@@ -362,7 +362,9 @@ impl Db {
         if self.entity_homograph(scope, d) {
             return;
         }
-        let s = &mut self.scopes[scope];
+        // The region gains a declaration of `key`: the answers for that name change, no other.
+        self.decls.bump_key(key.index());
+        let s = self.scopes.quiet_mut(scope);
         s.names.entry(key).or_default().push(d);
         s.order.push(d);
     }
@@ -466,9 +468,11 @@ impl Db {
     /// chain again for every new inner region.
     fn lookup_full(&mut self, scope: ScopeId, key: Symbol) -> (Visible, bool, bool) {
         let (rev, epoch) = (self.file_rev(), self.cache_epoch());
-        if let Some((r, e, direct, v)) = self.lookup_cache.get(&(scope, key))
+        let kgen = self.decls.key_gen(key.index());
+        if let Some((r, e, g, direct, v)) = self.lookup_cache.get(&(scope, key))
             && *r == rev
             && *e == epoch
+            && *g == kgen
         {
             let (v, direct) = (v.clone(), *direct);
             #[cfg(debug_assertions)]
@@ -500,9 +504,13 @@ impl Db {
         // probe: only results from further out are kept. Something changed during the lookup
         // (a unit was loaded): do not trust the epoch.
         let own = matches!(&v, Visible::One(d) if direct && self.decls[*d].scope == scope);
-        if cacheable && !own && self.cache_epoch() == epoch {
+        if cacheable
+            && !own
+            && self.cache_epoch() == epoch
+            && self.decls.key_gen(key.index()) == kgen
+        {
             self.lookup_cache
-                .insert((scope, key), (rev, epoch, direct, v.clone()));
+                .insert((scope, key), (rev, epoch, kgen, direct, v.clone()));
         }
         (v, direct, cacheable)
     }
@@ -627,12 +635,11 @@ impl Db {
                     return true;
                 }
                 let hidden = match self.profile_shape(p) {
-                    Some(sh) => {
-                        explicit_other
-                            .iter()
-                            .any(|&q| self.entity(q) != self.entity(p))
-                            || by_shape.any(&sh, |q| self.homographs(p, q))
-                    }
+                    // An implicit subprogram or literal is hidden only by an
+                    // explicit homograph subprogram, not by a non-overloadable:
+                    // a constant and a subprogram of one designator are not made
+                    // directly visible at all (12.4, the conflict below, #628).
+                    Some(sh) => by_shape.any(&sh, |q| self.homographs(p, q)),
                     None => {
                         explicit_other.iter().any(|&q| self.homographs(p, q))
                             || by_shape.any_member(|q| self.homographs(p, q))

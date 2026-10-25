@@ -544,6 +544,45 @@ fn session_records_every_file_as_it_goes() {
     assert_eq!(m.files().last().unwrap().hash, hash_content(b"a2"));
 }
 
+/// A deferred record writes the file's record at once and the index at the flush only (#747): a
+/// batch writes the index once, a file recorded twice and then as it first was keeps its record,
+/// and the record a file replaced goes with the flush.
+#[test]
+fn deferred_records_are_published_by_the_flush() {
+    let (t, _, work, _) = setup();
+    let session = work.session().unwrap();
+    let rec = |name: &str, text: &str, units: Vec<UnitRecord>| {
+        let p = t.path().join(name);
+        std::fs::write(&p, text).unwrap();
+        session
+            .record_deferred(STD, &p, &hash_content(text.as_bytes()), None, units)
+            .unwrap();
+        p
+    };
+    session.flush().unwrap(); // nothing recorded: no index
+    assert!(work.read().is_err());
+    let a = rec("a.vhd", "a1", vec![pkg("A")]);
+    rec("b.vhd", "b1", vec![pkg("B")]);
+    assert!(work.read().is_err(), "the index is written by the flush");
+    session.flush().unwrap();
+    assert_eq!(work.read().unwrap().len(), 2);
+    // a.vhd: other units, then the first ones again; the record of the first is live at the flush.
+    rec("a.vhd", "a2", vec![pkg("A2")]);
+    rec("a.vhd", "a3", vec![pkg("A")]);
+    rec("c.vhd", "c1", vec![pkg("C")]);
+    assert_eq!(work.read().unwrap().len(), 2);
+    session.flush().unwrap();
+    let m = work.read().unwrap();
+    assert_eq!(m.len(), 3);
+    let f = m.file(&a).unwrap();
+    assert_eq!(m.records(&f).unwrap()[0].name, "A");
+    let records = std::fs::read_dir(work.dir.join("yavs-lib.d"))
+        .unwrap()
+        .count();
+    assert_eq!(records, 3, "one record per file, none left over");
+    drop(session);
+}
+
 /// A read under the session's own lock is parsed once and shared with the session, and it never
 /// shows the manifest from before a record (the reader that parsed it and the writer are one
 /// process).

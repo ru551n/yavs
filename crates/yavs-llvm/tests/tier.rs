@@ -187,6 +187,13 @@ fn auto_tier_compiles_hot_functions() {
         assert_eq!(call().unwrap(), Some(5_000_050_000));
     }
     assert_eq!(call().unwrap(), Some(5_000_050_000));
+    // The policy's clock is the instructions of the simulation threads, or the platform says why not.
+    if let Some(why) = tier.clock_note() {
+        assert!(
+            why.contains("perf_event_open") || why.contains("no instruction counter"),
+            "{why}"
+        );
+    }
     tier.stop(true);
     // A note per module: its native-frame code and its frame-mode code (#510).
     let notes = notes.lock().unwrap();
@@ -924,6 +931,86 @@ fn logic_copies_match_the_interpreter() {
                 &["LCopy"],
                 &[0, 1, 5, 63, 64, 65, 127, 128, 200, 639, -1, 1 << 40],
             );
+        }
+    }
+}
+
+/// `LCopy` with constant offsets and count (the inline form for a range inside one plane block
+/// on each side, also over the same bytes and from a constant): the same bytes as the
+/// interpreter, a weighted sum of all 32-bit words.
+#[test]
+fn constant_logic_copies_match_the_interpreter() {
+    const LEN: usize = 320;
+    let pattern: Vec<u8> = (0..LEN)
+        .map(|i| (i as u32).wrapping_mul(2_654_435_761).to_le_bytes()[3])
+        .collect();
+    let shapes = [
+        (1, 0, 0),
+        (1, 63, 0),
+        (7, 3, 3),
+        (7, 5, 9),
+        (32, 0, 0),
+        (32, 31, 31),
+        (32, 1, 40),
+        (33, 60, 0),
+        (63, 1, 0),
+        (64, 0, 0),
+        (64, 64, 128),
+        (64, 70, 100),
+        (30, 127, 127),
+        (30, 100, 99),
+        (40, 5, 6),
+        (200, 0, 0),
+    ];
+    for (n, a, b) in shapes {
+        for from_const in [false, true] {
+            let mut pb = ProgramBuilder::new();
+            let k = pb.konst(ConstData::Bytes(pattern.clone()));
+            let f = pb.declare("f", FuncKind::Function, None);
+            let mut fb = pb.define(f);
+            fb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+            fb.param("b", Width::B8, ParamClass::Value, Mode::In, None);
+            stmt(&mut fb);
+            let c = fb.addr(AddrSpace::Const(k), 0);
+            let size = fb.int(LEN as i64);
+            let t = alloc(&mut fb, size);
+            fb.emit(Inst::Copy {
+                dst: t,
+                src: c,
+                bytes: size,
+            });
+            let (a, b, n) = (fb.int(a), fb.int(b), fb.int(n));
+            fb.emit(Inst::LCopy {
+                dst: t,
+                dst_off: a,
+                src: if from_const { c } else { t },
+                src_off: b,
+                n,
+            });
+            let mut acc = fb.int(0);
+            for w in 0..LEN / 4 {
+                let at = fb.int(w as i64 * 4);
+                let p = index(&mut fb, t, at);
+                let v = load(&mut fb, p, Width::B4);
+                let m = fb.int(w as i64 + 1);
+                let (x, sum) = (fb.reg(RegTy::I64), fb.reg(RegTy::I64));
+                fb.emit(Inst::Bin {
+                    op: IntOp::Mul,
+                    dst: x,
+                    a: v,
+                    b: m,
+                });
+                fb.emit(Inst::Bin {
+                    op: IntOp::Add,
+                    dst: sum,
+                    a: acc,
+                    b: x,
+                });
+                acc = sum;
+            }
+            fb.emit(Inst::Ret { v: Some(acc) });
+            fb.finish();
+            check(pb.finish().unwrap(), f, &["LCopy"], &[0]);
         }
     }
 }

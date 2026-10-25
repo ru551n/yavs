@@ -27,6 +27,9 @@ pub const REGION: &str = "yavs_rt_region";
 
 pub const SIGNAL: &str = "yavs_rt_signal";
 pub const DRIVE: &str = "yavs_rt_drive";
+
+pub const DRIVE_NAT: &str = "yavs_rt_drive_nat";
+
 pub const WAIT: &str = "yavs_rt_wait";
 pub const WAIT_ON: &str = "yavs_rt_wait_on";
 
@@ -95,10 +98,19 @@ pub struct Mem {
     pub objs: [Obj; OBJS],
     /// Entries of `objs` in use, at most (0: none, nothing to forget).
     pub live: u64,
+    /// Of those, the entries of `Life::Runtime`: up to `RT_KEEP` of them stay when another machine
+    /// of the same runtime runs (`settle`).
+    pub rt_live: u64,
+    /// The entries (up to four) this activation entered or found in the process's record, in
+    /// that order: what `save_objs` keeps, not what other machines left in the table.
+    pub mine: [u16; MINE],
+    pub nmine: u64,
     /// Entries of the table `nslots` points at (the thread's table never shrinks).
     /// Which entries of `objs` are in use: the walks (`retain`, `save_objs`, `begin`) visit only
     /// those.
     pub occ: [u64; OBJS / 64],
+    /// Bit `w` set: word `w` of `occ` has a bit set (the walks skip the empty words).
+    pub occ_any: u64,
     /// The `TierFrame::owner` and `heap_epoch` the objects were found at (`begin`).
     pub objs_owner: u64,
     pub objs_epoch: u64,
@@ -220,6 +232,15 @@ const _: () = assert!(std::mem::size_of::<Obj>() == 1 << OBJ_SHIFT);
 /// walk visits only the entries in use (`Mem::occ`); ways if a profile shows conflicts again.
 pub const OBJS: usize = 1024;
 
+/// The entries a process's record holds (`Mem::mine`).
+pub const MINE: usize = 4;
+
+/// The most constants `Mem` keeps for the next machine of the runtime. The walks over the table
+/// (`retain`, at a change of machine or the end of an activation) cost an entry each: a design
+/// whose processes use many constants drops them all at a change of machine and restores each
+/// process's own from its record, as before they were kept.
+pub const RT_KEEP: u64 = 16;
+
 const _: () = assert!(OBJS.is_power_of_two() && OBJS >= 64 && OBJS <= 1 << 24);
 
 /// The entry of `Mem::objs` for the object whose addresses have high half `hi`: the low bits of
@@ -282,6 +303,9 @@ pub const MEM_STACK_LO: u64 = std::mem::offset_of!(Mem, stack_lo) as u64;
 pub const MEM_NSLOTS: u64 = std::mem::offset_of!(Mem, nslots) as u64;
 pub const MEM_FLAGS: u64 = std::mem::offset_of!(Mem, fr.flags) as u64;
 pub const MEM_COV: u64 = std::mem::offset_of!(Mem, fr.cov) as u64;
+
+pub const MEM_STOP: u64 = std::mem::offset_of!(Mem, fr.stop) as u64;
+
 pub const MEM_COV_LEN: u64 = std::mem::offset_of!(Mem, fr.cov_len) as u64;
 pub const MEM_OBJS: u64 = std::mem::offset_of!(Mem, objs) as u64;
 
@@ -310,7 +334,11 @@ impl Mem {
             fr,
             objs: [NO_OBJ; OBJS],
             live: 0,
+            rt_live: 0,
+            mine: [0; MINE],
+            nmine: 0,
             occ: [0; OBJS / 64],
+            occ_any: 0,
             objs_owner: 0,
             objs_epoch: 0,
             dirty: false,
@@ -348,23 +376,21 @@ impl Mem {
     #[inline(always)]
     pub fn begin(&mut self, host: &mut dyn TierHost) {
         self.dirty = false;
-        if self.live != 0 {
+        self.nmine = 0;
+        // Nothing kept, or a few constants of this runtime only (a machine of it ran last):
+        // nothing to do.
+        if self.live != self.rt_live
+            || self.live != 0
+                && (self.rt_live > RT_KEEP
+                    || (self.objs_owner ^ self.fr.owner) >> yavs_interp::OWNER_RT_SHIFT != 0)
+        {
             self.begin_kept(host);
         }
     }
 
     #[inline(never)]
     fn begin_kept(&mut self, host: &mut dyn TierHost) {
-        let same = self.objs_owner == self.fr.owner;
-        let epoch = same && self.objs_epoch == self.fr.heap_epoch;
-        if !epoch || self.transient {
-            self.retain(|hi| match life(hi) {
-                Life::Machine => same,
-                Life::Heap => epoch,
-                Life::Volatile => false,
-            });
-        }
-        if epoch && self.fr.flags & yavs_interp::TIER_STAMPS != 0 {
+        if self.settle() && self.fr.flags & yavs_interp::TIER_STAMPS != 0 {
             for o in self.in_use() {
                 if o.w != 0 && life(o.hi) == Life::Heap {
                     host.wrote(o.hi << 32);
@@ -373,12 +399,31 @@ impl Mem {
         }
     }
 
+    /// Drop the entries the view's machine cannot use: another machine of the same runtime keeps
+    /// the constants (`RT_KEEP` at most), another runtime keeps nothing. True when the heap
+    /// objects are still good.
+    fn settle(&mut self) -> bool {
+        let same = self.objs_owner == self.fr.owner;
+        let rt = (self.objs_owner ^ self.fr.owner) >> yavs_interp::OWNER_RT_SHIFT == 0
+            && self.rt_live <= RT_KEEP;
+        let epoch = same && self.objs_epoch == self.fr.heap_epoch;
+        if !epoch || !rt && self.rt_live != 0 || self.transient {
+            self.retain(|hi| match life(hi) {
+                Life::Runtime => rt,
+                Life::Machine => same,
+                Life::Heap => epoch,
+                Life::Volatile => false,
+            });
+        }
+        epoch
+    }
+
     /// The entries of `objs` in use.
     #[inline]
     fn in_use(&self) -> impl Iterator<Item = &Obj> {
-        self.occ.iter().enumerate().flat_map(move |(w, &bits)| {
+        BitIter(self.occ_any).flat_map(move |w| {
             let objs = &self.objs;
-            BitIter(bits).map(move |b| &objs[w * 64 + b])
+            BitIter(self.occ[w]).map(move |b| &objs[w * 64 + b])
         })
     }
 
@@ -396,19 +441,44 @@ impl Mem {
     #[inline(always)]
     pub fn put_obj(&mut self, o: Obj) {
         let at = obj_at(o.hi);
+        self.mine_add(at);
         let e = &mut self.objs[at];
-        self.live += u64::from(e.hi == u64::MAX);
+        if e.hi == u64::MAX {
+            self.live += 1;
+        } else {
+            self.rt_live -= u64::from(life(e.hi) == Life::Runtime);
+        }
+        self.rt_live += u64::from(life(o.hi) == Life::Runtime);
         self.occ[at / 64] |= 1 << (at % 64);
+        self.occ_any |= 1 << (at / 64);
         self.transient |= life(o.hi) == Life::Volatile;
         self.dirty = true;
         *e = o;
     }
 
+    /// Entry `at` is one of this activation's (`mine`; a fifth is not recorded).
+    #[inline(always)]
+    fn mine_add(&mut self, at: usize) {
+        let n = self.nmine as usize;
+        if n < MINE && !self.mine[..n].contains(&(at as u16)) {
+            self.mine[n] = at as u16;
+            self.nmine += 1;
+        }
+    }
+
     /// The objects of a process's record (`save_objs`: up to four of `hi`, address, `len`, `w`),
-    /// entered where `begin` left no other.
+    /// entered where `begin` left no other entry, or only a constant (another machine's).
     pub fn load_objs(&mut self, w: &[u64; 17]) {
         for k in w[..16].as_chunks::<4>().0 {
-            if k[0] != u64::MAX && self.objs[obj_at(k[0])].hi == u64::MAX {
+            // The entries are packed from the front (`save_kept`).
+            if k[0] == u64::MAX {
+                break;
+            }
+            let at = obj_at(k[0]);
+            let held = self.objs[at].hi;
+            if held == k[0] {
+                self.mine_add(at);
+            } else if held == u64::MAX || life(held) == Life::Runtime {
                 self.put_obj(Obj {
                     hi: k[0],
                     ptr: k[1] as *mut u8,
@@ -421,28 +491,37 @@ impl Mem {
         self.dirty = false;
     }
 
-    /// Keep (up to four of) the objects `forget_end` left for the next activation of this
-    /// process, whatever ran on the thread in between (`TierState`).
+    /// Keep the objects this activation found or restored (`mine`) for the next activation of
+    /// this process, whatever ran on the thread in between (`TierState`).
+    #[inline(always)]
     pub fn save_objs(&self, slot: &mut Option<Box<yavs_interp::TierState>>) {
-        if self.live == 0 {
+        // Nothing found or dropped since the record was loaded, and it holds something: it stays.
+        if !self.dirty && self.nmine != 0 && slot.as_ref().is_some_and(|st| st.used) {
+            return;
+        }
+        self.save_kept(slot);
+    }
+
+    #[inline(never)]
+    fn save_kept(&self, slot: &mut Option<Box<yavs_interp::TierState>>) {
+        let mut words = [u64::MAX; 16];
+        let mut n = 0;
+        for &at in &self.mine[..self.nmine as usize] {
+            let o = &self.objs[at as usize];
+            // Dropped since (a frame or temporary area object at the end of the activation).
+            if o.hi != u64::MAX {
+                words[n * 4..n * 4 + 4].copy_from_slice(&[o.hi, o.ptr as u64, o.len, o.w]);
+                n += 1;
+            }
+        }
+        if n == 0 {
             if let Some(st) = slot {
                 st.used = false;
             }
             return;
         }
         let st = slot.get_or_insert_with(Default::default);
-        if !self.dirty && st.used {
-            return;
-        }
-        st.words[..16].fill(u64::MAX);
-        for (k, o) in st.words[..16]
-            .as_chunks_mut::<4>()
-            .0
-            .iter_mut()
-            .zip(self.in_use())
-        {
-            k.copy_from_slice(&[o.hi, o.ptr as u64, o.len, o.w]);
-        }
+        st.words[..16].copy_from_slice(&words);
         st.words[16] = self.fr.heap_epoch;
         st.used = true;
     }
@@ -459,12 +538,13 @@ impl Mem {
     /// Drop the objects whose high half `keep` refuses.
     #[inline]
     pub fn retain(&mut self, keep: impl Fn(u64) -> bool) {
-        let (mut live, mut transient) = (0, false);
-        for w in 0..self.occ.len() {
+        let (mut live, mut rt_live, mut transient) = (0, 0, false);
+        for w in BitIter(self.occ_any) {
             for b in BitIter(self.occ[w]) {
                 let o = &mut self.objs[w * 64 + b];
                 if keep(o.hi) {
                     live += 1;
+                    rt_live += u64::from(life(o.hi) == Life::Runtime);
                     transient |= life(o.hi) == Life::Volatile;
                 } else {
                     *o = NO_OBJ;
@@ -472,8 +552,12 @@ impl Mem {
                     self.dirty = true;
                 }
             }
+            if self.occ[w] == 0 {
+                self.occ_any &= !(1 << w);
+            }
         }
         self.live = live;
+        self.rt_live = rt_live;
         self.transient = transient;
     }
 
@@ -483,7 +567,7 @@ impl Mem {
         if self.live == 0 {
             return;
         }
-        self.retain(|hi| life(hi) == Life::Machine);
+        self.retain(|hi| matches!(life(hi), Life::Machine | Life::Runtime));
     }
 
     /// `forget` after a host call that started at heap epoch `epoch` (`TierFrame::heap_epoch`):
@@ -521,18 +605,20 @@ impl Iterator for BitIter {
 
 /// How long an object of `Mem::objs` stays where it was found: until the next host call that
 /// may move frames or the temporary area; while the heaps' epoch is unchanged (heap objects);
-/// while the same machine runs (constants, instance data, package data, shared variables:
-/// another machine may run another program).
+/// while the same machine runs (instance data, package data, shared variables: another machine
+/// may run another instance); while a machine of the same runtime runs (constants: the program's).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Life {
     Volatile,
     Heap,
     Machine,
+    Runtime,
 }
 
 pub fn life(hi: u64) -> Life {
     match (hi >> 29) as u8 {
-        space::CONST | space::INST | space::PKG | space::SHARED => Life::Machine,
+        space::CONST => Life::Runtime,
+        space::INST | space::PKG | space::SHARED => Life::Machine,
         space::HEAP | space::SHARED_HEAP => Life::Heap,
         _ => Life::Volatile,
     }
@@ -743,6 +829,43 @@ pub unsafe extern "C" fn yavs_rt_drive(
         }
     }
     yavs_rt_drive_slow(env, regs, mem, pc, driver, lo, len, wave, flags)
+}
+
+/// `yavs_rt_drive` for a native frame (`TierHost::drive_try`): no frame view and no pc, any delay.
+/// 1 when done, 0 when nothing was done: the caller materialises its frames and the interpreter
+/// runs the `Drive`. `wave` is read as in `yavs_rt_drive`.
+pub unsafe extern "C" fn yavs_rt_drive_nat(
+    env: *mut c_void,
+    driver: u32,
+    lo: u64,
+    len: u64,
+    wave: *const u8,
+    flags: u32,
+) -> u32 {
+    cb(Cb::Drive);
+    // SAFETY: as in `yavs_rt_drive`; the caller checked 8 + 32 bytes per 64 elements at `wave`.
+    let envp = env as *mut Env<'_>;
+    let word = |k: usize| unsafe { std::ptr::read_unaligned(wave.add(k * 8).cast::<u64>()) };
+    let host = unsafe { &mut *(*envp).host };
+    let inertial = flags & 1 != 0;
+    if flags & 4 != 0 {
+        let n = (len.div_ceil(64) * 32) as usize;
+        // A copy, as `yavs_rt_drive_wide` makes.
+        let planes = unsafe { std::slice::from_raw_parts(wave.add(8), n) }.to_vec();
+        return u32::from(host.drive_wide_try(
+            driver,
+            [lo, len],
+            word(0) as i64,
+            &planes,
+            inertial,
+        ));
+    }
+    let (delay, block) = if flags & 2 != 0 {
+        (word(0) as i64, [word(1), 0, 0, 0])
+    } else {
+        (word(0) as i64, [word(1), word(2), word(3), word(4)])
+    };
+    u32::from(host.drive_try(driver, [lo, len], delay, block, inertial))
 }
 
 /// `yavs_rt_drive` for a wide target and for the assignments the kernel's fastest path does not
@@ -2049,6 +2172,7 @@ pub unsafe fn yavs_rt_obj(env: *mut c_void, mem: *mut Mem, addr: u64, write: u32
 
 /// Run compiled `f` (generated for `nregs` registers) from `pc` (`Tier::run`); `lookup`
 /// finds the compiled code of the functions it calls.
+#[inline(always)]
 pub fn enter(
     f: RunFn,
     nregs: usize,
@@ -2303,6 +2427,7 @@ pub fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
         Inst::Load { dst, addr, w } => [vec![addr], pair(dst, w)].concat(),
         Inst::Store { addr, src, w } => [vec![addr], pair(src, w)].concat(),
         Inst::Copy { dst, src, bytes } => vec![dst, src, bytes],
+        Inst::Zero { addr, .. } => vec![addr],
         Inst::Pos { dst, dope, idx, .. } => vec![dst, dope, idx],
         Inst::SlicePos {
             dst,
@@ -2434,6 +2559,7 @@ pub fn keeps_objects(i: &Inst) -> bool {
             | Inst::Store { .. }
             | Inst::Copy { .. }
             | Inst::Fill { .. }
+            | Inst::Zero { .. }
             | Inst::Pos { .. }
             | Inst::SlicePos { .. }
             | Inst::Index { .. }
@@ -2783,6 +2909,7 @@ pub fn stable_activation(f: &Func) -> bool {
                 | Inst::Store { .. }
                 | Inst::Copy { .. }
                 | Inst::Fill { .. }
+                | Inst::Zero { .. }
                 | Inst::Pos { .. }
                 | Inst::SlicePos { .. }
                 | Inst::Index { .. }
@@ -2957,7 +3084,7 @@ pub fn param_addrs(f: &Func) -> Vec<ParamAddr> {
             Inst::Load { addr, .. } => (&[*addr], &[]),
             Inst::Store { addr, .. } => (&[], &[*addr]),
             Inst::Copy { dst, src, .. } => (&[*src], &[*dst]),
-            Inst::Fill { dst, .. } => (&[], &[*dst]),
+            Inst::Fill { dst, .. } | Inst::Zero { addr: dst, .. } => (&[], &[*dst]),
             Inst::Pos { dope, .. } | Inst::DopeLen { dope, .. } | Inst::SlicePos { dope, .. } => {
                 (&[*dope], &[])
             }
@@ -3123,9 +3250,6 @@ pub fn track<V: Copy>(known: &mut [Option<Known<V>>], fixed: &[Option<i64>], f: 
         }
     }
 }
-
-// The callbacks are `unsafe extern "C"` functions called only by generated code, which passes the
-// `env` and `mem` pointers `enter` made: one safety contract for all of them, stated on `enter`.
 
 /// Below this many IR instructions a function without a loop stays interpreted (`too_short`).
 pub const SHORT: usize = 64;
@@ -3336,6 +3460,7 @@ pub fn xstep_ok(f: &Func, i: &Inst) -> bool {
             | Inst::Phys { .. }
             | Inst::LNum { .. }
             | Inst::LogicOp { .. }
+            | Inst::SigSlice { .. }
             | Inst::Cat { logic: true, .. }
             | Inst::Bin { op: IntOp::Pow, .. }
             | Inst::BinRange { op: IntOp::Pow, .. }
@@ -3346,5 +3471,135 @@ pub fn xstep_ok(f: &Func, i: &Inst) -> bool {
     ) && {
         let (uses, defs) = yavs_interp::inst_regs(f, i);
         uses.iter().chain(&defs).all(|r| r.0 < n)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn obj(sp: u8, index: u64) -> Obj {
+        Obj {
+            hi: u64::from(sp) << 29 | index,
+            ptr: std::ptr::null_mut(),
+            len: 8,
+            w: 0,
+            h: NO_H,
+        }
+    }
+
+    fn entered(m: &Mem, sp: u8, index: u64) -> bool {
+        let hi = u64::from(sp) << 29 | index;
+        m.objs[obj_at(hi)].hi == hi
+    }
+
+    /// A machine of the same runtime keeps the constants the last one found and drops its
+    /// instance data and heap objects; a machine of another runtime keeps nothing.
+    #[test]
+    fn constants_outlive_the_machine_that_found_them() {
+        let rt = |id: u64, n: u64| id << yavs_interp::OWNER_RT_SHIFT | n;
+        let mut m = Box::new(Mem::of(TierFrame::default()));
+        m.fr.owner = rt(1, 1);
+        for o in [
+            obj(space::CONST, 2),
+            obj(space::INST, 3),
+            obj(space::HEAP, 4),
+        ] {
+            m.put_obj(o);
+        }
+        m.end();
+        assert_eq!((m.live, m.rt_live), (3, 1));
+        // Another machine of runtime 1.
+        m.fr.owner = rt(1, 2);
+        assert!(m.live != m.rt_live);
+        m.settle();
+        assert_eq!((m.live, m.rt_live), (1, 1));
+        assert!(entered(&m, space::CONST, 2));
+        assert!(!entered(&m, space::INST, 3) && !entered(&m, space::HEAP, 4));
+        // Only constants kept: a machine of the same runtime has nothing to settle, ...
+        m.end();
+        m.fr.owner = rt(1, 3);
+        assert!(
+            m.live == m.rt_live && (m.objs_owner ^ m.fr.owner) >> yavs_interp::OWNER_RT_SHIFT == 0
+        );
+        // ... and one of another runtime drops them.
+        m.fr.owner = rt(2, 1);
+        m.settle();
+        assert_eq!((m.live, m.rt_live), (0, 0));
+        assert!(!entered(&m, space::CONST, 2));
+    }
+
+    /// The record of a process (`save_objs`) holds what its activation found or restored, not the
+    /// constants other machines left in the table; `load_objs` puts a constant of the record
+    /// where only another machine's constant stands.
+    #[test]
+    fn the_process_record_holds_what_the_activation_used() {
+        let rt1 = |n: u64| 1 << yavs_interp::OWNER_RT_SHIFT | n;
+        let mut m = Box::new(Mem::of(TierFrame::default()));
+        // Machine 1 finds a constant and a heap object and keeps them in its record.
+        m.fr.owner = rt1(1);
+        m.nmine = 0;
+        m.put_obj(obj(space::CONST, 2));
+        m.put_obj(obj(space::HEAP, 5));
+        let mut rec1 = None;
+        m.save_objs(&mut rec1);
+        m.end();
+        // Machine 2 of the runtime finds another constant: the first one is not its own.
+        m.fr.owner = rt1(2);
+        m.nmine = 0;
+        m.settle();
+        assert!(entered(&m, space::CONST, 2) && !entered(&m, space::HEAP, 5));
+        m.put_obj(obj(space::CONST, 9));
+        let mut rec2 = None;
+        m.save_objs(&mut rec2);
+        let st = rec2.as_ref().expect("a record");
+        assert_eq!(st.words[0], u64::from(space::CONST) << 29 | 9);
+        assert_eq!(st.words[4], u64::MAX);
+        m.end();
+        // Machine 1 again: its record is put back, the table's other constants stay.
+        m.fr.owner = rt1(1);
+        m.nmine = 0;
+        m.settle();
+        m.load_objs(&rec1.as_ref().expect("a record").words);
+        assert!(entered(&m, space::CONST, 2) && entered(&m, space::HEAP, 5));
+        // Unchanged since it was loaded: the record stays as it is.
+        let before = rec1.as_ref().expect("a record").words;
+        m.save_objs(&mut rec1);
+        assert_eq!(rec1.expect("a record").words, before);
+        // A constant of the record replaces another one at the same entry, not a heap object.
+        let clash = u64::from(space::CONST) << 29 | (2 + OBJS as u64);
+        assert_eq!(obj_at(clash), obj_at(obj(space::CONST, 2).hi));
+        m.nmine = 0;
+        m.put_obj(Obj {
+            hi: clash,
+            ..obj(space::CONST, 2)
+        });
+        let mut w = [u64::MAX; 17];
+        w[..4].copy_from_slice(&[obj(space::CONST, 2).hi, 0, 8, 0]);
+        m.load_objs(&w);
+        assert!(entered(&m, space::CONST, 2));
+    }
+
+    /// Many constants are not kept for the next machine (every walk of the table would pay for
+    /// them): its record restores its own, as before they were kept at all.
+    #[test]
+    fn only_a_few_constants_are_kept_for_the_next_machine() {
+        let rt1 = |n: u64| 1 << yavs_interp::OWNER_RT_SHIFT | n;
+        let mut m = Box::new(Mem::of(TierFrame::default()));
+        m.fr.owner = rt1(1);
+        for k in 0..RT_KEEP + 1 {
+            m.put_obj(obj(space::CONST, k));
+        }
+        m.end();
+        m.fr.owner = rt1(2);
+        m.settle();
+        assert_eq!((m.live, m.rt_live), (0, 0));
+        for k in 0..RT_KEEP {
+            m.put_obj(obj(space::CONST, k));
+        }
+        m.end();
+        m.fr.owner = rt1(3);
+        m.settle();
+        assert_eq!((m.live, m.rt_live), (RT_KEEP, RT_KEEP));
     }
 }

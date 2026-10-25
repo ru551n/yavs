@@ -7,6 +7,11 @@
  * -f: the window opens at the (SKIP+1)-th entry to ADDR (default: at the first instruction).
  * -t: the window closes at the N-th entry to ADDR after it opened (default 1).
  * -n: the window closes after MAX instructions. Without -t and -n it closes at exit.
+ * -d ADDR -a ARMFILE [-s SYMFILE]: ADDR is the address of the indirect jump that dispatches the ops of an
+ *    interpreter loop. Every instruction after a dispatch up to the next one (callees included) is charged
+ *    to the op that dispatch started, named by its first instruction. ARMFILE gets "arm instructions ops"
+ *    lines (hex arm, decimal), and with SYMFILE ("hex-address hex-size" lines, sorted) ARMFILE.fn gets
+ *    "arm symbol-index instructions" lines: where the instructions of each op were spent.
  * PCFILE gets "relative-pc count" lines (hex pc, decimal) for addresses of the program file;
  * stderr gets the totals, and the instructions outside it (libraries, vdso) per mapping.
  * Only the main thread is traced: run the program with one thread. x86-64 Linux only.
@@ -58,6 +63,41 @@ static void bump(uint64_t pc) {
     tab[i].pc = pc; tab[i].n = 1; used++;
 }
 
+/* Instructions per dispatched op ("arm": the first instruction after the dispatch jump), and per
+ * (arm, symbol). */
+static struct { uint64_t arm, ins, ops; } arms[4096];
+static int narms;
+static uint64_t *symaddr, *symsize;
+static int nsym;
+static struct { uint64_t arm; int fn; uint64_t n; } *af;
+static int naf, capaf;
+
+static int arm_index(uint64_t arm) {
+    for (int i = 0; i < narms; i++) if (arms[i].arm == arm) return i;
+    if (narms >= 4096) return 0;
+    arms[narms].arm = arm;
+    return narms++;
+}
+
+static int symbol_of(uint64_t pc) {
+    int lo = 0, hi = nsym - 1, r = -1;
+    while (lo <= hi) {
+        int m = (lo + hi) / 2;
+        if (symaddr[m] <= pc) { r = m; lo = m + 1; } else hi = m - 1;
+    }
+    return r >= 0 && pc < symaddr[r] + symsize[r] ? r : -1;
+}
+
+static void arm_fn_bump(uint64_t arm, int fn) {
+    for (int i = 0; i < naf; i++) if (af[i].arm == arm && af[i].fn == fn) { af[i].n++; return; }
+    if (naf == capaf) {
+        capaf = capaf ? capaf * 2 : 4096;
+        af = realloc(af, capaf * sizeof *af);
+        if (!af) die("realloc");
+    }
+    af[naf].arm = arm; af[naf].fn = fn; af[naf].n = 1; naf++;
+}
+
 /* Load base of the program file and its mappings (lowest start, end) from /proc/PID/maps. */
 static char exe[4096];
 static struct { uint64_t lo, hi; char name[256]; uint64_t n; int is_exe; } maps[256];
@@ -103,20 +143,35 @@ static int cmp_pc(const void *a, const void *b) {
 }
 
 int main(int argc, char **argv) {
-    uint64_t from = 0, skip = 0, to = 0, nto = 1, max = 0;
-    const char *out = NULL;
+    uint64_t from = 0, skip = 0, to = 0, nto = 1, max = 0, disp = 0;
+    const char *out = NULL, *armf = NULL, *symf = NULL;
     int c;
-    while ((c = getopt(argc, argv, "+f:t:n:o:")) != -1) {
+    while ((c = getopt(argc, argv, "+f:t:n:o:d:a:s:")) != -1) {
         char *e;
         switch (c) {
         case 'f': from = strtoull(optarg, &e, 16); if (*e == ':') skip = strtoull(e + 1, NULL, 10); break;
         case 't': to = strtoull(optarg, &e, 16); if (*e == ':') nto = strtoull(e + 1, NULL, 10); break;
         case 'n': max = strtoull(optarg, NULL, 10); break;
         case 'o': out = optarg; break;
+        case 'd': disp = strtoull(optarg, NULL, 16); break;
+        case 'a': armf = optarg; break;
+        case 's': symf = optarg; break;
         default: return 2;
         }
     }
     if (!out || optind >= argc) { fprintf(stderr, "usage: step [-f ADDR[:SKIP]] [-t ADDR[:N]] [-n MAX] -o PCFILE -- prog args...\n"); return 2; }
+    if (disp && !armf) { fprintf(stderr, "step: -d needs -a\n"); return 2; }
+    if (symf) {
+        FILE *sf = fopen(symf, "r");
+        uint64_t a, z;
+        int cap = 1 << 18;
+        if (!sf) die(symf);
+        symaddr = malloc(cap * sizeof *symaddr);
+        symsize = malloc(cap * sizeof *symsize);
+        if (!symaddr || !symsize) die("malloc");
+        while (fscanf(sf, "%" SCNx64 " %" SCNx64, &a, &z) == 2 && nsym < cap) { symaddr[nsym] = a; symsize[nsym++] = z; }
+        fclose(sf);
+    }
     char **prog = argv + optind;
     if (!realpath(prog[0], exe)) die(prog[0]);
     int pie; uint64_t fv = first_load(exe, &pie);
@@ -161,7 +216,8 @@ int main(int argc, char **argv) {
     }
     load_maps(pid, fv); /* mappings of the libraries exist now */
 
-    uint64_t total = 0, outside = 0, tos = 0;
+    uint64_t total = 0, outside = 0, tos = 0, cur = 0;
+    int after_dispatch = 0;
     int ended = 0;
     for (;;) {
         if (ptrace(PTRACE_GETREGS, pid, 0, &r) < 0) die("getregs");
@@ -174,6 +230,14 @@ int main(int argc, char **argv) {
         for (int i = 0; i < nmaps; i++)
             if (pc >= maps[i].lo && pc < maps[i].hi) { if (maps[i].is_exe) in = 1; else maps[i].n++; break; }
         if (in) bump(rel); else outside++;
+        if (disp) {
+            if (after_dispatch) { cur = rel; after_dispatch = 0; arms[arm_index(cur)].ops++; }
+            if (cur) {
+                arms[arm_index(cur)].ins++;
+                if (nsym) arm_fn_bump(cur, in ? symbol_of(rel) : -1);
+            }
+            if (in && rel == disp) after_dispatch = 1;
+        }
         if (ptrace(PTRACE_SINGLESTEP, pid, 0, 0) < 0) die("step");
         if (waitpid(pid, &st, 0) < 0) die("wait");
         if (WIFEXITED(st) || WIFSIGNALED(st)) { ended = 1; break; }
@@ -192,6 +256,20 @@ int main(int argc, char **argv) {
     qsort(v, k, sizeof *v, cmp_pc);
     for (uint64_t i = 0; i < k; i++) fprintf(f, "%" PRIx64 " %" PRIu64 "\n", v[i][0], v[i][1]);
     fclose(f);
+    if (disp) {
+        char p[4200];
+        FILE *g = fopen(armf, "w");
+        if (!g) die(armf);
+        for (int i = 0; i < narms; i++) fprintf(g, "%" PRIx64 " %" PRIu64 " %" PRIu64 "\n", arms[i].arm, arms[i].ins, arms[i].ops);
+        fclose(g);
+        if (nsym) {
+            snprintf(p, sizeof p, "%s.fn", armf);
+            g = fopen(p, "w");
+            if (!g) die(p);
+            for (int i = 0; i < naf; i++) fprintf(g, "%" PRIx64 " %d %" PRIu64 "\n", af[i].arm, af[i].fn, af[i].n);
+            fclose(g);
+        }
+    }
     fprintf(stderr, "step: %" PRIu64 " instructions in the window (%" PRIu64 " outside the program file)%s\n",
             total, outside, ended ? ", the program ended" : "");
     for (int i = 0; i < nmaps; i++) if (maps[i].n) fprintf(stderr, "step:   outside: %s %" PRIu64 "\n", maps[i].name, maps[i].n);

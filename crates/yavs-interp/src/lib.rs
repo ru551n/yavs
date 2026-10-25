@@ -55,7 +55,9 @@ pub use exec::copy_bits;
 pub use heap::{Heap, collections as gc_collections};
 pub use ieee::{code_table, edge_native};
 pub use pmemo::pmemo_stats;
-pub use pre::{ScalarDrive, light_ieee as light_native, scalar_drives, static_wait};
+pub use pre::{
+    ScalarDrive, light_ieee as light_native, retreating_brs, scalar_drives, static_wait,
+};
 pub use state::{restore_state, restore_state_prefix};
 pub use textio::{FILE_INPUT, FILE_OUTPUT};
 pub use tier_census::report as tier_census;
@@ -242,6 +244,18 @@ impl yavs_kernel::Observer for SharedGc {
         phase == yavs_kernel::Phase::NextCycle
     }
 
+    /// A cycle start with nothing to collect needs no hook (the kernel makes one per call).
+    fn phase_due(&mut self, phase: yavs_kernel::Phase) -> bool {
+        if phase != yavs_kernel::Phase::NextCycle {
+            return true;
+        }
+        let t = self.rt.limits.gc_threshold;
+        // A poisoned lock is reported by the next process that takes it.
+        self.shared
+            .lock()
+            .is_ok_and(|s| s.heap.as_ref().is_some_and(|h| h.gc_due(t)))
+    }
+
     fn phase(&mut self, _hook: &mut yavs_kernel::Hook<'_>, phase: yavs_kernel::Phase) {
         // A poisoned lock is reported by the next process that takes it.
         let Ok(mut s) = self.shared.lock() else {
@@ -365,6 +379,15 @@ pub trait Tier: Send + Sync {
     /// Whether `func` has compiled code now: the interpreter calls `run` only then.
     fn ready(&self, _func: FuncId) -> bool {
         true
+    }
+
+    /// Whether the tier compiles the specialised copy of a process (`Program::copy_of`) when it
+    /// runs hot, like any function. Then a process switches to its copy whether or not the
+    /// shared code is compiled (`Machine::specialise`): compiled code of the copy is a third
+    /// smaller and faster. A tier that compiled everything before the run leaves it `false`:
+    /// its processes stay on the compiled shared code.
+    fn compiles_copies(&self) -> bool {
+        false
     }
 
     /// Whether [`Tier::call`] takes `func` now (`Runtime::set_tier` marks it).
@@ -567,6 +590,37 @@ pub trait TierHost {
     /// caller uses `drive_block`.
     fn drive_now(&mut self, driver: u32, target: [u64; 2], delay: i64, block: [u64; 4]) -> bool {
         let _ = (driver, target, delay, block);
+        false
+    }
+
+    /// `drive_block` for a native frame (no frame view, any delay): one waveform element of 1 to
+    /// 64 logic elements, or of one scalar of at most 8 bytes, assigned to the single-range
+    /// signal reference `target` through driver `driver`. `true` when done; `false` (nothing
+    /// done, also on every error) otherwise: the caller materialises its frames and the
+    /// interpreter runs the `Drive`, which reports the error.
+    fn drive_try(
+        &mut self,
+        driver: u32,
+        target: [u64; 2],
+        delay: i64,
+        block: [u64; 4],
+        inertial: bool,
+    ) -> bool {
+        let _ = (driver, target, delay, block, inertial);
+        false
+    }
+
+    /// [`TierHost::drive_try`] for a target of more than 64 logic elements: `planes` as for
+    /// `drive_wide`.
+    fn drive_wide_try(
+        &mut self,
+        driver: u32,
+        target: [u64; 2],
+        delay: i64,
+        planes: &[u8],
+        inertial: bool,
+    ) -> bool {
+        let _ = (driver, target, delay, planes, inertial);
         false
     }
 
@@ -863,7 +917,8 @@ pub struct TierFrame {
     /// needs.
     pub flags: u64,
     /// Which machine the view is of (a number no other machine of the process has): the
-    /// process heap, instance data and frames are that machine's.
+    /// process heap, instance data and frames are that machine's. Bits `OWNER_RT_SHIFT` and up
+    /// are the runtime's id: what machines of one runtime share (constants) compares there.
     pub owner: u64,
     /// The slots of the frames `up` names and their lengths (0: not offered, ask the host), so compiled
     /// code reads a variable of an enclosing subprogram in place.
@@ -873,8 +928,19 @@ pub struct TierFrame {
     /// null and 0 without coverage.
     pub cov: *const u8,
     pub cov_len: u64,
+    /// The kernel's interrupt flag byte (`Ctx::interrupt_flags`; `NO_STOP` without a kernel):
+    /// a process that never suspends polls `Interrupt::STOP` at its jumps back, as the interpreter does.
+    pub stop: *const u8,
 }
 
+/// The bit of the byte `TierFrame::stop` points at that asks the run to stop.
+pub const STOP_BIT: u8 = yavs_kernel::Interrupt::STOP;
+
+/// `TierFrame::stop` of a view without a kernel: never set.
+pub static NO_STOP: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// The bit of `TierFrame::owner` at which the runtime's id starts.
+pub const OWNER_RT_SHIFT: u32 = 32;
 /// `TierFrame::flags`: allocators allocate in the shared heap (`Frame::shared_alloc`).
 pub const TIER_SHARED_ALLOC: u64 = 1;
 /// `TierFrame::flags`: the process may use the shared state, as a protected call needs.
@@ -950,6 +1016,7 @@ impl Default for TierFrame {
             flags: 0,
             cov: std::ptr::null(),
             cov_len: 0,
+            stop: NO_STOP.as_ptr(),
         }
     }
 }
@@ -991,9 +1058,6 @@ pub struct Runtime {
     pub(crate) files: Mutex<Vec<textio::FileSlot>>,
     /// Compiled code, set once before the simulation starts (`set_tier`).
     pub(crate) tier: std::sync::OnceLock<Arc<dyn Tier>>,
-    /// When the tier was set: processes wait this long for it to compile their code before they
-    /// switch to a specialised copy (`Machine::specialise`).
-    pub(crate) tier_at: std::sync::OnceLock<std::time::Instant>,
     /// Calls run again for their side effects (`set_replay`): their reports without a
     /// kernel were printed and counted the first time.
     pub(crate) replay: std::sync::atomic::AtomicBool,
@@ -1020,18 +1084,50 @@ pub struct NativeFlags {
     func: Box<[std::sync::atomic::AtomicU8]>,
     /// Per process function: the processes made of it (`InterpProcess::new`).
     instances: Box<[std::sync::atomic::AtomicU32]>,
+    /// Per process function: some process made of it ran a second activation
+    /// (`Machine::specialise`), so it can reach the switch to its copy at all (#749).
+    resumed: Box<[std::sync::atomic::AtomicBool]>,
     /// Activations of the one process function a trial of the tier counts (`count_on`).
     entered: std::sync::atomic::AtomicU64,
     /// Some function is counted (`NAT_COUNT`).
     counting: std::sync::atomic::AtomicBool,
+    /// Functions flagged since the last `Runtime::sync_native`, which sets `Pre::native` of each.
+    fresh: Mutex<Vec<u32>>,
+    /// `fresh` is not empty.
+    dirty: std::sync::atomic::AtomicBool,
 }
 
 impl NativeFlags {
+    /// `func` got a flag: `Runtime::sync_native` tells its `Pre`.
+    fn note(&self, func: u32) {
+        self.fresh
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(func);
+        self.dirty.store(true, Ordering::Release);
+    }
+
+    /// Whether any flag of `func` is set.
+    fn flagged(&self, func: u32) -> bool {
+        self.func
+            .get(func as usize)
+            .is_some_and(|n| n.load(Ordering::Acquire) != 0)
+    }
+
     /// The processes made of process function `func` so far.
     pub fn instances(&self, func: FuncId) -> u32 {
         self.instances
             .get(func.0 as usize)
             .map_or(0, |n| n.load(Ordering::Relaxed))
+    }
+
+    /// Whether a process of `func` has run a second activation: until then none of them has
+    /// come back from its first wait, and a process that never does (one loop and a final wait)
+    /// never switches to a copy.
+    pub fn resumed(&self, func: FuncId) -> bool {
+        self.resumed
+            .get(func.0 as usize)
+            .is_some_and(|n| n.load(Ordering::Relaxed))
     }
 
     /// Count the activations of the process function `func` from now on (`entries`). One function
@@ -1042,6 +1138,7 @@ impl NativeFlags {
             self.entered.store(0, Ordering::Relaxed);
             self.counting.store(true, Ordering::Release);
             n.fetch_or(NAT_COUNT, Ordering::Release);
+            self.note(func.0);
             self.any.store(true, Ordering::Release);
         }
     }
@@ -1095,6 +1192,7 @@ impl NativeFlags {
     pub fn set_call(&self, func: FuncId) {
         if let Some(n) = self.func.get(func.0 as usize) {
             n.fetch_or(NAT_CALL, Ordering::Release);
+            self.note(func.0);
         }
     }
 
@@ -1126,6 +1224,7 @@ impl NativeFlags {
     pub fn set(&self, func: FuncId) {
         if let Some(n) = self.func.get(func.0 as usize) {
             n.fetch_or(NAT_CODE, Ordering::Release);
+            self.note(func.0);
         }
         self.any.store(true, Ordering::Release);
     }
@@ -1150,7 +1249,31 @@ static SLOTS: Mutex<
     )>,
 > = Mutex::new(Vec::new());
 
+/// What runs on a thread when it gets its sampling slot (`on_simulation_thread`).
+static ON_NEW_SLOT: std::sync::OnceLock<fn(usize)> = std::sync::OnceLock::new();
+
+/// Register `f` to run once on every thread that becomes a simulation thread (the first time it runs
+/// the fast loop), before it interprets anything, with the index of the thread's slot
+/// (`Runtime::thread_sampler`): `--tier=auto` opens a work counter for the thread there. The calling
+/// thread is told at once when it has its slot already (it ran elaboration code); other threads that
+/// have theirs are not. The first call wins.
+pub fn on_simulation_thread(f: fn(usize)) {
+    let f = *ON_NEW_SLOT.get_or_init(|| f);
+    if let Some(s) = SLOT.get()
+        && !TOLD.replace(true)
+    {
+        let slots = SLOTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(i) = slots.iter().position(|(a, _)| std::ptr::eq(*a, s)) {
+            f(i);
+        }
+    }
+}
+
 thread_local! {
+    /// The hook of `on_simulation_thread` has run on this thread.
+    static TOLD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Where the watching loop was at its last look: `function << 32 | IR pc` (`pc_slot`).
     static PC_SLOT: std::cell::Cell<Option<&'static std::sync::atomic::AtomicU64>> =
         const { std::cell::Cell::new(None) };
@@ -1183,12 +1306,19 @@ pub(crate) fn pc_slot() -> &'static std::sync::atomic::AtomicU64 {
 fn new_slot() -> &'static std::sync::atomic::AtomicU64 {
     let s: &'static std::sync::atomic::AtomicU64 = Box::leak(Box::default());
     let pc: &'static std::sync::atomic::AtomicU64 = Box::leak(Box::default());
-    SLOTS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push((s, pc));
+    let index = {
+        let mut slots = SLOTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        slots.push((s, pc));
+        slots.len() - 1
+    };
     SLOT.set(Some(s));
     PC_SLOT.set(Some(pc));
+    if let Some(f) = ON_NEW_SLOT.get() {
+        TOLD.set(true);
+        f(index);
+    }
     s
 }
 
@@ -1211,11 +1341,6 @@ pub fn spec_after() -> u64 {
 pub fn spec_forced() -> bool {
     std::env::var_os("YAVS_SPEC_AFTER").is_some()
 }
-
-/// How long after a tier is set a process stays on its shared code (`Machine::specialise`): the
-/// tier needs about 30 ms of samples of a process before it compiles it, and its compile takes
-/// a few more.
-pub(crate) const SPEC_TIER_WAIT: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// Activations of a process before it switches to its copy: the optimiser spends about 0.7
 /// million instructions on a copy, which an activation saves a few tens of (docs/design/specialisation.md).
@@ -1296,7 +1421,6 @@ impl Runtime {
             asserts: Default::default(),
             files: Mutex::new(textio::FileSlot::preopened()),
             tier: Default::default(),
-            tier_at: Default::default(),
             replay: Default::default(),
             id: {
                 static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
@@ -1306,8 +1430,11 @@ impl Runtime {
                 any: Default::default(),
                 func: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
                 instances: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
+                resumed: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
                 entered: Default::default(),
                 counting: Default::default(),
+                fresh: Default::default(),
+                dirty: Default::default(),
             }),
             live: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
             plans: Default::default(),
@@ -1397,11 +1524,42 @@ impl Runtime {
     /// The facts of function `id` (`f`), computed once.
     #[inline(always)]
     pub(crate) fn pre(&self, id: yavs_ir::FuncId, f: &yavs_ir::Func) -> Option<&pre::Pre> {
-        Some(
-            self.pre
-                .get(id.0 as usize)?
-                .get_or_init(|| pre::Pre::new(f, &self.prog, self.prog.runs_raw(id))),
-        )
+        Some(self.pre.get(id.0 as usize)?.get_or_init(|| {
+            let mut p = pre::Pre::new(f, &self.prog, self.prog.runs_raw(id));
+            p.native = self.native.flagged(id.0).into();
+            p
+        }))
+    }
+
+    /// Set `Pre::native` of the functions flagged since the last call. The fast loops call it where
+    /// they look for compiled code anyway (an activation starts, every `WATCH` events), so a
+    /// call of a function the tier just flagged is seen within that many events.
+    #[inline(always)]
+    pub(crate) fn sync_native(&self) {
+        if self.native.dirty.load(Ordering::Acquire) {
+            self.sync_native_slow();
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn sync_native_slow(&self) {
+        self.native.dirty.store(false, Ordering::Relaxed);
+        let ids = std::mem::take(
+            &mut *self
+                .native
+                .fresh
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        for id in ids {
+            let id = FuncId(id);
+            if let Some(f) = self.prog.func(id)
+                && let Some(p) = self.pre(id, f)
+            {
+                p.native.store(true, Ordering::Relaxed);
+            }
+        }
     }
 
     /// The `Handle` and `Ptr` registers live at each safepoint of `id`, computed when first
@@ -1465,7 +1623,6 @@ impl Runtime {
                 self.native.set_call(FuncId(i as u32));
             }
         }
-        let _ = self.tier_at.set(std::time::Instant::now());
         self.tier.set(tier).is_ok()
     }
 
@@ -1479,12 +1636,24 @@ impl Runtime {
     /// appends the functions the simulation threads run at that moment, and whether they run
     /// compiled code.
     pub fn sampler(&self) -> impl Fn(&mut Vec<(FuncId, bool)>) + Send + 'static {
+        let sample = self.thread_sampler();
+        move |out| {
+            let mut v = Vec::new();
+            sample(&mut v);
+            out.extend(v.into_iter().map(|(_, f, c)| (f, c)));
+        }
+    }
+
+    /// `sampler` with the index of the sampled thread's slot (what `on_simulation_thread` told its
+    /// hook), to pair each thread with its own work counter.
+    pub fn thread_sampler(&self) -> impl Fn(&mut Vec<(usize, FuncId, bool)>) + Send + 'static {
         let (id, native) = (u64::from(self.id), self.native.clone());
         move |out| {
-            for (s, _) in SLOTS
+            for (i, (s, _)) in SLOTS
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .iter()
+                .enumerate()
             {
                 let v = s.load(Ordering::Relaxed);
                 if v >> 32 == id {
@@ -1493,7 +1662,7 @@ impl Runtime {
                         .func
                         .get(func as usize)
                         .is_some_and(|n| n.load(Ordering::Relaxed) & NAT_CODE != 0);
-                    out.push((FuncId(func), compiled));
+                    out.push((i, FuncId(func), compiled));
                 }
             }
         }
@@ -1525,6 +1694,10 @@ impl Runtime {
             let _ = n.try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                 (v & NAT_CODE == 0).then_some(v | NAT_ASK)
             });
+        }
+        // Every function has a flag now: the facts made so far (`Pre::native`) say so at once.
+        for p in self.pre.iter().filter_map(|p| p.get()) {
+            p.native.store(true, Ordering::Relaxed);
         }
         self.native.any.store(true, Ordering::Release);
     }
@@ -1905,7 +2078,13 @@ impl Process for InterpProcess {
             if let Err(e) = self.m.borrow_scratch() {
                 return Err(self.m.error(e, Some(ctx)));
             }
-            return self.run_quick(ctx);
+            let mut c = Some(&mut *ctx);
+            let q = match self.m.run_direct(&mut c) {
+                exec::Direct::Done(q) => q,
+                exec::Direct::Continue => self.m.run_quick(&mut c, true),
+                exec::Direct::No => self.m.run_quick(&mut c, false),
+            };
+            return self.finish_quick(q, ctx);
         }
         self.run_cold(ctx)
     }
@@ -1915,7 +2094,7 @@ impl InterpProcess {
     /// The outcome of `Machine::run_quick`.
     #[inline(always)]
     fn run_quick(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
-        let q = self.m.run_quick(&mut Some(&mut *ctx));
+        let q = self.m.run_quick(&mut Some(&mut *ctx), false);
         self.finish_quick(q, ctx)
     }
 

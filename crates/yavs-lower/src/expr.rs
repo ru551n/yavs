@@ -2264,9 +2264,9 @@ impl<'a> Fx<'a, '_> {
         let indexes = index_subtypes(db, db.base(st));
         for (i, rc) in dims.iter().enumerate() {
             let r = self.range(rc, span)?;
-            // LRM 5.3.2.2: the index range lies inside the index subtype.
-            if let (RangeC::Explicit { .. }, Some(&ix)) =
-                (rc, indexes.as_ref().and_then(|v| v.get(i)))
+            // LRM 5.3.2.2: the index range lies inside the index subtype. An
+            // attribute range (`string(x'range)`) is checked too (#637).
+            if let Some(&ix) = indexes.as_ref().and_then(|v| v.get(i))
                 && !ty::is_real(db, db.base(ix))
                 && !self.range_within(rc, ix)
             {

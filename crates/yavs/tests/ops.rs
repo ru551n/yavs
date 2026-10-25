@@ -87,16 +87,31 @@ begin
     variable s2 : positive := 987654;
     variable x  : real := 0.0;
     variable acc : real := 0.0;
+    variable acc2 : real := 0.0;
     procedure draw(variable a, b : inout positive) is
     begin
       uniform(a, b, x);
       acc := acc + x;
+    end procedure;
+    -- The real is in the frame of the procedure, the seeds in the process's: the three
+    -- variables are not in one frame.
+    procedure draw2(variable a, b : inout positive) is
+      variable y : real := 0.0;
+    begin
+      uniform(a, b, y);
+      acc2 := acc2 + y;
     end procedure;
   begin
     for i in 1 to 1000 loop
       draw(s1, s2);
     end loop;
     report \"acc=\" & real'image(acc) & \" s1=\" & integer'image(s1) & \" s2=\" & integer'image(s2);
+    s1 := 123456;
+    s2 := 987654;
+    for i in 1 to 1000 loop
+      draw2(s1, s2);
+    end loop;
+    report \"acc2=\" & real'image(acc2) & \" s1=\" & integer'image(s1);
     s1 := positive'high;
     draw(s1, s2);
     report \"bad seed1 x=\" & real'image(x) & \" s1=\" & integer'image(s1);
@@ -144,6 +159,7 @@ fn uniform_is_an_op_and_reports_bad_seeds() {
     // The generator's own numbers (the body's L'Ecuyer steps), and the two reports.
     for want in [
         "acc=501.184307579734 s1=1444183576 s2=208212704",
+        "acc2=501.184307579734 s1=1444183576",
         "SEED1 > 2147483562 in UNIFORM",
         "bad seed1 x=0 s1=2147483647",
         "SEED2 > 2147483398 in UNIFORM",

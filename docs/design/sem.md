@@ -243,7 +243,9 @@ Algorithm:
    Then filter (12.4):
    - (a) drop a potentially visible decl if a directly visible homograph exists;
    - (b) of two potentially visible homographs, if one is explicit and the other implicit, drop
-     the implicit one (2008);
+     the implicit one (2008). An implicit subprogram or literal is dropped only for an explicit
+     homograph **subprogram**, never for a non-overloadable: a constant and a subprogram of one
+     designator are not homographs that hide each other here, they fall to (c) (#628, [L141]);
    - (c) two potentially visible non-overloadable decls with the same key, or a non-overloadable
      and an overloadable one, make **all** of them invisible unless they are the same declaration
      or non-object aliases (or the declaration itself) that denote the same named entity. Object
@@ -420,6 +422,11 @@ element names in a record constraint: `E1213`.
 - Access (5.4): `designated` may be any subtype, including unconstrained (`type line is access string`).
   Allocators: `new S` needs `S` fully constrained (or a protected type), `new T'(x)` takes bounds
   from the qualified expression.
+- A subtype indication of an access type may carry an index constraint when the designated type
+  is an array (`arr(0 to 3)`): it is merged against the designated type and stored on the access
+  subtype (`merge_constraint`), so the dimension checks and the "already constrained" error of a
+  subtype of it run as for an array subtype; a range or record constraint stays `E1211` (#643,
+  [L139]).
 - The designated type of a 2008 access type cannot be a file or protected type (`E1221`); 2019
   allows both (permissive, [L19]).
 - Dereference: `p.all`, and implicitly a selected, indexed or sliced name or an attribute whose
@@ -1054,6 +1061,12 @@ Predefined attributes are a table keyed by `(name, prefix kind)`:
 
 - The table, prefix forms per revision and typing are `attr::TABLE` (lrm-checks L12 to L14). An
   implicit signal object keeps its defining `ExprKind::Attr` as its `default`.
+- An attribute name is a primary whose value can be indexed or sliced (8.4, 8.5):
+  `takes_args` is true only for a predefined attribute with a parameter, so `x'simple_name(1)`
+  indexes the string value; a user attribute with arguments gets index/slice candidates of its
+  value's type. A type-mark prefix's user attribute is looked up on the type or subtype
+  declaration itself (`type_mark_decl`), so an attribute of a subtype is found (#653, #657,
+  #658, [L140]).
 - `s'delayed(t)`, `s'stable(t)`, `s'quiet(t)`, `s'transaction` create **implicit signal**
   entities (`DeclKind::Object` with `ImplicitSignal{attr, prefix_lsp, param}`) in the enclosing
   region, one per distinct (prefix LSP, attribute, static parameter) occurrence, so M2 creates

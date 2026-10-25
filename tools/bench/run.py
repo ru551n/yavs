@@ -16,7 +16,7 @@ internal designs only, as one number (elaborate + run), labels only: see AGENTS.
 Every run writes a JSON file (raw samples and medians) under --out/results.
 Stdlib only. Run with `python3 -I`.
 """
-import argparse, hashlib, importlib.util, json, os, re, resource, shlex, shutil, statistics, subprocess, sys, tempfile, time
+import argparse, hashlib, importlib.util, itertools, json, os, re, resource, shlex, shutil, statistics, subprocess, sys, tempfile, time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -53,6 +53,18 @@ def sh(argv, cwd, env=None, timeout=1800, check=True):
     if check and p.returncode:
         raise RuntimeError(f"{' '.join(map(str, argv[:4]))}... exit {p.returncode}: {(p.stdout + p.stderr)[-400:]}")
     return p
+
+
+def analyse_files(call, items, wd):
+    """Analyse items = [(lib, file)] in order; call(lib, files) is the command. Consecutive files of one library go in one call (one analysis
+    session, as integrations call it, #745); a failing call is repeated file by file. Returns the items that fail."""
+    bad = []
+    for lib, g in itertools.groupby(items, key=lambda x: x[0]):
+        files = [f for _, f in g]
+        if sh(call(lib, files), wd, check=False).returncode == 0:
+            continue
+        bad += [(lib, f) for f in files if sh(call(lib, [f]), wd, check=False).returncode]
+    return bad
 
 
 def mkdir(p):
@@ -94,9 +106,8 @@ def prep_vunit_vc(Y, key):
     vc = mkdir(CACHE / "work" / key / "vc")
     if not (vc / "vunit_lib").is_dir():  # the testbenches use `work.` for the library they live in
         shutil.copytree(libs / "vunit_lib", vc / "vunit_lib")
-        for tb in sorted(tests.glob("tb_*.vhd")):
-            sh([Y, "analyze", f"--std={STD}", "--relaxed", f"--work=vunit_lib:{vc}/vunit_lib", f"--map=osvvm:{libs}/osvvm", str(tb)],
-               vc, check=False)
+        analyse_files(lambda lib, fs: [Y, "analyze", f"--std={STD}", "--relaxed", f"--work=vunit_lib:{vc}/vunit_lib", f"--map=osvvm:{libs}/osvvm"] + [str(f) for f in fs],
+                      [("vunit_lib", tb) for tb in sorted(tests.glob("tb_*.vhd"))], vc)
     cmds = []
     for line in (HERE / "vc_tests.tsv").read_text().splitlines():
         tb, case = line.split("\t")
@@ -170,8 +181,8 @@ def prep_vai(tb, Y, key):
     if not marker.exists():
         pending = srcs  # fixed point: retry what failed until a pass makes no progress
         while pending:
-            rest = [(l, f) for l, f in pending if sh([Y, "analyze", f"--std={STD}", "--relaxed", f"--work={l}:{wd}/{l}"]
-                                                     + [m for m in maps if not m.startswith(f"--map={l}:")] + [str(f)], wd, check=False).returncode]
+            rest = analyse_files(lambda l, fs: [Y, "analyze", f"--std={STD}", "--relaxed", f"--work={l}:{wd}/{l}"]
+                                 + [m for m in maps if not m.startswith(f"--map={l}:")] + [str(f) for f in fs], pending, wd)
             if len(rest) == len(pending):
                 break
             pending = rest

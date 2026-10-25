@@ -1,0 +1,1 @@
+Copies and slices of logic vectors, and concatenations of them, are cheaper in the interpreter: short ones skip the staging buffers, wide ones are moved word by word between the two objects, and a concatenation is built directly in its destination.

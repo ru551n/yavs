@@ -35,6 +35,7 @@
 
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::de::DeserializeOwned;
@@ -403,15 +404,31 @@ impl Db {
         if let Some(fc) = self.files.get(&(lib, path.to_path_buf())) {
             return fc.hash.clone();
         }
-        Self::content_hash_in(&self.libs[lib].source, path)
+        self.content_hash_in(&self.libs[lib].source, path)
     }
 
-    fn content_hash_in(source: &LibSource, path: &Path) -> Option<String> {
+    fn content_hash_in(&self, source: &LibSource, path: &Path) -> Option<String> {
         match source {
             LibSource::StdDir(_) => Some(builtin_hash(path)),
             LibSource::Manifest(m) => match m.file(path) {
-                Some(f) if f.unchanged() => Some(f.hash.to_string()),
-                _ => std::fs::read(path).ok().map(|b| yavs_lib::hash_content(&b)),
+                // The size and time of a file are asked once per session, not once per unit that
+                // depends on it (a call of a hundred files asks for the same hundred sources).
+                Some(f) => {
+                    if let Some(h) = self.entry_cache.hashes.lock().unwrap().get(path) {
+                        return Some(h.clone());
+                    }
+                    if f.unchanged() {
+                        let h = f.hash.to_string();
+                        self.entry_cache
+                            .hashes
+                            .lock()
+                            .unwrap()
+                            .insert(path.to_path_buf(), h.clone());
+                        return Some(h);
+                    }
+                    std::fs::read(path).ok().map(|b| yavs_lib::hash_content(&b))
+                }
+                None => std::fs::read(path).ok().map(|b| yavs_lib::hash_content(&b)),
             },
             LibSource::Files => None,
         }
@@ -698,6 +715,7 @@ impl Db {
                     Ok((identity, bytes)) => {
                         if let Some(s) = self.store() {
                             s.put(self.libs[f.lib].name.key.as_str(), &identity, &bytes);
+                            self.entry_cache.entries.lock().unwrap().remove(&identity);
                         }
                     }
                     Err(why) => self.note_miss(&f, &why),
@@ -1418,6 +1436,9 @@ struct Enc {
     /// Each file of an allowed load: the load's owner and the file's position among its steps.
     files: Rc<FxHashMap<FileId, (Owner, u32)>>,
     failed: Rc<std::cell::RefCell<Option<String>>>,
+    /// Per kind the last run of one owner an id was found in: `(first index, end, owner number,
+    /// offset of the first)`. Ids come in clusters, so most are in the run of the one before.
+    hot: [std::cell::Cell<(u32, u32, u32, u32)>; KINDS],
 }
 
 /// `(first index, length, offset of the first among the owner's entries)` of each run.
@@ -1482,6 +1503,7 @@ impl Enc {
             by_owner: Default::default(),
             files: Rc::new(files),
             failed: Default::default(),
+            hot: std::array::from_fn(|_| std::cell::Cell::new((0, 0, 0, 0))),
         }
     }
 
@@ -1499,17 +1521,27 @@ impl Enc {
     fn file_map(&self) -> yavs_diag::FileIdMap {
         let (files, owners, failed) =
             (self.files.clone(), self.owners.clone(), self.failed.clone());
-        Rc::new(move |id: FileId| match files.get(&id) {
-            Some((o, k)) => {
-                let o = owners.get(o.clone());
-                (o < 1 << 24).then_some(FileId((o << 8) | k))
+        let last = std::cell::Cell::new(None);
+        Rc::new(move |id: FileId| {
+            if let Some((from, to)) = last.get()
+                && from == id
+            {
+                return to;
             }
-            None => {
-                failed
-                    .borrow_mut()
-                    .get_or_insert_with(|| "a file of a unit it did not load".into());
-                None
-            }
+            let to = match files.get(&id) {
+                Some((o, k)) => {
+                    let o = owners.get(o.clone());
+                    (o < 1 << 24).then_some(FileId((o << 8) | k))
+                }
+                None => {
+                    failed
+                        .borrow_mut()
+                        .get_or_insert_with(|| "a file of a unit it did not load".into());
+                    None
+                }
+            };
+            last.set(Some((id, to)));
+            to
         })
     }
 
@@ -1521,6 +1553,10 @@ impl Enc {
 
 impl Reloc for Enc {
     fn enc(&self, kind: Kind, index: u32) -> Option<(u32, u32)> {
+        let hot = self.hot[kind as usize].get();
+        if index.wrapping_sub(hot.0) < hot.1 - hot.0 {
+            return Some((hot.2, hot.3 + index - hot.0));
+        }
         let s = self.owner_of(kind, index);
         if s == SESSION {
             if index < BASE[kind as usize] {
@@ -1563,6 +1599,7 @@ impl Reloc for Enc {
         if index >= start + len {
             return self.fail("an entry outside its owner's runs".into());
         }
+        self.hot[kind as usize].set((start, start + len, o, base));
         Some((o, base + index - start))
     }
 
@@ -1611,12 +1648,32 @@ fn parse_entry(buf: yavs_diag::Buffer) -> Result<Entry, String> {
     })
 }
 
+/// What this session learnt from the store and the files that the next file of a call asks again
+/// (#748): the files of a call that depend on the same hundred units would read, map and decode
+/// each entry, and ask the size and time of each source, again for every file.
+#[derive(Default)]
+pub(crate) struct EntryCache {
+    /// The entries read, by identity. An entry the session stores leaves the cache (the entry of
+    /// that identity is another now), and it does not grow past [`EntryCache::MAX`] (each entry
+    /// is a mapping of the process). `Db::release_analysis` drops it.
+    entries: std::sync::Mutex<FxHashMap<Hash, Arc<Entry>>>,
+    /// The content hash of each source the manifest knows and the file still has the size and
+    /// time of.
+    hashes: std::sync::Mutex<FxHashMap<std::path::PathBuf, String>>,
+    /// The index of each library with a manifest, as read first.
+    pub(crate) manifests: std::sync::Mutex<FxHashMap<String, Arc<yavs_lib::Manifest>>>,
+}
+
+impl EntryCache {
+    const MAX: usize = 4096;
+}
+
 /// A unit the replay will load: where its entries go.
 struct Planned {
     serial: u32,
     lib: Symbol,
     key: UnitKey,
-    entry: Rc<Entry>,
+    entry: Arc<Entry>,
     runs: Runs,
     files: Vec<FileId>,
 }
@@ -1629,7 +1686,7 @@ struct Plan {
     units: FxHashMap<(Symbol, UnitKey), Planned>,
     libs: FxHashMap<Symbol, (LibId, DeclId)>,
     files: FxHashMap<(Symbol, String), FileId>,
-    entries: FxHashMap<(Symbol, UnitKey), Option<Rc<Entry>>>,
+    entries: FxHashMap<(Symbol, UnitKey), Option<Arc<Entry>>>,
     /// The sources of the libraries the replay makes.
     srcs: FxHashMap<Symbol, LibSource>,
 }
@@ -1640,7 +1697,7 @@ impl Db {
     }
 
     /// The entry of `(lib, key)` if it is one for the unit as it is now.
-    fn entry_for(&self, lib: LibId, key: UnitKey) -> Result<Rc<Entry>, String> {
+    fn entry_for(&self, lib: LibId, key: UnitKey) -> Result<Arc<Entry>, String> {
         let (path, rev) = self.locate(lib, key).ok_or("not found")?;
         let hash = self.content_hash(lib, &path).ok_or("no content hash")?;
         self.entry_at(lib, key, &path, &hash, rev)
@@ -1663,7 +1720,7 @@ impl Db {
         path: &Path,
         hash: &str,
         rev: LangRev,
-    ) -> Result<Rc<Entry>, String> {
+    ) -> Result<Arc<Entry>, String> {
         self.entry_named(self.libs[lib].name.key, key, path, hash, rev)
     }
 
@@ -1674,20 +1731,36 @@ impl Db {
         path: &Path,
         hash: &str,
         rev: LangRev,
-    ) -> Result<Rc<Entry>, String> {
+    ) -> Result<Arc<Entry>, String> {
         let store = self.store().ok_or("no store")?;
-        let buf = store
-            .get(name.as_str(), &self.identity(name, key, path))
-            .ok_or("no entry")?;
-        let e = parse_entry(buf)?;
+        let identity = self.identity(name, key, path);
+        let cached = self
+            .entry_cache
+            .entries
+            .lock()
+            .unwrap()
+            .get(&identity)
+            .cloned();
+        let e = match cached {
+            Some(e) => e,
+            None => {
+                let buf = store.get(name.as_str(), &identity).ok_or("no entry")?;
+                let e = Arc::new(parse_entry(buf)?);
+                let mut c = self.entry_cache.entries.lock().unwrap();
+                if c.len() < EntryCache::MAX {
+                    c.insert(identity, e.clone());
+                }
+                e
+            }
+        };
         if e.head.address != Self::address(path, hash, rev) {
             return Err("the source changed".into());
         }
-        Ok(Rc::new(e))
+        Ok(e)
     }
 
     /// The entry of unit `key` of library `lib`, which the replay makes.
-    fn planned_entry(&self, p: &mut Plan, lib: Symbol, key: UnitKey) -> Option<Rc<Entry>> {
+    fn planned_entry(&self, p: &mut Plan, lib: Symbol, key: UnitKey) -> Option<Arc<Entry>> {
         if let std::collections::hash_map::Entry::Vacant(v) = p.srcs.entry(lib) {
             v.insert(self.lib_source(lib.as_str())?.ok()?);
         }
@@ -1696,7 +1769,7 @@ impl Db {
             return None;
         }
         let (path, rev) = self.locate_in(src, key)?;
-        let hash = Self::content_hash_in(src, &path)?;
+        let hash = self.content_hash_in(src, &path)?;
         self.entry_named(lib, key, &path, &hash, rev).ok()
     }
 
@@ -1804,7 +1877,7 @@ impl Db {
         p: &mut Plan,
         lib: Symbol,
         key: UnitKey,
-        entry: Rc<Entry>,
+        entry: Arc<Entry>,
     ) -> Result<(), String> {
         let serial = p.serials;
         p.serials += 1;

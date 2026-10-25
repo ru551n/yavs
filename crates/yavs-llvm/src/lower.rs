@@ -453,6 +453,7 @@ pub(crate) fn new_jit(opt: OptLevel) -> Result<Jit, Error> {
             (REGION, yavs_rt_region as *const () as usize),
             (SIGNAL, yavs_rt_signal as *const () as usize),
             (DRIVE, yavs_rt_drive as *const () as usize),
+            (DRIVE_NAT, yavs_rt_drive_nat as *const () as usize),
             (DRIVE_BIT, yavs_rt_drive_bit as *const () as usize),
             (WAIT, yavs_rt_wait as *const () as usize),
             (WAIT_AGAIN, yavs_rt_wait_again as *const () as usize),
@@ -952,6 +953,27 @@ unsafe fn layout(fv: LLVMValueRef, cold: &[LLVMBasicBlockRef]) {
     }
 }
 
+/// A constant `LCopy` of 1 to 64 elements that lies inside one plane block on each side:
+/// the blocks and the bit offsets in them.
+struct LcopyShape {
+    k: u32,
+    sb: i64,
+    s0: u32,
+    db: i64,
+    d0: u32,
+}
+
+fn lcopy_one_block(k: i64, so: i64, d: i64) -> Option<LcopyShape> {
+    let ok = (1..=64).contains(&k) && (0..1 << 32).contains(&so) && (0..1 << 32).contains(&d);
+    (ok && so >> 6 == (so + k - 1) >> 6 && d >> 6 == (d + k - 1) >> 6).then_some(LcopyShape {
+        k: k as u32,
+        sb: so >> 6,
+        s0: (so & 63) as u32,
+        db: d >> 6,
+        d0: (d & 63) as u32,
+    })
+}
+
 /// `ModRef` of an LLVM `memory(...)` attribute: reads, writes, both.
 const REF: u64 = 1;
 
@@ -996,6 +1018,10 @@ struct Gen {
     /// `yavs_rt_drive(env, regs, mem, pc, driver, lo, len, wave, inertial) -> u32`.
     drive_ty: LLVMTypeRef,
     drive: LLVMValueRef,
+    /// `yavs_rt_drive_nat(env, driver, lo, len, wave, flags) -> u32`: `drive` for a native frame,
+    /// 1 when done and 0 when nothing was done (no frame view).
+    drive_nat_ty: LLVMTypeRef,
+    drive_nat: LLVMValueRef,
     /// `yavs_rt_drive_bit(env, regs, mem, pc, driver, lo, len, delay, code) -> u32`: the scalar
     /// logic assignment of a `yavs_interp::ScalarDrive`, the code in the low byte and bit 8 for
     /// an inertial one.
@@ -1124,6 +1150,9 @@ struct Cur<'p> {
     exits: std::cell::RefCell<Vec<(LLVMBasicBlockRef, LLVMValueRef, usize)>>,
     /// The native frame's exit block (`exit_for`) and its phi.
     exit: (LLVMBasicBlockRef, LLVMValueRef),
+    /// The blocks that record the core registers for the exits that share them (`core_stub`):
+    /// block, phi of the pc, predecessors.
+    cores: std::cell::RefCell<Vec<(LLVMBasicBlockRef, LLVMValueRef, usize)>>,
     /// The frame's size in bytes (`Func::frame`): the slots of every frame of the function.
     frame_len: u64,
     /// The native frame, when this is a function's native-frame code (`f<id>_n`).
@@ -1229,6 +1258,14 @@ struct Nat {
     spill: LLVMValueRef,
     /// The registers live before each instruction (none: every register is recorded).
     live: Option<crate::regs::Live>,
+    /// The registers the interpreter starts a frame with (`regs::preloaded`): `materialise`
+    /// keeps their preload and ignores the recorded word, so an exit does not store them.
+    pre: Vec<bool>,
+    /// The registers every exit from pc `core_from` on records the same way (`regs::entry_core`),
+    /// and which they are (`is_core`): `core_stub` stores them for those exits together.
+    core: Vec<u32>,
+    is_core: Vec<bool>,
+    core_from: u32,
     /// No address of the frame's slots ever leaves the function's own loads and stores
     /// (`closed_frame`, the ranges of its slots in use): the slots are not registered in
     /// `Mem::nslots` and LLVM may keep them in registers.
@@ -1268,6 +1305,9 @@ impl Gen {
             let drive_name = CString::new(DRIVE).expect("no NUL");
             let mut dparams = [ptr, ptr, ptr, i32, i32, i64, i64, ptr, i32];
             let drive_ty = LLVMFunctionType(i32, dparams.as_mut_ptr(), 9, 0);
+            let drive_nat_name = CString::new(DRIVE_NAT).expect("no NUL");
+            let mut nparams = [ptr, i32, i64, i64, ptr, i32];
+            let drive_nat_ty = LLVMFunctionType(i32, nparams.as_mut_ptr(), 6, 0);
             let drive_bit_name = CString::new(DRIVE_BIT).expect("no NUL");
             let mut bparams = [ptr, ptr, ptr, i32, i32, i64, i64, i64, i64];
             let drive_bit_ty = LLVMFunctionType(i32, bparams.as_mut_ptr(), 9, 0);
@@ -1347,6 +1387,8 @@ impl Gen {
                 signal: LLVMAddFunction(module, signal_name.as_ptr(), signal_ty),
                 drive_ty,
                 drive: LLVMAddFunction(module, drive_name.as_ptr(), drive_ty),
+                drive_nat_ty,
+                drive_nat: LLVMAddFunction(module, drive_nat_name.as_ptr(), drive_nat_ty),
                 drive_bit_ty,
                 drive_bit: LLVMAddFunction(module, drive_bit_name.as_ptr(), drive_bit_ty),
                 wait_ty,
@@ -1438,6 +1480,7 @@ impl Gen {
                 self.region,
                 self.signal,
                 self.drive,
+                self.drive_nat,
                 self.wait,
                 self.wait_again,
                 self.wait_same,
@@ -1597,33 +1640,75 @@ impl Gen {
     unsafe fn leave(&self, c: &Cur, v: LLVMValueRef) {
         // SAFETY: the builder is in a block of c.f; the phi is the exit block's.
         unsafe {
-            if let Some(n) = &c.nat {
-                self.spill_live(c, n, v);
-            }
-            let exit = self.exit_for(c, v);
-            LLVMBuildBr(self.b, exit);
+            let shared = match &c.nat {
+                Some(n) => self.spill_live(c, n, v),
+                None => false,
+            };
+            let to = if shared {
+                self.core_stub(c, v)
+            } else {
+                self.exit_for(c, v)
+            };
+            LLVMBuildBr(self.b, to);
         }
     }
 
     /// A native frame leaves to be materialised at the pc `v`: store the registers the
     /// interpreter reads from there (all of them when `v` is no constant or liveness is not
     /// known) in the spill buffer. Only these are live up to this exit, so the other registers
-    /// need not stay in machine registers or stack slots up to every guard.
-    unsafe fn spill_live(&self, c: &Cur, n: &Nat, v: LLVMValueRef) {
+    /// need not stay in machine registers or stack slots up to every guard. Not stored: the
+    /// registers the interpreter preloads, and, after the first block, the core registers,
+    /// which `core_stub` stores for the exit (the result is true then).
+    unsafe fn spill_live(&self, c: &Cur, n: &Nat, v: LLVMValueRef) -> bool {
         // SAFETY: the builder is in a block of c.f; `spill` has one word per register.
         unsafe {
-            let row = (!LLVMIsAConstantInt(v).is_null())
-                .then(|| LLVMConstIntGetZExtValue(v) as usize)
-                .zip(n.live.as_ref())
-                .map(|(pc, l)| l.row(pc));
+            let pc =
+                (!LLVMIsAConstantInt(v).is_null()).then(|| LLVMConstIntGetZExtValue(v) as usize);
+            let row = pc.zip(n.live.as_ref()).map(|(pc, l)| l.row(pc));
+            let shared = !n.core.is_empty() && pc.is_some_and(|pc| pc >= n.core_from as usize);
             let nregs = c.known.borrow().len();
             for r in 0..nregs {
-                if row.is_some_and(|w| w[r / 64] >> (r % 64) & 1 == 0) {
+                if row.is_some_and(|w| w[r / 64] >> (r % 64) & 1 == 0)
+                    || n.pre[r]
+                    || shared && n.is_core[r]
+                {
                     continue;
                 }
                 let at = self.gep(n.spill, self.c64(r as i64 * 8));
                 self.store(self.ld(c, Reg(r as u32)), at);
             }
+            shared
+        }
+    }
+
+    /// The block that records the core registers and goes on to the exit with the pc `v`, for
+    /// the exit being generated: one block for up to `EXIT_PHI` exits, with a phi of their pcs.
+    /// The core registers are defined in the first block, which dominates every such exit, and
+    /// have no other definition, so their current value is the one they have there.
+    unsafe fn core_stub(&self, c: &Cur, v: LLVMValueRef) -> LLVMBasicBlockRef {
+        // SAFETY: well-formed blocks of c.f; a native frame, so `nat` is set.
+        unsafe {
+            let n = c.nat.as_ref().expect("native frame");
+            let from = LLVMGetInsertBlock(self.b);
+            let mut cs = c.cores.borrow_mut();
+            if cs.last().is_none_or(|x| x.2 >= EXIT_PHI) {
+                let blk = self.block(c);
+                LLVMPositionBuilderAtEnd(self.b, blk);
+                let phi = LLVMBuildPhi(self.b, self.i32, c"".as_ptr());
+                for &r in &n.core {
+                    let val = LLVMBuildLoad2(self.b, self.i64, self.slot(c, Reg(r)), c"".as_ptr());
+                    let at = self.gep(n.spill, self.c64(i64::from(r) * 8));
+                    self.store(val, at);
+                }
+                let exit = self.exit_for(c, phi);
+                LLVMBuildBr(self.b, exit);
+                LLVMPositionBuilderAtEnd(self.b, from);
+                cs.push((blk, phi, 0));
+            }
+            let x = cs.last_mut().expect("core block");
+            LLVMAddIncoming(x.1, &mut { v }, &mut { from }, 1);
+            x.2 += 1;
+            x.0
         }
     }
 
@@ -1742,14 +1827,22 @@ impl Gen {
     /// Define register `r` as `v` without a store: `flush` stores it where the frame is looked
     /// at. Only in straight-line code (not between the fast and slow path of an instruction).
     unsafe fn std(&self, c: &Cur, r: Reg, v: LLVMValueRef) {
+        // The interpreter starts every frame with a register defined once by a constant or an
+        // address (`Pre::fill`): its definition stores nothing, in loops or not.
+        if let Some(d) = &c.defer
+            && d.pre.get(r.0 as usize) == Some(&true)
+        {
+            if let Some(p) = d.pend.borrow_mut().get_mut(r.0 as usize) {
+                *p = None;
+            }
+            return;
+        }
         if let Some(d) = &c.defer
             && d.loopy[d.pc.get() as usize]
             && !d.keep.get(r.0 as usize).copied().unwrap_or(false)
             && let Some(p) = d.pend.borrow_mut().get_mut(r.0 as usize)
         {
-            // The interpreter starts every frame with a register defined once by a constant
-            // or an address: nothing to store.
-            *p = (!d.pre[r.0 as usize]).then_some(v);
+            *p = Some(v);
             d.fresh.borrow_mut().push(r.0);
             return;
         }
@@ -2271,6 +2364,15 @@ impl Gen {
                 } else {
                     (self.c64(-1), self.c64(-1))
                 };
+                let live = crate::regs::Live::new(prog, f, None);
+                let pre = crate::regs::preloaded(f);
+                let (core, core_from) = live.as_ref().map_or((Vec::new(), 0), |l| {
+                    crate::regs::entry_core(prog, f, l, &pre)
+                });
+                let mut is_core = vec![false; nregs];
+                for &r in &core {
+                    is_core[r as usize] = true;
+                }
                 let nat = Nat {
                     slots,
                     fhi,
@@ -2280,12 +2382,28 @@ impl Gen {
                     scratch,
                     id,
                     spill,
-                    live: crate::regs::Live::new(prog, f, None),
+                    live,
+                    pre,
+                    core,
+                    is_core,
+                    core_from,
                     closed: closed_frame(prog, f, id),
                 };
                 (regs, LLVMGetParam(fv, 1), Some(nat))
             } else {
                 (LLVMGetParam(fv, 1), LLVMGetParam(fv, 2), None)
+            };
+            // The jumps back that poll the stop request (#737), see `Inst::Br`.
+            let backs: std::collections::HashSet<u32> = if !native
+                && f.kind == FuncKind::Process
+                && !f.flags.contains(yavs_ir::FuncFlags::MAY_SUSPEND)
+            {
+                yavs_interp::retreating_brs(prog, f)
+                    .into_iter()
+                    .map(|(br, _)| br)
+                    .collect()
+            } else {
+                Default::default()
             };
             let static_wait = if !native && f.kind == FuncKind::Process {
                 yavs_interp::static_wait(prog, f, 1)
@@ -2294,7 +2412,12 @@ impl Gen {
             };
             let skipped: std::collections::HashSet<u32> = scalar_drives
                 .iter()
-                .flat_map(|d| [d.alloc, d.store, d.index, d.lset])
+                .flat_map(|d| {
+                    d.head
+                        .into_iter()
+                        .chain([d.lset])
+                        .filter(|&p| p != u32::MAX)
+                })
                 .collect();
             let mut c = Cur {
                 prog,
@@ -2313,6 +2436,7 @@ impl Gen {
                     vec![(exit, exit_pc, 0)]
                 }),
                 exit: (exit, exit_pc),
+                cores: Default::default(),
                 frame_len: u64::from(f.frame),
                 nat,
                 defer: None,
@@ -2980,6 +3104,16 @@ impl Gen {
                 if c.batch.is_some() && !batched.contains(&pc) && !batch_pure(prog, f, &inst) {
                     self.batch_flush(&c);
                 }
+                // A frame address used inside a branch of an instruction's own code (a fast path)
+                // takes the slots pointer of the stretch: fetch it here, where it dominates.
+                if c.nat.is_none()
+                    && !skipped.contains(&pc)
+                    && inline_regs(f, &inst)
+                        .into_iter()
+                        .any(|r| matches!(self.known_addr(&c, r), Some(Known::Frame(_))))
+                {
+                    self.own_slots_cached(&c);
+                }
                 match inst {
                     _ if skipped.contains(&pc) => {}
                     Inst::Drive { .. }
@@ -3632,6 +3766,14 @@ impl Gen {
                         LLVMBuildMemMove(self.b, pd, 1, ps, 1, n);
                         self.join(&c, join);
                     }
+                    Inst::Zero { addr, bytes } => {
+                        let (slow, join) = self.slow_path(&c, pc, &inst);
+                        let n = self.c64(i64::from(bytes));
+                        let p =
+                            self.host(&c, self.ld(&c, addr), fk(addr), self.c64(0), n, true, slow);
+                        LLVMBuildMemSet(self.b, p, LLVMConstInt(self.i8, 0, 0), n, 1);
+                        self.join(&c, join);
+                    }
                     Inst::MakeDope { at, parts } => {
                         let rs = f.regs(parts).ok_or("operand list out of range")?;
                         let (slow, join) = self.slow_path(&c, pc, &inst);
@@ -4091,6 +4233,27 @@ impl Gen {
                     }
                     Inst::Br { to } => {
                         let bb = block_bb(to)?;
+                        // A process that never suspends polls the stop request (Ctrl-C) at
+                        // every jump back, as the interpreter does (#737): on a request it leaves
+                        // at this `Br`, whose step suspends the process. The retreating `Br`s
+                        // only (a `Br` to a join laid out earlier is no loop), and as the
+                        // interpreter steps only those that jump back in the code.
+                        if backs.contains(&pc) && start_of(to)? <= pc as usize {
+                            let flags = self.mem_ld(&c, MEM_STOP, self.ptr);
+                            let byte = LLVMBuildLoad2(self.b, self.i8, flags, c"".as_ptr());
+                            LLVMSetOrdering(
+                                byte,
+                                llvm_sys::LLVMAtomicOrdering::LLVMAtomicOrderingMonotonic,
+                            );
+                            let hit = LLVMBuildAnd(
+                                self.b,
+                                byte,
+                                LLVMConstInt(self.i8, u64::from(yavs_interp::STOP_BIT), 0),
+                                c"".as_ptr(),
+                            );
+                            let bad = self.icmp(IP::LLVMIntNE, hit, LLVMConstInt(self.i8, 0, 0));
+                            self.exit_if(&c, bad, pc);
+                        }
                         let snap = self.edge_prep(&c, &[start_of(to)?]);
                         self.edge_to(&c, &snap, start_of(to)?);
                         LLVMBuildBr(self.b, bb);
@@ -4130,6 +4293,20 @@ impl Gen {
                         self.edge_to(&c, &snap, start_of(t.default)?);
                         LLVMBuildBr(self.b, block_bb(t.default)?);
                         open = false;
+                    }
+                    // A constant range inside one plane block on each side (most copies of record
+                    // fields): masks and shifts are constants, no block arithmetic.
+                    Inst::LCopy {
+                        dst,
+                        dst_off,
+                        src,
+                        src_off,
+                        n,
+                    } if self.lcopy_shape(&c, n, src_off, dst_off).is_some() => {
+                        let shape = self.lcopy_shape(&c, n, src_off, dst_off).expect("checked");
+                        let (slow, join) = self.slow_path(&c, pc, &inst);
+                        self.lcopy_const(&c, dst, src, fk(dst), fk(src), shape, slow);
+                        self.join(&c, join);
                     }
                     Inst::LCopy {
                         dst,
@@ -4237,7 +4414,15 @@ impl Gen {
                         n,
                         mode,
                         reject: None,
-                    } if c.nat.is_none() => self.drive_block(&c, pc, driver, t, wave, n, mode),
+                    } => self.drive_block(&c, pc, Ok(driver), t, wave, n, mode),
+                    Inst::DriveSlot {
+                        slot,
+                        target,
+                        wave,
+                        n,
+                        mode,
+                        reject: None,
+                    } => self.drive_block(&c, pc, Err(slot), target, wave, n, mode),
                     Inst::WaitOn { sig }
                         if c.nat.is_none()
                             && matches!(f.code.get(i + 1), Some(Inst::Suspend { .. })) =>
@@ -4261,8 +4446,7 @@ impl Gen {
                         self.guard(&c, self.icmp(IP::LLVMIntNE, r, self.c32(0)), slow);
                         self.join(&c, join);
                     }
-                    Inst::SigRead { dst, sig }
-                        if c.nat.is_none() && self.sig_read_block(&c, pc, dst, sig) => {}
+                    Inst::SigRead { dst, sig } if self.sig_read_block(&c, pc, dst, sig) => {}
                     Inst::SigRead { .. }
                     | Inst::WaitOn { .. }
                     | Inst::WaitEdge { .. }
@@ -5013,6 +5197,79 @@ impl Gen {
         }
     }
 
+    fn lcopy_shape(&self, c: &Cur, n: Reg, so: Reg, d: Reg) -> Option<LcopyShape> {
+        lcopy_one_block(self.kint(c, n)?, self.kint(c, so)?, self.kint(c, d)?)
+    }
+
+    /// `Inst::LCopy` of a constant range inside one plane block on each side (`lcopy_one_block`).
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn lcopy_const(
+        &self,
+        c: &Cur,
+        dst: Reg,
+        src: Reg,
+        kd: Option<Known>,
+        ks: Option<Known>,
+        sh: LcopyShape,
+        slow: LLVMBasicBlockRef,
+    ) {
+        // SAFETY: `host` checks 32 bytes at each block.
+        unsafe {
+            let ps = self.host(
+                c,
+                self.ld(c, src),
+                ks,
+                self.c64(sh.sb * 32),
+                self.c64(32),
+                false,
+                slow,
+            );
+            let pd = self.host(
+                c,
+                self.ld(c, dst),
+                kd,
+                self.c64(sh.db * 32),
+                self.c64(32),
+                true,
+                slow,
+            );
+            let b = self.b;
+            let mask = if sh.k == 64 {
+                u64::MAX
+            } else {
+                (1u64 << sh.k) - 1
+            };
+            let hole = mask << sh.d0;
+            // The source planes first: the ranges may overlap.
+            let mut v = [self.c64(0); 4];
+            for (plane, x) in v.iter_mut().enumerate() {
+                let w = self.load(self.i64, self.gep(ps, self.c64(plane as i64 * 8)));
+                *x = if sh.s0 == sh.d0 {
+                    LLVMBuildAnd(b, w, self.c64(hole as i64), c"".as_ptr())
+                } else {
+                    let r = LLVMBuildLShr(b, w, self.c64(i64::from(sh.s0)), c"".as_ptr());
+                    let r = LLVMBuildAnd(b, r, self.c64(mask as i64), c"".as_ptr());
+                    LLVMBuildShl(b, r, self.c64(i64::from(sh.d0)), c"".as_ptr())
+                };
+            }
+            for (plane, x) in v.iter().enumerate() {
+                let at = self.gep(pd, self.c64(plane as i64 * 8));
+                let out = if hole == u64::MAX {
+                    *x
+                } else {
+                    let keep = LLVMBuildAnd(
+                        b,
+                        self.load(self.i64, at),
+                        self.c64(!hole as i64),
+                        c"".as_ptr(),
+                    );
+                    LLVMBuildOr(b, keep, *x, c"".as_ptr())
+                };
+                self.store(out, at);
+            }
+        }
+    }
+
     /// `Inst::LCopy` of `k` (1 to 64) elements from bit `s0` of the one or two plane blocks at
     /// `ps` (`ns` of them) to bit `d0` of those at `pd` (`nd`), as `copy_bits` does: the
     /// source planes are read first (the ranges may overlap), the destination bits outside
@@ -5112,7 +5369,7 @@ impl Gen {
         &self,
         c: &Cur,
         pc: u32,
-        driver: u32,
+        driver: Result<u32, Reg>,
         target: Reg,
         wave: Reg,
         n: Reg,
@@ -5126,6 +5383,19 @@ impl Gen {
                 self.icmp(IP::LLVMIntEQ, self.ld(c, n), self.c64(1)),
                 slow,
             );
+            // A slot register: the driver index of the process (a `DriveSlot`).
+            let driver = match driver {
+                Ok(d) => self.c32(d),
+                Err(slot) => {
+                    let v = self.ld(c, slot);
+                    self.guard(
+                        c,
+                        self.icmp(IP::LLVMIntULE, v, self.c64(i64::from(u32::MAX))),
+                        slow,
+                    );
+                    LLVMBuildTrunc(self.b, v, self.i32, c"".as_ptr())
+                }
+            };
             // A signal of enumeration, integer, boolean or real elements has a waveform element
             // of 16 bytes (time and cell), a logic one 40 (time and the first plane block).
             let (ent, _) = self.sig_entry(c, target, None, slow);
@@ -5185,12 +5455,35 @@ impl Gen {
                 ),
                 c"".as_ptr(),
             );
+            if c.nat.is_some() {
+                // A native frame has no frame view: the kernel's answer or the materialised
+                // frames, whose interpreter runs the `Drive` (and reports its error).
+                let mut args = [
+                    c.env,
+                    driver,
+                    self.ld(c, target),
+                    self.ld(c, Reg(target.0 + 1)),
+                    w,
+                    inertial,
+                ];
+                let ok = LLVMBuildCall2(
+                    self.b,
+                    self.drive_nat_ty,
+                    self.drive_nat,
+                    args.as_mut_ptr(),
+                    6,
+                    c"".as_ptr(),
+                );
+                self.guard(c, self.icmp(IP::LLVMIntNE, ok, self.c32(0)), slow);
+                self.join(c, join);
+                return;
+            }
             let mut args = [
                 c.env,
                 c.regs,
                 c.mem,
                 self.c32(pc),
-                self.c32(driver),
+                driver,
                 self.ld(c, target),
                 self.ld(c, Reg(target.0 + 1)),
                 w,
@@ -7808,6 +8101,7 @@ pub(crate) fn batch_pure(prog: &Program, f: &Func, i: &Inst) -> bool {
                 | Inst::AddrOf { .. }
                 | Inst::Load { .. }
                 | Inst::Store { .. }
+                | Inst::Zero { .. }
                 | Inst::Alloc { .. }
                 | Inst::Br { .. }
                 | Inst::CondBr { .. }

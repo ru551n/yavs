@@ -38,6 +38,14 @@ python3 -I tools/stepcount/stepcount.py --from '<yavs_kernel::kernel::SimControl
   not included), `--lines N` the busiest source lines, `--in NAME` only lines of functions containing NAME.
 - A line is the innermost inlined frame that is not the standard library or a registry crate, so `Vec::retain` inside
   `update_word` is attributed to the line of `update_word` that calls it. `--inner` shows the library frame itself.
+- `--ops[=N]` charges every instruction after a dispatch of the interpreter loop (`yavs-interp`'s `run_ops`) up to the
+  next dispatch to the op that dispatch started, callees included, and prints the N busiest ops (share of the window,
+  instructions per op, ops, name); `--ops-detail OP` adds where the instructions of the ops whose name contains OP are spent,
+  by function. It finds the dispatch jump (`movzbl tag; lea table; movslq; add; jmp *`) and its jump table in the binary and
+  names the arms from the order of `pre::Op` in `crates/yavs-interp/src/pre.rs` of this checkout, so the binary must be built
+  from it (`--ops-fn SYM` names another function holding the dispatch). Use it before choosing a fusion or an out-of-line body:
+  the time column of `op-census` includes the kernel, this does not guess. Window with `--from '<yavs_kernel::kernel::SimControl>::run_batch:SKIP'`
+  and `--max`, run with `--threads 1`.
 - A build without line tables (a plain release build) gives functions only; with `tools/build-bench.sh` the same
   code and the same addresses as the timed binary, which is the point (root rule 19, bench builds).
 - A function that is always inlined has no row of its own; its instructions are in its caller, its lines are not.
@@ -48,6 +56,7 @@ python3 -I tools/stepcount/stepcount.py --from '<yavs_kernel::kernel::SimControl
 |---|---|---|
 | Single-stepping with ptrace, not an instruction-count sampler | An exact per-function and per-line count of a window, repeatable to the instruction | user, 2026-10-24 (#440) |
 | C for the stepper, Python (stdlib) for symbols and lines | A C compiler is an approved build-time dependency; `nm` and `addr2line` already resolve DWARF | root rule 9 |
+| `--ops` attributes by position in the dispatch loop, not by symbol: the first instruction after the dispatch jump names the op | An op's cost is its arm plus the helpers it calls (`read_into`, `assign_code_fast`, natives); symbols alone split it | #520, interpreter round 18 |
 | Windows start at a function entry (a breakpoint) and end at an entry, a count or the exit | Skip start-up and warm-up cheaply, count one phase | |
 
 ## 4. Invariants and pitfalls

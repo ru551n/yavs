@@ -119,6 +119,16 @@ pub(crate) enum Quick {
     Fault,
 }
 
+/// What [`Machine::run_direct`] did with an activation.
+pub(crate) enum Direct {
+    /// Not an activation of compiled code: nothing was done, `run_quick` runs it.
+    No,
+    /// Compiled code ran and left the process for the interpreter (`run_quick` with `cont`).
+    Continue,
+    /// Compiled code ended the activation.
+    Done(Quick),
+}
+
 pub(crate) enum Outcome {
     Suspended,
     Returned(Option<u64>),
@@ -234,6 +244,9 @@ const TIER_GO_SUSPEND: u64 = u64::MAX - 1;
 const RECHECK: u32 = 256;
 /// Events (jumps, calls, returns) between two looks of the loop that has no compiled code yet.
 const WATCH: u32 = 128;
+/// Iterations of a fused loop op (`Op::Loop`, the search loop) per dispatch in the watching loop,
+/// so a loop that stays in one op is still looked at (the plain loop runs them in one go).
+const WATCH_CHUNK: u32 = 128;
 
 /// Every `WATCH` jumps back and calls of the watching loop: name the running function for the
 /// sampler; true when it has compiled code or is to be compiled. Out of line on purpose: inlined,
@@ -241,6 +254,7 @@ const WATCH: u32 = 128;
 #[cold]
 #[inline(never)]
 fn watch_tick(rt: &Runtime, func: FuncId, pc: u32) -> bool {
+    rt.sync_native();
     crate::slot().store(
         u64::from(rt.id) << 32 | u64::from(func.0),
         Ordering::Relaxed,
@@ -250,6 +264,26 @@ fn watch_tick(rt: &Runtime, func: FuncId, pc: u32) -> bool {
         .func
         .get(func.0 as usize)
         .is_some_and(|n| n.load(Ordering::Acquire) & (NAT_CODE | NAT_ASK) != 0)
+}
+
+/// Whether `callee` has a flag set now (`Pre::native` says it had one once). Out of line: it runs
+/// only for functions the tier has touched, and inlined its loads cost the loop registers.
+#[cold]
+#[inline(never)]
+fn callee_flagged(rt: &Runtime, callee: u32) -> bool {
+    rt.native.flagged(callee)
+}
+
+/// Zeroes the sampling slot when dropped (`Machine::exec_fast`).
+struct SlotIdle<'a>(Option<&'a std::sync::atomic::AtomicU64>);
+
+impl Drop for SlotIdle<'_> {
+    #[inline(always)]
+    fn drop(&mut self) {
+        if let Some(s) = self.0 {
+            s.store(0, Ordering::Relaxed);
+        }
+    }
 }
 
 /// The body of `Machine::push_frame` and `push_frame_pre`.
@@ -731,6 +765,25 @@ pub(crate) fn to_time(v: i64) -> R<Time> {
     Time::from_vhdl(v).map_err(|_| runtime_f!("negative time value {v} fs"))
 }
 
+/// The length of a dimension (bounds and direction word, `dim_of`) in `u64` arithmetic, `None`
+/// where it would overflow (the general code then decides).
+#[inline(always)]
+fn dim_len63((l, r, dir): (i64, i64, u64)) -> Option<u64> {
+    let (lo, hi) = if dir == 1 { (r, l) } else { (l, r) };
+    if hi < lo {
+        Some(0)
+    } else {
+        hi.checked_sub(lo).and_then(|d| (d as u64).checked_add(1))
+    }
+}
+
+/// The eight bytes at `off` of a memory object of `len` bytes, when they are inside it.
+#[inline(always)]
+fn slot_range(len: usize, off: u64) -> Option<std::ops::Range<usize>> {
+    let o = usize::try_from(off).ok()?;
+    (o.checked_add(8)? <= len).then(|| o..o + 8)
+}
+
 /// The little-endian value of 1, 4 or 8 bytes (fixed-size copies, no `memcpy` call).
 #[inline(always)]
 fn le_bytes(b: &[u8]) -> u64 {
@@ -893,6 +946,36 @@ fn blocks_of(bytes: &[u8]) -> Vec<[u64; 4]> {
         .collect()
 }
 
+/// Whole blocks `out` from the bits of `src` from bit `sh` (1 to 63) of its first block: block
+/// `j` of `out` is the high `64 - sh` bits of block `j` of `src` and the low `sh` bits of the
+/// next, plane by plane (`src` has one block more than `out`).
+#[inline(always)]
+fn shift_merge(out: &mut [u8], src: &[u8], sh: u64) {
+    let word = |b: &[u8], i: usize| plane_words_at(b, i);
+    for (j, o) in out.as_chunks_mut::<32>().0.iter_mut().enumerate() {
+        let (lo, hi) = (word(src, j * 32), word(src, (j + 1) * 32));
+        for (k, c) in o.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+            *c = (lo[k] >> sh | hi[k] << (64 - sh)).to_le_bytes();
+        }
+    }
+}
+
+/// The four plane words of the block at byte `at` of `b`.
+#[inline(always)]
+fn plane_words_at(b: &[u8], at: usize) -> [u64; 4] {
+    plane_words(&b[at..at + 32])
+}
+
+/// The four plane words of the block `b` (32 bytes).
+#[inline(always)]
+fn plane_words(b: &[u8]) -> [u64; 4] {
+    let mut w = [0u64; 4];
+    for (w, c) in w.iter_mut().zip(b.as_chunks::<8>().0) {
+        *w = u64::from_le_bytes(*c);
+    }
+    w
+}
+
 /// The blocks of `bytes` (32 bytes each) into `out`.
 #[inline(always)]
 fn fill_blocks(bytes: &[u8], out: &mut [[u64; 4]]) {
@@ -1013,7 +1096,8 @@ impl Machine {
         Machine {
             vc: ViewCache {
                 tier_sigs: Vec::new(),
-                owner: OWNERS.fetch_add(1, Ordering::Relaxed),
+                owner: u64::from(rt.id) << crate::OWNER_RT_SHIFT
+                    | OWNERS.fetch_add(1, Ordering::Relaxed) & u64::from(u32::MAX),
                 inst_data: inst.data.as_ptr() as usize,
                 inst_len: inst.data.len(),
                 nsigs: inst.sigs.len(),
@@ -1239,9 +1323,9 @@ impl Machine {
         f: &Func,
         func: FuncId,
         pre: &pre::Pre,
+        link: Option<u32>,
         ret: Option<Reg>,
     ) -> R<()> {
-        let link: Option<u32> = None;
         push_frame_body!(self, pre, f, func, link, ret, pre.fslots);
         Ok(())
     }
@@ -1266,6 +1350,36 @@ impl Machine {
             self.regs.v.shrink_to(1 << 10);
         }
         Some(fr)
+    }
+
+    /// `pop_frame` for a return in the fast loop: only the register that receives the result
+    /// is handed back (the frame, 40 bytes, is not moved out).
+    #[inline(always)]
+    fn pop_ret(&mut self) -> Option<Option<Reg>> {
+        let fr = self.frames.pop()?;
+        self.regs.v.truncate(fr.rbase as usize);
+        match self.frames.last() {
+            Some(top) => {
+                self.regs.base = top.rbase as usize;
+                self.sstack.truncate(fr.sbase as usize);
+                // Back at the root: a deep recursion does not keep its stack.
+                if self.frames.len() == 1 && self.sstack.capacity() > 1 << 16 {
+                    self.shrink_stacks();
+                }
+            }
+            None => {
+                self.regs.base = 0;
+                self.root.clear();
+            }
+        }
+        Some(fr.ret)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn shrink_stacks(&mut self) {
+        self.sstack.shrink_to(1 << 12);
+        self.regs.v.shrink_to(1 << 10);
     }
 
     /// `pop_frame` without giving memory back: the stacks do not move (compiled code of the
@@ -1373,7 +1487,8 @@ impl Machine {
         if self.dbg.is_none() && self.rt.prog.specialisable(self.entry) {
             self.rt.prog.note_planned();
             self.spec = Some(holes);
-            self.spec_at = u32::try_from(at).unwrap_or(u32::MAX);
+            // First stop at the second activation (`specialise`): it tells the tier the process runs again.
+            self.spec_at = u32::try_from(at.min(2)).unwrap_or(u32::MAX);
         }
     }
 
@@ -1386,6 +1501,13 @@ impl Machine {
     #[cold]
     #[inline(never)]
     pub(crate) fn specialise(&mut self) {
+        if self.spec.is_some() && self.execs < crate::spec_after() {
+            if let Some(n) = self.rt.native.resumed.get(self.entry.0 as usize) {
+                n.store(true, Ordering::Relaxed);
+            }
+            self.spec_at = u32::try_from(crate::spec_after()).unwrap_or(u32::MAX);
+            return;
+        }
         let Some(holes) = self.spec.take() else {
             return;
         };
@@ -1397,31 +1519,21 @@ impl Machine {
         {
             return;
         }
-        // The shared code is compiled already: a copy would run interpreted until the tier
-        // compiled it. (A function the tier is asked to compile on entry, `NAT_ASK`, is not:
-        // the copy has the flag as well, `Runtime::set_eager`.)
-        if !crate::spec_forced()
-            && rt
+        // The shared code is compiled already: a tier that compiles copies takes the copy over at
+        // once (compiled code of the copy is smaller and faster: folded layouts and descriptors,
+        // #679), else a copy would run interpreted for good. (A function the tier is asked to
+        // compile on entry, `NAT_ASK`, is not: the copy has the flag as well,
+        // `Runtime::set_eager`.) A process whose shared code is not compiled switches at once,
+        // with a tier too: the tier compiles the copy (#675).
+        if !crate::spec_forced() {
+            let compiled = rt
                 .native
                 .func
                 .get(base.0 as usize)
-                .is_some_and(|n| n.load(Ordering::Acquire) & NAT_CODE != 0)
-        {
-            return;
-        }
-        // With a tier the shared code of a process that takes much of the run is about to be
-        // compiled (a compiled process beats its interpreted copy by far, and the copies of a
-        // process of many instances would each be too small a share for the tier to take): give
-        // it `SPEC_TIER_WAIT`, then try again later.
-        if !crate::spec_forced()
-            && rt
-                .tier_at
-                .get()
-                .is_some_and(|t| t.elapsed() < crate::SPEC_TIER_WAIT)
-        {
-            self.spec = Some(holes);
-            self.spec_at = u32::try_from(self.execs.saturating_mul(2)).unwrap_or(u32::MAX);
-            return;
+                .is_some_and(|n| n.load(Ordering::Acquire) & NAT_CODE != 0);
+            if compiled && !rt.tier.get().is_some_and(|t| t.compiles_copies()) {
+                return;
+            }
         }
         let Ok(id) = prog.copy_of_pkgs(base, &self.inst.data, &holes, &*rt) else {
             return;
@@ -1514,20 +1626,16 @@ impl Machine {
         self.dbg.is_none()
     }
 
-    /// `run` without a debugger and with base 0, the outcome as a `Quick`.
-    pub(crate) fn run_quick(&mut self, ctx: &mut Option<&mut Ctx<'_>>) -> Quick {
+    /// `run` without a debugger and with base 0, the outcome as a `Quick`. `cont`: compiled code
+    /// has run this activation already ([`Machine::run_direct`] said [`Direct::Continue`]) and
+    /// the interpreter goes on from the frames' pcs.
+    pub(crate) fn run_quick(&mut self, ctx: &mut Option<&mut Ctx<'_>>, cont: bool) -> Quick {
         let rt = self.rt_run.take().unwrap_or_else(|| self.rt.clone());
         let r = match rt.tier.get() {
-            Some(tier) if self.tiered(&rt) => {
+            Some(tier) if cont || self.tiered(&rt) => {
                 let slot = crate::slot();
-                if let Some(fr) = self.frames.first() {
+                if !cont && let Some(fr) = self.frames.first() {
                     rt.native.activated(fr.func);
-                }
-                if let Some(q) = self.run_compiled(&rt, &**tier, slot, ctx) {
-                    // Nothing interpreted on this thread until the next run.
-                    slot.store(0, Ordering::Relaxed);
-                    self.rt_run = Some(rt);
-                    return q;
                 }
                 let r = self.exec_fast::<true, false>(&rt, Some(&**tier), None, ctx, 0);
                 slot.store(0, Ordering::Relaxed);
@@ -1538,9 +1646,7 @@ impl Machine {
                 if let Some(fr) = self.frames.first() {
                     rt.native.activated(fr.func);
                 }
-                let r = self.exec_fast::<false, true>(&rt, None, Some(slot), ctx, 0);
-                slot.store(0, Ordering::Relaxed);
-                r
+                self.exec_fast::<false, true>(&rt, None, Some(slot), ctx, 0)
             }
             None => self.exec_fast::<false, false>(&rt, None, None, ctx, 0),
         };
@@ -1563,6 +1669,7 @@ impl Machine {
     fn tiered(&self, rt: &Runtime) -> bool {
         rt.native.any.load(Ordering::Acquire)
             && self.frames.last().is_some_and(|fr| {
+                rt.sync_native();
                 rt.native
                     .func
                     .get(fr.func.0 as usize)
@@ -1572,29 +1679,40 @@ impl Machine {
 
     /// The activation of a process whose root function has compiled code, entered where it
     /// suspended without `exec_fast`'s and `run_ops`' set-up (nothing returned by value
-    /// but the outcome: a copy of a result the callee stored in pieces stalls). `Some` when
-    /// the compiled code suspends the process or a fault ends the run; `None` when the
-    /// interpreter must go on (the compiled code left frames or an instruction to it:
-    /// `exec_fast` continues from the frames' pcs, as after `tier_go`).
-    #[inline]
-    fn run_compiled(
-        &mut self,
-        rt: &Runtime,
-        tier: &dyn crate::Tier,
-        slot: &std::sync::atomic::AtomicU64,
-        ctx: &mut Option<&mut Ctx<'_>>,
-    ) -> Option<Quick> {
-        if self.frames.len() != 1 || self.pause.is_some() {
-            return None;
+    /// but the outcome: a copy of a result the callee stored in pieces stalls). The first thing
+    /// `InterpProcess::run` does for a process that is `hot`, so a compiled activation passes
+    /// through one function frame of the interpreter's.
+    #[inline(always)]
+    pub(crate) fn run_direct(&mut self, ctx: &mut Option<&mut Ctx<'_>>) -> Direct {
+        // Compiled code ready for the root function (one look at its flags, which the tier
+        // changes when it swaps code); the activation is `run_quick`'s otherwise.
+        if !self.rt.native.any.load(Ordering::Acquire) {
+            return Direct::No;
         }
-        let func = self.frames[0].func;
-        // Compiled code ready; a function still to be compiled (`NAT_ASK`) is `run_ops`'.
-        if rt.native.func.get(func.0 as usize)?.load(Ordering::Acquire) & (NAT_CODE | NAT_ASK)
-            != NAT_CODE
+        let [fr] = &self.frames[..] else {
+            return Direct::No;
+        };
+        let func = fr.func;
+        let Some(flags) = self.rt.native.func.get(func.0 as usize) else {
+            return Direct::No;
+        };
+        if flags.load(Ordering::Acquire) & (NAT_CODE | NAT_ASK) != NAT_CODE || self.pause.is_some()
         {
-            return None;
+            return Direct::No;
         }
-        let f = rt.prog.func(func)?;
+        let Some(rt) = self.rt_run.take() else {
+            return Direct::No;
+        };
+        let Some(tier) = rt.tier.get() else {
+            self.rt_run = Some(rt);
+            return Direct::No;
+        };
+        let slot = crate::slot();
+        rt.native.activated(func);
+        let Some(f) = rt.prog.func(func) else {
+            self.rt_run = Some(rt);
+            return Direct::No;
+        };
         slot.store(
             u64::from(rt.id) << 32 | u64::from(func.0),
             Ordering::Relaxed,
@@ -1603,7 +1721,7 @@ impl Machine {
         let mut state = self.tier_state.take();
         let mut host = Host {
             m: self,
-            rt,
+            rt: &rt,
             prog: &rt.prog,
             f,
             up: Vec::new(),
@@ -1614,19 +1732,22 @@ impl Machine {
         let ran = tier.run_cached(func, pc, &mut host, &mut state);
         let fault = host.fault;
         self.tier_state = state;
+        self.rt_run = Some(rt);
         if let Some(e) = fault {
+            slot.store(0, Ordering::Relaxed);
             self.quick_fault = Some(e);
-            return Some(Quick::Fault);
+            return Direct::Done(Quick::Fault);
         }
         match ran {
             Some(crate::TIER_SUSPEND) => {
                 self.top().pc += 1;
-                Some(Quick::Suspended)
+                slot.store(0, Ordering::Relaxed);
+                Direct::Done(Quick::Suspended)
             }
-            Some(crate::TIER_UNWIND) | None => None,
+            Some(crate::TIER_UNWIND) | None => Direct::Continue,
             Some(p) => {
                 self.top().pc = p;
-                None
+                Direct::Continue
             }
         }
     }
@@ -2437,28 +2558,137 @@ impl Machine {
         d + dlen <= s || s + slen <= d
     }
 
-    /// `lcopy` of a wide range whose two sides start at the same bit of a block and do not
-    /// overlap: a partial block at each end, the whole blocks between them as bytes.
+    /// `lcopy` of a wide range (three or more blocks on a side) whose two sides are in
+    /// objects that share no byte: a partial block at each end, the whole destination blocks
+    /// between them as one move (a `memcpy` when both sides start at the same bit of a block,
+    /// else a shift-merge of the source words). `false`: nothing was copied (memory the
+    /// machine does not hold in a field of its own).
     #[inline(never)]
-    fn lcopy_aligned(&mut self, dst: u64, doff: u64, src: u64, soff: u64, n: u64) -> R<()> {
+    fn lcopy_wide(&mut self, dst: u64, doff: u64, src: u64, soff: u64, n: u64) -> R<bool> {
         let head = (64 - doff % 64) % 64;
+        let (dpos, spos) = (doff + head, soff + head);
         let whole = (n - head) / 64;
+        let (dm, sm) = (
+            add_addr(dst, dpos / 64 * 32)?,
+            add_addr(src, spos / 64 * 32)?,
+        );
+        let sh = spos % 64;
+        let (dn, sn) = (
+            whole as usize * 32,
+            (whole as usize + usize::from(sh != 0)) * 32,
+        );
+        if !self.copy_pair(dm, sm, dn, sn, |out, src| {
+            if sh == 0 {
+                out.copy_from_slice(&src[..dn]);
+            } else {
+                shift_merge(out, src, sh);
+            }
+        }) {
+            return Ok(false);
+        }
         if head > 0 {
             self.lcopy(dst, doff, src, soff, head)?;
         }
-        let (dm, sm) = (
-            add_addr(dst, (doff + head) / 64 * 32)?,
-            add_addr(src, (soff + head) / 64 * 32)?,
-        );
-        self.copy_mem(dm, sm, whole * 32)?;
         let done = head + whole * 64;
-        self.lcopy(dst, doff + done, src, soff + done, n - done)
+        self.lcopy(dst, doff + done, src, soff + done, n - done)?;
+        Ok(true)
     }
 
+    /// `lcopy` of elements inside one block on each side (a field or a slice of a vector, the
+    /// usual copy): the source block into registers, the destination block changed where it
+    /// is, no staging and no call. `false`: nothing was copied (another shape, memory the
+    /// machine does not hold in a field, an address that does not resolve: `lcopy_general`
+    /// copies or reports).
+    #[inline(always)]
+    fn lcopy1(&mut self, dst: u64, doff: u64, src: u64, soff: u64, n: u64) -> bool {
+        let (s0, d0) = (soff % 64, doff % 64);
+        if n == 0 || n > 64 - s0 || n > 64 - d0 {
+            return false;
+        }
+        let (ssp, sidx, so) = split(src);
+        let so = (so + soff / 64 * 32) as usize;
+        let Some(sw) = self
+            .mem_fast(ssp, sidx)
+            .and_then(|m| m.get(so..so + 32))
+            .map(plane_words)
+        else {
+            return false;
+        };
+        let (dsp, didx, dof) = split(dst);
+        let dof = (dof + doff / 64 * 32) as usize;
+        let mem = match dsp {
+            FRAME => self.fslots_mut(didx as usize),
+            TEMP => Some(&mut self.temp[..]),
+            HEAP => self.heap.data_mut(didx),
+            SHARED_HEAP => self
+                .sh
+                .as_mut()
+                .and_then(|s| s.heap.as_mut()?.data_mut(didx)),
+            _ => None,
+        };
+        let Some(db) = mem.and_then(|m| m.get_mut(dof..dof + 32)) else {
+            return false;
+        };
+        let mask = yavs_logic::wide::nmask(n as usize);
+        for (c, s) in db.as_chunks_mut::<8>().0.iter_mut().zip(sw) {
+            let d = u64::from_le_bytes(*c);
+            *c = (d & !(mask << d0) | (s >> s0 & mask) << d0).to_le_bytes();
+        }
+        true
+    }
+
+    /// `Inst::LCopy`: `n` elements from element `soff` of the logic vector at `src` to `doff` of
+    /// the one at `dst`.
     #[inline(never)]
     fn lcopy(&mut self, dst: u64, doff: u64, src: u64, soff: u64, n: u64) -> R<()> {
+        if self.lcopy1(dst, doff, src, soff, n) {
+            return Ok(());
+        }
+        self.lcopy_general(dst, doff, src, soff, n)
+    }
+
+    /// `lcopy` of every other shape.
+    #[inline(never)]
+    fn lcopy_general(&mut self, dst: u64, doff: u64, src: u64, soff: u64, n: u64) -> R<()> {
         if n == 0 {
             return Ok(());
+        }
+        // The usual copy: at most 64 elements, one block on each side. Found and shifted in
+        // place; anything unusual (another space, a bad address) goes on to the general code.
+        let (s0, d0) = (soff & 63, doff & 63);
+        if n <= 64 - s0 && n <= 64 - d0 {
+            let (ssp, sidx, sbase) = split(src);
+            let (dsp, didx, dbase) = split(dst);
+            if let Some(so) = sbase
+                .checked_add((soff >> 6) * 32)
+                .filter(|&o| o <= u64::from(u32::MAX))
+                && let Some(dof) = dbase
+                    .checked_add((doff >> 6) * 32)
+                    .filter(|&o| o <= u64::from(u32::MAX))
+                && let Some(sb) = self
+                    .mem_fast(ssp, sidx)
+                    .and_then(|m| m.get(so as usize..))
+                    .and_then(|m| m.first_chunk::<32>())
+            {
+                let sw: [u64; 4] = std::array::from_fn(|p| plane_word(sb, p));
+                let mem = match dsp {
+                    FRAME => self.fslots_mut(didx as usize),
+                    TEMP => Some(&mut self.temp[..]),
+                    HEAP => self.heap.data_mut(didx),
+                    _ => None,
+                };
+                if let Some(db) = mem
+                    .and_then(|m| m.get_mut(dof as usize..))
+                    .and_then(|m| m.first_chunk_mut::<32>())
+                {
+                    let mask = if n == 64 { !0 } else { (1u64 << n) - 1 };
+                    for (p, c) in db.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+                        let d = u64::from_le_bytes(*c);
+                        *c = (d & !(mask << d0) | ((sw[p] >> s0) & mask) << d0).to_le_bytes();
+                    }
+                    return Ok(());
+                }
+            }
         }
         let last = |off: u64| {
             off.checked_add(n - 1)
@@ -2469,31 +2699,6 @@ impl Machine {
         let (sn, dn) = ((sb1 - sb0 + 1) as usize, (db1 - db0 + 1) as usize);
         let da = add_addr(dst, db0 * 32)?;
         let (s0, d0) = (soff - sb0 * 64, doff - db0 * 64);
-        // One block on each side, the destination in frame, temporary or heap memory: the source
-        // read first, the destination changed where it is.
-        if sn == 1 && dn == 1 {
-            let sa = add_addr(src, sb0 * 32)?;
-            let mut sw = [[0u64; 4]; 1];
-            if let Ok(b) = self.rd_hot(sa, 32) {
-                fill_blocks(b, &mut sw);
-                let (sp, idx, off) = split(da);
-                let mem = match sp {
-                    FRAME => self.fslots_mut(idx as usize),
-                    TEMP => Some(&mut self.temp[..]),
-                    HEAP => self.heap.data_mut(idx),
-                    _ => None,
-                };
-                if let Some(b) = mem.and_then(|m| m.get_mut(off as usize..off as usize + 32)) {
-                    let mut dw = [[0u64; 4]; 1];
-                    fill_blocks(b, &mut dw);
-                    copy_bits(&sw, &mut dw, s0, d0, n);
-                    for (c, w) in b.as_chunks_mut::<8>().0.iter_mut().zip(dw.as_flattened()) {
-                        *c = w.to_le_bytes();
-                    }
-                    return Ok(());
-                }
-            }
-        }
         // Up to 128 elements on either side: the blocks on the stack.
         if sn <= 2 && dn <= 2 {
             let sa = add_addr(src, sb0 * 32)?;
@@ -2524,11 +2729,10 @@ impl Machine {
             }
             return self.put(da, &out[..dn * 32]);
         }
-        if n >= 1024
-            && s0 == d0
-            && self.disjoint(dst, db0 * 32, dn as u64 * 32, src, sb0 * 32, sn as u64 * 32)
+        if self.disjoint(dst, db0 * 32, dn as u64 * 32, src, sb0 * 32, sn as u64 * 32)
+            && self.lcopy_wide(dst, doff, src, soff, n)?
         {
-            return self.lcopy_aligned(dst, doff, src, soff, n);
+            return Ok(());
         }
         let sw = blocks_of(self.rd(add_addr(src, sb0 * 32)?, sn as u64 * 32)?);
         let mut dw = blocks_of(self.rd(da, dn as u64 * 32)?);
@@ -2741,7 +2945,7 @@ impl Machine {
             let Some(b) = slots.get(at..at + n) else {
                 return j;
             };
-            let x = le_bytes(b);
+            let x = cell_w(b, d.w);
             let code = match d.aff {
                 Some((_, ca, c0)) if aff_ok(x as i64) => {
                     (i64::from(c0) + i64::from(ca) * x as i64) as u64
@@ -2762,6 +2966,19 @@ impl Machine {
             }
         }
         run.drives.len()
+    }
+
+    /// The `SigVal` of the first drive of a run that a `DriveRun` stands in place of.
+    #[inline(never)]
+    fn drive_run_head(&mut self, run: &pre::DriveRun) -> R<()> {
+        let Some(d) = run.drives.first() else {
+            return Err(ice_s!("a drive run without drives"));
+        };
+        let (o, l) = (self.regs[d.offset as usize], self.regs[d.len as usize]);
+        let (a, b) = self.sig_val(d.sig, o as i64, l as i64)?;
+        self.regs[d.sv as usize] = a;
+        self.regs[d.sv as usize + 1] = b;
+        Ok(())
     }
 
     /// `drive_bit` with the delay itself instead of the waveform.
@@ -2792,11 +3009,29 @@ impl Machine {
     /// at `w`, the element address in `e`).
     #[inline(never)]
     fn waveform_head(&mut self, size: u16, time: u16, w: u16, e: u16) -> R<()> {
-        let a = self.temp_alloc(self.regs[size as usize])?;
-        self.regs[w as usize] = a;
-        self.store(a, Width::B8, self.regs[time as usize])?;
-        self.regs[e as usize] = add_addr(a, 8)?;
+        let a = self.wave_at(size, time, w)?;
+        if size & pre::FRAME_WAVE == 0 {
+            self.regs[e as usize] = add_addr(a, 8)?;
+        }
         Ok(())
+    }
+
+    /// The start of a dropped waveform with its time written, as its first instructions made it:
+    /// an `Alloc` of the size in register `size` into `w`, or (`pre::FRAME_WAVE`) the zeroing of
+    /// the temporary in the frame `w` points to, whose registers stay as the frame set them.
+    #[inline(never)]
+    fn wave_at(&mut self, size: u16, time: u16, w: u16) -> R<u64> {
+        let a = if size & pre::FRAME_WAVE != 0 {
+            let a = self.regs[w as usize];
+            self.wr(a, u64::from(size & !pre::FRAME_WAVE))?.fill(0);
+            a
+        } else {
+            let a = self.temp_alloc(self.regs[size as usize])?;
+            self.regs[w as usize] = a;
+            a
+        };
+        self.store(a, Width::B8, self.regs[time as usize])?;
+        Ok(a)
     }
 
     /// The `LSet` at IR pc `pc` and the `Drive` after it, as the IR has them.
@@ -3253,22 +3488,53 @@ impl Machine {
     #[inline(always)]
     fn lget(&self, base: u64, i: u64) -> R<u64> {
         let (sp, idx, off) = split(base);
-        if let Some(b) = self.mem_fast(sp, idx).and_then(|m| {
-            let o = (off + i / 64 * 32) as usize;
-            m.get(o..o + 32)
-        }) {
-            return Ok((0..4).fold(0u64, |c, p| c | (plane_word(b, p) >> (i % 64) & 1) << p));
+        if let Some(b) = self
+            .mem_fast(sp, idx)
+            .and_then(|m| m.get((off + i / 64 * 32) as usize..))
+            .and_then(|m| m.first_chunk::<32>())
+        {
+            let (w, s) = (b.as_chunks::<8>().0, i % 64);
+            let bit = |p: usize| u64::from_le_bytes(w[p]) >> s & 1;
+            return Ok(bit(0) | bit(1) << 1 | bit(2) << 2 | bit(3) << 3);
         }
         let b = self.rd(add_addr(base, i / 64 * 32)?, 32)?;
         Ok((0..4).fold(0u64, |c, p| c | (plane_word(b, p) >> (i % 64) & 1) << p))
     }
 
-    /// `Inst::LSet`: set element `i` of the logic vector at `base` to `code`.
+    /// `Inst::LSet`: set element `i` of the logic vector at `base` to `code`. The block in a
+    /// frame, temporary memory or a heap object is found without the general lookup.
     #[inline(always)]
     fn lset(&mut self, base: u64, i: u64, code: u64) -> R<()> {
         if code > 8 {
             return Err(ice_f!("std_ulogic code {code}"));
         }
+        let (sp, idx, off) = split(base);
+        let mem = match sp {
+            FRAME => self.fslots_mut(idx as usize),
+            TEMP => Some(&mut self.temp[..]),
+            HEAP => self.heap.data_mut(idx),
+            SHARED_HEAP | SHARED => self.shared_mem_mut(sp, idx),
+            _ => None,
+        };
+        if let Some(o) = off
+            .checked_add(i / 64 * 32)
+            .filter(|&o| o <= u64::from(u32::MAX))
+            && let Some(b) = mem
+                .and_then(|m| m.get_mut(o as usize..))
+                .and_then(|m| m.first_chunk_mut::<32>())
+        {
+            let s = i % 64;
+            for (p, c) in b.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+                let w = u64::from_le_bytes(*c) & !(1 << s) | (code >> p & 1) << s;
+                *c = w.to_le_bytes();
+            }
+            return Ok(());
+        }
+        self.lset_slow(base, i, code)
+    }
+
+    #[inline(never)]
+    fn lset_slow(&mut self, base: u64, i: u64, code: u64) -> R<()> {
         let a = add_addr(base, i / 64 * 32)?;
         let b = self.wr(a, 32)?;
         let s = i % 64;
@@ -3338,6 +3604,7 @@ impl Machine {
     fn cat(
         &mut self,
         d: u64,
+        eoff: u64,
         n: u64,
         m: u64,
         ps: &[Reg],
@@ -3348,7 +3615,7 @@ impl Machine {
     ) -> R<()> {
         let big = || runtime_s!("object larger than 4 GiB");
         let total = n.wrapping_mul(m);
-        if logic && total <= 64 && self.cat_block(d, total, m, ps, scalars, bias)? {
+        if logic && total <= 64 && eoff == 0 && self.cat_block(d, total, m, ps, scalars, bias)? {
             return Ok(());
         }
         let mut k = 0u64;
@@ -3358,7 +3625,10 @@ impl Machine {
             let len = if scalar { 1 } else { self.r(pr[1]) };
             if logic {
                 let units = if scalar { 1 } else { len.wrapping_mul(m) };
-                let off = total.wrapping_sub(k.wrapping_mul(m)).wrapping_sub(units);
+                let off = eoff
+                    .wrapping_add(total)
+                    .wrapping_sub(k.wrapping_mul(m))
+                    .wrapping_sub(units);
                 if scalar {
                     self.lset(d, off, v.wrapping_add(u64::from(bias)))?;
                 } else {
@@ -3476,6 +3746,33 @@ impl Machine {
         Ok(Some((words, mask, k)))
     }
 
+    /// Whether a logic `Cat` of `total` elements can be built in place from element `doff` of
+    /// `d`: the pieces `ps` cover exactly `total` elements and share no byte with the blocks
+    /// it writes (a piece that did could be overwritten before it is read).
+    #[inline(never)]
+    fn cat_apart(&self, d: u64, doff: u64, total: u64, m: u64, ps: &[Reg], scalars: u16) -> bool {
+        let Some(last) = doff.checked_add(total) else {
+            return false;
+        };
+        let (at, dbytes) = (doff / 64 * 32, (last.div_ceil(64) - doff / 64) * 32);
+        let mut covered = 0u64;
+        for (j, pr) in ps.as_chunks::<2>().0.iter().enumerate() {
+            let units = if scalars >> j & 1 == 1 {
+                1
+            } else {
+                let units = self.r(pr[1]).wrapping_mul(m);
+                if units != 0
+                    && !self.disjoint(d, at, dbytes, self.r(pr[0]), 0, units.div_ceil(64) * 32)
+                {
+                    return false;
+                }
+                units
+            };
+            covered = covered.wrapping_add(units);
+        }
+        covered == total
+    }
+
     /// A block of 32 bytes in the temporary area holding `b` (an `Alloc` of 32 and the stores
     /// of all of it, without clearing it first).
     #[inline(always)]
@@ -3534,8 +3831,6 @@ impl Machine {
             sstack,
             temp,
             heap,
-            inst,
-            rt,
             sh,
             ..
         } = self;
@@ -3554,6 +3849,38 @@ impl Machine {
             }
             return false;
         }
+        self.copy_pair(d, s, n, n, |out, src| out.copy_from_slice(src))
+    }
+
+    /// `f(dst, src)` on the `dn` bytes at `d` and the `sn` bytes at `s` when they are in two
+    /// different objects the machine holds in fields of their own (as `copy_fast`). `false`:
+    /// `f` was not called.
+    #[inline(always)]
+    fn copy_pair(
+        &mut self,
+        d: u64,
+        s: u64,
+        dn: usize,
+        sn: usize,
+        f: impl FnOnce(&mut [u8], &[u8]),
+    ) -> bool {
+        let (dsp, didx, doff) = split(d);
+        let (ssp, sidx, soff) = split(s);
+        let (doff, soff) = (doff as usize, soff as usize);
+        if doff.checked_add(dn).is_none() || soff.checked_add(sn).is_none() {
+            return false;
+        }
+        let Machine {
+            frames,
+            root,
+            sstack,
+            temp,
+            heap,
+            inst,
+            rt,
+            sh,
+            ..
+        } = self;
         let dst = match dsp {
             TEMP => {
                 let src = match ssp {
@@ -3565,7 +3892,7 @@ impl Machine {
                     SHARED => sh.as_ref().map(|s| &s.vars[..]),
                     _ => None,
                 };
-                (src, temp.get_mut(doff..doff + n))
+                (src, temp.get_mut(doff..doff + dn))
             }
             FRAME => {
                 let src = match ssp {
@@ -3580,7 +3907,7 @@ impl Machine {
                 (
                     src,
                     slots_of_mut(frames, root, sstack, didx as usize)
-                        .and_then(|b| b.get_mut(doff..doff + n)),
+                        .and_then(|b| b.get_mut(doff..doff + dn)),
                 )
             }
             HEAP => {
@@ -3595,7 +3922,7 @@ impl Machine {
                 };
                 (
                     src,
-                    heap.data_mut(didx).and_then(|b| b.get_mut(doff..doff + n)),
+                    heap.data_mut(didx).and_then(|b| b.get_mut(doff..doff + dn)),
                 )
             }
             SHARED_HEAP => {
@@ -3611,14 +3938,14 @@ impl Machine {
                     src,
                     sh.as_mut()
                         .and_then(|s| s.heap.as_mut()?.data_mut(didx))
-                        .and_then(|b| b.get_mut(doff..doff + n)),
+                        .and_then(|b| b.get_mut(doff..doff + dn)),
                 )
             }
             _ => return false,
         };
         match dst {
-            (Some(src), Some(out)) if soff + n <= src.len() => {
-                out.copy_from_slice(&src[soff..soff + n]);
+            (Some(src), Some(out)) if soff + sn <= src.len() => {
+                f(out, &src[soff..soff + sn]);
                 true
             }
             _ => false,
@@ -3639,6 +3966,18 @@ impl Machine {
                 *c = self.regs[r.0 as usize].to_le_bytes();
             }
             return Ok(());
+        }
+        // In the frame (a temporary of a process there, `yavs_ir` `opt/slots.rs`): the same.
+        if sp == FRAME {
+            let vals: [u64; 8] = std::array::from_fn(|k| parts.get(k).map_or(0, |r| self.r(*r)));
+            if parts.len() <= 8
+                && let Some(dst) = self.frame_bytes(at, parts.len() * 8)
+            {
+                for (c, v) in dst.as_chunks_mut::<8>().0.iter_mut().zip(vals) {
+                    *c = v.to_le_bytes();
+                }
+                return Ok(());
+            }
         }
         let mut buf = [0u8; 64];
         if parts.len() <= 8 {
@@ -3670,9 +4009,24 @@ impl Machine {
     }
 
     /// `Inst::SubtypeCheck`: the length of each dimension of the descriptor at `dope` against
-    /// the one at `want`.
-    #[inline(always)]
+    /// the one at `want`. Out of line, with the usual case (one dimension, both descriptors in
+    /// memory, equal bounds or lengths that fit 63 bits) before the general loop.
+    #[inline(never)]
     fn subtype_check(&self, dope: u64, want: u64, dims: u8, what: yavs_ir::CheckMsgId) -> R<()> {
+        if dims == 1
+            && let (Ok(a), Ok(b)) = (self.dim_of(dope, 0), self.dim_of(want, 0))
+        {
+            if a == b {
+                return Ok(());
+            }
+            if let (Some(x), Some(y)) = (dim_len63(a), dim_len63(b)) {
+                return if x == y {
+                    Ok(())
+                } else {
+                    self.subtype_fail(x, y, 0, 1, what)
+                };
+            }
+        }
         for k in 0..u64::from(dims) {
             let len = |base: u64| -> R<u64> {
                 let (l, r, dir) = self.dim_of(base, k)?;
@@ -3817,9 +4171,12 @@ impl Machine {
     #[inline(always)]
     fn dope_len(&self, dope: u64, dim: u8) -> R<u64> {
         let (l, rr, dir) = self.dim_of(dope, u64::from(dim))?;
-        yavs_ir::dim_len(l, rr, dir == 1)
-            .filter(|&n| n <= i64::MAX as u64)
-            .ok_or_else(|| runtime_f!("range {l} .. {rr} too long"))
+        match dim_len63((l, rr, dir)) {
+            Some(n) if n <= i64::MAX as u64 => Ok(n),
+            _ => yavs_ir::dim_len(l, rr, dir == 1)
+                .filter(|&n| n <= i64::MAX as u64)
+                .ok_or_else(|| runtime_f!("range {l} .. {rr} too long")),
+        }
     }
 
     /// `Inst::SigVal`: the two registers of a reference to elements `o .. o + l` of instance
@@ -4300,6 +4657,31 @@ impl Machine {
         ctx: &mut Option<&mut Ctx<'_>>,
     ) -> R<Flow> {
         let [pa, pb, px] = vars;
+        // The three variables in one frame (the process's or an enclosing subprogram's): one
+        // lookup of its slots instead of five loads and stores.
+        let ((sa, ia, oa), (sb, ib, ob), (sx, ix, ox)) = (split(pa), split(pb), split(px));
+        if sa == FRAME
+            && sb == FRAME
+            && sx == FRAME
+            && ia == ib
+            && ia == ix
+            && let Some(m) = self.fslots_mut(ia as usize)
+            && let Some(wa) = slot_range(m.len(), oa)
+            && let Some(wb) = slot_range(m.len(), ob)
+            && let Some(wx) = slot_range(m.len(), ox)
+            && let (a, b) = (
+                le_bytes(&m[wa.clone()]) as i64,
+                le_bytes(&m[wb.clone()]) as i64,
+            )
+            && a <= 2147483562
+            && b <= 2147483398
+        {
+            let (t1, t2, v) = crate::ieee::uniform_step(a, b);
+            m[wa].copy_from_slice(&t1.to_le_bytes());
+            m[wb].copy_from_slice(&t2.to_le_bytes());
+            m[wx].copy_from_slice(&v.to_le_bytes());
+            return Ok(Flow::Next);
+        }
         if let (Ok(a), Ok(b)) = (self.load(pa, Width::B8), self.load(pb, Width::B8))
             && (a as i64) <= 2147483562
             && (b as i64) <= 2147483398
@@ -4354,9 +4736,7 @@ impl Machine {
                 }
                 Some(_) => {
                     let slot = crate::slot();
-                    let r = self.exec_fast::<false, true>(rt, None, Some(slot), ctx, base);
-                    slot.store(0, Ordering::Relaxed);
-                    r
+                    self.exec_fast::<false, true>(rt, None, Some(slot), ctx, base)
                 }
                 None => self.exec_fast::<false, false>(rt, None, None, ctx, base),
             };
@@ -4591,6 +4971,9 @@ impl Machine {
         base: usize,
     ) -> R<Outcome> {
         let prog = &rt.prog;
+        // Nothing interpreted on this thread after the loop (a store in the caller, between the
+        // call and the match on the result, made it copy the result).
+        let _idle = W.then(|| SlotIdle(slot));
         // `W`: this thread's sampling `slot` names the function the loop goes on in; `run_ops`
         // names it again only every `WATCH` calls and jumps back (#525).
         let tag = u64::from(rt.id) << 32;
@@ -4759,14 +5142,8 @@ impl Machine {
         // `watch`: a call of a function with compiled code, one the tier calls on a native frame
         // or one to be compiled is made by the loop with the tier (the frame's pc is the call's).
         macro_rules! callee_look {
-            ($callee:expr) => {
-                if watch
-                    && rt
-                        .native
-                        .func
-                        .get($callee as usize)
-                        .is_some_and(|n| n.load(Ordering::Acquire) != 0)
-                {
+            ($callee:expr, $cpre:expr) => {
+                if watch && $cpre.native.load(Ordering::Relaxed) && callee_flagged(rt, $callee) {
                     return Ok(Flow::Retier);
                 }
             };
@@ -4816,21 +5193,15 @@ impl Machine {
                 }
             };
         }
-        // The callers of the frames this loop pushed (innermost last): their function, code
-        // and the op after the call, so a return looks nothing up. Compiled code leaves this
-        // loop when it keeps frames (`TIER_UNWIND`), so the list stays right.
-        let mut saved: [Option<(FuncId, &Func, &pre::Code, u32)>; 8] = [None; 8];
+        // The callers of the frames this loop pushed (innermost last): their function and code,
+        // so a return looks neither up. Compiled code leaves this loop when it keeps frames
+        // (`TIER_UNWIND`), so the list stays right.
+        let mut saved: [Option<(FuncId, &Func, &pre::Code)>; 8] = [None; 8];
         let mut depth = 0usize;
         macro_rules! save_caller {
             () => {
                 if depth < saved.len() {
-                    let ret = code
-                        .at
-                        .get(k)
-                        .and_then(|&p| code.entry.get(p as usize + 1))
-                        .copied()
-                        .unwrap_or(pre::NONE);
-                    saved[depth] = Some((func, f, code, ret));
+                    saved[depth] = Some((func, f, code));
                 }
                 depth += 1;
             };
@@ -4919,7 +5290,6 @@ impl Machine {
             ($callee:expr, $start:expr, $len:expr, $dst:expr, $memo:expr) => {{
                 let (callee, start, len, dst) = ($callee, $start, $len, $dst);
                 self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
-                callee_look!(callee);
                 let args = yavs_ir::Regs { start, len };
                 let dst = (dst != pre::NONE).then_some(Reg(dst));
                 let cid = FuncId(callee);
@@ -4927,6 +5297,7 @@ impl Machine {
                     .func(cid)
                     .ok_or_else(|| ice_f!("call of missing function {cid}"))?;
                 let cpre = rt.pre(cid, cf).ok_or_else(|| ice_f!("no function {cid}"))?;
+                callee_look!(callee, cpre);
                 // The memo of pure calls answers a repeated call before the call is made, by the
                 // compiled tier or not (out of line: it keeps this loop's frame as it was).
                 if $memo
@@ -5071,7 +5442,7 @@ impl Machine {
                     let n = w.bytes() as usize;
                     let o = off as usize;
                     self.regs[dst as usize] = match fslots!().and_then(|s| s.get(o..o + n)) {
-                        Some(b) => le_bytes(b),
+                        Some(b) => cell_w(b, w),
                         None => t!(mk_addr(FRAME, top as u32, off.into())
                             .and_then(|a| self.load_slow(a, w))),
                     };
@@ -5210,7 +5581,7 @@ impl Machine {
                     let n = w.bytes() as usize;
                     let o = off as usize;
                     self.regs[dst as usize] = match self.inst.data.get(o..o + n) {
-                        Some(b) => le_bytes(b),
+                        Some(b) => cell_w(b, w),
                         None => t!(mk_addr(INST, 0, off.into()).and_then(|a| self.load(a, w))),
                     };
                     k += 1;
@@ -5306,8 +5677,8 @@ impl Machine {
                     cp,
                     c0,
                 } => {
-                    match self.pos_len(self.regs[dope as usize], self.regs[idx as usize] as i64) {
-                        Some((p, _)) if aff_ok(p) => {
+                    match self.pos_first(self.regs[dope as usize], self.regs[idx as usize] as i64) {
+                        Some(p) if aff_ok(p) => {
                             self.regs[dst as usize] = (i64::from(c0) + i64::from(cp) * p) as u64;
                         }
                         _ => {
@@ -5525,8 +5896,8 @@ impl Machine {
                     {
                         // A search loop: run its iterations here, off the dispatch.
                         let other = if sa == idx { sb } else { sa };
-                        let mut limit = 1 << 16;
-                        if (TIER && !native) || watch {
+                        let mut limit = if watch { WATCH_CHUNK } else { 1 << 16 };
+                        if TIER && !native {
                             limit = limit.min(recheck.saturating_sub(1));
                         }
                         let sc = self.scan_loop(
@@ -5549,7 +5920,7 @@ impl Machine {
                         if sc.iters > 0 {
                             self.regs[dst as usize] = sc.ch;
                             self.regs[idx as usize] = sc.i as u64;
-                            if (TIER && !native) || watch {
+                            if TIER && !native {
                                 recheck -= sc.iters.min(recheck - 1);
                             }
                             match sc.hit {
@@ -5624,6 +5995,7 @@ impl Machine {
                     let ps = t!(f.regs(parts).ok_or_else(|| ice_s!("operand list")));
                     t!(self.cat(
                         self.regs[dst.0 as usize],
+                        0,
                         self.regs[n.0 as usize],
                         self.regs[m.0 as usize],
                         ps,
@@ -5699,12 +6071,16 @@ impl Machine {
                 Op::Br { to } => go!(to),
                 Op::Loop { id, to } => {
                     // Iterations the kernel may run before the loop goes back to counting.
-                    let mut limit = i64::MAX as u64;
-                    if (TIER && !native) || watch {
+                    let mut limit = if watch {
+                        u64::from(WATCH_CHUNK)
+                    } else {
+                        i64::MAX as u64
+                    };
+                    if TIER && !native {
                         limit = limit.min(u64::from(recheck.saturating_sub(1)));
                     }
                     let n = t!(self.op_loop(code, top, id, limit));
-                    if n > 0 && ((TIER && !native) || watch) {
+                    if n > 0 && TIER && !native {
                         recheck -= (n as u32).min(recheck - 1);
                     }
                     go!(to);
@@ -5758,7 +6134,6 @@ impl Machine {
                     dst,
                 } => {
                     self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
-                    callee_look!(callee);
                     t!(self.shared());
                     let h = self.regs[obj as usize];
                     let args = yavs_ir::Regs { start, len };
@@ -5768,6 +6143,7 @@ impl Machine {
                         .func(cid)
                         .ok_or_else(|| ice_f!("call of missing function {cid}"))?;
                     let cpre = rt.pre(cid, cf).ok_or_else(|| ice_f!("no function {cid}"))?;
+                    callee_look!(callee, cpre);
                     // A function the compiled tier calls on a native frame (`Tier::call`).
                     if TIER
                         && let Some(t) = tier
@@ -5811,11 +6187,11 @@ impl Machine {
                     if top <= base {
                         return Ok(Flow::Ret(v));
                     }
-                    let done = self
-                        .pop_frame()
+                    let ret = self
+                        .pop_ret()
                         .ok_or_else(|| ice_s!("return without frame"))?;
                     top -= 1;
-                    if let Some(d) = done.ret {
+                    if let Some(d) = ret {
                         self.regs[d.0 as usize] =
                             v.ok_or_else(|| ice_s!("function returned no value"))?;
                     }
@@ -5825,11 +6201,10 @@ impl Machine {
                     // The caller this loop entered the callee from: no lookups.
                     if depth > 0 {
                         depth -= 1;
-                        if let Some(&Some((sf, sff, sc, rk))) = saved.get(depth)
-                            && rk != pre::NONE
-                        {
-                            (func, f, code, k) = (sf, sff, sc, rk as usize);
+                        if let Some(&Some((sf, sff, sc))) = saved.get(depth) {
+                            (func, f, code) = (sf, sff, sc);
                             ops = &code.ops;
+                            k = entry!(pc)? as usize;
                             if TIER {
                                 rebind!();
                             }
@@ -5923,10 +6298,8 @@ impl Machine {
                         }
                     }
                     if !done {
-                        // The waveform as the three dropped instructions made it.
-                        let a = t!(self.temp_alloc(self.regs[size as usize]));
-                        self.regs[w as usize] = a;
-                        t!(self.store(a, Width::B8, self.regs[time as usize]));
+                        // The waveform as the dropped instructions made it.
+                        let a = t!(self.wave_at(size, time, w));
                         let at = t!(add_addr(a, 8));
                         t!(self.copy_mem(at, self.regs[src as usize], nbytes));
                         if multi {
@@ -6068,15 +6441,21 @@ impl Machine {
                     };
                     enter!();
                 }
-                Op::DriveRun { run } => {
-                    self.end_stmt();
+                Op::DriveRun { run, stmt } => {
+                    if stmt {
+                        self.end_stmt();
+                    }
                     let r = code
                         .runs
                         .get(run as usize)
                         .ok_or_else(|| ice_f!("no drive run {run}"))?;
                     let done = self.drive_run(r, top, ctx);
                     k = match done {
-                        0 => k + 1,
+                        0 if stmt => k + 1,
+                        0 => {
+                            t!(self.drive_run_head(r));
+                            k + 1
+                        }
                         d if d == r.drives.len() => r.end as usize,
                         d => r.starts[d] as usize,
                     };
@@ -6350,32 +6729,65 @@ impl Machine {
                     else {
                         return Err(ice_f!("pc {pc} is not a concatenation"));
                     };
+                    let lpc = code.at.get(k + 2).copied().unwrap_or(0);
+                    let Some(&Inst::LCopy {
+                        dst_off, src_off, ..
+                    }) = f.code.get(lpc as usize)
+                    else {
+                        return Err(ice_f!("pc {lpc} is not a logic copy"));
+                    };
+                    let (doff, soff) = (self.r(dst_off), self.r(src_off));
                     let ps = t!(f.regs(parts).ok_or_else(|| ice_s!("operand list")));
                     let d = self.regs[dst as usize];
-                    let total = self.regs[cn.0 as usize].wrapping_mul(self.regs[m.0 as usize]);
+                    let (mv, cnt) = (self.regs[m.0 as usize], self.regs[n as usize]);
+                    let total = self.regs[cn.0 as usize].wrapping_mul(mv);
+                    // The whole concatenation copied: it can be built in place.
+                    let whole = logic && soff == 0 && cnt == total;
                     // One block of planes into memory that is not a fresh temporary: written
                     // once after every piece is read, so a piece may be in `d` itself.
-                    let direct = logic
+                    let direct = whole
                         && total <= 64
-                        && self.regs[n as usize] == total
+                        && doff == 0
                         && split(d).0 != TEMP
-                        && t!(self.cat_block(d, total, self.regs[m.0 as usize], ps, scalars, bias));
+                        && t!(self.cat_block(d, total, mv, ps, scalars, bias));
                     if direct {
                         k += 3;
-                    } else {
-                        let a = t!(self.temp_alloc(size.into()));
-                        self.regs[tmp as usize] = a;
+                    } else if whole && total > 64 && self.cat_apart(d, doff, total, mv, ps, scalars)
+                    {
+                        // Wide: the pieces straight into the destination, no temporary and no
+                        // second copy.
                         t!(self.cat(
-                            a,
+                            d,
+                            doff,
                             self.regs[cn.0 as usize],
-                            self.regs[m.0 as usize],
+                            mv,
                             ps,
                             scalars,
                             bias,
                             logic,
                             w
                         ));
-                        t!(self.lcopy(d, 0, a, 0, self.regs[n as usize]));
+                        k += 3;
+                    } else {
+                        let size = if size & pre::SIZE_REG != 0 {
+                            self.regs[(size & !pre::SIZE_REG) as usize]
+                        } else {
+                            size.into()
+                        };
+                        let a = t!(self.temp_alloc(size));
+                        self.regs[tmp as usize] = a;
+                        t!(self.cat(
+                            a,
+                            0,
+                            self.regs[cn.0 as usize],
+                            mv,
+                            ps,
+                            scalars,
+                            bias,
+                            logic,
+                            w
+                        ));
+                        t!(self.lcopy(d, doff, a, soff, cnt));
                         k += 3;
                     }
                 }
@@ -6420,15 +6832,12 @@ impl Machine {
                     if cnt != 0 && cnt <= 64 && so % 64 + cnt <= 64 && d0 < 64 && d0 + cnt <= 64 {
                         let sa = t!(add_addr(self.regs[src as usize], so / 64 * 32));
                         if let Ok(b) = self.rd_hot(sa, 32) {
-                            let mut sw = [[0u64; 4]; 1];
-                            fill_blocks(b, &mut sw);
-                            let mut dw = [[0u64; 4]; 1];
-                            copy_bits(&sw, &mut dw, so % 64, d0, cnt);
+                            // The new block is zero but for the copied elements.
+                            let (s0, mask) =
+                                (so % 64, if cnt == 64 { !0 } else { (1u64 << cnt) - 1 });
                             let mut out = [0u8; 32];
-                            for (c, w) in
-                                out.as_chunks_mut::<8>().0.iter_mut().zip(dw.as_flattened())
-                            {
-                                *c = w.to_le_bytes();
+                            for (p, c) in out.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+                                *c = ((plane_word(b, p) >> s0 & mask) << d0).to_le_bytes();
                             }
                             self.regs[dst as usize] = t!(self.temp_push32(&out));
                             done = true;
@@ -6647,6 +7056,21 @@ impl Machine {
                 Op::CondBr { c, t, f: e } => {
                     go!(if self.regs[c as usize] != 0 { t } else { e });
                 }
+                Op::ZeroSlot { w, off, n } => {
+                    t!(self.op_zero_slot(top, w, off, n));
+                    k += 1;
+                }
+                Op::ZeroReadVec { dst, sig, off } => {
+                    k += t!(self.op_zero_read_vec(ctx.as_deref_mut(), top, dst, sig, off));
+                }
+                op @ (Op::ZeroCat { .. } | Op::ZeroLCopy { .. } | Op::ZeroCatLCopy { .. }) => {
+                    k += t!(self.op_zero_fill(f, code, k, op));
+                }
+                Op::SlotBr { dst, off, t, f: e } => {
+                    let v = slot8!(off);
+                    self.regs[dst as usize] = v;
+                    go!(if v != 0 { t } else { e });
+                }
             }
         }
     }
@@ -6783,6 +7207,180 @@ impl Machine {
                 .get(i)
                 .ok_or_else(|| ice_f!("no coverage counter {i}"))?
                 .fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
+    /// `Op::ZeroReadVec`: `AllocReadVec` into the block in the frame's slots at `off`. The number
+    /// of ops done.
+    #[inline(never)]
+    fn op_zero_read_vec(
+        &mut self,
+        ctx: Option<&mut Ctx<'_>>,
+        top: usize,
+        dst: u32,
+        sig: u32,
+        off: u32,
+    ) -> R<usize> {
+        if !self.is_multi(Reg(sig)) {
+            let (sr, ty) = self.sigref(Reg(sig))?;
+            if ty.elem == Elem::Logic
+                && sr.range.is_some_and(|r| (1..=64).contains(&r.len))
+                && let Some(c) = ctx
+            {
+                let mut buf = [0u8; 32];
+                c.read_into(sr, &mut buf).map_err(Fault::from)?;
+                let slots = if top == 0 {
+                    Some(&mut self.root[..])
+                } else {
+                    self.fslots_mut(top)
+                };
+                if let Some(b) = slots.and_then(|s| s.get_mut(off as usize..off as usize + 32)) {
+                    b.copy_from_slice(&buf);
+                    return Ok(2);
+                }
+            }
+        }
+        self.zero_at(dst, 32)?;
+        Ok(1)
+    }
+
+    /// The frame forms of `AllocCat`, `AllocLCopy` and `CatLCopy` (`Op::ZeroCat` and the others;
+    /// `Op::ZeroReadVec` is an arm of the loop): the block is the temporary in the frame the
+    /// register points to (its `ZeroSlot` is this op), so the fast paths write it in place and the
+    /// others zero it and go on with the next op. The number of ops done.
+    #[inline(never)]
+    fn op_zero_fill(&mut self, f: &Func, code: &pre::Code, k: usize, op: Op) -> R<usize> {
+        let put = |m: &mut Self, dst: u32, b: &[u8; 32]| -> R<usize> {
+            let a = m.regs[dst as usize];
+            match m.frame_bytes(a, 32) {
+                Some(d) => d.copy_from_slice(b),
+                None => m.wr(a, 32)?.copy_from_slice(b),
+            }
+            Ok(2)
+        };
+        let cat_at = |pc: u32| match f.code.get(pc as usize) {
+            Some(&Inst::Cat {
+                n,
+                m,
+                parts,
+                scalars,
+                bias,
+                logic,
+                w,
+                ..
+            }) => Ok((n, m, parts, scalars, bias, logic, w)),
+            _ => Err(ice_f!("pc {pc} is not a concatenation")),
+        };
+        let next = code.at.get(k + 1).copied().unwrap_or(0);
+        match op {
+            Op::ZeroCat { dst } => {
+                let (n, m, parts, scalars, bias, _, _) = cat_at(next)?;
+                let ps = f.regs(parts).ok_or_else(|| ice_s!("operand list"))?;
+                let (mv, total) = (
+                    self.regs[m.0 as usize],
+                    self.regs[n.0 as usize].wrapping_mul(self.regs[m.0 as usize]),
+                );
+                if total <= 64
+                    && let Some((words, mask, _)) = self.cat_words(total, mv, ps, scalars, bias)?
+                {
+                    let mut out = [0u8; 32];
+                    for (o, w) in out.as_chunks_mut::<8>().0.iter_mut().zip(words) {
+                        *o = (w & mask).to_le_bytes();
+                    }
+                    return put(self, dst, &out);
+                }
+                self.zero_at(dst, 32)?;
+            }
+            Op::ZeroLCopy {
+                dst,
+                doff,
+                src,
+                soff,
+                n,
+            } => {
+                let (cnt, so, d0) = (
+                    self.regs[n as usize],
+                    self.regs[soff as usize],
+                    self.regs[doff as usize],
+                );
+                // As `AllocLCopy`.
+                if cnt != 0 && cnt <= 64 && so % 64 + cnt <= 64 && d0 < 64 && d0 + cnt <= 64 {
+                    let sa = add_addr(self.regs[src as usize], so / 64 * 32)?;
+                    if let Ok(b) = self.rd_hot(sa, 32) {
+                        let (s0, mask) = (so % 64, if cnt == 64 { !0 } else { (1u64 << cnt) - 1 });
+                        let mut out = [0u8; 32];
+                        for (p, c) in out.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+                            *c = ((plane_word(b, p) >> s0 & mask) << d0).to_le_bytes();
+                        }
+                        return put(self, dst, &out);
+                    }
+                }
+                self.zero_at(dst, 32)?;
+            }
+            Op::ZeroCatLCopy { tmp, size, dst, n } => {
+                let (cn, m, parts, scalars, bias, logic, w) = cat_at(next)?;
+                let ps = f.regs(parts).ok_or_else(|| ice_s!("operand list"))?;
+                let d = self.regs[dst as usize];
+                let total = self.regs[cn.0 as usize].wrapping_mul(self.regs[m.0 as usize]);
+                // As `CatLCopy`: one block of planes written into `d` once every piece is read.
+                let direct = logic
+                    && total <= 64
+                    && self.regs[n as usize] == total
+                    && split(d).0 != TEMP
+                    && self.cat_block(d, total, self.regs[m.0 as usize], ps, scalars, bias)?;
+                if !direct {
+                    self.zero_at(tmp, size)?;
+                    let a = self.regs[tmp as usize];
+                    let (cnt, mv) = (self.regs[cn.0 as usize], self.regs[m.0 as usize]);
+                    self.cat(a, 0, cnt, mv, ps, scalars, bias, logic, w)?;
+                    self.lcopy(d, 0, a, 0, self.regs[n as usize])?;
+                }
+                return Ok(3);
+            }
+            _ => return Err(ice_s!("not a frame fill")),
+        }
+        Ok(1)
+    }
+
+    /// `Inst::Zero` of `n` bytes at the address in register `w`.
+    #[inline(never)]
+    fn zero_at(&mut self, w: u32, n: u32) -> R<()> {
+        let a = self.regs[w as usize];
+        match self.frame_bytes(a, n as usize) {
+            Some(d) => d.fill(0),
+            None => self.wr(a, n.into())?.fill(0),
+        }
+        Ok(())
+    }
+
+    /// The `n` bytes at `a` when they are in the slots of a frame (`None`: anywhere else, or
+    /// outside the slots, for the general path and its errors).
+    #[inline(always)]
+    fn frame_bytes(&mut self, a: u64, n: usize) -> Option<&mut [u8]> {
+        let (sp, i, off) = split(a);
+        if sp != FRAME {
+            return None;
+        }
+        let slots = if i == 0 {
+            Some(&mut self.root[..])
+        } else {
+            self.fslots_mut(i as usize)
+        };
+        slots?.get_mut(off as usize..(off as usize).checked_add(n)?)
+    }
+
+    /// `Op::ZeroSlot`: `n` bytes at `off` of the slots of frame `top` (its address in `w`).
+    #[inline(never)]
+    fn op_zero_slot(&mut self, top: usize, w: u32, off: u32, n: u32) -> R<()> {
+        let slots = if top == 0 {
+            Some(&mut self.root[..])
+        } else {
+            self.fslots_mut(top)
+        };
+        match slots.and_then(|s| s.get_mut(off as usize..(off as usize + n as usize))) {
+            Some(b) => b.fill(0),
+            None => self.zero_at(w, n)?,
         }
         Ok(())
     }
@@ -7497,8 +8095,21 @@ impl Machine {
     /// The length of the first dimension of the descriptor at `dope` (`pos_len`).
     #[inline(always)]
     fn dope_len_of(&self, dope: u64) -> Option<i64> {
+        let d = self.dim_of(dope, 0).ok()?;
+        Some(dim_len63(d).filter(|&n| n <= i64::MAX as u64)? as i64)
+    }
+
+    /// The position of index `i` in the first dimension of the descriptor at `dope` (`pos_len`
+    /// without the length, which a position does not depend on); `None` when the index is
+    /// outside the range or the descriptor cannot be read.
+    #[inline(always)]
+    fn pos_first(&self, dope: u64, i: i64) -> Option<i64> {
         let (l, rr, dir) = self.dim_of(dope, 0).ok()?;
-        Some(yavs_ir::dim_len(l, rr, dir == 1).filter(|&n| n <= i64::MAX as u64)? as i64)
+        match dir {
+            0 if l <= i && i <= rr => Some(i.wrapping_sub(l)),
+            1 if rr <= i && i <= l => Some(l.wrapping_sub(i)),
+            _ => None,
+        }
     }
 
     /// The position of index `i` in the first dimension of the descriptor at `dope` and its
@@ -7507,7 +8118,7 @@ impl Machine {
     #[inline(always)]
     fn pos_len(&self, dope: u64, i: i64) -> Option<(i64, i64)> {
         let (l, rr, dir) = self.dim_of(dope, 0).ok()?;
-        let n = yavs_ir::dim_len(l, rr, dir == 1).filter(|&n| n <= i64::MAX as u64)? as i64;
+        let n = dim_len63((l, rr, dir)).filter(|&n| n <= i64::MAX as u64)? as i64;
         let pos = match dir {
             0 if l <= i && i <= rr => i.wrapping_sub(l),
             1 if rr <= i && i <= l => l.wrapping_sub(i),
@@ -7697,6 +8308,7 @@ impl Machine {
         tf.nsigs = m.vc.nsigs as u64;
         tf.sigtab = m.vc.tier_sigs.as_ptr();
         tf.sigtab_len = m.vc.tier_sigs.len() as u64;
+        m.reserve_temp();
         tf.temp = m.temp.as_mut_ptr();
         tf.temp_len = m.temp.len() as u64;
         tf.temp_cap = m.temp.capacity().min(u32::MAX as usize) as u64;
@@ -7708,6 +8320,7 @@ impl Machine {
         tf.max_depth = m.vc.max_depth;
         tf.owner = m.vc.owner;
         m.tier_cov(tf);
+        tf.stop = c.interrupt_flags();
         // A process that is `hot` has no shared state (`sh`), which the call paths of a serial
         // process do not promise: its epoch and flags come from the heap and the frame alone.
         if m.hot {
@@ -7761,6 +8374,17 @@ impl Machine {
         tf.cov_len = cov.len() as u64;
     }
 
+    /// The temporary area has room for a statement's small allocations when compiled code takes
+    /// its view: the interpreter's fused ops (a waveform, a string) never grow it, so a
+    /// capacity of 0 made every `Alloc` of compiled code a step, or the end of a native frame.
+    #[inline(always)]
+    fn reserve_temp(&mut self) {
+        const TIER_TEMP: usize = 512;
+        if self.temp.capacity() < TIER_TEMP {
+            self.temp.reserve(TIER_TEMP - self.temp.len());
+        }
+    }
+
     /// Make `tf` the top frame's view (`TierFrame`).
     fn tier_view(&mut self, tf: &mut crate::TierFrame) {
         let top = self.frames.len() - 1;
@@ -7770,6 +8394,7 @@ impl Machine {
         tf.slots_len = slen as u64;
         tf.frame = top as u64;
         tf.frame_hi = u64::from(FRAME) << 29 | top as u64;
+        self.reserve_temp();
         tf.temp = self.temp.as_mut_ptr();
         tf.temp_len = self.temp.len() as u64;
         tf.temp_cap = self.temp.capacity().min(u32::MAX as usize) as u64;
@@ -8148,8 +8773,13 @@ impl Machine {
         dst: Option<Reg>,
         first: Option<u64>,
     ) -> R<()> {
+        let link = if pre.nested {
+            self.static_link(callee, None)?
+        } else {
+            None
+        };
         let caller = self.regs.base;
-        self.push_frame_lean(callee, func, pre, dst)?;
+        self.push_frame_lean(callee, func, pre, link, dst)?;
         let base = self.regs.base;
         let mut pro = pre.pro.iter();
         if let Some(h) = first
@@ -8328,6 +8958,33 @@ impl Machine {
             return Ok(0);
         }
         let dp = self.r(dope);
+        // Both ends inside the range and the slice in the array's direction: one look at the
+        // descriptor. Anything else is checked, and reported, by the general sequence.
+        if let Ok((dl, dr, dd)) = self.dim_of(dp, 0)
+            && dd == w as u64
+        {
+            let pos = |i: i64| match dd {
+                0 if dl <= i && i <= dr => Some(i.wrapping_sub(dl)),
+                1 if dr <= i && i <= dl => Some(dl.wrapping_sub(i)),
+                _ => None,
+            };
+            if let (Some(p), Some(_)) = (pos(l), pos(r)) {
+                return Ok(p as u64);
+            }
+        }
+        self.slice_pos_checked(dp, l, r, w, what, dir_what)
+    }
+
+    #[inline(never)]
+    fn slice_pos_checked(
+        &self,
+        dp: u64,
+        l: i64,
+        r: i64,
+        w: i64,
+        what: yavs_ir::CheckMsgId,
+        dir_what: yavs_ir::CheckMsgId,
+    ) -> R<u64> {
         let p = self.pos_of(dp, 0, l, what)?;
         self.pos_of(dp, 0, r, what)?;
         let (_, _, d) = self.dim_of(dp, 0)?;
@@ -8569,6 +9226,7 @@ impl Machine {
                 self.copy_mem(self.r(dst), self.r(src), self.r(bytes))?;
             }
             Inst::Fill { dst, elem, n, size } => self.fill(dst, elem, n, size)?,
+            Inst::Zero { addr, bytes } => self.wr(self.r(addr), u64::from(bytes))?.fill(0),
             Inst::Pos {
                 dst,
                 dope,
@@ -8784,6 +9442,7 @@ impl Machine {
                 let ps = f.regs(parts).ok_or_else(|| ice_s!("operand list"))?;
                 self.cat(
                     self.r(dst),
+                    0,
                     self.r(n),
                     self.r(m),
                     ps,
@@ -9074,9 +9733,28 @@ impl Machine {
             }
             Inst::WaitEdge { sig, kind } => self.wait_edge_inst(kind.code(), sig, ctx)?,
             Inst::SigLastValue { dst, sig } => {
-                let parts = self.sigparts(sig)?;
-                let v = self.read_parts(kc!(), &parts, true)?;
-                self.put_value(self.r(dst), &v)?;
+                // One element of a logic signal (`clk'last_value`): its code, as the block of
+                // planes of a one-element value, without building a `Value`.
+                let code = if self.is_multi(sig) {
+                    None
+                } else {
+                    let (sr, ty) = self.sigref(sig)?;
+                    if ty.elem == Elem::Logic {
+                        kc!().last_code(sr)?
+                    } else {
+                        None
+                    }
+                };
+                if let Some(code) = code {
+                    let out = self.wr(self.r(dst), 32)?;
+                    for (p, w) in out.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+                        *w = u64::from(code >> p & 1).to_le_bytes();
+                    }
+                } else {
+                    let parts = self.sigparts(sig)?;
+                    let v = self.read_parts(kc!(), &parts, true)?;
+                    self.put_value(self.r(dst), &v)?;
+                }
             }
             Inst::SigAttr { dst, kind, sig } => {
                 // Over several parts: any event or activity, the most recent one (LRM 16.2.4).
@@ -9451,32 +10129,36 @@ impl Host<'_, '_, '_> {
             };
             let lset = before(at, &|i| matches!(i, Inst::LSet { .. }))
                 .ok_or_else(|| ice_s!("a fused drive without its LSet"))?;
-            let (
-                Inst::LSet { base, v, .. },
-                Some(Inst::Alloc { size, .. }),
-                Some(Inst::Store { src, .. }),
-            ) = (
-                f.code[lset],
-                before(
-                    lset,
-                    &|i| matches!(i, Inst::Alloc { dst, .. } if *dst == wave),
-                )
-                .map(|p| f.code[p]),
-                before(
-                    lset,
-                    &|i| matches!(i, Inst::Store { addr, .. } if *addr == wave),
-                )
-                .map(|p| f.code[p]),
-            )
-            else {
-                return Err(ice_s!("a fused drive without its waveform"));
+            let Inst::LSet { base, v, idx } = f.code[lset] else {
+                return Err(ice_s!("a fused drive without its LSet"));
             };
             let u = |x: u32| u16::try_from(x).map_err(|_| ice_s!("a register beyond 65535"));
+            let head = before(
+                lset,
+                &|i| matches!(i, Inst::Alloc { dst, .. } | Inst::Zero { addr: dst, .. } if *dst == wave),
+            )
+            .ok_or_else(|| ice_s!("a fused drive without its waveform"))?;
+            let store = (head + 1..lset)
+                .find(|&p| matches!(f.code[p], Inst::Store { addr, .. } if addr == wave))
+                .map(|p| f.code[p]);
+            // In the frame the time register is the `Store`'s, or (none: the time is 0) the
+            // `LSet`'s index, which holds 0. Coupled to `pre::peephole`, which fuses only an
+            // `LSet` at the constant index 0: if that widens, this needs a zero register of its own.
+            let (size, time) = match (f.code[head], store) {
+                (Inst::Alloc { size, .. }, Some(Inst::Store { src, .. })) => (u(size.0)?, src),
+                (Inst::Zero { bytes, .. }, Some(Inst::Store { src, .. })) => {
+                    (pre::FRAME_WAVE | u(bytes)?, src)
+                }
+                (Inst::Zero { bytes, .. }, None) => (pre::FRAME_WAVE | u(bytes)?, idx),
+                _ => return Err(ice_s!("a fused drive without its waveform")),
+            };
             m.regs[t.0 as usize] = target[0];
             m.regs[t.0 as usize + 1] = target[1];
-            m.regs[src.0 as usize] = delay as u64;
+            if store.is_some() {
+                m.regs[time.0 as usize] = delay as u64;
+            }
             m.regs[v.0 as usize] = code;
-            m.waveform_head(u(size.0)?, u(src.0)?, u(wave.0)?, u(base.0)?)?;
+            m.waveform_head(size, u(time.0)?, u(wave.0)?, u(base.0)?)?;
             m.top().pc = lset as u32;
             m.replay_lset_drive(self.prog, f, lset as u32, m.frames.len() - 1, self.ctx)
         })();
@@ -9502,8 +10184,10 @@ impl crate::TierHost for Host<'_, '_, '_> {
         let Some(c) = self.ctx.as_deref() else {
             tf.sigtab_len = 0;
             tf.known = u64::MAX;
+            tf.stop = crate::NO_STOP.as_ptr();
             return;
         };
+        tf.stop = c.interrupt_flags();
         if m.vc.tier_sigs.len() != m.vc.nsigs {
             m.vc.tier_sigs = m
                 .inst
@@ -9822,6 +10506,96 @@ impl crate::TierHost for Host<'_, '_, '_> {
         c.assign_planes_now(d.id, Some(r), block)
     }
 
+    fn drive_try(
+        &mut self,
+        driver: u32,
+        target: [u64; 2],
+        delay: i64,
+        block: [u64; 4],
+        inertial: bool,
+    ) -> bool {
+        let m = &*self.m;
+        if target[1] == 0 || target[1] > 64 || target[0] >> 32 == MULTI {
+            return false;
+        }
+        let (Some(d), Some(s), Some(c)) = (
+            m.drivers.get(driver as usize),
+            m.inst.sigs.get((target[0] >> 32) as usize),
+            self.ctx.as_deref_mut(),
+        ) else {
+            return false;
+        };
+        let Ok(t) = to_time(delay) else {
+            return false;
+        };
+        let mode = if inertial {
+            DelayMode::INERTIAL
+        } else {
+            DelayMode::Transport
+        };
+        let r = Some(yavs_kernel::Range::new(
+            s.off + target[0] as u32,
+            target[1] as u32,
+        ));
+        if let Elem::Bytes(es) = s.ty.elem {
+            return target[1] == 1
+                && es <= 8
+                && c.assign_bytes(d.id, r, t, &block[0].to_le_bytes()[..es as usize], mode)
+                    .is_ok();
+        }
+        if s.ty.elem != Elem::Logic {
+            return false;
+        }
+        if target[1] == 1 {
+            let code =
+                (block[0] & 1) | (block[1] & 1) << 1 | (block[2] & 1) << 2 | (block[3] & 1) << 3;
+            return c.assign_code(d.id, r, t, code as u8, mode).is_ok();
+        }
+        let mask = yavs_logic::wide::nmask(target[1] as usize);
+        let mut bytes = [0u8; 32];
+        for (o, w) in bytes.as_chunks_mut::<8>().0.iter_mut().zip(block) {
+            *o = (w & mask).to_le_bytes();
+        }
+        c.assign_blocks(d.id, r, t, &bytes, mode).is_ok()
+    }
+
+    fn drive_wide_try(
+        &mut self,
+        driver: u32,
+        target: [u64; 2],
+        delay: i64,
+        planes: &[u8],
+        inertial: bool,
+    ) -> bool {
+        let m = &*self.m;
+        if target[1] <= 64
+            || target[0] >> 32 == MULTI
+            || planes.len() as u64 != target[1].div_ceil(64) * 32
+        {
+            return false;
+        }
+        let (Some(d), Some(s), Some(c)) = (
+            m.drivers.get(driver as usize),
+            m.inst.sigs.get((target[0] >> 32) as usize),
+            self.ctx.as_deref_mut(),
+        ) else {
+            return false;
+        };
+        let (Ok(t), true) = (to_time(delay), s.ty.elem == Elem::Logic) else {
+            return false;
+        };
+        let mode = if inertial {
+            DelayMode::INERTIAL
+        } else {
+            DelayMode::Transport
+        };
+        let r = Some(yavs_kernel::Range::new(
+            s.off + target[0] as u32,
+            target[1] as u32,
+        ));
+        c.assign_blocks(d.id, r, t, planes, mode).is_ok()
+    }
+
     fn drive_bit_now(&mut self, driver: u32, target: [u64; 2], code: u64) -> bool {
         if code > 8 || target[1] != 1 || target[0] >> 32 == MULTI {
             return false;
@@ -10102,7 +10876,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
             }) => match f.regs(parts) {
                 Some(ps) => {
                     let (d, n, mm) = (m.r(dst), m.r(n), m.r(mm));
-                    m.cat(d, n, mm, ps, scalars, bias, logic, w)
+                    m.cat(d, 0, n, mm, ps, scalars, bias, logic, w)
                 }
                 None => Err(ice_s!("operand list")),
             },

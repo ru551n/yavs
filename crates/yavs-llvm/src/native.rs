@@ -205,6 +205,26 @@ pub fn nat_inline(prog: &Program, f: &Func, i: &Inst) -> bool {
         // Read from the view's signal table; where that has no answer the frame is materialised
         // (`Gen::signal`).
         Inst::SigReadScalar { dst, sig } => fits(&[dst, sig, Reg(sig.0.saturating_add(1))]),
+        // The planes from the code bytes in place, else the kernel's blocks; where neither
+        // answers the frame is materialised (`Gen::sig_read_block`).
+        Inst::SigRead { dst, sig } => fits(&[dst, sig, Reg(sig.0.saturating_add(1))]),
+        // The kernel's answer for one waveform element; where it has none the frame is
+        // materialised (`Gen::drive_block`).
+        Inst::Drive {
+            target: Some(t),
+            wave,
+            n,
+            reject: None,
+            ..
+        } => fits(&[t, Reg(t.0.saturating_add(1)), wave, n]),
+        Inst::DriveSlot {
+            slot,
+            target,
+            wave,
+            n,
+            reject: None,
+            ..
+        } => fits(&[slot, target, Reg(target.0.saturating_add(1)), wave, n]),
         // Cold: leaving to the interpreter is what they do.
         Inst::Unreachable { .. } => true,
         _ => xstep_ok(f, i),

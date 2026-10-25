@@ -747,3 +747,130 @@ fn unchanged_direct_byte_assignments_keep_the_deltas() {
     assert!(off.iter().any(|l| l.contains("+1 NextCycle")), "{off:?}");
     assert_eq!(off, on);
 }
+
+/// Random zero-delay assignments of one process to one 100-element logic signal it alone drives:
+/// single elements, vectors of up to 64 elements and a vector of more than 64, in any order, with
+/// overlaps. The value the signal holds at each run is the one a model that applies the
+/// assignments one after the other (the last wins) gives, whichever of the direct entry kinds
+/// (`out`, `outv`) the assignments went to.
+fn mixed_entries(skip: bool, extra: u32, seed: u64) -> Vec<String> {
+    let mut b = Builder::new();
+    let s = b.signal(
+        "s",
+        SignalType::logic(100),
+        &LogicVec::new(100, StdULogic::Zero),
+    );
+    let d = b.driver(s);
+    // Many drivers make the process keep marks of its entries (`ProcState::marks`).
+    let pad = b.signal(
+        "pad",
+        SignalType::logic(extra.max(1)),
+        &LogicVec::new(extra.max(1) as usize, StdULogic::Zero),
+    );
+    let mut owned = vec![d];
+    owned.extend((0..extra).map(|i| b.driver(pad.slice(i, 1))));
+    let bad = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let bad2 = bad.clone();
+    let mut model = [ZERO; 100];
+    let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    let mut run = 0u32;
+    b.process(
+        "p",
+        NONE,
+        &owned,
+        p(move |c| {
+            run += 1;
+            let got: String = (0..100)
+                .map(|e| Ok(if c.elem_code(s, e)? == ONE { '1' } else { '0' }))
+                .collect::<Result<_, SimError>>()?;
+            let want: String = model
+                .iter()
+                .map(|&x| if x == ONE { '1' } else { '0' })
+                .collect();
+            if got != want {
+                bad2.lock()
+                    .unwrap()
+                    .push(format!("run {run}: {got} != {want}"));
+            }
+            let mut next = || {
+                rng = rng
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                rng >> 33
+            };
+            for _ in 0..2 + next() % 6 {
+                let r = next();
+                match r % 4 {
+                    0 | 1 => {
+                        // One element.
+                        let e = (next() % 100) as u32;
+                        let v = if next() & 1 == 1 { ONE } else { ZERO };
+                        c.assign_code(
+                            d,
+                            Some(Range::new(e, 1)),
+                            Time::ZERO,
+                            v,
+                            DelayMode::INERTIAL,
+                        )?;
+                        model[e as usize] = v;
+                    }
+                    k => {
+                        // A vector: up to 64 elements, or (k == 3) more.
+                        let len = if k == 3 {
+                            65 + (next() % 36) as u32
+                        } else {
+                            1 + (next() % 64) as u32
+                        };
+                        let off = (next() % u64::from(101 - len)) as u32;
+                        let bits = next() ^ next() << 20;
+                        let mut blocks = vec![0u8; (len as usize).div_ceil(64) * 32];
+                        for j in 0..len {
+                            let one = (bits.rotate_left(j) & 1 == 1) as u64;
+                            model[(off + j) as usize] = if one == 1 { ONE } else { ZERO };
+                            // Codes of '0' and '1' in the four planes.
+                            let code = u64::from(if one == 1 { ONE } else { ZERO });
+                            for plane in 0..4 {
+                                let w = (j as usize / 64) * 32 + plane * 8;
+                                let mut x =
+                                    u64::from_le_bytes(blocks[w..w + 8].try_into().unwrap());
+                                x |= (code >> plane & 1) << (j % 64);
+                                blocks[w..w + 8].copy_from_slice(&x.to_le_bytes());
+                            }
+                        }
+                        c.assign_blocks(
+                            d,
+                            Some(Range::new(off, len)),
+                            Time::ZERO,
+                            &blocks,
+                            DelayMode::INERTIAL,
+                        )?;
+                    }
+                }
+            }
+            c.wait_for(ns(1))
+        }),
+    );
+    let (mut sim, _trace) = build(
+        b,
+        Config {
+            skip_unchanged: skip,
+            ..Config::default()
+        },
+    );
+    sim.run_until(ns(400)).unwrap();
+    bad.lock().unwrap().clone()
+}
+
+#[test]
+fn mixed_direct_entry_kinds_apply_in_assignment_order() {
+    for seed in 0..16 {
+        for (skip, extra) in [(false, 0), (true, 0), (false, 6), (true, 6)] {
+            let bad = mixed_entries(skip, extra, seed);
+            assert!(
+                bad.is_empty(),
+                "seed {seed} skip {skip} extra {extra}: {:?}",
+                &bad[..bad.len().min(3)]
+            );
+        }
+    }
+}

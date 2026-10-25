@@ -251,10 +251,18 @@ yavs analyze --std=FILE_STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=alwa
   and `--std`. They are analyzed in the given order by one analysis session: each
   file is parsed once and sees the units of the files before it, even before the
   index is read again. The work library's exclusive lock is held for the
-  whole call, and each successful file is recorded (its record and the index are renamed into place) as
-  soon as it is done (visible to readers at once; they are renamed into place without an fsync, so a power loss may lose the last call's files, which the next `analyze` records again), so concurrent calls into the same library serialize per
-  call and never lose each other's files. A call reads the index and writes the records and the index of its
-  own files, not the whole library.
+  whole call, and each successful file's record is renamed into place as soon as it is done; the index is
+  written once, at the end of the call and after a failure (#747: one write for the batch, not one per
+  file; a reader waits for the lock, so it sees the library as it was before the call or after it, and a
+  call killed half way records none of its files, which the next `analyze` redoes from the analysed-unit
+  entries it made). Nothing is fsynced, so a power loss may lose the last call's files, which the next
+  `analyze` records again. Concurrent calls into the same library serialize per call and never lose each
+  other's files. A call reads the index and writes the records of its own files and the index once, not
+  the whole library file by file.
+- Integrations pass the consecutive files of one library and standard in one call by default (user decision
+  2026-10-25, #745: fewer process starts and one loaded index; cold analysis of the verification libraries
+  costs 26 to 50 percent fewer user instructions and about 85 percent fewer kernel instructions); where each
+  file's own result is needed, a failing call is repeated file by file.
 - Exit 0: every file was analyzed and recorded in the work library. Warnings go
   to stderr/stdout and do not change the exit code (unless `-Werror`).
 - Exit 1: a file has errors. The call stops at the first failing file (fail
@@ -466,6 +474,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   an `output` event of category `stderr`. Processes run on one thread (`--threads` above 1 is
   warning `W0109`), so stops are deterministic. The exit status is the run's (below), sent as
   the `exited` event before `terminated`; a disconnect before the end stops the run (exit 1).
+  `YAVS_COUNTERS` prints the run's work counters on stderr when the session ends, as without `--dap`.
   `--wave` and `--vhpi` work with `--dap` (the waveform file is flushed at every stop and finished before `exited`; a
   plugin's own prints go to stdout, so use a port with `--vhpi`); `--cov` with `--dap` is
   `E9999` not implemented (exit 2). A port that cannot be opened is `E0701` (exit 2). Custom requests, served while stopped: `yavs/runFor` and

@@ -184,6 +184,50 @@ fn editing_a_dependency_invalidates_its_dependents() {
     assert!(r.stdout.contains("K=3 M=4 f=12"), "{r:?}");
 }
 
+/// One call with a dependency and its dependents, the dependency edited since the library was made:
+/// the entries the call read before the edit's file is analysed again are not used for the files
+/// after it (the session keeps the entries it read, #748), and the files before a failing one stay
+/// recorded (the index is written once, after the failure, #747).
+#[test]
+fn a_batch_after_an_edit_reads_nothing_stale_and_records_what_it_did() {
+    let e = Env::new("units_batch_edit");
+    let all = e.abs(&ALL);
+    let all: Vec<&str> = all.iter().map(String::as_str).collect();
+    let work = e.lib("work");
+    let call = |files: &[&str]| {
+        let mut a = vec!["analyze", "--work", work.as_str()];
+        a.extend_from_slice(files);
+        e.yavs(&a)
+    };
+    let cold = call(&all);
+    assert_eq!(cold.code, 0, "{cold:?}");
+    let warm = call(&all);
+    assert_eq!(warm.notes("verified work.m "), 1, "{warm:?}");
+    std::fs::write(e.tmp.join("pkg.vhd"), PKG.replace(":= 7", ":= 9")).expect("write");
+    let edited = call(&all);
+    assert_eq!(edited.code, 0, "{edited:?}");
+    assert_eq!(edited.notes("verified work.m "), 0, "{edited:?}");
+    assert_eq!(edited.notes("hit work.m"), 0, "{edited:?}");
+    let r = e.run(&[]);
+    assert!(r.stdout.contains("K=9 M=10 f=36"), "{r:?}");
+    // A failing second file: the first stays recorded.
+    let fresh = Env::new("units_batch_fail");
+    std::fs::write(fresh.tmp.join("bad.vhd"), "entity broken is\n").expect("write");
+    let files = fresh.abs(&["pkg.vhd", "bad.vhd", "mid.vhd"]);
+    let files: Vec<&str> = files.iter().map(String::as_str).collect();
+    let work = fresh.lib("work");
+    let mut a = vec!["analyze", "--work", work.as_str()];
+    a.extend_from_slice(&files);
+    let o = fresh.yavs(&a);
+    assert_eq!(o.code, 1, "{o:?}");
+    let index =
+        std::fs::read_to_string(fresh.tmp.join("work").join("yavs-lib.toml")).expect("index");
+    assert!(
+        index.contains("pkg.vhd") && !index.contains("mid.vhd"),
+        "{index}"
+    );
+}
+
 impl Env {
     /// The files by absolute path, as integrations pass them (a dependency is found by the path the
     /// manifest records).

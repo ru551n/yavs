@@ -297,7 +297,8 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
             };
             // The file was readable or analysis would have failed.
             let hash = hash.unwrap_or_default();
-            if let Err(d) = session.record_stamped(std_name, Path::new(file), &hash, stamp, records)
+            if let Err(d) =
+                session.record_deferred(std_name, Path::new(file), &hash, stamp, records)
             {
                 out.emit(&none, &d);
                 return Some(i);
@@ -315,6 +316,18 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
         }
         None
     }));
+    // The index of the library, written once for the batch (#747): after a failure too, so that the
+    // files before the failing one stay recorded.
+    let flushed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| session.flush()));
+    match &flushed {
+        Ok(Err(d)) => out.emit(&none, d),
+        Err(_) => out.emit(
+            &none,
+            &Diagnostic::error("E9999", "internal compiler error: this is a bug in yavs")
+                .with_note("panicked while writing the library index"),
+        ),
+        Ok(Ok(())) => {}
+    }
     let failed = match run {
         Err(p) => {
             let msg = p
@@ -339,6 +352,9 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
     };
     if let Some(i) = failed {
         note_batch(&a.files, i, &done.borrow());
+        return out.finish(1);
+    }
+    if !matches!(flushed, Ok(Ok(()))) {
         return out.finish(1);
     }
     // The process exits now: the lock goes with it, and freeing the session's copy of the manifest

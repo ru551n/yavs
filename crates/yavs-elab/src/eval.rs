@@ -609,8 +609,28 @@ impl Model {
                 attr: attr @ (PredefAttr::PathName | PredefAttr::InstanceName),
                 prefix: AttrPrefix::Entity(d),
                 ..
-            } if let (Some(s), DeclKind::Unit(_)) = (scope, &db.decls[*d].kind) => {
-                let i = self.hier.instance_of(s);
+            } if let (Some(s), DeclKind::Unit(_) | DeclKind::Label(_)) =
+                (scope, &db.decls[*d].kind) =>
+            {
+                // An instance label is defined in the generic map of its own
+                // instantiation (LRM 16.2.5): it names the instance whose generics
+                // are being bound (`actual_of`), not the parent the actual is
+                // evaluated in. Another label's name is not known yet (#619).
+                let i = if matches!(db.decls[*d].kind, DeclKind::Label(_)) {
+                    match self.actual_of {
+                        Some(i) if db.decls[*d].name.key() == self.hier.scope(i).name.key => i,
+                        _ => {
+                            return Err(err(
+                                codes::NOT_EVALUATED,
+                                ex.span,
+                                "the name of another instance is not known during elaboration yet",
+                                "here",
+                            ));
+                        }
+                    }
+                } else {
+                    self.hier.instance_of(s)
+                };
                 let text = if *attr == PredefAttr::InstanceName {
                     self.hier.instance_name(i, db, crate::Case::Lrm)
                 } else {
@@ -664,6 +684,15 @@ impl Model {
                 });
             }
             _ => {}
+        }
+        // `now` is 0 fs during elaboration, as without a kernel (decisions.md
+        // "Elaboration-time calls"): a constant that bounds a subtype may read it (#620).
+        if let ExprKind::Call { callee, .. } = &ex.kind
+            && let Some(sp) = db.decls[*callee].kind.subprogram()
+            && let yavs_sem::decl::Body::Native(sym) = &sp.body
+            && sym.as_str().starts_with("yavs.standard.now.")
+        {
+            return Ok(Val::Phys(0));
         }
         if let ExprKind::Call {
             callee,

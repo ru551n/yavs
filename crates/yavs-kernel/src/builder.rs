@@ -669,7 +669,6 @@ impl Builder {
                 idle_win: 0,
                 idle_hits: 0,
                 idle_static: false,
-                armed: true,
                 idle_state: 0,
                 shadow: false,
             });

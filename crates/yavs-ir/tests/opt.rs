@@ -475,41 +475,163 @@ fn a_slot_whose_address_is_passed_stays_in_memory() {
     assert!(loads >= 1 && stores >= 3, "{loads} loads {stores} stores");
 }
 
+/// A statement that makes a temporary: `Alloc` of 8 bytes and a store into it.
+fn make_temporary(fb: &mut FuncBuilder<'_>) {
+    fb.stmt(StmtKind::VarAssign, sp());
+    let n = fb.int(8);
+    let a = fb.reg(RegTy::Ptr);
+    fb.emit(Inst::Alloc { dst: a, size: n });
+    fb.emit(Inst::Store {
+        addr: a,
+        src: n,
+        w: Width::B8,
+    });
+}
+
 #[test]
-fn a_marker_survives_only_for_a_statement_with_temporaries() {
+fn a_marker_survives_only_where_it_frees_a_temporary() {
     if !on() {
         return;
     }
     let code = build(FuncKind::Function, |fb| {
-        fb.slot(16, 8);
-        fb.stmt(StmtKind::VarAssign, sp());
-        pin(fb, 0);
-        let x = load(fb, 0);
-        let one = fb.int(1);
-        let y = bin(fb, IntOp::Add, x, one);
-        // The second statement allocates a temporary: its marker frees the first one's.
-        fb.stmt(StmtKind::VarAssign, sp());
-        let n = fb.int(8);
-        let a = fb.reg(RegTy::Ptr);
-        fb.emit(Inst::Alloc { dst: a, size: n });
-        fb.emit(Inst::Store {
-            addr: a,
-            src: y,
-            w: Width::B8,
-        });
+        // Nothing before the first statement, so no marker; the second statement's marker frees
+        // the first one's temporary; the last statement makes none.
+        make_temporary(fb);
+        make_temporary(fb);
         fb.stmt(StmtKind::Return, sp());
-        let z = bin(fb, IntOp::Add, y, one);
+        let z = fb.int(0);
         fb.emit(Inst::Ret { v: Some(z) });
     });
     assert_eq!(count(&code, |i| matches!(i, Inst::Stmt)), 1, "{code:?}");
-    let alloc = code
+    let (first, second) = {
+        let mut at = code
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| matches!(i, Inst::Alloc { .. }))
+            .map(|(k, _)| k);
+        (at.next().expect("alloc"), at.next().expect("alloc"))
+    };
+    let stmt = code
         .iter()
-        .position(|i| matches!(i, Inst::Alloc { .. }))
-        .expect("alloc");
-    assert!(
-        code[..alloc].iter().any(|i| matches!(i, Inst::Stmt)),
-        "{code:?}"
+        .position(|i| matches!(i, Inst::Stmt))
+        .expect("marker");
+    assert!(first < stmt && stmt < second, "{code:?}");
+}
+
+#[test]
+fn a_loop_keeps_the_marker_that_frees_its_temporaries() {
+    if !on() {
+        return;
+    }
+    // The temporary of the body is freed by the marker at its start on the next round.
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(16, 8);
+        fb.stmt(StmtKind::VarAssign, sp());
+        pin(fb, 0);
+        let (head, done) = (fb.block(), fb.block());
+        fb.emit(Inst::Br { to: head });
+        fb.at(head);
+        make_temporary(fb);
+        let c = load(fb, 0);
+        fb.emit(Inst::CondBr {
+            c,
+            t: head,
+            f: done,
+        });
+        fb.at(done);
+        let z = fb.int(0);
+        fb.emit(Inst::Ret { v: Some(z) });
+    });
+    assert_eq!(count(&code, |i| matches!(i, Inst::Stmt)), 1, "{code:?}");
+}
+
+/// `f` calls `g` (which returns a register of type `res` and allocates nothing) in a statement
+/// of its own between two statements that make a temporary; the markers left in `f`.
+fn markers_around_a_call(res: RegTy) -> usize {
+    let mut pb = ProgramBuilder::new();
+    let g = pb.declare("g", FuncKind::Function, None);
+    let f = pb.declare("f", FuncKind::Function, None);
+    let mut gb = pb.define(g);
+    gb.slot(16, 8);
+    gb.stmt(StmtKind::Return, sp());
+    let r = gb.reg(res);
+    if res == RegTy::Ptr {
+        gb.emit(Inst::AddrOf {
+            dst: r,
+            space: AddrSpace::Frame,
+            off: 0,
+        });
+    } else {
+        gb.emit(Inst::Const { dst: r, v: 7 });
+    }
+    gb.emit(Inst::Ret { v: Some(r) });
+    gb.finish();
+    let mut fb = pb.define(f);
+    make_temporary(&mut fb);
+    fb.stmt(StmtKind::VarAssign, sp());
+    let args = fb.regs(&[]);
+    let d = fb.reg(res);
+    fb.emit(Inst::Call {
+        func: g,
+        args,
+        dst: Some(d),
+    });
+    make_temporary(&mut fb);
+    fb.stmt(StmtKind::Return, sp());
+    let z = fb.int(0);
+    fb.emit(Inst::Ret { v: Some(z) });
+    fb.finish();
+    let p = pb.finish().expect("verifies");
+    count(&p.func(f).expect("f").code, |i| matches!(i, Inst::Stmt))
+}
+
+#[test]
+fn a_call_that_leaves_no_temporaries_needs_no_marker() {
+    if !on() {
+        return;
+    }
+    // A scalar result of a function that allocates nothing: the one marker left is the second
+    // temporary's, which frees the first. An address result may be a composite the callee built
+    // in the caller's temporaries: the call's own statement keeps its marker too.
+    assert_eq!(markers_around_a_call(RegTy::I64), 1);
+    assert!(markers_around_a_call(RegTy::Ptr) > 1);
+}
+
+/// A statement calling the native `symbol` (a scalar result) between two that make a temporary:
+/// the markers left.
+fn markers_around_a_native(symbol: &str, nargs: usize) -> usize {
+    let code = build(FuncKind::Procedure, |fb| {
+        make_temporary(fb);
+        fb.stmt(StmtKind::VarAssign, sp());
+        let native = fb.program().native(symbol, None);
+        let regs: Vec<Reg> = (0..nargs).map(|i| fb.int(i as i64)).collect();
+        let args = fb.regs(&regs);
+        let dst = fb.reg(RegTy::I64);
+        fb.emit(Inst::CallNative {
+            native,
+            args,
+            dst: Some(dst),
+        });
+        make_temporary(fb);
+        fb.stmt(StmtKind::Return, sp());
+        fb.emit(Inst::Ret { v: None });
+    });
+    count(&code, |i| matches!(i, Inst::Stmt))
+}
+
+#[test]
+fn a_native_that_may_hand_the_call_back_keeps_its_marker() {
+    if !on() {
+        return;
+    }
+    // The call of a native with a scalar result makes no temporary, except an `ieee` one that
+    // can give the call back to its VHDL body (it builds descriptors for its array arguments).
+    assert_eq!(markers_around_a_native("yavs.implicit.eq.integer", 2), 1);
+    assert_eq!(
+        markers_around_a_native("yavs.ieee.numeric_std.to_integer(unsigned)integer", 4),
+        1
     );
+    assert!(markers_around_a_native("yavs.ieee.numeric_std.to_integer(unsigned)integer@9", 4) > 1);
 }
 
 #[test]
@@ -531,21 +653,12 @@ fn a_statement_that_only_reads_signals_needs_no_marker() {
             let d = fb.reg(RegTy::I64);
             fb.emit(Inst::SigReadScalar { dst: d, sig: s });
         }
-        // The last statement allocates a temporary: its marker stays.
-        fb.stmt(StmtKind::VarAssign, sp());
-        let n = fb.int(8);
-        let a = fb.reg(RegTy::Ptr);
-        fb.emit(Inst::Alloc { dst: a, size: n });
-        let z = fb.int(0);
-        fb.emit(Inst::Store {
-            addr: a,
-            src: z,
-            w: Width::B8,
-        });
+        // The last statement allocates a temporary: nothing before it left one to free.
+        make_temporary(fb);
         fb.stmt(StmtKind::Return, sp());
         fb.emit(Inst::Ret { v: None });
     });
-    assert_eq!(count(&code, |i| matches!(i, Inst::Stmt)), 1, "{code:?}");
+    assert_eq!(count(&code, |i| matches!(i, Inst::Stmt)), 0, "{code:?}");
 }
 
 #[test]

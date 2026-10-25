@@ -104,7 +104,7 @@ pub struct Jit {
     deopt_slots: ClifId,
     deopt_end: ClifId,
     /// The kernel-facing callbacks of `rt.rs`, in the order of `KERNEL`.
-    kernel: [ClifId; 14],
+    kernel: [ClifId; 15],
     tables: HashMap<Vec<u8>, DataId>,
     sig: Signature,
     /// Calls between compiled functions without a frame in the interpreter (`NatInfo`) and
@@ -222,6 +222,7 @@ impl Jit {
             (XSTEP, yavs_rt_xstep as *const u8),
             (MEMO, yavs_rt_memo as *const u8),
             (MEMO_KEEP, yavs_rt_memo_keep as *const u8),
+            (DRIVE_NAT, yavs_rt_drive_nat as *const u8),
         ] {
             b.symbol(n, p);
         }
@@ -277,6 +278,7 @@ impl Jit {
             )?,
             imp(MEMO, &[I64, I64, I32, I64, I32, I64, I64], Some(I32))?,
             imp(MEMO_KEEP, &[I64, I64, I32, I64, I32, I64, I64], Some(I32))?,
+            imp(DRIVE_NAT, &[I64, I32, I64, I64, I64, I32], Some(I32))?,
         ];
         let mut sig = module.make_signature();
         sig.params.extend([AbiParam::new(I64); 3]);
@@ -669,6 +671,9 @@ impl Jit {
             memo_keep: self
                 .module
                 .declare_func_in_func(self.kernel[13], &mut ctx.func),
+            drive_nat: self
+                .module
+                .declare_func_in_func(self.kernel[14], &mut ctx.func),
             tables: tabs,
             consts: cons,
             natives,
@@ -847,6 +852,9 @@ struct Imports {
     /// `yavs_rt_memo` and `yavs_rt_memo_keep`: the memo of pure calls.
     memo: FuncRef,
     memo_keep: FuncRef,
+    /// `yavs_rt_drive_nat(env, driver, lo, len, wave, flags) -> u32`: `drive` for a native frame,
+    /// 0 when nothing was done (no frame view).
+    drive_nat: FuncRef,
     tables: HashMap<Vec<u8>, GlobalValue>,
     /// Copies of the constants (up to 4 KiB of bytes) the function takes the address of, which
     /// never change: reads of them need no lookup.
@@ -1378,6 +1386,16 @@ fn gen_func(
     // The scalar logic assignments the interpreter runs as one op (their waveform is not made here
     // either) and the waits that name the same signals every time (`yavs_rt_wait_same`).
     let kernel_facing = !native && f.kind == FuncKind::Process;
+    // The jumps back that poll the stop request (#737), see `Inst::Br`.
+    let backs: HashSet<u32> = if kernel_facing && !f.flags.contains(yavs_ir::FuncFlags::MAY_SUSPEND)
+    {
+        yavs_interp::retreating_brs(prog, f)
+            .into_iter()
+            .map(|(br, _)| br)
+            .collect()
+    } else {
+        HashSet::new()
+    };
     let static_wait = if kernel_facing {
         yavs_interp::static_wait(prog, f, 1)
     } else {
@@ -1390,7 +1408,12 @@ fn gen_func(
     };
     let skipped: HashSet<u32> = scalar_drives
         .iter()
-        .flat_map(|d| [d.alloc, d.store, d.index, d.lset])
+        .flat_map(|d| {
+            d.head
+                .into_iter()
+                .chain([d.lset])
+                .filter(|&p| p != u32::MAX)
+        })
         .collect();
     let always: Vec<usize> = (0..base_known.len())
         .filter(|&r| base_known[r].is_some())
@@ -1927,6 +1950,15 @@ fn gen_func(
                 g.b.ins().call(g.imp.mov, &[pd, ps, n]);
                 g.join(join);
             }
+            // The zeroing of a temporary the optimiser keeps in a process frame (#668).
+            Inst::Zero { addr, bytes } => {
+                let (slow, join) = g.slow_path(pc, &inst);
+                let n = u64::from(bytes);
+                let a = g.ld(addr);
+                let p = g.host(a, Some(addr), Op::C(0), Op::C(n), true, slow);
+                g.zero_range(p, 0, n);
+                g.join(join);
+            }
             Inst::DopeLen { dst, dope, dim } => {
                 let (slow, join) = g.slow_path(pc, &inst);
                 let d = g.ld(dope);
@@ -2347,6 +2379,15 @@ fn gen_func(
             }
             Inst::Br { to } => {
                 let tb = block_bb(to)?;
+                // A process that never suspends polls the stop request (Ctrl-C) at every jump
+                // back and leaves at this `Br`, whose step suspends it, as the interpreter does
+                // (#737): only the retreating `Br`s that jump back in the code.
+                if backs.contains(&pc) && f.blocks.get(to).is_some_and(|b| b.start <= pc) {
+                    let p = g.mem_ld(MEM_STOP);
+                    let byte = g.b.ins().load(I8, MemFlagsData::trusted(), p, 0);
+                    let hit = g.b.ins().band_imm_s(byte, i64::from(yavs_interp::STOP_BIT));
+                    g.exit_if(hit, pc);
+                }
                 g.b.ins().jump(tb, &[]);
                 open = false;
             }
@@ -2385,7 +2426,15 @@ fn gen_func(
                 n,
                 mode,
                 reject: None,
-            } if g.nat.is_none() => g.drive_block(pc, driver, t, wave, n, mode),
+            } => g.drive_block(pc, Ok(driver), t, wave, n, mode),
+            Inst::DriveSlot {
+                slot,
+                target,
+                wave,
+                n,
+                mode,
+                reject: None,
+            } => g.drive_block(pc, Err(slot), target, wave, n, mode),
             Inst::WaitOn { sig }
                 if g.nat.is_none() && matches!(f.code.get(i + 1), Some(Inst::Suspend { .. })) =>
             {
@@ -4813,14 +4862,16 @@ impl Gen<'_> {
     /// builds the planes eight codes at a time, else `yavs_rt_codes`), more from the kernel's
     /// plane blocks (`yavs_rt_planes`); anything else through `TierHost::signal`.
     fn sig_read(&mut self, pc: u32, dst: Reg, sig: Reg) {
-        if self.no_native() {
-            return;
-        }
         let known = self.kint(Reg(sig.0 + 1));
         if let Some(l) = known
             && !(1..=i64::from(u32::MAX)).contains(&l)
         {
-            self.signal(pc, 0);
+            // (A native frame is materialised: the interpreter reads it, as `slow` does.)
+            if self.nat.is_some() {
+                self.deopt_here(pc);
+            } else {
+                self.signal(pc, 0);
+            }
             return;
         }
         let (slow, join) = self.slow_signal(pc, 0);
@@ -4871,19 +4922,29 @@ impl Gen<'_> {
     fn drive_block(
         &mut self,
         pc: u32,
-        driver: u32,
+        driver: Result<u32, Reg>,
         target: Reg,
         wave: Reg,
         n: Reg,
         mode: yavs_ir::DriveMode,
     ) {
-        if self.no_native() {
-            return;
-        }
         let (slow, join) = self.slow_signal(pc, 0);
         let nv = self.ld(n);
         let one = self.b.ins().icmp_imm_s(IntCC::Equal, nv, 1);
         self.guard(one, slow);
+        // A slot register: the driver index of the process (a `DriveSlot`).
+        let drv = match driver {
+            Ok(d) => self.c32(d),
+            Err(slot) => {
+                let v = self.ld(slot);
+                let fits =
+                    self.b
+                        .ins()
+                        .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, v, i64::from(u32::MAX));
+                self.guard(fits, slow);
+                self.b.ins().ireduce(I32, v)
+            }
+        };
         // A waveform element of 16 bytes (time and cell) for a signal of integer, enumeration or
         // real elements, 40 (time and the first plane block) for a logic one, 8 and a block of
         // planes per 64 elements beyond 64.
@@ -4919,8 +4980,21 @@ impl Gen<'_> {
         let w4 = self.b.ins().select(wnb, c4, c0);
         let fl = self.b.ins().bor(b2, w4);
         let flags = self.b.ins().bor(fl, cm);
-        let (pcv, drv) = (self.c32(pc), self.c32(driver));
         let (lo, len) = (self.ld(target), self.ld(Reg(target.0 + 1)));
+        if self.nat.is_some() {
+            // A native frame has no frame view: the kernel's answer or the materialised frames,
+            // whose interpreter runs the `Drive` (and reports its error).
+            let call = self
+                .b
+                .ins()
+                .call(self.imp.drive_nat, &[self.env, drv, lo, len, w, flags]);
+            let r = self.b.inst_results(call)[0];
+            let done = self.b.ins().icmp_imm_s(IntCC::NotEqual, r, 0);
+            self.guard(done, slow);
+            self.join(join);
+            return;
+        }
+        let pcv = self.c32(pc);
         self.call_go(self.imp.drive, &[pcv, drv, lo, len, w, flags], false);
         self.join(join);
     }

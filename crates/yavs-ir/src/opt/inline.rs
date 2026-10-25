@@ -140,6 +140,12 @@ fn forwarder(
 
 fn make(prog: &crate::Program, callee: FuncId, level: u8, wide: bool) -> Option<Forwarder> {
     let raw = prog.funcs.get(callee)?;
+    if let Some(t) = prog.tabs.get(&callee.0)
+        && crate::casetab::enabled()
+        && !raw.flags.contains(crate::FuncFlags::HAS_COVER)
+    {
+        return tab_forwarder(prog, callee, t);
+    }
     // Cheap exits before optimising a function: not a small subprogram of the plain kind.
     if !matches!(raw.kind, FuncKind::Function | FuncKind::Procedure)
         || raw.nested
@@ -312,6 +318,203 @@ fn make(prog: &crate::Program, callee: FuncId, level: u8, wide: bool) -> Option<
         reg_ty,
         via_nodes: c.via_nodes.clone(),
         params,
+        defs,
+    })
+}
+
+/// The forwarder of a function with a result table (`casetab.rs`): when the argument is a
+/// value the table holds, the result is read from it (an array result as the fat pair the
+/// function builds, its data in the pool), else the function is called as before.
+fn tab_forwarder(prog: &crate::Program, callee: FuncId, t: &crate::CaseTab) -> Option<Forwarder> {
+    use crate::{IntOp, Regs};
+    let loc = *prog.funcs.get(callee)?.full().loc.first()?;
+    let mut reg_ty: Vec<RegTy> = vec![RegTy::I64];
+    let mut fresh = |ty: RegTy| {
+        reg_ty.push(ty);
+        Reg(reg_ty.len() as u32 - 1)
+    };
+    let p = Reg(0);
+    let (lo, hi) = (fresh(RegTy::I64), fresh(RegTy::I64));
+    let (c1, c2, ok, k) = (
+        fresh(RegTy::I64),
+        fresh(RegTy::I64),
+        fresh(RegTy::I64),
+        fresh(RegTy::I64),
+    );
+    let hit_to = BlockId(2);
+    let miss = BlockId(3);
+    let b0 = if t.whole {
+        vec![
+            Inst::Const { dst: lo, v: t.lo },
+            Inst::Br { to: BlockId(1) },
+        ]
+    } else {
+        vec![
+            Inst::Const { dst: lo, v: t.lo },
+            Inst::Const {
+                dst: hi,
+                v: t.lo + i64::from(t.n) - 1,
+            },
+            Inst::Cmp {
+                op: CmpOp::Ge,
+                dst: c1,
+                a: p,
+                b: lo,
+            },
+            Inst::Cmp {
+                op: CmpOp::Le,
+                dst: c2,
+                a: p,
+                b: hi,
+            },
+            Inst::Bool {
+                op: BoolOp::And,
+                dst: ok,
+                a: c1,
+                b: c2,
+            },
+            Inst::CondBr {
+                c: ok,
+                t: BlockId(1),
+                f: miss,
+            },
+        ]
+    };
+    let mut b1 = vec![Inst::Bin {
+        op: IntOp::Sub,
+        dst: k,
+        a: p,
+        b: lo,
+    }];
+    if let Some(v) = t.valid {
+        let (vt, vp, vv, one) = (
+            fresh(RegTy::Ptr),
+            fresh(RegTy::Ptr),
+            fresh(RegTy::I64),
+            fresh(RegTy::I64),
+        );
+        let _ = one;
+        b1.extend([
+            Inst::AddrOf {
+                dst: vt,
+                space: AddrSpace::Const(v),
+                off: 0,
+            },
+            Inst::Index {
+                dst: vp,
+                base: vt,
+                pos: k,
+                stride: 1,
+            },
+            Inst::Load {
+                dst: vv,
+                addr: vp,
+                w: Width::B1,
+            },
+            Inst::CondBr {
+                c: vv,
+                t: hit_to,
+                f: miss,
+            },
+        ]);
+    } else {
+        b1.push(Inst::Br { to: hit_to });
+    }
+    let (tb, tp) = (fresh(RegTy::Ptr), fresh(RegTy::Ptr));
+    let mut b2 = vec![
+        Inst::AddrOf {
+            dst: tb,
+            space: AddrSpace::Const(t.table),
+            off: 0,
+        },
+        Inst::Index {
+            dst: tp,
+            base: tb,
+            pos: k,
+            stride: t.stride,
+        },
+    ];
+    let res;
+    if let Some(d) = t.desc {
+        let (dd, c16, pr, c8, q) = (
+            fresh(RegTy::Ptr),
+            fresh(RegTy::I64),
+            fresh(RegTy::Ptr),
+            fresh(RegTy::I64),
+            fresh(RegTy::Ptr),
+        );
+        b2.extend([
+            Inst::AddrOf {
+                dst: dd,
+                space: AddrSpace::Const(d),
+                off: 0,
+            },
+            Inst::Const { dst: c16, v: 16 },
+            Inst::Alloc { dst: pr, size: c16 },
+            Inst::Store {
+                addr: pr,
+                src: tp,
+                w: Width::B8,
+            },
+            Inst::Const { dst: c8, v: 8 },
+            Inst::Index {
+                dst: q,
+                base: pr,
+                pos: c8,
+                stride: 1,
+            },
+            Inst::Store {
+                addr: q,
+                src: dd,
+                w: Width::B8,
+            },
+            Inst::TempRoot {
+                addr: pr,
+                desc: None,
+                ty: None,
+            },
+        ]);
+        res = pr;
+    } else {
+        res = fresh(RegTy::I64);
+        b2.push(Inst::Load {
+            dst: res,
+            addr: tp,
+            w: Width::B8,
+        });
+    }
+    b2.push(Inst::Ret { v: Some(res) });
+    let cres = fresh(if t.ptr { RegTy::Ptr } else { RegTy::I64 });
+    let b3 = vec![
+        Inst::Call {
+            func: callee,
+            args: Regs { start: 0, len: 1 },
+            dst: Some(cres),
+        },
+        Inst::Ret { v: Some(cres) },
+    ];
+    let blocks: Vec<Vec<Ent>> = [b0, b1, b2, b3]
+        .into_iter()
+        .map(|b| b.into_iter().map(|i| (i, loc, 0)).collect())
+        .collect();
+    let mut defs = vec![0u8; reg_ty.len()];
+    for blk in &blocks {
+        for (i, ..) in blk {
+            i.visit(&mut |r, role, _| {
+                if role == Role::Def
+                    && let Some(d) = defs.get_mut(r.0 as usize)
+                {
+                    *d = d.saturating_add(1);
+                }
+            });
+        }
+    }
+    Some(Forwarder {
+        blocks,
+        operands: vec![p],
+        reg_ty,
+        via_nodes: Vec::new(),
+        params: vec![vec![p]],
         defs,
     })
 }

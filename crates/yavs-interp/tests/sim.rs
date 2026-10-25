@@ -136,6 +136,85 @@ fn activations_of_a_process_are_counted_while_a_trial_asks() {
     assert_eq!(flags.entries(), n);
 }
 
+/// A function the tier flags while an interpreted process runs is entered through the tier at
+/// the process's next calls (`Pre::native`, seen by the watching loop within an activation or
+/// `WATCH` events), and not before it is flagged (#750).
+#[test]
+fn a_callee_flagged_later_is_entered_through_the_tier() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    // Compiled code for `.0` once `.2` is set; counts the entries.
+    struct Count(FuncId, AtomicU32, std::sync::atomic::AtomicBool);
+    impl yavs_interp::Tier for Count {
+        fn run(&self, f: FuncId, _: u32, _: &mut dyn yavs_interp::TierHost) -> Option<u32> {
+            if f == self.0 {
+                self.1.fetch_add(1, Ordering::Relaxed);
+            }
+            None
+        }
+        fn ready(&self, f: FuncId) -> bool {
+            f == self.0 && self.2.load(Ordering::Relaxed)
+        }
+    }
+    let mut pb = ProgramBuilder::new();
+    let int = integer(&mut pb);
+    let sq = pb.declare("square", FuncKind::Function, None);
+    let proc_ = pb.declare("p", FuncKind::Process, None);
+    {
+        let mut fb = pb.define(sq);
+        let x = fb.param("x", Width::B8, ParamClass::Value, Mode::In, None);
+        // Longer than the optimiser inlines (it would leave no call to flag).
+        stmt(&mut fb, StmtKind::Return);
+        let v = load(&mut fb, AddrSpace::Frame, x, Width::B8);
+        let mut r = v;
+        for _ in 0..30 {
+            r = bin(&mut fb, IntOp::Add, r, v);
+        }
+        fb.emit(Inst::Ret { v: Some(r) });
+        fb.finish();
+    }
+    {
+        // A new argument each time: the memo of pure calls would answer a repeated one.
+        let mut fb = pb.define(proc_);
+        let n = fb.local("n", int, 8, 8);
+        wait_for(&mut fb, 10 * NS);
+        stmt(&mut fb, StmtKind::Call);
+        let v = load(&mut fb, AddrSpace::Frame, n, Width::B8);
+        let one = fb.int(1);
+        let v1 = bin(&mut fb, IntOp::Add, v, one);
+        store(&mut fb, AddrSpace::Frame, n, v1, Width::B8);
+        let args = fb.regs(&[v1]);
+        let r = fb.reg(RegTy::I64);
+        fb.emit(Inst::Call {
+            func: sq,
+            args,
+            dst: Some(r),
+        });
+        fb.emit(Inst::Br { to: BlockId(0) });
+        fb.finish();
+    }
+    let mut d = Design::new(pb);
+    d.procs = vec![ProcSpec {
+        name: "p",
+        func: proc_,
+        drives: vec![],
+    }];
+    let rt = Runtime::new(d.prog.clone(), Default::default()).unwrap();
+    let tier = std::sync::Arc::new(Count(sq, AtomicU32::new(0), Default::default()));
+    assert!(rt.set_tier(tier.clone()));
+    let flags = rt.native_flags();
+    let (mut sim, _, _) = d.build_rt(1, rt, |p, _| p);
+    sim.run_until(Time::ns(100)).unwrap();
+    assert_eq!(tier.1.load(Ordering::Relaxed), 0);
+    tier.2.store(true, Ordering::Relaxed);
+    flags.set(sq);
+    sim.run_until(Time::ns(200)).unwrap();
+    assert!(
+        tier.1.load(Ordering::Relaxed) >= 9,
+        "{}",
+        tier.1.load(Ordering::Relaxed)
+    );
+}
+
 /// Counters of rising edges, one small (its registers stay with the process between
 /// activations) and one whose temporaries outgrow what a process keeps (it hands its vectors
 /// to the thread's scratch), both run for many activations with identical results.
@@ -525,6 +604,55 @@ fn checked_overflow_stack_trace() {
     assert_eq!(e.trace, [s_sq, s_call]);
     assert_eq!(e.process.as_ref().map(|p| p.1.as_str()), Some("top.p"));
     assert_eq!(e.exit_status(), 1);
+}
+
+/// A 4-byte load of a negative value sign-extends, through the fused `LoadSlot`
+/// and `LoadInst` ops as through the generic `Load` (#746).
+#[test]
+fn narrow_loads_sign_extend() {
+    let mut pb = ProgramBuilder::new();
+    let int = integer(&mut pb);
+    let frame = pb.declare("frame", FuncKind::Function, None);
+    let inst = pb.declare("inst", FuncKind::Function, None);
+    {
+        // `frame(x)`: store the parameter as B4 in a local, load it back (LoadSlot).
+        let mut fb = pb.define(frame);
+        let x = fb.param("x", Width::B8, ParamClass::Value, Mode::In, None);
+        let slot = fb.local("slot", int, 8, 8);
+        stmt(&mut fb, StmtKind::VarAssign);
+        let v = load(&mut fb, AddrSpace::Frame, x, Width::B8);
+        store(&mut fb, AddrSpace::Frame, slot, v, Width::B4);
+        let got = load(&mut fb, AddrSpace::Frame, slot, Width::B4);
+        fb.emit(Inst::Ret { v: Some(got) });
+        fb.finish();
+    }
+    {
+        // `inst()`: a constant B4 load of instance data (LoadInst).
+        let mut fb = pb.define(inst);
+        stmt(&mut fb, StmtKind::Return);
+        let got = load(&mut fb, AddrSpace::Inst, 0, Width::B4);
+        fb.emit(Inst::Ret { v: Some(got) });
+        fb.finish();
+    }
+    let prog = std::sync::Arc::new(pb.finish().unwrap());
+    let rt = Runtime::new(prog, Bindings::default()).unwrap();
+    for v in [-1i32, i32::MIN] {
+        let want = Some(i64::from(v) as u64);
+        let got = yavs_interp::call(
+            rt.clone(),
+            frame,
+            std::sync::Arc::new(yavs_interp::InstData::default()),
+            &[i64::from(v) as u64],
+        )
+        .unwrap();
+        assert_eq!(got, want, "frame {v}");
+        let data = std::sync::Arc::new(yavs_interp::InstData {
+            data: v.to_le_bytes().to_vec(),
+            ..Default::default()
+        });
+        let got = yavs_interp::call(rt.clone(), inst, data, &[]).unwrap();
+        assert_eq!(got, want, "inst {v}");
+    }
 }
 
 /// A function `lin(x, y) = y - (x * 16 + 3) - 1`: the fast loop runs the four `Bin`s as one
@@ -2228,4 +2356,40 @@ fn process_instances_are_counted() {
         yavs_interp::InterpProcess::new(rt.clone(), p, inst, vec![], None).unwrap();
     }
     assert_eq!(rt.native_flags().instances(p), 3);
+}
+
+/// A 4-byte load sign-extends wherever the cell is (`Width::B4`, #746): instance data at a
+/// constant offset (`Op::LoadInst`) and a frame slot (`Op::LoadSlot`) alike.
+#[test]
+fn four_byte_loads_sign_extend_from_instance_data_and_frame() {
+    let mut pb = ProgramBuilder::new();
+    let from_inst = pb.declare("from_inst", FuncKind::Function, None);
+    let from_frame = pb.declare("from_frame", FuncKind::Function, None);
+    {
+        let mut fb = pb.define(from_inst);
+        stmt(&mut fb, StmtKind::Return);
+        let v = load(&mut fb, AddrSpace::Inst, 8, Width::B4);
+        fb.emit(Inst::Ret { v: Some(v) });
+        fb.finish();
+    }
+    {
+        let mut fb = pb.define(from_frame);
+        let x = fb.param("x", Width::B4, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb, StmtKind::Return);
+        let v = load(&mut fb, AddrSpace::Frame, x, Width::B4);
+        fb.emit(Inst::Ret { v: Some(v) });
+        fb.finish();
+    }
+    let prog = std::sync::Arc::new(pb.finish().unwrap());
+    let rt = Runtime::new(prog, Bindings::default()).unwrap();
+    let mut data = vec![0u8; 16];
+    data[8..12].copy_from_slice(&(-3i32).to_le_bytes());
+    let inst = std::sync::Arc::new(yavs_interp::InstData {
+        data,
+        ..Default::default()
+    });
+    let v = yavs_interp::call(rt.clone(), from_inst, inst.clone(), &[]).unwrap();
+    assert_eq!(v.map(|v| v as i64), Some(-3));
+    let v = yavs_interp::call(rt, from_frame, inst, &[(-7i64) as u64]).unwrap();
+    assert_eq!(v.map(|v| v as i64), Some(-7));
 }

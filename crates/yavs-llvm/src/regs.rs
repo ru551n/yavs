@@ -233,6 +233,59 @@ pub fn preloaded(f: &Func) -> Vec<bool> {
     pre
 }
 
+/// The fewest instructions after its definition a register must be live at to be a core
+/// register (`entry_core`).
+const CORE_MIN: usize = 8;
+
+/// The registers a native frame's exits record the same way wherever they are: defined once,
+/// by an instruction of the function's first block (which no jump leads back to), live at
+/// `CORE_MIN` or more later instructions, and not preloaded. They dominate every exit from the
+/// pc `core_from` on, so those exits can record them in one shared block (`Gen::core_stub`)
+/// instead of each storing them again.
+pub fn entry_core(prog: &Program, f: &Func, live: &Live, pre: &[bool]) -> (Vec<u32>, u32) {
+    let n = f.code.len();
+    let end = f
+        .code
+        .iter()
+        .position(Inst::is_terminator)
+        .map_or(n, |p| p + 1);
+    let entered = (0..n).any(|pc| succs(prog, f, pc, &f.code[pc]).is_none_or(|s| s.contains(&0)));
+    if entered {
+        return (Vec::new(), 0);
+    }
+    let mut defs = vec![0u8; f.reg_ty.len()];
+    for i in &f.code {
+        i.visit(&mut |r, role, _| {
+            if role == Role::Def
+                && let Some(d) = defs.get_mut(r.0 as usize)
+            {
+                *d = d.saturating_add(1);
+            }
+        });
+    }
+    let sig = |r: usize| f.reg_ty.get(r) == Some(&RegTy::Sig);
+    let (mut core, mut from) = (Vec::new(), 0);
+    for (pc, i) in f.code[..end].iter().enumerate() {
+        i.visit(&mut |r, role, _| {
+            let k = r.0 as usize;
+            if role == Role::Def
+                && defs.get(k) == Some(&1)
+                && !pre.get(k).copied().unwrap_or(true)
+                && !sig(k)
+                && !(k > 0 && sig(k - 1))
+                && (pc + 1..n)
+                    .filter(|&p| live.row(p)[k / 64] >> (k % 64) & 1 != 0)
+                    .count()
+                    >= CORE_MIN
+            {
+                core.push(r.0);
+                from = from.max(pc as u32 + 1);
+            }
+        });
+    }
+    (core, from)
+}
+
 /// The instructions that can run after `i` at `pc` (`None`: a branch to a missing block).
 pub fn succs(prog: &Program, f: &Func, pc: usize, i: &Inst) -> Option<Vec<u32>> {
     let start = |b: yavs_ir::BlockId| f.blocks.get(b).map(|b| b.start);
@@ -884,6 +937,69 @@ mod tests {
         fb.emit(Inst::Ret { v: Some(acc) });
         fb.finish();
         (pb.finish().unwrap(), f)
+    }
+
+    #[test]
+    fn the_core_is_what_the_first_block_defines_once_and_keeps_alive() {
+        let (prog, id) = big(20);
+        let f = prog.funcs.get(id).unwrap();
+        let live = Live::new(&prog, f, None).unwrap();
+        let (core, from) = entry_core(&prog, f, &live, &preloaded(f));
+        // The load of the parameter is read to the end of the loop; the chain's temporaries die
+        // at once, the accumulator and the counter are defined again in the loop, and the
+        // constants and addresses are preloaded.
+        let at = f
+            .code
+            .iter()
+            .position(|i| matches!(i, Inst::Load { .. }))
+            .unwrap();
+        let Inst::Load { dst, .. } = f.code[at] else {
+            unreachable!()
+        };
+        assert_eq!(core, vec![dst.0]);
+        assert_eq!(from as usize, at + 1);
+    }
+
+    #[test]
+    fn the_core_is_empty_when_a_jump_leads_back_to_the_first_block() {
+        let mut pb = ProgramBuilder::new();
+        let f = pb.declare("f", FuncKind::Function, None);
+        let mut fb = pb.define(f);
+        let sx = fb.param("x", Width::B8, ParamClass::Value, Mode::In, None);
+        let entry = fb.current();
+        let (head, done) = (fb.block(), fb.block());
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let px = fb.addr(AddrSpace::Frame, sx);
+        let x = fb.reg(RegTy::I64);
+        fb.emit(Inst::Load {
+            dst: x,
+            addr: px,
+            w: Width::B8,
+        });
+        fb.emit(Inst::Br { to: head });
+        fb.at(head);
+        for _ in 0..10 {
+            let t = fb.reg(RegTy::I64);
+            fb.emit(Inst::Bin {
+                op: IntOp::Add,
+                dst: t,
+                a: x,
+                b: x,
+            });
+        }
+        fb.emit(Inst::CondBr {
+            c: x,
+            t: done,
+            f: entry,
+        });
+        fb.at(done);
+        fb.emit(Inst::Ret { v: Some(x) });
+        fb.finish();
+        let prog = pb.finish().unwrap();
+        let f = prog.funcs.get(f).unwrap();
+        let live = Live::new(&prog, f, None).unwrap();
+        let (core, _) = entry_core(&prog, f, &live, &preloaded(f));
+        assert!(core.is_empty(), "the first block runs again: {core:?}");
     }
 
     #[test]

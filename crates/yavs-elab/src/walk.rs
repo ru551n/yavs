@@ -1133,6 +1133,36 @@ impl Elab<'_> {
         Ok(())
     }
 
+    /// Give the leaves of object `obj` the guard kind `g` and the disconnection time of
+    /// declaration `d` (LRM 7.4): a guarded signal or a guarded (`bus`) port.
+    fn set_guard(&mut self, s: ScopeId, d: yavs_sem::DeclId, obj: ObjId, g: GuardKind) -> R<()> {
+        let db: &Db = self.db;
+        let mut disconnect = yavs_kernel::Time::ZERO;
+        if let Some(&e) = db.disconnect_times.get(&d) {
+            let fs = self.m.eval(db, e, Some(s))?.as_int().ok_or_else(|| {
+                Box::new(ice(
+                    db.exprs[e].span,
+                    "disconnection time is not an integer",
+                ))
+            })?;
+            disconnect = yavs_kernel::Time::from_vhdl(fs).map_err(|_| {
+                Box::new(
+                    Diagnostic::error(
+                        codes::EVAL_FAILED,
+                        "disconnection time is negative or out of range",
+                    )
+                    .with_primary(db.exprs[e].span, "here"),
+                )
+            })?;
+        }
+        let (a, b) = self.m.nets.obj(obj).leaves;
+        for l in &mut self.m.nets.leaves[a.index()..b.index()] {
+            l.guard = Some(g);
+            l.disconnect = disconnect;
+        }
+        Ok(())
+    }
+
     /// Signal declarations of a declarative region (constants are evaluated on demand).
     fn decls(&mut self, s: ScopeId, region: yavs_sem::ScopeId) -> R<()> {
         if self.db.scopes[region].kind != yavs_sem::scope::ScopeKind::Process {
@@ -1207,29 +1237,20 @@ impl Elab<'_> {
                         span,
                     )?;
                     if let Some(g) = guard {
-                        let mut disconnect = yavs_kernel::Time::ZERO;
-                        if let Some(&e) = db.disconnect_times.get(&d) {
-                            let fs = self.m.eval(db, e, Some(s))?.as_int().ok_or_else(|| {
-                                Box::new(ice(
-                                    db.exprs[e].span,
-                                    "disconnection time is not an integer",
-                                ))
-                            })?;
-                            disconnect = yavs_kernel::Time::from_vhdl(fs).map_err(|_| {
-                                Box::new(
-                                    Diagnostic::error(
-                                        codes::EVAL_FAILED,
-                                        "disconnection time is negative or out of range",
-                                    )
-                                    .with_primary(db.exprs[e].span, "here"),
-                                )
-                            })?;
-                        }
-                        let (a, b) = self.m.nets.obj(obj).leaves;
-                        for l in &mut self.m.nets.leaves[a.index()..b.index()] {
-                            l.guard = Some(g);
-                            l.disconnect = disconnect;
-                        }
+                        self.set_guard(s, d, obj, g)?;
+                    }
+                }
+                // A guarded (`bus`) port is a guarded signal too: its leaves get the
+                // guard kind and the disconnection time, as a plain signal's (#656).
+                (ObjClass::Signal, ObjRole::Port) => {
+                    let Some(g) = o.signal_kind.map(|k| match k {
+                        yavs_syntax::ast::SignalKind::Bus => GuardKind::Bus,
+                        yavs_syntax::ast::SignalKind::Register => GuardKind::Register,
+                    }) else {
+                        continue;
+                    };
+                    if let Some(obj) = self.m.signal(s, d) {
+                        self.set_guard(s, d, obj, g)?;
                     }
                 }
                 (ObjClass::Signal, ObjRole::Guard) => {

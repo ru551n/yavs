@@ -16,9 +16,15 @@
 | Cranelift tier (#481 item 1) | `yavs run --tier=clift`, `--tier=clift-auto` (feature `clift`, off by default, no LLVM needed, crate `yavs-clift`) and `--tier=auto3` (both features: Cranelift for warm functions, LLVM O2 for those that stay hot) run the optimised IR on the LLVM tier's frame view, callbacks and side exits; the difftest corpus is identical to the interpreter at 1 and 4 threads and under the collection stress build; Cranelift translates at 31 to 62 us per IR instruction against 115 to 536 for LLVM; since 2026-10-24 it lowers the kernel-facing instructions, protected calls and heap code in native frames; on the window generator testbench it is 24 percent below the interpreter in instructions (LLVM `auto` 49 to 62 percent below), level or up to 8 percent above the interpreter on neorv32, fletcher, poc_arith_addw and grlib, so it is not the first level of `auto`; measurements and the gap list in the clift section |
 | M5, M10 | not started (M5: the `vhpi_*` export surface (#266), `yavs run --vhpi` (#267) and the design hierarchy object model (#269) are done; values and most callbacks are not; `yavs run` accepts `+plusargs` after the top level, readable through `vhpiArgcP` and the `vhpiArgvs` iterator (#298), `crates/yavs-vhpi`; M10: design `docs/design/gui.md` (#384, decisions answered 2026-10-19); slice G1 (#388): `gui/` workspace (EUPL-1.2) with `yavs-gui`, which starts `yavs run --dap=stdio` or attaches to a port, shows a dock layout of placeholder panels, a console of the run's output and Run/Pause/Stop, tested headless against a scripted DAP server (`gui/AGENTS.md`); `yavs run --gui` starts it (E0122 when missing); release archives ship it; slice G2 (#399): source view with breakpoint gutter (conditions, hit counts), call stack per process, locals and watch with lazy and paged expansion and edit, hover, step buttons, time and delta in the status bar, tested against a scripted DAP server and, ignored, the real `yavs`; G3 to G6 and the server slices S1 (#396), S2 (#397), S4 (#398) not started) |
 
+### DAP work counters (#696)
+
+`YAVS_COUNTERS` reports the kernel and interpreter work counters on stderr at the end of a `--dap`
+session, as it does for a plain run. The scripted-session test also checks that a debugger keeps
+signal activity and full event histories (`skip_signals=0`, `lean_signals=0`).
+
 ### Stuck and hung simulations (#582)
 
-E3002 names the processes and signals of the loop and `--max-deltas` raises the limit; `--hang-report` and SIGUSR1 print what the waiting processes wait for (W3101, with stuck signals, their drivers and a stopped clock); W3102 warns about a process that can never suspend; `--shuffle` prints its seed. Tests: `crates/yavs/tests/stuck.rs`, `tests/cli/stuck_*`. Not done: the wait statement's place, the silent hang itself (#583).
+E3002 names the processes and signals of the loop and `--max-deltas` raises the limit; `--hang-report` and SIGUSR1 print what the waiting processes wait for (W3101, with stuck signals, their drivers and a stopped clock); W3102 warns about a process that can never suspend; `--shuffle` prints its seed. Tests: `crates/yavs/tests/stuck.rs`, `tests/cli/stuck_*`. Not done: the wait statement's place.
 
 ### Elaboration fixes (#494, #495, #498, #499)
 
@@ -187,7 +193,7 @@ suite's pass list).
 ## performance (`tools/bench`, #387)
 
 The shared benchmark harness (`tools/bench/AGENTS.md`) measures every performance change the same way:
-`python3 -I tools/bench/run.py --compare A B`. Phase times come from `yavs run --time-report`. Testbenches of real projects (41, against sim1 and between binaries): `tools/realbench`. Current comparison with sim1 (rule 23: `--tier=auto`, total wall incl. analysis, cold and warm): section "Real-world performance suite: yavs against sim1, head-to-head 4, 2026-10-25"; geomean of the 41 realbench totals (libraries analysed too) 0.25 warm, 0.46 cold (own files + elab + run 0.27 and 0.52; head-to-head 3 had 0.26 and 0.49 for the total, 0.32 and 0.59 for own + elab + run), executed instructions yavs / sim1 0.35 (0.43 before), tiny-test corpus 0.14 and 0.28, the h2h designs 0.59 and 0.82. The tables below are older measurements on the earlier host.
+`python3 -I tools/bench/run.py --compare A B`. Phase times come from `yavs run --time-report`. Testbenches of real projects (41, against sim1 and between binaries): `tools/realbench`. Analysis cells are batched calls since #745 (section "Analysis in batched calls"; tables before it are one call per file and not comparable). Current comparison with sim1 (rule 23: `--tier=auto`, total wall incl. analysis, cold and warm): section "Real-world performance suite: yavs against sim1, head-to-head 5, 2026-10-25"; geomean of the 41 realbench totals (libraries analysed too) 0.23 warm, 0.43 cold (own files + elab + run 0.25 and 0.49; head-to-head 4 had 0.25 and 0.46 for the total, 0.27 and 0.52 for own + elab + run), executed instructions yavs / sim1 0.32 (0.35 before), tiny-test corpus 0.12 and 0.26, the h2h designs 0.71 and 0.83 (three designs lost their warm speedup, #749; fixed, section "`--tier=auto` warm runs of one-loop processes"). The tables below are older measurements on the earlier host.
 
 Baseline of main at the commit that added the harness (release build, Intel Core Ultra 9 275HX, 24 CPUs,
 host shared with other agents; median CPU seconds of 3 runs, phase CPU in 10 ms steps, `--threads 1`):
@@ -4410,6 +4416,32 @@ The reader's instruction count did not change in the kernel round; its rows show
 1.5 s of library analysis with run times that moved by 40%. Only the writer's rows are an effect of the change (instructions 0.92).
 Totals under 1 or near 1 for the reader come from the library analysis of yavs (0.2 s warm) against the reference's 1.5 s.
 
+### Kernel round 23: assignments in pieces stay direct entries (#521, #733, #735, 2026-10-25)
+
+(`docs/decisions.md` "Kernel round 23".) Instruction counts only (no timing cores): whole runs under `perf stat instructions:u`, one thread,
+`--no-cache`, bench builds with `--features llvm`; main at 27842f12 against the round; windows of 100 delta cycles from cycle 20000 with
+`tools/stepcount`.
+
+| design | before (G) | after (G) | change |
+|---|---:|---:|---:|
+| neorv32_single_min | 36.900 | 33.051 | -10.4% |
+| fletcher_bufferreader | 20.853 | 20.685 | -0.8% |
+| poc_arith_addw | 149.297 | 148.496 | -0.5% |
+| hdlm_lfsr | 64.248 | 64.098 | -0.2% |
+| rtl_fan | 13.656 | 13.175 | -3.5% |
+| rtl_chain | 3.360 | 3.348 | -0.4% |
+
+One delta cycle of neorv32_single_min, program file: 70.4 K to 63.7 K instructions (libc, the `memcpy` of the general assignment path, 1.3 K to
+0.4 K); the stages that are the kernel, `Ctx` and `CopyProcess` included, 31.7 K to 25.8 K. What went: the assignments of `port_req(i)` (a record of
+an array assigned whole, then its `stb` field) that left the direct path 2.4 times a delta cycle (`Waveform::schedule`, `apply_driver`,
+`compute_driving`, `update_effective`, `spill_out`: about 1800 instructions each). `realbench --compare` (run phase, interpreter and llvm,
+all 42 tests, instructions): geometric mean 1.00 and 0.99, the `cpu` category 0.97 and 0.95, no other test beyond noise.
+
+Left, by share of a neorv32 delta cycle (instructions a delta cycle): `finish_direct` 5.6 K (of which the arm loop `arm_readers_of` inlined
+about 0.9 K), `cycle` 4.5 K (the arm loop about 1.7 K), `CopyProcess::run` 2.5 K (2.65 runs of about 10 parts),
+`run_batch` 1.9 K, `commit_out` 1.5 K, `take_woken` 2.5 K (12 calls), `commit_planes_run` 1.3 K. The empty delta cycle after skipped
+assignments is 389 instructions of a 2400-instruction cycle (kept, see the decisions entry).
+
 ### Kernel round 22: the per-delta bookkeeping of CPU-style designs (#519, #521, 2026-10-25)
 
 (`docs/decisions.md` "Kernel round 22".) Instruction counts only (no timing cores): whole runs under `perf stat instructions:u`, one thread,
@@ -5474,9 +5506,145 @@ designs and four internal benchmarks print the same under interp, llvm, auto and
 
 Not verified: `--threads` above 1 for the timings; aarch64 and Windows beyond CI; wall times on an idle host.
 
+## llvm: cold compiles, where cold minus warm goes (#740, 2026-10-25)
+
+Breakdown of head-to-head 4 (41 tests, summed seconds, 192 cold against 139 warm): library analysis one call per file 37 (cold parses, warm finds the units; about 13 M user instructions a file at the median,
+flat profile), run phase 13.6 (two tests), elaboration 2.0. Compile cost of `--tier=auto` (window generator, 55 compiles): code generation 62 percent, the `LEAN` passes 34 (of them `instcombine` 78: quadratic in the
+register buffer of the exits), the rest 4; the store of an object costs nothing measurable (no `fsync`). Changes: the passes without the alloca walk, exits that store fewer registers (decisions.md "Cold compiles").
+Compile CPU of the same 54 functions of `vai_window_gen_interlock` 2 292 to 1 667 ms (-27 percent). Wall of cold runs, medians of 5 interleaved runs, core 12, host load 20 to 28, before / after: window generator
+14.87 / 14.12 s (instructions 207 / 200 G), `poc_stat_histogram` 1.60 / 1.47 s, `fletcher_bufferwriter_512` 5.37 / 4.96 s, `poc_arith_addw` 9.58 / 9.37 s, neorv32 single min and cache, `hdlm_lfsr` within noise;
+`uvvm_util_rand` 1.15 / 1.30 s (instructions 14.0 / 15.6 G: which functions the run compiles by the time it ends depends on when the compiles finish, #673; a variant that prices compiles at half
+gave 17.5 G). Warm runs: instructions equal on every test (window generator 147.2 / 146.4 G), wall within the noise of the loaded host.
+Not done, the larger cuts: the cold analysis of the libraries (a policy and a start-up question: #738, #553), a cheaper first compile level (1 to 3 percent slower code, `FastRa` pattern), the price constant
+`US_PER_INSTR` (800) against 260 to 670 measured per IR instruction (posted to #728). Not verified: the full head-to-head basis (the loaded host made 41-test cold totals meaningless at this size).
+
+## Analysis in batched calls: integrations, tools and the head-to-head method (#745, 2026-10-25)
+
+User decision: integrations analyse consecutive files of one library and standard in one `yavs analyze F1 F2 ...` call by default (`docs/decisions.md` "Batched analysis calls"). Changed: `tools/corpus/run.py`
+(yavs batches, a failing call is repeated file by file, `--per-file` for the old form; all 34 manifests give identical results and output either way; whole corpus 34 s against 47 s on a busy host),
+`tools/realbench` analysis cells (both tools, `--analyze-calls batched|per-file`), `tools/bench/run.py` preparation, `docs/usage.rst`, `docs/cli-contract.md`. `tools/suites` already batched; `tools/difftest`,
+`tools/discrepancies`, `tiny.py` and the release smoke test analyze one file by construction. The VUnit simulator interface for yavs (the `rsim-integration` branch, described in `docs/test-runner-requirements.md`) is not in the repository, on this host or on the VUnit fork, so it is unchanged; the generic
+`--batch-compile` is the open VUnit pull request #1236 (opt-in flag).
+
+Method for the head-to-head (root rule 23): the analysis cells call BOTH tools the same way, consecutive files of one library, standard and flag set per call, with one rule more: a file that defines a unit an earlier file of the call
+defined starts a new call (the corpus manifests put several projects into one library and the reference rejects a unit replaced within one call). The reference is called through its multi-file form (`{file}` expands to the files
+in its untracked `corpus_cmd`); its own integration in the runner is one file per call, so the old basis (head-to-head 1 to 5) was one call per file for both tools. The two bases are not comparable; a table says which it is
+(`--analyze-calls per-file` reproduces the old one). The untimed set-up of the worlds stays one file per call. The same note is kept with the head-to-head results outside the repository.
+
+Realbench analysis cells, 8 tests (`hdlm_fifo_sync`, `neorv32_single_min`, `olo_base_cam`, `osvvm_axis_random`, `poc_strings`, `sc5_timestamp`, `uvvm_util_rand`, `vunit_logging`), same bench build (no `llvm` feature), core 12, 5 runs per
+cell, two passes per mode with the lower one kept, host load 12 to 14. Wall seconds, one call per file / batched:
+
+| test | yavs cold | yavs warm | sim1 cold |
+|---|---|---|---|
+| `hdlm_fifo_sync` | 1.15 / 0.45 | 0.55 / 0.20 | 4.09 / 0.77 |
+| `neorv32_single_min` | 0.28 / 0.14 | 0.11 / 0.02 | 0.89 / 0.11 |
+| `olo_base_cam` | 1.97 / 0.65 | 1.01 / 0.17 | 6.61 / 0.74 |
+| `osvvm_axis_random` | 3.55 / 0.78 | 1.92 / 0.92 | 11.05 / 1.60 |
+| `poc_strings` | 0.64 / 0.28 | 0.34 / 0.08 | 2.13 / 0.24 |
+| `sc5_timestamp` | 1.05 / 0.31 | 0.54 / 0.11 | 3.00 / 0.27 |
+| `uvvm_util_rand` | 0.41 / 0.26 | 0.09 / 0.02 | 1.01 / 0.49 |
+| `vunit_logging` | 0.98 / 0.50 | 0.52 / 0.24 | 3.29 / 0.70 |
+
+Geometric mean of batched / one call per file: yavs 0.40 cold and 0.27 warm in wall time (instructions 0.48 and 0.34), sim1 0.16 cold and warm (instructions 0.26). So the reference gains more than yavs, and the analysis
+ratio yavs / sim1 (geometric mean of the 8) rises from 0.32 to 0.80 cold and from 0.14 to 0.23 warm; yavs cold is behind sim1 on `neorv32_single_min`, `poc_strings` and `sc5_timestamp` (#747); the warm cell of `osvvm_axis_random` (0.92 s) is as slow as its cold cell (0.78 s) because the OSVVM testbench libraries redefine units (#748). Not verified: the other 34
+realbench tests' analysis cells timed (their batched call lists were built and ran without a failing call for both tools, untimed), the full head-to-head basis, the effect on the run phases (none expected: libraries are
+the same).
+
+## Batched analysis: shared work paid once per call (#747, #748, 2026-10-25)
+
+Decisions and causes in `docs/decisions.md` "Batched analysis: shared work paid once per call". Changed: the library index is written once per call (`Session::record_deferred` and `flush`), the
+entry store counts its puts instead of listing the directory at each, and a `Db` keeps the entries, source hashes and library indexes it read (`EntryCache`), so the files of a call that share a large dependency
+closure stop reading it again. Tests: `deferred_records_are_published_by_the_flush` (yavs-lib), `counted_puts_still_prune` (yavs-cache), `a_batch_after_an_edit_reads_nothing_stale_and_records_what_it_did` (units.rs).
+
+`tools/realbench --compare` of the bench build before and after, analysis phase, batched calls, all 42 tests, 5 runs, one claimed core, host load 6 (so wall times are higher than on a quiet host). After / before,
+geometric mean over the tests: cold instructions 0.91, cold wall 0.81, warm instructions 0.40, warm wall 0.35 (36 tests with a measurable warm wall). Largest changes (wall, seconds, before / after):
+
+| test | cold | warm | cold G instr | warm G instr |
+|---|---|---|---|---|
+| `osvvm_axis_random` | 1.37 / 0.77 | 1.81 / 0.18 | 5.81 / 5.45 | 5.70 / 1.33 |
+| `osvvm_axi4_random` | 0.74 / 0.65 | 0.91 / 0.20 | 5.87 / 5.45 | 5.68 / 1.33 |
+| `sc5_timestamp` | 0.32 / 0.22 | 0.10 / 0.02 | 2.88 / 1.93 | 0.56 / 0.19 |
+| `hdlm_fifo_sync` | 0.56 / 0.40 | 0.19 / 0.10 | 3.83 / 3.64 | 1.14 / 0.53 |
+| `olo_base_cam` | 0.67 / 0.55 | 0.18 / 0.07 | 5.65 / 5.09 | 1.04 / 0.38 |
+| `poc_strings` | 0.24 / 0.19 | 0.08 / 0.02 | 1.62 / 1.36 | 0.42 / 0.15 |
+| `neorv32_single_min` | 0.10 / 0.08 | 0.01 / 0.00 | 1.04 / 0.93 | 0.14 / 0.06 |
+| `uvvm_util_rand` | 0.22 / 0.22 | 0.01 / 0.00 | 3.01 / 2.98 | 0.21 / 0.09 |
+
+Against sim1 (batched calls for both, yavs / sim1 wall, before / after, runs on different host loads): `hdlm_fifo_sync` cold 0.72 / 0.56, warm 0.28 / 0.12; `neorv32_single_min` 1.00 / 0.80, 0.18 / 0.00;
+`olo_base_cam` 0.97 / 0.69, 0.26 / 0.06; `osvvm_axis_random` 0.41 / 0.37, 0.48 / 0.11; `poc_strings` 0.81 / 0.82, 0.27 / 0.09; `sc5_timestamp` 1.25 / 0.71, 0.36 / 0.09; `uvvm_util_rand` 0.50 / 0.46, 0.04 / 0.00;
+`vunit_logging` 0.86 / 0.50, 0.28 / 0.11. Geometric mean of the 8: cold 0.77 to 0.59, warm 0.23 to 0.05 (a floor of 0.01 for the warm cells that round to 0.00). The warm cell of `osvvm_axis_random` is cheaper than its cold cell again
+(0.16 s against 0.55 s). All 42 against sim1 with the final build (host load 12): cold geometric mean 0.63 (instructions 0.60), warm 0.08; 38 tests below 1 cold, all below 1 warm; at par or above cold: `fletcher_bufferreader`, `fletcher_bufferwriter_512`, `fletcher_bufferwriter_prim32` (1.00) and `en_cl_fix_pkg` (1.10). Not verified: a quiet-host rerun of all 42 against sim1; the interpreter, run and elab phases
+(nothing in them changed); Windows and aarch64 (the code is portable, CI covers it).
+
+## Real-world performance suite: yavs against sim1, head-to-head 5, 2026-10-25 (`tools/realbench`)
+
+This is the current headline (`9e75d84e`, bench build with the `llvm` feature, one binary for every cell; the previous run, head-to-head 4 at `18b290ef`, is in brackets). Basis (root rule 23): `--tier=auto`
+only, TOTAL wall as a user runs it, analysis of every file of the compile order (one tool call per file) plus elaboration and run, against sim1's analysis plus elaboration plus run; cold = empty compilation cache and
+fresh libraries, warm = cache present. Interpreter times are never compared with sim1. Ratios are yavs / sim1, below 1 means yavs is faster. Method exactly as head-to-head 4: 5 timed runs per cell, interleaved, two
+complete passes, the lower pass median per cell for both tools, a sim1-only control at the start and the end; one timed process per core, the cores held through `tools/claim core` locks (9, 10 and 11 of a Ryzen 9
+7950X3D, SMT siblings idle), host load average 5 to 33 (mostly 12 to 20). Raw results are not committed.
+
+Geometric mean over the same 41 tests (the full total first, own files + elaboration + run beside it):
+
+| category | n | total warm | total cold | own+elab+run warm | own+elab+run cold |
+|---|---:|---:|---:|---:|---:|
+| **overall** | 41 | 0.23 (0.25) | 0.43 (0.46) | 0.25 (0.27) | 0.49 (0.52) |
+| bus-tristate | 1 | 0.14 (0.17) | 0.32 (0.35) | 0.06 (0.08) | 0.33 (0.36) |
+| cpu | 3 | 0.56 (0.57) | 0.63 (0.66) | 0.66 (0.68) | 0.70 (0.73) |
+| fsm | 4 | 0.21 (0.23) | 0.37 (0.40) | 0.44 (0.46) | 0.61 (0.62) |
+| memory | 4 | 0.18 (0.20) | 0.39 (0.43) | 0.21 (0.22) | 0.50 (0.57) |
+| numeric | 8 | 0.21 (0.22) | 0.39 (0.43) | 0.20 (0.21) | 0.40 (0.45) |
+| protected | 8 | 0.22 (0.23) | 0.45 (0.44) | 0.27 (0.27) | 0.48 (0.47) |
+| records | 7 | 0.18 (0.21) | 0.35 (0.39) | 0.16 (0.16) | 0.34 (0.37) |
+| rtl-datapath | 2 | 0.38 (0.44) | 0.69 (0.79) | 0.38 (0.46) | 0.74 (0.84) |
+| strings-textio | 2 | 0.14 (0.15) | 0.31 (0.35) | 0.05 (0.06) | 0.24 (0.22) |
+| wide-vectors | 2 | 0.83 (0.97) | 1.10 (1.12) | 2.10 (2.53) | 2.48 (2.63) |
+
+| basis | warm | cold |
+|---|---:|---:|
+| total, libraries analysed too | 0.23 (0.25) | 0.43 (0.46) |
+| own files + elab + run | 0.25 (0.27) | 0.49 (0.52) |
+| elab + run only | 0.24 (0.26) | 0.50 (0.53) |
+| executed instructions (run cell), yavs / sim1 | 0.32 (0.35) | 0.60 (0.65) |
+
+Head-to-head 3 had 0.26 and 0.49 for the total, 0.32 and 0.59 for own + elab + run and 0.43 and 0.79 for the instructions. Summed over the 41 tests the full total is 60 s (yavs) against 188 s (sim1) warm and 92 s
+against 187 s cold (76 against 218 s and 118 against 218 s before); the executed instructions sum to 552 G (yavs) against 522 G (sim1), 644 G against 525 G before. 39 tests are faster than sim1 warm and 39 cold
+(38 and 38 before). With `grlib_leon3mp` (VHDL-93 mode, kept out of the means above to keep the basis) the full total is 0.25 warm and 0.45 cold (0.27 and 0.48). The h2h designs (10 that sim1 runs): 0.71 warm,
+0.83 cold (0.59, 0.82): worse, because of three designs whose warm run no longer beats the cold one, `compute_h2h` (153 to 477 ms warm, ratio 0.04 to 0.15), `xor_types` (221 to 374 ms, 0.22 to 0.40) and `xor_sig`
+(220 to 377 ms, sim1 does not run it), issue #749; the others stayed or moved a little (`lfsr64_xor` 0.96 to 0.80, `rtl_ff` 1.25 to 1.22, `rtl_fan` 0.78 to 0.85, `rtl_ram` 0.75 to 0.88).
+Slower than sim1 are `rtl_lfsr` (1.59), `lfsr64` (1.42), `rtl_chain` (1.24) and `rtl_ff` (1.22) warm. The tiny-test corpus: 397 tests that both tools run (524 files, 127 dropped because a tool rejects or fails
+them): 0.12 warm, 0.26 cold; on the 393 tests common to the fourth run 0.12 and 0.26 against 0.14 and 0.28 there, yavs 30 percent faster per test warm (geomean; medians 4.1 against 5.7 ms) and sim1 18 percent
+faster (33.5 against 39.3 ms); all 397 are faster than sim1 warm and 393 cold (the four slower are `ieee/ieee_textio*` and `ieee/fixed_pkg_ops*`).
+
+Repeatability: the single passes give a full total of 0.235 and 0.226 warm and 0.432 and 0.433 cold (merged 0.233 and 0.431). Tests whose two passes differ by more than 20 percent in the full ratio: `vunit_axi_dma`
+(warm 0.13 against 0.10) and `hdlm_lfsr` (warm 0.46 against 0.32). Sim1 drift against head-to-head 4, stated so the move can be read: over the same tests sim1's full-total wall is x0.86 warm and x0.86 cold, its run
+phase x0.90 (tests over 0.3 s; executed instructions unchanged, x0.99, so this is host speed and load, not different work), while yavs' full total is x0.79 and x0.80 and its executed instructions fell from 644 G to
+552 G. So the ratio gain is yavs getting faster (the instruction ratio, load-independent, went 0.35 to 0.32 warm and 0.65 to 0.60 cold) and part of it is hidden by sim1 running faster on a quieter host. The sim1
+control (the three long tests `fletcher_bufferwriter_512`, `poc_arith_addw`, `vai_window_gen_interlock`, run phase, same cores, at the start and at the end of the batch, then within the passes) was stable this time:
+`fletcher_bufferwriter_512` 1.88, 1.89, 1.84 and 1.97 s (1.97 to 2.03 s before), `poc_arith_addw` 5.41, 5.32, 5.33 and 5.63 s (5.57 to 8.35 s before), `vai_window_gen_interlock` 3.98, 3.89, 4.00 and 3.83 s (4.16 to
+6.13 s before).
+
+Worst 10 by warm total ratio, with `grlib_leon3mp` (seconds are medians; run = elaboration + run, yavs vs sim1; the ratio at head-to-head 4 in brackets, instruction ratio yavs / sim1 in the fifth column):
+
+| test | warm | cold | run s | instr | issue |
+|---|---:|---:|---|---:|---|
+| grlib_leon3mp | 2.17 (2.56) | 2.32 (2.65) | 39.71 vs 11.90 | 2.6 (3.7) | #677 |
+| fletcher_bufferwriter_512 | 1.35 (1.45) | 1.47 (1.54) | 4.08 vs 1.84 | 2.0 (2.1) | #519 |
+| vai_window_gen_interlock | 1.06 (1.19) | 1.52 (1.77) | 8.40 vs 3.83 | 2.0 (2.6) | #520 |
+| poc_arith_addw | 0.82 (1.07) | 0.96 (1.53) | 5.82 vs 5.33 | 1.0 (1.3) | #520 |
+| neorv32_single_min | 0.76 (0.71) | 0.83 (0.81) | 2.99 vs 3.26 | 0.9 (0.9) | #521, #529 |
+| fletcher_bufferreader | 0.75 (0.79) | 0.87 (0.92) | 1.62 vs 1.07 | 1.4 (1.5) | #519, #523 |
+| uvvm_axistream_vvc | 0.69 (0.54) | 0.78 (0.61) | 2.91 vs 3.33 | 1.3 (1.2) | none specific |
+| neorv32_single_cache | 0.55 (0.59) | 0.62 (0.69) | 2.48 vs 3.87 | 0.6 (0.7) | #521, #529 |
+| sc5_fifo_repack | 0.52 (0.65) | 0.82 (0.82) | 1.73 vs 0.86 | 2.3 (3.2) | #519 |
+| hdlm_lfsr | 0.45 (0.43) | 0.60 (0.60) | 1.50 vs 1.04 | 1.5 (1.5) | none specific |
+
+Slower than sim1 are only run-bound tests (`grlib_leon3mp`, `fletcher_bufferwriter_512`, `vai_window_gen_interlock`); `poc_arith_addw` is now faster than sim1 (1.07 to 0.82 warm, instruction ratio 1.3 to 1.0). The
+analysis of every test is faster than sim1's. Every cell was measured with the same bench binary. A first attempt on an earlier tip was lost with the host session and discarded; this is a complete rerun.
+
 ## Real-world performance suite: yavs against sim1, head-to-head 4, 2026-10-25 (`tools/realbench`)
 
-This is the current headline (`479463c1`, bench build with the `llvm` feature; the previous run, head-to-head 3 at `4b80445d`, is in brackets). Basis (root rule 23): `--tier=auto` only, TOTAL wall as a user runs
+This was the headline of the fourth run, superseded by head-to-head 5 above (`479463c1`, bench build with the `llvm` feature; the previous run, head-to-head 3 at `4b80445d`, is in brackets). Basis (root rule 23): `--tier=auto` only, TOTAL wall as a user runs
 it, analysis of every file of the compile order (one tool call per file) plus elaboration and run, against sim1's analysis plus elaboration plus run; cold = empty compilation cache and fresh libraries, warm = cache
 present. Interpreter times are never compared with sim1. Ratios are yavs / sim1, below 1 means yavs is faster. Method exactly as head-to-head 3: 5 timed runs per cell, interleaved, two complete passes, the lower pass
 median per cell for both tools; one timed process per core on the physical cores 13, 14 and 15 of a Ryzen 9 7950X3D (the other timing cores belonged to other work), host load average 15 to 20. The interpreter cell of the
@@ -7069,6 +7237,36 @@ load average 38 while measuring, so the ratios are inflated): `poc_arith_addw` 3
   dropped buffer and the op that drives it. `olo_axi_master_full` 0.865, `neorv32_single_min` 0.974, `poc_cache_cpu`
   0.981, geometric mean over 45 designs 0.9935.
 
+## Interpreter round 20: the watching loop (#750, #544, 2026-10-25)
+
+Details in `docs/decisions.md` "Interpreter round 20". The cost of a `--tier=auto` run that compiles nothing sat in the loop for
+uncompiled functions while a tier is set (`run_ops::<false, true>`) and in `run_quick`'s set-up for it, not in the loop with the tier.
+The look at a callee reads `Pre::native` (a byte mirrored from `NativeFlags`, set by `Runtime::sync_native`) instead of the flag table,
+the fused loop ops run 128 iterations per dispatch there, and `exec_fast` clears the sampling slot with a guard. Main-thread
+instructions of `--tier=auto` with nothing compiled over `--tier=interp`, seven designs, geometric mean 1.0137 to 1.0054 (from 1.0011
+to 1.0261 per design before, 0.9998 to 1.0102 after); `--tier=interp` unchanged within 0.1 percent. Left: the per-activation set-up
+(about 20 instructions) and the tick of a jump back.
+
+## Interpreter round 19: statement markers by a forward dataflow (#520, 2026-10-25)
+
+Details in `docs/decisions.md` "Interpreter round 19". `Stmt` markers stay only where a path reaches them through an instruction
+that leaves temporary memory (`opt::leaves_temps`, callee flag `FuncFlags::NO_TEMPS`, set by `propagate`); waits and drive
+statements keep theirs. Instructions of 25 bench designs 0.990 (`calls` 0.833, `textio_heavy` 0.980, `file_io` 0.983);
+`hdlm_lfsr` 0.974, `neorv32_single_min` 0.979, `sc5_fifo_repack` 0.979. Tier-active path (+1.6 percent in an equal-work window,
+per-op differences of 2 to 10 percent) measured, not fixed. Left: `FieldOf` chains in `grlib_leon3mp`, loop-invariant signal
+reads of `sc5_fifo_repack`; `cat_words` is valmove's.
+
+## Interpreter round 18: exact per-op counts, the usual case first (#520, #518, 2026-10-25)
+
+Details in `docs/decisions.md` "Interpreter round 18". `tools/stepcount --ops` counts the instructions of each interpreter op
+(callees included) and `--ops-detail OP` splits one op by function. With it: `Uniform` (one frame lookup), `SubtypeCheck`
+(out of line, one-dimension fast path), the `u64` length of a dimension, `SlicePos` (one look at the descriptor), `LSet`,
+`LCopy` (up to 64 elements in one block), `AllocLCopy` and `LGet` take their usual case before the general code. Instructions
+against main: `sc5_fifo_repack` 0.950, `grlib_leon3mp` 0.956, `fletcher_bufferwriter_512` 0.983, geometric mean over 8 designs
+0.983, cycles 0.991; `tools/bench` internal CPU 0.976; no design above 1.00 in instructions. `CallIeee` out of line was tried
+and lost (+0.4 percent). Left: the kernel side of `Suspend`/`WaitSuspend`/`Drive` (kern22), `cat_words` for `lfsr64`, the
+`FieldOf` chains of `grlib_leon3mp`.
+
 ## Interpreter round 17: loads from the other address spaces (#674, #518, 2026-10-24)
 
 Details and the measurements in `docs/decisions.md` "Interpreter round 17". `op-census` has a table of `Machine::load_slow`
@@ -8026,6 +8224,51 @@ Calibration data (cold, `YAVS_AUTO_TRACE` lines "cpu"): CPU per IR instruction o
 to 340 (full pipeline), native-frame code 445 (lean) to 620 (full), `Fast` code 90 to 115, cache hit 12 (frame) and 26 (native); native-frame
 compile time per IR instruction grows with the size of the function (360 at 15 IR, 570 at 100, 1160 at 300).
 
+### `--tier=auto` work clock, kinds of function, cached objects (yavs-llvm, #670, #673, #675, #717, #728, 2026-10-25)
+
+Decisions and causes: `docs/decisions.md` "`--tier=auto` work clock, kinds of function, cached objects, shared code that waits for its copy".
+Method: the bench builds of main (40cffec3, "before") and of this change ("after"), a fresh copy of the pristine world per sample,
+default threads, pinned to core 8 (the compile thread shares it), `perf stat -e instructions:u` of the whole process tree, cold = the
+first run of the world, warm = the third, 8 worlds per cell, the two binaries interleaved per world, `YAVS_AUTO_TRACE=1` for the
+decisions. Loaded = a busy loop on core 8 and one on its SMT sibling for the whole sample. Cells: median G instructions (spread =
+(max - min) / median), median wall, the median of the sampled work the policy saw (`sampled`, the clock of its decisions) and the number
+of different sets of compiles (and trial verdicts) in the 8 worlds.
+
+| design, run | idle before | idle after | loaded before | loaded after |
+|---|---|---|---|---|
+| `hdlm_lfsr` cold | 27.69 (6.8%), 1.87 s, 0.82 s, 2 | 27.66 (0.4%), 1.85 s, 1.13 s, 2 | 27.21 (2.2%), 5.14 s, 1.10 s, 1 | 27.53 (0.9%), 5.11 s, 1.23 s, 1 |
+| `hdlm_lfsr` warm | 25.14 (6.4%), 1.75 s, 0.73 s, 1 | 25.12 (0.5%), 1.66 s, 1.00 s, 1 | 24.34 (3.1%), 4.56 s, 1.02 s, 2 | 24.03 (2.0%), 4.54 s, 1.18 s, 1 |
+| `sc5_fifo_repack` cold | 41.55 (1.5%), 2.65 s, 2.21 s, 1 | 41.47 (0.4%), 2.61 s, 2.46 s, 1 | 42.56 (4.9%), 7.78 s, -, 4 | 41.29 (0.3%), 7.51 s, 2.48 s, 1 |
+| `sc5_fifo_repack` warm | 39.50 (0.2%), 2.42 s, 2.04 s, 1 | 39.50 (0.2%), 2.43 s, 2.36 s, 1 | 38.02 (13.2%), 6.80 s, 2.66 s, 3 | 39.21 (0.1%), 6.88 s, 2.37 s, 1 |
+| `neorv32_single_min` cold | 37.09 (0.0%), 3.44 s, 1.80 s, 1 | 37.07 (0.0%), 3.36 s, 1.85 s, 1 | 37.16 (0.1%), 9.17 s, 2.38 s, 1 | 37.08 (0.0%), 9.18 s, 2.03 s, 1 |
+| `neorv32_single_min` warm | 35.57 (0.0%), 3.21 s, 1.75 s, 1 | 35.55 (0.0%), 3.26 s, 1.86 s, 1 | 35.63 (0.0%), 8.81 s, 2.35 s, 1 | 35.55 (0.1%), 8.56 s, 2.00 s, 1 |
+| `poc_arith_addw` cold | 121.95 (1.3%), 7.92 s, 4.32 s, 2 | 108.69 (1.2%), 7.35 s, 4.85 s, 1 | 116.06 (1.7%), 21.68 s, 6.25 s, 1 | 106.79 (1.3%), 20.16 s, 5.55 s, 2 |
+| `poc_arith_addw` warm | 112.52 (7.9%), 7.31 s, 3.94 s, 2 | 92.80 (2.7%), 6.23 s, 4.02 s, 1 | 122.91 (9.5%), 23.04 s, 6.98 s, 2 | 91.68 (1.6%), 17.47 s, 4.71 s, 1 |
+| `vai_window_gen_interlock` cold | 210.57 (3.8%), 14.37 s, 10.26 s, 8 | 204.09 (2.3%), 13.99 s, 10.81 s, 8 | 202.52 (1.9%), 36.65 s, 14.54 s, 8 | 202.98 (2.5%), 36.66 s, 10.83 s, 7 |
+| `vai_window_gen_interlock` warm | 149.85 (3.6%), 9.80 s, 8.74 s, 8 | 148.89 (1.1%), 9.88 s, 9.02 s, 6 | 146.40 (6.5%), 27.94 s, 11.85 s, 8 | 150.82 (1.6%), 28.15 s, 9.16 s, 7 |
+
+What the numbers say. The clock: the work the policy saw moves from idle to loaded by 0 to 18 percent after (window generator cold
+10.81 s to 10.83 s; `hdlm_lfsr` and `poc_arith_addw` +8 to +18 percent: the sampler takes its looks at other points of the run) where
+the CPU-time clock moved it by 32 to 45 percent (window generator cold 10.26 s to 14.55 s; the cell without a number is a run that
+ended inside a compile, which the trace does not print). The spread of instructions over 8 worlds is 0.0 to 2.7 percent (before 0.0 to
+13.2). The sets of compiles: `sc5_fifo_repack` 1 set idle and loaded (before 1 and 3 or 4), `poc_arith_addw` warm 1 and 1 (before 2 and
+2). What is left in the window generator (6 to 8 sets in 8 worlds, also idle) is sampling: the functions that differ are within a few
+milliseconds of seen time of their thresholds. Wall: `poc_arith_addw` cold -7 percent (loaded -7), warm -15 (loaded -24), from the
+processes that switch to their copies before they are compiled (`awaits_switch`) and the carry-chain process (`RtlFew`); the rest
+within the spread of the wall (3 to 8 percent on this host), at most 2 percent either way.
+
+Head-to-head designs (`tools/bench/designs`, warm, wall median of 8, core 8): `rtl_ff` 0.665 s to 0.623 s, `rtl_lfsr` 0.288 s to 0.281 s,
+`lfsr64` and `rtl_chain` unchanged. The window generator under the benefit table alone (clock of the base): cold -0.5 to +2.6 percent
+wall over 16 worlds in four batches, warm -6 to +3. `rtl_lfsr` with the shared code of processes of 64 instances or more waiting: warm
+0.283 s to 0.351 s, the reason of `SPEC_INSTANCES`.
+
+All 42 of `tools/realbench` (`--compare`, `--tiers auto,auto-cold`, run phase, core 8, default runs): geometric mean of the wall
+ratio after/before 1.00 (auto, warm) and 0.97 (auto-cold), of the instructions 0.99 and 0.98, sum of the walls 0.97 and 0.94; per
+category within 0.94 to 1.04. Largest changes: `poc_arith_addw` 0.89 / 0.90 (instructions 0.84 / 0.89), `hdlm_axi_fifo` cold 0.89,
+`olo_intf_i2c_master` cold 0.87. The tests that came out +7 to +16 percent in the first pass (`neorv32_single_min`,
+`neorv32_single_cache`, `osvvm_axis_random`, `fletcher_bufferwriter_512`, equal instructions) were run again with 7 runs: 0.97, 1.03,
+1.07, 1.02 warm and 1.00, 1.00, 1.02, 1.02 cold, in the spread of the host.
+
 ## IR optimiser round 14: a repeated `to_integer` is made once (#520, 2026-10-24)
 
 `docs/decisions.md` "IR optimiser round 14". A check such as `simAssertion(to_integer(unsigned(c & s)) = x, "..." &
@@ -8501,7 +8744,7 @@ Geomean against sim1, warm: instructions 0.41, wall 0.33; cold: 0.73 and 0.60. y
 | 3 | kernel per-activation orchestration: cycle, commit, event bookkeeping | 10.4 s (5.0) | kern22 |
 | 4 | compiled code of processes over 1 000 IR is not faster than the interpreter (#679) | `grlib_leon3mp` forced compile 67.8 s against 52.4 s | unowned |
 | 5 | auto policy: priced out or never considered (#675, #728, #673) | interpreted-only seconds 36.6 of 40.2 (grlib), 2.5 of 2.7 (`fletcher_bufferwriter_512`) | autoclk |
-| 6 | process to kernel boundary: entry, scalar drives and waits, signal reads | 13 to 42 percent of small RTL under llvm; reads 2.0 s | cgdirect, reads unowned |
+| 6 | process to kernel boundary: entry, scalar drives and waits, signal reads | 13 to 42 percent of small RTL under llvm; reads 2.0 s | cgdirect (entry); signal reads and the scalar drive callback measured at the floor after kernel round 22, nothing left to gain there (decisions "Signal access from processes", #519) |
 | 7 | cold start: tier-up latency and cache-miss start-up | cold minus warm 22 s over 52 tests | coldc, startup |
 | 8 | calls, frames, pure-call memo | 0.7 s (0.3) | calls730 |
 
@@ -8540,3 +8783,276 @@ L1i misses +50 %, branch misses +56 %. So the goal "heat cycles at or below the 
 design but not yet by cycles on LEON3 (the L1i and branch misses of the 15 MB of code) and `fletcher_bufferwriter_512`; the remaining bytes are
 `LayoutOf` (10 %), `LCopy` (7 %), `Field` and `Load` in the LEON3 copy (per-kind table with `YAVS_LLVM_KINDLOC`).
 Difftest 523/523 on `yavs-interp`, `yavs-llvm`, `yavs-auto` and `yavs-auto` with `--tier-heat=1,0,0`, 1 and 4 threads.
+
+## grlib_leon3mp, second round: copies of nested and serial processes, scratch sets, implicit signals (#720, #721, #722, #723, #724, 2026-10-25)
+
+Commits 44abf774 (copies of processes with nested subprograms and serial processes, file-only processes off the shared-state path, four scratch sets) and the kernel commit
+after it (fast update paths with implicit signals, `'last_value` of one element). `--tier=auto` warm, bench build with `llvm`, core 10, medians of 3 interleaved, run phase
+of the system (std 1993): 48.65 s to 44.47 s (-8.6 percent), interpreter instructions 564.7 G to 490.5 G (-13 percent), user cycles 230.0 G to 211.3 G. The first commit alone:
+54.3 s to 49.3 s (host noisier). Cold not re-measured. Against the reference simulator the ratio of the run goes from about 3.6 to about 3.3 (reference run 12.3 s from the
+previous round, not re-run).
+
+Breadth (realbench `--compare`, 42 tests, run phase, `interp` and `auto`, core 10, load average about 20 on the host, first commit against its base): wall geomean 0.95 / 0.95,
+instructions 1.01 / 1.00; per test within noise except `grlib_leon3mp` 0.92 / 0.94 (instructions 0.94) and the small tests that start up in 10 to 50 ms. `neorv32_single_cache` read 1.13
+in wall at 1.00 in instructions; repeated by hand on core 10 (4 interleaved pairs of user cycles) it is +1 percent (layout noise). The kernel commit was checked on the system, the four SDRAM
+models alone (100 us: 12.8 G to 10.5 G instructions) and the work-counter case `implicit_fast`; it changes nothing for designs without implicit signals.
+
+What the profile says now (four SDRAM models alone, `op-census`): 85 ops and about 16 k instructions per wake; in time, the kernel's part of every wake (`Suspend` 38 percent), the
+`DriveRun` of 13 scalar drives 8, `CopyDrive` 4.6, `EdgeBr` 4. Not done: vector drives in `DriveRun` (built, no gain, #723 closed in decisions.md), the pure-call memo give-up (#722: the memo
+saves twice its cost there; the S-record start-up is the `HRead` loop itself, a table pass for pure functions of one enumeration argument would be the general fix), the empty kernel
+cycle after an activation whose drives were all skipped (kernel lane), the cold path of processes that really use protected objects or the shared heap (#724 remains for those).
+
+## Subprogram calls (#730, 2026-10-25)
+
+Where a frame-mode call goes was measured in both tiers (`docs/decisions.md` "Calls: where the 50 to 80 ns go"): no piece is more than a tenth of a call.
+Taken: `Machine::pop_ret` on `Op::Ret`, the saved caller without its return op, and no slots for a lean callee's unused locals. Measured and not taken: a larger inliner budget (window generator interpreter -9 percent, `--tier=auto` +6 percent), a pool of register files per depth.
+Round 2 (`docs/decisions.md` "Calls, round 2"): `Drive`, `DriveSlot`, vector `SigRead` and `SigSlice` are native-frame instructions (signal-driving procedures 0.59 to 0.68 of the cycles of frame mode, vector-reading functions 0.42), the temporary area has capacity when a view is taken, and the lean path takes nested callees and, where no collection can run, `out`/`inout` references (nested function call 0.85 of the cycles). Real testbenches are level: their steps are protected calls and heap instructions. `Wait` as a native-frame instruction was measured and not taken (an always-waiting procedure 1.35 times the cycles).
+Left: waits and `Edge` on native frames need a cheaper materialisation or a profile; the callers that step `New`/`NewFill`/`LayoutOf`/`Free` (osvvm_axis_random).
+
+## llvm: compiled clocked RTL, round 7: the direct entry (#634, 2026-10-25)
+
+Decisions: `docs/decisions.md` "Compiled clocked RTL processes, round 7". The process-direct entry that was left as the next step (the kernel
+calling the compiled activation with one state pointer and a persistent per-process view) was designed and **not built in that shape**: a `Mem`
+carries a 64 KB object table, a persistent view per process is the cold-lines cost round 2 measured, and `yavs-interp` forbids `unsafe`. What was
+built is the same saving by removing the layers and the churn: `Machine::run_direct` is the first thing `InterpProcess::run` does for a compiled
+process (one function frame instead of `Process::run`, `run_quick`, `run_compiled`), `rt::enter` is inlined into `Tier::run_cached`, and the
+constants a process uses (`Life::Runtime`, at most 16, runtime id in the high bits of `TierFrame::owner`) stay in the thread's table from one
+process to the next instead of being dropped, loaded from the process's record and saved again at every activation (230 instructions in
+`rtl_lfsr`); the walks over the table skip empty words (`Mem::occ_any`). Entry plumbing per activation (`tools/stepcount`, `--tier=llvm`): `rtl_lfsr`
+703 to 441 of 1 391 instructions, `rtl_ff` and `rtl_fan` 468 to 431, `lfsr64` 700 to 624.
+
+Simulation phase, bench builds, core 14, `--tier=auto --tier-heat=1,0,0`, cycles and instructions (minimum of 5, interleaved), main before and after on the rebased tree:
+`rtl_ff` 3.02 to 2.83 G and 9.11 to 8.83 G; `rtl_lfsr` 1.32 to 1.18 and 4.81 to 4.14; `rtl_chain` 0.90 to 0.86 and 3.15 to 3.09; `rtl_fan` 4.38 to 3.82 and 13.85 to 13.16;
+`lfsr64` 0.67 to 0.65 and 2.68 to 2.58. The default `--tier=auto` is level with the interpreter on these designs (the policy compiles little of them; its
+cycles move by noise only), the interpreter is unchanged to the instruction. Whole-run ratios to the reference simulator of the last head-to-head (rtl_lfsr 1.57,
+lfsr64 1.43, rtl_ff 1.25, rtl_chain 1.21) were not re-measured here: the compiled body and the kernel and drive path (550 of 1 800 instructions in `rtl_lfsr`),
+not the entry, are what is left, and with `--tier=auto` the policy decides whether these designs run compiled at all (#728, #675).
+
+Left (ranked): the kernel and drive path per activation (`finish_direct`, `assign_planes_fast`, `commit_planes_run`: #521); `Process::run` 182
+instructions (the `Host`, the sampling slot and the result, 60 before the split, the rest moved here from `run_quick`); `run_cached` 150; `view_again` 72;
+a persistent per-process state needs `unsafe` in `yavs-interp` and a per-process object table (a decision for the user).
+
+## Value movement: lcopy, wide copies, in-place concatenation (#519, 2026-10-25)
+
+Gapscan item 2 (no timing cores: exact instruction counts, `perf stat instructions:u`, core 6, bench build with `llvm`, `--tier=interp --threads 1`; decision and numbers in
+`docs/decisions.md` "Value movement"). Call shapes of `lcopy` (histogram of a throwaway build, not kept): grlib_leon3mp 115 M sampled calls, 85 to 95 percent of 1 to 64 elements in one
+block on each side; fletcher_bufferwriter_512 6.7 M, half of them 4 to 64 elements into heap or shared heap, 10 percent of 512 elements; vai_window_gen_interlock 26 M of 8 elements.
+
+| change | where | effect |
+|---|---|---|
+| `lcopy1`: one block each side, in registers, destination changed in place (frame, temporary, heap, shared heap) | `Machine::lcopy`, `AllocLCopy` | 126 instructions per 8-element copy statement; `lcopy` + `copy_bits` 417 to 230 per 2000 calls in grlib |
+| `lcopy_wide`: three or more blocks, objects apart: memcpy or `shift_merge` between the objects | `Machine::lcopy_wide`, `copy_pair` | 629 per 512-element copy at another bit offset, 716 at the same offset |
+| `Op::CatLCopy` for any size and offset, wide `&` built in its destination | `pre.rs`, `Machine::cat_apart` | 1071 per `&` of 8 x 64 into 512 elements; no temporary of the result size |
+
+Whole runs, interpreter, instructions: fletcher_bufferwriter_512 -1.0 percent, grlib_leon3mp -0.55, poc_stat_histogram -0.9, osvvm_axis_random -0.5; hdlm_lfsr, poc_arith_addw, uvvm_sb_slv
++0.14 to +0.25 (loop layout). The gain per test is small because the wide-vector share of these runs is small once the kernel and dispatch costs are counted: the gapscan "helpers"
+17.6 s are mostly calls of 1 to 64 elements, which now cost about 40 percent less each, and `sig_gather`/`sig_scatter` (about 100 and 130 instructions per leaf, 2.4 + 3.0 percent of grlib
+cycles) are untouched.
+
+Left, measured: `sig_gather` and `sig_scatter` per leaf (signal lookup, kind dispatch, code read) and per call (plan lookup compares descriptor bytes); they want a plan that knows runs of leaves in one
+signal (record packs, #686, #677). `layout_word` (1.7 percent of grlib cycles, about 100 instructions per call) belongs to #518. The compiled tier keeps its own inline copies for one and two blocks; `CatLCopy` and `lcopy_wide` are interpreter code, so
+`fletcher_bufferwriter_512` under `--tier=llvm` (above the interpreter) is not helped by this change.
+
+## Compiled code polls the stop request (#737, 2026-10-25)
+
+A process that never suspends now ends on Ctrl-C or SIGTERM whichever tier runs it: compiled code (`--tier=llvm`, and `--tier=auto` once it has compiled the process) polls
+`TierFrame::stop` at the retreating `Br`s of such a process and leaves to the interpreter at that `Br`, which suspends the process as before (`docs/decisions.md` "Compiled code
+polls the stop request"). Tests: `stuck::sigint_ends_a_process_that_never_suspends` in the default, `--tier=interp` and (llvm feature) `--tier=llvm` variants, each also checking the
+exit status 1, "simulation interrupted" and the wave file; the llvm variant fails without the poll. Cost, user instructions of `--tier=llvm` runs on bench builds (warm object cache, minimum of 3), before to after:
+`compute_h2h` 2 733.70 M to 2 733.72 M, `poc_arith_addw` 124.28 G to 124.34 G (+0.05 percent), the window generator 160.33 G to 160.33 G, because their processes wait and carry no poll. The worst case, a 20 M iteration compute loop in a process
+without any wait that ends in `finish`: 2 714 M to 2 814 M (+3.7 percent, 5 instructions an iteration). Polling every `Br` that jumps back in the code (not only the retreating ones) cost +15 percent there: the
+loop has several such `Br`s to joins laid out earlier. Not covered: SIGUSR1 (the hang report of a process that never suspends), loops ended by a `CondBr`, the Cranelift lowering (#481).
+
+## Result tables for pure functions of one small discrete argument (yavs-ir `casetab.rs`, #722, 2026-10-25)
+
+A pure function of a character, an enumeration or a small integer type that picks its result with a `case` (7 arms or more) or a long `if` chain gets a result table when it is
+lowered; the inliner reads the table in the caller in every tier and keeps the call for values the table does not hold (`docs/decisions.md` "Result tables for pure functions of one
+small discrete argument"). `grlib_leon3mp` (bench build with `llvm`, `--tier=interp`, no cache, core from `tools/claim core`), the first 1 us (elaboration and the S-record start-up
+of the memory models): instructions 63.85 G to 59.9 G (-6.2 percent), cycles 18.43 G to 17.2 G (-6.7 percent; 3 interleaved pairs); `--stop-time=0fs` 38.2 G to 35.8 G; the whole run
+476.8 G to 472.9 G instructions, output byte-identical, user cycles level to -4 percent over 3 interleaved pairs on a host with load average above 30. The start-up of the memory
+models is the `HRead` loop itself (slices, `SubtypeCheck`, `LCopy` and `Is_X` per digit); the table removes only the call and the memo probe of `FromChar`.
+
+Breadth (realbench `--compare`, 42 tests, run phase, `interp` and `auto`, one run per cell, load average 14 to 25, binaries of the base and of the change): instruction ratios 0.95 to 1.04,
+the geometric mean 1.00; every test within 1 percent but `grlib_leon3mp` (0.99 interp, 0.95 auto) and `sc5_fifo_repack` (auto 0.91, the layout of an unrelated unit; not repeated).
+Wall times of single runs in that table are host noise (`grlib_leon3mp` 1.15 and 1.19 there, level to faster in the interleaved cycle measurement above). `tools/bench --compare`
+(31 benchmarks, 3 runs, one core): CPU geomean 1.005. Work-counter case `case_tab`; correctness case `crates/yavs/tests/casetab.rs` (every value of a hex-digit function, a nibble
+function, an enumeration, an integer type with an `if` chain, functions that report for some values; output and reports equal with `YAVS_NO_CASETAB=1`, at 1 and 4 threads, in
+`--tier=llvm` and `--tier=auto`). Not done: integer subtypes (the IR type is the base type), results whose length depends on the argument, a fat pair per call on the table path.
+## Cold library analysis, round 4: lookups invalidated by name, one hash per symbol (#742, #740, 2026-10-25)
+
+Cold analysis of a library, one file per `yavs analyze` call (70 percent of cold minus warm in the head-to-head, #740), after #424 rounds 1 to 3. Cuts and reasoning: `docs/decisions.md`
+"Cold analysis, round 4". Whole-manifest cold analysis, user instructions in G, base build to new build (both `tools/build-bench.sh --features llvm`, cores 0-5, load 17 to 36;
+the counts are exact, the kernel column and the wall times of a shared host are not):
+
+| manifest (calls) | before | after | ratio |
+|---|---:|---:|---:|
+| osvvm-2008 (174) | 5.414 | 4.836 | 0.893 |
+| uvvm-2008 (235) | 9.360 | 8.363 | 0.893 |
+| open-logic-2008 (386) | 10.959 | 9.808 | 0.895 |
+| vunit-2008 (143) | 4.270 | 3.872 | 0.907 |
+| poc-2008 (181) | 2.664 | 2.407 | 0.904 |
+| hdl-modules-2008 (86) | 0.924 | 0.826 | 0.894 |
+| satcat5-2008 (246) | 3.622 | 3.288 | 0.908 |
+| neorv32-2008 (67) | 1.415 | 1.264 | 0.893 |
+| grlib-1993 (454) | 14.107 | 12.191 | 0.864 |
+
+User cycles of the quiet OSVVM pairs 4.42 to 3.87 G and 4.23 to 3.73 G, task-clock 1.66 to 1.48 s (-11 percent); kernel cycles are about 40 percent of a cold call and vary from 3 to 8 G between
+runs of one binary on this host (THP compaction, load), so no kernel claim is made. Warm analysis (the same files again, user instructions): osvvm 1.201 to 1.126 G, satcat5 0.914 to 0.892, hdl-modules 0.178 to 0.173.
+`tools/realbench --compare --phases analyze,elab`, 10 tests (one per library selection with a test), cores 11, instruction ratios new / old: cold analysis 0.90 (lib 0.90, own 0.95), warm analysis 0.94, cold `elab` 0.98
+(neorv32 1.03), warm `elab` 0.95; wall times on the loaded host ranged 0.66 to 2.14 and are not usable.
+
+Checks: all 33 analysis corpora with a release build with debug assertions (the recomputation on every lookup cache hit, every table compared after each unit) as expected, 0 differences; `YAVS_UNIT_CHECK=1` cold and warm
+(each file analysed twice, two calls) over 14 corpus selections (hdl-modules, neorv32, fletcher, en_cl_fix, poc, vunit, osvvm 2008 and 2019, uvvm 2008 and 2019, satcat5, open-logic, json-for-vhdl, grlib 1993): no difference between the cached and the
+fresh analysis. The unit entries of hdl-modules (172), satcat5 (590) and vunit (254) written by the old and the new build have the same sizes pairwise and differ only in the hashes that
+carry the build id.
+
+Where a cold call goes now (frame-pointer profile, 9 corpora): the file's own analysis 40 percent (`Page::at` loads of the lazy arenas 3.8 percent, lookups 3 percent, the rest flat), dependencies' entries 25 percent (`Scope` pages
+6 percent, of which 45 percent is interning the names; `Decl` pages 6 percent), writing the entry 10 percent, parsing 9 percent, library index 2.5 percent, dynamic loader 5 percent. Batching is a user decision: one call per library
+instead of one per file takes UVVM from 9.36 to 6.08 G user and 2.38 to 0.36 G kernel instructions (`docs/decisions.md`). Not verified: Windows and aarch64 (CI).
+
+## llvm: compiled copies of processes, constant `LCopy` (#679, 2026-10-25)
+
+(`docs/decisions.md` "llvm: compiled copies of processes, ...".) A process whose shared code is compiled now switches to its specialised copy
+(`Tier::compiles_copies`, `AutoTier`) and the copy is compiled, so the compiled code has the folded layouts and descriptors of the interpreter's
+copies; a constant `LCopy` in one plane block is inline arithmetic with constant masks; a register defined once by a constant is not stored.
+Bench builds (`tools/build-bench.sh --features llvm`) of main at 10a5dc8d and of the change, one timed core of CCD1 (`tools/claim core`), all
+modes of a design interleaved in one session (`perf stat --no-inherit`, cycles:u of the simulation thread, medians of 3 after an untimed warm
+run; a session differs from another by up to 25 percent, so only the rows of one table are compared). Heat is `--tier=auto --tier-heat=1,0,0`.
+
+| design (cycles in G) | interpreter | heat, main | heat, change | auto, main | auto, change |
+|---|---:|---:|---:|---:|---:|
+| `fletcher_bufferwriter_512` | 20.3 | 23.0 | 17.5 (-24 %, instructions -15 %) | 20.8 | 20.4 |
+| `grlib_leon3mp` 150 us, `iu:comb` etc. forced in heat | 37.3 | 47.5 | 41.9 (-12 %, instructions -6 %) | 43.4 | 40.2 (-7 %) |
+| `sc5_fifo_repack` | 11.4 | 7.09 | 5.70 (-20 %) | 9.59 | 9.65 |
+| `neorv32_single_min` | 14.9 | 13.95 | 13.47 (-3.5 %) | 14.9 | 15.2 |
+
+Before the rebase onto the work-clock policy (f85fcee4 as base, same method): writer heat 26.2 to 20.95 G, LEON3 150 us heat 51 to 43 G, `sc5_fifo_repack`
+`--tier=auto` 9.4 to 6.9 G with the wait removed as well (not kept, decisions). `tools/realbench --compare` of f85fcee4 and the change, `--tiers auto,auto-cold`, 42 tests,
+one core: instructions equal within 1 percent except `poc_arith_addw` -16 % (120.8 to 100.8 G warm) and `sc5_fifo_repack` -4 %; the flagged wall slowdowns were
+runs of 0.01 to 0.3 s and one 55 s LEON3 run with equal instructions (the whole LEON3 run, interleaved, `--tier=auto`: 291 to 259 G cycles median, 263 to 255 minimum).
+
+Where the LEON3 gap to the interpreter is (heat 150 us, +12 %, instructions -6 %): frontend stall cycles 11.3 G against 5.9 G, L1i misses 108 M against 38 M, branch misses
+219 M against 160 M. The compiled code is 62 bytes per IR instruction in the largest copy (112 in the shared code); a process that runs its whole straight-line body at each
+activation (the integer unit's `comb` copy: 11 477 IR instructions, 700 KB of machine code) streams more instruction bytes through the 32 KB L1i and the 1 MB L2 than the
+interpreter's loop and operation stream do. Top kinds of that copy by bytes (`YAVS_LLVM_KINDLOC`): `LCopy` 14 % (336 bytes each before this change, 266 after;
+the destination's heap lookup is a large part of the rest), `Br` 7 % (the entry switch tree), `SigRead` 7 %, `Const` 7 % (before this change), `Alloc` 5 %. Left: one lookup for the several
+`LCopy` of one record variable, `Alloc` and `SigRead` bytes, and shared subprogram code still has the unfolded `LayoutOf` and `Field` (stepped `LayoutOf` 467 K per 60 us in LEON3).
+Difftest 524/524 on `yavs-interp`, `yavs-llvm`, `yavs-auto` (1 and 4 threads) and `yavs-auto --tier-heat=1,0,0` (1 and 4 threads, also with `YAVS_SPEC_AFTER=2`).
+
+### `--tier=auto` round 5 (yavs-llvm, yavs-interp, #675, 2026-10-25)
+
+Decisions and causes: `docs/decisions.md` "`--tier=auto` round 5". Method: bench builds of main (f3a280ea, "main") and of this change ("new"), a
+fresh copy of the pristine world per sample, pinned to core 8 (the compile thread shares it), cold = first run, warm = third, 4 worlds, the three
+tiers interleaved per world; wall of `--tier=auto` as a ratio to `--tier=interp` of the same build (below 1 is faster).
+
+| design | main cold / warm | new cold / warm |
+|---|---|---|
+| `rtl_lfsr` | 1.11 / 1.05 | 0.99 / 0.80 |
+| `rtl_ff` | 1.06 / 0.87 | 0.97 / 0.86 |
+| `sc5_fifo_repack` | 1.07 / 0.94 | 1.03 / 0.89 |
+| `lfsr64_xor` | 0.99 / 0.95 | 0.88 / 0.85 |
+| `hdlm_lfsr` | 0.48 / 0.44 | 0.49 / 0.41 |
+| `fletcher_bufferreader` | 1.04 / 1.04 | 1.02 / 1.02 |
+| `fletcher_bufferwriter_512` | 1.04 / 1.04 | 1.03 / 1.03 |
+| `neorv32_single_min` | 1.02 / 1.04 | 1.02 / 1.03 |
+| `lfsr64`, `rtl_chain`, `poc_arith_addw`, `vai_window_gen_interlock` | equal | equal |
+
+Geometric mean of new / main over the 47 designs (the 42 of realbench and the h2h designs): wall 0.987 cold, 0.970 warm, warm cycles 0.986.
+Head-to-head designs (`tools/bench --ref sim1 --tiers interp,auto`, warm, median of 8, core 8), wall of `--tier=auto` against the reference
+simulator: `rtl_lfsr` 2.33 to 1.80 (0.35 to 0.27 s; main had lost the 1.57 of head-to-head 4 to the trial of the shared code), `rtl_ff` 1.28 to
+1.26, `compute_h2h` 0.15 to 0.14, the others equal (`rtl_chain` 1.38, `lfsr64` 1.60, `rtl_ram` 1.20, `lfsr64_xor` 1.00, `rtl_fan` 0.83, `rtl_bus` 0.28,
+`xor_types` 0.39).
+
+All 42 of `tools/realbench` (`--compare`, `--tiers auto,auto-cold`, run phase, core 8, default runs): wall geometric mean new / main 1.00 (auto,
+warm) and 0.99 (auto-cold), instructions 0.99 and 0.99, sum of the walls 0.99 and 0.98; per category 0.95 (fsm) to 1.10 (memory, four runs of
+0.01 to 0.03 s) warm and 0.97 to 1.00 cold; slowdowns flagged by the tool: none. Largest: `hdlm_lfsr` 1.44 to 1.36 s warm, `poc_fifo_ic_assembly`
+0.09 to 0.08 s, `fletcher_bufferreader` 1.55 to 1.52, `leon3mp` 36.4 to 36.1 s.
+
+## `--tier=auto` warm runs of one-loop processes (yavs-interp, yavs-llvm, #749, 2026-10-25)
+
+Decisions and cause: `docs/decisions.md` "`--tier=auto`: a process that never comes back from its first wait is not waited for". Head-to-head 5
+found `compute_h2h`, `xor_types` and `xor_sig` as slow warm as cold; `6d2f237f` (the shared code of a process that can have a copy waits for the
+switch, 400 ms of sampled work) was the cause: those processes run one loop in their only activation, so the switch never comes. Fixed: the
+interpreter reports the second activation of such a process (`NativeFlags::resumed`) and the tier waits only while one may still come.
+
+Method: bench builds with the `llvm` feature of main (`93b2a89e`, A) and of the fix (B), `--tier=auto`, default threads, the default generics of
+`tools/bench/designs`, one claimed core (the compile thread shares it), medians of 5 interleaved runs, warm = third run of the work library, cold = a
+fresh copy of the analysed library per run; wall ms (CPU equals wall within 1 ms in every cell).
+
+| design | warm A | warm B | B/A | cold A | cold B | B/A |
+|---|---:|---:|---:|---:|---:|---:|
+| `compute_h2h` | 450 | 140 | 0.31 | 519 | 374 | 0.72 |
+| `xor_sig` | 357 | 145 | 0.41 | 414 | 303 | 0.73 |
+| `xor_types` | 358 | 123 | 0.34 | 420 | 403 | 0.96 |
+| `rtl_ff` | 599 | 602 | 1.00 | 729 | 725 | 0.99 |
+| `rtl_lfsr` | 371 | 356 | 0.96 | 384 | 366 | 0.95 |
+| `rtl_chain` | 193 | 194 | 1.01 | 193 | 189 | 0.98 |
+| `rtl_fan` | 817 | 824 | 1.01 | 821 | 829 | 1.01 |
+| `rtl_bus` | 193 | 194 | 1.01 | 194 | 194 | 1.00 |
+| `rtl_ram` | 63 | 63 | 1.00 | 65 | 65 | 1.00 |
+| `lfsr64_xor` | 63 | 63 | 0.99 | 65 | 64 | 0.99 |
+| `lfsr64` | 168 | 171 | 1.02 | 169 | 172 | 1.01 |
+
+Bisect (`compute_h2h`, `--tier=auto`, core 9, bench builds): `00b506e8`, the parent of `6d2f237f`, 0.43 s cold and 0.16 s warm; main before the fix 0.47 s warm. The trace of the fixed warm run links `_p0` from the cache after 17 to 21 ms of sampled work (400 085 us before). The ratio against
+sim1 (head-to-head 5: 0.15 warm for `compute_h2h`, 0.40 `xor_types`) is not re-measured here; at sim1's 3168 ms the warm run is 140 ms (0.04 again).
+
+`tools/realbench --compare` (all 42 tests, run phase, `--tiers auto,auto-cold`, cores 9 and 10, default runs): wall geometric mean B/A 1.00 (auto) and 1.00
+(auto-cold), instructions 1.00 and 1.00, sum of walls 0.99 and 1.05 (the cold sum is `vai_window_gen_interlock` 11.8 s to 12.8 s in that pass and 12.7 s to 12.1 s in a
+second pass of three tests, instructions 1.00 both: its decisions differ between worlds by sampling, #673). Flagged and re-run alone (9 runs): `osvvm_axis_random` and
+`hdlm_ring_buffer` 1.00 / 0.84 and 1.00 / 0.89 (noise of the first pass). Not explained: `fletcher_bufferwriter_512` 1.01 to 1.08 warm and 1.06 to 1.15 cold wall at
+equal instructions (52.2 G) in two passes, cycles not measured (code layout, #576, or the load of the host); no `--tier=auto` decision of that test was traced.
+
+## Temporaries of a process in its frame (#668, 2026-10-25)
+
+`yavs_ir` `opt/slots.rs` keeps constant-size temporaries of processes (waveforms of signal
+assignments, vectors read from signals, concatenations, descriptors) in frame bytes, with frame
+forms of the fused `Alloc` ops in the predecoder (`ZeroSlot`, `CopyDrive`/`LSetDrive`/`LCopyDrive`
+with `pre::FRAME_WAVE`, `ZeroReadVec`, `ZeroCat`, `ZeroLCopy`, `ZeroCatLCopy`, `SlotBr`, drive runs
+without a marker) and in the LLVM tier (`Zero` as `memset`, `ScalarDrive::head`); `YAVS_NO_SLOTS=1`
+turns it off. Landed from two independent branches (decisions.md "Temporaries of a process in its
+frame"). Also: 4-byte `LoadSlot`/`LoadInst` loads sign-extend (#746), compiled frame code fetches
+the slots pointer before an instruction's own branches (#751), the predecoder's single-use counts
+ignore the operand lists of removed instructions (#752).
+
+Instructions (`perf stat`, bench builds, each cell the third run of its world so the compilation
+cache is in its steady state; main = 1f267217, the change's base; "off"/"on": this binary with and
+without `YAVS_NO_SLOTS=1`; percentages on/off, on/main):
+
+| design | interp main / off / on (G) | llvm main / off / on (G) |
+|---|---|---|
+| `neorv32_single_min` | 30.82 / 30.90 / 30.18 (-2.3 %, -2.1 %) | 41.74 / 41.78 / 40.13 (-3.9 %, -3.9 %) |
+| `sc5_fifo_repack` | 36.53 / 36.67 / 36.24 (-1.2 %, -0.8 %) | 22.42 / 22.42 / 22.28 (-0.6 %, -0.6 %) |
+| `fletcher_bufferwriter_512` | 51.29 / 51.39 / 50.96 (-0.8 %, -0.6 %) | 58.74 / 58.76 / 58.41 (-0.6 %, -0.6 %) |
+| `poc_cache_cpu` | 7.85 / 7.96 / 7.76 (-2.6 %, -1.1 %) | 11.07 / 11.07 / 11.01 (-0.6 %, -0.6 %) |
+| `sc5_timestamp` | 6.88 / 6.88 / 6.64 (-3.5 %, -3.5 %) | 5.78 / 5.78 / 5.74 (-0.8 %, -0.8 %) |
+| `grlib_leon3mp` (100 us) | 82.79 / 83.05 / 83.50 (+0.5 %, +0.9 %) | 122.28 / 122.69 / 121.74 (-0.8 %, -0.4 %) |
+| `poc_arith_addw` | 147.73 / 146.90 / 149.02 (+1.4 %, +0.9 %) | 124.45 / 124.46 / 122.43 (-1.6 %, -1.6 %) |
+
+(A measurement taken one run after the warm-up, as in the first version of this table in the
+branch, is not steady: the second run of a world makes cache entries the third reuses, and which
+variant ran first moved designs by up to 13 percent.) Peak RSS main / on: interpreter equal within
+3 percent (`fletcher_bufferwriter_512` 38.0 / 37.8 MB, `grlib_leon3mp` 243 / 243 MB,
+`neorv32_single_min` 72 / 75 MB); LLVM tier `neorv32_single_min` 527 / 444 MB, `grlib_leon3mp`
+1409 / 1386 MB, `fletcher_bufferwriter_512` 258 / 258 MB.
+
+Head-to-head designs (`tools/bench/designs` group `h2h`, pinned to one core, median of 5
+interleaved runs, cycles and instructions new / main): interpreter geomean cycles 1.010,
+instructions 1.007 (`rtl_lfsr` 1.039 / 1.024, `lfsr64` 1.039 / 1.017, `lfsr64_xor` 1.024 / 1.019,
+`xor_sig` 1.028 / 1.025; `rtl_ff` 0.982 / 0.993, `rtl_chain` 0.987 / 0.994); LLVM tier 0.980 /
+0.975. The `lfsr` designs concatenate into a temporary every cycle: `ZeroCat` is out of line where
+`AllocCat` is an arm of the loop, and putting it (or `ZeroReadVec`) into the loop cost 1 to 3
+percent of instructions on every design through code generation of `run_ops`, so `ZeroReadVec` is
+out of line too (the binary with the pass off is within -0.6 to +1.5 percent of main on the seven
+designs, equal on the head-to-head ones but `compute_h2h` +0.7 %).
+
+All 42 of `tools/realbench` (`--compare` main against this change, run phase, `--tiers interp,llvm`,
+core 9, default runs, host loaded): geomean new / main of wall 0.99 (interp) and 1.00 (llvm), CPU
+time 0.99 and 1.00, instructions 1.00 and 1.00; category `cpu` 0.97 and 0.97 (wall), `numeric`
+1.05 and 0.99, `memory` 0.84 and 1.00 (runs of 0.01 to 0.04 s); sum of the walls 0.98 and 1.02;
+`neorv32_*` 0.94 to 0.97 interp and 0.92 to 0.95 llvm, `grlib_leon3mp` 0.98 interp and 1.05 llvm
+(instructions 0.99), `poc_arith_addw` 0.97 and 1.01, `fletcher_bufferwriter_512` 1.02 and 0.96.
+
+Checked: `cargo test --workspace`, `-p yavs-llvm -p yavs --features llvm`, both gc-stress suites
+(one timing-dependent failure under load, #755, passes alone); the differential corpus 524/524 on
+`yavs-interp`, `yavs-llvm`, `yavs-auto` and `yavs-auto --tier-heat=1,0,0` at 1 and 4 threads, and
+on the first three with `YAVS_SPEC_AFTER=2`.

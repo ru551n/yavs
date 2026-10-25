@@ -318,7 +318,17 @@ pub(crate) struct ProcState {
     pub out: Vec<Out>,
     pub outv: Vec<OutV>,
     pub outb: Vec<OutB>,
+    /// What this run did, `ACT_*` bits; cleared at every resumption (`kernel::resumption`). The
+    /// commit looks at the lists only when a bit says they may hold something.
+    pub act: u8,
 }
+
+/// `ProcState::act`: the run set a timeout or made an effect (`deadline`, `effects`), so the
+/// commit is not the usual clocked one.
+pub(crate) const ACT_SLOW: u8 = 1;
+/// `ProcState::act`: the run scheduled a transaction or made a direct entry or a phantom
+/// (`scheduled`, `phantoms`, `out`, `outv`, `outb`). Every push sets it.
+pub(crate) const ACT_ASSIGNED: u8 = 2;
 
 /// `ProcState::known` when no edge is known.
 pub(crate) const NO_EDGE: u64 = u64::MAX;
@@ -339,6 +349,26 @@ pub const EDGE_LEVEL: u8 = 2;
 const SKIPPED: u32 = u32::MAX;
 
 impl ProcState {
+    /// The summary flags say what the lists hold (a flag may be set with its lists empty, not the
+    /// other way round).
+    #[inline(always)]
+    pub fn check_flags(&self) {
+        debug_assert!(
+            self.act & ACT_SLOW != 0 || (self.deadline.is_none() && self.effects.is_empty()),
+            "ACT_SLOW missing"
+        );
+        debug_assert!(
+            self.act & ACT_ASSIGNED != 0
+                || (self.scheduled.is_empty()
+                    && self.phantoms.is_empty()
+                    && self.out.is_empty()
+                    && self.outv.is_empty()
+                    && self.outb.is_empty()),
+            "ACT_ASSIGNED missing"
+        );
+        debug_assert!(!self.again || self.sens.is_empty(), "again with sens");
+    }
+
     /// End of a run: whether skipped assignments are left, which the kernel must replace by an
     /// empty delta.
     pub fn take_phantoms(&mut self) -> bool {
@@ -430,6 +460,13 @@ impl Ctx<'_> {
     #[inline]
     pub fn stop_requested(&self) -> bool {
         crate::kernel::Interrupt::stopped(self.sh.interrupt)
+    }
+
+    /// The flag byte `stop_requested` reads (`Interrupt::STOP` set: stop), for compiled code that
+    /// polls it itself. Valid for the whole run.
+    #[inline]
+    pub fn interrupt_flags(&self) -> *const u8 {
+        self.sh.interrupt.as_ptr()
     }
 
     /// An error with this process, time and delta attached. The interpreter adds its call
@@ -554,6 +591,20 @@ impl Ctx<'_> {
         let (s, r) = self.sig(r)?;
         self.history(s, r, true)?;
         Ok(s.last_value_of(r).to_value())
+    }
+
+    /// `'last_value` of one element of a logic signal as its `std_ulogic` code, without building
+    /// a value (the element's own history is all there is to a single element, so this is
+    /// [`Ctx::last_value`]); `None` where that does not apply (more or fewer elements, a signal
+    /// that holds bytes), and the caller reads the value.
+    #[inline]
+    pub fn last_code(&self, r: impl Into<SigRef>) -> Result<Option<u8>, SimError> {
+        let (s, r) = self.sig(r)?;
+        if r.len != 1 {
+            return Ok(None);
+        }
+        self.history(s, r, true)?;
+        Ok(s.last_value.planes_code(r.offset as usize))
     }
 
     /// The first element of `r` of a logic signal as a `std_ulogic` code, its current value or
@@ -808,6 +859,7 @@ impl Ctx<'_> {
                     value: Some(value),
                 });
                 self.st.waveforms[local].schedule(r, None, &mut t);
+                self.st.act |= ACT_ASSIGNED;
                 self.st.scheduled.push((now, d));
             }
             return;
@@ -843,6 +895,7 @@ impl Ctx<'_> {
             });
             // Transport: a transaction at `now` replaces the earlier ones at `now`.
             self.st.waveforms[local].schedule(r, None, &mut t);
+            self.st.act |= ACT_ASSIGNED;
             self.st.scheduled.push((now, d));
         }
     }
@@ -936,6 +989,7 @@ impl Ctx<'_> {
         {
             let w = &mut self.st.waveforms[local];
             if w.phantom.is_empty() {
+                self.st.act |= ACT_ASSIGNED;
                 self.st.phantoms.push(local as u32);
             }
             w.phantom.push(r);
@@ -965,6 +1019,7 @@ impl Ctx<'_> {
                 range: r,
                 value: Some(buf),
             });
+            self.st.act |= ACT_ASSIGNED;
             self.st.scheduled.push((now, d));
             return Ok(());
         }
@@ -1066,14 +1121,27 @@ impl Ctx<'_> {
                 elem: r.offset,
                 code,
             });
+            self.st.act |= ACT_ASSIGNED;
             self.st.scheduled.push((at, d));
             return true;
         }
         if info.direct {
             let (sig, slot) = (info.signal.0, info.slot);
-            // The driver's vector entries keep the order: the general path moves them.
+            // The driver has vector entries in this run (a record assigned whole, then one of its
+            // fields): the commit applies `out` before `outv`, so the element joins the vector
+            // entries, in order, as an entry of one element. No skip: the entries before it
+            // decide what the signal holds.
             if self.has_entries(info, 2) {
-                return false;
+                let c = u64::from(code);
+                self.st.act |= ACT_ASSIGNED;
+                self.st.outv.push(OutV {
+                    sig,
+                    slot,
+                    elem: r.offset,
+                    len: 1,
+                    planes: [c & 1, c >> 1 & 1, c >> 2 & 1, c >> 3 & 1],
+                });
+                return true;
             }
             // The signal and the driver have the code and nothing of this run is pending: the
             // commit would find no change (`Signal::commit_code`), so the entry is not made.
@@ -1084,6 +1152,7 @@ impl Ctx<'_> {
                 return true;
             }
             self.mark_entries(info, 1);
+            self.st.act |= ACT_ASSIGNED;
             self.st.out.push(Out {
                 sig,
                 slot,
@@ -1104,6 +1173,7 @@ impl Ctx<'_> {
                 && (!ds.shared || s.sole(r))
         } {
             w.phantom.push(r);
+            self.st.act |= ACT_ASSIGNED;
             self.st.phantoms.push(info.local);
             return true;
         }
@@ -1113,6 +1183,7 @@ impl Ctx<'_> {
             elem: r.offset,
             code,
         });
+        self.st.act |= ACT_ASSIGNED;
         self.st.scheduled.push((now, d));
         true
     }
@@ -1160,6 +1231,7 @@ impl Ctx<'_> {
             };
         if same {
             self.st.waveforms[info.local as usize].phantom.push(r);
+            self.st.act |= ACT_ASSIGNED;
             self.st.phantoms.push(info.local);
         }
         same
@@ -1172,6 +1244,7 @@ impl Ctx<'_> {
     #[inline]
     fn note_skipped(&mut self) {
         if self.st.phantoms.last() != Some(&SKIPPED) {
+            self.st.act |= ACT_ASSIGNED;
             self.st.phantoms.push(SKIPPED);
         }
     }
@@ -1208,6 +1281,7 @@ impl Ctx<'_> {
             if code >= 9 || !range.contains(Range::new(elem, 1)) {
                 break;
             }
+            self.st.act |= ACT_ASSIGNED;
             self.st.out.push(Out {
                 sig,
                 slot,
@@ -1360,6 +1434,7 @@ impl Ctx<'_> {
                 // The commit writes it to the signal; a later assignment of the run to the driver
                 // is another entry (the last one wins), one that needs the waveform moves them.
                 self.mark_entries(info, 3);
+                self.st.act |= ACT_ASSIGNED;
                 self.st.outb.push(OutB {
                     sig: sig as u32,
                     slot: info.slot,
@@ -1378,6 +1453,7 @@ impl Ctx<'_> {
         if at == now && self.unchanged(sig, d, r, ValueRef::Bytes(bytes)) {
             let w = &mut self.st.waveforms[local];
             w.phantom.push(r);
+            self.st.act |= ACT_ASSIGNED;
             self.st.phantoms.push(local as u32);
             return true;
         }
@@ -1388,6 +1464,7 @@ impl Ctx<'_> {
             es: n as u8,
             val,
         });
+        self.st.act |= ACT_ASSIGNED;
         self.st.scheduled.push((at, d));
         true
     }
@@ -1443,25 +1520,26 @@ impl Ctx<'_> {
                 len,
                 planes,
             });
+            self.st.act |= ACT_ASSIGNED;
             self.st.scheduled.push((at, d));
             return true;
         }
         if info.direct {
             let (sig, slot) = (info.signal.0, info.slot);
-            // The driver's one-element entries keep the order: the general path moves them.
-            if self.has_entries(info, 1) {
-                return false;
-            }
             let planes = planes.map(|p| p & yavs_logic::wide::nmask(len as usize));
+            // One-element entries of the driver (the fields of a record before this one) are
+            // applied before the vector entries, which is the order they were made in.
             // Nothing of this run on the driver and the signal and its driving value have the
             // value: the commit would only set the elements pending (`direct_same_planes`).
-            if !self.has_entries(info, 2)
+            if !self.has_entries(info, 1)
+                && !self.has_entries(info, 2)
                 && self.sh.signals[sig as usize].direct_same_planes(slot, r.offset, len, planes)
             {
                 self.note_skipped();
                 return true;
             }
             self.mark_entries(info, 2);
+            self.st.act |= ACT_ASSIGNED;
             self.st.outv.push(OutV {
                 sig,
                 slot,
@@ -1485,6 +1563,7 @@ impl Ctx<'_> {
             && (!ds.shared || s.sole(r))
         {
             w.phantom.push(r);
+            self.st.act |= ACT_ASSIGNED;
             self.st.phantoms.push(info.local);
             return true;
         }
@@ -1495,6 +1574,7 @@ impl Ctx<'_> {
             len,
             planes,
         });
+        self.st.act |= ACT_ASSIGNED;
         self.st.scheduled.push((now, d));
         true
     }
@@ -1527,14 +1607,14 @@ impl Ctx<'_> {
             return false;
         }
         let w = &self.st.waveforms[info.local as usize];
-        // The driver's one-element entries keep the order: the general path moves them.
-        if !w.idle() || !w.phantom.is_empty() || self.has_entries(info, 1) {
+        if !w.idle() || !w.phantom.is_empty() {
             return false;
         }
         self.mark_entries(info, 2);
         let (sig, slot) = (info.signal.0, info.slot);
         for (i, b) in blocks.as_chunks::<32>().0.iter().enumerate() {
             let len = (n - 64 * i).min(64);
+            self.st.act |= ACT_ASSIGNED;
             self.st.outv.push(OutV {
                 sig,
                 slot,
@@ -1591,6 +1671,7 @@ impl Ctx<'_> {
             elem,
             code,
         });
+        self.st.act |= ACT_ASSIGNED;
         self.st.scheduled.push((at, d));
         true
     }
@@ -1679,6 +1760,7 @@ impl Ctx<'_> {
                 value,
             });
             self.st.waveforms[local].schedule(r, Some(time), &mut t);
+            self.st.act |= ACT_ASSIGNED;
             self.st.scheduled.push((time, d));
         }
         Ok(())
@@ -1780,6 +1862,7 @@ impl Ctx<'_> {
             return Ok(()); // a null slice: nothing to drive
         }
         let local = self.own(d)?.local as usize;
+        self.st.act |= ACT_ASSIGNED;
         self.st.scheduled.extend(new.iter().map(|t| (t.time, d)));
         self.st.waveforms[local].schedule(r, reject_from, new);
         Ok(())
@@ -1862,6 +1945,7 @@ impl Ctx<'_> {
     /// A timeout past TIME'HIGH never expires (lrm-checks.md).
     #[inline]
     pub fn wait_for(&mut self, delay: Time) -> Result<(), SimError> {
+        self.st.act |= ACT_SLOW;
         self.st.deadline = self.after(delay).ok();
         Ok(())
     }
@@ -1873,6 +1957,7 @@ impl Ctx<'_> {
         if deadline < self.sh.now {
             return Err(self.error(ErrorKind::DeadlineInPast { deadline }));
         }
+        self.st.act |= ACT_SLOW;
         self.st.deadline = Some(deadline);
         Ok(())
     }
@@ -1894,6 +1979,7 @@ impl Ctx<'_> {
             }
             _ => false,
         };
+        self.st.act |= ACT_SLOW;
         self.st.effects.push(Effect::Report(severity, msg, live));
     }
 
@@ -1907,16 +1993,19 @@ impl Ctx<'_> {
             }
             _ => false,
         };
+        self.st.act |= ACT_SLOW;
         self.st.effects.push(Effect::Output(bytes.to_vec(), live));
     }
 
     /// `std.env.stop`.
     pub fn stop(&mut self, status: i32) {
+        self.st.act |= ACT_SLOW;
         self.st.effects.push(Effect::Stop(status));
     }
 
     /// `std.env.finish`.
     pub fn finish(&mut self, status: i32) {
+        self.st.act |= ACT_SLOW;
         self.st.effects.push(Effect::Finish(status));
     }
 
@@ -1934,6 +2023,7 @@ impl Ctx<'_> {
             Some(value.into()),
         )
         .map_err(|k| self.error(k))?;
+        self.st.act |= ACT_SLOW;
         self.st.effects.push(Effect::Op(op));
         Ok(())
     }
@@ -1952,6 +2042,7 @@ impl Ctx<'_> {
             Some(value.into()),
         )
         .map_err(|k| self.error(k))?;
+        self.st.act |= ACT_SLOW;
         self.st.effects.push(Effect::Op(op));
         Ok(())
     }
@@ -1960,6 +2051,7 @@ impl Ctx<'_> {
     pub fn release(&mut self, r: impl Into<SigRef>, mode: ForceMode) -> Result<(), SimError> {
         let op = make_op(self.sh.signals, r.into(), OpMode::Release(mode), None)
             .map_err(|k| self.error(k))?;
+        self.st.act |= ACT_SLOW;
         self.st.effects.push(Effect::Op(op));
         Ok(())
     }

@@ -1,0 +1,1 @@
+Designs of many small clocked processes simulate faster with compiled code: a compiled process is entered through a shorter path, and the constants it uses stay available to the next process instead of being looked up again at every activation.

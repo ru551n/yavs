@@ -42,6 +42,11 @@ textual dump.
 
 ## Changes
 
+- Result tables for pure functions of one small discrete argument (#722, `src/casetab.rs`): `Program::tabs` (function id to `CaseTab`), made by `FuncBuilder::finish`, read by the inliner; producers do nothing (a stored program carries the field).
+- `Inst::Zero { addr, bytes }` (#668): zero `bytes` bytes (a multiple of 8) at `addr`, the zeroing
+  of an `Alloc` for memory that is not allocated there. Made only by the optimiser (`opt/slots.rs`:
+  constant-size temporaries of a process in its frame); producers never emit it. The interpreter
+  runs it as `Op::ZeroSlot` (or through `step`), the LLVM tier as a `memset`.
 - Memo of pure calls (#701, `src/memo_fn.rs`): `Param::arr` (the array type of the data cell of an array parameter passed by value; its `ty` stays `None`, so no debugger local), `Func::ret_ty` (the base type of a function's result; `FuncBuilder::param_array`, `FuncBuilder::ret_ty` set them, `yavs-lower` does for functions), `Program::memo_sig` (a `MemoSig` per function the interpreter may answer calls of from a memo, else `None`), `MemoArg`/`MemoArr`, `native_is_pure` (the allow-list of natives that compute from their arguments, moved here from `yavs-interp`). A producer that builds `Func`s by hand sets nothing: without `ret_ty` a function has no signature.
 - Package data in specialised copies (#708): `Program::copy_of_pkgs` (`copy_of` with the data of the packages the process's declarative part reads, taken from a `PkgSource`; a digest of them is part of the copy's key, of `copy_tag` and of the stored `CopyBlob`), `Program::pkg_deps`, `PkgData`, `PkgSource`. `copy_of` is `copy_of_pkgs` without package data.
 - `Inst::MemEq` (#444): `dst` = 1 when `n` bytes at two addresses are equal. Lowering emits it for `=` and

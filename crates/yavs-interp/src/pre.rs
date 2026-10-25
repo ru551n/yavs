@@ -49,6 +49,10 @@ pub(crate) struct Pre {
     pub memo_off: std::sync::atomic::AtomicBool,
     /// Processes that gave the memo of this function up.
     pub memo_votes: std::sync::atomic::AtomicU32,
+    /// Some flag of `NativeFlags::func` is set for this function (compiled, asked, called by the
+    /// tier or counted; never cleared). The watching loop looks at this byte of the callee's
+    /// `Pre`, which the call has loaded, instead of the flag table (`Runtime::sync_native`).
+    pub native: std::sync::atomic::AtomicBool,
     /// Registers defined once by a constant or an address (not of an up-level frame): the
     /// frame starts with their values, the interpreter never executes their definitions.
     pub preloaded: Box<[bool]>,
@@ -194,8 +198,14 @@ impl Pre {
         if lean {
             frame.retain(|&(_, off)| !f.params.iter().any(|p| p.slot as u64 == off));
         }
-        let all_params: u32 = f.params.iter().map(|p| p.width.bytes()).sum();
-        let fslots = if lean && f.frame == all_params && f.roots.is_empty() {
+        // A lean frame needs slots only for what the code addresses besides the parameters
+        // (which the skipped prologue alone read): none when it addresses no other.
+        let fslots = if lean
+            && (f.roots.is_empty() || !may_collect(f))
+            && !f.code.iter().any(|i| {
+                matches!(*i, Inst::AddrOf { space: AddrSpace::Frame, off, .. }
+                    if !f.params.iter().any(|p| p.slot == off))
+            }) {
             0
         } else {
             f.frame
@@ -211,6 +221,7 @@ impl Pre {
             nested: f.parent.is_some(),
             memo_off: Default::default(),
             memo_votes: Default::default(),
+            native: Default::default(),
             preloaded: preloaded.into(),
             frame,
             next,
@@ -740,6 +751,9 @@ pub(crate) enum Op {
     /// run (`Machine::drive_run`), else at the first drive that would.
     DriveRun {
         run: u32,
+        /// It stands for the first drive's `Stmt` (else, a statement without one, for its
+        /// `SigVal`: `yavs_ir` `opt/slots.rs` drops markers).
+        stmt: bool,
     },
     /// `StmtLoadSlot8` and the `CondBr` on the register it loaded (which is also written).
     FlagBr {
@@ -756,9 +770,11 @@ pub(crate) enum Op {
         sig: u32,
         len: u32,
     },
-    /// `AllocK`, a `Cat` into it and the `LCopy` of all of it (from and to element 0)
-    /// into `dst`: the concatenation of logic elements is written there directly
-    /// when it fits one block of planes (the temporary is dead).
+    /// `Alloc`, a `Cat` into it and the `LCopy` of it into `dst` (offsets read from that
+    /// instruction): the concatenation of logic elements is written there directly when
+    /// all of it is copied and it fits one block of planes at element 0, or is wider and no
+    /// piece shares a byte with `dst` (the temporary is dead). `size` is the byte count, or a register that
+    /// holds it with `SIZE_REG` set.
     CatLCopy {
         tmp: u32,
         size: u32,
@@ -1087,6 +1103,46 @@ pub(crate) enum Op {
         desc: u32,
         n: u32,
     },
+    // (Ops of the temporaries in the frame go last: new variants in the middle renumber the
+    // others and move the dispatch loop's code, #508.)
+    /// `Inst::Zero` of `n` bytes at `off` of the frame's slots, the address being in `w` (a
+    /// temporary of a process in its frame, `yavs_ir` `opt/slots.rs`).
+    ZeroSlot {
+        w: u32,
+        off: u32,
+        n: u32,
+    },
+    /// `AllocReadVec`, `AllocCat`, `AllocLCopy` and `CatLCopy` of a temporary in the frame (its
+    /// `ZeroSlot` in place of the `AllocK`): the register holds the block's address and keeps it.
+    ZeroReadVec {
+        dst: u32,
+        sig: u32,
+        /// The block's offset in the frame's slots.
+        off: u32,
+    },
+    ZeroCat {
+        dst: u32,
+    },
+    ZeroLCopy {
+        dst: u32,
+        doff: u32,
+        src: u32,
+        soff: u32,
+        n: u32,
+    },
+    ZeroCatLCopy {
+        tmp: u32,
+        size: u32,
+        dst: u32,
+        n: u32,
+    },
+    /// `FlagBr` without the `Stmt` (a statement whose marker the optimiser dropped).
+    SlotBr {
+        dst: u32,
+        off: u32,
+        t: u32,
+        f: u32,
+    },
 }
 
 // Small enough for three ops to a cache line.
@@ -1122,9 +1178,9 @@ pub(crate) struct Code {
     pub runs: Vec<DriveRun>,
 }
 
-/// A run of scalar drives, each `[Stmt, SigVal, LoadSlot, Aff1?, LSetDrive]`, in consecutive ops.
+/// A run of scalar drives, each `[Stmt?, SigVal, LoadSlot, Aff1?, LSetDrive]`, in consecutive ops.
 pub(crate) struct DriveRun {
-    /// The op of each drive's `Stmt`.
+    /// The op of each drive's `Stmt` (its `SigVal` when it has none).
     pub starts: Vec<u32>,
     /// The op after the run.
     pub end: u32,
@@ -1148,8 +1204,8 @@ pub(crate) struct RunDrive {
 
 /// The drive at the start of `ops` (and how many ops it is), if it is of the shape `DriveRun` takes.
 fn run_drive(ops: &[Op]) -> Option<(RunDrive, usize)> {
+    let stmt = matches!(ops.first(), Some(Op::Stmt));
     let [
-        Op::Stmt,
         Op::SigVal {
             dst: sv,
             sig,
@@ -1158,7 +1214,7 @@ fn run_drive(ops: &[Op]) -> Option<(RunDrive, usize)> {
         },
         Op::LoadSlot { dst: ld, off, w },
         rest @ ..,
-    ] = ops
+    ] = &ops[usize::from(stmt)..]
     else {
         return None;
     };
@@ -1190,7 +1246,7 @@ fn run_drive(ops: &[Op]) -> Option<(RunDrive, usize)> {
             driver,
             time,
         },
-        4 + usize::from(aff.is_some()),
+        3 + usize::from(stmt) + usize::from(aff.is_some()),
     ))
 }
 
@@ -1211,6 +1267,7 @@ fn drive_runs(ops: &mut [Op]) -> Vec<DriveRun> {
         if drives.len() >= 2 {
             ops[k] = Op::DriveRun {
                 run: runs.len() as u32,
+                stmt: matches!(ops[k], Op::Stmt),
             };
             runs.push(DriveRun {
                 starts,
@@ -1225,12 +1282,34 @@ fn drive_runs(ops: &mut [Op]) -> Vec<DriveRun> {
     runs
 }
 
+/// Whether a collection can run while a frame of `f` is on the stack: it does at `New`, `Free`,
+/// a native call and a suspension, and in anything a call reaches. A frame of a function that
+/// cannot be in one of those needs no slot the collector reads as a root.
+fn may_collect(f: &Func) -> bool {
+    f.code.iter().any(|i| {
+        matches!(
+            i,
+            Inst::Call { .. }
+                | Inst::CallProt { .. }
+                | Inst::CallNative { .. }
+                | Inst::New { .. }
+                | Inst::NewFill { .. }
+                | Inst::Free { .. }
+                | Inst::WaitOn { .. }
+                | Inst::WaitEdge { .. }
+                | Inst::WaitFor { .. }
+                | Inst::WaitAt { .. }
+                | Inst::Suspend { .. }
+        )
+    })
+}
+
 /// Is every parameter handed over in the register the prologue loads it into, and read from
 /// its slot by nothing else? Then a call writes the registers and leaves the slots alone.
-/// Plain functions and procedures whose parameters are whole 8-byte values passed in only.
+/// Plain functions and procedures (nested ones too, they get a static link) whose parameters are
+/// whole 8-byte values or addresses (`out` and `inout` scalars are by reference).
 fn lean_params(f: &Func, prog: &Program, code: &Code, pro: &[u32]) -> bool {
     if f.nested
-        || f.parent.is_some()
         || f.body.is_some()
         || !matches!(
             f.kind,
@@ -1242,7 +1321,9 @@ fn lean_params(f: &Func, prog: &Program, code: &Code, pro: &[u32]) -> bool {
         || f.params.iter().any(|p| {
             p.width != Width::B8
                 || p.class != yavs_ir::ParamClass::Value
-                || p.mode != yavs_ir::Mode::In
+                // The address of an `out` or `inout` parameter is a collector root in its
+                // slot, which a lean call leaves empty: only where no collection can run.
+                || p.mode != yavs_ir::Mode::In && may_collect(f)
         })
     {
         return false;
@@ -1345,6 +1426,9 @@ pub(crate) struct CaseOps {
 }
 
 pub(crate) const NONE: u32 = u32::MAX;
+
+/// Set in the `size` of `Op::CatLCopy` when the rest names the register that holds the byte count.
+pub(crate) const SIZE_REG: u32 = 1 << 31;
 
 /// A native the loop runs as an op of its own.
 enum NativeOp {
@@ -1886,6 +1970,48 @@ fn waveform_is_private(
     nw == 3 && nb == 1 && dead(wave, nw) && dead(base, nb)
 }
 
+/// The waveform in the frame bytes `off..off + bytes` (`yavs_ir` `opt/slots.rs`), zeroed at IR
+/// pc `from`, is read by the `Drive` at `to` and by nothing else: all in one block, the reads of
+/// every register that points into those bytes (not only the waveform's two: the frame starts
+/// with each address derived by a constant) number `want` there (the `Zero`, the `Store` of the
+/// time if any, the write of the value and the `Drive`), and none of them is read after it.
+fn frame_wave_is_private(
+    f: &Func,
+    known: &[Known],
+    block_start: &[bool],
+    total: &std::cell::OnceCell<Vec<u32>>,
+    (from, to): (usize, usize),
+    (off, bytes): (u32, u32),
+    want: u32,
+) -> bool {
+    if from >= to || (from + 1..=to).any(|p| block_start.get(p).copied().unwrap_or(true)) {
+        return false;
+    }
+    let inside = |r: yavs_ir::Reg| matches!(known.get(r.0 as usize), Some(&Known::Frame(o)) if o >= off && o - off < bytes);
+    let mut regs: Vec<(u32, u32)> = Vec::new();
+    for i in f.code.iter().take(to + 1).skip(from) {
+        reads(f, i, |r| {
+            if inside(r) {
+                match regs.iter_mut().find(|x| x.0 == r.0) {
+                    Some(x) => x.1 += 1,
+                    None => regs.push((r.0, 1)),
+                }
+            }
+        });
+    }
+    // (Those registers are defined once, before `from`: read only in the range, they are dead.)
+    regs.iter().map(|x| x.1).sum::<u32>() == want
+        && regs.iter().all(|&(r, n)| {
+            total.get_or_init(|| read_counts(f)).get(r as usize) == Some(&n)
+                || live_within(f, to, yavs_ir::Reg(r), 256) == Some(false)
+        })
+}
+
+/// Bit of the `size` field of `CopyDrive`, `LSetDrive` and `LCopyDrive`: the waveform is a
+/// temporary in the frame, at the address its `w` register holds from the start, and the rest of
+/// the field is its size in bytes (else `size` is the register holding the size of an `Alloc`).
+pub(crate) const FRAME_WAVE: u16 = 0x8000;
+
 /// Pairs and triples of adjacent ops that are one op (they never cross a block start: the
 /// first op's pc stays an entry, the others' pcs are not).
 #[allow(clippy::too_many_arguments)]
@@ -1927,6 +2053,13 @@ fn peephole(
             .and_then(|i| aff.get(i).map(|e| (e.1, e.2)))
     };
     let free = |k: usize| old_at.get(k).is_some_and(|&p| !block_start[p as usize]);
+    // A register the frame starts with that holds 0 (the time of a waveform in the frame whose
+    // zero store the optimiser dropped). The replay of compiled code takes the `LSet`'s index
+    // instead (`Host::drive_bit_replay`): keep the two in step.
+    let zero_reg = known
+        .iter()
+        .position(|k| matches!(k, Known::Int(0)))
+        .and_then(|r| u16::try_from(r).ok());
     // The reads of each register in the function, found when a waveform needs them.
     let total = std::cell::OnceCell::new();
     let mut i = 0;
@@ -1995,7 +2128,8 @@ fn peephole(
                             def
                         });
                     let r = |x: u32| u16::try_from(x).ok();
-                    match (r(driver), r(target), r(time), r(size), r(w), r(e), r(n)) {
+                    let rs = |x: u32| r(x).filter(|&x| x < FRAME_WAVE);
+                    match (r(driver), r(target), r(time), rs(size), r(w), r(e), r(n)) {
                         (
                             Some(driver),
                             Some(target),
@@ -2054,6 +2188,153 @@ fn peephole(
                         continue;
                     }
                     None => (Some(Op::WaveBuf { w, size, time, e }), 3),
+                }
+            }
+            (Op::ZeroSlot { w, off, n: bytes }, next, _)
+                if let Ok(b16) = u16::try_from(bytes)
+                    && b16 < FRAME_WAVE
+                    && let Some(w16) = u16::try_from(w).ok()
+                    && let Some(&from) = old_at.get(i) =>
+            {
+                // A waveform in the frame (`yavs_ir` `opt/slots.rs`): its zeroing, the store of
+                // the time unless the time is 0, the value written 8 bytes in (a register that
+                // holds that address from the start) and the one-element `Drive`. Run as above;
+                // the registers keep the frame's addresses, so only `Code::no_tier` matters.
+                let (time, skip) = match next {
+                    Some(&Op::StoreSlot {
+                        src,
+                        off: o,
+                        w: Width::B8,
+                    }) if o == off
+                        && free(i + 1)
+                        && let Some(&sp) = old_at.get(i + 1) =>
+                    {
+                        (Some((src, sp)), 2)
+                    }
+                    _ => (None, 1),
+                };
+                let at_e = |b: u32| matches!(known.get(b as usize), Some(&Known::Frame(o)) if Some(o) == off.checked_add(8));
+                let seen = std::cell::Cell::new(false);
+                let go = |j: usize| free(j) && !seen.get();
+                let pair = (i + skip..old.len()).take_while(|&j| go(j)).find_map(|j| {
+                    let Some(&Op::Drive {
+                        driver,
+                        target,
+                        wave,
+                        n,
+                        reject: NONE,
+                        inertial,
+                    }) = old.get(j + 1)
+                    else {
+                        return None;
+                    };
+                    seen.set(wave == w);
+                    let to = *old_at.get(j + 1)? as usize;
+                    let (value, e) = match old[j] {
+                        Op::Copy { dst, src, bytes } if at_e(dst) => (Val::Copy(src, bytes), dst),
+                        Op::LSet { base, idx, v } if at_e(base) && int(idx) == Some(0) => {
+                            (Val::LSet(v), base)
+                        }
+                        Op::LCopy {
+                            dst,
+                            doff,
+                            src,
+                            soff,
+                            n: cnt,
+                        } if at_e(dst) && int(doff) == Some(0) => (Val::LCopy(src, soff, cnt), dst),
+                        _ => return None,
+                    };
+                    let from = from as usize;
+                    // A store of the time further on stays (the replay writes that word again).
+                    let time = time.or_else(|| {
+                        (i + 1..j).find_map(|k| match old[k] {
+                            Op::StoreSlot {
+                                src,
+                                off: o,
+                                w: Width::B8,
+                            } if o == off => Some((src, *old_at.get(k)?)),
+                            _ => None,
+                        })
+                    });
+                    let clean = wave == w
+                        && int(n) == Some(1)
+                        && free(j + 1)
+                        && frame_wave_is_private(
+                            f,
+                            known,
+                            block_start,
+                            &total,
+                            (from, to),
+                            (off, bytes),
+                            3 + u32::from(time.is_some()),
+                        )
+                        && time.is_none_or(|(t, at)| {
+                            !(at as usize + 1..to).any(|p| {
+                                let mut def = false;
+                                f.code[p]
+                                    .visit(&mut |r, role, _| def |= role == Role::Def && r.0 == t);
+                                def
+                            })
+                        });
+                    if !clean {
+                        return None;
+                    }
+                    let r = |x: u32| u16::try_from(x).ok();
+                    // No store: the time is 0, which a register the frame starts with holds.
+                    let time = match time {
+                        Some((t, _)) => r(t)?,
+                        None => zero_reg?,
+                    };
+                    let (driver, target, e, n) = (r(driver)?, r(target)?, r(e)?, r(n)?);
+                    let size = FRAME_WAVE | b16;
+                    Some((
+                        j,
+                        match value {
+                            Val::Copy(a, b) => Op::CopyDrive {
+                                driver,
+                                target,
+                                src: r(a)?,
+                                bytes: r(b)?,
+                                time,
+                                size,
+                                w: w16,
+                                n,
+                                inertial,
+                            },
+                            Val::LSet(v) => Op::LSetDrive {
+                                v,
+                                driver,
+                                target,
+                                time,
+                                size,
+                                w: w16,
+                                e,
+                                inertial,
+                            },
+                            Val::LCopy(a, b, c) => Op::LCopyDrive {
+                                driver,
+                                target,
+                                src: r(a)?,
+                                soff: r(b)?,
+                                cnt: r(c)?,
+                                time,
+                                size,
+                                w: w16,
+                                e,
+                                n,
+                                inertial,
+                            },
+                        },
+                    ))
+                });
+                match pair {
+                    Some((j, op)) => {
+                        dropped.push((j, op, ops.len() as u32));
+                        remap[i] = ops.len() as u32;
+                        i += skip;
+                        continue;
+                    }
+                    None => (None, 1),
                 }
             }
             _ if let Some(p) = dropped.iter().position(|d| d.0 == i) => {
@@ -2226,6 +2507,7 @@ pub fn static_wait(prog: &Program, f: &Func, min: usize) -> Vec<(usize, usize)> 
                         | Inst::Select { .. }
                         | Inst::Load { .. }
                         | Inst::Alloc { .. }
+                        | Inst::Zero { .. }
                         | Inst::MakeDope { .. }
                         | Inst::LayoutOf { .. }
                         | Inst::SigVal { .. }
@@ -2246,17 +2528,17 @@ pub fn static_wait(prog: &Program, f: &Func, min: usize) -> Vec<(usize, usize)> 
 }
 
 /// A scalar logic assignment the predecoder runs as one op (`Op::LSetDrive`): the `Alloc`,
-/// `Store` and `Index` that make the waveform, the `LSet` of its element and the one-element
-/// `Drive` of it, which nothing else reads. A tier that runs the same pattern as one step
-/// leaves the first four alone and does the assignment at the `Drive`; it must use exactly
-/// these sites, because the interpreter, which continues where compiled code leaves, does not
-/// define the waveform's registers either.
+/// `Store` and `Index` that make the waveform (for a waveform in the frame, `yavs_ir`
+/// `opt/slots.rs`: its `Zero` and the `Store` of the time unless it is 0), the `LSet` of its
+/// element and the one-element `Drive` of it, which nothing else reads. A tier that runs the
+/// same pattern as one step leaves the head and the `LSet` alone and does the assignment at the
+/// `Drive`; it must use exactly these sites, because the interpreter, which continues where
+/// compiled code leaves, does not write the waveform (nor, for an `Alloc`, its registers) either.
 #[derive(Clone, Copy, Debug)]
 pub struct ScalarDrive {
-    /// The IR pcs, in order: `Alloc`, `Store`, `Index`, `LSet`, `Drive`.
-    pub alloc: u32,
-    pub store: u32,
-    pub index: u32,
+    /// The IR pcs of the head, in order (`u32::MAX` where there is none).
+    pub head: [u32; 3],
+    /// The IR pcs of the `LSet` and of the `Drive`.
     pub lset: u32,
     pub drive: u32,
     pub driver: u32,
@@ -2279,7 +2561,7 @@ pub fn scalar_drives(prog: &Program, f: &Func) -> Vec<ScalarDrive> {
             driver,
             target,
             time,
-            size: _,
+            size,
             w,
             e,
             inertial,
@@ -2290,7 +2572,18 @@ pub fn scalar_drives(prog: &Program, f: &Func) -> Vec<ScalarDrive> {
         let lset = pre.code.at[k] as usize;
         let find =
             |from: usize, hit: &dyn Fn(&Inst) -> bool| (0..from).rev().find(|&p| hit(&f.code[p]));
-        let (Some(alloc), Some(store), Some(index)) = (
+        let head = if size & FRAME_WAVE != 0 {
+            let Some(zero) = find(
+                lset,
+                &|i| matches!(i, Inst::Zero { addr, .. } if addr.0 == u32::from(w)),
+            ) else {
+                continue;
+            };
+            let store = (zero + 1..lset)
+                .find(|&p| matches!(f.code[p], Inst::Store { addr, .. } if addr.0 == u32::from(w)))
+                .map_or(u32::MAX, |p| p as u32);
+            [zero as u32, store, u32::MAX]
+        } else if let (Some(alloc), Some(store), Some(index)) = (
             find(
                 lset,
                 &|i| matches!(i, Inst::Alloc { dst, .. } if dst.0 == u32::from(w)),
@@ -2303,7 +2596,9 @@ pub fn scalar_drives(prog: &Program, f: &Func) -> Vec<ScalarDrive> {
                 lset,
                 &|i| matches!(i, Inst::Index { dst, .. } if dst.0 == u32::from(e)),
             ),
-        ) else {
+        ) {
+            [alloc as u32, store as u32, index as u32]
+        } else {
             continue;
         };
         let Some(drive) =
@@ -2312,9 +2607,7 @@ pub fn scalar_drives(prog: &Program, f: &Func) -> Vec<ScalarDrive> {
             continue;
         };
         out.push(ScalarDrive {
-            alloc: alloc as u32,
-            store: store as u32,
-            index: index as u32,
+            head,
             lset: lset as u32,
             drive: drive as u32,
             driver: u32::from(driver),
@@ -2445,6 +2738,7 @@ fn targets_mut(op: &mut Op) -> [Option<&mut u32>; 2] {
         | Op::MoveCondBr { t, f, .. }
         | Op::LoadSlot8CmpBr { t, f, .. }
         | Op::FlagBr { t, f, .. }
+        | Op::SlotBr { t, f, .. }
         | Op::EdgeBr { t, f, .. } => [Some(t), Some(f)],
         _ => [None, None],
     }
@@ -2459,14 +2753,10 @@ fn jumps_mut(op: &mut Op) -> [Option<&mut u32>; 2] {
     }
 }
 
-/// A function that runs as lowered under elaboration-time evaluation counts its jumps back
-/// (`Program::back_edge`, #695): the jump back to the head of a loop goes to a new `Op::Step` of
-/// that `Br` of the IR, placed after the end of the code, where `Machine::step_out` counts it.
-/// Loops are fused into ops that jump back themselves (`CmpBrStep`), so the counting is a
-/// trampoline, and the loop ops of every other function stay as they are. The jumps back are the
-/// retreating `Br`s of a depth-first walk of the blocks (a jump to a join the code lays out
-/// earlier is none). An element loop (`Op::Loop`) is not counted: its iterations run at once.
-fn count_back_edges(prog: &Program, f: &Func, entry: &[u32], ops: &mut Vec<Op>, at: &mut Vec<u32>) {
+/// (pc of the `Br`, pc of the head block) of every jump back of `f`: the retreating `Br`s of a
+/// depth-first walk of its blocks (a jump to a join the code lays out earlier is none). Every loop
+/// that goes round by a `Br` has one.
+pub fn retreating_brs(prog: &Program, f: &Func) -> Vec<(u32, u32)> {
     let blocks = f.blocks.values();
     let succ = |b: usize| -> Vec<usize> {
         let bl = &blocks[b];
@@ -2484,7 +2774,6 @@ fn count_back_edges(prog: &Program, f: &Func, entry: &[u32], ops: &mut Vec<Op>, 
             ref i => i.targets().iter().map(|t| t.0 as usize).collect(),
         }
     };
-    // (pc of the `Br`, pc of the head) of every jump back.
     let mut back: Vec<(u32, u32)> = Vec::new();
     let mut state = vec![0u8; blocks.len()];
     let mut stack: Vec<(usize, Vec<usize>, usize)> = Vec::new();
@@ -2514,6 +2803,18 @@ fn count_back_edges(prog: &Program, f: &Func, entry: &[u32], ops: &mut Vec<Op>, 
             _ => {}
         }
     }
+    back
+}
+
+/// A function that runs as lowered under elaboration-time evaluation counts its jumps back
+/// (`Program::back_edge`, #695): the jump back to the head of a loop goes to a new `Op::Step` of
+/// that `Br` of the IR, placed after the end of the code, where `Machine::step_out` counts it.
+/// Loops are fused into ops that jump back themselves (`CmpBrStep`), so the counting is a
+/// trampoline, and the loop ops of every other function stay as they are. The jumps back are the
+/// retreating `Br`s of a depth-first walk of the blocks (a jump to a join the code lays out
+/// earlier is none). An element loop (`Op::Loop`) is not counted: its iterations run at once.
+fn count_back_edges(prog: &Program, f: &Func, entry: &[u32], ops: &mut Vec<Op>, at: &mut Vec<u32>) {
+    let back = retreating_brs(prog, f);
     // The ops in code order come first; the ones the passes appended (element loops) follow.
     let main = at
         .windows(2)
@@ -3060,6 +3361,18 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
     };
     let once = |r: u32| uses.get(r as usize) == Some(&1);
     let r16 = |r: u32| u16::try_from(r).ok();
+    // A new block of known size: `Alloc`, or the zeroing of a temporary in the frame (its
+    // register keeps the address). The register, the bytes, whether in the frame.
+    let block = |op: Op| match op {
+        Op::Alloc { dst, size } => int(size)
+            .and_then(|n| u32::try_from(n).ok())
+            .map(|n| (dst, n, false)),
+        Op::ZeroSlot { w, n, .. } => Some((w, n, true)),
+        _ => None,
+    };
+    // Does register `r` point into the `n` frame bytes at `off`? (A fused frame op skips the
+    // zeroing, so an operand inside the block would read what the `Zero` clears.)
+    let in_slot = |r: u32, off: u32, n: u32| matches!(known.get(r as usize), Some(&Known::Frame(o)) if o >= off && o - off < n);
     for k in 0..ops.len() {
         let fused = match (ops[k], ops.get(k + 1), ops.get(k + 2)) {
             (Op::AddrUp { dst: a, depth, off }, Some(&Op::Load { dst, addr, w }), _)
@@ -3197,6 +3510,9 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
             (Op::StmtLoadSlot8 { dst, off }, Some(&Op::CondBr { c, t, f }), _) if c == dst => {
                 Some(Op::FlagBr { dst, off, t, f })
             }
+            (Op::LoadSlot8 { dst, off }, Some(&Op::CondBr { c, t, f }), _) if c == dst => {
+                Some(Op::SlotBr { dst, off, t, f })
+            }
             (
                 Op::LoadSlot8 { dst: d, off },
                 Some(&Op::SigVal {
@@ -3216,17 +3532,11 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
             (
                 Op::Alloc { dst: tmp, size: sz },
                 Some(&Op::Cat),
-                Some(&Op::LCopy {
-                    dst,
-                    doff,
-                    src,
-                    soff,
-                    n,
-                }),
-            ) if let Some(size) = int(sz).and_then(|n| u32::try_from(n).ok())
-                && src == tmp
-                && doff == soff
-                && int(doff) == Some(0)
+                Some(&Op::LCopy { dst, src, n, .. }),
+            ) if let Some(size) = match int(sz) {
+                Some(n) => u32::try_from(n).ok().filter(|n| n & SIZE_REG == 0),
+                None => Some(sz | SIZE_REG),
+            } && src == tmp
                 && dst != tmp
                 && let (Some(&cp), Some(&lp)) = (at.get(k + 1), at.get(k + 2))
                 && let Some(&Inst::Cat {
@@ -3240,7 +3550,36 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
                 Some(Op::CatLCopy { tmp, size, dst, n })
             }
             (
-                Op::Alloc { dst, size },
+                Op::ZeroSlot {
+                    w: tmp,
+                    off,
+                    n: size,
+                },
+                Some(&Op::Cat),
+                Some(&Op::LCopy {
+                    dst,
+                    doff,
+                    src,
+                    soff,
+                    n,
+                }),
+            ) if src == tmp
+                && doff == soff
+                && int(doff) == Some(0)
+                && !in_slot(dst, off, size)
+                && let (Some(&cp), Some(&lp)) = (at.get(k + 1), at.get(k + 2))
+                && let Some(&Inst::Cat {
+                    dst: cd,
+                    logic: true,
+                    ..
+                }) = f.code.get(cp as usize)
+                && cd.0 == tmp
+                && !live_after(f, lp as usize, yavs_ir::Reg(tmp)) =>
+            {
+                Some(Op::ZeroCatLCopy { tmp, size, dst, n })
+            }
+            (
+                first,
                 Some(&Op::LCopy {
                     dst: d2,
                     doff,
@@ -3249,20 +3588,40 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
                     n,
                 }),
                 _,
-            ) if int(size) == Some(32) && d2 == dst && src != dst => Some(Op::AllocLCopy {
-                dst,
-                doff,
-                src,
-                soff,
-                n,
-            }),
-            (Op::Alloc { dst, size }, Some(&Op::SigReadVec { dst: d2, sig }), _)
-                if int(size) == Some(32) && d2 == dst =>
+            ) if let Some((dst, 32, frame)) = block(first)
+                && d2 == dst
+                && src != dst
+                && !matches!(first, Op::ZeroSlot { off, .. } if in_slot(src, off, 32)) =>
             {
-                Some(Op::AllocReadVec { dst, sig })
+                Some(if frame {
+                    Op::ZeroLCopy {
+                        dst,
+                        doff,
+                        src,
+                        soff,
+                        n,
+                    }
+                } else {
+                    Op::AllocLCopy {
+                        dst,
+                        doff,
+                        src,
+                        soff,
+                        n,
+                    }
+                })
             }
-            (Op::Alloc { dst, size }, Some(&Op::Cat), _)
-                if int(size) == Some(32)
+            (first, Some(&Op::SigReadVec { dst: d2, sig }), _)
+                if let Some((dst, 32, frame)) = block(first)
+                    && d2 == dst =>
+            {
+                Some(match first {
+                    Op::ZeroSlot { off, .. } if frame => Op::ZeroReadVec { dst, sig, off },
+                    _ => Op::AllocReadVec { dst, sig },
+                })
+            }
+            (first, Some(&Op::Cat), _)
+                if let Some((dst, 32, frame)) = block(first)
                     && let Some(&cp) = at.get(k + 1)
                     && let Some(&Inst::Cat {
                         dst: cd,
@@ -3271,7 +3630,11 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
                     }) = f.code.get(cp as usize)
                     && cd.0 == dst =>
             {
-                Some(Op::AllocCat { dst })
+                Some(if frame {
+                    Op::ZeroCat { dst }
+                } else {
+                    Op::AllocCat { dst }
+                })
             }
             (Op::Alloc { dst, size }, _, _)
                 if let Some(n) = int(size).and_then(|n| u32::try_from(n).ok()) =>
@@ -3551,21 +3914,9 @@ impl Code {
                 *s = true;
             }
         }
-        let mut uses = vec![0u32; f.reg_ty.len()];
-        for inst in &f.code {
-            inst.visit(&mut |r, role, _| {
-                if role == Role::Use
-                    && let Some(u) = uses.get_mut(r.0 as usize)
-                {
-                    *u = u.saturating_add(1);
-                }
-            });
-        }
-        for r in &f.operands {
-            if let Some(u) = uses.get_mut(r.0 as usize) {
-                *u = u.saturating_add(1);
-            }
-        }
+        // (Lists through the instructions that name them: the optimiser leaves the lists of
+        // removed instructions in `operands`, #752.)
+        let uses = read_counts(f);
         let int = |r: yavs_ir::Reg| match known.get(r.0 as usize) {
             Some(&Known::Int(v)) => Some(v),
             _ => None,
@@ -4373,6 +4724,14 @@ impl Code {
                     dst: dst.0,
                     size: size.0,
                 },
+                Inst::Zero { addr, bytes } => match known.get(addr.0 as usize) {
+                    Some(&Known::Frame(off)) => Op::ZeroSlot {
+                        w: addr.0,
+                        off,
+                        n: bytes,
+                    },
+                    _ => Op::Step(pc as u32),
+                },
                 Inst::Const { dst, v } => Op::Const { dst: dst.0, v },
                 Inst::FCmp { op, dst, a, b } => Op::FCmp {
                     op,
@@ -4623,11 +4982,18 @@ mod tests {
     /// `depth(n) = if n = 0 then 0 else depth(n - 1) + 1` (one 8-byte `in` parameter, so
     /// `lean`); its first instruction takes the address of the parameter's slot.
     fn depth() -> (Program, yavs_ir::FuncId) {
+        depth_with(false, false)
+    }
+
+    /// `depth` with a slot nothing addresses (`spare`), or one the body takes the address of.
+    fn depth_with(spare: bool, used: bool) -> (Program, yavs_ir::FuncId) {
         let mut pb = ProgramBuilder::new();
         let depth = pb.declare("depth", FuncKind::Function, None);
         let mut fb = pb.define(depth);
         let s = fb.param("n", Width::B8, ParamClass::Value, Mode::In, None);
         fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let extra = (spare || used).then(|| fb.slot(16, 8));
+        let extra_at = extra.filter(|_| used).map(|e| fb.addr(AddrSpace::Frame, e));
         let at = fb.addr(AddrSpace::Frame, s);
         let n = fb.reg(RegTy::I64);
         fb.emit(Inst::Load {
@@ -4635,8 +5001,36 @@ mod tests {
             addr: at,
             w: Width::B8,
         });
+        if let Some(at) = extra_at {
+            let x = fb.reg(RegTy::I64);
+            fb.emit(Inst::Store {
+                addr: at,
+                src: n,
+                w: Width::B8,
+            });
+            fb.emit(Inst::Load {
+                dst: x,
+                addr: at,
+                w: Width::B8,
+            });
+            fb.emit(Inst::Bin {
+                op: yavs_ir::IntOp::Add,
+                dst: n,
+                a: n,
+                b: x,
+            });
+        }
         let (base, rec) = (fb.block(), fb.block());
         let (zero, one, c) = (fb.int(0), fb.int(1), fb.reg(RegTy::I64));
+        // (Computed before the test: the parameter load then stays an op of its own, which the
+        // compare and branch would otherwise take over now that nothing here needs a marker.)
+        let m = fb.reg(RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: yavs_ir::IntOp::Sub,
+            dst: m,
+            a: n,
+            b: one,
+        });
         fb.emit(Inst::Cmp {
             op: CmpOp::Eq,
             dst: c,
@@ -4647,13 +5041,6 @@ mod tests {
         fb.at(base);
         fb.emit(Inst::Ret { v: Some(zero) });
         fb.at(rec);
-        let m = fb.reg(RegTy::I64);
-        fb.emit(Inst::Bin {
-            op: yavs_ir::IntOp::Sub,
-            dst: m,
-            a: n,
-            b: one,
-        });
         let args = fb.regs(&[m]);
         let d = fb.reg(RegTy::I64);
         fb.emit(Inst::Call {
@@ -4670,6 +5057,100 @@ mod tests {
         fb.emit(Inst::Ret { v: Some(d) });
         fb.finish();
         (pb.finish().unwrap(), depth)
+    }
+
+    /// A lean call allocates the slots the code addresses besides the parameters: none for a
+    /// frame the code never addresses (#730).
+    #[test]
+    fn lean_frame_has_slots_only_when_addressed() {
+        for (spare, used) in [(false, false), (true, false), (false, true)] {
+            let (prog, id) = depth_with(spare, used);
+            let f = prog.func(id).unwrap();
+            let pre = Pre::new(f, &prog, false);
+            assert!(pre.lean);
+            let addressed = f.code.iter().any(
+                |i| matches!(*i, Inst::AddrOf { space: AddrSpace::Frame, off, .. } if off != 0),
+            );
+            assert_eq!(
+                pre.fslots,
+                if addressed { f.frame } else { 0 },
+                "{spare} {used}"
+            );
+            if spare && !used {
+                assert!(
+                    f.frame > 8 && pre.fslots == 0,
+                    "an unused slot is not allocated"
+                );
+            }
+        }
+    }
+
+    /// A function with an `inout` scalar parameter (the address of the variable, a collector root
+    /// in the slot), optionally calling itself, optionally nested in `outer`.
+    fn by_ref(calls: bool, nested: bool) -> (Program, yavs_ir::FuncId) {
+        let mut pb = ProgramBuilder::new();
+        let outer = pb.declare("outer", FuncKind::Procedure, None);
+        let inc = pb.declare("inc", FuncKind::Procedure, nested.then_some(outer));
+        let mut fb = pb.define(outer);
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+        let mut fb = pb.define(inc);
+        let s = fb.param("v", Width::B8, ParamClass::Value, Mode::Inout, None);
+        fb.root(s, yavs_ir::RootKind::Addr);
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let at = fb.addr(AddrSpace::Frame, s);
+        let p = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Load {
+            dst: p,
+            addr: at,
+            w: Width::B8,
+        });
+        let (x, one) = (fb.reg(RegTy::I64), fb.int(1));
+        fb.emit(Inst::Load {
+            dst: x,
+            addr: p,
+            w: Width::B8,
+        });
+        fb.emit(Inst::Bin {
+            op: yavs_ir::IntOp::Add,
+            dst: x,
+            a: x,
+            b: one,
+        });
+        fb.emit(Inst::Store {
+            addr: p,
+            src: x,
+            w: Width::B8,
+        });
+        if calls {
+            let args = fb.regs(&[p]);
+            fb.emit(Inst::Call {
+                func: inc,
+                args,
+                dst: None,
+            });
+        }
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+        (pb.finish().unwrap(), inc)
+    }
+
+    /// An `out` or `inout` parameter and a static link do not keep a call from being lean; the
+    /// parameter's slot is a collector root, so a callee in which a collection can run keeps its
+    /// calls the full way (#730).
+    #[test]
+    fn lean_covers_by_reference_parameters_and_nested_functions() {
+        for (calls, nested) in [(false, false), (false, true), (true, false)] {
+            let (prog, id) = by_ref(calls, nested);
+            let f = prog.func(id).unwrap();
+            let pre = Pre::new(f, &prog, false);
+            assert_eq!(pre.lean, !calls, "calls {calls} nested {nested}");
+            assert_eq!(pre.nested, nested);
+            if pre.lean {
+                assert_eq!(pre.fslots, 0, "no collection runs in the callee: no root");
+            }
+        }
     }
 
     /// The contract tiers rely on (#566): the register holding a lean parameter's slot address

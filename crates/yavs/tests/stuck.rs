@@ -239,6 +239,31 @@ fn sigusr1_prints_a_report_and_the_run_goes_on() {
 #[cfg(unix)]
 #[test]
 fn sigint_ends_a_process_that_never_suspends() {
+    sigint_ends_spin(None);
+}
+
+#[cfg(unix)]
+#[test]
+fn sigint_ends_a_process_that_never_suspends_interpreted() {
+    sigint_ends_spin(Some("--tier=interp"));
+}
+
+/// The same with the process compiled before it first runs (#737).
+#[cfg(all(unix, feature = "llvm"))]
+#[test]
+fn sigint_ends_a_process_that_never_suspends_compiled() {
+    sigint_ends_spin(Some("--tier=llvm"));
+}
+
+/// The same under the Cranelift tier (#737, #481).
+#[cfg(all(unix, feature = "clift"))]
+#[test]
+fn sigint_ends_a_process_that_never_suspends_clift() {
+    sigint_ends_spin(Some("--tier=clift"));
+}
+
+#[cfg(unix)]
+fn sigint_ends_spin(tier: Option<&str>) {
     let t = tmp("sigint");
     let lib = format!("--work=work:{}/lib", t.display());
     let wave = format!("--wave={}/o.fst", t.display());
@@ -248,9 +273,11 @@ fn sigint_ends_a_process_that_never_suspends() {
             .success()
     );
     let mut child = Command::new(env!("CARGO_BIN_EXE_yavs"))
-        .args(["--color", "never", "run", &lib, &wave, "stuck_spin"])
+        .args(["--color", "never", "run"])
+        .args(tier)
+        .args([&lib, &wave, "stuck_spin"])
         .current_dir(dir())
-        .stdout(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawn");
@@ -265,14 +292,24 @@ fn sigint_ends_a_process_that_never_suspends() {
             .success()
     );
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while child.try_wait().expect("wait").is_none() {
+    let status = loop {
+        if let Some(s) = child.try_wait().expect("wait") {
+            break s;
+        }
         if std::time::Instant::now() > deadline {
             child.kill().expect("kill");
             let _ = child.wait();
             panic!("the run did not end after SIGINT");
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+    };
+    // The same end whatever tier ran the process: reported, exit status 1, file left behind.
+    let mut stdout = String::new();
+    std::io::Read::read_to_string(&mut child.stdout.take().expect("stdout"), &mut stdout)
+        .expect("read");
+    assert_eq!(status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("simulation interrupted"), "{stdout}");
+    assert!(t.join("o.fst").metadata().expect("wave").len() > 0);
     let _ = std::fs::remove_dir_all(&t);
 }
 

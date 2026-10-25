@@ -240,6 +240,44 @@ pub fn add_low_half(m: &Module) {
     }
 }
 
+/// Adds `buffer(x: i64, sink: extern "C" fn(*const i64)) -> i32`: fills a stack buffer of `n`
+/// words with `x + k` through byte offsets, hands its address to `sink` and returns 0. The shape
+/// of the buffer a native frame's exits record the registers in: thousands of stores to
+/// addresses made from one alloca that escapes to a call.
+pub fn add_buffer(m: &Module, n: usize) {
+    let g = Gen::new(m);
+    // SAFETY: well-formed IR; the verifier runs in the tests.
+    unsafe {
+        let f = g.function(c"buffer", g.i32, &mut [g.i64, g.ptr]);
+        LLVMPositionBuilderAtEnd(g.b, g.block(f));
+        let buf = LLVMBuildAlloca(g.b, LLVMArrayType2(g.i64, n as u64), c"".as_ptr());
+        let x = LLVMGetParam(f, 0);
+        for k in 0..n {
+            let at = LLVMBuildGEP2(
+                g.b,
+                LLVMInt8TypeInContext(g.ctx),
+                buf,
+                [g.c64(8 * k as i64)].as_mut_ptr(),
+                1,
+                c"".as_ptr(),
+            );
+            let v = LLVMBuildAdd(g.b, x, g.c64(k as i64), c"".as_ptr());
+            LLVMSetAlignment(LLVMBuildStore(g.b, v, at), 1);
+        }
+        let mut params = [g.ptr];
+        let ty = LLVMFunctionType(LLVMVoidTypeInContext(g.ctx), params.as_mut_ptr(), 1, 0);
+        LLVMBuildCall2(
+            g.b,
+            ty,
+            LLVMGetParam(f, 1),
+            [buf].as_mut_ptr(),
+            1,
+            c"".as_ptr(),
+        );
+        LLVMBuildRet(g.b, g.c32(0));
+    }
+}
+
 /// Adds `process_body`, a process touching signal state through a pointer:
 /// `next = cur * 2 + 2` (checked, statements 1 and 2), `event = next != cur`,
 /// `runs += 1`.

@@ -176,7 +176,7 @@ case!(
     pkg_table,
     "sum=212",
     &[],
-    [("ops_elab", Max(480)), ("ops", Max(50))]
+    [("ops_elab", Max(480)), ("ops", Max(49))]
 );
 case!(
     elab_raw,
@@ -239,7 +239,7 @@ case!(
         ("events", Max(313)),
         ("update_general", Max(2)),
         ("quick_applied", Min(194)),
-        ("ops", Max(3258)),
+        ("ops", Max(2943)),
     ]
 );
 case!(
@@ -251,7 +251,7 @@ case!(
         ("process_runs", Max(440)),
         ("update_general", Max(0)),
         ("update_timed", Min(185)),
-        ("ops", Max(5080)),
+        ("ops", Max(4647)),
     ]
 );
 case!(
@@ -264,7 +264,7 @@ case!(
         ("wakes", Max(418)),
         ("update_general", Max(2)),
         ("direct_planes", Min(195)),
-        ("ops", Max(4930)),
+        ("ops", Max(4408)),
     ]
 );
 case!(
@@ -275,7 +275,7 @@ case!(
         ("cycles", Max(312)),
         ("update_general", Max(2)),
         ("direct_planes", Min(400)),
-        ("ops", Max(4120)),
+        ("ops", Max(3588)),
     ]
 );
 case!(
@@ -286,7 +286,7 @@ case!(
         ("cycles", Max(312)),
         ("lean_signals", Min(2)),
         ("update_general", Max(2)),
-        ("ops", Max(14435)),
+        ("ops", Max(13570)),
     ]
 );
 case!(
@@ -300,7 +300,7 @@ case!(
         ("update_general", Max(2)),
         ("direct_bytes", Min(195)),
         ("quick_applied", Min(194)),
-        ("ops", Max(6489)),
+        ("ops", Max(5552)),
     ]
 );
 case!(
@@ -313,7 +313,7 @@ case!(
         ("wakes", Max(841)),
         ("update_general", Max(2)),
         ("quick_applied", Min(494)),
-        ("ops", Max(7523)),
+        ("ops", Max(6782)),
     ]
 );
 case!(
@@ -350,7 +350,7 @@ case!(
         ("cycles", Max(1005)),
         ("process_runs", Max(1030)),
         ("update_general", Max(0)),
-        ("ops", Max(506)),
+        ("ops", Max(467)),
     ]
 );
 case!(
@@ -398,10 +398,10 @@ case!(
     &[],
     [("process_runs", Max(2)), ("ops", Max(1481)),]
 );
-case!(ieee_operands, "acc=", &[], [("ops", Max(4060))]);
+case!(ieee_operands, "acc=", &[], [("ops", Max(3541))]);
 case!(ieee_share, "n=", &[], [("ops", Max(3630))]);
 case!(elem_loops, "acc=", &[], [("ops", Max(35600))]);
-case!(wide_vec, "wide=0", &[], [("ops", Max(1873000))]);
+case!(wide_vec, "wide=0", &[], [("ops", Max(2270000))]);
 case!(
     licm_loop,
     "acc=",
@@ -430,7 +430,19 @@ case!(
     [
         ("pmemo_hits", Min(420)),
         ("pmemo_runs", Max(14)),
-        ("ops", Max(17800))
+        ("ops", Max(16767))
+    ]
+);
+// A hex-digit parser of two 22-arm case functions (character to integer and to a nibble),
+// 384 calls of each: the result tables (#722) read them inline, so none reaches the memo.
+case!(
+    case_tab,
+    "sum=",
+    &[],
+    [
+        ("pmemo_hits", Max(0)),
+        ("pmemo_runs", Max(0)),
+        ("ops", Max(18300))
     ]
 );
 case!(
@@ -441,7 +453,7 @@ case!(
         ("cycles", Max(415)),
         ("process_runs", Max(1890)),
         ("wakes", Max(1870)),
-        ("ops", Max(21230)),
+        ("ops", Max(19560)),
     ]
 );
 case!(
@@ -454,14 +466,14 @@ case!(
         ("wakes", Max(414)),
         ("update_general", Max(206)),
         ("events", Max(208)),
-        ("ops", Max(7769)),
+        ("ops", Max(7357)),
     ]
 );
 case!(
     inline_calls,
     "acc=",
     &[],
-    [("process_runs", Max(2)), ("ops", Max(3320)),]
+    [("process_runs", Max(2)), ("ops", Max(2710)),]
 );
 // The message of a check is built after the branch that reads it: images, lengths and the
 // concatenation stay out of the 270 passing calls (inlining of the check and `opt/sink.rs`).
@@ -477,7 +489,7 @@ case!(
     [
         ("direct_codes", Max(137)),
         ("direct_planes", Max(63)),
-        ("ops", Max(4300)),
+        ("ops", Max(3564)),
     ]
 );
 // A run of scalar drives of variables that hold what the signals have is one op (`pre.rs`
@@ -491,7 +503,22 @@ case!(
         ("cycles", Max(402)),
         ("cycles", Min(402)),
         ("direct_codes", Max(275)),
-        ("ops", Max(16800)),
+        ("ops", Max(15900)),
+    ]
+);
+// Implicit signals in the design do not take the other signals off the fast update paths: only
+// the updates in which a source of an implicit signal has activity, or one is due, run the general
+// path (1342 of 1342 without this); the implicit signals still see every event of their sources.
+case!(
+    implicit_fast,
+    "d_clk=300 d_slow=40 st=151 qu=41 tr=151",
+    &[],
+    [
+        ("cycles", Max(1342)),
+        ("cycles", Min(1342)),
+        ("update_general", Max(380)),
+        ("update_fast", Min(650)),
+        ("ops", Max(22528)),
     ]
 );
 // Vector assignments that change nothing are skipped when they are made (605 direct plane
@@ -504,11 +531,25 @@ case!(
         ("cycles", Max(242)),
         ("cycles", Min(242)),
         ("direct_planes", Max(180)),
-        ("ops", Max(19900)),
+        ("ops", Max(19173)),
+    ]
+);
+// Bits and slices of one register assigned in turn in one activation (the fields of a record) stay
+// direct entries in order: no assignment goes through the driver's waveform (`update_general`).
+case!(
+    mixed_entries,
+    "ev=168 h=59167",
+    &[],
+    [
+        ("cycles", Max(415)),
+        ("update_general", Max(0)),
+        ("direct_planes", Min(1400)),
+        ("direct_codes", Min(400)),
+        ("events", Max(870)),
     ]
 );
 // A one-element aggregate choice is straight code and conversion copies run in the kernel.
-case!(agg_carry, "acc=", &[], [("ops", Max(7860))]);
+case!(agg_carry, "acc=", &[], [("ops", Max(7032))]);
 case!(
     static_chain,
     "acc=",
@@ -525,7 +566,7 @@ case!(
         ("wakes", Max(212)),
         ("events", Max(650)),
         ("update_general", Max(2)),
-        ("ops", Max(4103)),
+        ("ops", Max(3785)),
         ("signals", Max(6)),
     ]
 );
@@ -536,7 +577,7 @@ case!(
     [
         ("cycles", Max(418)),
         ("process_runs", Max(525)),
-        ("ops", Max(29292)),
+        ("ops", Max(28141)),
         // The records `r` and `rin` are packs of leaves (#686), not one signal per leaf.
         ("signals", Max(20)),
     ]
@@ -551,7 +592,7 @@ case!(
         ("wakes", Max(450)),
         ("events", Max(410)),
         ("update_general", Max(21)),
-        ("ops", Max(1004)),
+        ("ops", Max(923)),
     ]
 );
 case!(
@@ -564,7 +605,7 @@ case!(
         ("wakes", Max(212)),
         ("events", Max(224)),
         ("update_general", Max(2)),
-        ("ops", Max(1822)),
+        ("ops", Max(1607)),
     ]
 );
 
@@ -575,7 +616,7 @@ case!(
     [
         ("process_runs", Max(3100)),
         ("idle_skips", Min(4050)),
-        ("ops", Max(32819)),
+        ("ops", Max(31837)),
     ]
 );
 
@@ -588,7 +629,7 @@ case!(
     [
         ("process_runs", Max(2200)),
         ("idle_skips", Min(560)),
-        ("ops", Max(34000)),
+        ("ops", Max(31457)),
     ]
 );
 case!(
@@ -598,7 +639,7 @@ case!(
     [
         ("process_runs", Max(4500)),
         ("idle_skips", Min(2850)),
-        ("ops", Max(68500)),
+        ("ops", Max(65257)),
     ]
 );
 // Variables assigned on every path before they are read (the arms of an `if`/`case`, the fields
@@ -625,7 +666,7 @@ case!(
     [
         ("process_runs", Max(1245)),
         ("wakes", Max(1245)),
-        ("ops", Max(16800)),
+        ("ops", Max(15535)),
     ]
 );
 
@@ -1058,7 +1099,9 @@ mod llvm {
         [
             ("cb_deopt", Max(3)),
             ("cb_xstep", Min(390)),
-            ("ops", Max(100)),
+            // One frame is materialised later in the first activation (the temporary area has
+            // room from the start, #730), so the interpreter finishes a longer stretch of it.
+            ("ops", Max(1460)),
             ("llvm_native_frames", Min(3)),
         ]
     );
@@ -1071,6 +1114,18 @@ mod llvm {
             ("cb_step", Max(4)),
             ("cb_signal", Max(4)),
             ("llvm_native_frames", Min(2))
+        ]
+    );
+    // Procedures that drive signals and a function that reads a vector run on native frames
+    // (#730): 900 calls, no step, no frame materialised.
+    llvm_case!(
+        llvm_sigdrive,
+        "acc=",
+        [
+            ("cb_step", Max(2)),
+            ("cb_signal", Max(302)),
+            ("cb_deopt", Max(0)),
+            ("llvm_native_frames", Min(3))
         ]
     );
     // `uniform` is computed in compiled code (#519): 400 calls, no callback for them.
@@ -1119,7 +1174,7 @@ mod llvm {
             ("cb_drive", Max(998)),
             ("cb_wait", Max(19)),
             ("cb_wait_same", Max(1018)),
-            ("llvm_inline_insts", Min(624)),
+            ("llvm_inline_insts", Min(600)),
             ("llvm_interpreted_insts", Max(48)),
             ("llvm_native_frames", Min(1)),
         ]

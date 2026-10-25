@@ -147,6 +147,9 @@ pub type Finish = Box<dyn FnOnce(&SimControl) -> Option<Diagnostic>>;
 /// editor's wave viewer can read every change up to the stop).
 pub type Sync = Box<dyn Fn() + Send + std::marker::Sync>;
 
+/// Work after the run, with the final kernel statistics and interpreter runtime.
+pub type Report = Box<dyn FnOnce(yavs_kernel::Stats, Option<&yavs_interp::Runtime>)>;
+
 /// The first variables reference of the per-stop table (`Shared::nodes`); the stateless
 /// references of scopes stay below it.
 const CHILD: i64 = 1 << 32;
@@ -1659,7 +1662,8 @@ fn parse_hit(s: &str) -> Result<HitCond, String> {
 
 /// Run the elaborated design under a DAP client until it ends; returns the exit status of
 /// the run (docs/cli-contract.md section 5). `attach` subscribes the caller's observers
-/// (`--wave`, `--vhpi`) to the built simulation and returns what to do at its end.
+/// (`--wave`, `--vhpi`) to the built simulation and returns what to do at its end. `report`
+/// receives the final statistics before the exit events.
 pub fn serve(
     db: Arc<Db>,
     e: Arc<Elaborated>,
@@ -1670,6 +1674,7 @@ pub fn serve(
         &mut SimControl,
         Option<&Built>,
     ) -> Result<Option<(Finish, Sync)>, Box<Diagnostic>>,
+    report: Report,
 ) -> Result<u8, Box<Diagnostic>> {
     let (db_arc, e_arc) = (db, e);
     let (db, e) = (&*db_arc, &*e_arc);
@@ -1882,6 +1887,7 @@ pub fn serve(
             None => break sim.run_until(stop),
         }
     };
+    report(sim.stats(), rt.as_deref());
     let code = match r {
         Ok(RunStatus::Ended(EndReason::Stop(c) | EndReason::Finish(c))) => {
             let what = match r {

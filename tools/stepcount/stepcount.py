@@ -111,8 +111,9 @@ def lines_of(binary, pcs, inner=False):
     return res
 
 
-def run(binary, args, frm, to, mx, per, top, nlines, within, inner):
+def run(binary, args, frm, to, mx, per, top, nlines, within, inner, ops=None, ops_fn=None, ops_detail=None):
     binary = os.path.realpath(binary)
+    BINARY[0] = binary
     syms = symbols(binary)
     starts = [s[0] for s in syms]
     cmd = [stepper()]
@@ -126,13 +127,26 @@ def run(binary, args, frm, to, mx, per, top, nlines, within, inner):
         cmd += ["-n", str(mx)]
     with tempfile.TemporaryDirectory(prefix="stepcount", dir=CACHE) as d:
         pcfile = os.path.join(d, "pcs")
+        armfile = os.path.join(d, "arms")
+        if ops is not None:
+            disp, table = dispatch_of(binary, syms, ops_fn)
+            symfile = os.path.join(d, "syms")
+            with open(symfile, "w") as f:
+                f.write("".join(f"{a:x} {n:x}\n" for a, n, _ in syms))
+            cmd += ["-d", f"{disp:x}", "-a", armfile, "-s", symfile]
         r = subprocess.run(cmd + ["-o", pcfile, "--", binary, *args], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         if r.returncode:
             die(r.stderr.strip())
         pcs = [(int(a, 16), int(n)) for a, n in (ln.split() for ln in open(pcfile))]
+        armdata = None
+        if ops is not None:
+            armdata = (open(armfile).read(), open(armfile + ".fn").read())
     total = sum(n for _, n in pcs)
     for ln in r.stderr.strip().splitlines():
         print(ln)
+    if ops is not None:
+        print_ops(armdata, syms, table, total, per, ops, ops_detail)
+        return
     byfunc = collections.Counter()
     for pc, n in pcs:
         i = bisect.bisect_right(starts, pc) - 1
@@ -153,6 +167,97 @@ def run(binary, args, frm, to, mx, per, top, nlines, within, inner):
         print(f"\nlines (instructions{unit}){' in ' + within if within else ''}:")
         for (loc, fn), n in byline.most_common(nlines):
             print(f"{n / div:12.1f} {100 * n / total:5.1f}%  {loc}  {fn}")
+
+
+OP_VARIANT = re.compile(r"^\s{4}([A-Z][A-Za-z0-9]*)\b")
+
+
+def op_names():
+    """The variants of `pre::Op` in declaration order (the tag of a variant is its index)."""
+    src = os.path.join(HERE, "..", "..", "crates", "yavs-interp", "src", "pre.rs")
+    text = open(src).read()
+    m = re.search(r"pub\(crate\) enum Op \{\n(.*?)\n\}\n", text, re.S)
+    if not m:
+        die(f"{src}: no `pub(crate) enum Op`")
+    names, depth = [], 0
+    for line in m.group(1).split("\n"):
+        v = OP_VARIANT.match(line)
+        if depth == 0 and v and not line.strip().startswith("//"):
+            names.append(v.group(1))
+        depth += line.count("{") + line.count("(") - line.count("}") - line.count(")")
+    return names
+
+
+def dispatch_of(binary, syms, fn):
+    """(address of the dispatch jump, address of its jump table) in the function `fn` (a name part;
+    default the op loop `run_ops::<false, false>`): the `movzbl tag; lea table; movslq; add; jmp *`."""
+    want = fn or "Machine>::run_ops::<false, false>"
+    hits = [s for s in syms if want in s[2] and "{closure" not in s[2]]
+    if len(hits) != 1:
+        die(f"--ops-fn {want!r} matches {len(hits)} symbols, need exactly one")
+    addr, size, _ = hits[0]
+    out = subprocess.run(["objdump", "-d", "--no-show-raw-insn", f"--start-address={addr}",
+                          f"--stop-address={addr + min(size, 0x6000)}", binary], capture_output=True, text=True).stdout.splitlines()
+    for i in range(len(out) - 4):
+        if "movzbl" in out[i] and ",8),%e" in out[i] and "lea" in out[i + 1] and "# " in out[i + 1] \
+                and "movslq" in out[i + 2] and "jmp" in out[i + 4] and "*" in out[i + 4]:
+            table = int(re.search(r"# ([0-9a-f]+) ", out[i + 1]).group(1), 16)
+            return int(out[i + 4].split(":")[0].strip(), 16), table
+    die(f"no dispatch jump found in the first 24 KB of {hits[0][2]}")
+
+
+def arm_names(binary, table, n):
+    """{arm address: [op names]} from the jump table at `table` (n 4-byte entries relative to it)."""
+    names = op_names()
+    hdr = subprocess.run(["objdump", "-h", binary], capture_output=True, text=True).stdout.splitlines()
+    for l in hdr:
+        p = l.split()
+        if len(p) >= 7 and p[1] == ".rodata":
+            size, vma, off = int(p[2], 16), int(p[3], 16), int(p[5], 16)
+            if vma <= table < vma + size:
+                with open(binary, "rb") as f:
+                    f.seek(off + table - vma)
+                    raw = f.read(4 * len(names))
+                ents = [int.from_bytes(raw[i * 4:i * 4 + 4], "little", signed=True) for i in range(len(names))]
+                res = collections.defaultdict(list)
+                for nm, e in zip(names, ents):
+                    res[table + e].append(nm)
+                return res
+    die("the jump table is not in .rodata")
+
+
+def print_ops(armdata, syms, table, total, per, top, detail):
+    """Instructions per op (callees included): share of the window, per op, ops, name."""
+    div = per or 1
+    arms = {}
+    for ln in armdata[0].splitlines():
+        a, i, o = ln.split()
+        arms[int(a, 16)] = (int(i), int(o))
+    names = arm_names(BINARY[0], table, 0)
+    rows = collections.defaultdict(lambda: [0, 0])
+    for a, (i, o) in arms.items():
+        n = "/".join(names.get(a, [f"?{a:x}"]))
+        rows[n][0] += i
+        rows[n][1] += o
+    allins = sum(r[0] for r in rows.values()) or 1
+    allops = sum(r[1] for r in rows.values()) or 1
+    print(f"\nops: {allops / div:.1f} dispatched{' per ' + str(per) if per else ''}, {allins / allops:.1f} instructions per op on average")
+    print("share   instr/op        ops  op   (instructions of the op itself and of everything it calls)")
+    for n, (i, o) in sorted(rows.items(), key=lambda x: -x[1][0])[:top]:
+        print(f"{100 * i / allins:5.1f}% {i / max(o, 1):9.1f} {o / div:10.1f}  {n}")
+    if detail:
+        want = {a for a in arms if detail in "/".join(names.get(a, []))}
+        by, ops_n = collections.Counter(), sum(arms[a][1] for a in want)
+        for ln in armdata[1].splitlines():
+            a, fn, c = ln.split()
+            if int(a, 16) in want:
+                by[int(fn)] += int(c)
+        print(f"\n{detail}: instructions per op by function ({ops_n / div:.1f} ops)")
+        for fn, c in by.most_common(14):
+            print(f"{c / max(ops_n, 1):9.1f}  {syms[fn][2] if fn >= 0 else '(outside the program)'}")
+
+
+BINARY = [None]
 
 
 SELF_TEST_C = r"""
@@ -204,6 +309,9 @@ def main():
     ap.add_argument("--lines", type=int, metavar="N", help="also the N busiest source lines")
     ap.add_argument("--inner", action="store_true", help="lines of the innermost inlined frame, library code included")
     ap.add_argument("--in", dest="within", metavar="SYM", help="lines of functions containing SYM only")
+    ap.add_argument("--ops", type=int, nargs="?", const=30, metavar="N", help="instructions per interpreter op (the dispatch loop of yavs-interp, callees included), the N busiest")
+    ap.add_argument("--ops-detail", metavar="OP", help="with --ops: where the instructions of the op OP (a name part, e.g. LCopy) are spent, by function")
+    ap.add_argument("--ops-fn", metavar="SYM", help="with --ops: the function holding the dispatch jump (default the loop `run_ops::<false, false>`)")
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("binary", nargs="?")
     ap.add_argument("args", nargs=argparse.REMAINDER)
@@ -212,7 +320,7 @@ def main():
         return self_test()
     if not a.binary:
         ap.error("BIN is required")
-    run(a.binary, a.args, a.frm, a.to, a.max, a.per, a.top, a.lines, a.within, a.inner)
+    run(a.binary, a.args, a.frm, a.to, a.max, a.per, a.top, a.lines, a.within, a.inner, a.ops, a.ops_fn, a.ops_detail)
 
 
 if __name__ == "__main__":

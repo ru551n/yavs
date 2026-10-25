@@ -12,8 +12,8 @@ use smallvec::SmallVec;
 use crate::builder::{PortConv, PortMode, ProcFlags};
 use crate::error::{ErrorKind, SimError};
 use crate::process::{
-    Ctx, DriverInfo, Effect, LiveSink, OpMode, Out, OutB, OutV, ProcId, ProcState, Process,
-    Severity, Shared, SignalOp, check_ref, make_op,
+    ACT_ASSIGNED, ACT_SLOW, Ctx, DriverInfo, Effect, LiveSink, OpMode, Out, OutB, OutV, ProcId,
+    ProcState, Process, Severity, Shared, SignalOp, check_ref, make_op,
 };
 use crate::signal::{
     DelayMode, DriverId, ForceMode, Hits, Range, Reg, SigRef, Signal, SignalId, Waiter, Waiters,
@@ -465,6 +465,12 @@ pub trait Observer: Send {
     fn phase_after_serial(&self, _phase: Phase) -> bool {
         false
     }
+    /// Asked right before `phase`, without a `Hook` (which costs the kernel about 50 instructions
+    /// to make): false skips the call. For an observer that has something to do in a few cycles
+    /// only and can tell cheaply (the default is yes).
+    fn phase_due(&mut self, _phase: Phase) -> bool {
+        true
+    }
     fn phase(&mut self, _hook: &mut Hook<'_>, _phase: Phase) {}
     /// Elements `range` of `signal` changed value in this cycle.
     fn value_change(&mut self, _hook: &mut Hook<'_>, _signal: SignalId, _range: Range) {}
@@ -503,7 +509,8 @@ pub struct Interrupt(Arc<AtomicU8>);
 
 impl Interrupt {
     const PAUSE: u8 = 1;
-    const STOP: u8 = 2;
+    /// The stop bit of the flag byte `Ctx::interrupt_flags` points at.
+    pub const STOP: u8 = 2;
 
     pub fn pause(&self) {
         self.0.fetch_or(Self::PAUSE, Ordering::AcqRel);
@@ -558,8 +565,6 @@ pub(crate) struct ProcMeta {
     pub idle_hits: u16,
     /// What `idle_ok` was set to at the start (`idle_reprobe` restores it).
     pub idle_static: bool,
-    /// A signal the process reads had an event since its last activation.
-    pub armed: bool,
     /// The last activation: 0 unknown (or not a plain clocked activation), 1 assigned nothing,
     /// 2 assigned.
     pub idle_state: u8,
@@ -795,6 +800,9 @@ pub struct SimControl {
     /// and can run in parallel with other such signals.
     independent: Vec<bool>,
     implicits: Vec<Implicit>,
+    /// The sources of the implicit signals (signal, range), each once: an update in which none
+    /// of them was active, with no implicit signal due, has nothing for `update_implicit`.
+    implicit_srcs: Vec<(u32, Range)>,
     /// Composites resolved as a whole (`Builder::resolved_composite`).
     groups: Vec<Group>,
     /// Per group: the cycle it was last resolved in (once per cycle, by its first part
@@ -843,6 +851,9 @@ pub struct SimControl {
     /// Per signal, the processes of `idle_ok` that read it: `readers[readers_start[s]..
     /// readers_start[s + 1]]` (empty without such a process).
     readers_start: Vec<u32>,
+    /// Per process: a signal it reads had an event since its last activation (`Builder::idle_skip`;
+    /// a dense array, the readers' loop of every event touches one byte per reader).
+    armed: Vec<bool>,
     readers: Vec<Reader>,
     reader_guards: Vec<ReaderGuard>,
     idle_active: bool,
@@ -1035,6 +1046,13 @@ impl SimControl {
                 }
             }
         }
+        let mut implicit_srcs: Vec<(u32, Range)> = Vec::new();
+        for im in &implicits {
+            implicit_srcs.push((im.src.0, im.range));
+            implicit_srcs.extend(im.more.iter().map(|&(s, r)| (s.0, r)));
+        }
+        implicit_srcs.sort_by_key(|&(s, r)| (s, r.offset, r.len));
+        implicit_srcs.dedup();
         if cfg.skip_unchanged {
             for s in &mut signals {
                 s.inactive = true;
@@ -1171,6 +1189,7 @@ impl SimControl {
             guard_readers,
             guard_due: Vec::new(),
             readers_start,
+            armed: vec![true; procs.len()],
             readers,
             reader_guards,
             idle_active,
@@ -1189,6 +1208,7 @@ impl SimControl {
             ports_down,
             independent,
             implicits,
+            implicit_srcs,
             group_cycle: vec![0; groups.len()],
             groups,
             slots,
@@ -1741,8 +1761,17 @@ impl SimControl {
     }
 
     /// Ended (firing `EndOfSim` once) or a pause request.
+    #[inline(always)]
     fn poll_end(&mut self) -> Result<Option<RunStatus>, SimError> {
-        // A plain load per delta; the locked exchange only when something was requested.
+        // A plain load per delta; the rest only when something was requested or the end came.
+        if self.end.is_none() && self.interrupt.0.load(Ordering::Acquire) == 0 {
+            return Ok(None);
+        }
+        self.poll_end_slow()
+    }
+
+    #[inline(never)]
+    fn poll_end_slow(&mut self) -> Result<Option<RunStatus>, SimError> {
         let flags = match self.interrupt.0.load(Ordering::Acquire) {
             0 => 0,
             _ => self.interrupt.0.swap(0, Ordering::AcqRel),
@@ -1832,8 +1861,7 @@ impl SimControl {
         // The elements of a signal of at most 64 that changed, when a reader of a part asks.
         let mut bits: Option<u64> = None;
         for rd in &self.readers[a..b] {
-            let m = &mut self.procs[rd.p as usize];
-            if m.armed {
+            if self.armed[rd.p as usize] {
                 continue;
             }
             // A read of part of the signal (a field of a record pack, #686) arms only for an
@@ -1851,7 +1879,7 @@ impl SimControl {
                     changed.iter().any(|c| c.overlaps(rd.r))
                 };
             if hit && (rd.g == NO_GUARD || self.reader_guards[rd.g as usize].holds(&self.signals)) {
-                m.armed = true;
+                self.armed[rd.p as usize] = true;
             }
         }
     }
@@ -1867,7 +1895,7 @@ impl SimControl {
         for i in 0..pids.len() {
             let p = pids[i];
             let m = &mut self.procs[p as usize];
-            if m.idle_ok && !m.armed && m.idle_state != 0 && m.perm != 0 {
+            if m.idle_ok && !self.armed[p as usize] && m.idle_state != 0 && m.perm != 0 {
                 self.stats.idle_skips += 1;
                 m.idle_hits = m.idle_hits.saturating_add(1);
                 m.idle_win = m.idle_win.saturating_add(1);
@@ -1887,12 +1915,12 @@ impl SimControl {
 
     /// Track again the processes `note_idle` stopped tracking: their inputs may be quiet now.
     fn idle_reprobe(&mut self) {
-        for m in &mut self.procs {
+        for (m, armed) in self.procs.iter_mut().zip(&mut self.armed) {
             if m.idle_static && !m.idle_ok {
                 m.idle_ok = true;
                 m.idle_win = 0;
                 m.idle_hits = 0;
-                m.armed = true;
+                *armed = true;
                 self.idle_live += 1;
             }
         }
@@ -2275,12 +2303,9 @@ impl SimControl {
         let (now, cycle) = (self.now, self.cycle);
         self.empty_delta = false;
         // The usual delta: direct transactions and drivers of one independent signal due, from
-        // this time's list, in driver order; no force, deposit or implicit signal. Applied in
-        // place.
-        if self.ops.is_empty()
-            && self.implicits.is_empty()
-            && self.queue.peek_time().is_none_or(|t| t > now)
-        {
+        // this time's list, in driver order; no force, deposit or implicit signal due (the
+        // sources of implicit signals are looked at after it). Applied in place.
+        if self.ops.is_empty() && self.queue.peek_time().is_none_or(|t| t > now) {
             let one = self.one_independent();
             if one.is_some() || self.queue.next_delta.is_empty() {
                 self.stats.update_fast += 1;
@@ -2308,11 +2333,11 @@ impl SimControl {
                         self.changed_sigs.push(s0);
                     }
                 }
-                return self.finish_direct();
+                self.finish_direct()?;
+                return self.update_implicit_quiet();
             }
         }
         if self.ops.is_empty()
-            && self.implicits.is_empty()
             && self.queue.next_delta.is_empty()
             && let Some(r) = self.update_timed()
         {
@@ -2480,7 +2505,7 @@ impl SimControl {
                 // they assign again at their next edge.
                 for d in &self.drivers {
                     if d.signal.0 == s {
-                        self.procs[d.owner.0 as usize].armed = true;
+                        self.armed[d.owner.0 as usize] = true;
                     }
                 }
             }
@@ -2518,7 +2543,8 @@ impl SimControl {
                 }
             }
         }
-        if self.implicits.is_empty() {
+        if self.implicits.is_empty() || due.is_empty() && self.implicit_srcs_quiet() {
+            due.clear();
             self.work = Some(work);
             return Ok(());
         }
@@ -2551,7 +2577,10 @@ impl SimControl {
         if let Err(e) = self.apply_timed(d) {
             return Some(Err(e));
         }
-        Some(self.finish_direct())
+        Some(
+            self.finish_direct()
+                .and_then(|()| self.update_implicit_quiet()),
+        )
     }
 
     /// Apply the matured quick or waveform transaction of driver `d` (of an independent signal)
@@ -2659,7 +2688,10 @@ impl SimControl {
         if let Some(e) = failed {
             return Some(Err(e));
         }
-        Some(self.finish_direct())
+        Some(
+            self.finish_direct()
+                .and_then(|()| self.update_implicit_quiet()),
+        )
     }
 
     /// The generator `k` made an event with its own transaction (the signal now has `code`):
@@ -3018,6 +3050,26 @@ impl SimControl {
         Ok(())
     }
 
+    /// Whether no source of an implicit signal had activity in this cycle.
+    #[inline]
+    fn implicit_srcs_quiet(&self) -> bool {
+        let cycle = self.cycle;
+        self.implicit_srcs
+            .iter()
+            .all(|&(s, r)| !self.signals[s as usize].active_in(r, cycle))
+    }
+
+    /// The implicit signals after an update of the fast paths (which run with implicit signals
+    /// in the design): none is due (the paths take no queue entry of one), so only a source that
+    /// had activity can change one.
+    #[inline]
+    fn update_implicit_quiet(&mut self) -> Result<(), ErrorKind> {
+        if self.implicits.is_empty() || self.implicit_srcs_quiet() {
+            return Ok(());
+        }
+        self.update_implicit(&BTreeSet::new())
+    }
+
     /// 14.7.5.3 c: `'transaction`, `'stable`, `'quiet` and `'delayed`, in creation order (an
     /// implicit signal of an implicit signal sees its source already updated).
     fn update_implicit(&mut self, due: &BTreeSet<u32>) -> Result<(), ErrorKind> {
@@ -3248,8 +3300,8 @@ impl SimControl {
             // made in: no shuffled run, and (below) nothing earlier in the batch to write.
             let live_ok = self.rng.is_none() && self.live_sink.is_some();
             // An error ends the commit at its process: later ones must not write.
-            let stops = |slot: &Slot| {
-                slot.result.is_err()
+            let stops = |failed: bool, slot: &Slot| {
+                failed
                     || postponed
                         && (slot.st.deadline == Some(sh.now)
                             || !slot.st.phantoms.is_empty()
@@ -3294,7 +3346,7 @@ impl SimControl {
                     let live = live_ok
                         && par.iter().all(|&p| {
                             let s = lock(&slots[p as usize]);
-                            !stops(&s)
+                            !stops(s.result.is_err(), &s)
                                 && !(s.st.effects.iter())
                                     .any(|e| matches!(e, Effect::Report(..) | Effect::Output(..)))
                         });
@@ -3304,7 +3356,7 @@ impl SimControl {
                             resumption(&self.procs, p, &mut s.st);
                         }
                         run(p, &mut s, live);
-                        if stops(&s) {
+                        if stops(s.result.is_err(), &s) {
                             break;
                         }
                     }
@@ -3328,8 +3380,13 @@ impl SimControl {
                                 st: &mut s.st,
                                 live: live_ok,
                             };
-                            s.result = s.process.run(&mut ctx);
-                            if stops(s) {
+                            // `result` stays `Ok` unless a run failed (a store would drop the old one).
+                            let r = s.process.run(&mut ctx);
+                            let failed = r.is_err();
+                            if failed {
+                                s.result = r;
+                            }
+                            if stops(failed, s) {
                                 late.push(p);
                                 break;
                             }
@@ -3343,13 +3400,12 @@ impl SimControl {
                             if !init
                                 && !postponed
                                 && st.again
+                                && st.act & ACT_SLOW == 0
                                 && meta.perm != 0
                                 && st.wait_key == meta.wkey
-                                && st.sens.is_empty()
-                                && st.deadline.is_none()
-                                && st.effects.is_empty()
-                                && s.result.is_ok()
+                                && !failed
                             {
+                                st.check_flags();
                                 st.again = false;
                                 st.matched = 0;
                                 st.wait_key = crate::process::NO_EDGE;
@@ -3357,36 +3413,45 @@ impl SimControl {
                                 meta.resumed = true;
                                 self.serial_ran |= meta.flags.serial;
                                 if meta.idle_ok
-                                    && note_idle(meta, sh.signals, &self.names[p as usize], st)
+                                    && note_idle(
+                                        meta,
+                                        &mut self.armed[p as usize],
+                                        sh.signals,
+                                        &self.names[p as usize],
+                                        st,
+                                    )
                                 {
                                     self.idle_live -= 1;
                                     self.idle_active = self.idle_live != 0;
                                 }
-                                for &(t, d) in st.scheduled.iter() {
-                                    self.queue.push(now, t, Entry::Driver(d.0));
-                                }
-                                st.scheduled.clear();
-                                // Applied after the batch: the signals are shared until then.
-                                if !st.out.is_empty() {
-                                    for &o in &st.out {
-                                        self.direct.push(o);
+                                // A quiet activation (nothing assigned) has nothing to commit.
+                                if st.act & ACT_ASSIGNED != 0 {
+                                    for &(t, d) in st.scheduled.iter() {
+                                        self.queue.push(now, t, Entry::Driver(d.0));
                                     }
-                                    st.out.clear();
-                                }
-                                if let [o] = st.outv[..] {
-                                    // One entry (the usual register): a store, not a `memcpy`.
-                                    self.directv.push(o);
-                                    st.outv.clear();
-                                } else if !st.outv.is_empty() {
-                                    self.directv.extend_from_slice(&st.outv);
-                                    st.outv.clear();
-                                }
-                                if !st.outb.is_empty() {
-                                    self.directb.extend_from_slice(&st.outb);
-                                    st.outb.clear();
-                                }
-                                if !st.phantoms.is_empty() {
-                                    self.empty_delta |= st.take_phantoms();
+                                    st.scheduled.clear();
+                                    // Applied after the batch: the signals are shared until then.
+                                    if !st.out.is_empty() {
+                                        for &o in &st.out {
+                                            self.direct.push(o);
+                                        }
+                                        st.out.clear();
+                                    }
+                                    if let [o] = st.outv[..] {
+                                        // One entry (the usual register): a store, not a `memcpy`.
+                                        self.directv.push(o);
+                                        st.outv.clear();
+                                    } else if !st.outv.is_empty() {
+                                        self.directv.extend_from_slice(&st.outv);
+                                        st.outv.clear();
+                                    }
+                                    if !st.outb.is_empty() {
+                                        self.directb.extend_from_slice(&st.outb);
+                                        st.outb.clear();
+                                    }
+                                    if !st.phantoms.is_empty() {
+                                        self.empty_delta |= st.take_phantoms();
+                                    }
                                 }
                             } else {
                                 late.push(p);
@@ -3431,30 +3496,42 @@ impl SimControl {
             live: sh.live.is_some(),
         };
         // A panic in process code is a broken invariant: an internal error of the process.
-        s.result = catch_unwind(AssertUnwindSafe(|| s.process.run(&mut ctx)))
+        let r = catch_unwind(AssertUnwindSafe(|| s.process.run(&mut ctx)))
             .unwrap_or_else(|panic| Err(process_panic(&sh, p, &*panic)));
+        // `result` stays `Ok` unless a run failed (a store would drop the old one).
+        let failed = r.is_err();
+        if failed {
+            s.result = r;
+        }
         let st = &mut s.st;
         let meta = &mut self.procs[p as usize];
         // The usual clocked process (see `run_batch`): committed here.
         if !(st.again
+            && st.act & ACT_SLOW == 0
             && meta.perm != 0
             && st.wait_key == meta.wkey
-            && st.sens.is_empty()
-            && st.deadline.is_none()
-            && st.effects.is_empty()
-            && s.result.is_ok())
+            && !failed)
         {
             let mut late = std::mem::take(&mut self.late);
             late.push(p);
             return self.commit_rest(late, pids, false, false);
         }
+        st.check_flags();
         st.again = false;
         st.matched = 0;
         st.wait_key = crate::process::NO_EDGE;
         meta.ready = false;
         meta.resumed = true;
         self.serial_ran |= meta.flags.serial;
-        if meta.idle_ok && note_idle(meta, sh.signals, &self.names[p as usize], st) {
+        if meta.idle_ok
+            && note_idle(
+                meta,
+                &mut self.armed[p as usize],
+                sh.signals,
+                &self.names[p as usize],
+                st,
+            )
+        {
             self.idle_live -= 1;
             self.idle_active = self.idle_live != 0;
         }
@@ -3559,7 +3636,13 @@ impl SimControl {
                 && st.effects.is_empty()
                 && slot.result.is_ok()
             {
-                if note_idle(meta, &self.signals, &self.names[p as usize], st) {
+                if note_idle(
+                    meta,
+                    &mut self.armed[p as usize],
+                    &self.signals,
+                    &self.names[p as usize],
+                    st,
+                ) {
                     self.idle_live -= 1;
                     self.idle_active = self.idle_live != 0;
                 }
@@ -3835,11 +3918,30 @@ impl SimControl {
         if which == 0 && self.obs_phases.len() <= 64 {
             return;
         }
+        let which = self.polled(which, phase);
+        if which == 0 && self.obs_phases.len() <= 64 {
+            return;
+        }
         self.notify_which(which, |o, h| {
             if o.wants_phase(phase) {
                 o.phase(h, phase)
             }
         });
+    }
+
+    /// `which` without the observers that say no (`Observer::phase_due`) before a hook is made.
+    #[inline(never)]
+    fn polled(&mut self, mut which: u64, phase: Phase) -> u64 {
+        let mut left = which;
+        while left != 0 && self.obs_phases.len() <= 64 {
+            let i = left.trailing_zeros() as usize;
+            left &= left - 1;
+            let o = &mut self.observers[i];
+            if !(o.wants_phase(phase) && o.phase_due(phase)) {
+                which &= !(1 << i);
+            }
+        }
+        which
     }
 
     /// The changed ranges of `changed_sigs` to every observer (`Observer::value_changes`): one
@@ -3958,7 +4060,10 @@ fn finish_dirty(sig: &mut Signal, now: Time, cycle: u64) -> Result<bool, ErrorKi
 
 /// Commit the direct transactions `out` and `outv` of a process (`Ctx::assign_code`, `Out`) to
 /// their signals (`Signal::commit_code`, `commit_planes`), listing each signal once in
-/// `direct_sigs` for the next update. The entries of one driver are all in one of the lists.
+/// `direct_sigs` for the next update. The entries of one driver are in the order they were made in
+/// when all of its `out` entries come before its `outv` ones (`Ctx` keeps it so: a one-element
+/// assignment after a vector entry of the same run is an `OutV` of one element); `outb` is for byte
+/// drivers only.
 #[inline]
 fn commit_out(
     stats: &mut Stats,
@@ -4099,7 +4204,13 @@ const IDLE_WINDOW: u16 = 128;
 /// signals it reads had no event since, until one does (`armed`), and what it did is what a skipped
 /// activation would do. With `Config::idle_check` an activation `idle_filter` would have skipped
 /// is checked against that first.
-fn note_idle(meta: &mut ProcMeta, signals: &[Signal], name: &str, st: &ProcState) -> bool {
+fn note_idle(
+    meta: &mut ProcMeta,
+    armed: &mut bool,
+    signals: &[Signal],
+    name: &str,
+    st: &ProcState,
+) -> bool {
     // Tracking costs ~40 instructions an activation and a skip saves ~1000: a process that is
     // skipped in fewer than 3% of its activations over a window stops being tracked for a while (a
     // design whose registers always change pays for the bookkeeping and gains nothing).
@@ -4161,7 +4272,7 @@ fn note_idle(meta: &mut ProcMeta, signals: &[Signal], name: &str, st: &ProcState
         );
     }
     meta.idle_state = 1 + u8::from(assigned);
-    meta.armed = false;
+    *armed = false;
     false
 }
 
@@ -4268,6 +4379,7 @@ fn resumption(procs: &[ProcMeta], p: u32, st: &mut ProcState) {
         m.epoch += 1;
     }
     let by_timeout = procs[p as usize].by_timeout;
+    st.act = 0;
     st.timed_out = by_timeout;
     st.known = if by_timeout {
         crate::process::NO_EDGE

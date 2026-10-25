@@ -254,6 +254,26 @@ fn subtype_indications() {
     assert!(matches!(&st(10).constraint, Some(Constraint::Record(v, _)) if v.len() == 2));
 }
 
+/// `arr(0)'subtype` is the subtype of an indexed object name: the parentheses
+/// belong to the name, not to an index constraint (#616).
+#[test]
+fn subtype_of_an_indexed_name() {
+    let d = ok(&pkg("subtype s is arr(0)'subtype;
+        subtype t is arr(0 to 1);"));
+    let decls = pkg_decls(&d);
+    let st = |i: usize| match &decls[i] {
+        Decl::Subtype(s) => &s.subtype,
+        d => panic!("{d:?}"),
+    };
+    let NameKind::Attribute { prefix, attr } = &st(0).type_mark.kind else {
+        panic!("{:?}", st(0).type_mark.kind)
+    };
+    assert_eq!(attr.key.as_str(), "subtype");
+    assert!(matches!(prefix.kind, NameKind::Apply { .. }));
+    assert!(st(0).constraint.is_none());
+    assert!(matches!(st(1).constraint, Some(Constraint::Array { .. })));
+}
+
 #[test]
 fn objects_and_aliases() {
     let d = ok(&pkg(

@@ -327,3 +327,40 @@ fn fast_ra_makes_smaller_correct_code() {
         sizes[1]
     );
 }
+
+thread_local! {
+    static SUNK: std::cell::RefCell<Vec<i64>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+extern "C" fn sink(p: *const i64, n: usize) {
+    // SAFETY: the caller passes `n` readable words.
+    SUNK.with(|s| *s.borrow_mut() = unsafe { std::slice::from_raw_parts(p, n) }.to_vec());
+}
+
+/// A stack buffer with thousands of stores through its address that escapes to a call (the
+/// buffer a native frame's exits record registers in) goes through the pass pipeline and
+/// the compiled function fills it: the passes that hide such a buffer give it back unchanged.
+#[test]
+fn a_big_escaping_buffer_survives_the_lean_passes() {
+    const N: usize = 3000;
+    for opt in [OptLevel::O2, OptLevel::Fast, OptLevel::FastRa] {
+        let mut m = Module::new("buffer");
+        spike::add_buffer(&m, N);
+        m.verify().unwrap();
+        m.optimize_as(opt, false).unwrap();
+        m.verify().unwrap();
+        let mut jit = Jit::new(opt, &runtime_symbols()).unwrap();
+        jit.add_object(&m.emit(opt).unwrap()).unwrap();
+        // SAFETY: the symbol is `extern "C" fn(i64, fn(*const i64)) -> i32`.
+        let f: unsafe extern "C" fn(i64, extern "C" fn(*const i64)) -> i32 =
+            unsafe { std::mem::transmute(jit.lookup("buffer").unwrap()) };
+        extern "C" fn sink_n(p: *const i64) {
+            sink(p, N);
+        }
+        // SAFETY: sink_n reads N words of the buffer.
+        assert_eq!(unsafe { f(1000, sink_n) }, 0, "{opt:?}");
+        let got = SUNK.with(|s| s.borrow().clone());
+        let want: Vec<i64> = (0..N as i64).map(|k| 1000 + k).collect();
+        assert_eq!(got, want, "{opt:?}");
+    }
+}

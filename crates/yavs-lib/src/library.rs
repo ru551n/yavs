@@ -256,6 +256,9 @@ pub struct Session {
 #[derive(Default)]
 struct SessionState {
     manifest: Option<Manifest>,
+    /// Records made since the index was last written, and the digests of the records they replaced.
+    dirty: bool,
+    dead: Vec<u128>,
 }
 
 impl Drop for Session {
@@ -282,6 +285,22 @@ impl Session {
     /// [`Session::record`] with the stamp of the file taken before its content was read, so that
     /// an edit in between is never trusted (see [`Stamp`]).
     pub fn record_stamped(
+        &self,
+        standard: &str,
+        path: &Path,
+        hash: &str,
+        stamp: Option<Stamp>,
+        units: Vec<UnitRecord>,
+    ) -> Result<()> {
+        self.record_deferred(standard, path, hash, stamp, units)?;
+        self.flush()
+    }
+
+    /// [`Session::record_stamped`] that leaves the index to [`Session::flush`]: the record of the
+    /// file is written now, the index (rewritten whole) once for a batch, not once per file (#747).
+    /// Nothing is recorded for a reader until the flush; a caller flushes before it returns and
+    /// after a failure, so that the files before the failing one stay recorded.
+    pub fn record_deferred(
         &self,
         standard: &str,
         path: &Path,
@@ -345,8 +364,23 @@ impl Session {
             .collect();
         dead.extend(m.take_units(&units));
         m.push_file(path_s, hash, standard, stamp, digest, &units);
+        st.dirty = true;
+        st.dead.extend(dead);
+        Ok(())
+    }
+
+    /// Write the index if records were made since it was last written (atomic rename), then
+    /// remove the records nothing names any more.
+    pub fn flush(&self) -> Result<()> {
+        let mut st = self.state.lock().unwrap();
+        if !std::mem::take(&mut st.dirty) {
+            return Ok(());
+        }
+        let mp = self.lib.manifest_path();
+        let m = st.manifest.as_ref().unwrap();
         let rendered = m.render();
         if rendered.text == m.src() {
+            st.dead.clear();
             return Ok(());
         }
         // What `read` parsed (of this or another name of the directory) is the old index from here on:
@@ -356,14 +390,21 @@ impl Session {
         let r = write_new(&mp, &rendered.text);
         WRITES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if let Err(e) = r {
-            // The in-memory index has the file now; the next record must start from the disk.
+            // The in-memory index has the files now; the next record must start from the disk.
             st.manifest = None;
+            st.dead.clear();
             return Err(io("L0002", "write", &mp, &e));
         }
         st.manifest.as_mut().unwrap().adopt(rendered);
-        // Records nothing names any more (the file's earlier one, files that lost every unit).
-        for d in dead {
-            let _ = fs::remove_file(rdir.join(record::file_name(d)));
+        // Records nothing names any more (the files' earlier ones, files that lost every unit); not
+        // one that a later record of the batch made again.
+        let m = st.manifest.as_ref().unwrap();
+        let rdir = m.record_dir();
+        let live: std::collections::HashSet<u128> = m.record_digests().collect();
+        for d in std::mem::take(&mut st.dead) {
+            if !live.contains(&d) {
+                let _ = fs::remove_file(rdir.join(record::file_name(d)));
+            }
         }
         Ok(())
     }

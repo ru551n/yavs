@@ -2799,6 +2799,10 @@ pub fn exit_now(code: u8) -> ! {
 }
 
 impl Tier for AutoTier {
+    fn compiles_copies(&self) -> bool {
+        true
+    }
+
     fn run(&self, func: FuncId, pc: u32, host: &mut dyn TierHost) -> Option<u32> {
         let (f, nregs) = self.funcs.get(func.0 as usize)?.get()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize)?.get();

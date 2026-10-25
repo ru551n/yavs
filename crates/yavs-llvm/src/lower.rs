@@ -693,6 +693,27 @@ fn ablate(i: &Inst) -> bool {
     !set.is_empty() && set.contains(&kind_name(i))
 }
 
+/// A constant `LCopy` of 1 to 64 elements that lies inside one plane block on each side:
+/// the blocks and the bit offsets in them.
+struct LcopyShape {
+    k: u32,
+    sb: i64,
+    s0: u32,
+    db: i64,
+    d0: u32,
+}
+
+fn lcopy_one_block(k: i64, so: i64, d: i64) -> Option<LcopyShape> {
+    let ok = (1..=64).contains(&k) && (0..1 << 32).contains(&so) && (0..1 << 32).contains(&d);
+    (ok && so >> 6 == (so + k - 1) >> 6 && d >> 6 == (d + k - 1) >> 6).then_some(LcopyShape {
+        k: k as u32,
+        sb: so >> 6,
+        s0: (so & 63) as u32,
+        db: d >> 6,
+        d0: (d & 63) as u32,
+    })
+}
+
 /// The variant name of `i` (`CallNative` for every native call).
 fn kind_name(i: &Inst) -> String {
     let d = format!("{i:?}");
@@ -2229,14 +2250,22 @@ impl Gen {
     /// Define register `r` as `v` without a store: `flush` stores it where the frame is looked
     /// at. Only in straight-line code (not between the fast and slow path of an instruction).
     unsafe fn std(&self, c: &Cur, r: Reg, v: LLVMValueRef) {
+        // The interpreter starts every frame with a register defined once by a constant or an
+        // address (`Pre::fill`): its definition stores nothing, in loops or not.
+        if let Some(d) = &c.defer
+            && d.pre.get(r.0 as usize) == Some(&true)
+        {
+            if let Some(p) = d.pend.borrow_mut().get_mut(r.0 as usize) {
+                *p = None;
+            }
+            return;
+        }
         if let Some(d) = &c.defer
             && d.loopy[d.pc.get() as usize]
             && !d.keep.get(r.0 as usize).copied().unwrap_or(false)
             && let Some(p) = d.pend.borrow_mut().get_mut(r.0 as usize)
         {
-            // The interpreter starts every frame with a register defined once by a constant
-            // or an address: nothing to store.
-            *p = (!d.pre[r.0 as usize]).then_some(v);
+            *p = Some(v);
             d.fresh.borrow_mut().push(r.0);
             return;
         }
@@ -4665,6 +4694,20 @@ impl Gen {
                         LLVMBuildBr(self.b, block_bb(t.default)?);
                         open = false;
                     }
+                    // A constant range inside one plane block on each side (most copies of record
+                    // fields): masks and shifts are constants, no block arithmetic.
+                    Inst::LCopy {
+                        dst,
+                        dst_off,
+                        src,
+                        src_off,
+                        n,
+                    } if self.lcopy_shape(&c, n, src_off, dst_off).is_some() => {
+                        let shape = self.lcopy_shape(&c, n, src_off, dst_off).expect("checked");
+                        let (slow, join) = self.slow_path(&c, pc, &inst);
+                        self.lcopy_const(&c, dst, src, fk(dst), fk(src), shape, slow);
+                        self.join(&c, join);
+                    }
                     Inst::LCopy {
                         dst,
                         dst_off,
@@ -5544,6 +5587,79 @@ impl Gen {
                 &mut [c.env, c.regs, c.mem, self.c32(at)],
                 quiet(i),
             )
+        }
+    }
+
+    fn lcopy_shape(&self, c: &Cur, n: Reg, so: Reg, d: Reg) -> Option<LcopyShape> {
+        lcopy_one_block(self.kint(c, n)?, self.kint(c, so)?, self.kint(c, d)?)
+    }
+
+    /// `Inst::LCopy` of a constant range inside one plane block on each side (`lcopy_one_block`).
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn lcopy_const(
+        &self,
+        c: &Cur,
+        dst: Reg,
+        src: Reg,
+        kd: Option<Known>,
+        ks: Option<Known>,
+        sh: LcopyShape,
+        slow: LLVMBasicBlockRef,
+    ) {
+        // SAFETY: `host` checks 32 bytes at each block.
+        unsafe {
+            let ps = self.host(
+                c,
+                self.ld(c, src),
+                ks,
+                self.c64(sh.sb * 32),
+                self.c64(32),
+                false,
+                slow,
+            );
+            let pd = self.host(
+                c,
+                self.ld(c, dst),
+                kd,
+                self.c64(sh.db * 32),
+                self.c64(32),
+                true,
+                slow,
+            );
+            let b = self.b;
+            let mask = if sh.k == 64 {
+                u64::MAX
+            } else {
+                (1u64 << sh.k) - 1
+            };
+            let hole = mask << sh.d0;
+            // The source planes first: the ranges may overlap.
+            let mut v = [self.c64(0); 4];
+            for (plane, x) in v.iter_mut().enumerate() {
+                let w = self.load(self.i64, self.gep(ps, self.c64(plane as i64 * 8)));
+                *x = if sh.s0 == sh.d0 {
+                    LLVMBuildAnd(b, w, self.c64(hole as i64), c"".as_ptr())
+                } else {
+                    let r = LLVMBuildLShr(b, w, self.c64(i64::from(sh.s0)), c"".as_ptr());
+                    let r = LLVMBuildAnd(b, r, self.c64(mask as i64), c"".as_ptr());
+                    LLVMBuildShl(b, r, self.c64(i64::from(sh.d0)), c"".as_ptr())
+                };
+            }
+            for (plane, x) in v.iter().enumerate() {
+                let at = self.gep(pd, self.c64(plane as i64 * 8));
+                let out = if hole == u64::MAX {
+                    *x
+                } else {
+                    let keep = LLVMBuildAnd(
+                        b,
+                        self.load(self.i64, at),
+                        self.c64(!hole as i64),
+                        c"".as_ptr(),
+                    );
+                    LLVMBuildOr(b, keep, *x, c"".as_ptr())
+                };
+                self.store(out, at);
+            }
         }
     }
 

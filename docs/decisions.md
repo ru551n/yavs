@@ -9259,3 +9259,31 @@ file's own entry 10 percent, parsing 9 percent, the library index 2.5 percent, t
 - **Ideas from the reference simulator** (rule 22; no code): its identifiers carry their hash and are interned in one open-addressing table with a bounded reprobe, so a text is hashed
   once and compared by pointer afterwards: the `Index` keeps the hash per slot for the same reason. Its units are one arena each, read and relocated as a whole with an identifier cache
   per file; ours stay per-entry lazy (cheaper for a unit of which one declaration is read), which is why decoding a `Scope` and its symbols remains the largest dependency cost.
+
+## llvm: compiled copies of processes, constant `LCopy`, no stores of preloaded constants (yavs-interp, yavs-llvm, #679, 2026-10-25)
+
+Cause found with the per-kind attribution (`YAVS_LLVM_KINDLOC`) of the compiled code of the LEON3 `comb`, `dctrl` and `ictrl` processes and of the
+`fletcher_bufferwriter_512` processes in heat mode: 35 to 45 percent of the bytes were `LayoutOf`, `Field`, `DopeLen` and `SubtypeCheck` that the
+interpreter's copies fold (`opt/decl.rs`, d52a0995). The compiled code was the code of the **shared** function: a process whose shared code is
+compiled does not switch to its copy (`Machine::specialise`: "a copy would run interpreted for good"), so every process the tier compiled early
+(`--tier-heat=1,0,0`, `YAVS_AUTO_FORCE`, or any process the policy compiled before it switched) kept the unfolded layouts, and the interpreter
+that ran copies had fewer instructions than the compiled shared code had.
+
+- **Decision: `Tier::compiles_copies` (default `false`, `true` for `AutoTier`): a process whose shared code is compiled switches to its copy at
+  activation `spec_after()` and the tier compiles the copy like any function** (its process is hot, so it is a candidate at once; the copy
+  is named by content, so a twin is linked from the cache). The wait of `SPEC_TIER_WAIT` stays for a process whose shared code is not compiled
+  (the policy's `awaits_switch`). `--tier=llvm` compiles everything before the run and compiles no copies: its processes stay on the shared code
+  as before. The compiled copy of the LEON3 `dctrl` is 11 477 IR instructions against 19 889 and 62 bytes of machine code per IR instruction
+  against 112.
+- **Decision: a constant `LCopy` inside one plane block on each side is inline arithmetic with constant masks and shifts** (`Gen::lcopy_const`,
+  any function kind): 1 575 of the 1 792 `LCopy` of the LEON3 copies have constant offsets and count, 1 560 of them one block each side, 1 214 the
+  same offset on both sides (a mask and an or per plane, no 128-bit shifts, no block arithmetic). The general inline form stays for run-time
+  offsets, the call for more than 64 elements.
+- **Decision: a register defined once by a constant or an address is not stored at its definition, in loops or not** (`Gen::std`): the frame starts
+  with it (`Pre::fill`), the deferral code already relied on this inside loops. Outside loops every constant was a `mov` to the frame (2 386 of them,
+  48 KB, in one LEON3 copy).
+- **Not done (measured):** dropping `SPEC_TIER_WAIT` for processes whose shared code is not compiled either (switch at activation 1024
+  whatever the clock): `sc5_fifo_repack` `--tier=auto` 7.5 to 6.9 G cycles and writer heat 19.9 to 18.4 G more, but the tier policy
+  (`awaits_switch`, #673) owns that wait; left to it. A frame address for the cached layout of `LayoutOf`: the interpreter's step after a
+  failed cache test leaves the layout in the temporary area, so the address is in two places and the shared code of subprograms keeps the
+  `LikelyTemp` lookup (`LayoutOf` and `Field` are 12 percent of the bytes of the writer's compiled code that is still shared).

@@ -218,6 +218,37 @@ fn copies_compile_under_auto() {
     }
 }
 
+/// Under `--tier=auto` with every function compiled when the interpreter enters it
+/// (`--tier-heat=1,0,0`) a process switches to its copy after the default number of activations
+/// although its shared code is compiled (`Tier::compiles_copies`, #679), and the report is the
+/// interpreter's.
+#[cfg(feature = "llvm")]
+#[test]
+fn compiled_processes_switch_to_copies_under_auto() {
+    let d = tempdir("spec_auto_default");
+    let src = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/perf/spec_copies.vhd"),
+    )
+    .expect("design")
+    .replace("1500 ns", "40 us");
+    std::fs::write(d.join("spec_copies.vhd"), src).expect("write");
+    let work = format!("work:{}", d.join("lib").display());
+    let a = yavs(&d, &[], &["analyze", "--work", &work, "spec_copies.vhd"]);
+    assert_eq!(a.code, 0, "{}", a.stderr);
+    let go = |tier_args: &[&str]| {
+        let mut args = vec!["run", "--work", &work, "--no-cache", "--threads", "1"];
+        args.extend_from_slice(tier_args);
+        args.push("spec_copies");
+        yavs(&d, &[], &args)
+    };
+    let interp = go(&["--tier=interp"]);
+    assert_eq!(interp.code, 0, "{}", interp.stderr);
+    let heat = go(&["--tier=auto", "--tier-heat=1,0,0"]);
+    assert_eq!(heat.code, 0, "{}", heat.stderr);
+    assert_eq!(heat.stdout, interp.stdout);
+    assert!(heat.counters["spec_switched"] >= 6);
+}
+
 /// Compiled code is kept in the compilation cache under a key made of the generated code. A copy
 /// is named by what it is for, not by its function id (which follows the order in which the
 /// processes switched, and that differs between thread counts), so a second run that switches in

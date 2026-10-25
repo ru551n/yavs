@@ -8394,3 +8394,32 @@ carry the build id.
 Where a cold call goes now (frame-pointer profile, 9 corpora): the file's own analysis 40 percent (`Page::at` loads of the lazy arenas 3.8 percent, lookups 3 percent, the rest flat), dependencies' entries 25 percent (`Scope` pages
 6 percent, of which 45 percent is interning the names; `Decl` pages 6 percent), writing the entry 10 percent, parsing 9 percent, library index 2.5 percent, dynamic loader 5 percent. Batching is a user decision: one call per library
 instead of one per file takes UVVM from 9.36 to 6.08 G user and 2.38 to 0.36 G kernel instructions (`docs/decisions.md`). Not verified: Windows and aarch64 (CI).
+
+## llvm: compiled copies of processes, constant `LCopy` (#679, 2026-10-25)
+
+(`docs/decisions.md` "llvm: compiled copies of processes, ...".) A process whose shared code is compiled now switches to its specialised copy
+(`Tier::compiles_copies`, `AutoTier`) and the copy is compiled, so the compiled code has the folded layouts and descriptors of the interpreter's
+copies; a constant `LCopy` in one plane block is inline arithmetic with constant masks; a register defined once by a constant is not stored.
+Bench builds (`tools/build-bench.sh --features llvm`) of main at 10a5dc8d and of the change, one timed core of CCD1 (`tools/claim core`), all
+modes of a design interleaved in one session (`perf stat --no-inherit`, cycles:u of the simulation thread, medians of 3 after an untimed warm
+run; a session differs from another by up to 25 percent, so only the rows of one table are compared). Heat is `--tier=auto --tier-heat=1,0,0`.
+
+| design (cycles in G) | interpreter | heat, main | heat, change | auto, main | auto, change |
+|---|---:|---:|---:|---:|---:|
+| `fletcher_bufferwriter_512` | 20.3 | 23.0 | 17.5 (-24 %, instructions -15 %) | 20.8 | 20.4 |
+| `grlib_leon3mp` 150 us, `iu:comb` etc. forced in heat | 37.3 | 47.5 | 41.9 (-12 %, instructions -6 %) | 43.4 | 40.2 (-7 %) |
+| `sc5_fifo_repack` | 11.4 | 7.09 | 5.70 (-20 %) | 9.59 | 9.65 |
+| `neorv32_single_min` | 14.9 | 13.95 | 13.47 (-3.5 %) | 14.9 | 15.2 |
+
+Before the rebase onto the work-clock policy (f85fcee4 as base, same method): writer heat 26.2 to 20.95 G, LEON3 150 us heat 51 to 43 G, `sc5_fifo_repack`
+`--tier=auto` 9.4 to 6.9 G with the wait removed as well (not kept, decisions). `tools/realbench --compare` of f85fcee4 and the change, `--tiers auto,auto-cold`, 42 tests,
+one core: instructions equal within 1 percent except `poc_arith_addw` -16 % (120.8 to 100.8 G warm) and `sc5_fifo_repack` -4 %; the flagged wall slowdowns were
+runs of 0.01 to 0.3 s and one 55 s LEON3 run with equal instructions (the whole LEON3 run, interleaved, `--tier=auto`: 291 to 259 G cycles median, 263 to 255 minimum).
+
+Where the LEON3 gap to the interpreter is (heat 150 us, +12 %, instructions -6 %): frontend stall cycles 11.3 G against 5.9 G, L1i misses 108 M against 38 M, branch misses
+219 M against 160 M. The compiled code is 62 bytes per IR instruction in the largest copy (112 in the shared code); a process that runs its whole straight-line body at each
+activation (the integer unit's `comb` copy: 11 477 IR instructions, 700 KB of machine code) streams more instruction bytes through the 32 KB L1i and the 1 MB L2 than the
+interpreter's loop and operation stream do. Top kinds of that copy by bytes (`YAVS_LLVM_KINDLOC`): `LCopy` 14 % (336 bytes each before this change, 266 after;
+the destination's heap lookup is a large part of the rest), `Br` 7 % (the entry switch tree), `SigRead` 7 %, `Const` 7 % (before this change), `Alloc` 5 %. Left: one lookup for the several
+`LCopy` of one record variable, `Alloc` and `SigRead` bytes, and shared subprogram code still has the unfolded `LayoutOf` and `Field` (stepped `LayoutOf` 467 K per 60 us in LEON3).
+Difftest 524/524 on `yavs-interp`, `yavs-llvm`, `yavs-auto` (1 and 4 threads) and `yavs-auto --tier-heat=1,0,0` (1 and 4 threads, also with `YAVS_SPEC_AFTER=2`).

@@ -381,6 +381,15 @@ pub trait Tier: Send + Sync {
         true
     }
 
+    /// Whether the tier compiles the specialised copy of a process (`Program::copy_of`) when it
+    /// runs hot, like any function. Then a process switches to its copy whether or not the
+    /// shared code is compiled (`Machine::specialise`): compiled code of the copy is a third
+    /// smaller and faster. A tier that compiled everything before the run leaves it `false`:
+    /// its processes stay on the compiled shared code.
+    fn compiles_copies(&self) -> bool {
+        false
+    }
+
     /// Whether [`Tier::call`] takes `func` now (`Runtime::set_tier` marks it).
     fn callable(&self, _func: FuncId) -> bool {
         false
@@ -1270,9 +1279,9 @@ pub fn spec_forced() -> bool {
     std::env::var_os("YAVS_SPEC_AFTER").is_some()
 }
 
-/// How long after a tier is set a process stays on its shared code (`Machine::specialise`): the
-/// tier needs about 30 ms of samples of a process before it compiles it, and its compile takes
-/// a few more.
+/// How long after a tier is set a process stays on its shared code (`Machine::specialise`) when
+/// the tier does not compile copies: the tier needs about 30 ms of samples of a process before it
+/// compiles it, and its compile takes a few more.
 pub(crate) const SPEC_TIER_WAIT: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// Activations of a process before it switches to its copy: the optimiser spends about 0.7

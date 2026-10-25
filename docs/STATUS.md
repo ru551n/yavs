@@ -8216,3 +8216,9 @@ What the profile says now (four SDRAM models alone, `op-census`): 85 ops and abo
 `DriveRun` of 13 scalar drives 8, `CopyDrive` 4.6, `EdgeBr` 4. Not done: vector drives in `DriveRun` (built, no gain, #723 closed in decisions.md), the pure-call memo give-up (#722: the memo
 saves twice its cost there; the S-record start-up is the `HRead` loop itself, a table pass for pure functions of one enumeration argument would be the general fix), the empty kernel
 cycle after an activation whose drives were all skipped (kernel lane), the cold path of processes that really use protected objects or the shared heap (#724 remains for those).
+
+## Subprogram calls (#730, 2026-10-25)
+
+Where a frame-mode call goes was measured in both tiers (`docs/decisions.md` "Calls: where the 50 to 80 ns go"): no piece is more than a tenth of a call.
+Taken: `Machine::pop_ret` on `Op::Ret`, the saved caller without its return op, and no slots for a lean callee's unused locals. Measured and not taken: a larger inliner budget (window generator interpreter -9 percent, `--tier=auto` +6 percent), a pool of register files per depth.
+Left: `Drive`, `Wait` and vector `SigRead` as native-frame instructions (the compiled frame-mode call is `Host::step` 18 percent, `tier_view` 13 percent), and by-reference and nested parameters in the lean path.

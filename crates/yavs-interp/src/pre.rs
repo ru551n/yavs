@@ -194,8 +194,14 @@ impl Pre {
         if lean {
             frame.retain(|&(_, off)| !f.params.iter().any(|p| p.slot as u64 == off));
         }
-        let all_params: u32 = f.params.iter().map(|p| p.width.bytes()).sum();
-        let fslots = if lean && f.frame == all_params && f.roots.is_empty() {
+        // A lean frame needs slots only for what the code addresses besides the parameters
+        // (which the skipped prologue alone read): none when it addresses no other.
+        let fslots = if lean
+            && f.roots.is_empty()
+            && !f.code.iter().any(|i| {
+                matches!(*i, Inst::AddrOf { space: AddrSpace::Frame, off, .. }
+                    if !f.params.iter().any(|p| p.slot == off))
+            }) {
             0
         } else {
             f.frame
@@ -4623,11 +4629,18 @@ mod tests {
     /// `depth(n) = if n = 0 then 0 else depth(n - 1) + 1` (one 8-byte `in` parameter, so
     /// `lean`); its first instruction takes the address of the parameter's slot.
     fn depth() -> (Program, yavs_ir::FuncId) {
+        depth_with(false, false)
+    }
+
+    /// `depth` with a slot nothing addresses (`spare`), or one the body takes the address of.
+    fn depth_with(spare: bool, used: bool) -> (Program, yavs_ir::FuncId) {
         let mut pb = ProgramBuilder::new();
         let depth = pb.declare("depth", FuncKind::Function, None);
         let mut fb = pb.define(depth);
         let s = fb.param("n", Width::B8, ParamClass::Value, Mode::In, None);
         fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let extra = (spare || used).then(|| fb.slot(16, 8));
+        let extra_at = extra.filter(|_| used).map(|e| fb.addr(AddrSpace::Frame, e));
         let at = fb.addr(AddrSpace::Frame, s);
         let n = fb.reg(RegTy::I64);
         fb.emit(Inst::Load {
@@ -4635,6 +4648,25 @@ mod tests {
             addr: at,
             w: Width::B8,
         });
+        if let Some(at) = extra_at {
+            let x = fb.reg(RegTy::I64);
+            fb.emit(Inst::Store {
+                addr: at,
+                src: n,
+                w: Width::B8,
+            });
+            fb.emit(Inst::Load {
+                dst: x,
+                addr: at,
+                w: Width::B8,
+            });
+            fb.emit(Inst::Bin {
+                op: yavs_ir::IntOp::Add,
+                dst: n,
+                a: n,
+                b: x,
+            });
+        }
         let (base, rec) = (fb.block(), fb.block());
         let (zero, one, c) = (fb.int(0), fb.int(1), fb.reg(RegTy::I64));
         fb.emit(Inst::Cmp {
@@ -4670,6 +4702,32 @@ mod tests {
         fb.emit(Inst::Ret { v: Some(d) });
         fb.finish();
         (pb.finish().unwrap(), depth)
+    }
+
+    /// A lean call allocates the slots the code addresses besides the parameters: none for a
+    /// frame the code never addresses (#730).
+    #[test]
+    fn lean_frame_has_slots_only_when_addressed() {
+        for (spare, used) in [(false, false), (true, false), (false, true)] {
+            let (prog, id) = depth_with(spare, used);
+            let f = prog.func(id).unwrap();
+            let pre = Pre::new(f, &prog, false);
+            assert!(pre.lean);
+            let addressed = f.code.iter().any(
+                |i| matches!(*i, Inst::AddrOf { space: AddrSpace::Frame, off, .. } if off != 0),
+            );
+            assert_eq!(
+                pre.fslots,
+                if addressed { f.frame } else { 0 },
+                "{spare} {used}"
+            );
+            if spare && !used {
+                assert!(
+                    f.frame > 8 && pre.fslots == 0,
+                    "an unused slot is not allocated"
+                );
+            }
+        }
     }
 
     /// The contract tiers rely on (#566): the register holding a lean parameter's slot address

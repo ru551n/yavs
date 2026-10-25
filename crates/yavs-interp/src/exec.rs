@@ -1287,6 +1287,36 @@ impl Machine {
         Some(fr)
     }
 
+    /// `pop_frame` for a return in the fast loop: only the register that receives the result
+    /// is handed back (the frame, 40 bytes, is not moved out).
+    #[inline(always)]
+    fn pop_ret(&mut self) -> Option<Option<Reg>> {
+        let fr = self.frames.pop()?;
+        self.regs.v.truncate(fr.rbase as usize);
+        match self.frames.last() {
+            Some(top) => {
+                self.regs.base = top.rbase as usize;
+                self.sstack.truncate(fr.sbase as usize);
+                // Back at the root: a deep recursion does not keep its stack.
+                if self.frames.len() == 1 && self.sstack.capacity() > 1 << 16 {
+                    self.shrink_stacks();
+                }
+            }
+            None => {
+                self.regs.base = 0;
+                self.root.clear();
+            }
+        }
+        Some(fr.ret)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn shrink_stacks(&mut self) {
+        self.sstack.shrink_to(1 << 12);
+        self.regs.v.shrink_to(1 << 10);
+    }
+
     /// `pop_frame` without giving memory back: the stacks do not move (compiled code of the
     /// caller holds a pointer to its registers, `TierHost::ret`).
     fn pop_frame_in_place(&mut self) -> Option<Frame> {
@@ -4946,21 +4976,15 @@ impl Machine {
                 }
             };
         }
-        // The callers of the frames this loop pushed (innermost last): their function, code
-        // and the op after the call, so a return looks nothing up. Compiled code leaves this
-        // loop when it keeps frames (`TIER_UNWIND`), so the list stays right.
-        let mut saved: [Option<(FuncId, &Func, &pre::Code, u32)>; 8] = [None; 8];
+        // The callers of the frames this loop pushed (innermost last): their function and code,
+        // so a return looks neither up. Compiled code leaves this loop when it keeps frames
+        // (`TIER_UNWIND`), so the list stays right.
+        let mut saved: [Option<(FuncId, &Func, &pre::Code)>; 8] = [None; 8];
         let mut depth = 0usize;
         macro_rules! save_caller {
             () => {
                 if depth < saved.len() {
-                    let ret = code
-                        .at
-                        .get(k)
-                        .and_then(|&p| code.entry.get(p as usize + 1))
-                        .copied()
-                        .unwrap_or(pre::NONE);
-                    saved[depth] = Some((func, f, code, ret));
+                    saved[depth] = Some((func, f, code));
                 }
                 depth += 1;
             };
@@ -5941,11 +5965,11 @@ impl Machine {
                     if top <= base {
                         return Ok(Flow::Ret(v));
                     }
-                    let done = self
-                        .pop_frame()
+                    let ret = self
+                        .pop_ret()
                         .ok_or_else(|| ice_s!("return without frame"))?;
                     top -= 1;
-                    if let Some(d) = done.ret {
+                    if let Some(d) = ret {
                         self.regs[d.0 as usize] =
                             v.ok_or_else(|| ice_s!("function returned no value"))?;
                     }
@@ -5955,11 +5979,10 @@ impl Machine {
                     // The caller this loop entered the callee from: no lookups.
                     if depth > 0 {
                         depth -= 1;
-                        if let Some(&Some((sf, sff, sc, rk))) = saved.get(depth)
-                            && rk != pre::NONE
-                        {
-                            (func, f, code, k) = (sf, sff, sc, rk as usize);
+                        if let Some(&Some((sf, sff, sc))) = saved.get(depth) {
+                            (func, f, code) = (sf, sff, sc);
                             ops = &code.ops;
+                            k = entry!(pc)? as usize;
                             if TIER {
                                 rebind!();
                             }

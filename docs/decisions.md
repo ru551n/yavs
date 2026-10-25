@@ -8902,3 +8902,43 @@ wake costs about 85 ops and 16 k instructions.
 - **Found, not done:** the empty delta that follows an activation whose assignments were all skipped (`SKIPPED`, kept for the delta numbers of reports) is a whole
   kernel cycle: in the model's wake the kernel is about 40 percent of the time (`Suspend` in the census, `cycle`, `run_batch`, `finish_direct`, `commit_rest`);
   kernel lane.
+
+## Calls: where the 50 to 80 ns go, and the small cuts (yavs-interp `exec.rs`, `pre.rs`, #730, 2026-10-25)
+
+Measured with `tools/stepcount` (exact instructions per call), `perf` cycles and the `op-census` build, on a micro design with
+one call shape per case (a function of one value, a procedure with an out parameter, a nested function, a function on a
+vector or a record, a protected method) and on the verification-library and CPU testbenches. A frame-mode call in the
+interpreter is about 300 to 350 instructions for the call, the callee's prologue and `Ret`; the shares are roughly:
+registers of the new frame (`Pre::fill`, an `extend_from_slice` of the callee's initial registers: 8 to 15 percent of the
+cycles of a call-heavy design, proportional to the callee's register count: 20 to 100 registers a frame), the `Ret` and
+`pop_frame` (the 40-byte `Frame` moved out and the saved caller looked up again by IR pc), the loads of the callee's `Pre`,
+`Func` and `memo` flags, the zeroing of the slot stack, and the dispatch of the callee's ops. No single piece is more than a
+tenth of a call. Ablation (a dummy copy of one step added to the call path, `callp`/nested-function cases): a second `fill` 25 to 33
+cycles a call, the pop 10 to 25, the callee look-ups 5 to 13, the slot zeroing 4 to 9, the static link 0.
+
+- **Taken:** `Op::Ret` pops through `Machine::pop_ret`, which hands back only the receiving register (no `Frame` moved
+  out, the shrink of a deep recursion out of line); the caller saved by `save_caller!` is `(function, code)` and the
+  return op is looked up by the caller's pc (`entry!`) as every other return path does, so a call stores 24 bytes
+  less; a lean frame (`Pre::lean`) allocates slots only when the code addresses a slot besides the parameters' (was: only when the
+  parameters were the whole frame), so the callee's unused locals are not zeroed. Test:
+  `pre::tests::lean_frame_has_slots_only_when_addressed`. Measured (bench builds, core 15, interleaved medians of 5,
+  `--tier=interp`): a nested function call 207 to 197 cycles and -4.2 percent instructions, a procedure on the enclosing
+  process's variable 181 to 174 cycles and -4.7 percent instructions, the other call shapes level within the run-to-run
+  spread (calls of the benchmark `calls` 29.7 to 29.4 cycles a call). Realbench `--compare` (16 designs, run phase, core 15, medians of 3, base a133e50c): instructions 0.99 to 1.01 for every design in both tiers, wall within the run-to-run spread (geomean level); the call-heavy testbenches (`uvvm_sb_slv`, `uvvm_util_rand`, `osvvm_axis_random`) instructions 0.99. The cut is small: the call stays a few hundred instructions.
+- **Measured and not taken, with the reason:** (1) a larger inliner budget (`MAX_MULTI` 100, 12 blocks, raw callee
+  up to four times 60): window generator `--tier=interp` -9 percent instructions and cycles, but `--tier=auto` +6 percent
+  instructions and +8 percent wall (bigger units to compile), and the scoreboard library's testbench +24 percent
+  instructions in the interpreter; the limits stay as the table in `opt/inline.rs` says. (2) A pool of register files per call depth
+  (skip `fill` when the frame at that depth last held the same function): 18 to 99 percent of the frames
+  of the testbenches would hit, but a hit does not mean the registers hold the initial values (the callee wrote its registers), and putting
+  them back is what `fill` does; no cheaper proof was found. (3) Passing
+  scalars "in registers" is already what `Pre::lean` does for the plain functions (11 of 13 million calls of the CPU testbench
+  and 85 percent of the calls of the scoreboard library); the calls that stay in the slow form are by-reference
+  (`inout`/`out`), nested and signal parameters. (4) Native frames for more callees: the procedures of the
+  random-number testbench that read signals already run native (`Functions that read signals run on native frames`);
+  what is left in frame mode is `Drive`, `Wait`, `SigRead` of a vector and protected-type allocation, each its own task.
+- **Where the compiled frame-mode call goes** (`--tier=llvm`, `perf` of the signal-driving procedure case, 1.4 G instructions for
+  1 million calls): the call itself is `Host::step` `Call` 18 percent, `tier_view` 13 percent and `Pre::fill` 3 percent
+  of the cycles; the drive inside it (`yavs_rt_drive`, `assign_bytes_fast`, `commit_out`) is about 20 percent. Making
+  `Drive` a native-frame instruction is the next cut and is shared with the process-entry work of the other lanes
+  (`cgdirect`) and the parameter-address work (#726); not touched here.

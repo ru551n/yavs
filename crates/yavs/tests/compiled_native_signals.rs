@@ -209,11 +209,13 @@ fn signal_procedures_and_vector_functions_on_native_frames_match_the_interpreter
         let o = run(&dir, flags, "native_signals");
         assert!(o.status.success(), "{flags:?}: {o:?}");
         assert_eq!(String::from_utf8_lossy(&o.stdout), want, "{flags:?}");
-        if flags == &["--tier=llvm"] {
+        if flags == &["--tier=llvm"] || flags == &["--tier=clift"] {
             // The procedures and functions run on native frames: the calls are not steps of
             // the interpreter (only the rejecting procedure and the report calls are).
             let err = String::from_utf8_lossy(&o.stderr);
-            assert!(counter(&err, "llvm_native_frames") >= 14, "{err}");
+            if flags == &["--tier=llvm"] {
+                assert!(counter(&err, "llvm_native_frames") >= 14, "{err}");
+            }
             assert!(counter(&err, "cb_step.Call") <= 32, "{err}");
         }
     }

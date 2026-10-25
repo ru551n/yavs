@@ -19,7 +19,7 @@ use cranelift_codegen::isa::CallConv;
 
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{DataDescription, DataId, FuncId as ClifId, Linkage, Module};
+use cranelift_module::{DataDescription, DataId, FuncId as ClifId, Linkage, Module, ModuleReloc};
 use yavs_interp::space;
 use yavs_ir::{
     AddrSpace, BoolOp, CheckKind, CmpOp, FOp, FUnOp, Func, FuncId, FuncKind, Inst, IntOp, IntUnOp,
@@ -86,6 +86,9 @@ extern "C" fn clift_move(d: *mut u8, s: *const u8, n: u64) {
 /// Cranelift error text.
 pub type Error = String;
 
+/// The error of a compile that the compilation cache could not serve (`Jit::set_cached_only`).
+pub const NOT_CACHED: &str = "not in the compilation cache";
+
 /// A function in the perf map: name, definition, size, and the IR pc of each stretch of its code.
 type PerfEntry = (String, ClifId, usize, Vec<(u32, u32, u32)>);
 
@@ -127,6 +130,13 @@ pub struct Jit {
     /// The functions the policy compiles with the one being compiled: other callees get no variant
     /// of their own here (they are called through `Mem::ntab`); none: all (`compile`).
     allowed: Option<HashSet<FuncId>>,
+    /// The frame-mode code `f<id>` defined so far: a function is defined once (a compile that
+    /// failed for a probe of the cache may have defined it).
+    frames: HashMap<FuncId, ClifId>,
+    /// `Generator::cached_only`: a function the compilation cache does not have is not compiled
+    /// (`missed` says one was not), and a failure is not remembered as "no variant".
+    cached_only: bool,
+    missed: bool,
 }
 
 /// The native-frame variant `n<id>` of a function, in the calling convention of the LLVM tier
@@ -309,6 +319,9 @@ impl Jit {
             via_ntab: flag("YAVS_CLIFT_NTAB", "0") == "1",
             perfmap: (flag("YAVS_CLIFT_PERFMAP", "0") == "1").then(Vec::new),
             allowed: None,
+            frames: HashMap::new(),
+            cached_only: false,
+            missed: false,
         })
     }
 
@@ -322,10 +335,61 @@ impl Jit {
         if let Some(r) = bad_reg(f) {
             return Err(format!("register r{} beyond the frame", r.0));
         }
+        if let Some(&c) = self.frames.get(&id) {
+            return Ok((c, Vec::new()));
+        }
         if std::env::var_os("YAVS_CLIFT_DUMP").is_some() {
             eprintln!("{}", prog.dump_func(id));
         }
-        self.build(prog, id, f, false).map(|(c, s, _)| (c, s))
+        let (c, s, _) = self.build(prog, id, f, false)?;
+        self.frames.insert(id, c);
+        Ok((c, s))
+    }
+
+    /// `Generator::cached_only`: from now on compile nothing the compilation cache does not have.
+    pub fn set_cached_only(&mut self, on: bool) {
+        self.cached_only = on;
+        self.missed = false;
+    }
+
+    /// Whether a function was not compiled because the cache did not have it (`set_cached_only`).
+    pub fn missed(&self) -> bool {
+        self.missed
+    }
+
+    /// Compile `ctx` into `fid`: linked from the compilation cache when it has the function
+    /// (`cache.rs`), else compiled, and stored when there is a cache.
+    fn define_code(&mut self, fid: ClifId, ctx: &mut Context) -> Result<(), String> {
+        let Some(store) = crate::cache::store() else {
+            return self
+                .module
+                .define_function(fid, ctx)
+                .map_err(|e| format!("{e:?}"));
+        };
+        let mut kv = crate::cache::Kv(store);
+        let isa = self.module.isa();
+        if self.cached_only && !kv.has(isa, &ctx.func) {
+            self.missed = true;
+            return Err(NOT_CACHED.into());
+        }
+        let hit = ctx
+            .compile_with_cache(isa, &mut kv, &mut Default::default())
+            .map_err(|e| format!("{:?}", e.inner))?
+            .1;
+        if hit {
+            crate::cache::note_hit();
+        }
+        let code = ctx.compiled_code().ok_or("no compiled code")?;
+        let relocs: Vec<ModuleReloc> = code
+            .buffer
+            .relocs()
+            .iter()
+            .map(|r| ModuleReloc::from_mach_reloc(r, &ctx.func, fid))
+            .collect();
+        let align = u64::from(code.buffer.min_alignment);
+        self.module
+            .define_function_bytes(fid, align, code.code_buffer(), &relocs)
+            .map_err(|e| format!("{e:?}"))
     }
 
     /// Make the native-frame variant of `id` if it can have one; whether it has one.
@@ -366,6 +430,10 @@ impl Jit {
         }
         let r = self.try_native(prog, id);
         self.building.remove(&id);
+        // (A probe of the cache that missed decides nothing: a compile later makes the variant.)
+        if r.is_none() && self.missed {
+            return NatVar::No;
+        }
         self.natives.insert(id, r.clone());
         r.map_or(NatVar::No, NatVar::Direct)
     }
@@ -464,7 +532,10 @@ impl Jit {
                 &ctx.func.signature,
             )
             .map_err(|e| e.to_string())?;
-        if let Err(e) = self.module.define_function(fid, &mut ctx) {
+        if let Err(e) = self.define_code(fid, &mut ctx) {
+            if e == NOT_CACHED {
+                return Err(e);
+            }
             if cfg!(debug_assertions) {
                 panic!(
                     "Cranelift rejected the adapter of f{}: {e:?}\n{}",
@@ -472,7 +543,7 @@ impl Jit {
                     ctx.func.display()
                 );
             }
-            return Err(format!("Cranelift: {e:?} (a bug in yavs)"));
+            return Err(format!("Cranelift: {e} (a bug in yavs)"));
         }
         self.module.clear_context(&mut ctx);
         Ok(fid)
@@ -714,7 +785,10 @@ impl Jit {
         let asm = std::env::var("YAVS_CLIFT_ASM")
             .is_ok_and(|v| v.parse::<u32>().is_ok_and(|n| n == id.0));
         ctx.set_disasm(asm);
-        if let Err(e) = self.module.define_function(fid, &mut ctx) {
+        if let Err(e) = self.define_code(fid, &mut ctx) {
+            if e == NOT_CACHED {
+                return Err(e);
+            }
             // A Cranelift error (the verifier is on in debug builds) is a bug of the lowering:
             // debug builds stop with the function, release builds leave it interpreted.
             if cfg!(debug_assertions) {
@@ -729,7 +803,7 @@ impl Jit {
                     ctx.func.display()
                 );
             }
-            return Err(format!("Cranelift: {e:?} (a bug in yavs)"));
+            return Err(format!("Cranelift: {e} (a bug in yavs)"));
         }
         if let Some(v) = ctx
             .compiled_code()

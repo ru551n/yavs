@@ -10,7 +10,12 @@
 #![allow(unsafe_code)]
 
 #[cfg(feature = "clift")]
+mod cache;
+#[cfg(feature = "clift")]
 mod lower;
+
+#[cfg(feature = "clift")]
+pub use cache::{cache_stats, set_cache};
 
 #[cfg(feature = "clift")]
 pub use lower::{BREAK, Error, Jit, compile};
@@ -98,6 +103,26 @@ impl yavs_llvm::Generator for First {
         self.jit.allow(ids);
     }
 
+    fn cache_enabled(&self) -> bool {
+        cache::store().is_some()
+    }
+
+    fn cache_hits(&self) -> usize {
+        cache::cache_stats().0
+    }
+
+    fn cache_list(&self) -> std::collections::HashSet<(String, u32)> {
+        cache::compiled_list()
+    }
+
+    fn cache_note(&self, name: &str, len: u32) {
+        cache::add_compiled(name, len);
+    }
+
+    fn cached_only(&mut self, on: bool) {
+        self.jit.set_cached_only(on);
+    }
+
     fn compile(
         &mut self,
         prog: &yavs_ir::Program,
@@ -110,8 +135,8 @@ impl yavs_llvm::Generator for First {
         let frame = (part != Part::Native)
             .then(|| self.jit.define(prog, id, f))
             .transpose()?;
-        if part != Part::Frame {
-            self.jit.make_native(prog, id);
+        if part != Part::Frame && !self.jit.make_native(prog, id) && self.jit.missed() {
+            return Err(lower::NOT_CACHED.into());
         }
         self.jit.finalize()?;
         let mut out = yavs_llvm::native::Compiled {

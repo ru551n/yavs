@@ -1871,14 +1871,13 @@ impl Worker {
             .prog
             .func(self.prog.base_of(id))
             .map_or(u64::MAX, |b| self.heat.threshold(b));
-        // Not with a first-level generator: its code is not in the compilation cache.
-        if self.first.is_some() || self.probed[k] || self.done[k][0] || seen < at.max(wait) {
+        if self.probed[k] || self.done[k][0] || seen < at.max(wait) {
             return false;
         }
         // The look-up generates the function's code: within the budget, as a compile is, with at
         // least the factor of a function called natively (code compiled before for a function
         // hot before is likely to pay); asked again at the next sample while there is no room.
-        let go = self.main.as_ref().is_some_and(|m| m.cache_enabled())
+        let go = self.lead().is_some_and(|g| g.cache_enabled())
             && self.listed.contains(&(f.name.clone(), f.code.len() as u32))
             && within_budget(
                 self.heat.budget,
@@ -1911,10 +1910,10 @@ impl Worker {
         if self.loaded[k] { 0 } else { g.load_us() }
     }
 
-    /// Whether the optimising generator only links from its compilation cache.
+    /// Whether the generators only link from their compilation caches.
     fn cached_only(&mut self, on: bool) {
-        if let Some(m) = &mut self.main {
-            m.cached_only(on);
+        for g in self.main.iter_mut().chain(self.first.iter_mut()) {
+            g.cached_only(on);
         }
     }
 
@@ -2200,6 +2199,7 @@ impl Worker {
             self.kind(id),
         );
         let k = usize::from(via_first);
+        let lead = via_first || self.first.is_none();
         let natively = self.natively(id);
         let Some(gen_) = (if via_first {
             &mut self.first
@@ -2276,7 +2276,8 @@ impl Worker {
                     self.fast[id.0 as usize] = true;
                 }
                 let key = (f.name.clone(), f.code.len() as u32);
-                if !hit && !via_first && gen_.cache_enabled() && self.listed.insert(key) {
+                // (`listed` is the list of the generator of the first level, `lead`.)
+                if !hit && lead && gen_.cache_enabled() && self.listed.insert(key) {
                     gen_.cache_note(&f.name, f.code.len() as u32);
                 }
                 for &(g, native, call) in &entry.extra {
@@ -2649,7 +2650,7 @@ impl AutoTier {
                     });
                     // (The end of the run wakes this thread: nothing to list then.)
                     if !sh.halt.load(Ordering::SeqCst) {
-                        w.listed = w.main.as_ref().map(|m| m.cache_list()).unwrap_or_default();
+                        w.listed = w.lead().map(|g| g.cache_list()).unwrap_or_default();
                     }
                     // `YAVS_FIRST_ONLY=1`: a first-level generator (Cranelift) is the only one, no
                     // recompile at O2 (code of the two does not call each other's native code).

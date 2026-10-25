@@ -664,12 +664,23 @@ impl Drop for StopTierUp {
     }
 }
 
+/// The work library's compilation cache keeps the code Cranelift compiles (#481), as the LLVM tier's
+/// does (#505); not with `--no-cache`.
+#[cfg(feature = "clift")]
+fn clift_cache(a: &RunArgs) {
+    let work = a.common.work.split_once(':').map_or("", |(_, d)| d);
+    if !a.common.no_cache && !work.is_empty() {
+        yavs_clift::set_cache(Some(std::path::Path::new(work)));
+    }
+}
+
 /// `--tier=clift` (compile the program now) or `--tier=clift-auto` (start tier-up).
 #[cfg(feature = "clift")]
 fn use_clift(
     rt: &yavs_interp::Runtime,
     a: &RunArgs,
 ) -> Result<Option<StopTierUp>, Box<Diagnostic>> {
+    clift_cache(a);
     let bug = |e: String| {
         Box::new(
             Diagnostic::error("E0121", "the Cranelift tier cannot compile the design")
@@ -697,6 +708,10 @@ fn use_clift(
                 tier.compile_time.as_millis(),
                 tier.inline,
                 kinds.join(", ")
+            );
+            let (hits, stored) = yavs_clift::cache_stats();
+            eprintln!(
+                "note: --tier=clift: {hits} functions linked from the compilation cache, {stored} compiled and stored"
             );
             // Per function size class: count, mean and slowest translation time.
             for (lo, hi) in [(0, 64), (64, 256), (256, 1024), (1024, usize::MAX)] {
@@ -771,6 +786,12 @@ fn use_auto3(
     rt: &yavs_interp::Runtime,
     a: &RunArgs,
 ) -> Result<Option<StopTierUp>, Box<Diagnostic>> {
+    clift_cache(a);
+    // (The O2 compiles of LLVM link from its own store, as under `--tier=auto`.)
+    let work = a.common.work.split_once(':').map_or("", |(_, d)| d);
+    if !a.common.no_cache && !work.is_empty() {
+        yavs_llvm::set_cache(Some(std::path::Path::new(work)));
+    }
     let bug = |e: String| {
         Box::new(
             Diagnostic::error("E0121", "the compiled tiers cannot compile the design")

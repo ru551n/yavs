@@ -431,6 +431,18 @@ case!(
         ("ops", Max(17800))
     ]
 );
+// A hex-digit parser of two 22-arm case functions (character to integer and to a nibble),
+// 384 calls of each: the result tables (#722) read them inline, so none reaches the memo.
+case!(
+    case_tab,
+    "sum=",
+    &[],
+    [
+        ("pmemo_hits", Max(0)),
+        ("pmemo_runs", Max(0)),
+        ("ops", Max(18300))
+    ]
+);
 case!(
     edge_forms,
     "edges=",

@@ -12,7 +12,7 @@ use crate::{
 
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ProgramBuilder {
-    prog: Program,
+    pub(crate) prog: Program,
     /// Empty in a serialised builder (nothing is serialised while a lowering has failed).
     #[serde(skip)]
     errors: Vec<VerifyError>,
@@ -759,5 +759,6 @@ impl FuncBuilder<'_> {
         f.body = self.body;
         f.ret_ty = self.ret_ty;
         f.defined = true;
+        crate::casetab::tabulate(self.pb, self.id);
     }
 }

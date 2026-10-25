@@ -24,6 +24,9 @@ pub struct Program {
     pub cov_conds: Vec<CovCond>,
     pub checks: IdVec<CheckMsgId, CheckMsg>,
     pub cases: IdVec<CaseTableId, CaseTable>,
+    /// Result tables of pure functions of one small discrete argument, by function id
+    /// (`casetab.rs`).
+    pub tabs: std::collections::BTreeMap<u32, crate::CaseTab>,
     /// Subtype descriptions for `std.reflection` mirrors (`yavs.attr.reflect`).
     pub reflect: IdVec<ReflId, Refl>,
     /// Root map of the shared variables area (`AddrSpace::Shared`), for the collection of

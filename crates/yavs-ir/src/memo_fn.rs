@@ -85,7 +85,7 @@ fn plain_scalar(prog: &Program, t: TyId) -> bool {
 }
 
 /// An array of plain scalars of type `t`.
-fn plain_array(prog: &Program, t: TyId) -> Option<MemoArr> {
+pub(crate) fn plain_array(prog: &Program, t: TyId) -> Option<MemoArr> {
     let Some(Ty::Array { elem, dims, .. }) = prog.types.get(t) else {
         return None;
     };

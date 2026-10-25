@@ -9,6 +9,7 @@
 //! `yavs_kernel::StmtId`, so a runtime error's trace resolves to spans without another table.
 
 mod build;
+mod casetab;
 mod copies;
 mod dump;
 pub mod gather;
@@ -21,6 +22,7 @@ mod ty;
 mod verify;
 
 pub use build::{FuncBuilder, ProgramBuilder};
+pub use casetab::CaseTab;
 pub use copies::{
     Copies, CopyBlob, CopyLoader, CopyStats, NoCopy, PkgData, PkgSource, cap_percent,
 };

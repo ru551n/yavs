@@ -9129,3 +9129,32 @@ fletcher x2, `sc5_fifo_repack`, `hdlm_lfsr`, `hdlm_axi_fifo`, `poc_cache_cpu`, `
   `osvvm_axis_random` -0.5, `sc5_fifo_repack` -0.2, `fletcher_bufferreader` -0.1, `vai_window_gen_interlock` within 0.2; `hdlm_lfsr` +0.25, `poc_arith_addw` +0.14,
   `uvvm_sb_slv` +0.2 (code layout of the loop; none uses wide vectors). `tools/realbench --compare` (12 tests, interp and auto): instructions 0.98 to 1.01 except the auto race of
   `sc5_fifo_repack` (1.07, tier-up timing, interp 1.00); no wall figure was taken (no timing cores).
+
+## Result tables for pure functions of one small discrete argument (yavs-ir `casetab.rs`, `opt/inline.rs`, #722, 2026-10-25)
+
+Found at the start-up of `grlib_leon3mp`: twelve memory models read an S-record image with `HRead`, which calls `FromChar` (a 22-arm `case` on a character that returns a
+4-element vector) for every hex digit. The pure-call memo (#701) answered those calls from a hash table, which is exact but costs a key, a probe and a result copy per call.
+
+- **Decision: a pure function of one `in` argument of an enumeration type, or of an integer type of at most 256 values, with a scalar or a plain-array result and a body that
+  only computes (no call, no native, no signal, instance or package data) gets a result table when it is lowered** (`FuncBuilder::finish` calls `casetab::tabulate`; a function
+  with a `case` of 7 or more arms or 60 or more instructions, the ones the inliner leaves alone). Every call the inliner reaches then reads the table in the caller, in both
+  tiers (`tab_forwarder`: for an integer type a range test, then a read of the table, the validity byte when some value is not tabulated, and for an array result the pool
+  data in a fresh fat pair with the pool descriptor); the function itself is untouched and is the call for the values the table does not hold. Option `YAVS_NO_CASETAB=1`.
+- **Why at lowering, and why a second small evaluator.** A finished program cannot grow a constant (the optimiser runs lazily on it, and the library stages store optimised
+  copies that name constants), and the interpreter, which could evaluate the function, is not reachable from `yavs-ir`. So `casetab.rs` has an abstract machine for the
+  optimised body: registers, the frame, constants, `Alloc`/`NewFrame` objects, `Case`, compares, checked `+ - *`, loads, stores, copies, `LCopy` on bit-planes. A register
+  defined once by a constant or an address starts with it wherever the definition is (frames start so; a first version without it tabulated all-zero results and the
+  differential test caught it).
+- **Exactness.** A value is tabulated only if the machine ran the body to its `Ret` with instructions it models; a `Report`, a failed check, an unmodelled instruction,
+  more than 20 000 steps or a result that differs in shape from the others leave the value to the call, so a function that reports for some values reports exactly as before
+  for those. A table with fewer than half its values tabulated is dropped; functions whose array result has a different length for different arguments get none. The argument of an
+  enumeration type is always inside its table; an integer argument is range-tested and falls back to the call outside. A `Cover` in the function (coverage on), a debugger and
+  `YAVS_NO_INLINE` leave the calls alone.
+- **Measured.** `grlib_leon3mp`, bench build with `llvm`, `--tier=interp`, a timing core from `tools/claim core`, the first 1 us of the system (elaboration and the S-record
+  start-up of the memory models): 63.85 G to 59.9 G instructions (-6.2 percent), 18.43 G to 17.2 G cycles (-6.7 percent); the whole run (to the test's own end) 476.8 G to 472.6 G instructions,
+  output identical. The start-up is the HRead loop itself, which this does not change (slices, subtype checks, `Is_X`, `LCopy` per digit): the table removes the call and the memo
+  probe, about 12 percent of the start-up. Perf case `case_tab` (the memo is not asked for its 768 calls; the interpreter's `ops` are 17767 against 16470 with memo hits, the table read being a few ops where a hit is one,
+  but a hit costs the key, the probe and the result copy, which `ops` do not count: the cycles above are the measure).
+- **Not done.** The tables of functions whose result length depends on the argument (strings by enumeration value) and of integer subtypes (the IR type of a parameter of a
+  subtype is its base type, so the range is unknown here); functions that read package or instance data; the fat pair of an array result is built per call (the join of the table
+  and call paths stops the optimiser from folding the loads of the pair that follow).

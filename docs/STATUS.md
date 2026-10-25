@@ -8321,3 +8321,19 @@ exit status 1, "simulation interrupted" and the wave file; the llvm variant fail
 `compute_h2h` 2 733.70 M to 2 733.72 M, `poc_arith_addw` 124.28 G to 124.34 G (+0.05 percent), the window generator 160.33 G to 160.33 G, because their processes wait and carry no poll. The worst case, a 20 M iteration compute loop in a process
 without any wait that ends in `finish`: 2 714 M to 2 814 M (+3.7 percent, 5 instructions an iteration). Polling every `Br` that jumps back in the code (not only the retreating ones) cost +15 percent there: the
 loop has several such `Br`s to joins laid out earlier. Not covered: SIGUSR1 (the hang report of a process that never suspends), loops ended by a `CondBr`, the Cranelift lowering (#481).
+
+## Result tables for pure functions of one small discrete argument (yavs-ir `casetab.rs`, #722, 2026-10-25)
+
+A pure function of a character, an enumeration or a small integer type that picks its result with a `case` (7 arms or more) or a long `if` chain gets a result table when it is
+lowered; the inliner reads the table in the caller in every tier and keeps the call for values the table does not hold (`docs/decisions.md` "Result tables for pure functions of one
+small discrete argument"). `grlib_leon3mp` (bench build with `llvm`, `--tier=interp`, no cache, core from `tools/claim core`), the first 1 us (elaboration and the S-record start-up
+of the memory models): instructions 63.85 G to 59.9 G (-6.2 percent), cycles 18.43 G to 17.2 G (-6.7 percent; 3 interleaved pairs); `--stop-time=0fs` 38.2 G to 35.8 G; the whole run
+476.8 G to 472.9 G instructions, output byte-identical, user cycles level to -4 percent over 3 interleaved pairs on a host with load average above 30. The start-up of the memory
+models is the `HRead` loop itself (slices, `SubtypeCheck`, `LCopy` and `Is_X` per digit); the table removes only the call and the memo probe of `FromChar`.
+
+Breadth (realbench `--compare`, 42 tests, run phase, `interp` and `auto`, one run per cell, load average 14 to 25, binaries of the base and of the change): instruction ratios 0.95 to 1.04,
+the geometric mean 1.00; every test within 1 percent but `grlib_leon3mp` (0.99 interp, 0.95 auto) and `sc5_fifo_repack` (auto 0.91, the layout of an unrelated unit; not repeated).
+Wall times of single runs in that table are host noise (`grlib_leon3mp` 1.15 and 1.19 there, level to faster in the interleaved cycle measurement above). `tools/bench --compare`
+(31 benchmarks, 3 runs, one core): CPU geomean 1.005. Work-counter case `case_tab`; correctness case `crates/yavs/tests/casetab.rs` (every value of a hex-digit function, a nibble
+function, an enumeration, an integer type with an `if` chain, functions that report for some values; output and reports equal with `YAVS_NO_CASETAB=1`, at 1 and 4 threads, in
+`--tier=llvm` and `--tier=auto`). Not done: integer subtypes (the IR type is the base type), results whose length depends on the argument, a fat pair per call on the table path.

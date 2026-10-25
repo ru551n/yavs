@@ -8399,7 +8399,8 @@ cycle after an activation whose drives were all skipped (kernel lane), the cold 
 
 Where a frame-mode call goes was measured in both tiers (`docs/decisions.md` "Calls: where the 50 to 80 ns go"): no piece is more than a tenth of a call.
 Taken: `Machine::pop_ret` on `Op::Ret`, the saved caller without its return op, and no slots for a lean callee's unused locals. Measured and not taken: a larger inliner budget (window generator interpreter -9 percent, `--tier=auto` +6 percent), a pool of register files per depth.
-Left: `Drive`, `Wait` and vector `SigRead` as native-frame instructions (the compiled frame-mode call is `Host::step` 18 percent, `tier_view` 13 percent), and by-reference and nested parameters in the lean path.
+Round 2 (`docs/decisions.md` "Calls, round 2"): `Drive`, `DriveSlot`, vector `SigRead` and `SigSlice` are native-frame instructions (signal-driving procedures 0.59 to 0.68 of the cycles of frame mode, vector-reading functions 0.42), the temporary area has capacity when a view is taken, and the lean path takes nested callees and, where no collection can run, `out`/`inout` references (nested function call 0.85 of the cycles). Real testbenches are level: their steps are protected calls and heap instructions. `Wait` as a native-frame instruction was measured and not taken (an always-waiting procedure 1.35 times the cycles).
+Left: waits and `Edge` on native frames need a cheaper materialisation or a profile; the callers that step `New`/`NewFill`/`LayoutOf`/`Free` (osvvm_axis_random).
 
 ## llvm: compiled clocked RTL, round 7: the direct entry (#634, 2026-10-25)
 

@@ -27,6 +27,8 @@ pub const SIGNAL: &str = "yavs_rt_signal";
 
 pub const DRIVE: &str = "yavs_rt_drive";
 
+pub const DRIVE_NAT: &str = "yavs_rt_drive_nat";
+
 pub const DRIVE_BIT: &str = "yavs_rt_drive_bit";
 
 pub const WAIT: &str = "yavs_rt_wait";
@@ -891,6 +893,43 @@ pub unsafe extern "C" fn yavs_rt_drive(
         }
     }
     yavs_rt_drive_slow(env, regs, mem, pc, driver, lo, len, wave, flags)
+}
+
+/// `yavs_rt_drive` for a native frame (`TierHost::drive_try`): no frame view and no pc, any delay.
+/// 1 when done, 0 when nothing was done: the caller materialises its frames and the interpreter
+/// runs the `Drive`. `wave` is read as in `yavs_rt_drive`.
+pub unsafe extern "C" fn yavs_rt_drive_nat(
+    env: *mut c_void,
+    driver: u32,
+    lo: u64,
+    len: u64,
+    wave: *const u8,
+    flags: u32,
+) -> u32 {
+    cb(Cb::Drive);
+    // SAFETY: as in `yavs_rt_drive`; the caller checked 8 + 32 bytes per 64 elements at `wave`.
+    let envp = env as *mut Env<'_>;
+    let word = |k: usize| unsafe { std::ptr::read_unaligned(wave.add(k * 8).cast::<u64>()) };
+    let host = unsafe { &mut *(*envp).host };
+    let inertial = flags & 1 != 0;
+    if flags & 4 != 0 {
+        let n = (len.div_ceil(64) * 32) as usize;
+        // A copy, as `yavs_rt_drive_wide` makes.
+        let planes = unsafe { std::slice::from_raw_parts(wave.add(8), n) }.to_vec();
+        return u32::from(host.drive_wide_try(
+            driver,
+            [lo, len],
+            word(0) as i64,
+            &planes,
+            inertial,
+        ));
+    }
+    let (delay, block) = if flags & 2 != 0 {
+        (word(0) as i64, [word(1), 0, 0, 0])
+    } else {
+        (word(0) as i64, [word(1), word(2), word(3), word(4)])
+    };
+    u32::from(host.drive_try(driver, [lo, len], delay, block, inertial))
 }
 
 /// `yavs_rt_drive` for a wide target and for the assignments the kernel's fastest path does not
@@ -2522,6 +2561,7 @@ pub fn xstep_ok(f: &Func, i: &Inst) -> bool {
             | Inst::Phys { .. }
             | Inst::LNum { .. }
             | Inst::LogicOp { .. }
+            | Inst::SigSlice { .. }
             | Inst::Cat { logic: true, .. }
             | Inst::Bin { op: IntOp::Pow, .. }
             | Inst::BinRange { op: IntOp::Pow, .. }

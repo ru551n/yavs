@@ -593,6 +593,37 @@ pub trait TierHost {
         false
     }
 
+    /// `drive_block` for a native frame (no frame view, any delay): one waveform element of 1 to
+    /// 64 logic elements, or of one scalar of at most 8 bytes, assigned to the single-range
+    /// signal reference `target` through driver `driver`. `true` when done; `false` (nothing
+    /// done, also on every error) otherwise: the caller materialises its frames and the
+    /// interpreter runs the `Drive`, which reports the error.
+    fn drive_try(
+        &mut self,
+        driver: u32,
+        target: [u64; 2],
+        delay: i64,
+        block: [u64; 4],
+        inertial: bool,
+    ) -> bool {
+        let _ = (driver, target, delay, block, inertial);
+        false
+    }
+
+    /// [`TierHost::drive_try`] for a target of more than 64 logic elements: `planes` as for
+    /// `drive_wide`.
+    fn drive_wide_try(
+        &mut self,
+        driver: u32,
+        target: [u64; 2],
+        delay: i64,
+        planes: &[u8],
+        inertial: bool,
+    ) -> bool {
+        let _ = (driver, target, delay, planes, inertial);
+        false
+    }
+
     /// The scalar logic assignment of a [`ScalarDrive`] for a zero delay, when the kernel takes
     /// it on its fastest path: `true` when done; `false` (nothing done) otherwise, and the
     /// caller uses `drive_bit`.

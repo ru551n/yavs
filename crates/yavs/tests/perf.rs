@@ -1097,7 +1097,9 @@ mod llvm {
         [
             ("cb_deopt", Max(3)),
             ("cb_xstep", Min(390)),
-            ("ops", Max(100)),
+            // One frame is materialised later in the first activation (the temporary area has
+            // room from the start, #730), so the interpreter finishes a longer stretch of it.
+            ("ops", Max(1460)),
             ("llvm_native_frames", Min(3)),
         ]
     );
@@ -1110,6 +1112,18 @@ mod llvm {
             ("cb_step", Max(4)),
             ("cb_signal", Max(4)),
             ("llvm_native_frames", Min(2))
+        ]
+    );
+    // Procedures that drive signals and a function that reads a vector run on native frames
+    // (#730): 900 calls, no step, no frame materialised.
+    llvm_case!(
+        llvm_sigdrive,
+        "acc=",
+        [
+            ("cb_step", Max(2)),
+            ("cb_signal", Max(302)),
+            ("cb_deopt", Max(0)),
+            ("llvm_native_frames", Min(3))
         ]
     );
     // `uniform` is computed in compiled code (#519): 400 calls, no callback for them.

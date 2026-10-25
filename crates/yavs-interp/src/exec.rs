@@ -1299,9 +1299,9 @@ impl Machine {
         f: &Func,
         func: FuncId,
         pre: &pre::Pre,
+        link: Option<u32>,
         ret: Option<Reg>,
     ) -> R<()> {
-        let link: Option<u32> = None;
         push_frame_body!(self, pre, f, func, link, ret, pre.fslots);
         Ok(())
     }
@@ -8053,6 +8053,7 @@ impl Machine {
         tf.nsigs = m.vc.nsigs as u64;
         tf.sigtab = m.vc.tier_sigs.as_ptr();
         tf.sigtab_len = m.vc.tier_sigs.len() as u64;
+        m.reserve_temp();
         tf.temp = m.temp.as_mut_ptr();
         tf.temp_len = m.temp.len() as u64;
         tf.temp_cap = m.temp.capacity().min(u32::MAX as usize) as u64;
@@ -8118,6 +8119,17 @@ impl Machine {
         tf.cov_len = cov.len() as u64;
     }
 
+    /// The temporary area has room for a statement's small allocations when compiled code takes
+    /// its view: the interpreter's fused ops (a waveform, a string) never grow it, so a
+    /// capacity of 0 made every `Alloc` of compiled code a step, or the end of a native frame.
+    #[inline(always)]
+    fn reserve_temp(&mut self) {
+        const TIER_TEMP: usize = 512;
+        if self.temp.capacity() < TIER_TEMP {
+            self.temp.reserve(TIER_TEMP - self.temp.len());
+        }
+    }
+
     /// Make `tf` the top frame's view (`TierFrame`).
     fn tier_view(&mut self, tf: &mut crate::TierFrame) {
         let top = self.frames.len() - 1;
@@ -8127,6 +8139,7 @@ impl Machine {
         tf.slots_len = slen as u64;
         tf.frame = top as u64;
         tf.frame_hi = u64::from(FRAME) << 29 | top as u64;
+        self.reserve_temp();
         tf.temp = self.temp.as_mut_ptr();
         tf.temp_len = self.temp.len() as u64;
         tf.temp_cap = self.temp.capacity().min(u32::MAX as usize) as u64;
@@ -8505,8 +8518,13 @@ impl Machine {
         dst: Option<Reg>,
         first: Option<u64>,
     ) -> R<()> {
+        let link = if pre.nested {
+            self.static_link(callee, None)?
+        } else {
+            None
+        };
         let caller = self.regs.base;
-        self.push_frame_lean(callee, func, pre, dst)?;
+        self.push_frame_lean(callee, func, pre, link, dst)?;
         let base = self.regs.base;
         let mut pro = pre.pro.iter();
         if let Some(h) = first
@@ -10226,6 +10244,96 @@ impl crate::TierHost for Host<'_, '_, '_> {
             return c.assign_code_now(d.id, r, code as u8);
         }
         c.assign_planes_now(d.id, Some(r), block)
+    }
+
+    fn drive_try(
+        &mut self,
+        driver: u32,
+        target: [u64; 2],
+        delay: i64,
+        block: [u64; 4],
+        inertial: bool,
+    ) -> bool {
+        let m = &*self.m;
+        if target[1] == 0 || target[1] > 64 || target[0] >> 32 == MULTI {
+            return false;
+        }
+        let (Some(d), Some(s), Some(c)) = (
+            m.drivers.get(driver as usize),
+            m.inst.sigs.get((target[0] >> 32) as usize),
+            self.ctx.as_deref_mut(),
+        ) else {
+            return false;
+        };
+        let Ok(t) = to_time(delay) else {
+            return false;
+        };
+        let mode = if inertial {
+            DelayMode::INERTIAL
+        } else {
+            DelayMode::Transport
+        };
+        let r = Some(yavs_kernel::Range::new(
+            s.off + target[0] as u32,
+            target[1] as u32,
+        ));
+        if let Elem::Bytes(es) = s.ty.elem {
+            return target[1] == 1
+                && es <= 8
+                && c.assign_bytes(d.id, r, t, &block[0].to_le_bytes()[..es as usize], mode)
+                    .is_ok();
+        }
+        if s.ty.elem != Elem::Logic {
+            return false;
+        }
+        if target[1] == 1 {
+            let code =
+                (block[0] & 1) | (block[1] & 1) << 1 | (block[2] & 1) << 2 | (block[3] & 1) << 3;
+            return c.assign_code(d.id, r, t, code as u8, mode).is_ok();
+        }
+        let mask = yavs_logic::wide::nmask(target[1] as usize);
+        let mut bytes = [0u8; 32];
+        for (o, w) in bytes.as_chunks_mut::<8>().0.iter_mut().zip(block) {
+            *o = (w & mask).to_le_bytes();
+        }
+        c.assign_blocks(d.id, r, t, &bytes, mode).is_ok()
+    }
+
+    fn drive_wide_try(
+        &mut self,
+        driver: u32,
+        target: [u64; 2],
+        delay: i64,
+        planes: &[u8],
+        inertial: bool,
+    ) -> bool {
+        let m = &*self.m;
+        if target[1] <= 64
+            || target[0] >> 32 == MULTI
+            || planes.len() as u64 != target[1].div_ceil(64) * 32
+        {
+            return false;
+        }
+        let (Some(d), Some(s), Some(c)) = (
+            m.drivers.get(driver as usize),
+            m.inst.sigs.get((target[0] >> 32) as usize),
+            self.ctx.as_deref_mut(),
+        ) else {
+            return false;
+        };
+        let (Ok(t), true) = (to_time(delay), s.ty.elem == Elem::Logic) else {
+            return false;
+        };
+        let mode = if inertial {
+            DelayMode::INERTIAL
+        } else {
+            DelayMode::Transport
+        };
+        let r = Some(yavs_kernel::Range::new(
+            s.off + target[0] as u32,
+            target[1] as u32,
+        ));
+        c.assign_blocks(d.id, r, t, planes, mode).is_ok()
     }
 
     fn drive_bit_now(&mut self, driver: u32, target: [u64; 2], code: u64) -> bool {

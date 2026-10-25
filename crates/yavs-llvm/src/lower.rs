@@ -117,6 +117,7 @@ pub(crate) fn new_jit(opt: OptLevel) -> Result<Jit, Error> {
             (REGION, yavs_rt_region as *const () as usize),
             (SIGNAL, yavs_rt_signal as *const () as usize),
             (DRIVE, yavs_rt_drive as *const () as usize),
+            (DRIVE_NAT, yavs_rt_drive_nat as *const () as usize),
             (DRIVE_BIT, yavs_rt_drive_bit as *const () as usize),
             (WAIT, yavs_rt_wait as *const () as usize),
             (WAIT_AGAIN, yavs_rt_wait_again as *const () as usize),
@@ -1233,6 +1234,26 @@ fn nat_inline(prog: &Program, f: &Func, i: &Inst) -> bool {
         // Read from the view's signal table; where that has no answer the frame is materialised
         // (`Gen::signal`).
         Inst::SigReadScalar { dst, sig } => fits(&[dst, sig, Reg(sig.0.saturating_add(1))]),
+        // The planes from the code bytes in place, else the kernel's blocks; where neither
+        // answers the frame is materialised (`Gen::sig_read_block`).
+        Inst::SigRead { dst, sig } => fits(&[dst, sig, Reg(sig.0.saturating_add(1))]),
+        // The kernel's answer for one waveform element; where it has none the frame is
+        // materialised (`Gen::drive_block`).
+        Inst::Drive {
+            target: Some(t),
+            wave,
+            n,
+            reject: None,
+            ..
+        } => fits(&[t, Reg(t.0.saturating_add(1)), wave, n]),
+        Inst::DriveSlot {
+            slot,
+            target,
+            wave,
+            n,
+            reject: None,
+            ..
+        } => fits(&[slot, target, Reg(target.0.saturating_add(1)), wave, n]),
         // Cold: leaving to the interpreter is what they do.
         Inst::Unreachable { .. } => true,
         _ => xstep_ok(f, i),
@@ -1456,6 +1477,10 @@ struct Gen {
     /// `yavs_rt_drive(env, regs, mem, pc, driver, lo, len, wave, inertial) -> u32`.
     drive_ty: LLVMTypeRef,
     drive: LLVMValueRef,
+    /// `yavs_rt_drive_nat(env, driver, lo, len, wave, flags) -> u32`: `drive` for a native frame,
+    /// 1 when done and 0 when nothing was done (no frame view).
+    drive_nat_ty: LLVMTypeRef,
+    drive_nat: LLVMValueRef,
     /// `yavs_rt_drive_bit(env, regs, mem, pc, driver, lo, len, delay, code) -> u32`: the scalar
     /// logic assignment of a `yavs_interp::ScalarDrive`, the code in the low byte and bit 8 for
     /// an inertial one.
@@ -1734,6 +1759,9 @@ impl Gen {
             let drive_name = CString::new(DRIVE).expect("no NUL");
             let mut dparams = [ptr, ptr, ptr, i32, i32, i64, i64, ptr, i32];
             let drive_ty = LLVMFunctionType(i32, dparams.as_mut_ptr(), 9, 0);
+            let drive_nat_name = CString::new(DRIVE_NAT).expect("no NUL");
+            let mut nparams = [ptr, i32, i64, i64, ptr, i32];
+            let drive_nat_ty = LLVMFunctionType(i32, nparams.as_mut_ptr(), 6, 0);
             let drive_bit_name = CString::new(DRIVE_BIT).expect("no NUL");
             let mut bparams = [ptr, ptr, ptr, i32, i32, i64, i64, i64, i64];
             let drive_bit_ty = LLVMFunctionType(i32, bparams.as_mut_ptr(), 9, 0);
@@ -1813,6 +1841,8 @@ impl Gen {
                 signal: LLVMAddFunction(module, signal_name.as_ptr(), signal_ty),
                 drive_ty,
                 drive: LLVMAddFunction(module, drive_name.as_ptr(), drive_ty),
+                drive_nat_ty,
+                drive_nat: LLVMAddFunction(module, drive_nat_name.as_ptr(), drive_nat_ty),
                 drive_bit_ty,
                 drive_bit: LLVMAddFunction(module, drive_bit_name.as_ptr(), drive_bit_ty),
                 wait_ty,
@@ -1904,6 +1934,7 @@ impl Gen {
                 self.region,
                 self.signal,
                 self.drive,
+                self.drive_nat,
                 self.wait,
                 self.wait_again,
                 self.wait_same,
@@ -4814,7 +4845,15 @@ impl Gen {
                         n,
                         mode,
                         reject: None,
-                    } if c.nat.is_none() => self.drive_block(&c, pc, driver, t, wave, n, mode),
+                    } => self.drive_block(&c, pc, Ok(driver), t, wave, n, mode),
+                    Inst::DriveSlot {
+                        slot,
+                        target,
+                        wave,
+                        n,
+                        mode,
+                        reject: None,
+                    } => self.drive_block(&c, pc, Err(slot), target, wave, n, mode),
                     Inst::WaitOn { sig }
                         if c.nat.is_none()
                             && matches!(f.code.get(i + 1), Some(Inst::Suspend { .. })) =>
@@ -4838,8 +4877,7 @@ impl Gen {
                         self.guard(&c, self.icmp(IP::LLVMIntNE, r, self.c32(0)), slow);
                         self.join(&c, join);
                     }
-                    Inst::SigRead { dst, sig }
-                        if c.nat.is_none() && self.sig_read_block(&c, pc, dst, sig) => {}
+                    Inst::SigRead { dst, sig } if self.sig_read_block(&c, pc, dst, sig) => {}
                     Inst::SigRead { .. }
                     | Inst::WaitOn { .. }
                     | Inst::WaitEdge { .. }
@@ -5762,7 +5800,7 @@ impl Gen {
         &self,
         c: &Cur,
         pc: u32,
-        driver: u32,
+        driver: Result<u32, Reg>,
         target: Reg,
         wave: Reg,
         n: Reg,
@@ -5776,6 +5814,19 @@ impl Gen {
                 self.icmp(IP::LLVMIntEQ, self.ld(c, n), self.c64(1)),
                 slow,
             );
+            // A slot register: the driver index of the process (a `DriveSlot`).
+            let driver = match driver {
+                Ok(d) => self.c32(d),
+                Err(slot) => {
+                    let v = self.ld(c, slot);
+                    self.guard(
+                        c,
+                        self.icmp(IP::LLVMIntULE, v, self.c64(i64::from(u32::MAX))),
+                        slow,
+                    );
+                    LLVMBuildTrunc(self.b, v, self.i32, c"".as_ptr())
+                }
+            };
             // A signal of enumeration, integer, boolean or real elements has a waveform element
             // of 16 bytes (time and cell), a logic one 40 (time and the first plane block).
             let (ent, _) = self.sig_entry(c, target, None, slow);
@@ -5835,12 +5886,35 @@ impl Gen {
                 ),
                 c"".as_ptr(),
             );
+            if c.nat.is_some() {
+                // A native frame has no frame view: the kernel's answer or the materialised
+                // frames, whose interpreter runs the `Drive` (and reports its error).
+                let mut args = [
+                    c.env,
+                    driver,
+                    self.ld(c, target),
+                    self.ld(c, Reg(target.0 + 1)),
+                    w,
+                    inertial,
+                ];
+                let ok = LLVMBuildCall2(
+                    self.b,
+                    self.drive_nat_ty,
+                    self.drive_nat,
+                    args.as_mut_ptr(),
+                    6,
+                    c"".as_ptr(),
+                );
+                self.guard(c, self.icmp(IP::LLVMIntNE, ok, self.c32(0)), slow);
+                self.join(c, join);
+                return;
+            }
             let mut args = [
                 c.env,
                 c.regs,
                 c.mem,
                 self.c32(pc),
-                self.c32(driver),
+                driver,
                 self.ld(c, target),
                 self.ld(c, Reg(target.0 + 1)),
                 w,

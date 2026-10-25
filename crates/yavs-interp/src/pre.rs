@@ -197,7 +197,7 @@ impl Pre {
         // A lean frame needs slots only for what the code addresses besides the parameters
         // (which the skipped prologue alone read): none when it addresses no other.
         let fslots = if lean
-            && f.roots.is_empty()
+            && (f.roots.is_empty() || !may_collect(f))
             && !f.code.iter().any(|i| {
                 matches!(*i, Inst::AddrOf { space: AddrSpace::Frame, off, .. }
                     if !f.params.iter().any(|p| p.slot == off))
@@ -1233,12 +1233,34 @@ fn drive_runs(ops: &mut [Op]) -> Vec<DriveRun> {
     runs
 }
 
+/// Whether a collection can run while a frame of `f` is on the stack: it does at `New`, `Free`,
+/// a native call and a suspension, and in anything a call reaches. A frame of a function that
+/// cannot be in one of those needs no slot the collector reads as a root.
+fn may_collect(f: &Func) -> bool {
+    f.code.iter().any(|i| {
+        matches!(
+            i,
+            Inst::Call { .. }
+                | Inst::CallProt { .. }
+                | Inst::CallNative { .. }
+                | Inst::New { .. }
+                | Inst::NewFill { .. }
+                | Inst::Free { .. }
+                | Inst::WaitOn { .. }
+                | Inst::WaitEdge { .. }
+                | Inst::WaitFor { .. }
+                | Inst::WaitAt { .. }
+                | Inst::Suspend { .. }
+        )
+    })
+}
+
 /// Is every parameter handed over in the register the prologue loads it into, and read from
 /// its slot by nothing else? Then a call writes the registers and leaves the slots alone.
-/// Plain functions and procedures whose parameters are whole 8-byte values passed in only.
+/// Plain functions and procedures (nested ones too, they get a static link) whose parameters are
+/// whole 8-byte values or addresses (`out` and `inout` scalars are by reference).
 fn lean_params(f: &Func, prog: &Program, code: &Code, pro: &[u32]) -> bool {
     if f.nested
-        || f.parent.is_some()
         || f.body.is_some()
         || !matches!(
             f.kind,
@@ -1250,7 +1272,9 @@ fn lean_params(f: &Func, prog: &Program, code: &Code, pro: &[u32]) -> bool {
         || f.params.iter().any(|p| {
             p.width != Width::B8
                 || p.class != yavs_ir::ParamClass::Value
-                || p.mode != yavs_ir::Mode::In
+                // The address of an `out` or `inout` parameter is a collector root in its
+                // slot, which a lean call leaves empty: only where no collection can run.
+                || p.mode != yavs_ir::Mode::In && may_collect(f)
         })
     {
         return false;
@@ -4734,6 +4758,74 @@ mod tests {
                     f.frame > 8 && pre.fslots == 0,
                     "an unused slot is not allocated"
                 );
+            }
+        }
+    }
+
+    /// A function with an `inout` scalar parameter (the address of the variable, a collector root
+    /// in the slot), optionally calling itself, optionally nested in `outer`.
+    fn by_ref(calls: bool, nested: bool) -> (Program, yavs_ir::FuncId) {
+        let mut pb = ProgramBuilder::new();
+        let outer = pb.declare("outer", FuncKind::Procedure, None);
+        let inc = pb.declare("inc", FuncKind::Procedure, nested.then_some(outer));
+        let mut fb = pb.define(outer);
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+        let mut fb = pb.define(inc);
+        let s = fb.param("v", Width::B8, ParamClass::Value, Mode::Inout, None);
+        fb.root(s, yavs_ir::RootKind::Addr);
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let at = fb.addr(AddrSpace::Frame, s);
+        let p = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Load {
+            dst: p,
+            addr: at,
+            w: Width::B8,
+        });
+        let (x, one) = (fb.reg(RegTy::I64), fb.int(1));
+        fb.emit(Inst::Load {
+            dst: x,
+            addr: p,
+            w: Width::B8,
+        });
+        fb.emit(Inst::Bin {
+            op: yavs_ir::IntOp::Add,
+            dst: x,
+            a: x,
+            b: one,
+        });
+        fb.emit(Inst::Store {
+            addr: p,
+            src: x,
+            w: Width::B8,
+        });
+        if calls {
+            let args = fb.regs(&[p]);
+            fb.emit(Inst::Call {
+                func: inc,
+                args,
+                dst: None,
+            });
+        }
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+        (pb.finish().unwrap(), inc)
+    }
+
+    /// An `out` or `inout` parameter and a static link do not keep a call from being lean; the
+    /// parameter's slot is a collector root, so a callee in which a collection can run keeps its
+    /// calls the full way (#730).
+    #[test]
+    fn lean_covers_by_reference_parameters_and_nested_functions() {
+        for (calls, nested) in [(false, false), (false, true), (true, false)] {
+            let (prog, id) = by_ref(calls, nested);
+            let f = prog.func(id).unwrap();
+            let pre = Pre::new(f, &prog, false);
+            assert_eq!(pre.lean, !calls, "calls {calls} nested {nested}");
+            assert_eq!(pre.nested, nested);
+            if pre.lean {
+                assert_eq!(pre.fslots, 0, "no collection runs in the callee: no root");
             }
         }
     }

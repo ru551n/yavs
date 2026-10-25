@@ -9385,3 +9385,49 @@ base build of 2026-10-25, cold analysis of a whole manifest, one call per file a
   references); the exit-code and `analyzed` report of `docs/test-runner-requirements.md` section 1 (a failing batch is repeated file by file by the caller). Cold batched analysis of small libraries
   is slower than the reference (#747); a warm call of a library whose units are redefined by later files (OSVVM testbench libraries) costs more than the cold call (#748). The corpus runner reports a batched call
   that fails while every file passes alone as a `DIFF` of its own, so the retry cannot hide a failure of the session itself.
+## Calls, round 2: signal drives and vector reads on native frames, lean calls for references and nested callees (yavs-llvm, yavs-interp, #730, 2026-10-25)
+
+- **Native frames lower `Drive`, `DriveSlot`, vector `SigRead` and `SigSlice`.** A procedure that drives a signal (through a
+  signal parameter or the process's own driver) or a function that reads a vector or a slice of a signal parameter was a
+  frame-mode callee: every call from compiled code was a step of the interpreter (`Host::step` `Call`, `tier_view`), 300 to 350
+  instructions. `Gen::drive_block` now serves native frames too; the driver of a `DriveSlot` is the value of its slot register.
+  The native form has no frame view, so it calls `yavs_rt_drive_nat` -> `TierHost::drive_try` (and `drive_wide_try` above 64
+  elements): one waveform element, any delay, 1 to 64 logic elements or one scalar of at most 8 bytes. It returns 0 with nothing
+  done, and on every error (a negative delay, a driver or target the kernel does not accept), and the generated code
+  materialises the frames: the interpreter re-executes the `Drive` and reports the identical error with the identical trace
+  (test `a_failing_assignment_on_a_native_frame_reports_as_the_interpreter_does`). The fused scalar drive of processes is not used
+  on native frames (it never builds the waveform a materialised frame would need). `SigRead` is `sig_read_block` as in frame mode
+  (planes from the code bytes in place); `SigSlice` is a `native_step`. `DriveSlot` also takes the fast arm in frame mode.
+- **The temporary area has capacity when a view is taken (`Machine::reserve_temp`, 512 bytes).** The interpreter's fused ops
+  (a waveform, a string) never grow the area, so a process that does not step an `Alloc` had capacity 0 and every `Alloc` of
+  compiled code failed its capacity guard: a step in frame mode, the end of the native frame (a materialisation per call) in
+  a native one. With the capacity, the first activation of `llvm_wide_fill` materialises one frame later and the interpreter
+  finishes a longer stretch of it (`ops` 95 to 1 412, once; the bound in `perf.rs` says so).
+- **`WaitOn`/`WaitFor` are not native-frame instructions.** Admitting them (a native frame materialises at the wait) was
+  measured, `--tier=llvm`, interleaved on one core: a procedure that waits at every call (`wait for 10 ns` in a loop) 1.35 times
+  the cycles of frame mode, one that waits at one call in a thousand 0.48. A materialisation costs about 600 cycles more than
+  the frame-mode call it replaces, and the testbench procedures that wait (clock and handshake helpers) wait at every call; a
+  static test cannot tell the two apart. Not taken; a profile-driven choice (the callee's own wait count) or a cheaper
+  materialisation would change that. `Edge` is not admitted on native frames either (the `wait until rising_edge` helpers).
+  Idea from the reference simulator (design read, no code taken): it separates subprograms that may suspend (their state lives in
+  a block the caller resumes) from those that cannot (plain calls), by a whole-program analysis; ours is the same split
+  (frame-mode and native callees), and the lesson is the same: a callee that suspends on most calls gains nothing from the cheap
+  protocol.
+- **The lean call path (`Pre::lean`) takes `out`/`inout` parameters and nested callees.** A nested callee gets its static link as
+  `call_pre` computes it. A by-reference parameter's slot is a collector root (`RootKind::Addr`) that a lean call leaves empty, so
+  such a parameter is lean only where no collection can run while the frame is on the stack (`may_collect`: no call, `new`,
+  `free`, native call or wait), which also means no slots are allocated for it. A callee in which a collection can run, with an
+  `out` parameter, keeps the full path: writing the root slots as well measured level with it (`refoutc`, +0.2 percent
+  instructions). The caller still owns copy-in/copy-out (the lowering passes an address and writes back a temporary); the lean
+  path changes no value. Test `lean_calls.rs` (nested subprograms reading and writing the enclosing process's variables,
+  `out`/`inout` references, recursion, a callee that allocates; the values equal the full path and the reference simulator).
+- **Measured** (bench builds, one claimed core, interleaved medians of 5, B/A cycles and instructions). `--tier=llvm` micro-designs:
+  procedure with two signal `out` parameters 0.59 / 0.70, nested procedure driving two signals 0.68 / 0.78, function reading a
+  vector and a slice 0.42 / 0.33, drive of a 128-element target 0.80 / 0.88 (the whole iteration includes a wait and the
+  kernel's cycle, 3 000 instructions). `--tier=interp`: nested function reading an enclosing variable 0.85 / 0.93, procedure with
+  `inout` and `out` references 0.95 instructions (cycles level), frame-mode compiled calls of the other shapes level. Real
+  testbenches (`osvvm_axis_random`, `uvvm_sb_slv`, `uvvm_util_rand`, `sc5_fifo_repack`, `grlib_leon3mp` 100 us, window generator,
+  interp, auto and llvm): instructions 0.993 to 1.007, cycles within the run-to-run spread; their steps are protected-method
+  calls, `New`, `Free` and `LayoutOf` (`osvvm_axis_random`: 190 000 `CallProt`, 70 000 `Free`), not the shapes done here.
+  `tools/realbench --compare` (all 42 tests, run phase, interp and auto, core 13, medians): instructions 1.00 overall and in every category, wall geomean over the tests of 1 s or more 1.01 (interp) and 1.00 (auto), sum ratio 1.00 and 0.98; the larger category figures are tests of 0.01 to 0.1 s.
+  The next cuts for those are the frame-mode callers that step `New`/`NewFill`/`LayoutOf`, not the call.

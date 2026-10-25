@@ -6716,6 +6716,17 @@ load average 38 while measuring, so the ratios are inflated): `poc_arith_addw` 3
   dropped buffer and the op that drives it. `olo_axi_master_full` 0.865, `neorv32_single_min` 0.974, `poc_cache_cpu`
   0.981, geometric mean over 45 designs 0.9935.
 
+## Interpreter round 18: exact per-op counts, the usual case first (#520, #518, 2026-10-25)
+
+Details in `docs/decisions.md` "Interpreter round 18". `tools/stepcount --ops` counts the instructions of each interpreter op
+(callees included) and `--ops-detail OP` splits one op by function. With it: `Uniform` (one frame lookup), `SubtypeCheck`
+(out of line, one-dimension fast path), the `u64` length of a dimension, `SlicePos` (one look at the descriptor), `LSet`,
+`LCopy` (up to 64 elements in one block), `AllocLCopy` and `LGet` take their usual case before the general code. Instructions
+against main: `sc5_fifo_repack` 0.950, `grlib_leon3mp` 0.956, `fletcher_bufferwriter_512` 0.983, geometric mean over 8 designs
+0.983, cycles 0.991; `tools/bench` internal CPU 0.976; no design above 1.00 in instructions. `CallIeee` out of line was tried
+and lost (+0.4 percent). Left: the kernel side of `Suspend`/`WaitSuspend`/`Drive` (kern22), `cat_words` for `lfsr64`, the
+`FieldOf` chains of `grlib_leon3mp`.
+
 ## Interpreter round 17: loads from the other address spaces (#674, #518, 2026-10-24)
 
 Details and the measurements in `docs/decisions.md` "Interpreter round 17". `op-census` has a table of `Machine::load_slow`

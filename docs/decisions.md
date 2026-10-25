@@ -6204,6 +6204,62 @@ cycle geometric mean over the designs of `tools/bench` and `tools/realbench` (32
   the same time, same list), and, to make `poc_arith_addw` cheaper, `to_integer` of the message (its warning for a vector
   with `U` is an effect at every call: not skipped, not shared with the identical call of the condition).
 
+## Interpreter round 18: the usual case first in the value helpers (yavs-interp, tools/stepcount, #520, #518, 2026-10-25)
+
+Method: `tools/stepcount` has a new `--ops` mode that charges every instruction between two dispatches of `run_ops` to the op
+the first dispatch started (callees included), with `--ops-detail OP` for where one op spends them, by function. The op-census
+time column includes the kernel and was a ranking hint only; this counts exactly. Measured on `fletcher_bufferwriter_512`,
+`fletcher_bufferreader`, `neorv32_single_min`, `sc5_fifo_repack`, `poc_cache_cpu`, `grlib_leon3mp` (100 us), `rtl_ff`, `lfsr64`.
+Aligned bench builds, `--tier=interp --threads 1`, core 11 (CCD1), medians of 5 interleaved runs, host load 20.
+
+What the exact counts showed (instructions per op, callees included):
+
+- Dispatch itself is 11 instructions per op (load tag, jump table, jump) plus the arm's register-file bounds checks; `rtl_ff`
+  is 112 instructions per activation outside the kernel (`Suspend`/`WaitSuspend` 490, `LSetDrive` 229, `Gate` 56,
+  `SigRead1Slot` 71), nearly all of it the ops' own checks and the kernel calls they make, not entry/exit of `run_ops`. The
+  entry (80 instructions before the first op) is paid once per activation, 70 of 1000 instructions for `rtl_ff`; shrinking it
+  was tried by reading the code, not built: the hoisted addresses are the compiler's choice and any edit of `run_ops` moves
+  other designs (round 15, lesson #576).
+- The cost of the heavy ops is in helpers: `Uniform` 329, `LCopy` 340 (191 of it `lcopy`), `SubtypeCheck` 188, `SlicePos` 155,
+  `LSet` 142, `LGet` 88, `AllocLCopy` 208, `AffP` 113, `CallIeee` 360 (about 140 of it the loop's own call set-up).
+- `Stmt` is 31 instructions; 80 percent of the `Stmt` executed in `sc5_fifo_repack`, `neorv32_single_min` and `poc_cache_cpu`
+  are at sites that never have a temporary to drop (counted per site with a temporary build). Not landed: a static
+  "clean statement" flag needs liveness of temporaries across calls, and the dirty check is already two loads.
+
+Landed (each an out-of-line or helper change; none touches an arm of `run_ops` except through the helper it calls):
+
+- `Uniform`: the three variables are found with one frame lookup and read and written in place when they are in one frame
+  (instructions 329 to 183 per op; `sc5_fifo_repack` 0.958).
+- `SubtypeCheck` is out of line with a one-dimension fast path (equal descriptors, or equal lengths in `u64` arithmetic);
+  `dope_len`, `AffP`, `AffL` and `AffPL` compute the length in `u64` (`dim_len63`), `AffP` reads no length; `SlicePos` looks at
+  the descriptor once when both ends are inside the range and the slice has the array's direction, the checked sequence
+  (`slice_pos_checked`, out of line) otherwise. Failure messages are the old ones, built by the same code.
+- `LSet` finds the block in frame, temporary, heap or shared memory directly (`lset_slow` is the old body); `LCopy` of at most
+  64 elements within one block on each side is shifted in place (`lcopy` before its general code); `AllocLCopy` builds its
+  block without `copy_bits`; `LGet` reads the four plane words from one slice.
+
+Instructions against main at 44abf774, 8 designs: `sc5_fifo_repack` 0.950, `grlib_leon3mp` 0.956, `fletcher_bufferwriter_512`
+0.983, `neorv32_single_min` 0.994, `poc_cache_cpu` 0.993, `fletcher_bufferreader` 0.995, `lfsr64` 0.992, `rtl_ff` 0.999;
+geometric mean 0.983. User cycles geometric mean 0.991 (single designs between 0.949 and 1.035: `rtl_ff` +3.5 percent with
+0.1 percent fewer instructions, the layout noise of #576). `tools/bench` internal 14 designs: CPU geometric mean 0.976;
+h2h 11 designs 1.029, and the same two binaries copied (A/A) read 1.027 on the same run, so it is noise. `tools/realbench
+--compare` (12 tests, interp, core 11): instructions 0.96 to 1.02, one test (`hdlm_lfsr`) wall 1.13 on one run with 0.99 of the
+instructions, and 0.95 to 1.03 of the cycles in four interleaved `perf stat` pairs. Gate: workspace tests (1613), llvm and
+gc-stress unit tests, difftest at `^(arith|delta|generics)/` for yavs, yavs-interp, yavs-llvm and the `--tier-heat=1,0,0` auto run.
+
+Tried and dropped:
+
+- `CallIeee` body out of line (`op_call_ieee`): +0.4 percent instructions on six of eight designs (the arm shrinks the frame the
+  other arms share), no gain. Same lesson as round 15: an arm change of `run_ops` is measured against all designs, and this one lost.
+- `WaveBuf` storing the delay straight into the temporary area, and `read_sig1`-style inline changes: within 0.1 percent.
+- Entry/exit of `run_ops`, register-file set-up: see above, no code change.
+
+Left (ranked by the exact counts): `Suspend`/`WaitSuspend` are 30 to 45 percent of the interpreted instructions of
+`neorv32_single_min` and `fletcher_*` but are kernel-side (kern22); `CopyDrive`/`LSetDrive` are mostly `assign_*_fast` in the
+kernel; `FieldOf`/`LayoutWord` chains in `grlib_leon3mp` (150 to 200 per op); `cat_words`/`cat_block` for `lfsr64` (330 of
+445 per `CatLCopy`); the element copy `sort_data(col + 1)(row) <= sort_data(col)(row)` and loop-invariant `reset_p` reads in
+`sc5_fifo_repack`.
+
 ## Interpreter round 17: loads from the other address spaces (yavs-interp, #674, #518, 2026-10-24)
 
 Measured as in round 16 (aligned bench builds, `tools/realbench/run.py --compare` with per-binary worlds on one core of the

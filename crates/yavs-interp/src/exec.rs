@@ -42,6 +42,11 @@ pub(crate) enum Fault {
 
 pub(crate) type R<T> = Result<T, Fault>;
 
+/// Jumps back of a process that never suspends before its activation is reported as
+/// infinite (#583): high enough that a long first-iteration computation is not mistaken
+/// for a hang, low enough that a genuinely stuck run is diagnosed promptly.
+const SPIN_LIMIT: u64 = 10_000_000;
+
 /// Runs `f` out of line. Every error of the interpreter is built by `cold`, through the
 /// macros below: an error constructor that is inlined into the loop of an op puts its message
 /// and its arguments on the stack of the loop and changes how the compiler lays the rest out,
@@ -621,6 +626,8 @@ pub(crate) struct Machine {
     spec: Option<Arc<[(u32, u32)]>>,
     /// The memo of pure calls this process keeps (`pmemo.rs`), made at its first memoised call.
     pub(crate) pm: Option<Box<crate::pmemo::State>>,
+    /// Jumps back of a process that never suspends, to bound the activation (#583).
+    spin: u64,
 }
 
 /// The fields of a machine that `view_root` reads and the interpreter does not (see
@@ -1144,6 +1151,7 @@ impl Machine {
             hot: false,
             rscratch: heap::Refs::default(),
             execs: 0,
+            spin: 0,
         }
     }
 
@@ -4119,13 +4127,21 @@ impl Machine {
         ctx: &mut Option<&mut Ctx<'_>>,
     ) -> R<Flow> {
         // The jump back of a process that never suspends: a stop request (Ctrl-C) ends the
-        // activation as a `wait;` would (`pre::Code::new` steps those jumps).
+        // activation as a `wait;` would (`pre::Code::new` steps those jumps). The activation is
+        // bounded too: without a wait the process never gives control back, so time cannot
+        // advance and the run would spin forever (#583).
         if let Inst::Br { to } = inst {
             if f.kind == FuncKind::Process {
-                if ctx.as_deref().is_some_and(|c| c.stop_requested())
-                    && !f.flags.contains(yavs_ir::FuncFlags::MAY_SUSPEND)
-                {
-                    return Ok(Flow::Suspend);
+                if !f.flags.contains(yavs_ir::FuncFlags::MAY_SUSPEND) {
+                    if ctx.as_deref().is_some_and(|c| c.stop_requested()) {
+                        return Ok(Flow::Suspend);
+                    }
+                    self.spin += 1;
+                    if self.spin >= SPIN_LIMIT {
+                        return rt_err_s!(
+                            "process has no wait statement and no sensitivity list: it never suspends, so simulation time cannot advance (an infinite activation)"
+                        );
+                    }
                 }
             } else if let Some(fr) = self.frames.last()
                 && let Some(over) = prog.back_edge(fr.func)

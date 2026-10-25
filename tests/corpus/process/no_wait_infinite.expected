@@ -1,0 +1,2 @@
+exit	1
+diag	fatal	0	0	-	process has no wait statement and no sensitivity list: it never suspends, so simulation time cannot advance (an infinite activation)

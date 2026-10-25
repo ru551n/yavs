@@ -9106,6 +9106,6 @@ fletcher x2, `sc5_fifo_repack`, `hdlm_lfsr`, `hdlm_axi_fifo`, `poc_cache_cpu`, `
 - **Measured** (exact instructions, `--tier=interp --threads 1`, bench build, A/B interleaved after three warm-up runs of the new binary): micro designs, one statement per iteration,
   instructions per statement saved: 8-element copy between vectors 126, 512-element copy at a different bit offset 629, at the same bit offset 716, `&` of eight 64-element pieces
   into 512 elements 1071. Whole runs: `fletcher_bufferwriter_512` 54.16 to 53.63 G (-1.0 percent), `grlib_leon3mp` 554.4 to 551.4 G (-0.55), `poc_stat_histogram` -0.9, `neorv32_single_min` -0.3,
-  `osvvm_axis_random` -0.5, `sc5_fifo_repack` -0.2, `fletcher_bufferreader` -0.1, `vai_window_gen_interlock` within 0.1; `hdlm_lfsr` +0.25, `poc_arith_addw` +0.14,
+  `osvvm_axis_random` -0.5, `sc5_fifo_repack` -0.2, `fletcher_bufferreader` -0.1, `vai_window_gen_interlock` within 0.2; `hdlm_lfsr` +0.25, `poc_arith_addw` +0.14,
   `uvvm_sb_slv` +0.2 (code layout of the loop; none uses wide vectors). `tools/realbench --compare` (12 tests, interp and auto): instructions 0.98 to 1.01 except the auto race of
   `sc5_fifo_repack` (1.07, tier-up timing, interp 1.00); no wall figure was taken (no timing cores).

@@ -8198,3 +8198,21 @@ L1i misses +50 %, branch misses +56 %. So the goal "heat cycles at or below the 
 design but not yet by cycles on LEON3 (the L1i and branch misses of the 15 MB of code) and `fletcher_bufferwriter_512`; the remaining bytes are
 `LayoutOf` (10 %), `LCopy` (7 %), `Field` and `Load` in the LEON3 copy (per-kind table with `YAVS_LLVM_KINDLOC`).
 Difftest 523/523 on `yavs-interp`, `yavs-llvm`, `yavs-auto` and `yavs-auto` with `--tier-heat=1,0,0`, 1 and 4 threads.
+
+## grlib_leon3mp, second round: copies of nested and serial processes, scratch sets, implicit signals (#720, #721, #722, #723, #724, 2026-10-25)
+
+Commits 44abf774 (copies of processes with nested subprograms and serial processes, file-only processes off the shared-state path, four scratch sets) and the kernel commit
+after it (fast update paths with implicit signals, `'last_value` of one element). `--tier=auto` warm, bench build with `llvm`, core 10, medians of 3 interleaved, run phase
+of the system (std 1993): 48.65 s to 44.47 s (-8.6 percent), interpreter instructions 564.7 G to 490.5 G (-13 percent), user cycles 230.0 G to 211.3 G. The first commit alone:
+54.3 s to 49.3 s (host noisier). Cold not re-measured. Against the reference simulator the ratio of the run goes from about 3.6 to about 3.3 (reference run 12.3 s from the
+previous round, not re-run).
+
+Breadth (realbench `--compare`, 42 tests, run phase, `interp` and `auto`, core 10, load average about 20 on the host, first commit against its base): wall geomean 0.95 / 0.95,
+instructions 1.01 / 1.00; per test within noise except `grlib_leon3mp` 0.92 / 0.94 (instructions 0.94) and the small tests that start up in 10 to 50 ms. `neorv32_single_cache` read 1.13
+in wall at 1.00 in instructions; repeated by hand on core 10 (4 interleaved pairs of user cycles) it is +1 percent (layout noise). The kernel commit was checked on the system, the four SDRAM
+models alone (100 us: 12.8 G to 10.5 G instructions) and the work-counter case `implicit_fast`; it changes nothing for designs without implicit signals.
+
+What the profile says now (four SDRAM models alone, `op-census`): 85 ops and about 16 k instructions per wake; in time, the kernel's part of every wake (`Suspend` 38 percent), the
+`DriveRun` of 13 scalar drives 8, `CopyDrive` 4.6, `EdgeBr` 4. Not done: vector drives in `DriveRun` (built, no gain, #723 closed in decisions.md), the pure-call memo give-up (#722: the memo
+saves twice its cost there; the S-record start-up is the `HRead` loop itself, a table pass for pure functions of one enumeration argument would be the general fix), the empty kernel
+cycle after an activation whose drives were all skipped (kernel lane), the cold path of processes that really use protected objects or the shared heap (#724 remains for those).

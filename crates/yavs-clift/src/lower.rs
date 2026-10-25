@@ -675,7 +675,10 @@ impl Jit {
         ctx.func.name = UserFuncName::user(u32::from(native), id.0);
         let mut natives = HashMap::new();
         let mut bodies: HashMap<FuncRef, Rc<NatInfo>> = HashMap::new();
-        for (&g, n) in &nats {
+        // (In id order: the body, and so its key in the compilation cache, is the same every run.)
+        let mut order: Vec<_> = nats.iter().collect();
+        order.sort_by_key(|(g, _)| g.0);
+        for (&g, n) in order {
             let fr = n
                 .as_ref()
                 .map(|n| self.module.declare_func_in_func(n.id, &mut ctx.func));

@@ -430,12 +430,23 @@ pub enum Called {
     Fault,
 }
 
+/// The words of a [`TierState`].
+pub const TIER_STATE_WORDS: usize = 4 * 64 + 1;
+
 /// What a tier keeps for one process between activations ([`Tier::run_cached`]).
-#[derive(Default)]
 pub struct TierState {
     /// Room for the tier's record, valid once `used`.
-    pub words: [u64; 17],
+    pub words: [u64; TIER_STATE_WORDS],
     pub used: bool,
+}
+
+impl Default for TierState {
+    fn default() -> TierState {
+        TierState {
+            words: [0; TIER_STATE_WORDS],
+            used: false,
+        }
+    }
 }
 
 /// [`Tier::run`] returns it when frames were pushed (calls `step` made that compiled code
@@ -779,6 +790,15 @@ pub trait TierHost {
         slots: &mut Option<Box<dyn NativeSlots>>,
         temp_base: u64,
     ) -> NativeCall;
+
+    /// Word `k` of the layout of type `ty` constrained by the descriptor bytes `desc`, from the
+    /// interpreter's layout memo (`Inst::LayoutOf` whose layout only one word is read of, in
+    /// compiled code): no step, no view, no memory of the machine read. `None` where the layout
+    /// fails (the interpreter then executes the instructions, with its error).
+    fn layout_word(&mut self, ty: u32, desc: &[u8], k: u32) -> Option<u64> {
+        let _ = (ty, desc, k);
+        None
+    }
 
     /// The memo of pure calls (`docs/decisions.md` "Memo of pure calls") for a call of `func`
     /// ([`Program::memo_sig`]) with argument `cells` made by compiled code: from the native

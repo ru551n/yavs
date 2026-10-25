@@ -292,7 +292,17 @@ fn auto_tier_compiles_a_long_loop_of_one_call() {
     let n = 3_000_000u64;
     let r = yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[n]);
     assert_eq!(r.unwrap(), Some(n * (n + 1) / 2));
-    assert_eq!(tier.compiled(), 1, "the loop was never compiled");
+    // (On a loaded host, or with a collection at every safepoint, the compile it decided on while
+    // the call ran may finish after the call: wait for it, it is not what the test measures, #755.)
+    let t0 = Instant::now();
+    while tier.compiled() == 0 {
+        assert!(
+            t0.elapsed() < Duration::from_secs(60),
+            "the loop was never compiled"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(tier.compiled(), 1);
     tier.stop(true);
 }
 

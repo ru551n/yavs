@@ -1275,11 +1275,24 @@ impl Ctx<'_> {
             return 0;
         }
         let (sig, slot, range) = (info.signal.0, info.slot, info.range);
+        // As `assign_code_fast`: an element the signal and the driver hold already makes no entry
+        // while nothing of this run is pending for it (no entry of the driver before this call,
+        // none for the element in it; the batch holds at most `DRIVE_BATCH` elements).
+        let fresh = !self.has_entries(info, 1);
+        let first = self.st.out.len();
         let mut taken = 0;
         while taken < n {
             let (elem, code) = run(taken);
             if code >= 9 || !range.contains(Range::new(elem, 1)) {
                 break;
+            }
+            taken += 1;
+            if fresh
+                && self.sh.signals[sig as usize].direct_same(slot, elem, code)
+                && !self.st.out[first..].iter().any(|o| o.elem == elem)
+            {
+                self.note_skipped();
+                continue;
             }
             self.st.act |= ACT_ASSIGNED;
             self.st.out.push(Out {
@@ -1288,9 +1301,8 @@ impl Ctx<'_> {
                 elem,
                 code: u32::from(code),
             });
-            taken += 1;
         }
-        if taken > 0 {
+        if self.st.out.len() > first {
             self.mark_entries(info, 1);
         }
         taken

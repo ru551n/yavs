@@ -50,6 +50,11 @@ pub(crate) fn note_twin() {
     HITS.fetch_add(1, Ordering::Relaxed);
 }
 
+/// The store, if compiled code is kept in one (it keeps the run-to-run profile too).
+pub(crate) fn store() -> Option<Store> {
+    STORE.lock().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
 /// Whether compiled code is kept in a cache.
 pub(crate) fn enabled() -> bool {
     STORE

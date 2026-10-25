@@ -1,4 +1,4 @@
--- difftest: top=generic_nested_proc ref=hand
+-- difftest: top=generic_nested_proc ref=hand relaxed
 -- ref=hand: only a report, no reference-specific output.
 -- A procedure declared inside a generic subprogram and called from its body gets its body in
 -- the instance too (#621): the call must not be "body not analyzed".

@@ -1322,12 +1322,10 @@ impl Db {
                 .with_primary(self.exprs[id].span, "not allowed here"),
             ));
         }
-        // 6.5.6.3: a formal that is written (out, inout, buffer, linkage) needs an
-        // actual that can be written; an `in` port or parameter cannot (#654).
-        if matches!(
-            mode,
-            Some(Mode::Out | Mode::Inout | Mode::Buffer | Mode::Linkage)
-        ) {
+        // 6.5.6.3: a formal that is written (out, inout, buffer) needs an
+        // actual that can be written; an `in` port or parameter cannot (#654). A linkage
+        // formal takes an actual of any mode.
+        if matches!(mode, Some(Mode::Out | Mode::Inout | Mode::Buffer)) {
             let mut e = id;
             while let Some((_, operand)) = self.actual_conversion(e) {
                 e = operand;

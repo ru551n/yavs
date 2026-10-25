@@ -1105,7 +1105,8 @@ mod llvm {
             ("llvm_native_frames", Min(3)),
         ]
     );
-    llvm_case!(llvm_hostless, "acc=", [("cb_host", Max(7))]);
+    // Constants found once stay for the run (#679).
+    llvm_case!(llvm_hostless, "acc=", [("cb_host", Max(2))]);
     // Functions and procedures that read signals run on native frames (#519): 900 calls, no step.
     llvm_case!(
         llvm_sigfun,
@@ -1155,14 +1156,30 @@ mod llvm {
         "acc=",
         [
             ("cb_native", Max(5)),
-            ("cb_host", Max(9)),
+            ("cb_host", Max(3)),
             ("llvm_native_frames", Min(1)),
+        ]
+    );
+    // A field of a record whose layout depends on a generic, read on a native frame: one call of
+    // the layout memo per field instead of a step of the `LayoutOf` (#679).
+    llvm_case!(
+        llvm_layout_field,
+        "acc=38682",
+        [
+            ("cb_xstep", Max(0)),
+            ("cb_step", Max(5)),
+            ("cb_layout", Max(1648))
         ]
     );
     llvm_case!(
         llvm_drive_batch,
         "q=",
-        [("cb_drive", Max(158)), ("llvm_interpreted_insts", Max(32)),]
+        [
+            ("cb_drive", Max(158)),
+            ("llvm_interpreted_insts", Max(32)),
+            // Kept drives of unchanged elements make no kernel entry, as in the interpreter.
+            ("direct_codes", Max(107)),
+        ]
     );
     llvm_case!(
         llvm_clocked,

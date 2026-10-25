@@ -55,7 +55,7 @@ YAVS_MIXED = "export YAVS_MIXED=1 YAVS_CLIFT_NTAB=1; " + YAVS_AUTO3_EAGER
 TEMPLATES = {"yavs-mixed": YAVS_MIXED, "yavs": YAVS, "yavs-interp": YAVS_INTERP, "yavs-llvm": YAVS_LLVM, "yavs-auto": YAVS_AUTO, "yavs-clift": YAVS_CLIFT, "yavs-clift-auto": YAVS_CLIFT_AUTO, "yavs-auto3": YAVS_AUTO3, "yavs-auto3-eager": YAVS_AUTO3_EAGER}
 # yavs repeats analysis warnings when it loads the units: W1904 (a shared variable of a
 # non-protected type) is the warning `relaxed` tests are about.
-_RX = "--relaxed -Wno-W1904 -Wno-W1325"
+_RX = "--relaxed -Wno-W1904 -Wno-W1325 -Wno-W1501"
 RELAXED = {k: _RX for k in TEMPLATES}
 # Fields masked by default per builtin candidate (a reference label: key `difftest_ignore`; the reference prints them all).
 DEFAULT_IGNORE = {k: "" for k in TEMPLATES}

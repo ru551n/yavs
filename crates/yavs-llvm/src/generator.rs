@@ -93,4 +93,9 @@ pub trait Generator: Send {
 
     /// Until switched off, `compile` links what the cache has and compiles nothing.
     fn cached_only(&mut self, _on: bool) {}
+
+    /// The store of its compilation cache, which also keeps the run-to-run profile (`profile.rs`).
+    fn store(&self) -> Option<yavs_cache::Store> {
+        None
+    }
 }

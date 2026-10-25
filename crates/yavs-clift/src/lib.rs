@@ -123,6 +123,10 @@ impl yavs_llvm::Generator for First {
         self.jit.set_cached_only(on);
     }
 
+    fn store(&self) -> Option<yavs_cache::Store> {
+        cache::store()
+    }
+
     fn compile(
         &mut self,
         prog: &yavs_ir::Program,

@@ -2456,16 +2456,15 @@ fn gen_func(
             }
             Inst::Br { to } => {
                 let tb = block_bb(to)?;
-                // A process that never suspends polls the stop request (Ctrl-C) at every jump
-                // back and leaves at this `Br`, whose step suspends it, as the interpreter does
-                // (#737): only the retreating `Br`s that jump back in the code.
+                // A process that never suspends leaves compiled code at every jump back: the
+                // interpreter steps this `Br`, polls the stop request (#737) and bounds the
+                // activation (#583), as under the LLVM tier. Only the retreating `Br`s that jump
+                // back in the code.
                 if backs.contains(&pc) && f.blocks.get(to).is_some_and(|b| b.start <= pc) {
-                    let p = g.mem_ld(MEM_STOP);
-                    let byte = g.b.ins().load(I8, MemFlagsData::trusted(), p, 0);
-                    let hit = g.b.ins().band_imm_s(byte, i64::from(yavs_interp::STOP_BIT));
-                    g.exit_if(hit, pc);
+                    g.leave_at(pc);
+                } else {
+                    g.b.ins().jump(tb, &[]);
                 }
-                g.b.ins().jump(tb, &[]);
                 open = false;
             }
             Inst::Case { v, table } => {

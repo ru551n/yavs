@@ -10026,3 +10026,122 @@ what it replaced:
 - **Not done**: a `NewPair` or `NewDope` frame form (the zeroing goes there by coverage, so the
   stores or the `MakeDope` alone remain); following a pointer through memory (a group of blocks
   that hold each other's addresses), unused on the designs measured.
+
+
+## llvm: large compiled processes lose to their callbacks, not to their code bytes: layout words from the memo, kept drives skip unchanged elements, objects stay in the table (yavs-llvm, yavs-interp, yavs-kernel, #679, 2026-10-25)
+
+Cause found with a profile of the main thread split by symbol and by the call site in compiled code (`perf record -j any_call` branch stacks: the
+last branch out of compiled code names the site; `YAVS_LLVM_PCLOC`, a new variant of `YAVS_LLVM_KINDLOC`, maps a site to the IR instruction of
+its function): in the steady state of the LEON3 window (after the S-record load) with every function compiled (`--tier-heat=1,0,0`) the compiled
+code itself took 8.4 k cycle samples where the interpreter's loop took 15.1 k for the same work, at about the same IPC (1.37 against 1.44). The
+whole loss was work only the compiled tier does: object lookups in the runtime (`yavs_rt_host`, `yavs_rt_obj`, `TierHost::object`, the constant
+bytes `Machine::obj` copies), stepped `LayoutOf` on native frames (`yavs_rt_xstep`, `native_step`, `layout_words`, the memset and memmove of
+`layout_of`), and the kernel's work for kept scalar drives of unchanged values (`assign_codes_now`, `commit_codes`), about 1.2 times the compiled
+code. The front-end stalls of the brief were mostly in those callbacks (IPC 0.6 to 1.0). A hot/cold split or a denser lowering of the compiled
+bodies would have worked on the half that already beat the interpreter, so neither was built.
+
+- **Decision: a `LayoutOf` that would be stepped and whose layout only one word is read of by the instructions right after it (a `Field`, a
+  `Load` of word 0, an `Index` by a constant then a `Load`; no entry between) is one call `yavs_rt_layout_word(env, ty, desc, dsz, k)`**
+  (`lower.rs` `fuse_layout`, `LayoutFuse`; frame mode and native frames): the generated code reads the descriptor bytes through `Gen::host` and
+  the interpreter's layout memo (`TierHost::layout_word`, `Machine::layout_word_of`, the memo `layout_build` fills, now `memo_fill`) answers with
+  the word, the `FieldOf` and `LayoutWord` ops of the interpreter in compiled code. The call reads no machine memory, forgets no object and
+  writes no register; where it declines (`u64::MAX`: no layout, an error) the code leaves to the interpreter at the `LayoutOf`, which runs all
+  of them and reports. Why: the native-frame step of these `LayoutOf` (the GRLIB AMBA records passed to `ahb_slv_dec_cache` and the integer
+  unit's procedures, whose layout depends on generics) was the largest single callback site, about 2 k samples of 32 k.
+- **Decision: `Ctx::assign_codes_now` (the kept scalar drives of compiled code, #676) skips an element the signal and the driver hold already,
+  as `assign_code_fast` does** (no entry of the driver before the call, none for the element earlier in the call). Compiled clocked processes
+  drove every element; the kernel committed every one (`commit_codes` 206 samples against 3 in the interpreter). `llvm_drive_batch`: kernel
+  entries 817 to 103 (the interpreter makes 463: its skip test stops at the first entry of the driver). Kernel tests
+  `a_batched_element_assigned_twice_keeps_the_last_code` and the random model test with runs of elements.
+- **Decision: the object table keeps every constant for the run, holds 4 096 entries, and a process's record holds up to 64 objects**
+  (`rt.rs` `Mem`): `RT_KEEP` (16 constants kept at a change of machine, else none) is gone; the walks that drop entries at a change of machine,
+  a host call or the end of an activation visit only the entries that are not constants (`Mem::occv`, `retain_some`), so keeping constants
+  costs those walks nothing; `MINE` 4 to 64 with an O(1) membership test (`mine_at`, `mine_gen`), frame and temporary objects no longer take
+  a place in the record, and a record is written up to its last entry. Why: a big process uses more than 16 constants and more than 4 heap
+  objects, so every activation after another process found them again in the runtime; host misses in the LEON3 window 13.4 million to 2.8
+  million.
+- **Measured** (LEON3 150 us, bench builds, `perf stat --no-inherit` of the simulation thread, medians of 3 interleaved on one claimed core):
+  see docs/STATUS.md "llvm: callbacks of large compiled processes".
+- **Not done:** a hot/cold split of large processes and a denser lowering (above: not the lever); processes that touch more than 64 objects
+  per activation still find the rest again (SDRAM models with rows as heap objects); the scalar drive path costs about twice the
+  interpreter's `drive_run` (the per-element callback and closure).
+- **The reference simulator (rule 22).** Its compiled code has no address translation at all: memory is raw pointers, record layouts are known
+  when the code is generated and constants are linked into the code. The ideas taken are its outcome, not its code: resolve an object once and
+  keep it (here for the run, in the object table and the process record), and answer a layout from what is already known (here the
+  interpreter's memo) instead of building it per access. Nothing was copied.
+
+## A process that never suspends leaves compiled code at its jump back (yavs-llvm, #583, #737, #759, 2026-10-25)
+
+Compiled code polled only the stop bit at the retreating `Br` of a process without `MAY_SUSPEND` (#737), so the activation bound
+of #583 (`SPIN_LIMIT`, interpreter only) did not hold under `--tier=auto` or `--tier=llvm`: the `process/no_wait_infinite` corpus
+file ran until the host ran out of memory (the compiled loop queues a transaction every iteration), which turned the llvm CI jobs
+red. The retreating `Br` now always leaves compiled code; the interpreter steps it (stop request, spin count, `E3009`) and, as
+before, re-enters compiled code at the next entry. Cost: a never-suspending loop runs at interpreter speed plus an exit per
+iteration, acceptable because such a process is already warned about (`W3102`) and bounded at `SPIN_LIMIT` jumps. Test:
+`stuck::a_process_that_never_suspends_ends_with_an_error` in every tier. Open: the compiled loop of `a <= not a` keeps growing
+memory where the interpreter replaces the pending transaction (#761).
+
+
+## `--tier=auto` run-to-run profile (yavs-llvm, yavs, #754, #755, 2026-10-25, user decision 2026-10-25)
+
+User decision (#754): a profile of the last run, kept next to the compiled code (same keying and invalidation as the object cache), so that what a
+run found hot and did not compile is compiled at the start of the next run, what a trial took back is not, and the first run decides exactly as before.
+Measured with bench builds (`tools/build-bench.sh --features llvm`) of main and of this change, pinned to core 8 (the compile thread shares it),
+fresh worlds (a copy of the pristine world per binary and sample, the analysis caches of the binary filled by two untimed runs, the compiled-code
+cache emptied), medians of 4 to 6 worlds; the Nth run is the Nth run of one world. Tables: docs/STATUS.md "`--tier=auto` run-to-run profile".
+
+- **What is kept** (`profile.rs`, `objcache::profile_key`): one small text entry in the object store of the work library, per build, optimiser switches,
+  command line (`yavs_llvm::set_run_id`, set by `yavs run` from a digest of its arguments: generics, stop time and the test case a runner names make
+  other runs) and program (a digest of every function's name, kind, parent and size, in id order; the reserved slots of copies are left out). Contents:
+  `base` (the simulation CPU time of the last judged run), `hot` (id, the microseconds seen, judged or not) and `lost` (ids; at most 48 and 256), by
+  process (a copy counts for its process, ids of copies are not the same in two runs). A text that is not exactly this version's is no profile.
+  Written by `AutoTier::stop`, atomically (`Store::put`), last writer wins. Not written by a run under 100 ms of simulation CPU time (host noise is
+  a few percent of that), not read or written under `--tier-heat`, without a compilation cache or a run id, or with `YAVS_AUTO_PROFILE=off`.
+  `--dap` defaults to `--tier=interp`, and `--vhpi` runs are compiled as any other, so neither is special.
+- **Why `stop` writes it and not the compile thread:** a run ends while the compile thread is inside a compile more often than not (a cold run of
+  a short design: every time), and the CLI then leaves without waiting for it. The thread publishes a `Snapshot` (bounded: processes seen for 20 ms)
+  at every decision; `stop` makes the profile of it, with the CPU time of the simulation threads (the process's less the compile thread's, taken
+  before the thread can end) since the thread started.
+- **Decision: only processes are compiled early, of the kinds the model says gain (speedup 1.4 or more: not large combinational processes, not
+  clocked ones of few instances), seen for a thirty-second of the sampled time (a clocked one an eighth, as `cold`).** Forced early, in whole-run
+  experiments: the 25 hottest functions of the window generator made its warm run 19 percent slower (its hot processes forced alone: no gain either, 0 to +2 percent), the hot
+  functions of `uvvm_util_rand`, `uvvm_sb_slv` and `olo_fix_cordic_rot` gained nothing (and their compiles cost more CPU than the whole 0.8 s
+  run), and one large combinational process of `neorv32_single_min` (`exec_comb`, 3660 IR, 6 percent of the run, kind `Big`) cost 30 percent of
+  the run. The functions' prices are measured (native-frame code) and right; the processes' are a model of functions applied to frame-mode code
+  (`sc5_fifo_repack`: 5 ms and 100 to 280 us an IR instruction against the model's 4 ms and 900 us), so the rule leaves hot ones for a run that is
+  over by the time it would compile them. A function a process calls is compiled with it as always (`tree`).
+- **Decision: the payback rule with the whole run in place of the part seen so far.** A listed process is compiled at its first look when the time
+  the last run saw it, over `EARLY_RUNS` (4) runs of that length, reaches the rule's threshold (`Worker::threshold`: the price of its kind, a link
+  where the cache has it, its payback). The compile is outside the budget (`early_root`: nothing is charged to `spent`, `cold` does not hold it) and
+  is not measured by a trial (its share of the run is not known at the start). The shared code of a process that can have copies is not compiled
+  early: its processes switch to the copies, which are. Without this rule the first early run of `poc_cache_cpu` spent 0.4 s of compile in a 0.65 s
+  run for processes of 10 percent of its time that gained nothing.
+- **Decision: the loss list is filled by the run as a whole too.** Functions compiled early for the first time are judged by the run after: at least
+  3 percent less simulation CPU time than the run before (`profile::better`) keeps them (`hot` judged, `base` is this run), anything else puts them
+  on `lost` for good and keeps `base`. A trial that takes a process back (`Worker::trial`) puts it there too. One run is lost to a loser at most:
+  the neorv32 process above, listed after one run, was lost after the next, the run that compiled it (the old policy's trial could not have caught it,
+  its share was under an eighth). A later run only adds: a function that becomes hot after the earlier ones joined is judged on top of them (hill
+  climbing, one step a run; `sc5_fifo_repack` needs the third run for all six processes).
+- **Decision: `SPEC_WAIT`, `SPEC_INSTANCES`, `SPEC_STALL` and `awaits_switch` are gone** (orchestrator's note on #749). Since compiled shared code
+  switches to its copy at its next activation (#679), the shared code of a process that can have copies does not need to wait for the switch.
+  `YAVS_AUTO_SPECWAIT=0` against the 400 ms: no change in wall, cycles or instructions on any of the 42 designs of `tools/realbench` (`auto` and
+  `auto-cold`, median of the default runs, load average 7 to 8: ratios 0.57 and 1.5 on `leon3mp` and the window generator were the host, instructions
+  1.00) or on `sc5_fifo_repack` (32.06 against 32.06 G instructions, 9.28 against 9.34 G cycles) or `hdlm_lfsr` (1.40 against 1.44 s); on the head-to-head designs only
+  `lfsr64` moved: -9 to -13 percent (a process of fewer than 64 instances in a 170 ms run waited 400 ms of sampled work for a switch the compiled
+  shared code makes at once). `NativeFlags::resumed` (interpreter, #749) is not read any more.
+- **Measured, not changed:** the window generator's "-15 percent" of the round 5 notes (every kind compiled at its first call) is not there in this
+  setting: its hot processes forced alone gave 0 to +2 percent, and with the profile it ends 2 to 4 percent faster by the fourth run. The warm run
+  of `poc_arith_addw` ends 1 to 5 percent faster (the clocked processes of 16 to 63 instances are compiled at their first look).
+- **Cost:** the run that compiles the listed processes for the first time pays the compile on the simulation's core when pinned (`sc5_fifo_repack`:
+  the second run +8 percent, about 20 cold compiles of 40 to 65 ms of CPU each; with a free core it is background work). The cache holds them from the
+  third run on. A run with nothing listed does what it did, plus one entry written (cold: 0.99 to 1.00 of main over the 42 designs).
+- **Not done:** early compile of functions (see above; a function-level verdict needs a measure per function, which neither the trial nor the
+  whole-run CPU time gives); a fixed convergence in two runs (the judged set grows by what becomes hot once the first ones are compiled); a profile
+  shared between command lines of one program.
+
+### #755: `auto_tier_compiles_a_long_loop_of_one_call`
+
+The test timed the compile against the end of a call (3 million iterations): with a collection at every safepoint or a loaded host the compile the
+sampler decided on during the call finished after it. It now waits for the compile (60 s at most) after the call returns; what it checks (the loop is
+compiled and swapped in while one call runs, the result is right) does not depend on who finishes first. The interpreter sees a newly flagged function
+at the next activation or within 128 events since interp750; the test does not depend on that, only on the compile finishing.

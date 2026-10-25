@@ -749,8 +749,8 @@ fn unchanged_direct_byte_assignments_keep_the_deltas() {
 }
 
 /// Random zero-delay assignments of one process to one 100-element logic signal it alone drives:
-/// single elements, vectors of up to 64 elements and a vector of more than 64, in any order, with
-/// overlaps. The value the signal holds at each run is the one a model that applies the
+/// single elements, runs of single elements in one call, vectors of up to 64 elements and a
+/// vector of more than 64, in any order, with overlaps. The value the signal holds at each run is the one a model that applies the
 /// assignments one after the other (the last wins) gives, whichever of the direct entry kinds
 /// (`out`, `outv`) the assignments went to.
 fn mixed_entries(skip: bool, extra: u32, seed: u64) -> Vec<String> {
@@ -800,7 +800,32 @@ fn mixed_entries(skip: bool, extra: u32, seed: u64) -> Vec<String> {
             };
             for _ in 0..2 + next() % 6 {
                 let r = next();
-                match r % 4 {
+                match r % 5 {
+                    4 => {
+                        // A run of single elements in one call (`assign_codes_now`, compiled
+                        // code's kept drives), from a few elements so that repeats happen; the
+                        // ones it does not take go one by one, as `drive_bits` does.
+                        let at = (next() % 96) as u32;
+                        let run: Vec<(u32, u8)> = (0..1 + next() % 8)
+                            .map(|_| {
+                                let e = at + (next() % 4) as u32;
+                                (e, if next() & 1 == 1 { ONE } else { ZERO })
+                            })
+                            .collect();
+                        let taken = c.assign_codes_now(d, run.len(), |k| run[k]);
+                        for &(e, v) in &run[taken..] {
+                            c.assign_code(
+                                d,
+                                Some(Range::new(e, 1)),
+                                Time::ZERO,
+                                v,
+                                DelayMode::INERTIAL,
+                            )?;
+                        }
+                        for &(e, v) in &run {
+                            model[e as usize] = v;
+                        }
+                    }
                     0 | 1 => {
                         // One element.
                         let e = (next() % 100) as u32;
@@ -873,4 +898,47 @@ fn mixed_direct_entry_kinds_apply_in_assignment_order() {
             );
         }
     }
+}
+
+/// A run of single elements in one call (`assign_codes_now`) that assigns an element twice, the
+/// second time the code the signal holds: the first entry is pending, so the second is no skip
+/// and the element ends with the second code.
+#[test]
+fn a_batched_element_assigned_twice_keeps_the_last_code() {
+    let mut b = Builder::new();
+    let s = b.signal(
+        "s",
+        SignalType::logic(8),
+        &LogicVec::new(8, StdULogic::Zero),
+    );
+    let d = b.driver(s);
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    let mut run = 0;
+    b.process(
+        "p",
+        NONE,
+        &[d],
+        p(move |c| {
+            run += 1;
+            match run {
+                1 => {
+                    let r = [(5u32, ONE), (6u32, ZERO), (5u32, ZERO)];
+                    assert_eq!(c.assign_codes_now(d, 3, |k| r[k]), 3);
+                }
+                2 => seen2.lock().unwrap().push(c.elem_code(s, 5)?),
+                _ => {}
+            }
+            c.wait_for(ns(1))
+        }),
+    );
+    let (mut sim, _t) = build(
+        b,
+        Config {
+            skip_unchanged: true,
+            ..Config::default()
+        },
+    );
+    sim.run_until(ns(5)).unwrap();
+    assert_eq!(*seen.lock().unwrap(), vec![ZERO]);
 }

@@ -8913,6 +8913,47 @@ Left (ranked): the kernel and drive path per activation (`finish_direct`, `assig
 instructions (the `Host`, the sampling slot and the result, 60 before the split, the rest moved here from `run_quick`); `run_cached` 150; `view_again` 72;
 a persistent per-process state needs `unsafe` in `yavs-interp` and a per-process object table (a decision for the user).
 
+### `--tier=auto` run-to-run profile (yavs-llvm, yavs, #754, #755, 2026-10-25)
+
+Decisions and causes: `docs/decisions.md` "`--tier=auto` run-to-run profile". A run leaves a small profile next to the compiled code (hot
+processes, processes a trial took back, the simulation CPU time); the next run of the same program and command line compiles the listed
+processes at their first look, and the run after it keeps them if the run as a whole took 3 percent less simulation CPU time, else loses
+them for good. `YAVS_AUTO_PROFILE=off` turns it off; the first run, `--tier-heat`, `--no-cache` and runs under 100 ms decide as before. The wait of the
+shared code of a process for its copy (`SPEC_WAIT`) is gone with it.
+
+Method: bench builds of main (d3123c88 for these tables, "main") and of this change ("new"); per world a fresh copy of the pristine world, the analysis caches of the
+binary filled by two untimed runs, the compiled-code cache emptied, then consecutive `--tier=auto` runs pinned to core 8 (the compile thread shares
+it); medians of 6 worlds (4 for the window generator), wall and `perf stat` user cycles and instructions. Ratios new / main of the Nth run of a world
+(below 1 is faster):
+
+| design | 1st (no profile) | 2nd | 3rd | 4th |
+|---|---|---|---|---|
+| `sc5_fifo_repack` | 1.02 | 1.08 | 0.73 | 0.73 |
+| `poc_arith_addw` | 1.00 | 0.98 | 1.00 | 0.99 |
+| `vai_window_gen_interlock` | 1.04 | 1.00 | 0.98 | 0.96 |
+| `uvvm_util_rand`, `uvvm_sb_slv`, `olo_fix_cordic_rot`, `neorv32_single_min` | 0.98 to 1.00 | 0.97 to 1.01 | 0.97 to 1.00 | 0.98 to 1.01 |
+
+`sc5_fifo_repack` main: 2.40 s first, 2.35 second, 2.43 third (its own cache keeps changing the set the policy compiles); new 2.46, 2.54, 1.76 and 1.68 s
+(cycles 12.0, 12.3, 8.5 and 7.7 G against 11.7, 11.5, 11.7 and 11.2 G). The first run with the profile compiles about twenty processes cold (40 to 65 ms of
+CPU each) on the simulation's own core, which is the +8 percent. With the first threshold (a sixteenth of the sampled time) the third run was 0.89.
+`poc_arith_addw` ended 5 percent faster in an earlier set of worlds (0.94 to 0.95 from the second run) and 1 to 2 percent in the later one: the
+difference is main's own spread. The four last rows never compile a process early (the hot ones are functions, or kinds the model says do not gain),
+their profile lists nothing and instructions are equal; the loss path was seen on `neorv32_single_min` when the kind filter was not there: one
+large combinational process compiled early, the run 30 percent slower, lost for good by the end of that run.
+
+Head-to-head designs (`tools/bench --compare`, 8 and 15 runs, core 8): geometric mean of CPU new / main 0.969 over the 11, `lfsr64` 0.82 (0.87 to 0.91
+with the profile off: a process of fewer than 64 instances in a 170 ms run no longer waits 400 ms of sampled work for a switch its compiled shared
+code makes at once), `rtl_ff` 0.99 to 1.02, `rtl_fan` 1.00 to 1.03 (the same with the profile off: layout spread), `rtl_lfsr` and `rtl_chain` 0.96.
+The wait's removal alone: no change on any of the 42 designs of `tools/realbench`, nor on `sc5_fifo_repack` (32.06 against 32.06 G instructions).
+
+All 42 of `tools/realbench` (`--compare`, `--tiers auto,auto-cold`, run phase, core 8, default runs): wall geometric mean new / main 1.02 (auto, warm: the ten-millisecond tests move by whole hundredths; 0.98 over the 11 tests of 1 s or more; sum
+of the walls 1.01) and 1.00 (auto-cold, sum 1.01), instructions 0.99 and 1.00. Per test only `sc5_fifo_repack` moves: 1.82 to 1.43 s (instructions 0.80);
+the others are host noise (load average 30 to 39 from other agents: `uvvm_axistream_vvc` 1.12 at equal instructions, `poc_arith_addw` 0.95 at
+instructions 1.10, `leon3mp` 40.4 to 41.6 s). Cold equals main on every design (the profile of a first run is written at its end).
+
+#755: `tier.rs::auto_tier_compiles_a_long_loop_of_one_call` waits (60 s at most) for the compile the call started instead of racing it; it
+failed once under `gc-stress` on a loaded host (load average 8).
+
 ## Value movement: lcopy, wide copies, in-place concatenation (#519, 2026-10-25)
 
 Gapscan item 2 (no timing cores: exact instruction counts, `perf stat instructions:u`, core 6, bench build with `llvm`, `--tier=interp --threads 1`; decision and numbers in
@@ -9137,3 +9178,54 @@ Checked: `cargo test --workspace`, `-p yavs-llvm -p yavs --features llvm`, both 
 (one timing-dependent failure under load, #755, passes alone); the differential corpus 524/524 on
 `yavs-interp`, `yavs-llvm`, `yavs-auto` and `yavs-auto --tier-heat=1,0,0` at 1 and 4 threads, and
 on the first three with `YAVS_SPEC_AFTER=2`.
+
+## llvm: callbacks of large compiled processes (#679, 2026-10-25)
+
+(`docs/decisions.md` "llvm: large compiled processes lose to their callbacks, ...".) The compiled bodies of the LEON3 processes were already
+cheaper than interpreting them (steady state of the window with everything compiled: 8.4 k cycle samples in compiled code against 15.1 k in
+the interpreter's loop); the loss was the runtime work around them. Three changes: a `LayoutOf` read for one word is one call of the layout
+memo (no native-frame step), kept scalar drives skip unchanged elements in the kernel, and the object table keeps constants for the run (4 096
+entries, a process record of 64 objects). Host misses in the LEON3 150 us window 13.4 million to 2.8 million; native-frame steps of
+`LayoutOf` gone (`llvm_layout_field`: `cb_xstep` 0, one `cb_layout` per field read); kernel entries of kept drives of `llvm_drive_batch` 817
+to 103.
+
+LEON3 150 us, bench builds of main (78f191a7) and of the change, `perf stat --no-inherit` of the simulation thread, one claimed CCD1 core,
+interleaved; heat = `--tier=auto --tier-heat=1,0,0` (everything compiled), warm compilation cache. Quiet session, medians of 5 (G):
+
+| | cycles | instructions | frontend stall cycles |
+|---|---:|---:|---:|
+| interpreter | 36.75 | 101.9 | 5.16 |
+| heat, main | (+5 to +10 % over the interpreter in other sessions) | 86.4 | 11.0 to 13.0 |
+| heat, change | 35.84 (-2.5 %) | 78.2 | 10.00 |
+
+A noisier session with main's heat in it (medians of 5, minimum in brackets): interpreter 42.25 (35.56), heat main 44.23 (37.58), heat change
+35.96 (33.10). The part before time 0 (elaboration and the S-record load of the memory models, `--stop-time=0fs`): interpreter 7.43, heat
+4.91 cycles; so the steady state of the window is level with the interpreter in cycles (instructions 60.7 G against 72.9 G). A process record
+of 16 objects instead of 64 (fewer instructions, more misses in the table) was 3 percent slower in the quiet session.
+Difftest 524/524 on `yavs-interp`, `yavs-llvm`, `yavs-auto` and `yavs-auto --tier-heat=1,0,0`, each at 1 and 4 threads. `tools/realbench
+--compare` (all 42 tests, `--tiers auto,auto-cold`, one core, main against the change): wall geometric mean 0.99 / 1.00, instructions 1.00 /
+1.00 (the default policy compiles few large processes); flagged only `grlib_leon3mp` and `uvvm_sb_slv` auto-cold wall 1.11 at equal
+instructions (two runs each on a loaded host).
+
+The whole LEON3 run (to 1060.5 us, the same method, medians of 2, G cycles / G instructions): interpreter 208 to 211 / 452; heat 270 / 459
+(main) and 226 / 405 (change); `--tier=auto` 257 / 445 (main) and 222 to 242 / 416 (change); `--tier=auto` with the large processes forced
+(`YAVS_AUTO_FORCE` of `comb`, `dctrl`, `ictrl`, `state_register`, the TLB `p0` and `ctrl`) 263 / 456 (main) and 242 / 413 (change). So over the
+whole run compiled code is still 7 to 8 percent above the interpreter in cycles at 10 percent fewer instructions: the part after the window is
+dominated by the SDRAM models (`state_register`, four instances, 90 percent of their wakes change nothing) and the TLBs, whose activations are
+short, so the cost of entering compiled code (`load_objs`, `begin_kept`, `view_again`, `run_cached`: 6 percent of the cycles) and the kept
+drives (`assign_codes_now`, `drive_bits`, `drive_now`, `yavs_rt_drive`: 8 percent, the interpreter's `drive_run` and its skip tests 5.7) weigh
+more than in the window. Over the whole run the tier's own runtime functions are 27 percent of the cycles (6.2 k of 23.2 k samples), as much as
+the compiled code itself. Tried and not kept: entering only the first 8 objects of a process record and the rest on a miss (fewer
+instructions; cycles higher in two runs per cell, which on this host does not separate 5 percent: not proven either way).
+
+Whole run in a quieter session, 7 cells interleaved, medians of 4 (minimum), G cycles / G instructions: interpreter 188.6 (184.6) / 451;
+everything compiled (heat) 195.2 (192.4) / 405, +3.5 percent; default `--tier=auto` 208.6 (198.8) / 416; auto with forced subsets
+(`YAVS_AUTO_FORCE`): the big set 205.4 / 411, without `state_register` 206.2 / 411, `state_register` only 197.9 (196.6) / 416, the TLB `p0` only
+206.4 / 412. So the target "compiled LEON3 below the interpreter in cycles" holds for the 150 us window and not for the whole run; the default
+policy itself costs about 10 percent of main-thread cycles on this test (data on #754). Heat mode on other designs (`tools/realbench --compare`,
+`YAVS_BENCH_TIERFLAGS=--tier-heat=1,0,0`, 5 runs, wall / instructions, change against main): `neorv32_single_min` 0.95 / 0.99,
+`fletcher_bufferwriter_512` 0.99 / 1.01, `fletcher_bufferreader` 1.02 / 1.00, `sc5_fifo_repack` 1.02 / 1.00.
+
+## CI repair after the correctness batch (#759, 2026-10-25)
+
+Main CI was red from `02c455f2`. Causes and fixes: (1) `E1360` of #654 also fired for a `linkage` formal, which accepts an actual of any mode (VESTs `tc778`); it now covers `out`/`inout`/`buffer` only. (2) The `vests-1993` expected list still had `tc400`, `tc2565` and `tc537` as known failures, which #657, #658 and #643 fixed: all 1939 entries pass now. (3) `generics/generic_nested_proc` (W1501 on stderr) was fixed by #758. (4) The `process/no_wait_infinite` file (#583) ran unbounded and out of memory under `--tier=auto` and `--tier=llvm` (the llvm jobs on all three runners, the `corpus_waves` test): a never-suspending process now leaves compiled code at its jump back (`docs/decisions.md`).

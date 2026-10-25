@@ -32,6 +32,7 @@ use yavs_ir::{FuncId, FuncKind};
 
 use crate::generator::{Generator, OptLevel, StartError};
 use crate::native::{Part, native_set, too_big};
+use crate::profile::{self, Profile, Snapshot};
 use crate::rt::{RunFn, back_edges, call, enter, loops};
 
 /// When a function is hot: once the sampler has seen the interpreter in it for `base`
@@ -861,6 +862,9 @@ struct Pending {
     later: Vec<FuncId>,
     /// Functions to look up in the compilation cache (`Worker::probe`).
     probes: Vec<FuncId>,
+    /// Functions the profile of the last run called hot, seen running now, with the microseconds
+    /// the last run saw them (`Worker::next_early`).
+    early: Vec<(u64, FuncId)>,
 }
 
 /// Looks sent together: the compile thread wakes once per this many.
@@ -897,6 +901,18 @@ struct Shared {
     finished: Vec<AtomicBool>,
     /// The generators once the thread has ended: compiled code lives as long as the tier.
     gens: Mutex<Vec<Box<dyn Generator>>>,
+    /// The run-to-run profile of this run until `stop` writes it (`profile.rs`).
+    profile: Mutex<Option<ProfileJob>>,
+}
+
+/// The profile of a run in the making: where it goes, what the runs before left, the simulation CPU
+/// time at the start of the compile thread (microseconds), and what the run has found so far.
+struct ProfileJob {
+    store: yavs_cache::Store,
+    key: yavs_cache::Key,
+    earlier: Profile,
+    cpu0: u64,
+    snap: Snapshot,
 }
 
 /// The kinds of function the policy prices and judges apart (#673, user decision 2026-10-24: a price
@@ -1022,23 +1038,6 @@ const PROBE_PART: u64 = 50;
 /// 40 to 45), its price for every kind of function (`Worker::price_of`).
 const FIRST_US_PER_INSTR: f64 = 45.0;
 
-/// The sampled microseconds before the shared code of a process that can have a copy may be compiled
-/// or linked from the cache (`Worker::awaits_switch`): two and a half times the wait of the
-/// interpreter's first try (150 ms) for the next try, at doubled activations, to have switched it.
-const SPEC_WAIT: u64 = 400_000;
-
-/// A process of this many instances or more is not waited for (`Worker::awaits_switch`): each copy is
-/// too small a share for the tier to take, so the shared code is compiled for all of them at once,
-/// as the interpreter's wait for it intends (`exec.rs` `specialise`). Processes of 16 to 63
-/// instances gain from the copy as those of fewer do (`poc_arith_addw`); `rtl_lfsr` (512) loses
-/// 20 percent warm by waiting on a run of 300 ms.
-const SPEC_INSTANCES: u32 = 64;
-
-/// The sampled microseconds of a process after which, if none of its instances has run a second
-/// activation (`NativeFlags::resumed`), its shared code is not waited for: a process that runs one
-/// loop and a final wait never reaches the switch, so the wait only delays its code (#749).
-const SPEC_STALL: u64 = 10_000;
-
 /// How long a run lasts before the compile thread is wanted: it samples nothing earlier (not for
 /// eager tiers). [`AutoTier::start_deferred`] leaves the start to the caller, who calls
 /// [`AutoTier::launch`] after this time.
@@ -1146,6 +1145,23 @@ struct Worker {
     /// The functions the compilation cache has compiled code of (`objcache::compiled_list`):
     /// the others are not looked up.
     listed: std::collections::HashSet<(String, u32)>,
+    /// The run-to-run profile (`profile.rs`): its key in the store, the processes and functions it
+    /// names as hot (not lost), by id, with the microseconds the last run saw them, and what this
+    /// run has found for the next one (`snapshot`).
+    profile_key: Option<yavs_cache::Key>,
+    /// The store the profile is in (`load_profile`).
+    store: Option<yavs_cache::Store>,
+    earlier: Profile,
+    early: std::collections::HashMap<FuncId, u64>,
+    /// Per process (by `Program::base_of`), the microseconds it and its copies were seen, interpreted
+    /// or compiled, and the ones that passed `profile::HOT_MIN_US` so far.
+    bseen: Vec<u64>,
+    hotish: Vec<u32>,
+    /// The processes a trial took back, and the functions compiled at once because of the profile
+    /// (a root being compiled that way, `early_root`, is charged no budget and is not held to `cold`).
+    lost_bases: Vec<u32>,
+    early_done: Vec<FuncId>,
+    early_root: bool,
     trace: Option<Trace>,
 }
 
@@ -1200,6 +1216,12 @@ impl Worker {
             }
             *t += dt;
             self.total += dt;
+            let b = self.prog.base_of(id).0 as usize;
+            let before = self.bseen[b];
+            self.bseen[b] += dt;
+            if before < profile::HOT_MIN_US && self.bseen[b] >= profile::HOT_MIN_US {
+                self.hotish.push(b as u32);
+            }
             if was == 0 && !compiled && forced(&self.prog, id) {
                 pending.asked.push_back(id);
             }
@@ -1226,13 +1248,21 @@ impl Worker {
             } else {
                 self.threshold(id, false)
             };
+            // What the last run found hot is compiled at once, whatever the payback rule and the
+            // budget say (the profile decides, not the looks: `next_early`). Not the shared code of a
+            // process that can have copies: its processes switch to them, which the tier compiles.
+            if let Some(&us) = self.early.get(&self.prog.base_of(id))
+                && !self.lost[id.0 as usize]
+                && !(self.prog.base_of(id) == id && self.prog.specialisable(id))
+                && !std::mem::replace(&mut self.asked_for[id.0 as usize], true)
+            {
+                pending.early.push((us, id));
+                continue;
+            }
             if self.wants_probe(id, now) {
                 pending.probes.push(id);
             }
-            if now >= at
-                && !self.awaits_switch(id)
-                && !std::mem::replace(&mut self.asked_for[id.0 as usize], true)
-            {
+            if now >= at && !std::mem::replace(&mut self.asked_for[id.0 as usize], true) {
                 pending.cands.push(id);
                 self.pick_at = 0;
                 if let Some(tr) = &mut self.trace {
@@ -1241,20 +1271,6 @@ impl Worker {
                 }
             }
         }
-    }
-
-    /// Whether `id` is the shared code of a process that can switch to a copy specialised to its
-    /// instance data (`Program::specialisable`) and the run is younger than `SPEC_WAIT`: the
-    /// processes switch at their 1024th activation (`yavs_interp` `spec_after`). The compiled
-    /// copy runs a third faster than the compiled shared code (the lfsr testbench's process: 459 ms
-    /// against 878 ms), so the shared code of a process of few instances waits for the switch (#673),
-    /// unless no instance came back from its first wait within `SPEC_STALL` of its sampled time (#749).
-    fn awaits_switch(&self, id: FuncId) -> bool {
-        self.total < SPEC_WAIT
-            && self.prog.base_of(id) == id
-            && self.native.instances(id) < SPEC_INSTANCES
-            && (self.group[id.0 as usize] < SPEC_STALL || self.native.resumed(id))
-            && self.prog.specialisable(id)
     }
 
     /// A worker with nothing seen yet.
@@ -1316,6 +1332,15 @@ impl Worker {
             warned: false,
             loaded: [false; 2],
             listed: Default::default(),
+            profile_key: None,
+            store: None,
+            earlier: Profile::default(),
+            early: Default::default(),
+            bseen: vec![0; nfuncs],
+            hotish: Vec::new(),
+            lost_bases: Vec::new(),
+            early_done: Vec::new(),
+            early_root: false,
             trace: std::env::var_os("YAVS_AUTO_TRACE").map(|_| Trace {
                 t0: std::time::Instant::now(),
                 first: Default::default(),
@@ -1869,9 +1894,6 @@ impl Worker {
         let Some(f) = self.prog.func(id) else {
             return false;
         };
-        if self.awaits_switch(id) {
-            return false;
-        }
         let k = id.0 as usize;
         let wait = if self.is_rtl(id) { self.band(id) } else { 0 };
         let at = self
@@ -2090,6 +2112,7 @@ impl Worker {
         }
         if let Some(Verdict::Drop(x)) = r {
             self.lost[k] = true;
+            self.lost_bases.push(self.prog.base_of(id).0);
             // The copies of a process are one process to the policy (#661): the ones not compiled
             // yet stay interpreted too.
             // (Not when it was the shared code: the copies fold what the shared code cannot, and
@@ -2108,6 +2131,94 @@ impl Worker {
                      interpreter, so it was taken back"
                 )),
             );
+        }
+    }
+
+    /// Read the profile of an earlier run of this program (`profile.rs`): what it found hot, and
+    /// not lost, is compiled when first seen running (`see`, `next_early`). Nothing in a test or
+    /// tuning mode (`--tier-heat`), without a compilation cache, or with `YAVS_AUTO_PROFILE=off`.
+    fn load_profile(&mut self) {
+        static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let off = *OFF.get_or_init(|| {
+            std::env::var("YAVS_AUTO_PROFILE").is_ok_and(|v| v.eq_ignore_ascii_case("off"))
+        });
+        if off || self.heat.budget == 0 || self.heat.eager() {
+            return;
+        }
+        // (In the store of the generator of the first level, `lead`.)
+        self.store = self.lead().and_then(|g| g.store());
+        self.profile_key = self.store.as_ref().and_then(|_| profile::key(&self.prog));
+        let (Some(store), Some(key)) = (&self.store, &self.profile_key) else {
+            return;
+        };
+        let Some(p) = profile::load(store, key).and_then(|t| Profile::parse(&t)) else {
+            return;
+        };
+        // A function is compiled early when seen long enough that the payback rule would have
+        // compiled it within `EARLY_RUNS` runs of this length: the rule's price, the object cache
+        // making it a link (`threshold`), but the whole run's time in place of the part seen so far.
+        for &(id, us, _) in &p.hot {
+            let id = FuncId(id);
+            let fine = self.prog.funcs.get(id).is_some_and(|f| !f.spare)
+                && self.prog.base_of(id) == id
+                && !p.lost.contains(&id.0)
+                && us.saturating_mul(profile::EARLY_RUNS) >= self.threshold(id, false);
+            if fine {
+                self.early.insert(id, us);
+            }
+        }
+        if let Some(tr) = &self.trace {
+            tr.line(format!(
+                "profile: {} hot, {} lost, last run {:?} us",
+                self.early.len(),
+                p.lost.len(),
+                p.base
+            ));
+        }
+        self.earlier = p;
+    }
+
+    /// The next function of the profile to compile, the one the last run saw longest first, with
+    /// what compiles with it; `None` when none is waiting.
+    fn next_early(&mut self, pending: &mut Pending) -> Option<Vec<(FuncId, Part)>> {
+        while !pending.early.is_empty() {
+            let k = (0..pending.early.len())
+                .max_by_key(|&i| (pending.early[i].0, std::cmp::Reverse(pending.early[i].1.0)))?;
+            let (_, id) = pending.early.swap_remove(k);
+            if !self.done[id.0 as usize][0] && !self.lost[id.0 as usize] {
+                return Some(self.tree(id));
+            }
+        }
+        None
+    }
+
+    /// What this run has found so far for the profile (`profile::next` makes the profile of it at
+    /// the end of the run).
+    fn snapshot(&self) -> Snapshot {
+        let seen = self
+            .hotish
+            .iter()
+            .map(|&b| (b, self.bseen[b as usize]))
+            .filter(|&(b, us)| {
+                self.prog
+                    .func(FuncId(b))
+                    .is_some_and(|f| f.kind == FuncKind::Process)
+                    && self.model(FuncId(b)).speedup >= profile::EARLY_SPEEDUP
+                    && (!self.is_rtl(FuncId(b)) || us.saturating_mul(RTL_SHARE) >= self.total)
+            })
+            .collect();
+        let mut early: Vec<u32> = self
+            .early_done
+            .iter()
+            .map(|&f| self.prog.base_of(f).0)
+            .collect();
+        early.sort_unstable();
+        early.dedup();
+        Snapshot {
+            total: self.total,
+            seen,
+            lost: self.lost_bases.clone(),
+            early,
         }
     }
 
@@ -2167,8 +2278,7 @@ impl Worker {
         } else {
             level
         };
-        let few = self
-            .is_rtl(id)
+        let few = (self.is_rtl(id) && !self.early_root)
             .then(|| {
                 let seen = self.group[self.prog.base_of(id).0 as usize];
                 cold(seen, self.total, self.tune)
@@ -2248,8 +2358,11 @@ impl Worker {
                     .map_or(0, |d| d.as_micros());
                 // A module linked from the compilation cache says nothing about compile cost.
                 let hit = gen_.cache_hits() != hits;
-                // Charged by the model, not by the time it took (#670).
-                self.spent += prices[usize::from(hit)];
+                // Charged by the model, not by the time it took (#670). What the profile asked for
+                // is not charged: the budget is for what the looks find.
+                if !self.early_root {
+                    self.spent += prices[usize::from(hit)];
+                }
                 if let Some(tr) = &self.trace {
                     let seen = self.time.get(id.0 as usize).map_or([0, 0], |t| *t);
                     let base = match self.prog.base_of(id) {
@@ -2260,8 +2373,9 @@ impl Worker {
                         .then(|| callbacks(&self.prog, f))
                         .map_or(String::new(), |(o, t)| format!(", {o} of {t} leave"));
                     tr.line(format!(
-                        "{id} compiled `{}` ({} IR{leave}{base}) {level:?} {part:?}{} {:?} in {} us, cpu {} us (model {}), first seen {} ms and candidate {} ms ago, \
+                        "{id} compiled{} `{}` ({} IR{leave}{base}) {level:?} {part:?}{} {:?} in {} us, cpu {} us (model {}), first seen {} ms and candidate {} ms ago, \
                          seen {}/{} us, spent {} of {} us",
+                        if self.early_root { " early" } else { "" },
                         f.name,
                         f.code.len(),
                         if hit { " hit" } else { "" },
@@ -2322,6 +2436,9 @@ impl Worker {
                 if let Some(run) = entry.run {
                     self.table[id.0 as usize].set((run, entry.nregs));
                     self.native.set(id);
+                }
+                if self.early_root && !self.early_done.contains(&id) {
+                    self.early_done.push(id);
                 }
                 (self.note)(id, level, Ok(took));
                 true
@@ -2658,7 +2775,30 @@ impl AutoTier {
                     // (The end of the run wakes this thread: nothing to list then.)
                     if !sh.halt.load(Ordering::SeqCst) {
                         w.listed = w.lead().map(|g| g.cache_list()).unwrap_or_default();
+                        w.load_profile();
                     }
+                    if let (Some(key), Some(store)) = (w.profile_key, w.store.clone()) {
+                        let cpu0 = sim_cpu().map_or(0, |c| u64::try_from(c.as_micros()).unwrap_or(0));
+                        *sh.profile.lock().unwrap_or_else(PoisonError::into_inner) =
+                            Some(ProfileJob {
+                                store,
+                                key,
+                                earlier: w.earlier.clone(),
+                                cpu0,
+                                snap: Snapshot::default(),
+                            });
+                    }
+                    let publish = |w: &Worker| {
+                        if w.profile_key.is_some()
+                            && let Some(job) = sh
+                                .profile
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .as_mut()
+                        {
+                            job.snap = w.snapshot();
+                        }
+                    };
                     // `YAVS_FIRST_ONLY=1`: a first-level generator (Cranelift) is the only one, no
                     // recompile at O2 (code of the two does not call each other's native code).
                     let upgrade = opt != OptLevel::O2
@@ -2694,6 +2834,7 @@ impl AutoTier {
                             w.see(&look, upgrade, &mut pending);
                         }
                         loop {
+                            publish(&w);
                             while let Ok(m) = rx.try_recv() {
                                 route(m, &mut pending, &mut inbox);
                             }
@@ -2702,6 +2843,7 @@ impl AutoTier {
                             } else {
                                 None
                             };
+                            let mut early = false;
                             let Some((ids, o2, sampled)) = probe
                                 .map(|id| (vec![(id, Part::Both)], false, true))
                                 .or_else(|| {
@@ -2715,6 +2857,12 @@ impl AutoTier {
                                         .later
                                         .pop()
                                         .map(|id| (w.upgrade_tree(id), true, false))
+                                })
+                                .or_else(|| {
+                                    w.next_early(&mut pending).map(|ids| {
+                                        early = true;
+                                        (ids, false, true)
+                                    })
                                 })
                                 .or_else(|| {
                                     w.pick(&mut pending.cands).map(|ids| (ids, false, true))
@@ -2741,6 +2889,7 @@ impl AutoTier {
                             let first = ids.first().map(|&(id, _)| id);
                             w.announce(&ids);
                             let mut root_done = false;
+                            w.early_root = early;
                             for (i, (id, part)) in ids.into_iter().enumerate() {
                                 let done = w.compile(id, o2, sampled && i == 0, part);
                                 root_done |= done && i == 0;
@@ -2754,7 +2903,12 @@ impl AutoTier {
                                     pending.later.push(id);
                                 }
                             }
-                            if let (Some(id), true) = (first, root_done && sampled && !o2) {
+                            w.early_root = false;
+                            // (Not a root the profile asked for: its share of the run is not known
+                            // yet, and the run as a whole is judged at its end.)
+                            if let (Some(id), true) =
+                                (first, root_done && sampled && !o2 && !early)
+                            {
                                 sh.trial.store(true, Ordering::SeqCst);
                                 w.trial(id, &sh.halt);
                                 sh.trial.store(false, Ordering::SeqCst);
@@ -2883,6 +3037,8 @@ impl AutoTier {
     /// own, and the process must not run its exit handlers under the running LLVM
     /// ([`exit_now`]).
     pub fn stop(&self, wait: bool) -> bool {
+        // (The simulation's CPU time first: the compile thread's clock is gone once it has ended.)
+        let cpu = self.sim_cpu_now();
         self.shared.halt.store(true, Ordering::SeqCst);
         // (An empty batch wakes the compile thread, which sees `halt`.)
         if let Some(q) = self
@@ -2893,6 +3049,7 @@ impl AutoTier {
         {
             let _ = q.send(Msg::Looks(Vec::new()));
         }
+        self.write_profile(cpu);
         if !wait && self.shared.busy.load(Ordering::SeqCst) {
             return false;
         }
@@ -2907,6 +3064,54 @@ impl AutoTier {
             resume_unwind(p);
         }
         true
+    }
+
+    /// The CPU time of the simulation threads so far, in microseconds: the process's less the compile
+    /// thread's. `None` before the thread started or where there is no such clock.
+    #[cfg(target_os = "linux")]
+    fn sim_cpu_now(&self) -> Option<u64> {
+        let clock = self.shared.compile_clock.load(Ordering::Acquire);
+        if clock == 0 {
+            return None;
+        }
+        let c = cpu_read(CPU_PROCESS)?.saturating_sub(cpu_read(clock)?);
+        u64::try_from(c.as_micros()).ok()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn sim_cpu_now(&self) -> Option<u64> {
+        None
+    }
+
+    /// Write the profile of this run (`profile::next`) from what the compile thread published, once:
+    /// from here and not from the compile thread, which may be in the middle of a compile when the
+    /// run ends. Nothing for a run whose CPU time is not known or too short to judge.
+    fn write_profile(&self, cpu: Option<u64>) {
+        let job = self
+            .shared
+            .profile
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        let (Some(job), Some(end)) = (job, cpu) else {
+            return;
+        };
+        let cpu = end.saturating_sub(job.cpu0);
+        if cpu < profile::JUDGE_MIN_US {
+            return;
+        }
+        let p = profile::next(&job.earlier, &job.snap, cpu);
+        if std::env::var_os("YAVS_AUTO_TRACE").is_some() {
+            eprintln!(
+                "trace: profile: stored {} hot ({} judged), {} lost; this run {cpu} us, last {:?} us, {} compiled early",
+                p.hot.len(),
+                p.hot.iter().filter(|h| h.2).count(),
+                p.lost.len(),
+                job.earlier.base,
+                job.snap.early.len()
+            );
+        }
+        profile::save(&job.store, &job.key, &p.render());
     }
 
     /// Start the compile thread of [`AutoTier::start_deferred`], which then begins at once; does
@@ -3732,6 +3937,116 @@ mod tests {
         let n2 = w2.prog.func(f2).unwrap().code.len();
         assert_eq!(w2.price_of(f2, Part::Both, true), HIT.price(n2));
         assert!(w2.price_of(f2, Part::Both, true) * 10 < w2.price_of(f2, Part::Both, false));
+    }
+
+    /// What the profile of an earlier run calls hot is a candidate at its first look (#754), whatever
+    /// the payback rule says yet, once; the longest seen last time is compiled first; a function a
+    /// trial took back or that is compiled already is not.
+    #[cfg(feature = "llvm")]
+    #[test]
+    fn the_profile_makes_a_function_a_candidate_at_its_first_look() {
+        let (mut w, f) = worker(100);
+        let look = |us: u64| super::Look {
+            running: vec![(f, false, us)],
+        };
+        let mut pending = super::Pending::default();
+        w.see(&look(10), false, &mut pending);
+        assert!(
+            pending.early.is_empty() && pending.cands.is_empty(),
+            "no profile"
+        );
+        w.asked_for[f.0 as usize] = false;
+        w.early.insert(f, 500_000);
+        w.see(&look(10), false, &mut pending);
+        assert_eq!(pending.early, [(500_000, f)]);
+        assert!(pending.cands.is_empty());
+        w.see(&look(10), false, &mut pending);
+        assert_eq!(pending.early.len(), 1, "asked once");
+        let ids = w.next_early(&mut pending).expect("a tree");
+        assert_eq!(ids[0].0, f);
+        assert!(w.next_early(&mut pending).is_none());
+        // Taken back by a trial: not asked for.
+        let (mut w, f) = worker(100);
+        w.early.insert(f, 500_000);
+        w.lost[f.0 as usize] = true;
+        let mut none = super::Pending::default();
+        w.see(&look(10), false, &mut none);
+        assert!(none.early.is_empty() && none.cands.is_empty());
+        // Compiled in the meantime: skipped when its turn comes.
+        let (mut w, f) = worker(100);
+        pending.early = vec![(1, f)];
+        w.done[f.0 as usize][0] = true;
+        assert!(w.next_early(&mut pending).is_none());
+    }
+
+    /// The snapshot of a run names the processes seen for a good part of the time whose kind is
+    /// expected to gain from compiled code, and what the profile needs besides (#754).
+    #[cfg(feature = "llvm")]
+    #[test]
+    fn the_snapshot_names_the_processes_that_are_hot_and_would_gain() {
+        use super::Kind;
+        let (mut w, f) = worker(100);
+        let look = |us: u64| super::Look {
+            running: vec![(f, false, us)],
+        };
+        let mut pending = super::Pending::default();
+        // 19 ms: not yet; 21 ms: hot.
+        w.see(&look(19_000), false, &mut pending);
+        assert!(w.snapshot().seen.is_empty());
+        w.see(&look(2_000), false, &mut pending);
+        // (A function, not a process: no early compile of it.)
+        assert!(w.snapshot().seen.is_empty());
+        assert_eq!(w.hotish, [f.0]);
+        // The same numbers for a process of a kind that gains and one that does not.
+        let (prog, p) = process(150, 0);
+        let rt = yavs_interp::Runtime::new(std::sync::Arc::new(prog), Default::default()).unwrap();
+        let tab = || -> std::sync::Arc<[std::sync::atomic::AtomicUsize]> {
+            (0..rt.prog.funcs.len())
+                .map(|_| std::sync::atomic::AtomicUsize::new(0))
+                .collect()
+        };
+        let table: std::sync::Arc<[super::Entry]> = (0..rt.prog.funcs.len())
+            .map(|_| super::Entry::default())
+            .collect();
+        let mut w = super::Worker::new(
+            rt.prog.clone(),
+            table,
+            tab(),
+            tab(),
+            rt.native_flags(),
+            super::Heat::DEFAULT,
+            crate::OptLevel::O2,
+            usize::MAX,
+            Some(Box::new(crate::LlvmGenerator::new())),
+            None,
+            Box::new(|_, _, _| {}),
+        );
+        let look = |us: u64| super::Look {
+            running: vec![(p, false, us)],
+        };
+        w.see(&look(100_000), false, &mut pending);
+        for (kind, named) in [
+            (Kind::Compute, true),
+            (Kind::Rtl, true),
+            (Kind::RtlFew, false),
+            (Kind::Big, false),
+        ] {
+            w.kinds[p.0 as usize] = Default::default();
+            w.kinds[p.0 as usize].set(kind).unwrap();
+            let snap = w.snapshot();
+            // (A clocked process seen for under an eighth of the run is not named either.)
+            let share = if kind == Kind::Rtl && snap.seen.is_empty() {
+                "cold"
+            } else {
+                ""
+            };
+            assert_eq!(snap.seen == [(p.0, 100_000)], named, "{kind:?} {share}");
+            assert_eq!(snap.total, 100_000);
+        }
+        w.lost_bases.push(p.0);
+        w.early_done.push(p);
+        let snap = w.snapshot();
+        assert_eq!((snap.lost, snap.early), (vec![p.0], vec![p.0]));
     }
 
     /// The CPU time of a look is shared by the functions running in it, and the time seen running

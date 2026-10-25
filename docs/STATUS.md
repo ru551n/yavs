@@ -8290,3 +8290,24 @@ not the entry, are what is left, and with `--tier=auto` the policy decides wheth
 Left (ranked): the kernel and drive path per activation (`finish_direct`, `assign_planes_fast`, `commit_planes_run`: #521); `Process::run` 182
 instructions (the `Host`, the sampling slot and the result, 60 before the split, the rest moved here from `run_quick`); `run_cached` 150; `view_again` 72;
 a persistent per-process state needs `unsafe` in `yavs-interp` and a per-process object table (a decision for the user).
+
+## Value movement: lcopy, wide copies, in-place concatenation (#519, 2026-10-25)
+
+Gapscan item 2 (no timing cores: exact instruction counts, `perf stat instructions:u`, core 6, bench build with `llvm`, `--tier=interp --threads 1`; decision and numbers in
+`docs/decisions.md` "Value movement"). Call shapes of `lcopy` (histogram of a throwaway build, not kept): grlib_leon3mp 115 M sampled calls, 85 to 95 percent of 1 to 64 elements in one
+block on each side; fletcher_bufferwriter_512 6.7 M, half of them 4 to 64 elements into heap or shared heap, 10 percent of 512 elements; vai_window_gen_interlock 26 M of 8 elements.
+
+| change | where | effect |
+|---|---|---|
+| `lcopy1`: one block each side, in registers, destination changed in place (frame, temporary, heap, shared heap) | `Machine::lcopy`, `AllocLCopy` | 126 instructions per 8-element copy statement; `lcopy` + `copy_bits` 417 to 230 per 2000 calls in grlib |
+| `lcopy_wide`: three or more blocks, objects apart: memcpy or `shift_merge` between the objects | `Machine::lcopy_wide`, `copy_pair` | 629 per 512-element copy at another bit offset, 716 at the same offset |
+| `Op::CatLCopy` for any size and offset, wide `&` built in its destination | `pre.rs`, `Machine::cat_apart` | 1071 per `&` of 8 x 64 into 512 elements; no temporary of the result size |
+
+Whole runs, interpreter, instructions: fletcher_bufferwriter_512 -1.0 percent, grlib_leon3mp -0.55, poc_stat_histogram -0.9, osvvm_axis_random -0.5; hdlm_lfsr, poc_arith_addw, uvvm_sb_slv
++0.14 to +0.25 (loop layout). The gain per test is small because the wide-vector share of these runs is small once the kernel and dispatch costs are counted: the gapscan "helpers"
+17.6 s are mostly calls of 1 to 64 elements, which now cost about 40 percent less each, and `sig_gather`/`sig_scatter` (about 100 and 130 instructions per leaf, 2.4 + 3.0 percent of grlib
+cycles) are untouched.
+
+Left, measured: `sig_gather` and `sig_scatter` per leaf (signal lookup, kind dispatch, code read) and per call (plan lookup compares descriptor bytes); they want a plan that knows runs of leaves in one
+signal (record packs, #686, #677). `layout_word` (1.7 percent of grlib cycles, about 100 instructions per call) belongs to #518. The compiled tier keeps its own inline copies for one and two blocks; `CatLCopy` and `lcopy_wide` are interpreter code, so
+`fletcher_bufferwriter_512` under `--tier=llvm` (above the interpreter) is not helped by this change.

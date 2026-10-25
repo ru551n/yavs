@@ -17,6 +17,10 @@ begin
     variable a, b, c : std_logic_vector(0 to 4999);
     variable bad : natural := 0;
     variable one : std_logic := '1';
+    type nat_vec is array (natural range <>) of natural;
+    constant lens : nat_vec := (129, 321, 700);
+    constant dofs : nat_vec := (0, 33, 64);
+    constant sofs : nat_vec := (0, 5, 62);
     variable zero : std_logic := '0';
   begin
     for rep in 1 to 3 loop
@@ -42,6 +46,41 @@ begin
         if i >= 5 and i <= 4200 then if b(i) /= pat(i + 4) then bad := bad + 1; end if;
         elsif b(i) /= 'W' then bad := bad + 1; end if;
       end loop;
+      -- copies of three to eleven blocks at every pair of offsets between two vectors
+      for l in lens'range loop
+        exit when rep > 1;
+        for dk in dofs'range loop
+          for sk in sofs'range loop
+            b := (others => 'W');
+            b(dofs(dk) to dofs(dk) + lens(l) - 1) := a(sofs(sk) to sofs(sk) + lens(l) - 1);
+            for i in 0 to dofs(dk) + lens(l) + 1 loop
+              if i >= dofs(dk) and i < dofs(dk) + lens(l) then
+                if b(i) /= pat(i - dofs(dk) + sofs(sk)) then bad := bad + 1; end if;
+              elsif b(i) /= 'W' then bad := bad + 1; end if;
+            end loop;
+          end loop;
+        end loop;
+      end loop;
+      if rep = 1 then
+      -- concatenations of wide pieces and a scalar, built in place
+        b := (others => 'U');
+        b(0 to 999) := a(0 to 99) & a(100 to 399) & one & a(400 to 998);
+        for i in b'range loop
+          if i <= 999 then
+            if i <= 399 then if b(i) /= pat(i) then bad := bad + 1; end if;
+            elsif i = 400 then if b(i) /= '1' then bad := bad + 1; end if;
+            elsif b(i) /= pat(i - 1) then bad := bad + 1; end if;
+          elsif b(i) /= 'U' then bad := bad + 1; end if;
+        end loop;
+        -- a piece in the destination itself is read before it is overwritten
+        c := a;
+        c(0 to 1999) := c(1000 to 1999) & c(0 to 999);
+        for i in c'range loop
+          if i < 1000 then if c(i) /= pat(i + 1000) then bad := bad + 1; end if;
+          elsif i < 2000 then if c(i) /= pat(i - 1000) then bad := bad + 1; end if;
+          elsif c(i) /= pat(i) then bad := bad + 1; end if;
+        end loop;
+      end if;
       -- an overlapping shift to the right and to the left within one vector
       c := a;
       c(64 to 4999) := c(0 to 4935);

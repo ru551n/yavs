@@ -922,6 +922,36 @@ fn blocks_of(bytes: &[u8]) -> Vec<[u64; 4]> {
         .collect()
 }
 
+/// Whole blocks `out` from the bits of `src` from bit `sh` (1 to 63) of its first block: block
+/// `j` of `out` is the high `64 - sh` bits of block `j` of `src` and the low `sh` bits of the
+/// next, plane by plane (`src` has one block more than `out`).
+#[inline(always)]
+fn shift_merge(out: &mut [u8], src: &[u8], sh: u64) {
+    let word = |b: &[u8], i: usize| plane_words_at(b, i);
+    for (j, o) in out.as_chunks_mut::<32>().0.iter_mut().enumerate() {
+        let (lo, hi) = (word(src, j * 32), word(src, (j + 1) * 32));
+        for (k, c) in o.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+            *c = (lo[k] >> sh | hi[k] << (64 - sh)).to_le_bytes();
+        }
+    }
+}
+
+/// The four plane words of the block at byte `at` of `b`.
+#[inline(always)]
+fn plane_words_at(b: &[u8], at: usize) -> [u64; 4] {
+    plane_words(&b[at..at + 32])
+}
+
+/// The four plane words of the block `b` (32 bytes).
+#[inline(always)]
+fn plane_words(b: &[u8]) -> [u64; 4] {
+    let mut w = [0u64; 4];
+    for (w, c) in w.iter_mut().zip(b.as_chunks::<8>().0) {
+        *w = u64::from_le_bytes(*c);
+    }
+    w
+}
+
 /// The blocks of `bytes` (32 bytes each) into `out`.
 #[inline(always)]
 fn fill_blocks(bytes: &[u8], out: &mut [[u64; 4]]) {
@@ -2506,26 +2536,98 @@ impl Machine {
         d + dlen <= s || s + slen <= d
     }
 
-    /// `lcopy` of a wide range whose two sides start at the same bit of a block and do not
-    /// overlap: a partial block at each end, the whole blocks between them as bytes.
+    /// `lcopy` of a wide range (three or more blocks on a side) whose two sides are in
+    /// objects that share no byte: a partial block at each end, the whole destination blocks
+    /// between them as one move (a `memcpy` when both sides start at the same bit of a block,
+    /// else a shift-merge of the source words). `false`: nothing was copied (memory the
+    /// machine does not hold in a field of its own).
     #[inline(never)]
-    fn lcopy_aligned(&mut self, dst: u64, doff: u64, src: u64, soff: u64, n: u64) -> R<()> {
+    fn lcopy_wide(&mut self, dst: u64, doff: u64, src: u64, soff: u64, n: u64) -> R<bool> {
         let head = (64 - doff % 64) % 64;
+        let (dpos, spos) = (doff + head, soff + head);
         let whole = (n - head) / 64;
+        let (dm, sm) = (
+            add_addr(dst, dpos / 64 * 32)?,
+            add_addr(src, spos / 64 * 32)?,
+        );
+        let sh = spos % 64;
+        let (dn, sn) = (
+            whole as usize * 32,
+            (whole as usize + usize::from(sh != 0)) * 32,
+        );
+        if !self.copy_pair(dm, sm, dn, sn, |out, src| {
+            if sh == 0 {
+                out.copy_from_slice(&src[..dn]);
+            } else {
+                shift_merge(out, src, sh);
+            }
+        }) {
+            return Ok(false);
+        }
         if head > 0 {
             self.lcopy(dst, doff, src, soff, head)?;
         }
-        let (dm, sm) = (
-            add_addr(dst, (doff + head) / 64 * 32)?,
-            add_addr(src, (soff + head) / 64 * 32)?,
-        );
-        self.copy_mem(dm, sm, whole * 32)?;
         let done = head + whole * 64;
-        self.lcopy(dst, doff + done, src, soff + done, n - done)
+        self.lcopy(dst, doff + done, src, soff + done, n - done)?;
+        Ok(true)
     }
 
+    /// `lcopy` of elements inside one block on each side (a field or a slice of a vector, the
+    /// usual copy): the source block into registers, the destination block changed where it
+    /// is, no staging and no call. `false`: nothing was copied (another shape, memory the
+    /// machine does not hold in a field, an address that does not resolve: `lcopy_general`
+    /// copies or reports).
+    #[inline(always)]
+    fn lcopy1(&mut self, dst: u64, doff: u64, src: u64, soff: u64, n: u64) -> bool {
+        let (s0, d0) = (soff % 64, doff % 64);
+        if n == 0 || n > 64 - s0 || n > 64 - d0 {
+            return false;
+        }
+        let (ssp, sidx, so) = split(src);
+        let so = (so + soff / 64 * 32) as usize;
+        let Some(sw) = self
+            .mem_fast(ssp, sidx)
+            .and_then(|m| m.get(so..so + 32))
+            .map(plane_words)
+        else {
+            return false;
+        };
+        let (dsp, didx, dof) = split(dst);
+        let dof = (dof + doff / 64 * 32) as usize;
+        let mem = match dsp {
+            FRAME => self.fslots_mut(didx as usize),
+            TEMP => Some(&mut self.temp[..]),
+            HEAP => self.heap.data_mut(didx),
+            SHARED_HEAP => self
+                .sh
+                .as_mut()
+                .and_then(|s| s.heap.as_mut()?.data_mut(didx)),
+            _ => None,
+        };
+        let Some(db) = mem.and_then(|m| m.get_mut(dof..dof + 32)) else {
+            return false;
+        };
+        let mask = yavs_logic::wide::nmask(n as usize);
+        for (c, s) in db.as_chunks_mut::<8>().0.iter_mut().zip(sw) {
+            let d = u64::from_le_bytes(*c);
+            *c = (d & !(mask << d0) | (s >> s0 & mask) << d0).to_le_bytes();
+        }
+        true
+    }
+
+    /// `Inst::LCopy`: `n` elements from element `soff` of the logic vector at `src` to `doff` of
+    /// the one at `dst`.
     #[inline(never)]
     fn lcopy(&mut self, dst: u64, doff: u64, src: u64, soff: u64, n: u64) -> R<()> {
+        if self.lcopy1(dst, doff, src, soff, n) {
+            return Ok(());
+        }
+        self.lcopy_general(dst, doff, src, soff, n)
+    }
+
+    /// `lcopy` of every other shape.
+    #[inline(never)]
+    fn lcopy_general(&mut self, dst: u64, doff: u64, src: u64, soff: u64, n: u64) -> R<()> {
         if n == 0 {
             return Ok(());
         }
@@ -2575,31 +2677,6 @@ impl Machine {
         let (sn, dn) = ((sb1 - sb0 + 1) as usize, (db1 - db0 + 1) as usize);
         let da = add_addr(dst, db0 * 32)?;
         let (s0, d0) = (soff - sb0 * 64, doff - db0 * 64);
-        // One block on each side, the destination in frame, temporary or heap memory: the source
-        // read first, the destination changed where it is.
-        if sn == 1 && dn == 1 {
-            let sa = add_addr(src, sb0 * 32)?;
-            let mut sw = [[0u64; 4]; 1];
-            if let Ok(b) = self.rd_hot(sa, 32) {
-                fill_blocks(b, &mut sw);
-                let (sp, idx, off) = split(da);
-                let mem = match sp {
-                    FRAME => self.fslots_mut(idx as usize),
-                    TEMP => Some(&mut self.temp[..]),
-                    HEAP => self.heap.data_mut(idx),
-                    _ => None,
-                };
-                if let Some(b) = mem.and_then(|m| m.get_mut(off as usize..off as usize + 32)) {
-                    let mut dw = [[0u64; 4]; 1];
-                    fill_blocks(b, &mut dw);
-                    copy_bits(&sw, &mut dw, s0, d0, n);
-                    for (c, w) in b.as_chunks_mut::<8>().0.iter_mut().zip(dw.as_flattened()) {
-                        *c = w.to_le_bytes();
-                    }
-                    return Ok(());
-                }
-            }
-        }
         // Up to 128 elements on either side: the blocks on the stack.
         if sn <= 2 && dn <= 2 {
             let sa = add_addr(src, sb0 * 32)?;
@@ -2630,11 +2707,10 @@ impl Machine {
             }
             return self.put(da, &out[..dn * 32]);
         }
-        if n >= 1024
-            && s0 == d0
-            && self.disjoint(dst, db0 * 32, dn as u64 * 32, src, sb0 * 32, sn as u64 * 32)
+        if self.disjoint(dst, db0 * 32, dn as u64 * 32, src, sb0 * 32, sn as u64 * 32)
+            && self.lcopy_wide(dst, doff, src, soff, n)?
         {
-            return self.lcopy_aligned(dst, doff, src, soff, n);
+            return Ok(());
         }
         let sw = blocks_of(self.rd(add_addr(src, sb0 * 32)?, sn as u64 * 32)?);
         let mut dw = blocks_of(self.rd(da, dn as u64 * 32)?);
@@ -3475,6 +3551,7 @@ impl Machine {
     fn cat(
         &mut self,
         d: u64,
+        eoff: u64,
         n: u64,
         m: u64,
         ps: &[Reg],
@@ -3485,7 +3562,7 @@ impl Machine {
     ) -> R<()> {
         let big = || runtime_s!("object larger than 4 GiB");
         let total = n.wrapping_mul(m);
-        if logic && total <= 64 && self.cat_block(d, total, m, ps, scalars, bias)? {
+        if logic && total <= 64 && eoff == 0 && self.cat_block(d, total, m, ps, scalars, bias)? {
             return Ok(());
         }
         let mut k = 0u64;
@@ -3495,7 +3572,10 @@ impl Machine {
             let len = if scalar { 1 } else { self.r(pr[1]) };
             if logic {
                 let units = if scalar { 1 } else { len.wrapping_mul(m) };
-                let off = total.wrapping_sub(k.wrapping_mul(m)).wrapping_sub(units);
+                let off = eoff
+                    .wrapping_add(total)
+                    .wrapping_sub(k.wrapping_mul(m))
+                    .wrapping_sub(units);
                 if scalar {
                     self.lset(d, off, v.wrapping_add(u64::from(bias)))?;
                 } else {
@@ -3613,6 +3693,33 @@ impl Machine {
         Ok(Some((words, mask, k)))
     }
 
+    /// Whether a logic `Cat` of `total` elements can be built in place from element `doff` of
+    /// `d`: the pieces `ps` cover exactly `total` elements and share no byte with the blocks
+    /// it writes (a piece that did could be overwritten before it is read).
+    #[inline(never)]
+    fn cat_apart(&self, d: u64, doff: u64, total: u64, m: u64, ps: &[Reg], scalars: u16) -> bool {
+        let Some(last) = doff.checked_add(total) else {
+            return false;
+        };
+        let (at, dbytes) = (doff / 64 * 32, (last.div_ceil(64) - doff / 64) * 32);
+        let mut covered = 0u64;
+        for (j, pr) in ps.as_chunks::<2>().0.iter().enumerate() {
+            let units = if scalars >> j & 1 == 1 {
+                1
+            } else {
+                let units = self.r(pr[1]).wrapping_mul(m);
+                if units != 0
+                    && !self.disjoint(d, at, dbytes, self.r(pr[0]), 0, units.div_ceil(64) * 32)
+                {
+                    return false;
+                }
+                units
+            };
+            covered = covered.wrapping_add(units);
+        }
+        covered == total
+    }
+
     /// A block of 32 bytes in the temporary area holding `b` (an `Alloc` of 32 and the stores
     /// of all of it, without clearing it first).
     #[inline(always)]
@@ -3671,8 +3778,6 @@ impl Machine {
             sstack,
             temp,
             heap,
-            inst,
-            rt,
             sh,
             ..
         } = self;
@@ -3691,6 +3796,38 @@ impl Machine {
             }
             return false;
         }
+        self.copy_pair(d, s, n, n, |out, src| out.copy_from_slice(src))
+    }
+
+    /// `f(dst, src)` on the `dn` bytes at `d` and the `sn` bytes at `s` when they are in two
+    /// different objects the machine holds in fields of their own (as `copy_fast`). `false`:
+    /// `f` was not called.
+    #[inline(always)]
+    fn copy_pair(
+        &mut self,
+        d: u64,
+        s: u64,
+        dn: usize,
+        sn: usize,
+        f: impl FnOnce(&mut [u8], &[u8]),
+    ) -> bool {
+        let (dsp, didx, doff) = split(d);
+        let (ssp, sidx, soff) = split(s);
+        let (doff, soff) = (doff as usize, soff as usize);
+        if doff.checked_add(dn).is_none() || soff.checked_add(sn).is_none() {
+            return false;
+        }
+        let Machine {
+            frames,
+            root,
+            sstack,
+            temp,
+            heap,
+            inst,
+            rt,
+            sh,
+            ..
+        } = self;
         let dst = match dsp {
             TEMP => {
                 let src = match ssp {
@@ -3702,7 +3839,7 @@ impl Machine {
                     SHARED => sh.as_ref().map(|s| &s.vars[..]),
                     _ => None,
                 };
-                (src, temp.get_mut(doff..doff + n))
+                (src, temp.get_mut(doff..doff + dn))
             }
             FRAME => {
                 let src = match ssp {
@@ -3717,7 +3854,7 @@ impl Machine {
                 (
                     src,
                     slots_of_mut(frames, root, sstack, didx as usize)
-                        .and_then(|b| b.get_mut(doff..doff + n)),
+                        .and_then(|b| b.get_mut(doff..doff + dn)),
                 )
             }
             HEAP => {
@@ -3732,7 +3869,7 @@ impl Machine {
                 };
                 (
                     src,
-                    heap.data_mut(didx).and_then(|b| b.get_mut(doff..doff + n)),
+                    heap.data_mut(didx).and_then(|b| b.get_mut(doff..doff + dn)),
                 )
             }
             SHARED_HEAP => {
@@ -3748,14 +3885,14 @@ impl Machine {
                     src,
                     sh.as_mut()
                         .and_then(|s| s.heap.as_mut()?.data_mut(didx))
-                        .and_then(|b| b.get_mut(doff..doff + n)),
+                        .and_then(|b| b.get_mut(doff..doff + dn)),
                 )
             }
             _ => return false,
         };
         match dst {
-            (Some(src), Some(out)) if soff + n <= src.len() => {
-                out.copy_from_slice(&src[soff..soff + n]);
+            (Some(src), Some(out)) if soff + sn <= src.len() => {
+                f(out, &src[soff..soff + sn]);
                 true
             }
             _ => false,
@@ -5798,6 +5935,7 @@ impl Machine {
                     let ps = t!(f.regs(parts).ok_or_else(|| ice_s!("operand list")));
                     t!(self.cat(
                         self.regs[dst.0 as usize],
+                        0,
                         self.regs[n.0 as usize],
                         self.regs[m.0 as usize],
                         ps,
@@ -6523,32 +6661,65 @@ impl Machine {
                     else {
                         return Err(ice_f!("pc {pc} is not a concatenation"));
                     };
+                    let lpc = code.at.get(k + 2).copied().unwrap_or(0);
+                    let Some(&Inst::LCopy {
+                        dst_off, src_off, ..
+                    }) = f.code.get(lpc as usize)
+                    else {
+                        return Err(ice_f!("pc {lpc} is not a logic copy"));
+                    };
+                    let (doff, soff) = (self.r(dst_off), self.r(src_off));
                     let ps = t!(f.regs(parts).ok_or_else(|| ice_s!("operand list")));
                     let d = self.regs[dst as usize];
-                    let total = self.regs[cn.0 as usize].wrapping_mul(self.regs[m.0 as usize]);
+                    let (mv, cnt) = (self.regs[m.0 as usize], self.regs[n as usize]);
+                    let total = self.regs[cn.0 as usize].wrapping_mul(mv);
+                    // The whole concatenation copied: it can be built in place.
+                    let whole = logic && soff == 0 && cnt == total;
                     // One block of planes into memory that is not a fresh temporary: written
                     // once after every piece is read, so a piece may be in `d` itself.
-                    let direct = logic
+                    let direct = whole
                         && total <= 64
-                        && self.regs[n as usize] == total
+                        && doff == 0
                         && split(d).0 != TEMP
-                        && t!(self.cat_block(d, total, self.regs[m.0 as usize], ps, scalars, bias));
+                        && t!(self.cat_block(d, total, mv, ps, scalars, bias));
                     if direct {
                         k += 3;
-                    } else {
-                        let a = t!(self.temp_alloc(size.into()));
-                        self.regs[tmp as usize] = a;
+                    } else if whole && total > 64 && self.cat_apart(d, doff, total, mv, ps, scalars)
+                    {
+                        // Wide: the pieces straight into the destination, no temporary and no
+                        // second copy.
                         t!(self.cat(
-                            a,
+                            d,
+                            doff,
                             self.regs[cn.0 as usize],
-                            self.regs[m.0 as usize],
+                            mv,
                             ps,
                             scalars,
                             bias,
                             logic,
                             w
                         ));
-                        t!(self.lcopy(d, 0, a, 0, self.regs[n as usize]));
+                        k += 3;
+                    } else {
+                        let size = if size & pre::SIZE_REG != 0 {
+                            self.regs[(size & !pre::SIZE_REG) as usize]
+                        } else {
+                            size.into()
+                        };
+                        let a = t!(self.temp_alloc(size));
+                        self.regs[tmp as usize] = a;
+                        t!(self.cat(
+                            a,
+                            0,
+                            self.regs[cn.0 as usize],
+                            mv,
+                            ps,
+                            scalars,
+                            bias,
+                            logic,
+                            w
+                        ));
+                        t!(self.lcopy(d, doff, a, soff, cnt));
                         k += 3;
                     }
                 }
@@ -8994,6 +9165,7 @@ impl Machine {
                 let ps = f.regs(parts).ok_or_else(|| ice_s!("operand list"))?;
                 self.cat(
                     self.r(dst),
+                    0,
                     self.r(n),
                     self.r(m),
                     ps,
@@ -10331,7 +10503,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
             }) => match f.regs(parts) {
                 Some(ps) => {
                     let (d, n, mm) = (m.r(dst), m.r(n), m.r(mm));
-                    m.cat(d, n, mm, ps, scalars, bias, logic, w)
+                    m.cat(d, 0, n, mm, ps, scalars, bias, logic, w)
                 }
                 None => Err(ice_s!("operand list")),
             },

@@ -399,7 +399,7 @@ case!(
 case!(ieee_operands, "acc=", &[], [("ops", Max(4060))]);
 case!(ieee_share, "n=", &[], [("ops", Max(3630))]);
 case!(elem_loops, "acc=", &[], [("ops", Max(35600))]);
-case!(wide_vec, "wide=0", &[], [("ops", Max(1873000))]);
+case!(wide_vec, "wide=0", &[], [("ops", Max(2270000))]);
 case!(
     licm_loop,
     "acc=",

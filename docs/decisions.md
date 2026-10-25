@@ -9083,3 +9083,29 @@ geometric mean of wall 0.98 (interpreter) and 0.98 (`--tier=auto`), of instructi
 The ten designs where compiled code runs most, again with `--tier-heat=1,0,0` (`YAVS_BENCH_TIERFLAGS`, new in `tools/realbench/run.py`; neorv32 x3,
 fletcher x2, `sc5_fifo_repack`, `hdlm_lfsr`, `hdlm_axi_fifo`, `poc_cache_cpu`, `osvvm_axis_random`): wall 0.99 to 1.04 and instructions 0.99 to 1.00 (a single
 1.2 on `hdlm_lfsr` at equal instructions did not repeat in a run of seven).
+
+## Value movement: short `lcopy` in place, wide copies without block vectors, concatenation built in its destination (yavs-interp `exec.rs`, `pre.rs`, #519, 2026-10-25)
+
+- **Finding:** the gapscan ranking put value movement (`lcopy`, `copy_bits`, `sig_gather`, `sig_scatter`, `cat`, memmove) second: 17.6 s of helper time over 52 tests. By call shape
+  (grlib_leon3mp, the fletcher and vai designs): 85 to 95 percent of the `lcopy` calls are 1 to 64 elements inside one block on each side, from and to frame, temporary, instance,
+  constant or heap memory; the wide ones (three or more blocks) went through two block vectors and `copy_bits` below 1024 elements; a wide `&` was built in a temporary of its own
+  size and copied once more.
+- **Decision:** (1) `Machine::lcopy1`, inlined into `lcopy`: for `n` elements that fit one block on each side the source block is read into registers and the destination block
+  changed where it is (frame, temporary, heap, shared heap), no staging buffer and no `copy_bits` call; `AllocLCopy` builds its fresh block the same way. (2) `lcopy_wide` replaces
+  `lcopy_aligned` for every copy with three or more blocks on a side whose objects share no byte (`disjoint`): a partial block at each end and one move of the whole destination blocks,
+  a `memcpy` when both sides start at the same bit, else `shift_merge` (each destination plane word is the high part of one source word and the low part of the next) straight between the
+  two objects (`copy_pair`, the memory-space match of `copy_fast` made generic over the two lengths). The 1024-element threshold is gone: the branch is after the one-and-two-block
+  cases, so small vectors do not pay for it. (3) `Op::CatLCopy` fuses `Alloc` of any size (a register holding the byte count, `pre::SIZE_REG`), a logic `Cat` and the `LCopy` of it to any
+  offset (it used to need a constant size and both offsets constant 0, which no wide `&` met); when all of the concatenation is copied the pieces are written straight into the
+  destination: one block at element 0 as before (`cat_block`), or wider when no piece shares a byte with the blocks written (`cat_apart`; `cat` takes an element offset).
+  Anything else keeps the temporary and the second copy.
+- **Not done:** `sig_gather` and `sig_scatter` cost about 100 and 130 instructions per leaf (stepcount, a 5-leaf record): per call a plan lookup that compares the descriptor bytes, per
+  leaf a kind dispatch, a signal lookup (760-byte `Signal`, one cache line per leaf) and a bounds-checked code read. Copying contiguous leaves as one block needs the plan to know which
+  leaves share a signal and a value run (record packs, #686, #677, leon5) and was left to them. `LCopy` with the destination in `SHARED` (package or shared variables) still stages.
+  Compiled code keeps its inline 1 and 2 block `lcopy_inline`; it shares `copy_bits` and the helpers above for the rest. `CatLCopy` is interpreter-only.
+- **Measured** (exact instructions, `--tier=interp --threads 1`, bench build, A/B interleaved after three warm-up runs of the new binary): micro designs, one statement per iteration,
+  instructions per statement saved: 8-element copy between vectors 126, 512-element copy at a different bit offset 629, at the same bit offset 716, `&` of eight 64-element pieces
+  into 512 elements 1071. Whole runs: `fletcher_bufferwriter_512` 54.16 to 53.63 G (-1.0 percent), `grlib_leon3mp` 554.4 to 551.4 G (-0.55), `poc_stat_histogram` -0.9, `neorv32_single_min` -0.3,
+  `osvvm_axis_random` -0.5, `sc5_fifo_repack` -0.2, `fletcher_bufferreader` -0.1, `vai_window_gen_interlock` within 0.1; `hdlm_lfsr` +0.25, `poc_arith_addw` +0.14,
+  `uvvm_sb_slv` +0.2 (code layout of the loop; none uses wide vectors). `tools/realbench --compare` (12 tests, interp and auto): instructions 0.98 to 1.01 except the auto race of
+  `sc5_fifo_repack` (1.07, tier-up timing, interp 1.00); no wall figure was taken (no timing cores).

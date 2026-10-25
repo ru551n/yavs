@@ -762,9 +762,11 @@ pub(crate) enum Op {
         sig: u32,
         len: u32,
     },
-    /// `AllocK`, a `Cat` into it and the `LCopy` of all of it (from and to element 0)
-    /// into `dst`: the concatenation of logic elements is written there directly
-    /// when it fits one block of planes (the temporary is dead).
+    /// `Alloc`, a `Cat` into it and the `LCopy` of it into `dst` (offsets read from that
+    /// instruction): the concatenation of logic elements is written there directly when
+    /// all of it is copied and it fits one block of planes at element 0, or is wider and no
+    /// piece shares a byte with `dst` (the temporary is dead). `size` is the byte count, or a register that
+    /// holds it with `SIZE_REG` set.
     CatLCopy {
         tmp: u32,
         size: u32,
@@ -1351,6 +1353,9 @@ pub(crate) struct CaseOps {
 }
 
 pub(crate) const NONE: u32 = u32::MAX;
+
+/// Set in the `size` of `Op::CatLCopy` when the rest names the register that holds the byte count.
+pub(crate) const SIZE_REG: u32 = 1 << 31;
 
 /// A native the loop runs as an op of its own.
 enum NativeOp {
@@ -3222,17 +3227,11 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
             (
                 Op::Alloc { dst: tmp, size: sz },
                 Some(&Op::Cat),
-                Some(&Op::LCopy {
-                    dst,
-                    doff,
-                    src,
-                    soff,
-                    n,
-                }),
-            ) if let Some(size) = int(sz).and_then(|n| u32::try_from(n).ok())
-                && src == tmp
-                && doff == soff
-                && int(doff) == Some(0)
+                Some(&Op::LCopy { dst, src, n, .. }),
+            ) if let Some(size) = match int(sz) {
+                Some(n) => u32::try_from(n).ok().filter(|n| n & SIZE_REG == 0),
+                None => Some(sz | SIZE_REG),
+            } && src == tmp
                 && dst != tmp
                 && let (Some(&cp), Some(&lp)) = (at.get(k + 1), at.get(k + 2))
                 && let Some(&Inst::Cat {

@@ -725,6 +725,68 @@ struct LayoutMemo {
     ckey: u64,
 }
 
+/// The layout memo of `ty` (`Machine::layouts`) made from the descriptor bytes `d` of `dsz`
+/// bytes, reusing `memo` (refilled in place: strings of changing lengths miss at nearly every
+/// call, and the memo must not allocate then). `ckey` is the constant descriptor's address, or 0.
+fn memo_fill(
+    prog: &Program,
+    ty: TyId,
+    mut memo: Option<LayoutMemo>,
+    dsz: u64,
+    d: &[u8],
+    ckey: u64,
+) -> R<LayoutMemo> {
+    if let Some(m) = memo.as_mut()
+        && let Some(n) = m.simple
+        && let Some(w) = simple_words(n, d)
+    {
+        m.words.clear();
+        for w in w {
+            m.words.extend_from_slice(&w.to_le_bytes());
+        }
+        m.ckey = ckey;
+        return memo.ok_or_else(|| ice_s!("layout memo missing"));
+    }
+    if memo.as_ref().is_none_or(|m| m.desc != d) {
+        let (l, _) = Ty::layout(&prog.types, &prog.consts, ty, d).map_err(|e| match e {
+            LayoutError::TooLarge => Fault::Runtime(e.to_string()),
+            LayoutError::Malformed(_) => ice(e.to_string()),
+        })?;
+        let m = memo.get_or_insert_with(|| LayoutMemo {
+            dsz,
+            simple: match prog.types.get(ty) {
+                Some(Ty::Array {
+                    elem,
+                    elem_desc: None,
+                    dims: 1,
+                }) => match prog.types.get(*elem) {
+                    Some(Ty::Enum { logic: Some(_), .. }) => Some(0),
+                    Some(e) if Ty::logic_leaf(&prog.types, ty).is_none() => e.elem_size(),
+                    _ => None,
+                },
+                _ => None,
+            },
+            desc: Vec::new(),
+            words: Vec::new(),
+            ckey: 0,
+        });
+        m.ckey = ckey;
+        m.desc.clear();
+        m.desc.extend_from_slice(d);
+        m.words.clear();
+        let sc = [l.stride, l.count];
+        let tail = if l.offsets.is_empty() {
+            sc.as_slice()
+        } else {
+            l.offsets.as_slice()
+        };
+        for w in [l.size, l.align].iter().chain(tail) {
+            m.words.extend_from_slice(&w.to_le_bytes());
+        }
+    }
+    memo.ok_or_else(|| ice_s!("layout memo missing"))
+}
+
 /// The layout words `[size, align, stride, count]` of a one-dimensional array of `n`-byte
 /// scalars (`n` 0: of logic elements) from its bounds; `None` for a bad direction or a size
 /// beyond 64 bits (the general path reports those).
@@ -3371,7 +3433,7 @@ impl Machine {
         if self.layouts.len() <= t {
             self.layouts.resize_with(t + 1, || None);
         }
-        let mut memo = self.layouts[t].take();
+        let memo = self.layouts[t].take();
         let dsz = match &memo {
             Some(m) => m.dsz,
             None => Ty::desc_size(&prog.types, ty)
@@ -3379,60 +3441,34 @@ impl Machine {
         };
         let d = self.rd(desc, dsz)?;
         let ckey = if split(desc).0 == CONST { desc } else { 0 };
-        if let Some(m) = memo.as_mut()
-            && let Some(n) = m.simple
-            && let Some(w) = simple_words(n, d)
-        {
-            m.words.clear();
-            for w in w {
-                m.words.extend_from_slice(&w.to_le_bytes());
-            }
-            m.ckey = ckey;
-            let m =
-                self.layouts[t].insert(memo.take().ok_or_else(|| ice_s!("layout memo missing"))?);
-            return Ok(&m.words);
-        }
-        if memo.as_ref().is_none_or(|m| m.desc != d) {
-            let (l, _) = Ty::layout(&prog.types, &prog.consts, ty, d).map_err(|e| match e {
-                LayoutError::TooLarge => Fault::Runtime(e.to_string()),
-                LayoutError::Malformed(_) => ice(e.to_string()),
-            })?;
-            // Refill the old memo in place: strings of changing lengths miss at nearly every
-            // call, and the memo must not allocate then.
-            let m = memo.get_or_insert_with(|| LayoutMemo {
-                dsz,
-                simple: match prog.types.get(ty) {
-                    Some(Ty::Array {
-                        elem,
-                        elem_desc: None,
-                        dims: 1,
-                    }) => match prog.types.get(*elem) {
-                        Some(Ty::Enum { logic: Some(_), .. }) => Some(0),
-                        Some(e) if Ty::logic_leaf(&prog.types, ty).is_none() => e.elem_size(),
-                        _ => None,
-                    },
-                    _ => None,
-                },
-                desc: Vec::new(),
-                words: Vec::new(),
-                ckey: 0,
-            });
-            m.ckey = ckey;
-            m.desc.clear();
-            m.desc.extend_from_slice(d);
-            m.words.clear();
-            let sc = [l.stride, l.count];
-            let tail = if l.offsets.is_empty() {
-                sc.as_slice()
-            } else {
-                l.offsets.as_slice()
-            };
-            for w in [l.size, l.align].iter().chain(tail) {
-                m.words.extend_from_slice(&w.to_le_bytes());
-            }
-        }
-        let m = self.layouts[t].insert(memo.ok_or_else(|| ice_s!("layout memo missing"))?);
+        let m = memo_fill(prog, ty, memo, dsz, d, ckey)?;
+        let m = self.layouts[t].insert(m);
         Ok(&m.words)
+    }
+
+    /// Word `k` of the layout of `ty` for the descriptor bytes `d` (`TierHost::layout_word`): the
+    /// memo's word when it was made from the same bytes, else the memo made again from them.
+    pub(crate) fn layout_word_of(&mut self, prog: &Program, ty: TyId, d: &[u8], k: u32) -> R<u64> {
+        let t = ty.0 as usize;
+        if self.layouts.len() <= t {
+            self.layouts.resize_with(t + 1, || None);
+        }
+        if let Some(m) = &self.layouts[t]
+            && m.dsz == d.len() as u64
+        {
+            match m.simple {
+                Some(n) => {
+                    if let Some(&w) = simple_words(n, d).as_ref().and_then(|w| w.get(k as usize)) {
+                        return Ok(w);
+                    }
+                }
+                None if m.desc == d => return word_of(&m.words, k),
+                None => {}
+            }
+        }
+        let memo = self.layouts[t].take();
+        let m = memo_fill(prog, ty, memo, d.len() as u64, d, 0)?;
+        word_of(&self.layouts[t].insert(m).words, k)
     }
 
     /// `Inst::LayoutOf`: the layout words in temporary memory.
@@ -11051,6 +11087,10 @@ impl crate::TierHost for Host<'_, '_, '_> {
             Ok(v) if !fallback => Done(v),
             _ => Slow,
         }
+    }
+
+    fn layout_word(&mut self, ty: u32, desc: &[u8], k: u32) -> Option<u64> {
+        self.m.layout_word_of(self.prog, TyId(ty), desc, k).ok()
     }
 
     fn native_light(

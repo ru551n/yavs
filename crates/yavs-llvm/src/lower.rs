@@ -129,6 +129,7 @@ pub(crate) fn new_jit(opt: OptLevel) -> Result<Jit, Error> {
             (DEOPT_SLOTS, yavs_rt_deopt_slots as *const () as usize),
             (DEOPT_END, yavs_rt_deopt_end as *const () as usize),
             (MEMEQ, yavs_rt_memeq as *const () as usize),
+            (LAYOUT_WORD, yavs_rt_layout_word as *const () as usize),
             (SCAN, yavs_rt_scan as *const () as usize),
             (CODES, yavs_rt_codes as *const () as usize),
             (SCALAR, yavs_rt_scalar as *const () as usize),
@@ -724,7 +725,9 @@ fn kind_name(i: &Inst) -> String {
 /// Measuring aid (`YAVS_LLVM_KINDLOC=<file>`): every LLVM instruction gets a debug line, the
 /// number of the IR instruction kind it was made for (1000 more in a cold block); the numbers
 /// are listed in `<file>`. With `YAVS_LLVM_OBJ` the machine code of an object can then be summed
-/// per kind (`objdump -dl`). Line tables only: no code changes.
+/// per kind (`objdump -dl`). Line tables only: no code changes. With `YAVS_LLVM_PCLOC` set too
+/// the line is `2 * pc + 2` of the IR instruction (one more in a cold block) and the file is
+/// `i<function id>`, so `perf` samples map to IR instructions of one function (#679).
 struct KindLoc {
     b: llvm_sys::prelude::LLVMDIBuilderRef,
     sp: LLVMMetadataRef,
@@ -754,13 +757,15 @@ fn kind_line(k: &str) -> u32 {
 
 impl Gen {
     /// Start line tables for `fv` when `YAVS_LLVM_KINDLOC` is set.
-    unsafe fn kindloc_begin(&self, fv: LLVMValueRef, name: &str) -> Option<KindLoc> {
+    unsafe fn kindloc_begin(&self, fv: LLVMValueRef, name: &str, id: u32) -> Option<KindLoc> {
         use llvm_sys::debuginfo::*;
         std::env::var_os("YAVS_LLVM_KINDLOC")?;
         // SAFETY: a fresh builder on our module; the strings are copied.
         unsafe {
             let b = LLVMCreateDIBuilder(self.module);
-            let file = LLVMDIBuilderCreateFile(b, c"ir".as_ptr(), 2, c".".as_ptr(), 1);
+            let fname = format!("i{id}");
+            let file =
+                LLVMDIBuilderCreateFile(b, fname.as_ptr().cast(), fname.len(), c".".as_ptr(), 1);
             LLVMDIBuilderCreateCompileUnit(
                 b,
                 LLVMDWARFSourceLanguage::LLVMDWARFSourceLanguageC,
@@ -812,11 +817,15 @@ impl Gen {
         }
     }
 
-    /// Instructions made from now on belong to IR kind `inst`.
-    unsafe fn kindloc_at(&self, k: &KindLoc, inst: &Inst) {
+    /// Instructions made from now on belong to IR kind `inst` at `pc` (`KindLoc`).
+    unsafe fn kindloc_at(&self, k: &KindLoc, inst: &Inst, pc: u32) {
         // SAFETY: the location is made in our context with a scope of this module.
         unsafe {
-            let line = kind_line(&kind_name(inst));
+            let line = if std::env::var_os("YAVS_LLVM_PCLOC").is_some() {
+                2 * pc + 2
+            } else {
+                kind_line(&kind_name(inst))
+            };
             let loc = llvm_sys::debuginfo::LLVMDIBuilderCreateDebugLocation(
                 self.ctx,
                 line,
@@ -839,16 +848,23 @@ unsafe fn kindloc_cold(fv: LLVMValueRef, cold: &[LLVMBasicBlockRef]) {
             return;
         }
         let ctx = LLVMGetModuleContext(LLVMGetGlobalParent(fv));
+        // Kind lines below 1000 get 1000 more; pc lines (`YAVS_LLVM_PCLOC`, even) get 1.
+        let pcloc = std::env::var_os("YAVS_LLVM_PCLOC").is_some();
         for &bb in cold {
             let mut i = LLVMGetFirstInstruction(bb);
             while !i.is_null() {
                 let old = LLVMInstructionGetDebugLoc(i);
                 if !old.is_null() {
                     let line = LLVMDILocationGetLine(old);
-                    if line < 1000 {
+                    let cold_line = match pcloc {
+                        true if line.is_multiple_of(2) => Some(line + 1),
+                        false if line < 1000 => Some(line + 1000),
+                        _ => None,
+                    };
+                    if let Some(line) = cold_line {
                         let loc = LLVMDIBuilderCreateDebugLocation(
                             ctx,
-                            line + 1000,
+                            line,
                             0,
                             sp,
                             std::ptr::null_mut(),
@@ -1515,6 +1531,9 @@ struct Gen {
     /// `yavs_rt_memeq(a, b, n) -> i64`.
     memeq_ty: LLVMTypeRef,
     memeq: LLVMValueRef,
+    /// `yavs_rt_layout_word(env, ty, desc, dsz, k) -> i64`.
+    layout_word_ty: LLVMTypeRef,
+    layout_word: LLVMValueRef,
     /// `yavs_rt_scan(env, mem, ctl, dope, base, i0, x, e, delta, out, depth) -> iterations`.
     scan_ty: LLVMTypeRef,
     scan: LLVMValueRef,
@@ -1598,6 +1617,9 @@ struct Cur<'p> {
     /// What the fused multiplication just generated settled for the `Index` at this pc: 1, its
     /// position is under 2^32; 2, its offset is within 32 bits too (the `Index` handler).
     fused: std::cell::Cell<(u32, u8)>,
+    /// The last pc of the instructions whose code the `LayoutOf` before them made
+    /// (`fuse_layout`), with the object a `Field`'s result points into, for `objnew` there.
+    layout_fused: std::cell::Cell<Option<Fused>>,
     /// Registers the function defines once, by a `Const`: that value wherever they are read
     /// (the interpreter's loop skips such a definition and relies on the same).
     fixed: Vec<Option<i64>>,
@@ -1639,6 +1661,22 @@ struct PRes {
     ptr: LLVMValueRef,
     len: LLVMValueRef,
     write: bool,
+}
+
+/// The last pc a fused `LayoutOf` made the code of, and the object a `Field` result points into.
+type Fused = (usize, Option<(Reg, ObjRef)>);
+
+/// A `LayoutOf` and the instructions after it that read one word of its layout (`fuse_layout`).
+#[derive(Clone, Copy)]
+struct LayoutFuse {
+    /// The pc of the last instruction fused.
+    last: usize,
+    /// The word of the layout.
+    k: u32,
+    /// The base address of a `Field`; none: the word itself is the result.
+    base: Option<Reg>,
+    /// The register that gets the result.
+    out: Reg,
 }
 
 /// Zero-delay scalar logic drives (`yavs_interp::ScalarDrive`) are not handed to the kernel one
@@ -1790,6 +1828,8 @@ impl Gen {
             let deopt_end_ty = LLVMFunctionType(i32, deparams.as_mut_ptr(), 3, 0);
             let mut mparams = [ptr, ptr, i64];
             let memeq_ty = LLVMFunctionType(i64, mparams.as_mut_ptr(), 3, 0);
+            let mut lwparams = [ptr, i32, ptr, i64, i32];
+            let layout_word_ty = LLVMFunctionType(i64, lwparams.as_mut_ptr(), 5, 0);
             let mut scparams = [ptr, ptr, i64, i64, i64, i64, i64, i64, i64, ptr, i64];
             let scan_ty = LLVMFunctionType(i32, scparams.as_mut_ptr(), 11, 0);
             let mut cparams = [ptr, i64, i64, ptr];
@@ -1865,6 +1905,8 @@ impl Gen {
                 deopt_end: add(DEOPT_END, deopt_end_ty),
                 memeq_ty,
                 memeq: add(MEMEQ, memeq_ty),
+                layout_word_ty,
+                layout_word: add(LAYOUT_WORD, layout_word_ty),
                 scan_ty,
                 scan: add(SCAN, scan_ty),
                 codes_ty,
@@ -1979,6 +2021,11 @@ impl Gen {
                 self.attr(f, false, "willreturn", 0);
             }
             self.attr(self.memeq, false, "memory", mem_effects(REF, 0, 0));
+            // The layout memo is host memory (and a panic is noted in `env`): the views stay.
+            for a in ["nounwind", "willreturn", "nosync"] {
+                self.attr(self.layout_word, false, a, 0);
+            }
+            self.attr(self.layout_word, false, "memory", mem_effects(RW, RW, 0));
             self.attr(self.memeq, false, "nofree", 0);
             self.attr(self.memeq, false, "nosync", 0);
             self.attr(self.host, false, "memory", mem_effects(RW, RW, 0));
@@ -2775,7 +2822,7 @@ impl Gen {
                 self.fn_ty
             };
             let fv = self.declare(name, fty);
-            let kloc = self.kindloc_begin(fv, name);
+            let kloc = self.kindloc_begin(fv, name, id.0);
             // `regs` and `mem` overlap no other memory the function reaches (frame slots,
             // temporaries, objects), so LLVM may keep their values in registers between
             // calls; the callbacks get both pointers.
@@ -2884,6 +2931,7 @@ impl Gen {
                 known: std::cell::RefCell::new(vec![None; f.reg_ty.len()]),
                 imul: index_muls(f, &fixed),
                 fused: Default::default(),
+                layout_fused: Default::default(),
                 fixed,
                 exits: std::cell::RefCell::new(if native {
                     Vec::new()
@@ -3039,6 +3087,96 @@ impl Gen {
                     enters[i] |= enters[i - 1] && preload_at(i - 1);
                 }
             }
+            // A `LayoutOf` that would be stepped and whose layout only one word is read of, by the
+            // instructions right after it (no entry between): one call of the interpreter's
+            // layout memo for that word (`yavs_rt_layout_word`), as the interpreter's own
+            // `FieldOf` and `LayoutWord` ops do. Per pc: the last pc fused, the word, the base of
+            // a `Field`, the register that gets the result.
+            let fuse_layout: Vec<Option<LayoutFuse>> = {
+                let mut uses = vec![0u32; f.reg_ty.len()];
+                let mut count = |r: Reg| {
+                    if let Some(u) = uses.get_mut(r.0 as usize) {
+                        *u = u.saturating_add(1);
+                    }
+                };
+                for inst in &f.code {
+                    inst.visit(&mut |r, role, _| {
+                        if role == yavs_ir::Role::Use {
+                            count(r);
+                        }
+                    });
+                }
+                for &r in &f.operands {
+                    count(r);
+                }
+                let once = |r: Reg| uses.get(r.0 as usize) == Some(&1);
+                let inside = |p: usize| p < n && !enters[p];
+                (0..n)
+                    .map(|pc| {
+                        let Inst::LayoutOf { dst, ty, cache, .. } = f.code[pc] else {
+                            return None;
+                        };
+                        if !once(dst)
+                            || static_layout(prog, ty).is_some()
+                            || !native && cache.is_some() && layout_shape(prog, ty).is_some()
+                            || !yavs_ir::Ty::desc_size(&prog.types, ty)
+                                .is_some_and(|d| d > 0 && d <= 4096)
+                            || !inside(pc + 1)
+                        {
+                            return None;
+                        }
+                        let word = |p: usize, k: u32, base, out| {
+                            Some(LayoutFuse {
+                                last: p,
+                                k,
+                                base,
+                                out,
+                            })
+                        };
+                        match (f.code[pc + 1], f.code.get(pc + 2)) {
+                            (
+                                Inst::Field {
+                                    dst: d,
+                                    base,
+                                    layout,
+                                    n: k,
+                                },
+                                _,
+                            ) if layout == dst && base != dst => word(pc + 1, 2 + k, Some(base), d),
+                            (
+                                Inst::Load {
+                                    dst: d,
+                                    addr,
+                                    w: Width::B8,
+                                },
+                                _,
+                            ) if addr == dst => word(pc + 1, 0, None, d),
+                            // A word at a constant offset: `Index` of the layout, then a load.
+                            (
+                                Inst::Index {
+                                    dst: x,
+                                    base,
+                                    pos,
+                                    stride,
+                                },
+                                Some(&Inst::Load {
+                                    dst: d,
+                                    addr,
+                                    w: Width::B8,
+                                }),
+                            ) if base == dst && addr == x && once(x) && inside(pc + 2) => {
+                                let off = c.fixed.get(pos.0 as usize).copied().flatten()?;
+                                let off = off.checked_mul(i64::from(stride))?;
+                                (off >= 0 && off % 8 == 0)
+                                    .then(|| u32::try_from(off / 8).ok())
+                                    .flatten()
+                                    .and_then(|k| word(pc + 2, k, None, d))
+                            }
+                            _ => None,
+                        }
+                    })
+                    .collect()
+            };
             // With registers carried across blocks (`Plan`) only the places the interpreter
             // can usefully enter at get an entry stub: the start, what follows a call, a wait or
             // a report, and loop headers (a hand-over comes at a jump, and the interpreter runs
@@ -3371,7 +3509,7 @@ impl Gen {
             for (i, &inst) in f.code.iter().enumerate() {
                 let pc = i as u32;
                 if let Some(k) = &kloc {
-                    self.kindloc_at(k, &inst);
+                    self.kindloc_at(k, &inst, pc);
                 }
                 if kinds {
                     if i % kstride == 0 {
@@ -3513,6 +3651,16 @@ impl Gen {
                 }
                 if ablate(&inst) {
                     self.step(&c, pc, &inst);
+                    continue;
+                }
+                // Made by the `LayoutOf` before it (`fuse_layout`).
+                if let Some((last, o)) = c.layout_fused.get()
+                    && i <= last
+                {
+                    if i == last {
+                        c.layout_fused.set(None);
+                        c.objnew.set(o);
+                    }
                     continue;
                 }
                 if let Some(l) = scans.get(&pc) {
@@ -4007,6 +4155,77 @@ impl Gen {
                         let (a, _) = self.temp_alloc(&c, self.ld(&c, size), slow);
                         self.st(&c, dst, a);
                         self.join(&c, join);
+                    }
+                    // The field's offset from the interpreter's layout memo, the field's address as
+                    // `Field` makes it; the interpreter runs both where the memo declines.
+                    Inst::LayoutOf { ty, desc, .. } if fuse_layout[i].is_some() => {
+                        let fu = fuse_layout[i].expect("checked");
+                        let dsz = yavs_ir::Ty::desc_size(&prog.types, ty).expect("checked") as i64;
+                        let slow = self.block(&c);
+                        c.cold.borrow_mut().push(slow);
+                        let here = LLVMGetInsertBlock(self.b);
+                        LLVMPositionBuilderAtEnd(self.b, slow);
+                        self.flush_exit(&c, pc);
+                        LLVMPositionBuilderAtEnd(self.b, here);
+                        let pd = self.host(
+                            &c,
+                            self.ld(&c, desc),
+                            fk(desc),
+                            self.c64(0),
+                            self.c64(dsz),
+                            false,
+                            slow,
+                        );
+                        let mut args = [c.env, self.c32(ty.0), pd, self.c64(dsz), self.c32(fu.k)];
+                        let w = LLVMBuildCall2(
+                            self.b,
+                            self.layout_word_ty,
+                            self.layout_word,
+                            args.as_mut_ptr(),
+                            5,
+                            c"".as_ptr(),
+                        );
+                        self.guard(&c, self.icmp(IP::LLVMIntNE, w, self.c64(-1)), slow);
+                        let mut obj = None;
+                        let v = match fu.base {
+                            None => w,
+                            // The field's address, as `Field` makes it.
+                            Some(base) => {
+                                let a = self.ld(&c, base);
+                                let known_obj = match fk(base) {
+                                    Some(Known::Heap(Some(o))) => Some(o),
+                                    _ => None,
+                                };
+                                let lo = match known_obj {
+                                    Some(o) => o.off,
+                                    None => {
+                                        LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr())
+                                    }
+                                };
+                                let (sum, o) = self.ovf(self.uadd, lo, w);
+                                let big = self.icmp(IP::LLVMIntUGT, sum, self.c64(0xffff_ffff));
+                                self.guard(
+                                    &c,
+                                    LLVMBuildNot(self.b, self.or(o, big), c"".as_ptr()),
+                                    slow,
+                                );
+                                let hi = match known_obj {
+                                    Some(o) => o.hi,
+                                    None => LLVMBuildAnd(
+                                        self.b,
+                                        a,
+                                        self.c64(!0xffff_ffff),
+                                        c"".as_ptr(),
+                                    ),
+                                };
+                                obj = known_obj
+                                    .filter(|_| c.nat.is_some())
+                                    .map(|o| (fu.out, ObjRef { off: sum, ..o }));
+                                LLVMBuildOr(self.b, hi, sum, c"".as_ptr())
+                            }
+                        };
+                        self.st(&c, fu.out, v);
+                        c.layout_fused.set(Some((fu.last, obj)));
                     }
                     // The layout the process's frame keeps for this type, when the descriptor is
                     // the one it was made for (`layout_cache`); else the interpreter makes it and

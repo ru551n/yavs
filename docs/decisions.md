@@ -9683,3 +9683,46 @@ what it replaced:
 - **Not done**: a `NewPair` or `NewDope` frame form (the zeroing goes there by coverage, so the
   stores or the `MakeDope` alone remain); following a pointer through memory (a group of blocks
   that hold each other's addresses), unused on the designs measured.
+
+
+## llvm: large compiled processes lose to their callbacks, not to their code bytes: layout words from the memo, kept drives skip unchanged elements, objects stay in the table (yavs-llvm, yavs-interp, yavs-kernel, #679, 2026-10-25)
+
+Cause found with a profile of the main thread split by symbol and by the call site in compiled code (`perf record -j any_call` branch stacks: the
+last branch out of compiled code names the site; `YAVS_LLVM_PCLOC`, a new variant of `YAVS_LLVM_KINDLOC`, maps a site to the IR instruction of
+its function): in the steady state of the LEON3 window (after the S-record load) with every function compiled (`--tier-heat=1,0,0`) the compiled
+code itself took 8.4 k cycle samples where the interpreter's loop took 15.1 k for the same work, at about the same IPC (1.37 against 1.44). The
+whole loss was work only the compiled tier does: object lookups in the runtime (`yavs_rt_host`, `yavs_rt_obj`, `TierHost::object`, the constant
+bytes `Machine::obj` copies), stepped `LayoutOf` on native frames (`yavs_rt_xstep`, `native_step`, `layout_words`, the memset and memmove of
+`layout_of`), and the kernel's work for kept scalar drives of unchanged values (`assign_codes_now`, `commit_codes`), about 1.2 times the compiled
+code. The front-end stalls of the brief were mostly in those callbacks (IPC 0.6 to 1.0). A hot/cold split or a denser lowering of the compiled
+bodies would have worked on the half that already beat the interpreter, so neither was built.
+
+- **Decision: a `LayoutOf` that would be stepped and whose layout only one word is read of by the instructions right after it (a `Field`, a
+  `Load` of word 0, an `Index` by a constant then a `Load`; no entry between) is one call `yavs_rt_layout_word(env, ty, desc, dsz, k)`**
+  (`lower.rs` `fuse_layout`, `LayoutFuse`; frame mode and native frames): the generated code reads the descriptor bytes through `Gen::host` and
+  the interpreter's layout memo (`TierHost::layout_word`, `Machine::layout_word_of`, the memo `layout_build` fills, now `memo_fill`) answers with
+  the word, the `FieldOf` and `LayoutWord` ops of the interpreter in compiled code. The call reads no machine memory, forgets no object and
+  writes no register; where it declines (`u64::MAX`: no layout, an error) the code leaves to the interpreter at the `LayoutOf`, which runs all
+  of them and reports. Why: the native-frame step of these `LayoutOf` (the GRLIB AMBA records passed to `ahb_slv_dec_cache` and the integer
+  unit's procedures, whose layout depends on generics) was the largest single callback site, about 2 k samples of 32 k.
+- **Decision: `Ctx::assign_codes_now` (the kept scalar drives of compiled code, #676) skips an element the signal and the driver hold already,
+  as `assign_code_fast` does** (no entry of the driver before the call, none for the element earlier in the call). Compiled clocked processes
+  drove every element; the kernel committed every one (`commit_codes` 206 samples against 3 in the interpreter). `llvm_drive_batch`: kernel
+  entries 817 to 103 (the interpreter makes 463: its skip test stops at the first entry of the driver). Kernel tests
+  `a_batched_element_assigned_twice_keeps_the_last_code` and the random model test with runs of elements.
+- **Decision: the object table keeps every constant for the run, holds 4 096 entries, and a process's record holds up to 64 objects**
+  (`rt.rs` `Mem`): `RT_KEEP` (16 constants kept at a change of machine, else none) is gone; the walks that drop entries at a change of machine,
+  a host call or the end of an activation visit only the entries that are not constants (`Mem::occv`, `retain_some`), so keeping constants
+  costs those walks nothing; `MINE` 4 to 64 with an O(1) membership test (`mine_at`, `mine_gen`), frame and temporary objects no longer take
+  a place in the record, and a record is written up to its last entry. Why: a big process uses more than 16 constants and more than 4 heap
+  objects, so every activation after another process found them again in the runtime; host misses in the LEON3 window 13.4 million to 2.8
+  million.
+- **Measured** (LEON3 150 us, bench builds, `perf stat --no-inherit` of the simulation thread, medians of 3 interleaved on one claimed core):
+  see docs/STATUS.md "llvm: callbacks of large compiled processes".
+- **Not done:** a hot/cold split of large processes and a denser lowering (above: not the lever); processes that touch more than 64 objects
+  per activation still find the rest again (SDRAM models with rows as heap objects); the scalar drive path costs about twice the
+  interpreter's `drive_run` (the per-element callback and closure).
+- **The reference simulator (rule 22).** Its compiled code has no address translation at all: memory is raw pointers, record layouts are known
+  when the code is generated and constants are linked into the code. The ideas taken are its outcome, not its code: resolve an object once and
+  keep it (here for the run, in the object table and the process record), and answer a layout from what is already known (here the
+  interpreter's memo) instead of building it per access. Nothing was copied.

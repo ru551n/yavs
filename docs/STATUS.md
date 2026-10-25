@@ -8772,3 +8772,42 @@ Checked: `cargo test --workspace`, `-p yavs-llvm -p yavs --features llvm`, both 
 (one timing-dependent failure under load, #755, passes alone); the differential corpus 524/524 on
 `yavs-interp`, `yavs-llvm`, `yavs-auto` and `yavs-auto --tier-heat=1,0,0` at 1 and 4 threads, and
 on the first three with `YAVS_SPEC_AFTER=2`.
+
+## llvm: callbacks of large compiled processes (#679, 2026-10-25)
+
+(`docs/decisions.md` "llvm: large compiled processes lose to their callbacks, ...".) The compiled bodies of the LEON3 processes were already
+cheaper than interpreting them (steady state of the window with everything compiled: 8.4 k cycle samples in compiled code against 15.1 k in
+the interpreter's loop); the loss was the runtime work around them. Three changes: a `LayoutOf` read for one word is one call of the layout
+memo (no native-frame step), kept scalar drives skip unchanged elements in the kernel, and the object table keeps constants for the run (4 096
+entries, a process record of 64 objects). Host misses in the LEON3 150 us window 13.4 million to 2.8 million; native-frame steps of
+`LayoutOf` gone (`llvm_layout_field`: `cb_xstep` 0, one `cb_layout` per field read); kernel entries of kept drives of `llvm_drive_batch` 817
+to 103.
+
+LEON3 150 us, bench builds of main (78f191a7) and of the change, `perf stat --no-inherit` of the simulation thread, one claimed CCD1 core,
+interleaved; heat = `--tier=auto --tier-heat=1,0,0` (everything compiled), warm compilation cache. Quiet session, medians of 5 (G):
+
+| | cycles | instructions | frontend stall cycles |
+|---|---:|---:|---:|
+| interpreter | 36.75 | 101.9 | 5.16 |
+| heat, main | (+5 to +10 % over the interpreter in other sessions) | 86.4 | 11.0 to 13.0 |
+| heat, change | 35.84 (-2.5 %) | 78.2 | 10.00 |
+
+A noisier session with main's heat in it (medians of 5, minimum in brackets): interpreter 42.25 (35.56), heat main 44.23 (37.58), heat change
+35.96 (33.10). The part before time 0 (elaboration and the S-record load of the memory models, `--stop-time=0fs`): interpreter 7.43, heat
+4.91 cycles; so the steady state of the window is level with the interpreter in cycles (instructions 60.7 G against 72.9 G). A process record
+of 16 objects instead of 64 (fewer instructions, more misses in the table) was 3 percent slower in the quiet session.
+Difftest 524/524 on `yavs-interp`, `yavs-llvm`, `yavs-auto` and `yavs-auto --tier-heat=1,0,0`, each at 1 and 4 threads. `tools/realbench
+--compare` (all 42 tests, `--tiers auto,auto-cold`, one core, main against the change): wall geometric mean 0.99 / 1.00, instructions 1.00 /
+1.00 (the default policy compiles few large processes); flagged only `grlib_leon3mp` and `uvvm_sb_slv` auto-cold wall 1.11 at equal
+instructions (two runs each on a loaded host).
+
+The whole LEON3 run (to 1060.5 us, the same method, medians of 2, G cycles / G instructions): interpreter 208 to 211 / 452; heat 270 / 459
+(main) and 226 / 405 (change); `--tier=auto` 257 / 445 (main) and 222 to 242 / 416 (change); `--tier=auto` with the large processes forced
+(`YAVS_AUTO_FORCE` of `comb`, `dctrl`, `ictrl`, `state_register`, the TLB `p0` and `ctrl`) 263 / 456 (main) and 242 / 413 (change). So over the
+whole run compiled code is still 7 to 8 percent above the interpreter in cycles at 10 percent fewer instructions: the part after the window is
+dominated by the SDRAM models (`state_register`, four instances, 90 percent of their wakes change nothing) and the TLBs, whose activations are
+short, so the cost of entering compiled code (`load_objs`, `begin_kept`, `view_again`, `run_cached`: 6 percent of the cycles) and the kept
+drives (`assign_codes_now`, `drive_bits`, `drive_now`, `yavs_rt_drive`: 8 percent, the interpreter's `drive_run` and its skip tests 5.7) weigh
+more than in the window. Over the whole run the tier's own runtime functions are 27 percent of the cycles (6.2 k of 23.2 k samples), as much as
+the compiled code itself. Tried and not kept: entering only the first 8 objects of a process record and the rest on a miss (fewer
+instructions, cycles 7 percent higher on the whole run).

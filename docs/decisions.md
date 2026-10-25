@@ -8753,3 +8753,16 @@ is thousands of tiny blocks (one per guard). Most of the bytes were values alive
   needed a valid-block analysis; it removed 4 percent of the bytes of exec_comb and was superseded by `MAX_SPAN`); a shared
   out-of-line exit stub per guard (the exits are already one `ret` block per 256 predecessors; the bytes per exit are the stores of the
   live registers, which are the frame values and cannot be shared per site).
+
+## `--tier=auto`: the class rules of the threshold are asked of a function at or above the base threshold (yavs-llvm `Worker::see`, #544, 2026-10-25)
+
+- **Decision: `Worker::see` evaluates `Worker::threshold` (the class rules: `is_rtl`, `is_compute`, `natively`) only for a function whose
+  time is at least the base threshold of the heat; below it the base is the threshold.** Why: the class rules only raise the base,
+  so a function below it is no candidate whatever its class says, and `natively` is `native_set`, which walks everything the function
+  can call and optimises each callee on the way (`Program::func`). `see` asked it of every function the sampler ever saw, so the
+  compile thread optimised library functions the run never executes: `hdlm_axi_fifo` had 385 function bodies optimised under the tier
+  against 323 in the interpreter (`opt_funcs`), 0.17 G of its 2.41 G run. Nothing that compiles changes. Instructions with the
+  default policy, `--no-cache`, interpreter / before / after (the Cranelift tier on the same tree; LLVM `auto` the same): `hdlm_axi_fifo`
+  2.41 / 2.50 / 2.41 G, `olo_base_cam` 2.68 / 2.81 / 2.68 G. Test: `a_function_below_the_base_threshold_is_not_analysed`.
+- Left (#544): the floor of the large runs, the watching form of the interpreter loop (`neorv32_single_min` 0.5 G), and the analysis a
+  function above the base still needs (everything it can call is optimised once).

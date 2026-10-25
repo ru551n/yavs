@@ -1169,7 +1169,18 @@ impl Worker {
             // its copies together are, and each copy that runs is a candidate then.
             let g = self.prog.base_of(id).0 as usize;
             self.group[g] += dt;
-            let (now, at) = (self.group[g], self.threshold(id, false));
+            // The class rules of `threshold` only raise the base, and they analyse everything the
+            // function can call (`natively`): not for one still below the base (#544).
+            let now = self.group[g];
+            let base = self
+                .prog
+                .func(self.prog.base_of(id))
+                .map_or(u64::MAX, |b| self.heat.threshold(b));
+            let at = if now < base {
+                base
+            } else {
+                self.threshold(id, false)
+            };
             if self.wants_probe(id, now) {
                 pending.probes.push(id);
             }
@@ -3181,6 +3192,24 @@ mod tests {
         assert_eq!(w.time[f.0 as usize], [500, 500]);
         assert_eq!(w.total, 1000);
     }
+    /// The class rules of the threshold analyse what a function can call; one below the base
+    /// threshold gets none of that (#544).
+    #[test]
+    fn a_function_below_the_base_threshold_is_not_analysed() {
+        let (mut w, f) = worker(100);
+        let at = super::Heat::DEFAULT.threshold(w.prog.func(f).unwrap());
+        let look = |us: u64| super::Look {
+            dt: us,
+            running: vec![(f, false)],
+        };
+        let mut pending = super::Pending::default();
+        w.see(&look(at - 1), false, &mut pending);
+        assert!(w.compute[f.0 as usize].get().is_none());
+        assert!(pending.cands.is_empty());
+        w.see(&look(1), false, &mut pending);
+        assert!(w.compute[f.0 as usize].get().is_some());
+    }
+
     /// A function that ran at `Fast` is compiled again at `FastRa` once it was seen running compiled
     /// for `PAYBACK_RA` times that compile, in a run that does not recompile at O2 (#715); one that
     /// did not run at `Fast` is not.

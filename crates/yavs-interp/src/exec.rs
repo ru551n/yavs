@@ -731,6 +731,13 @@ pub(crate) fn to_time(v: i64) -> R<Time> {
     Time::from_vhdl(v).map_err(|_| runtime_f!("negative time value {v} fs"))
 }
 
+/// The eight bytes at `off` of a memory object of `len` bytes, when they are inside it.
+#[inline(always)]
+fn slot_range(len: usize, off: u64) -> Option<std::ops::Range<usize>> {
+    let o = usize::try_from(off).ok()?;
+    (o.checked_add(8)? <= len).then(|| o..o + 8)
+}
+
 /// The little-endian value of 1, 4 or 8 bytes (fixed-size copies, no `memcpy` call).
 #[inline(always)]
 fn le_bytes(b: &[u8]) -> u64 {
@@ -4300,6 +4307,28 @@ impl Machine {
         ctx: &mut Option<&mut Ctx<'_>>,
     ) -> R<Flow> {
         let [pa, pb, px] = vars;
+        // The three variables in one frame (the process's or an enclosing subprogram's): one
+        // lookup of its slots instead of five loads and stores.
+        let ((sa, ia, oa), (sb, ib, ob), (sx, ix, ox)) = (split(pa), split(pb), split(px));
+        if sa == FRAME
+            && sb == FRAME
+            && sx == FRAME
+            && ia == ib
+            && ia == ix
+            && let Some(m) = self.fslots_mut(ia as usize)
+            && let Some(wa) = slot_range(m.len(), oa)
+            && let Some(wb) = slot_range(m.len(), ob)
+            && let Some(wx) = slot_range(m.len(), ox)
+            && let (a, b) = (le_bytes(&m[wa.clone()]) as i64, le_bytes(&m[wb.clone()]) as i64)
+            && a <= 2147483562
+            && b <= 2147483398
+        {
+            let (t1, t2, v) = crate::ieee::uniform_step(a, b);
+            m[wa].copy_from_slice(&t1.to_le_bytes());
+            m[wb].copy_from_slice(&t2.to_le_bytes());
+            m[wx].copy_from_slice(&v.to_le_bytes());
+            return Ok(Flow::Next);
+        }
         if let (Ok(a), Ok(b)) = (self.load(pa, Width::B8), self.load(pb, Width::B8))
             && (a as i64) <= 2147483562
             && (b as i64) <= 2147483398

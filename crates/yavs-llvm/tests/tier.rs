@@ -247,7 +247,7 @@ fn auto_tier_deferred_starts_its_thread_at_launch() {
     let (prog, f) = sum();
     let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
     let note: Note = Box::new(|_, _, _| {});
-    let tier = AutoTier::start_deferred(&rt, OptLevel::O2, usize::MAX, HOT, note).unwrap();
+    let tier = AutoTier::start_deferred(&rt, OptLevel::O2, usize::MAX, HOT, note, None).unwrap();
     let call = || yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[100_000]);
     let t0 = Instant::now();
     while t0.elapsed() < Duration::from_millis(300) {
@@ -265,7 +265,7 @@ fn auto_tier_deferred_starts_its_thread_at_launch() {
     let (prog, _) = sum();
     let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
     let note: Note = Box::new(|_, _, _| {});
-    let tier = AutoTier::start_deferred(&rt, OptLevel::O2, usize::MAX, HOT, note).unwrap();
+    let tier = AutoTier::start_deferred(&rt, OptLevel::O2, usize::MAX, HOT, note, None).unwrap();
     assert!(tier.stop(false));
     tier.launch().unwrap();
     assert!(tier.stop(true));

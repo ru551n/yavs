@@ -617,6 +617,7 @@ impl StopTierUp {
     /// Starts the compile thread. It does not exist at first: a run of a few milliseconds ends
     /// before it would look at anything, and a thread is a twentieth of such a run. The helper
     /// thread of the signal handlers calls this after `START_AFTER` (`Handlers::after`).
+    #[allow(unused_variables)]
     fn launcher(
         &self,
         format: MessageFormat,

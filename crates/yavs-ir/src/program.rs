@@ -383,6 +383,10 @@ impl FuncFlags {
     /// Set by lowering: a process with a sensitivity list (`process (all)` too): a `wait`
     /// executed in a procedure it calls is a run-time error (LRM 11.3).
     pub const SENS_LIST: FuncFlags = FuncFlags(32);
+    /// A call of the function leaves nothing in the caller's temporary memory: it allocates
+    /// none and calls only such functions and natives with a scalar result (`opt::leaves_temps`,
+    /// set by `propagate`). Absent in older stores, which reads as "may leave some".
+    pub const NO_TEMPS: FuncFlags = FuncFlags(128);
 
     pub fn contains(self, o: FuncFlags) -> bool {
         self.0 & o.0 == o.0

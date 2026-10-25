@@ -4675,6 +4675,15 @@ mod tests {
         }
         let (base, rec) = (fb.block(), fb.block());
         let (zero, one, c) = (fb.int(0), fb.int(1), fb.reg(RegTy::I64));
+        // (Computed before the test: the parameter load then stays an op of its own, which the
+        // compare and branch would otherwise take over now that nothing here needs a marker.)
+        let m = fb.reg(RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: yavs_ir::IntOp::Sub,
+            dst: m,
+            a: n,
+            b: one,
+        });
         fb.emit(Inst::Cmp {
             op: CmpOp::Eq,
             dst: c,
@@ -4685,13 +4694,6 @@ mod tests {
         fb.at(base);
         fb.emit(Inst::Ret { v: Some(zero) });
         fb.at(rec);
-        let m = fb.reg(RegTy::I64);
-        fb.emit(Inst::Bin {
-            op: yavs_ir::IntOp::Sub,
-            dst: m,
-            a: n,
-            b: one,
-        });
         let args = fb.regs(&[m]);
         let d = fb.reg(RegTy::I64);
         fb.emit(Inst::Call {

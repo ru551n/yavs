@@ -6204,6 +6204,69 @@ cycle geometric mean over the designs of `tools/bench` and `tools/realbench` (32
   the same time, same list), and, to make `poc_arith_addw` cheaper, `to_integer` of the message (its warning for a vector
   with `U` is an effect at every call: not skipped, not shared with the identical call of the condition).
 
+## Interpreter round 19: statement markers by a forward dataflow, callee `NO_TEMPS` (yavs-ir, #520, 2026-10-25)
+
+Method as in round 18 (`tools/stepcount --ops`, aligned bench builds, `--tier=interp --threads 1`), warm instruction counts of
+`perf stat` after two warm-up runs of the same binary (the first runs of a binary fill its compilation cache and read 3 to 6
+percent high), base and candidate built from the same `origin/main`.
+
+What the counts said: `Stmt` is 30 instructions an op and 1 to 3 percent of the interpreted instructions. The old rule dropped a
+marker when the statement after it had no allocating instruction, so every statement with a call, a `LayoutOf` or a native
+kept its marker, and 80 percent of the executed markers found nothing to free.
+
+Landed (`opt.rs` `drop_statements`, `build.rs` `propagate`, `program.rs` `FuncFlags::NO_TEMPS`):
+
+- **A marker stays only where it can free something.** Forward dataflow over the markers that the old forward rule keeps: the state
+  is "some path from the marker before (or the frame's start) reached here through an instruction that leaves temporaries";
+  a marker that finds the state clean is dropped, which changes no other marker's answer (it would have reset a clean state to a
+  clean one). A process is clean again after a `Suspend` (the machine empties its temporaries at every suspension of the root
+  frame, `release_scratch`). A loop that makes temporaries keeps the marker that frees them (test
+  `a_loop_keeps_the_marker_that_frees_its_temporaries`).
+- **`opt::leaves_temps` replaces `may_allocate`**: `Alloc`, `TempRoot`, `LayoutOf`, `New*`, `NewFrame`, `SigParts`, `SigSlice`,
+  foreign and indirect calls, `Elab`, and calls. Checked against every `temp_alloc` of `yavs-interp` and the temporary bumps of the
+  LLVM tier (`Alloc`, `NewFrame`, `LayoutOf`, and what `step` runs for them). A `Call`/`CallProt` leaves none when the callee
+  has the new flag `FuncFlags::NO_TEMPS` and the result register is a scalar (a composite result is built in the caller's
+  temporaries, also by the pure-call memo); a `CallNative` when its result is a scalar and it is not an `ieee` native with a VHDL
+  body (`...@<id>`: on metavalues it gives the call back and builds a descriptor per array argument in the caller's temporaries).
+  The flag is set by `propagate` over the reverse call graph; absent in an older store it reads as "may leave some".
+- **Pinned markers**: a statement that waits (`static_wait`, #588), scatters a record, or builds a waveform (`Alloc`) and drives
+  keeps its marker: the drives pass finds the start of a drive's payload by the marker (without it `a_record_default_...` lost
+  its saving), and `DriveRun` is built from `[Stmt, SigVal, ...]`.
+
+Measured, 25 bench designs, instructions candidate / base: geometric mean 0.990; `calls` 0.833, `textio_heavy` 0.980,
+`file_io` 0.983, `compute_loop` 0.984, `access_heavy` 0.992, `ieee_heavy` 0.995, `protected_queue` 0.998, the `rtl_*` and
+`lfsr64*` designs 1.000, `strings_heavy` 1.006. Real tests (instructions, same method): `hdlm_lfsr` 0.974, `neorv32_single_min`
+0.979, `sc5_fifo_repack` 0.979, `poc_cache_cpu` 0.995, `grlib_leon3mp` 0.998, `fletcher_bufferreader` 0.999. Executed markers in
+a 3 M-instruction window: `sc5_fifo_repack` 3075 to 1052, `poc_cache_cpu` 1460 to 366, `neorv32_single_min` 1116 to 694.
+`tools/realbench --compare` (42 tests, interp, core 12, host load about 90, so wall is noisy): wall geometric mean 1.00 (sum of
+times 0.99), instructions 1.00.
+
+`strings_heavy` +0.6 percent: in an equal-work window (600 native calls) the program's own instructions are 0.3 percent fewer and
+libc's 11 percent more (malloc/free internals move with the size the temporary area reaches); no counter of ours differs.
+
+Lessons:
+
+- **A dropped marker is not a no-op for the optimiser's registers.** The optimiser keeps registers that point into temporary
+  memory across a dropped marker, so an op that ends the statement where the marker was dropped frees what they point to.
+  The first version fused `LoadSlot8` + `CondBr` into `FlagBr` (which ends the statement) to keep the op count; it freed the
+  alias descriptor of `spec_record_var` and failed with "read of 24 bytes outside a temporary object of 0 bytes". `FlagBr` is
+  built from `StmtLoadSlot8` only; the unfused pair costs one op and no instructions.
+- A new arm in `run_ops` for the unfused case (`LoadSlot8Br`) moved `rtl_ff` by +3 percent of instructions; a flag in the
+  arm +0.2 percent. Both dropped (round 15, #576 again).
+- `Pre::new` of a function whose leading marker is gone fuses the parameter load with the compare after it, which takes it out of
+  the prologue `lean` calls need; the unit test `lean_parameter_address_register_is_unset` computes the decrement first.
+- Coverage counts through `Cover` instructions, not `Stmt`; debuggers stay on `KEEP_VARS`, which skips the whole pass.
+
+Tier-active path (clift7's finding, #544: about 5 percent more instructions an op once code is compiled): measured on
+`osvvm_axis_random` (`stepcount --ops` per op, equal windows). `run_ops::<false, true>` (a tier is set, nothing compiled yet) reads
+`AffP` 102.3 against 98.4, `DerefImm` 93.0 against 88.0, `LoadSlot8x2` 72.3 against 65.3, `CmpBr` 44.8 against 43.0, `Load` equal;
+the equal-work window is 1.6 percent longer (33.4 M against 32.9 M). Not fixed: moving the jump counter `recheck` into `Machine`
+changes no arm (identical counts); merging the three variants into one function with runtime flags makes the plain interpreter
+14 percent slower in the same window (the dispatch table base is hoisted differently). The `<true, false>` variant could not
+be measured: `stepcount --ops` does not find its dispatch in the first 24 KB (the compiled code takes the work in the window).
+The difference sits in the register allocation of the whole loop, not in a named check; a fix needs the generated code of the
+variants side by side.
+
 ## Interpreter round 18: the usual case first in the value helpers (yavs-interp, tools/stepcount, #520, #518, 2026-10-25)
 
 Method: `tools/stepcount` has a new `--ops` mode that charges every instruction between two dispatches of `run_ops` to the op

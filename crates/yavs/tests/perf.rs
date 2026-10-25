@@ -471,7 +471,7 @@ case!(
     inline_calls,
     "acc=",
     &[],
-    [("process_runs", Max(2)), ("ops", Max(3320)),]
+    [("process_runs", Max(2)), ("ops", Max(2710)),]
 );
 // The message of a check is built after the branch that reads it: images, lengths and the
 // concatenation stay out of the 270 passing calls (inlining of the check and `opt/sink.rs`).
@@ -575,7 +575,7 @@ case!(
     [
         ("cycles", Max(418)),
         ("process_runs", Max(525)),
-        ("ops", Max(29292)),
+        ("ops", Max(28570)),
         // The records `r` and `rin` are packs of leaves (#686), not one signal per leaf.
         ("signals", Max(20)),
     ]
@@ -1158,7 +1158,7 @@ mod llvm {
             ("cb_drive", Max(998)),
             ("cb_wait", Max(19)),
             ("cb_wait_same", Max(1018)),
-            ("llvm_inline_insts", Min(624)),
+            ("llvm_inline_insts", Min(600)),
             ("llvm_interpreted_insts", Max(48)),
             ("llvm_native_frames", Min(1)),
         ]

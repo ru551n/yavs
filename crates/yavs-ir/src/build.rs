@@ -423,9 +423,19 @@ fn propagate(prog: &mut Program, first: usize) {
     let n = prog.funcs.len();
     let mut callers: Vec<Vec<u32>> = vec![Vec::new(); n];
     let mut flags: Vec<FuncFlags> = prog.funcs.values().iter().map(|f| f.flags).collect();
+    // Functions that may leave temporaries in the caller's memory (`FuncFlags::NO_TEMPS` is the
+    // rest): the local cause, then the callers of those.
+    let mut leaves: Vec<bool> = flags
+        .iter()
+        .enumerate()
+        .map(|(i, f)| i < first && !f.contains(FuncFlags::NO_TEMPS))
+        .collect();
     for (id, f) in prog.funcs.iter().skip(first) {
         let fl = &mut flags[id.0 as usize];
+        // (A function declared and never defined has no code to judge.)
+        let mut lt = !f.defined;
         for inst in &f.code {
+            lt |= crate::opt::leaves_temps(inst, &f.reg_ty, &prog.natives, &|_| true);
             match *inst {
                 Inst::Suspend { .. } => fl.insert(FuncFlags::MAY_SUSPEND),
                 Inst::AddrOf {
@@ -453,6 +463,23 @@ fn propagate(prog: &mut Program, first: usize) {
             {
                 v.push(id.0);
             }
+        }
+        leaves[id.0 as usize] = lt;
+    }
+    // (A call whose result is not a scalar counts above for every callee; the callee's own
+    // `leaves` reaches its callers here.)
+    let mut work: Vec<u32> = (0..n as u32).filter(|&i| leaves[i as usize]).collect();
+    while let Some(f) = work.pop() {
+        for &c in &callers[f as usize] {
+            if !leaves[c as usize] {
+                leaves[c as usize] = true;
+                work.push(c);
+            }
+        }
+    }
+    for (i, l) in leaves.iter().enumerate().skip(first) {
+        if !l {
+            flags[i].insert(FuncFlags::NO_TEMPS);
         }
     }
     for bit in [

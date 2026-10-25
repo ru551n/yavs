@@ -2084,10 +2084,83 @@ impl<'a> Opt<'a> {
         false
     }
 
-    /// Drop the `Stmt` markers whose statement allocates no temporary memory: at run time a
-    /// marker only frees the temporaries of the statement before it, and nothing needs freeing
-    /// when that statement made none. Only in subprograms while no debugger runs (it stops at
-    /// markers).
+    /// Does some path from just after the marker at `pc` (every marker when `None`: from the start
+    /// of each block) reach an instruction `hit` before the next marker? One entry per `Stmt`.
+    fn forward_hits(&self, hit: &dyn Fn(&Inst) -> bool) -> Vec<bool> {
+        // What running from the start of a block (or just after a marker) up to the next
+        // marker does: reaches it first, hits first, or runs to the end of the block.
+        #[derive(Clone, Copy, PartialEq)]
+        enum Run {
+            Marker,
+            Hit,
+            Falls,
+        }
+        let scan = |rg: std::ops::Range<usize>| {
+            for pc in rg {
+                match &self.code[pc] {
+                    Inst::Stmt => return Run::Marker,
+                    i if hit(i) => return Run::Hit,
+                    _ => {}
+                }
+            }
+            Run::Falls
+        };
+        let nb = self.blocks.len();
+        let local: Vec<Run> = (0..nb).map(|b| scan(self.range(b))).collect();
+        // Does some path from the start of the block hit before the next marker?
+        let mut hits: Vec<bool> = local.iter().map(|&r| r == Run::Hit).collect();
+        loop {
+            let mut moved = false;
+            for b in 0..nb {
+                if hits[b] || local[b] != Run::Falls {
+                    continue;
+                }
+                let mut k = 0;
+                while let Some(s) = self.succ(b, k) {
+                    k += 1;
+                    if hits[s] {
+                        hits[b] = true;
+                        moved = true;
+                        break;
+                    }
+                }
+            }
+            if !moved {
+                break;
+            }
+        }
+        let mut out = vec![false; self.code.len()];
+        for b in 0..nb {
+            for pc in self.range(b) {
+                if self.code[pc] != Inst::Stmt {
+                    continue;
+                }
+                out[pc] = match scan(pc + 1..self.blocks[b].1 as usize) {
+                    Run::Marker => false,
+                    Run::Hit => true,
+                    Run::Falls => {
+                        let mut k = 0;
+                        let mut any = false;
+                        while let Some(s) = self.succ(b, k) {
+                            k += 1;
+                            any |= hits[s];
+                        }
+                        any
+                    }
+                };
+            }
+        }
+        out
+    }
+
+    /// Drop the `Stmt` markers that have nothing to free. At run time a marker frees the
+    /// temporaries made since the one before it, so it is needed only where a path from the
+    /// previous marker (or the start of the frame) reaches it through an instruction that
+    /// leaves some (`leaves_temps`) and the statement after it makes some too, or the statement
+    /// after it waits or drives (the predecoder builds fused ops on those markers). The first is a forward dataflow ("dirty") over the markers that stay; dropping a
+    /// marker that finds the frame clean changes no other marker's answer. A process starts
+    /// clean again after a suspension (the machine empties its temporaries then). Only in
+    /// subprograms while no debugger runs (it stops at markers).
     fn drop_statements(&mut self) {
         if KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed)
             || !(self.nosusp && self.f.body.is_none() || self.f.kind == FuncKind::Process)
@@ -2098,41 +2171,77 @@ impl<'a> Opt<'a> {
         {
             return;
         }
-        // What running from the start of a block (or just after a marker) up to the next
-        // marker does: reaches it first, allocates first, or runs to the end of the block.
-        #[derive(Clone, Copy, PartialEq)]
-        enum Run {
-            Marker,
-            Alloc,
-            Falls,
-        }
-        let scan = |code: &[Inst], rg: std::ops::Range<usize>| {
-            for pc in rg {
-                match &code[pc] {
-                    Inst::Stmt => return Run::Marker,
-                    i if may_allocate(i) => return Run::Alloc,
+        let prog = self.prog;
+        let clean = |c: FuncId| {
+            prog.funcs
+                .get(c)
+                .is_some_and(|f| f.defined && f.flags.contains(FuncFlags::NO_TEMPS))
+        };
+        let leaves = |i: &Inst| leaves_temps(i, &self.f.reg_ty, &prog.natives, &clean);
+        let pinned = self.forward_hits(&is_wait);
+        // (The drives pass moves what a drive builds back to the `Stmt` before it, and the
+        // predecoder fuses a run of scalar drives, each from its own `Stmt`, into one op: a
+        // statement of one block that scatters a record, or builds a waveform and drives, keeps
+        // its marker.)
+        let mut pinned = pinned;
+        for b in 0..self.blocks.len() {
+            let mut start = None;
+            let (mut wave, mut drive) = (false, false);
+            for pc in self.range(b) {
+                match &self.code[pc] {
+                    Inst::Stmt => {
+                        start = Some(pc);
+                        (wave, drive) = (false, false);
+                    }
+                    Inst::Alloc { .. } => wave = true,
+                    Inst::Drive { .. } | Inst::DriveSlot { .. } => drive = true,
                     _ => {}
                 }
-            }
-            Run::Falls
-        };
-        let nb = self.blocks.len();
-        let local: Vec<Run> = (0..nb).map(|b| scan(&self.code, self.range(b))).collect();
-        // Does some path from the start of the block allocate before the next marker?
-        let mut allocs: Vec<bool> = local.iter().map(|&r| r == Run::Alloc).collect();
-        loop {
-            let mut moved = false;
-            for b in 0..nb {
-                if allocs[b] || local[b] != Run::Falls {
-                    continue;
+                if let Some(st) = start
+                    && (wave && drive || matches!(self.code[pc], Inst::SigScatter { .. }))
+                {
+                    pinned[st] = true;
                 }
+            }
+        }
+        let ahead = self.forward_hits(&|i| leaves(i) && !is_wait(i));
+        let nb = self.blocks.len();
+        // The markers left so far; the dirty state at the start of each block and at each marker.
+        let kept: Vec<bool> = (0..self.code.len())
+            .map(|pc| self.code[pc] == Inst::Stmt && (pinned[pc] || ahead[pc]))
+            .collect();
+        let process = self.f.kind == FuncKind::Process;
+        let walk = |din: &[bool], at: &mut [bool]| -> Vec<bool> {
+            let mut out = vec![false; nb];
+            for b in 0..nb {
+                let mut d = din[b];
+                for pc in self.range(b) {
+                    let i = &self.code[pc];
+                    if kept[pc] {
+                        at[pc] = d;
+                        d = false;
+                    } else if process && matches!(i, Inst::Suspend { .. }) && !is_dead(i) {
+                        d = false;
+                    } else if !is_wait(i) && leaves(i) {
+                        d = true;
+                    }
+                }
+                out[b] = d;
+            }
+            out
+        };
+        let mut din = vec![false; nb];
+        let mut at = vec![false; self.code.len()];
+        loop {
+            let out = walk(&din, &mut at);
+            let mut moved = false;
+            for b in (0..nb).filter(|&b| out[b]) {
                 let mut k = 0;
                 while let Some(s) = self.succ(b, k) {
                     k += 1;
-                    if allocs[s] {
-                        allocs[b] = true;
+                    if !din[s] {
+                        din[s] = true;
                         moved = true;
-                        break;
                     }
                 }
             }
@@ -2140,28 +2249,10 @@ impl<'a> Opt<'a> {
                 break;
             }
         }
-        for b in 0..nb {
-            for pc in self.range(b) {
-                if self.code[pc] != Inst::Stmt {
-                    continue;
-                }
-                let free = match scan(&self.code, pc + 1..self.blocks[b].1 as usize) {
-                    Run::Marker => true,
-                    Run::Alloc => false,
-                    Run::Falls => {
-                        let mut k = 0;
-                        let mut free = true;
-                        while let Some(s) = self.succ(b, k) {
-                            k += 1;
-                            free &= !allocs[s];
-                        }
-                        free
-                    }
-                };
-                if free {
-                    self.code[pc] = dead();
-                    self.changed = true;
-                }
+        for pc in 0..self.code.len() {
+            if self.code[pc] == Inst::Stmt && !(kept[pc] && (pinned[pc] || at[pc])) {
+                self.code[pc] = dead();
+                self.changed = true;
             }
         }
     }
@@ -4441,70 +4532,68 @@ fn same_class(a: Option<RegTy>, b: Option<RegTy>) -> bool {
     class(a) != 0 && class(a) == class(b)
 }
 
-/// May the instruction allocate temporary memory (or call something that does: results of
-/// callees stay in the caller's temporaries)? The listed ones never do.
-fn may_allocate(i: &Inst) -> bool {
-    !matches!(
-        i,
-        Inst::Const { .. }
-            | Inst::ConstF { .. }
-            | Inst::Move { .. }
-            | Inst::Select { .. }
-            | Inst::AddrOf { .. }
-            | Inst::Load { .. }
-            | Inst::Store { .. }
-            | Inst::Copy { .. }
-            | Inst::Fill { .. }
-            | Inst::Pos { .. }
-            | Inst::SlicePos { .. }
-            | Inst::Index { .. }
-            | Inst::Field { .. }
-            | Inst::Bin { .. }
-            | Inst::BinRange { .. }
-            | Inst::Un { .. }
-            | Inst::FBin { .. }
-            | Inst::FUn { .. }
-            | Inst::IToF { .. }
-            | Inst::FToI { .. }
-            | Inst::Cmp { .. }
-            | Inst::FCmp { .. }
-            | Inst::Bool { .. }
-            | Inst::LGet { .. }
-            | Inst::LSet { .. }
-            | Inst::LFill { .. }
-            | Inst::LCopy { .. }
-            | Inst::Cat { .. }
-            | Inst::LEq { .. }
-            | Inst::MemEq { .. }
-            | Inst::Check { .. }
-            | Inst::FCheck { .. }
-            | Inst::DopeLen { .. }
-            | Inst::SubtypeCheck { .. }
-            | Inst::MakeDope { .. }
-            | Inst::Br { .. }
-            | Inst::CondBr { .. }
-            | Inst::Case { .. }
-            | Inst::Ret { .. }
-            | Inst::Unreachable { .. }
-            | Inst::Deref { .. }
-            | Inst::Cover { .. }
-            // Signal and time operations write registers and the kernel, never temporary memory.
-            // (Waits stay off the list: `static_wait` in the predecoder starts a wait at its
-            // `Stmt`, in both tiers.)
-            | Inst::SigVal { .. }
+/// Does `i` leave memory in the frame's temporary area, which only the next `Stmt` (or the
+/// end of the activation) frees? Allocations, a call that may (`callee_clean` says whether a
+/// call of the function leaves none, [`FuncFlags::NO_TEMPS`]; a result that is not a scalar is
+/// a composite in temporary memory) and the few signal references and layouts built there.
+/// Everything the interpreter keeps in registers or writes to memory somebody else allocated
+/// leaves none (checked against every `temp_alloc` of `yavs-interp` and the temporary bumps of
+/// the LLVM tier: `Alloc`, `NewFrame`, `LayoutOf`, and what the interpreter's `step` runs for
+/// them). `New` stays on the list because the optimiser may turn it into `NewFrame`; a pass that
+/// makes another instruction allocate must add it here.
+pub(crate) fn leaves_temps(
+    i: &Inst,
+    reg_ty: &[RegTy],
+    natives: &crate::IdVec<crate::NativeId, crate::NativeRef>,
+    callee_clean: &dyn Fn(FuncId) -> bool,
+) -> bool {
+    let scalar = |d: &Option<Reg>| {
+        d.is_none_or(|r| {
+            matches!(
+                reg_ty.get(r.0 as usize),
+                Some(RegTy::I64 | RegTy::F64 | RegTy::Handle)
+            )
+        })
+    };
+    !is_dead(i)
+        && match i {
+            Inst::Call { func, dst, .. } | Inst::CallProt { func, dst, .. } => {
+                !(callee_clean(*func) && scalar(dst))
+            }
+            // (A native `ieee` subprogram with a VHDL body, `...@<id>`, gives the call back on
+            // metavalues and then builds a descriptor in temporary memory for each array.)
+            Inst::CallNative { native, dst, .. } => {
+                !scalar(dst)
+                    || natives.get(*native).is_none_or(|n| {
+                        n.symbol.starts_with("yavs.ieee.") && n.symbol.contains('@')
+                    })
+            }
+            Inst::Alloc { .. }
+            | Inst::TempRoot { .. }
+            | Inst::LayoutOf { .. }
+            | Inst::New { .. }
+            | Inst::NewFill { .. }
+            | Inst::NewFrame { .. }
+            | Inst::SigParts { .. }
             | Inst::SigSlice { .. }
-            | Inst::SigRead { .. }
-            | Inst::SigReadScalar { .. }
-            | Inst::SigLastValue { .. }
-            | Inst::SigAttr { .. }
-            | Inst::Edge { .. }
-            | Inst::Driving { .. }
-            | Inst::DrivingValue { .. }
-            | Inst::Drive { .. }
-            | Inst::DriveSlot { .. }
-            | Inst::TimedOut { .. }
-            | Inst::Now { .. }
-            | Inst::Delta { .. }
+            | Inst::CallForeign { .. }
+            | Inst::CallIndirect { .. }
+            | Inst::Elab { .. } => true,
+            // (A wait or a suspension in a called procedure keeps the caller's temporaries.)
+            _ => is_wait(i),
+        }
+}
+
+/// A wait or a suspension: `static_wait` in the predecoder starts a wait at its `Stmt`, in both
+/// tiers, so that marker stays.
+fn is_wait(i: &Inst) -> bool {
+    matches!(
+        i,
+        Inst::WaitOn { .. }
+            | Inst::WaitEdge { .. }
+            | Inst::WaitFor { .. }
+            | Inst::WaitAt { .. }
+            | Inst::Suspend { .. }
     ) && !is_dead(i)
 }
 

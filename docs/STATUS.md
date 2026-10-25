@@ -6774,6 +6774,15 @@ load average 38 while measuring, so the ratios are inflated): `poc_arith_addw` 3
   dropped buffer and the op that drives it. `olo_axi_master_full` 0.865, `neorv32_single_min` 0.974, `poc_cache_cpu`
   0.981, geometric mean over 45 designs 0.9935.
 
+## Interpreter round 19: statement markers by a forward dataflow (#520, 2026-10-25)
+
+Details in `docs/decisions.md` "Interpreter round 19". `Stmt` markers stay only where a path reaches them through an instruction
+that leaves temporary memory (`opt::leaves_temps`, callee flag `FuncFlags::NO_TEMPS`, set by `propagate`); waits and drive
+statements keep theirs. Instructions of 25 bench designs 0.990 (`calls` 0.833, `textio_heavy` 0.980, `file_io` 0.983);
+`hdlm_lfsr` 0.974, `neorv32_single_min` 0.979, `sc5_fifo_repack` 0.979. Tier-active path (+1.6 percent in an equal-work window,
+per-op differences of 2 to 10 percent) measured, not fixed. Left: `FieldOf` chains in `grlib_leon3mp`, loop-invariant signal
+reads of `sc5_fifo_repack`; `cat_words` is valmove's.
+
 ## Interpreter round 18: exact per-op counts, the usual case first (#520, #518, 2026-10-25)
 
 Details in `docs/decisions.md` "Interpreter round 18". `tools/stepcount --ops` counts the instructions of each interpreter op

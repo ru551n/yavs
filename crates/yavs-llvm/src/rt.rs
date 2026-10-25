@@ -64,6 +64,7 @@ pub const MEMEQ: &str = "yavs_rt_memeq";
 pub const LAYOUT_WORD: &str = "yavs_rt_layout_word";
 
 pub const SCAN: &str = "yavs_rt_scan";
+pub const ELOOP: &str = "yavs_rt_eloop";
 
 pub const CODES: &str = "yavs_rt_codes";
 
@@ -1570,6 +1571,17 @@ pub unsafe extern "C" fn yavs_rt_lcopy(
     n: u64,
 ) {
     cb(Cb::Lcopy);
+    // Up to 64 elements: the run read into registers, then written (so also where the two
+    // overlap), no staging of the blocks.
+    if n <= 64 && s0 < 64 && d0 < 64 && (s0 + n).div_ceil(64) <= ns && (d0 + n).div_ceil(64) <= nd {
+        // SAFETY: compiled code checked `ns` readable blocks at `src` and `nd` writable blocks at
+        // `dst` (`Gen::host`), and the run lies inside them (the test above).
+        unsafe {
+            let v = crate::eloop::get_run(src, 0, s0 as usize, n as usize);
+            crate::eloop::put_run(dst, 0, d0 as usize, n as usize, v);
+        }
+        return;
+    }
     let blocks = |b: &[u8], out: &mut [[u64; 4]]| {
         for (o, c) in out.iter_mut().zip(b.as_chunks::<32>().0) {
             *o = std::array::from_fn(|k| u64::from_le_bytes(std::array::from_fn(|j| c[k * 8 + j])));
@@ -2034,6 +2046,75 @@ pub unsafe extern "C" fn yavs_rt_scan(
     }
     sc.iters
 }
+
+/// `yavs_rt_eloop(env, mem, prog, nprog, inputs, ind, bound, step, depth) -> iterations`: all but
+/// the last iterations of an element loop (`yavs_interp::elem_loops`) compiled code is at the
+/// head of (`crate::eloop::run`; `prog` is the loop's steps, a constant of the module, `inputs` the
+/// registers they read). Returns the iterations done, 0 where the generic code must go on: it
+/// then does every iteration and fails where and as it would.
+pub unsafe extern "C" fn yavs_rt_eloop(
+    env: *mut c_void,
+    mem: *mut Mem,
+    prog: *const i64,
+    nprog: u64,
+    inputs: *const u64,
+    ind: i64,
+    bound: i64,
+    step: i64,
+    depth: u64,
+    fhi: u64,
+    slots: *mut u8,
+    slots_len: u64,
+) -> i64 {
+    cb(Cb::Eloop);
+    struct Objects {
+        env: *mut c_void,
+        mem: *mut Mem,
+        depth: u64,
+        /// The calling native frame's own slots (`Mem::region` finds the frames above it only).
+        fhi: u64,
+        slots: *mut u8,
+        slots_len: u64,
+    }
+    impl crate::eloop::LoopMem for Objects {
+        fn region(&mut self, a: u64, write: bool) -> Option<(*mut u8, u64)> {
+            if a >> 32 == self.fhi && !self.slots.is_null() {
+                return Some((self.slots, self.slots_len));
+            }
+            // SAFETY: the pointers are the ones compiled code was given.
+            let m = unsafe { &*self.mem };
+            if let Some(r) = m.region(a, self.depth, write, true) {
+                return Some(r);
+            }
+            // SAFETY: as above; the object is in the table afterwards.
+            if unsafe { yavs_rt_obj(self.env, self.mem, a, u32::from(write)) } == 0 {
+                return None;
+            }
+            // SAFETY: as above.
+            unsafe { &*self.mem }.region(a, self.depth, write, true)
+        }
+    }
+    let mut objs = Objects {
+        env,
+        mem,
+        depth,
+        fhi,
+        slots,
+        slots_len,
+    };
+    // SAFETY: compiled code passes its constant program of `nprog` aligned words and an array
+    // of `MAX_INPUTS` words with the inputs it filled.
+    let (words, inputs) = unsafe {
+        (
+            std::slice::from_raw_parts(prog, nprog as usize),
+            std::slice::from_raw_parts(inputs, yavs_interp::eloop::MAX_INPUTS),
+        )
+    };
+    crate::eloop::run(words, inputs, ind, bound, step, ELOOP_LIMIT, &mut objs)
+}
+
+/// The most iterations one call of `yavs_rt_eloop` does (the generic code asks again after it).
+const ELOOP_LIMIT: i64 = 1 << 24;
 
 /// The `ctl` word of `yavs_rt_scan` for a search loop.
 pub fn scan_ctl(l: &yavs_interp::SearchLoop) -> u64 {

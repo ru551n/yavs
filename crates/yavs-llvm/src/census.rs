@@ -26,9 +26,10 @@ pub(crate) enum Cb {
     Scan,
     Memo,
     Region,
+    Eloop,
 }
 
-const NAMES: [&str; 18] = [
+const NAMES: [&str; 19] = [
     "step",
     "signal",
     "deopt",
@@ -47,10 +48,11 @@ const NAMES: [&str; 18] = [
     "scan",
     "memo",
     "region",
+    "eloop",
 ];
 
 #[cfg(any(debug_assertions, feature = "op-census"))]
-static COUNTS: [AtomicU64; 18] = [const { AtomicU64::new(0) }; 18];
+static COUNTS: [AtomicU64; 19] = [const { AtomicU64::new(0) }; 19];
 
 #[inline(always)]
 pub(crate) fn cb(c: Cb) {

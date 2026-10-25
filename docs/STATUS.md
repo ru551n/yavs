@@ -5292,6 +5292,51 @@ with `grlib_leon3mp`), cold 8 (also `poc_arith_addw`, `sc5_timestamp`, `hdlm_lfs
 longer hides their run phase. The yavs run phase is where the remaining gap is; the analysis of every test is still faster than sim1's. Every cell was
 measured with the same bench binary.
 
+## Run phase of `poc_stat_histogram`, `sc5_fifo_repack` and `sc5_timestamp` against sim1 (#757, 2026-10-26)
+
+The three run-bound tests above sim1 in head-to-head 6 and not owned by an earlier issue. Bench build with `llvm`
+(`tools/build-bench.sh`), `--tier=auto`, executed instructions of the whole process (`perf stat`, compile thread
+included), G; sim1 = elaboration and run of the reference. `tools/realbench --compare`, run phase, medians of 5
+interleaved, one claimed core (12) of a loaded host (wall is noisy, the instructions are not):
+
+| test | sim1 | interpreter | auto cold, before / after | auto warm, before / after | run s warm, before / after | cold |
+|---|---:|---:|---:|---:|---:|---:|
+| poc_stat_histogram | 4.5 | 24.8 | 22.6 / 21.4 | 16.0 / 13.3 | 0.64 / 0.55 | 1.18 / 1.15 |
+| sc5_fifo_repack | 12.8 | 36.4 | 36.8 / 36.8 | 31.3 / 31.3 | 2.0 / 1.9 (level) | 2.24 / 2.22 |
+| sc5_timestamp | 4.6 | 6.6 | 6.8 / 6.8 | 6.7 / 6.7 | 0.41 / 0.41 | 0.40 / 0.40 |
+
+What the three spend (perf, per clock), and what was done:
+
+- **`poc_stat_histogram`** (the ratio of instructions to sim1 fell from 3.6 to 3.0 warm). Each clock `to_slm` rebuilds a 256 x 8
+  matrix and `to_slvv_8` 256 `get_row` calls read it back (2048 elements each way, 2.6 million `get_row` calls in the run);
+  sim1 does the same element by element at about 100 instructions an element. Warm, `get_row`, `to_slm` and
+  `to_slvv_8` (compiled, native frames) were 70 percent of the instructions, the per-element loops 190 instructions an
+  iteration (two object look-ups, checked index arithmetic, four plane words each way). Done: element loops
+  on native frames run through a helper (decisions.md "Element loops in compiled code"), and the out-of-line copy of at most 64
+  elements no longer stages its blocks. Left: about 1000 instructions of every `get_row` call outside the loop (frame, descriptor,
+  result copy, layout; a call of a function returning an unconstrained array), the memo callback of a pure function two
+  processes have given up (7 percent of the cycles, #762), and the helper itself (about 1000 instructions for an
+  eight-element row). The cold run interprets for its first half second because the three functions are compiled one after
+  the other, native and frame-mode part each (426 ms of compile CPU on the pinned core, 176 ms of it the frame-mode halves, which no
+  native frame of these functions ever needs; posted on #754).
+- **`sc5_fifo_repack`**: no hotspot. Interpreted, 630 million ops at about 50 instructions, 72 percent in the dispatch
+  loop: the `uniform` loop of the testbench's `rand_next` (`AddrUp`, `Uniform`, `LoadUp`, `FCmp`, `Br`: 15 percent of the ops),
+  loop latches (`CmpBr`, `Bin`, `Br`, `CondBr`), signal reads and slice drives; no single op is above 8 percent. `--tier=llvm` (everything compiled)
+  is 22 G against 31 to 36 under `auto`, which closes about half of the gap to sim1: the processes `p_in`, `p_col`, `p_sreg`,
+  `p_input` and `p_pack` stay interpreted under `auto` (budget and trial rules, #754). In compiled code 24 percent of the
+  cycles are the signal assignment path (`drive_now`, `assign_codes_now`, `yavs_rt_drive`, `drive_bits`) and 12 percent
+  `memmove` (not traced to its callers). Nothing changed here. Cold compiles only `rand_next`, at 2.6 s of a 2.8 s run.
+- **`sc5_timestamp`**: kernel-bound (55 percent of the samples, 2000 instructions a delta cycle against 1400 in sim1, 3.25
+  million cycles, spread evenly over `cycle`, `update`, `run_batch`, `run_until`, `drive`, `commit_out`). Compiled code
+  does not help (`--tier=llvm` 5.7 G). Nothing was changed; the earlier kernel rounds (decisions.md "Kernel round 3" and after)
+  took the single hotspots.
+
+Compile cost, measured on the histogram's three functions (79, 107 and 153 IR instructions): 54 to 113 ms of CPU per native
+compile, 62 percent of it code generation, 288 basic blocks after the passes for the 79-instruction `get_row`; the register
+allocator choice moves it by up to 20 percent, FastISel by 27 (rejected for the code it makes). The budget charges a native compile of that
+size 75 ms, so the first compile is allowed once the run has shown 460 ms of work (`YAVS_AUTO_TRACE`), which is most of a
+cold run of this length. Posted on #740 and #754.
+
 ## Real-world performance suite: yavs against sim1, head-to-head 5, 2026-10-25 (`tools/realbench`)
 
 This was the headline of the fifth run, superseded by head-to-head 6 above (one analysis call per file for both tools; `9e75d84e`, bench build with the `llvm` feature, one binary for every cell; the previous run, head-to-head 4 at `18b290ef`, is in brackets). Basis (root rule 23): `--tier=auto`

@@ -15,6 +15,7 @@
 mod binfile;
 mod census;
 mod debug;
+pub mod eloop;
 mod env;
 mod exec;
 mod foreign;
@@ -22,6 +23,7 @@ mod gather;
 mod pmemo;
 mod pre;
 mod scan;
+pub use eloop::{ElemLoop, elem_loops};
 pub use foreign::{ForeignModel, ModelArg, ModelCall, ModelSignal, ModelTxn, ScalarKind};
 pub use scan::{Scan, ScanFrom, ScanShape, SearchLoop, scan_bytes, search_loops};
 mod heap;

@@ -9802,3 +9802,56 @@ The test timed the compile against the end of a call (3 million iterations): wit
 sampler decided on during the call finished after it. It now waits for the compile (60 s at most) after the call returns; what it checks (the loop is
 compiled and swapped in while one call runs, the result is right) does not depend on who finishes first. The interpreter sees a newly flagged function
 at the next activation or within 128 events since interp750; the test does not depend on that, only on the compile finishing.
+
+## Element loops in compiled code (yavs-llvm, yavs-interp, #757, 2026-10-26)
+
+`poc_stat_histogram` ran 1.2 times the reference simulator warm (2.5 cold, instruction ratio 3.4, the highest of
+the batched head-to-head 6). Warm under `--tier=auto` three compiled functions (`get_row`, `to_slm`,
+`to_slvv_8`: a matrix row to a vector, a vector of vectors to a matrix, 2048 elements a clock) were 70
+percent of the instructions, and the per-element copy loop inside them cost about 190 instructions an
+iteration in native-frame code (two object-table look-ups, checked index arithmetic and four plane words
+read or written per element), where the interpreter does the same loop as one op (#520).
+
+- **The interpreter's loop, in the IR, behind one helper call** (`yavs_interp::elem_loops`, `eloop.rs` of
+  both crates, `yavs_rt_eloop`): the lowering looks for the IR shape of a `for` loop (a head, straight-line
+  body blocks, `Cmp Eq ind, bound`, a step block `ind += step`) whose body is index arithmetic (`Bin` add,
+  subtract, multiply by an unchanging value, `Pos`, `DopeLen`, `Load`, `Index` by a constant, `Move`,
+  `Const`) with one `LGet` and the `LSet` of it, or one `LSet` of an unchanging code. At the head of such a
+  loop in native-frame code it asks the helper for all the iterations but the last; the generic code runs
+  the last one (so the exit, every register the body defines and every failure are the generic code's, as
+  in the interpreter). The helper evaluates the body once as affine pairs, checks every position,
+  descriptor and element range at the first and last iteration and does a copy of planes, or an in-order
+  element loop where the vectors overlap or run in opposite directions, or a fill; anything else returns 0
+  and the generic loop runs from its first iteration, failing at its own index with its own message.
+- **Hooked at the head, not on the entry edge**: the generic code's back edge reaches the head too, so a
+  loop the helper declined asks again at every iteration. The hook is therefore only called with at least two
+  iterations to go (`ind != bound && ind + step != bound`), and a decline is rare (an out-of-range element,
+  an overlapping source, memory the table does not reach). Not done: remembering a decline per loop
+  activation (a flag that needs a reset on the entry edge).
+- **The program is a module constant** (an 8-byte aligned `[N x i64]`), the registers it reads go in an
+  `alloca` array: nothing about the loop lives in a host table, so the compilation cache key (the bitcode)
+  determines the code whatever order the run met the functions in. `yavs_interp` holds the analysis (it
+  forbids `unsafe`), `yavs-llvm` the raw-pointer runtime.
+- **Only native frames, only a frame that is not closed**: the calling frame's own slots are passed to the
+  helper (a descriptor in a slot is the usual case; `Mem::region` finds the frames above it only), and a
+  closed frame keeps its slots in registers. Frame-mode code has no hook (the interpreter does the loop
+  there, or the generic code does).
+- **`yavs_rt_lcopy` of at most 64 elements inside the blocks it was given** reads the run into registers and
+  writes it (the helper's `get_run`/`put_run`) instead of staging eight blocks on each side with a
+  `memset` of both (the out-of-line copy of every native-frame `LCopy`: the result of `get_row` into the
+  element of `to_slvv_8`, 2.6 million calls in the histogram run).
+- **Measured** (bench build with `llvm`, pinned core, warm, `--tier=auto`, `perf stat`): `poc_stat_histogram`
+  16.0 G to 13.5 G instructions, 3.19 G to 2.76 G cycles (-14 percent), run phase 0.67 to 0.59 s; the
+  other 36 tests of `tools/realbench --compare` (run phase, `auto` warm, 3 runs) are level (wall and
+  instruction geomeans over the 37 tests 0.99, no other test moved by more than the noise). The helper
+  costs about 1000 instructions a call for a loop of nine steps (an eight-element row), so a short loop
+  gains less than a long one. What is left of the histogram
+  gap is the per-call cost of a function returning an unconstrained array (frame, descriptor and result
+  copy, about 1000 instructions) and the layout work around it, not the element loops.
+- **Not done**: bodies with more than one `LGet`/`LSet`, loops that count by anything but 1 or -1, a body
+  that carries a value to the next iteration, loops over integer arrays (the interpreter's loops stop at
+  the same places, `YAVS_DUMPIR` says why one is rejected there; `YAVS_LLVM_KINDLOC=1` prints the loops
+  the lowering found). Tests: `crates/yavs/tests/compiled_loops.rs` (the `loops.rs` design under
+  `--tier=llvm` and `--tier=auto --tier-heat=1,0,0`: same output and exit status as the interpreter, also
+  for the loop that leaves its vector), `perf/llvm_eloop.vhd` (`cb_eloop` floor, no step or deopt), unit
+  tests of the runtime against the plain loop in `eloop.rs`.

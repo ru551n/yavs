@@ -131,6 +131,7 @@ pub(crate) fn new_jit(opt: OptLevel) -> Result<Jit, Error> {
             (MEMEQ, yavs_rt_memeq as *const () as usize),
             (LAYOUT_WORD, yavs_rt_layout_word as *const () as usize),
             (SCAN, yavs_rt_scan as *const () as usize),
+            (ELOOP, yavs_rt_eloop as *const () as usize),
             (CODES, yavs_rt_codes as *const () as usize),
             (SCALAR, yavs_rt_scalar as *const () as usize),
             (PLANES, yavs_rt_planes as *const () as usize),
@@ -1537,6 +1538,10 @@ struct Gen {
     /// `yavs_rt_scan(env, mem, ctl, dope, base, i0, x, e, delta, out, depth) -> iterations`.
     scan_ty: LLVMTypeRef,
     scan: LLVMValueRef,
+    /// `yavs_rt_eloop(env, mem, prog, nprog, inputs, ind, bound, step, depth, fhi, slots, slots_len)
+    /// -> iterations`.
+    eloop_ty: LLVMTypeRef,
+    eloop: LLVMValueRef,
     /// `yavs_rt_codes(codes, groups, mask, out)`.
     codes_ty: LLVMTypeRef,
     codes: LLVMValueRef,
@@ -1832,6 +1837,8 @@ impl Gen {
             let layout_word_ty = LLVMFunctionType(i64, lwparams.as_mut_ptr(), 5, 0);
             let mut scparams = [ptr, ptr, i64, i64, i64, i64, i64, i64, i64, ptr, i64];
             let scan_ty = LLVMFunctionType(i32, scparams.as_mut_ptr(), 11, 0);
+            let mut elparams = [ptr, ptr, ptr, i64, ptr, i64, i64, i64, i64, i64, ptr, i64];
+            let eloop_ty = LLVMFunctionType(i64, elparams.as_mut_ptr(), 12, 0);
             let mut cparams = [ptr, i64, i64, ptr];
             let codes_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), cparams.as_mut_ptr(), 4, 0);
             let mut scaparams = [ptr, i64, ptr];
@@ -1909,6 +1916,8 @@ impl Gen {
                 layout_word: add(LAYOUT_WORD, layout_word_ty),
                 scan_ty,
                 scan: add(SCAN, scan_ty),
+                eloop_ty,
+                eloop: add(ELOOP, eloop_ty),
                 codes_ty,
                 codes: add(CODES, codes_ty),
                 scalar_ty,
@@ -3491,6 +3500,17 @@ impl Gen {
             } else {
                 Default::default()
             };
+            // Element loops (`yavs_interp::elem_loops`) of a native frame ask `yavs_rt_eloop` for
+            // all their iterations but the last at the head (#757).
+            let eloops: std::collections::HashMap<u32, yavs_interp::ElemLoop> =
+                if native && std::env::var_os("YAVS_LLVM_NO_ELOOP").is_none() {
+                    yavs_interp::elem_loops(f)
+                        .into_iter()
+                        .map(|l| (l.head, l))
+                        .collect()
+                } else {
+                    Default::default()
+                };
             for l in scans.values() {
                 for b in [l.found, l.end] {
                     if let Some(w) = f.blocks.get(b).and_then(|b| ways.get_mut(b.start as usize)) {
@@ -3662,6 +3682,63 @@ impl Gen {
                         c.objnew.set(o);
                     }
                     continue;
+                }
+                if let Some(l) = eloops.get(&pc)
+                    && c.nat.as_ref().is_some_and(|n| n.closed.is_none())
+                {
+                    // The iterations but the last run in the helper; what it leaves (a fault, an
+                    // overlap, memory it does not reach, nothing to gain) is the generic code below.
+                    if std::env::var_os("YAVS_LLVM_KINDLOC").is_some() {
+                        eprintln!("eloop `{}` pc{}: {:?}", f.name, l.head, l);
+                    }
+                    let (ind, bound) = (self.ld(&c, l.ind), self.ld(&c, l.bound));
+                    let step = self.ld(&c, l.step);
+                    let (call, set, generic) = (self.block(&c), self.block(&c), self.block(&c));
+                    // At least two iterations to go (the helper leaves the last to the generic code).
+                    let next = LLVMBuildAdd(self.b, ind, step, c"".as_ptr());
+                    let more = LLVMBuildAnd(
+                        self.b,
+                        self.icmp(IP::LLVMIntNE, ind, bound),
+                        self.icmp(IP::LLVMIntNE, next, bound),
+                        c"".as_ptr(),
+                    );
+                    LLVMBuildCondBr(self.b, more, call, generic);
+                    LLVMPositionBuilderAtEnd(self.b, call);
+                    let inputs = self.entry_alloca(&c, 8 * yavs_interp::eloop::MAX_INPUTS as u64);
+                    for (k, r) in l.inputs.iter().enumerate() {
+                        self.store(self.ld(&c, *r), self.gep(inputs, self.c64(k as i64 * 8)));
+                    }
+                    let mut args = [
+                        c.env,
+                        c.mem,
+                        self.i64_table(&l.prog),
+                        self.c64(l.prog.len() as i64),
+                        inputs,
+                        ind,
+                        bound,
+                        step,
+                        c.nat.as_ref().map_or(self.c64(0), |n| n.depth),
+                        c.nat.as_ref().map_or(self.c64(0), |n| n.fhi),
+                        c.nat
+                            .as_ref()
+                            .map_or(LLVMConstPointerNull(self.ptr), |n| n.slots),
+                        self.c64(c.frame_len as i64),
+                    ];
+                    let done = LLVMBuildCall2(
+                        self.b,
+                        self.eloop_ty,
+                        self.eloop,
+                        args.as_mut_ptr(),
+                        12,
+                        c"".as_ptr(),
+                    );
+                    let some = self.icmp(IP::LLVMIntNE, done, self.c64(0));
+                    LLVMBuildCondBr(self.b, some, set, generic);
+                    LLVMPositionBuilderAtEnd(self.b, set);
+                    let moved = LLVMBuildMul(self.b, done, step, c"".as_ptr());
+                    self.st(&c, l.ind, LLVMBuildAdd(self.b, ind, moved, c"".as_ptr()));
+                    LLVMBuildBr(self.b, generic);
+                    LLVMPositionBuilderAtEnd(self.b, generic);
                 }
                 if let Some(l) = scans.get(&pc) {
                     // The iterations that need nothing special run in the helper; what it leaves
@@ -7946,6 +8023,24 @@ impl Gen {
                 LLVMConstArray2(self.i8, vals.as_mut_ptr(), t.len() as u64),
             );
             LLVMSetGlobalConstant(g, 1);
+            LLVMSetLinkage(g, llvm_sys::LLVMLinkage::LLVMPrivateLinkage);
+            g
+        }
+    }
+
+    /// A private constant array of `i64`, 8-byte aligned.
+    unsafe fn i64_table(&self, t: &[i64]) -> LLVMValueRef {
+        // SAFETY: a global of our module with a matching initialiser.
+        unsafe {
+            let mut vals: Vec<LLVMValueRef> = t.iter().map(|&b| self.c64(b)).collect();
+            let ty = LLVMArrayType2(self.i64, t.len() as u64);
+            let g = LLVMAddGlobal(self.module, ty, c"".as_ptr());
+            LLVMSetInitializer(
+                g,
+                LLVMConstArray2(self.i64, vals.as_mut_ptr(), t.len() as u64),
+            );
+            LLVMSetGlobalConstant(g, 1);
+            LLVMSetAlignment(g, 8);
             LLVMSetLinkage(g, llvm_sys::LLVMLinkage::LLVMPrivateLinkage);
             g
         }

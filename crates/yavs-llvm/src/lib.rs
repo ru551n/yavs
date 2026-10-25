@@ -18,6 +18,7 @@ mod arena;
 #[cfg(feature = "llvm")]
 mod auto;
 mod census;
+mod eloop;
 #[cfg(feature = "llvm")]
 mod jit;
 #[cfg(feature = "llvm")]

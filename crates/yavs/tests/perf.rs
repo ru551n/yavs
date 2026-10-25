@@ -1170,6 +1170,17 @@ mod llvm {
         ]
     );
     llvm_case!(
+        llvm_eloop,
+        "acc=",
+        [
+            ("cb_eloop", Min(175)),
+            ("cb_step", Max(6)),
+            ("cb_deopt", Max(0)),
+            ("cb_host", Max(22)),
+            ("llvm_native_frames", Min(2)),
+        ]
+    );
+    llvm_case!(
         llvm_drive_batch,
         "q=",
         [

@@ -9517,6 +9517,6 @@ a binary is named. Tables: docs/STATUS.md "`--tier=auto` round 5".
   (#679) a process whose shared code is compiled moves to its copy at its next activation, so `SPEC_WAIT` may no longer be needed
   for processes that resume. Not measured here (`hdlm_lfsr`, `poc_arith_addw` do not move with this change).
 - **Test:** `crates/yavs/tests/auto_warm.rs` (`--features llvm`): a one-loop process run twice in one work library with
-  `YAVS_AUTO_TRACE=1`: the first run compiles it, the second must link it from the cache having seen it for under 100 ms of the work
-  clock (400 ms before the fix; the work is instructions, not time). Fails without `SPEC_STALL`.
+  `YAVS_AUTO_TRACE=1`: the first run compiles it, the second must link it from the cache having seen it for under 300 ms of the work
+  clock (400 ms before the fix; instructions where the system gives a counter, CPU time on the Windows runner, where the warm run saw 110 ms). Fails without `SPEC_STALL`.
 - **Measured** (docs/STATUS.md "`--tier=auto` warm runs of one-loop processes"): the 11 h2h designs warm and cold, `tools/realbench --compare`.

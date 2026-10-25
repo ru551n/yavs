@@ -420,6 +420,11 @@ element names in a record constraint: `E1213`.
 - Access (5.4): `designated` may be any subtype, including unconstrained (`type line is access string`).
   Allocators: `new S` needs `S` fully constrained (or a protected type), `new T'(x)` takes bounds
   from the qualified expression.
+- A subtype indication of an access type may carry an index constraint when the designated type
+  is an array (`arr(0 to 3)`): it is merged against the designated type and stored on the access
+  subtype (`merge_constraint`), so the dimension checks and the "already constrained" error of a
+  subtype of it run as for an array subtype; a range or record constraint stays `E1211` (#643,
+  [L139]).
 - The designated type of a 2008 access type cannot be a file or protected type (`E1221`); 2019
   allows both (permissive, [L19]).
 - Dereference: `p.all`, and implicitly a selected, indexed or sliced name or an attribute whose

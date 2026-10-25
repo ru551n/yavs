@@ -1480,6 +1480,20 @@ impl Db {
                 element,
                 span,
             } => {
+                // 5.4, 6.3: an index constraint on an access type applies to the
+                // designated array type; the merged constraint is stored on the
+                // access subtype.
+                let t = match &self.types[t].kind {
+                    TypeKind::Access { designated }
+                        if matches!(
+                            self.types[self.base(*designated)].kind,
+                            TypeKind::Array { .. }
+                        ) =>
+                    {
+                        self.base(*designated)
+                    }
+                    _ => t,
+                };
                 let TypeKind::Array { indexes: idx, elem } = &self.types[t].kind else {
                     return kind_err(
                         self,

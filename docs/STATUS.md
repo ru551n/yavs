@@ -3537,10 +3537,46 @@ Gap list after this round:
 
 | gap | evidence | effort | blocks replacing LLVM? |
 |---|---|---:|---|
-| Policy by measured benefit instead of share and callback count (the work on main: work clock, benefit model) | neorv32 floor above the interpreter; UVVM testbenches 1.2 to 1.5; `counter_increment` refused although it pays | M | no |
+| Policy by measured benefit instead of share and callback count (the work on main: work clock, benefit model) | neorv32 floor above the interpreter; UVVM testbenches 1.03 to 1.16 (round 4; was 1.2 to 1.5); `counter_increment` refused although it pays | M | no |
 | Loop bodies of the compute designs: the conversion `CallNative`, `SubtypeCheck` and `LCopy` of `xor_types`, then registers and slot variables as phis in loops | `compute_h2h` 3.9 G against 2.6 G (warm LLVM `auto`), `xor_types` 7.1 G against 4.0 G, `xor_sig` 8.3 G against 4.8 G | M for the instructions, L for the phis | only for compute-bound testbenches |
 | Compile cost: 6 percent of the window generator's run is translation (11 G), 4 percent of fletcher's | native variants: 30 Cranelift instructions per IR `Load`, 53 per `DopeLen`, 57 per `NewFrame`; frame mode 195 per `LCopy` | M | no |
 | Compiled-code cache, Windows and aarch64 numbers, test sharing, Cranelift upgrades | as before | S to M | no |
+
+### clift: round 4, the merge with main, what a first-level compile owes (2026-10-25, #481, #718, #544, #732)
+
+`spike/clift2` merged with main at 9171b609 (the generic `Worker` with #715 `FastRa`, #725 the sampler start, #719, #711, #726, #730,
+#519; `docs/decisions.md` "Cranelift tier, round 4"). Method as in round 3, re-baselined on this tree (the interpreter's figures moved
+with main: `neorv32_single_min` 39.8 G, was 37.7), runs four at a time so the spread is larger than in round 3. Instructions in G
+(ratio to the interpreter), medians of 3, cold:
+
+| test | interp | clift-auto before | clift-auto now | auto3 now | LLVM `auto` before | LLVM `auto` now |
+|---|---:|---:|---:|---:|---:|---:|
+| window generator | 449.0 | 167.6 (0.373) | 171.9 (0.383) | 173.0 (0.385) | 199.7 | 198.8 |
+| neorv32_single_min | 39.8 | 41.5 (1.040) | 40.9 (1.025) | 41.4 (1.040) | 40.4 | 40.4 |
+| fletcher_bufferwriter_512 | 54.7 | 52.9 (0.966) | 53.6 (0.978) | 53.0 (0.969) | 55.5 | 55.6 |
+| poc_arith_addw | 156.7 | 116.0 (0.740) | 112.0 (0.714) | 111.5 (0.711) | 118.0 | 117.6 |
+| uvvm_sb_slv | 13.05 | 15.95 (1.22) | 14.01 (1.07) | 14.03 (1.08) | 13.35 | 13.32 |
+| uvvm_util_rand | 15.16 | 18.69 (1.23) | 15.64 (1.03) | 15.68 (1.03) | 16.96 | 15.27 |
+| uvvm_axistream_vvc | 37.9 | 41.5 (1.09) | 43.9 (1.16) | 44.0 (1.16) | 46.9 | 38.6 |
+| osvvm_axis_random | 4.72 | 5.56 (1.18) | 4.95 (1.05) | 4.98 (1.06) | 4.85 | 4.76 |
+| osvvm_axi4_random | 8.78 | 9.15 (1.04) | 8.98 (1.02) | 9.11 (1.04) | 8.95 | 8.83 |
+| poc_cache_cpu | 8.80 | 9.54 (1.08) | 9.42 (1.07) | 9.40 (1.07) | 9.09 | 9.08 |
+| hdlm_axi_fifo | 2.41 | 2.50 (1.04) | 2.41 (1.00) | 2.42 (1.00) | 2.51 | 2.42 |
+| olo_base_cam | 2.68 | 2.81 (1.05) | 2.68 (1.00) | 2.68 (1.00) | 2.81 | 2.68 |
+
+Geometric mean of the eight library testbenches (the rows from `uvvm_sb_slv` down): 1.115 before, 1.050 now for `clift-auto`, 1.066
+and 1.012 for LLVM `auto`. The designs the round 3 targets name: the window generator and `poc_arith_addw` stay far below the interpreter
+(0.38 and 0.71), fletcher 2 percent below, `neorv32_single_min` at the tier's floor (+2.5 percent: with nothing compiled 40.4 G). Worse
+than before: `uvvm_axistream_vvc` (a 2.7 s run in which the old policy compiled the functions that gain: 1.09 to 1.16 where it was
+1.04 to 1.09 in serial runs); its LLVM `auto` figure is bimodal (38.6 or 46.9 in the same binary, #673). What changed: the merge
+(Cranelift lowers `SigReadScalar` in native frames), `Tune::FIRST` `tree_payback` 8 and `payback_rtl` 16 (a root owes 8 times the price
+of the callees compiled with it, a clocked process 16 times its own), the class rules of the threshold are asked only of a function at
+or above the base threshold (all generators: the compile thread optimised library functions a run never executes; short runs with
+nothing compiled are level with the interpreter now), and the `cb_*` bounds of the Cranelift perf cases guard something. What is left: the
+interpreter loop of a run with compiled code executes 5 percent more instructions per op than the watching loop of a run with a tier and
+no code (shared interpreter code, the other half of #544), so a testbench whose compiled code saves less than that ends above the
+interpreter (`uvvm_sb_slv`, `poc_cache_cpu` 1.07); a policy that prices by measured benefit (the work in progress on main) is where
+`uvvm_axistream_vvc` and these are decided.
 
 ## performance (tiers against two reference simulators, 2026-10-19)
 

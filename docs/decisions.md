@@ -8416,6 +8416,77 @@ one and the figures repeat), one `clift`-only release binary built with `tools/b
   the compiled code, the limit is one in ten). A policy that picks by measured benefit (the work in progress on main) can get the
   design level; constants cannot.
 
+## Cranelift tier, round 4: merge with main, what a first-level compile owes (yavs-llvm, yavs-clift, #481, #718, #544, #732, user, 2026-10-25)
+
+The user resumed the Cranelift work after the pause for usage: merge main first (the generic `Worker` against #715, #725, #719,
+#711, #726, #730 and #519), then the verification-library testbenches that run above the interpreter under `clift-auto` (#718), the
+floor of `--tier=auto` (#544) and the vacuous bounds of the Cranelift perf cases (#732). Method as in round 3: instructions of the
+whole process tree (`perf stat -e instructions:u`), `--no-cache`, one release binary from `tools/build-bench.sh --features
+llvm,clift`, medians of 3 runs, no timing cores (cycles were not measured). Runs in parallel (four at a time) spread more than
+serial ones: the policy decides on sampled CPU time, so a loaded host moves what compiles (#673), most on `uvvm_axistream_vvc`
+and `uvvm_util_rand`.
+
+- **The merge.** `OptLevel::FastRa` (#715) is an `OptLevel` like the others and the LLVM generator maps it to its own JIT (`jitr`);
+  the policy keeps `Worker::fast` and `PAYBACK_RA`. The sampler of #725 starts from the compile thread as there. The shared native
+  predicates (`yavs_llvm::native`) take `uniform_regs` (`Gen::uniform_fast` is LLVM only: the policy counts it inline for both) and
+  `SigReadScalar` in native frames (#730); the Cranelift lowering did not have that last one (a signal operation made the function
+  frame-mode only, and the compile of its native part failed, which the policy treats as a refusal of the whole function), so it
+  lowers the table read in native frames as well, where the view has no answer the frame is materialised
+  (`clift::sigfun` in `perf.rs`: 900 calls, `cb_step` 4). `Tune` stays per generator.
+- **Finding (#718): the compiled code of library functions the interpreter calls gains nothing in instructions, and any compiled code
+  makes the interpreter slower.** Forcing one function at a time (`YAVS_AUTO_FORCE`, every other rule off; deterministic):
+  `uvvm_sb_slv` 13.34 G with nothing compiled, 14.38 with `match_identifier` (114 IR), 15.39 with `peek`, 16.57 with `log`;
+  `find_expected_position` 13.34. The extra instructions are two things: the translation (`match_identifier`: 0.28 G on the tier-up
+  thread; `peek`: a tree of 14 variants, 13 of them callees the sampler never saw, 100 ms; `log`: 3 G) and what the simulation thread
+  executes once anything is compiled (`match_identifier`: +0.75 G, +0.31 G of it in `run_ops::<true, false>`, the interpreter loop
+  of a run with compiled code, which executes 5 percent more instructions per op than the watching loop `<false, true>` of a run with
+  a tier and no code). With the earlier policy the simulation thread executed about 1.6 G fewer instructions than the interpreter and
+  the tier-up thread 3.7 G.
+- **Decision: `Tune::FIRST` has two payback rules, `tree_payback` 8 and `payback_rtl` 16.** A root owes 8 times the price of the callees
+  compiled with it (on top of the payback of its own price) before it is picked (`Worker::pick`, `repaid`); a clocked process
+  16 times its own price (`threshold`). A nested subprogram entered in frame mode has no native variant to pay for and is exempt.
+  `Tune::MAIN` is unchanged (0 and 0). Instructions in G, `clift-auto`, interpreter / before / now: `uvvm_sb_slv` 13.05 / 15.95 /
+  14.01, `uvvm_util_rand` 15.16 / 18.69 / 15.64, `osvvm_axis_random` 4.72 / 5.56 / 4.95, `poc_cache_cpu` 8.80 / 9.54 / 9.42; the
+  geometric mean of the eight library testbenches of the table in STATUS.md goes from 1.115 to 1.050 of the interpreter. The four
+  designs: window generator 167.6 / 171.9 (+2.6 percent, 0.385 of the interpreter), `poc_arith_addw` 116.0 / 112.0,
+  fletcher 52.9 / 53.6 (0.98), neorv32 41.5 / 40.9 (the tier's floor, 1.03 of the interpreter). `uvvm_axistream_vvc` is worse than
+  before (1.09 to 1.16 of the interpreter's instructions where it was 1.04 to 1.10): a long run (2.7 s) in which the old policy
+  compiled `check_value`, `await_cmd_from_sequencer` and others that gain. Why: the rest of the sweeps below show no setting that
+  keeps both; the multiplier of 8 is the smallest that gets the short testbenches near the floor.
+- **Sweeps and what they showed.** All on `clift-auto` with `YAVS_FIRST_TUNE`: the payback of native, compute and other
+  functions at 8 and 32 and the native budget factor at 1, 4 and 16 (`peek` is in the compute class, which is paid back after 2
+  times its price: its loops leave the compiled code rarely, which says nothing about whether compiling pays) moved `uvvm_sb_slv` by less than the spread of
+  the runs; the price of the whole tree paid back 2, 4, 8 and 16 times (every class) gives `uvvm_sb_slv` 15.6, 14.3, 14.3 and 13.4 and
+  the window generator 170, 176 and 187 for the first three (`fletcher` 56.0 at 8), which is why only the callees get the
+  large multiplier; a payback for clocked processes of 4, 8 and 16 gives `poc_cache_cpu` 9.54, 9.42 and
+  9.12 (no change on the processes of `hdlm_lfsr`, 39.1 G against 66.8 interpreted). Cranelift's `opt_level=none` and the
+  single-pass register allocator (`YAVS_CLIFT_OPT`, `YAVS_CLIFT_RA`) did not lower the total (15.5 and 16.8 against 15.8).
+- **Tried and dropped.** (1) No candidate that is a native-called function (the interpreter's calls into compiled code are the cost):
+  `uvvm_sb_slv` at the floor, but the window generator 466 G against 169 and `poc_arith_addw` 153 against 125: the native roots
+  are where those two designs get their gain. (2) No callees brought along because the caller calls them on every run
+  (`Worker::hot`): no change, the sampler sees them anyway. (3) The first compile of a run needs a function that is a tenth, a
+  fifth or a third of the sampled time (the interpreter loop tax is paid once): `uvvm_sb_slv` at the floor with a fifth, but
+  fletcher 55.9 to 56.7 G against 53.4 and the idea needs the benefit model of the work-clock lane to decide per class. (4) Counting
+  only the callees the sampler never saw as the tree: `uvvm_axistream_vvc` 40.0 G but `uvvm_sb_slv` 15.1.
+- **Not fixed: the interpreter loop of a run with compiled code costs 5 percent more instructions per op than the watching loop of
+  a run with a tier and nothing compiled.** It is the other half of #544 and shared interpreter code: a run whose compiled code
+  saves less than that tax ends above the interpreter, however cheap the compiles are. The short testbenches stay 2 to 7 percent
+  above (`uvvm_sb_slv` 1.07, `poc_cache_cpu` 1.07, `osvvm_axis_random` 1.05).
+- **Decision (#544, all generators): the class rules of `Worker::threshold` (`natively`, `is_compute`, `is_rtl`) are asked only of a
+  function at or above the base threshold of the heat.** Why: `natively` runs `native_set`, which walks everything the function
+  can call and optimises each callee on the way (`Program::func`), and `see` asked it of every function the sampler ever saw, so the
+  compile thread optimised library functions the run never executes (`hdlm_axi_fifo`: 323 function bodies optimised by the
+  interpreter, 385 under the tier). A function below the base is no candidate whatever its class says (the class rules only raise
+  the threshold), so nothing changes in what compiles. Instructions in G, interpreter / before / now,
+  default policy: `hdlm_axi_fifo` 2.41 / 2.50 / 2.41 and `olo_base_cam` 2.68 / 2.81 / 2.68 under `clift-auto`, 2.51 and 2.81 /
+  2.42 and 2.68 under LLVM `auto` (+7 and +5 percent with nothing compiled, `--tier-max-size=1`, before). The floor of
+  the large runs (the watching loop, 0.5 G of `neorv32_single_min`) is untouched.
+- **Decision (#732): the `cb_*` counters are printed for a build with `clift` and without `llvm`, and a counter a bound names must exist
+  in a build that counts (debug, `op-census`).** Why: `callback_counts` was printed only with `llvm`, and `check_bounds` let any `cb_*`
+  be absent, so every `Max` bound of the `clift` perf cases passed for any value (several were also the LLVM numbers: `cb_signal` of
+  `reg_planes` was bounded at 108 and is 4). The bounds are the numbers of the Cranelift code now, each case has a floor on its
+  drives or memo calls, and `llvm_sigfun` runs under `clift`.
+
 ## Frame-mode code tests the temporary area and the object cache inline for addresses it can guess (yavs-llvm `Gen::host`, `rt::track`, #711, 2026-10-24)
 
 - **Finding:** the `yavs_rt_host` calls of `llvm_ieee` (`cb_host` 1416, then 2019 after the in-place `numeric_std`

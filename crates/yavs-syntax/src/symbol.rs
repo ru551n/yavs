@@ -5,16 +5,88 @@
 //! not DoS-hardened because names come from the user's own sources), and symbols stay valid on every thread (the runtime will read
 //! names from worker threads).
 
+use std::hash::Hasher;
 use std::sync::{OnceLock, RwLock};
-
-use rustc_hash::FxHashMap;
 
 /// An interned string.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Symbol(u32);
 
+/// Open-addressing set of interned strings, probed with a hash made once: a miss in the
+/// thread's mirror and in the shared table (and the insert into both) hash the text once, and
+/// growing never reads a text again.
+struct Index {
+    /// `(text, hash, symbol number)`; number `u32::MAX` is an empty slot.
+    slots: Vec<(&'static str, u32, u32)>,
+    len: usize,
+}
+
+const EMPTY: (&str, u32, u32) = ("", 0, u32::MAX);
+
+impl Index {
+    fn with_capacity(n: usize) -> Self {
+        Index {
+            slots: vec![EMPTY; (n * 3 / 2).next_power_of_two()],
+            len: 0,
+        }
+    }
+
+    fn hash(s: &str) -> u32 {
+        let mut h = rustc_hash::FxHasher::default();
+        h.write(s.as_bytes());
+        let h = h.finish();
+        (h ^ (h >> 32)) as u32
+    }
+
+    fn find(&self, h: u32, s: &str) -> Option<(Symbol, &'static str)> {
+        let mask = self.slots.len() - 1;
+        let mut i = h as usize & mask;
+        loop {
+            let (text, tag, n) = self.slots[i];
+            if n == u32::MAX {
+                return None;
+            }
+            if tag == h && text == s {
+                return Some((Symbol(n), text));
+            }
+            i = (i + 1) & mask;
+        }
+    }
+
+    /// Add `text` (not in the set) with hash `h`.
+    fn insert(&mut self, h: u32, text: &'static str, sym: Symbol) {
+        self.reserve(1);
+        self.place((text, h, sym.0));
+        self.len += 1;
+    }
+
+    fn place(&mut self, e: (&'static str, u32, u32)) {
+        let mask = self.slots.len() - 1;
+        let mut i = e.1 as usize & mask;
+        while self.slots[i].2 != u32::MAX {
+            i = (i + 1) & mask;
+        }
+        self.slots[i] = e;
+    }
+
+    /// Room for `extra` more strings with the table at most two thirds full.
+    fn reserve(&mut self, extra: usize) {
+        if (self.len + extra) * 3 <= self.slots.len() * 2 {
+            return;
+        }
+        let mut n = self.slots.len();
+        while (self.len + extra) * 3 > n * 2 {
+            n *= 2;
+        }
+        let old = std::mem::replace(&mut self.slots, vec![EMPTY; n]);
+        for e in old.into_iter().filter(|e| e.2 != u32::MAX) {
+            self.place(e);
+        }
+    }
+}
+
 struct Interner {
-    map: FxHashMap<&'static str, Symbol>,
+    map: Index,
     strings: Vec<&'static str>,
 }
 
@@ -24,7 +96,7 @@ impl Default for Interner {
     /// rehashing.
     fn default() -> Self {
         Interner {
-            map: FxHashMap::with_capacity_and_hasher(NAMES, Default::default()),
+            map: Index::with_capacity(NAMES),
             strings: Vec::with_capacity(NAMES),
         }
     }
@@ -41,7 +113,7 @@ const NAMES: usize = 1 << 10;
 /// Per-thread mirror of the table: a hit or `as_str` of a known symbol takes no lock (the
 /// table only grows, so a copy never goes stale, it only lacks newer entries).
 struct Local {
-    map: FxHashMap<&'static str, Symbol>,
+    map: Index,
     strings: Vec<&'static str>,
 }
 
@@ -49,7 +121,7 @@ impl Default for Local {
     /// Sized like the table, so a short run does not grow it by doubling.
     fn default() -> Self {
         Local {
-            map: FxHashMap::with_capacity_and_hasher(NAMES, Default::default()),
+            map: Index::with_capacity(NAMES),
             strings: Vec::with_capacity(NAMES),
         }
     }
@@ -72,34 +144,35 @@ impl Symbol {
     }
 
     pub fn intern(s: &str) -> Symbol {
+        let h = Index::hash(s);
         LOCAL.with(|l| {
             let mut l = l.borrow_mut();
-            if let Some(&sym) = l.map.get(s) {
+            if let Some((sym, _)) = l.map.find(h, s) {
                 return sym;
             }
-            let (sym, text) = Self::intern_global(s);
-            l.map.insert(text, sym);
+            let (sym, text) = Self::intern_global(h, s);
+            l.map.insert(h, text, sym);
             sym
         })
     }
 
-    fn intern_global(s: &str) -> (Symbol, &'static str) {
-        if let Some((&text, &sym)) = interner()
+    fn intern_global(h: u32, s: &str) -> (Symbol, &'static str) {
+        if let Some(found) = interner()
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .map
-            .get_key_value(s)
+            .find(h, s)
         {
-            return (sym, text);
+            return (found.0, found.1);
         }
         let mut i = interner().write().unwrap_or_else(|e| e.into_inner());
-        if let Some((&text, &sym)) = i.map.get_key_value(s) {
-            return (sym, text);
+        if let Some(found) = i.map.find(h, s) {
+            return (found.0, found.1);
         }
         let s: &'static str = Box::leak(s.to_owned().into_boxed_str());
         let sym = Symbol(i.strings.len() as u32);
         i.strings.push(s);
-        i.map.insert(s, sym);
+        i.map.insert(h, s, sym);
         (sym, s)
     }
 
@@ -225,7 +298,9 @@ pub struct DecodeTable(std::sync::Arc<Decoded>);
 
 struct Decoded {
     table: SymbolTable,
-    syms: Vec<std::sync::OnceLock<Symbol>>,
+    /// The symbol of each text once interned, as its number plus one (0: not yet). Two threads
+    /// that intern the same text get the same symbol, so a race stores the same value twice.
+    syms: Vec<std::sync::atomic::AtomicU32>,
 }
 
 impl DecodeTable {
@@ -248,7 +323,15 @@ impl DecodeTable {
         let end = *t.ends.get(i)? as usize;
         let start = if i == 0 { 0 } else { t.ends[i - 1] as usize };
         let text = t.text.get(start..end)?;
-        Some(*self.0.syms[i].get_or_init(|| Symbol::intern(text)))
+        let slot = &self.0.syms[i];
+        match slot.load(std::sync::atomic::Ordering::Relaxed) {
+            0 => {
+                let sym = Symbol::intern(text);
+                slot.store(sym.0 + 1, std::sync::atomic::Ordering::Relaxed);
+                Some(sym)
+            }
+            n => Some(Symbol(n - 1)),
+        }
     }
 
     /// The table of the enclosing [`DecodeTable::run`], if any.

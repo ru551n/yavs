@@ -401,6 +401,32 @@ fn rename(f: &mut crate::Func, pc: usize, map: &mut FxMap<Reg, Reg>) {
     f.code[pc] = i;
 }
 
+/// An `Alloc` of 32 bytes that the interpreter fuses with the read of a signal, the copy or the
+/// concatenation into it runs in its dispatch loop; the frame forms of those fusions are out of
+/// line and cost the designs that run them every cycle 2 to 8 percent in cycles (#756). Only
+/// the interpreter alone keeps those blocks (compiled code is better with them in the frame).
+fn fused_in_loop(f: &crate::Func, pc: usize, end: usize, dst: Reg) -> bool {
+    // The constants and addresses in between are skipped by the predecoder.
+    let next = f.code[pc + 1..end].iter().find(|i| {
+        !matches!(
+            i,
+            Inst::Const { .. } | Inst::ConstF { .. } | Inst::AddrOf { .. }
+        )
+    });
+    matches!(
+        next,
+        Some(
+            &Inst::SigRead { dst: d, .. }
+                | &Inst::LCopy { dst: d, .. }
+                | &Inst::Cat {
+                    dst: d,
+                    logic: true,
+                    ..
+                }
+        ) if d == dst
+    )
+}
+
 /// Find the temporaries of block `b` (the `Alloc`s of constant size) and what the block's
 /// instructions do with their pointers.
 fn scan_block(
@@ -549,6 +575,7 @@ fn scan_block(
             && n > 0
             && n <= MAX_TEMP
             && local.len() < MAX_PER_BLOCK
+            && !(n == 32 && !layout_slots_on() && fused_in_loop(f, pc, blk.end as usize, dst))
         {
             let n = n.next_multiple_of(8);
             let g = cands.len();

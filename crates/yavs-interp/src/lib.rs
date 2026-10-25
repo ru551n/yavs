@@ -15,6 +15,7 @@
 mod binfile;
 mod census;
 mod debug;
+pub mod eloop;
 mod env;
 mod exec;
 mod foreign;
@@ -22,6 +23,7 @@ mod gather;
 mod pmemo;
 mod pre;
 mod scan;
+pub use eloop::{ElemLoop, elem_loops};
 pub use foreign::{ForeignModel, ModelArg, ModelCall, ModelSignal, ModelTxn, ScalarKind};
 pub use scan::{Scan, ScanFrom, ScanShape, SearchLoop, scan_bytes, search_loops};
 mod heap;
@@ -51,7 +53,7 @@ pub use debug::{
     DebugSession, Debugger, FrameView, HitCond, Hits, LineBp, LocalView, ProcState, ProcStatus,
     Resume, SignalBreak, Stop, StopReason, Watches, format_scalar,
 };
-pub use exec::copy_bits;
+pub use exec::{SPIN_CHECK, SPIN_LIMIT, copy_bits};
 pub use heap::{Heap, collections as gc_collections};
 pub use ieee::{code_table, edge_native};
 pub use pmemo::pmemo_stats;
@@ -951,6 +953,11 @@ pub struct TierFrame {
     /// The kernel's interrupt flag byte (`Ctx::interrupt_flags`; `NO_STOP` without a kernel):
     /// a process that never suspends polls `Interrupt::STOP` at its jumps back, as the interpreter does.
     pub stop: *const u8,
+    /// The machine's count of jumps back of a process that never suspends (`SPIN_LIMIT`): compiled
+    /// code adds one at each retreating `Br` of such a process and leaves for the interpreter,
+    /// which reports the activation, once it reaches the limit. Kept in the machine so it
+    /// survives every re-entry; `NO_SPIN` without a machine.
+    pub spin: *mut u64,
 }
 
 /// The bit of the byte `TierFrame::stop` points at that asks the run to stop.
@@ -958,6 +965,9 @@ pub const STOP_BIT: u8 = yavs_kernel::Interrupt::STOP;
 
 /// `TierFrame::stop` of a view without a kernel: never set.
 pub static NO_STOP: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// `TierFrame::spin` of a view without a machine: scratch, never read.
+pub static NO_SPIN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The bit of `TierFrame::owner` at which the runtime's id starts.
 pub const OWNER_RT_SHIFT: u32 = 32;
@@ -1037,6 +1047,7 @@ impl Default for TierFrame {
             cov: std::ptr::null(),
             cov_len: 0,
             stop: NO_STOP.as_ptr(),
+            spin: NO_SPIN.as_ptr(),
         }
     }
 }

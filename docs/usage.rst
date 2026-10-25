@@ -72,7 +72,7 @@ otherwise.
   listed per part (default 30). Without the option nothing is printed at those ends. On Unix,
   ``kill -USR1 PID`` prints the same report of a running simulation, which then goes on. A
   process with no wait statement and no sensitivity list never suspends, so time cannot advance;
-  ``W3102`` warns about it before time 0.
+  ``W3102`` warns about it before time 0, and its activation ends with ``E3009`` after 10^9 jumps back.
 * ``--shuffle[=SEED]`` prints its seed at the start of the run and repeats it in the diagnostics
   of the run; ``--shuffle=SEED`` replays the same order.
 * ``--gc-threshold SIZE`` sets how much memory access values may allocate (plain bytes, or a

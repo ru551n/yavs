@@ -5695,6 +5695,51 @@ with `grlib_leon3mp`), cold 8 (also `poc_arith_addw`, `sc5_timestamp`, `hdlm_lfs
 longer hides their run phase. The yavs run phase is where the remaining gap is; the analysis of every test is still faster than sim1's. Every cell was
 measured with the same bench binary.
 
+## Run phase of `poc_stat_histogram`, `sc5_fifo_repack` and `sc5_timestamp` against sim1 (#757, 2026-10-26)
+
+The three run-bound tests above sim1 in head-to-head 6 and not owned by an earlier issue. Bench build with `llvm`
+(`tools/build-bench.sh`), `--tier=auto`, executed instructions of the whole process (`perf stat`, compile thread
+included), G; sim1 = elaboration and run of the reference. `tools/realbench --compare`, run phase, medians of 5
+interleaved, one claimed core (12) of a loaded host (wall is noisy, the instructions are not):
+
+| test | sim1 | interpreter | auto cold, before / after | auto warm, before / after | run s warm, before / after | cold |
+|---|---:|---:|---:|---:|---:|---:|
+| poc_stat_histogram | 4.5 | 24.8 | 22.6 / 21.4 | 16.0 / 13.3 | 0.64 / 0.55 | 1.18 / 1.15 |
+| sc5_fifo_repack | 12.8 | 36.4 | 36.8 / 36.8 | 31.3 / 31.3 | 2.0 / 1.9 (level) | 2.24 / 2.22 |
+| sc5_timestamp | 4.6 | 6.6 | 6.8 / 6.8 | 6.7 / 6.7 | 0.41 / 0.41 | 0.40 / 0.40 |
+
+What the three spend (perf, per clock), and what was done:
+
+- **`poc_stat_histogram`** (the ratio of instructions to sim1 fell from 3.6 to 3.0 warm). Each clock `to_slm` rebuilds a 256 x 8
+  matrix and `to_slvv_8` 256 `get_row` calls read it back (2048 elements each way, 2.6 million `get_row` calls in the run);
+  sim1 does the same element by element at about 100 instructions an element. Warm, `get_row`, `to_slm` and
+  `to_slvv_8` (compiled, native frames) were 70 percent of the instructions, the per-element loops 190 instructions an
+  iteration (two object look-ups, checked index arithmetic, four plane words each way). Done: element loops
+  on native frames run through a helper (decisions.md "Element loops in compiled code"), and the out-of-line copy of at most 64
+  elements no longer stages its blocks. Left: about 1000 instructions of every `get_row` call outside the loop (frame, descriptor,
+  result copy, layout; a call of a function returning an unconstrained array), the memo callback of a pure function two
+  processes have given up (7 percent of the cycles, #762), and the helper itself (about 1000 instructions for an
+  eight-element row). The cold run interprets for its first half second because the three functions are compiled one after
+  the other, native and frame-mode part each (426 ms of compile CPU on the pinned core, 176 ms of it the frame-mode halves, which no
+  native frame of these functions ever needs; posted on #754).
+- **`sc5_fifo_repack`**: no hotspot. Interpreted, 630 million ops at about 50 instructions, 72 percent in the dispatch
+  loop: the `uniform` loop of the testbench's `rand_next` (`AddrUp`, `Uniform`, `LoadUp`, `FCmp`, `Br`: 15 percent of the ops),
+  loop latches (`CmpBr`, `Bin`, `Br`, `CondBr`), signal reads and slice drives; no single op is above 8 percent. `--tier=llvm` (everything compiled)
+  is 22 G against 31 to 36 under `auto`, which closes about half of the gap to sim1: the processes `p_in`, `p_col`, `p_sreg`,
+  `p_input` and `p_pack` stay interpreted under `auto` (budget and trial rules, #754). In compiled code 24 percent of the
+  cycles are the signal assignment path (`drive_now`, `assign_codes_now`, `yavs_rt_drive`, `drive_bits`) and 12 percent
+  `memmove` (not traced to its callers). Nothing changed here. Cold compiles only `rand_next`, at 2.6 s of a 2.8 s run.
+- **`sc5_timestamp`**: kernel-bound (55 percent of the samples, 2000 instructions a delta cycle against 1400 in sim1, 3.25
+  million cycles, spread evenly over `cycle`, `update`, `run_batch`, `run_until`, `drive`, `commit_out`). Compiled code
+  does not help (`--tier=llvm` 5.7 G). Nothing was changed; the earlier kernel rounds (decisions.md "Kernel round 3" and after)
+  took the single hotspots.
+
+Compile cost, measured on the histogram's three functions (79, 107 and 153 IR instructions): 54 to 113 ms of CPU per native
+compile, 62 percent of it code generation, 288 basic blocks after the passes for the 79-instruction `get_row`; the register
+allocator choice moves it by up to 20 percent, FastISel by 27 (rejected for the code it makes). The budget charges a native compile of that
+size 75 ms, so the first compile is allowed once the run has shown 460 ms of work (`YAVS_AUTO_TRACE`), which is most of a
+cold run of this length. Posted on #740 and #754.
+
 ## Real-world performance suite: yavs against sim1, head-to-head 5, 2026-10-25 (`tools/realbench`)
 
 This was the headline of the fifth run, superseded by head-to-head 6 above (one analysis call per file for both tools; `9e75d84e`, bench build with the `llvm` feature, one binary for every cell; the previous run, head-to-head 4 at `18b290ef`, is in brackets). Basis (root rule 23): `--tier=auto`
@@ -9267,3 +9312,48 @@ policy itself costs about 10 percent of main-thread cycles on this test (data on
 ## CI repair after the correctness batch (#759, 2026-10-25)
 
 Main CI was red from `02c455f2`. Causes and fixes: (1) `E1360` of #654 also fired for a `linkage` formal, which accepts an actual of any mode (VESTs `tc778`); it now covers `out`/`inout`/`buffer` only. (2) The `vests-1993` expected list still had `tc400`, `tc2565` and `tc537` as known failures, which #657, #658 and #643 fixed: all 1939 entries pass now. (3) `generics/generic_nested_proc` (W1501 on stderr) was fixed by #758. (4) The `process/no_wait_infinite` file (#583) ran unbounded and out of memory under `--tier=auto` and `--tier=llvm` (the llvm jobs on all three runners, the `corpus_waves` test): a never-suspending process now leaves compiled code at its jump back (`docs/decisions.md`).
+
+## The interpreter keeps the fused 32-byte blocks out of the frame (#756, 2026-10-25)
+
+Under `--tier=interp` an `Alloc` of 32 bytes that the next instruction fills as a signal read, a
+logic concatenation or an `LCopy` stays an `Alloc` (`opt/slots.rs` `fused_in_loop`), so
+`AllocReadVec`, `AllocCat` and `AllocLCopy` run in the dispatch loop as before the frame
+temporaries; `auto` and `llvm` are unchanged (decisions.md "Temporaries of a process in its
+frame"). A frame flag on the in-loop arms was tried first and cost 2.8 percent of instructions
+with the pass off. Interpreter, bench builds, one core, interleaved, median of 15 (cycles /
+instructions, new over the build before #668; main = #668 over the same):
+
+| design | main | new |
+|---|---|---|
+| `rtl_lfsr` | 1.031 / 1.024 | 0.988 / 0.992 |
+| `lfsr64` | 1.036 / 1.018 | 0.987 / 0.989 |
+| `lfsr64_xor` | 1.017 / 1.019 | 0.986 / 0.994 |
+| `xor_sig` | 1.020 / 1.025 | 0.997 / 1.003 |
+
+The other head-to-head and internal designs have the instructions of main (within 0.1 percent;
+`ff_rtl` -1.0, `rtl_ram` -0.4), their cycle differences between the builds are noise on a loaded
+host. Realbench (42 tests, interpreter, `--compare` main against the change, one run): wall
+geomean 1.00, instructions 1.00, CPU time 1.05 (runs of 0.01 to 0.05 s); `grlib_leon3mp` wall 1.06
+at 0.99 instructions in that loaded run. LLVM tier: `--tier=llvm` instructions equal to main.
+Work-counter ceilings `ops` of `reg_planes` and `out_port` raised (the blocks keep their
+statement markers). Checked on this commit: fmt, clippy with and without `llvm`, both test suites, the
+differential corpus on `yavs-interp`, `yavs`, `yavs-llvm` and `yavs-auto --tier-heat=1,0,0` at 1
+and 4 threads: 530/531 on each (the difference is the stderr warning of `process/no_wait_infinite`,
+a test of another commit).
+
+## A process that never suspends stays compiled under a 10^9 bound; the entry leak (yavs-llvm, yavs-interp, yavs-kernel, #583, #761, 2026-10-26)
+
+- The bound on the jumps back of a process without a wait is 10^9 in the interpreter and in compiled code (`YAVS_SPIN_LIMIT` lowers
+  it for tests); compiled code no longer leaves at every jump back but keeps a register-held count, stored back at every exit, and
+  leaves every 2^20 jumps (`docs/decisions.md` "stays in compiled code under a bound"). `E3009`, exit status and the finished wave file are the
+  interpreter's, as before.
+- #761: the memory growth (about 24 bytes per assignment in both tiers) was the direct entries one activation lists until it ends;
+  `Ctx::trim_run` keeps the last of identical ones at each of those exits. 12 million `a <= not a` stay near 60 MB (interpreter) and 125 MB
+  (compiled) instead of +290 MB.
+- Cost against the stop poll alone, release bench build, `--tier=llvm`, core 10: compute loop of 10^8 iterations (real arithmetic) 0.56 s to
+  0.58 s (+3.6 percent), integer loop of 3x10^8 iterations 1.23 s to 1.24 s (within noise).
+- The full default bound on `process/no_wait_infinite` (release bench build): `--tier=llvm` 6.4 s and 104 MB peak, `--tier=interp` 27.6 s and 40 MB.
+- New tests: `stuck` (exact limit per tier, a 3-million loop to `finish`), `rss` (flat memory), perf `llvm_nowait`; the
+  `sigint_ends_a_process_that_never_suspends*` tests set the bound out of reach instead of assuming the run lasts 1.5 s.
+  Difftest header key `spin=N`; `process/no_wait_infinite` uses it.
+

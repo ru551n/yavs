@@ -345,6 +345,35 @@ pub fn edge_key(signal: SignalId, elem: u32, kind: u8) -> u64 {
 /// level (`x'event and x = '1'`), not the IEEE function.
 pub const EDGE_LEVEL: u8 = 2;
 
+/// Removes every element whose key a later element has too, keeping the order of the rest.
+/// Linear for the few distinct keys a loop body makes (a hash set takes over beyond that).
+fn keep_last<T, K: Eq + std::hash::Hash + Copy>(v: &mut Vec<T>, key: impl Fn(&T) -> K) {
+    const FEW: usize = 16;
+    let (mut few, mut many) = (
+        SmallVec::<[K; FEW]>::new(),
+        std::collections::HashSet::new(),
+    );
+    let mut seen = |k: K| {
+        if many.is_empty() && few.len() < FEW {
+            if few.contains(&k) {
+                return false;
+            }
+            few.push(k);
+            return true;
+        }
+        if many.is_empty() {
+            many.extend(few.iter().copied());
+        }
+        many.insert(k)
+    };
+    let mut keep = vec![false; v.len()];
+    for (i, x) in v.iter().enumerate().rev() {
+        keep[i] = seen(key(x));
+    }
+    let mut it = keep.into_iter();
+    v.retain(|_| it.next().unwrap_or(true));
+}
+
 /// In `ProcState::phantoms`: a skipped assignment to a direct driver (no waveform entry).
 const SKIPPED: u32 = u32::MAX;
 
@@ -1748,6 +1777,23 @@ impl Ctx<'_> {
         ds.value.same_as(rel, n, v)
             && s.cur.same_as(r.offset as usize, n, v)
             && (!ds.shared || s.sole(r))
+    }
+
+    /// Drops what the run's lists hold twice (#761): of direct entries of one element (or range)
+    /// the last one, as the commit would leave it, and repeated scheduled times and skipped
+    /// assignments. A process that never suspends lists one entry per assignment for the whole
+    /// of its activation, so its caller trims now and then.
+    pub fn trim_run(&mut self) {
+        keep_last(&mut self.st.out, |o| (o.sig, o.slot, o.elem, 0));
+        keep_last(&mut self.st.outv, |o| (o.sig, o.slot, o.elem, o.len));
+        keep_last(&mut self.st.outb, |o| (o.sig, o.slot, o.elem, 0));
+        keep_last(&mut self.st.scheduled, |&(t, d)| (t, d));
+        keep_last(&mut self.st.phantoms, |&l| l);
+        for w in &mut self.st.waveforms {
+            if w.phantom.len() > 1 {
+                keep_last(&mut w.phantom, |&r| r);
+            }
+        }
     }
 
     /// The skipped assignments of driver `d` this run become real transactions again, before

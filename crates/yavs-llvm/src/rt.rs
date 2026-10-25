@@ -51,6 +51,8 @@ pub const DRIVE_BIT: &str = "yavs_rt_drive_bit";
 
 pub const LAYOUT_WORD: &str = "yavs_rt_layout_word";
 pub const SCAN: &str = "yavs_rt_scan";
+pub const ELOOP: &str = "yavs_rt_eloop";
+
 pub const CODES: &str = "yavs_rt_codes";
 
 pub const SCALAR: &str = "yavs_rt_scalar";
@@ -312,6 +314,7 @@ pub const MEM_FLAGS: u64 = std::mem::offset_of!(Mem, fr.flags) as u64;
 pub const MEM_COV: u64 = std::mem::offset_of!(Mem, fr.cov) as u64;
 
 pub const MEM_STOP: u64 = std::mem::offset_of!(Mem, fr.stop) as u64;
+pub const MEM_SPIN: u64 = std::mem::offset_of!(Mem, fr.spin) as u64;
 
 pub const MEM_COV_LEN: u64 = std::mem::offset_of!(Mem, fr.cov_len) as u64;
 pub const MEM_OBJS: u64 = std::mem::offset_of!(Mem, objs) as u64;
@@ -1527,35 +1530,14 @@ pub unsafe extern "C" fn yavs_rt_lcopy(
     n: u64,
 ) {
     cb(Cb::Lcopy);
-    // Up to 64 elements in at most two blocks each side (the usual copy): the planes are shifted
-    // as 128-bit words in place.
-    if (1..=64).contains(&n) && ns <= 2 && nd <= 2 && s0 < 64 && d0 < 64 {
+    // Up to 64 elements: the run read into registers, then written (so also where the two
+    // overlap), no staging of the blocks.
+    if n <= 64 && s0 < 64 && d0 < 64 && (s0 + n).div_ceil(64) <= ns && (d0 + n).div_ceil(64) <= nd {
         // SAFETY: compiled code checked `ns` readable blocks at `src` and `nd` writable blocks at
-        // `dst` (`Gen::host`); a plane is 8 bytes of a block of 32.
+        // `dst` (`Gen::host`), and the run lies inside them (the test above).
         unsafe {
-            let rd = |p: *const u8, blk: usize, plane: usize| -> u128 {
-                u128::from(std::ptr::read_unaligned(
-                    p.add(blk * 32 + plane * 8).cast::<u64>(),
-                ))
-            };
-            let mask: u64 = if n == 64 { !0 } else { (1u64 << n) - 1 };
-            let mut v = [0u64; 4];
-            for (plane, x) in v.iter_mut().enumerate() {
-                let hi = if ns == 2 { rd(src, 1, plane) } else { 0 };
-                *x = (((hi << 64 | rd(src, 0, plane)) >> s0) as u64) & mask;
-            }
-            let keep = !(u128::from(mask) << d0);
-            for (plane, &x) in v.iter().enumerate() {
-                let hi = if nd == 2 { rd(dst, 1, plane) } else { 0 };
-                let out = ((hi << 64 | rd(dst, 0, plane)) & keep) | (u128::from(x) << d0);
-                std::ptr::write_unaligned(dst.add(plane * 8).cast::<u64>(), out as u64);
-                if nd == 2 {
-                    std::ptr::write_unaligned(
-                        dst.add(32 + plane * 8).cast::<u64>(),
-                        (out >> 64) as u64,
-                    );
-                }
-            }
+            let v = crate::eloop::get_run(src, 0, s0 as usize, n as usize);
+            crate::eloop::put_run(dst, 0, d0 as usize, n as usize, v);
         }
         return;
     }
@@ -2023,6 +2005,75 @@ pub unsafe extern "C" fn yavs_rt_scan(
     }
     sc.iters
 }
+
+/// `yavs_rt_eloop(env, mem, prog, nprog, inputs, ind, bound, step, depth) -> iterations`: all but
+/// the last iterations of an element loop (`yavs_interp::elem_loops`) compiled code is at the
+/// head of (`crate::eloop::run`; `prog` is the loop's steps, a constant of the module, `inputs` the
+/// registers they read). Returns the iterations done, 0 where the generic code must go on: it
+/// then does every iteration and fails where and as it would.
+pub unsafe extern "C" fn yavs_rt_eloop(
+    env: *mut c_void,
+    mem: *mut Mem,
+    prog: *const i64,
+    nprog: u64,
+    inputs: *const u64,
+    ind: i64,
+    bound: i64,
+    step: i64,
+    depth: u64,
+    fhi: u64,
+    slots: *mut u8,
+    slots_len: u64,
+) -> i64 {
+    cb(Cb::Eloop);
+    struct Objects {
+        env: *mut c_void,
+        mem: *mut Mem,
+        depth: u64,
+        /// The calling native frame's own slots (`Mem::region` finds the frames above it only).
+        fhi: u64,
+        slots: *mut u8,
+        slots_len: u64,
+    }
+    impl crate::eloop::LoopMem for Objects {
+        fn region(&mut self, a: u64, write: bool) -> Option<(*mut u8, u64)> {
+            if a >> 32 == self.fhi && !self.slots.is_null() {
+                return Some((self.slots, self.slots_len));
+            }
+            // SAFETY: the pointers are the ones compiled code was given.
+            let m = unsafe { &*self.mem };
+            if let Some(r) = m.region(a, self.depth, write, true) {
+                return Some(r);
+            }
+            // SAFETY: as above; the object is in the table afterwards.
+            if unsafe { yavs_rt_obj(self.env, self.mem, a, u32::from(write)) } == 0 {
+                return None;
+            }
+            // SAFETY: as above.
+            unsafe { &*self.mem }.region(a, self.depth, write, true)
+        }
+    }
+    let mut objs = Objects {
+        env,
+        mem,
+        depth,
+        fhi,
+        slots,
+        slots_len,
+    };
+    // SAFETY: compiled code passes its constant program of `nprog` aligned words and an array
+    // of `MAX_INPUTS` words with the inputs it filled.
+    let (words, inputs) = unsafe {
+        (
+            std::slice::from_raw_parts(prog, nprog as usize),
+            std::slice::from_raw_parts(inputs, yavs_interp::eloop::MAX_INPUTS),
+        )
+    };
+    crate::eloop::run(words, inputs, ind, bound, step, ELOOP_LIMIT, &mut objs)
+}
+
+/// The most iterations one call of `yavs_rt_eloop` does (the generic code asks again after it).
+const ELOOP_LIMIT: i64 = 1 << 24;
 
 /// The `ctl` word of `yavs_rt_scan` for a search loop.
 pub fn scan_ctl(l: &yavs_interp::SearchLoop) -> u64 {

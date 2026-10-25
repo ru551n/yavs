@@ -17,6 +17,7 @@
 mod arena;
 pub mod auto;
 mod census;
+mod eloop;
 pub mod generator;
 #[cfg(feature = "llvm")]
 mod jit;

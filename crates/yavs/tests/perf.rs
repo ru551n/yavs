@@ -264,7 +264,7 @@ case!(
         ("wakes", Max(418)),
         ("update_general", Max(2)),
         ("direct_planes", Min(195)),
-        ("ops", Max(4408)),
+        ("ops", Max(4620)),
     ]
 );
 case!(
@@ -605,7 +605,7 @@ case!(
         ("wakes", Max(212)),
         ("events", Max(224)),
         ("update_general", Max(2)),
-        ("ops", Max(1607)),
+        ("ops", Max(1660)),
     ]
 );
 
@@ -1105,6 +1105,12 @@ mod llvm {
             ("llvm_native_frames", Min(3)),
         ]
     );
+    // A process without a wait runs its jumps back in compiled code, leaving every 2^20th (#583).
+    llvm_case!(
+        llvm_nowait,
+        "jumps=",
+        [("cb_step", Max(4)), ("cb_signal", Max(2))]
+    );
     // Constants found once stay for the run (#679).
     llvm_case!(llvm_hostless, "acc=", [("cb_host", Max(2))]);
     // Functions and procedures that read signals run on native frames (#519): 900 calls, no step.
@@ -1169,6 +1175,17 @@ mod llvm {
             ("cb_xstep", Max(0)),
             ("cb_step", Max(5)),
             ("cb_layout", Max(1648))
+        ]
+    );
+    llvm_case!(
+        llvm_eloop,
+        "acc=",
+        [
+            ("cb_eloop", Min(175)),
+            ("cb_step", Max(6)),
+            ("cb_deopt", Max(0)),
+            ("cb_host", Max(22)),
+            ("llvm_native_frames", Min(2)),
         ]
     );
     llvm_case!(

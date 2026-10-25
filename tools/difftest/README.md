@@ -30,7 +30,7 @@ systemd-run for debugging.
 
 One line in the first 15 lines of each `.vhd`:
 
-    -- difftest: top=NAME [std=2008|2019|1993|2002] [stop=55ns] [res=ps] [relaxed] [psl] [exit=N] [ref=hand] [ignore=a,b]
+    -- difftest: top=NAME [std=2008|2019|1993|2002] [stop=55ns] [res=ps] [relaxed] [psl] [exit=N] [ref=hand] [ignore=a,b] [spin=N]
 
 - `top`: top-level entity (required). All design units in the file are analysed into one library.
 - `std`: default 2008. `stop`: passed as `--stop-time` (needed for free-running clocks).
@@ -42,6 +42,8 @@ One line in the first 15 lines of each `.vhd`:
 - `psl`: yavs gets `--psl` (read `-- psl` comment pragmas); the references read them anyway.
 - `exit`: expected process exit status of the reference (default 0). `--bless` refuses to write
   an `.expected` whose exit status differs, so a broken test cannot be blessed by accident.
+- `spin`: the bound on the jumps back of a process that never suspends, as `YAVS_SPIN_LIMIT` for yavs (default 10^9, minutes
+  in a debug build); lower it so a test that runs into it ends in seconds. The references ignore it.
 - `ignore`: fields added to the ignore set for this test only (below), e.g. `ignore=order` for a
   test whose processes report in the same cycle. Say why in a comment.
 - PSL: the reference simulator templates read `-- psl` comments (`--psl`, `-fpsl`). A PSL failure

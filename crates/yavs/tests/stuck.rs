@@ -29,6 +29,11 @@ fn yavs(args: &[&str]) -> Output {
 
 /// Analyze `tests/cli/NAME.vhd` (2008) and run its entity with `extra`; returns the output.
 fn run(name: &str, extra: &[&str]) -> Output {
+    run_env(name, extra, &[])
+}
+
+/// `run` with environment variables set for the run.
+fn run_env(name: &str, extra: &[&str], env: &[(&str, &str)]) -> Output {
     let t = tmp(name);
     let lib = format!("--work=work:{}/lib", t.display());
     let file = format!("{name}.vhd");
@@ -37,7 +42,13 @@ fn run(name: &str, extra: &[&str]) -> Output {
             .status
             .success()
     );
-    let o = yavs(&[&["run", &lib][..], extra, &[name]].concat());
+    let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .args(["--color", "never"])
+        .args([&["run", &lib][..], extra, &[name]].concat())
+        .envs(env.iter().copied())
+        .current_dir(dir())
+        .output()
+        .expect("run yavs");
     let _ = std::fs::remove_dir_all(&t);
     o
 }
@@ -104,10 +115,7 @@ fn process_without_wait_is_warned_about() {
     assert!(o.stderr.is_empty(), "{}", clean(&o));
 }
 
-/// The activation of a process that never suspends is bounded in every tier (#583): the
-/// compiled one leaves its code at the jump back and the interpreter ends it.
-#[test]
-fn a_process_that_never_suspends_ends_with_an_error() {
+fn tiers() -> Vec<&'static str> {
     let mut tiers = vec!["--tier=interp"];
     if cfg!(feature = "llvm") {
         tiers.extend(["--tier=llvm", "--tier=auto"]);
@@ -115,13 +123,58 @@ fn a_process_that_never_suspends_ends_with_an_error() {
     if cfg!(feature = "clift") {
         tiers.extend(["--tier=clift", "--tier=clift-auto"]);
     }
-    for tier in tiers {
-        let o = run("stuck_spin", &[tier]);
+    tiers
+}
+
+/// The activation of a process that never suspends is bounded in every tier (#583), at the same
+/// count: `YAVS_SPIN_LIMIT` lowers the bound (not a multiple of the compiled code's check
+/// interval, so the exact count is tested), and a run of `last` jumps back ends by itself or with
+/// E3009 on either side of it.
+#[test]
+fn a_process_that_never_suspends_ends_with_an_error() {
+    let env = [("YAVS_SPIN_LIMIT", "2000000")];
+    for tier in tiers() {
+        let o = run_env("stuck_spin", &[tier], &env);
         assert_eq!(o.status.code(), Some(1), "{tier}: {}", clean(&o));
-        assert!(
-            String::from_utf8_lossy(&o.stderr).contains("E3009"),
-            "{tier}"
-        );
+        let e = String::from_utf8_lossy(&o.stderr);
+        assert!(e.contains("E3009"), "{tier}: {e}");
+        // Just inside the bound: the run finishes. Just outside: E3009.
+        for (last, ok) in [("1999900", true), ("2000100", false)] {
+            let o = run_env("stuck_count", &[tier, &format!("-glast={last}")], &env);
+            let all = String::from_utf8_lossy(&o.stdout).to_string() + &clean(&o);
+            assert_eq!(
+                o.status.code(),
+                Some(i32::from(!ok)),
+                "{tier} {last}: {all}"
+            );
+            assert_eq!(all.contains("counted"), ok, "{tier} {last}: {all}");
+            assert_eq!(all.contains("E3009"), !ok, "{tier} {last}: {all}");
+        }
+    }
+}
+
+/// A long loop without a wait that ends with `finish` runs to its end in every tier, past
+/// several trims and checks of the compiled code (#583).
+#[test]
+fn a_long_loop_without_a_wait_runs_to_its_finish() {
+    for tier in tiers() {
+        let o = run("stuck_count", &[tier, "-glast=3000000"]);
+        let out = String::from_utf8_lossy(&o.stdout);
+        assert_eq!(o.status.code(), Some(0), "{tier}: {out}{}", clean(&o));
+        assert!(out.contains("counted 3000000"), "{tier}: {out}");
+    }
+}
+
+/// The bound is 10^9 jumps back as shipped (not run in the suite: seconds in a release build
+/// with the compiled tier, minutes in the interpreter).
+#[cfg(feature = "llvm")]
+#[test]
+#[ignore = "long: 10^9 jumps back"]
+fn the_default_bound_is_a_billion_jumps_back() {
+    for last in ["999999000", "1000001000"] {
+        let o = run("stuck_count", &["--tier=llvm", &format!("-glast={last}")]);
+        let all = String::from_utf8_lossy(&o.stdout).to_string() + &clean(&o);
+        assert_eq!(all.contains("E3009"), last == "1000001000", "{last}: {all}");
     }
 }
 
@@ -297,12 +350,14 @@ fn sigint_ends_spin(tier: Option<&str>) {
         .args(["--color", "never", "run"])
         .args(tier)
         .args([&lib, &wave, "stuck_spin"])
+        // The bound out of reach, so the run cannot end by itself whatever the speed of the build.
+        .env("YAVS_SPIN_LIMIT", "1000000000000000")
         .current_dir(dir())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawn");
-    // Give the run time to start the process.
+    // Give the run time to start the process (it cannot end by itself).
     std::thread::sleep(std::time::Duration::from_millis(1500));
     assert!(child.try_wait().expect("wait").is_none(), "ended by itself");
     assert!(

@@ -375,6 +375,7 @@ const PASS: &[&str] = &[
     "resolution/array_record_whole",
     "resolution/array_whole",
     "resolution/bus_guarded",
+    "resolution/guarded_bus_port",
     "resolution/custom_resolution",
     "resolution/nested_array_whole",
     "resolution/nested_record_whole",

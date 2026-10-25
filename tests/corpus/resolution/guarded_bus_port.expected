@@ -1,0 +1,4 @@
+exit	0
+diag	note	10000000	0	:guarded_bus_port:_p0	s1='0'
+diag	note	60000000	0	:guarded_bus_port:_p0	s2='0'
+diag	note	160000000	0	:guarded_bus_port:_p0	s3='1'

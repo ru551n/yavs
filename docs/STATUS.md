@@ -8811,3 +8811,7 @@ drives (`assign_codes_now`, `drive_bits`, `drive_now`, `yavs_rt_drive`: 8 percen
 more than in the window. Over the whole run the tier's own runtime functions are 27 percent of the cycles (6.2 k of 23.2 k samples), as much as
 the compiled code itself. Tried and not kept: entering only the first 8 objects of a process record and the rest on a miss (fewer
 instructions, cycles 7 percent higher on the whole run).
+
+## CI repair after the correctness batch (#759, 2026-10-25)
+
+Main CI was red from `02c455f2`. Causes and fixes: (1) `E1360` of #654 also fired for a `linkage` formal, which accepts an actual of any mode (VESTs `tc778`); it now covers `out`/`inout`/`buffer` only. (2) The `vests-1993` expected list still had `tc400`, `tc2565` and `tc537` as known failures, which #657, #658 and #643 fixed: all 1939 entries pass now. (3) `generics/generic_nested_proc` (W1501 on stderr) was fixed by #758. (4) The `process/no_wait_infinite` file (#583) ran unbounded and out of memory under `--tier=auto` and `--tier=llvm` (the llvm jobs on all three runners, the `corpus_waves` test): a never-suspending process now leaves compiled code at its jump back (`docs/decisions.md`).

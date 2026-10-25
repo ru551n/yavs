@@ -104,6 +104,25 @@ fn process_without_wait_is_warned_about() {
     assert!(o.stderr.is_empty(), "{}", clean(&o));
 }
 
+/// The activation of a process that never suspends is bounded in every tier (#583): the
+/// compiled one leaves its code at the jump back and the interpreter ends it.
+#[test]
+fn a_process_that_never_suspends_ends_with_an_error() {
+    let tiers: &[&str] = if cfg!(feature = "llvm") {
+        &["--tier=interp", "--tier=llvm", "--tier=auto"]
+    } else {
+        &["--tier=interp"]
+    };
+    for tier in tiers {
+        let o = run("stuck_spin", &[tier]);
+        assert_eq!(o.status.code(), Some(1), "{tier}: {}", clean(&o));
+        assert!(
+            String::from_utf8_lossy(&o.stderr).contains("E3009"),
+            "{tier}"
+        );
+    }
+}
+
 #[test]
 fn hang_report_at_stop_time() {
     let e = snapshot(

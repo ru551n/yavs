@@ -1,5 +1,4 @@
 # tools/corpus/run.py expected results for vests-1993 (yavs); one line per manifest entry, in order
-# Known yavs failures (each has an issue; the reference simulators accept them): tc400 #657; tc2565 #658; tc537 #643.
 PASS work vests/vhdl-93/billowitch/compliant/tc1.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc10.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc100.vhd
@@ -807,7 +806,7 @@ PASS work vests/vhdl-93/billowitch/compliant/tc2559.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc2562.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc2563.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc2564.vhd
-FAIL work vests/vhdl-93/billowitch/compliant/tc2565.vhd
+PASS work vests/vhdl-93/billowitch/compliant/tc2565.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc2566.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc2567.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc2569.vhd
@@ -1152,7 +1151,7 @@ PASS work vests/vhdl-93/billowitch/compliant/tc397.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc398.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc399.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc40.vhd
-FAIL work vests/vhdl-93/billowitch/compliant/tc400.vhd
+PASS work vests/vhdl-93/billowitch/compliant/tc400.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc401.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc402.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc403.vhd
@@ -1275,7 +1274,7 @@ PASS work vests/vhdl-93/billowitch/compliant/tc530.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc531.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc534.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc535.vhd
-FAIL work vests/vhdl-93/billowitch/compliant/tc537.vhd
+PASS work vests/vhdl-93/billowitch/compliant/tc537.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc538.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc54.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc541.vhd

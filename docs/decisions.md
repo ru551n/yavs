@@ -9726,3 +9726,15 @@ bodies would have worked on the half that already beat the interpreter, so neith
   when the code is generated and constants are linked into the code. The ideas taken are its outcome, not its code: resolve an object once and
   keep it (here for the run, in the object table and the process record), and answer a layout from what is already known (here the
   interpreter's memo) instead of building it per access. Nothing was copied.
+
+## A process that never suspends leaves compiled code at its jump back (yavs-llvm, #583, #737, #759, 2026-10-25)
+
+Compiled code polled only the stop bit at the retreating `Br` of a process without `MAY_SUSPEND` (#737), so the activation bound
+of #583 (`SPIN_LIMIT`, interpreter only) did not hold under `--tier=auto` or `--tier=llvm`: the `process/no_wait_infinite` corpus
+file ran until the host ran out of memory (the compiled loop queues a transaction every iteration), which turned the llvm CI jobs
+red. The retreating `Br` now always leaves compiled code; the interpreter steps it (stop request, spin count, `E3009`) and, as
+before, re-enters compiled code at the next entry. Cost: a never-suspending loop runs at interpreter speed plus an exit per
+iteration, acceptable because such a process is already warned about (`W3102`) and bounded at `SPIN_LIMIT` jumps. Test:
+`stuck::a_process_that_never_suspends_ends_with_an_error` in every tier. Open: the compiled loop of `a <= not a` keeps growing
+memory where the interpreter replaces the pending transaction (filed separately).
+

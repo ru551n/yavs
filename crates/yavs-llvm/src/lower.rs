@@ -4907,26 +4907,14 @@ impl Gen {
                     }
                     Inst::Br { to } => {
                         let bb = block_bb(to)?;
-                        // A process that never suspends polls the stop request (Ctrl-C) at
-                        // every jump back, as the interpreter does (#737): on a request it leaves
-                        // at this `Br`, whose step suspends the process. The retreating `Br`s
-                        // only (a `Br` to a join laid out earlier is no loop), and as the
-                        // interpreter steps only those that jump back in the code.
+                        // A process that never suspends leaves compiled code at every jump
+                        // back: the interpreter steps this `Br`, polls the stop request (#737)
+                        // and bounds the activation (#583). The retreating `Br`s only (a `Br`
+                        // to a join laid out earlier is no loop), and as the interpreter steps
+                        // only those that jump back in the code.
                         if backs.contains(&pc) && start_of(to)? <= pc as usize {
-                            let flags = self.mem_ld(&c, MEM_STOP, self.ptr);
-                            let byte = LLVMBuildLoad2(self.b, self.i8, flags, c"".as_ptr());
-                            LLVMSetOrdering(
-                                byte,
-                                llvm_sys::LLVMAtomicOrdering::LLVMAtomicOrderingMonotonic,
-                            );
-                            let hit = LLVMBuildAnd(
-                                self.b,
-                                byte,
-                                LLVMConstInt(self.i8, u64::from(yavs_interp::STOP_BIT), 0),
-                                c"".as_ptr(),
-                            );
-                            let bad = self.icmp(IP::LLVMIntNE, hit, LLVMConstInt(self.i8, 0, 0));
-                            self.exit_if(&c, bad, pc);
+                            let always = LLVMConstInt(LLVMInt1TypeInContext(self.ctx), 1, 0);
+                            self.exit_if(&c, always, pc);
                         }
                         let snap = self.edge_prep(&c, &[start_of(to)?]);
                         self.edge_to(&c, &snap, start_of(to)?);

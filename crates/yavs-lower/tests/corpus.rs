@@ -304,6 +304,7 @@ const PASS: &[&str] = &[
     "process/call_error_path",
     "process/call_conversions_unconstrained",
     "process/case_if",
+    "process/no_wait_infinite",
     "process/wait_in_sensitivity_proc",
     "process/conditional_expr_2019",
     "process/edge_shapes",

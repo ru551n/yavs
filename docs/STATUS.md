@@ -193,7 +193,7 @@ suite's pass list).
 ## performance (`tools/bench`, #387)
 
 The shared benchmark harness (`tools/bench/AGENTS.md`) measures every performance change the same way:
-`python3 -I tools/bench/run.py --compare A B`. Phase times come from `yavs run --time-report`. Testbenches of real projects (41, against sim1 and between binaries): `tools/realbench`. Analysis cells are batched calls since #745 (section "Analysis in batched calls"; tables before it are one call per file and not comparable). Current comparison with sim1 (rule 23: `--tier=auto`, total wall incl. analysis, cold and warm): section "Real-world performance suite: yavs against sim1, head-to-head 5, 2026-10-25"; geomean of the 41 realbench totals (libraries analysed too) 0.23 warm, 0.43 cold (own files + elab + run 0.25 and 0.49; head-to-head 4 had 0.25 and 0.46 for the total, 0.27 and 0.52 for own + elab + run), executed instructions yavs / sim1 0.32 (0.35 before), tiny-test corpus 0.12 and 0.26, the h2h designs 0.71 and 0.83 (three designs lost their warm speedup, #749; fixed, section "`--tier=auto` warm runs of one-loop processes"). The tables below are older measurements on the earlier host.
+`python3 -I tools/bench/run.py --compare A B`. Phase times come from `yavs run --time-report`. Testbenches of real projects (41, against sim1 and between binaries): `tools/realbench`. Analysis cells are batched calls since #745 (section "Analysis in batched calls"; tables before it are one call per file and not comparable). Current comparison with sim1 (rule 23: `--tier=auto`, total wall incl. analysis, cold and warm): section "Real-world performance suite: yavs against sim1, head-to-head 6, 2026-10-26", on the batched-call analysis basis (#745, both tools analyse consecutive files of a library in one call; head-to-head 1 to 5 were one call per file and are not comparable): geomean of the 41 realbench totals (libraries analysed too) 0.22 warm, 0.64 cold (the same run on the old per-file basis 0.24 and 0.42; head-to-head 5 had 0.23 and 0.43); own files + elab + run 0.23 and 0.49, elab + run 0.23 and 0.47, executed instructions yavs / sim1 0.31 and 0.60, tiny-test corpus 0.11 and 0.25, the h2h designs 0.56 and 0.78. The tables below are older measurements on the earlier host.
 
 Baseline of main at the commit that added the harness (release build, Intel Core Ultra 9 275HX, 24 CPUs,
 host shared with other agents; median CPU seconds of 3 runs, phase CPU in 10 ms steps, `--threads 1`):
@@ -5576,9 +5576,90 @@ Against sim1 (batched calls for both, yavs / sim1 wall, before / after, runs on 
 (0.16 s against 0.55 s). All 42 against sim1 with the final build (host load 12): cold geometric mean 0.63 (instructions 0.60), warm 0.08; 38 tests below 1 cold, all below 1 warm; at par or above cold: `fletcher_bufferreader`, `fletcher_bufferwriter_512`, `fletcher_bufferwriter_prim32` (1.00) and `en_cl_fix_pkg` (1.10). Not verified: a quiet-host rerun of all 42 against sim1; the interpreter, run and elab phases
 (nothing in them changed); Windows and aarch64 (the code is portable, CI covers it).
 
+## Real-world performance suite: yavs against sim1, head-to-head 6, 2026-10-26 (`tools/realbench`)
+
+This is the current headline (`d3123c88`, bench build with the `llvm` feature, one binary for every cell; the previous run, head-to-head 5 at `9e75d84e`, is in brackets where it is comparable). **The basis of the
+analysis cells changed (#745): both tools now analyse consecutive files of one library and standard in ONE call (`--analyze-calls batched`, the realbench default; the shared-work cost fix is `66219d63`), where
+head-to-head 1 to 5 used one call per file.** The two bases are not comparable, so the tables give both: "batched" is the new headline, "per-file" is the old basis measured once (one pass of the analysis cells with
+`--analyze-calls per-file`, the run cells taken from the batched passes, they are the same cells). Basis otherwise unchanged (root rule 23): `--tier=auto` only, TOTAL wall as a user runs it (analysis of every file of
+the compile order plus elaboration and run, against sim1's analysis plus elaboration plus run); cold = empty compilation cache and fresh libraries, warm = cache present. Ratios are yavs / sim1, below 1 means yavs
+is faster. Method exactly as head-to-head 5: 5 timed runs per cell, interleaved, two complete passes, the lower pass median per cell for both tools, a sim1-only control at the start and the end; one timed process per
+core, the cores held through `tools/claim core` locks (9, 10, 11 and 12 of a Ryzen 9 7950X3D, SMT siblings idle; core 8 was kept away because another agent timed on it without a lock), host load average 7 to 28.
+Raw results are not committed. A first attempt was discarded after 4 minutes because core 8 was shared with an unlocked timing job.
+
+Geometric mean over the same 41 tests, ratio yavs / sim1 (the per-file basis of this run, then head-to-head 5, in brackets):
+
+| basis | total warm | total cold |
+|---|---:|---:|
+| **total, libraries analysed too, batched calls** | **0.22 (0.24; 0.23)** | **0.64 (0.42; 0.43)** |
+| own files + elab + run | 0.23 (0.24; 0.25) | 0.49 (0.46; 0.49) |
+| elab + run only | 0.23 (0.23; 0.24) | 0.47 (0.47; 0.50) |
+| executed instructions (run cell), yavs / sim1 | 0.31 (same cells; 0.32) | 0.60 (same cells; 0.60) |
+
+Head-to-head 4 (per-file basis) had 0.25 and 0.46 for the total, 0.27 and 0.52 for own + elab + run, 0.26 and 0.53 for elab + run and 0.35 and 0.65 for the instructions. With `grlib_leon3mp` (VHDL-93 mode, kept out
+of the means to keep the basis) the full total is 0.23 warm and 0.66 cold batched (0.26 and 0.44 per-file, 0.25 and 0.45 at head-to-head 5, 0.27 and 0.48 at head-to-head 4).
+
+What the basis change does: batching helps sim1 far more than yavs, because sim1 pays a large fixed cost per call. Summed over the 41 tests the analysis (library + own files) is, per-file to batched, 156 s to 25 s
+for sim1 and 25 s to 2 s for yavs warm, 154 s to 24 s for sim1 and 49 s to 14 s for yavs cold. The warm analysis ratio improves (0.15 to 0.08 geomean) because yavs' warm analysis is nearly free; the cold analysis
+ratio rises from 0.33 to 0.63, because yavs parses every library file once (14 s of the 64 s cold total) while sim1's analysis fell to 24 s. With sim1's analysis cheap the fixed run phase weighs more in the total,
+so the total cold ratio rises from 0.42 to 0.64 and the total warm ratio stays at 0.22 to 0.24; own + elab + run and elab + run, which batching barely touches, did not move (0.49 and 0.47 cold). Summed over the 41
+tests the full total on the batched basis is 43 s (yavs) against 76 s (sim1) warm and 64 s against 76 s cold (per-file basis: 66 against 207 s and 99 against 205 s; head-to-head 5: 60 against 188 s and 92 against
+187 s). The executed instructions sum to 545 G (yavs) against 522 G (sim1) (552 G against 522 G). Tests faster than sim1: batched 36 of 41 warm and 33 of 41 cold; per-file basis 40 and 39 (39 and 39 at head-to-head 5).
+
+By category (batched; in brackets the per-file basis of this run, then head-to-head 5):
+
+| category | n | total warm | total cold | own+elab+run warm | own+elab+run cold |
+|---|---:|---:|---:|---:|---:|
+| **overall** | 41 | 0.22 (0.24; 0.23) | 0.64 (0.42; 0.43) | 0.23 (0.24; 0.25) | 0.49 (0.46; 0.49) |
+| bus-tristate | 1 | 0.06 (0.15; 0.14) | 0.56 (0.31; 0.32) | 0.06 (0.06; 0.06) | 0.32 (0.32; 0.33) |
+| cpu | 3 | 0.59 (0.52; 0.56) | 0.67 (0.61; 0.63) | 0.60 (0.60; 0.66) | 0.66 (0.66; 0.70) |
+| fsm | 4 | 0.31 (0.22; 0.21) | 0.70 (0.39; 0.37) | 0.41 (0.41; 0.44) | 0.56 (0.56; 0.61) |
+| memory | 4 | 0.16 (0.20; 0.18) | 0.77 (0.38; 0.39) | 0.18 (0.21; 0.21) | 0.59 (0.49; 0.50) |
+| numeric | 8 | 0.17 (0.21; 0.21) | 0.61 (0.38; 0.39) | 0.18 (0.20; 0.20) | 0.42 (0.39; 0.40) |
+| protected | 8 | 0.19 (0.22; 0.22) | 0.50 (0.41; 0.45) | 0.23 (0.26; 0.27) | 0.46 (0.44; 0.48) |
+| records | 7 | 0.15 (0.20; 0.18) | 0.52 (0.35; 0.35) | 0.14 (0.15; 0.16) | 0.35 (0.34; 0.34) |
+| rtl-datapath | 2 | 0.37 (0.38; 0.38) | 0.94 (0.61; 0.69) | 0.31 (0.33; 0.38) | 0.73 (0.66; 0.74) |
+| strings-textio | 2 | 0.07 (0.15; 0.14) | 0.51 (0.33; 0.31) | 0.04 (0.04; 0.05) | 0.21 (0.21; 0.24) |
+| wide-vectors | 2 | 1.93 (0.93; 0.83) | 2.17 (1.10; 1.10) | 2.23 (2.23; 2.10) | 2.38 (2.38; 2.48) |
+
+The h2h designs (10 that sim1 runs): 0.56 warm, 0.78 cold (0.71, 0.83 at head-to-head 5): the two designs that had lost their warm speedup are back, `compute_h2h` 477 to 153 ms warm (ratio 0.15 to 0.05) and
+`xor_types` 374 to 130 ms (0.40 to 0.13), `xor_sig` 377 to 183 ms (#749); the others are level (`rtl_ff` 1.22 to 1.20, `rtl_fan` 0.85 to 0.83, `lfsr64_xor` 0.80 to 0.72, `rtl_lfsr` 1.59 to 1.60, `lfsr64` 1.42 to 1.42,
+`rtl_chain` 1.24 to 1.29, `rtl_ram` 0.88 to 0.87, `rtl_bus` 0.28 to 0.28). Slower than sim1 warm: `rtl_lfsr`, `lfsr64`, `rtl_chain`, `rtl_ff`. The tiny-test corpus: the same 397 tests that both tools run (127 dropped
+because a tool rejects or fails them): 0.114 warm, 0.245 cold (0.117 and 0.263 at head-to-head 5; analysis is one file per call here, unaffected by the basis change); all 397 faster than sim1 warm and 393 cold;
+medians 4.6 against 38.3 ms warm. Per test both tools were 10 to 13 percent slower than at head-to-head 5 (yavs x1.10 warm, sim1 x1.13), the host.
+
+Repeatability and drift. The single batched passes give a full total of 0.219 and 0.222 warm and 0.663 and 0.629 cold (merged 0.217 and 0.638). Tests whose two passes differ by more than 20 percent in the full
+ratio: `vunit_logging`, `uvvm_util_rand`, `uvvm_axistream_vvc`, `sc5_fifo_repack`, `sc5_timestamp`, `poc_fifo_ic_assembly` (warm), `poc_strings`, `poc_uart_rx`, `fletcher_bufferwriter_prim32` and `poc_fifo_ic_assembly`
+(cold), mostly tests whose total is a few tenths of a second. The host was noisier than at head-to-head 5, which the sim1 control shows: the run phase of the three long tests (`fletcher_bufferwriter_512`,
+`poc_arith_addw`, `vai_window_gen_interlock`; sim1 / yavs seconds) was at the start 2.03 / 4.46, 5.67 / 5.97, 4.68 / 8.44 (head-to-head 5: 1.88 / 4.20, 5.41 / 5.80, 3.98 / 8.64), in the first pass 2.05 / 4.35,
+5.82 / 6.13, 6.09 / 9.47, in the second 1.99 / 4.30, 5.60 / 5.74, 9.42 / 12.81 and at the end 2.77 / 5.62, 7.97 / 8.31, 8.05 / 12.73. So `vai_window_gen_interlock` slowed from 4.7 s (start) to 6.1 s (first pass) to 9.4 s (second pass) for sim1 and from 8.4 to 9.5 to 12.8 s for yavs (both move together,
+so its ratio holds, but its absolute seconds and the sums above carry the drift), and the end control is 36 to 72 percent above the start on all three tests: part of the late cells were timed on a loaded host (load 27 at the end). Over the same tests sim1's run phase is x1.15 and yavs' x1.07 against head-to-head 5 (tests over 0.3 s; executed instructions of sim1 unchanged, x1.00). Sim1 slowed more than yavs,
+which flatters the ratio slightly; the instruction ratio (0.32 to 0.31 warm), which is load-independent, moved less. A quiet-host rerun was not made.
+
+Worst 10 by warm total ratio on the batched basis, with `grlib_leon3mp` (seconds are medians; run = elaboration + run, yavs vs sim1; the ratios on the per-file basis of this run and at head-to-head 5 in brackets,
+instruction ratio yavs / sim1 in the sixth column):
+
+| test | warm | cold | run s | instr | issue |
+|---|---:|---:|---|---:|---|
+| grlib_leon3mp | 3.31 (2.31; 2.17) | 3.18 (2.24; 2.32) | 48.35 vs 12.98 | 2.6 | #677 |
+| fletcher_bufferwriter_512 | 2.06 (1.38; 1.35) | 2.11 (1.44; 1.47) | 4.30 vs 1.99 | 1.9 | #519 |
+| sc5_fifo_repack | 1.81 (0.63; 0.52) | 2.23 (0.84; 0.82) | 2.08 vs 0.89 | 2.7 | #519 |
+| vai_window_gen_interlock | 1.33 (0.91; 1.06) | 1.82 (1.30; 1.52) | 9.47 vs 6.09 | 2.0 | #520 |
+| fletcher_bufferreader | 1.32 (0.76; 0.75) | 1.43 (0.86; 0.87) | 1.63 vs 1.14 | 1.3 | #519, #523 |
+| poc_stat_histogram | 1.20 (0.38; 0.38) | 2.45 (0.74) | 0.65 vs 0.33 | 3.4 | none specific |
+| poc_arith_addw | 0.99 (0.73; 0.82) | 1.23 (0.97; 0.96) | 5.74 vs 5.60 | 1.0 | #520 |
+| hdlm_lfsr | 0.86 (0.45; 0.45) | 1.12 (0.56; 0.60) | 1.52 vs 1.13 | 1.3 | none specific |
+| sc5_timestamp | 0.82 (0.30; 0.23) | 1.20 (0.50) | 0.44 vs 0.29 | 1.5 | none specific |
+| neorv32_single_min | 0.76 (0.66; 0.76) | 0.83 (0.83) | 2.88 vs 3.70 | 0.8 | #521, #529 |
+
+On the batched basis more tests are above sim1: warm 5 of 41 (`fletcher_bufferwriter_512`, `sc5_fifo_repack`, `vai_window_gen_interlock`, `fletcher_bufferreader`, `poc_stat_histogram`; 3 at head-to-head 5
+with `grlib_leon3mp`), cold 8 (also `poc_arith_addw`, `sc5_timestamp`, `hdlm_lfsr`). The new ones are run-bound short tests (run phase 0.4 to 2.1 s, instruction ratio 1.3 to 3.4): sim1's cheap analysis no
+longer hides their run phase. The yavs run phase is where the remaining gap is; the analysis of every test is still faster than sim1's. Every cell was
+measured with the same bench binary.
+
 ## Real-world performance suite: yavs against sim1, head-to-head 5, 2026-10-25 (`tools/realbench`)
 
-This is the current headline (`9e75d84e`, bench build with the `llvm` feature, one binary for every cell; the previous run, head-to-head 4 at `18b290ef`, is in brackets). Basis (root rule 23): `--tier=auto`
+This was the headline of the fifth run, superseded by head-to-head 6 above (one analysis call per file for both tools; `9e75d84e`, bench build with the `llvm` feature, one binary for every cell; the previous run, head-to-head 4 at `18b290ef`, is in brackets). Basis (root rule 23): `--tier=auto`
 only, TOTAL wall as a user runs it, analysis of every file of the compile order (one tool call per file) plus elaboration and run, against sim1's analysis plus elaboration plus run; cold = empty compilation cache and
 fresh libraries, warm = cache present. Interpreter times are never compared with sim1. Ratios are yavs / sim1, below 1 means yavs is faster. Method exactly as head-to-head 4: 5 timed runs per cell, interleaved, two
 complete passes, the lower pass median per cell for both tools, a sim1-only control at the start and the end; one timed process per core, the cores held through `tools/claim core` locks (9, 10 and 11 of a Ryzen 9

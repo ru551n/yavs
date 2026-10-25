@@ -1001,10 +1001,16 @@ impl Db {
                 _ => None,
             };
             if let Some(attr) = attr {
-                if !self.report_attr(scope, base, attr) {
-                    self.unsupported(n.span, "this use of a predefined attribute", "S3");
+                if self.report_attr(scope, base, attr) {
+                    return;
                 }
-                return;
+                // An applied attribute whose value is indexed or sliced: the
+                // generic apply diagnostics below report a wrong arity or index
+                // type; only a bare attribute name is unsupported here (#653).
+                if !matches!(n.kind, ast::NameKind::Apply { .. }) {
+                    self.unsupported(n.span, "this use of a predefined attribute", "S3");
+                    return;
+                }
             }
             // `obj.m` of a protected object without a method `m` (E1100, E1105).
             if let ast::NameKind::Selected {

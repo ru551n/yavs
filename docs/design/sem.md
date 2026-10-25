@@ -1059,6 +1059,12 @@ Predefined attributes are a table keyed by `(name, prefix kind)`:
 
 - The table, prefix forms per revision and typing are `attr::TABLE` (lrm-checks L12 to L14). An
   implicit signal object keeps its defining `ExprKind::Attr` as its `default`.
+- An attribute name is a primary whose value can be indexed or sliced (8.4, 8.5):
+  `takes_args` is true only for a predefined attribute with a parameter, so `x'simple_name(1)`
+  indexes the string value; a user attribute with arguments gets index/slice candidates of its
+  value's type. A type-mark prefix's user attribute is looked up on the type or subtype
+  declaration itself (`type_mark_decl`), so an attribute of a subtype is found (#653, #657,
+  #658, [L140]).
 - `s'delayed(t)`, `s'stable(t)`, `s'quiet(t)`, `s'transaction` create **implicit signal**
   entities (`DeclKind::Object` with `ImplicitSignal{attr, prefix_lsp, param}`) in the enclosing
   region, one per distinct (prefix LSP, attribute, static parameter) occurrence, so M2 creates

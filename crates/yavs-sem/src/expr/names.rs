@@ -780,11 +780,20 @@ impl Db {
             Err(_) => return CandSet::Types(Default::default()),
         };
         let Some(a) = PredefAttr::from_key(attr.key) else {
-            return match self.user_attr_type(&ps, attr.key) {
+            return match self.user_attr_type(scope, prefix, &ps, attr.key) {
                 Some(t) if args.is_empty() => {
                     CandSet::Types(smallvec::smallvec![Interp::new(t, Via::Attr)])
                 }
-                _ => CandSet::Types(Default::default()),
+                // The value of a user attribute is indexed or sliced like any
+                // other array value (6.7, 8.4, #657).
+                Some(t) => {
+                    let slice = self.is_slice_arg(scope, args);
+                    match self.index_interp(scope, t, args, slice) {
+                        Some(i) => CandSet::Types(smallvec::smallvec![i]),
+                        None => CandSet::Types(Default::default()),
+                    }
+                }
+                None => CandSet::Types(Default::default()),
             };
         };
         let info = a.info();
@@ -840,14 +849,37 @@ impl Db {
         CandSet::Types(out)
     }
 
+    /// The declaration a type-mark prefix names: its own, so an attribute of a
+    /// subtype is found on the subtype, not on its base type (7.2).
+    fn type_mark_decl(&mut self, scope: ScopeId, prefix: &ast::Name) -> Option<DeclId> {
+        match self.classify(scope, prefix) {
+            NameRes::One(d) => match self.decls[self.entity(d)].kind {
+                DeclKind::Type(_) | DeclKind::GenericType(_) | DeclKind::Subtype(_) => Some(d),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// The type of user-defined attribute `key` of the named entity a prefix
     /// denotes, if it has a value for it (7.2). Any overload with a value counts.
-    fn user_attr_type(&self, ps: &[(attr::Prefix, PSrc)], key: Symbol) -> Option<TypeId> {
+    fn user_attr_type(
+        &mut self,
+        scope: ScopeId,
+        prefix: &ast::Name,
+        ps: &[(attr::Prefix, PSrc)],
+        key: Symbol,
+    ) -> Option<TypeId> {
         ps.iter().find_map(|(_, src)| {
-            let (PSrc::Entity(d) | PSrc::Object(d, _)) = *src else {
-                return None;
+            let v = match *src {
+                PSrc::Entity(d) | PSrc::Object(d, _) => self.user_attr_value(d, key)?,
+                // A type mark: the attribute of the type or subtype declaration.
+                PSrc::Type(_) => {
+                    let d = self.type_mark_decl(scope, prefix)?;
+                    self.user_attr_value(d, key)?
+                }
+                PSrc::Value(_) => return None,
             };
-            let v = self.user_attr_value(d, key)?;
             let st = attr::spec_subtype(self, self.attr_values[v].attr)?;
             Some(self.base(st))
         })
@@ -2696,7 +2728,11 @@ impl Db {
         };
         let found = ps.iter().find_map(|(_, src)| match *src {
             PSrc::Entity(d) | PSrc::Object(d, _) => self.user_attr_value(d, attr.key),
-            _ => None,
+            PSrc::Type(_) => {
+                let d = self.type_mark_decl(scope, prefix)?;
+                self.user_attr_value(d, attr.key)
+            }
+            PSrc::Value(_) => None,
         });
         let Some(v) = found else {
             return self.poison_expr();
@@ -3121,8 +3157,11 @@ pub(crate) fn assoc_map(
 
 /// Whether `attr(args)` is an attribute call. `x'subtype`, `x'element` and `t'base` denote
 /// subtypes, so applying them is a type conversion; a user-defined attribute has a value that
-/// the arguments index (`x'a(1)`, LRM 7.2).
+/// the arguments index (`x'a(1)`, LRM 7.2). A predefined attribute without a parameter takes
+/// none either: `x'simple_name(1)` indexes the string value (#653).
 fn takes_args(attr: &ast::Ident) -> bool {
-    !matches!(attr.key.as_str(), "subtype" | "element" | "base")
-        && PredefAttr::from_key(attr.key).is_some()
+    if matches!(attr.key.as_str(), "subtype" | "element" | "base") {
+        return false;
+    }
+    PredefAttr::from_key(attr.key).is_some_and(|a| a.info().param != attr::Param::None)
 }

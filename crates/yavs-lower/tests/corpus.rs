@@ -109,6 +109,7 @@ const PASS: &[&str] = &[
     "composite/aggregate_target_ranges_signal",
     "composite/array_records",
     "composite/index_constraint_compat",
+    "composite/index_constraint_attr",
     "composite/array_conversion_index",
     "composite/nested_alias_slices",
     "composite/nested_selections",

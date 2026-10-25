@@ -565,8 +565,6 @@ pub(crate) struct ProcMeta {
     pub idle_hits: u16,
     /// What `idle_ok` was set to at the start (`idle_reprobe` restores it).
     pub idle_static: bool,
-    /// A signal the process reads had an event since its last activation.
-    pub armed: bool,
     /// The last activation: 0 unknown (or not a plain clocked activation), 1 assigned nothing,
     /// 2 assigned.
     pub idle_state: u8,
@@ -853,6 +851,9 @@ pub struct SimControl {
     /// Per signal, the processes of `idle_ok` that read it: `readers[readers_start[s]..
     /// readers_start[s + 1]]` (empty without such a process).
     readers_start: Vec<u32>,
+    /// Per process: a signal it reads had an event since its last activation (`Builder::idle_skip`;
+    /// a dense array, the readers' loop of every event touches one byte per reader).
+    armed: Vec<bool>,
     readers: Vec<Reader>,
     reader_guards: Vec<ReaderGuard>,
     idle_active: bool,
@@ -1188,6 +1189,7 @@ impl SimControl {
             guard_readers,
             guard_due: Vec::new(),
             readers_start,
+            armed: vec![true; procs.len()],
             readers,
             reader_guards,
             idle_active,
@@ -1859,8 +1861,7 @@ impl SimControl {
         // The elements of a signal of at most 64 that changed, when a reader of a part asks.
         let mut bits: Option<u64> = None;
         for rd in &self.readers[a..b] {
-            let m = &mut self.procs[rd.p as usize];
-            if m.armed {
+            if self.armed[rd.p as usize] {
                 continue;
             }
             // A read of part of the signal (a field of a record pack, #686) arms only for an
@@ -1878,7 +1879,7 @@ impl SimControl {
                     changed.iter().any(|c| c.overlaps(rd.r))
                 };
             if hit && (rd.g == NO_GUARD || self.reader_guards[rd.g as usize].holds(&self.signals)) {
-                m.armed = true;
+                self.armed[rd.p as usize] = true;
             }
         }
     }
@@ -1894,7 +1895,7 @@ impl SimControl {
         for i in 0..pids.len() {
             let p = pids[i];
             let m = &mut self.procs[p as usize];
-            if m.idle_ok && !m.armed && m.idle_state != 0 && m.perm != 0 {
+            if m.idle_ok && !self.armed[p as usize] && m.idle_state != 0 && m.perm != 0 {
                 self.stats.idle_skips += 1;
                 m.idle_hits = m.idle_hits.saturating_add(1);
                 m.idle_win = m.idle_win.saturating_add(1);
@@ -1914,12 +1915,12 @@ impl SimControl {
 
     /// Track again the processes `note_idle` stopped tracking: their inputs may be quiet now.
     fn idle_reprobe(&mut self) {
-        for m in &mut self.procs {
+        for (m, armed) in self.procs.iter_mut().zip(&mut self.armed) {
             if m.idle_static && !m.idle_ok {
                 m.idle_ok = true;
                 m.idle_win = 0;
                 m.idle_hits = 0;
-                m.armed = true;
+                *armed = true;
                 self.idle_live += 1;
             }
         }
@@ -2504,7 +2505,7 @@ impl SimControl {
                 // they assign again at their next edge.
                 for d in &self.drivers {
                     if d.signal.0 == s {
-                        self.procs[d.owner.0 as usize].armed = true;
+                        self.armed[d.owner.0 as usize] = true;
                     }
                 }
             }
@@ -3412,7 +3413,13 @@ impl SimControl {
                                 meta.resumed = true;
                                 self.serial_ran |= meta.flags.serial;
                                 if meta.idle_ok
-                                    && note_idle(meta, sh.signals, &self.names[p as usize], st)
+                                    && note_idle(
+                                        meta,
+                                        &mut self.armed[p as usize],
+                                        sh.signals,
+                                        &self.names[p as usize],
+                                        st,
+                                    )
                                 {
                                     self.idle_live -= 1;
                                     self.idle_active = self.idle_live != 0;
@@ -3516,7 +3523,15 @@ impl SimControl {
         meta.ready = false;
         meta.resumed = true;
         self.serial_ran |= meta.flags.serial;
-        if meta.idle_ok && note_idle(meta, sh.signals, &self.names[p as usize], st) {
+        if meta.idle_ok
+            && note_idle(
+                meta,
+                &mut self.armed[p as usize],
+                sh.signals,
+                &self.names[p as usize],
+                st,
+            )
+        {
             self.idle_live -= 1;
             self.idle_active = self.idle_live != 0;
         }
@@ -3621,7 +3636,13 @@ impl SimControl {
                 && st.effects.is_empty()
                 && slot.result.is_ok()
             {
-                if note_idle(meta, &self.signals, &self.names[p as usize], st) {
+                if note_idle(
+                    meta,
+                    &mut self.armed[p as usize],
+                    &self.signals,
+                    &self.names[p as usize],
+                    st,
+                ) {
                     self.idle_live -= 1;
                     self.idle_active = self.idle_live != 0;
                 }
@@ -4183,7 +4204,13 @@ const IDLE_WINDOW: u16 = 128;
 /// signals it reads had no event since, until one does (`armed`), and what it did is what a skipped
 /// activation would do. With `Config::idle_check` an activation `idle_filter` would have skipped
 /// is checked against that first.
-fn note_idle(meta: &mut ProcMeta, signals: &[Signal], name: &str, st: &ProcState) -> bool {
+fn note_idle(
+    meta: &mut ProcMeta,
+    armed: &mut bool,
+    signals: &[Signal],
+    name: &str,
+    st: &ProcState,
+) -> bool {
     // Tracking costs ~40 instructions an activation and a skip saves ~1000: a process that is
     // skipped in fewer than 3% of its activations over a window stops being tracked for a while (a
     // design whose registers always change pays for the bookkeeping and gains nothing).
@@ -4245,7 +4272,7 @@ fn note_idle(meta: &mut ProcMeta, signals: &[Signal], name: &str, st: &ProcState
         );
     }
     meta.idle_state = 1 + u8::from(assigned);
-    meta.armed = false;
+    *armed = false;
     false
 }
 

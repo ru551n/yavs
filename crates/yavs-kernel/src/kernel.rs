@@ -795,6 +795,9 @@ pub struct SimControl {
     /// and can run in parallel with other such signals.
     independent: Vec<bool>,
     implicits: Vec<Implicit>,
+    /// The sources of the implicit signals (signal, range), each once: an update in which none
+    /// of them was active, with no implicit signal due, has nothing for `update_implicit`.
+    implicit_srcs: Vec<(u32, Range)>,
     /// Composites resolved as a whole (`Builder::resolved_composite`).
     groups: Vec<Group>,
     /// Per group: the cycle it was last resolved in (once per cycle, by its first part
@@ -1035,6 +1038,13 @@ impl SimControl {
                 }
             }
         }
+        let mut implicit_srcs: Vec<(u32, Range)> = Vec::new();
+        for im in &implicits {
+            implicit_srcs.push((im.src.0, im.range));
+            implicit_srcs.extend(im.more.iter().map(|&(s, r)| (s.0, r)));
+        }
+        implicit_srcs.sort_by_key(|&(s, r)| (s, r.offset, r.len));
+        implicit_srcs.dedup();
         if cfg.skip_unchanged {
             for s in &mut signals {
                 s.inactive = true;
@@ -1189,6 +1199,7 @@ impl SimControl {
             ports_down,
             independent,
             implicits,
+            implicit_srcs,
             group_cycle: vec![0; groups.len()],
             groups,
             slots,
@@ -2275,12 +2286,9 @@ impl SimControl {
         let (now, cycle) = (self.now, self.cycle);
         self.empty_delta = false;
         // The usual delta: direct transactions and drivers of one independent signal due, from
-        // this time's list, in driver order; no force, deposit or implicit signal. Applied in
-        // place.
-        if self.ops.is_empty()
-            && self.implicits.is_empty()
-            && self.queue.peek_time().is_none_or(|t| t > now)
-        {
+        // this time's list, in driver order; no force, deposit or implicit signal due (the
+        // sources of implicit signals are looked at after it). Applied in place.
+        if self.ops.is_empty() && self.queue.peek_time().is_none_or(|t| t > now) {
             let one = self.one_independent();
             if one.is_some() || self.queue.next_delta.is_empty() {
                 self.stats.update_fast += 1;
@@ -2308,11 +2316,11 @@ impl SimControl {
                         self.changed_sigs.push(s0);
                     }
                 }
-                return self.finish_direct();
+                self.finish_direct()?;
+                return self.update_implicit_quiet();
             }
         }
         if self.ops.is_empty()
-            && self.implicits.is_empty()
             && self.queue.next_delta.is_empty()
             && let Some(r) = self.update_timed()
         {
@@ -2518,7 +2526,8 @@ impl SimControl {
                 }
             }
         }
-        if self.implicits.is_empty() {
+        if self.implicits.is_empty() || due.is_empty() && self.implicit_srcs_quiet() {
+            due.clear();
             self.work = Some(work);
             return Ok(());
         }
@@ -2551,7 +2560,10 @@ impl SimControl {
         if let Err(e) = self.apply_timed(d) {
             return Some(Err(e));
         }
-        Some(self.finish_direct())
+        Some(
+            self.finish_direct()
+                .and_then(|()| self.update_implicit_quiet()),
+        )
     }
 
     /// Apply the matured quick or waveform transaction of driver `d` (of an independent signal)
@@ -2659,7 +2671,10 @@ impl SimControl {
         if let Some(e) = failed {
             return Some(Err(e));
         }
-        Some(self.finish_direct())
+        Some(
+            self.finish_direct()
+                .and_then(|()| self.update_implicit_quiet()),
+        )
     }
 
     /// The generator `k` made an event with its own transaction (the signal now has `code`):
@@ -3016,6 +3031,26 @@ impl SimControl {
             at += n;
         }
         Ok(())
+    }
+
+    /// Whether no source of an implicit signal had activity in this cycle.
+    #[inline]
+    fn implicit_srcs_quiet(&self) -> bool {
+        let cycle = self.cycle;
+        self.implicit_srcs
+            .iter()
+            .all(|&(s, r)| !self.signals[s as usize].active_in(r, cycle))
+    }
+
+    /// The implicit signals after an update of the fast paths (which run with implicit signals
+    /// in the design): none is due (the paths take no queue entry of one), so only a source that
+    /// had activity can change one.
+    #[inline]
+    fn update_implicit_quiet(&mut self) -> Result<(), ErrorKind> {
+        if self.implicits.is_empty() || self.implicit_srcs_quiet() {
+            return Ok(());
+        }
+        self.update_implicit(&BTreeSet::new())
     }
 
     /// 14.7.5.3 c: `'transaction`, `'stable`, `'quiet` and `'delayed`, in creation order (an

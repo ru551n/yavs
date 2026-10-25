@@ -186,7 +186,9 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
      signals have one source per signal (`Builder::implicit_source`), any of them counting.
      They are kernel state, so none of them costs an extra delta or a process. `'transaction`
      (BIT) and `'stable`/`'quiet` (BOOLEAN) are one logic element with the codes of '0'/'1',
-     like every BIT and BOOLEAN signal (#185).
+     like every BIT and BOOLEAN signal (#185). Their update is skipped when no source had
+     activity in the cycle and none is due (`implicit_srcs`), which lets the fast update paths
+     run in a design that has implicit signals (#720).
    So an uncollapsed port hierarchy of any depth settles in the same delta as its source.
 3. Publish value changes on the observer bus (signal id order, then range order), then resume
    processes whose waited range overlaps a changed range. A process with an edge trigger

@@ -556,6 +556,20 @@ impl Ctx<'_> {
         Ok(s.last_value_of(r).to_value())
     }
 
+    /// `'last_value` of one element of a logic signal as its `std_ulogic` code, without building
+    /// a value (the element's own history is all there is to a single element, so this is
+    /// [`Ctx::last_value`]); `None` where that does not apply (more or fewer elements, a signal
+    /// that holds bytes), and the caller reads the value.
+    #[inline]
+    pub fn last_code(&self, r: impl Into<SigRef>) -> Result<Option<u8>, SimError> {
+        let (s, r) = self.sig(r)?;
+        if r.len != 1 {
+            return Ok(None);
+        }
+        self.history(s, r, true)?;
+        Ok(s.last_value.planes_code(r.offset as usize))
+    }
+
     /// The first element of `r` of a logic signal as a `std_ulogic` code, its current value or
     /// (`last`) its `'last_value`, without allocating; `None` for a null range.
     #[inline(always)]

@@ -9074,9 +9074,28 @@ impl Machine {
             }
             Inst::WaitEdge { sig, kind } => self.wait_edge_inst(kind.code(), sig, ctx)?,
             Inst::SigLastValue { dst, sig } => {
-                let parts = self.sigparts(sig)?;
-                let v = self.read_parts(kc!(), &parts, true)?;
-                self.put_value(self.r(dst), &v)?;
+                // One element of a logic signal (`clk'last_value`): its code, as the block of
+                // planes of a one-element value, without building a `Value`.
+                let code = if self.is_multi(sig) {
+                    None
+                } else {
+                    let (sr, ty) = self.sigref(sig)?;
+                    if ty.elem == Elem::Logic {
+                        kc!().last_code(sr)?
+                    } else {
+                        None
+                    }
+                };
+                if let Some(code) = code {
+                    let out = self.wr(self.r(dst), 32)?;
+                    for (p, w) in out.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+                        *w = u64::from(code >> p & 1).to_le_bytes();
+                    }
+                } else {
+                    let parts = self.sigparts(sig)?;
+                    let v = self.read_parts(kc!(), &parts, true)?;
+                    self.put_value(self.r(dst), &v)?;
+                }
             }
             Inst::SigAttr { dst, kind, sig } => {
                 // Over several parts: any event or activity, the most recent one (LRM 16.2.4).

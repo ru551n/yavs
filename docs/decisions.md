@@ -8814,3 +8814,35 @@ Gapscan item 6 (process to kernel boundary), instruction counts only (stepcount 
 - **A cached effective-value pointer per instance signal** was not built: it would save the signal-table lookup (about 6 instructions per read) and must be revalidated whenever a signal's buffer can move.
 
 What is left of the boundary cost under llvm is the process entry (`rt::enter` 122, `view_again` 72, `InterpProcess::run` 57, `run_cached` 28 of about 900 instructions per `rtl_ff` activation) and the wait (`wait_same` plus its callback 52): direct process entry (cgdirect), not signal access. Idea from the reference simulator: it has no entry or view at all, a process is a function called with its instance pointer; ours needs the frame view at every activation until the direct entry lands.
+
+## Implicit signals no longer take every update off the fast paths; `'last_value` of one element; vector drive runs and the pure-call memo measured (yavs-kernel, yavs-interp, #720, #722, #723, 2026-10-25)
+
+Micro-benchmark of the four SDRAM models alone (`state_register` wakes on a 0.5 ns clock, 1.6 M wakes in 200 us; `op-census` build, one thread) and the `op-census`
+time table: `Suspend` 38 percent (the kernel's part of every wake), `DriveRun` 8, `CopyDrive` 4.6 (39 ns), `EdgeBr` 4, the `Const; CondBr` chains 6. The
+wake costs about 85 ops and 16 k instructions.
+
+- **Decision: the fast update paths (`update_fast`, `update_timed`) run in a design with implicit signals (`'delayed`, `'stable`, `'quiet`, `'transaction`).**
+  Any implicit signal in the design, however unrelated, sent every update through the general path (`update_general`) and a scan of all implicit signals
+  (`update_implicit`: `event_in` and `active_in` of each source). The paths now run when no queue entry of an implicit signal is due (they take only
+  drivers, as before, and `update_timed_many` refuses an `Entry::Implicit`), and `update_implicit_quiet` follows them: the implicit signals are
+  looked at when a source had activity in the cycle (`implicit_srcs`, each signal and range once) and skipped otherwise; the general path skips the scan the same
+  way when nothing is due. The model of the SDRAM (four `Clk'DELAYED` each, 48 in the LEON3 system) went from 13 percent of its instructions in `update` plus
+  the activity queries to a few. Perf case `implicit_fast` (clocked processes, generators and the four kinds of implicit signals on a register and on a slow generator;
+  1342 cycles, 974 of the updates on the fast paths instead of none).
+- **Decision: `'last_value` of one element of a logic signal is read without building a value (`Ctx::last_code`, `Inst::SigLastValue`).** The general
+  path built a `Value` and its history vectors (385 ns a call in the census; the SDRAM clock process evaluates `Clk'LAST_VALUE` at every clock edge).
+  For a single element the last value is the signal's own `last_value` plane, which is what `Signal::last_value_of` returns for one element.
+- **Tried, not landed: vector drives in `drive_run` (#723).** `DriveRun` took `[Stmt, SigVal, LoadSlot8, CopyDrive]` and the variant with `LoadSlot8x2` and
+  `SubtypeCheck` (a length check, done in the guard) too, with `Ctx::skip_planes_now` in the kernel. It skips correctly (the three vector drives of the model, a run
+  of five drives with a scalar in the middle, a failing length check leaves the drive to its ops) and the instructions of a microbenchmark did not move
+  (1.337 G to 1.333 G for 200 000 wakes, 4 vector drives each, almost none changing): the guard costs what the ops it replaces cost. The census says why: a
+  `CopyDrive` is 39 ns and the three of a wake 118 ns of about 2 us (the kernel's `Suspend` is 480 ns, `DriveRun` of the 13 scalar drives 213 ns). Not worth the
+  code; the count of ops in #723 (a third of a wake) is not the time.
+- **Not changed: the pure-call memo at the start-up of the memory models (#722).** The memo answers 10.5 M calls of `FromChar` (the `HRead` of the S-record
+  parse) in the first 2 us and runs 124 k; with `YAVS_NO_PMEMO=1` the same window takes 36.2 G cycles instead of 27.2 G. Its key, lookup and result copies are 9.6
+  percent of the cycles and save more than twice that, so a faster give-up would lose. What is left of the start-up (4.6 s against 1.5 s) is the interpretation of
+  the `HRead` loop itself (`stdio.vhd:181`, 35 percent of the window): a table lookup per character is what the reference simulator compiles; a case-to-table pass in
+  the optimiser for pure functions of one enumeration argument that return constants would be the general fix (not started).
+- **Found, not done:** the empty delta that follows an activation whose assignments were all skipped (`SKIPPED`, kept for the delta numbers of reports) is a whole
+  kernel cycle: in the model's wake the kernel is about 40 percent of the time (`Suspend` in the census, `cycle`, `run_batch`, `finish_direct`, `commit_rest`);
+  kernel lane.

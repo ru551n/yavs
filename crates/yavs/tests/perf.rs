@@ -492,6 +492,21 @@ case!(
         ("ops", Max(16800)),
     ]
 );
+// Implicit signals in the design do not take the other signals off the fast update paths: only
+// the updates in which a source of an implicit signal has activity, or one is due, run the general
+// path (1342 of 1342 without this); the implicit signals still see every event of their sources.
+case!(
+    implicit_fast,
+    "d_clk=300 d_slow=40 st=151 qu=41 tr=151",
+    &[],
+    [
+        ("cycles", Max(1342)),
+        ("cycles", Min(1342)),
+        ("update_general", Max(380)),
+        ("update_fast", Min(650)),
+        ("ops", Max(24800)),
+    ]
+);
 // Vector assignments that change nothing are skipped when they are made (605 direct plane
 // commits without the skip), except behind an assignment of the same activation to the driver.
 case!(

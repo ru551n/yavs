@@ -43,7 +43,7 @@ YAVS_AUTO = YAVS.replace("--threads=", "--tier=auto --threads=")
 TEMPLATES = {"yavs": YAVS, "yavs-interp": YAVS_INTERP, "yavs-llvm": YAVS_LLVM, "yavs-auto": YAVS_AUTO}
 # yavs repeats analysis warnings when it loads the units: W1904 (a shared variable of a
 # non-protected type) is the warning `relaxed` tests are about.
-RELAXED = {"yavs": "--relaxed -Wno-W1904 -Wno-W1325", "yavs-interp": "--relaxed -Wno-W1904 -Wno-W1325", "yavs-llvm": "--relaxed -Wno-W1904 -Wno-W1325", "yavs-auto": "--relaxed -Wno-W1904 -Wno-W1325"}
+RELAXED = {"yavs": "--relaxed -Wno-W1904 -Wno-W1325 -Wno-W1501", "yavs-interp": "--relaxed -Wno-W1904 -Wno-W1325 -Wno-W1501", "yavs-llvm": "--relaxed -Wno-W1904 -Wno-W1325 -Wno-W1501", "yavs-auto": "--relaxed -Wno-W1904 -Wno-W1325 -Wno-W1501"}
 # Fields masked by default per builtin candidate (a reference label: key `difftest_ignore`; the reference prints them all).
 DEFAULT_IGNORE = {"yavs": "", "yavs-interp": "", "yavs-llvm": "", "yavs-auto": ""}
 

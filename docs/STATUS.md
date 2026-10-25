@@ -8810,7 +8810,15 @@ short, so the cost of entering compiled code (`load_objs`, `begin_kept`, `view_a
 drives (`assign_codes_now`, `drive_bits`, `drive_now`, `yavs_rt_drive`: 8 percent, the interpreter's `drive_run` and its skip tests 5.7) weigh
 more than in the window. Over the whole run the tier's own runtime functions are 27 percent of the cycles (6.2 k of 23.2 k samples), as much as
 the compiled code itself. Tried and not kept: entering only the first 8 objects of a process record and the rest on a miss (fewer
-instructions, cycles 7 percent higher on the whole run).
+instructions; cycles higher in two runs per cell, which on this host does not separate 5 percent: not proven either way).
+
+Whole run in a quieter session, 7 cells interleaved, medians of 4 (minimum), G cycles / G instructions: interpreter 188.6 (184.6) / 451;
+everything compiled (heat) 195.2 (192.4) / 405, +3.5 percent; default `--tier=auto` 208.6 (198.8) / 416; auto with forced subsets
+(`YAVS_AUTO_FORCE`): the big set 205.4 / 411, without `state_register` 206.2 / 411, `state_register` only 197.9 (196.6) / 416, the TLB `p0` only
+206.4 / 412. So the target "compiled LEON3 below the interpreter in cycles" holds for the 150 us window and not for the whole run; the default
+policy itself costs about 10 percent of main-thread cycles on this test (data on #754). Heat mode on other designs (`tools/realbench --compare`,
+`YAVS_BENCH_TIERFLAGS=--tier-heat=1,0,0`, 5 runs, wall / instructions, change against main): `neorv32_single_min` 0.95 / 0.99,
+`fletcher_bufferwriter_512` 0.99 / 1.01, `fletcher_bufferreader` 1.02 / 1.00, `sc5_fifo_repack` 1.02 / 1.00.
 
 ## CI repair after the correctness batch (#759, 2026-10-25)
 

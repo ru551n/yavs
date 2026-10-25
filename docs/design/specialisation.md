@@ -361,11 +361,12 @@ section 9 as proposed there. What exists, and where it differs from the prototyp
   is classified as it. When the process is hot every copy that was seen running is a candidate (and one
   that starts running later, as its instance switches), each compiled from its own code, so the copy that
   runs is the copy that is compiled; a trial that takes the compiled code of one copy back keeps the copies
-  not compiled yet interpreted too. A process whose shared code is compiled already does not switch. A
-  process also waits 150 ms after the tier is set before its first try (`SPEC_TIER_WAIT`, then again at twice
-  the activations): the tier takes about 30 ms of samples to compile a process, and a compiled process
-  beats its interpreted copy by far (`hdlm_lfsr`: 31.7 G compiled shared code against 66.9 G interpreted
-  copy). Compiled copies are named, and so keyed in the compilation cache, by what they are for
+  not compiled yet interpreted too. A process whose shared code is compiled switches to its copy too
+  (`Tier::compiles_copies`, #679). A process did wait 150 ms after the tier was set before its first try
+  (`SPEC_TIER_WAIT`, until #675): the tier takes about 30 ms of samples to compile a process, and a compiled
+  process beats its interpreted copy by far (`hdlm_lfsr`: 31.7 G compiled shared code against 66.9 G
+  interpreted copy). Compiled shared code switching to compiled copies made the wait unnecessary and
+  `sc5_fifo_repack` warm 7 to 10 percent slower with it. Compiled copies are named, and so keyed in the compilation cache, by what they are for
   (`Program::copy_tag`: a hash of the process and the masked instance data, `f<process>c<tag>` in the
   module), not by their function ids, which follow the order the processes switched in and so differ between
   runs with `--threads` above 1: the same copy is the same module in every run and is linked from the cache.

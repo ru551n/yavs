@@ -8531,3 +8531,32 @@ interpreter's loop and operation stream do. Top kinds of that copy by bytes (`YA
 the destination's heap lookup is a large part of the rest), `Br` 7 % (the entry switch tree), `SigRead` 7 %, `Const` 7 % (before this change), `Alloc` 5 %. Left: one lookup for the several
 `LCopy` of one record variable, `Alloc` and `SigRead` bytes, and shared subprogram code still has the unfolded `LayoutOf` and `Field` (stepped `LayoutOf` 467 K per 60 us in LEON3).
 Difftest 524/524 on `yavs-interp`, `yavs-llvm`, `yavs-auto` (1 and 4 threads) and `yavs-auto --tier-heat=1,0,0` (1 and 4 threads, also with `YAVS_SPEC_AFTER=2`).
+
+### `--tier=auto` round 5 (yavs-llvm, yavs-interp, #675, 2026-10-25)
+
+Decisions and causes: `docs/decisions.md` "`--tier=auto` round 5". Method: bench builds of main (f3a280ea, "main") and of this change ("new"), a
+fresh copy of the pristine world per sample, pinned to core 8 (the compile thread shares it), cold = first run, warm = third, 4 worlds, the three
+tiers interleaved per world; wall of `--tier=auto` as a ratio to `--tier=interp` of the same build (below 1 is faster).
+
+| design | main cold / warm | new cold / warm |
+|---|---|---|
+| `rtl_lfsr` | 1.11 / 1.05 | 0.99 / 0.80 |
+| `rtl_ff` | 1.06 / 0.87 | 0.97 / 0.86 |
+| `sc5_fifo_repack` | 1.07 / 0.94 | 1.03 / 0.89 |
+| `lfsr64_xor` | 0.99 / 0.95 | 0.88 / 0.85 |
+| `hdlm_lfsr` | 0.48 / 0.44 | 0.49 / 0.41 |
+| `fletcher_bufferreader` | 1.04 / 1.04 | 1.02 / 1.02 |
+| `fletcher_bufferwriter_512` | 1.04 / 1.04 | 1.03 / 1.03 |
+| `neorv32_single_min` | 1.02 / 1.04 | 1.02 / 1.03 |
+| `lfsr64`, `rtl_chain`, `poc_arith_addw`, `vai_window_gen_interlock` | equal | equal |
+
+Geometric mean of new / main over the 47 designs (the 42 of realbench and the h2h designs): wall 0.987 cold, 0.970 warm, warm cycles 0.986.
+Head-to-head designs (`tools/bench --ref sim1 --tiers interp,auto`, warm, median of 8, core 8), wall of `--tier=auto` against the reference
+simulator: `rtl_lfsr` 2.33 to 1.80 (0.35 to 0.27 s; main had lost the 1.57 of head-to-head 4 to the trial of the shared code), `rtl_ff` 1.28 to
+1.26, `compute_h2h` 0.15 to 0.14, the others equal (`rtl_chain` 1.38, `lfsr64` 1.60, `rtl_ram` 1.20, `lfsr64_xor` 1.00, `rtl_fan` 0.83, `rtl_bus` 0.28,
+`xor_types` 0.39).
+
+All 42 of `tools/realbench` (`--compare`, `--tiers auto,auto-cold`, run phase, core 8, default runs): wall geometric mean new / main 1.00 (auto,
+warm) and 0.99 (auto-cold), instructions 0.99 and 0.99, sum of the walls 0.99 and 0.98; per category 0.95 (fsm) to 1.10 (memory, four runs of
+0.01 to 0.03 s) warm and 0.97 to 1.00 cold; slowdowns flagged by the tool: none. Largest: `hdlm_lfsr` 1.44 to 1.36 s warm, `poc_fifo_ic_assembly`
+0.09 to 0.08 s, `fletcher_bufferreader` 1.55 to 1.52, `leon3mp` 36.4 to 36.1 s.

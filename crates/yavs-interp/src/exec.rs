@@ -1491,26 +1491,15 @@ impl Machine {
         // once (compiled code of the copy is smaller and faster: folded layouts and descriptors,
         // #679), else a copy would run interpreted for good. (A function the tier is asked to
         // compile on entry, `NAT_ASK`, is not: the copy has the flag as well,
-        // `Runtime::set_eager`.) Otherwise, with a tier, the process gives it `SPEC_TIER_WAIT`
-        // before the first try and tries again later: the tier compiles no shared code of a
-        // process that can have a copy before then (`yavs-llvm` `Worker::awaits_switch`).
+        // `Runtime::set_eager`.) A process whose shared code is not compiled switches at once,
+        // with a tier too: the tier compiles the copy (#675).
         if !crate::spec_forced() {
             let compiled = rt
                 .native
                 .func
                 .get(base.0 as usize)
                 .is_some_and(|n| n.load(Ordering::Acquire) & NAT_CODE != 0);
-            if compiled {
-                if !rt.tier.get().is_some_and(|t| t.compiles_copies()) {
-                    return;
-                }
-            } else if rt
-                .tier_at
-                .get()
-                .is_some_and(|t| t.elapsed() < crate::SPEC_TIER_WAIT)
-            {
-                self.spec = Some(holes);
-                self.spec_at = u32::try_from(self.execs.saturating_mul(2)).unwrap_or(u32::MAX);
+            if compiled && !rt.tier.get().is_some_and(|t| t.compiles_copies()) {
                 return;
             }
         }

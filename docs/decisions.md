@@ -9431,3 +9431,63 @@ base build of 2026-10-25, cold analysis of a whole manifest, one call per file a
   calls, `New`, `Free` and `LayoutOf` (`osvvm_axis_random`: 190 000 `CallProt`, 70 000 `Free`), not the shapes done here.
   `tools/realbench --compare` (all 42 tests, run phase, interp and auto, core 13, medians): instructions 1.00 overall and in every category, wall geomean over the tests of 1 s or more 1.01 (interp) and 1.00 (auto), sum ratio 1.00 and 0.98; the larger category figures are tests of 0.01 to 0.1 s.
   The next cuts for those are the frame-mode callers that step `New`/`NewFill`/`LayoutOf`, not the call.
+
+## `--tier=auto` round 5: the shared-code trial, no wait for the switch, sparser looks, visible refusals (yavs-llvm, yavs-interp, #675, 2026-10-25)
+
+Policy owner's change after `Tier::compiles_copies` (f3a280ea, #679). Measured with bench builds (`tools/build-bench.sh --features llvm`, main
+and this change built alike), pinned to core 8, a fresh copy of the pristine world per sample, cold = the first run, warm = the third, medians of
+4 to 8 worlds, wall and `perf stat` user instructions and cycles; the comparisons below are against `--tier=interp` of the same build unless
+a binary is named. Tables: docs/STATUS.md "`--tier=auto` round 5".
+
+- **Cause of a regression on main: the trial of the shared code of a process that has copies measured code that no longer ran.** Since
+  `compiles_copies` a process whose shared code is compiled switches to its copy at activation 1024, which the tier compiles. `rtl_lfsr`
+  (512 instances) compiled the shared code at 70 ms, its processes switched to the copy within the 250 ms of the trial, the windows saw
+  1.00 times the progress ("taken back"), and the trial's loss also kept the copies, not compiled yet, interpreted (`lost` by process):
+  warm 1.05 of the interpreter's wall (0.381 s interpreted, 0.403 s auto) where it was 0.82 before. **Decision: the trial of the shared code of a
+  process that `Program::specialisable` is not run, and the loss of a base never stops its copies** (a copy that loses still stops the other
+  copies). The copy is measured as any function is, when it is seen for an eighth of the run. `rtl_lfsr` warm 0.80 to 0.83 of the interpreter's wall
+  (0.318 s), cold 0.99; the trial's 250 ms of windows are gone and so is the blind spot of the sampler during them (no looks are taken in a
+  trial, so the budget stood still: the copy was refused "fits at 168 ms of 54 seen").
+- **Decision: a process does not wait for the tier to compile its shared code before it switches to its copy** (`SPEC_TIER_WAIT`, 150 ms from
+  `set_tier`, and `tier_at`, are gone; cgsize2 measured the same gain in f3a280ea and left the decision to the tier policy). It was there so the
+  tier compiled the shared code first and the copy never ran interpreted for good; compiled shared code switching to a compiled copy
+  made it a cost. `sc5_fifo_repack` warm 2.172 to 2.020 s (-7 percent), `hdlm_lfsr` warm 1.562 to 1.493 s (-4), `rtl_lfsr` cold 0.452 to 0.413.
+  `AutoTier::awaits_switch` (the shared code of fewer than 64 instances waits 400 ms of sampled work for the copy) stays: dropping it as well was
+  1.965 against 2.020 s on `sc5_fifo_repack`, inside the spread, and one compile of shared code that the copy replaces is not free in a cold run.
+- **Decision: the sampler's looks get sparser as the work seen grows** (`stretch`: a look per `Heat::period` for the first 300 ms of work, per two
+  periods to 1 s, per four after; a function of the work seen, so decisions still follow the looks only). A look wakes the sampler on the
+  simulation's core when the run is pinned. Isolated on `fletcher_bufferwriter_512` (4.1 s, nothing is ever compiled; nothing compiles
+  with `--tier-heat=2000000000,0,P`): wall against `--tier=interp` +5.1 percent at 1 ms looks, +3.4 at 4 ms, +2.9 at 16 ms; with the
+  stretch +2.2 (cold) and +3.3 (warm) on this run against +4.0 and +5.2 without, `neorv32_single_min` +1.0 and +1.3 against +3.6 and +4.1. The remaining 2.9 percent is not the sampler (its
+  threads are 0.04 percent of the instructions): the interpreter loop under a tier runs 1.7 percent more instructions (`run_ops::<_, true>`
+  takes no lean call and no parameter skip), filed as #750.
+- **Every refusal is visible in `YAVS_AUTO_TRACE`** (`refused f.. `name` (n IR), seen .. us of ..: why`, once per function: `cold`, `too_short`,
+  `fused_search`, `too_many_callbacks`, the size cap; until now only the budget's refusals were printed) and the closing `seen` lines name
+  the function's `Kind` and the seen time it is a candidate at, so "why is this hot function not compiled" is answered by one run.
+- **Measured, not changed: what `neorv32_single_min` leaves interpreted should stay interpreted.** `request` (122 IR, 9 percent of the sampled
+  time) is no `cold()` refusal: it is a combinational process with a small loop, `Kind::Frame` (payback 12.1, a candidate at 394 ms of seen
+  time, seen 265), and the compile budget refuses it besides. Forced (`YAVS_AUTO_FORCE`, warm, medians of 4 to 6 worlds, cycles against the
+  interpreter's 14.90 G): `request` +3.8 percent, `exec_comb` +6.3, `arbiter_comb` +0.9, `arbiter_fsm` +1.4, `trace_packet_buffer`
+  +2.5, `counter_increment` +0.7, `counter_core` (the one `Rtl` process) +3.5. Compiling all at their first call (`--tier=llvm`, heat) is
+  60 percent slower than the default auto (warm 5.8 s against 3.6 s). So `RTL_SHARE` stays 1/8: 1/16 and 1/32 compile the same set (equal
+  instructions to 0.02 percent). Same for the combinational processes of `fletcher_bufferwriter_512` (nothing compiled; compiling them all
+  is 1.12 to 1.2 times the interpreter's cycles, cg634's table).
+- **Measured, not changed: the clocked processes of `sc5_fifo_repack`.** They are `Kind::Compute` (they contain a loop) and the compute model
+  (4 ms + 900 us an IR instruction, a native-frame loop's) prices a frame-mode process body at 380 ms where it costs 54 ms of compile CPU
+  (417 IR; 130 to 300 us an IR instruction for the O2 pipeline of frame-mode code, 63 for `Fast`). With a frame-mode price (5 ms + 180) the
+  policy compiles them all and warm falls from 2.06 to 1.61 s (-22 percent; every process of the design compiled and cached is 1.37 s, `--tier=llvm`)
+  but cold rises from 2.45 to 2.76 s: the 40 copies of a few processes are different modules (constants differ), each costs 50 to 90 ms
+  on the simulation's core for 20 to 50 ms of seen time, and the compile budget of a compute loop (50 times, all of the run) lets them in.
+  A budget of 8 gives cold 2.47, warm 2.09, as before. Forcing each hot process alone, warm, cycles against the default auto: `p_in` -8 percent, `p_sreg` -8,
+  `p_input` -4, `p_pack` -4, `p_col` -2, `p_pre` 0, all six -26; cold only `p_in` pays (-9 percent wall). Not adopted: the cold run is what
+  pays, and only a profile kept from an earlier run (compile what the last run found hot, at the start) would turn the warm gain into a cold
+  one; that is a design decision for the user (below). Pooling the seen time of copies with equal code (twins) was tried (`class_of`) and
+  does not change the sc5 copies (their code differs) and was dropped.
+- **Measured, not changed: `BAND_WAIT`.** Without the wait `rtl_ff` (135 IR, outside the band) cold is 0.759 s against 0.857 (interpreter 0.782);
+  `lfsr64` (131 IR, a 170 ms run) cold goes 0.212 to 0.265 s (the compile never repays), warm unchanged. The wait stays; a rule that told the
+  two apart by something other than length would need the run length.
+- **Not done, for the user:** a profile of the last run kept beside the compiled code (names, sizes and seen time of the functions that were hot
+  and not compiled) so a run compiles at its start what the previous one found hot. It would give `sc5_fifo_repack` -22 percent warm and
+  the window generator about -15 (every kind compiled at its first call, warm: 0.29 of the interpreter's wall against 0.35), but also
+  compile the hot losers (`uvvm_*` 1.3 to 1.9 times the interpreter's wall, `olo_fix_cordic_rot` 1.67) that only a trial can take back,
+  which it can for processes seen for an eighth of the run only.

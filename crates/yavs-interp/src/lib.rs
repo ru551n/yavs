@@ -1058,9 +1058,6 @@ pub struct Runtime {
     pub(crate) files: Mutex<Vec<textio::FileSlot>>,
     /// Compiled code, set once before the simulation starts (`set_tier`).
     pub(crate) tier: std::sync::OnceLock<Arc<dyn Tier>>,
-    /// When the tier was set: processes wait this long for it to compile their code before they
-    /// switch to a specialised copy (`Machine::specialise`).
-    pub(crate) tier_at: std::sync::OnceLock<std::time::Instant>,
     /// Calls run again for their side effects (`set_replay`): their reports without a
     /// kernel were printed and counted the first time.
     pub(crate) replay: std::sync::atomic::AtomicBool,
@@ -1310,11 +1307,6 @@ pub fn spec_forced() -> bool {
     std::env::var_os("YAVS_SPEC_AFTER").is_some()
 }
 
-/// How long after a tier is set a process stays on its shared code (`Machine::specialise`) when
-/// the tier does not compile copies: the tier needs about 30 ms of samples of a process before it
-/// compiles it, and its compile takes a few more.
-pub(crate) const SPEC_TIER_WAIT: std::time::Duration = std::time::Duration::from_millis(150);
-
 /// Activations of a process before it switches to its copy: the optimiser spends about 0.7
 /// million instructions on a copy, which an activation saves a few tens of (docs/design/specialisation.md).
 const SPEC_AFTER: u64 = 1024;
@@ -1394,7 +1386,6 @@ impl Runtime {
             asserts: Default::default(),
             files: Mutex::new(textio::FileSlot::preopened()),
             tier: Default::default(),
-            tier_at: Default::default(),
             replay: Default::default(),
             id: {
                 static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
@@ -1563,7 +1554,6 @@ impl Runtime {
                 self.native.set_call(FuncId(i as u32));
             }
         }
-        let _ = self.tier_at.set(std::time::Instant::now());
         self.tier.set(tier).is_ok()
     }
 

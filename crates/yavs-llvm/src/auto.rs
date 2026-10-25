@@ -1183,6 +1183,7 @@ struct Worker {
     group: Vec<u64>,
     /// Per function: it became a candidate (`start`).
     asked_for: Vec<bool>,
+
     /// Microseconds the simulation threads were seen running, and the compile thread spent
     /// compiling.
     total: u64,
@@ -1235,6 +1236,8 @@ struct Trace {
     /// candidate.
     first: std::collections::HashMap<FuncId, u128>,
     cand: std::collections::HashMap<FuncId, u128>,
+    /// Functions a refusal line was printed for (`Worker::compile`): once each.
+    refused: std::collections::HashSet<FuncId>,
 }
 
 impl Trace {
@@ -1321,11 +1324,9 @@ impl Worker {
 
     /// Whether `id` is the shared code of a process that can switch to a copy specialised to its
     /// instance data (`Program::specialisable`) and the run is younger than `SPEC_WAIT`: the
-    /// processes switch within a few hundred milliseconds of the tier being set
-    /// (`yavs_interp::SPEC_TIER_WAIT`, then at the next doubled activation count), and a process
-    /// whose shared code is compiled, or linked from the compilation cache, does not switch. The
-    /// compiled copy runs a third faster than the compiled shared code (the lfsr testbench's
-    /// process: 459 ms against 878 ms), so the shared code waits for the switch (#673).
+    /// processes switch at their 1024th activation (`yavs_interp` `spec_after`). The compiled
+    /// copy runs a third faster than the compiled shared code (the lfsr testbench's process: 459 ms
+    /// against 878 ms), so the shared code of a process of few instances waits for the switch (#673).
     fn awaits_switch(&self, id: FuncId) -> bool {
         self.total < SPEC_WAIT
             && self.prog.base_of(id) == id
@@ -1390,6 +1391,7 @@ impl Worker {
                 t0: std::time::Instant::now(),
                 first: Default::default(),
                 cand: Default::default(),
+                refused: Default::default(),
             }),
         }
     }
@@ -1955,6 +1957,12 @@ impl Worker {
         if !clocked && f.kind != FuncKind::Process {
             return;
         }
+        // The shared code of a process that can have copies is not measured: its processes switch
+        // to their copies, which the tier compiles and measures, so the windows would time code
+        // that no longer runs (`rtl_lfsr` taken back at 1.0, #675).
+        if self.prog.base_of(id) == id && self.prog.specialisable(id) {
+            return;
+        }
         if self.heat.budget == 0
             || self.heat.eager()
             || clocked && self.unmeasurable
@@ -2055,9 +2063,11 @@ impl Worker {
             self.lost[k] = true;
             // The copies of a process are one process to the policy (#661): the ones not compiled
             // yet stay interpreted too.
+            // (Not when it was the shared code: the copies fold what the shared code cannot, and
+            // the processes that switched to one no longer run the code the trial measured.)
             let base = self.prog.base_of(id);
             for j in 0..self.lost.len() {
-                if self.prog.base_of(FuncId(j as u32)) == base && !self.done[j][0] {
+                if base != id && self.prog.base_of(FuncId(j as u32)) == base && !self.done[j][0] {
                     self.lost[j] = true;
                 }
             }
@@ -2132,6 +2142,18 @@ impl Worker {
             .flatten();
         let short_only = short.is_some() && too_big(f, self.max_size).is_none();
         let refused = too_big(f, self.max_size).or(short);
+        if let (Some(why), Some(tr)) = (&refused, &mut self.trace)
+            && tr.refused.insert(id)
+        {
+            let seen = self.time.get(id.0 as usize).map_or(0, |t| t[0]);
+            tr.line(format!(
+                "refused f{} `{}` ({} IR), seen {seen} us of {}: {why}",
+                id.0,
+                f.name,
+                f.code.len(),
+                self.total
+            ));
+        }
         // A refused function does not open the LLVM library.
         let loaded = if refused.is_none() {
             let loaded = crate::lazy::ensure();
@@ -2298,7 +2320,7 @@ fn nap(sh: &Shared, d: Duration) {
 /// between looks without that.
 fn sampler_loop(
     sample: impl Fn(&mut Vec<(usize, FuncId, bool)>),
-    period: Duration,
+    base_period: Duration,
     tx: Sender<Msg>,
     sh: &Shared,
 ) {
@@ -2318,14 +2340,17 @@ fn sampler_loop(
     let (mut last_cpu, mut last_wall) = (clock(), std::time::Instant::now());
     let mut last: Vec<(usize, u64)> = Vec::new();
     crate::work::per_thread(&mut last);
-    let target = u64::try_from(period.as_micros())
-        .unwrap_or(u64::MAX)
-        .saturating_mul(crate::work::per_us());
+    // The work seen so far (microseconds), which sets how far apart the looks are (`stretch`).
+    let mut done_us: u64 = 0;
     let mut batch = Vec::with_capacity(BATCH);
     let mut running = Vec::new();
     let mut counts = Vec::new();
     let mut slots = Vec::new();
     while !sh.halt.load(Ordering::SeqCst) {
+        let period = base_period * stretch(done_us);
+        let target = u64::try_from(period.as_micros())
+            .unwrap_or(u64::MAX)
+            .saturating_mul(crate::work::per_us());
         let since = |counts: &[(usize, u64)], last: &[(usize, u64)], i: usize| {
             let at = |v: &[(usize, u64)]| v.iter().find(|e| e.0 == i).map_or(0, |e| e.1);
             at(counts).saturating_sub(at(last))
@@ -2396,6 +2421,7 @@ fn sampler_loop(
             shared_look(u64::try_from(dt.as_micros()).unwrap_or(u64::MAX), &running)
         };
         (last_cpu, last_wall) = (cpu, wall);
+        done_us += look.running.iter().map(|r| r.2).max().unwrap_or(0);
         for &(i, c) in &counts {
             match last.iter_mut().find(|e| e.0 == i) {
                 Some(e) => e.1 = c,
@@ -2411,6 +2437,22 @@ fn sampler_loop(
         }
     }
 }
+
+/// How many periods apart the looks are once `done_us` microseconds of work were seen: the first
+/// 300 ms are looked at every period, to 1 s every second one, then every fourth (the sampler shares the
+/// simulation's core under `taskset`, and a run that has not found a candidate by then is unlikely
+/// to, so each look costs more than it finds). A function of the work seen, so decisions stay a
+/// function of the looks.
+fn stretch(done_us: u64) -> u32 {
+    match done_us {
+        0..STRETCH_2 => 1,
+        STRETCH_2..STRETCH_4 => 2,
+        _ => 4,
+    }
+}
+
+const STRETCH_2: u64 = 300_000;
+const STRETCH_4: u64 = 1_000_000;
 
 /// The calling thread's timer slack to 1 us (the default 50 us late-wakes every sleep): the
 /// sampler's polls land close to the work they wait for.
@@ -2650,16 +2692,19 @@ impl AutoTier {
                         v.sort_by_key(|&k| std::cmp::Reverse(w.time[k][0] + w.time[k][1]));
                         for &k in v.iter().take(40) {
                             if let Some(f) = w.prog.func(FuncId(k as u32)) {
+                                let id = FuncId(k as u32);
                                 tr.line(format!(
-                                    "seen f{k} `{}` ({} IR{}): interpreted {} us, compiled {} us",
+                                    "seen f{k} `{}` ({} IR{}): interpreted {} us, compiled {} us, {:?}, candidate at {} us",
                                     f.name,
                                     f.code.len(),
-                                    match w.prog.base_of(FuncId(k as u32)) {
+                                    match w.prog.base_of(id) {
                                         b if b.0 as usize != k => format!(", copy of {b}"),
                                         _ => String::new(),
                                     },
                                     w.time[k][0],
                                     w.time[k][1],
+                                    w.kind(id),
+                                    w.threshold(id, false),
                                 ));
                             }
                         }
@@ -3392,6 +3437,18 @@ mod tests {
             assert_eq!(t.compiled.len(), pairs);
             assert!(matches!(t.verdict, Some(super::Verdict::Keep(_))));
         }
+    }
+
+    /// The looks of the sampler get sparser as the run goes on, by the work seen (#675).
+    #[test]
+    fn looks_get_sparser_with_the_work_seen() {
+        use super::{STRETCH_2, STRETCH_4, stretch};
+        assert_eq!(stretch(0), 1);
+        assert_eq!(stretch(STRETCH_2 - 1), 1);
+        assert_eq!(stretch(STRETCH_2), 2);
+        assert_eq!(stretch(STRETCH_4 - 1), 2);
+        assert_eq!(stretch(STRETCH_4), 4);
+        assert_eq!(stretch(u64::MAX), 4);
     }
 
     /// A clocked process stays interpreted unless it has many instances and is a good part of

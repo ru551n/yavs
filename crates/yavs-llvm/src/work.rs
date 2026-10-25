@@ -77,6 +77,7 @@ mod imp {
     unsafe extern "C" {
         fn syscall(num: i64, ...) -> i64;
         fn read(fd: i32, buf: *mut std::ffi::c_void, n: usize) -> isize;
+        fn close(fd: i32) -> i32;
     }
 
     /// The simulation threads by slot index with their thread ids, and once `activate`d their counters
@@ -180,6 +181,19 @@ mod imp {
     }
 
     pub fn activate() -> Result<(), String> {
+        // Probe with the caller's own counter: no thread may be noted yet (the main thread is told
+        // when it first interprets), and a refused kernel must not look like success (#743).
+        match open(gettid()) {
+            // SAFETY: `fd` was just opened here and is not stored.
+            Ok(fd) => unsafe {
+                close(fd);
+            },
+            Err(e) => {
+                return Err(format!(
+                    "perf_event_open of user instructions refused: {e} (kernel.perf_event_paranoid above 2, a virtual machine without counters or a container profile)"
+                ));
+            }
+        }
         let mut st = state();
         let tids = st.tids.clone();
         for (index, tid) in tids {

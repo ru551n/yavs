@@ -8087,3 +8087,11 @@ Facts worth keeping: full `--tier=llvm` removes no instructions on `fletcher_buf
 `fletcher_bufferreader` (23.9 G against 22.3 G): the cost there is the value path of items 2 and 3, not op dispatch. Natives, allocation, warm start-up, wake and
 drive are already ahead of sim1. A layer that is 0 for sim1 (cycle driver, signal reads, helpers) is structural: its generated code or one runtime function does that
 work, so compare group totals.
+
+## llvm: address parameters of native frames resolved once (#726, 2026-10-25)
+
+A native frame resolves the region each address parameter points into once, at its entry, when the function uses it as an address three times or more with one use in a loop
+(`yavs_rt_region`, `docs/decisions.md` "Address parameters of native frames are resolved once per activation"). Window generator (bench builds, fresh world per binary and tier, 12 untimed runs,
+medians of 5 interleaved runs, core 9, host load 17 to 20): `--tier=llvm` 179.6 to 176.0 G instructions (-2.0 percent), 66.4 to 63.2 G cycles; `--tier=auto` warm 147.0 to 143.4 G, cycles level
+(-3.3 percent on a quiet host); `decode` of the codec 6.6 to 3.5 percent of the instructions. Realbench `--compare` over all 42 tests (auto warm and cold): wall geomean 1.00 / 1.00, instructions 1.00 / 0.99;
+only the window generator moves (warm 9.89 to 9.37 s). New: `crates/yavs/tests/compiled_param_regions.rs`; counter `cb_region`.

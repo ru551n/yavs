@@ -21,6 +21,8 @@ pub const STEP: &str = "yavs_rt_step";
 
 pub const HOST: &str = "yavs_rt_host";
 
+pub const REGION: &str = "yavs_rt_region";
+
 pub const SIGNAL: &str = "yavs_rt_signal";
 
 pub const DRIVE: &str = "yavs_rt_drive";
@@ -1550,6 +1552,37 @@ impl Mem {
         ((a & 0xffff_ffff) <= len).then_some((base, len))
     }
 
+    /// The bytes of the region address `a` points into, from the region's start (`Gen::host`
+    /// holds them for a whole activation, `param_addrs`). The slots of a native caller between
+    /// the interpreter's top frame and frame `depth` live as long as the callee: always. The top
+    /// frame, the temporary area, the instance data (not for writing) and a heap object of the
+    /// table only when `stable` (`stable_activation`: nothing the function does moves them).
+    fn region(&self, a: u64, depth: u64, write: bool, stable: bool) -> Option<(*mut u8, u64)> {
+        let hi = a >> 32;
+        let fr = &self.fr;
+        if hi >> 29 == u64::from(space::FRAME) && hi != fr.frame_hi {
+            let idx = hi & ((1 << 29) - 1);
+            if idx > fr.frame && idx < depth && !self.nslots.is_null() {
+                // SAFETY: as in `span`.
+                let e = unsafe { *self.nslots.add(idx as usize) };
+                return (e.len != 0).then_some((e.ptr, e.len));
+            }
+        }
+        if !stable {
+            return None;
+        }
+        if hi == fr.frame_hi {
+            Some((fr.slots, fr.slots_len))
+        } else if hi == u64::from(space::TEMP) << 29 {
+            Some((fr.temp, fr.temp_len))
+        } else if hi == u64::from(space::INST) << 29 {
+            (!write).then(|| (fr.inst.cast_mut(), fr.inst_len))
+        } else {
+            let o = &self.objs[obj_at(hi)];
+            (o.hi == hi && (!write || o.w != 0)).then_some((o.ptr, o.len))
+        }
+    }
+
     /// The host pointer to `n` bytes at address `a` plus `extra` where they lie in the frame's
     /// slots, the temporary area, (reading) the instance data or a cached object.
     pub fn find(&self, a: u64, extra: u64, n: u64, write: bool) -> Option<*mut u8> {
@@ -1618,6 +1651,32 @@ extern "C" fn host_miss(
     let m = unsafe { &*mem };
     m.find(a, extra, n, write != 0)
         .unwrap_or(std::ptr::null_mut())
+}
+
+/// `yavs_rt_region(env, mem, a, depth, flags, out)`: where the region address `a` (a parameter of
+/// a native frame) points into, `out = [host pointer of the region's start, length]` (0, 0 where
+/// the lookup does not reach it). Flags: 1 resolve for writing, 2 the function is a stable
+/// activation (`stable_activation`). Compiled code tests its accesses against the pair; what
+/// fails the test takes the ordinary lookup (`Gen::host`).
+pub unsafe extern "C" fn yavs_rt_region(
+    env: *mut c_void,
+    mem: *mut Mem,
+    a: u64,
+    depth: u64,
+    flags: u32,
+    out: *mut [u64; 2],
+) {
+    cb(Cb::Region);
+    let (write, stable) = (flags & 1 != 0, flags & 2 != 0);
+    // SAFETY: as in `yavs_rt_step`.
+    let mut r = unsafe { &*mem }.region(a, depth, write, stable);
+    if r.is_none() && stable && unsafe { yavs_rt_obj(env, mem, a, u32::from(write)) } != 0 {
+        // SAFETY: as above; the object is in the table now.
+        r = unsafe { &*mem }.region(a, depth, write, stable);
+    }
+    let (p, len) = r.map_or((0, 0), |(p, len)| (p as u64, len));
+    // SAFETY: compiled code gave the address of its two-word buffer.
+    unsafe { *out = [p, len] };
 }
 
 /// `yavs_rt_scan(env, mem, ctl, dope, base, i0, x, e, delta, out)`: the iterations of a search loop
@@ -2550,6 +2609,9 @@ pub enum Known<V = ()> {
     /// temporary area, the instance data or a constant. In a native frame, the object itself while
     /// nothing that could free or move it ran (`ObjRef`).
     Heap(Option<ObjRef<V>>),
+    /// An address a native frame got as a parameter (or an `Index` of one), in the region
+    /// `Cur::pres[.0]` pinned at the function's entry (`param_addrs`, `yavs_rt_region`).
+    Param(u16),
 }
 
 /// An object a `Deref` found in a native frame, as the generated code holds it: valid up to the
@@ -2687,6 +2749,242 @@ pub fn preloads(f: &Func) -> Vec<Preload> {
         .collect()
 }
 
+/// A parameter of a native-frame function that holds an address the function uses in a loop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParamAddr {
+    /// The register the entry block loads the parameter into (defined once, never used before).
+    pub reg: Reg,
+    /// The parameter's cell in the native function's argument list.
+    pub cell: usize,
+    /// Written through: the region is resolved for writing.
+    pub write: bool,
+}
+
+/// The instructions of a function none of which can move the interpreter's slot stack, the
+/// temporary area or a heap object while it runs (nothing allocates, calls, or ends a statement),
+/// so the host pointers of the regions its parameters point into stay good for the whole
+/// activation (`yavs_rt_region`).
+pub fn stable_activation(f: &Func) -> bool {
+    f.code.iter().all(|i| {
+        matches!(
+            i,
+            Inst::Const { .. }
+                | Inst::ConstF { .. }
+                | Inst::Move { .. }
+                | Inst::Select { .. }
+                | Inst::AddrOf { .. }
+                | Inst::Load { .. }
+                | Inst::Store { .. }
+                | Inst::Copy { .. }
+                | Inst::Fill { .. }
+                | Inst::Pos { .. }
+                | Inst::SlicePos { .. }
+                | Inst::Index { .. }
+                | Inst::Field { .. }
+                | Inst::Bin { .. }
+                | Inst::Un { .. }
+                | Inst::FBin { .. }
+                | Inst::FUn { .. }
+                | Inst::IToF { .. }
+                | Inst::FToI { .. }
+                | Inst::Cmp { .. }
+                | Inst::FCmp { .. }
+                | Inst::Bool { .. }
+                | Inst::LogicOp { .. }
+                | Inst::LEq { .. }
+                | Inst::MemEq { .. }
+                | Inst::LGet { .. }
+                | Inst::LSet { .. }
+                | Inst::LFill { .. }
+                | Inst::LCopy { .. }
+                | Inst::Check { .. }
+                | Inst::FCheck { .. }
+                | Inst::BinRange { .. }
+                | Inst::DopeLen { .. }
+                | Inst::SubtypeCheck { .. }
+                | Inst::Br { .. }
+                | Inst::CondBr { .. }
+                | Inst::Case { .. }
+                | Inst::Ret { .. }
+                | Inst::Unreachable { .. }
+        )
+    })
+}
+
+/// The address parameters of `f` worth resolving once at entry: a register loaded from a
+/// parameter slot by the entry block's straight-line code, defined once, whose slot nothing
+/// else touches (the parameter is the caller's argument for the whole call), and which the
+/// function uses as an address (directly, or through the single-definition `Index` and `Move`
+/// registers derived from it) inside a loop. A value that is no address, or one used rarely is
+/// left alone: the resolution is a callback.
+pub fn param_addrs(f: &Func) -> Vec<ParamAddr> {
+    let n = f.reg_ty.len();
+    let (mut defs, mut first_use) = (vec![0u32; n + 1], vec![usize::MAX; n + 1]);
+    for (pc, i) in f.code.iter().enumerate() {
+        let (uses, d) = yavs_interp::inst_regs(f, i);
+        for r in uses {
+            if let Some(u) = first_use.get_mut(r.0 as usize) {
+                *u = (*u).min(pc);
+            }
+        }
+        for r in d {
+            if let Some(x) = defs.get_mut(r.0 as usize) {
+                *x += 1;
+            }
+        }
+    }
+    let end0 = f
+        .blocks
+        .iter()
+        .map(|(_, b)| b.start as usize)
+        .filter(|&s| s > 0)
+        .min()
+        .unwrap_or(f.code.len());
+    // The cells of the 8-byte parameters by slot.
+    let mut cells = std::collections::HashMap::new();
+    let mut cell = 0;
+    for p in &f.params {
+        if p.width == Width::B8 {
+            cells.insert(u64::from(p.slot), cell);
+        }
+        cell += 1 + usize::from(p.width == Width::Sig);
+    }
+    // The registers that hold the address of a slot, and the slots whose address is used for
+    // anything but a load of 8 bytes: those may change under the function.
+    let mut at: Vec<Option<u64>> = vec![None; n + 1];
+    for i in &f.code {
+        if let Inst::AddrOf {
+            dst,
+            space: AddrSpace::Frame,
+            off,
+        } = *i
+            && let Some(a) = at.get_mut(dst.0 as usize)
+        {
+            *a = Some(off.into());
+        }
+    }
+    let mut touched = std::collections::HashSet::new();
+    for i in &f.code {
+        let load = match *i {
+            Inst::Load {
+                addr, w: Width::B8, ..
+            } => Some(addr),
+            _ => None,
+        };
+        for r in yavs_interp::inst_regs(f, i).0 {
+            if let Some(Some(o)) = at.get(r.0 as usize)
+                && load != Some(r)
+            {
+                touched.insert(*o);
+            }
+        }
+    }
+    let mut cands: Vec<(Reg, usize, usize)> = Vec::new();
+    for (pc, i) in f.code.iter().enumerate().take(end0) {
+        let Inst::Load {
+            dst,
+            addr,
+            w: Width::B8,
+        } = *i
+        else {
+            continue;
+        };
+        let Some(Some(o)) = at.get(addr.0 as usize) else {
+            continue;
+        };
+        if let Some(&c) = cells.get(o)
+            && !touched.contains(o)
+            && defs.get(dst.0 as usize) == Some(&1)
+            && first_use.get(dst.0 as usize).is_some_and(|&u| u > pc)
+            && f.reg_ty.get(dst.0 as usize) != Some(&yavs_ir::RegTy::Sig)
+            && !cands.iter().any(|x| x.1 == c)
+        {
+            cands.push((dst, c, pc));
+        }
+    }
+    if cands.is_empty() {
+        return Vec::new();
+    }
+    // Which candidate each register derives from (single definitions only).
+    let mut origin: Vec<Option<usize>> = vec![None; n + 1];
+    for (k, &(r, ..)) in cands.iter().enumerate() {
+        origin[r.0 as usize] = Some(k);
+    }
+    for _ in 0..2 {
+        for i in &f.code {
+            let (dst, src) = match *i {
+                Inst::Index { dst, base, .. } => (dst, base),
+                Inst::Move { dst, src } => (dst, src),
+                _ => continue,
+            };
+            if defs.get(dst.0 as usize) == Some(&1)
+                && let Some(Some(k)) = origin.get(src.0 as usize).copied()
+            {
+                origin[dst.0 as usize] = Some(k);
+            }
+        }
+    }
+    // Spans of the backward branches.
+    let start = |b: yavs_ir::BlockId| f.blocks.get(b).map(|b| b.start as usize);
+    let mut loops: Vec<(usize, usize)> = Vec::new();
+    for (pc, i) in f.code.iter().enumerate() {
+        let targets = match *i {
+            Inst::Br { to } => [Some(to), None],
+            Inst::CondBr { t, f: e, .. } => [Some(t), Some(e)],
+            _ => continue,
+        };
+        for t in targets.into_iter().flatten() {
+            if let Some(s) = start(t)
+                && s <= pc
+            {
+                loops.push((s, pc));
+            }
+        }
+    }
+    let (mut uses, mut in_loop, mut write) = (
+        vec![0u32; cands.len()],
+        vec![0u32; cands.len()],
+        vec![false; cands.len()],
+    );
+    for (pc, i) in f.code.iter().enumerate() {
+        let (reads, writes): (&[Reg], &[Reg]) = match i {
+            Inst::Load { addr, .. } => (&[*addr], &[]),
+            Inst::Store { addr, .. } => (&[], &[*addr]),
+            Inst::Copy { dst, src, .. } => (&[*src], &[*dst]),
+            Inst::Fill { dst, .. } => (&[], &[*dst]),
+            Inst::Pos { dope, .. } | Inst::DopeLen { dope, .. } | Inst::SlicePos { dope, .. } => {
+                (&[*dope], &[])
+            }
+            Inst::SubtypeCheck { dope, want, .. } => (&[*dope, *want], &[]),
+            Inst::LGet { base, .. } => (&[*base], &[]),
+            Inst::LSet { base, .. } | Inst::LFill { base, .. } => (&[], &[*base]),
+            Inst::LCopy { dst, src, .. } => (&[*src], &[*dst]),
+            Inst::LEq { a, b, .. } | Inst::MemEq { a, b, .. } => (&[*a, *b], &[]),
+            _ => (&[], &[]),
+        };
+        let looped = loops.iter().any(|&(s, e)| s <= pc && pc <= e);
+        for (rs, w) in [(reads, false), (writes, true)] {
+            for r in rs {
+                if let Some(Some(k)) = origin.get(r.0 as usize).copied() {
+                    uses[k] += 1;
+                    in_loop[k] += u32::from(looped);
+                    write[k] |= w;
+                }
+            }
+        }
+    }
+    cands
+        .iter()
+        .enumerate()
+        .filter(|&(k, _)| in_loop[k] > 0 && uses[k] >= 3)
+        .map(|(k, &(reg, cell, _))| ParamAddr {
+            reg,
+            cell,
+            write: write[k],
+        })
+        .collect()
+}
+
 /// Update `known` for what `i` writes.
 pub fn track<V: Copy>(known: &mut [Option<Known<V>>], fixed: &[Option<i64>], f: &Func, i: &Inst) {
     let get = |r: Reg| known.get(r.0 as usize).copied().flatten();
@@ -2782,6 +3080,7 @@ pub fn track<V: Copy>(known: &mut [Option<Known<V>>], fixed: &[Option<i64>], f: 
                 (Some(Known::LikelyTemp), _) => Some((dst, Known::LikelyTemp)),
                 (Some(Known::LikelyHeap), _) => Some((dst, Known::LikelyHeap)),
                 (Some(Known::Heap(_)), _) => Some((dst, Known::Heap(None))),
+                (Some(Known::Param(k)), _) => Some((dst, Known::Param(k))),
                 _ => None,
             }
         }

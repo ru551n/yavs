@@ -8556,3 +8556,37 @@ part, reads an S-record file and holds access objects, so it was neither special
   without a fall-back in the middle of an activation. A process that really touches shared state (VUnit's logging and checks use protected objects) keeps
   the cold path: the fall-back at the first shared access is not done.
 - **Not done:** the guard for `CopyDrive` entries of `drive_run` (#723) and the memo's give-up rule at the start-up (#722) are the next steps; see `docs/STATUS.md`.
+
+## Address parameters of native frames are resolved once per activation (yavs-llvm `rt.rs` `param_addrs`, `Gen::host`, #726, 2026-10-25)
+
+- **Finding:** an address a native frame gets as a parameter (a by-reference scalar, a dope or string pointer, a vector) is in an unknown space, so `Gen::host` looked it up at
+  every access: the own-frame test, the caller-slot table, the object entry, the top frame, the temporary area, the instance data, `yavs_rt_host` (about 25 instructions
+  for a caller's frame, more elsewhere). `decode` of the test runner's codec (`index` inout, `result`, `code`, two descriptors) does about ten such accesses an
+  iteration and was 6.6 percent of the window generator's instructions (`--tier=llvm`, 180 G). The reference simulator's by-reference argument is the machine pointer itself,
+  so an access to it costs nothing; ours costs the translation, and the idea taken is to pay it once instead of at every access.
+- **Decision:** `param_addrs` picks the 8-byte parameters a function loads in its straight-line entry block into a register that is defined once, never read before, and whose slot nothing else
+  touches (every use of the slot's address is a load of 8 bytes: the argument is the caller's for the whole call), and that the function uses as an address (`Load`,
+  `Store`, `Copy`, `Pos`, `DopeLen`, `SubtypeCheck`, `LGet`/`LSet`/`LFill`/`LCopy`, `LEq`, `MemEq`, directly or through the single-definition `Index`/`Move` registers derived from it)
+  at least three times, one of them inside a loop (a backward branch). At the entry the native function calls `yavs_rt_region(env, mem, addr, depth, flags, out)` once per such
+  parameter and keeps the host pointer of the region's start and its length (`Cur::pres`); the register is `Known::Param(k)` in every block (`base_known`, and again after its
+  definition, which `track` clears), `Index` and `Move` carry it, and `Gen::host` tests the access against the pair (6 instructions) and takes the old lookup when the test
+  fails, whatever the reason (a parameter can point anywhere; a failed test never goes to the slow path by itself). A register `Index`ed from the parameter in another block stays on the
+  old lookup (it has more than one definition).
+- **What is held:** the slots of a native caller (`Mem::nslots`, between the interpreter's top frame and this frame) for every function, since that frame lives as long as the callee. The top
+  frame, the temporary area, instance data (not for writing) and a heap object of the object table only when the function is a *stable activation* (`stable_activation`): its
+  instructions are an allowlist none of which allocates, calls, ends a statement, derefs or leaves the function other than by failing, so nothing it does (steps of its own
+  instructions included) frees or moves a heap object, grows the temporary area or pushes a frame. A function with a call keeps the pointers of the callers' frames and asks the
+  lookup for the rest. A parameter resolved for writing (a write use exists) asks the heap object for write access once, like the entry of an activation does
+  (`TierHost::wrote`); a region that cannot be written has length 0 for that parameter and its accesses take the old lookup.
+- **Cost:** one callback per resolved parameter and activation, counted as `cb_region`. The three-use rule is the break-even (about 45 instructions for the callback against
+  about 18 saved per access); without the loop requirement the realbench wall geomean was no better (1.04, a loaded host) and the instructions equal, so it stays.
+- **Tests:** `compiled_param_regions.rs` (arguments in a native caller's frame, a process variable, the temporary area and a heap object; a stable callee and one that allocates
+  between its accesses; errors; identical output in the interpreter, `--tier=llvm`, `--tier=auto` heat mode at 1 and 4 threads; `cb_region` > 0).
+- **Measured** (bench builds A = before, B = after, same origin otherwise; fresh world per binary and tier, 12 untimed runs of each, medians of 5 interleaved runs, core 9, host load 17 to 20):
+  window generator `--tier=llvm` instructions 179.6 to 176.0 G (-2.0 percent), cycles 66.4 to 63.2 G (-4.9 percent; on a quiet host an earlier pair 58.3 to 57.1 G, -2.0 percent); `--tier=auto` warm
+  instructions 147.0 to 143.4 G (-2.4 percent), cycles -0.2 percent (a quiet-host pair: -3.3 percent); `decode` 6.6 to 3.5 percent of the instructions. `tools/realbench` `--compare` over
+  the 42 tests of the suite (`--tier=auto` warm and cold, 6 cores): wall geomean 1.00 and 1.00, instructions 1.00 and 0.99; the window generator is the one test that gains (warm 9.89 to 9.37 s,
+  cold level); no other test moves outside the noise of its run (the short ones by their initialisation). `neorv32_single_min`, `poc_arith_addw`, the OSVVM and UVVM queue tests: instructions within 1 percent.
+- **Not done:** an `Index` register with several definitions (the limit register of the loop head in `decode`, one access an iteration) keeps the old lookup; holding it would need a test of the
+  address's high half at each access. Functions that call between their accesses keep only the callers' frames (heap and temporary regions would have to be found again after each call;
+  the object table does that at an access already). Tag: LLVM-only (the pins are `Gen` values; a second code generator would reuse `param_addrs`, `stable_activation` and `yavs_rt_region`).

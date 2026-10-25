@@ -113,6 +113,7 @@ pub(crate) fn new_jit(opt: OptLevel) -> Result<Jit, Error> {
         &[
             (STEP, yavs_rt_step as *const () as usize),
             (HOST, yavs_rt_host as *const () as usize),
+            (REGION, yavs_rt_region as *const () as usize),
             (SIGNAL, yavs_rt_signal as *const () as usize),
             (DRIVE, yavs_rt_drive as *const () as usize),
             (DRIVE_BIT, yavs_rt_drive_bit as *const () as usize),
@@ -1282,6 +1283,9 @@ struct Gen {
     /// `yavs_rt_host(env, mem, addr, extra, n, write) -> ptr`, null for the slow path.
     host_ty: LLVMTypeRef,
     host: LLVMValueRef,
+    /// `yavs_rt_region(env, mem, addr, depth, flags, out)`: the region a parameter points into.
+    region_ty: LLVMTypeRef,
+    region: LLVMValueRef,
     /// `yavs_rt_signal(env, regs, mem, pc, edge) -> u32`, as `step`.
     signal_ty: LLVMTypeRef,
     signal: LLVMValueRef,
@@ -1425,6 +1429,18 @@ struct Cur<'p> {
     objnew: std::cell::Cell<Option<(Reg, ObjRef)>>,
     /// The scalar drives of this activation kept for one host call, when the function has any.
     batch: Option<Batch>,
+    /// The regions the address parameters of a native frame point into (`param_addrs`), resolved at
+    /// the entry: `Known::Param(k)` is `pres[k]`.
+    pres: std::cell::RefCell<Vec<PRes>>,
+}
+
+/// A region held for a whole native activation: the host pointer of its start and its length;
+/// `write`: resolved for writing too.
+#[derive(Clone, Copy)]
+struct PRes {
+    ptr: LLVMValueRef,
+    len: LLVMValueRef,
+    write: bool,
 }
 
 /// Zero-delay scalar logic drives (`yavs_interp::ScalarDrive`) are not handed to the kernel one
@@ -1520,6 +1536,10 @@ impl Gen {
             let host_name = CString::new(HOST).expect("no NUL");
             let mut hparams = [ptr, ptr, i64, i64, i64, i32];
             let host_ty = LLVMFunctionType(ptr, hparams.as_mut_ptr(), 6, 0);
+            let region_name = CString::new(REGION).expect("no NUL");
+            let mut rparams = [ptr, ptr, i64, i64, i32, ptr];
+            let region_ty =
+                LLVMFunctionType(LLVMVoidTypeInContext(ctx), rparams.as_mut_ptr(), 6, 0);
             let signal_name = CString::new(SIGNAL).expect("no NUL");
             let mut sparams = [ptr, ptr, ptr, i32, i32];
             let signal_ty = LLVMFunctionType(i32, sparams.as_mut_ptr(), 5, 0);
@@ -1595,6 +1615,8 @@ impl Gen {
                 step: LLVMAddFunction(module, step_name.as_ptr(), fn_ty),
                 host_ty,
                 host: LLVMAddFunction(module, host_name.as_ptr(), host_ty),
+                region_ty,
+                region: LLVMAddFunction(module, region_name.as_ptr(), region_ty),
                 signal_ty,
                 signal: LLVMAddFunction(module, signal_name.as_ptr(), signal_ty),
                 drive_ty,
@@ -1684,6 +1706,7 @@ impl Gen {
             for f in [
                 self.step,
                 self.host,
+                self.region,
                 self.signal,
                 self.drive,
                 self.wait,
@@ -1716,6 +1739,7 @@ impl Gen {
             self.attr(self.planes, false, "nosync", 0);
             for f in [
                 self.host,
+                self.region,
                 self.lcopy,
                 self.deopt_slots,
                 self.memeq,
@@ -1727,6 +1751,7 @@ impl Gen {
             self.attr(self.memeq, false, "nofree", 0);
             self.attr(self.memeq, false, "nosync", 0);
             self.attr(self.host, false, "memory", mem_effects(RW, RW, 0));
+            self.attr(self.region, false, "memory", mem_effects(RW, RW, 0));
             self.attr(self.lcopy, false, "memory", mem_effects(RW, 0, 0));
             self.attr(self.lcopy, false, "nofree", 0);
             self.attr(self.lcopy, false, "nosync", 0);
@@ -2561,6 +2586,7 @@ impl Gen {
                 cold: Default::default(),
                 objnew: Default::default(),
                 batch: None,
+                pres: Default::default(),
             };
             if !batched.is_empty() {
                 // At the start of the entry block: every way in passes it.
@@ -2576,6 +2602,8 @@ impl Gen {
                 self.ret_exit(&c, exit_pc);
                 LLVMPositionBuilderAtEnd(self.b, entry);
             }
+            // Address parameters whose region a native frame resolves once, at its entry.
+            let pas = if native { param_addrs(f) } else { Vec::new() };
             // Registers the interpreter starts the frame with hold the same address everywhere.
             let mut base_known: Vec<Option<Known>> = vec![None; nregs];
             {
@@ -2599,6 +2627,12 @@ impl Gen {
                             AddrSpace::Inst => Some(Known::Inst(off.into())),
                             _ => None,
                         };
+                    }
+                }
+                // The address parameters resolved at the entry (`param_addrs`).
+                for (k, pa) in pas.iter().enumerate() {
+                    if let Some(x) = base_known.get_mut(pa.reg.0 as usize) {
+                        *x = Some(Known::Param(k as u16));
                     }
                 }
                 *c.known.borrow_mut() = base_known.clone();
@@ -2887,6 +2921,34 @@ impl Gen {
                     };
                     self.st(&c, r, x);
                 }
+                // Where the address parameters point (`yavs_rt_region`), held for the activation.
+                let stable = stable_activation(f);
+                let first = if f.parent.is_some() { 5 } else { 3 };
+                for pa in &pas {
+                    let out = LLVMBuildAlloca(self.b, LLVMArrayType2(self.i64, 2), c"".as_ptr());
+                    let flags = self.c32(u32::from(pa.write) | u32::from(stable) << 1);
+                    let mut args = [
+                        c.env,
+                        mem,
+                        LLVMGetParam(fv, (first + pa.cell) as u32),
+                        nat.depth,
+                        flags,
+                        out,
+                    ];
+                    LLVMBuildCall2(
+                        self.b,
+                        self.region_ty,
+                        self.region,
+                        args.as_mut_ptr(),
+                        6,
+                        c"".as_ptr(),
+                    );
+                    c.pres.borrow_mut().push(PRes {
+                        ptr: self.load(self.ptr, out),
+                        len: self.load(self.i64, self.gep(out, self.c64(8))),
+                        write: pa.write,
+                    });
+                }
                 LLVMBuildBr(self.b, bbs[0]);
             } else {
                 let pc_in = LLVMGetParam(fv, 3);
@@ -3007,6 +3069,14 @@ impl Gen {
                 }
                 if let Some(p) = prev.replace(inst) {
                     track(&mut c.known.borrow_mut(), &c.fixed, f, &p);
+                    // The load of an address parameter (`param_addrs`) defines the register once:
+                    // what `track` cleared for the definition holds again.
+                    if let Inst::Load { dst, .. } = p
+                        && let Some(k) = pas.iter().position(|pa| pa.reg == dst)
+                        && let Some(x) = c.known.borrow_mut().get_mut(dst.0 as usize)
+                    {
+                        *x = Some(Known::Param(k as u16));
+                    }
                     // The objects found stay valid up to an instruction that may free or move
                     // one (`keeps_objects`: the rule of the object table too).
                     if !keeps_objects(&p) {
@@ -7423,6 +7493,67 @@ impl Gen {
     /// its own (constants never change).
     #[allow(clippy::too_many_arguments)]
     unsafe fn host(
+        &self,
+        c: &Cur,
+        a: LLVMValueRef,
+        at: Option<Known>,
+        extra: LLVMValueRef,
+        n: LLVMValueRef,
+        write: bool,
+        slow: LLVMBasicBlockRef,
+    ) -> LLVMValueRef {
+        // SAFETY: loads of the pinned region, integer arithmetic, well-formed blocks of c.f.
+        unsafe {
+            // An address parameter (or an `Index` of one) of a native frame: its region was resolved
+            // at the entry, so a test against the held pair replaces the lookup. What fails the test
+            // (another space, a write to a region resolved for reading, an address outside) takes the
+            // ordinary lookup.
+            if let (Some(Known::Param(k)), Some(_)) = (at, &c.nat)
+                && let Some(r) = c.pres.borrow().get(usize::from(k)).copied()
+                && (r.write || !write)
+            {
+                let lo = LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr());
+                let konst = |v: LLVMValueRef| {
+                    (!LLVMIsAConstantInt(v).is_null()).then(|| LLVMConstIntGetZExtValue(v))
+                };
+                let (off, ok) = match (konst(extra), konst(n)) {
+                    // `lo` is below 2^32: the sums cannot wrap.
+                    (Some(e), Some(k)) if e < 1 << 31 && k < 1 << 31 => {
+                        let off = LLVMBuildAdd(self.b, lo, extra, c"".as_ptr());
+                        let end = LLVMBuildAdd(self.b, lo, self.c64((e + k) as i64), c"".as_ptr());
+                        (off, self.icmp(IP::LLVMIntULE, end, r.len))
+                    }
+                    _ => {
+                        // `extra` is below 2^63, the sum cannot wrap.
+                        let off = LLVMBuildAdd(self.b, lo, extra, c"".as_ptr());
+                        let fits = self.icmp(IP::LLVMIntULE, n, r.len);
+                        let rest = LLVMBuildSub(self.b, r.len, n, c"".as_ptr());
+                        let inside = self.icmp(IP::LLVMIntULE, off, rest);
+                        (off, LLVMBuildAnd(self.b, fits, inside, c"".as_ptr()))
+                    }
+                };
+                let (fast, miss, join) = (self.block(c), self.block(c), self.block(c));
+                self.cond_br(ok, fast, miss, true);
+                LLVMPositionBuilderAtEnd(self.b, fast);
+                let pf = self.gep(r.ptr, off);
+                LLVMBuildBr(self.b, join);
+                LLVMPositionBuilderAtEnd(self.b, miss);
+                let pm = self.host_lookup(c, a, None, extra, n, write, slow);
+                let from = LLVMGetInsertBlock(self.b);
+                LLVMBuildBr(self.b, join);
+                LLVMPositionBuilderAtEnd(self.b, join);
+                let phi = LLVMBuildPhi(self.b, self.ptr, c"".as_ptr());
+                LLVMAddIncoming(phi, &mut { pf }, &mut { fast }, 1);
+                LLVMAddIncoming(phi, &mut { pm }, &mut { from }, 1);
+                return phi;
+            }
+            self.host_lookup(c, a, at, extra, n, write, slow)
+        }
+    }
+
+    /// `host` for an address of the space and region the generator does not hold.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn host_lookup(
         &self,
         c: &Cur,
         a: LLVMValueRef,

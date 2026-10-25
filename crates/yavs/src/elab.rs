@@ -587,6 +587,34 @@ impl StopTierUp {
             yavs_llvm::exit_now(code);
         }
     }
+
+    /// Starts the compile thread. It does not exist at first: a run of a few milliseconds ends
+    /// before it would look at anything, and a thread is a twentieth of such a run. The helper
+    /// thread of the signal handlers calls this after `START_AFTER` (`Handlers::after`).
+    fn launcher(
+        &self,
+        format: MessageFormat,
+        color: bool,
+    ) -> (std::time::Duration, Arc<dyn Fn() + Send + Sync>) {
+        let tier = self.0.clone();
+        (
+            yavs_llvm::START_AFTER,
+            Arc::new(move || {
+                if let Err(e) = tier.launch() {
+                    crate::stdout::flush();
+                    let d = Diagnostic::warning(
+                        "W0117",
+                        "cannot start the compile thread of `--tier=auto`",
+                    )
+                    .with_note(e.to_string());
+                    eprint!(
+                        "{}",
+                        yavs_diag::render(&SourceMap::default(), &d, format, color)
+                    );
+                }
+            }),
+        )
+    }
 }
 
 #[cfg(feature = "llvm")]
@@ -602,6 +630,14 @@ struct StopTierUp;
 #[cfg(not(feature = "llvm"))]
 impl StopTierUp {
     fn end(self, _: u8, _: bool) {}
+
+    fn launcher(
+        &self,
+        _: MessageFormat,
+        _: bool,
+    ) -> (std::time::Duration, Arc<dyn Fn() + Send + Sync>) {
+        unreachable!("no tier-up without the llvm feature")
+    }
 }
 
 /// Set up `--tier=llvm` (compile the program now) or `--tier=auto` (start tier-up, stopped
@@ -663,7 +699,7 @@ fn use_tier(
                     }
                 }
             });
-            let t = yavs_llvm::AutoTier::start(
+            let t = yavs_llvm::AutoTier::start_deferred(
                 rt,
                 // The hidden `--tier-heat` is for tests and tuning: O0 first, O2 for the hot ones.
                 if a.tier_heat.is_some() {
@@ -1043,6 +1079,10 @@ pub fn run(
     if crate::stdout::is_on() {
         hooks.tick = Some((crate::stdout::TICK, Box::new(crate::stdout::flush)));
     }
+    let launch = tier_up.as_ref().map(|t| t.launcher(format, color));
+    hooks.after = launch
+        .clone()
+        .map(|(after, f)| (after, Box::new(move || f()) as _));
     let keep_exit = !a.load.is_empty() || !a.vhpi.is_empty();
     if recorder.is_some() || cfg_profile.is_some() {
         let flag = if recorder.is_some() {
@@ -1061,6 +1101,10 @@ pub fn run(
         if recorder.is_some() {
             out.emit(&none, &handler_error(err));
             return out.finish(2);
+        }
+        // No helper thread to start it later.
+        if let Some((_, f)) = &launch {
+            f();
         }
         crate::stdout::unbuffer();
         out.emit(

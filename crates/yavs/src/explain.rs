@@ -188,6 +188,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "W0116",
         "The signal handlers of a running simulation (Ctrl-C and SIGTERM writing out the buffered output, SIGUSR1 printing a hang report) could not be installed (the note gives the operating system error). The run goes on without them, and its output is written line by line; `--hang-report` is not affected.",
     ),
+    (
+        "W0117",
+        "The compile thread of `--tier=auto` could not be started (the note gives the operating system error). The thread starts a few milliseconds into the run, from the helper thread of the signal handlers. The run goes on interpreted.",
+    ),
     // yavs-vhpi
     (
         "E0901",

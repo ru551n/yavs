@@ -39,7 +39,7 @@ pub fn code_arena_stats() -> Option<[usize; 4]> {
     arena::stats()
 }
 #[cfg(feature = "llvm")]
-pub use auto::{AutoTier, Heat, Note, exit_now};
+pub use auto::{AutoTier, Heat, Note, START_AFTER, exit_now};
 pub use census::callback_counts;
 #[cfg(feature = "llvm")]
 pub use jit::{Error, Jit, Module, OptLevel, portable_cpu};

@@ -7947,6 +7947,22 @@ would have to give `Inst::Cat` parts an offset: cross-crate), unchecked register
 Not verified: cold tiny numbers after the change (only warm), Windows and aarch64 start-up, whether a non-PIE binary changes
 `--tier=auto` instruction counts (it did not change the cycles of the head-to-head designs).
 
+## performance: floor of a run, round 4 (#426, 2026-10-25)
+
+The fixed cost of a tiny test after #725: no compile thread in a run under 5 ms, fewer system calls per cache entry (`docs/decisions.md` "Floor of a run, round 4").
+Tiny corpus, every fifth test (100), warm, bench builds with `llvm`, the binaries copied fresh and interleaved per test, `perf stat -r 6`:
+
+| per test, geometric mean against before | user instructions | kernel instructions | page faults | task-clock (hint) |
+|---|---:|---:|---:|---:|
+| `run` | 0.993 | 0.935 | 0.989 | 0.939 |
+| `run`, `array_attrs` / `concat_chain` | 0.990 / 0.994 | 0.917 / 0.923 | 0.984 / 0.996 | 0.923 / 0.905 |
+| `analyze` (warm) | 0.999 | 1.007 | 1.004 | 1.017 |
+
+Median test 2.14 ms to 2.00 ms of CPU (cores 0-7, load 16: a hint; counts are what is reliable). `analyze` and `--version` do not start the threads this round removes.
+What the rest of a tiny `run` is made of, and what was measured and rejected (heap pre-fault, section sorting, `arena_max`), is in the decision. The stack probe of the Rust
+runtime (about 5 percent of a `run` and of an `analyze`) is a decision for the user, #738. Not verified: Windows and aarch64 start-up, cold numbers, a run between 5 and 6 ms
+(where the compile thread now starts 5 ms in, from the signal thread: `--verbose` notes of `rtl_ff`, `compute_h2h` and `bench_lfsr64` show the same compiles as before).
+
 ## grlib_leon3mp whole-run profile and the unowned costs (#720, 2026-10-24)
 
 Profile of `grlib_leon3mp` (std 1993) on main at 3df7bc44, `tools/build-bench.sh --features llvm`, `--tier=auto` warm, core 10 (the compile thread

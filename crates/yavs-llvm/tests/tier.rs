@@ -239,6 +239,38 @@ fn auto_tier_stops_without_waiting_for_the_sampler() {
     }
 }
 
+/// A deferred tier has no compile thread until `launch`: a hot loop stays interpreted, then it is
+/// compiled once the thread runs; ending the tier before any launch is fine, and a launch after
+/// the end does nothing (a run of a few milliseconds starts no thread, #426).
+#[test]
+fn auto_tier_deferred_starts_its_thread_at_launch() {
+    let (prog, f) = sum();
+    let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
+    let note: Note = Box::new(|_, _, _| {});
+    let tier = AutoTier::start_deferred(&rt, OptLevel::O2, usize::MAX, HOT, note).unwrap();
+    let call = || yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[100_000]);
+    let t0 = Instant::now();
+    while t0.elapsed() < Duration::from_millis(300) {
+        assert_eq!(call().unwrap(), Some(5_000_050_000));
+    }
+    assert_eq!(tier.compiled(), 0, "compiled with no thread");
+    tier.launch().unwrap();
+    let t0 = Instant::now();
+    while tier.compiled() == 0 {
+        assert!(t0.elapsed() < Duration::from_secs(60), "never compiled");
+        assert_eq!(call().unwrap(), Some(5_000_050_000));
+    }
+    assert!(tier.stop(true));
+
+    let (prog, _) = sum();
+    let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
+    let note: Note = Box::new(|_, _, _| {});
+    let tier = AutoTier::start_deferred(&rt, OptLevel::O2, usize::MAX, HOT, note).unwrap();
+    assert!(tier.stop(false));
+    tier.launch().unwrap();
+    assert!(tier.stop(true));
+}
+
 /// One call that never returns to the kernel (a process that runs its loop to the end without
 /// suspending) is seen by the sampler only, and the big loop is still compiled within the
 /// default budget and swapped in while it runs (#432). The budget decision itself is tested

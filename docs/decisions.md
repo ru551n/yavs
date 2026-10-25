@@ -5761,6 +5761,54 @@ relocations, no line tables; one signal thread", #562).
   with the same status (1 for the second signal, 130 for the first one of a plain run). With foreign libraries or VHPI
   plugins loaded (`--load`, `--vhpi`) the ordinary `exit` stays, so their exit handlers run.
 
+## Floor of a run, round 4: no compile thread in a short run, fewer system calls per entry (yavs-llvm, yavs-wave, yavs-cache, yavs, #426, 2026-10-25)
+
+Measured on the tiny corpus (`tests/corpus`, every fifth test, 100 tests, warm: `analyze` once, then `perf stat -r 6` of `yavs run` per test, bench builds with
+`llvm`, the binaries copied fresh and interleaved per test; instruction and page-fault counts of user and kernel mode; wall figures are a hint, cores 0-7 of a
+host with a load of 16). Decisions:
+
+- **The compile thread of `--tier=auto` is created 5 ms into the run, by the signal thread, not at the start** (`AutoTier::start_deferred` and `launch`;
+  `Handlers::after` of `yavs_wave::interrupt` runs `launch` once, 5 ms after the signal thread started; `StopTierUp::launcher`). A run that ends within 5 ms
+  creates no compile thread (the sampler thread already waited for `START_AFTER`, #725). `stop` needs no launch (nothing to join), and a launch after the end does
+  nothing (both under the `worker` lock; `halt` is set before it is taken). An eager `--tier-heat` (period 0: `Tier::hot` waits for the compile) starts the
+  thread at once, so the tests and `--tier-heat=1,0,0` compile as before. `AutoTier::start` is `start_deferred` plus a launch with the 5 ms wait inside the
+  thread (the tests of `yavs-llvm`). A launch that cannot start the thread is W0117 on stderr and the run goes on interpreted. Why: the sleeping thread was
+  about 7 percent of the task-clock of a tiny run (`--tier=interp` against `auto`, 100 interleaved runs of `array_attrs`); and when the end of the run woke it, it
+  read the cache's list of compiled functions (`compiled_list`) before it saw the halt, with the main thread waiting to join it. A thread that wakes to find
+  the halt now skips the listing. The late start was tried from a tick of the interpreter and reverted twice (0fdb10ee, #562); the signal thread is the tick that
+  does not depend on the shape of an activation.
+- **The signal thread stays and starts before the simulation** (it is 6.7 percent of a tiny run: measured by not starting it). Starting it late is not an option:
+  the handlers are installed before the first instruction of the simulation, and a design stuck in one activation must stay interruptible with its buffered
+  output written (`signal_keeps_reports`, `sigusr1_prints_a_report_and_the_run_goes_on`); the handlers only write into sockets that this thread reads. No thread
+  at all would need handlers that write the output buffer themselves (an async-signal-safe flush and a timer for the 100 ms tick) and unsafe code in
+  `yavs-wave`: not done.
+- **`register_raw` on descriptors that stay open** (`interrupt::start`): the writing ends of the two socket pairs are leaked (the handlers and the thread kept
+  them for the life of the process anyway) and shared by every signal, instead of one `dup` per registration (7 `fcntl` calls).
+- **A cache entry is mapped with one `fstat` and refreshed through the open file** (`map::open`): the length of the mapping comes from the same `fstat` (it was
+  asked for twice), and the entry's time is set with the read descriptor (it was an `open` for writing, `utimensat` and `close`: three more system calls and a
+  write open of every entry of every run). Every read still refreshes the time: an earlier draft refreshed after a minute, but a cold suite can put
+  `MAX_ENTRIES` entries into a minute and evict the shared prefix entries, whose time would then lag.
+- **`huge_heap` reads the system's mode with one `read`** into a small buffer (`read_to_string` asks for the size and reads again to find the end).
+- Measured (100 tests; `array_attrs` and `concat_chain` alone in brackets): warm `run` user instructions -0.7 percent (-1.0, -0.6), kernel instructions
+  -6.5 percent (-8.3, -7.7), page faults -1.1 percent, task-clock geomean -6.1 percent (median test 2.14 to 2.00 ms; -7.7, -9.5). Warm `analyze` and
+  `yavs --version` are unchanged in instructions (they have no thread and no tier).
+- **How to measure start-up on a shared host** (found on the way): the page cache state of the executable file changes the kernel work of a start by 20 percent
+  and its page faults by 35, for the same bytes. Two copies of one binary, one written by `cp` a minute earlier and one that had stayed in the page cache for
+  hours under memory pressure, ran 3.2 M and 4.0 M kernel instructions and 416 and 450 page faults. Copy every binary with `cp` right before a comparison, and
+  interleave; compare nothing across sessions (the kernel instructions of one binary moved by 25 percent between two hours). Instructions of user mode do not move.
+- **Where the fixed cost is now** (tiny `run`, 1.3 to 1.7 ms of CPU, about 416 page faults; `perf record` of user instructions and of page faults): 110 faults
+  are code, each mapping the 16 pages around it (a fault-around fault costs about 20 000 kernel instructions, more than half of the kernel's work in the run),
+  and 77 are copy-on-write faults of relocated data in the dynamic loader, of which 6 930 of the 17 829 relative relocations are the panic `Location` of
+  every `unwrap`, index and `expect` (`-Zlocation-detail=none` is nightly only). The dynamic loader's `__tunables_init` is 12 to 15 percent of the user
+  instructions with the 87 variables of a shell (it compares every variable with every tunable). The checksum of the mapped images (`xxh3`, 70 KB per run)
+  is 63 000 instructions, `signal_hook_registry` about 5 percent of the executable's own (it copies its table at each registration). The Rust runtime's stack
+  probe (`pthread_getattr_np` parsing `/proc/self/maps`) is 290 000 user and about 200 000 kernel instructions: left to the user (#738).
+- Measured and not worth it: pre-faulting the first 128 to 512 KiB of the heap with `MADV_POPULATE_WRITE` (page faults -7 to -14 percent, task-clock -1 percent, and
+  +3 percent at 512 KiB: a fault costs the work on the page, not the trap); `-Wl,--sort-section=name` (the same text faults, the hash suffixes of the
+  symbols scatter a module's functions); `glibc.malloc.arena_max=1` (-1 percent, and the compile thread and the parallel kernel would share one arena lock);
+  loading `libm` lazily (it needs our own `sin`, `exp` and the rest in front of glibc's, and the compiled tier finds them in the process). A symbol order
+  from a profile (or PGO) would cut the 110 text faults, but the hashed symbol names change with every build: not done.
+
 ## `--tier=auto` compile policy: no candidate holds up another, natively called functions repay after twice their compile time (yavs-llvm, #572, #520, #493, 2026-10-23)
 
 Found with `YAVS_AUTO_TRACE=1` (new, below) on the window-generator testbench of the real-world suite, cold cache: its hot

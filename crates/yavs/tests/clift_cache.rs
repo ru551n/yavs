@@ -81,9 +81,18 @@ fn entries(dir: &Path) -> Vec<std::path::PathBuf> {
 fn a_second_eager_run_links_every_function_from_the_cache() {
     let dir = tempdir("clift_cache_eager");
     std::fs::write(dir.join("c.vhd"), SRC).expect("write");
-    yavs(&dir, &["analyze", "--std=2008", "--work=work:work", "c.vhd"]);
+    yavs(
+        &dir,
+        &["analyze", "--std=2008", "--work=work:work", "c.vhd"],
+    );
     let run = |extra: &[&str]| {
-        let mut args = vec!["run", "--std=2008", "--work=work:work", "--tier=clift", "--verbose"];
+        let mut args = vec![
+            "run",
+            "--std=2008",
+            "--work=work:work",
+            "--tier=clift",
+            "--verbose",
+        ];
         args.extend_from_slice(extra);
         args.extend(["-gN=1000", "clift_cache"]);
         yavs(&dir, &args)
@@ -110,7 +119,10 @@ fn a_second_eager_run_links_every_function_from_the_cache() {
 fn a_warm_clift_auto_run_links_the_hot_process_from_the_cache() {
     let dir = tempdir("clift_cache_auto");
     std::fs::write(dir.join("c.vhd"), SRC).expect("write");
-    yavs(&dir, &["analyze", "--std=2008", "--work=work:work", "c.vhd"]);
+    yavs(
+        &dir,
+        &["analyze", "--std=2008", "--work=work:work", "c.vhd"],
+    );
     let run = || {
         let o = yavs(
             &dir,

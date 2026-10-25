@@ -62,6 +62,16 @@ fn store_word(fb: &mut FuncBuilder<'_>, t: Reg, off: i64, v: i64) {
 /// writes and reads it (the variable's slot is its third argument).
 /// Returns the instructions and the frame size.
 fn process(shape: impl FnOnce(&mut FuncBuilder<'_>, Reg, u32)) -> (Vec<Inst>, u32) {
+    process_of(16, false, |fb, t, var, _| shape(fb, t, var))
+}
+
+/// As `process`, the temporary being `bytes` long and, with `sig`, a signal reference made
+/// before the `Alloc` (the last argument of `shape`).
+fn process_of(
+    bytes: i64,
+    sig: bool,
+    shape: impl FnOnce(&mut FuncBuilder<'_>, Reg, u32, Option<Reg>),
+) -> (Vec<Inst>, u32) {
     let mut pb = ProgramBuilder::new();
     let f = pb.declare("p", FuncKind::Process, None);
     let mut fb = pb.define(f);
@@ -73,10 +83,21 @@ fn process(shape: impl FnOnce(&mut FuncBuilder<'_>, Reg, u32)) -> (Vec<Inst>, u3
     fb.emit(Inst::Br { to: head });
     fb.at(head);
     fb.stmt(StmtKind::Wait, span);
-    let size = fb.int(16);
+    let sr = sig.then(|| {
+        let (off, len) = (fb.int(0), fb.int(16));
+        let r = fb.reg(RegTy::Sig);
+        fb.emit(Inst::SigVal {
+            dst: r,
+            sig: 0,
+            offset: off,
+            len,
+        });
+        r
+    });
+    let size = fb.int(bytes);
     let t = fb.reg(RegTy::Ptr);
     fb.emit(Inst::Alloc { dst: t, size });
-    shape(&mut fb, t, var);
+    shape(&mut fb, t, var, sr);
     fb.emit(Inst::Suspend { resume: 0 });
     fb.emit(Inst::Br { to: head });
     fb.finish();
@@ -246,6 +267,35 @@ fn a_temporary_whose_address_is_loaded_back_keeps_its_bytes() {
     });
     assert!(
         count(&code, |i| matches!(i, Inst::Alloc { .. })) >= 1,
+        "{code:?}"
+    );
+}
+
+/// A block of 32 bytes the interpreter fuses with the signal read into it stays an `Alloc` (its
+/// frame form is out of its dispatch loop, #756); the same block written by stores is frame bytes.
+#[test]
+fn a_block_the_interpreter_fuses_with_a_signal_read_stays_an_alloc() {
+    if !yavs_ir::opt::enabled() {
+        return;
+    }
+    let (code, _) = process_of(32, true, |fb, t, var, sig| {
+        let sig = sig.expect("made");
+        fb.emit(Inst::SigRead { dst: t, sig });
+        sum_words(fb, t, var);
+    });
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Alloc { .. })),
+        1,
+        "{code:?}"
+    );
+    let (code, _) = process_of(32, false, |fb, t, var, _| {
+        store_word(fb, t, 0, 3);
+        store_word(fb, t, 8, 4);
+        sum_words(fb, t, var);
+    });
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Alloc { .. })),
+        0,
         "{code:?}"
     );
 }

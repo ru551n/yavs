@@ -8909,3 +8909,31 @@ policy itself costs about 10 percent of main-thread cycles on this test (data on
 ## CI repair after the correctness batch (#759, 2026-10-25)
 
 Main CI was red from `02c455f2`. Causes and fixes: (1) `E1360` of #654 also fired for a `linkage` formal, which accepts an actual of any mode (VESTs `tc778`); it now covers `out`/`inout`/`buffer` only. (2) The `vests-1993` expected list still had `tc400`, `tc2565` and `tc537` as known failures, which #657, #658 and #643 fixed: all 1939 entries pass now. (3) `generics/generic_nested_proc` (W1501 on stderr) was fixed by #758. (4) The `process/no_wait_infinite` file (#583) ran unbounded and out of memory under `--tier=auto` and `--tier=llvm` (the llvm jobs on all three runners, the `corpus_waves` test): a never-suspending process now leaves compiled code at its jump back (`docs/decisions.md`).
+
+## The interpreter keeps the fused 32-byte blocks out of the frame (#756, 2026-10-25)
+
+Under `--tier=interp` an `Alloc` of 32 bytes that the next instruction fills as a signal read, a
+logic concatenation or an `LCopy` stays an `Alloc` (`opt/slots.rs` `fused_in_loop`), so
+`AllocReadVec`, `AllocCat` and `AllocLCopy` run in the dispatch loop as before the frame
+temporaries; `auto` and `llvm` are unchanged (decisions.md "Temporaries of a process in its
+frame"). A frame flag on the in-loop arms was tried first and cost 2.8 percent of instructions
+with the pass off. Interpreter, bench builds, one core, interleaved, median of 15 (cycles /
+instructions, new over the build before #668; main = #668 over the same):
+
+| design | main | new |
+|---|---|---|
+| `rtl_lfsr` | 1.031 / 1.024 | 0.988 / 0.992 |
+| `lfsr64` | 1.036 / 1.018 | 0.987 / 0.989 |
+| `lfsr64_xor` | 1.017 / 1.019 | 0.986 / 0.994 |
+| `xor_sig` | 1.020 / 1.025 | 0.997 / 1.003 |
+
+The other head-to-head and internal designs have the instructions of main (within 0.1 percent;
+`ff_rtl` -1.0, `rtl_ram` -0.4), their cycle differences between the builds are noise on a loaded
+host. Realbench (42 tests, interpreter, `--compare` main against the change, one run): wall
+geomean 1.00, instructions 1.00, CPU time 1.05 (runs of 0.01 to 0.05 s); `grlib_leon3mp` wall 1.06
+at 0.99 instructions in that loaded run. LLVM tier: `--tier=llvm` instructions equal to main.
+Work-counter ceilings `ops` of `reg_planes` and `out_port` raised (the blocks keep their
+statement markers). Checked on this commit: fmt, clippy with and without `llvm`, both test suites, the
+differential corpus on `yavs-interp`, `yavs`, `yavs-llvm` and `yavs-auto --tier-heat=1,0,0` at 1
+and 4 threads: 530/531 on each (the difference is the stderr warning of `process/no_wait_infinite`,
+a test of another commit).

@@ -262,7 +262,7 @@ case!(
         ("wakes", Max(418)),
         ("update_general", Max(2)),
         ("direct_planes", Min(195)),
-        ("ops", Max(4408)),
+        ("ops", Max(4620)),
     ]
 );
 case!(
@@ -603,7 +603,7 @@ case!(
         ("wakes", Max(212)),
         ("events", Max(224)),
         ("update_general", Max(2)),
-        ("ops", Max(1607)),
+        ("ops", Max(1660)),
     ]
 );
 

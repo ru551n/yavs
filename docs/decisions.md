@@ -9672,6 +9672,20 @@ what it replaced:
   generation of the loop. The price: a design that concatenates into a temporary every cycle
   (`rtl_lfsr`, `lfsr64`) runs 2 to 4 percent more cycles in the interpreter than with the in-loop
   `AllocCat`.
+- **Interpreter alone keeps the fused 32-byte blocks (#756, user, 2026-10-25)**: the price above
+  was recovered in the optimiser: under `--tier=interp` (not `auto`, not `llvm`: `layout_slots_on`)
+  an `Alloc` of 32 bytes that the next instruction (constants and addresses skipped, as the
+  predecoder does) fills as a signal read, a concatenation of logic or an `LCopy` stays an
+  `Alloc` (`slots.rs` `fused_in_loop`), so `AllocReadVec`, `AllocCat` and `AllocLCopy` run in the
+  loop as before the frame temporaries. Other blocks (waveforms, descriptors, the rest) are
+  frame bytes as before. Tried first: a `frame` flag on the in-loop `AllocCat` and `AllocReadVec`
+  arms in place of `ZeroCat` and `ZeroReadVec` (one branch in the arm): the loop executed 2.8
+  percent more instructions on `rtl_lfsr` with the pass off (code generation of `run_ops` again,
+  #508), so it was dropped. The fingerprint needs no new switch (`layouts` is the same tier
+  split). The compiled tiers keep the frame forms: they gain from them, and `--tier=llvm` is
+  unchanged. Rationale: interpreter cycles of the designs that concatenate every cycle, back to
+  before #668, at the price of the frame form for those blocks (the marker of their statement
+  stays) only where the interpreter runs everything.
 - **Why**: the same binary with the pass on against off, instructions (steady-state cache):
   interpreter -3.5 to +1.4 percent on the seven designs of #668 (`grlib_leon3mp` +0.5,
   `poc_arith_addw` +1.4), the LLVM tier -0.6 to -3.9 percent; against main the interpreter is -3.5

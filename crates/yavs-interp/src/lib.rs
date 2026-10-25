@@ -818,6 +818,8 @@ pub struct TierFrame {
     /// `temp_base`.
     pub temp: *mut u8,
     pub temp_len: u64,
+    /// The capacity, at most `u32::MAX`: an offset in the area is 32 bits, so one bound does for
+    /// compiled code.
     pub temp_cap: u64,
     pub temp_base: u64,
     /// Temporaries recorded for the GC (`Inst::TempRoot`): while there are any, compiled

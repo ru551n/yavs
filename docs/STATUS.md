@@ -8152,3 +8152,26 @@ A native frame resolves the region each address parameter points into once, at i
 medians of 5 interleaved runs, core 9, host load 17 to 20): `--tier=llvm` 179.6 to 176.0 G instructions (-2.0 percent), 66.4 to 63.2 G cycles; `--tier=auto` warm 147.0 to 143.4 G, cycles level
 (-3.3 percent on a quiet host); `decode` of the codec 6.6 to 3.5 percent of the instructions. Realbench `--compare` over all 42 tests (auto warm and cold): wall geomean 1.00 / 1.00, instructions 1.00 / 0.99;
 only the window generator moves (warm 9.89 to 9.37 s). New: `crates/yavs/tests/compiled_param_regions.rs`; counter `cb_region`.
+
+## llvm: smaller frame-mode code (#679, 2026-10-25)
+
+(`docs/decisions.md` "llvm: smaller frame-mode code ...".) Bench builds, `--tier-heat=1,0,0`, core 7 (CCD0, shared with builds: cycles carry a
+large spread, so instructions, L1i and iTLB misses, branch misses and frontend stall cycles from `perf stat --no-inherit` of the simulation
+thread are the evidence; medians of 5 interleaved runs, base = main at 9171b609), the measuring aid `YAVS_LLVM_KINDLOC`.
+
+Machine code of the cold-cache run of neorv32 (30 us), all objects: 8.42 MB to 5.38 MB (-36 %); `exec_comb` 301 769 to 174 253 bytes
+(-42 %). LEON3 60 us window with `iu:comb` forced: 24.4 MB to 14.9 MB of code over the objects it compiles.
+
+| case (base to change) | instructions | cycles (min) | L1i misses | iTLB misses | branch misses | frontend stall cycles |
+|---|---:|---:|---:|---:|---:|---:|
+| `neorv32_single_min` | 35.42 G to 35.06 G | -16 % (-6.8) | -19 % | -54 % | -7 % | -17 % |
+| `fletcher_bufferreader` | 23.01 G to 22.61 G | -11.5 % (-12.1) | -21 % | -7 % | -2 % | -18 % |
+| `fletcher_bufferwriter_512` | 52.72 G to 51.67 G | -6.6 % (+13.9) | -23 % | -28 % | -29 % | -20 % |
+| `sc5_fifo_repack` | 27.01 G to 26.15 G | -0.6 % (+0.5) | -40 % | -29 % | level | level |
+| LEON3 60 us, `iu:comb` forced (3 runs) | 74.3 G to 72.2 G | +5 % (+8.6) | -6 % | +80 % | +9 % | +6 % |
+
+The interpreter against heat mode (same binary, 60 us LEON3): 82.2 G instructions against 71.5 G, cycles level (34.5 G against 35.5 G);
+L1i misses +50 %, branch misses +56 %. So the goal "heat cycles at or below the interpreter" is met by instructions and by code bytes on every
+design but not yet by cycles on LEON3 (the L1i and branch misses of the 15 MB of code) and `fletcher_bufferwriter_512`; the remaining bytes are
+`LayoutOf` (10 %), `LCopy` (7 %), `Field` and `Load` in the LEON3 copy (per-kind table with `YAVS_LLVM_KINDLOC`).
+Difftest 523/523 on `yavs-interp`, `yavs-llvm`, `yavs-auto` and `yavs-auto` with `--tier-heat=1,0,0`, 1 and 4 threads.

@@ -4203,7 +4203,7 @@ impl Machine {
     fn tier_temp(&mut self, tf: &mut crate::TierFrame) {
         tf.temp = self.temp.as_mut_ptr();
         tf.temp_len = self.temp.len() as u64;
-        tf.temp_cap = self.temp.capacity() as u64;
+        tf.temp_cap = self.temp.capacity().min(u32::MAX as usize) as u64;
         tf.temp_roots = self.troots.len() as u64;
         tf.temp_base = u64::from(self.frames[self.frames.len() - 1].temp_base);
         tf.heap_epoch = self.heap_epochs();
@@ -7699,7 +7699,7 @@ impl Machine {
         tf.sigtab_len = m.vc.tier_sigs.len() as u64;
         tf.temp = m.temp.as_mut_ptr();
         tf.temp_len = m.temp.len() as u64;
-        tf.temp_cap = m.temp.capacity() as u64;
+        tf.temp_cap = m.temp.capacity().min(u32::MAX as usize) as u64;
         tf.temp_base = u64::from(temp_base);
         tf.temp_roots = m.troots.len() as u64;
         tf.regs = m.regs.v.as_mut_ptr().wrapping_add(rbase);
@@ -7772,7 +7772,7 @@ impl Machine {
         tf.frame_hi = u64::from(FRAME) << 29 | top as u64;
         tf.temp = self.temp.as_mut_ptr();
         tf.temp_len = self.temp.len() as u64;
-        tf.temp_cap = self.temp.capacity() as u64;
+        tf.temp_cap = self.temp.capacity().min(u32::MAX as usize) as u64;
         tf.temp_base = temp_base as u64;
         tf.temp_roots = self.troots.len() as u64;
         tf.inst = self.inst.data.as_ptr();
@@ -10307,7 +10307,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
         // Only the temporary area can have moved or grown.
         tf.temp = m.temp.as_mut_ptr();
         tf.temp_len = m.temp.len() as u64;
-        tf.temp_cap = m.temp.capacity() as u64;
+        tf.temp_cap = m.temp.capacity().min(u32::MAX as usize) as u64;
         match r {
             Ok(v) if !fallback && stop => {
                 self.stop = true;
@@ -10360,7 +10360,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
         // Only the temporary area can have moved or grown.
         tf.temp = m.temp.as_mut_ptr();
         tf.temp_len = m.temp.len() as u64;
-        tf.temp_cap = m.temp.capacity() as u64;
+        tf.temp_cap = m.temp.capacity().min(u32::MAX as usize) as u64;
         match r {
             Ok(crate::pmemo::Probe::Hit(v)) => crate::MemoLook::Hit(v),
             Ok(crate::pmemo::Probe::Miss(n)) => crate::MemoLook::Miss(n),

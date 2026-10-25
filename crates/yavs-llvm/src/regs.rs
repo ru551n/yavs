@@ -25,6 +25,21 @@ impl Live {
         &self.bits[pc * self.words..(pc + 1) * self.words]
     }
 
+    /// Per register (and slot variable), the number of instructions it is live before.
+    pub fn spans(&self) -> Vec<u32> {
+        let mut out = vec![0u32; self.words * 64];
+        for row in self.bits.chunks(self.words) {
+            for (w, &bits) in row.iter().enumerate() {
+                let mut b = bits;
+                while b != 0 {
+                    out[w * 64 + b.trailing_zeros() as usize] += 1;
+                    b &= b - 1;
+                }
+            }
+        }
+        out
+    }
+
     /// Backward liveness over the instructions of `f`; `None` for a function too big for it.
     ///
     /// Solved per basic block (a few hundred times fewer sets than instructions), the rows of

@@ -31,7 +31,7 @@ pub const DRIVE_BIT: &str = "yavs_rt_drive_bit";
 
 pub const WAIT: &str = "yavs_rt_wait";
 
-pub const WAIT_ON: &str = "yavs_rt_wait_on";
+pub const WAIT_AGAIN: &str = "yavs_rt_wait_again";
 
 pub const WAIT_SAME: &str = "yavs_rt_wait_same";
 
@@ -62,6 +62,8 @@ pub const MEMEQ: &str = "yavs_rt_memeq";
 pub const SCAN: &str = "yavs_rt_scan";
 
 pub const CODES: &str = "yavs_rt_codes";
+
+pub const SCALAR: &str = "yavs_rt_scalar";
 
 pub const PLANES: &str = "yavs_rt_planes";
 
@@ -998,24 +1000,14 @@ pub unsafe extern "C" fn yavs_rt_wait(
 }
 
 /// A `WaitOn` that is not the last of its wait (a sensitivity list of several signals, #532):
-/// the kernel's registration of a waiter it had at the last wait (`TierHost::wait_on_again`),
-/// else the instruction through `TierHost::signal`. Returns `GO` or what `yavs_rt_signal` does.
-pub extern "C" fn yavs_rt_wait_on(
-    env: *mut c_void,
-    regs: *mut u64,
-    mem: *mut Mem,
-    pc: u32,
-    lo: u64,
-    len: u64,
-) -> u32 {
+/// whether the kernel took the registration of a waiter it had at the last wait
+/// (`TierHost::wait_on_again`); 0 otherwise, and compiled code runs the instruction through
+/// `yavs_rt_signal` in a slow path. It reads no register, so the caller has stored none.
+pub extern "C" fn yavs_rt_wait_again(env: *mut c_void, lo: u64, len: u64) -> u32 {
     cb(Cb::WaitOn);
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
-    if unsafe { (*envp).host.wait_on_again([lo, len]) } {
-        return GO;
-    }
-    // SAFETY: as in `yavs_rt_step`.
-    unsafe { yavs_rt_signal(env, regs, mem, pc, 0) }
+    u32::from(unsafe { (*envp).host.wait_on_again([lo, len]) })
 }
 
 /// The wait of a process that names the same signals at every activation
@@ -1426,18 +1418,79 @@ pub unsafe extern "C" fn yavs_rt_memeq(a: *const u8, b: *const u8, n: u64) -> u6
 /// length (`Gen::sig_read_block`).
 pub unsafe extern "C" fn yavs_rt_codes(codes: *const u8, groups: u64, mask: u64, out: *mut u64) {
     let mut planes = [0u64; 4];
-    for j in 0..groups as usize {
+    let mut j = 0usize;
+    #[cfg(target_arch = "x86_64")]
+    {
+        use std::arch::x86_64::*;
+        // Sixteen codes at a time: bit p of every byte is the top bit after a shift by 7 - p.
+        // SAFETY: the caller checked `groups * 8` readable bytes at `codes`; SSE2 is the baseline.
+        unsafe {
+            while j + 2 <= groups as usize {
+                let v = _mm_loadu_si128(codes.add(8 * j).cast());
+                planes[0] |= (_mm_movemask_epi8(_mm_slli_epi16::<7>(v)) as u64) << (8 * j);
+                planes[1] |= (_mm_movemask_epi8(_mm_slli_epi16::<6>(v)) as u64) << (8 * j);
+                planes[2] |= (_mm_movemask_epi8(_mm_slli_epi16::<5>(v)) as u64) << (8 * j);
+                planes[3] |= (_mm_movemask_epi8(_mm_slli_epi16::<4>(v)) as u64) << (8 * j);
+                j += 2;
+            }
+        }
+    }
+    while j < groups as usize {
         // SAFETY: the caller checked `groups * 8` readable bytes at `codes`.
         let w = unsafe { std::ptr::read_unaligned(codes.add(8 * j).cast::<u64>()) };
         for (p, plane) in planes.iter_mut().enumerate() {
             let bits = (w >> p) & 0x0101_0101_0101_0101;
             *plane |= (bits.wrapping_mul(0x0102_0408_1020_4080) >> 56) << (8 * j);
         }
+        j += 1;
     }
     for (p, plane) in planes.iter().enumerate() {
         // SAFETY: the caller checked 32 writable bytes at `out`.
         unsafe { std::ptr::write_unaligned(out.add(p), plane & mask) };
     }
+}
+
+/// `Inst::SigReadScalar` of element `off` of the signal at `ent` when its codes are not offered:
+/// the four plane bits of a logic signal, or the bytes of an enumeration, integer, boolean or real
+/// one (a four-byte element sign-extended), stored at `out`. Pure, no host state. 0 (nothing
+/// stored): the element is not within what the entry offers, or it has an element size compiled
+/// code does not read; compiled code runs the instruction in the interpreter's way then.
+pub unsafe extern "C" fn yavs_rt_scalar(
+    ent: *const yavs_interp::TierSig,
+    off: u64,
+    out: *mut u64,
+) -> u32 {
+    // SAFETY: `ent` is an entry of the table compiled code holds.
+    let e = unsafe { &*ent };
+    if off >= e.plen {
+        return 0;
+    }
+    let el = e.off + off;
+    let v = if e.planes != 0 {
+        // SAFETY: `el` is within the elements the entry offers, in whole blocks of four planes.
+        let blk = unsafe { (e.planes as *const u64).add(4 * (el >> 6) as usize) };
+        let sh = el & 63;
+        (0..4).fold(0u64, |acc, p| {
+            // SAFETY: as above.
+            acc | (((unsafe { *blk.add(p) } >> sh) & 1) << p)
+        })
+    } else if e.bytes != 0 {
+        let at = (e.bytes + el * e.es) as usize;
+        // SAFETY: the element is within the bytes the entry offers.
+        unsafe {
+            match e.es {
+                1 => u64::from(*(at as *const u8)),
+                4 => i64::from(std::ptr::read_unaligned(at as *const i32)) as u64,
+                8 => std::ptr::read_unaligned(at as *const u64),
+                _ => return 0,
+            }
+        }
+    } else {
+        return 0;
+    };
+    // SAFETY: the register slot compiled code passes.
+    unsafe { *out = v };
+    1
 }
 
 /// `Inst::SigRead` of `n` elements from element `bit0` of the `nblk` plane blocks of a kernel

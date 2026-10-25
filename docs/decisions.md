@@ -8723,3 +8723,33 @@ part, reads an S-record file and holds access objects, so it was neither special
   `ctrl_comb_proc`, 0 of 69 K for `last_stage_proc`, `StreamPipelineBarrel` `reg_proc` once), so skipping them would skip nothing. The
   testbench processes' null runs are real work that drives no signal (the per-element check loop of `bus_proc`). No further idle-skip rule
   is worth its verification cost on this suite.
+
+## llvm: smaller frame-mode code: short-lived deferred values, address copies per block, calls for the cold decodes (yavs-llvm, #679, 2026-10-25)
+
+Cause found with a per-IR-kind attribution of the machine code (`YAVS_LLVM_KINDLOC=<file>`: every LLVM instruction gets a debug line, the
+number of its IR kind, 1000 more in a cold block; with `YAVS_LLVM_OBJ` the bytes per kind and, with `perf record`, the executed
+instructions per kind): the unoptimised code generator keeps every value that crosses a block in a stack slot, and a frame-mode process
+is thousands of tiny blocks (one per guard). Most of the bytes were values alive across blocks and their reloads, not the guards.
+
+- **Decision: a definition is deferred (kept as a value, stored at exits) only when its register is live over at most `MAX_SPAN` (4) IR
+  instructions** (`lower.rs` `Defer::keep`, `regs.rs` `Live::spans`). A long-lived deferred value is stored again at every call and
+  guard exit it is live at, and is a cross-block value (a stack slot) anyway; storing it once at the definition is smaller (exec_comb
+  of neorv32 -26 percent bytes) and not slower. 2 and 16 were measured worse (more iTLB/L1i misses at 16, more stores at 2).
+- **Decision: the sensitivity list `WaitOn` is a call `yavs_rt_wait_again(env, lo, len)` that reads no register**, with the old
+  instruction as the slow path (`yavs_rt_wait_on` is gone). The registers live at the call were stored before every one of the
+  list's calls, which is most of the bytes of a process with a 40-signal list.
+- **Decision: address arithmetic is copied into the blocks that use it after the passes** (`jit.rs` `remat_geps`, unoptimised code
+  generation only): early-cse merges the constant-offset `getelementptr`s of a block with those of a dominating block and the merged
+  address becomes a stack slot; a copy per block folds into the load or store.
+- **Decision: `SigRead` of up to 64 elements and `SigReadScalar` of a signal without codes are calls of pure runtime functions**
+  (`yavs_rt_codes`, now two codes groups per SSE2 step, and the new `yavs_rt_scalar`), not unrolled plane arithmetic and a three-way
+  size switch per site. The inline byte read of a signal that keeps codes stays.
+- **Decision: one range test for a constant size** (`Gen::in_range`: `o + n <= len` as one add and one compare when `n` is a small
+  constant, `o` below 2^32 + 2^63 so the sum cannot wrap), instead of `n <= len && o <= len - n`; `TierFrame::temp_cap` is capped at
+  `u32::MAX` (an offset in the temporary area is 32 bits) so `temp_alloc` needs one bound.
+- **Decision: the tests of `Gen::host` for the temporary area, the frame and instance data are made in the block of their own try**
+  (they were made at the top, and each result crossed the blocks of the earlier tries).
+- **Not kept (measured):** skipping a store of a register an earlier callback call already stored in the same straight run (the marks
+  needed a valid-block analysis; it removed 4 percent of the bytes of exec_comb and was superseded by `MAX_SPAN`); a shared
+  out-of-line exit stub per guard (the exits are already one `ret` block per 256 predecessors; the bytes per exit are the stores of the
+  live registers, which are the frame values and cannot be shared per site).

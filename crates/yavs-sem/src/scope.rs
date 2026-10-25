@@ -635,12 +635,11 @@ impl Db {
                     return true;
                 }
                 let hidden = match self.profile_shape(p) {
-                    Some(sh) => {
-                        explicit_other
-                            .iter()
-                            .any(|&q| self.entity(q) != self.entity(p))
-                            || by_shape.any(&sh, |q| self.homographs(p, q))
-                    }
+                    // An implicit subprogram or literal is hidden only by an
+                    // explicit homograph subprogram, not by a non-overloadable:
+                    // a constant and a subprogram of one designator are not made
+                    // directly visible at all (12.4, the conflict below, #628).
+                    Some(sh) => by_shape.any(&sh, |q| self.homographs(p, q)),
                     None => {
                         explicit_other.iter().any(|&q| self.homographs(p, q))
                             || by_shape.any_member(|q| self.homographs(p, q))

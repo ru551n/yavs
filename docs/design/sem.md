@@ -243,7 +243,9 @@ Algorithm:
    Then filter (12.4):
    - (a) drop a potentially visible decl if a directly visible homograph exists;
    - (b) of two potentially visible homographs, if one is explicit and the other implicit, drop
-     the implicit one (2008);
+     the implicit one (2008). An implicit subprogram or literal is dropped only for an explicit
+     homograph **subprogram**, never for a non-overloadable: a constant and a subprogram of one
+     designator are not homographs that hide each other here, they fall to (c) (#628, [L141]);
    - (c) two potentially visible non-overloadable decls with the same key, or a non-overloadable
      and an overloadable one, make **all** of them invisible unless they are the same declaration
      or non-object aliases (or the declaration itself) that denote the same named entity. Object

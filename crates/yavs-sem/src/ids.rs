@@ -194,6 +194,11 @@ pub struct Arena<I, T> {
     track: bool,
     /// Mutable accesses so far; not serialized.
     version: u64,
+    /// Per name key (`Symbol::index`) of a declaration arena: the mutable accesses of the
+    /// declarations with that name; not serialized. A lookup of a key depends on the
+    /// declarations of that key only (and on `version`), so a write to another name leaves its
+    /// cached answer valid.
+    key_gen: Vec<u32>,
     /// Who the next `push` belongs to (`units.rs`: a load of a unit, or [`SESSION`]).
     owner: u32,
     /// The owner of every entry: `(first index, owner)` at each change of owner.
@@ -592,11 +597,50 @@ impl<I: Id, T> Arena<I, T> {
             len: 0,
             track: false,
             version: 0,
+            key_gen: Vec::new(),
             owner: SESSION,
             runs: Vec::new(),
             watch: None,
             _id: PhantomData,
         }
+    }
+
+    /// `index_mut` that does not count as a write for the visibility caches: for a caller that
+    /// bumps what it changes itself (`bump_key`).
+    pub(crate) fn quiet_mut(&mut self, id: I) -> &mut T
+    where
+        I: Id,
+    {
+        let i = id.index();
+        self.note_write(i);
+        self.pages[i / PAGE].at_mut(i % PAGE)
+    }
+
+    /// Keep the bytes of entry `i` before the first write of the unit being recorded.
+    fn note_write(&mut self, i: usize) {
+        if self.watch.as_ref().is_some_and(|w| i < w.floor) {
+            let w = self.watch.as_ref().expect("checked");
+            if !w.seen.contains(&(i as u32)) {
+                let before = (w.snap)(self.at(i));
+                let w = self.watch.as_mut().expect("checked");
+                w.seen.insert(i as u32);
+                w.touched.push((i as u32, before));
+            }
+        }
+    }
+
+    /// How often a declaration named `key` was written (see `key_gen`).
+    pub(crate) fn key_gen(&self, key: u32) -> u32 {
+        self.key_gen.get(key as usize).copied().unwrap_or(0)
+    }
+
+    /// A declaration named `key` changed, or one is about to join a region.
+    pub(crate) fn bump_key(&mut self, key: u32) {
+        let k = key as usize;
+        if self.key_gen.len() <= k {
+            self.key_gen.resize((k + 1).next_power_of_two(), 0);
+        }
+        self.key_gen[k] = self.key_gen[k].wrapping_add(1);
     }
 
     /// Counts the mutable accesses of a tracked arena: equal values mean nothing a cache could
@@ -874,6 +918,7 @@ impl<'de, I, T: serde::de::DeserializeOwned> serde::Deserialize<'de> for Arena<I
             len: img.len,
             track: img.track,
             version: 0,
+            key_gen: Vec::new(),
             owner: SESSION,
             runs: img.runs.into_owned(),
             watch: None,
@@ -907,20 +952,24 @@ impl<I: Id, T> std::ops::Index<I> for Arena<I, T> {
     }
 }
 
-impl<I: Id, T> std::ops::IndexMut<I> for Arena<I, T> {
+impl<I: Id, T: 'static> std::ops::IndexMut<I> for Arena<I, T> {
     fn index_mut(&mut self, id: I) -> &mut T {
-        self.version += 1;
         let i = id.index();
-        if self.watch.as_ref().is_some_and(|w| i < w.floor) {
-            let w = self.watch.as_ref().expect("checked");
-            if !w.seen.contains(&(i as u32)) {
-                let before = (w.snap)(self.at(i));
-                let w = self.watch.as_mut().expect("checked");
-                w.seen.insert(i as u32);
-                w.touched.push((i as u32, before));
+        self.note_write(i);
+        let item = self.pages[i / PAGE].at_mut(i % PAGE);
+        // A write to a declaration changes the answers for its name only; any other write
+        // changes every answer.
+        match (item as &mut dyn std::any::Any).downcast_ref::<crate::decl::Decl>() {
+            Some(d) => {
+                let k = d.name.key().index() as usize;
+                if self.key_gen.len() <= k {
+                    self.key_gen.resize((k + 1).next_power_of_two(), 0);
+                }
+                self.key_gen[k] = self.key_gen[k].wrapping_add(1);
             }
+            None => self.version += 1,
         }
-        self.pages[i / PAGE].at_mut(i % PAGE)
+        item
     }
 }
 

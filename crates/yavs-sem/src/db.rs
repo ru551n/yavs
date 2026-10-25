@@ -101,6 +101,9 @@ pub struct Facts {
     pub(crate) package_paths: Vec<(ExprId, ExternalId)>,
 }
 
+/// A cached `lookup`: revision, epoch, generation of the key, direct hit, result.
+pub(crate) type LookupAnswer = (LangRev, u64, u32, bool, crate::scope::Visible);
+
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Db {
     /// The design revision `D`: std and ieee are loaded for it.
@@ -171,10 +174,9 @@ pub struct Db {
     /// classified once per resolution pass).
     pub(crate) rev_reported: TrackedSet<Span>,
     /// Bottom-up candidate sets of the complete context being resolved, by AST node address.
-    /// `lookup` results valid while `Db::cache_epoch` is unchanged: (scope, key) -> (revision, epoch, direct hit, result).
+    /// `lookup` results valid while `Db::cache_epoch` is unchanged: (scope, key) -> (revision, epoch, generation of the key, direct hit, result).
     #[serde(skip)]
-    pub(crate) lookup_cache:
-        HashMap<(ScopeId, Symbol), (LangRev, u64, bool, crate::scope::Visible)>,
+    pub(crate) lookup_cache: HashMap<(ScopeId, Symbol), LookupAnswer>,
     #[serde(skip)]
     pub(crate) memo: HashMap<usize, crate::expr::CandSet>,
     /// The same for name nodes.

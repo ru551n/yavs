@@ -103,6 +103,11 @@ impl Symbol {
         (sym, s)
     }
 
+    /// The number of this symbol in the table: small and dense, for tables indexed by name.
+    pub fn index(self) -> u32 {
+        self.0
+    }
+
     pub fn as_str(self) -> &'static str {
         let i = self.0 as usize;
         LOCAL.with(|l| {

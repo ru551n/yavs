@@ -9736,5 +9736,5 @@ red. The retreating `Br` now always leaves compiled code; the interpreter steps 
 before, re-enters compiled code at the next entry. Cost: a never-suspending loop runs at interpreter speed plus an exit per
 iteration, acceptable because such a process is already warned about (`W3102`) and bounded at `SPIN_LIMIT` jumps. Test:
 `stuck::a_process_that_never_suspends_ends_with_an_error` in every tier. Open: the compiled loop of `a <= not a` keeps growing
-memory where the interpreter replaces the pending transaction (filed separately).
+memory where the interpreter replaces the pending transaction (#761).
 

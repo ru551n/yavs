@@ -14,7 +14,7 @@
 //! Disk files are read and written directly through `yavs_std::file::TextFile`, not through
 //! kernel streams, so that a process that closes a file and opens it again for reading in
 //! the same delta sees what it wrote. Every caller of a file native is serial (yavs-ir
-//! `TOUCHES_SHARED`), so the bytes on disk do not depend on `--threads` even when file objects
+//! `TOUCHES_FILES`), so the bytes on disk do not depend on `--threads` even when file objects
 //! of different processes name the same external file.
 //! `STD_OUTPUT` goes through the kernel's OUTPUT stream, ordered with `report`.
 

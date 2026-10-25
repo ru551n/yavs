@@ -8518,3 +8518,41 @@ testbench (`rand_next`, 8.3 M calls of `math_real.uniform`) 11: `yavs_rt_native`
 - **Found on the way (#729):** under `--tier=auto --tier-heat=1,0,0` the native-frame code of a function is made once, at the first level (O0), and the O2 recompile gives
   the frame-mode code only: a function that now runs on native frames keeps O0 code in the heat mode (`sc5_fifo_repack` 25.0 to 27.6 G there, though the llvm tier gains). The default policy
   compiles at O2 at once and is not affected; the differential tests use the heat mode.
+
+## Copies of processes with nested subprograms and serial processes, files do not need the shared state, scratch sets (yavs-ir, yavs-interp, yavs-elab, #721, #724, 2026-10-25)
+
+Found with the whole-run profile of `grlib_leon3mp` (#720); the SDRAM model `state_register` declares `Init_mem` and `Burst_decode` in its declarative
+part, reads an S-record file and holds access objects, so it was neither specialisable nor on the quick path.
+
+- **Decision: a process with nested subprograms, or that is serial, can have specialised copies (`Program::specialisable` no longer asks for
+  `!nested` and no `TOUCHES_SHARED`).** The copy keeps the frame layout of the lowered code, so a nested subprogram reaches the variables through
+  the static link as before. Three pieces make that correct: (1) `Machine::static_link` finds the parent frame by the process, not by the function
+  id of the frame (the root frame holds the copy after the switch: `base_of`); (2) `closed_frame` of the LLVM tier asks for functions nested in the
+  process the copy is of; (3) `opt/decl.rs` takes the frame writes of the nested subprograms into account (see next). The switch itself is tried in
+  `InterpProcess::exec` as it is in the quick path, between two activations with no frame above the root, and `specialise_later` is called for serial
+  processes too.
+- **Decision: the facts of a process's declarative part (`decl_facts`) are computed for a process with nested subprograms.** The subprograms nested in
+  it (and theirs) reach its frame by `AddrOf { space: Up(depth) }`; `Opt::nested_writes` classifies every use of such an address exactly like the
+  process's own uses of its frame addresses (`Opt::classify`, shared with `frame_writes`): a `Store` or `Copy` to it is a write of that range, any other
+  use except a `Load` is a pointer that may reach the whole object (`frame_range`), and a register holding such an address that is defined twice gives up
+  on the whole frame. Frame bytes and words that no code writes and no pointer reaches stay facts as for a process without nested subprograms. The
+  descriptor of an array variable is never written after the declaration (the one fact taken on the language's word, as before), so the layouts and
+  bounds of the variables the nested subprograms do not assign are folded.
+- **Decision: integer `**` folds (`fold_int` knows `IntOp::Pow`, with the interpreter's rules: natural exponent, `0`, `1`, `-1` bases, overflow and
+  negative exponents are left to the run-time error).** `2 ** addr_bits - 1` with a generic made the bounds of every array variable of a copy unknown to
+  the declarative part's evaluator and to the optimiser. `decl.rs` tracks blocks of up to 256 KiB (was 64 KiB): the 8192 access cells of the SDRAM
+  model's `ram_stor` are 64 KiB and a branch on the length of the object it makes stopped the evaluation.
+- **Decision: the per-thread scratch of registers and temporaries has four sets, found by the function of the root frame (`Scratch`,
+  `SCRATCH_SLOTS`).** One set meant that processes of different functions waking in turn (the two copies of one process, the stages of a pipeline) each
+  filled the register file template at their activation (`borrow_fill`: a copy of 40 KB for the SDRAM model). With copies the four SDRAM models alternate
+  between two functions, which is what showed it (+11 percent of the interpreter's instructions before this change, with copies at all). The set that is
+  given up when all four are in use goes round robin.
+- **Decision: file natives mark the function `TOUCHES_FILES`, not `TOUCHES_SHARED` (`FuncFlags`, `Program::uses_shared_state`).** Both make the process
+  serial for the kernel (`Program::is_serial`: the bytes on disk and what is read back do not depend on `--threads`). Only `TOUCHES_SHARED` (shared
+  variables, protected objects, the shared heap) needs the `SharedState`: the lock, taking the state in and out of the machine, `publish_shared`, the
+  roots, the allocation in the shared heap (#303) and the cold activation (`run_cold`). A process that only reads or writes files, which is every
+  testbench process that writes with `textio` to a file or `OUTPUT`, now runs on the quick path (`Machine::run_quick`) with its own heap; it is still run
+  alone by the kernel. #724 asked for the quick path while an activation touches no shared state; this is the same at function granularity and
+  without a fall-back in the middle of an activation. A process that really touches shared state (VUnit's logging and checks use protected objects) keeps
+  the cold path: the fall-back at the first shared access is not done.
+- **Not done:** the guard for `CopyDrive` entries of `drive_run` (#723) and the memo's give-up rule at the start-up (#722) are the next steps; see `docs/STATUS.md`.

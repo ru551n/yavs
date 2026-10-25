@@ -180,6 +180,7 @@ fn body_ok(prog: &Program, f: &Func, calls: &mut Vec<FuncId>) -> bool {
         && f.flags.contains(FuncFlags::PURE)
         && !f.flags.contains(FuncFlags::MAY_SUSPEND)
         && !f.flags.contains(FuncFlags::TOUCHES_SHARED)
+        && !f.flags.contains(FuncFlags::TOUCHES_FILES)
         && !f.flags.contains(FuncFlags::HAS_COVER)
         && f.parent.is_none()
         && f.defined
@@ -240,6 +241,7 @@ impl Program {
             || !f.flags.contains(FuncFlags::PURE)
             || f.flags.contains(FuncFlags::MAY_SUSPEND)
             || f.flags.contains(FuncFlags::TOUCHES_SHARED)
+            || f.flags.contains(FuncFlags::TOUCHES_FILES)
         {
             return None;
         }

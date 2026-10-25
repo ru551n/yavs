@@ -201,7 +201,7 @@ fn flags_and_dump() {
     let prog = pb.finish().unwrap();
     let pf = prog.func(p).unwrap();
     assert!(pf.flags.contains(FuncFlags::MAY_SUSPEND));
-    assert!(prog.is_serial(p));
+    assert!(prog.is_serial(p) && prog.uses_shared_state(p));
     assert!(!prog.is_serial(tick));
     assert_eq!(pf.resume, [2]);
     assert_eq!(
@@ -256,6 +256,9 @@ fn file_natives_make_callers_serial() {
     let prog = pb.finish().unwrap();
     let serial: Vec<bool> = procs.iter().map(|&p| prog.is_serial(p)).collect();
     assert_eq!(serial, [true, true, true, true, false, false]);
+    // Serial for the kernel's order, but they need no shared state: the machine runs them on the
+    // quick path.
+    assert!(procs.iter().all(|&p| !prog.uses_shared_state(p)));
 }
 
 /// An `ieee` native takes `data, left, right, dir` for each array argument (#697).

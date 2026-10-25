@@ -329,8 +329,7 @@ section 9 as proposed there. What exists, and where it differs from the prototyp
   initialisation of `neorv32_single_min`); every process runs once in initialisation (LRM 14.7.5),
   so "optimise on first use" would have been as eager. `Machine::specialise` runs between two
   activations of a process that waits at its one wait statement in its root frame (the resume point
-  maps to the copy's one `Suspend`; a process with several wait statements, a nested subprogram,
-  shared state, coverage or no instance data stays on the shared code). The variables stay in the
+  maps to the copy's one `Suspend`; a process with several wait statements, coverage or no instance data stays on the shared code; a nested subprogram or shared state do not keep it from a copy since #721). The variables stay in the
   slots the lowered code gave them; the memo flag and values and the layout slots the shared
   optimised code kept behind them are zeroed, the registers are filled for the copy and a resident
   process stays resident. One compare per activation (`execs == spec_at`) is the whole cost for a

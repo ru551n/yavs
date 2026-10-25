@@ -287,7 +287,8 @@ macro_rules! push_frame_body {
         let shared_alloc = match $self.frames.last() {
             Some(top) => top.shared_alloc,
             None => {
-                $self.sh.is_some() || $f.kind == FuncKind::Process && $self.rt.prog.is_serial($func)
+                $self.sh.is_some()
+                    || $f.kind == FuncKind::Process && $self.rt.prog.uses_shared_state($func)
             }
         };
         $self.frames.push(Frame {
@@ -620,11 +621,31 @@ static RESIDENT_USED: std::sync::atomic::AtomicUsize = std::sync::atomic::Atomic
 /// scratch.
 const RESIDENT_TEMP: usize = 1024;
 
-/// The working vectors of the process running on this thread: registers and temporaries. A suspended process owns none of them (no register or temporary is
-/// live across a suspension, ir.md 1.2), so a design of thousands of processes keeps one set
-/// per thread instead of a set each (#409).
-#[derive(Default)]
+/// The working vectors of the processes running on this thread: registers and temporaries. A
+/// suspended process owns none of them (no register or temporary is live across a suspension,
+/// ir.md 1.2), so a design of thousands of processes keeps a few sets per thread instead of a
+/// set each (#409).
 struct Scratch {
+    slots: [ScratchSlot; SCRATCH_SLOTS],
+    /// The slot a set is evicted from when none is empty.
+    next: usize,
+}
+
+/// Sets of vectors kept per thread: processes of a few functions that wake in turn (the
+/// specialised copies of one process, a pipeline of processes) each find their own, with the
+/// registers they start with in place.
+const SCRATCH_SLOTS: usize = 4;
+
+impl Scratch {
+    /// The slot to give up when every one holds a set that is worth keeping.
+    fn evict(&mut self) -> usize {
+        let i = self.next;
+        self.next = (i + 1) % SCRATCH_SLOTS;
+        i
+    }
+}
+
+struct ScratchSlot {
     regs: Vec<u64>,
     temp: Vec<u8>,
     /// Which function's root frame `regs` holds (runtime id, function id plus one; 0: none).
@@ -637,9 +658,8 @@ struct Scratch {
 thread_local! {
     static SCRATCH: std::cell::RefCell<Scratch> = const {
         std::cell::RefCell::new(Scratch {
-            regs: Vec::new(),
-            temp: Vec::new(),
-            key: 0,
+            slots: [const { ScratchSlot { regs: Vec::new(), temp: Vec::new(), key: 0 } }; SCRATCH_SLOTS],
+            next: 0,
         })
     };
 }
@@ -1061,10 +1081,23 @@ impl Machine {
         let key = self.scratch_key();
         let pristine = SCRATCH.with(|s| {
             let mut s = s.borrow_mut();
-            std::mem::swap(&mut self.regs.v, &mut s.regs);
-            std::mem::swap(&mut self.temp, &mut s.temp);
-            // The scratch now holds the machine's empty vectors.
-            std::mem::replace(&mut s.key, 0) == key && key != 0
+            let hit = (key != 0)
+                .then(|| s.slots.iter().position(|e| e.key == key))
+                .flatten();
+            // (No hit: any set will do, it is filled; one with room is best.)
+            let i = hit.unwrap_or_else(|| {
+                let free = |e: &ScratchSlot| e.key == 0;
+                (s.slots.iter())
+                    .position(|e| free(e) && e.regs.capacity() > 0)
+                    .or_else(|| s.slots.iter().position(free))
+                    .unwrap_or_else(|| s.evict())
+            });
+            let e = &mut s.slots[i];
+            std::mem::swap(&mut self.regs.v, &mut e.regs);
+            std::mem::swap(&mut self.temp, &mut e.temp);
+            // The slot now holds the machine's empty vectors.
+            e.key = 0;
+            hit.is_some()
         });
         self.regs.base = 0;
         if pristine {
@@ -1124,9 +1157,14 @@ impl Machine {
         let key = self.scratch_key();
         SCRATCH.with(|s| {
             let mut s = s.borrow_mut();
-            s.regs = std::mem::take(&mut self.regs.v);
-            s.temp = std::mem::take(&mut self.temp);
-            s.key = key;
+            let i = (s.slots.iter())
+                .position(|e| e.key == 0 && e.regs.capacity() == 0)
+                .or_else(|| s.slots.iter().position(|e| e.key == 0))
+                .unwrap_or_else(|| s.evict());
+            let e = &mut s.slots[i];
+            e.regs = std::mem::take(&mut self.regs.v);
+            e.temp = std::mem::take(&mut self.temp);
+            e.key = key;
         });
     }
 
@@ -3762,6 +3800,7 @@ impl Machine {
             .is_some_and(|fl| {
                 fl.contains(yavs_ir::FuncFlags::PURE)
                     && !fl.contains(yavs_ir::FuncFlags::TOUCHES_SHARED)
+                    && !fl.contains(yavs_ir::FuncFlags::TOUCHES_FILES)
             });
         if pure
             && yavs_ir::ElabRaw::restartable()
@@ -7860,7 +7899,8 @@ impl Machine {
         let mut k = self.frames.len().checked_sub(1);
         while let Some(i) = k {
             let fr = &self.frames[i];
-            if fr.func == parent {
+            // (The root frame of a process that switched to a specialised copy holds the copy.)
+            if fr.func == parent || i == 0 && self.rt.prog.base_of(fr.func) == parent {
                 return Ok(Some(i as u32));
             }
             // Search the caller's static chain, then outward along the dynamic stack.

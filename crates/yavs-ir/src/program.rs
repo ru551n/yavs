@@ -320,6 +320,16 @@ impl Program {
     /// The process must run serially (ir.md 3.5): it or a subprogram it reaches touches
     /// shared state.
     pub fn is_serial(&self, f: FuncId) -> bool {
+        self.funcs.get(self.base_of(f)).is_some_and(|f| {
+            f.flags.contains(FuncFlags::TOUCHES_SHARED)
+                || f.flags.contains(FuncFlags::TOUCHES_FILES)
+        })
+    }
+
+    /// Serial because it needs the shared state (shared variables, protected objects, the shared
+    /// heap), not only because it touches files: it runs with the `SharedState` of the design
+    /// and allocates in its heap.
+    pub fn uses_shared_state(&self, f: FuncId) -> bool {
         self.funcs
             .get(self.base_of(f))
             .is_some_and(|f| f.flags.contains(FuncFlags::TOUCHES_SHARED))
@@ -356,9 +366,12 @@ pub struct FuncFlags(pub u8);
 impl FuncFlags {
     /// The function or a procedure it calls can execute `Suspend`.
     pub const MAY_SUSPEND: FuncFlags = FuncFlags(1);
-    /// Touches shared variables, protected objects, the shared heap or disk files (serial
-    /// marking).
+    /// Touches shared variables, protected objects or the shared heap (serial marking; the
+    /// process needs the shared state).
     pub const TOUCHES_SHARED: FuncFlags = FuncFlags(2);
+    /// Reads or writes disk files (serial marking only: the kernel orders such processes, the
+    /// machine needs no shared state).
+    pub const TOUCHES_FILES: FuncFlags = FuncFlags(64);
     /// Set by lowering: the function is pure.
     pub const PURE: FuncFlags = FuncFlags(4);
     pub const HAS_COVER: FuncFlags = FuncFlags(8);

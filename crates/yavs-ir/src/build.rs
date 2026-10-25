@@ -441,7 +441,7 @@ fn propagate(prog: &mut Program, first: usize) {
                         .get(native)
                         .is_some_and(|n| touches_files(&n.symbol)) =>
                 {
-                    fl.insert(FuncFlags::TOUCHES_SHARED)
+                    fl.insert(FuncFlags::TOUCHES_FILES)
                 }
                 Inst::Cover { .. } | Inst::CoverIn { .. } | Inst::CoverCond { .. } => {
                     fl.insert(FuncFlags::HAS_COVER)
@@ -455,7 +455,11 @@ fn propagate(prog: &mut Program, first: usize) {
             }
         }
     }
-    for bit in [FuncFlags::MAY_SUSPEND, FuncFlags::TOUCHES_SHARED] {
+    for bit in [
+        FuncFlags::MAY_SUSPEND,
+        FuncFlags::TOUCHES_SHARED,
+        FuncFlags::TOUCHES_FILES,
+    ] {
         let mut work: Vec<u32> = (0..n as u32)
             .filter(|&i| flags[i as usize].contains(bit))
             .collect();

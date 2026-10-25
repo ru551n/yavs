@@ -665,6 +665,33 @@ fn spec_record_var() {
     );
 }
 
+/// A process with subprograms nested in it, holding an access object and a line (so it runs on the
+/// serial path), switches to a copy too: the nested subprograms reach the frame the copy keeps,
+/// and the copy folds the layouts they do not write (#721): the same report, fewer ops.
+#[test]
+fn spec_nested() {
+    let d = tempdir("spec_nested");
+    let src = include_str!("perf/spec_nested.vhd");
+    let run = |env: &[(&str, &str)]| run_design_env(&d, "spec_nested", src, "interp", &[], env);
+    let (shared, copies) = (
+        run(&[("YAVS_NO_SPEC", "1")]),
+        run(&[("YAVS_SPEC_AFTER", "2")]),
+    );
+    assert_eq!((shared.code, copies.code), (0, 0), "{}", copies.all());
+    assert!(copies.all().contains("sum="), "{}", copies.all());
+    assert_eq!(shared.stdout, copies.stdout);
+    assert!(
+        copies.counters["ops"] < shared.counters["ops"],
+        "{:?}",
+        copies.counters
+    );
+    check_bounds(
+        "spec_nested",
+        &copies,
+        &[("spec_switched", Min(3)), ("ops", Max(318_000))],
+    );
+}
+
 /// The idle skip changes nothing a run shows: the same output (values, times and deltas of the
 /// reports) with it off, on and checked (a skipped activation run and compared), and it skips.
 /// `idle_regs`: clocked processes, `idle_comb`: combinational ones, clocked concurrent

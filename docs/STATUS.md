@@ -4051,16 +4051,16 @@ Totals under 1 or near 1 for the reader come from the library analysis of yavs (
 `--no-cache`, bench builds with `--features llvm`, main at 2cf30ee4 against the round; windows of 100 delta cycles from cycle 20000 (rtl_fan
 20 cycles from 1000, rtl_chain 200 from 3000) with `tools/stepcount`. Kernel includes the `Ctx` callbacks of `process.rs`.
 
-Whole run, instructions in G; cycles are the minimum of 4 alternating runs on one loaded core of the first CCD (indications, no timing core
+Whole run, instructions in G (main at a133e50c against the rebased round; the windows and the cycles were measured on 2cf30ee4 before the rebase); cycles are the minimum of 4 alternating runs on one loaded core of the first CCD (indications, no timing core
 was used), main against the last commit:
 
 | design | before | after | change | cycles |
 |---|---:|---:|---:|---:|
-| neorv32_single_min | 37.60 | 34.76 | -7.5% | -6.9% |
-| poc_arith_addw | 154.81 | 147.49 | -4.7% | -4.5% |
-| fletcher_bufferreader | 22.73 | 21.33 | -6.2% | -4.3% |
-| hdlm_lfsr | 66.84 | 66.04 | -1.2% | -0.9% |
-| rtl_chain | 3.292 | 3.212 | -2.4% | |
+| neorv32_single_min | 39.82 | 37.12 | -6.8% | -6.9% |
+| poc_arith_addw | 156.74 | 149.61 | -4.5% | -4.5% |
+| fletcher_bufferreader | 22.60 | 21.33 | -5.6% | -4.3% |
+| hdlm_lfsr | 67.21 | 66.41 | -1.2% | -0.9% |
+| rtl_chain | 3.369 | 3.288 | -2.4% | |
 | rtl_fan | 13.479 | 13.479 | 0.0% | |
 
 One delta cycle, instructions before / after (stepcount windows). The `Ctx` callbacks (`read_into`, the assign fast paths, `commit_code`,

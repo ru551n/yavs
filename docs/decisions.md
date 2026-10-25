@@ -7822,8 +7822,9 @@ rtl_chain), where "kernel" counts `yavs-kernel` including the `Ctx` callbacks of
   - The small accessors of `Ctx` (`planes`, `planes_view`, `bytes_view`, `now`, `delta`, `cycle`, `timed_out`, ...) and `Buf::bytes` are `#[inline]`
     (19 to 25 instruction calls, 6 a delta on neorv32), `commit_code` is inlined into `commit_out` and `run_one` (-0.3% neorv32, -0.7% fletcher
     reader, -1.1% rtl_chain) and `arm_readers_of` into its two callers (-0.2%, -0.6%, +0.1% rtl_chain).
-  - Together: neorv32_single_min 37.60 G to 34.76 G (-7.5%), poc_arith_addw 154.81 G to 147.49 G (-4.7%), fletcher_bufferreader 22.73 G to
-    21.33 G (-6.2%), hdlm_lfsr 66.84 G to 66.04 G (-1.2%), rtl_chain 3.292 G to 3.212 G (-2.4%), rtl_fan level. Cycles, minimum of 4
+  - Together (main at a133e50c, whole runs): neorv32_single_min 39.82 G to 37.12 G (-6.8%), poc_arith_addw 156.74 G to 149.61 G (-4.5%),
+    fletcher_bufferreader 22.60 G to 21.33 G (-5.6%), hdlm_lfsr 67.21 G to 66.41 G (-1.2%), rtl_chain 3.369 G to 3.288 G (-2.4%), rtl_fan level.
+    Before the rebase, on 2cf30ee4, the same set was -7.5%, -4.7%, -6.2%, -1.2%, -2.4%. Cycles, minimum of 4
     alternating runs on one loaded core of the first CCD (no timing core was used, so these are indications): neorv32_single_min 16.16 G to
     15.04 G (-6.9%), poc_arith_addw 45.7 G to 43.6 G (-4.5%), fletcher_bufferreader 8.65 G to 8.28 G (-4.3%), hdlm_lfsr 17.7 G to 17.5 G
     (-0.9%). Per delta cycle (stepcount windows): neorv32 73.3 K to 67.0 K, addw 46.4 K to 44.3 K, fletcher reader 12.3 K to 11.6 K; tables in

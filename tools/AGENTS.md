@@ -22,6 +22,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change or ru
 | `update-ieee-libs.sh [--write]` | Re-fetch the pinned VASG commit, verify `lib/UPSTREAM.sha256`, derive, compare (default) or rewrite |
 | `gen_native_md.py` | Generate `lib/NATIVE.md` (`python3 -I tools/gen_native_md.py > lib/NATIVE.md`) |
 | `check-sim1.sh [2008|2019]` | Analyze `lib/` with the reference simulator in `lib/ORDER.md` order (scratch `~/.cache/rsim-libs/work`, `YAVS_LIBS_SCRATCH`) |
+| `claim <take|release|list|stale|core|build>` | Issue claims on GitHub for multi-agent work, plus host-local core and build locks (root `AGENTS.md` section 3a; `claim selftest` checks the comment parser) |
 | `suites/` | Drivers that simulate an external library's own testbenches on yavs (`tools/suites/AGENTS.md`) |
 | `corpus/` | Analysis corpus manifests, runner, report (`tools/corpus/AGENTS.md`) |
 | `difftest/` | Differential simulation harness (`tools/difftest/AGENTS.md`) |

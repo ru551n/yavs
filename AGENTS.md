@@ -181,6 +181,25 @@ to, and those documents win over your memory.
     are recorded once answered. A decision that exists only in a commit message, an agent report
     or a chat is not recorded.
 
+## 3a. Working alongside other agents
+
+Several agents, possibly from different tools or machines, work on this repo at once. GitHub is
+the shared source of truth; `tools/claim` (needs `gh`) is the only protocol. `who` is
+`<harness>/<agent>`, e.g. `cc-host1/kern23`.
+
+- One issue per task. Before starting: `tools/claim take <issue> <who>` (exit 0 = yours; non-zero =
+  someone else holds it or won the race, pick another issue). Never start on a claimed issue.
+- While working: `tools/claim list` shows active claims; `tools/claim stale [hours]` lists claims
+  older than 24 h by default, for a human to clear.
+- Before every push: `git fetch && git rebase origin/main`, then the CI gates (rule 13) green on
+  that exact commit. Push only fast-forward to `main` (`git push origin HEAD:main`), never force.
+- When done or abandoned: `tools/claim release <issue> <who> [note]`.
+- Comments posted through the maintainer's account are prefixed "Written by an agent (<who>)."
+  by the tool.
+- Host-local only (these locks do not coordinate other machines): `tools/claim core [-- cmd...]`
+  picks a free timing core 8-15 and runs the command pinned there; `tools/claim build -- cmd...`
+  runs a heavy build in one of 4 host-wide slots and refuses below 50 GB free disk.
+
 ## 4. Common commands
 
 ```sh

@@ -6,7 +6,7 @@
 //! 100 elements and of slices of an unconstrained signal parameter. Where the kernel's fast answer
 //! is missing (an array of integers, a negative delay) the frames are materialised and the
 //! interpreter runs the assignment, error and call trace included.
-#![cfg(feature = "llvm")]
+#![cfg(any(feature = "llvm", feature = "clift"))]
 
 mod common;
 use common::tempdir;
@@ -173,11 +173,20 @@ fn counter(stderr: &str, name: &str) -> u64 {
         .unwrap_or(0)
 }
 
-const TIERS: [&[&str]; 4] = [
+const TIERS: &[&[&str]] = &[
     &["--tier=interp"],
+    #[cfg(feature = "llvm")]
     &["--tier=llvm"],
+    #[cfg(feature = "llvm")]
     &["--tier=auto", "--tier-heat=1,0,0"],
+    #[cfg(feature = "llvm")]
     &["--tier=auto", "--tier-heat=1,0,0", "--threads=4"],
+    #[cfg(feature = "clift")]
+    &["--tier=clift"],
+    #[cfg(feature = "clift")]
+    &["--tier=clift-auto", "--tier-heat=1,0,0", "--threads=4"],
+    #[cfg(all(feature = "llvm", feature = "clift"))]
+    &["--tier=auto3", "--tier-heat=1,0,0"],
 ];
 
 fn run(dir: &Path, flags: &[&str], top: &str) -> Output {
@@ -200,7 +209,7 @@ fn signal_procedures_and_vector_functions_on_native_frames_match_the_interpreter
         let o = run(&dir, flags, "native_signals");
         assert!(o.status.success(), "{flags:?}: {o:?}");
         assert_eq!(String::from_utf8_lossy(&o.stdout), want, "{flags:?}");
-        if flags == &TIERS[1] {
+        if flags == &["--tier=llvm"] {
             // The procedures and functions run on native frames: the calls are not steps of
             // the interpreter (only the rejecting procedure and the report calls are).
             let err = String::from_utf8_lossy(&o.stderr);

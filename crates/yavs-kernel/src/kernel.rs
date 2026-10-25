@@ -545,6 +545,9 @@ pub(crate) struct ProcMeta {
     pub perm: u64,
     /// 1 + index in `SimControl::triggers` of `trigger` (0: none).
     pub tid: u32,
+    /// The edge (`edge_key`) of the dynamic trigger the process's waiters were registered with
+    /// (`Ctx::wait_edge`), `NO_EDGE` for none (always, with a `trigger`).
+    pub wkey: u64,
     /// An activation can be skipped when `armed` is false (`Builder::idle_skip`, set by
     /// `SimControl::new` for the processes that qualify).
     pub idle_ok: bool,
@@ -897,6 +900,8 @@ pub struct SimControl {
     indep_buf: Vec<(u32, u32)>,
     /// The distinct edge triggers of the processes (`ProcMeta::tid`).
     triggers: Vec<crate::EdgeTrigger>,
+    /// `triggers` by trigger: the elaborator's and the ones waits made (`Ctx::wait_edge`).
+    trig_ids: std::collections::HashMap<crate::EdgeTrigger, u32>,
     /// Named parts of signals (record packs) for hang and loop reports (`name_parts`).
     part_names: HashMap<u32, Vec<(Range, String)>>,
 }
@@ -1241,6 +1246,7 @@ impl SimControl {
             woken_buf: Vec::new(),
             indep_buf: Vec::new(),
             triggers,
+            trig_ids: ids,
         };
         for (m, slot) in sim.procs.iter().zip(&mut sim.slots) {
             if let Some(t) = m.trigger {
@@ -3338,6 +3344,7 @@ impl SimControl {
                                 && !postponed
                                 && st.again
                                 && meta.perm != 0
+                                && st.wait_key == meta.wkey
                                 && st.sens.is_empty()
                                 && st.deadline.is_none()
                                 && st.effects.is_empty()
@@ -3345,6 +3352,7 @@ impl SimControl {
                             {
                                 st.again = false;
                                 st.matched = 0;
+                                st.wait_key = crate::process::NO_EDGE;
                                 meta.ready = false;
                                 meta.resumed = true;
                                 self.serial_ran |= meta.flags.serial;
@@ -3430,6 +3438,7 @@ impl SimControl {
         // The usual clocked process (see `run_batch`): committed here.
         if !(st.again
             && meta.perm != 0
+            && st.wait_key == meta.wkey
             && st.sens.is_empty()
             && st.deadline.is_none()
             && st.effects.is_empty()
@@ -3441,6 +3450,7 @@ impl SimControl {
         }
         st.again = false;
         st.matched = 0;
+        st.wait_key = crate::process::NO_EDGE;
         meta.ready = false;
         meta.resumed = true;
         self.serial_ran |= meta.flags.serial;
@@ -3518,9 +3528,25 @@ impl SimControl {
             meta.ready = false;
             meta.resumed |= !init;
             self.serial_ran |= meta.flags.serial;
-            let (generation, trigger, tid) = (meta.generation, meta.trigger, meta.tid);
+            let (generation, mut trigger, mut tid) = (meta.generation, meta.trigger, meta.tid);
             let slot = slot_mut(&mut self.slots[p as usize]);
             let st = &mut slot.st;
+            // A wait that resumes the process only on an edge (`Ctx::wait_edge`): its waiters
+            // carry that edge's trigger, and a wait with another one registers them again.
+            let wkey = std::mem::replace(&mut st.wait_key, crate::process::NO_EDGE);
+            let wkey = if tid != 0 || !self.cfg.edge_triggers {
+                crate::process::NO_EDGE
+            } else {
+                wkey
+            };
+            if wkey != crate::process::NO_EDGE {
+                let t = dyn_trigger(wkey);
+                tid = *self.trig_ids.entry(t).or_insert_with(|| {
+                    self.triggers.push(t);
+                    self.triggers.len() as u32
+                });
+                trigger = Some(t);
+            }
             // A plain activation (below) of a clocked process the idle skip tracks: record what
             // it did, as the batch loop does, before the commit takes its lists.
             if meta.idle_ok
@@ -3546,6 +3572,7 @@ impl SimControl {
             if st.again
                 && !postponed
                 && meta.perm != 0
+                && wkey == meta.wkey
                 && st.sens.is_empty()
                 && st.deadline.is_none()
                 && st.effects.is_empty()
@@ -3618,7 +3645,17 @@ impl SimControl {
                 st.sens = all;
                 again = false;
             }
-            let same = !timed && (again || !st.sens.is_empty() && st.sens[..] == st.sens_prev[..]);
+            // The resident waiters carry the trigger of the last wait: another one names the
+            // wait in full and registers them again.
+            let moved = wkey != meta.wkey;
+            if moved && again {
+                st.sens = st.sens_prev.clone();
+                again = false;
+            }
+            meta.wkey = wkey;
+            let same = !timed
+                && !moved
+                && (again || !st.sens.is_empty() && st.sens[..] == st.sens_prev[..]);
             let mut perm = 0;
             // The ranges to register: `sens`, or `sens_prev` when they are the same or the new
             // wait became the previous one (the buffers swap, nothing is copied).
@@ -3999,6 +4036,18 @@ fn fires(signals: &[Signal], t: crate::EdgeTrigger, cycle: u64) -> bool {
     edge(signals, t, cycle)
         || t.reset
             .is_some_and(|(r, e, c)| signals[r.0 as usize].cur_code(e as usize) == c)
+}
+
+/// The trigger of a wait that resumes its process only on the edge `edge_key` made
+/// (`Ctx::wait_edge`).
+fn dyn_trigger(key: u64) -> crate::EdgeTrigger {
+    crate::EdgeTrigger {
+        signal: SignalId((key >> 32) as u32),
+        elem: ((key & 0xffff_ffff) >> 2) as u32,
+        rising: key & 1 != 0,
+        legacy: key & u64::from(crate::EDGE_LEVEL) != 0,
+        reset: None,
+    }
 }
 
 /// Alternatives of conjunctions of literals (`IdleRead::guard`).

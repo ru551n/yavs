@@ -2722,6 +2722,7 @@ impl<'a> Opt<'a> {
             | Inst::Force { .. }
             | Inst::Release { .. }
             | Inst::WaitOn { .. }
+            | Inst::WaitEdge { .. }
             | Inst::WaitFor { .. }
             | Inst::WaitAt { .. }
             | Inst::TimedOut { .. }

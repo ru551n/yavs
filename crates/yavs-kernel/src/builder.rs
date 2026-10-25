@@ -642,6 +642,7 @@ impl Builder {
                 }),
                 known_key: crate::process::NO_EDGE,
                 known: crate::process::NO_EDGE,
+                wait_key: crate::process::NO_EDGE,
                 ..Default::default()
             };
             slots.push(Mutex::new(Slot {
@@ -663,6 +664,7 @@ impl Builder {
                 trigger: p.trigger,
                 perm: 0,
                 tid: 0,
+                wkey: crate::process::NO_EDGE,
                 idle_ok: false,
                 idle_win: 0,
                 idle_hits: 0,

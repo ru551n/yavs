@@ -3878,6 +3878,19 @@ impl Machine {
         Self::edge_elem(sr, kind, ctx)
     }
 
+    /// `Inst::WaitEdge`: the coming wait resumes the process only in a cycle where the edge
+    /// `kind` of the one element `sig` refers to holds.
+    #[inline(never)]
+    fn wait_edge_inst(&mut self, code: u8, sig: Reg, ctx: &mut Option<&mut Ctx<'_>>) -> R<()> {
+        let Some(c) = ctx.as_deref_mut() else {
+            return rt_err_s!("signal or wait operation during elaboration");
+        };
+        if !self.is_multi(sig) {
+            c.wait_edge(self.sigref(sig)?.0, code);
+        }
+        Ok(())
+    }
+
     /// The value of the one element of `sr`.
     #[inline(always)]
     fn read_elem(
@@ -6038,6 +6051,11 @@ impl Machine {
                 }
                 Op::WaitOn { sig } => {
                     t!(self.wait_on(Reg(sig), ctx));
+                    k += 1;
+                    enter!();
+                }
+                Op::WaitEdge { sig, kind } => {
+                    t!(self.wait_edge_inst(kind, Reg(sig), ctx));
                     k += 1;
                     enter!();
                 }
@@ -9054,6 +9072,7 @@ impl Machine {
                 let v = self.edge_inst(kind, sig, ctx)?;
                 self.set(dst, v);
             }
+            Inst::WaitEdge { sig, kind } => self.wait_edge_inst(kind.code(), sig, ctx)?,
             Inst::SigLastValue { dst, sig } => {
                 let parts = self.sigparts(sig)?;
                 let v = self.read_parts(kc!(), &parts, true)?;
@@ -9987,6 +10006,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
             Some(&Inst::Edge { dst, kind, sig }) => {
                 m.edge_inst(kind, sig, self.ctx).map(|v| m.set(dst, v))
             }
+            Some(&Inst::WaitEdge { sig, kind }) => m.wait_edge_inst(kind.code(), sig, self.ctx),
             Some(&Inst::Drive {
                 driver,
                 target,

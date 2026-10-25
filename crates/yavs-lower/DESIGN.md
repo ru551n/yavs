@@ -189,7 +189,7 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
 | `Loop Forever` / `While` | header block, `CondBr` |
 | `Loop For` | range bounds evaluated once into slots, direction known statically or tested at run time, null range skips, the parameter slot written each iteration (no overflow at the last value: compare before increment) |
 | `Next` / `Exit` | `Br` to the loop's continue / exit block (optional `CondBr`) |
-| `Wait` | ir.md 1.5 sequence: `WaitOn` per `Lsp` (or the signals of `until` when `on` is empty, LRM 10.2), `WaitAt deadline`, `Suspend`, re-test `until`, loop |
+| `Wait` | ir.md 1.5 sequence: `WaitEdge` first when the `until` condition has a clock edge as an `and` conjunct (`edge.rs` `wait_edge`; not in a postponed process or with coverage counters), `WaitOn` per `Lsp` (or the signals of `until` when `on` is empty, LRM 10.2), `WaitAt deadline`, `Suspend`, re-test `until`, loop |
 | `Assert` | `CondBr` on the condition; the failing arm builds the message (`"Assertion violation."` default) and `Report{severity default error}` |
 | `Report` | message, `Report{severity default note}` |
 | `ProcCall` | as a call statement; a `MAY_SUSPEND` callee: arguments to slots first |

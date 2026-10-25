@@ -357,6 +357,7 @@ pub(crate) fn loud(i: &Inst, native: &dyn Fn(&Inst) -> bool) -> bool {
             | Inst::Output { .. }
             | Inst::Suspend { .. }
             | Inst::WaitOn { .. }
+            | Inst::WaitEdge { .. }
             | Inst::WaitFor { .. }
             | Inst::WaitAt { .. }
             | Inst::Elab { .. }

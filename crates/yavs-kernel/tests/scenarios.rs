@@ -1496,6 +1496,79 @@ fn edge_query_is_the_same_with_and_without_triggers() {
     assert_eq!(run(true, false), 2);
 }
 
+/// A wait that names the edge it needs (`Ctx::wait_edge`) resumes its process only in a cycle
+/// with that edge, also for events of the other signals of the wait; the edge may change from
+/// wait to wait. With `Config::edge_triggers` off every event resumes it.
+#[test]
+fn wait_edge_resumes_only_on_the_edge() {
+    let run = |triggers: bool| {
+        let mut b = Builder::new();
+        let clk = b.signal(
+            "clk",
+            SignalType::logic(1),
+            &LogicVec::new(1, StdULogic::Zero),
+        );
+        let v = b.signal(
+            "v",
+            SignalType::logic(1),
+            &LogicVec::new(1, StdULogic::Zero),
+        );
+        let (dc, dv) = (b.driver(clk), b.driver(v));
+        // `clk` toggles every 10 ns, `v` 3 ns after each of its edges and at 1 ns after that.
+        let mut step = 0u32;
+        b.process(
+            "stim",
+            NONE,
+            &[dc, dv],
+            p(move |c| {
+                let (l1, l0): (LogicVec, LogicVec) = ("1".parse().unwrap(), "0".parse().unwrap());
+                let hi = step.is_multiple_of(2);
+                let l = if hi { &l1 } else { &l0 };
+                c.assign(dc, None, &[(Time::ZERO, l)], DelayMode::INERTIAL)?;
+                c.assign(dv, None, &[(ns(3), l)], DelayMode::INERTIAL)?;
+                step += 1;
+                c.wait_for(ns(10))
+            }),
+        );
+        let seen = Arc::new(std::sync::Mutex::new((0u32, 0u32)));
+        let out = seen.clone();
+        let (mut runs, mut hits) = (0u32, 0u32);
+        let mut started = false;
+        b.process(
+            "reg",
+            NONE,
+            &[],
+            p(move |c| {
+                runs += 1;
+                // Four waits for the rising edge, then four for the falling one, each a loop that
+                // waits again when the edge does not hold (a `wait until` with an extra signal).
+                if std::mem::replace(&mut started, true) {
+                    let rising = hits < 4;
+                    if c.edge(clk.slice(0, 1), rising)? == Some(true) {
+                        hits += 1;
+                    }
+                }
+                *out.lock().unwrap() = (runs, hits);
+                c.wait_edge(clk.slice(0, 1), u8::from(hits < 4));
+                c.wait_on(clk)?;
+                c.wait_on(v)
+            }),
+        );
+        let cfg = Config {
+            edge_triggers: triggers,
+            ..Config::default()
+        };
+        let (mut sim, _) = build(b, cfg);
+        sim.run_until(ns(100)).unwrap();
+        *seen.lock().unwrap()
+    };
+    let (with, without) = (run(true), run(false));
+    // The same edges are found either way; the runs for events without the edge are not made.
+    assert!(with.0 < without.0, "{with:?} {without:?}");
+    assert_eq!(with.1, without.1, "{with:?} {without:?}");
+    assert!(with.1 >= 6, "{with:?}");
+}
+
 #[test]
 fn hook_names_the_reporting_process() {
     struct Names(Arc<std::sync::Mutex<Vec<String>>>);

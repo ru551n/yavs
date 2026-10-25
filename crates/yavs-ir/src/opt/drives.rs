@@ -544,6 +544,7 @@ impl Dr<'_> {
                     }
                 }
                 Inst::WaitOn { .. }
+                | Inst::WaitEdge { .. }
                 | Inst::WaitFor { .. }
                 | Inst::WaitAt { .. }
                 | Inst::Suspend { .. } => v.push(Ev::Bar { idx, wait: true }),

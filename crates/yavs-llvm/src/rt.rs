@@ -2475,6 +2475,7 @@ pub fn keeps_objects(i: &Inst) -> bool {
             | Inst::Drive { .. }
             | Inst::DriveSlot { .. }
             | Inst::WaitOn { .. }
+            | Inst::WaitEdge { .. }
             | Inst::WaitFor { .. }
             | Inst::WaitAt { .. }
             | Inst::TimedOut { .. }

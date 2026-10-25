@@ -8687,3 +8687,39 @@ part, reads an S-record file and holds access objects, so it was neither special
 - **Not done:** an `Index` register with several definitions (the limit register of the loop head in `decode`, one access an iteration) keeps the old lookup; holding it would need a test of the
   address's high half at each access. Functions that call between their accesses keep only the callers' frames (heap and temporary regions would have to be found again after each call;
   the object table does that at an access already). Tag: LLVM-only (the pins are `Gen` values; a second code generator would reuse `param_addrs`, `stable_activation` and `yavs_rt_region`).
+
+## Waits on a clock edge: `Inst::WaitEdge` (yavs-ir, yavs-lower, yavs-interp, yavs-kernel, #519, 2026-10-25)
+
+- **What:** a `wait until` whose condition has a clock edge as a conjunct of `and`s (`wait until rising_edge(clk) and ready = '1';`,
+  `x'event and x = '1' and en = '1'`, either order) lowers to `WaitEdge { sig, kind }` before its `WaitOn`s (`yavs-lower` `edge.rs`
+  `wait_edge`, the same `Db::edge_shape` idioms as `Inst::Edge`). The interpreter's op calls `Ctx::wait_edge`, which stores the edge's
+  `edge_key` in `ProcState::wait_key`; the commit of the wait registers all its waiters (the clock's and those of the other signals of the
+  condition) with the trigger of that edge, interned beside the elaborator's (`SimControl::trig_ids`, `dyn_trigger`). The wake path
+  that already held back a process whose edge trigger does not hold (`hold`, `uniform_trigger`, the cached wake lists) then leaves it
+  suspended for the falling edge and for events of the other signals in cycles without the edge.
+- **Why it is the same run:** the condition is false in every cycle without that edge (an `and` of a false conjunct), so those wake-ups
+  only evaluated it, found it false and waited again. It was the one place where a testbench process woke without being able to do anything
+  (every `wait until rising_edge(clk)` inside a process that also waits for other things, so no elaborator trigger).
+- **Rules:** a wait resumes only through the trigger; its timeout (a deadline in the queue) is independent of it. A wait with another edge
+  or none registers its waiters again (`ProcMeta::wkey` against `ProcState::wait_key`, in `commit_rest` and in the two hot commit paths).
+  A process with an elaborator trigger ignores it (`known_edge` set). `known_edge` is never set from a dynamic trigger: the same IR runs in
+  procedures called from postponed processes, which may resume in a later cycle. Not emitted in a postponed process, and not
+  where coverage counters count the evaluations of the condition (statement, branch, condition, expression: the counts of the false
+  evaluations would change); `Config::edge_triggers` off (debugger, VHPI) turns the trigger off.
+- **Tests:** `delta/wait_edge` (12 processes: loop, rising then falling, `or`, timeout, `wait on ... until`, procedure with the wait on
+  two clocks, legacy form, two clocks in turn, postponed, array element clock, wait for between; identical to the reference simulator at
+  1 and 4 threads, shuffled, in every tier), kernel scenario `wait_edge_resumes_only_on_the_edge`, work-counter design `wait_edge`
+  (1507 to 1207 process runs).
+- **Measured** (bench builds, interpreter, exact instructions): `hdlm_lfsr` 0.98 (67.3 G to 65.9 G; auto 0.94), `fletcher_bufferreader` 0.98,
+  `fletcher_bufferwriter_512` 0.99; a skipped wake costs ~650 instructions. `realbench --compare` over the 42 tests, interpreter and auto:
+  instruction geometric mean 1.00 in both, wall 1.00 (noise at load 20), no test with a reproducible slowdown. The gain is real but small:
+  it is the testbench processes' falling-edge wakes, 4% of the writer's wakes.
+- **Idle skip, round 6: measured, not built (same task).** Per-process counters (a local profiling patch: time, runs, runs that drove nothing
+  and made no effect, per process; the reason the purity analysis refused each process, in all 42 designs): of ~300 s of process time in the
+  interpreter, the processes that the idle skip does not take and that drive nothing in more than half of their runs cost ~1.6 s (0.5%):
+  `window_hold_check` (a checker with state in `prev` variables, 2% of `vai_window_gen_interlock`) and the like are checkers that keep
+  variables between activations, not skippable. The processes with the idle skip's refusals the brief named (`report`/`assert`, field read
+  before assignment, procedure calls) in the fletcher writer all change their outputs in nearly every run (null runs: 0 of 137 K for
+  `ctrl_comb_proc`, 0 of 69 K for `last_stage_proc`, `StreamPipelineBarrel` `reg_proc` once), so skipping them would skip nothing. The
+  testbench processes' null runs are real work that drives no signal (the per-element check loop of `bus_proc`). No further idle-skip rule
+  is worth its verification cost on this suite.

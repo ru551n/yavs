@@ -1055,6 +1055,11 @@ pub(crate) enum Op {
     WaitOn {
         sig: u32,
     },
+    /// `Inst::WaitEdge`; `kind` is `EdgeKind::code`.
+    WaitEdge {
+        sig: u32,
+        kind: u8,
+    },
     Suspend,
     /// `Inst::Ret`; `v` is `NONE` without a value.
     Ret {
@@ -4333,6 +4338,10 @@ impl Code {
                     sig: sig.0,
                 },
                 Inst::WaitOn { sig } => Op::WaitOn { sig: sig.0 },
+                Inst::WaitEdge { sig, kind } => Op::WaitEdge {
+                    sig: sig.0,
+                    kind: kind.code(),
+                },
                 Inst::Drive {
                     driver,
                     target: Some(target),

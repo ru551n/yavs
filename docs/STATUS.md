@@ -4088,6 +4088,20 @@ The shares of the instructions of a whole run that are the kernel (including `Ct
 `cycle` 6%, `assign_planes_fast` 4%, `commit_out` 4%, `run_batch` 4%, `Ctx::read_into` 3.4% (85 instructions a call, a third of them decoding
 the `SigRef`).
 
+### Waits on a clock edge, and what the idle skip leaves (#519, 2026-10-25)
+
+(`docs/decisions.md` "Waits on a clock edge".) Fresh profile of `fletcher_bufferwriter_512` (interpreter, bench build, core 13; per-process
+time from a local patch, not committed): `reg_proc`-style clocked processes 19% of process time at ~500 ns a run, the padder `comb` 12%,
+the testbench's `bus_proc` and `input_proc` 11% each, the reshaper `ctrl_comb_proc` 9%, `last_stage_proc` 5%. `perf`: `run_ops` 31%,
+`finish_words_lean` 6.5%, `cycle` 4%, `commit_planes_run` 3.8%. Over all 42 realbench designs the processes the idle skip refuses
+and that mostly drive nothing are checkers with variables kept between activations (~0.5% of process time): no new idle-skip rule
+pays. Built instead: `Inst::WaitEdge`, so `wait until rising_edge(clk) and x` wakes only on the edge. Instructions
+(interpreter): `hdlm_lfsr` 0.98 (auto 0.94), `fletcher_bufferreader` 0.98, `fletcher_bufferwriter_512` 0.99, the rest 1.00;
+`realbench --compare` of 42 tests: instruction and wall geometric mean 1.00 in interpreter and auto. Difftest 524 of 524 (interp, llvm,
+auto, auto heat 1,0,0 at 4 threads, interp shuffled); new corpus test `delta/wait_edge`, perf design `wait_edge`.
+Writer total against the reference simulator is unchanged (about 1.4x warm): the remaining gap is the interpreter dispatch, kernel
+commit and record layout items of the whole-picture table above.
+
 ### Kernel round 21: cells for a wide bus with a waiter on a part (#519, 2026-10-24)
 
 (`docs/decisions.md` "Kernel round 21".) The split of such a bus into kernel signals at the waiters' boundaries (the user's task) was

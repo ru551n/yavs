@@ -303,6 +303,9 @@ pub(crate) struct ProcState {
     pub known_edge: Option<(SignalId, u32, u8)>,
     pub known_key: u64,
     pub known: u64,
+    /// The edge (`edge_key`) the coming wait resumes the process for (`Ctx::wait_edge`),
+    /// `NO_EDGE` for none; the commit takes it and puts `NO_EDGE` back.
+    pub wait_key: u64,
     /// The run's number (from 1, bumped at every resumption), and per driver (local index) which
     /// kind of direct entry it has in this run: `epoch << 2 | kind`, kind 1 `out`, 2 `outv`,
     /// 3 `outb`. A mark of an older run means none, so the entries need no scan and no clearing.
@@ -1801,6 +1804,23 @@ impl Ctx<'_> {
         }
         self.st.sens.push((r.signal, range));
         Ok(())
+    }
+
+    /// The coming wait resumes this process only in a cycle where the edge `kind` of the one
+    /// element `r` refers to holds (`Inst::WaitEdge`): the kernel leaves it suspended for
+    /// events of the other signals of the wait in other cycles. Ignored for a process whose
+    /// edge trigger the elaborator made (it has one already) and for a range of more or fewer
+    /// than one element.
+    #[inline(always)]
+    pub fn wait_edge(&mut self, r: impl Into<SigRef>, kind: u8) {
+        let r = r.into();
+        if self.st.known_edge.is_none()
+            && let Some(x) = r.range
+            && x.len == 1
+            && x.offset < 1 << 30
+        {
+            self.st.wait_key = edge_key(r.signal, x.offset, kind);
+        }
     }
 
     /// `wait_on` of one range, when it is the next of the ranges the last wait named, in the

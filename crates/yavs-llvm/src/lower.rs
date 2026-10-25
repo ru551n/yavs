@@ -4519,6 +4519,7 @@ impl Gen {
                         if c.nat.is_none() && self.sig_read_block(&c, pc, dst, sig) => {}
                     Inst::SigRead { .. }
                     | Inst::WaitOn { .. }
+                    | Inst::WaitEdge { .. }
                     | Inst::WaitFor { .. }
                     | Inst::DriveSlot { .. }
                     | Inst::Drive { .. }

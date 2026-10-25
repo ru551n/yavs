@@ -614,6 +614,19 @@ case!(
     ]
 );
 
+// A `wait until` with a clock edge as a conjunct resumes its process only in a cycle with the
+// edge (1507 process runs without).
+case!(
+    wait_edge,
+    "hits=100 falls=100",
+    &[],
+    [
+        ("process_runs", Max(1245)),
+        ("wakes", Max(1245)),
+        ("ops", Max(16800)),
+    ]
+);
+
 /// Processes of instances with their own generics switch to copies specialised to their instance
 /// data (`docs/design/specialisation.md`): the same report, fewer ops, three copies for the six
 /// processes (the iterations of a generate and the instances with equal generics share one).

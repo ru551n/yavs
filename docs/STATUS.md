@@ -3584,6 +3584,44 @@ no code (shared interpreter code, the other half of #544), so a testbench whose 
 interpreter (`uvvm_sb_slv`, `poc_cache_cpu` 1.07); a policy that prices by measured benefit (the work in progress on main) is where
 `uvvm_axistream_vvc` and these are decided.
 
+### clift: round 5, the merge with main and a compiled-code cache (2026-10-26, #481)
+
+`spike/clift2` merged with main twice (6ec6356f, 11a5d5f0: the work clock and the per-kind `Model`s, compiled copies, frame
+temporaries, native-frame drives, the stop poll and the bound of processes that never suspend, the run-to-run profile; decisions.md
+"Cranelift tier, round 5"). The Cranelift lowering got `Inst::Zero`, `ScalarDrive::head`, the exit at the jump back of a process that
+never suspends, and `Drive`/`DriveSlot`/`SigRead` in native variants. The run-to-run profile of the policy is kept in the store of
+the generator of the first level, so a build without LLVM has it too. Cold instructions after the first merge, ratio to the
+interpreter (medians of 3, `--no-cache`): window generator 0.388 (round 4: 0.383), `neorv32_single_min` 1.025 (1.025),
+`fletcher_bufferwriter_512` 0.996 (0.978), `poc_arith_addw` 0.680 (0.714); LLVM `auto` 0.417, 1.023, 1.009, 0.686.
+
+The compiled-code cache (`yavs-clift/src/cache.rs`): one `clif-<key>.img` per Cranelift function in the work library's objects
+store, under Cranelift's own key of the body and the target; eager neorv32 translates 1 804 functions in 4 079 ms cold and links
+them in 536 ms warm, every function a hit from the second run on. Gates on a9856e74: fmt, clippy `-D warnings` for default,
+`llvm`, `clift`, `llvm,clift`; `cargo test --workspace` (1 153) and the feature sets (`llvm,clift` 441, `clift` 336, `llvm` 417);
+difftest 532/533 for `yavs-clift`, `-clift-auto`, `-auto3`, `-mixed`, `-llvm`, `-auto` at 1 and 4 threads (the one failure,
+`process/no_wait_infinite`, fails for the interpreter too: #763).
+
+Full total (analyze, elaborate, run) of a Cranelift-only build (`--features clift`, `auto` is `clift-auto`) and an LLVM build
+(`--features llvm`), both `tools/build-bench.sh` of a9856e74, against sim1; realbench `--compare --runs 5`, timing cores 8 and 9:
+
+| test | Cranelift warm | LLVM warm | Cranelift cold | LLVM cold | run s Cranelift warm / cold | run s LLVM warm / cold |
+|---|---:|---:|---:|---:|---|---|
+| poc_arith_addw | 1.28 | 0.98 | 1.32 | 1.21 | 6.97 / 7.04 | 5.31 / 6.44 |
+| fletcher_bufferwriter_512 | 2.11 | 2.06 | 2.22 | 2.10 | 4.18 / 4.33 | 4.09 / 4.09 |
+| neorv32_single_min | 0.78 | 0.78 | 0.87 | 0.87 | 2.61 / 2.84 | 2.61 / 2.84 |
+| osvvm_axis_random | 0.14 | 0.15 | 0.37 | 0.37 | 0.17 / 0.28 | 0.17 / 0.27 |
+| uvvm_sb_slv | 0.50 | 0.50 | 0.73 | 0.69 | 0.65 / 0.78 | 0.65 / 0.72 |
+| uvvm_util_rand | 0.50 | 0.49 | 0.80 | 0.71 | 0.79 / 1.04 | 0.77 / 0.91 |
+| uvvm_axistream_vvc | 0.83 | 0.81 | 0.87 | 0.86 | 3.01 / 3.00 | 2.94 / 2.98 |
+| osvvm_axi4_random | 0.26 | 0.24 | 0.45 | 0.45 | 0.55 / 0.66 | 0.51 / 0.64 |
+| vai_window_gen_interlock | 1.88 | 1.68 | 2.17 | 2.39 | 8.92 / 9.82 | 7.97 / 10.88 |
+| geometric mean | 0.678 | 0.643 | 0.920 | 0.895 | | |
+
+Cranelift against LLVM (geometric mean of the full totals): warm 1.055, cold 1.028; before the cache the same nine tests were 1.174
+warm and 1.017 cold, and a run of the cache before the second merge measured 1.023 warm and 1.039 cold. What is left warm is code
+quality on heavy compute (`poc_arith_addw` 99 G instructions against 87 G warm, window generator 157 G against 135 G); the
+verification-library tests are level.
+
 ## performance (tiers against two reference simulators, 2026-10-19)
 
 Measurement only (#125, #383, #385, #386, #395). yavs at `d76a08b5`, release build with the

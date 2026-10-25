@@ -19,7 +19,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | File | Responsibility |
 |---|---|
 | `src/lib.rs` | `Std`, `Options` (`std`, `defines`), `Encoding`, `load_source`, `parse_file`, `parse_str`, `Parsed` (`design` only when no error), `codes` |
-| `src/symbol.rs` | `Symbol`: global interner behind a lock plus a per-thread copy (hits and `as_str` take no lock), leaked strings, `as_str() -> &'static str`; `encode_table`/`DecodeTable`: the symbol text table of a cache image, each symbol interned on first read |
+| `src/symbol.rs` | `Symbol`: global interner behind a lock plus a per-thread copy (hits and `as_str` take no lock; both are open-addressing `Index`es probed with one hash that they keep), leaked strings, `as_str() -> &'static str`, `index()`; `encode_table`/`DecodeTable`: the symbol text table of a cache image, each symbol interned on first read (an atomic per symbol) |
 | `src/source.rs` | `Src` (bytes plus Latin-1 flag) |
 | `src/token.rs` | `Tok`, `Kw` (keywords per standard), `Token` |
 | `src/lexer.rs` | `lex`: bytes to tokens, `-- psl` pragmas, `E0001`, `E0009`, `W0003` |
@@ -39,7 +39,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 |---|---|---|
 | Own parser, 2008 and 2019 in one grammar, gated by `Std` (`E0004` for 2019 syntax in 2008, `E0011` for 2008 syntax in 1993, #629) | Plan decision | `docs/plan.md` "Decisions made with the user" |
 | `Ident` keeps original spelling plus folded key; extended identifiers fold to themselves | VHPI `CaseName`, waves, diagnostics | `docs/plan.md` rule 8 |
-| Global interner, leaked strings, per-thread mirror of the table | Symbols valid on runtime threads; a hit or `as_str` takes no lock (#424) | `docs/decisions.md` "Parser" |
+| Global interner, leaked strings, per-thread mirror of the table; a text is hashed once and the hash is kept in the slot | Symbols valid on runtime threads; a hit or `as_str` takes no lock (#424); a miss hashed five times and growing re-read every text (#742) | `docs/decisions.md` "Parser", "Cold analysis, round 4" |
 | List parsers (statements, declarations, interface and association lists) push onto a scratch stack in `Parser` and move the elements into an exact-size `Vec`; rare large AST variants (`Actual::Range/Subtype`, `Constraint::Range`, interface type/subprogram/package) are boxed | No doubling of 200 to 400 byte elements, smaller nodes, less copying per parse step | #424 |
 | `parse_file` returns the tree only when there was no error; recovery inside a file lists independent errors; cascades at the same or a lexically bad token are dropped | Fail early, no guessed AST | `docs/decisions.md` "Parser"; error motto |
 | Conditional analysis in 2008 files too; unknown directives warn `W0002`; `TOOL_VENDOR`/`TOOL_NAME` = `yavs` | Harmless, 2008 allows tool directives | `docs/decisions.md` "Parser" |

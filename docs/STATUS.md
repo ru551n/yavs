@@ -8337,3 +8337,34 @@ Wall times of single runs in that table are host noise (`grlib_leon3mp` 1.15 and
 (31 benchmarks, 3 runs, one core): CPU geomean 1.005. Work-counter case `case_tab`; correctness case `crates/yavs/tests/casetab.rs` (every value of a hex-digit function, a nibble
 function, an enumeration, an integer type with an `if` chain, functions that report for some values; output and reports equal with `YAVS_NO_CASETAB=1`, at 1 and 4 threads, in
 `--tier=llvm` and `--tier=auto`). Not done: integer subtypes (the IR type is the base type), results whose length depends on the argument, a fat pair per call on the table path.
+## Cold library analysis, round 4: lookups invalidated by name, one hash per symbol (#742, #740, 2026-10-25)
+
+Cold analysis of a library, one file per `yavs analyze` call (70 percent of cold minus warm in the head-to-head, #740), after #424 rounds 1 to 3. Cuts and reasoning: `docs/decisions.md`
+"Cold analysis, round 4". Whole-manifest cold analysis, user instructions in G, base build to new build (both `tools/build-bench.sh --features llvm`, cores 0-5, load 17 to 36;
+the counts are exact, the kernel column and the wall times of a shared host are not):
+
+| manifest (calls) | before | after | ratio |
+|---|---:|---:|---:|
+| osvvm-2008 (174) | 5.414 | 4.836 | 0.893 |
+| uvvm-2008 (235) | 9.360 | 8.363 | 0.893 |
+| open-logic-2008 (386) | 10.959 | 9.808 | 0.895 |
+| vunit-2008 (143) | 4.270 | 3.872 | 0.907 |
+| poc-2008 (181) | 2.664 | 2.407 | 0.904 |
+| hdl-modules-2008 (86) | 0.924 | 0.826 | 0.894 |
+| satcat5-2008 (246) | 3.622 | 3.288 | 0.908 |
+| neorv32-2008 (67) | 1.415 | 1.264 | 0.893 |
+| grlib-1993 (454) | 14.107 | 12.191 | 0.864 |
+
+User cycles of the quiet OSVVM pairs 4.42 to 3.87 G and 4.23 to 3.73 G, task-clock 1.66 to 1.48 s (-11 percent); kernel cycles are about 40 percent of a cold call and vary from 3 to 8 G between
+runs of one binary on this host (THP compaction, load), so no kernel claim is made. Warm analysis (the same files again, user instructions): osvvm 1.201 to 1.126 G, satcat5 0.914 to 0.892, hdl-modules 0.178 to 0.173.
+`tools/realbench --compare --phases analyze,elab`, 10 tests (one per library selection with a test), cores 11, instruction ratios new / old: cold analysis 0.90 (lib 0.90, own 0.95), warm analysis 0.94, cold `elab` 0.98
+(neorv32 1.03), warm `elab` 0.95; wall times on the loaded host ranged 0.66 to 2.14 and are not usable.
+
+Checks: all 33 analysis corpora with a release build with debug assertions (the recomputation on every lookup cache hit, every table compared after each unit) as expected, 0 differences; `YAVS_UNIT_CHECK=1` cold and warm
+(each file analysed twice, two calls) over 14 corpus selections (hdl-modules, neorv32, fletcher, en_cl_fix, poc, vunit, osvvm 2008 and 2019, uvvm 2008 and 2019, satcat5, open-logic, json-for-vhdl, grlib 1993): no difference between the cached and the
+fresh analysis. The unit entries of hdl-modules (172), satcat5 (590) and vunit (254) written by the old and the new build have the same sizes pairwise and differ only in the hashes that
+carry the build id.
+
+Where a cold call goes now (frame-pointer profile, 9 corpora): the file's own analysis 40 percent (`Page::at` loads of the lazy arenas 3.8 percent, lookups 3 percent, the rest flat), dependencies' entries 25 percent (`Scope` pages
+6 percent, of which 45 percent is interning the names; `Decl` pages 6 percent), writing the entry 10 percent, parsing 9 percent, library index 2.5 percent, dynamic loader 5 percent. Batching is a user decision: one call per library
+instead of one per file takes UVVM from 9.36 to 6.08 G user and 2.38 to 0.36 G kernel instructions (`docs/decisions.md`). Not verified: Windows and aarch64 (CI).

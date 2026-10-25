@@ -9158,3 +9158,44 @@ Found at the start-up of `grlib_leon3mp`: twelve memory models read an S-record 
 - **Not done.** The tables of functions whose result length depends on the argument (strings by enumeration value) and of integer subtypes (the IR type of a parameter of a
   subtype is its base type, so the range is unknown here); functions that read package or instance data; the fat pair of an array result is built per call (the join of the table
   and call paths stops the optimiser from folding the loads of the pair that follow).
+## Cold analysis, round 4: lookups invalidated by name, one hash per symbol (yavs-sem, yavs-syntax, yavs-cache, yavs, #742, #740, 2026-10-25, yavs decisions under the user's single-thread performance priority)
+
+Cold analysis of a library, one file per `yavs analyze` call, is 70 percent of the cold-minus-warm gap of the head-to-head (#740). Profile (frame pointers, call
+graphs, UVVM, OSVVM, Open Logic, vunit, PoC, satcat5, neorv32, hdl-modules, GRLIB 1993; flat): analysis of the file itself 40 to 45 percent (name lookup and overload
+resolution first), reading the dependencies' entries 25 to 30 percent (`replay`, the lazy `Decl` and `Scope` pages, symbols interned from the entries' tables), writing the
+file's own entry 10 percent, parsing 9 percent, the library index 2.5 percent, the dynamic loader 5 percent. A cold call spends 40 percent of its cycles in the kernel
+(UVVM, 235 calls: 5.7 G user and 3.6 G kernel cycles, 690 page faults a call of which 280 are the floor): user instructions understate the wall time.
+
+- **A cached lookup answer is invalidated by writes to its name, not by every write** (`Arena::key_gen`, `bump_key`, `quiet_mut`; `scope.rs` `lookup_full`, `declare`). The
+  validity of `Db::lookup` answers was "the summed `Arena::version` of the scope, declaration and subtype arenas is unchanged": a declaration added to a region, and each fill-in of
+  a declaration that was just made (a clone of a generic package fills in four fields of each of its declarations), flushed all answers. Counted over the UVVM corpus: 590 000
+  `lookup_full` calls, 21 percent answered from the cache, 42 percent first-time asks, 37 percent asks with a stale entry, and 215 845 of the 215 893 stale entries were
+  recomputed to the same answer. Now a write through `IndexMut` to a `Decl` counts against the declaration's name key (a per-key counter in the declaration arena; the arena
+  detects its element type with `Any`, so the generic `Arena` stays generic), a declaration joining a region counts against its name only (`quiet_mut` skips the global counter), and every other write
+  (scopes, subtypes, replays: `Arena::bump`) still counts for all names. An entry is valid while the global counter and the counter of its key are unchanged. What a lookup of
+  `k` reads is the declarations named `k` (their kind, profile, `implicit`, `since`) and the regions' names and use clauses; a write to an alias target (which has another name than the alias)
+  is the one case the rule does not cover by construction. The debug-build recomputation on every cache hit (`stale lookup cache entry`) is the net: all 33 analysis corpora with
+  a release build with debug assertions (that check, and the comparison of every table after each unit) pass their expected lists unchanged, and `cargo test --workspace` (debug) passes. Cost: one `Any` check per `IndexMut`
+  (resolved at compile time per arena), one counter per name. Cold analysis, instructions: -3 to -5 percent of the total, the largest single item of this round.
+- **The interner hashes a text once** (`symbol.rs` `Index`). A symbol read from an entry's table that the thread's mirror did not know hashed its text five times (mirror probe,
+  shared read probe, shared write probe, shared insert, mirror insert) and rehashed every text when a table grew. Both tables are open-addressing sets of `(text, hash, number)`
+  probed with one hash, which they keep (a probe compares the 32-bit hash before the text; growing reads no text), at most two thirds full. The symbols of a decode table are atomics
+  (0: not yet interned; two threads store the same number) instead of `OnceLock`s, so reading a symbol runs no `Once` machinery (-0.7 to -1 percent alone).
+- **Replay and encoding**: `Arena::push_run` checks the page and its source list once per page, not per entry; the encoder's id relocation (`Enc::enc`) keeps the last run an id
+  was found in per kind (two binary searches and two hash lookups per id otherwise) and the file id map keeps its last answer.
+- **Cache paths**: `Store::file` builds `dir/kind-<key>.img` in one `OsString`; `Units` holds a `Store` per mapped library instead of making two paths for every entry asked for
+  (`Path::_join` and `format!` were 1.7 percent of the cycles). The interner, replay, encoder and path changes together: -4.5 to -5 percent of the instructions on top of the lookup change.
+- **`UnitStore::has` for a std/ieee unit another library holds asks that library for the size of the entry (`payload_len`) instead of reading and checksumming it** (the check
+  `analyze` makes at its end for the std package bodies). Difference: a damaged entry in another library counts as present; it is a miss, analysed from source, when a run reads it.
+- **Measured, not kept**: symbol texts copied into 16 KiB blocks instead of one allocation each (0.2 percent); a postcard flavor that pushes the one to eight bytes of a varint instead
+  of copying a slice (no change in instructions). Not done: `Scope::names` as a table that is probed in the entry's bytes instead of decoded and interned at the first lookup (decoding a
+  `Scope` is 6 percent of a cold call, 45 percent of it interning the names: a probe by the hash of the text, built when the entry is written, would remove most of it, at the price of
+  a `Scope` type with a lazy base and an overlay for the writes, 110 uses of `names`); the same for the lazy `Decl` pages; relative relocation packing (`-z pack-relative-relocs`, needs glibc 2.36 at run time) and static `libgcc` for the
+  loader's 5 percent (a distribution question; PIE stays, user 2026-10-21).
+- **Batching is already there and large**: `yavs analyze F1 F2 ...` analyses the files of a call in one session (cli-contract section 4), which the test runners' batch compile modes use. Cold
+  analysis of the same libraries with one call per library and standard (consecutive files of one library) against one call per file, instructions, base build: UVVM 9.36 to 6.08 G user and
+  2.38 to 0.36 G kernel, OSVVM 5.41 to 2.73 G and 2.07 to 0.25 G, hdl-modules 0.92 to 0.68 G and 0.46 to 0.22 G. `tools/realbench` keeps timing one file per call (its recorded decision, as the integrations pass
+  one file per call); whether integrations should batch by default is not ours to decide (decision issue).
+- **Ideas from the reference simulator** (rule 22; no code): its identifiers carry their hash and are interned in one open-addressing table with a bounded reprobe, so a text is hashed
+  once and compared by pointer afterwards: the `Index` keeps the hash per slot for the same reason. Its units are one arena each, read and relocated as a whole with an identifier cache
+  per file; ours stay per-entry lazy (cheaper for a unit of which one declaration is read), which is why decoding a `Scope` and its symbols remains the largest dependency cost.

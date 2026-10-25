@@ -2013,6 +2013,10 @@ impl Db {
         );
         self.scopes[cscope].names = names;
         self.scopes[cscope].uses = uses;
+        // The generic map records the actuals of generic types in `inst_types` for
+        // the port map of this binding only: two bindings of one generic entity get
+        // one instance each, not the first binding's types (#614).
+        self.inst_types.clear();
         let generic_map = match &b.generic_map {
             Some(m) => errs.keep(self.assoc_list(cscope, &eg, m, b.span)),
             None => errs.keep(self.default_map(&locals_g, &eg, e, &types, at)),
@@ -2021,6 +2025,7 @@ impl Db {
             Some(m) => errs.keep(self.assoc_list(cscope, &ep, m, b.span)),
             None => errs.keep(self.default_map(&locals_p, &ep, e, &types, at)),
         };
+        self.inst_types.clear();
         // A binding indication connects the component's ports to the entity's, it reads no
         // value (LRM 1993 4.3.2): an `out` port of the component is no read there.
         for a in generic_map.iter().chain(&port_map).flat_map(|m| m.iter()) {

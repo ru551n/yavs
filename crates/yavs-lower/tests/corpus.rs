@@ -162,6 +162,7 @@ const PASS: &[&str] = &[
     "generics/call_generic_map_2019_hand",
     "generics/package_generic_map",
     "generics/generic_nested_proc",
+    "generics/config_generic_types",
     "generics/case_generate_array",
     "generics/attr_image_value",
     "generics/composite_eval",

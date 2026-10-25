@@ -12,8 +12,8 @@ use smallvec::SmallVec;
 use crate::builder::{PortConv, PortMode, ProcFlags};
 use crate::error::{ErrorKind, SimError};
 use crate::process::{
-    Ctx, DriverInfo, Effect, LiveSink, OpMode, Out, OutB, OutV, ProcId, ProcState, Process,
-    Severity, Shared, SignalOp, check_ref, make_op,
+    ACT_ASSIGNED, ACT_SLOW, Ctx, DriverInfo, Effect, LiveSink, OpMode, Out, OutB, OutV, ProcId,
+    ProcState, Process, Severity, Shared, SignalOp, check_ref, make_op,
 };
 use crate::signal::{
     DelayMode, DriverId, ForceMode, Hits, Range, Reg, SigRef, Signal, SignalId, Waiter, Waiters,
@@ -464,6 +464,12 @@ pub trait Observer: Send {
     /// as the shared heap. The kernel skips its `phase` call otherwise (the default is no).
     fn phase_after_serial(&self, _phase: Phase) -> bool {
         false
+    }
+    /// Asked right before `phase`, without a `Hook` (which costs the kernel about 50 instructions
+    /// to make): false skips the call. For an observer that has something to do in a few cycles
+    /// only and can tell cheaply (the default is yes).
+    fn phase_due(&mut self, _phase: Phase) -> bool {
+        true
     }
     fn phase(&mut self, _hook: &mut Hook<'_>, _phase: Phase) {}
     /// Elements `range` of `signal` changed value in this cycle.
@@ -1753,8 +1759,17 @@ impl SimControl {
     }
 
     /// Ended (firing `EndOfSim` once) or a pause request.
+    #[inline(always)]
     fn poll_end(&mut self) -> Result<Option<RunStatus>, SimError> {
-        // A plain load per delta; the locked exchange only when something was requested.
+        // A plain load per delta; the rest only when something was requested or the end came.
+        if self.end.is_none() && self.interrupt.0.load(Ordering::Acquire) == 0 {
+            return Ok(None);
+        }
+        self.poll_end_slow()
+    }
+
+    #[inline(never)]
+    fn poll_end_slow(&mut self) -> Result<Option<RunStatus>, SimError> {
         let flags = match self.interrupt.0.load(Ordering::Acquire) {
             0 => 0,
             _ => self.interrupt.0.swap(0, Ordering::AcqRel),
@@ -3284,8 +3299,8 @@ impl SimControl {
             // made in: no shuffled run, and (below) nothing earlier in the batch to write.
             let live_ok = self.rng.is_none() && self.live_sink.is_some();
             // An error ends the commit at its process: later ones must not write.
-            let stops = |slot: &Slot| {
-                slot.result.is_err()
+            let stops = |failed: bool, slot: &Slot| {
+                failed
                     || postponed
                         && (slot.st.deadline == Some(sh.now)
                             || !slot.st.phantoms.is_empty()
@@ -3330,7 +3345,7 @@ impl SimControl {
                     let live = live_ok
                         && par.iter().all(|&p| {
                             let s = lock(&slots[p as usize]);
-                            !stops(&s)
+                            !stops(s.result.is_err(), &s)
                                 && !(s.st.effects.iter())
                                     .any(|e| matches!(e, Effect::Report(..) | Effect::Output(..)))
                         });
@@ -3340,7 +3355,7 @@ impl SimControl {
                             resumption(&self.procs, p, &mut s.st);
                         }
                         run(p, &mut s, live);
-                        if stops(&s) {
+                        if stops(s.result.is_err(), &s) {
                             break;
                         }
                     }
@@ -3364,8 +3379,13 @@ impl SimControl {
                                 st: &mut s.st,
                                 live: live_ok,
                             };
-                            s.result = s.process.run(&mut ctx);
-                            if stops(s) {
+                            // `result` stays `Ok` unless a run failed (a store would drop the old one).
+                            let r = s.process.run(&mut ctx);
+                            let failed = r.is_err();
+                            if failed {
+                                s.result = r;
+                            }
+                            if stops(failed, s) {
                                 late.push(p);
                                 break;
                             }
@@ -3379,13 +3399,12 @@ impl SimControl {
                             if !init
                                 && !postponed
                                 && st.again
+                                && st.act & ACT_SLOW == 0
                                 && meta.perm != 0
                                 && st.wait_key == meta.wkey
-                                && st.sens.is_empty()
-                                && st.deadline.is_none()
-                                && st.effects.is_empty()
-                                && s.result.is_ok()
+                                && !failed
                             {
+                                st.check_flags();
                                 st.again = false;
                                 st.matched = 0;
                                 st.wait_key = crate::process::NO_EDGE;
@@ -3398,31 +3417,34 @@ impl SimControl {
                                     self.idle_live -= 1;
                                     self.idle_active = self.idle_live != 0;
                                 }
-                                for &(t, d) in st.scheduled.iter() {
-                                    self.queue.push(now, t, Entry::Driver(d.0));
-                                }
-                                st.scheduled.clear();
-                                // Applied after the batch: the signals are shared until then.
-                                if !st.out.is_empty() {
-                                    for &o in &st.out {
-                                        self.direct.push(o);
+                                // A quiet activation (nothing assigned) has nothing to commit.
+                                if st.act & ACT_ASSIGNED != 0 {
+                                    for &(t, d) in st.scheduled.iter() {
+                                        self.queue.push(now, t, Entry::Driver(d.0));
                                     }
-                                    st.out.clear();
-                                }
-                                if let [o] = st.outv[..] {
-                                    // One entry (the usual register): a store, not a `memcpy`.
-                                    self.directv.push(o);
-                                    st.outv.clear();
-                                } else if !st.outv.is_empty() {
-                                    self.directv.extend_from_slice(&st.outv);
-                                    st.outv.clear();
-                                }
-                                if !st.outb.is_empty() {
-                                    self.directb.extend_from_slice(&st.outb);
-                                    st.outb.clear();
-                                }
-                                if !st.phantoms.is_empty() {
-                                    self.empty_delta |= st.take_phantoms();
+                                    st.scheduled.clear();
+                                    // Applied after the batch: the signals are shared until then.
+                                    if !st.out.is_empty() {
+                                        for &o in &st.out {
+                                            self.direct.push(o);
+                                        }
+                                        st.out.clear();
+                                    }
+                                    if let [o] = st.outv[..] {
+                                        // One entry (the usual register): a store, not a `memcpy`.
+                                        self.directv.push(o);
+                                        st.outv.clear();
+                                    } else if !st.outv.is_empty() {
+                                        self.directv.extend_from_slice(&st.outv);
+                                        st.outv.clear();
+                                    }
+                                    if !st.outb.is_empty() {
+                                        self.directb.extend_from_slice(&st.outb);
+                                        st.outb.clear();
+                                    }
+                                    if !st.phantoms.is_empty() {
+                                        self.empty_delta |= st.take_phantoms();
+                                    }
                                 }
                             } else {
                                 late.push(p);
@@ -3467,23 +3489,27 @@ impl SimControl {
             live: sh.live.is_some(),
         };
         // A panic in process code is a broken invariant: an internal error of the process.
-        s.result = catch_unwind(AssertUnwindSafe(|| s.process.run(&mut ctx)))
+        let r = catch_unwind(AssertUnwindSafe(|| s.process.run(&mut ctx)))
             .unwrap_or_else(|panic| Err(process_panic(&sh, p, &*panic)));
+        // `result` stays `Ok` unless a run failed (a store would drop the old one).
+        let failed = r.is_err();
+        if failed {
+            s.result = r;
+        }
         let st = &mut s.st;
         let meta = &mut self.procs[p as usize];
         // The usual clocked process (see `run_batch`): committed here.
         if !(st.again
+            && st.act & ACT_SLOW == 0
             && meta.perm != 0
             && st.wait_key == meta.wkey
-            && st.sens.is_empty()
-            && st.deadline.is_none()
-            && st.effects.is_empty()
-            && s.result.is_ok())
+            && !failed)
         {
             let mut late = std::mem::take(&mut self.late);
             late.push(p);
             return self.commit_rest(late, pids, false, false);
         }
+        st.check_flags();
         st.again = false;
         st.matched = 0;
         st.wait_key = crate::process::NO_EDGE;
@@ -3871,11 +3897,30 @@ impl SimControl {
         if which == 0 && self.obs_phases.len() <= 64 {
             return;
         }
+        let which = self.polled(which, phase);
+        if which == 0 && self.obs_phases.len() <= 64 {
+            return;
+        }
         self.notify_which(which, |o, h| {
             if o.wants_phase(phase) {
                 o.phase(h, phase)
             }
         });
+    }
+
+    /// `which` without the observers that say no (`Observer::phase_due`) before a hook is made.
+    #[inline(never)]
+    fn polled(&mut self, mut which: u64, phase: Phase) -> u64 {
+        let mut left = which;
+        while left != 0 && self.obs_phases.len() <= 64 {
+            let i = left.trailing_zeros() as usize;
+            left &= left - 1;
+            let o = &mut self.observers[i];
+            if !(o.wants_phase(phase) && o.phase_due(phase)) {
+                which &= !(1 << i);
+            }
+        }
+        which
     }
 
     /// The changed ranges of `changed_sigs` to every observer (`Observer::value_changes`): one
@@ -4304,6 +4349,7 @@ fn resumption(procs: &[ProcMeta], p: u32, st: &mut ProcState) {
         m.epoch += 1;
     }
     let by_timeout = procs[p as usize].by_timeout;
+    st.act = 0;
     st.timed_out = by_timeout;
     st.known = if by_timeout {
         crate::process::NO_EDGE

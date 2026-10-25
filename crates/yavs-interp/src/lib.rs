@@ -244,6 +244,18 @@ impl yavs_kernel::Observer for SharedGc {
         phase == yavs_kernel::Phase::NextCycle
     }
 
+    /// A cycle start with nothing to collect needs no hook (the kernel makes one per call).
+    fn phase_due(&mut self, phase: yavs_kernel::Phase) -> bool {
+        if phase != yavs_kernel::Phase::NextCycle {
+            return true;
+        }
+        let t = self.rt.limits.gc_threshold;
+        // A poisoned lock is reported by the next process that takes it.
+        self.shared
+            .lock()
+            .is_ok_and(|s| s.heap.as_ref().is_some_and(|h| h.gc_due(t)))
+    }
+
     fn phase(&mut self, _hook: &mut yavs_kernel::Hook<'_>, phase: yavs_kernel::Phase) {
         // A poisoned lock is reported by the next process that takes it.
         let Ok(mut s) = self.shared.lock() else {

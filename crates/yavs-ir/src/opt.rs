@@ -45,6 +45,7 @@ mod memo;
 mod range;
 mod share;
 mod sink;
+mod slots;
 
 pub use inline::FwdCache;
 
@@ -97,6 +98,17 @@ fn drives_enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| {
         std::env::var("YAVS_NO_DRIVES")
+            .map(|v| v.is_empty() || v == "0")
+            .unwrap_or(true)
+    })
+}
+
+/// Are the constant-size temporaries of processes kept in their frames (`slots.rs`)? Off with
+/// `YAVS_NO_SLOTS` set to anything but `0` or the empty string (differential testing).
+fn slots_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("YAVS_NO_SLOTS")
             .map(|v| v.is_empty() || v == "0")
             .unwrap_or(true)
     })
@@ -189,12 +201,14 @@ pub fn fingerprint() -> String {
         external(),
         layout_slots_on(),
         drives_enabled(),
+        slots_enabled(),
     ])
 }
 
-fn fingerprint_of(f: [bool; 9]) -> String {
+fn fingerprint_of(f: [bool; 10]) -> String {
     let names = [
         "iropt", "memo", "cfg", "inline", "keep", "compiled", "external", "layouts", "drives",
+        "slots",
     ];
     let parts: Vec<String> = names
         .iter()
@@ -211,9 +225,9 @@ mod fingerprint_tests {
     /// Every switch is part of the fingerprint (#491).
     #[test]
     fn each_switch_changes_the_fingerprint() {
-        let base = fingerprint_of([false; 9]);
-        for i in 0..9 {
-            let mut f = [false; 9];
+        let base = fingerprint_of([false; 10]);
+        for i in 0..10 {
+            let mut f = [false; 10];
             f[i] = true;
             assert_ne!(fingerprint_of(f), base, "switch {i}");
         }
@@ -310,6 +324,34 @@ fn optimize_func_with(
             let mut errs = Vec::new();
             crate::verify::verify_func(prog, id, &f, &mut errs);
             assert!(errs.is_empty(), "inlining broke {}: {errs:?}", f.name);
+        }
+    }
+    // Temporaries of a process in its frame, last (inlining and `sink` work on `Alloc`s): the
+    // statements that allocate nothing any more lose their markers.
+    if slots_enabled()
+        && !KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed)
+        && slots::run(prog, &mut f)
+    {
+        {
+            let mut layouts = prog
+                .layouts
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            drop_markers(prog, &mut f, &mut layouts);
+        }
+        // (No second `renumber`: sharing the registers again cost the predecoder fusions that
+        // want a register defined or read once; the `Alloc` registers left unused are gaps.)
+        crate::build::number_func(&mut f, |c| {
+            prog.funcs
+                .get(c)
+                .is_some_and(|c| c.flags.contains(FuncFlags::MAY_SUSPEND))
+        });
+        #[cfg(debug_assertions)]
+        {
+            let mut errs = Vec::new();
+            crate::verify::verify_func(prog, id, &f, &mut errs);
+            assert!(errs.is_empty(), "optimiser broke {}: {errs:?}", f.name);
         }
     }
     Some(f)
@@ -614,7 +656,8 @@ fn drop_markers(prog: &Program, f: &mut crate::Func, layouts: &mut FxMap<TyId, O
         return;
     }
     let mut loc = f.loc.clone();
-    let blocks = o.compact(&mut loc, None);
+    let mut via = f.via.clone();
+    let blocks = o.compact(&mut loc, (!via.is_empty()).then_some(&mut via));
     let code = o.code;
     for (i, nb) in blocks.iter().enumerate() {
         if let Some(b) = f.blocks.get_mut(BlockId(i as u32)) {
@@ -624,6 +667,7 @@ fn drop_markers(prog: &Program, f: &mut crate::Func, layouts: &mut FxMap<TyId, O
     }
     f.code = code;
     f.loc = loc;
+    f.via = via;
 }
 
 /// Give the registers the code uses consecutive numbers: lowering and the passes leave gaps
@@ -2697,6 +2741,10 @@ impl<'a> Opt<'a> {
             | Inst::Cat { dst, .. } => {
                 let a = self.opn(dst);
                 self.kill(a, i64::MAX / 4);
+            }
+            Inst::Zero { addr, bytes } => {
+                let a = self.opn(addr);
+                self.kill(a, i64::from(bytes));
             }
             Inst::MakeDope { at, parts } => {
                 let a = self.opn(at);

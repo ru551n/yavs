@@ -2442,6 +2442,7 @@ pub fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
         Inst::Load { dst, addr, w } => [vec![addr], pair(dst, w)].concat(),
         Inst::Store { addr, src, w } => [vec![addr], pair(src, w)].concat(),
         Inst::Copy { dst, src, bytes } => vec![dst, src, bytes],
+        Inst::Zero { addr, .. } => vec![addr],
         Inst::Pos { dst, dope, idx, .. } => vec![dst, dope, idx],
         Inst::SlicePos {
             dst,
@@ -2605,6 +2606,7 @@ pub fn keeps_objects(i: &Inst) -> bool {
             | Inst::Store { .. }
             | Inst::Copy { .. }
             | Inst::Fill { .. }
+            | Inst::Zero { .. }
             | Inst::Pos { .. }
             | Inst::SlicePos { .. }
             | Inst::Index { .. }
@@ -2954,6 +2956,7 @@ pub fn stable_activation(f: &Func) -> bool {
                 | Inst::Store { .. }
                 | Inst::Copy { .. }
                 | Inst::Fill { .. }
+                | Inst::Zero { .. }
                 | Inst::Pos { .. }
                 | Inst::SlicePos { .. }
                 | Inst::Index { .. }
@@ -3128,7 +3131,7 @@ pub fn param_addrs(f: &Func) -> Vec<ParamAddr> {
             Inst::Load { addr, .. } => (&[*addr], &[]),
             Inst::Store { addr, .. } => (&[], &[*addr]),
             Inst::Copy { dst, src, .. } => (&[*src], &[*dst]),
-            Inst::Fill { dst, .. } => (&[], &[*dst]),
+            Inst::Fill { dst, .. } | Inst::Zero { addr: dst, .. } => (&[], &[*dst]),
             Inst::Pos { dope, .. } | Inst::DopeLen { dope, .. } | Inst::SlicePos { dope, .. } => {
                 (&[*dope], &[])
             }

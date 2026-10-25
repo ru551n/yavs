@@ -2945,7 +2945,7 @@ impl Machine {
             let Some(b) = slots.get(at..at + n) else {
                 return j;
             };
-            let x = le_bytes(b);
+            let x = cell_w(b, d.w);
             let code = match d.aff {
                 Some((_, ca, c0)) if aff_ok(x as i64) => {
                     (i64::from(c0) + i64::from(ca) * x as i64) as u64
@@ -2966,6 +2966,19 @@ impl Machine {
             }
         }
         run.drives.len()
+    }
+
+    /// The `SigVal` of the first drive of a run that a `DriveRun` stands in place of.
+    #[inline(never)]
+    fn drive_run_head(&mut self, run: &pre::DriveRun) -> R<()> {
+        let Some(d) = run.drives.first() else {
+            return Err(ice_s!("a drive run without drives"));
+        };
+        let (o, l) = (self.regs[d.offset as usize], self.regs[d.len as usize]);
+        let (a, b) = self.sig_val(d.sig, o as i64, l as i64)?;
+        self.regs[d.sv as usize] = a;
+        self.regs[d.sv as usize + 1] = b;
+        Ok(())
     }
 
     /// `drive_bit` with the delay itself instead of the waveform.
@@ -2996,11 +3009,29 @@ impl Machine {
     /// at `w`, the element address in `e`).
     #[inline(never)]
     fn waveform_head(&mut self, size: u16, time: u16, w: u16, e: u16) -> R<()> {
-        let a = self.temp_alloc(self.regs[size as usize])?;
-        self.regs[w as usize] = a;
-        self.store(a, Width::B8, self.regs[time as usize])?;
-        self.regs[e as usize] = add_addr(a, 8)?;
+        let a = self.wave_at(size, time, w)?;
+        if size & pre::FRAME_WAVE == 0 {
+            self.regs[e as usize] = add_addr(a, 8)?;
+        }
         Ok(())
+    }
+
+    /// The start of a dropped waveform with its time written, as its first instructions made it:
+    /// an `Alloc` of the size in register `size` into `w`, or (`pre::FRAME_WAVE`) the zeroing of
+    /// the temporary in the frame `w` points to, whose registers stay as the frame set them.
+    #[inline(never)]
+    fn wave_at(&mut self, size: u16, time: u16, w: u16) -> R<u64> {
+        let a = if size & pre::FRAME_WAVE != 0 {
+            let a = self.regs[w as usize];
+            self.wr(a, u64::from(size & !pre::FRAME_WAVE))?.fill(0);
+            a
+        } else {
+            let a = self.temp_alloc(self.regs[size as usize])?;
+            self.regs[w as usize] = a;
+            a
+        };
+        self.store(a, Width::B8, self.regs[time as usize])?;
+        Ok(a)
     }
 
     /// The `LSet` at IR pc `pc` and the `Drive` after it, as the IR has them.
@@ -3935,6 +3966,18 @@ impl Machine {
                 *c = self.regs[r.0 as usize].to_le_bytes();
             }
             return Ok(());
+        }
+        // In the frame (a temporary of a process there, `yavs_ir` `opt/slots.rs`): the same.
+        if sp == FRAME {
+            let vals: [u64; 8] = std::array::from_fn(|k| parts.get(k).map_or(0, |r| self.r(*r)));
+            if parts.len() <= 8
+                && let Some(dst) = self.frame_bytes(at, parts.len() * 8)
+            {
+                for (c, v) in dst.as_chunks_mut::<8>().0.iter_mut().zip(vals) {
+                    *c = v.to_le_bytes();
+                }
+                return Ok(());
+            }
         }
         let mut buf = [0u8; 64];
         if parts.len() <= 8 {
@@ -5399,7 +5442,7 @@ impl Machine {
                     let n = w.bytes() as usize;
                     let o = off as usize;
                     self.regs[dst as usize] = match fslots!().and_then(|s| s.get(o..o + n)) {
-                        Some(b) => le_bytes(b),
+                        Some(b) => cell_w(b, w),
                         None => t!(mk_addr(FRAME, top as u32, off.into())
                             .and_then(|a| self.load_slow(a, w))),
                     };
@@ -5538,7 +5581,7 @@ impl Machine {
                     let n = w.bytes() as usize;
                     let o = off as usize;
                     self.regs[dst as usize] = match self.inst.data.get(o..o + n) {
-                        Some(b) => le_bytes(b),
+                        Some(b) => cell_w(b, w),
                         None => t!(mk_addr(INST, 0, off.into()).and_then(|a| self.load(a, w))),
                     };
                     k += 1;
@@ -6255,10 +6298,8 @@ impl Machine {
                         }
                     }
                     if !done {
-                        // The waveform as the three dropped instructions made it.
-                        let a = t!(self.temp_alloc(self.regs[size as usize]));
-                        self.regs[w as usize] = a;
-                        t!(self.store(a, Width::B8, self.regs[time as usize]));
+                        // The waveform as the dropped instructions made it.
+                        let a = t!(self.wave_at(size, time, w));
                         let at = t!(add_addr(a, 8));
                         t!(self.copy_mem(at, self.regs[src as usize], nbytes));
                         if multi {
@@ -6400,15 +6441,21 @@ impl Machine {
                     };
                     enter!();
                 }
-                Op::DriveRun { run } => {
-                    self.end_stmt();
+                Op::DriveRun { run, stmt } => {
+                    if stmt {
+                        self.end_stmt();
+                    }
                     let r = code
                         .runs
                         .get(run as usize)
                         .ok_or_else(|| ice_f!("no drive run {run}"))?;
                     let done = self.drive_run(r, top, ctx);
                     k = match done {
-                        0 => k + 1,
+                        0 if stmt => k + 1,
+                        0 => {
+                            t!(self.drive_run_head(r));
+                            k + 1
+                        }
                         d if d == r.drives.len() => r.end as usize,
                         d => r.starts[d] as usize,
                     };
@@ -7009,6 +7056,21 @@ impl Machine {
                 Op::CondBr { c, t, f: e } => {
                     go!(if self.regs[c as usize] != 0 { t } else { e });
                 }
+                Op::ZeroSlot { w, off, n } => {
+                    t!(self.op_zero_slot(top, w, off, n));
+                    k += 1;
+                }
+                Op::ZeroReadVec { dst, sig, off } => {
+                    k += t!(self.op_zero_read_vec(ctx.as_deref_mut(), top, dst, sig, off));
+                }
+                op @ (Op::ZeroCat { .. } | Op::ZeroLCopy { .. } | Op::ZeroCatLCopy { .. }) => {
+                    k += t!(self.op_zero_fill(f, code, k, op));
+                }
+                Op::SlotBr { dst, off, t, f: e } => {
+                    let v = slot8!(off);
+                    self.regs[dst as usize] = v;
+                    go!(if v != 0 { t } else { e });
+                }
             }
         }
     }
@@ -7145,6 +7207,180 @@ impl Machine {
                 .get(i)
                 .ok_or_else(|| ice_f!("no coverage counter {i}"))?
                 .fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
+    /// `Op::ZeroReadVec`: `AllocReadVec` into the block in the frame's slots at `off`. The number
+    /// of ops done.
+    #[inline(never)]
+    fn op_zero_read_vec(
+        &mut self,
+        ctx: Option<&mut Ctx<'_>>,
+        top: usize,
+        dst: u32,
+        sig: u32,
+        off: u32,
+    ) -> R<usize> {
+        if !self.is_multi(Reg(sig)) {
+            let (sr, ty) = self.sigref(Reg(sig))?;
+            if ty.elem == Elem::Logic
+                && sr.range.is_some_and(|r| (1..=64).contains(&r.len))
+                && let Some(c) = ctx
+            {
+                let mut buf = [0u8; 32];
+                c.read_into(sr, &mut buf).map_err(Fault::from)?;
+                let slots = if top == 0 {
+                    Some(&mut self.root[..])
+                } else {
+                    self.fslots_mut(top)
+                };
+                if let Some(b) = slots.and_then(|s| s.get_mut(off as usize..off as usize + 32)) {
+                    b.copy_from_slice(&buf);
+                    return Ok(2);
+                }
+            }
+        }
+        self.zero_at(dst, 32)?;
+        Ok(1)
+    }
+
+    /// The frame forms of `AllocCat`, `AllocLCopy` and `CatLCopy` (`Op::ZeroCat` and the others;
+    /// `Op::ZeroReadVec` is an arm of the loop): the block is the temporary in the frame the
+    /// register points to (its `ZeroSlot` is this op), so the fast paths write it in place and the
+    /// others zero it and go on with the next op. The number of ops done.
+    #[inline(never)]
+    fn op_zero_fill(&mut self, f: &Func, code: &pre::Code, k: usize, op: Op) -> R<usize> {
+        let put = |m: &mut Self, dst: u32, b: &[u8; 32]| -> R<usize> {
+            let a = m.regs[dst as usize];
+            match m.frame_bytes(a, 32) {
+                Some(d) => d.copy_from_slice(b),
+                None => m.wr(a, 32)?.copy_from_slice(b),
+            }
+            Ok(2)
+        };
+        let cat_at = |pc: u32| match f.code.get(pc as usize) {
+            Some(&Inst::Cat {
+                n,
+                m,
+                parts,
+                scalars,
+                bias,
+                logic,
+                w,
+                ..
+            }) => Ok((n, m, parts, scalars, bias, logic, w)),
+            _ => Err(ice_f!("pc {pc} is not a concatenation")),
+        };
+        let next = code.at.get(k + 1).copied().unwrap_or(0);
+        match op {
+            Op::ZeroCat { dst } => {
+                let (n, m, parts, scalars, bias, _, _) = cat_at(next)?;
+                let ps = f.regs(parts).ok_or_else(|| ice_s!("operand list"))?;
+                let (mv, total) = (
+                    self.regs[m.0 as usize],
+                    self.regs[n.0 as usize].wrapping_mul(self.regs[m.0 as usize]),
+                );
+                if total <= 64
+                    && let Some((words, mask, _)) = self.cat_words(total, mv, ps, scalars, bias)?
+                {
+                    let mut out = [0u8; 32];
+                    for (o, w) in out.as_chunks_mut::<8>().0.iter_mut().zip(words) {
+                        *o = (w & mask).to_le_bytes();
+                    }
+                    return put(self, dst, &out);
+                }
+                self.zero_at(dst, 32)?;
+            }
+            Op::ZeroLCopy {
+                dst,
+                doff,
+                src,
+                soff,
+                n,
+            } => {
+                let (cnt, so, d0) = (
+                    self.regs[n as usize],
+                    self.regs[soff as usize],
+                    self.regs[doff as usize],
+                );
+                // As `AllocLCopy`.
+                if cnt != 0 && cnt <= 64 && so % 64 + cnt <= 64 && d0 < 64 && d0 + cnt <= 64 {
+                    let sa = add_addr(self.regs[src as usize], so / 64 * 32)?;
+                    if let Ok(b) = self.rd_hot(sa, 32) {
+                        let (s0, mask) = (so % 64, if cnt == 64 { !0 } else { (1u64 << cnt) - 1 });
+                        let mut out = [0u8; 32];
+                        for (p, c) in out.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+                            *c = ((plane_word(b, p) >> s0 & mask) << d0).to_le_bytes();
+                        }
+                        return put(self, dst, &out);
+                    }
+                }
+                self.zero_at(dst, 32)?;
+            }
+            Op::ZeroCatLCopy { tmp, size, dst, n } => {
+                let (cn, m, parts, scalars, bias, logic, w) = cat_at(next)?;
+                let ps = f.regs(parts).ok_or_else(|| ice_s!("operand list"))?;
+                let d = self.regs[dst as usize];
+                let total = self.regs[cn.0 as usize].wrapping_mul(self.regs[m.0 as usize]);
+                // As `CatLCopy`: one block of planes written into `d` once every piece is read.
+                let direct = logic
+                    && total <= 64
+                    && self.regs[n as usize] == total
+                    && split(d).0 != TEMP
+                    && self.cat_block(d, total, self.regs[m.0 as usize], ps, scalars, bias)?;
+                if !direct {
+                    self.zero_at(tmp, size)?;
+                    let a = self.regs[tmp as usize];
+                    let (cnt, mv) = (self.regs[cn.0 as usize], self.regs[m.0 as usize]);
+                    self.cat(a, 0, cnt, mv, ps, scalars, bias, logic, w)?;
+                    self.lcopy(d, 0, a, 0, self.regs[n as usize])?;
+                }
+                return Ok(3);
+            }
+            _ => return Err(ice_s!("not a frame fill")),
+        }
+        Ok(1)
+    }
+
+    /// `Inst::Zero` of `n` bytes at the address in register `w`.
+    #[inline(never)]
+    fn zero_at(&mut self, w: u32, n: u32) -> R<()> {
+        let a = self.regs[w as usize];
+        match self.frame_bytes(a, n as usize) {
+            Some(d) => d.fill(0),
+            None => self.wr(a, n.into())?.fill(0),
+        }
+        Ok(())
+    }
+
+    /// The `n` bytes at `a` when they are in the slots of a frame (`None`: anywhere else, or
+    /// outside the slots, for the general path and its errors).
+    #[inline(always)]
+    fn frame_bytes(&mut self, a: u64, n: usize) -> Option<&mut [u8]> {
+        let (sp, i, off) = split(a);
+        if sp != FRAME {
+            return None;
+        }
+        let slots = if i == 0 {
+            Some(&mut self.root[..])
+        } else {
+            self.fslots_mut(i as usize)
+        };
+        slots?.get_mut(off as usize..(off as usize).checked_add(n)?)
+    }
+
+    /// `Op::ZeroSlot`: `n` bytes at `off` of the slots of frame `top` (its address in `w`).
+    #[inline(never)]
+    fn op_zero_slot(&mut self, top: usize, w: u32, off: u32, n: u32) -> R<()> {
+        let slots = if top == 0 {
+            Some(&mut self.root[..])
+        } else {
+            self.fslots_mut(top)
+        };
+        match slots.and_then(|s| s.get_mut(off as usize..(off as usize + n as usize))) {
+            Some(b) => b.fill(0),
+            None => self.zero_at(w, n)?,
         }
         Ok(())
     }
@@ -8990,6 +9226,7 @@ impl Machine {
                 self.copy_mem(self.r(dst), self.r(src), self.r(bytes))?;
             }
             Inst::Fill { dst, elem, n, size } => self.fill(dst, elem, n, size)?,
+            Inst::Zero { addr, bytes } => self.wr(self.r(addr), u64::from(bytes))?.fill(0),
             Inst::Pos {
                 dst,
                 dope,
@@ -9892,32 +10129,36 @@ impl Host<'_, '_, '_> {
             };
             let lset = before(at, &|i| matches!(i, Inst::LSet { .. }))
                 .ok_or_else(|| ice_s!("a fused drive without its LSet"))?;
-            let (
-                Inst::LSet { base, v, .. },
-                Some(Inst::Alloc { size, .. }),
-                Some(Inst::Store { src, .. }),
-            ) = (
-                f.code[lset],
-                before(
-                    lset,
-                    &|i| matches!(i, Inst::Alloc { dst, .. } if *dst == wave),
-                )
-                .map(|p| f.code[p]),
-                before(
-                    lset,
-                    &|i| matches!(i, Inst::Store { addr, .. } if *addr == wave),
-                )
-                .map(|p| f.code[p]),
-            )
-            else {
-                return Err(ice_s!("a fused drive without its waveform"));
+            let Inst::LSet { base, v, idx } = f.code[lset] else {
+                return Err(ice_s!("a fused drive without its LSet"));
             };
             let u = |x: u32| u16::try_from(x).map_err(|_| ice_s!("a register beyond 65535"));
+            let head = before(
+                lset,
+                &|i| matches!(i, Inst::Alloc { dst, .. } | Inst::Zero { addr: dst, .. } if *dst == wave),
+            )
+            .ok_or_else(|| ice_s!("a fused drive without its waveform"))?;
+            let store = (head + 1..lset)
+                .find(|&p| matches!(f.code[p], Inst::Store { addr, .. } if addr == wave))
+                .map(|p| f.code[p]);
+            // In the frame the time register is the `Store`'s, or (none: the time is 0) the
+            // `LSet`'s index, which holds 0. Coupled to `pre::peephole`, which fuses only an
+            // `LSet` at the constant index 0: if that widens, this needs a zero register of its own.
+            let (size, time) = match (f.code[head], store) {
+                (Inst::Alloc { size, .. }, Some(Inst::Store { src, .. })) => (u(size.0)?, src),
+                (Inst::Zero { bytes, .. }, Some(Inst::Store { src, .. })) => {
+                    (pre::FRAME_WAVE | u(bytes)?, src)
+                }
+                (Inst::Zero { bytes, .. }, None) => (pre::FRAME_WAVE | u(bytes)?, idx),
+                _ => return Err(ice_s!("a fused drive without its waveform")),
+            };
             m.regs[t.0 as usize] = target[0];
             m.regs[t.0 as usize + 1] = target[1];
-            m.regs[src.0 as usize] = delay as u64;
+            if store.is_some() {
+                m.regs[time.0 as usize] = delay as u64;
+            }
             m.regs[v.0 as usize] = code;
-            m.waveform_head(u(size.0)?, u(src.0)?, u(wave.0)?, u(base.0)?)?;
+            m.waveform_head(size, u(time.0)?, u(wave.0)?, u(base.0)?)?;
             m.top().pc = lset as u32;
             m.replay_lset_drive(self.prog, f, lset as u32, m.frames.len() - 1, self.ctx)
         })();

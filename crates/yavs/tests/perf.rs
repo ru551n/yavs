@@ -174,7 +174,7 @@ case!(
     pkg_table,
     "sum=212",
     &[],
-    [("ops_elab", Max(480)), ("ops", Max(50))]
+    [("ops_elab", Max(480)), ("ops", Max(49))]
 );
 case!(
     elab_raw,
@@ -237,7 +237,7 @@ case!(
         ("events", Max(313)),
         ("update_general", Max(2)),
         ("quick_applied", Min(194)),
-        ("ops", Max(3258)),
+        ("ops", Max(2943)),
     ]
 );
 case!(
@@ -249,7 +249,7 @@ case!(
         ("process_runs", Max(440)),
         ("update_general", Max(0)),
         ("update_timed", Min(185)),
-        ("ops", Max(5080)),
+        ("ops", Max(4647)),
     ]
 );
 case!(
@@ -262,7 +262,7 @@ case!(
         ("wakes", Max(418)),
         ("update_general", Max(2)),
         ("direct_planes", Min(195)),
-        ("ops", Max(4930)),
+        ("ops", Max(4408)),
     ]
 );
 case!(
@@ -273,7 +273,7 @@ case!(
         ("cycles", Max(312)),
         ("update_general", Max(2)),
         ("direct_planes", Min(400)),
-        ("ops", Max(4120)),
+        ("ops", Max(3588)),
     ]
 );
 case!(
@@ -284,7 +284,7 @@ case!(
         ("cycles", Max(312)),
         ("lean_signals", Min(2)),
         ("update_general", Max(2)),
-        ("ops", Max(14435)),
+        ("ops", Max(13570)),
     ]
 );
 case!(
@@ -298,7 +298,7 @@ case!(
         ("update_general", Max(2)),
         ("direct_bytes", Min(195)),
         ("quick_applied", Min(194)),
-        ("ops", Max(6489)),
+        ("ops", Max(5552)),
     ]
 );
 case!(
@@ -311,7 +311,7 @@ case!(
         ("wakes", Max(841)),
         ("update_general", Max(2)),
         ("quick_applied", Min(494)),
-        ("ops", Max(7523)),
+        ("ops", Max(6782)),
     ]
 );
 case!(
@@ -348,7 +348,7 @@ case!(
         ("cycles", Max(1005)),
         ("process_runs", Max(1030)),
         ("update_general", Max(0)),
-        ("ops", Max(506)),
+        ("ops", Max(467)),
     ]
 );
 case!(
@@ -396,7 +396,7 @@ case!(
     &[],
     [("process_runs", Max(2)), ("ops", Max(1481)),]
 );
-case!(ieee_operands, "acc=", &[], [("ops", Max(4060))]);
+case!(ieee_operands, "acc=", &[], [("ops", Max(3541))]);
 case!(ieee_share, "n=", &[], [("ops", Max(3630))]);
 case!(elem_loops, "acc=", &[], [("ops", Max(35600))]);
 case!(wide_vec, "wide=0", &[], [("ops", Max(2270000))]);
@@ -428,7 +428,7 @@ case!(
     [
         ("pmemo_hits", Min(420)),
         ("pmemo_runs", Max(14)),
-        ("ops", Max(17800))
+        ("ops", Max(16767))
     ]
 );
 // A hex-digit parser of two 22-arm case functions (character to integer and to a nibble),
@@ -451,7 +451,7 @@ case!(
         ("cycles", Max(415)),
         ("process_runs", Max(1890)),
         ("wakes", Max(1870)),
-        ("ops", Max(21230)),
+        ("ops", Max(19560)),
     ]
 );
 case!(
@@ -464,7 +464,7 @@ case!(
         ("wakes", Max(414)),
         ("update_general", Max(206)),
         ("events", Max(208)),
-        ("ops", Max(7769)),
+        ("ops", Max(7357)),
     ]
 );
 case!(
@@ -487,7 +487,7 @@ case!(
     [
         ("direct_codes", Max(137)),
         ("direct_planes", Max(63)),
-        ("ops", Max(4300)),
+        ("ops", Max(3564)),
     ]
 );
 // A run of scalar drives of variables that hold what the signals have is one op (`pre.rs`
@@ -501,7 +501,7 @@ case!(
         ("cycles", Max(402)),
         ("cycles", Min(402)),
         ("direct_codes", Max(275)),
-        ("ops", Max(16800)),
+        ("ops", Max(15900)),
     ]
 );
 // Implicit signals in the design do not take the other signals off the fast update paths: only
@@ -516,7 +516,7 @@ case!(
         ("cycles", Min(1342)),
         ("update_general", Max(380)),
         ("update_fast", Min(650)),
-        ("ops", Max(24800)),
+        ("ops", Max(22528)),
     ]
 );
 // Vector assignments that change nothing are skipped when they are made (605 direct plane
@@ -529,7 +529,7 @@ case!(
         ("cycles", Max(242)),
         ("cycles", Min(242)),
         ("direct_planes", Max(180)),
-        ("ops", Max(19900)),
+        ("ops", Max(19173)),
     ]
 );
 // Bits and slices of one register assigned in turn in one activation (the fields of a record) stay
@@ -547,7 +547,7 @@ case!(
     ]
 );
 // A one-element aggregate choice is straight code and conversion copies run in the kernel.
-case!(agg_carry, "acc=", &[], [("ops", Max(7860))]);
+case!(agg_carry, "acc=", &[], [("ops", Max(7032))]);
 case!(
     static_chain,
     "acc=",
@@ -564,7 +564,7 @@ case!(
         ("wakes", Max(212)),
         ("events", Max(650)),
         ("update_general", Max(2)),
-        ("ops", Max(4103)),
+        ("ops", Max(3785)),
         ("signals", Max(6)),
     ]
 );
@@ -575,7 +575,7 @@ case!(
     [
         ("cycles", Max(418)),
         ("process_runs", Max(525)),
-        ("ops", Max(28570)),
+        ("ops", Max(28141)),
         // The records `r` and `rin` are packs of leaves (#686), not one signal per leaf.
         ("signals", Max(20)),
     ]
@@ -590,7 +590,7 @@ case!(
         ("wakes", Max(450)),
         ("events", Max(410)),
         ("update_general", Max(21)),
-        ("ops", Max(1004)),
+        ("ops", Max(923)),
     ]
 );
 case!(
@@ -603,7 +603,7 @@ case!(
         ("wakes", Max(212)),
         ("events", Max(224)),
         ("update_general", Max(2)),
-        ("ops", Max(1822)),
+        ("ops", Max(1607)),
     ]
 );
 
@@ -614,7 +614,7 @@ case!(
     [
         ("process_runs", Max(3100)),
         ("idle_skips", Min(4050)),
-        ("ops", Max(32819)),
+        ("ops", Max(31837)),
     ]
 );
 
@@ -627,7 +627,7 @@ case!(
     [
         ("process_runs", Max(2200)),
         ("idle_skips", Min(560)),
-        ("ops", Max(34000)),
+        ("ops", Max(31457)),
     ]
 );
 case!(
@@ -637,7 +637,7 @@ case!(
     [
         ("process_runs", Max(4500)),
         ("idle_skips", Min(2850)),
-        ("ops", Max(68500)),
+        ("ops", Max(65257)),
     ]
 );
 // Variables assigned on every path before they are read (the arms of an `if`/`case`, the fields
@@ -664,7 +664,7 @@ case!(
     [
         ("process_runs", Max(1245)),
         ("wakes", Max(1245)),
-        ("ops", Max(16800)),
+        ("ops", Max(15535)),
     ]
 );
 

@@ -9615,3 +9615,71 @@ what it replaced:
   writing an entry without the temporary file would save the rename but gives up that a reader never sees a short file (the checksum would catch it, so it is an option for a later round).
   `Manifest` lookups by path are linear in the files of the library (`index_of_str`); they do not show in a profile of 449 files.
 
+## Temporaries of a process in its frame (yavs-ir `opt/slots.rs`, yavs-interp `pre.rs`, yavs-llvm `lower.rs`, #668, #746, #751, #752, 2026-10-25)
+
+- **Source**: two independent implementations of the issue (branches `compare/opus-668`, "A", and
+  `compare/sonnet-668`, "B", both from a7a121a9); a blind review chose A as the base. Taken from B:
+  the bit-set liveness with its size cap, the byte-range privacy check of a waveform in the frame,
+  the alias guards of the frame forms of the block fusions and the IR tests
+  (`crates/yavs-ir/tests/opt_slots.rs`). Not taken from B: its `--tier=auto` rule that left
+  processes which never suspend interpreted (it also kept processes whose waits are in called
+  procedures interpreted; compiled code polls the stop request on backward branches since #737).
+- **Decision**: an `Alloc` of a constant size (at most 256 bytes) in a process, whose block no
+  pointer outlives the basic block of the `Alloc`, is frame bytes of the process: a fresh `AddrOf`
+  register defined once (the frame starts with it) and `Inst::Zero` unless the block is written
+  whole before anything reads it. A block stays an `Alloc` when a register pointing into it is
+  live at the end of its basic block (`live_out`: backward liveness of those registers, a bit set
+  per block; above 2^24 block-words the process keeps all its `Alloc`s), when its pointer is used
+  by an instruction `classify` does not know, and when its pointer is stored anywhere, also into
+  another temporary: a pointer loaded back out of memory is not tracked (review finding S1: A and B
+  followed a pointer stored into another taken block, and a `Load` of it later read bytes that a
+  newer temporary had taken). No taken block holds a handle: lowering roots such a value with
+  `TempRoot`, which rejects the block (debug assertion, finding S2). The pass runs last in
+  `optimize_func` (after inlining and `sink`, whose value numbering works on `Alloc`s) and drops
+  the statement markers that free nothing any more. Neither a walk of the optimiser nor a second
+  `renumber` runs over the result: both made registers read or defined more than once that the
+  predecoder's fusions want read or defined once; the pass folds the derived addresses itself and
+  the `Alloc` registers it leaves unused are gaps. `YAVS_NO_SLOTS=1` turns it off.
+- **Interpreter**: frame forms of the fused `Alloc` ops: `CopyDrive`, `LSetDrive` and
+  `LCopyDrive` take `ZeroSlot` (and the store of the time, kept when it is not next to it) in place
+  of `Alloc`/`Store`/`Index` (`pre::FRAME_WAVE` in `size`: the waveform is at the address `w` holds
+  and the slow paths zero and write it there, never writing the registers). The waveform is
+  private when the reads of every register pointing into its bytes, between its `Zero` and the
+  `Drive`, are exactly the fused instructions' and none is read after (`frame_wave_is_private`):
+  the frame starts with every address derived by a constant, so counting the two named registers
+  is not enough. `ZeroReadVec`, `ZeroCat`, `ZeroLCopy`, `ZeroCatLCopy` (out of
+  line), not fused when the copy's other operand points into the block (`in_slot`: the fast path
+  skips the zeroing the unfused ops would read); `ZeroSlot`; `SlotBr` (`FlagBr` without the
+  marker); a `DriveRun` may start at a drive without a `Stmt` (it then stands for that drive's
+  `SigVal`). New ops go at the end of `Op` and of the loop's match: in the middle they renumbered
+  the others (#508).
+- **4-byte loads (#746)**: `LoadSlot`, `LoadInst` and the slot loads of a `DriveRun` read through
+  `cell_w`, so a `B4` cell sign-extends as `Machine::load` does (they zero-extended: a negative
+  narrow integer element read at a constant frame or instance address came out as 2^32 - n).
+- **Single-use counts (#752)**: the predecoder counts the reads of a register through the
+  instructions of the code (`read_counts`, lists included), not over all of `Func::operands`: the
+  optimiser leaves the lists of removed instructions there, and the pass's renamed copies of shared
+  lists made registers look read twice, which cost the fusions that want a register read once.
+- **LLVM tier**: `Zero` is a `memset` of the host bytes; `ScalarDrive::head` lists the pcs the
+  tier skips (`Alloc`, `Store`, `Index`, or `Zero` and the time `Store`); an instruction with a
+  frame address operand fetches the slots pointer of the stretch on the main path first (#751: a
+  fast path inside the instruction's own branches defined it where it did not dominate later uses,
+  and functions failed verification).
+- **Out of the loop**: `ZeroReadVec`, `ZeroCat`, `ZeroLCopy` and `ZeroCatLCopy` run out of line
+  (`op_zero_read_vec`, `op_zero_fill`), only `ZeroSlot` and `SlotBr` are arms of `run_ops`: every
+  frame form tried as an arm of the loop (A had `ZeroReadVec` there) made the binary run 1 to 3
+  percent more interpreter instructions on every design, the pass off included, through code
+  generation of the loop. The price: a design that concatenates into a temporary every cycle
+  (`rtl_lfsr`, `lfsr64`) runs 2 to 4 percent more cycles in the interpreter than with the in-loop
+  `AllocCat`.
+- **Why**: the same binary with the pass on against off, instructions (steady-state cache):
+  interpreter -3.5 to +1.4 percent on the seven designs of #668 (`grlib_leon3mp` +0.5,
+  `poc_arith_addw` +1.4), the LLVM tier -0.6 to -3.9 percent; against main the interpreter is -3.5
+  to +0.9 percent (geomean -0.9), the LLVM tier -0.4 to -3.9; the head-to-head designs 1.010 in
+  interpreter cycles and 0.980 in the LLVM tier; realbench (42 tests) wall geomean 0.99 interpreter
+  and 1.00 LLVM tier, CPU time 0.99 and 1.00, `cpu` category 0.97 both (`docs/STATUS.md`
+  "Temporaries of a process in its frame"). Over the two sets the interpreter's cycles are not
+  worse (rule of the user, 2026-10-23), the LLVM tier is better.
+- **Not done**: a `NewPair` or `NewDope` frame form (the zeroing goes there by coverage, so the
+  stores or the `MakeDope` alone remain); following a pointer through memory (a group of blocks
+  that hold each other's addresses), unused on the designs measured.

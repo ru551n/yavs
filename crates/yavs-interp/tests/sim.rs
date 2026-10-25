@@ -2308,3 +2308,39 @@ fn process_instances_are_counted() {
     }
     assert_eq!(rt.native_flags().instances(p), 3);
 }
+
+/// A 4-byte load sign-extends wherever the cell is (`Width::B4`, #746): instance data at a
+/// constant offset (`Op::LoadInst`) and a frame slot (`Op::LoadSlot`) alike.
+#[test]
+fn four_byte_loads_sign_extend_from_instance_data_and_frame() {
+    let mut pb = ProgramBuilder::new();
+    let from_inst = pb.declare("from_inst", FuncKind::Function, None);
+    let from_frame = pb.declare("from_frame", FuncKind::Function, None);
+    {
+        let mut fb = pb.define(from_inst);
+        stmt(&mut fb, StmtKind::Return);
+        let v = load(&mut fb, AddrSpace::Inst, 8, Width::B4);
+        fb.emit(Inst::Ret { v: Some(v) });
+        fb.finish();
+    }
+    {
+        let mut fb = pb.define(from_frame);
+        let x = fb.param("x", Width::B4, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb, StmtKind::Return);
+        let v = load(&mut fb, AddrSpace::Frame, x, Width::B4);
+        fb.emit(Inst::Ret { v: Some(v) });
+        fb.finish();
+    }
+    let prog = std::sync::Arc::new(pb.finish().unwrap());
+    let rt = Runtime::new(prog, Bindings::default()).unwrap();
+    let mut data = vec![0u8; 16];
+    data[8..12].copy_from_slice(&(-3i32).to_le_bytes());
+    let inst = std::sync::Arc::new(yavs_interp::InstData {
+        data,
+        ..Default::default()
+    });
+    let v = yavs_interp::call(rt.clone(), from_inst, inst.clone(), &[]).unwrap();
+    assert_eq!(v.map(|v| v as i64), Some(-3));
+    let v = yavs_interp::call(rt, from_frame, inst, &[(-7i64) as u64]).unwrap();
+    assert_eq!(v.map(|v| v as i64), Some(-7));
+}

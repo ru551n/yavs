@@ -337,6 +337,12 @@ pub enum Inst {
         src: Reg,
         bytes: Reg,
     },
+    /// `bytes` zero bytes at `addr` (a multiple of 8): the zeroing an `Alloc` does, for memory that
+    /// is not allocated here (the optimiser's temporaries in a process frame, `opt/slots.rs`).
+    Zero {
+        addr: Reg,
+        bytes: u32,
+    },
     /// `n` copies of the `size`-byte element at `elem`.
     Fill {
         dst: Reg,
@@ -975,6 +981,7 @@ impl Inst {
                 f(src, Use, p);
                 f(bytes, Use, i);
             }
+            Inst::Zero { addr, .. } => f(addr, Use, p),
             Inst::Fill { dst, elem, n, .. } => {
                 f(dst, Use, p);
                 f(elem, Use, p);

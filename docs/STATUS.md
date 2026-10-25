@@ -8630,3 +8630,58 @@ sim1 (head-to-head 5: 0.15 warm for `compute_h2h`, 0.40 `xor_types`) is not re-m
 second pass of three tests, instructions 1.00 both: its decisions differ between worlds by sampling, #673). Flagged and re-run alone (9 runs): `osvvm_axis_random` and
 `hdlm_ring_buffer` 1.00 / 0.84 and 1.00 / 0.89 (noise of the first pass). Not explained: `fletcher_bufferwriter_512` 1.01 to 1.08 warm and 1.06 to 1.15 cold wall at
 equal instructions (52.2 G) in two passes, cycles not measured (code layout, #576, or the load of the host); no `--tier=auto` decision of that test was traced.
+
+## Temporaries of a process in its frame (#668, 2026-10-25)
+
+`yavs_ir` `opt/slots.rs` keeps constant-size temporaries of processes (waveforms of signal
+assignments, vectors read from signals, concatenations, descriptors) in frame bytes, with frame
+forms of the fused `Alloc` ops in the predecoder (`ZeroSlot`, `CopyDrive`/`LSetDrive`/`LCopyDrive`
+with `pre::FRAME_WAVE`, `ZeroReadVec`, `ZeroCat`, `ZeroLCopy`, `ZeroCatLCopy`, `SlotBr`, drive runs
+without a marker) and in the LLVM tier (`Zero` as `memset`, `ScalarDrive::head`); `YAVS_NO_SLOTS=1`
+turns it off. Landed from two independent branches (decisions.md "Temporaries of a process in its
+frame"). Also: 4-byte `LoadSlot`/`LoadInst` loads sign-extend (#746), compiled frame code fetches
+the slots pointer before an instruction's own branches (#751), the predecoder's single-use counts
+ignore the operand lists of removed instructions (#752).
+
+Instructions (`perf stat`, bench builds, each cell the third run of its world so the compilation
+cache is in its steady state; main = 1f267217, the change's base; "off"/"on": this binary with and
+without `YAVS_NO_SLOTS=1`; percentages on/off, on/main):
+
+| design | interp main / off / on (G) | llvm main / off / on (G) |
+|---|---|---|
+| `neorv32_single_min` | 30.82 / 30.90 / 30.18 (-2.3 %, -2.1 %) | 41.74 / 41.78 / 40.13 (-3.9 %, -3.9 %) |
+| `sc5_fifo_repack` | 36.53 / 36.67 / 36.24 (-1.2 %, -0.8 %) | 22.42 / 22.42 / 22.28 (-0.6 %, -0.6 %) |
+| `fletcher_bufferwriter_512` | 51.29 / 51.39 / 50.96 (-0.8 %, -0.6 %) | 58.74 / 58.76 / 58.41 (-0.6 %, -0.6 %) |
+| `poc_cache_cpu` | 7.85 / 7.96 / 7.76 (-2.6 %, -1.1 %) | 11.07 / 11.07 / 11.01 (-0.6 %, -0.6 %) |
+| `sc5_timestamp` | 6.88 / 6.88 / 6.64 (-3.5 %, -3.5 %) | 5.78 / 5.78 / 5.74 (-0.8 %, -0.8 %) |
+| `grlib_leon3mp` (100 us) | 82.79 / 83.05 / 83.50 (+0.5 %, +0.9 %) | 122.28 / 122.69 / 121.74 (-0.8 %, -0.4 %) |
+| `poc_arith_addw` | 147.73 / 146.90 / 149.02 (+1.4 %, +0.9 %) | 124.45 / 124.46 / 122.43 (-1.6 %, -1.6 %) |
+
+(A measurement taken one run after the warm-up, as in the first version of this table in the
+branch, is not steady: the second run of a world makes cache entries the third reuses, and which
+variant ran first moved designs by up to 13 percent.) Peak RSS main / on: interpreter equal within
+3 percent (`fletcher_bufferwriter_512` 38.0 / 37.8 MB, `grlib_leon3mp` 243 / 243 MB,
+`neorv32_single_min` 72 / 75 MB); LLVM tier `neorv32_single_min` 527 / 444 MB, `grlib_leon3mp`
+1409 / 1386 MB, `fletcher_bufferwriter_512` 258 / 258 MB.
+
+Head-to-head designs (`tools/bench/designs` group `h2h`, pinned to one core, median of 5
+interleaved runs, cycles and instructions new / main): interpreter geomean cycles 1.010,
+instructions 1.007 (`rtl_lfsr` 1.039 / 1.024, `lfsr64` 1.039 / 1.017, `lfsr64_xor` 1.024 / 1.019,
+`xor_sig` 1.028 / 1.025; `rtl_ff` 0.982 / 0.993, `rtl_chain` 0.987 / 0.994); LLVM tier 0.980 /
+0.975. The `lfsr` designs concatenate into a temporary every cycle: `ZeroCat` is out of line where
+`AllocCat` is an arm of the loop, and putting it (or `ZeroReadVec`) into the loop cost 1 to 3
+percent of instructions on every design through code generation of `run_ops`, so `ZeroReadVec` is
+out of line too (the binary with the pass off is within -0.6 to +1.5 percent of main on the seven
+designs, equal on the head-to-head ones but `compute_h2h` +0.7 %).
+
+All 42 of `tools/realbench` (`--compare` main against this change, run phase, `--tiers interp,llvm`,
+core 9, default runs, host loaded): geomean new / main of wall 0.99 (interp) and 1.00 (llvm), CPU
+time 0.99 and 1.00, instructions 1.00 and 1.00; category `cpu` 0.97 and 0.97 (wall), `numeric`
+1.05 and 0.99, `memory` 0.84 and 1.00 (runs of 0.01 to 0.04 s); sum of the walls 0.98 and 1.02;
+`neorv32_*` 0.94 to 0.97 interp and 0.92 to 0.95 llvm, `grlib_leon3mp` 0.98 interp and 1.05 llvm
+(instructions 0.99), `poc_arith_addw` 0.97 and 1.01, `fletcher_bufferwriter_512` 1.02 and 0.96.
+
+Checked: `cargo test --workspace`, `-p yavs-llvm -p yavs --features llvm`, both gc-stress suites
+(one timing-dependent failure under load, #755, passes alone); the differential corpus 524/524 on
+`yavs-interp`, `yavs-llvm`, `yavs-auto` and `yavs-auto --tier-heat=1,0,0` at 1 and 4 threads, and
+on the first three with `YAVS_SPEC_AFTER=2`.

@@ -1102,6 +1102,7 @@ fn batch_pure(prog: &Program, f: &Func, i: &Inst) -> bool {
                 | Inst::AddrOf { .. }
                 | Inst::Load { .. }
                 | Inst::Store { .. }
+                | Inst::Zero { .. }
                 | Inst::Alloc { .. }
                 | Inst::Br { .. }
                 | Inst::CondBr { .. }
@@ -2866,7 +2867,12 @@ impl Gen {
             };
             let skipped: std::collections::HashSet<u32> = scalar_drives
                 .iter()
-                .flat_map(|d| [d.alloc, d.store, d.index, d.lset])
+                .flat_map(|d| {
+                    d.head
+                        .into_iter()
+                        .chain([d.lset])
+                        .filter(|&p| p != u32::MAX)
+                })
                 .collect();
             let mut c = Cur {
                 prog,
@@ -3553,6 +3559,16 @@ impl Gen {
                 if c.batch.is_some() && !batched.contains(&pc) && !batch_pure(prog, f, &inst) {
                     self.batch_flush(&c);
                 }
+                // A frame address used inside a branch of an instruction's own code (a fast path)
+                // takes the slots pointer of the stretch: fetch it here, where it dominates.
+                if c.nat.is_none()
+                    && !skipped.contains(&pc)
+                    && inline_regs(f, &inst)
+                        .into_iter()
+                        .any(|r| matches!(self.known_addr(&c, r), Some(Known::Frame(_))))
+                {
+                    self.own_slots_cached(&c);
+                }
                 match inst {
                     _ if skipped.contains(&pc) => {}
                     Inst::Drive { .. }
@@ -4203,6 +4219,14 @@ impl Gen {
                         let pd =
                             self.host(&c, self.ld(&c, dst), fk(dst), self.c64(0), n, true, slow);
                         LLVMBuildMemMove(self.b, pd, 1, ps, 1, n);
+                        self.join(&c, join);
+                    }
+                    Inst::Zero { addr, bytes } => {
+                        let (slow, join) = self.slow_path(&c, pc, &inst);
+                        let n = self.c64(i64::from(bytes));
+                        let p =
+                            self.host(&c, self.ld(&c, addr), fk(addr), self.c64(0), n, true, slow);
+                        LLVMBuildMemSet(self.b, p, LLVMConstInt(self.i8, 0, 0), n, 1);
                         self.join(&c, join);
                     }
                     Inst::MakeDope { at, parts } => {

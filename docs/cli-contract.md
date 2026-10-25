@@ -474,6 +474,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   an `output` event of category `stderr`. Processes run on one thread (`--threads` above 1 is
   warning `W0109`), so stops are deterministic. The exit status is the run's (below), sent as
   the `exited` event before `terminated`; a disconnect before the end stops the run (exit 1).
+  `YAVS_COUNTERS` prints the run's work counters on stderr when the session ends, as without `--dap`.
   `--wave` and `--vhpi` work with `--dap` (the waveform file is flushed at every stop and finished before `exited`; a
   plugin's own prints go to stdout, so use a port with `--vhpi`); `--cov` with `--dap` is
   `E9999` not implemented (exit 2). A port that cannot be opened is `E0701` (exit 2). Custom requests, served while stopped: `yavs/runFor` and

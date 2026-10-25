@@ -986,7 +986,11 @@ pub fn run(
                 (finish, sync)
             }))
         };
-        let r = yavs_dap::serve(db.clone(), e.clone(), cfg, stop, t, attach);
+        let report: yavs_dap::Report = Box::new(|stats, rt| {
+            crate::counters::report(stats, rt);
+            yavs_interp::census_dump(40);
+        });
+        let r = yavs_dap::serve(db.clone(), e.clone(), cfg, stop, t, attach, report);
         return match r {
             Ok(code) => out.finish(code),
             Err(d) => {

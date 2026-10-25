@@ -318,6 +318,48 @@ fn pause() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `YAVS_COUNTERS` reports a debugger session on stderr, including the counters that show
+/// activity observers and full signal histories are kept (#696).
+#[test]
+fn counters() {
+    let dir = setup("counters");
+    let mut child = yavs()
+        .current_dir(&dir)
+        .env("YAVS_COUNTERS", "1")
+        .args(["run", "--work=work:lib", "tb", "--dap=stdio"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("yavs");
+    let _watchdog = Watchdog::new(child.id(), 120);
+    let mut c = stdio_client(&mut child);
+    c.request("initialize", json!({"adapterID": "yavs"}));
+    c.request("launch", json!({}));
+    c.request("configurationDone", json!({}));
+    assert_eq!(c.event("exited")["body"]["exitCode"], 0);
+    c.request("disconnect", json!({}));
+    drop(c.w);
+    assert_eq!(child.wait().expect("wait").code(), Some(0));
+    let mut err = String::new();
+    child
+        .stderr
+        .take()
+        .expect("stderr")
+        .read_to_string(&mut err)
+        .expect("stderr");
+    let counters: std::collections::BTreeMap<_, _> = err
+        .lines()
+        .filter_map(|l| l.strip_prefix("counters: ")?.split_once('='))
+        .map(|(k, v)| (k, v.parse::<u64>().expect("counter value")))
+        .collect();
+    assert!(counters["cycles"] > 0, "{err}");
+    assert!(counters["process_runs"] > 0, "{err}");
+    assert_eq!(counters["skip_signals"], 0, "{err}");
+    assert_eq!(counters["lean_signals"], 0, "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `--dap=0` listens on a free port and announces it on stderr (docs/cli-contract.md 6).
 #[test]
 fn tcp() {

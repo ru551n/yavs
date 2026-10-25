@@ -8804,3 +8804,13 @@ is thousands of tiny blocks (one per guard). Most of the bytes were values alive
   `-disable-tail-duplicate`, `-disable-branch-fold`, `-split-spill-mode=size` (each under 1.5 percent). A cheaper level for the first compile of a function, recompiled at `O2` when it repays,
   is a policy question (the payback rule of `FastRa` is the pattern); it would have to win more than the 1 to 3 percent the cheaper code costs a warm run.
 
+
+## Signal access from processes: measured at the floor after kernel round 22, nothing built (yavs-kernel `Ctx`, yavs-interp, #519, 2026-10-25)
+
+Gapscan item 6 (process to kernel boundary), instruction counts only (stepcount windows and `perf stat instructions:u`, bench builds, no timing cores). Three changes were built and measured against main with kernel round 22 (the `Ctx` accessors inlined into the interpreter) and dropped:
+
+- **A one-word logic read without the `SigRef` and the `Result`** (`Ctx::read_block` from `SigRead` and `AllocReadVec`, checks on the instance signal table and the signal's plane buffer only): -0.2 percent of a `poc_arith_addw` window, +0.3 percent on `neorv32_single_min`, 0.0 on the whole run of the others. The read is the reference check, one plane copy and the store; the 2.0 s of `Ctx::read_into` in the gap scan was mostly the out-of-line call, which round 22 removed.
+- **A scalar drive callback for the direct driver of a clocked process** (`Ctx::assign_direct_code`: no delay or mode tests, the element checked against the driver's range): `rtl_ff` under `--tier=llvm` 931.6 to 899.6 instructions per register activation on the main before round 22, but 904.4 to 898.4 (0.7 percent, whole run 0.995) on the main with it, because round 22 inlined `assign_code_fast` into the callback. Not worth a second path in the kernel.
+- **A cached effective-value pointer per instance signal** was not built: it would save the signal-table lookup (about 6 instructions per read) and must be revalidated whenever a signal's buffer can move.
+
+What is left of the boundary cost under llvm is the process entry (`rt::enter` 122, `view_again` 72, `InterpProcess::run` 57, `run_cached` 28 of about 900 instructions per `rtl_ff` activation) and the wait (`wait_same` plus its callback 52): direct process entry (cgdirect), not signal access. Idea from the reference simulator: it has no entry or view at all, a process is a function called with its instance pointer; ours needs the frame view at every activation until the direct entry lands.

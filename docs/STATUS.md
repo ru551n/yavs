@@ -8148,7 +8148,7 @@ Geomean against sim1, warm: instructions 0.41, wall 0.33; cold: 0.73 and 0.60. y
 | 3 | kernel per-activation orchestration: cycle, commit, event bookkeeping | 10.4 s (5.0) | kern22 |
 | 4 | compiled code of processes over 1 000 IR is not faster than the interpreter (#679) | `grlib_leon3mp` forced compile 67.8 s against 52.4 s | unowned |
 | 5 | auto policy: priced out or never considered (#675, #728, #673) | interpreted-only seconds 36.6 of 40.2 (grlib), 2.5 of 2.7 (`fletcher_bufferwriter_512`) | autoclk |
-| 6 | process to kernel boundary: entry, scalar drives and waits, signal reads | 13 to 42 percent of small RTL under llvm; reads 2.0 s | cgdirect, reads unowned |
+| 6 | process to kernel boundary: entry, scalar drives and waits, signal reads | 13 to 42 percent of small RTL under llvm; reads 2.0 s | cgdirect (entry); signal reads and the scalar drive callback measured at the floor after kernel round 22, nothing left to gain there (decisions "Signal access from processes", #519) |
 | 7 | cold start: tier-up latency and cache-miss start-up | cold minus warm 22 s over 52 tests | coldc, startup |
 | 8 | calls, frames, pure-call memo | 0.7 s (0.3) | calls730 |
 

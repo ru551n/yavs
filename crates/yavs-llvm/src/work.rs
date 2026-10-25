@@ -76,7 +76,7 @@ mod imp {
 
     unsafe extern "C" {
         fn syscall(num: i64, ...) -> i64;
-        fn read(fd: i32, buf: *mut u8, n: usize) -> isize;
+        fn read(fd: i32, buf: *mut std::ffi::c_void, n: usize) -> isize;
     }
 
     /// The simulation threads by slot index with their thread ids, and once `activate`d their counters

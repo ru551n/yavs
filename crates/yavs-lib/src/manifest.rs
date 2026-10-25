@@ -535,6 +535,11 @@ impl Manifest {
         self.index_of_str(path).map(|i| self.files[i].record)
     }
 
+    /// The digests of the records the index names.
+    pub(crate) fn record_digests(&self) -> impl Iterator<Item = u128> + '_ {
+        self.files.iter().map(|f| f.record)
+    }
+
     /// Forget `path`; the digest of the record it had.
     pub(crate) fn remove_file(&mut self, path: &str) -> Option<u128> {
         let i = self.index_of_str(path)?;

@@ -9359,8 +9359,8 @@ base build of 2026-10-25, cold analysis of a whole manifest, one call per file a
 
 - **Decision (user, 2026-10-25): integrations analyse consecutive files of one library and standard in one call by default.** What batching changes, and how each is kept: the call stops at its
   first failing file, so a caller that needs each file's own result repeats a failing call file by file (the exit status of the whole is the same; the files before the failure stay recorded and
-  analysing a file again replaces its units, `docs/cli-contract.md`); the caller groups by library, standard and flags (a call has one of each); the analysed-unit cache and the library index are
-  written per file as before, so a warm call finds the same units.
+  analysing a file again replaces its units, `docs/cli-contract.md`); the caller groups by library, standard and flags (a call has one of each); the analysed-unit cache entries are
+  written per file as before and the library index once per call (#747), so a warm call finds the same units.
 - **What was changed.** `tools/corpus/run.py` (yavs: batches by default, a failing call repeated file by file, `--per-file` for the old form; references stay one call per file because their
   expected lists record per-file verdicts and a reference that replaces a unit within one call rejects it); all 34 manifests give identical PASS/FAIL lists and identical output either way,
   and the whole corpus takes 34 s instead of 47 s (busy host). `tools/realbench` (analysis cells, both tools, `--analyze-calls batched|per-file`, default batched); `tools/bench/run.py`
@@ -9383,7 +9383,7 @@ base build of 2026-10-25, cold analysis of a whole manifest, one call per file a
   reference's own integration in the runner is one file per call, which is why the old basis was kept until now; the batched basis measures the tools, not the callers.
 - **Not done.** Batching the untimed fixed-point of `make_pristine` (needs each file's result); batching the reference's corpus validation (`gen_external.py`, the per-file expected lists of the
   references); the exit-code and `analyzed` report of `docs/test-runner-requirements.md` section 1 (a failing batch is repeated file by file by the caller). Cold batched analysis of small libraries
-  is slower than the reference (#747); a warm call of a library whose units are redefined by later files (OSVVM testbench libraries) costs more than the cold call (#748). The corpus runner reports a batched call
+  was slower than the reference (#747) and a warm call of a library whose units are redefined by later files (OSVVM testbench libraries) cost more than the cold call (#748): both fixed, see "Batched analysis: shared work paid once per call". The corpus runner reports a batched call
   that fails while every file passes alone as a `DIFF` of its own, so the retry cannot hide a failure of the session itself.
 ## Calls, round 2: signal drives and vector reads on native frames, lean calls for references and nested callees (yavs-llvm, yavs-interp, #730, 2026-10-25)
 
@@ -9520,3 +9520,34 @@ a binary is named. Tables: docs/STATUS.md "`--tier=auto` round 5".
   `YAVS_AUTO_TRACE=1`: the first run compiles it, the second must link it from the cache having seen it for under 300 ms of the work
   clock (400 ms before the fix; instructions where the system gives a counter, CPU time on the Windows runner, where the warm run saw 110 ms). Fails without `SPEC_STALL`.
 - **Measured** (docs/STATUS.md "`--tier=auto` warm runs of one-loop processes"): the 11 h2h designs warm and cold, `tools/realbench --compare`.
+
+## Batched analysis: shared work paid once per call (yavs, yavs-lib, yavs-cache, yavs-sem, #747, #748, 2026-10-25)
+
+Profiles of a batched call (cold: `perf record` on a build with frame pointers; warm: strace and instruction counts of whole calls) found work that a call of N files paid N times. What was done, and
+what it replaced:
+
+- **The library index is written once per call, not after every file** (`Session::record_deferred`, `Session::flush`, `yavs analyze`). The record of a file is still written as soon as the file is
+  done; the index (rendered and renamed whole) and the deletion of the records it replaced wait for `flush`, which `analyze` calls after the loop, after a failing file and after a panic, so the files
+  before a failure stay recorded. A 246-file call wrote and renamed an index of up to 40 KB 246 times: 0.8 G kernel instructions of 2.6 G, and quadratic in the files of the call. Nobody can read the
+  library meanwhile (readers wait for the exclusive lock), so the only visible change is a call killed from outside: it records none of its files instead of a prefix, and the next call redoes them
+  from the analysed-unit entries it made (`docs/cli-contract.md` 4). A record replaced and then made again inside one call is not deleted (the digests the index names are kept). Rejected: writing
+  the index every N files (a knob for a case nobody has).
+- **The entry store counts its puts** (`yavs-cache` `Store::prune`): the directory listing that decides whether to prune (one `readdir` of an entry directory that grows to thousands of names, per put)
+  is done once per store and process, then one is added per put. Entries other processes add meanwhile are seen by the next sweep (at the latest every 5 s), so the entry limit is soft by their puts.
+  A put also creates the directory only when the file create fails and writes the header in one write instead of five.
+- **A session keeps what it read** (`yavs-sem` `EntryCache`, #748). `warm_records` planned the whole dependency closure of every warm file again: 82 units for each of the 46 files of an OSVVM
+  testbench library, each opened, mapped, checksummed and decoded again, each source stat-ed again, each library index read again under a shared lock. The `Db` now keeps, for its session, the entries it
+  read (by identity, an entry it stores leaves the cache, at most 4096 because each is a mapping), the content hash of each source whose file still has the recorded size and time, and the index of each
+  library. A `Db` is one session (`yavs analyze`, `elab`, `run` each build their own; `release_analysis` drops the cache) and a library it has loaded already keeps the source it was first loaded with (`libs[lib].source`); the
+  cache extends that to the libraries a replay plans, so another process analysing into a mapped library during the call is not seen by it, as before for a library already in the session. This is also why a warm call of a library with redefined units cost more than the cold one: that was a cost of every warm file with a large closure, and those libraries have the largest
+  closures; nothing is invalidated because a unit was redefined (the full key of an entry already says what it was made with).
+- **Measured** (`tools/realbench --phases analyze`, the batched calls, 42 tests, bench builds of the same sources before and after, interleaved on one claimed core, medians of 5, host load 6): cold instructions
+  0.91 and wall 0.81 of before (geometric mean), warm instructions 0.40 and wall 0.35. Against sim1 on the 8 tests of #745 (yavs / sim1, geometric mean, wall): cold 0.77 to 0.59, warm 0.23 to 0.05; every one
+  of the 8 is below 1 cold now (`neorv32_single_min` 1.00 to 0.80, `sc5_timestamp` 1.25 to 0.71, `poc_strings` 0.81 to 0.82 on a loaded host, 0.62 on a quiet one). `osvvm_axis_random` warm 0.71 s to 0.17 s (cold 0.60 s).
+- **All 42 tests against sim1** (final build, `--ref sim1 --phases analyze`, batched calls, one claimed core, host load 12, so ratios are noisy): cold geometric mean yavs / sim1 0.63 (instructions 0.60), warm 0.08;
+  38 tests are below 1 cold and every test is below 1 warm. At par or above cold: the three `fletcher_*` tests (0.09 s each, ratio 1.00, instructions 1.13) and `en_cl_fix_pkg` (1.10, instructions 0.90).
+  #747 stays open for those (a library whose cost is the analysis, the encoding of its unit entries and, in a world with one library, the one-time storing of the std/ieee package bodies).
+- **Not done.** The cold cost that is left is the analysis itself plus the encoding of each unit entry (about a tenth of the cycles) and the entry file's create and rename (a tenth, in the kernel);
+  writing an entry without the temporary file would save the rename but gives up that a reader never sees a short file (the checksum would catch it, so it is an option for a later round).
+  `Manifest` lookups by path are linear in the files of the library (`index_of_str`); they do not show in a profile of 449 files.
+

@@ -218,6 +218,17 @@ pub struct Store {
     /// `get` refreshes the time of the entry it reads (not for the analysed units: a run reads
     /// a hundred of them, and a library keeps them all).
     touch: bool,
+    /// The `.img` entries of the directory as this process counts them: read once, then one per
+    /// put (a batch of puts must not list the directory every time); [`UNKNOWN`] until the first
+    /// put and after a sweep. Entries other processes add meanwhile are seen by the next sweep.
+    count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// [`Store::count`] before the directory was listed.
+const UNKNOWN: usize = usize::MAX;
+
+fn unknown() -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+    std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(UNKNOWN))
 }
 
 /// What [`Store::clean`] removed.
@@ -240,6 +251,7 @@ impl Store {
             dir: lib.join(DIR),
             limits: (MAX_ENTRIES, MAX_BYTES),
             touch: true,
+            count: unknown(),
         }
     }
 
@@ -250,6 +262,7 @@ impl Store {
             dir: lib.join(DIR).join(OBJ_DIR),
             limits: (OBJ_MAX_ENTRIES, OBJ_MAX_BYTES),
             touch: true,
+            count: unknown(),
         }
     }
 
@@ -260,6 +273,7 @@ impl Store {
             dir: lib.join(DIR).join(UNIT_DIR),
             limits: (UNIT_MAX_ENTRIES, UNIT_MAX_BYTES),
             touch: false,
+            count: unknown(),
         }
     }
 
@@ -327,7 +341,6 @@ impl Store {
     }
 
     fn try_put(&self, kind: &str, key: &Key, payload: &[u8]) -> std::io::Result<()> {
-        fs::create_dir_all(&self.dir)?;
         let tmp = self.dir.join(format!(
             ".tmp-{}-{}",
             std::process::id(),
@@ -336,12 +349,21 @@ impl Store {
                 .map_or(0, |d| d.as_nanos())
         ));
         let write = || -> std::io::Result<()> {
-            let mut f = fs::File::create(&tmp)?;
-            f.write_all(MAGIC)?;
-            f.write_all(&FORMAT.to_le_bytes())?;
-            f.write_all(&key.0)?;
-            f.write_all(&(payload.len() as u64).to_le_bytes())?;
-            f.write_all(&checksum(payload))?;
+            // The directory exists after the first put: made only when the create fails.
+            let mut f = match fs::File::create(&tmp) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    fs::create_dir_all(&self.dir)?;
+                    fs::File::create(&tmp)?
+                }
+                r => r?,
+            };
+            let mut head = Vec::with_capacity(HEADER);
+            head.extend_from_slice(MAGIC);
+            head.extend_from_slice(&FORMAT.to_le_bytes());
+            head.extend_from_slice(&key.0);
+            head.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+            head.extend_from_slice(&checksum(payload));
+            f.write_all(&head)?;
             f.write_all(payload)?;
             f.flush()
         };
@@ -444,7 +466,12 @@ impl Store {
     /// and ages are asked for a directory over the entry limit, after a big entry, and at most
     /// every [`SWEEP_EVERY`] otherwise, not for every put of every process.
     fn prune(&self, added: u64) {
-        let n = self.names_ending(".img").len();
+        use std::sync::atomic::Ordering::Relaxed;
+        let n = match self.count.load(Relaxed) {
+            UNKNOWN => self.names_ending(".img").len(),
+            c => c + 1,
+        };
+        self.count.store(n, Relaxed);
         let marker = self.dir.join(SWEPT);
         let due = n > FEW_ENTRIES
             && fs::metadata(&marker)
@@ -455,6 +482,7 @@ impl Store {
         if needs_sweep(n, added, due, self.limits) {
             let _ = fs::File::create(&marker);
             self.prune_to(self.limits.0, self.limits.1);
+            self.count.store(UNKNOWN, Relaxed);
         }
     }
 
@@ -534,6 +562,7 @@ impl Store {
                     dir,
                     limits,
                     touch: true,
+                    count: unknown(),
                 }
                 .clean()?;
                 c.entries += o.entries;
@@ -717,6 +746,20 @@ mod tests {
         let c = lib.clean().unwrap();
         assert_eq!(c.entries, MAX_ENTRIES + 5 + 2);
         assert!(!lib.dir().exists());
+    }
+
+    /// A store counts its puts after the first listing of the directory (#747) and still keeps
+    /// to the entry limit; the newest entry is always kept.
+    #[test]
+    fn counted_puts_still_prune() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::of_library(d.path());
+        let n = MAX_ENTRIES + MAX_ENTRIES / 2;
+        for i in 0..n {
+            s.put("t", &key(&i.to_string()), b"x");
+        }
+        assert_eq!(s.entries().len(), MAX_ENTRIES);
+        assert!(s.get("t", &key(&(n - 1).to_string())).is_some());
     }
 
     /// Pruning asks the size and age of every entry: it waits for a reason.

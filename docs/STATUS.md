@@ -5179,6 +5179,32 @@ ratio yavs / sim1 (geometric mean of the 8) rises from 0.32 to 0.80 cold and fro
 realbench tests' analysis cells timed (their batched call lists were built and ran without a failing call for both tools, untimed), the full head-to-head basis, the effect on the run phases (none expected: libraries are
 the same).
 
+## Batched analysis: shared work paid once per call (#747, #748, 2026-10-25)
+
+Decisions and causes in `docs/decisions.md` "Batched analysis: shared work paid once per call". Changed: the library index is written once per call (`Session::record_deferred` and `flush`), the
+entry store counts its puts instead of listing the directory at each, and a `Db` keeps the entries, source hashes and library indexes it read (`EntryCache`), so the files of a call that share a large dependency
+closure stop reading it again. Tests: `deferred_records_are_published_by_the_flush` (yavs-lib), `counted_puts_still_prune` (yavs-cache), `a_batch_after_an_edit_reads_nothing_stale_and_records_what_it_did` (units.rs).
+
+`tools/realbench --compare` of the bench build before and after, analysis phase, batched calls, all 42 tests, 5 runs, one claimed core, host load 6 (so wall times are higher than on a quiet host). After / before,
+geometric mean over the tests: cold instructions 0.91, cold wall 0.81, warm instructions 0.40, warm wall 0.35 (36 tests with a measurable warm wall). Largest changes (wall, seconds, before / after):
+
+| test | cold | warm | cold G instr | warm G instr |
+|---|---|---|---|---|
+| `osvvm_axis_random` | 1.37 / 0.77 | 1.81 / 0.18 | 5.81 / 5.45 | 5.70 / 1.33 |
+| `osvvm_axi4_random` | 0.74 / 0.65 | 0.91 / 0.20 | 5.87 / 5.45 | 5.68 / 1.33 |
+| `sc5_timestamp` | 0.32 / 0.22 | 0.10 / 0.02 | 2.88 / 1.93 | 0.56 / 0.19 |
+| `hdlm_fifo_sync` | 0.56 / 0.40 | 0.19 / 0.10 | 3.83 / 3.64 | 1.14 / 0.53 |
+| `olo_base_cam` | 0.67 / 0.55 | 0.18 / 0.07 | 5.65 / 5.09 | 1.04 / 0.38 |
+| `poc_strings` | 0.24 / 0.19 | 0.08 / 0.02 | 1.62 / 1.36 | 0.42 / 0.15 |
+| `neorv32_single_min` | 0.10 / 0.08 | 0.01 / 0.00 | 1.04 / 0.93 | 0.14 / 0.06 |
+| `uvvm_util_rand` | 0.22 / 0.22 | 0.01 / 0.00 | 3.01 / 2.98 | 0.21 / 0.09 |
+
+Against sim1 (batched calls for both, yavs / sim1 wall, before / after, runs on different host loads): `hdlm_fifo_sync` cold 0.72 / 0.56, warm 0.28 / 0.12; `neorv32_single_min` 1.00 / 0.80, 0.18 / 0.00;
+`olo_base_cam` 0.97 / 0.69, 0.26 / 0.06; `osvvm_axis_random` 0.41 / 0.37, 0.48 / 0.11; `poc_strings` 0.81 / 0.82, 0.27 / 0.09; `sc5_timestamp` 1.25 / 0.71, 0.36 / 0.09; `uvvm_util_rand` 0.50 / 0.46, 0.04 / 0.00;
+`vunit_logging` 0.86 / 0.50, 0.28 / 0.11. Geometric mean of the 8: cold 0.77 to 0.59, warm 0.23 to 0.05 (a floor of 0.01 for the warm cells that round to 0.00). The warm cell of `osvvm_axis_random` is cheaper than its cold cell again
+(0.16 s against 0.55 s). All 42 against sim1 with the final build (host load 12): cold geometric mean 0.63 (instructions 0.60), warm 0.08; 38 tests below 1 cold, all below 1 warm; at par or above cold: `fletcher_bufferreader`, `fletcher_bufferwriter_512`, `fletcher_bufferwriter_prim32` (1.00) and `en_cl_fix_pkg` (1.10). Not verified: a quiet-host rerun of all 42 against sim1; the interpreter, run and elab phases
+(nothing in them changed); Windows and aarch64 (the code is portable, CI covers it).
+
 ## Real-world performance suite: yavs against sim1, head-to-head 5, 2026-10-25 (`tools/realbench`)
 
 This is the current headline (`9e75d84e`, bench build with the `llvm` feature, one binary for every cell; the previous run, head-to-head 4 at `18b290ef`, is in brackets). Basis (root rule 23): `--tier=auto`

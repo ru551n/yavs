@@ -90,6 +90,7 @@ mod source_tag {
     }
 }
 
+#[derive(Clone)]
 pub enum LibSource {
     /// A library directory with `yavs-lib.toml`.
     Manifest(std::sync::Arc<Manifest>),
@@ -231,7 +232,22 @@ impl Db {
     ) -> Option<Result<LibSource, Box<yavs_diag::Diagnostic>>> {
         match self.opts.libraries.get(key) {
             Some(l) if !l.has_manifest() => Some(Ok(LibSource::Files)),
-            Some(l) => Some(l.read().map(LibSource::Manifest)),
+            // The index of a library is read once per session: a unit asks for the libraries it
+            // depends on again for every file of a call (#748).
+            Some(l) => {
+                if let Some(m) = self.entry_cache.manifests.lock().unwrap().get(key) {
+                    return Some(Ok(LibSource::Manifest(m.clone())));
+                }
+                let r = l.read();
+                if let Ok(m) = &r {
+                    self.entry_cache
+                        .manifests
+                        .lock()
+                        .unwrap()
+                        .insert(key.to_string(), m.clone());
+                }
+                Some(r.map(LibSource::Manifest))
+            }
             None if key == "std" || key == "ieee" => Some(Ok(LibSource::StdDir(
                 self.opts.stdlib.join(key).join(self.rev.as_str()),
             ))),

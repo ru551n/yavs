@@ -10524,3 +10524,40 @@ runs on one claimed core of the second CCD. Base is main at 7076335e.
   once. The ideas taken are the outcome: the drive and the wait of a compiled process reach the kernel in one call, and a `wait until`
   on an edge is the static wait it is. Ours keeps the interpreter's host for every case the kernel's fastest path refuses, and the
   pointers live in the per-activation view. Nothing was copied.
+
+## Compiled clocked RTL processes, round 9: the tier's record inline in the machine (yavs-interp, yavs-llvm, #766, 2026-10-26)
+
+Task (user decision 2026-10-26 on #766): inline `TierState`, the `Box` of which was a cache line of its own per process (12 percent of
+`run_cached`'s cycles on its first load), changing the shared `Tier::run_cached` signature; trim other entry steps within the rules
+(no persistent per-process view or tag cache, #634; no `unsafe` in `yavs-interp`; no "no object table" flag). Method as in round 8: bench
+builds with `llvm`, `tools/stepcount` windows of 4096 (`rtl_ff`) or 2048 compiled activations (entries of `AutoTier::run_cached`,
+`--tier=auto --tier-heat=1,0,0`, `--threads 1`; instructions an activation include the kernel and the compiled body), cycles as the
+minimum of 7 interleaved warm `--tier=auto` runs on one claimed core of the second CCD. Base is main at 1585475c.
+
+- **Decision (user, 2026-10-26): `Tier::run_cached` takes `state: &mut TierState`** (was `&mut Option<Box<TierState>>`), and
+  `Machine::tier_state` is a `TierState` (now `Copy`) inline in the machine, in its fifth cache line together with `troots` (24 bytes,
+  whose length every activation reads); `heap` moves to the sixth. A process with no record yet has the default one (`used` false, `at`
+  `NO_PC`), which `Mem::begin` treats as none, as it did `None`. `run_direct` hands the tier a copy on its stack and stores it back (the
+  `Host` borrows the whole machine; no `unsafe`), then reads `at` from the copy. `enter`/`enter_on` take `Option<&mut TierState>`;
+  `Mem::save_tag` writes the record in place. `activation_fields_are_in_the_first_lines` pins the new line. Why: the per-activation lines
+  of a small compiled process went from seven (four hot machine lines, the heap's head, the box, `troots`) to six; L2 data misses of
+  `rtl_ff` dropped by about one an activation (103 M to 95 M).
+- **Tried and dropped:** writing the record in `save_tag` only when it changed (so the caller's copy back forwards from its own stores):
+  more instructions, cycles within noise.
+- **Measured** (instructions an activation, base / round 9): `rtl_ff` 1189.5 / 1178.5, `rtl_lfsr` 1378.8 / 1367.8, `lfsr64` 1429.3 /
+  1418.2 (11 fewer each: the box's take, `get_or_insert` and the pointer chase). Cycles, warm `--tier=auto`, two batches (core 15 at
+  load 15; core 11 at load 6): `rtl_ff` -4.4 / -2.0 percent, `lfsr64` -3.3 / -1.0, `rtl_lfsr` -1.0 / -0.5, `rtl_chain` +1.3 / -0.5
+  (interpreted, the same instructions: noise). `tools/realbench --compare` (42 tests, interpreter and `--tier=auto`, cores 12 and 13,
+  load 11 to 6): run-phase wall geometric mean 1.00 / 1.00, instructions 1.00 / 1.01, CPU 1.00 / 0.99; `neorv32_*` level,
+  `grlib_leon3mp` 0.87 / 0.87 at instructions 1.00 (host load, not claimed).
+- **Not done, and why.** The rest of the entry is 20 to 30 steps of 3 to 15 instructions of field copies (`view_root` writes about 30
+  view fields from five machine lines; `run_direct` builds the `Host`, the sampling slot, `NativeFlags::activated`; `enter_on` builds
+  `Env` and sets the tags of `Mem::begin`). The largest single step within the rules is `Program::func` in `run_direct` (13 instructions
+  plus its checks): `Host::f` is read at about 20 places, the census notes included, and a lazy lookup would make each of them fallible.
+  Leads for later: the cycles of these designs are first-touch misses of each process's lines (the machine, its frame, register and
+  driver vectors are separate allocations); a prefetch of the next process of a batch in the kernel, or the root frame inline in the
+  machine, would attack those.
+- **The reference simulator (rule 22):** its per-process record is a small fixed block (asserted to fit two cache lines) that holds
+  what entering the compiled code needs inline, the entry point and its context among them, with the variables behind one pointer. The
+  idea taken: what the tier needs at every entry lives inline in the process's own hot lines, sized and pinned by a test. Ours keeps
+  the record in the machine's fifth line next to `troots` instead of a block of its own. Nothing was copied.

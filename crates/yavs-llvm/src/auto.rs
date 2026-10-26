@@ -3240,7 +3240,7 @@ impl Tier for AutoTier {
         func: FuncId,
         pc: u32,
         host: &mut dyn TierHost,
-        state: &mut Option<Box<yavs_interp::TierState>>,
+        state: &mut yavs_interp::TierState,
     ) -> Option<u32> {
         let (f, nregs) = self.funcs.get(func.0 as usize)?.get()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize)?.get();

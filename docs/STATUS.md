@@ -9184,6 +9184,20 @@ instructions (-11.1 percent). The other natives on slices (`to_x01`, the numeric
 A `CondBr` whose arms lead to the same block is a `Br` (the null-range test of a local array). Part of the fixed cost of an `HRead` call (`docs/decisions.md` "A branch whose arms lead to the same block"):
 the call is still about 80 ops; the rest is listed there. First 1 us of `grlib_leon3mp` with #768 to #771: 31.37 G to 22.99 G instructions (-26.7 percent), `--tier=interp`.
 
+## llvm: compiled clocked RTL, round 9: the tier's record inline in the machine (#766, 2026-10-26)
+
+- `Tier::run_cached` takes `&mut TierState`; the record lives inline in `Machine::tier_state`, in the machine's fifth cache line with
+  `troots` (was a `Box` of its own per process). A second code generator only changes its `run_cached` signature.
+- Instructions an activation (stepcount, base 1585475c / round 9): `rtl_ff` 1189.5 / 1178.5, `rtl_lfsr` 1378.8 / 1367.8, `lfsr64`
+  1429.3 / 1418.2; L2 data misses of `rtl_ff` about one fewer an activation. Cycles, warm `--tier=auto`, two batches of 7 on one CCD1
+  core: `rtl_ff` -4.4 / -2.0 percent, `lfsr64` -3.3 / -1.0, `rtl_lfsr` -1.0 / -0.5, `rtl_chain` +1.3 / -0.5 (interpreted).
+- Checks: fmt, clippy with and without `llvm`, both test suites, `gc-stress` tests of `yavs-interp` and `yavs-llvm`; difftest 535/535
+  at 1 and 4 threads for `yavs-interp`, `yavs-auto`, `yavs-llvm` and `yavs-auto` with `--tier-heat=1,0,0`.
+- `tools/realbench --compare` (42 tests): run-phase wall geometric mean 1.00 (interpreter) and 1.00 (auto), instructions 1.00 / 1.01;
+  `neorv32_*` level, `grlib_leon3mp` 0.87 wall at equal instructions (host load fell during the run; not claimed).
+- Left (decisions.md "Compiled clocked RTL processes, round 9"): the entry is field copies of 3 to 15 instructions each; the cycles are
+  first-touch misses of each process's separate allocations.
+
 ## llvm: compiled clocked RTL, round 8: drives and waits on the kernel, every edge form alike (#766, #772, 2026-10-26)
 
 - Zero-delay drives (`yavs_rt_drive_bit`, `yavs_rt_drive` of 1 to 64 logic elements or one byte scalar, `yavs_rt_drive_flush`) and

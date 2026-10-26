@@ -578,8 +578,6 @@ pub(crate) struct Machine {
     pub inst: Arc<InstData>,
     pub drivers: Vec<ProcDriver>,
     dbg: Option<Box<Dbg>>,
-    /// What the compiled tier keeps for this process between activations.
-    pub(crate) tier_state: Option<Box<crate::TierState>>,
     /// Bumped whenever the machine runs or a variable is written: unchanged means every
     /// variable of the process has its last value (the waveform recorder skips it).
     pub(crate) execs: u64,
@@ -605,6 +603,13 @@ pub(crate) struct Machine {
     /// (`view_root`; it was scattered over five lines of a machine and its instance data,
     /// which cost a design of thousands of processes three cache misses per activation).
     vc: ViewCache,
+    /// What the compiled tier keeps for this process between activations, inline (a box of its
+    /// own was one more cache line per activation, #766), in the fifth line with `troots`, whose
+    /// length every activation reads.
+    pub(crate) tier_state: crate::TierState,
+    /// Temporaries that hold handles or heap addresses (`Inst::TempRoot`), until the
+    /// statement that made them ends (`Inst::Stmt` drops those at or above its frame's base).
+    troots: Vec<TempRoot>,
     pub heap: Heap,
     /// The roots scan of the last `publish_shared`, kept for its buffers.
     rscratch: heap::Refs,
@@ -620,9 +625,6 @@ pub(crate) struct Machine {
     nwin_to: usize,
     /// The slots of the other frames, one stack: no per-call allocation.
     sstack: Vec<u8>,
-    /// Temporaries that hold handles or heap addresses (`Inst::TempRoot`), until the
-    /// statement that made them ends (`Inst::Stmt` drops those at or above its frame's base).
-    troots: Vec<TempRoot>,
     pub sh: Option<SharedState>,
     /// The package being initialised (`init_package`): its index and writable data.
     pub pkg_init: Option<(u32, Vec<u8>)>,
@@ -1230,7 +1232,7 @@ impl Machine {
             cells: Vec::new(),
             bytes: Vec::new(),
             released: false,
-            tier_state: None,
+            tier_state: crate::TierState::default(),
             resident: false,
             enum_text: Vec::new(),
             resident_bytes: 0,
@@ -1666,7 +1668,7 @@ impl Machine {
         (fr.func, fr.pc, fr.slen) = (id, at, pre.slots);
         self.entry = id;
         prog.note_switch();
-        self.tier_state = None;
+        self.tier_state = crate::TierState::default();
         // A resident process holds registers filled for the shared code: fill the copy's, and
         // stay resident if they fit. A released one gets the copy's from `borrow_fill`, its
         // scratch being keyed by function.
@@ -1824,7 +1826,7 @@ impl Machine {
             Ordering::Relaxed,
         );
         let pc = self.frames[0].pc;
-        let mut state = self.tier_state.take();
+        let mut state = self.tier_state;
         let mut host = Host {
             m: self,
             rt: &rt,
@@ -1848,9 +1850,9 @@ impl Machine {
             Some(crate::TIER_SUSPEND) => {
                 // A wait compiled code ended on the kernel itself left its pc in the record
                 // (the tier writes `at` at every activation).
-                match &self.tier_state {
-                    Some(st) if st.at != crate::NO_PC => self.top().pc = st.at + 1,
-                    _ => self.top().pc += 1,
+                match state.at {
+                    crate::NO_PC => self.top().pc += 1,
+                    at => self.top().pc = at + 1,
                 }
                 slot.store(0, Ordering::Relaxed);
                 Direct::Done(Quick::Suspended)
@@ -11670,8 +11672,9 @@ thread_local! {
 mod tests {
     use super::*;
 
-    /// What an activation of a small process reads is in the first four cache lines of a
-    /// machine: the hot three, and the line `view_root` reads for compiled code (#634). A new
+    /// What an activation of a small process reads is in the first five cache lines of a
+    /// machine: the hot three, the line `view_root` reads for compiled code (#634) and the tier's
+    /// record with `troots` (#766). A new
     /// field goes after `heap` unless an activation reads it.
     #[test]
     fn activation_fields_are_in_the_first_lines() {
@@ -11683,7 +11686,6 @@ mod tests {
             ("temp", offset_of!(Machine, temp), 24),
             ("rt", offset_of!(Machine, rt), 8),
             ("inst", offset_of!(Machine, inst), 8),
-            ("tier_state", offset_of!(Machine, tier_state), 8),
             ("execs", offset_of!(Machine, execs), 8),
             ("hot", offset_of!(Machine, hot), 1),
             ("spec_at", offset_of!(Machine, spec_at), 4),
@@ -11699,6 +11701,9 @@ mod tests {
             "the view cache is the fourth line"
         );
         assert!(size_of::<ViewCache>() <= 64);
+        // The tier's record and `troots` share the fifth line (#766).
+        assert_eq!(offset_of!(Machine, tier_state), 256);
+        assert!(offset_of!(Machine, troots) + 24 <= 320);
         assert!(offset_of!(Machine, heap) >= 256);
     }
 

@@ -549,8 +549,7 @@ impl Mem {
 
     /// Keep the machine's tags in the process's record for its next activation.
     #[inline(always)]
-    pub fn save_tag(&self, slot: &mut Option<Box<yavs_interp::TierState>>) {
-        let st = slot.get_or_insert_with(Default::default);
+    pub fn save_tag(&self, st: &mut yavs_interp::TierState) {
         let t = |sp: u8| self.tags[sp as usize] >> 32;
         st.words = [self.id, self.cur_epoch, t(space::HEAP), t(space::INST)];
         st.used = true;
@@ -2323,7 +2322,7 @@ pub fn enter(
     host: &mut dyn TierHost,
     lookup: Lookup<'_>,
     ntab: *const usize,
-    state: Option<&mut Option<Box<yavs_interp::TierState>>>,
+    state: Option<&mut yavs_interp::TierState>,
 ) -> Option<u32> {
     // This thread's `Mem`, or a new one inside an activation that holds it.
     let p = MEM.replace(std::ptr::null_mut());
@@ -2368,7 +2367,7 @@ pub fn enter_on(
     host: &mut dyn TierHost,
     lookup: Lookup<'_>,
     ntab: *const usize,
-    state: Option<&mut Option<Box<yavs_interp::TierState>>>,
+    state: Option<&mut yavs_interp::TierState>,
 ) -> Result<Option<u32>, Box<dyn Any + Send>> {
     if !host.view_again(&mut mem.fr) {
         host.view(&mut mem.fr);
@@ -2381,7 +2380,7 @@ pub fn enter_on(
     mem.temp_seen = mem.fr.temp_len;
     mem.ndeopt = 0;
     // The objects this machine found before, on this thread, at this heap epoch.
-    mem.begin(state.as_deref().and_then(|s| s.as_deref()));
+    mem.begin(state.as_deref());
     // A frame index beyond the address format is the interpreter's error.
     if mem.fr.nregs != nregs as u64 || mem.fr.frame >= 1 << 29 {
         return Ok(None);
@@ -3424,6 +3423,7 @@ pub fn track<V: Copy>(known: &mut [Option<Known<V>>], fixed: &[Option<i64>], f: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use yavs_interp::TierState;
 
     fn obj(sp: u8, index: u64) -> Obj {
         Obj {
@@ -3444,18 +3444,13 @@ mod tests {
     }
 
     /// An activation of machine `owner` at heap epoch `epoch` with the process record `rec`.
-    fn activate(
-        m: &mut Mem,
-        owner: u64,
-        epoch: u64,
-        rec: &mut Option<Box<yavs_interp::TierState>>,
-    ) {
+    fn activate(m: &mut Mem, owner: u64, epoch: u64, rec: &mut yavs_interp::TierState) {
         m.fr.owner = owner;
         m.fr.heap_epoch = epoch;
-        m.begin(rec.as_deref());
+        m.begin(Some(rec));
     }
 
-    fn finish(m: &mut Mem, rec: &mut Option<Box<yavs_interp::TierState>>) {
+    fn finish(m: &mut Mem, rec: &mut yavs_interp::TierState) {
         m.forget_end();
         m.save_tag(rec);
     }
@@ -3465,7 +3460,7 @@ mod tests {
     #[test]
     fn instances_keep_their_own_objects() {
         let mut m = Mem::new(TierFrame::default());
-        let (mut r1, mut r2) = (None, None);
+        let (mut r1, mut r2) = (TierState::default(), TierState::default());
         let mine = |n: usize| Obj {
             ptr: std::ptr::null_mut::<u8>().wrapping_add(n),
             ..obj(space::HEAP, 5)
@@ -3493,9 +3488,7 @@ mod tests {
         finish(&mut m, &mut r1);
         // A record of another table is no record here.
         activate(&mut m, rt(1, 2), 0, &mut r2);
-        if let Some(st) = r1.as_mut() {
-            st.words[0] ^= 1 << 40;
-        }
+        r1.words[0] ^= 1 << 40;
         activate(&mut m, rt(1, 1), 1, &mut r1);
         assert!(!entered(&m, space::INST, 3));
     }
@@ -3505,15 +3498,15 @@ mod tests {
     #[test]
     fn constants_are_shared_by_the_machines_of_a_runtime() {
         let mut m = Mem::new(TierFrame::default());
-        let mut r = None;
+        let mut r = TierState::default();
         activate(&mut m, rt(1, 1), 0, &mut r);
         for k in 100..200 {
             m.put_obj(obj(space::CONST, k));
         }
         finish(&mut m, &mut r);
-        activate(&mut m, rt(1, 2), 7, &mut None);
+        activate(&mut m, rt(1, 2), 7, &mut TierState::default());
         assert!((100..200).all(|k| entered(&m, space::CONST, k)));
-        activate(&mut m, rt(2, 1), 0, &mut None);
+        activate(&mut m, rt(2, 1), 0, &mut TierState::default());
         assert!(!entered(&m, space::CONST, 100));
     }
 
@@ -3522,7 +3515,7 @@ mod tests {
     #[test]
     fn host_calls_drop_volatile_objects_and_a_changed_heap() {
         let mut m = Mem::new(TierFrame::default());
-        activate(&mut m, rt(1, 1), 0, &mut None);
+        activate(&mut m, rt(1, 1), 0, &mut TierState::default());
         m.put_obj(obj(space::HEAP, 3));
         m.put_obj(obj(space::FRAME, 4));
         assert!(m.transient && entered(&m, space::FRAME, 4));
@@ -3533,7 +3526,7 @@ mod tests {
         assert!(!entered(&m, space::HEAP, 3));
         m.put_obj(obj(space::HEAP, 3));
         // The next activation at that epoch keeps it.
-        activate(&mut m, rt(1, 1), 1, &mut None);
+        activate(&mut m, rt(1, 1), 1, &mut TierState::default());
         assert!(entered(&m, space::HEAP, 3));
     }
 
@@ -3542,14 +3535,14 @@ mod tests {
     #[test]
     fn the_last_tag_empties_the_table() {
         let mut m = Mem::new(TierFrame::default());
-        let mut r = None;
+        let mut r = TierState::default();
         activate(&mut m, rt(1, 1), 0, &mut r);
         m.put_obj(obj(space::HEAP, 3));
         m.put_obj(obj(space::CONST, 4));
         finish(&mut m, &mut r);
         let id = m.id;
         m.next_tag = TAG_END;
-        activate(&mut m, rt(1, 2), 0, &mut None);
+        activate(&mut m, rt(1, 2), 0, &mut TierState::default());
         assert_ne!(m.id, id);
         assert!(m.objs.iter().all(|o| o.hi == 0));
         assert!(!entered(&m, space::CONST, 4));

@@ -948,6 +948,37 @@ fn byte_codes_change_nothing() {
     }
 }
 
+/// A port-map actual, a sensitivity entry and a signal passed to a subprogram that reads no
+/// element of it are no element reads (#734): `b`, `c`, `e` and `h` of the design keep no codes.
+#[test]
+fn connections_and_sensitivity_need_no_byte_codes() {
+    let d = tempdir("codes_conn");
+    let src = include_str!("perf/elem_codes_conn.vhd");
+    let run = |mode: &str, tier: &str| {
+        run_design_env(
+            &d,
+            "elem_codes_conn",
+            src,
+            tier,
+            &[],
+            &[("YAVS_CODES", mode)],
+        )
+    };
+    let tiers: &[&str] = if cfg!(feature = "llvm") {
+        &["interp", "auto"]
+    } else {
+        &["interp"]
+    };
+    for &tier in tiers {
+        let (all, some) = (run("all", tier), run("", tier));
+        assert_eq!((all.code, some.code), (0, 0), "{}", some.all());
+        assert!(some.stdout.contains("hits="), "{}", some.all());
+        assert_eq!(all.stdout, some.stdout, "{tier}");
+        assert_eq!(all.counters["no_code_signals"], 0);
+        assert_eq!(some.counters["no_code_signals"], 4, "{:?}", some.counters);
+    }
+}
+
 /// An assignment of the value a signal holds is dropped only when nothing can observe the
 /// signal's activity (user, 2026-10-24): `skip_signals` counts the signals that allow it. Each
 /// observer of activity (a plugin, a debugger, `'active`, `'last_active`, `'transaction`,

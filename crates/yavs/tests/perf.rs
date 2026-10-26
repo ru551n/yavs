@@ -415,7 +415,7 @@ case!(
         ("process_runs", Max(323)),
         ("wakes", Max(317)),
         ("update_general", Max(2)),
-        ("ops", Max(6934)),
+        ("ops", Max(1440)),
     ]
 );
 case!(memo_wide, "q=64442", &[], [("ops", Max(75700))]);
@@ -440,7 +440,7 @@ case!(
     [
         ("pmemo_hits", Max(0)),
         ("pmemo_runs", Max(0)),
-        ("ops", Max(18300))
+        ("ops", Max(13550))
     ]
 );
 // Two processes whose calls of a pure function never repeat: both give its memo up, which turns it
@@ -455,6 +455,9 @@ case!(
         ("ops", Max(25930))
     ]
 );
+// The digit loop of a textio HRead (#744): a result-table nibble stored into the slice
+// `sv(4 * i to 4 * i + 3)` and `is_x` on the same slice, 8 digits of each of 3 words, 16 times.
+case!(hread_loop, "sum=", &[], [("ops", Max(7800))]);
 case!(
     edge_forms,
     "edges=",
@@ -754,7 +757,7 @@ fn spec_nested() {
     check_bounds(
         "spec_nested",
         &copies,
-        &[("spec_switched", Min(3)), ("ops", Max(318_000))],
+        &[("spec_switched", Min(3)), ("ops", Max(224_200))],
     );
 }
 

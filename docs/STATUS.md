@@ -8764,6 +8764,31 @@ Wall times of single runs in that table are host noise (`grlib_leon3mp` 1.15 and
 (31 benchmarks, 3 runs, one core): CPU geomean 1.005. Work-counter case `case_tab`; correctness case `crates/yavs/tests/casetab.rs` (every value of a hex-digit function, a nibble
 function, an enumeration, an integer type with an `if` chain, functions that report for some values; output and reports equal with `YAVS_NO_CASETAB=1`, at 1 and 4 threads, in
 `--tier=llvm` and `--tier=auto`). Not done: integer subtypes (the IR type is the base type), results whose length depends on the argument, a fat pair per call on the table path.
+## The HRead digit loop of the S-record start-up (yavs-ir `opt.rs`, `opt/inline.rs`, yavs-interp `ieee.rs`, #744, 2026-10-26)
+
+The digit loop of the `HRead` of GRLIB's `stdio` package (`SV(4*i to 4*i+3) := FromChar(S(i)); if Is_X(SV(4*i to 4*i+3))`) was more than half of the first 1 us of `grlib_leon3mp` (the
+twelve memory models read an S-record image at start). Result-table reads are made before the first optimiser pass (the pair a table read builds is no longer made and read back); the optimiser keeps
+its facts across a `TempRoot`, across a store to another word of the same block and across reads through a frame address; the length of `v(x to x + 3)` is a constant, so the slice's descriptor, layout and
+length check fold; a repeated slice position is shared; a block that is only stored into goes; `is_x` of a vector reads the planes in place and `to_bitvector` is a native (`docs/decisions.md` "The HRead
+digit loop"). 33 interpreter ops per digit became 13. Bench builds with `llvm`, `--tier=interp`, cores 8 to 15 (`tools/claim core`), before = the commit before:
+
+| `grlib_leon3mp` | before | after |
+|---|---:|---:|
+| first 1 us, warm cache: instructions | 51.89 G | 31.54 G (-39.2 percent) |
+| first 1 us, warm cache: cycles | 13.82 to 13.91 G | 8.33 to 8.48 G |
+| first 1 us, warm cache: wall, same core, `--tier=interp` / `auto` / `llvm` | 2.70 s / 2.0 s / 7.5 s | 1.63 s / 1.45 s / 6.85 s |
+| first 1 us, empty cache: instructions / CPU time | 60.69 G / 3.30 s | 40.39 G / 2.24 s |
+| whole run, `--tier=interp`: wall / instructions | 36.02 s / 449.1 G | 34.87 s / 428.1 G |
+| whole run, `--tier=auto`: wall / instructions | 36.54 s / 439.4 G | 35.38 s / 428.9 G |
+| whole run, empty cache, `--tier=interp` / `--tier=auto`: wall | 36.95 s / 37.19 s | 35.68 s / 36.53 s |
+
+Breadth: `tools/realbench --compare`, 42 tests, run phase, `interp` and `auto`, one run per cell: instruction ratio geometric mean 0.99 and 1.00, no test slower beyond noise; with an
+empty cache (`interp-cold`, `auto-cold`, the optimiser's first run of each function) 1.00 and 1.00. The standard `hread` of `ieee.std_logic_textio` into 32 and 64 bit vectors: 7.30 G to 5.58 G instructions.
+`tools/bench` designs `textio_heavy`, `file_io`, `strings_heavy`, `ieee_heavy`, `report_heavy` execute the same instructions as before; `textio_heavy` has 3.7 percent more cycles over 8 interleaved pairs
+(7.6 percent more L1 instruction cache misses, no change in the executed instructions: the code layout of #576). Output of the `difftest` corpus equal at 1 and 4 threads in every tier (531 of 531).
+Work-counter cases: `hread_loop` (new), `case_tab` (ceiling lowered). Left (issues): `Init_mem` of the SDRAM model is now 18 percent of the first 1 us (#768); the fixed cost of one `HRead` call (86 ops for
+one digit, #771); a copy-free `Is_X` of a slice (#770); table reads with a range test or a validity mask (#769).
+
 ## Cold library analysis, round 4: lookups invalidated by name, one hash per symbol (#742, #740, 2026-10-25)
 
 Cold analysis of a library, one file per `yavs analyze` call (70 percent of cold minus warm in the head-to-head, #740), after #424 rounds 1 to 3. Cuts and reasoning: `docs/decisions.md`

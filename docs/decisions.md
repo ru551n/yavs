@@ -10111,3 +10111,52 @@ first-run latency".
   there, and the budget would need a second rule for it); a cheaper first level for frame-mode copies (`Fast` code is about 1.7 times slower
   and the copies' gain is 1.75 at O2); batching copies with equal code (twins, #713, already compile once; the `sc5_fifo_repack` copies
   differ).
+
+## The HRead digit loop: table reads before the first pass, facts about the words of one block, slices of constant length (yavs-ir `opt.rs`, `opt/inline.rs`, yavs-interp `ieee.rs`, #744, 2026-10-26)
+
+The S-record start-up of the twelve memory models of `grlib_leon3mp` is the digit loop of the `HRead` of GRLIB's `stdio` package: `SV(4*i to 4*i+3) := FromChar(S(i)); if Is_X(SV(4*i to 4*i+3))`
+for every hex digit, run from the textio package at start-up (more than half of the profile of the first 1 us, `--tier=interp`, after #722). The cost is general: every
+`v(a to a + k) := f(x)` or `g(v(a to a + k))` on a slice of constant length pays for a descriptor, a length check, a layout and a position per statement. The loop took 33 interpreter ops
+per digit (the table read of #722 built a fat pair in a block of its own and read both words back; both slices made a descriptor of their length and checked it against the length of the
+result; the second slice repeated the position of the first); it takes 13.
+
+- **A result-table read is made before the first optimiser pass** (`opt/inline.rs` `tab_calls`, called by `optimize_body_with`), not by the inliner after it. The reads of #722 are inlined
+  after the register sharing (`renumber`), where most registers are defined more than once and the optimiser does not follow their values; the loads of the two words of the pair
+  `tab_forwarder` builds were never forwarded from the stores that built them. Before the first pass the registers of the read are new and defined once. Only reads that are one path
+  (the argument type is an enumeration, every value tabulated: no range test, no call) are taken early, and the call's statement stays on the inlined instructions (no `via`
+  entry: a table read cannot fail, so a trace needs no frame for it). A table with a range test or a validity mask keeps the inliner's join and call path. `YAVS_NO_CASETAB=1` and
+  `YAVS_NO_INLINE=1` turn it off.
+- **Facts the walk keeps** (`opt.rs`): a `TempRoot` writes no memory (it registered the pair block and so forgot every fact, a load right after it read memory again); a store forgets
+  the facts about another word of the same block only when its bytes overlap (`kill`: two `Index` results of one block by constants, `iat`), so the pair's two stores no longer
+  forget each other; a stored address that a register holds (an `AddrOf` result defined once) is what a load of that word gives back; a load is aliased to a register only of the same
+  register type; a frame address that `Copy`, `LCopy`, `LFill`, `LSet`, `LGet`, `MemEq`, `Zero`, `MakeDope`, `DopeLen`, `SlicePos`, `Pos`, `SubtypeCheck` or `LayoutOf` read or write through
+  does not escape (`escapes`: the facts about the descriptors of a frame slot survived no copy into a vector before); a second `SlicePos` of the same slice of the same descriptor is
+  the first one (`Key::Slice`).
+- **The length of `MakeDope [x + p, x + q]`** for one register `x` defined once and constants `p`, `q` is `q - p + 1` (0 if that is negative; `downto` the other way round): the
+  additions are checked, so on the path that continues it is exact (`note_affine` keeps `aff`, `affine_len`). `DopeLen`, `LayoutOf` of the slice and the `SubtypeCheck` of its length against
+  the pool descriptor of a table result fold, and the descriptor goes with its block.
+- **A block that is only stored into goes** (`drop_stored_only_blocks`, in `dce`): an `Alloc` defined once whose every use is the address of a `Store` or the base of an `Index`
+  that only addresses stores (the fat pair of a table read once its words were forwarded) loses the `Alloc`, the stores and the indexes. `dce` runs before `drop_statements` at the end
+  of `run` so that the markers of statements whose temporaries are gone go with them.
+- **Interpreter** (`yavs-interp` `ieee.rs`): `is_x` of a vector reads the plane words in place (it made a `LogicVec` with a heap vector for every call, a few percent of the loop with `malloc` and `free`); `to_bitvector (std_ulogic_vector, bit)` is a native (the 1164 body is an
+  element loop with a `case`: 6 to 9 percent of the start-up through `HRead (bit_vector)`).
+- **Measured** (bench builds with `llvm`, `--tier=interp` unless said, cores 8 to 15 by `tools/claim core`, `perf stat`; before = the commit before this change). `grlib_leon3mp`, the first 1 us
+  (elaboration and S-record start-up): warm compilation cache 51.89 G to 31.54 G instructions (-39.2 percent), 13.82 to 13.91 G cycles to 8.33 to 8.48 G, CPU time 2.72 s to 1.65 s (3 interleaved
+  pairs); empty cache 60.69 G to 40.39 G instructions (-33 percent), 3.30 s to 2.24 s CPU. The whole run (`--stop-time=1060500ns`, `tools/realbench --compare`, median of 3, core 8): `--tier=interp`
+  36.02 s to 34.87 s wall, 449.1 G to 428.1 G instructions; `--tier=auto` 36.54 s to 35.38 s, 439.4 G to 428.9 G; with an empty cache 36.95 s to 35.68 s (interp), 37.19 s to 36.53 s (auto) (the start-up is about a thirteenth of the run). The first 1 us, same core, interleaved: `--tier=auto` 35.5 G to 27.1 G instructions, 2.0 s to 1.45 s; `--tier=llvm` 84.3 G to 72.5 G, 7.5 s to 6.85 s. A reproducer with the shape of
+  the loop (240 000 `HRead` calls of 32 bits, 7 digits each): 76.1 M to 39.4 M ops, 7.43 G to 4.17 G instructions, 33 to 13 ops per digit; one digit of 8 bits: 56.9 M to 41.1 M ops.
+  Breadth (`tools/realbench --compare`, 42 tests, run phase, `interp` and `auto`, one run per cell): geometric mean of the instruction ratios 0.99 and 1.00 (every test within 5 percent
+  but two `auto` cells at 1.05 and 1.07 that repeat at 1.00 and 0.99 over 5 runs), of the CPU-time ratios 0.96 and 1.01; empty cache (`interp-cold`, `auto-cold`, so the optimiser's first
+  run): instruction ratio geometric mean 1.00 and 1.00 (small tests +1 to 2 percent, the cost of the extra `dce` and the table pass on the first call of each function). The standard `hread` of
+  `ieee.std_logic_textio` (2008) into 32 and 64 bit vectors, 20 000 lines of six words: 7.30 G to 5.58 G instructions, 0.38 s to 0.29 s wall (same core, interleaved). `tools/bench` designs `textio_heavy`, `file_io`, `strings_heavy`,
+  `ieee_heavy` and `report_heavy` run the same instructions (to 0.03 percent); `textio_heavy` alone has 3.7 percent more cycles over 8 interleaved pairs with 7.6 percent more L1 instruction cache
+  misses, the layout effect of #576 (the executed instruction counts are equal). `case_tab` fell from 17.4 k to 13.2 k ops, `spec_nested` (the copy) from 312 k to 218 k and `slice_memo` from 1.5 k to 1.4 k (their ceilings are lowered), the
+  work-counter case `hread_loop` bounds a digit loop of this shape.
+- **Tests**: `opt` (`a_slice_whose_bounds_differ_by_a_constant_has_that_length`, `a_block_only_stored_into_goes`, `registering_a_root_forgets_nothing_about_memory`, the words of a
+  descriptor that a store beside them does not change), `ieee_native` (`to_bitvector` of random operands, natives on and off), perf case `hread_loop`, and the differential cases of #722
+  (`casetab`). The `make_temporary` of the `opt` tests keeps its block as a root, and the `opt_slots` tests put a store through an unknown pointer between the writes and the reads of a
+  block: both blocks were only written or read back from the stores, which the optimiser now follows.
+- **Not done** (issues): `Init_mem` of the SDRAM model (element-by-element fill of a row through an access value, 18 percent of what is left of the start-up, #768); the fixed cost of an
+  `HRead` call (two frames with descriptors, two natives, the `Copy` of the descriptors: 86 ops for one digit, #771); a copy-free `Is_X` of a slice (the slice is copied into a block first: `Alloc` +
+  `LCopy` + native, #770); the table path with a range test or a validity mask (integer arguments) still has the join and the pair (#769). Range proofs for `4 * i` and `4 * i + 3` against the
+  integer range (two `BinRange` per digit stay) are not planned.

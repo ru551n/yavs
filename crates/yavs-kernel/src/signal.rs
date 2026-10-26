@@ -748,8 +748,8 @@ pub(crate) struct Signal {
     /// or in the next one.
     seg_hint: usize,
     /// The `std_ulogic` code of every element of `cur`, one byte each (rounded up to whole
-    /// plane blocks), for logic signals of at most `CODES_MAX` elements unless `no_codes`; empty
-    /// otherwise. Kept in step with `cur` (`sync_codes`, `refresh_codes`): a read of one element
+    /// plane blocks), for logic signals of at most `CODES_MAX` elements unless `no_codes` or a bus
+    /// (`CODES_SOURCE_MAX`); empty otherwise. Kept in step with `cur` (`sync_codes`, `refresh_codes`): a read of one element
     /// is one load.
     codes: Vec<u8>,
     /// The elaborator found no read of a single element of the signal (`Builder::no_codes`):
@@ -904,6 +904,13 @@ fn held(codes: &[u8], cur: &Buf, e: usize, code: u8) -> bool {
 fn plane_held(cur: &Buf, e: usize, code: u8) -> bool {
     cur.code(e) == code
 }
+
+/// A logic signal of more than 64 elements (several plane blocks) keeps its byte codes only when
+/// every source (driver or out-port) has at most this many elements. A wider source makes it a
+/// bus, updated a block at a time: refreshing 64 codes on every change costs more than the
+/// plane reads of the rare single element do. A vector of registers (sources of one element,
+/// or a byte lane) keeps them: its updates are single elements and its elements are read singly.
+const CODES_SOURCE_MAX: usize = 16;
 
 /// Elements `elem .. elem + len` (`len <= 64`) into the pending bit mask and its list of words.
 #[inline(always)]
@@ -1078,6 +1085,11 @@ impl Signal {
         if let Buf::Planes { len, b } = &self.cur
             && *len <= CODES_MAX
             && !self.no_codes
+            && (*len <= 64
+                || self
+                    .drivers
+                    .iter()
+                    .all(|d| d.range.len as usize <= CODES_SOURCE_MAX))
         {
             self.codes.resize(b.len() * 64, 0);
             refresh_codes(&mut self.codes, &self.cur, 0, *len);

@@ -2,6 +2,7 @@
 //! one byte (`yavs_kernel::Builder::no_codes` says when it need not), which makes a read of one
 //! element one load but costs a refresh on every change. Only reads of a single element use them;
 //! the analysis facts (`yavs_sem::Facts::elem_reads`) say which signal objects have such reads.
+//! The kernel adds the width condition of #519: above 64 elements only with narrow sources.
 
 use std::collections::HashSet;
 

@@ -8230,16 +8230,13 @@ the run; cycles as the minimum of 7 interleaved runs on one core claimed with `t
 - **Without codes** a one-element read comes from the planes (`Ctx::first_code`, and compiled code through `TierSig` with `codes = 0`: its
   plane path was there for buses, so `TierSig` and `rt.rs` are unchanged), and the skip test of an assignment of the value a signal holds
   (`direct_same`, `commit_code`, `commit_codes`) compares the plane bit instead (`held`), so a vector driven by element and read whole
-  still skips. The width rule is gone: a wide vector with element reads now keeps its codes.
-- **Results** (bench builds with `llvm`, base 9b5ce798, instructions of whole warm runs, `--threads 1`, `--tier=interp` / `--tier=llvm`):
-  `lfsr64` 0.968 / 0.954, `lfsr64_xor` 0.979 / 0.973, `rtl_ram` 0.992 / 0.992; `rtl_lfsr`, `rtl_ff`, `rtl_chain`, `neorv32_single_min` and
-  `grlib_leon3mp` keep their codes or have no vector that is not read by element, so they move by at most +0.45% instructions (code layout; the
-  logic of their paths is unchanged, cycles level within the noise of a shared host). `rtl_lfsr`, `rtl_ff` and `rtl_chain` read single elements
-  of their registers (`r(i)(0) = 'U'`, `q((i+1) mod N)`, `c(i-1)`), so this decision cannot save their refresh. `realbench --compare` (42 tests,
-  interpreter and auto, 3 runs a cell, one core): instruction geometric mean 1.00 / 1.00, wall 0.98 / 1.00; every test within 1.00 +- 0.02 in
-  instructions but `fletcher_bufferwriter_512` (1.05, wall 1.03 interp, 1.07 auto): its wide buses are read by element in several processes
-  and used to be exempt by the width rule, now they keep 64 codes per changed block. If that matters, the old exemption can come back as
-  a second condition (element reads and a narrow source) in `keep_codes.rs` only.
+  still skips. The width rule of #519 stays as a second condition (user, 2026-10-26, see the last bullet): a signal of more than 64 elements keeps its codes only with every source at most `CODES_SOURCE_MAX` (16) elements, checked in `Signal::sync_codes`.
+- **Results** (bench builds with `llvm`, base = main without this change, instructions of whole warm runs, `--threads 1`, `--tier=interp` / `--tier=llvm`):
+  `lfsr64` 0.968 / 0.952, `lfsr64_xor` 0.979 / 0.972, `rtl_ram` 0.992 / 0.992; cycles (minimum of 9 interleaved runs on a claimed core) 0.96 / 0.96,
+  0.97 / 0.97, 1.02 / 0.99. `rtl_lfsr`, `rtl_ff`, `rtl_chain` read single elements of their registers (`r(i)(0) = 'U'`, `q((i+1) mod N)`,
+  `c(i-1)`) and keep their codes, so this decision cannot save their refresh: instructions 1.000 / 1.004 / 1.005 (code layout; their paths are
+  unchanged), cycles level within the noise of a shared host. `neorv32_single_min` and `grlib_leon3mp` level.
+- **Width condition kept (user, 2026-10-26)**: with the element-read rule alone `fletcher_bufferwriter_512` lost 5% instructions (3% wall interp, 7% auto) because its wide buses have element reads. A leaf now keeps codes only with element reads AND, above 64 elements, narrow sources (the #519 rule, unchanged in `Signal::sync_codes`). `fletcher_bufferwriter_512` is level again: instructions 51.12 G to 51.17 G (interp), 49.44 G to 49.16 G (auto), cpu 3.98 s both. The skip test on the planes (`held`) is new for buses and signals without codes, so `mixed_entries` counts fewer direct entries (floors 1230 and 260).
 - **Not done**: telling a real read from a port-map actual or a sensitivity entry (would let a few more bus signals drop their codes); reads
   through signal parameters make every signal keep its codes (OSVVM/UVVM designs get no gain).
 

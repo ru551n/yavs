@@ -3662,6 +3662,10 @@ Cranelift's code of the adder processes of `poc_arith_addw` takes about 1.35 tim
 stack slots); in the window generator the native variants of the test runner's accessors (`get`, `set`, `unsafe_pop`, `decode`)
 take 1.5 to 3 times LLVM's cycles, on the chains of object-table look-ups and the checked arithmetic around them.
 
+`grlib_leon3mp`, run phase, `--tier=auto` warm, the same two builds on core 8 (realbench `--compare --runs 3`): Cranelift 42.6 s,
+LLVM 35.2 s (0.83, instructions 0.97); sim1 11.9 s in a run of the Cranelift build alone (Cranelift 44.5 s warm, 48.8 s cold
+there). Level instructions at 1.2 times the time: the same IPC gap as in the adder processes.
+
 ## performance (tiers against two reference simulators, 2026-10-19)
 
 Measurement only (#125, #383, #385, #386, #395). yavs at `d76a08b5`, release build with the

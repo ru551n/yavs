@@ -9008,7 +9008,9 @@ the cache.
   153 in `llvm_drive_batch`, now 153). Work-counter bounds for the four under `clift::`; `clift::layout_field` has a
   ceiling of 3 400 layout calls against LLVM's 1 648, because this lowering has no inline layout cache in frame mode,
   so the process's `LayoutOf`s go to the memo too (they were stepped before).
-- **`--tier=clift-auto` gets the layout slots** (`yavs_interp::layout_slots`, as `auto` and `auto3`). Why: since #756 the
+- **`--tier=clift-auto` gets the layout slots** (`yavs_interp::layout_slots`, as `auto` and `auto3`; an agent's choice, pending
+  the user's confirmation: the user ruled on the memory of the slots for LLVM only, and a switch of its own for the #756
+  gate is the alternative). Why: since #756 the
   slot pass keeps the 32-byte blocks the interpreter fuses out of the frame unless layout slots are on, and compiled
   code is slower with them (an `Alloc` in the temporary area before every signal read and concatenation). The merge
   alone took warm `clift-auto` on `poc_arith_addw` from 98.5 G to 101.5 G instructions and 34.9 G to 39.8 G cycles; with
@@ -9023,7 +9025,10 @@ the cache.
   the register array's address in the pinned register (regalloc kept it in a stack slot and reloaded it before 15
   percent of the instructions of a large process; pinned, the reloads are gone, cycles are level and instructions 2
   percent up from the copies `get_pinned_reg` makes); the register cache kept across the join of a slow path (minus the
-  instruction's registers): 1 percent more instructions and cycles, longer live ranges.
+  instruction's registers): 1 percent more instructions and cycles, longer live ranges. Cranelift's `opt_level`
+  `speed_and_size` against `speed`: the same instructions on `poc_arith_addw`. The inline threshold (`YAVS_CLIFT_INLINE`,
+  largest inlined body in Cranelift instructions) on the window generator: 0 gives 144.5 G instructions, 150 (the default)
+  144.7 G, 300 145.4 G; 600 fails with an internal error (#765). Inlining larger bodies buys nothing here.
 - **What is left** is the code of the hot functions themselves, which LLVM's optimiser makes about 1.35 times shorter and
   runs at a higher IPC: the frame-mode code of a process stores every register it defines and reloads it after every
   join and callback, the base pointers live in stack slots, and the pointer chains of the test runner's accessors

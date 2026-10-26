@@ -9275,14 +9275,26 @@ the cache.
   and the object table first unless the register holds a likely temporary (+2.6 percent).
 - **Address parameters used in loops are resolved at the entry of a native frame** (`param_addrs`, `yavs_rt_region`,
   `Known::Param`), as in the LLVM lowering: an access tests the held region, the ordinary lookup when it fails.
-  `unsafe_push` and `decode` of the window generator 39 and 30 percent fewer instructions, `set` (the callee it
-  inlines has such a loop and pays the callback per call) 87 percent more, as the LLVM tier's own `set`; the window
-  generator as a whole 0.2 percent fewer.
+  `unsafe_push` and `decode` of the window generator 39 and 30 percent fewer instructions, the window generator as a
+  whole 0.2 percent fewer (`yavs_rt_region` 0.8 G). The samples of `set` (`f24`, no loop, no address parameter, its
+  code unchanged) rose from 768 to 1 439 in the same pair of eager profiles, not explained; the LLVM tier's eager O2
+  `set` has 1 794.
 - **Measured** (eager `--tier=clift`, combined bench build, claimed cores, second of two interleaved runs, a private
   copy of the world per binary: the eager code cache of a world holds about four builds' functions, `OBJ_MAX_ENTRIES`):
   the window generator 148.3 G to 123.2 G instructions and 41.9 G to 36.9 G cycles, `poc_arith_addw` 103.0 G to
   99.7 G. Warm, the combined build: `--tier=clift-auto` window generator 126.1 G instructions and 40.1 G cycles
   against `--tier=auto` 137.8 G and 44.2 G, `poc_arith_addw` 87.4 G and 27.6 G against 85.9 G and 27.9 G.
+- **The adder copies of `poc_arith_addw`** (item 3 of the round-8 list, 1.18 times LLVM's instructions under `auto`):
+  against the LLVM tier's eager O2 code their own instructions are 1.6 to 1.9 times, but the LLVM lowering leaves their
+  `Cat` to the interpreter (`cat_block`, `cat_words`, `cat`: 4 030 samples) where the Cranelift lowering makes it inline;
+  the compiled code plus those callbacks is level (9 268 samples against 9 306, eager, `instructions` every 3 M).
+- **Ideas of the reference simulator** (sim1, rule 22): its IR tells an overflow-checked addition from a plain one and
+  checks overflow on the width of the type's representation, and its code generators branch on the flag the addition
+  sets; ours decides from the constant bounds of the `BinRange` that no test is needed, and compares the sum with the
+  operand because Cranelift does not fold the signed overflow flag into a branch. Its bounds checks are a compare and a
+  conditional compare with one jump; Cranelift has no conditional compare, so ours is a jump per compare. Its access
+  values are host pointers, so there is nothing to look up; keeping the object a `Deref` found in hand for the rest of
+  the stretch is the nearest this design (addresses as space, index and offset, an object table) gets to that.
 - **Not taken:** the `Mem` pointer stays in a stack slot that regalloc reloads at most block starts of a lookup
   (`procChecker` after the round: 4 percent of its samples on those reloads, and the function is 2 percent of the
   run); a pinned register was tried in round 6. The native variants of the window generator still take 1.2 times

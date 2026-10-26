@@ -1331,6 +1331,47 @@ mod llvm {
             ("llvm_native_frames", Min(1)),
         ]
     );
+
+    /// `edge_cost_parity` compiled (#772): the `wait until` form ends its wait on the kernel as
+    /// the sensitivity-list forms do (`static_wait_edge`), so all four make the same callbacks.
+    #[test]
+    fn llvm_edge_cost_parity() {
+        let forms = [
+            "process (clk) begin if rising_edge(clk) then q(i) <= not q(i); end if; end process;",
+            "process (clk) begin if clk'event and clk = '1' then q(i) <= not q(i); end if; end process;",
+            "process (clk) begin if not clk'stable and clk = '1' then q(i) <= not q(i); end if; end process;",
+            "process begin wait until rising_edge(clk); q(i) <= not q(i); end process;",
+        ];
+        let template = include_str!("perf/edge_cost.vhd");
+        let mut cbs = Vec::new();
+        for (k, form) in forms.iter().enumerate() {
+            let d = tempdir(&format!("llvm_edge_cost_{k}"));
+            let r = run_design(
+                &d,
+                "edge_cost",
+                &template.replace(forms[0], form),
+                "llvm",
+                &[],
+            );
+            assert_eq!(r.code, 0, "{form}: {}", r.all());
+            assert!(r.all().contains("ones=8"), "{form}: {}", r.all());
+            check_bounds(
+                &format!("llvm_edge_cost/{k}"),
+                &r,
+                &[("cb_wait_same", Max(1050)), ("cb_signal", Max(16))],
+            );
+            let sum: u64 = (r.counters.iter())
+                .filter(|(c, _)| c.starts_with("cb_"))
+                .map(|(_, &n)| n)
+                .sum();
+            cbs.push(sum);
+        }
+        // The wait form waits in full at its first activation (no edge resumed it yet).
+        assert!(
+            cbs.iter().all(|&n| n <= cbs[0] + 16 && n + 16 >= cbs[0]),
+            "callbacks per form: {cbs:?}"
+        );
+    }
 }
 
 /// Under the Cranelift tier (`--tier=clift`, compiled before the run): the callbacks compiled code

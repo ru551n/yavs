@@ -34,6 +34,7 @@ pub const WAIT: &str = "yavs_rt_wait";
 pub const WAIT_ON: &str = "yavs_rt_wait_on";
 
 pub const WAIT_AGAIN: &str = "yavs_rt_wait_again";
+pub const WAIT_EDGE: &str = "yavs_rt_wait_edge";
 
 pub const WAIT_SAME: &str = "yavs_rt_wait_same";
 pub const LCOPY: &str = "yavs_rt_lcopy";
@@ -134,6 +135,9 @@ pub struct Mem {
     pub nslots: *mut NSlot,
     /// Entries of the table `nslots` points at (the thread's table never shrinks).
     nslots_len: usize,
+    /// The `Suspend` a wait ended on the kernel itself stopped at (`TIER_ROOT_WAIT`), for the
+    /// process's record (`TierState::at`); `NO_PC` otherwise.
+    wait_at: u32,
 }
 
 /// The slots of a native frame, registered at its entry in `Mem::nslots`.
@@ -487,6 +491,7 @@ impl Mem {
         let t = |sp: u8| self.tags[sp as usize] >> 32;
         st.words = [self.id, self.cur_epoch, t(space::HEAP), t(space::INST)];
         st.used = true;
+        st.at = self.wait_at;
     }
 
     /// Enter object `o` (`o.hi`: the high half of its addresses) at its entry.
@@ -565,6 +570,35 @@ pub struct Env<'a> {
     /// The slots of the native frames for calls into the interpreter (`TabSlots`), made when
     /// first needed in the activation.
     pub windows: Option<Box<dyn yavs_interp::NativeSlots>>,
+}
+
+/// The kernel context, the machine's drivers and the view's signals of the activation `fr`
+/// belongs to, when it offers them (`TierFrame::kctx`): the drives that go to the kernel straight.
+///
+/// # Safety
+/// `fr` is the view of the running activation or call (`kctx` is cleared when it ends) and
+/// nothing else uses the context, the drivers or the signal table while the result lives.
+#[inline(always)]
+unsafe fn direct<'a>(
+    fr: &TierFrame,
+) -> Option<(
+    &'a mut yavs_kernel::Ctx<'a>,
+    &'a [yavs_interp::ProcDriver],
+    &'a [yavs_interp::TierSig],
+)> {
+    if fr.kctx.is_null() {
+        return None;
+    }
+    // SAFETY: the host wrote `kctx` from the activation's `&mut Ctx` and the tables from the
+    // machine's vectors (`view`, `view_again`), which do not move within the activation; the
+    // host does not run while compiled code is in this callback.
+    unsafe {
+        Some((
+            &mut *fr.kctx.cast::<yavs_kernel::Ctx<'a>>(),
+            std::slice::from_raw_parts(fr.drivers, fr.ndrivers as usize),
+            std::slice::from_raw_parts(fr.sigtab, fr.sigtab_len as usize),
+        ))
+    }
 }
 
 /// The address of a local of the caller: where the native stack is.
@@ -749,8 +783,14 @@ pub unsafe extern "C" fn yavs_rt_drive(
         } else {
             (word(0) as i64, unsafe { plane_block(wave) })
         };
-        // The usual case, taken by the host without a frame view or a result.
-        if unsafe { (*envp).host.drive_now(driver, [lo, len], delay, block) } {
+        // The usual case, taken by the kernel without the host (#766), else by the host
+        // without a frame view or a result.
+        // SAFETY: `mem` is the running activation's.
+        if let Some((c, ds, ss)) = unsafe { direct(&(*mem).fr) } {
+            if yavs_interp::direct_drive_now(c, ds, ss, driver, [lo, len], delay, block) {
+                return GO;
+            }
+        } else if unsafe { (*envp).host.drive_now(driver, [lo, len], delay, block) } {
             return GO;
         }
     }
@@ -897,8 +937,17 @@ pub unsafe extern "C" fn yavs_rt_drive_bit(
     cb(Cb::Drive);
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
-    if delay == 0 && unsafe { (*envp).host.drive_bit_now(driver, [lo, len], code & !0x100) } {
-        return GO;
+    if delay == 0 {
+        // SAFETY: `mem` is the running activation's.
+        let done = match unsafe { direct(&(*mem).fr) } {
+            Some((c, ds, ss)) => {
+                yavs_interp::direct_drive_bit(c, ds, ss, driver, [lo, len], code & !0x100)
+            }
+            None => unsafe { (*envp).host.drive_bit_now(driver, [lo, len], code & !0x100) },
+        };
+        if done {
+            return GO;
+        }
     }
     yavs_rt_drive_bit_slow(env, regs, mem, pc, driver, lo, len, delay, code)
 }
@@ -949,14 +998,21 @@ unsafe fn plane_block(wave: *const u8) -> [u64; 4] {
 /// `TierHost::drive_bits`. `GO`, or the pc of the `Drive` of an entry that failed.
 pub extern "C" fn yavs_rt_drive_flush(
     env: *mut c_void,
-    _mem: *mut Mem,
+    mem: *mut Mem,
     entries: *const [u64; 2],
     n: u32,
 ) -> u32 {
     cb(Cb::Drive);
     // SAFETY: as in `yavs_rt_step`; compiled code passes `n` entries it wrote.
     let envp = env as *mut Env<'_>;
-    let ents = unsafe { std::slice::from_raw_parts(entries, n as usize) };
+    let mut ents = unsafe { std::slice::from_raw_parts(entries, n as usize) };
+    // The leading entries the kernel takes itself (#766).
+    if let Some((c, ds, ss)) = unsafe { direct(&(*mem).fr) } {
+        ents = &ents[yavs_interp::direct_drive_bits(c, ds, ss, ents)..];
+        if ents.is_empty() {
+            return GO;
+        }
+    }
     match catch_unwind(AssertUnwindSafe(|| unsafe {
         (*envp).host.drive_bits(ents)
     })) {
@@ -981,7 +1037,16 @@ pub unsafe extern "C" fn yavs_rt_wait(
     cb(Cb::Wait);
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
-    if unsafe { (*envp).host.wait_again(pc, [lo, len]) } {
+    // On the kernel itself (#766), else through the host.
+    let fr = unsafe { &(*mem).fr };
+    if fr.flags & yavs_interp::TIER_ROOT_WAIT != 0
+        && let Some((c, _, ss)) = unsafe { direct(fr) }
+    {
+        if yavs_interp::direct_wait_again(c, ss, [lo, len]) {
+            unsafe { (*mem).wait_at = pc + 1 };
+            return TIER_SUSPEND;
+        }
+    } else if unsafe { (*envp).host.wait_again(pc, [lo, len]) } {
         return TIER_SUSPEND;
     }
     unsafe { (*mem).sync(&mut *(*envp).host) };
@@ -991,6 +1056,11 @@ pub unsafe extern "C" fn yavs_rt_wait(
     // SAFETY: the pointers are the ones compiled code was given.
     unsafe { stepped(envp, mem, pc, r) }
 }
+
+/// `lo` of `yavs_rt_wait_same` for a wait with a `WaitEdge` (`yavs_interp::static_wait_edge`):
+/// it short-cuts only in an activation the process's edge trigger resumed (`TierFrame::known`),
+/// where `Ctx::wait_edge` does nothing (#772).
+pub const WAIT_SAME_EDGE: u64 = 1;
 
 /// A `WaitOn` that is not the last of its wait (a sensitivity list of several signals, #532):
 /// the kernel's registration of a waiter it had at the last wait (`TierHost::wait_on_again`),
@@ -1032,17 +1102,48 @@ pub extern "C" fn yavs_rt_wait_same(
     _regs: *mut u64,
     mem: *mut Mem,
     pc: u32,
-    _lo: u64,
+    lo: u64,
     _len: u64,
 ) -> u32 {
     cb(Cb::WaitSame);
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
-    unsafe { (*mem).sync(&mut *(*envp).host) };
+    // On the kernel itself (#766), else through the host. Neither reads the temporary area.
+    let fr = unsafe { &(*mem).fr };
+    // The wait's `WaitEdge` changes nothing only when the edge trigger resumed the activation.
+    if lo & WAIT_SAME_EDGE != 0 && fr.known == u64::MAX {
+        return GO;
+    }
+    if fr.flags & yavs_interp::TIER_ROOT_WAIT != 0
+        && let Some((c, _, _)) = unsafe { direct(fr) }
+        && yavs_interp::direct_wait_same(c)
+    {
+        unsafe { (*mem).wait_at = pc };
+        return TIER_SUSPEND;
+    }
+    // The host also notes why it refused.
     if unsafe { (*envp).host.wait_same(pc) } {
         TIER_SUSPEND
     } else {
         GO
+    }
+}
+
+/// `Inst::WaitEdge` of the signal reference `lo`, `len` with edge code `kind` on the kernel
+/// itself (#766): 1 when done, 0 when the instruction must run through `yavs_rt_signal`. It
+/// reads no register.
+pub extern "C" fn yavs_rt_wait_edge(
+    _env: *mut c_void,
+    mem: *mut Mem,
+    lo: u64,
+    len: u64,
+    kind: u32,
+) -> u32 {
+    cb(Cb::WaitOn);
+    // SAFETY: `mem` is the running activation's.
+    match unsafe { direct(&(*mem).fr) } {
+        Some((c, _, ss)) => u32::from(yavs_interp::direct_wait_edge(c, ss, [lo, len], kind as u8)),
+        None => 0,
     }
 }
 
@@ -2240,6 +2341,11 @@ pub fn enter_on(
     if !host.view_again(&mut mem.fr) {
         host.view(&mut mem.fr);
     }
+    // Only an activation with a record can leave the pc of its wait there.
+    if state.is_none() {
+        mem.fr.flags &= !yavs_interp::TIER_ROOT_WAIT;
+    }
+    mem.wait_at = yavs_interp::NO_PC;
     mem.temp_seen = mem.fr.temp_len;
     mem.ndeopt = 0;
     // The objects this machine found before, on this thread, at this heap epoch.
@@ -2272,6 +2378,7 @@ pub fn enter_on(
             pc,
         )
     };
+    mem.fr.kctx = std::ptr::null_mut();
     mem.sync(env.host);
     mem.forget_end();
     if let Some(slot) = state {
@@ -2329,6 +2436,7 @@ pub fn call_on(
     if !host.view_again(&mut mem.fr) {
         host.view(&mut mem.fr);
     }
+    mem.fr.flags &= !yavs_interp::TIER_ROOT_WAIT;
     let depth = mem.fr.frame + 1;
     // The depth limit and a frame index beyond the address format are the interpreter's
     // errors; a protected call outside the shared state is too.
@@ -2387,6 +2495,7 @@ pub fn call_on(
     } else {
         Called::Done(v as u64)
     };
+    mem.fr.kctx = std::ptr::null_mut();
     mem.forget_end();
     match env.panic {
         Some(p) => Err(p),

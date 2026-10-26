@@ -63,6 +63,16 @@ impl Profile {
         s
     }
 
+    /// Rename every function with `f`; one it maps to `None` is dropped.
+    pub fn remap(&mut self, f: impl Fn(u32) -> Option<u32>) {
+        self.hot = self
+            .hot
+            .iter()
+            .filter_map(|&(id, us, ok)| Some((f(id)?, us, ok)))
+            .collect();
+        self.lost = self.lost.iter().filter_map(|&id| f(id)).collect();
+    }
+
     /// The profile in `text`, `None` for anything this version did not write.
     pub fn parse(text: &str) -> Option<Profile> {
         let mut lines = text.lines();
@@ -289,25 +299,40 @@ pub fn set_run_id(id: Option<&str>) {
         .unwrap_or_else(std::sync::PoisonError::into_inner) = id.map(str::to_string);
 }
 
-/// The key of the profile of `prog`: the build, the optimiser switches, the run's id and a digest of
-/// every function's identity in id order (name, kind, parent and size as lowered; the reserved slots
-/// of copies are left out, they are filled in as the run goes), so the profile of a run is never
-/// read for another one. `None` without a run id.
-pub(crate) fn key(prog: &yavs_ir::Program) -> Option<yavs_cache::Key> {
+/// The key of the profile of `prog`: the build, the optimiser switches, the run's id and a digest
+/// of the set of functions' identities (name, kind, parent's name and kind, size as lowered, and how
+/// many equal ones come before it; the reserved slots of copies are left out, they are filled in as
+/// the run goes), so the profile of a run is never read for another one but is found whatever order
+/// elaboration lowered the functions in (#774). With it the ids in identity order
+/// (`order[rank] = id`): the profile names a function by its rank, not by its id. `None` without a
+/// run id.
+// ponytail: functions equal in all of that (the same label and size in two architectures) swap
+// places when their order changes; a profile applied to the wrong one only mis-steers the heat.
+pub(crate) fn key(prog: &yavs_ir::Program) -> Option<(yavs_cache::Key, Vec<u32>)> {
     use std::hash::{Hash, Hasher};
     let id = RUN_ID
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone()?;
-    let mut h = std::hash::DefaultHasher::new();
-    for (_, f) in prog.funcs.iter().filter(|(_, f)| !f.spare) {
-        (&f.name, f.kind, f.parent, f.size).hash(&mut h);
+    let mut count: std::collections::HashMap<u64, u32> = Default::default();
+    let mut ident: Vec<(u64, u32)> = Vec::new();
+    for (i, f) in prog.funcs.iter().filter(|(_, f)| !f.spare) {
+        let parent = f.parent.and_then(|p| prog.funcs.get(p));
+        let mut h = std::hash::DefaultHasher::new();
+        (&f.name, f.kind, parent.map(|p| (&p.name, p.kind)), f.size).hash(&mut h);
+        let same = count.entry(h.finish()).or_insert(0);
+        *same += 1;
+        same.hash(&mut h);
+        ident.push((h.finish(), i.0));
     }
+    ident.sort_unstable();
+    let mut h = std::hash::DefaultHasher::new();
+    ident.iter().for_each(|i| i.0.hash(&mut h));
     let mut k = yavs_cache::KeyBuilder::new(KIND);
     k.text(&yavs_ir::opt::fingerprint())
         .text(&id)
         .part(&h.finish().to_le_bytes());
-    Some(k.finish())
+    Some((k.finish(), ident.into_iter().map(|i| i.1).collect()))
 }
 
 /// The profile stored under `key`, if any.
@@ -324,10 +349,16 @@ pub(crate) fn save(store: &yavs_cache::Store, key: &yavs_cache::Key, text: &str)
 mod store_tests {
     use super::{key, load, save, set_run_id};
 
+    /// The tests that set the run id (process-wide) take turns.
+    static GLOBALS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// The profile of a run is kept per program and per run id (the command line), is read back
     /// whole, and exists only with an id.
     #[test]
     fn the_profile_is_kept_per_program_and_run() {
+        let _g = GLOBALS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let prog = {
             let mut pb = yavs_ir::ProgramBuilder::new();
             let f = pb.declare("p", yavs_ir::FuncKind::Process, None);
@@ -349,9 +380,9 @@ mod store_tests {
         set_run_id(None);
         assert!(key(&prog).is_none(), "no run id");
         set_run_id(Some("a"));
-        let a = key(&prog).expect("a key");
+        let a = key(&prog).expect("a key").0;
         set_run_id(Some("b"));
-        let b = key(&prog).expect("a key");
+        let b = key(&prog).expect("a key").0;
         assert_ne!(a, b);
         assert_eq!(load(&store, &a), None);
         save(&store, &a, "yavs-auto-profile 2\nbase 5\n");
@@ -360,6 +391,62 @@ mod store_tests {
             Some("yavs-auto-profile 2\nbase 5\n")
         );
         assert_eq!(load(&store, &b), None);
+        set_run_id(None);
+    }
+
+    /// The profile key and the ranks do not depend on the order functions were lowered in (#774):
+    /// the same functions in another order give the same key and the same function at each rank.
+    #[test]
+    fn the_profile_key_ignores_the_order_of_functions() {
+        let _g = GLOBALS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        use yavs_ir::{FuncKind, Inst, ProgramBuilder, StmtKind};
+        let build = |order: &[(&str, usize)]| {
+            let mut pb = ProgramBuilder::new();
+            let ids: Vec<_> = order
+                .iter()
+                .map(|&(n, _)| pb.declare(n, FuncKind::Procedure, None))
+                .collect();
+            for (&id, &(_, len)) in ids.iter().zip(order) {
+                let mut fb = pb.define(id);
+                let spin = fb.block();
+                fb.stmt(
+                    StmtKind::Return,
+                    yavs_diag::Span::new(yavs_diag::FileId(0), 0, 1),
+                );
+                let ptr = fb.reg(yavs_ir::RegTy::Ptr);
+                fb.emit(Inst::AddrOf {
+                    dst: ptr,
+                    space: yavs_ir::AddrSpace::Frame,
+                    off: 0,
+                });
+                for _ in 0..len {
+                    fb.emit(Inst::Free { ptr });
+                }
+                fb.emit(Inst::Br { to: spin });
+                fb.at(spin);
+                fb.emit(Inst::Br { to: spin });
+                fb.finish();
+            }
+            pb.finish().unwrap()
+        };
+        let names = |p: &yavs_ir::Program, order: &[u32]| -> Vec<String> {
+            order
+                .iter()
+                .map(|&i| p.funcs.get(yavs_ir::FuncId(i)).unwrap().name.clone())
+                .collect()
+        };
+        set_run_id(Some("a"));
+        let one = build(&[("f", 3), ("g", 5), ("h", 3), ("h", 3)]);
+        let two = build(&[("h", 3), ("g", 5), ("h", 3), ("f", 3)]);
+        let other = build(&[("f", 3), ("g", 6), ("h", 3), ("h", 3)]);
+        let (k1, o1) = key(&one).unwrap();
+        let (k2, o2) = key(&two).unwrap();
+        assert_eq!(k1, k2, "the same functions in another order");
+        assert_ne!(o1, o2, "the ids do move");
+        assert_eq!(names(&one, &o1), names(&two, &o2));
+        assert_ne!(k1, key(&other).unwrap().0, "a function differs");
         set_run_id(None);
     }
 }

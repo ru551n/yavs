@@ -8389,16 +8389,13 @@ the run; cycles as the minimum of 7 interleaved runs on one core claimed with `t
 - **Without codes** a one-element read comes from the planes (`Ctx::first_code`, and compiled code through `TierSig` with `codes = 0`: its
   plane path was there for buses, so `TierSig` and `rt.rs` are unchanged), and the skip test of an assignment of the value a signal holds
   (`direct_same`, `commit_code`, `commit_codes`) compares the plane bit instead (`held`), so a vector driven by element and read whole
-  still skips. The width rule is gone: a wide vector with element reads now keeps its codes.
-- **Results** (bench builds with `llvm`, base 9b5ce798, instructions of whole warm runs, `--threads 1`, `--tier=interp` / `--tier=llvm`):
-  `lfsr64` 0.968 / 0.954, `lfsr64_xor` 0.979 / 0.973, `rtl_ram` 0.992 / 0.992; `rtl_lfsr`, `rtl_ff`, `rtl_chain`, `neorv32_single_min` and
-  `grlib_leon3mp` keep their codes or have no vector that is not read by element, so they move by at most +0.45% instructions (code layout; the
-  logic of their paths is unchanged, cycles level within the noise of a shared host). `rtl_lfsr`, `rtl_ff` and `rtl_chain` read single elements
-  of their registers (`r(i)(0) = 'U'`, `q((i+1) mod N)`, `c(i-1)`), so this decision cannot save their refresh. `realbench --compare` (42 tests,
-  interpreter and auto, 3 runs a cell, one core): instruction geometric mean 1.00 / 1.00, wall 0.98 / 1.00; every test within 1.00 +- 0.02 in
-  instructions but `fletcher_bufferwriter_512` (1.05, wall 1.03 interp, 1.07 auto): its wide buses are read by element in several processes
-  and used to be exempt by the width rule, now they keep 64 codes per changed block. If that matters, the old exemption can come back as
-  a second condition (element reads and a narrow source) in `keep_codes.rs` only.
+  still skips. The width rule of #519 stays as a second condition (user, 2026-10-26, see the last bullet): a signal of more than 64 elements keeps its codes only with every source at most `CODES_SOURCE_MAX` (16) elements, checked in `Signal::sync_codes`.
+- **Results** (bench builds with `llvm`, base = main without this change, instructions of whole warm runs, `--threads 1`, `--tier=interp` / `--tier=llvm`):
+  `lfsr64` 0.968 / 0.952, `lfsr64_xor` 0.979 / 0.972, `rtl_ram` 0.992 / 0.992; cycles (minimum of 9 interleaved runs on a claimed core) 0.96 / 0.96,
+  0.97 / 0.97, 1.02 / 0.99. `rtl_lfsr`, `rtl_ff`, `rtl_chain` read single elements of their registers (`r(i)(0) = 'U'`, `q((i+1) mod N)`,
+  `c(i-1)`) and keep their codes, so this decision cannot save their refresh: instructions 1.000 / 1.004 / 1.005 (code layout; their paths are
+  unchanged), cycles level within the noise of a shared host. `neorv32_single_min` and `grlib_leon3mp` level.
+- **Width condition kept (user, 2026-10-26)**: with the element-read rule alone `fletcher_bufferwriter_512` lost 5% instructions (3% wall interp, 7% auto) because its wide buses have element reads. A leaf now keeps codes only with element reads AND, above 64 elements, narrow sources (the #519 rule, unchanged in `Signal::sync_codes`). `fletcher_bufferwriter_512` is level again: instructions 51.12 G to 51.17 G (interp), 49.44 G to 49.16 G (auto), cpu 3.98 s both. The skip test on the planes (`held`) is new for buses and signals without codes, so `mixed_entries` counts fewer direct entries (floors 1230 and 260).
 - **Not done**: telling a real read from a port-map actual or a sensitivity entry (would let a few more bus signals drop their codes); reads
   through signal parameters make every signal keep its codes (OSVVM/UVVM designs get no gain).
 
@@ -10469,9 +10466,12 @@ cache emptied), medians of 4 to 6 worlds; the Nth run is the Nth run of one worl
 
 - **What is kept** (`profile.rs`, `objcache::profile_key`): one small text entry in the object store of the work library, per build, optimiser switches,
   command line (`yavs_llvm::set_run_id`, set by `yavs run` from a digest of its arguments: generics, stop time and the test case a runner names make
-  other runs) and program (a digest of every function's name, kind, parent and size, in id order; the reserved slots of copies are left out). Contents:
-  `base` (the simulation CPU time of the last judged run), `hot` (id, the microseconds seen, judged or not) and `lost` (ids; at most 48 and 256), by
-  process (a copy counts for its process, ids of copies are not the same in two runs). A text that is not exactly this version's is no profile.
+  other runs) and program (a digest of the set of function identities: name, kind, parent's name and kind, size and the count of equal ones before it; the reserved
+  slots of copies are left out; #774: elaboration may lower the functions in another order in the next run, so the key and the stored names are by
+  identity, not by id). Contents:
+  `base` (the simulation CPU time of the last judged run), `hot` (rank, the microseconds seen, judged or not) and `lost` (ranks; at most 48 and 256), by
+  process (a copy counts for its process, ids of copies are not the same in two runs); a rank is the place in identity order, mapped to and from ids
+  when the profile is read and written. A text that is not exactly this version's is no profile.
   Written by `AutoTier::stop`, atomically (`Store::put`), last writer wins. Not written by a run under 100 ms of simulation CPU time (host noise is
   a few percent of that), not read or written under `--tier-heat`, without a compilation cache or a run id, or with `YAVS_AUTO_PROFILE=off`.
   `--dap` defaults to `--tier=interp`, and `--vhpi` runs are compiled as any other, so neither is special.
@@ -10797,6 +10797,56 @@ entry, about a fifth more per op over the rest of a testbench process's long act
 - **Left:** a callee with frame-mode code still hands over (`check_value` of `uvvm_sb_slv` forced: 10.79 G to 12.65 to 14.47 G warm), the general
   cost of the loop with the tier is #750.
 
+## The loop with the tier calls untouched callees lean; the watching arm of `run_quick` reads `any` once (yavs-interp `run_ops`, `run_quick`, #750, 2026-10-26)
+
+Question (#750, after round 20 and #757): what is left of the cost of a tier that compiled nothing, and does the loop with the tier
+(`run_ops::<true, false>`, entered by an activation whose root has compiled code or by a hand-over) pay per call what the plain loop does not?
+
+Method as in round 20: main-thread instructions (`perf stat --no-inherit`, warm world, deterministic to 0.05 percent), `tools/stepcount --ops`
+over equal windows (`--to` a kernel cycle count) of `--tier=interp` against `--tier=auto --tier-heat=2000000000,0,16000`, per-instruction
+counts of `run_quick` and `run_ops` (`objdump` with the executed counts), bench builds with `llvm`, `YAVS_STD_CACHE` private.
+
+What the counts said (nothing compiled, `poc_cache_cpu` and `neorv32_single_min`, 1.0128 and 1.0124 over `--tier=interp`):
+
+- 75 to 80 percent of the difference is per activation, in `run_quick`: 28 instructions (`Suspend` +28 an op, `WaitSuspend` +26, `WaitEdgeSuspend`
+  +22 in the equal windows; `run_ops` itself costs the same per activation in both loops): the tier / `any` / `cont` tests, the thread-local
+  slot, `NativeFlags::activated` (two loads and a test), the slot store with `runtime id << 32 | function`, the `SlotIdle` store.
+- The rest is the tick of a jump (`cmp` of the target with `k`, then the countdown on a taken jump back: 2 instructions on a forward jump, 4 on a
+  backward one, `CmpBr` +3, `Br` +3, `CondBr` +1.5). The spilled hoisted address of round 20 does not show any more (`AffP`, `Load`, `DerefImm` equal).
+- With a tier the loop `run_ops::<true, false>` made every call through `call_pre` and started the callee at `Code::first`: no lean call, no
+  skipped parameter loads, for callees that have no compiled code and never will (the `Pre::native` byte is clear).
+
+Landed (`exec.rs`):
+
+- **`run_quick` reads `NativeFlags::any` once** and counts an activation (`activated`) only when it is set (`count_on` sets it): the watching
+  arm drops about 6 of its 28 instructions. `Machine::tiered` is `any && root_flagged`.
+- **`plain_callee!`: the loop with the tier makes a lean call and starts a callee past its prologue (`Code::skip`) when the callee's
+  `Pre::native` byte is clear** (it was `!TIER`). A callee the tier flags while its lean frame runs is entered by `enter!` at that op, as the
+  watching loop's hand-over already did for frames it had called lean; compiled code enters a lean frame only at an IR pc past the prologue,
+  and a pc that is no entry is interpreted to the next jump (`tier_go`). Test
+  `a_callee_the_tier_never_touched_is_called_lean_in_the_loop_with_the_tier` (trace equal to the interpreter's, callee flagged half way).
+- **Not landed:** skipping `ready!` at the entry of an untouched callee in the loop with the tier (about 7 instructions a call, 1 percent of a
+  forced `uvvm_sb_slv` run, inside the spread of its compile timing); ticking every taken jump by the countdown alone (tried in round 20, worse);
+  a cheaper slot protocol (the sampler needs the function per activation and the idle mark, so the stores stay).
+
+Measured (main-thread instructions, `--tier=auto` over `--tier=interp`, nothing compiled, before to after; both ratios from the same two
+binaries, interleaved, 3 rounds, core 8 to 15): `poc_cache_cpu` 1.0128 to 1.0112, `neorv32_single_min` 1.0124 to 1.0112, `osvvm_axis_random`
+1.0053 to 1.0053, `fletcher_bufferwriter_512` 1.0039 to 1.0034, `uvvm_util_rand` 1.0054 to 1.0061, `uvvm_sb_slv` 1.0082 to 1.0081,
+`uvvm_axistream_vvc` 1.0043 to 1.0044, `poc_stat_histogram` 1.0034 to 1.0034; geometric mean 1.0070 to 1.0066. `--tier=interp` instructions
+are equal to 0.03 percent. So the no-compiled-code case still costs 0.3 to 1.1 percent of instructions (the per-activation 22 and the jump tick);
+the cycles of the same pairs move by +-2 percent either way (host spread, #576), the cycle geometric mean is 1.00. The case that
+changed is a function with compiled code and callees without: `uvvm_sb_slv` with `check_value` forced (frame-mode code, the callee that hands over,
+#757): 12.44 G to 11.5 to 11.9 G main-thread instructions and 3.80 to 3.95 G to 3.50 to 3.70 G cycles (5 runs each, warm, compile-timing spread).
+`tools/realbench --compare` (14 tests, run phase, `interp` and `auto`, core 8): wall geometric mean 1.00 and 1.00, instructions 1.01 (tiny
+tests, 0.01 G) and 1.00; the long `interp` runs are equal to 0.1 percent.
+
+Checks: fmt, clippy `-D warnings` default and `--features llvm`, `cargo test --workspace` default and with `llvm`, difftest 531/531 at 1 and 4
+threads for `yavs-interp`, `yavs-auto`, `yavs-llvm` and `yavs-auto` with `--tier-heat=1,0,0`.
+
+Left: the per-activation set-up of the watching arm (about 22 instructions: tier test, thread-local slot, tag, two stores) and the tick of a
+jump; both are the price of the sampler's slot protocol. A change of that protocol (say, the slot written only while the sampler looks) belongs
+to the policy owner. The loop with the tier still checks the flag table at every call and return (`bind!`).
+
 ## `wait until <edge>` costs what the sensitivity-list forms cost: `Op::WaitEdgeSuspend` (yavs-interp `pre.rs`, `exec.rs`, #767, 2026-10-26)
 
 - **Cause** (`tools/stepcount --ops`, one clock period): the process `begin wait until rising_edge(clk); ... end process;` has an elaborator edge trigger,
@@ -10931,3 +10981,65 @@ Follow-up of "`--tier=auto` first-run latency": the lower `Compute` price (nativ
   `uvvm_util_rand` cold 1.03 (its compile of `prefix_lines` happens in some runs of either build: 14.02 to 14.46 G for main), the window generator 1.016
   both; `uvvm_axistream_vvc` run 3 is 1.22: that is the run that compiles the shared trees, a run later than it should because the profile of its first run
   is not found by the second (#774); realbench times runs 3 to 5 and takes the median.
+
+## Compiled clocked RTL processes, round 8: drives and waits on the kernel itself, every edge form alike (yavs-llvm, yavs-interp, #766, #772, 2026-10-26)
+
+Task (orchestrator): the host layers around a small compiled clocked process (#766: 600 to 700 instructions an activation against about 200
+of kernel and 215 to 340 of compiled body; sim1 is 1 000 to 1 100 in all) and the compiled `wait until rising_edge(clk)` form, about 215
+instructions an activation dearer than the sensitivity-list forms under `--tier=llvm` (#772). Bench builds with `llvm`, `--threads 1`,
+`tools/stepcount` windows of one clock period late in the run (`--tier=auto --tier-heat=1,0,0`), cycles as the minimum of 7 interleaved
+runs on one claimed core of the second CCD. Base is main at 7076335e.
+
+- **Where it went** (`rtl_ff`, instructions an activation, base): `Process::run` with `run_direct` 182, `run_cached` with `enter_on`,
+  `begin`, `save_tag` 189, `view_again` 96, the drive 173 (`yavs_rt_drive_bit` 38 with a six-register prologue for its slow path, then
+  `Host::drive_bit_now` with the kernel's `assign_code_now` inline), the wait 52 (`yavs_rt_wait_same` and `Host::wait_same`),
+  `Program::func` 13. Every activation of `rtl_ff` is another machine, so nothing about the view or the object tags can be kept on the
+  thread from the last activation.
+- **Decision: the zero-delay drives go from the callback to the kernel without the host** (S for the functions and the view, L for
+  their use in `rt.rs`). `TierFrame` carries `kctx` (the activation's `yavs_kernel::Ctx`, written by `view` and `view_again` from the
+  host's `&mut Ctx`, null without a kernel) and the machine's drivers (`drivers`, `ndrivers`); `yavs_rt_drive_bit`, the one-element and
+  1 to 64 element forms of `yavs_rt_drive` and `yavs_rt_drive_flush` (the kept drives of #679, LEON3's) call the safe
+  `yavs_interp::direct_drive_bit`, `direct_drive_now`, `direct_drive_bits` on them through `rt::direct`, the one place that turns the
+  pointers into references. They take what `Host::drive_bit_now`, `drive_now` and the fast part of `drive_bits` took (the logic test is
+  the signal table's `codes | planes`, the byte test its `bytes`); everything else goes the old way. `kctx` is cleared when `enter_on`
+  and `call_on` end, so a view of a finished activation never reaches a kernel. Why: the host hop was the dyn call, the bounds checks
+  of the machine's tables, the `Option` of the context and the callback's prologue, 33 of `rtl_ff`'s 173 and 30 of `rtl_lfsr`'s 209.
+- **Decision: the waits too** (`yavs_rt_wait_same`, `yavs_rt_wait`, and a new `yavs_rt_wait_edge` for `Inst::WaitEdge`, which went
+  through the generic `yavs_rt_signal` at every activation of a `wait until` process). A wait ended on the kernel must still leave the
+  frame at its `Suspend`: compiled code cannot reach the machine's frames, so the pc goes to `Mem::wait_at`, `save_tag` copies it into
+  the process's record (`TierState::at`, `NO_PC` otherwise) and `Machine::run_direct` puts it in the frame at `TIER_SUSPEND`. Only a view
+  of a root frame with no debugger entered through `run_cached` may do it (`TIER_ROOT_WAIT` in `TierFrame::flags`: set by `view_root`,
+  never by `tier_flags`, so a deeper view after a call drops it; cleared by `enter_on` without a record and by `call_on`). The host path
+  stays for a refusal (it also notes why, for `YAVS_COUNTERS=kinds`). `yavs_rt_wait_same` no longer hands the temporary area back first:
+  neither path reads it, and the activation's end does it.
+- **Decision (#772): a `wait until <edge>` is a static wait** (`yavs_interp::static_wait_edge`, S; the interpreter keeps `static_wait`
+  and its own `WaitEdgeSuspend` of #767). Its instructions are `Stmt; Br` to the block of `SigVal`, `WaitEdge`, `WaitOn`, `Suspend`
+  (the block the condition jumps back to), and it names the same signal every time. Compiled code calls `yavs_rt_wait_same` at the
+  `Stmt` with `lo` = `WAIT_SAME_EDGE`, which short-cuts only when `TierFrame::known` says the process's edge trigger resumed the
+  activation: then `Ctx::wait_edge` does nothing, so leaving the `WaitEdge` out changes nothing. Otherwise (the first activation, no
+  trigger) the wait runs in full, with the `WaitEdge` on the kernel and `yavs_rt_wait`. Result: the four spellings (`rising_edge`,
+  `'event and = '1'`, `not 'stable and = '1'`, `wait until rising_edge`) run the same instructions under `--tier=llvm` and `--tier=auto`
+  (`rtl_ff`-style, 4096 x 2000, `--tier=llvm`: 9.004 / 9.011 / 9.011 / 9.005 G, base 9.331 / 9.339 / 9.339 / 11.046 G). Work-counter test
+  `llvm_edge_cost_parity` holds their callbacks equal.
+- **Decision: a `SigRead` of up to 64 elements that lie in one word of each plane reads the kernel's planes inline** (L, `sig_read_block`):
+  four loads, a shift and a mask instead of `yavs_rt_codes` over the codes (60 instructions in `rtl_lfsr`). The planes are the signal's
+  current value (the codes are made from them); elements across a word boundary keep the old path.
+- **Measured** (instructions an activation, stepcount, base / round): `rtl_ff` 1107 / 1067, `rtl_lfsr` 1462 / 1385, `lfsr64` 1656 / 1618,
+  `ff_event` and `ff_stable` (the `'event` and `not 'stable` spellings of `rtl_ff`) 1107 / 1067, `ff_waituntil` 1316 / 1067. Cycles of
+  whole warm `--tier=auto` runs (min of 7, core claimed on CCD1): `rtl_ff` -7.5 percent, `rtl_lfsr` -3.0, `lfsr64` -3.6, `ff_waituntil`
+  -15.8, `rtl_chain` level (interpreted). Head-to-head instruction ratios against sim1 (`tools/bench/run.py --ref sim1 --tiers auto
+  --instructions`): `rtl_ff` 1.23 to 1.18, `rtl_lfsr` 1.52 to 1.49, `lfsr64` 1.52 to 1.48, `rtl_chain` 1.62 (unchanged); the walls of
+  that run were taken at a host load of 15 and are not quoted. realbench: see docs/STATUS.md.
+- **Not done, and why.** What is left of the host layers is the entry: `Process::run` with `run_direct` about 190, `run_cached` about 190,
+  `view_again` about 105 instructions (`rtl_ff`). It is spread over 20 to 30 steps of 5 to 15 instructions (the view's 30 fields, the
+  object tags of the machine from its record, `Env`, the sampling slot, the result). Caching the view or the tags across activations
+  needs per-process state the tier can reach (the user decision of 2026-10-25 on #634 says no persistent per-process machine state and no `unsafe` in
+  `yavs-interp`); on the thread it never hits for these designs, where every activation is another machine. Two leads that stay within
+  the rules: the `Box` of `TierState` is a cache line of its own per process (12 percent of `run_cached`'s cycles land on its first
+  load in `perf annotate`), and a function whose code never touches the object table could skip `Mem::begin` and `save_tag` (about 55
+  instructions) if the generator proved it for every callback it emits.
+- **The reference simulator (rule 22).** Its compiled code schedules a signal's waveform and registers a process's events through the
+  kernel's own entry points with a pointer to the signal, with nothing between, and a process with a static sensitivity registers it
+  once. The ideas taken are the outcome: the drive and the wait of a compiled process reach the kernel in one call, and a `wait until`
+  on an edge is the static wait it is. Ours keeps the interpreter's host for every case the kernel's fastest path refuses, and the
+  pointers live in the per-activation view. Nothing was copied.

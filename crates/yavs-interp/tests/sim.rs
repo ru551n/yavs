@@ -217,6 +217,84 @@ fn a_callee_flagged_later_is_entered_through_the_tier() {
     assert!(flags.retiers() > 0);
 }
 
+/// In the loop with the tier (the process has compiled code) a callee the tier never touched is
+/// called with its parameters in registers only and entered past its prologue; one the tier
+/// flags while it runs is entered through the tier from there. The trace is the interpreter's
+/// (#750).
+#[test]
+fn a_callee_the_tier_never_touched_is_called_lean_in_the_loop_with_the_tier() {
+    struct Late(FuncId, FuncId, std::sync::atomic::AtomicBool);
+    impl yavs_interp::Tier for Late {
+        fn run(&self, _: FuncId, _: u32, _: &mut dyn yavs_interp::TierHost) -> Option<u32> {
+            None
+        }
+        fn ready(&self, f: FuncId) -> bool {
+            f == self.0 || f == self.1 && self.2.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+    let build = || {
+        let mut pb = ProgramBuilder::new();
+        let int = integer(&mut pb);
+        let sq = pb.declare("square", FuncKind::Function, None);
+        let proc_ = pb.declare("p", FuncKind::Process, None);
+        {
+            let mut fb = pb.define(sq);
+            let x = fb.param("x", Width::B8, ParamClass::Value, Mode::In, None);
+            stmt(&mut fb, StmtKind::Return);
+            let v = load(&mut fb, AddrSpace::Frame, x, Width::B8);
+            let mut r = v;
+            for _ in 0..30 {
+                r = bin(&mut fb, IntOp::Add, r, v);
+            }
+            fb.emit(Inst::Ret { v: Some(r) });
+            fb.finish();
+        }
+        {
+            let mut fb = pb.define(proc_);
+            let n = fb.local("n", int, 8, 8);
+            wait_for(&mut fb, 10 * NS);
+            stmt(&mut fb, StmtKind::Call);
+            let v = load(&mut fb, AddrSpace::Frame, n, Width::B8);
+            let one = fb.int(1);
+            let v1 = bin(&mut fb, IntOp::Add, v, one);
+            store(&mut fb, AddrSpace::Frame, n, v1, Width::B8);
+            let args = fb.regs(&[v1]);
+            let r = fb.reg(RegTy::I64);
+            fb.emit(Inst::Call {
+                func: sq,
+                args,
+                dst: Some(r),
+            });
+            drive(&mut fb, 0, 0, r, Width::B8);
+            fb.emit(Inst::Br { to: BlockId(0) });
+            fb.finish();
+        }
+        let mut d = Design::new(pb);
+        d.signals = vec![byte_sig("s", 1, 8)];
+        d.procs = vec![ProcSpec {
+            name: "p",
+            func: proc_,
+            drives: vec![(0, 1)],
+        }];
+        (d, sq, proc_)
+    };
+    let (d, _, _) = build();
+    let (want, r) = d.run(Time::ns(200));
+    assert!(r.is_ok());
+    assert!(has(&want, "s=[3"), "{want:#?}");
+    let (d, sq, proc_) = build();
+    let rt = Runtime::new(d.prog.clone(), Default::default()).unwrap();
+    let tier = std::sync::Arc::new(Late(proc_, sq, Default::default()));
+    assert!(rt.set_tier(tier.clone()));
+    let flags = rt.native_flags();
+    let (mut sim, t, _) = d.build_rt(1, rt, |p, _| p);
+    sim.run_until(Time::ns(100)).unwrap();
+    tier.2.store(true, std::sync::atomic::Ordering::Relaxed);
+    flags.set(sq);
+    sim.run_until(Time::ns(200)).unwrap();
+    assert_eq!(*t.0.lock().unwrap(), want);
+}
+
 type Sampler = Box<dyn Fn(&mut Vec<(FuncId, bool)>) + Send>;
 
 /// A tier whose only function is `.0`, called on a native frame once flagged (`.1` counts the

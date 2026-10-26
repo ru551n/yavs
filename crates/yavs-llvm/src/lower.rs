@@ -182,14 +182,17 @@ impl Gen {
                 0,
             );
             LLVMSetSubprogram(fv, sp);
-            let three = LLVMValueAsMetadata(self.c32(3));
-            LLVMAddModuleFlag(
-                self.module,
-                llvm_sys::LLVMModuleFlagBehavior::LLVMModuleFlagBehaviorWarning,
-                c"Debug Info Version".as_ptr(),
-                18,
-                three,
-            );
+            // (A whole-program module has many functions and the flag may be set once, #773.)
+            if LLVMGetModuleFlag(self.module, c"Debug Info Version".as_ptr(), 18).is_null() {
+                let three = LLVMValueAsMetadata(self.c32(3));
+                LLVMAddModuleFlag(
+                    self.module,
+                    llvm_sys::LLVMModuleFlagBehavior::LLVMModuleFlagBehaviorWarning,
+                    c"Debug Info Version".as_ptr(),
+                    18,
+                    three,
+                );
+            }
             Some(KindLoc { b, sp })
         }
     }
@@ -476,6 +479,7 @@ pub(crate) fn new_jit(opt: OptLevel) -> Result<Jit, Error> {
             (DRIVE_BIT, yavs_rt_drive_bit as *const () as usize),
             (WAIT, yavs_rt_wait as *const () as usize),
             (WAIT_AGAIN, yavs_rt_wait_again as *const () as usize),
+            (WAIT_EDGE, yavs_rt_wait_edge as *const () as usize),
             (WAIT_SAME, yavs_rt_wait_same as *const () as usize),
             (LCOPY, yavs_rt_lcopy as *const () as usize),
             (LAYOUT, yavs_rt_layout as *const () as usize),
@@ -1055,6 +1059,9 @@ struct Gen {
     wait_again_ty: LLVMTypeRef,
     wait_again: LLVMValueRef,
     wait_same: LLVMValueRef,
+    /// `yavs_rt_wait_edge(env, mem, lo, len, kind) -> u32`.
+    wait_edge_ty: LLVMTypeRef,
+    wait_edge: LLVMValueRef,
     /// `yavs_rt_lcopy(dst, nd, d0, src, ns, s0, n)`.
     lcopy_ty: LLVMTypeRef,
     lcopy: LLVMValueRef,
@@ -1361,6 +1368,9 @@ impl Gen {
             let wait_ty = LLVMFunctionType(i32, wparams.as_mut_ptr(), 6, 0);
             let mut aparams = [ptr, i64, i64];
             let wait_again_ty = LLVMFunctionType(i32, aparams.as_mut_ptr(), 3, 0);
+            let wait_edge_name = CString::new(WAIT_EDGE).expect("no NUL");
+            let mut eparams = [ptr, ptr, i64, i64, i32];
+            let wait_edge_ty = LLVMFunctionType(i32, eparams.as_mut_ptr(), 5, 0);
             let lcopy_name = CString::new(LCOPY).expect("no NUL");
             let mut lparams = [ptr, i64, i64, ptr, i64, i64, i64];
             let lcopy_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), lparams.as_mut_ptr(), 7, 0);
@@ -1443,6 +1453,8 @@ impl Gen {
                 wait_again_ty,
                 wait_again: LLVMAddFunction(module, wait_again_name.as_ptr(), wait_again_ty),
                 wait_same: LLVMAddFunction(module, wait_same_name.as_ptr(), wait_ty),
+                wait_edge_ty,
+                wait_edge: LLVMAddFunction(module, wait_edge_name.as_ptr(), wait_edge_ty),
                 lcopy_ty,
                 lcopy: LLVMAddFunction(module, lcopy_name.as_ptr(), lcopy_ty),
                 layout_ty,
@@ -2477,7 +2489,7 @@ impl Gen {
                 Default::default()
             };
             let static_wait = if !native && f.kind == FuncKind::Process {
-                yavs_interp::static_wait(prog, f, 1)
+                yavs_interp::static_wait_edge(prog, f, 1, true)
             } else {
                 Vec::new()
             };
@@ -3708,13 +3720,15 @@ impl Gen {
                         self.join(&c, join);
                         // The wait that names the same signals every time: the kernel keeps
                         // the last one, and the process suspends without naming them (#530).
-                        if let Some(&(_, at)) = static_wait.iter().find(|w| w.0 == i) {
+                        // A `wait until <edge>` short-cuts only where the edge trigger
+                        // resumed the activation (`WAIT_SAME_EDGE`, #772).
+                        if let Some(&(_, at, edge)) = static_wait.iter().find(|w| w.0 == i) {
                             let mut args = [
                                 c.env,
                                 c.regs,
                                 c.mem,
                                 self.c32(at as u32),
-                                self.c64(0),
+                                self.c64(if edge { WAIT_SAME_EDGE as i64 } else { 0 }),
                                 self.c64(0),
                             ];
                             self.call_go(&c, self.wait_ty, self.wait_same, &mut args, true);
@@ -4723,6 +4737,28 @@ impl Gen {
                         self.guard(&c, self.icmp(IP::LLVMIntNE, r, self.c32(0)), slow);
                         self.join(&c, join);
                     }
+                    Inst::WaitEdge { sig, kind } if c.nat.is_none() => {
+                        // On the kernel itself (no register read); else the instruction runs in
+                        // the interpreter's way.
+                        let (slow, join) = self.slow_signal(&c, pc, 0);
+                        let mut args = [
+                            c.env,
+                            c.mem,
+                            self.ld(&c, sig),
+                            self.ld(&c, Reg(sig.0 + 1)),
+                            self.c32(u32::from(kind.code())),
+                        ];
+                        let r = LLVMBuildCall2(
+                            self.b,
+                            self.wait_edge_ty,
+                            self.wait_edge,
+                            args.as_mut_ptr(),
+                            5,
+                            c"".as_ptr(),
+                        );
+                        self.guard(&c, self.icmp(IP::LLVMIntNE, r, self.c32(0)), slow);
+                        self.join(&c, join);
+                    }
                     Inst::SigRead { dst, sig } if self.sig_read_block(&c, pc, dst, sig) => {}
                     Inst::SigRead { .. }
                     | Inst::WaitOn { .. }
@@ -5214,10 +5250,60 @@ impl Gen {
             return false;
         }
         let groups = (l as u64).div_ceil(8);
-        // SAFETY: see `sig_entry`; the guards check the groups lie within the codes.
+        // SAFETY: see `sig_entry`; the guards check the groups lie within the codes, and the
+        // elements within the plane blocks and one word of each plane.
         unsafe {
             let (slow, join) = self.slow_signal(c, pc, 0);
             let (ent, off) = self.sig_entry(c, sig, Some(l), slow);
+            let mask = if l == 64 { !0 } else { (1u64 << l) - 1 };
+            // The elements in one word of each of the kernel's planes (the current value; the
+            // codes are made from them): four loads, no call (#766).
+            let codes_at = self.block(c);
+            let blocks = self.tag(
+                self.load(self.ptr, self.gep(ent, self.c64(SIG_PLANES))),
+                AA_CODES,
+            );
+            self.guard(
+                c,
+                LLVMBuildIsNotNull(self.b, blocks, c"".as_ptr()),
+                codes_at,
+            );
+            let plen = self.load(self.i64, self.gep(ent, self.c64(SIG_PLEN)));
+            let used = LLVMBuildAdd(self.b, off, self.c64(l), c"".as_ptr());
+            self.guard(c, self.icmp(IP::LLVMIntULE, used, plen), codes_at);
+            let first = self.load(self.i64, self.gep(ent, self.c64(SIG_OFF)));
+            let bit0 = LLVMBuildAdd(self.b, first, off, c"".as_ptr());
+            let sh = LLVMBuildAnd(self.b, bit0, self.c64(63), c"".as_ptr());
+            let end = LLVMBuildAdd(self.b, sh, self.c64(l), c"".as_ptr());
+            self.guard(c, self.icmp(IP::LLVMIntULE, end, self.c64(64)), codes_at);
+            let w0 = LLVMBuildShl(
+                self.b,
+                LLVMBuildLShr(self.b, bit0, self.c64(6), c"".as_ptr()),
+                self.c64(5),
+                c"".as_ptr(),
+            );
+            let pd = self.host(
+                c,
+                self.ld(c, dst),
+                self.known_addr(c, dst),
+                self.c64(0),
+                self.c64(32),
+                true,
+                slow,
+            );
+            for p in 0..4 {
+                let at = LLVMBuildAdd(self.b, w0, self.c64(8 * p), c"".as_ptr());
+                let w = self.load(self.i64, self.gep(blocks, at));
+                let v = LLVMBuildAnd(
+                    self.b,
+                    LLVMBuildLShr(self.b, w, sh, c"".as_ptr()),
+                    self.c64(mask as i64),
+                    c"".as_ptr(),
+                );
+                self.store(v, self.gep(pd, self.c64(8 * p)));
+            }
+            LLVMBuildBr(self.b, join);
+            LLVMPositionBuilderAtEnd(self.b, codes_at);
             // The elements are there, and so are the whole groups of eight codes that hold them
             // (the codes are kept in whole plane blocks; the planes are masked to the elements);
             // else the kernel's plane blocks.
@@ -5233,7 +5319,6 @@ impl Gen {
                 AA_CODES,
             );
             let base = self.gep(codes, off);
-            let mask = if l == 64 { !0 } else { (1u64 << l) - 1 };
             let pd = self.host(
                 c,
                 self.ld(c, dst),

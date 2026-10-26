@@ -11,7 +11,7 @@ use smallvec::{SmallVec, smallvec};
 use crate::error::ErrorKind;
 use crate::time::Time;
 use crate::value::{
-    Buf, Elem, SignalType, bits, bytes_eq, fill_bits, plane_code, put_bits, put_bytes,
+    Buf, Elem, SignalType, bits, bytes_eq, fill_bits, plane_code, plane_is, put_bits, put_bytes,
     put_plane_code,
 };
 use yavs_logic::Block;
@@ -891,17 +891,18 @@ fn note_cells(changed: &mut Vec<Range>, nruns: &mut u64, cuts: &[u32], base: usi
 const CODES_MAX: usize = 1 << 20;
 
 /// Whether `cur` holds `code` at element `e`: from the codes, else (a signal that keeps none) the
-/// planes.
+/// planes, inline: a signal without codes must skip as cheaply as one with (#734).
 #[inline(always)]
 fn held(codes: &[u8], cur: &Buf, e: usize, code: u8) -> bool {
-    match codes.get(e) {
-        Some(&c) => c == code,
-        None => plane_held(cur, e, code),
+    match (codes.get(e), cur) {
+        (Some(&c), _) => c == code,
+        (None, Buf::Planes { b, .. }) => plane_is(b, e, code),
+        (None, _) => bytes_held(cur, e, code),
     }
 }
 
 #[inline(never)]
-fn plane_held(cur: &Buf, e: usize, code: u8) -> bool {
+fn bytes_held(cur: &Buf, e: usize, code: u8) -> bool {
     cur.code(e) == code
 }
 
@@ -1809,16 +1810,16 @@ impl Signal {
 
     /// Whether `commit_code` of `code` to element `elem` through the direct driver in `slot` would
     /// find the driver and the signal holding it already, on a signal that allows skipping.
-    #[inline]
+    #[inline(always)]
     pub(crate) fn direct_same(&self, slot: u32, elem: u32, code: u8) -> bool {
         if !self.skip_ok || !held(&self.codes, &self.cur, elem as usize, code) {
             return false;
         }
         if self.exact {
             let d = &self.drivers[slot as usize];
-            matches!(&d.value, Buf::Planes { b, .. } if plane_code(b, (elem - d.range.offset) as usize) == code)
+            matches!(&d.value, Buf::Planes { b, .. } if plane_is(b, (elem - d.range.offset) as usize, code))
         } else {
-            matches!(&self.driving, Buf::Planes { b, .. } if plane_code(b, elem as usize) == code)
+            matches!(&self.driving, Buf::Planes { b, .. } if plane_is(b, elem as usize, code))
         }
     }
 
@@ -1865,7 +1866,7 @@ impl Signal {
             let d = &mut self.drivers[slot as usize];
             if let Buf::Planes { b, .. } = &mut d.value {
                 let rel = (elem - d.range.offset) as usize;
-                if same && plane_code(b, rel) == code {
+                if same && plane_is(b, rel, code) {
                     return None;
                 }
                 put_plane_code(b, rel, code);
@@ -1873,7 +1874,7 @@ impl Signal {
         }
         // The driver is the element's only source: the driving value is its value (`lag`).
         if let Buf::Planes { b, .. } = &mut self.driving {
-            if !self.exact && same && plane_code(b, elem as usize) == code {
+            if !self.exact && same && plane_is(b, elem as usize, code) {
                 return None;
             }
             put_plane_code(b, elem as usize, code);
@@ -1972,12 +1973,12 @@ impl Signal {
                     continue;
                 };
                 let rel = e - d.range.offset as usize;
-                if *skip_ok && is_held(e, code) && plane_code(dv, rel) == code {
+                if *skip_ok && is_held(e, code) && plane_is(dv, rel, code) {
                     *empty = true;
                     continue;
                 }
                 put_plane_code(dv, rel, code);
-            } else if *skip_ok && is_held(e, code) && plane_code(drv, e) == code {
+            } else if *skip_ok && is_held(e, code) && plane_is(drv, e, code) {
                 *empty = true;
                 continue;
             }

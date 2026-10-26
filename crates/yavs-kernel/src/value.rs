@@ -239,6 +239,15 @@ pub(crate) fn plane_code(b: &[Block], i: usize) -> u8 {
         as u8
 }
 
+/// Whether element `i` of plane blocks holds `code`: the four planes against the code's
+/// splat words, one test of bit `i`, no code assembled (fewer instructions than
+/// `plane_code(b, i) == code`).
+#[inline(always)]
+pub(crate) fn plane_is(b: &[Block], i: usize, code: u8) -> bool {
+    let (blk, v) = (&b[i >> 6], &SPLAT[usize::from(code & 15)]);
+    ((blk[0] ^ v[0]) | (blk[1] ^ v[1]) | (blk[2] ^ v[2]) | (blk[3] ^ v[3])) >> (i & 63) & 1 == 0
+}
+
 impl Buf {
     /// `n` elements, all bytes zero or all logic `U`.
     pub fn zeroed(elem: Elem, n: usize) -> Buf {

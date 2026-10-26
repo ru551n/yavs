@@ -9173,6 +9173,8 @@ The elaborator decides which logic signals keep the per-element byte codes: thos
 
 Port-map actuals (`v(3)`), sensitivity entries and element reads through signal parameters no longer make a signal keep its byte codes: a scalar port read whole is the read, and a signal passed to a parameter that reads an element of it is found by a fixpoint over the calls (`docs/decisions.md` "Element read facts without connections, sensitivity entries and parameter reads"). `no_code_signals`: `osvvm_axis_random` 0 to 21, `grlib_leon3mp` 0 to 317, `uvvm_axistream_vvc` 0 to 5; instructions level except `grlib_leon3mp` +0.7 percent.
 
+The skip test of a signal without byte codes reads the planes inline (`plane_is`, no call): `grlib_leon3mp` instructions -0.9 percent against 30241dbc, and below the run that kept the 317 codes; other designs level (`docs/decisions.md` "The skip test of a signal without byte codes reads the planes inline").
+
 ## Table reads with a range test or a validity mask (yavs-ir `opt/inline.rs`, #769, 2026-10-26)
 
 A result-table read for an argument of an integer type (range test) or with values that report (validity mask) now takes the rest of its block into the table arm before the first optimiser pass

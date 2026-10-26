@@ -8260,8 +8260,27 @@ the run; cycles as the minimum of 7 interleaved runs on one core claimed with `t
 - **Results** (bench builds with `llvm`, `no_code_signals` before / after of the real-world suite): `osvvm_axis_random` 0 / 21, `osvvm_axi4_random` 0 / 1,
   `uvvm_axistream_vvc` 0 / 5, `grlib_leon3mp` 0 / 317, `neorv32_single_min` 373 / 376, `uvvm_sb_slv` 0 / 0 (3 signals), fletcher tests unchanged.
   Instructions of whole runs (`--tier=interp` / `auto`): all level (1.000) except `grlib_leon3mp` 1.007 / 1.007: the 317 signals it
-  now drops are written by element and skip on the plane bit (`plane_held`), which costs more than the byte compare it replaces; wall time
+  now drops are written by element and skip on the plane bit (`plane_held`), which costs more than the byte compare it replaces (fixed by the next entry); wall time
   level (0.99 / 0.95, noise of a shared host). Test: `connections_and_sensitivity_need_no_byte_codes`, `elem_read_facts`.
+
+## The skip test of a signal without byte codes reads the planes inline (yavs-kernel `signal.rs`, `value.rs`, #734, 2026-10-26)
+
+- **Decision**: `held` (the skip tests `direct_same`, `commit_code`, `commit_codes`) reads the plane bit inline when the signal keeps no
+  byte codes, through `plane_is`: the four plane words against the code's splat words, one test of the element's bit, with no code
+  assembled. The out-of-line `plane_held` call is gone (it was `#[inline(never)]`; byte storage keeps an out-of-line path, `bytes_held`). The
+  compares against the driver value and the driving value use `plane_is` too. `direct_same` is `#[inline(always)]`, so the drive run of
+  the interpreter (`skip_code_now`) and the compiled-code direct drives (`yavs_interp::direct_drive_*`, which end in the same
+  `assign_code_now`) run the test without a call.
+- **Why**: dropping the codes of a signal written by element (30241dbc: 317 signals of `grlib_leon3mp`) turned the byte compare into a call
+  of about 40 instructions, +0.7 percent of the run. Now the test is about 25 inline instructions on the plane path and the refresh of
+  the codes is gone: dropping codes is not a loss any more. `direct_same_planes` (vectors) never used the codes.
+- **Measured** (bench builds with `llvm`, `--threads 1`, interleaved on claimed cores, instructions; "before" is main at 30241dbc, "pre" the
+  commit before it, with the 317 codes kept): `grlib_leon3mp` interp 425.70 G before, 421.82 G after, 422.62 G pre; `neorv32_single_min`
+  interp 29.95 / 29.85 G, auto 30.47 / 30.23 G; `fletcher_bufferwriter_512` interp 51.10 / 51.07 G, auto 48.73 / 48.57 G; `lfsr64`, `lfsr64_xor`,
+  `rtl_ram`, `rtl_lfsr`, `rtl_ff`, `rtl_chain` level (0.999 to 1.003, layout). Cycles are within host noise (the machine was shared; min of
+  3 to 5 runs): grlib 181.9 / 183.0 G, neorv32 interp 13.28 / 13.21 G, fletcher auto 19.89 / 19.67 G. `realbench --compare` (42 tests,
+  interp and auto): instruction geomean 1.00 / 1.01 (the auto rows that move are short runs whose compile outcome differs, #673). Equality:
+  `YAVS_CODES=all` and the default give identical output on `grlib_leon3mp` and `neorv32_single_min`.
 
 ## Facts the declarative part leaves in a process copy (yavs-ir `opt/decl.rs`, #678, 2026-10-24)
 

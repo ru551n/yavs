@@ -1439,7 +1439,7 @@ pub fn run(
     let sampler = cfg_profile.map(|p| {
         crate::profile::Sampler::start(
             p,
-            rt.as_ref().map(|rt| rt.sampler()),
+            rt.as_ref().map(|rt| rt.profile_sampler()),
             rt.as_ref().map(|rt| rt.line_sampler()),
         )
     });

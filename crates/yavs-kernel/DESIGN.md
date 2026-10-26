@@ -71,7 +71,9 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   source is the identity) is a direct driver (`DriverInfo::direct`, set by `SimControl::new`).
   A zero-delay assignment of one element, or of up to 64, that changes nothing (the signal allows skipping, the driver
   has no entry of this run, the signal and the driving value have the value) is not an entry: it only
-  keeps the run's delta (`SKIPPED` in `ProcState::phantoms`, #720). A zero-delay assignment of at most 64 elements to it, with nothing pending on its waveform, is
+  keeps the run's delta (`SKIPPED` in `ProcState::phantoms`, #720). A driver whose skip tests miss 8 times in a row makes
+  its next 248 entries without the test (`ProcState::same`): an entry of an unchanged value commits and finishes with no event.
+  A zero-delay assignment of at most 64 elements to it, with nothing pending on its waveform, is
   an entry in the process's `ProcState::out` (signal, source slot, element, code) or, for more
   elements, `outv` (first element, length, plane words; the entries of one driver are in one of
   the two, so their order is kept), not a waveform entry, a `scheduled` time or a queue entry; a later assignment to the same driver in
@@ -81,7 +83,8 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   the signals are shared until then) writes the driver value and the signal's driving value at
   once: the update phase is over and no process reads either before the next one. The elements
   wait in a per-signal bit mask (`Signal::pend`); the next update finishes them a plane word at a
-  time (`finish_pend`: activity, then the XOR of `cur` and the driving value gives the events),
+  time (`finish_pend`: activity, then the XOR of `cur` and the driving value gives the events; the
+  words in element order only for a signal whose changed runs are listed or that takes the dirty ranges),
   one element through its code byte. A signal with a force layer, or a force or deposit in that
   cycle, takes the elements to its dirty ranges and the general path instead. Activity stamps
   are not written for a signal whose activity nothing reads (`Signal::inactive`:

@@ -923,10 +923,10 @@ enum Kind {
     Tiny,
     /// A function called on native frames, without a loop (native-frame code only).
     Native,
-    /// A function called on native frames with a loop that is not a compute loop (frame-mode code
-    /// too, for the interpreter to enter again after a materialisation).
+    /// A function called on native frames with a loop that is not a compute loop (its frame-mode
+    /// code later, `Worker::frame_at`).
     Loop,
-    /// A compute loop (`compute`): full pipeline.
+    /// A compute loop (`compute`) called on native frames: native-frame code, full pipeline.
     Compute,
     /// Any other function or process, frame-mode code (the nested subprograms, the processes that
     /// are no clocked process, whatever has a loop and is not called on native frames).
@@ -940,6 +940,9 @@ enum Kind {
     /// A function compiled at `OptLevel::Fast` (`lower::level_for`), the large combinational
     /// processes among them.
     Big,
+    /// A compute loop in frame-mode code (a process with a loop, a nested subprogram): its compile
+    /// costs a fraction of the native-frame code of the same size.
+    ComputeFrame,
 }
 
 /// What the policy expects of compiling a kind of function: the CPU microseconds a compile costs
@@ -977,30 +980,45 @@ const fn model(fixed: f64, per_ir: f64, speedup: f64) -> Model {
 /// The models, by `Kind` (`MODELS[kind as usize]`). Prices: cold compiles of tools/realbench
 /// (CPU of the compile thread: a function of 20 IR instructions 6 to 9 ms, `get` of 61 14 ms, `push`
 /// of 263 193 ms, native-frame code 450 to 620 us an IR instruction and rising with the size,
-/// frame-mode code 210 to 340, `Fast` 90 to 115, #673). Speedups: what the thresholds of the flat
-/// price had (`Tiny` 1.2: the benefit of a small native function is lower than the factor 2 of the
-/// others, a compile that costs 3 to 9 ms for it is more than it saves; the rest as `PAYBACK*` were:
-/// 2 for functions called on native frames and compute loops, 4/3 for the rest), `Big` pinned to
-/// the old threshold of 3 200 us an IR instruction (compiled code of the large processes is level
-/// with the interpreter, #679; whether they compile is the user's decision, no size cap).
-const MODELS: [Model; 8] = [
+/// frame-mode code 210 to 340, `Fast` 90 to 115, #673; compute loops, #757: native-frame code 33 to
+/// 62 ms for 79 to 153 IR, frame-mode code 21 to 50 ms for 91 to 558). Speedups: what the thresholds
+/// of the flat price had (`Tiny` 1.2: the benefit of a small native function is lower than the factor
+/// 2 of the others, a compile that costs 3 to 9 ms for it is more than it saves; the rest as
+/// `PAYBACK*` were: 2 for functions called on native frames and compute loops, 4/3 for the rest),
+/// `Big` pinned to the old threshold of 3 200 us an IR instruction (compiled code of the large
+/// processes is level with the interpreter, #679; whether they compile is the user's decision, no
+/// size cap). A function called on native frames is priced for its native-frame code only: its
+/// frame-mode code is compiled when it is needed (`Worker::frame_at`). `Compute` (native frames) keeps
+/// its price though it measures lower (33 to 62 ms for 79 to 153 IR, #757): the lower price compiled
+/// the string loops of the verification libraries (no faster compiled) and let clocked processes
+/// with such callees into the budget near the end of short runs (docs/decisions.md).
+const MODELS: [Model; 9] = [
     model(2500.0, 200.0, 1.2),
     model(2000.0, 550.0, 1.55),
-    model(4000.0, 800.0, 2.1),
+    model(4000.0, 550.0, 2.1),
     model(4000.0, 900.0, 2.4),
     model(2000.0, 250.0, 1.09),
     model(0.0, 200.0, 1.5),
     model(0.0, 200.0, 1.1),
     model(4000.0, 110.0, 1.037),
+    model(15000.0, 110.0, 1.8),
 ];
 
 /// `MODELS`, with `YAVS_AUTO_MODEL=kind=fixed,per_ir,speedup/..` (a tuning aid) applied.
-fn models() -> &'static [Model; 8] {
-    static M: std::sync::OnceLock<[Model; 8]> = std::sync::OnceLock::new();
+fn models() -> &'static [Model; 9] {
+    static M: std::sync::OnceLock<[Model; 9]> = std::sync::OnceLock::new();
     M.get_or_init(|| {
         let mut m = MODELS;
         let names = [
-            "tiny", "native", "loop", "compute", "frame", "rtl", "rtlfew", "big",
+            "tiny",
+            "native",
+            "loop",
+            "compute",
+            "frame",
+            "rtl",
+            "rtlfew",
+            "big",
+            "computeframe",
         ];
         for part in std::env::var("YAVS_AUTO_MODEL")
             .unwrap_or_default()
@@ -1103,6 +1121,10 @@ struct Worker {
     group: Vec<u64>,
     /// Per function: it became a candidate (`start`).
     asked_for: Vec<bool>,
+    /// Per function compiled as native-frame code only that has a loop: the interpreted time seen at
+    /// which its frame-mode code is compiled too (0: none). A native frame of it left to the
+    /// interpreter goes on interpreted, which is what this time measures (#757).
+    frame_at: Vec<u64>,
 
     /// Microseconds the simulation threads were seen running, and the compile thread spent
     /// compiling.
@@ -1232,6 +1254,15 @@ impl Worker {
                 }
                 continue;
             }
+            let k = id.0 as usize;
+            if self.frame_at[k] != 0 && *t >= self.frame_at[k] {
+                self.frame_at[k] = 0;
+                self.asked_for[k] = true;
+                if !self.done[k][0] && !self.lost[k] {
+                    pending.cands.push(id);
+                    self.pick_at = 0;
+                }
+            }
             // The time of a process counts for every copy of it (#661): the process is hot when
             // its copies together are, and each copy that runs is a candidate then.
             let g = self.prog.base_of(id).0 as usize;
@@ -1262,7 +1293,24 @@ impl Worker {
             if self.wants_probe(id, now) {
                 pending.probes.push(id);
             }
-            if now >= at && !std::mem::replace(&mut self.asked_for[id.0 as usize], true) {
+            // A copy that is not a clocked process repays its own compile (copies differ in their
+            // constants, so each one is a module of its own): by its own seen time (#757).
+            let own =
+                |w: &Self| w.prog.base_of(id) == id || w.is_rtl(id) || w.time[k][0] >= w.need(id);
+            if now >= at
+                && own(self)
+                && !std::mem::replace(&mut self.asked_for[id.0 as usize], true)
+            {
+                // Native-frame code of it exists (linked from the cache, compiled as a callee): its
+                // frame-mode code waits for `frame_at` like that of a root.
+                if self.nat[k].0 != 0 && !self.done[k][0] && self.natural_part(id) == Part::Native {
+                    if self.frame_at[k] == 0
+                        && self.prog.func(id).is_some_and(|f| loops(&self.prog, f))
+                    {
+                        self.frame_at[k] = self.time[k][0] + self.frame_need(id);
+                    }
+                    continue;
+                }
                 pending.cands.push(id);
                 self.pick_at = 0;
                 if let Some(tr) = &mut self.trace {
@@ -1298,6 +1346,7 @@ impl Worker {
             time: vec![[0; 2]; nfuncs],
             group: vec![0; nfuncs],
             asked_for: vec![false; nfuncs],
+            frame_at: vec![0; nfuncs],
             done: vec![[false; 2]; nfuncs],
             fast: vec![false; nfuncs],
             nat: vec![(0, false); nfuncs],
@@ -1404,12 +1453,14 @@ impl Worker {
         })
     }
 
-    /// The modules `tree` makes of `id` as a root: native-frame code for a function that runs on
-    /// native frames, with frame-mode code too when it has a loop, else frame-mode code.
+    /// The modules `tree` first makes of `id` as a root: native-frame code for a function that runs
+    /// on native frames, else frame-mode code. The frame-mode code of one with a loop (for the
+    /// interpreter to enter again where a native frame was left to it) waits until the function is
+    /// seen interpreted after that (`frame_at`); with `--tier-heat` (no budget) both at once.
     fn natural_part(&self, id: FuncId) -> Part {
         match self.prog.func(id) {
             Some(f) if f.parent.is_none() && self.nset(id).contains(&id) => {
-                if loops(&self.prog, f) {
+                if self.heat.budget == 0 && loops(&self.prog, f) {
                     Part::Both
                 } else {
                     Part::Native
@@ -1422,7 +1473,7 @@ impl Worker {
     /// The microseconds of compile time to expect for `id` as `tree` compiles it: what the
     /// budget is charged.
     fn cost(&self, id: FuncId) -> u64 {
-        self.price(id, self.natural_part(id))
+        self.price(id)
     }
 
     /// The kind of `id` (a copy of a process counts as the process it is a copy of), worked out once.
@@ -1447,7 +1498,11 @@ impl Worker {
         {
             Kind::Big
         } else if self.is_compute(id) {
-            Kind::Compute
+            if !self.natively(id) {
+                Kind::ComputeFrame
+            } else {
+                Kind::Compute
+            }
         } else if self.natively(id) {
             if loops(&self.prog, f) {
                 Kind::Loop
@@ -1471,10 +1526,16 @@ impl Worker {
         &models()[self.kind(id) as usize]
     }
 
-    /// The microseconds of compile time to expect for the modules `part` of `id` (the budget's
-    /// price): the price of the function, shared by the two modules of a function that has both.
-    fn price(&self, id: FuncId, part: Part) -> u64 {
-        self.price_of(id, part, self.cached(id))
+    /// The interpreted time `id`, compiled as native-frame code only, must be seen for before its
+    /// frame-mode code is compiled (`frame_at`): what that code would repay at its kind's price.
+    fn frame_need(&self, id: FuncId) -> u64 {
+        (self.price_of(id, false) as f64 * self.model(id).payback()) as u64
+    }
+
+    /// The microseconds of compile time to expect for a module of `id` (the budget's price): the price
+    /// of its kind, or of a link when the cache has it.
+    fn price(&self, id: FuncId) -> u64 {
+        self.price_of(id, self.cached(id))
     }
 
     /// Whether the compilation cache holds the object of `id`: an earlier run compiled a function
@@ -1484,15 +1545,26 @@ impl Worker {
             && self
                 .prog
                 .func(id)
-                .is_some_and(|f| self.listed.contains(&(f.name.clone(), f.code.len() as u32)))
+                .is_some_and(|f| self.listed.contains(&self.list_key(id, f)))
+    }
+
+    /// How the list of the compilation cache names `id` (`f`): name and size, and for a copy of a
+    /// process its `Program::copy_tag` too. Copies of one process share name and size but are
+    /// modules of their own (their constants differ), so one compiled copy says nothing of another.
+    fn list_key(&self, id: FuncId, f: &yavs_ir::Func) -> (String, u32) {
+        let name = match self.prog.copy_tag(id) {
+            Some(tag) => format!("{}#{tag:x}", f.name),
+            None => f.name.clone(),
+        };
+        (name, f.code.len() as u32)
     }
 
     /// `price` of a function in the cache (`cached`) or compiled by the model of its kind.
-    fn price_of(&self, id: FuncId, part: Part, cached: bool) -> u64 {
+    fn price_of(&self, id: FuncId, cached: bool) -> u64 {
         let Some(f) = self.prog.func(id) else {
             return 0;
         };
-        let whole = if cached && self.first.is_some() {
+        if cached && self.first.is_some() {
             FIRST_HIT.price(f.code.len())
         } else if cached {
             HIT.price(f.code.len())
@@ -1500,12 +1572,6 @@ impl Worker {
             (FIRST_US_PER_INSTR * f.code.len() as f64) as u64
         } else {
             self.model(id).price(f.code.len())
-        };
-        let both = self.natural_part(id) == Part::Both;
-        if part != Part::Both && both {
-            whole / 2
-        } else {
-            whole
         }
     }
 
@@ -1640,6 +1706,14 @@ impl Worker {
         let size = |i: FuncId| self.prog.func(i).map_or(0, |f| f.code.len());
         let hot = self.hot(root);
         let nc = self.nset(root);
+        // The frame-mode code `frame_at` asks for: the root alone, the callees its native-frame code
+        // left out stay so (they were never seen running).
+        if nc.contains(&root)
+            && self.nat[root.0 as usize].0 != 0
+            && self.prog.func(root).is_some_and(|f| loops(&self.prog, f))
+        {
+            return vec![(root, Part::Frame)];
+        }
         if nc.contains(&root) {
             // (A hash set iterates in a different order in every process: sorted, so the callees
             // compile in the same order in every run, #670.)
@@ -1656,8 +1730,7 @@ impl Worker {
                 // with a loop gets that too, for the interpreter to enter again where a native
                 // frame of it was left to the interpreter.
                 let part = match self.prog.func(root) {
-                    Some(f) if f.parent.is_none() && !loops(&self.prog, f) => Part::Native,
-                    Some(f) if f.parent.is_none() => Part::Both,
+                    Some(f) if f.parent.is_none() => self.natural_part(root),
                     _ => Part::Frame,
                 };
                 let mut ids = vec![(root, part)];
@@ -1777,6 +1850,12 @@ impl Worker {
             if ready {
                 self.ntab[k].store(addr, Ordering::Release);
                 self.nat[k].1 = true;
+                if let Some(tr) = &self.trace {
+                    tr.line(format!(
+                        "f{k} native-frame code published, call {}",
+                        self.calls[k] != 0
+                    ));
+                }
                 if self.calls[k] != 0 {
                     self.ctab[k].store(self.calls[k], Ordering::Release);
                     self.native.set_call(FuncId(k as u32));
@@ -1805,8 +1884,7 @@ impl Worker {
         let mut prices = Vec::new();
         for &i in &order {
             let ids = self.tree(cands[i]);
-            let cost: u64 =
-                ids.iter().map(|&(i, p)| self.price(i, p)).sum::<u64>() + self.load_cost();
+            let cost: u64 = ids.iter().map(|&(i, _)| self.price(i)).sum::<u64>() + self.load_cost();
             prices.push((cost, self.factor(cands[i])));
             trees.push(ids);
         }
@@ -1821,7 +1899,7 @@ impl Worker {
                 if self.is_rtl(id) || matches!(trees[k].first(), Some((_, Part::Frame))) {
                     return true;
                 }
-                let own = trees[k].first().map_or(0, |&(i, p)| self.price(i, p));
+                let own = trees[k].first().map_or(0, |&(i, _)| self.price(i));
                 let extra = (prices[k].0 - load).saturating_sub(own);
                 let seen = self.time[id.0 as usize][0];
                 let need = (own as f64 * self.model(id).payback()) as u64;
@@ -1907,7 +1985,7 @@ impl Worker {
         // least the factor of a function called natively (code compiled before for a function
         // hot before is likely to pay); asked again at the next sample while there is no room.
         let go = self.lead().is_some_and(|g| g.cache_enabled())
-            && self.listed.contains(&(f.name.clone(), f.code.len() as u32))
+            && self.listed.contains(&self.list_key(id, f))
             && within_budget(
                 self.heat.budget,
                 self.factor(id).max(NATIVE_BUDGET),
@@ -2222,8 +2300,45 @@ impl Worker {
         }
     }
 
-    /// Compile `id` at the first level, or at O2 when `o2`; whether it was compiled.
+    /// Compile `id` at the first level, or at O2 when `o2`; whether it was compiled. Native-frame code
+    /// of a function with a loop that the cache had brings its frame-mode code along when the cache has
+    /// that too (a link costs a millisecond; `frame_at` decides only about compiling it).
     fn compile(&mut self, id: FuncId, o2: bool, sampled: bool, part: Part) -> bool {
+        let hits = self.hits_of(o2);
+        let ok = self.compile_part(id, o2, sampled, part);
+        let k = id.0 as usize;
+        if ok
+            && part == Part::Native
+            && self.hits_of(o2) != hits
+            && !self.done[k][0]
+            && self.natural_part(id) == Part::Native
+            && self.prog.func(id).is_some_and(|f| loops(&self.prog, f))
+        {
+            // (Inside a probe the generators link only already.)
+            let probing = std::mem::replace(&mut self.probing, true);
+            if !probing {
+                self.cached_only(true);
+            }
+            self.compile_part(id, o2, false, Part::Frame);
+            if !probing {
+                self.cached_only(false);
+            }
+            self.probing = probing;
+        }
+        ok
+    }
+
+    /// The cache hits so far of the generator a compile at `o2` goes to.
+    fn hits_of(&self, o2: bool) -> usize {
+        let g = if self.first.is_some() && (!o2 || self.main.is_none()) {
+            &self.first
+        } else {
+            &self.main
+        };
+        g.as_ref().map_or(0, |g| g.cache_hits())
+    }
+
+    fn compile_part(&mut self, id: FuncId, o2: bool, sampled: bool, part: Part) -> bool {
         // The generator of this compile, and its rank: native-frame code of the first level is
         // replaced by the optimising generator's when the function is compiled again.
         let rank = if self.first.is_some() && (!o2 || self.main.is_none()) {
@@ -2307,13 +2422,12 @@ impl Worker {
             ));
         }
         // (What a compile and a link from the cache are charged: the generator borrows `self` below.)
-        let (prices, model_cost, kind) = (
-            [
-                self.price_of(id, part, false),
-                self.price_of(id, part, true),
-            ],
+        let (prices, model_cost, kind, list_key, frame_need) = (
+            [self.price_of(id, false), self.price_of(id, true)],
             self.cost(id),
             self.kind(id),
+            self.list_key(id, f),
+            self.frame_need(id),
         );
         let k = usize::from(via_first);
         let lead = via_first || self.first.is_none();
@@ -2396,17 +2510,26 @@ impl Worker {
                 if level == OptLevel::Fast && part != Part::Native && !natively {
                     self.fast[id.0 as usize] = true;
                 }
-                let key = (f.name.clone(), f.code.len() as u32);
-                // (`listed` is the list of the generator of the first level, `lead`.)
-                if !hit && lead && gen_.cache_enabled() && self.listed.insert(key) {
-                    gen_.cache_note(&f.name, f.code.len() as u32);
+                // (A copy linked as the twin of another is listed under its own name too;
+                // `listed` is the list of the generator of the first level, `lead`.)
+                let key = list_key;
+                if lead && gen_.cache_enabled() && self.listed.insert(key.clone()) {
+                    gen_.cache_note(&key.0, key.1);
+                }
+                if part == Part::Native
+                    && sampled
+                    && !self.done[id.0 as usize][0]
+                    && loops(&self.prog, f)
+                {
+                    self.frame_at[id.0 as usize] =
+                        self.time[id.0 as usize][0] + frame_need;
                 }
                 for &(g, native, call) in &entry.extra {
                     let k = g.0 as usize;
                     if native != 0 && self.nat.get(k).is_some_and(|n| n.0 == 0) {
                         // Made with the root, so its compile call later finds nothing to do and
                         // charges nothing.
-                        self.spent += self.price(g, Part::Native);
+                        self.spent += self.price(g);
                         self.nat[k] = (native, false);
                         self.nat_by[k] = rank;
                         self.calls[k] = call;
@@ -3917,7 +4040,7 @@ mod tests {
     #[cfg(feature = "llvm")]
     #[test]
     fn kinds_are_priced_and_judged_apart() {
-        use super::{HIT, Kind, MODELS, Part};
+        use super::{HIT, Kind, MODELS};
         let (w, f) = worker(1_600);
         assert_eq!(w.kind(f), Kind::Big);
         let n = 1_600.0;
@@ -3935,8 +4058,8 @@ mod tests {
         // IR instructions at about 3 ms, whatever its kind (#728).
         assert_eq!(HIT.price(200), 3_000);
         let n2 = w2.prog.func(f2).unwrap().code.len();
-        assert_eq!(w2.price_of(f2, Part::Both, true), HIT.price(n2));
-        assert!(w2.price_of(f2, Part::Both, true) * 10 < w2.price_of(f2, Part::Both, false));
+        assert_eq!(w2.price_of(f2, true), HIT.price(n2));
+        assert!(w2.price_of(f2, true) * 10 < w2.price_of(f2, false));
     }
 
     /// What the profile of an earlier run calls hot is a candidate at its first look (#754), whatever
@@ -4026,7 +4149,7 @@ mod tests {
         };
         w.see(&look(100_000), false, &mut pending);
         for (kind, named) in [
-            (Kind::Compute, true),
+            (Kind::ComputeFrame, true),
             (Kind::Rtl, true),
             (Kind::RtlFew, false),
             (Kind::Big, false),
@@ -4112,5 +4235,158 @@ mod tests {
         assert_eq!(pending.later, [f]);
         w.see(&look(at), false, &mut pending);
         assert_eq!(pending.later, [f], "asked once");
+    }
+
+    /// A worker over `prog` with the default heat.
+    #[cfg(feature = "llvm")]
+    fn worker_of(prog: yavs_ir::Program) -> super::Worker {
+        let rt = yavs_interp::Runtime::new(std::sync::Arc::new(prog), Default::default()).unwrap();
+        let tab = || -> std::sync::Arc<[std::sync::atomic::AtomicUsize]> {
+            (0..rt.prog.funcs.len())
+                .map(|_| std::sync::atomic::AtomicUsize::new(0))
+                .collect()
+        };
+        super::Worker::new(
+            rt.prog.clone(),
+            (0..rt.prog.funcs.len())
+                .map(|_| super::Entry::default())
+                .collect(),
+            tab(),
+            tab(),
+            rt.native_flags(),
+            super::Heat::DEFAULT,
+            crate::OptLevel::O2,
+            usize::MAX,
+            Some(Box::new(crate::LlvmGenerator::new())),
+            None,
+            Box::new(|_, _, _| {}),
+        )
+    }
+
+    /// A function called on native frames that has a loop is compiled as native-frame code alone;
+    /// its frame-mode code (for a native frame left to the interpreter) follows once it is seen
+    /// interpreted again for what that code would repay, and then without its callees (#757).
+    #[cfg(feature = "llvm")]
+    #[test]
+    fn frame_code_of_a_native_loop_waits_until_it_is_seen_interpreted() {
+        use super::Part;
+        let (mut w, f) = worker(100);
+        assert_eq!(w.natural_part(f), Part::Native);
+        assert_eq!(w.tree(f), [(f, Part::Native)]);
+        let k = f.0 as usize;
+        w.time[k][0] = 50_000;
+        assert!(w.compile(f, false, true, Part::Native), "native-frame code");
+        assert!(w.nat[k].0 != 0 && !w.done[k][0], "no frame-mode code yet");
+        let at = w.frame_at[k];
+        assert!(at > 50_000, "{at}");
+        assert_eq!(w.tree(f), [(f, Part::Frame)]);
+        let look = |us: u64| super::Look {
+            running: vec![(f, false, us)],
+        };
+        let mut pending = super::Pending::default();
+        // (Not a candidate again although hot: native-frame code of it exists.)
+        w.see(&look(at - 50_001), false, &mut pending);
+        assert!(pending.cands.is_empty());
+        assert_eq!(w.frame_at[k], at);
+        w.see(&look(1), false, &mut pending);
+        assert_eq!(pending.cands, [f]);
+        w.see(&look(at), false, &mut pending);
+        assert_eq!(pending.cands, [f], "asked once");
+        // With `--tier-heat` (no budget) both parts at once, as before.
+        let (mut h, g) = worker(100);
+        h.heat.budget = 0;
+        assert_eq!(h.natural_part(g), Part::Both);
+    }
+
+    /// A process with a loop through its suspension and two reserved copies (not a clocked
+    /// process: the copies are judged by their own seen time).
+    #[cfg(feature = "llvm")]
+    fn process_with_copies() -> (yavs_ir::Program, yavs_ir::FuncId, [yavs_ir::FuncId; 2]) {
+        use yavs_ir::{AddrSpace, CmpOp, FuncKind, RegTy, Width};
+        let mut pb = ProgramBuilder::new();
+        let f = pb.declare("p", FuncKind::Process, None);
+        let mut fb = pb.define(f);
+        fb.slot(16, 8);
+        fb.stmt(StmtKind::Wait, Span::new(FileId(0), 0, 1));
+        let (head, body, yes, no, end) =
+            (fb.block(), fb.block(), fb.block(), fb.block(), fb.block());
+        fb.body(head);
+        fb.emit(Inst::Br { to: head });
+        fb.at(head);
+        fb.emit(Inst::Br { to: body });
+        fb.at(body);
+        let a = fb.addr(AddrSpace::Inst, 0);
+        let g = fb.reg(RegTy::I64);
+        fb.emit(Inst::Load {
+            dst: g,
+            addr: a,
+            w: Width::B8,
+        });
+        let three = fb.int(3);
+        let c = fb.reg(RegTy::I64);
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Eq,
+            dst: c,
+            a: g,
+            b: three,
+        });
+        fb.emit(Inst::CondBr { c, t: yes, f: no });
+        for (blk, v) in [(yes, 1), (no, 2)] {
+            fb.at(blk);
+            let s = fb.addr(AddrSpace::Frame, 0);
+            let k = fb.int(v);
+            fb.emit(Inst::Store {
+                addr: s,
+                src: k,
+                w: Width::B8,
+            });
+            fb.emit(Inst::Br { to: end });
+        }
+        fb.at(end);
+        fb.emit(Inst::Suspend { resume: 0 });
+        fb.emit(Inst::Br { to: head });
+        fb.finish();
+        let mut p = pb.finish().unwrap();
+        p.reserve_copies(2);
+        let copy = |g: i64| {
+            let mut d = g.to_le_bytes().to_vec();
+            d.extend([0; 8]);
+            p.copy_of(f, &d, &[]).expect("a copy")
+        };
+        let cs = [copy(3), copy(4)];
+        (p, f, cs)
+    }
+
+    /// The copies of a process that is no clocked process are modules of their own: a copy is a
+    /// candidate once the process is hot and it has repaid its own price, not when the process's
+    /// other copies made the process hot (#757). The cache list names each copy apart.
+    #[cfg(feature = "llvm")]
+    #[test]
+    fn a_copy_repays_its_own_compile() {
+        let (prog, f, [c1, c2]) = process_with_copies();
+        let mut w = worker_of(prog);
+        assert_eq!(w.prog.base_of(c1), f);
+        assert!(!w.is_rtl(c1));
+        let look = |id: yavs_ir::FuncId, us: u64| super::Look {
+            running: vec![(id, false, us)],
+        };
+        let mut pending = super::Pending::default();
+        let need = w.need(c2);
+        w.see(&look(c1, 10 * need), false, &mut pending);
+        assert_eq!(pending.cands, [c1], "repaid by its own time");
+        w.see(&look(c2, need - 1), false, &mut pending);
+        assert_eq!(
+            pending.cands,
+            [c1],
+            "the process is hot, but this copy has not repaid yet"
+        );
+        w.see(&look(c2, 1), false, &mut pending);
+        assert_eq!(pending.cands, [c1, c2]);
+        let k = |id| {
+            let f = w.prog.func(id).unwrap();
+            w.list_key(id, f)
+        };
+        assert_ne!(k(c1), k(c2));
+        assert_eq!(k(f).0, "p");
     }
 }

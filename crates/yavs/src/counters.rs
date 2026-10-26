@@ -60,6 +60,7 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         ("gc_collections", yavs_interp::gc_collections()),
         ("pmemo_hits", memo_hits),
         ("pmemo_runs", memo_runs),
+        ("pmemo_off", yavs_interp::pmemo_off()),
         ("wave_var_reads", reads),
         ("wave_var_idle_skips", idle),
     ];

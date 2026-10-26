@@ -2,7 +2,8 @@
 //! `Program::memo_sig` allows, kept by the bytes of their arguments, so a call with arguments
 //! it has seen before is answered without running the function (`Machine::memo_probe`).
 //!
-//! One memo per function and process (no locks, and the same hits on every thread count): a
+//! One memo per function and process (no locks; the same hits on every thread count but where the
+//! switch off for all, `Pre::memo_off`, flips while other threads run): a
 //! direct-mapped table of `SLOTS` entries, each the key (the argument words and, for an array,
 //! its descriptor and element bytes), a hash of it and the result. A key is compared whole, so
 //! a hit is exact. The first `WARM` calls of a function decide whether it is kept: a function
@@ -28,7 +29,8 @@ pub(crate) const MAX_BYTES: usize = 1024;
 const WARM: u32 = 64;
 /// Calls that must repeat one made before, out of every `RATE`, for the memo to stay on.
 const RATE: u32 = 8;
-/// Processes that give a function's memo up before it is off for all of them.
+/// Processes that give a function's memo up before it is off for all of them (fewer when fewer
+/// processes call it: off once every caller gave it up, #762).
 const VOTES: u32 = 3;
 /// Calls run to their end from inside one another (a pure function that calls itself): deeper
 /// calls are made as usual, so the native stack stays small.
@@ -36,6 +38,13 @@ pub(crate) const NEST: u8 = 8;
 
 static HITS: AtomicU64 = AtomicU64::new(0);
 static MISSES: AtomicU64 = AtomicU64::new(0);
+
+static OFF: AtomicU64 = AtomicU64::new(0);
+
+/// Functions whose memo is off for every process.
+pub fn pmemo_off() -> u64 {
+    OFF.load(Ordering::Relaxed)
+}
 
 /// Calls answered from a memo, and calls run and remembered, over all processes.
 pub fn pmemo_stats() -> (u64, u64) {
@@ -87,6 +96,8 @@ pub(crate) struct State {
     pub reports: u64,
     /// The hash of the key in `key` after a lookup that missed.
     pub miss_hash: u64,
+    /// The last lookup made the memo of its function in this process (its first call).
+    pub fresh: bool,
 }
 
 /// A hash of `key`: eight bytes a step.
@@ -128,6 +139,7 @@ impl State {
                     evicted: 0,
                     off: false,
                 });
+                self.fresh = true;
                 self.memos.len() - 1
             }
         };
@@ -281,13 +293,21 @@ impl Machine {
         if !made {
             // A key too big, or one that cannot be read, counts as a call that did not repeat.
             let gave_up = st.unkeyed(func.0);
+            let fresh = std::mem::take(&mut st.fresh);
             self.pm = Some(st);
+            if fresh {
+                self.memo_user(prog, func);
+            }
             if gave_up {
                 self.memo_vote(prog, func);
             }
             return Ok(Probe::No);
         }
-        match st.look(func.0) {
+        let look = st.look(func.0);
+        if std::mem::take(&mut st.fresh) {
+            self.memo_user(prog, func);
+        }
+        match look {
             Look::Off => {
                 self.pm = Some(st);
                 Ok(Probe::No)
@@ -487,14 +507,27 @@ impl Machine {
         out
     }
 
-    /// This process gave the memo of `func` up: when `VOTES` processes have, it is off for all.
+    /// This process gave the memo of `func` up: when `VOTES` processes have, or every process that
+    /// called it so far, it is off for all. A compiled caller then skips the probe's work too (#762).
     #[cold]
     fn memo_vote(&self, prog: &Program, func: FuncId) {
         if let Some(c) = prog.func(func)
             && let Some(pre) = self.rt.pre(func, c)
-            && pre.memo_votes.fetch_add(1, Ordering::Relaxed) + 1 >= VOTES
+            && pre.memo_votes.fetch_add(1, Ordering::Relaxed) + 1
+                >= VOTES.min(pre.memo_users.load(Ordering::Relaxed))
+            && !pre.memo_off.swap(true, Ordering::Relaxed)
         {
-            pre.memo_off.store(true, Ordering::Relaxed);
+            OFF.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// This process called `func` through the memo for the first time.
+    #[cold]
+    fn memo_user(&self, prog: &Program, func: FuncId) {
+        if let Some(c) = prog.func(func)
+            && let Some(pre) = self.rt.pre(func, c)
+        {
+            pre.memo_users.fetch_add(1, Ordering::Relaxed);
         }
     }
 

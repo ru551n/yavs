@@ -94,40 +94,32 @@ pub const KEEP: u32 = 1 << 31;
 /// What compiled code reaches through its `mem` argument (field offsets: `MEM_*`): the
 /// frame view the interpreter keeps current ([`TierFrame`]; compiled code keeps the
 /// temporary area's length in it and hands it back before every step and at the end), and
-/// the objects `yavs_rt_obj` and `Deref` found, valid until a step (a direct-mapped table:
-/// the object of address high half `hi` is entry `obj_at(hi)`).
+/// the objects `yavs_rt_obj` and `Deref` found (a direct-mapped table keyed by the object's
+/// address high half and a tag: `Mem::slot`, `Mem::key`).
 #[repr(C)]
 pub struct Mem {
     pub fr: TierFrame,
     pub objs: [Obj; OBJS],
-    /// Entries of `objs` in use, at most (0: none, nothing to forget).
-    pub live: u64,
-    /// Of those, the entries of `Life::Runtime`: they stay when another machine of the same
-    /// runtime runs (`settle`).
-    pub rt_live: u64,
-    /// The entries (up to `MINE`) this activation entered or found in the process's record, in
-    /// that order: what `save_objs` keeps, not what other machines left in the table.
-    pub mine: [u16; MINE],
-    pub nmine: u64,
-    /// Per entry, the activation (`mine_gen`) that put it in `mine`.
-    pub mine_at: [u32; OBJS],
-    pub mine_gen: u32,
-    /// Entries of the table `nslots` points at (the thread's table never shrinks).
-    /// Which entries of `objs` are in use: the walks (`retain`, `save_objs`, `begin`) visit only
-    /// those.
-    pub occ: [u64; OBJS / 64],
-    /// Bit `w` set: word `w` of `occ` has a bit set (the walks skip the empty words).
-    pub occ_any: u64,
-    /// The entries of `occ` that are not constants: what a change of machine or a host call may
-    /// drop, so the walks of `retain_some` visit only those, however many constants are kept.
-    pub occv: [u64; OBJS / 64],
-    pub occv_any: u64,
-    /// The `TierFrame::owner` and `heap_epoch` the objects were found at (`begin`).
-    pub objs_owner: u64,
-    pub objs_epoch: u64,
-    /// `objs` changed since it was loaded from the process's record (`save_objs`).
-    pub dirty: bool,
-    /// Some entry of `objs` is not one `forget_end` keeps.
+    /// Per address space (bits 29 to 31 of the high half), the tag of its objects shifted to
+    /// bits 32 and up (an entry's key is the high half of the object's addresses or-ed with it),
+    /// and the entry offset, scaled by the entry size, its keys are moved by, so the objects of
+    /// two instances of one process do not share entries (#679). Instance data, package data and
+    /// shared variables have the machine's tag, heap objects the machine's at its heap epoch,
+    /// constants the runtime's, frame and temporary objects the activation's. Generated code
+    /// reads both (`MEM_TAGS`, `MEM_MIXES`).
+    pub tags: [u64; 8],
+    pub mixes: [u64; 8],
+    /// The next tag to issue; at `TAG_END` the table is emptied and this `Mem` gets a new `id`
+    /// (`wipe`), so no record of a process names a tag twice.
+    next_tag: u64,
+    id: u64,
+    /// The owner the machine's tags are for, and the heap epoch its heap tag is for
+    /// (`TierFrame::owner`, `heap_epoch`): the next activation or call of that machine keeps them.
+    cur_owner: u64,
+    cur_epoch: u64,
+    /// The owner whose runtime the constants' tag is for (`OWNER_RT_SHIFT` and up compare).
+    rt_owner: u64,
+    /// Some frame or temporary object is in the table (`forget_end` drops them).
     pub transient: bool,
     /// The temporary area's length the interpreter last gave: no hand-back while unchanged.
     pub temp_seen: u64,
@@ -214,11 +206,11 @@ pub fn nslots_grow(depth: usize) -> *mut NSlot {
     at.0
 }
 
-/// An object in `Mem::objs`: the high half of its addresses (`u64::MAX`: none), start,
-/// length, whether it was found for writing, and the access value a `Deref` found it for
-/// (`NO_H`: none; its address is `hi << 32`). An entry with an access value is writable
-/// (`yavs_rt_obj` keeps the permission of an entry it replaces for the same object), so a
-/// `Deref` needs one compare.
+/// An object in `Mem::objs`: its key (the high half of its addresses or-ed with the tag of their
+/// space, `Mem::slot`; tag 0: no object), start, length, whether it was found for writing, and
+/// the access value a `Deref` found it for (`NO_H`: none; its address is `hi << 32`). An entry
+/// with an access value is writable (`yavs_rt_obj` keeps the permission of an entry it replaces
+/// for the same object), so a `Deref` compares the value and the tag only.
 #[derive(Clone, Copy)]
 #[repr(C, align(64))]
 pub struct Obj {
@@ -235,25 +227,34 @@ const _: () = assert!(std::mem::size_of::<Obj>() == 1 << OBJ_SHIFT);
 
 /// Entries of `Mem::objs`, a power of two. ponytail: direct-mapped by the low bits of the
 /// object index xor its space (`obj_at`: a private and a shared heap object of the same index
-/// are two objects of one protected-type library function), two objects whose keys agree there
-/// evict each other. 16 entries missed three heap objects in four on a test runner's queue
-/// code (95 million `Deref` callbacks in a 16 s run, 12 million at 256); 1 024 made that three
-/// times rarer; 4 096 (the most the one-word `occ_any` summary covers) since the constants of
-/// every process stay in the table (#679: the constants of the LEON3 processes evicted each other
-/// 2.0 million times in 150 us at 1 024, 0.5 million at 4 096). A walk visits only the entries in
-/// use (`Mem::occ`, `Mem::occv`); ways if a profile shows conflicts again.
-pub const OBJS: usize = 4096;
+/// are two objects of one protected-type library function) xor the tag's offset (`mix`): two
+/// objects whose slots agree evict each other. 16 entries missed three heap objects in four on
+/// a test runner's queue code (95 million `Deref` callbacks in a 16 s run, 12 million at 256);
+/// 1 024 made that three times rarer; since the objects of every machine stay in the table
+/// (#679), 16 384: the LEON3 run finds objects again 21.7 million times at 4 096, 7.2 million
+/// at 16 384 and 6.6 million at 65 536. Ways if a profile shows conflicts again.
+pub const OBJS: usize = 16384;
 
-/// The entries a process's record holds (`Mem::mine`): the heap objects and instance data of
-/// a large process are all found again at its next activation (#679).
-pub const MINE: usize = 64;
+/// Tags are issued below this: then the table starts again empty (`Mem::wipe`).
+const TAG_END: u64 = 1 << 31;
 
-const _: () = assert!(4 * MINE + 1 == yavs_interp::TIER_STATE_WORDS);
+/// A process's record (`TierState`): the `Mem` identity, the heap epoch, the heap tag and the
+/// machine tag of its objects (`Mem::save_tag`).
+const _: () = assert!(yavs_interp::TIER_STATE_WORDS == 4);
+
+/// Identities of `Mem`s, so a record names the table its tag is from.
+static MEM_IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// The entry offset (scaled by the entry size) the keys of tag `t` are moved by.
+#[inline(always)]
+pub fn mix(t: u64) -> u64 {
+    (t.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> (64 - OBJS.trailing_zeros())) << OBJ_SHIFT
+}
 
 const _: () = assert!(OBJS.is_power_of_two() && OBJS >= 64 && OBJS <= 1 << 24);
 
-/// The entry of `Mem::objs` for the object whose addresses have high half `hi`: the low bits of
-/// its index, bit 3 flipped for a shared heap (space 7, bit 29 of `hi`; private is 4). The
+/// The entry of `Mem::objs` for the object whose addresses have high half `hi`, before the tag's
+/// offset (`Mem::slot`): the low bits of its index, bit 3 flipped for a shared heap (space 7, bit 29 of `hi`; private is 4). The
 /// access value of a heap object has the same index in bits 32 to 55 and, as its tag, a shared
 /// flag in bit 57 (`handle_at`, and `obj_entry` in the generated code, which must agree with
 /// both: `obj_keys_agree`).
@@ -278,12 +279,13 @@ pub const KEY_SHIFT_HANDLE: u32 = 22;
 /// must miss).
 pub const NO_H: u64 = 1;
 
+/// The empty entry: all zero, a key of tag 0, which no space has (`Mem::restart`).
 pub const NO_OBJ: Obj = Obj {
-    hi: u64::MAX,
+    hi: 0,
     ptr: std::ptr::null_mut(),
     len: 0,
     w: 0,
-    h: NO_H,
+    h: 0,
 };
 
 pub const MEM_SLOTS: u64 = std::mem::offset_of!(Mem, fr.slots) as u64;
@@ -318,6 +320,8 @@ pub const MEM_SPIN: u64 = std::mem::offset_of!(Mem, fr.spin) as u64;
 
 pub const MEM_COV_LEN: u64 = std::mem::offset_of!(Mem, fr.cov_len) as u64;
 pub const MEM_OBJS: u64 = std::mem::offset_of!(Mem, objs) as u64;
+pub const MEM_TAGS: u64 = std::mem::offset_of!(Mem, tags) as u64;
+pub const MEM_MIXES: u64 = std::mem::offset_of!(Mem, mixes) as u64;
 
 pub const OBJ_PTR: u64 = std::mem::offset_of!(Obj, ptr) as u64;
 pub const OBJ_LEN: u64 = std::mem::offset_of!(Obj, len) as u64;
@@ -338,32 +342,26 @@ pub const SIG_BYTES: i64 = std::mem::offset_of!(yavs_interp::TierSig, bytes) as 
 pub const SIG_ES: i64 = std::mem::offset_of!(yavs_interp::TierSig, es) as i64;
 pub const SIG_OFF: i64 = std::mem::offset_of!(yavs_interp::TierSig, off) as i64;
 
+/// The address spaces of each kind of tag (`Mem::tags`).
+const MACHINE_SPACES: [u8; 3] = [space::INST, space::PKG, space::SHARED];
+const HEAP_SPACES: [u8; 2] = [space::HEAP, space::SHARED_HEAP];
+const VOLATILE_SPACES: [u8; 2] = [space::FRAME, space::TEMP];
+
 impl Mem {
-    pub fn of(fr: TierFrame) -> Mem {
-        Mem {
-            fr,
-            objs: [NO_OBJ; OBJS],
-            live: 0,
-            rt_live: 0,
-            mine: [0; MINE],
-            nmine: 0,
-            mine_at: [0; OBJS],
-            mine_gen: 1,
-            occ: [0; OBJS / 64],
-            occ_any: 0,
-            occv: [0; OBJS / 64],
-            occv_any: 0,
-            objs_owner: 0,
-            objs_epoch: 0,
-            dirty: false,
-            transient: false,
-            temp_seen: fr.temp_len,
-            ndeopt: 0,
-            ntab: std::ptr::null(),
-            stack_lo: 0,
-            nslots: std::ptr::null_mut(),
-            nslots_len: 0,
-        }
+    /// A `Mem` for view `fr` with an empty table, made in place (the table is a megabyte: a
+    /// value on the stack would overflow a simulation thread's).
+    pub fn new(fr: TierFrame) -> Box<Mem> {
+        let m = Box::<Mem>::new_zeroed();
+        // SAFETY: every field of `Mem` is an integer, a bool, a raw pointer, or an array or
+        // `repr(C)` struct of those (`TierFrame`, `Obj`): all zero bytes are a valid value of
+        // each, and the empty entry is all zero (`NO_OBJ`).
+        let mut m = unsafe { m.assume_init() };
+        m.fr = fr;
+        m.temp_seen = fr.temp_len;
+        m.cur_owner = u64::MAX;
+        m.rt_owner = u64::MAX;
+        m.restart();
+        m
     }
 
     /// Point `nslots` at this thread's table of at least `depth` entries.
@@ -384,300 +382,153 @@ impl Mem {
         }
     }
 
-    /// The start of an activation or a call from the interpreter, on a view just made: keep the
-    /// objects found before that are still where they were (`Life`), and count the writes of
-    /// the writable heap objects kept as this run's (`TierHost::wrote`).
+    /// The entry of `objs` for the object of high half `hi` and its key there.
     #[inline(always)]
-    pub fn begin(&mut self, host: &mut dyn TierHost) {
-        self.dirty = false;
-        self.start_mine();
-        // Nothing kept, or constants of this runtime only (a machine of it ran last): nothing
-        // to do.
-        if self.live != self.rt_live
-            || self.live != 0
-                && (self.objs_owner ^ self.fr.owner) >> yavs_interp::OWNER_RT_SHIFT != 0
+    pub fn slot(&self, hi: u64) -> (usize, u64) {
+        let sp = (hi >> 29) as usize & 7;
+        (
+            obj_at(hi) ^ (self.mixes[sp] >> OBJ_SHIFT) as usize,
+            hi | self.tags[sp],
+        )
+    }
+
+    /// The entry of the object of high half `hi`, if the table holds it.
+    #[inline(always)]
+    pub fn get(&self, hi: u64) -> Option<&Obj> {
+        let (at, k) = self.slot(hi);
+        let o = &self.objs[at];
+        (o.hi == k).then_some(o)
+    }
+
+    /// Tag `t` for the objects of `spaces`.
+    #[inline(always)]
+    fn set(&mut self, spaces: &[u8], t: u64) {
+        for &sp in spaces {
+            self.tags[sp as usize] = t << 32;
+            self.mixes[sp as usize] = mix(t);
+        }
+    }
+
+    /// The start of an activation (with the process's record) or a call from the interpreter,
+    /// on a view just made: the machine's tags if the record or the last activation on this
+    /// thread had them (its heap tag only at the same heap epoch), else new ones. A new tag drops
+    /// nothing: the old keys simply miss (#679).
+    #[inline(always)]
+    pub fn begin(&mut self, rec: Option<&yavs_interp::TierState>) {
+        let (owner, epoch) = (self.fr.owner, self.fr.heap_epoch);
+        if (owner ^ self.rt_owner) >> yavs_interp::OWNER_RT_SHIFT != 0 {
+            self.new_runtime();
+        }
+        let rec = rec.filter(|st| st.used && st.words[0] == self.id);
+        let same = owner == self.cur_owner;
+        if let Some(st) = rec {
+            self.set(&MACHINE_SPACES, st.words[3]);
+        } else if !same {
+            let t = self.issue();
+            self.set(&MACHINE_SPACES, t);
+        }
+        // Someone compares heap objects by their write counts: a kept writable heap object
+        // would not count this activation's writes (`Heap::data_mut`), so none is kept.
+        let stamps = self.fr.flags & yavs_interp::TIER_STAMPS != 0;
+        if let Some(st) = rec
+            && st.words[1] == epoch
+            && !stamps
         {
-            self.begin_kept(host);
+            self.set(&HEAP_SPACES, st.words[2]);
+        } else if !same || epoch != self.cur_epoch || stamps {
+            let t = self.issue();
+            self.set(&HEAP_SPACES, t);
         }
+        (self.cur_owner, self.cur_epoch) = (owner, epoch);
     }
 
+    /// The tag of the constants of a runtime other than the last one's.
+    #[cold]
     #[inline(never)]
-    fn begin_kept(&mut self, host: &mut dyn TierHost) {
-        if self.settle() && self.fr.flags & yavs_interp::TIER_STAMPS != 0 {
-            for o in self.in_use_some() {
-                if o.w != 0 && life(o.hi) == Life::Heap {
-                    host.wrote(o.hi << 32);
-                }
-            }
-        }
+    fn new_runtime(&mut self) {
+        let t = self.issue();
+        self.set(&[space::CONST], t);
+        self.rt_owner = self.fr.owner;
     }
 
-    /// Drop the entries the view's machine cannot use: another machine of the same runtime keeps
-    /// the constants, another runtime keeps nothing. True when the heap objects are still good.
-    fn settle(&mut self) -> bool {
-        let same = self.objs_owner == self.fr.owner;
-        let rt = (self.objs_owner ^ self.fr.owner) >> yavs_interp::OWNER_RT_SHIFT == 0;
-        let epoch = same && self.objs_epoch == self.fr.heap_epoch;
-        if !rt && self.rt_live != 0 {
-            self.retain(|_| false);
-        } else if !epoch || self.transient {
-            self.retain_some(|hi| match life(hi) {
-                Life::Machine => same,
-                Life::Heap => epoch,
-                _ => false,
-            });
-        }
-        epoch
-    }
-
-    /// The entries of `objs` in use.
-    #[inline]
-    fn in_use(&self) -> impl Iterator<Item = &Obj> {
-        BitIter(self.occ_any).flat_map(move |w| {
-            let objs = &self.objs;
-            BitIter(self.occ[w]).map(move |b| &objs[w * 64 + b])
-        })
-    }
-
-    /// The entries of `objs` in use that are not constants.
-    #[inline]
-    pub fn in_use_some(&self) -> impl Iterator<Item = &Obj> {
-        BitIter(self.occv_any).flat_map(move |w| {
-            let objs = &self.objs;
-            BitIter(self.occv[w]).map(move |b| &objs[w * 64 + b])
-        })
-    }
-
-    /// The end of an activation or call: what `begin` checks next time.
     #[inline(always)]
-    pub fn end(&mut self) {
-        // `begin` looks at these only while objects are kept.
-        if self.live != 0 {
-            self.objs_owner = self.fr.owner;
-            self.objs_epoch = self.fr.heap_epoch;
+    fn issue(&mut self) -> u64 {
+        if self.next_tag == TAG_END {
+            self.wipe();
         }
+        self.next_tag += 1;
+        self.next_tag - 1
     }
 
-    /// Enter object `o` at its entry.
-    #[inline(always)]
-    pub fn put_obj(&mut self, o: Obj) {
-        let at = obj_at(o.hi);
-        // A frame or temporary area object does not outlive the activation: no record entry.
-        if life(o.hi) != Life::Volatile {
-            self.mine_add(at);
-        }
-        let e = &mut self.objs[at];
-        if e.hi == u64::MAX {
-            self.live += 1;
-        } else {
-            self.rt_live -= u64::from(life(e.hi) == Life::Runtime);
-        }
-        self.rt_live += u64::from(life(o.hi) == Life::Runtime);
-        self.occ[at / 64] |= 1 << (at % 64);
-        self.occ_any |= 1 << (at / 64);
-        if life(o.hi) == Life::Runtime {
-            self.occv[at / 64] &= !(1 << (at % 64));
-        } else {
-            self.occv[at / 64] |= 1 << (at % 64);
-            self.occv_any |= 1 << (at / 64);
-        }
-        self.transient |= life(o.hi) == Life::Volatile;
-        self.dirty = true;
-        *e = o;
-    }
-
-    /// A new activation: nothing in `mine`.
-    #[inline(always)]
-    pub fn start_mine(&mut self) {
-        self.nmine = 0;
-        self.mine_gen = self.mine_gen.wrapping_add(1);
-        if self.mine_gen == 0 {
-            self.mine_at = [0; OBJS];
-            self.mine_gen = 1;
-        }
-    }
-
-    /// Entry `at` is one of this activation's (`mine`; one past `MINE` is not recorded).
-    #[inline(always)]
-    fn mine_add(&mut self, at: usize) {
-        let n = self.nmine as usize;
-        if n < MINE && self.mine_at[at] != self.mine_gen {
-            self.mine_at[at] = self.mine_gen;
-            self.mine[n] = at as u16;
-            self.nmine += 1;
-        }
-    }
-
-    /// The objects of a process's record (`save_objs`: up to `MINE` of `hi`, address, `len`,
-    /// `w`), entered where `begin` left no other entry, or only a constant (another machine's).
-    pub fn load_objs(&mut self, w: &[u64; yavs_interp::TIER_STATE_WORDS]) {
-        for k in w[..4 * MINE].as_chunks::<4>().0 {
-            // The entries are packed from the front (`save_kept`).
-            if k[0] == u64::MAX {
-                break;
-            }
-            let at = obj_at(k[0]);
-            let held = self.objs[at].hi;
-            if held == k[0] {
-                self.mine_add(at);
-            } else if held == u64::MAX || life(held) == Life::Runtime {
-                self.put_obj(Obj {
-                    hi: k[0],
-                    ptr: k[1] as *mut u8,
-                    len: k[2],
-                    w: k[3],
-                    h: NO_H,
-                });
-            }
-        }
-        self.dirty = false;
-    }
-
-    /// Keep the objects this activation found or restored (`mine`) for the next activation of
-    /// this process, whatever ran on the thread in between (`TierState`).
-    #[inline(always)]
-    pub fn save_objs(&self, slot: &mut Option<Box<yavs_interp::TierState>>) {
-        // Nothing found or dropped since the record was loaded, and it holds something: it stays.
-        if !self.dirty && self.nmine != 0 && slot.as_ref().is_some_and(|st| st.used) {
-            return;
-        }
-        self.save_kept(slot);
-    }
-
+    /// Every tag was issued: empty the table and start again.
+    #[cold]
     #[inline(never)]
-    fn save_kept(&self, slot: &mut Option<Box<yavs_interp::TierState>>) {
-        let mine = &self.mine[..self.nmine as usize];
-        // Dropped since (a heap object after an edit in place) are left out.
-        let kept = || {
-            mine.iter()
-                .map(|&at| &self.objs[at as usize])
-                .filter(|o| o.hi != u64::MAX)
-        };
-        if kept().next().is_none() {
-            if let Some(st) = slot {
-                st.used = false;
-            }
-            return;
-        }
+    fn wipe(&mut self) {
+        self.objs.fill(NO_OBJ);
+        self.restart();
+    }
+
+    /// A new identity (records of processes name the old one) and a tag for every space, 1 to
+    /// 4: no key of the table has tag 0 but the empty entries'.
+    fn restart(&mut self) {
+        self.id = MEM_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.transient = false;
+        self.set(&[space::CONST], 1);
+        self.set(&MACHINE_SPACES, 2);
+        self.set(&HEAP_SPACES, 3);
+        self.set(&VOLATILE_SPACES, 4);
+        self.next_tag = 5;
+    }
+
+    /// Keep the machine's tags in the process's record for its next activation.
+    #[inline(always)]
+    pub fn save_tag(&self, slot: &mut Option<Box<yavs_interp::TierState>>) {
         let st = slot.get_or_insert_with(Default::default);
-        let mut n = 0;
-        for o in kept() {
-            st.words[n * 4..n * 4 + 4].copy_from_slice(&[o.hi, o.ptr as u64, o.len, o.w]);
-            n += 1;
-        }
-        // The entries are packed from the front and end at the first `u64::MAX` (`load_objs`).
-        if n < MINE {
-            st.words[n * 4] = u64::MAX;
-        }
-        st.words[4 * MINE] = self.fr.heap_epoch;
+        let t = |sp: u8| self.tags[sp as usize] >> 32;
+        st.words = [self.id, self.cur_epoch, t(space::HEAP), t(space::INST)];
         st.used = true;
     }
 
-    /// The end of an activation: forget the frame and temporary objects found.
-    #[inline]
+    /// Enter object `o` (`o.hi`: the high half of its addresses) at its entry.
+    #[inline(always)]
+    pub fn put_obj(&mut self, mut o: Obj) {
+        let (at, k) = self.slot(o.hi);
+        self.transient |= life(o.hi) == Life::Volatile;
+        o.hi = k;
+        self.objs[at] = o;
+    }
+
+    /// The end of an activation or a call: forget the frame and temporary objects found.
+    #[inline(always)]
     pub fn forget_end(&mut self) {
-        if !self.transient {
-            return;
+        if self.transient {
+            self.drop_volatile();
         }
-        self.retain_some(|hi| life(hi) != Life::Volatile);
     }
 
-    /// Drop the objects whose high half `keep` refuses, constants included.
-    pub fn retain(&mut self, keep: impl Fn(u64) -> bool) {
-        let (mut live, mut rt_live) = (0, 0);
-        for w in BitIter(self.occ_any) {
-            for b in BitIter(self.occ[w]) {
-                let o = &mut self.objs[w * 64 + b];
-                if keep(o.hi) {
-                    live += 1;
-                    rt_live += u64::from(life(o.hi) == Life::Runtime);
-                } else {
-                    *o = NO_OBJ;
-                    self.occ[w] &= !(1 << b);
-                    self.occv[w] &= !(1 << b);
-                    self.dirty = true;
-                }
-            }
-            if self.occ[w] == 0 {
-                self.occ_any &= !(1 << w);
-            }
-            if self.occv[w] == 0 {
-                self.occv_any &= !(1 << w);
-            }
-        }
-        self.live = live;
-        self.rt_live = rt_live;
-        let transient = self.in_use().any(|o| life(o.hi) == Life::Volatile);
-        self.transient = transient;
+    #[inline(never)]
+    fn drop_volatile(&mut self) {
+        let t = self.issue();
+        self.set(&VOLATILE_SPACES, t);
+        self.transient = false;
     }
 
-    /// `retain` that keeps every constant: the walk visits the other entries only (`occv`).
-    #[inline]
-    pub fn retain_some(&mut self, keep: impl Fn(u64) -> bool) {
-        let (mut live, mut transient) = (self.rt_live, false);
-        for w in BitIter(self.occv_any) {
-            for b in BitIter(self.occv[w]) {
-                let o = &mut self.objs[w * 64 + b];
-                if keep(o.hi) {
-                    live += 1;
-                    transient |= life(o.hi) == Life::Volatile;
-                } else {
-                    *o = NO_OBJ;
-                    self.occ[w] &= !(1 << b);
-                    self.occv[w] &= !(1 << b);
-                    self.dirty = true;
-                }
-            }
-            if self.occ[w] == 0 {
-                self.occ_any &= !(1 << w);
-            }
-            if self.occv[w] == 0 {
-                self.occv_any &= !(1 << w);
-            }
-        }
-        self.live = live;
-        self.transient = transient;
-    }
-
-    /// Forget the objects found before a host call that may have moved frames, the temporary
-    /// area or heap objects; those of the machine stay (`Life`).
+    /// After a host call that may have pushed frames, moved the temporary area or freed or
+    /// edited heap objects: the frame and temporary objects go, and the heap objects too when
+    /// the heap epoch changed (it counts every deallocation and edit in place).
+    #[inline(always)]
     pub fn forget(&mut self) {
-        if self.live == self.rt_live {
-            return;
+        self.forget_end();
+        if self.fr.heap_epoch != self.cur_epoch {
+            self.new_heap();
         }
-        self.retain_some(|hi| life(hi) == Life::Machine);
     }
 
-    /// `forget` after a host call that started at heap epoch `epoch` (`TierFrame::heap_epoch`):
-    /// heap objects stay too while no heap object was deallocated or edited in place.
-    pub fn forget_since(&mut self, epoch: u64) {
-        let heap = self.fr.heap_epoch == epoch;
-        // Nothing volatile found, no heap object freed or edited: nothing to drop.
-        if self.live == self.rt_live || heap && !self.transient {
-            return;
-        }
-        self.retain_some(|hi| match life(hi) {
-            Life::Volatile => false,
-            Life::Heap => heap,
-            _ => true,
-        });
-    }
-}
-
-/// The positions of the set bits of a word, lowest first.
-struct BitIter(u64);
-
-impl Iterator for BitIter {
-    type Item = usize;
-
-    #[inline]
-    fn next(&mut self) -> Option<usize> {
-        if self.0 == 0 {
-            return None;
-        }
-        let b = self.0.trailing_zeros() as usize;
-        self.0 &= self.0 - 1;
-        Some(b)
+    #[inline(never)]
+    fn new_heap(&mut self) {
+        let t = self.issue();
+        self.set(&HEAP_SPACES, t);
+        self.cur_epoch = self.fr.heap_epoch;
     }
 }
 
@@ -745,7 +596,6 @@ pub unsafe extern "C" fn yavs_rt_step(
     let envp = env as *mut Env<'_>;
     let (keep, pc) = (pc & KEEP != 0, pc & !KEEP);
     unsafe { (*mem).sync(&mut *(*envp).host) };
-    let epoch = unsafe { (*mem).fr.heap_epoch };
     // No unwinding through JIT frames: a panic is carried over the call and resumed after.
     let r = match catch_unwind(AssertUnwindSafe(|| unsafe { step_in(envp, mem, pc) })) {
         Ok(r) => r,
@@ -756,10 +606,8 @@ pub unsafe extern "C" fn yavs_rt_step(
     };
     let mem = unsafe { &mut *mem };
     mem.temp_seen = mem.fr.temp_len;
-    if r != GO {
+    if r != GO || !keep {
         mem.forget();
-    } else if !keep {
-        mem.forget_since(epoch);
     }
     r
 }
@@ -1222,7 +1070,6 @@ pub extern "C" fn yavs_rt_native(
     // compiled code), `out` one word.
     let envp = env as *mut Env<'_>;
     unsafe { (*mem).sync(&mut *(*envp).host) };
-    let epoch = unsafe { (*mem).fr.heap_epoch };
     let r = catch_unwind(AssertUnwindSafe(|| unsafe {
         let cells = std::slice::from_raw_parts(cells, n as usize);
         let env = &mut *envp;
@@ -1241,7 +1088,7 @@ pub extern "C" fn yavs_rt_native(
     // SAFETY: as above.
     let m = unsafe { &mut *mem };
     m.temp_seen = m.fr.temp_len;
-    m.forget_since(epoch);
+    m.forget();
     let put = |v: Option<u64>| {
         if let Some(v) = v {
             // SAFETY: `out` is one word of the caller.
@@ -1490,7 +1337,6 @@ pub extern "C" fn yavs_rt_xstep(
     // many `u32`, all of the calling native frame (allocas and constants of compiled code).
     let envp = env as *mut Env<'_>;
     unsafe { (*mem).sync(&mut *(*envp).host) };
-    let epoch = unsafe { (*mem).fr.heap_epoch };
     let r = catch_unwind(AssertUnwindSafe(|| unsafe {
         let ins = std::slice::from_raw_parts(ins, nin as usize);
         let outs = std::slice::from_raw_parts_mut(outs, nout as usize);
@@ -1514,7 +1360,7 @@ pub extern "C" fn yavs_rt_xstep(
     // SAFETY: as above.
     let m = unsafe { &mut *mem };
     m.temp_seen = m.fr.temp_len;
-    m.forget_since(epoch);
+    m.forget();
     match r {
         Ok(NativeCall::Done(_)) => 1,
         Ok(NativeCall::Stop(_)) => 2,
@@ -1739,7 +1585,7 @@ pub unsafe extern "C" fn yavs_rt_planes(
 pub unsafe fn step_in(env: *mut Env<'_>, mem: *mut Mem, pc: u32) -> u32 {
     // SAFETY: see `yavs_rt_step`.
     unsafe {
-        let (stack, epoch) = ((*mem).fr.stack, (*mem).fr.heap_epoch);
+        let stack = (*mem).fr.stack;
         let stepped = (*env).host.step(&mut (*mem).fr, pc);
         // The interpreter's view: the temporary area has the length it shows.
         (*mem).temp_seen = (*mem).fr.temp_len;
@@ -1764,7 +1610,7 @@ pub unsafe fn step_in(env: *mut Env<'_>, mem: *mut Mem, pc: u32) -> u32 {
         }
         // The callee runs on the same `Mem`: the interpreter keeps its view current. The push
         // may have moved the slot stack under the objects found before.
-        (*mem).forget_since(epoch);
+        (*mem).forget();
         let next = run(env as *mut c_void, fr.regs, mem, 0);
         (*mem).sync(&mut *(*env).host);
         if (*env).panic.is_some() || next == TIER_UNWIND || next == TIER_SUSPEND {
@@ -1803,10 +1649,7 @@ impl Mem {
             }
             (e.ptr.cast_const(), e.len)
         } else {
-            let o = &self.objs[obj_at(hi)];
-            if o.hi != hi {
-                return None;
-            }
+            let o = self.get(hi)?;
             (o.ptr.cast_const(), o.len)
         };
         ((a & 0xffff_ffff) <= len).then_some((base, len))
@@ -1817,6 +1660,7 @@ impl Mem {
     /// the interpreter's top frame and frame `depth` live as long as the callee: always. The top
     /// frame, the temporary area, the instance data (not for writing) and a heap object of the
     /// table only when `stable` (`stable_activation`: nothing the function does moves them).
+    #[inline]
     fn region(&self, a: u64, depth: u64, write: bool, stable: bool) -> Option<(*mut u8, u64)> {
         let hi = a >> 32;
         let fr = &self.fr;
@@ -1838,8 +1682,9 @@ impl Mem {
         } else if hi == u64::from(space::INST) << 29 {
             (!write).then(|| (fr.inst.cast_mut(), fr.inst_len))
         } else {
-            let o = &self.objs[obj_at(hi)];
-            (o.hi == hi && (!write || o.w != 0)).then_some((o.ptr, o.len))
+            self.get(hi)
+                .filter(|o| !write || o.w != 0)
+                .map(|o| (o.ptr, o.len))
         }
     }
 
@@ -1862,8 +1707,8 @@ impl Mem {
         } else if hi == fr.up[1] {
             (fr.up_slots[1], fr.up_len[1])
         } else {
-            let o = &self.objs[obj_at(hi)];
-            if o.hi != hi || write && o.w == 0 {
+            let o = self.get(hi)?;
+            if write && o.w == 0 {
                 return None;
             }
             (o.ptr, o.len)
@@ -2263,8 +2108,9 @@ pub unsafe extern "C" fn yavs_rt_fast(
                     // inline.
                     let m = unsafe { &mut *mem };
                     let hi = addr >> 32;
-                    let e = &mut m.objs[obj_at(hi)];
-                    if e.hi == hi && e.w != 0 {
+                    let (at, k) = m.slot(hi);
+                    let e = &mut m.objs[at];
+                    if e.hi == k && e.w != 0 {
                         e.h = a;
                     } else if let Ok(Some((p, len))) =
                         catch_unwind(AssertUnwindSafe(|| env.host.object(addr, true)))
@@ -2313,11 +2159,9 @@ pub unsafe fn yavs_rt_obj(env: *mut c_void, mem: *mut Mem, addr: u64, write: u32
             let hi = addr >> 32;
             // The same object found before (by a `Deref`, for the other direction) keeps the
             // access value it was found for.
-            let e = &mem.objs[obj_at(hi)];
-            let (h, w) = if e.hi == hi {
-                (e.h, e.w | u64::from(write))
-            } else {
-                (NO_H, u64::from(write))
+            let (h, w) = match mem.get(hi) {
+                Some(e) => (e.h, e.w | u64::from(write)),
+                None => (NO_H, u64::from(write)),
             };
             mem.put_obj(Obj {
                 hi,
@@ -2369,7 +2213,7 @@ pub fn enter(
 /// A new `Mem` (out of line: its 64 KB would otherwise be a stack probe in every `enter`).
 #[inline(never)]
 fn new_mem() -> Box<Mem> {
-    Box::new(Mem::of(TierFrame::default()))
+    Mem::new(TierFrame::default())
 }
 
 thread_local! {
@@ -2398,23 +2242,8 @@ pub fn enter_on(
     }
     mem.temp_seen = mem.fr.temp_len;
     mem.ndeopt = 0;
-    // The objects found before on this thread, and those of the process's own record, which
-    // are good while the heaps did not change.
-    mem.begin(host);
-    if let Some(Some(st)) = state.as_deref()
-        && st.used
-        && st.words[4 * MINE] == mem.fr.heap_epoch
-    {
-        mem.load_objs(&st.words);
-        // The heap objects it may write count as written in this activation.
-        if mem.fr.flags & yavs_interp::TIER_STAMPS != 0 {
-            for o in mem.in_use_some() {
-                if o.w != 0 && life(o.hi) == Life::Heap {
-                    host.wrote(o.hi << 32);
-                }
-            }
-        }
-    }
+    // The objects this machine found before, on this thread, at this heap epoch.
+    mem.begin(state.as_deref().and_then(|s| s.as_deref()));
     // A frame index beyond the address format is the interpreter's error.
     if mem.fr.nregs != nregs as u64 || mem.fr.frame >= 1 << 29 {
         return Ok(None);
@@ -2446,9 +2275,8 @@ pub fn enter_on(
     mem.sync(env.host);
     mem.forget_end();
     if let Some(slot) = state {
-        mem.save_objs(slot);
+        mem.save_tag(slot);
     }
-    mem.end();
     match env.panic {
         Some(p) => Err(p),
         None => Ok(Some(next)),
@@ -2512,7 +2340,7 @@ pub fn call_on(
     }
     mem.temp_seen = mem.fr.temp_len;
     mem.ndeopt = 0;
-    mem.begin(host);
+    mem.begin(None);
     // The callee of a protected call allocates in the shared heap when the object is there.
     if obj.is_some_and(|h| (h >> 56) as u8 == yavs_interp::SHARED_TAG) {
         mem.fr.flags |= yavs_interp::TIER_SHARED_ALLOC;
@@ -2560,7 +2388,6 @@ pub fn call_on(
         Called::Done(v as u64)
     };
     mem.forget_end();
-    mem.end();
     match env.panic {
         Some(p) => Err(p),
         None => Ok(Some(out)),
@@ -3861,129 +3688,128 @@ mod tests {
     }
 
     fn entered(m: &Mem, sp: u8, index: u64) -> bool {
-        let hi = u64::from(sp) << 29 | index;
-        m.objs[obj_at(hi)].hi == hi
+        m.get(u64::from(sp) << 29 | index).is_some()
     }
 
-    /// A machine of the same runtime keeps the constants the last one found and drops its
-    /// instance data and heap objects; a machine of another runtime keeps nothing.
+    fn rt(id: u64, n: u64) -> u64 {
+        id << yavs_interp::OWNER_RT_SHIFT | n
+    }
+
+    /// An activation of machine `owner` at heap epoch `epoch` with the process record `rec`.
+    fn activate(
+        m: &mut Mem,
+        owner: u64,
+        epoch: u64,
+        rec: &mut Option<Box<yavs_interp::TierState>>,
+    ) {
+        m.fr.owner = owner;
+        m.fr.heap_epoch = epoch;
+        m.begin(rec.as_deref());
+    }
+
+    fn finish(m: &mut Mem, rec: &mut Option<Box<yavs_interp::TierState>>) {
+        m.forget_end();
+        m.save_tag(rec);
+    }
+
+    /// Two instances of one process use the same addresses for their own objects: each finds its
+    /// own after the other ran, with no walk and no restore (#679).
     #[test]
-    fn constants_outlive_the_machine_that_found_them() {
-        let rt = |id: u64, n: u64| id << yavs_interp::OWNER_RT_SHIFT | n;
-        let mut m = Box::new(Mem::of(TierFrame::default()));
-        m.fr.owner = rt(1, 1);
-        for o in [
-            obj(space::CONST, 2),
-            obj(space::INST, 3),
-            obj(space::HEAP, 4),
-        ] {
-            m.put_obj(o);
+    fn instances_keep_their_own_objects() {
+        let mut m = Mem::new(TierFrame::default());
+        let (mut r1, mut r2) = (None, None);
+        let mine = |n: usize| Obj {
+            ptr: std::ptr::null_mut::<u8>().wrapping_add(n),
+            ..obj(space::HEAP, 5)
+        };
+        activate(&mut m, rt(1, 1), 0, &mut r1);
+        m.put_obj(mine(1));
+        m.put_obj(obj(space::INST, 3));
+        finish(&mut m, &mut r1);
+        activate(&mut m, rt(1, 2), 0, &mut r2);
+        assert!(!entered(&m, space::HEAP, 5) && !entered(&m, space::INST, 3));
+        m.put_obj(mine(2));
+        finish(&mut m, &mut r2);
+        activate(&mut m, rt(1, 1), 0, &mut r1);
+        let hi = u64::from(space::HEAP) << 29 | 5;
+        assert_eq!(m.get(hi).map(|o| o.ptr as usize), Some(1));
+        assert!(entered(&m, space::INST, 3));
+        finish(&mut m, &mut r1);
+        activate(&mut m, rt(1, 2), 0, &mut r2);
+        assert_eq!(m.get(hi).map(|o| o.ptr as usize), Some(2));
+        finish(&mut m, &mut r2);
+        // Machine 1's heap changed (a deallocation): its heap objects are not found again, its
+        // instance data is.
+        activate(&mut m, rt(1, 1), 1, &mut r1);
+        assert!(!entered(&m, space::HEAP, 5) && entered(&m, space::INST, 3));
+        finish(&mut m, &mut r1);
+        // A record of another table is no record here.
+        activate(&mut m, rt(1, 2), 0, &mut r2);
+        if let Some(st) = r1.as_mut() {
+            st.words[0] ^= 1 << 40;
         }
-        m.end();
-        assert_eq!((m.live, m.rt_live), (3, 1));
-        // Another machine of runtime 1.
-        m.fr.owner = rt(1, 2);
-        assert!(m.live != m.rt_live);
-        m.settle();
-        assert_eq!((m.live, m.rt_live), (1, 1));
-        assert!(entered(&m, space::CONST, 2));
-        assert!(!entered(&m, space::INST, 3) && !entered(&m, space::HEAP, 4));
-        // Only constants kept: a machine of the same runtime has nothing to settle, ...
-        m.end();
-        m.fr.owner = rt(1, 3);
-        assert!(
-            m.live == m.rt_live && (m.objs_owner ^ m.fr.owner) >> yavs_interp::OWNER_RT_SHIFT == 0
-        );
-        // ... and one of another runtime drops them.
-        m.fr.owner = rt(2, 1);
-        m.settle();
-        assert_eq!((m.live, m.rt_live), (0, 0));
-        assert!(!entered(&m, space::CONST, 2));
+        activate(&mut m, rt(1, 1), 1, &mut r1);
+        assert!(!entered(&m, space::INST, 3));
     }
 
-    /// The record of a process (`save_objs`) holds what its activation found or restored, not the
-    /// constants other machines left in the table; `load_objs` puts a constant of the record
-    /// where only another machine's constant stands.
+    /// Constants are the runtime's: every machine of it finds them, a machine of another
+    /// runtime does not.
     #[test]
-    fn the_process_record_holds_what_the_activation_used() {
-        let rt1 = |n: u64| 1 << yavs_interp::OWNER_RT_SHIFT | n;
-        let mut m = Box::new(Mem::of(TierFrame::default()));
-        // Machine 1 finds a constant and a heap object and keeps them in its record.
-        m.fr.owner = rt1(1);
-        m.start_mine();
-        m.put_obj(obj(space::CONST, 2));
-        m.put_obj(obj(space::HEAP, 5));
-        let mut rec1 = None;
-        m.save_objs(&mut rec1);
-        m.end();
-        // Machine 2 of the runtime finds another constant: the first one is not its own.
-        m.fr.owner = rt1(2);
-        m.start_mine();
-        m.settle();
-        assert!(entered(&m, space::CONST, 2) && !entered(&m, space::HEAP, 5));
-        m.put_obj(obj(space::CONST, 9));
-        let mut rec2 = None;
-        m.save_objs(&mut rec2);
-        let st = rec2.as_ref().expect("a record");
-        assert_eq!(st.words[0], u64::from(space::CONST) << 29 | 9);
-        assert_eq!(st.words[4], u64::MAX);
-        m.end();
-        // Machine 1 again: its record is put back, the table's other constants stay.
-        m.fr.owner = rt1(1);
-        m.start_mine();
-        m.settle();
-        m.load_objs(&rec1.as_ref().expect("a record").words);
-        assert!(entered(&m, space::CONST, 2) && entered(&m, space::HEAP, 5));
-        // Unchanged since it was loaded: the record stays as it is.
-        let before = rec1.as_ref().expect("a record").words;
-        m.save_objs(&mut rec1);
-        assert_eq!(rec1.expect("a record").words, before);
-        // A constant of the record replaces another one at the same entry, not a heap object.
-        let clash = u64::from(space::CONST) << 29 | (2 + OBJS as u64);
-        assert_eq!(obj_at(clash), obj_at(obj(space::CONST, 2).hi));
-        m.start_mine();
-        m.put_obj(Obj {
-            hi: clash,
-            ..obj(space::CONST, 2)
-        });
-        let mut w = [u64::MAX; yavs_interp::TIER_STATE_WORDS];
-        w[..4].copy_from_slice(&[obj(space::CONST, 2).hi, 0, 8, 0]);
-        m.load_objs(&w);
-        assert!(entered(&m, space::CONST, 2));
-    }
-
-    /// Every constant is kept for the next machine of the runtime, however many (#679): the walk
-    /// that drops the other entries visits those only (`occv`), and a host call keeps them.
-    #[test]
-    fn constants_are_kept_however_many() {
-        let rt1 = |n: u64| 1 << yavs_interp::OWNER_RT_SHIFT | n;
-        let mut m = Box::new(Mem::of(TierFrame::default()));
-        m.fr.owner = rt1(1);
+    fn constants_are_shared_by_the_machines_of_a_runtime() {
+        let mut m = Mem::new(TierFrame::default());
+        let mut r = None;
+        activate(&mut m, rt(1, 1), 0, &mut r);
         for k in 100..200 {
             m.put_obj(obj(space::CONST, k));
         }
-        m.put_obj(obj(space::HEAP, 3));
-        m.put_obj(obj(space::TEMP, 4));
-        m.end();
-        assert_eq!((m.live, m.rt_live), (102, 100));
-        assert_eq!(m.in_use_some().count(), 2);
-        m.forget();
-        assert_eq!((m.live, m.rt_live), (100, 100));
-        m.put_obj(obj(space::HEAP, 3));
-        m.end();
-        m.fr.owner = rt1(2);
-        m.settle();
-        assert_eq!((m.live, m.rt_live), (100, 100));
+        finish(&mut m, &mut r);
+        activate(&mut m, rt(1, 2), 7, &mut None);
         assert!((100..200).all(|k| entered(&m, space::CONST, k)));
-        assert!(!entered(&m, space::HEAP, 3) && m.in_use_some().count() == 0);
-        // A heap object replaces a constant at its entry: the entry is one to drop again.
-        let at = obj_at(obj(space::CONST, 105).hi);
-        let clash = (0..4 * OBJS as u64)
-            .map(|k| obj(space::HEAP, k))
-            .find(|o| obj_at(o.hi) == at)
-            .expect("an index");
-        m.put_obj(clash);
-        assert!(!entered(&m, space::CONST, 105));
-        assert_eq!((m.live, m.rt_live, m.in_use_some().count()), (100, 99, 1));
+        activate(&mut m, rt(2, 1), 0, &mut None);
+        assert!(!entered(&m, space::CONST, 100));
+    }
+
+    /// A host call drops the frame and temporary objects; the machine's objects stay while its
+    /// heap epoch does.
+    #[test]
+    fn host_calls_drop_volatile_objects_and_a_changed_heap() {
+        let mut m = Mem::new(TierFrame::default());
+        activate(&mut m, rt(1, 1), 0, &mut None);
+        m.put_obj(obj(space::HEAP, 3));
+        m.put_obj(obj(space::FRAME, 4));
+        assert!(m.transient && entered(&m, space::FRAME, 4));
+        m.forget();
+        assert!(!m.transient && !entered(&m, space::FRAME, 4) && entered(&m, space::HEAP, 3));
+        m.fr.heap_epoch = 1;
+        m.forget();
+        assert!(!entered(&m, space::HEAP, 3));
+        m.put_obj(obj(space::HEAP, 3));
+        // The next activation at that epoch keeps it.
+        activate(&mut m, rt(1, 1), 1, &mut None);
+        assert!(entered(&m, space::HEAP, 3));
+    }
+
+    /// When the tags run out the table starts again empty under a new identity, so a record
+    /// made before names no tag of it.
+    #[test]
+    fn the_last_tag_empties_the_table() {
+        let mut m = Mem::new(TierFrame::default());
+        let mut r = None;
+        activate(&mut m, rt(1, 1), 0, &mut r);
+        m.put_obj(obj(space::HEAP, 3));
+        m.put_obj(obj(space::CONST, 4));
+        finish(&mut m, &mut r);
+        let id = m.id;
+        m.next_tag = TAG_END;
+        activate(&mut m, rt(1, 2), 0, &mut None);
+        assert_ne!(m.id, id);
+        assert!(m.objs.iter().all(|o| o.hi == 0));
+        assert!(!entered(&m, space::CONST, 4));
+        activate(&mut m, rt(1, 1), 0, &mut r);
+        assert!(!entered(&m, space::HEAP, 3));
+        let mut t = m.tags.map(|t| t >> 32);
+        assert!(t.iter().all(|&t| t < 16));
+        t.sort();
+        assert_eq!(t.windows(2).filter(|w| w[0] != w[1]).count(), 3);
     }
 }

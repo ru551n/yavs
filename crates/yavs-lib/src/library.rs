@@ -342,10 +342,10 @@ impl Session {
             };
             st.manifest = Some(m);
         }
-        // No fsync (user, 2026-10-23, #561): every file is renamed into place, so a reader or a
-        // crash sees each of them whole, old or new; the record goes first, so the index never
-        // names one that is not there, and a power loss may lose the last analyze, which the next
-        // analyze redoes.
+        // No fsync (user, 2026-10-23, #561): the index is renamed into place, so a reader or a
+        // crash sees it whole, old or new; a record goes first and nothing reads it before the
+        // index names it (`write_record`), so the index never names one that is not there, and a
+        // power loss may lose the last analyze, which the next analyze redoes.
         let m = st.manifest.as_ref().unwrap();
         let rdir = m.record_dir();
         let text = record::render(path_s, &units);
@@ -353,7 +353,7 @@ impl Session {
         let rp = rdir.join(record::file_name(digest));
         let intact = m.record_of(path_s) == Some(digest)
             && fs::metadata(&rp).is_ok_and(|md| md.len() == text.len() as u64);
-        if !intact && let Err(e) = write_new(&rp, &text) {
+        if !intact && let Err(e) = write_record(&rp, &text) {
             return Err(io("L0002", "write", &rp, &e));
         }
         let m = st.manifest.as_mut().unwrap();
@@ -410,6 +410,35 @@ impl Session {
     }
 }
 
+/// Write a record under its own name, with no temporary file and rename (a record is named by the
+/// digest of its text and nothing reads it before the index, written later, names it, so a reader
+/// never meets it half written). A record of the same length already there is the same record; a
+/// shorter one is a crashed call's, replaced whole.
+fn write_record(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    let mut f = match opts.open(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir_all(path.parent().expect("a directory"))?;
+            opts.open(path)
+        }
+        r => r,
+    };
+    match &mut f {
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            if fs::metadata(path).is_ok_and(|m| m.len() == text.len() as u64) {
+                return Ok(());
+            }
+            write_new(path, text)
+        }
+        Err(_) => f.map(drop),
+        Ok(f) => f.write_all(text.as_bytes()).inspect_err(|_| {
+            let _ = fs::remove_file(path);
+        }),
+    }
+}
+
 /// Write `text` to a temporary file next to `path` and rename it over `path` (the directory is
 /// made when it is the record directory and missing). `std::fs::rename` replaces an existing
 /// target on Windows too (MOVEFILE_REPLACE_EXISTING).
@@ -426,4 +455,29 @@ fn write_new(path: &Path, text: &str) -> std::io::Result<()> {
     r.and_then(|()| fs::rename(&tmp, path)).inspect_err(|_| {
         let _ = fs::remove_file(&tmp);
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_record;
+
+    #[test]
+    fn a_cut_short_record_is_rewritten_and_an_intact_one_is_kept() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("records").join("r.toml");
+        write_record(&p, "one two three\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "one two three\n");
+        std::fs::write(&p, "one tw").unwrap();
+        write_record(&p, "one two three\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "one two three\n");
+        let before = std::fs::metadata(&p).unwrap().modified().unwrap();
+        write_record(&p, "one two three\n").unwrap();
+        assert_eq!(std::fs::metadata(&p).unwrap().modified().unwrap(), before);
+        assert!(
+            std::fs::read_dir(d.path().join("records"))
+                .unwrap()
+                .all(|e| e.unwrap().file_name() == "r.toml"),
+            "no temporary file is left"
+        );
+    }
 }

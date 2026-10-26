@@ -8292,7 +8292,16 @@ impl Machine {
             fault: None,
             stop: false,
         };
+        // A profile names the callee while its native frame runs (`Runtime::profile_sampler`).
+        let marked = crate::PROFILE_NATIVE.load(Ordering::Relaxed).then(|| {
+            let slot = crate::pc_slot();
+            let mark = u64::from(callee.0) << 32 | u64::from(crate::NATIVE_PC);
+            (slot, slot.swap(mark, Ordering::Relaxed))
+        });
         let r = tier.call(callee, &cells[..n], obj, pc, &mut host);
+        if let Some((slot, before)) = marked {
+            slot.store(before, Ordering::Relaxed);
+        }
         if let Some(e) = host.fault {
             return Err(e);
         }
@@ -10548,17 +10557,6 @@ impl crate::TierHost for Host<'_, '_, '_> {
                 self.fault = Some(e);
                 crate::Stepped::Fault
             }
-        }
-    }
-
-    fn wrote(&mut self, addr: u64) {
-        let (sp, idx, _) = split(addr);
-        if sp == HEAP {
-            let _ = self.m.heap.data_mut(idx);
-        } else if sp == SHARED_HEAP
-            && let Some(h) = self.m.sh.as_mut().and_then(|sh| sh.heap.as_mut())
-        {
-            let _ = h.data_mut(idx);
         }
     }
 

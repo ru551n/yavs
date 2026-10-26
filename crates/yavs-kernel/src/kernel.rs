@@ -2254,6 +2254,12 @@ impl SimControl {
                 old.clear();
                 self.ready = old;
             }
+        } else if let [p] = ready[..]
+            && self.rng.is_none()
+        {
+            // `run_batch`'s own short path, without its entry (a stage of a chain).
+            self.batch_mono = false;
+            self.run_one(p, ready)?;
         } else {
             self.run_batch(ready, false, false)?;
         }
@@ -3062,9 +3068,18 @@ impl SimControl {
     /// The implicit signals after an update of the fast paths (which run with implicit signals
     /// in the design): none is due (the paths take no queue entry of one), so only a source that
     /// had activity can change one.
-    #[inline]
+    /// The test is inlined into the fast paths, a design with implicit signals pays the call.
+    #[inline(always)]
     fn update_implicit_quiet(&mut self) -> Result<(), ErrorKind> {
-        if self.implicits.is_empty() || self.implicit_srcs_quiet() {
+        if self.implicits.is_empty() {
+            return Ok(());
+        }
+        self.update_implicit_active()
+    }
+
+    #[inline(never)]
+    fn update_implicit_active(&mut self) -> Result<(), ErrorKind> {
+        if self.implicit_srcs_quiet() {
             return Ok(());
         }
         self.update_implicit(&BTreeSet::new())
@@ -3431,10 +3446,11 @@ impl SimControl {
                                     }
                                     st.scheduled.clear();
                                     // Applied after the batch: the signals are shared until then.
-                                    if !st.out.is_empty() {
-                                        for &o in &st.out {
-                                            self.direct.push(o);
-                                        }
+                                    if let [o] = st.out[..] {
+                                        self.direct.push(o);
+                                        st.out.clear();
+                                    } else if !st.out.is_empty() {
+                                        self.direct.extend_from_slice(&st.out);
                                         st.out.clear();
                                     }
                                     if let [o] = st.outv[..] {

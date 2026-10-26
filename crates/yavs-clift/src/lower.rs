@@ -4123,7 +4123,7 @@ impl Gen<'_> {
             let off = self.b.ins().iadd(lo, ev);
             let done = self.b.create_block();
             let p = self.b.append_block_param(done, I64);
-            self.obj_lookup(a, hi, off, ev, nv, write, done);
+            self.obj_lookup(a, hi, off, ev, nv, write, true, done);
             self.b.switch_to_block(done);
             let nn = self.b.ins().icmp_imm_s(IntCC::NotEqual, p, 0);
             self.guard(nn, slow);
@@ -4341,7 +4341,7 @@ impl Gen<'_> {
             self.b.ins().jump(done, &[BlockArg::Value(pup)]);
             self.b.switch_to_block(rest);
         }
-        self.obj_lookup(a, hi, off, extra, n, write, done);
+        self.obj_lookup(a, hi, off, extra, n, write, false, done);
         self.b.switch_to_block(done);
         let nn = self.b.ins().icmp_imm_s(IntCC::NotEqual, p, 0);
         self.guard(nn, slow);
@@ -4351,7 +4351,8 @@ impl Gen<'_> {
     /// The object table's entry for the access (the objects found before: heap objects a `Deref`
     /// found, a process's heap variables): one load and compare, as the LLVM generator does;
     /// else `yavs_rt_host` (`Mem::find`, then the interpreter is asked for the object). Jumps
-    /// to `done` with the host pointer (0: not available).
+    /// to `done` with the host pointer (0: not available). `heap`: the address is a heap
+    /// object's (or guessed to be), whose key has the heap tag.
     #[allow(clippy::too_many_arguments)]
     fn obj_lookup(
         &mut self,
@@ -4361,6 +4362,7 @@ impl Gen<'_> {
         extra: Value,
         n: Value,
         write: bool,
+        heap: bool,
         done: Block,
     ) {
         let flag = self.b.ins().ushr_imm_s(a, 32 + i64::from(KEY_SHIFT_ADDR));
@@ -4368,9 +4370,12 @@ impl Gen<'_> {
         let key = self.b.ins().bxor(hi, flag);
         let key = self.b.ins().band_imm_s(key, OBJS as i64 - 1);
         let eo = self.b.ins().ishl_imm_s(key, i64::from(OBJ_SHIFT));
+        let (tk, mx) = self.obj_tag((!heap).then_some(hi));
+        let eo = self.b.ins().bxor(eo, mx);
         let ent = self.b.ins().iadd(self.mem, eo);
         let ehi = self.b.ins().load(I64, self.mf, ent, MEM_OBJS as i32);
-        let mut hit = self.b.ins().icmp(IntCC::Equal, ehi, hi);
+        let want = self.b.ins().bor(hi, tk);
+        let mut hit = self.b.ins().icmp(IntCC::Equal, ehi, want);
         if write {
             let w = self
                 .b
@@ -4409,6 +4414,22 @@ impl Gen<'_> {
             .call(self.imp.host, &[self.env, self.mem, a, extra, n, w]);
         let p2 = self.b.inst_results(c)[0];
         self.b.ins().jump(done, &[BlockArg::Value(p2)]);
+    }
+
+    /// The tag bits and the scaled entry offset of the keys `Mem::slot` gives an object
+    /// (`MEM_TAGS`, `MEM_MIXES`, by space): of a heap object, or of the space of high half `hi`.
+    fn obj_tag(&mut self, hi: Option<Value>) -> (Value, Value) {
+        let Some(hi) = hi else {
+            let k = 8 * u64::from(space::HEAP);
+            return (self.mem_ld(MEM_TAGS + k), self.mem_ld(MEM_MIXES + k));
+        };
+        let sp = self.b.ins().ushr_imm_s(hi, 29);
+        let k = self.b.ins().ishl_imm_s(sp, 3);
+        let p = self.b.ins().iadd(self.mem, k);
+        (
+            self.b.ins().load(I64, self.mf, p, MEM_TAGS as i32),
+            self.b.ins().load(I64, self.mf, p, MEM_MIXES as i32),
+        )
     }
 
     /// `left, right, dir` of the descriptor dimension at `p`.
@@ -6486,13 +6507,20 @@ impl Gen<'_> {
         let key = self.b.ins().bxor(hi, flag);
         let key = self.b.ins().band_imm_s(key, OBJS as i64 - 1);
         let eo = self.b.ins().ishl_imm_s(key, i64::from(OBJ_SHIFT));
+        let (tk, mx) = self.obj_tag(None);
+        let eo = self.b.ins().bxor(eo, mx);
         let ent = self.b.ins().iadd(self.mem, eo);
-        // An entry with an access value is writable, and a null handle is no entry's value.
+        // An entry with an access value is writable, and a null handle is no entry's value; the
+        // key's tag says the entry is this machine's (another instance holds the same values).
         let eh = self
             .b
             .ins()
             .load(I64, self.mf, ent, (MEM_OBJS + OBJ_H) as i32);
-        let hit = self.b.ins().icmp(IntCC::Equal, eh, h);
+        let ek = self.b.ins().load(I64, self.mf, ent, MEM_OBJS as i32);
+        let ek = self.b.ins().band_imm_s(ek, !0xffff_ffff);
+        let same_h = self.b.ins().icmp(IntCC::Equal, eh, h);
+        let same_t = self.b.ins().icmp(IntCC::Equal, ek, tk);
+        let hit = self.b.ins().band(same_h, same_t);
         let (fast, miss) = (self.b.create_block(), self.b.create_block());
         self.b.set_cold_block(miss);
         self.branch(hit, fast, miss);
@@ -6530,6 +6558,8 @@ impl Gen<'_> {
             // The callback may have found the address and failed to enter the object: the entry
             // must hold what the result points into.
             let at = self.b.ins().ushr_imm_s(v, 32);
+            let tk = self.obj_tag(None).0;
+            let at = self.b.ins().bor(at, tk);
             let found = self.b.ins().load(I64, self.mf, ent, MEM_OBJS as i32);
             let same = self.b.ins().icmp(IntCC::Equal, found, at);
             self.guard(same, slow);

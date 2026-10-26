@@ -942,3 +942,59 @@ fn a_batched_element_assigned_twice_keeps_the_last_code() {
     sim.run_until(ns(5)).unwrap();
     assert_eq!(*seen.lock().unwrap(), vec![ZERO]);
 }
+
+/// A scalar and a vector direct driver whose values change at every activation for a while
+/// (their skip tests miss, so they stop asking it, `ProcState::same`), then hold for longer
+/// than the tests are left out, then change again. The changes and the delta cycles are those
+/// of the run that never skips.
+fn changing_then_held(skip: bool) -> Vec<String> {
+    let mut b = Builder::new();
+    let lv = |s: &str| s.parse::<LogicVec>().unwrap();
+    let (s, v) = (
+        b.signal("s", SignalType::logic(1), &lv("0")),
+        b.signal("v", SignalType::logic(4), &lv("0000")),
+    );
+    let (ds, dv) = (b.driver(s), b.driver(v));
+    let mut k = 0u32;
+    b.process(
+        "regs",
+        NONE,
+        &[ds, dv],
+        p(move |c| {
+            k += 1;
+            let moving = !(20..320).contains(&k);
+            let code = if moving && k % 2 == 1 { ONE } else { ZERO };
+            let vec = if moving {
+                ["0110", "1001", "0011"][k as usize % 3]
+            } else {
+                "1111"
+            };
+            c.assign_code(ds, None, Time::ZERO, code, DelayMode::INERTIAL)?;
+            c.assign(dv, None, &[(Time::ZERO, &lv(vec))], DelayMode::INERTIAL)?;
+            c.wait_for(ns(1))
+        }),
+    );
+    let mut sim = b
+        .build(Config {
+            skip_unchanged: skip,
+            ..Config::default()
+        })
+        .unwrap();
+    let trace = Trace {
+        phases: true,
+        ..Trace::default()
+    };
+    sim.subscribe(Box::new(trace.clone()));
+    sim.run_until(ns(340)).unwrap();
+    trace.take()
+}
+
+#[test]
+fn drivers_that_stop_asking_the_skip_test_keep_values_and_deltas() {
+    let (off, on) = (changing_then_held(false), changing_then_held(true));
+    assert!(
+        off.iter().any(|l| l == "320 ns +1 s[0..1]=\"1\""),
+        "{off:?}"
+    );
+    assert_eq!(off, on);
+}

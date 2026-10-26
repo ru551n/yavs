@@ -6,7 +6,8 @@
 //! registers, argument slots, return), and a library testbench is a chain of such calls. The pass runs last, on the finished code of a
 //! subprogram (after the other passes and the renumbering), and takes the callee from its own
 //! optimised code, made apart from the callee's published copy (`forwarder`), so the result
-//! does not depend on which function was optimised first.
+//! does not depend on which function was optimised first. (The reads of result tables that are
+//! one path are the exception: `tab_calls` makes them before the first pass, #744.)
 //!
 //! What stays as it was: the callee's checks and calls, in their order, and what a trace shows.
 //! An inlined instruction keeps the statement of the callee and `Func::via` names the call it
@@ -493,7 +494,19 @@ fn tab_forwarder(prog: &crate::Program, callee: FuncId, t: &crate::CaseTab) -> O
         },
         Inst::Ret { v: Some(cres) },
     ];
-    let blocks: Vec<Vec<Ent>> = [b0, b1, b2, b3]
+    // A table that holds every value of the type never calls: one path, spliced in place, so the
+    // caller's loads of the result see the stores that built it (no join with a dead call path).
+    let lists: Vec<Vec<Inst>> = if t.whole && t.valid.is_none() {
+        let one = [b0, b1, b2]
+            .into_iter()
+            .flatten()
+            .filter(|i| !matches!(i, Inst::Br { .. }))
+            .collect();
+        vec![one]
+    } else {
+        vec![b0, b1, b2, b3]
+    };
+    let blocks: Vec<Vec<Ent>> = lists
         .into_iter()
         .map(|b| b.into_iter().map(|i| (i, loc, 0)).collect())
         .collect();
@@ -770,17 +783,55 @@ type Out = (Inst, StmtId, u32);
 /// Inline the calls of `f` (function `id`) whose callee has a forwarder. `true`: the code
 /// changed.
 pub(super) fn run(prog: &crate::Program, id: FuncId, f: &mut crate::Func, level: u8) -> bool {
-    run_with(prog, id, f, level, false)
+    run_with(prog, id, f, level, Round::All)
 }
 
-/// The second round over a function that inlined (`wide_only`): only the calls that hand over a
+/// `raw` with the calls of functions that have a result table (`casetab.rs`) replaced by the
+/// table read, made before the first pass so that it sees the read where the registers are still
+/// single-definition: the loads of an array result then find the stores that built it. `None`
+/// when there is no such call.
+pub(super) fn tab_calls(
+    prog: &crate::Program,
+    id: FuncId,
+    raw: &crate::Func,
+) -> Option<Box<crate::Func>> {
+    if !enabled()
+        || !crate::casetab::enabled()
+        || super::keep_variables_on()
+        || !raw.code.iter().any(|i| {
+            matches!(i, Inst::Call { func, .. } if *func != id && prog.tabs.contains_key(&func.0))
+        })
+    {
+        return None;
+    }
+    let mut f = Box::new(raw.clone());
+    // (A table read cannot fail, so the trace needs no frame for it: no `via` entries.)
+    if !run_with(prog, id, &mut f, 0, Round::Tabs) {
+        return None;
+    }
+    f.via.clear();
+    f.via_nodes.clear();
+    Some(f)
+}
+
+/// Which calls a round of inlining takes.
+#[derive(Clone, Copy, PartialEq)]
+enum Round {
+    All,
+    /// Only the calls that hand over a string built just before them.
+    Wide,
+    /// Only the calls of functions with a result table whose read is one path.
+    Tabs,
+}
+
+/// The second round over a function that inlined (`Round::Wide`): only the calls that hand over a
 /// string built just before them, which the first round may have brought in with the body of a
 /// wrapper (a package procedure in front of a protected method).
 pub(super) fn run_wide(prog: &crate::Program, id: FuncId, f: &mut crate::Func) -> bool {
     f.code
         .iter()
         .any(|i| matches!(i, Inst::Cat { logic: false, .. }))
-        && run_with(prog, id, f, 0, true)
+        && run_with(prog, id, f, 0, Round::Wide)
 }
 
 fn run_with(
@@ -788,8 +839,9 @@ fn run_with(
     id: FuncId,
     f: &mut crate::Func,
     level: u8,
-    wide_only: bool,
+    round: Round,
 ) -> bool {
+    let wide_only = round == Round::Wide;
     if !enabled()
         || super::keep_variables_on()
         || !matches!(
@@ -825,7 +877,19 @@ fn run_with(
                 .any(|i| matches!(i, Inst::Cat { logic: false, .. }))
                 && builds_string(f, pc, args, obj)
         };
-        let fw = if wide_only {
+        let fw = if round == Round::Tabs {
+            // (A table that holds every value of its type: one path, nothing to join. The
+            // function itself is the call when coverage counts in it: `make` takes no table then.)
+            if !prog.tabs.contains_key(&func.0)
+                || prog
+                    .funcs
+                    .get(func)
+                    .is_none_or(|c| c.flags.contains(crate::FuncFlags::HAS_COVER))
+            {
+                continue;
+            }
+            forwarder(prog, func, 0, false).filter(|fw| fw.straight())
+        } else if wide_only {
             wide().then(|| forwarder(prog, func, level, true)).flatten()
         } else {
             forwarder(prog, func, level, false)
@@ -900,11 +964,13 @@ fn run_with(
             let loc = f.loc[pc];
             // This call, and the calls the body's own inlined instructions came through,
             // now inlined through it as well.
-            nodes.push(ViaNode {
-                site: loc,
-                callee: site.func,
-                up: old_via(pc),
-            });
+            if round != Round::Tabs {
+                nodes.push(ViaNode {
+                    site: loc,
+                    callee: site.func,
+                    up: old_via(pc),
+                });
+            }
             let outer = nodes.len() as u32;
             let mut remap: Vec<u32> = Vec::with_capacity(fw.via_nodes.len());
             for n in &fw.via_nodes {
@@ -916,6 +982,14 @@ fn run_with(
                 remap.push(nodes.len() as u32);
             }
             let chain = |v: u32| if v == 0 { outer } else { remap[v as usize - 1] };
+            // (A table read has no frame of its own in a trace: it is the call's statement.)
+            let own = |l: StmtId, v: u32| {
+                if round == Round::Tabs {
+                    (loc, sv)
+                } else {
+                    (l, chain(v))
+                }
+            };
             // The other parameters arrive in the registers the loads defined.
             for (k, regs) in fw.params.iter().enumerate() {
                 for &r in regs {
@@ -963,7 +1037,8 @@ fn run_with(
                         }
                         continue;
                     }
-                    cur.push((place_inst(inst, &mut operands), l, chain(v)));
+                    let (l, v) = own(l, v);
+                    cur.push((place_inst(inst, &mut operands), l, v));
                 }
                 continue;
             }

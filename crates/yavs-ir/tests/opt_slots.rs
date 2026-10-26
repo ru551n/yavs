@@ -41,6 +41,25 @@ fn sum_words(fb: &mut FuncBuilder<'_>, t: Reg, var: u32) {
     });
 }
 
+/// A store through a pointer the optimiser knows nothing about: the words stored before it are
+/// not forwarded to the reads after it.
+fn barrier(fb: &mut FuncBuilder<'_>) {
+    let slot = fb.slot(8, 8);
+    let qa = fb.addr(AddrSpace::Frame, slot);
+    let q = fb.reg(RegTy::Ptr);
+    fb.emit(Inst::Load {
+        dst: q,
+        addr: qa,
+        w: Width::B8,
+    });
+    let z = fb.int(0);
+    fb.emit(Inst::Store {
+        addr: q,
+        src: z,
+        w: Width::B8,
+    });
+}
+
 fn store_word(fb: &mut FuncBuilder<'_>, t: Reg, off: i64, v: i64) {
     let a = fb.reg(RegTy::Ptr);
     let k = fb.int(off);
@@ -119,6 +138,7 @@ fn a_temporary_written_whole_is_frame_bytes_without_zeroing() {
     let (code, frame) = process(|fb, t, var| {
         store_word(fb, t, 0, 3);
         store_word(fb, t, 8, 4);
+        barrier(fb);
         sum_words(fb, t, var);
     });
     assert_eq!(
@@ -166,6 +186,7 @@ fn a_temporary_a_later_block_uses_stays_an_alloc() {
         let next = fb.block();
         store_word(fb, t, 0, 3);
         store_word(fb, t, 8, 4);
+        barrier(fb);
         fb.emit(Inst::Br { to: next });
         fb.at(next);
         sum_words(fb, t, var);

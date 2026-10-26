@@ -171,6 +171,9 @@ pub enum Op {
     Syn(Syn),
     /// `math_real.uniform (seed1, seed2, x)`: the only native procedure.
     Uniform,
+    /// `to_bitvector (std_ulogic_vector, bit)`: `0 L` to `'0'`, `1 H` to `'1'`, the rest to the
+    /// second argument.
+    ToBitVector,
     /// `to_hstring` (false) or `to_ostring` (true) of a `std_ulogic_vector`; a null vector is
     /// handed back to the body.
     Str(bool),
@@ -230,6 +233,9 @@ pub fn parse(key: &str) -> Option<Op> {
         }
         ("std_logic_1164", "to_01", ["std_ulogic_vector", "std_ulogic"], "std_ulogic_vector") => {
             Some(Op::To01)
+        }
+        ("std_logic_1164", "to_bitvector", ["std_ulogic_vector", "bit"], "bit_vector") => {
+            Some(Op::ToBitVector)
         }
         ("std_logic_1164", "??", ["std_ulogic"], "boolean") => Some(Op::Truthy),
         ("std_logic_1164", "is_x", [t @ ("std_ulogic" | "std_ulogic_vector")], "boolean") => {

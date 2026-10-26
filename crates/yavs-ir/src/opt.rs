@@ -397,6 +397,8 @@ fn optimize_body_with(
     if matches!(raw.kind, FuncKind::Elab | FuncKind::Thunk) || raw.code.len() < 2 {
         return None;
     }
+    let tabbed = inline::tab_calls(prog, id, raw);
+    let raw = tabbed.as_deref().unwrap_or(raw);
     let mut layouts = prog
         .layouts
         .0
@@ -886,6 +888,8 @@ enum Key {
     Part(Opn, u32),
     Dope(Opn, u8),
     Pos(Opn, u8, Opn),
+    /// `SlicePos` of the bounds `left`, `right` and direction in a descriptor.
+    Slice(Opn, [Opn; 3]),
     Field(Opn, Opn, u32),
     /// The temporary layout of a type under a descriptor: gone at the next `Stmt`.
     Layout(TyId, Opn),
@@ -898,6 +902,7 @@ impl Key {
             Key::Load(a, w) => Some((a, 0, i64::from(w.bytes()))),
             Key::Part(a, o) => Some((a, i64::from(o), 8)),
             Key::Dope(a, d) | Key::Pos(a, d, ..) => Some((a, i64::from(d) * 24, 24)),
+            Key::Slice(a, _) => Some((a, 0, 24)),
             Key::Field(_, l, n) => Some((l, 16 + 8 * i64::from(n), 8)),
             Key::Layout(_, d) => Some((d, 0, 24 * 8)),
             _ => None,
@@ -1076,6 +1081,10 @@ struct Opt<'a> {
     /// `Index` results at a constant offset from a once-defined register: (that register, byte
     /// offset), so a `Load` finds the `MakeDope` word it reads (`Key::Part`).
     iat: FxMap<Reg, (Reg, i64)>,
+    /// Once-defined results of an addition or subtraction of a constant to a once-defined
+    /// register: (that register, the constant added), so the length of `MakeDope [x, x + 3]`
+    /// is known.
+    aff: FxMap<Reg, (Reg, i64)>,
     /// Field offsets of the static record layouts met so far (shared by the functions of one
     /// batch).
     layouts: &'a mut FxMap<TyId, Option<Vec<u64>>>,
@@ -1159,6 +1168,7 @@ impl<'a> Opt<'a> {
             lwords: FxMap::default(),
             lat: FxMap::default(),
             iat: FxMap::default(),
+            aff: FxMap::default(),
             layouts,
             uses: Vec::new(),
             reach: Vec::new(),
@@ -1588,6 +1598,8 @@ impl<'a> Opt<'a> {
             self.forward_frame_copies();
         }
         self.drop_clean_roots();
+        // (Temporaries nothing reads are gone before the markers that free them are judged.)
+        self.dce();
         self.drop_statements();
         self.merge_consts();
         self.dce();
@@ -2684,14 +2696,21 @@ impl<'a> Opt<'a> {
             match *i {
                 Inst::Load { .. } => {}
                 Inst::Store { src, .. } => mark(src, None),
-                Inst::Copy { dst, src, bytes } => {
-                    let n = match self.opn(bytes) {
-                        Opn::K(n) => Some(n),
-                        _ => None,
-                    };
-                    mark(dst, n);
-                    mark(src, n);
-                }
+                // Reads and writes through the address: it is used, not kept anywhere (the
+                // bytes of a copy that are addresses were marked where they were stored).
+                Inst::Copy { .. }
+                | Inst::LCopy { .. }
+                | Inst::LFill { .. }
+                | Inst::LSet { .. }
+                | Inst::LGet { .. }
+                | Inst::MemEq { .. }
+                | Inst::Zero { .. }
+                | Inst::MakeDope { .. }
+                | Inst::DopeLen { .. }
+                | Inst::SlicePos { .. }
+                | Inst::Pos { .. }
+                | Inst::SubtypeCheck { .. }
+                | Inst::LayoutOf { .. } => {}
                 _ => {
                     i.visit(&mut |r, role, _| {
                         if role == Role::Use {
@@ -2725,6 +2744,10 @@ impl<'a> Opt<'a> {
                         Opn::K(v) => Some(Val::K(v)),
                         Opn::R(r) if self.single(r) => Some(Val::R(r)),
                         Opn::R(r) if self.multi(r) => Some(Val::V(r, self.vsn[r.0 as usize])),
+                        // A known address: the register that holds it, when it is defined once.
+                        Opn::A(..) if self.single(self.resolve(src)) => {
+                            Some(Val::R(self.resolve(src)))
+                        }
                         _ => None,
                     };
                     if let Some(v) = v {
@@ -2776,6 +2799,14 @@ impl<'a> Opt<'a> {
                                 dim_len(l, r, dir == 1).filter(|&n| n <= i64::MAX as u64)
                         {
                             self.tbl.put(Key::Dope(k, d as u8), Val::K(n as i64));
+                        } else if let Some(dir) = w(2)
+                            && let (Some(&l), Some(&r)) = (
+                                self.operands.get((parts.start + 3 * d) as usize),
+                                self.operands.get((parts.start + 3 * d + 1) as usize),
+                            )
+                            && let Some(n) = self.affine_len(l, r, dir)
+                        {
+                            self.tbl.put(Key::Dope(k, d as u8), Val::K(n));
                         }
                     }
                 }
@@ -2814,6 +2845,7 @@ impl<'a> Opt<'a> {
             | Inst::AddrOf { .. }
             | Inst::Load { .. }
             | Inst::Alloc { .. }
+            | Inst::TempRoot { .. }
             | Inst::PkgAlloc { .. }
             | Inst::Index { .. }
             | Inst::Field { .. }
@@ -2924,6 +2956,13 @@ impl<'a> Opt<'a> {
                 // A pointer reaches a frame slot only if the slot's address escaped.
                 (_, Opn::A(AddrSpace::Frame, o2)) => apart || clear_of(esc, i64::from(o2) + lo, n),
                 (Opn::A(AddrSpace::Frame, o1), _) => apart || clear_of(esc, i64::from(o1), len),
+                // Two fields of one block (`Index` of one register by constants): apart when
+                // their bytes are.
+                (Opn::R(x), Opn::R(y)) => {
+                    let at = |r: Reg| this.iat.get(&r).copied().unwrap_or((r, 0));
+                    let ((rx, ox), (ry, oy)) = (at(x), at(y));
+                    apart || rx == ry && (ox + len <= oy + lo || oy + lo + n <= ox)
+                }
                 _ => apart,
             }
         };
@@ -2994,7 +3033,9 @@ impl<'a> Opt<'a> {
                     self.changed = true;
                     return;
                 }
-                (Some(d), Val::R(x)) if self.alias(pc, d, x) => return,
+                (Some(d), Val::R(x)) if self.rty(d) == self.rty(x) && self.alias(pc, d, x) => {
+                    return;
+                }
                 (Some(d), Val::K(v)) if self.single(d) => {
                     self.make_const(pc, d, v);
                     return;
@@ -3160,6 +3201,44 @@ impl<'a> Opt<'a> {
         Some((w(0) as i64, w(1) as i64, w(2)))
     }
 
+    /// `dst = a + c` or `a - c` for a constant `c` and once-defined `a` and `dst`: kept in `aff`.
+    fn note_affine(&mut self, op: IntOp, dst: Reg, a: Reg, b: Reg) {
+        if !self.single(dst) {
+            return;
+        }
+        let (x, c) = match (op, self.opn(a), self.opn(b)) {
+            (IntOp::Add, Opn::R(x), Opn::K(c)) | (IntOp::Add, Opn::K(c), Opn::R(x)) => (x, c),
+            (IntOp::Sub, Opn::R(x), Opn::K(c)) => (x, c.wrapping_neg()),
+            _ => return,
+        };
+        if self.single(x) && c != i64::MIN {
+            let (root, o) = self.aff.get(&x).copied().unwrap_or((x, 0));
+            if let Some(o) = o.checked_add(c) {
+                self.aff.insert(dst, (root, o));
+            }
+        }
+    }
+
+    /// The length of dimension `d` of a `MakeDope` whose bounds are `x + p` and `x + q` for one
+    /// once-defined register `x` and constants (a slice `v(4 * i to 4 * i + 3)`).
+    fn affine_len(&self, l: Reg, r: Reg, dir: i64) -> Option<i64> {
+        let at = |x: Reg| {
+            let x = self.resolve(x);
+            self.single(x)
+                .then(|| self.aff.get(&x).copied().unwrap_or((x, 0)))
+        };
+        let ((rl, ol), (rr, or)) = (at(l)?, at(r)?);
+        if rl != rr {
+            return None;
+        }
+        let d = match dir {
+            0 => or.checked_sub(ol)?,
+            1 => ol.checked_sub(or)?,
+            _ => return None,
+        };
+        Some(d.checked_add(1)?.max(0))
+    }
+
     /// The length of dimension `k` of the descriptor in `r`, when a pool constant or a
     /// `MakeDope` of constants on this path says.
     fn dope_known(&self, r: Reg, k: u8) -> Option<u64> {
@@ -3312,6 +3391,7 @@ impl<'a> Opt<'a> {
                     Some(Simp::Same(x)) if self.alias_ok(pc, dst, x) => return,
                     _ => {}
                 }
+                self.note_affine(op, dst, a, b);
                 if let (Some(x), Some(y)) = (self.kopn(a), self.kopn(b)) {
                     self.cse(pc, Some(dst), Key::Bin(op, x, y));
                 }
@@ -3333,6 +3413,8 @@ impl<'a> Opt<'a> {
                 {
                     return self.make_const(pc, dst, v);
                 }
+                // (The result is the plain one or the run stops.)
+                self.note_affine(op, dst, a, b);
                 if let (Some(a), Some(b), Some(l), Some(h)) =
                     (self.kopn(a), self.kopn(b), self.kopn(lo), self.kopn(hi))
                 {
@@ -3638,9 +3720,19 @@ impl<'a> Opt<'a> {
                             } else {
                                 l.wrapping_sub(a)
                             };
-                            self.make_const(pc, dst, pos);
+                            return self.make_const(pc, dst, pos);
                         }
                     }
+                }
+                // The same slice of the same descriptor again: the check passed, the position
+                // is the same.
+                if let (Some(d), Some(a), Some(b), Some(w)) = (
+                    self.kopn(dope),
+                    self.kopn(left),
+                    self.kopn(right),
+                    self.kopn(dir),
+                ) {
+                    self.cse(pc, Some(dst), Key::Slice(d, [a, b, w]));
                 }
             }
             Inst::LayoutOf { dst, ty, desc, .. } => {
@@ -3983,6 +4075,7 @@ impl<'a> Opt<'a> {
         self.lstride.clear();
         self.lat.clear();
         self.iat.clear();
+        self.aff.clear();
         self.esc = None;
         self.analyse();
     }
@@ -4441,6 +4534,7 @@ impl<'a> Opt<'a> {
                 }
             });
         }
+        self.drop_stored_only_blocks(&mut uses);
         // One backward sweep removes whole chains: a user comes after its operands.
         for pc in (0..self.code.len()).rev() {
             let i = self.code[pc];
@@ -4513,6 +4607,81 @@ impl<'a> Opt<'a> {
             self.changed = true;
         }
         self.uses = uses;
+    }
+
+    /// A block that is allocated and stored into but never read, passed on or kept (the fat
+    /// pair of an inlined table read, once the loads of its two words were forwarded): its
+    /// `Alloc`, the `Store`s and the `Index`es that only address them go. `uses` is the count of
+    /// readers of each register, kept in step.
+    fn drop_stored_only_blocks(&mut self, uses: &mut [u32]) {
+        let n = uses.len();
+        let mut stored = vec![0u32; n];
+        for i in &self.code {
+            if let Inst::Store { addr, w, .. } = *i
+                && w != Width::Sig
+                && !is_dead(i)
+                && let Some(c) = stored.get_mut(addr.0 as usize)
+            {
+                *c += 1;
+            }
+        }
+        if !self.code.iter().any(|i| matches!(i, Inst::Alloc { .. })) {
+            return;
+        }
+        // An `Index` whose result only addresses stores addresses stores itself.
+        for pc in (0..self.code.len()).rev() {
+            if let Inst::Index { dst, base, .. } = self.code[pc]
+                && self.single(dst)
+                && uses[dst.0 as usize] > 0
+                && uses[dst.0 as usize] == stored[dst.0 as usize]
+            {
+                stored[base.0 as usize] += 1;
+            }
+        }
+        let mut dead_reg = vec![false; n];
+        let mut any = false;
+        for pc in 0..self.code.len() {
+            match self.code[pc] {
+                Inst::Alloc { dst, .. }
+                    if self.single(dst)
+                        && uses[dst.0 as usize] > 0
+                        && uses[dst.0 as usize] == stored[dst.0 as usize] =>
+                {
+                    dead_reg[dst.0 as usize] = true;
+                    any = true;
+                }
+                Inst::Index { dst, base, .. }
+                    if dead_reg[base.0 as usize]
+                        && self.single(dst)
+                        && uses[dst.0 as usize] == stored[dst.0 as usize] =>
+                {
+                    dead_reg[dst.0 as usize] = true;
+                }
+                _ => {}
+            }
+        }
+        if !any {
+            return;
+        }
+        for pc in 0..self.code.len() {
+            let i = self.code[pc];
+            let gone = match i {
+                Inst::Store { addr, w, .. } => w != Width::Sig && dead_reg[addr.0 as usize],
+                Inst::Index { dst, .. } | Inst::Alloc { dst, .. } => dead_reg[dst.0 as usize],
+                _ => false,
+            };
+            if gone {
+                i.visit(&mut |r, role, _| {
+                    if role == Role::Use
+                        && let Some(u) = uses.get_mut(r.0 as usize)
+                    {
+                        *u = u.saturating_sub(1);
+                    }
+                });
+                self.code[pc] = dead();
+                self.changed = true;
+            }
+        }
     }
 
     /// Remove the dead instructions and add the inserted ones, with their locations; the new

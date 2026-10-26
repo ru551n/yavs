@@ -8292,6 +8292,75 @@ against the round.
     `CopyProcess::run` (2.65 runs a delta, 956 instructions each, about 10 parts): skipping a copied part whose source had no event would change
     what a deposit or a force on the target sees at the next activation; not built.
 
+## Kernel round 24: the skip test that keeps missing, pending words in element order, the in-word commit of a register (yavs-kernel, #734, 2026-10-26)
+
+Task (orchestrator): the small-RTL designs where yavs is still slower than sim1 under `--tier=auto` (head-to-head 6: `rtl_lfsr` 1.60, `lfsr64`
+1.42, `rtl_chain` 1.29, `rtl_ff` 1.20), starting from #734; find where the per-event kernel cost goes and cut it for every clock-edge form. Bench
+builds with `llvm`, `--threads 1`; `perf stat instructions:u` of whole warm runs (two untimed runs first: the first run of a binary leaves a
+note in the compilation cache, the second makes the entries and costs up to 15% more), `tools/stepcount` windows of one clock period late in
+the run; cycles as the minimum of 7 interleaved runs on one core claimed with `tools/claim core`. Main at 504f86ad against the round.
+
+- **Where an activation goes** (per activation, compiled processes, one clock period): `rtl_ff` about 1100 instructions, of which the kernel
+  (`run_batch` 125, `commit_codes` 55, the skip test 13, finish and commit loop 13) is about 206, the compiled body about 215 and the host layers
+  between the kernel and compiled code (`InterpProcess::run`, `run_direct`, `run_cached`, `enter_on`, `view_again`, `drive_bit_now`, the
+  `yavs_rt_*` callbacks, `save_kept`, `Program::func`) about 680; `rtl_lfsr` about 1530: kernel about 450 (`run_batch` 121, `finish_direct` 118,
+  `commit_planes_run` 91, `direct_same_planes` 66, the inlined `Ctx` paths), compiled body 340, host layers about 600. sim1 runs both at about
+  1000 to 1100 per activation in total. The host layers are filed as #766 (yavs-llvm and yavs-interp, other agents' area): the kernel alone
+  cannot bring these designs to sim1. `rtl_chain` (interpreted: compiling is slower there) is 1640 instructions a delta cycle, the kernel about
+  860 of them, spread over 10 functions of 25 to 260 instructions with no single item above 80 (the three `put_plane_code` of a one-element
+  commit and finish). `#734` itself (the event stamps, run lists and codes of a signal of at most 64 elements) does not apply to any of the
+  four: each holds its registers in one signal wider than 64 elements.
+- **Edge forms.** Four `rtl_ff` variants (`if rising_edge(clk)`, `if clk'event and clk = '1'`, `if not clk'stable and clk = '1'`, `wait
+  until rising_edge(clk)`) have identical work counters and identical kernel instructions per activation; the `wait until` form runs 128
+  more interpreter instructions per activation (four more ops after the resumption), filed as #767.
+- **Decisions** (each a measured drop of instructions, results unchanged):
+  - **The skip test of a direct assignment is left out for a driver whose tests keep missing.** `Signal::direct_same` and `direct_same_planes`
+    (#720: an assignment of the value the signal and driver hold makes no entry) cost 13 and 66 instructions a call and missed at every
+    activation of a register whose value changes every cycle (a counter, a shift register, a toggling register): 4% of `rtl_lfsr`. Per driver
+    (the first `SAME_DRIVERS` = 8 of a process, `ProcState::same`; later ones always ask), after `SAME_MISSES` = 8 misses in a row the next 248
+    assignments make their entry without asking. Leaving the test out is always correct: the entry of an unchanged value commits, finishes
+    with no event (`update_word` with an empty change mask, `commit_code` returning `None` for one element) and the delta cycle happens as with
+    the skip. The state lives in `ProcState`, which every run writes: in the driver's `Waveform` (read only on this path) it was one more dirty
+    cache line per activation and cost `rtl_ff` 3% of its cycles; one counter per process (not per driver) left neo level, because a process
+    whose first assignments change silenced the test for the others. Idea of sim1: it turns off a fast driver update path when it stops
+    paying (fewer than half the parts of a signal use it); ours is per driver and comes back after 248 assignments.
+  - **Pending words in element order only where it matters.** `finish_pend` sorted the list of pending plane words of a signal at every update;
+    the processes of the elements of a vector of registers commit in descending element order (seen on `lfsr64`, `rtl_lfsr` and `rtl_ff`; the
+    batch is in process order), so it sorted a reversed list each time (57 instructions a word on `lfsr64`). Each word is finished
+    on its own, so a plain signal nothing watches (`!watched`, its changed runs are only counted) takes the words in commit order; the others
+    reverse a descending list instead of sorting it (`order_words`).
+  - **The commit of a vector entry within one plane word** (a register of an array of registers, a whole bus word) blends with one mask and
+    sets the pending bits with the same mask, instead of `put_block` and `mark_bits` each building theirs (91 to about 50 instructions an entry;
+    `OutV::planes` are masked to the length, which every producer already did).
+  - The test for implicit signals after the fast update paths is inlined (`update_implicit_quiet`), the call only for a design with implicit
+    signals (21 instructions a delta cycle of `rtl_chain`); `cycle` calls `run_one` for a batch of one process itself, without entering
+    `run_batch`; a run with one direct one-element entry pushes it without the loop.
+  - Results, instructions of whole runs (`--tier=interp`, deterministic), main against the round: `rtl_lfsr` -3.9%, `lfsr64` -4.2%,
+    `rtl_chain` -2.6%, `rtl_ff` -1.8%, `delta_chain` -6.1%, `lfsr64_xor` -2.9%, `ff_rtl` -1.7%, `rtl_ram` -1.2%, neorv32_single_min -0.5%;
+    `rtl_fan`, `rtl_bus`, `compute_h2h`, `xor_sig`, `xor_types`, `resolved_bus` level (within 0.02%). Against sim1 (`tools/bench/run.py --ref
+    sim1 --tiers auto --instructions`, instruction ratio): `rtl_lfsr` 1.59 to 1.52, `lfsr64` 1.70 to 1.61, `rtl_chain` 1.66 to 1.62, `rtl_ff`
+    1.22 to 1.20.
+  - Cycles (minimum of 7 interleaved runs on one claimed core of the second CCD), `--tier=auto` / `--tier=interp`: `rtl_ff` -3.5% / -2.2%,
+    `rtl_lfsr` -1.9% / -0.5%, `lfsr64` -3.9% / -2.9%, `rtl_chain` -1.0% / -1.4%. neorv32_single_min: +0.6% to +1.7% cycles in four sessions
+    with 0.5% fewer instructions; builds that each took one of the changes back recovered part of it, not additively (a build with neither
+    the skip-test change nor the word order was still +0.85%). Not explained by branch, L1 data or L1 instruction misses (`perf stat`); by
+    the convention of #576 a single design's cycles moving by a few percent are not decided on alone.
+  - `realbench --compare` (run phase, interpreter and auto, all 42 tests, 3 runs a cell, one core): wall geometric mean over the tests of 1 s
+    or more 1.01 (interpreter) and 0.99 (auto), summed wall 1.00 and 1.00; the `cpu` category 1.01 and 1.02 (neorv32 and LEON3); instructions
+    level (the 0.01 to 0.2 s tests move by up to 4% between two runs of one binary, `--compare base base`). The CPU designs again, interpreter,
+    5 runs a cell: neorv32_single_min 2.55 to 2.56 s, grlib_leon3mp 36.04 to 36.21 s; a build without the skip-test change gave the same
+    (2.54 to 2.56, 36.21 to 36.51), so that change is not what costs them.
+- **Measured and not taken:**
+  - Pre-shifted spread tables for the `codes` refresh (`refresh_changed_codes`, about 250 instructions a fully changed word): -0.25% instructions
+    on the LFSR designs for four 2 KB tables instead of one; not kept.
+  - One masked blend for the `cur` and `'last_value` writes of a one-element event (`finish_code`, `finish_quick`): neo -0.2%, `rtl_chain` +0.2%
+    instructions; not kept.
+  - Dropping the `codes` of signals whose sources have 9 to 16 elements (the #519 rule keeps codes up to 16): about 60 instructions an entry of
+    `lfsr64` and `rtl_lfsr` go to the refresh, but the interpreter reads single elements of `rtl_lfsr`'s registers through them; the rule is a
+    recorded decision and is left as it is (a candidate for the elaborator's facts: which signals have one-element reads).
+- **Left:** #766 (host layers around compiled clocked processes, the largest item on `rtl_ff`, `rtl_lfsr`, `lfsr64`), #767 (`wait until` form),
+  the `run_batch` loop (about 120 instructions an activation spread over 30 lines), the `codes` refresh of 16-bit registers.
+
 ## Facts the declarative part leaves in a process copy (yavs-ir `opt/decl.rs`, #678, 2026-10-24)
 
 - **Decision**: a copy of a process (`copies.rs`) takes over between two activations, so what its declarative part made is in the frame
@@ -10053,6 +10122,30 @@ what it replaced:
   writing an entry without the temporary file would save the rename but gives up that a reader never sees a short file (the checksum would catch it, so it is an option for a later round).
   `Manifest` lookups by path are linear in the files of the library (`index_of_str`); they do not show in a profile of 449 files.
 
+## Cold analysis: unit entries and records created in place (yavs-cache, yavs-lib, #747, 2026-10-26)
+
+- **Decision: an analysed-unit entry and a library record are created under their own name, with no temporary file and rename.** A cold analysis of a small library makes a hundred or more of each
+  (`fletcher_*`: 204 entries and 101 records for 101 files); the 306 renames were a twentieth of the cycles of the call and a fifth of its kernel cycles. The unit store (`Store::units_of_library`, `direct`)
+  opens the entry with `create_new`; a name that exists (a cut-short entry of a killed call, or another run's entry) takes the old path, a temporary file renamed over it, so a damaged entry heals at the next
+  `put`. Every other kind of entry (the stage images, the compiled code) keeps the rename: there are a few per call and they are big. A record (`write_record`) is created the same way; one of the same length is
+  kept (named by the digest of its text, so it is the same record), a shorter one is rewritten whole. The index keeps the rename.
+- **Why this is safe, and what changes.** The no-fsync ruling (user, 2026-10-23, #561) rested on "every file is renamed into place". For the index and the other cache kinds that still holds. A record is read
+  only after the index names it, and the index is renamed last, so no reader meets a record half written; a call killed while writing one leaves a short record that nothing names and the next call rewrites.
+  A unit entry can be met half written by a concurrent reader (or left short by a killed call): `get` checks the length and the xxh3 checksum of every entry, so it is a miss, as a damaged entry always was;
+  `payload_len`, which used the file size alone, now compares the size with the length in the header, so such a file is not counted as present (it is what `builtin_bodies_missing` asks). Windows keeps the temporary file
+  and rename for entries (the fast path is Unix-only).
+- **Measured** (`tools/realbench --compare`, bench builds with `--features llvm` of origin/main and of this change, analysis phase, batched calls, claimed core 8, 5 runs, host load 5 to 8; B/A): cold instructions
+  0.98, cold CPU 0.91, cold wall 0.98 (0.93 `poc_strings`, 0.95 `sc5_timestamp`, the rest within the 10 ms resolution of the cell), warm unchanged. On the `fletcher` selection (101 files), `perf stat` over 15 interleaved cold
+  calls: task clock 85.8 to 81.3 ms, kernel cycles 83.8 to 66.3 M, user instructions unchanged. Elaboration and run cells unchanged (instructions 1.00).
+- **Where a cold call of a small library spends its cycles** (frame-pointer profile, `fletcher` selection, before this change): analysis of the files 42 percent, parsing 18, encoding the unit entries 16, creating
+  entries and records 13, the rest startup and exit. The `std`/`ieee` packages a library uses (0.2 G instructions for `fletcher`, 204 M of it their bodies, stored for the first elaboration) are the
+  same work in every fresh library; a copy of the 22 std/ieee entries into the fresh library before the call, as a shared store would give, saves 13 to 27 percent of its instructions (`fletcher` 27, `neorv32_single_min` 24,
+  `en_cl_fix_pkg` 18, `poc_strings` 18, `sc5_timestamp` 13) and 7 to 21 percent of its wall. Sharing them was declined (#564, user, 2026-10-23: keep std/ieee analysed per library), so it is not done; these are the
+  numbers if it is asked again.
+- **Tried, not kept**: a push-based `postcard` flavor for the unit entries (instructions -0.5 percent, cycles flat); one thread-local access per serialized id instead of two (-0.15 percent).
+- **Not done**: writing the entries from a thread of their own (a call on a host with a free core overlaps its 13 percent of file creation, but every timed cell is pinned to one core, so it would not show there);
+  storing the std/ieee bodies at the first elaboration instead of at the end of `analyze` (moves 204 M instructions from the analysis to the elaboration of the same flow, no gain in the total).
+
 ## Temporaries of a process in its frame (yavs-ir `opt/slots.rs`, yavs-interp `pre.rs`, yavs-llvm `lower.rs`, #668, #746, #751, #752, 2026-10-25)
 
 - **Source**: two independent implementations of the issue (branches `compare/opus-668`, "A", and
@@ -10341,3 +10434,167 @@ suspends is **10^9 jumps back** (was 10^7, interpreter only) and compiled code k
   `rss::a_loop_without_a_wait_keeps_memory_flat`, perf case `llvm_nowait` (2 exits for 2.5 million jumps),
   corpus `process/no_wait_infinite` (`spin=3000000`, `ignore=stderr`: only yavs prints the W3102 warning).
 
+
+## llvm: an object table keyed by machine (yavs-llvm `rt.rs`, `lower.rs`, yavs-interp `TierState`, #679, 2026-10-26)
+
+Over the whole LEON3 run with every function compiled, the tier's own work at the start of an activation was 4 percent of the
+simulation thread's cycles (`Mem::load_objs` 3.1, `begin_kept` 0.8): the object table was one per thread and keyed by address,
+so a change of machine dropped the other machine's instance data and heap objects (a walk), and the process's record of up to 64
+objects was entered again at every activation. The SDRAM models (`state_register`, four instances of one process) and the TLBs
+have short activations, so this paid for itself on every wake.
+
+- **Decision: an entry's key is the address high half or-ed with a tag, one tag per address space** (`Mem::tags`, `Mem::slot`;
+  the 32-bit high half leaves bits 32 and up free): instance data, package data and shared variables carry the machine's tag,
+  heap objects the machine's heap tag (valid for one heap epoch), constants the runtime's tag, frame and temporary objects the
+  activation's tag. Dropping a group of objects is taking a new tag (`Mem::issue`, a counter of the thread's table): the old
+  keys simply miss, no walk. Why: the objects of every machine survive other machines' activations, so the per-activation walk
+  and restore are gone (`load_objs`, `save_objs`, `begin_kept`, `settle`, `retain*`, the `occ`/`occv` summaries and the `mine`
+  record are removed).
+- **Decision: the entry is also moved by an offset of the tag** (`Mem::mixes`, `mix`: a multiplicative hash of the tag, scaled
+  by the entry size, xor-ed into `obj_at`). Why: the instances of one process use the same addresses for their own objects (the
+  same instance-data and heap indices); without the offset they would take the same entries and evict each other at every
+  alternation.
+- **Decision: a process's record (`yavs_interp::TierState`, 4 words) holds the table's identity, the heap epoch, the heap tag
+  and the machine tag**; the next activation keeps the machine tag when the identity matches and the heap tag when the epoch
+  matches too (`Mem::begin`). A call from the interpreter (`Tier::call`, no record) keeps the tags of the last activation or call
+  on the thread when it is of the same machine (and epoch). The heap epoch counts every deallocation and edit in place (garbage
+  collection deallocates), so the heap objects of a machine stay valid while it is unchanged: a host call that changed it takes a
+  new heap tag (`Mem::forget`, was a walk keeping the machine's objects); frames and temporaries take a new tag at the end of an
+  activation that found one and after every host call. With `TIER_STAMPS` (someone compares heap objects by write counts) every
+  activation takes a new heap tag, so every write of an earlier-found heap object is seen again (was: `TierHost::wrote` for the
+  kept writable objects, now removed; a ponytail in `Mem::begin`).
+- **Decision: the table has 16 384 entries** (`OBJS`, one cache line each, one megabyte per simulation thread, built zeroed in
+  place: `Mem::new`; the empty entry is all zero, a key of tag 0, which no space has). Lookups of the whole LEON3 run that had to
+  ask the interpreter (`yavs_rt_obj`): main 15.7 million, keyed with 4 096 entries 21.7 million (the objects of all machines
+  compete for the entries), 16 384 entries 7.2 million, 65 536 entries 6.6 million. What is left is mostly heap objects found
+  again after a `textio` read edited a line in place (2.2 million new heap tags, in `HRead` and `state_register`), which the old
+  table dropped too. Tags run out after 2^31: the table is emptied and gets a new identity (`Mem::wipe`), so no record names a
+  tag twice.
+- **Generated code** (`Gen::obj_tag`, `Gen::obj_entry`): a heap access and `Deref` read the heap space's tag and offset at fixed
+  offsets of `Mem`; an access of unknown space indexes `MEM_TAGS`/`MEM_MIXES` by the space bits of its address (two loads from
+  one line). The `Deref` hit test compares the access value and the tag (two machines hold the same access values). The callbacks
+  that may take a new tag all receive `mem`, so LLVM reloads the tags after them.
+- **Measured** (whole LEON3 run, bench builds, `perf stat --no-inherit` of the simulation thread, one claimed CCD1 core, cells
+  interleaved, medians of 4, warm compilation cache; heat = `--tier=auto --tier-heat=1,0,0`; auto worlds settled by four runs
+  each since the run-to-run profile): see docs/STATUS.md "llvm: an object table keyed by machine".
+- **Cost:** native-frame code pays for the tag in its inline lookups of unknown space (two more loads of `Mem`): `poc_stat_histogram`,
+  whose time is element loops on native frames, +2.8 percent instructions and +3.2 percent cycles; the 42 designs of
+  `tools/realbench` are level in the geometric mean (docs/STATUS.md).
+- **Not done:** the kept drives (#679's second half) are still above the interpreter's drive path: about 9 percent of the heat run's
+  samples in the drive callbacks and the kernel functions they reach (`assign_codes_now` 2.2, `drive_now` 1.6, `yavs_rt_drive` 1.4,
+  `drive_bits` 1.0, `direct_same`, `direct_same_planes`, `Ctx::assign`) against about 5.7 in the interpreter (`drive_run` 2.0,
+  `direct_same_planes` 2.2, `direct_same`, `Ctx::assign`). Inside `assign_codes_now` most samples are loads that miss: the driver's
+  `direct` flag, the waveform's pending list, the signal. A batch has 3.8 entries on average. Loading the waveform words of `yavs_rt_drive` one by one (the profile showed most of its
+  samples on a merged 16-byte load) changed nothing measurable and was not kept.
+- **The reference simulator (rule 22).** It needs no object table: compiled code holds raw pointers, and each instance's data is
+  reached through its own context pointer. The idea taken is the outcome: a process's objects belong to that process and do not
+  have to be found again because another one ran. Nothing was copied.
+
+## `--tier=auto` first-run latency: prices of compute loops by mode, frame-mode code of native loops on demand, copies repay their own compile, memo votes by callers (yavs-llvm, yavs-interp, #757, #762, 2026-10-26)
+
+Policy owner's round after the batched-analysis basis made short runs (0.3 to 3 s) decide the totals against sim1. Measured with bench builds of
+`0dcfa551` ("main") and of this change, a fresh copy of the pristine world per binary and round, the analysis caches filled by two untimed
+`--tier=interp` runs, then four consecutive `--tier=auto` runs (run 1 = cold, run 3 = what `tools/realbench` times as warm), one claimed core of
+CCD1 for all cells of a test, 5 rounds interleaved, medians, wall from `perf stat duration_time`. Tables: docs/STATUS.md "`--tier=auto`
+first-run latency".
+
+- **Cause: the compute model priced both kinds of compute loop as neither.** `Kind::Compute` (4 ms + 900 us an IR instruction) covered the
+  native-frame code of a compute function and the frame-mode code of a process with a loop. Measured compile CPU: native-frame code 33, 53 and
+  62 ms for 79, 107 and 153 IR (`get_row`, `to_slvv_8`, `to_slm` of `poc_stat_histogram`; the model said 75, 100, 142), frame-mode code 21 to
+  75 ms for 91 to 448 IR and 146 ms for 949 (the model said 86 to 410 and 860). **Decision: frame-mode compute loops are a kind of their own,
+  `ComputeFrame` (15 ms + 110, speedup 1.8); `Compute` (native frames) keeps its price and speedup.** The speedup of `ComputeFrame` is what
+  the trials of `sc5_fifo_repack` measure (a `p_col` copy seen for 19 percent of the run gave 1.09 to 1.13 times the progress: about 1.75 for
+  its own time; all six processes forced were 26 percent of the run, #675) and stays above `profile::EARLY_SPEEDUP` so the profile keeps
+  listing such processes. `Compute` at its measured price was tried twice and dropped: at speedup 2.4 it compiled the string loops of the
+  verification libraries early, which run no faster compiled and, linked from the cache, made every warm run slower too (`uvvm_sb_slv`
+  `match_identifier`: 8 percent more instructions warm and cold; `uvvm_axistream_vvc` cold +16 percent with
+  `convert_byte_array_to_slv_array` and its callees, 0.5 s of compile CPU at 1.9 s of a 2.9 s run); at speedup 1.3 (the old thresholds) the
+  budget still let a clocked process whose tree holds a compute callee in at the end of a 0.6 s run (`poc_cache_cpu` cold +11 percent, the
+  compile still running when the run ended). The old price is the guard against both; what tells the winners (`poc_stat_histogram`:
+  element-loop copies, 3 to 4 times faster compiled) from these losers was not found (the histogram's functions have more loops than element
+  loops, so a kind by the loops' shape does not separate them; a per-function verdict would, the profile judges processes only). `Loop`
+  (native frames with a loop that is no compute loop) is priced for its native-frame code alone, 4 ms + 550 (the price of `Native`; it had paid
+  for two modules).
+- **Cause: the frame-mode code of a native function with a loop was compiled right after its native-frame code** (`Part::Both`, 176 of
+  426 ms of compile CPU in a cold `poc_stat_histogram`), though no native frame of it ever left to the interpreter there, and the second
+  module was priced as a link (the cache list had the name from the first module), so the budget saw 1.8 ms for a 39 ms compile.
+  **Decision: such a function is compiled as native-frame code alone; its frame-mode code is compiled once the function is seen interpreted
+  again for that code's payback (`Worker::frame_at`), as a root of its own without callees** (a native frame left to the interpreter goes
+  on interpreted, which is what the samples see; the callees its native code left out were never seen running, and compiling them with the
+  frame-mode code brought sixty logging functions of the window generator along). Under `--tier-heat` (no budget) both modules are made at
+  once as before, so the CI legs keep covering frame-mode code of such functions. `price_of` no longer halves the price of a part. A
+  function whose native-frame code exists (linked from the cache by the probe, or compiled as a callee) that becomes a candidate gets a
+  `frame_at` instead of a compile of its frame-mode code (that was the old path to it: a warm run compiled 40 ms of frame-mode code per
+  such function), and a native-frame module the cache had brings its frame-mode module along when the cache has that too (a link,
+  `Worker::compile`). Found on the way, #764: in some second runs a memoised function with published native-frame code keeps running
+  interpreted (`to_slvv_8` of `poc_stat_histogram`, depending on the order its callers' code is linked, never with `YAVS_NO_PMEMO=1`);
+  `frame_at` then compiled its frame-mode code after about 250 ms. Fixed in 9418e648 by another agent; with it the second run is level with main.
+- **Cause: every copy of a hot process was a candidate.** The seen time of a process counts for all its copies (#661), and once the process
+  was hot every copy that ran was compiled; copies differ in their constants, so each is a module of its own (50 ms each in
+  `sc5_fifo_repack`, seen for 5 to 250 ms each). With the cheaper frame-mode price that turned into twenty cold compiles and a cold run 8
+  to 13 percent slower (autopol2's finding). And the cache list keys functions by name and size, which copies share, so one compiled copy
+  made every other copy of the process look cached (priced as a 6 ms link). **Decision: a copy of a process that is not a clocked process
+  (`rtl`) is a candidate once the process is hot and the copy itself was seen for its own payback (`need` of its own length); clocked
+  processes keep the pooled rule (`poc_arith_addw`, #675), and the cache list names a copy by `Program::copy_tag` (`Worker::list_key`; a
+  copy linked as the twin of another is listed under its own name too).** The profile's early path is unchanged: a listed process still
+  compiles every copy at its first look (that is what the warm runs gain).
+- **#762: the memo of a pure function stays on for all processes until `VOTES` (3) have given it up**, so a function two processes call
+  (`get_row` of `poc_stat_histogram`: the testbench and the unit) kept every compiled call going through `yavs_rt_memo` and
+  `TierHost::memo_probe` (7.3 percent of the warm run's cycles, `Machine::memo_probe` with its `pm.take()` and `is_off` scan). **Decision: off
+  for all once `VOTES` or every process that called it so far has given it up** (`Pre::memo_users`, counted at a process's first call of the
+  function). Accepted: a process that starts calling after the others gave up does not get the memo. After: the memo symbols are 0.7
+  percent of the cycles. Counter `pmemo_off` (functions whose memo is off for all), test `perf/memo_giveup.vhd`. The idea of a flag that
+  compiled code tests before the callback was not needed.
+- **Not done, why:** compiling on spare cores (every timed comparison pins the run and its compile thread to one core, so it cannot show
+  there, and the budget would need a second rule for it); a cheaper first level for frame-mode copies (`Fast` code is about 1.7 times slower
+  and the copies' gain is 1.75 at O2); batching copies with equal code (twins, #713, already compile once; the `sc5_fifo_repack` copies
+  differ).
+
+## The HRead digit loop: table reads before the first pass, facts about the words of one block, slices of constant length (yavs-ir `opt.rs`, `opt/inline.rs`, yavs-interp `ieee.rs`, #744, 2026-10-26)
+
+The S-record start-up of the twelve memory models of `grlib_leon3mp` is the digit loop of the `HRead` of GRLIB's `stdio` package: `SV(4*i to 4*i+3) := FromChar(S(i)); if Is_X(SV(4*i to 4*i+3))`
+for every hex digit, run from the textio package at start-up (more than half of the profile of the first 1 us, `--tier=interp`, after #722). The cost is general: every
+`v(a to a + k) := f(x)` or `g(v(a to a + k))` on a slice of constant length pays for a descriptor, a length check, a layout and a position per statement. The loop took 33 interpreter ops
+per digit (the table read of #722 built a fat pair in a block of its own and read both words back; both slices made a descriptor of their length and checked it against the length of the
+result; the second slice repeated the position of the first); it takes 13.
+
+- **A result-table read is made before the first optimiser pass** (`opt/inline.rs` `tab_calls`, called by `optimize_body_with`), not by the inliner after it. The reads of #722 are inlined
+  after the register sharing (`renumber`), where most registers are defined more than once and the optimiser does not follow their values; the loads of the two words of the pair
+  `tab_forwarder` builds were never forwarded from the stores that built them. Before the first pass the registers of the read are new and defined once. Only reads that are one path
+  (the argument type is an enumeration, every value tabulated: no range test, no call) are taken early, and the call's statement stays on the inlined instructions (no `via`
+  entry: a table read cannot fail, so a trace needs no frame for it). A table with a range test or a validity mask keeps the inliner's join and call path. `YAVS_NO_CASETAB=1` and
+  `YAVS_NO_INLINE=1` turn it off.
+- **Facts the walk keeps** (`opt.rs`): a `TempRoot` writes no memory (it registered the pair block and so forgot every fact, a load right after it read memory again); a store forgets
+  the facts about another word of the same block only when its bytes overlap (`kill`: two `Index` results of one block by constants, `iat`), so the pair's two stores no longer
+  forget each other; a stored address that a register holds (an `AddrOf` result defined once) is what a load of that word gives back; a load is aliased to a register only of the same
+  register type; a frame address that `Copy`, `LCopy`, `LFill`, `LSet`, `LGet`, `MemEq`, `Zero`, `MakeDope`, `DopeLen`, `SlicePos`, `Pos`, `SubtypeCheck` or `LayoutOf` read or write through
+  does not escape (`escapes`: the facts about the descriptors of a frame slot survived no copy into a vector before); a second `SlicePos` of the same slice of the same descriptor is
+  the first one (`Key::Slice`).
+- **The length of `MakeDope [x + p, x + q]`** for one register `x` defined once and constants `p`, `q` is `q - p + 1` (0 if that is negative; `downto` the other way round): the
+  additions are checked, so on the path that continues it is exact (`note_affine` keeps `aff`, `affine_len`). `DopeLen`, `LayoutOf` of the slice and the `SubtypeCheck` of its length against
+  the pool descriptor of a table result fold, and the descriptor goes with its block.
+- **A block that is only stored into goes** (`drop_stored_only_blocks`, in `dce`): an `Alloc` defined once whose every use is the address of a `Store` or the base of an `Index`
+  that only addresses stores (the fat pair of a table read once its words were forwarded) loses the `Alloc`, the stores and the indexes. `dce` runs before `drop_statements` at the end
+  of `run` so that the markers of statements whose temporaries are gone go with them.
+- **Interpreter** (`yavs-interp` `ieee.rs`): `is_x` of a vector reads the plane words in place (it made a `LogicVec` with a heap vector for every call, a few percent of the loop with `malloc` and `free`); `to_bitvector (std_ulogic_vector, bit)` is a native (the 1164 body is an
+  element loop with a `case`: 6 to 9 percent of the start-up through `HRead (bit_vector)`).
+- **Measured** (bench builds with `llvm`, `--tier=interp` unless said, cores 8 to 15 by `tools/claim core`, `perf stat`; before = the commit before this change). `grlib_leon3mp`, the first 1 us
+  (elaboration and S-record start-up): warm compilation cache 51.89 G to 31.54 G instructions (-39.2 percent), 13.82 to 13.91 G cycles to 8.33 to 8.48 G, CPU time 2.72 s to 1.65 s (3 interleaved
+  pairs); empty cache 60.69 G to 40.39 G instructions (-33 percent), 3.30 s to 2.24 s CPU. The whole run (`--stop-time=1060500ns`, `tools/realbench --compare`, median of 3, core 8): `--tier=interp`
+  36.02 s to 34.87 s wall, 449.1 G to 428.1 G instructions; `--tier=auto` 36.54 s to 35.38 s, 439.4 G to 428.9 G; with an empty cache 36.95 s to 35.68 s (interp), 37.19 s to 36.53 s (auto) (the start-up is about a thirteenth of the run). The first 1 us, same core, interleaved: `--tier=auto` 35.5 G to 27.1 G instructions, 2.0 s to 1.45 s; `--tier=llvm` 84.3 G to 72.5 G, 7.5 s to 6.85 s. A reproducer with the shape of
+  the loop (240 000 `HRead` calls of 32 bits, 7 digits each): 76.1 M to 39.4 M ops, 7.43 G to 4.17 G instructions, 33 to 13 ops per digit; one digit of 8 bits: 56.9 M to 41.1 M ops.
+  Breadth (`tools/realbench --compare`, 42 tests, run phase, `interp` and `auto`, one run per cell): geometric mean of the instruction ratios 0.99 and 1.00 (every test within 5 percent
+  but two `auto` cells at 1.05 and 1.07 that repeat at 1.00 and 0.99 over 5 runs), of the CPU-time ratios 0.96 and 1.01; empty cache (`interp-cold`, `auto-cold`, so the optimiser's first
+  run): instruction ratio geometric mean 1.00 and 1.00 (small tests +1 to 2 percent, the cost of the extra `dce` and the table pass on the first call of each function). The standard `hread` of
+  `ieee.std_logic_textio` (2008) into 32 and 64 bit vectors, 20 000 lines of six words: 7.30 G to 5.58 G instructions, 0.38 s to 0.29 s wall (same core, interleaved). `tools/bench` designs `textio_heavy`, `file_io`, `strings_heavy`,
+  `ieee_heavy` and `report_heavy` run the same instructions (to 0.03 percent); `textio_heavy` alone has 3.7 percent more cycles over 8 interleaved pairs with 7.6 percent more L1 instruction cache
+  misses, the layout effect of #576 (the executed instruction counts are equal). `case_tab` fell from 17.4 k to 13.2 k ops, `spec_nested` (the copy) from 312 k to 218 k and `slice_memo` from 1.5 k to 1.4 k (their ceilings are lowered), the
+  work-counter case `hread_loop` bounds a digit loop of this shape.
+- **Tests**: `opt` (`a_slice_whose_bounds_differ_by_a_constant_has_that_length`, `a_block_only_stored_into_goes`, `registering_a_root_forgets_nothing_about_memory`, the words of a
+  descriptor that a store beside them does not change), `ieee_native` (`to_bitvector` of random operands, natives on and off), perf case `hread_loop`, and the differential cases of #722
+  (`casetab`). The `make_temporary` of the `opt` tests keeps its block as a root, and the `opt_slots` tests put a store through an unknown pointer between the writes and the reads of a
+  block: both blocks were only written or read back from the stores, which the optimiser now follows.
+- **Not done** (issues): `Init_mem` of the SDRAM model (element-by-element fill of a row through an access value, 18 percent of what is left of the start-up, #768); the fixed cost of an
+  `HRead` call (two frames with descriptors, two natives, the `Copy` of the descriptors: 86 ops for one digit, #771); a copy-free `Is_X` of a slice (the slice is copied into a block first: `Alloc` +
+  `LCopy` + native, #770); the table path with a range test or a validity mask (integer arguments) still has the join and the pair (#769). Range proofs for `4 * i` and `4 * i + 3` against the
+  integer range (two `BinRange` per digit stay) are not planned.

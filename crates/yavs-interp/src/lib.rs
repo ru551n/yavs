@@ -56,7 +56,7 @@ pub use debug::{
 pub use exec::{SPIN_CHECK, SPIN_LIMIT, copy_bits};
 pub use heap::{Heap, collections as gc_collections};
 pub use ieee::{code_table, edge_native};
-pub use pmemo::pmemo_stats;
+pub use pmemo::{pmemo_off, pmemo_stats};
 pub use pre::{
     ScalarDrive, light_ieee as light_native, retreating_brs, scalar_drives, static_wait,
 };
@@ -432,8 +432,9 @@ pub enum Called {
     Fault,
 }
 
-/// The words of a [`TierState`].
-pub const TIER_STATE_WORDS: usize = 4 * 64 + 1;
+/// The words of a [`TierState`] (the compiled tier keeps the identity of its object table, the
+/// heap epoch and the tags of the process's objects there).
+pub const TIER_STATE_WORDS: usize = 4;
 
 /// What a tier keeps for one process between activations ([`Tier::run_cached`]).
 pub struct TierState {
@@ -590,13 +591,6 @@ pub trait TierHost {
     /// `view` for a process in its root frame, with every field written but straight from the
     /// machine's fields; `false` (nothing written) when it is not (use `view`).
     fn view_again(&mut self, fr: &mut TierFrame) -> bool;
-
-    /// Compiled code keeps writing the heap object (process or shared heap) at `addr` that it
-    /// found writable at an earlier activation or call: count this one's writes as the object's
-    /// (`Heap::data_mut`), which tells the waveform recorder the object may have changed.
-    fn wrote(&mut self, addr: u64) {
-        let _ = addr;
-    }
 
     /// `drive_block` for a zero delay and one element of a logic signal, when the kernel takes
     /// it on its fastest path: `true` when done; `false` (nothing done) otherwise, and the
@@ -976,8 +970,8 @@ pub const TIER_SHARED_ALLOC: u64 = 1;
 /// `TierFrame::flags`: the process may use the shared state, as a protected call needs.
 pub const TIER_SERIAL: u64 = 2;
 /// `TierFrame::flags`: someone compares heap objects by their write counts (`Stamp`, the
-/// waveform recorder): compiled code that keeps writing an object it found earlier must say so
-/// (`TierHost::wrote`).
+/// waveform recorder): compiled code keeps no heap object across activations, so every write
+/// goes through `TierHost::object` and is counted.
 pub const TIER_STAMPS: u64 = 4;
 /// The tag in the top byte of a handle into the shared heap.
 pub const SHARED_TAG: u8 = heap::SHARED;
@@ -1104,7 +1098,7 @@ pub struct Runtime {
 
 /// Which functions have compiled code, for the fast loop (`Runtime::native_flags`).
 pub struct NativeFlags {
-    /// Some function has compiled code (or `set_eager` asks for it): until then the fast loop
+    /// Some function has compiled code, is called on a native frame or is asked for (`set_eager`): until then the fast loop
     /// runs without the compiled tier's bookkeeping and looks here now and then.
     any: std::sync::atomic::AtomicBool,
     /// Per function, so the fast loop asks without a virtual call: `NAT_CODE` when it has
@@ -1206,14 +1200,14 @@ impl NativeFlags {
         }
     }
 
-    /// Nothing compiled, asked for or counted any more: the fast loop goes back to the one
+    /// Nothing compiled, asked for, called natively or counted any more: the fast loop goes back to the one
     /// without the tier's bookkeeping. Only the thread that calls `set` calls this, so the two do
     /// not race.
     fn refresh(&self) {
         if !self
             .func
             .iter()
-            .any(|n| n.load(Ordering::Relaxed) & (NAT_CODE | NAT_ASK | NAT_COUNT) != 0)
+            .any(|n| n.load(Ordering::Relaxed) & (NAT_CODE | NAT_ASK | NAT_CALL | NAT_COUNT) != 0)
         {
             self.any.store(false, Ordering::Release);
         }
@@ -1224,6 +1218,9 @@ impl NativeFlags {
         if let Some(n) = self.func.get(func.0 as usize) {
             n.fetch_or(NAT_CALL, Ordering::Release);
             self.note(func.0);
+            // The fast loop syncs `Pre::native` only while `any` holds: native-frame code alone
+            // (no `set`) must switch it on too, or its callers never see the flag (#764).
+            self.any.store(true, Ordering::Release);
         }
     }
 
@@ -1269,6 +1266,15 @@ pub(crate) const NAT_ASK: u8 = 2;
 pub(crate) const NAT_CALL: u8 = 4;
 /// `NativeFlags::func`: the activations of the process function are counted (`NativeFlags::count_on`).
 pub(crate) const NAT_COUNT: u8 = 8;
+
+/// `profile_sampler` exists: `Machine::tier_call` names the callee in the thread's `pc_slot` for
+/// as long as the tier runs it on a native frame (#760).
+pub(crate) static PROFILE_NATIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// The IR pc half of a `pc_slot` value that marks a native-frame call: the function half names
+/// the callee.
+pub(crate) const NATIVE_PC: u32 = u32::MAX;
 
 /// What each simulation thread interprets, for the sampler of a compiled tier
 /// (`Runtime::sampler`): `runtime id << 32 | function`, 0 while it interprets nothing. One
@@ -1711,9 +1717,38 @@ impl Runtime {
                 .iter()
             {
                 let (v, at) = (s.load(Ordering::Relaxed), pc.load(Ordering::Relaxed));
-                if v >> 32 == id && at >> 32 == v & 0xffff_ffff {
+                if v >> 32 == id && at >> 32 == v & 0xffff_ffff && at as u32 != NATIVE_PC {
                     out.push((FuncId(v as u32), at as u32));
                 }
+            }
+        }
+    }
+
+    /// `sampler` for the profiler (`yavs run --profile`): a function the tier runs on a native
+    /// frame for an interpreted caller (`Tier::call`) is reported as itself, compiled, instead of
+    /// as its caller (the outermost such function when native frames call each other).
+    pub fn profile_sampler(&self) -> impl Fn(&mut Vec<(FuncId, bool)>) + Send + 'static {
+        PROFILE_NATIVE.store(true, Ordering::Relaxed);
+        let (id, native) = (u64::from(self.id), self.native.clone());
+        move |out| {
+            for (s, pc) in SLOTS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+            {
+                let (v, at) = (s.load(Ordering::Relaxed), pc.load(Ordering::Relaxed));
+                if v >> 32 != id {
+                    continue;
+                }
+                if at as u32 == NATIVE_PC {
+                    out.push((FuncId((at >> 32) as u32), true));
+                    continue;
+                }
+                let compiled = native
+                    .func
+                    .get(v as u32 as usize)
+                    .is_some_and(|n| n.load(Ordering::Relaxed) & NAT_CODE != 0);
+                out.push((FuncId(v as u32), compiled));
             }
         }
     }

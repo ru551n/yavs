@@ -475,7 +475,8 @@ fn a_slot_whose_address_is_passed_stays_in_memory() {
     assert!(loads >= 1 && stores >= 3, "{loads} loads {stores} stores");
 }
 
-/// A statement that makes a temporary: `Alloc` of 8 bytes and a store into it.
+/// A statement that makes a temporary: `Alloc` of 8 bytes and a store into it, kept as a root
+/// (a block that is only stored into is dead and goes).
 fn make_temporary(fb: &mut FuncBuilder<'_>) {
     fb.stmt(StmtKind::VarAssign, sp());
     let n = fb.int(8);
@@ -485,6 +486,11 @@ fn make_temporary(fb: &mut FuncBuilder<'_>) {
         addr: a,
         src: n,
         w: Width::B8,
+    });
+    fb.emit(Inst::TempRoot {
+        addr: a,
+        desc: None,
+        ty: None,
     });
 }
 
@@ -1193,6 +1199,198 @@ fn a_descriptor_nobody_reads_goes_with_its_block() {
     assert_eq!(
         count(&code, |i| matches!(i, Inst::MakeDope { .. })),
         0,
+        "{code:?}"
+    );
+}
+
+/// The constant `Ret` returns, if the code ends in a `Ret` of a register a `Const` defines.
+fn returned_const(code: &[Inst]) -> Option<i64> {
+    let r = code.iter().find_map(|i| match i {
+        Inst::Ret { v: Some(r) } => Some(*r),
+        _ => None,
+    })?;
+    code.iter().find_map(|i| match i {
+        Inst::Const { dst, v } if *dst == r => Some(*v),
+        _ => None,
+    })
+}
+
+#[test]
+fn a_slice_whose_bounds_differ_by_a_constant_has_that_length() {
+    if !on() {
+        return;
+    }
+    // The length of `(x, x + c, dir)` through a checked addition: `c + 1` to, `c + 1` downto
+    // with the bounds the other way round, and 0 when the range is null.
+    let len = |c: i64, dir: i64, swap: bool| {
+        let code = build(FuncKind::Function, |fb| {
+            fb.slot(16, 8);
+            fb.stmt(StmtKind::Return, sp());
+            pin(fb, 0);
+            let x = load(fb, 0);
+            let (k, lo, hi) = (fb.int(c), fb.int(-1000), fb.int(1000));
+            let what = fb.program().check_msg("range", Dir::To);
+            let r = fb.reg(RegTy::I64);
+            fb.emit(Inst::BinRange {
+                op: IntOp::Add,
+                dst: r,
+                a: x,
+                b: k,
+                lo,
+                hi,
+                what,
+            });
+            let size = fb.int(24);
+            let dope = fb.reg(RegTy::Ptr);
+            fb.emit(Inst::Alloc { dst: dope, size });
+            let d = fb.int(dir);
+            let parts = if swap {
+                fb.regs(&[r, x, d])
+            } else {
+                fb.regs(&[x, r, d])
+            };
+            fb.emit(Inst::MakeDope { at: dope, parts });
+            let n = fb.reg(RegTy::I64);
+            fb.emit(Inst::DopeLen {
+                dst: n,
+                dope,
+                dim: 0,
+            });
+            fb.emit(Inst::Ret { v: Some(n) });
+        });
+        assert_eq!(
+            count(&code, |i| matches!(i, Inst::DopeLen { .. })),
+            0,
+            "{code:?}"
+        );
+        assert_eq!(
+            count(&code, |i| matches!(i, Inst::MakeDope { .. })),
+            0,
+            "{code:?}"
+        );
+        returned_const(&code)
+    };
+    assert_eq!(len(3, 0, false), Some(4));
+    assert_eq!(len(3, 1, true), Some(4));
+    assert_eq!(len(-1, 0, false), Some(0));
+    assert_eq!(len(-5, 0, false), Some(0));
+    assert_eq!(len(0, 0, false), Some(1));
+}
+
+#[test]
+fn a_block_only_stored_into_goes() {
+    if !on() {
+        return;
+    }
+    // The pair of an inlined table read once its words were read back: nothing reads the block.
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(16, 8);
+        fb.stmt(StmtKind::Return, sp());
+        pin(fb, 0);
+        let x = load(fb, 0);
+        let size = fb.int(16);
+        let a = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Alloc { dst: a, size });
+        fb.emit(Inst::Store {
+            addr: a,
+            src: x,
+            w: Width::B8,
+        });
+        let eight = fb.int(8);
+        let b = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Index {
+            dst: b,
+            base: a,
+            pos: eight,
+            stride: 1,
+        });
+        fb.emit(Inst::Store {
+            addr: b,
+            src: x,
+            w: Width::B8,
+        });
+        let z = fb.int(0);
+        fb.emit(Inst::Ret { v: Some(z) });
+    });
+    assert_eq!(
+        count(&code, |i| matches!(
+            i,
+            Inst::Alloc { .. } | Inst::Index { .. }
+        )),
+        0,
+        "{code:?}"
+    );
+    // (The store of `pin` is all that is left.)
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Store { .. })),
+        1,
+        "{code:?}"
+    );
+    // The same block handed to a call stays.
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(16, 8);
+        fb.stmt(StmtKind::Return, sp());
+        let size = fb.int(16);
+        let a = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Alloc { dst: a, size });
+        let seven = fb.int(7);
+        fb.emit(Inst::Store {
+            addr: a,
+            src: seven,
+            w: Width::B8,
+        });
+        let native = fb.program().native("yavs.implicit.eq.integer", None);
+        let args = fb.regs(&[a, seven]);
+        let r = fb.reg(RegTy::I64);
+        fb.emit(Inst::CallNative {
+            native,
+            args,
+            dst: Some(r),
+        });
+        fb.emit(Inst::Ret { v: Some(r) });
+    });
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Alloc { .. })),
+        1,
+        "{code:?}"
+    );
+}
+
+#[test]
+fn registering_a_root_forgets_nothing_about_memory() {
+    if !on() {
+        return;
+    }
+    // A `TempRoot` writes no memory: the word stored in the block before it reads back.
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(16, 8);
+        fb.stmt(StmtKind::Return, sp());
+        pin(fb, 0);
+        let x = load(fb, 0);
+        let size = fb.int(16);
+        let a = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Alloc { dst: a, size });
+        fb.emit(Inst::Store {
+            addr: a,
+            src: x,
+            w: Width::B8,
+        });
+        fb.emit(Inst::TempRoot {
+            addr: a,
+            desc: None,
+            ty: None,
+        });
+        let y = fb.reg(RegTy::I64);
+        fb.emit(Inst::Load {
+            dst: y,
+            addr: a,
+            w: Width::B8,
+        });
+        fb.emit(Inst::Ret { v: Some(y) });
+    });
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Load { .. })),
+        1,
         "{code:?}"
     );
 }
@@ -2279,11 +2477,31 @@ fn a_made_descriptor_gives_its_bounds_back() {
         }),
         0
     );
-    // A store into the descriptor changes the word it writes, and the optimiser cannot tell
-    // which: the loads stay.
-    assert!(
+    // A store into the descriptor at a constant offset changes the word it writes only: the
+    // other two still read back the registers, the stored word what was stored.
+    assert_eq!(
         dope_loads_left(|fb, dope| {
             let at = fb.int(8);
+            let a = fb.reg(RegTy::Ptr);
+            fb.emit(Inst::Index {
+                dst: a,
+                base: dope,
+                pos: at,
+                stride: 1,
+            });
+            let v = fb.int(77);
+            fb.emit(Inst::Store {
+                addr: a,
+                src: v,
+                w: Width::B8,
+            });
+        }),
+        0
+    );
+    // At an offset only the run knows, the optimiser cannot tell which word: the loads stay.
+    assert!(
+        dope_loads_left(|fb, dope| {
+            let at = load(fb, 0);
             let a = fb.reg(RegTy::Ptr);
             fb.emit(Inst::Index {
                 dst: a,

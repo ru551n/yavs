@@ -8,7 +8,9 @@
 //! faster, never fail it.
 //!
 //! Writes are a temporary file plus an atomic rename, so concurrent readers and writers (parallel
-//! test runs sharing a library) never see a half-written entry and need no lock.
+//! test runs sharing a library) never see a half-written entry and need no lock. The analysed
+//! units (`Store::units_of_library`) are created under their own name instead, to save the rename:
+//! a reader that meets one half written finds its length or checksum wrong, which is a miss.
 
 #[allow(unsafe_code)]
 mod map;
@@ -218,6 +220,9 @@ pub struct Store {
     /// `get` refreshes the time of the entry it reads (not for the analysed units: a run reads
     /// a hundred of them, and a library keeps them all).
     touch: bool,
+    /// `put` creates an entry under its own name (the analysed units: a hundred or more small
+    /// entries per call), not through a temporary file and a rename.
+    direct: bool,
     /// The `.img` entries of the directory as this process counts them: read once, then one per
     /// put (a batch of puts must not list the directory every time); [`UNKNOWN`] until the first
     /// put and after a sweep. Entries other processes add meanwhile are seen by the next sweep.
@@ -251,6 +256,7 @@ impl Store {
             dir: lib.join(DIR),
             limits: (MAX_ENTRIES, MAX_BYTES),
             touch: true,
+            direct: false,
             count: unknown(),
         }
     }
@@ -262,6 +268,7 @@ impl Store {
             dir: lib.join(DIR).join(OBJ_DIR),
             limits: (OBJ_MAX_ENTRIES, OBJ_MAX_BYTES),
             touch: true,
+            direct: false,
             count: unknown(),
         }
     }
@@ -273,6 +280,7 @@ impl Store {
             dir: lib.join(DIR).join(UNIT_DIR),
             limits: (UNIT_MAX_ENTRIES, UNIT_MAX_BYTES),
             touch: false,
+            direct: true,
             count: unknown(),
         }
     }
@@ -326,11 +334,18 @@ impl Store {
         Some(Entry { data: bytes })
     }
 
-    /// The payload size of the entry, from the file's size alone (nothing is read or checked):
-    /// for a caller that only asks whether a usable, non-empty entry is there.
+    /// The payload size of the entry, from its header and the file's size alone (the payload is not
+    /// read or checked): for a caller that only asks whether a usable, non-empty entry is there. A
+    /// file whose size is not the header's is not one (an entry another process is still writing,
+    /// or a write that was cut short).
     pub fn payload_len(&self, kind: &str, key: &Key) -> Option<u64> {
-        let len = fs::metadata(self.file(kind, key)).ok()?.len();
-        len.checked_sub(HEADER as u64)
+        use std::io::Read as _;
+        let mut f = fs::File::open(self.file(kind, key)).ok()?;
+        let size = f.metadata().ok()?.len();
+        let mut head = [0u8; HEADER];
+        f.read_exact(&mut head).ok()?;
+        let len = u64::from_le_bytes(head[HEADER - 16..HEADER - 8].try_into().ok()?);
+        (size == HEADER as u64 + len).then_some(len)
     }
 
     /// Store `payload` atomically. Failures are only noted with `YAVS_LOG=debug`.
@@ -341,6 +356,10 @@ impl Store {
     }
 
     fn try_put(&self, kind: &str, key: &Key, payload: &[u8]) -> std::io::Result<()> {
+        if self.direct && self.try_put_new(kind, key, payload)? {
+            self.prune(payload.len() as u64);
+            return Ok(());
+        }
         let tmp = self.dir.join(format!(
             ".tmp-{}-{}",
             std::process::id(),
@@ -378,6 +397,45 @@ impl Store {
         }
         self.prune(payload.len() as u64);
         Ok(())
+    }
+
+    /// Creates the entry under its own name (no temporary file and rename: a rename costs a
+    /// twentieth of a cold analysis). A reader that meets it half written finds the length or the
+    /// checksum wrong, which is a miss. `false`: the name exists (a damaged or racing entry), the
+    /// caller replaces it by rename.
+    #[cfg(unix)]
+    fn try_put_new(&self, kind: &str, key: &Key, payload: &[u8]) -> std::io::Result<bool> {
+        let path = self.file(kind, key);
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        let mut f = match opts.open(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir_all(&self.dir)?;
+                match opts.open(&path) {
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+                    r => r?,
+                }
+            }
+            r => r?,
+        };
+        let mut head = Vec::with_capacity(HEADER);
+        head.extend_from_slice(MAGIC);
+        head.extend_from_slice(&FORMAT.to_le_bytes());
+        head.extend_from_slice(&key.0);
+        head.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+        head.extend_from_slice(&checksum(payload));
+        if let Err(e) = f.write_all(&head).and_then(|()| f.write_all(payload)) {
+            drop(f);
+            let _ = fs::remove_file(&path);
+            return Err(e);
+        }
+        Ok(true)
+    }
+
+    #[cfg(not(unix))]
+    fn try_put_new(&self, _: &str, _: &Key, _: &[u8]) -> std::io::Result<bool> {
+        Ok(false)
     }
 
     fn note_file(&self, kind: &str, key: &Key) -> PathBuf {
@@ -562,6 +620,7 @@ impl Store {
                     dir,
                     limits,
                     touch: true,
+                    direct: false,
                     count: unknown(),
                 }
                 .clean()?;
@@ -673,6 +732,36 @@ mod tests {
         assert_eq!(s.get("t", &k), None);
         fs::write(&p, &good).unwrap();
         assert!(s.get("t", &k).is_some());
+    }
+
+    /// The units store creates entries under their own name: a cut-short file there is a miss, not
+    /// an entry (`payload_len` agrees), and the next `put` replaces it; a complete one is read as
+    /// before.
+    #[test]
+    fn a_cut_short_unit_entry_is_replaced() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::units_of_library(d.path());
+        let k = key("a");
+        s.put("unit", &k, b"payload bytes");
+        assert_eq!(s.get("unit", &k).as_deref(), Some(&b"payload bytes"[..]));
+        assert_eq!(s.payload_len("unit", &k), Some(13));
+        let p = s.file("unit", &k);
+        let good = fs::read(&p).unwrap();
+        for cut in [0, 10, HEADER, good.len() - 1] {
+            fs::write(&p, &good[..cut]).unwrap();
+            assert_eq!(s.get("unit", &k), None, "cut at {cut}");
+            assert_eq!(s.payload_len("unit", &k), None, "cut at {cut}");
+            s.put("unit", &k, b"payload bytes");
+            assert_eq!(fs::read(&p).unwrap(), good, "cut at {cut}");
+        }
+        assert!(
+            fs::read_dir(s.dir()).unwrap().all(|e| !e
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".tmp")),
+            "no temporary file is left"
+        );
     }
 
     /// An entry that is replaced (a writer renames a new file over it) or removed while a run

@@ -9149,3 +9149,9 @@ A result-table read for an argument of an integer type (range test) or with valu
 (`docs/decisions.md` "Table reads with a range test or a validity mask"), so the fat pair of an array result is not made and read back: perf case `tab_tail` 22 072 to 15 764 ops, a digit loop 26.8 to 18.9
 ops (11.8 with a proven range). The late inliner no longer expands table functions (a miss is the test and the call). `grlib_leon3mp` is unchanged (its table is whole). Left: #771, #770, #768.
 
+## Invariant loads and dereferences leave fill loops (yavs-ir `opt/licm.rs`, #768, 2026-10-26)
+
+`Init_mem` of the SDRAM model (rows of bit vectors behind access values, filled one element at a time) is no longer 18 percent of the first 1 us of `grlib_leon3mp`: the loads, the dereference and the
+descriptor reads of such a loop move before it (`docs/decisions.md` "Loop-invariant loads and dereferences"), and the inner loop runs as one element-loop op. The reproducer of the issue: 5.08 M ops to
+0.26 M; the first 1 us: 31.37 G to 25.96 G instructions (-17.2 percent) with `--tier=interp`. Left: #771, #770.
+

@@ -10298,3 +10298,26 @@ built the fat pair of an array result and read both words back for every call (a
 - **Tests**: perf case `tab_tail` (a ceiling that fails if the pair is made again), the `casetab` differential test (new `digvec` and `digsum`: array results by an integer type with a mask, reports
   for the digits that are no table entry, rest-of-block copies with live-out registers), run with the tables on and off at 1 and 4 threads and in every tier.
 
+## Loop-invariant loads and dereferences in loops that write only logic elements (yavs-ir `opt/licm.rs`, #768, 2026-10-26)
+
+`Init_mem` of the SDRAM model of `grlib_leon3mp` (a procedure declared in a process) fills a freshly allocated row, `Bank0 (Row_index) (i) (j) := '0'`, in two nested loops: 18 percent of the first
+1 us after #744. Each element store read the access value of the row from the frame of the process (`AddrOf Up`, `Load`), dereferenced it and computed the positions and lengths of the descriptors,
+nine ops per element, because the loop-invariant code motion moved only computations, never a load or a dereference, and not the address of a frame up the static links.
+
+- **Decision: in a loop whose only writes are element writes of logic arrays (`LSet`, `LFill`), a `Load` (not of a signal), a `Deref` and the descriptor reads (`Pos`, `DopeLen`) are invariant when
+  their operands are; the address of a frame up the static links (`AddrOf Up`) moves like a computation that cannot fail.** The existing rule for what may fail is unchanged: a `Deref` (null or
+  dangling handle) moves only from the effect-free start of the header, and the preheader replays that start as the first pass would run it, so the first failure and its message are the unmoved
+  code's. A loop that stores a word, frees, allocates or calls keeps its loads and dereferences in place.
+- **Why this is sound.** Element planes of a logic array are never read as words (`Load`), never hold handles and never hold descriptors: the lowering reads them with `LGet`/`LCopy`, which are not
+  moved. `AddrOf Up` yields the address of a frame in the static chain of the running call, the same for the whole run of the loop; it is not moved out of the loop's other blocks (`speculable` still
+  excludes it), only from the start of the header, because a loop that does not run does not compute it.
+- **Effect.** The inner loop is left with the element position and the store, which `ElemLoop` (`eloop.rs`, #520) already runs as one op: 9 ops per element became 8 ops per row of 17 elements
+  (the issue's reproducer: 5.08 M ops to 0.26 M). `grlib_leon3mp`, first 1 us, `--tier=interp`: `Init_mem` 420 of 1888 profile samples to 29; 31.37 G to 25.96 G instructions (-17.2 percent),
+  8.3 G to 6.9 G cycles. Work-counter ceilings lowered because the ops fell: `elem_loops` 35.6 k to 27.8 k, `licm_loop` 26.4 k to 19.8 k, `wide_vec`, `case_tab`, `idle_vars`.
+- **The compiled tier keeps what a moved load knew.** Compiled process code (`--tier=llvm`, `auto`) reaches a vector through a pointer loaded from a variable's slot; the generator knew that
+  pointer (probably a heap object, so its accesses try the object cache inline) only in the block of the load, and a load that moved to a preheader lost it: every element access of the loop
+  asked the runtime (`llvm_eloop`: `cb_host` 22 to 1671). The space analysis of the generator (`yavs-llvm` `regs.rs` `spaces`) now carries "probably heap" for the pointer loaded from the slot of a
+  variable (not a parameter's) or of an enclosing subprogram's through the blocks, as it carries the definite spaces.
+- **Tests**: perf case `row_fill` (a procedure of a process fills rows behind access values: a ceiling on the ops), the difftest cases `access/row_fill` (nested fills, an empty range over a null access
+  value) and `access/row_fill_null` (the failure of a null access in a nested loop comes after the report that precedes it in the body, as in the reference), the loop tests of `yavs-lower`.
+

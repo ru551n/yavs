@@ -414,13 +414,13 @@ case!(
 );
 case!(ieee_operands, "acc=", &[], [("ops", Max(3541))]);
 case!(ieee_share, "n=", &[], [("ops", Max(3630))]);
-case!(elem_loops, "acc=", &[], [("ops", Max(35600))]);
-case!(wide_vec, "wide=0", &[], [("ops", Max(2270000))]);
+case!(elem_loops, "acc=", &[], [("ops", Max(27760))]);
+case!(wide_vec, "wide=0", &[], [("ops", Max(2202000))]);
 case!(
     licm_loop,
     "acc=",
     &[],
-    [("process_runs", Max(2)), ("ops", Max(26442)),]
+    [("process_runs", Max(2)), ("ops", Max(19800)),]
 );
 case!(
     slice_memo,
@@ -456,7 +456,7 @@ case!(
     [
         ("pmemo_hits", Max(0)),
         ("pmemo_runs", Max(0)),
-        ("ops", Max(13550))
+        ("ops", Max(12770))
     ]
 );
 // Two processes whose calls of a pure function never repeat: both give its memo up, which turns it
@@ -477,6 +477,9 @@ case!(hread_loop, "sum=", &[], [("ops", Max(7800))]);
 // The same loop with an argument of an integer type, whose table read tests the range and a mask
 // of valid digits (#769): the pair of the array result is not made on the table path.
 case!(tab_tail, "sum=", &[], [("ops", Max(16240))]);
+// Rows of bit vectors behind access values filled in nested loops by a procedure of the process
+// (#768): the loads, the dereference and the descriptors leave the inner loop, which runs as one op.
+case!(row_fill, "ones=", &[], [("ops", Max(5290))]);
 case!(
     edge_forms,
     "edges=",
@@ -744,7 +747,7 @@ case!(
     [
         ("process_runs", Max(433)),
         ("idle_skips", Min(75)),
-        ("ops", Max(9180)),
+        ("ops", Max(8850)),
     ]
 );
 

@@ -647,16 +647,20 @@ pub(crate) enum Sp {
     Inst,
     Temp,
     Heap,
+    /// Probably a heap object: a pointer loaded from the slot of a variable (#768).
+    Likely,
 }
 
-/// Registers that hold an address of instance data, the temporary area or a heap object at the
+/// Registers that hold an address of instance data, the temporary area or a heap object (or
+/// probably one, the pointer loaded from a variable's slot) at the
 /// start of each block, whatever path reached it (#684): a forward dataflow over the blocks
 /// (`starts[pc]`), meet = both sides agree, entry = the registers the interpreter preloads.
 /// The result is indexed by the block's first pc. `None` for a function too big for it.
 pub(crate) fn spaces(prog: &Program, f: &Func, starts: &[bool]) -> Option<Vec<Vec<(u32, Sp)>>> {
     let n = f.code.len();
-    // ponytail: bits per block = candidates x 3; a function over this size keeps block-local facts.
+    // ponytail: bits per block = candidates x 5; a function over this size keeps block-local facts.
     const MAX_BITS: usize = 1 << 27;
+    const SETS: usize = 5;
     let nregs = f.reg_ty.len();
     let mut cand = vec![u32::MAX; nregs];
     let mut regs: Vec<u32> = Vec::new();
@@ -673,7 +677,8 @@ pub(crate) fn spaces(prog: &Program, f: &Func, starts: &[bool]) -> Option<Vec<Ve
         | Inst::Alloc { dst, .. }
         | Inst::Deref { dst, .. }
         | Inst::Move { dst, .. }
-        | Inst::Index { dst, .. } = *i
+        | Inst::Index { dst, .. }
+        | Inst::Load { dst, .. } = *i
             && cand.get(dst.0 as usize) == Some(&u32::MAX)
         {
             cand[dst.0 as usize] = regs.len() as u32;
@@ -682,11 +687,12 @@ pub(crate) fn spaces(prog: &Program, f: &Func, starts: &[bool]) -> Option<Vec<Ve
     }
     let nb = starts.iter().filter(|&&s| s).count();
     let w = regs.len().div_ceil(64);
-    if regs.is_empty() || nb.checked_mul(3 * w * 64)? > MAX_BITS {
+    if regs.is_empty() || nb.checked_mul(SETS * w * 64)? > MAX_BITS {
         return None;
     }
-    let sets = 3 * w;
-    // Bit `k` of set `s` (0 instance data, 1 temporary area, 2 heap).
+    let sets = SETS * w;
+    // Bit `k` of set `s` (0 instance data, 1 temporary area, 2 heap, 3 the address of a
+    // variable's slot, 4 probably heap).
     let bit = |st: &[u64], s: usize, k: usize| st[s * w + k / 64] >> (k % 64) & 1 != 0;
     let put = |st: &mut [u64], s: usize, k: usize, on: bool| {
         let m = 1u64 << (k % 64);
@@ -726,20 +732,38 @@ pub(crate) fn spaces(prog: &Program, f: &Func, starts: &[bool]) -> Option<Vec<Ve
                     .filter(|&&k| k != u32::MAX)
                     .map(|&k| {
                         let k = k as usize;
-                        [bit(st, 0, k), bit(st, 1, k), bit(st, 2, k)]
+                        std::array::from_fn(|s| bit(st, s, k))
                     })
-                    .unwrap_or([false; 3])
+                    .unwrap_or([false; SETS])
             };
             let new = match *i {
                 Inst::AddrOf {
                     dst,
                     space: AddrSpace::Inst,
                     ..
-                } => Some((dst, [true, false, false])),
-                Inst::Alloc { dst, .. } => Some((dst, [false, true, false])),
-                Inst::Deref { dst, .. } => Some((dst, [false, false, true])),
+                } => Some((dst, [true, false, false, false, false])),
+                Inst::Alloc { dst, .. } => Some((dst, [false, true, false, false, false])),
+                Inst::Deref { dst, .. } => Some((dst, [false, false, true, false, false])),
+                // A variable's slot (not a parameter's: the caller's argument is in any space).
+                Inst::AddrOf {
+                    dst,
+                    space: AddrSpace::Frame,
+                    off,
+                } if !f.params.iter().any(|p| u64::from(p.slot) == u64::from(off)) => {
+                    Some((dst, [false, false, false, true, false]))
+                }
+                Inst::AddrOf {
+                    dst,
+                    space: AddrSpace::Up(1..=2),
+                    ..
+                } => Some((dst, [false, false, false, true, false])),
                 Inst::Move { dst, src } => Some((dst, from(&st, src))),
                 Inst::Index { dst, base, .. } => Some((dst, from(&st, base))),
+                Inst::Load {
+                    dst,
+                    addr,
+                    w: Width::B8,
+                } => Some((dst, [false, false, false, false, from(&st, addr)[3]])),
                 _ => None,
             };
             i.visit(&mut |r, role, _| {
@@ -748,7 +772,7 @@ pub(crate) fn spaces(prog: &Program, f: &Func, starts: &[bool]) -> Option<Vec<Ve
                         if let Some(&c) = cand.get(k as usize)
                             && c != u32::MAX
                         {
-                            for s in 0..3 {
+                            for s in 0..SETS {
                                 put(&mut st, s, c as usize, false);
                             }
                         }
@@ -804,7 +828,7 @@ pub(crate) fn spaces(prog: &Program, f: &Func, starts: &[bool]) -> Option<Vec<Ve
                 };
                 let mut v = Vec::new();
                 for (k, &r) in regs.iter().enumerate() {
-                    for (s, sp) in [(0, Sp::Inst), (1, Sp::Temp), (2, Sp::Heap)] {
+                    for (s, sp) in [(0, Sp::Inst), (1, Sp::Temp), (2, Sp::Heap), (4, Sp::Likely)] {
                         if bit(st, s, k) {
                             v.push((r, sp));
                         }

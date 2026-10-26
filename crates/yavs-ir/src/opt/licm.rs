@@ -16,7 +16,10 @@
 //! on the first pass fails first in the preheader, the copies cost one run per entry. An
 //! instruction that cannot fail and reads no memory (a compare, a select, a constant) moves
 //! from anywhere in the loop, and so does a load from read-only memory (instance data, the
-//! constant pool) at a constant address.
+//! constant pool) at a constant address. In a loop that writes only the elements of logic
+//! arrays (a fill or copy loop), loads, dereferences of handles and descriptor reads are
+//! invariant when their operands are, and move from the start of the header like the rest
+//! (#768).
 //!
 //! Loops are the natural loops of the back edges a depth-first walk finds, with a single entry
 //! (the header); inner loops go first, so what moved into an inner preheader can leave the
@@ -51,19 +54,32 @@ fn reads_dope(i: &Inst) -> bool {
     )
 }
 
+/// Does it read memory a write in the loop could change: a descriptor, a word or the object a
+/// handle names? (Writes into the elements of a logic array reach none of them, #768.)
+fn reads_mem(i: &Inst) -> bool {
+    reads_dope(i)
+        || matches!(i, Inst::Deref { .. })
+        || matches!(*i, Inst::Load { w, .. } if w != Width::Sig)
+}
+
 /// May it move out of the start of the header: a computation whose result depends only on
 /// its operands (and, for a descriptor read, on a descriptor nothing in the loop writes).
 fn movable(i: &Inst) -> bool {
     speculable(i)
         || matches!(
             i,
-            Inst::Bin { .. }
+            // (A frame up the static links is the same for the whole run of a loop; the
+            // address of one is not run where the loop did not, as `speculable` asks.)
+            Inst::AddrOf {
+                space: AddrSpace::Up(_),
+                ..
+            } | Inst::Bin { .. }
                 | Inst::BinRange { .. }
                 | Inst::Un { .. }
                 | Inst::Index { .. }
                 | Inst::Check { .. }
         )
-        || reads_dope(i)
+        || reads_mem(i)
 }
 
 /// Can the preheader run it again with the values of the first pass: no effect, at most one
@@ -71,7 +87,10 @@ fn movable(i: &Inst) -> bool {
 fn replayable(i: &Inst) -> bool {
     movable(i)
         || matches!(*i, Inst::Load { w, .. } if w != Width::Sig)
-        || matches!(i, Inst::LGet { .. } | Inst::Field { .. })
+        || matches!(
+            i,
+            Inst::LGet { .. } | Inst::Field { .. } | Inst::Deref { .. }
+        )
 }
 
 /// Can it fail other than by a broken invariant (a copy that cannot is dropped unless read)?
@@ -79,7 +98,11 @@ fn may_fail(i: &Inst) -> bool {
     !speculable(i)
         && !matches!(
             i,
-            Inst::Index { .. } | Inst::Load { .. } | Inst::LGet { .. } | Inst::Field { .. }
+            Inst::Index { .. }
+                | Inst::Load { .. }
+                | Inst::LGet { .. }
+                | Inst::Field { .. }
+                | Inst::AddrOf { .. }
         )
 }
 
@@ -393,7 +416,7 @@ impl Licm<'_> {
                 let fails = may_fail(i);
                 if (movable(i) || self.ro_load(i))
                     && (!fails || prefix < cap)
-                    && (clean || !reads_dope(i))
+                    && (clean || !reads_mem(i) || self.ro_load(i))
                     && d.is_none_or(|d| self.defs[d.0 as usize] == 1)
                     && self.uses_invariant(i, tag, ops(i))
                 {

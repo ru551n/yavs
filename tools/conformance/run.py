@@ -63,6 +63,7 @@ class Run:
         self.env = {"YAVS_BIN": str(a.yavs), "YAVS_STD_CACHE": str(self.out / "std"),
                     "PATH": str(Path(a.yavs).parent) + os.pathsep + os.environ["PATH"]}
         self.jobs = str(a.jobs)
+        self.corpus = Path(os.environ.get("YAVS_CORPUS") or "~/.cache/rsim-corpus").expanduser()
 
     def tool(self, *cmd):
         return sh(PY + [TOOLS / cmd[0], *cmd[1:]], self.env)
@@ -112,7 +113,9 @@ class Run:
 
     def suite(self, name, cmd, status_col):
         d = self.out / name
-        sh(cmd + ["--out", d], self.env)
+        rc, text = sh(cmd + ["--out", d], self.env)
+        if not (d / "results.tsv").exists():
+            sys.exit(f"{cmd[2]} wrote no results.tsv (exit {rc}):\n{text[-1500:]}")
         rows = [l.split("\t") for l in (d / "results.tsv").read_text().splitlines()]
         res = {"runs": len(rows)}
         for r in rows:
@@ -123,7 +126,7 @@ class Run:
         return self.suite("uvvm", PY + [TOOLS / "suites/uvvm.py", "--yavs", self.a.yavs, "-j", "4", "--no-wrap"], 3)
 
     def step_osvvm(self):
-        return {std: self.suite(f"osvvm-{std}", PY + [TOOLS / "suites/pro.py", "--std", std, "--yavs", self.a.yavs, "--jobs", "4", "--no-wrap"], 3)
+        return {std: self.suite(f"osvvm-{std}", PY + [TOOLS / "suites/pro.py", "--std", std, "--root", self.corpus / "osvvm-libraries", "--yavs", self.a.yavs, "--jobs", "4", "--no-wrap"], 3)
                 for std in ("2008", "2019")}
 
     def step_designs(self, tiers="interp", name="designs"):

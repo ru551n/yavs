@@ -10702,3 +10702,15 @@ against compiled; a ratio over 1 is a gain).
   (speedup 1.4 or more, user decision 2026-10-25) leaves `BigLoop` out.
 - **The reference simulator (rule 22).** Its JIT tier counts calls of a function and compiles it after a fixed number, with no model of size or benefit,
   and a normal run generates the design's code ahead of time anyway. No idea was taken from it for this rule; ours keeps a benefit per kind.
+
+## Value movement: composite copies, scratch sets (yavs-interp `exec.rs`, `heap.rs`, #677, 2026-10-26)
+
+Found by the gap scan of 2026-10-26 (value movement was 6.4 s of the 14 tests slower than the reference simulator, `grlib_leon3mp`
+1.2 s and `uvvm_axistream_vvc` 0.5 s of it in `memmove`). A counting `memcpy`/`memmove` interposer with frame-pointer call chains
+found the callers; a throwaway per-site census of `Copy`, `LCopy`, `New`, frame fills and scratch borrows named the IR sites.
+
+- **Decision: a copy between two different objects of one heap goes straight from one to the other** (`Heap::data_pair`: both slots at
+  once, `copy_pair`), for the private heap and the shared heap alike. It went through `copy_staged` (read into a staging buffer, then
+  `put`): three passes over the bytes for a `Copy`, and five for a wide `LCopy` (`lcopy_general`: the source, the destination as
+  blocks, the merge, the write). `uvvm_axistream_vvc` copies a 689 KB command record between designated objects about 12 000 times:
+  8 of its 20 GB of `memcpy` traffic was this.

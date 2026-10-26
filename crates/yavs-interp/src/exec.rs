@@ -3968,6 +3968,24 @@ impl Machine {
             sh,
             ..
         } = self;
+        // Two objects of one heap: both slots at once.
+        if dsp == ssp && matches!(dsp, HEAP | SHARED_HEAP) {
+            let h = if dsp == HEAP {
+                Some(heap)
+            } else {
+                sh.as_mut().and_then(|s| s.heap.as_deref_mut())
+            };
+            return match h.and_then(|h| h.data_pair(didx, sidx)) {
+                Some((out, src)) if soff + sn <= src.len() => match out.get_mut(doff..doff + dn) {
+                    Some(out) => {
+                        f(out, &src[soff..soff + sn]);
+                        true
+                    }
+                    None => false,
+                },
+                _ => false,
+            };
+        }
         let dst = match dsp {
             TEMP => {
                 let src = match ssp {

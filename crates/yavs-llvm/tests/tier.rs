@@ -282,25 +282,26 @@ fn auto_tier_deferred_starts_its_thread_at_launch() {
 /// suspending) is seen by the sampler only, and the big loop is still compiled within the
 /// default budget and swapped in while it runs (#432). The budget decision itself is tested
 /// deterministically in `auto.rs`; this checks the whole path.
+///
+/// What the sampler credits to a function is the work it saw, so the compile is decided after a
+/// number of calls and not after a time (#755, #777): the calls go on until it is, each one's
+/// result checked. The payback rule asks for about half of one call's work, so the first call
+/// decides it on a quiet host; a host that credits less takes more calls.
 #[test]
 fn auto_tier_compiles_a_long_loop_of_one_call() {
+    const MAX_CALLS: u32 = 40;
     let (prog, f) = sum_padded(800);
     let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
     let note: Note = Box::new(|_, _, _| {});
     let heat = Heat { budget: 2, ..HOT };
     let tier = AutoTier::start(&rt, OptLevel::O2, usize::MAX, heat, note).unwrap();
     let n = 3_000_000u64;
-    let r = yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[n]);
-    assert_eq!(r.unwrap(), Some(n * (n + 1) / 2));
-    // (On a loaded host, or with a collection at every safepoint, the compile it decided on while
-    // the call ran may finish after the call: wait for it, it is not what the test measures, #755.)
-    let t0 = Instant::now();
+    let mut calls = 0;
     while tier.compiled() == 0 {
-        assert!(
-            t0.elapsed() < Duration::from_secs(60),
-            "the loop was never compiled"
-        );
-        std::thread::sleep(Duration::from_millis(5));
+        calls += 1;
+        assert!(calls <= MAX_CALLS, "the loop was never compiled");
+        let r = yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[n]);
+        assert_eq!(r.unwrap(), Some(n * (n + 1) / 2));
     }
     assert_eq!(tier.compiled(), 1);
     tier.stop(true);

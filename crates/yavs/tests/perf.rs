@@ -413,8 +413,8 @@ case!(
     [("process_runs", Max(2)), ("ops", Max(1481)),]
 );
 case!(ieee_operands, "acc=", &[], [("ops", Max(3541))]);
-case!(ieee_share, "n=", &[], [("ops", Max(3630))]);
-case!(elem_loops, "acc=", &[], [("ops", Max(27760))]);
+case!(ieee_share, "n=", &[], [("ops", Max(3626))]);
+case!(elem_loops, "acc=", &[], [("ops", Max(27715))]);
 case!(wide_vec, "wide=0", &[], [("ops", Max(2202000))]);
 case!(
     licm_loop,
@@ -434,7 +434,7 @@ case!(
         ("ops", Max(1440)),
     ]
 );
-case!(memo_wide, "q=64442", &[], [("ops", Max(75700))]);
+case!(memo_wide, "q=64442", &[], [("ops", Max(75491))]);
 // Pure functions on vectors called with repeating arguments (PoC ffdre, resize, mux): the memo of
 // pure calls (#701) answers 436 of the 448 calls (ops 72600 without it).
 case!(
@@ -473,10 +473,10 @@ case!(
 );
 // The digit loop of a textio HRead (#744): a result-table nibble stored into the slice
 // `sv(4 * i to 4 * i + 3)` and `is_x` on the same slice, 8 digits of each of 3 words, 16 times.
-case!(hread_loop, "sum=", &[], [("ops", Max(7370))]);
+case!(hread_loop, "sum=", &[], [("ops", Max(4233))]);
 // The same loop with an argument of an integer type, whose table read tests the range and a mask
 // of valid digits (#769): the pair of the array result is not made on the table path.
-case!(tab_tail, "sum=", &[], [("ops", Max(16240))]);
+case!(tab_tail, "sum=", &[], [("ops", Max(14590))]);
 // Rows of bit vectors behind access values filled in nested loops by a procedure of the process
 // (#768): the loads, the dereference and the descriptors leave the inner loop, which runs as one op.
 case!(row_fill, "ones=", &[], [("ops", Max(5290))]);
@@ -571,7 +571,7 @@ case!(
 );
 // The message of a check is built after the branch that reads it: images, lengths and the
 // concatenation stay out of the 270 passing calls (inlining of the check and `opt/sink.rs`).
-case!(sink_msg, "failed=10 acc=14850", &[], [("ops", Max(6234))]);
+case!(sink_msg, "failed=10 acc=14850", &[], [("ops", Max(6214))]);
 // The defaults of a combinational process that a later drive deletes are not done on that path
 // (`opt/drives.rs`): 303 scalar and 61 vector drives, 378 and 92 without the pass (the scalar
 // drives that change nothing are skipped when they are made, `Ctx::assign_code_fast`, and not

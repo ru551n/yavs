@@ -9218,3 +9218,11 @@ the call is still about 80 ops; the rest is listed there. First 1 us of `grlib_l
   at 0.99 in five runs a cell at load 8, `poc_cache_cpu` 0.98. `neorv32_single_min` 2.75 / 2.78 s interpreter, 2.83 / 2.81 s auto.
 - Every function compiled (`YAVS_BENCH_TIERFLAGS=--tier-heat=1,0,0`, three runs a cell, load 9): `grlib_leon3mp` 46.45 to 45.82 s
   (instructions 0.99: the kept drives' flush on the kernel), `neorv32_single_min` 4.37 to 4.40 s (instructions 1.01).
+
+## The fixed cost of an `HRead` call and its digit loop (yavs-lower, yavs-ir, yavs-interp, #771, 2026-10-26)
+
+READ of a string takes its target as data and bounds (no pair per call), a local array of run-time bounds keeps its descriptor in its own slot (three ops instead of five), the optimiser keeps the lengths it knows
+for that slot and for a parameter's descriptor (the `SubtypeCheck` of `variable sv : v (0 to sl - 1)` against `sl` goes), the length of a vector leaves a loop that copies elements and calls `is_x`, and the digit
+loop of `HRead` is five ops (was eleven): `PosIndexLoadIndex`, `SliceAff`, `AffLCopy`, `StmtIsXBr`, `CmpBrStep` (`docs/decisions.md` "The fixed cost of an `HRead` call and its digit loop"). An 8-bit `HRead` is 56 ops
+(was 86). First 1 us of `grlib_leon3mp`, `--tier=interp`: 23.14 G to 20.37 G instructions (-12.0 percent), 6.67 G to 5.99 G cycles; `--tier=auto` -5.5 percent instructions; `--tier=llvm` -2.0 percent. Left: the other
+natives on slices (`to_x01`, the numeric operators) still copy the slice first; `Call`/`Ret` and the textio natives (`CallNative` is 6 percent of the first 1 us) are the next cost of the call.

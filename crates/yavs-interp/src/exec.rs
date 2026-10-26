@@ -10551,17 +10551,6 @@ impl crate::TierHost for Host<'_, '_, '_> {
         }
     }
 
-    fn wrote(&mut self, addr: u64) {
-        let (sp, idx, _) = split(addr);
-        if sp == HEAP {
-            let _ = self.m.heap.data_mut(idx);
-        } else if sp == SHARED_HEAP
-            && let Some(h) = self.m.sh.as_mut().and_then(|sh| sh.heap.as_mut())
-        {
-            let _ = h.data_mut(idx);
-        }
-    }
-
     fn drive_now(&mut self, driver: u32, target: [u64; 2], delay: i64, block: [u64; 4]) -> bool {
         let m = &*self.m;
         if delay != 0 || target[1] == 0 || target[1] > 64 || target[0] >> 32 == MULTI {

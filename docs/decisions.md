@@ -9903,3 +9903,58 @@ suspends is **10^9 jumps back** (was 10^7, interpreter only) and compiled code k
   `rss::a_loop_without_a_wait_keeps_memory_flat`, perf case `llvm_nowait` (2 exits for 2.5 million jumps),
   corpus `process/no_wait_infinite` (`spin=3000000`, `ignore=stderr`: only yavs prints the W3102 warning).
 
+
+## llvm: an object table keyed by machine (yavs-llvm `rt.rs`, `lower.rs`, yavs-interp `TierState`, #679, 2026-10-26)
+
+Over the whole LEON3 run with every function compiled, the tier's own work at the start of an activation was 4 percent of the
+simulation thread's cycles (`Mem::load_objs` 3.1, `begin_kept` 0.8): the object table was one per thread and keyed by address,
+so a change of machine dropped the other machine's instance data and heap objects (a walk), and the process's record of up to 64
+objects was entered again at every activation. The SDRAM models (`state_register`, four instances of one process) and the TLBs
+have short activations, so this paid for itself on every wake.
+
+- **Decision: an entry's key is the address high half or-ed with a tag, one tag per address space** (`Mem::tags`, `Mem::slot`;
+  the 32-bit high half leaves bits 32 and up free): instance data, package data and shared variables carry the machine's tag,
+  heap objects the machine's heap tag (valid for one heap epoch), constants the runtime's tag, frame and temporary objects the
+  activation's tag. Dropping a group of objects is taking a new tag (`Mem::issue`, a counter of the thread's table): the old
+  keys simply miss, no walk. Why: the objects of every machine survive other machines' activations, so the per-activation walk
+  and restore are gone (`load_objs`, `save_objs`, `begin_kept`, `settle`, `retain*`, the `occ`/`occv` summaries and the `mine`
+  record are removed).
+- **Decision: the entry is also moved by an offset of the tag** (`Mem::mixes`, `mix`: a multiplicative hash of the tag, scaled
+  by the entry size, xor-ed into `obj_at`). Why: the instances of one process use the same addresses for their own objects (the
+  same instance-data and heap indices); without the offset they would take the same entries and evict each other at every
+  alternation.
+- **Decision: a process's record (`yavs_interp::TierState`, 4 words) holds the table's identity, the heap epoch, the heap tag
+  and the machine tag**; the next activation keeps the machine tag when the identity matches and the heap tag when the epoch
+  matches too (`Mem::begin`). A call from the interpreter (`Tier::call`, no record) keeps the tags of the last activation or call
+  on the thread when it is of the same machine (and epoch). The heap epoch counts every deallocation and edit in place (garbage
+  collection deallocates), so the heap objects of a machine stay valid while it is unchanged: a host call that changed it takes a
+  new heap tag (`Mem::forget`, was a walk keeping the machine's objects); frames and temporaries take a new tag at the end of an
+  activation that found one and after every host call. With `TIER_STAMPS` (someone compares heap objects by write counts) every
+  activation takes a new heap tag, so every write of an earlier-found heap object is seen again (was: `TierHost::wrote` for the
+  kept writable objects, now removed; a ponytail in `Mem::begin`).
+- **Decision: the table has 16 384 entries** (`OBJS`, one cache line each, one megabyte per simulation thread, built zeroed in
+  place: `Mem::new`; the empty entry is all zero, a key of tag 0, which no space has). Lookups of the whole LEON3 run that had to
+  ask the interpreter (`yavs_rt_obj`): main 15.7 million, keyed with 4 096 entries 21.7 million (the objects of all machines
+  compete for the entries), 16 384 entries 7.2 million, 65 536 entries 6.6 million. What is left is mostly heap objects found
+  again after a `textio` read edited a line in place (2.2 million new heap tags, in `HRead` and `state_register`), which the old
+  table dropped too. Tags run out after 2^31: the table is emptied and gets a new identity (`Mem::wipe`), so no record names a
+  tag twice.
+- **Generated code** (`Gen::obj_tag`, `Gen::obj_entry`): a heap access and `Deref` read the heap space's tag and offset at fixed
+  offsets of `Mem`; an access of unknown space indexes `MEM_TAGS`/`MEM_MIXES` by the space bits of its address (two loads from
+  one line). The `Deref` hit test compares the access value and the tag (two machines hold the same access values). The callbacks
+  that may take a new tag all receive `mem`, so LLVM reloads the tags after them.
+- **Measured** (whole LEON3 run, bench builds, `perf stat --no-inherit` of the simulation thread, one claimed CCD1 core, cells
+  interleaved, medians of 4, warm compilation cache; heat = `--tier=auto --tier-heat=1,0,0`; auto worlds settled by four runs
+  each since the run-to-run profile): see docs/STATUS.md "llvm: an object table keyed by machine".
+- **Cost:** native-frame code pays for the tag in its inline lookups of unknown space (two more loads of `Mem`): `poc_stat_histogram`,
+  whose time is element loops on native frames, +2.8 percent instructions and +3.2 percent cycles; the 42 designs of
+  `tools/realbench` are level in the geometric mean (docs/STATUS.md).
+- **Not done:** the kept drives (#679's second half) are still above the interpreter's drive path: about 9 percent of the heat run's
+  samples in the drive callbacks and the kernel functions they reach (`assign_codes_now` 2.2, `drive_now` 1.6, `yavs_rt_drive` 1.4,
+  `drive_bits` 1.0, `direct_same`, `direct_same_planes`, `Ctx::assign`) against about 5.7 in the interpreter (`drive_run` 2.0,
+  `direct_same_planes` 2.2, `direct_same`, `Ctx::assign`). Inside `assign_codes_now` most samples are loads that miss: the driver's
+  `direct` flag, the waveform's pending list, the signal. A batch has 3.8 entries on average. Loading the waveform words of `yavs_rt_drive` one by one (the profile showed most of its
+  samples on a merged 16-byte load) changed nothing measurable and was not kept.
+- **The reference simulator (rule 22).** It needs no object table: compiled code holds raw pointers, and each instance's data is
+  reached through its own context pointer. The idea taken is the outcome: a process's objects belong to that process and do not
+  have to be found again because another one ran. Nothing was copied.

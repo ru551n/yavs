@@ -8906,6 +8906,49 @@ policy itself costs about 10 percent of main-thread cycles on this test (data on
 `YAVS_BENCH_TIERFLAGS=--tier-heat=1,0,0`, 5 runs, wall / instructions, change against main): `neorv32_single_min` 0.95 / 0.99,
 `fletcher_bufferwriter_512` 0.99 / 1.01, `fletcher_bufferreader` 1.02 / 1.00, `sc5_fifo_repack` 1.02 / 1.00.
 
+## llvm: an object table keyed by machine (#679, 2026-10-26)
+
+(`docs/decisions.md` "llvm: an object table keyed by machine".) The compiled tier's object table (`rt.rs` `Mem::objs`) keys each entry by
+the address high half and a tag of its space (machine, machine heap at its epoch, runtime constants, activation volatiles) and moves the
+entry by an offset of the tag, so the objects of every process stay in the table while other processes run. A change of machine walks
+and restores nothing (`load_objs`, `save_objs`, `begin_kept` and the drop walks are gone); a process's record is four words (table
+identity, heap epoch, two tags); the table has 16 384 entries, built zeroed in place. Lookups the runtime had to ask the interpreter for
+over the whole LEON3 run: 15.7 million to 7.2 million. Test `compiled_instances` (four instances of a process with heap variables and
+deallocations, interleaved, every tier against the interpreter; it fails when the instances share a heap tag) and the `rt.rs` unit tests.
+
+Whole LEON3 run (to 1060.5 us), bench builds, `perf stat --no-inherit` of the simulation thread, one claimed CCD1 core, cells
+interleaved, medians of 4 (minimum in brackets), G cycles / G instructions; heat = `--tier=auto --tier-heat=1,0,0`; each cell in its own
+world, auto worlds settled by four untimed runs (the run-to-run profile). Session 1 and 2: main a9db5d80 against the change on it;
+session 3 (noisier): main 504f86ad against the change rebased on it:
+
+| | session 1 | session 2 | session 3 |
+|---|---:|---:|---:|
+| interpreter | 184.2 (183.5) / 452 | 185.7 (184.0) / 452 | 192.0 (183.6) / 455 |
+| heat, main | 189.8 (188.9) / 405 | | 197.2 (191.6) / 402 |
+| heat, change | 180.3 (179.4) / 377 | 184.9 (183.3) / 377 | 190.0 (187.0) / 374 |
+| default auto, main | | 198.1 (193.2) / 436 | 186.8 (185.3) / 437 |
+| default auto, change | | 182.3 (180.3) / 438 | 185.9 (184.1) / 437 |
+| auto with `state_register` forced, change | | 185.0 (182.7) / 437 | |
+
+Heat is 4 to 5 percent below main in every session and level with or below the interpreter (-2.1 percent in the quiet session 1, -1
+percent median and +1.9 percent minimum in session 3). Default auto is level with main (session 3 and `tools/realbench`; session 2's -8
+percent did not repeat, at equal instructions) and level with or below the interpreter: the policy compiles few large processes of this
+test, so the table change reaches it little. Forcing `state_register` under the default policy gains nothing now (data on #754). Left on this test: the kept drives
+(`assign_codes_now`, `drive_now`, `yavs_rt_drive`, `drive_bits`: about 7 percent of the heat run's cycles), whose time is the
+kernel's cache misses on the driver, waveform and signal of each assignment; the run makes 33.9 million batch flushes of 127.6 million
+kept scalar drives, 55.9 million vector drives and 10.4 million single scalar drives in 22.9 million compiled activations.
+Difftest 531/531 on `yavs-interp`, `yavs-llvm`, `yavs-auto` and `yavs-auto --tier-heat=1,0,0`, each at 1 and 4 threads.
+`tools/realbench --compare` (main 504f86ad against the change, run phase, `auto` and `auto-cold`, 42 tests, core 10): wall geometric mean
+1.01 / 1.01, instructions 1.00 / 1.00; flagged only `poc_stat_histogram` auto (wall 1.04, instructions 1.06 in a run of 0.5 s;
+repeated: instructions +4.3 percent under `--tier=llvm`, at equal callback counts). That test's time is element loops on native frames
+(`yavs_rt_eloop`, `Mem::region`) and the inline object lookups of native-frame code, which now index the tag table by the address's
+space (two loads more per lookup of unknown space); `Mem::region` marked `#[inline]` (it stopped being inlined into the loop's lookup)
+brings it to +2.8 percent instructions and +3.2 percent cycles. The `numeric` category's auto wall of 1.06 in that run (equal CPU time
+and instructions) was 1.00 in a rerun of 7 runs. A single key word per space (tag and offset in one load) is the next
+step if native-frame lookups show in a profile. Heat on
+the medium designs (`YAVS_BENCH_TIERFLAGS=--tier-heat=1,0,0`, 5 runs, wall / instructions): `neorv32_single_min` 0.99 / 1.00,
+`fletcher_bufferwriter_512` 1.00 / 1.00, `fletcher_bufferreader` 1.01 / 1.00, `sc5_fifo_repack` 1.00 / 1.01.
+
 ## CI repair after the correctness batch (#759, 2026-10-25)
 
 Main CI was red from `02c455f2`. Causes and fixes: (1) `E1360` of #654 also fired for a `linkage` formal, which accepts an actual of any mode (VESTs `tc778`); it now covers `out`/`inout`/`buffer` only. (2) The `vests-1993` expected list still had `tc400`, `tc2565` and `tc537` as known failures, which #657, #658 and #643 fixed: all 1939 entries pass now. (3) `generics/generic_nested_proc` (W1501 on stderr) was fixed by #758. (4) The `process/no_wait_infinite` file (#583) ran unbounded and out of memory under `--tier=auto` and `--tier=llvm` (the llvm jobs on all three runners, the `corpus_waves` test): a never-suspending process now leaves compiled code at its jump back (`docs/decisions.md`).

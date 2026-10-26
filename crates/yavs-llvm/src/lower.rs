@@ -4929,11 +4929,24 @@ impl Gen {
                     Inst::Deref { dst, handle, .. } => {
                         let (slow, join) = self.slow_path(&c, pc, &inst);
                         let h = self.ld(&c, handle);
-                        let e = self.obj_entry(&c, h, true);
+                        let (tk, mx) = self.obj_tag(&c, None);
+                        let e = self.obj_entry(&c, h, true, mx);
                         let eh = self.load(self.i64, self.gep(e, self.c64(OBJ_H as i64)));
                         // An entry with an access value is writable, and a null handle is no
-                        // entry's value (`NO_H`).
-                        let hit = self.icmp(IP::LLVMIntEQ, eh, h);
+                        // entry's value (`NO_H`); the key's tag says the entry is this machine's
+                        // (another instance holds the same access values).
+                        let ek = LLVMBuildAnd(
+                            self.b,
+                            self.load(self.i64, e),
+                            self.c64(!0xffff_ffff),
+                            c"".as_ptr(),
+                        );
+                        let hit = LLVMBuildAnd(
+                            self.b,
+                            self.icmp(IP::LLVMIntEQ, eh, h),
+                            self.icmp(IP::LLVMIntEQ, ek, tk),
+                            c"".as_ptr(),
+                        );
                         let miss = self.block(&c);
                         if c.nat.is_some() {
                             // The object stays in hand for the instructions that follow
@@ -4948,6 +4961,8 @@ impl Gen {
                             let found = self.load(self.i64, e);
                             let at =
                                 LLVMBuildLShr(self.b, self.ld(&c, dst), self.c64(32), c"".as_ptr());
+                            let at =
+                                LLVMBuildOr(self.b, at, self.obj_tag(&c, None).0, c"".as_ptr());
                             self.guard(&c, self.icmp(IP::LLVMIntEQ, found, at), slow);
                             LLVMBuildBr(self.b, join);
                             LLVMPositionBuilderAtEnd(self.b, join);
@@ -8159,7 +8174,13 @@ impl Gen {
     /// entry size. The index sits at bits 32 and up of both, and the shared-heap flag at bit 61
     /// of an address and bit 57 of an access value (`obj_keys_agree`); two shifts and masks
     /// whose chains run side by side, then an exclusive or.
-    unsafe fn obj_entry(&self, c: &Cur, v: LLVMValueRef, handle: bool) -> LLVMValueRef {
+    unsafe fn obj_entry(
+        &self,
+        c: &Cur,
+        v: LLVMValueRef,
+        handle: bool,
+        mixs: LLVMValueRef,
+    ) -> LLVMValueRef {
         // SAFETY: integer arithmetic on values of c.f; the entry lies inside `Mem`.
         unsafe {
             let idx_shift = 32 - OBJ_SHIFT;
@@ -8184,8 +8205,33 @@ impl Gen {
                 c"".as_ptr(),
             );
             let off = LLVMBuildXor(self.b, idx, flag, c"".as_ptr());
+            let off = LLVMBuildXor(self.b, off, mixs, c"".as_ptr());
             let off = LLVMBuildAdd(self.b, off, self.c64(MEM_OBJS as i64), c"".as_ptr());
             self.gep(c.mem, off)
+        }
+    }
+
+    /// The tag bits and the entry offset of the keys `Mem::slot` gives an object (`MEM_TAGS`,
+    /// `MEM_MIXES`, by address space): of a heap object, or with `hi` of the space of the address
+    /// whose high half that is.
+    unsafe fn obj_tag(&self, c: &Cur, hi: Option<LLVMValueRef>) -> (LLVMValueRef, LLVMValueRef) {
+        // SAFETY: loads of `Mem` fields (eight words each, `hi` is below 2^32) and integer
+        // arithmetic.
+        unsafe {
+            let Some(hi) = hi else {
+                let k = 8 * u64::from(space::HEAP);
+                return (
+                    self.mem_ld(c, MEM_TAGS + k, self.i64),
+                    self.mem_ld(c, MEM_MIXES + k, self.i64),
+                );
+            };
+            let sp = LLVMBuildLShr(self.b, hi, self.c64(29), c"".as_ptr());
+            let k = LLVMBuildShl(self.b, sp, self.c64(3), c"".as_ptr());
+            let at = |base: u64| {
+                let off = LLVMBuildAdd(self.b, k, self.c64(base as i64), c"".as_ptr());
+                self.load(self.i64, self.gep(c.mem, off))
+            };
+            (at(MEM_TAGS), at(MEM_MIXES))
         }
     }
 
@@ -8559,8 +8605,10 @@ impl Gen {
                 let hi = LLVMBuildLShr(self.b, a, self.c64(32), c"".as_ptr());
                 let lo = LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr());
                 let o = LLVMBuildAdd(self.b, lo, extra, c"".as_ptr());
-                let e = self.obj_entry(c, a, false);
-                let mut hit = self.icmp(IP::LLVMIntEQ, self.load(self.i64, e), hi);
+                let (tk, mx) = self.obj_tag(c, (!heap).then_some(hi));
+                let e = self.obj_entry(c, a, false, mx);
+                let key = LLVMBuildOr(self.b, hi, tk, c"".as_ptr());
+                let mut hit = self.icmp(IP::LLVMIntEQ, self.load(self.i64, e), key);
                 if write {
                     let w = self.load(self.i64, self.gep(e, self.c64(OBJ_W as i64)));
                     let w = self.icmp(IP::LLVMIntNE, w, self.c64(0));

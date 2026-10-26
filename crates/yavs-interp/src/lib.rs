@@ -432,8 +432,9 @@ pub enum Called {
     Fault,
 }
 
-/// The words of a [`TierState`].
-pub const TIER_STATE_WORDS: usize = 4 * 64 + 1;
+/// The words of a [`TierState`] (the compiled tier keeps the identity of its object table, the
+/// heap epoch and the tags of the process's objects there).
+pub const TIER_STATE_WORDS: usize = 4;
 
 /// What a tier keeps for one process between activations ([`Tier::run_cached`]).
 pub struct TierState {
@@ -590,13 +591,6 @@ pub trait TierHost {
     /// `view` for a process in its root frame, with every field written but straight from the
     /// machine's fields; `false` (nothing written) when it is not (use `view`).
     fn view_again(&mut self, fr: &mut TierFrame) -> bool;
-
-    /// Compiled code keeps writing the heap object (process or shared heap) at `addr` that it
-    /// found writable at an earlier activation or call: count this one's writes as the object's
-    /// (`Heap::data_mut`), which tells the waveform recorder the object may have changed.
-    fn wrote(&mut self, addr: u64) {
-        let _ = addr;
-    }
 
     /// `drive_block` for a zero delay and one element of a logic signal, when the kernel takes
     /// it on its fastest path: `true` when done; `false` (nothing done) otherwise, and the
@@ -976,8 +970,8 @@ pub const TIER_SHARED_ALLOC: u64 = 1;
 /// `TierFrame::flags`: the process may use the shared state, as a protected call needs.
 pub const TIER_SERIAL: u64 = 2;
 /// `TierFrame::flags`: someone compares heap objects by their write counts (`Stamp`, the
-/// waveform recorder): compiled code that keeps writing an object it found earlier must say so
-/// (`TierHost::wrote`).
+/// waveform recorder): compiled code keeps no heap object across activations, so every write
+/// goes through `TierHost::object` and is counted.
 pub const TIER_STAMPS: u64 = 4;
 /// The tag in the top byte of a handle into the shared heap.
 pub const SHARED_TAG: u8 = heap::SHARED;

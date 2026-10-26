@@ -10352,3 +10352,40 @@ arm for a null range is a block that only jumps to the block of the other arm, s
   `BinRange` of `4 * i` and `4 * i + 3` and the `SlicePos` of a slice whose position the loop's range already bounds.
 - **Tests**: `opt` (`a_branch_whose_arms_lead_to_the_same_block_is_a_jump`); perf case `hread_loop` lowered (7594 to 7156 ops with #770).
 
+## `--tier=auto`: a compile pays for the callees it brings, `Compute` at one and a half times its measured price (yavs-llvm `auto.rs`, #757, 2026-10-26)
+
+Follow-up of "`--tier=auto` first-run latency": the lower `Compute` price (native-frame compute loops, measured 33 to 62 ms of compile CPU for 79 to
+153 IR) had been dropped because it compiled losers. Measured with bench builds, fresh copies of the pristine `tools/realbench` worlds, two untimed
+`--tier=interp` runs, then `--tier=auto` runs, all cells of a design on one claimed core of CCD1, instructions of the whole process.
+
+- **The losers were not the compiled code.** After "The watching loop calls native-frame callees itself" the string loops are winners (`match_identifier`
+  3.5 times faster, `uvvm_sb_slv` warm 7 percent fewer instructions at the measured price). What remained was cold-run cost, two kinds:
+  - **The tree.** The payback rule (`need`) prices the root alone, while `tree` compiles every native-frame callee not compiled yet. A cheaper `Compute`
+    let `convert_byte_array_to_slv_array` (303 IR) in with ten callees, 700 ms of compile CPU in a 3 s run (`uvvm_axistream_vvc` cold +8 to +17
+    percent), and a clocked process whose callee `mux` is a compute loop into the budget at the end of a 0.6 s run (`poc_cache_cpu` cold +11 to +13 percent).
+  - **The run length.** At the measured price `match_identifier` compiles at 0.5 s of a 0.8 s run, when the payback rule assumes the rest is as long
+    as the part seen (`uvvm_sb_slv` cold +4 percent): no rule that reads only the looks can tell that run from the histogram's.
+- **Decision: `pick` compiles a candidate only when its tree repays** (`Worker::repays`): the sum over the tree of each function's seen time over its
+  kind's payback is at least the sum of the prices of the tree. The root's term is the payback rule itself; a clocked process keeps its own rules and its
+  seen time pays only for its callees. A candidate that does not repay yet waits without moving `pick_at` (asked again at the next look; `YAVS_AUTO_TRACE`
+  prints a `waits` line once). **A program the profile says ran before shares the cost among `profile::EARLY_RUNS` runs** (the cache makes the compile a link in
+  the runs after, as the profile's own early compiles assume): without that the rule kept the big trees of the window generator (`push_variable_string`,
+  `encode`) and of `uvvm_axistream_vvc` out of every warm run (warm +6 to +8 percent against the change before).
+- **Decision: `Compute` is priced 12 ms + 510 us an IR instruction** (one and a half times what it measures; it was 4 ms + 900), speedup 2.4 unchanged.
+  At the measured price (8 ms + 340) `poc_stat_histogram` cold is 0.87 but `uvvm_sb_slv` cold 1.04; at 10 ms + 420 the string loop compiles in some
+  runs and not in others. The native kinds (`Tiny`, `Native`, `Loop`) keep their models: speedups of 2.5 for them (measured 3 or more since the
+  hand-over fix) compiled more trees in first runs and moved warm runs of `sc5_fifo_repack` and the window generator by +2 to +8 percent; their
+  calibration is open.
+- **Not built: a per-function verdict** (was the compile of a native-frame function paid back, from its seen time before and after). The losers it was
+  meant to catch were the hand-over (fixed); what is left is the cost of a first run, and a first run has no profile to carry a verdict. The measured loser
+  after the fix is a frame-mode process: `check_axi_stream` (934 IR, `ComputeFrame`) of the window generator, first seen 8.1 s into an 11 to 14 s cold
+  run, compiled at 10.4 s for 178 ms of CPU (model 118), ran at 11 percent of the wall afterwards against 12 percent interpreted before, about 1.06
+  times faster against the kind's 1.8; linked warm it is a small gain. Its kind's speedup is the open question.
+- **Measured** (`tools/realbench --compare`, 42 tests, run phase, `auto` and `auto-cold`, cores 12 to 15, against main 46c42d35): wall geometric mean 1.00
+  and 1.00, instructions 0.99 and 1.00, CPU 0.98 and 1.00, sums of the walls 0.98 and 0.99. Moved: `poc_stat_histogram` cold 0.92 (instructions 0.92),
+  `uvvm_axistream_vvc` warm 0.92 (0.92) and cold 0.98 (0.96), `sc5_fifo_repack` cold 0.96 (0.94); the rest within the spread (`uvvm_sb_slv`,
+  `poc_cache_cpu`, `uvvm_util_rand`, the window generator 1.00 to 1.03 wall, instructions 0.99 to 1.02). Five interleaved rounds of the run-1 (cold) and
+  run-3 cells on the guard designs: `poc_stat_histogram` cold 0.922, `uvvm_sb_slv`, `poc_cache_cpu`, `sc5_fifo_repack`, `uvvm_func_cov` 1.00 to 1.01 both,
+  `uvvm_util_rand` cold 1.03 (its compile of `prefix_lines` happens in some runs of either build: 14.02 to 14.46 G for main), the window generator 1.016
+  both; `uvvm_axistream_vvc` run 3 is 1.22: that is the run that compiles the shared trees, a run later than it should because the profile of its first run
+  is not found by the second (#774); realbench times runs 3 to 5 and takes the median.

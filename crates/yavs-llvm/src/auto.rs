@@ -1080,15 +1080,15 @@ const fn model(fixed: f64, per_ir: f64, speedup: f64) -> Model {
 /// `Big` pinned to the old threshold of 3 200 us an IR instruction (compiled code of the large
 /// processes is level with the interpreter, #679; whether they compile is the user's decision, no
 /// size cap). A function called on native frames is priced for its native-frame code only: its
-/// frame-mode code is compiled when it is needed (`Worker::frame_at`). `Compute` (native frames) keeps
-/// its price though it measures lower (33 to 62 ms for 79 to 153 IR, #757): the lower price compiled
-/// the string loops of the verification libraries (no faster compiled) and let clocked processes
-/// with such callees into the budget near the end of short runs (docs/decisions.md).
+/// frame-mode code is compiled when it is needed (`Worker::frame_at`). `Compute` (native frames) is
+/// priced at one and a half times what it measures (33 to 62 ms for 79 to 153 IR, #757): at the
+/// measured price a first run of 0.8 s compiled a string loop too late to repay it, and the callees
+/// such a function brings are paid by `Worker::repays` (docs/decisions.md).
 const MODELS: [Model; 9] = [
     model(2500.0, 200.0, 1.2),
     model(2000.0, 550.0, 1.55),
     model(4000.0, 550.0, 2.1),
-    model(4000.0, 900.0, 2.4),
+    model(12000.0, 510.0, 2.4),
     model(2000.0, 250.0, 1.09),
     model(0.0, 200.0, 1.5),
     model(0.0, 200.0, 1.1),
@@ -1643,7 +1643,7 @@ impl Worker {
     /// payback of its kind (`Model::payback`): the price of the function times what its compiled
     /// code is expected to save.
     fn need(&self, id: FuncId) -> u64 {
-        (self.cost(id) as f64 * self.model(id).payback()) as u64
+        (self.cost(id) as f64 * self.model(id).payback()).ceil() as u64
     }
 
     /// `native_set` of `id` alone (the functions it reaches on native frames, `id` among them
@@ -1901,11 +1901,33 @@ impl Worker {
         order.sort_by_key(|&i| std::cmp::Reverse(heat(self, cands[i])));
         let mut trees = Vec::new();
         let mut prices = Vec::new();
-        for &i in &order {
+        let mut waits = Vec::new();
+        order.retain(|&i| {
             let ids = self.tree(cands[i]);
+            let (saves, costs) = self.repays(cands[i], &ids);
+            if saves < costs {
+                waits.push((cands[i], ids.len(), saves, costs));
+                return false;
+            }
             let cost: u64 = ids.iter().map(|&(i, _)| self.price(i)).sum::<u64>() + self.load_cost();
             prices.push((cost, self.factor(cands[i])));
             trees.push(ids);
+            true
+        });
+        if let Some(tr) = &mut self.trace {
+            for (id, n, saves, costs) in waits {
+                if tr.refused.insert(id) {
+                    tr.line(format!(
+                        "waits f{} `{}`: its compile of {n} functions costs {costs:.0} us, \
+                         saves {saves:.0} us of a rest of the run like the part seen",
+                        id.0,
+                        self.prog.func(id).map_or("?", |f| f.name.as_str()),
+                    ));
+                }
+            }
+        }
+        if order.is_empty() {
+            return None;
         }
         match first_fit(&prices, self.heat.budget, self.spent, self.total) {
             Ok(k) => {
@@ -1953,6 +1975,40 @@ impl Worker {
                 None
             }
         }
+    }
+
+    /// What compiling `root` with its tree `ids` saves in a rest of the run like the part seen (each
+    /// function's seen time over its kind's payback) and what it costs (the prices of the tree), in
+    /// microseconds: compiled when the first is at least the second. The payback rule prices the root
+    /// alone, and the callees a native-frame root brings cost up to six times its own price (#757).
+    /// A program the profile says ran before shares the cost among `profile::EARLY_RUNS` runs, as the
+    /// profile does (the compilation cache makes it a link in the next ones). The root's seen time is
+    /// what `threshold` reads (a process's pooled over its copies, a copy's own unless it is a clocked
+    /// process); a clocked process keeps its own rules, its seen time pays for its callees only.
+    fn repays(&self, root: FuncId, ids: &[(FuncId, Part)]) -> (f64, f64) {
+        if self.heat.budget == 0 {
+            return (0.0, 0.0);
+        }
+        let runs = if self.earlier.base.is_some() {
+            profile::EARLY_RUNS as f64
+        } else {
+            1.0
+        };
+        let rtl = self.is_rtl(root);
+        let base = self.prog.base_of(root);
+        let (mut saves, mut costs) = (0.0, 0.0);
+        for &(i, _) in ids {
+            let seen = if i == root && (rtl || base == root) {
+                self.group[base.0 as usize]
+            } else {
+                self.time[i.0 as usize][0]
+            };
+            saves += seen as f64 / self.model(i).payback();
+            if i != root || !rtl {
+                costs += self.price(i) as f64 / runs;
+            }
+        }
+        (saves, costs)
     }
 
     /// Whether `id` (interpreted, seen for `seen` microseconds) should be looked up in the
@@ -4223,5 +4279,75 @@ mod tests {
         };
         assert_ne!(k(c1), k(c2));
         assert_eq!(k(f).0, "p");
+    }
+
+    /// Two procedures of the shape of `padded_loop`, neither calling the other.
+    fn two_loops(n: usize) -> (yavs_ir::Program, yavs_ir::FuncId, yavs_ir::FuncId) {
+        let mut pb = ProgramBuilder::new();
+        let ids = ["f", "g"].map(|name| pb.declare(name, yavs_ir::FuncKind::Procedure, None));
+        for id in ids {
+            let mut fb = pb.define(id);
+            let spin = fb.block();
+            fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+            let ptr = fb.reg(yavs_ir::RegTy::Ptr);
+            fb.emit(Inst::AddrOf {
+                dst: ptr,
+                space: yavs_ir::AddrSpace::Frame,
+                off: 0,
+            });
+            for _ in 0..n {
+                fb.emit(Inst::Free { ptr });
+            }
+            fb.emit(Inst::Br { to: spin });
+            fb.at(spin);
+            fb.emit(Inst::Br { to: spin });
+            fb.finish();
+        }
+        (pb.finish().unwrap(), ids[0], ids[1])
+    }
+
+    /// A compile is paid by what its whole tree saves: the price of a callee it brings counts against
+    /// the seen time of the root and of the callee (#757).
+    #[test]
+    fn a_compile_waits_until_its_tree_repays() {
+        use super::Part;
+        let (prog, f, g) = two_loops(100);
+        let mut w = worker_of(prog);
+        let tree = [(f, Part::Native), (g, Part::Native)];
+        // (`see` keeps a function's time and its group's alike.)
+        let seen = |w: &mut super::Worker, id: yavs_ir::FuncId, us: u64| {
+            w.time[id.0 as usize][0] = us;
+            w.group[id.0 as usize] = us;
+        };
+        let (nf, ng) = (w.need(f), w.need(g));
+        seen(&mut w, f, nf);
+        let (saves, costs) = w.repays(f, &tree[..1]);
+        assert!(saves >= costs, "alone at its threshold: {saves} {costs}");
+        let (saves, costs) = w.repays(f, &tree);
+        assert!(saves < costs, "with a callee: {saves} {costs}");
+        // A program that ran before shares the cost among the runs the cache serves.
+        w.earlier.base = Some(1);
+        let (_, shared) = w.repays(f, &tree);
+        assert_eq!(shared, costs / super::profile::EARLY_RUNS as f64);
+        w.earlier.base = None;
+        seen(&mut w, g, ng);
+        let (saves, costs) = w.repays(f, &tree);
+        assert!(saves >= costs, "the callee repaid its own: {saves} {costs}");
+    }
+
+    /// A candidate whose compile does not repay yet waits without holding up the next pick: it is
+    /// asked again at the next look (`pick_at` stays).
+    #[test]
+    fn a_candidate_that_does_not_repay_yet_is_asked_again() {
+        let (mut w, f) = worker(100);
+        let k = f.0 as usize;
+        w.total = 100 * w.need(f);
+        (w.time[k][0], w.group[k]) = (w.need(f) / 2, w.need(f) / 2);
+        let mut cands = vec![f];
+        assert!(w.pick(&mut cands).is_none());
+        assert_eq!((cands.as_slice(), w.pick_at), ([f].as_slice(), 0));
+        (w.time[k][0], w.group[k]) = (w.need(f), w.need(f));
+        assert!(w.pick(&mut cands).is_some());
+        assert!(cands.is_empty());
     }
 }

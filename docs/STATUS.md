@@ -8728,6 +8728,15 @@ rerun of 7 runs (with `uvvm_sb_slv` 0.98 / 1.00 and the histogram 1.00 / 0.90); 
 designs (`tools/bench --compare`, 8 runs, core 9): CPU geometric mean 1.013, every design 0.99 to 1.03 (1.001 for an earlier build with the same
 policy for these designs: host spread).
 
+### `--tier=auto`: a compile pays for the callees it brings (yavs-llvm, #757, 2026-10-26)
+
+Decisions and numbers: `docs/decisions.md` "`--tier=auto`: a compile pays for the callees it brings". A candidate is compiled once what its whole tree
+(the native-frame callees `tree` brings) saves in a rest of the run like the part seen covers the tree's price, shared among four runs once the profile
+says the program ran before; native-frame compute loops are priced at one and a half times what they measure (12 ms + 510 us an IR instruction, was
+4 ms + 900). All 42 of `tools/realbench`: wall geometric mean 1.00 warm and cold, instructions 0.99 and 1.00; `poc_stat_histogram` cold 0.92,
+`uvvm_axistream_vvc` warm 0.92. Left: the native kinds' models (measured speedups of 3 or more since the hand-over fix), `ComputeFrame`'s speedup for
+processes like `check_axi_stream`, the profile key across runs (#774).
+
 ### The watching loop calls native-frame callees itself (yavs-interp, #757, 2026-10-26)
 
 Decisions and numbers: `docs/decisions.md` "The watching loop calls native-frame callees itself". An interpreted caller no longer hands its activation

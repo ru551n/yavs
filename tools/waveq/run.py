@@ -47,11 +47,14 @@ def cap(mem):
 
 
 def bash(script, cwd, mem):
-    """(exit status, output tail, compiled frames: the llvm_native_frames counter of a yavs run, else None)."""
+    """(exit status, output tail, compiled code of a yavs run: functions --tier=auto compiled (its --verbose notes), IR
+    instructions --tier=llvm compiled inline (counter), else None)."""
     p = subprocess.run(cap(mem) + ["bash", "-c", script], cwd=cwd, capture_output=True, text=True, errors="replace", env=os.environ | {"YAVS_COUNTERS": "1"})
     out = p.stdout + p.stderr
-    m = re.search(r"llvm_native_frames=(\d+)", out)
-    return p.returncode, out[-1500:], int(m[1]) if m else None
+    m = re.search(r"llvm_inline_insts=(\d+)", out)
+    auto = len(re.findall(r"compiled by --tier=auto", out))
+    code = f"{auto} functions" if auto else f"{m[1]} IR instructions" if m and m[1] != "0" else "0" if m else None
+    return p.returncode, out[-1500:], code
 
 
 def fill(tmpl, **kw):
@@ -75,7 +78,7 @@ def run_h2h(name, tool, Y, tier, d):
     if tool == "yavs":
         wave = d / f"yavs-{tier}.fst"
         s = (f"{shlex.quote(Y)} analyze --std=2008 --work=work:{work}/work {f} && "
-             f"{shlex.quote(Y)} run --std=2008 --work=work:{work}/work --tier={tier} --wave={wave} {top} " + " ".join(f"-g{g}" for g in gens))
+             f"{shlex.quote(Y)} run --std=2008 --work=work:{work}/work --tier={tier} --verbose --wave={wave} {top} " + " ".join(f"-g{g}" for g in gens))
         mem = YAVS_MEM
     else:
         tmpl = simconf.get(tool, "waveq")
@@ -102,7 +105,7 @@ def run_real(R, t, tool, Y, key, tier, d, world):
         wave = d / f"yavs-{tier}.fst"
         if not world.exists():
             R.make_pristine(t, "yavs", Y, key, world)
-        s = R.yavs_script(Y, t, world, tier, extra=[f"--wave={wave}"])
+        s = R.yavs_script(Y, t, world, tier, extra=[f"--wave={wave}", "--verbose"])
         mem = YAVS_MEM
     else:
         flags = simconf.get(tool, "waveq_flags")
@@ -156,7 +159,7 @@ def design(name, Y, key, tiers, refs, cmp, R):
                 except R.Fail as e:
                     st, wave, tail, frames = "setup failed", None, str(e), None
             runs[label] = {"status": st, "wave": str(wave) if wave else None, "seconds": round(time.time() - t0, 1),
-                           "bytes": wave.stat().st_size if wave else 0, "tail": tail if st != "ok" else "", "compiled_frames": frames}
+                           "bytes": wave.stat().st_size if wave else 0, "tail": tail if st != "ok" else "", "compiled": frames}
             print(f"  {name} {label}: {st} ({runs[label]['seconds']}s, {runs[label]['bytes'] >> 20} MB)", flush=True)
     finally:
         for w in worlds:
@@ -216,7 +219,7 @@ def compact(res):
     rows = []
     for n, r in res["designs"].items():
         for p in r["pairs"] or [{"a": "", "b": "", "error": "no reference waveform: " + ", ".join(f"{k} {v['status']}" for k, v in r["runs"].items())}]:
-            row = {"design": n, "kind": r["kind"], "a": p["a"], "b": p["b"], "compiled_frames": r["runs"].get(p["a"], {}).get("compiled_frames")}
+            row = {"design": n, "kind": r["kind"], "a": p["a"], "b": p["b"], "compiled": r["runs"].get(p["a"], {}).get("compiled")}
             if "error" in p:
                 rows.append(row | {"error": p["error"]})
                 continue
@@ -235,7 +238,7 @@ def markdown(c):
     m = c["run"]
     s = [f"Waveform equivalence: run locally on {m['date']} at {m['commit']} (yavs build {m['yavs_key']}), references {', '.join(m['refs'])}.",
          f"Reproduce: `{m['command']}`", "",
-         "| design | A | B | signals | value changes | equal | different | equal as slice | other shape | only A | only B | differences | A compiled frames |",
+         "| design | A | B | signals | value changes | equal | different | equal as slice | other shape | only A | only B | differences | A compiled code |",
          "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in c["rows"]:
         if "error" in r:
@@ -243,7 +246,7 @@ def markdown(c):
             continue
         v = ", ".join(f"{k}: {n}" for k, n in sorted(r["verdicts"].items())) or "none"
         s.append(f"| {r['design']} | {r['a']} | {r['b']} | {r['signals']} | {r['changes']} | {r['equal']} | {r['different']} | "
-                 f"{r['sliced']} | {r['other_shape']} | {r['only_a']} | {r['only_b']} | {v} | {'' if r.get('compiled_frames') is None else r['compiled_frames']} |")
+                 f"{r['sliced']} | {r['other_shape']} | {r['only_a']} | {r['only_b']} | {v} | {'' if r.get('compiled') is None else r['compiled']} |")
     bad = [f"{n} {k}: {st}" for n, runs in c["status"].items() for k, st in runs.items() if st not in ("ok", "not configured")]
     if bad:
         s += ["", "Runs that did not end with status 0 (compared up to where their waveform ends): " + "; ".join(bad)]

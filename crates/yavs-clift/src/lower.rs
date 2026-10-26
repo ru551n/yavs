@@ -1979,9 +1979,10 @@ fn gen_func(
                 ..
             } => {
                 let (x, y) = (g.ld(a), g.ld(b));
-                match g.int_op(op, x, y, pc) {
+                let (l, h) = (g.ld(lo), g.ld(hi));
+                let bounds = g.const_of(l).zip(g.const_of(h));
+                match g.int_op_in(op, x, y, pc, bounds) {
                     Some(v) => {
-                        let (l, h) = (g.ld(lo), g.ld(hi));
                         g.range_exit(v, l, h, pc);
                         g.st(dst, v);
                     }
@@ -2135,7 +2136,7 @@ fn gen_func(
                     Some(Some(Known::Frame(o) | Known::Const(_, o) | Known::Inst(o))) => {
                         (Some(*o), None)
                     }
-                    Some(Some(Known::Heap(Some(o)))) if g.nat.is_some() => (None, Some(*o)),
+                    Some(Some(Known::Heap(Some(o)))) => (None, Some(*o)),
                     _ => (None, None),
                 };
                 // The offset of the base in its 4 GiB window.
@@ -3948,6 +3949,50 @@ impl Gen<'_> {
     /// `x op y` as `yavs_std::arith`, leaving at `pc` wherever it reports an error. `None` for
     /// `**`, which goes through the interpreter.
     fn int_op(&mut self, op: IntOp, x: Value, y: Value, pc: u32) -> Option<Value> {
+        self.int_op_in(op, x, y, pc, None)
+    }
+
+    /// `int_op` whose result is then checked against the constant `bounds`. An addition of a
+    /// constant tests the sum against the operand (`add`, `cmp`, `jcc` instead of `seto`, `test`,
+    /// `jne`), and not at all when every wrapped sum is outside the bounds.
+    fn int_op_in(
+        &mut self,
+        op: IntOp,
+        x: Value,
+        y: Value,
+        pc: u32,
+        bounds: Option<(i64, i64)>,
+    ) -> Option<Value> {
+        let addend = match op {
+            IntOp::Add => self
+                .const_of(y)
+                .map(|c| (x, c))
+                .or_else(|| self.const_of(x).map(|c| (y, c))),
+            IntOp::Sub => self
+                .const_of(y)
+                .and_then(|c| c.checked_neg())
+                .map(|c| (x, c)),
+            _ => None,
+        };
+        if let Some((x, d)) = addend {
+            let v = self.b.ins().iadd_imm_s(x, d);
+            // A sum that wrapped is below `MIN + d` (d > 0) or above `MAX + d` (d < 0).
+            let caught = bounds.is_some_and(|(l, h)| {
+                l <= h
+                    && (d >= 0 && l >= i64::MIN.wrapping_add(d)
+                        || d < 0 && h <= i64::MAX.wrapping_add(d))
+            });
+            if d != 0 && !caught {
+                let cc = if d > 0 {
+                    IntCC::SignedLessThan
+                } else {
+                    IntCC::SignedGreaterThan
+                };
+                let bad = self.b.ins().icmp(cc, v, x);
+                self.exit_if(bad, pc);
+            }
+            return Some(v);
+        }
         Some(match op {
             IntOp::Add => {
                 let (v, o) = self.b.ins().sadd_overflow(x, y);
@@ -4145,9 +4190,7 @@ impl Gen<'_> {
             Some(Some(Known::LikelyHeap)) if self.nat.is_none() => Some(None),
             _ => None,
         });
-        if let Some(Some(o)) = heap
-            && self.nat.is_some()
-        {
+        if let Some(Some(o)) = heap {
             // An object in hand: only the bounds of the access.
             let (ev, nv) = (self.op(extra), self.op(n));
             let off = self.b.ins().iadd(o.off, ev);
@@ -4285,110 +4328,127 @@ impl Gen<'_> {
             self.guard(nn, slow);
             return p;
         }
+        // A native frame, by the address's space: a frame address is its own slots, the slots of
+        // the native frames below it or the interpreter's top frame; the temporary area and
+        // (reading) the instance data are their views; anything else (and what those miss) the
+        // object table, then `yavs_rt_host`.
         let hi = self.b.ins().ushr_imm_s(a, 32);
         let lo = self.lo32(a);
         let off = self.b.ins().iadd(lo, extra);
-        let frame_hi = self.mem_ld(MEM_FRAME);
-        let is_f = self.b.ins().icmp(IntCC::Equal, hi, frame_hi);
-        let is_t = self
-            .b
-            .ins()
-            .icmp_imm_s(IntCC::Equal, hi, i64::from(space::TEMP) << 29);
-        let (slots, slots_len) = (self.mem_ld(MEM_SLOTS), self.mem_ld(MEM_SLOTS_LEN));
-        let (temp, temp_len) = (self.mem_ld(MEM_TEMP), self.mem_ld(MEM_TEMP_LEN));
-        let (base, len, known) = if write {
-            let base = self.b.ins().select(is_f, slots, temp);
-            let len = self.b.ins().select(is_f, slots_len, temp_len);
-            (base, len, self.b.ins().bor(is_f, is_t))
-        } else {
-            let is_i = self
-                .b
-                .ins()
-                .icmp_imm_s(IntCC::Equal, hi, i64::from(space::INST) << 29);
-            let (inst, inst_len) = (self.mem_ld(MEM_INST), self.mem_ld(MEM_INST_LEN));
-            let b = self.b.ins().select(is_t, temp, inst);
-            let l = self.b.ins().select(is_t, temp_len, inst_len);
-            let base = self.b.ins().select(is_f, slots, b);
-            let len = self.b.ins().select(is_f, slots_len, l);
-            let k = self.b.ins().bor(is_f, is_t);
-            (base, len, self.b.ins().bor(k, is_i))
-        };
-        let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, n, len);
-        let rest = self.b.ins().isub(len, n);
-        let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, rest);
-        let k2 = self.b.ins().band(fits, inside);
-        let known = self.b.ins().band(known, k2);
-        let (fast, call, done) = (
+        let done = self.b.create_block();
+        let p = self.b.append_block_param(done, I64);
+        let (depth, slots) = self.nat.as_ref().map(|n| (n.depth, n.slots)).expect("nat");
+        let closed = self.nat.as_ref().is_some_and(|n| n.closed.is_some());
+        let (fr, nf, objb) = (
             self.b.create_block(),
             self.b.create_block(),
             self.b.create_block(),
         );
-        let p = self.b.append_block_param(done, I64);
-        self.b.ins().brif(known, fast, &[], call, &[]);
-        self.b.switch_to_block(fast);
-        let p1 = self.b.ins().iadd(base, off);
-        self.b.ins().jump(done, &[BlockArg::Value(p1)]);
-        self.b.switch_to_block(call);
-        {
-            // A native frame's own slots, and the slots of the native frames below it, registered
-            // at their entry in `Mem::nslots` (a frame above the interpreter's top frame and
-            // below this one).
-            let (depth, slots) = self.nat.as_ref().map(|n| (n.depth, n.slots)).expect("nat");
-            let closed = self.nat.as_ref().is_some_and(|n| n.closed.is_some());
-            let (other, up, rest) = (
-                self.b.create_block(),
-                self.b.create_block(),
-                self.b.create_block(),
-            );
-            // No address of a closed frame is of unknown space.
-            if closed {
-                self.b.ins().jump(other, &[]);
-            } else {
-                let own = self.b.create_block();
-                let flen = self.c64(self.frame_len as i64);
-                let is_own = self.b.ins().icmp(IntCC::Equal, hi, depth);
-                self.b.ins().brif(is_own, own, &[], other, &[]);
-                self.b.switch_to_block(own);
-                let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, n, flen);
-                let orest = self.b.ins().isub(flen, n);
-                let inside = self
-                    .b
-                    .ins()
-                    .icmp(IntCC::UnsignedLessThanOrEqual, off, orest);
-                let okc = self.b.ins().band(fits, inside);
-                self.guard(okc, slow);
-                let pown = self.b.ins().iadd(slots, off);
-                self.b.ins().jump(done, &[BlockArg::Value(pown)]);
-            }
+        let is_fr = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::UnsignedLessThan, a, 1 << (32 + 29));
+        debug_assert_eq!(space::FRAME, 0);
+        self.b.ins().brif(is_fr, fr, &[], nf, &[]);
+        self.b.switch_to_block(fr);
+        // No address of a closed frame is of unknown space.
+        if !closed {
+            let (own, other) = (self.b.create_block(), self.b.create_block());
+            let is_own = self.b.ins().icmp(IntCC::Equal, hi, depth);
+            self.b.ins().brif(is_own, own, &[], other, &[]);
+            self.b.switch_to_block(own);
+            let flen = self.c64(self.frame_len as i64);
+            let okc = self.in_range(off, n, flen);
+            self.guard(okc, slow);
+            let pown = self.b.ins().iadd(slots, off);
+            self.b.ins().jump(done, &[BlockArg::Value(pown)]);
             self.b.switch_to_block(other);
-            let top = self.mem_ld(MEM_FRAME_IDX);
-            let above = self.b.ins().icmp(IntCC::UnsignedGreaterThan, hi, top);
-            let below = self.b.ins().icmp(IntCC::UnsignedLessThan, hi, depth);
-            let between = self.b.ins().band(above, below);
-            self.b.ins().brif(between, up, &[], rest, &[]);
-            self.b.switch_to_block(up);
-            let tab = self.mem_ld(MEM_NSLOTS);
-            let eo = self.b.ins().imul_imm_s(hi, 16);
-            let ent = self.b.ins().iadd(tab, eo);
-            let sp = self.b.ins().load(I64, MemFlagsData::trusted(), ent, 0);
-            let len = self.b.ins().load(I64, MemFlagsData::trusted(), ent, 8);
-            let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, n, len);
-            let urest = self.b.ins().isub(len, n);
-            let inside = self
+        }
+        let (up, rest) = (self.b.create_block(), self.b.create_block());
+        let top = self.mem_ld(MEM_FRAME_IDX);
+        let above = self.b.ins().icmp(IntCC::UnsignedGreaterThan, hi, top);
+        let below = self.b.ins().icmp(IntCC::UnsignedLessThan, hi, depth);
+        let between = self.b.ins().band(above, below);
+        self.b.ins().brif(between, up, &[], rest, &[]);
+        self.b.switch_to_block(up);
+        let tab = self.mem_ld(MEM_NSLOTS);
+        let eo = self.b.ins().imul_imm_s(hi, 16);
+        let ent = self.b.ins().iadd(tab, eo);
+        let sp = self.b.ins().load(I64, MemFlagsData::trusted(), ent, 0);
+        let len = self.b.ins().load(I64, MemFlagsData::trusted(), ent, 8);
+        let okc = self.in_range(off, n, len);
+        self.guard(okc, slow);
+        let pup = self.b.ins().iadd(sp, off);
+        self.b.ins().jump(done, &[BlockArg::Value(pup)]);
+        self.b.switch_to_block(rest);
+        let fh = self.mem_ld(MEM_FRAME);
+        let is = self.b.ins().icmp(IntCC::Equal, hi, fh);
+        self.view_try(is, off, n, MEM_SLOTS, MEM_SLOTS_LEN, done, objb);
+        self.b.switch_to_block(nf);
+        let is = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::Equal, hi, i64::from(space::TEMP) << 29);
+        if write {
+            self.view_try(is, off, n, MEM_TEMP, MEM_TEMP_LEN, done, objb);
+        } else {
+            let ni = self.b.create_block();
+            self.view_try(is, off, n, MEM_TEMP, MEM_TEMP_LEN, done, ni);
+            self.b.switch_to_block(ni);
+            let is = self
                 .b
                 .ins()
-                .icmp(IntCC::UnsignedLessThanOrEqual, off, urest);
-            let okc = self.b.ins().band(fits, inside);
-            self.guard(okc, slow);
-            let pup = self.b.ins().iadd(sp, off);
-            self.b.ins().jump(done, &[BlockArg::Value(pup)]);
-            self.b.switch_to_block(rest);
+                .icmp_imm_s(IntCC::Equal, hi, i64::from(space::INST) << 29);
+            self.view_try(is, off, n, MEM_INST, MEM_INST_LEN, done, objb);
         }
-        self.obj_lookup(a, hi, off, extra, n, write, false, done);
+        self.b.switch_to_block(objb);
+        let miss = self.b.create_block();
+        self.obj_try(a, hi, off, n, write, false, done, miss);
+        self.b.switch_to_block(miss);
+        self.b.set_cold_block(miss);
+        let w = self.c32(u32::from(write));
+        let c = self
+            .b
+            .ins()
+            .call(self.imp.host, &[self.env, self.mem, a, extra, n, w]);
+        let ph = self.b.inst_results(c)[0];
+        self.b.ins().jump(done, &[BlockArg::Value(ph)]);
         self.b.switch_to_block(done);
         let nn = self.b.ins().icmp_imm_s(IntCC::NotEqual, p, 0);
         self.guard(nn, slow);
         p
+    }
+
+    /// The view at `base_f`, `len_f` of `Mem` when `is` and the access lies within it: jumps to
+    /// `done` with the host pointer, to `miss` otherwise.
+    #[allow(clippy::too_many_arguments)]
+    fn view_try(
+        &mut self,
+        is: Value,
+        off: Value,
+        n: Value,
+        base_f: u64,
+        len_f: u64,
+        done: Block,
+        miss: Block,
+    ) {
+        let len = self.mem_ld(len_f);
+        let inside = self.in_range(off, n, len);
+        let okc = self.b.ins().band(is, inside);
+        let fast = self.b.create_block();
+        self.b.ins().brif(okc, fast, &[], miss, &[]);
+        self.b.switch_to_block(fast);
+        let base = self.mem_ld(base_f);
+        let pf = self.b.ins().iadd(base, off);
+        self.b.ins().jump(done, &[BlockArg::Value(pf)]);
+    }
+
+    /// Whether `n` bytes at offset `off` lie within `len` bytes.
+    fn in_range(&mut self, off: Value, n: Value, len: Value) -> Value {
+        let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, n, len);
+        let rest = self.b.ins().isub(len, n);
+        let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, rest);
+        self.b.ins().band(fits, inside)
     }
 
     /// The object table's entry for the access (the objects found before: heap objects a `Deref`
@@ -4407,6 +4467,33 @@ impl Gen<'_> {
         write: bool,
         heap: bool,
         done: Block,
+    ) {
+        let miss = self.b.create_block();
+        self.b.set_cold_block(miss);
+        self.obj_try(a, hi, off, n, write, heap, done, miss);
+        self.b.switch_to_block(miss);
+        let w = self.c32(u32::from(write));
+        let c = self
+            .b
+            .ins()
+            .call(self.imp.host, &[self.env, self.mem, a, extra, n, w]);
+        let p2 = self.b.inst_results(c)[0];
+        self.b.ins().jump(done, &[BlockArg::Value(p2)]);
+    }
+
+    /// The object table's test of `obj_lookup`: jumps to `done` with the host pointer on a hit,
+    /// to `miss` otherwise.
+    #[allow(clippy::too_many_arguments)]
+    fn obj_try(
+        &mut self,
+        a: Value,
+        hi: Value,
+        off: Value,
+        n: Value,
+        write: bool,
+        heap: bool,
+        done: Block,
+        miss: Block,
     ) {
         let flag = self.b.ins().ushr_imm_s(a, 32 + i64::from(KEY_SHIFT_ADDR));
         let flag = self.b.ins().band_imm_s(flag, KEY_FLAG as i64);
@@ -4443,20 +4530,11 @@ impl Gen<'_> {
             .icmp(IntCC::UnsignedLessThanOrEqual, off, orest);
         let ok = self.b.ins().band(ofits, oinside);
         let ok = self.b.ins().band(hit, ok);
-        let (obj, miss) = (self.b.create_block(), self.b.create_block());
-        self.b.set_cold_block(miss);
+        let obj = self.b.create_block();
         self.b.ins().brif(ok, obj, &[], miss, &[]);
         self.b.switch_to_block(obj);
         let p3 = self.b.ins().iadd(optr, off);
         self.b.ins().jump(done, &[BlockArg::Value(p3)]);
-        self.b.switch_to_block(miss);
-        let w = self.c32(u32::from(write));
-        let c = self
-            .b
-            .ins()
-            .call(self.imp.host, &[self.env, self.mem, a, extra, n, w]);
-        let p2 = self.b.inst_results(c)[0];
-        self.b.ins().jump(done, &[BlockArg::Value(p2)]);
     }
 
     /// The tag bits and the scaled entry offset of the keys `Mem::slot` gives an object
@@ -4473,6 +4551,19 @@ impl Gen<'_> {
             self.b.ins().load(I64, self.mf, p, MEM_TAGS as i32),
             self.b.ins().load(I64, self.mf, p, MEM_MIXES as i32),
         )
+    }
+
+    /// The host pointer and length of the object in table entry `ent`.
+    fn ent_obj(&mut self, ent: Value) -> (Value, Value) {
+        let p = self
+            .b
+            .ins()
+            .load(I64, self.mf, ent, (MEM_OBJS + OBJ_PTR) as i32);
+        let l = self
+            .b
+            .ins()
+            .load(I64, self.mf, ent, (MEM_OBJS + OBJ_LEN) as i32);
+        (p, l)
     }
 
     /// `left, right, dir` of dimension `dim` of the descriptor `dope` points to, when that is a
@@ -6595,7 +6686,21 @@ impl Gen<'_> {
         let ehi = self.b.ins().load(I64, self.mf, ent, MEM_OBJS as i32);
         let v = self.b.ins().ishl_imm_s(ehi, 32);
         self.st(dst, v);
-        self.b.ins().jump(join, &[]);
+        // Frame mode: the object goes on in hand through `cont` (pointer, length, value); a way
+        // that cannot vouch for the entry passes length 0, so every access takes its slow path.
+        let cont = self.nat.is_none().then(|| {
+            let c = self.b.create_block();
+            for _ in 0..3 {
+                self.b.append_block_param(c, I64);
+            }
+            let (ptr, len) = self.ent_obj(ent);
+            let args = [ptr, len, v].map(BlockArg::Value);
+            self.b.ins().jump(c, &args);
+            c
+        });
+        if cont.is_none() {
+            self.b.ins().jump(join, &[]);
+        }
         self.start(miss);
         // A variant has no register array to write the address into: a cell of its own.
         let scratch = self.nat.is_some().then(|| {
@@ -6632,6 +6737,42 @@ impl Gen<'_> {
             self.guard(same, slow);
             self.st(dst, v);
             self.b.ins().jump(join, &[]);
+        } else if let Some(c) = cont {
+            let ok = self.b.create_block();
+            self.b.ins().brif(failed, slow, &[], ok, &[]);
+            self.start(ok);
+            // As for a variant: the callback may not have entered the object.
+            let v = self.ld(dst);
+            let at = self.b.ins().ushr_imm_s(v, 32);
+            let tk = self.obj_tag(None).0;
+            let at = self.b.ins().bor(at, tk);
+            let found = self.b.ins().load(I64, self.mf, ent, MEM_OBJS as i32);
+            let same = self.b.ins().icmp(IntCC::Equal, found, at);
+            let (ptr, len) = self.ent_obj(ent);
+            let z = self.c64(0);
+            let len = self.b.ins().select(same, len, z);
+            let args = [ptr, len, v].map(BlockArg::Value);
+            self.b.ins().jump(c, &args);
+            // The interpreter's step: no entry to vouch for (a valid pointer for 0 bytes).
+            self.start(join);
+            let v = self.ld(dst);
+            let z = self.c64(0);
+            let args = [self.mem, z, v].map(BlockArg::Value);
+            self.b.ins().jump(c, &args);
+            self.start(c);
+            let ps = self.b.block_params(c).to_vec();
+            self.cache[dst.0 as usize] = Some(ps[2]);
+            let off = self.c64(0);
+            self.objnew = Some((
+                dst,
+                ObjRef {
+                    ptr: ps[0],
+                    len: ps[1],
+                    hi: ps[2],
+                    off,
+                },
+            ));
+            return;
         } else {
             self.b.ins().brif(failed, slow, &[], join, &[]);
         }

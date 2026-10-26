@@ -1094,12 +1094,17 @@ pub fn run(
         yavs_interp::keep_variables();
     }
     // Eager Cranelift compiles the whole program before time 0 like `--tier=llvm` (no specialised
-    // copies, layout slots); the tiers that tier up get the layout slots, which also keep the
-    // 32-byte blocks the interpreter fuses in the frame, the form compiled code is faster with
-    // (#756; the Cranelift code ignores the slots themselves).
+    // copies, layout slots); the tiers that tier up with LLVM get the layout slots, which also keep
+    // the 32-byte blocks the interpreter fuses in the frame, the form compiled code is faster with
+    // (#756). `clift-auto` keeps only the blocks in the frame: its code does not use the slots,
+    // which cost process-frame memory (user, 2026-10-26); `YAVS_CLIFT_LAYOUT_SLOTS=1` adds them.
     match a.tier() {
         TierArg::Llvm | TierArg::Clift => yavs_interp::compiled_tier(),
-        TierArg::Auto | TierArg::Auto3 | TierArg::CliftAuto => yavs_interp::layout_slots(),
+        TierArg::Auto | TierArg::Auto3 => yavs_interp::layout_slots(),
+        TierArg::CliftAuto if std::env::var("YAVS_CLIFT_LAYOUT_SLOTS").is_ok_and(|v| v == "1") => {
+            yavs_interp::layout_slots()
+        }
+        TierArg::CliftAuto => yavs_interp::frame_blocks(),
         TierArg::Interp => {}
     }
     // A plugin may deposit into process variables between activations, and the waveform

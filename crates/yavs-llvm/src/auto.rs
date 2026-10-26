@@ -2521,8 +2521,7 @@ impl Worker {
                     && !self.done[id.0 as usize][0]
                     && loops(&self.prog, f)
                 {
-                    self.frame_at[id.0 as usize] =
-                        self.time[id.0 as usize][0] + frame_need;
+                    self.frame_at[id.0 as usize] = self.time[id.0 as usize][0] + frame_need;
                 }
                 for &(g, native, call) in &entry.extra {
                     let k = g.0 as usize;

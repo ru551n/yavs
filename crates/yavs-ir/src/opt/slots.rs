@@ -575,7 +575,7 @@ fn scan_block(
             && n > 0
             && n <= MAX_TEMP
             && local.len() < MAX_PER_BLOCK
-            && !(n == 32 && !layout_slots_on() && fused_in_loop(f, pc, blk.end as usize, dst))
+            && !(n == 32 && !frame_blocks_on() && fused_in_loop(f, pc, blk.end as usize, dst))
         {
             let n = n.next_multiple_of(8);
             let g = cands.len();

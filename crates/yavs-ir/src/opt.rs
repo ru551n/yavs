@@ -149,6 +149,19 @@ fn layout_slots_on() -> bool {
     compiled() || LAYOUT_SLOTS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+static FRAME_BLOCKS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The 32-byte blocks the interpreter fuses become frame bytes as under [`layout_slots`], without
+/// the layout slots (`--tier=clift-auto`: its compiled code is faster with the blocks in the frame
+/// and does not use the slots, user 2026-10-26). Call it before the first function is asked for.
+pub fn frame_blocks() {
+    FRAME_BLOCKS.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn frame_blocks_on() -> bool {
+    layout_slots_on() || FRAME_BLOCKS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 static EXTERNAL_VARS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Process variables may be read or written from outside (a plugin deposits a value through
@@ -202,13 +215,14 @@ pub fn fingerprint() -> String {
         layout_slots_on(),
         drives_enabled(),
         slots_enabled(),
+        frame_blocks_on(),
     ])
 }
 
-fn fingerprint_of(f: [bool; 10]) -> String {
+fn fingerprint_of(f: [bool; 11]) -> String {
     let names = [
         "iropt", "memo", "cfg", "inline", "keep", "compiled", "external", "layouts", "drives",
-        "slots",
+        "slots", "blocks",
     ];
     let parts: Vec<String> = names
         .iter()
@@ -225,9 +239,9 @@ mod fingerprint_tests {
     /// Every switch is part of the fingerprint (#491).
     #[test]
     fn each_switch_changes_the_fingerprint() {
-        let base = fingerprint_of([false; 10]);
-        for i in 0..10 {
-            let mut f = [false; 10];
+        let base = fingerprint_of([false; 11]);
+        for i in 0..11 {
+            let mut f = [false; 11];
             f[i] = true;
             assert_ne!(fingerprint_of(f), base, "switch {i}");
         }

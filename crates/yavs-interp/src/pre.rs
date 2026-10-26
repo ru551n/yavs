@@ -1158,6 +1158,16 @@ pub(crate) enum Op {
         t: u32,
         f: u32,
     },
+    /// `Alloc` of 32 bytes, `LCopy` of at most 64 elements from one block into it and the `is_x`
+    /// of that vector (`CallIeee`), the temporary read by nothing else: the planes are tested where
+    /// they are (else the `Alloc` alone). #770.
+    IsXSlice {
+        tmp: u32,
+        src: u32,
+        soff: u32,
+        n: u32,
+        res: u32,
+    },
 }
 
 // Small enough for three ops to a cache line.
@@ -3369,7 +3379,16 @@ fn loop_body(body: &[Op], ind: u32, bound: u32, delta: Delta) -> Result<Vec<LSte
     }
 }
 
-fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32]) {
+/// Is the native the `is_x` of a vector of `std_ulogic`?
+fn is_x_vec(prog: &Program, native: u32) -> bool {
+    prog.natives
+        .get(yavs_ir::NativeId(native))
+        .and_then(|n| yavs_ir::ieee::symbol_key(&n.symbol))
+        .and_then(|k| yavs_ir::ieee::parse(k.split_once('@').map_or(k, |k| k.0)))
+        .is_some_and(|op| matches!(op, yavs_ir::ieee::Op::IsX(true)))
+}
+
+fn superops(prog: &Program, ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32]) {
     let int = |r: u32| match known.get(r as usize) {
         Some(&Known::Int(v)) => Some(v),
         _ => None,
@@ -3592,6 +3611,41 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
                 && !live_after(f, lp as usize, yavs_ir::Reg(tmp)) =>
             {
                 Some(Op::ZeroCatLCopy { tmp, size, dst, n })
+            }
+            (
+                first,
+                Some(&Op::LCopy {
+                    dst: d2,
+                    doff,
+                    src,
+                    soff,
+                    n,
+                }),
+                Some(&Op::CallIeee {
+                    native,
+                    start,
+                    len,
+                    dst: res,
+                }),
+            ) if let Some((tmp, 32, false)) = block(first)
+                && d2 == tmp
+                && src != tmp
+                && res != NONE
+                && int(doff) == Some(0)
+                && is_x_vec(prog, native)
+                && let Some(&[a0, ..]) = f.regs(yavs_ir::Regs { start, len })
+                && len == 4
+                && a0.0 == tmp
+                && let Some(&cp) = at.get(k + 2)
+                && !live_after(f, cp as usize, yavs_ir::Reg(tmp)) =>
+            {
+                Some(Op::IsXSlice {
+                    tmp,
+                    src,
+                    soff,
+                    n,
+                    res,
+                })
             }
             (
                 first,
@@ -5024,7 +5078,7 @@ impl Code {
                 o => o,
             };
         }
-        superops(&mut ops, &at, f, known, &uses);
+        superops(prog, &mut ops, &at, f, known, &uses);
         static_waits(prog, f, &mut ops, &at, &entry);
         let runs = drive_runs(&mut ops);
         let loops = elem_loops(&mut ops, &mut at);

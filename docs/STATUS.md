@@ -9155,3 +9155,8 @@ ops (11.8 with a proven range). The late inliner no longer expands table functio
 descriptor reads of such a loop move before it (`docs/decisions.md` "Loop-invariant loads and dereferences"), and the inner loop runs as one element-loop op. The reproducer of the issue: 5.08 M ops to
 0.26 M; the first 1 us: 31.37 G to 25.96 G instructions (-17.2 percent) with `--tier=interp`. Left: #771, #770.
 
+## `is_x` of a slice without a copy (yavs-interp, #770, 2026-10-26)
+
+`Is_X (v (a to b))` tests the plane words of `v` where they are (`Op::IsXSlice`, `docs/decisions.md` "`is_x` of a slice of a logic vector"): no temporary, no native call. `grlib_leon3mp`, first 1 us, `--tier=interp`: 25.97 G to 23.07 G
+instructions (-11.1 percent). The other natives on slices (`to_x01`, the numeric operators) still copy the slice first.
+

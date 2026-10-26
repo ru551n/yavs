@@ -10321,3 +10321,19 @@ nine ops per element, because the loop-invariant code motion moved only computat
 - **Tests**: perf case `row_fill` (a procedure of a process fills rows behind access values: a ceiling on the ops), the difftest cases `access/row_fill` (nested fills, an empty range over a null access
   value) and `access/row_fill_null` (the failure of a null access in a nested loop comes after the report that precedes it in the body, as in the reference), the loop tests of `yavs-lower`.
 
+## `is_x` of a slice of a logic vector tests the planes of the source: `Op::IsXSlice` (yavs-interp `pre.rs`, `exec.rs`, #770, 2026-10-26)
+
+`Is_X (SV (4*i to 4*i+3))`, in the digit loop of every textio `HRead`, copied the slice into a block of temporary memory (`Alloc` + `LCopy`, fused into `AllocLCopy`) and called the native on the
+copy (`CallIeee`: the cells of the call, the lookup of the function, a result through `Machine::set`): three ops and about a tenth of the digit loop's instructions.
+
+- **Decision: the predecoder fuses `Alloc` of 32 bytes, the `LCopy` of at most 64 elements into it and the `CallIeee` of the `is_x` of a vector into `Op::IsXSlice`**, when the copy is read by
+  nothing else (`live_after`) and lands at element 0. The op tests the plane words of the source block where they are (shifted by the element offset, masked to the count); it does not allocate the
+  temporary. Anything else (more than 64 elements, a slice that crosses a block, an unreadable source, no elements) runs the `Alloc` alone and the ops that follow, as before. The same op shape
+  fits the other natives that read one small vector (`to_x01` and the like make a vector and stay on `AllocLCopy`); only `is_x` is fused here.
+- **Why not a form of the `ieee` arguments that passes an element offset.** Every native reads its operand from element 0 of the planes (`dim_at`, `Machine::planes`); an offset would be an
+  extra cell for each of them and a shift in each, to save one copy of at most 32 bytes. The copy is cheap; the call around it was the cost.
+- **Measured** (bench build with `llvm`, `--tier=interp`, `tools/claim core`, same core, interleaved, `perf stat`): `grlib_leon3mp`, first 1 us, 25.966 G to 23.072 G instructions (-11.1
+  percent). A 128-bit `HRead` repeated 20 000 times: 992 M to 798 M instructions with #771's branch fold (-19.6 percent; 31 digits each).
+- **Tests**: difftest case `ieee/is_x_slice` (every `std_ulogic` value at every position of vectors of 150 elements, ascending and descending, slices of 1 to 70 elements that stay in a block or
+  cross its edge), perf case `hread_loop` (ops 7594 to 7156 together with #771).
+

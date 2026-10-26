@@ -7004,6 +7004,34 @@ impl Machine {
                         k += 1;
                     }
                 }
+                Op::IsXSlice {
+                    tmp,
+                    src,
+                    soff,
+                    n,
+                    res,
+                } => {
+                    // `AllocLCopy` and `is_x` of the copy, on the planes of the source: the
+                    // elements of one block, tested where they are.
+                    let (cnt, so) = (self.regs[n as usize], self.regs[soff as usize]);
+                    let mut done = false;
+                    if cnt != 0 && cnt <= 64 && so % 64 + cnt <= 64 {
+                        let sa = t!(add_addr(self.regs[src as usize], so / 64 * 32));
+                        if let Ok(b) = self.rd_hot(sa, 32) {
+                            let (s0, mask) =
+                                (so % 64, if cnt == 64 { !0 } else { (1u64 << cnt) - 1 });
+                            let x = (!(plane_word(b, 1) >> s0) | plane_word(b, 3) >> s0) & mask;
+                            self.regs[res as usize] = u64::from(x != 0);
+                            done = true;
+                        }
+                    }
+                    if done {
+                        k += 3;
+                    } else {
+                        self.regs[tmp as usize] = t!(self.temp_alloc(32));
+                        k += 1;
+                    }
+                }
                 Op::AllocReadVec { dst, sig } => {
                     // `AllocK` of one block and the read of a logic signal into it.
                     let mut done = false;

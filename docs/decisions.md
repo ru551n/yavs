@@ -10598,3 +10598,28 @@ result; the second slice repeated the position of the first); it takes 13.
   `HRead` call (two frames with descriptors, two natives, the `Copy` of the descriptors: 86 ops for one digit, #771); a copy-free `Is_X` of a slice (the slice is copied into a block first: `Alloc` +
   `LCopy` + native, #770); the table path with a range test or a validity mask (integer arguments) still has the join and the pair (#769). Range proofs for `4 * i` and `4 * i + 3` against the
   integer range (two `BinRange` per digit stay) are not planned.
+
+## The watching loop calls native-frame callees itself (yavs-interp `run_ops`, #757, #750, 2026-10-26)
+
+The `--tier=auto` round before this one found that compiling the string loops of the verification libraries as native-frame code made the runs slower
+(`uvvm_sb_slv` +8 percent) and kept the `Compute` price high for that reason. The compiled code was not the cause: forced alone at its first look,
+`match_identifier` fell from 113 to 32 profile samples (3.5 times faster) while the run took 8.5 percent more instructions, and `perf` put 50 percent of
+the cycles in `run_ops::<true, false>`. A call of any function the tier had flagged made the watching loop (`run_ops::<false, true>`) hand over
+(`Flow::Retier`), and the activation stayed in the loop with the tier to its end: no lean calls, no skipped parameter loads, a slot store and a flag look per
+entry, about a fifth more per op over the rest of a testbench process's long activation.
+
+- **Decision: a callee the tier calls on a native frame (`NAT_CALL`) is called by the watching loop through `Tier::call` itself** (`native_tier!`, the
+  runtime's tier for a callee whose `Pre::native` is set; a memoised callee goes through `memo_call` with the tier, so a miss is a native call as in the loop
+  with the tier, not `memo_run`). The hand-over stays for a callee with frame-mode code (`NAT_CODE`) or one to be compiled (`NAT_ASK`): its frame is
+  entered and its compiled code run by the loop with the tier. `NativeFlags::retiers` counts the hand-overs (`YAVS_COUNTERS` `retiers`); the
+  `sim.rs` tests pin none for a native-call callee and some for a frame-mode one. A materialisation (`Called::Pushed`) returns `Flow::Call` to
+  `exec_fast::<false, true>`, which interprets the pushed frames.
+- **Measured** (bench builds of main 9b5ce798 and of this change, `YAVS_AUTO_FORCE` of one function at its first look with every other kind priced out,
+  warm run, instructions of the process): `match_identifier` 11.57 G to 9.97 G (nothing forced: 10.74 G), `STD_MATCH` 12.49 G to 10.69 G,
+  `uvvm_axistream_vvc` with `to_string` 41.9 G to 38.4 G (nothing forced: 36.25 G); the histogram's element-loop functions unchanged. `--tier=interp`
+  instructions equal (24.2485 G against 24.2486 G on `poc_stat_histogram`). All 42 of `tools/realbench` (`--compare`, `auto,auto-cold`, run phase,
+  cores 13 to 15, default runs): wall geometric mean 0.99 warm and 1.00 cold, instructions 1.00 and 1.01, sum of the walls 0.97 and 1.01;
+  `uvvm_axistream_vvc` warm instructions 0.91 (the three native functions the policy compiles there no longer cost the rest of the activation),
+  the other moves are within the host spread of that pass (load average 9 to 12).
+- **Left:** a callee with frame-mode code still hands over (`check_value` of `uvvm_sb_slv` forced: 10.79 G to 12.65 to 14.47 G warm), the general
+  cost of the loop with the tier is #750.

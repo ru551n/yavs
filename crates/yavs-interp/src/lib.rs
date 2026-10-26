@@ -1117,6 +1117,9 @@ pub struct NativeFlags {
     entered: std::sync::atomic::AtomicU64,
     /// Some function is counted (`NAT_COUNT`).
     counting: std::sync::atomic::AtomicBool,
+    /// Hand-overs of the fast loop without the tier's bookkeeping to the one with it
+    /// (`Flow::Retier`): the rest of that activation runs in the dearer loop.
+    retiers: std::sync::atomic::AtomicU64,
     /// Functions flagged since the last `Runtime::sync_native`, which sets `Pre::native` of each.
     fresh: Mutex<Vec<u32>>,
     /// `fresh` is not empty.
@@ -1176,6 +1179,11 @@ impl NativeFlags {
             self.counting.store(false, Ordering::Release);
             self.refresh();
         }
+    }
+
+    /// The hand-overs to the loop with the tier's bookkeeping so far (`retiers`).
+    pub fn retiers(&self) -> u64 {
+        self.retiers.load(Ordering::Relaxed)
     }
 
     /// The entries counted so far (`count_on`).
@@ -1471,6 +1479,7 @@ impl Runtime {
                 resumed: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
                 entered: Default::default(),
                 counting: Default::default(),
+                retiers: Default::default(),
                 fresh: Default::default(),
                 dirty: Default::default(),
             }),

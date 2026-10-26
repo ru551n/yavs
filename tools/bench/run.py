@@ -411,19 +411,21 @@ def instr_event(cores):
 def timed(script, cwd, cores, env=None, instr=None, ref=True, ok=None):
     """One pinned run of a bash script under a memory cap: wall, cpu (user+system of the process tree),
     peak RSS (MiB, largest process, `time -f %M`), exit status and, with instr, the instruction count. With ok (a regex) `ok_match`
-    tells whether it matches anywhere in the output (stdout then stderr), not only in the tail."""
+    tells whether it matches anywhere in the output (stdout then stderr), not only in the tail. `cyc` counts the cycles
+    with the instructions; `load` is the host's 1-minute load average at the start."""
     wait_mem()
     fd, tf = tempfile.mkstemp(prefix="yavs-bench-")
     os.close(fd)
     pf = tf + ".pf"
     inner = f"{TIME} -f '%e %U %S %M' -o {tf} bash -c {shlex.quote(script)}"
     if instr:
-        inner = f"perf stat -x, -e {instr} -o {pf} {inner}"
+        inner = f"perf stat -x, -e {instr},{instr.replace('instructions', 'cycles')} -o {pf} {inner}"
     if ref:
         inner = "ulimit -s unlimited; " + inner  # a deep native stack for the reference tools
     cmd = ["timeout", "300", "systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G", "taskset", "-c", cores, "bash", "-c", inner]
+    load = os.getloadavg()[0]
     p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, errors="replace", env={**os.environ, **(env or {})})
-    r = {"wall": None, "cpu": None, "rss": None, "ins": None, "rc": p.returncode, "tail": (p.stdout + p.stderr)[-200:],
+    r = {"wall": None, "cpu": None, "rss": None, "ins": None, "cyc": None, "load": load, "rc": p.returncode, "tail": (p.stdout + p.stderr)[-200:],
          "ok_match": None if ok is None else bool(re.search(ok, p.stdout + p.stderr))}
     try:
         f = Path(tf).read_text().split()[-4:]
@@ -432,11 +434,13 @@ def timed(script, cwd, cores, env=None, instr=None, ref=True, ok=None):
         pass
     if instr and os.path.exists(pf):
         for l in open(pf):
-            if "instructions" in l and not l.startswith("#"):
-                try:
-                    r["ins"] = int(l.split(",")[0])
-                except ValueError:
-                    pass
+            f = l.split(",")
+            for ev, k in (("instructions", "ins"), ("cycles", "cyc")):
+                if len(f) > 2 and ev in f[2] and not l.startswith("#"):  # field 3 is the event's name
+                    try:
+                        r[k] = int(f[0])
+                    except ValueError:
+                        pass
     for f in (tf, pf):
         if os.path.exists(f):
             os.unlink(f)
@@ -446,8 +450,12 @@ def timed(script, cwd, cores, env=None, instr=None, ref=True, ok=None):
 def cell(samples, ins=None):
     ok = [s for s in samples if s["rc"] == 0 and s["wall"] is not None]
     m = lambda k: med([s[k] for s in ok])
-    return {"wall": m("wall"), "cpu": m("cpu"), "rss": max((s["rss"] for s in ok), default=None), "ins": ins,
-            "ok": len(ok), "runs": len(samples), "rcs": [s["rc"] for s in samples]}
+    out = {"wall": m("wall"), "cpu": m("cpu"), "rss": max((s["rss"] for s in ok), default=None), "ins": ins,
+           "ok": len(ok), "runs": len(samples), "rcs": [s["rc"] for s in samples],
+           "walls": [s["wall"] for s in ok], "loads": [s.get("load") for s in samples]}
+    if ok and all(s.get("cyc") for s in ok):  # every timed run counted (realbench --count-runs)
+        out.update(cyc=m("cyc"), cycs=[s["cyc"] for s in ok], ins_med=m("ins"))
+    return out
 
 
 def sample_interleaved(scripts, cwd, runs, cores, instr, env=None):

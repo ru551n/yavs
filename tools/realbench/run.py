@@ -508,6 +508,7 @@ def auto_runs(t):
 
 
 PHASES = ("analyze", "elab", "codegen", "run")
+COUNT_RUNS = False  # --count-runs: every timed run counts instructions and cycles (perf stat)
 SHARED = {}  # library-part analysis cells shared by the tests of one corpus selection: key -> measured cell (measured once)
 
 
@@ -610,7 +611,7 @@ def measure_group(t, cells, ctx, cores, runs, instr, scratch):
         runs = auto_runs(max([out[c.name][0]["wall"] or 0 for c in live] + [0]))
     for rep in range(runs):
         for c in (live if rep % 2 == 0 else live[::-1]):
-            out[c.name].append(B.timed(c.prepare(ctx, scratch, t), str(scratch), cores, ref=c.tool != "yavs"))
+            out[c.name].append(B.timed(c.prepare(ctx, scratch, t), str(scratch), cores, instr=COUNT_RUNS and instr, ref=c.tool != "yavs"))
     res = {}
     for c in cells:
         if c.name in bad:
@@ -953,6 +954,7 @@ def main():
     ap.add_argument("--runs", default="auto", help="timed runs per cell (default auto: 5, 3 or 2 by test length; 0 = probe)")
     ap.add_argument("--cores", default="", help="cpu list of performance cores, one test at a time per core, e.g. 6,7 (required to time)")
     ap.add_argument("--no-instructions", action="store_true")
+    ap.add_argument("--count-runs", action="store_true", help="count instructions and cycles in every timed run (median `cyc`, `ins_med`)")
     ap.add_argument("--out", default=str(CACHE))
     ap.add_argument("--label", default="")
     ap.add_argument("--list", action="store_true")
@@ -961,6 +963,8 @@ def main():
     ap.add_argument("--report", metavar="JSON")
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
+    global COUNT_RUNS
+    COUNT_RUNS = a.count_runs
     try:
         return run(a)
     except Fail as e:

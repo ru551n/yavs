@@ -2186,6 +2186,17 @@ impl<'a> Fx<'a, '_> {
 
     /// The descriptor of an array subtype with index constraints; `None` when it has none.
     pub fn subtype_dope(&mut self, st: SubtypeId, span: Span) -> R<Option<Reg>> {
+        self.subtype_dope_in(st, span, None)
+    }
+
+    /// [`Fx::subtype_dope`]; a descriptor of run-time bounds is written at `into` (24 bytes per
+    /// dimension) instead of a temporary when given, and the result is then `into`.
+    pub fn subtype_dope_in(
+        &mut self,
+        st: SubtypeId,
+        span: Span,
+        into: Option<Reg>,
+    ) -> R<Option<Reg>> {
         let db = self.db;
         // `x'subtype` of an unconstrained object, a named return value's subtype: the
         // object's own descriptor.
@@ -2275,7 +2286,10 @@ impl<'a> Fx<'a, '_> {
             let d = self.dir_reg(r.dir);
             parts.extend([r.left, r.right, d]);
         }
-        let at = self.alloc_n(24 * dims.len() as u32);
+        let at = match into {
+            Some(at) => at,
+            None => self.alloc_n(24 * dims.len() as u32),
+        };
         let parts = self.fb.regs(&parts);
         self.emit(Inst::MakeDope { at, parts });
         Ok(Some(at))
@@ -2930,7 +2944,14 @@ impl<'a> Fx<'a, '_> {
         match &sp.body {
             Body::Implicit(op) => self.implicit(op, sp, args, span),
             Body::Native(sym) => {
-                let cells = self.cells(sp, args, span, Conv::Fat)?;
+                // READ of a string takes its target as `data, left, right, dir`: no fat pair
+                // per call (#771).
+                let conv = if sym.as_str().starts_with("yavs.textio.read.line_string") {
+                    Conv::Flat
+                } else {
+                    Conv::Fat
+                };
+                let cells = self.cells(sp, args, span, conv)?;
                 let r = self.native(sym.as_str(), None, &cells, sp.ret, span)?;
                 self.copy_out(span)?;
                 Ok(r)

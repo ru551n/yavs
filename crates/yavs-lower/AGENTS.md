@@ -114,7 +114,7 @@ rule 24).
 - Every function goes through the yavs-ir verifier; a verifier error is an ICE of this crate,
   never "fixed" by relaxing the verifier.
 - The calling and native conventions (fat pair `[data, dope]`, `ieee` natives' array values
-  `data, left, right, dir` (`expr.rs` `Conv`), cells per parameter, signal
+  `data, left, right, dir` (`expr.rs` `Conv`; also the string target of the textio READ natives, #771), cells per parameter, signal
   parameter = two cells) are shared with `yavs-interp`: change both, note it in DESIGN.md and
   `crates/yavs-ir/README.md`.
 - Kernel offsets of non-static indices must use the same rule as `yavs_elab::NetGraph::select`.

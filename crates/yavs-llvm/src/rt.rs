@@ -899,7 +899,7 @@ pub unsafe extern "C" fn yavs_rt_drive(
         let (delay, block) = if flags & 2 != 0 {
             (word(0) as i64, [word(1), 0, 0, 0])
         } else {
-            (word(0) as i64, [word(1), word(2), word(3), word(4)])
+            (word(0) as i64, unsafe { plane_block(wave) })
         };
         // The usual case, taken by the host without a frame view or a result.
         if unsafe { (*envp).host.drive_now(driver, [lo, len], delay, block) } {
@@ -941,7 +941,7 @@ pub unsafe extern "C" fn yavs_rt_drive_nat(
     let (delay, block) = if flags & 2 != 0 {
         (word(0) as i64, [word(1), 0, 0, 0])
     } else {
-        (word(0) as i64, [word(1), word(2), word(3), word(4)])
+        (word(0) as i64, unsafe { plane_block(wave) })
     };
     u32::from(host.drive_try(driver, [lo, len], delay, block, inertial))
 }
@@ -971,7 +971,7 @@ extern "C" fn yavs_rt_drive_slow(
     let (delay, block) = if flags & 2 != 0 {
         (word(0) as i64, [word(1), 0, 0, 0])
     } else {
-        (word(0) as i64, [word(1), word(2), word(3), word(4)])
+        (word(0) as i64, unsafe { plane_block(wave) })
     };
     unsafe { (*mem).sync(&mut *(*envp).host) };
     let r = catch_unwind(AssertUnwindSafe(|| unsafe {
@@ -1085,6 +1085,16 @@ extern "C" fn yavs_rt_drive_bit_slow(
         )
     }));
     unsafe { stepped(envp, mem, pc, r) }
+}
+
+/// The plane block of a logic waveform element (the four words after its time), read as one 32-byte
+/// copy: two 16-byte loads, each forwarded from the 16-byte stores of the code that made the element
+/// (the Cranelift tier's `Copy`) or from one wider store; four reads that the compiler pairs its own
+/// way can span two stores and wait for them to reach the cache.
+#[inline(always)]
+unsafe fn plane_block(wave: *const u8) -> [u64; 4] {
+    // SAFETY: the caller checked the 40 bytes of the element.
+    unsafe { std::ptr::read_unaligned(wave.add(8).cast::<[u64; 4]>()) }
 }
 
 /// The scalar logic assignments compiled code kept (`Batch`): `n` entries of two words, for

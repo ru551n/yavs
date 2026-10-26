@@ -138,6 +138,9 @@ pub struct Jit {
     /// (`missed` says one was not), and a failure is not remembered as "no variant".
     cached_only: bool,
     missed: bool,
+    /// Frame-mode code by its body and the functions and data it refers to: the copies of a process
+    /// that are the same code share one definition.
+    bodies: HashMap<String, ClifId>,
 }
 
 /// The native-frame variant `n<id>` of a function, in the calling convention of the LLVM tier
@@ -329,6 +332,7 @@ impl Jit {
             frames: HashMap::new(),
             cached_only: false,
             missed: false,
+            bodies: HashMap::new(),
         })
     }
 
@@ -818,6 +822,28 @@ impl Jit {
             ctx.inline(inl)
                 .map_err(|e| format!("Cranelift inline: {e:?}"))?;
         }
+        // The instances of a process with equal code (`Program::copy_of` of data the code does not
+        // read) are one function, as the LLVM tier's twins.
+        let body = (!native && prog.base_of(id) != id).then(|| {
+            let names: Vec<(u32, u32)> = ctx
+                .func
+                .params
+                .user_named_funcs()
+                .values()
+                .map(|n| (n.namespace, n.index))
+                .collect();
+            format!(
+                "{} {names:?}",
+                cranelift_codegen::incremental_cache::compute_cache_key(
+                    self.module.isa(),
+                    &ctx.func
+                )
+            )
+        });
+        if let Some(&c) = body.as_ref().and_then(|k| self.bodies.get(k)) {
+            self.module.clear_context(&mut ctx);
+            return Ok((c, stepped, None));
+        }
         let fid = self
             .module
             .declare_function(
@@ -826,6 +852,7 @@ impl Jit {
                 &ctx.func.signature,
             )
             .map_err(|e| e.to_string())?;
+        let shared = body;
         let body = native.then(|| ctx.func.clone());
         // `YAVS_CLIFT_ASM=<function id>`: the machine code of that function (variant) on stderr.
         let asm = std::env::var("YAVS_CLIFT_ASM")
@@ -889,6 +916,9 @@ impl Jit {
             ));
         }
         self.module.clear_context(&mut ctx);
+        if let Some(k) = shared {
+            self.bodies.insert(k, fid);
+        }
         Ok((fid, stepped, body))
     }
 
@@ -1134,6 +1164,68 @@ struct Gen<'a> {
     spin: Option<Variable>,
     /// The scalar drives of this activation kept for one host call, when the process has any.
     batch: Option<Batch>,
+    /// Frame mode: the registers the interpreter starts every frame with (`preloads`), which
+    /// compiled code never stores.
+    preset: Vec<bool>,
+    /// Frame mode, deferred register stores (`docs/decisions.md` "Cranelift tier, round 7"): the
+    /// value of each register not yet stored to the frame, defined by an earlier instruction.
+    pend: Vec<Option<Value>>,
+    /// The registers `pend` may have a value of (a superset).
+    plist: Vec<u32>,
+    /// The registers the instruction being generated defined without a store (`defer`).
+    fresh: Vec<u32>,
+    /// The instruction being generated defers its definitions (`quiet`).
+    defer: bool,
+    /// Its pc.
+    pc: u32,
+    /// Registers live over more than `MAX_SPAN` instructions: stored at the definition.
+    keep: Vec<bool>,
+    /// What a slow path's block stores before the step (the deferred registers live at its pc),
+    /// by slow block; and the registers its join takes as block parameters, by join block.
+    snaps: HashMap<Block, Vec<(u32, Value)>>,
+    jparams: HashMap<Block, Vec<u32>>,
+    /// A broken invariant of the deferral (a deferred value lost at a block start).
+    broken: Option<String>,
+}
+
+/// The instructions a deferred register may be live over and still be deferred (`Gen::keep`).
+const MAX_SPAN: u32 = 4;
+
+/// Frame-mode instructions that leave the frame to the interpreter only through `leave_at` at
+/// their own pc or a slow path, and call out to nothing that reads the registers: deferred
+/// stores of earlier instructions pass them, and their own definitions are deferred.
+fn quiet(i: &Inst) -> bool {
+    match *i {
+        Inst::FBin { op, .. } => !matches!(op, FOp::PowI | FOp::Pow),
+        Inst::Bin { op, .. } | Inst::BinRange { op, .. } => op != IntOp::Pow,
+        Inst::AddrOf { space, off, .. } => {
+            addr_const(space, off).is_some() || matches!(space, AddrSpace::Up(1..=2))
+        }
+        _ => matches!(
+            i,
+            Inst::Const { .. }
+                | Inst::ConstF { .. }
+                | Inst::Move { .. }
+                | Inst::Select { .. }
+                | Inst::Un { .. }
+                | Inst::FUn { .. }
+                | Inst::IToF { .. }
+                | Inst::Cmp { .. }
+                | Inst::FCmp { .. }
+                | Inst::Bool { .. }
+                | Inst::Check { .. }
+                | Inst::FCheck { .. }
+                | Inst::Index { .. }
+                | Inst::Load { .. }
+                | Inst::Store { .. }
+                | Inst::Copy { .. }
+                | Inst::Zero { .. }
+                | Inst::DopeLen { .. }
+                | Inst::SubtypeCheck { .. }
+                | Inst::SigVal { .. }
+                | Inst::MakeDope { .. }
+        ),
+    }
 }
 
 /// Zero-delay scalar logic drives (`yavs_interp::ScalarDrive`, `batched_drives`) are not handed to
@@ -1398,9 +1490,12 @@ fn gen_func(
     };
     let mut ways = vec![0u32; n + 1];
     ways[0] = 2;
+    // Block starts a jump leads to (the others are reached by falling through or entered).
+    let mut jumped = vec![false; n + 1];
     for (i, inst) in f.code.iter().enumerate() {
         for t in targets(inst) {
             ways[t] += 1;
+            jumped[t] = true;
         }
         if i + 1 < n && !is_jump(inst) {
             ways[i + 1] += 1;
@@ -1423,6 +1518,8 @@ fn gen_func(
     let bbs: Vec<Option<Block>> = (0..n)
         .map(|i| leader[i].then(|| b.create_block()))
         .collect();
+    // The registers each block start takes as parameters (`dispatch`).
+    let mut lparams: Vec<Vec<u32>> = vec![Vec::new(); n];
     // The jumps back that poll the stop request (#737) and count the activation (#583), see
     // `Inst::Br`.
     let backs: HashSet<u32> = if !native
@@ -1464,18 +1561,13 @@ fn gen_func(
         b.def_var(v, n);
         v
     });
-    if !native {
-        let other = b.create_block();
-        let mut sw = Switch::new();
-        for (i, bb) in bbs.iter().enumerate() {
-            if let Some(bb) = bb {
-                sw.set_entry(i as u128, *bb);
-            }
-        }
-        sw.emit(&mut b, pc_in, other);
-        b.switch_to_block(other);
-        b.ins().jump(exit, &[BlockArg::Value(pc_in)]);
-    }
+    // Frame mode: the switch over the entries is made at the end (`dispatch`), when the registers
+    // each block start takes as parameters are known.
+    let dispatch = (!native).then(|| {
+        let d = b.create_block();
+        b.ins().jump(d, &[]);
+        d
+    });
     let region = |b: &mut FunctionBuilder<'_>, id: u32, name: &'static str| {
         b.func.dfg.alias_regions.insert(AliasRegionData {
             user_id: id,
@@ -1492,7 +1584,9 @@ fn gen_func(
     // goes by what is known, as in the LLVM tier.
     let mut base_known: Vec<Option<Known<Value>>> = vec![None; f.reg_ty.len()];
     let mut pre: Vec<Option<(AddrSpace, u32)>> = vec![None; f.reg_ty.len()];
+    let mut preset = vec![false; f.reg_ty.len()];
     for (r, addr, _) in preloads(f) {
+        preset[r.0 as usize] = !native;
         base_known[r.0 as usize] = match addr {
             Some((AddrSpace::Frame, off)) => Some(Known::Frame(off.into())),
             Some((AddrSpace::Const(k), off)) => Some(Known::Const(k, off.into())),
@@ -1542,7 +1636,27 @@ fn gen_func(
         fixed: fixed.clone(),
         spin,
         batch,
+        preset,
+        pend: vec![None; f.reg_ty.len()],
+        plist: Vec::new(),
+        fresh: Vec::new(),
+        defer: false,
+        pc: 0,
+        keep: vec![true; f.reg_ty.len()],
+        snaps: HashMap::new(),
+        jparams: HashMap::new(),
+        broken: None,
     };
+    // Processes only: they hold the hot frame-mode code, and the analysis costs every compile.
+    if g.nat.is_none() && f.kind == FuncKind::Process {
+        g.live = Live::new(prog, f, None);
+        if let Some(l) = &g.live {
+            let spans = l.spans();
+            for (r, k) in g.keep.iter_mut().enumerate() {
+                *k = spans.get(r).is_none_or(|&s| s > MAX_SPAN);
+            }
+        }
+    }
     if g.nat.is_some() {
         g.vars = (0..f.reg_ty.len()).map(|_| g.b.declare_var(I64)).collect();
         g.live = Live::new(prog, f, None);
@@ -1649,7 +1763,17 @@ fn gen_func(
             let single = native && ways[i] == 1;
             let fall = i > 0 && !is_jump(&f.code[i - 1]);
             let brought = inherit[i].take().filter(|_| single);
-            if !(single && fall) {
+            // Frame mode: a block start no jump leads to is reached from the instruction before it
+            // only (compiled or interpreted), so what holds of the values there holds here.
+            let kept = !native && fall && !jumped[i];
+            if kept {
+                for k in g.known.iter_mut().flatten() {
+                    if let Known::Heap(o) = k {
+                        *o = None;
+                    }
+                }
+            }
+            if !(single && fall) && !kept {
                 // A guess is tested where it is used, so the fall-through's guesses hold on
                 // every way in (a call's result after the entry that follows the call).
                 let guesses: Vec<(usize, Known<Value>)> = if fall && !native {
@@ -1695,12 +1819,40 @@ fn gen_func(
                 }
             }
         }
+        g.settle();
         if let Some(bb) = bbs[i] {
+            let mut carried = Vec::new();
             if open {
-                g.b.ins().jump(bb, &[]);
+                if g.nat.is_none() && g.live.is_some() && !jumped[i] {
+                    // Reached by falling through and entered by the interpreter only otherwise: the
+                    // values in hand that are live go in as block parameters, the entry loads them
+                    // from the frame (`dispatch`).
+                    let rs: Vec<(u32, Value, bool)> = (0..g.cache.len())
+                        .filter(|&r| !g.preset[r] && g.live_at(pc, r))
+                        .filter_map(|r| Some((r as u32, g.cache[r]?, g.pend[r].is_some())))
+                        .collect();
+                    let args: Vec<BlockArg> = rs.iter().map(|x| BlockArg::Value(x.1)).collect();
+                    g.b.ins().jump(bb, &args);
+                    for &(r, _, dirty) in &rs {
+                        let v = g.b.append_block_param(bb, I64);
+                        carried.push((r, v, dirty));
+                    }
+                    lparams[i] = rs.iter().map(|x| x.0).collect();
+                } else {
+                    g.spill(pc);
+                    g.b.ins().jump(bb, &[]);
+                }
             }
             g.b.switch_to_block(bb);
+            g.drop_pend();
             g.clear();
+            for (r, v, dirty) in carried {
+                g.cache[r as usize] = Some(v);
+                if dirty {
+                    g.pend[r as usize] = Some(v);
+                    g.plist.push(r);
+                }
+            }
             open = true;
         } else if !open {
             // Dead code after a terminator: a block of its own, never entered.
@@ -1708,6 +1860,16 @@ fn gen_func(
             g.b.switch_to_block(bb);
             g.clear();
             open = true;
+        }
+        // Deferred stores pass the quiet instructions; the others find the frame as the
+        // interpreter would.
+        g.pc = pc;
+        g.defer = g.nat.is_none()
+            && g.live.is_some()
+            && quiet(&inst)
+            && (g.batch.is_none() || batch_pure(prog, f, &inst));
+        if g.nat.is_none() && !g.defer {
+            g.spill(pc);
         }
         if let Some(l) = eloops.get(&pc) {
             g.eloop(l)?;
@@ -2212,8 +2374,22 @@ fn gen_func(
                 let words: Vec<Value> = (0..n / 8)
                     .map(|k| g.b.ins().load(I64, g.gf, ps, k as i32 * 8))
                     .collect();
-                for (k, w) in words.into_iter().enumerate() {
-                    g.b.ins().store(g.gf, w, pd, k as i32 * 8);
+                // Pairs of words are stored as 16 bytes, so a reader's 16-byte load of a pair
+                // (the plane block of a waveform element) is forwarded from one store.
+                let mut parts: Vec<(i32, Value)> = Vec::new();
+                for (k, pair) in words.chunks(2).enumerate() {
+                    let at = k as i32 * 16;
+                    match *pair {
+                        [lo, hi] => {
+                            let v = g.b.ins().scalar_to_vector(types::I64X2, lo);
+                            parts.push((at, g.b.ins().insertlane(v, hi, 1)));
+                        }
+                        [w] => parts.push((at, w)),
+                        _ => {}
+                    }
+                }
+                for (at, v) in parts {
+                    g.b.ins().store(g.gf, v, pd, at);
                 }
                 g.join(join);
             }
@@ -2788,6 +2964,38 @@ fn gen_func(
         g.leave_at(n as u32);
     }
     // The slow paths, after the body (a slow path may add more).
+    g.settle();
+    g.drop_pend();
+    g.defer = false;
+    if let Some(d) = dispatch {
+        g.b.switch_to_block(d);
+        let other = g.b.create_block();
+        let mut sw = Switch::new();
+        let mut stubs = Vec::new();
+        for (i, bb) in bbs.iter().enumerate() {
+            if let Some(bb) = *bb {
+                let to = if lparams[i].is_empty() {
+                    bb
+                } else {
+                    let s = g.b.create_block();
+                    stubs.push((s, bb, std::mem::take(&mut lparams[i])));
+                    s
+                };
+                sw.set_entry(i as u128, to);
+            }
+        }
+        sw.emit(&mut g.b, pc_in, other);
+        g.b.switch_to_block(other);
+        g.b.ins().jump(g.exit, &[BlockArg::Value(pc_in)]);
+        for (s, bb, rs) in stubs {
+            g.b.switch_to_block(s);
+            let args: Vec<BlockArg> = rs
+                .iter()
+                .map(|&r| BlockArg::Value(g.b.ins().load(I64, g.rf, g.regs, r as i32 * 8)))
+                .collect();
+            g.b.ins().jump(bb, &args);
+        }
+    }
     let mut next_slow = 0;
     while next_slow < g.slows.len() {
         let s = g.slows[next_slow];
@@ -2798,6 +3006,19 @@ fn gen_func(
             g.b.set_srcloc(ir::SourceLoc::new(s.pc + 1));
         }
         g.clear();
+        // The registers deferred before the instruction, for the step.
+        if let Some(rs) = g.snaps.remove(&s.block) {
+            g.store_regs(&rs);
+        }
+        // The definitions the join takes, from the frame the step wrote.
+        let back = |g: &mut Gen| -> Vec<BlockArg> {
+            g.jparams.get(&s.join).map_or_else(Vec::new, |rs| {
+                rs.clone()
+                    .into_iter()
+                    .map(|r| BlockArg::Value(g.b.ins().load(I64, g.rf, g.regs, r as i32 * 8)))
+                    .collect()
+            })
+        };
         if s.xstep && g.nat.is_some() {
             let inst = f.code[s.pc as usize];
             g.native_step(s.pc, &inst, f);
@@ -2818,13 +3039,18 @@ fn gen_func(
         if let Some(e) = s.edge {
             let (p, ev) = (g.c32(s.pc), g.c32(e));
             g.call_go(g.imp.signal, &[p, ev], false);
-            g.b.ins().jump(s.join, &[]);
+            let args = back(&mut g);
+            g.b.ins().jump(s.join, &args);
             continue;
         }
         let at = if s.keep { s.pc | KEEP } else { s.pc };
         let pcv = g.c32(at);
         g.call_go(g.imp.step, &[pcv], false);
-        g.b.ins().jump(s.join, &[]);
+        let args = back(&mut g);
+        g.b.ins().jump(s.join, &args);
+    }
+    if let Some(why) = g.broken.take() {
+        return Err(format!("deferred stores: {why} (a bug in yavs)"));
     }
     // The exit block.
     g.b.set_srcloc(ir::SourceLoc::default());
@@ -2875,8 +3101,79 @@ fn gen_func(
 
 impl Gen<'_> {
     fn clear(&mut self) {
+        // A deferred register of an earlier instruction keeps its value: it dominates every block
+        // of the instructions after it up to the next block start, which stores it.
         self.cache.fill(None);
+        for &r in &self.plist {
+            self.cache[r as usize] = self.pend[r as usize];
+        }
         self.slots = None;
+        if !self.fresh.is_empty() {
+            debug_assert!(
+                false,
+                "deferred definitions lost at a block start, pc {}",
+                self.pc
+            );
+            self.broken
+                .get_or_insert_with(|| format!("deferred definitions lost at pc {}", self.pc));
+        }
+    }
+
+    /// Whether register `r` is live before `pc` (every register when liveness is not known).
+    fn live_at(&self, pc: u32, r: usize) -> bool {
+        self.live.as_ref().is_none_or(|l| {
+            l.row(pc as usize)
+                .get(r / 64)
+                .is_some_and(|w| w >> (r % 64) & 1 != 0)
+        })
+    }
+
+    /// The deferred registers of earlier instructions live before `pc`.
+    fn pend_live(&self, pc: u32) -> Vec<(u32, Value)> {
+        let mut rs: Vec<(u32, Value)> = self
+            .plist
+            .iter()
+            .filter_map(|&r| Some((r, self.pend[r as usize]?)))
+            .filter(|&(r, _)| self.live_at(pc, r as usize))
+            .collect();
+        rs.sort_unstable_by_key(|x| x.0);
+        rs.dedup_by_key(|x| x.0);
+        rs
+    }
+
+    fn store_regs(&mut self, rs: &[(u32, Value)]) {
+        for &(r, v) in rs {
+            self.b.ins().store(self.rf, v, self.regs, r as i32 * 8);
+        }
+    }
+
+    /// The definitions of the instruction just generated become deferred registers.
+    fn settle(&mut self) {
+        for r in std::mem::take(&mut self.fresh) {
+            self.pend[r as usize] = self.cache[r as usize];
+            self.plist.push(r);
+        }
+    }
+
+    /// Store everything deferred that is live at `pc` (and the definitions of the instruction being
+    /// generated): the frame holds every register from here on.
+    fn spill(&mut self, pc: u32) {
+        let mut rs = self.pend_live(pc);
+        for r in std::mem::take(&mut self.fresh) {
+            if let Some(v) = self.cache[r as usize] {
+                rs.retain(|x| x.0 != r);
+                rs.push((r, v));
+            }
+        }
+        self.store_regs(&rs);
+        self.drop_pend();
+    }
+
+    /// Forget the deferred registers (the frame holds them, or they are dead).
+    fn drop_pend(&mut self) {
+        for r in std::mem::take(&mut self.plist) {
+            self.pend[r as usize] = None;
+        }
     }
 
     /// The variable of the closed frame's slot a load or store of `w` through `addr` reaches.
@@ -2991,9 +3288,19 @@ impl Gen<'_> {
             self.b.def_var(self.vars[r.0 as usize], v);
             return;
         }
+        let k = r.0 as usize;
+        self.cache[k] = Some(v);
+        if self.preset[k] {
+            return;
+        }
+        if self.defer && !self.keep[k] {
+            if !self.fresh.contains(&r.0) {
+                self.fresh.push(r.0);
+            }
+            return;
+        }
         self.b.ins().store(self.rf, v, self.regs, r.0 as i32 * 8);
-        // A signal reference's second word may be written by the next instruction only.
-        self.cache[r.0 as usize] = Some(v);
+        self.pend[k] = None;
     }
 
     fn ldf(&mut self, r: Reg) -> Value {
@@ -3416,6 +3723,19 @@ impl Gen<'_> {
                     self.b.ins().store(self.rf, v, self.regs, r as i32 * 8);
                 }
             }
+        } else {
+            // The interpreter re-executes the instruction at its own pc from the registers before
+            // it; at another pc it reads this instruction's definitions too.
+            let mut rs = self.pend_live(pc);
+            if pc != self.pc {
+                for &r in &self.fresh {
+                    if let Some(v) = self.cache[r as usize] {
+                        rs.retain(|x| x.0 != r);
+                        rs.push((r, v));
+                    }
+                }
+            }
+            self.store_regs(&rs);
         }
         let v = self.c32(pc);
         self.leave(v);
@@ -3623,6 +3943,9 @@ impl Gen<'_> {
     /// Call a callback (the arguments after env, regs, mem) that returns `GO` or what the
     /// compiled function returns at once; code goes on when it returned `GO`.
     fn call_go(&mut self, f: FuncRef, rest: &[Value], cont_here: bool) {
+        if self.nat.is_none() {
+            self.spill(self.pc);
+        }
         let mut args = vec![self.env, self.regs, self.mem];
         args.extend_from_slice(rest);
         let call = self.b.ins().call(f, &args);
@@ -3673,6 +3996,12 @@ impl Gen<'_> {
     /// returned join block (emitted after the body).
     fn slow_path(&mut self, pc: u32, i: &Inst) -> (Block, Block) {
         let (block, join) = (self.b.create_block(), self.b.create_block());
+        if self.nat.is_none() {
+            let rs = self.pend_live(pc);
+            if !rs.is_empty() {
+                self.snaps.insert(block, rs);
+            }
+        }
         self.slows.push(Slow {
             block,
             join,
@@ -3706,10 +4035,40 @@ impl Gen<'_> {
     }
 
     /// End the fast path at the slow path's join block.
+    /// The definitions deferred on the fast path are block parameters of the join, which the slow
+    /// path loads from the frame after the step.
     fn join(&mut self, join: Block) {
-        self.b.ins().jump(join, &[]);
+        let fresh = self.fresh.clone();
+        self.join_with(join, &fresh);
+    }
+
+    /// `join`, with the values in hand of registers `rs` as block parameters of the join (frame
+    /// mode: the slow path loads them from the frame after the step).
+    fn join_with(&mut self, join: Block, rs: &[u32]) {
+        let rs: Vec<u32> = rs
+            .iter()
+            .copied()
+            .filter(|&r| self.nat.is_none() && self.cache[r as usize].is_some())
+            .collect();
+        let args: Vec<BlockArg> = rs
+            .iter()
+            .map(|&r| BlockArg::Value(self.cache[r as usize].expect("cached")))
+            .collect();
+        let ps: Vec<Value> = rs
+            .iter()
+            .map(|_| self.b.append_block_param(join, I64))
+            .collect();
+        self.b.ins().jump(join, &args);
         self.b.switch_to_block(join);
+        let fresh = std::mem::take(&mut self.fresh);
         self.clear();
+        self.fresh = fresh;
+        for (&r, v) in rs.iter().zip(ps) {
+            self.cache[r as usize] = Some(v);
+        }
+        if !rs.is_empty() {
+            self.jparams.insert(join, rs);
+        }
     }
 
     /// The host pointer for `n` bytes at address `a` plus `extra`: the frame's slots, the
@@ -4668,12 +5027,29 @@ impl Gen<'_> {
                 self.st(d, at);
             }
         }
-        self.b.ins().jump(done, &[]);
+        // Frame mode: the result goes on as a parameter of `done`.
+        let carry = self.nat.is_none();
+        let res = self.cache[d.0 as usize].filter(|_| carry);
+        self.b.ins().jump(
+            done,
+            &res.map(BlockArg::Value).into_iter().collect::<Vec<_>>(),
+        );
         self.b.switch_to_block(fb);
         self.clear();
         self.native_direct(pc, inst, f, native, args, dst)?;
-        self.b.ins().jump(done, &[]);
+        let alt = res.map(|_| match self.cache[d.0 as usize] {
+            Some(v) => v,
+            None => self.b.ins().load(I64, self.rf, self.regs, d.0 as i32 * 8),
+        });
+        self.b.ins().jump(
+            done,
+            &alt.map(BlockArg::Value).into_iter().collect::<Vec<_>>(),
+        );
+        let p = res.map(|_| self.b.append_block_param(done, I64));
         self.start(done);
+        if let Some(p) = p {
+            self.cache[d.0 as usize] = Some(p);
+        }
         Ok(())
     }
 }
@@ -5805,10 +6181,11 @@ impl Gen<'_> {
             okc = self.b.ins().band(okc, has);
         }
         self.guard(okc, slow);
-        if let Some(d) = dst {
+        let res = dst.map(|d| {
             let v = self.b.ins().load(I64, MemFlagsData::trusted(), scratch, 0);
             self.st(d, v);
-        }
+            (d, v)
+        });
         // The native ended the process: a native frame is materialised after the call, a
         // frame-mode function suspends with its registers in place.
         let (out, cont) = (self.b.create_block(), self.b.create_block());
@@ -5823,7 +6200,13 @@ impl Gen<'_> {
             self.leave(v);
         }
         self.start(cont);
-        self.join(join);
+        match res {
+            Some((d, v)) if self.nat.is_none() => {
+                self.cache[d.0 as usize] = Some(v);
+                self.join_with(join, &[d.0]);
+            }
+            _ => self.join(join),
+        }
         Ok(())
     }
 

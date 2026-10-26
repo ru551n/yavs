@@ -3622,6 +3622,46 @@ warm and 1.017 cold, and a run of the cache before the second merge measured 1.0
 quality on heavy compute (`poc_arith_addw` 99 G instructions against 87 G warm, window generator 157 G against 135 G); the
 verification-library tests are level.
 
+### clift: round 7, deferred stores, values across entries, shared copies (2026-10-26, #481)
+
+Frame-mode code of processes defers the stores of the registers quiet instructions define and stores them where the
+interpreter or a callback can look at the frame; registers the interpreter preloads are never stored; a slow path's
+join and the entry after a call take the values in hand as block parameters (the switch over the entries is made last,
+its stubs load them). Copies of a process with the same Cranelift body are one definition (36 to 4 in `poc_arith_addw`).
+`Copy` stores word pairs as 16 bytes and the drive callbacks read the plane block in two 16-byte halves (a stalled
+store forwarding, 3.7 percent of the run). #765 fixed: Cranelift's inliner keeps a callee's symbol reference, so a body
+with a symbol is no longer inlined (`crates/yavs/tests/clift_inline.rs`). Details and measurements: decisions.md
+"Cranelift tier, round 7".
+
+Gates on 10d1b7fd: fmt, clippy `-D warnings` for default, `llvm`, `clift`, `llvm,clift`; `cargo test --workspace` (1 158)
+and the feature sets (`llvm,clift` 1 297, `clift` 1 190, `llvm` 1 268, all test binaries counted); difftest 533/533 for
+`yavs-clift`, `-clift-auto`, `-auto3`, `-mixed` at 1 and 4 threads (verifier on).
+
+Full total (analyze, elaborate, run) of a Cranelift-only build (`--features clift`) and an LLVM build (`--features llvm`),
+`tools/build-bench.sh` of 10d1b7fd and of 1f5c4249 (the sources of the `llvm` build are the same), against sim1; realbench `--compare --runs 5`, timing cores 10 and 11, host load
+about 10 (round 6: about 4); last column the warm run instructions in G:
+
+| test | Cranelift warm | LLVM warm | Cranelift cold | LLVM cold | G warm Cranelift / LLVM |
+|---|---:|---:|---:|---:|---|
+| poc_arith_addw | 1.07 | 0.97 | 1.13 | 1.19 | 95.6 / 85.5 |
+| fletcher_bufferwriter_512 | 2.10 | 2.07 | 2.23 | 2.15 | 48.8 / 51.2 |
+| neorv32_single_min | 0.78 | 0.78 | 0.87 | 0.87 | 30.4 / 30.5 |
+| osvvm_axis_random | 0.15 | 0.15 | 0.37 | 0.37 | 2.6 / 2.6 |
+| uvvm_sb_slv | 0.47 | 0.47 | 0.69 | 0.66 | 11.1 / 10.7 |
+| uvvm_util_rand | 0.49 | 0.47 | 0.78 | 0.70 | 11.2 / 12.3 |
+| uvvm_axistream_vvc | 0.77 | 0.76 | 0.87 | 0.83 | 37.9 / 35.7 |
+| osvvm_axi4_random | 0.26 | 0.25 | 0.46 | 0.44 | 6.7 / 6.6 |
+| vai_window_gen_interlock | 1.88 | 1.67 | 2.11 | 2.35 | 152.4 / 133.8 |
+| geometric mean | 0.655 | 0.632 | 0.895 | 0.882 | |
+
+Cranelift against LLVM: warm 1.037, cold 1.015 (round 6: 1.056 and 1.029). A run of the same table on 1f5c4249 (before
+the inliner fix, cores 11 and 12) gave 1.014 and 1.011; the window generator's warm cell moves by 4 percent between
+the two (1.80 and 1.88), as warm `auto` runs do (#673). `poc_arith_addw` warm went from 1.28 to 1.07 (LLVM 0.97).
+What is left: the window generator (the native variants of the test runner's accessors, unchanged this round; eager
+`get` and `set` take fewer cycles than LLVM's eager code, `unsafe_pop` and `decode` 1.4 and 1.5 times, and under
+`auto` LLVM's code is faster), `procChecker` under `auto` (1.5 times the cycles of LLVM's O2 code), and the cold
+library testbenches (`uvvm_util_rand` 1.11 times LLVM cold).
+
 ### clift: round 6, merge, ports and frame-mode code quality (2026-10-26, #481)
 
 `spike/clift2` merged with main at 504f86ad (7871ae39: #756, #757, #583). Ported to the Cranelift lowering (decisions.md

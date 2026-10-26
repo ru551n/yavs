@@ -9035,6 +9035,61 @@ the cache.
   (`get`) wait on the object table. The next step is deferred register stores with liveness and values carried across
   blocks in frame mode, as the LLVM lowering has (decisions "Tight compute loops").
 
+## Cranelift tier, round 7: deferred register stores, values across entries, shared copies (yavs-clift, yavs-llvm `rt.rs`, #481, 2026-10-26)
+
+- **Registers the interpreter preloads are never stored** by frame-mode code (`Gen::preset`, `rt::preloads`), as in the
+  LLVM lowering: a `Const` or a non-`Up` `AddrOf` defined once is in every frame the interpreter makes. Eager
+  `--tier=clift` `poc_arith_addw` 109.9 G to 108.0 G instructions.
+- **Deferred register stores in processes** (the LLVM lowering's "Tight compute loops", first part): the definitions
+  of a `quiet` instruction (arithmetic, compares, moves, constants, addresses, `Load`, `Index`, `DopeLen`, `SigVal`;
+  `Store`, `Copy`, `Zero`, checks and `MakeDope` pass them) stay Cranelift values (`Gen::pend`) and are stored where
+  the frame is looked at: an exit (`leave_at`, the registers live at its pc by `regs::Live`; at another pc than the
+  instruction's own its definitions too), the block of a slow path (`snaps`: the values from before the instruction,
+  stored before the step), the start of any other instruction (`spill`: it may call out), a block start a jump leads
+  to. A register live over more than `MAX_SPAN` (4) instructions is stored at the definition, as in the LLVM lowering.
+  Only processes (`FuncKind::Process`): the liveness and the stores cost every compile, and the hot frame-mode code
+  is processes' (functions run on native frames).
+- **Values across joins and entries.** A slow path's join takes the definitions of the fast path as block parameters
+  and the slow block loads them from the frame after the step (`join_with`); the result of a direct native call and
+  of an in-place `ieee` native likewise. A block start no jump leads to (the entry after a call, a wait, a report)
+  takes the live values in hand as block parameters, and the facts of `known` carry over (the only way there is the
+  instruction before it, compiled or interpreted); the switch over the entries is now made last (`dispatch`), where
+  a stub for such a block loads its parameters from the frame. Why: the hottest IR instruction of the adder processes
+  of `poc_arith_addw` began by loading again the native's result the instruction before had just stored.
+- **Measured** (eager, combined `llvm,clift` bench build, claimed cores, `perf record` samples per function): the
+  adder processes `f96` and `f93` 13 and 8 percent fewer instructions, 7 and 9 percent fewer cycles; `procChecker`
+  (`f38`) 17 and 9 percent. Against the LLVM tier's eager code the adder processes are now level (`f96`) and 3 percent
+  faster (`f93`), `f38` 37 percent faster. The whole eager run: 2 percent fewer instructions, cycles within the
+  noise (the processes are a quarter of it). Measured the same way (fixed-period sampling) before the round, eager
+  `f96` took about 1.07 times LLVM's cycles; under `--tier=auto` the copies of the next point were most of the gap.
+- **Copies of a process with the same code are one definition** (`Jit::bodies`): the key is Cranelift's
+  `compute_cache_key` of the body with the external names it refers to, for copies only (`Program::base_of`), the
+  same idea as the LLVM tier's twins. `--tier=clift-auto` defined 36 copies of the adder processes where LLVM's
+  cache shares 4; each copy ran cold in the caches. Warm `--tier=clift-auto` `poc_arith_addw`: cycles 32.9 G to
+  29.5 G (LLVM `auto` 26.9 G), instructions level.
+- **A 16-byte load across two 8-byte stores waits.** `yavs_rt_drive` read the plane block of a waveform element as four
+  words, which the compiler paired into a 16-byte load across two of the `Copy` stores (Cranelift's words; LLVM's
+  `memmove` is one 32-byte store, which forwards): 95 percent of its samples on that load, 3.7 percent of the run.
+  `Copy` of up to 64 bytes now stores pairs of words as 16 bytes and the drive callbacks read the block as one
+  32-byte copy (`rt::plane_block`, two 16-byte loads at the pairs' offsets): `yavs_rt_drive` and `drive_now` 2 880
+  to 1 410 samples of about 57 000. Tried first and dropped: one 8-byte load per word (`black_box` on the index) moved
+  the stall into `drive_now`, which reads the block it is passed in 16-byte halves.
+- **Compile cost.** The share key hashed every frame-mode function (`sha256` 270 M instructions in the eager compile of
+  the window generator) and the list of deferred registers was a scan of all registers per slow path: keys for
+  copies only, a list of the deferred registers (`plist`). Eager `--tier=clift --no-cache` of the window generator up
+  to time 0: 38.29 G instructions before the round, 38.13 G after.
+- **Not changed:** the native variants of the test runner's accessors (window generator, item 3 of #481): eager, the
+  Cranelift variants of `get` and `set` take fewer cycles than LLVM's eager code, `unsafe_pop` and `decode` 1.4 and
+  1.5 times; under `auto` LLVM's code is faster. `procChecker` under `--tier=auto` takes 1.5 times the cycles of
+  LLVM's O2 code.
+- **#765, the internal error with `YAVS_CLIFT_INLINE=600`:** Cranelift's inliner (0.137, `create_global_values`) copies
+  a callee's `GlobalValueData::Symbol` as it is, with the callee's `UserExternalNameRef`, which in the caller names
+  whatever the caller declared under that index: an inlined `encode (boolean)` read one of its caller's constants as
+  its string's descriptor. Function references are translated, symbols are not. A body with a symbol (a constant
+  copy or a `std_ulogic` table, `symbol_value`) is no longer inlined (`Inl`); a callee under the default threshold
+  (150) can have one too. Test: `crates/yavs/tests/clift_inline.rs` (an inlined
+  callee returning string literals; the old build printed `<0:>` for `<0:TF>`). An upstream report is the user's call.
+
 ## Frame-mode code tests the temporary area and the object cache inline for addresses it can guess (yavs-llvm `Gen::host`, `rt::track`, #711, 2026-10-24)
 
 - **Finding:** the `yavs_rt_host` calls of `llvm_ieee` (`cb_host` 1416, then 2019 after the in-place `numeric_std`

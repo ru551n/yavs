@@ -1131,6 +1131,8 @@ struct Slow {
 
 struct Gen<'a> {
     b: FunctionBuilder<'a>,
+    /// The program (the constant pool: descriptors `const_dim` reads at compile time).
+    prog: &'a Program,
     imp: Imports,
     env: Value,
     regs: Value,
@@ -1623,6 +1625,7 @@ fn gen_func(
         }
     }
     let mut g = Gen {
+        prog,
         known: base_known.clone(),
         objnew: None,
         frame_len: u64::from(f.frame),
@@ -2586,6 +2589,30 @@ fn gen_func(
             } if g.nat.is_some() => g.new_frame(pc, &inst, dst, desc, dsize, data, size, fill),
             Inst::Fill { dst, elem, n, size } if g.nat.is_some() => {
                 g.fill_inst(pc, &inst, dst, elem, n, size)
+            }
+            Inst::Pos {
+                dst,
+                dope,
+                dim,
+                idx,
+                ..
+            } if let Some((l, r, dir)) = g.const_dim(dope, u32::from(dim)) => {
+                // A descriptor of the constant pool: its dimension is known now (an empty one or
+                // a bad direction word never gets here; the interpreter reports those).
+                let (lo, hi) = if dir == 1 { (r, l) } else { (l, r) };
+                let i = g.ld(idx);
+                let rel = g.b.ins().iadd_imm_s(i, lo.wrapping_neg());
+                let bad =
+                    g.b.ins()
+                        .icmp_imm_s(IntCC::UnsignedGreaterThan, rel, hi.wrapping_sub(lo));
+                g.exit_if(bad, pc);
+                let v = if dir == 1 {
+                    let k = g.c64(l);
+                    g.b.ins().isub(k, i)
+                } else {
+                    rel
+                };
+                g.st(dst, v);
             }
             Inst::Pos {
                 dst,
@@ -3899,6 +3926,19 @@ impl Gen<'_> {
     }
 
     fn range_exit(&mut self, x: Value, lo: Value, hi: Value, pc: u32) {
+        // Constant bounds of a range that is not empty: one unsigned compare of `x - lo`.
+        if let (Some(l), Some(h)) = (self.const_of(lo), self.const_of(hi))
+            && l <= h
+        {
+            let rel = self.b.ins().iadd_imm_s(x, l.wrapping_neg());
+            let bad = self.b.ins().icmp_imm_s(
+                IntCC::UnsignedGreaterThan,
+                rel,
+                (h as u64).wrapping_sub(l as u64) as i64,
+            );
+            self.exit_if(bad, pc);
+            return;
+        }
         let a = self.b.ins().icmp(IntCC::SignedLessThan, x, lo);
         let b = self.b.ins().icmp(IntCC::SignedGreaterThan, x, hi);
         let bad = self.b.ins().bor(a, b);
@@ -4433,6 +4473,30 @@ impl Gen<'_> {
             self.b.ins().load(I64, self.mf, p, MEM_TAGS as i32),
             self.b.ins().load(I64, self.mf, p, MEM_MIXES as i32),
         )
+    }
+
+    /// `left, right, dir` of dimension `dim` of the descriptor `dope` points to, when that is a
+    /// descriptor of the constant pool with a direction word of 0 or 1 and a range that is not
+    /// empty.
+    fn const_dim(&self, dope: Reg, dim: u32) -> Option<(i64, i64, i64)> {
+        let Some(Some(Known::Const(k, o))) = self.known.get(dope.0 as usize).copied() else {
+            return None;
+        };
+        let Some(yavs_ir::ConstData::Bytes(bytes)) = self.prog.consts.get(k) else {
+            return None;
+        };
+        let at = usize::try_from(o).ok()?.checked_add(24 * dim as usize)?;
+        let w = |i: usize| -> Option<i64> {
+            let b = bytes.get(at + 8 * i..at + 8 * i + 8)?;
+            Some(i64::from_le_bytes(b.try_into().ok()?))
+        };
+        let (l, r, dir) = (w(0)?, w(1)?, w(2)?);
+        let ok = match dir {
+            0 => l <= r,
+            1 => r <= l,
+            _ => false,
+        };
+        ok.then_some((l, r, dir))
     }
 
     /// `left, right, dir` of the descriptor dimension at `p`.

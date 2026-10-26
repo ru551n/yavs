@@ -10714,3 +10714,8 @@ found the callers; a throwaway per-site census of `Copy`, `LCopy`, `New`, frame 
   `put`): three passes over the bytes for a `Copy`, and five for a wide `LCopy` (`lcopy_general`: the source, the destination as
   blocks, the merge, the write). `uvvm_axistream_vvc` copies a 689 KB command record between designated objects about 12 000 times:
   8 of its 20 GB of `memcpy` traffic was this.
+- **Decision: 16 scratch sets per thread, was 4** (`SCRATCH_SLOTS`). A process that is not resident (more than 4096 registers, or
+  temporaries that grew past 1 KB once) gives its register vector to the thread's scratch at a suspension and finds it again, filled,
+  by function. `grlib_leon3mp` has nine such processes (the integer unit's `comb`, `dctrl`, `ctrl`, `ictrl`, the SDRAM `state_register`,
+  ...) that wake in turn; four sets were evicted round robin, so 1.16 M activations refilled 25 to 60 KB each (30 GB of `memcpy`, the
+  largest user of `memmove` in the run). The sets are empty vectors until used; only the key search (a compare per set) is more.

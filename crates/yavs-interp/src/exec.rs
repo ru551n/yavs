@@ -705,8 +705,10 @@ struct Scratch {
 
 /// Sets of vectors kept per thread: processes of a few functions that wake in turn (the
 /// specialised copies of one process, a pipeline of processes) each find their own, with the
-/// registers they start with in place.
-const SCRATCH_SLOTS: usize = 4;
+/// registers they start with in place. GRLIB LEON3 has nine large processes (3000 to 7500
+/// registers each) that wake every delta cycle: with four sets each wake refilled 25 to 60 KB of
+/// registers (30 GB of `memcpy` in a run).
+const SCRATCH_SLOTS: usize = 16;
 
 impl Scratch {
     /// The slot to give up when every one holds a set that is worth keeping.

@@ -10185,3 +10185,26 @@ entry, about a fifth more per op over the rest of a testbench process's long act
   the other moves are within the host spread of that pass (load average 9 to 12).
 - **Left:** a callee with frame-mode code still hands over (`check_value` of `uvvm_sb_slv` forced: 10.79 G to 12.65 to 14.47 G warm), the general
   cost of the loop with the tier is #750.
+
+## `wait until <edge>` costs what the sensitivity-list forms cost: `Op::WaitEdgeSuspend` (yavs-interp `pre.rs`, `exec.rs`, #767, 2026-10-26)
+
+- **Cause** (`tools/stepcount --ops`, one clock period): the process `begin wait until rising_edge(clk); ... end process;` has an elaborator edge trigger,
+  so the kernel side was already the same as for `process (clk) if rising_edge(clk)`. The interpreter still ran, at the end of every activation, `BrBody`
+  (the pause check of the jump to the body block), `Stmt`, `SigVal` + `WaitEdge` (a reference to the clock, then `Ctx::wait_edge`, which does nothing when the
+  trigger's `known_edge` is set) and `WaitSuspend`: about 128 instructions an activation more than the other forms (+8.9 percent of a 4096-register design in
+  the interpreter, +11.9 percent in `--tier=auto`).
+- **Decision:** `pre::superops` makes the sequence `SigVal` (one element), `WaitEdge`, `WaitSig`, `Suspend` on the same element (same instance signal and
+  the same offset register or equal known offsets, the reference read only by the `WaitEdge`) one op, `WaitEdgeSuspend`, in the style of `WaitSuspend`: a
+  `Stmt` before it is part of it, and a `Br` or `BrBody` to it is a copy of it that runs as op `at` (the `BrBody` copy keeps the pause check of `prestart`, the
+  `body` field). The op does `Ctx::wait_edge` (a load and a test when the trigger is known) and `wait_on_again` on the element directly from
+  `inst.sigs` (`Machine::wait_edge_sig1`); an element out of the fast path runs the two steps with the checks of `sig_elem`. A `wait until` that is not an
+  edge on one element (an `and` with other signals, `or`, a timeout, another signal in the `on` list) keeps the instructions as they were.
+- **Not done:** the `--tier=llvm` code of such a process (every function compiled, the `WaitEdge` goes to the host through `signal`) still costs more than the
+  sensitivity forms (about +18 percent in the same design): #772, next to #766.
+- **Measured** (bench builds, `rtl_ff`-style design of 4096 one-bit registers and 2000 cycles, `--threads 1`, warm cache, `perf stat instructions:u`, cores 8 to 15 by
+  `tools/claim core`; sensitivity `rising_edge`, `'event`, `not 'stable`, `wait until rising_edge`): interpreter before 8.730, 8.737, 8.737, 9.780 G, after 8.705, 8.713, 8.713,
+  8.756 G (wait form +12.0 percent over `rising_edge` before, +0.6 percent after: 128 to 6 instructions an activation); `--tier=auto` before 9.003, 9.010, 9.010, 10.077 G,
+  after 8.978, 8.985, 8.985, 9.036 G (+11.9 to +0.65 percent). The other forms gain 0.3 percent (the pass). Cycles (same runs, interleaved old/new pairs, best of 2, G): interpreter wait form
+  2.98 to 2.81 (`rising_edge` 2.84 to 2.77), `--tier=auto` 3.05 to 2.81 (`rising_edge` 2.90 to 2.84); the wait form is within 1.5 percent of `rising_edge` in both.
+- **Tests:** work-counter test `edge_cost_parity` (`perf/edge_cost.vhd` with each of the four forms: equal `ops`, a ceiling for each); `edge_forms` bound lowered; `delta/wait_edge`
+  and `edge_idioms` run the wait shapes in every tier. Difftest 531 of 531 for interp, auto and llvm at 1 and 4 threads and auto with `--tier-heat=1,0,0` at 4 threads.

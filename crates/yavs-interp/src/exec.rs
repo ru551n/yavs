@@ -4491,6 +4491,33 @@ impl Machine {
         Self::wait_elem(sr, ctx)
     }
 
+    /// `Inst::WaitEdge` and `Inst::WaitOn` of element `o` of instance signal `sig` (as `wait_sig1`).
+    #[inline(always)]
+    fn wait_edge_sig1(&self, sig: u32, o: u64, kind: u8, ctx: &mut Option<&mut Ctx<'_>>) -> R<()> {
+        if let Some(s) = self.inst.sigs.get(sig as usize)
+            && let Ok(o) = u32::try_from(o)
+            && let Some(e) = s.off.checked_add(o)
+            && let Some(c) = ctx.as_deref_mut()
+        {
+            c.wait_edge(s.signal.slice(e, 1), kind);
+            if c.wait_on_again(s.signal, yavs_kernel::Range::new(e, 1)) {
+                return Ok(());
+            }
+        }
+        self.wait_edge1_slow(sig, o, kind, ctx)?;
+        self.wait_sig1_slow(sig, o, ctx)
+    }
+
+    #[inline(never)]
+    fn wait_edge1_slow(&self, sig: u32, o: u64, kind: u8, ctx: &mut Option<&mut Ctx<'_>>) -> R<()> {
+        let (sr, _) = self.sig_elem(sig, o)?;
+        let Some(c) = ctx.as_deref_mut() else {
+            return rt_err_s!("signal or wait operation during elaboration");
+        };
+        c.wait_edge(sr, kind);
+        Ok(())
+    }
+
     /// `Inst::WaitFor`.
     fn wait_for(&mut self, t: Reg, ctx: &mut Option<&mut Ctx<'_>>) -> R<()> {
         let t = to_time(self.ri(t))?;
@@ -6789,6 +6816,34 @@ impl Machine {
                     }
                     t!(self.wait_sig1(sig, self.regs[offset as usize], ctx));
                     self.frames[top].pc = code.at.get(k + 1).copied().unwrap_or(0);
+                    self.suspend(prog, f, ctx)?;
+                    return Ok(Flow::Suspend);
+                }
+                Op::WaitEdgeSuspend {
+                    sig,
+                    offset,
+                    kind,
+                    at,
+                    stmt,
+                    body,
+                } => {
+                    if body != pre::NONE
+                        && self.pause == Some(BlockId(body))
+                        && self.frames.len() == 1
+                    {
+                        // Stopped before the jump, which runs again on resumption.
+                        self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
+                        self.pause = None;
+                        return Ok(Flow::Next);
+                    }
+                    k = at as usize;
+                    if stmt {
+                        self.end_stmt();
+                        k += 1;
+                    }
+                    let o = self.regs[offset as usize];
+                    t!(self.wait_edge_sig1(sig, o, kind, ctx));
+                    self.frames[top].pc = code.at.get(k + 3).copied().unwrap_or(0);
                     self.suspend(prog, f, ctx)?;
                     return Ok(Flow::Suspend);
                 }

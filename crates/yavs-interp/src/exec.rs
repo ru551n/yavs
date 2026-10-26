@@ -1846,7 +1846,12 @@ impl Machine {
         }
         match ran {
             Some(crate::TIER_SUSPEND) => {
-                self.top().pc += 1;
+                // A wait compiled code ended on the kernel itself left its pc in the record
+                // (the tier writes `at` at every activation).
+                match &self.tier_state {
+                    Some(st) if st.at != crate::NO_PC => self.top().pc = st.at + 1,
+                    _ => self.top().pc += 1,
+                }
                 slot.store(0, Ordering::Relaxed);
                 Direct::Done(Quick::Suspended)
             }
@@ -8531,6 +8536,8 @@ impl Machine {
         m.tier_cov(tf);
         tf.stop = c.interrupt_flags();
         tf.spin = &raw mut m.spin;
+        tf.drivers = m.drivers.as_ptr();
+        tf.ndrivers = m.drivers.len() as u64;
         // A process that is `hot` has no shared state (`sh`), which the call paths of a serial
         // process do not promise: its epoch and flags come from the heap and the frame alone.
         if m.hot {
@@ -8540,6 +8547,10 @@ impl Machine {
         } else {
             tf.heap_epoch = m.heap_epochs();
             tf.flags = m.tier_flags();
+        }
+        // `frames.len() == 1` above; `tier_flags` (deeper views) never sets it.
+        if m.root_process && m.dbg.is_none() {
+            tf.flags |= crate::TIER_ROOT_WAIT;
         }
         tf.cycle = c.cycle();
         tf.known = c.resumed_edge_key();
@@ -10391,13 +10402,18 @@ impl crate::TierHost for Host<'_, '_, '_> {
         // What compiled code reads of the kernel itself: the codes of logic signals and the
         // edge this activation was resumed for.
         let m = &mut *self.m;
-        let Some(c) = self.ctx.as_deref() else {
+        tf.drivers = m.drivers.as_ptr();
+        tf.ndrivers = m.drivers.len() as u64;
+        let Some(c) = self.ctx.as_deref_mut() else {
             tf.sigtab_len = 0;
             tf.known = u64::MAX;
             tf.stop = crate::NO_STOP.as_ptr();
             tf.spin = &raw mut m.spin;
+            tf.kctx = std::ptr::null_mut();
             return;
         };
+        tf.kctx = (c as *mut Ctx<'_>).cast();
+        let c = &*c;
         tf.stop = c.interrupt_flags();
         tf.spin = &raw mut m.spin;
         if m.vc.tier_sigs.len() != m.vc.nsigs {
@@ -10457,9 +10473,10 @@ impl crate::TierHost for Host<'_, '_, '_> {
     }
 
     fn view_again(&mut self, tf: &mut crate::TierFrame) -> bool {
-        let Some(c) = self.ctx.as_deref() else {
+        let Some(c) = self.ctx.as_deref_mut() else {
             return false;
         };
+        tf.kctx = (c as *mut Ctx<'_>).cast();
         self.m.view_root(tf, c)
     }
 

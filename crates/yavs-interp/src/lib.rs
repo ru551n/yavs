@@ -59,6 +59,7 @@ pub use ieee::{code_table, edge_native};
 pub use pmemo::{pmemo_off, pmemo_stats};
 pub use pre::{
     ScalarDrive, light_ieee as light_native, retreating_brs, scalar_drives, static_wait,
+    static_wait_edge,
 };
 pub use state::{restore_state, restore_state_prefix};
 pub use textio::{FILE_INPUT, FILE_OUTPUT};
@@ -441,13 +442,21 @@ pub struct TierState {
     /// Room for the tier's record, valid once `used`.
     pub words: [u64; TIER_STATE_WORDS],
     pub used: bool,
+    /// The `Suspend` the activation stopped at when compiled code ended its wait on the kernel
+    /// itself ([`TIER_ROOT_WAIT`]) and returned [`TIER_SUSPEND`]; [`NO_PC`] otherwise (the
+    /// frames' pc is the `Suspend`'s).
+    pub at: u32,
 }
+
+/// [`TierState::at`] when the frames hold the pc.
+pub const NO_PC: u32 = u32::MAX;
 
 impl Default for TierState {
     fn default() -> TierState {
         TierState {
             words: [0; TIER_STATE_WORDS],
             used: false,
+            at: NO_PC,
         }
     }
 }
@@ -952,6 +961,152 @@ pub struct TierFrame {
     /// which reports the activation, once it reaches the limit. Kept in the machine so it
     /// survives every re-entry; `NO_SPIN` without a machine.
     pub spin: *mut u64,
+    /// The kernel context of this activation (`yavs_kernel::Ctx`), null without one, and the
+    /// machine's drivers (`ndrivers`): the zero-delay drives of compiled code go to the kernel
+    /// straight ([`direct_drive_bit`], [`direct_drive_now`], [`direct_drive_bits`]). Valid only
+    /// within the activation or call whose view wrote it (the tier clears `kctx` at its end).
+    pub kctx: *mut std::ffi::c_void,
+    pub drivers: *const ProcDriver,
+    pub ndrivers: u64,
+}
+
+/// [`TierHost::drive_bit_now`] on the kernel context itself (`TierFrame::kctx`), with the
+/// machine's drivers and the view's signals: no host call (#766). `false`, nothing done, where
+/// the host must run it.
+#[inline(always)]
+pub fn direct_drive_bit(
+    c: &mut Ctx<'_>,
+    drivers: &[ProcDriver],
+    sigs: &[TierSig],
+    driver: u32,
+    target: [u64; 2],
+    code: u64,
+) -> bool {
+    if code > 8 || target[1] != 1 {
+        return false;
+    }
+    let (Some(d), Some(s)) = (
+        drivers.get(driver as usize),
+        sigs.get((target[0] >> 32) as usize),
+    ) else {
+        return false;
+    };
+    // Codes or planes are offered for logic signals only.
+    s.codes | s.planes != 0
+        && c.assign_code_now(
+            d.id,
+            Range::new(s.off as u32 + target[0] as u32, 1),
+            code as u8,
+        )
+}
+
+/// [`TierHost::drive_now`] as [`direct_drive_bit`] does it: one waveform element of 1 to 64
+/// logic elements or one scalar of at most 8 bytes, zero delay.
+#[inline(always)]
+pub fn direct_drive_now(
+    c: &mut Ctx<'_>,
+    drivers: &[ProcDriver],
+    sigs: &[TierSig],
+    driver: u32,
+    target: [u64; 2],
+    delay: i64,
+    block: [u64; 4],
+) -> bool {
+    if delay != 0 || target[1] == 0 || target[1] > 64 {
+        return false;
+    }
+    let (Some(d), Some(s)) = (
+        drivers.get(driver as usize),
+        sigs.get((target[0] >> 32) as usize),
+    ) else {
+        return false;
+    };
+    let r = Range::new(s.off as u32 + target[0] as u32, target[1] as u32);
+    if s.bytes != 0 {
+        let es = s.es as usize;
+        return target[1] == 1
+            && es <= 8
+            && c.assign_bytes_now(d.id, r, &block[0].to_le_bytes()[..es]);
+    }
+    if s.codes | s.planes == 0 {
+        return false;
+    }
+    if target[1] == 1 {
+        let code = (block[0] & 1) | (block[1] & 1) << 1 | (block[2] & 1) << 2 | (block[3] & 1) << 3;
+        return c.assign_code_now(d.id, r, code as u8);
+    }
+    c.assign_planes_now(d.id, Some(r), block)
+}
+
+/// [`TierHost::wait_same`] on the kernel context (`TierFrame::kctx`): whether the kernel took the
+/// wait as the last one. The caller checked [`TIER_ROOT_WAIT`] and records the pc.
+#[inline(always)]
+pub fn direct_wait_same(c: &mut Ctx<'_>) -> bool {
+    c.wait_same()
+}
+
+/// [`TierHost::wait_again`] on the kernel context, as [`direct_wait_same`]: the `WaitOn` of the
+/// signal reference `sig` before the `Suspend`.
+#[inline(always)]
+pub fn direct_wait_again(c: &mut Ctx<'_>, sigs: &[TierSig], sig: [u64; 2]) -> bool {
+    let Some(s) = sigs.get((sig[0] >> 32) as usize) else {
+        return false;
+    };
+    c.wait_on_again(
+        SignalId(s.signal as u32),
+        Range::new(s.off as u32 + sig[0] as u32, sig[1] as u32),
+    )
+}
+
+/// `Inst::WaitEdge` of the signal reference `sig` and edge code `kind` on the kernel context:
+/// `false`, nothing done, where the host must step it.
+#[inline(always)]
+pub fn direct_wait_edge(c: &mut Ctx<'_>, sigs: &[TierSig], sig: [u64; 2], kind: u8) -> bool {
+    let Some(s) = sigs.get((sig[0] >> 32) as usize) else {
+        return false;
+    };
+    c.wait_edge(
+        SignalId(s.signal as u32).slice(s.off as u32 + sig[0] as u32, sig[1] as u32),
+        kind,
+    );
+    true
+}
+
+/// The leading entries of [`TierHost::drive_bits`] the kernel's fastest path takes, as
+/// [`direct_drive_bit`] does: how many were done (the host runs the rest).
+pub fn direct_drive_bits(
+    c: &mut Ctx<'_>,
+    drivers: &[ProcDriver],
+    sigs: &[TierSig],
+    entries: &[[u64; 2]],
+) -> usize {
+    let mut at = 0;
+    while let Some(&[t, w]) = entries.get(at) {
+        let driver = (w & 0xffff) as u32;
+        let (Some(d), Some(s)) = (drivers.get(driver as usize), sigs.get((t >> 32) as usize))
+        else {
+            break;
+        };
+        if s.codes | s.planes == 0 {
+            break;
+        }
+        let rest = &entries[at..];
+        let n = rest
+            .iter()
+            .take_while(|e| e[0] >> 32 == t >> 32 && e[1] & 0xffff == u64::from(driver))
+            .count();
+        let taken = c.assign_codes_now(d.id, n, |k| {
+            (
+                s.off as u32 + rest[k][0] as u32,
+                (rest[k][1] >> 16 & 0xff) as u8,
+            )
+        });
+        if taken == 0 {
+            break;
+        }
+        at += taken;
+    }
+    at
 }
 
 /// The bit of the byte `TierFrame::stop` points at that asks the run to stop.
@@ -973,6 +1128,10 @@ pub const TIER_SERIAL: u64 = 2;
 /// waveform recorder): compiled code keeps no heap object across activations, so every write
 /// goes through `TierHost::object` and is counted.
 pub const TIER_STAMPS: u64 = 4;
+/// `TierFrame::flags`: the view is of a process's root frame, with no debugger, entered through
+/// [`Tier::run_cached`]: compiled code may end the activation's wait on the kernel itself and
+/// leave the pc of its `Suspend` in [`TierState::at`] (#766). Views of other frames never have it.
+pub const TIER_ROOT_WAIT: u64 = 8;
 /// The tag in the top byte of a handle into the shared heap.
 pub const SHARED_TAG: u8 = heap::SHARED;
 
@@ -1042,6 +1201,9 @@ impl Default for TierFrame {
             cov_len: 0,
             stop: NO_STOP.as_ptr(),
             spin: NO_SPIN.as_ptr(),
+            kctx: std::ptr::null_mut(),
+            drivers: std::ptr::null(),
+            ndrivers: 0,
         }
     }
 }

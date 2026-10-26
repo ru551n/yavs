@@ -9180,3 +9180,23 @@ instructions (-11.1 percent). The other natives on slices (`to_x01`, the numeric
 A `CondBr` whose arms lead to the same block is a `Br` (the null-range test of a local array). Part of the fixed cost of an `HRead` call (`docs/decisions.md` "A branch whose arms lead to the same block"):
 the call is still about 80 ops; the rest is listed there. First 1 us of `grlib_leon3mp` with #768 to #771: 31.37 G to 22.99 G instructions (-26.7 percent), `--tier=interp`.
 
+## llvm: compiled clocked RTL, round 8: drives and waits on the kernel, every edge form alike (#766, #772, 2026-10-26)
+
+- Zero-delay drives (`yavs_rt_drive_bit`, `yavs_rt_drive` of 1 to 64 logic elements or one byte scalar, `yavs_rt_drive_flush`) and
+  waits (`yavs_rt_wait_same`, `yavs_rt_wait`, new `yavs_rt_wait_edge`) of compiled code reach the kernel without the host
+  (`TierFrame::kctx`, `drivers`; `yavs_interp::direct_*`); the host path stays for what the kernel's fastest path refuses.
+- A compiled `wait until <edge>` is a static wait (`yavs_interp::static_wait_edge`): `rising_edge`, `'event`, `not 'stable` and
+  `wait until rising_edge` run the same instructions under `--tier=llvm` and `--tier=auto` (`llvm_edge_cost_parity`).
+- `SigRead` of up to 64 elements within one plane word reads the kernel's planes inline.
+- Instructions an activation (stepcount, `--tier=auto --tier-heat=1,0,0`), main 7076335e / round: `rtl_ff` 1107 / 1067, `rtl_lfsr`
+  1462 / 1385, `lfsr64` 1656 / 1618, `ff_waituntil` 1316 / 1067. Cycles of warm `--tier=auto` runs (min of 7, one CCD1 core):
+  `rtl_ff` 0.925, `rtl_lfsr` 0.970, `lfsr64` 0.964, `rtl_chain` 1.009 (interpreted, unchanged code), `ff_waituntil` 0.842.
+- Head-to-head against sim1 (`--tiers auto --instructions`, instruction ratio): `rtl_ff` 1.23 to 1.18, `rtl_lfsr` 1.52 to 1.49,
+  `lfsr64` 1.52 to 1.48, `rtl_chain` 1.62.
+- Checks: fmt, clippy with and without `llvm`, both test suites and the `gc-stress` llvm tests; difftest 531/531 at 1 and 4 threads for
+  `yavs-interp`, `yavs-auto`, `yavs-llvm` and `yavs-auto` with `--tier-heat=1,0,0`.
+- `tools/realbench --compare` (42 tests, interpreter and `--tier=auto`, one core, load 15): run-phase wall geometric mean 0.99
+  (interpreter) and 1.01 (auto), instructions level; the one auto cell above noise (`grlib_leon3mp` 1.25 at equal instructions) repeated
+  at 0.99 in five runs a cell at load 8, `poc_cache_cpu` 0.98. `neorv32_single_min` 2.75 / 2.78 s interpreter, 2.83 / 2.81 s auto.
+- Every function compiled (`YAVS_BENCH_TIERFLAGS=--tier-heat=1,0,0`, three runs a cell, load 9): `grlib_leon3mp` 46.45 to 45.82 s
+  (instructions 0.99: the kept drives' flush on the kernel), `neorv32_single_min` 4.37 to 4.40 s (instructions 1.01).

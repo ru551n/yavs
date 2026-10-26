@@ -10436,3 +10436,65 @@ Follow-up of "`--tier=auto` first-run latency": the lower `Compute` price (nativ
   `uvvm_util_rand` cold 1.03 (its compile of `prefix_lines` happens in some runs of either build: 14.02 to 14.46 G for main), the window generator 1.016
   both; `uvvm_axistream_vvc` run 3 is 1.22: that is the run that compiles the shared trees, a run later than it should because the profile of its first run
   is not found by the second (#774); realbench times runs 3 to 5 and takes the median.
+
+## Compiled clocked RTL processes, round 8: drives and waits on the kernel itself, every edge form alike (yavs-llvm, yavs-interp, #766, #772, 2026-10-26)
+
+Task (orchestrator): the host layers around a small compiled clocked process (#766: 600 to 700 instructions an activation against about 200
+of kernel and 215 to 340 of compiled body; sim1 is 1 000 to 1 100 in all) and the compiled `wait until rising_edge(clk)` form, about 215
+instructions an activation dearer than the sensitivity-list forms under `--tier=llvm` (#772). Bench builds with `llvm`, `--threads 1`,
+`tools/stepcount` windows of one clock period late in the run (`--tier=auto --tier-heat=1,0,0`), cycles as the minimum of 7 interleaved
+runs on one claimed core of the second CCD. Base is main at 7076335e.
+
+- **Where it went** (`rtl_ff`, instructions an activation, base): `Process::run` with `run_direct` 182, `run_cached` with `enter_on`,
+  `begin`, `save_tag` 189, `view_again` 96, the drive 173 (`yavs_rt_drive_bit` 38 with a six-register prologue for its slow path, then
+  `Host::drive_bit_now` with the kernel's `assign_code_now` inline), the wait 52 (`yavs_rt_wait_same` and `Host::wait_same`),
+  `Program::func` 13. Every activation of `rtl_ff` is another machine, so nothing about the view or the object tags can be kept on the
+  thread from the last activation.
+- **Decision: the zero-delay drives go from the callback to the kernel without the host** (S for the functions and the view, L for
+  their use in `rt.rs`). `TierFrame` carries `kctx` (the activation's `yavs_kernel::Ctx`, written by `view` and `view_again` from the
+  host's `&mut Ctx`, null without a kernel) and the machine's drivers (`drivers`, `ndrivers`); `yavs_rt_drive_bit`, the one-element and
+  1 to 64 element forms of `yavs_rt_drive` and `yavs_rt_drive_flush` (the kept drives of #679, LEON3's) call the safe
+  `yavs_interp::direct_drive_bit`, `direct_drive_now`, `direct_drive_bits` on them through `rt::direct`, the one place that turns the
+  pointers into references. They take what `Host::drive_bit_now`, `drive_now` and the fast part of `drive_bits` took (the logic test is
+  the signal table's `codes | planes`, the byte test its `bytes`); everything else goes the old way. `kctx` is cleared when `enter_on`
+  and `call_on` end, so a view of a finished activation never reaches a kernel. Why: the host hop was the dyn call, the bounds checks
+  of the machine's tables, the `Option` of the context and the callback's prologue, 33 of `rtl_ff`'s 173 and 30 of `rtl_lfsr`'s 209.
+- **Decision: the waits too** (`yavs_rt_wait_same`, `yavs_rt_wait`, and a new `yavs_rt_wait_edge` for `Inst::WaitEdge`, which went
+  through the generic `yavs_rt_signal` at every activation of a `wait until` process). A wait ended on the kernel must still leave the
+  frame at its `Suspend`: compiled code cannot reach the machine's frames, so the pc goes to `Mem::wait_at`, `save_tag` copies it into
+  the process's record (`TierState::at`, `NO_PC` otherwise) and `Machine::run_direct` puts it in the frame at `TIER_SUSPEND`. Only a view
+  of a root frame with no debugger entered through `run_cached` may do it (`TIER_ROOT_WAIT` in `TierFrame::flags`: set by `view_root`,
+  never by `tier_flags`, so a deeper view after a call drops it; cleared by `enter_on` without a record and by `call_on`). The host path
+  stays for a refusal (it also notes why, for `YAVS_COUNTERS=kinds`). `yavs_rt_wait_same` no longer hands the temporary area back first:
+  neither path reads it, and the activation's end does it.
+- **Decision (#772): a `wait until <edge>` is a static wait** (`yavs_interp::static_wait_edge`, S; the interpreter keeps `static_wait`
+  and its own `WaitEdgeSuspend` of #767). Its instructions are `Stmt; Br` to the block of `SigVal`, `WaitEdge`, `WaitOn`, `Suspend`
+  (the block the condition jumps back to), and it names the same signal every time. Compiled code calls `yavs_rt_wait_same` at the
+  `Stmt` with `lo` = `WAIT_SAME_EDGE`, which short-cuts only when `TierFrame::known` says the process's edge trigger resumed the
+  activation: then `Ctx::wait_edge` does nothing, so leaving the `WaitEdge` out changes nothing. Otherwise (the first activation, no
+  trigger) the wait runs in full, with the `WaitEdge` on the kernel and `yavs_rt_wait`. Result: the four spellings (`rising_edge`,
+  `'event and = '1'`, `not 'stable and = '1'`, `wait until rising_edge`) run the same instructions under `--tier=llvm` and `--tier=auto`
+  (`rtl_ff`-style, 4096 x 2000, `--tier=llvm`: 9.004 / 9.011 / 9.011 / 9.005 G, base 9.331 / 9.339 / 9.339 / 11.046 G). Work-counter test
+  `llvm_edge_cost_parity` holds their callbacks equal.
+- **Decision: a `SigRead` of up to 64 elements that lie in one word of each plane reads the kernel's planes inline** (L, `sig_read_block`):
+  four loads, a shift and a mask instead of `yavs_rt_codes` over the codes (60 instructions in `rtl_lfsr`). The planes are the signal's
+  current value (the codes are made from them); elements across a word boundary keep the old path.
+- **Measured** (instructions an activation, stepcount, base / round): `rtl_ff` 1107 / 1067, `rtl_lfsr` 1462 / 1385, `lfsr64` 1656 / 1618,
+  `ff_event` and `ff_stable` (the `'event` and `not 'stable` spellings of `rtl_ff`) 1107 / 1067, `ff_waituntil` 1316 / 1067. Cycles of
+  whole warm `--tier=auto` runs (min of 7, core claimed on CCD1): `rtl_ff` -7.5 percent, `rtl_lfsr` -3.0, `lfsr64` -3.6, `ff_waituntil`
+  -15.8, `rtl_chain` level (interpreted). Head-to-head instruction ratios against sim1 (`tools/bench/run.py --ref sim1 --tiers auto
+  --instructions`): `rtl_ff` 1.23 to 1.18, `rtl_lfsr` 1.52 to 1.49, `lfsr64` 1.52 to 1.48, `rtl_chain` 1.62 (unchanged); the walls of
+  that run were taken at a host load of 15 and are not quoted. realbench: see docs/STATUS.md.
+- **Not done, and why.** What is left of the host layers is the entry: `Process::run` with `run_direct` about 190, `run_cached` about 190,
+  `view_again` about 105 instructions (`rtl_ff`). It is spread over 20 to 30 steps of 5 to 15 instructions (the view's 30 fields, the
+  object tags of the machine from its record, `Env`, the sampling slot, the result). Caching the view or the tags across activations
+  needs per-process state the tier can reach (the user decision of 2026-10-25 on #634 says no persistent per-process machine state and no `unsafe` in
+  `yavs-interp`); on the thread it never hits for these designs, where every activation is another machine. Two leads that stay within
+  the rules: the `Box` of `TierState` is a cache line of its own per process (12 percent of `run_cached`'s cycles land on its first
+  load in `perf annotate`), and a function whose code never touches the object table could skip `Mem::begin` and `save_tag` (about 55
+  instructions) if the generator proved it for every callback it emits.
+- **The reference simulator (rule 22).** Its compiled code schedules a signal's waveform and registers a process's events through the
+  kernel's own entry points with a pointer to the signal, with nothing between, and a process with a static sensitivity registers it
+  once. The ideas taken are the outcome: the drive and the wait of a compiled process reach the kernel in one call, and a `wait until`
+  on an edge is the static wait it is. Ours keeps the interpreter's host for every case the kernel's fastest path refuses, and the
+  pointers live in the per-activation view. Nothing was copied.

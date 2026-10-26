@@ -2491,6 +2491,22 @@ fn static_waits(prog: &Program, f: &Func, ops: &mut [Op], at: &[u32], entry: &[u
 /// that also keeps the references for the later ones, and the activations after the first run the
 /// later copy): they all wait for the same list, so every one that qualifies short-cuts.
 pub fn static_wait(prog: &Program, f: &Func, min: usize) -> Vec<(usize, usize)> {
+    static_wait_edge(prog, f, min, false)
+        .into_iter()
+        .map(|(st, s, _)| (st, s))
+        .collect()
+}
+
+/// [`static_wait`], with `edge` also the waits of a `wait until <edge>` (a `WaitEdge` among the
+/// instructions, third field `true`): such a wait names the same signals too, and its `WaitEdge`
+/// changes nothing where the process has an edge trigger (`Ctx::wait_edge`), which compiled code
+/// checks at run time (`TierFrame::known`, #772).
+pub fn static_wait_edge(
+    prog: &Program,
+    f: &Func,
+    min: usize,
+    edge: bool,
+) -> Vec<(usize, usize, bool)> {
     let calls = |i: &Inst| match *i {
         Inst::Call { func, .. } | Inst::CallProt { func, .. } => prog
             .func(func)
@@ -2538,16 +2554,31 @@ pub fn static_wait(prog: &Program, f: &Func, min: usize) -> Vec<(usize, usize)> 
                         | Inst::SigVal { .. }
                         | Inst::SigSlice { .. }
                         | Inst::WaitOn { .. }
-                )
+                ) && !(edge && matches!(f.code[p], Inst::WaitEdge { .. }))
             })?;
             let waits = f.code[st + 1..s]
                 .iter()
                 .filter(|i| matches!(i, Inst::WaitOn { .. }))
                 .count();
-            (matches!(f.code[st], Inst::Stmt)
-                && waits >= min
-                && !(st + 1..=s).any(|p| f.blocks.iter().any(|(_, b)| b.start as usize == p)))
-            .then_some((st, s))
+            let has_edge = f.code[st + 1..s]
+                .iter()
+                .any(|i| matches!(i, Inst::WaitEdge { .. }));
+            let starts = |p: usize| f.blocks.iter().any(|(_, b)| b.start as usize == p);
+            // A `wait until` is the head of its own loop: `Stmt; Br` to the block of the wait,
+            // which the condition jumps back to (that way runs the wait in full).
+            let (stmt, from) = match f.code[st] {
+                Inst::Br { to }
+                    if has_edge
+                        && st > 0
+                        && matches!(f.code[st - 1], Inst::Stmt)
+                        && f.blocks.get(to).is_some_and(|b| b.start as usize == st + 1) =>
+                {
+                    (st - 1, st + 2)
+                }
+                _ => (st, st + 1),
+            };
+            (matches!(f.code[stmt], Inst::Stmt) && waits >= min && !(from..=s).any(starts))
+                .then_some((stmt, s, has_edge))
         })
         .collect()
 }

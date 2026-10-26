@@ -22,6 +22,10 @@ names of `std_ulogic`, BIT, BOOLEAN or their vectors runs as the kernel's own `G
 `rtl_chain` (1000 inverters): 3.29 G to 2.08 G instructions under `--tier=auto`, CPU 1.36 to 0.79 times sim1. Corpus
 `sigassign/logic_gates` passes against sim1 at 1 and 4 threads on every tier. Open: one-level muxes, relational operators, literal operands.
 
+### Conformance report (#780, 2026-10-26)
+
+`tools/conformance/run.py` generates `docs/conformance.md` (and `.json`): pass counts of the differential corpus per group and thread count, the reference simulators' own tests, the discrepancy catalogue, the analysis corpora against the recorded sim1 lists, the UVVM and OSVVM suites, neorv32 and GRLIB LEON3 runs, platforms and known limits. The `conformance` workflow regenerates the CI-capable parts on `main` and release tags and checks the committed copy (`tools/conformance/AGENTS.md`). Open: waveform equivalence on real designs (a slot in the report), a public page (maintainer's decision).
+
 ### `wait until <edge>` as cheap as the sensitivity-list forms (#767, 2026-10-26)
 
 (`docs/decisions.md` "`wait until <edge>` costs what the sensitivity-list forms cost".) The end of a `wait until rising_edge(clk)` on one

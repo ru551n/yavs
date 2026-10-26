@@ -1,0 +1,55 @@
+# Conformance report (#780): regenerates the parts of docs/conformance.md that need only yavs and the
+# fetched corpora, uploads the report as an artifact and checks the committed copy. Nothing is published
+# outside the repository. On main a stale committed report is a warning; on a release tag it fails the run.
+name: conformance
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: 0
+  YAVS_CORPUS: ${{ github.workspace }}/.corpus-cache
+
+jobs:
+  conformance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
+        with:
+          path: .corpus-cache
+          key: corpus-${{ hashFiles('tools/fetch-corpus.sh') }}
+      - run: tools/fetch-corpus.sh "$YAVS_CORPUS"
+      - run: cargo build --release --locked -p yavs
+      - name: Regenerate the report and compare it with the committed one
+        id: report
+        # A stale committed report fails only on release tags; the steps that cannot run here
+        # (reference simulators, vendor libraries) keep the records of docs/conformance-local.json.
+        continue-on-error: ${{ github.ref_type != 'tag' }}
+        run: |
+          tools/conformance/run.py --check --no-sandbox --core 1 \
+            --yavs target/release/yavs --out "$RUNNER_TEMP/conformance"
+      - name: Stale report warning
+        if: steps.report.outcome == 'failure'
+        run: echo "::warning::docs/conformance.md differs from the regenerated report; run tools/conformance/run.py and commit"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: conformance-report
+          path: |
+            ${{ runner.temp }}/conformance/conformance.md
+            ${{ runner.temp }}/conformance/*.json

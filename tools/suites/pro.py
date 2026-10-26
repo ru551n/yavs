@@ -280,13 +280,14 @@ def build_plan(root, std, out):
 
 def sandbox(cmd, log, cwd, timeout=300):
     """Run cmd under timeout and systemd-run; return (status, seconds). Output appended to log."""
-    full = ["timeout", str(timeout), "systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=4G"] + cmd
+    full = ["timeout", str(timeout)] + ([] if NO_WRAP else ["systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=4G"]) + cmd
     t = time.time()
     with open(log, "ab") as f:
         r = subprocess.run(full, stdout=f, stderr=subprocess.STDOUT, cwd=cwd)
     return r.returncode, time.time() - t
 
 
+NO_WRAP = False  # --no-wrap: CI runners have no systemd user session
 SUMMARY = re.compile(r"^%%.*\bDONE\s+PASSED\b", re.M)
 FAILSUM = re.compile(r"^%%.*\bDONE\s+FAILED\b", re.M)
 
@@ -322,7 +323,10 @@ def main():
     ap.add_argument("--filter", default="")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--analyze-only", action="store_true")
+    ap.add_argument("--no-wrap", action="store_true", help="run without systemd-run (CI)")
     o = ap.parse_args()
+    global NO_WRAP
+    NO_WRAP = o.no_wrap
     if o.jobs > 4:
         sys.exit("pro.py: at most 4 parallel runs")
     out, root = Path(o.out).resolve(), Path(o.root).resolve()

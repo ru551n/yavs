@@ -1,0 +1,695 @@
+{
+ "records": {
+  "cocotb": {
+   "command": "cocotb's own tests with the VHPI plugin (crates/yavs-vhpi/COCOTB.md)",
+   "commit": "78b1c398",
+   "data": {
+    "fail": 2,
+    "pass": 66,
+    "skip": 0
+   },
+   "date": "2026-10-20",
+   "note": "counted in test directories, recorded in docs/STATUS.md; the integration work is on hold",
+   "title": "cocotb regression over VHPI"
+  },
+  "refdiff": {
+   "command": "tools/difftest/difftest.py --candidate sim1|sim2",
+   "commit": "cd5268f8b2",
+   "data": {
+    "sim1": {
+     "agree": 533,
+     "tests": 535
+    },
+    "sim2": {
+     "agree": 314,
+     "tests": 535
+    }
+   },
+   "date": "2026-10-26",
+   "note": "",
+   "title": "References against the recorded outputs",
+   "version": "0.8.0"
+  },
+  "tiers": {
+   "command": "tools/conformance/run.py --local --llvm --only tiers (yavs built with --features llvm)",
+   "commit": "cd5268f8b2",
+   "data": {
+    "auto": {
+     "1 thread": {
+      "failed": [],
+      "groups": {
+       "access": [
+        8,
+        8
+       ],
+       "arith": [
+        8,
+        8
+       ],
+       "composite": [
+        114,
+        114
+       ],
+       "delta": [
+        13,
+        13
+       ],
+       "env": [
+        14,
+        14
+       ],
+       "force": [
+        12,
+        12
+       ],
+       "generics": [
+        52,
+        52
+       ],
+       "hierarchy": [
+        81,
+        81
+       ],
+       "ieee": [
+        21,
+        21
+       ],
+       "implicit": [
+        6,
+        6
+       ],
+       "postponed": [
+        2,
+        2
+       ],
+       "process": [
+        36,
+        36
+       ],
+       "protected": [
+        22,
+        22
+       ],
+       "psl": [
+        13,
+        13
+       ],
+       "reflect": [
+        14,
+        14
+       ],
+       "report": [
+        10,
+        10
+       ],
+       "resolution": [
+        22,
+        22
+       ],
+       "rtl": [
+        4,
+        4
+       ],
+       "scalar": [
+        16,
+        16
+       ],
+       "shared": [
+        4,
+        4
+       ],
+       "sigassign": [
+        24,
+        24
+       ],
+       "std93": [
+        6,
+        6
+       ],
+       "synopsys": [
+        20,
+        20
+       ],
+       "textio": [
+        13,
+        13
+       ]
+      }
+     },
+     "4 threads": {
+      "failed": [],
+      "groups": {
+       "access": [
+        8,
+        8
+       ],
+       "arith": [
+        8,
+        8
+       ],
+       "composite": [
+        114,
+        114
+       ],
+       "delta": [
+        13,
+        13
+       ],
+       "env": [
+        14,
+        14
+       ],
+       "force": [
+        12,
+        12
+       ],
+       "generics": [
+        52,
+        52
+       ],
+       "hierarchy": [
+        81,
+        81
+       ],
+       "ieee": [
+        21,
+        21
+       ],
+       "implicit": [
+        6,
+        6
+       ],
+       "postponed": [
+        2,
+        2
+       ],
+       "process": [
+        36,
+        36
+       ],
+       "protected": [
+        22,
+        22
+       ],
+       "psl": [
+        13,
+        13
+       ],
+       "reflect": [
+        14,
+        14
+       ],
+       "report": [
+        10,
+        10
+       ],
+       "resolution": [
+        22,
+        22
+       ],
+       "rtl": [
+        4,
+        4
+       ],
+       "scalar": [
+        16,
+        16
+       ],
+       "shared": [
+        4,
+        4
+       ],
+       "sigassign": [
+        24,
+        24
+       ],
+       "std93": [
+        6,
+        6
+       ],
+       "synopsys": [
+        20,
+        20
+       ],
+       "textio": [
+        13,
+        13
+       ]
+      }
+     },
+     "4 threads shuffled": {
+      "failed": [],
+      "groups": {
+       "access": [
+        8,
+        8
+       ],
+       "arith": [
+        8,
+        8
+       ],
+       "composite": [
+        114,
+        114
+       ],
+       "delta": [
+        13,
+        13
+       ],
+       "env": [
+        14,
+        14
+       ],
+       "force": [
+        12,
+        12
+       ],
+       "generics": [
+        52,
+        52
+       ],
+       "hierarchy": [
+        81,
+        81
+       ],
+       "ieee": [
+        21,
+        21
+       ],
+       "implicit": [
+        6,
+        6
+       ],
+       "postponed": [
+        2,
+        2
+       ],
+       "process": [
+        36,
+        36
+       ],
+       "protected": [
+        22,
+        22
+       ],
+       "psl": [
+        13,
+        13
+       ],
+       "reflect": [
+        14,
+        14
+       ],
+       "report": [
+        10,
+        10
+       ],
+       "resolution": [
+        22,
+        22
+       ],
+       "rtl": [
+        4,
+        4
+       ],
+       "scalar": [
+        16,
+        16
+       ],
+       "shared": [
+        4,
+        4
+       ],
+       "sigassign": [
+        24,
+        24
+       ],
+       "std93": [
+        6,
+        6
+       ],
+       "synopsys": [
+        20,
+        20
+       ],
+       "textio": [
+        13,
+        13
+       ]
+      }
+     }
+    },
+    "designs": {
+     "grlib_leon3mp": {
+      "auto": true
+     },
+     "neorv32_dual_full": {
+      "auto": true
+     },
+     "neorv32_single_cache": {
+      "auto": true
+     },
+     "neorv32_single_min": {
+      "auto": true
+     }
+    },
+    "llvm": {
+     "1 thread": {
+      "failed": [],
+      "groups": {
+       "access": [
+        8,
+        8
+       ],
+       "arith": [
+        8,
+        8
+       ],
+       "composite": [
+        114,
+        114
+       ],
+       "delta": [
+        13,
+        13
+       ],
+       "env": [
+        14,
+        14
+       ],
+       "force": [
+        12,
+        12
+       ],
+       "generics": [
+        52,
+        52
+       ],
+       "hierarchy": [
+        81,
+        81
+       ],
+       "ieee": [
+        21,
+        21
+       ],
+       "implicit": [
+        6,
+        6
+       ],
+       "postponed": [
+        2,
+        2
+       ],
+       "process": [
+        36,
+        36
+       ],
+       "protected": [
+        22,
+        22
+       ],
+       "psl": [
+        13,
+        13
+       ],
+       "reflect": [
+        14,
+        14
+       ],
+       "report": [
+        10,
+        10
+       ],
+       "resolution": [
+        22,
+        22
+       ],
+       "rtl": [
+        4,
+        4
+       ],
+       "scalar": [
+        16,
+        16
+       ],
+       "shared": [
+        4,
+        4
+       ],
+       "sigassign": [
+        24,
+        24
+       ],
+       "std93": [
+        6,
+        6
+       ],
+       "synopsys": [
+        20,
+        20
+       ],
+       "textio": [
+        13,
+        13
+       ]
+      }
+     },
+     "4 threads": {
+      "failed": [],
+      "groups": {
+       "access": [
+        8,
+        8
+       ],
+       "arith": [
+        8,
+        8
+       ],
+       "composite": [
+        114,
+        114
+       ],
+       "delta": [
+        13,
+        13
+       ],
+       "env": [
+        14,
+        14
+       ],
+       "force": [
+        12,
+        12
+       ],
+       "generics": [
+        52,
+        52
+       ],
+       "hierarchy": [
+        81,
+        81
+       ],
+       "ieee": [
+        21,
+        21
+       ],
+       "implicit": [
+        6,
+        6
+       ],
+       "postponed": [
+        2,
+        2
+       ],
+       "process": [
+        36,
+        36
+       ],
+       "protected": [
+        22,
+        22
+       ],
+       "psl": [
+        13,
+        13
+       ],
+       "reflect": [
+        14,
+        14
+       ],
+       "report": [
+        10,
+        10
+       ],
+       "resolution": [
+        22,
+        22
+       ],
+       "rtl": [
+        4,
+        4
+       ],
+       "scalar": [
+        16,
+        16
+       ],
+       "shared": [
+        4,
+        4
+       ],
+       "sigassign": [
+        24,
+        24
+       ],
+       "std93": [
+        6,
+        6
+       ],
+       "synopsys": [
+        20,
+        20
+       ],
+       "textio": [
+        13,
+        13
+       ]
+      }
+     },
+     "4 threads shuffled": {
+      "failed": [],
+      "groups": {
+       "access": [
+        8,
+        8
+       ],
+       "arith": [
+        8,
+        8
+       ],
+       "composite": [
+        114,
+        114
+       ],
+       "delta": [
+        13,
+        13
+       ],
+       "env": [
+        14,
+        14
+       ],
+       "force": [
+        12,
+        12
+       ],
+       "generics": [
+        52,
+        52
+       ],
+       "hierarchy": [
+        81,
+        81
+       ],
+       "ieee": [
+        21,
+        21
+       ],
+       "implicit": [
+        6,
+        6
+       ],
+       "postponed": [
+        2,
+        2
+       ],
+       "process": [
+        36,
+        36
+       ],
+       "protected": [
+        22,
+        22
+       ],
+       "psl": [
+        13,
+        13
+       ],
+       "reflect": [
+        14,
+        14
+       ],
+       "report": [
+        10,
+        10
+       ],
+       "resolution": [
+        22,
+        22
+       ],
+       "rtl": [
+        4,
+        4
+       ],
+       "scalar": [
+        16,
+        16
+       ],
+       "shared": [
+        4,
+        4
+       ],
+       "sigassign": [
+        24,
+        24
+       ],
+       "std93": [
+        6,
+        6
+       ],
+       "synopsys": [
+        20,
+        20
+       ],
+       "textio": [
+        13,
+        13
+       ]
+      }
+     }
+    }
+   },
+   "date": "2026-10-26",
+   "note": "",
+   "title": "The auto and llvm tiers",
+   "version": "0.8.0"
+  },
+  "vhpi": {
+   "command": "tools/vhpi-conformance/run.py",
+   "commit": "cd5268f8b2",
+   "data": {
+    "plugins": 23,
+    "sim1_lines": 2042,
+    "sim1_lines_not_reproduced": 660,
+    "traces_equal": 2,
+    "yavs_extra_lines": 876
+   },
+   "date": "2026-10-26",
+   "note": "",
+   "title": "VHPI conformance",
+   "version": "0.8.0"
+  },
+  "vunit-own": {
+   "command": "VUNIT_SIMULATOR=yavs python run.py -p 2   (in each vunit/vhdl/<suite>/test directory)",
+   "commit": "f2ab69be",
+   "data": {
+    "fail": 0,
+    "pass": 1357,
+    "skip": 0
+   },
+   "date": "2026-10-20",
+   "note": "11 suites; recorded in docs/STATUS.md (#112); needs a VUnit checkout with a yavs simulator interface, which this tool cannot fetch",
+   "title": "VUnit's own VHDL suites"
+  }
+ }
+}

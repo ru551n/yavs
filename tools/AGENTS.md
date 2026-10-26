@@ -52,6 +52,7 @@ cross-check test in `yavs-sem`. Never commit the file or put a tool name, path o
 | Decision | Why | Source |
 |---|---|---|
 | External corpora are fetched at pinned commits into a cache, never committed | Licences, repo size | root `AGENTS.md` rule 7, `docs/plan.md` "External test inputs" |
+| A tool that runs yavs sets `YAVS_STD_CACHE` to a directory in its own cache (never the user's shared std/ieee store); a new tool does the same | A harness must not write the user's store; the store stays warm after a tool's first call, the agreed cold basis (user, 2026-10-26) | `docs/decisions.md` "Shared std/ieee units", #564 |
 | Every reference simulator run is `timeout 300 systemd-run --user --scope -p MemoryMax=2G`, at most 8 at once | Shared host (OOM history) | root `AGENTS.md` rule 15, `docs/plan.md` "Working rules" |
 | Scratch output under `~/.cache/rsim-*` (old name kept on purpose) | `/tmp` is a small shared tmpfs; directories exist on disk | root `AGENTS.md` rule 20, `docs/decisions.md` "Project name" |
 | `lib/` changes only through `derive_libs.py` | Reproducible from upstream, hashes stay valid | `lib/SOURCES.md`, `lib/AGENTS.md` |

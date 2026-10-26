@@ -103,6 +103,8 @@ def main():
             die(f"source {s['id']} not found under {[str(r) for r in roots]}; run tools/fetch-corpus.sh")
         base[s["id"]] = d
     out = Path(a.out or f"~/.cache/yavs-corpus-out/{a.tool}-{name}-{os.getpid()}").expanduser()
+    # the shared std/ieee store (#564) is private to this tool, never the user's
+    os.environ["YAVS_STD_CACHE"] = str(out.resolve().parent / "std")
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
 

@@ -108,7 +108,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "E0126",
-        "The directory of the std/ieee units shared by all libraries cannot be used: `YAVS_STD_CACHE` is empty, no user cache directory is known, or (for `yavs analyze`) the directory cannot be created or written. Name a writable directory with `YAVS_STD_CACHE`, or set `YAVS_STD_CACHE=off` to keep the std/ieee units in each library. Exit status 2.",
+        "The directory of the std/ieee units shared by all libraries cannot be used: `--std-cache` or `YAVS_STD_CACHE` is empty, no user cache directory is known, or (for `yavs analyze`) the directory cannot be created or written. Name a writable directory with `--std-cache` or `YAVS_STD_CACHE`, or use `off` to keep the std/ieee units in each library. Exit status 2.",
     ),
     // yavs-wave
     (

@@ -261,25 +261,31 @@ pub struct Units {
 /// (`off`: no sharing, each library keeps its own).
 pub const STD_CACHE_ENV: &str = "YAVS_STD_CACHE";
 
-/// The directory of the shared std/ieee unit store: `$YAVS_STD_CACHE`, else `yavs/std` in the user's
-/// cache directory. `None` when sharing is off. A user without a cache directory, or an empty
-/// value, is an error (`E0126`): say `off` or a directory.
-pub fn shared_std_dir() -> Result<Option<std::path::PathBuf>, Box<Diagnostic>> {
+/// The directory of the shared std/ieee unit store: `--std-cache` (`flag`), else `$YAVS_STD_CACHE`,
+/// else `yavs/std` in the user's cache directory. `None` when sharing is off. A user without a
+/// cache directory, or an empty value, is an error (`E0126`): say `off` or a directory.
+pub fn shared_std_dir(
+    flag: Option<&std::ffi::OsStr>,
+) -> Result<Option<std::path::PathBuf>, Box<Diagnostic>> {
     let bad = |why: &str| {
         Box::new(
             Diagnostic::error("E0126", "no place for the shared std/ieee cache")
                 .with_note(why.to_string())
                 .with_help(format!(
-                    "set {STD_CACHE_ENV} to a directory, or to `off` to keep std/ieee units in each library"
+                    "pass --std-cache=DIR or set {STD_CACHE_ENV} to a directory, or `off` to keep std/ieee units in each library"
                 )),
         )
     };
     let abs =
         |v: Option<std::ffi::OsString>| v.map(std::path::PathBuf::from).filter(|p| p.is_absolute());
-    if let Some(v) = std::env::var_os(STD_CACHE_ENV) {
+    let (given, name) = match flag {
+        Some(f) => (Some(f.to_os_string()), "--std-cache"),
+        None => (std::env::var_os(STD_CACHE_ENV), STD_CACHE_ENV),
+    };
+    if let Some(v) = given {
         return match v.to_str() {
             Some("off") => Ok(None),
-            Some("") => Err(bad(&format!("{STD_CACHE_ENV} is empty"))),
+            Some("") => Err(bad(&format!("{name} is empty"))),
             _ => Ok(Some(v.into())),
         };
     }
@@ -312,7 +318,7 @@ pub fn prepare_shared_std(dir: &Path) -> Result<(), Box<Diagnostic>> {
                 )
                 .with_note(e.to_string())
                 .with_help(format!(
-                    "make the directory writable, name another with {STD_CACHE_ENV}, or set {STD_CACHE_ENV}=off"
+                    "make the directory writable, name another with --std-cache or {STD_CACHE_ENV}, or use `off`"
                 )),
             )
         })
@@ -632,6 +638,10 @@ pub struct CleanArgs {
         required = true
     )]
     libs: Vec<String>,
+    /// Also remove the shared std/ieee units from DIR (default: `$YAVS_STD_CACHE`, else the user's
+    /// cache directory); `off` leaves them.
+    #[arg(long, value_name = "DIR|off")]
+    std_cache: Option<std::ffi::OsString>,
 }
 
 pub fn run(c: Command, format: MessageFormat, color: bool) -> ExitCode {
@@ -655,8 +665,19 @@ fn clean(a: &CleanArgs, format: MessageFormat, color: bool) -> ExitCode {
             return ExitCode::from(2);
         }
     }
-    for spec in &a.libs {
-        let dir = spec.split_once(':').map_or("", |(_, d)| d);
+    let shared = match shared_std_dir(a.std_cache.as_deref()) {
+        Ok(d) => d,
+        Err(d) => {
+            fail(*d);
+            return ExitCode::from(2);
+        }
+    };
+    let dirs = a
+        .libs
+        .iter()
+        .map(|s| s.split_once(':').map_or("", |(_, d)| d).into())
+        .chain(shared.as_deref().map(|d| d.display().to_string()));
+    for dir in dirs {
         match Store::of_library(dir.as_ref()).clean() {
             Ok(c) => println!(
                 "{dir}: removed {} {} ({} bytes)",

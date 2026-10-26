@@ -326,6 +326,8 @@ def main():
     if o.jobs > 4:
         sys.exit("pro.py: at most 4 parallel runs")
     out, root = Path(o.out).resolve(), Path(o.root).resolve()
+    # the shared std/ieee store (#564) is private to this tool, never the user's
+    os.environ["YAVS_STD_CACHE"] = str(out / "std-cache")
     try:
         plan = build_plan(root, o.std, out)
     except ProError as e:

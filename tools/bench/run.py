@@ -25,6 +25,8 @@ CACHE = Path(os.environ.get("YAVS_BENCH_CACHE", "~/.cache/yavs-bench")).expandus
 CORPUS = Path(os.environ.get("YAVS_CORPUS", "~/.cache/rsim-corpus")).expanduser()
 RUN_FLAGS = os.environ.get("YAVS_BENCH_RUN_FLAGS", "").split()  # extra `yavs run` flags, e.g. "--wave={out}"
 OUT = CACHE / "bench-out.fst"
+# the shared std/ieee store (#564) is private to this tool, never the user's
+os.environ["YAVS_STD_CACHE"] = str(CACHE / "std")
 PHASES = ["analyze", "elaborate", "init", "simulate"]
 STD = "2008"
 INTERNAL = ["compute_loop", "ff_rtl", "resolved_bus", "delta_chain", "textio_heavy", "protected_scoreboard", "protected_queue", "calls", "strings_heavy", "access_heavy", "report_heavy", "file_io", "ieee_heavy", "elab_heavy"]

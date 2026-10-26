@@ -45,6 +45,10 @@ pub struct Common {
     /// Neither read nor write the compilation cache of the work library.
     #[arg(long)]
     no_cache: bool,
+    /// Directory of the std/ieee units shared by all libraries, or `off` (default: `$YAVS_STD_CACHE`,
+    /// else `yavs/std` in the user's cache directory).
+    #[arg(long, value_name = "DIR|off")]
+    std_cache: Option<std::ffi::OsString>,
     /// Keep every `in` port its own signal instead of an alias of its actual (docs/cli-contract.md).
     #[arg(long)]
     no_collapse_ports: bool,
@@ -384,7 +388,7 @@ fn elaborate(
     opts.psl = c.psl;
     opts.encoding = encoding;
     let work_dir = c.work.split_once(':').map_or("", |(_, d)| d);
-    let shared = match crate::cache::shared_std_dir() {
+    let shared = match crate::cache::shared_std_dir(c.std_cache.as_deref()) {
         Ok(d) => d,
         Err(d) if !c.no_cache => {
             out.emit(&none, &d);

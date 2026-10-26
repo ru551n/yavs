@@ -179,7 +179,7 @@ identical to a run without it, at any `--threads`.
   reading from it works as before.
 - `--no-cache` (`run` and `elab`) neither reads nor writes the cache. A custom `$YAVS_STDLIB` tree
   disables it. `yavs cache clean --work=NAME:PATH [--map=NAME:PATH ...]` removes the entries of those
-  library directories and prints what it removed (`E0123` if one cannot be removed). Deleting
+  library directories and, with them, the shared std/ieee store (see below; `--std-cache=DIR|off` picks or skips it), and prints what it removed per directory (`E0123` if one cannot be removed). Deleting
   the `yavs-cache` directory by hand is equally safe.
 - The first run of a closure only leaves a note (`<kind>-<key>.seen`, an empty file) and makes no entry
   of its own; the second run makes the analysis image and the lowered packages. A closure that starts
@@ -242,10 +242,11 @@ identical to a run without it, at any `--threads`.
   `$YAVS_STD_CACHE/yavs-cache/units/`, default `yavs/std` in the user's cache directory (`$XDG_CACHE_HOME`
   or `~/.cache`; `%LOCALAPPDATA%` on Windows), not in each library. A fresh library therefore reads them
   instead of analysing them. The rules of the unit cache hold (identical results, damaged or half-written
-  entries are misses, atomic creation, no lock). `YAVS_STD_CACHE=off` keeps them in each library's own
+  entries are misses, atomic creation, no lock). `--std-cache=DIR|off` (`analyze`, `elab`, `run`, `cache clean`) names the
+  directory instead of the environment and wins over it. `off` (flag or `YAVS_STD_CACHE=off`) keeps them in each library's own
   directory. `yavs analyze` checks at start that the directory can be written: `E0126` names the directory,
-  the cause and the fix; an empty value, or no cache directory to derive one from, is `E0126` for `analyze`,
-  `elab` and `run` (not with `--no-cache`). A user's own `ieee` (`analyze --bootstrap`) is a mapped library and
+  the cause and the fix; an empty value (flag or environment), or no cache directory to derive one from, is `E0126` for `analyze`,
+  `elab`, `run` and `cache clean` (not with `--no-cache`). A user's own `ieee` (`analyze --bootstrap`) is a mapped library and
   is never shared. Deleting the directory is safe.
 
 ## 4. `yavs analyze`
@@ -671,7 +672,7 @@ prints the same line.
 ## 7. Environment
 
 The test runner sets no yavs environment variables. `YAVS_STDLIB` overrides the std/ieee
-tree (section 3); `YAVS_STD_CACHE` names the directory of the shared std/ieee units, or `off` (section 3). Simulator hooks from the test runner packages
+tree (section 3); `YAVS_STD_CACHE` names the directory of the shared std/ieee units, or `off`; `--std-cache` overrides it (section 3). Simulator hooks from the test runner packages
 can add `elab_flags`, `run_flags` and run environment; the test runner applies
 `elab_flags` to both `run` and `elab`, and `run_flags` only to `run`. `YAVS_HUGE_HEAP=0` stops yavs
 from asking for transparent huge pages on its heap at start (Linux with glibc and the system's

@@ -9703,15 +9703,15 @@ what it replaced:
 - **Fail early.** `yavs analyze` checks the shared directory once at start (create it, create and remove a probe file) and an unusable one is `E0126` naming the directory, the cause and the fix; a silently
   unwritable store would lose every unit it should keep. An empty `YAVS_STD_CACHE`, or no cache directory to derive one from (no `HOME`), is `E0126` for `analyze`, `elab` and `run` (not with `--no-cache`). `elab` and
   `run` only read: a directory that does not exist is a miss. This is the one place where the cache can fail a command; the rest of the cache stays "an optimisation that can only miss".
-- **Switch.** `YAVS_STD_CACHE=off` keeps the std/ieee units in each library's own directory (the 2026-10-23 behaviour). `--no-cache` (`analyze`) still skips the unit store, shared or not. No command line
-  flag: the setting belongs to the machine or the CI job, not to a call (an open question for the user).
+- **Switch.** `YAVS_STD_CACHE=off` keeps the std/ieee units in each library's own directory (the 2026-10-23 behaviour). `--no-cache` (`analyze`) still skips the unit store, shared or not. `--std-cache=DIR|off` on `analyze`, `elab`, `run` and `cache clean` does the same as the variable and wins over it (user decision
+  2026-10-26: a call may need its own store, e.g. a harness).
 - **Tests and tools.** `.cargo/config.toml` points `YAVS_STD_CACHE` at `target/yavs-std-cache` for processes started by `cargo test`/`cargo run`, so tests do not write to the user's cache directory and share the
-  store like concurrent users. Timing tools see a "cold" library with a warm shared store after the first call (that is the steady state of a harness); to measure a cold machine, give `YAVS_STD_CACHE` an empty
-  directory per run.
+  store like concurrent users. Every harness in `tools/` (bench, realbench, difftest, corpus, discrepancies, suites, vhpi-conformance) sets `YAVS_STD_CACHE` to a directory of its own cache and never writes the user's store (user decision 2026-10-26). Timing tools see a "cold" library with a warm shared store after the first call (the steady state of an installed tool, the agreed cold basis, comparable to the reference's precompiled `ieee`); to measure a cold machine, delete the tool's `std` directory.
 - **Measured** (bench builds with `--features llvm`, `tools/realbench --compare`, analysis phase, batched calls, claimed core 8, 7 runs, B/A, shared store warm): cold instructions `en_cl_fix_pkg` 0.72,
   `poc_strings` 0.83, `neorv32_single_min` 0.77, `sc5_timestamp` 0.79, `fletcher_bufferreader` 0.74 (geomean 0.77); cold wall 0.78, 0.92, 0.75, 0.84, 0.75 (geomean 0.81); warm unchanged (1.00).
   First call into an empty store: 193.36 M instructions against 193.38 M before, so nothing is lost when the store is cold.
-- **Not done**: a `yavs cache clean` for the shared store (delete the directory); a store per build tag.
+- **`cache clean`.** `yavs cache clean` also removes the shared store (the one `--std-cache`/`YAVS_STD_CACHE` name; `--std-cache=off` leaves it) and prints it as one more line (user decision 2026-10-26).
+- **Not done**: a store per build tag.
 
 ## Cold analysis: unit entries and records created in place (yavs-cache, yavs-lib, #747, 2026-10-26)
 

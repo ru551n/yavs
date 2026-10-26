@@ -121,6 +121,8 @@ def main():
     a = ap.parse_args()
     extra = [r for r in a.refs.split(",") if r]
     out = Path(a.out)
+    # the shared std/ieee store (#564) is private to this tool, never the user's
+    os.environ["YAVS_STD_CACHE"] = str(out.resolve() / "std-cache")
     out.mkdir(parents=True, exist_ok=True)
     names = a.only.split(",") if a.only else list(RUNS)
     bad = 0

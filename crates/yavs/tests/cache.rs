@@ -295,11 +295,12 @@ fn set_tree_mode(dir: &Path, mode: u32) {
 
 #[test]
 fn clean_removes_entries() {
+    // `--std-cache=off`: a clean of the shared store would hit every test running at the same time.
     let e = Env::new("clean");
     e.cold("tb", &[]);
     assert_eq!(e.entries(), 2);
     let work = e.work();
-    let o = e.yavs(&["cache", "clean", "--work", &work]);
+    let o = e.yavs(&["cache", "clean", "--work", &work, "--std-cache=off"]);
     assert_eq!(o.code, 0, "{o:?}");
     // The two of the run and the analysed units `analyze` made.
     let n: usize = o
@@ -317,7 +318,7 @@ fn clean_removes_entries() {
         .expect("library directory")
         .to_path_buf();
     assert!(lib.join("yavs-lib.d").is_dir() && lib.join("yavs-lib.toml").is_file());
-    let again = e.yavs(&["cache", "clean", "--work", &work]);
+    let again = e.yavs(&["cache", "clean", "--work", &work, "--std-cache=off"]);
     assert_eq!(again.code, 0);
     assert!(again.stdout.contains("0 entries"), "{again:?}");
     assert!(e.run(&[]).stdout.contains("K=7"));
@@ -1264,7 +1265,7 @@ fn compiled_code_is_cached() {
     assert!(note(&r, "obj stored") && !note(&r, "obj hit"), "{r:?}");
     assert!(r.stdout.contains("K=7"), "{r:?}");
     let work = e.work();
-    let o = e.yavs(&["cache", "clean", "--work", &work]);
+    let o = e.yavs(&["cache", "clean", "--work", &work, "--std-cache=off"]);
     assert_eq!(o.code, 0, "{o:?}");
     assert!(objects(&e).is_empty() && !e.cache_dir().exists());
 }

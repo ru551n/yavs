@@ -108,7 +108,7 @@ cargo run -p yavs -- run --work=work:$HOME/.cache/<dir>/work top --threads 4
 
 - New CLI behaviour: add a `Case` to `tests/cli.rs` with its source in `tests/cli/` and bless the
   `.stderr`. A parse diagnostic: add `tests/diag/NAME.vhd` and bless.
-- Env vars: `YAVS_STDLIB` (std/ieee tree), `YAVS_STD_CACHE` (shared std/ieee unit store or `off`; `cargo test` sets it to `target/yavs-std-cache` through `.cargo/config.toml`), `YAVS_BLESS=1`, `YAVS_CORPUS`, `NO_COLOR`.
+- Env vars: `YAVS_STDLIB` (std/ieee tree), `YAVS_STD_CACHE` (shared std/ieee unit store or `off`; the flag `--std-cache=DIR|off` of `analyze`/`elab`/`run`/`cache clean` wins; `cargo test` sets it to `target/yavs-std-cache` through `.cargo/config.toml`), `YAVS_BLESS=1`, `YAVS_CORPUS`, `NO_COLOR`.
 - Codes owned: `E0100`-`E0199`/`W0100`-`W0199` (in use: E0100 unreadable file, E0101 response
   file, E0102 std/ieee mapped, E0103 `-W` form, E0104 no top level, E0105 bad `--stop-time`, E0106 `--load` library
   cannot be loaded, E0107 foreign subprogram cannot be bound or called, W0108 foreign symbol not bound, W0109

@@ -316,3 +316,81 @@ fn a_users_own_ieee_is_never_shared() {
         text(&o)
     );
 }
+
+#[test]
+fn the_flag_wins_over_the_environment_and_clean_clears_the_store() {
+    let e = Env::new("share_flag");
+    let env_store = e.tmp.join("from_env").display().to_string();
+    let flag_store = e.tmp.join("from_flag");
+    let flag = format!("--std-cache={}", flag_store.display());
+    let o = e
+        .analyze_in(&env_store, &e.tmp, "a", &[&flag])
+        .wait_with_output()
+        .expect("wait");
+    assert_eq!(o.status.code(), Some(0), "{:?}", text(&o));
+    assert!(
+        entries_in(&e.tmp.join("from_env")).is_empty(),
+        "env store untouched"
+    );
+    let made = entries_in(&flag_store).len();
+    assert!(made >= 3, "the flag names the store: {made}");
+    // `run` takes the flag too (reads only: a miss would still pass, so check the library is not it).
+    let work = format!("a:{}", e.tmp.join("a").display());
+    let r = e
+        .command(&env_store, &e.tmp, &["run", &flag, "--work", &work, "tb"])
+        .output()
+        .expect("run");
+    assert_eq!(r.status.code(), Some(0), "{:?}", text(&r));
+    // `--std-cache=off` keeps the units in the library; an empty flag is E0126 even with a good env.
+    let off = e
+        .analyze_in(&env_store, &e.tmp, "b", &["--std-cache=off"])
+        .wait_with_output()
+        .expect("wait");
+    assert_eq!(off.status.code(), Some(0));
+    assert!(entries_in(&e.tmp.join("b")).len() >= 5);
+    let empty = e
+        .analyze_in(&env_store, &e.tmp, "c", &["--std-cache="])
+        .wait_with_output()
+        .expect("wait");
+    assert_eq!(empty.status.code(), Some(2));
+    assert!(text(&empty).2.contains("E0126"));
+    // `cache clean` removes the library's entries and the shared store's; `off` leaves it.
+    let lib = format!("a:{}", e.tmp.join("a").display());
+    let keep = e
+        .command(
+            &env_store,
+            &e.tmp,
+            &["cache", "clean", "--work", &lib, "--std-cache=off"],
+        )
+        .output()
+        .expect("clean");
+    assert_eq!(keep.status.code(), Some(0), "{:?}", text(&keep));
+    assert_eq!(entries_in(&flag_store).len(), made, "off leaves the store");
+    let clean = e
+        .command(
+            &env_store,
+            &e.tmp,
+            &["cache", "clean", "--work", &lib, &flag],
+        )
+        .output()
+        .expect("clean");
+    assert_eq!(clean.status.code(), Some(0), "{:?}", text(&clean));
+    assert!(
+        entries_in(&flag_store).is_empty(),
+        "the shared store is cleared"
+    );
+    // By environment alone it clears the store the environment names.
+    let again = e
+        .analyze_in(&env_store, &e.tmp, "d", &[])
+        .wait_with_output()
+        .expect("wait");
+    assert_eq!(again.status.code(), Some(0));
+    assert!(!entries_in(&e.tmp.join("from_env")).is_empty());
+    let lib = format!("d:{}", e.tmp.join("d").display());
+    let clean = e
+        .command(&env_store, &e.tmp, &["cache", "clean", "--work", &lib])
+        .output()
+        .expect("clean");
+    assert_eq!(clean.status.code(), Some(0), "{:?}", text(&clean));
+    assert!(entries_in(&e.tmp.join("from_env")).is_empty());
+}

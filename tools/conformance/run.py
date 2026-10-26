@@ -328,10 +328,11 @@ A `--local` run rewrites `docs/conformance-local.json`; commit it together with 
     if "external" in ci:
         o.append("## The reference simulators' own regression tests (CI)\n\nEach reference simulator ships a suite of self-checking tests. They run in place from the "
                  "fetched checkout on yavs and are judged by the suite's own verdict. The pass lists (`tools/difftest/external-*.pass`) are gated: "
-                 "a listed test that stops passing fails CI. The other classes name the first difference (`outcome`, `elab` and `analysis` are failures to "
-                 "run; the suites contain tests of features yavs does not implement and tests of reference-specific behaviour).\n")
+                 "a listed test that stops passing fails CI. The others fail the suite's own verdict, fail to analyse or elaborate, or are skipped (other languages, VHPI, scripts); "
+                 "the suites contain tests of features yavs does not implement and tests of reference-specific behaviour.\n")
         o.append(table(["suite", "tests", "pass", "gated pass list", "regressions"] , [[s, v["tests"], v["classes"].get("pass", 0) + v["classes"].get("early", 0), v["pass_list"], len(v["pass_list_regressions"])] for s, v in ci["external"].items()], right=(1, 2, 3, 4)))
-        o.append("Classes: " + "; ".join(f"{s}: " + ", ".join(f"{k} {n}" for k, n in v["classes"].items()) for s, v in ci["external"].items()) + ".\n")
+        o.append("Not passing: " + "; ".join(f"{s}: {v['tests'] - v['classes'].get('pass', 0) - v['classes'].get('early', 0) - v['classes'].get('skip', 0)}" for s, v in ci["external"].items()) +
+                 " (the classes of each are in `docs/conformance.json`; a timeout under load moves a test between them, so the report does not).\n")
     # --- discrepancies
     rows = st["discrepancies"]
     cnt = {}

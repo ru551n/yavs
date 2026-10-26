@@ -42,6 +42,8 @@ report generator or regenerate the report (#780).
 
 ## 5. How to work here
 
+The CI parts need no local run: download the `conformance-report` artifact of a green `conformance` run and run `run.py --report-only --out <dir>` on it to refresh the committed report (the local records stay).
+
 ```sh
 tools/fetch-corpus.sh
 cargo build --release -p yavs        # --features llvm for the auto and llvm tiers

@@ -26,6 +26,19 @@ names of `std_ulogic`, BIT, BOOLEAN or their vectors runs as the kernel's own `G
 
 `tools/conformance/run.py` generates `docs/conformance.md` (and `.json`): pass counts of the differential corpus per group and thread count, the reference simulators' own tests, the discrepancy catalogue, the analysis corpora against the recorded sim1 lists, the UVVM and OSVVM suites, neorv32 and GRLIB LEON3 runs, platforms and known limits. The `conformance` workflow regenerates the CI-capable parts on `main` and release tags and checks the committed copy (`tools/conformance/AGENTS.md`). Open: waveform equivalence on real designs (a slot in the report), a public page (maintainer's decision).
 
+### Waveform equivalence against the reference simulators (#781, 2026-10-26)
+
+`tools/waveq/run.py` runs a design on yavs (interp, auto and llvm tiers) and on the references and compares the
+waveforms signal by signal, the value after the last delta of each time step (`tools/waveq/AGENTS.md`). Run locally at
+aeaeaa59 (`tools/waveq/RESULTS.md`, `results.json`): the 8 h2h RTL designs (sim1 and sim2), neorv32 (13 466 signals,
+15.9 M value changes, 300 us), GRLIB LEON3 (13 897 signals, 33.2 M value changes, the whole 1.06 ms system test) and
+the UVVM and OSVVM testbenches of realbench (sim1) are equal on all three tiers in every matched signal, except OSVVM
+verification-component IDs and UVVM activity-register entries (process order within one cycle, catalogue
+`process-order-in-cycle`) and the UVVM AXI-Stream random valid/ready-low sequence from 266.87 us (catalogue
+`subprogram-signature-instance-name`, yavs part #784). The llvm tier compiles 137 to 226 142 IR instructions per design;
+auto compiles little in these short runs (LEON3 4 functions). sim2 runs the h2h designs only (no realbench keys). Found on
+the way: #782 (literals accepted without visible character literals), #783 (integer width in yavs FST).
+
 ### `wait until <edge>` as cheap as the sensitivity-list forms (#767, 2026-10-26)
 
 (`docs/decisions.md` "`wait until <edge>` costs what the sensitivity-list forms cost".) The end of a `wait until rising_edge(clk)` on one

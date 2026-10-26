@@ -8643,6 +8643,52 @@ instructions 1.10, `leon3mp` 40.4 to 41.6 s). Cold equals main on every design (
 #755: `tier.rs::auto_tier_compiles_a_long_loop_of_one_call` waits (60 s at most) for the compile the call started instead of racing it; it
 failed once under `gc-stress` on a loaded host (load average 8).
 
+### `--tier=auto` first-run latency (yavs-llvm, yavs-interp, #757, #762, 2026-10-26)
+
+Decisions and causes: `docs/decisions.md` "`--tier=auto` first-run latency". Frame-mode compute loops are priced as what they cost (`Kind::ComputeFrame`),
+a function called on native frames that has a loop gets its frame-mode code only when it is seen interpreted again (`Worker::frame_at`), a copy of a
+process that is not clocked RTL compiles once it repays its own price (and the cache list names copies apart), and the memo of a pure function is off
+for all once every process that called it gave it up (#762). `Compute` (native frames) keeps its price: the measured, lower one compiled losers.
+
+Method: bench builds of `0dcfa551` ("main") and of this change, a fresh copy of the pristine `tools/realbench` world per binary and round, the analysis
+caches filled by two untimed `--tier=interp` runs, then four consecutive `--tier=auto` runs (run 1 cold, run 3 is what realbench times as warm), all cells of
+a test on one claimed core of CCD1 (core 9), 5 rounds interleaved, medians, wall from `perf stat duration_time` (the compile thread shares the core).
+Ratios new / main (below 1 is faster; instructions in brackets):
+
+| design | run 1 (cold) | run 2 | run 3 | run 4 |
+|---|---|---|---|---|
+| `poc_stat_histogram` | 0.89 (0.95) | 1.16 (1.08) | 1.05 (0.98) | 0.97 (0.98) |
+| `sc5_fifo_repack` | 0.98 (0.94) | 0.97 (0.96) | 0.89 (0.89) | 0.85 (0.86) |
+| `sc5_timestamp` | 1.01 (1.00) | 1.01 (1.00) | 1.00 (1.00) | 1.01 (1.00) |
+| `poc_arith_addw` | 0.96 (0.93) | 1.01 (1.00) | 1.02 (1.01) | 0.99 (1.00) |
+| `vai_window_gen_interlock` | 1.00 (1.02) | 1.04 (1.00) | 0.99 (0.97) | 1.00 (0.98) |
+
+Rebased on 9418e648 (#764 fixed), 4 rounds, same method: `poc_stat_histogram` 0.89 (0.95), 1.01 (1.01), 1.02 (1.01), 1.02 (1.01); `sc5_fifo_repack`
+0.93 (0.92), 1.01 (0.98), 0.87 (0.88), 0.88 (0.89). Against main at b15bc241 (the parent of this change), two sets of 4 rounds of three runs: `poc_stat_histogram` 0.89, 0.99, 0.99;
+`sc5_fifo_repack` 1.00 to 1.06 cold, 0.97 to 1.03, 0.85 to 0.87; `poc_arith_addw` 0.96, 0.98, 0.99; `vai_window_gen_interlock` 1.01 to 1.04 cold (instructions
+1.01 to 1.03: frame-mode compute loops compiled late in its 11 s cold run, `check_axi_stream` among them), 1.01 to 1.02, 0.99 to 1.00. A `ComputeFrame` speedup of
+1.5 instead of 1.8 did not change either cold run beyond that spread.
+
+- `poc_stat_histogram` cold: the three element-loop functions are compiled as native-frame code only (426 ms of compile CPU before, about 150 now); the run 2 row
+  of the table is #764 (a memoised function with published native-frame code kept running interpreted until `frame_at` compiled its frame-mode
+  code), fixed in 9418e648 (the fast loop's tier bookkeeping is on once a function is flagged for native-frame calls). The memo callback that was 7.3 percent of the warm cycles is 0.7 percent (#762). Warm `perf record`:
+  what is left is the element-loop helper (`eloop::run` and its object look-ups, about 40 percent) and the call of a function returning an unconstrained
+  array (#757).
+- `sc5_fifo_repack`: the processes are `ComputeFrame` now (15 ms + 110 us an IR instruction against 4 ms + 900), so the profile of the first run lists them
+  and the warm runs compile and link them; cold, only the copies that repay themselves compile (with the pooled rule and the cheaper price twenty copies
+  compiled, cold +8 to +13 percent).
+- Tried and dropped (each measured on these designs plus `uvvm_sb_slv`, `uvvm_axistream_vvc`, `uvvm_util_rand`, `poc_cache_cpu`): `Compute` at its
+  measured price (8 ms + 340) with speedup 2.4 (histogram cold 0.80, but `uvvm_sb_slv` 1.08 warm and cold, `uvvm_axistream_vvc` cold 1.16,
+  `poc_cache_cpu` cold 1.11..1.21) or 1.3 (`poc_cache_cpu` cold 1.11); a kind for functions whose loops are all element loops (the histogram's functions
+  have more loops than element loops).
+
+All 42 of `tools/realbench` (`--compare`, `--tiers auto,auto-cold`, run phase, core 9, default runs): wall geometric mean new / main 1.01 warm, 1.00
+cold (sums of the walls 0.99 and 1.00; tests of 1 s or more 0.99 and 0.98), instructions 0.99 and 1.00. Moved: `sc5_fifo_repack` warm 0.87,
+`poc_stat_histogram` cold 0.88, `poc_arith_addw` cold 0.96, `hdlm_lfsr` cold 0.95; `uvvm_util_rand` 1.07 / 1.06 in that pass was 1.00 / 1.00 in a
+rerun of 7 runs (with `uvvm_sb_slv` 0.98 / 1.00 and the histogram 1.00 / 0.90); the tests of 0.01 to 0.03 s move by whole hundredths. Head-to-head
+designs (`tools/bench --compare`, 8 runs, core 9): CPU geometric mean 1.013, every design 0.99 to 1.03 (1.001 for an earlier build with the same
+policy for these designs: host spread).
+
 ## Value movement: lcopy, wide copies, in-place concatenation (#519, 2026-10-25)
 
 Gapscan item 2 (no timing cores: exact instruction counts, `perf stat instructions:u`, core 6, bench build with `llvm`, `--tier=interp --threads 1`; decision and numbers in

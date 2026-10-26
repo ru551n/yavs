@@ -9982,3 +9982,63 @@ have short activations, so this paid for itself on every wake.
 - **The reference simulator (rule 22).** It needs no object table: compiled code holds raw pointers, and each instance's data is
   reached through its own context pointer. The idea taken is the outcome: a process's objects belong to that process and do not
   have to be found again because another one ran. Nothing was copied.
+
+## `--tier=auto` first-run latency: prices of compute loops by mode, frame-mode code of native loops on demand, copies repay their own compile, memo votes by callers (yavs-llvm, yavs-interp, #757, #762, 2026-10-26)
+
+Policy owner's round after the batched-analysis basis made short runs (0.3 to 3 s) decide the totals against sim1. Measured with bench builds of
+`0dcfa551` ("main") and of this change, a fresh copy of the pristine world per binary and round, the analysis caches filled by two untimed
+`--tier=interp` runs, then four consecutive `--tier=auto` runs (run 1 = cold, run 3 = what `tools/realbench` times as warm), one claimed core of
+CCD1 for all cells of a test, 5 rounds interleaved, medians, wall from `perf stat duration_time`. Tables: docs/STATUS.md "`--tier=auto`
+first-run latency".
+
+- **Cause: the compute model priced both kinds of compute loop as neither.** `Kind::Compute` (4 ms + 900 us an IR instruction) covered the
+  native-frame code of a compute function and the frame-mode code of a process with a loop. Measured compile CPU: native-frame code 33, 53 and
+  62 ms for 79, 107 and 153 IR (`get_row`, `to_slvv_8`, `to_slm` of `poc_stat_histogram`; the model said 75, 100, 142), frame-mode code 21 to
+  75 ms for 91 to 448 IR and 146 ms for 949 (the model said 86 to 410 and 860). **Decision: frame-mode compute loops are a kind of their own,
+  `ComputeFrame` (15 ms + 110, speedup 1.8); `Compute` (native frames) keeps its price and speedup.** The speedup of `ComputeFrame` is what
+  the trials of `sc5_fifo_repack` measure (a `p_col` copy seen for 19 percent of the run gave 1.09 to 1.13 times the progress: about 1.75 for
+  its own time; all six processes forced were 26 percent of the run, #675) and stays above `profile::EARLY_SPEEDUP` so the profile keeps
+  listing such processes. `Compute` at its measured price was tried twice and dropped: at speedup 2.4 it compiled the string loops of the
+  verification libraries early, which run no faster compiled and, linked from the cache, made every warm run slower too (`uvvm_sb_slv`
+  `match_identifier`: 8 percent more instructions warm and cold; `uvvm_axistream_vvc` cold +16 percent with
+  `convert_byte_array_to_slv_array` and its callees, 0.5 s of compile CPU at 1.9 s of a 2.9 s run); at speedup 1.3 (the old thresholds) the
+  budget still let a clocked process whose tree holds a compute callee in at the end of a 0.6 s run (`poc_cache_cpu` cold +11 percent, the
+  compile still running when the run ended). The old price is the guard against both; what tells the winners (`poc_stat_histogram`:
+  element-loop copies, 3 to 4 times faster compiled) from these losers was not found (the histogram's functions have more loops than element
+  loops, so a kind by the loops' shape does not separate them; a per-function verdict would, the profile judges processes only). `Loop`
+  (native frames with a loop that is no compute loop) is priced for its native-frame code alone, 4 ms + 550 (the price of `Native`; it had paid
+  for two modules).
+- **Cause: the frame-mode code of a native function with a loop was compiled right after its native-frame code** (`Part::Both`, 176 of
+  426 ms of compile CPU in a cold `poc_stat_histogram`), though no native frame of it ever left to the interpreter there, and the second
+  module was priced as a link (the cache list had the name from the first module), so the budget saw 1.8 ms for a 39 ms compile.
+  **Decision: such a function is compiled as native-frame code alone; its frame-mode code is compiled once the function is seen interpreted
+  again for that code's payback (`Worker::frame_at`), as a root of its own without callees** (a native frame left to the interpreter goes
+  on interpreted, which is what the samples see; the callees its native code left out were never seen running, and compiling them with the
+  frame-mode code brought sixty logging functions of the window generator along). Under `--tier-heat` (no budget) both modules are made at
+  once as before, so the CI legs keep covering frame-mode code of such functions. `price_of` no longer halves the price of a part. A
+  function whose native-frame code exists (linked from the cache by the probe, or compiled as a callee) that becomes a candidate gets a
+  `frame_at` instead of a compile of its frame-mode code (that was the old path to it: a warm run compiled 40 ms of frame-mode code per
+  such function), and a native-frame module the cache had brings its frame-mode module along when the cache has that too (a link,
+  `Worker::compile`). Found on the way, #764: in some second runs a memoised function with published native-frame code keeps running
+  interpreted (`to_slvv_8` of `poc_stat_histogram`, depending on the order its callers' code is linked, never with `YAVS_NO_PMEMO=1`);
+  `frame_at` then compiled its frame-mode code after about 250 ms. Fixed in 9418e648 by another agent; with it the second run is level with main.
+- **Cause: every copy of a hot process was a candidate.** The seen time of a process counts for all its copies (#661), and once the process
+  was hot every copy that ran was compiled; copies differ in their constants, so each is a module of its own (50 ms each in
+  `sc5_fifo_repack`, seen for 5 to 250 ms each). With the cheaper frame-mode price that turned into twenty cold compiles and a cold run 8
+  to 13 percent slower (autopol2's finding). And the cache list keys functions by name and size, which copies share, so one compiled copy
+  made every other copy of the process look cached (priced as a 6 ms link). **Decision: a copy of a process that is not a clocked process
+  (`rtl`) is a candidate once the process is hot and the copy itself was seen for its own payback (`need` of its own length); clocked
+  processes keep the pooled rule (`poc_arith_addw`, #675), and the cache list names a copy by `Program::copy_tag` (`Worker::list_key`; a
+  copy linked as the twin of another is listed under its own name too).** The profile's early path is unchanged: a listed process still
+  compiles every copy at its first look (that is what the warm runs gain).
+- **#762: the memo of a pure function stays on for all processes until `VOTES` (3) have given it up**, so a function two processes call
+  (`get_row` of `poc_stat_histogram`: the testbench and the unit) kept every compiled call going through `yavs_rt_memo` and
+  `TierHost::memo_probe` (7.3 percent of the warm run's cycles, `Machine::memo_probe` with its `pm.take()` and `is_off` scan). **Decision: off
+  for all once `VOTES` or every process that called it so far has given it up** (`Pre::memo_users`, counted at a process's first call of the
+  function). Accepted: a process that starts calling after the others gave up does not get the memo. After: the memo symbols are 0.7
+  percent of the cycles. Counter `pmemo_off` (functions whose memo is off for all), test `perf/memo_giveup.vhd`. The idea of a flag that
+  compiled code tests before the callback was not needed.
+- **Not done, why:** compiling on spare cores (every timed comparison pins the run and its compile thread to one core, so it cannot show
+  there, and the budget would need a second rule for it); a cheaper first level for frame-mode copies (`Fast` code is about 1.7 times slower
+  and the copies' gain is 1.75 at O2); batching copies with equal code (twins, #713, already compile once; the `sc5_fifo_repack` copies
+  differ).

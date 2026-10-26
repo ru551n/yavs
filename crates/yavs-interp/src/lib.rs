@@ -56,7 +56,7 @@ pub use debug::{
 pub use exec::{SPIN_CHECK, SPIN_LIMIT, copy_bits};
 pub use heap::{Heap, collections as gc_collections};
 pub use ieee::{code_table, edge_native};
-pub use pmemo::pmemo_stats;
+pub use pmemo::{pmemo_off, pmemo_stats};
 pub use pre::{
     ScalarDrive, light_ieee as light_native, retreating_brs, scalar_drives, static_wait,
 };

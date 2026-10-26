@@ -443,6 +443,18 @@ case!(
         ("ops", Max(18300))
     ]
 );
+// Two processes whose calls of a pure function never repeat: both give its memo up, which turns it
+// off for all (#762: three votes were needed, so it stayed on the call path of compiled callers).
+case!(
+    memo_giveup,
+    "acc=",
+    &[],
+    [
+        ("pmemo_off", Min(1)),
+        ("pmemo_runs", Max(130)),
+        ("ops", Max(25930))
+    ]
+);
 case!(
     edge_forms,
     "edges=",

@@ -49,6 +49,8 @@ pub(crate) struct Pre {
     pub memo_off: std::sync::atomic::AtomicBool,
     /// Processes that gave the memo of this function up.
     pub memo_votes: std::sync::atomic::AtomicU32,
+    /// Processes that called this function through the memo.
+    pub memo_users: std::sync::atomic::AtomicU32,
     /// Some flag of `NativeFlags::func` is set for this function (compiled, asked, called by the
     /// tier or counted; never cleared). The watching loop looks at this byte of the callee's
     /// `Pre`, which the call has loaded, instead of the flag table (`Runtime::sync_native`).
@@ -221,6 +223,7 @@ impl Pre {
             nested: f.parent.is_some(),
             memo_off: Default::default(),
             memo_votes: Default::default(),
+            memo_users: Default::default(),
             native: Default::default(),
             preloaded: preloaded.into(),
             frame,

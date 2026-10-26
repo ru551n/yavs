@@ -213,6 +213,8 @@ fn a_callee_flagged_later_is_entered_through_the_tier() {
         "{}",
         tier.1.load(Ordering::Relaxed)
     );
+    // Compiled code of the callee hands the process over to the loop with the tier.
+    assert!(flags.retiers() > 0);
 }
 
 type Sampler = Box<dyn Fn(&mut Vec<(FuncId, bool)>) + Send>;
@@ -304,7 +306,8 @@ fn square_caller() -> (Design, FuncId) {
 
 /// A function the tier only calls on a native frame (`NativeFlags::set_call`, no frame-mode code
 /// anywhere, so `NativeFlags::set` never ran) is called through the tier by an interpreted
-/// process as soon as it is flagged, whatever order the tier flagged its functions in (#764).
+/// process as soon as it is flagged, whatever order the tier flagged its functions in (#764),
+/// by the loop without the tier's bookkeeping: no hand-over (#757).
 #[test]
 fn a_callee_flagged_for_native_calls_alone_is_called_through_the_tier() {
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -329,6 +332,7 @@ fn a_callee_flagged_for_native_calls_alone_is_called_through_the_tier() {
         "{}",
         tier.1.load(Ordering::Relaxed)
     );
+    assert_eq!(flags.retiers(), 0);
 }
 
 /// The profile's sampler names a function the tier runs on a native frame for an interpreted

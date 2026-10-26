@@ -8718,6 +8718,14 @@ rerun of 7 runs (with `uvvm_sb_slv` 0.98 / 1.00 and the histogram 1.00 / 0.90); 
 designs (`tools/bench --compare`, 8 runs, core 9): CPU geometric mean 1.013, every design 0.99 to 1.03 (1.001 for an earlier build with the same
 policy for these designs: host spread).
 
+### The watching loop calls native-frame callees itself (yavs-interp, #757, 2026-10-26)
+
+Decisions and numbers: `docs/decisions.md` "The watching loop calls native-frame callees itself". An interpreted caller no longer hands its activation
+over to the loop with the tier's bookkeeping when it calls a function the tier runs on a native frame, so compiling such a function no longer makes the
+rest of the caller's activation dearer (`uvvm_sb_slv` with `match_identifier` compiled: 8.5 percent more instructions before, 7 percent fewer now).
+`YAVS_COUNTERS` prints `retiers`, the hand-overs that remain (callees with frame-mode code, #750). All 42 of `tools/realbench`: wall geometric mean 0.99
+warm, 1.00 cold; `uvvm_axistream_vvc` warm instructions 0.91.
+
 ## Value movement: lcopy, wide copies, in-place concatenation (#519, 2026-10-25)
 
 Gapscan item 2 (no timing cores: exact instruction counts, `perf stat instructions:u`, core 6, bench build with `llvm`, `--tier=interp --threads 1`; decision and numbers in

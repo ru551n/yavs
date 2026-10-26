@@ -297,12 +297,15 @@ fn watch_tick(rt: &Runtime, func: FuncId, pc: u32) -> bool {
         .is_some_and(|n| n.load(Ordering::Acquire) & (NAT_CODE | NAT_ASK) != 0)
 }
 
-/// Whether `callee` has a flag set now (`Pre::native` says it had one once). Out of line: it runs
-/// only for functions the tier has touched, and inlined its loads cost the loop registers.
+/// Whether a call of `callee` hands the loop over to the one with the tier: a flag of it is set now
+/// (`Pre::native` says it had one once) and the tier does not call it on a native frame, which the
+/// loop without the tier does itself (the loop with it costs more per op for the rest of the
+/// activation, #757). Out of line: it runs only for functions the tier has touched, and inlined
+/// its loads cost the loop registers.
 #[cold]
 #[inline(never)]
-fn callee_flagged(rt: &Runtime, callee: u32) -> bool {
-    rt.native.flagged(callee)
+fn callee_retier(rt: &Runtime, callee: u32) -> bool {
+    rt.native.flagged(callee) && !rt.native.callable(callee)
 }
 
 /// Zeroes the sampling slot when dropped (`Machine::exec_fast`).
@@ -5097,6 +5100,7 @@ impl Machine {
                 }
                 Flow::Retier => {
                     if !TIER && let Some(t) = rt.tier.get() {
+                        rt.native.retiers.fetch_add(1, Ordering::Relaxed);
                         return self.exec_fast::<true, false>(rt, Some(&**t), None, ctx, base);
                     }
                 }
@@ -5222,12 +5226,26 @@ impl Machine {
                 enter!();
             };
         }
-        // `watch`: a call of a function with compiled code, one the tier calls on a native frame
-        // or one to be compiled is made by the loop with the tier (the frame's pc is the call's).
+        // `watch`: a call of a function with compiled code or one to be compiled is made by the
+        // loop with the tier (the frame's pc is the call's); one the tier calls on a native frame
+        // is made here (`native_tier`).
         macro_rules! callee_look {
             ($callee:expr, $cpre:expr) => {
-                if watch && $cpre.native.load(Ordering::Relaxed) && callee_flagged(rt, $callee) {
+                if watch && $cpre.native.load(Ordering::Relaxed) && callee_retier(rt, $callee) {
                     return Ok(Flow::Retier);
+                }
+            };
+        }
+        // The tier that may call a callee on a native frame (`Tier::call`): the loop's, and in the
+        // loop without it (`watch`) the runtime's for a callee the tier has touched.
+        macro_rules! native_tier {
+            ($cpre:expr) => {
+                if TIER {
+                    tier
+                } else if watch && $cpre.native.load(Ordering::Relaxed) {
+                    rt.tier.get().map(|t| &**t)
+                } else {
+                    None
                 }
             };
         }
@@ -5387,7 +5405,7 @@ impl Machine {
                     && !cpre.memo_off.load(Ordering::Relaxed)
                     && let Some(sig) = prog.memo_sig(cid)
                 {
-                    let tier = if TIER { tier } else { None };
+                    let tier = native_tier!(cpre);
                     match t!(self.memo_call(prog, rt, tier, f, cid, cf, sig, args, dst, ctx)) {
                         crate::pmemo::Memoed::No => {}
                         crate::pmemo::Memoed::Hit => {
@@ -5403,8 +5421,7 @@ impl Machine {
                     }
                 }
                 // A function the compiled tier calls on a native frame (`Tier::call`).
-                if TIER
-                    && let Some(t) = tier
+                if let Some(t) = native_tier!(cpre)
                     && rt.native.callable(callee)
                     && let Some(flow) = self.tier_call(t, rt, f, cid, cf, args, dst, None, ctx)?
                 {
@@ -6228,8 +6245,7 @@ impl Machine {
                     let cpre = rt.pre(cid, cf).ok_or_else(|| ice_f!("no function {cid}"))?;
                     callee_look!(callee, cpre);
                     // A function the compiled tier calls on a native frame (`Tier::call`).
-                    if TIER
-                        && let Some(t) = tier
+                    if let Some(t) = native_tier!(cpre)
                         && rt.native.callable(callee)
                         && let Some(flow) =
                             self.tier_call(t, rt, f, cid, cf, args, dst, Some(h), ctx)?

@@ -991,6 +991,37 @@ impl Model {
             _ => return Ok(None),
         };
         let v = self.eval(db, x, scope)?;
+        let v = if name == "yavs.attr.value"
+            && matches!(
+                db.types[to].kind,
+                TypeKind::Array { .. } | TypeKind::Record { .. }
+            )
+            && let Val::Array(a) = &v
+            && let Some((left, dir, right)) = a.bounds.first()
+        {
+            let mut chars = Vec::new();
+            for c in elems(a) {
+                let Some(c) = c.as_int().and_then(|c| u8::try_from(c).ok()) else {
+                    return Err(not_yet(db, e, "the text of a value attribute"));
+                };
+                chars.push(c);
+            }
+            let mut quoted = Vec::with_capacity(chars.len() + 2);
+            quoted.push(b'"');
+            for c in chars {
+                quoted.push(c);
+                if c == b'"' {
+                    quoted.push(c);
+                }
+            }
+            quoted.push(b'"');
+            Val::Array(ArrayConst {
+                bounds: Box::new([(*left, *dir, *right)]),
+                elems: Elems::Bytes(quoted.into()),
+            })
+        } else {
+            v
+        };
         let t = if name == "yavs.attr.image" { from } else { to };
         let r = self.native_call(db, e, vec![v], &[from], to, |l| l.attr_native(name, t))?;
         // 'value: the result must belong to the prefix subtype (LRM 16.2.1).

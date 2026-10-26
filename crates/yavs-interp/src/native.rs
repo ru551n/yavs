@@ -17,7 +17,7 @@ use yavs_kernel::Ctx;
 use yavs_std::image;
 use yavs_std::types::{EnumLit, PhysicalType};
 
-use crate::exec::{Fault, Machine, R, ice, rt_err};
+use crate::exec::{Fault, Machine, R, add_addr, ice, rt_err};
 use crate::reflect::{const_bytes, layout_err, le, logic_pos, plane_get, plane_set};
 
 pub(crate) type NativeFn =
@@ -268,7 +268,8 @@ pub(crate) fn scalar_text(m: &Machine, ty: Option<TyId>, v: u64, image: bool) ->
     })
 }
 
-/// `T'value(s)` of a scalar type: the string as a fat pair, `ty` the base type.
+/// `T'value(s)`: the string as a fat pair, `ty` the base type. A composite
+/// takes its constrained prefix descriptor, or each open index's left and direction.
 fn value_attr(
     m: &mut Machine,
     _: &mut Option<&mut Ctx<'_>>,
@@ -278,6 +279,24 @@ fn value_attr(
     use yavs_std::types::{Bounds, EnumType, RealBounds};
     use yavs_std::value;
     let s = m.fat_bytes(arg(a, 0)?)?;
+    let s = if a.len() > 2
+        && !s.iter().copied().any(yavs_std::value::is_ws)
+        && s.first() != Some(&b'(')
+        && s.first() != Some(&b'"')
+    {
+        let mut quoted = Vec::with_capacity(s.len() + 2);
+        quoted.push(b'"');
+        for &c in &s {
+            quoted.push(c);
+            if c == b'"' {
+                quoted.push(c);
+            }
+        }
+        quoted.push(b'"');
+        quoted
+    } else {
+        s
+    };
     let ty = ty.ok_or_else(|| ice("'value native without a type"))?;
     let t =
         m.rt.prog
@@ -312,10 +331,393 @@ fn value_attr(
             };
             value::enum_value(&s, &e).map(|v| v as u64)
         }
-        _ => return rt_err(format!("'value of a non-scalar type {ty}")),
+        Ty::Array { .. } | Ty::Record { .. } => {
+            let n = Ty::desc_size(&m.rt.prog.types, ty).ok_or_else(|| ice("descriptor size"))?;
+            let desc = if a.len() > 2 || n == 0 {
+                Vec::new()
+            } else {
+                let dp = arg(a, 1)?;
+                m.rd(dp, n)?.to_vec()
+            };
+            let mut at = 0;
+            let lt = lit_type(m, ty, &desc, &s, &mut at, a)?;
+            let v = value::literal(&s, &lt).map_err(|e| Fault::Runtime(format!("'value: {e}")))?;
+            return encode_composite(m, ty, &lt, &v).map(Some);
+        }
+        _ => return rt_err(format!("'value of this type {ty} is not implemented yet")),
     };
     r.map(Some)
         .map_err(|e| Fault::Runtime(format!("'value: {e}")))
+}
+
+/// The parser type of `ty` under `desc`. Open dimensions take the index
+/// subtype's left and direction, and their length from the literal.
+fn lit_type(
+    m: &Machine,
+    ty: TyId,
+    desc: &[u8],
+    s: &[u8],
+    at: &mut usize,
+    a: &[u64],
+) -> R<yavs_std::value::LitType> {
+    use yavs_std::types::{Bounds, EnumType, RealBounds};
+    use yavs_std::value::LitType;
+    let t =
+        m.rt.prog
+            .types
+            .get(ty)
+            .ok_or_else(|| ice(format!("no type {ty}")))?;
+    Ok(match t {
+        Ty::Int { lo, hi } => LitType::Int(Bounds {
+            low: *lo,
+            high: *hi,
+        }),
+        Ty::Real => LitType::Real(RealBounds::REAL),
+        Ty::Physical { lo, hi, units } => {
+            let u: Vec<(&str, i64)> = units.iter().map(|(n, v)| (n.as_str(), *v)).collect();
+            LitType::Phys(
+                PhysicalType::new(&u),
+                Bounds {
+                    low: *lo,
+                    high: *hi,
+                },
+            )
+        }
+        Ty::Enum { lits, .. } => LitType::Enum(EnumType {
+            lits: lits.iter().map(|l| lit(l)).collect(),
+        }),
+        Ty::Record { fields } => {
+            let mut fs = Vec::with_capacity(fields.len());
+            for f in fields {
+                let fd = match f.desc {
+                    Some(c) => const_bytes(&m.rt.prog, c)?,
+                    None => {
+                        let n = Ty::desc_size(&m.rt.prog.types, f.ty)
+                            .ok_or_else(|| ice("record field descriptor size"))?
+                            as usize;
+                        let fd = desc.get(*at..*at + n).unwrap_or(&[]).to_vec();
+                        *at += n;
+                        fd
+                    }
+                };
+                fs.push((f.name.clone(), lit_type(m, f.ty, &fd, s, &mut 0, a)?));
+            }
+            LitType::Record(fs)
+        }
+        Ty::Array {
+            elem,
+            elem_desc,
+            dims,
+        } => {
+            let nd = usize::from(*dims);
+            let mut bounds = Vec::with_capacity(nd);
+            for d in 0..nd {
+                let b = desc.get(d * 24..d * 24 + 24);
+                bounds.push(match b {
+                    Some(b) => {
+                        let l = crate::reflect::rd64(b, 0) as i64;
+                        let r = crate::reflect::rd64(b, 8) as i64;
+                        let down = crate::reflect::rd64(b, 16) == 1;
+                        let len = yavs_ir::dim_len(l, r, down)
+                            .ok_or_else(|| Fault::Runtime("array too long".into()))?;
+                        (l, !down, len)
+                    }
+                    None => {
+                        let len = literal_len(m, ty, d, s)?;
+                        let (left, down) = a
+                            .get(1 + d * 2)
+                            .zip(a.get(2 + d * 2))
+                            .map(|(&l, &d)| (l as i64, d == 1))
+                            .unwrap_or((0, false));
+                        (left, !down, len)
+                    }
+                });
+            }
+            let ed = match elem_desc {
+                Some(c) => const_bytes(&m.rt.prog, *c)?,
+                None => desc.get(nd * 24..).unwrap_or(&[]).to_vec(),
+            };
+            let et = lit_type(m, *elem, &ed, s, &mut 0, a)?;
+            let mut lt = et;
+            for &(left, ascending, len) in bounds.iter().rev() {
+                lt = LitType::Array {
+                    left,
+                    ascending,
+                    len,
+                    elem: Box::new(lt),
+                };
+            }
+            lt
+        }
+        _ => return rt_err(format!("'value of this type {ty} is not implemented yet")),
+    })
+}
+
+/// Length of the outermost open dimension. A string gives it directly; an
+/// aggregate gives it through its positional elements or its named choices.
+fn literal_len(m: &Machine, ty: TyId, dim: usize, s: &[u8]) -> R<u64> {
+    let start = s
+        .iter()
+        .position(|&c| !yavs_std::value::is_ws(c))
+        .unwrap_or(s.len());
+    if s.get(start) != Some(&b'(') {
+        if s.get(start) == Some(&b'"') && dim == 0 {
+            let mut n = 0u64;
+            let mut i = start + 1;
+            while let Some(&c) = s.get(i) {
+                match c {
+                    b'"' if s.get(i + 1) == Some(&b'"') => {
+                        n += 1;
+                        i += 2;
+                    }
+                    b'"' => return Ok(n),
+                    _ => {
+                        n += 1;
+                        i += 1;
+                    }
+                }
+            }
+            return rt_err("'value: '\"' closing the string");
+        }
+        return yavs_std::value::string_len(s, start)
+            .map_err(|e| Fault::Runtime(format!("'value: {e}")));
+    }
+    let _ = (m, ty, dim);
+    let mut depth = 0usize;
+    let mut n = 0u64;
+    let mut i = start + 1;
+    while let Some(&c) = s.get(i) {
+        match c {
+            b'\'' if s.get(i + 2) == Some(&b'\'') => i += 2,
+            b'"' => {
+                i += 1;
+                while i < s.len() && !(s[i] == b'"' && s.get(i + 1) != Some(&b'"')) {
+                    i += if s[i] == b'"' { 2 } else { 1 };
+                }
+            }
+            b'(' => depth += 1,
+            b')' if depth == 0 => return Ok(n),
+            b')' => depth -= 1,
+            b',' if depth == 0 => n += 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    let _ = (m, ty, dim);
+    rt_err("'value: ')' closing the aggregate")
+}
+
+/// Encode a parsed composite in the IR's value layout and return its fat pair.
+fn encode_composite(
+    m: &mut Machine,
+    ty: TyId,
+    lt: &yavs_std::value::LitType,
+    v: &yavs_std::value::Lit,
+) -> R<u64> {
+    let mut desc = Vec::new();
+    let mut data = Vec::new();
+    encode_value(m, ty, lt, v, &mut desc, &mut data)?;
+    let d = m.temp_alloc(data.len() as u64)?;
+    m.put(d, &data)?;
+    let p = m.temp_alloc(desc.len() as u64)?;
+    m.put(p, &desc)?;
+    if Ty::has_handles(&m.rt.prog.types, ty) {
+        m.temp_root(d, Some(ty), desc.clone().into());
+    }
+    let fat = m.temp_alloc(16)?;
+    m.store(fat, Width::B8, d)?;
+    m.store(add_addr(fat, 8)?, Width::B8, p)?;
+    Ok(fat)
+}
+
+fn encode_value(
+    m: &Machine,
+    ty: TyId,
+    lt: &yavs_std::value::LitType,
+    v: &yavs_std::value::Lit,
+    desc: &mut Vec<u8>,
+    out: &mut Vec<u8>,
+) -> R<()> {
+    use yavs_std::value::{Lit, LitType};
+    let t =
+        m.rt.prog
+            .types
+            .get(ty)
+            .ok_or_else(|| ice(format!("no type {ty}")))?;
+    match (t, lt, v) {
+        (Ty::Int { .. }, LitType::Int(_), Lit::Int(x))
+        | (Ty::Physical { .. }, LitType::Phys(..), Lit::Phys(x)) => {
+            out.extend_from_slice(&x.to_le_bytes())
+        }
+        (Ty::Real, LitType::Real(_), Lit::Real(x)) => {
+            out.extend_from_slice(&x.to_bits().to_le_bytes())
+        }
+        (Ty::Enum { lits, .. }, LitType::Enum(_), Lit::Enum(p)) => {
+            let w = if lits.len() <= 256 { 1 } else { 4 };
+            out.extend_from_slice(&(*p as u64).to_le_bytes()[..w]);
+        }
+        (Ty::Record { fields }, LitType::Record(fs), Lit::Record(xs)) => {
+            let mut parts = Vec::with_capacity(fields.len());
+            for (f, ((_, ft), x)) in fields.iter().zip(fs.iter().zip(xs)) {
+                let mut fd = match f.desc {
+                    Some(c) => const_bytes(&m.rt.prog, c)?,
+                    None => Vec::new(),
+                };
+                let mut data = Vec::new();
+                encode_value(m, f.ty, ft, x, &mut fd, &mut data)?;
+                parts.push((f.ty, fd, data));
+            }
+            let full: Vec<u8> = parts.iter().flat_map(|p| p.1.clone()).collect();
+            let (lay, _) =
+                Ty::layout(&m.rt.prog.types, &m.rt.prog.consts, ty, &full).map_err(layout_err)?;
+            let start = out.len();
+            out.resize(start + lay.size as usize, 0);
+            for (i, (_, fd, data)) in parts.into_iter().enumerate() {
+                if fields[i].desc.is_none() {
+                    desc.extend(fd);
+                }
+                let at = start + lay.offsets[i] as usize;
+                out[at..at + data.len()].copy_from_slice(&data);
+            }
+        }
+        (
+            Ty::Array {
+                elem,
+                elem_desc,
+                dims,
+            },
+            LitType::Array {
+                left,
+                ascending,
+                len,
+                elem: et,
+            },
+            Lit::Array(xs),
+        ) => {
+            let right = if *len == 0 {
+                Some(if *ascending {
+                    left.wrapping_sub(1)
+                } else {
+                    left.wrapping_add(1)
+                })
+            } else if *ascending {
+                left.checked_add(*len as i64 - 1)
+            } else {
+                left.checked_sub(*len as i64 - 1)
+            }
+            .ok_or_else(|| Fault::Runtime("array bounds overflow".into()))?;
+            for x in [*left, right, i64::from(!*ascending)] {
+                desc.extend_from_slice(&x.to_le_bytes());
+            }
+            let mut data = Vec::new();
+            let mut element_desc = Vec::new();
+            if *dims > 1 {
+                let LitType::Array { elem: row, .. } = &**et else {
+                    return Err(ice("multi-dimensional parser type without rows"));
+                };
+                for x in xs {
+                    let Lit::Array(row_values) = x else {
+                        return Err(ice("multi-dimensional value without rows"));
+                    };
+                    for x in row_values {
+                        encode_value(m, *elem, row, x, &mut element_desc, &mut data)?;
+                    }
+                }
+            } else {
+                encode_array_data(m, *elem, et, xs, &mut element_desc, &mut data)?;
+            }
+            if elem_desc.is_none() {
+                if *dims > 1 {
+                    let LitType::Array {
+                        left,
+                        ascending,
+                        len,
+                        ..
+                    } = &**et
+                    else {
+                        return Err(ice("matrix row parser type"));
+                    };
+                    let right = if *ascending {
+                        left + *len as i64 - 1
+                    } else {
+                        left - *len as i64 + 1
+                    };
+                    for x in [*left, right, i64::from(!*ascending)] {
+                        desc.extend_from_slice(&x.to_le_bytes());
+                    }
+                }
+                desc.extend_from_slice(&element_desc);
+            }
+            if Ty::logic_leaf(&m.rt.prog.types, ty).is_some() {
+                out.extend(data);
+            } else {
+                let ed = match elem_desc {
+                    Some(c) => const_bytes(&m.rt.prog, *c)?,
+                    None => element_desc.clone(),
+                };
+                let (el, _) = Ty::layout(&m.rt.prog.types, &m.rt.prog.consts, *elem, &ed)
+                    .map_err(layout_err)?;
+                let stride = el.size.next_multiple_of(el.align.max(1)) as usize;
+                let width =
+                    m.rt.prog
+                        .types
+                        .get(*elem)
+                        .and_then(Ty::elem_size)
+                        .unwrap_or(el.size) as usize;
+                let base = out.len();
+                let count = if *dims > 1 {
+                    xs.iter()
+                        .map(|x| match x {
+                            Lit::Array(row) => row.len(),
+                            _ => 0,
+                        })
+                        .sum()
+                } else {
+                    xs.len()
+                };
+                out.resize(base + stride * count, 0);
+                for (k, chunk) in data.chunks(width).enumerate() {
+                    let at = base + k * stride;
+                    out[at..at + chunk.len()].copy_from_slice(chunk);
+                }
+            }
+        }
+        _ => return Err(ice("'value: parsed value does not match its type")),
+    }
+    Ok(())
+}
+
+fn encode_array_data(
+    m: &Machine,
+    ty: TyId,
+    lt: &yavs_std::value::LitType,
+    xs: &[yavs_std::value::Lit],
+    desc: &mut Vec<u8>,
+    out: &mut Vec<u8>,
+) -> R<()> {
+    use yavs_std::value::Lit;
+    if let Some(kind) = Ty::logic_leaf(&m.rt.prog.types, ty) {
+        let mut codes = Vec::with_capacity(xs.len());
+        for x in xs {
+            let Lit::Enum(p) = x else {
+                return Err(ice("'value: logic element is not an enumeration"));
+            };
+            let code = match kind {
+                yavs_ir::LogicKind::StdULogic => *p as u8,
+                _ => 2 | (*p as u8 & 1),
+            };
+            codes.push(yavs_logic::StdULogic::from_code_pub(code));
+        }
+        let v = yavs_kernel::LogicVec::from_fn(xs.len(), |i| codes[xs.len() - 1 - i]);
+        for w in v.repr().blocks().as_flattened() {
+            out.extend_from_slice(&w.to_le_bytes());
+        }
+        return Ok(());
+    }
+    for x in xs {
+        encode_value(m, ty, lt, x, desc, out)?;
+    }
+    Ok(())
 }
 
 fn image_attr(

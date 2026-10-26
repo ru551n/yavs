@@ -819,6 +819,12 @@ fn lit_at(s: &[u8], i: usize, ty: &LitType) -> R<(Lit, usize)> {
     }
 }
 
+/// The number of elements in the string or bit string literal at `i`, without
+/// converting its characters to an enumeration type.
+pub fn string_len(s: &[u8], i: usize) -> R<u64> {
+    string_at(s, i).map(|(v, _)| v.len() as u64)
+}
+
 /// A string literal or a bit string literal (LRM 15.7, 15.8) at `i`: its characters and its
 /// end.
 fn string_at(s: &[u8], i: usize) -> R<(Vec<u8>, usize)> {

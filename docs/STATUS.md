@@ -3632,6 +3632,50 @@ warm and 1.017 cold, and a run of the cache before the second merge measured 1.0
 quality on heavy compute (`poc_arith_addw` 99 G instructions against 87 G warm, window generator 157 G against 135 G); the
 verification-library tests are level.
 
+### clift: round 9, objects in hand in frame mode, one branch per compare, the native chain by space (2026-10-26, #481)
+
+`spike/clift2` merged with main at db3176aa (the shared std store, `WaitEdgeSuspend`, the callee-aware payback rule,
+#768's likely-heap space facts, which the Cranelift lowering reads too). Frame-mode code keeps the object a `Deref`
+found in hand (pointer and length as block parameters of the join; length 0 where the entry is not vouched for), so
+`procChecker`'s load and store of one heap word no longer look up the object table each; it is now 1.03 times the
+instructions of LLVM's eager O2 code. Additions and subtractions of a constant test overflow with a compare against
+the operand, or not at all inside a `BinRange` whose bounds catch every wrapped sum. A branch on the `and`/`or` of
+compares is one branch per compare (`brif_split`); `Pos` has one arm per direction; the native-frame chain goes by
+the address's space; address parameters used in loops are resolved at the entry of a native frame (`param_addrs`),
+as in the LLVM lowering. Eager `--tier=clift`: the window generator 148.3 G to 123.2 G instructions, `poc_arith_addw`
+103.0 G to 99.7 G. Details: decisions.md "Cranelift tier, round 9".
+
+Gates on 31bf2606 (the code of this round; docs after it): fmt, clippy `-D warnings` for default, `llvm`, `clift`, `llvm,clift`;
+`cargo test --workspace` (1 189) and the feature sets (`llvm` 1 304, `clift` 1 222, `llvm,clift` 1 334, all test binaries
+counted); difftest 537/537 for `yavs-clift`, `-clift-auto`, `-auto3`, `-mixed`, `-llvm`, `-auto` at 1 and 4 threads (debug
+build, verifier on). The merge needed `#[cfg(feature = "llvm")]` on two new policy tests of `auto.rs` (helpers that
+exist with LLVM only; main compiles `auto.rs` with LLVM only, this branch for Cranelift too).
+
+Full total (analyze, elaborate, run) of a Cranelift-only build (`--features clift`) and an LLVM build (`--features llvm`), both
+`tools/build-bench.sh` of 31bf2606, against sim1; realbench `--compare --runs 5`, timing cores 9 and 8, host load 9 to 22
+at the start, falling to 6; last column the warm run instructions in G:
+
+| test | Cranelift warm | LLVM warm | Cranelift cold | LLVM cold | G warm Cranelift / LLVM |
+|---|---:|---:|---:|---:|---|
+| poc_arith_addw | 1.06 | 0.99 | 1.10 | 1.15 | 89.0 / 84.6 |
+| fletcher_bufferwriter_512 | 2.20 | 2.12 | 2.33 | 2.27 | 50.8 / 51.4 |
+| neorv32_single_min | 0.77 | 0.76 | 0.87 | 0.84 | 30.8 / 30.4 |
+| osvvm_axis_random | 0.15 | 0.15 | 0.37 | 0.36 | 2.6 / 2.6 |
+| uvvm_sb_slv | 0.44 | 0.48 | 0.66 | 0.69 | 9.1 / 10.0 |
+| uvvm_util_rand | 0.47 | 0.48 | 0.69 | 0.70 | 11.0 / 12.3 |
+| uvvm_axistream_vvc | 0.77 | 0.68 | 0.88 | 0.82 | 32.1 / 30.3 |
+| osvvm_axi4_random | 0.26 | 0.25 | 0.45 | 0.44 | 6.6 / 6.6 |
+| vai_window_gen_interlock | 1.63 | 1.81 | 1.97 | 2.43 | 124.0 / 137.3 |
+| geometric mean | 0.643 | 0.633 | 0.872 | 0.885 | |
+
+Cranelift against LLVM: warm 1.015, cold 0.985 in wall (round 8: 1.003 and 0.985 at load 20 to 27); in instructions of the
+run 0.980 warm and 0.956 cold. Cranelift now runs fewer instructions than LLVM on the window generator (0.90 warm, 0.79
+cold), `uvvm_sb_slv` and `uvvm_util_rand` (0.91, 0.90), more on `poc_arith_addw` (1.05) and `uvvm_axistream_vvc` (1.06);
+the wall ratios of the tests whose instructions are level (`osvvm_axi4_random` 1.00 in instructions, 1.09 in wall) say the
+rest is cycles per instruction or noise at this load. What is left: `uvvm_axistream_vvc` and `poc_arith_addw` warm, the
+frame-mode processes of the window generator (1.8 times LLVM O2's instructions eager, e.g. the element loop of
+`bus_process` over `LGet`s), the native variants (1.2 times), and the `Mem` pointer in a stack slot.
+
 ### clift: round 8, the merge with main, the layout slots apart, constant descriptors (2026-10-26, #481)
 
 `spike/clift2` merged with main at 9b5ce798 and f320c0dc: the Cranelift lowering uses the object table keyed by machine

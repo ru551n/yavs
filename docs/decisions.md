@@ -9240,6 +9240,58 @@ the cache.
   `test`, `jne`). An object kept in hand after a `Deref` in frame-mode code (as native frames do) is the next step there.
   The copies of the adder processes take 1.18 times LLVM's instructions.
 
+## Cranelift tier, round 9: objects in hand in frame mode, one branch per compare, the native chain by space (yavs-clift, #481, 2026-10-26)
+
+- **Merge** of `origin/main` (31ea022e the shared std store, 7076335e `WaitEdgeSuspend`, db3176aa the callee-aware
+  payback rule, b73eda27 and eb4b4963 of the optimiser, the rest). Nothing of it touches the compiled tiers but the
+  space facts of #768 (`regs::Sp::Likely`, a pointer loaded from a variable's slot), which the Cranelift lowering
+  reads as `Known::LikelyHeap` as the LLVM lowering does; the interpreter's new op and the policy apply to both
+  generators unchanged. Two new policy tests of `auto.rs` use helpers that exist with LLVM only: `#[cfg(feature =
+  "llvm")]` on them, since this branch compiles `auto.rs` for Cranelift too.
+- **The object a `Deref` found stays in hand in frame-mode code** (as in native frames): the fast path passes the
+  entry's pointer and length and the value to the join as block parameters; the callback's way checks the entry
+  again and the interpreter's step passes length 0 (a valid pointer for no bytes), so a way that cannot vouch for the
+  entry sends every access to its slow path, never to a wrong object. The `Load` and the `Store` back of the
+  assertion counter of `procChecker` no longer look up the object table each. Eager `poc_arith_addw` 103.0 G to
+  101.7 G instructions; against the LLVM tier's eager O2 code (`YAVS_LLVM_FAST_MIN` raised) `procChecker` is now
+  1.03 times its instructions (was 1.55 under `auto`).
+- **Overflow tests of an addition or subtraction of a constant** compare the result with the operand (`add`, `cmp`,
+  `jcc`, where `sadd_overflow` was `seto`, `test`, `jne`: Cranelift 0.137 folds the flags of `uadd_overflow` and the
+  multiplications into a branch but not those of the signed additions), and a `BinRange` whose constant bounds lie
+  inside `MIN + c ..= MAX` (c > 0; the mirror for c < 0) has none: every wrapped sum is outside the bounds, so its
+  range test leaves at the same pc. 0.1 to 0.4 percent of the eager instructions.
+- **One branch per compare** (`Gen::brif_split`, used by `guard`, `exit_if`, `branch` and every plain `brif`): a
+  branch on the `band` or `bor` of compare results is a compare and a conditional jump each; Cranelift made the
+  truth values (two `setcc`, `and`, `test`, `jne`) for every bounds test and object-table hit. Only truth values are
+  split (compare results and such combinations); a `band` of words keeps its meaning.
+- **`Pos` of a descriptor that is not a constant has one arm per direction** (the LLVM lowering's), instead of
+  selects over both directions and three tests.
+- **The native-frame chain goes by the address's space** (`Gen::host`, `view_try`, `obj_try`): a frame address is
+  tested against the frame's own slots, a native caller's (`Mem::nslots`) and the interpreter's top frame; another
+  against the temporary area and (reading) the instance data, then the object table; `yavs_rt_host` last. Before,
+  every access made selects over the frame, temporary and instance views (seven loads from `Mem`) before the first
+  test. Tried and dropped: the object table first for addresses outside a frame (the LLVM lowering's order; window
+  generator +3.0 percent instructions, its natives read call results in the temporary area more than heap objects),
+  and the object table first unless the register holds a likely temporary (+2.6 percent).
+- **Address parameters used in loops are resolved at the entry of a native frame** (`param_addrs`, `yavs_rt_region`,
+  `Known::Param`), as in the LLVM lowering: an access tests the held region, the ordinary lookup when it fails.
+  `unsafe_push` and `decode` of the window generator 39 and 30 percent fewer instructions, `set` (the callee it
+  inlines has such a loop and pays the callback per call) 87 percent more, as the LLVM tier's own `set`; the window
+  generator as a whole 0.2 percent fewer.
+- **Measured** (eager `--tier=clift`, combined bench build, claimed cores, second of two interleaved runs, a private
+  copy of the world per binary: the eager code cache of a world holds about four builds' functions, `OBJ_MAX_ENTRIES`):
+  the window generator 148.3 G to 123.2 G instructions and 41.9 G to 36.9 G cycles, `poc_arith_addw` 103.0 G to
+  99.7 G. Warm, the combined build: `--tier=clift-auto` window generator 126.1 G instructions and 40.1 G cycles
+  against `--tier=auto` 137.8 G and 44.2 G, `poc_arith_addw` 87.4 G and 27.6 G against 85.9 G and 27.9 G.
+- **Not taken:** the `Mem` pointer stays in a stack slot that regalloc reloads at most block starts of a lookup
+  (`procChecker` after the round: 4 percent of its samples on those reloads, and the function is 2 percent of the
+  run); a pinned register was tried in round 6. The native variants of the window generator still take 1.2 times
+  the instructions of LLVM's O2 code (`get` 1.25, `unsafe_push` 1.5, `decode` 1.3), its frame-mode processes 1.8
+  times. In warm `clift-auto` `poc_arith_addw`, `drive_now` takes 850 samples of 29 600 where LLVM `auto` takes
+  17: the first-level rules compile the `_p1` processes (four copies, `instances` 4 of `Tune::FIRST`) that the LLVM
+  rules leave interpreted; `YAVS_FIRST_TUNE=instances=16` or `share=8` did not change the run in two measurements
+  each (warm `auto` runs vary by 1 to 2 percent).
+
 ## Frame-mode code tests the temporary area and the object cache inline for addresses it can guess (yavs-llvm `Gen::host`, `rt::track`, #711, 2026-10-24)
 
 - **Finding:** the `yavs_rt_host` calls of `llvm_ieee` (`cb_host` 1416, then 2019 after the in-place `numeric_std`

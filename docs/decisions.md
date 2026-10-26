@@ -639,8 +639,21 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   dropped as cascades.
 - **Conditional analysis in both modes:** `` `if `` etc. are evaluated for 2008 files too
   (`VHDL_VERSION` is `"2008"`), since 2008 already allows tool directives and the evaluation is
-  harmless. Unknown directives (`` `protect ``) warn (W0002) and skip their line. `TOOL_VENDOR`
+  harmless. Unknown directives warn (W0002) and skip their line; `` `protect begin_protected ``
+  (and `` `pragma protect begin_protected ``) is the exception, see "Encrypted sources" below. `TOOL_VENDOR`
   and `TOOL_NAME` are `yavs`, `TOOL_TYPE` is `SIMULATION`, `TOOL_EDITION` is empty.
+- **Encrypted sources (#775, #776 D8):** an IEEE 1735 envelope (`` `protect begin_protected ``,
+  also `` `pragma protect ``, any case) is one error `E0012` at the line that opens it, with the
+  encrypt agent and the number of vendor key blocks as a note and the fix as help; the lexer stops
+  there (the encoded blocks are never lexed) and the file is neither preprocessed nor parsed. For
+  VHDL this is a hard error at analysis, not a recorded unit: vendor VHDL files encrypt the whole
+  design unit, ports included, so there is no plaintext header to record, and the existing
+  front end has no notion of a unit without a tree. The detector (`yavs_syntax::protect`) is
+  language-neutral for the planned Verilog front end, which records encrypted modules at analysis
+  and errors only when one is instantiated (#776 D8). `` `protect begin `` / `end` (plaintext
+  marked for encryption) and key-only files (public key files) are not envelopes. Evidence: all
+  217 enveloped `.vhd` files of the Vivado 2026.1 data directory open with `` `protect begin_protected ``
+  and none uses `` `pragma protect `` or another marker in VHDL.
 - **2019 closing keywords:** 2019 makes only `end component` optional (LCS-2016-055a); every
   other ending keeps the 2008 rule. The reference simulators 2025.3 reject a bare `end;` for every
   other construct (`docs/design/lrm-checks.md` P1); yavs gives E0002 with a help naming the rule.

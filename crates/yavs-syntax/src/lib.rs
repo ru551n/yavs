@@ -30,6 +30,7 @@ pub mod ast;
 pub mod directive;
 mod lexer;
 mod parser;
+pub mod protect;
 mod source;
 mod symbol;
 pub mod token;
@@ -92,6 +93,8 @@ pub mod codes {
     pub const INVALID_UTF8: &str = "E0010";
     /// A VHDL-2008 construct used in VHDL-1993 mode.
     pub const NEEDS_2008: &str = "E0011";
+    /// An encrypted (IEEE 1735 protected) envelope: yavs cannot read the file.
+    pub const ENCRYPTED: &str = "E0012";
     /// Internal compiler error.
     pub const INTERNAL: &str = "E9999";
     /// A `` `warning `` directive.
@@ -173,6 +176,13 @@ pub fn parse_file(file: FileId, source: &SourceFile, opts: &Options) -> Parsed {
     };
     let mut diags = Vec::new();
     let toks = lexer::lex(file, src, opts.std, opts.psl, &mut diags);
+    // An encrypted envelope ends the file: nothing after it is source, so no further stage runs.
+    if diags.iter().any(|d| d.code == codes::ENCRYPTED) {
+        return Parsed {
+            design: None,
+            diags,
+        };
+    }
     let toks = directive::preprocess(file, src, toks, opts.std, &opts.defines, &mut diags);
     let design = parser::parse(file, src, toks, opts.std, &mut diags);
     let ok = !diags.iter().any(|d| d.severity == Severity::Error);

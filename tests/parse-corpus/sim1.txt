@@ -1355,7 +1355,7 @@ PASS 2008 sim1/test/parse/package.vhd
 FAIL 2008 sim1/test/parse/pkgindecl.vhd  # E0002 expected `new`, found `end`
 FAIL 2008 sim1/test/parse/procedure.vhd  # E0002 expected `function`, found `procedure`
 PASS 2008 sim1/test/parse/process.vhd
-FAIL 2008 sim1/test/parse/protect1.vhd  # E0002 expected design unit, found identifier
+FAIL 2008 sim1/test/parse/protect1.vhd  # E0012 encrypted (IEEE 1735 protected) source
 PASS 2008 sim1/test/parse/protected.vhd
 PASS 2008 sim1/test/parse/protected2.vhd
 FAIL 2008 sim1/test/parse/protected3.vhd  # E0002 expected `protected`, found `package`

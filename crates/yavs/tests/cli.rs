@@ -29,6 +29,16 @@ const CASES: &[Case] = &[
         code: 1,
     },
     Case {
+        name: "encrypted",
+        args: &[
+            "analyze",
+            "--std=2008",
+            "--work=work:$TMP/lib",
+            "encrypted.vhd",
+        ],
+        code: 1,
+    },
+    Case {
         name: "missing_library",
         args: &["analyze", "--work=work:$TMP/lib", "nolib.vhd"],
         code: 1,

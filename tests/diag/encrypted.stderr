@@ -1,0 +1,11 @@
+error[E0012]: encrypted (IEEE 1735 protected) source
+ --> encrypted.vhd:4:1
+  |
+4 | `protect begin_protected
+  | ^^^^^^^^^^^^^^^^^^^^^^^^ the envelope starts here and runs to the end of the file
+  |
+  = note: encrypted by `SOMETOOL`, with 2 vendor key block(s)
+  = help: yavs never decrypts protected IP: analyze the vendor's unencrypted simulation model instead, or simulate this block with a tool that holds the vendor's key
+
+error: aborting due to 1 previous error
+

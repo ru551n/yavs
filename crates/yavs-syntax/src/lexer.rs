@@ -4,6 +4,7 @@ use yavs_diag::{Diagnostic, FileId, Span};
 
 use crate::Std;
 use crate::codes;
+use crate::protect;
 use crate::source::Src;
 use crate::token::{Kw, Tok, Token};
 
@@ -628,8 +629,36 @@ impl Lexer<'_> {
             );
             return;
         }
+        if protect::begins_envelope(self.b, start + 1) {
+            return self.encrypted(start);
+        }
         self.pos = end;
         self.push(Tok::Directive, start);
+    }
+
+    /// `` `protect begin_protected ``: the rest of the file is encoded text, not source. Report
+    /// it once and stop lexing so that no token of the envelope is read.
+    fn encrypted(&mut self, start: usize) {
+        let (agent, keys) = protect::envelope_info(self.b, start);
+        let line = &self.b[start..];
+        let end = start + line.iter().position(|&b| b == b'\n').unwrap_or(line.len());
+        let end = start + self.b[start..end].trim_ascii_end().len();
+        let mut d = Diagnostic::error(codes::ENCRYPTED, "encrypted (IEEE 1735 protected) source")
+            .with_primary(
+                Span::new(self.file, start as u32, end as u32),
+                "the envelope starts here and runs to the end of the file",
+            )
+            .with_help(
+                "yavs never decrypts protected IP: analyze the vendor's unencrypted simulation \
+                 model instead, or simulate this block with a tool that holds the vendor's key",
+            );
+        if let Some(a) = agent {
+            d = d.with_note(format!(
+                "encrypted by `{a}`, with {keys} vendor key block(s)"
+            ));
+        }
+        self.diags.push(d);
+        self.pos = self.b.len();
     }
 }
 

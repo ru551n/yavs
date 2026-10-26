@@ -1495,3 +1495,41 @@ fn vhdl_1993_keeps_its_own_statements() {
         "architecture a of e is begin s <= '1' when c else '0'; with c select t <= '1' when true, '0' when others; end;",
     );
 }
+
+const ENVELOPE: &str = "library ieee;\nuse ieee.std_logic_1164.all;\n\
+`protect begin_protected\n`protect version = 1\n`protect encrypt_agent = \"ACME\"\n\
+`protect key_keyowner = \"V1\", key_keyname = \"K1\", key_method = \"rsa\"\n`protect key_block\n\
+gXD3eJb5QXOvO8ipSY44ZeDNBPOmJ+mNfS3w8DY0bWv1SMCs 12ns 0x\"\n`protect key_block\nAAAA\n\
+`protect data_method = \"AES128-CBC\"\n`protect data_block\n1ApGWQyrhNARS7n9r5ePL6NW\n\
+`protect end_protected\n";
+
+#[test]
+fn encrypted_envelope_is_one_error() {
+    for src in [
+        ENVELOPE.to_string(),
+        ENVELOPE.replace("`protect begin", "`PRAGMA Protect Begin"),
+    ] {
+        let p = parse_std(&src, Std::Vhdl2008);
+        assert!(p.design.is_none());
+        let codes: Vec<_> = p.diags.iter().map(|d| d.code.to_string()).collect();
+        assert_eq!(codes, ["E0012"], "{:?}", p.diags);
+        let span = p.diags[0].primary.as_ref().expect("span").span;
+        assert_eq!(span.start as usize, src.find('`').unwrap());
+        assert!(
+            src[span.start as usize..span.end as usize]
+                .to_lowercase()
+                .ends_with("begin_protected")
+        );
+        assert!(p.diags[0].notes[0].contains("ACME"));
+    }
+}
+
+#[test]
+fn plaintext_protect_regions_are_not_envelopes() {
+    // `protect begin/end mark text to encrypt; the text itself stays source.
+    let p = parse_std(
+        "`protect begin\nentity e is end;\n`protect end\n",
+        Std::Vhdl2008,
+    );
+    assert!(p.diags.iter().all(|d| d.code != "E0012"));
+}

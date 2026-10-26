@@ -296,6 +296,8 @@ yavs analyze --std=FILE_STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=alwa
     printed. `-WCODE`: that warning stays a warning even under `-Werror`.
   - For one code the last option wins; `CODE` must be a registered warning code
     (`W0001`, `W1008`, ...), else `E0103` and exit 2.
+- An encrypted source (IEEE 1735 `` `protect begin_protected `` envelope, #775) is one error
+  `E0012` naming the file and the line that opens the envelope, with the fix; yavs never decrypts.
 - `yavs --explain CODE` prints the long text of a diagnostic code on stdout
   (exit 2 for an unknown code).
 - A panic in any command is an internal compiler error: `E9999` on stderr and

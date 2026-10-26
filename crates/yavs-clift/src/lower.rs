@@ -6050,7 +6050,7 @@ impl Gen<'_> {
         let at = self.b.ins().iadd(blocks, w0);
         let a = self.ld(dst);
         let pd = self.host(a, Some(dst), Op::C(0), Op::C(32), true, slow);
-        let mask = if l == 64 { -1 } else { ((1u64 << l) - 1) as i64 };
+        let mask = (u64::MAX >> (64 - l)) as i64;
         for p in 0..4 {
             let v = self.b.ins().load(I64, MemFlagsData::trusted(), at, 8 * p);
             let v = self.b.ins().ushr(v, sh);

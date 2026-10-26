@@ -1098,7 +1098,7 @@ pub struct Runtime {
 
 /// Which functions have compiled code, for the fast loop (`Runtime::native_flags`).
 pub struct NativeFlags {
-    /// Some function has compiled code (or `set_eager` asks for it): until then the fast loop
+    /// Some function has compiled code, is called on a native frame or is asked for (`set_eager`): until then the fast loop
     /// runs without the compiled tier's bookkeeping and looks here now and then.
     any: std::sync::atomic::AtomicBool,
     /// Per function, so the fast loop asks without a virtual call: `NAT_CODE` when it has
@@ -1200,14 +1200,14 @@ impl NativeFlags {
         }
     }
 
-    /// Nothing compiled, asked for or counted any more: the fast loop goes back to the one
+    /// Nothing compiled, asked for, called natively or counted any more: the fast loop goes back to the one
     /// without the tier's bookkeeping. Only the thread that calls `set` calls this, so the two do
     /// not race.
     fn refresh(&self) {
         if !self
             .func
             .iter()
-            .any(|n| n.load(Ordering::Relaxed) & (NAT_CODE | NAT_ASK | NAT_COUNT) != 0)
+            .any(|n| n.load(Ordering::Relaxed) & (NAT_CODE | NAT_ASK | NAT_CALL | NAT_COUNT) != 0)
         {
             self.any.store(false, Ordering::Release);
         }
@@ -1218,6 +1218,9 @@ impl NativeFlags {
         if let Some(n) = self.func.get(func.0 as usize) {
             n.fetch_or(NAT_CALL, Ordering::Release);
             self.note(func.0);
+            // The fast loop syncs `Pre::native` only while `any` holds: native-frame code alone
+            // (no `set`) must switch it on too, or its callers never see the flag (#764).
+            self.any.store(true, Ordering::Release);
         }
     }
 

@@ -215,6 +215,96 @@ fn a_callee_flagged_later_is_entered_through_the_tier() {
     );
 }
 
+/// A function the tier only calls on a native frame (`NativeFlags::set_call`, no frame-mode code
+/// anywhere, so `NativeFlags::set` never ran) is called through the tier by an interpreted
+/// process as soon as it is flagged, whatever order the tier flagged its functions in (#764).
+#[test]
+fn a_callee_flagged_for_native_calls_alone_is_called_through_the_tier() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    struct Calls(FuncId, AtomicU32);
+    impl yavs_interp::Tier for Calls {
+        fn run(&self, _: FuncId, _: u32, _: &mut dyn yavs_interp::TierHost) -> Option<u32> {
+            None
+        }
+        fn ready(&self, _: FuncId) -> bool {
+            false
+        }
+        fn callable(&self, f: FuncId) -> bool {
+            f == self.0 && self.1.load(Ordering::Relaxed) != u32::MAX
+        }
+        fn call(
+            &self,
+            f: FuncId,
+            _: &[u64],
+            _: Option<u64>,
+            _: u32,
+            _: &mut dyn yavs_interp::TierHost,
+        ) -> Option<yavs_interp::Called> {
+            (f == self.0).then(|| {
+                self.1.fetch_add(1, Ordering::Relaxed);
+                yavs_interp::Called::Done(0)
+            })
+        }
+    }
+    let mut pb = ProgramBuilder::new();
+    let int = integer(&mut pb);
+    let sq = pb.declare("square", FuncKind::Function, None);
+    let proc_ = pb.declare("p", FuncKind::Process, None);
+    {
+        let mut fb = pb.define(sq);
+        let x = fb.param("x", Width::B8, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb, StmtKind::Return);
+        let v = load(&mut fb, AddrSpace::Frame, x, Width::B8);
+        let mut r = v;
+        for _ in 0..30 {
+            r = bin(&mut fb, IntOp::Add, r, v);
+        }
+        fb.emit(Inst::Ret { v: Some(r) });
+        fb.finish();
+    }
+    {
+        // A new argument each time: the memo of pure calls would answer a repeated one.
+        let mut fb = pb.define(proc_);
+        let n = fb.local("n", int, 8, 8);
+        wait_for(&mut fb, 10 * NS);
+        stmt(&mut fb, StmtKind::Call);
+        let v = load(&mut fb, AddrSpace::Frame, n, Width::B8);
+        let one = fb.int(1);
+        let v1 = bin(&mut fb, IntOp::Add, v, one);
+        store(&mut fb, AddrSpace::Frame, n, v1, Width::B8);
+        let args = fb.regs(&[v1]);
+        let r = fb.reg(RegTy::I64);
+        fb.emit(Inst::Call {
+            func: sq,
+            args,
+            dst: Some(r),
+        });
+        fb.emit(Inst::Br { to: BlockId(0) });
+        fb.finish();
+    }
+    let mut d = Design::new(pb);
+    d.procs = vec![ProcSpec {
+        name: "p",
+        func: proc_,
+        drives: vec![],
+    }];
+    let rt = Runtime::new(d.prog.clone(), Default::default()).unwrap();
+    // Not callable when the tier is set: the tier flags it while the run goes on.
+    let tier = std::sync::Arc::new(Calls(sq, AtomicU32::new(u32::MAX)));
+    assert!(rt.set_tier(tier.clone()));
+    let flags = rt.native_flags();
+    let (mut sim, _, _) = d.build_rt(1, rt, |p, _| p);
+    sim.run_until(Time::ns(100)).unwrap();
+    tier.1.store(0, Ordering::Relaxed);
+    flags.set_call(sq);
+    sim.run_until(Time::ns(200)).unwrap();
+    assert!(
+        tier.1.load(Ordering::Relaxed) >= 9,
+        "{}",
+        tier.1.load(Ordering::Relaxed)
+    );
+}
+
 /// Counters of rising edges, one small (its registers stay with the process between
 /// activations) and one whose temporaries outgrow what a process keeps (it hands its vectors
 /// to the thread's scratch), both run for many activations with identical results.

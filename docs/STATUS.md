@@ -8997,3 +8997,7 @@ a test of another commit).
   `sigint_ends_a_process_that_never_suspends*` tests set the bound out of reach instead of assuming the run lasts 1.5 s.
   Difftest header key `spin=N`; `process/no_wait_infinite` uses it.
 
+
+## A function with native-frame code alone is called through the tier at once (yavs-interp, #764, 2026-10-26)
+
+`NativeFlags::set_call` did not switch `any` on, only `set` (frame-mode code) did, and `Machine::tiered` syncs `Pre::native` (the byte the watching loop reads at a call) only while `any` holds. When a run published native-frame code and no frame-mode code anywhere (a warm `--tier=auto` run that links the native objects of `to_slvv_8`, `to_slm` and `get_row` of the PoC histogram testbench), an interpreted caller with one activation per clock never saw the flag and called the function interpreted until some function's frame-mode code appeared; which one appeared first, and when, depended on the order the objects were linked in. `set_call` now switches `any` on and `refresh` counts `NAT_CALL`. Test: `a_callee_flagged_for_native_calls_alone_is_called_through_the_tier` (`yavs-interp` `tests/sim.rs`). Not the memo: the call of that function is an `Op::Call`, and `YAVS_NO_PMEMO=1` only changed which functions got frame-mode code first.

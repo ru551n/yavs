@@ -474,6 +474,9 @@ case!(
 // The digit loop of a textio HRead (#744): a result-table nibble stored into the slice
 // `sv(4 * i to 4 * i + 3)` and `is_x` on the same slice, 8 digits of each of 3 words, 16 times.
 case!(hread_loop, "sum=", &[], [("ops", Max(7800))]);
+// The same loop with an argument of an integer type, whose table read tests the range and a mask
+// of valid digits (#769): the pair of the array result is not made on the table path.
+case!(tab_tail, "sum=", &[], [("ops", Max(16240))]);
 case!(
     edge_forms,
     "edges=",

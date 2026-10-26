@@ -6,8 +6,8 @@
 //! registers, argument slots, return), and a library testbench is a chain of such calls. The pass runs last, on the finished code of a
 //! subprogram (after the other passes and the renumbering), and takes the callee from its own
 //! optimised code, made apart from the callee's published copy (`forwarder`), so the result
-//! does not depend on which function was optimised first. (The reads of result tables that are
-//! one path are the exception: `tab_calls` makes them before the first pass, #744.)
+//! does not depend on which function was optimised first. (The reads of result tables are the
+//! exception: `tab_calls` makes them before the first pass, #744, #769.)
 //!
 //! What stays as it was: the callee's checks and calls, in their order, and what a trace shows.
 //! An inlined instruction keeps the statement of the callee and `Func::via` names the call it
@@ -725,6 +725,8 @@ struct Site {
     func: FuncId,
     args: Vec<Reg>,
     dst: Option<Reg>,
+    /// A table read with branches that takes the rest of its block into the arm that reads the table.
+    dup: bool,
 }
 
 /// Where each register of the body lives in the caller at one site: a parameter the body never
@@ -834,6 +836,238 @@ pub(super) fn run_wide(prog: &crate::Program, id: FuncId, f: &mut crate::Func) -
         && run_with(prog, id, f, 0, Round::Wide)
 }
 
+/// The most instructions of the rest of a block copied for the hit path of a table read.
+const MAX_TAIL: usize = 64;
+
+/// Is a call of `func` replaced by the read of its result table (before the first pass,
+/// `tab_calls`) instead of being left to the inliner?
+fn tabbed(prog: &crate::Program, func: FuncId) -> bool {
+    crate::casetab::enabled()
+        && prog.tabs.contains_key(&func.0)
+        && prog
+            .funcs
+            .get(func)
+            .is_some_and(|c| !c.flags.contains(crate::FuncFlags::HAS_COVER))
+}
+
+/// One site expanded: its registers placed in the caller, and what a trace shows.
+struct Expand<'a> {
+    site: &'a Site,
+    at: HashMap<u32, Reg>,
+    loc: StmtId,
+    sv: u32,
+    round: Round,
+    outer: u32,
+    remap: Vec<u32>,
+}
+
+impl<'a> Expand<'a> {
+    fn new(
+        f: &crate::Func,
+        site: &'a Site,
+        pc: usize,
+        round: Round,
+        reg_ty: &mut Vec<RegTy>,
+        nodes: &mut Vec<ViaNode>,
+    ) -> Self {
+        let sv = f.via.get(pc).copied().unwrap_or(0);
+        let loc = f.loc[pc];
+        let at = place(site, reg_ty);
+        // This call, and the calls the body's own inlined instructions came through, now
+        // inlined through it as well.
+        if round != Round::Tabs {
+            nodes.push(ViaNode {
+                site: loc,
+                callee: site.func,
+                up: sv,
+            });
+        }
+        let outer = nodes.len() as u32;
+        let mut remap: Vec<u32> = Vec::with_capacity(site.fw.via_nodes.len());
+        for n in &site.fw.via_nodes {
+            let up = match n.up {
+                0 => outer,
+                u => remap[u as usize - 1],
+            };
+            nodes.push(ViaNode { up, ..*n });
+            remap.push(nodes.len() as u32);
+        }
+        Self {
+            site,
+            at,
+            loc,
+            sv,
+            round,
+            outer,
+            remap,
+        }
+    }
+
+    fn map(&self, r: Reg) -> Reg {
+        self.at.get(&r.0).copied().unwrap_or(r)
+    }
+
+    fn chain(&self, v: u32) -> u32 {
+        if v == 0 {
+            self.outer
+        } else {
+            self.remap[v as usize - 1]
+        }
+    }
+
+    /// (A table read has no frame of its own in a trace: it is the call's statement.)
+    fn own(&self, l: StmtId, v: u32) -> (StmtId, u32) {
+        if self.round == Round::Tabs {
+            (self.loc, self.sv)
+        } else {
+            (l, self.chain(v))
+        }
+    }
+
+    /// The other parameters arrive in the registers the loads defined.
+    fn param_moves(&self, cur: &mut Vec<Out>) {
+        for (k, regs) in self.site.fw.params.iter().enumerate() {
+            for &r in regs {
+                if self.at.get(&r.0) != Some(&self.site.args[k]) && self.at.contains_key(&r.0) {
+                    let mv = Inst::Move {
+                        dst: self.map(r),
+                        src: self.site.args[k],
+                    };
+                    cur.push((mv, self.loc, self.sv));
+                }
+            }
+        }
+    }
+
+    /// The body's instruction with its registers placed.
+    fn place_inst(&self, inst: Inst, operands: &mut Vec<Reg>) -> Inst {
+        let mut inst = inst;
+        inst.visit_mut(&mut |r, _, _| *r = self.map(*r));
+        match &mut inst {
+            Inst::Call { args, .. }
+            | Inst::CallProt { args, .. }
+            | Inst::CallNative { args, .. } => {
+                let start = operands.len() as u32;
+                let from = args.start as usize..(args.start + args.len) as usize;
+                operands.extend(self.site.fw.operands[from].iter().map(|&r| self.map(r)));
+                args.start = start;
+            }
+            _ => {}
+        }
+        inst
+    }
+
+    fn ret_move(&self, inst: &Inst) -> Option<Inst> {
+        match (*inst, self.site.dst) {
+            (Inst::Ret { v: Some(r) }, Some(d)) if self.map(r) != d => Some(Inst::Move {
+                dst: d,
+                src: self.map(r),
+            }),
+            _ => None,
+        }
+    }
+
+    /// A body of one path, spliced in where the call was.
+    fn splice(&self, cur: &mut Vec<Out>, operands: &mut Vec<Reg>) {
+        self.param_moves(cur);
+        for &(inst, l, v) in &self.site.fw.blocks[0] {
+            if let Inst::Ret { .. } = inst {
+                if let Some(m) = self.ret_move(&inst) {
+                    cur.push((m, self.loc, self.sv));
+                }
+                continue;
+            }
+            let (l, v) = self.own(l, v);
+            cur.push((self.place_inst(inst, operands), l, v));
+        }
+    }
+}
+
+/// Uses of each register in `code` (operand lists included).
+fn use_counts(f: &crate::Func) -> Vec<u32> {
+    let mut n = vec![0u32; f.reg_ty.len()];
+    for i in &f.code {
+        count_uses(f, i, &mut n);
+    }
+    n
+}
+
+fn count_uses(f: &crate::Func, i: &Inst, n: &mut [u32]) {
+    i.visit(&mut |r, role, _| {
+        if role == Role::Use {
+            n[r.0 as usize] += 1;
+        }
+    });
+    if let Some(l) = i.list() {
+        for r in f.regs(l).unwrap_or(&[]) {
+            n[r.0 as usize] += 1;
+        }
+    }
+}
+
+/// `tail` (the rest of a block, its terminator last) with every register it defines renamed to
+/// a new one, so that the copy leaves the original registers to the other copy: the registers
+/// the code outside the tail reads (`live_out`), or the tail itself reads before it defines
+/// them, are moved back before the terminator. `seed`: a register that already stands for
+/// another here (the result of the call, which the table read made).
+fn rename_tail(
+    tail: &[Out],
+    seed: Option<(Reg, Reg)>,
+    live_out: &dyn Fn(Reg) -> bool,
+    reg_ty: &mut Vec<RegTy>,
+    operands: &mut Vec<Reg>,
+) -> Vec<Out> {
+    let mut map: std::collections::BTreeMap<u32, Reg> = std::collections::BTreeMap::new();
+    map.extend(seed.map(|(a, b)| (a.0, b)));
+    let mut exposed: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    let mut out: Vec<Out> = Vec::with_capacity(tail.len() + 2);
+    for &(mut inst, l, v) in tail {
+        let mut see = |r: &mut Reg| match map.get(&r.0) {
+            Some(&n) => *r = n,
+            None => {
+                exposed.insert(r.0);
+            }
+        };
+        inst.visit_mut(&mut |r, role, _| {
+            if role == Role::Use {
+                see(r);
+            }
+        });
+        if let Some(list) = inst.list_mut() {
+            let start = operands.len() as u32;
+            for k in list.start as usize..(list.start + list.len) as usize {
+                let mut r = operands[k];
+                see(&mut r);
+                operands.push(r);
+            }
+            list.start = start;
+        }
+        inst.visit_mut(&mut |r, role, _| {
+            if role == Role::Def {
+                let n = Reg(reg_ty.len() as u32);
+                reg_ty.push(reg_ty[r.0 as usize]);
+                map.insert(r.0, n);
+                *r = n;
+            }
+        });
+        out.push((inst, l, v));
+    }
+    if let Some(term) = out.pop() {
+        let at = term.1;
+        for (&r, &n) in &map {
+            if live_out(Reg(r)) || exposed.contains(&r) {
+                let mv = Inst::Move {
+                    dst: Reg(r),
+                    src: n,
+                };
+                out.push((mv, at, term.2));
+            }
+        }
+        out.push(term);
+    }
+    out
+}
+
 fn run_with(
     prog: &crate::Program,
     id: FuncId,
@@ -868,6 +1102,12 @@ fn run_with(
         if func == id {
             continue;
         }
+        // The reads of result tables are made by the round before the first pass, where the
+        // loads of an array result find the stores that built it; a call left in the code
+        // (the path for the values the table does not hold) stays one.
+        if (round == Round::Tabs) != tabbed(prog, func) {
+            continue;
+        }
         // A call that hands over a string built just before it (the message of a check): a
         // callee of up to four times the usual raw size, because sinking can then skip
         // building it (`opt/sink.rs`).
@@ -878,17 +1118,7 @@ fn run_with(
                 && builds_string(f, pc, args, obj)
         };
         let fw = if round == Round::Tabs {
-            // (A table that holds every value of its type: one path, nothing to join. The
-            // function itself is the call when coverage counts in it: `make` takes no table then.)
-            if !prog.tabs.contains_key(&func.0)
-                || prog
-                    .funcs
-                    .get(func)
-                    .is_none_or(|c| c.flags.contains(crate::FuncFlags::HAS_COVER))
-            {
-                continue;
-            }
-            forwarder(prog, func, 0, false).filter(|fw| fw.straight())
+            forwarder(prog, func, 0, false)
         } else if wide_only {
             wide().then(|| forwarder(prog, func, level, true)).flatten()
         } else {
@@ -933,6 +1163,7 @@ fn run_with(
                     func,
                     args: sargs,
                     dst,
+                    dup: false,
                 },
             );
         }
@@ -940,6 +1171,43 @@ fn run_with(
     if sites.is_empty() {
         return false;
     }
+    // A table read that branches (a range test, a validity mask) takes the rest of its block
+    // with it into the arm that reads the table, so that the loads of an array result there
+    // find the stores that built it (the join of the two arms hides them); a long rest, or one
+    // with another such read or a suspension, is joined instead.
+    let mut dups: Vec<usize> = Vec::new();
+    if round == Round::Tabs {
+        let mut end_of = vec![0usize; f.code.len()];
+        for blk in f.blocks.values() {
+            end_of[blk.start as usize..blk.end as usize].fill(blk.end as usize);
+        }
+        let wide: Vec<usize> = sites
+            .iter()
+            .filter(|(_, s)| !s.fw.straight())
+            .map(|(&pc, _)| pc)
+            .collect();
+        for &pc in &wide {
+            let end = end_of[pc];
+            let rest = &f.code[pc + 1..end];
+            if sites[&pc].fw.blocks.len() == 4
+                && rest.len() <= MAX_TAIL
+                && !wide.iter().any(|&o| o > pc && o < end)
+                && !rest.iter().any(|i| matches!(i, Inst::Suspend { .. }))
+            {
+                dups.push(pc);
+            }
+        }
+        for pc in &dups {
+            if let Some(s) = sites.get_mut(pc) {
+                s.dup = true;
+            }
+        }
+    }
+    let uses = if dups.is_empty() {
+        Vec::new()
+    } else {
+        use_counts(f)
+    };
     let nb = f.blocks.len();
     let mut blocks: Vec<Option<Vec<Out>>> = vec![None; nb];
     let mut reg_ty = f.reg_ty.clone();
@@ -952,100 +1220,54 @@ fn run_with(
         };
         let mut cur: Vec<Out> = Vec::new();
         let mut cur_id = b;
+        let mut closed = false;
         for pc in blk.start as usize..blk.end as usize {
             let Some(site) = sites.get(&pc) else {
                 cur.push((f.code[pc], f.loc[pc], old_via(pc)));
                 continue;
             };
-            let sv = old_via(pc);
-            let at = place(site, &mut reg_ty);
-            let map = |r: Reg| at.get(&r.0).copied().unwrap_or(r);
+            let ex = Expand::new(f, site, pc, round, &mut reg_ty, &mut nodes);
+            let (loc, sv) = (ex.loc, ex.sv);
             let fw = &site.fw;
-            let loc = f.loc[pc];
-            // This call, and the calls the body's own inlined instructions came through,
-            // now inlined through it as well.
-            if round != Round::Tabs {
-                nodes.push(ViaNode {
-                    site: loc,
-                    callee: site.func,
-                    up: old_via(pc),
-                });
-            }
-            let outer = nodes.len() as u32;
-            let mut remap: Vec<u32> = Vec::with_capacity(fw.via_nodes.len());
-            for n in &fw.via_nodes {
-                let up = match n.up {
-                    0 => outer,
-                    u => remap[u as usize - 1],
-                };
-                nodes.push(ViaNode { up, ..*n });
-                remap.push(nodes.len() as u32);
-            }
-            let chain = |v: u32| if v == 0 { outer } else { remap[v as usize - 1] };
-            // (A table read has no frame of its own in a trace: it is the call's statement.)
-            let own = |l: StmtId, v: u32| {
-                if round == Round::Tabs {
-                    (loc, sv)
-                } else {
-                    (l, chain(v))
-                }
-            };
-            // The other parameters arrive in the registers the loads defined.
-            for (k, regs) in fw.params.iter().enumerate() {
-                for &r in regs {
-                    if at.get(&r.0) != Some(&site.args[k]) && at.contains_key(&r.0) {
-                        cur.push((
-                            Inst::Move {
-                                dst: map(r),
-                                src: site.args[k],
-                            },
-                            loc,
-                            sv,
-                        ));
-                    }
-                }
-            }
-            // The body's instruction with its registers placed.
-            let place_inst = |inst: Inst, operands: &mut Vec<Reg>| {
-                let mut inst = inst;
-                inst.visit_mut(&mut |r, _, _| *r = map(*r));
-                match &mut inst {
-                    Inst::Call { args, .. }
-                    | Inst::CallProt { args, .. }
-                    | Inst::CallNative { args, .. } => {
-                        let start = operands.len() as u32;
-                        let from = args.start as usize..(args.start + args.len) as usize;
-                        operands.extend(fw.operands[from].iter().map(|&r| map(r)));
-                        args.start = start;
-                    }
-                    _ => {}
-                }
-                inst
-            };
-            let ret_move = |inst: &Inst| match (*inst, site.dst) {
-                (Inst::Ret { v: Some(r) }, Some(d)) if map(r) != d => Some(Inst::Move {
-                    dst: d,
-                    src: map(r),
-                }),
-                _ => None,
-            };
             if fw.straight() {
-                for &(inst, l, v) in &fw.blocks[0] {
-                    if let Inst::Ret { .. } = inst {
-                        if let Some(m) = ret_move(&inst) {
-                            cur.push((m, loc, sv));
-                        }
-                        continue;
-                    }
-                    let (l, v) = own(l, v);
-                    cur.push((place_inst(inst, &mut operands), l, v));
-                }
+                ex.splice(&mut cur, &mut operands);
                 continue;
             }
+            ex.param_moves(&mut cur);
             let base = blocks.len();
             let n = fw.blocks.len();
-            blocks.resize(base + n + 1, None);
+            let dup = site.dup;
+            // The rest of the block, for the arm that reads the table (renamed) and the one
+            // that calls.
+            let (mut hit_tail, mut miss_tail) = (Vec::new(), Vec::new());
+            if dup {
+                let end = blk.end as usize;
+                for pc2 in pc + 1..end {
+                    match sites.get(&pc2) {
+                        Some(s2) => {
+                            let e2 = Expand::new(f, s2, pc2, round, &mut reg_ty, &mut nodes);
+                            e2.splice(&mut miss_tail, &mut operands);
+                        }
+                        None => miss_tail.push((f.code[pc2], f.loc[pc2], old_via(pc2))),
+                    }
+                }
+                let mut inside = vec![0u32; uses.len()];
+                for i in &f.code[pc + 1..end] {
+                    count_uses(f, i, &mut inside);
+                }
+                let live_out = |r: Reg| {
+                    let (u, i) = (uses.get(r.0 as usize), inside.get(r.0 as usize));
+                    u.zip(i).is_some_and(|(u, i)| u > i)
+                };
+                // The table arm is block 2 of the forwarder: its `Ret` returns the pair.
+                let seed = match (site.dst, fw.blocks[2].last()) {
+                    (Some(d), Some((Inst::Ret { v: Some(r) }, ..))) => Some((d, ex.map(*r))),
+                    _ => None,
+                };
+                hit_tail = rename_tail(&miss_tail, seed, &live_out, &mut reg_ty, &mut operands);
+            }
             let cont = BlockId((base + n) as u32);
+            blocks.resize(base + n + usize::from(!dup), None);
             cur.push((
                 Inst::Br {
                     to: BlockId(base as u32),
@@ -1057,29 +1279,53 @@ fn run_with(
             for (i, cb) in fw.blocks.iter().enumerate() {
                 let mut ents: Vec<Out> = Vec::with_capacity(cb.len() + 1);
                 for &(inst, l, v) in cb {
+                    let (l, v) = ex.own(l, v);
                     match inst {
+                        Inst::Ret { .. } if dup && i == 2 => {
+                            ents.extend(std::mem::take(&mut hit_tail));
+                        }
+                        Inst::Ret { .. } if dup => {
+                            if let Some(m) = ex.ret_move(&inst) {
+                                ents.push((m, loc, sv));
+                            }
+                            ents.extend(std::mem::take(&mut miss_tail));
+                        }
                         Inst::Ret { .. } => {
-                            if let Some(m) = ret_move(&inst) {
+                            if let Some(m) = ex.ret_move(&inst) {
                                 ents.push((m, loc, sv));
                             }
                             ents.push((Inst::Br { to: cont }, loc, sv));
                         }
                         Inst::Br { to } => {
                             let to = BlockId(base as u32 + to.0);
-                            ents.push((Inst::Br { to }, l, chain(v)));
+                            ents.push((Inst::Br { to }, l, v));
                         }
                         Inst::CondBr { c, t, f: e } => {
                             let (t, e) = (BlockId(base as u32 + t.0), BlockId(base as u32 + e.0));
-                            ents.push((Inst::CondBr { c: map(c), t, f: e }, l, chain(v)));
+                            ents.push((
+                                Inst::CondBr {
+                                    c: ex.map(c),
+                                    t,
+                                    f: e,
+                                },
+                                l,
+                                v,
+                            ));
                         }
-                        other => ents.push((place_inst(other, &mut operands), l, chain(v))),
+                        other => ents.push((ex.place_inst(other, &mut operands), l, v)),
                     }
                 }
                 blocks[base + i] = Some(ents);
             }
+            if dup {
+                closed = true;
+                break;
+            }
             cur_id = base + n;
         }
-        blocks[cur_id] = Some(cur);
+        if !closed {
+            blocks[cur_id] = Some(cur);
+        }
     }
     let mut code = Vec::new();
     let mut loc = Vec::new();

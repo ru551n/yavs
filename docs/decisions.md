@@ -10277,3 +10277,24 @@ entry, about a fifth more per op over the rest of a testbench process's long act
   2.98 to 2.81 (`rising_edge` 2.84 to 2.77), `--tier=auto` 3.05 to 2.81 (`rising_edge` 2.90 to 2.84); the wait form is within 1.5 percent of `rising_edge` in both.
 - **Tests:** work-counter test `edge_cost_parity` (`perf/edge_cost.vhd` with each of the four forms: equal `ops`, a ceiling for each); `edge_forms` bound lowered; `delta/wait_edge`
   and `edge_idioms` run the wait shapes in every tier. Difftest 531 of 531 for interp, auto and llvm at 1 and 4 threads and auto with `--tier-heat=1,0,0` at 4 threads.
+
+## Table reads with a range test or a validity mask: the rest of the block goes into the table arm (yavs-ir `opt/inline.rs`, #769, 2026-10-26)
+
+The result-table read of #722 for an argument of an integer type tests the range, and for a table with values that report (a mask of valid values) tests the mask; both
+send the other values to the call. The read was inlined by the late inliner as blocks that join again, so the optimiser, which does not follow registers there, never saw the stores that
+built the fat pair of an array result and read both words back for every call (about 30 ops per digit of a nibble loop, against 13 for a character argument whose table holds every value).
+
+- **Decision: every read of a result table is made before the first optimiser pass (`tab_calls`), the late inliner leaves calls of table functions alone** (`tabbed`). A read that branches
+  becomes the range test, the mask test, the table arm and the call arm; the rest of the block after the call (at most `MAX_TAIL` = 64 instructions, no suspension, no other branching read) is
+  **copied into the table arm** with every register it defines renamed (`rename_tail`), so the table arm is straight-line code from the test to the end of the block and the loads of the pair find the
+  stores that built it (the pair goes, as in #744). The call arm keeps the original rest of the block. A register the copy defines that the code outside the rest reads, or that the rest reads before
+  it defines it, is moved back to its own name before the terminator. A longer rest, or one with another branching read, takes the old shape: arms that join. The call that stays in the call arm
+  is not read again: the late inliner skips calls of table functions, so a miss costs the test and the call, not a second test.
+- **Why copy the rest instead of joining with the words of the pair.** Joining the two words (data address, descriptor) as registers would need every use of the pair rewritten and loses that the
+  descriptor of the table path is a constant (its length check folds). The copy costs code only on the table arm; its size is capped and counted against the growth cap of the inliner.
+- **Measured.** Perf case `tab_tail` (new: an integer type of 21 values, 16 tabulated, 8 digits stored into a slice): 22 072 ops to 15 764 (-29 percent). A loop of 160 000 such reads: 26.8 to 18.9
+  ops per digit; with a proven range (`i mod 16` into `type nib_t is range 0 to 15`) the test folds and the digit costs 11.8 ops (24.8 before). `grlib_leon3mp` has no such table (its `FromChar` takes a
+  character): unchanged.
+- **Tests**: perf case `tab_tail` (a ceiling that fails if the pair is made again), the `casetab` differential test (new `digvec` and `digsum`: array results by an integer type with a mask, reports
+  for the digits that are no table entry, rest-of-block copies with live-out registers), run with the tables on and off at 1 and 4 threads and in every tier.
+

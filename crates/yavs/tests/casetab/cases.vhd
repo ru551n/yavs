@@ -5,6 +5,7 @@ library ieee; use ieee.std_logic_1164.all;
 package casetab_cases_pkg is
   type op_t is (op_nop, op_add, op_sub, op_and, op_or, op_xor, op_shl, op_shr, op_not, op_neg);
   type byte_t is range 0 to 255;
+  type dig_t is range 0 to 20;
   function hexval(c : character) return integer;
   function hexcheck(c : character) return integer;
   function nibble(c : character) return std_ulogic_vector;
@@ -13,6 +14,8 @@ package casetab_cases_pkg is
   function opwarn(o : op_t) return integer;
   function classify(b : byte_t) return integer;
   function lanes(o : op_t) return bit_vector;
+  function digvec(d : dig_t) return std_ulogic_vector;
+  function digsum(n : integer) return integer;
 end package;
 package body casetab_cases_pkg is
   function hexval(c : character) return integer is
@@ -116,6 +119,36 @@ package body casetab_cases_pkg is
       when op_not => return "011111111"; when op_neg => return "0111111111";
     end case;
   end function;
+  -- an array result by a value of an integer type, and a mask: the digits 16 to 20 report
+  function digvec(d : dig_t) return std_ulogic_vector is
+    variable r : std_ulogic_vector(0 to 3);
+  begin
+    case d is
+      when 0 => r := "0000"; when 1 => r := "0001"; when 2 => r := "0010";
+      when 3 => r := "0011"; when 4 => r := "0100"; when 5 => r := "0101";
+      when 6 => r := "0110"; when 7 => r := "0111"; when 8 => r := "1000";
+      when 9 => r := "1001"; when 10 => r := "1010"; when 11 => r := "1011";
+      when 12 => r := "1100"; when 13 => r := "1101"; when 14 => r := "1110";
+      when 15 => r := "1111";
+      when others => report "digvec: bad digit " & integer'image(integer(d)) severity warning;
+        r := "UUUU";
+    end case;
+    return r;
+  end function;
+  -- the read inside a function, its rest of the block a loop body with a return
+  function digsum(n : integer) return integer is
+    variable v : std_ulogic_vector(0 to 7);
+    variable s : integer := 0;
+  begin
+    for i in 0 to n loop
+      v(4 to 7) := digvec(dig_t(i mod 21));
+      if v(7) = '1' then s := s + i; end if;
+      for j in 4 to 7 loop
+        if v(j) = '1' then s := s + 2 * j; end if;
+      end loop;
+    end loop;
+    return s;
+  end function;
 end package body;
 
 library ieee; use ieee.std_logic_1164.all; use work.casetab_cases_pkg.all;
@@ -136,7 +169,7 @@ architecture t of casetab_cases is
   end function;
 begin
   process
-    variable a, b, c, d, e, f, g, h : integer := 0;
+    variable a, b, c, d, e, f, g, h, m, k : integer := 0;
     variable l : std_ulogic_vector(0 to 15);
     constant hexdigits : string := "0123456789abcdef";
   begin
@@ -155,6 +188,13 @@ begin
         f := f + lanes(o)'length;
       end loop;
     end loop;
+    for i in 0 to 20 loop
+      l(8 to 11) := digvec(dig_t(i));
+      k := to_i(digvec(dig_t(20 - i)));
+      m := (m * 5 + to_i(l(8 to 11)) + k) mod 100003;
+      l(12 to 15) := digvec(dig_t(i));
+    end loop;
+    m := m + to_i(l(8 to 15)) + digsum(50);
     -- every result, not only their sums
     for i in 0 to 255 loop
       report integer'image(i) & ":" & to_string(nibble(character'val(i))) & ","
@@ -167,7 +207,7 @@ begin
     end loop;
     report "casetab a=" & integer'image(a) & " b=" & integer'image(b) & " c=" & integer'image(c)
       & " d=" & integer'image(d) & " e=" & integer'image(e) & " f=" & integer'image(f)
-      & " g=" & integer'image(g) & " h=" & integer'image(h);
+      & " g=" & integer'image(g) & " h=" & integer'image(h) & " m=" & integer'image(m);
     wait;
   end process;
 end architecture;

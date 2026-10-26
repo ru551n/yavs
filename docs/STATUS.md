@@ -9140,3 +9140,12 @@ The analysed units of the built-in `std`/`ieee` live in one store per user (`$YA
 ## Byte codes only for signals with element reads (yavs-sem, yavs-elab, yavs-kernel, #734, 2026-10-26)
 
 The elaborator decides which logic signals keep the per-element byte codes: those that have a read of one element (`Db::facts()` `elem_reads`, `yavs-elab` `keep_codes.rs`, `Builder::no_codes`); the source-width rule of #519 is gone. Signals without codes are read from the planes and still skip assignments of the value they hold. Instructions of whole runs (interpreter / llvm): `lfsr64` 0.97 / 0.95, `lfsr64_xor` 0.98 / 0.97, `rtl_ram` 0.99; `rtl_lfsr`, `rtl_ff`, `rtl_chain` read single elements of their registers and keep their codes (level, at most +0.45% from layout); `realbench --compare` instruction geometric mean 1.00, `fletcher_bufferwriter_512` +5% (its wide buses have element reads). Details and the open items: `docs/decisions.md` "Byte codes by element reads".
+
+The analysed units of the built-in `std`/`ieee` live in one store per user (`$YAVS_STD_CACHE`, else `yavs/std` in the user's cache directory) instead of every library's `yavs-cache/units/`; a fresh library reads them. `YAVS_STD_CACHE=off` keeps the old per-library placement; `E0126` for an unusable directory; a mapped (bootstrap) `ieee` is never shared; `crates/yavs/build.rs` hashes `lib/` into the build id. Cold batched analysis (shared store warm, bench builds, core 8): instructions 0.72 to 0.83 of before on `en_cl_fix_pkg`, `poc_strings`, `neorv32_single_min`, `sc5_timestamp`, `fletcher_bufferreader`, wall 0.75 to 0.92; first call into an empty store unchanged. Decision and numbers: `docs/decisions.md` "Shared std/ieee units". Tests: `crates/yavs/tests/std_share.rs`.
+
+## Table reads with a range test or a validity mask (yavs-ir `opt/inline.rs`, #769, 2026-10-26)
+
+A result-table read for an argument of an integer type (range test) or with values that report (validity mask) now takes the rest of its block into the table arm before the first optimiser pass
+(`docs/decisions.md` "Table reads with a range test or a validity mask"), so the fat pair of an array result is not made and read back: perf case `tab_tail` 22 072 to 15 764 ops, a digit loop 26.8 to 18.9
+ops (11.8 with a proven range). The late inliner no longer expands table functions (a miss is the test and the call). `grlib_leon3mp` is unchanged (its table is whole). Left: #771, #770, #768.
+

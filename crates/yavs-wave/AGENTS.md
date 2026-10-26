@@ -13,7 +13,7 @@ The writer choice and the FST mapping are in `docs/decisions.md` "Waveform write
   subscribes to the kernel's value-change bus; the writer sink itself stays kernel-free.
   `yavs run --wave` wires it (E0801-E0803, W0802).
 - Depends on: `wavefst` (writer, lz4; no C compiler), `signal-hook` (Unix), `ctrlc` (Windows); dev: `wellen` (read-back),
-  `tempfile`. Called by: `yavs` (`run --wave`), `yavs-dap` (live waves, `record_to`), `examples/demo.rs`.
+  `tempfile`. Called by: `yavs` (`run --wave`), `yavs-dap` (live waves, `record_to`), `examples/demo.rs`; `examples/waveq.rs` reads files only.
 
 ## 2. Map
 
@@ -28,6 +28,7 @@ The writer choice and the FST mapping are in `docs/decisions.md` "Waveform write
 | `tests/roundtrip.rs` | Every file read back with wellen |
 | `examples/writer_bench.rs` | Writer throughput on synthetic changes (`SCALARS`, `VECTORS`): the per-change cost of the writer alone |
 | `examples/demo.rs` | Small end-to-end use |
+| `examples/waveq.rs` | Comparer of two waveform files (FST, VCD, GHW through `wellen`) for `tools/waveq` (#781); its unit tests run with `cargo test` (`test = true`) |
 
 ## 3. Design decisions that bind this module
 

@@ -11,7 +11,7 @@ report generator or regenerate the report (#780).
   and `docs/conformance.json`. It is a thin driver: it parses the output of those tools and builds no
   test of its own.
 - Not here: waveform equivalence on real designs (agent trust2: the section includes
-  `tools/waveq/RESULTS.md` when that file exists, a placeholder before); the owner of `tools/waveq` refreshes it with `run.py --waveq` (no CI steps needed; that block is outside the staleness check), performance numbers (`tools/bench`,
+  `tools/waveq/RESULTS.md` when that file exists, a placeholder before); the owner of `tools/waveq` refreshes the report with `run.py --waveq` after updating `RESULTS.md` and `results.json` (no CI steps needed), performance numbers (`tools/bench`,
   `tools/realbench`).
 - Python stdlib only (`python3 -I`).
 

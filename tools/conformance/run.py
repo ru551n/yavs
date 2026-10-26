@@ -10,8 +10,8 @@ Steps (--only names): difftest, discrepancies, external, corpora, uvvm, osvvm, d
 refdiff, vhpi (reference simulators configured in tools/sims.local.conf); with --llvm (a build with
 the `llvm` feature) also difftest of the auto and llvm tiers and the designs under auto. A --local run stores
 what it ran in docs/conformance-local.json with date and commit; CI never writes it. --check renders into --out
-and exits 1 when the committed docs/conformance.md differs outside the `Generated:` line and the waveform section.
---waveq refreshes just that section from tools/waveq/RESULTS.md (a local record, written by tools/waveq).
+and exits 1 when the committed docs/conformance.md differs outside the `Generated:` line.
+--waveq re-renders the committed report with the current tools/waveq results (a local record written by tools/waveq).
 Needs the corpora: tools/fetch-corpus.sh (YAVS_CORPUS, default ~/.cache/rsim-corpus). Python stdlib only.
 """
 import argparse, concurrent.futures as cf, datetime, json, os, re, subprocess, sys, tempfile
@@ -273,6 +273,10 @@ The references are called sim1 and sim2 (two established open-source VHDL simula
         h.append(("OSVVM's own regression", ", ".join(f"{s}: {v.get('pass', 0)}/{v['runs']}" for s, v in ci["osvvm"].items())))
     if "designs" in ci:
         h.append(("Real designs run to completion (neorv32 x3, GRLIB LEON3)", "{}/{}".format(sum(all(t.values()) for t in ci["designs"].values()), len(ci["designs"]))))
+    w = R.get("waveq")
+    if w:
+        h.append(("Waveform equivalence with sim1 (local, real designs)", f"{w['designs']} designs compared signal by signal and time step by time step, interpreter: {w['equal']} of {w['signals']} signals equal over {w['changes']} value changes; "
+                  f"{w['different']} signals differ, {w['different'] - w['unexplained']} of them explained by reference-simulator behaviour the language reference leaves open, {w['unexplained']} unexplained"))
     for k, v in loc.items():
         if k == "vunit-own":
             h.append(("VUnit's own VHDL suites (local)", f"{v['data']['pass']} of {v['data']['pass'] + v['data']['fail']} tests pass, 11 suites"))
@@ -297,6 +301,8 @@ A `--local` run rewrites `docs/conformance-local.json`; commit it together with 
             ["Analysis corpora", "CI", "`tools/corpus/run.py <manifest> --keep-going`"],
             ["UVVM, OSVVM suites", "CI", "`tools/suites/uvvm.py`, `tools/suites/pro.py --std 2008|2019`"],
             ["Real designs", "CI", "`tools/realbench/run.py BIN --tests ... --runs 0`"]]
+    if w:
+        prov.append(["Waveform equivalence", f"local, {w['run']['date']} at `{w['run']['commit']}`", f"`{w['run']['command']}`"])
     for k, v in loc.items():
         prov.append([v["title"], f"local, {v['date']} at `{v['commit']}`", f"`{v['command']}`"])
     o.append("## What was run where\n\n" + table(["Evidence", "Where", "Command"], prov))
@@ -395,7 +401,7 @@ yavs's verdict and who decided.
     if "tiers" in loc:
         v = loc["tiers"]
         o.append(f"Under the `auto` tier (local, {v['date']} at `{v['commit']}`): " + ", ".join(f"{n} {'pass' if all(t.values()) else '**FAIL**'}" for n, t in v["data"]["designs"].items()) + ".\n")
-    o.append("## Waveform equivalence on real designs\n\n" + WAVEQ[0] + "\n" + R["trust2"] + "\n" + WAVEQ[1] + "\n")
+    o.append("## Waveform equivalence on real designs\n\n" + R["trust2"] + "\n")
     # --- platforms and limits
     o.append("## Platforms covered by CI\n\n" + table(["job", "runs on"], [[f"`{j}`", ", ".join(os_)] for j, os_ in st["platforms"].items()]) +
              "\nThe `check` job is `cargo fmt`, `clippy -D warnings` and the whole test suite of the workspace; the `llvm` job the same for the LLVM tier plus a simulation smoke run. "
@@ -404,7 +410,6 @@ yavs's verdict and who decided.
     return "\n".join(o)
 
 
-WAVEQ = ("<!-- waveq -->", "<!-- /waveq -->")  # a local record like the others: refreshed by --waveq, outside the staleness check
 TRUST2_SLOT = "Not yet in this report. This section is reserved for the waveform comparison of yavs against the reference simulators on neorv32 and GRLIB LEON3 (tracked separately)."
 
 
@@ -413,27 +418,34 @@ def build(a, ci, gen):
     trust2 = TOOLS / "waveq/RESULTS.md"  # written by tools/waveq (#781)
     R = {"generated": gen, "ci": ci, "local": loc,
          "static": {"discrepancies": discrepancy_table(), "corpus_refs": corpus_refs(), "platforms": ci_platforms()},
-         "trust2": trust2.read_text().strip() if trust2.exists() else TRUST2_SLOT}
+         "trust2": trust2.read_text().strip() if trust2.exists() else TRUST2_SLOT, "waveq": waveq_summary()}
     return R
 
 
 def strip_generated(t):
-    t = re.sub(re.escape(WAVEQ[0]) + ".*?" + re.escape(WAVEQ[1]), "", t, flags=re.S)
     return "\n".join(l for l in t.splitlines() if not l.startswith("Generated:"))
 
 
+def waveq_summary():
+    """Totals of tools/waveq/results.json for the interpreter against sim1 (the tool's own file, a local record)."""
+    f = TOOLS / "waveq/results.json"
+    if not f.exists():
+        return None
+    j = json.loads(f.read_text())
+    rows = [r for r in j["rows"] if r["a"] == "yavs-interp"]
+    explained = sum(n for r in rows for n in r["verdicts"].values())
+    return {"run": j["run"], "designs": len(rows), "signals": sum(r["signals"] for r in rows), "equal": sum(r["equal"] for r in rows),
+            "changes": sum(r["changes"] for r in rows), "different": sum(r["different"] for r in rows), "unexplained": sum(r["different"] for r in rows) - explained}
+
+
 def refresh_waveq():
-    """Put the current tools/waveq/RESULTS.md into the committed report and JSON, nothing else."""
-    new = (TOOLS / "waveq/RESULTS.md").read_text().strip()
-    md = MD.read_text()
-    pat = re.escape(WAVEQ[0]) + r"\n.*?\n" + re.escape(WAVEQ[1])
-    if not re.search(pat, md, re.S):
-        sys.exit(f"{MD}: no waveq block; regenerate the report with tools/conformance/run.py")
-    MD.write_text(re.sub(pat, lambda m: f"{WAVEQ[0]}\n{new}\n{WAVEQ[1]}", md, flags=re.S))
-    js = json.loads(JS.read_text())
-    js["trust2"] = new
-    JS.write_text(json.dumps(js, indent=1, sort_keys=True) + "\n")
-    print(f"updated the waveform section of {MD}")
+    """Re-render the committed report with the current tools/waveq results; every other number stays as committed."""
+    R = json.loads(JS.read_text())
+    R["trust2"] = (TOOLS / "waveq/RESULTS.md").read_text().strip()
+    R["waveq"] = waveq_summary()
+    MD.write_text(render(R))
+    JS.write_text(json.dumps(R, indent=1, sort_keys=True) + "\n")
+    print(f"updated the waveform parts of {MD}")
 
 
 def main():

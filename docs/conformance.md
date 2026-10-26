@@ -1,6 +1,6 @@
 # yavs conformance report
 
-Generated: yavs 0.8.0 at commit `d2997c6f25` (2026-10-26) by `tools/conformance/run.py`; do not edit by hand.
+Generated: yavs 0.8.0 at commit `4cd961c994` (2026-10-26) by `tools/conformance/run.py`; do not edit by hand.
 
 This report collects the evidence that yavs behaves as the VHDL language reference and the established open-source simulators do.
 Nothing here is a proof of correctness. Every number comes from a command in the "Reproduce" section; sections marked **CI** are
@@ -12,14 +12,15 @@ The references are called sim1 and sim2 (two established open-source VHDL simula
 
 | Evidence | Result |
 | --- | --- |
-| Differential corpus, interpreter, 4 threads shuffled | 535/535 testbenches equal to the recorded sim1 output, identical at 1 and 4 threads |
+| Differential corpus, interpreter, 4 threads shuffled | 539/539 testbenches equal to the recorded sim1 output, identical at 1 and 4 threads |
 | sim1's own regression tests | 1000 of 1070 runnable tests pass the suite's own verdict (992 on a gated pass list, 0 regressions); 403 skipped (other languages, VHPI, scripts) |
 | sim2's own regression tests | 458 of 504 runnable tests pass the suite's own verdict (455 on a gated pass list, 0 regressions); 647 skipped (other languages, VHPI, scripts) |
 | Analysis corpora (third-party VHDL code) | 6675 of 6682 files analyse, 33 corpora, all equal to the gated lists |
-| Known discrepancy cases | 208 reproducers, yavs output equals the recorded one: yes |
+| Known discrepancy cases | 209 reproducers, yavs output equals the recorded one: yes |
 | UVVM's own testbenches | 131 of 137 runs pass (6 skipped: vendor libraries absent) |
 | OSVVM's own regression | 2008: 314/314, 2019: 314/314 |
 | Real designs run to completion (neorv32 x3, GRLIB LEON3) | 4/4 |
+| Waveform equivalence with sim1 (local, real designs) | 17 designs compared signal by signal and time step by time step, interpreter: 44735 of 44889 signals equal over 50304249 value changes; 154 signals differ, 154 of them classified as reference-simulator differences (catalogued, the language reference leaves the behaviour open), 0 unexplained |
 | VUnit's own VHDL suites (local) | 1357 of 1357 tests pass, 11 suites |
 
 ## Reproduce
@@ -45,6 +46,7 @@ A `--local` run rewrites `docs/conformance-local.json`; commit it together with 
 | Analysis corpora | CI | `tools/corpus/run.py <manifest> --keep-going` |
 | UVVM, OSVVM suites | CI | `tools/suites/uvvm.py`, `tools/suites/pro.py --std 2008|2019` |
 | Real designs | CI | `tools/realbench/run.py BIN --tests ... --runs 0` |
+| Waveform equivalence | local, 2026-10-26 at `aeaeaa593f` | `python3 -I tools/waveq/run.py BIN` |
 | cocotb regression over VHPI | local, 2026-10-20 at `78b1c398` | `cocotb's own tests with the VHPI plugin (crates/yavs-vhpi/COCOTB.md)` |
 | References against the recorded outputs | local, 2026-10-26 at `cd5268f8b2` | `tools/difftest/difftest.py --candidate sim1|sim2` |
 | The auto and llvm tiers | local, 2026-10-26 at `cd5268f8b2` | `tools/conformance/run.py --local --llvm --only tiers (yavs built with --features llvm)` |
@@ -59,7 +61,7 @@ Every testbench of `tests/corpus` runs on yavs and its normalised output is comp
 | --- | --- | --- | --- |
 | access | 8/8 | 8/8 | 8/8 |
 | arith | 8/8 | 8/8 | 8/8 |
-| composite | 114/114 | 114/114 | 114/114 |
+| composite | 116/116 | 116/116 | 116/116 |
 | delta | 13/13 | 13/13 | 13/13 |
 | env | 14/14 | 14/14 | 14/14 |
 | force | 12/12 | 12/12 | 12/12 |
@@ -77,11 +79,11 @@ Every testbench of `tests/corpus` runs on yavs and its normalised output is comp
 | rtl | 4/4 | 4/4 | 4/4 |
 | scalar | 16/16 | 16/16 | 16/16 |
 | shared | 4/4 | 4/4 | 4/4 |
-| sigassign | 24/24 | 24/24 | 24/24 |
+| sigassign | 25/25 | 25/25 | 25/25 |
 | std93 | 6/6 | 6/6 | 6/6 |
 | synopsys | 20/20 | 20/20 | 20/20 |
-| textio | 13/13 | 13/13 | 13/13 |
-| total | 535/535 | 535/535 | 535/535 |
+| textio | 14/14 | 14/14 | 14/14 |
+| total | 539/539 | 539/539 | 539/539 |
 
 Failing: none.
 
@@ -91,20 +93,20 @@ The compiled tiers must give the same output as the interpreter (local, 2026-10-
 
 ## The reference simulators' own regression tests (CI)
 
-Each reference simulator ships a suite of self-checking tests. They run in place from the fetched checkout on yavs and are judged by the suite's own verdict. The pass lists (`tools/difftest/external-*.pass`) are gated: a listed test that stops passing fails CI. The other classes name the first difference (`outcome`, `elab` and `analysis` are failures to run; the suites contain tests of features yavs does not implement and tests of reference-specific behaviour).
+Each reference simulator ships a suite of self-checking tests. They run in place from the fetched checkout on yavs and are judged by the suite's own verdict. The pass lists (`tools/difftest/external-*.pass`) are gated: a listed test that stops passing fails CI. The others fail the suite's own verdict, fail to analyse or elaborate, or are skipped (other languages, VHPI, scripts); the suites contain tests of features yavs does not implement and tests of reference-specific behaviour.
 
 | suite | tests | pass | gated pass list | regressions |
 | --- | ---: | ---: | ---: | ---: |
 | sim1 | 1473 | 1000 | 992 | 0 |
 | sim2 | 1151 | 458 | 455 | 0 |
 
-Classes: sim1: pass 1000, skip 403, oracle 32, analysis 22, elab 16; sim2: skip 647, pass 458, analysis 27, elab 11, oracle 8.
+Not passing: sim1: 70; sim2: 46 (the classes of each are in `docs/conformance.json`; a timeout under load moves a test between them, so the report does not).
 
 ## Known discrepancies (CI for yavs's side)
 
 `docs/design/simulator-discrepancies.md` lists every case where the references disagree with each other, with the language reference or with yavs:
-208 catalogued behaviours, each with a reproducer under `tests/discrepancies/<case>/`. CI runs every reproducer on yavs and fails when yavs's output
-differs from the recorded one (matches). Kinds: LRM clear 126, LRM ambiguity 76, reference bug 5, library availability 1.
+209 catalogued behaviours, each with a reproducer under `tests/discrepancies/<case>/`. CI runs every reproducer on yavs and fails when yavs's output
+differs from the recorded one (matches). Kinds: LRM clear 126, LRM ambiguity 77, reference bug 5, library availability 1.
 
 Policy (user decision, `docs/plan.md`): where the language reference is clear, yavs follows it even against all references; where it is unclear yavs is permissive
 and follows the majority of the references that run the construct. The verdicts of each reference are in the catalogue; the table gives the clause, the kind,
@@ -320,6 +322,7 @@ yavs's verdict and who decided.
 | [`integer-literal-outside`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/integer-literal-outside) | 9.3.6, 5.2.1 | LRM clear | FATAL | agent (#463, L122) |
 | [`record-aggregate-field-range`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/record-aggregate-field-range) | 9.3.3.2, 5.2.1 | LRM clear | FATAL | agent (#463, L119) |
 | [`package-instance-path-name`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/package-instance-path-name) | 16.2.5 | LRM clear | OK | agent, 2026-10-20 (#445) |
+| [`subprogram-signature-instance-name`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/subprogram-signature-instance-name) | 16.2.5 | LRM ambiguity | OK: `show[string,std_ulogic,integer]` (t | agent, 2026-10-26 (#781, #784) |
 | [`psl-edge-unknown-value`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/psl-edge-unknown-value) | PSL (IEEE 1850) 5.2.3.4, 5.2.3.5 | LRM ambiguity | OK | agent, 2026-10-20 (#445) |
 | [`short-circuit-constant-false-effect`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/short-circuit-constant-false-effect) | 9.2.2 | LRM clear | OK | agent, 2026-10-24 |
 
@@ -388,18 +391,86 @@ Complete designs, run with the interpreter. neorv32: a RISC-V system running its
 
 | design | interp |
 | --- | --- |
-| neorv32_dual_full | pass |
-| neorv32_single_min | pass |
-| neorv32_single_cache | pass |
 | grlib_leon3mp | pass |
+| neorv32_dual_full | pass |
+| neorv32_single_cache | pass |
+| neorv32_single_min | pass |
 
 Under the `auto` tier (local, 2026-10-26 at `cd5268f8b2`): grlib_leon3mp pass, neorv32_dual_full pass, neorv32_single_cache pass, neorv32_single_min pass.
 
 ## Waveform equivalence on real designs
 
-<!-- waveq -->
-Not yet in this report. This section is reserved for the waveform comparison of yavs against the reference simulators on neorv32 and GRLIB LEON3 (tracked separately).
-<!-- /waveq -->
+Waveform equivalence: run locally on 2026-10-26 at aeaeaa593f (yavs build 11c367ea3e), references sim1, sim2.
+Reproduce: `python3 -I tools/waveq/run.py BIN`
+
+| design | A | B | signals | value changes | equal | different | equal as slice | other shape | only A | only B | differences | A compiled code |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| rtl_ff | yavs-interp | sim1 | 3 | 604 | 3 | 0 | 0 | 0 | 0 | 0 | none | 0 |
+| rtl_ff | yavs-auto | sim1 | 3 | 604 | 3 | 0 | 0 | 0 | 0 | 0 | none | 0 |
+| rtl_ff | yavs-llvm | sim1 | 3 | 604 | 3 | 0 | 0 | 0 | 0 | 0 | none | 285 IR instructions |
+| rtl_ff | sim2 | sim1 | 3 | 604 | 3 | 0 | 0 | 0 | 0 | 0 | none |  |
+| rtl_lfsr | yavs-interp | sim1 | 66 | 33067 | 66 | 0 | 0 | 0 | 0 | 0 | none | 0 |
+| rtl_lfsr | yavs-auto | sim1 | 66 | 33067 | 66 | 0 | 0 | 0 | 0 | 0 | none | 0 |
+| rtl_lfsr | yavs-llvm | sim1 | 66 | 33067 | 66 | 0 | 0 | 0 | 0 | 0 | none | 357 IR instructions |
+| rtl_lfsr | sim2 | sim1 | 66 | 33067 | 66 | 0 | 0 | 0 | 0 | 0 | none |  |
+| rtl_chain | yavs-interp | sim1 | 4 | 605 | 4 | 0 | 0 | 0 | 0 | 0 | none | 0 |
+| rtl_chain | yavs-auto | sim1 | 4 | 605 | 4 | 0 | 0 | 0 | 0 | 0 | none | 0 |
+| rtl_chain | yavs-llvm | sim1 | 4 | 605 | 4 | 0 | 0 | 0 | 0 | 0 | none | 261 IR instructions |
+| rtl_chain | sim2 | sim1 | 4 | 605 | 4 | 0 | 0 | 0 | 0 | 0 | none |  |
+| rtl_fan | yavs-interp | sim1 | 4 | 405 | 4 | 0 | 0 | 0 | 0 | 0 | none | 0 |
+| rtl_fan | yavs-auto | sim1 | 4 | 405 | 4 | 0 | 0 | 0 | 0 | 0 | none | 0 |
+| rtl_fan | yavs-llvm | sim1 | 4 | 405 | 4 | 0 | 0 | 0 | 0 | 0 | none | 137 IR instructions |
+| rtl_fan | sim2 | sim1 | 4 | 405 | 4 | 0 | 0 | 0 | 0 | 0 | none |  |
+| rtl_bus | yavs-interp | sim1 | 4 | 2005 | 4 | 0 | 0 | 0 | 0 | 0 | none | 0 |
+| rtl_bus | yavs-auto | sim1 | 4 | 2005 | 4 | 0 | 0 | 0 | 0 | 0 | none | 0 |
+| rtl_bus | yavs-llvm | sim1 | 4 | 2005 | 4 | 0 | 0 | 0 | 0 | 0 | none | 261 IR instructions |
+| rtl_bus | sim2 | sim1 | 4 | 2005 | 4 | 0 | 0 | 0 | 0 | 0 | none |  |
+| rtl_ram | yavs-interp | sim1 | 16390 | 30385 | 16390 | 0 | 0 | 0 | 0 | 0 | none | 0 |
+| rtl_ram | yavs-auto | sim1 | 16390 | 30385 | 16390 | 0 | 0 | 0 | 0 | 0 | none | 0 |
+| rtl_ram | yavs-llvm | sim1 | 16390 | 30385 | 16390 | 0 | 0 | 0 | 0 | 0 | none | 675 IR instructions |
+| rtl_ram | sim2 | sim1 | 16390 | 30385 | 16390 | 0 | 0 | 0 | 0 | 0 | none |  |
+| lfsr64_xor | yavs-interp | sim1 | 67 | 33567 | 67 | 0 | 0 | 0 | 0 | 0 | none | 0 |
+| lfsr64_xor | yavs-auto | sim1 | 67 | 33567 | 67 | 0 | 0 | 0 | 0 | 0 | none | 0 |
+| lfsr64_xor | yavs-llvm | sim1 | 67 | 33567 | 67 | 0 | 0 | 0 | 0 | 0 | none | 382 IR instructions |
+| lfsr64_xor | sim2 | sim1 | 67 | 33567 | 67 | 0 | 0 | 0 | 0 | 0 | none |  |
+| lfsr64 | yavs-interp | sim1 | 67 | 33567 | 67 | 0 | 0 | 0 | 0 | 0 | none | 0 |
+| lfsr64 | yavs-auto | sim1 | 67 | 33567 | 67 | 0 | 0 | 0 | 0 | 0 | none | 0 |
+| lfsr64 | yavs-llvm | sim1 | 67 | 33567 | 67 | 0 | 0 | 0 | 0 | 0 | none | 309 IR instructions |
+| lfsr64 | sim2 | sim1 | 67 | 33567 | 67 | 0 | 0 | 0 | 0 | 0 | none |  |
+| neorv32_single_min | yavs-interp | sim1 | 13466 | 15877072 | 13466 | 0 | 133 | 0 | 1045 | 0 | none | 0 |
+| neorv32_single_min | yavs-auto | sim1 | 13466 | 15877072 | 13466 | 0 | 133 | 0 | 1045 | 0 | none | 0 |
+| neorv32_single_min | yavs-llvm | sim1 | 13466 | 15877072 | 13466 | 0 | 133 | 0 | 1045 | 0 | none | 128233 IR instructions |
+| grlib_leon3mp | yavs-interp | sim1 | 13897 | 33197020 | 13897 | 0 | 230 | 0 | 3843 | 0 | none | 0 |
+| grlib_leon3mp | yavs-auto | sim1 | 13897 | 33197020 | 13897 | 0 | 230 | 0 | 3843 | 0 | none | 4 functions |
+| grlib_leon3mp | yavs-llvm | sim1 | 13897 | 33197020 | 13897 | 0 | 230 | 0 | 3843 | 0 | none | 226142 IR instructions |
+| uvvm_sb_slv | yavs-interp | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 0 |
+| uvvm_sb_slv | yavs-auto | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 0 |
+| uvvm_sb_slv | yavs-llvm | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 42834 IR instructions |
+| uvvm_util_rand | yavs-interp | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 0 |
+| uvvm_util_rand | yavs-auto | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 1 functions |
+| uvvm_util_rand | yavs-llvm | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 84159 IR instructions |
+| uvvm_axistream_vvc | yavs-interp | sim1 | 154 | 788147 | 61 | 93 | 0 | 0 | 20 | 1 | reference process-order-in-cycle: 4, reference subprogram-signature-instance-name: 89 | 0 |
+| uvvm_axistream_vvc | yavs-auto | sim1 | 154 | 788147 | 61 | 93 | 0 | 0 | 20 | 1 | reference process-order-in-cycle: 4, reference subprogram-signature-instance-name: 89 | 0 |
+| uvvm_axistream_vvc | yavs-llvm | sim1 | 154 | 788147 | 61 | 93 | 0 | 0 | 20 | 1 | reference process-order-in-cycle: 4, reference subprogram-signature-instance-name: 89 | 69265 IR instructions |
+| uvvm_methods_log | yavs-interp | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 0 |
+| uvvm_methods_log | yavs-auto | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 0 |
+| uvvm_methods_log | yavs-llvm | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 14064 IR instructions |
+| uvvm_func_cov | yavs-interp | sim1 | 4 | 4 | 4 | 0 | 0 | 0 | 0 | 0 | none | 0 |
+| uvvm_func_cov | yavs-auto | sim1 | 4 | 4 | 4 | 0 | 0 | 0 | 0 | 0 | none | 0 |
+| uvvm_func_cov | yavs-llvm | sim1 | 4 | 4 | 4 | 0 | 0 | 0 | 0 | 0 | none | 45937 IR instructions |
+| osvvm_axis_random | yavs-interp | sim1 | 223 | 109554 | 202 | 21 | 0 | 0 | 2 | 0 | reference process-order-in-cycle: 21 | 0 |
+| osvvm_axis_random | yavs-auto | sim1 | 223 | 109554 | 202 | 21 | 0 | 0 | 2 | 0 | reference process-order-in-cycle: 21 | 0 |
+| osvvm_axis_random | yavs-llvm | sim1 | 223 | 109554 | 202 | 21 | 0 | 0 | 2 | 0 | reference process-order-in-cycle: 21 | 55734 IR instructions |
+| osvvm_axi4_random | yavs-interp | sim1 | 531 | 198238 | 491 | 40 | 0 | 0 | 0 | 0 | reference process-order-in-cycle: 40 | 0 |
+| osvvm_axi4_random | yavs-auto | sim1 | 531 | 198238 | 491 | 40 | 0 | 0 | 0 | 0 | reference process-order-in-cycle: 40 | 0 |
+| osvvm_axi4_random | yavs-llvm | sim1 | 531 | 198238 | 491 | 40 | 0 | 0 | 0 | 0 | reference process-order-in-cycle: 40 | 69313 IR instructions |
+
+Not configured (no waveform keys for the kind of design in tools/sims.local.conf): sim2 for 9 designs
+
+Differences explained:
+
+- reference process-order-in-cycle: the verification components take IDs from a shared counter in the order their processes run in one cycle; the LRM leaves that order open (14.7.5.3) and the references differ among themselves (docs/design/simulator-discrepancies.md); every bus signal is equal
+- reference subprogram-signature-instance-name: from 266.87 us, in the test case with random valid/ready low, the masters deassert tvalid in other cycles: the BFM seeds that random stream from `'instance_name` of a procedure variable, whose signature each tool spells differently (base types on yavs, #784; a space after each comma on sim1), so each tool runs a different, equally valid sequence (the cause is inferred from where the divergence starts); the test passes everywhere
 
 ## Platforms covered by CI
 

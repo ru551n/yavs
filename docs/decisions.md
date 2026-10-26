@@ -8996,6 +8996,40 @@ the cache.
   instruction, from the neorv32 figures), LLVM's at `HIT`. `--tier=auto3` uses the Cranelift store for its first level and the
   LLVM store for its O2 compiles. Not with `--no-cache`.
 
+## Cranelift tier, round 6: merge with main, the ports, compute code quality (yavs-clift, yavs-llvm, #481, #583, #757, #763, user, 2026-10-26)
+
+- **Merge** of `origin/main` (#756 frame blocks, #757 element loops, #583 the spin counter). Three LLVM-side changes of main
+  reach the Cranelift lowering the same way, through the shared `rt.rs`, which now also holds `fuse_layout`,
+  `batched_drives` and `batch_pure` (moved from `yavs-llvm/src/lower.rs`, unchanged): the register-held jump count of a
+  process that never suspends (a Cranelift variable, stored back by the exit block; the process stays compiled under
+  the 10^9 bound, which closes #763 for this tier: `process/no_wait_infinite` passes), the element loops of a variant
+  (`yavs_rt_eloop`), and the fused layout word (`yavs_rt_layout_word`). The kept-drive skip of the kernel (9c54654a)
+  is reached through the drive batch, which the Cranelift lowering lacked: ported (`Batch`, 918 kernel calls against
+  153 in `llvm_drive_batch`, now 153). Work-counter bounds for the four under `clift::`; `clift::layout_field` has a
+  ceiling of 3 400 layout calls against LLVM's 1 648, because this lowering has no inline layout cache in frame mode,
+  so the process's `LayoutOf`s go to the memo too (they were stepped before).
+- **`--tier=clift-auto` gets the layout slots** (`yavs_interp::layout_slots`, as `auto` and `auto3`). Why: since #756 the
+  slot pass keeps the 32-byte blocks the interpreter fuses out of the frame unless layout slots are on, and compiled
+  code is slower with them (an `Alloc` in the temporary area before every signal read and concatenation). The merge
+  alone took warm `clift-auto` on `poc_arith_addw` from 98.5 G to 101.5 G instructions and 34.9 G to 39.8 G cycles; with
+  the slots 99.7 G and 36.2 G. The slots themselves cost memory in process frames that Cranelift code does not use.
+- **Code quality of frame-mode code**, found by comparing the hot functions of `poc_arith_addw` and the window generator with
+  LLVM's (paired `perf` profiles, samples per IR instruction from `YAVS_CLIFT_CODEDIR`): guesses of a register's space
+  survive a fall-through block start (the entry after a call: 1 of 3 `yavs_rt_host` calls of an adder process); dope reads
+  use the register's facts; small `Copy`s of a known size are words (`memmove` was 3.4 G instructions against 0.4 G for
+  LLVM); a 32-byte temporary of run-time size is zeroed by stores (a `memset` and then 8-byte reads of the same bytes
+  stalled on store forwarding: a fifth of the cycles of the adder process); `index_muls` as in the LLVM lowering.
+- **Tried and dropped** (eager `--tier=clift` A/B on claimed cores, which is deterministic where warm `auto` is not, #673):
+  the register array's address in the pinned register (regalloc kept it in a stack slot and reloaded it before 15
+  percent of the instructions of a large process; pinned, the reloads are gone, cycles are level and instructions 2
+  percent up from the copies `get_pinned_reg` makes); the register cache kept across the join of a slow path (minus the
+  instruction's registers): 1 percent more instructions and cycles, longer live ranges.
+- **What is left** is the code of the hot functions themselves, which LLVM's optimiser makes about 1.35 times shorter and
+  runs at a higher IPC: the frame-mode code of a process stores every register it defines and reloads it after every
+  join and callback, the base pointers live in stack slots, and the pointer chains of the test runner's accessors
+  (`get`) wait on the object table. The next step is deferred register stores with liveness and values carried across
+  blocks in frame mode, as the LLVM lowering has (decisions "Tight compute loops").
+
 ## Frame-mode code tests the temporary area and the object cache inline for addresses it can guess (yavs-llvm `Gen::host`, `rt::track`, #711, 2026-10-24)
 
 - **Finding:** the `yavs_rt_host` calls of `llvm_ieee` (`cb_host` 1416, then 2019 after the in-place `numeric_std`

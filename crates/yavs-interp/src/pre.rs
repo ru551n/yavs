@@ -743,6 +743,18 @@ pub(crate) enum Op {
         at: u32,
         stmt: bool,
     },
+    /// `SigVal`, `WaitEdge`, `WaitSig` and `Suspend` of a `wait until` on a clock edge of one
+    /// element: the edge of the element the wait names, then the wait, then the suspension.
+    /// Placed like `WaitSuspend` (`at`, `stmt`); `body` is the block id a `BrBody` copy of it
+    /// stands for (`NONE` otherwise), whose pause check runs first. The `Suspend` is 3 ops on.
+    WaitEdgeSuspend {
+        sig: u32,
+        offset: u32,
+        kind: u8,
+        at: u32,
+        stmt: bool,
+        body: u32,
+    },
     /// The `Stmt` of a wait statement whose sensitivity is the same at every activation
     /// (`static_waits`): when the kernel can keep the last wait (`Ctx::wait_same`), the
     /// op goes on at the `Suspend` (op `to`) without naming the signals again.
@@ -3766,6 +3778,40 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
             ops[k] = Op::ImageStr { a, ty, x, p, q, l };
         }
     }
+    // `wait until <edge>`: the edge test of the element the wait names, the wait and the suspend (#767).
+    for k in 0..ops.len().saturating_sub(3) {
+        if let (
+            Op::SigVal {
+                dst,
+                sig,
+                offset: eo,
+                len,
+            },
+            Op::WaitEdge { sig: er, kind },
+            Op::WaitSuspend {
+                sig: ws,
+                offset: wo,
+                stmt: false,
+                ..
+            },
+            Op::Suspend,
+        ) = (ops[k], ops[k + 1], ops[k + 2], ops[k + 3])
+            && er == dst
+            && once(dst)
+            && sig == ws
+            && int(len) == Some(1)
+            && (eo == wo || int(eo).is_some() && int(eo) == int(wo))
+        {
+            ops[k] = Op::WaitEdgeSuspend {
+                sig,
+                offset: wo,
+                kind,
+                at: k as u32,
+                stmt: false,
+                body: NONE,
+            };
+        }
+    }
     // A `Stmt` before the edge test or the wait of a clocked process is part of that op, and a
     // jump to such a wait is a copy of it (the end of every activation).
     for k in 0..ops.len() {
@@ -3804,6 +3850,24 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
                 at: k as u32,
                 stmt: true,
             }),
+            (
+                Op::Stmt,
+                Some(&Op::WaitEdgeSuspend {
+                    sig,
+                    offset,
+                    kind,
+                    stmt: false,
+                    body,
+                    ..
+                }),
+            ) => Some(Op::WaitEdgeSuspend {
+                sig,
+                offset,
+                kind,
+                at: k as u32,
+                stmt: true,
+                body,
+            }),
             _ => None,
         };
         if let Some(op) = fused {
@@ -3811,10 +3875,36 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
         }
     }
     for k in 0..ops.len() {
-        if let Op::Br { to } = ops[k]
-            && let Some(&w @ Op::WaitSuspend { .. }) = ops.get(to as usize)
-        {
-            ops[k] = w;
+        match ops[k] {
+            Op::Br { to } => {
+                if let Some(&w @ (Op::WaitSuspend { .. } | Op::WaitEdgeSuspend { .. })) =
+                    ops.get(to as usize)
+                {
+                    ops[k] = w;
+                }
+            }
+            // The jump to the block a process pauses at keeps its check in the copy.
+            Op::BrBody { to, block } => {
+                if let Some(&Op::WaitEdgeSuspend {
+                    sig,
+                    offset,
+                    kind,
+                    at,
+                    stmt,
+                    ..
+                }) = ops.get(to as usize)
+                {
+                    ops[k] = Op::WaitEdgeSuspend {
+                        sig,
+                        offset,
+                        kind,
+                        at,
+                        stmt,
+                        body: block,
+                    };
+                }
+            }
+            _ => {}
         }
     }
     // The search loop: a load and compare of a position, then a step of the index that jumps

@@ -20,6 +20,8 @@ import simconf  # noqa: E402
 
 CORPUS = Path(os.environ.get("YAVS_CORPUS") or Path.home() / ".cache" / "rsim-corpus")
 CACHE = Path(os.environ.get("DIFFTEST_CACHE") or Path.home() / ".cache" / "yavs-difftest" / f"ext-{os.getpid()}")
+# the shared std/ieee store (#564) is private to this tool, never the user's
+os.environ["YAVS_STD_CACHE"] = str(CACHE / "std")
 
 
 class Skip(Exception):

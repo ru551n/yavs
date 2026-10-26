@@ -312,6 +312,8 @@ def main():
     ap.add_argument("--root", default=os.environ.get("YAVS_CORPUS", "~/.cache/rsim-corpus"))
     a = ap.parse_args()
     a.out = Path(a.out).expanduser()
+    # the shared std/ieee store (#564) is private to this tool, never the user's
+    os.environ["YAVS_STD_CACHE"] = str(a.out / "std-cache")
     root = (Path(a.root).expanduser() / "uvvm").resolve()
     corpus = Path(a.root).expanduser()  # the third-party checkouts are next to the UVVM one
     if not root.is_dir():

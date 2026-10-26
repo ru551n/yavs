@@ -142,9 +142,16 @@ link that code instead of compiling it again; ``--tier=auto`` uses the stored co
 computation loop as soon as the loop is hot, without waiting until compiling it would pay off. The
 code is the same that compiling makes, so the results are too.
 
+The analysed ``std`` and ``ieee`` packages are kept once per user, in ``yavs/std`` of the user's
+cache directory (``$XDG_CACHE_HOME`` or ``~/.cache``; ``%LOCALAPPDATA%`` on Windows), so a new
+library does not analyze them again. ``--std-cache=DIR`` (``analyze``, ``elab``, ``run``, ``cache clean``) or ``YAVS_STD_CACHE=DIR`` names another directory (the flag wins) and
+``--std-cache=off`` or ``YAVS_STD_CACHE=off`` keeps them in each library. A directory ``analyze`` cannot write is error
+``E0126``. Deleting it is safe.
+
 * ``--no-cache`` (``elab``, ``run``) neither reads nor writes the cache.
 * ``yavs cache clean --work=lib:out/lib [--map=NAME:PATH ...]`` removes the entries of those
-  libraries. Deleting ``yavs-cache/`` by hand does the same.
+  libraries and the shared ``std``/``ieee`` units (``--std-cache=DIR|off`` picks or skips that store).
+  Deleting ``yavs-cache/`` by hand does the same.
 
 Waveforms
 ---------

@@ -4439,6 +4439,46 @@ impl<'a> Fx<'a, '_> {
             .ok_or(Failed)
     }
 
+    /// `T'VALUE(S)`: the native also takes the prefix descriptor, whose bounds it
+    /// preserves for a constrained prefix and whose open dimensions it fills from `S`.
+    fn value_attr(
+        &mut self,
+        prefix: AttrPrefix,
+        args: &[ExprId],
+        res: SubtypeId,
+        span: Span,
+    ) -> R<V> {
+        let AttrPrefix::Subtype(st) = prefix else {
+            return Err(self.cx.ice(span, "'value without a type prefix"));
+        };
+        let t = self.db.base(st);
+        let v = self.expr(args[0])?;
+        let (d, p) = self.arr(v, span)?;
+        let fat = self.make_fat(d, p);
+        let tid = self.ty(t, span)?;
+        let desc = self.desc_of(st, None, span)?;
+        let mut cells = vec![fat];
+        if let Some(desc) = desc {
+            cells.push(desc);
+        } else {
+            let TypeKind::Array { indexes, .. } = &self.db.types[t].kind else {
+                return Err(self.cx.ice(span, "open record without a descriptor"));
+            };
+            for &ix in indexes {
+                let r = self.scalar_bounds(ix, span)?;
+                let d = self.dir_reg(r.dir);
+                cells.extend([r.left, d]);
+            }
+        }
+        let r = self
+            .native("yavs.attr.value", Some(tid), &cells, Some(res), span)?
+            .ok_or(Failed)?;
+        if let V::S(r) = r {
+            self.check_scalar(r, None, st, "", span)?;
+        }
+        Ok(r)
+    }
+
     fn attr(
         &mut self,
         attr: PredefAttr,
@@ -4453,6 +4493,9 @@ impl<'a> Fx<'a, '_> {
         }
         if attr == Image {
             return self.image_attr(prefix, args, span);
+        }
+        if attr == Value {
+            return self.value_attr(prefix, args, res, span);
         }
         let db = self.db;
         let dim = |fx: &Fx<'_, '_>| -> u8 {
@@ -4522,19 +4565,6 @@ impl<'a> Fx<'a, '_> {
                             span,
                         )?;
                         Ok(V::S(r))
-                    }
-                    Value => {
-                        let v = self.expr(args[0])?;
-                        let (d, p) = self.arr(v, span)?;
-                        let fat = self.make_fat(d, p);
-                        let tid = self.ty(t, span)?;
-                        let r = self
-                            .native("yavs.attr.value", Some(tid), &[fat], Some(res), span)?
-                            .ok_or(Failed)?;
-                        if let V::S(r) = r {
-                            self.check_scalar(r, None, st, "", span)?;
-                        }
-                        Ok(r)
                     }
                     _ => Err(self
                         .cx

@@ -5244,7 +5244,7 @@ dependencies; this overrides "no incremental compilation cache" for analysis too
 
 - **One entry per design unit**, `<lib dir>/yavs-cache/units/unit-<key>.img`, written by `analyze` when it
   analyses the unit from source (also a dependency it had to analyse, into that library's directory, and
-  `std`/`ieee` units into the work library's), read by `analyze`, `elab` and `run`; `elab` and `run` never
+  `std`/`ieee` units into the shared store, see "Shared std/ieee units", before 2026-10-26 into the work library's), read by `analyze`, `elab` and `run`; `elab` and `run` never
   write one (plan rule 14). The key names the library, the unit, its file path, the design revision, the
   options and the build (`yavs-cache` adds the build); the entry holds the *address* (path, content hash,
   standard of the file) and the *full key* (the address and the full keys of the units it loaded, the
@@ -10162,6 +10162,35 @@ what it replaced:
   writing an entry without the temporary file would save the rename but gives up that a reader never sees a short file (the checksum would catch it, so it is an option for a later round).
   `Manifest` lookups by path are linear in the files of the library (`index_of_str`); they do not show in a profile of 449 files.
 
+## Shared std/ieee units (yavs, yavs-sem `units.rs`, #564, user decision 2026-10-26; it reverses 2026-10-23)
+
+- **Decision: the analysed units of the built-in `std` and `ieee` are kept once per user, not once per library.** Their entries are written by `yavs analyze` to, and read by `analyze`, `elab` and `run` from,
+  the directory `$YAVS_STD_CACHE`, else `<user cache directory>/yavs/std` (`$XDG_CACHE_HOME` or `~/.cache` on Unix, `%LOCALAPPDATA%` on Windows), in its `yavs-cache/units/` (same store, entry format,
+  limits and pruning as a library's). Why: the entries depend on nothing but the build, the options and the vendored sources (the key never held a library path), yet every fresh library re-analysed them;
+  copying the 22 std/ieee entries into a fresh library before the call saved 13 to 27 percent of the cold analysis instructions of the small-library tests (#747), and 98 percent of the instructions of a call
+  that analyses one tiny file against a fresh library (193 M to 4 M).
+- **Content addressing.** An entry is named by the unit's identity (library, unit, embedded path, revision, options, defines) and the yavs build (`yavs_cache::build_id`). The build hash (`crates/yavs/build.rs`)
+  now covers `lib/` as well as the crates, so an edit of a vendored file is a new build and never meets an old entry; an entry also records the address of its source and a read checks it. One directory,
+  not one per build: pruning (16384 entries, 512 MiB, oldest first) removes what the builds in use no longer read.
+- **Which units are shared.** `std` or `ieee` that no mapped library supplies (`--map`/`--work` of `ieee` needs `analyze --bootstrap`): a user's own `ieee` is a mapped library and its units stay in its own
+  directory, as every other library's. A custom `$YAVS_STDLIB` tree is not cached at all (unchanged). The earlier scan of the other mapped libraries' directories for a `std`/`ieee` entry is gone (the shared
+  store replaces it).
+- **Concurrency and damage.** Nothing new is needed: the unit store creates an entry under its own name (`create_new`; a name that exists is rewritten through a temporary file and a rename), a reader checks
+  length and checksum, so an entry another process is still writing, a cut-short or a damaged one is a miss and the unit is analysed from source and stored again (healing the entry). Tested with six
+  simultaneous cold analyses into an empty store (`tests/std_share.rs`).
+- **Fail early.** `yavs analyze` checks the shared directory once at start (create it, create and remove a probe file) and an unusable one is `E0126` naming the directory, the cause and the fix; a silently
+  unwritable store would lose every unit it should keep. An empty `YAVS_STD_CACHE`, or no cache directory to derive one from (no `HOME`), is `E0126` for `analyze`, `elab` and `run` (not with `--no-cache`). `elab` and
+  `run` only read: a directory that does not exist is a miss. This is the one place where the cache can fail a command; the rest of the cache stays "an optimisation that can only miss".
+- **Switch.** `YAVS_STD_CACHE=off` keeps the std/ieee units in each library's own directory (the 2026-10-23 behaviour). `--no-cache` (`analyze`) still skips the unit store, shared or not. `--std-cache=DIR|off` on `analyze`, `elab`, `run` and `cache clean` does the same as the variable and wins over it (user decision
+  2026-10-26: a call may need its own store, e.g. a harness).
+- **Tests and tools.** `.cargo/config.toml` points `YAVS_STD_CACHE` at `target/yavs-std-cache` for processes started by `cargo test`/`cargo run`, so tests do not write to the user's cache directory and share the
+  store like concurrent users. Every harness in `tools/` (bench, realbench, difftest, corpus, discrepancies, suites, vhpi-conformance) sets `YAVS_STD_CACHE` to a directory of its own cache and never writes the user's store (user decision 2026-10-26). Timing tools see a "cold" library with a warm shared store after the first call (the steady state of an installed tool, the agreed cold basis, comparable to the reference's precompiled `ieee`); to measure a cold machine, delete the tool's `std` directory.
+- **Measured** (bench builds with `--features llvm`, `tools/realbench --compare`, analysis phase, batched calls, claimed core 8, 7 runs, B/A, shared store warm): cold instructions `en_cl_fix_pkg` 0.72,
+  `poc_strings` 0.83, `neorv32_single_min` 0.77, `sc5_timestamp` 0.79, `fletcher_bufferreader` 0.74 (geomean 0.77); cold wall 0.78, 0.92, 0.75, 0.84, 0.75 (geomean 0.81); warm unchanged (1.00).
+  First call into an empty store: 193.36 M instructions against 193.38 M before, so nothing is lost when the store is cold.
+- **`cache clean`.** `yavs cache clean` also removes the shared store (the one `--std-cache`/`YAVS_STD_CACHE` name; `--std-cache=off` leaves it) and prints it as one more line (user decision 2026-10-26).
+- **Not done**: a store per build tag.
+
 ## Cold analysis: unit entries and records created in place (yavs-cache, yavs-lib, #747, 2026-10-26)
 
 - **Decision: an analysed-unit entry and a library record are created under their own name, with no temporary file and rename.** A cold analysis of a small library makes a hundred or more of each
@@ -10180,8 +10209,7 @@ what it replaced:
 - **Where a cold call of a small library spends its cycles** (frame-pointer profile, `fletcher` selection, before this change): analysis of the files 42 percent, parsing 18, encoding the unit entries 16, creating
   entries and records 13, the rest startup and exit. The `std`/`ieee` packages a library uses (0.2 G instructions for `fletcher`, 204 M of it their bodies, stored for the first elaboration) are the
   same work in every fresh library; a copy of the 22 std/ieee entries into the fresh library before the call, as a shared store would give, saves 13 to 27 percent of its instructions (`fletcher` 27, `neorv32_single_min` 24,
-  `en_cl_fix_pkg` 18, `poc_strings` 18, `sc5_timestamp` 13) and 7 to 21 percent of its wall. Sharing them was declined (#564, user, 2026-10-23: keep std/ieee analysed per library), so it is not done; these are the
-  numbers if it is asked again.
+  `en_cl_fix_pkg` 18, `poc_strings` 18, `sc5_timestamp` 13) and 7 to 21 percent of its wall. Sharing them was declined (#564, user, 2026-10-23) and decided the other way on 2026-10-26: see "Shared std/ieee units".
 - **Tried, not kept**: a push-based `postcard` flavor for the unit entries (instructions -0.5 percent, cycles flat); one thread-local access per serialized id instead of two (-0.15 percent).
 - **Not done**: writing the entries from a thread of their own (a call on a host with a free core overlaps its 13 percent of file creation, but every timed cell is pinned to one core, so it would not show there);
   storing the std/ieee bodies at the first elaboration instead of at the end of `analyze` (moves 204 M instructions from the analysis to the elaboration of the same flow, no gain in the total).
@@ -10663,3 +10691,26 @@ entry, about a fifth more per op over the rest of a testbench process's long act
   the other moves are within the host spread of that pass (load average 9 to 12).
 - **Left:** a callee with frame-mode code still hands over (`check_value` of `uvvm_sb_slv` forced: 10.79 G to 12.65 to 14.47 G warm), the general
   cost of the loop with the tier is #750.
+
+## `wait until <edge>` costs what the sensitivity-list forms cost: `Op::WaitEdgeSuspend` (yavs-interp `pre.rs`, `exec.rs`, #767, 2026-10-26)
+
+- **Cause** (`tools/stepcount --ops`, one clock period): the process `begin wait until rising_edge(clk); ... end process;` has an elaborator edge trigger,
+  so the kernel side was already the same as for `process (clk) if rising_edge(clk)`. The interpreter still ran, at the end of every activation, `BrBody`
+  (the pause check of the jump to the body block), `Stmt`, `SigVal` + `WaitEdge` (a reference to the clock, then `Ctx::wait_edge`, which does nothing when the
+  trigger's `known_edge` is set) and `WaitSuspend`: about 128 instructions an activation more than the other forms (+8.9 percent of a 4096-register design in
+  the interpreter, +11.9 percent in `--tier=auto`).
+- **Decision:** `pre::superops` makes the sequence `SigVal` (one element), `WaitEdge`, `WaitSig`, `Suspend` on the same element (same instance signal and
+  the same offset register or equal known offsets, the reference read only by the `WaitEdge`) one op, `WaitEdgeSuspend`, in the style of `WaitSuspend`: a
+  `Stmt` before it is part of it, and a `Br` or `BrBody` to it is a copy of it that runs as op `at` (the `BrBody` copy keeps the pause check of `prestart`, the
+  `body` field). The op does `Ctx::wait_edge` (a load and a test when the trigger is known) and `wait_on_again` on the element directly from
+  `inst.sigs` (`Machine::wait_edge_sig1`); an element out of the fast path runs the two steps with the checks of `sig_elem`. A `wait until` that is not an
+  edge on one element (an `and` with other signals, `or`, a timeout, another signal in the `on` list) keeps the instructions as they were.
+- **Not done:** the `--tier=llvm` code of such a process (every function compiled, the `WaitEdge` goes to the host through `signal`) still costs more than the
+  sensitivity forms (about +18 percent in the same design): #772, next to #766.
+- **Measured** (bench builds, `rtl_ff`-style design of 4096 one-bit registers and 2000 cycles, `--threads 1`, warm cache, `perf stat instructions:u`, cores 8 to 15 by
+  `tools/claim core`; sensitivity `rising_edge`, `'event`, `not 'stable`, `wait until rising_edge`): interpreter before 8.730, 8.737, 8.737, 9.780 G, after 8.705, 8.713, 8.713,
+  8.756 G (wait form +12.0 percent over `rising_edge` before, +0.6 percent after: 128 to 6 instructions an activation); `--tier=auto` before 9.003, 9.010, 9.010, 10.077 G,
+  after 8.978, 8.985, 8.985, 9.036 G (+11.9 to +0.65 percent). The other forms gain 0.3 percent (the pass). Cycles (same runs, interleaved old/new pairs, best of 2, G): interpreter wait form
+  2.98 to 2.81 (`rising_edge` 2.84 to 2.77), `--tier=auto` 3.05 to 2.81 (`rising_edge` 2.90 to 2.84); the wait form is within 1.5 percent of `rising_edge` in both.
+- **Tests:** work-counter test `edge_cost_parity` (`perf/edge_cost.vhd` with each of the four forms: equal `ops`, a ceiling for each); `edge_forms` bound lowered; `delta/wait_edge`
+  and `edge_idioms` run the wait shapes in every tier. Difftest 531 of 531 for interp, auto and llvm at 1 and 4 threads and auto with `--tier-heat=1,0,0` at 4 threads.

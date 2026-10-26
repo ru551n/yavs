@@ -357,8 +357,17 @@ fn sigint_ends_spin(tier: Option<&str>) {
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawn");
-    // Give the run time to start the process (it cannot end by itself).
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    // Wait for the run to have started (the wave file exists) before signalling: a fixed
+    // delay raced the handler and the process loop on a loaded host (#753).
+    let start = std::time::Instant::now();
+    while !t.join("o.fst").exists() {
+        assert!(child.try_wait().expect("wait").is_none(), "ended by itself");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "the run did not start"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     assert!(child.try_wait().expect("wait").is_none(), "ended by itself");
     assert!(
         Command::new("kill")

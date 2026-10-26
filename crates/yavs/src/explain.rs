@@ -106,6 +106,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "E0125",
         "`yavs run --profile` was combined with `--dap`. The profiler samples which process is running; a stop at a breakpoint would be counted as time in the stopped process. Profile a run without `--dap`. Exit status 2.",
     ),
+    (
+        "E0126",
+        "The directory of the std/ieee units shared by all libraries cannot be used: `--std-cache` or `YAVS_STD_CACHE` is empty, no user cache directory is known, or (for `yavs analyze`) the directory cannot be created or written. Name a writable directory with `--std-cache` or `YAVS_STD_CACHE`, or use `off` to keep the std/ieee units in each library. Exit status 2.",
+    ),
     // yavs-wave
     (
         "E0801",

@@ -29,6 +29,8 @@ sys.path.insert(0, os.path.join(HERE, ".."))
 import simconf  # noqa: E402
 
 CACHE = os.path.expanduser(os.environ.get("DISCREP_CACHE", "~/.cache/yavs-discrep"))
+# the shared std/ieee store (#564) is private to this tool, never the user's
+os.environ["YAVS_STD_CACHE"] = os.path.join(CACHE, "std")
 
 # (analyse, elab_and_run) bash snippets; placeholders {file} {top} {std} {work} {res} (the resolution limit of the case, default fs). Exit 97 is an
 # analysis error, 98 an elaboration error.

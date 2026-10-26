@@ -1,0 +1,5 @@
+# Processes started by `cargo test` and `cargo run` keep the shared std/ieee unit cache
+# (`YAVS_STD_CACHE`, docs/decisions.md "Shared std/ieee units") in the build tree, not in the
+# user's cache directory. A value set outside is kept.
+[env]
+YAVS_STD_CACHE = { value = "target/yavs-std-cache", relative = true }

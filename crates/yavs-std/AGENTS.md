@@ -43,6 +43,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | Real literals (any base) are correctly rounded, ties to even, subnormals included; the reference simulator flushes based subnormals | LRM: nearest value | `docs/decisions.md` "std value conversion" |
 | READ of a bit_vector skips white space before each bit (sim1; the LRM is silent, sim2 rejects), a failed read still leaves the line unchanged (#623) | Permissive, rule 2 | `docs/design/lrm-checks.md` L131 |
 | Leniencies kept: leading `+`, integer literal for a real, `5ns`, format effectors as whitespace | Accepted by the reference simulators | same |
+| `string_len` exposes the decoded length of a string or bit string literal for open composite `T'VALUE` bounds | The runtime needs the length before it can build the parser's array type (#609) | `src/value.rs` |
 | READ: failed READ leaves the line unchanged (the second reference simulator), TIME accepts decimals, CRs before LF dropped, WRITELINE writes LF everywhere | Permissive, deterministic across platforms | same |
 | env: exact TIME_RECORD arithmetic, errors outside years 1..4095, sorted `DIRECTORY.items`, TOOL_* name yavs | Fail early, determinism | same |
 | Checked i64 everywhere; overflow is an error, never wrapped or clamped | `docs/plan.md` rule 7, error motto | `src/arith.rs` |

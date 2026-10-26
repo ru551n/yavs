@@ -37,6 +37,8 @@ _spec.loader.exec_module(B)
 
 CACHE = Path(os.environ.get("YAVS_REALBENCH_CACHE", "~/.cache/yavs-realbench")).expanduser()
 CORPUS = Path(os.environ.get("YAVS_CORPUS", "~/.cache/rsim-corpus")).expanduser()
+# the shared std/ieee store (#564) is private to this tool, never the user's
+os.environ["YAVS_STD_CACHE"] = str(CACHE / "std")
 SPECIAL = {"vhdl-ai-test": "YAVS_BENCH_VHDL_AI_TEST"}  # source id -> environment variable naming its checkout
 COLD = "-cold"
 ANALYZE_CALLS = "batched"  # analysis cells and replays: "batched" (consecutive files of a library and standard per call) or "per-file"

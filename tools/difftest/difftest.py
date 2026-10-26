@@ -13,6 +13,8 @@ ROOT = HERE.parents[1]
 CORPUS = ROOT / "tests" / "corpus"
 # Work directory: unique per process unless DIFFTEST_CACHE is set, so parallel runs never collide.
 CACHE = Path(os.environ.get("DIFFTEST_CACHE") or Path.home() / ".cache" / "yavs-difftest" / f"run-{os.getpid()}")
+# the shared std/ieee store (#564) is private to this tool, never the user's
+os.environ["YAVS_STD_CACHE"] = str(CACHE / "std")
 MAX_JOBS = 8
 TIMEOUT = 300
 GZ_MIN = 1 << 20  # outputs larger than this are stored as .expected.gz

@@ -111,11 +111,14 @@ fn check_bounds(design: &str, r: &Run, bounds: &[(&str, Bound)]) {
     let mut failed = Vec::new();
     for &(name, bound) in bounds {
         let Some(&v) = r.counters.get(name) else {
-            // Counted in debug builds and with `op-census`; a plain release build has none (`ops`, `cb_*`).
-            // Where they are counted, a missing one is a bound that guards nothing (#732).
-            let counted = cfg!(debug_assertions) || cfg!(feature = "op-census");
+            // A plain release build without `op-census` collects no `ops` or `cb_*`
+            // counters; those bounds are skipped there. In a debug build they are
+            // collected, so a missing counter is a failure, not a vacuous pass (#732).
+            if cfg!(debug_assertions) {
+                panic!("design `{design}`: no counter `{name}` in {:?}", r.counters);
+            }
             assert!(
-                !counted && (name == "ops" || name == "ops_elab" || name.starts_with("cb_")),
+                name == "ops" || name == "ops_elab" || name.starts_with("cb_"),
                 "design `{design}`: no counter `{name}` in {:?}",
                 r.counters
             );
@@ -468,9 +471,68 @@ case!(
         ("cycles", Max(415)),
         ("process_runs", Max(1890)),
         ("wakes", Max(1870)),
-        ("ops", Max(19560)),
+        ("ops", Max(19143)),
     ]
 );
+
+/// The same register written with each spelling of the clock edge costs the same work, the
+/// `wait until` form included (#767): `ops` of the four are equal (the wait form skips the
+/// first activation's edge test), with a ceiling for each.
+#[test]
+fn edge_cost_parity() {
+    let forms = [
+        (
+            "rising_edge",
+            "process (clk) begin if rising_edge(clk) then q(i) <= not q(i); end if; end process;",
+        ),
+        (
+            "event",
+            "process (clk) begin if clk'event and clk = '1' then q(i) <= not q(i); end if; end process;",
+        ),
+        (
+            "stable",
+            "process (clk) begin if not clk'stable and clk = '1' then q(i) <= not q(i); end if; end process;",
+        ),
+        (
+            "wait_until",
+            "process begin wait until rising_edge(clk); q(i) <= not q(i); end process;",
+        ),
+    ];
+    let template = include_str!("perf/edge_cost.vhd");
+    assert!(
+        template.contains(forms[0].1),
+        "the design holds the first form"
+    );
+    let mut ops = Vec::new();
+    for (name, form) in forms {
+        let d = tempdir(&format!("edge_cost_{name}"));
+        let r = run_design(
+            &d,
+            "edge_cost",
+            &template.replace(forms[0].1, form),
+            "interp",
+            &[],
+        );
+        assert_eq!(r.code, 0, "{name}: {}", r.all());
+        assert!(r.all().contains("ones=8"), "{name}: {}", r.all());
+        check_bounds(
+            &format!("edge_cost/{name}"),
+            &r,
+            &[("process_runs", Max(1050)), ("ops", Max(8280))],
+        );
+        ops.push((name, r.counters.get("ops").copied()));
+    }
+    if let Some((first, Some(base))) = ops.first().copied() {
+        for (name, n) in &ops {
+            let n = n.expect("ops");
+            assert!(
+                n <= base && n + 8 >= base,
+                "ops of {name} differ from {first}: {ops:?}"
+            );
+        }
+    }
+}
+
 case!(
     wait_static,
     "s=",

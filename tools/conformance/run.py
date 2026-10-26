@@ -276,7 +276,7 @@ The references are called sim1 and sim2 (two established open-source VHDL simula
     w = R.get("waveq")
     if w:
         h.append(("Waveform equivalence with sim1 (local, real designs)", f"{w['designs']} designs compared signal by signal and time step by time step, interpreter: {w['equal']} of {w['signals']} signals equal over {w['changes']} value changes; "
-                  f"{w['different']} signals differ, {w['different'] - w['unexplained']} of them explained by reference-simulator behaviour the language reference leaves open, {w['unexplained']} unexplained"))
+                  f"{w['different']} signals differ, {w['different'] - w['unexplained']} of them classified as reference-simulator differences (catalogued, the language reference leaves the behaviour open), {w['unexplained']} unexplained"))
     for k, v in loc.items():
         if k == "vunit-own":
             h.append(("VUnit's own VHDL suites (local)", f"{v['data']['pass']} of {v['data']['pass'] + v['data']['fail']} tests pass, 11 suites"))
@@ -397,10 +397,10 @@ yavs's verdict and who decided.
     if "designs" in ci:
         o.append("## Real designs (CI)\n\nComplete designs, run with the interpreter. neorv32: a RISC-V system running its built-in program until the stop time, three configurations (pass = the run finishes with status 0). "
                  "GRLIB LEON3: the template design boots from its PROM image and runs GRLIB's own system test (pass = status 0 and the line `Test passed`).\n\n" +
-                 table(["design", *sorted({t for v in ci["designs"].values() for t in v})], [[n, *["pass" if v.get(t) else "**FAIL**" for t in sorted({t for v in ci["designs"].values() for t in v})]] for n, v in ci["designs"].items()]))
+                 table(["design", *sorted({t for v in ci["designs"].values() for t in v})], [[n, *["pass" if v.get(t) else "**FAIL**" for t in sorted({t for v in ci["designs"].values() for t in v})]] for n, v in sorted(ci["designs"].items())]))
     if "tiers" in loc:
         v = loc["tiers"]
-        o.append(f"Under the `auto` tier (local, {v['date']} at `{v['commit']}`): " + ", ".join(f"{n} {'pass' if all(t.values()) else '**FAIL**'}" for n, t in v["data"]["designs"].items()) + ".\n")
+        o.append(f"Under the `auto` tier (local, {v['date']} at `{v['commit']}`): " + ", ".join(f"{n} {'pass' if all(t.values()) else '**FAIL**'}" for n, t in sorted(v["data"]["designs"].items())) + ".\n")
     o.append("## Waveform equivalence on real designs\n\n" + R["trust2"] + "\n")
     # --- platforms and limits
     o.append("## Platforms covered by CI\n\n" + table(["job", "runs on"], [[f"`{j}`", ", ".join(os_)] for j, os_ in st["platforms"].items()]) +

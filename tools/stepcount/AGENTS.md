@@ -34,6 +34,9 @@ python3 -I tools/stepcount/stepcount.py --from '<yavs_kernel::kernel::SimControl
   N-th entry after that, `--max N` after N instructions; without any of them the whole run is counted. NAME is a part
   of the demangled name without the hash (`nm -C`), or `0xADDRESS`; the full name wins over a longer match, and a name
   that matches several symbols is an error that lists them (generic code has many copies: name one).
+- `--ops-lines OP` (with `--ops`) adds the instructions per op of the arm named OP by source line, callees included (`step -w ARM`
+  keeps the pcs of that arm); `--ops-pcs FILE` writes the relative pc and count of every instruction of it, for an annotated listing with
+  `objdump -d -l`. The arm named exactly OP is taken, else the first op whose name contains OP.
 - `--per N` divides every count (edges, cycles, activations). `--top N` functions are shown (self instructions, callees
   not included), `--lines N` the busiest source lines, `--in NAME` only lines of functions containing NAME.
 - A line is the innermost inlined frame that is not the standard library or a registry crate, so `Vec::retain` inside

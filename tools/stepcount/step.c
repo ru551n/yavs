@@ -12,6 +12,7 @@
  *    to the op that dispatch started, named by its first instruction. ARMFILE gets "arm instructions ops"
  *    lines (hex arm, decimal), and with SYMFILE ("hex-address hex-size" lines, sorted) ARMFILE.fn gets
  *    "arm symbol-index instructions" lines: where the instructions of each op were spent.
+ * -w ARM: also ARMFILE.pc gets "relative-pc count" lines for the instructions executed by the ops of that arm (hex).
  * PCFILE gets "relative-pc count" lines (hex pc, decimal) for addresses of the program file;
  * stderr gets the totals, and the instructions outside it (libraries, vdso) per mapping.
  * Only the main thread is traced: run the program with one thread. x86-64 Linux only.
@@ -38,6 +39,36 @@ static void die(const char *m) {
 /* Open-addressing table pc -> count. */
 static struct { uint64_t pc, n; } *tab;
 static uint64_t cap = 1 << 20, used;
+
+static void bump(uint64_t pc);
+static uint64_t watch_arm;
+static struct { uint64_t pc, n; } *wtab;
+static uint64_t wcap = 1 << 16, wused;
+
+/* The instructions of one watched arm, by pc (table doubles on demand). */
+static void wbump(uint64_t pc) {
+    uint64_t i = (pc * 0x9E3779B97F4A7C15ull) >> 40 & (wcap - 1);
+    for (;; i = (i + 1) & (wcap - 1)) {
+        if (wtab[i].n && wtab[i].pc == pc) { wtab[i].n++; return; }
+        if (!wtab[i].n) break;
+    }
+    if (wused * 2 >= wcap) {
+        void *old = wtab; uint64_t oc = wcap;
+        wcap *= 2; wused = 0;
+        wtab = calloc(wcap, sizeof *wtab);
+        if (!wtab) die("calloc");
+        for (uint64_t k = 0; k < oc; k++) {
+            typeof(*wtab) *e = (typeof(*wtab) *)old + k;
+            if (!e->n) continue;
+            uint64_t j = (e->pc * 0x9E3779B97F4A7C15ull) >> 40 & (wcap - 1);
+            while (wtab[j].n) j = (j + 1) & (wcap - 1);
+            wtab[j] = *e; wused++;
+        }
+        free(old);
+        wbump(pc); return;
+    }
+    wtab[i].pc = pc; wtab[i].n = 1; wused++;
+}
 
 static void bump(uint64_t pc) {
     uint64_t i = (pc * 0x9E3779B97F4A7C15ull) >> 40 & (cap - 1);
@@ -146,7 +177,7 @@ int main(int argc, char **argv) {
     uint64_t from = 0, skip = 0, to = 0, nto = 1, max = 0, disp = 0;
     const char *out = NULL, *armf = NULL, *symf = NULL;
     int c;
-    while ((c = getopt(argc, argv, "+f:t:n:o:d:a:s:")) != -1) {
+    while ((c = getopt(argc, argv, "+f:t:n:o:d:a:s:w:")) != -1) {
         char *e;
         switch (c) {
         case 'f': from = strtoull(optarg, &e, 16); if (*e == ':') skip = strtoull(e + 1, NULL, 10); break;
@@ -156,6 +187,7 @@ int main(int argc, char **argv) {
         case 'd': disp = strtoull(optarg, NULL, 16); break;
         case 'a': armf = optarg; break;
         case 's': symf = optarg; break;
+        case 'w': watch_arm = strtoull(optarg, NULL, 16); break;
         default: return 2;
         }
     }
@@ -177,6 +209,8 @@ int main(int argc, char **argv) {
     int pie; uint64_t fv = first_load(exe, &pie);
     tab = calloc(cap, sizeof *tab);
     if (!tab) die("calloc");
+    wtab = calloc(wcap, sizeof *wtab);
+    if (!wtab) die("calloc");
 
     pid_t pid = fork();
     if (pid < 0) die("fork");
@@ -234,6 +268,7 @@ int main(int argc, char **argv) {
             if (after_dispatch) { cur = rel; after_dispatch = 0; arms[arm_index(cur)].ops++; }
             if (cur) {
                 arms[arm_index(cur)].ins++;
+                if (watch_arm && cur == watch_arm && in) wbump(rel);
                 if (nsym) arm_fn_bump(cur, in ? symbol_of(rel) : -1);
             }
             if (in && rel == disp) after_dispatch = 1;
@@ -262,6 +297,13 @@ int main(int argc, char **argv) {
         if (!g) die(armf);
         for (int i = 0; i < narms; i++) fprintf(g, "%" PRIx64 " %" PRIu64 " %" PRIu64 "\n", arms[i].arm, arms[i].ins, arms[i].ops);
         fclose(g);
+        if (watch_arm) {
+            snprintf(p, sizeof p, "%s.pc", armf);
+            g = fopen(p, "w");
+            if (!g) die(p);
+            for (uint64_t i = 0; i < wcap; i++) if (wtab[i].n) fprintf(g, "%" PRIx64 " %" PRIu64 "\n", wtab[i].pc, wtab[i].n);
+            fclose(g);
+        }
         if (nsym) {
             snprintf(p, sizeof p, "%s.fn", armf);
             g = fopen(p, "w");

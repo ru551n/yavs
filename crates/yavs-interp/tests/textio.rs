@@ -173,12 +173,12 @@ fn write_then_read_back() {
         // read(l, s3) -> " hi"; a second integer read fails: good = false
         stmt(&mut fb, StmtKind::Call);
         let (la, sa) = (a(&mut fb, l), a(&mut fb, s3));
-        let sf = fat_of(&mut fb, sa, 1, 3, false);
+        let bounds = [fb.int(1), fb.int(3), fb.int(0)];
         call(
             &mut fb,
             "yavs.textio.read.line_string",
             None,
-            &[la, sf],
+            &[la, sa, bounds[0], bounds[1], bounds[2]],
             false,
         );
         stmt(&mut fb, StmtKind::Report);

@@ -1168,6 +1168,67 @@ pub(crate) enum Op {
         n: u32,
         res: u32,
     },
+    /// `BinRangeK` of `k * i`, `BinRangeK` of `+ c` (both of 32 bits) and the `SlicePos` of the slice
+    /// between them in an ascending descriptor (`v (4 * i to 4 * i + 3)`): the three registers
+    /// are written together when both ends are inside the bounds, else the first op alone. #771.
+    SliceAff {
+        i: u32,
+        dope: u32,
+        a: u32,
+        b: u32,
+        p: u32,
+        k: i8,
+        c: i8,
+    },
+    /// `PosIndexLoad` of an element and the `Index` that takes it as the position in another block
+    /// (the character and its row in a result table, #722); registers of 16 bits.
+    PosIndexLoadIndex {
+        dst: u16,
+        dope: u16,
+        idx: u16,
+        base: u16,
+        dst2: u16,
+        base2: u16,
+        stride: u16,
+        stride2: u16,
+        w: Width,
+        dim: u8,
+    },
+    /// [`Op::StmtIsXSlice`] and the `CondBr` on its result: the branch goes with it when the
+    /// fast path ran (registers of 16 bits).
+    StmtIsXBr {
+        tmp: u16,
+        src: u16,
+        soff: u16,
+        n: u16,
+        res: u16,
+        t: u32,
+        f: u32,
+    },
+    /// `Aff2` (`c0 + ca * a + cb * b`) and the `LCopy` that takes its result as the offset it
+    /// copies to (the plane position of a slice, `v (a to b) := x`): the copy follows the sum
+    /// when it is in range, else the sum alone is replayed. #771.
+    AffLCopy {
+        ad: u16,
+        a: u16,
+        b: u16,
+        ld: u16,
+        src: u16,
+        soff: u16,
+        n: u16,
+        ca: i8,
+        cb: i8,
+        c0: i16,
+    },
+    /// `Stmt` and then [`Op::IsXSlice`]: the statement of an `is_x` of a slice makes no temporary
+    /// on the fast path, so the marker goes with it.
+    StmtIsXSlice {
+        tmp: u32,
+        src: u32,
+        soff: u32,
+        n: u32,
+        res: u32,
+    },
 }
 
 // Small enough for three ops to a cache line.
@@ -3438,8 +3499,185 @@ fn superops(prog: &Program, ops: &mut [Op], at: &[u32], f: &Func, known: &[Known
     // Does register `r` point into the `n` frame bytes at `off`? (A fused frame op skips the
     // zeroing, so an operand inside the block would read what the `Zero` clears.)
     let in_slot = |r: u32, off: u32, n: u32| matches!(known.get(r as usize), Some(&Known::Frame(o)) if o >= off && o - off < n);
+    // `Alloc` of a vector block at `k`, the `LCopy` into it of a slice and the `is_x` of the copy
+    // (nothing else reads it): one op (#770).
+    let is_x_slice = |ops: &[Op], k: usize| -> Option<Op> {
+        match (ops.get(k), ops.get(k + 1), ops.get(k + 2)) {
+            (
+                Some(&first),
+                Some(&Op::LCopy {
+                    dst: d2,
+                    doff,
+                    src,
+                    soff,
+                    n,
+                }),
+                Some(&Op::CallIeee {
+                    native,
+                    start,
+                    len,
+                    dst: res,
+                }),
+            ) if let Some((tmp, 32, false)) = block(first)
+                && d2 == tmp
+                && src != tmp
+                && res != NONE
+                && int(doff) == Some(0)
+                && is_x_vec(prog, native)
+                && let Some(&[a0, ..]) = f.regs(yavs_ir::Regs { start, len })
+                && len == 4
+                && a0.0 == tmp
+                && let Some(&cp) = at.get(k + 2)
+                && !live_after(f, cp as usize, yavs_ir::Reg(tmp)) =>
+            {
+                Some(Op::IsXSlice {
+                    tmp,
+                    src,
+                    soff,
+                    n,
+                    res,
+                })
+            }
+            _ => None,
+        }
+    };
     for k in 0..ops.len() {
         let fused = match (ops[k], ops.get(k + 1), ops.get(k + 2)) {
+            (
+                Op::PosIndexLoad {
+                    dst,
+                    dope,
+                    idx,
+                    base,
+                    stride,
+                    w,
+                    dim,
+                },
+                Some(&Op::Index {
+                    dst: dst2,
+                    base: base2,
+                    pos,
+                    stride: stride2,
+                }),
+                _,
+            ) if pos == dst
+                && let (Some(dst), Some(dope), Some(idx), Some(base), Some(dst2), Some(base2)) = (
+                    r16(dst),
+                    r16(dope),
+                    r16(idx),
+                    r16(base),
+                    r16(dst2),
+                    r16(base2),
+                )
+                && let (Ok(stride), Ok(stride2)) =
+                    (u16::try_from(stride), u16::try_from(stride2)) =>
+            {
+                Some(Op::PosIndexLoadIndex {
+                    dst,
+                    dope,
+                    idx,
+                    base,
+                    dst2,
+                    base2,
+                    stride,
+                    stride2,
+                    w,
+                    dim,
+                })
+            }
+            (
+                Op::Aff2 {
+                    dst: ad,
+                    a,
+                    b,
+                    ca,
+                    cb,
+                    c0,
+                },
+                Some(&Op::LCopy {
+                    dst: ld,
+                    doff,
+                    src,
+                    soff,
+                    n,
+                }),
+                _,
+            ) if doff == ad
+                && let (Ok(ca), Ok(cb), Ok(c0)) =
+                    (i8::try_from(ca), i8::try_from(cb), i16::try_from(c0))
+                && let (Some(ad), Some(a), Some(b), Some(ld), Some(src), Some(soff), Some(n)) = (
+                    r16(ad),
+                    r16(a),
+                    r16(b),
+                    r16(ld),
+                    r16(src),
+                    r16(soff),
+                    r16(n),
+                ) =>
+            {
+                Some(Op::AffLCopy {
+                    ad,
+                    a,
+                    b,
+                    ld,
+                    src,
+                    soff,
+                    n,
+                    ca,
+                    cb,
+                    c0,
+                })
+            }
+            (
+                Op::BinRangeK {
+                    op: IntOp::Mul,
+                    dst: a,
+                    a: kr,
+                    b: i,
+                    lo: i32::MIN,
+                    hi: i32::MAX,
+                },
+                Some(&Op::BinRangeK {
+                    op: IntOp::Add,
+                    dst: b,
+                    a: a2,
+                    b: cr,
+                    lo: i32::MIN,
+                    hi: i32::MAX,
+                }),
+                Some(&Op::SlicePos(pc)),
+            ) if a2 == a
+                && a != b
+                && let Some(kv) = int(kr)
+                    .and_then(|v| i8::try_from(v).ok())
+                    .filter(|&v| v > 0)
+                && let Some(c) = int(cr)
+                    .and_then(|v| i8::try_from(v).ok())
+                    .filter(|&v| v >= 0)
+                && let Some(&Inst::SlicePos {
+                    dst: p,
+                    dope,
+                    left,
+                    right,
+                    dir,
+                    ..
+                }) = f.code.get(pc as usize)
+                && left.0 == a
+                && right.0 == b
+                && int(dir.0) == Some(0)
+                && dope.0 != a
+                && dope.0 != b =>
+            {
+                Some(Op::SliceAff {
+                    i,
+                    dope: dope.0,
+                    a,
+                    b,
+                    p: p.0,
+                    k: kv,
+                    c,
+                })
+            }
             (Op::AddrUp { dst: a, depth, off }, Some(&Op::Load { dst, addr, w }), _)
                 if addr == a
                     && let Some(&lp) = at.get(k + 1)
@@ -3643,41 +3881,50 @@ fn superops(prog: &Program, ops: &mut [Op], at: &[u32], f: &Func, known: &[Known
             {
                 Some(Op::ZeroCatLCopy { tmp, size, dst, n })
             }
-            (
-                first,
-                Some(&Op::LCopy {
-                    dst: d2,
-                    doff,
-                    src,
-                    soff,
-                    n,
-                }),
-                Some(&Op::CallIeee {
-                    native,
-                    start,
-                    len,
-                    dst: res,
-                }),
-            ) if let Some((tmp, 32, false)) = block(first)
-                && d2 == tmp
-                && src != tmp
-                && res != NONE
-                && int(doff) == Some(0)
-                && is_x_vec(prog, native)
-                && let Some(&[a0, ..]) = f.regs(yavs_ir::Regs { start, len })
-                && len == 4
-                && a0.0 == tmp
-                && let Some(&cp) = at.get(k + 2)
-                && !live_after(f, cp as usize, yavs_ir::Reg(tmp)) =>
-            {
-                Some(Op::IsXSlice {
+            (Op::Stmt, Some(&Op::Alloc { .. }), _)
+                if let Some(Op::IsXSlice {
                     tmp,
                     src,
                     soff,
                     n,
                     res,
-                })
+                }) = is_x_slice(ops, k + 1) =>
+            {
+                // (A branch on the result follows after the fused `Alloc`, `LCopy`, `CallIeee`.)
+                match (
+                    ops.get(k + 4),
+                    r16(tmp),
+                    r16(src),
+                    r16(soff),
+                    r16(n),
+                    r16(res),
+                ) {
+                    (
+                        Some(&Op::CondBr { c, t, f: e }),
+                        Some(tmp),
+                        Some(src),
+                        Some(soff),
+                        Some(n),
+                        Some(r),
+                    ) if c == res => Some(Op::StmtIsXBr {
+                        tmp,
+                        src,
+                        soff,
+                        n,
+                        res: r,
+                        t,
+                        f: e,
+                    }),
+                    _ => Some(Op::StmtIsXSlice {
+                        tmp,
+                        src,
+                        soff,
+                        n,
+                        res,
+                    }),
+                }
             }
+            _ if let Some(op) = is_x_slice(ops, k) => Some(op),
             (
                 first,
                 Some(&Op::LCopy {

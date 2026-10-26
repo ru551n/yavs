@@ -785,7 +785,15 @@ impl<'a, 'b> Fx<'a, 'b> {
                 let dope_bytes = 24 * u32::from(dims);
                 let init = o.default.map(|e| self.expr(e)).transpose()?;
                 let init = init.map(|v| self.arr(v, decl.span)).transpose()?;
-                let dope = match (self.subtype_dope(o.subtype, decl.span)?, init) {
+                // Without an initial value, bounds known at run time are made in the
+                // variable's own descriptor: no temporary and no copy (#771).
+                let dslot = self.offset(slot, 24);
+                let into = if init.is_none() && !shared {
+                    Some(dslot)
+                } else {
+                    None
+                };
+                let dope = match (self.subtype_dope_in(o.subtype, decl.span, into)?, init) {
                     (Some(dope), Some((_, vd))) => {
                         let what = self.msg(&name, yavs_ir::Dir::To);
                         self.emit(Inst::SubtypeCheck {
@@ -844,13 +852,14 @@ impl<'a, 'b> Fx<'a, 'b> {
                     what,
                 });
                 self.store(slot, p, Width::B8);
-                let dslot = self.offset(slot, 24);
-                let n = self.int(i64::from(dope_bytes));
-                self.emit(Inst::Copy {
-                    dst: dslot,
-                    src: dope,
-                    bytes: n,
-                });
+                if dope != dslot {
+                    let n = self.int(i64::from(dope_bytes));
+                    self.emit(Inst::Copy {
+                        dst: dslot,
+                        src: dope,
+                        bytes: n,
+                    });
+                }
                 let dp = self.offset(slot, 8);
                 self.store(dp, dslot, Width::B8);
                 let c = &db.subtypes[o.subtype].constraint;

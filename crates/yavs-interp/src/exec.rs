@@ -578,8 +578,6 @@ pub(crate) struct Machine {
     pub inst: Arc<InstData>,
     pub drivers: Vec<ProcDriver>,
     dbg: Option<Box<Dbg>>,
-    /// What the compiled tier keeps for this process between activations.
-    pub(crate) tier_state: Option<Box<crate::TierState>>,
     /// Bumped whenever the machine runs or a variable is written: unchanged means every
     /// variable of the process has its last value (the waveform recorder skips it).
     pub(crate) execs: u64,
@@ -605,6 +603,13 @@ pub(crate) struct Machine {
     /// (`view_root`; it was scattered over five lines of a machine and its instance data,
     /// which cost a design of thousands of processes three cache misses per activation).
     vc: ViewCache,
+    /// What the compiled tier keeps for this process between activations, inline (a box of its
+    /// own was one more cache line per activation, #766), in the fifth line with `troots`, whose
+    /// length every activation reads.
+    pub(crate) tier_state: crate::TierState,
+    /// Temporaries that hold handles or heap addresses (`Inst::TempRoot`), until the
+    /// statement that made them ends (`Inst::Stmt` drops those at or above its frame's base).
+    troots: Vec<TempRoot>,
     pub heap: Heap,
     /// The roots scan of the last `publish_shared`, kept for its buffers.
     rscratch: heap::Refs,
@@ -620,9 +625,6 @@ pub(crate) struct Machine {
     nwin_to: usize,
     /// The slots of the other frames, one stack: no per-call allocation.
     sstack: Vec<u8>,
-    /// Temporaries that hold handles or heap addresses (`Inst::TempRoot`), until the
-    /// statement that made them ends (`Inst::Stmt` drops those at or above its frame's base).
-    troots: Vec<TempRoot>,
     pub sh: Option<SharedState>,
     /// The package being initialised (`init_package`): its index and writable data.
     pub pkg_init: Option<(u32, Vec<u8>)>,
@@ -1230,7 +1232,7 @@ impl Machine {
             cells: Vec::new(),
             bytes: Vec::new(),
             released: false,
-            tier_state: None,
+            tier_state: crate::TierState::default(),
             resident: false,
             enum_text: Vec::new(),
             resident_bytes: 0,
@@ -1666,7 +1668,7 @@ impl Machine {
         (fr.func, fr.pc, fr.slen) = (id, at, pre.slots);
         self.entry = id;
         prog.note_switch();
-        self.tier_state = None;
+        self.tier_state = crate::TierState::default();
         // A resident process holds registers filled for the shared code: fill the copy's, and
         // stay resident if they fit. A released one gets the copy's from `borrow_fill`, its
         // scratch being keyed by function.
@@ -1824,7 +1826,7 @@ impl Machine {
             Ordering::Relaxed,
         );
         let pc = self.frames[0].pc;
-        let mut state = self.tier_state.take();
+        let mut state = self.tier_state;
         let mut host = Host {
             m: self,
             rt: &rt,
@@ -1848,9 +1850,9 @@ impl Machine {
             Some(crate::TIER_SUSPEND) => {
                 // A wait compiled code ended on the kernel itself left its pc in the record
                 // (the tier writes `at` at every activation).
-                match &self.tier_state {
-                    Some(st) if st.at != crate::NO_PC => self.top().pc = st.at + 1,
-                    _ => self.top().pc += 1,
+                match state.at {
+                    crate::NO_PC => self.top().pc += 1,
+                    at => self.top().pc = at + 1,
                 }
                 slot.store(0, Ordering::Relaxed);
                 Direct::Done(Quick::Suspended)
@@ -4664,10 +4666,15 @@ impl Machine {
             // needs nothing (the allocation is zeroed).
             let src = self.rd(self.r(data), u64::from(fill))?;
             if src.iter().any(|&b| b != 0) {
-                let src = src.to_vec();
-                let out = self.wr(val, size)?;
-                for c in out.chunks_exact_mut(fill as usize) {
-                    c.copy_from_slice(&src);
+                if let [b] = *src {
+                    // One byte (the planes of a logic vector): a memset.
+                    self.wr(val, size)?.fill(b);
+                } else {
+                    let src = src.to_vec();
+                    let out = self.wr(val, size)?;
+                    for c in out.chunks_exact_mut(fill as usize) {
+                        c.copy_from_slice(&src);
+                    }
                 }
             }
         }
@@ -4832,6 +4839,34 @@ impl Machine {
     fn string_parts(&self, fat: u64) -> R<[u64; 3]> {
         let n = self.load(add_addr(fat, 24)?, Width::B8)?;
         Ok([add_addr(fat, 40)?, add_addr(fat, 16)?, n])
+    }
+
+    /// `is_x` of `n` elements at element `soff` of the vector block at `src`, on its planes where
+    /// they are; `None` when they are not in one readable block (`Op::IsXSlice`).
+    #[inline(always)]
+    fn is_x_planes(&self, src: u32, soff: u32, n: u32) -> Option<u64> {
+        let (cnt, so) = (self.regs[n as usize], self.regs[soff as usize]);
+        if cnt == 0 || cnt > 64 || so % 64 + cnt > 64 {
+            return None;
+        }
+        let sa = add_addr(self.regs[src as usize], so / 64 * 32).ok()?;
+        let b = self.rd_hot(sa, 32).ok()?;
+        let (s0, mask) = (so % 64, if cnt == 64 { !0 } else { (1u64 << cnt) - 1 });
+        let x = (!(plane_word(b, 1) >> s0) | plane_word(b, 3) >> s0) & mask;
+        Some(u64::from(x != 0))
+    }
+
+    /// `Op::SliceAff`: the ends `k * x` and `k * x + c` and the position of that slice, when both
+    /// ends are within 32 bits and inside the ascending descriptor at `dope`.
+    #[inline(always)]
+    fn slice_aff(&self, x: i64, dope: u64, k: i8, c: i8) -> Option<(i64, i64, u64)> {
+        let l = x.checked_mul(i64::from(k))?;
+        let r = l + i64::from(c);
+        if l < i64::from(i32::MIN) || r > i64::from(i32::MAX) {
+            return None;
+        }
+        let (dl, dr, dd) = self.dim_of(dope, 0).ok()?;
+        (dd == 0 && dl <= l && r <= dr).then(|| (l, r, l.wrapping_sub(dl) as u64))
     }
 
     /// The temporaries of the statement that ended (`Inst::Stmt`).
@@ -5683,6 +5718,34 @@ impl Machine {
                     ));
                     self.regs[dst as usize] =
                         t!(self.load_idx(self.regs[base as usize], p, stride, w));
+                    k += 1;
+                }
+                Op::PosIndexLoadIndex {
+                    dst,
+                    dope,
+                    idx,
+                    base,
+                    dst2,
+                    base2,
+                    stride,
+                    stride2,
+                    w,
+                    dim,
+                } => {
+                    let p = t!(self.pos_of_with(
+                        self.regs[dope as usize],
+                        dim,
+                        self.regs[idx as usize] as i64,
+                        || pos_what!()
+                    ));
+                    self.regs[dst as usize] =
+                        t!(self.load_idx(self.regs[base as usize], p, stride.into(), w));
+                    k += 1;
+                    self.regs[dst2 as usize] = t!(index_addr(
+                        self.regs[base2 as usize],
+                        self.regs[dst as usize],
+                        stride2.into()
+                    ));
                     k += 1;
                 }
                 Op::PosIndexStore {
@@ -7036,23 +7099,101 @@ impl Machine {
                 } => {
                     // `AllocLCopy` and `is_x` of the copy, on the planes of the source: the
                     // elements of one block, tested where they are.
-                    let (cnt, so) = (self.regs[n as usize], self.regs[soff as usize]);
-                    let mut done = false;
-                    if cnt != 0 && cnt <= 64 && so % 64 + cnt <= 64 {
-                        let sa = t!(add_addr(self.regs[src as usize], so / 64 * 32));
-                        if let Ok(b) = self.rd_hot(sa, 32) {
-                            let (s0, mask) =
-                                (so % 64, if cnt == 64 { !0 } else { (1u64 << cnt) - 1 });
-                            let x = (!(plane_word(b, 1) >> s0) | plane_word(b, 3) >> s0) & mask;
-                            self.regs[res as usize] = u64::from(x != 0);
-                            done = true;
-                        }
-                    }
-                    if done {
+                    if let Some(x) = self.is_x_planes(src, soff, n) {
+                        self.regs[res as usize] = x;
                         k += 3;
                     } else {
                         self.regs[tmp as usize] = t!(self.temp_alloc(32));
                         k += 1;
+                    }
+                }
+                Op::SliceAff {
+                    i,
+                    dope,
+                    a,
+                    b,
+                    p,
+                    k: kc,
+                    c,
+                } => {
+                    let x = self.regs[i as usize] as i64;
+                    if let Some((l, r, pos)) = self.slice_aff(x, self.regs[dope as usize], kc, c) {
+                        self.regs[a as usize] = l as u64;
+                        self.regs[b as usize] = r as u64;
+                        self.regs[p as usize] = pos;
+                        k += 3;
+                    } else {
+                        // The first op alone (`Op::BinRangeK`), which reports what it finds.
+                        let (y, lo, hi) = (i64::from(kc), i64::from(i32::MIN), i64::from(i32::MAX));
+                        self.regs[a as usize] = match fast_op(IntOp::Mul, x, y) {
+                            Some(v) if lo <= v && v <= hi => v as u64,
+                            _ => t!(self.bin_range_slow(IntOp::Mul, x, y, lo, hi, || {
+                                match code.at.get(k).and_then(|&p| f.code.get(p as usize)) {
+                                    Some(&Inst::BinRange { what, .. }) => what,
+                                    _ => yavs_ir::CheckMsgId(0),
+                                }
+                            })),
+                        };
+                        k += 1;
+                    }
+                }
+                Op::StmtIsXBr {
+                    tmp,
+                    src,
+                    soff,
+                    n,
+                    res,
+                    t: yes,
+                    f: no,
+                } => {
+                    self.end_stmt();
+                    if let Some(x) = self.is_x_planes(src.into(), soff.into(), n.into()) {
+                        self.regs[res as usize] = x;
+                        go!(if x != 0 { yes } else { no });
+                    } else {
+                        self.regs[tmp as usize] = t!(self.temp_alloc(32));
+                        k += 2;
+                    }
+                }
+                Op::AffLCopy {
+                    ad,
+                    a,
+                    b,
+                    ld,
+                    src,
+                    soff,
+                    n,
+                    ca,
+                    cb,
+                    c0,
+                } => {
+                    let (x, y) = (self.regs[a as usize] as i64, self.regs[b as usize] as i64);
+                    if aff_ok(x) && aff_ok(y) {
+                        self.regs[ad as usize] =
+                            (i64::from(c0) + i64::from(ca) * x + i64::from(cb) * y) as u64;
+                        k += 1;
+                        t!(self.op_lcopy(ld.into(), ad.into(), src.into(), soff.into(), n.into()));
+                    } else {
+                        self.aff_replay(prog, f, code, top, k, ctx)?;
+                    }
+                    k += 1;
+                    enter!();
+                }
+                Op::StmtIsXSlice {
+                    tmp,
+                    src,
+                    soff,
+                    n,
+                    res,
+                } => {
+                    // The same after the marker of its statement.
+                    self.end_stmt();
+                    if let Some(x) = self.is_x_planes(src, soff, n) {
+                        self.regs[res as usize] = x;
+                        k += 4;
+                    } else {
+                        self.regs[tmp as usize] = t!(self.temp_alloc(32));
+                        k += 2;
                     }
                 }
                 Op::AllocReadVec { dst, sig } => {
@@ -11672,8 +11813,9 @@ thread_local! {
 mod tests {
     use super::*;
 
-    /// What an activation of a small process reads is in the first four cache lines of a
-    /// machine: the hot three, and the line `view_root` reads for compiled code (#634). A new
+    /// What an activation of a small process reads is in the first five cache lines of a
+    /// machine: the hot three, the line `view_root` reads for compiled code (#634) and the tier's
+    /// record with `troots` (#766). A new
     /// field goes after `heap` unless an activation reads it.
     #[test]
     fn activation_fields_are_in_the_first_lines() {
@@ -11685,7 +11827,6 @@ mod tests {
             ("temp", offset_of!(Machine, temp), 24),
             ("rt", offset_of!(Machine, rt), 8),
             ("inst", offset_of!(Machine, inst), 8),
-            ("tier_state", offset_of!(Machine, tier_state), 8),
             ("execs", offset_of!(Machine, execs), 8),
             ("hot", offset_of!(Machine, hot), 1),
             ("spec_at", offset_of!(Machine, spec_at), 4),
@@ -11701,6 +11842,9 @@ mod tests {
             "the view cache is the fourth line"
         );
         assert!(size_of::<ViewCache>() <= 64);
+        // The tier's record and `troots` share the fifth line (#766).
+        assert_eq!(offset_of!(Machine, tier_state), 256);
+        assert!(offset_of!(Machine, troots) + 24 <= 320);
         assert!(offset_of!(Machine, heap) >= 256);
     }
 

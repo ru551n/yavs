@@ -9755,6 +9755,20 @@ instructions (-11.1 percent). The other natives on slices (`to_x01`, the numeric
 A `CondBr` whose arms lead to the same block is a `Br` (the null-range test of a local array). Part of the fixed cost of an `HRead` call (`docs/decisions.md` "A branch whose arms lead to the same block"):
 the call is still about 80 ops; the rest is listed there. First 1 us of `grlib_leon3mp` with #768 to #771: 31.37 G to 22.99 G instructions (-26.7 percent), `--tier=interp`.
 
+## llvm: compiled clocked RTL, round 9: the tier's record inline in the machine (#766, 2026-10-26)
+
+- `Tier::run_cached` takes `&mut TierState`; the record lives inline in `Machine::tier_state`, in the machine's fifth cache line with
+  `troots` (was a `Box` of its own per process). A second code generator only changes its `run_cached` signature.
+- Instructions an activation (stepcount, base 1585475c / round 9): `rtl_ff` 1189.5 / 1178.5, `rtl_lfsr` 1378.8 / 1367.8, `lfsr64`
+  1429.3 / 1418.2; L2 data misses of `rtl_ff` about one fewer an activation. Cycles, warm `--tier=auto`, two batches of 7 on one CCD1
+  core: `rtl_ff` -4.4 / -2.0 percent, `lfsr64` -3.3 / -1.0, `rtl_lfsr` -1.0 / -0.5, `rtl_chain` +1.3 / -0.5 (interpreted).
+- Checks: fmt, clippy with and without `llvm`, both test suites, `gc-stress` tests of `yavs-interp` and `yavs-llvm`; difftest 535/535
+  at 1 and 4 threads for `yavs-interp`, `yavs-auto`, `yavs-llvm` and `yavs-auto` with `--tier-heat=1,0,0`.
+- `tools/realbench --compare` (42 tests): run-phase wall geometric mean 1.00 (interpreter) and 1.00 (auto), instructions 1.00 / 1.01;
+  `neorv32_*` level, `grlib_leon3mp` 0.87 wall at equal instructions (host load fell during the run; not claimed).
+- Left (decisions.md "Compiled clocked RTL processes, round 9"): the entry is field copies of 3 to 15 instructions each; the cycles are
+  first-touch misses of each process's separate allocations.
+
 ## llvm: compiled clocked RTL, round 8: drives and waits on the kernel, every edge form alike (#766, #772, 2026-10-26)
 
 - Zero-delay drives (`yavs_rt_drive_bit`, `yavs_rt_drive` of 1 to 64 logic elements or one byte scalar, `yavs_rt_drive_flush`) and
@@ -9775,3 +9789,11 @@ the call is still about 80 ops; the rest is listed there. First 1 us of `grlib_l
   at 0.99 in five runs a cell at load 8, `poc_cache_cpu` 0.98. `neorv32_single_min` 2.75 / 2.78 s interpreter, 2.83 / 2.81 s auto.
 - Every function compiled (`YAVS_BENCH_TIERFLAGS=--tier-heat=1,0,0`, three runs a cell, load 9): `grlib_leon3mp` 46.45 to 45.82 s
   (instructions 0.99: the kept drives' flush on the kernel), `neorv32_single_min` 4.37 to 4.40 s (instructions 1.01).
+
+## The fixed cost of an `HRead` call and its digit loop (yavs-lower, yavs-ir, yavs-interp, #771, 2026-10-26)
+
+READ of a string takes its target as data and bounds (no pair per call), a local array of run-time bounds keeps its descriptor in its own slot (three ops instead of five), the optimiser keeps the lengths it knows
+for that slot and for a parameter's descriptor (the `SubtypeCheck` of `variable sv : v (0 to sl - 1)` against `sl` goes), the length of a vector leaves a loop that copies elements and calls `is_x`, and the digit
+loop of `HRead` is five ops (was eleven): `PosIndexLoadIndex`, `SliceAff`, `AffLCopy`, `StmtIsXBr`, `CmpBrStep` (`docs/decisions.md` "The fixed cost of an `HRead` call and its digit loop"). An 8-bit `HRead` is 56 ops
+(was 86). First 1 us of `grlib_leon3mp`, `--tier=interp`: 23.14 G to 20.37 G instructions (-12.0 percent), 6.67 G to 5.99 G cycles; `--tier=auto` -5.5 percent instructions; `--tier=llvm` -2.0 percent. Left: the other
+natives on slices (`to_x01`, the numeric operators) still copy the slice first; `Call`/`Ret` and the textio natives (`CallNative` is 6 percent of the first 1 us) are the next cost of the call.

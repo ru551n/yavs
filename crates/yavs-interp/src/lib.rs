@@ -368,14 +368,14 @@ pub trait Tier: Send + Sync {
     fn run(&self, func: FuncId, pc: u32, host: &mut dyn TierHost) -> Option<u32>;
 
     /// [`Tier::run`] for a process that suspends compiled over and over: `state` is the tier's
-    /// own record of this process (its frame view and bookkeeping), kept by the machine between
-    /// activations so that none of it is built again.
+    /// own record of this process, kept inline in the machine between activations (a box was a
+    /// cache line of its own per process, #766).
     fn run_cached(
         &self,
         func: FuncId,
         pc: u32,
         host: &mut dyn TierHost,
-        _state: &mut Option<Box<TierState>>,
+        _state: &mut TierState,
     ) -> Option<u32> {
         self.run(func, pc, host)
     }
@@ -439,6 +439,7 @@ pub enum Called {
 pub const TIER_STATE_WORDS: usize = 4;
 
 /// What a tier keeps for one process between activations ([`Tier::run_cached`]).
+#[derive(Clone, Copy)]
 pub struct TierState {
     /// Room for the tier's record, valid once `used`.
     pub words: [u64; TIER_STATE_WORDS],

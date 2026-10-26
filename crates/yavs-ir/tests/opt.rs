@@ -1278,6 +1278,57 @@ fn a_slice_whose_bounds_differ_by_a_constant_has_that_length() {
 }
 
 #[test]
+fn a_descriptor_from_zero_to_a_length_minus_one_has_that_length() {
+    if !on() {
+        return;
+    }
+    // `variable sv : vector (0 to sl - 1)` with `sl := value'length`: checking `sv` against the
+    // parameter's descriptor decides nothing; `1 to sl - 1` is another length.
+    let checks = |left: i64| {
+        let code = build(FuncKind::Procedure, |fb| {
+            // (The parameter's pointer and the descriptor are slots of their own.)
+            let int = fb.program().ty(Ty::Int { lo: 0, hi: 99 });
+            fb.local("p", int, 8, 8);
+            fb.slot(16, 8);
+            fb.local("d", int, 24, 8);
+            fb.stmt(StmtKind::Return, sp());
+            pin(fb, 0);
+            let a = fb.addr(AddrSpace::Frame, 0);
+            let p = fb.reg(RegTy::Ptr);
+            fb.emit(Inst::Load {
+                dst: p,
+                addr: a,
+                w: Width::B8,
+            });
+            let x = fb.reg(RegTy::I64);
+            fb.emit(Inst::DopeLen {
+                dst: x,
+                dope: p,
+                dim: 0,
+            });
+            let one = fb.int(1);
+            let r = bin(fb, IntOp::Sub, x, one);
+            // (The descriptor of a local array lives in its slot.)
+            let at = fb.addr(AddrSpace::Frame, 24);
+            let (l, d) = (fb.int(left), fb.int(0));
+            let parts = fb.regs(&[l, r, d]);
+            fb.emit(Inst::MakeDope { at, parts });
+            let what = fb.program().check_msg("length", Dir::To);
+            fb.emit(Inst::SubtypeCheck {
+                dope: at,
+                want: p,
+                dims: 1,
+                what,
+            });
+            fb.emit(Inst::Ret { v: None });
+        });
+        count(&code, |i| matches!(i, Inst::SubtypeCheck { .. }))
+    };
+    assert_eq!(checks(0), 0);
+    assert_eq!(checks(1), 1);
+}
+
+#[test]
 fn a_block_only_stored_into_goes() {
     if !on() {
         return;

@@ -11066,3 +11066,76 @@ runs on one claimed core of the second CCD. Base is main at 7076335e.
   once. The ideas taken are the outcome: the drive and the wait of a compiled process reach the kernel in one call, and a `wait until`
   on an edge is the static wait it is. Ours keeps the interpreter's host for every case the kernel's fastest path refuses, and the
   pointers live in the per-activation view. Nothing was copied.
+
+## Compiled clocked RTL processes, round 9: the tier's record inline in the machine (yavs-interp, yavs-llvm, #766, 2026-10-26)
+
+Task (user decision 2026-10-26 on #766): inline `TierState`, the `Box` of which was a cache line of its own per process (12 percent of
+`run_cached`'s cycles on its first load), changing the shared `Tier::run_cached` signature; trim other entry steps within the rules
+(no persistent per-process view or tag cache, #634; no `unsafe` in `yavs-interp`; no "no object table" flag). Method as in round 8: bench
+builds with `llvm`, `tools/stepcount` windows of 4096 (`rtl_ff`) or 2048 compiled activations (entries of `AutoTier::run_cached`,
+`--tier=auto --tier-heat=1,0,0`, `--threads 1`; instructions an activation include the kernel and the compiled body), cycles as the
+minimum of 7 interleaved warm `--tier=auto` runs on one claimed core of the second CCD. Base is main at 1585475c.
+
+- **Decision (user, 2026-10-26): `Tier::run_cached` takes `state: &mut TierState`** (was `&mut Option<Box<TierState>>`), and
+  `Machine::tier_state` is a `TierState` (now `Copy`) inline in the machine, in its fifth cache line together with `troots` (24 bytes,
+  whose length every activation reads); `heap` moves to the sixth. A process with no record yet has the default one (`used` false, `at`
+  `NO_PC`), which `Mem::begin` treats as none, as it did `None`. `run_direct` hands the tier a copy on its stack and stores it back (the
+  `Host` borrows the whole machine; no `unsafe`), then reads `at` from the copy. `enter`/`enter_on` take `Option<&mut TierState>`;
+  `Mem::save_tag` writes the record in place. `activation_fields_are_in_the_first_lines` pins the new line. Why: the per-activation lines
+  of a small compiled process went from seven (four hot machine lines, the heap's head, the box, `troots`) to six; L2 data misses of
+  `rtl_ff` dropped by about one an activation (103 M to 95 M).
+- **Tried and dropped:** writing the record in `save_tag` only when it changed (so the caller's copy back forwards from its own stores):
+  more instructions, cycles within noise.
+- **Measured** (instructions an activation, base / round 9): `rtl_ff` 1189.5 / 1178.5, `rtl_lfsr` 1378.8 / 1367.8, `lfsr64` 1429.3 /
+  1418.2 (11 fewer each: the box's take, `get_or_insert` and the pointer chase). Cycles, warm `--tier=auto`, two batches (core 15 at
+  load 15; core 11 at load 6): `rtl_ff` -4.4 / -2.0 percent, `lfsr64` -3.3 / -1.0, `rtl_lfsr` -1.0 / -0.5, `rtl_chain` +1.3 / -0.5
+  (interpreted, the same instructions: noise). `tools/realbench --compare` (42 tests, interpreter and `--tier=auto`, cores 12 and 13,
+  load 11 to 6): run-phase wall geometric mean 1.00 / 1.00, instructions 1.00 / 1.01, CPU 1.00 / 0.99; `neorv32_*` level,
+  `grlib_leon3mp` 0.87 / 0.87 at instructions 1.00 (host load, not claimed).
+- **Not done, and why.** The rest of the entry is 20 to 30 steps of 3 to 15 instructions of field copies (`view_root` writes about 30
+  view fields from five machine lines; `run_direct` builds the `Host`, the sampling slot, `NativeFlags::activated`; `enter_on` builds
+  `Env` and sets the tags of `Mem::begin`). The largest single step within the rules is `Program::func` in `run_direct` (13 instructions
+  plus its checks): `Host::f` is read at about 20 places, the census notes included, and a lazy lookup would make each of them fallible.
+  Leads for later: the cycles of these designs are first-touch misses of each process's lines (the machine, its frame, register and
+  driver vectors are separate allocations); a prefetch of the next process of a batch in the kernel, or the root frame inline in the
+  machine, would attack those.
+- **The reference simulator (rule 22):** its per-process record is a small fixed block (asserted to fit two cache lines) that holds
+  what entering the compiled code needs inline, the entry point and its context among them, with the variables behind one pointer. The
+  idea taken: what the tier needs at every entry lives inline in the process's own hot lines, sized and pinned by a test. Ours keeps
+  the record in the machine's fifth line next to `troots` instead of a block of its own. Nothing was copied.
+
+## The fixed cost of an `HRead` call and its digit loop: string READ without a pair, descriptors in place, markers, lengths, fused ops (yavs-lower, yavs-ir `opt.rs`, `opt/licm.rs`, yavs-interp `pre.rs`, `exec.rs`, `textio.rs`, #771, 2026-10-26)
+
+What #771 left after the branch fold (`HRead` is 61 percent of the first 1 us of `grlib_leon3mp`, its digit loop 45 percent of that): the pair for the string READ, five ops for each local array, a marker for the
+`is_x` statement, the two `BinRange` and the `SlicePos` of a slice `sv (4 * i to 4 * i + 3)`. Each is general; the digit loop is the case that shows them.
+
+- **READ of a string takes its target as `data, left, right, dir`** (lowering `expr.rs`: the textio natives `yavs.textio.read.line_string*` get `Conv::Flat`, as the `ieee` natives do; `textio.rs` `read_string`
+  computes the length from the bounds). The call made a pair in temporary memory (`NewPair`, two stores, `FatRoot`) and the native read three words back from it. A string of at most 64 characters goes through the stack, not a `Vec`
+  (`malloc` and `free` per call). The verifier checks the register count of the `ieee` natives only; the interpreter test `textio` builds the new form.
+- **A local array whose bounds are known only at run time gets its descriptor in its own slot** (`func.rs` `var_init` through `subtype_dope_in`, for a variable without an initial value that is not shared): `MakeDope` writes the
+  `[data, dope, handle, descriptor]` slot's descriptor directly, no `Alloc` of 24 bytes and no `Copy` of it. `SV (0 to SL-1)` and `S (1 to SL/4-1)` went from five ops each (`NewDope`, `MakeDope`, `LayoutWord`, `NewFrame`, `Copy`) to
+  three. (Not done: the three as one op, or made once per length: the layout and the fill depend on the descriptor, so a per-length cache would compare the descriptor on every call, which is the work.)
+  `NewFrame` with a one-byte pattern fills with a memset (it copied the byte `size` times and took a `Vec` for the pattern).
+- **The optimiser keeps what it knows about such a slot.** (1) The store of the slot's own descriptor address into the slot (the `dope` word) is not an escape (`escapes`, `own_slot`; nothing writes a descriptor through that
+  pointer after the declaration), and `New`, `NewFill` and `NewFrame` read the descriptor they are given without keeping its address; before, any pointer store or call forgot the slot's lengths. (2) `DopeLen` of a
+  parameter's descriptor is a pure fact (`Key::ParamDope`, the descriptor read from a `X'dope` parameter slot): a callee never changes bounds it was given, so no store, call or marker drops it. (3) The length of
+  `MakeDope [c, x + c - 1, to]` for a once-defined `DopeLen` result `x` is the register `x` (`len_register`), so the `SubtypeCheck` of `variable sv : v (0 to sl - 1)` against the parameter `sl` was taken from
+  goes, with the `DopeLen` after it.
+- **A loop that copies logic elements, allocates a block and calls an `ieee` function writes no descriptor** (`licm.rs` `writes`): `LCopy`, `Alloc`, a statement marker (not under a debugger) and an `ieee` native
+  that makes a block of its own (`light_native`, `Uniform` excluded) no longer make the loop "dirty", and `DopeLen` cannot fail (`may_fail`), so the length of the vector leaves the digit loop, past the checks before it.
+- **Fused ops of the digit loop** (`pre::superops`, all fall back to the unfused ops for anything but the usual case; the dispatch, an indirect jump, is 9 percent of the cycles of the first 1 us, so ops count more
+  than their instructions): `StmtIsXSlice` (the `Stmt` before `Alloc`, `LCopy` and `is_x` of #770; the fast path makes no temporary, the slow path ends the statement, allocates and goes on at the `LCopy`) and
+  `StmtIsXBr` (the same with the `CondBr` on its result, registers of 16 bits); `SliceAff` (`BinRangeK` of `k * i`, `BinRangeK` of `+ c`, both 32-bit, `0 < k`, `0 <= c`, below 128, and the `SlicePos` of that slice in an
+  ascending descriptor: writes the three registers when both ends are inside the bounds, else it is the first `BinRangeK` alone, with its error, and the next two ops run as before); `AffLCopy` (`Aff2` and the `LCopy`
+  that copies to its result, the plane position of a slice; the sum out of range replays the `Aff` as before); `PosIndexLoadIndex` (the element of a string and its row in a result table, #722). The digit loop went from
+  11 ops to 5. Not done: proving the two `BinRange` and the `SlicePos` away needs `i <= sl/4 - 1` to give `4*i + 3 <= sl - 1`, a relation intervals do not hold; the other natives on slices (`to_x01`, the
+  numeric operators) read their operand from element 0 of the planes, so a slice is still copied for them (the copy is `AllocLCopy`, one op, and `CallIeee`).
+- **Measured** (bench builds with `llvm`, `perf stat`, `tools/claim core`, one core per tier, interleaved, 5 pairs, medians; before = 502fc80d, the parent of these commits). `grlib_leon3mp`, the first 1 us:
+  `--tier=interp` 23.14 G to 20.37 G instructions (-12.0 percent), 6.67 G to 5.99 G cycles (-10.3 percent), 1.36 s to 1.22 s of CPU; `--tier=auto` 19.87 G to 18.78 G instructions (-5.5 percent), 6.07 G to 5.69 G cycles;
+  `--tier=llvm` 71.88 G to 70.43 G instructions (-2.0 percent; the compiled code runs the loop, and the cycles of both vary from 38 G to 47 G between runs: no claim). A repro of the stdio `HRead` of 8 bits, 40 000
+  calls: 359.7 M to 327.9 M instructions (-8.8 percent; the start is 7.8 M); the call went from 86 ops (the count of #771; 83 after its branch fold) to 56 (`op-census`).
+  Breadth (`tools/realbench --compare`, 42 tests, run phase, `interp` and `auto`, one counted run per cell, before = 502fc80d): the geometric mean of the instruction ratios is 1.00 and 0.99, of the CPU-time ratios
+  1.00 and 0.99, no test above 1.05 in instructions; the whole run of `grlib_leon3mp` (`--stop-time=1060500ns`): 423.2 G to 421.0 G instructions (the start-up is a thirteenth of it).
+- **Tests**: `opt` (`a_descriptor_from_zero_to_a_length_minus_one_has_that_length`), interpreter `textio` (the new calling form), difftest `textio/read_string_forms` (target bounds, directions, null, 70 characters, short
+  line, GOOD form), `composite/local_array_from_parameter` (defaults of logic, bit, character and integer locals, null range, bounds of the parameter) and `composite/slice_loop_bounds` (slices of a loop in range, then
+  past the end), perf cases `hread_loop` (7156 to 4109 ops, ceiling 4233) and `tab_tail` (ceiling 16240 to 14590); the ceilings of `ieee_share`, `elem_loops`, `memo_wide` and `sink_msg` follow the fused ops.

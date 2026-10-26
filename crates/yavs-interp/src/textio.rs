@@ -878,11 +878,11 @@ fn read_with<T>(
     ctx: &mut Option<&mut Ctx<'_>>,
     what: &str,
     a: Args<'_>,
+    good: Option<u64>,
     parse: impl FnOnce(&mut &[u8]) -> Result<T, ()>,
     store: impl FnOnce(&mut Machine, T) -> R<()>,
 ) -> R<Option<u64>> {
     let cell = arg(a, 0)?;
-    let good = a.get(2).copied();
     let ok = match m.line_parse(cell, parse)? {
         Ok(v) => {
             store(m, v)?;
@@ -914,6 +914,7 @@ fn read_scalar(
         ctx,
         what,
         a,
+        a.get(2).copied(),
         |l| f(l, rev).map_err(drop),
         |m, v| m.store(dst, w, v),
     )
@@ -932,6 +933,7 @@ fn read_bits(
         ctx,
         what,
         a,
+        a.get(2).copied(),
         |l| f(l, n as usize).map_err(drop),
         |m, b| m.put_bits(data, &b),
     )
@@ -978,8 +980,24 @@ natives! {
         read_scalar(m, ctx, "time read failed", a, Width::B8, |l, _| tio::read_physical(l, &time_type(), Bounds::I64).map(|v| v as u64))
     }
     read_string(m, ctx, a) {
-        let (data, n) = m.fat1(arg(a, 1)?)?;
-        read_with(m, ctx, "string read failed", a, |l| tio::read_string(l, n as usize).map_err(drop), |m, b| m.put(data, &b))
+        // The target arrives as `data, left, right, dir`; GOOD (if any) follows it.
+        let n = yavs_ir::dim_len(arg(a, 2)? as i64, arg(a, 3)? as i64, arg(a, 4)? == 1)
+            .ok_or_else(|| Fault::Runtime("array too long".into()))?;
+        let data = arg(a, 1)?;
+        let good = a.get(5).copied();
+        let n = n as usize;
+        if n <= 64 {
+            // Short strings (a hex digit run): through the stack, not a vector.
+            let take = |l: &mut &[u8]| {
+                let head = l.get(..n).ok_or(())?;
+                let mut buf = [0u8; 64];
+                buf[..n].copy_from_slice(head);
+                *l = &l[n..];
+                Ok(buf)
+            };
+            return read_with(m, ctx, "string read failed", a, good, take, |m, b| m.put(data, &b[..n]));
+        }
+        read_with(m, ctx, "string read failed", a, good, |l| tio::read_string(l, n).map_err(drop), |m, b| m.put(data, &b))
     }
     read_bit_vector(m, ctx, a) { read_bits(m, ctx, "bit_vector read failed", a, tio::read_bit_vector) }
     hread(m, ctx, a) { read_bits(m, ctx, "hread failed", a, tio::hread) }

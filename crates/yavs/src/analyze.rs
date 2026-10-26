@@ -218,7 +218,22 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
     opts.defines = a.defines;
     opts.encoding = encoding;
     if !a.no_cache {
-        opts.units = crate::cache::Units::store_for(&opts, &work_lib.dir, true);
+        let shared = crate::cache::shared_std_dir().and_then(|d| {
+            d.as_deref()
+                .map(crate::cache::prepare_shared_std)
+                .transpose()?;
+            Ok(d)
+        });
+        match shared {
+            Ok(d) => {
+                opts.units =
+                    crate::cache::Units::store_for(&opts, &work_lib.dir, d.as_deref(), true)
+            }
+            Err(d) => {
+                out.emit(&none, &d);
+                return out.finish(2);
+            }
+        }
     }
 
     // One exclusive hold on the work library for the whole batch (contract section 3).

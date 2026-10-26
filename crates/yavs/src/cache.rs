@@ -246,59 +246,114 @@ fn with_stages(
 }
 
 /// The analysed-unit cache (`docs/decisions.md` "Analysed-unit cache", `yavs_sem::units`): the
-/// entries of a library's units in its directory, those of std/ieee in the work library's.
+/// entries of a library's units in its directory; those of the built-in std/ieee in the store
+/// shared by all libraries ([`shared_std_dir`]), or in the work library's with sharing off.
 #[derive(Debug)]
 pub struct Units {
     /// The unit store of each mapped library.
     stores: std::collections::HashMap<String, Store>,
-    /// The work library's, which holds the entries of std/ieee.
-    work: Store,
+    /// Where the built-in std/ieee units are: the shared store, else the work library's.
+    std: Store,
     writable: bool,
-    /// The stores of the mapped libraries but the work library, in path order: where a
-    /// `std`/`ieee` unit the work library lacks may have been stored.
-    others: Vec<Store>,
-    /// The one of `others` that last had such a unit, which the next is looked for in first.
-    hit: std::sync::atomic::AtomicUsize,
+}
+
+/// Environment variable naming the directory of the std/ieee units shared by all libraries
+/// (`off`: no sharing, each library keeps its own).
+pub const STD_CACHE_ENV: &str = "YAVS_STD_CACHE";
+
+/// The directory of the shared std/ieee unit store: `$YAVS_STD_CACHE`, else `yavs/std` in the user's
+/// cache directory. `None` when sharing is off. A user without a cache directory, or an empty
+/// value, is an error (`E0126`): say `off` or a directory.
+pub fn shared_std_dir() -> Result<Option<std::path::PathBuf>, Box<Diagnostic>> {
+    let bad = |why: &str| {
+        Box::new(
+            Diagnostic::error("E0126", "no place for the shared std/ieee cache")
+                .with_note(why.to_string())
+                .with_help(format!(
+                    "set {STD_CACHE_ENV} to a directory, or to `off` to keep std/ieee units in each library"
+                )),
+        )
+    };
+    let abs =
+        |v: Option<std::ffi::OsString>| v.map(std::path::PathBuf::from).filter(|p| p.is_absolute());
+    if let Some(v) = std::env::var_os(STD_CACHE_ENV) {
+        return match v.to_str() {
+            Some("off") => Ok(None),
+            Some("") => Err(bad(&format!("{STD_CACHE_ENV} is empty"))),
+            _ => Ok(Some(v.into())),
+        };
+    }
+    #[cfg(windows)]
+    let base = abs(std::env::var_os("LOCALAPPDATA"));
+    #[cfg(not(windows))]
+    let base = abs(std::env::var_os("XDG_CACHE_HOME"))
+        .or_else(|| abs(std::env::var_os("HOME")).map(|h| h.join(".cache")));
+    match base {
+        Some(b) => Ok(Some(b.join("yavs").join("std"))),
+        None => Err(bad(
+            "neither the user's cache directory nor the home directory is known",
+        )),
+    }
+}
+
+/// Make the shared store writable for `yavs analyze` (the directory exists and a file can be
+/// created in it): an unusable store would otherwise lose every unit it should keep without a word.
+pub fn prepare_shared_std(dir: &Path) -> Result<(), Box<Diagnostic>> {
+    let units = Store::units_of_library(dir).dir().to_path_buf();
+    let probe = units.join(format!(".probe-{}", std::process::id()));
+    std::fs::create_dir_all(&units)
+        .and_then(|()| std::fs::File::create(&probe))
+        .and_then(|_| std::fs::remove_file(&probe))
+        .map_err(|e| {
+            Box::new(
+                Diagnostic::error(
+                    "E0126",
+                    format!("the shared std/ieee cache `{}` is not usable", dir.display()),
+                )
+                .with_note(e.to_string())
+                .with_help(format!(
+                    "make the directory writable, name another with {STD_CACHE_ENV}, or set {STD_CACHE_ENV}=off"
+                )),
+            )
+        })
 }
 
 impl Units {
     /// The store for a run with `libs` mapped and `work` the work library's directory; only
-    /// `yavs analyze` writes (`writable`). `None` with a custom std/ieee tree (its files are not
-    /// part of the build).
+    /// `yavs analyze` writes (`writable`). `shared` is the directory of [`shared_std_dir`].
+    /// `None` with a custom std/ieee tree (its files are not part of the build).
     pub fn store_for(
         opts: &Options,
         work: &Path,
+        shared: Option<&Path>,
         writable: bool,
     ) -> Option<std::sync::Arc<dyn yavs_sem::UnitStore>> {
         if opts.stdlib != Path::new(yavs_sem::stdlib::EMBEDDED) {
             return None;
         }
-        let dirs: std::collections::HashMap<String, std::path::PathBuf> = opts
-            .libraries
-            .names()
-            .filter_map(|n| Some((n.to_string(), opts.libraries.get(n)?.dir.clone())))
-            .collect();
-        let mut others: Vec<&std::path::PathBuf> = dirs.values().filter(|d| *d != work).collect();
-        others.sort();
         Some(std::sync::Arc::new(Units {
-            work: Store::units_of_library(work),
-            others: others
-                .into_iter()
-                .map(|d| Store::units_of_library(d))
-                .collect(),
-            stores: dirs
-                .iter()
-                .map(|(n, d)| (n.clone(), Store::units_of_library(d)))
+            std: Store::units_of_library(shared.unwrap_or(work)),
+            stores: opts
+                .libraries
+                .names()
+                .filter_map(|n| {
+                    Some((
+                        n.to_string(),
+                        Store::units_of_library(&opts.libraries.get(n)?.dir),
+                    ))
+                })
                 .collect(),
             writable,
-            hit: Default::default(),
         }))
     }
 
     fn store(&self, lib: &str, identity: &[u8; 32]) -> Option<(&Store, Key)> {
-        let store = match lib {
-            "std" | "ieee" => &self.work,
-            _ => self.stores.get(lib)?,
+        // A mapped `std` or `ieee` is the user's own library (its units belong to its directory);
+        // an unmapped one is the built-in tree.
+        let store = match self.stores.get(lib) {
+            Some(s) => s,
+            None if matches!(lib, "std" | "ieee") => &self.std,
+            None => return None,
         };
         let mut k = KeyBuilder::new("unit");
         k.text(lib).part(identity);
@@ -309,35 +364,12 @@ impl Units {
 impl yavs_sem::UnitStore for Units {
     fn get(&self, lib: &str, identity: &[u8; 32]) -> Option<yavs_diag::Buffer> {
         let (s, k) = self.store(lib, identity)?;
-        if let Some(e) = s.get("unit", &k) {
-            return Some(yavs_diag::Buffer::new(e));
-        }
-        // std/ieee units another work library analysed: the same for every library.
-        if !matches!(lib, "std" | "ieee") {
-            return None;
-        }
-        // A project of thirty libraries has one entry of each `std`/`ieee` unit, in the library
-        // analysed first: look where the last one was found before the rest (a failed `open` of
-        // a path five directories deep is two microseconds, and a call asks for a dozen units).
-        let n = self.others.len();
-        let from = self.hit.load(std::sync::atomic::Ordering::Relaxed);
-        (0..n).map(|i| (from + i) % n.max(1)).find_map(|i| {
-            let e = self.others[i].get("unit", &k)?;
-            self.hit.store(i, std::sync::atomic::Ordering::Relaxed);
-            Some(yavs_diag::Buffer::new(e))
-        })
+        s.get("unit", &k).map(yavs_diag::Buffer::new)
     }
 
     fn has(&self, lib: &str, identity: &[u8; 32]) -> bool {
-        let Some((s, k)) = self.store(lib, identity) else {
-            return false;
-        };
-        s.payload_len("unit", &k).is_some()
-            || (matches!(lib, "std" | "ieee")
-                && self
-                    .others
-                    .iter()
-                    .any(|o| o.payload_len("unit", &k).is_some()))
+        self.store(lib, identity)
+            .is_some_and(|(s, k)| s.payload_len("unit", &k).is_some())
     }
 
     fn put(&self, lib: &str, identity: &[u8; 32], bytes: &[u8]) {
@@ -424,6 +456,7 @@ pub fn analyze_closure(
     opts: Options,
     files: &[ClosureFile],
     work_dir: &Path,
+    shared_std: Option<&Path>,
     enabled: bool,
     ahead: bool,
 ) -> (Db, Result<(), Reported>) {
@@ -431,7 +464,7 @@ pub fn analyze_closure(
     let enabled = enabled && opts.stdlib == Path::new(yavs_sem::stdlib::EMBEDDED);
     let mut opts = opts;
     if enabled {
-        opts.units = Units::store_for(&opts, work_dir, false);
+        opts.units = Units::store_for(&opts, work_dir, shared_std, false);
     }
     if !enabled {
         let mut db = Db::new(opts);

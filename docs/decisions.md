@@ -5180,7 +5180,7 @@ dependencies; this overrides "no incremental compilation cache" for analysis too
 
 - **One entry per design unit**, `<lib dir>/yavs-cache/units/unit-<key>.img`, written by `analyze` when it
   analyses the unit from source (also a dependency it had to analyse, into that library's directory, and
-  `std`/`ieee` units into the work library's), read by `analyze`, `elab` and `run`; `elab` and `run` never
+  `std`/`ieee` units into the shared store, see "Shared std/ieee units", before 2026-10-26 into the work library's), read by `analyze`, `elab` and `run`; `elab` and `run` never
   write one (plan rule 14). The key names the library, the unit, its file path, the design revision, the
   options and the build (`yavs-cache` adds the build); the entry holds the *address* (path, content hash,
   standard of the file) and the *full key* (the address and the full keys of the units it loaded, the
@@ -9684,6 +9684,35 @@ what it replaced:
   writing an entry without the temporary file would save the rename but gives up that a reader never sees a short file (the checksum would catch it, so it is an option for a later round).
   `Manifest` lookups by path are linear in the files of the library (`index_of_str`); they do not show in a profile of 449 files.
 
+## Shared std/ieee units (yavs, yavs-sem `units.rs`, #564, user decision 2026-10-26; it reverses 2026-10-23)
+
+- **Decision: the analysed units of the built-in `std` and `ieee` are kept once per user, not once per library.** Their entries are written by `yavs analyze` to, and read by `analyze`, `elab` and `run` from,
+  the directory `$YAVS_STD_CACHE`, else `<user cache directory>/yavs/std` (`$XDG_CACHE_HOME` or `~/.cache` on Unix, `%LOCALAPPDATA%` on Windows), in its `yavs-cache/units/` (same store, entry format,
+  limits and pruning as a library's). Why: the entries depend on nothing but the build, the options and the vendored sources (the key never held a library path), yet every fresh library re-analysed them;
+  copying the 22 std/ieee entries into a fresh library before the call saved 13 to 27 percent of the cold analysis instructions of the small-library tests (#747), and 98 percent of the instructions of a call
+  that analyses one tiny file against a fresh library (193 M to 4 M).
+- **Content addressing.** An entry is named by the unit's identity (library, unit, embedded path, revision, options, defines) and the yavs build (`yavs_cache::build_id`). The build hash (`crates/yavs/build.rs`)
+  now covers `lib/` as well as the crates, so an edit of a vendored file is a new build and never meets an old entry; an entry also records the address of its source and a read checks it. One directory,
+  not one per build: pruning (16384 entries, 512 MiB, oldest first) removes what the builds in use no longer read.
+- **Which units are shared.** `std` or `ieee` that no mapped library supplies (`--map`/`--work` of `ieee` needs `analyze --bootstrap`): a user's own `ieee` is a mapped library and its units stay in its own
+  directory, as every other library's. A custom `$YAVS_STDLIB` tree is not cached at all (unchanged). The earlier scan of the other mapped libraries' directories for a `std`/`ieee` entry is gone (the shared
+  store replaces it).
+- **Concurrency and damage.** Nothing new is needed: the unit store creates an entry under its own name (`create_new`; a name that exists is rewritten through a temporary file and a rename), a reader checks
+  length and checksum, so an entry another process is still writing, a cut-short or a damaged one is a miss and the unit is analysed from source and stored again (healing the entry). Tested with six
+  simultaneous cold analyses into an empty store (`tests/std_share.rs`).
+- **Fail early.** `yavs analyze` checks the shared directory once at start (create it, create and remove a probe file) and an unusable one is `E0126` naming the directory, the cause and the fix; a silently
+  unwritable store would lose every unit it should keep. An empty `YAVS_STD_CACHE`, or no cache directory to derive one from (no `HOME`), is `E0126` for `analyze`, `elab` and `run` (not with `--no-cache`). `elab` and
+  `run` only read: a directory that does not exist is a miss. This is the one place where the cache can fail a command; the rest of the cache stays "an optimisation that can only miss".
+- **Switch.** `YAVS_STD_CACHE=off` keeps the std/ieee units in each library's own directory (the 2026-10-23 behaviour). `--no-cache` (`analyze`) still skips the unit store, shared or not. No command line
+  flag: the setting belongs to the machine or the CI job, not to a call (an open question for the user).
+- **Tests and tools.** `.cargo/config.toml` points `YAVS_STD_CACHE` at `target/yavs-std-cache` for processes started by `cargo test`/`cargo run`, so tests do not write to the user's cache directory and share the
+  store like concurrent users. Timing tools see a "cold" library with a warm shared store after the first call (that is the steady state of a harness); to measure a cold machine, give `YAVS_STD_CACHE` an empty
+  directory per run.
+- **Measured** (bench builds with `--features llvm`, `tools/realbench --compare`, analysis phase, batched calls, claimed core 8, 7 runs, B/A, shared store warm): cold instructions `en_cl_fix_pkg` 0.72,
+  `poc_strings` 0.83, `neorv32_single_min` 0.77, `sc5_timestamp` 0.79, `fletcher_bufferreader` 0.74 (geomean 0.77); cold wall 0.78, 0.92, 0.75, 0.84, 0.75 (geomean 0.81); warm unchanged (1.00).
+  First call into an empty store: 193.36 M instructions against 193.38 M before, so nothing is lost when the store is cold.
+- **Not done**: a `yavs cache clean` for the shared store (delete the directory); a store per build tag.
+
 ## Cold analysis: unit entries and records created in place (yavs-cache, yavs-lib, #747, 2026-10-26)
 
 - **Decision: an analysed-unit entry and a library record are created under their own name, with no temporary file and rename.** A cold analysis of a small library makes a hundred or more of each
@@ -9702,8 +9731,7 @@ what it replaced:
 - **Where a cold call of a small library spends its cycles** (frame-pointer profile, `fletcher` selection, before this change): analysis of the files 42 percent, parsing 18, encoding the unit entries 16, creating
   entries and records 13, the rest startup and exit. The `std`/`ieee` packages a library uses (0.2 G instructions for `fletcher`, 204 M of it their bodies, stored for the first elaboration) are the
   same work in every fresh library; a copy of the 22 std/ieee entries into the fresh library before the call, as a shared store would give, saves 13 to 27 percent of its instructions (`fletcher` 27, `neorv32_single_min` 24,
-  `en_cl_fix_pkg` 18, `poc_strings` 18, `sc5_timestamp` 13) and 7 to 21 percent of its wall. Sharing them was declined (#564, user, 2026-10-23: keep std/ieee analysed per library), so it is not done; these are the
-  numbers if it is asked again.
+  `en_cl_fix_pkg` 18, `poc_strings` 18, `sc5_timestamp` 13) and 7 to 21 percent of its wall. Sharing them was declined (#564, user, 2026-10-23) and decided the other way on 2026-10-26: see "Shared std/ieee units".
 - **Tried, not kept**: a push-based `postcard` flavor for the unit entries (instructions -0.5 percent, cycles flat); one thread-local access per serialized id instead of two (-0.15 percent).
 - **Not done**: writing the entries from a thread of their own (a call on a host with a free core overlaps its 13 percent of file creation, but every timed cell is pinned to one core, so it would not show there);
   storing the std/ieee bodies at the first elaboration instead of at the end of `analyze` (moves 204 M instructions from the analysis to the elaboration of the same flow, no gain in the total).

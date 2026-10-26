@@ -223,8 +223,8 @@ identical to a run without it, at any `--threads`.
   cache clean`. The directory keeps at most 4096 objects and 256 MiB, apart from the 96 entries.
 - **Analysed units** (#537, #539, user decision 2026-10-22, `docs/decisions.md` "Analysed-unit
   cache"): `yavs analyze` keeps the analysis of every design unit it analyses from source in
-  `<dir>/yavs-cache/units/unit-<key>.img` of the unit's library (`std` and `ieee` units in the work
-  library's), and a later `analyze`, `elab` or `run` that needs the unit reads it from there instead of
+  `<dir>/yavs-cache/units/unit-<key>.img` of the unit's library (the built-in `std` and `ieee` units in the
+  store shared by all libraries, below), and a later `analyze`, `elab` or `run` that needs the unit reads it from there instead of
   parsing and analysing its file again: the dependencies of a file analysed one file per call, a
   file analysed again unchanged, the closure of a first `elab` or `run`. An entry is used only if the
   unit's file has the content (and standard) it was made from, the units it depends on are the ones
@@ -237,6 +237,16 @@ identical to a run without it, at any `--threads`.
   cannot be written is read and never fails. `analyze --no-cache` neither reads nor writes them; `yavs
   cache clean` removes them. The directory keeps at most 16384 entries and 512 MiB, apart from the 96
   entries.
+- **Shared std/ieee units** (#564, user decision 2026-10-26, `docs/decisions.md` "Shared std/ieee units"):
+  the analysed units of the built-in `std` and `ieee` are kept once per user in
+  `$YAVS_STD_CACHE/yavs-cache/units/`, default `yavs/std` in the user's cache directory (`$XDG_CACHE_HOME`
+  or `~/.cache`; `%LOCALAPPDATA%` on Windows), not in each library. A fresh library therefore reads them
+  instead of analysing them. The rules of the unit cache hold (identical results, damaged or half-written
+  entries are misses, atomic creation, no lock). `YAVS_STD_CACHE=off` keeps them in each library's own
+  directory. `yavs analyze` checks at start that the directory can be written: `E0126` names the directory,
+  the cause and the fix; an empty value, or no cache directory to derive one from, is `E0126` for `analyze`,
+  `elab` and `run` (not with `--no-cache`). A user's own `ieee` (`analyze --bootstrap`) is a mapped library and
+  is never shared. Deleting the directory is safe.
 
 ## 4. `yavs analyze`
 
@@ -661,7 +671,7 @@ prints the same line.
 ## 7. Environment
 
 The test runner sets no yavs environment variables. `YAVS_STDLIB` overrides the std/ieee
-tree (section 3). Simulator hooks from the test runner packages
+tree (section 3); `YAVS_STD_CACHE` names the directory of the shared std/ieee units, or `off` (section 3). Simulator hooks from the test runner packages
 can add `elab_flags`, `run_flags` and run environment; the test runner applies
 `elab_flags` to both `run` and `elab`, and `run_flags` only to `run`. `YAVS_HUGE_HEAP=0` stops yavs
 from asking for transparent huge pages on its heap at start (Linux with glibc and the system's

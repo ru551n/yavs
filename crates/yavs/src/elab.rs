@@ -384,8 +384,22 @@ fn elaborate(
     opts.psl = c.psl;
     opts.encoding = encoding;
     let work_dir = c.work.split_once(':').map_or("", |(_, d)| d);
-    let (mut db, analyzed) =
-        crate::cache::analyze_closure(opts, &files, work_dir.as_ref(), !c.no_cache, !compile_all);
+    let shared = match crate::cache::shared_std_dir() {
+        Ok(d) => d,
+        Err(d) if !c.no_cache => {
+            out.emit(&none, &d);
+            return Err((out, 2));
+        }
+        Err(_) => None,
+    };
+    let (mut db, analyzed) = crate::cache::analyze_closure(
+        opts,
+        &files,
+        work_dir.as_ref(),
+        shared.as_deref(),
+        !c.no_cache,
+        !compile_all,
+    );
     let diags = db.take_diagnostics();
     for d in &diags {
         out.emit(&db.sources, d);

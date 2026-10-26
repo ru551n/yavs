@@ -57,6 +57,11 @@ fn source_hash() -> String {
             }
         }
     }
+    // The vendored std/ieee sources are embedded in the binary: an edit changes the build, so a
+    // store shared by builds (analysed std/ieee units, #564) never holds a stale unit.
+    let lib = top.join("lib");
+    println!("cargo:rerun-if-changed={}", lib.display());
+    hash_tree(&mut h, &top, &lib);
     let lock = top.join("Cargo.lock");
     println!("cargo:rerun-if-changed={}", lock.display());
     h.update(std::fs::read(lock).unwrap_or_default());

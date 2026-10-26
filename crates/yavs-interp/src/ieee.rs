@@ -104,13 +104,17 @@ fn vh(m: &Machine, a: &[u64], i: usize) -> R<Vh> {
 }
 
 fn put(m: &mut Machine, o: &Vh) -> Ret {
-    // The fat pair, the dope vector and the planes in one block of temporary memory.
-    let blocks = o.v.repr().blocks();
+    put_blocks(m, o.v.repr().blocks(), o.left, o.right, o.down)
+}
+
+/// The result with these plane blocks and bounds: the fat pair, the dope vector and the planes in
+/// one block of temporary memory.
+fn put_blocks(m: &mut Machine, blocks: &[[u64; 4]], left: i64, right: i64, down: bool) -> Ret {
     let size = blocks.len() as u64 * 32;
     let fat = m.temp_alloc(16 + DOPE_DIM_BYTES + size)?;
     let (dope, data) = (add_addr(fat, 16)?, add_addr(fat, 16 + DOPE_DIM_BYTES)?);
     let b = m.wr(fat, 16 + DOPE_DIM_BYTES + size)?;
-    let head = [data, dope, o.left as u64, o.right as u64, u64::from(o.down)];
+    let head = [data, dope, left as u64, right as u64, u64::from(down)];
     for (d, w) in b
         .as_chunks_mut::<8>()
         .0
@@ -594,7 +598,37 @@ fn reduce<const G: u8>(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &
 }
 
 fn is_x_vec(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
-    Ok(Some(u64::from(vh(m, a, 0)?.v.has_x())))
+    let (data, left, right, down) = dim_at(a, 0)?;
+    let n = dim_len(left, right, down).ok_or_else(|| Fault::Runtime("array too long".into()))?;
+    // The planes are tested where they are: no vector is made for a test of the elements (the
+    // codes with plane 1 set and plane 3 clear are the `0 1 L H`, as `yavs_logic::wide::has_x`).
+    let bytes = m.rd(data, n.div_ceil(64) * 32)?;
+    let mut any = 0u64;
+    for (i, c) in bytes.as_chunks::<32>().0.iter().enumerate() {
+        any |= (!le8(&c[8..16]) | le8(&c[24..32])) & yavs_logic::wide::nmask(n as usize - i * 64);
+    }
+    Ok(Some(u64::from(any != 0)))
+}
+
+/// `to_bitvector (s, xmap)`: `'0'` for `0`/`L`, `'1'` for `1`/`H` and `xmap` for any other element,
+/// as the result `(n - 1 downto 0)`. A `bit` element has the plane code of `'0'` or `'1'`.
+fn to_bitvector(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
+    let (data, left, right, down) = dim_at(a, 0)?;
+    let n = dim_len(left, right, down).ok_or_else(|| Fault::Runtime("array too long".into()))?;
+    let n = usize::try_from(n).map_err(|_| Fault::Runtime("array too long".into()))?;
+    let xmap = if arg(a, A1)? != 0 { !0u64 } else { 0 };
+    let mut out = Vec::with_capacity(n.div_ceil(64));
+    if n > 0 {
+        let b = m.rd(data, n.div_ceil(64) as u64 * 32)?;
+        for (i, w) in b.as_chunks::<32>().0.iter().enumerate() {
+            let (p0, p1, p3) = (le8(&w[0..8]), le8(&w[8..16]), le8(&w[24..32]));
+            // `0 L` and `1 H` are the codes with plane 1 set and plane 3 clear; plane 0 tells which.
+            let known = p1 & !p3;
+            let valid = low(n - i * 64);
+            out.push([(p0 & known | !known & xmap) & valid, valid, 0, 0]);
+        }
+    }
+    put_blocks(m, &out, n as i64 - 1, 0, true)
 }
 
 fn is_x_sul(_: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
@@ -1708,6 +1742,7 @@ pub(crate) fn lookup(symbol: &str) -> Option<NativeFn> {
         Op::Conv(1, true) => conv::<1, true>,
         Op::Conv(_, true) => conv::<2, true>,
         Op::To01 => to_01_vec,
+        Op::ToBitVector => to_bitvector,
         Op::Truthy => truthy,
         Op::IsX(true) => is_x_vec,
         Op::IsX(false) => is_x_sul,

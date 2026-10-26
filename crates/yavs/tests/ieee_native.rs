@@ -61,6 +61,17 @@ architecture a of t is
   begin return img(std_ulogic_vector(x)); end function;
   function img (x : signed) return string is
   begin return img(std_ulogic_vector(x)); end function;
+  function img (x : bit_vector) return string is
+    variable r : string(1 to x'length);
+    variable k : integer := 0;
+  begin
+    for i in x'range loop
+      k := k + 1;
+      r(k) := bit'image(x(i))(2);
+    end loop;
+    return integer'image(x'left) & "," & integer'image(x'right) & "," &
+           boolean'image(x'ascending) & ":" & r;
+  end function;
   function img (b : boolean) return string is
   begin return boolean'image(b); end function;
   function img (s : std_ulogic) return string is
@@ -235,6 +246,8 @@ fn testbench(seed: u64, per_op: usize) -> String {
             g.case(&format!("{f}({x})"), "img");
         }
         g.case(&format!("is_x({x})"), "img");
+        g.case(&format!("to_bitvector({x})"), "img");
+        g.case(&format!("to_bitvector({x}, '1')"), "img");
         // Reductions, also over several plane words.
         let w = if g.rng.below(2) == 0 {
             x.clone()

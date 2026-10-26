@@ -347,7 +347,11 @@ macro_rules! push_frame_body {
             return stack_fail($f);
         };
         $self.regs.base = rbase;
-        $pre.fill(&mut $self.regs.v, idx as u32)?;
+        if idx < 1 << 29 {
+            $pre.fill_below(&mut $self.regs.v, idx as u32);
+        } else {
+            $pre.fill(&mut $self.regs.v, idx as u32)?;
+        }
         // A root frame entered with the shared state attached is elaboration code
         // (`call_shared`, `init_package`, `call_values_shared`); a process enters its
         // root frame before it first takes the shared state, and allocates in the shared
@@ -865,6 +869,17 @@ fn sev(v: u64) -> R<Severity> {
 #[inline(always)]
 pub(crate) fn to_time(v: i64) -> R<Time> {
     Time::from_vhdl(v).map_err(|_| runtime_f!("negative time value {v} fs"))
+}
+
+/// The left, right and direction words of a dimension descriptor.
+#[inline(always)]
+fn desc_words(b: &[u8; 24]) -> (i64, i64, u64) {
+    let c = b.as_chunks::<8>().0;
+    (
+        u64::from_le_bytes(c[0]) as i64,
+        u64::from_le_bytes(c[1]) as i64,
+        u64::from_le_bytes(c[2]),
+    )
 }
 
 /// The length of a dimension (bounds and direction word, `dim_of`) in `u64` arithmetic, `None`
@@ -3786,6 +3801,15 @@ impl Machine {
         Ok(true)
     }
 
+    /// The four planes of the block of 32 bytes at `a`. Out of line: inlined in a loop, the reads of
+    /// every memory space load their fields before the loop (60 instructions per call of `cat_words`).
+    #[inline(never)]
+    fn block32(&self, a: u64) -> R<[u64; 4]> {
+        let mut b = [0u64; 4];
+        fill_blocks(self.rd_hot(a, 32)?, std::slice::from_mut(&mut b));
+        Ok(b)
+    }
+
     /// The planes of the pieces of a `Cat` of a logic array of at most 64 elements, combined:
     /// the words, the mask of the elements they cover and how many elements the pieces
     /// have. `None` when a piece does not fit the pattern.
@@ -3817,9 +3841,7 @@ impl Machine {
                 if units > 64 {
                     return Ok(None);
                 }
-                let mut b = [0u64; 4];
-                fill_blocks(self.rd_hot(v, 32)?, std::slice::from_mut(&mut b));
-                (units, b)
+                (units, self.block32(v)?)
             };
             if k.wrapping_add(units) > total {
                 return Ok(None);
@@ -4120,6 +4142,40 @@ impl Machine {
     /// memory, equal bounds or lengths that fit 63 bits) before the general loop.
     #[inline(never)]
     fn subtype_check(&self, dope: u64, want: u64, dims: u8, what: yavs_ir::CheckMsgId) -> R<()> {
+        // Equal descriptors (mostly a temporary against instance data), or equal lengths, are
+        // the usual case.
+        if dims == 1
+            && let (Some(a), Some(b)) = (self.desc24(dope), self.desc24(want))
+            && (a == b
+                || matches!((dim_len63(desc_words(a)), dim_len63(desc_words(b))),
+                    (Some(x), Some(y)) if x == y))
+        {
+            return Ok(());
+        }
+        self.subtype_check_slow(dope, want, dims, what)
+    }
+
+    /// The 24 bytes of the first dimension of the descriptor at `a`, in temporary memory or the
+    /// instance data (the usual homes of a value's and a target's descriptor).
+    #[inline(always)]
+    fn desc24(&self, a: u64) -> Option<&[u8; 24]> {
+        let (sp, idx, off) = split(a);
+        let mem = match sp {
+            TEMP => &self.temp[..],
+            INST => &self.inst.data[..],
+            _ => self.mem_fast(sp, idx)?,
+        };
+        mem.get(off as usize..)?.first_chunk::<24>()
+    }
+
+    #[inline(never)]
+    fn subtype_check_slow(
+        &self,
+        dope: u64,
+        want: u64,
+        dims: u8,
+        what: yavs_ir::CheckMsgId,
+    ) -> R<()> {
         if dims == 1
             && let (Ok(a), Ok(b)) = (self.dim_of(dope, 0), self.dim_of(want, 0))
         {
@@ -6823,7 +6879,7 @@ impl Machine {
                 } => {
                     let a = t!(self.deref(self.regs[handle as usize], what));
                     self.regs[d1 as usize] = a;
-                    match add_addr(a, off.into()).and_then(|a| self.load(a, w)) {
+                    match self.load(a + u64::from(off), w) {
                         Ok(v) => self.regs[d2 as usize] = v,
                         Err(e) => {
                             self.frames[top].pc = code.at.get(k + 1).copied().unwrap_or(0);
@@ -6847,13 +6903,8 @@ impl Machine {
                         }
                     };
                     self.regs[d1 as usize] = a;
-                    match add_addr(a, off.into()) {
-                        Ok(b) => self.regs[d2 as usize] = b,
-                        Err(e) => {
-                            self.frames[top].pc = code.at.get(k + 1).copied().unwrap_or(0);
-                            return Err(e);
-                        }
-                    }
+                    // `deref` gives offset 0: a 32-bit `off` cannot overflow the offset field.
+                    self.regs[d2 as usize] = a + u64::from(off);
                     k += 2;
                 }
                 Op::LoadDerefImm {
@@ -6878,13 +6929,7 @@ impl Machine {
                         }
                     };
                     self.regs[d1 as usize] = a;
-                    match add_addr(a, o2.into()) {
-                        Ok(b) => self.regs[d2 as usize] = b,
-                        Err(e) => {
-                            self.frames[top].pc = code.at.get(k + 2).copied().unwrap_or(0);
-                            return Err(e);
-                        }
-                    }
+                    self.regs[d2 as usize] = a + u64::from(o2);
                     k += 3;
                 }
                 Op::MoveCondBr { dst, src, t, f: e } => {
@@ -7238,24 +7283,25 @@ impl Machine {
                         k += 1;
                     }
                 }
-                Op::AllocCat { dst } => {
+                Op::AllocCat {
+                    dst,
+                    n,
+                    m,
+                    parts,
+                    len,
+                    scalars,
+                    bias,
+                } => {
                     // `AllocK` of one block and the `Cat` into it of at most 64 elements.
-                    let pc = code.at.get(k + 1).copied().unwrap_or(0);
-                    let Some(&Inst::Cat {
-                        n,
-                        m,
-                        parts,
-                        scalars,
-                        bias,
-                        ..
-                    }) = f.code.get(pc as usize)
-                    else {
-                        return Err(ice_f!("pc {pc} is not a concatenation"));
-                    };
-                    let ps = t!(f.regs(parts).ok_or_else(|| ice_s!("operand list")));
+                    let ps = t!(f
+                        .regs(yavs_ir::Regs {
+                            start: parts,
+                            len: len.into()
+                        })
+                        .ok_or_else(|| ice_s!("operand list")));
                     let (mv, total) = (
-                        self.regs[m.0 as usize],
-                        self.regs[n.0 as usize].wrapping_mul(self.regs[m.0 as usize]),
+                        self.regs[m as usize],
+                        self.regs[n as usize].wrapping_mul(self.regs[m as usize]),
                     );
                     let words = if total <= 64 {
                         t!(self.cat_words(total, mv, ps, scalars, bias))

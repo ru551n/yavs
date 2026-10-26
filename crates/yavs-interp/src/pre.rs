@@ -73,20 +73,27 @@ impl Pre {
     /// The collection reads only registers live at a safepoint (#422), so zeros are not
     /// needed for it; appending the table costs what appending stale words would.
     pub(crate) fn fill(&self, stack: &mut Vec<u64>, idx: u32) -> R<()> {
+        if idx < 1 << 29 {
+            self.fill_below(stack, idx);
+            return Ok(());
+        }
+        // The error of `mk_addr`.
+        if let Some(&(_, off)) = self.frame.first() {
+            mk_addr(FRAME, idx, off)?;
+        }
+        self.fill_below(stack, idx);
+        Ok(())
+    }
+
+    /// [`Pre::fill`] for a frame index below 2^29, where no address can fail.
+    #[inline(always)]
+    pub(crate) fn fill_below(&self, stack: &mut Vec<u64>, idx: u32) {
         let at = stack.len();
         stack.extend_from_slice(&self.init);
-        if idx >= 1 << 29 {
-            // The error of `mk_addr`.
-            if let Some(&(_, off)) = self.frame.first() {
-                mk_addr(FRAME, idx, off)?;
-            }
-        }
-        // Offsets are `u32`s, so `mk_addr` cannot fail below the index bound.
         let hi = u64::from(FRAME) << 61 | u64::from(idx) << 32;
         for &(r, off) in &self.frame {
             stack[at + r as usize] = hi | off;
         }
-        Ok(())
     }
 
     /// `budget`: `f` runs as lowered under elaboration-time evaluation, and its jumps back are
@@ -827,6 +834,13 @@ pub(crate) enum Op {
     /// block (else the `AllocK` alone).
     AllocCat {
         dst: u32,
+        n: u32,
+        m: u32,
+        /// The start and length of the operand list of the `Cat` (pieces of two registers).
+        parts: u32,
+        len: u8,
+        scalars: u16,
+        bias: u8,
     },
     /// `Alloc` of a size known at decode time.
     AllocK {
@@ -3973,14 +3987,28 @@ fn superops(prog: &Program, ops: &mut [Op], at: &[u32], f: &Func, known: &[Known
                     && let Some(&Inst::Cat {
                         dst: cd,
                         logic: true,
+                        n,
+                        m,
+                        parts,
+                        scalars,
+                        bias,
                         ..
                     }) = f.code.get(cp as usize)
-                    && cd.0 == dst =>
+                    && cd.0 == dst
+                    && (frame || u8::try_from(parts.len).is_ok()) =>
             {
                 Some(if frame {
                     Op::ZeroCat { dst }
                 } else {
-                    Op::AllocCat { dst }
+                    Op::AllocCat {
+                        dst,
+                        n: n.0,
+                        m: m.0,
+                        parts: parts.start,
+                        len: parts.len as u8,
+                        scalars,
+                        bias,
+                    }
                 })
             }
             (Op::Alloc { dst, size }, _, _)

@@ -10747,3 +10747,42 @@ of its separate allocations. Try a software prefetch in the batch loop of `SimCo
   implementors (`warm` method): measured, no gain over the fixed five lines of `InterpProcess`.
 - **The reference simulator (rule 22):** no new idea taken beyond round 9's (the hot data in the process's own first lines); the prefetch
   is our own measurement-driven design. Nothing was copied.
+
+## Per-op costs, round 1: subtype checks, concatenation, frame fill, dereference offsets (yavs-interp `exec.rs`, `pre.rs`, #778, #520, 2026-10-26)
+
+`tools/stepcount --ops-lines OP` (new) shows the instructions of one op by source line; the first reading of the ops the gap scan ranked
+(`SubtypeCheck` 136 to 161, `AllocCat` 354, `CallProt` 415, `LoadDerefImm` 146, `DerefImm` 90 instructions an op) found waste of four kinds, none of
+them in the work itself.
+
+- **Decision: `subtype_check` tests the equal descriptor before anything else** and the equal length next, both from the 24 bytes of the descriptors
+  read in place (temporary memory and instance data first: a value's and a target's usual homes); the general loop is `subtype_check_slow`. In the
+  tests the check is equal descriptors (`poc_arith_addw`: 14.5 M of 16.8 M checks are a temporary against instance data) or equal lengths with
+  other bounds (the window generator). Not below 50 instructions: the dispatch (11) and the register reads of the arm (20) are most of what is left.
+- **Decision: an out-of-line function that reads memory by `rd_hot` in a loop pays 60 instructions of prologue**, the loads of every memory space's
+  fields hoisted out of the loop. `cat_words` read its vector pieces so; the read is now `block32`, out of line, and `AllocCat` carries the fields of
+  its `Cat` (`n`, `m`, the operand list, `scalars`, `bias`) instead of decoding the instruction at run time (`f.code[pc + 1]`, 25 instructions).
+  A `Cat` with more than 255 operands is not fused.
+- **Decision: `Pre::fill_below` (frame index below 2^29, always) is inlined in the frame push**; `fill` keeps the error of the address check for the
+  rest. The out-of-line `fill` saved and restored six registers and returned a `Result` through memory.
+- **Decision: the address `Deref` returns has offset 0, so `DerefImm`, `LoadDerefImm` and `DerefLoadOff` add their (32 or 16 bit) offset without
+  the overflow and index checks of `add_addr`.**
+- **Tried and dropped: the call of a callee out of line** (`call_enter`: lookups, frame push and argument copy in one function, the arms only
+  switching to the new frame). `CallProt` 415 to 443, `Call` 376 to 414: the work is the same, the call and the result through memory are not free,
+  and the loop's own bookkeeping (saved caller, new `code`, `ops`, `k`: 22 instructions) stays.
+- **Measured** (`tools/stepcount --ops`, 5 M instructions after 3000 `run_batch` entries, `--tier=interp --threads 1`, bench builds of main
+  30241dbc and of this change; instructions an op, before to after):
+
+  | op | window | before | after |
+  |---|---|---:|---:|
+  | `SubtypeCheck` | `poc_arith_addw` | 136.1 | 87.4 |
+  | `SubtypeCheck` | `vai_window_gen_interlock` | 161.5 | 128.8 |
+  | `SubtypeCheck` | `fletcher_bufferwriter_512` | 145.9 | 102.9 |
+  | `SubtypeCheck` | `sc5_fifo_repack` | 153.6 | 113.7 |
+  | `SubtypeCheck` | `grlib_leon3mp` | 151.7 | 113.5 |
+  | `SubtypeCheck` | `fletcher_bufferreader` | 143.2 | 97.4 |
+  | `SubtypeCheck` | `uvvm_axistream_vvc` | 142.3 | 100.0 |
+  | `AllocCat` | `poc_arith_addw` | 354.0 | 319.0 |
+  | `CallProt` | `vai_window_gen_interlock` | 414.8 | 392.6 |
+  | `Call` | `vai_window_gen_interlock` | 376.1 | 354.8 |
+  | `LoadDerefImm` | `vai_window_gen_interlock` | 146.0 | 135.0 |
+  | `DerefImm` | `vai_window_gen_interlock` | 90.0 | 81.0 |

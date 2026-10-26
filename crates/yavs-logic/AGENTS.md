@@ -18,7 +18,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 |---|---|
 | `src/scalar.rs` | `StdULogic` (`U X 0 1 Z W L H -` = codes 0..8), `ALL`, tables `RESOLVE`, `AND`, `OR`, `XOR`, `MATCH`, `NOT`, `TO_X01`, `TO_X01Z`, `TO_UX01`; scalar ops, `rising_edge`/`falling_edge` |
 | `src/repr.rs` | `Repr` trait (`new`, `len`, `get`, `set`, `bin`, `un`, `to_words01`, `from_words01`), `BinOp`, `UnOp` |
-| `src/planes.rs` | `Planes`: `Vec<Block>`, `Block = [u64; 4]` (64 elements, plane k = bit k of the code); `blocks`, `from_blocks`, `resolve_block` (kernel accessors) |
+| `src/planes.rs` | `Planes`: `Vec<Block>`, `Block = [u64; 4]` (64 elements, plane k = bit k of the code); `blocks`, `from_blocks`, `resolve_block`, `bin_block`, `not_block` (kernel accessors; the last two are the kernel's gates, #779) |
 | `src/nibbles.rs` | `Nibbles`: 4-bit codes, table lookups (behind `--features nibbles` as the default alias) |
 | `src/vec.rs` | `Logic<R>`: the vector API used by the rest of yavs; `LogicVec = Logic<DefaultRepr>` in `lib.rs` |
 | `src/wide.rs` | Block-slice kernels over `[Block]` plus an element offset (copy, equality, `is_x`, `?=`, many-source resolution, `Lane`/`L4` four-blocks-at-a-time arithmetic); used by `Planes`, the kernel's `Buf` and the ieee natives |
@@ -51,7 +51,7 @@ Module-local decisions go in this section (and `LAYOUT.md` for layout data) in t
 - Both layouts must give identical results; add a new op to `Repr` for both and to the reference
   comparison in `tests/layouts.rs`.
 - A new loop over blocks goes in `wide.rs` with a case in `tests/wide.rs` (offsets 0, 3, 63, 64, lengths 0, 1, 63, 64, 65, over 256) and a `benches/wide.rs` entry; measure before keeping any lane or SIMD variant (simple gates lost to the transpose).
-- `Planes::blocks`/`from_blocks`/`resolve_block`, `yavs_logic::wide::{get_block, put_block, chunks, copy_range, eq_range, resolve_into}` and `Logic::repr`/`from_repr` are kernel API
+- `Planes::blocks`/`from_blocks`/`resolve_block`/`bin_block`/`not_block`, `yavs_logic::wide::{get_block, put_block, chunks, copy_range, eq_range, resolve_into}` and `Logic::repr`/`from_repr` are kernel API
   (`docs/decisions.md` "Kernel round 2"); changing them breaks `yavs-kernel`.
 - `tests/ieee_tables.rs` reads `lib/ieee`; never "fix" a table without the 1164 body agreeing.
 

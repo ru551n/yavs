@@ -441,6 +441,7 @@ const PASS: &[&str] = &[
     "sigassign/implicit_in_process",
     "sigassign/implicit_in_subprogram",
     "sigassign/last_value_whole",
+    "sigassign/logic_gates",
     "sigassign/null_waveform",
     "sigassign/null_waveform_mixed",
     "sigassign/out_param_elements",

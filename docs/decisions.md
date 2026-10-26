@@ -10597,3 +10597,38 @@ What #771 left after the branch fold (`HRead` is 61 percent of the first 1 us of
 - **Tests**: `opt` (`a_descriptor_from_zero_to_a_length_minus_one_has_that_length`), interpreter `textio` (the new calling form), difftest `textio/read_string_forms` (target bounds, directions, null, 70 characters, short
   line, GOOD form), `composite/local_array_from_parameter` (defaults of logic, bit, character and integer locals, null range, bounds of the parameter) and `composite/slice_loop_bounds` (slices of a loop in range, then
   past the end), perf cases `hread_loop` (7156 to 4109 ops, ceiling 4233) and `tab_tail` (ceiling 16240 to 14590); the ceilings of `ieee_share`, `elem_loops`, `memo_wide` and `sink_msg` follow the fused ops.
+
+## Kernel gates: one-operator concurrent assignments run as the kernel's own process (yavs-kernel, yavs-elab, yavs-logic, #779, 2026-10-26)
+
+A concurrent `c(i) <= not c(i-1);` was an interpreted process of 74 IR instructions: about 600 instructions of interpreter and
+`Ctx` work per activation of `rtl_chain` for a table lookup, 59 ns of its 103 ns per activation against 3 ns in sim1's engine.
+
+- **Decision: a concurrent assignment of one logical operator on static signal names is `ProcInst::gate` and runs as
+  `yavs_kernel::GateProcess`** (`Walker::gate_source`): `not`, `and`, `or`, `xor`, `nand`, `nor`, `xnor`; the IEEE operator of
+  `std_ulogic`/`std_ulogic_vector` (declared in `std_logic_1164`, not implicit) or the predefined one of BIT, BOOLEAN and their
+  vectors; result, operands and target of one base type (so no reduction and no mixed scalar and vector form), each operand and the
+  target one part of one length (the vector operators' length check cannot fail), the target's elements of the whole element type
+  (no range check), the target one whole driver of the process; not guarded or postponed, no `reject`, one waveform element whose
+  `after`, if any, evaluates at elaboration to a time of at least 0 without a call (`static_delay`, the probe `toggle_source` already
+  used). Anything else stays a process. Built under the conditions of a kernel copy (`Config::edge_triggers`, no counters); a clock
+  generator `x <= not x after T` stays a `ToggleProcess`. Why: the statement does one thing; BIT and BOOLEAN keep the codes of '0' and
+  '1', so the IEEE 1164 tables (`yavs_logic::tables`) and plane functions (`Planes::bin_block`, `not_block`, now public) serve all three
+  types with one code path.
+- **The process**: one element reads both codes (`elem_code`), looks up the table and assigns with `assign_code` (the zero-delay
+  fast path of every other scalar assignment); more elements read both operands into buffers made at build (`read_into`), apply the
+  plane function per word and assign with `assign_blocks`. The wait is `wait_same` after the first activation. Delta and event
+  behaviour is that of the process: the same assignment entry points, the same sensitivity (the operand parts are the longest static
+  prefixes). Corpus `sigassign/logic_gates` (all 81 value pairs, a resolved target with two gate drivers, an in port, a vector over a
+  plane word, BIT and BOOLEAN, inertial and transport delays with pulses shorter than the delay) is checked against sim1; the elab test
+  `logic_gates_run_in_the_kernel` compares the reports with time and delta against the interpreted statements and checks the
+  excluded shapes.
+- **Measured** (`tools/bench/run.py --ref sim1 --tiers interp,auto --instructions --runs 5`, core 10, base = main 30241dbc):
+  `rtl_chain` 3.29 G to 2.08 G instructions (`--tier=auto`), wall 0.19 to 0.11 s, CPU ratio to sim1 1.36 to 0.79 (instructions 1.62
+  to 1.02); per activation 94 to 55 ns against sim1's 72 ns. `rtl_ff`, `rtl_lfsr`, `lfsr64`, `delta_chain` have no such statement:
+  unchanged. Work counters: `comb_chain` ops 8139 to 843, new design `gate_vec` (10082 ops interpreted, 6415 with kernel gates).
+- **The reference simulator (rule 22).** Its concurrent statements are tiny compiled functions that read the inputs and schedule the
+  driver directly; its engine part of a chain stage is a few nanoseconds. The idea taken is that a one-operator statement needs no
+  general process machinery; ours reaches it with a fixed kernel process chosen at elaboration rather than generated code, so it costs
+  nothing to compile and works in the interpreter tier. Nothing was copied.
+- **Not covered** (still processes): one-level `when ... else` muxes and selected assignments, relational operators, literal
+  operands, expressions of more than one operator, operands of several parts (record wholes).

@@ -1,0 +1,93 @@
+exit	0
+diag	note	0	0	:tb_logic_gates:watch	0 UUUUUUUUU UUUU UU 0000000000 0false 000 ev=falsefalsefalse
+diag	note	0	0	:tb_logic_gates:pulses	p_in=0 p_tr=0
+diag	note	0	1	:tb_logic_gates:watch	0 100011110 0000 11 1111111111 0true 111 ev=truetruetrue
+diag	note	0	2	:tb_logic_gates:watch	0 UUUUUUUUU U1U1 U0 UUUUUUUUUU 0false 111 ev=truetruetrue
+diag	note	1000000	2	:tb_logic_gates:watch	1 UUUUUUUUU 11U1 00 UUUUUUUUUU 1true 110 ev=falsefalsefalse
+diag	note	2000000	2	:tb_logic_gates:watch	2 U0UU1UUUU X1U1 X0 UUUUUUUUUU 1true 101 ev=truefalsefalse
+diag	note	3000000	0	:tb_logic_gates:pulses	p_in=1 p_tr=1
+diag	note	3000000	2	:tb_logic_gates:watch	3 UU1UU0UUU 1111 00 UUUUUUUUUU 0false 100 ev=truefalsefalse
+diag	note	4000000	2	:tb_logic_gates:watch	4 UUUUUUUUU X1U1 X0 UUUUUUUUUU 0true 111 ev=falsefalsefalse
+diag	note	5000000	2	:tb_logic_gates:watch	5 UUUUUUUUU X1U1 X0 UUUUUUUUUU 1true 010 ev=falsefalsefalse
+diag	note	6000000	2	:tb_logic_gates:watch	6 U0UU1UUUU 01U1 10 UUUUUUUUUU 1false 101 ev=truefalsefalse
+diag	note	7000000	2	:tb_logic_gates:watch	7 UU1UU0UUU 11U1 00 UUUUUUUUUU 0true 000 ev=truefalsefalse
+diag	note	8000000	2	:tb_logic_gates:watch	8 UUUUUUUUU X111 X0 UUUUUUUUUU 0true 111 ev=falsefalsefalse
+diag	note	9000000	2	:tb_logic_gates:watch	9 XUUUUUUXU U1X1 U0 UUUUUXUUUU 1false 110 ev=falsefalsetrue
+diag	note	10000000	2	:tb_logic_gates:watch	10 XXXXXXXXX 11X1 00 XXXXXXXXXX 1true 101 ev=truetruetrue
+diag	note	11000000	2	:tb_logic_gates:watch	11 X0XX1XXXX X1X1 X0 XXXXXXXXXX 0true 100 ev=truefalsefalse
+diag	note	12000000	2	:tb_logic_gates:watch	12 XX1XX0XXX 1111 00 XXXXXXXXXX 0false 111 ev=truefalsefalse
+diag	note	13000000	2	:tb_logic_gates:watch	13 XXXXXXXXX X1X1 X0 XXXXXXXXXX 1true 010 ev=falsefalsefalse
+diag	note	14000000	2	:tb_logic_gates:watch	14 XXXXXXXXX X1U1 X0 XXXXXXXXXX 1true 101 ev=falsefalsefalse
+diag	note	15000000	2	:tb_logic_gates:watch	15 X0XX1XXXX 01X1 10 XXXXXXXXXX 0false 000 ev=truefalsefalse
+diag	note	16000000	2	:tb_logic_gates:watch	16 XX1XX0XXX 11X1 00 XXXXXXXXXX 0true 111 ev=truefalsefalse
+diag	note	17000000	2	:tb_logic_gates:watch	17 XXXXXXXXX X111 X0 XXXXXXXXXX 1true 110 ev=falsefalsefalse
+diag	note	18000000	2	:tb_logic_gates:watch	18 10UU1UU1U U1X1 U0 UUUUU1UUUU 1false 101 ev=truetruetrue
+diag	note	19000000	2	:tb_logic_gates:watch	19 10XX1XX1X 11X1 00 XXXXX1XXXX 0true 100 ev=falsetruetrue
+diag	note	20000000	2	:tb_logic_gates:watch	20 100011110 X101 X0 1111111111 0true 111 ev=falsetruetrue
+diag	note	21000000	2	:tb_logic_gates:watch	21 10111001X 1111 00 0000010000 1false 010 ev=falsetruetrue
+diag	note	22000000	2	:tb_logic_gates:watch	22 10XX1XX1X X1X1 X0 XXXXX1XXXX 1true 101 ev=falsefalsetrue
+diag	note	23000000	2	:tb_logic_gates:watch	23 10XX1XX1X X1U1 X0 XXXXX1XXXX 0true 000 ev=falsefalsefalse
+diag	note	24000000	2	:tb_logic_gates:watch	24 100011110 01X1 10 1111111111 0false 111 ev=falsetruetrue
+diag	note	25000000	2	:tb_logic_gates:watch	25 10111001X 1101 00 0000010000 1true 110 ev=falsetruetrue
+diag	note	26000000	2	:tb_logic_gates:watch	26 10XX1XX1X X111 X0 XXXXX1XXXX 1true 101 ev=falsefalsetrue
+diag	note	27000000	2	:tb_logic_gates:watch	27 0U1UU0U0U U111 U0 UUUUU1UUUU 0false 100 ev=truetruetrue
+diag	note	28000000	2	:tb_logic_gates:watch	28 0X1XX0X0X 1111 00 XXXXX1XXXX 0true 111 ev=truetruetrue
+diag	note	29000000	2	:tb_logic_gates:watch	29 00111000X X111 X0 0000010000 1true 010 ev=truefalsetrue
+diag	note	30000000	2	:tb_logic_gates:watch	30 011000101 1111 00 1111111111 1false 101 ev=truetruetrue
+diag	note	31000000	2	:tb_logic_gates:watch	31 0X1XX0X0X X111 X0 XXXXX1XXXX 0true 000 ev=truetruetrue
+diag	note	32000000	2	:tb_logic_gates:watch	32 0X1XX0X0X X111 X0 XXXXX1XXXX 0true 111 ev=falsefalsefalse
+diag	note	33000000	2	:tb_logic_gates:watch	33 00111000X 0111 10 0000010000 1false 110 ev=truefalsetrue
+diag	note	34000000	2	:tb_logic_gates:watch	34 011000101 1111 00 1111111111 1true 101 ev=truetruetrue
+diag	note	35000000	2	:tb_logic_gates:watch	35 0X1XX0X0X X111 X0 XXXXX1XXXX 0true 100 ev=truetruetrue
+diag	note	36000000	2	:tb_logic_gates:watch	36 XUUUUUUXU U1X1 U0 UUUUUXUUUU 0false 111 ev=truetruetrue
+diag	note	37000000	2	:tb_logic_gates:watch	37 XXXXXXXXX 11X1 00 XXXXXXXXXX 1true 010 ev=truetruetrue
+diag	note	38000000	2	:tb_logic_gates:watch	38 X0XX1XXXX X1X1 X0 XXXXXXXXXX 1true 101 ev=truefalsefalse
+diag	note	39000000	2	:tb_logic_gates:watch	39 XX1XX0XXX 1111 00 XXXXXXXXXX 0false 000 ev=truefalsefalse
+diag	note	40000000	2	:tb_logic_gates:watch	40 XXXXXXXXX X1X1 X0 XXXXXXXXXX 0true 111 ev=falsefalsefalse
+diag	note	41000000	2	:tb_logic_gates:watch	41 XXXXXXXXX X1U1 X0 XXXXXXXXXX 1true 110 ev=falsefalsefalse
+diag	note	42000000	2	:tb_logic_gates:watch	42 X0XX1XXXX 01X1 10 XXXXXXXXXX 1false 101 ev=truefalsefalse
+diag	note	43000000	2	:tb_logic_gates:watch	43 XX1XX0XXX 11X1 00 XXXXXXXXXX 0true 100 ev=truefalsefalse
+diag	note	44000000	2	:tb_logic_gates:watch	44 XXXXXXXXX X111 X0 XXXXXXXXXX 0true 111 ev=falsefalsefalse
+diag	note	45000000	2	:tb_logic_gates:watch	45 XUUUUUUXU U1X1 U0 UUUUUXUUUU 1false 010 ev=truetruetrue
+diag	note	46000000	2	:tb_logic_gates:watch	46 XXXXXXXXX 11X1 00 XXXXXXXXXX 1true 101 ev=truetruetrue
+diag	note	47000000	2	:tb_logic_gates:watch	47 X0XX1XXXX X1X1 X0 XXXXXXXXXX 0true 000 ev=truefalsefalse
+diag	note	48000000	2	:tb_logic_gates:watch	48 XX1XX0XXX 1111 00 XXXXXXXXXX 0false 111 ev=truefalsefalse
+diag	note	49000000	2	:tb_logic_gates:watch	49 XXXXXXXXX X1X1 X0 XXXXXXXXXX 1true 110 ev=falsefalsefalse
+diag	note	50000000	2	:tb_logic_gates:watch	50 XXXXXXXXX X1U1 X0 XXXXXXXXXX 1true 101 ev=falsefalsefalse
+diag	note	51000000	2	:tb_logic_gates:watch	51 X0XX1XXXX 01X1 10 XXXXXXXXXX 0false 100 ev=truefalsefalse
+diag	note	52000000	2	:tb_logic_gates:watch	52 XX1XX0XXX 11X1 00 XXXXXXXXXX 0true 111 ev=truefalsefalse
+diag	note	53000000	2	:tb_logic_gates:watch	53 XXXXXXXXX X111 X0 XXXXXXXXXX 1true 010 ev=falsefalsefalse
+diag	note	54000000	2	:tb_logic_gates:watch	54 10UU1UU1U U1X1 U0 UUUUU1UUUU 1false 101 ev=truetruetrue
+diag	note	55000000	2	:tb_logic_gates:watch	55 10XX1XX1X 11X1 00 XXXXX1XXXX 0true 000 ev=falsetruetrue
+diag	note	56000000	2	:tb_logic_gates:watch	56 100011110 X101 X0 1111111111 0true 111 ev=falsetruetrue
+diag	note	57000000	2	:tb_logic_gates:watch	57 10111001X 1111 00 0000010000 1false 110 ev=falsetruetrue
+diag	note	58000000	2	:tb_logic_gates:watch	58 10XX1XX1X X1X1 X0 XXXXX1XXXX 1true 101 ev=falsefalsetrue
+diag	note	59000000	2	:tb_logic_gates:watch	59 10XX1XX1X X1U1 X0 XXXXX1XXXX 0true 100 ev=falsefalsefalse
+diag	note	60000000	2	:tb_logic_gates:watch	60 100011110 01X1 10 1111111111 0false 111 ev=falsetruetrue
+diag	note	61000000	2	:tb_logic_gates:watch	61 10111001X 1101 00 0000010000 1true 010 ev=falsetruetrue
+diag	note	62000000	2	:tb_logic_gates:watch	62 10XX1XX1X X111 X0 XXXXX1XXXX 1true 101 ev=falsefalsetrue
+diag	note	63000000	2	:tb_logic_gates:watch	63 0U1UU0U0U U111 U0 UUUUU1UUUU 0false 000 ev=truetruetrue
+diag	note	64000000	2	:tb_logic_gates:watch	64 0X1XX0X0X 1111 00 XXXXX1XXXX 0true 111 ev=truetruetrue
+diag	note	65000000	2	:tb_logic_gates:watch	65 00111000X X111 X0 0000010000 1true 110 ev=truefalsetrue
+diag	note	66000000	2	:tb_logic_gates:watch	66 011000101 1111 00 1111111111 1false 101 ev=truetruetrue
+diag	note	67000000	2	:tb_logic_gates:watch	67 0X1XX0X0X X111 X0 XXXXX1XXXX 0true 100 ev=truetruetrue
+diag	note	68000000	2	:tb_logic_gates:watch	68 0X1XX0X0X X111 X0 XXXXX1XXXX 0true 111 ev=falsefalsefalse
+diag	note	69000000	2	:tb_logic_gates:watch	69 00111000X 0111 10 0000010000 1false 010 ev=truefalsetrue
+diag	note	70000000	2	:tb_logic_gates:watch	70 011000101 1111 00 1111111111 1true 101 ev=truetruetrue
+diag	note	71000000	2	:tb_logic_gates:watch	71 0X1XX0X0X X111 X0 XXXXX1XXXX 0true 000 ev=truetruetrue
+diag	note	72000000	2	:tb_logic_gates:watch	72 XUUUUUUXU U1X1 U0 UUUUUXUUUU 0false 111 ev=truetruetrue
+diag	note	73000000	2	:tb_logic_gates:watch	73 XXXXXXXXX 11X1 00 XXXXXXXXXX 1true 110 ev=truetruetrue
+diag	note	74000000	2	:tb_logic_gates:watch	74 X0XX1XXXX X1X1 X0 XXXXXXXXXX 1true 101 ev=truefalsefalse
+diag	note	75000000	2	:tb_logic_gates:watch	75 XX1XX0XXX 1111 00 XXXXXXXXXX 0false 100 ev=truefalsefalse
+diag	note	76000000	2	:tb_logic_gates:watch	76 XXXXXXXXX X1X1 X0 XXXXXXXXXX 0true 111 ev=falsefalsefalse
+diag	note	77000000	2	:tb_logic_gates:watch	77 XXXXXXXXX X1U1 X0 XXXXXXXXXX 1true 010 ev=falsefalsefalse
+diag	note	78000000	2	:tb_logic_gates:watch	78 X0XX1XXXX 01X1 10 XXXXXXXXXX 1false 101 ev=truefalsefalse
+diag	note	79000000	2	:tb_logic_gates:watch	79 XX1XX0XXX 11X1 00 XXXXXXXXXX 0true 000 ev=truefalsefalse
+diag	note	80000000	2	:tb_logic_gates:watch	80 XXXXXXXXX X111 X0 XXXXXXXXXX 0true 111 ev=falsefalsefalse
+diag	note	84000000	0	:tb_logic_gates:pulses	p_in=1 p_tr=0
+diag	note	85000000	0	:tb_logic_gates:pulses	p_in=1 p_tr=1
+diag	note	90000000	0	:tb_logic_gates:pulses	p_in=1 p_tr=0
+diag	note	92000000	0	:tb_logic_gates:pulses	p_in=1 p_tr=1
+diag	note	97000000	0	:tb_logic_gates:pulses	p_in=0 p_tr=0
+diag	note	101000000	0	:tb_logic_gates:pulses	p_in=1 p_tr=1
+diag	note	103000000	0	:tb_logic_gates:stim	done

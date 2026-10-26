@@ -95,6 +95,23 @@ impl Planes {
         resolve(x, y)
     }
 
+    /// IEEE 1164 `op` of two blocks (`Resolve`: the resolution), element by element.
+    #[inline]
+    pub fn bin_block(op: BinOp, x: Block, y: Block) -> Block {
+        match op {
+            BinOp::And => and(x, y),
+            BinOp::Or => or(x, y),
+            BinOp::Xor => xor(x, y),
+            BinOp::Resolve => resolve(x, y),
+        }
+    }
+
+    /// IEEE 1164 `not` of a block, element by element (`U` beyond the length stays `U`).
+    #[inline]
+    pub fn not_block(x: Block) -> Block {
+        not(x)
+    }
+
     fn mask(&self, bi: usize) -> u64 {
         let r = self.len - bi * 64;
         if r >= 64 { !0 } else { (1u64 << r) - 1 }

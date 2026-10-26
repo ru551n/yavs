@@ -357,3 +357,32 @@ proptest! {
         prop_assert_eq!(got, want);
     }
 }
+
+/// `Planes::bin_block`/`not_block` (kernel gates) against the scalar tables: all 81 pairs, each
+/// at bit 0, 37 and 63 of a block, every other bit left `U`.
+#[test]
+fn block_ops_match_scalar() {
+    use yavs_logic::BinOp;
+    let put =
+        |v: StdULogic, s: u32| -> [u64; 4] { std::array::from_fn(|k| ((v as u64 >> k) & 1) << s) };
+    let get =
+        |b: [u64; 4], s: u32| -> u8 { (0..4).fold(0, |c, k| c | ((b[k] >> s & 1) as u8) << k) };
+    for s in [0, 37, 63] {
+        for &x in &ALL {
+            assert_eq!(get(Planes::not_block(put(x, s)), s), x.not() as u8);
+            for &y in &ALL {
+                let (bx, by) = (put(x, s), put(y, s));
+                for (op, f) in [
+                    (BinOp::And, StdULogic::and as fn(_, _) -> _),
+                    (BinOp::Or, StdULogic::or),
+                    (BinOp::Xor, StdULogic::xor),
+                ] {
+                    let r = Planes::bin_block(op, bx, by);
+                    assert_eq!(get(r, s), f(x, y) as u8, "{op:?} {x:?} {y:?}");
+                    // The other elements are `U` op `U` = `U`.
+                    assert_eq!(r.map(|p| p & !(1 << s)), [0; 4]);
+                }
+            }
+        }
+    }
+}

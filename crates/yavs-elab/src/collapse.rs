@@ -253,6 +253,10 @@ pub(crate) fn ports(
         if let Some(c) = &mut p.copy {
             c.iter_mut().for_each(mr);
         }
+        if let Some(g) = &mut p.gate {
+            mr(&mut g.a);
+            mr(&mut g.b);
+        }
         if let Some(v) = &mut p.guard {
             v.iter_mut().for_each(mr);
         }

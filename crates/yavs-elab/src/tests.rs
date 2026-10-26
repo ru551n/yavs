@@ -2428,6 +2428,126 @@ fn clock_generators_run_in_the_kernel() {
     assert_eq!(kernel, interp);
 }
 
+/// A concurrent assignment of one logical operator on static signal names (`std_ulogic`, BIT,
+/// BOOLEAN and their vectors, wider than a plane word, a resolved target with two such drivers,
+/// through an `in` port, inertial and transport `after`) is a gate the kernel runs itself
+/// (`ProcInst::gate`, #779); a reduction, a mixed scalar and vector operand, another package's
+/// operator, a literal operand, a constrained target, a rejection limit, two waveform elements, a
+/// condition, a guard or `postponed` are not. Reports, with time and delta, are those of the
+/// interpreted statements over all 81 pairs of values.
+#[test]
+fn logic_gates_run_in_the_kernel() {
+    let src = "library ieee; use ieee.std_logic_1164.all;
+      entity inner is port (i : in std_logic; o : out std_logic); end;
+      architecture a of inner is begin
+        o <= not i;
+      end;
+      library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
+      entity t is end; architecture a of t is
+        signal a, b, en : std_logic := '0';
+        signal y1, y2, y3, y4, y5, y6, y7, y8, y9, yi, r : std_logic;
+        signal v1 : std_logic_vector(3 downto 0);
+        signal v2 : std_logic_vector(0 to 3);
+        signal v3 : std_logic_vector(3 downto 0);
+        signal v4 : std_ulogic_vector(1 downto 0);
+        signal w1, w2, w3 : std_logic_vector(69 downto 0);
+        signal ba, bc, bb : bit;
+        signal bl, bo : boolean;
+        signal bv1, bv2, bv3 : bit_vector(2 downto 0);
+        signal n1, n2 : std_logic;
+        signal n3 : std_logic_vector(3 downto 0);
+        signal un1, un2, un3 : unsigned(3 downto 0);
+        signal cl, c1 : std_logic range '0' to '1' := '0';
+      begin
+        u : entity work.inner port map (i => a, o => yi);
+        y1 <= not a;
+        y2 <= a and b;
+        y3 <= a nand b after 2 ns;
+        y4 <= transport a xor b after 3 ns;
+        v3 <= v1 or v2;
+        v4 <= v1(3 downto 2) nor v2(0 to 1);
+        w3 <= w1 xnor w2;
+        bb <= ba xnor bc;
+        bo <= not bl;
+        bv3 <= bv1 and bv2;
+        r <= a and b;
+        r <= a or b;
+        n1 <= and v1;
+        n3 <= v1 and a;
+        un3 <= un1 and un2;
+        y5 <= a and '1';
+        c1 <= not cl;
+        y6 <= reject 1 ns inertial a and b after 2 ns;
+        y7 <= a and b, '0' after 4 ns;
+        y8 <= a and b when en = '1' else '0';
+        blk : block (en = '1') begin y9 <= guarded a or b; end block;
+        postponed n2 <= a or b after 1 ns;
+        process begin
+          for i in 0 to 80 loop
+            a <= std_logic'val(i / 9);
+            b <= std_logic'val(i mod 9);
+            en <= std_logic'val(i mod 4 + 2);
+            v1 <= (std_logic'val(i mod 9), std_logic'val(i / 9), std_logic'val((i + 4) mod 9), '1');
+            v2 <= (std_logic'val((i * 7) mod 9), 'H', std_logic'val(i / 9), std_logic'val(i mod 9));
+            w1 <= (others => std_logic'val(i mod 9));
+            w1(64) <= std_logic'val(i / 9);
+            w2 <= (others => std_logic'val(i / 9));
+            ba <= bit'val(i mod 2);
+            bc <= bit'val(i / 2 mod 2);
+            bl <= i mod 3 = 0;
+            bv1 <= (bit'val(i mod 2), bit'val(i / 2 mod 2), '1');
+            bv2 <= (bit'val(i / 4 mod 2), '1', bit'val(i mod 2));
+            un1 <= to_unsigned(i mod 16, 4);
+            un2 <= to_unsigned(i / 5 mod 16, 4);
+            wait for 1 ns;
+          end loop;
+          wait;
+        end process;
+        process (y1, y2, y3, y4, y5, y6, y7, y8, y9, yi, r, v3, v4, w3, bb, bo, bv3, n1, n2, n3, un3, c1) begin
+          report to_string(y1) & to_string(y2) & to_string(y3) & to_string(y4) & to_string(y5)
+            & to_string(y6) & to_string(y7) & to_string(y8) & to_string(y9) & to_string(yi)
+            & to_string(r) & ' ' & to_string(v3) & ' ' & to_string(v4) & ' ' & to_string(w3)
+            & ' ' & to_string(bb) & boolean'image(bo) & to_string(bv3) & to_string(n1)
+            & to_string(n2) & to_string(n3) & to_string(un3) & to_string(c1);
+        end process;
+      end;";
+    let (mut db, mut e) = elab("gates", src, "t", &[]);
+    let gates: Vec<bool> = e.procs.iter().map(|p| p.gate.is_some()).collect();
+    // inner's `o <= not i`, then the statements of t in order (the block's `_guard` before
+    // its statement), then its two processes.
+    let mut want = vec![true; 13];
+    want.extend([false; 13]);
+    assert_eq!(gates, want);
+    e.lower(&mut db).expect("lower");
+    struct Seen(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+    impl yavs_kernel::Observer for Seen {
+        fn report(&mut self, hook: &mut yavs_kernel::Hook<'_>, r: &yavs_kernel::Report) {
+            let (t, d) = (hook.now().as_fs(), hook.delta());
+            self.0
+                .lock()
+                .expect("lock")
+                .push(format!("{t} {d} {}", r.message));
+        }
+    }
+    let run = |e: &Elaborated, cfg: yavs_kernel::Config| {
+        let mut sim = e.build(cfg).expect("build");
+        let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        sim.subscribe(Box::new(Seen(got.clone())));
+        sim.run_until(yavs_kernel::Time::MAX).expect("run");
+        got.lock().expect("lock").clone()
+    };
+    let kernel = run(&e, yavs_kernel::Config::default());
+    let interp = run(
+        &e,
+        yavs_kernel::Config {
+            edge_triggers: false,
+            ..Default::default()
+        },
+    );
+    assert!(kernel.len() > 140, "{}", kernel.len());
+    assert_eq!(kernel, interp);
+}
+
 /// The scans for the signals and shared variables of loaded packages skip std and ieee
 /// (`walk.rs` `builtin_lib`, #426): none of their packages may declare one.
 #[test]

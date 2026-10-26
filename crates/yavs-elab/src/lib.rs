@@ -182,6 +182,9 @@ pub struct ProcInst {
     /// A concurrent `x <= not x after T;` on one scalar element with `T` known now
     /// (`Walker::toggle_source`): the kernel runs it itself (`yavs_kernel::ToggleProcess`, #440).
     pub toggle: Option<ProcToggle>,
+    /// A concurrent `target <= a op b;` (or `not a`) of one logical operator on static signal
+    /// parts (`Walker::gate_source`): the kernel runs it itself (`yavs_kernel::GateProcess`, #779).
+    pub gate: Option<ProcGate>,
     /// A clocked process (it has a `trigger`) whose activation is a function of the signals
     /// listed here and constants alone (`Db::pure_clocked_reads`): the kernel may skip an
     /// activation when none of them had an event since the last one
@@ -199,6 +202,18 @@ pub struct ProcToggle {
     pub leaf: LeafId,
     pub elem: u32,
     /// The delay in femtoseconds, positive.
+    pub delay: i64,
+    pub transport: bool,
+}
+
+/// The gate `target <= a op b;` of [`ProcInst::gate`]: operand parts of the target's length.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcGate {
+    pub gate: yavs_kernel::Gate,
+    pub a: (LeafId, yavs_kernel::Range),
+    /// `a` again for `not`.
+    pub b: (LeafId, yavs_kernel::Range),
+    /// The `after` delay in femtoseconds, 0 without one.
     pub delay: i64,
     pub transport: bool,
 }

@@ -353,7 +353,7 @@ case!(
         ("wakes", Max(1181)),
         ("events", Max(1141)),
         ("update_general", Max(0)),
-        ("ops", Max(8428)),
+        ("ops", Max(870)),
     ]
 );
 case!(
@@ -366,6 +366,13 @@ case!(
         ("update_general", Max(0)),
         ("ops", Max(467)),
     ]
+);
+case!(
+    gate_vec,
+    "s=",
+    &[],
+    // The gates run in the kernel (#779): 10082 ops when they are interpreted.
+    [("process_runs", Max(335)), ("ops", Max(6610))]
 );
 case!(
     fan,

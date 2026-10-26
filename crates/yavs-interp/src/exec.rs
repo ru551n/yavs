@@ -1731,21 +1731,24 @@ impl Machine {
     pub(crate) fn run_quick(&mut self, ctx: &mut Option<&mut Ctx<'_>>, cont: bool) -> Quick {
         let rt = self.rt_run.take().unwrap_or_else(|| self.rt.clone());
         let r = match rt.tier.get() {
-            Some(tier) if cont || self.tiered(&rt) => {
-                let slot = crate::slot();
-                if !cont && let Some(fr) = self.frames.first() {
-                    rt.native.activated(fr.func);
+            // `any` is read once: counting an activation (`count_on`) sets it too.
+            Some(tier) => {
+                let any = rt.native.any.load(Ordering::Acquire);
+                if cont || (any && self.root_flagged(&rt)) {
+                    let slot = crate::slot();
+                    if !cont && let Some(fr) = self.frames.first() {
+                        rt.native.activated(fr.func);
+                    }
+                    let r = self.exec_fast::<true, false>(&rt, Some(&**tier), None, ctx, 0);
+                    slot.store(0, Ordering::Relaxed);
+                    r
+                } else {
+                    let slot = crate::slot();
+                    if any && let Some(fr) = self.frames.first() {
+                        rt.native.activated(fr.func);
+                    }
+                    self.exec_fast::<false, true>(&rt, None, Some(slot), ctx, 0)
                 }
-                let r = self.exec_fast::<true, false>(&rt, Some(&**tier), None, ctx, 0);
-                slot.store(0, Ordering::Relaxed);
-                r
-            }
-            Some(_) => {
-                let slot = crate::slot();
-                if let Some(fr) = self.frames.first() {
-                    rt.native.activated(fr.func);
-                }
-                self.exec_fast::<false, true>(&rt, None, Some(slot), ctx, 0)
             }
             None => self.exec_fast::<false, false>(&rt, None, None, ctx, 0),
         };
@@ -1766,14 +1769,18 @@ impl Machine {
     /// one and every `WATCH` events (#480).
     #[inline(always)]
     fn tiered(&self, rt: &Runtime) -> bool {
-        rt.native.any.load(Ordering::Acquire)
-            && self.frames.last().is_some_and(|fr| {
-                rt.sync_native();
-                rt.native
-                    .func
-                    .get(fr.func.0 as usize)
-                    .is_some_and(|n| n.load(Ordering::Acquire) & (NAT_CODE | NAT_ASK) != 0)
-            })
+        rt.native.any.load(Ordering::Acquire) && self.root_flagged(rt)
+    }
+
+    #[inline(always)]
+    fn root_flagged(&self, rt: &Runtime) -> bool {
+        self.frames.last().is_some_and(|fr| {
+            rt.sync_native();
+            rt.native
+                .func
+                .get(fr.func.0 as usize)
+                .is_some_and(|n| n.load(Ordering::Acquire) & (NAT_CODE | NAT_ASK) != 0)
+        })
     }
 
     /// The activation of a process whose root function has compiled code, entered where it
@@ -5263,6 +5270,15 @@ impl Machine {
                 }
             };
         }
+        // The callee's parameters may go to registers only and its ops start past the prologue
+        // (`Pre::lean`, `Code::skip`): always without the tier, with it for a callee it has not
+        // touched. One it flags meanwhile is entered by `enter!` at that op, as the watching
+        // loop's hand-over does.
+        macro_rules! plain_callee {
+            ($cpre:expr) => {
+                !TIER || !$cpre.native.load(Ordering::Relaxed)
+            };
+        }
         // The tier that may call a callee on a native frame (`Tier::call`): the loop's, and in the
         // loop without it (`watch`) the runtime's for a callee the tier has touched.
         macro_rules! native_tier {
@@ -5458,7 +5474,8 @@ impl Machine {
                     }
                     return Ok(flow);
                 }
-                if !TIER && cpre.lean {
+                let plain = plain_callee!(cpre);
+                if plain && cpre.lean {
                     let regs = f
                         .regs(args)
                         .ok_or_else(|| ice_s!("operand list out of range"))?;
@@ -5476,7 +5493,7 @@ impl Machine {
                 k = match code.first {
                     pre::NONE => entry!(0)? as usize,
                     // The parameters are in their registers (`call_pre`): not loaded again.
-                    _ if !TIER && code.skip != pre::NONE => code.skip as usize,
+                    _ if plain && code.skip != pre::NONE => code.skip as usize,
                     first => first as usize,
                 };
                 rebind!();
@@ -6283,7 +6300,8 @@ impl Machine {
                         }
                         return Ok(flow);
                     }
-                    if !TIER && cpre.lean {
+                    let plain = plain_callee!(cpre);
+                    if plain && cpre.lean {
                         let regs = f
                             .regs(args)
                             .ok_or_else(|| ice_s!("operand list out of range"))?;
@@ -6301,7 +6319,7 @@ impl Machine {
                     k = match code.first {
                         pre::NONE => entry!(0)? as usize,
                         // The parameters are in their registers (`call_pre`): not loaded again.
-                        _ if !TIER && code.skip != pre::NONE => code.skip as usize,
+                        _ if plain && code.skip != pre::NONE => code.skip as usize,
                         first => first as usize,
                     };
                     rebind!();

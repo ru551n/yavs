@@ -10252,6 +10252,56 @@ entry, about a fifth more per op over the rest of a testbench process's long act
 - **Left:** a callee with frame-mode code still hands over (`check_value` of `uvvm_sb_slv` forced: 10.79 G to 12.65 to 14.47 G warm), the general
   cost of the loop with the tier is #750.
 
+## The loop with the tier calls untouched callees lean; the watching arm of `run_quick` reads `any` once (yavs-interp `run_ops`, `run_quick`, #750, 2026-10-26)
+
+Question (#750, after round 20 and #757): what is left of the cost of a tier that compiled nothing, and does the loop with the tier
+(`run_ops::<true, false>`, entered by an activation whose root has compiled code or by a hand-over) pay per call what the plain loop does not?
+
+Method as in round 20: main-thread instructions (`perf stat --no-inherit`, warm world, deterministic to 0.05 percent), `tools/stepcount --ops`
+over equal windows (`--to` a kernel cycle count) of `--tier=interp` against `--tier=auto --tier-heat=2000000000,0,16000`, per-instruction
+counts of `run_quick` and `run_ops` (`objdump` with the executed counts), bench builds with `llvm`, `YAVS_STD_CACHE` private.
+
+What the counts said (nothing compiled, `poc_cache_cpu` and `neorv32_single_min`, 1.0128 and 1.0124 over `--tier=interp`):
+
+- 75 to 80 percent of the difference is per activation, in `run_quick`: 28 instructions (`Suspend` +28 an op, `WaitSuspend` +26, `WaitEdgeSuspend`
+  +22 in the equal windows; `run_ops` itself costs the same per activation in both loops): the tier / `any` / `cont` tests, the thread-local
+  slot, `NativeFlags::activated` (two loads and a test), the slot store with `runtime id << 32 | function`, the `SlotIdle` store.
+- The rest is the tick of a jump (`cmp` of the target with `k`, then the countdown on a taken jump back: 2 instructions on a forward jump, 4 on a
+  backward one, `CmpBr` +3, `Br` +3, `CondBr` +1.5). The spilled hoisted address of round 20 does not show any more (`AffP`, `Load`, `DerefImm` equal).
+- With a tier the loop `run_ops::<true, false>` made every call through `call_pre` and started the callee at `Code::first`: no lean call, no
+  skipped parameter loads, for callees that have no compiled code and never will (the `Pre::native` byte is clear).
+
+Landed (`exec.rs`):
+
+- **`run_quick` reads `NativeFlags::any` once** and counts an activation (`activated`) only when it is set (`count_on` sets it): the watching
+  arm drops about 6 of its 28 instructions. `Machine::tiered` is `any && root_flagged`.
+- **`plain_callee!`: the loop with the tier makes a lean call and starts a callee past its prologue (`Code::skip`) when the callee's
+  `Pre::native` byte is clear** (it was `!TIER`). A callee the tier flags while its lean frame runs is entered by `enter!` at that op, as the
+  watching loop's hand-over already did for frames it had called lean; compiled code enters a lean frame only at an IR pc past the prologue,
+  and a pc that is no entry is interpreted to the next jump (`tier_go`). Test
+  `a_callee_the_tier_never_touched_is_called_lean_in_the_loop_with_the_tier` (trace equal to the interpreter's, callee flagged half way).
+- **Not landed:** skipping `ready!` at the entry of an untouched callee in the loop with the tier (about 7 instructions a call, 1 percent of a
+  forced `uvvm_sb_slv` run, inside the spread of its compile timing); ticking every taken jump by the countdown alone (tried in round 20, worse);
+  a cheaper slot protocol (the sampler needs the function per activation and the idle mark, so the stores stay).
+
+Measured (main-thread instructions, `--tier=auto` over `--tier=interp`, nothing compiled, before to after; both ratios from the same two
+binaries, interleaved, 3 rounds, core 8 to 15): `poc_cache_cpu` 1.0128 to 1.0112, `neorv32_single_min` 1.0124 to 1.0112, `osvvm_axis_random`
+1.0053 to 1.0053, `fletcher_bufferwriter_512` 1.0039 to 1.0034, `uvvm_util_rand` 1.0054 to 1.0061, `uvvm_sb_slv` 1.0082 to 1.0081,
+`uvvm_axistream_vvc` 1.0043 to 1.0044, `poc_stat_histogram` 1.0034 to 1.0034; geometric mean 1.0070 to 1.0066. `--tier=interp` instructions
+are equal to 0.03 percent. So the no-compiled-code case still costs 0.3 to 1.1 percent of instructions (the per-activation 22 and the jump tick);
+the cycles of the same pairs move by +-2 percent either way (host spread, #576), the cycle geometric mean is 1.00. The case that
+changed is a function with compiled code and callees without: `uvvm_sb_slv` with `check_value` forced (frame-mode code, the callee that hands over,
+#757): 12.44 G to 11.5 to 11.9 G main-thread instructions and 3.80 to 3.95 G to 3.50 to 3.70 G cycles (5 runs each, warm, compile-timing spread).
+`tools/realbench --compare` (14 tests, run phase, `interp` and `auto`, core 8): wall geometric mean 1.00 and 1.00, instructions 1.01 (tiny
+tests, 0.01 G) and 1.00; the long `interp` runs are equal to 0.1 percent.
+
+Checks: fmt, clippy `-D warnings` default and `--features llvm`, `cargo test --workspace` default and with `llvm`, difftest 531/531 at 1 and 4
+threads for `yavs-interp`, `yavs-auto`, `yavs-llvm` and `yavs-auto` with `--tier-heat=1,0,0`.
+
+Left: the per-activation set-up of the watching arm (about 22 instructions: tier test, thread-local slot, tag, two stores) and the tick of a
+jump; both are the price of the sampler's slot protocol. A change of that protocol (say, the slot written only while the sampler looks) belongs
+to the policy owner. The loop with the tier still checks the flag table at every call and return (`bind!`).
+
 ## `wait until <edge>` costs what the sensitivity-list forms cost: `Op::WaitEdgeSuspend` (yavs-interp `pre.rs`, `exec.rs`, #767, 2026-10-26)
 
 - **Cause** (`tools/stepcount --ops`, one clock period): the process `begin wait until rising_edge(clk); ... end process;` has an elaborator edge trigger,

@@ -63,6 +63,16 @@ impl Profile {
         s
     }
 
+    /// Rename every function with `f`; one it maps to `None` is dropped.
+    pub fn remap(&mut self, f: impl Fn(u32) -> Option<u32>) {
+        self.hot = self
+            .hot
+            .iter()
+            .filter_map(|&(id, us, ok)| Some((f(id)?, us, ok)))
+            .collect();
+        self.lost = self.lost.iter().filter_map(|&id| f(id)).collect();
+    }
+
     /// The profile in `text`, `None` for anything this version did not write.
     pub fn parse(text: &str) -> Option<Profile> {
         let mut lines = text.lines();

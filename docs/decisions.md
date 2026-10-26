@@ -9924,9 +9924,12 @@ cache emptied), medians of 4 to 6 worlds; the Nth run is the Nth run of one worl
 
 - **What is kept** (`profile.rs`, `objcache::profile_key`): one small text entry in the object store of the work library, per build, optimiser switches,
   command line (`yavs_llvm::set_run_id`, set by `yavs run` from a digest of its arguments: generics, stop time and the test case a runner names make
-  other runs) and program (a digest of every function's name, kind, parent and size, in id order; the reserved slots of copies are left out). Contents:
-  `base` (the simulation CPU time of the last judged run), `hot` (id, the microseconds seen, judged or not) and `lost` (ids; at most 48 and 256), by
-  process (a copy counts for its process, ids of copies are not the same in two runs). A text that is not exactly this version's is no profile.
+  other runs) and program (a digest of the set of function identities: name, kind, parent's name and kind, size and the count of equal ones before it; the reserved
+  slots of copies are left out; #774: elaboration may lower the functions in another order in the next run, so the key and the stored names are by
+  identity, not by id). Contents:
+  `base` (the simulation CPU time of the last judged run), `hot` (rank, the microseconds seen, judged or not) and `lost` (ranks; at most 48 and 256), by
+  process (a copy counts for its process, ids of copies are not the same in two runs); a rank is the place in identity order, mapped to and from ids
+  when the profile is read and written. A text that is not exactly this version's is no profile.
   Written by `AutoTier::stop`, atomically (`Store::put`), last writer wins. Not written by a run under 100 ms of simulation CPU time (host noise is
   a few percent of that), not read or written under `--tier-heat`, without a compilation cache or a run id, or with `YAVS_AUTO_PROFILE=off`.
   `--dap` defaults to `--tier=interp`, and `--vhpi` runs are compiled as any other, so neither is special.

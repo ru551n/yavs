@@ -1002,6 +1002,8 @@ struct Shared {
 /// time at the start of the compile thread (microseconds), and what the run has found so far.
 struct ProfileJob {
     key: yavs_cache::Key,
+    /// The ids in identity order (`objcache::profile_key`): the stored profile names ranks.
+    order: Vec<u32>,
     earlier: Profile,
     cpu0: u64,
     snap: Snapshot,
@@ -1254,6 +1256,7 @@ struct Worker {
     /// names as hot (not lost), by id, with the microseconds the last run saw them, and what this
     /// run has found for the next one (`snapshot`).
     profile_key: Option<yavs_cache::Key>,
+    profile_order: Vec<u32>,
     earlier: Profile,
     early: std::collections::HashMap<FuncId, u64>,
     /// Per process (by `Program::base_of`), the microseconds it and its copies were seen, interpreted
@@ -1457,6 +1460,7 @@ impl Worker {
             loaded: false,
             listed: Default::default(),
             profile_key: None,
+            profile_order: Vec::new(),
             earlier: Profile::default(),
             early: Default::default(),
             bseen: vec![0; nfuncs],
@@ -2253,13 +2257,17 @@ impl Worker {
         if off || self.heat.budget == 0 || self.heat.eager() {
             return;
         }
-        self.profile_key = crate::objcache::profile_key(&self.prog);
-        let Some(key) = &self.profile_key else {
+        let Some((key, order)) = crate::objcache::profile_key(&self.prog) else {
             return;
         };
-        let Some(p) = crate::objcache::profile_load(key).and_then(|t| Profile::parse(&t)) else {
+        self.profile_order = order;
+        let Some(mut p) = crate::objcache::profile_load(&key).and_then(|t| Profile::parse(&t))
+        else {
+            self.profile_key = Some(key);
             return;
         };
+        self.profile_key = Some(key);
+        p.remap(|rank| self.profile_order.get(rank as usize).copied());
         // A function is compiled early when seen long enough that the payback rule would have
         // compiled it within `EARLY_RUNS` runs of this length: the rule's price, the object cache
         // making it a link (`threshold`), but the whole run's time in place of the part seen so far.
@@ -2864,6 +2872,7 @@ impl AutoTier {
                         *sh.profile.lock().unwrap_or_else(PoisonError::into_inner) =
                             Some(ProfileJob {
                                 key,
+                                order: w.profile_order.clone(),
                                 earlier: w.earlier.clone(),
                                 cpu0,
                                 snap: Snapshot::default(),
@@ -3146,7 +3155,7 @@ impl AutoTier {
         if cpu < profile::JUDGE_MIN_US {
             return;
         }
-        let p = profile::next(&job.earlier, &job.snap, cpu);
+        let mut p = profile::next(&job.earlier, &job.snap, cpu);
         if std::env::var_os("YAVS_AUTO_TRACE").is_some() {
             eprintln!(
                 "trace: profile: stored {} hot ({} judged), {} lost; this run {cpu} us, last {:?} us, {} compiled early",
@@ -3157,6 +3166,9 @@ impl AutoTier {
                 job.snap.early.len()
             );
         }
+        let rank: std::collections::HashMap<u32, u32> =
+            (0..).zip(&job.order).map(|(r, &id)| (id, r)).collect();
+        p.remap(|id| rank.get(&id).copied());
         crate::objcache::profile_store(&job.key, &p.render());
     }
 

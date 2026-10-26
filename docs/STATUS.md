@@ -9252,3 +9252,19 @@ for that slot and for a parameter's descriptor (the `SubtypeCheck` of `variable 
 loop of `HRead` is five ops (was eleven): `PosIndexLoadIndex`, `SliceAff`, `AffLCopy`, `StmtIsXBr`, `CmpBrStep` (`docs/decisions.md` "The fixed cost of an `HRead` call and its digit loop"). An 8-bit `HRead` is 56 ops
 (was 86). First 1 us of `grlib_leon3mp`, `--tier=interp`: 23.14 G to 20.37 G instructions (-12.0 percent), 6.67 G to 5.99 G cycles; `--tier=auto` -5.5 percent instructions; `--tier=llvm` -2.0 percent. Left: the other
 natives on slices (`to_x01`, the numeric operators) still copy the slice first; `Call`/`Ret` and the textio natives (`CallNative` is 6 percent of the first 1 us) are the next cost of the call.
+
+## `--tier=auto`: large functions with loops, `Kind::BigLoop` (yavs-llvm `auto.rs`, #679, 2026-10-26)
+
+- A function compiled at `Fast` (300 IR instructions or more, not a compute loop below 1 500) with 10 percent or more of its IR in loops is `BigLoop`
+  (speedup 1.15, a candidate at about 7.7 times its price); straight-line ones stay `Big` (1.037). `YAVS_AUTO_TRACE` `seen` lines print each
+  function's loop share. Decision and measurements: `docs/decisions.md` "`--tier=auto`: large functions with loops are a kind of their own".
+- Per process, compiled against interpreted (warm `--profile` pairs, forced at the first look): window generator `bus_process` 1.16, `walk_control`
+  1.62, `present` 1.20, `control` 1.12; `fletcher_bufferwriter_512` `ctrl_comb_proc` 1.02; `grlib_leon3mp` 0.86 (`iu:comb`) to 1.36 (`ictrl`), level over the
+  run; `neorv32_single_min` `counter_increment` 1.03.
+- `tools/realbench --compare` (bench builds, 30241dbc against the change, run phase, cores 9 and 10, load of other agents on the host):
+  42 tests, `auto` sum 1.00 and geometric mean (tests of 1 s or more) 0.99, `auto-cold` 1.02 and 1.02 at equal instructions (the cells above 1.05
+  were noise: `poc_arith_addw`, `fletcher_bufferwriter_512`, `neorv32_dual_full` 0.98 to 1.00 in seven runs a cell). `vai_window_gen_interlock` warm 0.91
+  wall, 0.87 instructions (seven runs), cold 1.01 to 1.03 wall, 1.01 instructions.
+- Left: `walk_control` and the other winners under their threshold in a first run are never cached (the run-to-run profile lists kinds of speedup 1.4
+  or more only); `iu:comb` and the other straight-line GRLIB processes are front-end bound and lose on calls to interpreted callees; cache hits of large
+  modules (#785).

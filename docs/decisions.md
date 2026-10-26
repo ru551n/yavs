@@ -10663,3 +10663,42 @@ A concurrent `c(i) <= not c(i-1);` was an interpreted process of 74 IR instructi
 - The `conformance` workflow (push to `main`, release tags) regenerates every part that needs only yavs and the fetched corpora and uploads the report as an artifact. Parts that need reference simulators or vendor libraries are dated records in `docs/conformance-local.json` (date, commit, command), refreshed with `run.py --local`. Reason: a number must say where and when it came from.
 - A committed report that differs from the regenerated one is a warning on `main` and a failure on a release tag. Reason: agents push to `main` all day and a changed count must not block them, while a release must carry a current report. Agent decision, open for the maintainer.
 - Nothing is published outside the repository (no Pages). Needs the maintainer's decision.
+
+## `--tier=auto`: large functions with loops are a kind of their own, `BigLoop` (yavs-llvm `auto.rs`, #679, 2026-10-26)
+
+Task: the processes of 1 000 IR instructions or more that `--tier=auto` leaves interpreted (`Kind::Big`, compiled at `OptLevel::Fast`, speedup
+pinned at 1.037 so that a process is seen for about 28 times its compile before it is a candidate). Measured with bench builds of 30241dbc, one
+claimed CCD1 core per cell, warm worlds, each large process forced compiled at its first look (`YAVS_AUTO_FORCE`, copies only), whole-run
+`perf stat --no-inherit` cycles and instructions of the simulation thread, and per process the samples of `yavs run --profile` (warm pairs, interpreted
+against compiled; a ratio over 1 is a gain).
+
+- **The class is not one population.** Window generator: forcing `bus_process` and `walk_control` takes the run from 43.3 G to 40.5 G cycles
+  (-6 percent, instructions -11 percent); per process `bus_process` 1.16, `walk_control` 1.62, `present` 1.20, `control` 1.12. `fletcher_bufferwriter_512`:
+  `ctrl_comb_proc` 1.02, the run level to +3 percent with all its large processes. `grlib_leon3mp`: all large copies forced, level (-1 to +5 percent
+  cycles, instructions -5 percent); per process 0.86 (`iu:comb`) to 1.36 (`ictrl`). `uvvm_axistream_vvc` (its large procedures): +8 percent cycles in
+  one A/B, level in the profile pair. `neorv32_single_min` `counter_increment` 1.03.
+- **What separates them: the share of the code in loops** (`loop_share`, percent of the IR instructions in the natural loops of `back_edges`). Every
+  large process of 12 percent or more ran 1.03 to 1.62 times faster compiled (`bus_process` 70, `present` 30, `walk_control` 12, two GRLIB
+  controllers of 54 and 21 percent, the timer and the APB bridge by their source loops, 1.16 and 1.15, `counter_increment` 13); below 9 percent losers
+  and winners mix (`iu:comb` 0 percent 0.86, the TLB processes 4 percent 0.92 and 0.95, the AHB controller, most likely the 5 percent copy, 0.91, `dctrl` 6 percent 1.11, `ictrl` 8 percent 1.36, the writer's straight-line processes 0 percent 1.0).
+  A straight-line process runs its whole body once per activation: its compiled code is mostly drives, signal reads and natives, which both tiers do
+  through the same runtime functions, and the rest is front-end bound at the sizes of these processes; a loop runs the same compiled bytes many times.
+- **Decision: a `Big` function with `BIG_LOOP_SHARE` (10) percent or more of its IR instructions in loops is `Kind::BigLoop`**: price as `Big`
+  (4 ms + 110 us an IR instruction), speedup 1.15 (the median of the measured class), so it is a candidate at about 7.7 times its price instead of 28.
+  The share is the function's own (a copy's, like its level and its price; `walk_control`'s copy has 12 percent, its shared code 6). The line is in the
+  gap between 8 and 12 percent; the trace's `seen` lines print each function's share.
+- **Measured** (`tools/realbench --compare`, run phase, `auto` and `auto-cold`): the window generator warm 0.93 wall, 0.87 instructions (`bus_process`
+  is compiled at 9 s of the cold run and from the cache at 0.9 s of a warm one), cold 1.03 wall, 1.01 instructions (a compile late in a first run does
+  not repay; the payback rule assumes the rest of the run is as long as the part seen). `fletcher_bufferwriter_512` 0.98 and 0.99, `sc5_fifo_repack`
+  1.01 and 1.02 (no `BigLoop` process is hot enough there). 42 tests: see `docs/STATUS.md`.
+- **Tried and dropped: `Worker::tree` without the root's size in `TREE_MAX`** (a root of 1 500 IR instructions or more brings no callee, so every
+  call of a large compiled process to an interpreted callee leaves the compiled code, `TIER_UNWIND`). It brought `bus_process`'s callees, but the
+  larger trees of mid-size roots made `fletcher_bufferwriter_512` warm 1.07 (instructions 1.02) and `sc5_fifo_repack` cold 1.08; the window
+  generator was better without it (instructions 0.87 against 0.95).
+- **Left (not policy):** GRLIB's large processes are front-end bound when compiled together (forcing their callees too made every one of them
+  slower, `iu:comb` 0.75); `iu:comb` loses through its calls to interpreted callees (`yavs_rt_step`, `TIER_UNWIND`, the interpreter's loop with the
+  tier, re-entry); a cache hit of a large module costs about 20 us an IR instruction against `HIT`'s 10 (#785). `walk_control` (1.62) is seen for 0.4 to 0.5 s
+  a run, under its 1.7 s threshold, so it is never compiled and never in the cache: only the run-to-run profile could take it, and its kind filter
+  (speedup 1.4 or more, user decision 2026-10-25) leaves `BigLoop` out.
+- **The reference simulator (rule 22).** Its JIT tier counts calls of a function and compiles it after a fixed number, with no model of size or benefit,
+  and a normal run generates the design's code ahead of time anyway. No idea was taken from it for this rule; ours keeps a benefit per kind.

@@ -1267,6 +1267,15 @@ pub(crate) const NAT_CALL: u8 = 4;
 /// `NativeFlags::func`: the activations of the process function are counted (`NativeFlags::count_on`).
 pub(crate) const NAT_COUNT: u8 = 8;
 
+/// `profile_sampler` exists: `Machine::tier_call` names the callee in the thread's `pc_slot` for
+/// as long as the tier runs it on a native frame (#760).
+pub(crate) static PROFILE_NATIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// The IR pc half of a `pc_slot` value that marks a native-frame call: the function half names
+/// the callee.
+pub(crate) const NATIVE_PC: u32 = u32::MAX;
+
 /// What each simulation thread interprets, for the sampler of a compiled tier
 /// (`Runtime::sampler`): `runtime id << 32 | function`, 0 while it interprets nothing. One
 /// slot per thread that ever ran the fast loop with a tier set, never freed (8 bytes).
@@ -1708,9 +1717,38 @@ impl Runtime {
                 .iter()
             {
                 let (v, at) = (s.load(Ordering::Relaxed), pc.load(Ordering::Relaxed));
-                if v >> 32 == id && at >> 32 == v & 0xffff_ffff {
+                if v >> 32 == id && at >> 32 == v & 0xffff_ffff && at as u32 != NATIVE_PC {
                     out.push((FuncId(v as u32), at as u32));
                 }
+            }
+        }
+    }
+
+    /// `sampler` for the profiler (`yavs run --profile`): a function the tier runs on a native
+    /// frame for an interpreted caller (`Tier::call`) is reported as itself, compiled, instead of
+    /// as its caller (the outermost such function when native frames call each other).
+    pub fn profile_sampler(&self) -> impl Fn(&mut Vec<(FuncId, bool)>) + Send + 'static {
+        PROFILE_NATIVE.store(true, Ordering::Relaxed);
+        let (id, native) = (u64::from(self.id), self.native.clone());
+        move |out| {
+            for (s, pc) in SLOTS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+            {
+                let (v, at) = (s.load(Ordering::Relaxed), pc.load(Ordering::Relaxed));
+                if v >> 32 != id {
+                    continue;
+                }
+                if at as u32 == NATIVE_PC {
+                    out.push((FuncId((at >> 32) as u32), true));
+                    continue;
+                }
+                let compiled = native
+                    .func
+                    .get(v as u32 as usize)
+                    .is_some_and(|n| n.load(Ordering::Relaxed) & NAT_CODE != 0);
+                out.push((FuncId(v as u32), compiled));
             }
         }
     }

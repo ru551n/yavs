@@ -215,37 +215,49 @@ fn a_callee_flagged_later_is_entered_through_the_tier() {
     );
 }
 
-/// A function the tier only calls on a native frame (`NativeFlags::set_call`, no frame-mode code
-/// anywhere, so `NativeFlags::set` never ran) is called through the tier by an interpreted
-/// process as soon as it is flagged, whatever order the tier flagged its functions in (#764).
-#[test]
-fn a_callee_flagged_for_native_calls_alone_is_called_through_the_tier() {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    struct Calls(FuncId, AtomicU32);
-    impl yavs_interp::Tier for Calls {
-        fn run(&self, _: FuncId, _: u32, _: &mut dyn yavs_interp::TierHost) -> Option<u32> {
-            None
-        }
-        fn ready(&self, _: FuncId) -> bool {
-            false
-        }
-        fn callable(&self, f: FuncId) -> bool {
-            f == self.0 && self.1.load(Ordering::Relaxed) != u32::MAX
-        }
-        fn call(
-            &self,
-            f: FuncId,
-            _: &[u64],
-            _: Option<u64>,
-            _: u32,
-            _: &mut dyn yavs_interp::TierHost,
-        ) -> Option<yavs_interp::Called> {
-            (f == self.0).then(|| {
-                self.1.fetch_add(1, Ordering::Relaxed);
-                yavs_interp::Called::Done(0)
-            })
-        }
+type Sampler = Box<dyn Fn(&mut Vec<(FuncId, bool)>) + Send>;
+
+/// A tier whose only function is `.0`, called on a native frame once flagged (`.1` counts the
+/// calls; `u32::MAX` while not callable), with no compiled code. `.2` holds a sampler that is
+/// asked at every call, and what it reported.
+struct Calls(
+    FuncId,
+    std::sync::atomic::AtomicU32,
+    std::sync::Mutex<Option<Sampler>>,
+    std::sync::Mutex<Vec<(FuncId, bool)>>,
+);
+
+impl yavs_interp::Tier for Calls {
+    fn run(&self, _: FuncId, _: u32, _: &mut dyn yavs_interp::TierHost) -> Option<u32> {
+        None
     }
+    fn ready(&self, _: FuncId) -> bool {
+        false
+    }
+    fn callable(&self, f: FuncId) -> bool {
+        f == self.0 && self.1.load(std::sync::atomic::Ordering::Relaxed) != u32::MAX
+    }
+    fn call(
+        &self,
+        f: FuncId,
+        _: &[u64],
+        _: Option<u64>,
+        _: u32,
+        _: &mut dyn yavs_interp::TierHost,
+    ) -> Option<yavs_interp::Called> {
+        (f == self.0).then(|| {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if let Some(sample) = &*self.2.lock().unwrap() {
+                sample(&mut self.3.lock().unwrap());
+            }
+            yavs_interp::Called::Done(0)
+        })
+    }
+}
+
+/// A process that calls `square` once a clock with a new argument each time (the memo of pure
+/// calls would answer a repeated one); the second function is `square`.
+fn square_caller() -> (Design, FuncId) {
     let mut pb = ProgramBuilder::new();
     let int = integer(&mut pb);
     let sq = pb.declare("square", FuncKind::Function, None);
@@ -263,7 +275,6 @@ fn a_callee_flagged_for_native_calls_alone_is_called_through_the_tier() {
         fb.finish();
     }
     {
-        // A new argument each time: the memo of pure calls would answer a repeated one.
         let mut fb = pb.define(proc_);
         let n = fb.local("n", int, 8, 8);
         wait_for(&mut fb, 10 * NS);
@@ -288,9 +299,24 @@ fn a_callee_flagged_for_native_calls_alone_is_called_through_the_tier() {
         func: proc_,
         drives: vec![],
     }];
+    (d, sq)
+}
+
+/// A function the tier only calls on a native frame (`NativeFlags::set_call`, no frame-mode code
+/// anywhere, so `NativeFlags::set` never ran) is called through the tier by an interpreted
+/// process as soon as it is flagged, whatever order the tier flagged its functions in (#764).
+#[test]
+fn a_callee_flagged_for_native_calls_alone_is_called_through_the_tier() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let (d, sq) = square_caller();
     let rt = Runtime::new(d.prog.clone(), Default::default()).unwrap();
     // Not callable when the tier is set: the tier flags it while the run goes on.
-    let tier = std::sync::Arc::new(Calls(sq, AtomicU32::new(u32::MAX)));
+    let tier = std::sync::Arc::new(Calls(
+        sq,
+        AtomicU32::new(u32::MAX),
+        Default::default(),
+        Default::default(),
+    ));
     assert!(rt.set_tier(tier.clone()));
     let flags = rt.native_flags();
     let (mut sim, _, _) = d.build_rt(1, rt, |p, _| p);
@@ -303,6 +329,29 @@ fn a_callee_flagged_for_native_calls_alone_is_called_through_the_tier() {
         "{}",
         tier.1.load(Ordering::Relaxed)
     );
+}
+
+/// The profile's sampler names a function the tier runs on a native frame for an interpreted
+/// caller as itself, compiled, not as its caller (#760).
+#[test]
+fn the_profile_names_a_native_frame_callee_not_its_caller() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let (d, sq) = square_caller();
+    let rt = Runtime::new(d.prog.clone(), Default::default()).unwrap();
+    let tier = std::sync::Arc::new(Calls(
+        sq,
+        AtomicU32::new(0),
+        Default::default(),
+        Default::default(),
+    ));
+    *tier.2.lock().unwrap() = Some(Box::new(rt.profile_sampler()));
+    assert!(rt.set_tier(tier.clone()));
+    let (mut sim, _, _) = d.build_rt(1, rt, |p, _| p);
+    sim.run_until(Time::ns(100)).unwrap();
+    let seen = tier.3.lock().unwrap().clone();
+    assert!(tier.1.load(Ordering::Relaxed) >= 9);
+    assert!(!seen.is_empty());
+    assert!(seen.iter().all(|&s| s == (sq, true)), "{seen:?}");
 }
 
 /// Counters of rising edges, one small (its registers stay with the process between

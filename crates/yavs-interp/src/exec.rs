@@ -8292,7 +8292,16 @@ impl Machine {
             fault: None,
             stop: false,
         };
+        // A profile names the callee while its native frame runs (`Runtime::profile_sampler`).
+        let marked = crate::PROFILE_NATIVE.load(Ordering::Relaxed).then(|| {
+            let slot = crate::pc_slot();
+            let mark = u64::from(callee.0) << 32 | u64::from(crate::NATIVE_PC);
+            (slot, slot.swap(mark, Ordering::Relaxed))
+        });
         let r = tier.call(callee, &cells[..n], obj, pc, &mut host);
+        if let Some((slot, before)) = marked {
+            slot.store(before, Ordering::Relaxed);
+        }
         if let Some(e) = host.fault {
             return Err(e);
         }

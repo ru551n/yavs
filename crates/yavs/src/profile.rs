@@ -1,7 +1,7 @@
 //! `yavs run --profile[=FILE]`: a sampling profiler. A thread wakes `HZ` times a second and
 //! tallies which process each simulation thread runs (`yavs_kernel::profile`, one relaxed
 //! store per activation) and which subprogram the interpreter or compiled code is in
-//! (`Runtime::sampler`). The table goes to stderr after the run, the optional file is JSON.
+//! (`Runtime::profile_sampler`). The table goes to stderr after the run, the optional file is JSON.
 //! Off, nothing is wrapped and no thread exists.
 
 use std::collections::HashMap;

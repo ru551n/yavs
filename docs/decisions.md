@@ -10645,6 +10645,11 @@ A concurrent `c(i) <= not c(i-1);` was an interpreted process of 74 IR instructi
   `rtl_chain` 3.29 G to 2.08 G instructions (`--tier=auto`), wall 0.19 to 0.11 s, CPU ratio to sim1 1.36 to 0.79 (instructions 1.62
   to 1.02); per activation 94 to 55 ns against sim1's 72 ns. `rtl_ff`, `rtl_lfsr`, `lfsr64`, `delta_chain` have no such statement:
   unchanged. Work counters: `comb_chain` ops 8139 to 843, new design `gate_vec` (10082 ops interpreted, 6415 with kernel gates).
+  realbench `--compare` (42 tests, interp and auto, core 11): geometric mean of instructions 1.00 in both tiers; the real testbenches
+  have few single-gate statements (neorv32: about five, besides its 381 copies), so they gain little. A first version assigned vector
+  gates with `assign_blocks`, whose second caller in the crate stopped its inlining into `CopyProcess::run`: `neorv32_single_min`
+  +1.0% instructions (interpreter, identical process runs); vector gates now use `assign_planes_now` or `assign` (+0.3%, spread over
+  unrelated functions: layout).
 - **The reference simulator (rule 22).** Its concurrent statements are tiny compiled functions that read the inputs and schedule the
   driver directly; its engine part of a chain stage is a few nanoseconds. The idea taken is that a one-operator statement needs no
   general process machinery; ours reaches it with a fixed kernel process chosen at elaboration rather than generated code, so it costs

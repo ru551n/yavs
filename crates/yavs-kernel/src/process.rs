@@ -241,21 +241,28 @@ impl Process for GateProcess {
         } else {
             ctx.read_into(a, &mut self.buf)?;
             ctx.read_into(b, &mut self.buf2)?;
-            let (x, _) = self.buf.as_chunks_mut::<32>();
+            let (x, _) = self.buf.as_chunks::<32>();
             let (y, _) = self.buf2.as_chunks::<32>();
-            for (x, y) in x.iter_mut().zip(y) {
-                let v = self.gate.block(words(x), words(y));
-                for (d, w) in x.as_chunks_mut::<8>().0.iter_mut().zip(v) {
-                    *d = w.to_le_bytes();
-                }
+            let mut v = x
+                .iter()
+                .zip(y)
+                .map(|(x, y)| self.gate.block(words(x), words(y)));
+            // Not `assign_blocks`: a second caller in this crate stops its inlining into
+            // `CopyProcess::run` (+1% instructions on a CPU design).
+            let fast = self.dst.len <= 64
+                && self.delay == Time::ZERO
+                && ctx.assign_planes_now(self.driver, Some(self.dst), v.next().unwrap_or_default());
+            if !fast {
+                let v = x
+                    .iter()
+                    .zip(y)
+                    .map(|(x, y)| self.gate.block(words(x), words(y)));
+                let v = LogicVec::from_repr(yavs_logic::Planes::from_blocks(
+                    self.dst.len as usize,
+                    v.collect(),
+                ));
+                ctx.assign(self.driver, Some(self.dst), &[(self.delay, &v)], self.mode)?;
             }
-            ctx.assign_blocks(
-                self.driver,
-                Some(self.dst),
-                self.delay,
-                &self.buf,
-                self.mode,
-            )?;
         }
         if !ctx.wait_same() {
             ctx.wait_on(a)?;

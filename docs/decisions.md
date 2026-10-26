@@ -8215,6 +8215,34 @@ the run; cycles as the minimum of 7 interleaved runs on one core claimed with `t
 - **Left:** #766 (host layers around compiled clocked processes, the largest item on `rtl_ff`, `rtl_lfsr`, `lfsr64`), #767 (`wait until` form),
   the `run_batch` loop (about 120 instructions an activation spread over 30 lines), the `codes` refresh of 16-bit registers.
 
+## Byte codes by element reads (yavs-sem facts, yavs-elab `keep_codes.rs`, yavs-kernel, #734, 2026-10-26)
+
+- **Decision (user, 2026-10-26, on #734)**: instead of the source-width rule of #519 (`CODES_SOURCE_MAX`), the elaborator decides which logic
+  signals keep the per-element byte codes (`Signal::codes`): those that have a read of a single element. Rationale: the refresh of the codes
+  of a changed word costs about 250 instructions for 16-bit registers (kernel round 24), and only reads of single elements use them.
+- **How**: `Db::facts()` has `elem_reads` (the signal objects with a scalar index, selection or alias of a part in an expression that is not an
+  assignment, force or release target) and `elem_reads_all` (an element read through a signal parameter or an external name: any signal may be
+  it). `yavs-elab` `keep_codes.rs` maps them to leaves like `lean.rs`: a leaf keeps its codes when it is one element, when an object that holds
+  it has an element read (a port collapsed into its actual marks the actual's leaf), when that object has a record in it (`SigGather` reads
+  the scalar leaves of a record one element at a time), for implicit signals and packs; all of them when `elem_reads_all`. The others get
+  `Builder::no_codes`. Port-map actuals such as `v(3)` count as reads (not told apart from other uses of the name): a safe over-count.
+  `YAVS_CODES=all` keeps every signal's codes (test aid); the `no_code_signals` counter shows how many signals keep none.
+- **Without codes** a one-element read comes from the planes (`Ctx::first_code`, and compiled code through `TierSig` with `codes = 0`: its
+  plane path was there for buses, so `TierSig` and `rt.rs` are unchanged), and the skip test of an assignment of the value a signal holds
+  (`direct_same`, `commit_code`, `commit_codes`) compares the plane bit instead (`held`), so a vector driven by element and read whole
+  still skips. The width rule is gone: a wide vector with element reads now keeps its codes.
+- **Results** (bench builds with `llvm`, base 9b5ce798, instructions of whole warm runs, `--threads 1`, `--tier=interp` / `--tier=llvm`):
+  `lfsr64` 0.968 / 0.954, `lfsr64_xor` 0.979 / 0.973, `rtl_ram` 0.992 / 0.992; `rtl_lfsr`, `rtl_ff`, `rtl_chain`, `neorv32_single_min` and
+  `grlib_leon3mp` keep their codes or have no vector that is not read by element, so they move by at most +0.45% instructions (code layout; the
+  logic of their paths is unchanged, cycles level within the noise of a shared host). `rtl_lfsr`, `rtl_ff` and `rtl_chain` read single elements
+  of their registers (`r(i)(0) = 'U'`, `q((i+1) mod N)`, `c(i-1)`), so this decision cannot save their refresh. `realbench --compare` (42 tests,
+  interpreter and auto, 3 runs a cell, one core): instruction geometric mean 1.00 / 1.00, wall 0.98 / 1.00; every test within 1.00 +- 0.02 in
+  instructions but `fletcher_bufferwriter_512` (1.05, wall 1.03 interp, 1.07 auto): its wide buses are read by element in several processes
+  and used to be exempt by the width rule, now they keep 64 codes per changed block. If that matters, the old exemption can come back as
+  a second condition (element reads and a narrow source) in `keep_codes.rs` only.
+- **Not done**: telling a real read from a port-map actual or a sensitivity entry (would let a few more bus signals drop their codes); reads
+  through signal parameters make every signal keep its codes (OSVVM/UVVM designs get no gain).
+
 ## Facts the declarative part leaves in a process copy (yavs-ir `opt/decl.rs`, #678, 2026-10-24)
 
 - **Decision**: a copy of a process (`copies.rs`) takes over between two activations, so what its declarative part made is in the frame

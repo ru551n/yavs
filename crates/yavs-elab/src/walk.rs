@@ -631,9 +631,11 @@ pub(crate) fn elaborate(
     let forced = crate::collapse::forced(e.db, &e.m.sigs);
     e.m.nets.place(e.cfg.packs, forced.as_ref());
     let lean = crate::lean::leaves(e.db, &e.m.nets);
+    let no_codes = crate::keep_codes::leaves(e.db, &e.m.nets);
     e.m.calls.flush();
     Ok(Elaborated {
         lean,
+        no_codes,
         top,
         hier: e.m.hier,
         nets: e.m.nets,

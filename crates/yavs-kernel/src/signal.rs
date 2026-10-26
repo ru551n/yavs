@@ -748,10 +748,13 @@ pub(crate) struct Signal {
     /// or in the next one.
     seg_hint: usize,
     /// The `std_ulogic` code of every element of `cur`, one byte each (rounded up to whole
-    /// plane blocks), for logic signals of at most `CODES_MAX` elements without a bus-wide source
-    /// (`CODES_SOURCE_MAX`); empty otherwise. Kept
-    /// in step with `cur` (`sync_codes`, `refresh_codes`): a read of one element is one load.
+    /// plane blocks), for logic signals of at most `CODES_MAX` elements unless `no_codes`; empty
+    /// otherwise. Kept in step with `cur` (`sync_codes`, `refresh_codes`): a read of one element
+    /// is one load.
     codes: Vec<u8>,
+    /// The elaborator found no read of a single element of the signal (`Builder::no_codes`):
+    /// refreshing `codes` on every change would cost more than it saves.
+    no_codes: bool,
     /// Quick transactions of this cycle finished at once (`apply_driver`), and whether one of
     /// them made an event not yet reported to the kernel.
     fuse_n: u32,
@@ -887,12 +890,20 @@ fn note_cells(changed: &mut Vec<Range>, nruns: &mut u64, cuts: &[u32], base: usi
 /// The longest logic signal that keeps `Signal::codes`.
 const CODES_MAX: usize = 1 << 20;
 
-/// A logic signal of more than 64 elements (several plane blocks) keeps its byte codes only when
-/// every source (driver or out-port) has at most this many elements. A wider source makes it a
-/// bus, updated a block at a time: refreshing 64 codes on every change costs more than the
-/// plane reads of the rare single element do. A vector of registers (sources of one element,
-/// or a byte lane) keeps them: its updates are single elements and its elements are read singly.
-const CODES_SOURCE_MAX: usize = 16;
+/// Whether `cur` holds `code` at element `e`: from the codes, else (a signal that keeps none) the
+/// planes.
+#[inline(always)]
+fn held(codes: &[u8], cur: &Buf, e: usize, code: u8) -> bool {
+    match codes.get(e) {
+        Some(&c) => c == code,
+        None => plane_held(cur, e, code),
+    }
+}
+
+#[inline(never)]
+fn plane_held(cur: &Buf, e: usize, code: u8) -> bool {
+    cur.code(e) == code
+}
 
 /// Elements `elem .. elem + len` (`len <= 64`) into the pending bit mask and its list of words.
 #[inline(always)]
@@ -1042,6 +1053,7 @@ impl Signal {
             static_plain: false,
             seg_hint: 0,
             codes: Vec::new(),
+            no_codes: false,
             fuse_n: 0,
             fused_event: false,
             watched: false,
@@ -1065,15 +1077,22 @@ impl Signal {
         self.codes.clear();
         if let Buf::Planes { len, b } = &self.cur
             && *len <= CODES_MAX
-            && (*len <= 64
-                || self
-                    .drivers
-                    .iter()
-                    .all(|d| d.range.len as usize <= CODES_SOURCE_MAX))
+            && !self.no_codes
         {
             self.codes.resize(b.len() * 64, 0);
             refresh_codes(&mut self.codes, &self.cur, 0, *len);
         }
+    }
+
+    /// Keep no byte codes: nothing reads a single element of the signal (before the first event).
+    pub fn set_no_codes(&mut self) {
+        self.no_codes = true;
+        self.sync_codes();
+    }
+
+    /// Whether `set_no_codes` was called.
+    pub fn keeps_no_codes(&self) -> bool {
+        self.no_codes
     }
 
     /// A process waits for, or reads, the part `r` (not the whole) of the signal: `changed` lists
@@ -1780,7 +1799,7 @@ impl Signal {
     /// find the driver and the signal holding it already, on a signal that allows skipping.
     #[inline]
     pub(crate) fn direct_same(&self, slot: u32, elem: u32, code: u8) -> bool {
-        if !self.skip_ok || self.codes.get(elem as usize) != Some(&code) {
+        if !self.skip_ok || !held(&self.codes, &self.cur, elem as usize, code) {
             return false;
         }
         if self.exact {
@@ -1829,14 +1848,12 @@ impl Signal {
     /// write or finish, only the delta it causes.
     #[inline(always)]
     pub(crate) fn commit_code(&mut self, slot: u32, elem: u32, code: u8) -> Option<bool> {
+        let same = self.skip_ok && held(&self.codes, &self.cur, elem as usize, code);
         if self.exact {
             let d = &mut self.drivers[slot as usize];
             if let Buf::Planes { b, .. } = &mut d.value {
                 let rel = (elem - d.range.offset) as usize;
-                if self.codes.get(elem as usize) == Some(&code)
-                    && self.skip_ok
-                    && plane_code(b, rel) == code
-                {
+                if same && plane_code(b, rel) == code {
                     return None;
                 }
                 put_plane_code(b, rel, code);
@@ -1844,11 +1861,7 @@ impl Signal {
         }
         // The driver is the element's only source: the driving value is its value (`lag`).
         if let Buf::Planes { b, .. } = &mut self.driving {
-            if !self.exact
-                && self.codes.get(elem as usize) == Some(&code)
-                && self.skip_ok
-                && plane_code(b, elem as usize) == code
-            {
+            if !self.exact && same && plane_code(b, elem as usize) == code {
                 return None;
             }
             put_plane_code(b, elem as usize, code);
@@ -1926,6 +1939,7 @@ impl Signal {
         let Signal {
             drivers,
             driving,
+            cur,
             codes,
             pend,
             pend_words,
@@ -1933,6 +1947,7 @@ impl Signal {
             skip_ok,
             ..
         } = self;
+        let is_held = |e: usize, code: u8| held(codes, cur, e, code);
         let Buf::Planes { b: drv, .. } = driving else {
             return false;
         };
@@ -1945,12 +1960,12 @@ impl Signal {
                     continue;
                 };
                 let rel = e - d.range.offset as usize;
-                if codes.get(e) == Some(&code) && *skip_ok && plane_code(dv, rel) == code {
+                if *skip_ok && is_held(e, code) && plane_code(dv, rel) == code {
                     *empty = true;
                     continue;
                 }
                 put_plane_code(dv, rel, code);
-            } else if codes.get(e) == Some(&code) && *skip_ok && plane_code(drv, e) == code {
+            } else if *skip_ok && is_held(e, code) && plane_code(drv, e) == code {
                 *empty = true;
                 continue;
             }

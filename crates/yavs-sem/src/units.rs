@@ -1314,6 +1314,7 @@ impl Db {
             }
             put(&mut body, &(n as u32))?;
             body.extend_from_slice(&tab);
+            facts.settle_elem_reads();
             put(&mut body, &facts)?;
             Ok(())
         })();
@@ -2629,6 +2630,7 @@ impl Db {
         if (a.reads_activity, &a.forces, &a.package_paths, a.history_all)
             != (b.reads_activity, &b.forces, &b.package_paths, b.history_all)
             || (&a.history_parts, &a.history_wholes) != (&b.history_parts, &b.history_wholes)
+            || (&a.elem_reads, a.elem_reads_all) != (&b.elem_reads, b.elem_reads_all)
         {
             return Some("facts".into());
         }

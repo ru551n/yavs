@@ -185,6 +185,8 @@ pub struct Stats {
     /// Signals of more than 64 elements that keep only each block's last event
     /// (`Builder::lean_events`); fixed when the model is built.
     pub lean_signals: u64,
+    /// Signals that keep no byte codes (`Builder::no_codes`); fixed when the model is built.
+    pub no_code_signals: u64,
     /// Signals that allow skipping an assignment of the value they hold (`Signal::skip_ok`).
     pub skip_signals: u64,
     /// Kernel signals (a pack of record leaves is one, #686).
@@ -1182,6 +1184,7 @@ impl SimControl {
             }
         }
         let lean_signals = signals.iter().filter(|s| s.is_lean()).count() as u64;
+        let no_code_signals = signals.iter().filter(|s| s.keeps_no_codes()).count() as u64;
         let skip_signals = signals.iter().filter(|s| s.skip_ok).count() as u64;
         let nsignals = signals.len() as u64;
         let mut sim = SimControl {
@@ -1255,6 +1258,7 @@ impl SimControl {
             interrupt: Interrupt::default(),
             stats: Stats {
                 lean_signals,
+                no_code_signals,
                 skip_signals,
                 signals: nsignals,
                 ..Stats::default()

@@ -244,6 +244,14 @@ impl Builder {
         }
     }
 
+    /// Keep no byte codes for `s`: no process reads a single element of it, so refreshing a code
+    /// per changed element costs more than it saves (#734). Reads still work, from the planes.
+    pub fn no_codes(&mut self, s: SignalId) {
+        if let Some((s, _)) = self.chk(s.into()) {
+            self.signals[s.0 as usize].set_no_codes();
+        }
+    }
+
     /// Make a resolved signal guarded (`bus` or `register`) with the disconnection time of
     /// its disconnection specification (0 if none).
     pub fn guard(&mut self, s: SignalId, kind: GuardKind, disconnect: Time) {

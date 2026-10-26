@@ -293,6 +293,17 @@ case!(
     ]
 );
 case!(
+    elem_codes,
+    "e=",
+    &[],
+    [
+        ("cycles", Max(930)),
+        ("no_code_signals", Min(2)),
+        ("no_code_signals", Max(2)),
+        ("ops", Max(26250)),
+    ]
+);
+case!(
     reg_bytes,
     "n=",
     &[],
@@ -620,8 +631,8 @@ case!(
     [
         ("cycles", Max(415)),
         ("update_general", Max(0)),
-        ("direct_planes", Min(1400)),
-        ("direct_codes", Min(400)),
+        ("direct_planes", Min(1230)),
+        ("direct_codes", Min(260)),
         ("events", Max(870)),
     ]
 );
@@ -905,6 +916,30 @@ fn lean_events_change_nothing() {
     assert_eq!(cov.code, 0, "{}", cov.all());
     assert_eq!(cov.stdout, on.stdout);
     assert_eq!(cov.counters["lean_signals"], 0);
+}
+
+/// Signals nothing reads a single element of keep no byte codes and give the report of the
+/// ones that keep them.
+#[test]
+fn byte_codes_change_nothing() {
+    let d = tempdir("codes_equal");
+    let src = include_str!("perf/elem_codes.vhd");
+    let run = |mode: &str, tier: &str| {
+        run_design_env(&d, "elem_codes", src, tier, &[], &[("YAVS_CODES", mode)])
+    };
+    let tiers: &[&str] = if cfg!(feature = "llvm") {
+        &["interp", "auto"]
+    } else {
+        &["interp"]
+    };
+    for &tier in tiers {
+        let (all, some) = (run("all", tier), run("", tier));
+        assert_eq!((all.code, some.code), (0, 0), "{}", some.all());
+        assert!(some.stdout.contains("e="), "{}", some.all());
+        assert_eq!(all.stdout, some.stdout, "{tier}");
+        assert_eq!(all.counters["no_code_signals"], 0);
+        assert_eq!(some.counters["no_code_signals"], 2, "{:?}", some.counters);
+    }
 }
 
 /// An assignment of the value a signal holds is dropped only when nothing can observe the

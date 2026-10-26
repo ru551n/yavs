@@ -9077,7 +9077,7 @@ the cache.
   153 in `llvm_drive_batch`, now 153). Work-counter bounds for the four under `clift::`; `clift::layout_field` has a
   ceiling of 3 400 layout calls against LLVM's 1 648, because this lowering has no inline layout cache in frame mode,
   so the process's `LayoutOf`s go to the memo too (they were stepped before).
-- **`--tier=clift-auto` gets the layout slots** (`yavs_interp::layout_slots`, as `auto` and `auto3`; an agent's choice, pending
+- **`--tier=clift-auto` gets the layout slots** (superseded by the user's decision in round 8: a switch of its own) (`yavs_interp::layout_slots`, as `auto` and `auto3`; an agent's choice, pending
   the user's confirmation: the user ruled on the memory of the slots for LLVM only, and a switch of its own for the #756
   gate is the alternative). Why: since #756 the
   slot pass keeps the 32-byte blocks the interpreter fuses out of the frame unless layout slots are on, and compiled
@@ -9158,6 +9158,46 @@ the cache.
   copy or a `std_ulogic` table, `symbol_value`) is no longer inlined (`Inl`); a callee under the default threshold
   (150) can have one too. Test: `crates/yavs/tests/clift_inline.rs` (an inlined
   callee returning string literals; the old build printed `<0:>` for `<0:TF>`). An upstream report is the user's call.
+
+## Cranelift tier, round 8: the object table by machine, the layout slots apart, constant descriptors (yavs-clift, yavs-ir `opt`, yavs-llvm `auto.rs`, #481, user, 2026-10-26)
+
+- **Merge** of `origin/main` (2ebc8fb5 the object table keyed by machine, c2dd4b2c the `auto` policy of #762, f320c0dc and the
+  rest). The Cranelift lowering reads the tag and the entry offset of the keys (`Mem::slot`, `MEM_TAGS`, `MEM_MIXES`,
+  `Gen::obj_tag`) for its inline lookups (`obj_lookup`: the heap's tag for a heap object or a guess, the address's space
+  otherwise) and its `Deref` hit test (handle and tag), as the LLVM lowering. `compiled_instances` runs the Cranelift
+  tiers too. The policy's compile wrapper of #762 (frame-mode code linked along with native-frame code the cache had)
+  goes through the generator of the compile (`Worker::hits_of`, `cached_only`), not the LLVM cache; the price of a module
+  is the function's (main dropped the halving per part), `FIRST_HIT` and `FIRST_US_PER_INSTR` for the first level.
+- **The #756 gate has a switch of its own** (user, 2026-10-26: `--tier=clift-auto` spends no process-frame memory on the
+  layout slots by default). `opt::frame_blocks` keeps the 32-byte blocks the interpreter fuses in the frame without the
+  layout slots (`frame_blocks_on`, fingerprint `blocks`); `clift-auto` turns it on, `YAVS_CLIFT_LAYOUT_SLOTS=1` gives it
+  the layout slots as before (a measurement knob; a command-line option instead is the user's call). Measured, realbench
+  `--compare --runs 5` `poc_arith_addw`, cores 10 and 11: warm 6.10 s and 93.52 G instructions without the slots, 6.07 s
+  and 93.60 G with them, peak RSS 43.5 and 43.8 MB; cold 6.26 and 6.32 s. The slots buy nothing for Cranelift code; the
+  blocks in the frame are what mattered (round 6: without both, 3 percent more instructions and 14 percent more cycles).
+- **A copy that shares another's body counts as linked from the cache** (`Jit::bodies` calls `cache::note_hit`, as the LLVM
+  tier's twins `note_twin`): the budget charged a full compile (45 us an IR instruction) for code that was not compiled.
+  `YAVS_AUTO_TRACE`, cold `--tier=clift-auto` `poc_arith_addw`: 30 of 74 copies are shared bodies, now ` hit` at 4 us an IR
+  instruction; spent 59.8 ms of the budget where the old price would have been about 169 ms.
+- **Positions in constant descriptors** (`Gen::const_dim`): a `Pos` whose descriptor register holds a constant-pool address
+  reads the dimension's words when the code is made; with a direction of 0 or 1 and a range that is not empty the position is
+  one unsigned compare of the index minus the low bound and, downward, a subtraction; anything else keeps the generic code,
+  whose slow path is the interpreter's error. A `BinRange` with constant bounds checks them with one unsigned compare
+  (`range_exit`). Eager `--tier=clift` (claimed cores, medians of 3): `poc_arith_addw` 105.8 G to 103.0 G instructions, the window
+  generator 150.8 G to 149.0 G; warm `clift-auto` `poc_arith_addw` 93.6 G to 90.7 G instructions, 30.2 G to 29.5 G cycles. Test:
+  `crates/yavs/tests/clift_const_dims.rs`.
+- **Tried and dropped:** values of earlier instructions kept in hand across the joins and callbacks of an IR block (`clear`
+  forgot every value but the deferred ones; a callback writes only its instruction's registers): eager `poc_arith_addw`
+  0.9 G more instructions, cycles level. Regalloc spills the longer live ranges to the stack, which costs what the reload
+  from the register array did. The block-parameter plan of the LLVM lowering for loops (registers carried across the blocks
+  of a loop) was not ported for the same reason: the hot loops here (`procChecker`) hold dozens of live registers.
+- **Where the rest is** (`perf record`, warm `auto`, `poc_arith_addw`): `procChecker` takes 1.55 times LLVM O2's instructions and
+  1.64 times its cycles, so the gap is the amount of code, not its IPC. In the Cranelift code the `Load` and the `Store` back
+  of the same heap word (the assertion counter of the inlined `simAssertion`) each do the whole object-table look-up from
+  the address register reloaded from the frame (the `Store` alone has 9 percent of the process's samples), the `Mem` pointer
+  is reloaded from a stack slot before each use in a look-up, and an overflow test sets a flag byte and tests it (`seto`,
+  `test`, `jne`). An object kept in hand after a `Deref` in frame-mode code (as native frames do) is the next step there.
+  The copies of the adder processes take 1.18 times LLVM's instructions.
 
 ## Frame-mode code tests the temporary area and the object cache inline for addresses it can guess (yavs-llvm `Gen::host`, `rt::track`, #711, 2026-10-24)
 

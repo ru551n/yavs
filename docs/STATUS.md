@@ -3622,6 +3622,46 @@ warm and 1.017 cold, and a run of the cache before the second merge measured 1.0
 quality on heavy compute (`poc_arith_addw` 99 G instructions against 87 G warm, window generator 157 G against 135 G); the
 verification-library tests are level.
 
+### clift: round 8, the merge with main, the layout slots apart, constant descriptors (2026-10-26, #481)
+
+`spike/clift2` merged with main at 9b5ce798 and f320c0dc: the Cranelift lowering uses the object table keyed by machine
+(the tag and entry offset of `Mem::slot` in its inline look-ups and its `Deref` hit test), the `auto` policy of #762 links
+frame-mode code along with cached native-frame code through the generator of the compile. User decision 2026-10-26:
+`--tier=clift-auto` keeps the fused 32-byte blocks in the frame through a switch of its own (`opt::frame_blocks`) and no
+longer gets the layout slots (`YAVS_CLIFT_LAYOUT_SLOTS=1` adds them; measured level in time and instructions on
+`poc_arith_addw`). A copy that shares another's Cranelift body is charged as a cache link. A `Pos` in a constant-pool
+descriptor and a range check with constant bounds are one unsigned compare (`crates/yavs/tests/clift_const_dims.rs`).
+Details: decisions.md "Cranelift tier, round 8".
+
+Gates on f63ddf3c (the code of this round; docs after it): fmt, clippy `-D warnings` for default, `llvm`, `clift`, `llvm,clift`; `cargo test --workspace` (1 170) and
+the feature sets (`llvm` 1 283, `clift` 1 203, `llvm,clift` 1 312, all test binaries counted); difftest 533/533 for `yavs-clift`, `-clift-auto`, `-auto3`, `-mixed`, `-llvm`, `-auto` at 1 and 4 threads (debug build, verifier on).
+
+Full total (analyze, elaborate, run) of a Cranelift-only build (`--features clift`) and an LLVM build (`--features llvm`), both
+`tools/build-bench.sh` of f63ddf3c, against sim1; realbench `--compare --runs 5`, timing cores 10 and 11, host load 20 to 27
+(round 7: about 10); last column the warm run instructions in G:
+
+| test | Cranelift warm | LLVM warm | Cranelift cold | LLVM cold | G warm Cranelift / LLVM |
+|---|---:|---:|---:|---:|---|
+| poc_arith_addw | 1.01 | 0.95 | 1.07 | 1.14 | 89.7 / 84.6 |
+| fletcher_bufferwriter_512 | 1.98 | 2.00 | 2.22 | 2.12 | 47.3 / 48.8 |
+| neorv32_single_min | 0.73 | 0.77 | 1.00 | 0.89 | 30.6 / 30.3 |
+| osvvm_axis_random | 0.15 | 0.15 | 0.37 | 0.36 | 2.6 / 2.6 |
+| uvvm_sb_slv | 0.38 | 0.42 | 0.55 | 0.58 | 9.8 / 10.8 |
+| uvvm_util_rand | 0.37 | 0.37 | 0.54 | 0.57 | 11.2 / 12.3 |
+| uvvm_axistream_vvc | 0.72 | 0.62 | 0.75 | 0.72 | 33.5 / 32.7 |
+| osvvm_axi4_random | 0.27 | 0.27 | 0.49 | 0.48 | 6.6 / 6.6 |
+| vai_window_gen_interlock | 1.44 | 1.41 | 1.72 | 2.11 | 148.8 / 137.8 |
+| geometric mean | 0.589 | 0.587 | 0.819 | 0.831 | |
+
+Cranelift against LLVM: warm 1.003, cold 0.985 (round 7: 1.037 and 1.015; the same table on 6cc3c558, the merge and the
+layout switch without the constant descriptors, cores 9 and 12, load about 8: 1.049 and 0.994). At this load single cells
+move by 10 percent between runs (`neorv32_single_min` cold 1.00 against 0.84 on 6cc3c558, `uvvm_axistream_vvc` warm 0.72
+against 0.67); warm instructions are steadier: `poc_arith_addw` 92.5 G to 89.7 G (LLVM 84.6 G), the window generator 152.9 G
+to 148.8 G (LLVM 137.8 G). What is left: `procChecker` of `poc_arith_addw` under `auto` takes 1.55 times LLVM O2's
+instructions (two object-table look-ups for the load and store of one heap word in frame-mode code, the `Mem` pointer
+reloaded from a stack slot, flag-byte overflow tests), the native variants of the window generator's accessors
+(`unsafe_pop`, `decode`: unchanged this round), and cold compile cost of the library testbenches.
+
 ### clift: round 7, deferred stores, values across entries, shared copies (2026-10-26, #481)
 
 Frame-mode code of processes defers the stores of the registers quiet instructions define and stores them where the

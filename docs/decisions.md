@@ -8237,8 +8237,31 @@ the run; cycles as the minimum of 7 interleaved runs on one core claimed with `t
   `c(i-1)`) and keep their codes, so this decision cannot save their refresh: instructions 1.000 / 1.004 / 1.005 (code layout; their paths are
   unchanged), cycles level within the noise of a shared host. `neorv32_single_min` and `grlib_leon3mp` level.
 - **Width condition kept (user, 2026-10-26)**: with the element-read rule alone `fletcher_bufferwriter_512` lost 5% instructions (3% wall interp, 7% auto) because its wide buses have element reads. A leaf now keeps codes only with element reads AND, above 64 elements, narrow sources (the #519 rule, unchanged in `Signal::sync_codes`). `fletcher_bufferwriter_512` is level again: instructions 51.12 G to 51.17 G (interp), 49.44 G to 49.16 G (auto), cpu 3.98 s both. The skip test on the planes (`held`) is new for buses and signals without codes, so `mixed_entries` counts fewer direct entries (floors 1230 and 260).
-- **Not done**: telling a real read from a port-map actual or a sensitivity entry (would let a few more bus signals drop their codes); reads
-  through signal parameters make every signal keep its codes (OSVVM/UVVM designs get no gain).
+- **Precise facts** (#734, 2026-10-26, next section): port-map actuals, sensitivity entries and signal parameters no longer count as
+  element reads or ask for every signal.
+
+## Element read facts without connections, sensitivity entries and parameter reads (yavs-sem `db.rs`, #734, 2026-10-26)
+
+- **Decision**: `Facts::elem_reads` counts only reads. (1) A plain port-map actual (`Actual::Expr`, not `inertial`, of an instance or a block)
+  is a connection: the read happens inside the instance on the formal. A scalar signal port read whole (any use that is not an assignment
+  target, a port-map actual or a sensitivity entry) is noted as an element read of the *port object*; `keep_codes.rs` already marks the
+  leaves of an object, and a collapsed port shares the actual's leaf, so `a(3)` keeps its codes only if the formal is read (modes in, out,
+  inout and buffer alike; `out` ports that are only driven read nothing). Converted, individual and `inertial` actuals stay reads (the
+  kernel or an interpreter process evaluates them). (2) The names of a process sensitivity list and of `wait on` without `until` are no
+  reads (matched by span: `Lsp::span` is the span of its expression). (3) An element read of a signal parameter no longer sets
+  `elem_reads_all`: every call with a signal actual to a signal formal is an edge `(callee, formal, root object)`; the parameters that
+  read an element (directly or by passing the signal on) are found by a fixpoint in `Db::settle_elem_reads`, and the root objects of the
+  edges into them get the element read. A parameter is its body region and its position (the spec and the body of a subprogram have
+  different parameter objects). An external name as actual, or a callee the analysis cannot see into (formal generic subprogram, foreign,
+  not yet instantiated, no body), keeps `elem_reads_all`; natives and implicit operations read no element. A scalar signal parameter read
+  whole is not noted: a call actual that is a part is itself a read, as before.
+- **Storage**: when the facts are recomputed they come from the raw lists (`elem_direct`, `param_reads`, `pass_edges`, `elem_ext`),
+  stored per unit (unit image FORMAT 7).
+- **Results** (bench builds with `llvm`, `no_code_signals` before / after of the real-world suite): `osvvm_axis_random` 0 / 21, `osvvm_axi4_random` 0 / 1,
+  `uvvm_axistream_vvc` 0 / 5, `grlib_leon3mp` 0 / 317, `neorv32_single_min` 373 / 376, `uvvm_sb_slv` 0 / 0 (3 signals), fletcher tests unchanged.
+  Instructions of whole runs (`--tier=interp` / `auto`): all level (1.000) except `grlib_leon3mp` 1.007 / 1.007: the 317 signals it
+  now drops are written by element and skip on the plane bit (`plane_held`), which costs more than the byte compare it replaces; wall time
+  level (0.99 / 0.95, noise of a shared host). Test: `connections_and_sensitivity_need_no_byte_codes`, `elem_read_facts`.
 
 ## Facts the declarative part leaves in a process copy (yavs-ir `opt/decl.rs`, #678, 2026-10-24)
 

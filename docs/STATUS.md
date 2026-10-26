@@ -9158,6 +9158,10 @@ The analysed units of the built-in `std`/`ieee` live in one store per user (`$YA
 
 The elaborator decides which logic signals keep the per-element byte codes: those that have a read of one element (`Db::facts()` `elem_reads`, `yavs-elab` `keep_codes.rs`, `Builder::no_codes`); the source-width condition of #519 stays for signals above 64 elements (user, 2026-10-26). Signals without codes are read from the planes and still skip assignments of the value they hold. Instructions of whole runs (interpreter / llvm): `lfsr64` 0.97 / 0.95, `lfsr64_xor` 0.98 / 0.97, `rtl_ram` 0.99; `rtl_lfsr`, `rtl_ff`, `rtl_chain` read single elements of their registers and keep their codes (level, at most +0.5% from layout); `fletcher_bufferwriter_512` level thanks to the width condition. Details and the open items: `docs/decisions.md` "Byte codes by element reads".
 
+## Element read facts without connections, sensitivity entries and parameter reads (yavs-sem, #734, 2026-10-26)
+
+Port-map actuals (`v(3)`), sensitivity entries and element reads through signal parameters no longer make a signal keep its byte codes: a scalar port read whole is the read, and a signal passed to a parameter that reads an element of it is found by a fixpoint over the calls (`docs/decisions.md` "Element read facts without connections, sensitivity entries and parameter reads"). `no_code_signals`: `osvvm_axis_random` 0 to 21, `grlib_leon3mp` 0 to 317, `uvvm_axistream_vvc` 0 to 5; instructions level except `grlib_leon3mp` +0.7 percent.
+
 ## Table reads with a range test or a validity mask (yavs-ir `opt/inline.rs`, #769, 2026-10-26)
 
 A result-table read for an argument of an integer type (range test) or with values that report (validity mask) now takes the rest of its block into the table arm before the first optimiser pass

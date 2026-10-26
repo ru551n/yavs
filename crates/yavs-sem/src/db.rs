@@ -98,30 +98,49 @@ pub struct Facts {
     /// kernel signals).
     pub history_wholes: Vec<DeclId>,
     /// The signal objects of which one element is read (a scalar index, selection or alias of a
-    /// part, in any expression that is not an assignment target): the kernel keeps byte codes
-    /// for those (#734).
+    /// part, or a scalar port read whole, which is an element of its actual when the port is
+    /// collapsed into it; in any expression that is not an assignment target, a port-map actual
+    /// or a sensitivity entry): the kernel keeps byte codes for those (#734). Found from the
+    /// `elem_direct`, `param_reads` and `pass_edges` of the whole design (`Db::settle_elem_reads`).
     pub elem_reads: Vec<DeclId>,
-    /// An element of something the elaborator cannot trace to a signal object is read (a signal
-    /// parameter, an external name): any signal may be it.
+    /// An element of something the elaborator cannot trace to signal objects is read (an external
+    /// name, a signal passed to a subprogram it cannot see into): any signal may be it.
     pub elem_reads_all: bool,
-    /// While scanning: the scalar names with a signal root and the targets of assignments, whose
-    /// difference is `elem_reads` (`Facts::settle_elem_reads`).
+    /// The signal objects with a direct element read, the signal parameters with one, the
+    /// subprogram calls with a signal actual `(callee, formal, root object of the actual)` (the
+    /// root is `None` for an external name), and an element of an external name read
+    /// directly: what `elem_reads` and `elem_reads_all` are found from.
+    pub(crate) elem_direct: Vec<DeclId>,
+    pub(crate) param_reads: Vec<DeclId>,
+    pub(crate) pass_edges: Vec<(DeclId, u16, Option<DeclId>)>,
+    pub(crate) elem_ext: bool,
+    /// While scanning: the scalar names with a signal root `(expression, span, root, whether the
+    /// root is a signal parameter)`, the expressions that are no reads (assignment targets and
+    /// plain port-map actuals) and the spans of sensitivity entries, which settle the candidates
+    /// into `elem_direct` and `param_reads` (`Facts::settle_elem_cands`).
     #[serde(skip)]
-    elem_cands: Vec<(ExprId, DeclId)>,
+    elem_cands: Vec<(ExprId, Span, DeclId, bool)>,
     #[serde(skip)]
     targets: Vec<ExprId>,
+    #[serde(skip)]
+    sens_spans: Vec<Span>,
     /// The expressions that were package-path external names (`@lib.pkg.obj`) with their names.
     pub(crate) package_paths: Vec<(ExprId, ExternalId)>,
 }
 
 impl Facts {
-    /// Turn the candidates and targets found since the last call into `elem_reads`: the signal
-    /// objects of a scalar part that is read, not assigned.
-    pub(crate) fn settle_elem_reads(&mut self) {
+    /// Turn the candidates found since the last call into `elem_direct` and `param_reads`: the
+    /// names of a scalar part that are read, not assigned, connected or listed.
+    pub(crate) fn settle_elem_cands(&mut self) {
         let targets: HashSet<ExprId> = std::mem::take(&mut self.targets).into_iter().collect();
-        for (e, d) in std::mem::take(&mut self.elem_cands) {
-            if !targets.contains(&e) {
-                self.elem_reads.push(d);
+        let sens: HashSet<Span> = std::mem::take(&mut self.sens_spans).into_iter().collect();
+        for (e, span, d, param) in std::mem::take(&mut self.elem_cands) {
+            if !targets.contains(&e) && !sens.contains(&span) {
+                if param {
+                    self.param_reads.push(d);
+                } else {
+                    self.elem_direct.push(d);
+                }
             }
         }
     }
@@ -506,23 +525,30 @@ impl Db {
             f.history_all |= u.history_all;
             f.history_parts.extend_from_slice(&u.history_parts);
             f.history_wholes.extend_from_slice(&u.history_wholes);
-            f.elem_reads.extend_from_slice(&u.elem_reads);
-            f.elem_reads_all |= u.elem_reads_all;
+            f.elem_direct.extend_from_slice(&u.elem_direct);
+            f.param_reads.extend_from_slice(&u.param_reads);
+            f.pass_edges.extend_from_slice(&u.pass_edges);
+            f.elem_ext |= u.elem_ext;
             f.package_paths.extend_from_slice(&u.package_paths);
         }
         if !self.unit_facts.is_empty() {
             f.forces.sort_unstable_by_key(|s| s.index());
             f.package_paths.sort_unstable_by_key(|p| p.0.index());
         }
-        f.settle_elem_reads();
+        f.settle_elem_cands();
         for v in [
             &mut f.history_parts,
             &mut f.history_wholes,
-            &mut f.elem_reads,
+            &mut f.elem_direct,
+            &mut f.param_reads,
         ] {
             v.sort_unstable_by_key(|d| d.index());
             v.dedup();
         }
+        f.pass_edges
+            .sort_unstable_by_key(|e| (e.0.index(), e.1, e.2.map(|d| d.index())));
+        f.pass_edges.dedup();
+        self.settle_elem_reads(&mut f);
         f.exprs = self.exprs.len();
         f.stmts = self.stmts.len();
         f
@@ -568,12 +594,23 @@ impl Db {
             ExprKind::Obj(d) if matches!(self.decls[d].kind, DeclKind::Alias(_)) => {
                 self.note_elem_read(id, f)
             }
+            ExprKind::Obj(d) if self.is_signal_port(d) => self.note_elem_read(id, f),
+            ExprKind::Call {
+                callee, ref args, ..
+            } => self.note_call(callee, args, f),
             _ => {}
         }
     }
 
-    /// Add `e` to the candidates of `Facts::elem_reads` if it is a scalar part of a signal
-    /// (#734). A whole scalar signal is one element anyway and not noted.
+    fn is_signal_port(&self, d: DeclId) -> bool {
+        use crate::decl::{ObjClass, ObjRole};
+        matches!(&self.decls[d].kind, DeclKind::Object(o) if o.class == ObjClass::Signal && o.role == ObjRole::Port)
+    }
+
+    /// Add `e` to the candidates of `Facts::elem_reads` if it is a scalar part of a signal, or a
+    /// scalar port read whole (#734). A whole scalar signal that is no port is one element
+    /// anyway and not noted. A scalar signal parameter read whole is not noted either: its
+    /// actual, if a part, is itself a read where the call is.
     fn note_elem_read(&self, e: ExprId, f: &mut Facts) {
         use crate::decl::{ObjClass, ObjRole};
         use crate::hir::ObjRoot;
@@ -584,24 +621,142 @@ impl Db {
             return;
         }
         match self.lsp_parts(e) {
-            Some((ObjRoot::Decl(d), path, _, cut)) if !path.is_empty() || cut => {
+            Some((ObjRoot::Decl(d), path, _, cut)) => {
                 if let DeclKind::Object(o) = &self.decls[d].kind
                     && o.class == ObjClass::Signal
+                    && (!path.is_empty() || cut || o.role == ObjRole::Port)
                 {
-                    if o.role == ObjRole::Param {
-                        f.elem_reads_all = true;
-                    } else {
-                        f.elem_cands.push((e, d));
-                    }
+                    let span = self.exprs[e].span;
+                    f.elem_cands.push((e, span, d, o.role == ObjRole::Param));
                 }
             }
-            Some((ObjRoot::External(x), ..))
-                if self.externals[x].class == yavs_syntax::ast::ExternalClass::Signal =>
+            Some((ObjRoot::External(x), path, _, cut))
+                if self.externals[x].class == yavs_syntax::ast::ExternalClass::Signal
+                    && (!path.is_empty() || cut) =>
             {
-                f.elem_reads_all = true
+                f.elem_ext = true
             }
             _ => {}
         }
+    }
+
+    /// Add the signal actuals of a call to `Facts::pass_edges`: a callee that reads an element
+    /// of its signal parameter reads one of the signal the actual names.
+    fn note_call(&self, callee: DeclId, args: &[crate::hir::Arg], f: &mut Facts) {
+        use crate::decl::ObjClass;
+        use crate::hir::{Actual, ObjRoot};
+        let Some(sp) = self.decls[callee].kind.subprogram() else {
+            return;
+        };
+        for a in args {
+            if sp
+                .params
+                .get(a.formal as usize)
+                .is_none_or(|p| p.class != ObjClass::Signal)
+            {
+                continue;
+            }
+            let actuals: Vec<ExprId> = match &a.actual {
+                Actual::Expr(e) => vec![*e],
+                Actual::Converted { actual, .. } => vec![*actual],
+                Actual::Individual(parts) => parts.iter().map(|p| p.1).collect(),
+                _ => continue,
+            };
+            for e in actuals {
+                match self.lsp_parts(e) {
+                    Some((ObjRoot::Decl(d), ..)) if matches!(&self.decls[d].kind, DeclKind::Object(o) if o.class == ObjClass::Signal) => {
+                        f.pass_edges.push((callee, a.formal, Some(d)))
+                    }
+                    Some((ObjRoot::External(x), ..))
+                        if self.externals[x].class == yavs_syntax::ast::ExternalClass::Signal =>
+                    {
+                        f.pass_edges.push((callee, a.formal, None))
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// Find `Facts::elem_reads` and `elem_reads_all` from the raw facts: a signal passed to a
+    /// subprogram that reads an element of that signal parameter (directly or by passing it on)
+    /// has an element read. A callee the elaborator cannot see into asks everything.
+    pub(crate) fn settle_elem_reads(&self, f: &mut Facts) {
+        use crate::decl::{Body, ObjRole};
+        // A parameter is its body region and its position among the region's parameters, the
+        // same for the declaration a call names and for the body's own parameter objects.
+        let key = |p: DeclId| -> Option<(ScopeId, u16)> {
+            let sc = self.decls[p].scope;
+            let is_param = |d: &&DeclId| matches!(&self.decls[**d].kind, DeclKind::Object(o) if o.role == ObjRole::Param);
+            let pos = self.scopes[sc]
+                .order
+                .iter()
+                .filter(is_param)
+                .position(|&d| d == p)?;
+            Some((sc, pos as u16))
+        };
+        let mut all = f.elem_ext;
+        let mut reads: HashSet<(ScopeId, u16)> = HashSet::default();
+        for &p in &f.param_reads {
+            match key(p) {
+                Some(k) => {
+                    reads.insert(k);
+                }
+                None => all = true,
+            }
+        }
+        enum To {
+            Obj(DeclId),
+            Param((ScopeId, u16)),
+            External,
+        }
+        let mut edges = Vec::new();
+        for &(callee, formal, actual) in &f.pass_edges {
+            let from = match self.decls[callee].kind.subprogram().map(|s| &s.body) {
+                Some(Body::Hir { scope, .. }) => (*scope, formal),
+                Some(Body::Native(_) | Body::Implicit(_)) => continue,
+                _ => {
+                    all = true;
+                    continue;
+                }
+            };
+            let to = match actual {
+                None => To::External,
+                Some(d) if self.is_param_decl(d) => match key(d) {
+                    Some(k) => To::Param(k),
+                    None => {
+                        all = true;
+                        continue;
+                    }
+                },
+                Some(d) => To::Obj(d),
+            };
+            edges.push((from, to));
+        }
+        let mut objs: HashSet<DeclId> = f.elem_direct.iter().copied().collect();
+        loop {
+            let mut changed = false;
+            for (from, to) in &edges {
+                if reads.contains(from) {
+                    changed |= match to {
+                        To::Obj(d) => objs.insert(*d),
+                        To::Param(k) => reads.insert(*k),
+                        To::External => !std::mem::replace(&mut all, true),
+                    };
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        f.elem_reads = objs.into_iter().collect();
+        f.elem_reads.sort_unstable_by_key(|d| d.index());
+        f.elem_reads_all = all;
+    }
+
+    fn is_param_decl(&self, d: DeclId) -> bool {
+        use crate::decl::ObjRole;
+        matches!(&self.decls[d].kind, DeclKind::Object(o) if o.role == ObjRole::Param)
     }
 
     /// Add what `p'last_event` (or `p'last_value`) contributes to `f`: what the kernel must keep
@@ -639,6 +794,26 @@ impl Db {
             }
             StmtKind::SignalAssign { target, .. } | StmtKind::ConcSignalAssign { target, .. } => {
                 f.targets.push(target.expr)
+            }
+            // Connections and sensitivity entries are no reads (#734).
+            StmtKind::Instance { port_map, .. } | StmtKind::Block { port_map, .. } => {
+                for a in port_map.iter() {
+                    if let crate::hir::Actual::Expr(e) = a.actual
+                        && !a.inertial
+                    {
+                        f.targets.push(e);
+                    }
+                }
+            }
+            StmtKind::Process {
+                sensitivity: crate::hir::Sensitivity::List(ls),
+                ..
+            } => f.sens_spans.extend(ls.iter().map(|l| l.span)),
+            StmtKind::Wait {
+                on, until: None, ..
+            } => f.sens_spans.extend(on.iter().map(|l| l.span)),
+            StmtKind::ProcCall(c) | StmtKind::ConcProcCall { call: c, .. } => {
+                self.note_call(c.callee, &c.args, f)
             }
             _ => {}
         }

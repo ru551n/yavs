@@ -94,11 +94,13 @@ fn replayable(i: &Inst) -> bool {
 }
 
 /// Can it fail other than by a broken invariant (a copy that cannot is dropped unless read)?
+/// (The length of a descriptor that is there cannot: it moves past the checks before it, #771.)
 fn may_fail(i: &Inst) -> bool {
     !speculable(i)
         && !matches!(
             i,
             Inst::Index { .. }
+                | Inst::DopeLen { .. }
                 | Inst::Load { .. }
                 | Inst::LGet { .. }
                 | Inst::Field { .. }
@@ -107,8 +109,9 @@ fn may_fail(i: &Inst) -> bool {
 }
 
 /// Does it write memory a descriptor could be in? Writes into the elements of a logic array
-/// never reach a descriptor.
-fn writes(i: &Inst) -> bool {
+/// never reach a descriptor, nor does a new temporary block, a statement marker or an `ieee`
+/// function (which reads its operands and makes a block of its own, #771).
+fn writes(prog: &Program, i: &Inst) -> bool {
     !(replayable(i)
         || matches!(
             i,
@@ -119,8 +122,28 @@ fn writes(i: &Inst) -> bool {
                 | Inst::Unreachable { .. }
                 | Inst::LSet { .. }
                 | Inst::LFill { .. }
+                | Inst::LCopy { .. }
+                | Inst::Alloc { .. }
                 | Inst::Cover { .. }
-        ))
+        )
+        // (A debugger may write a variable at a marker.)
+        || matches!(i, Inst::Stmt) && !keep_variables_on()
+        || matches!(*i, Inst::CallNative { native, .. } if light_native(prog, native)))
+}
+
+/// A native `ieee` function: it reads its arguments and returns a new block, touching no other
+/// memory.
+fn light_native(prog: &Program, native: crate::NativeId) -> bool {
+    let Some(n) = prog.natives.get(native) else {
+        return false;
+    };
+    let Some(key) = n.symbol.strip_prefix("yavs.ieee.") else {
+        return false;
+    };
+    !matches!(
+        crate::ieee::parse(key.split_once('@').map_or(key, |k| k.0)),
+        None | Some(crate::ieee::Op::Uniform)
+    )
 }
 
 fn def_of(i: &Inst) -> Option<Reg> {
@@ -388,7 +411,7 @@ impl Licm<'_> {
         let mut clean = true;
         for &b in &body {
             for i in &self.code[b as usize] {
-                clean &= !writes(i);
+                clean &= !writes(self.prog, i);
                 i.visit(&mut |r, role, _| {
                     if role == Role::Def {
                         self.ldef[r.0 as usize] = tag;

@@ -887,6 +887,9 @@ enum Key {
     /// the register it was made from (a `Load` of the descriptor gives that back).
     Part(Opn, u32),
     Dope(Opn, u8),
+    /// The length of a dimension of a parameter's descriptor: a callee never changes the bounds
+    /// of a descriptor it was given, so no store, call or marker drops it.
+    ParamDope(Opn, u8),
     Pos(Opn, u8, Opn),
     /// `SlicePos` of the bounds `left`, `right` and direction in a descriptor.
     Slice(Opn, [Opn; 3]),
@@ -2686,6 +2689,22 @@ impl<'a> Opt<'a> {
             return vec![(0, i64::MAX)];
         }
         let range = |o: i64, n: Option<i64>| self.frame_range(o, n);
+        // The slot of a local array keeps the address of its own descriptor (`[data, dope, handle,
+        // descriptor]`): nothing writes the descriptor through it after the declaration, so that
+        // store is no escape (#771).
+        let own_slot = |addr: Reg, src: Reg| {
+            let at = |r: Reg| match self.ka.get(self.resolve(r).0 as usize) {
+                Some(Some((AddrSpace::Frame, o))) => Some(i64::from(*o)),
+                _ => None,
+            };
+            let (Some(a), Some(s)) = (at(addr), at(src)) else {
+                return false;
+            };
+            self.f.locals.iter().any(|l| {
+                let (b, e) = (i64::from(l.slot), i64::from(l.slot) + i64::from(l.size));
+                b <= a && a < e && b <= s && s < e && a != s
+            })
+        };
         let mut esc = Vec::new();
         let mut mark = |r: Reg, n: Option<i64>| {
             if let Some(Some((AddrSpace::Frame, o))) = self.ka.get(self.resolve(r).0 as usize) {
@@ -2695,6 +2714,7 @@ impl<'a> Opt<'a> {
         for i in &self.code {
             match *i {
                 Inst::Load { .. } => {}
+                Inst::Store { addr, src, .. } if own_slot(addr, src) => {}
                 Inst::Store { src, .. } => mark(src, None),
                 // Reads and writes through the address: it is used, not kept anywhere (the
                 // bytes of a copy that are addresses were marked where they were stored).
@@ -2710,7 +2730,12 @@ impl<'a> Opt<'a> {
                 | Inst::SlicePos { .. }
                 | Inst::Pos { .. }
                 | Inst::SubtypeCheck { .. }
-                | Inst::LayoutOf { .. } => {}
+                | Inst::LayoutOf { .. }
+                // (An object made from bytes at an address reads them; the descriptor of a
+                // local array lives in its slot, #771.)
+                | Inst::New { .. }
+                | Inst::NewFill { .. }
+                | Inst::NewFrame { .. } => {}
                 _ => {
                     i.visit(&mut |r, role, _| {
                         if role == Role::Use {
@@ -2807,6 +2832,8 @@ impl<'a> Opt<'a> {
                             && let Some(n) = self.affine_len(l, r, dir)
                         {
                             self.tbl.put(Key::Dope(k, d as u8), Val::K(n));
+                        } else if let Some(x) = self.len_register(parts, d) {
+                            self.tbl.put(Key::Dope(k, d as u8), Val::R(x));
                         }
                     }
                 }
@@ -3239,6 +3266,73 @@ impl<'a> Opt<'a> {
         Some(d.checked_add(1)?.max(0))
     }
 
+    /// Dimension `d` of the `MakeDope` with `parts` is `c to x + (c - 1)` for a constant `c` and a
+    /// once-defined register `x` that a `DopeLen` made (a length, so not negative): its length is `x`.
+    /// (`variable sv : std_ulogic_vector (0 to sl - 1)` with `constant sl := value'length`.)
+    fn len_register(&self, parts: crate::Regs, d: u32) -> Option<Reg> {
+        let part = |j: u32| {
+            self.operands
+                .get((parts.start + 3 * d + j) as usize)
+                .copied()
+        };
+        let (Opn::K(c), Opn::K(0)) = (self.opn(part(0)?), self.opn(part(2)?)) else {
+            return None;
+        };
+        let r = self.resolve(part(1)?);
+        let (x, o) = self
+            .single(r)
+            .then(|| self.aff.get(&r).copied().unwrap_or((r, 0)))?;
+        let x = self.resolve(x);
+        (self.single(x)
+            && o.checked_add(1) == Some(c)
+            && matches!(
+                self.code.get(*self.def_pc.get(x.0 as usize)? as usize),
+                Some(Inst::DopeLen { dst, .. }) if *dst == x
+            ))
+        .then_some(x)
+    }
+
+    /// The length of dimension `k` of the descriptor in `r` as a constant (`Ok`) or the register
+    /// that holds it (`Err`), when this path says.
+    fn dope_len_val(&self, r: Reg, k: u8) -> Option<Result<u64, Reg>> {
+        if let Some(n) = self.dope_known(r, k) {
+            return Some(Ok(n));
+        }
+        let d = self.kopn(r)?;
+        let v = self
+            .tbl
+            .get(&Key::ParamDope(d, k))
+            .or_else(|| self.tbl.get(&Key::Dope(d, k)));
+        match v {
+            Some(Val::R(x)) => Some(Err(self.resolve(x))),
+            _ => None,
+        }
+    }
+
+    /// Is `r` the descriptor of a parameter, loaded from the slot that holds it (`X'dope`)?
+    fn param_dope(&self, r: Reg) -> bool {
+        let r = self.resolve(r);
+        if !self.single(r) {
+            return false;
+        }
+        let Some(&Inst::Load {
+            addr, w: Width::B8, ..
+        }) = self
+            .def_pc
+            .get(r.0 as usize)
+            .and_then(|&p| self.code.get(p as usize))
+        else {
+            return false;
+        };
+        let Some(Some((AddrSpace::Frame, off))) = self.ka.get(self.resolve(addr).0 as usize) else {
+            return false;
+        };
+        self.f
+            .params
+            .iter()
+            .any(|p| p.slot == *off && p.name.ends_with("'dope"))
+    }
+
     /// The length of dimension `k` of the descriptor in `r`, when a pool constant or a
     /// `MakeDope` of constants on this path says.
     fn dope_known(&self, r: Reg, k: u8) -> Option<u64> {
@@ -3652,7 +3746,12 @@ impl<'a> Opt<'a> {
                     return self.make_const(pc, dst, n as i64);
                 }
                 if let Some(d) = self.kopn(dope) {
-                    self.cse(pc, Some(dst), Key::Dope(d, dim));
+                    let key = if self.param_dope(dope) {
+                        Key::ParamDope(d, dim)
+                    } else {
+                        Key::Dope(d, dim)
+                    };
+                    self.cse(pc, Some(dst), key);
                 }
             }
             // Two descriptors of known, equal lengths: the check passes.
@@ -3660,8 +3759,8 @@ impl<'a> Opt<'a> {
                 dope, want, dims, ..
             } => {
                 if (0..dims).all(|k| {
-                    let a = self.dope_known(dope, k);
-                    a.is_some() && a == self.dope_known(want, k)
+                    let a = self.dope_len_val(dope, k);
+                    a.is_some() && a == self.dope_len_val(want, k)
                 }) {
                     self.code[pc] = dead();
                     self.changed = true;

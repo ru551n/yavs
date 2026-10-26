@@ -10337,3 +10337,18 @@ copy (`CallIeee`: the cells of the call, the lookup of the function, a result th
 - **Tests**: difftest case `ieee/is_x_slice` (every `std_ulogic` value at every position of vectors of 150 elements, ascending and descending, slices of 1 to 70 elements that stay in a block or
   cross its edge), perf case `hread_loop` (ops 7594 to 7156 together with #771).
 
+## A branch whose arms lead to the same block is a jump (yavs-ir `opt/cfg.rs`, #771, 2026-10-26)
+
+The fixed cost of one `HRead` call is about 86 interpreter ops for one digit (#771). Part of it is the descriptor of each local array: `SV (0 to SL-1)` tests whether the range is null, and the
+arm for a null range is a block that only jumps to the block of the other arm, so the test decided nothing (three of them per call).
+
+- **Decision: `cfg::equal_arms` turns a `CondBr` whose two targets lead to the same block (through up to four blocks that are only a jump) into a `Br`**; the compare that fed it goes with
+  `dead_defs`, the emptied arm with the clean-up that follows. It runs first in `cfg::run`, for every subprogram that cannot suspend, loop or not.
+- **Measured.** `HRead` of 8 bits, 20 000 calls (bench build, `perf stat`): 245.8 M to 231.1 M instructions together with #770 (two `is_x` per call); the branch fold alone is 0.3 percent of
+  the first 1 us of `grlib_leon3mp`, three ops of 86.
+- **Not done in #771** (what is left of its cost, with the profile of the first 1 us after #768 and #770: `HRead` 61 percent of the samples, its digit loop 45 percent): the `Read` of a string
+  as a native on `data, left, right, dir` instead of a fat pair (`NewPair`, `FatRoot`, `CallNative` per call); descriptors of local arrays whose shape depends on `VALUE'Length` made once per
+  length (`NewDope`, `MakeDope`, `LayoutWord`, `NewFrame`, `Copy` are five ops for each of `SV` and `S`); `Stmt` markers of statements the fusion left without a temporary; the two
+  `BinRange` of `4 * i` and `4 * i + 3` and the `SlicePos` of a slice whose position the loop's range already bounds.
+- **Tests**: `opt` (`a_branch_whose_arms_lead_to_the_same_block_is_a_jump`); perf case `hread_loop` lowered (7594 to 7156 ops with #770).
+

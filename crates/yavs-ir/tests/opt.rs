@@ -2518,3 +2518,52 @@ fn a_made_descriptor_gives_its_bounds_back() {
         }) > 0
     );
 }
+
+#[test]
+fn a_branch_whose_arms_lead_to_the_same_block_is_a_jump() {
+    if !on() {
+        return;
+    }
+    // The null-range test of a local array: `if 0 <= n - 1` jumps to a block that only jumps on.
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(16, 8);
+        fb.stmt(StmtKind::Return, sp());
+        let x = unknown(fb, 0);
+        let y = unknown(fb, 8);
+        let c = fb.reg(RegTy::I64);
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Le,
+            dst: c,
+            a: x,
+            b: y,
+        });
+        let (b1, b2) = (fb.block(), fb.block());
+        fb.emit(Inst::CondBr { c, t: b1, f: b2 });
+        fb.at(b1);
+        fb.emit(Inst::Br { to: b2 });
+        fb.at(b2);
+        let s = fb.reg(RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: s,
+            a: x,
+            b: y,
+        });
+        let t = fb.reg(RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: IntOp::Mul,
+            dst: t,
+            a: s,
+            b: y,
+        });
+        fb.emit(Inst::Ret { v: Some(t) });
+    });
+    assert_eq!(
+        count(&code, |i| matches!(
+            i,
+            Inst::CondBr { .. } | Inst::Cmp { .. }
+        )),
+        0,
+        "{code:?}"
+    );
+}

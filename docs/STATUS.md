@@ -9160,3 +9160,8 @@ descriptor reads of such a loop move before it (`docs/decisions.md` "Loop-invari
 `Is_X (v (a to b))` tests the plane words of `v` where they are (`Op::IsXSlice`, `docs/decisions.md` "`is_x` of a slice of a logic vector"): no temporary, no native call. `grlib_leon3mp`, first 1 us, `--tier=interp`: 25.97 G to 23.07 G
 instructions (-11.1 percent). The other natives on slices (`to_x01`, the numeric operators) still copy the slice first.
 
+## Branches with equal arms (yavs-ir `opt/cfg.rs`, #771, 2026-10-26)
+
+A `CondBr` whose arms lead to the same block is a `Br` (the null-range test of a local array). Part of the fixed cost of an `HRead` call (`docs/decisions.md` "A branch whose arms lead to the same block"):
+the call is still about 80 ops; the rest is listed there. First 1 us of `grlib_leon3mp` with #768 to #771: 31.37 G to 22.99 G instructions (-26.7 percent), `--tier=interp`.
+

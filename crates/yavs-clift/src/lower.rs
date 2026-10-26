@@ -841,6 +841,9 @@ impl Jit {
             )
         });
         if let Some(&c) = body.as_ref().and_then(|k| self.bodies.get(k)) {
+            // Counts as linked from the cache, so `--tier=auto` charges a link (the LLVM tier's
+            // twins do the same).
+            crate::cache::note_hit();
             self.module.clear_context(&mut ctx);
             return Ok((c, stepped, None));
         }

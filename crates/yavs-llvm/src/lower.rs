@@ -807,14 +807,17 @@ impl Gen {
                 0,
             );
             LLVMSetSubprogram(fv, sp);
-            let three = LLVMValueAsMetadata(self.c32(3));
-            LLVMAddModuleFlag(
-                self.module,
-                llvm_sys::LLVMModuleFlagBehavior::LLVMModuleFlagBehaviorWarning,
-                c"Debug Info Version".as_ptr(),
-                18,
-                three,
-            );
+            // (A whole-program module has many functions and the flag may be set once, #773.)
+            if LLVMGetModuleFlag(self.module, c"Debug Info Version".as_ptr(), 18).is_null() {
+                let three = LLVMValueAsMetadata(self.c32(3));
+                LLVMAddModuleFlag(
+                    self.module,
+                    llvm_sys::LLVMModuleFlagBehavior::LLVMModuleFlagBehaviorWarning,
+                    c"Debug Info Version".as_ptr(),
+                    18,
+                    three,
+                );
+            }
             Some(KindLoc { b, sp })
         }
     }

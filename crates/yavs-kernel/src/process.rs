@@ -241,7 +241,7 @@ pub(crate) struct Out {
     pub code: u32,
 }
 
-/// `Out` of at most 64 elements, as plane words.
+/// `Out` of at most 64 elements, as plane words (bits from `len` on are zero).
 #[derive(Clone, Copy)]
 pub(crate) struct OutV {
     pub sig: u32,
@@ -321,7 +321,21 @@ pub(crate) struct ProcState {
     /// What this run did, `ACT_*` bits; cleared at every resumption (`kernel::resumption`). The
     /// commit looks at the lists only when a bit says they may hold something.
     pub act: u8,
+    /// Per driver (local index, the first `SAME_DRIVERS`): misses in a row of the skip test of
+    /// its direct assignments, then the count of those made without it (`same_wanted`). Kept here,
+    /// which every run writes, not in the driver's `Waveform`, which a direct assignment only
+    /// reads (a store there per activation cost rtl_ff 3% of its cycles).
+    pub same: [u8; SAME_DRIVERS],
 }
+
+/// Drivers of a process with a skip-test state (`ProcState::same`); later ones always ask it.
+pub(crate) const SAME_DRIVERS: usize = 8;
+
+/// Misses in a row of the skip test of a direct driver after which it is not asked for the next
+/// `256 - SAME_MISSES` assignments of the driver: its value changes at every activation (a
+/// counter, a shift register), and a skip left out only costs the commit of an unchanged entry,
+/// which changes nothing.
+const SAME_MISSES: u8 = 8;
 
 /// `ProcState::act`: the run set a timeout or made an effect (`deadline`, `effects`), so the
 /// commit is not the usual clocked one.
@@ -378,6 +392,28 @@ fn keep_last<T, K: Eq + std::hash::Hash + Copy>(v: &mut Vec<T>, key: impl Fn(&T)
 const SKIPPED: u32 = u32::MAX;
 
 impl ProcState {
+    /// Whether to ask the skip test of an assignment to direct driver `local`: not while its
+    /// tests keep missing (`SAME_MISSES`). The test's answer goes to `same_seen`.
+    #[inline(always)]
+    fn same_wanted(&mut self, local: u32) -> bool {
+        match self.same.get_mut(local as usize) {
+            Some(s) if *s >= SAME_MISSES => {
+                *s = s.wrapping_add(1);
+                false
+            }
+            _ => true,
+        }
+    }
+
+    /// Notes the answer `same` of the skip test of driver `local` and returns it.
+    #[inline(always)]
+    fn same_seen(&mut self, local: u32, same: bool) -> bool {
+        if let Some(s) = self.same.get_mut(local as usize) {
+            *s = if same { 0 } else { *s + 1 };
+        }
+        same
+    }
+
     /// The summary flags say what the lists hold (a flag may be set with its lists empty, not the
     /// other way round).
     #[inline(always)]
@@ -1175,7 +1211,11 @@ impl Ctx<'_> {
             // The signal and the driver have the code and nothing of this run is pending: the
             // commit would find no change (`Signal::commit_code`), so the entry is not made.
             if !self.has_entries(info, 1)
-                && self.sh.signals[sig as usize].direct_same(slot, r.offset, code)
+                && self.st.same_wanted(info.local)
+                && self.st.same_seen(
+                    info.local,
+                    self.sh.signals[sig as usize].direct_same(slot, r.offset, code),
+                )
             {
                 self.note_skipped();
                 return true;
@@ -1317,7 +1357,11 @@ impl Ctx<'_> {
             }
             taken += 1;
             if fresh
-                && self.sh.signals[sig as usize].direct_same(slot, elem, code)
+                && self.st.same_wanted(info.local)
+                && self.st.same_seen(
+                    info.local,
+                    self.sh.signals[sig as usize].direct_same(slot, elem, code),
+                )
                 && !self.st.out[first..].iter().any(|o| o.elem == elem)
             {
                 self.note_skipped();
@@ -1574,7 +1618,11 @@ impl Ctx<'_> {
             // value: the commit would only set the elements pending (`direct_same_planes`).
             if !self.has_entries(info, 1)
                 && !self.has_entries(info, 2)
-                && self.sh.signals[sig as usize].direct_same_planes(slot, r.offset, len, planes)
+                && self.st.same_wanted(info.local)
+                && self.st.same_seen(
+                    info.local,
+                    self.sh.signals[sig as usize].direct_same_planes(slot, r.offset, len, planes),
+                )
             {
                 self.note_skipped();
                 return true;

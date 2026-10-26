@@ -910,6 +910,20 @@ fn mark_bits(pend: &mut [u64], words: &mut Vec<u32>, elem: u32, len: u32) {
     }
 }
 
+/// The pending words of a signal in element order. Processes of the elements of a vector
+/// often commit in descending element order (the batch is in process order): reversed, not
+/// sorted.
+fn order_words(words: &mut [u32]) {
+    if words.is_sorted() {
+        return;
+    }
+    if words.is_sorted_by(|a, b| a >= b) {
+        words.reverse();
+    } else {
+        words.sort_unstable();
+    }
+}
+
 /// Byte `i` of `SPREAD[x]` is bit `i` of `x`.
 const SPREAD: [u64; 256] = {
     let mut t = [0u64; 256];
@@ -2036,14 +2050,19 @@ impl Signal {
                 let d = &mut drivers[o.slot as usize];
                 d.put_planes((o.elem - d.range.offset) as usize, o.len as usize, o.planes);
             }
-            if o.elem % 64 == 0 && o.len == 64 {
-                // A whole plane word (the usual entry of a wide bus): no shifts or masks.
-                let w = o.elem as usize / 64;
-                drv[w] = o.planes;
+            // Within one plane word (a whole word of a bus, a register of an array of them):
+            // one mask for the blend and the pending bits. The planes are masked to the length.
+            let (w, sh) = (o.elem as usize / 64, o.elem % 64);
+            if sh + o.len <= 64 {
+                let m = nmask(o.len as usize) << sh;
+                let b = &mut drv[w];
+                for (x, p) in b.iter_mut().zip(o.planes) {
+                    *x = *x & !m | p << sh;
+                }
                 if pend[w] == 0 {
                     pend_words.push(w as u32);
                 }
-                pend[w] = !0;
+                pend[w] |= m;
                 continue;
             }
             put_block(drv, o.elem as usize, o.len as usize, o.planes, !0);
@@ -2094,8 +2113,8 @@ impl Signal {
             let mut words = std::mem::take(&mut self.pend_words);
             // Runs are listed in element order for the waiters of parts (cells are sorted and
             // joined by `canonical_changed`).
-            if self.fine && self.cuts.is_empty() && !words.is_sorted() {
-                words.sort_unstable();
+            if self.fine && self.cuts.is_empty() {
+                order_words(&mut words);
             }
             let any = self.finish_words_lean(&words, now, cycle);
             words.clear();
@@ -2112,8 +2131,10 @@ impl Signal {
             return None;
         }
         let mut words = std::mem::take(&mut self.pend_words);
-        if !words.is_sorted() {
-            words.sort_unstable();
+        // Each word is finished on its own; only the changed runs and dirty ranges want
+        // element order.
+        if !plain || self.watched {
+            order_words(&mut words);
         }
         let mut any = false;
         for &w in &words {
@@ -2147,8 +2168,8 @@ impl Signal {
             return None;
         }
         let mut words = std::mem::take(&mut self.pend_words);
-        if !words.is_sorted() {
-            words.sort_unstable();
+        if !plain || self.watched {
+            order_words(&mut words);
         }
         let mut any = false;
         for &w in &words {

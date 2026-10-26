@@ -8133,6 +8133,75 @@ against the round.
     `CopyProcess::run` (2.65 runs a delta, 956 instructions each, about 10 parts): skipping a copied part whose source had no event would change
     what a deposit or a force on the target sees at the next activation; not built.
 
+## Kernel round 24: the skip test that keeps missing, pending words in element order, the in-word commit of a register (yavs-kernel, #734, 2026-10-26)
+
+Task (orchestrator): the small-RTL designs where yavs is still slower than sim1 under `--tier=auto` (head-to-head 6: `rtl_lfsr` 1.60, `lfsr64`
+1.42, `rtl_chain` 1.29, `rtl_ff` 1.20), starting from #734; find where the per-event kernel cost goes and cut it for every clock-edge form. Bench
+builds with `llvm`, `--threads 1`; `perf stat instructions:u` of whole warm runs (two untimed runs first: the first run of a binary leaves a
+note in the compilation cache, the second makes the entries and costs up to 15% more), `tools/stepcount` windows of one clock period late in
+the run; cycles as the minimum of 7 interleaved runs on one core claimed with `tools/claim core`. Main at 504f86ad against the round.
+
+- **Where an activation goes** (per activation, compiled processes, one clock period): `rtl_ff` about 1100 instructions, of which the kernel
+  (`run_batch` 125, `commit_codes` 55, the skip test 13, finish and commit loop 13) is about 206, the compiled body about 215 and the host layers
+  between the kernel and compiled code (`InterpProcess::run`, `run_direct`, `run_cached`, `enter_on`, `view_again`, `drive_bit_now`, the
+  `yavs_rt_*` callbacks, `save_kept`, `Program::func`) about 680; `rtl_lfsr` about 1530: kernel about 450 (`run_batch` 121, `finish_direct` 118,
+  `commit_planes_run` 91, `direct_same_planes` 66, the inlined `Ctx` paths), compiled body 340, host layers about 600. sim1 runs both at about
+  1000 to 1100 per activation in total. The host layers are filed as #766 (yavs-llvm and yavs-interp, other agents' area): the kernel alone
+  cannot bring these designs to sim1. `rtl_chain` (interpreted: compiling is slower there) is 1640 instructions a delta cycle, the kernel about
+  860 of them, spread over 10 functions of 25 to 260 instructions with no single item above 80 (the three `put_plane_code` of a one-element
+  commit and finish). `#734` itself (the event stamps, run lists and codes of a signal of at most 64 elements) does not apply to any of the
+  four: each holds its registers in one signal wider than 64 elements.
+- **Edge forms.** Four `rtl_ff` variants (`if rising_edge(clk)`, `if clk'event and clk = '1'`, `if not clk'stable and clk = '1'`, `wait
+  until rising_edge(clk)`) have identical work counters and identical kernel instructions per activation; the `wait until` form runs 128
+  more interpreter instructions per activation (four more ops after the resumption), filed as #767.
+- **Decisions** (each a measured drop of instructions, results unchanged):
+  - **The skip test of a direct assignment is left out for a driver whose tests keep missing.** `Signal::direct_same` and `direct_same_planes`
+    (#720: an assignment of the value the signal and driver hold makes no entry) cost 13 and 66 instructions a call and missed at every
+    activation of a register whose value changes every cycle (a counter, a shift register, a toggling register): 4% of `rtl_lfsr`. Per driver
+    (the first `SAME_DRIVERS` = 8 of a process, `ProcState::same`; later ones always ask), after `SAME_MISSES` = 8 misses in a row the next 248
+    assignments make their entry without asking. Leaving the test out is always correct: the entry of an unchanged value commits, finishes
+    with no event (`update_word` with an empty change mask, `commit_code` returning `None` for one element) and the delta cycle happens as with
+    the skip. The state lives in `ProcState`, which every run writes: in the driver's `Waveform` (read only on this path) it was one more dirty
+    cache line per activation and cost `rtl_ff` 3% of its cycles; one counter per process (not per driver) left neo level, because a process
+    whose first assignments change silenced the test for the others. Idea of sim1: it turns off a fast driver update path when it stops
+    paying (fewer than half the parts of a signal use it); ours is per driver and comes back after 248 assignments.
+  - **Pending words in element order only where it matters.** `finish_pend` sorted the list of pending plane words of a signal at every update;
+    the processes of the elements of a vector of registers commit in descending element order (seen on `lfsr64`, `rtl_lfsr` and `rtl_ff`; the
+    batch is in process order), so it sorted a reversed list each time (57 instructions a word on `lfsr64`). Each word is finished
+    on its own, so a plain signal nothing watches (`!watched`, its changed runs are only counted) takes the words in commit order; the others
+    reverse a descending list instead of sorting it (`order_words`).
+  - **The commit of a vector entry within one plane word** (a register of an array of registers, a whole bus word) blends with one mask and
+    sets the pending bits with the same mask, instead of `put_block` and `mark_bits` each building theirs (91 to about 50 instructions an entry;
+    `OutV::planes` are masked to the length, which every producer already did).
+  - The test for implicit signals after the fast update paths is inlined (`update_implicit_quiet`), the call only for a design with implicit
+    signals (21 instructions a delta cycle of `rtl_chain`); `cycle` calls `run_one` for a batch of one process itself, without entering
+    `run_batch`; a run with one direct one-element entry pushes it without the loop.
+  - Results, instructions of whole runs (`--tier=interp`, deterministic), main against the round: `rtl_lfsr` -3.9%, `lfsr64` -4.2%,
+    `rtl_chain` -2.6%, `rtl_ff` -1.8%, `delta_chain` -6.1%, `lfsr64_xor` -2.9%, `ff_rtl` -1.7%, `rtl_ram` -1.2%, neorv32_single_min -0.5%;
+    `rtl_fan`, `rtl_bus`, `compute_h2h`, `xor_sig`, `xor_types`, `resolved_bus` level (within 0.02%). Against sim1 (`tools/bench/run.py --ref
+    sim1 --tiers auto --instructions`, instruction ratio): `rtl_lfsr` 1.59 to 1.52, `lfsr64` 1.70 to 1.61, `rtl_chain` 1.66 to 1.62, `rtl_ff`
+    1.22 to 1.20.
+  - Cycles (minimum of 7 interleaved runs on one claimed core of the second CCD), `--tier=auto` / `--tier=interp`: `rtl_ff` -3.5% / -2.2%,
+    `rtl_lfsr` -1.9% / -0.5%, `lfsr64` -3.9% / -2.9%, `rtl_chain` -1.0% / -1.4%. neorv32_single_min: +0.6% to +1.7% cycles in four sessions
+    with 0.5% fewer instructions; builds that each took one of the changes back recovered part of it, not additively (a build with neither
+    the skip-test change nor the word order was still +0.85%). Not explained by branch, L1 data or L1 instruction misses (`perf stat`); by
+    the convention of #576 a single design's cycles moving by a few percent are not decided on alone.
+  - `realbench --compare` (run phase, interpreter and auto, all 42 tests, 3 runs a cell, one core): wall geometric mean over the tests of 1 s
+    or more 1.01 (interpreter) and 0.99 (auto), summed wall 1.00 and 1.00; the `cpu` category 1.01 and 1.02 (neorv32 and LEON3); instructions
+    level (the 0.01 to 0.2 s tests move by up to 4% between two runs of one binary, `--compare base base`). The CPU designs again, interpreter,
+    5 runs a cell: neorv32_single_min 2.55 to 2.56 s, grlib_leon3mp 36.04 to 36.21 s; a build without the skip-test change gave the same
+    (2.54 to 2.56, 36.21 to 36.51), so that change is not what costs them.
+- **Measured and not taken:**
+  - Pre-shifted spread tables for the `codes` refresh (`refresh_changed_codes`, about 250 instructions a fully changed word): -0.25% instructions
+    on the LFSR designs for four 2 KB tables instead of one; not kept.
+  - One masked blend for the `cur` and `'last_value` writes of a one-element event (`finish_code`, `finish_quick`): neo -0.2%, `rtl_chain` +0.2%
+    instructions; not kept.
+  - Dropping the `codes` of signals whose sources have 9 to 16 elements (the #519 rule keeps codes up to 16): about 60 instructions an entry of
+    `lfsr64` and `rtl_lfsr` go to the refresh, but the interpreter reads single elements of `rtl_lfsr`'s registers through them; the rule is a
+    recorded decision and is left as it is (a candidate for the elaborator's facts: which signals have one-element reads).
+- **Left:** #766 (host layers around compiled clocked processes, the largest item on `rtl_ff`, `rtl_lfsr`, `lfsr64`), #767 (`wait until` form),
+  the `run_batch` loop (about 120 instructions an activation spread over 30 lines), the `codes` refresh of 16-bit registers.
+
 ## Facts the declarative part leaves in a process copy (yavs-ir `opt/decl.rs`, #678, 2026-10-24)
 
 - **Decision**: a copy of a process (`copies.rs`) takes over between two activations, so what its declarative part made is in the frame

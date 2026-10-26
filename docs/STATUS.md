@@ -4051,6 +4051,35 @@ The reader's instruction count did not change in the kernel round; its rows show
 1.5 s of library analysis with run times that moved by 40%. Only the writer's rows are an effect of the change (instructions 0.92).
 Totals under 1 or near 1 for the reader come from the library analysis of yavs (0.2 s warm) against the reference's 1.5 s.
 
+### Kernel round 24: the skip test that keeps missing, pending words in element order (#734, 2026-10-26)
+
+(`docs/decisions.md` "Kernel round 24".) The small-RTL designs still slower than sim1 under `--tier=auto` at head-to-head 6. Bench builds with
+`--features llvm`, `--threads 1`; instructions of warm whole runs (`perf stat instructions:u`, `--tier=interp`, deterministic); cycles as
+the minimum of 7 interleaved runs on one claimed core; main at 504f86ad against the round. The ratio to sim1 is `tools/bench/run.py --ref
+sim1` (elaboration and run, analysis excluded), whose wall column (10 ms steps) did not move for these four designs; it is not the basis of
+the head-to-head 6 full totals.
+
+| design | instructions, interp | cycles, auto | cycles, interp | instruction ratio to sim1, auto (before, after) |
+|---|---:|---:|---:|---:|
+| rtl_lfsr | -3.9% | -1.9% | -0.5% | 1.59, 1.52 |
+| lfsr64 | -4.2% | -3.9% | -2.9% | 1.70, 1.61 |
+| rtl_chain | -2.6% | -1.0% | -1.4% | 1.66, 1.62 |
+| rtl_ff | -1.8% | -3.5% | -2.2% | 1.22, 1.20 |
+| neorv32_single_min | -0.5% | +0.6% to +1.7% | +0.6% to +1.7% | |
+
+Also `delta_chain` -6.1%, `lfsr64_xor` -2.9%, `ff_rtl` -1.7%, `rtl_ram` -1.2% instructions; the other h2h designs level. `realbench --compare`
+(run phase, 42 tests): wall geometric mean over the tests of 1 s or more 1.01 (interpreter) and 0.99 (auto), summed wall 1.00; the `cpu` category 1.01
+(interpreter) and 1.02 (auto), neorv32 +1 to 3% wall (builds that each took one change back recovered part of it, not additively). What changed: a
+driver whose skip tests (`direct_same`, `direct_same_planes`) miss 8 times in a row leaves them out for 248 assignments; the pending words of a
+signal nothing watches are finished in commit order (the processes of a vector of registers commit in descending element order, and the sort
+of a reversed list ran at every update); a vector entry within one plane word commits with one mask.
+
+Where an activation of a compiled small clocked process goes (about 1100 instructions on `rtl_ff`, 1530 on `rtl_lfsr`; sim1 about 1000 to 1100
+in total): the kernel about 200 and 450, the compiled body about 215 and 340, the host layers between the kernel and the compiled code about 680
+and 600 (#766). `#734`'s narrow-signal mask does not apply to the four designs (each keeps its registers in one signal of more than 64
+elements). The four clock-edge forms cost the same in the kernel; `wait until rising_edge(clk)` runs 128 more interpreter instructions per
+activation (#767).
+
 ### Kernel round 23: assignments in pieces stay direct entries (#521, #733, #735, 2026-10-25)
 
 (`docs/decisions.md` "Kernel round 23".) Instruction counts only (no timing cores): whole runs under `perf stat instructions:u`, one thread,

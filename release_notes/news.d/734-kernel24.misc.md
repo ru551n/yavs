@@ -1,0 +1,1 @@
+Registers whose value changes at every clock edge (counters, shift registers, vectors of one-bit registers) simulate faster: the kernel stops testing whether such an assignment repeats the value the signal holds once that test keeps failing, and finishes the registers of a vector without sorting them first. Results are unchanged.

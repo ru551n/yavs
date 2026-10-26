@@ -1298,6 +1298,39 @@ mod clift {
         "acc=",
         [("cb_step", Max(4)), ("cb_signal", Max(4))]
     );
+    // A process without a wait runs its jumps back in compiled code, leaving every 2^20th (#583).
+    clift_case!(
+        nowait,
+        "llvm_nowait",
+        "jumps=",
+        [("cb_step", Max(4)), ("cb_signal", Max(2))]
+    );
+    // One call of the layout memo per field instead of a step of the `LayoutOf` (#679).
+    clift_case!(
+        layout_field,
+        "llvm_layout_field",
+        "acc=38682",
+        [("cb_step", Max(5)), ("cb_layout", Max(3400))]
+    );
+    // Zero-delay scalar drives kept for one host call (`Batch`); kept drives of unchanged
+    // elements make no kernel entry.
+    clift_case!(
+        drive_batch,
+        "llvm_drive_batch",
+        "q=",
+        [("cb_drive", Max(158)), ("direct_codes", Max(107))]
+    );
+    // Element loops of native frames through `yavs_rt_eloop` (#757).
+    clift_case!(
+        eloop,
+        "llvm_eloop",
+        "acc=",
+        [
+            ("cb_eloop", Min(175)),
+            ("cb_step", Max(6)),
+            ("cb_deopt", Max(0))
+        ]
+    );
     clift_case!(
         reg_planes,
         "reg_planes",

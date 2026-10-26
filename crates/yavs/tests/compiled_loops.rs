@@ -1,7 +1,7 @@
 //! Element loops in compiled code (#757): on a native frame the iterations of a copy or fill loop
 //! but the last run in `yavs_rt_eloop`, and the output, the exit status and the message of a loop
 //! that leaves its vector are those of the interpreter, which runs the plain loop.
-#![cfg(feature = "llvm")]
+#![cfg(any(feature = "llvm", feature = "clift"))]
 
 mod common;
 use common::tempdir;
@@ -54,10 +54,16 @@ fn element_loops_in_compiled_code_match_the_interpreter() {
     assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
     let want = run(&d, &["--tier=interp"], false);
     assert!(text(&want).contains("short LLLHH000"), "{}", text(&want));
-    for (tier, least) in [
-        (vec!["--tier=llvm"], 5),
-        (vec!["--tier=auto", "--tier-heat=1,0,0"], 1),
-    ] {
+    let mut tiers = Vec::new();
+    if cfg!(feature = "llvm") {
+        tiers.push((vec!["--tier=llvm"], 5));
+        tiers.push((vec!["--tier=auto", "--tier-heat=1,0,0"], 1));
+    }
+    if cfg!(feature = "clift") {
+        tiers.push((vec!["--tier=clift"], 5));
+        tiers.push((vec!["--tier=clift-auto", "--tier-heat=1,0,0"], 1));
+    }
+    for (tier, least) in tiers {
         let got = run(&d, &tier, true);
         assert_eq!(text(&got), text(&want), "{tier:?}");
         // The helper ran for the loops of enough elements (a build with callback counters).

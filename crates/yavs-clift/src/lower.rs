@@ -13,7 +13,8 @@ use cranelift_codegen::inline::{Inline, InlineCommand};
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{
     self, AbiParam, AliasRegionData, Block, BlockArg, FuncRef, GlobalValue, InstBuilder,
-    MemFlagsData, Signature, StackSlotData, StackSlotKind, Type, UserFuncName, Value, types,
+    MemFlagsData, Signature, StackSlot, StackSlotData, StackSlotKind, Type, UserFuncName, Value,
+    types,
 };
 use cranelift_codegen::isa::CallConv;
 
@@ -107,7 +108,7 @@ pub struct Jit {
     deopt_slots: ClifId,
     deopt_end: ClifId,
     /// The kernel-facing callbacks of `rt.rs`, in the order of `KERNEL`.
-    kernel: [ClifId; 15],
+    kernel: [ClifId; 18],
     tables: HashMap<Vec<u8>, DataId>,
     sig: Signature,
     /// Calls between compiled functions without a frame in the interpreter (`NatInfo`) and
@@ -233,6 +234,9 @@ impl Jit {
             (MEMO, yavs_rt_memo as *const u8),
             (MEMO_KEEP, yavs_rt_memo_keep as *const u8),
             (DRIVE_NAT, yavs_rt_drive_nat as *const u8),
+            (ELOOP, yavs_rt_eloop as *const u8),
+            (LAYOUT_WORD, yavs_rt_layout_word as *const u8),
+            (DRIVE_FLUSH, yavs_rt_drive_flush as *const u8),
         ] {
             b.symbol(n, p);
         }
@@ -289,6 +293,9 @@ impl Jit {
             imp(MEMO, &[I64, I64, I32, I64, I32, I64, I64], Some(I32))?,
             imp(MEMO_KEEP, &[I64, I64, I32, I64, I32, I64, I64], Some(I32))?,
             imp(DRIVE_NAT, &[I64, I32, I64, I64, I64, I32], Some(I32))?,
+            imp(ELOOP, &[I64; 12], Some(I64))?,
+            imp(LAYOUT_WORD, &[I64, I32, I64, I64, I32], Some(I64))?,
+            imp(DRIVE_FLUSH, &[I64, I64, I64, I32], Some(I32))?,
         ];
         let mut sig = module.make_signature();
         sig.params.extend([AbiParam::new(I64); 3]);
@@ -637,6 +644,33 @@ impl Jit {
                 tabs.insert(t, gv);
             }
         }
+        // The programs of the element loops of a variant (`yavs_rt_eloop`), 8-byte aligned.
+        if native {
+            for l in yavs_interp::elem_loops(f) {
+                let t: Vec<u8> = l.prog.iter().flat_map(|w| w.to_le_bytes()).collect();
+                if tabs.contains_key(&t) {
+                    continue;
+                }
+                let did = match self.tables.get(&t) {
+                    Some(&d) => d,
+                    None => {
+                        let name = format!("t{}", self.tables.len());
+                        let d = self
+                            .module
+                            .declare_data(&name, Linkage::Local, false, false)
+                            .map_err(|e| e.to_string())?;
+                        let mut dd = DataDescription::new();
+                        dd.define(t.clone().into_boxed_slice());
+                        dd.set_align(8);
+                        self.module.define_data(d, &dd).map_err(|e| e.to_string())?;
+                        self.tables.insert(t.clone(), d);
+                        d
+                    }
+                };
+                let gv = self.module.declare_data_in_func(did, &mut ctx.func);
+                tabs.insert(t, gv);
+            }
+        }
         // Copies of the constants this function takes the address of.
         let mut cons = HashMap::new();
         for i in &f.code {
@@ -748,6 +782,15 @@ impl Jit {
             drive_nat: self
                 .module
                 .declare_func_in_func(self.kernel[14], &mut ctx.func),
+            eloop: self
+                .module
+                .declare_func_in_func(self.kernel[15], &mut ctx.func),
+            layout_word: self
+                .module
+                .declare_func_in_func(self.kernel[16], &mut ctx.func),
+            drive_flush: self
+                .module
+                .declare_func_in_func(self.kernel[17], &mut ctx.func),
             tables: tabs,
             consts: cons,
             natives,
@@ -932,6 +975,14 @@ struct Imports {
     /// `yavs_rt_drive_nat(env, driver, lo, len, wave, flags) -> u32`: `drive` for a native frame,
     /// 0 when nothing was done (no frame view).
     drive_nat: FuncRef,
+    /// `yavs_rt_eloop(env, mem, prog, nprog, inputs, ind, bound, step, depth, fhi, slots,
+    /// slots_len) -> iterations`: the element loops of a native frame (#757).
+    eloop: FuncRef,
+    /// `yavs_rt_layout_word(env, ty, desc, dsz, k) -> i64`: one word of a layout from the
+    /// interpreter's layout memo, -1 when it declines.
+    layout_word: FuncRef,
+    /// `yavs_rt_drive_flush(env, mem, entries, n) -> u32`: the kept scalar drives (`Batch`).
+    drive_flush: FuncRef,
     tables: HashMap<Vec<u8>, GlobalValue>,
     /// Copies of the constants (up to 4 KiB of bytes) the function takes the address of, which
     /// never change: reads of them need no lookup.
@@ -1078,6 +1129,23 @@ struct Gen<'a> {
     frame_hi: Option<Value>,
     /// The registers defined once by a constant (`fixed_consts`).
     fixed: Vec<Option<i64>>,
+    /// The jump count of a process that never suspends (`TierFrame::spin`) while compiled code
+    /// runs: loaded at the entry, stored back by the exit block.
+    spin: Option<Variable>,
+    /// The scalar drives of this activation kept for one host call, when the process has any.
+    batch: Option<Batch>,
+}
+
+/// Zero-delay scalar logic drives (`yavs_interp::ScalarDrive`, `batched_drives`) are not handed to
+/// the kernel one by one: the process appends `(signal reference, driver | code | pc)` to
+/// `entries` (`yavs_interp::DRIVE_BATCH` of them, `count` in use) and `Gen::batch_flush` hands them
+/// over in one `TierHost::drive_bits` call before anything that could look at a driver or run
+/// other code (every instruction but `batch_pure` ones) and in the exit block, as the LLVM
+/// lowering does.
+#[derive(Clone, Copy)]
+struct Batch {
+    entries: StackSlot,
+    count: Variable,
 }
 
 /// What a native-frame variant has instead of the interpreter's frame.
@@ -1355,6 +1423,47 @@ fn gen_func(
     let bbs: Vec<Option<Block>> = (0..n)
         .map(|i| leader[i].then(|| b.create_block()))
         .collect();
+    // The jumps back that poll the stop request (#737) and count the activation (#583), see
+    // `Inst::Br`.
+    let backs: HashSet<u32> = if !native
+        && f.kind == FuncKind::Process
+        && !f.flags.contains(yavs_ir::FuncFlags::MAY_SUSPEND)
+    {
+        yavs_interp::retreating_brs(prog, f)
+            .into_iter()
+            .map(|(br, _)| br)
+            .collect()
+    } else {
+        HashSet::new()
+    };
+    // The scalar logic assignments the interpreter runs as one op (their waveform is not made here
+    // either) and those without a delay kept for one host call (`Batch`).
+    let (scalar_drives, batched) = if !native && f.kind == FuncKind::Process {
+        batched_drives(prog, f, &fixed_consts(f))
+    } else {
+        Default::default()
+    };
+    let batch = (!batched.is_empty()).then(|| {
+        let entries = b.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            16 * yavs_interp::DRIVE_BATCH as u32,
+            3,
+        ));
+        let count = b.declare_var(I32);
+        let zero = b.ins().iconst(I32, 0);
+        b.def_var(count, zero);
+        Batch { entries, count }
+    });
+    // Every way in passes the entry block.
+    let spin = (!backs.is_empty()).then(|| {
+        let v = b.declare_var(I64);
+        let at = b
+            .ins()
+            .load(I64, MemFlagsData::trusted(), mem, MEM_SPIN as i32);
+        let n = b.ins().load(I64, MemFlagsData::trusted(), at, 0);
+        b.def_var(v, n);
+        v
+    });
     if !native {
         let other = b.create_block();
         let mut sw = Switch::new();
@@ -1431,6 +1540,8 @@ fn gen_func(
         pre,
         frame_hi,
         fixed: fixed.clone(),
+        spin,
+        batch,
     };
     if g.nat.is_some() {
         g.vars = (0..f.reg_ty.len()).map(|_| g.b.declare_var(I64)).collect();
@@ -1463,23 +1574,8 @@ fn gen_func(
     // The scalar logic assignments the interpreter runs as one op (their waveform is not made here
     // either) and the waits that name the same signals every time (`yavs_rt_wait_same`).
     let kernel_facing = !native && f.kind == FuncKind::Process;
-    // The jumps back that poll the stop request (#737), see `Inst::Br`.
-    let backs: HashSet<u32> = if kernel_facing && !f.flags.contains(yavs_ir::FuncFlags::MAY_SUSPEND)
-    {
-        yavs_interp::retreating_brs(prog, f)
-            .into_iter()
-            .map(|(br, _)| br)
-            .collect()
-    } else {
-        HashSet::new()
-    };
     let static_wait = if kernel_facing {
         yavs_interp::static_wait(prog, f, 1)
-    } else {
-        Vec::new()
-    };
-    let scalar_drives = if kernel_facing {
-        yavs_interp::scalar_drives(prog, f)
     } else {
         Vec::new()
     };
@@ -1492,6 +1588,24 @@ fn gen_func(
                 .filter(|&p| p != u32::MAX)
         })
         .collect();
+    // Element loops (`yavs_interp::elem_loops`) of a variant whose frame is registered ask
+    // `yavs_rt_eloop` for all their iterations but the last at the head (#757).
+    let eloops: HashMap<u32, yavs_interp::ElemLoop> =
+        if g.nat.as_ref().is_some_and(|n| n.closed.is_none()) {
+            yavs_interp::elem_loops(f)
+                .into_iter()
+                .map(|l| (l.head, l))
+                .collect()
+        } else {
+            HashMap::new()
+        };
+    // `LayoutOf`s whose one word read is a call of the layout memo, and the last pc made with it.
+    let fuse = fuse_layout(prog, f, &leader, &fixed, false);
+    // Multiplications by a constant that only feed the `Index` after them (`index_muls`): one test
+    // of the operand, and that `Index` tests the sum only (`fused_mul`, its pc).
+    let imuls = index_muls(f, &fixed);
+    let mut fused_mul: Option<usize> = None;
+    let mut fused_to: Option<usize> = None;
     let always: Vec<usize> = (0..base_known.len())
         .filter(|&r| base_known[r].is_some())
         .collect();
@@ -1536,6 +1650,20 @@ fn gen_func(
             let fall = i > 0 && !is_jump(&f.code[i - 1]);
             let brought = inherit[i].take().filter(|_| single);
             if !(single && fall) {
+                // A guess is tested where it is used, so the fall-through's guesses hold on
+                // every way in (a call's result after the entry that follows the call).
+                let guesses: Vec<(usize, Known<Value>)> = if fall && !native {
+                    g.known
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(r, k)| match k {
+                            Some(k @ (Known::LikelyTemp | Known::LikelyHeap)) => Some((r, *k)),
+                            _ => None,
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 match brought {
                     Some(k) => g.known = k,
                     None => {
@@ -1551,6 +1679,11 @@ fn gen_func(
                                 });
                             }
                         }
+                    }
+                }
+                for (r, k) in guesses {
+                    if g.known[r].is_none() {
+                        g.known[r] = Some(k);
                     }
                 }
             }
@@ -1576,6 +1709,21 @@ fn gen_func(
             g.clear();
             open = true;
         }
+        if let Some(l) = eloops.get(&pc) {
+            g.eloop(l)?;
+        }
+        if g.batch.is_some() && !batched.contains(&pc) && !batch_pure(prog, f, &inst) {
+            g.batch_flush();
+        }
+        // Made by the `LayoutOf` before it (`fuse`).
+        if let Some(last) = fused_to
+            && i <= last
+        {
+            if i == last {
+                fused_to = None;
+            }
+            continue;
+        }
         if let Inst::Ret { v } = inst {
             if g.nat.is_some() {
                 let val = match v {
@@ -1598,7 +1746,11 @@ fn gen_func(
         match inst {
             _ if skipped.contains(&pc) => {}
             Inst::Drive { .. } if let Some(d) = scalar_drives.iter().find(|d| d.drive == pc) => {
-                g.drive_bit(pc, d)
+                if batched.contains(&pc) && g.batch.is_some() {
+                    g.drive_kept(pc, d)
+                } else {
+                    g.drive_bit(pc, d)
+                }
             }
             Inst::Const { dst, v } => {
                 let x = g.c64(v);
@@ -1611,6 +1763,25 @@ fn gen_func(
             Inst::Move { dst, src } => {
                 let x = g.ld(src);
                 g.st(dst, x)
+            }
+            Inst::Bin {
+                op: IntOp::Mul,
+                dst,
+                ..
+            } if let Some((r, m)) = imuls[i]
+                && matches!(f.code.get(i + 1), Some(Inst::Index { stride: 1, .. }))
+                && !leader[i + 1] =>
+            {
+                // The operand is at most `max`, or the interpreter multiplies and indexes; the
+                // product is then under 2^32.
+                let x = g.ld(r);
+                let bad =
+                    g.b.ins()
+                        .icmp_imm_s(IntCC::UnsignedGreaterThan, x, (0xffff_ffff / m) as i64);
+                g.exit_if(bad, pc);
+                let v = g.b.ins().imul_imm_s(x, m as i64);
+                g.st(dst, v);
+                fused_mul = Some(i + 1);
             }
             Inst::Bin { op, dst, a, b } => {
                 let (x, y) = (g.ld(a), g.ld(b));
@@ -1828,7 +1999,12 @@ fn gen_func(
                             // Both under 2^32 (the position and the stride are): no wrap.
                             let lo = lo_of(&mut g);
                             let sum = g.b.ins().iadd(lo, off);
-                            let wide = g.b.ins().bor(p, sum);
+                            // A position the multiplication before tested is under 2^32.
+                            let wide = if fused_mul == Some(i) {
+                                sum
+                            } else {
+                                g.b.ins().bor(p, sum)
+                            };
                             let big = g.b.ins().ushr_imm_s(wide, 32);
                             g.exit_if(big, pc);
                             sum_out = Some(sum);
@@ -1928,6 +2104,10 @@ fn gen_func(
                 g.st(dst, a);
                 g.join(join);
             }
+            Inst::LayoutOf { ty, desc, .. } if let Some(fu) = fuse[i] => {
+                g.layout_word(prog, pc, ty, desc, fu);
+                fused_to = Some(fu.last);
+            }
             Inst::LayoutOf { dst, ty, desc, .. } => match static_layout(prog, ty) {
                 Some(sl) => {
                     let (slow, join) = g.slow_path(pc, &inst);
@@ -2018,6 +2198,25 @@ fn gen_func(
                 }
                 g.join(join);
             }
+            // A copy of a known size of up to 64 bytes in words: all loads before the stores, so
+            // overlapping ranges copy as `memmove` does.
+            Inst::Copy { dst, src, bytes }
+                if g.kint(bytes)
+                    .is_some_and(|n| n > 0 && n <= 64 && n % 8 == 0) =>
+            {
+                let n = g.kint(bytes).expect("guard") as u64;
+                let (slow, join) = g.slow_path(pc, &inst);
+                let (sa, da) = (g.ld(src), g.ld(dst));
+                let ps = g.host(sa, Some(src), Op::C(0), Op::C(n), false, slow);
+                let pd = g.host(da, Some(dst), Op::C(0), Op::C(n), true, slow);
+                let words: Vec<Value> = (0..n / 8)
+                    .map(|k| g.b.ins().load(I64, g.gf, ps, k as i32 * 8))
+                    .collect();
+                for (k, w) in words.into_iter().enumerate() {
+                    g.b.ins().store(g.gf, w, pd, k as i32 * 8);
+                }
+                g.join(join);
+            }
             Inst::Copy { dst, src, bytes } => {
                 let (slow, join) = g.slow_path(pc, &inst);
                 let n = g.ld(bytes);
@@ -2039,7 +2238,7 @@ fn gen_func(
             Inst::DopeLen { dst, dope, dim } => {
                 let (slow, join) = g.slow_path(pc, &inst);
                 let d = g.ld(dope);
-                let (n, fits) = g.dim_len(d, u64::from(dim) * 24, slow);
+                let (n, fits) = g.dim_len(d, dope, u64::from(dim) * 24, slow);
                 // Lengths above i64::MAX are the interpreter's error.
                 let nn = g.b.ins().icmp_imm_s(IntCC::SignedGreaterThanOrEqual, n, 0);
                 let okv = g.b.ins().band(fits, nn);
@@ -2053,8 +2252,8 @@ fn gen_func(
                 let (slow, join) = g.slow_path(pc, &inst);
                 let (d, w) = (g.ld(dope), g.ld(want));
                 for k in 0..u64::from(dims) {
-                    let (a, oka) = g.dim_len(d, k * 24, slow);
-                    let (b, okb) = g.dim_len(w, k * 24, slow);
+                    let (a, oka) = g.dim_len(d, dope, k * 24, slow);
+                    let (b, okb) = g.dim_len(w, want, k * 24, slow);
                     let eq = g.b.ins().icmp(IntCC::Equal, a, b);
                     let okv = g.b.ins().band(oka, okb);
                     let okv = g.b.ins().band(okv, eq);
@@ -2456,15 +2655,14 @@ fn gen_func(
             }
             Inst::Br { to } => {
                 let tb = block_bb(to)?;
-                // A process that never suspends leaves compiled code at every jump back: the
-                // interpreter steps this `Br`, polls the stop request (#737) and bounds the
-                // activation (#583), as under the LLVM tier. Only the retreating `Br`s that jump
-                // back in the code.
+                // A process that never suspends polls the stop request (#737) and counts its
+                // jumps back (#583) at every retreating `Br`; at a request and at every
+                // `SPIN_CHECK`th jump it leaves at this `Br`, whose interpreter step suspends,
+                // trims or reports it, as under the LLVM tier.
                 if backs.contains(&pc) && f.blocks.get(to).is_some_and(|b| b.start <= pc) {
-                    g.leave_at(pc);
-                } else {
-                    g.b.ins().jump(tb, &[]);
+                    g.spin_poll(pc);
                 }
+                g.b.ins().jump(tb, &[]);
                 open = false;
             }
             Inst::Case { v, table } => {
@@ -2642,7 +2840,33 @@ fn gen_func(
         let zero = g.c64(0);
         g.b.ins().return_(&[zero]);
     } else {
-        g.b.ins().return_(&[exit_pc]);
+        if let Some(v) = g.spin {
+            let n = g.b.use_var(v);
+            let at = g.mem_ld(MEM_SPIN);
+            g.b.ins().store(MemFlagsData::trusted(), n, at, 0);
+        }
+        let out = match g.batch {
+            // The kept drives go before the return; a refused one returns its pc.
+            Some(bt) => {
+                let n = g.b.use_var(bt.count);
+                let (fl, done) = (g.b.create_block(), g.b.create_block());
+                let out = g.b.append_block_param(done, I32);
+                g.b.set_cold_block(fl);
+                g.b.ins()
+                    .brif(n, fl, &[], done, &[BlockArg::Value(exit_pc)]);
+                g.b.switch_to_block(fl);
+                let r = g.flush_call(n);
+                let bad =
+                    g.b.ins()
+                        .icmp_imm_s(IntCC::NotEqual, r, i64::from(GO as i32));
+                let w = g.b.ins().select(bad, r, exit_pc);
+                g.b.ins().jump(done, &[BlockArg::Value(w)]);
+                g.b.switch_to_block(done);
+                out
+            }
+            None => exit_pc,
+        };
+        g.b.ins().return_(&[out]);
     }
     g.b.seal_all_blocks();
     g.b.finalize(cfg);
@@ -3197,6 +3421,133 @@ impl Gen<'_> {
         self.leave(v);
     }
 
+    /// A `LayoutOf` and the read of one word of its layout after it (`fuse_layout`): the word from
+    /// the interpreter's layout memo, a `Field`'s address made of it as `Field` does; the
+    /// interpreter runs them where the memo declines.
+    fn layout_word(
+        &mut self,
+        prog: &Program,
+        pc: u32,
+        ty: yavs_ir::TyId,
+        desc: Reg,
+        fu: LayoutFuse,
+    ) {
+        let dsz = yavs_ir::Ty::desc_size(&prog.types, ty).expect("fuse_layout") as i64;
+        let out = self.b.create_block();
+        self.b.set_cold_block(out);
+        let d = self.ld(desc);
+        let pd = self.host(d, Some(desc), Op::C(0), Op::C(dsz as u64), false, out);
+        let (tyv, dszv, kv) = (self.c32(ty.0), self.c64(dsz), self.c32(fu.k));
+        let c = self
+            .b
+            .ins()
+            .call(self.imp.layout_word, &[self.env, tyv, pd, dszv, kv]);
+        let w = self.b.inst_results(c)[0];
+        self.clear();
+        let declined = self.b.ins().icmp_imm_s(IntCC::Equal, w, -1);
+        let go = self.b.create_block();
+        self.b.ins().brif(declined, out, &[], go, &[]);
+        self.b.switch_to_block(out);
+        self.leave_at(pc);
+        self.b.switch_to_block(go);
+        let v = match fu.base {
+            None => w,
+            Some(base) => {
+                let a = self.ld(base);
+                let lo = self.b.ins().band_imm_u(a, 0xffff_ffff);
+                let (sum, o) = self.b.ins().uadd_overflow(lo, w);
+                let big = self
+                    .b
+                    .ins()
+                    .icmp_imm_u(IntCC::UnsignedGreaterThan, sum, 0xffff_ffff);
+                let bad = self.b.ins().bor(o, big);
+                self.exit_if(bad, pc);
+                let hi = self.b.ins().band_imm_u(a, !0xffff_ffff);
+                self.b.ins().bor(hi, sum)
+            }
+        };
+        self.st(fu.out, v);
+    }
+
+    /// At the head of an element loop of a variant: the iterations but the last in the helper;
+    /// what it leaves (a fault, an overlap, memory it does not reach, nothing to gain) is the
+    /// generic code after this, which also runs the last iteration.
+    fn eloop(&mut self, l: &yavs_interp::ElemLoop) -> Result<(), String> {
+        let (ind, bound, step) = (self.ld(l.ind), self.ld(l.bound), self.ld(l.step));
+        let (call, set, generic) = (
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+        );
+        // At least two iterations to go.
+        let next = self.b.ins().iadd(ind, step);
+        let a = self.b.ins().icmp(IntCC::NotEqual, ind, bound);
+        let b = self.b.ins().icmp(IntCC::NotEqual, next, bound);
+        let more = self.b.ins().band(a, b);
+        self.b.ins().brif(more, call, &[], generic, &[]);
+        self.b.switch_to_block(call);
+        let ss = self.b.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            8 * yavs_interp::eloop::MAX_INPUTS as u32,
+            3,
+        ));
+        let inputs = self.b.ins().stack_addr(I64, ss, 0);
+        for (k, r) in l.inputs.iter().enumerate() {
+            let v = self.ld(*r);
+            self.b
+                .ins()
+                .store(MemFlagsData::trusted(), v, inputs, k as i32 * 8);
+        }
+        let t: Vec<u8> = l.prog.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let gv = *ok(self.imp.tables.get(&t), "element loop without data")?;
+        let prog = self.b.ins().symbol_value(I64, gv);
+        let n = self.nat.as_ref().expect("variant");
+        let (depth, slots) = (n.depth, n.slots);
+        let fhi = self.b.ins().ushr_imm_s(self.frame_hi.expect("variant"), 32);
+        let nprog = self.c64(l.prog.len() as i64);
+        let flen = self.c64(self.frame_len as i64);
+        let c = self.b.ins().call(
+            self.imp.eloop,
+            &[
+                self.env, self.mem, prog, nprog, inputs, ind, bound, step, depth, fhi, slots, flen,
+            ],
+        );
+        let done = self.b.inst_results(c)[0];
+        self.b.ins().brif(done, set, &[], generic, &[]);
+        self.b.switch_to_block(set);
+        let moved = self.b.ins().imul(done, step);
+        let v = self.b.ins().iadd(ind, moved);
+        self.st(l.ind, v);
+        self.b.ins().jump(generic, &[]);
+        self.b.switch_to_block(generic);
+        self.clear();
+        Ok(())
+    }
+
+    /// The poll at a retreating `Br` of a process that never suspends: leave at `pc` before
+    /// counting (the interpreter's step counts this jump) at a stop request or when the count
+    /// reaches a multiple of `SPIN_CHECK`.
+    fn spin_poll(&mut self, pc: u32) {
+        let v = self.spin.expect("spin variable");
+        let flags = self.mem_ld(MEM_STOP);
+        let byte = self.b.ins().atomic_load(I8, MemFlagsData::trusted(), flags);
+        let hit = self
+            .b
+            .ins()
+            .band_imm_s(byte, i64::from(yavs_interp::STOP_BIT));
+        let stop = self.b.ins().icmp_imm_s(IntCC::NotEqual, hit, 0);
+        let n = self.b.use_var(v);
+        let n = self.b.ins().iadd_imm_s(n, 1);
+        let low = self
+            .b
+            .ins()
+            .band_imm_s(n, yavs_interp::SPIN_CHECK as i64 - 1);
+        let check = self.b.ins().icmp_imm_s(IntCC::Equal, low, 0);
+        let bad = self.b.ins().bor(stop, check);
+        self.exit_if(bad, pc);
+        self.b.def_var(v, n);
+    }
+
     /// Whether register `r` is a constant the interpreter preloads (`fixed_consts`).
     fn fk_int(&self, r: usize) -> bool {
         self.fixed.get(r).copied().flatten().is_some()
@@ -3702,8 +4053,8 @@ impl Gen<'_> {
 
     /// The length of the descriptor dimension at `dope + off` as `yavs_ir::dim_len`, and
     /// whether it fits a u64 (`dim_len` is not `None`).
-    fn dim_len(&mut self, dope: Value, off: u64, slow: Block) -> (Value, Value) {
-        let p = self.host(dope, None, Op::C(off), Op::C(24), false, slow);
+    fn dim_len(&mut self, dope: Value, reg: Reg, off: u64, slow: Block) -> (Value, Value) {
+        let p = self.host(dope, Some(reg), Op::C(off), Op::C(24), false, slow);
         let (l, r, dir) = self.dope_words(p);
         self.len_of(l, r, dir)
     }
@@ -3843,8 +4194,28 @@ impl Gen<'_> {
                 self.b.ins().jump(merge, &[]);
                 self.b.switch_to_block(merge);
             }
+            // A size known at run time: one plane block (32 bytes, a logic array of up to 64
+            // elements) at an aligned end by stores too. A `memset` there made the reads that
+            // follow wait for its stores (no forwarding): a fifth of the cycles of an adder
+            // process.
+            // ponytail: one size only; a jump table over the small sizes if others show up.
             _ => {
+                let (blk, other, merge) = (
+                    self.b.create_block(),
+                    self.b.create_block(),
+                    self.b.create_block(),
+                );
+                let aligned = self.b.ins().icmp(IntCC::Equal, off, len);
+                let is32 = self.b.ins().icmp_imm_s(IntCC::Equal, n, 32);
+                let fast = self.b.ins().band(aligned, is32);
+                self.b.ins().brif(fast, blk, &[], other, &[]);
+                self.b.switch_to_block(blk);
+                self.zero_range(at, 0, 32);
+                self.b.ins().jump(merge, &[]);
+                self.b.switch_to_block(other);
                 self.b.ins().call(self.imp.zero, &[at, fill]);
+                self.b.ins().jump(merge, &[]);
+                self.b.switch_to_block(merge);
             }
         }
         self.mem_st(MEM_TEMP_LEN, end);
@@ -5073,6 +5444,105 @@ impl Gen<'_> {
         let pcv = self.c32(pc);
         self.call_go(self.imp.drive, &[pcv, drv, lo, len, w, flags], false);
         self.join(join);
+    }
+
+    /// `yavs_rt_drive_flush` of the `n` kept entries.
+    fn flush_call(&mut self, n: Value) -> Value {
+        let bt = self.batch.expect("batch");
+        let e = self.b.ins().stack_addr(I64, bt.entries, 0);
+        let c = self
+            .b
+            .ins()
+            .call(self.imp.drive_flush, &[self.env, self.mem, e, n]);
+        self.b.inst_results(c)[0]
+    }
+
+    /// Hand over the kept scalar drives before the instruction being generated, when there are
+    /// some; a refused one leaves the function.
+    fn batch_flush(&mut self) {
+        let bt = self.batch.expect("batch");
+        let n = self.b.use_var(bt.count);
+        let (fl, cont) = (self.b.create_block(), self.b.create_block());
+        self.b.set_cold_block(fl);
+        self.b.ins().brif(n, fl, &[], cont, &[]);
+        self.b.switch_to_block(fl);
+        let r = self.flush_call(n);
+        let go = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::Equal, r, i64::from(GO as i32));
+        self.b
+            .ins()
+            .brif(go, cont, &[], self.exit, &[BlockArg::Value(r)]);
+        self.b.switch_to_block(cont);
+        let zero = self.b.ins().iconst(I32, 0);
+        self.b.def_var(bt.count, zero);
+    }
+
+    /// The `Drive` of a scalar logic assignment without a delay (`batched_drives`): kept in
+    /// `Batch::entries` when it is a plain logic element of a signal the kernel offers
+    /// (`TierSig::codes` or `planes`) and there is room, else handed over at once, after the ones
+    /// kept before it.
+    fn drive_kept(&mut self, pc: u32, s: &yavs_interp::ScalarDrive) {
+        let bt = self.batch.expect("batch");
+        let (v, l, code) = (
+            self.ld(s.target),
+            self.ld(Reg(s.target.0 + 1)),
+            self.ld(s.value),
+        );
+        let base = self.b.ins().ushr_imm_s(v, 32);
+        let n = self.mem_ld(MEM_SIGTAB_LEN);
+        let has = self.b.ins().icmp(IntCC::UnsignedLessThan, base, n);
+        let one = self.b.ins().icmp_imm_s(IntCC::Equal, l, 1);
+        let small = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, code, 8);
+        let ok = self.b.ins().band(has, one);
+        let ok = self.b.ins().band(ok, small);
+        let (chk, slow, fast, join) = (
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+        );
+        self.b.set_cold_block(slow);
+        self.b.ins().brif(ok, chk, &[], slow, &[]);
+        self.b.switch_to_block(chk);
+        let tab = self.mem_ld(MEM_SIGTAB);
+        let at = self.b.ins().imul_imm_s(base, SIG_ENT);
+        let ent = self.b.ins().iadd(tab, at);
+        let codes = self.ent_ld(ent, SIG_CODES);
+        let planes = self.ent_ld(ent, SIG_PLANES);
+        let logic = self.b.ins().bor(codes, planes);
+        let k = self.b.use_var(bt.count);
+        let room =
+            self.b
+                .ins()
+                .icmp_imm_s(IntCC::UnsignedLessThan, k, yavs_interp::DRIVE_BATCH as i64);
+        let isl = self.b.ins().icmp_imm_s(IntCC::NotEqual, logic, 0);
+        let fits = self.b.ins().band(isl, room);
+        self.b.ins().brif(fits, fast, &[], slow, &[]);
+        // Slow: what was kept, then this one alone.
+        self.b.switch_to_block(slow);
+        self.batch_flush();
+        self.drive_bit(pc, s);
+        self.b.ins().jump(join, &[]);
+        self.b.switch_to_block(fast);
+        let e = self.b.ins().stack_addr(I64, bt.entries, 0);
+        let kx = self.b.ins().uextend(I64, k);
+        let off = self.b.ins().imul_imm_s(kx, 16);
+        let p = self.b.ins().iadd(e, off);
+        self.b.ins().store(MemFlagsData::trusted(), v, p, 0);
+        let info = u64::from(s.driver) | u64::from(s.inertial) << 24 | u64::from(pc) << 32;
+        let w = self.b.ins().ishl_imm_s(code, 16);
+        let w = self.b.ins().bor_imm_s(w, info as i64);
+        self.b.ins().store(MemFlagsData::trusted(), w, p, 8);
+        let k1 = self.b.ins().iadd_imm_s(k, 1);
+        self.b.def_var(bt.count, k1);
+        self.b.ins().jump(join, &[]);
+        self.b.switch_to_block(join);
+        self.clear();
     }
 
     /// The `Drive` of a scalar logic assignment the interpreter fuses

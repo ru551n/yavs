@@ -1229,19 +1229,6 @@ struct PRes {
 /// The last pc a fused `LayoutOf` made the code of, and the object a `Field` result points into.
 type Fused = (usize, Option<(Reg, ObjRef)>);
 
-/// A `LayoutOf` and the instructions after it that read one word of its layout (`fuse_layout`).
-#[derive(Clone, Copy)]
-struct LayoutFuse {
-    /// The pc of the last instruction fused.
-    last: usize,
-    /// The word of the layout.
-    k: u32,
-    /// The base address of a `Field`; none: the word itself is the result.
-    base: Option<Reg>,
-    /// The register that gets the result.
-    out: Reg,
-}
-
 /// Zero-delay scalar logic drives (`yavs_interp::ScalarDrive`) are not handed to the kernel one
 /// by one: the function appends `(signal reference, driver | code | pc)` to `entries`
 /// (`yavs_interp::DRIVE_BATCH` of them, `count` in use) and `Gen::batch_flush` hands them over in
@@ -2690,91 +2677,7 @@ impl Gen {
             // layout memo for that word (`yavs_rt_layout_word`), as the interpreter's own
             // `FieldOf` and `LayoutWord` ops do. Per pc: the last pc fused, the word, the base of
             // a `Field`, the register that gets the result.
-            let fuse_layout: Vec<Option<LayoutFuse>> = {
-                let mut uses = vec![0u32; f.reg_ty.len()];
-                let mut count = |r: Reg| {
-                    if let Some(u) = uses.get_mut(r.0 as usize) {
-                        *u = u.saturating_add(1);
-                    }
-                };
-                for inst in &f.code {
-                    inst.visit(&mut |r, role, _| {
-                        if role == yavs_ir::Role::Use {
-                            count(r);
-                        }
-                    });
-                }
-                for &r in &f.operands {
-                    count(r);
-                }
-                let once = |r: Reg| uses.get(r.0 as usize) == Some(&1);
-                let inside = |p: usize| p < n && !enters[p];
-                (0..n)
-                    .map(|pc| {
-                        let Inst::LayoutOf { dst, ty, cache, .. } = f.code[pc] else {
-                            return None;
-                        };
-                        if !once(dst)
-                            || static_layout(prog, ty).is_some()
-                            || !native && cache.is_some() && layout_shape(prog, ty).is_some()
-                            || !yavs_ir::Ty::desc_size(&prog.types, ty)
-                                .is_some_and(|d| d > 0 && d <= 4096)
-                            || !inside(pc + 1)
-                        {
-                            return None;
-                        }
-                        let word = |p: usize, k: u32, base, out| {
-                            Some(LayoutFuse {
-                                last: p,
-                                k,
-                                base,
-                                out,
-                            })
-                        };
-                        match (f.code[pc + 1], f.code.get(pc + 2)) {
-                            (
-                                Inst::Field {
-                                    dst: d,
-                                    base,
-                                    layout,
-                                    n: k,
-                                },
-                                _,
-                            ) if layout == dst && base != dst => word(pc + 1, 2 + k, Some(base), d),
-                            (
-                                Inst::Load {
-                                    dst: d,
-                                    addr,
-                                    w: Width::B8,
-                                },
-                                _,
-                            ) if addr == dst => word(pc + 1, 0, None, d),
-                            // A word at a constant offset: `Index` of the layout, then a load.
-                            (
-                                Inst::Index {
-                                    dst: x,
-                                    base,
-                                    pos,
-                                    stride,
-                                },
-                                Some(&Inst::Load {
-                                    dst: d,
-                                    addr,
-                                    w: Width::B8,
-                                }),
-                            ) if base == dst && addr == x && once(x) && inside(pc + 2) => {
-                                let off = c.fixed.get(pos.0 as usize).copied().flatten()?;
-                                let off = off.checked_mul(i64::from(stride))?;
-                                (off >= 0 && off % 8 == 0)
-                                    .then(|| u32::try_from(off / 8).ok())
-                                    .flatten()
-                                    .and_then(|k| word(pc + 2, k, None, d))
-                            }
-                            _ => None,
-                        }
-                    })
-                    .collect()
-            };
+            let fuse_layout = fuse_layout(prog, f, &enters, &c.fixed, !native);
             // With registers carried across blocks (`Plan`) only the places the interpreter
             // can usefully enter at get an entry stub: the start, what follows a call, a wait or
             // a report, and loop headers (a hand-over comes at a jump, and the interpreter runs
@@ -8396,102 +8299,6 @@ impl Drop for Gen {
     fn drop(&mut self) {
         // SAFETY: we own the builder.
         unsafe { LLVMDisposeBuilder(self.b) }
-    }
-}
-
-/// The scalar logic assignments of the process `f` (`yavs_interp::scalar_drives`) and the pcs of
-/// those `Gen::drive_bit` keeps for one host call (`Batch`): no delay, a driver index the entry has
-/// room for, and another such assignment (or itself, in a loop) can follow it within the
-/// activation. A process that drives once per activation gains nothing and keeps the direct call.
-pub(crate) fn batched_drives(
-    prog: &Program,
-    f: &Func,
-    fixed: &[Option<i64>],
-) -> (
-    Vec<yavs_interp::ScalarDrive>,
-    std::collections::HashSet<u32>,
-) {
-    let all = yavs_interp::scalar_drives(prog, f);
-    let cand: std::collections::HashSet<u32> = all
-        .iter()
-        .filter(|d| fixed.get(d.time.0 as usize) == Some(&Some(0)) && d.driver <= 0xffff)
-        .map(|d| d.drive)
-        .collect();
-    let n = f.code.len();
-    // ponytail: a search per candidate, quadratic; above the cap every candidate stays.
-    if cand.len() * n > 4_000_000 {
-        return (all, cand);
-    }
-    let kept = cand
-        .iter()
-        .copied()
-        .filter(|&d| {
-            let mut seen = vec![false; n];
-            let mut work = vec![d as usize];
-            let mut first = true;
-            while let Some(pc) = work.pop() {
-                if !std::mem::replace(&mut first, false) && cand.contains(&(pc as u32)) {
-                    return true;
-                }
-                if pc >= n || std::mem::replace(&mut seen[pc], true) {
-                    continue;
-                }
-                let i = &f.code[pc];
-                if matches!(i, Inst::Suspend { .. }) {
-                    continue;
-                }
-                match crate::regs::succs(prog, f, pc, i) {
-                    Some(s) => work.extend(s.into_iter().map(|t| t as usize)),
-                    None => return true,
-                }
-            }
-            false
-        })
-        .collect();
-    (all, kept)
-}
-
-/// Instructions that neither drive a signal, look at a driver, wait nor run other code, on any
-/// path (a slow path steps the same instruction): scalar drives kept in `Batch` stay kept
-/// across them. Everything else hands them over first.
-pub(crate) fn batch_pure(prog: &Program, f: &Func, i: &Inst) -> bool {
-    match *i {
-        Inst::CallNative { native, args, dst } => native_kind(prog, f, native, args, dst).is_some(),
-        _ => matches!(
-            i,
-            Inst::Const { .. }
-                | Inst::ConstF { .. }
-                | Inst::Move { .. }
-                | Inst::Select { .. }
-                | Inst::Bin { .. }
-                | Inst::BinRange { .. }
-                | Inst::Un { .. }
-                | Inst::FBin { .. }
-                | Inst::FUn { .. }
-                | Inst::IToF { .. }
-                | Inst::Cmp { .. }
-                | Inst::FCmp { .. }
-                | Inst::Bool { .. }
-                | Inst::Check { .. }
-                | Inst::FCheck { .. }
-                | Inst::Index { .. }
-                | Inst::Pos { .. }
-                | Inst::AddrOf { .. }
-                | Inst::Load { .. }
-                | Inst::Store { .. }
-                | Inst::Zero { .. }
-                | Inst::Alloc { .. }
-                | Inst::Br { .. }
-                | Inst::CondBr { .. }
-                | Inst::Case { .. }
-                | Inst::Stmt
-                | Inst::LGet { .. }
-                | Inst::LSet { .. }
-                | Inst::SigVal { .. }
-                | Inst::SigReadScalar { .. }
-                | Inst::SigRead { .. }
-                | Inst::Edge { .. }
-        ),
     }
 }
 

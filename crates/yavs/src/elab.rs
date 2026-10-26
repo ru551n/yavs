@@ -1094,12 +1094,13 @@ pub fn run(
         yavs_interp::keep_variables();
     }
     // Eager Cranelift compiles the whole program before time 0 like `--tier=llvm` (no specialised
-    // copies, layout slots); the tiers that tier up get the layout slots when LLVM is one of
-    // their levels (the Cranelift code ignores them).
+    // copies, layout slots); the tiers that tier up get the layout slots, which also keep the
+    // 32-byte blocks the interpreter fuses in the frame, the form compiled code is faster with
+    // (#756; the Cranelift code ignores the slots themselves).
     match a.tier() {
         TierArg::Llvm | TierArg::Clift => yavs_interp::compiled_tier(),
-        TierArg::Auto | TierArg::Auto3 => yavs_interp::layout_slots(),
-        TierArg::Interp | TierArg::CliftAuto => {}
+        TierArg::Auto | TierArg::Auto3 | TierArg::CliftAuto => yavs_interp::layout_slots(),
+        TierArg::Interp => {}
     }
     // A plugin may deposit into process variables between activations, and the waveform
     // recorder reads them from their slots.

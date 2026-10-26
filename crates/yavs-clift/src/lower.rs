@@ -108,7 +108,7 @@ pub struct Jit {
     deopt_slots: ClifId,
     deopt_end: ClifId,
     /// The kernel-facing callbacks of `rt.rs`, in the order of `KERNEL`.
-    kernel: [ClifId; 19],
+    kernel: [ClifId; 20],
     tables: HashMap<Vec<u8>, DataId>,
     sig: Signature,
     /// Calls between compiled functions without a frame in the interpreter (`NatInfo`) and
@@ -241,6 +241,7 @@ impl Jit {
             (LAYOUT_WORD, yavs_rt_layout_word as *const u8),
             (DRIVE_FLUSH, yavs_rt_drive_flush as *const u8),
             (REGION, yavs_rt_region as *const u8),
+            (WAIT_EDGE, yavs_rt_wait_edge as *const u8),
         ] {
             b.symbol(n, p);
         }
@@ -301,6 +302,7 @@ impl Jit {
             imp(LAYOUT_WORD, &[I64, I32, I64, I64, I32], Some(I64))?,
             imp(DRIVE_FLUSH, &[I64, I64, I64, I32], Some(I32))?,
             imp(REGION, &[I64, I64, I64, I64, I32, I64], None)?,
+            imp(WAIT_EDGE, &[I64, I64, I64, I64, I32], Some(I32))?,
         ];
         let mut sig = module.make_signature();
         sig.params.extend([AbiParam::new(I64); 3]);
@@ -800,6 +802,9 @@ impl Jit {
             region: self
                 .module
                 .declare_func_in_func(self.kernel[18], &mut ctx.func),
+            wait_edge: self
+                .module
+                .declare_func_in_func(self.kernel[19], &mut ctx.func),
             tables: tabs,
             consts: cons,
             natives,
@@ -1023,6 +1028,8 @@ struct Imports {
     drive_flush: FuncRef,
     /// `yavs_rt_region(env, mem, a, depth, flags, out)`: where an address parameter points.
     region: FuncRef,
+    /// `yavs_rt_wait_edge(env, mem, lo, len, kind) -> u32`: a `WaitEdge` on the kernel itself.
+    wait_edge: FuncRef,
     tables: HashMap<Vec<u8>, GlobalValue>,
     /// Copies of the constants (up to 4 KiB of bytes) the function takes the address of, which
     /// never change: reads of them need no lookup.
@@ -1725,7 +1732,7 @@ fn gen_func(
     // either) and the waits that name the same signals every time (`yavs_rt_wait_same`).
     let kernel_facing = !native && f.kind == FuncKind::Process;
     let static_wait = if kernel_facing {
-        yavs_interp::static_wait(prog, f, 1)
+        yavs_interp::static_wait_edge(prog, f, 1, true)
     } else {
         Vec::new()
     };
@@ -2270,8 +2277,10 @@ fn gen_func(
                 let v = g.b.ins().umin(base, len);
                 g.mem_st(MEM_TEMP_LEN, v);
                 g.join(join);
-                if let Some(&(_, at)) = static_wait.iter().find(|w| w.0 == i) {
-                    g.wait_same(at as u32);
+                // A `wait until <edge>` short-cuts only where the edge trigger resumed the
+                // activation (`WAIT_SAME_EDGE`, #772).
+                if let Some(&(_, at, edge)) = static_wait.iter().find(|w| w.0 == i) {
+                    g.wait_same(at as u32, edge);
                 }
             }
             Inst::Deref { dst, handle, .. } => g.deref(pc, &inst, dst, handle),
@@ -2968,6 +2977,7 @@ fn gen_func(
                 g.wait_suspend(pc, sig)
             }
             Inst::WaitOn { sig } if g.nat.is_none() => g.wait_on(pc, sig),
+            Inst::WaitEdge { sig, kind } if g.nat.is_none() => g.wait_edge(pc, sig, kind.code()),
             Inst::SigRead { dst, sig } => g.sig_read(pc, dst, sig),
             Inst::WaitOn { .. }
             | Inst::WaitFor { .. }
@@ -6004,6 +6014,53 @@ impl Gen<'_> {
         self.b.ins().jump(join, &[]);
     }
 
+    /// A `SigRead` of `l` (1 to 64, known) elements that lie in one word of each of the kernel's
+    /// planes: four loads, no call (#766); else on to the codes in a new current block.
+    fn sig_read_word(
+        &mut self,
+        ent: Value,
+        off: Value,
+        l: i64,
+        dst: Reg,
+        slow: Block,
+        join: Block,
+    ) {
+        let codes_at = self.b.create_block();
+        let blocks = self.ent_ld(ent, SIG_PLANES);
+        let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, blocks, 0);
+        self.guard(has, codes_at);
+        let plen = self.ent_ld(ent, SIG_PLEN);
+        let used = self.b.ins().iadd_imm_s(off, l);
+        let fits = self
+            .b
+            .ins()
+            .icmp(IntCC::UnsignedLessThanOrEqual, used, plen);
+        self.guard(fits, codes_at);
+        let first = self.ent_ld(ent, SIG_OFF);
+        let bit0 = self.b.ins().iadd(first, off);
+        let sh = self.b.ins().band_imm_s(bit0, 63);
+        let end = self.b.ins().iadd_imm_s(sh, l);
+        let one = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, end, 64);
+        self.guard(one, codes_at);
+        let w = self.b.ins().ushr_imm_s(bit0, 6);
+        let w0 = self.b.ins().ishl_imm_s(w, 5);
+        let at = self.b.ins().iadd(blocks, w0);
+        let a = self.ld(dst);
+        let pd = self.host(a, Some(dst), Op::C(0), Op::C(32), true, slow);
+        let mask = if l == 64 { -1 } else { ((1u64 << l) - 1) as i64 };
+        for p in 0..4 {
+            let v = self.b.ins().load(I64, MemFlagsData::trusted(), at, 8 * p);
+            let v = self.b.ins().ushr(v, sh);
+            let v = self.b.ins().band_imm_s(v, mask);
+            self.b.ins().store(self.gf, v, pd, 8 * p);
+        }
+        self.b.ins().jump(join, &[]);
+        self.start(codes_at);
+    }
+
     /// `Inst::SigRead`: up to 64 elements from the codes in place (a count known at compile time
     /// builds the planes eight codes at a time, else `yavs_rt_codes`), more from the kernel's
     /// plane blocks (`yavs_rt_planes`); anything else through `TierHost::signal`.
@@ -6027,6 +6084,9 @@ impl Gen<'_> {
             self.sig_read_planes(ent, off, lv, dst, slow, join);
             self.start(join);
             return;
+        }
+        if let Some(l) = known {
+            self.sig_read_word(ent, off, l, dst, slow, join);
         }
         // Up to 64 elements from the codes, else (or without the codes) from the planes.
         let alt = self.b.create_block();
@@ -6948,12 +7008,32 @@ impl Gen<'_> {
     /// The wait that names the same signals every time, at its first statement: the process
     /// suspends at the `Suspend` at `at` when the kernel still holds the last wait
     /// (`yavs_rt_wait_same`).
-    fn wait_same(&mut self, at: u32) {
+    fn wait_same(&mut self, at: u32, edge: bool) {
         if self.no_native() {
             return;
         }
         let (pcv, z) = (self.c32(at), self.c64(0));
-        self.call_go(self.imp.wait_same, &[pcv, z, z], true);
+        let lo = self.c64(if edge { WAIT_SAME_EDGE as i64 } else { 0 });
+        self.call_go(self.imp.wait_same, &[pcv, lo, z], true);
+    }
+
+    /// `WaitEdge` on the kernel itself (no register read, `yavs_rt_wait_edge`); else the
+    /// instruction through `yavs_rt_signal`.
+    fn wait_edge(&mut self, pc: u32, sig: Reg, kind: u8) {
+        let (slow, join) = self.slow_signal(pc, 0);
+        let (lo, len, k) = (
+            self.ld(sig),
+            self.ld(Reg(sig.0 + 1)),
+            self.c32(u32::from(kind)),
+        );
+        let call = self
+            .b
+            .ins()
+            .call(self.imp.wait_edge, &[self.env, self.mem, lo, len, k]);
+        let r = self.b.inst_results(call)[0];
+        let done = self.b.ins().icmp_imm_s(IntCC::NotEqual, r, 0);
+        self.guard(done, slow);
+        self.join(join);
     }
 }
 

@@ -1430,12 +1430,12 @@ mod clift {
         "edges=",
         [
             ("cb_signal", Max(8)),
-            // One step per `wait until` with an edge conjunct (`WaitEdge`, #519): no compiled
-            // lowering yet, in either generator.
-            ("cb_step", Max(225)),
+            // `WaitEdge` goes to the kernel itself (`yavs_rt_wait_edge`, #766), no step; the
+            // `wait until <edge>` waits take `yavs_rt_wait_same` too (#772).
+            ("cb_step", Max(8)),
             ("cb_drive", Max(1867)),
             ("cb_drive", Min(1700)),
-            ("cb_wait_same", Max(1570)),
+            ("cb_wait_same", Max(1780)),
         ]
     );
     // The memo of pure calls (#701) answers the compiled calls of this tier too.

@@ -1067,6 +1067,17 @@ impl Inline for Inl<'_> {
         _args: &[Value],
     ) -> InlineCommand<'_> {
         match self.bodies.get(&callee) {
+            // Cranelift's inliner copies a callee's symbol (`symbol_value` of a constant or a
+            // table) with the callee's name reference, which names another symbol in the caller
+            // (#765): a body that has one stays a call.
+            Some(n)
+                if n.body
+                    .global_values
+                    .values()
+                    .any(|g| matches!(g, ir::GlobalValueData::Symbol { .. })) =>
+            {
+                InlineCommand::KeepCall
+            }
             Some(n) => {
                 let size = n.body.dfg.num_insts();
                 if size <= self.max && size <= self.budget {

@@ -68,7 +68,7 @@ impl ClifTier {
         func: FuncId,
         pc: u32,
         host: &mut dyn TierHost,
-        state: Option<&mut Option<Box<yavs_interp::TierState>>>,
+        state: Option<&mut yavs_interp::TierState>,
     ) -> Option<u32> {
         let &(f, nregs) = self.funcs.get(func.0 as usize)?.as_ref()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize).copied().flatten();
@@ -173,7 +173,7 @@ impl Tier for ClifTier {
         func: FuncId,
         pc: u32,
         host: &mut dyn TierHost,
-        state: &mut Option<Box<yavs_interp::TierState>>,
+        state: &mut yavs_interp::TierState,
     ) -> Option<u32> {
         self.go(func, pc, host, Some(state))
     }

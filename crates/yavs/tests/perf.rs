@@ -293,6 +293,17 @@ case!(
     ]
 );
 case!(
+    elem_codes,
+    "e=",
+    &[],
+    [
+        ("cycles", Max(930)),
+        ("no_code_signals", Min(2)),
+        ("no_code_signals", Max(2)),
+        ("ops", Max(26250)),
+    ]
+);
+case!(
     reg_bytes,
     "n=",
     &[],
@@ -403,13 +414,13 @@ case!(
 );
 case!(ieee_operands, "acc=", &[], [("ops", Max(3541))]);
 case!(ieee_share, "n=", &[], [("ops", Max(3630))]);
-case!(elem_loops, "acc=", &[], [("ops", Max(35600))]);
-case!(wide_vec, "wide=0", &[], [("ops", Max(2270000))]);
+case!(elem_loops, "acc=", &[], [("ops", Max(27760))]);
+case!(wide_vec, "wide=0", &[], [("ops", Max(2202000))]);
 case!(
     licm_loop,
     "acc=",
     &[],
-    [("process_runs", Max(2)), ("ops", Max(26442)),]
+    [("process_runs", Max(2)), ("ops", Max(19800)),]
 );
 case!(
     slice_memo,
@@ -445,7 +456,7 @@ case!(
     [
         ("pmemo_hits", Max(0)),
         ("pmemo_runs", Max(0)),
-        ("ops", Max(13550))
+        ("ops", Max(12770))
     ]
 );
 // Two processes whose calls of a pure function never repeat: both give its memo up, which turns it
@@ -462,7 +473,13 @@ case!(
 );
 // The digit loop of a textio HRead (#744): a result-table nibble stored into the slice
 // `sv(4 * i to 4 * i + 3)` and `is_x` on the same slice, 8 digits of each of 3 words, 16 times.
-case!(hread_loop, "sum=", &[], [("ops", Max(7800))]);
+case!(hread_loop, "sum=", &[], [("ops", Max(7370))]);
+// The same loop with an argument of an integer type, whose table read tests the range and a mask
+// of valid digits (#769): the pair of the array result is not made on the table path.
+case!(tab_tail, "sum=", &[], [("ops", Max(16240))]);
+// Rows of bit vectors behind access values filled in nested loops by a procedure of the process
+// (#768): the loads, the dereference and the descriptors leave the inner loop, which runs as one op.
+case!(row_fill, "ones=", &[], [("ops", Max(5290))]);
 case!(
     edge_forms,
     "edges=",
@@ -620,8 +637,8 @@ case!(
     [
         ("cycles", Max(415)),
         ("update_general", Max(0)),
-        ("direct_planes", Min(1400)),
-        ("direct_codes", Min(400)),
+        ("direct_planes", Min(1230)),
+        ("direct_codes", Min(260)),
         ("events", Max(870)),
     ]
 );
@@ -730,7 +747,7 @@ case!(
     [
         ("process_runs", Max(433)),
         ("idle_skips", Min(75)),
-        ("ops", Max(9180)),
+        ("ops", Max(8850)),
     ]
 );
 
@@ -905,6 +922,30 @@ fn lean_events_change_nothing() {
     assert_eq!(cov.code, 0, "{}", cov.all());
     assert_eq!(cov.stdout, on.stdout);
     assert_eq!(cov.counters["lean_signals"], 0);
+}
+
+/// Signals nothing reads a single element of keep no byte codes and give the report of the
+/// ones that keep them.
+#[test]
+fn byte_codes_change_nothing() {
+    let d = tempdir("codes_equal");
+    let src = include_str!("perf/elem_codes.vhd");
+    let run = |mode: &str, tier: &str| {
+        run_design_env(&d, "elem_codes", src, tier, &[], &[("YAVS_CODES", mode)])
+    };
+    let tiers: &[&str] = if cfg!(feature = "llvm") {
+        &["interp", "auto"]
+    } else {
+        &["interp"]
+    };
+    for &tier in tiers {
+        let (all, some) = (run("all", tier), run("", tier));
+        assert_eq!((all.code, some.code), (0, 0), "{}", some.all());
+        assert!(some.stdout.contains("e="), "{}", some.all());
+        assert_eq!(all.stdout, some.stdout, "{tier}");
+        assert_eq!(all.counters["no_code_signals"], 0);
+        assert_eq!(some.counters["no_code_signals"], 2, "{:?}", some.counters);
+    }
 }
 
 /// An assignment of the value a signal holds is dropped only when nothing can observe the

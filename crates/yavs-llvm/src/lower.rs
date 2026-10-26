@@ -3097,6 +3097,7 @@ impl Gen {
                                         crate::regs::Sp::Inst => Known::InstAny,
                                         crate::regs::Sp::Temp => Known::Temp,
                                         crate::regs::Sp::Heap => Known::Heap(None),
+                                        crate::regs::Sp::Likely => Known::LikelyHeap,
                                     });
                                 }
                             }

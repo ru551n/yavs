@@ -48,6 +48,14 @@ const EXPLAIN: &[(&str, &str)] = &[
         "A VHDL-2008 construct was used in a VHDL-1993 file. Analyze with `--std=2008` or rewrite it.",
     ),
     (
+        "E0012",
+        "The file holds an encrypted (IEEE 1735 protected) envelope, `` `protect begin_protected `` \
+         or `` `pragma protect begin_protected ``. yavs never decrypts protected IP, so it stops \
+         reading the file at the envelope and reports this one error. Analyze the vendor's \
+         unencrypted simulation model instead, or simulate the block with a tool that holds the \
+         vendor's key.",
+    ),
+    (
         "W0001",
         "A `` `warning `` conditional analysis directive was reached; the message is the one in the directive.",
     ),

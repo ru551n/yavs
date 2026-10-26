@@ -703,8 +703,21 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   dropped as cascades.
 - **Conditional analysis in both modes:** `` `if `` etc. are evaluated for 2008 files too
   (`VHDL_VERSION` is `"2008"`), since 2008 already allows tool directives and the evaluation is
-  harmless. Unknown directives (`` `protect ``) warn (W0002) and skip their line. `TOOL_VENDOR`
+  harmless. Unknown directives warn (W0002) and skip their line; `` `protect begin_protected ``
+  (and `` `pragma protect begin_protected ``) is the exception, see "Encrypted sources" below. `TOOL_VENDOR`
   and `TOOL_NAME` are `yavs`, `TOOL_TYPE` is `SIMULATION`, `TOOL_EDITION` is empty.
+- **Encrypted sources (#775, #776 D8):** an IEEE 1735 envelope (`` `protect begin_protected ``,
+  also `` `pragma protect ``, any case) is one error `E0012` at the line that opens it, with the
+  encrypt agent and the number of vendor key blocks as a note and the fix as help; the lexer stops
+  there (the encoded blocks are never lexed) and the file is neither preprocessed nor parsed. For
+  VHDL this is a hard error at analysis, not a recorded unit: vendor VHDL files encrypt the whole
+  design unit, ports included, so there is no plaintext header to record, and the existing
+  front end has no notion of a unit without a tree. The detector (`yavs_syntax::protect`) is
+  language-neutral for the planned Verilog front end, which records encrypted modules at analysis
+  and errors only when one is instantiated (#776 D8). `` `protect begin `` / `end` (plaintext
+  marked for encryption) and key-only files (public key files) are not envelopes. Evidence: all
+  217 enveloped `.vhd` files of the Vivado 2026.1 data directory open with `` `protect begin_protected ``
+  and none uses `` `pragma protect `` or another marker in VHDL.
 - **2019 closing keywords:** 2019 makes only `end component` optional (LCS-2016-055a); every
   other ending keeps the 2008 rule. The reference simulators 2025.3 reject a bare `end;` for every
   other construct (`docs/design/lrm-checks.md` P1); yavs gives E0002 with a help naming the rule.
@@ -8361,6 +8374,34 @@ the run; cycles as the minimum of 7 interleaved runs on one core claimed with `t
 - **Left:** #766 (host layers around compiled clocked processes, the largest item on `rtl_ff`, `rtl_lfsr`, `lfsr64`), #767 (`wait until` form),
   the `run_batch` loop (about 120 instructions an activation spread over 30 lines), the `codes` refresh of 16-bit registers.
 
+## Byte codes by element reads (yavs-sem facts, yavs-elab `keep_codes.rs`, yavs-kernel, #734, 2026-10-26)
+
+- **Decision (user, 2026-10-26, on #734)**: instead of the source-width rule of #519 (`CODES_SOURCE_MAX`), the elaborator decides which logic
+  signals keep the per-element byte codes (`Signal::codes`): those that have a read of a single element. Rationale: the refresh of the codes
+  of a changed word costs about 250 instructions for 16-bit registers (kernel round 24), and only reads of single elements use them.
+- **How**: `Db::facts()` has `elem_reads` (the signal objects with a scalar index, selection or alias of a part in an expression that is not an
+  assignment, force or release target) and `elem_reads_all` (an element read through a signal parameter or an external name: any signal may be
+  it). `yavs-elab` `keep_codes.rs` maps them to leaves like `lean.rs`: a leaf keeps its codes when it is one element, when an object that holds
+  it has an element read (a port collapsed into its actual marks the actual's leaf), when that object has a record in it (`SigGather` reads
+  the scalar leaves of a record one element at a time), for implicit signals and packs; all of them when `elem_reads_all`. The others get
+  `Builder::no_codes`. Port-map actuals such as `v(3)` count as reads (not told apart from other uses of the name): a safe over-count.
+  `YAVS_CODES=all` keeps every signal's codes (test aid); the `no_code_signals` counter shows how many signals keep none.
+- **Without codes** a one-element read comes from the planes (`Ctx::first_code`, and compiled code through `TierSig` with `codes = 0`: its
+  plane path was there for buses, so `TierSig` and `rt.rs` are unchanged), and the skip test of an assignment of the value a signal holds
+  (`direct_same`, `commit_code`, `commit_codes`) compares the plane bit instead (`held`), so a vector driven by element and read whole
+  still skips. The width rule is gone: a wide vector with element reads now keeps its codes.
+- **Results** (bench builds with `llvm`, base 9b5ce798, instructions of whole warm runs, `--threads 1`, `--tier=interp` / `--tier=llvm`):
+  `lfsr64` 0.968 / 0.954, `lfsr64_xor` 0.979 / 0.973, `rtl_ram` 0.992 / 0.992; `rtl_lfsr`, `rtl_ff`, `rtl_chain`, `neorv32_single_min` and
+  `grlib_leon3mp` keep their codes or have no vector that is not read by element, so they move by at most +0.45% instructions (code layout; the
+  logic of their paths is unchanged, cycles level within the noise of a shared host). `rtl_lfsr`, `rtl_ff` and `rtl_chain` read single elements
+  of their registers (`r(i)(0) = 'U'`, `q((i+1) mod N)`, `c(i-1)`), so this decision cannot save their refresh. `realbench --compare` (42 tests,
+  interpreter and auto, 3 runs a cell, one core): instruction geometric mean 1.00 / 1.00, wall 0.98 / 1.00; every test within 1.00 +- 0.02 in
+  instructions but `fletcher_bufferwriter_512` (1.05, wall 1.03 interp, 1.07 auto): its wide buses are read by element in several processes
+  and used to be exempt by the width rule, now they keep 64 codes per changed block. If that matters, the old exemption can come back as
+  a second condition (element reads and a narrow source) in `keep_codes.rs` only.
+- **Not done**: telling a real read from a port-map actual or a sensitivity entry (would let a few more bus signals drop their codes); reads
+  through signal parameters make every signal keep its codes (OSVVM/UVVM designs get no gain).
+
 ## Facts the declarative part leaves in a process copy (yavs-ir `opt/decl.rs`, #678, 2026-10-24)
 
 - **Decision**: a copy of a process (`copies.rs`) takes over between two activations, so what its declarative part made is in the frame
@@ -10714,3 +10755,115 @@ entry, about a fifth more per op over the rest of a testbench process's long act
   2.98 to 2.81 (`rising_edge` 2.84 to 2.77), `--tier=auto` 3.05 to 2.81 (`rising_edge` 2.90 to 2.84); the wait form is within 1.5 percent of `rising_edge` in both.
 - **Tests:** work-counter test `edge_cost_parity` (`perf/edge_cost.vhd` with each of the four forms: equal `ops`, a ceiling for each); `edge_forms` bound lowered; `delta/wait_edge`
   and `edge_idioms` run the wait shapes in every tier. Difftest 531 of 531 for interp, auto and llvm at 1 and 4 threads and auto with `--tier-heat=1,0,0` at 4 threads.
+
+## Table reads with a range test or a validity mask: the rest of the block goes into the table arm (yavs-ir `opt/inline.rs`, #769, 2026-10-26)
+
+The result-table read of #722 for an argument of an integer type tests the range, and for a table with values that report (a mask of valid values) tests the mask; both
+send the other values to the call. The read was inlined by the late inliner as blocks that join again, so the optimiser, which does not follow registers there, never saw the stores that
+built the fat pair of an array result and read both words back for every call (about 30 ops per digit of a nibble loop, against 13 for a character argument whose table holds every value).
+
+- **Decision: every read of a result table is made before the first optimiser pass (`tab_calls`), the late inliner leaves calls of table functions alone** (`tabbed`). A read that branches
+  becomes the range test, the mask test, the table arm and the call arm; the rest of the block after the call (at most `MAX_TAIL` = 64 instructions, no suspension, no other branching read) is
+  **copied into the table arm** with every register it defines renamed (`rename_tail`), so the table arm is straight-line code from the test to the end of the block and the loads of the pair find the
+  stores that built it (the pair goes, as in #744). The call arm keeps the original rest of the block. A register the copy defines that the code outside the rest reads, or that the rest reads before
+  it defines it, is moved back to its own name before the terminator. A longer rest, or one with another branching read, takes the old shape: arms that join. The call that stays in the call arm
+  is not read again: the late inliner skips calls of table functions, so a miss costs the test and the call, not a second test.
+- **Why copy the rest instead of joining with the words of the pair.** Joining the two words (data address, descriptor) as registers would need every use of the pair rewritten and loses that the
+  descriptor of the table path is a constant (its length check folds). The copy costs code only on the table arm; its size is capped and counted against the growth cap of the inliner.
+- **Measured.** Perf case `tab_tail` (new: an integer type of 21 values, 16 tabulated, 8 digits stored into a slice): 22 072 ops to 15 764 (-29 percent). A loop of 160 000 such reads: 26.8 to 18.9
+  ops per digit; with a proven range (`i mod 16` into `type nib_t is range 0 to 15`) the test folds and the digit costs 11.8 ops (24.8 before). `grlib_leon3mp` has no such table (its `FromChar` takes a
+  character): unchanged.
+- **Tests**: perf case `tab_tail` (a ceiling that fails if the pair is made again), the `casetab` differential test (new `digvec` and `digsum`: array results by an integer type with a mask, reports
+  for the digits that are no table entry, rest-of-block copies with live-out registers), run with the tables on and off at 1 and 4 threads and in every tier.
+
+## Loop-invariant loads and dereferences in loops that write only logic elements (yavs-ir `opt/licm.rs`, #768, 2026-10-26)
+
+`Init_mem` of the SDRAM model of `grlib_leon3mp` (a procedure declared in a process) fills a freshly allocated row, `Bank0 (Row_index) (i) (j) := '0'`, in two nested loops: 18 percent of the first
+1 us after #744. Each element store read the access value of the row from the frame of the process (`AddrOf Up`, `Load`), dereferenced it and computed the positions and lengths of the descriptors,
+nine ops per element, because the loop-invariant code motion moved only computations, never a load or a dereference, and not the address of a frame up the static links.
+
+- **Decision: in a loop whose only writes are element writes of logic arrays (`LSet`, `LFill`), a `Load` (not of a signal), a `Deref` and the descriptor reads (`Pos`, `DopeLen`) are invariant when
+  their operands are; the address of a frame up the static links (`AddrOf Up`) moves like a computation that cannot fail.** The existing rule for what may fail is unchanged: a `Deref` (null or
+  dangling handle) moves only from the effect-free start of the header, and the preheader replays that start as the first pass would run it, so the first failure and its message are the unmoved
+  code's. A loop that stores a word, frees, allocates or calls keeps its loads and dereferences in place.
+- **Why this is sound.** Element planes of a logic array are never read as words (`Load`), never hold handles and never hold descriptors: the lowering reads them with `LGet`/`LCopy`, which are not
+  moved. `AddrOf Up` yields the address of a frame in the static chain of the running call, the same for the whole run of the loop; it is not moved out of the loop's other blocks (`speculable` still
+  excludes it), only from the start of the header, because a loop that does not run does not compute it.
+- **Effect.** The inner loop is left with the element position and the store, which `ElemLoop` (`eloop.rs`, #520) already runs as one op: 9 ops per element became 8 ops per row of 17 elements
+  (the issue's reproducer: 5.08 M ops to 0.26 M). `grlib_leon3mp`, first 1 us, `--tier=interp`: `Init_mem` 420 of 1888 profile samples to 29; 31.37 G to 25.96 G instructions (-17.2 percent),
+  8.3 G to 6.9 G cycles. Work-counter ceilings lowered because the ops fell: `elem_loops` 35.6 k to 27.8 k, `licm_loop` 26.4 k to 19.8 k, `wide_vec`, `case_tab`, `idle_vars`.
+- **The compiled tier keeps what a moved load knew.** Compiled process code (`--tier=llvm`, `auto`) reaches a vector through a pointer loaded from a variable's slot; the generator knew that
+  pointer (probably a heap object, so its accesses try the object cache inline) only in the block of the load, and a load that moved to a preheader lost it: every element access of the loop
+  asked the runtime (`llvm_eloop`: `cb_host` 22 to 1671). The space analysis of the generator (`yavs-llvm` `regs.rs` `spaces`) now carries "probably heap" for the pointer loaded from the slot of a
+  variable (not a parameter's) or of an enclosing subprogram's through the blocks, as it carries the definite spaces.
+- **Tests**: perf case `row_fill` (a procedure of a process fills rows behind access values: a ceiling on the ops), the difftest cases `access/row_fill` (nested fills, an empty range over a null access
+  value) and `access/row_fill_null` (the failure of a null access in a nested loop comes after the report that precedes it in the body, as in the reference), the loop tests of `yavs-lower`.
+
+## `is_x` of a slice of a logic vector tests the planes of the source: `Op::IsXSlice` (yavs-interp `pre.rs`, `exec.rs`, #770, 2026-10-26)
+
+`Is_X (SV (4*i to 4*i+3))`, in the digit loop of every textio `HRead`, copied the slice into a block of temporary memory (`Alloc` + `LCopy`, fused into `AllocLCopy`) and called the native on the
+copy (`CallIeee`: the cells of the call, the lookup of the function, a result through `Machine::set`): three ops and about a tenth of the digit loop's instructions.
+
+- **Decision: the predecoder fuses `Alloc` of 32 bytes, the `LCopy` of at most 64 elements into it and the `CallIeee` of the `is_x` of a vector into `Op::IsXSlice`**, when the copy is read by
+  nothing else (`live_after`) and lands at element 0. The op tests the plane words of the source block where they are (shifted by the element offset, masked to the count); it does not allocate the
+  temporary. Anything else (more than 64 elements, a slice that crosses a block, an unreadable source, no elements) runs the `Alloc` alone and the ops that follow, as before. The same op shape
+  fits the other natives that read one small vector (`to_x01` and the like make a vector and stay on `AllocLCopy`); only `is_x` is fused here.
+- **Why not a form of the `ieee` arguments that passes an element offset.** Every native reads its operand from element 0 of the planes (`dim_at`, `Machine::planes`); an offset would be an
+  extra cell for each of them and a shift in each, to save one copy of at most 32 bytes. The copy is cheap; the call around it was the cost.
+- **Measured** (bench build with `llvm`, `--tier=interp`, `tools/claim core`, same core, interleaved, `perf stat`): `grlib_leon3mp`, first 1 us, 25.966 G to 23.072 G instructions (-11.1
+  percent). A 128-bit `HRead` repeated 20 000 times: 992 M to 798 M instructions with #771's branch fold (-19.6 percent; 31 digits each).
+- **Tests**: difftest case `ieee/is_x_slice` (every `std_ulogic` value at every position of vectors of 150 elements, ascending and descending, slices of 1 to 70 elements that stay in a block or
+  cross its edge), perf case `hread_loop` (ops 7594 to 7156 together with #771).
+
+## A branch whose arms lead to the same block is a jump (yavs-ir `opt/cfg.rs`, #771, 2026-10-26)
+
+The fixed cost of one `HRead` call is about 86 interpreter ops for one digit (#771). Part of it is the descriptor of each local array: `SV (0 to SL-1)` tests whether the range is null, and the
+arm for a null range is a block that only jumps to the block of the other arm, so the test decided nothing (three of them per call).
+
+- **Decision: `cfg::equal_arms` turns a `CondBr` whose two targets lead to the same block (through up to four blocks that are only a jump) into a `Br`**; the compare that fed it goes with
+  `dead_defs`, the emptied arm with the clean-up that follows. It runs first in `cfg::run`, for every subprogram that cannot suspend, loop or not.
+- **Measured.** `HRead` of 8 bits, 20 000 calls (bench build, `perf stat`): 245.8 M to 231.1 M instructions together with #770 (two `is_x` per call); the branch fold alone is 0.3 percent of
+  the first 1 us of `grlib_leon3mp`, three ops of 86.
+- **Not done in #771** (what is left of its cost, with the profile of the first 1 us after #768 and #770: `HRead` 61 percent of the samples, its digit loop 45 percent): the `Read` of a string
+  as a native on `data, left, right, dir` instead of a fat pair (`NewPair`, `FatRoot`, `CallNative` per call); descriptors of local arrays whose shape depends on `VALUE'Length` made once per
+  length (`NewDope`, `MakeDope`, `LayoutWord`, `NewFrame`, `Copy` are five ops for each of `SV` and `S`); `Stmt` markers of statements the fusion left without a temporary; the two
+  `BinRange` of `4 * i` and `4 * i + 3` and the `SlicePos` of a slice whose position the loop's range already bounds.
+- **Tests**: `opt` (`a_branch_whose_arms_lead_to_the_same_block_is_a_jump`); perf case `hread_loop` lowered (7594 to 7156 ops with #770).
+
+## `--tier=auto`: a compile pays for the callees it brings, `Compute` at one and a half times its measured price (yavs-llvm `auto.rs`, #757, 2026-10-26)
+
+Follow-up of "`--tier=auto` first-run latency": the lower `Compute` price (native-frame compute loops, measured 33 to 62 ms of compile CPU for 79 to
+153 IR) had been dropped because it compiled losers. Measured with bench builds, fresh copies of the pristine `tools/realbench` worlds, two untimed
+`--tier=interp` runs, then `--tier=auto` runs, all cells of a design on one claimed core of CCD1, instructions of the whole process.
+
+- **The losers were not the compiled code.** After "The watching loop calls native-frame callees itself" the string loops are winners (`match_identifier`
+  3.5 times faster, `uvvm_sb_slv` warm 7 percent fewer instructions at the measured price). What remained was cold-run cost, two kinds:
+  - **The tree.** The payback rule (`need`) prices the root alone, while `tree` compiles every native-frame callee not compiled yet. A cheaper `Compute`
+    let `convert_byte_array_to_slv_array` (303 IR) in with ten callees, 700 ms of compile CPU in a 3 s run (`uvvm_axistream_vvc` cold +8 to +17
+    percent), and a clocked process whose callee `mux` is a compute loop into the budget at the end of a 0.6 s run (`poc_cache_cpu` cold +11 to +13 percent).
+  - **The run length.** At the measured price `match_identifier` compiles at 0.5 s of a 0.8 s run, when the payback rule assumes the rest is as long
+    as the part seen (`uvvm_sb_slv` cold +4 percent): no rule that reads only the looks can tell that run from the histogram's.
+- **Decision: `pick` compiles a candidate only when its tree repays** (`Worker::repays`): the sum over the tree of each function's seen time over its
+  kind's payback is at least the sum of the prices of the tree. The root's term is the payback rule itself; a clocked process keeps its own rules and its
+  seen time pays only for its callees. A candidate that does not repay yet waits without moving `pick_at` (asked again at the next look; `YAVS_AUTO_TRACE`
+  prints a `waits` line once). **A program the profile says ran before shares the cost among `profile::EARLY_RUNS` runs** (the cache makes the compile a link in
+  the runs after, as the profile's own early compiles assume): without that the rule kept the big trees of the window generator (`push_variable_string`,
+  `encode`) and of `uvvm_axistream_vvc` out of every warm run (warm +6 to +8 percent against the change before).
+- **Decision: `Compute` is priced 12 ms + 510 us an IR instruction** (one and a half times what it measures; it was 4 ms + 900), speedup 2.4 unchanged.
+  At the measured price (8 ms + 340) `poc_stat_histogram` cold is 0.87 but `uvvm_sb_slv` cold 1.04; at 10 ms + 420 the string loop compiles in some
+  runs and not in others. The native kinds (`Tiny`, `Native`, `Loop`) keep their models: speedups of 2.5 for them (measured 3 or more since the
+  hand-over fix) compiled more trees in first runs and moved warm runs of `sc5_fifo_repack` and the window generator by +2 to +8 percent; their
+  calibration is open.
+- **Not built: a per-function verdict** (was the compile of a native-frame function paid back, from its seen time before and after). The losers it was
+  meant to catch were the hand-over (fixed); what is left is the cost of a first run, and a first run has no profile to carry a verdict. The measured loser
+  after the fix is a frame-mode process: `check_axi_stream` (934 IR, `ComputeFrame`) of the window generator, first seen 8.1 s into an 11 to 14 s cold
+  run, compiled at 10.4 s for 178 ms of CPU (model 118), ran at 11 percent of the wall afterwards against 12 percent interpreted before, about 1.06
+  times faster against the kind's 1.8; linked warm it is a small gain. Its kind's speedup is the open question.
+- **Measured** (`tools/realbench --compare`, 42 tests, run phase, `auto` and `auto-cold`, cores 12 to 15, against main 46c42d35): wall geometric mean 1.00
+  and 1.00, instructions 0.99 and 1.00, CPU 0.98 and 1.00, sums of the walls 0.98 and 0.99. Moved: `poc_stat_histogram` cold 0.92 (instructions 0.92),
+  `uvvm_axistream_vvc` warm 0.92 (0.92) and cold 0.98 (0.96), `sc5_fifo_repack` cold 0.96 (0.94); the rest within the spread (`uvvm_sb_slv`,
+  `poc_cache_cpu`, `uvvm_util_rand`, the window generator 1.00 to 1.03 wall, instructions 0.99 to 1.02). Five interleaved rounds of the run-1 (cold) and
+  run-3 cells on the guard designs: `poc_stat_histogram` cold 0.922, `uvvm_sb_slv`, `poc_cache_cpu`, `sc5_fifo_repack`, `uvvm_func_cov` 1.00 to 1.01 both,
+  `uvvm_util_rand` cold 1.03 (its compile of `prefix_lines` happens in some runs of either build: 14.02 to 14.46 G for main), the window generator 1.016
+  both; `uvvm_axistream_vvc` run 3 is 1.22: that is the run that compiles the shared trees, a run later than it should because the profile of its first run
+  is not found by the second (#774); realbench times runs 3 to 5 and takes the median.

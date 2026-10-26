@@ -140,6 +140,9 @@ impl Elaborated {
             if self.lean.get(i) == Some(&true) {
                 b.lean_events(id);
             }
+            if self.no_codes.get(i) == Some(&true) {
+                b.no_codes(id);
+            }
             if let Some(g) = leaf.guard {
                 b.guard(id, g, leaf.disconnect);
             }

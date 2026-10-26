@@ -13,6 +13,7 @@ mod callcache;
 mod collapse;
 mod eval;
 mod hier;
+mod keep_codes;
 mod lean;
 pub mod libstage;
 mod pkgcall;
@@ -285,6 +286,9 @@ pub struct Elaborated {
     /// the kernel keeps only each block's last event (`lean.rs`). Clear it to keep the history
     /// of every signal; empty means the same.
     pub lean: Vec<bool>,
+    /// Per leaf: no process reads a single element of this signal, so the kernel keeps no byte
+    /// codes for it (`keep_codes.rs`). Clear it to keep them for every signal; empty means the same.
+    pub no_codes: Vec<bool>,
     /// Signal objects by (scope, declaration).
     pub sigs: std::collections::HashMap<(ScopeId, yavs_sem::DeclId), ObjId>,
     /// The declarative regions (yavs-sem scopes) of each elaborated scope, in elaboration

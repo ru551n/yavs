@@ -97,8 +97,34 @@ pub struct Facts {
     /// The signal objects that are whole such a prefix (the elaborator checks they are whole
     /// kernel signals).
     pub history_wholes: Vec<DeclId>,
+    /// The signal objects of which one element is read (a scalar index, selection or alias of a
+    /// part, in any expression that is not an assignment target): the kernel keeps byte codes
+    /// for those (#734).
+    pub elem_reads: Vec<DeclId>,
+    /// An element of something the elaborator cannot trace to a signal object is read (a signal
+    /// parameter, an external name): any signal may be it.
+    pub elem_reads_all: bool,
+    /// While scanning: the scalar names with a signal root and the targets of assignments, whose
+    /// difference is `elem_reads` (`Facts::settle_elem_reads`).
+    #[serde(skip)]
+    elem_cands: Vec<(ExprId, DeclId)>,
+    #[serde(skip)]
+    targets: Vec<ExprId>,
     /// The expressions that were package-path external names (`@lib.pkg.obj`) with their names.
     pub(crate) package_paths: Vec<(ExprId, ExternalId)>,
+}
+
+impl Facts {
+    /// Turn the candidates and targets found since the last call into `elem_reads`: the signal
+    /// objects of a scalar part that is read, not assigned.
+    pub(crate) fn settle_elem_reads(&mut self) {
+        let targets: HashSet<ExprId> = std::mem::take(&mut self.targets).into_iter().collect();
+        for (e, d) in std::mem::take(&mut self.elem_cands) {
+            if !targets.contains(&e) {
+                self.elem_reads.push(d);
+            }
+        }
+    }
 }
 
 /// A cached `lookup`: revision, epoch, generation of the key, direct hit, result.
@@ -480,13 +506,20 @@ impl Db {
             f.history_all |= u.history_all;
             f.history_parts.extend_from_slice(&u.history_parts);
             f.history_wholes.extend_from_slice(&u.history_wholes);
+            f.elem_reads.extend_from_slice(&u.elem_reads);
+            f.elem_reads_all |= u.elem_reads_all;
             f.package_paths.extend_from_slice(&u.package_paths);
         }
         if !self.unit_facts.is_empty() {
             f.forces.sort_unstable_by_key(|s| s.index());
             f.package_paths.sort_unstable_by_key(|p| p.0.index());
         }
-        for v in [&mut f.history_parts, &mut f.history_wholes] {
+        f.settle_elem_reads();
+        for v in [
+            &mut f.history_parts,
+            &mut f.history_wholes,
+            &mut f.elem_reads,
+        ] {
             v.sort_unstable_by_key(|d| d.index());
             v.dedup();
         }
@@ -531,6 +564,42 @@ impl Db {
             {
                 f.package_paths.push((id, x));
             }
+            ExprKind::Index { .. } | ExprKind::Field { .. } => self.note_elem_read(id, f),
+            ExprKind::Obj(d) if matches!(self.decls[d].kind, DeclKind::Alias(_)) => {
+                self.note_elem_read(id, f)
+            }
+            _ => {}
+        }
+    }
+
+    /// Add `e` to the candidates of `Facts::elem_reads` if it is a scalar part of a signal
+    /// (#734). A whole scalar signal is one element anyway and not noted.
+    fn note_elem_read(&self, e: ExprId, f: &mut Facts) {
+        use crate::decl::{ObjClass, ObjRole};
+        use crate::hir::ObjRoot;
+        if !self.types[self.base(self.exprs[e].subtype)]
+            .kind
+            .is_scalar()
+        {
+            return;
+        }
+        match self.lsp_parts(e) {
+            Some((ObjRoot::Decl(d), path, _, cut)) if !path.is_empty() || cut => {
+                if let DeclKind::Object(o) = &self.decls[d].kind
+                    && o.class == ObjClass::Signal
+                {
+                    if o.role == ObjRole::Param {
+                        f.elem_reads_all = true;
+                    } else {
+                        f.elem_cands.push((e, d));
+                    }
+                }
+            }
+            Some((ObjRoot::External(x), ..))
+                if self.externals[x].class == yavs_syntax::ast::ExternalClass::Signal =>
+            {
+                f.elem_reads_all = true
+            }
             _ => {}
         }
     }
@@ -563,11 +632,15 @@ impl Db {
     /// Add what statement `id` contributes to `f`.
     pub(crate) fn note_stmt(&self, id: StmtId, f: &mut Facts) {
         use crate::hir::StmtKind;
-        if matches!(
-            self.stmts[id].kind,
-            StmtKind::Force { .. } | StmtKind::Release { .. }
-        ) {
-            f.forces.push(id);
+        match &self.stmts[id].kind {
+            StmtKind::Force { target, .. } | StmtKind::Release { target, .. } => {
+                f.forces.push(id);
+                f.targets.push(target.expr);
+            }
+            StmtKind::SignalAssign { target, .. } | StmtKind::ConcSignalAssign { target, .. } => {
+                f.targets.push(target.expr)
+            }
+            _ => {}
         }
     }
 

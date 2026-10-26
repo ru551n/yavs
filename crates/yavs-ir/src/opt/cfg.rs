@@ -796,6 +796,41 @@ fn for_uses(f: &crate::Func, i: &Inst, mut g: impl FnMut(Reg)) {
     }
 }
 
+/// A branch whose two arms lead to the same block (an arm that is only a jump to the other: the
+/// test of a null range, which a local array whose bounds come from a parameter makes before it
+/// is made, whichever way it goes) is a jump. The compare that fed it goes with `dead_defs`.
+fn equal_arms(f: &mut crate::Func) -> bool {
+    let target = |f: &crate::Func, mut b: BlockId| {
+        // (A few jump-only blocks in a row; a block that jumps to itself stays.)
+        for _ in 0..4 {
+            match f
+                .blocks
+                .get(b)
+                .map(|r| &f.code[r.start as usize..r.end as usize])
+            {
+                Some(&[Inst::Br { to }]) if to != b => b = to,
+                _ => break,
+            }
+        }
+        b
+    };
+    let mut any = false;
+    for k in 0..f.blocks.len() {
+        let r = f.blocks.values()[k];
+        let Some(last) = (r.end as usize).checked_sub(1).filter(|_| r.end > r.start) else {
+            continue;
+        };
+        if let Inst::CondBr { t, f: e, .. } = f.code[last] {
+            let (tt, te) = (target(f, t), target(f, e));
+            if tt == te {
+                f.code[last] = Inst::Br { to: tt };
+                any = true;
+            }
+        }
+    }
+    any
+}
+
 /// Run the passes over a finished subprogram (one that cannot suspend).
 /// Does some jump go to a block `thread` would copy, or some branch to a block that only
 /// tests its condition again? (Checked on the finished code before anything is copied.)
@@ -854,7 +889,7 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) -> bool {
     if f.code.len() < 6 {
         return false;
     }
-    let mut moved = false;
+    let mut moved = equal_arms(f);
     // Copying and rewriting pay in loops; most of a library runs a few times, and the
     // optimiser's time counts for every subprogram at its first call.
     let looped = has_back_edge(f);

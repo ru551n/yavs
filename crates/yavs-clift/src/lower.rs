@@ -1836,6 +1836,7 @@ fn gen_func(
                                     yavs_llvm::regs::Sp::Inst => Known::InstAny,
                                     yavs_llvm::regs::Sp::Temp => Known::Temp,
                                     yavs_llvm::regs::Sp::Heap => Known::Heap(None),
+                                    yavs_llvm::regs::Sp::Likely => Known::LikelyHeap,
                                 });
                             }
                         }

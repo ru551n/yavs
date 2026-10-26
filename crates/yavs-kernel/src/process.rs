@@ -722,7 +722,7 @@ impl Ctx<'_> {
 
     /// The bytes of the `std_ulogic` codes of the current value of logic signal `s`, one per
     /// element, as a pointer and the number of elements, for compiled code that reads them
-    /// itself. `None` for a signal that keeps no codes (bytes, over `CODES_MAX` elements, or a bus: `CODES_SOURCE_MAX`).
+    /// itself. `None` for a signal that keeps no codes (bytes, over `CODES_MAX` elements, or one `Builder::no_codes` named).
     /// The pointer stays valid for the whole simulation; the bytes change only in the update
     /// phase, while no process runs.
     #[inline]

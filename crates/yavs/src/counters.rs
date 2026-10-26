@@ -43,6 +43,7 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         ("wakes", s.wakes),
         ("idle_skips", s.idle_skips),
         ("lean_signals", s.lean_signals),
+        ("no_code_signals", s.no_code_signals),
         ("skip_signals", s.skip_signals),
         ("signals", s.signals),
         ("events", s.events),

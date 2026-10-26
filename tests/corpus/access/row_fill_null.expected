@@ -1,0 +1,4 @@
+exit	1
+diag	note	0	0	:row_fill_null:_p0	row 0
+diag	note	0	0	:row_fill_null:_p0	row 1
+diag	fatal	0	0	-	null access dereference

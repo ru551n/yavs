@@ -1240,6 +1240,10 @@ pub fn run(
     if !observed_free || std::env::var("YAVS_LEAN_EVENTS").is_ok_and(|v| v == "off") {
         e.lean.clear();
     }
+    // Hidden test aid: `YAVS_CODES=all` keeps the byte codes of every logic signal.
+    if std::env::var("YAVS_CODES").is_ok_and(|v| v == "all") {
+        e.no_codes.clear();
+    }
     let idle_mode = std::env::var("YAVS_IDLE_SKIP").unwrap_or_default();
     let cfg = yavs_kernel::Config {
         threads: a.threads.max(1),

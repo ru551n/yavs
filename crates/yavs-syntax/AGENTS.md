@@ -23,6 +23,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `src/source.rs` | `Src` (bytes plus Latin-1 flag) |
 | `src/token.rs` | `Tok`, `Kw` (keywords per standard), `Token` |
 | `src/lexer.rs` | `lex`: bytes to tokens, `-- psl` pragmas, `E0001`, `E0009`, `W0003` |
+| `src/protect.rs` | Language-neutral detector of `` `protect begin_protected `` envelopes (`begins_envelope`, `envelope_info`); the lexer reports `E0012` and stops, `parse_file` skips the later stages (#775) |
 | `src/directive.rs` | `preprocess`: `` `if/elsif/else/end ``, `` `warning/error ``, unknown directives `W0002`; standard identifiers (`VHDL_VERSION`, `TOOL_*`) |
 | `src/parser/mod.rs` | `Parser`, `PResult`/`Recover`, resync, `MAX_DEPTH = 64`, fuel counter |
 | `src/parser/unit.rs`, `decl.rs`, `stmt.rs`, `expr.rs` | Design units, declarations, statements, expressions and names |
@@ -42,6 +43,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | Global interner, leaked strings, per-thread mirror of the table; a text is hashed once and the hash is kept in the slot | Symbols valid on runtime threads; a hit or `as_str` takes no lock (#424); a miss hashed five times and growing re-read every text (#742) | `docs/decisions.md` "Parser", "Cold analysis, round 4" |
 | List parsers (statements, declarations, interface and association lists) push onto a scratch stack in `Parser` and move the elements into an exact-size `Vec`; rare large AST variants (`Actual::Range/Subtype`, `Constraint::Range`, interface type/subprogram/package) are boxed | No doubling of 200 to 400 byte elements, smaller nodes, less copying per parse step | #424 |
 | `parse_file` returns the tree only when there was no error; recovery inside a file lists independent errors; cascades at the same or a lexically bad token are dropped | Fail early, no guessed AST | `docs/decisions.md` "Parser"; error motto |
+| An encrypted envelope (`` `protect begin_protected ``) is `E0012`, the lexer stops there and no later stage runs; hard error, no recorded unit | Whole VHDL units are encrypted, there is no header to record; one clear error instead of thousands of base64 warnings; `docs/decisions.md` "Parser" | #775 |
 | Conditional analysis in 2008 files too; unknown directives warn `W0002`; `TOOL_VENDOR`/`TOOL_NAME` = `yavs` | Harmless, 2008 allows tool directives | `docs/decisions.md` "Parser" |
 | 2019 makes only `end component` optional; other bare `end;` is `E0002` with a help | LRM, matches the reference simulators | `docs/design/lrm-checks.md` P1 |
 | Where 2019 conditional expressions are allowed | Permissive per LRM policy | `docs/design/lrm-checks.md` P2, `docs/decisions.md` "Parser" |
@@ -91,7 +93,7 @@ cargo run -p yavs -- parse --std 2019 --dump-ast f.vhd   # inspect the tree
 - New syntax: a unit test in `src/tests.rs` plus, for an error, a `tests/diag/NAME.vhd` snapshot
   (first line `-- yavs: --std 2019` for 2019). Corpus list changes in `tests/parse-corpus/` must
   be explained in the commit.
-- Codes owned: `E0001`-`E0099`, `W0001`-`W0099` (`yavs_syntax::codes`: E0001 to E0011, W0001 to
+- Codes owned: `E0001`-`E0099`, `W0001`-`W0099` (`yavs_syntax::codes`: E0001 to E0012, W0001 to
   W0004), plus `E9999` for internal errors.
 
 ## 6. Coordination

@@ -2588,6 +2588,9 @@ go through `yavs-diag` (human, short and JSON formats; snapshots in `tests/diag/
 subset runs as implicit checker processes, also in `-- psl` comments with `--psl` (#226) with the built-in functions `prev`, `stable`, `rose`, `fell`, `isunknown`, `countones`, `onehot`, `onehot0` and with sequences (`;`, `:`, `|`, `&&`, `&`, `within`, `[*]`, `[+]`, `[=n]`, `[->n]`, `|->`, `|=>`) in `cover`, `assert never` and suffix implications, named sequences and properties with `boolean`, `const`, `sequence` and `property` formals, and weak temporal properties (`next_a`, `next_e`, `next_event*`, `until*`, `before*`, `sync_abort`, `abort`, `async_abort` (checked at the tick), `<->`; #445); `restrict`, `restrict_guarantee`, `assume_guarantee`, `fairness` and `nondet` directives are skipped silently (formal-only); other PSL is skipped
 with one `W0004` warning per design unit (#138).
 
+Encrypted sources (#775): a `` `protect begin_protected `` envelope is one `E0012` error instead of
+thousands of lexer warnings and an `E0002` (`yavs_syntax::protect`, tests in `src/tests.rs`, snapshot `tests/diag/encrypted.vhd`).
+
 Vendor libraries (#119, #61): `tools/corpus/unisim-2008.toml` reads `unisim`/`unimacro` in place from `$YAVS_VENDOR_UNISIM` (skipped when unset): all 1073 files analyze (952 of the 1073 before the Synopsys packages; the 121 failures were exactly the missing `std_logic_arith`, `std_logic_signed` and `std_logic_unsigned`), with the VITAL (#118) and Synopsys (#117) packages built in. The Synopsys packages `std_logic_arith`, `std_logic_unsigned`, `std_logic_signed` and `std_logic_misc` are the original files, unmodified, in `lib/ieee/{2008,2019}` (`lib/SOURCES.md`, `lib/LICENSE-SYNOPSYS`), visible without a flag; `tests/corpus/synopsys/` (20 testbenches, reference simulator or the original package text for 6, `--threads 1` and `4`) passes 20 of 20. The 6 hdl-modules files that need `unisim` analyze against it.
 
 Parse corpus: `tools/fetch-corpus.sh` fetches the corpora (default `~/.cache/rsim-corpus`), then
@@ -9252,6 +9255,15 @@ rerun of 7 runs (with `uvvm_sb_slv` 0.98 / 1.00 and the histogram 1.00 / 0.90); 
 designs (`tools/bench --compare`, 8 runs, core 9): CPU geometric mean 1.013, every design 0.99 to 1.03 (1.001 for an earlier build with the same
 policy for these designs: host spread).
 
+### `--tier=auto`: a compile pays for the callees it brings (yavs-llvm, #757, 2026-10-26)
+
+Decisions and numbers: `docs/decisions.md` "`--tier=auto`: a compile pays for the callees it brings". A candidate is compiled once what its whole tree
+(the native-frame callees `tree` brings) saves in a rest of the run like the part seen covers the tree's price, shared among four runs once the profile
+says the program ran before; native-frame compute loops are priced at one and a half times what they measure (12 ms + 510 us an IR instruction, was
+4 ms + 900). All 42 of `tools/realbench`: wall geometric mean 1.00 warm and cold, instructions 0.99 and 1.00; `poc_stat_histogram` cold 0.92,
+`uvvm_axistream_vvc` warm 0.92. Left: the native kinds' models (measured speedups of 3 or more since the hand-over fix), `ComputeFrame`'s speedup for
+processes like `check_axi_stream`, the profile key across runs (#774).
+
 ### The watching loop calls native-frame callees itself (yavs-interp, #757, 2026-10-26)
 
 Decisions and numbers: `docs/decisions.md` "The watching loop calls native-frame callees itself". An interpreted caller no longer hands its activation
@@ -9660,3 +9672,32 @@ a test of another commit).
 ## std/ieee analysed units shared across libraries (yavs, #564, 2026-10-26)
 
 The analysed units of the built-in `std`/`ieee` live in one store per user (`$YAVS_STD_CACHE`, else `yavs/std` in the user's cache directory) instead of every library's `yavs-cache/units/`; a fresh library reads them. `YAVS_STD_CACHE=off` keeps the old per-library placement; `E0126` for an unusable directory; a mapped (bootstrap) `ieee` is never shared; `crates/yavs/build.rs` hashes `lib/` into the build id. Cold batched analysis (shared store warm, bench builds, core 8): instructions 0.72 to 0.83 of before on `en_cl_fix_pkg`, `poc_strings`, `neorv32_single_min`, `sc5_timestamp`, `fletcher_bufferreader`, wall 0.75 to 0.92; first call into an empty store unchanged. Decision and numbers: `docs/decisions.md` "Shared std/ieee units". `--std-cache=DIR|off` on `analyze`/`elab`/`run`/`cache clean` (wins over the variable); `yavs cache clean` also clears the shared store; every harness in `tools/` uses a private store. Tests: `crates/yavs/tests/std_share.rs`.
+
+## Byte codes only for signals with element reads (yavs-sem, yavs-elab, yavs-kernel, #734, 2026-10-26)
+
+The elaborator decides which logic signals keep the per-element byte codes: those that have a read of one element (`Db::facts()` `elem_reads`, `yavs-elab` `keep_codes.rs`, `Builder::no_codes`); the source-width rule of #519 is gone. Signals without codes are read from the planes and still skip assignments of the value they hold. Instructions of whole runs (interpreter / llvm): `lfsr64` 0.97 / 0.95, `lfsr64_xor` 0.98 / 0.97, `rtl_ram` 0.99; `rtl_lfsr`, `rtl_ff`, `rtl_chain` read single elements of their registers and keep their codes (level, at most +0.45% from layout); `realbench --compare` instruction geometric mean 1.00, `fletcher_bufferwriter_512` +5% (its wide buses have element reads). Details and the open items: `docs/decisions.md` "Byte codes by element reads".
+
+The analysed units of the built-in `std`/`ieee` live in one store per user (`$YAVS_STD_CACHE`, else `yavs/std` in the user's cache directory) instead of every library's `yavs-cache/units/`; a fresh library reads them. `YAVS_STD_CACHE=off` keeps the old per-library placement; `E0126` for an unusable directory; a mapped (bootstrap) `ieee` is never shared; `crates/yavs/build.rs` hashes `lib/` into the build id. Cold batched analysis (shared store warm, bench builds, core 8): instructions 0.72 to 0.83 of before on `en_cl_fix_pkg`, `poc_strings`, `neorv32_single_min`, `sc5_timestamp`, `fletcher_bufferreader`, wall 0.75 to 0.92; first call into an empty store unchanged. Decision and numbers: `docs/decisions.md` "Shared std/ieee units". Tests: `crates/yavs/tests/std_share.rs`.
+
+## Table reads with a range test or a validity mask (yavs-ir `opt/inline.rs`, #769, 2026-10-26)
+
+A result-table read for an argument of an integer type (range test) or with values that report (validity mask) now takes the rest of its block into the table arm before the first optimiser pass
+(`docs/decisions.md` "Table reads with a range test or a validity mask"), so the fat pair of an array result is not made and read back: perf case `tab_tail` 22 072 to 15 764 ops, a digit loop 26.8 to 18.9
+ops (11.8 with a proven range). The late inliner no longer expands table functions (a miss is the test and the call). `grlib_leon3mp` is unchanged (its table is whole). Left: #771, #770, #768.
+
+## Invariant loads and dereferences leave fill loops (yavs-ir `opt/licm.rs`, #768, 2026-10-26)
+
+`Init_mem` of the SDRAM model (rows of bit vectors behind access values, filled one element at a time) is no longer 18 percent of the first 1 us of `grlib_leon3mp`: the loads, the dereference and the
+descriptor reads of such a loop move before it (`docs/decisions.md` "Loop-invariant loads and dereferences"), and the inner loop runs as one element-loop op. The reproducer of the issue: 5.08 M ops to
+0.26 M; the first 1 us: 31.37 G to 25.96 G instructions (-17.2 percent) with `--tier=interp`. Left: #771, #770.
+
+## `is_x` of a slice without a copy (yavs-interp, #770, 2026-10-26)
+
+`Is_X (v (a to b))` tests the plane words of `v` where they are (`Op::IsXSlice`, `docs/decisions.md` "`is_x` of a slice of a logic vector"): no temporary, no native call. `grlib_leon3mp`, first 1 us, `--tier=interp`: 25.97 G to 23.07 G
+instructions (-11.1 percent). The other natives on slices (`to_x01`, the numeric operators) still copy the slice first.
+
+## Branches with equal arms (yavs-ir `opt/cfg.rs`, #771, 2026-10-26)
+
+A `CondBr` whose arms lead to the same block is a `Br` (the null-range test of a local array). Part of the fixed cost of an `HRead` call (`docs/decisions.md` "A branch whose arms lead to the same block"):
+the call is still about 80 ops; the rest is listed there. First 1 us of `grlib_leon3mp` with #768 to #771: 31.37 G to 22.99 G instructions (-26.7 percent), `--tier=interp`.
+

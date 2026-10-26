@@ -9615,6 +9615,30 @@ what it replaced:
   writing an entry without the temporary file would save the rename but gives up that a reader never sees a short file (the checksum would catch it, so it is an option for a later round).
   `Manifest` lookups by path are linear in the files of the library (`index_of_str`); they do not show in a profile of 449 files.
 
+## Cold analysis: unit entries and records created in place (yavs-cache, yavs-lib, #747, 2026-10-26)
+
+- **Decision: an analysed-unit entry and a library record are created under their own name, with no temporary file and rename.** A cold analysis of a small library makes a hundred or more of each
+  (`fletcher_*`: 204 entries and 101 records for 101 files); the 306 renames were a twentieth of the cycles of the call and a fifth of its kernel cycles. The unit store (`Store::units_of_library`, `direct`)
+  opens the entry with `create_new`; a name that exists (a cut-short entry of a killed call, or another run's entry) takes the old path, a temporary file renamed over it, so a damaged entry heals at the next
+  `put`. Every other kind of entry (the stage images, the compiled code) keeps the rename: there are a few per call and they are big. A record (`write_record`) is created the same way; one of the same length is
+  kept (named by the digest of its text, so it is the same record), a shorter one is rewritten whole. The index keeps the rename.
+- **Why this is safe, and what changes.** The no-fsync ruling (user, 2026-10-23, #561) rested on "every file is renamed into place". For the index and the other cache kinds that still holds. A record is read
+  only after the index names it, and the index is renamed last, so no reader meets a record half written; a call killed while writing one leaves a short record that nothing names and the next call rewrites.
+  A unit entry can be met half written by a concurrent reader (or left short by a killed call): `get` checks the length and the xxh3 checksum of every entry, so it is a miss, as a damaged entry always was;
+  `payload_len`, which used the file size alone, now compares the size with the length in the header, so such a file is not counted as present (it is what `builtin_bodies_missing` asks). Windows keeps the temporary file
+  and rename for entries (the fast path is Unix-only).
+- **Measured** (`tools/realbench --compare`, bench builds with `--features llvm` of origin/main and of this change, analysis phase, batched calls, claimed core 8, 5 runs, host load 5 to 8; B/A): cold instructions
+  0.98, cold CPU 0.91, cold wall 0.98 (0.93 `poc_strings`, 0.95 `sc5_timestamp`, the rest within the 10 ms resolution of the cell), warm unchanged. On the `fletcher` selection (101 files), `perf stat` over 15 interleaved cold
+  calls: task clock 85.8 to 81.3 ms, kernel cycles 83.8 to 66.3 M, user instructions unchanged. Elaboration and run cells unchanged (instructions 1.00).
+- **Where a cold call of a small library spends its cycles** (frame-pointer profile, `fletcher` selection, before this change): analysis of the files 42 percent, parsing 18, encoding the unit entries 16, creating
+  entries and records 13, the rest startup and exit. The `std`/`ieee` packages a library uses (0.2 G instructions for `fletcher`, 204 M of it their bodies, stored for the first elaboration) are the
+  same work in every fresh library; a copy of the 22 std/ieee entries into the fresh library before the call, as a shared store would give, saves 13 to 27 percent of its instructions (`fletcher` 27, `neorv32_single_min` 24,
+  `en_cl_fix_pkg` 18, `poc_strings` 18, `sc5_timestamp` 13) and 7 to 21 percent of its wall. Sharing them was declined (#564, user, 2026-10-23: keep std/ieee analysed per library), so it is not done; these are the
+  numbers if it is asked again.
+- **Tried, not kept**: a push-based `postcard` flavor for the unit entries (instructions -0.5 percent, cycles flat); one thread-local access per serialized id instead of two (-0.15 percent).
+- **Not done**: writing the entries from a thread of their own (a call on a host with a free core overlaps its 13 percent of file creation, but every timed cell is pinned to one core, so it would not show there);
+  storing the std/ieee bodies at the first elaboration instead of at the end of `analyze` (moves 204 M instructions from the analysis to the elaboration of the same flow, no gain in the total).
+
 ## Temporaries of a process in its frame (yavs-ir `opt/slots.rs`, yavs-interp `pre.rs`, yavs-llvm `lower.rs`, #668, #746, #751, #752, 2026-10-25)
 
 - **Source**: two independent implementations of the issue (branches `compare/opus-668`, "A", and

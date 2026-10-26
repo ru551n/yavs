@@ -5211,6 +5211,15 @@ Against sim1 (batched calls for both, yavs / sim1 wall, before / after, runs on 
 (0.16 s against 0.55 s). All 42 against sim1 with the final build (host load 12): cold geometric mean 0.63 (instructions 0.60), warm 0.08; 38 tests below 1 cold, all below 1 warm; at par or above cold: `fletcher_bufferreader`, `fletcher_bufferwriter_512`, `fletcher_bufferwriter_prim32` (1.00) and `en_cl_fix_pkg` (1.10). Not verified: a quiet-host rerun of all 42 against sim1; the interpreter, run and elab phases
 (nothing in them changed); Windows and aarch64 (the code is portable, CI covers it).
 
+## Cold analysis: unit entries and records created in place (#747, 2026-10-26)
+
+Decisions, measurements and what was tried in `docs/decisions.md` "Cold analysis: unit entries and records created in place". Changed: the unit store (`yavs-cache`) and the library records (`yavs-lib`) create
+a file under its own name instead of a temporary file and a rename; `Store::payload_len` checks the header's length. Tests: `a_cut_short_unit_entry_is_replaced` (yavs-cache),
+`a_cut_short_record_is_rewritten_and_an_intact_one_is_kept` (yavs-lib). Cold analysis of the seven small-library tests of #747, B/A of the bench builds: instructions 0.98, CPU 0.91, wall 0.98; yavs / sim1 cold
+analysis wall 0.62 to 0.89 (`en_cl_fix_pkg` 0.82, `poc_strings` 0.62, `sc5_timestamp` 0.79, `neorv32_single_min` 0.73 to 0.80, the `fletcher_*` 0.89), instructions 0.52 to 0.89; the at-par readings in #747 came from a host at load 12. The cold total (analysis plus
+elaboration plus run, `--tiers auto-cold`) is below sim1 on `en_cl_fix_pkg`, `poc_strings`, `neorv32_single_min` and `fletcher_bufferwriter_prim32` and above it on `sc5_timestamp` (0.59 s against 0.53), `fletcher_bufferreader` (1.64 against 1.13)
+and `fletcher_bufferwriter_512` (4.1 against 1.9): there the run phase is the gap (#519, #523, #740), not the analysis. Not verified: Windows (the fast path is Unix-only), other file systems than ext4.
+
 ## Real-world performance suite: yavs against sim1, head-to-head 6, 2026-10-26 (`tools/realbench`)
 
 This is the current headline (`d3123c88`, bench build with the `llvm` feature, one binary for every cell; the previous run, head-to-head 5 at `9e75d84e`, is in brackets where it is comparable). **The basis of the

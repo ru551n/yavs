@@ -5341,6 +5341,35 @@ analysis wall 0.62 to 0.89 (`en_cl_fix_pkg` 0.82, `poc_strings` 0.62, `sc5_times
 elaboration plus run, `--tiers auto-cold`) is below sim1 on `en_cl_fix_pkg`, `poc_strings`, `neorv32_single_min` and `fletcher_bufferwriter_prim32` and above it on `sc5_timestamp` (0.59 s against 0.53), `fletcher_bufferreader` (1.64 against 1.13)
 and `fletcher_bufferwriter_512` (4.1 against 1.9): there the run phase is the gap (#519, #523, #740), not the analysis. Not verified: Windows (the fast path is Unix-only), other file systems than ext4.
 
+## Cold minus warm, by phase (#740, 2026-10-27)
+
+Where the cold column of head-to-head 7 loses against the warm one, split per test from its raw cells (cold minus warm of
+the analysis cells, of `interp0` = start-up to time 0 without compiling, and the rest of the `auto` run cell = compile CPU
+on the pinned core plus the time interpreted before compiled code arrives), weighted by the change of the log ratio, so
+by its weight in the geometric mean: **analysis of the libraries 75 percent, start-up (closure, elaboration, lowering)
+19 percent, compiling and its late arrival 6 percent**. The short testbenches (about 30 of 41) lose almost all of their
+cold factor in analysis; the tests above sim1 cold (`sc5_fifo_repack`, `poc_stat_histogram`, `vai_window_gen_interlock`,
+`rtl_lfsr`, `lfsr64`) lose it in the run cell: the `--tier=auto` policy compiles their processes 0.2 to 8 s into the run
+(the compile CPU itself is 7 to 17 percent of their cold CPU). Halving every price of the policy (`YAVS_AUTO_MODEL`,
+compile cost unchanged) moved `poc_stat_histogram` 0.87 to 0.77 s, `sc5_fifo_repack` and the window generator not at all,
+so a cheaper code generator alone does not close those; the policy is #679 (#800 filed: a second compile of a function
+is priced 10 to 20 times below its cost).
+
+Found and fixed: the analysed-unit entries were keyed by the session's `--relaxed`, so a relaxed run of a design whose
+libraries were analysed without it (the open-logic, satcat5, window-generator and GRLIB tests) read no library unit and
+analysed the closure from source in its first two runs. `--relaxed` is now a question a unit asks only where the
+setting changes its analysis (`docs/decisions.md` "`--relaxed` is a question"): window generator cold run 68 unit
+misses to 10 (the rest are bodies with assignments to unconstrained targets, which do depend on it). `tools/realbench
+--compare` (15033264's change against its parent, bench builds, 42 tests, core 9, load 10 to 25): analysis cold 0.97,
+elab cold 0.98 (instructions 0.96; `vai_weight_buffer` 0.65, `vai_pe_array` 0.72, `sc5_timestamp` instructions 0.70),
+`auto-cold` 0.99, `auto` 1.00, no slowdown; full total (analysis + run) 0.975 cold, `vai_pe_array` 1.11 to 0.95 s,
+`vai_weight_buffer` 0.74 to 0.64 s. Against sim1 of head-to-head 7 (other session) the cold geometric mean moves
+0.578 to 0.564.
+
+Also found: entries of files analysed by relative path are never read by `elab`/`run` (#799); in `tools/realbench`
+the libraries' std/ieee entries live in the corpus tool's store, so a run of `--phases run` alone without the analysis
+cells misses std/ieee units the analysis cells would have stored (the full suite is not affected).
+
 ## Real-world performance suite: yavs against sim1, head-to-head 7, 2026-10-27 (`tools/realbench`)
 
 Current headline: `5b2beb73`, bench build with the `llvm` feature, method exactly as head-to-head 6 (batched analysis calls for both tools, `--tier=auto`, total wall incl. analysis, 5 timed

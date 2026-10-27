@@ -134,7 +134,8 @@ impl Process for CopyProcess {
 }
 
 /// The operator of a [`GateProcess`]: the IEEE 1164 logical operators (BIT and BOOLEAN use the
-/// codes of '0' and '1', so the same tables hold for them).
+/// codes of '0' and '1', so the same tables hold for them) and the predefined `=` and `/=`
+/// (a BOOLEAN result; equal codes are equal values).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Gate {
     Not,
@@ -144,6 +145,8 @@ pub enum Gate {
     Nand,
     Nor,
     Xnor,
+    Eq,
+    Ne,
 }
 
 impl Gate {
@@ -151,7 +154,7 @@ impl Gate {
     fn parts(self) -> (Option<yavs_logic::BinOp>, bool) {
         use yavs_logic::BinOp::*;
         match self {
-            Gate::Not => (None, true),
+            Gate::Not | Gate::Eq | Gate::Ne => (None, true),
             Gate::And => (Some(And), false),
             Gate::Or => (Some(Or), false),
             Gate::Xor => (Some(Xor), false),
@@ -161,9 +164,23 @@ impl Gate {
         }
     }
 
+    /// A relational operator (one BOOLEAN result for operands of any length).
+    fn rel(self) -> bool {
+        matches!(self, Gate::Eq | Gate::Ne)
+    }
+
+    /// The BOOLEAN code of the relation for operands that are `equal`.
+    #[inline]
+    fn rel_code(self, equal: bool) -> u8 {
+        2 + (equal == (self == Gate::Eq)) as u8
+    }
+
     #[inline]
     fn code(self, a: u8, b: u8) -> u8 {
         use yavs_logic::tables::{AND, NOT, OR, XOR};
+        if self.rel() {
+            return self.rel_code(a == b);
+        }
         let (a, b) = (a as usize & 15, b as usize & 15);
         let v = match self.parts().0 {
             None => a as u8,
@@ -183,91 +200,300 @@ impl Gate {
     }
 }
 
-/// A process whose whole body is `target <= a op b;` (or `not a`) on logic signal parts of one
-/// length (`std_ulogic`, BIT, BOOLEAN and vectors of them): the kernel reads the operands,
-/// applies the table and assigns, with no process code (the elaborator recognises the shape,
-/// #779). The operands are read whole, so a part of one element is a scalar gate.
+/// A logic value known at elaboration (a literal, a constant): the code of its first element
+/// and its plane blocks as `Ctx::read_into` gives them.
+pub struct Lit {
+    code: u8,
+    blocks: Vec<u8>,
+}
+
+impl Lit {
+    pub fn new(v: &LogicVec) -> Lit {
+        let blocks = v.repr().blocks();
+        Lit {
+            code: v.get(0) as u8,
+            blocks: blocks
+                .iter()
+                .flat_map(|b| b.iter().flat_map(|w| w.to_le_bytes()))
+                .collect(),
+        }
+    }
+}
+
+/// What a [`GateProcess`] or [`MuxProcess`] reads: a signal part (the process waits for it) or
+/// a value known at elaboration.
+pub enum Src {
+    Sig(SigRef),
+    Lit(Lit),
+}
+
+impl Src {
+    /// The code of the one element.
+    #[inline(always)]
+    fn code(&self, ctx: &Ctx<'_>) -> Result<u8, SimError> {
+        match self {
+            Src::Sig(r) => ctx.elem_code(r.signal, r.range.map_or(0, |r| r.offset)),
+            Src::Lit(l) => Ok(l.code),
+        }
+    }
+
+    /// The plane blocks: `buf` when a signal is read, else the value's own.
+    #[inline(always)]
+    fn blocks<'a>(&'a self, ctx: &Ctx<'_>, buf: &'a mut [u8]) -> Result<&'a [u8], SimError> {
+        match self {
+            Src::Sig(r) => ctx.read_into(*r, buf).map(|()| &*buf),
+            Src::Lit(l) => Ok(&l.blocks),
+        }
+    }
+
+    fn wait(&self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+        match self {
+            Src::Sig(r) => ctx.wait_on(*r),
+            Src::Lit(_) => Ok(()),
+        }
+    }
+}
+
+/// `assign` of a logic value given as plane blocks: the zero-delay case of up to 64 elements
+/// takes the planes fast path, anything else builds a value. Not `assign_blocks`: a third
+/// caller in this crate stops its inlining into `CopyProcess::run` (+1% instructions on a CPU
+/// design).
+#[inline]
+fn assign_logic(
+    ctx: &mut Ctx<'_>,
+    d: DriverId,
+    dst: Range,
+    delay: Time,
+    blocks: &[u8],
+    mode: DelayMode,
+) -> Result<(), SimError> {
+    let chunks = blocks.as_chunks::<32>().0;
+    if dst.len <= 64
+        && delay == Time::ZERO
+        && let Some(b) = chunks.first()
+        && ctx.assign_planes_now(d, Some(dst), words(b))
+    {
+        return Ok(());
+    }
+    let v = LogicVec::from_repr(yavs_logic::Planes::from_blocks(
+        dst.len as usize,
+        chunks.iter().map(words).collect(),
+    ));
+    ctx.assign(d, Some(dst), &[(delay, &v)], mode)
+}
+
+/// A process whose whole body is `target <= a op b;` (or `not a`) on logic signal parts or
+/// values known at elaboration, of one length (`std_ulogic`, BIT, BOOLEAN and vectors of them):
+/// the kernel reads the operands, applies the table and assigns, with no process code (the
+/// elaborator recognises the shape, #779). The operands are read whole, so a part of one
+/// element is a scalar gate. `=` and `/=` give one BOOLEAN element for operands of any length
+/// (#786).
 pub struct GateProcess {
     gate: Gate,
-    a: SigRef,
+    a: Src,
     /// The second operand; `a` again for `not`.
-    b: SigRef,
+    b: Src,
+    /// The length of the operands.
+    len: u32,
     driver: DriverId,
     dst: Range,
     delay: Time,
     mode: DelayMode,
     buf: Vec<u8>,
     buf2: Vec<u8>,
+    out: Vec<u8>,
 }
 
 impl GateProcess {
-    /// `a`, `b` and `dst` have the same length (`b` is `a` for `not`).
+    /// `a` and `b` have `len` elements (`b` is `a` for `not`), `dst` as many (one for `=`).
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         gate: Gate,
-        a: SigRef,
-        b: SigRef,
+        a: Src,
+        b: Src,
+        len: u32,
         driver: DriverId,
         dst: Range,
         delay: Time,
         mode: DelayMode,
     ) -> GateProcess {
-        let n = (dst.len as usize).div_ceil(64) * 32;
+        let n = if len > 1 {
+            (len as usize).div_ceil(64) * 32
+        } else {
+            0
+        };
         GateProcess {
             gate,
             a,
             b,
+            len,
             driver,
             dst,
             delay,
             mode,
             buf: vec![0; n],
             buf2: vec![0; n],
+            out: vec![0; if gate.rel() { 0 } else { n }],
         }
     }
 }
 
 impl Process for GateProcess {
     fn run(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
-        let (a, b) = (self.a, self.b);
-        if self.dst.len == 1 {
-            let (ea, eb) = (
-                a.range.map_or(0, |r| r.offset),
-                b.range.map_or(0, |r| r.offset),
-            );
-            let c = self
-                .gate
-                .code(ctx.elem_code(a.signal, ea)?, ctx.elem_code(b.signal, eb)?);
+        if self.len == 1 {
+            let c = self.gate.code(self.a.code(ctx)?, self.b.code(ctx)?);
             ctx.assign_code(self.driver, Some(self.dst), self.delay, c, self.mode)?;
         } else {
-            ctx.read_into(a, &mut self.buf)?;
-            ctx.read_into(b, &mut self.buf2)?;
-            let (x, _) = self.buf.as_chunks::<32>();
-            let (y, _) = self.buf2.as_chunks::<32>();
-            let mut v = x
-                .iter()
-                .zip(y)
-                .map(|(x, y)| self.gate.block(words(x), words(y)));
-            // Not `assign_blocks`: a second caller in this crate stops its inlining into
-            // `CopyProcess::run` (+1% instructions on a CPU design).
-            let fast = self.dst.len <= 64
-                && self.delay == Time::ZERO
-                && ctx.assign_planes_now(self.driver, Some(self.dst), v.next().unwrap_or_default());
-            if !fast {
-                let v = x
-                    .iter()
-                    .zip(y)
-                    .map(|(x, y)| self.gate.block(words(x), words(y)));
-                let v = LogicVec::from_repr(yavs_logic::Planes::from_blocks(
-                    self.dst.len as usize,
-                    v.collect(),
-                ));
-                ctx.assign(self.driver, Some(self.dst), &[(self.delay, &v)], self.mode)?;
+            let x = self.a.blocks(ctx, &mut self.buf)?;
+            let y = self.b.blocks(ctx, &mut self.buf2)?;
+            if self.gate.rel() {
+                let c = self.gate.rel_code(x == y);
+                ctx.assign_code(self.driver, Some(self.dst), self.delay, c, self.mode)?;
+            } else {
+                let (x, y) = (x.as_chunks::<32>().0, y.as_chunks::<32>().0);
+                for ((o, x), y) in self.out.as_chunks_mut::<32>().0.iter_mut().zip(x).zip(y) {
+                    let v = self.gate.block(words(x), words(y));
+                    for (d, w) in o.as_chunks_mut::<8>().0.iter_mut().zip(v) {
+                        *d = w.to_le_bytes();
+                    }
+                }
+                assign_logic(ctx, self.driver, self.dst, self.delay, &self.out, self.mode)?;
             }
         }
         if !ctx.wait_same() {
-            ctx.wait_on(a)?;
-            if b != a {
-                ctx.wait_on(b)?;
+            self.a.wait(ctx)?;
+            if self.b_is_other() {
+                self.b.wait(ctx)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl GateProcess {
+    /// `b` is a second operand (not the `a` that `not` repeats).
+    fn b_is_other(&self) -> bool {
+        match (&self.a, &self.b) {
+            (Src::Sig(a), Src::Sig(b)) => a != b,
+            _ => true,
+        }
+    }
+}
+
+/// One target part of a [`MuxProcess`]: what its two arms read and the driver and range it
+/// assigns.
+pub struct MuxPart {
+    pub elem: crate::value::Elem,
+    /// The arms: `[else, then]`.
+    pub arms: [Src; 2],
+    pub driver: DriverId,
+    pub dst: Range,
+}
+
+/// The condition of a [`MuxProcess`].
+pub enum Cond {
+    /// One logic element is one of a set of codes: bit `c` of `mask` is set when code `c` makes
+    /// the condition true (`x = '1'`, `x /= '0'`, `?? x`, a BOOLEAN name).
+    Mask { sig: SigRef, mask: u16 },
+    /// The predefined `a = b` (`/=` when `ne`) of two logic operands of `len` elements.
+    Eq { a: Src, b: Src, len: u32, ne: bool },
+}
+
+/// A process whose whole body is `target <= a when c else b;` with a [`Cond`]: the kernel
+/// evaluates it, copies the selected arm (signal parts of the structure of the target, or a
+/// logic value known at elaboration) to the drivers and waits for the condition and both arms,
+/// with no process code (#786). The copy is that of [`CopyProcess`].
+pub struct MuxProcess {
+    cond: Cond,
+    parts: Vec<MuxPart>,
+    /// The `after` delay of each arm: `[else, then]`.
+    delay: [Time; 2],
+    mode: DelayMode,
+    buf: Vec<u8>,
+    /// What `Cond::Eq` reads, when it has more than one element.
+    cbuf: [Vec<u8>; 2],
+}
+
+impl MuxProcess {
+    pub fn new(cond: Cond, parts: Vec<MuxPart>, delay: [Time; 2], mode: DelayMode) -> MuxProcess {
+        let n = (parts.iter())
+            .map(|p| match p.elem {
+                crate::value::Elem::Logic => (p.dst.len as usize).div_ceil(64) * 32,
+                crate::value::Elem::Bytes(w) => p.dst.len as usize * w as usize,
+            })
+            .max()
+            .unwrap_or(0);
+        let cn = match &cond {
+            Cond::Eq { len, .. } if *len > 1 => (*len as usize).div_ceil(64) * 32,
+            _ => 0,
+        };
+        MuxProcess {
+            cond,
+            parts,
+            delay,
+            mode,
+            buf: vec![0; n],
+            cbuf: [vec![0; cn], vec![0; cn]],
+        }
+    }
+}
+
+impl Process for MuxProcess {
+    fn run(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+        let sel = match &self.cond {
+            Cond::Mask { sig, mask } => {
+                let c = ctx.elem_code(sig.signal, sig.range.map_or(0, |r| r.offset))?;
+                (*mask >> (c & 15)) as usize & 1
+            }
+            Cond::Eq { a, b, len, ne } => {
+                let equal = if *len == 1 {
+                    a.code(ctx)? == b.code(ctx)?
+                } else {
+                    let [x, y] = &mut self.cbuf;
+                    a.blocks(ctx, x)? == b.blocks(ctx, y)?
+                };
+                (equal != *ne) as usize
+            }
+        };
+        let delay = self.delay[sel];
+        for p in &self.parts {
+            let src = &p.arms[sel];
+            match p.elem {
+                crate::value::Elem::Logic if p.dst.len == 1 => {
+                    let c = src.code(ctx)?;
+                    ctx.assign_code(p.driver, Some(p.dst), delay, c, self.mode)?;
+                }
+                crate::value::Elem::Logic => {
+                    let n = (p.dst.len as usize).div_ceil(64) * 32;
+                    let b = src.blocks(ctx, &mut self.buf[..n])?;
+                    assign_logic(ctx, p.driver, p.dst, delay, b, self.mode)?;
+                }
+                crate::value::Elem::Bytes(w) => {
+                    let Src::Sig(r) = src else {
+                        return Err(ctx.error(ErrorKind::BadRef(
+                            "a literal arm for a byte signal (this is a bug in yavs: the \
+                             elaborator builds literal arms of logic signals only)"
+                                .into(),
+                        )));
+                    };
+                    let b = &mut self.buf[..p.dst.len as usize * w as usize];
+                    ctx.read_into(*r, b)?;
+                    ctx.assign_bytes(p.driver, Some(p.dst), delay, b, self.mode)?;
+                }
+            }
+        }
+        if !ctx.wait_same() {
+            match &self.cond {
+                Cond::Mask { sig, .. } => ctx.wait_on(*sig)?,
+                Cond::Eq { a, b, .. } => {
+                    a.wait(ctx)?;
+                    b.wait(ctx)?;
+                }
+            }
+            for p in &self.parts {
+                for a in &p.arms {
+                    a.wait(ctx)?;
+                }
             }
         }
         Ok(())

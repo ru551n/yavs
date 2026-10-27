@@ -20,7 +20,14 @@
 (`docs/decisions.md` "Kernel gates".) A concurrent assignment of one logical operator (`not and or xor nand nor xnor`) on static signal
 names of `std_ulogic`, BIT, BOOLEAN or their vectors runs as the kernel's own `GateProcess`, with zero delay or a static `after`.
 `rtl_chain` (1000 inverters): 3.29 G to 2.08 G instructions under `--tier=auto`, CPU 1.36 to 0.79 times sim1. Corpus
-`sigassign/logic_gates` passes against sim1 at 1 and 4 threads on every tier. Open: one-level muxes, relational operators, literal operands.
+`sigassign/logic_gates` passes against sim1 at 1 and 4 threads on every tier. Muxes, relational operators and literal operands: see "Kernel muxes" below.
+
+### Kernel muxes (#786, 2026-10-27)
+
+(`docs/decisions.md` "Kernel muxes".) A concurrent `y <= a when c else b;` with one condition (a code set of one logic element, or `=`/`/=` of logic
+signals and values), each arm a signal copy as `CopyProcess` takes one (also records and byte parts) or a literal; `y <= a = b;` and `y <= a and '1';`
+run as the kernel's own `MuxProcess` and `GateProcess`. Corpus `sigassign/mux_gates` passes against sim1 at 1 and 4 threads on every tier. Open
+(#788): expression trees, compound and multi-arm conditions, constant conditions.
 
 ### Conformance report (#780, 2026-10-26)
 

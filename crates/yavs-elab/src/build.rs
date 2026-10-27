@@ -241,30 +241,74 @@ impl Elaborated {
                 Some(yavs_kernel::ToggleProcess::new(sig, elem, d, time, mode))
             });
             // And a one-operator gate `y <= a and b;` (a toggle `x <= not x after T` is both).
-            let gate = p.gate.filter(|_| native && toggle.is_none()).and_then(|g| {
-                let time = yavs_kernel::Time::from_vhdl(g.delay).ok()?;
-                let (k, dl, dr) = *p.lsps.first()?.first()?;
-                let d = *ds.get(p.drivers.iter().position(|&x| x == k)?)?;
-                let mode = if g.transport {
+            let src = |x: &crate::ProcSrc| match x {
+                crate::ProcSrc::Sig(l, r) => yavs_kernel::Src::Sig(nets.kref(*l, *r)),
+                crate::ProcSrc::Lit(v) => yavs_kernel::Src::Lit(yavs_kernel::Lit::new(v)),
+            };
+            let mode = |transport| {
+                if transport {
                     yavs_kernel::DelayMode::Transport
                 } else {
                     yavs_kernel::DelayMode::INERTIAL
+                }
+            };
+            let gate = p
+                .gate
+                .as_ref()
+                .filter(|_| native && toggle.is_none())
+                .and_then(|g| {
+                    let time = yavs_kernel::Time::from_vhdl(g.delay).ok()?;
+                    let (k, dl, dr) = *p.lsps.first()?.first()?;
+                    let d = *ds.get(p.drivers.iter().position(|&x| x == k)?)?;
+                    Some(yavs_kernel::GateProcess::new(
+                        g.gate,
+                        src(&g.a),
+                        src(&g.b),
+                        g.len,
+                        d,
+                        nets.kpart(dl, dr).1,
+                        time,
+                        mode(g.transport),
+                    ))
+                });
+            // And a conditional `y <= a when c else b;`.
+            let mux = p.mux.as_ref().filter(|_| native).and_then(|m| {
+                let delay = |t| yavs_kernel::Time::from_vhdl(t).ok();
+                let parts = (p.lsps.first()?.iter().enumerate())
+                    .map(|(i, &(k, dl, dr))| {
+                        Some(yavs_kernel::MuxPart {
+                            elem: nets.leaf(dl).ty.elem,
+                            arms: [src(m.srcs[0].get(i)?), src(m.srcs[1].get(i)?)],
+                            driver: *ds.get(p.drivers.iter().position(|&x| x == k)?)?,
+                            dst: nets.kpart(dl, dr).1,
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                let cond = match &m.cond {
+                    crate::ProcCond::Mask((l, r), mask) => yavs_kernel::Cond::Mask {
+                        sig: nets.kref(*l, *r),
+                        mask: *mask,
+                    },
+                    crate::ProcCond::Eq { a, b, len, ne } => yavs_kernel::Cond::Eq {
+                        a: src(a),
+                        b: src(b),
+                        len: *len,
+                        ne: *ne,
+                    },
                 };
-                Some(yavs_kernel::GateProcess::new(
-                    g.gate,
-                    nets.kref(g.a.0, g.a.1),
-                    nets.kref(g.b.0, g.b.1),
-                    d,
-                    nets.kpart(dl, dr).1,
-                    time,
-                    mode,
+                Some(yavs_kernel::MuxProcess::new(
+                    cond,
+                    parts,
+                    [delay(m.delay[0])?, delay(m.delay[1])?],
+                    mode(m.transport),
                 ))
             });
-            let proc: Box<dyn Process> = match (copy, toggle, gate) {
-                (Some(parts), _, _) => Box::new(yavs_kernel::CopyProcess::new(parts)),
-                (None, Some(t), _) => Box::new(t),
-                (None, None, Some(g)) => Box::new(g),
-                (None, None, None) => make(p, &ds)?,
+            let proc: Box<dyn Process> = match (copy, toggle, gate, mux) {
+                (Some(parts), ..) => Box::new(yavs_kernel::CopyProcess::new(parts)),
+                (None, Some(t), ..) => Box::new(t),
+                (None, None, Some(g), _) => Box::new(g),
+                (None, None, None, Some(m)) => Box::new(m),
+                (None, None, None, None) => make(p, &ds)?,
             };
             let proc_waits = proc.several_waits();
             let name = self.hier.path_name(p.scope, Case::Lrm);

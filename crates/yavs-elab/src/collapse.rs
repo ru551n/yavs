@@ -253,9 +253,26 @@ pub(crate) fn ports(
         if let Some(c) = &mut p.copy {
             c.iter_mut().for_each(mr);
         }
+        let remap = |x: &mut crate::ProcSrc| {
+            if let crate::ProcSrc::Sig(l, r) = x {
+                let mut q = (*l, *r);
+                mr(&mut q);
+                (*l, *r) = q;
+            }
+        };
         if let Some(g) = &mut p.gate {
-            mr(&mut g.a);
-            mr(&mut g.b);
+            remap(&mut g.a);
+            remap(&mut g.b);
+        }
+        if let Some(x) = &mut p.mux {
+            match &mut x.cond {
+                crate::ProcCond::Mask(c, _) => mr(c),
+                crate::ProcCond::Eq { a, b, .. } => {
+                    remap(a);
+                    remap(b);
+                }
+            }
+            x.srcs.iter_mut().flatten().for_each(remap);
         }
         if let Some(v) = &mut p.guard {
             v.iter_mut().for_each(mr);

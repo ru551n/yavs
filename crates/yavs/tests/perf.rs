@@ -375,6 +375,14 @@ case!(
     [("process_runs", Max(335)), ("ops", Max(6610))]
 );
 case!(
+    mux_bus,
+    "s=",
+    &[],
+    // The muxes, the relation and the gates run in the kernel (#786): 5094 ops when they are
+    // interpreted (the rest is the stimulus process).
+    [("process_runs", Max(257)), ("ops", Max(3340))]
+);
+case!(
     fan,
     "hits=",
     &[],

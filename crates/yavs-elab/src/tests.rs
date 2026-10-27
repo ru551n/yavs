@@ -2432,7 +2432,7 @@ fn clock_generators_run_in_the_kernel() {
 /// BOOLEAN and their vectors, wider than a plane word, a resolved target with two such drivers,
 /// through an `in` port, inertial and transport `after`) is a gate the kernel runs itself
 /// (`ProcInst::gate`, #779); a reduction, a mixed scalar and vector operand, another package's
-/// operator, a literal operand, a constrained target, a rejection limit, two waveform elements, a
+/// operator, a constrained target, a rejection limit, two waveform elements, a
 /// condition, a guard or `postponed` are not. Reports, with time and delta, are those of the
 /// interpreted statements over all 81 pairs of values.
 #[test]
@@ -2516,7 +2516,10 @@ fn logic_gates_run_in_the_kernel() {
     // inner's `o <= not i`, then the statements of t in order (the block's `_guard` before
     // its statement), then its two processes.
     let mut want = vec![true; 13];
-    want.extend([false; 13]);
+    want.extend([false; 3]);
+    // `y5 <= a and '1'` has a literal operand (#786).
+    want.push(true);
+    want.extend([false; 9]);
     assert_eq!(gates, want);
     e.lower(&mut db).expect("lower");
     struct Seen(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
@@ -2545,6 +2548,60 @@ fn logic_gates_run_in_the_kernel() {
         },
     );
     assert!(kernel.len() > 140, "{}", kernel.len());
+    assert_eq!(kernel, interp);
+}
+
+/// Conditional assignments with one condition on a logic element, relational operators and gates
+/// with a literal operand (#786) run in the kernel (`ProcInst::mux`, `ProcInst::gate`); the
+/// shapes next to them (three arms, a compound condition or numeric_std's `=`, `unaffected`, a guard,
+/// `postponed`, a rejection limit, numeric_std's `=`, constants only) stay processes. Reports,
+/// with time and delta, are those of the interpreted statements over all value triples
+/// (the corpus case `sigassign/mux_gates`).
+#[test]
+fn muxes_and_relations_run_in_the_kernel() {
+    let src = include_str!("../../../tests/corpus/sigassign/mux_gates.vhd");
+    let (mut db, mut e) = elab("muxes", src, "tb_mux_gates", &[]);
+    let kernel_shapes: Vec<bool> = e
+        .procs
+        .iter()
+        .map(|p| p.gate.is_some() || p.mux.is_some())
+        .collect();
+    // The inner entity's mux, the 30 muxes of t (m8 has two drivers), the 12 relations, then
+    // numeric_std's `=` and `?=` (processes), the 9 gates; then the near shapes (the block's
+    // `_guard` before its statement) and the two processes of the testbench.
+    let mut want = vec![true; 1 + 30 + 12];
+    want.extend([false; 2]);
+    want.extend([true; 9]);
+    want.extend([false; 12]);
+    assert_eq!(kernel_shapes.len(), want.len(), "{kernel_shapes:?}");
+    assert_eq!(kernel_shapes, want, "{kernel_shapes:?}");
+    e.lower(&mut db).expect("lower");
+    struct Seen(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+    impl yavs_kernel::Observer for Seen {
+        fn report(&mut self, hook: &mut yavs_kernel::Hook<'_>, r: &yavs_kernel::Report) {
+            let (t, d) = (hook.now().as_fs(), hook.delta());
+            self.0
+                .lock()
+                .expect("lock")
+                .push(format!("{t} {d} {}", r.message));
+        }
+    }
+    let run = |e: &Elaborated, cfg: yavs_kernel::Config| {
+        let mut sim = e.build(cfg).expect("build");
+        let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        sim.subscribe(Box::new(Seen(got.clone())));
+        sim.run_until(yavs_kernel::Time::MAX).expect("run");
+        got.lock().expect("lock").clone()
+    };
+    let kernel = run(&e, yavs_kernel::Config::default());
+    let interp = run(
+        &e,
+        yavs_kernel::Config {
+            edge_triggers: false,
+            ..Default::default()
+        },
+    );
+    assert!(kernel.len() > 2000, "{}", kernel.len());
     assert_eq!(kernel, interp);
 }
 

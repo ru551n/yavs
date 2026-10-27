@@ -333,7 +333,8 @@ pub trait Process: Send {
   evaluates `T` and builds the kernel's own `ToggleProcess` (#440).
 - A one-operator logic gate (`y <= a and b;`, `y <= not a;` on logic signal parts of one length)
   needs none either: the kernel's own `GateProcess` reads the operands and applies the IEEE 1164
-  tables (#779).
+  tables (#779). So do literal operands, `=`/`/=` as a BOOLEAN gate, and a conditional assignment
+  with one condition (`y <= a when s = '1' else b;`): `MuxProcess` (#786).
 - Elaboration: leaves as `Builder::signal`/`resolved_signal` with `SignalType::logic` for
   `std_ulogic` arrays and `SignalType::bytes` otherwise; uncollapsed ports as `Builder::port`
   with `Converter` closures that call the IR conversion function; `'stable/'quiet/'delayed/

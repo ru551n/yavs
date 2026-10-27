@@ -10840,3 +10840,24 @@ counters, not kept) gave the shares below.
     34.1 s; interp 413.9 G to 390.0 G (-5.8%), cycles -4.8%, cpu -3.8%. `neorv32_single_min` interp +0.04% instructions, cycles -0.8%;
     `fletcher_bufferreader` interp +0.3% instructions, cycles +0.1% (code layout: the path is not taken there, one general assignment
     in the whole run).
+- **Fixed on the way (#789):** `Signal::force_events` dropped the part of a recorded force range outside the range being updated, so a
+  force lost its events beyond the first updated range when a direct entry of another plane word was finished in the same cycle.
+- **Measured and not taken:**
+  - Held words of a wide assignment make no entry (`assign_wide_fast` asking `direct_same_planes` per plane word, gated per driver by
+    `ProcState::same`, entries marked only when a word was pushed). A probe build counted 19.6% of the 39.4 M wide words of
+    `fletcher_bufferwriter_512` and 96% of the 8.4 M of `grlib_leon3mp` as held, yet `fletcher_bufferwriter_512` lost 4.4% instructions
+    and 3.6% cycles (interp; auto 7.3% and 5.4%) and `grlib_leon3mp` was level (-0.2% instructions, +0.2% cycles): the saved entry, commit
+    and finish of a word cost about what the two plane compares cost, as kernel round 20 found for the commit-time skip.
+  - Taking a process's wide `outv` list into the batch's list by a swap instead of a copy when the batch list is empty: level
+    (`fletcher_bufferwriter_512` +0.01% instructions, cycles +1%); the copy is not where its `memmove` time goes.
+- **Where the rest is** (instructions, `perf record -e instructions:u`, interp): `poc_arith_addw` spends 5% in `finish_direct`, 5% in
+  `run_batch`, 4% in `cycle`, 3.8% in `CopyProcess::run` and 2.4% in `commit_out` over 13 processes a delta cycle, with no line above
+  0.5% of the run (the per-element event stamps of narrow signals, #734, are 0.3%); `sc5_timestamp` about 1100 kernel instructions a
+  delta cycle over about 200 lines. Profiles were taken of `grlib_leon3mp`, `fletcher_bufferwriter_512`, `fletcher_bufferreader`,
+  `neorv32_single_min`, `poc_arith_addw` and `sc5_timestamp`; a counters sweep of the 42 realbench tests found no other design that
+  leaves the fast assignment paths in bulk (`general_assigns` at most 0.2 M outside `grlib_leon3mp`, now 1.3 M there).
+- **The reference simulator (rule 22):** for a zero-delay drive of a driver that is its net's only source it only writes the new
+  value into the driver's one pending slot when the driver is already queued in this delta (a repeat in the activation costs a store),
+  and skips the queueing when the value equals the driver's (only the delta is kept). Ours now takes a repeat that changes nothing on
+  the fast path for drivers that are not direct too; a repeat that changes still takes the general path, which keeps the order of
+  transactions (an overwrite in place, the reference's way, is the other option of #667 and is not done here). Nothing was copied.

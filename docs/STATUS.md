@@ -3677,6 +3677,22 @@ warm and 1.017 cold, and a run of the cache before the second merge measured 1.0
 quality on heavy compute (`poc_arith_addw` 99 G instructions against 87 G warm, window generator 157 G against 135 G); the
 verification-library tests are level.
 
+### clift: round 10, the verdict on a quiet host, `Tune::FIRST`, search loops (2026-10-27, #481)
+
+`spike/clift2` merged with main up to e790e0de; the Cranelift lowering got main's #766 and #772 lowering (`WaitEdge`
+on the kernel, the edge waits' `wait_same`, a signal read from one plane word) and search loops through
+`yavs_rt_scan`. The verdict table (Cranelift-only build / LLVM build, `--tier=auto`, `--runs 7`, every test started at
+load under 4, highest load 3.6): wall 0.997 warm and 0.968 cold, cycles 0.996 and 0.963, instructions 0.983 and
+0.953 (geometric means over the 9 tests). Slower warm: `uvvm_axistream_vvc` 1.10, `osvvm_axi4_random` 1.04 (1.00 in
+instructions), `poc_arith_addw` 1.03; faster: the window generator 0.91, `uvvm_util_rand` 0.92, `uvvm_sb_slv` 0.94.
+`Tune::FIRST` stays: LLVM's rules for clocked processes in the Cranelift-only build were 1.007 in wall and instructions
+warm (window generator 1.058 instructions, `fletcher_bufferwriter_512` 0.971). Search loops: 0.986 instructions warm,
+cycles level. Details and the table: decisions.md "Cranelift tier, round 10".
+
+Gates on e6034249 (the code of this round; docs after it): fmt, clippy `-D warnings` for default, `llvm`, `clift`,
+`llvm,clift`; `cargo test --workspace` (1 214) and the feature sets (`llvm` 1 332, `clift` 1 248, `llvm,clift` 1 363); difftest
+543/543 for `yavs-clift`, `-clift-auto`, `-auto3`, `-mixed`, `-llvm`, `-auto` at 1 and 4 threads (debug build, verifier on).
+
 ### clift: round 9, objects in hand in frame mode, one branch per compare, the native chain by space (2026-10-26, #481)
 
 `spike/clift2` merged with main at db3176aa (the shared std store, `WaitEdgeSuspend`, the callee-aware payback rule,

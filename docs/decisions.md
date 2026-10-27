@@ -9343,6 +9343,72 @@ the cache.
   rules leave interpreted; `YAVS_FIRST_TUNE=instances=16` or `share=8` did not change the run in two measurements
   each (warm `auto` runs vary by 1 to 2 percent).
 
+## Cranelift tier, round 10: the verdict on a quiet host, the first level's rules for clocked processes, search loops (yavs-clift, yavs-llvm, `tools/realbench`, #481, user, 2026-10-27)
+
+- **Merges** of `origin/main` up to e790e0de. Ported to the Cranelift lowering: `WaitEdge` on the kernel itself
+  (`yavs_rt_wait_edge`, #766), the waits of `wait until <edge>` through `yavs_rt_wait_same` with `WAIT_SAME_EDGE`
+  (`static_wait_edge`, #772), a `SigRead` of 1 to 64 known elements in one word of each plane as four loads
+  (#766), the inline `TierState` of `Tier::run_cached` (cd5268f8). The direct drives and waits of #766 are in the shared
+  `rt.rs` and reach Cranelift code unchanged. The identity-order profile key of #774 moved into this branch's
+  `profile.rs` (the profile lives in the store of the first level's generator). `BigLoop` (809de535) is decided by the
+  main generator's level rule as `Big` is; its two test helpers need LLVM (`#[cfg(feature = "llvm")]`). `perf.rs`
+  `clift::edge_forms`: `cb_step` 225 to 1 (ceiling 8), `cb_wait_same` 1 570 to 1 727 (ceiling 1 780).
+- **The verdict, measured as the user asked** (2026-10-26): a Cranelift-only build (`--features clift`) against an
+  LLVM build (`--features llvm`), both `tools/build-bench.sh` of 5dd5de30, `--tier=auto`; realbench `--compare --runs 7
+  --count-runs` (every timed run counts cycles and instructions, A and B interleaved), one test at a time, each started
+  only when the 1-minute load was under 4 (`driver.sh` in the raw directory), core 8. Ratios Cranelift / LLVM; wall is
+  the full total (analysis and run), cycles and instructions those of the run; load is the highest 1-minute load seen
+  at the start of a timed run of the test:
+
+  | test | wall warm | wall cold | cycles warm | cycles cold | instr warm | instr cold | load |
+  |---|---:|---:|---:|---:|---:|---:|---:|
+  | poc_arith_addw | 1.033 | 0.943 | 1.035 | 0.941 | 1.035 | 0.939 | 3.6 |
+  | fletcher_bufferwriter_512 | 1.018 | 1.012 | 1.017 | 1.014 | 0.981 | 0.983 | 3.6 |
+  | neorv32_single_min | 1.000 | 0.983 | 1.001 | 0.985 | 1.012 | 1.002 | 3.4 |
+  | osvvm_axis_random | 1.030 | 1.012 | 1.009 | 1.021 | 1.000 | 1.009 | 3.2 |
+  | uvvm_sb_slv | 0.937 | 0.978 | 0.937 | 0.928 | 0.927 | 0.897 | 3.3 |
+  | uvvm_util_rand | 0.923 | 0.956 | 0.922 | 0.951 | 0.908 | 0.937 | 3.3 |
+  | uvvm_axistream_vvc | 1.095 | 1.030 | 1.101 | 1.030 | 1.097 | 1.026 | 3.6 |
+  | osvvm_axi4_random | 1.044 | 1.000 | 1.052 | 1.013 | 1.003 | 1.004 | 3.4 |
+  | vai_window_gen_interlock | 0.906 | 0.815 | 0.904 | 0.807 | 0.903 | 0.805 | 3.5 |
+  | geometric mean | 0.997 | 0.968 | 0.996 | 0.963 | 0.983 | 0.953 | |
+
+  Run walls spread 2 to 7 percent ((max - min) / median) except the two short testbenches whose warm `auto` decides
+  differently from run to run in either build: `uvvm_axistream_vvc` (11 and 19 percent) and `uvvm_sb_slv` (16 percent
+  for LLVM). Again at `--runs 15` (load at most 4.5): `uvvm_axistream_vvc` 1.107 warm and 1.032 cold in run wall,
+  1.085 and 1.027 in instructions; `uvvm_sb_slv` 0.905 and 0.917 in run wall. The verdict: on this table the
+  Cranelift-only build is level with the LLVM build warm (0.997 wall, 0.996 cycles) and 3 percent faster cold
+  (compile time), with 1.7 and 4.7 percent fewer instructions. The table is A/B only (no reference simulator
+  column). Raw: `~/.cache/yavs-h2h-keep/2026-10-26-clift13/` (`table-v.md`, `table-v15-run.md`).
+- **`Tune::FIRST` stays** (the user allowed matching LLVM's first-compile rule unless measurement shows a gain).
+  A/B of one binary (5dd5de30, Cranelift-only) with and without `YAVS_FIRST_TUNE` set to LLVM's rules for clocked
+  processes (`rtl_min=120, band=1, instances=16, share=8, payback_rtl=0`), `--runs 7 --count-runs`, run cells; LLVM's
+  rules / `FIRST`: `vai_window_gen_interlock` 1.058 instructions warm and 1.034 cold (load up to 9.5 in that test:
+  instructions are the measure there), `poc_arith_addw` 1.002 instructions and 1.018 cycles warm (the `_p1` copies
+  that `FIRST` compiles now cost the same instructions either way: #766 sends their drives to the kernel directly),
+  `fletcher_bufferwriter_512` 0.971 warm (LLVM's rules better), `neorv32_single_min` and `uvvm_axistream_vvc` level;
+  geometric mean 1.007 wall, 1.012 cycles, 1.007 instructions warm, 1.010, 1.012 and 1.005 cold. A small gain for
+  `FIRST`, so it stays. Raw: `table-first.md`.
+- **Search loops on native frames run through `yavs_rt_scan`** (the LLVM lowering's `scans`, now in the Cranelift
+  one): at the head of a loop `yavs_interp::search_loops` finds, the helper does the iterations that need nothing
+  special and leaves the index and element in their registers; its exits jump to the found and end blocks (one more
+  way in each, so their facts are not inherited). Found by attributing `uvvm_axistream_vvc`'s warm instructions per
+  function (`perf record -e instructions:u`): `pos_of_leftmost` on its native frame took 2.0 G instructions against
+  0.3 G for LLVM's code. A/B of one binary (2bc00782) with and without `YAVS_CLIFT_NO_SCAN` (a measurement knob),
+  9 tests, `--runs 7`: warm instructions 0.986 (`uvvm_sb_slv` 0.951, `uvvm_util_rand` 0.964, `uvvm_axistream_vvc`
+  0.975), cycles 1.000, wall 1.006; cold level. Kept: fewer instructions at level cycles. Test:
+  `search_loops_match_the_interpreter` in `crates/yavs-clift/tests/tier.rs` (the LLVM tier's, for this lowering).
+- **What is left in `uvvm_axistream_vvc`** (1.10 warm): the Cranelift-only build compiles more functions at its first
+  level (15 against 9 in one traced run; frame-mode `axistream_receive`, `fetch_command_and_prepare_executor`,
+  `log`), and the run spends 1.4 G instructions in `native_step`, `native_direct`, `yavs_rt_xstep` and `yavs_rt_native`
+  that the LLVM run does not, plus 3.4 G in the interpreter's loop entered from compiled code
+  (`run_ops::<true, false>`). Not attributed to single functions yet. The native variant of
+  `convert_byte_array_to_slv_array` runs 2 times LLVM's instructions: a 130 KB function whose values live in stack
+  slots (spills and reloads around every `LCopy` and statement end, the `Mem` pointer reloaded from its slot): the
+  register pressure of a long native frame, the item "the `Mem` pointer in a stack slot" of round 9 at a larger scale.
+- **Measurement tooling**: `tools/realbench/run.py --count-runs`; `tools/bench/run.py`'s `timed` counts cycles with
+  instructions and records the load at the start of each run; cells keep their run walls and loads.
+
 ## Frame-mode code tests the temporary area and the object cache inline for addresses it can guess (yavs-llvm `Gen::host`, `rt::track`, #711, 2026-10-24)
 
 - **Finding:** the `yavs_rt_host` calls of `llvm_ieee` (`cb_host` 1416, then 2019 after the in-place `numeric_std`

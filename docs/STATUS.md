@@ -9313,8 +9313,10 @@ natives on slices (`to_x01`, the numeric operators) still copy the slice first; 
 - Cache hits (#785): a copy is keyed by its twin key (one bitcode, not two: copies 25 to 30 percent cheaper to link), `Gen::func` resets only
   the registers a block wrote, `HIT` priced at 1 ms + 20 us an IR instruction as measured (`objtimes hit`); window generator warm 0.96 wall.
   Skipping generation on a hit needs a key decision (#785).
+- Against 70cebdc0 (the per-op interpreter round) the window generator with these changes is warm 1.01 wall at 0.92 instructions, cold 1.01.
 - Left: `iu:comb` and the other straight-line GRLIB processes stay level compiled (drives, signal reads and natives through the same runtime
-  functions); a cache hit still generates the module.
+  functions); running interpreted callees in place from compiled code was tried and dropped (window generator 1.12, decisions.md); a cache hit
+  still generates the module.
 
 ## Value movement: copies between heap objects, scratch sets (yavs-interp, #677, 2026-10-27)
 

@@ -7876,6 +7876,8 @@ of every PMP region) and assigned the constant again.
   call's constant arguments to reach the callee (#701).
 - **Measured**: see "IR optimiser round 13" in `docs/STATUS.md`.
 
+
+
 ## Native ieee calls: one-word operands read and written in place (yavs-interp `ieee.rs`, `exec.rs`, yavs-lib `closure.rs`, #691, 2026-10-24)
 
 - **Decision: `ieee::small` (the one-word view of an array operand of 1 to 64 elements without a metavalue) returns `Option`, not
@@ -7937,6 +7939,7 @@ builds, `perf stat` on core 13, minimum of 5 alternating runs; instruction count
   interpreter side (dispatch 24 to 33%, record layout and copies 15 to 16%) and the shares of the kernel are in `docs/STATUS.md`
   "Fletcher writer and reader against the reference simulator".
 
+
 ## Kernel round 21: a wide bus with a waiter on a part lists its changes per cell; the split of a leaf at the waiters' boundaries is not built (yavs-kernel, #519, 2026-10-24)
 
 Task (user, 2026-10-24): split signals that have a waiter on a part into kernel signals along the union of the boundaries that waiters,
@@ -7984,6 +7987,7 @@ instruction counts from the third on).
   remove only the waiter side, and only if the interpreter, the compiled tier and the observers took pieces; revisit if a design
   appears whose waited parts are driven by separate processes at exactly the cuts (then the pieces would be whole signals with whole
   drivers and no one-to-many path is needed).
+
 
 ## Kernel round 22: the per-delta bookkeeping of CPU-style designs (yavs-kernel, #519, #521, 2026-10-25)
 
@@ -8080,6 +8084,7 @@ rtl_chain), where "kernel" counts `yavs-kernel` including the `Ctx` callbacks of
 - **Found on the way (#736, fixed):** a panic while `run_batch` committed a process in place (the `idle_check` assertion, a broken invariant
   in `note_idle`) was reported for the next process of the batch, or panicked again past the end of it and hid the message; the unwind guard now
   keeps the index of the process it was running (`idle_skip::a_wrong_read_list_is_caught_by_the_check_and_names_the_process`).
+
 
 ## Kernel round 23: assignments in pieces stay direct entries, a quiet activation commits nothing (yavs-kernel, #521, #733, #735, 2026-10-25)
 
@@ -8303,6 +8308,7 @@ the run; cycles as the minimum of 7 interleaved runs on one core claimed with `t
 - **Measured**: `docs/STATUS.md` "Facts the declarative part leaves in a process copy". `spec_record_var` (`crates/yavs/tests/perf.rs`) is
   the work-counter case (239 313 ops with the shared code, 151 530 with copies), `crates/yavs-ir/tests/copies.rs` the unit cases.
 
+
 ## Light natives in compiled code: a callback of their own (yavs-llvm, yavs-interp, #698, 2026-10-24)
 
 Counted with `tools/stepcount` on `poc_arith_addw` under `--tier=llvm` (1078 calls of a light `ieee` native in a window of
@@ -8525,6 +8531,7 @@ value. After the message was sunk (round 16) the second chain and call were what
 - **Coordination (#697, #520):** the pass takes a native with one argument that is a fat pair the block allocated and stored
   the data address and the descriptor into. A native whose arguments are in registers (#697) is not shared until
   `Sink::shareable` and the argument test in `find_pairs` know that form; nothing else in the pass depends on the pair layout.
+
 
 ## llvm: a stepped definition is read back from the frame (yavs-llvm, #710, 2026-10-24)
 
@@ -9277,6 +9284,7 @@ is thousands of tiny blocks (one per guard). Most of the bytes were values alive
   `-disable-tail-duplicate`, `-disable-branch-fold`, `-split-spill-mode=size` (each under 1.5 percent). A cheaper level for the first compile of a function, recompiled at `O2` when it repays,
   is a policy question (the payback rule of `FastRa` is the pattern); it would have to win more than the 1 to 3 percent the cheaper code costs a warm run.
 
+
 ## Signal access from processes: measured at the floor after kernel round 22, nothing built (yavs-kernel `Ctx`, yavs-interp, #519, 2026-10-25)
 
 Gapscan item 6 (process to kernel boundary), instruction counts only (stepcount windows and `perf stat instructions:u`, bench builds, no timing cores). Three changes were built and measured against main with kernel round 22 (the `Ctx` accessors inlined into the interpreter) and dropped:
@@ -9891,6 +9899,7 @@ what it replaced:
   stores or the `MakeDope` alone remain); following a pointer through memory (a group of blocks
   that hold each other's addresses), unused on the designs measured.
 
+
 ## llvm: large compiled processes lose to their callbacks, not to their code bytes: layout words from the memo, kept drives skip unchanged elements, objects stay in the table (yavs-llvm, yavs-interp, yavs-kernel, #679, 2026-10-25)
 
 Cause found with a profile of the main thread split by symbol and by the call site in compiled code (`perf record -j any_call` branch stacks: the
@@ -9945,6 +9954,7 @@ before, re-enters compiled code at the next entry. Cost: a never-suspending loop
 iteration, acceptable because such a process is already warned about (`W3102`) and bounded at `SPIN_LIMIT` jumps. Test:
 `stuck::a_process_that_never_suspends_ends_with_an_error` in every tier. Open: the compiled loop of `a <= not a` keeps growing
 memory where the interpreter replaces the pending transaction (#761).
+
 
 ## `--tier=auto` run-to-run profile (yavs-llvm, yavs, #754, #755, 2026-10-25, user decision 2026-10-25)
 
@@ -10096,6 +10106,7 @@ suspends is **10^9 jumps back** (was 10^7, interpreter only) and compiled code k
   `stuck::a_long_loop_without_a_wait_runs_to_its_finish`, ignored `stuck::the_default_bound_is_a_billion_jumps_back`,
   `rss::a_loop_without_a_wait_keeps_memory_flat`, perf case `llvm_nowait` (2 exits for 2.5 million jumps),
   corpus `process/no_wait_infinite` (`spin=3000000`, `ignore=stderr`: only yavs prints the W3102 warning).
+
 
 ## llvm: an object table keyed by machine (yavs-llvm `rt.rs`, `lower.rs`, yavs-interp `TierState`, #679, 2026-10-26)
 
@@ -10916,3 +10927,20 @@ Round 1 made the remaining `SubtypeCheck` cheaper; round 2 removes the ones whos
   generation decides (whether native-frame code verified, the twin name). Proposal on #785.
 - **The reference simulator (rule 22):** it generates the design's code ahead of time and keeps it per design unit, so it has no per-function
   look-up at run time to price; nothing was taken from it here.
+
+## llvm: interpreted callees of compiled code run in place: tried and dropped (yavs-llvm `rt.rs`, yavs-interp `exec.rs`, #679, 2026-10-27)
+
+- **Tried:** a call from compiled frame-mode code to a callee without compiled code (GRLIB `iu:comb` makes about 4.4 M a run, to callees of 570
+  to 1 640 IR) returns `TIER_UNWIND`: the caller leaves its compiled code, the interpreter runs the callee and the caller's code up to its next jump,
+  and enters the compiled code again. `rt::step_in` ran such a callee in the interpreter inside the step instead (a `TierHost::run_pushed`:
+  `exec_fast` with the callee's frame as its base, the result to the call's register, the sampling slot put back; not for a callee that may
+  suspend, at most three such levels a thread, the interpreter going on after the call when the register stack moved) and the compiled caller
+  went on. Difftest 539/539 for all tiers at 1 and 4 threads, the interpreter's traceback and stops kept.
+- **Measured and dropped:** GRLIB with `iu:comb` forced compiled: the interpreter's tier loop 8.6 to 6.3 percent of the run, `tier_go` gone,
+  the run and `iu:comb`'s own `--profile` time level (8 236 / 8 546 samples before, 8 339 / 8 691 after; interpreted 8 022 / 8 199). The window
+  generator lost: warm 1.12 wall at 0.91 instructions against 1.01 / 0.92 without it (`tools/realbench --compare`, 70cebdc0 against both, five
+  runs, same core). The crossing is not what keeps the straight-line large processes level: their compiled code is drives, signal reads and
+  natives through the interpreter's runtime functions (`scatter_leaves`, `drive_run`, `sig_gather`, `lcopy`), and staying in that compiled code
+  after a call costs more cycles than the interpreter's tail of the same instructions.
+- **The reference simulator (rule 22):** a function there that is not compiled has its interpreter as its entry point, so compiled code calls it
+  like any other and gets the result back on the native stack: the idea tried here, on our interpreter frames.

@@ -399,7 +399,7 @@ case!(
         ("process_runs", Max(1876)),
         ("wakes", Max(40)),
         ("update_general", Max(2)),
-        ("ops", Max(10293)),
+        ("ops", Max(8546)),
     ]
 );
 case!(
@@ -438,7 +438,7 @@ case!(
 case!(ieee_operands, "acc=", &[], [("ops", Max(2716))]);
 case!(ieee_share, "n=", &[], [("ops", Max(3626))]);
 case!(elem_loops, "acc=", &[], [("ops", Max(27715))]);
-case!(wide_vec, "wide=0", &[], [("ops", Max(2202000))]);
+case!(wide_vec, "wide=0", &[], [("ops", Max(2143000))]);
 case!(
     licm_loop,
     "acc=",
@@ -755,7 +755,7 @@ case!(
     [
         ("process_runs", Max(2200)),
         ("idle_skips", Min(560)),
-        ("ops", Max(31457)),
+        ("ops", Max(27715)),
     ]
 );
 case!(
@@ -779,7 +779,7 @@ case!(
     [
         ("process_runs", Max(433)),
         ("idle_skips", Min(75)),
-        ("ops", Max(8662)),
+        ("ops", Max(8324)),
     ]
 );
 
@@ -792,7 +792,7 @@ case!(
     [
         ("process_runs", Max(1245)),
         ("wakes", Max(1245)),
-        ("ops", Max(15535)),
+        ("ops", Max(15225)),
     ]
 );
 

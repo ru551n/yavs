@@ -9435,3 +9435,10 @@ frame-mode code runs both instructions through `yavs_rt_signal` instead of a ste
 ## Large value copies: records built in their own object (yavs-ir, yavs-interp, #792, 2026-10-27)
 
 A large initialised record variable or heap node is created in its own object and filled there instead of being built in a temporary and copied (`Opt::defaults_first`); `LFill`s of 'U' into that fresh zero object are dropped; `NewFrame` appends its copy without a zero fill first; small temporary zero fills are one fixed-size store (`docs/decisions.md` "Large value copies"). `uvvm_axistream_vvc`: cycles 0.92 (interp) and 0.92 (auto) of main, memory traffic 23 to 17.7 GB; `realbench --compare` (42 tests) instructions 0.99. Left: the required whole-record assignments of the command path (copy-on-write or sparse values), the frame fill of calls. Copy-on-write of large objects was measured and not built (#798): ceiling about 6 percent of `uvvm_axistream_vvc`, under 1.2 percent on the other verification-library tests, the test is 0.72 of sim1 (`docs/decisions.md` "Large value copies").
+## Jump threading in processes (yavs-ir `opt/cfg.rs`, #791, 2026-10-27)
+
+The clean-up of short-circuit chains (`cfg.rs`, #444) runs on processes too, after the memo: a constant flag that the join of an `and`/`or`
+tests is decided where it is set, the large processes' dead definitions go (the liveness bound counts the tracked registers only), and the
+dead blocks of a specialised copy jump to the next block so fusions run through them. `grlib_leon3mp` -2.9 percent instructions under
+`--tier=interp` and `auto`, `fletcher_bufferwriter_512`, `fletcher_bufferreader` and `neorv32_single_min` -1 to -1.5 percent interpreted
+(`docs/decisions.md` "Interpreter execution of large processes"). `op-census` prints ops by function and by position.

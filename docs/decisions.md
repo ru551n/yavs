@@ -11265,3 +11265,62 @@ windows, `perf record`, IBS op sampling (`ibs_op`, data source per load) and `pe
 - **The reference simulator (rule 22):** its compiled code holds raw pointers into a memory space and a deallocation touches only the object
   freed. The idea taken: a deallocation invalidates that object alone. Ours keeps generational handles and the object table and drops one
   entry per logged change. Nothing was copied.
+## Interpreter execution of large processes: jump threading in processes (yavs-ir `opt/cfg.rs`, `opt.rs`, #791, 2026-10-27)
+
+Task (orchestrator, gap scan 2026-10-26 row 1): the large straight-line processes `--tier=auto` leaves interpreted (`iu:comb`,
+`dctrl`, the SDRAM model's `state_register`, `ctrl_comb_proc`). Op census of a whole `grlib_leon3mp` run (`--tier=interp
+--threads 1`, 2.73 G ops): the most frequent adjacent pair was `Const -> CondBr` (100.9 M, 3.7 percent of the ops), the false arm of a
+short-circuit `and`/`or` storing a constant flag that the join block tests at once; 88 M of them in the two `state_register` codes
+(`if (Burst_length_1 = '1' or Write_burst_mode = '1') then`). The clean-up that removes that shape (`cfg.rs` thread, #444) ran only on
+subprograms that cannot suspend.
+
+- **Decision: `cfg::run` also runs on a process, after the memo of instance-constant values** (which wants the blocks as lowered:
+  run before it, `fletcher_bufferwriter_512` lost memoised values and its loop latches and took 0.7 percent more instructions with 2 percent
+  fewer ops). Not with a debugger keeping variables or with coverage counters. Three rules for a process:
+  - the block the process pauses at before its first run (`Func::body`) is never taken over or jumped past;
+  - a block that reads or defines a register defined once by a constant or an address is not copied: no register of a process may be read
+    across a suspension (the verifier's rule), so its copy would need definitions of its own, each an executed op where the frame's
+    preloaded value costs none (tried: materialised constants cost a loop latch in `wide_vec`, +5 percent ops);
+  - a loop test whose next block jumps back with an add or subtract is not copied, also before the clean-up made that block `[Bin, Br]`
+    (a checked add, a move into the variable): the predecoder's `CmpBrStep` needs the three in order.
+- **Decision: `dead_defs` bounds its work by the registers it tracks (multiply defined, droppable), not by all registers** (`nb * m`
+  under 2^24 instead of `nb * n` under 2^22): `iu:comb`, `dctrl` and `state_register` have thousands of blocks and registers and were
+  skipped, so the flags a decided branch leaves stayed as executed `Const`s.
+- **Decision: a dead block of a copy (`drop_declarations`) jumps to the next block, not to itself.** A block that jumps to itself is a jump
+  target, so the predecoder stopped its fusions there (a `WaveBuf` with its `LSet` and `Drive` behind a dead arm: `spec_record_var`
+  -0.9 percent ops); the next block is the convention of `emit` and `kill_unreachable`, which the predecoder runs through.
+- **Measured and dropped: a layout memo keyed by a heap descriptor's address and the object's write stamp** (52 M of the 68.5 M `FieldOf`
+  of `grlib_leon3mp` read a descriptor in a heap object). Windows of 4 M instructions showed no hits and 7 to 20 more instructions an
+  op: the objects are written between the reads.
+- **Tool: `op-census` tables of ops by function and by position** (`crates/yavs-interp/AGENTS.md` section 5): they found the shapes above
+  (`state_register` op 3617 `Const`, op 3618 `CondBr`) and showed that a census binary built in a target directory shared with another
+  checkout ran stale `yavs-ir` code (cargo's fingerprints follow the other checkout's files): one target directory per checkout.
+- **Measured** (bench builds of ac8d4e88 and of this change, `perf stat` user instructions and cycles of warm worlds, three runs each,
+  interleaved on one claimed core of the second CCD, host load 20 to 28, so cycles are indicative only):
+
+  | test | tier | instructions before | after | cycles before | after |
+  |---|---|---:|---:|---:|---:|
+  | `grlib_leon3mp` | interp | 383.86 | 372.75 (-2.9%) | 245.7 | 237.7 |
+  | `grlib_leon3mp` | auto | 382.32 | 371.56 (-2.8%) | 223.7 | 208.6 |
+  | `fletcher_bufferwriter_512` | interp | 48.23 | 47.52 (-1.5%) | 22.66 | 22.48 |
+  | `fletcher_bufferwriter_512` | auto | 45.26 | 46.17 | 24.81 | 24.34 |
+  | `fletcher_bufferreader` | interp | 18.83 | 18.62 (-1.1%) | 9.53 | 9.38 |
+  | `fletcher_bufferreader` | auto | 18.77 | 18.49 (-1.5%) | 9.46 | 9.36 |
+  | `neorv32_single_min` | interp | 27.49 | 27.11 (-1.4%) | 14.59 | 14.12 |
+  | `neorv32_single_min` | auto | 27.54 | 27.29 (-0.9%) | 14.74 | 14.53 |
+
+  (`auto` counts move 2 to 5 percent with the background compilation; `fletcher_bufferwriter_512` auto was 46.10 before in a quieter
+  pass.) Ops of the whole `grlib_leon3mp` run (`op-census`, interp, 1 thread): 2.727 G to 2.469 G (-9.5 percent); `CondBr` 155.4 M to
+  48.7 M, `Const` 104.3 M to under 16.8 M (out of the top 40), `Br` 62.6 M to 46.1 M, `CmpBr` 153.2 M to 164.4 M (the copied tests); the pair `Const -> CondBr`
+  100.8 M to none. `tools/realbench --compare` (42 tests, run phase, interp and auto, one claimed core, load about 22): wall
+  geometric mean 0.99 (interp) and 0.98 (auto), summed wall 0.96 and 0.96, instructions 0.99 and 0.99; `grlib_leon3mp` wall 37.8 to
+  34.2 s (interp) and 37.4 to 34.3 s (auto); no test above 1.05 in instructions (`neorv32_single_cache` interp wall 1.12 at 0.98
+  instructions, a single noisy cell). Difftest 542/542 at 1 and 4 threads with interp, auto and llvm.
+- **The reference simulator (rule 22):** its lowering evaluates both operands of `and`/`or` with a plain logical operation when the right
+  operand has no side effects, and branches only otherwise, so it never keeps a flag for the join to test. Ours keeps lowering as it is
+  and threads the branches in the optimiser, where the left operand's branch already exists; evaluating cheap right operands without a
+  branch is the other option, not taken. Nothing was copied.
+- **Left:** the per-op cost of `FieldOf`/`LayoutWord` on run-time record descriptors (150 to 250 instructions, 4 to 5 percent of
+  `grlib_leon3mp`): the descriptors are in temporary memory or written heap objects, so a key needs the optimiser to prove them unchanged
+  (or fold them, as the copies do for instance data); `AllocLCopy` followed only by `LGet` (a bit of a copied slice, 15 M in GRLIB's
+  `ahb_slv_dec_cache`); the signal and drive ops of #790.

@@ -461,6 +461,21 @@ fn optimize_body_with(
             layout_cache::run(prog, &mut f);
         }
     }
+    // Short-circuit chains of a process branch where their inputs are known (#791), after the
+    // memo (which wants the blocks as lowered); not with a debugger reading the variables or with
+    // coverage counters.
+    if cfg_enabled()
+        && f.kind == FuncKind::Process
+        && !keep_variables_on()
+        && !f.code.iter().any(|i| {
+            matches!(
+                i,
+                Inst::Cover { .. } | Inst::CoverIn { .. } | Inst::CoverCond { .. }
+            )
+        })
+    {
+        cfg::run(prog, &mut f);
+    }
     if had_inst && f.kind == FuncKind::Process && f.via.is_empty() {
         drop_declarations(prog, &mut f);
     }
@@ -626,9 +641,11 @@ fn drop_declarations(prog: &Program, f: &mut crate::Func) {
             code.extend_from_slice(&f.code[range.clone()]);
             loc.extend_from_slice(&f.loc[range]);
         } else {
-            // Every block holds an instruction: a dead one jumps to itself.
+            // Every block holds an instruction: a dead one jumps to the next block, which the
+            // predecoder runs through (a jump to itself would stop the fusions of the block
+            // before it, #791).
             code.push(Inst::Br {
-                to: BlockId(b as u32),
+                to: BlockId(if b + 1 < nb { b as u32 + 1 } else { b as u32 }),
             });
             loc.push(f.loc[range.start]);
         }

@@ -1,6 +1,7 @@
 -- Copy and fill loops over logic vectors in functions that run on native frames under --tier=llvm:
--- each asks yavs_rt_eloop for its iterations but the last (cb_eloop), and the rest stays in the
--- compiled code (no step, no deopt).
+-- each is planned at its head, its iterations but the last done at once (the short row copies
+-- inline, the fills by a runtime call, cb_eloop), and the rest stays in the compiled code (no
+-- step, no deopt, no lookup call).
 library ieee;
 use ieee.std_logic_1164.all;
 entity llvm_eloop is end;

@@ -675,6 +675,7 @@ pub(crate) fn spaces(prog: &Program, f: &Func, starts: &[bool]) -> Option<Vec<Ve
         });
         if let Inst::AddrOf { dst, .. }
         | Inst::Alloc { dst, .. }
+        | Inst::NewFrame { dst, .. }
         | Inst::Deref { dst, .. }
         | Inst::Move { dst, .. }
         | Inst::Index { dst, .. }
@@ -742,7 +743,9 @@ pub(crate) fn spaces(prog: &Program, f: &Func, starts: &[bool]) -> Option<Vec<Ve
                     space: AddrSpace::Inst,
                     ..
                 } => Some((dst, [true, false, false, false, false])),
-                Inst::Alloc { dst, .. } => Some((dst, [false, true, false, false, false])),
+                Inst::Alloc { dst, .. } | Inst::NewFrame { dst, .. } => {
+                    Some((dst, [false, true, false, false, false]))
+                }
                 Inst::Deref { dst, .. } => Some((dst, [false, false, true, false, false])),
                 // A variable's slot (not a parameter's: the caller's argument is in any space).
                 Inst::AddrOf {

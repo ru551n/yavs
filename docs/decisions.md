@@ -10116,7 +10116,7 @@ it 2.6 million times; `eloop::run`, `LoopObjects::region` and `yavs_rt_eloop` we
   (a fresh frame the caller made, a heap vector) through one call, `yavs_rt_eloop_host`, which finds what `LoopObjects`
   finds (also the slots of the calling native frames) and bounds-checks `extra + n`. An inline probe of the object cache entry
   in front of that call was tried and dropped: the new frame of `get_row` is not in the cache yet (the call loads it), so
-  the probe only added instructions (10.4 G to 10.7 G, cycles +3 percent).
+  the probe only added instructions (10.4 G to 10.7 G, cycles +3 percent). Superseded by "Native-frame calls find their fresh frames, results and argument regions inline": the fresh frame is a known temporary now and the call is gone.
 - **`eloop::exec` decides overlap by host addresses**, not by "same object": the byte ranges of the blocks each stream
   touches are compared as addresses, which is what the code handing it pointers (not objects) needs, and is as exact for the
   helper.
@@ -10128,6 +10128,46 @@ it 2.6 million times; `eloop::run`, `LoopObjects::region` and `yavs_rt_eloop` we
   and result around the loop), `to_slvv_8` and `to_slm` 16, `exec_planned` 6, `yavs_rt_eloop_host` with its object look-up 10
   (for the fresh frame and the vector read), the interpreter's part (`run_ops`, `op_loop`) 10.
 
+
+## Native-frame calls find their fresh frames, results and argument regions inline (yavs-llvm, #757, 2026-10-28)
+
+What was left in `poc_stat_histogram` after the planned element loops was the path around each call of a short native-frame
+function (`get_row` 2.6 million times, `to_slm`), not the loops: per call two `yavs_rt_eloop_host` callbacks and a
+`yavs_rt_region` callback, a parameter region test that always failed and fell into the whole lookup chain, the chain again for
+the call's result, and a runtime call to copy eight elements. The fixes are general, for every function on a native frame:
+
+- **`NewFrame` is a temporary-area address** (`rt::track`, `regs::spaces`): the object of a local composite is made there, as
+  `Alloc`'s is, so `Known::Temp` and its one bounds test, in its block and across blocks. (`cat_block`'s "fresh block" rule is the
+  interpreter's own, which reads the space of the address, so it holds for these objects too.)
+- **`Known::LikelyTemp` in native frames too** (`Gen::host_lookup`): a call's result, the words loaded from it and a layout get the
+  temporary-area test first, then the native chain as before (own frame, the callers' slots, the object table, the views,
+  `yavs_rt_host`); frame-mode code keeps going to the runtime on a miss. A held parameter region that misses (`Gen::host`) takes
+  the same order: what an activation cannot hold is mostly an argument in the temporary area.
+- **Element-loop memory is found by `Gen::host`** (`Gen::eloop_host`): the plan's vectors and descriptors of unknown space get the
+  inline chain, the temporary area first. `yavs_rt_eloop_host` is gone (an inline probe of the object table in front of it was
+  slower when the fresh frame was not a known temporary, decisions above; it is now).
+- **Activations that move only the temporary area hold every other region** (`rt::fixed_activation`, `yavs_rt_region` flag 4):
+  `stable_activation`'s allowlist plus `Alloc`, `NewFrame`, `Stmt`, `TempRoot`, `MakeDope` and `LayoutOf`. None of them frees or
+  moves a heap object or pushes a frame, also in its slow path (native frames materialise there, or `native_step` does a layout in
+  the temporary area); the temporary area itself may grow, so it is not held. A function that returns a vector was never stable,
+  so its descriptor parameters were never held and every access took the full chain.
+- **The entry finds a held region in the object table inline** (`Gen::func`, native prologue): where the activation holds objects
+  (`stable` or `fixed`), the parameter's entry of `Mem::objs` is probed before `yavs_rt_region` (not for a frame or the temporary
+  area, which stay the runtime's to judge); a hit is the region.
+- **A planned copy inside one plane block each side is inline** (`Gen::eloop_plan`): the same step of 1 or -1 on both sides, the
+  elements of each side within one 64-element block, the two blocks' bytes apart (the test `eloop::exec` makes) is the plane copy
+  of `exec` as four masked word moves; anything else calls `yavs_rt_eloop_exec` as before.
+- **Not changed:** the optimisation level of native frames (#729/#785): the full `O2` pipeline on these three functions was measured
+  level with `LEAN` (cycles 1.89 against 1.88 G); the cost is in the generated code, not in what LLVM does with it.
+- **Measured** (bench builds, `--tier=auto` warm, one claimed core, `perf stat`, interleaved, against `8e4cd334`): histogram
+  instructions 10.42 to 6.97 G, cycles 2.21 to 1.49 G; step by step (cycles): fresh frames and the element-loop temporary test
+  -14 percent, `LikelyTemp` in native frames -3, `fixed_activation` -11, the plan through `Gen::host` -3, the entry probe -3, the
+  inline copy -5. `llvm_eloop` work counters: `cb_region` 160 to 1, `cb_host` 22 to 0. realbench run phase `--compare` (42 tests):
+  see docs/STATUS.md.
+- **sim1:** its argument is a machine pointer and a function's result a pointer into a bump-allocated thread-local area, so neither
+  costs a lookup; the idea taken is to treat fresh objects and results as what they are (temporary-area addresses, one test) and
+  to resolve an argument's region once, inline where the object table has it. Its element-wise loops were not taken (decisions
+  above).
 
 ## A process that never suspends stays in compiled code under a bound of 10^9 jumps back (yavs-llvm, yavs-interp, yavs-kernel, #583, #761, 2026-10-26)
 

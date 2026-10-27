@@ -5874,6 +5874,43 @@ impl Machine {
                     };
                     k += 1;
                 }
+                Op::LoadPair { d1, d2, base, off } => {
+                    let a = self.regs[base as usize];
+                    let (sp, idx, o) = split(a);
+                    let o = o + u64::from(off);
+                    if let Some(b) = self
+                        .mem_fast(sp, idx)
+                        .and_then(|m| m.get(o as usize..o as usize + 16))
+                        .and_then(|b| b.as_chunks::<8>().0.first_chunk::<2>())
+                    {
+                        let (x, y) = (u64::from_le_bytes(b[0]), u64::from_le_bytes(b[1]));
+                        self.regs[d1 as usize] = x;
+                        self.regs[d2 as usize] = y;
+                    } else {
+                        let x = t!(add_addr(a, off.into()).and_then(|a| self.load(a, Width::B8)));
+                        self.regs[d1 as usize] = x;
+                        let y =
+                            add_addr(a, u64::from(off) + 8).and_then(|a| self.load(a, Width::B8));
+                        self.regs[d2 as usize] = match y {
+                            Ok(y) => y,
+                            Err(e) => return Err(self.fault_at(top, code, k + 1, e)),
+                        };
+                    }
+                    k += 2;
+                }
+                Op::LoadPkg { dst, pkg, off, w } => {
+                    let n = w.bytes() as usize;
+                    let o = off as usize;
+                    let mem = match &self.pkg_init {
+                        Some((p, data)) if *p == pkg => Some(&data[..]),
+                        _ => self.rt.pkgs.get(pkg as usize).map(|p| &p.data[..]),
+                    };
+                    self.regs[dst as usize] = match mem.and_then(|m| m.get(o..o + n)) {
+                        Some(b) => cell_w(b, w),
+                        None => t!(mk_addr(PKG, pkg, off.into()).and_then(|a| self.load(a, w))),
+                    };
+                    k += 1;
+                }
                 Op::LoadOff { dst, base, off, w } => {
                     let a = t!(add_addr(self.regs[base as usize], off.into()));
                     self.regs[dst as usize] = t!(self.load(a, w));
@@ -6328,6 +6365,19 @@ impl Machine {
                         self.regs[hi as usize] as i64,
                         what
                     ));
+                    k += 1;
+                }
+                Op::CheckK {
+                    kind,
+                    v,
+                    lo,
+                    hi,
+                    what,
+                } => {
+                    let x = self.regs[v as usize] as i64;
+                    if x < i64::from(lo) || x > i64::from(hi) {
+                        t!(self.check_fail(kind, x, lo.into(), hi.into(), what));
+                    }
                     k += 1;
                 }
                 Op::Layout { dst, ty, desc } => {

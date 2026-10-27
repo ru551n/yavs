@@ -10766,6 +10766,10 @@ them in the work itself.
   rest. The out-of-line `fill` saved and restored six registers and returned a `Result` through memory.
 - **Decision: the address `Deref` returns has offset 0, so `DerefImm`, `LoadDerefImm` and `DerefLoadOff` add their (32 or 16 bit) offset without
   the overflow and index checks of `add_addr`.**
+- **Decision: three more ops from the op census of the window generator** (`YAVS_CENSUS` pairs, 471 M ops): `LoadPkg` (a `Load` of an address that is
+  a package-data constant: 15.7 M of the 56.8 M `Load`s took `load_slow`, the handle of a protected object stored in a package variable; 79 to 53
+  instructions), `LoadPair` (a word and the next word of one base, the data pointer and the descriptor of a fat pair; applied after the element-loop
+  planner, which knows single loads only) and `CheckK` (a `Check` of `Range` or `Index` with 32-bit constant bounds reads two registers fewer).
 - **Tried and dropped: the call of a callee out of line** (`call_enter`: lookups, frame push and argument copy in one function, the arms only
   switching to the new frame). `CallProt` 415 to 443, `Call` 376 to 414: the work is the same, the call and the result through memory are not free,
   and the loop's own bookkeeping (saved caller, new `code`, `ops`, `k`: 22 instructions) stays.
@@ -10786,3 +10790,7 @@ them in the work itself.
   | `Call` | `vai_window_gen_interlock` | 376.1 | 354.8 |
   | `LoadDerefImm` | `vai_window_gen_interlock` | 146.0 | 135.0 |
   | `DerefImm` | `vai_window_gen_interlock` | 90.0 | 81.0 |
+
+  Whole runs, `--tier=interp --threads 1`, `perf stat instructions:u` of a warm world (the first run of a new binary in a world pays a note in
+  the compilation cache and counts up to 70 percent more), G: `vai_window_gen_interlock` 430.9 to 410.5, `poc_arith_addw` 145.7 to 137.8,
+  `fletcher_bufferwriter_512` 51.1 to 50.1, `uvvm_axistream_vvc` 35.0 to 34.3.

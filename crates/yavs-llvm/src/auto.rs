@@ -1898,6 +1898,36 @@ impl Worker {
         out
     }
 
+    /// Whether every function the native-frame code of `id` calls natively is compiled, and they
+    /// in turn. A callee left out of its compile or never seen running ends the walk: nothing
+    /// compiles it until it runs, so it kept `id` and every native caller of `id` unpublished for
+    /// the whole run, each of their calls a step out of compiled code. Once it runs, it is seen
+    /// and compiled like any other function, and the call reaches it through `ntab`.
+    fn ready(&self, id: FuncId) -> bool {
+        let nc = self.nset(id);
+        let mut seen = std::collections::HashSet::from([id]);
+        let mut todo = vec![id];
+        while let Some(g) = todo.pop() {
+            for inst in self.prog.func(g).map_or(&[][..], |f| &f.code[..]) {
+                let (yavs_ir::Inst::Call { func, .. } | yavs_ir::Inst::CallProt { func, .. }) =
+                    *inst
+                else {
+                    continue;
+                };
+                if !nc.contains(&func) || !seen.insert(func) {
+                    continue;
+                }
+                let k = func.0 as usize;
+                if self.nat[k].0 != 0 {
+                    todo.push(func);
+                } else if !self.left[k].get() && self.time[k] != [0, 0] {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
     /// Publish the native-frame code whose callees are all compiled.
     fn publish(&mut self) {
         for k in 0..self.nat.len() {
@@ -1905,11 +1935,7 @@ impl Worker {
             if addr == 0 || done || self.lost[k] {
                 continue;
             }
-            let ready = self
-                .nset(FuncId(k as u32))
-                .iter()
-                .all(|c| self.nat[c.0 as usize].0 != 0 || self.left[c.0 as usize].get());
-            if ready {
+            if self.ready(FuncId(k as u32)) {
                 self.ntab[k].store(addr, Ordering::Release);
                 self.nat[k].1 = true;
                 if let Some(tr) = &self.trace {
@@ -3520,6 +3546,53 @@ mod tests {
         let prog = pb.finish().unwrap();
         let calls = must_calls(&prog, prog.func(ids[0]).unwrap());
         assert_eq!(calls, vec![ids[1], ids[3]]);
+    }
+
+    /// Native-frame code is published once what it reaches through compiled callees is compiled;
+    /// a callee never seen running does not hold it back, one seen running does, one left out
+    /// of a compile does not (#797).
+    #[test]
+    fn native_code_waits_only_for_callees_that_ran() {
+        let mut pb = ProgramBuilder::new();
+        let ids: Vec<_> = ["f", "g", "h"]
+            .into_iter()
+            .map(|n| pb.declare(n, yavs_ir::FuncKind::Procedure, None))
+            .collect();
+        for k in 0..3 {
+            let mut fb = pb.define(ids[k]);
+            fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+            // Something of its own, so the optimiser keeps the call.
+            let keep = fb.slot(8, 8);
+            let at = fb.addr(yavs_ir::AddrSpace::Frame, keep);
+            fb.emit(Inst::Store {
+                addr: at,
+                src: at,
+                w: yavs_ir::Width::B8,
+            });
+            if k < 2 {
+                let args = fb.regs(&[]);
+                fb.emit(Inst::Call {
+                    func: ids[k + 1],
+                    args,
+                    dst: None,
+                });
+            }
+            fb.emit(Inst::Ret { v: None });
+            fb.finish();
+        }
+        let mut w = worker_of(pb.finish().unwrap());
+        let (f, g, h) = (ids[0], ids[1], ids[2]);
+        assert!(w.nset(f).contains(&h));
+        w.nat[f.0 as usize].0 = 1;
+        assert!(w.ready(f), "g never ran");
+        w.time[g.0 as usize][0] = 1;
+        assert!(!w.ready(f), "g ran and is not compiled");
+        w.nat[g.0 as usize].0 = 1;
+        assert!(w.ready(f), "h never ran");
+        w.time[h.0 as usize][0] = 1;
+        assert!(!w.ready(f), "h ran and is not compiled");
+        w.left[h.0 as usize].set(true);
+        assert!(w.ready(f), "h is left out");
     }
 
     #[test]

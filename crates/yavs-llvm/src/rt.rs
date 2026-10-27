@@ -10,8 +10,8 @@ use std::any::Any;
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use yavs_interp::{
-    Called, MemoLook, NativeCall, NativeFrame, Stepped, TIER_SUSPEND, TIER_UNWIND, TierFrame,
-    TierHost, space,
+    Called, HEAP_LOG, MemoLook, NativeCall, NativeFrame, Stepped, TIER_SUSPEND, TIER_UNWIND,
+    TierFrame, TierHost, space,
 };
 
 use yavs_ir::{AddrSpace, FOp, Func, FuncId, Inst, IntOp, Program, Reg, Width};
@@ -137,10 +137,11 @@ pub struct Mem {
     /// (`wipe`), so no record of a process names a tag twice.
     next_tag: u64,
     id: u64,
-    /// The owner the machine's tags are for, and the heap epoch its heap tag is for
-    /// (`TierFrame::owner`, `heap_epoch`): the next activation or call of that machine keeps them.
+    /// The owner the machine's tags are for, and the epochs of the process heap and the shared
+    /// heap its heap tag is for (`TierFrame::owner`, `heap_epoch`, `shared_epoch`): the next
+    /// activation or call of that machine keeps them, dropping the objects the heaps changed since.
     cur_owner: u64,
-    cur_epoch: u64,
+    cur_epochs: [u64; 2],
     /// The owner whose runtime the constants' tag is for (`OWNER_RT_SHIFT` and up compare).
     rt_owner: u64,
     /// Some frame or temporary object is in the table (`forget_end` drops them).
@@ -265,8 +266,11 @@ pub const OBJS: usize = 16384;
 /// Tags are issued below this: then the table starts again empty (`Mem::wipe`).
 const TAG_END: u64 = 1 << 31;
 
-/// A process's record (`TierState`): the `Mem` identity, the heap epoch, the heap tag and the
-/// machine tag of its objects (`Mem::save_tag`).
+/// A tag in the low half of a record word (`Mem::save_tag`).
+const TAG_MASK: u64 = (1 << 32) - 1;
+
+/// A process's record (`TierState`): the `Mem` identity, the process heap's epoch, the heap tag and
+/// the machine tag of its objects in one word, the shared heap's epoch (`Mem::save_tag`).
 const _: () = assert!(yavs_interp::TIER_STATE_WORDS == 4);
 
 /// Identities of `Mem`s, so a record names the table its tag is from.
@@ -491,7 +495,7 @@ impl Mem {
         let rec = rec.filter(|st| st.used && st.words[0] == self.id);
         let same = owner == self.cur_owner;
         if let Some(st) = rec {
-            self.set(&MACHINE_SPACES, st.words[3]);
+            self.set(&MACHINE_SPACES, st.words[2] >> 32);
         } else if !same {
             let t = self.issue();
             self.set(&MACHINE_SPACES, t);
@@ -499,16 +503,56 @@ impl Mem {
         // Someone compares heap objects by their write counts: a kept writable heap object
         // would not count this activation's writes (`Heap::data_mut`), so none is kept.
         let stamps = self.fr.flags & yavs_interp::TIER_STAMPS != 0;
-        if let Some(st) = rec
-            && st.words[1] == epoch
-            && !stamps
-        {
-            self.set(&HEAP_SPACES, st.words[2]);
-        } else if !same || epoch != self.cur_epoch || stamps {
+        let kept = !stamps
+            && match rec {
+                Some(st) => self.keep_heap(st.words[2] & TAG_MASK, [st.words[1], st.words[3]]),
+                None => {
+                    same && self.keep_heap(self.tags[space::HEAP as usize] >> 32, self.cur_epochs)
+                }
+            };
+        if !kept {
             let t = self.issue();
             self.set(&HEAP_SPACES, t);
         }
-        (self.cur_owner, self.cur_epoch) = (owner, epoch);
+        (self.cur_owner, self.cur_epochs) = (owner, [epoch, self.fr.shared_epoch]);
+    }
+
+    /// Heap tag `t`, whose objects were found at the heaps' epochs `from`, for the view's
+    /// epochs: the objects of the slots the heaps changed since are dropped (`drop_changed`);
+    /// `false` when more changed than their logs name (then nothing is kept).
+    #[inline(always)]
+    fn keep_heap(&mut self, t: u64, from: [u64; 2]) -> bool {
+        let to = [self.fr.heap_epoch, self.fr.shared_epoch];
+        if self.tags[space::HEAP as usize] != t << 32 {
+            self.set(&HEAP_SPACES, t);
+        }
+        from == to || self.drop_changed(from, to)
+    }
+
+    /// Drop the table's entries of the heap slots the heaps changed from epochs `from` to `to`
+    /// (`TierFrame::heap_log`); `false`, nothing dropped, when a heap is more than `HEAP_LOG`
+    /// changes on or has no log.
+    #[inline(never)]
+    fn drop_changed(&mut self, from: [u64; 2], to: [u64; 2]) -> bool {
+        let n = [to[0].wrapping_sub(from[0]), to[1].wrapping_sub(from[1])];
+        for (&d, log) in n.iter().zip(self.fr.heap_log) {
+            if d != 0 && (d > HEAP_LOG as u64 || log.is_null()) {
+                return false;
+            }
+        }
+        for (k, sp) in [space::HEAP, space::SHARED_HEAP].into_iter().enumerate() {
+            for e in 1..=n[k] {
+                let at = from[k].wrapping_add(e) as usize % HEAP_LOG;
+                // SAFETY: the log of the view's heap has `HEAP_LOG` entries and lives as long
+                // as the machine the view is of.
+                let i = unsafe { *self.fr.heap_log[k].add(at) };
+                let (at, key) = self.slot(u64::from(sp) << 29 | u64::from(i));
+                if self.objs[at].hi == key {
+                    self.objs[at] = NO_OBJ;
+                }
+            }
+        }
+        true
     }
 
     /// The tag of the constants of a runtime other than the last one's.
@@ -553,7 +597,13 @@ impl Mem {
     #[inline(always)]
     pub fn save_tag(&self, st: &mut yavs_interp::TierState) {
         let t = |sp: u8| self.tags[sp as usize] >> 32;
-        st.words = [self.id, self.cur_epoch, t(space::HEAP), t(space::INST)];
+        // Tags are below `TAG_END`: the heap's and the machine's share a word.
+        st.words = [
+            self.id,
+            self.cur_epochs[0],
+            t(space::HEAP) | t(space::INST) << 32,
+            self.cur_epochs[1],
+        ];
         st.used = true;
         st.at = self.wait_at;
     }
@@ -583,21 +633,20 @@ impl Mem {
     }
 
     /// After a host call that may have pushed frames, moved the temporary area or freed or
-    /// edited heap objects: the frame and temporary objects go, and the heap objects too when
-    /// the heap epoch changed (it counts every deallocation and edit in place).
+    /// edited heap objects: the frame and temporary objects go, and the heap objects the heaps
+    /// changed (their epochs count every deallocation and edit in place), all of them when more
+    /// changed than the heaps' logs name.
     #[inline(always)]
     pub fn forget(&mut self) {
         self.forget_end();
-        if self.fr.heap_epoch != self.cur_epoch {
-            self.new_heap();
+        let to = [self.fr.heap_epoch, self.fr.shared_epoch];
+        if to != self.cur_epochs {
+            if !self.drop_changed(self.cur_epochs, to) {
+                let t = self.issue();
+                self.set(&HEAP_SPACES, t);
+            }
+            self.cur_epochs = to;
         }
-    }
-
-    #[inline(never)]
-    fn new_heap(&mut self) {
-        let t = self.issue();
-        self.set(&HEAP_SPACES, t);
-        self.cur_epoch = self.fr.heap_epoch;
     }
 }
 
@@ -2542,7 +2591,9 @@ pub fn call_on(
     }
     mem.temp_seen = mem.fr.temp_len;
     mem.ndeopt = 0;
-    mem.begin(None);
+    // The calling machine's record: the objects its compiled code found stay found.
+    let mut rec = host.tier_state();
+    mem.begin(Some(&rec));
     // The callee of a protected call allocates in the shared heap when the object is there.
     if obj.is_some_and(|h| (h >> 56) as u8 == yavs_interp::SHARED_TAG) {
         mem.fr.flags |= yavs_interp::TIER_SHARED_ALLOC;
@@ -2591,6 +2642,11 @@ pub fn call_on(
     };
     mem.fr.kctx = std::ptr::null_mut();
     mem.forget_end();
+    // (`at` is the activation's, not the call's.)
+    let at = rec.at;
+    mem.save_tag(&mut rec);
+    rec.at = at;
+    env.host.set_tier_state(rec);
     match env.panic {
         Some(p) => Err(p),
         None => Ok(Some(out)),
@@ -3591,6 +3647,40 @@ mod tests {
         // The next activation at that epoch keeps it.
         activate(&mut m, rt(1, 1), 1, &mut TierState::default());
         assert!(entered(&m, space::HEAP, 3));
+    }
+
+    /// A heap change drops the objects of the slots the heaps' logs name and keeps the rest, in
+    /// the activation and from the process record; more changes than a log holds drop them all.
+    #[test]
+    fn a_heap_change_drops_only_the_slots_it_names() {
+        let (h, s) = (space::HEAP, space::SHARED_HEAP);
+        let mut m = Mem::new(TierFrame::default());
+        let (mut log, mut slog) = ([0u32; HEAP_LOG], [0u32; HEAP_LOG]);
+        let mut r = TierState::default();
+        activate(&mut m, rt(1, 1), 0, &mut r);
+        for k in 1..=4 {
+            m.put_obj(obj(h, k));
+            m.put_obj(obj(s, k));
+        }
+        // Epoch 1 of each heap: private slot 2 and shared slot 3 were deallocated.
+        (log[1], slog[1]) = (2, 3);
+        m.fr.heap_log = [log.as_ptr(), slog.as_ptr()];
+        (m.fr.heap_epoch, m.fr.shared_epoch) = (1, 1);
+        m.forget();
+        assert!(!entered(&m, h, 2) && entered(&m, h, 3));
+        assert!(!entered(&m, s, 3) && entered(&m, s, 2));
+        finish(&mut m, &mut r);
+        // Another machine runs, then the first comes back two changes later (slots 4 and 1).
+        activate(&mut m, rt(1, 2), 1, &mut TierState::default());
+        (log[2], log[3]) = (4, 1);
+        m.fr.heap_log = [log.as_ptr(), slog.as_ptr()];
+        activate(&mut m, rt(1, 1), 3, &mut r);
+        assert!(entered(&m, h, 3) && !entered(&m, h, 4) && !entered(&m, h, 1));
+        assert!(entered(&m, s, 1) && entered(&m, s, 4));
+        // More changes than the log holds: nothing is kept.
+        m.fr.heap_epoch = 4 + HEAP_LOG as u64;
+        m.forget();
+        assert!(!entered(&m, h, 3) && !entered(&m, s, 1));
     }
 
     /// When the tags run out the table starts again empty under a new identity, so a record

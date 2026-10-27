@@ -1294,6 +1294,9 @@ mod llvm {
     );
     // Constants found once stay for the run (#679).
     llvm_case!(llvm_hostless, "acc=", [("cb_host", Max(2))]);
+    // A deallocation drops only the freed object from compiled code's table (#520): 600 `cb_fast`
+    // before (every `deallocate` made both `Deref`s of the table after it ask the host again), 201 now.
+    llvm_case!(llvm_heap_free, "acc=", [("cb_fast", Max(207))]);
     // Functions and procedures that read signals run on native frames (#519): 900 calls, no step.
     llvm_case!(
         llvm_sigfun,

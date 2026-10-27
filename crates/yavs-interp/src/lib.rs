@@ -55,7 +55,7 @@ pub use debug::{
     Resume, SignalBreak, Stop, StopReason, Watches, format_scalar,
 };
 pub use exec::{SPIN_CHECK, SPIN_LIMIT, copy_bits};
-pub use heap::{Heap, collections as gc_collections};
+pub use heap::{HEAP_LOG, Heap, collections as gc_collections};
 pub use ieee::{code_table, edge_native};
 pub use pmemo::{pmemo_off, pmemo_stats};
 pub use pre::{
@@ -435,7 +435,7 @@ pub enum Called {
 }
 
 /// The words of a [`TierState`] (the compiled tier keeps the identity of its object table, the
-/// heap epoch and the tags of the process's objects there).
+/// epochs of both heaps and the tags of the process's objects there).
 pub const TIER_STATE_WORDS: usize = 4;
 
 /// What a tier keeps for one process between activations ([`Tier::run_cached`]).
@@ -602,6 +602,17 @@ pub trait TierHost {
     /// `view` for a process in its root frame, with every field written but straight from the
     /// machine's fields; `false` (nothing written) when it is not (use `view`).
     fn view_again(&mut self, fr: &mut TierFrame) -> bool;
+
+    /// The calling machine's record of the tier (`TierState`, what `Tier::run_cached` keeps), so
+    /// a call from the interpreter (`Tier::call`) finds the objects the machine's compiled code
+    /// found before; `set_tier_state` keeps it again after the call.
+    fn tier_state(&self) -> TierState {
+        TierState::default()
+    }
+
+    fn set_tier_state(&mut self, st: TierState) {
+        let _ = st;
+    }
 
     /// `drive_block` for a zero delay and one element of a logic signal, when the kernel takes
     /// it on its fastest path: `true` when done; `false` (nothing done) otherwise, and the
@@ -935,10 +946,15 @@ pub struct TierFrame {
     /// The call depth limit (`Limits::max_depth`): frame indices compiled code may give its
     /// native frames stay below it.
     pub max_depth: u64,
-    /// The sum of the process heap's and the shared heap's `epoch`: the host addresses of heap
-    /// objects compiled code found stay valid while it is unchanged (refreshed with the
+    /// The process heap's `epoch` and the shared heap's (0 for a machine without the shared
+    /// state): the host addresses of heap objects compiled code found stay valid while they are
+    /// unchanged, or for the slots their change logs do not name (`heap_log`; refreshed with the
     /// temporary area after every host call).
     pub heap_epoch: u64,
+    pub shared_epoch: u64,
+    /// The change logs of the process heap and the shared heap (`Heap::log`, `HEAP_LOG` entries
+    /// each), null for none.
+    pub heap_log: [*const u32; 2],
     /// [`TIER_SHARED_ALLOC`] (the top frame allocates in the shared heap) and [`TIER_SERIAL`]
     /// (the process may use the shared state): what native frames inherit and a protected call
     /// needs.
@@ -1197,6 +1213,8 @@ impl Default for TierFrame {
             cycle: 0,
             max_depth: 0,
             heap_epoch: 0,
+            shared_epoch: 0,
+            heap_log: [std::ptr::null(); 2],
             owner: 0,
             flags: 0,
             cov: std::ptr::null(),

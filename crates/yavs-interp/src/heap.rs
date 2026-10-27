@@ -35,6 +35,10 @@ pub const SHARED: u8 = 2;
 
 const MAX_INDEX: u32 = (1 << 24) - 1;
 
+/// Epoch changes a heap remembers the slot of ([`Heap::log`]): a holder of host addresses that
+/// is at most this many changes behind drops only the objects of those slots.
+pub const HEAP_LOG: usize = 16;
+
 /// Quarantined slots that make an in-activation [`Heap::recycle`] due, at least.
 const RECLAIM_MIN: usize = 4096;
 
@@ -97,6 +101,9 @@ pub struct Heap {
     #[serde(skip)]
     epoch: u64,
     slots: Vec<Slot>,
+    /// The slot of each of the last [`HEAP_LOG`] epoch changes, at `epoch % HEAP_LOG`.
+    #[serde(skip)]
+    log: [u32; HEAP_LOG],
     free: Vec<u32>,
     /// Handles that are roots for good ([`Heap::seal`]).
     sealed: Vec<u64>,
@@ -138,6 +145,7 @@ impl Heap {
             live_bytes: 0,
             sealed: Vec::new(),
             epoch: 0,
+            log: [0; HEAP_LOG],
         }
     }
 
@@ -145,6 +153,13 @@ impl Heap {
     #[inline]
     pub fn epoch(&self) -> u64 {
         self.epoch
+    }
+
+    /// The slots of the last [`HEAP_LOG`] epoch changes, the change to epoch `e` at
+    /// `e % HEAP_LOG`.
+    #[inline]
+    pub fn log(&self) -> &[u32; HEAP_LOG] {
+        &self.log
     }
 
     pub fn tag(&self) -> u8 {
@@ -211,6 +226,7 @@ impl Heap {
     pub fn edit(&mut self, h: u64) -> Result<(u32, &mut Vec<u8>, &mut usize), HeapError> {
         let i = self.resolve(h)?;
         self.epoch += 1;
+        self.log[self.epoch as usize % HEAP_LOG] = i;
         let s = &mut self.slots[i as usize];
         s.writes = s.writes.wrapping_add(1);
         match s.data.as_mut() {
@@ -263,6 +279,7 @@ impl Heap {
 
     fn release(&mut self, i: u32) {
         self.epoch += 1;
+        self.log[self.epoch as usize % HEAP_LOG] = i;
         let s = &mut self.slots[i as usize];
         s.data = None;
         s.generation = s.generation.wrapping_add(1).max(1);
@@ -601,6 +618,21 @@ pub(crate) fn handles_in(
 mod tests {
     use super::*;
     use yavs_ir::{Field, IdVec, Program};
+
+    /// Every epoch change names its slot in the log (compiled code drops only that object).
+    #[test]
+    fn the_log_names_the_slot_of_each_change() {
+        let mut h = Heap::new(PRIVATE);
+        let hs: Vec<u64> = (0..3)
+            .map(|_| h.alloc(Obj::Typed(TyId(0)), vec![0; 8]).unwrap())
+            .collect();
+        let slot = |x: u64| ((x >> 32) & u64::from(MAX_INDEX)) as u32;
+        h.free(hs[1]).unwrap();
+        assert_eq!(h.log()[h.epoch() as usize % HEAP_LOG], slot(hs[1]));
+        let (i, _, _) = h.edit(hs[2]).unwrap();
+        assert_eq!((h.epoch(), h.log()[2]), (2, i));
+        assert_eq!(i, slot(hs[2]));
+    }
 
     #[test]
     fn handles_and_collection() {

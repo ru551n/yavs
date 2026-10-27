@@ -72,6 +72,20 @@ the way: #782 (literals accepted without visible character literals), #783 (inte
 
 (`docs/decisions.md` "Per-op costs, round 3".) `Op::CallIeee` keeps its argument registers and tries a reportless fast path of the native first (`ieee::lookup_fast`): the one-word paths of the `numeric_std` operators and `std_logic_1164` gates, the scalar `is_x`/`to_x01..`, the reductions, and new word-wise paths (`ieee_wide.rs`) for vectors of 65 to 1024 elements (`+`, `-`, comparisons, `to_integer`, `to_unsigned`/`to_signed`, `resize`, `sll`/`srl`, gates), read from the planes in place and written straight into temporary memory. `CallIeee` 323 to 220 instructions an op in `poc_arith_addw`, 398 to 332 in `fletcher_bufferwriter_512`, 300 to 230 in `neorv32_single_min`; whole runs (interp) `poc_arith_addw` 136.4 to 130.8 G, `fletcher_bufferwriter_512` 49.8 to 48.6 G, `neorv32_single_min` 29.0 to 28.75 G, compiled tier (`--tier=auto`, main thread) `fletcher_bufferwriter_512` -1.4 percent, `poc_arith_addw` unchanged (its operators are inline in compiled code). New differential test `native_wide_matches_bodies`. Open: the slice copy before a native (not fused: 1.5 percent of a NEORV32 start-up window).
 
+### Compiled library code keeps its heap objects; native code published past never-run callees (#520, #797, 2026-10-27)
+
+(`docs/decisions.md` "llvm: a heap change drops only the objects it changed ...".) Each heap logs the slots of its last 16 deallocations and
+edits (`Heap::log`); compiled code drops only those objects from its object table instead of all heap objects at every deallocation, and a
+call from the interpreter into native-frame code keeps the calling machine's objects (`TierHost::tier_state`). `--tier=auto` publishes
+native-frame code whose native callees that never ran are not compiled (#797: such code stayed unused for the whole run in some runs, its
+callers stepping out of compiled code). Window generator (`vai_window_gen_interlock`) warm 0.90 to 0.93 wall, 0.96 to 0.98 instructions,
+cold level; object-table callbacks 3.75 to 1.30 million a run; a test-runner queue loop 18 to 16.4 G instructions and no slow mode.
+`tools/realbench --compare` (42 tests): geometric mean 1.00 / 0.99 wall, 1.00 / 1.00 instructions (warm / cold). Against sim1 (run cell,
+elaboration plus run, not the full total of the head-to-heads; two sessions of one core 4 minutes apart, sim1 itself 4.27 and 4.92 s):
+warm 1.77 to 1.76 (instructions 1.69 to 1.67), cold 2.56 to 2.65 (instructions 2.57 to 2.61, the compile outcome of cold runs varies).
+Left: protected-method calls of the random package stepped from compiled code, native steps of `FToIRange`, `LFill`, `LogicOp`, the remaining
+object-table misses (decisions.md).
+
 ### `wait until <edge>` as cheap as the sensitivity-list forms (#767, 2026-10-26)
 
 (`docs/decisions.md` "`wait until <edge>` costs what the sensitivity-list forms cost".) The end of a `wait until rising_edge(clk)` on one

@@ -11219,3 +11219,38 @@ windows, `perf record`, IBS op sampling (`ibs_op`, data source per load) and `pe
   `rtl_lfsr` or in a synthetic design of four 8-bit registers per process with the skip test active).
 - **The reference simulator (rule 22):** its cycle was read (one pass over the time-ordered event heap, deferred queues of drivers and
   processes, the driving and effective values in level order); neither change takes an idea from it. Nothing was copied.
+
+## llvm: a heap change drops only the objects it changed; interpreter calls keep the machine's objects; native code published past never-run callees (yavs-llvm `rt.rs`, `auto.rs`, yavs-interp `heap.rs`, `exec.rs`, #520, #797, 2026-10-27)
+
+- **Problem.** In `vai_window_gen_interlock` under `--tier=auto` the compiled test-runner library code (queue, string and integer-vector
+  pointers on the shared heap) ran 3.75 million `TierHost::object` callbacks a run (about 4 percent of the cycles at a low instruction
+  count: cache misses in the slot lookup). Two causes: every deallocation anywhere moved the heap epoch and so the heap tag of `Mem`,
+  dropping every heap object found before (the library frees messages and strings all the time); and a call from the interpreter
+  (`Tier::call`, `call_on`) of another machine than the last one began without a record, so it issued new machine and heap tags. A third
+  cause hid the compiled code itself: native-frame code waited for its whole transitive native set to be compiled (#797).
+- **Decision: each heap logs the slot of its last `HEAP_LOG` (16) epoch changes** (`Heap::log`, written by `release` and `edit`), the view
+  carries both epochs and both logs (`TierFrame::heap_epoch` is now the process heap's alone, `shared_epoch`, `heap_log`), and `Mem`
+  drops only the table entries of the logged slots when it is at most 16 changes behind (`Mem::drop_changed`, from `forget` and `begin`);
+  further behind it takes a new heap tag as before. The process record keeps both epochs (`TierState` words: identity, process heap epoch,
+  heap tag and machine tag in one word (tags are below 2^31), shared heap epoch; still four words, the fifth cache line of the machine is full).
+  Why: an object's host bytes move or go only at its own deallocation or edit (objects never move otherwise), so the other entries stay true.
+- **Decision: `call_on` begins with the calling machine's record** (`TierHost::tier_state`, kept again with `set_tier_state` after the call,
+  `TierState::at` left alone): the record names the machine's tags and epochs whoever ran in between.
+- **Decision (#797): `Worker::publish` asks `Worker::ready`**, a walk over the native callees that stops at a callee that is `left` or was
+  never seen running. Such a callee is compiled by no one until it runs; then it is seen and compiled like any other function, and until then
+  a call to it materialises the frames (counted: up to 18 000 materialisations a run in the queue loop and 76 000 to 79 000 in the window
+  generator, 38 000 to 148 000 with a walk that stopped at `left` callees only, against 285 000 to 1.2 million steps out of compiled code
+  a run of the queue loop in its slow mode).
+- **Measured** (bench builds, warm worlds two runs old, claimed core of CCD1, interleaved): a test-runner queue loop (push, pop, set, get, 300 000
+  times) 17.8 to 18.4 G user instructions to 16.2 to 16.6 G, `object` callbacks 6.5 million to 0.59 million; window generator warm, five rounds
+  at load 2 to 10 after a reboot: 8.70 to 7.84 s median wall, 114.5 to 109.8 G instructions, 41.6 to 37.8 G cycles, `object` callbacks
+  3.75 million to 1.30 million; cold level (12.5 against 12.6 s). `tools/realbench --compare` against ac8d4e88 (42 tests, core 8): wall
+  geometric mean 1.00 warm / 0.99 cold, instructions 1.00 / 1.00; window generator 0.93 / 0.97 wall; `uvvm_sb_slv` 1.05 / 0.99 in that pass,
+  1.00 / 0.96 in a rerun of seven runs (both binaries 10.35 G: run-to-run spread of `--tier=auto`, #673).
+- **Not done (measured, left):** the 1.1 million steps of `random_frame` (the protected-method calls of the random package: `CheckMinMax`
+  and `LocalRandInt` are frame-mode only because their error paths call the alert procedure, so each call is a step plus a compiled callee,
+  about 0.3 percent of the run); `FToIRange` (560 000), `LFill` (390 000) and `LogicOp` (333 000) native steps of `Scale`, `get_range`,
+  `decode` and `"and"` in native frames; the remaining 1.3 million `object` callbacks (first finds and table conflicts).
+- **The reference simulator (rule 22):** its compiled code holds raw pointers into a memory space and a deallocation touches only the object
+  freed. The idea taken: a deallocation invalidates that object alone. Ours keeps generational handles and the object table and drops one
+  entry per logged change. Nothing was copied.

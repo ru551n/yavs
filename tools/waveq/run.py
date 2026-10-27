@@ -193,7 +193,7 @@ KNOWN = [
     ("osvvm_*", "*fifoid", 0, 0, "reference", "process-order-in-cycle"),
     ("osvvm_*", "*.intfrommodel", 0, 20_000_000, "reference", "process-order-in-cycle"),  # the ID a VC hands back at its start
     ("uvvm_axistream_vvc", "*entry_num_in_vvc_activity_register", 0, 0, "reference", "process-order-in-cycle"),
-    # the random valid/ready-low test case, BFM seeds from 'instance_name (#784 is the yavs part)
+    # the random valid/ready-low test case, BFM seeds from 'instance_name (yavs matches sim2 since #784; sim1 spaces differ)
     ("uvvm_axistream_vvc", "*", 266_872_500_000, None, "reference", "subprogram-signature-instance-name"),
 ]
 
@@ -203,8 +203,8 @@ WHY = {
                               "(docs/design/simulator-discrepancies.md); every bus signal is equal",
     "subprogram-signature-instance-name": "from 266.87 us, in the test case with random valid/ready low, the masters deassert "
             "tvalid in other cycles: the BFM seeds that random stream from `'instance_name` of a procedure variable, whose "
-            "signature each tool spells differently (base types on yavs, #784; a space after each comma on sim1), so each "
-            "tool runs a different, equally valid sequence (the cause is inferred from where the divergence starts); the test passes everywhere",
+            "signature is spelled with a space after each comma on sim1 and without on yavs and sim2 (#784), so sim1 "
+            "runs a different, equally valid sequence (the cause is inferred from where the divergence starts); the test passes everywhere",
 }
 
 

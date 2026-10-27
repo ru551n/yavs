@@ -11178,3 +11178,24 @@ strings (`Cat` is 50 MB of 23 GB): it is **one 689 KB record**, UVVM's `t_vvc_cm
   mean of instructions 0.99 interp and 0.99 auto, wall 1.00 and 1.00 (single small tests moved by 40 to 60 percent on noise at equal instructions, e.g.
   `neorv32_dual_full`); the protected category (the verification-library testbenches) wall 0.95 / 0.96, `uvvm_axistream_vvc` 0.92 / 0.86 (instructions 0.96).
   Interposer census of `uvvm_axistream_vvc` (interp): `memcpy` 16.4 to 14.9 GB, `memmove` 1.2 to 0.17 GB, `memset` 5.3 to 2.3 GB, `memset` calls 26.9 M to 12.1 M.
+
+## Kernel round 26: the slot of the process ahead, a batch of element drives as one vector entry (yavs-kernel, #795, #676, 2026-10-27)
+
+Task (orchestrator): the small clocked RTL designs still above sim1 under `--tier=auto` (head-to-head 7, full total, warm: `rtl_lfsr` 1.35,
+`lfsr64` 1.10, `rtl_ff` 1.02) and the kernel-bound `sc5_timestamp` and `hdlm_lfsr`. Bench builds with `llvm`, `--threads 1`; `tools/stepcount`
+windows, `perf record`, IBS op sampling (`ibs_op`, data source per load) and `perf stat` of warm runs on claimed cores of the second CCD.
+
+- **Where the time is** (instructions an activation, compiled, one clock period, main at 3a29884f): `rtl_lfsr` about 1390, of which the kernel
+  about 330 (`run_batch` 148, `finish_direct` 118, `commit_planes_run` 60), the host layers between the kernel and compiled code about 490
+  (`InterpProcess::run`, `run_cached`, `view_again`, #766) and compiled code about 360; `rtl_ff` about 1100 with the kernel about 210. The
+  kernel lines are 2 to 28 instructions each. The largest single item of the warm runs is outside the kernel: the interpreted start before the
+  compiled process is used (`rtl_lfsr` about 51 ms of 303, `lfsr64` 20 to 37 ms of 148, #728). A falling clock edge with nothing to resume
+  is about 1240 kernel instructions (`cycle` 440, the timed update and `finish_quick` 330, `rearm` 115, `last_delta` and `next_queued` 140).
+- **Decision: the batch loop prefetches the next process's slot.** The serial arm of `run_batch` (batches of 128 or more processes, three
+  steps ahead, as round "Prefetch of the next process in a batch") also asks for every cache line of the process's `Slot` (`SLOT_LINES`: 368
+  bytes rounded up plus one line, a slot need not start on a line). IBS sampling of `rtl_ff` put 8 of its about 25 L2 misses an activation on
+  `ProcState` fields (`resumption`, `has_entries`, the `out` and `sens` vectors' headers, `wait_same`). Cycles, warm `--tier=auto`: on a
+  host whose other cores were busy (load 25 to 38) `rtl_ff` medians -15 to -25 percent (L2 misses 219 M to 136 M), on a quieter host (load
+  13) -1 to -2 percent with L2 misses 87 M against 86 M: the slots stay in the cache there. Instructions +0.6 percent (the hints).
+  `rtl_lfsr`, `lfsr64`, `rtl_fan`, `rtl_chain`, `rtl_bus`, `lfsr64_xor` level. Also prefetching the waveform buffer, the `out` and `outv`
+  buffers, `sens_prev` and the `ProcMeta` line one or two steps ahead was measured: no gain over the slot alone.

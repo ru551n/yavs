@@ -3403,8 +3403,10 @@ impl SimControl {
                         while let Some(&p) = pids.get(i) {
                             at = i;
                             if let Some(&n) = pids.get(i.saturating_add(ahead)) {
-                                let next = &*slot_mut(&mut self.slots[n as usize]).process;
-                                yavs_prefetch::lines(next, PREFETCH_LINES);
+                                let next = &mut self.slots[n as usize];
+                                // The slot (the process's kernel state), then the process.
+                                yavs_prefetch::lines(&*next, SLOT_LINES);
+                                yavs_prefetch::lines(&*slot_mut(next).process, PREFETCH_LINES);
                             }
                             let s = slot_mut(&mut self.slots[p as usize]);
                             if !init {
@@ -4431,6 +4433,8 @@ fn resumption(procs: &[ProcMeta], p: u32, st: &mut ProcState) {
 const PREFETCH_BATCH: usize = 128;
 const PREFETCH_AHEAD: usize = 3;
 const PREFETCH_LINES: usize = 5;
+/// Every line a slot can touch: it need not start on a line.
+const SLOT_LINES: usize = std::mem::size_of::<Mutex<Slot>>().div_ceil(yavs_prefetch::LINE) + 1;
 
 fn slot_mut(m: &mut Mutex<Slot>) -> &mut Slot {
     m.get_mut().unwrap_or_else(PoisonError::into_inner)

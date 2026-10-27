@@ -23,8 +23,15 @@ use yavs_syntax::{Encoding, Options, Std};
 /// What `yavs --version` prints after the name: the first line of its output is
 /// `yavs MAJOR.MINOR.PATCH (details)` (docs/cli-contract.md section 1); the details say whether
 /// the compiled tier is built in (release archives with and without it, #780).
-const VERSION: &str = if cfg!(feature = "llvm") {
+const VERSION: &str = if cfg!(all(feature = "llvm", feature = "clift")) {
+    concat!(
+        env!("CARGO_PKG_VERSION"),
+        " (compiled tier: llvm, cranelift)"
+    )
+} else if cfg!(feature = "llvm") {
     concat!(env!("CARGO_PKG_VERSION"), " (compiled tier: llvm)")
+} else if cfg!(feature = "clift") {
+    concat!(env!("CARGO_PKG_VERSION"), " (compiled tier: cranelift)")
 } else {
     concat!(
         env!("CARGO_PKG_VERSION"),
@@ -497,10 +504,11 @@ mod tests {
             cfg!(feature = "llvm"),
             "{v}"
         );
+        assert_eq!(v.contains("cranelift"), cfg!(feature = "clift"), "{v}");
     }
 
-    /// The default tier (#125): `auto` with the `llvm` feature, also under `--vhpi`; `interp`
-    /// under `--dap` and without the feature; an explicit `--tier=` wins.
+    /// The default tier (#125): `auto` with a compiled tier (`llvm` or `clift`), also under
+    /// `--vhpi`; `interp` under `--dap` and without one; an explicit `--tier=` wins.
     #[test]
     fn default_tier() {
         let tier = |extra: &[&str]| {
@@ -511,7 +519,9 @@ mod tests {
                 _ => unreachable!(),
             }
         };
-        let auto = if cfg!(feature = "llvm") {
+        let auto = if cfg!(all(feature = "clift", not(feature = "llvm"))) {
+            elab::TierArg::CliftAuto
+        } else if cfg!(feature = "llvm") {
             elab::TierArg::Auto
         } else {
             elab::TierArg::Interp

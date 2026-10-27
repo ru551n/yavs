@@ -23,7 +23,7 @@ the same files again into the populated libraries), `elab` (elaboration only, co
 `--tier=interp`, both stopped at time 0; cold and warm cache; the reference generates code inside its elaboration), `run` (the --tiers cells).
 Python is stdlib only; run with `python3 -I`. See AGENTS.md.
 """
-import argparse, concurrent.futures as cf, functools, importlib.util, json, math, os, re, shlex, shutil, statistics, subprocess, sys, tempfile, threading, time, tomllib
+import argparse, concurrent.futures as cf, functools, importlib.util, json, math, os, re, shlex, shutil, statistics, subprocess, sys, tempfile, threading, time, tomllib, types
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -616,7 +616,7 @@ def measure_group(t, cells, ctx, cores, runs, instr, scratch):
             continue
         ins = None
         if instr and runs:  # the counted run must pass too: a run that stops early counts fewer instructions
-            w = B.timed(c.prepare(ctx, scratch, t), str(scratch), cores, instr=instr, ref=c.tool != "yavs")
+            w = B.timed(c.prepare(ctx, scratch, t), str(scratch), cores, instr=instr, ref=c.tool != "yavs", ok=t["ok"] or None)
             if not ok_run(t, c, w):
                 res[c.name] = {"wall": None, "cpu": None, "rss": None, "ins": None, "ok": 0, "runs": 0, "rcs": [w["rc"]], "tail": w["tail"]}
                 continue
@@ -922,6 +922,17 @@ def self_test():
     md3 = markdown({"meta": meta3, "tests": {"a": {"category": "c1", "cells": cs}}})
     assert "## Phase: analyze" in md3 and "| analyze-cold | 1 | **2.00**" in md3 and "| codegen-cold | 1 | **10.00**" in md3 and "Analysis per file" in md3 and "100.0" in md3
     assert "hidden" not in md3 and "analyze-cold-lib | " in md3
+    # the counted run is matched against `ok` like the check run (#794): a pass text beyond the output tail must not fail the cell
+    fake = lambda m: lambda script, cwd, cores, env=None, instr=None, ref=True, ok=None: dict(rc=0, wall=1.0, cpu=1.0, rss=1.0, ins=5, tail="", ok_match=None if ok is None else m)
+    cl = types.SimpleNamespace(name="x", tool="yavs", mode="run", warmups=1, prepare=lambda *a: "")
+    real_timed = B.timed
+    try:
+        for m, want in ((True, 1), (False, 0)):
+            B.timed = fake(m)
+            r = measure_group({"ok": "Test passed"}, [cl], None, "0", 1, "instructions:u", None)["x"]
+            assert r["ok"] == want and (m or r["ins"] is None), r
+    finally:
+        B.timed = real_timed
     # analysis calls (#745): consecutive files of one library, standard and flags share a call; --analyze-calls per-file splits them
     it = lambda lib, f, std="2008", fl=None: dict(lib=lib, std=std, file=f, flags=fl)
     items = [it("a", "1"), it("a", "2"), it("b", "3"), it("a", "4"), it("a", "5", "2019"), it("a", "6", "2019", ["--relaxed"])]

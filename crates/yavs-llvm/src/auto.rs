@@ -1406,8 +1406,7 @@ impl Worker {
             if let Some(&us) = self.early.get(&self.prog.base_of(id))
                 && !self.lost[id.0 as usize]
                 && !(self.prog.base_of(id) == id && self.prog.specialisable(id))
-                && (self.prog.base_of(id) == id
-                    || us.saturating_mul(profile::EARLY_RUNS) >= self.threshold(id, false))
+                && (self.prog.base_of(id) == id || us >= self.threshold(id, false))
                 && !std::mem::replace(&mut self.asked_for[id.0 as usize], true)
             {
                 pending.early.push((us, id));
@@ -2057,8 +2056,8 @@ impl Worker {
     /// function's seen time over its kind's payback) and what it costs (the prices of the tree), in
     /// microseconds: compiled when the first is at least the second. The payback rule prices the root
     /// alone, and the callees a native-frame root brings cost up to six times its own price (#757).
-    /// A program the profile says ran before shares the cost among `profile::EARLY_RUNS` runs, as the
-    /// profile does (the compilation cache makes it a link in the next ones). The root's seen time is
+    /// A program the profile says ran before shares the cost among `profile::EARLY_RUNS` runs (the
+    /// compilation cache makes it a link in the next ones). The root's seen time is
     /// what `threshold` reads (a process's pooled over its copies, a copy's own unless it is a clocked
     /// process); a clocked process keeps its own rules, its seen time pays for its callees only.
     fn repays(&self, root: FuncId, ids: &[(FuncId, Part)]) -> (f64, f64) {
@@ -2340,18 +2339,17 @@ impl Worker {
         };
         self.profile_key = Some(key);
         p.remap(|rank| self.profile_order.get(rank as usize).copied());
-        // A function is compiled early when seen long enough that the payback rule would have
-        // compiled it within `EARLY_RUNS` runs of this length: the rule's price, the object cache
-        // making it a link (`threshold`), but the whole run's time in place of the part seen so far.
-        // A process that can have copies is held to it by each copy's own kind when the copy runs
-        // (`see`): a `BigLoop` copy of a `Big` process.
+        // A function is compiled early once the time the earlier runs saw it, summed, repays its
+        // compile by the payback rule (`threshold`: the rule's price, the object cache making it a
+        // link), maintainer 2026-10-27 (#679): the compile is paid once and the cache serves the runs
+        // after. A process that can have copies is held to it by each copy's own kind when the copy
+        // runs (`see`): a `BigLoop` copy of a `Big` process.
         for &(id, us, _) in &p.hot {
             let id = FuncId(id);
             let fine = self.prog.funcs.get(id).is_some_and(|f| !f.spare)
                 && self.prog.base_of(id) == id
                 && !p.lost.contains(&id.0)
-                && (self.prog.specialisable(id)
-                    || us.saturating_mul(profile::EARLY_RUNS) >= self.threshold(id, false));
+                && (self.prog.specialisable(id) || us >= self.threshold(id, false));
             if fine {
                 self.early.insert(id, us);
             }
@@ -4495,7 +4493,7 @@ mod tests {
         set(&mut w, c2, Kind::BigLoop);
         let need = w.threshold(c2, false);
         let mut pending = super::Pending::default();
-        w.early.insert(f, need / super::profile::EARLY_RUNS - 1);
+        w.early.insert(f, need - 1);
         w.see(&look(c2, 1), false, &mut pending);
         assert!(pending.early.is_empty());
         w.early.insert(f, need);

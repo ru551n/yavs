@@ -15,8 +15,9 @@ pub(crate) const HOT_MIN_US: u64 = 20_000;
 /// loser the run after cannot afford to find out.
 pub(crate) const EARLY_SPEEDUP: f64 = 1.4;
 
-/// A hot function is compiled early when the payback rule of its kind would compile it for the time it
-/// was seen this many runs over: the compile is paid once and the cache keeps it for the runs after.
+/// The runs among which a program that ran before shares the price of a compile (`Worker::repays`):
+/// the compile is paid once and the cache keeps it for the runs after. (A hot function of the profile
+/// is compiled early once its seen time summed over the runs repays its compile, #679.)
 pub(crate) const EARLY_RUNS: u64 = 4;
 
 /// A run is judged, and written to the profile, only when the simulation threads used this much CPU
@@ -32,15 +33,16 @@ pub(crate) const LOST_MAX: usize = 256;
 /// the link: they are lost.
 pub(crate) const GAIN_PERCENT: u64 = 3;
 
-const HEAD: &str = "yavs-auto-profile 2";
+const HEAD: &str = "yavs-auto-profile 3";
 
 /// What the earlier runs of a program left.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Profile {
     /// Simulation CPU microseconds of the latest judged run.
     pub base: Option<u64>,
-    /// Functions to compile when first seen: id, microseconds the last run that saw it, and whether
-    /// a run that compiled it early was judged better than the run before. The hottest first.
+    /// Functions to compile when first seen: id, microseconds the runs saw it (summed over the runs
+    /// since it became hot, #679), and whether a run that compiled it early was judged better than
+    /// the run before. The hottest first.
     pub hot: Vec<(u32, u64, bool)>,
     /// Functions not compiled early: a trial took their compiled code back, or the run that
     /// compiled them early was not better. The oldest first.
@@ -124,7 +126,7 @@ pub(crate) struct Snapshot {
 /// functions compiled early for the first time are judged by the run as a whole: it took clearly
 /// less CPU time than the run before (`better`), or they are lost. The functions a trial took back
 /// are lost. The functions seen for a good part of the sampled time join the hot ones; the ones
-/// already there stay (a run that compiles them early sees them less).
+/// already there stay and add this run's seen time to theirs (#679).
 pub(crate) fn next(earlier: &Profile, snap: &Snapshot, cpu: u64) -> Profile {
     let mut p = earlier.clone();
     let lose = |p: &mut Profile, b: u32| {
@@ -158,9 +160,9 @@ pub(crate) fn next(earlier: &Profile, snap: &Snapshot, cpu: u64) -> Profile {
     let floor = HOT_MIN_US.max(snap.total / HOT_DIV);
     for &(b, us) in &snap.seen {
         if let Some(h) = p.hot.iter_mut().find(|h| h.0 == b) {
-            // (Compiled code retires fewer instructions: the time seen of a function compiled early
-            // is less than the time it was seen interpreted, which stays the measure.)
-            h.1 = h.1.max(us);
+            // The time of the runs adds up until it repays the compile (`Worker::load_profile`); a
+            // function compiled early has passed that already.
+            h.1 = h.1.saturating_add(us);
         } else if us >= floor && !p.lost.contains(&b) {
             p.hot.push((b, us, false));
         }
@@ -194,12 +196,12 @@ mod tests {
         );
         for bad in [
             "",
-            "yavs-auto-profile 1\n",
-            "yavs-auto-profile 2\nhot 1 2\n",
-            "yavs-auto-profile 2\nhot 1 2 x\n",
-            "yavs-auto-profile 2\nhot 1 2 a 3\n",
-            "yavs-auto-profile 2\nhot x 2 a\n",
-            "yavs-auto-profile 2\nwarm 1 2\n",
+            "yavs-auto-profile 2\n",
+            "yavs-auto-profile 3\nhot 1 2\n",
+            "yavs-auto-profile 3\nhot 1 2 x\n",
+            "yavs-auto-profile 3\nhot 1 2 a 3\n",
+            "yavs-auto-profile 3\nhot x 2 a\n",
+            "yavs-auto-profile 3\nwarm 1 2\n",
         ] {
             assert_eq!(Profile::parse(bad), None, "{bad:?}");
         }
@@ -235,7 +237,7 @@ mod tests {
             &snap(&[(5, 300_000), (6, 80_000)], &[5, 6], &[]),
             1_400_000,
         );
-        assert_eq!(kept.hot, [(5, 400_000, true), (6, 90_000, true)]);
+        assert_eq!(kept.hot, [(5, 700_000, true), (6, 170_000, true)]);
         assert_eq!(kept.base, Some(1_400_000));
         assert!(kept.lost.is_empty());
         // One that took as long loses them: out of the hot ones and on the list of losers.
@@ -259,7 +261,11 @@ mod tests {
         );
         assert_eq!(
             more.hot,
-            [(5, 400_000, true), (8, 120_000, false), (6, 90_000, true)]
+            [
+                (5, 1_000_000, true),
+                (6, 250_000, true),
+                (8, 120_000, false)
+            ]
         );
         assert_eq!(more.base, Some(1_410_000));
         // A trial that took a function back loses it whatever else happened.
@@ -268,8 +274,11 @@ mod tests {
             &snap(&[(5, 300_000), (6, 80_000)], &[5, 6], &[6]),
             1_300_000,
         );
-        assert_eq!(trial.hot, [(5, 400_000, true)]);
+        assert_eq!(trial.hot, [(5, 1_000_000, true)]);
         assert_eq!(trial.lost, [6]);
+        // A run that compiled nothing early adds its seen time to the hot ones' (#679).
+        let two = next(&one, &snap(&[(5, 380_000)], &[], &[]), 2_000_000);
+        assert_eq!(two.hot, [(5, 780_000, false), (6, 90_000, false)]);
         // A lost function is not hot again.
         let again = next(&lost, &snap(&[(5, 400_000)], &[], &[]), 2_000_000);
         assert!(again.hot.is_empty());

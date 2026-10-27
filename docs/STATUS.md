@@ -9429,6 +9429,25 @@ natives on slices (`to_x01`, the numeric operators) still copy the slice first; 
   functions); running interpreted callees in place from compiled code was tried and dropped (window generator 1.12, decisions.md); a cache hit
   still generates the module.
 
+## `--tier=auto`: compiled code found before it is generated, profile time summed over runs (yavs-llvm, yavs-ir, yavs-elab, #785, #679, 2026-10-27)
+
+- **Pre-key (#785, maintainer 2026-10-27):** a warm run links a function's object by a key made before generation (program identity from the
+  stage cache, the function's optimised IR, level, part, target, build); no generation on a hit. `YAVS_LLVM_PREKEY_CHECK=1` (CI `llvm` jobs,
+  difftest candidate `yavs-auto-warm`) generates anyway and aborts on another module. `HIT` is 1 ms + 1 us an IR instruction. GRLIB warm with
+  the large copies forced: 52 hits cost the compile thread 0.07 s (35 hits by the IR key on main: 5.26 s); a 19 867 IR function links in
+  9.5 ms (was about 790). Decision: `docs/decisions.md` "llvm: compiled code found before it is generated".
+- **Profile (#679, maintainer 2026-10-27):** a listed process compiles early once the seen time of the earlier runs, summed, repays its
+  price (was one run's times 4). Window generator: `walk_control` compiles early from run 5 (main: run 2) and is kept; steady state equal.
+- `tools/realbench --compare` (bench builds, 12e07dce against both changes, run phase, one claimed CCD1 core each, host load 15 to 30 from
+  other agents): 41 tests (GRLIB apart, #794) `auto` geometric mean 0.97, sum 0.99; `auto-cold` 1.01 / 1.00, instructions 0.99 / 1.00.
+  Seven runs: `vai_window_gen_interlock` warm 0.98 / cold 0.99, `fletcher_bufferwriter_512` 1.00 / 0.99, `fletcher_bufferreader` 0.96 / 1.00,
+  `neorv32_single_min` 1.01 / 1.00, `poc_arith_addw` 1.04 / 1.02 (0.98 / 1.01 in the 42-test run, instructions 0.99). Nine runs of the
+  small-test outliers of the 42 (cold 1.07 to 1.14): all 1.00 but `olo_base_cam` cold 0.14 to 0.15 s. GRLIB (realbench fixed for #794, five runs): two sessions at load 30 to
+  35 ran 70 to 95 s a cell (37 s quiet) and disagree (warm 0.94 and 1.09, cold 1.17 and 1.02, instructions 1.00 to 1.02): not measured.
+- Left: with the sum a process that the 4-run projection compiled in run 2 waits until its seen time has repaid it (window generator runs
+  2 to 4 0.1 to 0.5 s slower than main's); a process under about 5 percent of a run gains near the judgement's 3 percent when compiled
+  early, so it is kept or lost by noise.
+
 ## Value movement: copies between heap objects, scratch sets (yavs-interp, #677, 2026-10-27)
 
 A copy between two objects of one heap (access values, shared variables of protected types) goes straight across (`Heap::data_pair`) instead of through the staging buffer, and the thread scratch keeps 16 register sets (was 4) so the nine large non-resident processes of `grlib_leon3mp` find their registers filled (`docs/decisions.md` "Value movement"). Interleaved `realbench --compare` (42 tests, cores 10 and 11, 3 runs): `uvvm_axistream_vvc` 0.93 interp / 0.92 auto (instructions 0.96), `grlib_leon3mp` 0.97 / 0.98, geometric mean of the run phase 0.98 / 0.98, nothing worse than noise. Left: frame fills of a call (`Pre::fill`, 8 GB of `memcpy` in `grlib_leon3mp`), `wide::eq_range` and `Signal::direct_same_planes` of same-value drives, `sig_gather`/`scatter_leaves` per-leaf work (runs of scalar leaves tried: no gain, dropped).

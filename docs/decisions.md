@@ -11368,3 +11368,21 @@ subprograms that cannot suspend.
 - **The reference simulator (rule 22):** its normal runs generate the design's code ahead of time per design unit, so it has no
   per-function look-up at run time to compare with; nothing was taken from it.
 
+## `--tier=auto` run-to-run profile: seen time summed over the runs (yavs-llvm `profile.rs`, `auto.rs`, #679, maintainer 2026-10-27)
+
+- **Decision (maintainer, 2026-10-27, on #679; replaces "seen, over `EARLY_RUNS` (4) runs" of "`--tier=auto` run-to-run profile"):** a process
+  the profile lists (any admitted kind, `BigLoop` among them) is compiled early once the time the earlier runs saw it, summed, repays its
+  price by the payback rule (`Worker::threshold`, a copy by its own kind), instead of one run's seen time times four. The loss list still
+  drops losers. `EARLY_RUNS` stays only where a program that ran before shares the price of a tree among runs (`Worker::repays`).
+- **How:** `profile::next` adds each run's seen time to a listed process's (`hot` entry, saturating; it used to keep the largest); the
+  text format is 3 (a format-2 profile is no profile, and the build is in its key anyway). `load_profile` and `see` compare the sum with
+  the threshold. The sum is of earlier runs only: the process compiles at its first look in the run after the sum crosses, so the run
+  that compiled it early has it for the whole run and is judged fairly against the run before.
+- **Measured** (bench builds, `vai_window_gen_interlock`, `YAVS_AUTO_TRACE`, eight consecutive runs of one fresh world, claimed CCD1 cores,
+  other agents busy). On main (12e07dce) `walk_control`'s one run (about 0.4 s) times 4 passed its threshold, so it compiled early from run 2
+  and both hot processes were kept (run 2 9.27 s simulation CPU against 11.84). With the sum it compiles early in run 5 (the sum crosses
+  its threshold of about 1.7 s after four runs) and is kept (7.68 s against 8.25); `bus_process` compiles early from run 2 as before.
+  Runs 2 to 4 are 0.1 to 0.5 s slower than main's, runs 5 to 8 equal (7.5 to 7.9 s both). Before main's latest interpreter changes the
+  same sequence showed the other side: a joint early trial of both in run 2 was judged not better and lost both, and with the sum
+  `bus_process` alone was tried first and kept. `walk_control` is under 5 percent of a run, so its early compile gains 2 to 7 percent of
+  the run, near the 3 percent of the judgement.

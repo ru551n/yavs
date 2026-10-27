@@ -10872,3 +10872,17 @@ Round 1 made the remaining `SubtypeCheck` cheaper; round 2 removes the ones whos
 - **Measured, not taken: `LoadDerefImm` and `AffP`.** In the window generator's `get` the derefs resolve different handles (list, row, element), so there is nothing to share or hoist per block; the 134 instructions of `LoadDerefImm` are 15 for the three register writes (`index_mut`), 13 for `load`, 11 dispatch, about 30 for `deref`/`resolve` and a long tail under 5 each, and `AffP`'s 107 are 20 for dispatch and register access and 40 for `dim_of`/`mem_fast`. A fusion of `LoadDerefImm` with the following `AffP` (one object lookup instead of two) needs a second op of more than the 24 bytes `Op` allows (`pre.rs`), or a table of resolved objects; not done.
 - **Remaining `SubtypeCheck`s** (probe of executed sites, 1/32 sampled): the callee's result against a frame-resident target (`fletcher_bufferwriter_512`: the result descriptor of a call, no constrained result subtype in `Func`), element descriptors of two-dimensional conversions with a register-sized width (`uvvm_axistream_vvc`: `i * w - 1 downto i * w - w` with `w` a parameter, a product of two registers, outside the linear forms). Both need information from outside the function.
 - **Work-counter ceilings** (`crates/yavs/tests/perf.rs`) of 20 designs, `ops` Max back to the measured value plus 3 percent: `ieee_operands` 3541 to 2716 is this change, the others (`gate_vec`, `idle_regs`, `case_tab`, `memo_giveup`, `pure_memo`, `agg_carry`, ...) were loose from earlier rounds (gates moved into the kernel, #779).
+- **Measured** (bench builds of `70cebdc0` and of this change before the rebase, `--threads 1`, `perf stat instructions:u` and cycles of warm worlds (two untimed runs), A and B alternating on one core of the second CCD; instructions in G, cycles in G):
+
+  | test | tier | instructions before | after | cycles before | after |
+  |---|---|---:|---:|---:|---:|
+  | `vai_window_gen_interlock` | interp | 412.46 | 406.12 | 116.3 | 118.3 |
+  | `poc_arith_addw` | interp | 138.64 | 137.00 | 41.4 | 40.0 |
+  | `fletcher_bufferwriter_512` | interp | 50.20 | 50.02 | 19.9 | 19.7 |
+  | `grlib_leon3mp` | interp | 413.95 | 413.97 | 172.4 | 172.3 |
+  | `uvvm_axistream_vvc` | interp | 33.15 | 32.70 | 12.4 | 12.1 |
+  | `poc_arith_addw` | auto | 80.27 | 78.8 | 26.0 | 25.8 |
+  | `uvvm_axistream_vvc` | auto | 28.17 | 28.0 | 11.0 | 10.95 |
+  | `vai_window_gen_interlock` | auto | 128.4 to 129.0 | 122.0 to 125.8 | 40.0 | 39.3 |
+
+  (`auto` counts vary by 2 to 5 percent with the background compilation, so only its direction is a result; `fletcher_bufferwriter_512` and `grlib_leon3mp` in `auto` are unchanged within that.) `SubtypeCheck` ops in the 5 M instruction window of `tools/stepcount --ops`: `poc_arith_addw` 802 to 96, `vai_window_gen_interlock` 352 to none. The `vai_window_gen_interlock` cycles went up 1.7 percent for 1.5 percent fewer instructions (layout, #576: the same binary pair gives -3.7 percent cycles on `poc_arith_addw`); `realbench --compare` over the 42 tests, `--phases run`: instructions 1.00 (interp) and 1.00 (auto), wall 1.00 and 0.99 overall.

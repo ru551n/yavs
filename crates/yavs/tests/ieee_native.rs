@@ -1077,3 +1077,133 @@ fn native_integer64_matches_bodies_2019() {
     );
     diff_run("int64", &src, "t", "2019", 100);
 }
+
+/// Vectors longer than one plane word: the word-wise paths against the bodies. Lengths at and
+/// around every word boundary, mostly clean `0 1` vectors with some `L`/`H` and some metavalues,
+/// all-zero, all-one and one-hot patterns, a small operand against a wide one, integer operands
+/// of both signs, resizes and shifts across words.
+#[test]
+fn native_wide_matches_bodies() {
+    let mut g = Gen {
+        rng: Rng(77),
+        out: String::new(),
+        n: 0,
+    };
+    const LENS: [usize; 14] = [1, 8, 63, 64, 65, 66, 100, 127, 128, 129, 192, 193, 300, 513];
+    fn wide(g: &mut Gen, ty: &str, len: usize) -> String {
+        let kind = g.rng.below(12);
+        let s: String = (0..len)
+            .map(|i| match kind {
+                0 => '0',
+                1 => '1',
+                2 => {
+                    if i == g.rng.below(len as u64) as usize {
+                        '1'
+                    } else {
+                        '0'
+                    }
+                }
+                3 => b"01LH"[g.rng.below(4) as usize] as char,
+                4 if g.rng.below(40) == 0 => b"UXZW-"[g.rng.below(5) as usize] as char,
+                _ => b"01"[g.rng.below(2) as usize] as char,
+            })
+            .collect();
+        let (l, asc) = (g.rng.below(9) as i64 + 600, g.rng.below(2) == 0);
+        format!("{ty}(\"{s}\", {l}, {asc})")
+    }
+    fn small_int(g: &mut Gen, nat: bool) -> String {
+        let v: i64 = match g.rng.below(5) {
+            0 => 0,
+            1 => 2147483647,
+            2 => g.rng.below(5) as i64,
+            _ => g.rng.below(70000) as i64,
+        };
+        if !nat && g.rng.below(2) == 0 {
+            format!("(-{v})")
+        } else {
+            v.to_string()
+        }
+    }
+    for _ in 0..iters(30) {
+        let n = LENS[g.rng.below(LENS.len() as u64) as usize];
+        let m = if g.rng.below(3) == 0 {
+            LENS[g.rng.below(LENS.len() as u64) as usize]
+        } else {
+            n
+        };
+        for op in ["and", "nand", "or", "nor", "xor", "xnor"] {
+            let (x, y) = (wide(&mut g, "sv", n), wide(&mut g, "sv", n));
+            g.case(&format!("{x} {op} {y}"), "img");
+            let (x, y) = (wide(&mut g, "uv", n), wide(&mut g, "uv", n));
+            g.case(&format!("{x} {op} {y}"), "img");
+        }
+        let x = wide(&mut g, "sv", n);
+        g.case(&format!("not {x}"), "img");
+        let x = wide(&mut g, "gv", n);
+        g.case(&format!("not {x}"), "img");
+        for (ty, nat) in [("uv", true), ("gv", false)] {
+            let (a, b) = (wide(&mut g, ty, n), wide(&mut g, ty, m));
+            for op in ["+", "-"] {
+                g.case(&format!("{a} {op} {b}"), "img");
+            }
+            for op in ["<", "<=", ">", ">=", "=", "/="] {
+                g.case(&format!("{a} {op} {b}"), "img");
+                g.case(&format!("{a} {op} {a}"), "img");
+            }
+            for op in ["+", "-"] {
+                let i = small_int(&mut g, nat);
+                g.case(&format!("{a} {op} {i}"), "img");
+                g.case(&format!("{i} {op} {a}"), "img");
+            }
+            for op in ["<", "<=", ">", ">=", "=", "/="] {
+                let i = small_int(&mut g, nat);
+                g.case(&format!("{a} {op} {i}"), "img");
+                g.case(&format!("{i} {op} {a}"), "img");
+            }
+            let s = LENS[g.rng.below(LENS.len() as u64) as usize];
+            g.case(&format!("resize({a}, {s})"), "img");
+            g.case(&format!("resize({a}, {})", s + 1), "img");
+            let i = small_int(&mut g, nat);
+            let f = if nat { "to_unsigned" } else { "to_signed" };
+            g.case(&format!("{f}({i}, {s})"), "img");
+            for f in ["shift_left", "shift_right"] {
+                for c in [
+                    0,
+                    1,
+                    7,
+                    63,
+                    64,
+                    65,
+                    130,
+                    n as u64 - 1,
+                    n as u64,
+                    n as u64 + 3,
+                ] {
+                    g.case(&format!("{f}({a}, {c})"), "img");
+                }
+            }
+            g.case(&format!("rotate_left({a}, 70)"), "img");
+            g.case(&format!("{a} sll 5"), "img");
+            g.case(&format!("{a} srl 66"), "img");
+        }
+        // to_integer of a wide vector whose value fits an INTEGER.
+        let low: String = (0..31)
+            .map(|_| b"01"[g.rng.below(2) as usize] as char)
+            .collect();
+        let zeros = "0".repeat(n.max(32) - 31);
+        let ones = "1".repeat(n.max(32) - 31);
+        g.case(
+            &format!("to_integer(uv(\"{zeros}{low}\", 600, false))"),
+            "img",
+        );
+        g.case(
+            &format!("to_integer(gv(\"{zeros}{low}\", 600, false))"),
+            "img",
+        );
+        g.case(
+            &format!("to_integer(gv(\"{ones}{low}\", 600, false))"),
+            "img",
+        );
+    }
+    diff_run("wide", &tb(&g.out), "t", "2008", 1000 / scale());
+}

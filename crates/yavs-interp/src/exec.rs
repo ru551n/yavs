@@ -2616,8 +2616,12 @@ impl Machine {
         if off + 8 * N as u64 > u64::from(u32::MAX) {
             return rt_err_s!("temporary memory of one statement exceeds 4 GiB");
         }
-        let addr = mk_addr(TEMP, 0, off)?;
-        self.temp.resize(off as usize, 0);
+        // `off` is below 2^32 (checked above): the address is the space and the offset.
+        let addr = u64::from(TEMP) << 61 | off;
+        // Mostly a multiple of 8 already: no call to `resize`.
+        if self.temp.len() as u64 != off {
+            self.temp.resize(off as usize, 0);
+        }
         self.temp
             .extend_from_slice(f(addr).map(u64::to_le_bytes).as_flattened());
         Ok(addr)
@@ -6863,34 +6867,38 @@ impl Machine {
                 }
                 Op::CallIeee {
                     native,
-                    start,
-                    len,
                     dst,
+                    len,
+                    bit,
+                    regs,
                 } => {
+                    let rv = &self.regs.v[self.regs.base..];
+                    let mut cells: [u64; pre::IEEE_CELLS] =
+                        std::array::from_fn(|i| rv[usize::from(regs[i])]);
+                    // The one-word path reports nothing and fails nowhere: no frame pc, no flags.
+                    if let Some(fast) = self.rt.fast.get(usize::from(native)).copied().flatten()
+                        && let Some(v) = fast(self, &cells)
+                    {
+                        if dst != pre::NONE16 {
+                            self.regs[usize::from(dst)] = v;
+                        }
+                        k += 1;
+                        enter!();
+                        continue;
+                    }
                     self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
-                    let nid = yavs_ir::NativeId(native);
-                    let n = prog
-                        .natives
-                        .get(nid)
-                        .ok_or_else(|| ice_f!("no native {native}"))?;
-                    let Some(fun) = self.rt.natives.get(native as usize).copied().flatten() else {
+                    let Some(fun) = self.rt.natives.get(usize::from(native)).copied().flatten()
+                    else {
                         return rt_err_f!(
                             "native subprogram `{}` is not implemented in yavs yet",
-                            n.symbol
+                            Self::native_symbol(prog, native)
                         );
                     };
-                    let regs = f
-                        .regs(yavs_ir::Regs { start, len })
-                        .ok_or_else(|| ice_s!("operand list out of range"))?;
-                    let mut cells = [0u64; pre::IEEE_CELLS];
-                    for (c, &r) in cells.iter_mut().zip(regs) {
-                        *c = self.regs[r.0 as usize];
-                    }
-                    let cells = &cells[..regs.len().min(pre::IEEE_CELLS)];
-                    let v = fun(self, ctx, n.ty, cells)?;
-                    let dst = (dst != pre::NONE).then_some(Reg(dst));
-                    if std::mem::take(&mut self.ieee_fallback) {
-                        match self.ieee_body(prog, &n.symbol, cells, dst)? {
+                    let cells = &mut cells[..usize::from(len)];
+                    // Only the natives of `numeric_bit` look at the type, and only whether there is one.
+                    let v = fun(self, ctx, bit.then_some(yavs_ir::TyId(0)), cells)?;
+                    if self.ieee_fallback | self.ieee_stop {
+                        match self.ieee_after(prog, native, cells, dst, v)? {
                             Flow::Next => {
                                 k += 1;
                                 enter!();
@@ -6898,13 +6906,14 @@ impl Machine {
                             flow => return Ok(flow),
                         }
                     } else {
-                        if let Some(d) = dst {
-                            let v =
-                                v.ok_or_else(|| ice_f!("native `{}` returned no value", n.symbol))?;
-                            self.set(d, v);
-                        }
-                        if std::mem::take(&mut self.ieee_stop) {
-                            return Ok(Flow::Suspend);
+                        if dst != pre::NONE16 {
+                            let Some(v) = v else {
+                                return Err(ice_f!(
+                                    "native `{}` returned no value",
+                                    Self::native_symbol(prog, native)
+                                ));
+                            };
+                            self.regs[usize::from(dst)] = v;
                         }
                         k += 1;
                         enter!();
@@ -9034,6 +9043,45 @@ impl Machine {
             "frame of {parent}, the parent of `{}`, is not on the stack",
             callee.name
         ))
+    }
+
+    /// The symbol of native `native` (for messages).
+    #[cold]
+    fn native_symbol(prog: &Program, native: u16) -> &str {
+        prog.natives
+            .get(yavs_ir::NativeId(u32::from(native)))
+            .map_or("?", |n| n.symbol.as_str())
+    }
+
+    /// What `Op::CallIeee` does when the native gave the call back to the VHDL body
+    /// (`ieee_fallback`) or ended the process (`ieee_stop`); clears both.
+    #[cold]
+    fn ieee_after(
+        &mut self,
+        prog: &Program,
+        native: u16,
+        cells: &[u64],
+        dst: u16,
+        v: Option<u64>,
+    ) -> R<Flow> {
+        let dst = (dst != pre::NONE16).then_some(Reg(u32::from(dst)));
+        if std::mem::take(&mut self.ieee_fallback) {
+            let symbol = Self::native_symbol(prog, native);
+            return self.ieee_body(prog, symbol, cells, dst);
+        }
+        if let Some(d) = dst {
+            let v = v.ok_or_else(|| {
+                ice_f!(
+                    "native `{}` returned no value",
+                    Self::native_symbol(prog, native)
+                )
+            })?;
+            self.set(d, v);
+        }
+        if std::mem::take(&mut self.ieee_stop) {
+            return Ok(Flow::Suspend);
+        }
+        Ok(Flow::Next)
     }
 
     /// Call the VHDL body of a native `ieee` subprogram that gave its call back: the symbol

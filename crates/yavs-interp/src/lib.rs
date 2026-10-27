@@ -28,6 +28,7 @@ pub use foreign::{ForeignModel, ModelArg, ModelCall, ModelSignal, ModelTxn, Scal
 pub use scan::{Scan, ScanFrom, ScanShape, SearchLoop, scan_bytes, search_loops};
 mod heap;
 mod ieee;
+mod ieee_wide;
 mod implicit;
 mod native;
 mod reflect;
@@ -1221,6 +1222,8 @@ const COV_MEMO_INPUTS: u8 = 5;
 pub struct Runtime {
     pub prog: Arc<Program>,
     pub(crate) natives: Vec<Option<native::NativeFn>>,
+    /// The one-word path of each native that has one (`ieee::lookup_fast`), by native id.
+    pub(crate) fast: Vec<Option<ieee::FastFn>>,
     pub(crate) foreign: Vec<Option<ForeignFn>>,
     pub(crate) models: Vec<Option<Arc<dyn ForeignModel>>>,
     /// Where unbound foreign symbols were looked for, for the error at their call.
@@ -1564,8 +1567,10 @@ impl Runtime {
     /// an error only when it is called.
     pub fn new(prog: Arc<Program>, b: Bindings) -> Result<Arc<Runtime>, SimError> {
         let mut natives = Vec::with_capacity(prog.natives.len());
+        let mut fast = Vec::with_capacity(prog.natives.len());
         for (_, n) in prog.natives.iter() {
             natives.push(native::lookup(&n.symbol).map_err(usage)?);
+            fast.push(ieee::lookup_fast(&n.symbol));
         }
         let mut foreign: Vec<Option<ForeignFn>> = vec![None; prog.foreign.len()];
         for (id, f) in b.foreign {
@@ -1600,6 +1605,7 @@ impl Runtime {
         let n = b.cov_counters.unwrap_or(prog.cov.len());
         Ok(Arc::new(Runtime {
             natives,
+            fast,
             foreign,
             models,
             searched: b.searched,
@@ -1682,6 +1688,7 @@ impl Runtime {
     ) -> Result<(), SimError> {
         for (_, n) in prog.natives.iter().skip(self.natives.len()) {
             self.natives.push(native::lookup(&n.symbol).map_err(usage)?);
+            self.fast.push(ieee::lookup_fast(&n.symbol));
         }
         self.foreign.resize(prog.foreign.len(), None);
         self.models.resize(prog.foreign.len(), None);

@@ -11199,3 +11199,23 @@ windows, `perf record`, IBS op sampling (`ibs_op`, data source per load) and `pe
   13) -1 to -2 percent with L2 misses 87 M against 86 M: the slots stay in the cache there. Instructions +0.6 percent (the hints).
   `rtl_lfsr`, `lfsr64`, `rtl_fan`, `rtl_chain`, `rtl_bus`, `lfsr64_xor` level. Also prefetching the waveform buffer, the `out` and `outv`
   buffers, `sens_prev` and the `ProcMeta` line one or two steps ahead was measured: no gain over the slot alone.
+- **Decision: a batch of element drives that covers a run is one vector entry.** `Ctx::assign_codes_now` (the kept scalar drives of
+  compiled code, #676) of 4 or more elements that together cover one run of at most 64 elements of the driver's range, in any order, an
+  element twice taking the later code (`codes_run`), is one `assign_planes_fast` of the run: one skip test, one `OutV`, one commit and one
+  pending word, instead of one `Out`, one `commit_codes` step and one pending bit per element. Anything else (a gap, a code above 8, an
+  element outside the driver) keeps the old loop. Leaving the per-element skip out is safe as in round 24: an entry of an unchanged value
+  commits and finishes with no event. Kernel round 19 had tried the same promotion per call in the interpreter path and at commit time
+  (`hdlm_lfsr` -0.9 percent, `sc5_fifo_repack` +1.9); here the whole batch is in hand, so nothing is extended or scanned.
+  `hdlm_lfsr` (`--tier=auto`): one-element commits 16.1 M to 1.1 M, instructions 21.8 G to 20.5 G, cycles -9 to -13 percent, realbench
+  run wall 1.42 to 1.34 s. Test: `direct_paths::a_batched_run_of_elements_is_one_entry_with_the_last_codes`.
+- **Measured** (`tools/realbench --compare`, 42 tests, run phase, interp and auto, 3 runs, core 12, main ac8d4e88 against both changes):
+  wall geometric mean 0.98 / 1.00, instructions 1.00 / 1.00, CPU 0.99 / 1.00, summed auto wall 0.98; `sc5_fifo_repack` auto instructions
+  1.06 in that run is the compile outcome (its direct commit counters are identical, three more runs 21.2 to 21.6 G against 21.7 to 22.9 G).
+  Head-to-head designs against sim1 (full total, warm / cold, load 13 to 20): `rtl_lfsr` 262 ms, `lfsr64` 131 ms, `rtl_ff` 545 ms warm,
+  level with main; the ratios move with sim1 only. Edge forms: the four `rtl_ff` spellings keep identical counters. Difftest 542/542 at 1 and
+  4 threads for interp, auto, llvm and auto with `--tier-heat=1,0,0`.
+- **Not done:** the falling-edge path (spread over 30 items of 5 to 40 instructions), the codes refresh of 16-bit registers (round 24,
+  a recorded decision), #793 (the store-forwarding stall of the vector entry: not among the hot instructions of `yavs_rt_drive` in
+  `rtl_lfsr` or in a synthetic design of four 8-bit registers per process with the skip test active).
+- **The reference simulator (rule 22):** its cycle was read (one pass over the time-ordered event heap, deferred queues of drivers and
+  processes, the driving and effective values in level order); neither change takes an idea from it. Nothing was copied.

@@ -9299,6 +9299,15 @@ instructions (-11.1 percent). The other natives on slices (`to_x01`, the numeric
 A `CondBr` whose arms lead to the same block is a `Br` (the null-range test of a local array). Part of the fixed cost of an `HRead` call (`docs/decisions.md` "A branch whose arms lead to the same block"):
 the call is still about 80 ops; the rest is listed there. First 1 us of `grlib_leon3mp` with #768 to #771: 31.37 G to 22.99 G instructions (-26.7 percent), `--tier=interp`.
 
+## kernel round 26: the slot of the process ahead, element drive batches as one vector entry (#795, #676, 2026-10-27)
+
+- The batch loop also prefetches the slot (kernel state) of the process three steps ahead: `rtl_ff` -15 to -25 percent cycles on a
+  busy host, level on a quiet one. A batch of compiled element drives that covers a run of at most 64 elements (a shift register loop)
+  is one vector entry: `hdlm_lfsr` one-element commits 16.1 M to 1.1 M, cycles -9 to -13 percent, run wall 1.42 to 1.34 s.
+- `realbench --compare` 42 tests: wall 0.98 (interp) / 1.00 (auto), instructions 1.00 / 1.00. Head-to-head designs against sim1 unchanged
+  (`rtl_lfsr` 262 ms, `lfsr64` 131 ms, `rtl_ff` 545 ms warm): the kernel is about a quarter of their activation; the rest is the
+  interpreted start of warm runs (#728) and the host layers (#766). Details: decisions.md "Kernel round 26".
+
 ## kernel: prefetch of the next process in a batch (#766, 2026-10-27)
 
 - A batch of 128 or more processes prefetches the five hot cache lines of the process three steps ahead (`yavs-prefetch`, the one

@@ -996,6 +996,42 @@ fn keep_last<T, K: Eq + std::hash::Hash + Copy>(v: &mut Vec<T>, key: impl Fn(&T)
 const SKIPPED: u32 = u32::MAX;
 
 /// The plane words of one element of code `c`.
+/// The fewest one-element drives `Ctx::assign_codes_now` makes one vector entry of.
+const RUN_MIN: usize = 4;
+
+/// The `n` drives `run(k)` of `Ctx::assign_codes_now` as one run within `range`: every element of
+/// the run driven (a later drive of an element wins), at most 64 elements, every code a logic
+/// value. `None`: anything else.
+#[inline]
+fn codes_run(
+    n: usize,
+    range: Range,
+    run: &impl Fn(usize) -> (u32, u8),
+) -> Option<(Range, [u64; 4])> {
+    let (mut lo, mut hi) = (u32::MAX, 0);
+    for k in 0..n {
+        let (e, c) = run(k);
+        if c >= 9 || !range.contains(Range::new(e, 1)) {
+            return None;
+        }
+        (lo, hi) = (lo.min(e), hi.max(e));
+    }
+    let len = hi - lo + 1;
+    if len > 64 {
+        return None;
+    }
+    let (mut planes, mut seen) = ([0u64; 4], 0u64);
+    for k in 0..n {
+        let (e, c) = run(k);
+        let bit = 1u64 << (e - lo);
+        seen |= bit;
+        for (p, w) in planes.iter_mut().enumerate() {
+            *w = *w & !bit | u64::from(c >> p & 1) << (e - lo);
+        }
+    }
+    (seen == yavs_logic::wide::nmask(len as usize)).then_some((Range::new(lo, len), planes))
+}
+
 #[inline(always)]
 fn code_planes(c: u8) -> [u64; 4] {
     let c = u64::from(c);
@@ -1979,7 +2015,8 @@ impl Ctx<'_> {
         }
     }
 
-    /// `assign_code_now` for `n` elements, `run(k)` being the offset in the signal and the code of
+    /// `assign_code_now` for `n` elements (`RUN_MIN` or more that cover a run of at most 64
+    /// elements are one vector entry), `run(k)` being the offset in the signal and the code of
     /// the `k`th, in order, with the driver and its waveform looked up once: how many of them,
     /// from the front, the usual fast case took (the caller runs `assign_code` for the next one).
     /// A driver that is not direct takes one element at most: the first leaves a quick transaction.
@@ -2005,6 +2042,13 @@ impl Ctx<'_> {
             return 0;
         }
         let (sig, slot, range) = (info.signal.0, info.slot, info.range);
+        // A loop over a run of elements (a shift register): one vector entry.
+        if n >= RUN_MIN
+            && let Some((r, planes)) = codes_run(n, range, &run)
+            && self.assign_planes_fast(d, Some(r), Time::ZERO, planes, None, DelayMode::Transport)
+        {
+            return n;
+        }
         // As `assign_code_fast`: an element the signal and the driver hold already makes no entry
         // while nothing of this run is pending for it (no entry of the driver before this call,
         // none for the element in it; the batch holds at most `DRIVE_BATCH` elements).

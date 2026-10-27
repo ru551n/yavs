@@ -10985,3 +10985,41 @@ Round 1 made the remaining `SubtypeCheck` cheaper; round 2 removes the ones whos
   instructions (0.4 percent), `poc_stat_histogram` and the rest level. Not worth the full gate set; the branch `wip-calls730` of the
   author's worktree held them. What would pay is a cheaper call by structure (no argument copy into the callee's registers, slots
   that need no zeroing), which is a lowering change rather than a loop change.
+
+## Per-op costs, round 3: the native `ieee` calls (yavs-interp `pre.rs`, `exec.rs`, `ieee.rs`, `ieee_wide.rs`, #778, #520, 2026-10-27)
+
+Task (orchestrator): cut the general cost of the `numeric_std` and `std_logic_1164` natives. `tools/stepcount --ops` of `poc_arith_addw` showed `CallIeee` at 323 instructions an op: 158 in the arm of the loop (operand-list lookup, native lookup, frame pc, eight bounds-checked cell reads, the call with its `Result<Option<u64>>` through memory, two flag takes, the result store), 94 in `add`, 44 in `put_down`, 24 in `to_integer`. The wide-vector natives of `fletcher_bufferwriter_512` (512-bit `resize`, `shift_left`, `shift_right`) went through `LogicVec` (a read into a vector, the operation, a second vector, a copy into temporary memory).
+
+- **Decision: `Op::CallIeee` holds its argument registers.** `native` and the registers are `u16`s, the unused cells repeat the first register, `bit` is the `NativeRef::ty.is_some()` that `numeric_bit` natives test (nothing else of the type is used): no operand list, no `prog.natives` entry at run time. A call whose numbers do not fit (`pre::call_ieee`: a register or native id above 65534, more than 8 cells) stays an `Op::CallNative`. The `IsXSlice` fusion reads the operand register from the op.
+- **Decision: a native may have a `FastFn`** (`ieee::lookup_fast`, `Runtime::fast` by native id): `fn(&mut Machine, &[u64]) -> Option<u64>` for the cases that report nothing and fail nowhere. `Op::CallIeee` calls it first and, on `Some`, stores the result and goes on: no frame pc, no `ieee_fallback`/`ieee_stop` test, no native lookup. On `None` it runs the native exactly as before (`ieee_after`, out of line, for the fallback to the VHDL body and the stop). The natives call their fast path first as well, so a callback of compiled code (`yavs_rt_native_light`) takes it too; `add`, `compare`, `resize`, the shifts, the gates and `not` lost their copies of the one-word code (`add_small` stays for the truncation warning of `to_unsigned`/`to_signed` values that do not fit, `to_integer` for its warning). Covered: `+`/`-`, comparisons, `to_integer`, `to_unsigned`/`to_signed`, `resize`, `sll`/`srl`/`sra`/`rol`/`ror` (one word), the gates, `not` of `unsigned` and `std_ulogic_vector`, the scalar `is_x`, `??`, `to_x01`, `to_x01z`, `to_ux01`, the reductions and `is_x` of vectors (their code reads the planes in place already; the fast path skips the call bookkeeping), and `to_x01`, `to_x01z`, `to_ux01`, `to_bitvector` of up to 64 elements, whose result block is computed from the operand's planes in one word.
+- **Decision: `put_down`/`put_small` are inline, `temp_words` skips `Vec::resize` when the area is already 8-aligned and builds the address without `mk_addr`, `small_of` reads the planes without the copy through the stack (`block4`), and the element mask is `u64::MAX >> (64 - n)` (`low1`).** `put_down` as a call cost 7 push/pop pairs and a result through memory.
+- **Decision: vectors of 65 to 1024 elements without a metavalue are word-wise** (`ieee_wide.rs`): `wide_of` reads the planes into a 16-word buffer (and refuses a metavalue, or an `L`/`H` for the operations that keep the elements), the operation runs on words (carries across them for `+`/`-`, a top-down compare, `trim` of the bits above the length) and `emit` writes the fat pair, the descriptor and the blocks straight into temporary memory. Taken: `+`, `-`, the six comparisons (two vectors, vector and integer, integer and vector), `to_integer` (the value must fit INTEGER; a leading sign or zero words are checked), `to_unsigned`/`to_signed` to 65 or more elements, `resize`, `sll`/`srl`, the six gates and `not` (vector and `numeric_std`). Not taken (the general path, unchanged): a metavalue in an operand, `sra`, rotations, vectors above 1024 elements, and every case that warns or fails. Rejected: a growable buffer for longer vectors (nothing in the 42 realbench tests is above 1024; the buffers are 128 bytes each and only wide calls zero them).
+- **Not done: the slice copy before a native** (`Alloc`, `LCopy` of at most 64 elements into it, `CallIeee`; `IsXSlice` is the one fusion of this shape). Counted: 163 of the 701 `CallIeee` sites of `neorv32_dual_full` and 233 of 925 in `grlib_leon3mp` have an `LCopy` before them, but in the 5 M instruction window of `neorv32_single_min` `LCopy` + `AllocLCopy` + `Alloc` are 1.5 percent of the instructions and only part of them feed a native; none of the five target tests has any (one of 167 sites in `fletcher_bufferwriter_512`). A fused op would need the native's cells (three more registers) plus the operand's: 20 bytes of the 24 an `Op` has, one fusion per native shape. Left until a profile asks for it.
+- **The compiled tier** (`yavs-llvm`) computes the one-word cases of `+`, `-`, comparisons, `to_integer`, `resize`, shifts and gates inline (`ieee_fast` in `lower.rs`) and calls `yavs_rt_native_light` for the rest; that callback now reaches the fast paths above, so the wide cases and the scalar conversions the tier does not inline are cheaper there too. `poc_arith_addw` in `--tier=auto` is unchanged (its operators are inline), `fletcher_bufferwriter_512` in auto is 1.4 percent lower.
+- **Tests:** `native_wide_matches_bodies` (`crates/yavs/tests/ieee_native.rs`): 14 lengths at and around the word boundaries up to 513, mixed lengths, `L`/`H` and metavalues in some operands, all-zero, all-one and one-hot vectors, integer operands of both signs, resizes, shifts by 0 to beyond the length, `to_integer` of wide vectors; native and body outputs must be equal. A mutation (the initial carry of the subtraction flipped) fails it at line 28. The existing differential tests (`native_matches_bodies_*`, numeric_bit, integer64) pass natively and with `YAVS_IEEE_TIER=llvm`.
+- **Measured** (`tools/stepcount --ops`, 5 M instructions after 3000 `run_batch` entries, `--tier=interp --threads 1`, bench builds of main `f877e389` and of this change; instructions an op, before to after):
+
+  | op | window | before | after |
+  |---|---|---:|---:|
+  | `CallIeee` | `poc_arith_addw` | 323.4 | 219.5 |
+  | `CallIeee` | `vai_window_gen_interlock` | 233.0 | 162.8 |
+  | `CallIeee` | `fletcher_bufferwriter_512` | 398.4 | 331.5 |
+  | `CallIeee` | `sc5_fifo_repack` | 265.0 | 238.0 |
+  | `CallIeee` | `neorv32_single_min` | 300.3 | 230.3 |
+  | `CallIeee` | `grlib_leon3mp` | 352.8 | 294.7 |
+
+  `poc_arith_addw` by function: the arm 158 to 94 instructions, `add` 94 to 96 (with `put_down` inlined into it; was 94 + 44), `to_integer` 24 to 16. (`poc_stat_histogram` has too few `run_batch` entries for a window to open.) Whole runs, `perf stat instructions:u` of warm worlds (two untimed runs), `--threads 1`, G:
+
+  | test | tier | before | after |
+  |---|---|---:|---:|
+  | `poc_arith_addw` | interp | 136.42 | 130.76 |
+  | `fletcher_bufferwriter_512` | interp | 49.76 | 48.60 |
+  | `sc5_fifo_repack` | interp | 34.27 | 34.20 |
+  | `poc_stat_histogram` | interp | 22.58 | 22.47 |
+  | `vai_window_gen_interlock` | interp | 405.97 | 405.03 |
+  | `neorv32_single_min` | interp | 29.00 | 28.75 |
+  | `grlib_leon3mp` | interp | 389.98 | 389.29 |
+  | `poc_arith_addw` | auto, main thread | 78.93 | 78.88 |
+  | `fletcher_bufferwriter_512` | auto, main thread | 47.17 | 46.52 |
+
+  (The whole-run counts of `auto` without `--no-inherit` include the compile threads and move by 2 to 5 percent between identical runs.)

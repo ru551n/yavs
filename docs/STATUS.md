@@ -29,6 +29,13 @@ signals and values), each arm a signal copy as `CopyProcess` takes one (also rec
 run as the kernel's own `MuxProcess` and `GateProcess`. Corpus `sigassign/mux_gates` passes against sim1 at 1 and 4 threads on every tier. Open
 (#788): expression trees, compound and multi-arm conditions, constant conditions.
 
+### Release archives with and without the compiled tier (#780, 2026-10-27)
+
+`release.yml` builds two archives per platform: `yavs-<version>-<target>` with the compiled tier (Linux: `lib/libLLVM.so.21.1`
+from `tools/release/build-libllvm.sh`, built for glibc 2.17; Windows: LLVM linked statically) and `...-nollvm` with the interpreter alone.
+`yavs --version` names the tiers built in. A `workflow_dispatch` dry run builds and smoke-tests all of them (centos:7 for the Linux
+ones, `--tier=llvm` from the extracted archive) without tagging. Decisions: `docs/decisions.md` "Release archives with and without the compiled tier".
+
 ### Conformance report (#780, 2026-10-26)
 
 `tools/conformance/run.py` generates `docs/conformance.md` (and `.json`): pass counts of the differential corpus per group and thread count, the reference simulators' own tests, the discrepancy catalogue, the analysis corpora against the recorded sim1 lists, the UVVM and OSVVM suites, neorv32 and GRLIB LEON3 runs, platforms and known limits. The `conformance` workflow regenerates the CI-capable parts on `main` and release tags and checks the committed copy (`tools/conformance/AGENTS.md`). Open: waveform equivalence on real designs (a slot in the report), a public page (maintainer's decision).

@@ -24,11 +24,40 @@ mod stubs {
         std::process::abort()
     }
 
+    /// Where the LLVM library is looked for: `lib/` next to the executable (the release archives),
+    /// the dynamic loader's search, the path this build linked against.
+    fn candidates(exe: Option<&std::path::Path>) -> Vec<std::path::PathBuf> {
+        let mut c = Vec::new();
+        if let Some(dir) = exe.and_then(|e| e.parent()) {
+            c.push(dir.join("lib").join(SONAME));
+        }
+        c.extend([SONAME.into(), PATH.into()]);
+        c
+    }
+
     pub(super) fn load() -> Result<(), String> {
+        let mut failed = Vec::new();
         // SAFETY: opening the library runs its initialisers, as the dynamic loader would have.
-        let lib = unsafe { libloading::Library::new(SONAME) }
-            .or_else(|_| unsafe { libloading::Library::new(PATH) })
-            .map_err(|e| format!("cannot load the LLVM library {SONAME}: {e}"))?;
+        let lib = candidates(std::env::current_exe().ok().as_deref())
+            .iter()
+            .find_map(|p| match unsafe { libloading::Library::new(p) } {
+                Ok(l) => Some(l),
+                Err(e) => {
+                    let why = if p.is_absolute() && !p.exists() {
+                        "not found".into()
+                    } else {
+                        e.to_string()
+                    };
+                    failed.push(format!("{}: {why}", p.display()));
+                    None
+                }
+            })
+            .ok_or_else(|| {
+                format!(
+                    "cannot load the LLVM library {SONAME} (looked in {})",
+                    failed.join("; ")
+                )
+            })?;
         let mut slots = [0usize; COUNT];
         for (slot, name) in slots.iter_mut().zip(NAMES.split_inclusive('\0')) {
             // SAFETY: only the address is taken; the stubs call it with the C API's signature.
@@ -47,6 +76,21 @@ mod stubs {
         // of `load`, once, and the callers of LLVM wait for it).
         unsafe { std::ptr::addr_of_mut!(yavs_llvm_slots).write(slots) };
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::path::Path;
+
+        #[test]
+        fn the_bundled_copy_is_tried_first() {
+            let c = candidates(Some(Path::new("/opt/yavs/bin/yavs")));
+            assert_eq!(c.len(), 3);
+            assert_eq!(c[0], Path::new("/opt/yavs/bin/lib").join(SONAME));
+            assert_eq!(c[1], Path::new(SONAME));
+            assert_eq!(candidates(None).len(), 2);
+        }
     }
 }
 

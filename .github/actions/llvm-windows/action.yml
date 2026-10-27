@@ -1,0 +1,46 @@
+# The pinned LLVM 21 release for x86_64-pc-windows-msvc (crates/yavs-llvm/WINDOWS.md), trimmed to
+# what llvm-sys needs and cached. Sets LLVM_SYS_211_PREFIX; the caller sets RUSTFLAGS
+# (-C target-feature=+crt-static: the libraries are built with the static C runtime).
+name: LLVM 21 (Windows)
+description: Install the pinned LLVM 21 for llvm-sys on a Windows runner
+inputs:
+  version:
+    description: LLVM release
+    default: 21.1.8
+  sha256:
+    description: sha256 of clang+llvm-<version>-x86_64-pc-windows-msvc.tar.xz
+    default: 749d22f565fcd5718dbed06512572d0e5353b502c03fe1f7f17ee8b8aca21a47
+runs:
+  using: composite
+  steps:
+    - uses: actions/cache@v4
+      id: llvm
+      with:
+        path: C:\llvm
+        key: llvm-${{ inputs.version }}-x86_64-pc-windows-msvc-trim1
+    - shell: pwsh
+      env:
+        STEPS_CACHE_HIT: ${{ steps.llvm.outputs.cache-hit }}
+        LLVM_VER: ${{ inputs.version }}
+        LLVM_SHA256: ${{ inputs.sha256 }}
+      run: |
+        $n = "clang+llvm-$env:LLVM_VER-x86_64-pc-windows-msvc"
+        if ($env:STEPS_CACHE_HIT -ne 'true') {
+          curl.exe -sSfLo llvm.tar.xz "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VER/$n.tar.xz"
+          if ((Get-FileHash llvm.tar.xz -Algorithm SHA256).Hash -ne $env:LLVM_SHA256) { throw "LLVM sha256 mismatch" }
+          New-Item -ItemType Directory C:\x | Out-Null
+          tar -xf llvm.tar.xz -C C:\x
+          # keep only what llvm-sys needs (0.4 GB instead of 4 GB)
+          New-Item -ItemType Directory C:\llvm\bin, C:\llvm\lib | Out-Null
+          Copy-Item "C:\x\$n\bin\llvm-config.exe", "C:\x\$n\bin\llvm-lib.exe" C:\llvm\bin
+          Copy-Item "C:\x\$n\lib\LLVM*.lib" C:\llvm\lib
+          Copy-Item "C:\x\$n\include" C:\llvm\include -Recurse
+          Remove-Item C:\x -Recurse -Force
+          # libxml2s.lib is missing from the package (llvm-project#172890); an empty stub satisfies the linker
+          & C:\llvm\bin\llvm-lib.exe /llvmlibempty /out:C:\llvm\lib\libxml2s.lib
+        }
+        # llvm-sys links the system libs as `static=`; rustc then needs to find them on a -L path,
+        # so copy the SDK import libs next to the LLVM libs (the cache holds only the stub above).
+        $um = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Lib\*\um\x64' | Sort-Object FullName | Select-Object -Last 1
+        foreach ($l in 'psapi','shell32','ole32','uuid','advapi32','ws2_32','ntdll') { Copy-Item "$($um.FullName)\$l.lib" C:\llvm\lib }
+        "LLVM_SYS_211_PREFIX=C:\llvm" >> $env:GITHUB_ENV

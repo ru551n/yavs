@@ -35,7 +35,7 @@ backslashes needs no escaping.
 
 ``yavs --version`` prints ``yavs MAJOR.MINOR.PATCH[-PRERELEASE] [(details)]`` on the first line
 of standard output. A runner can parse the first ``MAJOR.MINOR`` it finds to refuse a version that
-is too old. The executable is looked up on ``PATH``.
+is too old. The details say whether the compiled tier is built in. The executable is looked up on ``PATH``.
 
 Response files
 --------------

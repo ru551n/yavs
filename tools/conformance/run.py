@@ -176,7 +176,7 @@ def collect(a):
 
 # ------------------------------------------------------------------ static facts
 def meta(a):
-    ver = sh([a.yavs, "--version"])[1].split()[-1] if a.yavs else "?"
+    ver = sh([a.yavs, "--version"])[1].split()[1] if a.yavs else "?"
     # a local run on commits not yet pushed names the last commit of origin/main they sit on (the sources that were run)
     commit = os.environ.get("GITHUB_SHA") or git("merge-base", "HEAD", "origin/main")
     dirty = any(not l[3:].startswith("docs/conformance") for l in git("status", "--porcelain").splitlines())  # the outputs of this tool do not count
@@ -222,7 +222,7 @@ LIMITS = [
     ("PSL", f"a subset; the rest is skipped with warning W0004 or listed in the tracking issue [#445]({GH}/issues/445)"),
     ("SDF and VITAL timing, SystemC, macOS", "out of scope (docs/plan.md, \"Out of scope\")"),
     ("Platforms", "Linux x86_64, Linux aarch64 and Windows x86_64 only"),
-    ("LLVM tier", "built only with the `llvm` feature (LLVM 21); the default build runs the interpreter tier. CI runs a slice of the corpus under the LLVM tier on the three platforms"),
+    ("LLVM tier", "the release archives ship both variants: with the compiled tier (LLVM 21, the default archive) and without it (`-nollvm`, the interpreter alone); a build from source has it only with the `llvm` feature. CI runs a slice of the corpus under the LLVM tier on the three platforms"),
     ("Reference simulators", "the comparison is against two established open-source VHDL simulators (sim3 and sim4, two commercial simulators, vote in part of the discrepancy catalogue); where the language reference is unclear yavs is permissive and the choice is recorded below"),
     ("What a pass means", "a pass is agreement with a recorded reference output or with a suite's own verdict. It is evidence, not a proof of correctness; each known disagreement is listed in the catalogue"),
 ]

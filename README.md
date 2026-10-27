@@ -29,7 +29,12 @@ Download the archive for your platform (Linux x86_64, Linux aarch64, Windows x86
 [releases](https://github.com/ru551n/yavs/releases) page, unpack it and put the directory on
 `PATH`. aarch64 is also known as arm64; run `uname -m` to see which one you need. The Linux
 archives require glibc 2.17 or newer (RHEL/CentOS 7+, Debian 8+, Ubuntu 14.04+); on musl-based
-systems such as Alpine, install the `gcompat` package. Or build from source with Rust stable and a C compiler:
+systems such as Alpine, install the `gcompat` package.
+
+Each platform has two archives. Take `yavs-<version>-<target>` (with the compiled tier, the
+default) unless you need the smallest download: `yavs-<version>-<target>-nollvm` has the
+interpreter alone, so runs are slower and `--tier=auto` and `--tier=llvm` are errors. `yavs
+--version` tells which one you have. Or build from source with Rust stable and a C compiler:
 
 ```sh
 cargo build --release -p yavs   # target/release/yavs
@@ -79,3 +84,7 @@ The graphical debugger `yavs-gui` (`gui/`) is a separate program under the EUPL-
 (`gui/LICENSE`), because the waveform viewer library it embeds (libsurfer) is. It talks to yavs
 over the Debug Adapter Protocol and links no yavs code. In the release archives its licence is
 `LICENSE-EUPL-1.2-yavs-gui`, which applies to the `yavs-gui` binary only.
+
+The archives with the compiled tier contain LLVM (`lib/libLLVM.so.21.1` on Linux, linked into
+`yavs.exe` on Windows), under the Apache License v2.0 with LLVM Exceptions
+(`LICENSE-LLVM`).

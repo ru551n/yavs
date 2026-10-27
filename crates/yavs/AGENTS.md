@@ -115,7 +115,7 @@ cargo run -p yavs -- run --work=work:$HOME/.cache/<dir>/work top --threads 4
   `--threads` ignored with `--dap`, E0110 coverage file cannot be written, E0111 coverage database
   cannot be read, E0112 exclusion file, W0110-W0114 exclusions and pragmas, W0115 signal over
   `--cov-toggle-max`, W0116 signal handlers cannot be installed, W0117 the compile thread of `--tier=auto` cannot be started, E0120 `--tier=llvm` or `auto` without the LLVM tier, E0121 the LLVM tier cannot
-  compile the design, E0122 `yavs-gui` not found or not startable, E0123 `yavs cache clean` cannot remove an entry, E0124 `--profile=FILE` cannot be written, E0125 `--profile` with `--dap`, E0126 the shared std/ieee cache directory unusable).
+  compile the design, E0122 `yavs-gui` not found or not startable, E0123 `yavs cache clean` cannot remove an entry, E0124 `--profile=FILE` cannot be written, E0125 `--profile` with `--dap`, E0126 the shared std/ieee cache directory unusable, E0127 the LLVM library cannot be loaded).
 
 ## 6. Coordination
 

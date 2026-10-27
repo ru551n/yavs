@@ -49,6 +49,8 @@ pub use census::callback_counts;
 #[cfg(feature = "llvm")]
 pub use jit::{Error, Jit, Module, OptLevel, portable_cpu};
 #[cfg(feature = "llvm")]
+pub use lazy::ensure as load_library;
+#[cfg(feature = "llvm")]
 pub use lower::{LlvmTier, compile};
 #[cfg(feature = "llvm")]
 pub use objcache::{cache_stats, set_cache, set_run_id};

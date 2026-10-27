@@ -693,6 +693,8 @@ pub(crate) struct ProcState {
     /// which every run writes, not in the driver's `Waveform`, which a direct assignment only
     /// reads (a store there per activation cost rtl_ff 3% of its cycles).
     pub same: [u8; SAME_DRIVERS],
+    /// Assignments that took the general path of `assign` (`Stats::general_assigns`).
+    pub general: u64,
 }
 
 /// Drivers of a process with a skip-test state (`ProcState::same`); later ones always ask it.
@@ -757,6 +759,13 @@ fn keep_last<T, K: Eq + std::hash::Hash + Copy>(v: &mut Vec<T>, key: impl Fn(&T)
 
 /// In `ProcState::phantoms`: a skipped assignment to a direct driver (no waveform entry).
 const SKIPPED: u32 = u32::MAX;
+
+/// The plane words of one element of code `c`.
+#[inline(always)]
+fn code_planes(c: u8) -> [u64; 4] {
+    let c = u64::from(c);
+    [c & 1, c >> 1 & 1, c >> 2 & 1, c >> 3 & 1]
+}
 
 impl ProcState {
     /// Whether to ask the skip test of an assignment to direct driver `local`: not while its
@@ -1407,6 +1416,7 @@ impl Ctx<'_> {
         {
             return Ok(());
         }
+        self.st.general += 1;
         self.spill_out(d);
         let (sig, r) = self.target(d, target)?;
         let elem = self.sh.signals[sig].ty.elem;
@@ -1533,7 +1543,8 @@ impl Ctx<'_> {
         }
         let w = &mut self.st.waveforms[info.local as usize];
         if !w.idle() || !w.phantom.is_empty() {
-            return false;
+            let again = w.idle() && !info.direct && at == Some(self.sh.now);
+            return again && self.skip_again(d, r, code_planes(code));
         }
         let now = self.sh.now;
         let at = at.unwrap_or(now);
@@ -1645,7 +1656,8 @@ impl Ctx<'_> {
         }
         let w = &self.st.waveforms[info.local as usize];
         if !w.idle() || !w.phantom.is_empty() {
-            return false;
+            let again = w.idle() && !info.direct;
+            return again && self.skip_again(d, r, code_planes(code));
         }
         let s = &self.sh.signals[info.signal.0 as usize];
         if info.direct {
@@ -1671,6 +1683,53 @@ impl Ctx<'_> {
             self.st.phantoms.push(info.local);
         }
         same
+    }
+
+    /// A zero-delay assignment of `planes` (masked to `r`) to idle driver `d`, which is not direct
+    /// and holds skipped assignments of the run (`Waveform::phantom`): skipped too when the fast
+    /// paths' skip test holds (#720). False, nothing done, otherwise: the general path flushes the
+    /// skipped ones first. The caller checked the driver's owner and that it covers `r` (at most
+    /// 64 elements).
+    #[inline(never)]
+    fn skip_again(&mut self, d: DriverId, r: Range, planes: [u64; 4]) -> bool {
+        let info = &self.sh.drivers[d.0 as usize];
+        let s = &self.sh.signals[info.signal.0 as usize];
+        let ds = &s.drivers[info.slot as usize];
+        let (Buf::Planes { b: dv, .. }, Buf::Planes { b: cv, .. }) = (&ds.value, &s.cur) else {
+            return false;
+        };
+        let n = r.len as usize;
+        let planes = planes.map(|p| p & yavs_logic::wide::nmask(n));
+        let rel = (r.offset - ds.range.offset) as usize;
+        let same = s.skip_ok
+            && yavs_logic::wide::get_block(dv, rel, n) == planes
+            && yavs_logic::wide::get_block(cv, r.offset as usize, n) == planes
+            && (!ds.shared || s.sole(r));
+        if same {
+            self.again_phantom(info.local, r);
+        }
+        same
+    }
+
+    /// `skip_again` of one element of a byte signal.
+    #[inline(never)]
+    fn skip_again_bytes(&mut self, d: DriverId, r: Range, bytes: &[u8]) -> bool {
+        let sig = self.sh.drivers[d.0 as usize].signal.0 as usize;
+        let same = self.unchanged(sig, d, r, ValueRef::Bytes(bytes));
+        if same {
+            self.again_phantom(self.sh.drivers[d.0 as usize].local, r);
+        }
+        same
+    }
+
+    /// One more skipped assignment of `r` on the driver `local`, which is in `phantoms` already;
+    /// a repeat of the last range is not listed again (`flush_phantoms` would queue it twice).
+    fn again_phantom(&mut self, local: u32, r: Range) {
+        let w = &mut self.st.waveforms[local as usize];
+        if w.phantom.last() != Some(&r) {
+            w.phantom.push(r);
+        }
+        self.st.act |= ACT_ASSIGNED;
     }
 
     /// An assignment to a direct driver was skipped: the run's delta stays (the kernel's
@@ -1877,7 +1936,8 @@ impl Ctx<'_> {
         let local = info.local as usize;
         let w = &mut self.st.waveforms[local];
         if !w.idle() || !w.phantom.is_empty() {
-            return false;
+            let again = w.idle() && !info.bdirect && at == Some(self.sh.now);
+            return again && self.skip_again_bytes(d, r, bytes);
         }
         let now = self.sh.now;
         let at = at.unwrap_or(now);
@@ -1952,7 +2012,8 @@ impl Ctx<'_> {
         }
         let w = &mut self.st.waveforms[info.local as usize];
         if !w.idle() || !w.phantom.is_empty() {
-            return false;
+            let again = w.idle() && !info.direct && at == Some(self.sh.now);
+            return again && self.skip_again(d, r, planes);
         }
         let now = self.sh.now;
         let at = at.unwrap_or(now);

@@ -54,6 +54,7 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         ("direct_codes", s.direct_codes),
         ("direct_planes", s.direct_planes),
         ("direct_bytes", s.direct_bytes),
+        ("general_assigns", s.general_assigns),
         ("ecall_hits", hits),
         ("ecall_runs", runs),
         ("opt_funcs", yavs_ir::optimised_functions()),

@@ -4106,6 +4106,14 @@ The reader's instruction count did not change in the kernel round; its rows show
 1.5 s of library analysis with run times that moved by 40%. Only the writer's rows are an effect of the change (instructions 0.92).
 Totals under 1 or near 1 for the reader come from the library analysis of yavs (0.2 s warm) against the reference's 1.5 s.
 
+### Kernel round 25: repeated skipped drives (#720, #667, 2026-10-27)
+
+(`docs/decisions.md` "Kernel round 25".) A zero-delay drive of a port or shared driver that already holds a skipped (unchanged)
+assignment of the same activation is skipped on the fast paths when it changes nothing either, instead of taking the general
+assignment path. `grlib_leon3mp` (bench builds with `llvm`, warm, 3 interleaved runs on one claimed core): auto instructions -5.6%,
+cycles -4.1%; interp -5.8% and -4.8%. `neorv32_single_min` and `fletcher_bufferreader` level (the path is not taken there).
+`Stats::general_assigns` (`YAVS_COUNTERS`) counts the general path; perf design `drive_repeat`.
+
 ### Kernel round 24: the skip test that keeps missing, pending words in element order (#734, 2026-10-26)
 
 (`docs/decisions.md` "Kernel round 24".) The small-RTL designs still slower than sim1 under `--tier=auto` at head-to-head 6. Bench builds with

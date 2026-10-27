@@ -10817,3 +10817,26 @@ them in the work itself.
 - **`yavs --version`** keeps the first line of docs/cli-contract.md and adds the details: `yavs 0.8.0 (compiled tier: llvm)` or `yavs 0.8.0 (interpreter only, no compiled tier)`.
 - **Licences:** the archives with the compiled tier carry `LICENSE-LLVM` (Apache-2.0 with LLVM exceptions; `crates/yavs-llvm/LICENSE-LLVM`, byte for byte from the 21.1.8 tag).
 - **Testing without a tag:** `workflow_dispatch` with `dry_run` builds, packages and smoke-tests every archive and uploads them as workflow artifacts; its `checks` input (default true) skips the CI workflows for a quick dry run. A tag push always runs them. The libLLVM build is cached under a key that includes the build script, so only the first run per recipe pays for it; a cache written by a branch run is not visible to a tag run, so dispatch once on `main` before tagging.
+
+## Kernel round 25: repeated skipped drives, wide drives (yavs-kernel, #720, #667, 2026-10-27)
+
+Task (orchestrator, gap scan 2026-10-26 row 2, kernel orchestration): cut the general kernel cost of same-value drives, wide drives and
+the per-delta loop. Bench builds with `llvm`, `--threads 1`, `tools/realbench --prepare` worlds; `perf stat` of warm runs (two untimed runs
+per binary first), the minimum of interleaved runs on one claimed core of the second CCD; base main at 70cebdc0. Probe builds (atomic
+counters, not kept) gave the shares below.
+
+- **Decision: a repeat of a skipped assignment stays on the fast paths.** A zero-delay assignment to a driver that is not direct (a port,
+  a shared driver) and already holds skipped assignments of the run (`Waveform::phantom`) is taken by `assign_code_fast`,
+  `assign_planes_fast`, `assign_bytes_fast` and `skip_code_now` when the skip test holds: one more phantom (`again_phantom`; the driver
+  is in `ProcState::phantoms` already, a repeat of the last range is not listed again: `flush_phantoms` would only queue the same
+  transaction twice). A change, a delay or a direct driver with phantoms still takes the general path, which flushes them first, so the
+  order of the transactions is as before. In `grlib_leon3mp` 32.0 M assignments took the general path, 30.7 M of them because of a
+  phantom on the driver, and 30.8 M were unchanged: the second and later drives of one activation, each paying `spill_out`, `target`,
+  `own`, `unchanged` and the `same_as` compare (`eq_range`, 1.3% of the cycles). `Stats::general_assigns` (new, `YAVS_COUNTERS`) counts
+  the general path; perf design `drive_repeat` (inout ports driven several times an activation): 300 to 2.
+  - The new path is out of line (`skip_again`, `skip_again_bytes`), reached only from the bail-out of each fast path: written inline in
+    the fast paths (the first try) it cost `fletcher_bufferreader` +0.6% instructions without ever being taken.
+  - `grlib_leon3mp` (3 runs, core 9): auto instructions 412.8 G to 389.6 G (-5.6%), cycles 174.4 G to 167.3 G (-4.1%), cpu 35.6 s to
+    34.1 s; interp 413.9 G to 390.0 G (-5.8%), cycles -4.8%, cpu -3.8%. `neorv32_single_min` interp +0.04% instructions, cycles -0.8%;
+    `fletcher_bufferreader` interp +0.3% instructions, cycles +0.1% (code layout: the path is not taken there, one general assignment
+    in the whole run).

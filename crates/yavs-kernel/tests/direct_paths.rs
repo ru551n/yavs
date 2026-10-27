@@ -998,3 +998,97 @@ fn drivers_that_stop_asking_the_skip_test_keep_values_and_deltas() {
     );
     assert_eq!(off, on);
 }
+
+/// Processes that drive signals with an in port (not direct: a scalar, a vector and an integer)
+/// one to four times a run with values the signals often hold, at zero delay and later: the
+/// assignments the skip test drops (`skip`) leave phantoms that later ones of the run meet.
+/// Reports the driving and effective values; returns the trace and `Stats::general_assigns`.
+fn repeated_drives(skip: bool, seed: u64) -> (Vec<String>, u64) {
+    let mut b = Builder::new();
+    let lv = |s: &str| s.parse::<LogicVec>().unwrap();
+    let a = b.signal("a", SignalType::logic(1), &lv("0"));
+    let v = b.signal("v", SignalType::logic(3), &lv("000"));
+    let n = b.signal("n", SignalType::bytes(4, 1), &[0; 4]);
+    let fa = b.signal("fa", SignalType::logic(1), &lv("0"));
+    let fv = b.signal("fv", SignalType::logic(3), &lv("000"));
+    let f_n = b.signal("fn", SignalType::bytes(4, 1), &[0; 4]);
+    for (f, s) in [(fa, a), (fv, v), (f_n, n)] {
+        b.port(f, s, PortMode::In, PortConv::default());
+    }
+    let drivers = [b.driver(a), b.driver(v), b.driver(n)];
+    for (k, d) in drivers.into_iter().enumerate() {
+        let mut rng = seed ^ (k as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let sref = [a, v, n][k];
+        b.process(
+            &format!("p{k}"),
+            NONE,
+            &[d],
+            p(move |c| {
+                for _ in 0..1 + rng % 4 {
+                    rng = rng
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    let r = rng >> 33;
+                    // Mostly zero delay, mostly the value the signal holds.
+                    let delay = if r.is_multiple_of(5) {
+                        ns(r % 3)
+                    } else {
+                        Time::ZERO
+                    };
+                    let x = u32::from((r >> 8).is_multiple_of(6));
+                    match k {
+                        0 => {
+                            let code = if x == 1 { ONE } else { ZERO };
+                            c.assign_code(d, None, delay, code, DelayMode::INERTIAL)?;
+                        }
+                        1 => {
+                            let val = lv(if x == 1 { "101" } else { "000" });
+                            c.assign(d, None, &[(delay, &val)], DelayMode::INERTIAL)?;
+                        }
+                        _ => {
+                            c.assign_bytes(d, None, delay, &x.to_le_bytes(), DelayMode::INERTIAL)?
+                        }
+                    }
+                }
+                let val = if k == 2 {
+                    format!("{:?}", c.value(sref)?)
+                } else {
+                    c.logic(sref)?.to_string()
+                };
+                c.report(
+                    Severity::Note,
+                    format!(
+                        "p{k} {val} driving {} active={}",
+                        c.driving_value(d)?,
+                        c.active(sref)?,
+                    ),
+                );
+                c.wait_for(ns(1))
+            }),
+        );
+    }
+    let (mut sim, trace) = build(
+        b,
+        Config {
+            skip_unchanged: skip,
+            ..Config::default()
+        },
+    );
+    sim.run_until(ns(200)).unwrap();
+    (trace.take(), sim.stats().general_assigns)
+}
+
+#[test]
+fn repeated_unchanged_drives_of_a_run_keep_values_and_deltas() {
+    for seed in 0..8 {
+        let ((skip, g_skip), (plain, g_plain)) =
+            (repeated_drives(true, seed), repeated_drives(false, seed));
+        assert!(skip.len() > 400, "{}", skip.len());
+        assert_eq!(skip, plain, "seed {seed}");
+        // The repeats of a skipped assignment stay on the fast paths.
+        assert!(
+            g_skip * 10 < g_plain * 8,
+            "seed {seed}: {g_skip} vs {g_plain}"
+        );
+    }
+}

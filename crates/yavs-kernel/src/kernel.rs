@@ -191,6 +191,9 @@ pub struct Stats {
     pub skip_signals: u64,
     /// Kernel signals (a pack of record leaves is one, #686).
     pub signals: u64,
+    /// Assignments that took the general path of `Ctx::assign` (waveform lists, preemption);
+    /// summed over the processes when asked.
+    pub general_assigns: u64,
 }
 
 /// A pending observer wake-up (`Hook::wake_at`). Ordered by time, then registration.
@@ -1520,7 +1523,10 @@ impl SimControl {
     }
 
     pub fn stats(&self) -> Stats {
-        self.stats
+        Stats {
+            general_assigns: self.slots.iter().map(|s| lock(s).st.general).sum(),
+            ..self.stats
+        }
     }
 
     pub fn signal_count(&self) -> usize {

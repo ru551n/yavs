@@ -601,6 +601,15 @@ case!(
         ("ops", Max(3564)),
     ]
 );
+// Repeated drives of inout ports (not direct) in one activation, mostly of the value held: the
+// first leaves a skipped assignment, the repeats are skipped on the fast paths too (300 general
+// assignments before, #720).
+case!(
+    drive_repeat,
+    "sum=2712",
+    &[],
+    [("general_assigns", Max(2)), ("cycles", Max(515))]
+);
 // A run of scalar drives of variables that hold what the signals have is one op (`pre.rs`
 // `drive_runs`); the drives that change are made, in the middle of a run too: 1811 direct
 // code commits without the run, and the same cycles (the skipped drives keep their delta).

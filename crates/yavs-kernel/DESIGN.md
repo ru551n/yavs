@@ -205,7 +205,8 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
    `Config::skip_unchanged` (R2b): an assignment that changes nothing on a signal whose
    activity nothing can observe (`Builder::mark_skippable`) is not queued; the cycle it would
    have caused still runs (`empty_delta`), and a later assignment of the run to the same driver
-   queues the skipped ones first (`Ctx::flush_phantoms`). See `docs/decisions.md` "Skipped
+   queues the skipped ones first (`Ctx::flush_phantoms`) unless it is skipped too (the fast paths
+   take a repeat that changes nothing, #720). See `docs/decisions.md` "Skipped
    unchanged assignments".
 4. Run resumed non-postponed processes (parallel, below), between the `StartOfProcesses` and
    `EndOfProcesses` callbacks (every cycle, #317; at `EndOfProcesses` what the processes

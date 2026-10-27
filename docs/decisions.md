@@ -11064,3 +11064,43 @@ Task (orchestrator): cut the general cost of the `numeric_std` and `std_logic_11
   (The whole-run counts of `auto` without `--no-inherit` include the compile threads and move by 2 to 5 percent between identical runs.)
 
   `realbench --compare` over the 41 tests that pass on both sides (`--phases run --tiers interp,auto`, core 8, base `12e07dce`, bench builds): geometric mean of instructions 1.00 (interp) and 1.00 (auto); wall 0.99 (interp) and 1.02 (auto; the categories with a 1.20 are tests of 0.02 to 0.05 s, instructions equal); `poc_arith_addw` interp wall 8.24 to 7.56 s, `fletcher_bufferwriter_512` 4.06 to 4.03 s, `neorv32_single_min` 2.51 to 2.47 s. `grlib_leon3mp` is reported failed by the tool for both binaries (its pass text sits beyond the 200 characters the tool keeps).
+
+## Signal I/O of large processes: whole values by groups made at bind time, gathers and scatters through the signal callback (yavs-interp `gather.rs`, yavs-llvm `lower.rs`, #790, 2026-10-27)
+
+Task (orchestrator): the large straight-line processes that are only level when compiled (GRLIB `iu:comb`, fletcher `ctrl_comb_proc`) spend their
+time in the runtime functions both tiers share (`sig_gather`, `scatter_leaves`, `drive_run`, `lcopy`). Measured first (bench builds, GRLIB to
+300 us, `tools/stepcount --ops`, a counting probe build): `SigGather` 2.17 M calls, 19 leaves and 3.7 kernel signals each; `SigScatter` 2.43 M
+calls, 18 leaves and 5.9 kernel assignments each (the runs of #686 already merge the leaves of a pack: one assignment per run of a driver);
+39 percent of the scatters are of values with arrays of records. Per call the instructions are lean (about 12 a leaf read, 22 a leaf driven
+with its kernel share); the cycles were not: a quarter of `sig_gather` and up to 40 percent of `sig_scatter` sat on the reload of the plan taken
+out of the machine and of the instruction's result, and the scatter of a value with arrays of records assigned every instance of a leaf on
+its own (the instances lie mirrored in the kernel, last first, and the loop went first first, so no two joined a run).
+
+- **Decision: the instances of a whole value are listed when the plan is bound** (`Bound::items`: leaf, value offset, kernel element, a logic
+  leaf's instances last first; at most 4096 instances, else leaf by leaf as before), **in groups**: `reads`, the logic items of one plane word
+  of one kernel signal, read from that word kept in registers (one signal lookup a group instead of one a leaf, the code of a scalar from the
+  four plane bits); `runs`, the logic items next to each other in one kernel signal up to 64 elements, whose planes are built in registers and
+  assigned once (the driver of every item checked equal at run time, else the old per-leaf path). A part of a value (`Part`) keeps the leaf loop;
+  its logic instances are now taken last first too, so they join a run. Why at bind time: the layout of a whole value is fixed per instance
+  (`InstSig::off`), so the grouping is paid once per machine and plan.
+- **Decision: the plan is boxed in the machine's list and given back on both arms of the result**, and a descriptor in constant space found equal
+  once is recognised by its address (`MPlan::at`): moving the 32-byte plan and the result through the stack were store-forwarding stalls.
+- **Decision: compiled frame-mode code runs `SigGather` and `SigScatter` through `yavs_rt_signal`** (`TierHost::signal`, the interpreter's
+  functions without the generic step), not `yavs_rt_step`; a native frame keeps its own way. No callback or `TierFrame` changed (heads-up on #481).
+- **Measured** (bench builds, `perf stat` user instructions, warm worlds, claimed CCD1 core; cycles on a host at load 13 to 16 are within its
+  noise and not quoted as a result): GRLIB to 300 us, `--tier=interp`, 117.10 G to 115.77 G instructions (-1.1 percent), whole run 389.6 G to 384.6 G (-1.3 percent), `--tier=auto` with `iu:comb` forced compiled 395.3 to 396.3 G against 389.8 to 391.7 G (-1.4 percent); a synthetic process
+  that reads and drives a 40-leaf record with an array of four records every clock: interpreter 14.74 G to 11.97 G (-19 percent, cycles
+  -15 percent), `--tier=llvm` 14.25 G to 11.31 G (-21 percent, cycles -18 percent). `tools/realbench --compare`: see docs/STATUS.md.
+- **Measured, not kept:** a grouping check against `InstSig::ty.len` (the leaf's own length, not its kernel signal's) left every pack leaf
+  ungrouped (+2.8 percent instructions); the items path for flat values with the leaf data behind an index
+  (+0.5 percent against the zip over the leaves; the items now carry length, size, kind and bias).
+- **Found, filed:** the kernel's vector entry of a direct driver reloads its planes with 16-byte moves after storing them a word at a time as the
+  argument of `direct_same_planes` (#793): 25 to 37 percent of `scatter_leaves` cycles in the synthetic design, not visible in GRLIB.
+- **Not done:** per-leaf code generated for gathers and scatters of a static layout (constant leaf offsets in the compiled code): after the groups
+  the gather of a pack is one signal lookup, four loads and a few shifts a leaf; what is left of a compiled `iu:comb` is its interpreted
+  callees and the kernel's per-drive work (`DriveRun` 257 instructions a scalar drive, `LSetDrive` 244, mostly `skip_code_now` and
+  `assign_code_fast`), which are #720 and #730. A gather into its destination (`Alloc t; SigGather t; Copy v <- t`) would save one copy of
+  about 400 bytes a gather (885 MB of gathers in the GRLIB window), under half a percent.
+- **The reference simulator (rule 22):** a waveform over a range of one signal is one call that walks the signal's parts in order, with the
+  values in the signal's own layout. The idea taken: one assignment per contiguous range of a driver, values handed over in the kernel's layout
+  (plane words) without staging. Ours groups at bind time and keeps the bit-planes. Nothing was copied.

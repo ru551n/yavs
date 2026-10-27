@@ -9380,3 +9380,26 @@ natives on slices (`to_x01`, the numeric operators) still copy the slice first; 
 ## Value movement: copies between heap objects, scratch sets (yavs-interp, #677, 2026-10-27)
 
 A copy between two objects of one heap (access values, shared variables of protected types) goes straight across (`Heap::data_pair`) instead of through the staging buffer, and the thread scratch keeps 16 register sets (was 4) so the nine large non-resident processes of `grlib_leon3mp` find their registers filled (`docs/decisions.md` "Value movement"). Interleaved `realbench --compare` (42 tests, cores 10 and 11, 3 runs): `uvvm_axistream_vvc` 0.93 interp / 0.92 auto (instructions 0.96), `grlib_leon3mp` 0.97 / 0.98, geometric mean of the run phase 0.98 / 0.98, nothing worse than noise. Left: frame fills of a call (`Pre::fill`, 8 GB of `memcpy` in `grlib_leon3mp`), `wide::eq_range` and `Signal::direct_same_planes` of same-value drives, `sig_gather`/`scatter_leaves` per-leaf work (runs of scalar leaves tried: no gain, dropped).
+
+## Signal I/O of large processes: whole values by groups, gathers and scatters through the signal callback (yavs-interp, yavs-llvm, #790, 2026-10-27)
+
+A whole record value (`SigGather`, `SigScatter` without a part), arrays of records inside it included, is handled by the instances of its leaves
+listed when the plan is bound (`Bound::items`, at most 4096): logic items of one plane word of one kernel signal are read from that word in
+registers, logic items next to each other in one signal are driven as one run of the driver with their planes built in registers. The
+instances of a logic leaf go last first, as the kernel mirrors them, so an array of records in a record is one run per leaf, not one assignment
+per element (also for parts). The plan in the machine's list is boxed and a constant descriptor is recognised by its address. Compiled
+frame-mode code runs both instructions through `yavs_rt_signal` instead of a step. Decision and measurements: `docs/decisions.md`
+"Signal I/O of large processes". Test `instances_of_record_leaves` (`crates/yavs/tests/value_move.rs`, every tier).
+
+- Bench builds, `perf stat` user instructions, warm, one claimed core of the second CCD (cycles on a host at load 13 to 16 vary by 10 to
+  30 percent between identical runs and are not a result here): `grlib_leon3mp` whole run `--tier=interp` 389.61 G to 384.57 G (-1.3 percent),
+  `--tier=auto` with `iu:comb` forced compiled (`YAVS_AUTO_FORCE=comb@1000#0`) 395.3 to 396.3 G against 389.8 to 391.7 G (-1.4 percent); a
+  synthetic process reading and driving a 40-leaf record with an array of four records every clock: interpreter -19 percent instructions and
+  -15 percent cycles, `--tier=llvm` -21 percent and -18 percent.
+- `tools/realbench --compare` (12e07dce against the change, 41 tests, run phase, core 14; `grlib_leon3mp` failed on both sides from the tool,
+  #794): wall geometric mean 1.01 interp / 0.99 auto, instructions 1.00 / 0.99; records category 0.97 / 0.98 wall at 1.00 instructions;
+  `fletcher_bufferwriter_512`, `fletcher_bufferreader`, `neorv32_*` and `uvvm_axistream_vvc` within 2 percent either way. Difftest 542/542 at 1
+  and 4 threads with interp, auto, llvm and auto with `--tier-heat=1,0,0`.
+- Left (#790): the kernel's per-drive work of scalar drives (`DriveRun` about 257 instructions a drive in GRLIB, `LSetDrive` 244), a store-forwarding
+  stall in the kernel's vector entry of a direct driver (#793), a gather straight into its destination (under half a percent), and per-leaf code
+  generated for static layouts, not started: the interpreted callees of a compiled `iu:comb` stay the larger part (#679).

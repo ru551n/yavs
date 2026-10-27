@@ -11300,6 +11300,23 @@ impl crate::TierHost for Host<'_, '_, '_> {
             Some(&Inst::SigRead { dst, sig }) if !m.is_multi(sig) => {
                 m.sig_read_vec(dst, sig, self.ctx)
             }
+            Some(&Inst::SigGather {
+                dst,
+                desc,
+                tab,
+                part,
+            }) => m.sig_gather(self.prog, dst, desc, tab, part, self.ctx),
+            Some(&Inst::SigScatter {
+                driver,
+                src,
+                desc,
+                tab,
+                ops,
+                mode,
+                has,
+            }) => m.sig_scatter(
+                self.prog, f, driver, src, desc, tab, ops, mode, has, self.ctx,
+            ),
             Some(&Inst::Edge { dst, kind, sig }) => {
                 m.edge_inst(kind, sig, self.ctx).map(|v| m.set(dst, v))
             }

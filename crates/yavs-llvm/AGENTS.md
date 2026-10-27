@@ -25,7 +25,7 @@ in `crates/yavs-llvm/WINDOWS.md`; measurements in `docs/STATUS.md` "llvm".
   addresses are found inline (frame-mode code asks `yavs_rt_host` for an address of unknown space, #634, except where `rt::track` has a guess: `Known::LikelyTemp` and `Known::LikelyHeap` get one inline test of the temporary area or the object entry first, `Gen::host`, #711), and a constant the generator knows (`Known::Const`) is read from a
   private copy in the module, `Gen::const_global`). Through the `yavs_rt_signal` callback
   (`TierHost::signal`: the interpreter's own functions without its generic step):
-  `SigRead` (one range), `Drive`, `DriveSlot` (one range), `WaitOn` and
+  `SigRead` (one range), `SigGather` and `SigScatter` of a frame-mode function (#790), `Drive`, `DriveSlot` (one range), `WaitOn` and
   `WaitFor` (each with the `Suspend` after it), `Suspend` and the `rising_edge`/`falling_edge`
   natives (#339); `SigReadScalar` of a logic signal that keeps its codes, and `rising_edge` /
   `falling_edge` of the edge the kernel resumed the process for, are read in place from

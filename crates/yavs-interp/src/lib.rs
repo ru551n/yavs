@@ -579,7 +579,7 @@ pub trait TierHost {
 
     /// Execute the signal instruction at `pc` of the top frame as `step` does, through the
     /// same interpreter functions without its generic dispatch: `SigReadScalar`, `SigRead`,
-    /// `Drive`, `DriveSlot`, `WaitOn`, `WaitFor` (each with the `Suspend` after it), `Suspend`, `Edge`, and (`edge` 1 rising, 2 falling) a `CallNative`
+    /// `SigGather`, `SigScatter`, `Drive`, `DriveSlot`, `WaitOn`, `WaitFor` (each with the `Suspend` after it), `Suspend`, `Edge`, and (`edge` 1 rising, 2 falling) a `CallNative`
     /// of `rising_edge` / `falling_edge` ([`edge_native`]), and the instructions that only
     /// change the temporary area (`TempRoot`, `Stmt` and `NewFrame`: the view's temporary
     /// fields are brought up to date) or only memory and a register (`Deref`, `MemEq`, `Cat`);

@@ -5364,6 +5364,11 @@ impl Gen {
                         self.join(&c, join);
                     }
                     Inst::SigRead { dst, sig } if self.sig_read_block(&c, pc, dst, sig) => {}
+                    // Through the signal callback rather than a step (#790); a native frame
+                    // keeps its own way.
+                    Inst::SigGather { .. } | Inst::SigScatter { .. } if c.nat.is_none() => {
+                        self.signal(&c, pc, 0)
+                    }
                     Inst::SigRead { .. }
                     | Inst::WaitOn { .. }
                     | Inst::WaitEdge { .. }

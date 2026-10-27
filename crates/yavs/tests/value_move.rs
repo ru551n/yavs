@@ -117,6 +117,62 @@ begin
 end;
 ";
 
+/// A record signal with an array of records inside, read whole and driven whole (#790): the
+/// instances of a logic leaf lie mirrored in the kernel and go as one run of the driver; byte
+/// leaves (integers) between them go one by one. Elements read on their own see the same values.
+const INSTANCES: &str = "
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+entity insts is end;
+architecture a of insts is
+  type ent is record
+    v : std_logic;
+    tag : std_logic_vector(5 downto 0);
+    n : integer range 0 to 1000;
+    d : std_logic_vector(0 to 2);
+  end record;
+  type ents is array (0 to 4) of ent;
+  type rec is record
+    head : std_logic;
+    e : ents;
+    tail : std_logic_vector(3 downto 0);
+  end record;
+  signal r : rec := ('1', (others => ('0', \"000000\", 0, \"000\")), \"0000\");
+begin
+  process
+    variable v : rec;
+    variable x : ent;
+  begin
+    for k in 1 to 3 loop
+      v := r;
+      for i in v.e'range loop
+        v.e(i).v := not v.e(i).v;
+        v.e(i).tag := std_logic_vector(to_unsigned(i * 7 + k, 6));
+        v.e(i).n := i * 100 + k;
+        v.e(i).d := (0 => 'Z', 1 => 'H', 2 => 'X');
+        if i = 3 then v.e(i).d(1) := 'L'; end if;
+      end loop;
+      v.head := 'W';
+      v.tail := \"1Z0L\";
+      r <= v;
+      wait for 1 ns;
+      for i in r.e'range loop
+        x := r.e(i);
+        assert x.n = i * 100 + k and x.tag = std_logic_vector(to_unsigned(i * 7 + k, 6))
+          report \"element \" & integer'image(i) severity failure;
+        assert x.v = r.e(i).v and x.d(0) = 'Z' and x.d(2) = 'X' report \"fields\" severity failure;
+        assert (i = 3 and x.d(1) = 'L') or (i /= 3 and x.d(1) = 'H') report \"d(1)\" severity failure;
+      end loop;
+      assert r.e(0).v = r.e(4).v and (k mod 2 = 1) = (r.e(2).v = '1') report \"v\" severity failure;
+      assert r.head = 'W' and r.tail = \"1Z0L\" report \"ends\" severity failure;
+    end loop;
+    report \"instances ok\";
+    wait;
+  end process;
+end;
+";
+
 /// Analyse and run `src` (entity `top`) on the interpreter, and on the compiled tier when built in,
 /// and expect `want` in the output.
 fn check(name: &str, src: &str, top: &str, want: &str) {
@@ -178,4 +234,9 @@ fn copies_between_designated_objects() {
 #[test]
 fn runs_of_scalar_record_leaves() {
     check("value_move_runs", RUNS, "runs", "runs ok");
+}
+
+#[test]
+fn instances_of_record_leaves() {
+    check("value_move_insts", INSTANCES, "insts", "instances ok");
 }

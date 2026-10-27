@@ -60,6 +60,10 @@ the way: #782 (literals accepted without visible character literals), #783 (inte
 `LoadPkg`, `LoadPair`, `CheckK`. Whole runs (`--tier=interp`): `vai_window_gen_interlock` 430.9 to 410.5 G instructions, `poc_arith_addw` 145.7 to 137.8 G. New
 `tools/stepcount --ops-lines OP`. Open: `CallIeee` marshalling (318 to 394), the frame fill of a call (proportional to the register count), `SubtypeCheck` below 50.
 
+### Per-op costs of the interpreter, round 2 (#778, #730, 2026-10-27)
+
+(`docs/decisions.md` "Per-op costs, round 2".) The optimiser keeps linear forms of values by register and version and the length of native `ieee` results (`to_unsigned`, `to_signed`, `resize`, `+`, `*`), so the `SubtypeCheck` of a slice of a computed width (`v(8 * i + 7 downto 8 * i)`) and of a `numeric_std` result into a signal goes: `poc_arith_addw` 138.6 to 137.0 G instructions, `vai_window_gen_interlock` 412.5 to 406.1 G, `uvvm_axistream_vvc` 33.2 to 32.7 G (interp); `realbench --compare` geomean 1.00. Work-counter ceilings of 20 designs back to the measured `ops` plus 3 percent. The frame fill (1.7 percent of cycles in `memmove`) and the `LoadDerefImm`/`AffP` chain were measured and left (reasons in decisions.md). Open: `SubtypeCheck` of a call result against a frame-resident target (`fletcher_bufferwriter_512`) and of register-sized widths (`uvvm_axistream_vvc`).
+
 ### `wait until <edge>` as cheap as the sensitivity-list forms (#767, 2026-10-26)
 
 (`docs/decisions.md` "`wait until <edge>` costs what the sensitivity-list forms cost".) The end of a `wait until rising_edge(clk)` on one

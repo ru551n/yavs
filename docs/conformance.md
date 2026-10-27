@@ -20,7 +20,7 @@ The references are called sim1 and sim2 (two established open-source VHDL simula
 | UVVM's own testbenches | 131 of 137 runs pass (6 skipped: vendor libraries absent) |
 | OSVVM's own regression | 2008: 314/314, 2019: 314/314 |
 | Real designs run to completion (neorv32 x3, GRLIB LEON3) | 4/4 |
-| Waveform equivalence with sim1 (local, real designs) | 17 designs compared signal by signal and time step by time step, interpreter: 44735 of 44889 signals equal over 50304249 value changes; 154 signals differ, 154 of them classified as reference-simulator differences (catalogued, the language reference leaves the behaviour open), 0 unexplained |
+| Waveform equivalence with sim1 (local, real designs) | 17 designs compared signal by signal and time step by time step, interpreter: 44824 of 44889 signals equal over 50301686 value changes; 65 signals differ, 65 of them classified as reference-simulator differences (catalogued, the language reference leaves the behaviour open), 0 unexplained |
 | VUnit's own VHDL suites (local) | 1357 of 1357 tests pass, 11 suites |
 
 ## Reproduce
@@ -46,7 +46,7 @@ A `--local` run rewrites `docs/conformance-local.json`; commit it together with 
 | Analysis corpora | CI | `tools/corpus/run.py <manifest> --keep-going` |
 | UVVM, OSVVM suites | CI | `tools/suites/uvvm.py`, `tools/suites/pro.py --std 2008|2019` |
 | Real designs | CI | `tools/realbench/run.py BIN --tests ... --runs 0` |
-| Waveform equivalence | local, 2026-10-26 at `aeaeaa593f` | `python3 -I tools/waveq/run.py BIN` |
+| Waveform equivalence | local, 2026-10-27 at `05aa8453fb` | `python3 -I tools/waveq/run.py BIN` |
 | cocotb regression over VHPI | local, 2026-10-20 at `78b1c398` | `cocotb's own tests with the VHPI plugin (crates/yavs-vhpi/COCOTB.md)` |
 | References against the recorded outputs | local, 2026-10-26 at `cd5268f8b2` | `tools/difftest/difftest.py --candidate sim1|sim2` |
 | The auto and llvm tiers | local, 2026-10-26 at `cd5268f8b2` | `tools/conformance/run.py --local --llvm --only tiers (yavs built with --features llvm)` |
@@ -322,7 +322,7 @@ yavs's verdict and who decided.
 | [`integer-literal-outside`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/integer-literal-outside) | 9.3.6, 5.2.1 | LRM clear | FATAL | agent (#463, L122) |
 | [`record-aggregate-field-range`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/record-aggregate-field-range) | 9.3.3.2, 5.2.1 | LRM clear | FATAL | agent (#463, L119) |
 | [`package-instance-path-name`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/package-instance-path-name) | 16.2.5 | LRM clear | OK | agent, 2026-10-20 (#445) |
-| [`subprogram-signature-instance-name`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/subprogram-signature-instance-name) | 16.2.5 | LRM ambiguity | OK: `show[string,std_ulogic,integer]` (t | agent, 2026-10-26 (#781, #784) |
+| [`subprogram-signature-instance-name`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/subprogram-signature-instance-name) | 16.2.5 | LRM ambiguity | OK: `show[string, std_logic, natural]` ( | user, 2026-10-27 (#781, #784) |
 | [`psl-edge-unknown-value`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/psl-edge-unknown-value) | PSL (IEEE 1850) 5.2.3.4, 5.2.3.5 | LRM ambiguity | OK | agent, 2026-10-20 (#445) |
 | [`short-circuit-constant-false-effect`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/short-circuit-constant-false-effect) | 9.2.2 | LRM clear | OK | agent, 2026-10-24 |
 
@@ -400,7 +400,7 @@ Under the `auto` tier (local, 2026-10-26 at `cd5268f8b2`): grlib_leon3mp pass, n
 
 ## Waveform equivalence on real designs
 
-Waveform equivalence: run locally on 2026-10-26 at aeaeaa593f (yavs build 11c367ea3e), references sim1, sim2.
+Waveform equivalence: run locally on 2026-10-27 at 05aa8453fb (yavs build 5dc3cb5d28), references sim1, sim2.
 Reproduce: `python3 -I tools/waveq/run.py BIN`
 
 | design | A | B | signals | value changes | equal | different | equal as slice | other shape | only A | only B | differences | A compiled code |
@@ -447,11 +447,11 @@ Reproduce: `python3 -I tools/waveq/run.py BIN`
 | uvvm_sb_slv | yavs-auto | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 0 |
 | uvvm_sb_slv | yavs-llvm | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 42834 IR instructions |
 | uvvm_util_rand | yavs-interp | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 0 |
-| uvvm_util_rand | yavs-auto | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 1 functions |
+| uvvm_util_rand | yavs-auto | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 0 |
 | uvvm_util_rand | yavs-llvm | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 84159 IR instructions |
-| uvvm_axistream_vvc | yavs-interp | sim1 | 154 | 788147 | 61 | 93 | 0 | 0 | 20 | 1 | reference process-order-in-cycle: 4, reference subprogram-signature-instance-name: 89 | 0 |
-| uvvm_axistream_vvc | yavs-auto | sim1 | 154 | 788147 | 61 | 93 | 0 | 0 | 20 | 1 | reference process-order-in-cycle: 4, reference subprogram-signature-instance-name: 89 | 0 |
-| uvvm_axistream_vvc | yavs-llvm | sim1 | 154 | 788147 | 61 | 93 | 0 | 0 | 20 | 1 | reference process-order-in-cycle: 4, reference subprogram-signature-instance-name: 89 | 69265 IR instructions |
+| uvvm_axistream_vvc | yavs-interp | sim1 | 154 | 785584 | 150 | 4 | 0 | 0 | 20 | 1 | reference process-order-in-cycle: 4 | 0 |
+| uvvm_axistream_vvc | yavs-auto | sim1 | 154 | 785584 | 150 | 4 | 0 | 0 | 20 | 1 | reference process-order-in-cycle: 4 | 0 |
+| uvvm_axistream_vvc | yavs-llvm | sim1 | 154 | 785584 | 150 | 4 | 0 | 0 | 20 | 1 | reference process-order-in-cycle: 4 | 69265 IR instructions |
 | uvvm_methods_log | yavs-interp | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 0 |
 | uvvm_methods_log | yavs-auto | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 0 |
 | uvvm_methods_log | yavs-llvm | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 14064 IR instructions |
@@ -470,7 +470,6 @@ Not configured (no waveform keys for the kind of design in tools/sims.local.conf
 Differences explained:
 
 - reference process-order-in-cycle: the verification components take IDs from a shared counter in the order their processes run in one cycle; the LRM leaves that order open (14.7.5.3) and the references differ among themselves (docs/design/simulator-discrepancies.md); every bus signal is equal
-- reference subprogram-signature-instance-name: from 266.87 us, in the test case with random valid/ready low, the masters deassert tvalid in other cycles: the BFM seeds that random stream from `'instance_name` of a procedure variable, whose signature each tool spells differently (base types on yavs, #784; a space after each comma on sim1), so each tool runs a different, equally valid sequence (the cause is inferred from where the divergence starts); the test passes everywhere
 
 ## Platforms covered by CI
 
@@ -490,6 +489,6 @@ The `check` job is `cargo fmt`, `clippy -D warnings` and the whole test suite of
 | PSL | a subset; the rest is skipped with warning W0004 or listed in the tracking issue [#445](https://github.com/ru551n/yavs/issues/445) |
 | SDF and VITAL timing, SystemC, macOS | out of scope (docs/plan.md, "Out of scope") |
 | Platforms | Linux x86_64, Linux aarch64 and Windows x86_64 only |
-| LLVM tier | built only with the `llvm` feature (LLVM 21); the default build runs the interpreter tier. CI runs a slice of the corpus under the LLVM tier on the three platforms |
+| LLVM tier | the release archives ship both variants: with the compiled tier (LLVM 21, the default archive) and without it (`-nollvm`, the interpreter alone); a build from source has it only with the `llvm` feature. CI runs a slice of the corpus under the LLVM tier on the three platforms |
 | Reference simulators | the comparison is against two established open-source VHDL simulators (sim3 and sim4, two commercial simulators, vote in part of the discrepancy catalogue); where the language reference is unclear yavs is permissive and the choice is recorded below |
 | What a pass means | a pass is agreement with a recorded reference output or with a suite's own verdict. It is evidence, not a proof of correctness; each known disagreement is listed in the catalogue |

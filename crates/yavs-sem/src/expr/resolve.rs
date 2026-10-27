@@ -366,7 +366,7 @@ impl Db {
                         },
                     ) = &e.kind
                         && matches!(&self.types[t].kind, TypeKind::Array { indexes, .. } if indexes.len() == 1)
-                        && crate::expr::literal::literal_expr(self, l, t).is_err()
+                        && crate::expr::literal::literal_expr(self, scope, l, t).is_err()
                     {
                         return self.poison_expr();
                     }
@@ -504,7 +504,7 @@ impl Db {
     fn build(&mut self, scope: ScopeId, e: &ast::Expr, i: Interp) -> ExprId {
         use ast::ExprKind as K;
         match &e.kind {
-            K::Literal(l) => match crate::expr::literal::literal_expr(self, l, i.ty) {
+            K::Literal(l) => match crate::expr::literal::literal_expr(self, scope, l, i.ty) {
                 Ok(id) => id,
                 Err(_) => self.poison_expr(),
             },
@@ -705,7 +705,7 @@ impl Db {
     fn build_class(&mut self, scope: ScopeId, e: &ast::Expr, t: TypeId) -> ExprId {
         match &e.kind {
             ast::ExprKind::Literal(l) => {
-                crate::expr::literal::literal_expr(self, l, t).unwrap_or(self.poison.expr)
+                crate::expr::literal::literal_expr(self, scope, l, t).unwrap_or(self.poison.expr)
             }
             ast::ExprKind::Aggregate(assocs) => {
                 // The context subtype, when the caller gave one (an object's declared subtype).

@@ -191,6 +191,9 @@ pub struct Stats {
     pub skip_signals: u64,
     /// Kernel signals (a pack of record leaves is one, #686).
     pub signals: u64,
+    /// Assignments that took the general path of `Ctx::assign` (waveform lists, preemption);
+    /// summed over the processes when asked.
+    pub general_assigns: u64,
 }
 
 /// A pending observer wake-up (`Hook::wake_at`). Ordered by time, then registration.
@@ -1520,7 +1523,10 @@ impl SimControl {
     }
 
     pub fn stats(&self) -> Stats {
-        self.stats
+        Stats {
+            general_assigns: self.slots.iter().map(|s| lock(s).st.general).sum(),
+            ..self.stats
+        }
     }
 
     pub fn signal_count(&self) -> usize {
@@ -3386,9 +3392,20 @@ impl SimControl {
                 _ => {
                     let now = self.now;
                     let (mut i, mut at) = (0, 0);
+                    // A big batch misses the cache on every process: ask for the hot lines of
+                    // a process a few steps ahead (#766).
+                    let ahead = if pids.len() >= PREFETCH_BATCH {
+                        PREFETCH_AHEAD
+                    } else {
+                        usize::MAX
+                    };
                     let caught = catch_unwind(AssertUnwindSafe(|| {
                         while let Some(&p) = pids.get(i) {
                             at = i;
+                            if let Some(&n) = pids.get(i.saturating_add(ahead)) {
+                                let next = &*slot_mut(&mut self.slots[n as usize]).process;
+                                yavs_prefetch::lines(next, PREFETCH_LINES);
+                            }
                             let s = slot_mut(&mut self.slots[p as usize]);
                             if !init {
                                 resumption(&self.procs, p, &mut s.st);
@@ -4407,6 +4424,13 @@ fn resumption(procs: &[ProcMeta], p: u32, st: &mut ProcState) {
         st.known_key
     };
 }
+
+/// A batch of at least this many processes prefetches (a smaller one stays in the cache, and the
+/// hint costs more than it saves), the process this many steps ahead, its first lines (the
+/// start of the `Process` object: `InterpProcess` keeps its machine's hot lines there).
+const PREFETCH_BATCH: usize = 128;
+const PREFETCH_AHEAD: usize = 3;
+const PREFETCH_LINES: usize = 5;
 
 fn slot_mut(m: &mut Mutex<Slot>) -> &mut Slot {
     m.get_mut().unwrap_or_else(PoisonError::into_inner)

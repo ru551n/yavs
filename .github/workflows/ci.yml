@@ -48,8 +48,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
-      LLVM_VER: 21.1.8
-      LLVM_SHA256: 749d22f565fcd5718dbed06512572d0e5353b502c03fe1f7f17ee8b8aca21a47
       CARGO_BUILD_JOBS: 4
     steps:
       - uses: actions/checkout@v5
@@ -67,39 +65,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y llvm-21-dev libzstd-dev
           echo "LLVM_SYS_211_PREFIX=/usr/lib/llvm-21" >> "$GITHUB_ENV"
-      - uses: actions/cache@v4
+      # Pinned LLVM 21 for MSVC, shared with the release workflow.
+      - uses: ./.github/actions/llvm-windows
         if: runner.os == 'Windows'
-        id: llvm
-        with:
-          path: C:\llvm
-          key: llvm-${{ env.LLVM_VER }}-x86_64-pc-windows-msvc-trim1
-      - name: LLVM 21 (Windows)
+      - name: Static C runtime (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          $n = "clang+llvm-$env:LLVM_VER-x86_64-pc-windows-msvc"
-          if ($env:STEPS_CACHE_HIT -ne 'true') {
-            curl.exe -sSfLo llvm.tar.xz "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VER/$n.tar.xz"
-            if ((Get-FileHash llvm.tar.xz -Algorithm SHA256).Hash -ne $env:LLVM_SHA256) { throw "LLVM sha256 mismatch" }
-            New-Item -ItemType Directory C:\x | Out-Null
-            tar -xf llvm.tar.xz -C C:\x
-            # keep only what llvm-sys needs (0.4 GB instead of 4 GB)
-            New-Item -ItemType Directory C:\llvm\bin, C:\llvm\lib | Out-Null
-            Copy-Item "C:\x\$n\bin\llvm-config.exe", "C:\x\$n\bin\llvm-lib.exe" C:\llvm\bin
-            Copy-Item "C:\x\$n\lib\LLVM*.lib" C:\llvm\lib
-            Copy-Item "C:\x\$n\include" C:\llvm\include -Recurse
-            Remove-Item C:\x -Recurse -Force
-            # libxml2s.lib is missing from the package (llvm-project#172890); an empty stub satisfies the linker
-            & C:\llvm\bin\llvm-lib.exe /llvmlibempty /out:C:\llvm\lib\libxml2s.lib
-          }
-          # llvm-sys links the system libs as `static=`; rustc then needs to find them on a -L path,
-          # so copy the SDK import libs next to the LLVM libs (the cache holds only the stub above).
-          $um = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Lib\*\um\x64' | Sort-Object FullName | Select-Object -Last 1
-          foreach ($l in 'psapi','shell32','ole32','uuid','advapi32','ws2_32','ntdll') { Copy-Item "$($um.FullName)\$l.lib" C:\llvm\lib }
-          "LLVM_SYS_211_PREFIX=C:\llvm" >> $env:GITHUB_ENV
-          "RUSTFLAGS=-C target-feature=+crt-static" >> $env:GITHUB_ENV
-        env:
-          STEPS_CACHE_HIT: ${{ steps.llvm.outputs.cache-hit }}
+        run: '"RUSTFLAGS=-C target-feature=+crt-static" >> $env:GITHUB_ENV'
       - run: cargo clippy -p yavs-llvm -p yavs --features llvm --all-targets --locked -- -D warnings
       - run: cargo test -p yavs-llvm -p yavs --features llvm --locked --no-fail-fast
       # The unit tests under the collect-at-every-safepoint build (#500); the difftest corpus

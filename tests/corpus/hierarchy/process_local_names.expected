@@ -7,7 +7,7 @@ diag	note	0	0	:process_local_names:main	prx :process_local_names:main:pr[integer
 diag	note	0	0	:process_local_names:main	pr self :process_local_names:main:pr[integer]: | :process_local_names(a):main:pr[integer]:
 diag	note	0	0	:process_local_names:main	inner :process_local_names:main:pr[integer]:inner[]:iv | :process_local_names(a):main:pr[integer]:inner[]:iv
 diag	note	0	0	:process_local_names:main	fn :process_local_names:main:fn[integer return integer]:fv | :process_local_names(a):main:fn[integer return integer]:fv
-diag	note	0	0	:process_local_names:main	arch fn :process_local_names:twice[integer,boolean return integer]:fv | :process_local_names(a):twice[integer,boolean return integer]:fv
+diag	note	0	0	:process_local_names:main	arch fn :process_local_names:twice[integer, boolean return integer]:fv | :process_local_names(a):twice[integer, boolean return integer]:fv
 diag	note	1000000	0	:process_local_names:_p0	u :process_local_names::u | :process_local_names(a)::u
 diag	note	2000000	0	:process_local_names:b:q	v :process_local_names:b:q:v | :process_local_names(a):b:q:v
 diag	note	3000000	0	:process_local_names:b:_p0	w :process_local_names:b::w | :process_local_names(a):b::w

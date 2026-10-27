@@ -47,6 +47,8 @@ pub use generator::{Generator, OptLevel, StartError};
 #[cfg(feature = "llvm")]
 pub use jit::{Error, Jit, Module, portable_cpu};
 #[cfg(feature = "llvm")]
+pub use lazy::ensure as load_library;
+#[cfg(feature = "llvm")]
 pub use lower::{LlvmGenerator, LlvmTier, compile};
 #[cfg(feature = "llvm")]
 pub use objcache::{cache_stats, set_cache};

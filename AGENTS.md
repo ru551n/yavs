@@ -38,6 +38,7 @@ to, and those documents win over your memory.
 | `crates/yavs-sem` | Semantic analysis to typed HIR (`hir.rs`); module owners in its `CONTRIBUTING.md` |
 | `crates/yavs-lib` | Library manifests, `_YAVS_LIB` locking, unit closure |
 | `crates/yavs-cache` | The on-disk store of the compilation cache (keys, atomic writes, validation, pruning); VHDL-agnostic |
+| `crates/yavs-prefetch` | A cache prefetch hint (`lines`): the one `unsafe` call the kernel's batch loop needs, so `yavs-kernel` stays `forbid(unsafe_code)` |
 | `crates/yavs-logic` | `std_ulogic` and packed logic vectors (bit-planes are the default) |
 | `crates/yavs-std` | Native `std.standard`/`textio`/`env` semantics, checked arithmetic |
 | `crates/yavs-kernel` | LRM 14.7 cycle, drivers, ports, parallel evaluation, `SimControl`, event bus |

@@ -20,6 +20,7 @@ postcard = { version = "1", default-features = false, features = ["use-std"] }
 rustc-hash = "2.1"
 smallvec = { version = "1", features = ["union"] }
 yavs-logic = { path = "crates/yavs-logic" }
+yavs-prefetch = { path = "crates/yavs-prefetch" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

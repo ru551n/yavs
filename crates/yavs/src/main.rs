@@ -20,11 +20,23 @@ use clap::{Parser, Subcommand, ValueEnum};
 use yavs_diag::{ColorChoice, Diagnostic, MessageFormat, Severity, SourceMap};
 use yavs_syntax::{Encoding, Options, Std};
 
+/// What `yavs --version` prints after the name: the first line of its output is
+/// `yavs MAJOR.MINOR.PATCH (details)` (docs/cli-contract.md section 1); the details say whether
+/// the compiled tier is built in (release archives with and without it, #780).
+const VERSION: &str = if cfg!(feature = "llvm") {
+    concat!(env!("CARGO_PKG_VERSION"), " (compiled tier: llvm)")
+} else {
+    concat!(
+        env!("CARGO_PKG_VERSION"),
+        " (interpreter only, no compiled tier)"
+    )
+};
+
 #[cfg_attr(test, derive(Debug))]
 #[derive(Parser)]
 #[command(
     name = "yavs",
-    version,
+    version = VERSION,
     about = "A VHDL simulator",
     args_override_self = true
 )]
@@ -95,7 +107,7 @@ fn parse_hot(args: &[String]) -> Option<Cli> {
         ),
     };
     let top = clap::Command::new("yavs")
-        .version(env!("CARGO_PKG_VERSION"))
+        .version(VERSION)
         .about("A VHDL simulator")
         .args_override_self(true);
     let mut matches = Top::augment_args(top)
@@ -470,6 +482,21 @@ mod tests {
         for a in whole {
             assert!(parse_hot(&args(a)).is_none(), "{a:?}");
         }
+    }
+
+    /// `yavs --version` keeps the shape of docs/cli-contract.md and says whether the compiled
+    /// tier is built in (#780).
+    #[test]
+    fn version_names_the_compiled_tier() {
+        use clap::CommandFactory;
+        let v = Cli::command().render_version();
+        let head = format!("yavs {} (", env!("CARGO_PKG_VERSION"));
+        assert!(v.starts_with(&head), "{v}");
+        assert_eq!(
+            v.contains("compiled tier: llvm"),
+            cfg!(feature = "llvm"),
+            "{v}"
+        );
     }
 
     /// The default tier (#125): `auto` with the `llvm` feature, also under `--vhpi`; `interp`

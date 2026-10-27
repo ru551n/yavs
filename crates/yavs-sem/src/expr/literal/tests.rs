@@ -724,6 +724,7 @@ fn string_bounds_follow_the_index_subtype() {
 fn literal_exprs() {
     use yavs_syntax::ast::{Literal, LiteralKind};
     let mut e = env();
+    let root = e.db.root;
     let int = add_type(&mut e.db, "integer", TypeKind::Integer);
     let real = add_type(&mut e.db, "real", TypeKind::Floating);
     let mk = |k| Literal {
@@ -732,6 +733,7 @@ fn literal_exprs() {
     };
     let id = literal_expr(
         &mut e.db,
+        root,
         &mk(LiteralKind::Abstract(Symbol::intern("16#10#"))),
         int,
     )
@@ -740,6 +742,7 @@ fn literal_exprs() {
     assert_eq!(e.db.exprs[id].stat, Staticness::Locally);
     let id = literal_expr(
         &mut e.db,
+        root,
         &mk(LiteralKind::Abstract(Symbol::intern("1.5"))),
         real,
     )
@@ -747,12 +750,18 @@ fn literal_exprs() {
     assert_eq!(e.db.value(id), Some(&ConstValue::Real(1.5)));
     // 1 is not a real literal; 1.0 is not an integer literal.
     for (t, ty) in [("1", real), ("1.0", int)] {
-        let r = literal_expr(&mut e.db, &mk(LiteralKind::Abstract(Symbol::intern(t))), ty);
+        let r = literal_expr(
+            &mut e.db,
+            root,
+            &mk(LiteralKind::Abstract(Symbol::intern(t))),
+            ty,
+        );
         assert_eq!(r.map(|_| ()), Err(Reported), "{t}");
         assert_eq!(e.db.diagnostics().last().unwrap().code, diag::TYPE_MISMATCH);
     }
     let r = literal_expr(
         &mut e.db,
+        root,
         &mk(LiteralKind::Abstract(Symbol::intern(
             "99999999999999999999",
         ))),
@@ -760,20 +769,41 @@ fn literal_exprs() {
     );
     assert_eq!(r.map(|_| ()), Err(Reported));
     assert_eq!(e.db.diagnostics().last().unwrap().code, diag::LITERAL_RANGE);
+    // The characters of the element type must be visible at the literal (LRM 9.3.2).
+    let bad = literal_expr(
+        &mut e.db,
+        root,
+        &mk(LiteralKind::BitString(Symbol::intern("x\"F\""))),
+        e.slv,
+    );
+    assert_eq!(bad.map(|_| ()), Err(Reported));
+    assert_eq!(e.db.diagnostics().last().unwrap().code, diag::NOT_DECLARED);
+    let TypeKind::Array { elem, .. } = &e.db.types[e.slv].kind else {
+        panic!("array")
+    };
+    let TypeKind::Enum { lits } = &e.db.types[e.db.subtypes[*elem].base].kind else {
+        panic!("enum")
+    };
+    let lits = lits.to_vec();
+    for l in lits {
+        e.db.declare(root, l);
+    }
     let id = literal_expr(
         &mut e.db,
+        root,
         &mk(LiteralKind::BitString(Symbol::intern("x\"F\""))),
         e.slv,
     )
     .unwrap();
     assert!(matches!(e.db.value(id), Some(ConstValue::Array(_))));
-    let id = literal_expr(&mut e.db, &mk(LiteralKind::Null), int).unwrap();
+    let id = literal_expr(&mut e.db, root, &mk(LiteralKind::Null), int).unwrap();
     assert!(matches!(e.db.exprs[id].kind, ExprKind::Null));
     // Poison type: silent.
     let n = e.db.error_count();
     let poison = e.db.poison.ty;
     let r = literal_expr(
         &mut e.db,
+        root,
         &mk(LiteralKind::Abstract(Symbol::intern("1"))),
         poison,
     );

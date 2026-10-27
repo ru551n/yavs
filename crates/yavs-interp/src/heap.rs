@@ -310,6 +310,26 @@ impl Heap {
         s.data.as_deref_mut()?.get_mut(s.start..)
     }
 
+    /// The bytes of live object `dst` (to write) and of a different live object `src`, both at
+    /// once (a copy from one object to another of the same heap).
+    pub fn data_pair(&mut self, dst: u32, src: u32) -> Option<(&mut [u8], &[u8])> {
+        let (d, s) = (dst as usize, src as usize);
+        let (dsl, ssl) = if d < s {
+            let (lo, hi) = self.slots.split_at_mut(s);
+            (lo.get_mut(d)?, hi.first()?)
+        } else if s < d {
+            let (lo, hi) = self.slots.split_at_mut(d);
+            (hi.first_mut()?, lo.get(s)?)
+        } else {
+            return None;
+        };
+        dsl.writes = dsl.writes.wrapping_add(1);
+        Some((
+            dsl.data.as_deref_mut()?.get_mut(dsl.start..)?,
+            ssl.data.as_deref()?.get(ssl.start..)?,
+        ))
+    }
+
     /// The generation and write count of live object `index`: equal stamps mean its bytes
     /// are unchanged, because every write goes through [`Heap::data_mut`]. ponytail: the
     /// count wraps after 2^32 writes between two stamps.

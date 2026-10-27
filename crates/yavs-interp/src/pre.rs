@@ -73,20 +73,27 @@ impl Pre {
     /// The collection reads only registers live at a safepoint (#422), so zeros are not
     /// needed for it; appending the table costs what appending stale words would.
     pub(crate) fn fill(&self, stack: &mut Vec<u64>, idx: u32) -> R<()> {
+        if idx < 1 << 29 {
+            self.fill_below(stack, idx);
+            return Ok(());
+        }
+        // The error of `mk_addr`.
+        if let Some(&(_, off)) = self.frame.first() {
+            mk_addr(FRAME, idx, off)?;
+        }
+        self.fill_below(stack, idx);
+        Ok(())
+    }
+
+    /// [`Pre::fill`] for a frame index below 2^29, where no address can fail.
+    #[inline(always)]
+    pub(crate) fn fill_below(&self, stack: &mut Vec<u64>, idx: u32) {
         let at = stack.len();
         stack.extend_from_slice(&self.init);
-        if idx >= 1 << 29 {
-            // The error of `mk_addr`.
-            if let Some(&(_, off)) = self.frame.first() {
-                mk_addr(FRAME, idx, off)?;
-            }
-        }
-        // Offsets are `u32`s, so `mk_addr` cannot fail below the index bound.
         let hi = u64::from(FRAME) << 61 | u64::from(idx) << 32;
         for &(r, off) in &self.frame {
             stack[at + r as usize] = hi | off;
         }
-        Ok(())
     }
 
     /// `budget`: `f` runs as lowered under elaboration-time evaluation, and its jumps back are
@@ -145,7 +152,13 @@ impl Pre {
                             known[dst.0 as usize] = Known::Inst(off as u32);
                             mk_addr(INST, 0, off).ok()
                         }
-                        AddrSpace::Pkg(p) => mk_addr(PKG, p, off).ok(),
+                        AddrSpace::Pkg(p) => {
+                            let a = mk_addr(PKG, p, off).ok();
+                            if a.is_some() {
+                                known[dst.0 as usize] = Known::Pkg(p, off as u32);
+                            }
+                            a
+                        }
                         AddrSpace::Const(c) => mk_addr(CONST, c.0, off).ok(),
                         AddrSpace::Shared => mk_addr(SHARED, 0, off).ok(),
                     };
@@ -242,6 +255,8 @@ enum Known {
     Frame(u32),
     /// The address of this offset in the instance data.
     Inst(u32),
+    /// The address of this offset in the data of this package.
+    Pkg(u32, u32),
 }
 
 /// Bit of `PosIndexLoadCmpBr::dim`: the op heads a search loop (see there).
@@ -416,6 +431,22 @@ pub(crate) enum Op {
         dst: u32,
         off: u32,
         w: Width,
+    },
+    /// A load from the data of package `pkg` at `off` (a package variable, for one the handle of a
+    /// protected object).
+    LoadPkg {
+        dst: u32,
+        pkg: u32,
+        off: u32,
+        w: Width,
+    },
+    /// Two adjacent words at `base + off` and `base + off + 8` (the data pointer and the descriptor of
+    /// a fat pair; a `Load` or `LoadOff` and the `LoadOff` after it), both read before either is written.
+    LoadPair {
+        d1: u32,
+        d2: u32,
+        base: u32,
+        off: u32,
     },
     /// A load at `base + off` (an `Index` by a constant whose result only this load reads).
     LoadOff {
@@ -827,6 +858,13 @@ pub(crate) enum Op {
     /// block (else the `AllocK` alone).
     AllocCat {
         dst: u32,
+        n: u32,
+        m: u32,
+        /// The start and length of the operand list of the `Cat` (pieces of two registers).
+        parts: u32,
+        len: u8,
+        scalars: u16,
+        bias: u8,
     },
     /// `Alloc` of a size known at decode time.
     AllocK {
@@ -850,6 +888,14 @@ pub(crate) enum Op {
         v: u32,
         lo: u32,
         hi: u32,
+        what: CheckMsgId,
+    },
+    /// A `Check` of kind `Range` or `Index` whose bounds are constants of 32 bits.
+    CheckK {
+        kind: CheckKind,
+        v: u32,
+        lo: i32,
+        hi: i32,
         what: CheckMsgId,
     },
     Br {
@@ -3472,6 +3518,47 @@ fn loop_body(body: &[Op], ind: u32, bound: u32, delta: Delta) -> Result<Vec<LSte
 }
 
 /// Is the native the `is_x` of a vector of `std_ulogic`?
+/// `Load`/`LoadOff` and a `LoadOff` of the next word from the same base: `LoadPair`. After the
+/// element loops are planned (their analysis knows the single loads only); the second op stays in
+/// place for a jump or a stop inside the pair.
+fn word_pairs(ops: &mut [Op]) {
+    for k in 0..ops.len().saturating_sub(1) {
+        let pair = match (ops[k], ops[k + 1]) {
+            (
+                Op::Load {
+                    dst: d1,
+                    addr,
+                    w: Width::B8,
+                },
+                Op::LoadOff {
+                    dst: d2,
+                    base,
+                    off: 8,
+                    w: Width::B8,
+                },
+            ) if base == addr && d1 != addr => Some((d1, d2, addr, 0)),
+            (
+                Op::LoadOff {
+                    dst: d1,
+                    base: b1,
+                    off: o1,
+                    w: Width::B8,
+                },
+                Op::LoadOff {
+                    dst: d2,
+                    base: b2,
+                    off: o2,
+                    w: Width::B8,
+                },
+            ) if b1 == b2 && d1 != b1 && o1.checked_add(8) == Some(o2) => Some((d1, d2, b1, o1)),
+            _ => None,
+        };
+        if let Some((d1, d2, base, off)) = pair {
+            ops[k] = Op::LoadPair { d1, d2, base, off };
+        }
+    }
+}
+
 fn is_x_vec(prog: &Program, native: u32) -> bool {
     prog.natives
         .get(yavs_ir::NativeId(native))
@@ -3973,14 +4060,28 @@ fn superops(prog: &Program, ops: &mut [Op], at: &[u32], f: &Func, known: &[Known
                     && let Some(&Inst::Cat {
                         dst: cd,
                         logic: true,
+                        n,
+                        m,
+                        parts,
+                        scalars,
+                        bias,
                         ..
                     }) = f.code.get(cp as usize)
-                    && cd.0 == dst =>
+                    && cd.0 == dst
+                    && (frame || u8::try_from(parts.len).is_ok()) =>
             {
                 Some(if frame {
                     Op::ZeroCat { dst }
                 } else {
-                    Op::AllocCat { dst }
+                    Op::AllocCat {
+                        dst,
+                        n: n.0,
+                        m: m.0,
+                        parts: parts.start,
+                        len: parts.len as u8,
+                        scalars,
+                        bias,
+                    }
                 })
             }
             (Op::Alloc { dst, size }, _, _)
@@ -4566,6 +4667,12 @@ impl Code {
                         }
                         Some(&Known::Frame(off)) => Op::LoadSlot { dst: dst.0, off, w },
                         Some(&Known::Inst(off)) => Op::LoadInst { dst: dst.0, off, w },
+                        Some(&Known::Pkg(pkg, off)) => Op::LoadPkg {
+                            dst: dst.0,
+                            pkg,
+                            off,
+                            w,
+                        },
                         _ => Op::Load {
                             dst: dst.0,
                             addr: addr.0,
@@ -4902,12 +5009,23 @@ impl Code {
                     lo,
                     hi,
                     what,
-                } => Op::Check {
-                    kind,
-                    v: v.0,
-                    lo: lo.0,
-                    hi: hi.0,
-                    what,
+                } => match (kind, int(lo).map(i32::try_from), int(hi).map(i32::try_from)) {
+                    (CheckKind::Range | CheckKind::Index, Some(Ok(lo)), Some(Ok(hi))) => {
+                        Op::CheckK {
+                            kind,
+                            v: v.0,
+                            lo,
+                            hi,
+                            what,
+                        }
+                    }
+                    _ => Op::Check {
+                        kind,
+                        v: v.0,
+                        lo: lo.0,
+                        hi: hi.0,
+                        what,
+                    },
                 },
                 Inst::LayoutOf { dst, ty, desc, .. } => {
                     let word = |d: yavs_ir::Reg, k: u32| Op::LayoutWord {
@@ -5360,6 +5478,7 @@ impl Code {
         static_waits(prog, f, &mut ops, &at, &entry);
         let runs = drive_runs(&mut ops);
         let loops = elem_loops(&mut ops, &mut at);
+        word_pairs(&mut ops);
         // A process that never suspends polls for a stop request at every jump back: the jump
         // is stepped (`Machine::step_out`), so no other function pays for the check.
         if f.kind == yavs_ir::FuncKind::Process && !f.flags.contains(FuncFlags::MAY_SUSPEND) {

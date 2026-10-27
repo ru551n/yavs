@@ -1,0 +1,181 @@
+//! Copies of composite values: between two objects of one heap (access values), a logic vector
+//! range between two designated vectors, and whole records through designated objects (#677).
+
+mod common;
+use common::tempdir as tmp;
+
+use std::process::Command;
+
+const COPIES: &str = "
+library ieee;
+use ieee.std_logic_1164.all;
+entity copies is end;
+architecture a of copies is
+  type slv_ptr is access std_logic_vector;
+  type rec is record
+    a : integer;
+    v : std_logic_vector(0 to 299);
+    s : string(1 to 5);
+  end record;
+  type rec_ptr is access rec;
+begin
+  process
+    variable p, q : slv_ptr;
+    variable r, t : rec_ptr;
+    variable ok : boolean := true;
+  begin
+    p := new std_logic_vector(0 to 999);
+    q := new std_logic_vector(0 to 999);
+    for i in p'range loop
+      if i mod 3 = 0 then p(i) := '1'; elsif i mod 3 = 1 then p(i) := 'Z'; else p(i) := 'X'; end if;
+      q(i) := '0';
+    end loop;
+    -- aligned, unaligned and short ranges from one designated vector to another
+    q(64 to 575) := p(64 to 575);
+    q(3 to 12) := p(500 to 509);
+    q(700 to 999) := p(701 to 1000 - 1) & '1';
+    for i in q'range loop
+      if i >= 64 and i <= 575 then ok := ok and q(i) = p(i);
+      elsif i >= 3 and i <= 12 then ok := ok and q(i) = p(i + 497);
+      elsif i >= 700 and i <= 998 then ok := ok and q(i) = p(i + 1);
+      elsif i = 999 then ok := ok and q(i) = '1';
+      else ok := ok and q(i) = '0';
+      end if;
+    end loop;
+    assert ok report \"vector ranges differ\" severity failure;
+    -- whole records between two designated objects
+    r := new rec;
+    t := new rec;
+    r.a := 42;
+    r.v := (others => '1');
+    r.v(100 to 199) := (others => 'H');
+    r.s := \"hello\";
+    t.all := r.all;
+    assert t.a = 42 and t.v(150) = 'H' and t.v(250) = '1' and t.s = \"hello\" report \"record copy\" severity failure;
+    r.a := 7;
+    assert t.a = 42 report \"copy shares storage\" severity failure;
+    t.all := t.all;
+    assert t.a = 42 and t.s = \"hello\" report \"self copy\" severity failure;
+    report \"copies ok\";
+    wait;
+  end process;
+end;
+";
+
+/// A record signal whose scalar leaves lie next to each other (runs of `std_logic`, `bit` and
+/// `boolean` fields, all nine `std_ulogic` values) read whole into a variable and driven whole
+/// from one: every field comes back as it went in, in steps of one delta cycle.
+const RUNS: &str = "
+library ieee;
+use ieee.std_logic_1164.all;
+entity runs is end;
+architecture a of runs is
+  type rec is record
+    a0, a1, a2, a3, a4, a5, a6, a7, a8, a9 : std_logic;
+    b0, b1, b2, b3, b4, b5 : bit;
+    c : integer range 0 to 255;
+    d0, d1, d2, d3 : std_logic;
+    e : std_logic_vector(7 downto 0);
+    f0, f1, f2, f3 : boolean;
+    g0, g1, g2 : std_logic;
+  end record;
+  constant init : rec := (
+    'U', 'X', '0', '1', 'Z', 'W', 'L', 'H', '-', '1',
+    '1', '0', '1', '0', '0', '1', 200,
+    '0', '1', 'Z', 'X', \"10Z1XWLH\",
+    true, false, false, true, '1', 'L', '-');
+  signal r : rec := init;
+  signal s : rec;
+begin
+  process
+    variable v : rec;
+    variable ok : boolean := true;
+  begin
+    v := r;
+    assert v = init report \"first gather\" severity failure;
+    v.a3 := 'Z'; v.a9 := 'X'; v.b2 := '0'; v.b3 := '1'; v.f1 := true; v.f2 := true;
+    v.d0 := '1'; v.g1 := '0'; v.c := 17; v.e(3) := '0';
+    s <= v;
+    wait for 1 ns;
+    assert s.a0 = 'U' and s.a1 = 'X' and s.a2 = '0' and s.a3 = 'Z' and s.a4 = 'Z' and s.a5 = 'W'
+       and s.a6 = 'L' and s.a7 = 'H' and s.a8 = '-' and s.a9 = 'X' report \"a run\" severity failure;
+    assert s.b0 = '1' and s.b1 = '0' and s.b2 = '0' and s.b3 = '1' and s.b4 = '0' and s.b5 = '1'
+       report \"bit run\" severity failure;
+    assert s.d0 = '1' and s.d1 = '1' and s.d2 = 'Z' and s.d3 = 'X' and s.c = 17 report \"d run\" severity failure;
+    assert s.f0 = true and s.f1 = true and s.f2 = true and s.f3 = true report \"boolean run\" severity failure;
+    assert s.g0 = '1' and s.g1 = '0' and s.g2 = '-' and s.e = \"10Z10WLH\" report \"tail\" severity failure;
+    -- a whole read of a signal driven whole, then a field driven after it in the same cycle
+    v := s;
+    assert v = s report \"second gather\" severity failure;
+    r <= v;
+    r.a5 <= '1';
+    wait for 1 ns;
+    assert r.a4 = 'Z' and r.a5 = '1' and r.a6 = 'L' and r.b3 = '1' and r.f1 = true report \"mixed\" severity failure;
+    report \"runs ok\";
+    wait;
+  end process;
+end;
+";
+
+/// Analyse and run `src` (entity `top`) on the interpreter, and on the compiled tier when built in,
+/// and expect `want` in the output.
+fn check(name: &str, src: &str, top: &str, want: &str) {
+    let d = tmp(name);
+    std::fs::write(d.join(format!("{top}.vhd")), src).expect("write");
+    let work = format!("work:{}", d.join("lib").display());
+    let yavs = env!("CARGO_BIN_EXE_yavs");
+    let a = Command::new(yavs)
+        .current_dir(&d)
+        .args([
+            "analyze",
+            "--std=2008",
+            "--work",
+            &work,
+            &format!("{top}.vhd"),
+        ])
+        .output()
+        .expect("analyze");
+    assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
+    let tiers: &[&str] = if cfg!(feature = "llvm") {
+        &["interp", "auto"]
+    } else {
+        &["interp"]
+    };
+    for tier in tiers {
+        let o = Command::new(yavs)
+            .current_dir(&d)
+            .args([
+                "--color",
+                "never",
+                "run",
+                "--std=2008",
+                "--no-cache",
+                "--work",
+                &work,
+            ])
+            .arg(format!("--tier={tier}"))
+            .arg(top)
+            .output()
+            .expect("run");
+        let (out, err) = (
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr),
+        );
+        assert!(o.status.success(), "{tier}: {out}\n{err}");
+        assert!(
+            out.contains(want) || err.contains(want),
+            "{tier}: {out}\n{err}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn copies_between_designated_objects() {
+    check("value_move", COPIES, "copies", "copies ok");
+}
+
+#[test]
+fn runs_of_scalar_record_leaves() {
+    check("value_move_runs", RUNS, "runs", "runs ok");
+}

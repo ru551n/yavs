@@ -11199,9 +11199,207 @@ A concurrent `c(i) <= not c(i-1);` was an interpreted process of 74 IR instructi
 - **Not covered** (still processes): one-level `when ... else` muxes and selected assignments, relational operators, literal
   operands, expressions of more than one operator, operands of several parts (record wholes).
 
+## Kernel muxes: conditional assignments with one condition, relations and literal operands run as the kernel's own process (yavs-kernel, yavs-elab, #786, 2026-10-27)
+
+#779 left the glue of bus multiplexers and address decoders as interpreted processes: `y <= a when s = '1' else b;`, `y <= '1' when addr = BASE else '0';`, `y <= a = b;`, `y <= a and '1';`.
+
+- **Decision: these four shapes are kernel processes** (`Walker::mux_source`, `gate_source`; `yavs_kernel::MuxProcess`, `GateProcess`), with the delta and event behaviour of the interpreted statement (the same assignment entry points, the sensitivity of the statement: the condition and both arms).
+  - *Mux* (`ProcInst::mux`): not guarded or postponed, no delay clause (or `transport`, or `inertial` without `reject`), exactly two waveforms of one element, an `after` per arm that is static (`static_delay`). The condition (`Cond`) is a code set of one static logic element (`x = '1'`, `x /= '1'`, `'1' = x`, `?? x` of std_ulogic, a BOOLEAN name; BIT and BOOLEAN with the codes of '0'/'1', `'H' = '1'` is false as in the interpreter) or the predefined `=`/`/=` of two operands of one logic type and length (static signal names of one part, or static values). Each arm is a copy exactly as `copy_source` takes one (`copy_parts`, shared: same types, lengths and subtypes, so no check can fail; records, byte parts and conversions between arrays of one element type included, parts assigned like `CopyProcess`) or a static value (`lit_value`, probe-evaluated at elaboration without a call) of the target's type and length when the target is one whole driver of whole-type logic elements.
+  - *Relation as a gate*: the implicit `=`/`/=` (so not numeric_std's, not `?=`) on such operands into a BOOLEAN scalar; equal codes are equal values, and the blocks of a vector compare as bytes (the padding of a block is zero). *Literal operands*: any gate operand may be a static value when another is a signal.
+  - Why: the statement does one thing; the kernel already has the table lookup, the copy and the fast assignment paths (`assign_logic` is the one place where gates and muxes assign, and not `assign_blocks`, see #779).
+- **Not covered, still processes** (#788): expression trees of more than one operator, compound conditions (`A_EN and addr = X`), three or more arms, `unaffected`, a constant condition, an arm that is an expression, `numeric_std` `=` as condition or value, an enumeration compare (`state = S_IDLE`), `selected` assignments, guarded, postponed, `reject`.
+- **Counted** (instances per elaboration, a temporary counter in the recogniser, 42 realbench testbenches and the 11 h2h designs; "of N": concurrent and sequential processes): neorv32 single-core minimal 211 muxes of 2413 (single-core with caches 222 of 2575, dual-core 387 of 3910), none of them literal gates; poc_cache_cpu 10 of 532, poc_arith_addw 8 of 467, fletcher 5 to 6 of 321 to 488, hdlm_axi_fifo 5 muxes and 10 gates with a literal of 230, vai pe_array 1 and 2 of 203, other vai, olo, sc5, osvvm and uvvm: 0 to 2, grlib_leon3mp 0 of 1044 (151 two-arm conditionals stay processes: a delayed copy under a compare, or an expression arm), h2h designs 0 (`rtl_chain`'s 1000 gates are #779's). The share is large only in the neorv32 bus fabric and address decoders, as the issue said; 865 muxes and 14 gates in all, 820 of them the three neorv32 configurations. What is left by shape is in #788.
+- **The reference simulator (rule 22).** As for #779: its concurrent statements are small compiled functions that read the inputs, select and schedule the driver; the idea taken is the fixed kernel process with no general machinery, built at elaboration instead of generated, so it works in every tier and costs nothing to compile. Nothing was copied.
+- **Measured** (bench builds with `llvm`, `tools/claim core` 8 to 9, base = 4cdb2fb1, medians of interleaved runs, a fresh binary's first run discarded): `tools/realbench --compare` run phase over the 42 tests, `interp` and `auto`: geometric means 1.00 and 1.00 of instructions, 1.00 and 0.99 of CPU time; neorv32 single-core minimal interp 30.00 G to 29.26 G instructions (-2.5 percent), 2.62 s to 2.55 s of CPU, auto 30.29 G to 29.54 G, 2.71 s to 2.62 s; with caches 24.30 G to 23.83 G, dual-core 20.23 G to 19.87 G; the CPU category 0.98 of instructions in both tiers; the two tests the tool flagged above 1.05 in instructions (`hdlm_ring_buffer` interp, `uvvm_sb_slv` auto) are 1.00 in a repeat. Repeated on the rebased pair (8207ccf8 against this change, ten tests, one core): neorv32 single-core minimal 29.83 G to 29.11 G instructions interp (-2.4 percent), 30.30 G to 29.56 G auto; with caches 24.13 G to 23.67 G; dual-core 20.10 G to 19.77 G; geometric mean of the instructions of the ten 0.99 in both tiers. h2h designs (`tools/bench/run.py --ref sim1 --tiers interp,auto --instructions --runs 5`, core 9, two rounds each of base and new): no instruction change beyond 1 percent (the auto tier of `rtl_ram` and `rtl_lfsr` moves 2 to 3 percent between rounds of the same binary), as no h2h design has these shapes; `rtl_chain` auto stays at 1.02 times sim1 in instructions. The worth of this change is the neorv32 fabric and the bus designs after it, not the h2h set.
+- **Tests**: elab `muxes_and_relations_run_in_the_kernel` (the recognised and the near shapes; reports with time and delta against the interpreted statements over 729 value triples, from the corpus file), `logic_gates_run_in_the_kernel` (its literal operand is now a gate), corpus `sigassign/mux_gates` against sim1 (all nine values for select and arms, `'U'`, `'X'`, `'Z'`, `'-'` included, a resolved target with two mux drivers, an in port, 70-element vectors, a record with an integer, BIT and BOOLEAN, per-arm delays, transport) at 1 and 4 threads on `interp`, `auto`, `llvm` and the heat-1 `auto` variant (540 of 540), perf case `mux_bus` (ops 5094 interpreted, 3240 now).
+
 ## Conformance report: generated, CI-regenerated where possible, dated records otherwise (tools/conformance, #780, 2026-10-26)
 
 - `docs/conformance.md` and `docs/conformance.json` are generated by `tools/conformance/run.py` from the existing harnesses; the README's "Correctness evidence" section links to it. Reason: other people should be able to check the evidence, not take our word for it. Decided: user, 2026-10-26.
 - The `conformance` workflow (push to `main`, release tags) regenerates every part that needs only yavs and the fetched corpora and uploads the report as an artifact. Parts that need reference simulators or vendor libraries are dated records in `docs/conformance-local.json` (date, commit, command), refreshed with `run.py --local`. Reason: a number must say where and when it came from.
 - A committed report that differs from the regenerated one is a warning on `main` and a failure on a release tag. Reason: agents push to `main` all day and a changed count must not block them, while a release must carry a current report. Agent decision, open for the maintainer.
 - Nothing is published outside the repository (no Pages). Needs the maintainer's decision.
+
+## `--tier=auto`: large functions with loops are a kind of their own, `BigLoop` (yavs-llvm `auto.rs`, #679, 2026-10-26)
+
+Task: the processes of 1 000 IR instructions or more that `--tier=auto` leaves interpreted (`Kind::Big`, compiled at `OptLevel::Fast`, speedup
+pinned at 1.037 so that a process is seen for about 28 times its compile before it is a candidate). Measured with bench builds of 30241dbc, one
+claimed CCD1 core per cell, warm worlds, each large process forced compiled at its first look (`YAVS_AUTO_FORCE`, copies only), whole-run
+`perf stat --no-inherit` cycles and instructions of the simulation thread, and per process the samples of `yavs run --profile` (warm pairs, interpreted
+against compiled; a ratio over 1 is a gain).
+
+- **The class is not one population.** Window generator: forcing `bus_process` and `walk_control` takes the run from 43.3 G to 40.5 G cycles
+  (-6 percent, instructions -11 percent); per process `bus_process` 1.16, `walk_control` 1.62, `present` 1.20, `control` 1.12. `fletcher_bufferwriter_512`:
+  `ctrl_comb_proc` 1.02, the run level to +3 percent with all its large processes. `grlib_leon3mp`: all large copies forced, level (-1 to +5 percent
+  cycles, instructions -5 percent); per process 0.86 (`iu:comb`) to 1.36 (`ictrl`). `uvvm_axistream_vvc` (its large procedures): +8 percent cycles in
+  one A/B, level in the profile pair. `neorv32_single_min` `counter_increment` 1.03.
+- **What separates them: the share of the code in loops** (`loop_share`, percent of the IR instructions in the natural loops of `back_edges`). Every
+  large process of 12 percent or more ran 1.03 to 1.62 times faster compiled (`bus_process` 70, `present` 30, `walk_control` 12, two GRLIB
+  controllers of 54 and 21 percent, the timer and the APB bridge by their source loops, 1.16 and 1.15, `counter_increment` 13); below 9 percent losers
+  and winners mix (`iu:comb` 0 percent 0.86, the TLB processes 4 percent 0.92 and 0.95, the AHB controller, most likely the 5 percent copy, 0.91, `dctrl` 6 percent 1.11, `ictrl` 8 percent 1.36, the writer's straight-line processes 0 percent 1.0).
+  A straight-line process runs its whole body once per activation: its compiled code is mostly drives, signal reads and natives, which both tiers do
+  through the same runtime functions, and the rest is front-end bound at the sizes of these processes; a loop runs the same compiled bytes many times.
+- **Decision: a `Big` function with `BIG_LOOP_SHARE` (10) percent or more of its IR instructions in loops is `Kind::BigLoop`**: price as `Big`
+  (4 ms + 110 us an IR instruction), speedup 1.15 (the median of the measured class), so it is a candidate at about 7.7 times its price instead of 28.
+  The share is the function's own (a copy's, like its level and its price; `walk_control`'s copy has 12 percent, its shared code 6). The line is in the
+  gap between 8 and 12 percent; the trace's `seen` lines print each function's share.
+- **Measured** (`tools/realbench --compare`, run phase, `auto` and `auto-cold`): the window generator warm 0.93 wall, 0.87 instructions (`bus_process`
+  is compiled at 9 s of the cold run and from the cache at 0.9 s of a warm one), cold 1.03 wall, 1.01 instructions (a compile late in a first run does
+  not repay; the payback rule assumes the rest of the run is as long as the part seen). `fletcher_bufferwriter_512` 0.98 and 0.99, `sc5_fifo_repack`
+  1.01 and 1.02 (no `BigLoop` process is hot enough there). 42 tests: see `docs/STATUS.md`.
+- **Tried and dropped: `Worker::tree` without the root's size in `TREE_MAX`** (a root of 1 500 IR instructions or more brings no callee, so every
+  call of a large compiled process to an interpreted callee leaves the compiled code, `TIER_UNWIND`). It brought `bus_process`'s callees, but the
+  larger trees of mid-size roots made `fletcher_bufferwriter_512` warm 1.07 (instructions 1.02) and `sc5_fifo_repack` cold 1.08; the window
+  generator was better without it (instructions 0.87 against 0.95).
+- **Left (not policy):** GRLIB's large processes are front-end bound when compiled together (forcing their callees too made every one of them
+  slower, `iu:comb` 0.75); `iu:comb` loses through its calls to interpreted callees (`yavs_rt_step`, `TIER_UNWIND`, the interpreter's loop with the
+  tier, re-entry); a cache hit of a large module costs about 20 us an IR instruction against `HIT`'s 10 (#785). `walk_control` (1.62) is seen for 0.4 to 0.5 s
+  a run, under its 1.7 s threshold, so it is never compiled and never in the cache: only the run-to-run profile could take it, and its kind filter
+  (speedup 1.4 or more, user decision 2026-10-25) leaves `BigLoop` out.
+- **The reference simulator (rule 22).** Its JIT tier counts calls of a function and compiles it after a fixed number, with no model of size or benefit,
+  and a normal run generates the design's code ahead of time anyway. No idea was taken from it for this rule; ours keeps a benefit per kind.
+
+## Value movement: composite copies, scratch sets (yavs-interp `exec.rs`, `heap.rs`, #677, 2026-10-26)
+
+Found by the gap scan of 2026-10-26 (value movement was 6.4 s of the 14 tests slower than the reference simulator, `grlib_leon3mp`
+1.2 s and `uvvm_axistream_vvc` 0.5 s of it in `memmove`). A counting `memcpy`/`memmove` interposer with frame-pointer call chains
+found the callers; a throwaway per-site census of `Copy`, `LCopy`, `New`, frame fills and scratch borrows named the IR sites.
+
+- **Decision: a copy between two different objects of one heap goes straight from one to the other** (`Heap::data_pair`: both slots at
+  once, `copy_pair`), for the private heap and the shared heap alike. It went through `copy_staged` (read into a staging buffer, then
+  `put`): three passes over the bytes for a `Copy`, and five for a wide `LCopy` (`lcopy_general`: the source, the destination as
+  blocks, the merge, the write). `uvvm_axistream_vvc` copies a 689 KB command record between designated objects about 12 000 times:
+  8 of its 20 GB of `memcpy` traffic was this.
+- **Decision: 16 scratch sets per thread, was 4** (`SCRATCH_SLOTS`). A process that is not resident (more than 4096 registers, or
+  temporaries that grew past 1 KB once) gives its register vector to the thread's scratch at a suspension and finds it again, filled,
+  by function. `grlib_leon3mp` has nine such processes (the integer unit's `comb`, `dctrl`, `ctrl`, `ictrl`, the SDRAM `state_register`,
+  ...) that wake in turn; four sets were evicted round robin, so 1.16 M activations refilled 25 to 60 KB each (30 GB of `memcpy`, the
+  largest user of `memmove` in the run). The sets are empty vectors until used; only the key search (a compare per set) is more.
+
+## Prefetch of the next process in a batch (yavs-kernel, yavs-prefetch, #766, 2026-10-27)
+
+Task (#766, host2's lead): after the inline `TierState` (round 9) the cycles of a small compiled clocked process go to first-touch misses
+of its separate allocations. Try a software prefetch in the batch loop of `SimControl::run_batch`.
+
+- **Decision: landed.** In the serial no-pool arm of `run_batch`, for a batch of at least `PREFETCH_BATCH` (128) processes, the loop
+  prefetches the first `PREFETCH_LINES` (5) cache lines of the `Process` object three steps ahead (`PREFETCH_AHEAD`). `InterpProcess` is
+  `repr(C)` with its `Machine` first, so those are the machine's five hot lines (frames, registers, root, view cache, tier record);
+  `activation_fields_are_in_the_first_lines` pins the offset. The hint is in a new crate `yavs-prefetch` (`lines`, a safe function; one
+  `unsafe` call of `_mm_prefetch` with a SAFETY comment, nothing on other targets): `yavs-kernel` and `yavs-interp` stay under the
+  workspace `forbid(unsafe_code)` (root rule 11, same shape as `yavs-cache`). No trait method, no change to `Process`.
+- **Measured** (bench builds with `llvm`, base origin/main 4cdb2fb1, minimum of 7 interleaved warm runs, one claimed core 8, load 8;
+  `perf stat` cycles, `auto` / `interp`): `rtl_ff` -9.2 / -11.1 percent (L1-fill from system -11 percent, from L2 -12 percent),
+  `rtl_lfsr` -4.4 / -2.4, `lfsr64` -0.8 / -0.8, `rtl_chain` -1.2 / -0.9, `delta_chain` -1.5 / -1.0, `rtl_bus` -2.2 / -0.7, `rtl_fan` -0.5 / -0.1.
+  Instructions: +2.2 percent on `rtl_ff` (the hints), level elsewhere except `rtl_fan` +3 percent. `tools/realbench --compare` (42 tests,
+  interpreter and auto, core 9, load 15): run wall geometric mean 0.97 / 1.00, CPU 1.00 / 0.95, instructions 1.00 / 0.99; `neorv32_*`
+  level; `grlib_leon3mp` level (three A/B pairs of 5 runs: 1.05, 0.95 and 1.00 on a loaded host, instructions 1.00 each: noise).
+- **Tuning found with an environment-variable harness (not kept).** Three steps ahead is the knee (1 is too late: no gain, 2 is
+  worse than 3, 6 and more evict lines before use and lose to 3). Prefetching only lines 0, 3 and 4 or the heap vectors behind them
+  (frame, registers, drivers, signal table) was no better than the five lines; touching the next process's `ProcState` or the `Slot` header
+  lost. A plain load ("touch") instead of the hint cost the gain back (it stalls on the miss). Two-ahead plus one-ahead layers: worse.
+  A threshold of 1 batch size changes nothing on the large-batch designs and costs `lfsr64_xor` 1 to 2 percent on batches of 64, so the
+  cut-off is 128.
+- **Not done:** the parallel arm (`PAR_BATCH`, rayon) and the commit loop, which touch other lines; a prefetch from `Process` for other
+  implementors (`warm` method): measured, no gain over the fixed five lines of `InterpProcess`.
+- **The reference simulator (rule 22):** no new idea taken beyond round 9's (the hot data in the process's own first lines); the prefetch
+  is our own measurement-driven design. Nothing was copied.
+
+## Per-op costs, round 1: subtype checks, concatenation, frame fill, dereference offsets (yavs-interp `exec.rs`, `pre.rs`, #778, #520, 2026-10-26)
+
+`tools/stepcount --ops-lines OP` (new) shows the instructions of one op by source line; the first reading of the ops the gap scan ranked
+(`SubtypeCheck` 136 to 161, `AllocCat` 354, `CallProt` 415, `LoadDerefImm` 146, `DerefImm` 90 instructions an op) found waste of four kinds, none of
+them in the work itself.
+
+- **Decision: `subtype_check` tests the equal descriptor before anything else** and the equal length next, both from the 24 bytes of the descriptors
+  read in place (temporary memory and instance data first: a value's and a target's usual homes); the general loop is `subtype_check_slow`. In the
+  tests the check is equal descriptors (`poc_arith_addw`: 14.5 M of 16.8 M checks are a temporary against instance data) or equal lengths with
+  other bounds (the window generator). Not below 50 instructions: the dispatch (11) and the register reads of the arm (20) are most of what is left.
+- **Decision: an out-of-line function that reads memory by `rd_hot` in a loop pays 60 instructions of prologue**, the loads of every memory space's
+  fields hoisted out of the loop. `cat_words` read its vector pieces so; the read is now `block32`, out of line, and `AllocCat` carries the fields of
+  its `Cat` (`n`, `m`, the operand list, `scalars`, `bias`) instead of decoding the instruction at run time (`f.code[pc + 1]`, 25 instructions).
+  A `Cat` with more than 255 operands is not fused.
+- **Decision: `Pre::fill_below` (frame index below 2^29, always) is inlined in the frame push**; `fill` keeps the error of the address check for the
+  rest. The out-of-line `fill` saved and restored six registers and returned a `Result` through memory.
+- **Decision: the address `Deref` returns has offset 0, so `DerefImm`, `LoadDerefImm` and `DerefLoadOff` add their (32 or 16 bit) offset without
+  the overflow and index checks of `add_addr`.**
+- **Decision: three more ops from the op census of the window generator** (`YAVS_CENSUS` pairs, 471 M ops): `LoadPkg` (a `Load` of an address that is
+  a package-data constant: 15.7 M of the 56.8 M `Load`s took `load_slow`, the handle of a protected object stored in a package variable; 79 to 53
+  instructions), `LoadPair` (a word and the next word of one base, the data pointer and the descriptor of a fat pair; applied after the element-loop
+  planner, which knows single loads only) and `CheckK` (a `Check` of `Range` or `Index` with 32-bit constant bounds reads two registers fewer).
+- **Tried and dropped: the call of a callee out of line** (`call_enter`: lookups, frame push and argument copy in one function, the arms only
+  switching to the new frame). `CallProt` 415 to 443, `Call` 376 to 414: the work is the same, the call and the result through memory are not free,
+  and the loop's own bookkeeping (saved caller, new `code`, `ops`, `k`: 22 instructions) stays.
+- **Measured** (`tools/stepcount --ops`, 5 M instructions after 3000 `run_batch` entries, `--tier=interp --threads 1`, bench builds of main
+  30241dbc and of this change; instructions an op, before to after):
+
+  | op | window | before | after |
+  |---|---|---:|---:|
+  | `SubtypeCheck` | `poc_arith_addw` | 136.1 | 87.4 |
+  | `SubtypeCheck` | `vai_window_gen_interlock` | 161.5 | 128.8 |
+  | `SubtypeCheck` | `fletcher_bufferwriter_512` | 145.9 | 102.9 |
+  | `SubtypeCheck` | `sc5_fifo_repack` | 153.6 | 113.7 |
+  | `SubtypeCheck` | `grlib_leon3mp` | 151.7 | 113.5 |
+  | `SubtypeCheck` | `fletcher_bufferreader` | 143.2 | 97.4 |
+  | `SubtypeCheck` | `uvvm_axistream_vvc` | 142.3 | 100.0 |
+  | `AllocCat` | `poc_arith_addw` | 354.0 | 319.0 |
+  | `CallProt` | `vai_window_gen_interlock` | 414.8 | 392.6 |
+  | `Call` | `vai_window_gen_interlock` | 376.1 | 354.8 |
+  | `LoadDerefImm` | `vai_window_gen_interlock` | 146.0 | 135.0 |
+  | `DerefImm` | `vai_window_gen_interlock` | 90.0 | 81.0 |
+
+  Whole runs, `--tier=interp --threads 1`, `perf stat instructions:u` of a warm world (the first run of a new binary in a world pays a note in
+  the compilation cache and counts up to 70 percent more), G: `vai_window_gen_interlock` 430.9 to 410.5, `poc_arith_addw` 145.7 to 137.8,
+  `fletcher_bufferwriter_512` 51.1 to 50.1, `uvvm_axistream_vvc` 35.0 to 34.3.
+
+## Release archives with and without the compiled tier (release workflow, yavs-llvm, #780, 2026-10-27)
+
+- **Two archives per platform** (user, 2026-10-27): `yavs-<version>-<target>` has the compiled tier (LLVM 21) and `yavs-<version>-<target>-nollvm` is the interpreter alone. Reason: the README advertises the compiled tier and `--tier=auto` is the default, so the plain name must be the full-featured binary that installers matching on the target triple pick up; the interpreter-only build is the explicit, smaller choice. The `-nollvm` binary fails `--tier=auto` and `--tier=llvm` with E0120 (no silent fallback).
+- **Linux: libLLVM is bundled, not linked.** The executable never depends on libLLVM (`build.rs` stubs, `lazy.rs`), so the archive keeps the glibc 2.17 floor of "Linux release archives" and carries `lib/libLLVM.so.21.1` next to `yavs`. `lazy::ensure` looks in `<dir of yavs>/lib/` first, then the system, then the path the build used, and the error lists all three. The library is built by `tools/release/build-libllvm.sh` from the pinned LLVM 21.1.8 source in a manylinux2014 container (glibc 2.17): shared, C API, the host architecture as the only target, no zlib, zstd, xml2, edit, ffi or terminfo, libstdc++ and libgcc linked in. The script and the workflow check that it uses no glibc symbol above 2.17 and needs no library but libc, libm, libdl, libpthread and librt, and the centos:7 smoke test runs `--tier=llvm` from the extracted archive and again with `lib/` removed (a clear error, no fallback). Rejected: bundling the distribution's libLLVM (needs glibc 2.38 and six more libraries), linking LLVM statically into `yavs` on Linux (the link memory and start-up cost that made the shared library the choice, "LLVM bindings"), the official Linux release archives (2 GB).
+- **Windows: LLVM is linked statically** (llvm-sys refuses dynamic linking on MSVC), with `-C target-feature=+crt-static` for this build only; the CI check prints the imports of both executables and fails on an LLVM or C runtime DLL. The pinned release and its trimmed install are one composite action (`.github/actions/llvm-windows`) shared by `ci.yml` and `release.yml`.
+- **`yavs --version`** keeps the first line of docs/cli-contract.md and adds the details: `yavs 0.8.0 (compiled tier: llvm)` or `yavs 0.8.0 (interpreter only, no compiled tier)`.
+- **Licences:** the archives with the compiled tier carry `LICENSE-LLVM` (Apache-2.0 with LLVM exceptions; `crates/yavs-llvm/LICENSE-LLVM`, byte for byte from the 21.1.8 tag).
+- **Testing without a tag:** `workflow_dispatch` with `dry_run` builds, packages and smoke-tests every archive and uploads them as workflow artifacts; its `checks` input (default true) skips the CI workflows for a quick dry run. A tag push always runs them. The libLLVM build is cached under a key that includes the build script, so only the first run per recipe pays for it; a cache written by a branch run is not visible to a tag run, so dispatch once on `main` before tagging.
+
+## Kernel round 25: repeated skipped drives, wide drives (yavs-kernel, #720, #667, 2026-10-27)
+
+Task (orchestrator, gap scan 2026-10-26 row 2, kernel orchestration): cut the general kernel cost of same-value drives, wide drives and
+the per-delta loop. Bench builds with `llvm`, `--threads 1`, `tools/realbench --prepare` worlds; `perf stat` of warm runs (two untimed runs
+per binary first), the minimum of interleaved runs on one claimed core of the second CCD; base main at 70cebdc0. Probe builds (atomic
+counters, not kept) gave the shares below.
+
+- **Decision: a repeat of a skipped assignment stays on the fast paths.** A zero-delay assignment to a driver that is not direct (a port,
+  a shared driver) and already holds skipped assignments of the run (`Waveform::phantom`) is taken by `assign_code_fast`,
+  `assign_planes_fast`, `assign_bytes_fast` and `skip_code_now` when the skip test holds: one more phantom (`again_phantom`; the driver
+  is in `ProcState::phantoms` already, a repeat of the last range is not listed again: `flush_phantoms` would only queue the same
+  transaction twice). A change, a delay or a direct driver with phantoms still takes the general path, which flushes them first, so the
+  order of the transactions is as before. In `grlib_leon3mp` 32.0 M assignments took the general path, 30.7 M of them because of a
+  phantom on the driver, and 30.8 M were unchanged: the second and later drives of one activation, each paying `spill_out`, `target`,
+  `own`, `unchanged` and the `same_as` compare (`eq_range`, 1.3% of the cycles). `Stats::general_assigns` (new, `YAVS_COUNTERS`) counts
+  the general path; perf design `drive_repeat` (inout ports driven several times an activation): 300 to 2.
+  - The new path is out of line (`skip_again`, `skip_again_bytes`), reached only from the bail-out of each fast path: written inline in
+    the fast paths (the first try) it cost `fletcher_bufferreader` +0.6% instructions without ever being taken.
+  - `grlib_leon3mp` (3 runs, core 9): auto instructions 412.8 G to 389.6 G (-5.6%), cycles 174.4 G to 167.3 G (-4.1%), cpu 35.6 s to
+    34.1 s; interp 413.9 G to 390.0 G (-5.8%), cycles -4.8%, cpu -3.8%. `neorv32_single_min` interp +0.04% instructions, cycles -0.8%;
+    `fletcher_bufferreader` interp +0.3% instructions, cycles +0.1% (code layout: the path is not taken there, one general assignment
+    in the whole run).
+- **Fixed on the way (#789):** `Signal::force_events` dropped the part of a recorded force range outside the range being updated, so a
+  force lost its events beyond the first updated range when a direct entry of another plane word was finished in the same cycle.
+- **Measured and not taken:**
+  - Held words of a wide assignment make no entry (`assign_wide_fast` asking `direct_same_planes` per plane word, gated per driver by
+    `ProcState::same`, entries marked only when a word was pushed). A probe build counted 19.6% of the 39.4 M wide words of
+    `fletcher_bufferwriter_512` and 96% of the 8.4 M of `grlib_leon3mp` as held, yet `fletcher_bufferwriter_512` lost 4.4% instructions
+    and 3.6% cycles (interp; auto 7.3% and 5.4%) and `grlib_leon3mp` was level (-0.2% instructions, +0.2% cycles): the saved entry, commit
+    and finish of a word cost about what the two plane compares cost, as kernel round 20 found for the commit-time skip.
+  - Taking a process's wide `outv` list into the batch's list by a swap instead of a copy when the batch list is empty: level
+    (`fletcher_bufferwriter_512` +0.01% instructions, cycles +1%); the copy is not where its `memmove` time goes.
+- **Where the rest is** (instructions, `perf record -e instructions:u`, interp): `poc_arith_addw` spends 5% in `finish_direct`, 5% in
+  `run_batch`, 4% in `cycle`, 3.8% in `CopyProcess::run` and 2.4% in `commit_out` over 13 processes a delta cycle, with no line above
+  0.5% of the run (the per-element event stamps of narrow signals, #734, are 0.3%); `sc5_timestamp` about 1100 kernel instructions a
+  delta cycle over about 200 lines. Profiles were taken of `grlib_leon3mp`, `fletcher_bufferwriter_512`, `fletcher_bufferreader`,
+  `neorv32_single_min`, `poc_arith_addw` and `sc5_timestamp`; a counters sweep of the 42 realbench tests found no other design that
+  leaves the fast assignment paths in bulk (`general_assigns` at most 0.2 M outside `grlib_leon3mp`, now 1.3 M there).
+- **The reference simulator (rule 22):** for a zero-delay drive of a driver that is its net's only source it only writes the new
+  value into the driver's one pending slot when the driver is already queued in this delta (a repeat in the activation costs a store),
+  and skips the queueing when the value equals the driver's (only the delta is kept). Ours now takes a repeat that changes nothing on
+  the fast path for drivers that are not direct too; a repeat that changes still takes the general path, which keeps the order of
+  transactions (an overwrite in place, the reference's way, is the other option of #667 and is not done here). Nothing was copied.

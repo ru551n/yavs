@@ -14,6 +14,21 @@ put the directory on ``PATH``:
 
 aarch64 is also known as arm64; run ``uname -m`` to see which one you need.
 
+Which archive
+~~~~~~~~~~~~~
+
+Every platform has two archives. The one named as above has the compiled tier: ``--tier=auto``
+(the default) compiles the hot code with LLVM 21 during the run and ``--tier=llvm`` compiles all of it
+before time 0. The Linux archive carries LLVM as ``lib/libLLVM.so.21.1`` next to the
+executable (keep the ``lib`` directory with ``yavs``; it needs nothing else installed), the Windows
+executable has LLVM linked in. The archive with ``-nollvm`` added before the extension
+(``yavs-<version>-<target>-nollvm.tar.gz``, ``.zip`` on Windows) is the interpreter alone: smaller,
+with no compiled tier, so it runs designs more slowly; its default tier is ``interp`` and
+``--tier=auto`` or ``--tier=llvm`` stop with error E0120. ``yavs --version`` shows the difference on its first line::
+
+    yavs 0.8.0 (compiled tier: llvm)
+    yavs 0.8.0 (interpreter only, no compiled tier)
+
 The Linux archives require glibc 2.17 or newer (RHEL/CentOS 7+, Debian 8+, Ubuntu 14.04+).
 On musl-based systems such as Alpine, install the ``gcompat`` package.
 
@@ -21,7 +36,7 @@ On musl-based systems such as Alpine, install the ``gcompat`` package.
 
     sha256sum -c SHA256SUMS --ignore-missing
 
-The archive holds the ``yavs`` executable, the graphical debugger ``yavs-gui`` and the
+The archive holds the ``yavs`` executable (with ``lib/`` and ``LICENSE-LLVM`` in the archive with the compiled tier), the graphical debugger ``yavs-gui`` and the
 licences. ``yavs-gui`` is licensed under the EUPL-1.2 (``LICENSE-EUPL-1.2-yavs-gui``, which
 applies to the ``yavs-gui`` binary only); everything else is MIT or Apache-2.0. The ``std`` and
 ``ieee`` sources are built into the executable; nothing else needs to be installed. ``YAVS_STDLIB`` points yavs at

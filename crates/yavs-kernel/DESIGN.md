@@ -205,7 +205,8 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
    `Config::skip_unchanged` (R2b): an assignment that changes nothing on a signal whose
    activity nothing can observe (`Builder::mark_skippable`) is not queued; the cycle it would
    have caused still runs (`empty_delta`), and a later assignment of the run to the same driver
-   queues the skipped ones first (`Ctx::flush_phantoms`). See `docs/decisions.md` "Skipped
+   queues the skipped ones first (`Ctx::flush_phantoms`) unless it is skipped too (the fast paths
+   take a repeat that changes nothing, #720). See `docs/decisions.md` "Skipped
    unchanged assignments".
 4. Run resumed non-postponed processes (parallel, below), between the `StartOfProcesses` and
    `EndOfProcesses` callbacks (every cycle, #317; at `EndOfProcesses` what the processes
@@ -333,7 +334,8 @@ pub trait Process: Send {
   evaluates `T` and builds the kernel's own `ToggleProcess` (#440).
 - A one-operator logic gate (`y <= a and b;`, `y <= not a;` on logic signal parts of one length)
   needs none either: the kernel's own `GateProcess` reads the operands and applies the IEEE 1164
-  tables (#779).
+  tables (#779). So do literal operands, `=`/`/=` as a BOOLEAN gate, and a conditional assignment
+  with one condition (`y <= a when s = '1' else b;`): `MuxProcess` (#786).
 - Elaboration: leaves as `Builder::signal`/`resolved_signal` with `SignalType::logic` for
   `std_ulogic` arrays and `SignalType::bytes` otherwise; uncollapsed ports as `Builder::port`
   with `Converter` closures that call the IR conversion function; `'stable/'quiet/'delayed/

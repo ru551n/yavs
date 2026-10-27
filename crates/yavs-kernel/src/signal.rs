@@ -2421,6 +2421,15 @@ impl Signal {
                 self.force_ev.push(f);
                 continue;
             };
+            // The parts of `f` outside `r` wait for the update of their own range.
+            let (end, pend) = (f.offset + f.len, part.offset + part.len);
+            if part.offset > f.offset {
+                self.force_ev
+                    .push(Range::new(f.offset, part.offset - f.offset));
+            }
+            if end > pend {
+                self.force_ev.push(Range::new(pend, end - pend));
+            }
             for e in part.elems() {
                 if self.event_cycle(e) == cycle {
                     continue;

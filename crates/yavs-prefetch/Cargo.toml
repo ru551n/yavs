@@ -1,0 +1,14 @@
+[package]
+name = "yavs-prefetch"
+description = "A cache prefetch hint for yavs: the one place the kernel's batch loop needs a CPU instruction"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Not `workspace = true`: the workspace forbids unsafe code and `forbid` cannot be relaxed by an
+# attribute. A prefetch intrinsic is `unsafe` to call, so this crate denies unsafe everywhere and
+# allows it in one function (root `AGENTS.md` rule 11).
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"

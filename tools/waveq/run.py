@@ -193,18 +193,12 @@ KNOWN = [
     ("osvvm_*", "*fifoid", 0, 0, "reference", "process-order-in-cycle"),
     ("osvvm_*", "*.intfrommodel", 0, 20_000_000, "reference", "process-order-in-cycle"),  # the ID a VC hands back at its start
     ("uvvm_axistream_vvc", "*entry_num_in_vvc_activity_register", 0, 0, "reference", "process-order-in-cycle"),
-    # the random valid/ready-low test case, BFM seeds from 'instance_name (#784 is the yavs part)
-    ("uvvm_axistream_vvc", "*", 266_872_500_000, None, "reference", "subprogram-signature-instance-name"),
 ]
 
 WHY = {
     "process-order-in-cycle": "the verification components take IDs from a shared counter in the order their processes run in one "
                               "cycle; the LRM leaves that order open (14.7.5.3) and the references differ among themselves "
                               "(docs/design/simulator-discrepancies.md); every bus signal is equal",
-    "subprogram-signature-instance-name": "from 266.87 us, in the test case with random valid/ready low, the masters deassert "
-            "tvalid in other cycles: the BFM seeds that random stream from `'instance_name` of a procedure variable, whose "
-            "signature each tool spells differently (base types on yavs, #784; a space after each comma on sim1), so each "
-            "tool runs a different, equally valid sequence (the cause is inferred from where the divergence starts); the test passes everywhere",
 }
 
 
@@ -271,7 +265,7 @@ def self_test():
     assert verdict("osvvm_axi4_random", "TbAxi4.Manager_1.ArrDelayCovID(1).ID", 0) == ("reference", "process-order-in-cycle")
     assert verdict("osvvm_axi4_random", "TbAxi4.Manager_1.ArrDelayCovID(1).ID", 5) == ("unexplained", "")
     assert verdict("uvvm_axistream_vvc", "tb.axistream_if_m.tdata", 1000) == ("unexplained", "")
-    assert verdict("uvvm_axistream_vvc", "tb.axistream_if_m.tdata", 266_872_500_000)[0] == "reference"
+    assert verdict("uvvm_axistream_vvc", "tb.axistream_if_m.tdata", 266_872_500_000) == ("unexplained", "")
     assert verdict("rtl_ff", "x.id", 0) == ("unexplained", "")
     pair = {"a": "yavs-interp", "b": "sim1", "signals": 3, "changes": 9, "equal": 2, "different": 1, "sliced": 0, "until_fs": 5, "shape": [],
             "only_a": ["x"], "only_b": [], "diffs": [{"name": "t.x", "time_fs": 5, "a": [], "b": []}]}

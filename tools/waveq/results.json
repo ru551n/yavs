@@ -1,8 +1,8 @@
 {
  "run": {
-  "date": "2026-10-26",
-  "commit": "aeaeaa593f",
-  "yavs_key": "11c367ea3e",
+  "date": "2026-10-27",
+  "commit": "05aa8453fb",
+  "yavs_key": "5dc3cb5d28",
   "refs": [
    "sim1",
    "sim2"
@@ -897,7 +897,7 @@
    "kind": "real",
    "a": "yavs-auto",
    "b": "sim1",
-   "compiled": "1 functions",
+   "compiled": "0",
    "signals": 3,
    "changes": 3,
    "equal": 3,
@@ -935,318 +935,41 @@
    "b": "sim1",
    "compiled": "0",
    "signals": 154,
-   "changes": 788147,
-   "equal": 61,
-   "different": 93,
+   "changes": 785584,
+   "equal": 150,
+   "different": 4,
    "sliced": 0,
-   "until_fs": 296256500000,
+   "until_fs": 294847500000,
    "other_shape": 0,
    "only_a": 20,
    "only_b": 1,
    "verdicts": {
-    "reference subprogram-signature-instance-name": 89,
     "reference process-order-in-cycle": 4
    },
    "diffs": [
     {
-     "signal": "axistream_vvc_tb.axistream_if_m.tdata",
-     "time_fs": 266872500000,
+     "signal": "axistream_vvc_tb.i_test_harness.i_axistream_vvc_master_VVC2FIFO.entry_num_in_vvc_activity_register",
+     "time_fs": 0,
      "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
+     "ref": "process-order-in-cycle"
     },
     {
-     "signal": "axistream_vvc_tb.axistream_if_m.tkeep",
-     "time_fs": 266872500000,
+     "signal": "axistream_vvc_tb.i_test_harness.i_axistream_vvc_master_VVC2VVC.entry_num_in_vvc_activity_register",
+     "time_fs": 0,
      "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
+     "ref": "process-order-in-cycle"
     },
     {
-     "signal": "axistream_vvc_tb.axistream_if_m.tlast",
-     "time_fs": 266942500000,
+     "signal": "axistream_vvc_tb.i_test_harness.i_axistream_vvc_slave_FIFO2VVC.entry_num_in_vvc_activity_register",
+     "time_fs": 0,
      "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
+     "ref": "process-order-in-cycle"
     },
     {
-     "signal": "axistream_vvc_tb.axistream_if_m.tready",
-     "time_fs": 267490000000,
+     "signal": "axistream_vvc_tb.i_test_harness.i_axistream_vvc_slave_VVC2VVC.entry_num_in_vvc_activity_register",
+     "time_fs": 0,
      "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_m.tvalid",
-     "time_fs": 266872500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tdata",
-     "time_fs": 266890000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tdest",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tid",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tkeep",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tlast",
-     "time_fs": 266960000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tready",
-     "time_fs": 267477500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tstrb",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tuser",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tvalid",
-     "time_fs": 266890000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.clk",
-     "time_fs": 294850000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2FIFO.tdata",
-     "time_fs": 266872500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2FIFO.tkeep",
-     "time_fs": 266872500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2FIFO.tlast",
-     "time_fs": 266942500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2FIFO.tready",
-     "time_fs": 267490000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2FIFO.tvalid",
-     "time_fs": 266872500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2VVC.tdata",
-     "time_fs": 266977500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2VVC.tkeep",
-     "time_fs": 266977500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2VVC.tlast",
-     "time_fs": 267242500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2VVC.tready",
-     "time_fs": 266987500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2VVC.tvalid",
-     "time_fs": 266977500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tdata",
-     "time_fs": 266890000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tdest",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tid",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tkeep",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tlast",
-     "time_fs": 266960000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tready",
-     "time_fs": 267477500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tstrb",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tuser",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tvalid",
-     "time_fs": 266890000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.clk",
-     "time_fs": 294850000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.dut_m_axis_tdest",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.dut_m_axis_tid",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.dut_m_axis_tstrb",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.clk",
-     "time_fs": 294850000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.empty",
-     "time_fs": 266890000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.m_axis_tdata",
-     "time_fs": 266890000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.m_axis_tkeep",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.m_axis_tlast",
-     "time_fs": 266960000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.m_axis_tready",
-     "time_fs": 267477500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.m_axis_tuser",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.m_axis_tvalid",
-     "time_fs": 266890000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.m_axis_tvalid_i",
-     "time_fs": 266890000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.s_axis_tdata",
-     "time_fs": 266872500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.s_axis_tkeep",
-     "time_fs": 266872500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.s_axis_tlast",
-     "time_fs": 266942500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
+     "ref": "process-order-in-cycle"
     }
    ]
   },
@@ -1257,318 +980,41 @@
    "b": "sim1",
    "compiled": "0",
    "signals": 154,
-   "changes": 788147,
-   "equal": 61,
-   "different": 93,
+   "changes": 785584,
+   "equal": 150,
+   "different": 4,
    "sliced": 0,
-   "until_fs": 296256500000,
+   "until_fs": 294847500000,
    "other_shape": 0,
    "only_a": 20,
    "only_b": 1,
    "verdicts": {
-    "reference subprogram-signature-instance-name": 89,
     "reference process-order-in-cycle": 4
    },
    "diffs": [
     {
-     "signal": "axistream_vvc_tb.axistream_if_m.tdata",
-     "time_fs": 266872500000,
+     "signal": "axistream_vvc_tb.i_test_harness.i_axistream_vvc_master_VVC2FIFO.entry_num_in_vvc_activity_register",
+     "time_fs": 0,
      "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
+     "ref": "process-order-in-cycle"
     },
     {
-     "signal": "axistream_vvc_tb.axistream_if_m.tkeep",
-     "time_fs": 266872500000,
+     "signal": "axistream_vvc_tb.i_test_harness.i_axistream_vvc_master_VVC2VVC.entry_num_in_vvc_activity_register",
+     "time_fs": 0,
      "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
+     "ref": "process-order-in-cycle"
     },
     {
-     "signal": "axistream_vvc_tb.axistream_if_m.tlast",
-     "time_fs": 266942500000,
+     "signal": "axistream_vvc_tb.i_test_harness.i_axistream_vvc_slave_FIFO2VVC.entry_num_in_vvc_activity_register",
+     "time_fs": 0,
      "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
+     "ref": "process-order-in-cycle"
     },
     {
-     "signal": "axistream_vvc_tb.axistream_if_m.tready",
-     "time_fs": 267490000000,
+     "signal": "axistream_vvc_tb.i_test_harness.i_axistream_vvc_slave_VVC2VVC.entry_num_in_vvc_activity_register",
+     "time_fs": 0,
      "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_m.tvalid",
-     "time_fs": 266872500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tdata",
-     "time_fs": 266890000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tdest",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tid",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tkeep",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tlast",
-     "time_fs": 266960000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tready",
-     "time_fs": 267477500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tstrb",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tuser",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tvalid",
-     "time_fs": 266890000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.clk",
-     "time_fs": 294850000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2FIFO.tdata",
-     "time_fs": 266872500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2FIFO.tkeep",
-     "time_fs": 266872500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2FIFO.tlast",
-     "time_fs": 266942500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2FIFO.tready",
-     "time_fs": 267490000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2FIFO.tvalid",
-     "time_fs": 266872500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2VVC.tdata",
-     "time_fs": 266977500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2VVC.tkeep",
-     "time_fs": 266977500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2VVC.tlast",
-     "time_fs": 267242500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2VVC.tready",
-     "time_fs": 266987500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2VVC.tvalid",
-     "time_fs": 266977500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tdata",
-     "time_fs": 266890000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tdest",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tid",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tkeep",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tlast",
-     "time_fs": 266960000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tready",
-     "time_fs": 267477500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tstrb",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tuser",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tvalid",
-     "time_fs": 266890000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.clk",
-     "time_fs": 294850000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.dut_m_axis_tdest",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.dut_m_axis_tid",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.dut_m_axis_tstrb",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.clk",
-     "time_fs": 294850000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.empty",
-     "time_fs": 266890000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.m_axis_tdata",
-     "time_fs": 266890000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.m_axis_tkeep",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.m_axis_tlast",
-     "time_fs": 266960000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.m_axis_tready",
-     "time_fs": 267477500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.m_axis_tuser",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.m_axis_tvalid",
-     "time_fs": 266890000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.m_axis_tvalid_i",
-     "time_fs": 266890000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.s_axis_tdata",
-     "time_fs": 266872500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.s_axis_tkeep",
-     "time_fs": 266872500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.s_axis_tlast",
-     "time_fs": 266942500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
+     "ref": "process-order-in-cycle"
     }
    ]
   },
@@ -1579,318 +1025,41 @@
    "b": "sim1",
    "compiled": "69265 IR instructions",
    "signals": 154,
-   "changes": 788147,
-   "equal": 61,
-   "different": 93,
+   "changes": 785584,
+   "equal": 150,
+   "different": 4,
    "sliced": 0,
-   "until_fs": 296256500000,
+   "until_fs": 294847500000,
    "other_shape": 0,
    "only_a": 20,
    "only_b": 1,
    "verdicts": {
-    "reference subprogram-signature-instance-name": 89,
     "reference process-order-in-cycle": 4
    },
    "diffs": [
     {
-     "signal": "axistream_vvc_tb.axistream_if_m.tdata",
-     "time_fs": 266872500000,
+     "signal": "axistream_vvc_tb.i_test_harness.i_axistream_vvc_master_VVC2FIFO.entry_num_in_vvc_activity_register",
+     "time_fs": 0,
      "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
+     "ref": "process-order-in-cycle"
     },
     {
-     "signal": "axistream_vvc_tb.axistream_if_m.tkeep",
-     "time_fs": 266872500000,
+     "signal": "axistream_vvc_tb.i_test_harness.i_axistream_vvc_master_VVC2VVC.entry_num_in_vvc_activity_register",
+     "time_fs": 0,
      "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
+     "ref": "process-order-in-cycle"
     },
     {
-     "signal": "axistream_vvc_tb.axistream_if_m.tlast",
-     "time_fs": 266942500000,
+     "signal": "axistream_vvc_tb.i_test_harness.i_axistream_vvc_slave_FIFO2VVC.entry_num_in_vvc_activity_register",
+     "time_fs": 0,
      "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
+     "ref": "process-order-in-cycle"
     },
     {
-     "signal": "axistream_vvc_tb.axistream_if_m.tready",
-     "time_fs": 267490000000,
+     "signal": "axistream_vvc_tb.i_test_harness.i_axistream_vvc_slave_VVC2VVC.entry_num_in_vvc_activity_register",
+     "time_fs": 0,
      "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_m.tvalid",
-     "time_fs": 266872500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tdata",
-     "time_fs": 266890000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tdest",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tid",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tkeep",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tlast",
-     "time_fs": 266960000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tready",
-     "time_fs": 267477500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tstrb",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tuser",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.axistream_if_s.tvalid",
-     "time_fs": 266890000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.clk",
-     "time_fs": 294850000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2FIFO.tdata",
-     "time_fs": 266872500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2FIFO.tkeep",
-     "time_fs": 266872500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2FIFO.tlast",
-     "time_fs": 266942500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2FIFO.tready",
-     "time_fs": 267490000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2FIFO.tvalid",
-     "time_fs": 266872500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2VVC.tdata",
-     "time_fs": 266977500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2VVC.tkeep",
-     "time_fs": 266977500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2VVC.tlast",
-     "time_fs": 267242500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2VVC.tready",
-     "time_fs": 266987500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_m_VVC2VVC.tvalid",
-     "time_fs": 266977500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tdata",
-     "time_fs": 266890000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tdest",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tid",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tkeep",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tlast",
-     "time_fs": 266960000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tready",
-     "time_fs": 267477500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tstrb",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tuser",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.axistream_if_s_FIFO2VVC.tvalid",
-     "time_fs": 266890000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.clk",
-     "time_fs": 294850000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.dut_m_axis_tdest",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.dut_m_axis_tid",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.dut_m_axis_tstrb",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.clk",
-     "time_fs": 294850000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.empty",
-     "time_fs": 266890000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.m_axis_tdata",
-     "time_fs": 266890000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.m_axis_tkeep",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.m_axis_tlast",
-     "time_fs": 266960000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.m_axis_tready",
-     "time_fs": 267477500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.m_axis_tuser",
-     "time_fs": 294362500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.m_axis_tvalid",
-     "time_fs": 266890000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.m_axis_tvalid_i",
-     "time_fs": 266890000000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.s_axis_tdata",
-     "time_fs": 266872500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.s_axis_tkeep",
-     "time_fs": 266872500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
-    },
-    {
-     "signal": "axistream_vvc_tb.i_test_harness.i_axis_fifo.s_axis_tlast",
-     "time_fs": 266942500000,
-     "verdict": "reference",
-     "ref": "subprogram-signature-instance-name"
+     "ref": "process-order-in-cycle"
     }
    ]
   },

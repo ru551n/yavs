@@ -2083,6 +2083,7 @@ dependencies = [
  "serde",
  "smallvec",
  "yavs-logic",
+ "yavs-prefetch",
 ]
 
 [[package]]
@@ -2134,6 +2135,10 @@ dependencies = [
  "yavs-sem",
  "yavs-syntax",
 ]
+
+[[package]]
+name = "yavs-prefetch"
+version = "0.8.0"
 
 [[package]]
 name = "yavs-sem"

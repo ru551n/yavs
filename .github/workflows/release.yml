@@ -4,6 +4,10 @@
 # licence, docs/decisions.md "GUI (M10)"),
 # SHA256SUMS and a GitHub pre-release with notes from release_notes/<version>.md (towncrier,
 # collected and renamed in the commit that bumps the version).
+# Two archives per platform (docs/decisions.md "Release archives with and without the compiled
+# tier", #780): yavs-<version>-<target> has the compiled tier (LLVM 21: on Linux a libLLVM built by
+# tools/release/build-libllvm.sh in lib/ next to yavs, on Windows linked statically) and
+# yavs-<version>-<target>-nollvm is the interpreter alone.
 # The Linux archives are built with cargo-zigbuild against glibc 2.17 (docs/decisions.md "Linux
 # release archives") and smoke-tested in centos:7.
 # workflow_dispatch with dry_run builds and packages the same archives as workflow artifacts
@@ -19,6 +23,10 @@ on:
         description: Build and package only, do not publish
         type: boolean
         default: true
+      checks:
+        description: Run the CI checks first (a tag push always does)
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -28,19 +36,24 @@ env:
 
 jobs:
   checks:
+    if: github.event_name == 'push' || inputs.checks
     uses: ./.github/workflows/ci.yml
 
   gui-checks:
+    if: github.event_name == 'push' || inputs.checks
     uses: ./.github/workflows/gui.yml
 
   build:
     needs: [checks, gui-checks]
+    # Skipped checks (a dispatch without them) do not stop the build; failed ones do.
+    if: ${{ !failure() && !cancelled() }}
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
-          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, arch: x86_64 }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, arch: aarch64 }
           - { os: windows-latest, target: x86_64-pc-windows-msvc }
     runs-on: ${{ matrix.os }}
     defaults:
@@ -61,6 +74,30 @@ jobs:
           "$RUNNER_TEMP/zb/bin/pip" install ziglang==0.14.1 cargo-zigbuild==0.23.4
           echo "$RUNNER_TEMP/zb/bin" >> "$GITHUB_PATH"
           rustup target add ${{ matrix.target }}
+      # Linux: the libLLVM the archive with the compiled tier ships, built once per recipe in a
+      # glibc 2.17 container (about an hour) and cached. A failed build fails the job: there is no
+      # archive without it and no fallback to a system LLVM.
+      - uses: actions/cache/restore@v4
+        if: runner.os == 'Linux'
+        id: libllvm
+        with:
+          path: ~/libllvm
+          key: libllvm-${{ matrix.target }}-${{ hashFiles('tools/release/build-libllvm.sh') }}
+      - name: Build libLLVM (Linux)
+        if: runner.os == 'Linux' && steps.libllvm.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$HOME/libllvm" "$RUNNER_TEMP/llvmwork"
+          docker run --rm -v "$PWD/tools/release:/rel:ro" -v "$HOME/libllvm:/out" -v "$RUNNER_TEMP/llvmwork:/work" \
+            quay.io/pypa/manylinux2014_${{ matrix.arch }} /rel/build-libllvm.sh /out /work
+      # Saved at once, so a later failure of the job does not lose the hour.
+      - uses: actions/cache/save@v4
+        if: runner.os == 'Linux' && steps.libllvm.outputs.cache-hit != 'true'
+        with:
+          path: ~/libllvm
+          key: libllvm-${{ matrix.target }}-${{ hashFiles('tools/release/build-libllvm.sh') }}
+      # Windows: the official LLVM release, linked statically (crates/yavs-llvm/WINDOWS.md).
+      - uses: ./.github/actions/llvm-windows
+        if: runner.os == 'Windows'
       - name: Version
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
@@ -70,59 +107,127 @@ jobs:
           echo "VERSION=$version" >> "$GITHUB_ENV"
       - name: Build
         run: |
+          t=${{ matrix.target }}
+          mkdir -p stage/nollvm stage/llvm
           if [[ "$RUNNER_OS" == Linux ]]; then
             # glibc 2.17; the target directory and the archive name stay the plain triple.
-            cargo zigbuild --release --locked -p yavs --target ${{ matrix.target }}.2.17
-            (cd gui && cargo zigbuild --release --locked --target ${{ matrix.target }}.2.17)
-            echo "BIN=target/${{ matrix.target }}/release/yavs" >> "$GITHUB_ENV"
-            echo "GUI=gui/target/${{ matrix.target }}/release/yavs-gui" >> "$GITHUB_ENV"
+            cargo zigbuild --release --locked -p yavs --target $t.2.17
+            cp target/$t/release/yavs stage/nollvm/
+            (cd gui && cargo zigbuild --release --locked --target $t.2.17)
+            cp gui/target/$t/release/yavs-gui stage/
+            LLVM_SYS_211_PREFIX="$HOME/libllvm" cargo zigbuild --release --locked -p yavs --features llvm --target $t.2.17
+            cp target/$t/release/yavs stage/llvm/
             # The GUI loads its windowing and OpenGL libraries at run time; only glibc is linked.
-            for b in target/${{ matrix.target }}/release/yavs gui/target/${{ matrix.target }}/release/yavs-gui; do
+            # The compiled tier opens libLLVM at run time too (lib/ next to yavs), so it is no
+            # dependency of the executable.
+            for b in stage/nollvm/yavs stage/llvm/yavs stage/yavs-gui; do
               v=$(objdump -T "$b" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n1)
               echo "$b: highest glibc symbol version: $v"
               [[ "$(printf '%s\n' GLIBC_2.17 "$v" | sort -V | tail -n1)" == GLIBC_2.17 ]] || { echo "needs more than glibc 2.17"; exit 1; }
             done
+            readelf -d stage/llvm/yavs | grep NEEDED
+            if readelf -d stage/llvm/yavs | grep -qi llvm; then echo "yavs depends on libLLVM"; exit 1; fi
           else
             cargo build --release --locked -p yavs
+            cp target/release/yavs.exe stage/nollvm/
             (cd gui && cargo build --release --locked)
-            echo "BIN=target/release/yavs.exe" >> "$GITHUB_ENV"
-            echo "GUI=gui/target/release/yavs-gui.exe" >> "$GITHUB_ENV"
+            cp gui/target/release/yavs-gui.exe stage/
+            # LLVM's static libraries are built with the static C runtime.
+            LLVM_SYS_211_PREFIX='C:\llvm' RUSTFLAGS='-C target-feature=+crt-static' cargo build --release --locked -p yavs --features llvm
+            cp target/release/yavs.exe stage/llvm/
           fi
+      - name: Windows dependencies of the compiled tier
+        if: runner.os == 'Windows'
+        run: |
+          # The LLVM code is inside yavs.exe: no LLVM or C runtime DLL may be an import.
+          dumpbin=$("/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -find '**/Hostx64/x64/dumpbin.exe' | head -n1)
+          for v in nollvm llvm; do
+            echo "== $v"; MSYS_NO_PATHCONV=1 "$dumpbin" /dependents "stage/$v/yavs.exe" | tee "dep-$v.txt"
+          done
+          if grep -iE '^ +(llvm|vcruntime|msvcp|ucrtbase)[^ ]*\.dll' dep-llvm.txt; then echo "unexpected import"; exit 1; fi
       - name: Package
         run: |
-          name="yavs-$VERSION-${{ matrix.target }}"
-          mkdir -p "dist/$name"
+          t=${{ matrix.target }}
+          mkdir dist
           # The built-in std/ieee sources are Apache-2.0 (lib/LICENSE, lib/SOURCES.md); the VITAL
           # packages are IEEE-copyrighted without a grant (lib/LICENSE-IEEE-VITAL); the Synopsys packages
           # keep their notice (lib/LICENSE-SYNOPSYS).
-          cp LICENSE-MIT LICENSE-APACHE README.md "dist/$name/"
-          cp lib/LICENSE "dist/$name/LICENSE-IEEE"
-          cp lib/LICENSE-IEEE-VITAL lib/LICENSE-SYNOPSYS "dist/$name/"
-          # yavs-gui is EUPL-1.2 (libsurfer); this licence applies to the yavs-gui binary only
-          # (README.md "License").
-          cp gui/LICENSE "dist/$name/LICENSE-EUPL-1.2-yavs-gui"
-          cp "$GUI" "dist/$name/"
+          package() { # VARIANT (llvm|nollvm) NAME
+            local dir="dist/$2"
+            mkdir -p "$dir"
+            cp LICENSE-MIT LICENSE-APACHE README.md "$dir/"
+            cp lib/LICENSE "$dir/LICENSE-IEEE"
+            cp lib/LICENSE-IEEE-VITAL lib/LICENSE-SYNOPSYS "$dir/"
+            # yavs-gui is EUPL-1.2 (libsurfer); this licence applies to the yavs-gui binary only
+            # (README.md "License").
+            cp gui/LICENSE "$dir/LICENSE-EUPL-1.2-yavs-gui"
+            cp stage/yavs-gui* "$dir/"
+            cp stage/$1/yavs* "$dir/"
+            if [[ $1 == llvm ]]; then
+              cp crates/yavs-llvm/LICENSE-LLVM "$dir/"
+              if [[ "$RUNNER_OS" == Linux ]]; then
+                mkdir "$dir/lib"
+                cp "$HOME/libllvm/lib/libLLVM.so.21.1" "$dir/lib/"
+              fi
+            fi
+            if [[ "$RUNNER_OS" == Windows ]]; then
+              # No VHPI import library: plugins bring their own (user, 2026-10-18, #124).
+              (cd dist && 7z a -tzip "$2.zip" "$2" > /dev/null)
+            else
+              (cd dist && tar czf "$2.tar.gz" "$2")
+            fi
+          }
+          package llvm "yavs-$VERSION-$t"
+          package nollvm "yavs-$VERSION-$t-nollvm"
+          ls -l dist/*.tar.gz dist/*.zip 2>/dev/null || true
+      - name: Smoke test
+        run: |
+          t=${{ matrix.target }}
           cd dist
-          if [[ "$RUNNER_OS" == Windows ]]; then
-            cp "../$BIN" "$name/"
-            # No VHPI import library: plugins bring their own (user, 2026-10-18, #124).
-            7z a -tzip "$name.zip" "$name" > /dev/null
-          else
-            cp "../$BIN" "$name/"
-            tar czf "$name.tar.gz" "$name"
-          fi
-          # Smoke test: the binary alone runs a design (std/ieee built in).
           printf 'entity t is end;\narchitecture a of t is begin\nprocess begin report "ok"; wait; end process;\nend;\n' > t.vhd
-          env -u YAVS_STDLIB "$name/yavs" analyze --work=work:w t.vhd
-          env -u YAVS_STDLIB "$name/yavs" run --work=work:w t | grep -q ': ok'
-          # The GUI starts without a display for --version.
-          "$name/yavs-gui" --version
-          # Linux: the same smoke test in the oldest environment the archive claims (glibc 2.17).
-          # centos:7 is multi-arch, so the arm64 runner runs the arm64 image natively.
-          if [[ "$RUNNER_OS" == Linux ]]; then
-            docker run --rm -v "$PWD:/w" -w /w centos:7 sh -ec \
-              "rm -rf w2; $name/yavs analyze --work=work:w2 t.vhd && $name/yavs run --work=work:w2 t | grep -q ': ok' && $name/yavs-gui --version"
-          fi
+          for v in llvm nollvm; do
+            name="yavs-$VERSION-$t"; [[ $v == nollvm ]] && name="$name-nollvm"
+            # Unpack the archive that was made, not the directory it was made from.
+            rm -rf "$name"
+            if [[ "$RUNNER_OS" == Windows ]]; then 7z x -y "$name.zip" > /dev/null; else tar xzf "$name.tar.gz"; fi
+            w="wd-$v"
+            # Smoke test: the binary alone runs a design (std/ieee built in).
+            "$name/yavs" --version | tee "version-$v.txt"
+            env -u YAVS_STDLIB "$name/yavs" analyze --work=work:$w t.vhd
+            env -u YAVS_STDLIB "$name/yavs" run --work=work:$w t | grep -q ': ok'
+            if [[ $v == llvm ]]; then
+              grep -q 'compiled tier: llvm' "version-$v.txt"
+              env -u YAVS_STDLIB "$name/yavs" run --tier=llvm --work=work:$w t | grep -q ': ok'
+              env -u YAVS_STDLIB "$name/yavs" run --tier=auto --work=work:$w t | grep -q ': ok'
+            else
+              grep -q 'interpreter only' "version-$v.txt"
+              # The interpreter-only archive refuses a compiled tier (fail early, no fallback).
+              if "$name/yavs" run --tier=llvm --work=work:$w t 2> "err-$v.txt"; then echo "--tier=llvm ran without a compiled tier"; exit 1; fi
+              grep -q E0120 "err-$v.txt"
+            fi
+            # The GUI starts without a display for --version.
+            "$name/yavs-gui" --version
+            # Linux: the same smoke test in the oldest environment the archive claims (glibc 2.17),
+            # which has no LLVM: the compiled tier must run from lib/ alone, and without lib/ must
+            # fail with a clear error. centos:7 is multi-arch, so the arm64 runner runs the arm64
+            # image natively.
+            if [[ "$RUNNER_OS" == Linux ]]; then
+              if [[ $v == llvm ]]; then
+                docker run --rm -v "$PWD:/w" -w /w centos:7 sh -ec \
+                  "rm -rf w2 w3; ldd $name/yavs; ldd $name/lib/libLLVM.so.*; $name/yavs --version;
+                   $name/yavs analyze --work=work:w2 t.vhd;
+                   $name/yavs run --work=work:w2 t | grep -q ': ok';
+                   $name/yavs run --tier=llvm --work=work:w2 t | grep -q ': ok';
+                   mv $name/lib $name/lib.off;
+                   if $name/yavs run --tier=llvm --work=work:w2 t 2> err.txt; then echo 'ran without libLLVM'; exit 1; fi;
+                   cat err.txt; grep -q 'cannot load the LLVM library' err.txt;
+                   mv $name/lib.off $name/lib; $name/yavs-gui --version"
+              else
+                docker run --rm -v "$PWD:/w" -w /w centos:7 sh -ec \
+                  "rm -rf w2; $name/yavs analyze --work=work:w2 t.vhd && $name/yavs run --work=work:w2 t | grep -q ': ok' && $name/yavs-gui --version"
+              fi
+            fi
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: yavs-${{ matrix.target }}
@@ -133,6 +238,7 @@ jobs:
 
   publish:
     needs: build
+    if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write

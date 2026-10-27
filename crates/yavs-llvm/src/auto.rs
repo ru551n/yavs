@@ -129,6 +129,17 @@ fn fused_search(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> Option<String> {
         .then(|| "its loops are searches the interpreter runs as one op".into())
 }
 
+/// The share of `f`'s IR instructions inside its loops (`back_edges`), in percent.
+fn loop_share(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> usize {
+    let mut inside = vec![false; f.code.len()];
+    if loops(prog, f) {
+        for r in back_edges(prog, f) {
+            inside[r].fill(true);
+        }
+    }
+    inside.iter().filter(|&&b| b).count() * 100 / f.code.len().max(1)
+}
+
 /// Whether the loops of `f` are compute: at most one instruction in twenty in them is one the
 /// compiled code leaves to the interpreter (a call other than a native-frame one, a native, a
 /// report). Such a function runs
@@ -945,7 +956,16 @@ enum Kind {
     /// A compute loop in frame-mode code (a process with a loop, a nested subprogram): its compile
     /// costs a fraction of the native-frame code of the same size.
     ComputeFrame,
+    /// A `Big` function with `BIG_LOOP_SHARE` percent or more of its IR instructions in loops
+    /// (`loop_share`): its compiled code runs the loops faster, where that of a straight-line
+    /// large process is level with the interpreter (#679).
+    BigLoop,
 }
+
+/// The share of its IR instructions in loops (percent) from which a `Big` function is `BigLoop`.
+/// Measured (#679): every large process of 12 percent or more ran 1.03 to 1.6 times faster compiled,
+/// below 9 percent they lost or gained alike (0.86 to 1.36), so the line is in the gap.
+const BIG_LOOP_SHARE: usize = 10;
 
 /// What the policy expects of compiling a kind of function: the CPU microseconds a compile costs
 /// (`fixed` plus `per_ir` per IR instruction: measured from the cold compiles of tools/realbench,
@@ -989,12 +1009,13 @@ const fn model(fixed: f64, per_ir: f64, speedup: f64) -> Model {
 /// `PAYBACK*` were: 2 for functions called on native frames and compute loops, 4/3 for the rest),
 /// `Big` pinned to the old threshold of 3 200 us an IR instruction (compiled code of the large
 /// processes is level with the interpreter, #679; whether they compile is the user's decision, no
-/// size cap). A function called on native frames is priced for its native-frame code only: its
+/// size cap), `BigLoop` at the median of its measured class (1.15: large processes with loops, forced
+/// compiled one by one, #679). A function called on native frames is priced for its native-frame code only: its
 /// frame-mode code is compiled when it is needed (`Worker::frame_at`). `Compute` (native frames) is
 /// priced at one and a half times what it measures (33 to 62 ms for 79 to 153 IR, #757): at the
 /// measured price a first run of 0.8 s compiled a string loop too late to repay it, and the callees
 /// such a function brings are paid by `Worker::repays` (docs/decisions.md).
-const MODELS: [Model; 9] = [
+const MODELS: [Model; 10] = [
     model(2500.0, 200.0, 1.2),
     model(2000.0, 550.0, 1.55),
     model(4000.0, 550.0, 2.1),
@@ -1004,11 +1025,12 @@ const MODELS: [Model; 9] = [
     model(0.0, 200.0, 1.1),
     model(4000.0, 110.0, 1.037),
     model(15000.0, 110.0, 1.8),
+    model(4000.0, 110.0, 1.15),
 ];
 
 /// `MODELS`, with `YAVS_AUTO_MODEL=kind=fixed,per_ir,speedup/..` (a tuning aid) applied.
-fn models() -> &'static [Model; 9] {
-    static M: std::sync::OnceLock<[Model; 9]> = std::sync::OnceLock::new();
+fn models() -> &'static [Model; 10] {
+    static M: std::sync::OnceLock<[Model; 10]> = std::sync::OnceLock::new();
     M.get_or_init(|| {
         let mut m = MODELS;
         let names = [
@@ -1021,6 +1043,7 @@ fn models() -> &'static [Model; 9] {
             "rtlfew",
             "big",
             "computeframe",
+            "bigloop",
         ];
         for part in std::env::var("YAVS_AUTO_MODEL")
             .unwrap_or_default()
@@ -1500,7 +1523,11 @@ impl Worker {
             .as_ref()
             .is_some_and(|m| m.level_for(&self.prog, f, OptLevel::O2) == OptLevel::Fast)
         {
-            Kind::Big
+            if loop_share(&self.prog, f) >= BIG_LOOP_SHARE {
+                Kind::BigLoop
+            } else {
+                Kind::Big
+            }
         } else if self.is_compute(id) {
             if !self.natively(id) {
                 Kind::ComputeFrame
@@ -3124,13 +3151,14 @@ impl AutoTier {
                             if let Some(f) = w.prog.func(FuncId(k as u32)) {
                                 let id = FuncId(k as u32);
                                 tr.line(format!(
-                                    "seen f{k} `{}` ({} IR{}): interpreted {} us, compiled {} us, {:?}, candidate at {} us",
+                                    "seen f{k} `{}` ({} IR{}, loops {}%): interpreted {} us, compiled {} us, {:?}, candidate at {} us",
                                     f.name,
                                     f.code.len(),
                                     match w.prog.base_of(id) {
                                         b if b.0 as usize != k => format!(", copy of {b}"),
                                         _ => String::new(),
                                     },
+                                    loop_share(&w.prog, f),
                                     w.time[k][0],
                                     w.time[k][1],
                                     w.kind(id),
@@ -3487,6 +3515,30 @@ mod tests {
         fb.emit(Inst::Br { to: spin });
         fb.at(spin);
         fb.emit(Inst::Br { to: spin });
+        fb.finish();
+        (pb.finish().unwrap(), f)
+    }
+
+    /// `padded_loop` with the padding inside the loop: a large function that is all loop.
+    #[cfg(feature = "llvm")]
+    fn padding_in_loop(n: usize) -> (yavs_ir::Program, yavs_ir::FuncId) {
+        let mut pb = ProgramBuilder::new();
+        let f = pb.declare("f", yavs_ir::FuncKind::Procedure, None);
+        let mut fb = pb.define(f);
+        let body = fb.block();
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let ptr = fb.reg(yavs_ir::RegTy::Ptr);
+        fb.emit(Inst::AddrOf {
+            dst: ptr,
+            space: yavs_ir::AddrSpace::Frame,
+            off: 0,
+        });
+        fb.emit(Inst::Br { to: body });
+        fb.at(body);
+        for _ in 0..n {
+            fb.emit(Inst::Free { ptr });
+        }
+        fb.emit(Inst::Br { to: body });
         fb.finish();
         (pb.finish().unwrap(), f)
     }
@@ -4039,7 +4091,14 @@ mod tests {
     /// A worker over the program of `padded_loop(n)`.
     #[cfg(feature = "llvm")]
     fn worker(n: usize) -> (super::Worker, yavs_ir::FuncId) {
-        let (prog, f) = padded_loop(n);
+        worker_on(padded_loop(n))
+    }
+
+    /// A worker over `prog`.
+    #[cfg(feature = "llvm")]
+    fn worker_on(
+        (prog, f): (yavs_ir::Program, yavs_ir::FuncId),
+    ) -> (super::Worker, yavs_ir::FuncId) {
         let rt = yavs_interp::Runtime::new(std::sync::Arc::new(prog), Default::default()).unwrap();
         let table: std::sync::Arc<[super::Entry]> = (0..rt.prog.funcs.len())
             .map(|_| super::Entry::default())
@@ -4123,6 +4182,14 @@ mod tests {
         // The better the speedup, the fewer times its price a function must be seen.
         assert!(m(Kind::Compute).payback() < m(Kind::Frame).payback());
         assert!(m(Kind::Big).payback() > m(Kind::Frame).payback());
+        // A large function whose code is mostly loops is compiled earlier than a straight-line one
+        // of the same size (#679); the share comes from the loops, not from the size.
+        assert_eq!(super::loop_share(&w.prog, w.prog.func(f).unwrap()), 0);
+        let (w3, f3) = worker_on(padding_in_loop(1_600));
+        assert_eq!(w3.kind(f3), Kind::BigLoop);
+        assert!(super::loop_share(&w3.prog, w3.prog.func(f3).unwrap()) > 90);
+        assert!(m(Kind::BigLoop).payback() < m(Kind::Big).payback());
+        assert!(w3.need(f3) < w.need(f));
         // A function whose object is in the cache is priced at what linking it costs, a process of 200
         // IR instructions at about 3 ms, whatever its kind (#728).
         assert_eq!(HIT.price(200), 3_000);

@@ -2567,12 +2567,14 @@ impl Elab<'_> {
         let copy = self.copy_source(s, st);
         let toggle = self.toggle_source(s, st);
         let gate = self.gate_source(s, st);
+        let mux = self.mux_source(s, st);
         if let Some(p) = self.procs.last_mut() {
             p.idle = idle;
             p.trigger = trigger;
             p.copy = copy;
             p.toggle = toggle;
             p.gate = gate;
+            p.mux = mux;
         }
         Ok(())
     }
@@ -2607,6 +2609,13 @@ impl Elab<'_> {
             return None;
         };
         let (e, t) = (*e, target.expr);
+        self.copy_parts(s, e, t)
+    }
+
+    /// The parts of the static signal name `e` (or a conversion of one between arrays of one
+    /// element type) that a copy to target `t` reads: `copy_source` without the statement.
+    fn copy_parts(&mut self, s: ScopeId, e: ExprId, t: ExprId) -> Option<Vec<(LeafId, Range)>> {
+        let db: &Db = &*self.db;
         // A conversion between arrays of one element type (`std_logic_vector(u(7 downto 0))`) moves
         // no value: the copy is positional.
         let conv = match &db.exprs[e].kind {
@@ -3193,10 +3202,9 @@ impl Elab<'_> {
         })
     }
 
-    /// The value in femtoseconds of the static `after` expression `e`, evaluated now as a probe
-    /// (undone): `None` when it needs a subprogram call, fails or is negative, so the process
-    /// keeps it and reports its own errors.
-    fn static_delay(&mut self, s: ScopeId, e: ExprId) -> Option<i64> {
+    /// The value of the static expression `e`, evaluated now as a probe (undone): `None` when
+    /// it needs a subprogram call or fails, so the process keeps it and reports its own errors.
+    fn static_val(&mut self, s: ScopeId, e: ExprId) -> Option<Val> {
         let db: &Db = self.db;
         if db.exprs[e].stat == Staticness::None {
             return None;
@@ -3205,8 +3213,38 @@ impl Elab<'_> {
         let v = self.m.eval(db, e, Some(s));
         let called = self.m.session.mark() != mark;
         self.m.session.undo(db, mark).ok()?;
-        match v {
-            Ok(Val::Phys(t)) if t >= 0 && !called => Some(t),
+        v.ok().filter(|_| !called)
+    }
+
+    /// The value in femtoseconds of the static `after` expression `e`: `None` when it needs a
+    /// subprogram call, fails or is negative.
+    fn static_delay(&mut self, s: ScopeId, e: ExprId) -> Option<i64> {
+        match self.static_val(s, e)? {
+            Val::Phys(t) if t >= 0 => Some(t),
+            _ => None,
+        }
+    }
+
+    /// The value of the static expression `x` of the type and length of `shape` (a scalar or a
+    /// one-dimensional array of std_ulogic, BIT or BOOLEAN) in the kernel's codes.
+    fn lit_value(&mut self, s: ScopeId, x: ExprId, shape: &Shape) -> Option<yavs_kernel::LogicVec> {
+        let (ety, _) = logic_elem(shape)?;
+        if self.db.base(self.db.exprs[x].subtype) != shape.ty() {
+            return None;
+        }
+        let v = self.static_val(s, x)?;
+        let db: &Db = self.db;
+        let vals = match (&v, shape) {
+            (Val::Enum(_), Shape::Scalar { .. }) => vec![v.clone()],
+            (Val::Array(a), Shape::Array { .. }) if a.bounds.len() == 1 => crate::value::elems(a),
+            _ => return None,
+        };
+        if vals.len() as u64 != shape.len() {
+            return None;
+        }
+        let vals: Vec<&Val> = vals.iter().collect();
+        match crate::eval::encode(Elem::Logic, !crate::eval::is_std_ulogic(db, ety), &vals) {
+            yavs_kernel::Value::Logic(l) => Some(l),
             _ => None,
         }
     }
@@ -3259,8 +3297,11 @@ impl Elab<'_> {
             "\"nand\"" => Gate::Nand,
             "\"nor\"" => Gate::Nor,
             "\"xnor\"" => Gate::Xnor,
+            "\"=\"" => Gate::Eq,
+            "\"/=\"" => Gate::Ne,
             _ => return None,
         };
+        let rel = matches!(gate, Gate::Eq | Gate::Ne);
         let ops: Vec<ExprId> = args
             .iter()
             .map(|a| match a.actual {
@@ -3273,51 +3314,40 @@ impl Elab<'_> {
         }
         let (callee, e, after, texpr) = (*callee, *e, *after, target.expr);
         let transport = matches!(delay, Delay::Transport);
-        // The result, the operands and the target are of one type.
-        let ty = db.base(db.exprs[e].subtype);
-        if ops.iter().any(|&x| db.base(db.exprs[x].subtype) != ty) {
+        // The operands are of one type, and so are the result and the target (not for `=`).
+        let ty = db.base(db.exprs[ops[0]].subtype);
+        if ops.iter().any(|&x| db.base(db.exprs[x].subtype) != ty)
+            || (!rel && db.base(db.exprs[e].subtype) != ty)
+        {
             return None;
         }
         let (dparts, tshape) = self.static_signal_parts(s, texpr)?;
-        let mut parts = Vec::with_capacity(2);
-        for &x in &ops {
-            let (p, shape) = self.static_signal_parts(s, x)?;
-            let [p] = p[..] else {
-                return None;
-            };
-            if shape.ty() != tshape.ty() || shape.len() != tshape.len() {
-                return None;
-            }
-            parts.push(p);
-        }
+        // What the operands must look like: the target, or for `=` the signal operand.
+        let (srcs, rshape) = self.operands(s, &ops, (!rel).then_some(&tshape))?;
         let db: &Db = self.db;
-        let elem = match &tshape {
-            Shape::Scalar { .. } => &tshape,
-            Shape::Array { dims, elem, .. } if dims.len() == 1 => &**elem,
-            _ => return None,
-        };
-        let Shape::Scalar {
-            ty: ety,
-            range: Some(range),
-            elem: Elem::Logic,
-            ..
-        } = elem
-        else {
-            return None;
-        };
+        let (ety, range) = logic_elem(&tshape)?;
         let decl = &db.decls[callee];
         let wk = &db.well_known;
-        let ok = match range.low_high() {
-            // The IEEE operators of `std_ulogic` (the whole type) and its vectors.
-            (0, 8) => {
-                !decl.implicit
-                    && db.scopes[decl.scope]
-                        .owner
-                        .is_some_and(|o| db.decls[o].name.key().as_str() == "std_logic_1164")
+        let ok = if rel {
+            // The predefined `=` of BIT, BOOLEAN and std_ulogic (codes compare) and their
+            // vectors; BOOLEAN result in a scalar target.
+            decl.implicit
+                && Some(ety) == wk.boolean
+                && range.low_high() == (0, 1)
+                && matches!(tshape, Shape::Scalar { .. })
+        } else {
+            match range.low_high() {
+                // The IEEE operators of `std_ulogic` (the whole type) and its vectors.
+                (0, 8) => {
+                    !decl.implicit
+                        && db.scopes[decl.scope]
+                            .owner
+                            .is_some_and(|o| db.decls[o].name.key().as_str() == "std_logic_1164")
+                }
+                // The predefined ones of BIT and BOOLEAN (bit-plane logic too).
+                (0, 1) => decl.implicit && (Some(ety) == wk.boolean || Some(ety) == wk.bit),
+                _ => false,
             }
-            // The predefined ones of BIT and BOOLEAN (bit-plane logic too).
-            (0, 1) => decl.implicit && (Some(*ety) == wk.boolean || Some(*ety) == wk.bit),
-            _ => false,
         };
         let [dpart] = dparts[..] else {
             return None;
@@ -3329,14 +3359,7 @@ impl Elab<'_> {
             return None;
         };
         let nets = &self.m.nets;
-        if !ok
-            || dpart != (dl, dr)
-            || nets.drivers[k].leaf != dl
-            || nets.drivers[k].range != dr
-            || parts
-                .iter()
-                .any(|&(l, r)| r.len != dr.len || nets.leaf(l).ty.elem != Elem::Logic)
-        {
+        if !ok || dpart != (dl, dr) || nets.drivers[k].leaf != dl || nets.drivers[k].range != dr {
             return None;
         }
         let delay = match after {
@@ -3345,11 +3368,235 @@ impl Elab<'_> {
         };
         Some(crate::ProcGate {
             gate,
-            a: parts[0],
-            b: *parts.last()?,
+            a: srcs[0].clone(),
+            b: srcs.last()?.clone(),
+            len: if rel { rshape.len() as u32 } else { dr.len },
             delay,
             transport,
         })
+    }
+
+    /// The operands `ops` of a gate or a relation as sources: static signal names of one part
+    /// each and the shape `want` (the first signal operand's when `None`), or static values of
+    /// that shape; at least one is a signal. Also the shape.
+    fn operands(
+        &mut self,
+        s: ScopeId,
+        ops: &[ExprId],
+        want: Option<&Shape>,
+    ) -> Option<(Vec<crate::ProcSrc>, Shape)> {
+        let names: Vec<_> = ops
+            .iter()
+            .map(|&x| self.static_signal_parts(s, x))
+            .collect();
+        let rshape = match want {
+            Some(w) => w.clone(),
+            None => names.iter().flatten().next()?.1.clone(),
+        };
+        logic_elem(&rshape)?;
+        let mut srcs = Vec::with_capacity(2);
+        for (&x, n) in ops.iter().zip(names) {
+            srcs.push(match n {
+                Some((p, shape)) => {
+                    let [(l, r)] = p[..] else {
+                        return None;
+                    };
+                    if shape.ty() != rshape.ty()
+                        || shape.len() != rshape.len()
+                        || self.m.nets.leaf(l).ty.elem != Elem::Logic
+                    {
+                        return None;
+                    }
+                    crate::ProcSrc::Sig(l, r)
+                }
+                None => crate::ProcSrc::Lit(self.lit_value(s, x, &rshape)?),
+            });
+        }
+        if srcs.iter().all(|x| matches!(x, crate::ProcSrc::Lit(_))) {
+            return None;
+        }
+        Some((srcs, rshape))
+    }
+
+    /// The mux of a concurrent `target <= a when c else b;` (not guarded or postponed; no delay
+    /// clause, `transport` or `inertial` without `reject`; two waveform elements of one value
+    /// each, their `after` static): `c` the test of one logic element against a set of codes
+    /// (`x = '1'`, `x /= '0'`, `'1' = x`, `?? x` of std_ulogic, a BOOLEAN name), each arm a copy
+    /// of a static signal name as `copy_source` takes one, or a static value of the
+    /// target's type and length when the target is one part of std_ulogic, BIT or BOOLEAN
+    /// elements of the whole type. `None` for anything else.
+    fn mux_source(&mut self, s: ScopeId, st: StmtId) -> Option<crate::ProcMux> {
+        let db: &Db = self.db;
+        let StmtKind::ConcSignalAssign {
+            postponed: false,
+            guarded: false,
+            target,
+            delay: delay @ (Delay::Default | Delay::Transport | Delay::Inertial { reject: None }),
+            rhs: Rhs::Conditional(alts),
+            ..
+        } = &db.stmts[st].kind
+        else {
+            return None;
+        };
+        let [
+            (Waveform::Elements(w1), Some(c)),
+            (Waveform::Elements(w2), None),
+        ] = &alts[..]
+        else {
+            return None;
+        };
+        let (
+            [
+                WaveElem {
+                    value: Some(e1),
+                    after: a1,
+                },
+            ],
+            [
+                WaveElem {
+                    value: Some(e2),
+                    after: a2,
+                },
+            ],
+        ) = (&w1[..], &w2[..])
+        else {
+            return None;
+        };
+        let (c, texpr) = (*c, target.expr);
+        let (e1, e2, a1, a2) = (*e1, *e2, *a1, *a2);
+        let transport = matches!(delay, Delay::Transport);
+        let cond = self.mux_cond(s, c)?;
+        let (_, tshape) = self.static_signal_parts(s, texpr)?;
+        let mut srcs = [Vec::new(), Vec::new()];
+        let mut delays = [0; 2];
+        // [else, then]
+        for (i, (e, after)) in [(e2, a2), (e1, a1)].into_iter().enumerate() {
+            srcs[i] = match self.copy_parts(s, e, texpr) {
+                Some(v) => (v.into_iter())
+                    .map(|(l, r)| crate::ProcSrc::Sig(l, r))
+                    .collect(),
+                None => {
+                    // A value: the target is one whole driver of whole-type logic elements.
+                    let db: &Db = self.db;
+                    let (ety, range) = logic_elem(&tshape)?;
+                    let whole = if crate::eval::is_std_ulogic(db, ety) {
+                        (0, 8)
+                    } else {
+                        (0, 1)
+                    };
+                    let [dst] = &self.procs.last()?.lsps[..] else {
+                        return None;
+                    };
+                    let [(k, dl, dr)] = dst[..] else {
+                        return None;
+                    };
+                    let nets = &self.m.nets;
+                    if range.low_high() != whole
+                        || nets.drivers[k].leaf != dl
+                        || nets.drivers[k].range != dr
+                    {
+                        return None;
+                    }
+                    vec![crate::ProcSrc::Lit(self.lit_value(s, e, &tshape)?)]
+                }
+            };
+            delays[i] = match after {
+                None => 0,
+                Some(a) => self.static_delay(s, a)?,
+            };
+        }
+        Some(crate::ProcMux {
+            cond,
+            srcs,
+            delay: delays,
+            transport,
+        })
+    }
+
+    /// What a condition tests: `x = '1'` (or `/=`, either side, BIT and BOOLEAN with the codes of
+    /// '0' and '1'), `?? x` of std_ulogic ('1' and 'H') or a BOOLEAN name, all on a static
+    /// element `x` of a logic signal; or the predefined `a = b` or `a /= b` of logic signals and
+    /// static values of one type and length.
+    fn mux_cond(&mut self, s: ScopeId, c: ExprId) -> Option<crate::ProcCond> {
+        self.mask_cond(s, c).or_else(|| self.rel_cond(s, c))
+    }
+
+    fn rel_cond(&mut self, s: ScopeId, c: ExprId) -> Option<crate::ProcCond> {
+        let db: &Db = self.db;
+        let ExprKind::Call {
+            callee,
+            args,
+            method_of: None,
+            implicit_cond: false,
+        } = &db.exprs[c].kind
+        else {
+            return None;
+        };
+        let decl = &db.decls[*callee];
+        let ne = match decl.name.key().as_str() {
+            "\"=\"" if decl.implicit => false,
+            "\"/=\"" if decl.implicit => true,
+            _ => return None,
+        };
+        let [
+            Arg {
+                actual: Actual::Expr(l),
+                ..
+            },
+            Arg {
+                actual: Actual::Expr(r),
+                ..
+            },
+        ] = &args[..]
+        else {
+            return None;
+        };
+        let (mut srcs, shape) = self.operands(s, &[*l, *r], None)?;
+        let (b, a) = (srcs.pop()?, srcs.pop()?);
+        Some(crate::ProcCond::Eq {
+            a,
+            b,
+            len: shape.len() as u32,
+            ne,
+        })
+    }
+
+    fn mask_cond(&mut self, s: ScopeId, c: ExprId) -> Option<crate::ProcCond> {
+        let db: &Db = self.db;
+        let (x, mask) = if let Some((x, code, eq)) = db.level_cmp(c) {
+            let m = 1u16 << code;
+            (x, if eq { m } else { !m & 0x1ff })
+        } else if let ExprKind::Call {
+            callee,
+            args,
+            method_of: None,
+            ..
+        } = &db.exprs[c].kind
+            && db.decls[*callee].name.key().as_str() == "\"??\""
+            && db.scopes[db.decls[*callee].scope]
+                .owner
+                .is_some_and(|o| db.decls[o].name.key().as_str() == "std_logic_1164")
+            && let [
+                Arg {
+                    actual: Actual::Expr(x),
+                    ..
+                },
+            ] = &args[..]
+        {
+            (*x, 1 << 3 | 1 << 7)
+        } else if Some(db.base(db.exprs[c].subtype)) == db.well_known.boolean {
+            (c, 1 << 3)
+        } else {
+            return None;
+        };
+        let (p, shape) = self.static_signal_parts(s, x)?;
+        let [(l, r)] = p[..] else {
+            return None;
+        };
+        let ok = r.len == 1
+            && matches!(shape, Shape::Scalar { .. })
+            && self.m.nets.leaf(l).ty.elem == Elem::Logic;
+        ok.then_some(crate::ProcCond::Mask((l, r), mask))
     }
 
     /// The leaf and element a static signal name denotes.
@@ -3538,6 +3785,7 @@ impl Elab<'_> {
             copy: None,
             toggle: None,
             gate: None,
+            mux: None,
             idle: None,
             guard: None,
         });
@@ -4860,6 +5108,25 @@ fn port_mode(m: Mode) -> PortMode {
         Mode::Out => PortMode::Out,
         Mode::Inout => PortMode::Inout,
         Mode::Buffer => PortMode::Buffer,
+    }
+}
+
+/// The type and bounds of the elements of a scalar or one-dimensional array of std_ulogic, BIT or
+/// BOOLEAN.
+fn logic_elem(shape: &Shape) -> Option<(yavs_sem::TypeId, crate::hier::Bounds)> {
+    let elem = match shape {
+        Shape::Scalar { .. } => shape,
+        Shape::Array { dims, elem, .. } if dims.len() == 1 => &**elem,
+        _ => return None,
+    };
+    match elem {
+        Shape::Scalar {
+            ty,
+            range: Some(range),
+            elem: Elem::Logic,
+            ..
+        } => Some((*ty, *range)),
+        _ => None,
     }
 }
 

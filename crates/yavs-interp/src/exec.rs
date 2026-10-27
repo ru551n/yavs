@@ -347,7 +347,11 @@ macro_rules! push_frame_body {
             return stack_fail($f);
         };
         $self.regs.base = rbase;
-        $pre.fill(&mut $self.regs.v, idx as u32)?;
+        if idx < 1 << 29 {
+            $pre.fill_below(&mut $self.regs.v, idx as u32);
+        } else {
+            $pre.fill(&mut $self.regs.v, idx as u32)?;
+        }
         // A root frame entered with the shared state attached is elaboration code
         // (`call_shared`, `init_package`, `call_values_shared`); a process enters its
         // root frame before it first takes the shared state, and allocates in the shared
@@ -705,8 +709,10 @@ struct Scratch {
 
 /// Sets of vectors kept per thread: processes of a few functions that wake in turn (the
 /// specialised copies of one process, a pipeline of processes) each find their own, with the
-/// registers they start with in place.
-const SCRATCH_SLOTS: usize = 4;
+/// registers they start with in place. GRLIB LEON3 has nine large processes (3000 to 7500
+/// registers each) that wake every delta cycle: with four sets each wake refilled 25 to 60 KB of
+/// registers (30 GB of `memcpy` in a run).
+const SCRATCH_SLOTS: usize = 16;
 
 impl Scratch {
     /// The slot to give up when every one holds a set that is worth keeping.
@@ -863,6 +869,17 @@ fn sev(v: u64) -> R<Severity> {
 #[inline(always)]
 pub(crate) fn to_time(v: i64) -> R<Time> {
     Time::from_vhdl(v).map_err(|_| runtime_f!("negative time value {v} fs"))
+}
+
+/// The left, right and direction words of a dimension descriptor.
+#[inline(always)]
+fn desc_words(b: &[u8; 24]) -> (i64, i64, u64) {
+    let c = b.as_chunks::<8>().0;
+    (
+        u64::from_le_bytes(c[0]) as i64,
+        u64::from_le_bytes(c[1]) as i64,
+        u64::from_le_bytes(c[2]),
+    )
 }
 
 /// The length of a dimension (bounds and direction word, `dim_of`) in `u64` arithmetic, `None`
@@ -3784,6 +3801,15 @@ impl Machine {
         Ok(true)
     }
 
+    /// The four planes of the block of 32 bytes at `a`. Out of line: inlined in a loop, the reads of
+    /// every memory space load their fields before the loop (60 instructions per call of `cat_words`).
+    #[inline(never)]
+    fn block32(&self, a: u64) -> R<[u64; 4]> {
+        let mut b = [0u64; 4];
+        fill_blocks(self.rd_hot(a, 32)?, std::slice::from_mut(&mut b));
+        Ok(b)
+    }
+
     /// The planes of the pieces of a `Cat` of a logic array of at most 64 elements, combined:
     /// the words, the mask of the elements they cover and how many elements the pieces
     /// have. `None` when a piece does not fit the pattern.
@@ -3815,9 +3841,7 @@ impl Machine {
                 if units > 64 {
                     return Ok(None);
                 }
-                let mut b = [0u64; 4];
-                fill_blocks(self.rd_hot(v, 32)?, std::slice::from_mut(&mut b));
-                (units, b)
+                (units, self.block32(v)?)
             };
             if k.wrapping_add(units) > total {
                 return Ok(None);
@@ -3968,6 +3992,24 @@ impl Machine {
             sh,
             ..
         } = self;
+        // Two objects of one heap: both slots at once.
+        if dsp == ssp && matches!(dsp, HEAP | SHARED_HEAP) {
+            let h = if dsp == HEAP {
+                Some(heap)
+            } else {
+                sh.as_mut().and_then(|s| s.heap.as_deref_mut())
+            };
+            return match h.and_then(|h| h.data_pair(didx, sidx)) {
+                Some((out, src)) if soff + sn <= src.len() => match out.get_mut(doff..doff + dn) {
+                    Some(out) => {
+                        f(out, &src[soff..soff + sn]);
+                        true
+                    }
+                    None => false,
+                },
+                _ => false,
+            };
+        }
         let dst = match dsp {
             TEMP => {
                 let src = match ssp {
@@ -4100,6 +4142,40 @@ impl Machine {
     /// memory, equal bounds or lengths that fit 63 bits) before the general loop.
     #[inline(never)]
     fn subtype_check(&self, dope: u64, want: u64, dims: u8, what: yavs_ir::CheckMsgId) -> R<()> {
+        // Equal descriptors (mostly a temporary against instance data), or equal lengths, are
+        // the usual case.
+        if dims == 1
+            && let (Some(a), Some(b)) = (self.desc24(dope), self.desc24(want))
+            && (a == b
+                || matches!((dim_len63(desc_words(a)), dim_len63(desc_words(b))),
+                    (Some(x), Some(y)) if x == y))
+        {
+            return Ok(());
+        }
+        self.subtype_check_slow(dope, want, dims, what)
+    }
+
+    /// The 24 bytes of the first dimension of the descriptor at `a`, in temporary memory or the
+    /// instance data (the usual homes of a value's and a target's descriptor).
+    #[inline(always)]
+    fn desc24(&self, a: u64) -> Option<&[u8; 24]> {
+        let (sp, idx, off) = split(a);
+        let mem = match sp {
+            TEMP => &self.temp[..],
+            INST => &self.inst.data[..],
+            _ => self.mem_fast(sp, idx)?,
+        };
+        mem.get(off as usize..)?.first_chunk::<24>()
+    }
+
+    #[inline(never)]
+    fn subtype_check_slow(
+        &self,
+        dope: u64,
+        want: u64,
+        dims: u8,
+        what: yavs_ir::CheckMsgId,
+    ) -> R<()> {
         if dims == 1
             && let (Ok(a), Ok(b)) = (self.dim_of(dope, 0), self.dim_of(want, 0))
         {
@@ -5798,6 +5874,43 @@ impl Machine {
                     };
                     k += 1;
                 }
+                Op::LoadPair { d1, d2, base, off } => {
+                    let a = self.regs[base as usize];
+                    let (sp, idx, o) = split(a);
+                    let o = o + u64::from(off);
+                    if let Some(b) = self
+                        .mem_fast(sp, idx)
+                        .and_then(|m| m.get(o as usize..o as usize + 16))
+                        .and_then(|b| b.as_chunks::<8>().0.first_chunk::<2>())
+                    {
+                        let (x, y) = (u64::from_le_bytes(b[0]), u64::from_le_bytes(b[1]));
+                        self.regs[d1 as usize] = x;
+                        self.regs[d2 as usize] = y;
+                    } else {
+                        let x = t!(add_addr(a, off.into()).and_then(|a| self.load(a, Width::B8)));
+                        self.regs[d1 as usize] = x;
+                        let y =
+                            add_addr(a, u64::from(off) + 8).and_then(|a| self.load(a, Width::B8));
+                        self.regs[d2 as usize] = match y {
+                            Ok(y) => y,
+                            Err(e) => return Err(self.fault_at(top, code, k + 1, e)),
+                        };
+                    }
+                    k += 2;
+                }
+                Op::LoadPkg { dst, pkg, off, w } => {
+                    let n = w.bytes() as usize;
+                    let o = off as usize;
+                    let mem = match &self.pkg_init {
+                        Some((p, data)) if *p == pkg => Some(&data[..]),
+                        _ => self.rt.pkgs.get(pkg as usize).map(|p| &p.data[..]),
+                    };
+                    self.regs[dst as usize] = match mem.and_then(|m| m.get(o..o + n)) {
+                        Some(b) => cell_w(b, w),
+                        None => t!(mk_addr(PKG, pkg, off.into()).and_then(|a| self.load(a, w))),
+                    };
+                    k += 1;
+                }
                 Op::LoadOff { dst, base, off, w } => {
                     let a = t!(add_addr(self.regs[base as usize], off.into()));
                     self.regs[dst as usize] = t!(self.load(a, w));
@@ -6252,6 +6365,19 @@ impl Machine {
                         self.regs[hi as usize] as i64,
                         what
                     ));
+                    k += 1;
+                }
+                Op::CheckK {
+                    kind,
+                    v,
+                    lo,
+                    hi,
+                    what,
+                } => {
+                    let x = self.regs[v as usize] as i64;
+                    if x < i64::from(lo) || x > i64::from(hi) {
+                        t!(self.check_fail(kind, x, lo.into(), hi.into(), what));
+                    }
                     k += 1;
                 }
                 Op::Layout { dst, ty, desc } => {
@@ -6803,7 +6929,7 @@ impl Machine {
                 } => {
                     let a = t!(self.deref(self.regs[handle as usize], what));
                     self.regs[d1 as usize] = a;
-                    match add_addr(a, off.into()).and_then(|a| self.load(a, w)) {
+                    match self.load(a + u64::from(off), w) {
                         Ok(v) => self.regs[d2 as usize] = v,
                         Err(e) => {
                             self.frames[top].pc = code.at.get(k + 1).copied().unwrap_or(0);
@@ -6827,13 +6953,8 @@ impl Machine {
                         }
                     };
                     self.regs[d1 as usize] = a;
-                    match add_addr(a, off.into()) {
-                        Ok(b) => self.regs[d2 as usize] = b,
-                        Err(e) => {
-                            self.frames[top].pc = code.at.get(k + 1).copied().unwrap_or(0);
-                            return Err(e);
-                        }
-                    }
+                    // `deref` gives offset 0: a 32-bit `off` cannot overflow the offset field.
+                    self.regs[d2 as usize] = a + u64::from(off);
                     k += 2;
                 }
                 Op::LoadDerefImm {
@@ -6858,13 +6979,7 @@ impl Machine {
                         }
                     };
                     self.regs[d1 as usize] = a;
-                    match add_addr(a, o2.into()) {
-                        Ok(b) => self.regs[d2 as usize] = b,
-                        Err(e) => {
-                            self.frames[top].pc = code.at.get(k + 2).copied().unwrap_or(0);
-                            return Err(e);
-                        }
-                    }
+                    self.regs[d2 as usize] = a + u64::from(o2);
                     k += 3;
                 }
                 Op::MoveCondBr { dst, src, t, f: e } => {
@@ -7218,24 +7333,25 @@ impl Machine {
                         k += 1;
                     }
                 }
-                Op::AllocCat { dst } => {
+                Op::AllocCat {
+                    dst,
+                    n,
+                    m,
+                    parts,
+                    len,
+                    scalars,
+                    bias,
+                } => {
                     // `AllocK` of one block and the `Cat` into it of at most 64 elements.
-                    let pc = code.at.get(k + 1).copied().unwrap_or(0);
-                    let Some(&Inst::Cat {
-                        n,
-                        m,
-                        parts,
-                        scalars,
-                        bias,
-                        ..
-                    }) = f.code.get(pc as usize)
-                    else {
-                        return Err(ice_f!("pc {pc} is not a concatenation"));
-                    };
-                    let ps = t!(f.regs(parts).ok_or_else(|| ice_s!("operand list")));
+                    let ps = t!(f
+                        .regs(yavs_ir::Regs {
+                            start: parts,
+                            len: len.into()
+                        })
+                        .ok_or_else(|| ice_s!("operand list")));
                     let (mv, total) = (
-                        self.regs[m.0 as usize],
-                        self.regs[n.0 as usize].wrapping_mul(self.regs[m.0 as usize]),
+                        self.regs[m as usize],
+                        self.regs[n as usize].wrapping_mul(self.regs[m as usize]),
                     );
                     let words = if total <= 64 {
                         t!(self.cat_words(total, mv, ps, scalars, bias))
@@ -11846,6 +11962,8 @@ mod tests {
         assert_eq!(offset_of!(Machine, tier_state), 256);
         assert!(offset_of!(Machine, troots) + 24 <= 320);
         assert!(offset_of!(Machine, heap) >= 256);
+        // The kernel prefetches the first five lines of the process object (#766).
+        assert_eq!(offset_of!(crate::InterpProcess, m), 0);
     }
 
     /// A suspension of a process without the shared state builds no roots (#356).

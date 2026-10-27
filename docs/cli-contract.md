@@ -64,7 +64,10 @@ Conventions:
   yavs MAJOR.MINOR.PATCH[-PRERELEASE] [(anything)]
   ```
 
-  e.g. `yavs 0.4.0-dev (1a2b3c4 2026-10-18)`. The test runner takes the first
+  e.g. `yavs 0.4.0-dev (1a2b3c4 2026-10-18)`. The details say whether the compiled tier is
+  built in: `yavs 0.8.0 (compiled tier: llvm)` or `yavs 0.9.0 (interpreter only, no compiled
+  tier)` (a build without the `llvm` feature fails `--tier=auto` and `--tier=llvm` with E0120).
+  The test runner takes the first
   `MAJOR.MINOR[.PATCH]` it finds; the prerelease tag is ignored for ordering.
   The version is available to the test runner packages as the `yavs_version` marker.
 
@@ -557,7 +560,9 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   per IR instruction of it (PERIOD `0`, as in `1,0,0`: from its first call or jump). Both tiers need a yavs
   built with the `llvm` cargo feature (LLVM 21): otherwise asking for them explicitly is error `E0120` (exit 2); a
   design the tier cannot compile (or a compile thread that cannot start) is `E0121` (exit 3, a
-  bug in yavs). `clift` and `clift-auto` are `llvm` and `auto` with the Cranelift code generator; they need a yavs built with
+  bug in yavs); an LLVM library that cannot be loaded (Linux: `lib/` next to `yavs`, else the
+  system's) is `E0127` for `--tier=llvm` (exit 2), and a warning for `--tier=auto`, whose hot code stays
+  interpreted. `clift` and `clift-auto` are `llvm` and `auto` with the Cranelift code generator; they need a yavs built with
   the `clift` cargo feature (no LLVM needed), otherwise `E0120`, and give the same output. In a build with `clift` and without `llvm`, `--tier=auto` is `clift-auto` (the default tier of such a build stays `interp`). `auto3` is `auto` with Cranelift as its first level: a function that becomes warm is translated by Cranelift, one that stays hot is compiled again by LLVM at O2 (a yavs built with both features, otherwise `E0120`); the output is the same. `--verbose` prints, on stderr, a note per function left to the
   interpreter and how many instructions were compiled (`llvm`), or a note per hot function as
   the compile thread takes it (`auto`, so their order and number depend on timing). The test

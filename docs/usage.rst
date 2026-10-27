@@ -86,8 +86,11 @@ otherwise.
   time 0 and runs that code; ``--tier=interp`` runs the interpreter alone. The output is the same
   with every tier. ``auto`` is the default in a yavs built with the ``llvm`` feature (LLVM 21),
   except under ``--dap``, which runs in the interpreter unless you ask for a tier;
-  a yavs built without the feature always defaults to ``--tier=interp``, and ``--tier=auto`` or
-  ``--tier=llvm`` on it is an error. Functions of
+  a yavs built without the feature (the ``-nollvm`` release archives, see :doc:`install`) always
+  defaults to ``--tier=interp``, and ``--tier=auto`` or ``--tier=llvm`` on it is an error
+  (E0120); ``yavs --version`` says which kind you have. The release archives with the compiled tier
+  find the LLVM library in ``lib/`` next to the executable; if it is missing, ``--tier=llvm`` stops with an
+  error naming the places looked in, and ``--tier=auto`` warns once and keeps the hot code interpreted. Functions of
   more than ``--tier-max-size`` IR instructions (default 50000) stay interpreted. ``--verbose``
   prints what the LLVM tier compiles and what it leaves to the interpreter.
   ``--tier=clift`` and ``--tier=clift-auto`` do the same with Cranelift instead of LLVM, in a yavs built

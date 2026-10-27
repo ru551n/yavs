@@ -988,6 +988,16 @@ fn use_llvm_tier(
     match a.tier() {
         TierArg::Interp | TierArg::Clift | TierArg::CliftAuto | TierArg::Auto3 => Ok(None),
         TierArg::Llvm => {
+            // A missing library is a problem of the installation, not a bug in the tier.
+            yavs_llvm::load_library().map_err(|e| {
+                Box::new(
+                    Diagnostic::error("E0127", "the LLVM library cannot be loaded")
+                        .with_note(e.to_string())
+                        .with_help(
+                            "keep the `lib` directory of the release archive next to `yavs`, install LLVM 21, or use `--tier=interp`",
+                        ),
+                )
+            })?;
             let tier = yavs_llvm::compile(&rt.prog, opt, a.tier_max_size).map_err(bug)?;
             use_llvm(rt, tier, a.verbose);
             Ok(None)
@@ -1357,7 +1367,11 @@ pub fn run(
     let tier_up = match use_tier(built.as_ref().map(|b| &*b.rt), &a) {
         Ok(g) => g,
         Err(d) => {
-            let code = if d.code == "E0120" { 2 } else { 3 };
+            let code = if matches!(d.code, "E0120" | "E0127") {
+                2
+            } else {
+                3
+            };
             out.emit(&none, &d);
             return out.finish(code);
         }

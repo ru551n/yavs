@@ -375,6 +375,14 @@ case!(
     [("process_runs", Max(335)), ("ops", Max(6610))]
 );
 case!(
+    mux_bus,
+    "s=",
+    &[],
+    // The muxes, the relation and the gates run in the kernel (#786): 5094 ops when they are
+    // interpreted (the rest is the stimulus process).
+    [("process_runs", Max(257)), ("ops", Max(3340))]
+);
+case!(
     fan,
     "hits=",
     &[],
@@ -592,6 +600,15 @@ case!(
         ("direct_planes", Max(63)),
         ("ops", Max(3564)),
     ]
+);
+// Repeated drives of inout ports (not direct) in one activation, mostly of the value held: the
+// first leaves a skipped assignment, the repeats are skipped on the fast paths too (300 general
+// assignments before, #720).
+case!(
+    drive_repeat,
+    "sum=2712",
+    &[],
+    [("general_assigns", Max(2)), ("cycles", Max(515))]
 );
 // A run of scalar drives of variables that hold what the signals have is one op (`pre.rs`
 // `drive_runs`); the drives that change are made, in the middle of a run too: 1811 direct

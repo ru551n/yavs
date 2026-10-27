@@ -185,6 +185,9 @@ pub struct ProcInst {
     /// A concurrent `target <= a op b;` (or `not a`) of one logical operator on static signal
     /// parts (`Walker::gate_source`): the kernel runs it itself (`yavs_kernel::GateProcess`, #779).
     pub gate: Option<ProcGate>,
+    /// A concurrent `target <= a when c else b;` (`Walker::mux_source`): the kernel runs it
+    /// itself (`yavs_kernel::MuxProcess`, #786).
+    pub mux: Option<ProcMux>,
     /// A clocked process (it has a `trigger`) whose activation is a function of the signals
     /// listed here and constants alone (`Db::pure_clocked_reads`): the kernel may skip an
     /// activation when none of them had an event since the last one
@@ -206,15 +209,52 @@ pub struct ProcToggle {
     pub transport: bool,
 }
 
-/// The gate `target <= a op b;` of [`ProcInst::gate`]: operand parts of the target's length.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What a gate or a mux reads: a signal part or a logic value known at elaboration.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProcSrc {
+    Sig(LeafId, yavs_kernel::Range),
+    Lit(yavs_kernel::LogicVec),
+}
+
+/// The gate `target <= a op b;` of [`ProcInst::gate`]: operands of the target's length (of one
+/// length for `=` and `/=`, whose target is one BOOLEAN element).
+#[derive(Clone, Debug, PartialEq)]
 pub struct ProcGate {
     pub gate: yavs_kernel::Gate,
-    pub a: (LeafId, yavs_kernel::Range),
+    pub a: ProcSrc,
     /// `a` again for `not`.
-    pub b: (LeafId, yavs_kernel::Range),
+    pub b: ProcSrc,
+    /// The length of the operands.
+    pub len: u32,
     /// The `after` delay in femtoseconds, 0 without one.
     pub delay: i64,
+    pub transport: bool,
+}
+
+/// The condition of a [`ProcMux`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProcCond {
+    /// One logic element is one of a set of codes: bit `c` of the mask is set when code `c`
+    /// makes the condition true.
+    Mask((LeafId, yavs_kernel::Range), u16),
+    /// The predefined `a = b` (`/=` when `ne`) of two logic operands of `len` elements.
+    Eq {
+        a: ProcSrc,
+        b: ProcSrc,
+        len: u32,
+        ne: bool,
+    },
+}
+
+/// The mux `target <= a when c else b;` of [`ProcInst::mux`]: the target's parts in the order of
+/// `ProcInst::lsps`, each with its source in the two arms.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProcMux {
+    pub cond: ProcCond,
+    /// The sources per arm: `[else, then]`.
+    pub srcs: [Vec<ProcSrc>; 2],
+    /// The `after` delay of each arm in femtoseconds, 0 without one.
+    pub delay: [i64; 2],
     pub transport: bool,
 }
 

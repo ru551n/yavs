@@ -21,7 +21,8 @@ use crate::db::{Db, Reported};
 use crate::decl::Designator;
 use crate::diag;
 use crate::hir::{Expr, ExprKind};
-use crate::ids::{ExprId, SubtypeId, TypeId};
+use crate::ids::{ExprId, ScopeId, SubtypeId, TypeId};
+use crate::scope::Visible;
 use crate::stat::{ArrayConst, ConstValue, Elems, Staticness};
 use crate::types::{Constraint, RangeC, TypeKind};
 
@@ -625,10 +626,64 @@ pub fn physical_value(
         .map_err(|e| abs_error(db, e, span))
 }
 
+/// The character literals a string or bit string value uses must be visible at the literal
+/// (LRM 9.3.2: each character denotes a literal of the element type; 12.3).
+fn chars_visible(
+    db: &mut Db,
+    scope: ScopeId,
+    ty: TypeId,
+    v: &ConstValue,
+    span: Span,
+) -> Result<(), Reported> {
+    let (
+        ConstValue::Array(ArrayConst {
+            elems: Elems::Bytes(b),
+            ..
+        }),
+        TypeKind::Array { elem, .. },
+    ) = (v, &db.types[ty].kind)
+    else {
+        return Ok(());
+    };
+    let et = db.subtypes[*elem].base;
+    let TypeKind::Enum { lits } = &db.types[et].kind else {
+        return Ok(());
+    };
+    let (lits, mut seen) = (lits.clone(), [false; 256]);
+    for &p in b.iter() {
+        if std::mem::replace(&mut seen[p as usize], true) {
+            continue;
+        }
+        let lit = lits[p as usize];
+        let found = match db.lookup(scope, db.decls[lit].name.key()) {
+            Visible::One(d) => db.entity(d) == lit,
+            Visible::Overloads(ds) => ds.iter().any(|&d| db.entity(d) == lit),
+            _ => false,
+        };
+        if !found {
+            let name = type_name(db, et);
+            let region = crate::mangle::region(db, db.decls[db.types[et].decl].scope);
+            return Err(db.error(
+                Diagnostic::error(
+                    diag::NOT_DECLARED,
+                    format!("the character literal {} of `{name}` is not visible here", db.decls[lit].name),
+                )
+                .with_primary(span, format!("this literal needs the characters of `{name}`"))
+                .with_note(
+                    "each character of a string or bit string literal is a literal of the element type, and must be visible where the literal is written (LRM 9.3.2, 12.3)",
+                )
+                .with_help(format!("add a use clause that makes `{name}` visible, for example `use {region}.all;`")),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The folded value of any literal for context type `ty` (`ty` is `universal_*` for abstract
 /// literals typed by themselves). `null` has no constant; use [`literal_expr`].
 pub fn literal_value(
     db: &mut Db,
+    scope: ScopeId,
     lit: &Literal,
     ty: TypeId,
 ) -> Result<Option<ConstValue>, Reported> {
@@ -662,8 +717,16 @@ pub fn literal_value(
             }
         }
         LiteralKind::Char(c) => char_literal(db, *c, ty, span)?,
-        LiteralKind::String(s) => string_literal(db, *s, ty, span)?,
-        LiteralKind::BitString(s) => bit_string_literal(db, *s, ty, span)?,
+        LiteralKind::String(s) => {
+            let v = string_literal(db, *s, ty, span)?;
+            chars_visible(db, scope, ty, &v, span)?;
+            v
+        }
+        LiteralKind::BitString(s) => {
+            let v = bit_string_literal(db, *s, ty, span)?;
+            chars_visible(db, scope, ty, &v, span)?;
+            v
+        }
         LiteralKind::Physical { value, unit } => physical_value(db, *value, *unit, ty, span)?,
         LiteralKind::Null => return Ok(None),
     }))
@@ -693,8 +756,13 @@ pub fn negated_min(db: &Db, lit: &Literal, ty: TypeId) -> Option<ConstValue> {
 }
 
 /// Build the constant HIR expression of a literal of type `ty` (sem.md 3.5, "Resolved with type T").
-pub fn literal_expr(db: &mut Db, lit: &Literal, ty: TypeId) -> Result<ExprId, Reported> {
-    let v = literal_value(db, lit, ty)?;
+pub fn literal_expr(
+    db: &mut Db,
+    scope: ScopeId,
+    lit: &Literal,
+    ty: TypeId,
+) -> Result<ExprId, Reported> {
+    let v = literal_value(db, scope, lit, ty)?;
     Ok(const_expr(db, lit.span, ty, v))
 }
 

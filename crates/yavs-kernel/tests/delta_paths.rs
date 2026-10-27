@@ -759,3 +759,74 @@ fn a_wide_bus_wakes_the_same_per_cell_as_per_run() {
         }
     }
 }
+
+/// A force over two plane words of a wide signal in a cycle where a direct entry finishes only
+/// the first: the force's events in the second word are still made (they were lost when the
+/// update of the first word's range took the force's whole event range, #789). `commit` makes
+/// the entry; the force alone is the reference.
+fn force_across_a_committed_word(commit: bool) -> Vec<String> {
+    let mut b = Builder::new();
+    // '1' from element 128 on: the force changes nothing there.
+    let init = LogicVec::from_fn(150, |i| {
+        if i < 128 {
+            StdULogic::Zero
+        } else {
+            StdULogic::One
+        }
+    });
+    let w = b.signal("w", SignalType::logic(150), &init);
+    let d = b.driver(w.slice(64, 64));
+    let mut t = 0u32;
+    b.process(
+        "p",
+        NONE,
+        &[d],
+        p(move |c| {
+            t += 1;
+            if commit && t == 3 {
+                let v = LogicVec::new(64, StdULogic::H);
+                c.assign_blocks(d, None, Time::ZERO, &blocks_of(&v), DelayMode::INERTIAL)?;
+            }
+            c.wait_for(ns(1))
+        }),
+    );
+    b.process(
+        "ctl",
+        NONE,
+        &[],
+        p(move |c| {
+            if c.now() == ns(2) {
+                let ones = LogicVec::new(40, StdULogic::One);
+                c.force(w.slice(100, 40), ForceMode::Effective, &ones)?;
+            }
+            c.wait_for(ns(1))
+        }),
+    );
+    let e = w.slice(135, 1);
+    b.process(
+        "e135",
+        NONE,
+        &[],
+        p(move |c| {
+            c.report(Severity::Note, format!("e135 event={}", c.event(e)?));
+            c.wait_on(e)
+        }),
+    );
+    let (mut sim, trace) = build(b, Config::default());
+    sim.run_until(ns(5)).unwrap();
+    trace
+        .take()
+        .into_iter()
+        .filter(|l| l.contains("e135"))
+        .collect()
+}
+
+#[test]
+fn a_force_keeps_its_events_beyond_a_committed_word() {
+    let (with, alone) = (
+        force_across_a_committed_word(true),
+        force_across_a_committed_word(false),
+    );
+    assert_eq!(with, alone);
+    assert!(with.iter().any(|l| l.contains("event=true")), "{with:?}");
+}

@@ -167,8 +167,8 @@ fn waves_of_a_design() {
             )
         };
         assert_eq!(int("i"), (Some("integer".into()), Some(32)));
-        assert_eq!(int("nat"), (Some("natural".into()), Some(31)));
-        assert_eq!(int("sm"), (Some("small_t".into()), Some(8)));
+        assert_eq!(int("nat"), (Some("natural".into()), Some(32)));
+        assert_eq!(int("sm"), (Some("small_t".into()), Some(9)));
         assert_eq!(int("neg"), (Some("integer".into()), Some(4)), "-8 to 7");
         assert_eq!(var(&["wave_tb"], "t").length(h), Some(64));
         // The chosen alternative of a case or if generate keeps its label.
@@ -280,8 +280,8 @@ fn wave_variables() {
     let s = dump(&fst);
     assert_eq!(
         changes(&s, "wave_tb.main.cnt"),
-        "0=0001 10000000=0010 20000000=0011 30000000=0100",
-        "natural range 0 to 15: 4 bits, the value at the end of each step"
+        "0=00001 10000000=00010 20000000=00011 30000000=00100",
+        "natural range 0 to 15: 5 bits (a zero sign bit), the value at the end of each step"
     );
     assert_eq!(
         changes(&s, "wave_tb.main.vs"),
@@ -653,14 +653,14 @@ fn wave_composite_and_shared_variables() {
     let fst = d.join("a.fst");
     let err = go(&fst, &[]);
     let s = dump(&fst);
-    // `0 to DEPTH - 1` with DEPTH = 16: 4 bits; `DEPTH / 4 - 1 downto 0`: 4 elements.
+    // `0 to DEPTH - 1` with DEPTH = 16: 5 bits; `DEPTH / 4 - 1 downto 0`: 4 elements.
     assert!(
-        s.contains("wave_vars_tb.u.main.cnt Integer Implicit Some(4)"),
+        s.contains("wave_vars_tb.u.main.cnt Integer Implicit Some(5)"),
         "{s}"
     );
     assert_eq!(
         changes(&s, "wave_vars_tb.u.main.cnt"),
-        "0=0001 10000000=0010 20000000=0011"
+        "0=00001 10000000=00010 20000000=00011"
     );
     assert_eq!(
         changes(&s, "wave_vars_tb.u.main.vec"),
@@ -674,7 +674,7 @@ fn wave_composite_and_shared_variables() {
     assert_eq!(changes(&s, "wave_vars_tb.u.main.pr.a"), "0=1");
     assert_eq!(
         changes(&s, "wave_vars_tb.u.main.pr.n"),
-        "0=001 10000000=010 20000000=011"
+        "0=0001 10000000=0010 20000000=0011"
     );
     assert_eq!(
         changes(&s, "wave_vars_tb.u.main.ints.(2)"),
@@ -895,4 +895,30 @@ fn wave_collapsed_port_is_an_alias() {
         h[ea.expect("e")].signal_ref(),
         h[eb.expect("u1.e")].signal_ref()
     );
+}
+
+/// A non-negative integer range is written with a zero sign bit (two's complement readers,
+/// #783): `natural range 0 to 31` holding 31 reads `011111`, never -1.
+#[test]
+fn wave_non_negative_integer_keeps_sign_bit() {
+    let d = scratch("nonneg");
+    let src = d.join("nn.vhd");
+    std::fs::write(
+        &src,
+        "entity nn is end;\narchitecture a of nn is\n  \
+         signal n : natural range 0 to 31 := 31; signal z : natural range 0 to 0 := 0;\n\
+         begin\nend;\n",
+    )
+    .expect("write");
+    assert!(analyze(&d, &src, "2008"));
+    let fst = d.join("a.fst");
+    let out = run(&d, &[&format!("--wave={}", fst.display()), "nn"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = dump(&fst);
+    assert_eq!(changes(&text, "nn.n"), "0=011111");
+    assert_eq!(changes(&text, "nn.z"), "0=0");
 }

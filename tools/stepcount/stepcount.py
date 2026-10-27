@@ -111,7 +111,7 @@ def lines_of(binary, pcs, inner=False):
     return res
 
 
-def run(binary, args, frm, to, mx, per, top, nlines, within, inner, ops=None, ops_fn=None, ops_detail=None):
+def run(binary, args, frm, to, mx, per, top, nlines, within, inner, ops=None, ops_fn=None, ops_detail=None, ops_lines=None, ops_pcs=None):
     binary = os.path.realpath(binary)
     BINARY[0] = binary
     syms = symbols(binary)
@@ -134,6 +134,12 @@ def run(binary, args, frm, to, mx, per, top, nlines, within, inner, ops=None, op
             with open(symfile, "w") as f:
                 f.write("".join(f"{a:x} {n:x}\n" for a, n, _ in syms))
             cmd += ["-d", f"{disp:x}", "-a", armfile, "-s", symfile]
+            if ops_lines:
+                hits = [(a, nm) for a, nm in arm_names(binary, table, 0).items() if ops_lines in nm]
+                if not hits:
+                    die(f"--ops-lines {ops_lines!r}: no op of that name")
+                watch = next((a for a, nm in hits if nm == [ops_lines]), hits[0][0])
+                cmd += ["-w", f"{watch:x}"]
         r = subprocess.run(cmd + ["-o", pcfile, "--", binary, *args], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         if r.returncode:
             die(r.stderr.strip())
@@ -141,11 +147,27 @@ def run(binary, args, frm, to, mx, per, top, nlines, within, inner, ops=None, op
         armdata = None
         if ops is not None:
             armdata = (open(armfile).read(), open(armfile + ".fn").read())
+            if ops_lines:
+                wpcs = [(int(a, 16), int(n)) for a, n in (ln.split() for ln in open(armfile + ".pc"))]
+                if ops_pcs:
+                    with open(ops_pcs, "w") as out:
+                        out.write("".join(f"{a:x} {n}\n" for a, n in wpcs))
+                winfo = lines_of(binary, [pc for pc, _ in wpcs], inner)
     total = sum(n for _, n in pcs)
     for ln in r.stderr.strip().splitlines():
         print(ln)
     if ops is not None:
         print_ops(armdata, syms, table, total, per, ops, ops_detail)
+        if ops_lines:
+            wanted = {a for a, nm in arm_names(binary, table, 0).items() if ops_lines in nm}
+            n_ops = sum(int(ln.split()[2]) for ln in armdata[0].splitlines() if int(ln.split()[0], 16) in wanted)
+            byline = collections.Counter()
+            for pc, n in wpcs:
+                loc, fn = winfo.get(pc, ("??:0", "??"))
+                byline[(loc, fn)] += n
+            print(f"\n{ops_lines}: instructions per op by source line (arm of the first match, {n_ops / (per or 1):.1f} ops of all its arms)")
+            for (loc, fn), n in byline.most_common(40):
+                print(f"{n / max(n_ops, 1):9.2f}  {loc}  {fn}")
         return
     byfunc = collections.Counter()
     for pc, n in pcs:
@@ -311,6 +333,8 @@ def main():
     ap.add_argument("--in", dest="within", metavar="SYM", help="lines of functions containing SYM only")
     ap.add_argument("--ops", type=int, nargs="?", const=30, metavar="N", help="instructions per interpreter op (the dispatch loop of yavs-interp, callees included), the N busiest")
     ap.add_argument("--ops-detail", metavar="OP", help="with --ops: where the instructions of the op OP (a name part, e.g. LCopy) are spent, by function")
+    ap.add_argument("--ops-lines", metavar="OP", help="with --ops: where the instructions of the op OP are spent, by source line (callees included)")
+    ap.add_argument("--ops-pcs", metavar="FILE", help="with --ops-lines: also write the relative pc and count of every instruction of the op to FILE")
     ap.add_argument("--ops-fn", metavar="SYM", help="with --ops: the function holding the dispatch jump (default the loop `run_ops::<false, false>`)")
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("binary", nargs="?")
@@ -320,7 +344,7 @@ def main():
         return self_test()
     if not a.binary:
         ap.error("BIN is required")
-    run(a.binary, a.args, a.frm, a.to, a.max, a.per, a.top, a.lines, a.within, a.inner, a.ops, a.ops_fn, a.ops_detail)
+    run(a.binary, a.args, a.frm, a.to, a.max, a.per, a.top, a.lines, a.within, a.inner, a.ops, a.ops_fn, a.ops_detail, a.ops_lines, a.ops_pcs)
 
 
 if __name__ == "__main__":

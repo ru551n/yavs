@@ -21,7 +21,21 @@
 (`docs/decisions.md` "Kernel gates".) A concurrent assignment of one logical operator (`not and or xor nand nor xnor`) on static signal
 names of `std_ulogic`, BIT, BOOLEAN or their vectors runs as the kernel's own `GateProcess`, with zero delay or a static `after`.
 `rtl_chain` (1000 inverters): 3.29 G to 2.08 G instructions under `--tier=auto`, CPU 1.36 to 0.79 times sim1. Corpus
-`sigassign/logic_gates` passes against sim1 at 1 and 4 threads on every tier. Open: one-level muxes, relational operators, literal operands.
+`sigassign/logic_gates` passes against sim1 at 1 and 4 threads on every tier. Muxes, relational operators and literal operands: see "Kernel muxes" below.
+
+### Kernel muxes (#786, 2026-10-27)
+
+(`docs/decisions.md` "Kernel muxes".) A concurrent `y <= a when c else b;` with one condition (a code set of one logic element, or `=`/`/=` of logic
+signals and values), each arm a signal copy as `CopyProcess` takes one (also records and byte parts) or a literal; `y <= a = b;` and `y <= a and '1';`
+run as the kernel's own `MuxProcess` and `GateProcess`. Corpus `sigassign/mux_gates` passes against sim1 at 1 and 4 threads on every tier. Open
+(#788): expression trees, compound and multi-arm conditions, constant conditions.
+
+### Release archives with and without the compiled tier (#780, 2026-10-27)
+
+`release.yml` builds two archives per platform: `yavs-<version>-<target>` with the compiled tier (Linux: `lib/libLLVM.so.21.1`
+from `tools/release/build-libllvm.sh`, built for glibc 2.17; Windows: LLVM linked statically) and `...-nollvm` with the interpreter alone.
+`yavs --version` names the tiers built in. A `workflow_dispatch` dry run builds and smoke-tests all of them (centos:7 for the Linux
+ones, `--tier=llvm` from the extracted archive) without tagging. Decisions: `docs/decisions.md` "Release archives with and without the compiled tier".
 
 ### Conformance report (#780, 2026-10-26)
 
@@ -31,14 +45,21 @@ names of `std_ulogic`, BIT, BOOLEAN or their vectors runs as the kernel's own `G
 
 `tools/waveq/run.py` runs a design on yavs (interp, auto and llvm tiers) and on the references and compares the
 waveforms signal by signal, the value after the last delta of each time step (`tools/waveq/AGENTS.md`). Run locally at
-aeaeaa59 (`tools/waveq/RESULTS.md`, `results.json`): the 8 h2h RTL designs (sim1 and sim2), neorv32 (13 466 signals,
+05aa8453 (2026-10-27; `tools/waveq/RESULTS.md`, `results.json`): the 8 h2h RTL designs (sim1 and sim2), neorv32 (13 466 signals,
 15.9 M value changes, 300 us), GRLIB LEON3 (13 897 signals, 33.2 M value changes, the whole 1.06 ms system test) and
 the UVVM and OSVVM testbenches of realbench (sim1) are equal on all three tiers in every matched signal, except OSVVM
 verification-component IDs and UVVM activity-register entries (process order within one cycle, catalogue
-`process-order-in-cycle`) and the UVVM AXI-Stream random valid/ready-low sequence from 266.87 us (catalogue
-`subprogram-signature-instance-name`, yavs part #784). The llvm tier compiles 137 to 226 142 IR instructions per design;
+`process-order-in-cycle`). The UVVM AXI-Stream random valid/ready-low sequence used to diverge from 266.87 us (89
+signals) because the BFMs seed it from the `'instance_name` signature; since #784 yavs spells it as sim1 and all
+signals are equal (catalogue `subprogram-signature-instance-name`). In all: 44 824 of 44 889 signals equal. The llvm tier compiles 137 to 226 142 IR instructions per design;
 auto compiles little in these short runs (LEON3 4 functions). sim2 runs the h2h designs only (no realbench keys). Found on
 the way: #782 (literals accepted without visible character literals), #783 (integer width in yavs FST).
+
+### Per-op costs of the interpreter, round 1 (#778, #520, 2026-10-27)
+
+(`docs/decisions.md` "Per-op costs, round 1".) `SubtypeCheck` 136 to 161 instructions an op down to 87 to 129, `AllocCat` 354 to 319, `CallProt` 415 to 393, `DerefImm` 90 to 81; new ops
+`LoadPkg`, `LoadPair`, `CheckK`. Whole runs (`--tier=interp`): `vai_window_gen_interlock` 430.9 to 410.5 G instructions, `poc_arith_addw` 145.7 to 137.8 G. New
+`tools/stepcount --ops-lines OP`. Open: `CallIeee` marshalling (318 to 394), the frame fill of a call (proportional to the register count), `SubtypeCheck` below 50.
 
 ### `wait until <edge>` as cheap as the sensitivity-list forms (#767, 2026-10-26)
 
@@ -4655,6 +4676,14 @@ The reader's instruction count did not change in the kernel round; its rows show
 1.15 s in the first session and 1.66 s in the second, yavs 2.25 s and 3.02 s), and the totals of the two sessions mix the reference's
 1.5 s of library analysis with run times that moved by 40%. Only the writer's rows are an effect of the change (instructions 0.92).
 Totals under 1 or near 1 for the reader come from the library analysis of yavs (0.2 s warm) against the reference's 1.5 s.
+
+### Kernel round 25: repeated skipped drives (#720, #667, 2026-10-27)
+
+(`docs/decisions.md` "Kernel round 25".) A zero-delay drive of a port or shared driver that already holds a skipped (unchanged)
+assignment of the same activation is skipped on the fast paths when it changes nothing either, instead of taking the general
+assignment path. `grlib_leon3mp` (bench builds with `llvm`, warm, 3 interleaved runs on one claimed core): auto instructions -5.6%,
+cycles -4.1%; interp -5.8% and -4.8%. `neorv32_single_min` and `fletcher_bufferreader` level (the path is not taken there).
+`Stats::general_assigns` (`YAVS_COUNTERS`) counts the general path; perf design `drive_repeat`.
 
 ### Kernel round 24: the skip test that keeps missing, pending words in element order (#734, 2026-10-26)
 
@@ -9781,6 +9810,13 @@ instructions (-11.1 percent). The other natives on slices (`to_x01`, the numeric
 A `CondBr` whose arms lead to the same block is a `Br` (the null-range test of a local array). Part of the fixed cost of an `HRead` call (`docs/decisions.md` "A branch whose arms lead to the same block"):
 the call is still about 80 ops; the rest is listed there. First 1 us of `grlib_leon3mp` with #768 to #771: 31.37 G to 22.99 G instructions (-26.7 percent), `--tier=interp`.
 
+## kernel: prefetch of the next process in a batch (#766, 2026-10-27)
+
+- A batch of 128 or more processes prefetches the five hot cache lines of the process three steps ahead (`yavs-prefetch`, the one
+  `unsafe` call; no-op off x86_64; `InterpProcess` is `repr(C)` with its machine first). Cycles, warm, minimum of 7 on one core:
+  `rtl_ff` -9.2 percent `--tier=auto` / -11.1 interpreter, `rtl_lfsr` -4.4 / -2.4, others -0.1 to -2.2; `realbench --compare` 42 tests
+  level (wall 0.97 / 1.00, CPU 1.00 / 0.95). Details: decisions.md "Prefetch of the next process in a batch".
+
 ## llvm: compiled clocked RTL, round 9: the tier's record inline in the machine (#766, 2026-10-26)
 
 - `Tier::run_cached` takes `&mut TierState`; the record lives inline in `Machine::tier_state`, in the machine's fifth cache line with
@@ -9823,3 +9859,23 @@ for that slot and for a parameter's descriptor (the `SubtypeCheck` of `variable 
 loop of `HRead` is five ops (was eleven): `PosIndexLoadIndex`, `SliceAff`, `AffLCopy`, `StmtIsXBr`, `CmpBrStep` (`docs/decisions.md` "The fixed cost of an `HRead` call and its digit loop"). An 8-bit `HRead` is 56 ops
 (was 86). First 1 us of `grlib_leon3mp`, `--tier=interp`: 23.14 G to 20.37 G instructions (-12.0 percent), 6.67 G to 5.99 G cycles; `--tier=auto` -5.5 percent instructions; `--tier=llvm` -2.0 percent. Left: the other
 natives on slices (`to_x01`, the numeric operators) still copy the slice first; `Call`/`Ret` and the textio natives (`CallNative` is 6 percent of the first 1 us) are the next cost of the call.
+
+## `--tier=auto`: large functions with loops, `Kind::BigLoop` (yavs-llvm `auto.rs`, #679, 2026-10-26)
+
+- A function compiled at `Fast` (300 IR instructions or more, not a compute loop below 1 500) with 10 percent or more of its IR in loops is `BigLoop`
+  (speedup 1.15, a candidate at about 7.7 times its price); straight-line ones stay `Big` (1.037). `YAVS_AUTO_TRACE` `seen` lines print each
+  function's loop share. Decision and measurements: `docs/decisions.md` "`--tier=auto`: large functions with loops are a kind of their own".
+- Per process, compiled against interpreted (warm `--profile` pairs, forced at the first look): window generator `bus_process` 1.16, `walk_control`
+  1.62, `present` 1.20, `control` 1.12; `fletcher_bufferwriter_512` `ctrl_comb_proc` 1.02; `grlib_leon3mp` 0.86 (`iu:comb`) to 1.36 (`ictrl`), level over the
+  run; `neorv32_single_min` `counter_increment` 1.03.
+- `tools/realbench --compare` (bench builds, 30241dbc against the change, run phase, cores 9 and 10, load of other agents on the host):
+  42 tests, `auto` sum 1.00 and geometric mean (tests of 1 s or more) 0.99, `auto-cold` 1.02 and 1.02 at equal instructions (the cells above 1.05
+  were noise: `poc_arith_addw`, `fletcher_bufferwriter_512`, `neorv32_dual_full` 0.98 to 1.00 in seven runs a cell). `vai_window_gen_interlock` warm 0.91
+  wall, 0.87 instructions (seven runs), cold 1.01 to 1.03 wall, 1.01 instructions.
+- Left: `walk_control` and the other winners under their threshold in a first run are never cached (the run-to-run profile lists kinds of speedup 1.4
+  or more only); `iu:comb` and the other straight-line GRLIB processes are front-end bound and lose on calls to interpreted callees; cache hits of large
+  modules (#785).
+
+## Value movement: copies between heap objects, scratch sets (yavs-interp, #677, 2026-10-27)
+
+A copy between two objects of one heap (access values, shared variables of protected types) goes straight across (`Heap::data_pair`) instead of through the staging buffer, and the thread scratch keeps 16 register sets (was 4) so the nine large non-resident processes of `grlib_leon3mp` find their registers filled (`docs/decisions.md` "Value movement"). Interleaved `realbench --compare` (42 tests, cores 10 and 11, 3 runs): `uvvm_axistream_vvc` 0.93 interp / 0.92 auto (instructions 0.96), `grlib_leon3mp` 0.97 / 0.98, geometric mean of the run phase 0.98 / 0.98, nothing worse than noise. Left: frame fills of a call (`Pre::fill`, 8 GB of `memcpy` in `grlib_leon3mp`), `wide::eq_range` and `Signal::direct_same_planes` of same-value drives, `sig_gather`/`scatter_leaves` per-leaf work (runs of scalar leaves tried: no gain, dropped).

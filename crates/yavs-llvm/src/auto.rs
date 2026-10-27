@@ -368,8 +368,9 @@ struct Tune {
     /// How many times its price a clocked process (`rtl`) is seen interpreted before it compiles,
     /// on top of `band_wait`: its compiled code gained 5 percent in the trials that kept it.
     payback_rtl: u64,
-    /// Without a main generator: a large function (`native::big`) is `Kind::Big` or `BigLoop`, as
-    /// the main generator's `OptLevel::Fast` makes it.
+    /// Without a main generator: a large subprogram (`native::big`) is `Kind::Big` or `BigLoop`,
+    /// as the main generator's `OptLevel::Fast` makes it. Not a process: Cranelift's code of
+    /// large processes gains (`fletcher_bufferwriter_512`'s `input_proc`, 3.7 percent of the run).
     big: bool,
     /// Whether a `Kind::Frame` function is compiled at all. Its frame-mode code moves the rest of
     /// every process that calls it into the interpreter's loop for compiled code
@@ -964,7 +965,7 @@ enum Kind {
     /// adder made 8 times) still pays (docs/decisions.md).
     RtlFew,
     /// A function compiled at `OptLevel::Fast` (`lower::level_for`), the large combinational
-    /// processes among them; with a first-level generator alone a function of that size
+    /// processes among them; with a first-level generator alone a subprogram of that size
     /// (`native::big`, `Tune::big`).
     Big,
     /// A compute loop in frame-mode code (a process with a loop, a nested subprogram): its compile
@@ -1546,7 +1547,9 @@ impl Worker {
             }
         } else if match &self.main {
             Some(m) => m.level_for(&self.prog, f, OptLevel::O2) == OptLevel::Fast,
-            None => self.tune.big && crate::native::big(&self.prog, f),
+            None => {
+                self.tune.big && f.kind != FuncKind::Process && crate::native::big(&self.prog, f)
+            }
         } {
             if loop_share(&self.prog, f) >= BIG_LOOP_SHARE {
                 Kind::BigLoop

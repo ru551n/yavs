@@ -10959,3 +10959,29 @@ Round 1 made the remaining `SubtypeCheck` cheaper; round 2 removes the ones whos
   after a call costs more cycles than the interpreter's tail of the same instructions.
 - **The reference simulator (rule 22):** a function there that is not compiled has its interpreter as its entry point, so compiled code calls it
   like any other and gets the result back on the native stack: the idea tried here, on our interpreter frames.
+
+## Calls, round 3: the register-stack rework measured and not taken (yavs-interp, #730, 2026-10-27)
+
+- **Decision: no high-water register stack.** The rework (a separate top, frames filling only the preloaded registers) was priced
+  before building it. The fill of a frame is `Pre::fill_below` (`extend_from_slice` of the init table plus the frame addresses);
+  timed with `rdtsc` around it in a throwaway build (bench build, core 10): `uvvm_axistream_vvc` 5.5 M calls, 650 bytes a call,
+  about 20 ticks (5 ns) a call, 1 percent of the run; `poc_stat_histogram` 2.5 M calls, 0 ticks above the timer. `vai_window_gen_interlock`
+  has 183 M calls and 312 bytes a call: 31 of 404 instructions of a `CallProt`, about 1.5 percent of its instructions. `grlib_leon3mp`
+  9.5 M calls: under 1 percent. The 8 GB figure is real but costs 0.5 ns a call. Slot zeroing (`sstack.resize`) is 112 bytes a call
+  in `uvvm_axistream_vvc` and below the timer's resolution. A rework touching 46 uses of `regs.v`, the compiled tier's frame
+  arithmetic and gc-stress zeroing would save at most those 1 to 1.5 percent: left.
+- **The 15 percent `memmove` and 3 percent `memset` of `uvvm_axistream_vvc` are not the call path.** The samples are in the
+  large-copy loop of libc (copies of 512 bytes and more, one `rep movsb`-like stream), so they are not the 650-byte frame fills
+  (those are 5 ns); the callers are string and array copies inside `run_ops` arms (UVVM's log lines). Open: find which ops (`Cat`,
+  `Copy`, `NewFrame`, `AllocLCopy`) own them; `perf` with frame pointers shows `run_ops` as the direct caller.
+- **Where the calls are.** Per op (`tools/stepcount --ops`, 6 M window): `vai_window_gen_interlock` `CallProt` 404, `Ret` 137,
+  `Call` 371 instructions (24 percent of the window; the VUnit `integer_vector_ptr` `get` alone is 20 percent of the run);
+  `uvvm_axistream_vvc` `Call` 516 (8.4 percent), argument copy 110, fill 71, frame push 47. `grlib_leon3mp`: 9.5 M calls are about
+  1 percent of its 414 G instructions; its `step_out` share is `SigGather`/`SigScatter` (#790), and the pure-call memo saves 3 to 4
+  percent (4.66 M hits, 406.8 G instructions with `YAVS_NO_PMEMO=1` against 389.7 G; cycles 196 to 204 G against 188.6 G), so a hit
+  (about 850 instructions, a third of it key hashing) is well under the call it replaces.
+- **Small cuts tried (not landed):** two slices for the argument copy of `call_lean`, no zeroing call for a frame without slots, one
+  memo scan per probe in `pmemo` (index kept, no `take` of the key): `CallProt` 404 to 394, `uvvm_axistream_vvc` 32.60 to 32.46 G
+  instructions (0.4 percent), `poc_stat_histogram` and the rest level. Not worth the full gate set; the branch `wip-calls730` of the
+  author's worktree held them. What would pay is a cheaper call by structure (no argument copy into the callee's registers, slots
+  that need no zeroing), which is a lowering change rather than a loop change.

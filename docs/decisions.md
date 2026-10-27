@@ -7876,8 +7876,6 @@ of every PMP region) and assigned the constant again.
   call's constant arguments to reach the callee (#701).
 - **Measured**: see "IR optimiser round 13" in `docs/STATUS.md`.
 
-
-
 ## Native ieee calls: one-word operands read and written in place (yavs-interp `ieee.rs`, `exec.rs`, yavs-lib `closure.rs`, #691, 2026-10-24)
 
 - **Decision: `ieee::small` (the one-word view of an array operand of 1 to 64 elements without a metavalue) returns `Option`, not
@@ -7939,7 +7937,6 @@ builds, `perf stat` on core 13, minimum of 5 alternating runs; instruction count
   interpreter side (dispatch 24 to 33%, record layout and copies 15 to 16%) and the shares of the kernel are in `docs/STATUS.md`
   "Fletcher writer and reader against the reference simulator".
 
-
 ## Kernel round 21: a wide bus with a waiter on a part lists its changes per cell; the split of a leaf at the waiters' boundaries is not built (yavs-kernel, #519, 2026-10-24)
 
 Task (user, 2026-10-24): split signals that have a waiter on a part into kernel signals along the union of the boundaries that waiters,
@@ -7987,7 +7984,6 @@ instruction counts from the third on).
   remove only the waiter side, and only if the interpreter, the compiled tier and the observers took pieces; revisit if a design
   appears whose waited parts are driven by separate processes at exactly the cuts (then the pieces would be whole signals with whole
   drivers and no one-to-many path is needed).
-
 
 ## Kernel round 22: the per-delta bookkeeping of CPU-style designs (yavs-kernel, #519, #521, 2026-10-25)
 
@@ -8084,7 +8080,6 @@ rtl_chain), where "kernel" counts `yavs-kernel` including the `Ctx` callbacks of
 - **Found on the way (#736, fixed):** a panic while `run_batch` committed a process in place (the `idle_check` assertion, a broken invariant
   in `note_idle`) was reported for the next process of the batch, or panicked again past the end of it and hid the message; the unwind guard now
   keeps the index of the process it was running (`idle_skip::a_wrong_read_list_is_caught_by_the_check_and_names_the_process`).
-
 
 ## Kernel round 23: assignments in pieces stay direct entries, a quiet activation commits nothing (yavs-kernel, #521, #733, #735, 2026-10-25)
 
@@ -8308,7 +8303,6 @@ the run; cycles as the minimum of 7 interleaved runs on one core claimed with `t
 - **Measured**: `docs/STATUS.md` "Facts the declarative part leaves in a process copy". `spec_record_var` (`crates/yavs/tests/perf.rs`) is
   the work-counter case (239 313 ops with the shared code, 151 530 with copies), `crates/yavs-ir/tests/copies.rs` the unit cases.
 
-
 ## Light natives in compiled code: a callback of their own (yavs-llvm, yavs-interp, #698, 2026-10-24)
 
 Counted with `tools/stepcount` on `poc_arith_addw` under `--tier=llvm` (1078 calls of a light `ieee` native in a window of
@@ -8531,7 +8525,6 @@ value. After the message was sunk (round 16) the second chain and call were what
 - **Coordination (#697, #520):** the pass takes a native with one argument that is a fat pair the block allocated and stored
   the data address and the descriptor into. A native whose arguments are in registers (#697) is not shared until
   `Sink::shareable` and the argument test in `find_pairs` know that form; nothing else in the pass depends on the pair layout.
-
 
 ## llvm: a stepped definition is read back from the frame (yavs-llvm, #710, 2026-10-24)
 
@@ -9284,7 +9277,6 @@ is thousands of tiny blocks (one per guard). Most of the bytes were values alive
   `-disable-tail-duplicate`, `-disable-branch-fold`, `-split-spill-mode=size` (each under 1.5 percent). A cheaper level for the first compile of a function, recompiled at `O2` when it repays,
   is a policy question (the payback rule of `FastRa` is the pattern); it would have to win more than the 1 to 3 percent the cheaper code costs a warm run.
 
-
 ## Signal access from processes: measured at the floor after kernel round 22, nothing built (yavs-kernel `Ctx`, yavs-interp, #519, 2026-10-25)
 
 Gapscan item 6 (process to kernel boundary), instruction counts only (stepcount windows and `perf stat instructions:u`, bench builds, no timing cores). Three changes were built and measured against main with kernel round 22 (the `Ctx` accessors inlined into the interpreter) and dropped:
@@ -9899,7 +9891,6 @@ what it replaced:
   stores or the `MakeDope` alone remain); following a pointer through memory (a group of blocks
   that hold each other's addresses), unused on the designs measured.
 
-
 ## llvm: large compiled processes lose to their callbacks, not to their code bytes: layout words from the memo, kept drives skip unchanged elements, objects stay in the table (yavs-llvm, yavs-interp, yavs-kernel, #679, 2026-10-25)
 
 Cause found with a profile of the main thread split by symbol and by the call site in compiled code (`perf record -j any_call` branch stacks: the
@@ -9954,7 +9945,6 @@ before, re-enters compiled code at the next entry. Cost: a never-suspending loop
 iteration, acceptable because such a process is already warned about (`W3102`) and bounded at `SPIN_LIMIT` jumps. Test:
 `stuck::a_process_that_never_suspends_ends_with_an_error` in every tier. Open: the compiled loop of `a <= not a` keeps growing
 memory where the interpreter replaces the pending transaction (#761).
-
 
 ## `--tier=auto` run-to-run profile (yavs-llvm, yavs, #754, #755, 2026-10-25, user decision 2026-10-25)
 
@@ -10106,7 +10096,6 @@ suspends is **10^9 jumps back** (was 10^7, interpreter only) and compiled code k
   `stuck::a_long_loop_without_a_wait_runs_to_its_finish`, ignored `stuck::the_default_bound_is_a_billion_jumps_back`,
   `rss::a_loop_without_a_wait_keeps_memory_flat`, perf case `llvm_nowait` (2 exits for 2.5 million jumps),
   corpus `process/no_wait_infinite` (`spin=3000000`, `ignore=stderr`: only yavs prints the W3102 warning).
-
 
 ## llvm: an object table keyed by machine (yavs-llvm `rt.rs`, `lower.rs`, yavs-interp `TierState`, #679, 2026-10-26)
 
@@ -10889,3 +10878,19 @@ Round 1 made the remaining `SubtypeCheck` cheaper; round 2 removes the ones whos
   | `vai_window_gen_interlock` | auto | 128.4 to 129.0 | 122.0 to 125.8 | 40.0 | 39.3 |
 
   (`auto` counts vary by 2 to 5 percent with the background compilation, so only its direction is a result; `fletcher_bufferwriter_512` and `grlib_leon3mp` in `auto` are unchanged within that.) `SubtypeCheck` ops in the 5 M instruction window of `tools/stepcount --ops`: `poc_arith_addw` 802 to 96, `vai_window_gen_interlock` 352 to none. The `vai_window_gen_interlock` cycles went up 1.7 percent for 1.5 percent fewer instructions (layout, #576: the same binary pair gives -3.7 percent cycles on `poc_arith_addw`); `realbench --compare` over the 42 tests, `--phases run`: instructions 1.00 (interp) and 1.00 (auto), wall 1.00 and 0.99 overall.
+
+## `--tier=auto` run-to-run profile: `BigLoop` processes too (yavs-llvm `auto.rs`, #679, maintainer, 2026-10-27)
+
+- **Decision (maintainer, 2026-10-27, on #679):** the run-to-run profile's kind filter (a modelled speedup of 1.4 or more, decision of
+  2026-10-25) also admits `Kind::BigLoop`, so a hot loop-heavy large process the run's payback rule leaves interpreted (`walk_control` of the
+  window generator, 1.62 times faster compiled, seen for 0.4 to 0.5 s a run against its 1.7 s threshold) compiles early in the next runs. The
+  loss list still drops a loser: a run that compiled it early for the first time must take 3 percent less simulation CPU than the run before.
+- **How:** a copy has a loop share of its own (`walk_control`'s copy 12 percent, its shared code 6), so the snapshot names a process when it
+  or a copy of it seen running is `BigLoop` (`Worker::big_loop`, `copies_seen`). The `EARLY_RUNS` threshold of a process that can have copies is
+  applied in `see` to each copy by the copy's own kind and price (`threshold(copy)`), not to the shared code in `load_profile` (it would be
+  `Big`'s payback of 28 there and never reached).
+- **Measured** (bench builds, `vai_window_gen_interlock`, `YAVS_AUTO_TRACE`, consecutive warm runs of one world): run 1 stores 2 hot
+  (`bus_process` and `walk_control`, 0.39 s seen); run 2 does not compile `walk_control` (4 x 0.39 s under its 1.71 s threshold), run 3 does
+  (4 x 0.46 s), and keeps it (7.96 s simulation CPU against 8.66 s); a third hot process (`main`, `ComputeFrame`) compiled early in run 4 was
+  judged no better and lost. `tools/realbench --compare` (809de535 against the change, run phase, seven runs, core 12): warm 0.93 wall,
+  0.96 instructions; cold 1.00 / 1.01.

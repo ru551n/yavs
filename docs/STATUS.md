@@ -9308,8 +9308,9 @@ natives on slices (`to_x01`, the numeric operators) still copy the slice first; 
   42 tests, `auto` sum 1.00 and geometric mean (tests of 1 s or more) 0.99, `auto-cold` 1.02 and 1.02 at equal instructions (the cells above 1.05
   were noise: `poc_arith_addw`, `fletcher_bufferwriter_512`, `neorv32_dual_full` 0.98 to 1.00 in seven runs a cell). `vai_window_gen_interlock` warm 0.91
   wall, 0.87 instructions (seven runs), cold 1.01 to 1.03 wall, 1.01 instructions.
-- Left: `walk_control` and the other winners under their threshold in a first run are never cached (the run-to-run profile lists kinds of speedup 1.4
-  or more only); `iu:comb` and the other straight-line GRLIB processes are front-end bound and lose on calls to interpreted callees; cache hits of large
+- The run-to-run profile takes `BigLoop` processes (or processes with a `BigLoop` copy) too (maintainer, 2026-10-27): `walk_control`
+  compiles early from the third warm run of the window generator and is kept; window generator warm 0.93 wall, 0.96 instructions, cold level.
+- Left: `iu:comb` and the other straight-line GRLIB processes are front-end bound and lose on calls to interpreted callees; cache hits of large
   modules (#785).
 
 ## Value movement: copies between heap objects, scratch sets (yavs-interp, #677, 2026-10-27)

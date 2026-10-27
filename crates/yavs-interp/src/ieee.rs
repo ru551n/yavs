@@ -497,6 +497,9 @@ fn conv<const K: u8, const VEC: bool>(
     a: &[u64],
 ) -> Ret {
     if VEC {
+        if let Some(r) = conv_small::<K>(m, a) {
+            return Ok(Some(r));
+        }
         let l = vh(m, a, 0)?;
         let v = match K {
             0 => l.v.to_x01(),
@@ -627,6 +630,9 @@ fn is_x_vec(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> R
 /// `to_bitvector (s, xmap)`: `'0'` for `0`/`L`, `'1'` for `1`/`H` and `xmap` for any other element,
 /// as the result `(n - 1 downto 0)`. A `bit` element has the plane code of `'0'` or `'1'`.
 fn to_bitvector(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
+    if let Some(r) = to_bitvector_small(m, a) {
+        return Ok(Some(r));
+    }
     let (data, left, right, down) = dim_at(a, 0)?;
     let n = dim_len(left, right, down).ok_or_else(|| Fault::Runtime("array too long".into()))?;
     let n = usize::try_from(n).map_err(|_| Fault::Runtime("array too long".into()))?;
@@ -1852,6 +1858,97 @@ fn fast_shift<const K: u8>(m: &mut Machine, a: &[u64]) -> Option<u64> {
     }
 }
 
+fn fast_is_x_sul(_: &mut Machine, a: &[u64]) -> Option<u64> {
+    Some(u64::from(sul(a, 0).ok()?.is_x()))
+}
+
+fn fast_truthy(_: &mut Machine, a: &[u64]) -> Option<u64> {
+    Some(u64::from(sul(a, 0).ok()?.is_true()))
+}
+
+fn fast_conv_sul<const K: u8>(_: &mut Machine, a: &[u64]) -> Option<u64> {
+    Some(conv_of(K, sul(a, 0).ok()?) as u64)
+}
+
+/// `is_x` of a vector reads its planes in place and makes nothing: its general path is its fast one.
+fn fast_is_x_vec(m: &mut Machine, a: &[u64]) -> Option<u64> {
+    is_x_vec(m, &mut None, None, a).ok().flatten()
+}
+
+fn fast_reduce<const G: u8>(m: &mut Machine, a: &[u64]) -> Option<u64> {
+    reduce::<G>(m, &mut None, None, a).ok().flatten()
+}
+
+/// The one block of planes of the array operand at cell 0 when it has 1 to 64 elements, with the
+/// element count.
+#[inline(always)]
+fn block_of(m: &Machine, a: &[u64]) -> Option<(usize, [u64; 4])> {
+    let &[data, left, right, d] = a.get(..ARRAY_REGS)? else {
+        return None;
+    };
+    let (lo, hi) = if d == 1 {
+        (right as i64, left as i64)
+    } else {
+        (left as i64, right as i64)
+    };
+    let n = usize::try_from(hi.checked_sub(lo)?).ok()?.checked_add(1)?;
+    (n <= 64).then_some(())?;
+    Some((n, block4(m, data)?))
+}
+
+/// A result of `n` elements (1 to 64) in one block of planes with bounds `left`, `right`, `down`.
+#[inline(always)]
+fn put_block(m: &mut Machine, blk: [u64; 4], left: i64, right: i64, down: bool) -> Option<u64> {
+    m.temp_words(|fat| {
+        [
+            fat + 16 + DOPE_DIM_BYTES,
+            fat + 16,
+            left as u64,
+            right as u64,
+            u64::from(down),
+            blk[0],
+            blk[1],
+            blk[2],
+            blk[3],
+        ]
+    })
+    .ok()
+}
+
+/// `to_x01`, `to_x01z`, `to_ux01` (`K` 0, 1, 2) of a vector of up to 64 elements, as the planes
+/// of `yavs_logic` compute them; `None` for a longer one.
+fn conv_small<const K: u8>(m: &mut Machine, a: &[u64]) -> Option<u64> {
+    let (n, [p0, p1, p2, p3]) = block_of(m, a)?;
+    let mask = low1(n);
+    let (is0, is1) = (!p3 & p1 & !p0, !p3 & p1 & p0);
+    let known = is0 | is1;
+    let blk = match K {
+        0 => [!is0, known, 0, 0],
+        1 => {
+            let z = !p3 & p2 & !p1 & !p0;
+            [!is0 & !z, known, z, 0]
+        }
+        _ => [!is0 & (p0 | p1 | p2 | p3), known, 0, 0],
+    };
+    put_block(m, blk.map(|p| p & mask), 1, n as i64, false)
+}
+
+fn fast_conv_vec<const K: u8>(m: &mut Machine, a: &[u64]) -> Option<u64> {
+    conv_small::<K>(m, a).or_else(|| conv::<K, true>(m, &mut None, None, a).ok().flatten())
+}
+
+/// `to_bitvector (s, xmap)` of up to 64 elements in one word; `None` for a longer one.
+fn to_bitvector_small(m: &mut Machine, a: &[u64]) -> Option<u64> {
+    let (n, [p0, p1, _, p3]) = block_of(m, a)?;
+    let xmap = if *a.get(A1)? != 0 { !0u64 } else { 0 };
+    let known = p1 & !p3;
+    put_down(m, n, p0 & known | !known & xmap).ok()
+}
+
+fn fast_to_bitvector(m: &mut Machine, a: &[u64]) -> Option<u64> {
+    to_bitvector_small(m, a).or_else(|| to_bitvector(m, &mut None, None, a).ok().flatten())
+}
+
 macro_rules! pick3 {
     ($f:ident, $a:expr, $b:expr, $c:expr) => {
         match ($a, $b, $c) {
@@ -2080,6 +2177,24 @@ pub(crate) fn lookup_fast(symbol: &str) -> Option<FastFn> {
         ][GATES.iter().position(|x| *x == g)?],
         Op::NumNot => fast_num_not,
         Op::VecNot => fast_vec_not,
+        Op::Reduce(g) => [
+            fast_reduce::<0> as FastFn,
+            fast_reduce::<1>,
+            fast_reduce::<2>,
+            fast_reduce::<3>,
+            fast_reduce::<4>,
+            fast_reduce::<5>,
+        ][GATES.iter().position(|x| *x == g)?],
+        Op::IsX(true) => fast_is_x_vec,
+        Op::IsX(false) => fast_is_x_sul,
+        Op::Truthy => fast_truthy,
+        Op::Conv(0, false) => fast_conv_sul::<0>,
+        Op::Conv(1, false) => fast_conv_sul::<1>,
+        Op::Conv(_, false) => fast_conv_sul::<2>,
+        Op::Conv(0, true) => fast_conv_vec::<0>,
+        Op::Conv(1, true) => fast_conv_vec::<1>,
+        Op::Conv(_, true) => fast_conv_vec::<2>,
+        Op::ToBitVector => fast_to_bitvector,
         Op::Add {
             sub,
             signed,

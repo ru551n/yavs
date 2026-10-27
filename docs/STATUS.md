@@ -9400,6 +9400,11 @@ frame-mode code runs both instructions through `yavs_rt_signal` instead of a ste
   #794): wall geometric mean 1.01 interp / 0.99 auto, instructions 1.00 / 0.99; records category 0.97 / 0.98 wall at 1.00 instructions;
   `fletcher_bufferwriter_512`, `fletcher_bufferreader`, `neorv32_*` and `uvvm_axistream_vvc` within 2 percent either way. Difftest 542/542 at 1
   and 4 threads with interp, auto, llvm and auto with `--tier-heat=1,0,0`.
+- `grlib_leon3mp` (after the #794 fix, `tools/realbench --compare`, core 10, interleaved): interp 0.97 wall / 0.99 instructions, auto 1.00 / 0.99.
+  Against sim1 (run cell, `--tier=auto` warm / cold, same core, base 12e07dce then the change, consecutive sessions at load 12): `grlib_leon3mp`
+  instructions 2.29 / 2.41 to 2.26 / 2.38 (wall 2.98 / 3.25 and 3.40 / 3.26: the wall of the two sessions differs by more than the change,
+  see the interleaved figure above), `fletcher_bufferwriter_512` 2.13 / 2.21 to 2.02 / 2.18 (instructions 1.81 / 1.91 to 1.78 / 1.91),
+  `fletcher_bufferreader` 1.33 / 1.34 to 1.41 / 1.43 (instructions 1.24 / 1.26 to 1.25 / 1.27, wall within the noise of the host).
 - Left (#790): the kernel's per-drive work of scalar drives (`DriveRun` about 257 instructions a drive in GRLIB, `LSetDrive` 244), a store-forwarding
   stall in the kernel's vector entry of a direct driver (#793), a gather straight into its destination (under half a percent), and per-leaf code
   generated for static layouts, not started: the interpreted callees of a compiled `iu:comb` stay the larger part (#679).

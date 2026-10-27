@@ -11023,3 +11023,5 @@ Task (orchestrator): cut the general cost of the `numeric_std` and `std_logic_11
   | `fletcher_bufferwriter_512` | auto, main thread | 47.17 | 46.52 |
 
   (The whole-run counts of `auto` without `--no-inherit` include the compile threads and move by 2 to 5 percent between identical runs.)
+
+  `realbench --compare` over the 41 tests that pass on both sides (`--phases run --tiers interp,auto`, core 8, base `12e07dce`, bench builds): geometric mean of instructions 1.00 (interp) and 1.00 (auto); wall 0.99 (interp) and 1.02 (auto; the categories with a 1.20 are tests of 0.02 to 0.05 s, instructions equal); `poc_arith_addw` interp wall 8.24 to 7.56 s, `fletcher_bufferwriter_512` 4.06 to 4.03 s, `neorv32_single_min` 2.51 to 2.47 s. `grlib_leon3mp` is reported failed by the tool for both binaries (its pass text sits beyond the 200 characters the tool keeps).

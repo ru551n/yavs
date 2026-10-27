@@ -3689,6 +3689,20 @@ warm and 1.017 cold, and a run of the cache before the second merge measured 1.0
 quality on heavy compute (`poc_arith_addw` 99 G instructions against 87 G warm, window generator 157 G against 135 G); the
 verification-library tests are level.
 
+### clift: round 11, the first level's rules for large subprograms and Frame functions, breadth, go/no-go (2026-10-27, #481)
+
+`spike/clift2` merged with main up to ac8d4e88. With a first-level generator alone (a Cranelift-only build), large
+subprograms are `Kind::Big`/`BigLoop` as LLVM's `OptLevel::Fast` makes them (`native::big`, `Tune::big`) and `Kind::Frame`
+functions stay interpreted (`Tune::frame`): their frame-mode code moved whole processes into the interpreter's loop for
+compiled code (`uvvm_axistream_vvc`: 8.8 percent more cycles than LLVM at level instructions). A Cranelift-only build runs
+`--tier=auto` by default and names its tier in `--version`. Breadth, Cranelift-only / LLVM build, `--tier=auto`, loaded host,
+instructions primary: realbench 42 tests 1.004 warm and 0.981 cold in instructions (cycles 1.013 and 0.987; `grlib_leon3mp` 1.15 and 1.27 in
+cycles at level instructions); h2h 11 designs
+1.179 warm and 0.992 cold (cycles 1.141 and 0.936): warm compute loops in frame-mode code run up to twice LLVM's
+instructions (`xor_types` 2.02, `lfsr64` 1.29, `compute_h2h` 1.14). Go/no-go: no-go as the default compiled tier until the
+frame-mode loop code (register array and `Mem` in registers, hoisted dope checks) closes that gap; the list is in
+decisions.md "Cranelift tier, round 11".
+
 ### clift: round 10, the verdict on a quiet host, `Tune::FIRST`, search loops (2026-10-27, #481)
 
 `spike/clift2` merged with main up to e790e0de; the Cranelift lowering got main's #766 and #772 lowering (`WaitEdge`

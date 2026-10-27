@@ -9409,6 +9409,82 @@ the cache.
 - **Measurement tooling**: `tools/realbench/run.py --count-runs`; `tools/bench/run.py`'s `timed` counts cycles with
   instructions and records the load at the start of each run; cells keep their run walls and loads.
 
+## Cranelift tier, round 11: merges, the first level's rules for large subprograms and Frame functions, breadth and the go/no-go for Cranelift as the default (yavs-clift, yavs-llvm `auto.rs`, `native.rs`, yavs CLI, #481, 2026-10-27)
+
+- **Merges** of `origin/main` up to ac8d4e88. Nothing to port in `rt.rs` or the Cranelift lowering: the element loops LLVM
+  now plans in its own code (f444b2f3, `yavs_rt_eloop_exec`, `yavs_rt_eloop_host`) keep `yavs_rt_eloop` unchanged, and the
+  Cranelift lowering keeps calling it for every element loop (`compiled_loops.rs` runs both). The profile's `BigLoop`
+  admission (555dbae3) and the cheaper LLVM cache hits (a5dcf52c) are policy and LLVM code; the new profile test needs
+  LLVM's helpers (`#[cfg(feature = "llvm")]`).
+- **Decision: without a main generator, a large subprogram is `Kind::Big` or `BigLoop`** (`native::big`, the size rule of
+  `lower::level_for` moved to code built without LLVM; `Tune::big`). In a Cranelift-only build `main` is `None`, so the
+  `Big` kinds never applied: `check_value` (349 IR instructions), `log` (538), `to_string` (389) and `axistream_receive`
+  (3 591) of `uvvm_axistream_vvc` were `Native` or `ComputeFrame`, compiled within the first 400 ms (15 compiles against
+  9 for LLVM), and their warm cache hits cost 10 to 50 ms of compile CPU against a modelled 1.4 (`FIRST_HIT` prices the
+  root only; the variants of its tree are generated and hashed again). Processes are left out: `fletcher_bufferwriter_512`'s
+  `input_proc` (1 546) as `Big` cost 3.7 percent more instructions warm, Cranelift's code of large processes gains.
+- **Decision: a first-level generator alone leaves `Kind::Frame` functions interpreted** (`Tune::frame`, false for
+  `FIRST`). Found by attribution: at level instructions (1.006, 12 interleaved runs) the Cranelift-only build ran
+  `uvvm_axistream_vvc` in 8.8 percent more cycles than the LLVM build, with 34 percent more cache misses, and 3.85 G
+  instructions in `run_ops::<true, false>` (the interpreter's loop for processes with compiled code) against 0. A
+  frame-mode compile of a wait procedure (`wait_until_given_time_after_rising_edge`, 131 IR instructions, priced at a
+  cache hit of 0.5 ms, so seen for 7 ms was enough) flags every process that calls it, and the rest of those processes
+  then runs in the second copy of the interpreter loop. The modelled 9 percent gain of `Frame` code does not cover that.
+  A/B of one binary on `uvvm_axistream_vvc` (12 runs, instructions and cycles): the size rule 0.940 cycles; then no
+  `Frame` compiles 0.974 cycles, 0.986 instructions. On the 9 tests of round 10 (`--runs 9`, A/B of one binary with
+  `YAVS_FIRST_TUNE`, loaded host, instructions primary): size rule 0.995 instructions warm and cold; no `Frame` compiles
+  0.994 and 0.996; `fletcher_bufferwriter_512` and the window generator unchanged in instructions after processes were
+  excluded. Knobs: `YAVS_FIRST_TUNE=big=0|1,frame=0|1`.
+- **The 2x of `convert_byte_array_to_slv_array` (round 10) is not a loss**: counted inclusively the native variants are
+  level (Cranelift 3.9 percent of a run's instructions in the function and 0.3 in `yavs_rt_lcopy`, LLVM 3.8 and 1.0):
+  LLVM's code calls `yavs_rt_lcopy` for the copies that Cranelift's makes inline. No refactor of long variants for it.
+- **The CLI**: a build with `clift` and without `llvm` runs `--tier=auto` (Cranelift) by default, like an LLVM build, and
+  `--version` says `compiled tier: cranelift` (`llvm, cranelift` with both); before, it defaulted to the interpreter and
+  printed "interpreter only, no compiled tier".
+- **Breadth** (`tools/build-bench.sh` of 250d590c, before the last merge; Cranelift-only build / LLVM build, `--tier=auto`,
+  run phase only, both builds share the front end): realbench `--compare --count-runs` over the 42 tests (15 runs,
+  7 for the long ones, 3 for `grlib_leon3mp`, which ran again after #794), and the 11 h2h designs (`h2h.sh` in the
+  raw directory: realbench's method of warm and cold cells, 15 interleaved runs, `perf stat` user instructions and
+  cycles; `tools/bench/run.py --compare` has no `--tier` or counter cells). The host was loaded throughout (1-minute load
+  8 to 122, other jobs on the host): instructions are the measure, walls are shown and not judged. Geometric means:
+
+  | set | instr warm | instr cold | cycles warm | cycles cold | wall warm | wall cold |
+  |---|---:|---:|---:|---:|---:|---:|
+  | realbench, 42 tests | 1.004 | 0.981 | 1.013 | 0.987 | 1.023 | 0.989 |
+  | h2h, 11 designs | 1.179 | 0.992 | 1.141 | 0.936 | 1.102 | 0.936 |
+
+  Losers warm (instructions): `xor_types` 2.02, `xor_sig` 1.99, `lfsr64` 1.29, `sc5_fifo_repack` 1.15,
+  `compute_h2h` 1.14, `hdlm_lfsr` 1.12, `rtl_lfsr` 1.07, the window generator 1.07 (LLVM's code of `walk_control` now
+  compiles early, 555dbae3; cycles 1.00); in cycles at level instructions `poc_fifo_ic_assembly` 1.14,
+  `osvvm_axi4_random` 1.08, `fletcher_bufferwriter_512` 1.06 (20 percent more cache misses in the compiled copies of its
+  clocked processes), `grlib_leon3mp` 1.15 warm and 1.27 cold at 1.01 and 1.03 instructions. Winners: `uvvm_sb_slv` 0.88, `uvvm_util_rand` 0.91; cold `poc_stat_histogram` 0.73,
+  the window generator 0.81, `compute_h2h` 0.76. Tables: `table-breadth.md`, `table-h2h.md` in the raw directory.
+- **What the warm losers have in common: tight loops in frame-mode code**, where a warm LLVM run links O2 code from its
+  cache and Cranelift has one level. `xor_types` (16-bit `unsigned xor` in a loop): the Cranelift run takes about 570
+  instructions an iteration (360 of them in the code of `_p0`), the LLVM run about 280; per IR instruction the loop's `LCopy`, the
+  load of the native's result and the jump back each take 60 to 90 machine instructions. The frame's register array
+  and the `Mem` pointer live in stack slots and are loaded again before nearly every access (the function is 26 KB, the
+  register allocator spills both), the temporary-area guess of the native's result is tested in full every iteration,
+  and `SubtypeCheck` recomputes both lengths from the dopes with conditional moves where LLVM's O2 hoists all of it.
+- **Go/no-go, Cranelift as the default compiled tier: no-go for now.** It is level with LLVM on the testbench-like
+  realbench set in instructions (1.004 warm, 0.98 cold; cycles 1.013 and 0.987) and passes every
+  difftest candidate, but warm compute loops run up to twice LLVM's instructions (h2h warm 1.18). Go once:
+  1. frame-mode loops keep the register array and `Mem` in registers (Cranelift's pinned register for `Mem`, or loop
+     bodies split into functions of their own) and `SubtypeCheck`/`DopeLen` of loop-invariant dopes are hoisted at IR
+     level (`yavs_ir::opt`, so both generators gain), measured on `xor_types`, `lfsr64`, `compute_h2h`, `hdlm_lfsr`;
+  2. the compiled copies of clocked processes lose their cache misses (`fletcher_bufferwriter_512`, `grlib_leon3mp`,
+     `sc5_fifo_repack`);
+  3. a cache hit costs what it is priced at (`FIRST_HIT` over the whole tree, or a key over the IR that skips generation:
+     the maintainer's decision that #785 left open for LLVM applies here too);
+  4. the release side: the `clift` feature in the default features and in the archive without LLVM (#780); the default
+     tier and `--version` are done.
+  Until then the useful step is the archive without LLVM: a Cranelift build is faster than the interpreter-only build
+  everywhere it compiles, needs no LLVM, and its policy is the same `auto`.
+- Gates on 921b3059 (code of this round): fmt, clippy `-D warnings` for default, `llvm`, `clift`, `llvm,clift`; `cargo test
+  --workspace` (1 223) and the feature sets (`llvm` 1 342, `clift` 1 257, `llvm,clift` 1 373); difftest 544/544 at 1 and 4
+  threads for `yavs-clift`, `-clift-auto`, `-auto3`, `-mixed`, `-llvm`, `-auto` (debug build of 250d590c, verifier on), and again for `yavs-clift`, `-clift-auto`,
+  `-auto3`, `-auto` on the debug build of 921b3059.
+
 ## Frame-mode code tests the temporary area and the object cache inline for addresses it can guess (yavs-llvm `Gen::host`, `rt::track`, #711, 2026-10-24)
 
 - **Finding:** the `yavs_rt_host` calls of `llvm_ieee` (`cb_host` 1416, then 2019 after the in-place `numeric_std`

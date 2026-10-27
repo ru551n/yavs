@@ -3,9 +3,9 @@
 -- relational operators and gates with a literal operand (#786): values over all nine std_ulogic
 -- values for the select and the arms, deltas, events, delays per arm, a resolved target with two
 -- such drivers, an in port, vectors wider than 64 elements, records with an integer, BIT and
--- BOOLEAN, and the nearby shapes that stay processes (three arms, two conditions, numeric_std's
--- "=" as condition or as value, unaffected, a guard, postponed, a rejection limit) must be those
--- of the equivalent processes.
+-- BOOLEAN, and the nearby shapes (three arms, two conditions and an expression arm, which are
+-- kernel programs since #788; numeric_std's "=" as condition or as value, unaffected, a guard,
+-- postponed, a rejection limit, which stay processes) must be those of the equivalent processes.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;

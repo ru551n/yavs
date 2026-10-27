@@ -450,6 +450,7 @@ const PASS: &[&str] = &[
     "sigassign/plain_copies",
     "sigassign/port_elem_active",
     "sigassign/proc_local_drivers",
+    "sigassign/prog_exprs",
     "sigassign/pulse_swallow",
     "sigassign/signal_alias",
     "sigassign/signal_alias_subprogram",

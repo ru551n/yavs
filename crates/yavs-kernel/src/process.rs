@@ -500,6 +500,241 @@ impl Process for MuxProcess {
     }
 }
 
+/// An operand of a [`ProgNode`]: a signal part or a value, or the result of an earlier node.
+pub enum Opnd {
+    Src(Src),
+    Node(u32),
+}
+
+/// One operation of a [`ProgProcess`], over operands of `len` elements: a logical operator
+/// (`b` is `a` again for `not`) or `=`/`/=`, or a test of one logic element against a set of
+/// codes (bit `c` of the mask set when code `c` passes). Results of one element
+/// (`len` 1, relations, tests) are BOOLEAN or logic codes; longer ones plane blocks.
+pub enum ProgOp {
+    Gate(Gate, Opnd, Opnd),
+    Mask(SigRef, u16),
+    /// One element of a byte signal holds these bytes (`/=` when the flag is set).
+    Bytes(SigRef, Vec<u8>, bool),
+}
+
+pub struct ProgNode {
+    pub op: ProgOp,
+    pub len: u32,
+}
+
+/// One arm of a [`ProgProcess`]: when its condition (a BOOLEAN; the last arm has none) holds,
+/// the target parts take `vals`. The nodes of the condition and of the values are run only when
+/// the arm is reached.
+pub struct ProgArm {
+    pub cond: Option<Opnd>,
+    pub cond_nodes: std::ops::Range<u32>,
+    pub vals: Vec<Opnd>,
+    pub val_nodes: std::ops::Range<u32>,
+    pub delay: Time,
+}
+
+/// One target part of a [`ProgProcess`].
+pub struct ProgPart {
+    pub elem: crate::value::Elem,
+    pub driver: DriverId,
+    pub dst: Range,
+}
+
+/// A process whose whole body is `target <= v1 when c1 else v2 when c2 else ... else vn;` (or
+/// a plain `target <= v;`) over trees of logical operators, relations and element tests on
+/// signal parts and values known at elaboration: the kernel evaluates the first arm whose
+/// condition holds and assigns its values, with no process code (#788). Operands are of one
+/// type and length by construction, so nothing can fail; the assignment, and the wait for every
+/// signal the statement reads, are those of [`GateProcess`] and [`MuxProcess`].
+pub struct ProgProcess {
+    nodes: Vec<ProgNode>,
+    arms: Vec<ProgArm>,
+    parts: Vec<ProgPart>,
+    mode: DelayMode,
+    /// Every signal part the statement reads, once.
+    waits: Vec<SigRef>,
+    /// The result of each node of one element.
+    codes: Vec<u8>,
+    /// The result of each node of more than one element (plane blocks).
+    bufs: Vec<Vec<u8>>,
+    /// Where a signal operand is read.
+    scratch: [Vec<u8>; 2],
+}
+
+impl ProgProcess {
+    pub fn new(
+        nodes: Vec<ProgNode>,
+        arms: Vec<ProgArm>,
+        parts: Vec<ProgPart>,
+        mode: DelayMode,
+    ) -> ProgProcess {
+        let blocks = |n: u32| (n as usize).div_ceil(64) * 32;
+        let mut waits: Vec<SigRef> = Vec::new();
+        let mut want = |o: &Opnd| {
+            if let Opnd::Src(Src::Sig(r)) = o
+                && !waits.contains(r)
+            {
+                waits.push(*r);
+            }
+        };
+        for n in &nodes {
+            match &n.op {
+                ProgOp::Gate(_, a, b) => {
+                    want(a);
+                    want(b);
+                }
+                ProgOp::Mask(r, _) | ProgOp::Bytes(r, ..) => want(&Opnd::Src(Src::Sig(*r))),
+            }
+        }
+        for a in &arms {
+            a.cond.iter().chain(&a.vals).for_each(&mut want);
+        }
+        let wide = (nodes.iter())
+            .map(|n| n.len)
+            .chain(parts.iter().map(|p| p.dst.len))
+            .max()
+            .unwrap_or(0);
+        let bufs = (nodes.iter())
+            .map(|n| match &n.op {
+                ProgOp::Gate(g, ..) if n.len > 1 && !g.rel() => vec![0; blocks(n.len)],
+                _ => Vec::new(),
+            })
+            .collect();
+        ProgProcess {
+            codes: vec![0; nodes.len()],
+            bufs,
+            scratch: [vec![0; blocks(wide)], vec![0; blocks(wide)]],
+            nodes,
+            arms,
+            parts,
+            mode,
+            waits,
+        }
+    }
+
+    /// The code of a one-element operand.
+    #[inline(always)]
+    fn code(&self, ctx: &Ctx<'_>, o: &Opnd) -> Result<u8, SimError> {
+        match o {
+            Opnd::Src(s) => s.code(ctx),
+            Opnd::Node(j) => Ok(self.codes[*j as usize]),
+        }
+    }
+
+    /// Run node `i` (its operands are earlier nodes, already run).
+    fn step(&mut self, ctx: &Ctx<'_>, i: usize) -> Result<(), SimError> {
+        let n = &self.nodes[i];
+        match &n.op {
+            ProgOp::Mask(r, mask) => {
+                let c = ctx.elem_code(r.signal, r.range.map_or(0, |r| r.offset))?;
+                self.codes[i] = 2 + ((*mask >> (c & 15)) & 1) as u8;
+            }
+            ProgOp::Bytes(r, bytes, ne) => {
+                let e = r.range.map_or(0, |r| r.offset);
+                let Some(b) = ctx.elem_bytes(r.signal, e) else {
+                    return Err(ctx.error(ErrorKind::BadRef(format!("signal {}", r.signal.0))));
+                };
+                self.codes[i] = 2 + ((b == &bytes[..]) != *ne) as u8;
+            }
+            ProgOp::Gate(g, a, b) if n.len == 1 => {
+                self.codes[i] = g.code(self.code(ctx, a)?, self.code(ctx, b)?);
+            }
+            ProgOp::Gate(g, a, b) => {
+                let [sa, sb] = &mut self.scratch;
+                let (lo, hi) = self.bufs.split_at_mut(i);
+                let x = blocks(ctx, a, lo, sa, n.len)?;
+                let y = blocks(ctx, b, lo, sb, n.len)?;
+                if g.rel() {
+                    self.codes[i] = g.rel_code(x == y);
+                } else {
+                    let (x, y) = (x.as_chunks::<32>().0, y.as_chunks::<32>().0);
+                    for ((o, x), y) in hi[0].as_chunks_mut::<32>().0.iter_mut().zip(x).zip(y) {
+                        let v = g.block(words(x), words(y));
+                        for (d, w) in o.as_chunks_mut::<8>().0.iter_mut().zip(v) {
+                            *d = w.to_le_bytes();
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The plane blocks of a longer operand: a signal is read into `scratch`, a value is its own,
+/// a node is its buffer (`done` holds the buffers of the nodes before the current one).
+#[inline(always)]
+fn blocks<'a>(
+    ctx: &Ctx<'_>,
+    o: &'a Opnd,
+    done: &'a [Vec<u8>],
+    scratch: &'a mut [u8],
+    len: u32,
+) -> Result<&'a [u8], SimError> {
+    match o {
+        Opnd::Src(s) => s.blocks(ctx, &mut scratch[..(len as usize).div_ceil(64) * 32]),
+        Opnd::Node(j) => Ok(&done[*j as usize]),
+    }
+}
+
+impl Process for ProgProcess {
+    fn run(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+        for ai in 0..self.arms.len() {
+            let arm = &self.arms[ai];
+            let (cn, vn, delay) = (arm.cond_nodes.clone(), arm.val_nodes.clone(), arm.delay);
+            if arm.cond.is_some() {
+                for i in cn {
+                    self.step(ctx, i as usize)?;
+                }
+                let Some(c) = &self.arms[ai].cond else {
+                    continue;
+                };
+                if self.code(ctx, c)? != 3 {
+                    continue;
+                }
+            }
+            for i in vn {
+                self.step(ctx, i as usize)?;
+            }
+            for (k, p) in self.parts.iter().enumerate() {
+                let v = &self.arms[ai].vals[k];
+                match p.elem {
+                    crate::value::Elem::Logic if p.dst.len == 1 => {
+                        let c = match v {
+                            Opnd::Src(s) => s.code(ctx)?,
+                            Opnd::Node(j) => self.codes[*j as usize],
+                        };
+                        ctx.assign_code(p.driver, Some(p.dst), delay, c, self.mode)?;
+                    }
+                    crate::value::Elem::Logic => {
+                        let b = blocks(ctx, v, &self.bufs, &mut self.scratch[0], p.dst.len)?;
+                        assign_logic(ctx, p.driver, p.dst, delay, b, self.mode)?;
+                    }
+                    crate::value::Elem::Bytes(w) => {
+                        let Opnd::Src(Src::Sig(r)) = v else {
+                            return Err(ctx.error(ErrorKind::BadRef(
+                                "a computed value for a byte signal (this is a bug in yavs: \
+                                 the elaborator builds them for logic signals only)"
+                                    .into(),
+                            )));
+                        };
+                        let b = &mut self.scratch[0][..p.dst.len as usize * w as usize];
+                        ctx.read_into(*r, b)?;
+                        ctx.assign_bytes(p.driver, Some(p.dst), delay, b, self.mode)?;
+                    }
+                }
+            }
+            break;
+        }
+        if !ctx.wait_same() {
+            for r in &self.waits {
+                ctx.wait_on(*r)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// A process whose whole body is `x <= not x after T;` on one scalar element of a logic
 /// signal (std_ulogic, bit or boolean: a clock generator): the kernel reads the element, assigns its complement and waits for it again,
 /// with no process code (the elaborator recognises the shape and evaluates `T`, #440).

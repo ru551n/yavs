@@ -303,12 +303,65 @@ impl Elaborated {
                     mode(m.transport),
                 ))
             });
+            // And an expression tree or a chain of conditional arms.
+            let prog = p.prog.as_ref().filter(|_| native).and_then(|g| {
+                let delay = |t| yavs_kernel::Time::from_vhdl(t).ok();
+                let opnd = |o: &crate::ProcOpnd| match o {
+                    crate::ProcOpnd::Src(x) => yavs_kernel::Opnd::Src(src(x)),
+                    crate::ProcOpnd::Node(i) => yavs_kernel::Opnd::Node(*i),
+                };
+                let nodes = (g.nodes.iter())
+                    .map(|n| yavs_kernel::ProgNode {
+                        op: match &n.op {
+                            crate::ProcOp::Gate(gate, a, b) => {
+                                yavs_kernel::ProgOp::Gate(*gate, opnd(a), opnd(b))
+                            }
+                            crate::ProcOp::Mask(l, r, mask) => {
+                                yavs_kernel::ProgOp::Mask(nets.kref(*l, *r), *mask)
+                            }
+                            crate::ProcOp::Bytes(l, r, bytes, ne) => {
+                                yavs_kernel::ProgOp::Bytes(nets.kref(*l, *r), bytes.clone(), *ne)
+                            }
+                        },
+                        len: n.len,
+                    })
+                    .collect();
+                let arms = (g.arms.iter())
+                    .map(|a| {
+                        Some(yavs_kernel::ProgArm {
+                            cond: a.cond.as_ref().map(opnd),
+                            cond_nodes: a.cond_nodes.clone(),
+                            vals: a.vals.iter().map(opnd).collect(),
+                            val_nodes: a.val_nodes.clone(),
+                            delay: delay(a.delay)?,
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                let parts = (p.lsps.first()?.iter())
+                    .map(|&(k, dl, dr)| {
+                        Some(yavs_kernel::ProgPart {
+                            elem: nets.leaf(dl).ty.elem,
+                            driver: *ds.get(p.drivers.iter().position(|&x| x == k)?)?,
+                            dst: nets.kpart(dl, dr).1,
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                Some(yavs_kernel::ProgProcess::new(
+                    nodes,
+                    arms,
+                    parts,
+                    mode(g.transport),
+                ))
+            });
             let proc: Box<dyn Process> = match (copy, toggle, gate, mux) {
                 (Some(parts), ..) => Box::new(yavs_kernel::CopyProcess::new(parts)),
                 (None, Some(t), ..) => Box::new(t),
                 (None, None, Some(g), _) => Box::new(g),
                 (None, None, None, Some(m)) => Box::new(m),
-                (None, None, None, None) => make(p, &ds)?,
+                (None, None, None, None) => match prog {
+                    Some(g) => Box::new(g),
+                    None => make(p, &ds)?,
+                },
             };
             let proc_waits = proc.several_waits();
             let name = self.hier.path_name(p.scope, Case::Lrm);

@@ -274,6 +274,20 @@ pub(crate) fn ports(
             }
             x.srcs.iter_mut().flatten().for_each(remap);
         }
+        if let Some(g) = &mut p.prog {
+            for n in &mut g.nodes {
+                if let crate::ProcOp::Mask(l, r, _) | crate::ProcOp::Bytes(l, r, ..) = &mut n.op {
+                    let mut q = (*l, *r);
+                    mr(&mut q);
+                    (*l, *r) = q;
+                }
+            }
+            g.opnds_mut().for_each(|o| {
+                if let crate::ProcOpnd::Src(x) = o {
+                    remap(x);
+                }
+            });
+        }
         if let Some(v) = &mut p.guard {
             v.iter_mut().for_each(mr);
         }

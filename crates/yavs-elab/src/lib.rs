@@ -188,6 +188,10 @@ pub struct ProcInst {
     /// A concurrent `target <= a when c else b;` (`Walker::mux_source`): the kernel runs it
     /// itself (`yavs_kernel::MuxProcess`, #786).
     pub mux: Option<ProcMux>,
+    /// A concurrent assignment of an expression tree of logic operators and relations, with any
+    /// number of conditional arms (`Walker::prog_source`), when it is not a gate or a mux: the
+    /// kernel runs it itself (`yavs_kernel::ProgProcess`, #788).
+    pub prog: Option<ProcProg>,
     /// A clocked process (it has a `trigger`) whose activation is a function of the signals
     /// listed here and constants alone (`Db::pure_clocked_reads`): the kernel may skip an
     /// activation when none of them had an event since the last one
@@ -256,6 +260,72 @@ pub struct ProcMux {
     /// The `after` delay of each arm in femtoseconds, 0 without one.
     pub delay: [i64; 2],
     pub transport: bool,
+}
+
+/// An operand of a [`ProcNode`]: a signal part or value, or the result of an earlier node.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProcOpnd {
+    Src(ProcSrc),
+    Node(u32),
+}
+
+/// One operation of a [`ProcProg`]; the result is a code (one element) or a plane value.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProcOp {
+    /// A logical operator (`b` is `a` again for `not`) over operands of `len` elements, or `=`
+    /// and `/=` (one BOOLEAN element).
+    Gate(yavs_kernel::Gate, ProcOpnd, ProcOpnd),
+    /// One logic element is one of a set of codes (as [`ProcCond::Mask`]); one BOOLEAN element.
+    Mask(LeafId, yavs_kernel::Range, u16),
+    /// One element of a signal of an enumeration or integer type holds these bytes (`/=` when
+    /// the flag is set); one BOOLEAN element.
+    Bytes(LeafId, yavs_kernel::Range, Vec<u8>, bool),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProcNode {
+    pub op: ProcOp,
+    /// The length of the operands.
+    pub len: u32,
+}
+
+/// One arm of a [`ProcProg`]: when its condition holds (the last arm has none), the target
+/// parts take `vals`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProcArm {
+    /// A BOOLEAN element.
+    pub cond: Option<ProcOpnd>,
+    /// The nodes the condition needs, in order (evaluated only when the arm is reached).
+    pub cond_nodes: std::ops::Range<u32>,
+    /// One per part of `ProcInst::lsps[0]` (several for a record copy, one otherwise).
+    pub vals: Vec<ProcOpnd>,
+    pub val_nodes: std::ops::Range<u32>,
+    /// The `after` delay in femtoseconds, 0 without one.
+    pub delay: i64,
+}
+
+/// The concurrent assignment `target <= v1 when c1 else v2 when c2 else ... else vn;` (or a
+/// plain `target <= v;`) of [`ProcInst::prog`]: nodes in post order, arms in statement order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProcProg {
+    pub nodes: Vec<ProcNode>,
+    pub arms: Vec<ProcArm>,
+    pub transport: bool,
+}
+
+impl ProcProg {
+    /// Every operand, for renumbering signal parts.
+    pub fn opnds_mut(&mut self) -> impl Iterator<Item = &mut ProcOpnd> {
+        let nodes = self.nodes.iter_mut().flat_map(|n| match &mut n.op {
+            ProcOp::Gate(_, a, b) => vec![a, b],
+            ProcOp::Mask(..) | ProcOp::Bytes(..) => vec![],
+        });
+        let arms = self
+            .arms
+            .iter_mut()
+            .flat_map(|a| a.cond.iter_mut().chain(&mut a.vals));
+        nodes.chain(arms)
+    }
 }
 
 /// A signal part a pure process reads ([`ProcInst::idle`]) and, when it reads it only under some

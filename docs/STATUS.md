@@ -29,6 +29,10 @@ signals and values), each arm a signal copy as `CopyProcess` takes one (also rec
 run as the kernel's own `MuxProcess` and `GateProcess`. Corpus `sigassign/mux_gates` passes against sim1 at 1 and 4 threads on every tier. Open
 (#788): expression trees, compound and multi-arm conditions, constant conditions.
 
+### Kernel programs (#788, 2026-10-27)
+
+(`docs/decisions.md` "Kernel programs".) A concurrent assignment of an expression of logical operators, relations and element tests (also of an enumeration or integer signal against a value), with a compound or constant condition or any number of arms, runs as the kernel's own `ProgProcess` when it is no gate or mux. neorv32 loses 4 percent of its instructions, poc_cache_cpu 4, the geometric mean over the real suite is 0.99. Corpus `sigassign/prog_exprs` passes against sim1 at 1 and 4 threads on every tier. Open: `numeric_std` operators and orderings, function calls, concatenations and conversions as operands, `selected` assignments.
+
 ### Release archives with and without the compiled tier (#780, 2026-10-27)
 
 `release.yml` builds two archives per platform: `yavs-<version>-<target>` with the compiled tier (Linux: `lib/libLLVM.so.21.1`

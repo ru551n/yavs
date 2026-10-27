@@ -156,7 +156,11 @@ pub(crate) struct Elab<'d> {
     pkg_uses: Vec<(UnitId, DeclId)>,
     /// How many units were loaded when the package bodies were last loaded (`load_new_bodies`).
     units_seen: usize,
+    /// While `prog_source` runs: `static_signal_parts` of each expression seen so far (one scope).
+    parts_memo: Option<HashMap<ExprId, SigParts>>,
 }
+
+type SigParts = Option<(Vec<(LeafId, Range)>, Shape)>;
 
 pub(crate) fn find_top(db: &mut Db, work: &str, name: &str) -> Result<Top, Vec<Diagnostic>> {
     let (prim, arch) = match name.split_once('.') {
@@ -515,6 +519,7 @@ pub(crate) fn elaborate(
         deferred: Vec::new(),
         pkg_uses,
         units_seen: 0,
+        parts_memo: None,
     };
     e.units_seen = e.db.units.len();
     let name = e.db.units[top.entity].name;
@@ -2568,6 +2573,11 @@ impl Elab<'_> {
         let toggle = self.toggle_source(s, st);
         let gate = self.gate_source(s, st);
         let mux = self.mux_source(s, st);
+        let prog = if copy.is_none() && toggle.is_none() && gate.is_none() && mux.is_none() {
+            self.prog_source(s, st)
+        } else {
+            None
+        };
         if let Some(p) = self.procs.last_mut() {
             p.idle = idle;
             p.trigger = trigger;
@@ -2575,6 +2585,7 @@ impl Elab<'_> {
             p.toggle = toggle;
             p.gate = gate;
             p.mux = mux;
+            p.prog = prog;
         }
         Ok(())
     }
@@ -2658,11 +2669,20 @@ impl Elab<'_> {
 
     /// The leaves and shape of `e` when it is a static name of a signal: an object, indexed,
     /// sliced and selected by static expressions only.
-    fn static_signal_parts(
-        &mut self,
-        s: ScopeId,
-        e: ExprId,
-    ) -> Option<(Vec<(LeafId, Range)>, Shape)> {
+    fn static_signal_parts(&mut self, s: ScopeId, e: ExprId) -> SigParts {
+        if let Some(m) = &self.parts_memo
+            && let Some(v) = m.get(&e)
+        {
+            return v.clone();
+        }
+        let v = self.static_signal_parts_now(s, e);
+        if let Some(m) = &mut self.parts_memo {
+            m.insert(e, v.clone());
+        }
+        v
+    }
+
+    fn static_signal_parts_now(&mut self, s: ScopeId, e: ExprId) -> SigParts {
         let db: &Db = &*self.db;
         fn whole(db: &Db, e: ExprId) -> bool {
             let st = |x: ExprId| db.exprs[x].stat != Staticness::None;
@@ -3513,6 +3533,500 @@ impl Elab<'_> {
         })
     }
 
+    /// The assignment `target <= v1 when c1 else v2 when c2 else ... else vn;` or `target <= v;`
+    /// (not guarded or postponed; no delay clause, `transport` or `inertial` without `reject`;
+    /// one waveform element of one value per arm, its `after` static) as a [`crate::ProcProg`]:
+    /// each condition a tree of BOOLEAN operators over relations of logic operands, tests of
+    /// one logic element, BOOLEAN names and static values (`prog_node`); each value a copy as
+    /// `copy_parts` takes one, or a tree of logic operators over static signal names and static
+    /// values when the target is one whole driver of whole-type logic elements. `None` for
+    /// anything else, and for a statement that is no more than a copy or a literal.
+    fn prog_source(&mut self, s: ScopeId, st: StmtId) -> Option<crate::ProcProg> {
+        let (arms_in, texpr, transport) = self.prog_arms(st)?;
+        // The same names are looked up several times (shape, test, operand): once per expression.
+        self.parts_memo = Some(HashMap::new());
+        let r = self
+            .static_signal_parts(s, texpr)
+            .and_then(|(_, tshape)| self.prog_build(s, arms_in, texpr, tshape, transport));
+        self.parts_memo = None;
+        r
+    }
+
+    /// The arms of a concurrent assignment `prog_source` takes: condition, value and `after` of
+    /// each, the target and whether it is `transport`.
+    #[allow(clippy::type_complexity)]
+    fn prog_arms(
+        &self,
+        st: StmtId,
+    ) -> Option<(Vec<(Option<ExprId>, ExprId, Option<ExprId>)>, ExprId, bool)> {
+        let db: &Db = self.db;
+        let StmtKind::ConcSignalAssign {
+            postponed: false,
+            guarded: false,
+            target,
+            delay: delay @ (Delay::Default | Delay::Transport | Delay::Inertial { reject: None }),
+            rhs,
+            ..
+        } = &db.stmts[st].kind
+        else {
+            return None;
+        };
+        let alts: Vec<(&Waveform, Option<ExprId>)> = match rhs {
+            Rhs::Simple(w) => vec![(w, None)],
+            Rhs::Conditional(a) => a.iter().map(|(w, c)| (w, *c)).collect(),
+            Rhs::Selected { .. } => return None,
+        };
+        let last = alts.len() - 1;
+        if alts
+            .iter()
+            .enumerate()
+            .any(|(i, a)| a.1.is_none() != (i == last))
+        {
+            return None;
+        }
+        // (condition, value, after) per arm, copied out of the database.
+        let mut arms_in = Vec::with_capacity(alts.len());
+        for (w, c) in alts {
+            let Waveform::Elements(w) = w else {
+                return None;
+            };
+            let [
+                WaveElem {
+                    value: Some(e),
+                    after,
+                },
+            ] = &w[..]
+            else {
+                return None;
+            };
+            if c.is_some_and(|c| !self.prog_shape(c)) || !self.prog_shape(*e) {
+                return None;
+            }
+            arms_in.push((c, *e, *after));
+        }
+        Some((arms_in, target.expr, matches!(delay, Delay::Transport)))
+    }
+
+    fn prog_build(
+        &mut self,
+        s: ScopeId,
+        arms_in: Vec<(Option<ExprId>, ExprId, Option<ExprId>)>,
+        texpr: ExprId,
+        tshape: Shape,
+        transport: bool,
+    ) -> Option<crate::ProcProg> {
+        let mut nodes = Vec::new();
+        let mut arms = Vec::with_capacity(arms_in.len());
+        for (c, e, after) in arms_in {
+            let n0 = nodes.len() as u32;
+            let cond = match c {
+                Some(c) => Some(self.prog_cond(s, c, &mut nodes)?),
+                None => None,
+            };
+            let n1 = nodes.len() as u32;
+            let vals = match self.copy_parts(s, e, texpr) {
+                Some(v) => (v.into_iter())
+                    .map(|(l, r)| crate::ProcOpnd::Src(crate::ProcSrc::Sig(l, r)))
+                    .collect(),
+                None => {
+                    if !self.whole_logic_target(&tshape) {
+                        return None;
+                    }
+                    let (o, shape) = self.prog_node(s, e, Some(&tshape), &mut nodes)?;
+                    if shape.ty() != tshape.ty() || shape.len() != tshape.len() {
+                        return None;
+                    }
+                    vec![o]
+                }
+            };
+            let n2 = nodes.len() as u32;
+            let delay = match after {
+                None => 0,
+                Some(a) => self.static_delay(s, a)?,
+            };
+            arms.push(crate::ProcArm {
+                cond,
+                cond_nodes: n0..n1,
+                vals,
+                val_nodes: n1..n2,
+                delay,
+            });
+        }
+        if nodes.is_empty() && arms.len() == 1 {
+            return None;
+        }
+        Some(crate::ProcProg {
+            nodes,
+            arms,
+            transport,
+        })
+    }
+
+    /// A static expression that `static_val` evaluates without a subprogram call: literals,
+    /// objects, selections and the predefined operators over such. (A call to a declared
+    /// function is evaluated, and undone, only to find it out; in a cold world that lowers
+    /// the function.)
+    fn static_cheap(&self, e: ExprId) -> bool {
+        let db: &Db = self.db;
+        match &db.exprs[e].kind {
+            ExprKind::Const(_) | ExprKind::Obj(_) => true,
+            ExprKind::Index { prefix, indices } => {
+                self.static_cheap(*prefix) && indices.iter().all(|&i| self.static_cheap(i))
+            }
+            ExprKind::Slice { prefix, .. } | ExprKind::Field { prefix, .. } => {
+                self.static_cheap(*prefix)
+            }
+            ExprKind::Qualified { operand, .. }
+            | ExprKind::Conv { operand, .. }
+            | ExprKind::ImplicitConv { operand } => self.static_cheap(*operand),
+            ExprKind::Aggregate { assocs, .. } => assocs.iter().all(|a| self.static_cheap(a.value)),
+            ExprKind::Call {
+                callee,
+                args,
+                method_of: None,
+                ..
+            } => {
+                db.decls[*callee].implicit
+                    && args.iter().all(|a| match a.actual {
+                        Actual::Expr(x) => self.static_cheap(x),
+                        _ => false,
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether `e` is made only of what `prog_node` can take, judged by the kinds of the
+    /// expressions alone (no evaluation): static values, signal names, and the operators
+    /// `prog_node` knows over such. It keeps the statements that cannot be programs from costing
+    /// a probe each at elaboration.
+    fn prog_shape(&self, e: ExprId) -> bool {
+        let db: &Db = self.db;
+        if db.exprs[e].stat != Staticness::None {
+            return self.static_cheap(e);
+        }
+        match &db.exprs[e].kind {
+            ExprKind::Obj(_)
+            | ExprKind::Index { .. }
+            | ExprKind::Slice { .. }
+            | ExprKind::Field { .. } => true,
+            ExprKind::Call {
+                callee,
+                args,
+                method_of: None,
+                ..
+            } => {
+                matches!(
+                    db.decls[*callee].name.key().as_str(),
+                    "\"not\""
+                        | "\"and\""
+                        | "\"or\""
+                        | "\"xor\""
+                        | "\"nand\""
+                        | "\"nor\""
+                        | "\"xnor\""
+                        | "\"=\""
+                        | "\"/=\""
+                        | "\"??\""
+                ) && args.iter().all(|a| match a.actual {
+                    Actual::Expr(x) => self.prog_shape(x),
+                    _ => false,
+                })
+            }
+            _ => false,
+        }
+    }
+
+    /// The target is one whole driver of the process, of logic elements of the whole type
+    /// (std_ulogic, BIT or BOOLEAN): nothing a value assigned to it can be checked against.
+    fn whole_logic_target(&mut self, tshape: &Shape) -> bool {
+        let db: &Db = self.db;
+        let Some((ety, range)) = logic_elem(tshape) else {
+            return false;
+        };
+        let whole = if crate::eval::is_std_ulogic(db, ety) {
+            (0, 8)
+        } else {
+            (0, 1)
+        };
+        let Some([dst]) = self.procs.last().map(|p| &p.lsps[..]) else {
+            return false;
+        };
+        let [(k, dl, dr)] = dst[..] else {
+            return false;
+        };
+        let nets = &self.m.nets;
+        range.low_high() == whole && nets.drivers[k].leaf == dl && nets.drivers[k].range == dr
+    }
+
+    /// The condition `c` as an operand: a BOOLEAN element.
+    fn prog_cond(
+        &mut self,
+        s: ScopeId,
+        c: ExprId,
+        nodes: &mut Vec<crate::ProcNode>,
+    ) -> Option<crate::ProcOpnd> {
+        let (o, shape) = self.prog_node(s, c, None, nodes)?;
+        let boolean = Some(shape.ty()) == self.db.well_known.boolean;
+        (boolean && matches!(shape, Shape::Scalar { .. })).then_some(o)
+    }
+
+    /// The shape of a scalar expression of an enumeration type (no evaluation).
+    fn scalar_shape(&mut self, s: ScopeId, e: ExprId) -> Option<Shape> {
+        let db: &Db = self.db;
+        let st = db.exprs[e].subtype;
+        if !db.types[db.base(st)].kind.is_scalar() {
+            return None;
+        }
+        self.m.shape(db, st, Some(s), db.exprs[e].span).ok()?
+    }
+
+    /// The shape of the operand `x` of an operator: that of its first static signal name, found
+    /// through logical operators, or of a scalar expression that reads a signal; `None` for a
+    /// static value or anything else.
+    fn tree_shape(&mut self, s: ScopeId, x: ExprId) -> Option<Shape> {
+        if let Some((_, sh)) = self.static_signal_parts(s, x) {
+            return Some(sh);
+        }
+        if self.db.exprs[x].stat != Staticness::None {
+            return None;
+        }
+        if let ExprKind::Call { callee, args, .. } = &self.db.exprs[x].kind
+            && matches!(
+                self.db.decls[*callee].name.key().as_str(),
+                "\"not\"" | "\"and\"" | "\"or\"" | "\"xor\"" | "\"nand\"" | "\"nor\"" | "\"xnor\""
+            )
+        {
+            let args: Vec<ExprId> = args
+                .iter()
+                .filter_map(|a| match a.actual {
+                    Actual::Expr(x) => Some(x),
+                    _ => None,
+                })
+                .collect();
+            return args.into_iter().find_map(|a| self.tree_shape(s, a));
+        }
+        self.scalar_shape(s, x)
+    }
+
+    /// A test of one element of a signal of an enumeration or integer type against a static
+    /// value, `exec.state = S_IDLE` or `n /= 3` (the predefined `=` or `/=`, either side): the
+    /// element, the bytes of the value as the signal holds them, and whether it is `/=`. `None`
+    /// when the value does not fit the element (it is then never equal, which the process
+    /// reports itself).
+    fn bytes_cond(&mut self, s: ScopeId, e: ExprId) -> Option<(LeafId, Range, Vec<u8>, bool)> {
+        let ExprKind::Call {
+            callee,
+            args,
+            method_of: None,
+            implicit_cond: false,
+        } = &self.db.exprs[e].kind
+        else {
+            return None;
+        };
+        let decl = &self.db.decls[*callee];
+        let ne = match decl.name.key().as_str() {
+            "\"=\"" if decl.implicit => false,
+            "\"/=\"" if decl.implicit => true,
+            _ => return None,
+        };
+        let [
+            Arg {
+                actual: Actual::Expr(l),
+                ..
+            },
+            Arg {
+                actual: Actual::Expr(r),
+                ..
+            },
+        ] = &args[..]
+        else {
+            return None;
+        };
+        for (sig, val) in [(*l, *r), (*r, *l)] {
+            let Some((p, Shape::Scalar { .. })) = self.static_signal_parts(s, sig) else {
+                continue;
+            };
+            let [(leaf, range)] = p[..] else {
+                continue;
+            };
+            let Elem::Bytes(w) = self.m.nets.leaf(leaf).ty.elem else {
+                continue;
+            };
+            let n = match self.static_val(s, val)? {
+                Val::Int(n) => n,
+                Val::Enum(p) => i64::from(p),
+                _ => return None,
+            };
+            let fits = match w {
+                8 => true,
+                4 => (-(1i64 << 31)..1i64 << 32).contains(&n),
+                _ => (0..1i64 << (8 * w)).contains(&n),
+            };
+            if range.len != 1 || !fits {
+                return None;
+            }
+            return Some((
+                leaf,
+                range,
+                (n as u64).to_le_bytes()[..w as usize].to_vec(),
+                ne,
+            ));
+        }
+        None
+    }
+
+    /// The expression `e` as an operand, appending the nodes it needs to `nodes`, and its shape:
+    /// a static signal name of one part (`want`, if given, is its shape), a static value (of
+    /// the shape `want`, or a scalar's own), a test of one logic element, a relation `=` or `/=`
+    /// of the predefined kind between operands of one logic shape, or a logical operator over
+    /// such operands (all of one type and length, so none can fail); a call to anything else
+    /// is `None`. At least one operand of an operator is not a value.
+    fn prog_node(
+        &mut self,
+        s: ScopeId,
+        e: ExprId,
+        want: Option<&Shape>,
+        nodes: &mut Vec<crate::ProcNode>,
+    ) -> Option<(crate::ProcOpnd, Shape)> {
+        use crate::{ProcNode, ProcOp, ProcOpnd, ProcSrc};
+        if let Some((p, shape)) = self.static_signal_parts(s, e) {
+            let [(l, r)] = p[..] else {
+                return None;
+            };
+            if self.m.nets.leaf(l).ty.elem != Elem::Logic
+                || logic_elem(&shape).is_none()
+                || want.is_some_and(|w| w.ty() != shape.ty() || w.len() != shape.len())
+            {
+                return None;
+            }
+            return Some((ProcOpnd::Src(ProcSrc::Sig(l, r)), shape));
+        }
+        if self.db.exprs[e].stat != Staticness::None {
+            let shape = match want {
+                Some(w) => w.clone(),
+                None => self.scalar_shape(s, e)?,
+            };
+            logic_elem(&shape)?;
+            let v = self.lit_value(s, e, &shape)?;
+            return Some((ProcOpnd::Src(ProcSrc::Lit(v)), shape));
+        }
+        let ExprKind::Call {
+            callee,
+            args,
+            method_of: None,
+            ..
+        } = &self.db.exprs[e].kind
+        else {
+            return None;
+        };
+        let callee = *callee;
+        let ops: Vec<ExprId> = args
+            .iter()
+            .map(|a| match a.actual {
+                Actual::Expr(x) => Some(x),
+                _ => None,
+            })
+            .collect::<Option<_>>()?;
+        if let Some(crate::ProcCond::Mask((l, r), mask)) = self.mask_cond(s, e) {
+            let shape = self.scalar_shape(s, e)?;
+            nodes.push(ProcNode {
+                op: ProcOp::Mask(l, r, mask),
+                len: 1,
+            });
+            return Some((ProcOpnd::Node(nodes.len() as u32 - 1), shape));
+        }
+        if let Some((l, r, bytes, ne)) = self.bytes_cond(s, e) {
+            let shape = self.scalar_shape(s, e)?;
+            nodes.push(ProcNode {
+                op: ProcOp::Bytes(l, r, bytes, ne),
+                len: 1,
+            });
+            return Some((ProcOpnd::Node(nodes.len() as u32 - 1), shape));
+        }
+        use yavs_kernel::Gate;
+        let decl = &self.db.decls[callee];
+        let (implicit, decl_scope) = (decl.implicit, decl.scope);
+        let gate = match self.db.decls[callee].name.key().as_str() {
+            "\"not\"" => Gate::Not,
+            "\"and\"" => Gate::And,
+            "\"or\"" => Gate::Or,
+            "\"xor\"" => Gate::Xor,
+            "\"nand\"" => Gate::Nand,
+            "\"nor\"" => Gate::Nor,
+            "\"xnor\"" => Gate::Xnor,
+            "\"=\"" => Gate::Eq,
+            "\"/=\"" => Gate::Ne,
+            _ => return None,
+        };
+        let rel = matches!(gate, Gate::Eq | Gate::Ne);
+        if ops.len() != if gate == Gate::Not { 1 } else { 2 } {
+            return None;
+        }
+        // The shape of the operands: the wanted one for a logical operator, else the first
+        // operand's that is a signal (or a BOOLEAN expression).
+        let mut rshape = if rel { None } else { want.cloned() };
+        for &x in &ops {
+            if rshape.is_some() {
+                break;
+            }
+            rshape = self.tree_shape(s, x);
+        }
+        let rshape = rshape?;
+        let (ety, range) = logic_elem(&rshape)?;
+        let ty = rshape.ty();
+        if ops
+            .iter()
+            .any(|&x| self.db.base(self.db.exprs[x].subtype) != ty)
+            || (!rel && self.db.base(self.db.exprs[e].subtype) != ty)
+        {
+            return None;
+        }
+        let wk = &self.db.well_known;
+        let ok = if rel {
+            implicit
+        } else {
+            match range.low_high() {
+                (0, 8) => {
+                    !implicit
+                        && self.db.scopes[decl_scope].owner.is_some_and(|o| {
+                            self.db.decls[o].name.key().as_str() == "std_logic_1164"
+                        })
+                }
+                (0, 1) => implicit && (Some(ety) == wk.boolean || Some(ety) == wk.bit),
+                _ => false,
+            }
+        };
+        if !ok {
+            return None;
+        }
+        let mut opnds = Vec::with_capacity(2);
+        for &x in &ops {
+            let (o, sh) = self.prog_node(s, x, Some(&rshape), nodes)?;
+            if sh.ty() != ty || sh.len() != rshape.len() {
+                return None;
+            }
+            opnds.push(o);
+        }
+        if opnds
+            .iter()
+            .all(|o| matches!(o, ProcOpnd::Src(ProcSrc::Lit(_))))
+        {
+            return None;
+        }
+        let b = opnds.last()?.clone();
+        nodes.push(ProcNode {
+            op: ProcOp::Gate(gate, opnds[0].clone(), b),
+            len: rshape.len() as u32,
+        });
+        let shape = if rel {
+            self.scalar_shape(s, e)?
+        } else {
+            rshape
+        };
+        Some((ProcOpnd::Node(nodes.len() as u32 - 1), shape))
+    }
+
     /// What a condition tests: `x = '1'` (or `/=`, either side, BIT and BOOLEAN with the codes of
     /// '0' and '1'), `?? x` of std_ulogic ('1' and 'H') or a BOOLEAN name, all on a static
     /// element `x` of a logic signal; or the predefined `a = b` or `a /= b` of logic signals and
@@ -3564,7 +4078,8 @@ impl Elab<'_> {
     fn mask_cond(&mut self, s: ScopeId, c: ExprId) -> Option<crate::ProcCond> {
         let db: &Db = self.db;
         let (x, mask) = if let Some((x, code, eq)) = db.level_cmp(c) {
-            let m = 1u16 << code;
+            // An enumeration position of 16 or more is no logic code (the element is checked below).
+            let m = 1u16.checked_shl(code)?;
             (x, if eq { m } else { !m & 0x1ff })
         } else if let ExprKind::Call {
             callee,
@@ -3786,6 +4301,7 @@ impl Elab<'_> {
             toggle: None,
             gate: None,
             mux: None,
+            prog: None,
             idle: None,
             guard: None,
         });

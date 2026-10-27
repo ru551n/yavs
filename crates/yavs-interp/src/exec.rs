@@ -2605,7 +2605,14 @@ impl Machine {
         if end > u64::from(u32::MAX) {
             return rt_err_s!("temporary memory of one statement exceeds 4 GiB");
         }
-        self.temp.resize(end as usize, 0);
+        let end = end as usize;
+        if end - self.temp.len() <= 32 {
+            // A fixed-size store, not a `memset` call for a handful of bytes.
+            self.temp.extend_from_slice(&[0; 32]);
+            self.temp.truncate(end);
+        } else {
+            self.temp.resize(end, 0);
+        }
         mk_addr(TEMP, 0, off)
     }
 
@@ -4715,6 +4722,64 @@ impl Machine {
         Ok(())
     }
 
+    /// Append the `ds` bytes at `d` and then the `n` bytes at `s` to the temporary area, 8-byte
+    /// aligned, and return the address of the first. `None`: nothing was appended (a size or
+    /// an address the general path reports).
+    fn temp_append_copy(&mut self, d: u64, ds: u64, s: u64, n: u64) -> Option<u64> {
+        let off = (self.temp.len() as u64).next_multiple_of(8);
+        if off.checked_add(ds)?.checked_add(n)? > u64::from(u32::MAX) {
+            return None;
+        }
+        let was = self.temp.len();
+        self.temp.resize(off as usize, 0);
+        if (ds == 0 || self.temp_append(d, ds as usize)) && self.temp_append(s, n as usize) {
+            return mk_addr(TEMP, 0, off).ok();
+        }
+        self.temp.truncate(was);
+        None
+    }
+
+    /// Append the `n` bytes at `s` to the temporary area. `false`: nothing was appended.
+    #[inline(always)]
+    fn temp_append(&mut self, s: u64, n: usize) -> bool {
+        let (ssp, sidx, soff) = split(s);
+        let soff = soff as usize;
+        let Some(end) = soff.checked_add(n) else {
+            return false;
+        };
+        let Machine {
+            frames,
+            root,
+            sstack,
+            temp,
+            heap,
+            inst,
+            rt,
+            sh,
+            ..
+        } = self;
+        let src = match ssp {
+            TEMP if end <= temp.len() => {
+                temp.extend_from_within(soff..end);
+                return true;
+            }
+            FRAME => slots_of(frames, root, sstack, sidx as usize),
+            INST => Some(&inst.data[..]),
+            CONST => const_bytes(rt, yavs_ir::ConstId(sidx)).ok(),
+            HEAP => heap.data(sidx),
+            SHARED_HEAP => sh.as_ref().and_then(|s| s.heap.as_ref()?.data(sidx)),
+            SHARED => sh.as_ref().map(|s| &s.vars[..]),
+            _ => None,
+        };
+        match src.and_then(|b| b.get(soff..end)) {
+            Some(b) => {
+                temp.extend_from_slice(b);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// `Inst::NewFrame`.
     #[inline(never)]
     fn new_frame(
@@ -4734,6 +4799,17 @@ impl Machine {
             return Err(ice_s!("NewFrame size is not a multiple of its element"));
         }
         let ds = u64::from(dsize);
+        // A copy of the descriptor and the value is appended as it is: the zero fill
+        // `temp_alloc` would do first is written over at once (#792).
+        if fill == 0
+            && let Some(at) = self.temp_append_copy(self.r(desc), ds, self.r(data), size)
+        {
+            let end = u32::try_from(self.temp.len())
+                .map_err(|_| runtime_s!("temporary memory exceeds 4 GiB"))?;
+            self.top().temp_base = end;
+            self.set(dst, at);
+            return Ok(());
+        }
         let at = self.temp_alloc(ds + size)?;
         if ds != 0 {
             self.copy_mem(at, self.r(desc), ds)?;

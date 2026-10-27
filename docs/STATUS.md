@@ -39,6 +39,12 @@ verification-component IDs and UVVM activity-register entries (process order wit
 auto compiles little in these short runs (LEON3 4 functions). sim2 runs the h2h designs only (no realbench keys). Found on
 the way: #782 (literals accepted without visible character literals), #783 (integer width in yavs FST).
 
+### Per-op costs of the interpreter, round 1 (#778, #520, 2026-10-27)
+
+(`docs/decisions.md` "Per-op costs, round 1".) `SubtypeCheck` 136 to 161 instructions an op down to 87 to 129, `AllocCat` 354 to 319, `CallProt` 415 to 393, `DerefImm` 90 to 81; new ops
+`LoadPkg`, `LoadPair`, `CheckK`. Whole runs (`--tier=interp`): `vai_window_gen_interlock` 430.9 to 410.5 G instructions, `poc_arith_addw` 145.7 to 137.8 G. New
+`tools/stepcount --ops-lines OP`. Open: `CallIeee` marshalling (318 to 394), the frame fill of a call (proportional to the register count), `SubtypeCheck` below 50.
+
 ### `wait until <edge>` as cheap as the sensitivity-list forms (#767, 2026-10-26)
 
 (`docs/decisions.md` "`wait until <edge>` costs what the sensitivity-list forms cost".) The end of a `wait until rising_edge(clk)` on one

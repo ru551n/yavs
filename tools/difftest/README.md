@@ -11,6 +11,7 @@ Python 3 stdlib only.
     tools/difftest/difftest.py --candidate yavs-interp  # yavs with `--tier=interp`
     tools/difftest/difftest.py --candidate yavs-llvm  # yavs with `--tier=llvm` (a yavs built with `--features llvm`)
     tools/difftest/difftest.py --candidate yavs-auto  # yavs with `--tier=auto` (the same build)
+    YAVS_LLVM_PREKEY_CHECK=1 tools/difftest/difftest.py --candidate yavs-auto-warm  # a second `--tier=auto` run, linking what the first compiled (the check generates it anyway and compares, #785)
     tools/difftest/difftest.py --bless              # regenerate .expected from the reference simulator
     tools/difftest/difftest.py --filter 'report/|env/' --jobs 4 -v
 

@@ -56,6 +56,11 @@ pub struct Program {
     #[serde(skip)]
     #[doc(hidden)]
     pub hot: HotList,
+    /// The key of the stage-cache entry this program was read from or stored to (the lowering
+    /// key: the same key is the same program, ids and all); `None` for a program not cached.
+    /// Compiled code is found by it before it is generated (yavs-llvm `objcache`, #785).
+    #[serde(skip)]
+    pub identity: Option<String>,
 }
 
 /// An optimised copy of a function, serialised (see [`Program::export_optimized`]).

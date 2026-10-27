@@ -143,6 +143,11 @@ impl LoweringKey {
         consts <= LOWERING_MAX_CONSTS
     }
 
+    /// The name of the stored program (`Program::identity`).
+    fn identity(&self) -> Option<String> {
+        self.cache.identity(&self.extent, "ir", &self.part)
+    }
+
     /// The specialised copies of processes stored for this lowering (kind `spec`, one entry for
     /// all of them, `CopyBlob`).
     fn get_copies(&self) -> Vec<yavs_ir::CopyBlob> {
@@ -344,7 +349,7 @@ impl Elaborated {
             .take()
             .filter(|s| !opts.any_coverage() && s.pkgs == packages && !s.lowerer.externals_early());
         let key = self.lowering_key(db, &opts, &packages, &archs, session.as_ref());
-        let (program, rest, start, learn, lib) =
+        let (mut program, rest, start, learn, lib) =
             match key.as_ref().and_then(|k| k.get().map(|l| (k, l))) {
                 Some((k, lw)) => {
                     let Lowering {
@@ -393,6 +398,8 @@ impl Elaborated {
                     (program, rest, start, learn, lib)
                 }
             };
+        // A program read from or stored to the stage cache is named by its entry (#785).
+        program.identity = learn.as_ref().and_then(|l| l.key.identity());
         let Rest {
             units: arch_units,
             packages: pkg_irs,

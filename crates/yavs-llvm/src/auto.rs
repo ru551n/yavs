@@ -1155,12 +1155,17 @@ fn models() -> &'static [Model; 10] {
     })
 }
 
-/// A module linked from the compilation cache (generation, key, link and dropping the module): 2 to 9
-/// ms for functions of 120 to 180 IR instructions, 12 to 25 us an IR instruction from 1 000 to 13 000
-/// (`YAVS_LLVM_TIMES` `objtimes hit`, #785; generation is about half of it). A function whose object is
-/// in the cache is priced so (`Worker::price`, user, 2026-10-25: a warm run uses cached code as soon as
-/// it is seen), not at what compiling it costs.
-const HIT: Model = model(1000.0, 20.0, 1.0);
+/// A module linked from the compilation cache by its pre-key (key, look-up, link, no generation,
+/// #785): 0.1 to 0.7 ms for functions of up to 220 IR instructions, 0.3 to 1 us an IR instruction from
+/// 1 000 to 20 000 (`YAVS_LLVM_TIMES` `prehit total`, GRLIB warm). A function whose object is in the
+/// cache is priced so (`Worker::price`, user, 2026-10-25: a warm run uses cached code as soon as it is
+/// seen), not at what compiling it costs. ponytail: the first run after the program changed has no
+/// pre-keys yet and generates; the price ignores that one run.
+const HIT: Model = model(1000.0, 1.0, 1.0);
+
+/// `HIT` of a program without `Program::identity` (not cached: coverage, large constant pools), which
+/// has no pre-keys: the module is generated and keyed by its IR, 12 to 50 us an IR instruction (#785).
+const HIT_GEN: Model = model(1000.0, 20.0, 1.0);
 
 /// Microseconds of opening the LLVM library (about 40 million cycles), counted with the first
 /// compile or look-up in the compilation cache: a run too short to pay for it loads nothing.
@@ -1664,8 +1669,10 @@ impl Worker {
         let Some(f) = self.prog.func(id) else {
             return 0;
         };
-        if cached {
+        if cached && self.prog.identity.is_some() {
             HIT.price(f.code.len())
+        } else if cached {
+            HIT_GEN.price(f.code.len())
         } else {
             self.model(id).price(f.code.len())
         }
@@ -4148,10 +4155,11 @@ mod tests {
         assert!(m(Kind::BigLoop).payback() < m(Kind::Big).payback());
         assert!(w3.need(f3) < w.need(f));
         // A function whose object is in the cache is priced at what linking it costs, a process of 200
-        // IR instructions at about 5 ms, whatever its kind (#728, #785).
-        assert_eq!(HIT.price(200), 5_000);
+        // IR instructions at about 1 ms, whatever its kind (#728, #785).
+        assert_eq!(HIT.price(200), 1_200);
         let n2 = w2.prog.func(f2).unwrap().code.len();
-        assert_eq!(w2.price_of(f2, true), HIT.price(n2));
+        // (A program that is not in the stage cache has no pre-keys: its hits generate, #785.)
+        assert_eq!(w2.price_of(f2, true), super::HIT_GEN.price(n2));
         assert!(w2.price_of(f2, true) * 10 < w2.price_of(f2, false));
     }
 

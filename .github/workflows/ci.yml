@@ -49,6 +49,9 @@ jobs:
     timeout-minutes: 90
     env:
       CARGO_BUILD_JOBS: 4
+      # Every run of the tests and the smoke generates code its pre-key found in the cache anyway
+      # and fails when it is another module (#785).
+      YAVS_LLVM_PREKEY_CHECK: 1
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -92,6 +95,9 @@ jobs:
           # --tier=auto with every function compiled from its first call or jump: swap-ins in the
           # middle of each test, at 1 and 4 threads.
           YAVS_BIN="$PWD/target/debug/yavs" YAVS_RUN_FLAGS=--tier-heat=1,0,0 python3 tools/difftest/difftest.py --candidate yavs-auto --threads 4 --no-sandbox --jobs 2 --filter '^(arith|delta|generics|ieee)/'
+          # A second run of each test links what the first compiled by the pre-keys of the compilation
+          # cache; the check mode generates the code anyway and fails on any other module (#785).
+          YAVS_BIN="$PWD/target/debug/yavs" YAVS_RUN_FLAGS=--tier-heat=1,0,0 python3 tools/difftest/difftest.py --candidate yavs-auto-warm --threads 4 --no-sandbox --jobs 2 --filter '^(arith|delta|generics|ieee)/'
 
   # Analysis corpora (tools/corpus): fetched at pinned revisions into the runner cache, never
   # part of the repository. Fails on any difference from the checked-in expected lists, in

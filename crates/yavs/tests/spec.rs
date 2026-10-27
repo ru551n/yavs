@@ -290,6 +290,8 @@ fn compiled_copies_are_cached_by_content() {
             .filter(|l| l.starts_with(&format!("debug: cache: obj {what} ")))
             .count()
     };
+    // (A hit of a pre-key links the object without generating the code, #785.)
+    let hits = |r: &Run| count(r, "hit") + count(r, "prehit");
     let first = go("1");
     assert_eq!(first.code, 0, "{}", first.stderr);
     assert!(first.counters["spec_switched"] >= 6);
@@ -313,8 +315,68 @@ fn compiled_copies_are_cached_by_content() {
             "--threads {threads}: {}",
             again.stderr
         );
-        assert!(count(&again, "hit") >= count(&first, "stored"));
+        assert!(hits(&again) >= count(&first, "stored"));
     }
+}
+
+/// A warm run links the compiled code a pre-key names without generating it (#785), whatever
+/// order the processes switched to their copies in; under `YAVS_LLVM_PREKEY_CHECK` (CI) it
+/// generates the code anyway and must find the object the pre-key named (a difference aborts).
+#[cfg(feature = "llvm")]
+#[test]
+fn a_warm_run_links_by_the_pre_key_and_the_check_agrees() {
+    let d = tempdir("spec_prekey");
+    let src = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/perf/spec_copies.vhd"),
+    )
+    .expect("design");
+    std::fs::write(d.join("spec_copies.vhd"), src).expect("write");
+    let work = format!("work:{}", d.join("lib").display());
+    let a = yavs(&d, &[], &["analyze", "--work", &work, "spec_copies.vhd"]);
+    assert_eq!(a.code, 0, "{}", a.stderr);
+    let go = |threads: &str, check: &str| {
+        let r = yavs(
+            &d,
+            &[
+                ("YAVS_SPEC_AFTER", "2"),
+                ("YAVS_LOG", "debug"),
+                ("YAVS_LLVM_PREKEY_CHECK", check),
+            ],
+            &[
+                "run",
+                "--work",
+                &work,
+                "--tier=auto",
+                "--tier-heat=1,0,0",
+                "--threads",
+                threads,
+                "--shuffle",
+                "spec_copies",
+            ],
+        );
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        let n = |what: &str| {
+            r.stderr
+                .lines()
+                .filter(|l| l.starts_with(&format!("debug: cache: obj {what} ")))
+                .count()
+        };
+        (r.stdout.clone(), n("prehit"), n("pre checked"))
+    };
+    // The first run has no stored program yet (the closure's entries come with its second run),
+    // so no pre-key; the second writes them.
+    let cold = go("1", "");
+    go("4", "");
+    let warm = go("4", "");
+    assert!(warm.1 > 0, "nothing linked by a pre-key");
+    assert_eq!(warm.2, 0);
+    for threads in ["1", "4"] {
+        let checked = go(threads, "1");
+        assert_eq!(checked.1, 0, "the check generates every function");
+        assert!(checked.2 >= warm.1, "{checked:?} against {warm:?}");
+        assert_eq!(checked.0, cold.0);
+    }
+    assert_eq!(warm.0, cold.0);
 }
 
 /// A copy knows the bounds of a signal array in the instance data and splits the position of an

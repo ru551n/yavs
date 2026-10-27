@@ -218,19 +218,40 @@ pub(crate) fn compile_one(
     if let Some(r) = bad_reg(f) {
         return Err(format!("register r{} beyond the frame", r.0));
     }
-    // Native callees are reached through `Mem::ntab`, so only the reachable set's shape
-    // matters here, not what is compiled yet. The function's own callees are roots too: a
-    // function that does not run on native frames still calls those that do directly (#510).
-    let nc = native_set(
-        prog,
-        std::iter::once(id).chain(f.code.iter().filter_map(call_of).map(|c| c.0)),
-    );
     // A copy of a process (`Program::copy_of`) is named by what it is for, not by its id, which
     // depends on the order the processes switched in: the same copy is the same module in every
     // run, so the compilation cache finds it (#661).
     let stem = prog.copy_tag(id).map_or_else(
         || format!("f{}", id.0),
         |t| format!("f{}c{t:016x}", prog.base_of(id).0),
+    );
+    let times = std::env::var_os("YAVS_LLVM_TIMES").is_some();
+    let t0 = std::time::Instant::now();
+    // The cache's object of the function found before its code is generated (#785); under
+    // `objcache::check` the code is generated anyway and must be that object.
+    let full = crate::auto::compute(prog, f);
+    let pre = crate::objcache::pre_key(prog, id, f, &format!("{opt:?} {full} {part:?}"));
+    let stored = pre.as_ref().and_then(crate::objcache::pre_get);
+    if let Some(e) = stored.as_ref().filter(|_| !crate::objcache::check())
+        && let Some(c) = linked(jit, f, &stem, part, e)?
+    {
+        if times {
+            eprintln!(
+                "times f{} {opt:?} ir={} prehit total={} us",
+                id.0,
+                f.code.len(),
+                t0.elapsed().as_micros()
+            );
+        }
+        return Ok(c);
+    }
+    let what = || format!("`{}` (f{}, {part:?})", f.name, id.0);
+    // Native callees are reached through `Mem::ntab`, so only the reachable set's shape
+    // matters here, not what is compiled yet. The function's own callees are roots too: a
+    // function that does not run on native frames still calls those that do directly (#510).
+    let nc = native_set(
+        prog,
+        std::iter::once(id).chain(f.code.iter().filter_map(call_of).map(|c| c.0)),
     );
     // A copy is generated under a fixed name and named by its module afterwards: another copy of
     // the process whose module is the same up to its names (instances that differ in data the code
@@ -245,14 +266,12 @@ pub(crate) fn compile_one(
     if part == Part::Native && !native {
         return Err("no native-frame code for the function".into());
     }
-    let times = std::env::var_os("YAVS_LLVM_TIMES").is_some();
     if let Some(dir) = std::env::var_os("YAVS_LLVM_DUMP") {
         let _ = std::fs::write(
             std::path::Path::new(&dir).join(format!("f{}.ir", id.0)),
             prog.dump_func(id),
         );
     }
-    let t0 = std::time::Instant::now();
     let m = loop {
         let m = Module::new(&name);
         let g = Gen::new(&m);
@@ -277,7 +296,6 @@ pub(crate) fn compile_one(
     };
     let t1 = std::time::Instant::now();
     let ninst = if times { m.instruction_count() } else { 0 };
-    let full = crate::auto::compute(prog, f);
     let mut m = m;
     let (mut name, mut nname, mut cname) = (name, nname, cname);
     let twin_key = twin.then(|| {
@@ -287,15 +305,18 @@ pub(crate) fn compile_one(
         k.finish().hex()
     });
     if let Some(key) = &twin_key {
-        if let Some(&(run, naddr, caddr)) = jit.twins.get(key) {
+        if let Some(&twin) = jit.twins.get(key) {
             crate::objcache::note_twin();
-            return Ok(Compiled {
-                // SAFETY: `run` is the entry of a module equal to the one just generated.
-                run: (run != 0).then(|| unsafe { std::mem::transmute::<usize, RunFn>(run) }),
-                nregs: f.reg_ty.len(),
-                native: naddr,
-                call: caddr,
-            });
+            if let Some(k) = &pre {
+                let obj = crate::objcache::key(&m, opt, full, Some(key));
+                let now = crate::objcache::Pre {
+                    obj,
+                    native,
+                    twin: twin_key.clone(),
+                };
+                crate::objcache::pre_note(k, stored.as_ref(), &now, what);
+            }
+            return Ok(twin_of(f, twin));
         }
         let stem = format!("t{}", &key[..16]);
         m.rename(&name, &stem);
@@ -304,7 +325,7 @@ pub(crate) fn compile_one(
     let (mut t2, mut t3, mut nopt) = (t1, t1, 0);
     // Verified and optimised only when it is not linked from the compilation cache (#505).
     // A copy's module is keyed by its twin key: the bitcode made for it, which names the module.
-    crate::objcache::add(jit, m, opt, full, twin_key.as_deref(), |m| {
+    let obj = crate::objcache::add(jit, m, opt, full, twin_key.as_deref(), |m| {
         m.verify()?;
         t2 = std::time::Instant::now();
         m.optimize_as(opt, full)?;
@@ -313,31 +334,15 @@ pub(crate) fn compile_one(
         Ok(())
     })
     .map_err(llvm)?;
-    let run = if part == Part::Native {
-        None
-    } else {
-        let addr = jit.lookup(&name).map_err(llvm)?;
-        // SAFETY: `name` was generated by `Gen::func` with the `RunFn` signature.
-        Some(unsafe { std::mem::transmute::<usize, RunFn>(addr) })
-    };
-    let naddr = if native {
-        jit.lookup(&nname).map_err(llvm)?
-    } else {
-        0
-    };
-    let caddr = if native && f.parent.is_none() {
-        jit.lookup(&cname).map_err(llvm)?
-    } else {
-        0
-    };
-    if let Some(key) = twin_key {
-        jit.twins
-            .insert(key, (run.map_or(0, |r| r as usize), naddr, caddr));
+    if let (Some(k), Some(obj)) = (&pre, obj) {
+        let now = crate::objcache::Pre {
+            obj,
+            native,
+            twin: twin_key.clone(),
+        };
+        crate::objcache::pre_note(k, stored.as_ref(), &now, what);
     }
-    perf_map(&[
-        (run.map_or(0, |r| r as usize), &f.name, &name),
-        (naddr, &f.name, &nname),
-    ]);
+    let c = look_up(jit, f, [&name, &nname, &cname], native, part, twin_key)?;
     if times {
         let us = |a: std::time::Instant, b: std::time::Instant| (b - a).as_micros();
         eprintln!(
@@ -351,12 +356,91 @@ pub(crate) fn compile_one(
             t0.elapsed().as_micros(),
         );
     }
+    Ok(c)
+}
+
+/// `compile_one` of a function whose pre-key names `e` (#785): the object linked (or the twin
+/// linked before), no code generated; `None` when the object is not there or `part` needs code it
+/// does not have.
+fn linked(
+    jit: &mut Jit,
+    f: &Func,
+    stem: &str,
+    part: Part,
+    e: &crate::objcache::Pre,
+) -> Result<Option<Compiled>, String> {
+    if part == Part::Native && !e.native {
+        return Ok(None);
+    }
+    if let Some(&twin) = e.twin.as_ref().and_then(|t| jit.twins.get(t)) {
+        crate::objcache::note_twin();
+        return Ok(Some(twin_of(f, twin)));
+    }
+    if !crate::objcache::link(jit, &e.obj) {
+        return Ok(None);
+    }
+    let name = e
+        .twin
+        .as_ref()
+        .map_or_else(|| stem.to_string(), |t| format!("t{}", &t[..16]));
+    let names = [&name, &format!("{name}_n"), &format!("{name}_c")];
+    look_up(jit, f, names, e.native, part, e.twin.clone()).map(Some)
+}
+
+/// The entry points of a module just linked into `jit` under `names` (frame-mode entry, native-frame
+/// code, its `CallFn`), recorded as `twin`'s when it is a copy.
+fn look_up(
+    jit: &mut Jit,
+    f: &Func,
+    [name, nname, cname]: [&String; 3],
+    native: bool,
+    part: Part,
+    twin: Option<String>,
+) -> Result<Compiled, String> {
+    let llvm = |e: Error| format!("LLVM: {e} (a bug in yavs)");
+    let run = if part == Part::Native {
+        None
+    } else {
+        let addr = jit.lookup(name).map_err(llvm)?;
+        // SAFETY: `name` was generated by `Gen::func` with the `RunFn` signature.
+        Some(unsafe { std::mem::transmute::<usize, RunFn>(addr) })
+    };
+    let naddr = if native {
+        jit.lookup(nname).map_err(llvm)?
+    } else {
+        0
+    };
+    let caddr = if native && f.parent.is_none() {
+        jit.lookup(cname).map_err(llvm)?
+    } else {
+        0
+    };
+    if let Some(key) = twin {
+        jit.twins
+            .insert(key, (run.map_or(0, |r| r as usize), naddr, caddr));
+    }
+    perf_map(&[
+        (run.map_or(0, |r| r as usize), &f.name, name),
+        (naddr, &f.name, nname),
+    ]);
     Ok(Compiled {
         run,
         nregs: f.reg_ty.len(),
         native: naddr,
         call: caddr,
     })
+}
+
+/// The `Compiled` of a copy whose twin is linked in the same JIT already (entry, native-frame code,
+/// `CallFn`).
+fn twin_of(f: &Func, (run, naddr, caddr): (usize, usize, usize)) -> Compiled {
+    Compiled {
+        // SAFETY: `run` is the entry of a module equal to the one asked for.
+        run: (run != 0).then(|| unsafe { std::mem::transmute::<usize, RunFn>(run) }),
+        nregs: f.reg_ty.len(),
+        native: naddr,
+        call: caddr,
+    }
 }
 
 /// What `compile_one` made of a function.
@@ -502,6 +586,7 @@ pub fn compile(prog: &Program, opt: OptLevel, max_size: usize) -> Result<LlvmTie
         nopt = if times { m.instruction_count() } else { 0 };
         Ok(())
     })?;
+    // (The whole program's module stays keyed by its bitcode: no pre-key, #785.)
     let mut funcs = vec![None; prog.funcs.len()];
     for (id, name, nregs) in names {
         let addr = jit.lookup(&name)?;

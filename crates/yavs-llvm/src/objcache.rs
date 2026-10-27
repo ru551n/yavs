@@ -73,7 +73,8 @@ fn debug(what: &str, k: &Key) {
     }
 }
 
-fn key(m: &Module, opt: OptLevel, full: bool, ir: Option<&str>) -> Key {
+/// The key of the object of `m` at `opt` and `full` (`ir`: a digest of its bitcode made already).
+pub(crate) fn key(m: &Module, opt: OptLevel, full: bool, ir: Option<&str>) -> Key {
     static TARGET: OnceLock<String> = OnceLock::new();
     let mut k = KeyBuilder::new(KIND);
     k.text(&yavs_ir::opt::fingerprint())
@@ -93,8 +94,9 @@ fn times() -> bool {
 
 /// Add `m` to `jit` at `opt` after `prepare` (verify and `optimize_as(opt, full)`); with a cache,
 /// link its stored object instead when there is one, else prepare it, compile it to an object,
-/// store that and link it. `ir`: a digest of `m`'s bitcode the caller made already (a copy's
-/// `twin` key, which names the module), keyed instead of writing the bitcode again.
+/// store that and link it, and return the object's key. `ir`: a digest of `m`'s bitcode the caller
+/// made already (a copy's `twin` key, which names the module), keyed instead of writing the
+/// bitcode again.
 pub(crate) fn add(
     jit: &mut Jit,
     mut m: Module,
@@ -102,7 +104,7 @@ pub(crate) fn add(
     full: bool,
     ir: Option<&str>,
     prepare: impl FnOnce(&mut Module) -> Result<(), Error>,
-) -> Result<(), Error> {
+) -> Result<Option<Key>, Error> {
     let store = STORE.lock().unwrap_or_else(PoisonError::into_inner).clone();
     let Some(store) = store else {
         prepare(&mut m)?;
@@ -111,7 +113,8 @@ pub(crate) fn add(
             jit.add_object(&m.emit(opt)?)
         } else {
             jit.add(m)
-        };
+        }
+        .map(|()| None);
     };
     let t0 = std::time::Instant::now();
     let k = key(&m, opt, full, ir);
@@ -137,7 +140,7 @@ pub(crate) fn add(
                     obj.len()
                 );
             }
-            return Ok(());
+            return Ok(Some(k));
         }
     }
     if CACHED_ONLY.get() {
@@ -174,7 +177,151 @@ pub(crate) fn add(
             obj.len()
         );
     }
-    r
+    r.map(|()| Some(k))
+}
+
+/// The kind of the entries that name a function's object before its code is generated (#785).
+const PRE: &str = "pre";
+
+/// The tuning switches that change the generated code (and `YAVS_LLVM_DUMP`, which dumps what is
+/// generated): a run with one of them set has no pre-keys (it generates and keys the bitcode).
+const GEN_SWITCHES: [&str; 7] = [
+    "YAVS_LLVM_ABLATE",
+    "YAVS_LLVM_DUMP",
+    "YAVS_LLVM_ELOOP_HELPER",
+    "YAVS_LLVM_KINDLOC",
+    "YAVS_LLVM_KINDS",
+    "YAVS_LLVM_NO_ELOOP",
+    "YAVS_LLVM_PCLOC",
+];
+
+/// What a pre-key names (`pre_get`): the key of the object, whether its module has native-frame
+/// code (the generator drops code that does not verify), and a copy's twin key (which names its
+/// symbols, `compile_one`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Pre {
+    pub obj: Key,
+    pub native: bool,
+    pub twin: Option<String>,
+}
+
+/// `YAVS_LLVM_PREKEY_CHECK` (CI; set, not empty and not `0`): a function whose pre-key names an
+/// object is generated anyway, and a module other than the one named is an internal error
+/// (`pre_note`).
+pub(crate) fn check() -> bool {
+    static CHECK: OnceLock<bool> = OnceLock::new();
+    *CHECK.get_or_init(|| {
+        std::env::var("YAVS_LLVM_PREKEY_CHECK").is_ok_and(|v| !v.is_empty() && v != "0")
+    })
+}
+
+/// The key that names the object of function `f` (`id` of `prog`) before its code is generated
+/// (#785, maintainer 2026-10-27): the build (in every key), the optimiser switches, the target,
+/// the program's identity (`Program::identity`: its stage-cache entry, everything the generator
+/// reads of the program), the process `id` is or is a copy of, the function as handed out (its
+/// optimised code: a copy's folded data among it) and `what` (level, `full`, part). `None` without
+/// a store, for a program not cached, or with a switch of `GEN_SWITCHES`.
+pub(crate) fn pre_key(
+    prog: &yavs_ir::Program,
+    id: yavs_ir::FuncId,
+    f: &yavs_ir::Func,
+    what: &str,
+) -> Option<Key> {
+    static TARGET: OnceLock<String> = OnceLock::new();
+    static SWITCHED: OnceLock<bool> = OnceLock::new();
+    let identity = prog.identity.as_deref()?;
+    if !enabled()
+        || *SWITCHED.get_or_init(|| GEN_SWITCHES.iter().any(|v| std::env::var_os(v).is_some()))
+    {
+        return None;
+    }
+    let mut k = KeyBuilder::new(PRE);
+    k.text(&yavs_ir::opt::fingerprint())
+        .text(TARGET.get_or_init(crate::jit::target_id))
+        .text(identity)
+        .text(what)
+        .part(&prog.base_of(id).0.to_le_bytes())
+        .part(&postcard::to_stdvec(f).ok()?);
+    Some(k.finish())
+}
+
+/// The entry of pre-key `k`, if any.
+pub(crate) fn pre_get(k: &Key) -> Option<Pre> {
+    let store = STORE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()?;
+    let e = store.get(PRE, k)?;
+    let text = std::str::from_utf8(&e).ok()?;
+    let mut w = text.split(' ');
+    let obj = Key::from_hex(w.next()?)?;
+    let native = match w.next()? {
+        "1" => true,
+        "0" => false,
+        _ => return None,
+    };
+    let twin = match w.next()? {
+        "-" => None,
+        t => Some(t.to_string()),
+    };
+    w.next().is_none().then_some(Pre { obj, native, twin })
+}
+
+/// Record that pre-key `k` names `now`, the module just generated; `stored` is what its entry
+/// named. Under `check` an entry that named another module is an internal error.
+pub(crate) fn pre_note(k: &Key, stored: Option<&Pre>, now: &Pre, what: impl Fn() -> String) {
+    match stored {
+        Some(s) if s == now => debug("pre checked", k),
+        Some(s) if check() => {
+            eprintln!(
+                "internal error: the compilation cache's pre-key {} of {} names object {} \
+                 (native {}, twin {:?}), but the code generated now is object {} (native {}, twin \
+                 {:?}): an input of the generator is missing from the pre-key; this is a bug in yavs",
+                k.hex(),
+                what(),
+                s.obj.hex(),
+                s.native,
+                s.twin,
+                now.obj.hex(),
+                now.native,
+                now.twin
+            );
+            std::process::abort();
+        }
+        _ => {
+            let store = STORE.lock().unwrap_or_else(PoisonError::into_inner).clone();
+            if let Some(store) = store {
+                let twin = now.twin.as_deref().unwrap_or("-");
+                let text = format!("{} {} {twin}", now.obj.hex(), u8::from(now.native));
+                store.put(PRE, k, text.as_bytes());
+            }
+        }
+    }
+}
+
+/// Link the stored object `obj` into `jit`; whether it was there and linked.
+pub(crate) fn link(jit: &mut Jit, obj: &Key) -> bool {
+    let store = STORE.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    let t0 = std::time::Instant::now();
+    let Some(bytes) = store.and_then(|s| s.get(KIND, obj)) else {
+        return false;
+    };
+    let t1 = std::time::Instant::now();
+    if jit.add_object(&bytes).is_err() {
+        return false;
+    }
+    HITS.fetch_add(1, Ordering::Relaxed);
+    debug("prehit", obj);
+    if times() {
+        // Tuning aid: the microseconds of the look-up and the link of an object a pre-key named.
+        eprintln!(
+            "objtimes prehit get={} link={} obj={}",
+            (t1 - t0).as_micros(),
+            t1.elapsed().as_micros(),
+            bytes.len()
+        );
+    }
+    true
 }
 
 /// The kind of the list of compiled functions (`compiled_list`).

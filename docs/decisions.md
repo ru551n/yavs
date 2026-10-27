@@ -4805,6 +4805,9 @@ is one module of minutes, and every test case of a suite paid it again. Decision
   of that; the LLVM IR is everything the machine code depends on, so a hit is by construction the code a
   compile makes, and anything that changes the code is a miss. Ceiling: the generation itself still runs on
   a hit (a small part of a compile).
+  **Superseded for `--tier=auto` (maintainer, 2026-10-27, #785):** a function's object is found first by a key made
+  before generation, and a hit generates nothing; the IR key stays the key of the object itself. See "llvm:
+  compiled code found before it is generated".
 - **Nothing absolute in the code** (audit of `lower.rs`, 2026-10-21). The runtime callbacks (`yavs_rt_*`) are
   external symbols that ORC resolves to this process's addresses when it links the object (`new_jit`);
   constants and tables known at generation time are private data of the module (`const_global`, `table`,
@@ -11324,3 +11327,44 @@ subprograms that cannot suspend.
   `grlib_leon3mp`): the descriptors are in temporary memory or written heap objects, so a key needs the optimiser to prove them unchanged
   (or fold them, as the copies do for instance data); `AllocLCopy` followed only by `LGet` (a bit of a copied slice, 15 M in GRLIB's
   `ahb_slv_dec_cache`); the signal and drive ops of #790.
+## llvm: compiled code found before it is generated (yavs-llvm `objcache.rs`, `lower.rs`, yavs-ir, yavs-elab, #785, maintainer 2026-10-27)
+
+- **Decision (maintainer, 2026-10-27, on #785; supersedes "Key: the generated LLVM IR" of "Compiled code in the compilation cache" for
+  `--tier=auto`):** a compiled-code cache hit is found by a key computed before generation, so a hit skips generation; a CI check mode
+  generates anyway and fails when one pre-key maps to another module.
+- **The pre-key** (`objcache::pre_key`): the build and cache format (every key), `yavs_ir::opt::fingerprint`, `jit::target_id` (triple,
+  CPU, LLVM version, code model, code generator switches, pipeline), the program's identity, the process the function is or is a copy of,
+  the function's IR as handed out (`Program::func`, serialised: its optimisation, and for a copy the data folded into it), the level
+  (profile- and size-driven, as asked), `full` and the part. **Program identity** is new: `Program::identity`, the key of the stage-cache
+  entry the program was read from or stored to (the lowering key: the same requests on the same analysis give the same program, ids and
+  all; `StageCache::identity`, set by `Elaborated::lower`); a program not cached (coverage, captured sessions, constant pools too large,
+  the first run of a closure) has none and generates as before. A run with a tuning switch that changes generated code
+  (`objcache::GEN_SWITCHES`: `YAVS_LLVM_ABLATE`, `DUMP` (so dumps are made), `ELOOP_HELPER`, `KINDLOC`, `KINDS`, `NO_ELOOP`, `PCLOC`) has no pre-keys.
+- **What generation decides is stored, not keyed:** the entry (kind `pre`) names the object key (the IR key as before), whether the
+  native-frame code verified, and a copy's twin key, which names its symbols; a hit checks the JIT's twins first (two equal copies link
+  one module), then links the object and looks its entry points up (`lower::linked`). Every compile and every IR-key hit writes the
+  entry; an entry whose object is gone is a miss.
+- **Inputs considered:** function ids are baked only into native-frame code (deoptimisation and step calls), and only functions that are
+  not copies have it; a copy's id depends on the switch order and is not in the key (its frame-mode code does not contain it). Known
+  facts, layouts, constants and the native set come from the program and the function. Copies differ by their folded IR, which is keyed.
+  The eager `--tier=llvm` program module keeps the IR key (one module per run; no pre-key).
+- **Check mode** (`YAVS_LLVM_PREKEY_CHECK=1`, set for the whole CI `llvm` job): a pre-key hit generates the module anyway and an entry that
+  names another object, native flag or twin key is an internal error that aborts the run, naming the function and both objects.
+  Exercised by `spec::a_warm_run_links_by_the_pre_key_and_the_check_agrees` (copies switched in another order at 1 and 4 threads) and
+  the difftest candidate `yavs-auto-warm` (a second `--tier=auto` run of every test). A deliberately missing input (the level left out
+  of the key) aborted the first warm run that recompiled at O2.
+- **`HIT`** is 1 ms + 1 us an IR instruction (was 1 ms + 20 us): `YAVS_LLVM_TIMES` `prehit total` (GRLIB warm with the large
+  copies forced, bench build): 0.1 to 0.7 ms for functions of up to 220 IR instructions, 0.3 to 1 us an IR instruction from 1 000 to
+  20 000 (19 867 IR: 9.5 ms, of which reading the object 0.4 and the link 0.15, the rest the key and the look-ups; that function's compile
+  is 839 ms and its IR-key hit was about 790). The first run after the program changed has no pre-keys yet and pays generation again; the
+  price ignores that one run. A program without an identity (never has pre-keys) prices a hit at 1 ms + 20 us an IR
+  instruction, as before (`HIT_GEN`).
+- **Pre entries share the object store** and its limits (4096 entries, least recently used first): one more small entry per compiled
+  function. ponytail: a store of their own if a large design's objects get pushed out.
+- **Measured:** GRLIB warm with the large copies forced, compile thread: 35 IR-key hits took 5.26 s on main, 52 pre-key hits 0.07 s (the
+  queue got further: 9 functions more compiled in that run). Check mode on the whole difftest corpus (`yavs-auto-warm`,
+  `--tier-heat=1,0,0`, 4 threads): no difference (the one test that differs, `textio/file_append_2019`, appends to a file the first run
+  wrote); GRLIB warm under check mode: 35 checked, none different. `tools/realbench --compare` with #679: `docs/STATUS.md`.
+- **The reference simulator (rule 22):** its normal runs generate the design's code ahead of time per design unit, so it has no
+  per-function look-up at run time to compare with; nothing was taken from it.
+

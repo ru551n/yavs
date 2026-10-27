@@ -172,6 +172,19 @@ impl Key {
         String::from_utf8_lossy(&self.hex_bytes()).into_owned()
     }
 
+    /// The key whose [`Key::hex`] is `s`, `None` for any other text.
+    pub fn from_hex(s: &str) -> Option<Key> {
+        let b = s.as_bytes();
+        if b.len() != 64 || !b.iter().all(u8::is_ascii_hexdigit) {
+            return None;
+        }
+        let mut k = [0; 32];
+        for (i, out) in k.iter_mut().enumerate() {
+            *out = u8::from_str_radix(s.get(2 * i..2 * i + 2)?, 16).ok()?;
+        }
+        Some(Key(k))
+    }
+
     fn hex_bytes(&self) -> [u8; 64] {
         const DIGITS: &[u8; 16] = b"0123456789abcdef";
         let mut out = [0; 64];
@@ -690,6 +703,15 @@ mod tests {
         assert_eq!(s.get("t", &key("a")).as_deref(), Some(&b"hello"[..]));
         assert_eq!(s.get("t", &key("b")), None);
         assert_eq!(s.get("u", &key("a")), None);
+    }
+
+    #[test]
+    fn a_key_reads_back_from_its_hex() {
+        let k = key("a");
+        assert_eq!(Key::from_hex(&k.hex()), Some(k));
+        for bad in ["", "ab", &k.hex()[1..], &format!("+{}", &k.hex()[1..])] {
+            assert_eq!(Key::from_hex(bad), None, "{bad:?}");
+        }
     }
 
     #[test]

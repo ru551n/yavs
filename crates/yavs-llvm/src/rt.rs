@@ -66,6 +66,8 @@ pub const LAYOUT_WORD: &str = "yavs_rt_layout_word";
 
 pub const SCAN: &str = "yavs_rt_scan";
 pub const ELOOP: &str = "yavs_rt_eloop";
+pub const ELOOP_EXEC: &str = "yavs_rt_eloop_exec";
+pub const ELOOP_HOST: &str = "yavs_rt_eloop_host";
 
 pub const CODES: &str = "yavs_rt_codes";
 
@@ -1993,6 +1995,37 @@ pub unsafe extern "C" fn yavs_rt_scan(
     sc.iters
 }
 
+/// The memory of an element loop in a native frame: the table of objects, the frames of the
+/// native callers and the calling frame's own slots.
+struct LoopObjects {
+    env: *mut c_void,
+    mem: *mut Mem,
+    depth: u64,
+    /// The calling native frame's own slots (`Mem::region` finds the frames above it only).
+    fhi: u64,
+    slots: *mut u8,
+    slots_len: u64,
+}
+
+impl crate::eloop::LoopMem for LoopObjects {
+    fn region(&mut self, a: u64, write: bool) -> Option<(*mut u8, u64)> {
+        if a >> 32 == self.fhi && !self.slots.is_null() {
+            return Some((self.slots, self.slots_len));
+        }
+        // SAFETY: the pointers are the ones compiled code was given.
+        let m = unsafe { &*self.mem };
+        if let Some(r) = m.region(a, self.depth, write, true) {
+            return Some(r);
+        }
+        // SAFETY: as above; the object is in the table afterwards.
+        if unsafe { yavs_rt_obj(self.env, self.mem, a, u32::from(write)) } == 0 {
+            return None;
+        }
+        // SAFETY: as above.
+        unsafe { &*self.mem }.region(a, self.depth, write, true)
+    }
+}
+
 /// `yavs_rt_eloop(env, mem, prog, nprog, inputs, ind, bound, step, depth) -> iterations`: all but
 /// the last iterations of an element loop (`yavs_interp::elem_loops`) compiled code is at the
 /// head of (`crate::eloop::run`; `prog` is the loop's steps, a constant of the module, `inputs` the
@@ -2013,34 +2046,7 @@ pub unsafe extern "C" fn yavs_rt_eloop(
     slots_len: u64,
 ) -> i64 {
     cb(Cb::Eloop);
-    struct Objects {
-        env: *mut c_void,
-        mem: *mut Mem,
-        depth: u64,
-        /// The calling native frame's own slots (`Mem::region` finds the frames above it only).
-        fhi: u64,
-        slots: *mut u8,
-        slots_len: u64,
-    }
-    impl crate::eloop::LoopMem for Objects {
-        fn region(&mut self, a: u64, write: bool) -> Option<(*mut u8, u64)> {
-            if a >> 32 == self.fhi && !self.slots.is_null() {
-                return Some((self.slots, self.slots_len));
-            }
-            // SAFETY: the pointers are the ones compiled code was given.
-            let m = unsafe { &*self.mem };
-            if let Some(r) = m.region(a, self.depth, write, true) {
-                return Some(r);
-            }
-            // SAFETY: as above; the object is in the table afterwards.
-            if unsafe { yavs_rt_obj(self.env, self.mem, a, u32::from(write)) } == 0 {
-                return None;
-            }
-            // SAFETY: as above.
-            unsafe { &*self.mem }.region(a, self.depth, write, true)
-        }
-    }
-    let mut objs = Objects {
+    let mut objs = LoopObjects {
         env,
         mem,
         depth,
@@ -2059,8 +2065,65 @@ pub unsafe extern "C" fn yavs_rt_eloop(
     crate::eloop::run(words, inputs, ind, bound, step, ELOOP_LIMIT, &mut objs)
 }
 
+/// `yavs_rt_eloop_exec(src, s_e0, s_step, dst, d_e0, d_step, code, m) -> iterations`: the
+/// iterations a loop planned in compiled code (`Gen::eloop_plan`) has checked (`crate::eloop::exec_planned`).
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn yavs_rt_eloop_exec(
+    src: *mut u8,
+    s_e0: i64,
+    s_step: i64,
+    dst: *mut u8,
+    d_e0: i64,
+    d_step: i64,
+    code: u64,
+    m: i64,
+) -> i64 {
+    cb(Cb::Eloop);
+    // SAFETY: compiled code checked every element against the memory the pointers point into.
+    unsafe { crate::eloop::exec_planned(src, s_e0, s_step, dst, d_e0, d_step, code as u8, m) }
+}
+
+/// `yavs_rt_eloop_host(env, mem, a, extra, n, write, depth, fhi, slots, slots_len) -> pointer`:
+/// the host pointer to `n` bytes at address `a` plus `extra` for a loop planned in compiled code,
+/// or null where the objects do not reach them (the loop then runs as it is).
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn yavs_rt_eloop_host(
+    env: *mut c_void,
+    mem: *mut Mem,
+    a: u64,
+    extra: u64,
+    n: u64,
+    write: u32,
+    depth: u64,
+    fhi: u64,
+    slots: *mut u8,
+    slots_len: u64,
+) -> *mut u8 {
+    cb(Cb::EloopHost);
+    use crate::eloop::LoopMem;
+    let mut objs = LoopObjects {
+        env,
+        mem,
+        depth,
+        fhi,
+        slots,
+        slots_len,
+    };
+    let Some((p, len)) = objs.region(a, write != 0) else {
+        return std::ptr::null_mut();
+    };
+    // `extra` is below 2^63: no wrap.
+    let off = (a & 0xffff_ffff) + extra;
+    if n <= len && off <= len - n {
+        // SAFETY: the `n` bytes at `off` lie in the object.
+        unsafe { p.add(off as usize) }
+    } else {
+        std::ptr::null_mut()
+    }
+}
+
 /// The most iterations one call of `yavs_rt_eloop` does (the generic code asks again after it).
-const ELOOP_LIMIT: i64 = 1 << 24;
+pub const ELOOP_LIMIT: i64 = 1 << 24;
 
 /// The `ctl` word of `yavs_rt_scan` for a search loop.
 pub fn scan_ctl(l: &yavs_interp::SearchLoop) -> u64 {

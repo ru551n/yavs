@@ -133,6 +133,8 @@ pub(crate) fn new_jit(opt: OptLevel) -> Result<Jit, Error> {
             (LAYOUT_WORD, yavs_rt_layout_word as *const () as usize),
             (SCAN, yavs_rt_scan as *const () as usize),
             (ELOOP, yavs_rt_eloop as *const () as usize),
+            (ELOOP_EXEC, yavs_rt_eloop_exec as *const () as usize),
+            (ELOOP_HOST, yavs_rt_eloop_host as *const () as usize),
             (CODES, yavs_rt_codes as *const () as usize),
             (SCALAR, yavs_rt_scalar as *const () as usize),
             (PLANES, yavs_rt_planes as *const () as usize),
@@ -1550,6 +1552,12 @@ struct Gen {
     /// -> iterations`.
     eloop_ty: LLVMTypeRef,
     eloop: LLVMValueRef,
+    /// `yavs_rt_eloop_exec(src, s_e0, s_step, dst, d_e0, d_step, code, m) -> iterations`.
+    eloop_exec_ty: LLVMTypeRef,
+    eloop_exec: LLVMValueRef,
+    /// `yavs_rt_eloop_host(env, mem, a, extra, n, write, depth, fhi, slots, slots_len) -> ptr`.
+    eloop_host_ty: LLVMTypeRef,
+    eloop_host: LLVMValueRef,
     /// `yavs_rt_codes(codes, groups, mask, out)`.
     codes_ty: LLVMTypeRef,
     codes: LLVMValueRef,
@@ -1917,6 +1925,10 @@ impl Gen {
             let scan_ty = LLVMFunctionType(i32, scparams.as_mut_ptr(), 11, 0);
             let mut elparams = [ptr, ptr, ptr, i64, ptr, i64, i64, i64, i64, i64, ptr, i64];
             let eloop_ty = LLVMFunctionType(i64, elparams.as_mut_ptr(), 12, 0);
+            let mut exparams = [ptr, i64, i64, ptr, i64, i64, i64, i64];
+            let eloop_exec_ty = LLVMFunctionType(i64, exparams.as_mut_ptr(), 8, 0);
+            let mut ehparams = [ptr, ptr, i64, i64, i64, i32, i64, i64, ptr, i64];
+            let eloop_host_ty = LLVMFunctionType(ptr, ehparams.as_mut_ptr(), 10, 0);
             let mut cparams = [ptr, i64, i64, ptr];
             let codes_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), cparams.as_mut_ptr(), 4, 0);
             let mut scaparams = [ptr, i64, ptr];
@@ -1998,6 +2010,10 @@ impl Gen {
                 scan: add(SCAN, scan_ty),
                 eloop_ty,
                 eloop: add(ELOOP, eloop_ty),
+                eloop_exec_ty,
+                eloop_exec: add(ELOOP_EXEC, eloop_exec_ty),
+                eloop_host_ty,
+                eloop_host: add(ELOOP_HOST, eloop_host_ty),
                 codes_ty,
                 codes: add(CODES, codes_ty),
                 scalar_ty,
@@ -2099,6 +2115,13 @@ impl Gen {
             self.attr(self.planes, false, "memory", mem_effects(RW, 0, 0));
             self.attr(self.planes, false, "nofree", 0);
             self.attr(self.planes, false, "nosync", 0);
+            for a in ["nounwind", "willreturn", "nofree", "nosync"] {
+                self.attr(self.eloop_exec, false, a, 0);
+            }
+            self.attr(self.eloop_exec, false, "memory", mem_effects(RW, 0, 0));
+            self.attr(self.eloop_host, false, "nounwind", 0);
+            self.attr(self.eloop_host, false, "willreturn", 0);
+            self.attr(self.eloop_host, false, "memory", mem_effects(RW, RW, 0));
             for f in [
                 self.host,
                 self.region,
@@ -3810,58 +3833,20 @@ impl Gen {
                 if let Some(l) = eloops.get(&pc)
                     && c.nat.as_ref().is_some_and(|n| n.closed.is_none())
                 {
-                    // The iterations but the last run in the helper; what it leaves (a fault, an
-                    // overlap, memory it does not reach, nothing to gain) is the generic code below.
+                    // The iterations but the last run planned in the code itself (the program of
+                    // steps as straight-line code), or in the helper for a shape it does not
+                    // handle; what either leaves (a fault, an overlap, memory it does not reach,
+                    // nothing to gain) is the generic code below.
                     if std::env::var_os("YAVS_LLVM_KINDLOC").is_some() {
                         eprintln!("eloop `{}` pc{}: {:?}", f.name, l.head, l);
                     }
-                    let (ind, bound) = (self.ld(&c, l.ind), self.ld(&c, l.bound));
-                    let step = self.ld(&c, l.step);
-                    let (call, set, generic) = (self.block(&c), self.block(&c), self.block(&c));
-                    // At least two iterations to go (the helper leaves the last to the generic code).
-                    let next = LLVMBuildAdd(self.b, ind, step, c"".as_ptr());
-                    let more = LLVMBuildAnd(
-                        self.b,
-                        self.icmp(IP::LLVMIntNE, ind, bound),
-                        self.icmp(IP::LLVMIntNE, next, bound),
-                        c"".as_ptr(),
-                    );
-                    LLVMBuildCondBr(self.b, more, call, generic);
-                    LLVMPositionBuilderAtEnd(self.b, call);
-                    let inputs = self.entry_alloca(&c, 8 * yavs_interp::eloop::MAX_INPUTS as u64);
-                    for (k, r) in l.inputs.iter().enumerate() {
-                        self.store(self.ld(&c, *r), self.gep(inputs, self.c64(k as i64 * 8)));
+                    let generic = self.block(&c);
+                    match crate::eloop::invariant_steps(&l.prog, l.inputs.len()) {
+                        Some(inv) if std::env::var_os("YAVS_LLVM_ELOOP_HELPER").is_none() => {
+                            self.eloop_plan(&c, l, &inv, generic);
+                        }
+                        _ => self.eloop_call(&c, l, generic),
                     }
-                    let mut args = [
-                        c.env,
-                        c.mem,
-                        self.i64_table(&l.prog),
-                        self.c64(l.prog.len() as i64),
-                        inputs,
-                        ind,
-                        bound,
-                        step,
-                        c.nat.as_ref().map_or(self.c64(0), |n| n.depth),
-                        c.nat.as_ref().map_or(self.c64(0), |n| n.fhi),
-                        c.nat
-                            .as_ref()
-                            .map_or(LLVMConstPointerNull(self.ptr), |n| n.slots),
-                        self.c64(c.frame_len as i64),
-                    ];
-                    let done = LLVMBuildCall2(
-                        self.b,
-                        self.eloop_ty,
-                        self.eloop,
-                        args.as_mut_ptr(),
-                        12,
-                        c"".as_ptr(),
-                    );
-                    let some = self.icmp(IP::LLVMIntNE, done, self.c64(0));
-                    LLVMBuildCondBr(self.b, some, set, generic);
-                    LLVMPositionBuilderAtEnd(self.b, set);
-                    let moved = LLVMBuildMul(self.b, done, step, c"".as_ptr());
-                    self.st(&c, l.ind, LLVMBuildAdd(self.b, ind, moved, c"".as_ptr()));
-                    LLVMBuildBr(self.b, generic);
                     LLVMPositionBuilderAtEnd(self.b, generic);
                 }
                 if let Some(l) = scans.get(&pc) {
@@ -8267,6 +8252,415 @@ impl Gen {
             LLVMSetGlobalConstant(g, 1);
             LLVMSetLinkage(g, llvm_sys::LLVMLinkage::LLVMPrivateLinkage);
             g
+        }
+    }
+
+    /// The head of an element loop in a native frame asks `yavs_rt_eloop` for its iterations but
+    /// the last (the shapes `eloop_plan` leaves alone); the builder ends at `generic`'s entry edge.
+    unsafe fn eloop_call(&self, c: &Cur, l: &yavs_interp::ElemLoop, generic: LLVMBasicBlockRef) {
+        // SAFETY: blocks of c.f, loads of its registers, a call with the declared signature.
+        unsafe {
+            let (ind, bound) = (self.ld(c, l.ind), self.ld(c, l.bound));
+            let step = self.ld(c, l.step);
+            let (call, set) = (self.block(c), self.block(c));
+            // At least two iterations to go (the helper leaves the last to the generic code).
+            let next = LLVMBuildAdd(self.b, ind, step, c"".as_ptr());
+            let more = LLVMBuildAnd(
+                self.b,
+                self.icmp(IP::LLVMIntNE, ind, bound),
+                self.icmp(IP::LLVMIntNE, next, bound),
+                c"".as_ptr(),
+            );
+            LLVMBuildCondBr(self.b, more, call, generic);
+            LLVMPositionBuilderAtEnd(self.b, call);
+            let inputs = self.entry_alloca(c, 8 * yavs_interp::eloop::MAX_INPUTS as u64);
+            for (k, r) in l.inputs.iter().enumerate() {
+                self.store(self.ld(c, *r), self.gep(inputs, self.c64(k as i64 * 8)));
+            }
+            let mut args = [
+                c.env,
+                c.mem,
+                self.i64_table(&l.prog),
+                self.c64(l.prog.len() as i64),
+                inputs,
+                ind,
+                bound,
+                step,
+                c.nat.as_ref().map_or(self.c64(0), |n| n.depth),
+                c.nat.as_ref().map_or(self.c64(0), |n| n.fhi),
+                c.nat
+                    .as_ref()
+                    .map_or(LLVMConstPointerNull(self.ptr), |n| n.slots),
+                self.c64(c.frame_len as i64),
+            ];
+            let done = LLVMBuildCall2(
+                self.b,
+                self.eloop_ty,
+                self.eloop,
+                args.as_mut_ptr(),
+                12,
+                c"".as_ptr(),
+            );
+            let some = self.icmp(IP::LLVMIntNE, done, self.c64(0));
+            LLVMBuildCondBr(self.b, some, set, generic);
+            LLVMPositionBuilderAtEnd(self.b, set);
+            let moved = LLVMBuildMul(self.b, done, step, c"".as_ptr());
+            self.st(c, l.ind, LLVMBuildAdd(self.b, ind, moved, c"".as_ptr()));
+            LLVMBuildBr(self.b, generic);
+        }
+    }
+
+    /// The host pointer to `n` bytes at `a` plus `extra` for `eloop_plan`: where the generator
+    /// knows the region (`host`: the held parameter regions, the frame, constants, the temporary
+    /// area, instance data) inline, else `yavs_rt_eloop_host` (every object a loop in a native
+    /// frame can reach); `slow` is taken where they are not there.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn eloop_host(
+        &self,
+        c: &Cur,
+        at: Option<Known>,
+        a: LLVMValueRef,
+        extra: LLVMValueRef,
+        n: LLVMValueRef,
+        write: bool,
+        slow: LLVMBasicBlockRef,
+    ) -> LLVMValueRef {
+        // SAFETY: blocks of c.f; a call with the declared signature.
+        unsafe {
+            if matches!(
+                at,
+                Some(
+                    Known::Param(_)
+                        | Known::Frame(_)
+                        | Known::Const(..)
+                        | Known::Temp
+                        | Known::Inst(_)
+                        | Known::InstAny
+                        | Known::Heap(Some(_))
+                )
+            ) {
+                return self.host(c, a, at, extra, n, write, slow);
+            }
+            let nat = c.nat.as_ref();
+            let mut args = [
+                c.env,
+                c.mem,
+                a,
+                extra,
+                n,
+                self.c32(u32::from(write)),
+                nat.map_or(self.c64(0), |n| n.depth),
+                nat.map_or(self.c64(0), |n| n.fhi),
+                nat.map_or(LLVMConstPointerNull(self.ptr), |n| n.slots),
+                self.c64(c.frame_len as i64),
+            ];
+            let p = LLVMBuildCall2(
+                self.b,
+                self.eloop_host_ty,
+                self.eloop_host,
+                args.as_mut_ptr(),
+                10,
+                c"".as_ptr(),
+            );
+            self.guard(c, LLVMBuildIsNotNull(self.b, p, c"".as_ptr()), slow);
+            p
+        }
+    }
+
+    /// The iterations of an element loop but the last, planned and done in the code itself
+    /// (#757): the program of steps (`yavs_interp::elem_loops`) as straight-line code that holds
+    /// each value as a pair (value at the first iteration, change per iteration; `inv` says which
+    /// have none), checks every position, descriptor and element range at the first and the last
+    /// iteration as `crate::eloop::run` does, and calls `yavs_rt_eloop_exec` for the elements. Any
+    /// check that fails, and any memory the loop would reach that the objects do not, takes
+    /// `generic` (nothing was written); the loop variable moves by the iterations done and the
+    /// builder leaves for `generic`, which runs the last iteration (or the whole loop).
+    unsafe fn eloop_plan(
+        &self,
+        c: &Cur,
+        l: &yavs_interp::ElemLoop,
+        inv: &[bool],
+        generic: LLVMBasicBlockRef,
+    ) {
+        use yavs_interp::eloop::{ADD, ADDR, GET, IND, KONST, LD, LEN, MOV, MUL, POS, SET, SUB};
+        // SAFETY: integer arithmetic, loads of the loop's registers, blocks of c.f, calls with the
+        // declared signatures; every pointer is used for the bytes `eloop_host` was asked for.
+        unsafe {
+            let b = self.b;
+            let (ind, bound, step) = (self.ld(c, l.ind), self.ld(c, l.bound), self.ld(c, l.step));
+            let (c0, c1) = (self.c64(0), self.c64(1));
+            let i1 = LLVMInt1TypeInContext(self.ctx);
+            let no = LLVMConstInt(i1, 0, 0);
+            let not = |v| LLVMBuildNot(b, v, c"".as_ptr());
+            let and = |x, y| LLVMBuildAnd(b, x, y, c"".as_ptr());
+            let sel = |k, x, y| LLVMBuildSelect(b, k, x, y, c"".as_ptr());
+            // Two iterations to go at least, 1 or -1 at a time: `m` iterations, the last at `bound`.
+            let (d0, o1) = self.ovf(self.ssub, bound, ind);
+            let (dist, o2) = self.ovf(self.smul, d0, step);
+            let lim = self.c64(ELOOP_LIMIT);
+            let m = sel(self.icmp(IP::LLVMIntSLT, dist, lim), dist, lim);
+            let unit = self.or(
+                self.icmp(IP::LLVMIntEQ, step, c1),
+                self.icmp(IP::LLVMIntEQ, step, self.c64(-1)),
+            );
+            let ok = and(
+                and(unit, not(self.or(o1, o2))),
+                self.icmp(IP::LLVMIntSGE, m, self.c64(2)),
+            );
+            self.guard(c, ok, generic);
+            let last = LLVMBuildSub(b, m, c1, c"".as_ptr());
+            // (value at iteration 0, change per iteration) of each step.
+            let mut val: Vec<(LLVMValueRef, LLVMValueRef)> = Vec::new();
+            let mut bad = no;
+            // The memory read besides the vectors: host address and bytes.
+            let mut reads: Vec<(LLVMValueRef, u64)> = Vec::new();
+            #[allow(clippy::type_complexity)]
+            let mut gets: Option<(
+                Option<Known>,
+                LLVMValueRef,
+                (LLVMValueRef, LLVMValueRef),
+                bool,
+            )> = None;
+            // What the generator knows of the register an operand is an input of.
+            let known = |v: i64| -> Option<Known> {
+                (v <= -2)
+                    .then(|| l.inputs.get((-2 - v) as usize))
+                    .flatten()
+                    .and_then(|r| self.known_addr(c, *r))
+            };
+            let get =
+                |v: i64, val: &Vec<(LLVMValueRef, LLVMValueRef)>| -> (LLVMValueRef, LLVMValueRef) {
+                    if v >= 0 {
+                        val[v as usize]
+                    } else if v == IND {
+                        (ind, step)
+                    } else {
+                        (self.ld(c, l.inputs[(-2 - v) as usize]), c0)
+                    }
+                };
+            // `x0 + x1 * last` and whether it overflowed; `x1` is not 0 unless `still`.
+            let at_last = |x: (LLVMValueRef, LLVMValueRef), still: bool, bad: &mut LLVMValueRef| {
+                if still {
+                    return x.0;
+                }
+                let (p, o) = self.ovf(self.smul, x.1, last);
+                let (e, o2) = self.ovf(self.sadd, x.0, p);
+                *bad = self.or(*bad, self.or(o, o2));
+                e
+            };
+            let val_inv =
+                |v: i64, inv: &[bool]| -> bool { if v >= 0 { inv[v as usize] } else { v != IND } };
+            for (j, st) in l.prog.as_chunks::<4>().0.iter().enumerate() {
+                let (a, bb, cc) = (st[1], st[2], st[3]);
+                let r = match st[0] {
+                    MOV => get(a, &val),
+                    KONST => (self.c64(a), c0),
+                    ADD | SUB => {
+                        let (x, y) = (get(a, &val), get(bb, &val));
+                        let f = if st[0] == ADD { self.sadd } else { self.ssub };
+                        let (r0, o) = self.ovf(f, x.0, y.0);
+                        bad = self.or(bad, o);
+                        let r1 = if inv[j] {
+                            c0
+                        } else {
+                            let (r1, o) = self.ovf(f, x.1, y.1);
+                            bad = self.or(bad, o);
+                            r1
+                        };
+                        let r = (r0, r1);
+                        at_last(r, inv[j], &mut bad);
+                        r
+                    }
+                    MUL => {
+                        // One of them does not change (`invariant_steps`).
+                        let (x, y) = (get(a, &val), get(bb, &val));
+                        let (k, v, vinv) = if val_inv(a, inv) {
+                            (x.0, y, val_inv(bb, inv))
+                        } else {
+                            (y.0, x, false)
+                        };
+                        let (r0, o) = self.ovf(self.smul, k, v.0);
+                        bad = self.or(bad, o);
+                        let r1 = if vinv {
+                            c0
+                        } else {
+                            let (r1, o) = self.ovf(self.smul, k, v.1);
+                            bad = self.or(bad, o);
+                            r1
+                        };
+                        let r = (r0, r1);
+                        at_last(r, inv[j], &mut bad);
+                        r
+                    }
+                    POS | LEN => {
+                        let d = get(a, &val).0;
+                        let p = self.eloop_host(
+                            c,
+                            known(a),
+                            d,
+                            self.c64(bb * 24),
+                            self.c64(24),
+                            false,
+                            generic,
+                        );
+                        reads.push((LLVMBuildPtrToInt(b, p, self.i64, c"".as_ptr()), 24));
+                        let (dl, dr, dir) = self.dope_words(p);
+                        if st[0] == LEN {
+                            let (n, fits) = self.len_of(dl, dr, dir);
+                            let big = self.icmp(IP::LLVMIntSLT, n, c0);
+                            bad = self.or(bad, self.or(not(fits), big));
+                            (n, c0)
+                        } else {
+                            let x = get(cc, &val);
+                            let xinv = val_inv(cc, inv);
+                            let up = self.icmp(IP::LLVMIntEQ, dir, c0);
+                            let down = self.icmp(IP::LLVMIntEQ, dir, c1);
+                            bad = self.or(bad, not(self.or(up, down)));
+                            let e1 = at_last(x, xinv, &mut bad);
+                            let lo = sel(down, dr, dl);
+                            let hi = sel(down, dl, dr);
+                            let (p0, o) =
+                                self.ovf(self.ssub, sel(down, dl, x.0), sel(down, x.0, dl));
+                            bad = self.or(bad, o);
+                            let p1 = if xinv {
+                                c0
+                            } else {
+                                let (neg, o) = self.ovf(self.ssub, c0, x.1);
+                                bad = self.or(bad, and(o, down));
+                                sel(down, neg, x.1)
+                            };
+                            let le = |u, v| self.icmp(IP::LLVMIntSLE, u, v);
+                            let inside =
+                                and(and(le(lo, x.0), le(x.0, hi)), and(le(lo, e1), le(e1, hi)));
+                            bad = self.or(bad, not(inside));
+                            (p0, p1)
+                        }
+                    }
+                    LD => {
+                        let base = get(a, &val).0;
+                        let p = self.eloop_host(
+                            c,
+                            known(a),
+                            base,
+                            self.c64(bb),
+                            self.c64(cc),
+                            false,
+                            generic,
+                        );
+                        reads.push((LLVMBuildPtrToInt(b, p, self.i64, c"".as_ptr()), cc as u64));
+                        let ty = match cc {
+                            1 => self.i8,
+                            4 => self.i32,
+                            _ => self.i64,
+                        };
+                        let w = self.load(ty, p);
+                        let w = if cc == 8 {
+                            w
+                        } else {
+                            LLVMBuildZExt(b, w, self.i64, c"".as_ptr())
+                        };
+                        (w, c0)
+                    }
+                    ADDR => {
+                        let base = get(a, &val).0;
+                        let lo = LLVMBuildAnd(b, base, self.c64(0xffff_ffff), c"".as_ptr());
+                        let lo = LLVMBuildAdd(b, lo, self.c64(bb), c"".as_ptr());
+                        bad = self.or(bad, self.icmp(IP::LLVMIntUGT, lo, self.c64(0xffff_ffff)));
+                        let hi = LLVMBuildAnd(b, base, self.c64(!0xffff_ffff), c"".as_ptr());
+                        (LLVMBuildOr(b, hi, lo, c"".as_ptr()), c0)
+                    }
+                    GET => {
+                        let base = get(a, &val).0;
+                        gets = Some((known(a), base, get(bb, &val), val_inv(bb, inv)));
+                        (c0, c0)
+                    }
+                    SET => {
+                        let base = get(a, &val).0;
+                        let x = get(bb, &val);
+                        let xinv = val_inv(bb, inv);
+                        // The elements `x0 + x1 * n`, `n` up to `last`, of the vector at `base`,
+                        // all in its object: the pointer to its first byte and the blocks'
+                        // byte range `lo..hi`.
+                        let stream = |at: Option<Known>,
+                                      base: LLVMValueRef,
+                                      x: (LLVMValueRef, LLVMValueRef),
+                                      xinv: bool,
+                                      write: bool,
+                                      bad: &mut LLVMValueRef| {
+                            let e1 = at_last(x, xinv, bad);
+                            let big = self.c64(1 << 32);
+                            let out = self.or(
+                                self.icmp(IP::LLVMIntUGE, x.0, big),
+                                self.icmp(IP::LLVMIntUGE, e1, big),
+                            );
+                            let bads = self.or(*bad, out);
+                            self.guard(c, not(bads), generic);
+                            *bad = no;
+                            let hi = sel(self.icmp(IP::LLVMIntUGT, x.0, e1), x.0, e1);
+                            let lo = sel(self.icmp(IP::LLVMIntULT, x.0, e1), x.0, e1);
+                            let blk = |e| {
+                                LLVMBuildShl(
+                                    b,
+                                    LLVMBuildLShr(b, e, self.c64(6), c"".as_ptr()),
+                                    self.c64(5),
+                                    c"".as_ptr(),
+                                )
+                            };
+                            let end = LLVMBuildAdd(b, blk(hi), self.c64(32), c"".as_ptr());
+                            let p = self.eloop_host(c, at, base, c0, end, write, generic);
+                            let pi = LLVMBuildPtrToInt(b, p, self.i64, c"".as_ptr());
+                            (
+                                p,
+                                LLVMBuildAdd(b, pi, blk(lo), c"".as_ptr()),
+                                LLVMBuildAdd(b, pi, end, c"".as_ptr()),
+                            )
+                        };
+                        let (dp, dlo, dhi) = stream(known(a), base, x, xinv, true, &mut bad);
+                        // Nothing it read is among the elements it writes.
+                        for &(rs, n) in &reads {
+                            let re = LLVMBuildAdd(b, rs, self.c64(n as i64), c"".as_ptr());
+                            let hit = and(
+                                self.icmp(IP::LLVMIntULT, rs, dhi),
+                                self.icmp(IP::LLVMIntULT, dlo, re),
+                            );
+                            bad = self.or(bad, hit);
+                        }
+                        let (sp, s_e0, s_step, code) = if cc >= 0 {
+                            let (sat, sb, sx, sinv) =
+                                gets.expect("`invariant_steps` has a GET before a copy");
+                            let (sp, _, _) = stream(sat, sb, sx, sinv, false, &mut bad);
+                            (sp, sx.0, sx.1, c0)
+                        } else {
+                            let code = get(cc, &val).0;
+                            bad = self.or(bad, self.icmp(IP::LLVMIntUGT, code, self.c64(8)));
+                            (LLVMConstPointerNull(self.ptr), c0, c0, code)
+                        };
+                        self.guard(c, not(bad), generic);
+                        let mut args = [sp, s_e0, s_step, dp, x.0, x.1, code, m];
+                        let done = LLVMBuildCall2(
+                            b,
+                            self.eloop_exec_ty,
+                            self.eloop_exec,
+                            args.as_mut_ptr(),
+                            8,
+                            c"".as_ptr(),
+                        );
+                        let moved = LLVMBuildMul(b, done, step, c"".as_ptr());
+                        self.st(c, l.ind, LLVMBuildAdd(b, ind, moved, c"".as_ptr()));
+                        LLVMBuildBr(b, generic);
+                        return;
+                    }
+                    _ => unreachable!("`invariant_steps` knows the operations"),
+                };
+                // The flags so far, tested here: a flag kept for the whole plan is a value live
+                // across the blocks of every memory access after it.
+                if !LLVMIsAConstantInt(bad).is_null() && LLVMConstIntGetZExtValue(bad) == 0 {
+                } else {
+                    self.guard(c, not(bad), generic);
+                    bad = no;
+                }
+                val.push(r);
+            }
         }
     }
 

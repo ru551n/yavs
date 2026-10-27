@@ -1363,6 +1363,8 @@ mod llvm {
         "acc=",
         [
             ("cb_eloop", Min(175)),
+            // The vector and the descriptor the planned loops cannot find inline: a call each.
+            ("cb_eloop_host", Max(360)),
             ("cb_step", Max(6)),
             ("cb_deopt", Max(0)),
             ("cb_host", Max(22)),

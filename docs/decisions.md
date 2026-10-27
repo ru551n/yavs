@@ -10076,6 +10076,45 @@ read or written per element), where the interpreter does the same loop as one op
   for the loop that leaves its vector), `perf/llvm_eloop.vhd` (`cb_eloop` floor, no step or deopt), unit
   tests of the runtime against the plain loop in `eloop.rs`.
 
+## Element loops planned in the compiled code itself (yavs-llvm, #757, 2026-10-27)
+
+The helper of "Element loops in compiled code" cost about 1000 instructions (190 cycles in a microbenchmark, 400 in the
+histogram run) for a loop of eight elements: it interprets the loop's program of steps, one `match` and one checked affine
+pair per step, and asks the object table through a trait object for every vector and descriptor. `poc_stat_histogram` calls
+it 2.6 million times; `eloop::run`, `LoopObjects::region` and `yavs_rt_eloop` were 38 percent of its warm cycles.
+
+- **The steps become straight-line code** (`Gen::eloop_plan`). Each value of the program is a pair (value at the first
+  iteration, change per iteration) of LLVM values; the checks of `eloop::run` are the same ones as integer arithmetic with
+  overflow flags (`sadd`, `ssub`, `smul`): the position of an index in a dimension at the first and the last iteration,
+  lengths, loaded words, an element range inside 2^32 and inside the object, nothing read among the elements written. One
+  set of flags, tested before every memory access that depends on them; any failure takes the generic loop with nothing
+  written, as the helper's decline did. Only the elements are done by a call, `yavs_rt_eloop_exec` (the plane copy, the fill
+  and the in-order loop of `eloop::exec`), which returns how many iterations it did (fewer only for a source element that is no
+  code); the loop variable moves by that many steps and the generic code runs the last iteration as before.
+- **Which steps change is known when the code is made** (`eloop::invariant_steps`): `elem_loops` only accepts bases, codes
+  and descriptors that do not change, and a product has one factor that does not, so a step either has change 0 (no code for
+  it) or depends on the loop variable (and `step`, 1 or -1, is checked once). A program it does not accept (it accepts
+  everything `elem_loops` makes today) keeps the helper call (`Gen::eloop_call`); `YAVS_LLVM_ELOOP_HELPER=1` forces it for A/B
+  measurements and for the test that runs the loops design both ways. The helper and `eloop::run` stay, for the shared
+  runtime (#481).
+- **An address is resolved once per use, not once per step.** A base the generator knows (a held parameter region, the frame,
+  a constant, the temporary area, instance data, an object in hand) goes through `Gen::host` inline as in any access; the others
+  (a fresh frame the caller made, a heap vector) through one call, `yavs_rt_eloop_host`, which finds what `LoopObjects`
+  finds (also the slots of the calling native frames) and bounds-checks `extra + n`. An inline probe of the object cache entry
+  in front of that call was tried and dropped: the new frame of `get_row` is not in the cache yet (the call loads it), so
+  the probe only added instructions (10.4 G to 10.7 G, cycles +3 percent).
+- **`eloop::exec` decides overlap by host addresses**, not by "same object": the byte ranges of the blocks each stream
+  touches are compared as addresses, which is what the code handing it pointers (not objects) needs, and is as exact for the
+  helper.
+- **Measured** (bench build with `llvm`, `--tier=auto`, histogram warm, one claimed core, `perf stat`, best of 5 interleaved):
+  13.10 G to 10.40 G instructions, 2.78 G to 2.24 G cycles (-19 percent); realbench run phase `--compare` (5 runs): wall 0.79 s to
+  0.52 s warm, 1.06 s to 0.92 s cold. The loops design runs identically in the interpreter, under `--tier=llvm` and
+  `--tier=auto --tier-heat=1,0,0`, each with and without the helper (`compiled_loops`).
+- **What is left in the histogram** (perf, warm): `get_row`'s own code 26 percent of the cycles (the plan, and the frame, layout
+  and result around the loop), `to_slvv_8` and `to_slm` 16, `exec_planned` 6, `yavs_rt_eloop_host` with its object look-up 10
+  (for the fresh frame and the vector read), the interpreter's part (`run_ops`, `op_loop`) 10.
+
+
 ## A process that never suspends stays in compiled code under a bound of 10^9 jumps back (yavs-llvm, yavs-interp, yavs-kernel, #583, #761, 2026-10-26)
 
 Supersedes the "leaves compiled code at its jump back" decision above (user, 2026-10-26): the bound on a process that never

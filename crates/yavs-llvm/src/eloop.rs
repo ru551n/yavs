@@ -70,6 +70,92 @@ pub fn run(
     }
 }
 
+/// Which steps of `prog` have the same value in every iteration, when compiled code can plan the
+/// loop itself (`Gen::eloop_plan`): every base and code is such a step, a product has one
+/// factor that is, and the single `SET` ends the program. `None` leaves the loop to [`run`].
+/// `ninputs` is how many input registers there are.
+#[cfg(any(feature = "llvm", test))]
+pub fn invariant_steps(prog: &[i64], ninputs: usize) -> Option<Vec<bool>> {
+    if !prog.len().is_multiple_of(4) || prog.len() > MAX_STEPS * 4 {
+        return None;
+    }
+    let mut inv: Vec<bool> = Vec::new();
+    let mut gets = 0;
+    let steps = prog.len() / 4;
+    for (j, st) in prog.as_chunks::<4>().0.iter().enumerate() {
+        let of = |v: i64, inv: &[bool]| -> Option<bool> {
+            if v >= 0 {
+                inv.get(v as usize).copied().filter(|_| (v as usize) < j)
+            } else if v == IND {
+                Some(false)
+            } else {
+                (((-2 - v) as usize) < ninputs).then_some(true)
+            }
+        };
+        let (a, b, c) = (st[1], st[2], st[3]);
+        let r = match st[0] {
+            MOV => of(a, &inv)?,
+            KONST => true,
+            ADD | SUB => of(a, &inv)? & of(b, &inv)?,
+            MUL => {
+                let (x, y) = (of(a, &inv)?, of(b, &inv)?);
+                if !x && !y {
+                    return None;
+                }
+                x & y
+            }
+            POS => {
+                if !of(a, &inv)? || !(0..1 << 20).contains(&b) {
+                    return None;
+                }
+                of(c, &inv)?
+            }
+            LEN => {
+                if !of(a, &inv)? || !(0..1 << 20).contains(&b) {
+                    return None;
+                }
+                true
+            }
+            LD => {
+                if !of(a, &inv)? || !(0..1 << 31).contains(&b) || !matches!(c, 1 | 4 | 8) {
+                    return None;
+                }
+                true
+            }
+            ADDR => {
+                if !of(a, &inv)? || !(0..1 << 32).contains(&b) {
+                    return None;
+                }
+                true
+            }
+            GET => {
+                if !of(a, &inv)? {
+                    return None;
+                }
+                of(b, &inv)?;
+                gets += 1;
+                true
+            }
+            SET => {
+                let ok = of(a, &inv)? && of(b, &inv).is_some() && j + 1 == steps;
+                let ok = ok
+                    && if c >= 0 {
+                        gets == 1
+                    } else {
+                        of(c, &inv)? && gets == 0
+                    };
+                if !ok {
+                    return None;
+                }
+                true
+            }
+            _ => return None,
+        };
+        inv.push(r);
+    }
+    matches!(prog.get(prog.len().wrapping_sub(4)), Some(&SET)).then_some(inv)
+}
+
 /// Evaluate the steps for iterations `0..m` (each value affine in the iteration number) and check
 /// every position, descriptor and element range at both ends: the source stream (none for a fill),
 /// the destination and the fill code.
@@ -368,16 +454,18 @@ fn exec(src: Option<Stream>, d: Stream, code: u8, m: i64) -> i64 {
             }
             return m;
         };
-        let same = s.ptr == d.ptr;
+        // The bytes of the blocks each stream touches, as host addresses: the streams share
+        // blocks exactly when these overlap, whatever objects they were found in.
         let span = |x: &Stream| {
             let (a, b) = (x.e0, x.e0 + x.step * (m - 1));
+            let base = x.ptr as usize + x.off;
             (
-                x.off + a.min(b) as usize / 64 * 32,
-                x.off + a.max(b) as usize / 64 * 32 + 32,
+                base + a.min(b) as usize / 64 * 32,
+                base + a.max(b) as usize / 64 * 32 + 32,
             )
         };
         let (sr, dr) = (span(&s), span(&d));
-        let apart = !same || sr.1 <= dr.0 || dr.1 <= sr.0;
+        let apart = sr.1 <= dr.0 || dr.1 <= sr.0;
         if s.step == d.step && s.step.abs() == 1 && apart {
             // The same run of elements in the same order: a copy of planes.
             let (sa, da) = if s.step == 1 {
@@ -404,6 +492,34 @@ fn exec(src: Option<Stream>, d: Stream, code: u8, m: i64) -> i64 {
         }
         m
     }
+}
+
+/// The iterations `0..m` of a plan compiled code made (`Gen::eloop_plan`): the elements
+/// `s_e0 + s_step * n` of the vector at `src` (null: a fill with `code`) to the elements
+/// `d_e0 + d_step * n` of the vector at `dst`, each pointer at its vector's first byte. Returns
+/// how many iterations were done (fewer where a source element is not a code).
+///
+/// # Safety
+/// Compiled code checked that every element lies in the memory its pointer points into.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn exec_planned(
+    src: *mut u8,
+    s_e0: i64,
+    s_step: i64,
+    dst: *mut u8,
+    d_e0: i64,
+    d_step: i64,
+    code: u8,
+    m: i64,
+) -> i64 {
+    let stream = |ptr, e0, step| Stream {
+        ptr,
+        off: 0,
+        e0,
+        step,
+    };
+    let s = (!src.is_null()).then(|| stream(src, s_e0, s_step));
+    exec(s, stream(dst, d_e0, d_step), code, m)
 }
 
 #[cfg(test)]
@@ -518,6 +634,31 @@ mod tests {
             let o = self.0.get_mut((a >> 32) as usize)?;
             Some((o.as_mut_ptr(), o.len() as u64))
         }
+    }
+
+    /// Which steps of the `get_row` loop do not change, and the programs `Gen::eloop_plan` leaves
+    /// to `run`.
+    #[test]
+    fn invariant_steps_of_loops() {
+        let get_row = [
+            5, -2, 1, -1, 2, -3, 0, 0, 3, -4, 1, 0, 9, -5, 2, 0, 5, -6, 0, -1, 6, -6, 0, 0, 3, 5,
+            -7, 0, 3, 6, 4, 0, 10, -8, 7, 3,
+        ];
+        let inv = invariant_steps(&get_row, 7).expect("the get_row loop");
+        assert_eq!(
+            inv,
+            [false, false, false, true, false, true, true, false, true]
+        );
+        // Not enough inputs, a step that is not there, two factors that change, a base that does.
+        assert_eq!(invariant_steps(&get_row, 6), None);
+        assert_eq!(invariant_steps(&[MUL, IND, IND, 0], 1), None);
+        assert_eq!(invariant_steps(&[ADD, 3, -2, 0], 1), None);
+        assert_eq!(invariant_steps(&[MUL, IND, IND, 0, GET, 0, 0, 0], 1), None);
+        // A fill with an unchanging code.
+        let fill = [MUL, IND, -3, 0, ADD, 0, -4, 0, SET, -2, 1, -5];
+        assert!(invariant_steps(&fill, 4).is_some());
+        // The code of a fill must not be the loop variable.
+        assert_eq!(invariant_steps(&[SET, -2, -1, IND], 1), None);
     }
 
     /// The `get_row` loop of a 256 x 8 matrix, many times: `perf stat -- cargo test --release

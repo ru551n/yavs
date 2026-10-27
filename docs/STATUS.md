@@ -9342,6 +9342,13 @@ instructions (-11.1 percent). The other natives on slices (`to_x01`, the numeric
 A `CondBr` whose arms lead to the same block is a `Br` (the null-range test of a local array). Part of the fixed cost of an `HRead` call (`docs/decisions.md` "A branch whose arms lead to the same block"):
 the call is still about 80 ops; the rest is listed there. First 1 us of `grlib_leon3mp` with #768 to #771: 31.37 G to 22.99 G instructions (-26.7 percent), `--tier=interp`.
 
+## kernel round 27: adjacent vector entries of a direct driver join (#676, #793, 2026-10-28)
+
+- A vector entry next to the run's last vector entry of the same direct driver joins it (a loop over the bytes of a vector, a sorting
+  network's lanes): `sc5_fifo_repack` -2.9 percent instructions, -2 to -3 percent cycles; `realbench --compare` 42 tests level
+  (instructions 1.00 / 1.00). #793 (store-forwarding stall of the vector entry) measured: removing the reload costs cycles, not kept.
+  Staging per direct driver proposed in #802. Details: decisions.md "Kernel round 27".
+
 ## kernel round 26: the slot of the process ahead, element drive batches as one vector entry (#795, #676, 2026-10-27)
 
 - The batch loop also prefetches the slot (kernel state) of the process three steps ahead: `rtl_ff` -15 to -25 percent cycles on a

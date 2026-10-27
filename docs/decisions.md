@@ -11234,6 +11234,44 @@ windows, `perf record`, IBS op sampling (`ibs_op`, data source per load) and `pe
 - **The reference simulator (rule 22):** its cycle was read (one pass over the time-ordered event heap, deferred queues of drivers and
   processes, the driving and effective values in level order); neither change takes an idea from it. Nothing was copied.
 
+## Kernel round 27: adjacent vector entries of a direct driver join (yavs-kernel, #676, #793, 2026-10-28)
+
+Task (orchestrator): the kernel side of element drives and their commit (`sc5_fifo_repack` 1.12 warm / 1.97 cold against sim1, process
+`p_col` with 21.3 M element drives) and the store-forwarding stall of #793. Bench builds with `llvm`, warm worlds captured from
+`tools/realbench`, a separate world per binary, A and B interleaved on one claimed core of the second CCD, `perf stat` user counts.
+
+- **Where the time is** (`sc5_fifo_repack`, `--tier=auto`): per clock and lane `p_col` drives one byte part of `sort_data(col + 1)` and one
+  bit of `sort_valid(col + 1)`. The drive side is about 25 percent of the cycles (about 70 cycles an element), the commit side about 10 (about
+  28 an element), the host layers around the compiled processes about 16, interpreted processes about 13; IPC 3.5. Each byte part was an
+  `OutV` of its own, and each scalar a flush of compiled code's kept drives (`Batch`) of one element: the byte drive between two scalar
+  drives flushes the batch.
+- **Decision: a vector entry of a direct driver that continues the run's last `OutV` of the same driver, up or down, within 64 elements,
+  joins it** (`Ctx::extend_outv`, from `assign_planes_fast` and from the one-element-after-a-vector branch of `assign_code_fast`). It is
+  tried only when the driver has vector entries in the run (the skip test of a first entry is unchanged), and only the list's last entry
+  is looked at: nothing of the driver can follow that entry, so the order of entries holds. Kernel round 19 had promoted one-element
+  entries to vectors, which cost `sc5_fifo_repack` instructions; this joins vectors to vectors and leaves one-element entries alone.
+  `sc5_fifo_repack` (`--tier-heat=1,0,0`, compile outcome fixed): instructions 20.55 G to 19.96 G (-2.9 percent), cycles -2 to -3 percent;
+  the synthetic record-scatter process (a record of an array of eight records driven every clock) -1.8 percent instructions, cycles
+  level; `hdlm_lfsr` level (heat and interpreter). `realbench --compare` 42 tests, run phase, interp and auto: instruction geometric
+  mean 1.00 / 1.00, CPU 0.98 / 0.97, wall of tests of 1 s or more 1.01 / 1.01 (noise, load 13). Counters: `drive_vec` 175 to 135 vector
+  commits, `mixed_entries` 1270 to 903. Test: `direct_paths::adjacent_parts_join_one_vector_entry`.
+- **Measured, not kept (#793):** the stall is real in compiled code too (45 percent of the `yavs_rt_drive` samples of `sc5_fifo_repack`,
+  26 percent of `scatter_leaves` in the record design). `direct_same_planes` `#[inline(always)]` removes the reload (the `OutV` planes are
+  then written from registers) and 2 percent of the instructions of the record design, but cycles rose 2 to 3 percent there (interpreter and
+  auto) and about 2 percent on `sc5_fifo_repack`: the samples moved to the next consumers. The cycles on that load are the wait for the
+  planes' inputs, not a forwarding penalty that goes away with the load.
+- **Measured, not kept:** the second pass of `codes_run` last element first, ORing planes with no clearing: `hdlm_lfsr` +1.8 percent
+  instructions (a branch per element).
+- **Not done, recorded:** not flushing compiled code's kept scalar drives at a vector `Drive` of another driver. The IR driver index is a
+  longest-static-prefix slot; elaboration merges the slots of one net into one kernel driver and collapsed ports can share a net, so no
+  static proof of "another driver" exists: it needs a runtime compare or a per-slot kernel-driver flag in the frame (#766). A staging
+  buffer per direct driver in place of the entry lists (the reference simulator writes the value into the driver and queues one deferred
+  update per driver) is #802, a decision. `grlib_leon3mp`'s per-scalar-drive cost (`DriveRun`, `LSetDrive` into `skip_code_now` and
+  `assign_code_fast`, kernel round 25) is not touched by this round.
+- **The reference simulator (rule 22):** its fast driver path was read (zero-delay drive of a sole-source driver writes the value into the
+  driver's waveform and queues one deferred update per driver, or per signal for a signal of such drivers); the join of adjacent entries is
+  not from it; the staging idea of #802 is. Nothing was copied.
+
 ## llvm: a heap change drops only the objects it changed; interpreter calls keep the machine's objects; native code published past never-run callees (yavs-llvm `rt.rs`, `auto.rs`, yavs-interp `heap.rs`, `exec.rs`, #520, #797, 2026-10-27)
 
 - **Problem.** In `vai_window_gen_interlock` under `--tier=auto` the compiled test-runner library code (queue, string and integer-vector

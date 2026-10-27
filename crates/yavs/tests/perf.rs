@@ -648,7 +648,8 @@ case!(
     ]
 );
 // Vector assignments that change nothing are skipped when they are made (605 direct plane
-// commits without the skip), except behind an assignment of the same activation to the driver.
+// commits without the skip), except behind an assignment of the same activation to the driver;
+// one next to the vector entry before it joins it (175 without, #676).
 case!(
     drive_vec,
     "ev=70 h=39957",
@@ -656,12 +657,13 @@ case!(
     [
         ("cycles", Max(242)),
         ("cycles", Min(242)),
-        ("direct_planes", Max(180)),
+        ("direct_planes", Max(140)),
         ("ops", Max(19173)),
     ]
 );
 // Bits and slices of one register assigned in turn in one activation (the fields of a record) stay
 // direct entries in order: no assignment goes through the driver's waveform (`update_general`).
+// Parts next to the vector entry before them join it (1270 entries without, #676).
 case!(
     mixed_entries,
     "ev=168 h=59167",
@@ -669,7 +671,8 @@ case!(
     [
         ("cycles", Max(415)),
         ("update_general", Max(0)),
-        ("direct_planes", Min(1230)),
+        ("direct_planes", Min(875)),
+        ("direct_planes", Max(930)),
         ("direct_codes", Min(260)),
         ("events", Max(870)),
     ]

@@ -1018,6 +1018,90 @@ fn a_batched_run_of_elements_is_one_entry_with_the_last_codes() {
     }
 }
 
+/// Parts of a vector assigned next to each other in one run (a loop over the bytes of a vector)
+/// join the run's last vector entry, up or down, across a plane word, up to 64 elements; a
+/// scalar next to it joins it too, and a part inside it is an entry of its own that wins.
+#[test]
+fn adjacent_parts_join_one_vector_entry() {
+    let mut b = Builder::new();
+    let zeros = |n: usize| LogicVec::new(n, StdULogic::Zero);
+    let s = b.signal("s", SignalType::logic(100), &zeros(100));
+    let t = b.signal("t", SignalType::logic(80), &zeros(80));
+    let (ds, dt) = (b.driver(s), b.driver(t));
+    let bad = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let bad2 = bad.clone();
+    let mut run = 0u32;
+    let v = |e: u32, run: u32| (e * 7 + run).is_multiple_of(3);
+    let code = |one: bool| if one { ONE } else { ZERO };
+    b.process(
+        "p",
+        NONE,
+        &[ds, dt],
+        p(move |c| {
+            // What the last activation assigned.
+            if run > 0 {
+                for e in 0..100 {
+                    let want = match e {
+                        70 => !v(70, run),
+                        24..48 | 60..85 => v(e, run),
+                        _ => false,
+                    };
+                    if c.elem_code(s, e)? != code(want) {
+                        bad2.lock().unwrap().push(format!("run {run}: s({e})"));
+                    }
+                }
+                for e in 0..80 {
+                    if c.elem_code(t, e)? != code(v(e, run)) {
+                        bad2.lock().unwrap().push(format!("run {run}: t({e})"));
+                    }
+                }
+            }
+            run += 1;
+            let part = |c: &mut Ctx<'_>, d: DriverId, off: u32, len: u32| {
+                let mut planes = [0u64; 4];
+                for j in 0..len {
+                    let k = code(v(off + j, run));
+                    for (p, w) in planes.iter_mut().enumerate() {
+                        *w |= u64::from(k >> p & 1) << j;
+                    }
+                }
+                assert!(c.assign_planes_now(d, Some(Range::new(off, len)), planes));
+            };
+            let one = |c: &mut Ctx<'_>, e: u32, k: u8| {
+                c.assign_code(
+                    ds,
+                    Some(Range::new(e, 1)),
+                    Time::ZERO,
+                    k,
+                    DelayMode::INERTIAL,
+                )
+            };
+            // Up across the plane word at 64, then a scalar after it: one entry of 60..85.
+            for off in [60, 68, 76] {
+                part(c, ds, off, 8);
+            }
+            one(c, 84, code(v(84, run)))?;
+            // Inside that entry: one of its own, the later value.
+            one(c, 70, code(!v(70, run)))?;
+            // Down: one entry of 24..48.
+            for off in [40, 32, 24] {
+                part(c, ds, off, 8);
+            }
+            // Ten bytes up: 64 elements, then 16.
+            for off in (0..80).step_by(8) {
+                part(c, dt, off, 8);
+            }
+            c.wait_for(ns(1))
+        }),
+    );
+    let (mut sim, _t) = build(b, Config::default());
+    sim.run_until(ns(4)).unwrap();
+    assert_eq!(*bad.lock().unwrap(), Vec::<String>::new());
+    // Five activations of five vector entries.
+    let st = sim.stats();
+    assert_eq!((st.direct_codes, st.direct_planes), (0, 25));
+}
+
 /// A scalar and a vector direct driver whose values change at every activation for a while
 /// (their skip tests miss, so they stop asking it, `ProcState::same`), then hold for longer
 /// than the tests are left out, then change again. The changes and the delta cycles are those

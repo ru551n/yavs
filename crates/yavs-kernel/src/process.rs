@@ -1846,15 +1846,17 @@ impl Ctx<'_> {
             // entries, in order, as an entry of one element. No skip: the entries before it
             // decide what the signal holds.
             if self.has_entries(info, 2) {
-                let c = u64::from(code);
-                self.st.act |= ACT_ASSIGNED;
-                self.st.outv.push(OutV {
-                    sig,
-                    slot,
-                    elem: r.offset,
-                    len: 1,
-                    planes: [c & 1, c >> 1 & 1, c >> 2 & 1, c >> 3 & 1],
-                });
+                let planes = code_planes(code);
+                if !self.extend_outv(sig, slot, r.offset, 1, planes) {
+                    self.st.act |= ACT_ASSIGNED;
+                    self.st.outv.push(OutV {
+                        sig,
+                        slot,
+                        elem: r.offset,
+                        len: 1,
+                        planes,
+                    });
+                }
                 return true;
             }
             // The signal and the driver have the code and nothing of this run is pending: the
@@ -2323,8 +2325,9 @@ impl Ctx<'_> {
             // applied before the vector entries, which is the order they were made in.
             // Nothing of this run on the driver and the signal and its driving value have the
             // value: the commit would only set the elements pending (`direct_same_planes`).
-            if !self.has_entries(info, 1)
-                && !self.has_entries(info, 2)
+            let vec = self.has_entries(info, 2);
+            if !vec
+                && !self.has_entries(info, 1)
                 && self.st.same_wanted(info.local)
                 && self.st.same_seen(
                     info.local,
@@ -2332,6 +2335,9 @@ impl Ctx<'_> {
                 )
             {
                 self.note_skipped();
+                return true;
+            }
+            if vec && self.extend_outv(sig, slot, r.offset, len, planes) {
                 return true;
             }
             self.mark_entries(info, 2);
@@ -2469,6 +2475,34 @@ impl Ctx<'_> {
         });
         self.st.act |= ACT_ASSIGNED;
         self.st.scheduled.push((at, d));
+        true
+    }
+
+    /// The run's last vector entry, when it is of driver `slot` of `sig` and `len` elements from
+    /// `elem` (planes masked to `len`) continue it up or down within 64 elements, takes them: a
+    /// loop over the parts of a vector (`v(i) <= x` of bytes) is one entry, one commit. Nothing
+    /// of the driver can follow that entry, so the order of its entries is kept.
+    #[inline(always)]
+    fn extend_outv(&mut self, sig: u32, slot: u32, elem: u32, len: u32, planes: [u64; 4]) -> bool {
+        let Some(o) = self.st.outv.last_mut() else {
+            return false;
+        };
+        if o.sig != sig || o.slot != slot || o.len + len > 64 {
+            return false;
+        }
+        if o.elem + o.len == elem {
+            for (p, q) in o.planes.iter_mut().zip(planes) {
+                *p |= q << o.len;
+            }
+        } else if elem + len == o.elem {
+            for (p, q) in o.planes.iter_mut().zip(planes) {
+                *p = *p << len | q;
+            }
+            o.elem = elem;
+        } else {
+            return false;
+        }
+        o.len += len;
         true
     }
 

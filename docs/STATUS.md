@@ -4116,7 +4116,10 @@ Totals under 1 or near 1 for the reader come from the library analysis of yavs (
 assignment of the same activation is skipped on the fast paths when it changes nothing either, instead of taking the general
 assignment path. `grlib_leon3mp` (bench builds with `llvm`, warm, 3 interleaved runs on one claimed core): auto instructions -5.6%,
 cycles -4.1%; interp -5.8% and -4.8%. `neorv32_single_min` and `fletcher_bufferreader` level (the path is not taken there).
-`Stats::general_assigns` (`YAVS_COUNTERS`) counts the general path; perf design `drive_repeat`.
+`Stats::general_assigns` (`YAVS_COUNTERS`) counts the general path; perf design `drive_repeat`. `realbench --compare` (42 tests, run
+phase): summed wall 0.99 (interp and auto), the other tests level. Fixed on the way: a force lost its events beyond the first updated
+range when another plane word of the signal was committed in the same cycle (#789). Measured and dropped: skipping held words of a wide
+assignment (`fletcher_bufferwriter_512` +4.4% instructions), a swap instead of a copy of a wide entry list (level).
 
 ### Kernel round 24: the skip test that keeps missing, pending words in element order (#734, 2026-10-26)
 

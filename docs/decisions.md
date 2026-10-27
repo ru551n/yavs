@@ -10840,6 +10840,9 @@ counters, not kept) gave the shares below.
     34.1 s; interp 413.9 G to 390.0 G (-5.8%), cycles -4.8%, cpu -3.8%. `neorv32_single_min` interp +0.04% instructions, cycles -0.8%;
     `fletcher_bufferreader` interp +0.3% instructions, cycles +0.1% (code layout: the path is not taken there, one general assignment
     in the whole run).
+  - `tools/realbench --compare` (run phase, 42 tests, interp and auto, core 8, main at 5f53eafc against e790e0de): summed wall 0.99 and
+    0.99, geometric mean over the tests of 1 s or more 1.00 and 1.00, instructions 1.00 and 1.00 overall; `grlib_leon3mp` wall 0.97 /
+    0.99, instructions 0.94 / 0.94. Difftest 541/541 at 1 and 4 threads with interp, auto, llvm and auto with `--tier-heat=1,0,0`.
 - **Fixed on the way (#789):** `Signal::force_events` dropped the part of a recorded force range outside the range being updated, so a
   force lost its events beyond the first updated range when a direct entry of another plane word was finished in the same cycle.
 - **Measured and not taken:**

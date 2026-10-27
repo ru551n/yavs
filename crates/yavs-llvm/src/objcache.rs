@@ -75,24 +75,34 @@ fn debug(what: &str, k: &Key) {
     }
 }
 
-fn key(m: &Module, opt: OptLevel, full: bool) -> Key {
+fn key(m: &Module, opt: OptLevel, full: bool, ir: Option<&str>) -> Key {
     static TARGET: OnceLock<String> = OnceLock::new();
     let mut k = KeyBuilder::new(KIND);
     k.text(&yavs_ir::opt::fingerprint())
         .text(TARGET.get_or_init(crate::jit::target_id))
-        .text(&format!("{opt:?} full={full}"))
-        .part(&m.bitcode());
+        .text(&format!("{opt:?} full={full}"));
+    match ir {
+        Some(d) => k.text(d),
+        None => k.part(&m.bitcode()),
+    };
     k.finish()
+}
+
+fn times() -> bool {
+    static TIMES: OnceLock<bool> = OnceLock::new();
+    *TIMES.get_or_init(|| std::env::var_os("YAVS_LLVM_TIMES").is_some())
 }
 
 /// Add `m` to `jit` at `opt` after `prepare` (verify and `optimize_as(opt, full)`); with a cache,
 /// link its stored object instead when there is one, else prepare it, compile it to an object,
-/// store that and link it.
+/// store that and link it. `ir`: a digest of `m`'s bitcode the caller made already (a copy's
+/// `twin` key, which names the module), keyed instead of writing the bitcode again.
 pub(crate) fn add(
     jit: &mut Jit,
     mut m: Module,
     opt: OptLevel,
     full: bool,
+    ir: Option<&str>,
     prepare: impl FnOnce(&mut Module) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let store = STORE.lock().unwrap_or_else(PoisonError::into_inner).clone();
@@ -106,15 +116,31 @@ pub(crate) fn add(
         };
     };
     let t0 = std::time::Instant::now();
-    let k = key(&m, opt, full);
+    let k = key(&m, opt, full, ir);
     let t1 = std::time::Instant::now();
     // An object ORC does not take is a miss like any other bad entry.
-    if let Some(obj) = store.get(KIND, &k)
-        && jit.add_object(&obj).is_ok()
-    {
-        HITS.fetch_add(1, Ordering::Relaxed);
-        debug("hit", &k);
-        return Ok(());
+    if let Some(obj) = store.get(KIND, &k) {
+        let t2 = std::time::Instant::now();
+        if jit.add_object(&obj).is_ok() {
+            HITS.fetch_add(1, Ordering::Relaxed);
+            debug("hit", &k);
+            let t3 = std::time::Instant::now();
+            drop(m);
+            if times() {
+                // Tuning aid: the microseconds of the key, the look-up, the link and dropping
+                // the module of a module linked from the cache.
+                let us = |a: std::time::Instant, b: std::time::Instant| (b - a).as_micros();
+                eprintln!(
+                    "objtimes hit key={} get={} link={} drop={} obj={}",
+                    us(t0, t1),
+                    us(t1, t2),
+                    us(t2, t3),
+                    t3.elapsed().as_micros(),
+                    obj.len()
+                );
+            }
+            return Ok(());
+        }
     }
     if CACHED_ONLY.get() {
         return Err(Error("not in the compilation cache".into()));
@@ -135,8 +161,7 @@ pub(crate) fn add(
     STORED.fetch_add(1, Ordering::Relaxed);
     debug("stored", &k);
     let r = jit.add_object(&obj);
-    static TIMES: OnceLock<bool> = OnceLock::new();
-    if *TIMES.get_or_init(|| std::env::var_os("YAVS_LLVM_TIMES").is_some()) {
+    if times() {
         // Tuning aid next to `compile_one`'s line: the microseconds of the key, the look-up,
         // the passes, the code generator, the store and the link of a module that was compiled.
         let us = |a: std::time::Instant, b: std::time::Instant| (b - a).as_micros();

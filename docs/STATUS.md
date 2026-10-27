@@ -61,6 +61,10 @@ the way: #782 (literals accepted without visible character literals), #783 (inte
 `LoadPkg`, `LoadPair`, `CheckK`. Whole runs (`--tier=interp`): `vai_window_gen_interlock` 430.9 to 410.5 G instructions, `poc_arith_addw` 145.7 to 137.8 G. New
 `tools/stepcount --ops-lines OP`. Open: `CallIeee` marshalling (318 to 394), the frame fill of a call (proportional to the register count), `SubtypeCheck` below 50.
 
+### Per-op costs of the interpreter, round 2 (#778, #730, 2026-10-27)
+
+(`docs/decisions.md` "Per-op costs, round 2".) The optimiser keeps linear forms of values by register and version and the length of native `ieee` results (`to_unsigned`, `to_signed`, `resize`, `+`, `*`), so the `SubtypeCheck` of a slice of a computed width (`v(8 * i + 7 downto 8 * i)`) and of a `numeric_std` result into a signal goes: `poc_arith_addw` 138.6 to 137.0 G instructions, `vai_window_gen_interlock` 412.5 to 406.1 G, `uvvm_axistream_vvc` 33.2 to 32.7 G (interp); `realbench --compare` geomean 1.00. Work-counter ceilings of 20 designs back to the measured `ops` plus 3 percent. The frame fill (1.7 percent of cycles in `memmove`) and the `LoadDerefImm`/`AffP` chain were measured and left (reasons in decisions.md). Open: `SubtypeCheck` of a call result against a frame-resident target (`fletcher_bufferwriter_512`) and of register-sized widths (`uvvm_axistream_vvc`).
+
 ### `wait until <edge>` as cheap as the sensitivity-list forms (#767, 2026-10-26)
 
 (`docs/decisions.md` "`wait until <edge>` costs what the sensitivity-list forms cost".) The end of a `wait until rising_edge(clk)` on one
@@ -4699,7 +4703,10 @@ Totals under 1 or near 1 for the reader come from the library analysis of yavs (
 assignment of the same activation is skipped on the fast paths when it changes nothing either, instead of taking the general
 assignment path. `grlib_leon3mp` (bench builds with `llvm`, warm, 3 interleaved runs on one claimed core): auto instructions -5.6%,
 cycles -4.1%; interp -5.8% and -4.8%. `neorv32_single_min` and `fletcher_bufferreader` level (the path is not taken there).
-`Stats::general_assigns` (`YAVS_COUNTERS`) counts the general path; perf design `drive_repeat`.
+`Stats::general_assigns` (`YAVS_COUNTERS`) counts the general path; perf design `drive_repeat`. `realbench --compare` (42 tests, run
+phase): summed wall 0.99 (interp and auto), the other tests level. Fixed on the way: a force lost its events beyond the first updated
+range when another plane word of the signal was committed in the same cycle (#789). Measured and dropped: skipping held words of a wide
+assignment (`fletcher_bufferwriter_512` +4.4% instructions), a swap instead of a copy of a wide entry list (level).
 
 ### Kernel round 24: the skip test that keeps missing, pending words in element order (#734, 2026-10-26)
 
@@ -9888,9 +9895,15 @@ natives on slices (`to_x01`, the numeric operators) still copy the slice first; 
   42 tests, `auto` sum 1.00 and geometric mean (tests of 1 s or more) 0.99, `auto-cold` 1.02 and 1.02 at equal instructions (the cells above 1.05
   were noise: `poc_arith_addw`, `fletcher_bufferwriter_512`, `neorv32_dual_full` 0.98 to 1.00 in seven runs a cell). `vai_window_gen_interlock` warm 0.91
   wall, 0.87 instructions (seven runs), cold 1.01 to 1.03 wall, 1.01 instructions.
-- Left: `walk_control` and the other winners under their threshold in a first run are never cached (the run-to-run profile lists kinds of speedup 1.4
-  or more only); `iu:comb` and the other straight-line GRLIB processes are front-end bound and lose on calls to interpreted callees; cache hits of large
-  modules (#785).
+- The run-to-run profile takes `BigLoop` processes (or processes with a `BigLoop` copy) too (maintainer, 2026-10-27): `walk_control`
+  compiles early from the third warm run of the window generator and is kept; window generator warm 0.93 wall, 0.96 instructions, cold level.
+- Cache hits (#785): a copy is keyed by its twin key (one bitcode, not two: copies 25 to 30 percent cheaper to link), `Gen::func` resets only
+  the registers a block wrote, `HIT` priced at 1 ms + 20 us an IR instruction as measured (`objtimes hit`); window generator warm 0.96 wall.
+  Skipping generation on a hit needs a key decision (#785).
+- Against 70cebdc0 (the per-op interpreter round) the window generator with these changes is warm 1.01 wall at 0.92 instructions, cold 1.01.
+- Left: `iu:comb` and the other straight-line GRLIB processes stay level compiled (drives, signal reads and natives through the same runtime
+  functions); running interpreted callees in place from compiled code was tried and dropped (window generator 1.12, decisions.md); a cache hit
+  still generates the module.
 
 ## Value movement: copies between heap objects, scratch sets (yavs-interp, #677, 2026-10-27)
 

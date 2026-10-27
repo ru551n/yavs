@@ -1063,10 +1063,12 @@ fn models() -> &'static [Model; 10] {
     })
 }
 
-/// A module linked from the compilation cache (generation, key and link): about 3 ms for a process of
-/// 200 IR instructions. A function whose object is in the cache is priced so (`Worker::price`, user,
-/// 2026-10-25: a warm run uses cached code as soon as it is seen), not at what compiling it costs.
-const HIT: Model = model(1000.0, 10.0, 1.0);
+/// A module linked from the compilation cache (generation, key, link and dropping the module): 2 to 9
+/// ms for functions of 120 to 180 IR instructions, 12 to 25 us an IR instruction from 1 000 to 13 000
+/// (`YAVS_LLVM_TIMES` `objtimes hit`, #785; generation is about half of it). A function whose object is
+/// in the cache is priced so (`Worker::price`, user, 2026-10-25: a warm run uses cached code as soon as
+/// it is seen), not at what compiling it costs.
+const HIT: Model = model(1000.0, 20.0, 1.0);
 
 /// `HIT` for a first-level generator (Cranelift): the body is generated again and its code linked,
 /// about 4 us an IR instruction (neorv32 eager: 1 804 functions, 143 723 IR instructions in 536 ms
@@ -1205,6 +1207,9 @@ struct Worker {
     /// or compiled, and the ones that passed `profile::HOT_MIN_US` so far.
     bseen: Vec<u64>,
     hotish: Vec<u32>,
+    /// The copies of processes seen running (a copy twice when seen in both tiers): `snapshot` asks
+    /// their kind (`big_loop`).
+    copies_seen: Vec<FuncId>,
     /// The processes a trial took back, and the functions compiled at once because of the profile
     /// (a root being compiled that way, `early_root`, is charged no budget and is not held to `cold`).
     lost_bases: Vec<u32>,
@@ -1270,6 +1275,9 @@ impl Worker {
             if before < profile::HOT_MIN_US && self.bseen[b] >= profile::HOT_MIN_US {
                 self.hotish.push(b as u32);
             }
+            if was == 0 && b != id.0 as usize {
+                self.copies_seen.push(id);
+            }
             if was == 0 && !compiled && forced(&self.prog, id) {
                 pending.asked.push_back(id);
             }
@@ -1308,9 +1316,12 @@ impl Worker {
             // What the last run found hot is compiled at once, whatever the payback rule and the
             // budget say (the profile decides, not the looks: `next_early`). Not the shared code of a
             // process that can have copies: its processes switch to them, which the tier compiles.
+            // A copy is held to the profile's threshold by its own kind (`load_profile`).
             if let Some(&us) = self.early.get(&self.prog.base_of(id))
                 && !self.lost[id.0 as usize]
                 && !(self.prog.base_of(id) == id && self.prog.specialisable(id))
+                && (self.prog.base_of(id) == id
+                    || us.saturating_mul(profile::EARLY_RUNS) >= self.threshold(id, false))
                 && !std::mem::replace(&mut self.asked_for[id.0 as usize], true)
             {
                 pending.early.push((us, id));
@@ -1414,6 +1425,7 @@ impl Worker {
             early: Default::default(),
             bseen: vec![0; nfuncs],
             hotish: Vec::new(),
+            copies_seen: Vec::new(),
             lost_bases: Vec::new(),
             early_done: Vec::new(),
             early_root: false,
@@ -2328,12 +2340,15 @@ impl Worker {
         // A function is compiled early when seen long enough that the payback rule would have
         // compiled it within `EARLY_RUNS` runs of this length: the rule's price, the object cache
         // making it a link (`threshold`), but the whole run's time in place of the part seen so far.
+        // A process that can have copies is held to it by each copy's own kind when the copy runs
+        // (`see`): a `BigLoop` copy of a `Big` process.
         for &(id, us, _) in &p.hot {
             let id = FuncId(id);
             let fine = self.prog.funcs.get(id).is_some_and(|f| !f.spare)
                 && self.prog.base_of(id) == id
                 && !p.lost.contains(&id.0)
-                && us.saturating_mul(profile::EARLY_RUNS) >= self.threshold(id, false);
+                && (self.prog.specialisable(id)
+                    || us.saturating_mul(profile::EARLY_RUNS) >= self.threshold(id, false));
             if fine {
                 self.early.insert(id, us);
             }
@@ -2363,6 +2378,20 @@ impl Worker {
         None
     }
 
+    /// Whether process `b` or a copy of it seen running is `Kind::BigLoop` (a copy has a loop share
+    /// of its own: `walk_control`'s copy 12 percent, its shared code 6). The profile takes these
+    /// whatever their speedup (maintainer, 2026-10-27, #679).
+    fn big_loop(&self, b: FuncId) -> bool {
+        match self.kind(b) {
+            Kind::BigLoop => true,
+            Kind::Big => self
+                .copies_seen
+                .iter()
+                .any(|&c| self.prog.base_of(c) == b && self.kind(c) == Kind::BigLoop),
+            _ => false,
+        }
+    }
+
     /// What this run has found so far for the profile (`profile::next` makes the profile of it at
     /// the end of the run).
     fn snapshot(&self) -> Snapshot {
@@ -2374,7 +2403,8 @@ impl Worker {
                 self.prog
                     .func(FuncId(b))
                     .is_some_and(|f| f.kind == FuncKind::Process)
-                    && self.model(FuncId(b)).speedup >= profile::EARLY_SPEEDUP
+                    && (self.model(FuncId(b)).speedup >= profile::EARLY_SPEEDUP
+                        || self.big_loop(FuncId(b)))
                     && (!self.is_rtl(FuncId(b)) || us.saturating_mul(RTL_SHARE) >= self.total)
             })
             .collect();
@@ -4191,8 +4221,8 @@ mod tests {
         assert!(m(Kind::BigLoop).payback() < m(Kind::Big).payback());
         assert!(w3.need(f3) < w.need(f));
         // A function whose object is in the cache is priced at what linking it costs, a process of 200
-        // IR instructions at about 3 ms, whatever its kind (#728).
-        assert_eq!(HIT.price(200), 3_000);
+        // IR instructions at about 5 ms, whatever its kind (#728, #785).
+        assert_eq!(HIT.price(200), 5_000);
         let n2 = w2.prog.func(f2).unwrap().code.len();
         assert_eq!(w2.price_of(f2, true), HIT.price(n2));
         assert!(w2.price_of(f2, true) * 10 < w2.price_of(f2, false));
@@ -4524,6 +4554,42 @@ mod tests {
         };
         assert_ne!(k(c1), k(c2));
         assert_eq!(k(f).0, "p");
+    }
+
+    /// A large process whose copy has loops (`Kind::BigLoop`) is named by the snapshot although
+    /// its shared code is `Big` (maintainer, 2026-10-27, #679); a next run compiles the copy early
+    /// only when the time seen reaches the copy's own threshold.
+    #[test]
+    #[cfg(feature = "llvm")]
+    fn the_profile_takes_a_process_with_a_big_loop_copy() {
+        use super::Kind;
+        let (prog, f, [c1, c2]) = process_with_copies();
+        let mut w = worker_of(prog);
+        let look = |id: yavs_ir::FuncId, us: u64| super::Look {
+            running: vec![(id, false, us)],
+        };
+        let mut pending = super::Pending::default();
+        w.see(&look(c1, 100_000), false, &mut pending);
+        let set = |w: &mut super::Worker, id: yavs_ir::FuncId, k: Kind| {
+            w.kinds[id.0 as usize] = Default::default();
+            w.kinds[id.0 as usize].set(k).unwrap();
+        };
+        set(&mut w, f, Kind::Big);
+        set(&mut w, c1, Kind::Big);
+        assert!(w.snapshot().seen.is_empty(), "Big alone gains nothing");
+        set(&mut w, c1, Kind::BigLoop);
+        assert_eq!(w.snapshot().seen, [(f.0, 100_000)]);
+        // The next run: the copy is compiled early only once the time seen pays for it.
+        set(&mut w, c2, Kind::BigLoop);
+        let need = w.threshold(c2, false);
+        let mut pending = super::Pending::default();
+        w.early.insert(f, need / super::profile::EARLY_RUNS - 1);
+        w.see(&look(c2, 1), false, &mut pending);
+        assert!(pending.early.is_empty());
+        w.early.insert(f, need);
+        w.see(&look(c2, 1), false, &mut pending);
+        assert_eq!(pending.early.len(), 1);
+        assert_eq!(pending.early[0].1, c2);
     }
 
     /// Two procedures of the shape of `padded_loop`, neither calling the other.

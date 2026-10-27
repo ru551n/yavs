@@ -638,7 +638,8 @@ pub(crate) fn compile_one(
     }
     let (mut t2, mut t3, mut nopt) = (t1, t1, 0);
     // Verified and optimised only when it is not linked from the compilation cache (#505).
-    crate::objcache::add(jit, m, opt, full, |m| {
+    // A copy's module is keyed by its twin key: the bitcode made for it, which names the module.
+    crate::objcache::add(jit, m, opt, full, twin_key.as_deref(), |m| {
         m.verify()?;
         t2 = std::time::Instant::now();
         m.optimize_as(opt, full)?;
@@ -817,7 +818,7 @@ pub fn compile(prog: &Program, opt: OptLevel, max_size: usize) -> Result<LlvmTie
     let (t0, mut tv, mut to, mut nopt) = (std::time::Instant::now(), None, None, 0);
     let ninst = if times { m.instruction_count() } else { 0 };
     let mut jit = new_jit(opt)?;
-    crate::objcache::add(&mut jit, m, opt, false, |m| {
+    crate::objcache::add(&mut jit, m, opt, false, None, |m| {
         let t = std::time::Instant::now();
         m.verify()?;
         tv = Some(t.elapsed());
@@ -1167,6 +1168,61 @@ struct AaNodes {
     k_noalias: u32,
 }
 
+/// Register facts that differ from a block's start (`Dirty::diff`).
+type Facts = Vec<(u32, Option<Known>)>;
+
+/// The registers whose entry in `Cur::known` may differ from what a block starts with (the
+/// function's preloaded addresses): a block start puts back only those, and the objects found are
+/// forgotten only in those, instead of a pass over every register (#785: O(registers x blocks)).
+struct Dirty {
+    regs: Vec<u32>,
+    set: Vec<bool>,
+}
+
+impl Dirty {
+    fn new(nregs: usize) -> Dirty {
+        Dirty {
+            regs: Vec::new(),
+            set: vec![false; nregs],
+        }
+    }
+
+    fn mark(&mut self, r: u32) {
+        if let Some(s) = self.set.get_mut(r as usize)
+            && !*s
+        {
+            *s = true;
+            self.regs.push(r);
+        }
+    }
+
+    /// Mark what `track` may have written for `i`: its definitions (two cells for a signal
+    /// reference, and the length word of `SigVal`).
+    fn defs(&mut self, i: &Inst) {
+        i.visit(&mut |r, role, ty| {
+            if role == yavs_ir::Role::Def {
+                self.mark(r.0);
+                if ty == Some(yavs_ir::RegTy::Sig) || matches!(i, Inst::SigVal { .. }) {
+                    self.mark(r.0 + 1);
+                }
+            }
+        });
+    }
+
+    /// Put `known` back to `base` and forget the marks.
+    fn reset(&mut self, known: &mut [Option<Known>], base: &[Option<Known>]) {
+        for r in self.regs.drain(..) {
+            known[r as usize] = base[r as usize];
+            self.set[r as usize] = false;
+        }
+    }
+
+    /// The entries of `known` that may differ from the base.
+    fn diff(&self, known: &[Option<Known>]) -> Facts {
+        self.regs.iter().map(|&r| (r, known[r as usize])).collect()
+    }
+}
+
 /// The function being generated.
 struct Cur<'p> {
     prog: &'p Program,
@@ -1178,6 +1234,8 @@ struct Cur<'p> {
     mem: LLVMValueRef,
     /// What the generator knows about each register at the current instruction (`track`).
     known: std::cell::RefCell<Vec<Option<Known>>>,
+    /// The registers whose entry in `known` may differ from what a block starts with (`Dirty`).
+    dirty: std::cell::RefCell<Dirty>,
     /// Per pc, a multiplication fused with the `Index` after it (`index_muls`).
     imul: Vec<Option<(Reg, u64)>>,
     /// What the fused multiplication just generated settled for the `Index` at this pc: 1, its
@@ -2510,6 +2568,7 @@ impl Gen {
                 regs,
                 mem,
                 known: std::cell::RefCell::new(vec![None; f.reg_ty.len()]),
+                dirty: std::cell::RefCell::new(Dirty::new(f.reg_ty.len())),
                 imul: index_muls(f, &fixed),
                 fused: Default::default(),
                 layout_fused: Default::default(),
@@ -2966,7 +3025,7 @@ impl Gen {
             };
             // A native frame's block with a single way in takes what its predecessor knew at the
             // jump: the values defined there dominate it (`inherit`).
-            let mut inherit: Vec<Option<Vec<Option<Known>>>> = vec![None; n + 1];
+            let mut inherit: Vec<Option<Facts>> = vec![None; n + 1];
             let mut ways = vec![0u32; n + 1];
             ways[0] = 2;
             if native {
@@ -3051,6 +3110,7 @@ impl Gen {
                 }
                 if let Some(p) = prev.replace(inst) {
                     track(&mut c.known.borrow_mut(), &c.fixed, f, &p);
+                    c.dirty.borrow_mut().defs(&p);
                     // The load of an address parameter (`param_addrs`) defines the register once:
                     // what `track` cleared for the definition holds again.
                     if let Inst::Load { dst, .. } = p
@@ -3060,11 +3120,13 @@ impl Gen {
                         *x = Some(Known::Param(k as u16));
                     }
                     // The objects found stay valid up to an instruction that may free or move
-                    // one (`keeps_objects`: the rule of the object table too).
+                    // one (`keeps_objects`: the rule of the object table too). Only a register
+                    // written in this block can hold one.
                     if !keeps_objects(&p) {
                         c.objnew.set(None);
-                        for k in c.known.borrow_mut().iter_mut().flatten() {
-                            if let Known::Heap(o) = k {
+                        let mut k = c.known.borrow_mut();
+                        for &r in &c.dirty.borrow().regs {
+                            if let Some(Some(Known::Heap(o))) = k.get_mut(r as usize) {
                                 *o = None;
                             }
                         }
@@ -3073,6 +3135,7 @@ impl Gen {
                         && let Some(k) = c.known.borrow_mut().get_mut(r.0 as usize)
                     {
                         *k = Some(Known::Heap(Some(o)));
+                        c.dirty.borrow_mut().mark(r.0);
                     }
                     // What the previous instruction defined and did not defer is in the frame.
                     if let Some(d) = &c.defer {
@@ -3096,11 +3159,17 @@ impl Gen {
                     d.pc.set(pc);
                 }
                 if block_start[i] {
+                    let mut k = c.known.borrow_mut();
+                    let mut d = c.dirty.borrow_mut();
+                    d.reset(&mut k, &base_known);
                     match inherit[i].take() {
-                        Some(k) if native && ways[i] == 1 => *c.known.borrow_mut() = k,
+                        Some(from) if native && ways[i] == 1 => {
+                            for (r, x) in from {
+                                k[r as usize] = x;
+                                d.mark(r);
+                            }
+                        }
                         _ => {
-                            let mut k = c.known.borrow_mut();
-                            k.clone_from(&base_known);
                             for &(r, sp) in &space_facts[i] {
                                 if let Some(x) = k.get_mut(r as usize)
                                     && x.is_none()
@@ -3111,6 +3180,7 @@ impl Gen {
                                         crate::regs::Sp::Heap => Known::Heap(None),
                                         crate::regs::Sp::Likely => Known::LikelyHeap,
                                     });
+                                    d.mark(r);
                                 }
                             }
                         }
@@ -3135,7 +3205,7 @@ impl Gen {
                         if let Some(at) = f.blocks.get(b).map(|b| b.start as usize)
                             && ways.get(at) == Some(&1)
                         {
-                            inherit[at] = Some(c.known.borrow().clone());
+                            inherit[at] = Some(c.dirty.borrow().diff(&c.known.borrow()));
                         }
                     }
                 }

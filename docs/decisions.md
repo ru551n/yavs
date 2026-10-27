@@ -11448,6 +11448,9 @@ counters, not kept) gave the shares below.
     34.1 s; interp 413.9 G to 390.0 G (-5.8%), cycles -4.8%, cpu -3.8%. `neorv32_single_min` interp +0.04% instructions, cycles -0.8%;
     `fletcher_bufferreader` interp +0.3% instructions, cycles +0.1% (code layout: the path is not taken there, one general assignment
     in the whole run).
+  - `tools/realbench --compare` (run phase, 42 tests, interp and auto, core 8, main at 5f53eafc against e790e0de): summed wall 0.99 and
+    0.99, geometric mean over the tests of 1 s or more 1.00 and 1.00, instructions 1.00 and 1.00 overall; `grlib_leon3mp` wall 0.97 /
+    0.99, instructions 0.94 / 0.94. Difftest 541/541 at 1 and 4 threads with interp, auto, llvm and auto with `--tier-heat=1,0,0`.
 - **Fixed on the way (#789):** `Signal::force_events` dropped the part of a recorded force range outside the range being updated, so a
   force lost its events beyond the first updated range when a direct entry of another plane word was finished in the same cycle.
 - **Measured and not taken:**
@@ -11469,3 +11472,83 @@ counters, not kept) gave the shares below.
   and skips the queueing when the value equals the driver's (only the delta is kept). Ours now takes a repeat that changes nothing on
   the fast path for drivers that are not direct too; a repeat that changes still takes the general path, which keeps the order of
   transactions (an overwrite in place, the reference's way, is the other option of #667 and is not done here). Nothing was copied.
+
+## Per-op costs, round 2: the length checks the optimiser can prove, the frame fill, the dereference chain (yavs-ir `opt.rs`, yavs-interp, #778, #730, 2026-10-27)
+
+Round 1 made the remaining `SubtypeCheck` cheaper; round 2 removes the ones whose two lengths the optimiser can see agree, and measures the other two items of the list (frame fill, `LoadDerefImm`/`AffP`).
+
+- **Decision: linear forms of values by register and version (`Opt::lin`).** Lowered code reuses registers, so the slice bounds `8 * (i + 1) - 1` and `8 * i` of `to_slv`, `from_byte_array` and the window generator's `golden_window` come from registers defined several times, which `aff` (registers defined once, `x + c` only) could not follow. `note_lin` keeps `dst = mul * base + add` for `Add`/`Sub` (`Bin` and `BinRange`) and for a range-checked `Mul` by a constant, with checked `i64` arithmetic; `define` stores it under the version `dst` gets (versions are numbers nothing else has, so an entry never goes stale; a suspension forgets them all). A `MakeDope` dimension whose bounds have one base and one factor has the constant length `l - r + 1` (`lin_len`). An unchecked `Bin` add or subtract is taken not to wrap, as `note_affine` already did.
+- **Decision: the length of a native `ieee` result is a fact, `Key::Nat`** (a pure key: the native writes the result block once, so no store or call drops it; a region key would die at the next `MakeDope`, which sits between the load and the check in `golden_window`). `native_len` knows `to_unsigned`, `to_signed` and `resize` (the size), `+` (the longer operand, 0 for a null operand, the vector's length for the integer forms) and `*` (the sum, 0 for a null operand) when the sizes and operand bounds are constants; the bounds registers of an operand read from an earlier native's descriptor count too (`Key::Nat` kinds 6 to 10 follow the pair, the descriptor pointer and its three words; each result has a number in the upper half of the value so three words of descriptors of one length are not taken for one descriptor's). `DopeLen` of such a descriptor is a constant, and a `SubtypeCheck` of a descriptor against itself goes.
+- **Measured, not taken: the frame fill.** `Pre::fill_below` is 31 of the 403 instructions of a `CallProt` in the window generator, and `memmove` is 1.7 percent of its cycles (all copies, the fill among them); `grlib_leon3mp`'s 8 GB over 9.5 M calls is under 1 percent of its 36 s. Without `unsafe` growing `Machine::regs.v` writes every register whatever is copied, so the real cut is a high-water length with a separate top (46 uses of `regs.v`, the compiled tier's `len()`/`capacity()` arithmetic, and the Handle/Ptr registers zeroed again for `gc-stress`, which treats every register as live), for at most 1 percent: left until a profile asks for it. What a `CallProt` spends beyond that: the slot memset (`sstack.resize`, 28), the frame push (27), the lean argument copy (about 40), the callee lookup (14).
+- **Measured, not taken: `LoadDerefImm` and `AffP`.** In the window generator's `get` the derefs resolve different handles (list, row, element), so there is nothing to share or hoist per block; the 134 instructions of `LoadDerefImm` are 15 for the three register writes (`index_mut`), 13 for `load`, 11 dispatch, about 30 for `deref`/`resolve` and a long tail under 5 each, and `AffP`'s 107 are 20 for dispatch and register access and 40 for `dim_of`/`mem_fast`. A fusion of `LoadDerefImm` with the following `AffP` (one object lookup instead of two) needs a second op of more than the 24 bytes `Op` allows (`pre.rs`), or a table of resolved objects; not done.
+- **Remaining `SubtypeCheck`s** (probe of executed sites, 1/32 sampled): the callee's result against a frame-resident target (`fletcher_bufferwriter_512`: the result descriptor of a call, no constrained result subtype in `Func`), element descriptors of two-dimensional conversions with a register-sized width (`uvvm_axistream_vvc`: `i * w - 1 downto i * w - w` with `w` a parameter, a product of two registers, outside the linear forms). Both need information from outside the function.
+- **Work-counter ceilings** (`crates/yavs/tests/perf.rs`) of 20 designs, `ops` Max back to the measured value plus 3 percent: `ieee_operands` 3541 to 2716 is this change, the others (`gate_vec`, `idle_regs`, `case_tab`, `memo_giveup`, `pure_memo`, `agg_carry`, ...) were loose from earlier rounds (gates moved into the kernel, #779).
+- **Measured** (bench builds of `70cebdc0` and of this change before the rebase, `--threads 1`, `perf stat instructions:u` and cycles of warm worlds (two untimed runs), A and B alternating on one core of the second CCD; instructions in G, cycles in G):
+
+  | test | tier | instructions before | after | cycles before | after |
+  |---|---|---:|---:|---:|---:|
+  | `vai_window_gen_interlock` | interp | 412.46 | 406.12 | 116.3 | 118.3 |
+  | `poc_arith_addw` | interp | 138.64 | 137.00 | 41.4 | 40.0 |
+  | `fletcher_bufferwriter_512` | interp | 50.20 | 50.02 | 19.9 | 19.7 |
+  | `grlib_leon3mp` | interp | 413.95 | 413.97 | 172.4 | 172.3 |
+  | `uvvm_axistream_vvc` | interp | 33.15 | 32.70 | 12.4 | 12.1 |
+  | `poc_arith_addw` | auto | 80.27 | 78.8 | 26.0 | 25.8 |
+  | `uvvm_axistream_vvc` | auto | 28.17 | 28.0 | 11.0 | 10.95 |
+  | `vai_window_gen_interlock` | auto | 128.4 to 129.0 | 122.0 to 125.8 | 40.0 | 39.3 |
+
+  (`auto` counts vary by 2 to 5 percent with the background compilation, so only its direction is a result; `fletcher_bufferwriter_512` and `grlib_leon3mp` in `auto` are unchanged within that.) `SubtypeCheck` ops in the 5 M instruction window of `tools/stepcount --ops`: `poc_arith_addw` 802 to 96, `vai_window_gen_interlock` 352 to none. The `vai_window_gen_interlock` cycles went up 1.7 percent for 1.5 percent fewer instructions (layout, #576: the same binary pair gives -3.7 percent cycles on `poc_arith_addw`); `realbench --compare` over the 42 tests, `--phases run`: instructions 1.00 (interp) and 1.00 (auto), wall 1.00 and 0.99 overall.
+
+## `--tier=auto` run-to-run profile: `BigLoop` processes too (yavs-llvm `auto.rs`, #679, maintainer, 2026-10-27)
+
+- **Decision (maintainer, 2026-10-27, on #679):** the run-to-run profile's kind filter (a modelled speedup of 1.4 or more, decision of
+  2026-10-25) also admits `Kind::BigLoop`, so a hot loop-heavy large process the run's payback rule leaves interpreted (`walk_control` of the
+  window generator, 1.62 times faster compiled, seen for 0.4 to 0.5 s a run against its 1.7 s threshold) compiles early in the next runs. The
+  loss list still drops a loser: a run that compiled it early for the first time must take 3 percent less simulation CPU than the run before.
+- **How:** a copy has a loop share of its own (`walk_control`'s copy 12 percent, its shared code 6), so the snapshot names a process when it
+  or a copy of it seen running is `BigLoop` (`Worker::big_loop`, `copies_seen`). The `EARLY_RUNS` threshold of a process that can have copies is
+  applied in `see` to each copy by the copy's own kind and price (`threshold(copy)`), not to the shared code in `load_profile` (it would be
+  `Big`'s payback of 28 there and never reached).
+- **Measured** (bench builds, `vai_window_gen_interlock`, `YAVS_AUTO_TRACE`, consecutive warm runs of one world): run 1 stores 2 hot
+  (`bus_process` and `walk_control`, 0.39 s seen); run 2 does not compile `walk_control` (4 x 0.39 s under its 1.71 s threshold), run 3 does
+  (4 x 0.46 s), and keeps it (7.96 s simulation CPU against 8.66 s); a third hot process (`main`, `ComputeFrame`) compiled early in run 4 was
+  judged no better and lost. `tools/realbench --compare` (809de535 against the change, run phase, seven runs, core 12): warm 0.93 wall,
+  0.96 instructions; cold 1.00 / 1.01.
+
+## llvm: cheaper compilation-cache hits, priced as measured (yavs-llvm `lower.rs`, `objcache.rs`, `auto.rs`, #785, 2026-10-27)
+
+- **Measured first** (`YAVS_LLVM_TIMES`, new `objtimes hit` line: key, look-up, link, dropping the module; `grlib_leon3mp` warm with the large
+  copies forced, bench builds, CCD0): a hit of a large module costs 12 to 50 us an IR instruction (`comb` copy of 7 627 IR 150 ms, the 19 867 IR
+  function 790 ms), about half of it generation, a quarter the bitcode for the key, the rest the copy's twin key (a second bitcode), the link
+  (ORC materialises at the look-up) and dropping the module. `perf` of the compile thread during those hits: LLVM 68 percent (IR construction,
+  `ValueEnumerator` of the bitcode writer, destruction), ours 20, malloc/free 8, flat.
+- **Done:** (1) a copy's module is keyed by its twin key (the bitcode `compile_one` writes for the twin table, which also names the module) instead of
+  writing the renamed module's bitcode again: copies 25 to 30 percent cheaper (7 627 IR 150 to 118 ms, 11 429 IR 295 to 202 ms). Still a key of the
+  generated IR (`AGENTS.md` "Object cache keyed by the generated LLVM IR"). (2) `Gen::func` resets the register facts (`Cur::known`) at a block
+  start, forgets found objects and records a block's facts for its single successor only for the registers written since the block began
+  (`Dirty`), not with a pass over every register: same bitcode (the `-pre.ll` dumps of `--tier=llvm --no-cache` of the window generator and LEON3
+  are byte-identical), generation 0 to 15 percent faster on the large functions. (3) `HIT` is 1 ms + 20 us an IR instruction (was 10): 2 to 9 ms
+  measured for 120 to 180 IR, 12 to 25 us an IR instruction from 1 000 to 13 000.
+- **Not done, needs the maintainer:** skipping generation on a hit (the cause of the other half). The object key is the generated IR (binding
+  decision of #505) because the generator reads more than the function. A run-independent key ahead of generation would have to name everything
+  the generator reads: the lowered program's identity (the stage cache's lowering key covers a program read back from it), the function's identity
+  (a copy by its copy key: process, data, package digest), part, level, pipeline, native set, `YAVS_LLVM_*` switches and the build, plus what
+  generation decides (whether native-frame code verified, the twin name). Proposal on #785.
+- **The reference simulator (rule 22):** it generates the design's code ahead of time and keeps it per design unit, so it has no per-function
+  look-up at run time to price; nothing was taken from it here.
+
+## llvm: interpreted callees of compiled code run in place: tried and dropped (yavs-llvm `rt.rs`, yavs-interp `exec.rs`, #679, 2026-10-27)
+
+- **Tried:** a call from compiled frame-mode code to a callee without compiled code (GRLIB `iu:comb` makes about 4.4 M a run, to callees of 570
+  to 1 640 IR) returns `TIER_UNWIND`: the caller leaves its compiled code, the interpreter runs the callee and the caller's code up to its next jump,
+  and enters the compiled code again. `rt::step_in` ran such a callee in the interpreter inside the step instead (a `TierHost::run_pushed`:
+  `exec_fast` with the callee's frame as its base, the result to the call's register, the sampling slot put back; not for a callee that may
+  suspend, at most three such levels a thread, the interpreter going on after the call when the register stack moved) and the compiled caller
+  went on. Difftest 539/539 for all tiers at 1 and 4 threads, the interpreter's traceback and stops kept.
+- **Measured and dropped:** GRLIB with `iu:comb` forced compiled: the interpreter's tier loop 8.6 to 6.3 percent of the run, `tier_go` gone,
+  the run and `iu:comb`'s own `--profile` time level (8 236 / 8 546 samples before, 8 339 / 8 691 after; interpreted 8 022 / 8 199). The window
+  generator lost: warm 1.12 wall at 0.91 instructions against 1.01 / 0.92 without it (`tools/realbench --compare`, 70cebdc0 against both, five
+  runs, same core). The crossing is not what keeps the straight-line large processes level: their compiled code is drives, signal reads and
+  natives through the interpreter's runtime functions (`scatter_leaves`, `drive_run`, `sig_gather`, `lcopy`), and staying in that compiled code
+  after a call costs more cycles than the interpreter's tail of the same instructions.
+- **The reference simulator (rule 22):** a function there that is not compiled has its interpreter as its entry point, so compiled code calls it
+  like any other and gets the result back on the native stack: the idea tried here, on our interpreter frames.

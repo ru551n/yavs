@@ -63,7 +63,7 @@ cargo run --release -p yavs-wave --example waveq -- a.fst b.wave  # two files by
 
 - #781 (this tool), #780 (the conformance report that shows `results.json`). Findings: #782 (literals accepted without
   visible character literals), #783 (integer width in yavs FST), #784 (`'instance_name` signature; catalogue
-  `subprogram-signature-instance-name`, the UVVM AXI-Stream difference).
+  `subprogram-signature-instance-name`, the UVVM AXI-Stream difference, fixed: yavs spells it as sim1).
 - sim2 has waveform keys for the h2h designs only: realbench builds its libraries per tool from the analysis-corpus
   manifests, and sim2 has no `corpus_cmd`, `real_elab`, `real_run` here; adding them gives a second reference on the
   real designs.

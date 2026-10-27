@@ -439,10 +439,11 @@ def waveq_summary():
 
 
 def refresh_waveq():
-    """Re-render the committed report with the current tools/waveq results; every other number stays as committed."""
+    """Re-render the committed report with the current tools/waveq results; every other run result stays as committed."""
     R = json.loads(JS.read_text())
     R["trust2"] = (TOOLS / "waveq/RESULTS.md").read_text().strip()
     R["waveq"] = waveq_summary()
+    R["static"]["discrepancies"] = discrepancy_table()  # the catalogue rows are text of the repo, not a run result
     MD.write_text(render(R))
     JS.write_text(json.dumps(R, indent=1, sort_keys=True) + "\n")
     print(f"updated the waveform parts of {MD}")

@@ -44,12 +44,13 @@ ones, `--tier=llvm` from the extracted archive) without tagging. Decisions: `doc
 
 `tools/waveq/run.py` runs a design on yavs (interp, auto and llvm tiers) and on the references and compares the
 waveforms signal by signal, the value after the last delta of each time step (`tools/waveq/AGENTS.md`). Run locally at
-aeaeaa59 (`tools/waveq/RESULTS.md`, `results.json`): the 8 h2h RTL designs (sim1 and sim2), neorv32 (13 466 signals,
+05aa8453 (2026-10-27; `tools/waveq/RESULTS.md`, `results.json`): the 8 h2h RTL designs (sim1 and sim2), neorv32 (13 466 signals,
 15.9 M value changes, 300 us), GRLIB LEON3 (13 897 signals, 33.2 M value changes, the whole 1.06 ms system test) and
 the UVVM and OSVVM testbenches of realbench (sim1) are equal on all three tiers in every matched signal, except OSVVM
 verification-component IDs and UVVM activity-register entries (process order within one cycle, catalogue
-`process-order-in-cycle`) and the UVVM AXI-Stream random valid/ready-low sequence from 266.87 us (catalogue
-`subprogram-signature-instance-name`, yavs part #784). The llvm tier compiles 137 to 226 142 IR instructions per design;
+`process-order-in-cycle`). The UVVM AXI-Stream random valid/ready-low sequence used to diverge from 266.87 us (89
+signals) because the BFMs seed it from the `'instance_name` signature; since #784 yavs spells it as sim1 and all
+signals are equal (catalogue `subprogram-signature-instance-name`). In all: 44 824 of 44 889 signals equal. The llvm tier compiles 137 to 226 142 IR instructions per design;
 auto compiles little in these short runs (LEON3 4 functions). sim2 runs the h2h designs only (no realbench keys). Found on
 the way: #782 (literals accepted without visible character literals), #783 (integer width in yavs FST).
 

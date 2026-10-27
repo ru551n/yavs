@@ -1,4 +1,4 @@
-Waveform equivalence: run locally on 2026-10-26 at aeaeaa593f (yavs build 11c367ea3e), references sim1, sim2.
+Waveform equivalence: run locally on 2026-10-27 at 05aa8453fb (yavs build 5dc3cb5d28), references sim1, sim2.
 Reproduce: `python3 -I tools/waveq/run.py BIN`
 
 | design | A | B | signals | value changes | equal | different | equal as slice | other shape | only A | only B | differences | A compiled code |
@@ -45,11 +45,11 @@ Reproduce: `python3 -I tools/waveq/run.py BIN`
 | uvvm_sb_slv | yavs-auto | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 0 |
 | uvvm_sb_slv | yavs-llvm | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 42834 IR instructions |
 | uvvm_util_rand | yavs-interp | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 0 |
-| uvvm_util_rand | yavs-auto | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 1 functions |
+| uvvm_util_rand | yavs-auto | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 0 |
 | uvvm_util_rand | yavs-llvm | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 84159 IR instructions |
-| uvvm_axistream_vvc | yavs-interp | sim1 | 154 | 788147 | 61 | 93 | 0 | 0 | 20 | 1 | reference process-order-in-cycle: 4, reference subprogram-signature-instance-name: 89 | 0 |
-| uvvm_axistream_vvc | yavs-auto | sim1 | 154 | 788147 | 61 | 93 | 0 | 0 | 20 | 1 | reference process-order-in-cycle: 4, reference subprogram-signature-instance-name: 89 | 0 |
-| uvvm_axistream_vvc | yavs-llvm | sim1 | 154 | 788147 | 61 | 93 | 0 | 0 | 20 | 1 | reference process-order-in-cycle: 4, reference subprogram-signature-instance-name: 89 | 69265 IR instructions |
+| uvvm_axistream_vvc | yavs-interp | sim1 | 154 | 785584 | 150 | 4 | 0 | 0 | 20 | 1 | reference process-order-in-cycle: 4 | 0 |
+| uvvm_axistream_vvc | yavs-auto | sim1 | 154 | 785584 | 150 | 4 | 0 | 0 | 20 | 1 | reference process-order-in-cycle: 4 | 0 |
+| uvvm_axistream_vvc | yavs-llvm | sim1 | 154 | 785584 | 150 | 4 | 0 | 0 | 20 | 1 | reference process-order-in-cycle: 4 | 69265 IR instructions |
 | uvvm_methods_log | yavs-interp | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 0 |
 | uvvm_methods_log | yavs-auto | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 0 |
 | uvvm_methods_log | yavs-llvm | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 14064 IR instructions |
@@ -68,4 +68,3 @@ Not configured (no waveform keys for the kind of design in tools/sims.local.conf
 Differences explained:
 
 - reference process-order-in-cycle: the verification components take IDs from a shared counter in the order their processes run in one cycle; the LRM leaves that order open (14.7.5.3) and the references differ among themselves (docs/design/simulator-discrepancies.md); every bus signal is equal
-- reference subprogram-signature-instance-name: from 266.87 us, in the test case with random valid/ready low, the masters deassert tvalid in other cycles: the BFM seeds that random stream from `'instance_name` of a procedure variable, whose signature each tool spells differently (base types on yavs, #784; a space after each comma on sim1), so each tool runs a different, equally valid sequence (the cause is inferred from where the divergence starts); the test passes everywhere

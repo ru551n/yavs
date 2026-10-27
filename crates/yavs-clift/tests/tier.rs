@@ -1033,3 +1033,201 @@ fn calls_between_compiled_functions() {
     assert_eq!(a, b);
     assert!(n > 1, "{n} entries: no recursion left to the interpreter");
 }
+
+/// `up(l, r, dir, k, x, start, e)` and `down(..)`: a descriptor `l, r, dir` over a 16-byte array of
+/// zeros but for a 7 at element `k`, and the search loop the interpreter runs as one op (`Pos`,
+/// `Index`, `Load`, compare with `x`, compare of the index with `e`, step by 1 or -1) from `start`:
+/// `i * 1000 + element` where the element matches, `-i` at `e`.
+fn search_loop(step: IntOp) -> (Program, FuncId) {
+    let mut pb = ProgramBuilder::new();
+    let what = pb.check_msg("index", Dir::To);
+    let f = pb.declare("search", FuncKind::Function, None);
+    let mut fb = pb.define(f);
+    let names = ["l", "r", "dir", "k", "x", "start", "e"];
+    let slots: Vec<u32> = names
+        .iter()
+        .map(|n| fb.param(n, Width::B8, ParamClass::Value, Mode::In, None))
+        .collect();
+    stmt(&mut fb);
+    let v: Vec<Reg> = slots
+        .iter()
+        .map(|&s| {
+            let p = fb.addr(AddrSpace::Frame, s);
+            load(&mut fb, p, Width::B8)
+        })
+        .collect();
+    let (l, r, dir, k, x, start, e) = (v[0], v[1], v[2], v[3], v[4], v[5], v[6]);
+    let d = dope(&mut fb, l, r, dir);
+    let sixteen = fb.int(16);
+    let arr = alloc(&mut fb, sixteen);
+    let seven = fb.int(7);
+    let at = index(&mut fb, arr, k);
+    fb.emit(Inst::Store {
+        addr: at,
+        src: seven,
+        w: Width::B1,
+    });
+    let (head, latch, stepb, found, end) =
+        (fb.block(), fb.block(), fb.block(), fb.block(), fb.block());
+    let (i, one) = (fb.reg(RegTy::I64), fb.int(1));
+    fb.emit(Inst::Move { dst: i, src: start });
+    fb.emit(Inst::Br { to: head });
+    fb.at(head);
+    let (p, a, ch, c) = (
+        fb.reg(RegTy::I64),
+        fb.reg(RegTy::Ptr),
+        fb.reg(RegTy::I64),
+        fb.reg(RegTy::I64),
+    );
+    fb.emit(Inst::Pos {
+        dst: p,
+        dope: d,
+        dim: 0,
+        idx: i,
+        what,
+    });
+    fb.emit(Inst::Index {
+        dst: a,
+        base: arr,
+        pos: p,
+        stride: 1,
+    });
+    fb.emit(Inst::Load {
+        dst: ch,
+        addr: a,
+        w: Width::B1,
+    });
+    fb.emit(Inst::Cmp {
+        op: CmpOp::Eq,
+        dst: c,
+        a: ch,
+        b: x,
+    });
+    fb.emit(Inst::CondBr {
+        c,
+        t: found,
+        f: latch,
+    });
+    fb.at(latch);
+    let c2 = fb.reg(RegTy::I64);
+    fb.emit(Inst::Cmp {
+        op: CmpOp::Eq,
+        dst: c2,
+        a: i,
+        b: e,
+    });
+    fb.emit(Inst::CondBr {
+        c: c2,
+        t: end,
+        f: stepb,
+    });
+    fb.at(stepb);
+    fb.emit(Inst::Bin {
+        op: step,
+        dst: i,
+        a: i,
+        b: one,
+    });
+    fb.emit(Inst::Br { to: head });
+    fb.at(found);
+    let (k1000, m, r1) = (fb.int(1000), fb.reg(RegTy::I64), fb.reg(RegTy::I64));
+    fb.emit(Inst::Bin {
+        op: IntOp::Mul,
+        dst: m,
+        a: i,
+        b: k1000,
+    });
+    fb.emit(Inst::Bin {
+        op: IntOp::Add,
+        dst: r1,
+        a: m,
+        b: ch,
+    });
+    fb.emit(Inst::Ret { v: Some(r1) });
+    fb.at(end);
+    let (zero, r2) = (fb.int(0), fb.reg(RegTy::I64));
+    fb.emit(Inst::Bin {
+        op: IntOp::Sub,
+        dst: r2,
+        a: zero,
+        b: i,
+    });
+    fb.emit(Inst::Ret { v: Some(r2) });
+    fb.finish();
+    // `outer` calls it, so it runs on a native frame.
+    let outer = pb.declare("outer", FuncKind::Function, None);
+    let mut fb = pb.define(outer);
+    let slots: Vec<u32> = names
+        .iter()
+        .map(|n| fb.param(n, Width::B8, ParamClass::Value, Mode::In, None))
+        .collect();
+    stmt(&mut fb);
+    let v: Vec<Reg> = slots
+        .iter()
+        .map(|&s| {
+            let p = fb.addr(AddrSpace::Frame, s);
+            load(&mut fb, p, Width::B8)
+        })
+        .collect();
+    // Room in the temporary area, which native frames do not grow.
+    let room = fb.int(4096);
+    let spare = alloc(&mut fb, room);
+    let zero = fb.int(0);
+    fb.emit(Inst::Store {
+        addr: spare,
+        src: zero,
+        w: Width::B1,
+    });
+    stmt(&mut fb);
+    let args = fb.regs(&v);
+    let r = fb.reg(RegTy::I64);
+    fb.emit(Inst::Call {
+        func: f,
+        args,
+        dst: Some(r),
+    });
+    fb.emit(Inst::Ret { v: Some(r) });
+    fb.finish();
+    (pb.finish().unwrap(), outer)
+}
+
+/// A search loop in a native frame runs through the scan helper and gives the interpreter's
+/// result (the Cranelift lowering, as the LLVM one): found, ended, an index outside the descriptor, bytes outside the array, either
+/// direction, either step.
+#[test]
+fn search_loops_match_the_interpreter() {
+    let scans = || {
+        yavs_llvm::callback_counts()
+            .and_then(|c| c.into_iter().find(|c| c.0 == "scan").map(|c| c.1))
+            .unwrap_or(0)
+    };
+    let before = scans();
+    for (step, dirs) in [(IntOp::Add, [0u64, 1]), (IntOp::Sub, [1, 0])] {
+        let (prog, f) = search_loop(step);
+        let p = Both::new(prog);
+        // The loop runs along the direction of the descriptor for the step that goes with it.
+        let dir = dirs[0];
+        for (l, r) in [
+            (0i64, 15i64),
+            (1, 16),
+            (3, 12),
+            (0, 20),
+            (15, 0),
+            (16, 1),
+            (20, 0),
+        ] {
+            for k in [0u64, 5, 15, 16] {
+                for x in [0u64, 7, 9] {
+                    for (start, e) in [(l, r), (l, l), (r, l), (l + 1, r), (r + 2, l), (l - 1, r)] {
+                        let args = [l as u64, r as u64, dir, k, x, start as u64, e as u64];
+                        let (a, b, _) = p.both(f, &args);
+                        assert_eq!(a, b, "{step:?} {args:?}");
+                    }
+                }
+            }
+        }
+    }
+    if cfg!(debug_assertions) {
+        assert!(scans() > before, "no loop went through the helper");
+    }
+}

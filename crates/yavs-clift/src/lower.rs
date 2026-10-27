@@ -108,7 +108,7 @@ pub struct Jit {
     deopt_slots: ClifId,
     deopt_end: ClifId,
     /// The kernel-facing callbacks of `rt.rs`, in the order of `KERNEL`.
-    kernel: [ClifId; 20],
+    kernel: [ClifId; 21],
     tables: HashMap<Vec<u8>, DataId>,
     sig: Signature,
     /// Calls between compiled functions without a frame in the interpreter (`NatInfo`) and
@@ -242,6 +242,7 @@ impl Jit {
             (DRIVE_FLUSH, yavs_rt_drive_flush as *const u8),
             (REGION, yavs_rt_region as *const u8),
             (WAIT_EDGE, yavs_rt_wait_edge as *const u8),
+            (SCAN, yavs_rt_scan as *const u8),
         ] {
             b.symbol(n, p);
         }
@@ -303,6 +304,7 @@ impl Jit {
             imp(DRIVE_FLUSH, &[I64, I64, I64, I32], Some(I32))?,
             imp(REGION, &[I64, I64, I64, I64, I32, I64], None)?,
             imp(WAIT_EDGE, &[I64, I64, I64, I64, I32], Some(I32))?,
+            imp(SCAN, &[I64; 11], Some(I32))?,
         ];
         let mut sig = module.make_signature();
         sig.params.extend([AbiParam::new(I64); 3]);
@@ -805,6 +807,9 @@ impl Jit {
             wait_edge: self
                 .module
                 .declare_func_in_func(self.kernel[19], &mut ctx.func),
+            scan: self
+                .module
+                .declare_func_in_func(self.kernel[20], &mut ctx.func),
             tables: tabs,
             consts: cons,
             natives,
@@ -1030,6 +1035,8 @@ struct Imports {
     region: FuncRef,
     /// `yavs_rt_wait_edge(env, mem, lo, len, kind) -> u32`: a `WaitEdge` on the kernel itself.
     wait_edge: FuncRef,
+    /// `yavs_rt_scan(env, mem, ctl, dope, base, i0, x, e, delta, out, depth) -> iterations`.
+    scan: FuncRef,
     tables: HashMap<Vec<u8>, GlobalValue>,
     /// Copies of the constants (up to 4 KiB of bytes) the function takes the address of, which
     /// never change: reads of them need no lookup.
@@ -1534,6 +1541,26 @@ fn gen_func(
             ways[i + 1] += 1;
         }
     }
+    // Search loops (`yavs_interp::search_loops`) of a variant run through `yavs_rt_scan` at their
+    // head; its exits jump to the loop's found and end blocks, which then have one more way in.
+    let scans: HashMap<u32, yavs_interp::SearchLoop> = if native {
+        yavs_interp::search_loops(f)
+            .into_iter()
+            .map(|l| (l.head, l))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+    for l in scans.values() {
+        for b in [l.found, l.end] {
+            if let Some(t) = f.blocks.get(b).map(|b| b.start as usize)
+                && t < n
+            {
+                ways[t] += 1;
+                jumped[t] = true;
+            }
+        }
+    }
     let mut inherit: Vec<Option<Vec<Option<Known<Value>>>>> = vec![None; n + 1];
     // The interpreter enters a function after the constants and addresses it preloads into the
     // frame's registers (`Pre::next`): the pcs after such definitions at an entry are entries too.
@@ -1917,6 +1944,9 @@ fn gen_func(
         }
         if let Some(l) = eloops.get(&pc) {
             g.eloop(l)?;
+        }
+        if let Some(l) = scans.get(&pc) {
+            g.scan(l, block_bb(l.found)?, block_bb(l.end)?);
         }
         if g.batch.is_some() && !batched.contains(&pc) && !batch_pure(prog, f, &inst) {
             g.batch_flush();
@@ -3950,6 +3980,55 @@ impl Gen<'_> {
         self.b.switch_to_block(generic);
         self.clear();
         Ok(())
+    }
+
+    /// A search loop at its head: the iterations that need nothing special run in
+    /// `yavs_rt_scan`, which leaves the index and element in their registers and names the exit
+    /// (1 `found`, 2 `end`); what it leaves (a fault, a long loop, memory it does not reach) is the
+    /// generic code after.
+    fn scan(&mut self, l: &yavs_interp::SearchLoop, found: Block, end: Block) {
+        let ss =
+            self.b
+                .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 32, 3));
+        let out = self.b.ins().stack_addr(I64, ss, 0);
+        let depth = self.nat.as_ref().expect("variant").depth;
+        let args = [
+            self.env,
+            self.mem,
+            self.c64(scan_ctl(l) as i64),
+            self.ld(l.dope),
+            self.ld(l.base),
+            self.ld(l.idx),
+            self.ld(l.x),
+            self.ld(l.e),
+            self.c64(l.shape.delta),
+            out,
+            depth,
+        ];
+        let c = self.b.ins().call(self.imp.scan, &args);
+        let iters = self.b.inst_results(c)[0];
+        let (done, generic, not_found) = (
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+        );
+        self.brif_split(iters, done, generic);
+        self.b.switch_to_block(done);
+        let t = MemFlagsData::trusted();
+        let (i, ch, hit) = (
+            self.b.ins().load(I64, t, out, 0),
+            self.b.ins().load(I64, t, out, 8),
+            self.b.ins().load(I64, t, out, 16),
+        );
+        self.st(l.idx, i);
+        self.st(l.ch, ch);
+        let is1 = self.b.ins().icmp_imm_s(IntCC::Equal, hit, 1);
+        self.b.ins().brif(is1, found, &[], not_found, &[]);
+        self.b.switch_to_block(not_found);
+        let is2 = self.b.ins().icmp_imm_s(IntCC::Equal, hit, 2);
+        self.b.ins().brif(is2, end, &[], generic, &[]);
+        self.b.switch_to_block(generic);
+        self.clear();
     }
 
     /// The poll at a retreating `Br` of a process that never suspends: leave at `pc` before

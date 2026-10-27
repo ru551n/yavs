@@ -2566,11 +2566,13 @@ impl Elab<'_> {
         };
         let copy = self.copy_source(s, st);
         let toggle = self.toggle_source(s, st);
+        let gate = self.gate_source(s, st);
         if let Some(p) = self.procs.last_mut() {
             p.idle = idle;
             p.trigger = trigger;
             p.copy = copy;
             p.toggle = toggle;
+            p.gate = gate;
         }
         Ok(())
     }
@@ -3182,18 +3184,170 @@ impl Elab<'_> {
         if (*l, r.offset, r.len) != (leaf, elem, 1) || nets.drivers[*k].leaf != leaf {
             return None;
         }
-        // A probe: a delay that needs a subprogram call (or fails) stays with the process.
-        let mark = self.m.session.mark();
-        let v = self.m.eval(db, after, Some(s));
-        let called = self.m.session.mark() != mark;
-        self.m.session.undo(db, mark).ok()?;
-        let Ok(Val::Phys(t)) = v else {
-            return None;
-        };
-        (t > 0 && !called).then_some(crate::ProcToggle {
+        let t = self.static_delay(s, after)?;
+        (t > 0).then_some(crate::ProcToggle {
             leaf,
             elem,
             delay: t,
+            transport,
+        })
+    }
+
+    /// The value in femtoseconds of the static `after` expression `e`, evaluated now as a probe
+    /// (undone): `None` when it needs a subprogram call, fails or is negative, so the process
+    /// keeps it and reports its own errors.
+    fn static_delay(&mut self, s: ScopeId, e: ExprId) -> Option<i64> {
+        let db: &Db = self.db;
+        if db.exprs[e].stat == Staticness::None {
+            return None;
+        }
+        let mark = self.m.session.mark();
+        let v = self.m.eval(db, e, Some(s));
+        let called = self.m.session.mark() != mark;
+        self.m.session.undo(db, mark).ok()?;
+        match v {
+            Ok(Val::Phys(t)) if t >= 0 && !called => Some(t),
+            _ => None,
+        }
+    }
+
+    /// The gate of a concurrent `target <= a op b;` or `target <= not a;` (not guarded or
+    /// postponed; no delay clause, `transport` or `inertial` without `reject`; one waveform
+    /// element, its `after` static as for `toggle_source`): `op` one of `and or xor nand nor xnor`,
+    /// the IEEE operator of `std_ulogic` or `std_ulogic_vector` or the predefined one of BIT,
+    /// BOOLEAN or their vectors, both operands and the target of the operator's result type,
+    /// static signal names of one part each and of one length (so the vector operators' length
+    /// check cannot fail), the target's elements of the whole element type (no range check to
+    /// make) and one whole driver of the process. `None` for anything else.
+    fn gate_source(&mut self, s: ScopeId, st: StmtId) -> Option<crate::ProcGate> {
+        let db: &Db = self.db;
+        let StmtKind::ConcSignalAssign {
+            postponed: false,
+            guarded: false,
+            target,
+            delay: delay @ (Delay::Default | Delay::Transport | Delay::Inertial { reject: None }),
+            rhs: Rhs::Simple(Waveform::Elements(elems)),
+            ..
+        } = &db.stmts[st].kind
+        else {
+            return None;
+        };
+        let [
+            WaveElem {
+                value: Some(e),
+                after,
+            },
+        ] = &elems[..]
+        else {
+            return None;
+        };
+        let ExprKind::Call {
+            callee,
+            args,
+            method_of: None,
+            implicit_cond: false,
+        } = &db.exprs[*e].kind
+        else {
+            return None;
+        };
+        use yavs_kernel::Gate;
+        let gate = match db.decls[*callee].name.key().as_str() {
+            "\"not\"" => Gate::Not,
+            "\"and\"" => Gate::And,
+            "\"or\"" => Gate::Or,
+            "\"xor\"" => Gate::Xor,
+            "\"nand\"" => Gate::Nand,
+            "\"nor\"" => Gate::Nor,
+            "\"xnor\"" => Gate::Xnor,
+            _ => return None,
+        };
+        let ops: Vec<ExprId> = args
+            .iter()
+            .map(|a| match a.actual {
+                Actual::Expr(x) => Some(x),
+                _ => None,
+            })
+            .collect::<Option<_>>()?;
+        if ops.len() != if gate == Gate::Not { 1 } else { 2 } {
+            return None;
+        }
+        let (callee, e, after, texpr) = (*callee, *e, *after, target.expr);
+        let transport = matches!(delay, Delay::Transport);
+        // The result, the operands and the target are of one type.
+        let ty = db.base(db.exprs[e].subtype);
+        if ops.iter().any(|&x| db.base(db.exprs[x].subtype) != ty) {
+            return None;
+        }
+        let (dparts, tshape) = self.static_signal_parts(s, texpr)?;
+        let mut parts = Vec::with_capacity(2);
+        for &x in &ops {
+            let (p, shape) = self.static_signal_parts(s, x)?;
+            let [p] = p[..] else {
+                return None;
+            };
+            if shape.ty() != tshape.ty() || shape.len() != tshape.len() {
+                return None;
+            }
+            parts.push(p);
+        }
+        let db: &Db = self.db;
+        let elem = match &tshape {
+            Shape::Scalar { .. } => &tshape,
+            Shape::Array { dims, elem, .. } if dims.len() == 1 => &**elem,
+            _ => return None,
+        };
+        let Shape::Scalar {
+            ty: ety,
+            range: Some(range),
+            elem: Elem::Logic,
+            ..
+        } = elem
+        else {
+            return None;
+        };
+        let decl = &db.decls[callee];
+        let wk = &db.well_known;
+        let ok = match range.low_high() {
+            // The IEEE operators of `std_ulogic` (the whole type) and its vectors.
+            (0, 8) => {
+                !decl.implicit
+                    && db.scopes[decl.scope]
+                        .owner
+                        .is_some_and(|o| db.decls[o].name.key().as_str() == "std_logic_1164")
+            }
+            // The predefined ones of BIT and BOOLEAN (bit-plane logic too).
+            (0, 1) => decl.implicit && (Some(*ety) == wk.boolean || Some(*ety) == wk.bit),
+            _ => false,
+        };
+        let [dpart] = dparts[..] else {
+            return None;
+        };
+        let [dst] = &self.procs.last()?.lsps[..] else {
+            return None;
+        };
+        let [(k, dl, dr)] = dst[..] else {
+            return None;
+        };
+        let nets = &self.m.nets;
+        if !ok
+            || dpart != (dl, dr)
+            || nets.drivers[k].leaf != dl
+            || nets.drivers[k].range != dr
+            || parts
+                .iter()
+                .any(|&(l, r)| r.len != dr.len || nets.leaf(l).ty.elem != Elem::Logic)
+        {
+            return None;
+        }
+        let delay = match after {
+            None => 0,
+            Some(a) => self.static_delay(s, a)?,
+        };
+        Some(crate::ProcGate {
+            gate,
+            a: parts[0],
+            b: *parts.last()?,
+            delay,
             transport,
         })
     }
@@ -3383,6 +3537,7 @@ impl Elab<'_> {
             trigger: None,
             copy: None,
             toggle: None,
+            gate: None,
             idle: None,
             guard: None,
         });

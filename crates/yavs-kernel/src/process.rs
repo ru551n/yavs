@@ -133,6 +133,147 @@ impl Process for CopyProcess {
     }
 }
 
+/// The operator of a [`GateProcess`]: the IEEE 1164 logical operators (BIT and BOOLEAN use the
+/// codes of '0' and '1', so the same tables hold for them).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Gate {
+    Not,
+    And,
+    Or,
+    Xor,
+    Nand,
+    Nor,
+    Xnor,
+}
+
+impl Gate {
+    /// The binary operator and whether the result is negated; `None` for `not`.
+    fn parts(self) -> (Option<yavs_logic::BinOp>, bool) {
+        use yavs_logic::BinOp::*;
+        match self {
+            Gate::Not => (None, true),
+            Gate::And => (Some(And), false),
+            Gate::Or => (Some(Or), false),
+            Gate::Xor => (Some(Xor), false),
+            Gate::Nand => (Some(And), true),
+            Gate::Nor => (Some(Or), true),
+            Gate::Xnor => (Some(Xor), true),
+        }
+    }
+
+    #[inline]
+    fn code(self, a: u8, b: u8) -> u8 {
+        use yavs_logic::tables::{AND, NOT, OR, XOR};
+        let (a, b) = (a as usize & 15, b as usize & 15);
+        let v = match self.parts().0 {
+            None => a as u8,
+            Some(yavs_logic::BinOp::And) => AND[a][b],
+            Some(yavs_logic::BinOp::Or) => OR[a][b],
+            Some(_) => XOR[a][b],
+        };
+        if self.parts().1 { NOT[v as usize] } else { v }
+    }
+
+    #[inline]
+    fn block(self, a: [u64; 4], b: [u64; 4]) -> [u64; 4] {
+        use yavs_logic::Planes;
+        let (op, neg) = self.parts();
+        let v = op.map_or(a, |op| Planes::bin_block(op, a, b));
+        if neg { Planes::not_block(v) } else { v }
+    }
+}
+
+/// A process whose whole body is `target <= a op b;` (or `not a`) on logic signal parts of one
+/// length (`std_ulogic`, BIT, BOOLEAN and vectors of them): the kernel reads the operands,
+/// applies the table and assigns, with no process code (the elaborator recognises the shape,
+/// #779). The operands are read whole, so a part of one element is a scalar gate.
+pub struct GateProcess {
+    gate: Gate,
+    a: SigRef,
+    /// The second operand; `a` again for `not`.
+    b: SigRef,
+    driver: DriverId,
+    dst: Range,
+    delay: Time,
+    mode: DelayMode,
+    buf: Vec<u8>,
+    buf2: Vec<u8>,
+}
+
+impl GateProcess {
+    /// `a`, `b` and `dst` have the same length (`b` is `a` for `not`).
+    pub fn new(
+        gate: Gate,
+        a: SigRef,
+        b: SigRef,
+        driver: DriverId,
+        dst: Range,
+        delay: Time,
+        mode: DelayMode,
+    ) -> GateProcess {
+        let n = (dst.len as usize).div_ceil(64) * 32;
+        GateProcess {
+            gate,
+            a,
+            b,
+            driver,
+            dst,
+            delay,
+            mode,
+            buf: vec![0; n],
+            buf2: vec![0; n],
+        }
+    }
+}
+
+impl Process for GateProcess {
+    fn run(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+        let (a, b) = (self.a, self.b);
+        if self.dst.len == 1 {
+            let (ea, eb) = (
+                a.range.map_or(0, |r| r.offset),
+                b.range.map_or(0, |r| r.offset),
+            );
+            let c = self
+                .gate
+                .code(ctx.elem_code(a.signal, ea)?, ctx.elem_code(b.signal, eb)?);
+            ctx.assign_code(self.driver, Some(self.dst), self.delay, c, self.mode)?;
+        } else {
+            ctx.read_into(a, &mut self.buf)?;
+            ctx.read_into(b, &mut self.buf2)?;
+            let (x, _) = self.buf.as_chunks::<32>();
+            let (y, _) = self.buf2.as_chunks::<32>();
+            let mut v = x
+                .iter()
+                .zip(y)
+                .map(|(x, y)| self.gate.block(words(x), words(y)));
+            // Not `assign_blocks`: a second caller in this crate stops its inlining into
+            // `CopyProcess::run` (+1% instructions on a CPU design).
+            let fast = self.dst.len <= 64
+                && self.delay == Time::ZERO
+                && ctx.assign_planes_now(self.driver, Some(self.dst), v.next().unwrap_or_default());
+            if !fast {
+                let v = x
+                    .iter()
+                    .zip(y)
+                    .map(|(x, y)| self.gate.block(words(x), words(y)));
+                let v = LogicVec::from_repr(yavs_logic::Planes::from_blocks(
+                    self.dst.len as usize,
+                    v.collect(),
+                ));
+                ctx.assign(self.driver, Some(self.dst), &[(self.delay, &v)], self.mode)?;
+            }
+        }
+        if !ctx.wait_same() {
+            ctx.wait_on(a)?;
+            if b != a {
+                ctx.wait_on(b)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// A process whose whole body is `x <= not x after T;` on one scalar element of a logic
 /// signal (std_ulogic, bit or boolean: a clock generator): the kernel reads the element, assigns its complement and waits for it again,
 /// with no process code (the elaborator recognises the shape and evaluates `T`, #440).

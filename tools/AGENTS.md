@@ -2,7 +2,7 @@
 
 Read the root `AGENTS.md` first. This file is for an agent about to change or run a script under
 `tools/`. Subdirectories have their own guides: `tools/corpus/AGENTS.md` (analysis corpora) and
-`tools/difftest/AGENTS.md` (differential simulation corpus), `tools/suites/AGENTS.md`, `tools/bench/AGENTS.md` and `tools/realbench/AGENTS.md`, `tools/stepcount/AGENTS.md`.
+`tools/difftest/AGENTS.md` (differential simulation corpus), `tools/conformance/AGENTS.md`, `tools/suites/AGENTS.md`, `tools/bench/AGENTS.md` and `tools/realbench/AGENTS.md`, `tools/stepcount/AGENTS.md`, `tools/waveq/AGENTS.md`.
 
 ## 1. Purpose and boundaries
 
@@ -22,6 +22,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change or ru
 | `update-ieee-libs.sh [--write]` | Re-fetch the pinned VASG commit, verify `lib/UPSTREAM.sha256`, derive, compare (default) or rewrite |
 | `gen_native_md.py` | Generate `lib/NATIVE.md` (`python3 -I tools/gen_native_md.py > lib/NATIVE.md`) |
 | `check-sim1.sh [2008|2019]` | Analyze `lib/` with the reference simulator in `lib/ORDER.md` order (scratch `~/.cache/rsim-libs/work`, `YAVS_LIBS_SCRATCH`) |
+| `conformance/` | The conformance report generator: runs the evidence suites, writes `docs/conformance.md` and `.json` (`tools/conformance/AGENTS.md`) |
 | `claim <take|release|list|stale|core|build>` | Issue claims on GitHub for multi-agent work, plus host-local core and build locks (root `AGENTS.md` section 3a; `claim selftest` checks the comment parser) |
 | `suites/` | Drivers that simulate an external library's own testbenches on yavs (`tools/suites/AGENTS.md`) |
 | `corpus/` | Analysis corpus manifests, runner, report (`tools/corpus/AGENTS.md`) |
@@ -30,6 +31,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change or ru
 | `bench/` | Shared performance benchmarks: phase timings, A/B comparison, JSON results (`tools/bench/AGENTS.md`) |
 | `realbench/` | Real-world performance suite: about 30 testbenches of real projects, timed against the reference and between two binaries (`tools/realbench/AGENTS.md`) |
 | `stepcount/` | Exact instruction counts per function and per source line for a window of a run (ptrace single-stepper in C plus a Python report; `tools/stepcount/AGENTS.md`) |
+| `waveq/` | Waveform equivalence: real designs on yavs and the reference simulators, compared signal by signal (`tools/waveq/AGENTS.md`) |
 | `discrepancies/` | Simulator discrepancy runner and verdict table (`tools/discrepancies/AGENTS.md`, catalogue `docs/design/simulator-discrepancies.md`) |
 
 ## 2a. Reference simulator configuration
@@ -42,7 +44,7 @@ git-ignored `tools/sims.local.conf`, an INI file with a section per label, read 
 `difftest_relaxed`, `difftest_ignore`, `ext_analyse`, `ext_elab`, `ext_run`, `ext_psl` (difftest, external.py);
 `corpus_cmd`, `corpus_suffix`, `corpus_fixup`, `gen_cmd`, `gen_setup`, `gen_licence`,
 `gen_version`, `grlib_target` (sim1 only: the make target in GRLIB's script generator that writes the ordered per-file list, used by `tools/corpus/gen_external.py` for `grlib-2008`), `osvvm_tool_name`, `osvvm_tool_vendor`, `uvvm_simulator_name` (tools/corpus, tools/suites);
-`real_elab`, `real_run` (realbench: elaboration and run templates with `{std} {lib} {dir} {gens} {top} {rest}`; analysis uses `corpus_cmd`, whose `{file}` must be a word of its own so that realbench can pass several files in one call, #745); `check_cmd`, `check_bootstrap` (check-sim1.sh); `vhpi_analyse`, `vhpi_run` (vhpi-conformance);
+`real_elab`, `real_run` (realbench: elaboration and run templates with `{std} {lib} {dir} {gens} {top} {rest}`; analysis uses `corpus_cmd`, whose `{file}` must be a word of its own so that realbench can pass several files in one call, #745); `check_cmd`, `check_bootstrap` (check-sim1.sh); `waveq`, `waveq_flags` (tools/waveq: one design with a waveform, run options that write `{wave}`); `vhpi_analyse`, `vhpi_run` (vhpi-conformance);
 `negtest_cmd`, `negtest_err`, `negtest_warn` (tests/diag/sem/check_ref.py); `golden_cmd`, `golden_name`
 (crates/yavs-std/golden/gen.py). The `YAVS_SIM1_CMD` variable names the sim1 command of the ignored
 cross-check test in `yavs-sem`. Never commit the file or put a tool name, path or licence value in a tracked file.

@@ -8419,8 +8419,27 @@ the run; cycles as the minimum of 7 interleaved runs on one core claimed with `t
 - **Results** (bench builds with `llvm`, `no_code_signals` before / after of the real-world suite): `osvvm_axis_random` 0 / 21, `osvvm_axi4_random` 0 / 1,
   `uvvm_axistream_vvc` 0 / 5, `grlib_leon3mp` 0 / 317, `neorv32_single_min` 373 / 376, `uvvm_sb_slv` 0 / 0 (3 signals), fletcher tests unchanged.
   Instructions of whole runs (`--tier=interp` / `auto`): all level (1.000) except `grlib_leon3mp` 1.007 / 1.007: the 317 signals it
-  now drops are written by element and skip on the plane bit (`plane_held`), which costs more than the byte compare it replaces; wall time
+  now drops are written by element and skip on the plane bit (`plane_held`), which costs more than the byte compare it replaces (fixed by the next entry); wall time
   level (0.99 / 0.95, noise of a shared host). Test: `connections_and_sensitivity_need_no_byte_codes`, `elem_read_facts`.
+
+## The skip test of a signal without byte codes reads the planes inline (yavs-kernel `signal.rs`, `value.rs`, #734, 2026-10-26)
+
+- **Decision**: `held` (the skip tests `direct_same`, `commit_code`, `commit_codes`) reads the plane bit inline when the signal keeps no
+  byte codes, through `plane_is`: the four plane words against the code's splat words, one test of the element's bit, with no code
+  assembled. The out-of-line `plane_held` call is gone (it was `#[inline(never)]`; byte storage keeps an out-of-line path, `bytes_held`). The
+  compares against the driver value and the driving value use `plane_is` too. `direct_same` is `#[inline(always)]`, so the drive run of
+  the interpreter (`skip_code_now`) and the compiled-code direct drives (`yavs_interp::direct_drive_*`, which end in the same
+  `assign_code_now`) run the test without a call.
+- **Why**: dropping the codes of a signal written by element (30241dbc: 317 signals of `grlib_leon3mp`) turned the byte compare into a call
+  of about 40 instructions, +0.7 percent of the run. Now the test is about 25 inline instructions on the plane path and the refresh of
+  the codes is gone: dropping codes is not a loss any more. `direct_same_planes` (vectors) never used the codes.
+- **Measured** (bench builds with `llvm`, `--threads 1`, interleaved on claimed cores, instructions; "before" is main at 30241dbc, "pre" the
+  commit before it, with the 317 codes kept): `grlib_leon3mp` interp 425.70 G before, 421.82 G after, 422.62 G pre; `neorv32_single_min`
+  interp 29.95 / 29.85 G, auto 30.47 / 30.23 G; `fletcher_bufferwriter_512` interp 51.10 / 51.07 G, auto 48.73 / 48.57 G; `lfsr64`, `lfsr64_xor`,
+  `rtl_ram`, `rtl_lfsr`, `rtl_ff`, `rtl_chain` level (0.999 to 1.003, layout). Cycles are within host noise (the machine was shared; min of
+  3 to 5 runs): grlib 181.9 / 183.0 G, neorv32 interp 13.28 / 13.21 G, fletcher auto 19.89 / 19.67 G. `realbench --compare` (42 tests,
+  interp and auto): instruction geomean 1.00 / 1.01 (the auto rows that move are short runs whose compile outcome differs, #673). Equality:
+  `YAVS_CODES=all` and the default give identical output on `grlib_leon3mp` and `neorv32_single_min`.
 
 ## Facts the declarative part leaves in a process copy (yavs-ir `opt/decl.rs`, #678, 2026-10-24)
 
@@ -11139,3 +11158,50 @@ What #771 left after the branch fold (`HRead` is 61 percent of the first 1 us of
 - **Tests**: `opt` (`a_descriptor_from_zero_to_a_length_minus_one_has_that_length`), interpreter `textio` (the new calling form), difftest `textio/read_string_forms` (target bounds, directions, null, 70 characters, short
   line, GOOD form), `composite/local_array_from_parameter` (defaults of logic, bit, character and integer locals, null range, bounds of the parameter) and `composite/slice_loop_bounds` (slices of a loop in range, then
   past the end), perf cases `hread_loop` (7156 to 4109 ops, ceiling 4233) and `tab_tail` (ceiling 16240 to 14590); the ceilings of `ieee_share`, `elem_loops`, `memo_wide` and `sink_msg` follow the fused ops.
+
+## Kernel gates: one-operator concurrent assignments run as the kernel's own process (yavs-kernel, yavs-elab, yavs-logic, #779, 2026-10-26)
+
+A concurrent `c(i) <= not c(i-1);` was an interpreted process of 74 IR instructions: about 600 instructions of interpreter and
+`Ctx` work per activation of `rtl_chain` for a table lookup, 59 ns of its 103 ns per activation against 3 ns in sim1's engine.
+
+- **Decision: a concurrent assignment of one logical operator on static signal names is `ProcInst::gate` and runs as
+  `yavs_kernel::GateProcess`** (`Walker::gate_source`): `not`, `and`, `or`, `xor`, `nand`, `nor`, `xnor`; the IEEE operator of
+  `std_ulogic`/`std_ulogic_vector` (declared in `std_logic_1164`, not implicit) or the predefined one of BIT, BOOLEAN and their
+  vectors; result, operands and target of one base type (so no reduction and no mixed scalar and vector form), each operand and the
+  target one part of one length (the vector operators' length check cannot fail), the target's elements of the whole element type
+  (no range check), the target one whole driver of the process; not guarded or postponed, no `reject`, one waveform element whose
+  `after`, if any, evaluates at elaboration to a time of at least 0 without a call (`static_delay`, the probe `toggle_source` already
+  used). Anything else stays a process. Built under the conditions of a kernel copy (`Config::edge_triggers`, no counters); a clock
+  generator `x <= not x after T` stays a `ToggleProcess`. Why: the statement does one thing; BIT and BOOLEAN keep the codes of '0' and
+  '1', so the IEEE 1164 tables (`yavs_logic::tables`) and plane functions (`Planes::bin_block`, `not_block`, now public) serve all three
+  types with one code path.
+- **The process**: one element reads both codes (`elem_code`), looks up the table and assigns with `assign_code` (the zero-delay
+  fast path of every other scalar assignment); more elements read both operands into buffers made at build (`read_into`), apply the
+  plane function per word and assign with `assign_blocks`. The wait is `wait_same` after the first activation. Delta and event
+  behaviour is that of the process: the same assignment entry points, the same sensitivity (the operand parts are the longest static
+  prefixes). Corpus `sigassign/logic_gates` (all 81 value pairs, a resolved target with two gate drivers, an in port, a vector over a
+  plane word, BIT and BOOLEAN, inertial and transport delays with pulses shorter than the delay) is checked against sim1; the elab test
+  `logic_gates_run_in_the_kernel` compares the reports with time and delta against the interpreted statements and checks the
+  excluded shapes.
+- **Measured** (`tools/bench/run.py --ref sim1 --tiers interp,auto --instructions --runs 5`, core 10, base = main 30241dbc):
+  `rtl_chain` 3.29 G to 2.08 G instructions (`--tier=auto`), wall 0.19 to 0.11 s, CPU ratio to sim1 1.36 to 0.79 (instructions 1.62
+  to 1.02); per activation 94 to 55 ns against sim1's 72 ns. `rtl_ff`, `rtl_lfsr`, `lfsr64`, `delta_chain` have no such statement:
+  unchanged. Work counters: `comb_chain` ops 8139 to 843, new design `gate_vec` (10082 ops interpreted, 6415 with kernel gates).
+  realbench `--compare` (42 tests, interp and auto, core 11): geometric mean of instructions 1.00 in both tiers; the real testbenches
+  have few single-gate statements (neorv32: about five, besides its 381 copies), so they gain little. A first version assigned vector
+  gates with `assign_blocks`, whose second caller in the crate stopped its inlining into `CopyProcess::run`: `neorv32_single_min`
+  +1.0% instructions (interpreter, identical process runs); vector gates now use `assign_planes_now` or `assign` (+0.3%, spread over
+  unrelated functions: layout).
+- **The reference simulator (rule 22).** Its concurrent statements are tiny compiled functions that read the inputs and schedule the
+  driver directly; its engine part of a chain stage is a few nanoseconds. The idea taken is that a one-operator statement needs no
+  general process machinery; ours reaches it with a fixed kernel process chosen at elaboration rather than generated code, so it costs
+  nothing to compile and works in the interpreter tier. Nothing was copied.
+- **Not covered** (still processes): one-level `when ... else` muxes and selected assignments, relational operators, literal
+  operands, expressions of more than one operator, operands of several parts (record wholes).
+
+## Conformance report: generated, CI-regenerated where possible, dated records otherwise (tools/conformance, #780, 2026-10-26)
+
+- `docs/conformance.md` and `docs/conformance.json` are generated by `tools/conformance/run.py` from the existing harnesses; the README's "Correctness evidence" section links to it. Reason: other people should be able to check the evidence, not take our word for it. Decided: user, 2026-10-26.
+- The `conformance` workflow (push to `main`, release tags) regenerates every part that needs only yavs and the fetched corpora and uploads the report as an artifact. Parts that need reference simulators or vendor libraries are dated records in `docs/conformance-local.json` (date, commit, command), refreshed with `run.py --local`. Reason: a number must say where and when it came from.
+- A committed report that differs from the regenerated one is a warning on `main` and a failure on a release tag. Reason: agents push to `main` all day and a changed count must not block them, while a release must carry a current report. Agent decision, open for the maintainer.
+- Nothing is published outside the repository (no Pages). Needs the maintainer's decision.

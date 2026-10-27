@@ -240,10 +240,31 @@ impl Elaborated {
                 let (sig, elem) = nets.kelem(t.leaf, t.elem);
                 Some(yavs_kernel::ToggleProcess::new(sig, elem, d, time, mode))
             });
-            let proc: Box<dyn Process> = match (copy, toggle) {
-                (Some(parts), _) => Box::new(yavs_kernel::CopyProcess::new(parts)),
-                (None, Some(t)) => Box::new(t),
-                (None, None) => make(p, &ds)?,
+            // And a one-operator gate `y <= a and b;` (a toggle `x <= not x after T` is both).
+            let gate = p.gate.filter(|_| native && toggle.is_none()).and_then(|g| {
+                let time = yavs_kernel::Time::from_vhdl(g.delay).ok()?;
+                let (k, dl, dr) = *p.lsps.first()?.first()?;
+                let d = *ds.get(p.drivers.iter().position(|&x| x == k)?)?;
+                let mode = if g.transport {
+                    yavs_kernel::DelayMode::Transport
+                } else {
+                    yavs_kernel::DelayMode::INERTIAL
+                };
+                Some(yavs_kernel::GateProcess::new(
+                    g.gate,
+                    nets.kref(g.a.0, g.a.1),
+                    nets.kref(g.b.0, g.b.1),
+                    d,
+                    nets.kpart(dl, dr).1,
+                    time,
+                    mode,
+                ))
+            });
+            let proc: Box<dyn Process> = match (copy, toggle, gate) {
+                (Some(parts), _, _) => Box::new(yavs_kernel::CopyProcess::new(parts)),
+                (None, Some(t), _) => Box::new(t),
+                (None, None, Some(g)) => Box::new(g),
+                (None, None, None) => make(p, &ds)?,
             };
             let proc_waits = proc.several_waits();
             let name = self.hier.path_name(p.scope, Case::Lrm);

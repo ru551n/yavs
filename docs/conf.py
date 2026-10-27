@@ -30,6 +30,7 @@ exclude_patterns = [
     "decisions.md",
     "cli-contract.md",
     "test-runner-requirements.md",
+    "conformance.md",
     "design",
     "AGENTS.md",
     "CLAUDE.md",

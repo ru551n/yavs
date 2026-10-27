@@ -16,6 +16,30 @@
 | Cranelift tier (#481 item 1) | `yavs run --tier=clift`, `--tier=clift-auto` (feature `clift`, off by default, no LLVM needed, crate `yavs-clift`) and `--tier=auto3` (both features: Cranelift for warm functions, LLVM O2 for those that stay hot) run the optimised IR on the LLVM tier's frame view, callbacks and side exits; the difftest corpus is identical to the interpreter at 1 and 4 threads and under the collection stress build; Cranelift translates at 31 to 62 us per IR instruction against 115 to 536 for LLVM; since 2026-10-24 it lowers the kernel-facing instructions, protected calls and heap code in native frames; on the window generator testbench it is 24 percent below the interpreter in instructions (LLVM `auto` 49 to 62 percent below), level or up to 8 percent above the interpreter on neorv32, fletcher, poc_arith_addw and grlib, so it is not the first level of `auto`; measurements and the gap list in the clift section |
 | M5, M10 | not started (M5: the `vhpi_*` export surface (#266), `yavs run --vhpi` (#267) and the design hierarchy object model (#269) are done; values and most callbacks are not; `yavs run` accepts `+plusargs` after the top level, readable through `vhpiArgcP` and the `vhpiArgvs` iterator (#298), `crates/yavs-vhpi`; M10: design `docs/design/gui.md` (#384, decisions answered 2026-10-19); slice G1 (#388): `gui/` workspace (EUPL-1.2) with `yavs-gui`, which starts `yavs run --dap=stdio` or attaches to a port, shows a dock layout of placeholder panels, a console of the run's output and Run/Pause/Stop, tested headless against a scripted DAP server (`gui/AGENTS.md`); `yavs run --gui` starts it (E0122 when missing); release archives ship it; slice G2 (#399): source view with breakpoint gutter (conditions, hit counts), call stack per process, locals and watch with lazy and paged expansion and edit, hover, step buttons, time and delta in the status bar, tested against a scripted DAP server and, ignored, the real `yavs`; G3 to G6 and the server slices S1 (#396), S2 (#397), S4 (#398) not started) |
 
+### Kernel gates (#779, 2026-10-26)
+
+(`docs/decisions.md` "Kernel gates".) A concurrent assignment of one logical operator (`not and or xor nand nor xnor`) on static signal
+names of `std_ulogic`, BIT, BOOLEAN or their vectors runs as the kernel's own `GateProcess`, with zero delay or a static `after`.
+`rtl_chain` (1000 inverters): 3.29 G to 2.08 G instructions under `--tier=auto`, CPU 1.36 to 0.79 times sim1. Corpus
+`sigassign/logic_gates` passes against sim1 at 1 and 4 threads on every tier. Open: one-level muxes, relational operators, literal operands.
+
+### Conformance report (#780, 2026-10-26)
+
+`tools/conformance/run.py` generates `docs/conformance.md` (and `.json`): pass counts of the differential corpus per group and thread count, the reference simulators' own tests, the discrepancy catalogue, the analysis corpora against the recorded sim1 lists, the UVVM and OSVVM suites, neorv32 and GRLIB LEON3 runs, platforms and known limits. The `conformance` workflow regenerates the CI-capable parts on `main` and release tags and checks the committed copy (`tools/conformance/AGENTS.md`). Open: waveform equivalence on real designs (a slot in the report), a public page (maintainer's decision).
+
+### Waveform equivalence against the reference simulators (#781, 2026-10-26)
+
+`tools/waveq/run.py` runs a design on yavs (interp, auto and llvm tiers) and on the references and compares the
+waveforms signal by signal, the value after the last delta of each time step (`tools/waveq/AGENTS.md`). Run locally at
+aeaeaa59 (`tools/waveq/RESULTS.md`, `results.json`): the 8 h2h RTL designs (sim1 and sim2), neorv32 (13 466 signals,
+15.9 M value changes, 300 us), GRLIB LEON3 (13 897 signals, 33.2 M value changes, the whole 1.06 ms system test) and
+the UVVM and OSVVM testbenches of realbench (sim1) are equal on all three tiers in every matched signal, except OSVVM
+verification-component IDs and UVVM activity-register entries (process order within one cycle, catalogue
+`process-order-in-cycle`) and the UVVM AXI-Stream random valid/ready-low sequence from 266.87 us (catalogue
+`subprogram-signature-instance-name`, yavs part #784). The llvm tier compiles 137 to 226 142 IR instructions per design;
+auto compiles little in these short runs (LEON3 4 functions). sim2 runs the h2h designs only (no realbench keys). Found on
+the way: #782 (literals accepted without visible character literals), #783 (integer width in yavs FST).
+
 ### `wait until <edge>` as cheap as the sensitivity-list forms (#767, 2026-10-26)
 
 (`docs/decisions.md` "`wait until <edge>` costs what the sensitivity-list forms cost".) The end of a `wait until rising_edge(clk)` on one
@@ -9732,6 +9756,8 @@ The elaborator decides which logic signals keep the per-element byte codes: thos
 ## Element read facts without connections, sensitivity entries and parameter reads (yavs-sem, #734, 2026-10-26)
 
 Port-map actuals (`v(3)`), sensitivity entries and element reads through signal parameters no longer make a signal keep its byte codes: a scalar port read whole is the read, and a signal passed to a parameter that reads an element of it is found by a fixpoint over the calls (`docs/decisions.md` "Element read facts without connections, sensitivity entries and parameter reads"). `no_code_signals`: `osvvm_axis_random` 0 to 21, `grlib_leon3mp` 0 to 317, `uvvm_axistream_vvc` 0 to 5; instructions level except `grlib_leon3mp` +0.7 percent.
+
+The skip test of a signal without byte codes reads the planes inline (`plane_is`, no call): `grlib_leon3mp` instructions -0.9 percent against 30241dbc, and below the run that kept the 317 codes; other designs level (`docs/decisions.md` "The skip test of a signal without byte codes reads the planes inline").
 
 ## Table reads with a range test or a validity mask (yavs-ir `opt/inline.rs`, #769, 2026-10-26)
 

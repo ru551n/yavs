@@ -331,6 +331,9 @@ pub trait Process: Send {
   elaborator builds the kernel's own `CopyProcess` for it (#529).
 - A clock generator `x <= not x after T;` on one scalar element needs none either: the elaborator
   evaluates `T` and builds the kernel's own `ToggleProcess` (#440).
+- A one-operator logic gate (`y <= a and b;`, `y <= not a;` on logic signal parts of one length)
+  needs none either: the kernel's own `GateProcess` reads the operands and applies the IEEE 1164
+  tables (#779).
 - Elaboration: leaves as `Builder::signal`/`resolved_signal` with `SignalType::logic` for
   `std_ulogic` arrays and `SignalType::bytes` otherwise; uncollapsed ports as `Builder::port`
   with `Converter` closures that call the IR conversion function; `'stable/'quiet/'delayed/

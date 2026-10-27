@@ -363,7 +363,7 @@ def gen_args(t, w):
     return [f"-g{g}" for g in gens]
 
 
-def yavs_script(Y, t, w, tier, sub="run", stop=None):
+def yavs_script(Y, t, w, tier, sub="run", stop=None, extra=()):
     tier, *envs = tier.split("+")  # `tier+VAR=VALUE`: the tier with environment variables set (measurement knobs)
     a = [Y, sub, f"--std={t['std']}"] + (["--relaxed"] if t["relaxed"] else []) + [f"--work={t['toplib']}:{w}/{t['toplib']}"]
     a += [f"--map={l}:{w}/{l}" for l in libs_of(w) if l != t["toplib"]]
@@ -372,20 +372,20 @@ def yavs_script(Y, t, w, tier, sub="run", stop=None):
         stop = stop or t["stop"]
         a += [f"--stop-time={stop}"] if stop else []
         a += [f"--exit-severity={t['severity']}"] if t.get("severity") else []
-    a += [t["top"]] + gen_args(t, w)
+    a += list(extra) + [t["top"]] + gen_args(t, w)
     pre = "env " + " ".join(shlex.quote(e) for e in envs) + " " if envs else ""
     return f"cd {shlex.quote(str(w))} && " + pre + " ".join(shlex.quote(x) for x in a)
 
 
-def ref_script(tool, t, w, what="both"):
-    """Elaboration and run of the reference (what="elab": elaboration only)."""
+def ref_script(tool, t, w, what="both", extra=""):
+    """Elaboration and run of the reference (what="elab": elaboration only; extra: more run options, tools/waveq)."""
     el, rn = simconf.get(tool, "real_elab"), simconf.get(tool, "real_run")
     if not el or not rn:
         raise Fail(f"{tool}: keys real_elab and real_run not configured (tools/sims.local.conf, see AGENTS.md)")
     rel = " ".join(relaxed_flag(tool)) + " " if t["relaxed"] else ""
     gens = " ".join(shlex.quote(g) for g in gen_args(t, w))
     sub = dict(std=t["std"], lib=t["toplib"], dir=str(w), relaxed=rel, gens=gens, top=t["top"].replace(".", "-", 1),  # a recorded ENTITY.ARCH is ENTITY-ARCH here
-               rest=f"--stop-time={t['stop']}" if t["stop"] else "")
+               rest=" ".join(x for x in (f"--stop-time={t['stop']}" if t["stop"] else "", extra) if x))
     f = lambda s: s.replace("{{", "\0").replace("}}", "\1").format(**sub).replace("\0", "{").replace("\1", "}")
     return f"cd {shlex.quote(str(w))} && {f(el)}" + (f" || exit 98; {f(rn)}" if what == "both" else "")
 

@@ -24,7 +24,8 @@ pub use kernel::{
     progress,
 };
 pub use process::{
-    CopyProcess, Ctx, EDGE_LEVEL, LiveSink, ProcId, Process, Severity, ToggleProcess, edge_key,
+    CopyProcess, Ctx, EDGE_LEVEL, Gate, GateProcess, LiveSink, ProcId, Process, Severity,
+    ToggleProcess, edge_key,
 };
 pub use signal::{
     DelayMode, DriverId, ForceMode, GuardKind, Range, Resolution, Resolver, SigRef, SignalId,

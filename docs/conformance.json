@@ -1,0 +1,2939 @@
+{
+ "ci": {
+  "corpora": {
+   "en_cl_fix-2008": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 149,
+    "total": 149
+   },
+   "fletcher-2008": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 101,
+    "total": 101
+   },
+   "grlib-1993": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 454,
+    "total": 454
+   },
+   "grlib-2008": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 410,
+    "total": 410
+   },
+   "hdl-modules-2008": {
+    "fail": 3,
+    "matches_expected": true,
+    "pass": 83,
+    "total": 86
+   },
+   "hdl-modules-2019": {
+    "fail": 3,
+    "matches_expected": true,
+    "pass": 83,
+    "total": 86
+   },
+   "json-for-vhdl-2008": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 149,
+    "total": 149
+   },
+   "neorv32-2008": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 67,
+    "total": 67
+   },
+   "neotrng-2008": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 2,
+    "total": 2
+   },
+   "open-logic-2008": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 386,
+    "total": 386
+   },
+   "osvvm-2008": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 174,
+    "total": 174
+   },
+   "osvvm-2019": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 174,
+    "total": 174
+   },
+   "poc-2008": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 181,
+    "total": 181
+   },
+   "satcat5-2008": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 246,
+    "total": 246
+   },
+   "surf-2008": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 318,
+    "total": 318
+   },
+   "unisim-2008": {
+    "skipped": "a vendor library directory is not available"
+   },
+   "uvvm-2008": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 235,
+    "total": 235
+   },
+   "uvvm-2019": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 235,
+    "total": 235
+   },
+   "vests-1993": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 1939,
+    "total": 1939
+   },
+   "vhdl-compliance-2008": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 171,
+    "total": 171
+   },
+   "vhdl-compliance-2019": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 208,
+    "total": 208
+   },
+   "vhdl-extras-2008": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 25,
+    "total": 25
+   },
+   "vhdl-ideas-2019": {
+    "fail": 1,
+    "matches_expected": true,
+    "pass": 18,
+    "total": 19
+   },
+   "vhdl-interfaces-2019": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 34,
+    "total": 34
+   },
+   "vhdl-tool-checks-2008": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 1,
+    "total": 1
+   },
+   "vhdl-tool-checks-2019": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 1,
+    "total": 1
+   },
+   "vhlib-2008": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 26,
+    "total": 26
+   },
+   "vunit-2008": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 143,
+    "total": 143
+   },
+   "vunit-2019": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 143,
+    "total": 143
+   },
+   "vunit-tests-2008": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 218,
+    "total": 218
+   },
+   "vunit-tests-2019": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 218,
+    "total": 218
+   },
+   "yavs-lib-1993": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 28,
+    "total": 28
+   },
+   "yavs-lib-2008": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 27,
+    "total": 27
+   },
+   "yavs-lib-2019": {
+    "fail": 0,
+    "matches_expected": true,
+    "pass": 28,
+    "total": 28
+   }
+  },
+  "designs": {
+   "grlib_leon3mp": {
+    "interp": true
+   },
+   "neorv32_dual_full": {
+    "interp": true
+   },
+   "neorv32_single_cache": {
+    "interp": true
+   },
+   "neorv32_single_min": {
+    "interp": true
+   }
+  },
+  "difftest": {
+   "interp": {
+    "1 thread": {
+     "failed": [],
+     "groups": {
+      "access": [
+       8,
+       8
+      ],
+      "arith": [
+       8,
+       8
+      ],
+      "composite": [
+       116,
+       116
+      ],
+      "delta": [
+       13,
+       13
+      ],
+      "env": [
+       14,
+       14
+      ],
+      "force": [
+       12,
+       12
+      ],
+      "generics": [
+       52,
+       52
+      ],
+      "hierarchy": [
+       81,
+       81
+      ],
+      "ieee": [
+       21,
+       21
+      ],
+      "implicit": [
+       6,
+       6
+      ],
+      "postponed": [
+       2,
+       2
+      ],
+      "process": [
+       36,
+       36
+      ],
+      "protected": [
+       22,
+       22
+      ],
+      "psl": [
+       13,
+       13
+      ],
+      "reflect": [
+       14,
+       14
+      ],
+      "report": [
+       10,
+       10
+      ],
+      "resolution": [
+       22,
+       22
+      ],
+      "rtl": [
+       4,
+       4
+      ],
+      "scalar": [
+       16,
+       16
+      ],
+      "shared": [
+       4,
+       4
+      ],
+      "sigassign": [
+       25,
+       25
+      ],
+      "std93": [
+       6,
+       6
+      ],
+      "synopsys": [
+       20,
+       20
+      ],
+      "textio": [
+       14,
+       14
+      ]
+     }
+    },
+    "4 threads": {
+     "failed": [],
+     "groups": {
+      "access": [
+       8,
+       8
+      ],
+      "arith": [
+       8,
+       8
+      ],
+      "composite": [
+       116,
+       116
+      ],
+      "delta": [
+       13,
+       13
+      ],
+      "env": [
+       14,
+       14
+      ],
+      "force": [
+       12,
+       12
+      ],
+      "generics": [
+       52,
+       52
+      ],
+      "hierarchy": [
+       81,
+       81
+      ],
+      "ieee": [
+       21,
+       21
+      ],
+      "implicit": [
+       6,
+       6
+      ],
+      "postponed": [
+       2,
+       2
+      ],
+      "process": [
+       36,
+       36
+      ],
+      "protected": [
+       22,
+       22
+      ],
+      "psl": [
+       13,
+       13
+      ],
+      "reflect": [
+       14,
+       14
+      ],
+      "report": [
+       10,
+       10
+      ],
+      "resolution": [
+       22,
+       22
+      ],
+      "rtl": [
+       4,
+       4
+      ],
+      "scalar": [
+       16,
+       16
+      ],
+      "shared": [
+       4,
+       4
+      ],
+      "sigassign": [
+       25,
+       25
+      ],
+      "std93": [
+       6,
+       6
+      ],
+      "synopsys": [
+       20,
+       20
+      ],
+      "textio": [
+       14,
+       14
+      ]
+     }
+    },
+    "4 threads shuffled": {
+     "failed": [],
+     "groups": {
+      "access": [
+       8,
+       8
+      ],
+      "arith": [
+       8,
+       8
+      ],
+      "composite": [
+       116,
+       116
+      ],
+      "delta": [
+       13,
+       13
+      ],
+      "env": [
+       14,
+       14
+      ],
+      "force": [
+       12,
+       12
+      ],
+      "generics": [
+       52,
+       52
+      ],
+      "hierarchy": [
+       81,
+       81
+      ],
+      "ieee": [
+       21,
+       21
+      ],
+      "implicit": [
+       6,
+       6
+      ],
+      "postponed": [
+       2,
+       2
+      ],
+      "process": [
+       36,
+       36
+      ],
+      "protected": [
+       22,
+       22
+      ],
+      "psl": [
+       13,
+       13
+      ],
+      "reflect": [
+       14,
+       14
+      ],
+      "report": [
+       10,
+       10
+      ],
+      "resolution": [
+       22,
+       22
+      ],
+      "rtl": [
+       4,
+       4
+      ],
+      "scalar": [
+       16,
+       16
+      ],
+      "shared": [
+       4,
+       4
+      ],
+      "sigassign": [
+       25,
+       25
+      ],
+      "std93": [
+       6,
+       6
+      ],
+      "synopsys": [
+       20,
+       20
+      ],
+      "textio": [
+       14,
+       14
+      ]
+     }
+    }
+   }
+  },
+  "discrepancies": {
+   "cases": 209,
+   "output_tail": "",
+   "yavs_matches_expected": true
+  },
+  "external": {
+   "sim1": {
+    "classes": {
+     "analysis": 22,
+     "elab": 16,
+     "oracle": 32,
+     "pass": 1000,
+     "skip": 403
+    },
+    "pass_list": 992,
+    "pass_list_regressions": [],
+    "tests": 1473
+   },
+   "sim2": {
+    "classes": {
+     "analysis": 27,
+     "elab": 11,
+     "oracle": 8,
+     "pass": 458,
+     "skip": 647
+    },
+    "pass_list": 455,
+    "pass_list_regressions": [],
+    "tests": 1151
+   }
+  },
+  "osvvm": {
+   "2008": {
+    "pass": 314,
+    "runs": 314
+   },
+   "2019": {
+    "pass": 314,
+    "runs": 314
+   }
+  },
+  "uvvm": {
+   "pass": 131,
+   "runs": 137,
+   "skip": 6
+  }
+ },
+ "generated": {
+  "commit": "4cd961c994",
+  "commit_date": "2026-10-26",
+  "version": "0.8.0"
+ },
+ "local": {
+  "records": {
+   "cocotb": {
+    "command": "cocotb's own tests with the VHPI plugin (crates/yavs-vhpi/COCOTB.md)",
+    "commit": "78b1c398",
+    "data": {
+     "fail": 2,
+     "pass": 66,
+     "skip": 0
+    },
+    "date": "2026-10-20",
+    "note": "counted in test directories, recorded in docs/STATUS.md; the integration work is on hold",
+    "title": "cocotb regression over VHPI"
+   },
+   "refdiff": {
+    "command": "tools/difftest/difftest.py --candidate sim1|sim2",
+    "commit": "cd5268f8b2",
+    "data": {
+     "sim1": {
+      "agree": 533,
+      "tests": 535
+     },
+     "sim2": {
+      "agree": 314,
+      "tests": 535
+     }
+    },
+    "date": "2026-10-26",
+    "note": "",
+    "title": "References against the recorded outputs",
+    "version": "0.8.0"
+   },
+   "tiers": {
+    "command": "tools/conformance/run.py --local --llvm --only tiers (yavs built with --features llvm)",
+    "commit": "cd5268f8b2",
+    "data": {
+     "auto": {
+      "1 thread": {
+       "failed": [],
+       "groups": {
+        "access": [
+         8,
+         8
+        ],
+        "arith": [
+         8,
+         8
+        ],
+        "composite": [
+         114,
+         114
+        ],
+        "delta": [
+         13,
+         13
+        ],
+        "env": [
+         14,
+         14
+        ],
+        "force": [
+         12,
+         12
+        ],
+        "generics": [
+         52,
+         52
+        ],
+        "hierarchy": [
+         81,
+         81
+        ],
+        "ieee": [
+         21,
+         21
+        ],
+        "implicit": [
+         6,
+         6
+        ],
+        "postponed": [
+         2,
+         2
+        ],
+        "process": [
+         36,
+         36
+        ],
+        "protected": [
+         22,
+         22
+        ],
+        "psl": [
+         13,
+         13
+        ],
+        "reflect": [
+         14,
+         14
+        ],
+        "report": [
+         10,
+         10
+        ],
+        "resolution": [
+         22,
+         22
+        ],
+        "rtl": [
+         4,
+         4
+        ],
+        "scalar": [
+         16,
+         16
+        ],
+        "shared": [
+         4,
+         4
+        ],
+        "sigassign": [
+         24,
+         24
+        ],
+        "std93": [
+         6,
+         6
+        ],
+        "synopsys": [
+         20,
+         20
+        ],
+        "textio": [
+         13,
+         13
+        ]
+       }
+      },
+      "4 threads": {
+       "failed": [],
+       "groups": {
+        "access": [
+         8,
+         8
+        ],
+        "arith": [
+         8,
+         8
+        ],
+        "composite": [
+         114,
+         114
+        ],
+        "delta": [
+         13,
+         13
+        ],
+        "env": [
+         14,
+         14
+        ],
+        "force": [
+         12,
+         12
+        ],
+        "generics": [
+         52,
+         52
+        ],
+        "hierarchy": [
+         81,
+         81
+        ],
+        "ieee": [
+         21,
+         21
+        ],
+        "implicit": [
+         6,
+         6
+        ],
+        "postponed": [
+         2,
+         2
+        ],
+        "process": [
+         36,
+         36
+        ],
+        "protected": [
+         22,
+         22
+        ],
+        "psl": [
+         13,
+         13
+        ],
+        "reflect": [
+         14,
+         14
+        ],
+        "report": [
+         10,
+         10
+        ],
+        "resolution": [
+         22,
+         22
+        ],
+        "rtl": [
+         4,
+         4
+        ],
+        "scalar": [
+         16,
+         16
+        ],
+        "shared": [
+         4,
+         4
+        ],
+        "sigassign": [
+         24,
+         24
+        ],
+        "std93": [
+         6,
+         6
+        ],
+        "synopsys": [
+         20,
+         20
+        ],
+        "textio": [
+         13,
+         13
+        ]
+       }
+      },
+      "4 threads shuffled": {
+       "failed": [],
+       "groups": {
+        "access": [
+         8,
+         8
+        ],
+        "arith": [
+         8,
+         8
+        ],
+        "composite": [
+         114,
+         114
+        ],
+        "delta": [
+         13,
+         13
+        ],
+        "env": [
+         14,
+         14
+        ],
+        "force": [
+         12,
+         12
+        ],
+        "generics": [
+         52,
+         52
+        ],
+        "hierarchy": [
+         81,
+         81
+        ],
+        "ieee": [
+         21,
+         21
+        ],
+        "implicit": [
+         6,
+         6
+        ],
+        "postponed": [
+         2,
+         2
+        ],
+        "process": [
+         36,
+         36
+        ],
+        "protected": [
+         22,
+         22
+        ],
+        "psl": [
+         13,
+         13
+        ],
+        "reflect": [
+         14,
+         14
+        ],
+        "report": [
+         10,
+         10
+        ],
+        "resolution": [
+         22,
+         22
+        ],
+        "rtl": [
+         4,
+         4
+        ],
+        "scalar": [
+         16,
+         16
+        ],
+        "shared": [
+         4,
+         4
+        ],
+        "sigassign": [
+         24,
+         24
+        ],
+        "std93": [
+         6,
+         6
+        ],
+        "synopsys": [
+         20,
+         20
+        ],
+        "textio": [
+         13,
+         13
+        ]
+       }
+      }
+     },
+     "designs": {
+      "grlib_leon3mp": {
+       "auto": true
+      },
+      "neorv32_dual_full": {
+       "auto": true
+      },
+      "neorv32_single_cache": {
+       "auto": true
+      },
+      "neorv32_single_min": {
+       "auto": true
+      }
+     },
+     "llvm": {
+      "1 thread": {
+       "failed": [],
+       "groups": {
+        "access": [
+         8,
+         8
+        ],
+        "arith": [
+         8,
+         8
+        ],
+        "composite": [
+         114,
+         114
+        ],
+        "delta": [
+         13,
+         13
+        ],
+        "env": [
+         14,
+         14
+        ],
+        "force": [
+         12,
+         12
+        ],
+        "generics": [
+         52,
+         52
+        ],
+        "hierarchy": [
+         81,
+         81
+        ],
+        "ieee": [
+         21,
+         21
+        ],
+        "implicit": [
+         6,
+         6
+        ],
+        "postponed": [
+         2,
+         2
+        ],
+        "process": [
+         36,
+         36
+        ],
+        "protected": [
+         22,
+         22
+        ],
+        "psl": [
+         13,
+         13
+        ],
+        "reflect": [
+         14,
+         14
+        ],
+        "report": [
+         10,
+         10
+        ],
+        "resolution": [
+         22,
+         22
+        ],
+        "rtl": [
+         4,
+         4
+        ],
+        "scalar": [
+         16,
+         16
+        ],
+        "shared": [
+         4,
+         4
+        ],
+        "sigassign": [
+         24,
+         24
+        ],
+        "std93": [
+         6,
+         6
+        ],
+        "synopsys": [
+         20,
+         20
+        ],
+        "textio": [
+         13,
+         13
+        ]
+       }
+      },
+      "4 threads": {
+       "failed": [],
+       "groups": {
+        "access": [
+         8,
+         8
+        ],
+        "arith": [
+         8,
+         8
+        ],
+        "composite": [
+         114,
+         114
+        ],
+        "delta": [
+         13,
+         13
+        ],
+        "env": [
+         14,
+         14
+        ],
+        "force": [
+         12,
+         12
+        ],
+        "generics": [
+         52,
+         52
+        ],
+        "hierarchy": [
+         81,
+         81
+        ],
+        "ieee": [
+         21,
+         21
+        ],
+        "implicit": [
+         6,
+         6
+        ],
+        "postponed": [
+         2,
+         2
+        ],
+        "process": [
+         36,
+         36
+        ],
+        "protected": [
+         22,
+         22
+        ],
+        "psl": [
+         13,
+         13
+        ],
+        "reflect": [
+         14,
+         14
+        ],
+        "report": [
+         10,
+         10
+        ],
+        "resolution": [
+         22,
+         22
+        ],
+        "rtl": [
+         4,
+         4
+        ],
+        "scalar": [
+         16,
+         16
+        ],
+        "shared": [
+         4,
+         4
+        ],
+        "sigassign": [
+         24,
+         24
+        ],
+        "std93": [
+         6,
+         6
+        ],
+        "synopsys": [
+         20,
+         20
+        ],
+        "textio": [
+         13,
+         13
+        ]
+       }
+      },
+      "4 threads shuffled": {
+       "failed": [],
+       "groups": {
+        "access": [
+         8,
+         8
+        ],
+        "arith": [
+         8,
+         8
+        ],
+        "composite": [
+         114,
+         114
+        ],
+        "delta": [
+         13,
+         13
+        ],
+        "env": [
+         14,
+         14
+        ],
+        "force": [
+         12,
+         12
+        ],
+        "generics": [
+         52,
+         52
+        ],
+        "hierarchy": [
+         81,
+         81
+        ],
+        "ieee": [
+         21,
+         21
+        ],
+        "implicit": [
+         6,
+         6
+        ],
+        "postponed": [
+         2,
+         2
+        ],
+        "process": [
+         36,
+         36
+        ],
+        "protected": [
+         22,
+         22
+        ],
+        "psl": [
+         13,
+         13
+        ],
+        "reflect": [
+         14,
+         14
+        ],
+        "report": [
+         10,
+         10
+        ],
+        "resolution": [
+         22,
+         22
+        ],
+        "rtl": [
+         4,
+         4
+        ],
+        "scalar": [
+         16,
+         16
+        ],
+        "shared": [
+         4,
+         4
+        ],
+        "sigassign": [
+         24,
+         24
+        ],
+        "std93": [
+         6,
+         6
+        ],
+        "synopsys": [
+         20,
+         20
+        ],
+        "textio": [
+         13,
+         13
+        ]
+       }
+      }
+     }
+    },
+    "date": "2026-10-26",
+    "note": "",
+    "title": "The auto and llvm tiers",
+    "version": "0.8.0"
+   },
+   "vhpi": {
+    "command": "tools/vhpi-conformance/run.py",
+    "commit": "cd5268f8b2",
+    "data": {
+     "plugins": 23,
+     "sim1_lines": 2042,
+     "sim1_lines_not_reproduced": 660,
+     "traces_equal": 2,
+     "yavs_extra_lines": 876
+    },
+    "date": "2026-10-26",
+    "note": "",
+    "title": "VHPI conformance",
+    "version": "0.8.0"
+   },
+   "vunit-own": {
+    "command": "VUNIT_SIMULATOR=yavs python run.py -p 2   (in each vunit/vhdl/<suite>/test directory)",
+    "commit": "f2ab69be",
+    "data": {
+     "fail": 0,
+     "pass": 1357,
+     "skip": 0
+    },
+    "date": "2026-10-20",
+    "note": "11 suites; recorded in docs/STATUS.md (#112); needs a VUnit checkout with a yavs simulator interface, which this tool cannot fetch",
+    "title": "VUnit's own VHDL suites"
+   }
+  }
+ },
+ "static": {
+  "corpus_refs": {
+   "en_cl_fix-2008": {
+    "pass": 149,
+    "recorded": "2026-10-22",
+    "total": 149
+   },
+   "fletcher-2008": {
+    "pass": 101,
+    "recorded": "2026-10-22",
+    "total": 101
+   },
+   "grlib-1993": {
+    "pass": 454,
+    "recorded": "2026-10-23",
+    "total": 454
+   },
+   "grlib-2008": {
+    "pass": 410,
+    "recorded": "2026-10-23",
+    "total": 410
+   },
+   "hdl-modules-2008": {
+    "pass": 86,
+    "recorded": "2026-10-22",
+    "total": 86
+   },
+   "hdl-modules-2019": {
+    "pass": 86,
+    "recorded": "2026-10-22",
+    "total": 86
+   },
+   "json-for-vhdl-2008": {
+    "pass": 149,
+    "recorded": "2026-10-22",
+    "total": 149
+   },
+   "neorv32-2008": {
+    "pass": 67,
+    "recorded": "2026-10-22",
+    "total": 67
+   },
+   "neotrng-2008": {
+    "pass": 2,
+    "recorded": "2026-10-22",
+    "total": 2
+   },
+   "open-logic-2008": {
+    "pass": 386,
+    "recorded": "2026-10-22",
+    "total": 386
+   },
+   "osvvm-2008": {
+    "pass": 174,
+    "recorded": "2026-10-22",
+    "total": 174
+   },
+   "osvvm-2019": {
+    "pass": 174,
+    "recorded": "2026-10-22",
+    "total": 174
+   },
+   "poc-2008": {
+    "pass": 181,
+    "recorded": "2026-10-22",
+    "total": 181
+   },
+   "satcat5-2008": {
+    "pass": 246,
+    "recorded": "2026-10-22",
+    "total": 246
+   },
+   "surf-2008": {
+    "pass": 310,
+    "recorded": "2026-10-22",
+    "total": 318
+   },
+   "uvvm-2008": {
+    "pass": 235,
+    "recorded": "2026-10-22",
+    "total": 235
+   },
+   "uvvm-2019": {
+    "pass": 235,
+    "recorded": "2026-10-22",
+    "total": 235
+   },
+   "vests-1993": {
+    "pass": 1939,
+    "recorded": "2026-10-23",
+    "total": 1939
+   },
+   "vhdl-compliance-2008": {
+    "pass": 171,
+    "recorded": "2026-10-22",
+    "total": 171
+   },
+   "vhdl-compliance-2019": {
+    "pass": 208,
+    "recorded": "2026-10-22",
+    "total": 208
+   },
+   "vhdl-extras-2008": {
+    "pass": 25,
+    "recorded": "2026-10-22",
+    "total": 25
+   },
+   "vhdl-ideas-2019": {
+    "pass": 18,
+    "recorded": "2026-10-22",
+    "total": 19
+   },
+   "vhdl-interfaces-2019": {
+    "pass": 34,
+    "recorded": "2026-10-22",
+    "total": 34
+   },
+   "vhdl-tool-checks-2008": {
+    "pass": 1,
+    "recorded": "2026-10-22",
+    "total": 1
+   },
+   "vhdl-tool-checks-2019": {
+    "pass": 1,
+    "recorded": "2026-10-22",
+    "total": 1
+   },
+   "vhlib-2008": {
+    "pass": 26,
+    "recorded": "2026-10-22",
+    "total": 26
+   },
+   "vunit-2008": {
+    "pass": 143,
+    "recorded": "2026-10-22",
+    "total": 143
+   },
+   "vunit-2019": {
+    "pass": 143,
+    "recorded": "2026-10-22",
+    "total": 143
+   },
+   "vunit-tests-2008": {
+    "pass": 218,
+    "recorded": "2026-10-22",
+    "total": 218
+   },
+   "vunit-tests-2019": {
+    "pass": 218,
+    "recorded": "2026-10-22",
+    "total": 218
+   },
+   "yavs-lib-2008": {
+    "pass": 27,
+    "recorded": "2026-10-22",
+    "total": 27
+   },
+   "yavs-lib-2019": {
+    "pass": 26,
+    "recorded": "2026-10-22",
+    "total": 28
+   }
+  },
+  "discrepancies": [
+   {
+    "case": "anonymous-generic-constant",
+    "decided": "agent (L94, #283)",
+    "kind": "LRM clear",
+    "lrm": "6.5.2, 6.5.3 (2019)",
+    "yavs": "OK"
+   },
+   {
+    "case": "anonymous-subprogram-parameter",
+    "decided": "agent (L94, #283)",
+    "kind": "LRM clear",
+    "lrm": "6.5.2, 6.5.3 (2019)",
+    "yavs": "OK"
+   },
+   {
+    "case": "composite-image-quoting",
+    "decided": "agent, 2026-10-19 (L105, #360)",
+    "kind": "LRM ambiguity (text not read)",
+    "lrm": "16.2.2, 5.7 (2019)",
+    "yavs": "as sim4"
+   },
+   {
+    "case": "anonymous-formal-subprogram",
+    "decided": "agent (L94, #308)",
+    "kind": "LRM clear",
+    "lrm": "6.5.2, 6.5.4 (2019)",
+    "yavs": "OK"
+   },
+   {
+    "case": "anonymous-generic-subprogram",
+    "decided": "agent (L94, #308)",
+    "kind": "LRM clear",
+    "lrm": "4.2.1, 6.5.2 (2019)",
+    "yavs": "OK"
+   },
+   {
+    "case": "anonymous-operator",
+    "decided": "agent (L94, #308)",
+    "kind": "LRM ambiguity",
+    "lrm": "6.5.2, 9.2 (2019)",
+    "yavs": "OK"
+   },
+   {
+    "case": "psl-sere-alternative",
+    "decided": "agent, 2026-10-23 (L123, #445)",
+    "kind": "LRM clear",
+    "lrm": "PSL (IEEE 1850) 6.1.1.2.1",
+    "yavs": "OK"
+   },
+   {
+    "case": "psl-sere-equal-repeat",
+    "decided": "agent, 2026-10-23 (L123, #445)",
+    "kind": "LRM clear",
+    "lrm": "PSL (IEEE 1850) 6.1.2.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "psl-sere-within-and",
+    "decided": "agent, 2026-10-23 (L123, #445)",
+    "kind": "LRM clear",
+    "lrm": "PSL (IEEE 1850) 6.1.1.2.2, 6.1.1.2.4",
+    "yavs": "OK"
+   },
+   {
+    "case": "psl-named-sequence",
+    "decided": "agent, 2026-10-23 (#445)",
+    "kind": "LRM clear",
+    "lrm": "PSL (IEEE 1850) 6.5",
+    "yavs": "OK"
+   },
+   {
+    "case": "psl-temporal-operators",
+    "decided": "agent, 2026-10-23 (L133, #445)",
+    "kind": "LRM clear",
+    "lrm": "PSL (IEEE 1850) 6.2.1.3 to 6.2.1.7",
+    "yavs": "OK"
+   },
+   {
+    "case": "psl-abort",
+    "decided": "user, 2026-10-23 (L133, #445, #636)",
+    "kind": "LRM clear (the abort is asynchronous: it takes effect between clock ticks), **deviation on purpose**",
+    "lrm": "PSL (IEEE 1850) 6.2.1.3 to 6.2.1.7",
+    "yavs": "OK"
+   },
+   {
+    "case": "formal-package-per-element-box",
+    "decided": "user, 2026-10-19: keep reject; open",
+    "kind": "LRM ambiguity",
+    "lrm": "2019 6.5.7.2 (text not at hand)",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "psl-assert-always",
+    "decided": "user, 2026-10-18 (#138); agent (#226)",
+    "kind": "LRM ambiguity",
+    "lrm": "2008 clause 17 (PSL by reference)",
+    "yavs": "OK"
+   },
+   {
+    "case": "psl-assert-severity",
+    "decided": "agent (#226, decisions.md \"Parser\")",
+    "kind": "LRM ambiguity",
+    "lrm": "2008 clause 17 (PSL by reference)",
+    "yavs": "OK"
+   },
+   {
+    "case": "psl-assume",
+    "decided": "agent (#226, decisions.md \"Parser\")",
+    "kind": "LRM ambiguity",
+    "lrm": "2008 clause 17 (PSL by reference)",
+    "yavs": "OK"
+   },
+   {
+    "case": "psl-explicit-clock",
+    "decided": "agent (#226, decisions.md \"Parser\")",
+    "kind": "LRM ambiguity",
+    "lrm": "2008 clause 17 (PSL by reference)",
+    "yavs": "OK"
+   },
+   {
+    "case": "synopsys-arith-package",
+    "decided": "user, 2026-10-19 (#117)",
+    "kind": "library availability",
+    "lrm": "none (not IEEE packages)",
+    "yavs": "OK"
+   },
+   {
+    "case": "v93-delimited-comment",
+    "decided": "agent, 2026-10-23 (#629, L135)",
+    "kind": "LRM clear",
+    "lrm": "1993 13.8",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "v93-elsif-generate",
+    "decided": "agent, 2026-10-23 (#629, L135)",
+    "kind": "LRM clear",
+    "lrm": "1993 9.7",
+    "yavs": "REJECT (`E0011`)"
+   },
+   {
+    "case": "v93-reserved-2008-word",
+    "decided": "agent, 2026-10-23 (#629)",
+    "kind": "LRM clear",
+    "lrm": "1993 13.9",
+    "yavs": "OK"
+   },
+   {
+    "case": "v93-explicit-implicit-homograph",
+    "decided": "agent, 2026-10-23 (#629, L134)",
+    "kind": "LRM ambiguity",
+    "lrm": "1993 10.4",
+    "yavs": "OK"
+   },
+   {
+    "case": "v93-out-port-read",
+    "decided": "agent, 2026-10-23 (#629, L138)",
+    "kind": "LRM clear",
+    "lrm": "1993 4.3.2",
+    "yavs": "REJECT (`E1360`)"
+   },
+   {
+    "case": "v93-out-port-read-contexts",
+    "decided": "agent, 2026-10-23 (L138)",
+    "kind": "LRM clear",
+    "lrm": "1993 4.3.2",
+    "yavs": "REJECT (`E1360`)"
+   },
+   {
+    "case": "v93-out-port-read-alias",
+    "decided": "agent, 2026-10-23 (L138)",
+    "kind": "LRM ambiguity (an alias is another name of the object, but the text speaks of the interface object's own name)",
+    "lrm": "1993 4.3.2, 6.6",
+    "yavs": "OK"
+   },
+   {
+    "case": "access-constant-parameter",
+    "decided": "user, 2026-10-19 (lrm-checks L46)",
+    "kind": "LRM clear",
+    "lrm": "6.4.2.2, 6.5.2",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "access-to-protected",
+    "decided": "agent (lrm-checks L19)",
+    "kind": "LRM ambiguity",
+    "lrm": "5.4.1",
+    "yavs": "08: REJECT / 19: OK"
+   },
+   {
+    "case": "actual-conversion-in-variable-parameter",
+    "decided": "agent (#229, L66)",
+    "kind": "LRM clear",
+    "lrm": "6.5.7.1, 4.2.2.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "alias-of-external-method",
+    "decided": "agent (reference notes in tests/diag/sem)",
+    "kind": "LRM clear",
+    "lrm": "6.6.2, 8.7",
+    "yavs": "OK"
+   },
+   {
+    "case": "block-config-default-bound",
+    "decided": "user, 2026-10-19 (decisions.md, lrm-checks \"Rule 15 rows\")",
+    "kind": "LRM ambiguity",
+    "lrm": "3.4.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "call-conversions",
+    "decided": "agent (#229)",
+    "kind": "LRM clear",
+    "lrm": "6.5.7.1",
+    "yavs": "OK"
+   },
+   {
+    "case": "config-label-wrong-component",
+    "decided": "agent (reference notes in tests/diag/sem)",
+    "kind": "LRM clear",
+    "lrm": "3.4.2, 7.3",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "config-rebinding",
+    "decided": "user, 2026-10-19 (LRM and majority)",
+    "kind": "LRM clear",
+    "lrm": "7.3.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "disconnect-others",
+    "decided": "agent (#260, L91)",
+    "kind": "LRM clear",
+    "lrm": "7.4",
+    "yavs": "OK"
+   },
+   {
+    "case": "disconnect-twice",
+    "decided": "agent (#260, L91)",
+    "kind": "LRM clear",
+    "lrm": "7.4",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "div-by-zero-in-range",
+    "decided": "user, 2026-10-19: keep reject; agent (sem.md 4.2)",
+    "kind": "LRM ambiguity",
+    "lrm": "9.4.2",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "duplicate-interface-param",
+    "decided": "agent (reference notes in tests/diag/sem)",
+    "kind": "LRM clear",
+    "lrm": "12.3 (homographs)",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "formal-conversion-unconstrained-port",
+    "decided": "user, 2026-10-19: keep reject; agent (rule1-review F8)",
+    "kind": "LRM ambiguity",
+    "lrm": "6.5.7.1",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "formal-package-map-mismatch",
+    "decided": "agent (reference notes in tests/diag/sem)",
+    "kind": "LRM clear",
+    "lrm": "6.5.7.2",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "formal-package-subprograms",
+    "decided": "agent (#101)",
+    "kind": "LRM clear",
+    "lrm": "6.5.7.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "generic-array-anonymous-types",
+    "decided": "agent (L92, #30)",
+    "kind": "LRM clear",
+    "lrm": "6.5.3 (2019)",
+    "yavs": "OK"
+   },
+   {
+    "case": "generic-array-index-constraint",
+    "decided": "agent (L92, #30)",
+    "kind": "LRM clear",
+    "lrm": "6.5.3 (2019)",
+    "yavs": "OK"
+   },
+   {
+    "case": "generic-class-array-elem-mismatch",
+    "decided": "agent (reference notes in tests/diag/sem)",
+    "kind": "LRM clear",
+    "lrm": "6.5.3 (2019)",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "generic-map-in-call",
+    "decided": "agent (#362, L103)",
+    "kind": "LRM clear",
+    "lrm": "4.4, 9.3.4, LCS-2016-049 (2019)",
+    "yavs": "OK"
+   },
+   {
+    "case": "generic-map-formal-signature",
+    "decided": "agent (#363, L104)",
+    "kind": "LRM clear",
+    "lrm": "6.5.7.2, LCS-2016-I03 (2019)",
+    "yavs": "OK"
+   },
+   {
+    "case": "generic-subprogram-of-block",
+    "decided": "user, 2026-10-19: keep reject; agent, 2026-10-19 (#222, L63)",
+    "kind": "LRM ambiguity",
+    "lrm": "6.5.7.2, 7.3.3, 11.2",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "generic-subprogram-of-enclosing-entity",
+    "decided": "user, 2026-10-19 (majority rule)",
+    "kind": "LRM ambiguity",
+    "lrm": "6.5.7.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "group-attribute",
+    "decided": "agent (#260, L90)",
+    "kind": "LRM clear",
+    "lrm": "6.10, 7.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "group-constituent-count",
+    "decided": "agent (#260, L90)",
+    "kind": "LRM clear",
+    "lrm": "6.10",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "group-mixed-class-template",
+    "decided": "agent (#260, L90)",
+    "kind": "LRM clear",
+    "lrm": "6.9, 6.10",
+    "yavs": "OK"
+   },
+   {
+    "case": "group-template-box-empty",
+    "decided": "agent (#260, L90)",
+    "kind": "LRM ambiguity",
+    "lrm": "6.10",
+    "yavs": "OK"
+   },
+   {
+    "case": "homograph-subprogram-instances",
+    "decided": "agent, 2026-10-19 (L22, L89)",
+    "kind": "LRM clear",
+    "lrm": "12.3, 4.10",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "i64-min-literal",
+    "decided": "user, 2026-10-19: keep reject; user, 2026-10-19 (#214, L58)",
+    "kind": "LRM ambiguity",
+    "lrm": "9.3, 5.2.3 (range of universal_integer implementation-defined)",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "implicit-condition-operator",
+    "decided": "user, 2026-10-19 (#48, L53)",
+    "kind": "LRM ambiguity",
+    "lrm": "9.2.9",
+    "yavs": "OK"
+   },
+   {
+    "case": "implicit-signal-in-subprogram",
+    "decided": "agent, 2026-10-19 (L67)",
+    "kind": "LRM ambiguity",
+    "lrm": "4.2.2.2, 14.7.5",
+    "yavs": "OK"
+   },
+   {
+    "case": "incomplete-type-never-completed",
+    "decided": "agent (reference notes in tests/diag/sem)",
+    "kind": "LRM clear",
+    "lrm": "5.4.2",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "incremental-binding",
+    "decided": "agent (hierarchy/incremental_binding, ref=hand)",
+    "kind": "LRM clear",
+    "lrm": "7.3.2.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "individual-assoc-parts",
+    "decided": "agent (#71)",
+    "kind": "LRM clear",
+    "lrm": "6.5.7.1",
+    "yavs": "OK"
+   },
+   {
+    "case": "local-generic-package-same-unit",
+    "decided": "agent (lrm-checks L81, #34)",
+    "kind": "LRM ambiguity",
+    "lrm": "4.9, 4.7 (2008)",
+    "yavs": "OK"
+   },
+   {
+    "case": "method-alias-objects-full",
+    "decided": "user, 2026-10-19 (#237)",
+    "kind": "LRM ambiguity",
+    "lrm": "5.6.2, 6.6.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "method-alias-of-object",
+    "decided": "user, 2026-10-19 (#237)",
+    "kind": "LRM ambiguity",
+    "lrm": "5.6.2, 6.6.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "method-alias-of-process-variable",
+    "decided": "user, 2026-10-19 (#237)",
+    "kind": "LRM ambiguity",
+    "lrm": "5.6.2, 6.6.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "method-alias-private-variable",
+    "decided": "agent (lrm-checks L15)",
+    "kind": "LRM clear",
+    "lrm": "5.6.2 (2019)",
+    "yavs": "OK"
+   },
+   {
+    "case": "multiple-sources-two-processes",
+    "decided": "agent (reference notes in tests/diag/sem)",
+    "kind": "LRM clear",
+    "lrm": "6.4.2.3, 14.7.3.1",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "named-return-in-return-and-formal",
+    "decided": "agent (L62, #33)",
+    "kind": "LRM ambiguity",
+    "lrm": "4.2.1 (2019)",
+    "yavs": "OK"
+   },
+   {
+    "case": "named-return-record-generic-method",
+    "decided": "agent (L62, #239)",
+    "kind": "LRM ambiguity",
+    "lrm": "4.2.1 (2019)",
+    "yavs": "OK"
+   },
+   {
+    "case": "named-return-scalar",
+    "decided": "user, 2026-10-19 (L77, #327; reverses the earlier rejection)",
+    "kind": "LRM ambiguity",
+    "lrm": "4.2.1 (2019)",
+    "yavs": "OK"
+   },
+   {
+    "case": "nested-generic-packages",
+    "decided": "agent (#101)",
+    "kind": "LRM clear",
+    "lrm": "4.7, 6.5.7.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "nested-package-runtime",
+    "decided": "agent (#34)",
+    "kind": "LRM clear",
+    "lrm": "4.7, 4.8, 3.3.2 (2008)",
+    "yavs": "OK"
+   },
+   {
+    "case": "nested-package-second-body",
+    "decided": "agent (#34)",
+    "kind": "LRM clear",
+    "lrm": "4.8, 12.1",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "others-with-other-choice",
+    "decided": "agent (reference notes in tests/diag/sem)",
+    "kind": "LRM clear",
+    "lrm": "9.3.3.3",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "overflow-in-addition",
+    "decided": "agent (sem.md Q5)",
+    "kind": "LRM ambiguity",
+    "lrm": "9.2.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "overload-by-conversion-type",
+    "decided": "user, 2026-10-19: keep reject; user, 2026-10-19 (#229, L66)",
+    "kind": "LRM ambiguity",
+    "lrm": "4.5.3, 6.5.7.1",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "overloaded-attribute-spec",
+    "decided": "agent (reference notes in tests/diag/sem)",
+    "kind": "LRM clear",
+    "lrm": "7.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "package-generic-local-state",
+    "decided": "agent (#101)",
+    "kind": "LRM clear",
+    "lrm": "4.8, 14.5",
+    "yavs": "OK"
+   },
+   {
+    "case": "package-in-generate",
+    "decided": "agent (#34)",
+    "kind": "LRM clear",
+    "lrm": "11.8, 3.3.2 (2008)",
+    "yavs": "OK"
+   },
+   {
+    "case": "package-generic-map",
+    "decided": "agent (#598, L128)",
+    "kind": "LRM clear",
+    "lrm": "4.7, 4.9",
+    "yavs": "OK"
+   },
+   {
+    "case": "package-in-process",
+    "decided": "agent (#34)",
+    "kind": "LRM clear",
+    "lrm": "11.3 (2008)",
+    "yavs": "OK"
+   },
+   {
+    "case": "package-instance-local",
+    "decided": "agent (#101)",
+    "kind": "LRM clear",
+    "lrm": "4.3, 11.3, 11.8",
+    "yavs": "OK"
+   },
+   {
+    "case": "package-instance-signal-in-process",
+    "decided": "agent (lrm-checks L82, #34)",
+    "kind": "LRM clear",
+    "lrm": "4.9, 4.7, 11.3",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "port-conv-formal-type-mark",
+    "decided": "agent (#259)",
+    "kind": "LRM clear",
+    "lrm": "6.5.7.1, 9.3.6",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "port-conv-inout",
+    "decided": "agent (#238, L70)",
+    "kind": "LRM clear",
+    "lrm": "6.5.7.1, 14.7.7.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "port-conv-inout-one-way-in",
+    "decided": "user, 2026-10-19: keep reject; agent (#74, L72)",
+    "kind": "LRM ambiguity",
+    "lrm": "6.5.7.1",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "port-conv-inout-one-way-out",
+    "decided": "agent (#74, L72)",
+    "kind": "LRM ambiguity",
+    "lrm": "6.5.7.1",
+    "yavs": "OK"
+   },
+   {
+    "case": "port-map-gap-individual",
+    "decided": "agent, 2026-10-18 (#224, L65)",
+    "kind": "LRM clear",
+    "lrm": "6.5.7.1",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "positional-generic-after-type",
+    "decided": "agent, 2026-10-18 (#223, L69); confirmation pending",
+    "kind": "LRM ambiguity",
+    "lrm": "6.5.3, 6.5.7.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "protected-composite-shared",
+    "decided": "agent (#361, L102)",
+    "kind": "LRM ambiguity",
+    "lrm": "6.4.2.4, LCS-2016-014 (2019)",
+    "yavs": "OK"
+   },
+   {
+    "case": "protected-composites",
+    "decided": "agent (#361, L102)",
+    "kind": "LRM clear",
+    "lrm": "5.3, 5.4, LCS-2016-014, 014a (2019)",
+    "yavs": "OK"
+   },
+   {
+    "case": "protected-record-mixed",
+    "decided": "user (#371, L102)",
+    "kind": "LRM clear",
+    "lrm": "5.3.1 (2019)",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "protected-method-access-parameter",
+    "decided": "user, 2026-10-19 (#212, lrm-checks L46)",
+    "kind": "LRM ambiguity",
+    "lrm": "5.6.2",
+    "yavs": "08: REJECT / 19: OK"
+   },
+   {
+    "case": "protected-method-access-result",
+    "decided": "agent, 2026-10-18 (#212)",
+    "kind": "LRM ambiguity",
+    "lrm": "5.6.2",
+    "yavs": "08: REJECT / 19: OK"
+   },
+   {
+    "case": "protected-type-expanded-name-method",
+    "decided": "agent (L74, #250)",
+    "kind": "LRM clear",
+    "lrm": "8.3, 12.1",
+    "yavs": "OK"
+   },
+   {
+    "case": "protected-type-expanded-name-mixed",
+    "decided": "agent (L74, #250)",
+    "kind": "LRM clear",
+    "lrm": "8.3, 12.1",
+    "yavs": "OK"
+   },
+   {
+    "case": "protected-type-expanded-name-state",
+    "decided": "agent (L74, #250)",
+    "kind": "LRM clear",
+    "lrm": "8.3, 12.1",
+    "yavs": "OK"
+   },
+   {
+    "case": "shared-variable-before-body",
+    "decided": "LRM clear, 2 of 3 reference simulators (#258)",
+    "kind": "LRM clear",
+    "lrm": "14.4.2",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "signal-param-parts",
+    "decided": "agent (#71)",
+    "kind": "LRM clear",
+    "lrm": "6.5.7.1",
+    "yavs": "OK"
+   },
+   {
+    "case": "signal-param-records",
+    "decided": "agent (#71)",
+    "kind": "LRM clear",
+    "lrm": "6.5.7.1",
+    "yavs": "OK"
+   },
+   {
+    "case": "signal-param-slices",
+    "decided": "agent (#71)",
+    "kind": "LRM clear",
+    "lrm": "6.5.7.1",
+    "yavs": "OK"
+   },
+   {
+    "case": "stable-attr-in-subprogram",
+    "decided": "agent (reference notes in tests/diag/sem)",
+    "kind": "LRM ambiguity",
+    "lrm": "4.2.2.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "static-index-out-of-range",
+    "decided": "user, 2026-10-19 (sem.md 4.3, L51)",
+    "kind": "LRM ambiguity",
+    "lrm": "8.4",
+    "yavs": "OK"
+   },
+   {
+    "case": "static-slice-out-of-range",
+    "decided": "user, 2026-10-19 (sem.md 4.3, L51)",
+    "kind": "LRM ambiguity",
+    "lrm": "8.5",
+    "yavs": "OK"
+   },
+   {
+    "case": "subprogram-header-generic-map",
+    "decided": "agent, 2026-10-18 (#227, lrm-checks L61)",
+    "kind": "LRM clear",
+    "lrm": "4.2.1, 4.4",
+    "yavs": "OK"
+   },
+   {
+    "case": "subprogram-param-package-interface",
+    "decided": "agent, 2026-10-18 (#227)",
+    "kind": "LRM clear",
+    "lrm": "4.2.2.1",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "type-through-formal-package-of-formal-package",
+    "decided": "user, 2026-10-19 (rule 15, #101)",
+    "kind": "LRM ambiguity",
+    "lrm": "6.5.7.2, 4.8",
+    "yavs": "OK"
+   },
+   {
+    "case": "unaffected-force",
+    "decided": "agent (L60)",
+    "kind": "LRM clear",
+    "lrm": "10.5.2.1 (2019)",
+    "yavs": "08: REJECT / 19: OK"
+   },
+   {
+    "case": "unaffected-variable",
+    "decided": "agent (L60)",
+    "kind": "LRM clear",
+    "lrm": "10.5.2.1 (2019)",
+    "yavs": "08: REJECT / 19: OK"
+   },
+   {
+    "case": "use-clause-constant-vs-literal",
+    "decided": "agent (reference notes in tests/diag/sem)",
+    "kind": "LRM clear",
+    "lrm": "12.4",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "variable-port",
+    "decided": "agent (lrm-checks L21)",
+    "kind": "LRM clear",
+    "lrm": "6.5.2, 6.5.7.1 (2019), LCS-2016-047",
+    "yavs": "OK"
+   },
+   {
+    "case": "view-individual-driven-elements",
+    "decided": "agent (#265)",
+    "kind": "LRM clear",
+    "lrm": "6.5.2, 14.7.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "force-resolved-composite-member",
+    "decided": "agent, 2026-10-19 (#68, L97)",
+    "kind": "LRM clear",
+    "lrm": "10.5.2.1",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "force-twice",
+    "decided": "agent, 2026-10-19 (#382)",
+    "kind": "LRM ambiguity",
+    "lrm": "10.5.2.1, 14.7.3 (when a force is an event is not stated)",
+    "yavs": "as sim1"
+   },
+   {
+    "case": "allocator-overload",
+    "decided": "agent (#27, L124)",
+    "kind": "LRM clear",
+    "lrm": "9.3.7, 12.5",
+    "yavs": "OK"
+   },
+   {
+    "case": "array-nested-resolved-whole",
+    "decided": "agent (#333, resolution/nested_array_whole, ref=hand)",
+    "kind": "LRM clear",
+    "lrm": "4.6, 14.7.2, 14.7.3.1",
+    "yavs": "OK"
+   },
+   {
+    "case": "array-record-resolved-whole",
+    "decided": "agent (#200, ref=hand)",
+    "kind": "LRM clear",
+    "lrm": "4.6, 14.7.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "array-resolved-whole",
+    "decided": "agent (resolution/array_whole, ref=hand)",
+    "kind": "LRM clear",
+    "lrm": "4.6, 14.7.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "null-waveform-in-waveform",
+    "decided": "agent, 2026-10-23 (#352)",
+    "kind": "LRM clear",
+    "lrm": "10.5.2.2, 14.7.3.1",
+    "yavs": "OK"
+   },
+   {
+    "case": "bus-guarded",
+    "decided": "agent (resolution/bus_guarded, ref=hand)",
+    "kind": "LRM clear",
+    "lrm": "14.7.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "conv-actual-unconstrained-result",
+    "decided": "agent, 2026-10-19 (#262, L87)",
+    "kind": "LRM clear",
+    "lrm": "5.3.2.2",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "conv-fn-param-unconstrained-out-port",
+    "decided": "agent, 2026-10-19 (#262, L87)",
+    "kind": "LRM clear",
+    "lrm": "5.3.2.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "config-generate-subtype-spec",
+    "decided": "agent, 2026-10-23 (#35, corpus hierarchy/config_generate_range, ref=hand)",
+    "kind": "LRM clear",
+    "lrm": "3.4.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "config-two-generate-ranges",
+    "decided": "agent, 2026-10-23 (#646, corpus hierarchy/config_generate_range_name, ref=hand)",
+    "kind": "LRM clear",
+    "lrm": "1.3.1, 3.4.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "external-name-in-port-delta",
+    "decided": "user, 2026-10-19 (#186, 2 of 3 reference simulators)",
+    "kind": "LRM ambiguity",
+    "lrm": "8.7, 6.5.6.3, 14.7",
+    "yavs": "OK"
+   },
+   {
+    "case": "external-name-in-port-init",
+    "decided": "user, 2026-10-19 (#186, 2 of 3 reference simulators)",
+    "kind": "LRM ambiguity",
+    "lrm": "8.7, 6.5.6.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "inertial-part-actual",
+    "decided": "agent, 2026-10-19 (#261, L80)",
+    "kind": "LRM clear",
+    "lrm": "6.5.6.3, 6.5.7.1",
+    "yavs": "OK"
+   },
+   {
+    "case": "open-port-default",
+    "decided": "agent, 2026-10-18 (#218, L59)",
+    "kind": "LRM ambiguity",
+    "lrm": "6.5.6.3, 14.3.5",
+    "yavs": "OK"
+   },
+   {
+    "case": "part-range-check-record-field",
+    "decided": "agent, 2026-10-19 (#263, L88)",
+    "kind": "LRM clear",
+    "lrm": "6.5.6.3, 14.7.3.1",
+    "yavs": "FATAL"
+   },
+   {
+    "case": "partial-driver-resolved-composite",
+    "decided": "agent, 2026-10-18 (#193)",
+    "kind": "LRM ambiguity",
+    "lrm": "4.6, 14.7.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "record-nested-resolved-whole",
+    "decided": "agent (#333, resolution/nested_record_whole, ref=hand)",
+    "kind": "LRM clear",
+    "lrm": "4.6, 14.7.2, 14.7.3.1",
+    "yavs": "OK"
+   },
+   {
+    "case": "relative-external-name-port-actual",
+    "decided": "agent (corpus hierarchy/external_port_forms)",
+    "kind": "LRM clear",
+    "lrm": "8.7",
+    "yavs": "OK"
+   },
+   {
+    "case": "time-below-resolution",
+    "decided": "user, 2026-10-19 (follow the LRM, #253)",
+    "kind": "LRM clear",
+    "lrm": "5.2.4.2",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "type-conv-unconstrained-composite",
+    "decided": "agent, 2026-10-19 (#262, L87)",
+    "kind": "LRM clear",
+    "lrm": "5.3.2.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "type-conv-unconstrained-in-port",
+    "decided": "agent, 2026-10-19 (#262, L87)",
+    "kind": "LRM clear",
+    "lrm": "5.3.2.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "type-conv-unconstrained-out-port",
+    "decided": "agent, 2026-10-19 (#262, L87)",
+    "kind": "LRM clear",
+    "lrm": "5.3.2.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "unconstrained-records",
+    "decided": "agent (ref=hand)",
+    "kind": "LRM clear",
+    "lrm": "5.3.3, 6.4.2.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "external-name-architecture-subprogram-unbound",
+    "decided": "user, 2026-10-19: keep reject; agent, 2026-10-19 (#255, L86, 2 of 3 reference simulators)",
+    "kind": "LRM ambiguity",
+    "lrm": "8.7, 14.4.1",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "external-name-package-subprogram-unbound",
+    "decided": "agent, 2026-10-19 (#255, L86, 2 of 3 reference simulators)",
+    "kind": "LRM ambiguity",
+    "lrm": "8.7",
+    "yavs": "OK"
+   },
+   {
+    "case": "external-name-in-package-declaration",
+    "decided": "agent, 2026-10-19 (#255, L86)",
+    "kind": "LRM clear",
+    "lrm": "8.7, 14.4.1",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "procedure-in-process-drives-external",
+    "decided": "agent, 2026-10-19 (#255, L86)",
+    "kind": "LRM clear",
+    "lrm": "14.7.2, 8.7",
+    "yavs": "OK"
+   },
+   {
+    "case": "elab-time-report-error",
+    "decided": "agent, 2026-10-19 (#349; ties flagged to the user)",
+    "kind": "LRM ambiguity",
+    "lrm": "10.4, 14.7.5 (silent on elaboration-time reports)",
+    "yavs": "FATAL: prints the error, simulates on, exit 1 (the error is counted in the VHDL assert counts like a run-time one)"
+   },
+   {
+    "case": "signal-init-reads-port",
+    "decided": "agent, 2026-10-22 (#559, L117)",
+    "kind": "LRM ambiguity",
+    "lrm": "14.4.2.4, 14.7.3.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "constant-init-reads-signal",
+    "decided": "agent, 2026-10-23 (#453, L117)",
+    "kind": "LRM ambiguity",
+    "lrm": "14.4.2.2, 14.5.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "path-name-of-block-label-in-inner-region",
+    "decided": "agent, 2026-10-20 (#376)",
+    "kind": "LRM clear",
+    "lrm": "16.2.5",
+    "yavs": "OK"
+   },
+   {
+    "case": "aggregate-piece-context-direction",
+    "decided": "agent, 2026-10-19 (#230, L84)",
+    "kind": "LRM ambiguity",
+    "lrm": "9.3.3.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "aggregate-piece-direction",
+    "decided": "agent, 2026-10-19 (#230, L84)",
+    "kind": "LRM ambiguity",
+    "lrm": "9.3.3.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "aggregate-piece-element-range-direction",
+    "decided": "agent, 2026-10-19 (#230, L84, 2 of 3)",
+    "kind": "LRM ambiguity",
+    "lrm": "9.3.3.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "aggregate-target-several-choices",
+    "decided": "agent, 2026-10-19 (#307, L96, 2 of 3)",
+    "kind": "LRM clear",
+    "lrm": "10.5.2.1, 10.6.2.1",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "aggregate-target-overlap",
+    "decided": "agent, 2026-10-19 (#307, L96, 2 of 3)",
+    "kind": "LRM ambiguity",
+    "lrm": "10.5.2.1, 10.6.2.1",
+    "yavs": "OK"
+   },
+   {
+    "case": "aggregate-piece-mixed-direction",
+    "decided": "user, 2026-10-19: keep reject; agent, 2026-10-19 (#230, L84, 2 of 3)",
+    "kind": "LRM ambiguity",
+    "lrm": "9.3.3.3",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "aggregate-target-element-choice",
+    "decided": "agent, 2026-10-19 (#264, L68)",
+    "kind": "LRM ambiguity",
+    "lrm": "10.6.2.1, 9.3.3.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "aggregate-target-element-order",
+    "decided": "agent, 2026-10-19 (#264, L68)",
+    "kind": "LRM ambiguity",
+    "lrm": "10.6.2.1, 9.3.3.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "aggregate-target-range-choice",
+    "decided": "user, 2026-10-19: accept, majority (#244, L68)",
+    "kind": "LRM ambiguity",
+    "lrm": "10.5.2.1, 10.6.2.1, 9.3.3.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "aggregate-target-range-directions",
+    "decided": "user, 2026-10-19: keep reject; agent, 2026-10-19 (#244, L68, L84, 2 of 3)",
+    "kind": "LRM ambiguity",
+    "lrm": "10.6.2.1, 9.3.3.3",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "aggregate-target-range-order",
+    "decided": "agent, 2026-10-19 (#244, L68)",
+    "kind": "LRM ambiguity",
+    "lrm": "10.6.2.1, 9.3.3.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "aggregate-target-record-names",
+    "decided": "agent, 2026-10-19 (#350, L98, 3 of 4)",
+    "kind": "LRM clear",
+    "lrm": "10.5.2.1, 10.6.2.1, 9.3.3.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "aggregate-target-nested-record",
+    "decided": "agent, 2026-10-19 (#350, L98, 2 of 4 accept)",
+    "kind": "LRM ambiguity",
+    "lrm": "10.5.2.1, 10.6.2.1",
+    "yavs": "OK"
+   },
+   {
+    "case": "aggregate-target-nested-array",
+    "decided": "agent, 2026-10-19 (#350, L98, 2 of 4 accept)",
+    "kind": "LRM ambiguity",
+    "lrm": "10.5.2.1, 10.6.2.1",
+    "yavs": "OK"
+   },
+   {
+    "case": "aggregate-target-matrix",
+    "decided": "agent, 2026-10-19 (#350, L98, 2 of 4 accept)",
+    "kind": "LRM ambiguity",
+    "lrm": "10.5.2.1, 10.6.2.1, 9.3.3.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "assert-count-cycles",
+    "decided": "agent (#99)",
+    "kind": "LRM ambiguity",
+    "lrm": "std.env (2019)",
+    "yavs": "OK"
+   },
+   {
+    "case": "concat-null-operands",
+    "decided": "agent (decisions.md)",
+    "kind": "LRM clear",
+    "lrm": "9.2.5",
+    "yavs": "OK"
+   },
+   {
+    "case": "concat-null-operands-three",
+    "decided": "agent, 2026-10-21 (#443)",
+    "kind": "LRM clear",
+    "lrm": "9.2.5",
+    "yavs": "OK"
+   },
+   {
+    "case": "concat-null-operands-four",
+    "decided": "agent, 2026-10-21 (#443)",
+    "kind": "LRM clear",
+    "lrm": "9.2.5",
+    "yavs": "OK"
+   },
+   {
+    "case": "delayed-initial-value",
+    "decided": "agent, 2026-10-19 (L67)",
+    "kind": "LRM clear",
+    "lrm": "14.7.5.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "element-length-open-formal",
+    "decided": "agent (#257)",
+    "kind": "LRM clear",
+    "lrm": "5.3.2.2, 6.5.6.2",
+    "yavs": "FATAL"
+   },
+   {
+    "case": "ieee-body-warnings",
+    "decided": "agent (ieee/ieee_warnings, ref=hand)",
+    "kind": "LRM clear",
+    "lrm": "IEEE package source",
+    "yavs": "OK"
+   },
+   {
+    "case": "integer-low-2019",
+    "decided": "agent (#214 area), changed for #601",
+    "kind": "LRM ambiguity",
+    "lrm": "5.2.3.1 (2019: at least -2**63+1 to 2**63-1)",
+    "yavs": "OK"
+   },
+   {
+    "case": "last-value-slice",
+    "decided": "agent (#215)",
+    "kind": "LRM clear",
+    "lrm": "16.2.4",
+    "yavs": "OK"
+   },
+   {
+    "case": "process-order-in-cycle",
+    "decided": "user, 2026-10-19 (#252, #281)",
+    "kind": "LRM ambiguity",
+    "lrm": "14.7.5.3 (order unspecified)",
+    "yavs": "OK"
+   },
+   {
+    "case": "reflect-access-get",
+    "decided": "agent (reflect/access_file_prot, ref=hand)",
+    "kind": "reference bug",
+    "lrm": "2019 16.11",
+    "yavs": "OK"
+   },
+   {
+    "case": "reflect-array-of-records",
+    "decided": "agent (reflect/walk, ref=hand)",
+    "kind": "reference bug",
+    "lrm": "2019 16.11",
+    "yavs": "OK"
+   },
+   {
+    "case": "reflect-enum-subtype-range",
+    "decided": "agent (reflect/enums, ref=hand)",
+    "kind": "reference bug",
+    "lrm": "2019 16.11",
+    "yavs": "OK"
+   },
+   {
+    "case": "reflect-index-bases",
+    "decided": "agent, 2026-10-18 (#156)",
+    "kind": "LRM ambiguity",
+    "lrm": "2019 16.11 (prose fixes no base)",
+    "yavs": "OK"
+   },
+   {
+    "case": "reflect-multidim-get",
+    "decided": "agent (reflect/multidim, ref=hand)",
+    "kind": "reference bug",
+    "lrm": "2019 16.11",
+    "yavs": "OK"
+   },
+   {
+    "case": "reflect-physical-time-value",
+    "decided": "user ruling (decisions.md, reflection)",
+    "kind": "LRM ambiguity",
+    "lrm": "2019 16.11",
+    "yavs": "OK"
+   },
+   {
+    "case": "reflect-signal-mirrors",
+    "decided": "agent (reflect/generics, ref=hand)",
+    "kind": "reference bug",
+    "lrm": "2019 16.11",
+    "yavs": "OK"
+   },
+   {
+    "case": "shift-negative-count",
+    "decided": "agent (decisions.md)",
+    "kind": "LRM clear",
+    "lrm": "9.2.4",
+    "yavs": "OK"
+   },
+   {
+    "case": "transaction-at-init",
+    "decided": "user, 2026-10-19 (#241)",
+    "kind": "LRM clear",
+    "lrm": "14.7.5.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "external-name-subprogram-generate",
+    "decided": "agent, 2026-10-19 (#255, L86)",
+    "kind": "LRM clear",
+    "lrm": "8.7",
+    "yavs": "OK"
+   },
+   {
+    "case": "external-constant-run-time-value",
+    "decided": "agent, 2026-10-19 (#255)",
+    "kind": "LRM clear",
+    "lrm": "8.7, 16.2.5",
+    "yavs": "OK"
+   },
+   {
+    "case": "pure-function-returns-access",
+    "decided": "agent, 2026-10-19 (#118, L95)",
+    "kind": "LRM clear",
+    "lrm": "4.2.1",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "force-in-port-actual",
+    "decided": "agent, 2026-10-19 (#68, L97)",
+    "kind": "LRM clear",
+    "lrm": "10.5.2.1, 14.7.3.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "delayed-in-port-init",
+    "decided": "agent, 2026-10-19 (#413)",
+    "kind": "LRM ambiguity",
+    "lrm": "16.2.3, 14.7.5.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "force-resolved-composite-whole",
+    "decided": "agent, 2026-10-19 (#68, L97)",
+    "kind": "LRM clear",
+    "lrm": "14.7.3.2, 14.7.3.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "release-after-part-release",
+    "decided": "agent, 2026-10-19 (#68, L97)",
+    "kind": "LRM clear",
+    "lrm": "10.5.2.1",
+    "yavs": "OK"
+   },
+   {
+    "case": "release-array-of-records",
+    "decided": "agent, 2026-10-19 (#68, L97)",
+    "kind": "LRM clear",
+    "lrm": "10.5.2.1",
+    "yavs": "OK"
+   },
+   {
+    "case": "protected-path-name",
+    "decided": "agent (rule 15)",
+    "kind": "LRM ambiguity (run-time value)",
+    "lrm": "16.2.5 (2019)",
+    "yavs": "OK"
+   },
+   {
+    "case": "reflect-integer-simple-name",
+    "decided": "agent (rule 15)",
+    "kind": "LRM ambiguity",
+    "lrm": "16.11 (2019)",
+    "yavs": "OK"
+   },
+   {
+    "case": "last-value-composite",
+    "decided": "agent, 2026-10-20 (#451)",
+    "kind": "LRM clear",
+    "lrm": "16.2.4",
+    "yavs": "OK"
+   },
+   {
+    "case": "active-in-delta-of-assignment",
+    "decided": "agent, 2026-10-24 (#519)",
+    "kind": "LRM clear",
+    "lrm": "14.7.3.2, 16.2.4",
+    "yavs": "OK"
+   },
+   {
+    "case": "use-type-operations",
+    "decided": "agent, 2026-10-20 (#452)",
+    "kind": "LRM ambiguity",
+    "lrm": "12.4",
+    "yavs": "OK"
+   },
+   {
+    "case": "resolution-array-bounds",
+    "decided": "agent, 2026-10-19 (#367, L101, 3 of 4)",
+    "kind": "LRM ambiguity",
+    "lrm": "4.6, 14.7.3.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "wait-past-time-high",
+    "decided": "agent, 2026-10-19 (#366, L99, 3 of 4)",
+    "kind": "LRM ambiguity",
+    "lrm": "10.2, 14.7.5",
+    "yavs": "OK"
+   },
+   {
+    "case": "text-file-read-write",
+    "decided": "agent, 2026-10-19 (#365, L100, 2 of 3 that run it)",
+    "kind": "LRM ambiguity",
+    "lrm": "5.5.2, 16.4",
+    "yavs": "OK"
+   },
+   {
+    "case": "textio-read-failure",
+    "decided": "agent, 2026-10-20 (#381, rule 15, 3 of 4)",
+    "kind": "LRM ambiguity (the read fails, the severity is not specified)",
+    "lrm": "16.4",
+    "yavs": "FATAL"
+   },
+   {
+    "case": "textio-read-bitvector-white-space",
+    "decided": "user, 2026-10-23 (#623)",
+    "kind": "LRM ambiguity",
+    "lrm": "16.4",
+    "yavs": "OK"
+   },
+   {
+    "case": "formal-package-without-actual",
+    "decided": "user, 2026-10-23 (#622)",
+    "kind": "LRM clear",
+    "lrm": "6.5.6.2, 6.5.7.2",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "range-constraint-outside-type-mark-static",
+    "decided": "agent, 2026-10-20 (#379, L108, 4 of 4); analysis error 2026-10-23 (#465, L118)",
+    "kind": "LRM clear",
+    "lrm": "5.2.1, 6.3",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "range-constraint-outside-type-mark-dynamic",
+    "decided": "agent, 2026-10-20 (#379, L108, LRM)",
+    "kind": "LRM clear",
+    "lrm": "5.2.1, 6.3",
+    "yavs": "FATAL"
+   },
+   {
+    "case": "index-constraint-outside-index-subtype-static",
+    "decided": "agent, 2026-10-23 (#465, L118)",
+    "kind": "LRM clear",
+    "lrm": "5.3.2.2, 6.3",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "index-constraint-outside-index-subtype",
+    "decided": "agent, 2026-10-20 (#379, L108, LRM)",
+    "kind": "LRM clear",
+    "lrm": "5.3.2.2, 6.3",
+    "yavs": "FATAL"
+   },
+   {
+    "case": "array-conversion-index-outside-target-static",
+    "decided": "agent, 2026-10-20 (#379, L108, 4 of 4); warning 2026-10-23 (#465, L118)",
+    "kind": "LRM clear",
+    "lrm": "9.3.6",
+    "yavs": "FATAL"
+   },
+   {
+    "case": "array-conversion-index-outside-target-dynamic",
+    "decided": "agent, 2026-10-20 (#379, L108, 3 of 4)",
+    "kind": "LRM clear",
+    "lrm": "9.3.6",
+    "yavs": "FATAL"
+   },
+   {
+    "case": "wait-in-procedure-of-sensitivity-list-process",
+    "decided": "agent, 2026-10-20 (#379, L108, L129, 4 of 4), 2026-10-23 (#597)",
+    "kind": "LRM clear",
+    "lrm": "11.3",
+    "yavs": "REJECT"
+   },
+   {
+    "case": "wait-in-procedure-of-sensitivity-list-process-package",
+    "decided": "agent, 2026-10-23 (#597)",
+    "kind": "LRM clear",
+    "lrm": "11.3",
+    "yavs": "FATAL"
+   },
+   {
+    "case": "integer-literal-outside",
+    "decided": "agent (#463, L122)",
+    "kind": "LRM clear",
+    "lrm": "9.3.6, 5.2.1",
+    "yavs": "FATAL"
+   },
+   {
+    "case": "record-aggregate-field-range",
+    "decided": "agent (#463, L119)",
+    "kind": "LRM clear",
+    "lrm": "9.3.3.2, 5.2.1",
+    "yavs": "FATAL"
+   },
+   {
+    "case": "package-instance-path-name",
+    "decided": "agent, 2026-10-20 (#445)",
+    "kind": "LRM clear",
+    "lrm": "16.2.5",
+    "yavs": "OK"
+   },
+   {
+    "case": "subprogram-signature-instance-name",
+    "decided": "agent, 2026-10-26 (#781, #784)",
+    "kind": "LRM ambiguity (spelling of the signature)",
+    "lrm": "16.2.5",
+    "yavs": "OK: `show[string,std_ulogic,integer]` (the base types)"
+   },
+   {
+    "case": "psl-edge-unknown-value",
+    "decided": "agent, 2026-10-20 (#445)",
+    "kind": "LRM ambiguity (run-time value)",
+    "lrm": "PSL (IEEE 1850) 5.2.3.4, 5.2.3.5",
+    "yavs": "OK"
+   },
+   {
+    "case": "short-circuit-constant-false-effect",
+    "decided": "agent, 2026-10-24",
+    "kind": "LRM clear",
+    "lrm": "9.2.2",
+    "yavs": "OK"
+   }
+  ],
+  "platforms": {
+   "check": [
+    "ubuntu-24.04",
+    "ubuntu-24.04-arm",
+    "windows-latest"
+   ],
+   "llvm": [
+    "ubuntu-24.04",
+    "ubuntu-24.04-arm",
+    "windows-latest"
+   ]
+  }
+ },
+ "trust2": "Waveform equivalence: run locally on 2026-10-26 at aeaeaa593f (yavs build 11c367ea3e), references sim1, sim2.\nReproduce: `python3 -I tools/waveq/run.py BIN`\n\n| design | A | B | signals | value changes | equal | different | equal as slice | other shape | only A | only B | differences | A compiled code |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n| rtl_ff | yavs-interp | sim1 | 3 | 604 | 3 | 0 | 0 | 0 | 0 | 0 | none | 0 |\n| rtl_ff | yavs-auto | sim1 | 3 | 604 | 3 | 0 | 0 | 0 | 0 | 0 | none | 0 |\n| rtl_ff | yavs-llvm | sim1 | 3 | 604 | 3 | 0 | 0 | 0 | 0 | 0 | none | 285 IR instructions |\n| rtl_ff | sim2 | sim1 | 3 | 604 | 3 | 0 | 0 | 0 | 0 | 0 | none |  |\n| rtl_lfsr | yavs-interp | sim1 | 66 | 33067 | 66 | 0 | 0 | 0 | 0 | 0 | none | 0 |\n| rtl_lfsr | yavs-auto | sim1 | 66 | 33067 | 66 | 0 | 0 | 0 | 0 | 0 | none | 0 |\n| rtl_lfsr | yavs-llvm | sim1 | 66 | 33067 | 66 | 0 | 0 | 0 | 0 | 0 | none | 357 IR instructions |\n| rtl_lfsr | sim2 | sim1 | 66 | 33067 | 66 | 0 | 0 | 0 | 0 | 0 | none |  |\n| rtl_chain | yavs-interp | sim1 | 4 | 605 | 4 | 0 | 0 | 0 | 0 | 0 | none | 0 |\n| rtl_chain | yavs-auto | sim1 | 4 | 605 | 4 | 0 | 0 | 0 | 0 | 0 | none | 0 |\n| rtl_chain | yavs-llvm | sim1 | 4 | 605 | 4 | 0 | 0 | 0 | 0 | 0 | none | 261 IR instructions |\n| rtl_chain | sim2 | sim1 | 4 | 605 | 4 | 0 | 0 | 0 | 0 | 0 | none |  |\n| rtl_fan | yavs-interp | sim1 | 4 | 405 | 4 | 0 | 0 | 0 | 0 | 0 | none | 0 |\n| rtl_fan | yavs-auto | sim1 | 4 | 405 | 4 | 0 | 0 | 0 | 0 | 0 | none | 0 |\n| rtl_fan | yavs-llvm | sim1 | 4 | 405 | 4 | 0 | 0 | 0 | 0 | 0 | none | 137 IR instructions |\n| rtl_fan | sim2 | sim1 | 4 | 405 | 4 | 0 | 0 | 0 | 0 | 0 | none |  |\n| rtl_bus | yavs-interp | sim1 | 4 | 2005 | 4 | 0 | 0 | 0 | 0 | 0 | none | 0 |\n| rtl_bus | yavs-auto | sim1 | 4 | 2005 | 4 | 0 | 0 | 0 | 0 | 0 | none | 0 |\n| rtl_bus | yavs-llvm | sim1 | 4 | 2005 | 4 | 0 | 0 | 0 | 0 | 0 | none | 261 IR instructions |\n| rtl_bus | sim2 | sim1 | 4 | 2005 | 4 | 0 | 0 | 0 | 0 | 0 | none |  |\n| rtl_ram | yavs-interp | sim1 | 16390 | 30385 | 16390 | 0 | 0 | 0 | 0 | 0 | none | 0 |\n| rtl_ram | yavs-auto | sim1 | 16390 | 30385 | 16390 | 0 | 0 | 0 | 0 | 0 | none | 0 |\n| rtl_ram | yavs-llvm | sim1 | 16390 | 30385 | 16390 | 0 | 0 | 0 | 0 | 0 | none | 675 IR instructions |\n| rtl_ram | sim2 | sim1 | 16390 | 30385 | 16390 | 0 | 0 | 0 | 0 | 0 | none |  |\n| lfsr64_xor | yavs-interp | sim1 | 67 | 33567 | 67 | 0 | 0 | 0 | 0 | 0 | none | 0 |\n| lfsr64_xor | yavs-auto | sim1 | 67 | 33567 | 67 | 0 | 0 | 0 | 0 | 0 | none | 0 |\n| lfsr64_xor | yavs-llvm | sim1 | 67 | 33567 | 67 | 0 | 0 | 0 | 0 | 0 | none | 382 IR instructions |\n| lfsr64_xor | sim2 | sim1 | 67 | 33567 | 67 | 0 | 0 | 0 | 0 | 0 | none |  |\n| lfsr64 | yavs-interp | sim1 | 67 | 33567 | 67 | 0 | 0 | 0 | 0 | 0 | none | 0 |\n| lfsr64 | yavs-auto | sim1 | 67 | 33567 | 67 | 0 | 0 | 0 | 0 | 0 | none | 0 |\n| lfsr64 | yavs-llvm | sim1 | 67 | 33567 | 67 | 0 | 0 | 0 | 0 | 0 | none | 309 IR instructions |\n| lfsr64 | sim2 | sim1 | 67 | 33567 | 67 | 0 | 0 | 0 | 0 | 0 | none |  |\n| neorv32_single_min | yavs-interp | sim1 | 13466 | 15877072 | 13466 | 0 | 133 | 0 | 1045 | 0 | none | 0 |\n| neorv32_single_min | yavs-auto | sim1 | 13466 | 15877072 | 13466 | 0 | 133 | 0 | 1045 | 0 | none | 0 |\n| neorv32_single_min | yavs-llvm | sim1 | 13466 | 15877072 | 13466 | 0 | 133 | 0 | 1045 | 0 | none | 128233 IR instructions |\n| grlib_leon3mp | yavs-interp | sim1 | 13897 | 33197020 | 13897 | 0 | 230 | 0 | 3843 | 0 | none | 0 |\n| grlib_leon3mp | yavs-auto | sim1 | 13897 | 33197020 | 13897 | 0 | 230 | 0 | 3843 | 0 | none | 4 functions |\n| grlib_leon3mp | yavs-llvm | sim1 | 13897 | 33197020 | 13897 | 0 | 230 | 0 | 3843 | 0 | none | 226142 IR instructions |\n| uvvm_sb_slv | yavs-interp | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 0 |\n| uvvm_sb_slv | yavs-auto | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 0 |\n| uvvm_sb_slv | yavs-llvm | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 42834 IR instructions |\n| uvvm_util_rand | yavs-interp | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 0 |\n| uvvm_util_rand | yavs-auto | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 1 functions |\n| uvvm_util_rand | yavs-llvm | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 84159 IR instructions |\n| uvvm_axistream_vvc | yavs-interp | sim1 | 154 | 788147 | 61 | 93 | 0 | 0 | 20 | 1 | reference process-order-in-cycle: 4, reference subprogram-signature-instance-name: 89 | 0 |\n| uvvm_axistream_vvc | yavs-auto | sim1 | 154 | 788147 | 61 | 93 | 0 | 0 | 20 | 1 | reference process-order-in-cycle: 4, reference subprogram-signature-instance-name: 89 | 0 |\n| uvvm_axistream_vvc | yavs-llvm | sim1 | 154 | 788147 | 61 | 93 | 0 | 0 | 20 | 1 | reference process-order-in-cycle: 4, reference subprogram-signature-instance-name: 89 | 69265 IR instructions |\n| uvvm_methods_log | yavs-interp | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 0 |\n| uvvm_methods_log | yavs-auto | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 0 |\n| uvvm_methods_log | yavs-llvm | sim1 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | none | 14064 IR instructions |\n| uvvm_func_cov | yavs-interp | sim1 | 4 | 4 | 4 | 0 | 0 | 0 | 0 | 0 | none | 0 |\n| uvvm_func_cov | yavs-auto | sim1 | 4 | 4 | 4 | 0 | 0 | 0 | 0 | 0 | none | 0 |\n| uvvm_func_cov | yavs-llvm | sim1 | 4 | 4 | 4 | 0 | 0 | 0 | 0 | 0 | none | 45937 IR instructions |\n| osvvm_axis_random | yavs-interp | sim1 | 223 | 109554 | 202 | 21 | 0 | 0 | 2 | 0 | reference process-order-in-cycle: 21 | 0 |\n| osvvm_axis_random | yavs-auto | sim1 | 223 | 109554 | 202 | 21 | 0 | 0 | 2 | 0 | reference process-order-in-cycle: 21 | 0 |\n| osvvm_axis_random | yavs-llvm | sim1 | 223 | 109554 | 202 | 21 | 0 | 0 | 2 | 0 | reference process-order-in-cycle: 21 | 55734 IR instructions |\n| osvvm_axi4_random | yavs-interp | sim1 | 531 | 198238 | 491 | 40 | 0 | 0 | 0 | 0 | reference process-order-in-cycle: 40 | 0 |\n| osvvm_axi4_random | yavs-auto | sim1 | 531 | 198238 | 491 | 40 | 0 | 0 | 0 | 0 | reference process-order-in-cycle: 40 | 0 |\n| osvvm_axi4_random | yavs-llvm | sim1 | 531 | 198238 | 491 | 40 | 0 | 0 | 0 | 0 | reference process-order-in-cycle: 40 | 69313 IR instructions |\n\nNot configured (no waveform keys for the kind of design in tools/sims.local.conf): sim2 for 9 designs\n\nDifferences explained:\n\n- reference process-order-in-cycle: the verification components take IDs from a shared counter in the order their processes run in one cycle; the LRM leaves that order open (14.7.5.3) and the references differ among themselves (docs/design/simulator-discrepancies.md); every bus signal is equal\n- reference subprogram-signature-instance-name: from 266.87 us, in the test case with random valid/ready low, the masters deassert tvalid in other cycles: the BFM seeds that random stream from `'instance_name` of a procedure variable, whose signature each tool spells differently (base types on yavs, #784; a space after each comma on sim1), so each tool runs a different, equally valid sequence (the cause is inferred from where the divergence starts); the test passes everywhere",
+ "waveq": {
+  "changes": 50304249,
+  "designs": 17,
+  "different": 154,
+  "equal": 44735,
+  "run": {
+   "command": "python3 -I tools/waveq/run.py BIN",
+   "commit": "aeaeaa593f",
+   "date": "2026-10-26",
+   "refs": [
+    "sim1",
+    "sim2"
+   ],
+   "tiers": [
+    "interp",
+    "auto",
+    "llvm"
+   ],
+   "yavs_key": "11c367ea3e"
+  },
+  "signals": 44889,
+  "unexplained": 0
+ }
+}

@@ -368,6 +368,13 @@ struct Tune {
     /// How many times its price a clocked process (`rtl`) is seen interpreted before it compiles,
     /// on top of `band_wait`: its compiled code gained 5 percent in the trials that kept it.
     payback_rtl: u64,
+    /// Without a main generator: a large function (`native::big`) is `Kind::Big` or `BigLoop`, as
+    /// the main generator's `OptLevel::Fast` makes it.
+    big: bool,
+    /// Whether a `Kind::Frame` function is compiled at all. Its frame-mode code moves the rest of
+    /// every process that calls it into the interpreter's loop for compiled code
+    /// (`run_ops::<true, _>`), which its modelled gain of 9 percent does not cover (#481).
+    frame: bool,
 }
 
 impl Tune {
@@ -379,6 +386,8 @@ impl Tune {
         o2_after: O2_AFTER,
         tree_payback: 0,
         payback_rtl: 0,
+        big: true,
+        frame: true,
     };
     const FIRST: Tune = Tune {
         rtl_min: 64,
@@ -388,10 +397,12 @@ impl Tune {
         o2_after: 300,
         tree_payback: 8,
         payback_rtl: 16,
+        big: true,
+        frame: false,
     };
 
     /// `FIRST`, or what `YAVS_FIRST_TUNE=rtl_min=N,band=0|1,instances=N,share=N,o2_after=N,
-    /// tree_payback=N,payback_rtl=N` changes of it (a measuring aid; an entry that is not understood is ignored).
+    /// tree_payback=N,payback_rtl=N,big=0|1,frame=0|1` changes of it (a measuring aid; an entry that is not understood is ignored).
     fn first() -> Tune {
         static T: std::sync::OnceLock<Tune> = std::sync::OnceLock::new();
         *T.get_or_init(|| {
@@ -406,6 +417,8 @@ impl Tune {
                     ("o2_after", Ok(n)) => t.o2_after = n,
                     ("tree_payback", Ok(n)) => t.tree_payback = n,
                     ("payback_rtl", Ok(n)) => t.payback_rtl = n,
+                    ("big", Ok(n)) => t.big = n != 0,
+                    ("frame", Ok(n)) => t.frame = n != 0,
                     _ => {}
                 }
             }
@@ -951,7 +964,8 @@ enum Kind {
     /// adder made 8 times) still pays (docs/decisions.md).
     RtlFew,
     /// A function compiled at `OptLevel::Fast` (`lower::level_for`), the large combinational
-    /// processes among them.
+    /// processes among them; with a first-level generator alone a function of that size
+    /// (`native::big`, `Tune::big`).
     Big,
     /// A compute loop in frame-mode code (a process with a loop, a nested subprogram): its compile
     /// costs a fraction of the native-frame code of the same size.
@@ -1530,11 +1544,10 @@ impl Worker {
             } else {
                 Kind::Rtl
             }
-        } else if self
-            .main
-            .as_ref()
-            .is_some_and(|m| m.level_for(&self.prog, f, OptLevel::O2) == OptLevel::Fast)
-        {
+        } else if match &self.main {
+            Some(m) => m.level_for(&self.prog, f, OptLevel::O2) == OptLevel::Fast,
+            None => self.tune.big && crate::native::big(&self.prog, f),
+        } {
             if loop_share(&self.prog, f) >= BIG_LOOP_SHARE {
                 Kind::BigLoop
             } else {
@@ -1634,6 +1647,9 @@ impl Worker {
     /// payback of its kind (`Model::payback`): the price of the function times what its compiled
     /// code is expected to save.
     fn need(&self, id: FuncId) -> u64 {
+        if !self.tune.frame && self.kind(id) == Kind::Frame {
+            return u64::MAX;
+        }
         (self.cost(id) as f64 * self.model(id).payback()).ceil() as u64
     }
 

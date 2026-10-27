@@ -19,6 +19,24 @@ pub fn too_big(f: &Func, max_size: usize) -> Option<String> {
     })
 }
 
+/// Functions of at least this many IR instructions are `big`: optimised LLVM code generation of
+/// such a function takes more than linear time (the register allocator's live-variable analysis
+/// over thousands of blocks), 100 to 500 us per LLVM instruction where small functions take 30; the
+/// unoptimised code generator takes 5 to 10 us (#432, #501).
+const FAST_MIN: usize = 300;
+
+/// A function of this many IR instructions or more is `big` even when its loops are compute
+/// (`auto::compute`): a process of 30 000 instructions with two short `for` loops is no compute
+/// loop, and its optimised code generation took 35 s for 670 000 LLVM instructions where `Fast`
+/// takes 8 (the register allocator is more than linear in the function's size).
+const COMPUTE_MAX: usize = 1500;
+
+/// Whether `f` is large: LLVM compiles it at `OptLevel::Fast` (`lower::level_for`), and
+/// `--tier=auto` prices it as `Kind::Big` or `Kind::BigLoop`, with a first-level generator alone too.
+pub fn big(prog: &Program, f: &Func) -> bool {
+    f.code.len() >= FAST_MIN && (f.code.len() >= COMPUTE_MAX || !crate::auto::compute(prog, f))
+}
+
 /// Which code of a function `compile_one` makes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Part {

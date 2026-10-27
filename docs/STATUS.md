@@ -9408,3 +9408,7 @@ frame-mode code runs both instructions through `yavs_rt_signal` instead of a ste
 - Left (#790): the kernel's per-drive work of scalar drives (`DriveRun` about 257 instructions a drive in GRLIB, `LSetDrive` 244), a store-forwarding
   stall in the kernel's vector entry of a direct driver (#793), a gather straight into its destination (under half a percent), and per-leaf code
   generated for static layouts, not started: the interpreted callees of a compiled `iu:comb` stay the larger part (#679).
+
+## Large value copies: records built in their own object (yavs-ir, yavs-interp, #792, 2026-10-27)
+
+A large initialised record variable or heap node is created in its own object and filled there instead of being built in a temporary and copied (`Opt::defaults_first`); `LFill`s of 'U' into that fresh zero object are dropped; `NewFrame` appends its copy without a zero fill first; small temporary zero fills are one fixed-size store (`docs/decisions.md` "Large value copies"). `uvvm_axistream_vvc`: cycles 0.92 (interp) and 0.92 (auto) of main, memory traffic 23 to 17.7 GB; `realbench --compare` (42 tests) instructions 0.99. Left: the required whole-record assignments of the command path (copy-on-write or sparse values), the frame fill of calls.

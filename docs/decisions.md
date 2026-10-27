@@ -11104,3 +11104,53 @@ its own (the instances lie mirrored in the kernel, last first, and the loop went
 - **The reference simulator (rule 22):** a waveform over a range of one signal is one call that walks the signal's parts in order, with the
   values in the signal's own layout. The idea taken: one assignment per contiguous range of a driver, values handed over in the kernel's layout
   (plane words) without staging. Ours groups at bind time and keeps the bit-planes. Nothing was copied.
+
+## Large value copies: records built in their own object, no zero fill before a copy (yavs-ir `opt.rs`, yavs-interp `exec.rs`, #792, 2026-10-27)
+
+Task (#792, from the calls round 3 finding of #730): `uvvm_axistream_vvc` spent 15 percent of its cycles in libc `memmove` and 3 percent in
+`memset`, in copies of 512 bytes and more called from `run_ops` arms. A counting `memcpy`/`memmove`/`memset` interposer with frame-pointer
+call chains (size class in the key) and a throwaway per-op print of the IR site (function, pc, bytes; not kept) found the owners. It is not log
+strings (`Cat` is 50 MB of 23 GB): it is **one 689 KB record**, UVVM's `t_vvc_cmd_record` (a 16 KB `data_array`, four word arrays, two
+300-character strings), moving through the command path 12 to 15 times per command (22 000 whole-record passes in the run, 13 GB of the 23 GB of
+`memcpy`/`memmove`/`memset` traffic; the rest is the frame fill of calls, 3.7 GB, and `lcopy_wide`, 2.6 GB):
+
+| site (UVVM) | ops | passes | verdict |
+|---|---|---|---|
+| `await_cmd_from_sequencer` (4 VVCs) | `Copy` shared to out parameter | 4764 | required assignment |
+| `set_general_target...`, `reset_vvc_transaction_info`, `fetch_command...`, `send_command_to_vvc`, `fetch` (heap to variable) | `Copy` | 1100 to 1200 each | required assignments |
+| `set_global_vvc_transaction_info` | five `LCopy` of 64K to 512K elements | 2143 | required assignments |
+| `fetch`: `variable v : t_generic_element` | `Alloc` (memset), 5 `LFill` of 'U', `NewFrame` (memset + copy) | 1181 | **removed** (4 of 5 passes) |
+| `send_command_to_vvc`: `variable v : t_vvc_cmd_record` | `Alloc`, `LFill`s, `New` (copy) | 1191 | **removed** |
+| queue `add`: `new t_element'(...)` | `Alloc`, `Copy`, `NewFill` (copy) | 1181 | **removed** (2 of 3 passes) |
+
+- **Decision: a large initialised record variable or heap node is created in its own object, then filled** (`Opt::defaults_first`, last in
+  `Opt::run`, after the constants are merged). The pattern is `Alloc t` (constant size of 4 KiB or more), stores, fills and copies into `t`,
+  then `NewFrame`/`New`/`NewFill` copying `t` into the variable's memory. The `Alloc` becomes a `NewFrame` (frame object) or a `NewFill` and
+  `Deref` (heap object) of the same size filled from one zero byte, the later `New*` goes (a `Move` for `NewFrame`), and everything that wrote
+  `t` writes the object. Conditions: both instructions in code that runs once per activation (no cycle), `t` defined once, and every use of
+  `t` or of an address derived from it (`Index`, `Field`) a `Load`, `Store` (as the address), `Copy`, `LFill` or `LSet` through it, in a
+  block not reachable from the copy and before it (a `TempRoot` of `t` is dropped for a heap object, whose handle is a live register). The
+  existing instructions only: the compiled tiers need no change. The one zero byte is a 1-byte `Alloc` inserted before; the size register is the
+  `Alloc`'s own (the `New`'s may be defined later). Run after `merge_consts`: the instructions it inserts name final registers.
+- **Decision: `LFill` of the code 0 into that fresh zero object is dropped** (`zero_fills_after`) when it overwrites nothing written since: the
+  default of a `std_ulogic` array is 'U' (code 0, all planes zero). A straight chain of blocks (each the only successor of the one before),
+  constant offsets and lengths (constants set in the stretch and those the optimiser has not inserted yet count); anything else ends the scan.
+- **Decision: `NewFrame` appends its copy** (`Machine::temp_append_copy`) instead of `temp_alloc` (zero fill) followed by the copy; the case that
+  remains is a `NewFrame` the pass above cannot take. **Zero fills of up to 32 bytes in `temp_alloc` are one fixed-size store** (13 M libc
+  `memset` calls of 25 to 100 bytes in this testbench).
+- **Not done, and why:** the required assignments above (11 of the remaining 17 GB) need copy-on-write or sparse values in the flat memory
+  model: a design change, left. Compare-before-copy was measured (4 KB chunks, two 689 KB buffers differing in a few bytes, 8 buffers in
+  rotation): 30 us against 26 us for the plain copy, so no. The frame fill of a call (`fill_below`, 650 bytes, 5.7 M calls, 3.7 GB) is the
+  #730 finding (5 ns a call). Ceiling of this task: about 5 of 23 GB; the traffic is 17.7 GB after it (interposer), cycles -8 percent.
+- **Tests:** `crates/yavs/tests/value_move.rs`: `large_variables_built_in_place` (defaults, assignments and later changes of a frame variable,
+  a variable of a waiting procedure and a queue node stay separate objects, interpreter and compiled tier), `large_variables_are_made_before_they_are_filled`
+  and `fills_of_zero_over_a_fresh_object_are_dropped` (the optimised IR: `fill: 1`, no `NewFill` copying a temporary, no `LFill`). No work-counter
+  design: the counters count ops and wakes, not bytes, and the IR tests pin the shape.
+- **Measured** (bench builds of main `ac8d4e88` and of this change, interleaved A/B on one timing core, 7 runs after a warm-up, median ratio B/A
+  of `cycles:u` and `instructions:u`): `uvvm_axistream_vvc` interp 0.920 cycles (0.956 instructions), auto 0.917 (0.965); `uvvm_sb_slv` 0.972 / 0.992;
+  `uvvm_util_rand` 0.992 / 1.009; `osvvm_axis_random` 0.973 / 1.000; `osvvm_axi4_random` 0.960 / 0.955. Instructions fall 1 to 4 percent
+  everywhere (the small zero fills).
+  `realbench --compare` (42 tests, `--phases run --tiers interp,auto`, 3 runs, cores 13 and 14, host load 37 from an unrelated job, base `ac8d4e88`): geometric
+  mean of instructions 0.99 interp and 0.99 auto, wall 1.00 and 1.00 (single small tests moved by 40 to 60 percent on noise at equal instructions, e.g.
+  `neorv32_dual_full`); the protected category (the verification-library testbenches) wall 0.95 / 0.96, `uvvm_axistream_vvc` 0.92 / 0.86 (instructions 0.96).
+  Interposer census of `uvvm_axistream_vvc` (interp): `memcpy` 16.4 to 14.9 GB, `memmove` 1.2 to 0.17 GB, `memset` 5.3 to 2.3 GB, `memset` calls 26.9 M to 12.1 M.

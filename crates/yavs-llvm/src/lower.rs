@@ -1620,6 +1620,9 @@ struct AaNodes {
     k_noalias: u32,
 }
 
+/// Register facts that differ from a block's start (`Dirty::diff`).
+type Facts = Vec<(u32, Option<Known>)>;
+
 /// The registers whose entry in `Cur::known` may differ from what a block starts with (the
 /// function's preloaded addresses): a block start puts back only those, and the objects found are
 /// forgotten only in those, instead of a pass over every register (#785: O(registers x blocks)).
@@ -1667,7 +1670,7 @@ impl Dirty {
     }
 
     /// The entries of `known` that may differ from the base.
-    fn diff(&self, known: &[Option<Known>]) -> Vec<(u32, Option<Known>)> {
+    fn diff(&self, known: &[Option<Known>]) -> Facts {
         self.regs.iter().map(|&r| (r, known[r as usize])).collect()
     }
 }
@@ -3571,7 +3574,7 @@ impl Gen {
             };
             // A native frame's block with a single way in takes what its predecessor knew at the
             // jump: the values defined there dominate it (`inherit`).
-            let mut inherit: Vec<Option<Vec<(u32, Option<Known>)>>> = vec![None; n + 1];
+            let mut inherit: Vec<Option<Facts>> = vec![None; n + 1];
             let mut ways = vec![0u32; n + 1];
             ways[0] = 2;
             if native {

@@ -9314,6 +9314,12 @@ natives on slices (`to_x01`, the numeric operators) still copy the slice first; 
   the registers a block wrote, `HIT` priced at 1 ms + 20 us an IR instruction as measured (`objtimes hit`); window generator warm 0.96 wall.
   Skipping generation on a hit needs a key decision (#785).
 - Against 70cebdc0 (the per-op interpreter round) the window generator with these changes is warm 1.01 wall at 0.92 instructions, cold 1.01.
+  42 tests against 463bae9b (`tools/realbench --compare`, run phase, core 8): `auto` sum 0.98, geometric mean (1 s or more) 0.99; `auto-cold`
+  1.03 / 1.01 at equal instructions; window generator warm 1.05 wall at 0.92 instructions (three runs; consecutive warm runs of both binaries
+  pairwise within 5 percent either way), GRLIB 0.97 / 1.06 cold at equal instructions. With today's faster interpreter `walk_control` is seen
+  0.32 to 0.41 s a run, so 4 runs of it stay under its 1.70 s threshold and the profile lists it without compiling it.
+  Against sim1 (run cell = elab + run, same session, 5b2beb73): window generator warm 1.56, cold 2.30; `fletcher_bufferwriter_512` 2.10 / 2.15;
+  `fletcher_bufferreader` 1.48 / 1.49; `grlib_leon3mp` 3.07 / 3.19.
 - Left: `iu:comb` and the other straight-line GRLIB processes stay level compiled (drives, signal reads and natives through the same runtime
   functions); running interpreted callees in place from compiled code was tried and dropped (window generator 1.12, decisions.md); a cache hit
   still generates the module.

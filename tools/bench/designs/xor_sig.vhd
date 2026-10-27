@@ -2,6 +2,7 @@
 -- false): the operator-call cost in a tight loop.
 -- Head-to-head design (tools/bench/AGENTS.md); written for yavs.
 library ieee;
+use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 entity bench_xor_sig is generic (N : natural := 10000000; SIG : boolean := true); end entity;
 architecture a of bench_xor_sig is

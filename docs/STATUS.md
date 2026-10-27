@@ -5477,6 +5477,27 @@ allocator choice moves it by up to 20 percent, FastISel by 27 (rejected for the 
 size 75 ms, so the first compile is allowed once the run has shown 460 ms of work (`YAVS_AUTO_TRACE`), which is most of a
 cold run of this length. Posted on #740 and #754.
 
+Follow-up (#757, 2026-10-27, decisions.md "Element loops planned in the compiled code itself"): the element-loop helper cost about 1000
+instructions a call for an eight-element row (38 percent of the histogram's warm cycles); the loops are now planned in the generated
+code and only the elements go through a call. Bench build with `llvm`, one claimed core, `tools/realbench --compare` against the
+build before (`f877e389`), 5 runs, `--ref sim1`, run phase (yavs run against sim1 elaboration plus run; the analysis is not in it):
+
+| test | sim1 s | auto warm s, before / after | instructions G | auto cold s, before / after | interp |
+|---|---:|---:|---:|---:|---:|
+| poc_stat_histogram | 0.34 | 0.56 / 0.48 | 13.0 / 10.4 | 0.99 / 0.92 | level |
+| sc5_fifo_repack | 0.88 | 1.31 / 1.31 | 21.9 / 21.5 | 2.13 / 2.13 | level |
+| sc5_timestamp | 0.30 | 0.40 / 0.40 | 6.7 / 6.7 | 0.40 / 0.40 | level |
+| hdlm_lfsr | 1.14 | 1.42 / 1.39 | 23.0 / 23.0 | 1.55 / 1.53 | level |
+
+The histogram's warm run is 1.65 times sim1's run phase before and 1.41 after (cycles best of 5, interleaved: 2.78 G to 2.24 G). Native-frame
+compile of the three functions: LLVM instructions +11 percent for `get_row`, +5 percent for `to_slm`, compile time within noise. What is
+left in the histogram: `get_row`, `to_slm`, `to_slvv_8` own code 40 percent of the cycles (native frames are compiled at the cheap level, the
+plan's flags and values live in stack slots across the checks' blocks), 10 percent the call that finds the fresh result frame and the
+matrix. The other three tests have no element loop: `sc5_fifo_repack` is the signal drive path (`yavs_rt_drive`, `assign_codes_now`
+15 percent) and the interpreted processes, `sc5_timestamp` and `hdlm_lfsr` the kernel (`cycle`, `finish_direct`, `assign_codes_now`,
+`commit_codes` 25 percent for `hdlm_lfsr`); their run-to-run instruction counts move by 5 percent with the policy's timing-dependent
+decisions, so a single pair of runs of `hdlm_lfsr` can differ by that much in either direction. All 41 tests of the run phase `--compare` (auto warm and cold): wall and instruction geomeans 0.99 to 1.00; the four tests flagged once (instructions +6 to +8 percent) were level on a re-run of 5.
+
 ## Real-world performance suite: yavs against sim1, head-to-head 5, 2026-10-25 (`tools/realbench`)
 
 This was the headline of the fifth run, superseded by head-to-head 6 above (one analysis call per file for both tools; `9e75d84e`, bench build with the `llvm` feature, one binary for every cell; the previous run, head-to-head 4 at `18b290ef`, is in brackets). Basis (root rule 23): `--tier=auto`

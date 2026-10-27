@@ -6,6 +6,7 @@
 //! differential test (`tests/ieee_native.rs`) runs both on the same operands. Calling
 //! convention: array arguments are four cells (`data, left, right, dir`), scalars one (#697).
 
+use crate::ieee_wide::{self as wide, Bounds};
 use yavs_ir::ieee::{ARRAY_REGS, Cmp, Form, Gate, Math, Op, Shift, Syn};
 use yavs_ir::{DOPE_DIM_BYTES, TyId, Width, dim_len};
 use yavs_kernel::{Ctx, LogicVec, Severity};
@@ -140,14 +141,39 @@ pub(crate) struct Small {
     down: bool,
 }
 
-/// The low `n` bits (`n` from 1 to 64).
-fn low(n: usize) -> u64 {
+/// The low `n` bits for `n` from 1 to 64, without a branch.
+#[inline(always)]
+fn low1(n: usize) -> u64 {
+    u64::MAX >> (64 - n)
+}
+
+/// The low `n` bits (`n` from 0 to 64 and above).
+pub(crate) fn low(n: usize) -> u64 {
     if n >= 64 { !0 } else { (1 << n) - 1 }
 }
 
-/// `N` words at `addr`: the common spaces inline, anything else (a frame of a compiled native
-/// frame, package data) through [`words_slow`]; `None` for an unreadable address (the general
-/// path then reads again and words the error).
+/// The four words (one block of planes) at `addr`: the common spaces inline, anything else (a
+/// frame of a compiled native frame, package data) through [`words_slow`]; `None` for an
+/// unreadable address (the general path then reads again and words the error).
+#[inline(always)]
+fn block4(m: &Machine, addr: u64) -> Option<[u64; 4]> {
+    let (sp, idx, off) = split(addr);
+    let Some(b) = m
+        .mem_temp_first(sp, idx)
+        .and_then(|b| b.get(off as usize..off as usize + 32))
+    else {
+        return words_slow(m, addr);
+    };
+    let (w, _) = b.as_chunks::<8>();
+    Some([
+        u64::from_le_bytes(w[0]),
+        u64::from_le_bytes(w[1]),
+        u64::from_le_bytes(w[2]),
+        u64::from_le_bytes(w[3]),
+    ])
+}
+
+/// `N` words at `addr` (`block4` for one block of planes).
 #[inline(always)]
 fn words<const N: usize>(m: &Machine, addr: u64) -> Option<[u64; N]> {
     let (sp, idx, off) = split(addr);
@@ -191,16 +217,16 @@ fn small_of(m: &Machine, data: u64, left: i64, right: i64, down: bool) -> Option
     if n > 64 {
         return None;
     }
-    let [p0, p1, p2, p3] = words::<4>(m, data)?;
+    let [p0, p1, p2, p3] = block4(m, data)?;
     // `0` or `L`: plane 1 only (plane 2 is the weak bit); `1` or `H`: planes 0 and 1.
-    let (zero, one) = (!p3 & p1 & !p0, !p3 & p1 & p0);
-    if (zero | one) & low(n) != low(n) {
+    let mask = low1(n);
+    if !p3 & p1 & mask != mask {
         return None;
     }
     Some(Small {
         n,
-        bits: one & low(n),
-        pure: p2 & low(n) == 0,
+        bits: p0 & mask,
+        pure: p2 & mask == 0,
         left,
         right,
         down,
@@ -209,8 +235,15 @@ fn small_of(m: &Machine, data: u64, left: i64, right: i64, down: bool) -> Option
 
 /// The result `bits` of `n` elements, bounds `left`, `right`, `down`, as [`put`] writes it.
 #[inline(always)]
-fn put_small(m: &mut Machine, n: usize, bits: u64, left: i64, right: i64, down: bool) -> R<u64> {
-    let mask = low(n);
+pub(crate) fn put_small(
+    m: &mut Machine,
+    n: usize,
+    bits: u64,
+    left: i64,
+    right: i64,
+    down: bool,
+) -> R<u64> {
+    let mask = low1(n);
     // The fat pair, the dope vector and one block of planes; `fat` is the address of the block.
     m.temp_words(|fat| {
         [
@@ -228,14 +261,15 @@ fn put_small(m: &mut Machine, n: usize, bits: u64, left: i64, right: i64, down: 
 }
 
 /// [`put_small`] with the bounds `(n-1 downto 0)` ([`Vh::down`]).
-fn put_down(m: &mut Machine, n: usize, bits: u64) -> R<u64> {
+#[inline(always)]
+pub(crate) fn put_down(m: &mut Machine, n: usize, bits: u64) -> R<u64> {
     put_small(m, n, bits, n as i64 - 1, 0, true)
 }
 
 /// `bits` of `n` elements extended to `to` elements (`to >= n`): sign or zero.
 fn extend_bits(bits: u64, n: usize, to: usize, signed: bool) -> u64 {
     if signed && n < to && bits >> (n - 1) & 1 == 1 {
-        (bits | !low(n)) & low(to)
+        (bits | !low1(n)) & low1(to)
     } else {
         bits
     }
@@ -386,18 +420,8 @@ const GATES: [Gate; 6] = [
 
 fn vec_gate<const G: u8>(m: &mut Machine, ctx: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
     let g = GATES[G as usize];
-    if let (Some(l), Some(r)) = (small(m, a, 0), small(m, a, A1))
-        && l.n == r.n
-    {
-        let bits = match g {
-            Gate::And => l.bits & r.bits,
-            Gate::Nand => !(l.bits & r.bits),
-            Gate::Or => l.bits | r.bits,
-            Gate::Nor => !(l.bits | r.bits),
-            Gate::Xor => l.bits ^ r.bits,
-            Gate::Xnor => !(l.bits ^ r.bits),
-        };
-        return put_small(m, l.n, bits, 1, l.n as i64, false).map(Some);
+    if let Some(r) = fast_vec_gate::<G>(m, a) {
+        return Ok(Some(r));
     }
     let (l, r) = (vh(m, a, 0)?, vh(m, a, A1)?);
     if l.v.len() != r.v.len() {
@@ -427,18 +451,8 @@ fn vec_gate<const G: u8>(m: &mut Machine, ctx: Cx<'_, '_, '_>, _: Option<TyId>, 
 /// with the bounds `(n-1 downto 0)`. Unequal lengths go back to the body.
 fn num_gate<const G: u8>(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
     let g = GATES[G as usize];
-    if let (Some(l), Some(r)) = (small(m, a, 0), small(m, a, A1))
-        && l.n == r.n
-    {
-        let bits = match g {
-            Gate::And => l.bits & r.bits,
-            Gate::Nand => !(l.bits & r.bits),
-            Gate::Or => l.bits | r.bits,
-            Gate::Nor => !(l.bits | r.bits),
-            Gate::Xor => l.bits ^ r.bits,
-            Gate::Xnor => !(l.bits ^ r.bits),
-        };
-        return put_down(m, l.n, bits).map(Some);
+    if let Some(r) = fast_num_gate::<G>(m, a) {
+        return Ok(Some(r));
     }
     let (l, r) = (vh(m, a, 0)?, vh(m, a, A1)?);
     if l.v.len() != r.v.len() {
@@ -457,8 +471,8 @@ fn num_gate<const G: u8>(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a:
 
 /// `numeric_std` `not` of an `unsigned` or `signed`.
 fn num_not(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
-    if let Some(l) = small(m, a, 0) {
-        return put_down(m, l.n, !l.bits).map(Some);
+    if let Some(r) = fast_num_not(m, a) {
+        return Ok(Some(r));
     }
     let l = vh(m, a, 0)?;
     put(m, &Vh::down(l.v.not()))
@@ -469,8 +483,8 @@ fn not(_: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
 }
 
 fn vec_not(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
-    if let Some(l) = small(m, a, 0) {
-        return put_small(m, l.n, !l.bits, 1, l.n as i64, false).map(Some);
+    if let Some(r) = fast_vec_not(m, a) {
+        return Ok(Some(r));
     }
     let l = vh(m, a, 0)?;
     put(m, &Vh::up1(l.v.not()))
@@ -483,6 +497,9 @@ fn conv<const K: u8, const VEC: bool>(
     a: &[u64],
 ) -> Ret {
     if VEC {
+        if let Some(r) = conv_small::<K>(m, a) {
+            return Ok(Some(r));
+        }
         let l = vh(m, a, 0)?;
         let v = match K {
             0 => l.v.to_x01(),
@@ -613,6 +630,9 @@ fn is_x_vec(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> R
 /// `to_bitvector (s, xmap)`: `'0'` for `0`/`L`, `'1'` for `1`/`H` and `xmap` for any other element,
 /// as the result `(n - 1 downto 0)`. A `bit` element has the plane code of `'0'` or `'1'`.
 fn to_bitvector(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
+    if let Some(r) = to_bitvector_small(m, a) {
+        return Ok(Some(r));
+    }
     let (data, left, right, down) = dim_at(a, 0)?;
     let n = dim_len(left, right, down).ok_or_else(|| Fault::Runtime("array too long".into()))?;
     let n = usize::try_from(n).map_err(|_| Fault::Runtime("array too long".into()))?;
@@ -1242,6 +1262,9 @@ fn add<const SUB: bool, const SIGNED: bool, const FORM: u8>(
     a: &[u64],
 ) -> Ret {
     let bit = t.is_some();
+    if let Some(r) = fast_add::<SUB, SIGNED, FORM>(m, a) {
+        return Ok(Some(r));
+    }
     if let Some(r) = add_small::<SUB, SIGNED, FORM>(m, ctx, bit, a)? {
         return Ok(Some(r));
     }
@@ -1365,7 +1388,7 @@ fn cmp_name(c: Cmp) -> &'static str {
 
 const CMPS: [Cmp; 6] = [Cmp::Gt, Cmp::Lt, Cmp::Le, Cmp::Ge, Cmp::Eq, Cmp::Ne];
 
-fn holds(c: Cmp, o: std::cmp::Ordering) -> bool {
+pub(crate) fn holds(c: Cmp, o: std::cmp::Ordering) -> bool {
     use std::cmp::Ordering::*;
     match c {
         Cmp::Gt => o == Greater,
@@ -1384,6 +1407,9 @@ fn compare<const C: u8, const SIGNED: bool, const FORM: u8>(
     a: &[u64],
 ) -> Ret {
     let bit = t.is_some();
+    if let Some(r) = fast_compare::<C, SIGNED, FORM>(m, a) {
+        return Ok(Some(r));
+    }
     let c = CMPS[C as usize];
     let dflt = c == Cmp::Ne;
     let bad = |m: &mut Machine, ctx: Cx<'_, '_, '_>, what: &str| -> Ret {
@@ -1399,32 +1425,6 @@ fn compare<const C: u8, const SIGNED: bool, const FORM: u8>(
         )?;
         Ok(Some(u64::from(dflt)))
     };
-    // Operands of at most 64 elements without a metavalue: plain integers.
-    let ord = match FORM {
-        0 => match (small(m, a, 0), small(m, a, A1)) {
-            (Some(l), Some(r)) if SIGNED => {
-                Some(signed_of(l.bits, l.n).cmp(&signed_of(r.bits, r.n)))
-            }
-            (Some(l), Some(r)) => Some(l.bits.cmp(&r.bits)),
-            _ => None,
-        },
-        _ => match small(m, a, usize::from(FORM != 1)) {
-            Some(v) => {
-                let i = int(a, if FORM == 1 { A1 } else { 0 })?;
-                let i = if SIGNED { i } else { natural(m, i)? };
-                let o = if SIGNED {
-                    signed_of(v.bits, v.n).cmp(&i)
-                } else {
-                    v.bits.cmp(&(i as u64))
-                };
-                Some(if FORM == 1 { o } else { o.reverse() })
-            }
-            None => None,
-        },
-    };
-    if let Some(o) = ord {
-        return Ok(Some(u64::from(holds(c, o))));
-    }
     let (l, r) = match FORM {
         0 => (vh(m, a, 0)?.v, Some(vh(m, a, A1)?.v)),
         1 => (vh(m, a, 0)?.v, None),
@@ -1476,6 +1476,9 @@ fn to_integer<const SIGNED: bool>(
     a: &[u64],
 ) -> Ret {
     let bit = t.is_some();
+    if let Some(r) = fast_to_integer::<SIGNED>(m, a) {
+        return Ok(Some(r));
+    }
     if let Some(v) = small(m, a, 0) {
         let neg = SIGNED && v.bits >> (v.n - 1) & 1 == 1;
         if SIGNED && v.n == 1 && neg {
@@ -1534,6 +1537,9 @@ fn to_unsigned<const SIGNED: bool>(
     a: &[u64],
 ) -> Ret {
     let bit = t.is_some();
+    if let Some(r) = fast_to_unsigned::<SIGNED>(m, a) {
+        return Ok(Some(r));
+    }
     let (v, size) = (int(a, 0)?, int(a, 1)?);
     let v = if SIGNED { v } else { natural(m, v)? };
     let size = natural(m, size)?;
@@ -1551,20 +1557,8 @@ fn resize<const SIGNED: bool>(
     _: Option<TyId>,
     a: &[u64],
 ) -> Ret {
-    if let Some(v) = small(m, a, 0).filter(|v| v.pure) {
-        let new = natural(m, int(a, A1)?)? as usize;
-        if (1..=64).contains(&new) {
-            let bits = if SIGNED {
-                // The top element is the argument's sign element; below it the low elements.
-                let keep = v.n.min(new) - 1;
-                let sign = v.bits >> (v.n - 1) & 1 == 1;
-                let kept = if keep == 0 { 0 } else { v.bits & low(keep) };
-                kept | if sign { low(new) & !low(keep) } else { 0 }
-            } else {
-                v.bits & low(v.n.min(new))
-            };
-            return put_down(m, new, bits).map(Some);
-        }
+    if let Some(r) = fast_resize::<SIGNED>(m, a) {
+        return Ok(Some(r));
     }
     let l = vh(m, a, 0)?.v;
     let new = natural(m, int(a, A1)?)? as usize;
@@ -1624,9 +1618,8 @@ fn shift_small<const K: u8>(m: &mut Machine, v: &Small, count: usize) -> R<Optio
 }
 
 fn shift<const K: u8>(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
-    if let Some(v) = small(m, a, 0).filter(|v| v.pure) {
-        let count = natural(m, int(a, A1)?)? as usize;
-        return shift_small::<K>(m, &v, count);
+    if let Some(r) = fast_shift::<K>(m, a) {
+        return Ok(Some(r));
     }
     let l = vh(m, a, 0)?;
     let count = natural(m, int(a, A1)?)? as usize;
@@ -1636,9 +1629,8 @@ fn shift<const K: u8>(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[
 /// `shift_left` ... `rotate_right`: the null array constant for a null argument, else the
 /// local function (`XSLL` ...) the body calls.
 fn shift_fn<const K: u8>(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
-    if let Some(v) = small(m, a, 0).filter(|v| v.pure) {
-        let count = natural(m, int(a, A1)?)? as usize;
-        return shift_small::<K>(m, &v, count);
+    if let Some(r) = fast_shift::<K>(m, a) {
+        return Ok(Some(r));
     }
     let l = vh(m, a, 0)?;
     let count = natural(m, int(a, A1)?)? as usize;
@@ -1665,6 +1657,296 @@ fn shift_of<const K: u8>(m: &mut Machine, l: Vh, count: usize) -> Ret {
         _ => l.v.ror(count),
     };
     put(m, &Vh::down(v))
+}
+
+// ---- the one-word paths without a report ----
+
+/// The one-word path of a native (operands of 1 to 64 elements without a metavalue, no report,
+/// no error), or the word-wise one for longer vectors (`ieee_wide`): the result, or `None` when
+/// the native must run (its general path words every warning and error). `Op::CallIeee` tries
+/// it first, without the bookkeeping of a native call, and so does each native.
+pub(crate) type FastFn = fn(&mut Machine, &[u64]) -> Option<u64>;
+
+/// The bits of `TO_UNSIGNED (arg, size)` / `TO_SIGNED` for `size` from 1 to 64 when `arg` fits.
+#[inline(always)]
+fn fit_bits(arg: i64, size: usize, signed: bool) -> Option<u64> {
+    let fits = if signed {
+        size >= 64 || (-(1i64 << (size - 1))..1i64 << (size - 1)).contains(&arg)
+    } else {
+        size >= 64 || (arg as u64) >> size == 0
+    };
+    fits.then(|| arg as u64 & low(size))
+}
+
+/// An integer operand: a NATURAL one (`unsigned`) must not be negative.
+#[inline(always)]
+fn nat_or_int(i: i64, signed: bool) -> Option<i64> {
+    (signed || i >= 0).then_some(i)
+}
+
+#[inline(always)]
+fn cell(a: &[u64], i: usize) -> Option<i64> {
+    a.get(i).map(|&c| c as i64)
+}
+
+fn fast_add<const SUB: bool, const SIGNED: bool, const FORM: u8>(
+    m: &mut Machine,
+    a: &[u64],
+) -> Option<u64> {
+    let (n, x, y) = match FORM {
+        0 => {
+            let (Some(l), Some(r)) = (small(m, a, 0), small(m, a, A1)) else {
+                return wide::add(m, a, SUB, SIGNED, 0);
+            };
+            let n = l.n.max(r.n);
+            (
+                n,
+                extend_bits(l.bits, l.n, n, SIGNED),
+                extend_bits(r.bits, r.n, n, SIGNED),
+            )
+        }
+        1 => {
+            let Some(l) = small(m, a, 0) else {
+                return wide::add(m, a, SUB, SIGNED, 1);
+            };
+            let i = nat_or_int(cell(a, A1)?, SIGNED)?;
+            (l.n, l.bits, fit_bits(i, l.n, SIGNED)?)
+        }
+        _ => {
+            let Some(r) = small(m, a, 1) else {
+                return wide::add(m, a, SUB, SIGNED, 2);
+            };
+            let i = nat_or_int(cell(a, 0)?, SIGNED)?;
+            (r.n, fit_bits(i, r.n, SIGNED)?, r.bits)
+        }
+    };
+    let s = if SUB {
+        x.wrapping_sub(y)
+    } else {
+        x.wrapping_add(y)
+    };
+    put_down(m, n, s).ok()
+}
+
+fn fast_compare<const C: u8, const SIGNED: bool, const FORM: u8>(
+    m: &mut Machine,
+    a: &[u64],
+) -> Option<u64> {
+    let ord = match FORM {
+        0 => {
+            let (Some(l), Some(r)) = (small(m, a, 0), small(m, a, A1)) else {
+                return wide::compare(m, a, CMPS[C as usize], SIGNED, 0);
+            };
+            if SIGNED {
+                signed_of(l.bits, l.n).cmp(&signed_of(r.bits, r.n))
+            } else {
+                l.bits.cmp(&r.bits)
+            }
+        }
+        _ => {
+            let Some(v) = small(m, a, usize::from(FORM != 1)) else {
+                return wide::compare(m, a, CMPS[C as usize], SIGNED, FORM);
+            };
+            let i = nat_or_int(cell(a, if FORM == 1 { A1 } else { 0 })?, SIGNED)?;
+            let o = if SIGNED {
+                signed_of(v.bits, v.n).cmp(&i)
+            } else {
+                v.bits.cmp(&(i as u64))
+            };
+            if FORM == 1 { o } else { o.reverse() }
+        }
+    };
+    Some(u64::from(holds(CMPS[C as usize], ord)))
+}
+
+fn fast_to_integer<const SIGNED: bool>(m: &mut Machine, a: &[u64]) -> Option<u64> {
+    let high = m.rt.revision.integer_bounds().high as u64;
+    let Some(v) = small(m, a, 0) else {
+        return wide::to_integer(m, a, SIGNED, high);
+    };
+    let neg = SIGNED && v.bits >> (v.n - 1) & 1 == 1;
+    // A one-element `signed` 1 warns, and beyond INTEGER'HIGH the body's checked addition fails.
+    if SIGNED && v.n == 1 && neg {
+        return None;
+    }
+    let mag = if neg { !v.bits & low(v.n) } else { v.bits };
+    (mag <= high).then(|| if neg { (-(mag as i64) - 1) as u64 } else { mag })
+}
+
+fn fast_to_unsigned<const SIGNED: bool>(m: &mut Machine, a: &[u64]) -> Option<u64> {
+    let (arg, size) = (cell(a, 0)?, usize::try_from(cell(a, 1)?).ok()?);
+    if (1..=64).contains(&size) {
+        let bits = fit_bits(nat_or_int(arg, SIGNED)?, size, SIGNED)?;
+        return put_down(m, size, bits).ok();
+    }
+    wide::from_int(m, arg, size, SIGNED)
+}
+
+#[inline(always)]
+pub(crate) fn gate_bits(g: Gate, x: u64, y: u64) -> u64 {
+    match g {
+        Gate::And => x & y,
+        Gate::Nand => !(x & y),
+        Gate::Or => x | y,
+        Gate::Nor => !(x | y),
+        Gate::Xor => x ^ y,
+        Gate::Xnor => !(x ^ y),
+    }
+}
+
+fn fast_vec_gate<const G: u8>(m: &mut Machine, a: &[u64]) -> Option<u64> {
+    let g = GATES[G as usize];
+    let (Some(l), Some(r)) = (small(m, a, 0), small(m, a, A1)) else {
+        return wide::gate(m, a, Some(g), Bounds::Up1);
+    };
+    if l.n != r.n {
+        return None;
+    }
+    put_small(m, l.n, gate_bits(g, l.bits, r.bits), 1, l.n as i64, false).ok()
+}
+
+fn fast_num_gate<const G: u8>(m: &mut Machine, a: &[u64]) -> Option<u64> {
+    let g = GATES[G as usize];
+    let (Some(l), Some(r)) = (small(m, a, 0), small(m, a, A1)) else {
+        return wide::gate(m, a, Some(g), Bounds::Down);
+    };
+    if l.n != r.n {
+        return None;
+    }
+    put_down(m, l.n, gate_bits(g, l.bits, r.bits)).ok()
+}
+
+fn fast_num_not(m: &mut Machine, a: &[u64]) -> Option<u64> {
+    let Some(l) = small(m, a, 0) else {
+        return wide::gate(m, a, None, Bounds::Down);
+    };
+    put_down(m, l.n, !l.bits).ok()
+}
+
+fn fast_vec_not(m: &mut Machine, a: &[u64]) -> Option<u64> {
+    let Some(l) = small(m, a, 0) else {
+        return wide::gate(m, a, None, Bounds::Up1);
+    };
+    put_small(m, l.n, !l.bits, 1, l.n as i64, false).ok()
+}
+
+fn fast_resize<const SIGNED: bool>(m: &mut Machine, a: &[u64]) -> Option<u64> {
+    let new = usize::try_from(cell(a, A1)?).ok()?;
+    if (1..=64).contains(&new)
+        && let Some(v) = small(m, a, 0).filter(|v| v.pure)
+    {
+        let bits = if SIGNED {
+            let keep = v.n.min(new) - 1;
+            let sign = v.bits >> (v.n - 1) & 1 == 1;
+            let kept = if keep == 0 { 0 } else { v.bits & low(keep) };
+            kept | if sign { low(new) & !low(keep) } else { 0 }
+        } else {
+            v.bits & low(v.n.min(new))
+        };
+        return put_down(m, new, bits).ok();
+    }
+    wide::resize(m, a, SIGNED)
+}
+
+fn fast_shift<const K: u8>(m: &mut Machine, a: &[u64]) -> Option<u64> {
+    let count = usize::try_from(cell(a, A1)?).ok()?;
+    match small(m, a, 0) {
+        Some(v) if v.pure => shift_small::<K>(m, &v, count).ok().flatten(),
+        Some(_) => None,
+        None if K < 2 => wide::shift(m, a, K),
+        None => None,
+    }
+}
+
+fn fast_is_x_sul(_: &mut Machine, a: &[u64]) -> Option<u64> {
+    Some(u64::from(sul(a, 0).ok()?.is_x()))
+}
+
+fn fast_truthy(_: &mut Machine, a: &[u64]) -> Option<u64> {
+    Some(u64::from(sul(a, 0).ok()?.is_true()))
+}
+
+fn fast_conv_sul<const K: u8>(_: &mut Machine, a: &[u64]) -> Option<u64> {
+    Some(conv_of(K, sul(a, 0).ok()?) as u64)
+}
+
+/// `is_x` of a vector reads its planes in place and makes nothing: its general path is its fast one.
+fn fast_is_x_vec(m: &mut Machine, a: &[u64]) -> Option<u64> {
+    is_x_vec(m, &mut None, None, a).ok().flatten()
+}
+
+fn fast_reduce<const G: u8>(m: &mut Machine, a: &[u64]) -> Option<u64> {
+    reduce::<G>(m, &mut None, None, a).ok().flatten()
+}
+
+/// The one block of planes of the array operand at cell 0 when it has 1 to 64 elements, with the
+/// element count.
+#[inline(always)]
+fn block_of(m: &Machine, a: &[u64]) -> Option<(usize, [u64; 4])> {
+    let &[data, left, right, d] = a.get(..ARRAY_REGS)? else {
+        return None;
+    };
+    let (lo, hi) = if d == 1 {
+        (right as i64, left as i64)
+    } else {
+        (left as i64, right as i64)
+    };
+    let n = usize::try_from(hi.checked_sub(lo)?).ok()?.checked_add(1)?;
+    (n <= 64).then_some(())?;
+    Some((n, block4(m, data)?))
+}
+
+/// A result of `n` elements (1 to 64) in one block of planes with bounds `left`, `right`, `down`.
+#[inline(always)]
+fn put_block(m: &mut Machine, blk: [u64; 4], left: i64, right: i64, down: bool) -> Option<u64> {
+    m.temp_words(|fat| {
+        [
+            fat + 16 + DOPE_DIM_BYTES,
+            fat + 16,
+            left as u64,
+            right as u64,
+            u64::from(down),
+            blk[0],
+            blk[1],
+            blk[2],
+            blk[3],
+        ]
+    })
+    .ok()
+}
+
+/// `to_x01`, `to_x01z`, `to_ux01` (`K` 0, 1, 2) of a vector of up to 64 elements, as the planes
+/// of `yavs_logic` compute them; `None` for a longer one.
+fn conv_small<const K: u8>(m: &mut Machine, a: &[u64]) -> Option<u64> {
+    let (n, [p0, p1, p2, p3]) = block_of(m, a)?;
+    let mask = low1(n);
+    let (is0, is1) = (!p3 & p1 & !p0, !p3 & p1 & p0);
+    let known = is0 | is1;
+    let blk = match K {
+        0 => [!is0, known, 0, 0],
+        1 => {
+            let z = !p3 & p2 & !p1 & !p0;
+            [!is0 & !z, known, z, 0]
+        }
+        _ => [!is0 & (p0 | p1 | p2 | p3), known, 0, 0],
+    };
+    put_block(m, blk.map(|p| p & mask), 1, n as i64, false)
+}
+
+fn fast_conv_vec<const K: u8>(m: &mut Machine, a: &[u64]) -> Option<u64> {
+    conv_small::<K>(m, a).or_else(|| conv::<K, true>(m, &mut None, None, a).ok().flatten())
+}
+
+/// `to_bitvector (s, xmap)` of up to 64 elements in one word; `None` for a longer one.
+fn to_bitvector_small(m: &mut Machine, a: &[u64]) -> Option<u64> {
+    let (n, [p0, p1, _, p3]) = block_of(m, a)?;
+    let xmap = if *a.get(A1)? != 0 { !0u64 } else { 0 };
+    let known = p1 & !p3;
+    put_down(m, n, p0 & known | !known & xmap).ok()
+}
+
+fn fast_to_bitvector(m: &mut Machine, a: &[u64]) -> Option<u64> {
+    to_bitvector_small(m, a).or_else(|| to_bitvector(m, &mut None, None, a).ok().flatten())
 }
 
 macro_rules! pick3 {
@@ -1850,5 +2132,109 @@ pub(crate) fn lookup(symbol: &str) -> Option<NativeFn> {
         Op::Shift(Shift::Sra) => shift::<2>,
         Op::Shift(Shift::Rol) => shift::<3>,
         Op::Shift(Shift::Ror) => shift::<4>,
+    })
+}
+
+macro_rules! pick3_fast {
+    ($f:ident, $a:expr, $b:expr, $c:expr) => {
+        match ($a, $b, $c) {
+            (false, false, 0) => $f::<false, false, 0> as FastFn,
+            (false, false, 1) => $f::<false, false, 1> as FastFn,
+            (false, false, _) => $f::<false, false, 2> as FastFn,
+            (false, true, 0) => $f::<false, true, 0> as FastFn,
+            (false, true, 1) => $f::<false, true, 1> as FastFn,
+            (false, true, _) => $f::<false, true, 2> as FastFn,
+            (true, false, 0) => $f::<true, false, 0> as FastFn,
+            (true, false, 1) => $f::<true, false, 1> as FastFn,
+            (true, false, _) => $f::<true, false, 2> as FastFn,
+            (true, true, 0) => $f::<true, true, 0> as FastFn,
+            (true, true, 1) => $f::<true, true, 1> as FastFn,
+            (true, true, _) => $f::<true, true, 2> as FastFn,
+        }
+    };
+}
+
+/// The one-word path of the native of an `yavs.ieee.<key>` symbol, when it has one.
+pub(crate) fn lookup_fast(symbol: &str) -> Option<FastFn> {
+    let key = symbol.strip_prefix("yavs.ieee.")?;
+    let op = yavs_ir::ieee::parse(key.split_once('@').map_or(key, |k| k.0))?;
+    Some(match op {
+        Op::VecGate(g) => [
+            fast_vec_gate::<0> as FastFn,
+            fast_vec_gate::<1>,
+            fast_vec_gate::<2>,
+            fast_vec_gate::<3>,
+            fast_vec_gate::<4>,
+            fast_vec_gate::<5>,
+        ][GATES.iter().position(|x| *x == g)?],
+        Op::NumGate(g) => [
+            fast_num_gate::<0> as FastFn,
+            fast_num_gate::<1>,
+            fast_num_gate::<2>,
+            fast_num_gate::<3>,
+            fast_num_gate::<4>,
+            fast_num_gate::<5>,
+        ][GATES.iter().position(|x| *x == g)?],
+        Op::NumNot => fast_num_not,
+        Op::VecNot => fast_vec_not,
+        Op::Reduce(g) => [
+            fast_reduce::<0> as FastFn,
+            fast_reduce::<1>,
+            fast_reduce::<2>,
+            fast_reduce::<3>,
+            fast_reduce::<4>,
+            fast_reduce::<5>,
+        ][GATES.iter().position(|x| *x == g)?],
+        Op::IsX(true) => fast_is_x_vec,
+        Op::IsX(false) => fast_is_x_sul,
+        Op::Truthy => fast_truthy,
+        Op::Conv(0, false) => fast_conv_sul::<0>,
+        Op::Conv(1, false) => fast_conv_sul::<1>,
+        Op::Conv(_, false) => fast_conv_sul::<2>,
+        Op::Conv(0, true) => fast_conv_vec::<0>,
+        Op::Conv(1, true) => fast_conv_vec::<1>,
+        Op::Conv(_, true) => fast_conv_vec::<2>,
+        Op::ToBitVector => fast_to_bitvector,
+        Op::Add {
+            sub,
+            signed,
+            form: f,
+        } => pick3_fast!(fast_add, sub, signed, form(f)),
+        Op::Compare {
+            cmp,
+            signed,
+            form: f,
+        } => {
+            let c = CMPS.iter().position(|x| *x == cmp)?;
+            let fs = form(f);
+            macro_rules! cs {
+                ($($c:literal),*) => {
+                    match (c, signed, fs) {
+                        $(
+                            ($c, false, 0) => fast_compare::<$c, false, 0> as FastFn,
+                            ($c, false, 1) => fast_compare::<$c, false, 1> as FastFn,
+                            ($c, false, _) => fast_compare::<$c, false, 2> as FastFn,
+                            ($c, true, 0) => fast_compare::<$c, true, 0> as FastFn,
+                            ($c, true, 1) => fast_compare::<$c, true, 1> as FastFn,
+                            ($c, true, _) => fast_compare::<$c, true, 2> as FastFn,
+                        )*
+                        _ => return None,
+                    }
+                };
+            }
+            cs!(0, 1, 2, 3, 4, 5)
+        }
+        Op::ToInteger { signed: false } => fast_to_integer::<false>,
+        Op::ToInteger { signed: true } => fast_to_integer::<true>,
+        Op::ToUnsigned => fast_to_unsigned::<false>,
+        Op::ToSigned => fast_to_unsigned::<true>,
+        Op::Resize { signed: false } => fast_resize::<false>,
+        Op::Resize { signed: true } => fast_resize::<true>,
+        Op::ShiftFn(Shift::Sll) | Op::Shift(Shift::Sll) => fast_shift::<0>,
+        Op::ShiftFn(Shift::Srl) | Op::Shift(Shift::Srl) => fast_shift::<1>,
+        Op::ShiftFn(Shift::Sra) | Op::Shift(Shift::Sra) => fast_shift::<2>,
+        Op::ShiftFn(Shift::Rol) | Op::Shift(Shift::Rol) => fast_shift::<3>,
+        Op::ShiftFn(Shift::Ror) | Op::Shift(Shift::Ror) => fast_shift::<4>,
+        _ => return None,
     })
 }

@@ -1,5 +1,5 @@
 //! Element loops in compiled code (#757): on a native frame the iterations of a copy or fill loop
-//! but the last run in `yavs_rt_eloop`, and the output, the exit status and the message of a loop
+//! but the last run planned in the code itself (or in `yavs_rt_eloop` for the shapes it leaves), and the output, the exit status and the message of a loop
 //! that leaves its vector are those of the interpreter, which runs the plain loop.
 #![cfg(any(feature = "llvm", feature = "clift"))]
 
@@ -10,7 +10,12 @@ use std::process::Command;
 
 const LOOPS: &str = include_str!("loops/loops.vhd");
 
-fn run(d: &std::path::Path, tier: &[&str], counters: bool) -> (Option<i32>, String, String) {
+fn run(
+    d: &std::path::Path,
+    tier: &[&str],
+    counters: bool,
+    helper: bool,
+) -> (Option<i32>, String, String) {
     let yavs = env!("CARGO_BIN_EXE_yavs");
     let work = format!("work:{}", d.join("lib").display());
     let mut c = Command::new(yavs);
@@ -20,6 +25,10 @@ fn run(d: &std::path::Path, tier: &[&str], counters: bool) -> (Option<i32>, Stri
         .arg("loops");
     if counters {
         c.env("YAVS_COUNTERS", "1");
+    }
+    if helper {
+        // The loops planned by the runtime helper instead of the code itself.
+        c.env("YAVS_LLVM_ELOOP_HELPER", "1");
     }
     let o = c.output().expect("run");
     (
@@ -52,21 +61,24 @@ fn element_loops_in_compiled_code_match_the_interpreter() {
         .output()
         .expect("analyze");
     assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
-    let want = run(&d, &["--tier=interp"], false);
+    let want = run(&d, &["--tier=interp"], false, false);
     assert!(text(&want).contains("short LLLHH000"), "{}", text(&want));
     let mut tiers = Vec::new();
     if cfg!(feature = "llvm") {
-        tiers.push((vec!["--tier=llvm"], 5));
-        tiers.push((vec!["--tier=auto", "--tier-heat=1,0,0"], 1));
+        tiers.push((vec!["--tier=llvm"], 5, false));
+        tiers.push((vec!["--tier=auto", "--tier-heat=1,0,0"], 1, false));
+        tiers.push((vec!["--tier=llvm"], 5, true));
+        tiers.push((vec!["--tier=auto", "--tier-heat=1,0,0"], 1, true));
     }
     if cfg!(feature = "clift") {
-        tiers.push((vec!["--tier=clift"], 5));
-        tiers.push((vec!["--tier=clift-auto", "--tier-heat=1,0,0"], 1));
+        // The Cranelift lowering calls the helper for every element loop.
+        tiers.push((vec!["--tier=clift"], 5, false));
+        tiers.push((vec!["--tier=clift-auto", "--tier-heat=1,0,0"], 1, false));
     }
-    for (tier, least) in tiers {
-        let got = run(&d, &tier, true);
-        assert_eq!(text(&got), text(&want), "{tier:?}");
-        // The helper ran for the loops of enough elements (a build with callback counters).
+    for (tier, least, helper) in tiers {
+        let got = run(&d, &tier, true, helper);
+        assert_eq!(text(&got), text(&want), "{tier:?} helper {helper}");
+        // The loops ran at once for the loops of enough elements (a build with callback counters).
         let calls = got
             .1
             .lines()
@@ -74,7 +86,7 @@ fn element_loops_in_compiled_code_match_the_interpreter() {
             .find_map(|l| l.strip_prefix("counters: cb_eloop="))
             .and_then(|n| n.parse::<u64>().ok());
         if let Some(n) = calls {
-            assert!(n >= least, "{tier:?}: {n} calls of the helper");
+            assert!(n >= least, "{tier:?} helper {helper}: {n} calls");
         }
     }
 }

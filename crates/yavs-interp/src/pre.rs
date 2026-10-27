@@ -1055,10 +1055,15 @@ pub(crate) enum Op {
     /// the call without the bookkeeping other natives need (they may reach the heap, files and
     /// the like; these work on temporary memory only).
     CallIeee {
-        native: u32,
-        start: u32,
-        len: u32,
-        dst: u32,
+        native: u16,
+        /// Register of the result, `NONE16` for none.
+        dst: u16,
+        /// Argument cells in `regs`.
+        len: u8,
+        /// The native takes a type (`numeric_bit`): `NativeRef::ty` is `Some`.
+        bit: bool,
+        /// The argument registers: no operand list is read at run time.
+        regs: [u16; IEEE_CELLS],
     },
     /// `Inst::CallProt`: a call with the protected object `obj` as the first argument.
     CallProt {
@@ -1610,6 +1615,9 @@ fn scalar_image(
 /// The most argument cells of an `Op::CallIeee`: two arrays of `yavs_ir::ieee::ARRAY_REGS`.
 pub(crate) const IEEE_CELLS: usize = 8;
 
+/// No result register in an [`Op::CallIeee`].
+pub(crate) const NONE16: u16 = u16::MAX;
+
 /// Whether the native is an `ieee` one that `Op::CallIeee` runs: at most [`IEEE_CELLS`] argument
 /// cells, none a signal, not the procedure `uniform` (which writes through its arguments). Such a
 /// native allocates only temporary memory and never collects ([`crate::TierHost::native_light`]).
@@ -1636,6 +1644,39 @@ pub fn light_ieee(
             yavs_ir::ieee::parse(key.split_once('@').map_or(key, |k| k.0)),
             None | Some(yavs_ir::ieee::Op::Uniform)
         )
+}
+
+/// The [`Op::CallIeee`] of a light `ieee` native whose numbers all fit its fields, else `None`
+/// (the call stays an `Op::CallNative`).
+fn call_ieee(
+    prog: &Program,
+    f: &Func,
+    native: yavs_ir::NativeId,
+    args: yavs_ir::Regs,
+    dst: Option<yavs_ir::Reg>,
+) -> Option<Op> {
+    if !light_ieee(prog, f, native, args) {
+        return None;
+    }
+    // The unused cells repeat the first register, so a read of all of them stays in the frame.
+    let list = f.regs(args)?;
+    let first = u16::try_from(list.first()?.0)
+        .ok()
+        .filter(|&r| r != NONE16)?;
+    let mut regs = [first; IEEE_CELLS];
+    for (c, r) in regs.iter_mut().zip(list) {
+        *c = u16::try_from(r.0).ok().filter(|&r| r != NONE16)?;
+    }
+    Some(Op::CallIeee {
+        native: u16::try_from(native.0).ok()?,
+        dst: match dst {
+            Some(d) => u16::try_from(d.0).ok().filter(|&r| r != NONE16)?,
+            None => NONE16,
+        },
+        len: u8::try_from(args.len).ok()?,
+        bit: prog.natives.get(native)?.ty.is_some(),
+        regs,
+    })
 }
 
 /// The scalar `std_logic_1164` natives, by their symbol (`ieee::lookup` has the bodies).
@@ -3601,19 +3642,18 @@ fn superops(prog: &Program, ops: &mut [Op], at: &[u32], f: &Func, known: &[Known
                 }),
                 Some(&Op::CallIeee {
                     native,
-                    start,
-                    len,
+                    len: 4,
                     dst: res,
+                    regs: [a0, ..],
+                    ..
                 }),
             ) if let Some((tmp, 32, false)) = block(first)
                 && d2 == tmp
                 && src != tmp
-                && res != NONE
+                && res != NONE16
                 && int(doff) == Some(0)
-                && is_x_vec(prog, native)
-                && let Some(&[a0, ..]) = f.regs(yavs_ir::Regs { start, len })
-                && len == 4
-                && a0.0 == tmp
+                && is_x_vec(prog, u32::from(native))
+                && u32::from(a0) == tmp
                 && let Some(&cp) = at.get(k + 2)
                 && !live_after(f, cp as usize, yavs_ir::Reg(tmp)) =>
             {
@@ -3622,7 +3662,7 @@ fn superops(prog: &Program, ops: &mut [Op], at: &[u32], f: &Func, known: &[Known
                     src,
                     soff,
                     n,
-                    res,
+                    res: u32::from(res),
                 })
             }
             _ => None,
@@ -5213,12 +5253,7 @@ impl Code {
                             native: native.0,
                             start: args.start,
                         },
-                        _ if light_ieee(prog, f, native, args) => Op::CallIeee {
-                            native: native.0,
-                            start: args.start,
-                            len: args.len,
-                            dst: dst.map_or(NONE, |d| d.0),
-                        },
+                        _ if let Some(op) = call_ieee(prog, f, native, args, dst) => op,
                         _ => Op::CallNative {
                             native: native.0,
                             start: args.start,

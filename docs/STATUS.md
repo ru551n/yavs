@@ -69,6 +69,10 @@ the way: #782 (literals accepted without visible character literals), #783 (inte
 
 (`docs/decisions.md` "Per-op costs, round 2".) The optimiser keeps linear forms of values by register and version and the length of native `ieee` results (`to_unsigned`, `to_signed`, `resize`, `+`, `*`), so the `SubtypeCheck` of a slice of a computed width (`v(8 * i + 7 downto 8 * i)`) and of a `numeric_std` result into a signal goes: `poc_arith_addw` 138.6 to 137.0 G instructions, `vai_window_gen_interlock` 412.5 to 406.1 G, `uvvm_axistream_vvc` 33.2 to 32.7 G (interp); `realbench --compare` geomean 1.00. Work-counter ceilings of 20 designs back to the measured `ops` plus 3 percent. The frame fill (1.7 percent of cycles in `memmove`) and the `LoadDerefImm`/`AffP` chain were measured and left (reasons in decisions.md). Open: `SubtypeCheck` of a call result against a frame-resident target (`fletcher_bufferwriter_512`) and of register-sized widths (`uvvm_axistream_vvc`).
 
+### Per-op costs of the interpreter, round 3: the native `ieee` calls (#778, #520, 2026-10-27)
+
+(`docs/decisions.md` "Per-op costs, round 3".) `Op::CallIeee` keeps its argument registers and tries a reportless fast path of the native first (`ieee::lookup_fast`): the one-word paths of the `numeric_std` operators and `std_logic_1164` gates, the scalar `is_x`/`to_x01..`, the reductions, and new word-wise paths (`ieee_wide.rs`) for vectors of 65 to 1024 elements (`+`, `-`, comparisons, `to_integer`, `to_unsigned`/`to_signed`, `resize`, `sll`/`srl`, gates), read from the planes in place and written straight into temporary memory. `CallIeee` 323 to 220 instructions an op in `poc_arith_addw`, 398 to 332 in `fletcher_bufferwriter_512`, 300 to 230 in `neorv32_single_min`; whole runs (interp) `poc_arith_addw` 136.4 to 130.8 G, `fletcher_bufferwriter_512` 49.8 to 48.6 G, `neorv32_single_min` 29.0 to 28.75 G, compiled tier (`--tier=auto`, main thread) `fletcher_bufferwriter_512` -1.4 percent, `poc_arith_addw` unchanged (its operators are inline in compiled code). New differential test `native_wide_matches_bodies`. Open: the slice copy before a native (not fused: 1.5 percent of a NEORV32 start-up window).
+
 ### `wait until <edge>` as cheap as the sensitivity-list forms (#767, 2026-10-26)
 
 (`docs/decisions.md` "`wait until <edge>` costs what the sensitivity-list forms cost".) The end of a `wait until rising_edge(clk)` on one
@@ -6060,6 +6064,27 @@ allocator choice moves it by up to 20 percent, FastISel by 27 (rejected for the 
 size 75 ms, so the first compile is allowed once the run has shown 460 ms of work (`YAVS_AUTO_TRACE`), which is most of a
 cold run of this length. Posted on #740 and #754.
 
+Follow-up (#757, 2026-10-27, decisions.md "Element loops planned in the compiled code itself"): the element-loop helper cost about 1000
+instructions a call for an eight-element row (38 percent of the histogram's warm cycles); the loops are now planned in the generated
+code and only the elements go through a call. Bench build with `llvm`, one claimed core, `tools/realbench --compare` against the
+build before (`f877e389`), 5 runs, `--ref sim1`, run phase (yavs run against sim1 elaboration plus run; the analysis is not in it):
+
+| test | sim1 s | auto warm s, before / after | instructions G | auto cold s, before / after | interp |
+|---|---:|---:|---:|---:|---:|
+| poc_stat_histogram | 0.34 | 0.56 / 0.48 | 13.0 / 10.4 | 0.99 / 0.92 | level |
+| sc5_fifo_repack | 0.88 | 1.31 / 1.31 | 21.9 / 21.5 | 2.13 / 2.13 | level |
+| sc5_timestamp | 0.30 | 0.40 / 0.40 | 6.7 / 6.7 | 0.40 / 0.40 | level |
+| hdlm_lfsr | 1.14 | 1.42 / 1.39 | 23.0 / 23.0 | 1.55 / 1.53 | level |
+
+The histogram's warm run is 1.65 times sim1's run phase before and 1.41 after (cycles best of 5, interleaved: 2.78 G to 2.24 G). Native-frame
+compile of the three functions: LLVM instructions +11 percent for `get_row`, +5 percent for `to_slm`, compile time within noise. What is
+left in the histogram: `get_row`, `to_slm`, `to_slvv_8` own code 40 percent of the cycles (native frames are compiled at the cheap level, the
+plan's flags and values live in stack slots across the checks' blocks), 10 percent the call that finds the fresh result frame and the
+matrix. The other three tests have no element loop: `sc5_fifo_repack` is the signal drive path (`yavs_rt_drive`, `assign_codes_now`
+15 percent) and the interpreted processes, `sc5_timestamp` and `hdlm_lfsr` the kernel (`cycle`, `finish_direct`, `assign_codes_now`,
+`commit_codes` 25 percent for `hdlm_lfsr`); their run-to-run instruction counts move by 5 percent with the policy's timing-dependent
+decisions, so a single pair of runs of `hdlm_lfsr` can differ by that much in either direction. All 41 tests of the run phase `--compare` (auto warm and cold): wall and instruction geomeans 0.99 to 1.00; the four tests flagged once (instructions +6 to +8 percent) were level on a re-run of 5.
+
 ## Real-world performance suite: yavs against sim1, head-to-head 5, 2026-10-25 (`tools/realbench`)
 
 This was the headline of the fifth run, superseded by head-to-head 6 above (one analysis call per file for both tools; `9e75d84e`, bench build with the `llvm` feature, one binary for every cell; the previous run, head-to-head 4 at `18b290ef`, is in brackets). Basis (root rule 23): `--tier=auto`
@@ -9942,3 +9967,26 @@ natives on slices (`to_x01`, the numeric operators) still copy the slice first; 
 ## Value movement: copies between heap objects, scratch sets (yavs-interp, #677, 2026-10-27)
 
 A copy between two objects of one heap (access values, shared variables of protected types) goes straight across (`Heap::data_pair`) instead of through the staging buffer, and the thread scratch keeps 16 register sets (was 4) so the nine large non-resident processes of `grlib_leon3mp` find their registers filled (`docs/decisions.md` "Value movement"). Interleaved `realbench --compare` (42 tests, cores 10 and 11, 3 runs): `uvvm_axistream_vvc` 0.93 interp / 0.92 auto (instructions 0.96), `grlib_leon3mp` 0.97 / 0.98, geometric mean of the run phase 0.98 / 0.98, nothing worse than noise. Left: frame fills of a call (`Pre::fill`, 8 GB of `memcpy` in `grlib_leon3mp`), `wide::eq_range` and `Signal::direct_same_planes` of same-value drives, `sig_gather`/`scatter_leaves` per-leaf work (runs of scalar leaves tried: no gain, dropped).
+
+## Signal I/O of large processes: whole values by groups, gathers and scatters through the signal callback (yavs-interp, yavs-llvm, #790, 2026-10-27)
+
+A whole record value (`SigGather`, `SigScatter` without a part), arrays of records inside it included, is handled by the instances of its leaves
+listed when the plan is bound (`Bound::items`, at most 4096): logic items of one plane word of one kernel signal are read from that word in
+registers, logic items next to each other in one signal are driven as one run of the driver with their planes built in registers. The
+instances of a logic leaf go last first, as the kernel mirrors them, so an array of records in a record is one run per leaf, not one assignment
+per element (also for parts). The plan in the machine's list is boxed and a constant descriptor is recognised by its address. Compiled
+frame-mode code runs both instructions through `yavs_rt_signal` instead of a step. Decision and measurements: `docs/decisions.md`
+"Signal I/O of large processes". Test `instances_of_record_leaves` (`crates/yavs/tests/value_move.rs`, every tier).
+
+- Bench builds, `perf stat` user instructions, warm, one claimed core of the second CCD (cycles on a host at load 13 to 16 vary by 10 to
+  30 percent between identical runs and are not a result here): `grlib_leon3mp` whole run `--tier=interp` 389.61 G to 384.57 G (-1.3 percent),
+  `--tier=auto` with `iu:comb` forced compiled (`YAVS_AUTO_FORCE=comb@1000#0`) 395.3 to 396.3 G against 389.8 to 391.7 G (-1.4 percent); a
+  synthetic process reading and driving a 40-leaf record with an array of four records every clock: interpreter -19 percent instructions and
+  -15 percent cycles, `--tier=llvm` -21 percent and -18 percent.
+- `tools/realbench --compare` (12e07dce against the change, 41 tests, run phase, core 14; `grlib_leon3mp` failed on both sides from the tool,
+  #794): wall geometric mean 1.01 interp / 0.99 auto, instructions 1.00 / 0.99; records category 0.97 / 0.98 wall at 1.00 instructions;
+  `fletcher_bufferwriter_512`, `fletcher_bufferreader`, `neorv32_*` and `uvvm_axistream_vvc` within 2 percent either way. Difftest 542/542 at 1
+  and 4 threads with interp, auto, llvm and auto with `--tier-heat=1,0,0`.
+- Left (#790): the kernel's per-drive work of scalar drives (`DriveRun` about 257 instructions a drive in GRLIB, `LSetDrive` 244), a store-forwarding
+  stall in the kernel's vector entry of a direct driver (#793), a gather straight into its destination (under half a percent), and per-leaf code
+  generated for static layouts, not started: the interpreted callees of a compiled `iu:comb` stay the larger part (#679).

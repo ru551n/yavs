@@ -45,6 +45,28 @@ architecture a of loops is
     for i in 0 to n loop r(i) := a(i); end loop;
     return r;
   end function;
+  function shl1(a : std_logic_vector) return std_logic_vector is
+    variable r : std_logic_vector(a'range) := (others => '0');
+  begin
+    for i in a'high downto a'low + 1 loop r(i) := a(i - 1); end loop;
+    return r;
+  end function;
+  function col(m : slm; k : natural) return std_logic_vector is
+    variable r : std_logic_vector(m'range(1));
+  begin
+    for i in m'range(1) loop r(i) := m(i, k); end loop;
+    return r;
+  end function;
+  procedure setrow(m : inout slm; k : natural; a : std_logic_vector) is
+  begin
+    for i in a'range loop m(k, i) := a(i); end loop;
+  end procedure;
+  function part(a : std_logic_vector; lo : natural; hi : natural) return std_logic_vector is
+    variable r : std_logic_vector(hi downto lo);
+  begin
+    for i in lo to hi loop r(i) := a(i); end loop;
+    return r;
+  end function;
   procedure shift(v : inout std_logic_vector) is
   begin
     for i in v'low to v'high - 1 loop v(i + 1) := v(i); end loop;
@@ -61,6 +83,10 @@ begin
     variable w : std_logic_vector(0 to 15);
     variable m : slm(0 to 2, 7 downto 0) := (others => (others => '0'));
     variable u : std_logic_vector(7 downto 0);
+    variable o : std_logic_vector(10 to 25) := "1X0Z1L0H1-0U1W01";
+    variable wide : std_logic_vector(129 downto 0);
+    variable m2 : slm(1 to 3, 0 to 7) := (others => (others => '1'));
+    variable lowv : std_logic_vector(7 downto 0);
   begin
     report "copy " & img(copy(v));
     report "copy70 " & img(copy(c70));
@@ -81,6 +107,18 @@ begin
     for i in 7 downto 5 loop u(i) := 'L'; end loop;
     for i in 4 to 2 loop u(i) := 'X'; end loop;
     report "short " & img(u);
+    report "shl1 " & img(shl1(v)) & " " & img(shl1(o));
+    report "col " & img(col(m, 3)) & " " & img(col(m, 0));
+    report "copy16 " & img(copy(o));
+    for i in wide'range loop wide(i) := c70(i mod 70); end loop;
+    report "copy130 " & img(copy(wide)) & " " & img(rev(wide)) & " " & img(shl1(wide));
+    lowv := v(7 downto 0);
+    setrow(m2, 2, lowv);
+    lowv := v(15 downto 8);
+    setrow(m2, 3, lowv);
+    report "setrow " & img(row(m2, 1)) & img(row(m2, 2)) & img(row(m2, 3));
+    report "part " & img(part(v, 3, 9)) & " " & img(part(wide, 60, 70)) & " " & img(part(wide, 0, 129));
+    report "part0 " & img(part(v, 5, 4));
     report "over " & img(over(v, 16));
     wait;
   end process;

@@ -11150,6 +11150,30 @@ strings (`Cat` is 50 MB of 23 GB): it is **one 689 KB record**, UVVM's `t_vvc_cm
   of `cycles:u` and `instructions:u`): `uvvm_axistream_vvc` interp 0.920 cycles (0.956 instructions), auto 0.917 (0.965); `uvvm_sb_slv` 0.972 / 0.992;
   `uvvm_util_rand` 0.992 / 1.009; `osvvm_axis_random` 0.973 / 1.000; `osvvm_axi4_random` 0.960 / 0.955. Instructions fall 1 to 4 percent
   everywhere (the small zero fills).
+- **Copy-on-write of large objects: measured, not built (#798, 2026-10-27).** Bench build of `743536eb`, timing core, a counting
+  `memcpy`/`memmove`/`memset` interposer with a time stamp counter around each call and around the whole process (not kept):
+  - `uvvm_axistream_vvc`: copies of 256 KB or more are 9.9 percent of the whole process (interp) and 10.8 percent (auto), 10.2 GB in
+    19 300 calls. About 13 350 are whole-record passes of the 689 KB command record (sizes 688 135 to 688 918 bytes), about 8 100 are
+    256 KB field copies (`set_global_vvc_transaction_info` assigns five array fields of an element of a shared array: a part of an
+    object, which object-level sharing never reaches). One pass costs about 13 us (L3 bandwidth: source plus target are 1.4 MB, more
+    than the L2), so a faster copy routine is no lever either.
+  - Per command and VVC, the whole-record passes that sharing would turn into a reference count: `await_cmd_from_sequencer` in the
+    three VVCs the command is not for (they copy `shared_vvc_cmd` and never write their copy), the queue insert, the fetch. Those that
+    stay (a write after the share clones the whole object): the sequencer's field writes into `shared_vvc_cmd`, the executor's writes
+    into its copy. Net ceiling about 6 to 7 percent of this one test (interp and auto).
+  - The other seven tests of the `protected` category (`osvvm_axis_random`, `osvvm_axi4_random`, `uvvm_sb_slv`, `uvvm_util_rand`,
+    `uvvm_methods_log`, `uvvm_func_cov`, `hdlm_axis_bfm`): copies of 256 KB or more are 0.05 to 1.2 percent. The command record is
+    large only for VIPs with a large data maximum (AXI-Stream 16 K bytes; Avalon-ST, GMII and RGMII smaller); the other VIPs have
+    records of a few KB. Expected realbench geometric mean: about 0.2 percent.
+  - sim1 assigns a record with a plain copy too (no sharing), and its layout uses a byte per `std_logic` against our half byte (bit
+    planes), so its record is twice as large. `uvvm_axistream_vvc` under `--tier=auto` is 0.72 of sim1 (wall, instructions 1.00).
+  - What it would take: large variables (process, subprogram, shared) and large heap nodes in objects of their own, addressed through a
+    pointer slot (lowering and elaboration); heap slots holding shared storage with the clone in `Heap::data_mut`; a heap epoch bump at
+    every share (compiled code keeps writable host pointers to heap objects between activations, an ABI point for both compiled
+    backends); constants as a share source; state images and the collector over shared storage; the optimiser's copy patterns.
+  - **Decision: not built.** A gain of about 6 percent on one test, none elsewhere, no gap to sim1, against a change of the memory
+    model across lowering, interpreter, both compiled backends, the collector and state images. Revisit if a design whose run is
+    dominated by whole-object copies of large values shows up (the interposer census above is the first check).
   `realbench --compare` (42 tests, `--phases run --tiers interp,auto`, 3 runs, cores 13 and 14, host load 37 from an unrelated job, base `ac8d4e88`): geometric
   mean of instructions 0.99 interp and 0.99 auto, wall 1.00 and 1.00 (single small tests moved by 40 to 60 percent on noise at equal instructions, e.g.
   `neorv32_dual_full`); the protected category (the verification-library testbenches) wall 0.95 / 0.96, `uvvm_axistream_vvc` 0.92 / 0.86 (instructions 0.96).

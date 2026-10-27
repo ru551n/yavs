@@ -1424,11 +1424,9 @@ fn int_bits(b: yavs_elab::Bounds) -> u32 {
     if hi < lo {
         return 1;
     }
-    if lo >= 0 {
-        return (64 - hi.leading_zeros()).max(1);
-    }
-    // `!lo` is -lo - 1, the largest magnitude a negative value needs.
-    let mag = (!lo as u64).max(hi.max(0) as u64);
+    // `!lo` is -lo - 1, the largest magnitude a negative value needs; a non-negative range
+    // keeps a zero sign bit (0 to 31 is 6 bits), or a reader of two's complement shows 31 as -1.
+    let mag = (if lo < 0 { !lo as u64 } else { 0 }).max(hi.max(0) as u64);
     65 - mag.leading_zeros()
 }
 
@@ -1474,6 +1472,24 @@ fn index_image(dims: &[yavs_elab::Bounds], mut j: u64, out: &mut String) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn int_bits_is_twos_complement_width() {
+        use super::Direction::To;
+        use yavs_elab::Bounds;
+        let w = |lo, hi| {
+            super::int_bits(Bounds {
+                left: lo,
+                right: hi,
+                dir: To,
+            })
+        };
+        assert_eq!(
+            (w(0, 31), w(0, 0), w(0, 1), w(-8, 7), w(-9, 7), w(5, 4)),
+            (6, 1, 2, 4, 5, 1)
+        );
+        assert_eq!((w(0, i64::MAX), w(i64::MIN, i64::MAX)), (64, 64));
+    }
+
     #[test]
     fn spread_puts_bit_j_in_byte_j() {
         for b in 0..256u64 {

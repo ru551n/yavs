@@ -9268,3 +9268,7 @@ natives on slices (`to_x01`, the numeric operators) still copy the slice first; 
 - Left: `walk_control` and the other winners under their threshold in a first run are never cached (the run-to-run profile lists kinds of speedup 1.4
   or more only); `iu:comb` and the other straight-line GRLIB processes are front-end bound and lose on calls to interpreted callees; cache hits of large
   modules (#785).
+
+## Value movement: copies between heap objects, scratch sets (yavs-interp, #677, 2026-10-27)
+
+A copy between two objects of one heap (access values, shared variables of protected types) goes straight across (`Heap::data_pair`) instead of through the staging buffer, and the thread scratch keeps 16 register sets (was 4) so the nine large non-resident processes of `grlib_leon3mp` find their registers filled (`docs/decisions.md` "Value movement"). Interleaved `realbench --compare` (42 tests, cores 10 and 11, 3 runs): `uvvm_axistream_vvc` 0.93 interp / 0.92 auto (instructions 0.96), `grlib_leon3mp` 0.97 / 0.98, geometric mean of the run phase 0.98 / 0.98, nothing worse than noise. Left: frame fills of a call (`Pre::fill`, 8 GB of `memcpy` in `grlib_leon3mp`), `wide::eq_range` and `Signal::direct_same_planes` of same-value drives, `sig_gather`/`scatter_leaves` per-leaf work (runs of scalar leaves tried: no gain, dropped).

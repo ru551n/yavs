@@ -890,6 +890,13 @@ enum Key {
     /// The length of a dimension of a parameter's descriptor: a callee never changes the bounds
     /// of a descriptor it was given, so no store, call or marker drops it.
     ParamDope(Opn, u8),
+    /// What the optimiser knows of the value in a register since its last definition: kind 0, the
+    /// result block of a native call whose descriptor has this length; 1, the address of that
+    /// descriptor's word in the block; 2, the descriptor, its first dimension having this length;
+    /// 6 and 7, the address of its right and direction word; 8, 9 and 10, the left, right and
+    /// direction word read from it. The native writes the block once, so no store or call drops
+    /// it.
+    Nat(u8, Opn),
     Pos(Opn, u8, Opn),
     /// `SlicePos` of the bounds `left`, `right` and direction in a descriptor.
     Slice(Opn, [Opn; 3]),
@@ -1088,6 +1095,17 @@ struct Opt<'a> {
     /// register: (that register, the constant added), so the length of `MakeDope [x, x + 3]`
     /// is known.
     aff: FxMap<Reg, (Reg, i64)>,
+    /// Linear forms of the values of registers, by register and version (`kopn`): the value is
+    /// `mul * base + add` for a register or version the key names (`bounds_len`). Versions are
+    /// numbers nothing else has, so an entry stays true.
+    lin: FxMap<Opn, (Opn, i64, i64)>,
+    /// The form of the result of the instruction being walked, and a fact about its result
+    /// (`Key::Nat` kind and length): recorded by `define`, once the result has its version.
+    plin: Option<(Reg, Opn, i64, i64)>,
+    pfact: Option<(Reg, u8, i64)>,
+    /// Native results met: the facts of `Key::Nat` carry the result's number in their upper half,
+    /// so words of two descriptors of one length are not taken for one descriptor's.
+    nid: i64,
     /// Field offsets of the static record layouts met so far (shared by the functions of one
     /// batch).
     layouts: &'a mut FxMap<TyId, Option<Vec<u64>>>,
@@ -1172,6 +1190,10 @@ impl<'a> Opt<'a> {
             lat: FxMap::default(),
             iat: FxMap::default(),
             aff: FxMap::default(),
+            lin: FxMap::default(),
+            plin: None,
+            pfact: None,
+            nid: 0,
             layouts,
             uses: Vec::new(),
             reach: Vec::new(),
@@ -1251,6 +1273,26 @@ impl<'a> Opt<'a> {
             if self.multi(r) {
                 self.bump(r);
             }
+        }
+        let key = |o: &Self, d: Reg| {
+            if o.multi(d) {
+                Some(Opn::V(d, o.vsn[d.0 as usize]))
+            } else {
+                o.single(d).then_some(Opn::R(d))
+            }
+        };
+        if let Some((d, base, mul, add)) = self.plin.take()
+            && matches!(self.code[pc], Inst::Bin { dst, .. } | Inst::BinRange { dst, .. } if dst == d)
+            && let Some(k) = key(self, d)
+            && k != base
+        {
+            self.lin.insert(k, (base, mul, add));
+        }
+        if let Some((d, kind, n)) = self.pfact.take()
+            && defs.contains(&Some(d))
+            && let Some(k) = key(self, d)
+        {
+            self.tbl.put(Key::Nat(kind, k), Val::K(n));
         }
         if wide {
             self.pend = None;
@@ -2551,6 +2593,7 @@ impl<'a> Opt<'a> {
         let mut work: Vec<Step> = Vec::new();
         self.mval.clear();
         self.rdesc.clear();
+        self.lin.clear();
         self.pend = None;
         // The declarative part of a process runs once: its blocks come before the body.
         let cold = self.f.body.map_or(0, |b| b.0 as usize);
@@ -2661,12 +2704,15 @@ impl<'a> Opt<'a> {
                 Inst::Unreachable { what } if what == DEAD_MSG => continue,
                 _ => {}
             }
+            self.plin = None;
+            self.pfact = None;
             self.simplify(pc);
             let i = self.code[pc];
             if is_dead(&i) {
                 continue;
             }
             if self.is_susp(&i) {
+                self.lin.clear();
                 self.tbl.clear();
                 self.susp_depth = self.depth;
                 self.susp_pc = pc as u32;
@@ -2829,7 +2875,9 @@ impl<'a> Opt<'a> {
                                 self.operands.get((parts.start + 3 * d) as usize),
                                 self.operands.get((parts.start + 3 * d + 1) as usize),
                             )
-                            && let Some(n) = self.affine_len(l, r, dir)
+                            && let Some(n) = self
+                                .affine_len(l, r, dir)
+                                .or_else(|| self.lin_len(l, r, dir))
                         {
                             self.tbl.put(Key::Dope(k, d as u8), Val::K(n));
                         } else if let Some(x) = self.len_register(parts, d) {
@@ -3246,6 +3294,122 @@ impl<'a> Opt<'a> {
         }
     }
 
+    /// The value of `r` as `mul * base + add`: a constant (no base), or a register at its
+    /// current version, or a form `note_lin` kept.
+    fn lin_of(&self, r: Reg) -> Option<(Option<Opn>, i64, i64)> {
+        match self.opn(r) {
+            Opn::K(c) => Some((None, 0, c)),
+            Opn::A(..) => None,
+            _ => {
+                let k = self.kopn(r)?;
+                match self.lin.get(&k) {
+                    Some(&(b, m, a)) if self.key_ok(b) => Some((Some(b), m, a)),
+                    _ => Some((Some(k), 1, 0)),
+                }
+            }
+        }
+    }
+
+    /// Keep the linear form of `dst = a op b` (add, subtract; multiply by a constant when the
+    /// product is range checked) for `define`, which knows the version `dst` gets.
+    // ponytail: an unchecked `Bin` add or subtract is taken not to wrap, as `note_affine` does.
+    fn note_lin(&mut self, op: IntOp, dst: Reg, a: Reg, b: Reg, checked: bool) {
+        if !(self.single(dst) || self.multi(dst)) {
+            return;
+        }
+        let (Some(x), Some(y)) = (self.lin_of(a), self.lin_of(b)) else {
+            return;
+        };
+        let r = match op {
+            IntOp::Add => lin_add(x, y, 1),
+            IntOp::Sub => lin_add(x, y, -1),
+            IntOp::Mul if checked => lin_mul(x, y),
+            _ => None,
+        };
+        if let Some((Some(base), m, c)) = r
+            && m != 0
+        {
+            self.plin = Some((dst, base, m, c));
+        }
+    }
+
+    /// The length of a `MakeDope` dimension whose bounds are linear forms of one value with the
+    /// same factor (`v(8 * i + 7 downto 8 * i)`), when `note_lin` followed them.
+    fn lin_len(&self, l: Reg, r: Reg, dir: i64) -> Option<i64> {
+        let ((bl, ml, cl), (br, mr, cr)) = (self.lin_of(l)?, self.lin_of(r)?);
+        if bl != br || ml != mr {
+            return None;
+        }
+        let d = match dir {
+            0 => cr.checked_sub(cl)?,
+            1 => cl.checked_sub(cr)?,
+            _ => return None,
+        };
+        Some(d.checked_add(1)?.max(0))
+    }
+
+    /// The length of the result of a native `ieee` call whose operand lengths and sizes are
+    /// constants (`Key::Nat`). A null operand gives a null result.
+    fn native_len(&self, native: crate::NativeId, args: crate::Regs) -> Option<i64> {
+        use crate::ieee::{Form, Op};
+        let key = crate::ieee::symbol_key(&self.prog.natives.get(native)?.symbol)?;
+        let op = crate::ieee::parse(key)?;
+        let regs = self
+            .operands
+            .get(args.start as usize..(args.start + args.len) as usize)?;
+        let mut at = Vec::new();
+        let mut p = 0;
+        while p < regs.len() {
+            at.push(p);
+            p += if crate::ieee::array_param(key, at.len() - 1) {
+                crate::ieee::ARRAY_REGS
+            } else {
+                1
+            };
+        }
+        let k = |p: usize| match self.opn(*regs.get(p)?) {
+            Opn::K(c) => Some(c),
+            _ => None,
+        };
+        let size = |i: usize| k(*at.get(i)?).map(|n| n.max(0));
+        let alen = |i: usize| {
+            let p = *at.get(i)?;
+            if let (Some(l), Some(r), Some(d)) = (k(p + 1), k(p + 2), k(p + 3)) {
+                return dim_len(l, r, d == 1).and_then(|n| i64::try_from(n).ok());
+            }
+            // The bounds read from a descriptor of known length.
+            let word = |j: usize, kind: u8| match self
+                .kopn(*regs.get(p + j)?)
+                .and_then(|o| self.tbl.get(&Key::Nat(kind, o)))
+            {
+                Some(Val::K(n)) => Some(n),
+                _ => None,
+            };
+            let n = word(1, 8)?;
+            (word(2, 9)? == n && word(3, 10)? == n).then_some(n & 0xffff_ffff)
+        };
+        match op {
+            Op::ToUnsigned | Op::ToSigned | Op::Resize { .. } => size(1),
+            Op::Add { form, .. } => match form {
+                Form::Vv => {
+                    let (a, b) = (alen(0)?, alen(1)?);
+                    Some(if a == 0 || b == 0 { 0 } else { a.max(b) })
+                }
+                Form::Vi => alen(0),
+                Form::Iv => alen(1),
+            },
+            Op::Mul { .. } => {
+                let (a, b) = (alen(0)?, alen(1)?);
+                Some(if a == 0 || b == 0 {
+                    0
+                } else {
+                    a.checked_add(b)?
+                })
+            }
+            _ => None,
+        }
+    }
+
     /// The length of dimension `d` of a `MakeDope` whose bounds are `x + p` and `x + q` for one
     /// once-defined register `x` and constants (a slice `v(4 * i to 4 * i + 3)`).
     fn affine_len(&self, l: Reg, r: Reg, dir: i64) -> Option<i64> {
@@ -3341,7 +3505,10 @@ impl<'a> Opt<'a> {
         }
         match self.kopn(r).and_then(|d| self.tbl.get(&Key::Dope(d, k))) {
             Some(Val::K(n)) => Some(n as u64),
-            _ => None,
+            _ => match self.kopn(r).and_then(|d| self.tbl.get(&Key::Nat(2, d))) {
+                Some(Val::K(n)) if k == 0 => Some((n & 0xffff_ffff) as u64),
+                _ => None,
+            },
         }
     }
 
@@ -3486,6 +3653,7 @@ impl<'a> Opt<'a> {
                     _ => {}
                 }
                 self.note_affine(op, dst, a, b);
+                self.note_lin(op, dst, a, b, false);
                 if let (Some(x), Some(y)) = (self.kopn(a), self.kopn(b)) {
                     self.cse(pc, Some(dst), Key::Bin(op, x, y));
                 }
@@ -3509,6 +3677,7 @@ impl<'a> Opt<'a> {
                 }
                 // (The result is the plain one or the run stops.)
                 self.note_affine(op, dst, a, b);
+                self.note_lin(op, dst, a, b, true);
                 if let (Some(a), Some(b), Some(l), Some(h)) =
                     (self.kopn(a), self.kopn(b), self.kopn(lo), self.kopn(hi))
                 {
@@ -3572,6 +3741,19 @@ impl<'a> Opt<'a> {
                 pos,
                 stride,
             } => {
+                if let (Some(b), Opn::K(c)) = (self.kopn(base), self.opn(pos)) {
+                    let at = c.checked_mul(i64::from(stride));
+                    let fact = match at {
+                        Some(8) => [(0, 1), (2, 6)],
+                        Some(16) => [(2, 7), (u8::MAX, 0)],
+                        _ => [(u8::MAX, 0); 2],
+                    };
+                    for (from, to) in fact {
+                        if let Some(Val::K(n)) = self.tbl.get(&Key::Nat(from, b)) {
+                            self.pfact = Some((dst, to, n));
+                        }
+                    }
+                }
                 if self.fold_index(pc) {
                     return;
                 }
@@ -3673,6 +3855,15 @@ impl<'a> Opt<'a> {
             Inst::Load { dst, addr, w } if w != Width::Sig => {
                 let a = self.opn(addr);
                 if w == Width::B8
+                    && let Some(ak) = self.kopn(addr)
+                {
+                    for (from, to) in [(1, 2), (2, 8), (6, 9), (7, 10)] {
+                        if let Some(Val::K(n)) = self.tbl.get(&Key::Nat(from, ak)) {
+                            self.pfact = Some((dst, to, n));
+                        }
+                    }
+                }
+                if w == Width::B8
                     && let Opn::R(x) = a
                 {
                     let (l, off) = self.lat.get(&x).copied().unwrap_or((x, 0));
@@ -3745,6 +3936,12 @@ impl<'a> Opt<'a> {
                 {
                     return self.make_const(pc, dst, n as i64);
                 }
+                if dim == 0
+                    && let Some(Val::K(n)) =
+                        self.kopn(dope).and_then(|d| self.tbl.get(&Key::Nat(2, d)))
+                {
+                    return self.make_const(pc, dst, n & 0xffff_ffff);
+                }
                 if let Some(d) = self.kopn(dope) {
                     let key = if self.param_dope(dope) {
                         Key::ParamDope(d, dim)
@@ -3754,14 +3951,28 @@ impl<'a> Opt<'a> {
                     self.cse(pc, Some(dst), key);
                 }
             }
+            Inst::CallNative {
+                native,
+                args,
+                dst: Some(d),
+            } => {
+                if let Some(n) = self.native_len(native, args)
+                    && n <= i64::from(i32::MAX)
+                {
+                    self.nid += 1;
+                    self.pfact = Some((d, 0, self.nid << 32 | n));
+                }
+            }
             // Two descriptors of known, equal lengths: the check passes.
             Inst::SubtypeCheck {
                 dope, want, dims, ..
             } => {
-                if (0..dims).all(|k| {
-                    let a = self.dope_len_val(dope, k);
-                    a.is_some() && a == self.dope_len_val(want, k)
-                }) {
+                if self.kopn(dope).is_some() && self.kopn(dope) == self.kopn(want)
+                    || (0..dims).all(|k| {
+                        let a = self.dope_len_val(dope, k);
+                        a.is_some() && a == self.dope_len_val(want, k)
+                    })
+                {
                     self.code[pc] = dead();
                     self.changed = true;
                 }
@@ -4838,6 +5049,40 @@ fn fits(want: Option<RegTy>, have: Option<RegTy>) -> bool {
 }
 
 /// Do two register types hold the same kind of value (integers and addresses, or reals)?
+/// `x + sign * y` for two linear forms (`Opt::lin_of`), when they have the same base or one is
+/// a constant.
+fn lin_add(
+    x: (Option<Opn>, i64, i64),
+    y: (Option<Opn>, i64, i64),
+    sign: i64,
+) -> Option<(Option<Opn>, i64, i64)> {
+    let c = x.2.checked_add(sign.checked_mul(y.2)?)?;
+    let my = sign.checked_mul(y.1)?;
+    match (x.0, y.0) {
+        (b, None) => Some((b, x.1, c)),
+        (None, b) => Some((b, my, c)),
+        (Some(a), Some(b)) if a == b => {
+            let m = x.1.checked_add(my)?;
+            Some((if m == 0 { None } else { Some(a) }, m, c))
+        }
+        _ => None,
+    }
+}
+
+/// `x * y` for two linear forms, when one is a constant.
+fn lin_mul(
+    x: (Option<Opn>, i64, i64),
+    y: (Option<Opn>, i64, i64),
+) -> Option<(Option<Opn>, i64, i64)> {
+    let (v, k) = match (x.0, y.0) {
+        (None, None) => return Some((None, 0, x.2.checked_mul(y.2)?)),
+        (None, _) => (y, x.2),
+        (_, None) => (x, y.2),
+        _ => return None,
+    };
+    Some((v.0, v.1.checked_mul(k)?, v.2.checked_mul(k)?))
+}
+
 fn same_class(a: Option<RegTy>, b: Option<RegTy>) -> bool {
     let class = |t| match t {
         Some(RegTy::I64 | RegTy::Ptr) => 1,

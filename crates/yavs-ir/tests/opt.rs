@@ -2618,3 +2618,278 @@ fn a_branch_whose_arms_lead_to_the_same_block_is_a_jump() {
         "{code:?}"
     );
 }
+
+/// `check_msg`, a value of unknown `x`: the bounds of `v(8 * (x + 1) - 1 downto 8 * x)` (the
+/// factor of the right bound `mul_r`) in a fresh descriptor, checked against a descriptor of
+/// length 8. `x` is defined twice, as a loop index is.
+fn scaled_slice_checks(mul_r: i64) -> usize {
+    let code = build(FuncKind::Procedure, |fb| {
+        fb.slot(32, 8);
+        fb.stmt(StmtKind::Return, sp());
+        pin(fb, 0);
+        let (i, j) = (load(fb, 0), load(fb, 8));
+        let x = fb.reg(RegTy::I64);
+        fb.emit(Inst::Move { dst: x, src: i });
+        fb.emit(Inst::Move { dst: x, src: j });
+        let what = fb.program().check_msg("range", Dir::To);
+        let (lo, hi) = (fb.int(-1000), fb.int(1000));
+        let (eight, one, dir) = (fb.int(8), fb.int(1), fb.int(1));
+        let rb = fb.int(mul_r);
+        let br = |fb: &mut FuncBuilder<'_>, op, a, b| {
+            let dst = fb.reg(RegTy::I64);
+            fb.emit(Inst::BinRange {
+                op,
+                dst,
+                a,
+                b,
+                lo,
+                hi,
+                what,
+            });
+            dst
+        };
+        let t = br(fb, IntOp::Add, x, one);
+        let m = br(fb, IntOp::Mul, eight, t);
+        let left = bin(fb, IntOp::Sub, m, one);
+        let right = br(fb, IntOp::Mul, rb, x);
+        let at = fb.reg(RegTy::Ptr);
+        let n = fb.int(24);
+        fb.emit(Inst::Alloc { dst: at, size: n });
+        let parts = fb.regs(&[left, right, dir]);
+        fb.emit(Inst::MakeDope { at, parts });
+        let have = made(fb, 7, 0, 1);
+        let what = fb.program().check_msg("length", Dir::To);
+        fb.emit(Inst::SubtypeCheck {
+            dope: have,
+            want: at,
+            dims: 1,
+            what,
+        });
+        fb.emit(Inst::Ret { v: None });
+    });
+    count(&code, |i| matches!(i, Inst::SubtypeCheck { .. }))
+}
+
+#[test]
+fn a_slice_of_a_scaled_index_has_a_known_length() {
+    if !on() {
+        return;
+    }
+    // 8 * (x + 1) - 1 downto 8 * x is 8 elements whatever x is; with another factor it is not.
+    assert_eq!(scaled_slice_checks(8), 0);
+    assert_eq!(scaled_slice_checks(7), 1);
+}
+
+/// A native `to_unsigned (v, size)` whose descriptor is checked against one of length 8, with a
+/// descriptor made in between.
+fn native_result_checks(size: i64) -> usize {
+    native_checks(
+        "yavs.ieee.numeric_std.to_unsigned(integer,integer)unsigned",
+        &[None, Some(size)],
+    )
+}
+
+/// The same for any native: each argument register is unknown (`None`) or the constant.
+fn native_checks(symbol: &str, args: &[Option<i64>]) -> usize {
+    let code = build(FuncKind::Procedure, |fb| {
+        fb.slot(16, 8);
+        fb.stmt(StmtKind::Return, sp());
+        pin(fb, 0);
+        let v = load(fb, 0);
+        let native = fb.program().native(symbol, None);
+        let regs: Vec<Reg> = args.iter().map(|a| a.map_or(v, |c| fb.int(c))).collect();
+        let args = fb.regs(&regs);
+        let res = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::CallNative {
+            native,
+            args,
+            dst: Some(res),
+        });
+        let eight = fb.int(8);
+        let slot = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Index {
+            dst: slot,
+            base: res,
+            pos: eight,
+            stride: 1,
+        });
+        let dope = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Load {
+            dst: dope,
+            addr: slot,
+            w: Width::B8,
+        });
+        let want = made(fb, 7, 0, 1);
+        let what = fb.program().check_msg("length", Dir::To);
+        fb.emit(Inst::SubtypeCheck {
+            dope,
+            want,
+            dims: 1,
+            what,
+        });
+        fb.emit(Inst::Ret { v: None });
+    });
+    count(&code, |i| matches!(i, Inst::SubtypeCheck { .. }))
+}
+
+#[test]
+fn the_length_of_a_native_result_is_known() {
+    if !on() {
+        return;
+    }
+    assert_eq!(native_result_checks(8), 0);
+    assert_eq!(native_result_checks(7), 1);
+}
+
+#[test]
+fn a_null_operand_gives_a_null_sum() {
+    if !on() {
+        return;
+    }
+    let add = "yavs.ieee.numeric_std.\"+\"(unsigned,unsigned)unsigned";
+    // (6 downto 0) + (7 downto 0) is 8 elements; with a null operand the sum is null.
+    let sum = |l: [i64; 3]| {
+        native_checks(
+            add,
+            &[
+                None,
+                Some(l[0]),
+                Some(l[1]),
+                Some(l[2]),
+                None,
+                Some(7),
+                Some(0),
+                Some(1),
+            ],
+        )
+    };
+    assert_eq!(sum([6, 0, 1]), 0);
+    assert_eq!(sum([-1, 0, 1]), 1);
+}
+
+/// `to_unsigned (v, size)` whose result bounds, read from its descriptor, are the bounds of the
+/// first operand of an addition of an operand of `other` elements: the length of the sum
+/// checked against 8. `same` reads the three bounds from the one descriptor, else the right
+/// bound from the descriptor of a second `to_unsigned`.
+fn chained_native_checks(size: i64, other: i64, same: bool) -> usize {
+    let code = build(FuncKind::Procedure, |fb| {
+        fb.slot(16, 8);
+        fb.stmt(StmtKind::Return, sp());
+        pin(fb, 0);
+        let v = load(fb, 0);
+        let to_u = fb.program().native(
+            "yavs.ieee.numeric_std.to_unsigned(integer,integer)unsigned",
+            None,
+        );
+        let add = fb.program().native(
+            "yavs.ieee.numeric_std.\"+\"(unsigned,unsigned)unsigned",
+            None,
+        );
+        let result = |fb: &mut FuncBuilder<'_>, size: i64| {
+            let n = fb.int(size);
+            let args = fb.regs(&[v, n]);
+            let res = fb.reg(RegTy::Ptr);
+            fb.emit(Inst::CallNative {
+                native: to_u,
+                args,
+                dst: Some(res),
+            });
+            let data = fb.reg(RegTy::Ptr);
+            fb.emit(Inst::Load {
+                dst: data,
+                addr: res,
+                w: Width::B8,
+            });
+            let eight = fb.int(8);
+            let slot = fb.reg(RegTy::Ptr);
+            fb.emit(Inst::Index {
+                dst: slot,
+                base: res,
+                pos: eight,
+                stride: 1,
+            });
+            let dope = fb.reg(RegTy::Ptr);
+            fb.emit(Inst::Load {
+                dst: dope,
+                addr: slot,
+                w: Width::B8,
+            });
+            (data, dope)
+        };
+        let word = |fb: &mut FuncBuilder<'_>, dope: Reg, off: i64| {
+            let k = fb.int(off);
+            let a = fb.reg(RegTy::Ptr);
+            fb.emit(Inst::Index {
+                dst: a,
+                base: dope,
+                pos: k,
+                stride: 1,
+            });
+            let w = fb.reg(RegTy::I64);
+            fb.emit(Inst::Load {
+                dst: w,
+                addr: a,
+                w: Width::B8,
+            });
+            w
+        };
+        let (data, dope) = result(fb, size);
+        let (_, dope2) = if same { (data, dope) } else { result(fb, size) };
+        let left = {
+            let w = fb.reg(RegTy::I64);
+            fb.emit(Inst::Load {
+                dst: w,
+                addr: dope,
+                w: Width::B8,
+            });
+            w
+        };
+        let right = word(fb, dope2, 8);
+        let dir = word(fb, dope, 16);
+        let (l2, r2, d2) = (fb.int(other - 1), fb.int(0), fb.int(1));
+        let regs = [data, left, right, dir, data, l2, r2, d2];
+        let args = fb.regs(&regs);
+        let sum = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::CallNative {
+            native: add,
+            args,
+            dst: Some(sum),
+        });
+        let eight = fb.int(8);
+        let slot = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Index {
+            dst: slot,
+            base: sum,
+            pos: eight,
+            stride: 1,
+        });
+        let have = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Load {
+            dst: have,
+            addr: slot,
+            w: Width::B8,
+        });
+        let want = made(fb, 7, 0, 1);
+        let what = fb.program().check_msg("length", Dir::To);
+        fb.emit(Inst::SubtypeCheck {
+            dope: have,
+            want,
+            dims: 1,
+            what,
+        });
+        fb.emit(Inst::Ret { v: None });
+    });
+    count(&code, |i| matches!(i, Inst::SubtypeCheck { .. }))
+}
+
+#[test]
+fn bounds_read_from_a_native_result_give_the_length_of_the_next_native() {
+    if !on() {
+        return;
+    }
+    // 8 elements plus 3: 8. 5 plus 8: 8. A bound from another descriptor, or 9 elements: stays.
+    assert_eq!(chained_native_checks(8, 3, true), 0);
+    assert_eq!(chained_native_checks(5, 8, true), 0);
+    assert_eq!(chained_native_checks(9, 3, true), 1);
+    assert_eq!(chained_native_checks(8, 3, false), 1);
+}

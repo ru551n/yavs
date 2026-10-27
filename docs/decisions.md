@@ -11788,3 +11788,118 @@ its own (the instances lie mirrored in the kernel, last first, and the loop went
 - **The reference simulator (rule 22):** a waveform over a range of one signal is one call that walks the signal's parts in order, with the
   values in the signal's own layout. The idea taken: one assignment per contiguous range of a driver, values handed over in the kernel's layout
   (plane words) without staging. Ours groups at bind time and keeps the bit-planes. Nothing was copied.
+
+## Large value copies: records built in their own object, no zero fill before a copy (yavs-ir `opt.rs`, yavs-interp `exec.rs`, #792, 2026-10-27)
+
+Task (#792, from the calls round 3 finding of #730): `uvvm_axistream_vvc` spent 15 percent of its cycles in libc `memmove` and 3 percent in
+`memset`, in copies of 512 bytes and more called from `run_ops` arms. A counting `memcpy`/`memmove`/`memset` interposer with frame-pointer
+call chains (size class in the key) and a throwaway per-op print of the IR site (function, pc, bytes; not kept) found the owners. It is not log
+strings (`Cat` is 50 MB of 23 GB): it is **one 689 KB record**, UVVM's `t_vvc_cmd_record` (a 16 KB `data_array`, four word arrays, two
+300-character strings), moving through the command path 12 to 15 times per command (22 000 whole-record passes in the run, 13 GB of the 23 GB of
+`memcpy`/`memmove`/`memset` traffic; the rest is the frame fill of calls, 3.7 GB, and `lcopy_wide`, 2.6 GB):
+
+| site (UVVM) | ops | passes | verdict |
+|---|---|---|---|
+| `await_cmd_from_sequencer` (4 VVCs) | `Copy` shared to out parameter | 4764 | required assignment |
+| `set_general_target...`, `reset_vvc_transaction_info`, `fetch_command...`, `send_command_to_vvc`, `fetch` (heap to variable) | `Copy` | 1100 to 1200 each | required assignments |
+| `set_global_vvc_transaction_info` | five `LCopy` of 64K to 512K elements | 2143 | required assignments |
+| `fetch`: `variable v : t_generic_element` | `Alloc` (memset), 5 `LFill` of 'U', `NewFrame` (memset + copy) | 1181 | **removed** (4 of 5 passes) |
+| `send_command_to_vvc`: `variable v : t_vvc_cmd_record` | `Alloc`, `LFill`s, `New` (copy) | 1191 | **removed** |
+| queue `add`: `new t_element'(...)` | `Alloc`, `Copy`, `NewFill` (copy) | 1181 | **removed** (2 of 3 passes) |
+
+- **Decision: a large initialised record variable or heap node is created in its own object, then filled** (`Opt::defaults_first`, last in
+  `Opt::run`, after the constants are merged). The pattern is `Alloc t` (constant size of 4 KiB or more), stores, fills and copies into `t`,
+  then `NewFrame`/`New`/`NewFill` copying `t` into the variable's memory. The `Alloc` becomes a `NewFrame` (frame object) or a `NewFill` and
+  `Deref` (heap object) of the same size filled from one zero byte, the later `New*` goes (a `Move` for `NewFrame`), and everything that wrote
+  `t` writes the object. Conditions: both instructions in code that runs once per activation (no cycle), `t` defined once, and every use of
+  `t` or of an address derived from it (`Index`, `Field`) a `Load`, `Store` (as the address), `Copy`, `LFill` or `LSet` through it, in a
+  block not reachable from the copy and before it (a `TempRoot` of `t` is dropped for a heap object, whose handle is a live register). The
+  existing instructions only: the compiled tiers need no change. The one zero byte is a 1-byte `Alloc` inserted before; the size register is the
+  `Alloc`'s own (the `New`'s may be defined later). Run after `merge_consts`: the instructions it inserts name final registers.
+- **Decision: `LFill` of the code 0 into that fresh zero object is dropped** (`zero_fills_after`) when it overwrites nothing written since: the
+  default of a `std_ulogic` array is 'U' (code 0, all planes zero). A straight chain of blocks (each the only successor of the one before),
+  constant offsets and lengths (constants set in the stretch and those the optimiser has not inserted yet count); anything else ends the scan.
+- **Decision: `NewFrame` appends its copy** (`Machine::temp_append_copy`) instead of `temp_alloc` (zero fill) followed by the copy; the case that
+  remains is a `NewFrame` the pass above cannot take. **Zero fills of up to 32 bytes in `temp_alloc` are one fixed-size store** (13 M libc
+  `memset` calls of 25 to 100 bytes in this testbench).
+- **Not done, and why:** the required assignments above (11 of the remaining 17 GB) need copy-on-write or sparse values in the flat memory
+  model: a design change, left. Compare-before-copy was measured (4 KB chunks, two 689 KB buffers differing in a few bytes, 8 buffers in
+  rotation): 30 us against 26 us for the plain copy, so no. The frame fill of a call (`fill_below`, 650 bytes, 5.7 M calls, 3.7 GB) is the
+  #730 finding (5 ns a call). Ceiling of this task: about 5 of 23 GB; the traffic is 17.7 GB after it (interposer), cycles -8 percent.
+- **Tests:** `crates/yavs/tests/value_move.rs`: `large_variables_built_in_place` (defaults, assignments and later changes of a frame variable,
+  a variable of a waiting procedure and a queue node stay separate objects, interpreter and compiled tier), `large_variables_are_made_before_they_are_filled`
+  and `fills_of_zero_over_a_fresh_object_are_dropped` (the optimised IR: `fill: 1`, no `NewFill` copying a temporary, no `LFill`). No work-counter
+  design: the counters count ops and wakes, not bytes, and the IR tests pin the shape.
+- **Measured** (bench builds of main `ac8d4e88` and of this change, interleaved A/B on one timing core, 7 runs after a warm-up, median ratio B/A
+  of `cycles:u` and `instructions:u`): `uvvm_axistream_vvc` interp 0.920 cycles (0.956 instructions), auto 0.917 (0.965); `uvvm_sb_slv` 0.972 / 0.992;
+  `uvvm_util_rand` 0.992 / 1.009; `osvvm_axis_random` 0.973 / 1.000; `osvvm_axi4_random` 0.960 / 0.955. Instructions fall 1 to 4 percent
+  everywhere (the small zero fills).
+- **Copy-on-write of large objects: measured, not built (#798, 2026-10-27).** Bench build of `743536eb`, timing core, a counting
+  `memcpy`/`memmove`/`memset` interposer with a time stamp counter around each call and around the whole process (not kept):
+  - `uvvm_axistream_vvc`: copies of 256 KB or more are 9.9 percent of the whole process (interp) and 10.8 percent (auto), 10.2 GB in
+    19 300 calls. About 13 350 are whole-record passes of the 689 KB command record (sizes 688 135 to 688 918 bytes), about 8 100 are
+    256 KB field copies (`set_global_vvc_transaction_info` assigns five array fields of an element of a shared array: a part of an
+    object, which object-level sharing never reaches). One pass costs about 13 us (L3 bandwidth: source plus target are 1.4 MB, more
+    than the L2), so a faster copy routine is no lever either.
+  - Per command and VVC, the whole-record passes that sharing would turn into a reference count: `await_cmd_from_sequencer` in the
+    three VVCs the command is not for (they copy `shared_vvc_cmd` and never write their copy), the queue insert, the fetch. Those that
+    stay (a write after the share clones the whole object): the sequencer's field writes into `shared_vvc_cmd`, the executor's writes
+    into its copy. Net ceiling about 6 to 7 percent of this one test (interp and auto).
+  - The other seven tests of the `protected` category (`osvvm_axis_random`, `osvvm_axi4_random`, `uvvm_sb_slv`, `uvvm_util_rand`,
+    `uvvm_methods_log`, `uvvm_func_cov`, `hdlm_axis_bfm`): copies of 256 KB or more are 0.05 to 1.2 percent. The command record is
+    large only for VIPs with a large data maximum (AXI-Stream 16 K bytes; Avalon-ST, GMII and RGMII smaller); the other VIPs have
+    records of a few KB. Expected realbench geometric mean: about 0.2 percent.
+  - sim1 assigns a record with a plain copy too (no sharing), and its layout uses a byte per `std_logic` against our half byte (bit
+    planes), so its record is twice as large. `uvvm_axistream_vvc` under `--tier=auto` is 0.72 of sim1 (wall, instructions 1.00).
+  - What it would take: large variables (process, subprogram, shared) and large heap nodes in objects of their own, addressed through a
+    pointer slot (lowering and elaboration); heap slots holding shared storage with the clone in `Heap::data_mut`; a heap epoch bump at
+    every share (compiled code keeps writable host pointers to heap objects between activations, an ABI point for both compiled
+    backends); constants as a share source; state images and the collector over shared storage; the optimiser's copy patterns.
+  - **Decision: not built.** A gain of about 6 percent on one test, none elsewhere, no gap to sim1, against a change of the memory
+    model across lowering, interpreter, both compiled backends, the collector and state images. Revisit if a design whose run is
+    dominated by whole-object copies of large values shows up (the interposer census above is the first check).
+  `realbench --compare` (42 tests, `--phases run --tiers interp,auto`, 3 runs, cores 13 and 14, host load 37 from an unrelated job, base `ac8d4e88`): geometric
+  mean of instructions 0.99 interp and 0.99 auto, wall 1.00 and 1.00 (single small tests moved by 40 to 60 percent on noise at equal instructions, e.g.
+  `neorv32_dual_full`); the protected category (the verification-library testbenches) wall 0.95 / 0.96, `uvvm_axistream_vvc` 0.92 / 0.86 (instructions 0.96).
+  Interposer census of `uvvm_axistream_vvc` (interp): `memcpy` 16.4 to 14.9 GB, `memmove` 1.2 to 0.17 GB, `memset` 5.3 to 2.3 GB, `memset` calls 26.9 M to 12.1 M.
+
+## Kernel round 26: the slot of the process ahead, a batch of element drives as one vector entry (yavs-kernel, #795, #676, 2026-10-27)
+
+Task (orchestrator): the small clocked RTL designs still above sim1 under `--tier=auto` (head-to-head 7, full total, warm: `rtl_lfsr` 1.35,
+`lfsr64` 1.10, `rtl_ff` 1.02) and the kernel-bound `sc5_timestamp` and `hdlm_lfsr`. Bench builds with `llvm`, `--threads 1`; `tools/stepcount`
+windows, `perf record`, IBS op sampling (`ibs_op`, data source per load) and `perf stat` of warm runs on claimed cores of the second CCD.
+
+- **Where the time is** (instructions an activation, compiled, one clock period, main at 3a29884f): `rtl_lfsr` about 1390, of which the kernel
+  about 330 (`run_batch` 148, `finish_direct` 118, `commit_planes_run` 60), the host layers between the kernel and compiled code about 490
+  (`InterpProcess::run`, `run_cached`, `view_again`, #766) and compiled code about 360; `rtl_ff` about 1100 with the kernel about 210. The
+  kernel lines are 2 to 28 instructions each. The largest single item of the warm runs is outside the kernel: the interpreted start before the
+  compiled process is used (`rtl_lfsr` about 51 ms of 303, `lfsr64` 20 to 37 ms of 148, #728). A falling clock edge with nothing to resume
+  is about 1240 kernel instructions (`cycle` 440, the timed update and `finish_quick` 330, `rearm` 115, `last_delta` and `next_queued` 140).
+- **Decision: the batch loop prefetches the next process's slot.** The serial arm of `run_batch` (batches of 128 or more processes, three
+  steps ahead, as round "Prefetch of the next process in a batch") also asks for every cache line of the process's `Slot` (`SLOT_LINES`: 368
+  bytes rounded up plus one line, a slot need not start on a line). IBS sampling of `rtl_ff` put 8 of its about 25 L2 misses an activation on
+  `ProcState` fields (`resumption`, `has_entries`, the `out` and `sens` vectors' headers, `wait_same`). Cycles, warm `--tier=auto`: on a
+  host whose other cores were busy (load 25 to 38) `rtl_ff` medians -15 to -25 percent (L2 misses 219 M to 136 M), on a quieter host (load
+  13) -1 to -2 percent with L2 misses 87 M against 86 M: the slots stay in the cache there. Instructions +0.6 percent (the hints).
+  `rtl_lfsr`, `lfsr64`, `rtl_fan`, `rtl_chain`, `rtl_bus`, `lfsr64_xor` level. Also prefetching the waveform buffer, the `out` and `outv`
+  buffers, `sens_prev` and the `ProcMeta` line one or two steps ahead was measured: no gain over the slot alone.
+- **Decision: a batch of element drives that covers a run is one vector entry.** `Ctx::assign_codes_now` (the kept scalar drives of
+  compiled code, #676) of 4 or more elements that together cover one run of at most 64 elements of the driver's range, in any order, an
+  element twice taking the later code (`codes_run`), is one `assign_planes_fast` of the run: one skip test, one `OutV`, one commit and one
+  pending word, instead of one `Out`, one `commit_codes` step and one pending bit per element. Anything else (a gap, a code above 8, an
+  element outside the driver) keeps the old loop. Leaving the per-element skip out is safe as in round 24: an entry of an unchanged value
+  commits and finishes with no event. Kernel round 19 had tried the same promotion per call in the interpreter path and at commit time
+  (`hdlm_lfsr` -0.9 percent, `sc5_fifo_repack` +1.9); here the whole batch is in hand, so nothing is extended or scanned.
+  `hdlm_lfsr` (`--tier=auto`): one-element commits 16.1 M to 1.1 M, instructions 21.8 G to 20.5 G, cycles -9 to -13 percent, realbench
+  run wall 1.42 to 1.34 s. Test: `direct_paths::a_batched_run_of_elements_is_one_entry_with_the_last_codes`.
+- **Measured** (`tools/realbench --compare`, 42 tests, run phase, interp and auto, 3 runs, core 12, main ac8d4e88 against both changes):
+  wall geometric mean 0.98 / 1.00, instructions 1.00 / 1.00, CPU 0.99 / 1.00, summed auto wall 0.98; `sc5_fifo_repack` auto instructions
+  1.06 in that run is the compile outcome (its direct commit counters are identical, three more runs 21.2 to 21.6 G against 21.7 to 22.9 G).
+  Head-to-head designs against sim1 (full total, warm / cold, load 13 to 20): `rtl_lfsr` 262 ms, `lfsr64` 131 ms, `rtl_ff` 545 ms warm,
+  level with main; the ratios move with sim1 only. Edge forms: the four `rtl_ff` spellings keep identical counters. Difftest 542/542 at 1 and
+  4 threads for interp, auto, llvm and auto with `--tier-heat=1,0,0`.
+- **Not done:** the falling-edge path (spread over 30 items of 5 to 40 instructions), the codes refresh of 16-bit registers (round 24,
+  a recorded decision), #793 (the store-forwarding stall of the vector entry: not among the hot instructions of `yavs_rt_drive` in
+  `rtl_lfsr` or in a synthetic design of four 8-bit registers per process with the skip test active).
+- **The reference simulator (rule 22):** its cycle was read (one pass over the time-ordered event heap, deferred queues of drivers and
+  processes, the driving and effective values in level order); neither change takes an idea from it. Nothing was copied.

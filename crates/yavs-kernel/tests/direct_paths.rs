@@ -943,6 +943,81 @@ fn a_batched_element_assigned_twice_keeps_the_last_code() {
     assert_eq!(*seen.lock().unwrap(), vec![ZERO]);
 }
 
+/// A batch of single elements that covers a run (`assign_codes_now` makes one vector entry of
+/// it), in any order and with an element twice, then one more element of the run on its own:
+/// the last assignment of each element wins, as one at a time.
+#[test]
+fn a_batched_run_of_elements_is_one_entry_with_the_last_codes() {
+    let mut b = Builder::new();
+    let s = b.signal(
+        "s",
+        SignalType::logic(24),
+        &LogicVec::new(24, StdULogic::Zero),
+    );
+    let d = b.driver(s);
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    let mut run = 0u32;
+    b.process(
+        "p",
+        NONE,
+        &[d],
+        p(move |c| {
+            run += 1;
+            let got: String = (0..24)
+                .map(|e| Ok(if c.elem_code(s, e)? == ONE { '1' } else { '0' }))
+                .collect::<Result<_, SimError>>()?;
+            seen2.lock().unwrap().push(got);
+            // Elements 4 to 19 backwards, element 7 again with the other value, then 9 alone.
+            let v = |e: u32| {
+                if (e + run).is_multiple_of(3) {
+                    ONE
+                } else {
+                    ZERO
+                }
+            };
+            let mut r: Vec<(u32, u8)> = (4..20).rev().map(|e| (e, v(e))).collect();
+            r.push((7, if v(7) == ONE { ZERO } else { ONE }));
+            assert_eq!(c.assign_codes_now(d, r.len(), |k| r[k]), r.len());
+            c.assign_code(
+                d,
+                Some(Range::new(9, 1)),
+                Time::ZERO,
+                ONE,
+                DelayMode::INERTIAL,
+            )?;
+            c.wait_for(ns(1))
+        }),
+    );
+    let (mut sim, _t) = build(
+        b,
+        Config {
+            skip_unchanged: true,
+            ..Config::default()
+        },
+    );
+    sim.run_until(ns(4)).unwrap();
+    // Two vector entries an activation (the run, then element 9), no one-element entry.
+    let st = sim.stats();
+    assert_eq!((st.direct_codes, st.direct_planes), (0, 10));
+    let want = |run: u32| -> String {
+        (0..24u32)
+            .map(|e| match e {
+                9 => '1',
+                7 if (7 + run).is_multiple_of(3) => '0',
+                7 => '1',
+                4..20 if (e + run).is_multiple_of(3) => '1',
+                _ => '0',
+            })
+            .collect()
+    };
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0], "0".repeat(24));
+    for (k, got) in seen.iter().enumerate().skip(1) {
+        assert_eq!(*got, want(k as u32), "activation {}", k + 1);
+    }
+}
+
 /// A scalar and a vector direct driver whose values change at every activation for a while
 /// (their skip tests miss, so they stop asking it, `ProcState::same`), then hold for longer
 /// than the tests are left out, then change again. The changes and the delta cycles are those

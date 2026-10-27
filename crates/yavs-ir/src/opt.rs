@@ -833,6 +833,9 @@ fn for_defs_fast(i: &Inst, mut f: impl FnMut(Reg)) {
     }
 }
 
+/// The smallest object `defaults_first` builds in place.
+const DEFAULTS_MIN: i64 = 4096;
+
 /// Marker for a deleted instruction until the code is compacted: an `Unreachable` with this
 /// message never occurs otherwise.
 const DEAD_MSG: CheckMsgId = CheckMsgId(u32::MAX);
@@ -1662,6 +1665,33 @@ impl<'a> Opt<'a> {
         self.drop_statements();
         self.merge_consts();
         self.dce();
+        // (After the constants are merged: the instructions it inserts name the final registers.)
+        if self.has_big_copy() {
+            self.reanalyse();
+            self.defaults_first();
+            self.dce();
+        }
+    }
+
+    /// Does the code make an object of a constant size of 4 KiB or more from a copy (`New`,
+    /// `NewFill`, `NewFrame`)? A scan of the constants, no analysis: the check that decides
+    /// whether `defaults_first` is worth its tables.
+    fn has_big_copy(&self) -> bool {
+        let mut sizes: FxMap<u32, ()> = FxMap::default();
+        for i in &self.code {
+            match *i {
+                Inst::New { size, .. }
+                | Inst::NewFill { size, .. }
+                | Inst::NewFrame { size, .. } => {
+                    sizes.insert(size.0, ());
+                }
+                _ => {}
+            }
+        }
+        !sizes.is_empty()
+            && self.code.iter().any(|i| {
+                matches!(*i, Inst::Const { dst, v } if v >= DEFAULTS_MIN && sizes.contains_key(&dst.0))
+            })
     }
 
     /// A fat pair in a block this function just allocated, whose two words (stored just before
@@ -1981,6 +2011,371 @@ impl<'a> Opt<'a> {
             }
             self.code[pc0] = dead();
             self.changed = true;
+        }
+    }
+
+    /// A large record variable (or heap node) whose initial value is built in a temporary
+    /// (`Alloc`, then stores and fills) that `NewFrame`, `New` or `NewFill` copies into the
+    /// object's own memory is built in that memory: the `Alloc` becomes the zero-filled object
+    /// and the copy goes (a record of some hundred kilobytes was zeroed twice and copied once
+    /// per call, #792). Only when nothing reads the temporary or keeps its address past the
+    /// copy.
+    fn defaults_first(&mut self) {
+        const MIN: i64 = DEFAULTS_MIN;
+        let nb = self.blocks.len();
+        let mut block_of = vec![0usize; self.code.len()];
+        for b in 0..nb {
+            for pc in self.range(b) {
+                block_of[pc] = b;
+            }
+        }
+        for pcn in 0..self.code.len() {
+            // The copy: its object register, the temporary and its size.
+            let (q, t, size, heap) = match self.code[pcn] {
+                Inst::NewFrame {
+                    dst,
+                    desc,
+                    dsize: 0,
+                    data,
+                    size,
+                    fill: 0,
+                } if desc == data => (dst, data, size, None),
+                Inst::New {
+                    dst,
+                    ty,
+                    init,
+                    size,
+                    shared,
+                } => (dst, init, size, Some((ty, shared))),
+                Inst::NewFill {
+                    dst,
+                    ty,
+                    dsize: 0,
+                    data,
+                    size,
+                    fill: 0,
+                    shared,
+                    ..
+                } => (dst, data, size, Some((ty, shared))),
+                _ => continue,
+            };
+            let Opn::K(total) = self.opn(size) else {
+                continue;
+            };
+            let bn = block_of[pcn];
+            if total < MIN
+                || self.defs.get(q.0 as usize) != Some(&1)
+                || self.defs.get(t.0 as usize) != Some(&1)
+                || !self.reach[bn]
+                || self.in_cycle(bn)
+            {
+                continue;
+            }
+            // The one `Alloc` of the temporary, of the same size, in code that runs once.
+            let mut alloc = None;
+            for (pc, i) in self.code.iter().enumerate() {
+                if let Inst::Alloc { dst, size: sz } = *i
+                    && dst == t
+                {
+                    alloc = (self.opn(sz) == Opn::K(total)).then_some((pc, sz));
+                    break;
+                }
+            }
+            // (The size register of the `Alloc` is the one defined where the object is now.)
+            let Some((pca, size)) = alloc else { continue };
+            let ba = block_of[pca];
+            if !self.reach[ba] || self.in_cycle(ba) {
+                continue;
+            }
+            // A heap object is dereferenced where the temporary was: the check message of the
+            // `Deref` that follows.
+            let mut what = None;
+            if heap.is_some() {
+                what = self.code.iter().find_map(|i| match *i {
+                    Inst::Deref { handle, what, .. } if handle == q => Some(what),
+                    _ => None,
+                });
+                if what.is_none() {
+                    continue;
+                }
+            }
+            // Registers that hold an address inside the temporary.
+            let mut at: FxMap<u32, ()> = FxMap::default();
+            at.insert(t.0, ());
+            let mut grew = true;
+            while grew {
+                grew = false;
+                for i in &self.code {
+                    if let Inst::Index { dst, base, .. } | Inst::Field { dst, base, .. } = *i
+                        && at.contains_key(&base.0)
+                        && !at.contains_key(&dst.0)
+                        && self.defs.get(dst.0 as usize) == Some(&1)
+                    {
+                        at.insert(dst.0, ());
+                        grew = true;
+                    }
+                }
+            }
+            // Blocks that run after the copy.
+            let mut after = vec![false; nb];
+            let mut work = Vec::new();
+            let mut k = 0;
+            while let Some(s) = self.succ(bn, k) {
+                work.push(s);
+                k += 1;
+            }
+            while let Some(x) = work.pop() {
+                if std::mem::replace(&mut after[x], true) {
+                    continue;
+                }
+                let mut k = 0;
+                while let Some(s) = self.succ(x, k) {
+                    work.push(s);
+                    k += 1;
+                }
+            }
+            // Every use of the temporary, or of an address in it, is a read or a write through
+            // it, before the copy (or, for a heap object, the `TempRoot` of the temporary).
+            let is_at = |r: Reg| at.contains_key(&r.0);
+            let mut ok = true;
+            let mut roots = Vec::new();
+            for (pc, i) in self.code.iter().enumerate() {
+                if pc == pcn || is_dead(i) {
+                    continue;
+                }
+                let mut used = false;
+                i.visit(&mut |r, role, _| used |= role == Role::Use && is_at(r));
+                if let Some(l) = i.list() {
+                    used |= self
+                        .operands
+                        .get(l.start as usize..(l.start + l.len) as usize)
+                        .unwrap_or(&[])
+                        .iter()
+                        .any(|&r| is_at(r));
+                }
+                if !used {
+                    continue;
+                }
+                let through = match *i {
+                    Inst::Index { pos, .. } => !is_at(pos),
+                    Inst::Field { layout, .. } => !is_at(layout),
+                    Inst::Load { .. } | Inst::LFill { .. } | Inst::LSet { .. } => true,
+                    Inst::Store { src, .. } => !is_at(src),
+                    Inst::Copy { bytes, .. } => !is_at(bytes),
+                    Inst::TempRoot { addr, desc, .. } if heap.is_some() && addr == t => {
+                        roots.push(pc);
+                        desc.is_none_or(|d| !is_at(d))
+                    }
+                    _ => false,
+                };
+                let before = if block_of[pc] == bn {
+                    pc < pcn
+                } else {
+                    !after[block_of[pc]]
+                };
+                if !through || !before {
+                    ok = false;
+                    break;
+                }
+            }
+            if !ok {
+                continue;
+            }
+            // The zero byte the fill reads.
+            let one = self.const_reg(ba, pca, 1);
+            let z = self.fresh(RegTy::Ptr, 1);
+            self.inserts.push((pca, Inst::Alloc { dst: z, size: one }));
+            if let (Some((ty, shared)), Some(what)) = (heap, what) {
+                self.inserts.push((
+                    pca,
+                    Inst::NewFill {
+                        dst: q,
+                        ty,
+                        desc: z,
+                        dsize: 0,
+                        data: z,
+                        size,
+                        fill: 1,
+                        shared,
+                    },
+                ));
+                self.code[pca] = Inst::Deref {
+                    dst: t,
+                    handle: q,
+                    what,
+                };
+                self.code[pcn] = dead();
+                for pc in roots {
+                    self.code[pc] = dead();
+                }
+            } else {
+                self.code[pca] = Inst::NewFrame {
+                    dst: t,
+                    desc: z,
+                    dsize: 0,
+                    data: z,
+                    size,
+                    fill: 1,
+                };
+                self.code[pcn] = Inst::Move { dst: q, src: t };
+            }
+            self.zero_fills_after(ba, pca, (bn, pcn), t, q);
+            self.changed = true;
+        }
+    }
+
+    /// `LFill`s of the code 0 (all planes zero) of a fresh zeroed object `t` that overwrite
+    /// nothing written before in the block (constant offsets and lengths only, anything else
+    /// ends the scan) write zeros over zeros: dropped. The default of a `std_logic` array is
+    /// 'U' (code 0), and a record of a few hundred kilobytes was filled twice with it. `q` is
+    /// the object's handle or alias: whoever has it may write the object, which ends the scan.
+    fn zero_fills_after(&mut self, b0: usize, pc0: usize, stop: (usize, usize), t: Reg, q: Reg) {
+        // Registers whose address inside `t` is known (byte offset), and the byte ranges written.
+        let mut at: FxMap<u32, i64> = FxMap::default();
+        at.insert(t.0, 0);
+        let mut written: Vec<(i64, i64)> = Vec::new();
+        // Constants set in this stretch (a register the optimiser reused is not a known constant).
+        let mut kval: FxMap<u32, i64> = FxMap::default();
+        // Constants the optimiser made and has not inserted yet.
+        let pending: FxMap<u32, i64> = self
+            .inserts
+            .iter()
+            .filter_map(|(_, i)| match *i {
+                Inst::Const { dst, v } => Some((dst.0, v)),
+                _ => None,
+            })
+            .collect();
+        let hit = |w: &[(i64, i64)], lo: i64, hi: i64| w.iter().any(|&(a, b)| lo < b && a < hi);
+        // The stretch is a chain of blocks, each the only successor of the one before, up to
+        // the copy's own block.
+        let mut npred = vec![0u32; self.blocks.len()];
+        for x in 0..self.blocks.len() {
+            let mut k = 0;
+            while let Some(s) = self.succ(x, k) {
+                npred[s] += 1;
+                k += 1;
+            }
+        }
+        let mut b = b0;
+        let mut hops = 0;
+        loop {
+            let end = if b == stop.0 {
+                (self.blocks[b].1 as usize).min(stop.1)
+            } else {
+                self.blocks[b].1 as usize
+            };
+            for pc in self.blocks[b].0 as usize..end {
+                let i = self.code[pc];
+                if is_dead(&i) {
+                    continue;
+                }
+                if pc <= pc0 {
+                    // Before the object: only the constants it leaves in registers.
+                    i.visit(&mut |r, role, _| {
+                        if role == Role::Def {
+                            kval.remove(&r.0);
+                        }
+                    });
+                    if let Inst::Const { dst, v } = i {
+                        kval.insert(dst.0, v);
+                    }
+                    continue;
+                }
+                let (mut touches, mut shared) = (false, false);
+                let mut defs: Vec<u32> = Vec::new();
+                i.visit(&mut |r, role, _| match role {
+                    Role::Use => {
+                        touches |= at.contains_key(&r.0);
+                        shared |= r == q;
+                    }
+                    Role::Def => defs.push(r.0),
+                });
+                if shared {
+                    return;
+                }
+                for &d in &defs {
+                    kval.remove(&d);
+                }
+                if let Inst::Const { dst, v } = i {
+                    kval.insert(dst.0, v);
+                }
+                if !touches {
+                    for d in defs {
+                        at.remove(&d);
+                    }
+                    continue;
+                }
+                let kv = |s: &Self, r: Reg| match kval.get(&r.0) {
+                    Some(&v) => Some(v),
+                    None => match s.opn(r) {
+                        Opn::K(v) => Some(v),
+                        Opn::R(r) => pending.get(&r.0).copied(),
+                        _ => None,
+                    },
+                };
+                match i {
+                    Inst::Index {
+                        dst,
+                        base,
+                        pos,
+                        stride,
+                    } if at.contains_key(&base.0) => {
+                        let o = at[&base.0];
+                        let Some(k) = kv(self, pos) else { return };
+                        let Some(d) = k
+                            .checked_mul(i64::from(stride))
+                            .and_then(|d| o.checked_add(d))
+                        else {
+                            return;
+                        };
+                        at.insert(dst.0, d);
+                    }
+                    Inst::Load { dst, .. } => {
+                        at.remove(&dst.0);
+                    }
+                    Inst::Store { addr, w, .. } => {
+                        let Some(&o) = at.get(&addr.0) else { return };
+                        written.push((o, o + i64::from(w.bytes())));
+                    }
+                    Inst::Copy { dst, bytes, .. } => {
+                        let (Some(&o), Some(n)) = (at.get(&dst.0), kv(self, bytes)) else {
+                            return;
+                        };
+                        if n > 0 {
+                            written.push((o, o.saturating_add(n)));
+                        }
+                    }
+                    Inst::LFill { base, idx, n, v } => {
+                        let (Some(&o), Some(i0), Some(cnt), Some(code)) =
+                            (at.get(&base.0), kv(self, idx), kv(self, n), kv(self, v))
+                        else {
+                            return;
+                        };
+                        if i0 < 0 || cnt < 0 {
+                            return;
+                        }
+                        if cnt == 0 {
+                            continue;
+                        }
+                        let (lo, hi) = (o + i0 / 64 * 32, o + (i0 + cnt + 63) / 64 * 32);
+                        if code == 0 && !hit(&written, lo, hi) {
+                            self.code[pc] = dead();
+                        } else {
+                            written.push((lo, hi));
+                        }
+                    }
+                    _ => return,
+                }
+            }
+            let Inst::Br { to } = self.code[self.blocks[b].1 as usize - 1] else {
+                return;
+            };
+            let to = to.0 as usize;
+            hops += 1;
+            if b == stop.0 || npred[to] != 1 || to == b0 || hops > 64 {
+                return;
+            }
+            b = to;
         }
     }
 

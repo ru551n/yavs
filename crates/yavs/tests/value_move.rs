@@ -173,6 +173,73 @@ begin
 end;
 ";
 
+/// A large record variable is built where it lives (frame object of a function, heap object of a
+/// procedure that waits, node of an access type), not in a temporary that is copied (#792):
+/// defaults, assignments and later changes of the variable stay separate objects.
+const INPLACE: &str = "
+library ieee;
+use ieee.std_logic_1164.all;
+entity inplace is end;
+architecture a of inplace is
+  type rec is record
+    n   : integer range -10 to 100;
+    big : std_logic_vector(0 to 9999);
+    s   : string(1 to 100);
+  end record;
+  type node;
+  type node_p is access node;
+  type node is record
+    nxt : node_p;
+    e   : rec;
+  end record;
+  function mk(i : integer) return rec is
+    variable v : rec;
+    variable w : std_logic_vector(0 to 9999) := (0 to 99 => '1', 100 to 199 => 'X', 200 to 9998 => 'U', 9999 => '0');
+  begin
+    assert w(0) = '1' and w(99) = '1' and w(100) = 'X' and w(199) = 'X' and w(200) = 'U' and w(5000) = 'U' and w(9998) = 'U' and w(9999) = '0' report \"aggregate default\" severity failure;
+    if i > 0 then
+      v.n := i;
+      v.big(i) := '1';
+      v.s(3) := 'x';
+    end if;
+    return v;
+  end function;
+  procedure slow(i : integer; r : out rec) is
+    variable v : rec;
+    variable p : node_p;
+  begin
+    wait for 1 ns;
+    v.n := i;
+    v.big(7) := 'H';
+    p := new node'(nxt => null, e => v);
+    v.n := 99;
+    v.big(9) := '1';
+    r := p.e;
+    r.big(8) := '0';
+    assert p.e.n = i and p.e.big(9) = 'U' and p.e.big(8) = 'U' report \"node shares the variable\" severity failure;
+    assert v.big(8) = 'U' and v.big(7) = 'H' report \"variable changed by the copy\" severity failure;
+    deallocate(p);
+  end procedure;
+begin
+  process
+    variable a, b : rec;
+  begin
+    for k in 1 to 3 loop
+      a := mk(0);
+      assert a.n = -10 and a.big(5) = 'U' and a.big(9999) = 'U' and a.s(1) = NUL report \"default\" severity failure;
+      a := mk(4);
+      b := mk(0);
+      assert a.n = 4 and a.big(4) = '1' and a.big(5) = 'U' and a.s(3) = 'x' and a.s(2) = NUL report \"set\" severity failure;
+      assert b.n = -10 and b.big(4) = 'U' and b.s(3) = NUL report \"calls share a variable\" severity failure;
+      slow(k, a);
+      assert a.n = k and a.big(7) = 'H' and a.big(8) = '0' and a.big(9) = 'U' and a.s(3) = NUL report \"waiting procedure\" severity failure;
+    end loop;
+    report \"inplace ok\";
+    wait;
+  end process;
+end;
+";
+
 /// Analyse and run `src` (entity `top`) on the interpreter, and on the compiled tier when built in,
 /// and expect `want` in the output.
 fn check(name: &str, src: &str, top: &str, want: &str) {
@@ -239,4 +306,137 @@ fn runs_of_scalar_record_leaves() {
 #[test]
 fn instances_of_record_leaves() {
     check("value_move_insts", INSTANCES, "insts", "instances ok");
+}
+
+#[test]
+fn large_variables_built_in_place() {
+    check("value_move_inplace", INPLACE, "inplace", "inplace ok");
+}
+
+/// Analyse `src` (entity `top`) and run it on the interpreter with the optimised IR dumped:
+/// the dump (standard error) and the standard output.
+fn run_with_dump(name: &str, src: &str, top: &str) -> (String, String) {
+    let d = tmp(name);
+    std::fs::write(d.join(format!("{top}.vhd")), src).expect("write");
+    let work = format!("work:{}", d.join("lib").display());
+    let yavs = env!("CARGO_BIN_EXE_yavs");
+    let a = Command::new(yavs)
+        .current_dir(&d)
+        .args([
+            "analyze",
+            "--std=2008",
+            "--work",
+            &work,
+            &format!("{top}.vhd"),
+        ])
+        .output()
+        .expect("analyze");
+    assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
+    let o = Command::new(yavs)
+        .current_dir(&d)
+        .env("YAVS_DUMPIR", "1")
+        .args([
+            "run",
+            "--std=2008",
+            "--no-cache",
+            "--tier=interp",
+            "--work",
+            &work,
+            top,
+        ])
+        .output()
+        .expect("run");
+    let (out, err) = (
+        String::from_utf8_lossy(&o.stdout).into_owned(),
+        String::from_utf8_lossy(&o.stderr).into_owned(),
+    );
+    assert!(o.status.success(), "{out}\n{err}");
+    let _ = std::fs::remove_dir_all(&d);
+    (out, err)
+}
+
+/// The dump of the function named `f` (in backquotes).
+fn function_dump<'a>(err: &'a str, f: &str) -> &'a str {
+    err.split("\nf")
+        .find(|b| b.contains(f))
+        .unwrap_or_else(|| panic!("no dump of {f}: {err}"))
+        .split("\nops of")
+        .next()
+        .unwrap_or_default()
+}
+
+/// The optimiser builds the variable in its own object: the `NewFrame` of `mk` and the `NewFill`
+/// of `slow` start from a zero byte (`fill: 1`) and nothing copies a temporary into them.
+#[test]
+fn large_variables_are_made_before_they_are_filled() {
+    let (_, err) = run_with_dump("value_move_inplace_ir", INPLACE, "inplace");
+    for f in ["`mk`", "`slow`"] {
+        let body = function_dump(&err, f);
+        assert!(
+            body.contains("fill: 1"),
+            "{f} is not built in place:\n{body}"
+        );
+        // (`mk` has a second, aggregate-initialised variable that is copied.)
+        assert!(
+            f == "`mk`" || !body.contains("fill: 0"),
+            "{f} copies its variable from a temporary:\n{body}"
+        );
+    }
+}
+
+/// Arrays of `std_ulogic` separated by integer fields: the 'U' fills of a fresh zero object write
+/// zeros over zeros and are not made, in a function and in a procedure that waits.
+const ZEROS: &str = "
+library ieee;
+use ieee.std_logic_1164.all;
+entity zeros is end;
+architecture a of zeros is
+  type rec is record
+    a1 : std_logic_vector(0 to 9999);
+    n  : integer range -10 to 100;
+    a2 : std_logic_vector(0 to 9999);
+    m  : natural range 1 to 100;
+    a3 : std_logic_vector(0 to 9999);
+  end record;
+  procedure proc(i : natural; r : out integer) is
+    variable v : rec;
+  begin
+    wait for 1 ns;
+    v.n := i;
+    r := v.n + v.m;
+  end procedure;
+  function fn(i : natural) return integer is
+    variable v : rec;
+  begin
+    v.n := i;
+    return v.n + v.m;
+  end function;
+begin
+  process
+    variable x, s : integer := 0;
+  begin
+    for i in 1 to 5 loop
+      proc(i, x);
+      s := s + x + fn(i);
+    end loop;
+    report \"sum \" & integer'image(s);
+    wait;
+  end process;
+end;
+";
+
+#[test]
+fn fills_of_zero_over_a_fresh_object_are_dropped() {
+    let (out, err) = run_with_dump("value_move_zeros", ZEROS, "zeros");
+    assert!(
+        out.contains("sum 40") || err.contains("sum 40"),
+        "{out}\n{err}"
+    );
+    for f in ["`proc`", "`fn`"] {
+        let body = function_dump(&err, f);
+        assert!(
+            body.contains("fill: 1") && !body.contains("LFill"),
+            "{f} fills its fresh variable with zeros:\n{body}"
+        );
+    }
 }

@@ -9310,8 +9310,11 @@ natives on slices (`to_x01`, the numeric operators) still copy the slice first; 
   wall, 0.87 instructions (seven runs), cold 1.01 to 1.03 wall, 1.01 instructions.
 - The run-to-run profile takes `BigLoop` processes (or processes with a `BigLoop` copy) too (maintainer, 2026-10-27): `walk_control`
   compiles early from the third warm run of the window generator and is kept; window generator warm 0.93 wall, 0.96 instructions, cold level.
-- Left: `iu:comb` and the other straight-line GRLIB processes are front-end bound and lose on calls to interpreted callees; cache hits of large
-  modules (#785).
+- Cache hits (#785): a copy is keyed by its twin key (one bitcode, not two: copies 25 to 30 percent cheaper to link), `Gen::func` resets only
+  the registers a block wrote, `HIT` priced at 1 ms + 20 us an IR instruction as measured (`objtimes hit`); window generator warm 0.96 wall.
+  Skipping generation on a hit needs a key decision (#785).
+- Left: `iu:comb` and the other straight-line GRLIB processes stay level compiled (drives, signal reads and natives through the same runtime
+  functions); a cache hit still generates the module.
 
 ## Value movement: copies between heap objects, scratch sets (yavs-interp, #677, 2026-10-27)
 

@@ -1155,10 +1155,12 @@ fn models() -> &'static [Model; 10] {
     })
 }
 
-/// A module linked from the compilation cache (generation, key and link): about 3 ms for a process of
-/// 200 IR instructions. A function whose object is in the cache is priced so (`Worker::price`, user,
-/// 2026-10-25: a warm run uses cached code as soon as it is seen), not at what compiling it costs.
-const HIT: Model = model(1000.0, 10.0, 1.0);
+/// A module linked from the compilation cache (generation, key, link and dropping the module): 2 to 9
+/// ms for functions of 120 to 180 IR instructions, 12 to 25 us an IR instruction from 1 000 to 13 000
+/// (`YAVS_LLVM_TIMES` `objtimes hit`, #785; generation is about half of it). A function whose object is
+/// in the cache is priced so (`Worker::price`, user, 2026-10-25: a warm run uses cached code as soon as
+/// it is seen), not at what compiling it costs.
+const HIT: Model = model(1000.0, 20.0, 1.0);
 
 /// Microseconds of opening the LLVM library (about 40 million cycles), counted with the first
 /// compile or look-up in the compilation cache: a run too short to pay for it loads nothing.
@@ -4073,8 +4075,8 @@ mod tests {
         assert!(m(Kind::BigLoop).payback() < m(Kind::Big).payback());
         assert!(w3.need(f3) < w.need(f));
         // A function whose object is in the cache is priced at what linking it costs, a process of 200
-        // IR instructions at about 3 ms, whatever its kind (#728).
-        assert_eq!(HIT.price(200), 3_000);
+        // IR instructions at about 5 ms, whatever its kind (#728, #785).
+        assert_eq!(HIT.price(200), 5_000);
         let n2 = w2.prog.func(f2).unwrap().code.len();
         assert_eq!(w2.price_of(f2, true), HIT.price(n2));
         assert!(w2.price_of(f2, true) * 10 < w2.price_of(f2, false));

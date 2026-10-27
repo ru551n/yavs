@@ -10894,3 +10894,25 @@ Round 1 made the remaining `SubtypeCheck` cheaper; round 2 removes the ones whos
   (4 x 0.46 s), and keeps it (7.96 s simulation CPU against 8.66 s); a third hot process (`main`, `ComputeFrame`) compiled early in run 4 was
   judged no better and lost. `tools/realbench --compare` (809de535 against the change, run phase, seven runs, core 12): warm 0.93 wall,
   0.96 instructions; cold 1.00 / 1.01.
+
+## llvm: cheaper compilation-cache hits, priced as measured (yavs-llvm `lower.rs`, `objcache.rs`, `auto.rs`, #785, 2026-10-27)
+
+- **Measured first** (`YAVS_LLVM_TIMES`, new `objtimes hit` line: key, look-up, link, dropping the module; `grlib_leon3mp` warm with the large
+  copies forced, bench builds, CCD0): a hit of a large module costs 12 to 50 us an IR instruction (`comb` copy of 7 627 IR 150 ms, the 19 867 IR
+  function 790 ms), about half of it generation, a quarter the bitcode for the key, the rest the copy's twin key (a second bitcode), the link
+  (ORC materialises at the look-up) and dropping the module. `perf` of the compile thread during those hits: LLVM 68 percent (IR construction,
+  `ValueEnumerator` of the bitcode writer, destruction), ours 20, malloc/free 8, flat.
+- **Done:** (1) a copy's module is keyed by its twin key (the bitcode `compile_one` writes for the twin table, which also names the module) instead of
+  writing the renamed module's bitcode again: copies 25 to 30 percent cheaper (7 627 IR 150 to 118 ms, 11 429 IR 295 to 202 ms). Still a key of the
+  generated IR (`AGENTS.md` "Object cache keyed by the generated LLVM IR"). (2) `Gen::func` resets the register facts (`Cur::known`) at a block
+  start, forgets found objects and records a block's facts for its single successor only for the registers written since the block began
+  (`Dirty`), not with a pass over every register: same bitcode (the `-pre.ll` dumps of `--tier=llvm --no-cache` of the window generator and LEON3
+  are byte-identical), generation 0 to 15 percent faster on the large functions. (3) `HIT` is 1 ms + 20 us an IR instruction (was 10): 2 to 9 ms
+  measured for 120 to 180 IR, 12 to 25 us an IR instruction from 1 000 to 13 000.
+- **Not done, needs the maintainer:** skipping generation on a hit (the cause of the other half). The object key is the generated IR (binding
+  decision of #505) because the generator reads more than the function. A run-independent key ahead of generation would have to name everything
+  the generator reads: the lowered program's identity (the stage cache's lowering key covers a program read back from it), the function's identity
+  (a copy by its copy key: process, data, package digest), part, level, pipeline, native set, `YAVS_LLVM_*` switches and the build, plus what
+  generation decides (whether native-frame code verified, the twin name). Proposal on #785.
+- **The reference simulator (rule 22):** it generates the design's code ahead of time and keeps it per design unit, so it has no per-function
+  look-up at run time to price; nothing was taken from it here.

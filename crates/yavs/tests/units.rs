@@ -547,3 +547,39 @@ begin\n  process\n  begin\n    report \"twice=\" & integer'image(ip.twice(5));\n
     assert_eq!(r.code, 0, "{r:?}");
     assert!(r.stdout.contains("twice=15"), "{r:?}");
 }
+
+/// An entry serves a session with the other `--relaxed` unless its unit's analysis asked for it
+/// (`Db::relaxed`): a library analysed without it is read by a relaxed run, a unit that needed
+/// the relaxation is analysed again from source without it and fails as from source.
+#[test]
+fn relaxed_is_asked_only_where_it_changes_the_analysis() {
+    let e = Env::new("units_relaxed");
+    let all = e.abs(&ALL);
+    let all: Vec<&str> = all.iter().map(String::as_str).collect();
+    e.analyze(&all, &[]);
+    let r = e.run(&["--relaxed"]);
+    assert_eq!(r.code, 0, "{r:?}");
+    assert!(r.stdout.contains("K=7 M=8 f=28"), "{r:?}");
+    // The library's own units are read; a std/ieee body with an assignment to an unconstrained
+    // target asked (R5 gives such a target its run-time bounds), so it has an entry per setting.
+    assert_eq!(r.notes("miss work"), 0, "{r:?}");
+    assert_eq!(r.notes("hit work.tb/a"), 1, "{r:?}");
+    // A shared variable of a non-protected type needs `--relaxed` (W1904): its entry says so.
+    let sv = e.tmp.join("sv.vhd");
+    std::fs::write(
+        &sv,
+        "entity sv is end;\narchitecture a of sv is\n  shared variable n : integer := 3;\n\
+         begin\n  process begin report \"n=\" & integer'image(n); wait; end process;\nend;\n",
+    )
+    .expect("write");
+    let sv = sv.display().to_string();
+    e.analyze(&[&sv], &["--relaxed"]);
+    let work = e.lib("work");
+    let relaxed = e.yavs(&["run", "--relaxed", "--work", &work, "sv"]);
+    assert!(relaxed.stdout.contains("n=3"), "{relaxed:?}");
+    assert_eq!(relaxed.notes("hit work.sv/a"), 1, "{relaxed:?}");
+    let strict = e.yavs(&["run", "--work", &work, "sv"]);
+    assert_ne!(strict.code, 0, "{strict:?}");
+    assert!(strict.stderr.contains("E1904"), "{strict:?}");
+    assert_eq!(strict.notes("hit work.sv/a"), 0, "{strict:?}");
+}

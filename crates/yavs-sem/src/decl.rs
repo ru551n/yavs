@@ -1315,7 +1315,7 @@ impl Db {
                 "the result of pure function `{name}` is or contains access type `{}`",
                 self.type_name(bad)
             );
-            let d = if self.opts.relaxed {
+            let d = if self.relaxed() {
                 yavs_diag::Diagnostic::warning(crate::diag::W_PURE_IMPURE, msg)
             } else {
                 yavs_diag::Diagnostic::error(crate::diag::PURE_SIDE_EFFECT, msg)

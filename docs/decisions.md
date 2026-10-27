@@ -5226,6 +5226,17 @@ dependencies; this overrides "no incremental compilation cache" for analysis too
   from source. A corrupt or stale entry is never an error. Questions a unit asks about libraries without
   loading a unit (whether a unit exists, an entity, the last architecture: `Db::unit_known`, `has_entity`,
   `last_architecture`) are recorded with their answer and asked again before a replay.
+- **`--relaxed` is a question, not part of every key** (#740, 2026-10-27). The key of an entry leaves the
+  session's `--relaxed` out unless the unit's analysis asked for it (`Db::relaxed`, recorded as
+  `Query::Relaxed`): only the four places where the setting changes the analysis ask (R1 a shared variable
+  of a non-protected type, R2 a pure function that reads something impure or returns an access type, R5
+  an assignment to a target that is not fully constrained), and each asks only when its construct is
+  there. A unit that never asked has one entry for both settings; one that asked is stored under a key
+  with the setting and its answer is checked again before a replay. A reader tries the shared key first,
+  then the one of its setting. Before, a relaxed run of a design whose libraries were analysed without
+  `--relaxed` (or the reverse) found no entry of any library unit and analysed the closure from source
+  in its first two runs (a run of the window-generator testbench: 68 misses, 10 after). Whether a unit
+  asks does not depend on the answer except where the strict analysis fails, which stores nothing.
 - **Table writes are tracked, arena writes are watched; both are audited in tests** (user, 2026-10-23, #603; it replaces
   "checked, not audited", under which a unit's changes were found by hashing every table before and after it, 20% of a cold
   analysis and growing with the closure). Arena entries a unit writes below its own are seen by `Arena::watch` (the bytes

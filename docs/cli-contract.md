@@ -232,7 +232,7 @@ identical to a run without it, at any `--threads`.
   file analysed again unchanged, the closure of a first `elab` or `run`. An entry is used only if the
   unit's file has the content (and standard) it was made from, the units it depends on are the ones
   it was made with (an edit anywhere upstream invalidates everything below it), the yavs build and the
-  options (`--std` of the design, `--relaxed`, `--psl`, `--encoding`, `-D`) are the same and the
+  options (`--std` of the design, `--psl`, `--encoding`, `-D`, and `--relaxed` where the unit's analysis depends on it) are the same and the
   libraries answer what they answered then; anything else, a damaged entry included, is a miss and the
   unit is analysed from source. Diagnostics, warnings included, and results are identical either way. `yavs analyze` shows warnings and notes only for the files named in the call (a unit read from the library was reported when its file was analysed, #584; errors are always shown), so a file that uses a unit with a warning does not repeat it, and `-Werror` counts the named files' warnings only.
   Only `analyze` writes entries (under its library session; the units of other libraries and of

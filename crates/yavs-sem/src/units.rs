@@ -57,7 +57,7 @@ use crate::{LangRev, UnitStore};
 pub type Hash = [u8; 32];
 
 /// The layout of entries; part of every identity.
-const FORMAT: u32 = 7;
+const FORMAT: u32 = 8;
 
 /// Entries of `Db::new` (index 0 of these arenas): the same in every session.
 const BASE: [u32; KINDS] = [0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0];
@@ -127,6 +127,9 @@ pub(crate) enum Query {
     Entity(Symbol, Symbol),
     /// The most recently analysed architecture of an entity.
     LastArch(Symbol, Symbol),
+    /// The session's `--relaxed`, asked only where it changes the analysis (`Db::relaxed`): an
+    /// entry of a unit that never asked serves both settings.
+    Relaxed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -363,8 +366,9 @@ impl Db {
     }
 
     /// The identity of unit `key` of library `lib` read from `path`: what an entry is stored
-    /// under.
-    fn identity(&self, lib: Symbol, key: UnitKey, path: &Path) -> Hash {
+    /// under. `relaxed` is the session's `--relaxed` for a unit whose analysis asked it
+    /// (`Db::relaxed`), `None` for the others, whose one entry serves both settings.
+    fn identity(&self, lib: Symbol, key: UnitKey, path: &Path, relaxed: Option<bool>) -> Hash {
         let mut defines = String::new();
         for (n, v) in &self.opts.defines {
             defines.push_str(&format!("{n}={v}\n"));
@@ -377,8 +381,7 @@ impl Db {
             path_text(path).as_bytes(),
             self.rev.as_str().as_bytes(),
             format!(
-                "{} {} {:?} {}",
-                self.opts.relaxed,
+                "{relaxed:?} {} {:?} {}",
                 self.opts.psl,
                 self.opts.encoding,
                 self.opts.stdlib.display()
@@ -826,7 +829,7 @@ impl Db {
     fn full_key(&self, f: &Frame, address: Hash) -> Option<Hash> {
         let mut parts: Vec<Vec<u8>> = vec![
             b"full".to_vec(),
-            self.identity(self.libs[f.lib].name.key, f.key, &f.path.as_ref()?.0)
+            self.identity(self.libs[f.lib].name.key, f.key, &f.path.as_ref()?.0, None)
                 .to_vec(),
             address.to_vec(),
         ];
@@ -850,6 +853,13 @@ impl Db {
         parts.push(format!("{:?}", f.queries).into_bytes());
         let refs: Vec<&[u8]> = parts.iter().map(|p| &p[..]).collect();
         Some(sha(&refs))
+    }
+
+    /// The session's `--relaxed`, recorded as a question of the unit being analysed: ask it only
+    /// where the answer changes the analysis, so other units' entries serve both settings.
+    pub(crate) fn relaxed(&self) -> bool {
+        self.note_query(Query::Relaxed, Answer::Bool(self.opts.relaxed));
+        self.opts.relaxed
     }
 
     /// Record a question about the libraries asked by the unit being recorded.
@@ -1133,7 +1143,15 @@ impl Db {
         out.extend_from_slice(&(head.len() as u64).to_le_bytes());
         out.extend_from_slice(&head);
         out.extend_from_slice(&body);
-        Ok((self.identity(self.libs[f.lib].name.key, f.key, path), out))
+        let relaxed = f
+            .queries
+            .iter()
+            .any(|(q, _)| *q == Query::Relaxed)
+            .then_some(self.opts.relaxed);
+        Ok((
+            self.identity(self.libs[f.lib].name.key, f.key, path, relaxed),
+            out,
+        ))
     }
 
     #[allow(clippy::type_complexity)]
@@ -1710,8 +1728,11 @@ impl Db {
             return false;
         };
         let name = self.libs[lib].name.key;
-        self.store()
-            .is_some_and(|s| s.has(name.as_str(), &self.identity(name, key, &path)))
+        self.store().is_some_and(|s| {
+            [None, Some(self.opts.relaxed)]
+                .into_iter()
+                .any(|r| s.has(name.as_str(), &self.identity(name, key, &path, r)))
+        })
     }
 
     fn entry_at(
@@ -1734,26 +1755,36 @@ impl Db {
         rev: LangRev,
     ) -> Result<Arc<Entry>, String> {
         let store = self.store().ok_or("no store")?;
-        let identity = self.identity(name, key, path);
-        let cached = self
-            .entry_cache
-            .entries
-            .lock()
-            .unwrap()
-            .get(&identity)
-            .cloned();
-        let e = match cached {
-            Some(e) => e,
-            None => {
-                let buf = store.get(name.as_str(), &identity).ok_or("no entry")?;
-                let e = Arc::new(parse_entry(buf)?);
-                let mut c = self.entry_cache.entries.lock().unwrap();
-                if c.len() < EntryCache::MAX {
-                    c.insert(identity, e.clone());
-                }
-                e
+        // The entry that serves both settings of `--relaxed`, else the one of this setting.
+        let mut e = None;
+        for relaxed in [None, Some(self.opts.relaxed)] {
+            let identity = self.identity(name, key, path, relaxed);
+            let cached = self
+                .entry_cache
+                .entries
+                .lock()
+                .unwrap()
+                .get(&identity)
+                .cloned();
+            e = match cached {
+                Some(e) => Some(e),
+                None => match store.get(name.as_str(), &identity) {
+                    Some(buf) => {
+                        let e = Arc::new(parse_entry(buf)?);
+                        let mut c = self.entry_cache.entries.lock().unwrap();
+                        if c.len() < EntryCache::MAX {
+                            c.insert(identity, e.clone());
+                        }
+                        Some(e)
+                    }
+                    None => None,
+                },
+            };
+            if e.is_some() {
+                break;
             }
-        };
+        }
+        let e = e.ok_or("no entry")?;
         if e.head.address != Self::address(path, hash, rev) {
             return Err("the source changed".into());
         }
@@ -2009,6 +2040,7 @@ impl Db {
     fn answer(&self, q: &Query, p: &mut Plan) -> Answer {
         let l = match q {
             Query::Known(l, _) | Query::Entity(l, _) | Query::LastArch(l, _) => *l,
+            Query::Relaxed => return Answer::Bool(self.opts.relaxed),
         };
         let lid = self.lib_named(l);
         // A library the replay makes: what its source says.
@@ -2052,6 +2084,7 @@ impl Db {
                     _ => None,
                 },
             }),
+            Query::Relaxed => Answer::Bool(self.opts.relaxed),
         }
     }
 

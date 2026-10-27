@@ -1543,14 +1543,15 @@ fn gen_func(
     }
     // Search loops (`yavs_interp::search_loops`) of a variant run through `yavs_rt_scan` at their
     // head; its exits jump to the loop's found and end blocks, which then have one more way in.
-    let scans: HashMap<u32, yavs_interp::SearchLoop> = if native {
-        yavs_interp::search_loops(f)
-            .into_iter()
-            .map(|l| (l.head, l))
-            .collect()
-    } else {
-        HashMap::new()
-    };
+    let scans: HashMap<u32, yavs_interp::SearchLoop> =
+        if native && std::env::var_os("YAVS_CLIFT_NO_SCAN").is_none() {
+            yavs_interp::search_loops(f)
+                .into_iter()
+                .map(|l| (l.head, l))
+                .collect()
+        } else {
+            HashMap::new()
+        };
     for l in scans.values() {
         for b in [l.found, l.end] {
             if let Some(t) = f.blocks.get(b).map(|b| b.start as usize)

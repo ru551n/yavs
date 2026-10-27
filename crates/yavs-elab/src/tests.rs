@@ -2553,8 +2553,9 @@ fn logic_gates_run_in_the_kernel() {
 
 /// Conditional assignments with one condition on a logic element, relational operators and gates
 /// with a literal operand (#786) run in the kernel (`ProcInst::mux`, `ProcInst::gate`); the
-/// shapes next to them (three arms, a compound condition or numeric_std's `=`, `unaffected`, a guard,
-/// `postponed`, a rejection limit, numeric_std's `=`, constants only) stay processes. Reports,
+/// shapes next to them are programs (three arms, a compound condition, an expression arm: #788) or
+/// stay processes (numeric_std's `=`, `unaffected`, a guard, `postponed`, a rejection limit,
+/// constants only). Reports,
 /// with time and delta, are those of the interpreted statements over all value triples
 /// (the corpus case `sigassign/mux_gates`).
 #[test]
@@ -2575,6 +2576,66 @@ fn muxes_and_relations_run_in_the_kernel() {
     want.extend([false; 12]);
     assert_eq!(kernel_shapes.len(), want.len(), "{kernel_shapes:?}");
     assert_eq!(kernel_shapes, want, "{kernel_shapes:?}");
+    e.lower(&mut db).expect("lower");
+    struct Seen(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+    impl yavs_kernel::Observer for Seen {
+        fn report(&mut self, hook: &mut yavs_kernel::Hook<'_>, r: &yavs_kernel::Report) {
+            let (t, d) = (hook.now().as_fs(), hook.delta());
+            self.0
+                .lock()
+                .expect("lock")
+                .push(format!("{t} {d} {}", r.message));
+        }
+    }
+    let run = |e: &Elaborated, cfg: yavs_kernel::Config| {
+        let mut sim = e.build(cfg).expect("build");
+        let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        sim.subscribe(Box::new(Seen(got.clone())));
+        sim.run_until(yavs_kernel::Time::MAX).expect("run");
+        got.lock().expect("lock").clone()
+    };
+    let kernel = run(&e, yavs_kernel::Config::default());
+    let interp = run(
+        &e,
+        yavs_kernel::Config {
+            edge_triggers: false,
+            ..Default::default()
+        },
+    );
+    assert!(kernel.len() > 2000, "{}", kernel.len());
+    assert_eq!(kernel, interp);
+}
+
+/// Concurrent assignments of expression trees, compound conditions and chains of arms run as
+/// `yavs_kernel::ProgProcess` (#788); the near shapes next to them stay processes. Reports, with
+/// time and delta, are those of the interpreted statements over all value triples (the corpus case
+/// `sigassign/prog_exprs`).
+#[test]
+fn expression_trees_run_in_the_kernel() {
+    let src = include_str!("../../../tests/corpus/sigassign/prog_exprs.vhd");
+    let (mut db, mut e) = elab("progs", src, "tb_prog_exprs", &[]);
+    let shapes: String = e
+        .procs
+        .iter()
+        .map(|p| match (&p.gate, &p.mux, &p.prog) {
+            (Some(_), ..) => 'g',
+            (_, Some(_), _) => 'm',
+            (.., Some(_)) => 'p',
+            _ => '.',
+        })
+        .collect();
+    // The inner entity's two, the 34 trees and BOOLEAN trees with delays (the gate `tm <= a and
+    // b` is not one of them), the second driver of `tm`, `tq`, the 14 conditions and the 12
+    // chains, a mux (the first `mr`) and the second `mr`, the 10 tests of enumeration, integer and character signals; then the near shapes (the block's
+    // `_guard` before its statement) and the testbench's two processes.
+    let want = format!(
+        "{}g{}mp{}{}",
+        "p".repeat(34),
+        "p".repeat(28),
+        "p".repeat(10),
+        ".".repeat(11)
+    );
+    assert_eq!(shapes, want);
     e.lower(&mut db).expect("lower");
     struct Seen(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
     impl yavs_kernel::Observer for Seen {

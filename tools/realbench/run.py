@@ -617,7 +617,13 @@ def measure_group(t, cells, ctx, cores, runs, instr, scratch):
         if c.name in bad:
             res[c.name] = {"wall": None, "cpu": None, "rss": None, "ins": None, "ok": 0, "runs": 0, "rcs": [bad[c.name]["rc"]], "tail": bad[c.name]["tail"]}
             continue
-        ins = B.timed(c.prepare(ctx, scratch, t), str(scratch), cores, instr=instr, ref=c.tool != "yavs")["ins"] if instr and runs else None
+        ins = None
+        if instr and runs:  # the counted run must pass too: a run that stops early counts fewer instructions
+            w = B.timed(c.prepare(ctx, scratch, t), str(scratch), cores, instr=instr, ref=c.tool != "yavs")
+            if not ok_run(t, c, w):
+                res[c.name] = {"wall": None, "cpu": None, "rss": None, "ins": None, "ok": 0, "runs": 0, "rcs": [w["rc"]], "tail": w["tail"]}
+                continue
+            ins = w["ins"]
         res[c.name] = B.cell(out[c.name] if runs == 0 else out[c.name][1:], ins)
         res[c.name]["warmup_wall"] = out[c.name][0]["wall"]
         if runs == 0:

@@ -390,15 +390,16 @@ def cpulist(s):
 
 
 def instr_event(cores):
-    """The instruction counter of the core type the timed runs are pinned to (cpu_core/ or cpu_atom/ on a hybrid
-    host, which only count on their own cores), or None when perf cannot count."""
+    """The user-space instruction counter of the core type the timed runs are pinned to (cpu_core/ or cpu_atom/ on a
+    hybrid host, which only count on their own cores), or None when perf cannot count. User only: the kernel's share of
+    a short run (page cache, faults after a world was copied) varies by several hundred million instructions."""
     if not shutil.which("perf"):
         return None
-    evs = ["instructions"]
+    evs = ["instructions:u"]
     for kind in ("core", "atom"):
         try:
             if cpulist(cores) <= cpulist(Path(f"/sys/devices/cpu_{kind}/cpus").read_text().strip()):
-                evs.insert(0, f"cpu_{kind}/instructions/")
+                evs.insert(0, f"cpu_{kind}/instructions/u")
         except (OSError, ValueError):
             pass
     for ev in evs:

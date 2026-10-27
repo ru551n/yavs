@@ -383,6 +383,14 @@ case!(
     [("process_runs", Max(257)), ("ops", Max(3340))]
 );
 case!(
+    prog_bus,
+    "s=",
+    &[],
+    // The tree, the conditions, the chain and the state test run in the kernel (#788): 7606 ops
+    // when they are interpreted (the rest is the stimulus process).
+    [("process_runs", Max(410)), ("ops", Max(2920))]
+);
+case!(
     fan,
     "hits=",
     &[],

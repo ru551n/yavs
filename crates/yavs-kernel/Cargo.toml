@@ -11,6 +11,7 @@ serde.workspace = true
 rayon.workspace = true
 smallvec.workspace = true
 yavs-logic.workspace = true
+yavs-prefetch.workspace = true
 
 [lints]
 workspace = true

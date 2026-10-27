@@ -9210,6 +9210,13 @@ instructions (-11.1 percent). The other natives on slices (`to_x01`, the numeric
 A `CondBr` whose arms lead to the same block is a `Br` (the null-range test of a local array). Part of the fixed cost of an `HRead` call (`docs/decisions.md` "A branch whose arms lead to the same block"):
 the call is still about 80 ops; the rest is listed there. First 1 us of `grlib_leon3mp` with #768 to #771: 31.37 G to 22.99 G instructions (-26.7 percent), `--tier=interp`.
 
+## kernel: prefetch of the next process in a batch (#766, 2026-10-27)
+
+- A batch of 128 or more processes prefetches the five hot cache lines of the process three steps ahead (`yavs-prefetch`, the one
+  `unsafe` call; no-op off x86_64; `InterpProcess` is `repr(C)` with its machine first). Cycles, warm, minimum of 7 on one core:
+  `rtl_ff` -9.2 percent `--tier=auto` / -11.1 interpreter, `rtl_lfsr` -4.4 / -2.4, others -0.1 to -2.2; `realbench --compare` 42 tests
+  level (wall 0.97 / 1.00, CPU 1.00 / 0.95). Details: decisions.md "Prefetch of the next process in a batch".
+
 ## llvm: compiled clocked RTL, round 9: the tier's record inline in the machine (#766, 2026-10-26)
 
 - `Tier::run_cached` takes `&mut TierState`; the record lives inline in `Machine::tier_state`, in the machine's fifth cache line with

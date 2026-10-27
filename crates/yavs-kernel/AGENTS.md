@@ -14,7 +14,7 @@ the IR plugs in, error handling, open questions); read it before editing.
 - Does not: know the IR, VHDL types or the heap. Processes are opaque `Process` trait objects
   (`yavs-interp`, later `yavs-llvm`); values are bytes or bit-plane logic described by
   `SignalType`. It does not print anything (the CLI's `Observer` prints reports).
-- Depends on: `yavs-logic`, `rayon`. Called by: `yavs-interp` (implements `Process`, uses `Ctx`),
+- Depends on: `yavs-logic`, `yavs-prefetch` (the batch loop's prefetch hint, #766), `rayon`. Called by: `yavs-interp` (implements `Process`, uses `Ctx`),
   `yavs-ir` (types like `StmtId`), `yavs-lower`, `yavs-elab` (`Builder`), `yavs` (`Config`,
   `SimControl`, `Observer`; runtime errors are rendered by `yavs_elab::Elaborated::runtime_diagnostic`). Planned subscribers: `yavs-wave`, `yavs-vhpi`, DAP.
 

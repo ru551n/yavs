@@ -11864,6 +11864,8 @@ mod tests {
         assert_eq!(offset_of!(Machine, tier_state), 256);
         assert!(offset_of!(Machine, troots) + 24 <= 320);
         assert!(offset_of!(Machine, heap) >= 256);
+        // The kernel prefetches the first five lines of the process object (#766).
+        assert_eq!(offset_of!(crate::InterpProcess, m), 0);
     }
 
     /// A suspension of a process without the shared state builds no roots (#356).

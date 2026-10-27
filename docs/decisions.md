@@ -10719,3 +10719,31 @@ found the callers; a throwaway per-site census of `Copy`, `LCopy`, `New`, frame 
   by function. `grlib_leon3mp` has nine such processes (the integer unit's `comb`, `dctrl`, `ctrl`, `ictrl`, the SDRAM `state_register`,
   ...) that wake in turn; four sets were evicted round robin, so 1.16 M activations refilled 25 to 60 KB each (30 GB of `memcpy`, the
   largest user of `memmove` in the run). The sets are empty vectors until used; only the key search (a compare per set) is more.
+
+## Prefetch of the next process in a batch (yavs-kernel, yavs-prefetch, #766, 2026-10-27)
+
+Task (#766, host2's lead): after the inline `TierState` (round 9) the cycles of a small compiled clocked process go to first-touch misses
+of its separate allocations. Try a software prefetch in the batch loop of `SimControl::run_batch`.
+
+- **Decision: landed.** In the serial no-pool arm of `run_batch`, for a batch of at least `PREFETCH_BATCH` (128) processes, the loop
+  prefetches the first `PREFETCH_LINES` (5) cache lines of the `Process` object three steps ahead (`PREFETCH_AHEAD`). `InterpProcess` is
+  `repr(C)` with its `Machine` first, so those are the machine's five hot lines (frames, registers, root, view cache, tier record);
+  `activation_fields_are_in_the_first_lines` pins the offset. The hint is in a new crate `yavs-prefetch` (`lines`, a safe function; one
+  `unsafe` call of `_mm_prefetch` with a SAFETY comment, nothing on other targets): `yavs-kernel` and `yavs-interp` stay under the
+  workspace `forbid(unsafe_code)` (root rule 11, same shape as `yavs-cache`). No trait method, no change to `Process`.
+- **Measured** (bench builds with `llvm`, base origin/main 4cdb2fb1, minimum of 7 interleaved warm runs, one claimed core 8, load 8;
+  `perf stat` cycles, `auto` / `interp`): `rtl_ff` -9.2 / -11.1 percent (L1-fill from system -11 percent, from L2 -12 percent),
+  `rtl_lfsr` -4.4 / -2.4, `lfsr64` -0.8 / -0.8, `rtl_chain` -1.2 / -0.9, `delta_chain` -1.5 / -1.0, `rtl_bus` -2.2 / -0.7, `rtl_fan` -0.5 / -0.1.
+  Instructions: +2.2 percent on `rtl_ff` (the hints), level elsewhere except `rtl_fan` +3 percent. `tools/realbench --compare` (42 tests,
+  interpreter and auto, core 9, load 15): run wall geometric mean 0.97 / 1.00, CPU 1.00 / 0.95, instructions 1.00 / 0.99; `neorv32_*`
+  level; `grlib_leon3mp` level (three A/B pairs of 5 runs: 1.05, 0.95 and 1.00 on a loaded host, instructions 1.00 each: noise).
+- **Tuning found with an environment-variable harness (not kept).** Three steps ahead is the knee (1 is too late: no gain, 2 is
+  worse than 3, 6 and more evict lines before use and lose to 3). Prefetching only lines 0, 3 and 4 or the heap vectors behind them
+  (frame, registers, drivers, signal table) was no better than the five lines; touching the next process's `ProcState` or the `Slot` header
+  lost. A plain load ("touch") instead of the hint cost the gain back (it stalls on the miss). Two-ahead plus one-ahead layers: worse.
+  A threshold of 1 batch size changes nothing on the large-batch designs and costs `lfsr64_xor` 1 to 2 percent on batches of 64, so the
+  cut-off is 128.
+- **Not done:** the parallel arm (`PAR_BATCH`, rayon) and the commit loop, which touch other lines; a prefetch from `Process` for other
+  implementors (`warm` method): measured, no gain over the fixed five lines of `InterpProcess`.
+- **The reference simulator (rule 22):** no new idea taken beyond round 9's (the hot data in the process's own first lines); the prefetch
+  is our own measurement-driven design. Nothing was copied.

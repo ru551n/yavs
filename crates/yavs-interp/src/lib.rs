@@ -1960,7 +1960,9 @@ pub fn proc_flags(prog: &Program, func: FuncId) -> ProcFlags {
     }
 }
 
-/// A process instance running IR in the interpreter.
+/// A process instance running IR in the interpreter. `repr(C)`: the machine, whose first five
+/// cache lines an activation reads, starts the object (the kernel prefetches them, #766).
+#[repr(C)]
 pub struct InterpProcess {
     m: Machine,
     started: bool,

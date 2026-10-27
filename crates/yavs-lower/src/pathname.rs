@@ -6,14 +6,14 @@ use yavs_sem::Db;
 use yavs_sem::decl::DeclKind;
 
 /// `name[type,type return type]` (LRM 16.2.5, lower case): a subprogram's path element. The type
-/// marks are the declared subtypes (`std_logic`, `natural`), not their base types; the
-/// references differ in the space after a comma, we write none.
+/// marks are the declared subtypes (`std_logic`, `natural`), not their base types, separated by a
+/// comma and a space as in sim1 (sim2 writes no space; user decision, #784).
 pub fn subprogram_element(db: &Db, d: yavs_sem::DeclId) -> String {
     let decl = &db.decls[d];
     let sub = decl.kind.subprogram().expect("a subprogram declaration");
     let ty = |st| db.subtype_name(st).to_ascii_lowercase();
     let params: Vec<String> = sub.params.iter().map(|p| ty(p.subtype)).collect();
-    let mut sig = params.join(",");
+    let mut sig = params.join(", ");
     if let Some(r) = sub.ret {
         if !sig.is_empty() {
             sig.push(' ');

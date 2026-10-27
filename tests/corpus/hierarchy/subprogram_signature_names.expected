@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:subprogram_signature_names:_p0	F :work:sigpk:f[std_logic, natural, byte, unsigned, rec return std_logic_vector]:v | :work:sigpk:f[std_logic, natural, byte, unsigned, rec return std_logic_vector]:v
+diag	note	0	0	:subprogram_signature_names:_p0	G :work:sigpk:g[return integer]:v
+diag	note	0	0	:subprogram_signature_names:_p0	P :work:sigpk:p[std_logic, integer, positive]:w | :work:sigpk:p[std_logic, integer, positive]:w
+diag	note	0	0	:subprogram_signature_names:_p0	I :work:sigpk:outer[integer]:inner[real, time]:w | :work:sigpk:outer[integer]:inner[real, time]:w
+diag	note	0	0	:subprogram_signature_names:_p0	OP :work:sigpk:outer[integer]:"+"[bit, bit return bit]:w

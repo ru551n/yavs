@@ -37,7 +37,8 @@ run as the kernel's own `MuxProcess` and `GateProcess`. Corpus `sigassign/mux_ga
 ### Release archives with and without the compiled tier (#780, 2026-10-27)
 
 `release.yml` builds two archives per platform: `yavs-<version>-<target>` with the compiled tier (Linux: `lib/libLLVM.so.21.1`
-from `tools/release/build-libllvm.sh`, built for glibc 2.17; Windows: LLVM linked statically) and `...-nollvm` with the interpreter alone.
+from `tools/release/build-libllvm.sh`, built for glibc 2.17; Windows: LLVM linked statically) and `...-nollvm` with the Cranelift tier instead (`--features clift`,
+`--tier=auto` by default, `compiled tier: cranelift`; user 2026-10-27, #481).
 `yavs --version` names the tiers built in. A `workflow_dispatch` dry run builds and smoke-tests all of them (centos:7 for the Linux
 ones, `--tier=llvm` from the extracted archive) without tagging. Decisions: `docs/decisions.md` "Release archives with and without the compiled tier".
 

@@ -31,10 +31,10 @@ Download the archive for your platform (Linux x86_64, Linux aarch64, Windows x86
 archives require glibc 2.17 or newer (RHEL/CentOS 7+, Debian 8+, Ubuntu 14.04+); on musl-based
 systems such as Alpine, install the `gcompat` package.
 
-Each platform has two archives. Take `yavs-<version>-<target>` (with the compiled tier, the
-default) unless you need the smallest download: `yavs-<version>-<target>-nollvm` has the
-interpreter alone, so runs are slower and `--tier=auto` and `--tier=llvm` are errors. `yavs
---version` tells which one you have. Or build from source with Rust stable and a C compiler:
+Each platform has two archives. Take `yavs-<version>-<target>` (compiled tier LLVM 21, the
+default) unless you need the smallest download: `yavs-<version>-<target>-nollvm` compiles with
+Cranelift instead, has no LLVM inside and runs `--tier=auto` by default too; `--tier=llvm` is an
+error there. `yavs --version` tells which one you have. Or build from source with Rust stable and a C compiler:
 
 ```sh
 cargo build --release -p yavs   # target/release/yavs

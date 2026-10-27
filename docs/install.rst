@@ -22,12 +22,14 @@ Every platform has two archives. The one named as above has the compiled tier: `
 before time 0. The Linux archive carries LLVM as ``lib/libLLVM.so.21.1`` next to the
 executable (keep the ``lib`` directory with ``yavs``; it needs nothing else installed), the Windows
 executable has LLVM linked in. The archive with ``-nollvm`` added before the extension
-(``yavs-<version>-<target>-nollvm.tar.gz``, ``.zip`` on Windows) is the interpreter alone: smaller,
-with no compiled tier, so it runs designs more slowly; its default tier is ``interp`` and
-``--tier=auto`` or ``--tier=llvm`` stop with error E0120. ``yavs --version`` shows the difference on its first line::
+(``yavs-<version>-<target>-nollvm.tar.gz``, ``.zip`` on Windows) has no LLVM inside and is smaller: its
+compiled tier is Cranelift, and ``--tier=auto`` (the default there too) compiles the hot code with it
+during the run, ``--tier=clift`` all of it before time 0. Its compiled code is mostly as fast as LLVM's;
+tight compute loops run faster with LLVM. ``--tier=llvm`` stops with error E0120 in it.
+``yavs --version`` shows the difference on its first line::
 
     yavs 0.8.0 (compiled tier: llvm)
-    yavs 0.8.0 (interpreter only, no compiled tier)
+    yavs 0.8.0 (compiled tier: cranelift)
 
 The Linux archives require glibc 2.17 or newer (RHEL/CentOS 7+, Debian 8+, Ubuntu 14.04+).
 On musl-based systems such as Alpine, install the ``gcompat`` package.

@@ -1,12 +1,13 @@
 # Root AGENTS.md rule 13 on the three release platforms (#134). The `check` job builds default
 # features only; the `llvm` job builds and tests the LLVM tier (`--features llvm`, LLVM 21) on the
-# same three platforms (#127, #128). The qemu/Wine ffi runs are not part of CI yet.
+# same three platforms (#127, #128); the `clift` job the Cranelift tier (`--features clift`, #481).
+# The qemu/Wine ffi runs are not part of CI yet.
 # The `corpus` job gates the analysis corpora (#63) and the discrepancy cases on Linux x86_64.
 name: CI
 
 on:
   push:
-    branches: [main, 'spike/**']
+    branches: [main]
   pull_request:
   workflow_call:
 
@@ -120,6 +121,9 @@ jobs:
           key: clift
       - run: cargo clippy -p yavs-clift -p yavs --features clift --all-targets --locked -- -D warnings
       - run: cargo test -p yavs-clift -p yavs --features clift --locked --no-fail-fast
+      - name: Unit tests with gc-stress
+        if: runner.os == 'Linux'
+        run: cargo test -p yavs-clift --features clift,gc-stress --locked --no-fail-fast
       - name: Simulation smoke with --tier=clift
         if: runner.os == 'Linux'
         run: |

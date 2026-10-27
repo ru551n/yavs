@@ -86,15 +86,16 @@ otherwise.
   time 0 and runs that code; ``--tier=interp`` runs the interpreter alone. The output is the same
   with every tier. ``auto`` is the default in a yavs built with the ``llvm`` feature (LLVM 21),
   except under ``--dap``, which runs in the interpreter unless you ask for a tier;
-  a yavs built without the feature (the ``-nollvm`` release archives, see :doc:`install`) always
-  defaults to ``--tier=interp``, and ``--tier=auto`` or ``--tier=llvm`` on it is an error
-  (E0120); ``yavs --version`` says which kind you have. The release archives with the compiled tier
+  a yavs built with neither ``llvm`` nor ``clift`` always defaults to ``--tier=interp``, and
+  ``--tier=auto`` or ``--tier=llvm`` on it is an error (E0120); ``yavs --version`` says which kind
+  you have. The release archives with the compiled tier
   find the LLVM library in ``lib/`` next to the executable; if it is missing, ``--tier=llvm`` stops with an
   error naming the places looked in, and ``--tier=auto`` warns once and keeps the hot code interpreted. Functions of
   more than ``--tier-max-size`` IR instructions (default 50000) stay interpreted. ``--verbose``
   prints what the LLVM tier compiles and what it leaves to the interpreter.
   ``--tier=clift`` and ``--tier=clift-auto`` do the same with Cranelift instead of LLVM, in a yavs built
-  with the ``clift`` feature; that needs no LLVM install.
+  with the ``clift`` feature; that needs no LLVM install. Without ``llvm``, ``--tier=auto`` is
+  ``--tier=clift-auto`` and the default (the ``-nollvm`` release archives, see :doc:`install`).
   ``--tier=auto3`` combines them (Cranelift for warm functions, LLVM O2 for those that stay hot) in a yavs built with both features.
 * ``--resolution=ps`` sets the time resolution limit (``fs``, ``ps``, ``ns``, ``us``, ``ms`` or
   ``sec``; default ``fs``). It is what ``std.env.resolution_limit`` returns and the unit of TIME

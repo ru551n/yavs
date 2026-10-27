@@ -66,7 +66,7 @@ Conventions:
 
   e.g. `yavs 0.4.0-dev (1a2b3c4 2026-10-18)`. The details say whether the compiled tier is
   built in: `yavs 0.8.0 (compiled tier: llvm)` or `yavs 0.9.0 (interpreter only, no compiled
-  tier)` (a build without the `llvm` feature fails `--tier=auto` and `--tier=llvm` with E0120;
+  tier)` (a build with neither `llvm` nor `clift` fails `--tier=auto` and `--tier=llvm` with E0120;
   a build with the `clift` feature says `compiled tier: cranelift`, or `llvm, cranelift` with
   both, and runs `--tier=auto` with Cranelift when `llvm` is not built in).
   The test runner takes the first

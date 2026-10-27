@@ -7,7 +7,8 @@
 # Two archives per platform (docs/decisions.md "Release archives with and without the compiled
 # tier", #780): yavs-<version>-<target> has the compiled tier (LLVM 21: on Linux a libLLVM built by
 # tools/release/build-libllvm.sh in lib/ next to yavs, on Windows linked statically) and
-# yavs-<version>-<target>-nollvm is the interpreter alone.
+# yavs-<version>-<target>-nollvm has the Cranelift compiled tier instead (`--features clift`,
+# nothing to bundle; `--tier=auto` is its default too, user 2026-10-27, #481).
 # The Linux archives are built with cargo-zigbuild against glibc 2.17 (docs/decisions.md "Linux
 # release archives") and smoke-tested in centos:7.
 # workflow_dispatch with dry_run builds and packages the same archives as workflow artifacts
@@ -111,7 +112,7 @@ jobs:
           mkdir -p stage/nollvm stage/llvm
           if [[ "$RUNNER_OS" == Linux ]]; then
             # glibc 2.17; the target directory and the archive name stay the plain triple.
-            cargo zigbuild --release --locked -p yavs --target $t.2.17
+            cargo zigbuild --release --locked -p yavs --features clift --target $t.2.17
             cp target/$t/release/yavs stage/nollvm/
             (cd gui && cargo zigbuild --release --locked --target $t.2.17)
             cp gui/target/$t/release/yavs-gui stage/
@@ -128,7 +129,7 @@ jobs:
             readelf -d stage/llvm/yavs | grep NEEDED
             if readelf -d stage/llvm/yavs | grep -qi llvm; then echo "yavs depends on libLLVM"; exit 1; fi
           else
-            cargo build --release --locked -p yavs
+            cargo build --release --locked -p yavs --features clift
             cp target/release/yavs.exe stage/nollvm/
             (cd gui && cargo build --release --locked)
             cp gui/target/release/yavs-gui.exe stage/
@@ -200,9 +201,11 @@ jobs:
               env -u YAVS_STDLIB "$name/yavs" run --tier=llvm --work=work:$w t | grep -q ': ok'
               env -u YAVS_STDLIB "$name/yavs" run --tier=auto --work=work:$w t | grep -q ': ok'
             else
-              grep -q 'interpreter only' "version-$v.txt"
-              # The interpreter-only archive refuses a compiled tier (fail early, no fallback).
-              if "$name/yavs" run --tier=llvm --work=work:$w t 2> "err-$v.txt"; then echo "--tier=llvm ran without a compiled tier"; exit 1; fi
+              grep -q 'compiled tier: cranelift' "version-$v.txt"
+              env -u YAVS_STDLIB "$name/yavs" run --tier=auto --work=work:$w t | grep -q ': ok'
+              env -u YAVS_STDLIB "$name/yavs" run --tier=clift --work=work:$w t | grep -q ': ok'
+              # The archive without LLVM refuses the LLVM tier (fail early, no fallback).
+              if "$name/yavs" run --tier=llvm --work=work:$w t 2> "err-$v.txt"; then echo "--tier=llvm ran without LLVM"; exit 1; fi
               grep -q E0120 "err-$v.txt"
             fi
             # The GUI starts without a display for --version.
@@ -224,7 +227,7 @@ jobs:
                    mv $name/lib.off $name/lib; $name/yavs-gui --version"
               else
                 docker run --rm -v "$PWD:/w" -w /w centos:7 sh -ec \
-                  "rm -rf w2; $name/yavs analyze --work=work:w2 t.vhd && $name/yavs run --work=work:w2 t | grep -q ': ok' && $name/yavs-gui --version"
+                  "rm -rf w2; $name/yavs analyze --work=work:w2 t.vhd && $name/yavs run --work=work:w2 t | grep -q ': ok' && $name/yavs run --tier=clift --work=work:w2 t | grep -q ': ok' && $name/yavs-gui --version"
               fi
             fi
           done

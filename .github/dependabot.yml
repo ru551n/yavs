@@ -19,6 +19,11 @@ updates:
       # (docs/decisions.md, "LLVM bindings: llvm-sys 211"). Major bumps need a decision first.
       - dependency-name: "llvm-sys"
         update-types: ["version-update:semver-major"]
+      # Cranelift (yavs-clift, `clift` feature, #481) is pinned with "=": 0.x minor releases are
+      # breaking, so major and minor bumps are made by hand after the clift benchmarks
+      # (docs/STATUS.md, "clift"); patch releases come with the group above.
+      - dependency-name: "cranelift*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
   - package-ecosystem: cargo
     directory: "/gui"
@@ -43,24 +48,3 @@ updates:
     groups:
       cargo-minor-patch:
         update-types: [minor, patch]
-
-  # Cranelift is only on the spike/clift branch (yavs-clift, pinned "=0.137.0"); it is not on main.
-  # Dependabot reads its config from the default branch and updates the manifest of the branch
-  # named in target-branch, so this entry opens PRs against spike/clift only. Each PR is a signal to
-  # re-run the clift benchmarks (docs/STATUS.md, "clift" section) before deciding anything; see
-  # docs/decisions.md and issue #481. When yavs-clift merges into main, move the cranelift crates
-  # into the main entry with an exact-pin policy like the llvm-sys entry above: major and minor
-  # bumps are reviewed by hand, since 0.x minor releases are breaking.
-  - package-ecosystem: cargo
-    directory: "/"
-    target-branch: "spike/clift"
-    allow:
-      - dependency-name: "cranelift*"
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 2
-    commit-message:
-      prefix: "deps(cranelift)"
-    groups:
-      cranelift:
-        patterns: ["cranelift*"]

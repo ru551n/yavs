@@ -252,7 +252,7 @@ suite's pass list).
 ## performance (`tools/bench`, #387)
 
 The shared benchmark harness (`tools/bench/AGENTS.md`) measures every performance change the same way:
-`python3 -I tools/bench/run.py --compare A B`. Phase times come from `yavs run --time-report`. Testbenches of real projects (41, against sim1 and between binaries): `tools/realbench`. Analysis cells are batched calls since #745 (section "Analysis in batched calls"; tables before it are one call per file and not comparable). Current comparison with sim1 (rule 23: `--tier=auto`, total wall incl. analysis, cold and warm): section "Real-world performance suite: yavs against sim1, head-to-head 6, 2026-10-26", on the batched-call analysis basis (#745, both tools analyse consecutive files of a library in one call; head-to-head 1 to 5 were one call per file and are not comparable): geomean of the 41 realbench totals (libraries analysed too) 0.22 warm, 0.64 cold (the same run on the old per-file basis 0.24 and 0.42; head-to-head 5 had 0.23 and 0.43); own files + elab + run 0.23 and 0.49, elab + run 0.23 and 0.47, executed instructions yavs / sim1 0.31 and 0.60, tiny-test corpus 0.11 and 0.25, the h2h designs 0.56 and 0.78. The tables below are older measurements on the earlier host.
+`python3 -I tools/bench/run.py --compare A B`. Phase times come from `yavs run --time-report`. Testbenches of real projects (41, against sim1 and between binaries): `tools/realbench`. Analysis cells are batched calls since #745 (section "Analysis in batched calls"; tables before it are one call per file and not comparable). Current comparison with sim1 (rule 23: `--tier=auto`, total wall incl. analysis, cold and warm): section "Real-world performance suite: yavs against sim1, head-to-head 7, 2026-10-27" (0.22 warm, 0.59 cold; head-to-head 6 below it is the detailed one), on the batched-call analysis basis (#745, both tools analyse consecutive files of a library in one call; head-to-head 1 to 5 were one call per file and are not comparable): geomean of the 41 realbench totals (libraries analysed too) 0.22 warm, 0.64 cold (the same run on the old per-file basis 0.24 and 0.42; head-to-head 5 had 0.23 and 0.43); own files + elab + run 0.23 and 0.49, elab + run 0.23 and 0.47, executed instructions yavs / sim1 0.31 and 0.60, tiny-test corpus 0.11 and 0.25, the h2h designs 0.56 and 0.78. The tables below are older measurements on the earlier host.
 
 Baseline of main at the commit that added the harness (release build, Intel Core Ultra 9 275HX, 24 CPUs,
 host shared with other agents; median CPU seconds of 3 runs, phase CPU in 10 ms steps, `--threads 1`):
@@ -5323,9 +5323,33 @@ analysis wall 0.62 to 0.89 (`en_cl_fix_pkg` 0.82, `poc_strings` 0.62, `sc5_times
 elaboration plus run, `--tiers auto-cold`) is below sim1 on `en_cl_fix_pkg`, `poc_strings`, `neorv32_single_min` and `fletcher_bufferwriter_prim32` and above it on `sc5_timestamp` (0.59 s against 0.53), `fletcher_bufferreader` (1.64 against 1.13)
 and `fletcher_bufferwriter_512` (4.1 against 1.9): there the run phase is the gap (#519, #523, #740), not the analysis. Not verified: Windows (the fast path is Unix-only), other file systems than ext4.
 
+## Real-world performance suite: yavs against sim1, head-to-head 7, 2026-10-27 (`tools/realbench`)
+
+Current headline: `5b2beb73`, bench build with the `llvm` feature, method exactly as head-to-head 6 (batched analysis calls for both tools, `--tier=auto`, total wall incl. analysis, 5 timed
+runs, two complete passes merged by the best cell, three claimed cores 9 to 11, controls of the three long tests at the start and the end). Host load average 5 to 10 (other agents; no quiet window). Raw
+results are not committed. Geometric mean over the same 41 tests, ratio yavs / sim1 (in brackets the scan of 2026-10-26 on `1585475c`, then head-to-head 6):
+
+| basis | total warm | total cold |
+|---|---:|---:|
+| **total, libraries analysed too** | **0.22 (0.21; 0.22)** | **0.59 (0.59; 0.64)** |
+| own files + elab + run | 0.22 (0.22; 0.23) | 0.49 (0.49; 0.49) |
+| elab + run only | 0.22 (0.23; 0.23) | 0.48 (0.48; 0.47) |
+| executed instructions (run cell), yavs / sim1 | 0.30 (0.30; 0.31) | 0.59 (0.60; 0.60) |
+
+Summed over the 41 tests the full total is 38 s (yavs) against 70 s (sim1) warm and 57 s against 70 s cold (42 / 72 and 60 / 71 in the scan, 43 / 76 and 64 / 76 at head-to-head 6). Faster than sim1: 36 of 41 warm,
+33 of 41 cold. The two passes agree (0.213 and 0.214 warm, 0.587 and 0.582 cold). The h2h designs (10 that were counted before; `xor_sig` now runs in sim1 and is 0.12 warm, 0.20 cold): 0.50 warm, 0.61 cold
+(0.54 and 0.65 in the scan, 0.56 and 0.78 at head-to-head 6): `rtl_chain` 1.21 to 0.70 warm, `rtl_ff` 1.24 to 1.02, `rtl_lfsr` 1.43 to 1.35, `lfsr64` 1.04 to 1.10 (sim1 itself moved 145 to 129 ms).
+
+Above sim1 (full total warm / cold, run-cell instruction ratio): `grlib_leon3mp` 2.67 / 2.84 (2.3; outside the 41), `fletcher_bufferwriter_512` 1.98 / 2.15 (1.8), `fletcher_bufferreader` 1.36 / 1.43 (1.3),
+`vai_window_gen_interlock` 1.29 / 1.98 (1.7), `sc5_fifo_repack` 1.12 / 1.97 (1.7), `poc_stat_histogram` 1.04 / 2.00 (2.8); cold only: `poc_arith_addw` 0.95 / 1.12, `hdlm_lfsr` 0.84 / 1.07,
+`sc5_timestamp` 0.72 / 1.02; designs `rtl_lfsr` 1.35 / 1.86, `lfsr64` 1.10 / 1.37, `rtl_ff` 1.02 / 1.21. Movers since the scan: `vai_window_gen_interlock` yavs 10.0 to 8.1 s (ratio 1.83 to 1.29; sim1 5.5 to
+6.2 s, host), `uvvm_axistream_vvc` 0.63 to 0.52 (3.0 to 2.5 s), `neorv32_single_min` 0.78 to 0.70, `uvvm_sb_slv` 0.49 to 0.44, `poc_arith_addw` 5.6 to 5.2 s; the 30 short tests are level. The controls
+(run cell, sim1 / yavs seconds) were at the start 1.85 / 4.03, 5.23 / 5.19, 5.88 / 7.53 and at the end 1.91 / 3.93, 6.01 / 5.85, 7.81 / 9.26 (`fletcher_bufferwriter_512`, `poc_arith_addw`,
+`vai_window_gen_interlock`; the end ran at load 10), so absolute seconds of the late cells carry drift for both tools.
+
 ## Real-world performance suite: yavs against sim1, head-to-head 6, 2026-10-26 (`tools/realbench`)
 
-This is the current headline (`d3123c88`, bench build with the `llvm` feature, one binary for every cell; the previous run, head-to-head 5 at `9e75d84e`, is in brackets where it is comparable). **The basis of the
+This was the headline of head-to-head 6 (`d3123c88`, bench build with the `llvm` feature, one binary for every cell; the previous run, head-to-head 5 at `9e75d84e`, is in brackets where it is comparable). **The basis of the
 analysis cells changed (#745): both tools now analyse consecutive files of one library and standard in ONE call (`--analyze-calls batched`, the realbench default; the shared-work cost fix is `66219d63`), where
 head-to-head 1 to 5 used one call per file.** The two bases are not comparable, so the tables give both: "batched" is the new headline, "per-file" is the old basis measured once (one pass of the analysis cells with
 `--analyze-calls per-file`, the run cells taken from the batched passes, they are the same cells). Basis otherwise unchanged (root rule 23): `--tier=auto` only, TOTAL wall as a user runs it (analysis of every file of

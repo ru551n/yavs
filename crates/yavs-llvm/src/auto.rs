@@ -1249,6 +1249,8 @@ struct Worker {
     compute: Vec<std::cell::OnceCell<bool>>,
     /// `kind` per function, once asked.
     kinds: Vec<std::cell::OnceCell<Kind>>,
+    /// `cached`, worked out once per function.
+    in_cache: Vec<std::cell::OnceCell<bool>>,
     /// `native_set` of each function alone, once asked (`nset`).
     nsets: Vec<std::cell::OnceCell<std::collections::HashSet<FuncId>>>,
     /// The sampled time `pick` waits for: the cheapest candidate it last refused fits the budget
@@ -1390,10 +1392,7 @@ impl Worker {
             // The class rules of `threshold` only raise the base, and they analyse everything the
             // function can call (`natively`): not for one still below the base (#544).
             let now = self.group[g];
-            let base = self
-                .prog
-                .func(self.prog.base_of(id))
-                .map_or(u64::MAX, |b| self.heat.threshold(b));
+            let base = self.floor(id);
             let at = if now < base {
                 base
             } else {
@@ -1482,6 +1481,7 @@ impl Worker {
             spent: 0,
             compute: vec![Default::default(); nfuncs],
             kinds: vec![Default::default(); nfuncs],
+            in_cache: vec![Default::default(); nfuncs],
             nsets: vec![Default::default(); nfuncs],
             pick_at: 0,
             note,
@@ -1644,12 +1644,31 @@ impl Worker {
 
     /// Whether the compilation cache holds the object of `id`: an earlier run compiled a function
     /// of its name and size (`listed`). A function of the cache costs `HIT`, whatever its kind.
+    /// Never with `YAVS_AUTO_PRICE=model` (the model's price and `Heat::threshold` for every
+    /// function, cold or warm: counts that do not depend on the cache, #728). Worked out once.
     fn cached(&self, id: FuncId) -> bool {
-        crate::objcache::enabled()
-            && self
-                .prog
-                .func(id)
-                .is_some_and(|f| self.listed.contains(&self.list_key(id, f)))
+        static MODEL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *self.in_cache[id.0 as usize].get_or_init(|| {
+            !*MODEL.get_or_init(|| std::env::var("YAVS_AUTO_PRICE").is_ok_and(|v| v == "model"))
+                && crate::objcache::enabled()
+                && self
+                    .prog
+                    .func(id)
+                    .is_some_and(|f| self.listed.contains(&self.list_key(id, f)))
+        })
+    }
+
+    /// The time any function must be seen before it is compiled: `Heat::threshold` of the process
+    /// `id` is or is a copy of. None for a function whose object is in the cache under the default
+    /// policy (maintainer 2026-10-27, #728): a warm run links it once its cache price repays
+    /// (`need`). `--tier-heat` keeps it.
+    fn floor(&self, id: FuncId) -> u64 {
+        if self.heat.budget != 0 && self.cached(id) {
+            return 0;
+        }
+        self.prog
+            .func(self.prog.base_of(id))
+            .map_or(u64::MAX, |b| self.heat.threshold(b))
     }
 
     /// How the list of the compilation cache names `id` (`f`): name and size, and for a copy of a
@@ -1738,10 +1757,7 @@ impl Worker {
             return self.heat.o2_threshold(f);
         }
         // (A copy's seen time is its process's, `Worker::group`: its threshold is the process's too.)
-        let at = self
-            .prog
-            .func(self.prog.base_of(id))
-            .map_or(u64::MAX, |b| self.heat.threshold(b));
+        let at = self.floor(id);
         if self.heat.budget == 0 {
             at
         } else if self.is_rtl(id) {
@@ -1977,6 +1993,7 @@ impl Worker {
         let mut trees = Vec::new();
         let mut prices = Vec::new();
         let mut waits = Vec::new();
+        let mut links = Vec::new();
         order.retain(|&i| {
             let ids = self.tree(cands[i]);
             let (saves, costs) = self.repays(cands[i], &ids);
@@ -1986,6 +2003,7 @@ impl Worker {
             }
             let cost: u64 = ids.iter().map(|&(i, _)| self.price(i)).sum::<u64>() + self.load_cost();
             prices.push((cost, self.factor(cands[i])));
+            links.push(ids.iter().all(|&(i, _)| self.cached(i)));
             trees.push(ids);
             true
         });
@@ -2003,6 +2021,14 @@ impl Worker {
         }
         if order.is_empty() {
             return None;
+        }
+        // A tree the cache holds whole is a link: it does not wait for the budget (maintainer
+        // 2026-10-27, #728: a warm run uses cached code as soon as its cache price repays).
+        if self.heat.budget != 0
+            && let Some(k) = links.iter().position(|&l| l)
+        {
+            cands.swap_remove(order[k]);
+            return Some(trees.swap_remove(k));
         }
         match first_fit(&prices, self.heat.budget, self.spent, self.total) {
             Ok(k) => {
@@ -2602,6 +2628,7 @@ impl Worker {
                 let key = self.list_key(id, f);
                 if crate::objcache::enabled() && self.listed.insert(key.clone()) {
                     crate::objcache::add_compiled(&key.0, key.1);
+                    self.in_cache[id.0 as usize] = Default::default();
                 }
                 if part == Part::Native
                     && sampled
@@ -4159,6 +4186,21 @@ mod tests {
         // (A program that is not in the stage cache has no pre-keys: its hits generate, #785.)
         assert_eq!(w2.price_of(f2, true), super::HIT_GEN.price(n2));
         assert!(w2.price_of(f2, true) * 10 < w2.price_of(f2, false));
+    }
+
+    /// A warm run compiles a function whose object is in the cache once its cache price repays,
+    /// without the floor every other function waits for; `--tier-heat` keeps the floor (#728).
+    #[test]
+    fn a_cached_function_waits_for_its_cache_price_only() {
+        let (mut w, f) = worker(200);
+        let floor = w.heat.threshold(w.prog.func(f).unwrap());
+        assert_eq!(w.floor(f), floor, "not in the cache");
+        w.in_cache[f.0 as usize] = std::cell::OnceCell::from(true);
+        assert_eq!(w.floor(f), 0);
+        assert!(w.threshold(f, false) < floor, "{}", w.threshold(f, false));
+        assert_eq!(w.threshold(f, false), w.need(f));
+        w.heat.budget = 0;
+        assert_eq!(w.floor(f), floor, "--tier-heat");
     }
 
     /// What the profile of an earlier run calls hot is a candidate at its first look (#754), whatever

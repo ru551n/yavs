@@ -11386,3 +11386,21 @@ subprograms that cannot suspend.
   same sequence showed the other side: a joint early trial of both in run 2 was judged not better and lost both, and with the sum
   `bus_process` alone was tried first and kept. `walk_control` is under 5 percent of a run, so its early compile gains 2 to 7 percent of
   the run, near the 3 percent of the judgement.
+
+## `--tier=auto`: a warm run compiles what the cache holds once its cache price repays (yavs-llvm `auto.rs`, #728, maintainer 2026-10-27)
+
+- **Decision (maintainer, 2026-10-27, option (c) on #728):** the default `--tier=auto` prices a function whose object is in the compilation
+  cache at the cache price, so a warm run compiles it as soon as it is seen; `--tier-heat` and an environment switch keep the fixed model
+  price for the deterministic count tests. Extends "A function whose object is in the cache is priced as linking it" (2026-10-25), which
+  priced the hit (`HIT`) but kept two fixed costs in front of it.
+- **What changed:** (1) a cached function does not wait for `Heat::threshold` (the floor of 2 ms + 40 us an IR instruction every
+  function is seen for), only for its payback rule at the cache price (`Worker::floor`, `need`: 3.6 ms seen for a clocked process of 200 IR
+  instead of 10 to 15); (2) a candidate whose whole tree is in the cache is picked ahead of the budget (`Worker::pick`, `links`): its
+  price there included opening the LLVM library (`LOAD_US`, 10 ms), which kept `rtl_lfsr`'s process refused until 35 ms of the run were
+  seen. `--tier-heat` (budget 0) keeps both; `YAVS_AUTO_PRICE=model` makes no function count as cached (model price, floor and budget for
+  every function, the same counts cold and warm). `Worker::cached` is worked out once per function (`in_cache`, reset when the run
+  lists the function).
+- **Measured** (bench builds, both with #785 and #679, warm worlds, 9 interleaved runs, one claimed CCD1 core, `perf stat` of the whole
+  run): `rtl_lfsr` 0.909 instructions, 0.94 CPU, 0.93 wall (`_p1` linked at 28 ms of the run, was 57); `rtl_ff` 0.99 / 0.92 / 0.92;
+  `lfsr64` 1.00 / 1.00 / 0.99 (its copy is compiled early by the run-to-run profile already, at 30 ms).
+

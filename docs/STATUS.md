@@ -9429,7 +9429,7 @@ natives on slices (`to_x01`, the numeric operators) still copy the slice first; 
   functions); running interpreted callees in place from compiled code was tried and dropped (window generator 1.12, decisions.md); a cache hit
   still generates the module.
 
-## `--tier=auto`: compiled code found before it is generated, profile time summed over runs (yavs-llvm, yavs-ir, yavs-elab, #785, #679, 2026-10-27)
+## `--tier=auto`: compiled code found before it is generated, profile time summed over runs, warm cache price (yavs-llvm, yavs-ir, yavs-elab, #785, #679, #728, 2026-10-27)
 
 - **Pre-key (#785, maintainer 2026-10-27):** a warm run links a function's object by a key made before generation (program identity from the
   stage cache, the function's optimised IR, level, part, target, build); no generation on a hit. `YAVS_LLVM_PREKEY_CHECK=1` (CI `llvm` jobs,
@@ -9438,12 +9438,17 @@ natives on slices (`to_x01`, the numeric operators) still copy the slice first; 
   9.5 ms (was about 790). Decision: `docs/decisions.md` "llvm: compiled code found before it is generated".
 - **Profile (#679, maintainer 2026-10-27):** a listed process compiles early once the seen time of the earlier runs, summed, repays its
   price (was one run's times 4). Window generator: `walk_control` compiles early from run 5 (main: run 2) and is kept; steady state equal.
-- `tools/realbench --compare` (bench builds, 12e07dce against both changes, run phase, one claimed CCD1 core each, host load 15 to 30 from
-  other agents): 41 tests (GRLIB apart, #794) `auto` geometric mean 0.97, sum 0.99; `auto-cold` 1.01 / 1.00, instructions 0.99 / 1.00.
-  Seven runs: `vai_window_gen_interlock` warm 0.98 / cold 0.99, `fletcher_bufferwriter_512` 1.00 / 0.99, `fletcher_bufferreader` 0.96 / 1.00,
-  `neorv32_single_min` 1.01 / 1.00, `poc_arith_addw` 1.04 / 1.02 (0.98 / 1.01 in the 42-test run, instructions 0.99). Nine runs of the
-  small-test outliers of the 42 (cold 1.07 to 1.14): all 1.00 but `olo_base_cam` cold 0.14 to 0.15 s. GRLIB (realbench fixed for #794, five runs): two sessions at load 30 to
-  35 ran 70 to 95 s a cell (37 s quiet) and disagree (warm 0.94 and 1.09, cold 1.17 and 1.02, instructions 1.00 to 1.02): not measured.
+- `tools/realbench --compare` (bench builds, 097f20ab against all three changes, run phase, one claimed CCD1 core, host load 6 to 13):
+  42 tests `auto` geometric mean 0.99, `auto-cold` 1.00, instructions 0.99 / 1.00; `grlib_leon3mp` 0.99 warm, 0.96 cold (34.4 to 32.8 s
+  warm). Seven-run reruns of the cells off by more than 5 percent: `vai_window_gen_interlock` 0.98 / 0.98 (was 1.13 at equal instructions),
+  `sc5_fifo_repack` 0.99 / 1.00, `uvvm_axistream_vvc` 0.98 / 1.00, `osvvm_axis_random` 1.06 / 1.03 (0.01 s), `poc_arith_addw` 1.06 / 0.92
+  (instructions 1.02 / 0.99; 0.98 to 1.06 warm over three sessions, the same functions compiled, all earlier).
+  Earlier session against 12e07dce (#785 and #679 only): 41 tests `auto` 0.97, `auto-cold` 1.01.
+- **Warm runs and the cache price (#728, maintainer 2026-10-27, option (c)):** a function the cache holds waits only for its payback at the
+  cache price (no `Heat::threshold` floor) and a fully cached tree is picked ahead of the budget; `--tier-heat` and `YAVS_AUTO_PRICE=model`
+  keep the model price. Warm, 9 interleaved runs against the same build without it (on 12e07dce): `rtl_lfsr` 0.93 wall (0.91
+  instructions), `rtl_ff` 0.92, `lfsr64` 0.99. Against 097f20ab with all three changes (15 runs, load spikes): `rtl_ff` 0.97, `rtl_lfsr`
+  1.00 (its `_p1` links at 24 ms, was 52, of a 250 ms run), `lfsr64` 0.99.
 - Left: with the sum a process that the 4-run projection compiled in run 2 waits until its seen time has repaid it (window generator runs
   2 to 4 0.1 to 0.5 s slower than main's); a process under about 5 percent of a run gains near the judgement's 3 percent when compiled
   early, so it is kept or lost by noise.

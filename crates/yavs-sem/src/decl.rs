@@ -468,6 +468,101 @@ impl Db {
         }
     }
 
+    /// `E1226`: an initial value in a package or package body names a deferred constant of
+    /// that package before the end of its full declaration (6.4.2.2): its value is not known
+    /// yet when the initial value is elaborated (#809).
+    fn check_deferred_uses(&mut self, scope: ScopeId, e: ExprId) {
+        use crate::scope::ScopeKind;
+        let pkg = match self.scopes[scope].kind {
+            ScopeKind::Package => scope,
+            ScopeKind::PackageBody => match self.body_package(scope) {
+                Some(p) => p,
+                None => return,
+            },
+            _ => return,
+        };
+        let mut early = Vec::new();
+        self.walk_expr(e, &mut |x| {
+            if let crate::hir::ExprKind::Obj(d) = self.exprs[x].kind
+                && self.decls[d].scope == pkg
+                && matches!(&self.decls[d].kind, DeclKind::Object(o) if o.role == ObjRole::Deferred)
+                && !(scope != pkg
+                    && self.scopes[scope]
+                        .names
+                        .get(&self.decls[d].name.key())
+                        .is_some_and(|v| v.iter().any(|&f| matches!(&self.decls[f].kind, DeclKind::Object(o) if o.class == ObjClass::Constant))))
+            {
+                early.push((d, self.exprs[x].span));
+            }
+        });
+        for (d, span) in early {
+            let name = self.decls[d].name;
+            self.report(
+                yavs_diag::Diagnostic::error(
+                    crate::diag::DEFERRED_EARLY,
+                    format!("deferred constant `{name}` is used before its full declaration"),
+                )
+                .with_primary(span, "its value is not known here")
+                .with_secondary(self.decls[d].name_span(), "deferred here")
+                .with_note("LRM 6.4.2.2: before the end of the full declaration, a deferred constant may appear only in the default expression of a local generic, port or formal parameter"),
+            );
+        }
+    }
+
+    /// `E1227`: the subtype indication of the full declaration of deferred constant `n` does
+    /// not conform to the deferred one (6.4.2.2): another type mark, or other static bounds.
+    fn check_full_conforms(&mut self, scope: ScopeId, n: &Ident, st: SubtypeId, span: Span) {
+        let Some(pkg) = self.body_package(scope) else {
+            return;
+        };
+        if self.scopes[scope].kind != crate::scope::ScopeKind::PackageBody {
+            return;
+        }
+        let Some(d) = self.scopes[pkg].names.get(&n.key).and_then(|v| {
+            v.iter().copied().find(
+                |&d| matches!(&self.decls[d].kind, DeclKind::Object(o) if o.role == ObjRole::Deferred),
+            )
+        }) else {
+            return;
+        };
+        let DeclKind::Object(o) = &self.decls[d].kind else {
+            return;
+        };
+        let deferred = o.subtype;
+        let mark = |db: &Self, s: SubtypeId| {
+            if db.subtypes[s].name.is_some() {
+                Some(s)
+            } else {
+                db.subtypes[s].parent
+            }
+        };
+        let dims = match &self.types[self.base(st)].kind {
+            crate::types::TypeKind::Array { indexes, .. } => indexes.len(),
+            _ => 1,
+        };
+        let sr = crate::expr::aggregate::subtype_range;
+        let same = mark(self, st) == mark(self, deferred)
+            && (0..dims).all(|k| match (sr(self, st, k), sr(self, deferred, k)) {
+                (Some(a), Some(b)) => (a.left, a.dir, a.right) == (b.left, b.dir, b.right),
+                _ => true,
+            });
+        if !same {
+            let (want, have) = (self.subtype_name(deferred), self.subtype_name(st));
+            self.report(
+                yavs_diag::Diagnostic::error(
+                    crate::diag::DEFERRED_SUBTYPE,
+                    format!(
+                        "the full declaration of `{}` has subtype `{have}`, the deferred constant `{want}`",
+                        n.text
+                    ),
+                )
+                .with_primary(span, "does not conform")
+                .with_secondary(self.decls[d].name_span(), "deferred here")
+                .with_note("LRM 6.4.2.2: the subtype indications of the deferred and the full declaration must conform"),
+            );
+        }
+    }
+
     /// `E1220`: an incomplete type declared in this region was never completed (5.4.2).
     fn check_incomplete_completed(&mut self, scope: ScopeId) {
         let open: Vec<DeclId> = self.scopes[scope]
@@ -604,6 +699,14 @@ impl Db {
             .default
             .as_ref()
             .map(|e| self.expr_in_subtype(scope, e, subtype));
+        if let Some(e) = default {
+            self.check_deferred_uses(scope, e);
+        }
+        if class == ObjClass::Constant && default.is_some() {
+            for n in &o.names {
+                self.check_full_conforms(scope, n, subtype, o.subtype.span);
+            }
+        }
         let full = self.constrainedness(subtype) == crate::types::Constrainedness::Full;
         let bounds = if full {
             BoundsFrom::Subtype

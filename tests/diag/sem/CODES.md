@@ -64,6 +64,8 @@ Status (2026-10-18): every proposed code in this table is now defined in `yavs-s
 | E1223 | constant (2008), signal, generic, port or parameter of an access or file type, also in 2008 protected method profiles | 8.1 |
 | E1224 | constant without a value outside a package declaration | 6.4.2.2 |
 | E1225 | bad resolution function | 8.1 |
+| E1226 | deferred constant used in an initial value of its package before its full declaration | 6.4.2.2 |
+| E1227 | full declaration of a deferred constant with a subtype indication that does not conform | 6.4.2.2 |
 | E1230 | missing body (subprogram, protected type, deferred constant in a package body) | 8.1, 4.8 |
 | E1232 | type, subprogram or package interface in a parameter list | 4.2.2.1 |
 | E1233 | named return value (2019) of a type that is not scalar, array or record, e.g. an access type (#239; scalar types accepted since the user ruling of 2026-10-19) | 4.2.1 (2019) |

@@ -3,9 +3,10 @@ Sphinx configuration of the yavs user documentation (Read the Docs, .readthedocs
 
 Build with: sphinx-build -W -b html docs docs/_build/html
 
-The other files in docs/ (plan, decisions, status, design notes, the command line contract, the
-test runner requirements) are for developers and agents and are not part of the site. To add a page
-to the site, see docs/README.md.
+The site is a user guide. The other files in docs/ (plan, decisions, status, design notes, the
+command line contract, the test runner requirements, the parallel kernel measurements, the full
+conformance report) are for developers and agents and are not part of the site. To add a page to
+the site, see docs/README.md.
 """
 
 import os
@@ -32,6 +33,10 @@ exclude_patterns = [
     "decisions.md",
     "cli-contract.md",
     "test-runner-requirements.md",
+    "parallel.md",
+    # The generated report and its summary, which conformance.rst includes
+    "conformance.md",
+    "conformance-summary.md",
     "design",
     "AGENTS.md",
     "README.md",
@@ -85,3 +90,8 @@ for _path in _unreleased + _releases:
         _notes += [f"## {_path.stem}", ""]
     _notes += [f"```{{include}} ../release_notes/{_path.name}", ":heading-offset: 1", "```", ""]
 (ROOT / "docs" / "release_notes.md").write_text("\n".join(_notes))
+
+# The site shows the summary of the generated conformance report, the part before "## Details",
+# cut here so that llms-full.txt (which ignores include options) holds only the summary too.
+_report = (ROOT / "docs" / "conformance.md").read_text()
+(ROOT / "docs" / "conformance-summary.md").write_text(_report.split("\n## Details\n", 1)[0] + "\n")

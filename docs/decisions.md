@@ -97,6 +97,14 @@ milestone users care about works.
   `READTHEDOCS_TOKEN`), rebuilds `latest` on main and activates a version per release tag plus
   `stable`. The developer documents in `docs/` (plan, decisions, design, CLI contract) are
   excluded from the site.
+- **The site is a user guide** (maintainer, 2026-10-28): short task-oriented pages (introduction,
+  installation, getting started, libraries, waveforms, coverage, debugging, VHPI, running faster,
+  command-line reference, troubleshooting) and a short reference (language support, where
+  simulators differ, conformance summary, performance). Developer detail (development environment
+  variables, counters, cache formats, crate names, measurement method) stays in the repository and
+  is linked on GitHub; `parallel.md` and the full `conformance.md` are off the site (the site shows
+  the report's summary, cut in `conf.py`). The site and README name OSVVM, UVVM and VUnit as
+  libraries yavs is compliant with, and never name cocotb (maintainer, 2026-10-28).
 - CI (agent, 2026-10-18, #134): fmt, clippy and tests with default features on ubuntu-24.04,
   ubuntu-24.04-arm and windows-latest (MSVC). No LLVM, no external corpora (#63), no qemu/Wine
   runs (the aarch64 and Windows runners are native). The release workflow calls the same

@@ -73,7 +73,7 @@ kernel's event bus or read the elaborated hierarchy; `yavs-cache` stores cache e
 | Both | features `llvm` and `clift` | `--tier=auto3`: Cranelift for warm functions, LLVM O2 for those that stay hot. Built in CI; not what a release archive contains. |
 
 How the CLI picks a tier, and what `--tier=auto` means in each build, is in `crates/yavs/AGENTS.md`
-and `docs/usage.rst` and `docs/install.rst`. Summary: `yavs` has no default cargo features, so
+and `docs/running-faster.rst` and `docs/install.rst`. Summary: `yavs` has no default cargo features, so
 a plain `cargo build -p yavs` is interpreter-only; with `llvm` or `clift` the default is `auto`
 (`auto` with LLVM when `llvm` is built in, else `clift-auto`), except under `--dap`, which never
 installs a compiled tier.
@@ -86,7 +86,7 @@ design and package state (`ir-*`, `low-*`, `init-*`, and the library-prefix kind
 `libopt-*`), compiled code (`obj/obj-*.img` for LLVM, `obj/clif-*.img` for Cranelift) and the shared
 analysed `std`/`ieee` units in a per-user store. Every entry is keyed by everything it depends on, damaged or
 foreign entries are misses, and `--no-cache` neither reads nor writes. The behaviour is specified in
-`docs/cli-contract.md` and described for users in `docs/usage.rst`.
+`docs/cli-contract.md` and described for users in `docs/running-faster.rst`.
 
 ### Parallel kernel (implemented, and what is not)
 

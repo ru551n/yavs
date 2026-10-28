@@ -642,7 +642,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   directions never happened); `--uncovered=yaml` prints the same items as a YAML exclusion file
   (`exclude:` list of `kind`/`instance`/`hash`/`line` or `signal`/`direction` maps); `--exclude FILE` takes the
   items such a file lists out of the summary and the Cobertura report and lists them under
-  "excluded" (format and warnings `W0110`, `W0111`, `W0114`: `docs/usage.rst` "Code coverage");
+  "excluded" (format and warnings `W0110`, `W0111`, `W0114`: `docs/coverage.md` "Excluding code");
   the file is read as YAML when its name ends in `.yaml` or `.yml` (any case), else as text rows,
   with the same meaning (`E0112` names the line of a bad entry).
   Exclusions apply when reporting; databases keep raw counts. `--cov-exclude-translate-off`

@@ -5,9 +5,8 @@ project. Of the approved VHDL-2019 language additions most work, three work in p
 (see the table below). PSL (the property language used for assertions) is supported as a subset. Plain Verilog is
 planned ([#776](https://github.com/ru551n/yavs/issues/776)).
 
-Which parts of VHDL and PSL yavs accepts and runs, and how well that is checked. For the command line see
-[usage](usage.rst) and [recipes](recipes.rst); the choices yavs makes where the language reference is open are in
-[Where simulators differ](language-choices.rst).
+Which parts of VHDL and PSL yavs accepts and runs, and how well that is checked. The choices yavs makes where the
+language reference is open are in [Where simulators differ](language-choices.rst).
 
 ## Choosing the standard
 
@@ -36,10 +35,8 @@ Each statement has one of these evidence levels.
 limits are listed. What is not implemented stops with a diagnostic that names the construct (see
 "Known gaps" below); yavs does not silently run it differently.
 
-The differential corpus of 544 testbenches passes at 1 and 4 threads with identical output on the interpreter and on the compiled tiers (544/544; the warm-cache `auto` variant is 543/544, one known failure, #806; recorded 2026-10-28 in the status log). Pass counts
-of the third-party suites yavs is also run against are in the
-[conformance report](https://github.com/ru551n/yavs/blob/main/docs/conformance.md). Passing tests are evidence, not
-proof, and the corpus is smaller than the language.
+How the evidence is gathered, and the pass counts of the test suites yavs is run against, are in the
+[conformance](conformance.rst) report. Passing tests are evidence, not proof.
 
 ## VHDL-2008
 
@@ -147,8 +144,19 @@ standard.
 ## PSL
 
 yavs runs a subset of PSL as checker processes. A directive is written as a VHDL-2008 statement in an architecture,
-block or generate statement or, with `--psl`, in a comment that starts with `-- psl`. The syntax and the run-time
-behaviour are described under "PSL assertions" in [usage](usage.rst). The subset below is simulated.
+block or generate statement or, with `--psl` (on `analyze` and `run`), in a comment that starts with `-- psl`:
+
+```text
+default clock is rising_edge(clk);
+p1: assert always count < 16 report "count overflow";
+p2: assert always req -> next[2] ack severity warning;
+p3: assert always {start; req} |=> {busy[*1 to 3]; ack};
+c1: cover {req; busy[*2 to 4]; done} report "transfer";
+-- psl p4: assert always start -> next busy;
+```
+
+A failing `assert` or `assume` reports like a VHDL assertion, with severity `error` unless the directive gives
+one; a `cover` prints its `report` text each time it is hit. The subset below is simulated.
 
 Supported:
 
@@ -204,7 +212,7 @@ testbenches for `numeric_std`, `std_logic_textio`, `std.textio` and the Synopsys
 
 The simulation cycle follows the language reference: delta cycles, inertial and transport delay, resolved and guarded
 signals, `postponed` processes, `force` and `release`, the signal attributes, shared variables, files, access types
-with heap reclamation, and external names are simulated by the differential corpus. Time is a 64-bit count of
+with heap reclamation, and external names are simulated by the regression testbenches. Time is a 64-bit count of
 femtoseconds by default; `--resolution` raises the limit and makes finer units an error. `integer` is 32 bits in
 1993 and 2008 and 64 bits in 2019. A run stops with `E3002` after `--max-deltas` delta cycles (default 10000) at
 one time.
@@ -214,7 +222,7 @@ Where the standard leaves the order of processes within a cycle open, yavs fixes
 on it.
 
 Mixed-language designs are not supported. Foreign subprograms (`VHPIDIRECT`) and VHPI plugins are described in
-[usage](usage.rst).
+[VHPI](vhpi.md).
 
 ## Known gaps
 

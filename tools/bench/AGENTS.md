@@ -96,7 +96,7 @@ Other rows of the 2026-10-21 head-to-head tables map to existing benchmarks: row
 ```sh
 tools/build-bench.sh                                                          # release + aligned functions (#576)
 python3 -I tools/bench/run.py --list
-# where does one long run spend its time (VHDL level)? yavs run --profile (see docs/usage.rst)
+# where does one long run spend its time (VHDL level)? yavs run --profile (see docs/running-faster.rst)
 python3 -I tools/bench/run.py target/release/yavs --group internal                      # one binary
 python3 -I tools/bench/run.py --compare /path/to/yavs-before target/release/yavs --runs 5   # A/B, all benchmarks
 python3 -I tools/bench/run.py --compare A B --bench elab_heavy,vunit_vc30 --fail-on-regression

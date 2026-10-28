@@ -113,8 +113,30 @@ exclude:
     instance: ":tb:u_debug*"
 ```
 
-Excluded items are left out of the totals and Cobertura and listed under "excluded". The
-database keeps the raw counts. The full row and key reference is in `docs/usage.rst`.
+Excluded items are left out of the totals and Cobertura and listed under "excluded" with their
+reasons; the database keeps the raw counts. Rows match by instance, kind and the hash of the
+statement's text, so an exclusion stays valid when the statement moves; the file and line are only
+there to read (a stale line is warning `W0110`). `yavs cov report --uncovered DB` and
+`--uncovered=yaml` print rows ready to copy:
+
+| Row | Fields |
+|-----|--------|
+| `statement`, `branch` | `INSTANCE HASH [FILE:LINE]` (YAML: `instance`, `hash`, `line`) |
+| `condition`, `expression` | `INSTANCE HEX12.OCC ROW` (YAML: plus `row: N`) |
+| `toggle` | `PATH SCALAR [rise\|fall]` (YAML: `instance`, `signal`, `direction`) |
+| `instance` | an instance path and everything below it |
+| `unit` | a package, such as `work.pkg_tools` |
+| `file` | a file glob, such as `*/generated/*.vhd` |
+
+In YAML, quote values that start with `*` or contain `: `.
+
+## Which tests cover what
+
+Each database names its test: `--cov-test=NAME`, by default the enabled test case of a
+`runner_cfg` generic, else the top level with its `-g` generics (`tb(n=0)`). `yavs cov merge`
+keeps, for every item, the tests that hit it. `yavs cov rank` prints a small set of tests that
+reaches the same coverage and the tests that set does not need; `yavs cov report --tests` lists
+the tests that hit each item.
 
 ## Details
 
@@ -129,28 +151,24 @@ line number in the row is only for reading.
 through `'Z'` or `'X'` counts nothing.
 
 **Condition and expression coverage.** An input is covered at value `v` when some evaluation
-flipped it alone and the result changed. Short-circuited inputs count as masked. Not measured:
-`assert` and `wait until` conditions, vector operands, and trees of more than 31 inputs. These
-two kinds add instructions to every evaluation of a multi-input condition, so ask for them only
-when you need them. The exact rules are in `docs/usage.rst`, section "Code coverage".
+flipped it alone and the result changed. In `if a and (b or c)` with `a` true, `b` false and `c`
+true, flipping `a` or `c` alone changes the result and flipping `b` does not: that evaluation covers
+`a = 1` and `c = 1`. Short-circuited inputs count as masked. Not measured: `assert` and `wait until`
+conditions, vector operands, and trees of more than 31 inputs. These two kinds cost time in every
+evaluation of a multi-input condition, so ask for them only when you need them.
 
 **Clocked processes.** A process that does nothing unless a clock edge happens runs only at
 that edge, with or without `--cov`. Its edge test therefore counts one run at initialisation
 plus one per edge.
 
-**The database.** The `.ycov` file is yavs's own text format with a version line; it may change
-between yavs versions. It is written at the end of the run whatever its outcome; an elaboration
-failure writes none. The file is overwritten, never appended to. Tests that ran with the same
-name count as one test. The default test name is the enabled test case of a `runner_cfg`
-generic, else the top level with its `-g` generics, such as `tb(n=0)`.
+**The database.** The `.ycov` file is written at the end of the run whatever its outcome, and
+overwritten, never appended to. Its format may change between yavs versions.
 
-**HTML report.** Static pages with inline style and one inline script, no external resources.
-Missed lines are red, partly covered lines (ran in some instances only) purple, lines with a
-missed branch arm or toggle yellow. Clicking a line opens its items per instance with counts and
-the tests that hit it. Each file also has a `src-N-missed.html` page with only the lines that
-have gaps. Sources are read from the paths stored in the database, so run the command where they
-resolve. The same databases always give the same bytes. `rank` picks tests greedily: each pick
-is the test adding the most items not yet hit.
+**HTML report.** Static pages that open from disk. Missed lines are red, lines that ran in only
+some instances purple, lines with a missed branch arm or toggle yellow; click a line to see its
+items per instance, with counts and the tests that hit them. Each file also has a page with only
+its gaps. Sources are read from the paths stored in the database, so run the command where they
+resolve.
 
 **Exit status and diagnostics.** `yavs cov` exits 0, or 1 on an error or when `-Werror` turns a
 warning into an error.
@@ -168,10 +186,4 @@ warning into an error.
 | `W0114` | an excluded item did run |
 | `W0115` | a signal was left out of toggle coverage because of `--cov-toggle-max` |
 
-**Execution tiers and threads.** Counts are the same in every execution tier (`--tier=interp`, `auto` and the others) and at any
-`--threads`. This is tested by comparing the database files byte for byte: the same design is
-run in each tier and with one and four threads, and the files must be identical for all kinds,
-including condition and expression rows. The automated tier comparisons run only in source builds
-with the compiled tier they were written for; for the Cranelift tier of the release archives the
-equality was observed on a small design but is not covered by a test. A further test checks that per-instance specialised code counts like shared
-code.
+**Tiers and threads.** Counts are the same in every tier and at any `--threads`.

@@ -723,10 +723,14 @@ impl Db {
             // a scalar subtype, as locally static integers (3.1.2, 5.2.1).
             ast::Range::Name(n) => {
                 let Some(res) = self.range_attr(scope, n) else {
-                    return Err(self.unsupported(
-                        span,
-                        "a type mark as a type definition's range",
-                        "S3",
+                    // 5.2.1: a range is `l to r` or a range attribute, never a type mark.
+                    return Err(self.error(
+                        Diagnostic::error(
+                            diag::BAD_TYPE_DECL,
+                            "the range of a type definition must be `left to right` or a range attribute",
+                        )
+                        .with_primary(n.span, "not a range")
+                        .with_help("write the bounds, e.g. `range t'low to t'high`, or `range t'range`"),
                     ));
                 };
                 let (rc, t) = res?;

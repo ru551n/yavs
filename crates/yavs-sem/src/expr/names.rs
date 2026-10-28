@@ -158,6 +158,25 @@ impl Db {
                                     );
                                 }
                             },
+                            // 8.3: a type, subtype or component is not a declarative region.
+                            DeclKind::Type(_)
+                            | DeclKind::Subtype(_)
+                            | DeclKind::GenericType(_)
+                            | DeclKind::Component(_)
+                            | DeclKind::EnumLit { .. }
+                            | DeclKind::PhysUnit { .. }
+                            | DeclKind::Attribute { .. } => {
+                                let what = self.decls[d].name;
+                                self.report(
+                                    Diagnostic::error(
+                                        diag::NOT_A_PACKAGE,
+                                        format!("`{what}` is not a region an expanded name can select from"),
+                                    )
+                                    .with_primary(prefix.span, "not a library, design unit, subprogram or labelled statement")
+                                    .with_note("LRM 8.3: the prefix of an expanded name denotes a construct that is a declarative region"),
+                                );
+                                return NameRes::Error;
+                            }
                             _ => {
                                 return NameRes::Unsupported(
                                     n.span,

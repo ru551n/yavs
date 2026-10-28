@@ -1063,7 +1063,8 @@ impl Db {
                 // An applied attribute whose value is indexed or sliced: the
                 // generic apply diagnostics below report a wrong arity or index
                 // type; only a bare attribute name is unsupported here (#653).
-                if !matches!(n.kind, ast::NameKind::Apply { .. }) {
+                // With interpretations, the type mismatch below is the problem (#822).
+                if !matches!(n.kind, ast::NameKind::Apply { .. }) && is.is_empty() {
                     self.unsupported(n.span, "this use of a predefined attribute", "S3");
                     return;
                 }

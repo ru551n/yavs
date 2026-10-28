@@ -562,7 +562,9 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   running exit handlers, unless `--load` or `--vhpi` libraries are loaded: then it waits for
   that compilation so their exit handlers run. Elaboration-time
   code (package and instance initialisation) runs interpreted either way, and so does a run
-  under `--dap`. `--tier-max-size=N` (default 50000): with `llvm` or `auto`, a function of more
+  under `--dap`. Known gap (checked 2026-10-28): under `--dap` an explicit `--tier=llvm` or
+  `--tier=clift` is accepted but nothing is compiled (`--verbose` prints no tier notes); the debugger
+  needs the interpreter's frame slots. `--tier-max-size=N` (default 50000): with `llvm` or `auto`, a function of more
   than N IR instructions stays interpreted (user, 2026-10-19, #126). `--tier-heat=BASE,PER_INSTR,PERIOD`
   (hidden, for tests and tuning): with `auto`, a function is hot once a sample every PERIOD
   microseconds has seen the interpreter in it for BASE microseconds plus PER_INSTR nanoseconds
@@ -671,7 +673,8 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
 
 ## 6. GUI and waves
 
-The test runner's `-g/--gui` option (until `yavs-gui` exists): the test runner runs `yavs run ...
+The test runner's `-g/--gui` option (this describes the viewer path; `yavs-gui` exists
+now and the last paragraph of this section is the plan for using it): the test runner runs `yavs run ...
 --wave=<output>/yavs/<entity>.fst`, then opens the file in the viewer:
 `--viewer` argument, then `yavs.viewer.gui` sim option, then the default FST
 viewers the runner knows, found on `PATH`. `yavs.viewer_script.gui` is passed to the viewer as
@@ -684,8 +687,8 @@ values other than `fst`.
 then on PATH; neither is error `E0122` (exit 2). The exit status is the GUI's. `--gui` and
 `--dap` together are a usage error (exit 2).
 
-Later: when `yavs-gui` lands, `-g` will run `yavs run --dap=0 ...` and start
-`yavs-gui` attached to it. `--dap=0` makes yavs pick a free port, and its first
+Planned, test runner side (`yavs-gui` exists now; nothing here says the runner uses it yet): `-g` will run
+`yavs run --dap=0 ...` and start `yavs-gui` attached to it. `--dap=0` makes yavs pick a free port, and its first
 line on stderr is then exactly `yavs: DAP listening on 127.0.0.1:<port>` (implemented, section
 5); the test runner reads that line to connect the GUI. `--dap=PORT` with a fixed port
 prints the same line.

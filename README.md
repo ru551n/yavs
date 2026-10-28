@@ -10,10 +10,9 @@ Yet Another VHDL Simulator: VHDL-1993, 2008 and 2019 in Rust.
 
 ## Features
 
-- **Languages:** VHDL-1993, 2008 and 2019 files mix in one project; the IEEE libraries (including the VITAL and Synopsys packages) are built in. A PSL subset (simple sequences, `assert`/`cover`, `always`, `never`, `next`, `until`, `before`, `abort`) runs as checker processes; the rest of PSL is skipped with a warning.
-- **Three execution tiers:** an interpreter, LLVM and Cranelift. `--tier=auto` starts in the interpreter and compiles hot functions on a background thread, guided by a profile of the previous run; compiled code is cached on disk under a key made before code generation, so warm runs reuse it. The release archives come with LLVM or, as `-nollvm`, with Cranelift instead (see Installation); both run `--tier=auto` by default. The output is identical on every tier.
-- **Fast:** on 41 real testbenches against an established open-source VHDL simulator, the geometric mean of the full run time (analysis included, `--tier=auto`) is 0.22 of the reference simulator's with a warm cache and 0.59 with a cold one; faster on 36 of 41 warm. A few designs are still slower; see the
-  [head-to-head 7 section](docs/STATUS.md#real-world-performance-suite-yavs-against-sim1-head-to-head-7-2026-10-27-toolsrealbench) of `docs/STATUS.md` for method and every cell.
+- **Languages:** VHDL-1993, 2008 and 2019 files mix in one project; the IEEE libraries (including the VITAL and Synopsys packages) are built in. A subset of PSL is supported. What is supported and what is not is listed in [`docs/language-support.md`](docs/language-support.md).
+- **Code generation:** a Cranelift code generator is bundled inside the simulator binary; LLVM, which is linked as an external library, is supported as well for now and is scheduled for removal, so that everything ships in one binary. `--tier=auto` chooses per function, and compiled code is cached on disk. The output is identical on every tier.
+- **Fast:** on 41 real testbenches the geometric mean of the full run time (analysis included, `--tier=auto`) is 0.22 of an established open-source VHDL simulator's with a warm cache and 0.59 with a cold one; see [`docs/performance.md`](docs/performance.md).
 - **Parallel kernel:** `--threads N` evaluates processes in parallel; output is identical at any thread count.
 - **Waveforms:** FST (`--wave`) with records and arrays as scopes, include and exclude globs, a size cap and optional process variables (`--wave-variables`).
 - **Coverage:** statement, branch, condition, expression and toggle coverage (`--cov`), per-test attribution and ranking, database merge, text, HTML and Cobertura reports, exclusions by pragma, file or YAML.
@@ -25,11 +24,12 @@ Yet Another VHDL Simulator: VHDL-1993, 2008 and 2019 in Rust.
 
 yavs is early: expect gaps and please [report](https://github.com/ru551n/yavs/issues) what breaks.
 
-## Correctness evidence
+## Correctness and performance
 
 yavs is checked against recorded output of established open-source VHDL simulators and against the test suites of widely used VHDL libraries and real designs.
 
 **Results per suite, known differences and limits: [`docs/conformance.md`](docs/conformance.md)** (machine-readable: [`docs/conformance.json`](docs/conformance.json); regenerate with `tools/conformance/run.py`).
+**Speed against an established open-source VHDL simulator, with method and every testbench: [`docs/performance.md`](docs/performance.md).**
 
 ## License
 

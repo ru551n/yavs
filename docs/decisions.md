@@ -12207,3 +12207,9 @@ instruction-bound, so this round removes instructions; the prefetch rounds had t
 - **The reference simulator (rule 22):** its process entry calls the compiled closure with the process's state pointer and nothing between
   the scheduler and the code. The idea taken: the code that makes the activation's context is static code in the caller, not a virtual
   call back into the host. Ours keeps the per-activation view (#634). Nothing was copied.
+
+## README and public docs (maintainer, 2026-10-28)
+
+- **The README links the evidence instead of repeating it.** Correctness: `docs/conformance.md` (generated); speed: `docs/performance.md` (method, headline geometric means, every testbench; updated with each head-to-head run); supported language features: `docs/language-support.md`. The README keeps one line per topic.
+- **The private test-runner interface is not named in tracked docs.** The README says only that yavs is compliant with OSVVM, UVVM and VUnit.
+- **LLVM is scheduled for removal.** The README presents the Cranelift code generator as the one bundled in the binary and LLVM, linked as an external library, as supported for now.

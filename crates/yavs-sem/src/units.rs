@@ -624,7 +624,9 @@ impl Db {
             files: Vec::new(),
         });
         let cacheable = self.cacheable(lib);
-        let capture = cacheable && self.store().is_some_and(|s| s.writable());
+        let capture = cacheable
+            && self.store().is_some_and(|s| s.writable())
+            && !self.dup_in_file.contains(&(lib, key));
         if capture {
             self.track(true);
         }

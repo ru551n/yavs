@@ -495,8 +495,15 @@ impl Db {
             }
             _ => {}
         }
+        // A package body is only needed at elaboration, so it may come later.
+        if !matches!(key, UnitKey::Secondary(_, b) if b.as_str() == "body")
+            && self.later_in_file.contains(&(lib, key))
+        {
+            return Err(self.declared_later(lib, key, at));
+        }
         if self.units_on()
             && self.replaying == 0
+            && !self.dup_in_file.contains(&(lib, key))
             && let Some(u) = self.try_replay(lib, key)
         {
             return Ok(u);
@@ -526,10 +533,16 @@ impl Db {
             .get_mut(&(lib, path.clone()))
             .expect("parsed above");
         let file = fc.file;
+        // A unit declared twice in its file: the file's own analysis takes the copies in
+        // order; a later load takes the last, which replaced the others (13.5).
+        let in_order = self.dup_in_file.contains(&(lib, key));
         let ast = fc
             .units
             .as_mut()
-            .and_then(|us| us.iter_mut().find(|(k, u)| *k == key && u.is_some()))
+            .and_then(|us| {
+                let mut it = us.iter_mut().filter(|(k, u)| *k == key && u.is_some());
+                if in_order { it.next() } else { it.last() }
+            })
             .and_then(|(_, u)| u.take());
         let Some(ast) = ast else {
             return Err(self.not_found(lib, key, at));
@@ -627,6 +640,24 @@ impl Db {
             d.with_help(hint.unwrap_or_else(|| {
                 "analyze the file that defines it first, or check the name".into()
             }));
+        self.error(d)
+    }
+
+    /// `E1002`: a unit needs a unit of its own file that comes after it (13.5, #810).
+    fn declared_later(&mut self, lib: LibId, key: UnitKey, at: Option<Span>) -> Reported {
+        let mut d = Diagnostic::error(
+            diag::UNIT_NOT_FOUND,
+            format!(
+                "design unit {} of library `{}` is declared later in this file",
+                key.describe(),
+                self.libs[lib].name.text
+            ),
+        )
+        .with_note("LRM 13.5: the units of a file are analyzed in their textual order, and a unit needs the units it depends on analyzed before it")
+        .with_help("move it before the unit that needs it");
+        if let Some(at) = at {
+            d = d.with_primary(at, "needed here");
+        }
         self.error(d)
     }
 
@@ -732,17 +763,39 @@ impl Db {
         }
         let before = self.error_count();
         let mut ids = Vec::new();
-        for &k in &keys {
+        self.later_in_file = keys.iter().map(|&k| (lib, k)).collect();
+        self.dup_in_file = (0..keys.len())
+            .filter(|&i| keys[..i].contains(&keys[i]))
+            .map(|i| (lib, keys[i]))
+            .collect();
+        for (i, &k) in keys.iter().enumerate() {
+            self.later_in_file.retain(|&(_, x)| x != k);
+            // A unit of the same name earlier in the file is replaced by this one (13.5).
+            if keys[..i].contains(&k) {
+                ids.retain(|&u| self.units[u].key != k);
+                self.libs[lib].units.insert(
+                    k,
+                    UnitSlot::NotLoaded {
+                        file: path.to_path_buf(),
+                        rev,
+                    },
+                );
+            }
             if let Ok(u) = self.load_unit(lib, k, None) {
                 ids.push(u);
             }
         }
+        self.later_in_file.clear();
+        self.dup_in_file.clear();
         // A unit that failed, or needed one that failed, without a new error
         // depends on a unit that failed earlier in this session (8.2: silent);
         // the file still failed. A failed file is not recorded, so none of its
         // units is visible to later files, as with one `yavs analyze` per file.
+        let distinct = (0..keys.len())
+            .filter(|&i| !keys[..i].contains(&keys[i]))
+            .count();
         if self.error_count() > before
-            || ids.len() < keys.len()
+            || ids.len() < distinct
             || ids.iter().any(|u| self.tainted.contains(u))
         {
             for &k in &keys {

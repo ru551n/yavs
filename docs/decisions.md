@@ -5413,6 +5413,10 @@ dependencies; this overrides "no incremental compilation cache" for analysis too
   a line at the first space. `analyze` checks that the body of a std/ieee package it loaded has an entry by the
   file's presence (`UnitStore::has`) instead of reading and decoding it, and forgets its session at exit
   instead of freeing the manifest.
+- **A unit declared twice in one file has no entry** (#810, VESTs `tc3064`): a later unit of the same name
+  replaces the earlier one (13.5), so the file's analysis analyses each copy in turn, but an entry's key
+  (library, unit, file) cannot tell the copies apart: the second would replay the first. Such units are
+  neither recorded nor replayed (`Db::dup_in_file`); a later load from source takes the last copy.
 - **Found on the way:** a generic instance cloned the formal types of an instance in a hash set's order,
   which differs per process (two analyses of the same files gave different ids); `Remap::formal_firsts` is
   ordered now. The default span (`Span::default()`, file 0 meaning no file) is written as such inside an

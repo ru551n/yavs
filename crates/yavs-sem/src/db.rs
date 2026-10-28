@@ -198,6 +198,15 @@ pub struct Db {
     /// (instance, region, span): `E1237` is checked when the body arrives.
     #[serde(skip)]
     pub(crate) pending_inst_checks: Vec<(crate::ids::InstId, ScopeId, yavs_diag::Span)>,
+    /// The units of the file being analyzed that come after the one being analyzed: a unit may
+    /// not need them (13.5, units of a file are analyzed in textual order; #810).
+    #[serde(skip)]
+    pub(crate) later_in_file: Vec<(LibId, crate::loader::UnitKey)>,
+    /// The units declared more than once in the file being analyzed: each is analyzed in turn,
+    /// the last replaces the others (13.5), and none goes through the analysed-unit cache, whose
+    /// entries cannot tell the copies apart.
+    #[serde(skip)]
+    pub(crate) dup_in_file: Vec<(LibId, crate::loader::UnitKey)>,
     /// Groups with a label constituent not declared yet.
     #[serde(skip)]
     pub(crate) pending_groups: Vec<crate::group::PendingGroup>,
@@ -1013,6 +1022,8 @@ impl Db {
             pkg_targets: Default::default(),
             incomplete_ok: false,
             interface_default: false,
+            later_in_file: Vec::new(),
+            dup_in_file: Vec::new(),
             context_subtype: None,
             relaxed_target: None,
             top_context: None,

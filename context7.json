@@ -22,7 +22,10 @@
     "decisions.md",
     "plan.md",
     "cli-contract.md",
-    "test-runner-requirements.md"
+    "test-runner-requirements.md",
+    "parallel.md",
+    "conformance.json",
+    "conformance-local.json"
   ],
   "rules": [
     "yavs is a command line tool: analyze VHDL into a library with `yavs analyze --std=2008 --work=NAME:PATH files...`, then simulate with `yavs run --work=NAME:PATH TOP`. `yavs elab` only checks that a design elaborates.",
@@ -34,7 +37,7 @@
     "Coverage workflow: run each test with `yavs run --cov=NAME.ycov --cov-kind=statement,branch,toggle,condition`, then merge and report with `yavs cov report all.ycov --html DIR --cobertura FILE`. Write `--cov=FILE`, not `--cov FILE`.",
     "Record waveforms with `--wave=FILE.fst` (FST format, readable by common waveform viewers); limit them with `--wave-exclude` globs on large designs.",
     "Errors and warnings carry stable codes such as E1100; `yavs --explain CODE` prints the explanation. A failed step stops the run: nothing runs after a failed analyze.",
-    "Check `docs/language-support.md` before relying on a VHDL-2019 or PSL feature: PSL is a subset and VHPI support is partial.",
-    "Start with the quickstart in the Command line page (a testbench in `docs/examples`: analyze, run, `-gEXPECTED=5` for a failing run, exit statuses 0 and 1). Debugging: `yavs run --dap` for editors, the VS Code extension and the separate `yavs-gui` (`yavs run --gui`); VHPI plugins load with `--vhpi`."
+    "Check `docs/language-support.md` before relying on a VHDL-2019 or PSL feature: PSL is a subset. VHPI support is partial, see `docs/vhpi.md`.",
+    "Start with the Getting started page (a testbench in `docs/examples`: analyze, run, `-gEXPECTED=5` for a failing run, exit statuses 0 and 1). The Command-line reference page lists the user-facing options; `yavs --explain CODE` and the Errors and troubleshooting page explain diagnostics. Debugging: `yavs run --dap` for editors, the VS Code extension and the separate `yavs-gui` (`yavs run --gui`); VHPI plugins load with `--vhpi`."
   ]
 }

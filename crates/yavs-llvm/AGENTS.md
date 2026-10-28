@@ -81,7 +81,7 @@ in `crates/yavs-llvm/WINDOWS.md`; measurements in `docs/STATUS.md` "llvm".
 | `tests/lazy.rs` | The library is not mapped at process start and is after the first module (Linux) |
 | `tests/jit.rs` | Spike tests: overflow trap into Rust, struct state, reference semantics, unresolved symbol by name, background compile and swap |
 | `examples/measure.rs` | JIT cost per function size (table in docs/STATUS.md) |
-| `LICENSE-LLVM` | LLVM licence (Apache-2.0 with LLVM exceptions), shipped in the release archives with the compiled tier |
+| `LICENSE-LLVM` | LLVM licence (Apache-2.0 with LLVM exceptions), no longer shipped: the release archives have no LLVM since 2026-10-28 |
 | `WINDOWS.md` | Where LLVM 21 comes from on Windows, llvm-sys static linking, ORC on COFF, CI recipe |
 
 ## 3. Design decisions that bind this module

@@ -245,8 +245,7 @@ drivers made with `vhpi_create`; an unregistered one is error `E0905`), `vhpiLib
 
 ### Other gaps
 
-- `vhpiGenerateIndexP` in the hierarchy, and sub-elements of variables whose bounds are only known at run
-  time.
+- Sub-elements of variables whose bounds are only known at run time.
 - Values: `vhpiRawDataVal`, `vhpiSmallPhys*` formats; `vhpiPtrVal` only for `in` access
   parameters of foreign subprograms.
 - Forcing a variable, force and release of constants or generics, and the non-propagating put modes on

@@ -748,7 +748,7 @@ share the frame and compiled code enters at any pc). Registers a frame starts wi
 
 *Update 2026-10-28:* a second generator, Cranelift (`yavs-clift`, feature `clift`), implements the same
 compiled-code contract and the same `--tier=auto` policy (`yavs-llvm` `AutoTier` with a different
-`Generator`); the release archives without LLVM use it. The hot-function size cap and the `--tier-max-size`
+`Generator`); the release archives use it. The hot-function size cap and the `--tier-max-size`
 option apply to both.
 
 **Identical semantics:** the interpreter is the reference (rule 5). CI runs every difftest group

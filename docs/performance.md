@@ -35,7 +35,7 @@ the repository (head-to-head 7, 2026-10-27).
 - **Cores:** one timed process per physical core, on three claimed cores of the faster chiplet (cores 9 to 11); the cells of the two tools are interleaved.
   Three long testbenches were timed as controls at the start and at the end of the run to show host drift.
 - **Build:** the benchmark build of yavs with the LLVM code generator (`tools/build-bench.sh --features llvm`), one binary for every cell. It is not a
-  release archive: the archives with and without LLVM (see [install](install.rst)) were not timed in this run, so no figure here applies to the Cranelift tier of the `-nollvm` archives.
+  release archive: the release archives ship the Cranelift tier (see [install](install.rst)), which was not timed in this run, so no figure here applies to it.
 - **Tool:** `tools/realbench`; the designs come from `tools/bench`. Raw results are not committed.
 
 ## Host

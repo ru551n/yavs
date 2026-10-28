@@ -25,7 +25,7 @@ build and no 32-bit build.
 On Windows, compare ``(Get-FileHash yavs-<version>-x86_64-pc-windows-msvc.zip).Hash`` in
 PowerShell with the line of ``SHA256SUMS``, unzip the archive and add its directory to ``PATH``.
 ``yavs --version`` prints the version and the kind of archive, for example
-``yavs 0.8.0 (compiled tier: llvm)``. The first simulation, from an empty directory, is in
+``yavs 0.8.0 (compiled tier: cranelift)``. The first simulation, from an empty directory, is in
 :doc:`usage`.
 
 Which archive
@@ -99,8 +99,6 @@ Each archive unpacks into one directory of the same name (without ``.tar.gz`` or
    * - ``yavs-gui``, ``yavs-gui.exe``
      - The graphical debugger (:doc:`usage`, "Graphical debugger"). ``yavs run --gui`` looks for it
        next to ``yavs``, so keep the two together.
-   * - ``lib/libLLVM.so.21.1``
-     - The LLVM library, in the Linux archive with the compiled tier only.
    * - ``LICENSE-MIT``, ``LICENSE-APACHE``
      - The licences of yavs, MIT or Apache-2.0 at your option.
    * - ``LICENSE-IEEE``, ``LICENSE-IEEE-VITAL``, ``LICENSE-SYNOPSYS``
@@ -109,8 +107,6 @@ Each archive unpacks into one directory of the same name (without ``.tar.gz`` or
    * - ``LICENSE-EUPL-1.2-yavs-gui``
      - The licence of ``yavs-gui``, EUPL-1.2. It applies to the ``yavs-gui`` binary only; everything
        else is MIT or Apache-2.0.
-   * - ``LICENSE-LLVM``
-     - Apache-2.0 with LLVM exceptions, in the archives with the compiled tier only.
    * - ``README.md``
      - The project readme.
 
@@ -188,13 +184,14 @@ With the Cranelift tier
 
     cargo build --release -p yavs --features clift
 
-This is how the ``-nollvm`` archives are built. It needs nothing but Rust: ``yavs --version`` says
+This is how the release archives are built. It needs nothing but Rust: ``yavs --version`` says
 ``compiled tier: cranelift`` and ``--tier=auto`` (the default) compiles the hot code with Cranelift.
 
 With the LLVM tier
 ~~~~~~~~~~~~~~~~~~
 
-``yavs run --tier=llvm`` needs a build with the ``llvm`` feature and LLVM 21.1 (pinned). Point
+The release archives do not contain the LLVM tier. ``yavs run --tier=llvm`` needs a build from source
+with the ``llvm`` feature and LLVM 21.1 (pinned). Point
 ``LLVM_SYS_211_PREFIX`` at the install if ``llvm-config`` is not on ``PATH``.
 
 .. code-block:: bash
@@ -230,11 +227,11 @@ If something goes wrong
    * - ``yavs: command not found``
      - The directory of the archive is not on ``PATH``.
    * - ``error[E0120]: `--tier=llvm` needs a yavs built with the LLVM tier``
-     - You run a ``-nollvm`` archive or a build without the feature. Use ``--tier=auto`` or
-       ``--tier=clift``, or the archive without ``-nollvm``.
+     - The release archives and builds without the ``llvm`` feature have no LLVM tier. Use
+       ``--tier=auto`` or ``--tier=clift``, or build from source with ``--features llvm``.
    * - ``error[E0127]: the LLVM library cannot be loaded``
-     - The ``lib`` directory was separated from ``yavs``. Put it back next to it, or use
-       ``--tier=interp``.
+     - Only in a source build with the ``llvm`` feature: the library was not found next to ``yavs``
+       or through the dynamic loader. Install LLVM 21 or use ``--tier=interp``.
    * - ``error[E0122]: `yavs-gui` was not found``
      - ``yavs-gui`` is not next to ``yavs`` and not on ``PATH``.
    * - ``error[L0001]: library `work` not found``

@@ -5355,7 +5355,7 @@ runs the test as written.
 ## vhpi export (`crates/yavs-vhpi`, `crates/yavs`)
 
 Done (#266): the `yavs` executable exports the full `vhpi_*` C ABI of `vhpi_user.h` (42 symbols:
-34 functions and the eight time constants `vhpiFS` to `vhpiHR`; counted in `exports.txt` and `nm -D` of the default build on 2026-10-28) on Linux x86_64 and aarch64 (also in the
+34 functions and the eight time constants `vhpiFS` to `vhpiHR`; counted in `exports.txt` and `nm -D` of the default build on 2026-10-28; since the first VHPI audit round every function works except `vhpi_get_next_time`, `vhpi_get_data`, `vhpi_put_data` and `vhpi_protected_call`, which report "not implemented", see `docs/vhpi.md`) on Linux x86_64 and aarch64 (also in the
 glibc 2.17 cargo-zigbuild release builds, where the linker exports more than the list) and in the
 Windows `.exe` export table (MinGW checked; MSVC `/DEF:` and the `yavs run --vhpi` plugin load run in the `windows-latest` CI job, #124). No import library is built or shipped (user decision, 2026-10-18): a VHPI plugin brings its own.
 `crates/yavs/tests/vhpi_exports.rs` checks the ELF `.dynsym` (Linux) and the PE export directory (Windows, in the `windows-latest` CI job, #124) against the header.

@@ -69,7 +69,7 @@ gap has an issue.
 | Area | Status | What works | Missing (issue) |
 |---|---|---|---|
 | Functions | partial | all 34 exported; every one works except the three on the right; `vhpi_get_next_time` in the end-of-time-step phase | `vhpi_get_data`, `vhpi_put_data` ([#832](https://github.com/ru551n/yavs/issues/832)), `vhpi_protected_call` ([#833](https://github.com/ru551n/yavs/issues/833)) |
-| Plugin loading, tool object | supported | startup table or `LIB:ENTRY`, Linux and Windows export tables (cocotb on Windows not tried yet: [#849](https://github.com/ru551n/yavs/issues/849)), `vhpiArgcP`, `vhpiArgvs`, `vhpiNameP`, `vhpiToolVersionP`, `vhpiCapabilitiesP` (hierarchy, static access, foreign models, advanced foreign models, run-time debug) | `vhpiPhaseP` ([#832](https://github.com/ru551n/yavs/issues/832)) |
+| Plugin loading, tool object | supported | startup table or `LIB:ENTRY`, Linux and Windows export tables, `vhpiArgcP`, `vhpiArgvs`, `vhpiNameP`, `vhpiToolVersionP`, `vhpiCapabilitiesP` (hierarchy, static access, foreign models, advanced foreign models, run-time debug) | `vhpiPhaseP` ([#832](https://github.com/ru551n/yavs/issues/832)) |
 | Region classes | partial | root and component instances, blocks, `for` and `if`/`case` generates, processes, package instances, entities, architectures, packages | equivalent processes of concurrent statements, statements ([#829](https://github.com/ru551n/yavs/issues/829)); components, configurations, subprograms, libraries ([#831](https://github.com/ru551n/yavs/issues/831)) |
 | Declaration classes | partial | generics, ports, signals, constants, variables, shared variables, user attribute specifications and declarations of declarations | aliases, files, implicit signals, attribute names ([#831](https://github.com/ru551n/yavs/issues/831)) |
 | Types | supported | type and subtype declarations of every scalar, array and record kind, constraints, literals, record elements, units | access, file and protected types as objects ([#831](https://github.com/ru551n/yavs/issues/831), [#833](https://github.com/ru551n/yavs/issues/833)) |
@@ -82,7 +82,7 @@ gap has an issue.
 | Foreign models | supported | `vhpiFuncF`, `vhpiProcF`, `vhpiArchF`, `vhpiLibF`, `vhpiAppF`, `vhpi_create` of processes and drivers | file parameters, `vhpiForeignfs` ([#831](https://github.com/ru551n/yavs/issues/831)) |
 | Simulation control | partial | `vhpi_control(vhpiStop)`, `vhpi_control(vhpiFinish)` | `vhpiReset` ([#832](https://github.com/ru551n/yavs/issues/832)) |
 | Errors and handles | supported | `vhpi_check_error` after every call, `vhpi_assert`, `vhpi_printf`, generational handles, `vhpi_compare_handles`, `vhpi_release_handle`, iterators released when exhausted | |
-| Conformance evidence | partial | cocotb's own regression (CI), C plugin traces diffed against a reference simulator (`tools/vhpi-conformance`), the plugin tests of `crates/yavs/tests/vhpi_run.rs` | the Rust `vhpi` crate's plugins as a second client ([#273](https://github.com/ru551n/yavs/issues/273)) |
+| Conformance evidence | partial | a Python testbench framework's own regression (CI, Linux; Windows not tried yet: [#849](https://github.com/ru551n/yavs/issues/849)), C plugin traces diffed against a reference simulator (`tools/vhpi-conformance`), the plugin tests of `crates/yavs/tests/vhpi_run.rs` | the Rust `vhpi` crate's plugins as a second client ([#273](https://github.com/ru551n/yavs/issues/273)) |
 
 ## Details
 

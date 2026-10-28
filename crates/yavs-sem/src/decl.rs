@@ -468,45 +468,71 @@ impl Db {
         }
     }
 
-    /// `E1226`: an initial value in a package or package body names a deferred constant of
-    /// that package before the end of its full declaration (6.4.2.2): its value is not known
-    /// yet when the initial value is elaborated (#809).
+    /// `E1226`: an initial value in a package declaration names one of its deferred constants,
+    /// whose value is not known before the package body (6.4.2.2, #809). Uses in the body are
+    /// `check_deferred_read`'s.
     fn check_deferred_uses(&mut self, scope: ScopeId, e: ExprId) {
-        use crate::scope::ScopeKind;
-        let pkg = match self.scopes[scope].kind {
-            ScopeKind::Package => scope,
-            ScopeKind::PackageBody => match self.body_package(scope) {
-                Some(p) => p,
-                None => return,
-            },
-            _ => return,
-        };
+        if self.scopes[scope].kind != crate::scope::ScopeKind::Package {
+            return;
+        }
         let mut early = Vec::new();
         self.walk_expr(e, &mut |x| {
             if let crate::hir::ExprKind::Obj(d) = self.exprs[x].kind
-                && self.decls[d].scope == pkg
+                && self.decls[d].scope == scope
                 && matches!(&self.decls[d].kind, DeclKind::Object(o) if o.role == ObjRole::Deferred)
-                && !(scope != pkg
-                    && self.scopes[scope]
-                        .names
-                        .get(&self.decls[d].name.key())
-                        .is_some_and(|v| v.iter().any(|&f| matches!(&self.decls[f].kind, DeclKind::Object(o) if o.class == ObjClass::Constant))))
             {
                 early.push((d, self.exprs[x].span));
             }
         });
         for (d, span) in early {
-            let name = self.decls[d].name;
-            self.report(
-                yavs_diag::Diagnostic::error(
-                    crate::diag::DEFERRED_EARLY,
-                    format!("deferred constant `{name}` is used before its full declaration"),
-                )
-                .with_primary(span, "its value is not known here")
-                .with_secondary(self.decls[d].name_span(), "deferred here")
-                .with_note("LRM 6.4.2.2: before the end of the full declaration, a deferred constant may appear only in the default expression of a local generic, port or formal parameter"),
-            );
+            self.report_deferred_early(d, span);
         }
+    }
+
+    /// `E1226`: a name in the body of `d`'s package, or in a subprogram there, denotes the
+    /// deferred constant `d` before its full declaration (6.4.2.2): the subprogram may run
+    /// before the value exists (#846). Interface defaults are exempt.
+    pub(crate) fn check_deferred_read(&mut self, scope: ScopeId, d: DeclId, span: Span) {
+        if self.interface_default
+            || !matches!(&self.decls[d].kind, DeclKind::Object(o) if o.role == ObjRole::Deferred)
+        {
+            return;
+        }
+        let pkg = self.decls[d].scope;
+        let mut cur = Some(scope);
+        while let Some(sc) = cur {
+            if self.body_package(sc) == Some(pkg) {
+                let full = self.scopes[sc].names.get(&self.decls[d].name.key()).is_some_and(|v| {
+                    v.iter().any(|&f| matches!(&self.decls[f].kind, DeclKind::Object(o) if o.class == ObjClass::Constant))
+                });
+                if !full {
+                    self.report_deferred_early(d, span);
+                }
+                return;
+            }
+            cur = self.scopes[sc].parent;
+        }
+    }
+
+    /// The default expression of an interface object (`Db::interface_default`).
+    fn interface_default_expr(&mut self, scope: ScopeId, e: &ast::Expr, st: SubtypeId) -> ExprId {
+        let outer = std::mem::replace(&mut self.interface_default, true);
+        let x = self.expr_in_subtype(scope, e, st);
+        self.interface_default = outer;
+        x
+    }
+
+    fn report_deferred_early(&mut self, d: DeclId, span: Span) {
+        let name = self.decls[d].name;
+        self.report(
+            yavs_diag::Diagnostic::error(
+                crate::diag::DEFERRED_EARLY,
+                format!("deferred constant `{name}` is used before its full declaration"),
+            )
+            .with_primary(span, "its value is not known here")
+            .with_secondary(self.decls[d].name_span(), "deferred here")
+            .with_note("LRM 6.4.2.2: before the end of the full declaration, a deferred constant may appear only in the default expression of a local generic, port or formal parameter"),
+        );
     }
 
     /// `E1227`: the subtype indication of the full declaration of deferred constant `n` does
@@ -1797,7 +1823,7 @@ impl Db {
         let mut out = Vec::new();
         // One default for all names of one subtype (diagnostics once), else one per name.
         let shared = match (subtypes, &o.default) {
-            ([st], Some(e)) => Some(self.expr_in_subtype(scope, e, *st)),
+            ([st], Some(e)) => Some(self.interface_default_expr(scope, e, *st)),
             _ => None,
         };
         for (i, &name) in o.names.iter().enumerate() {
@@ -1805,7 +1831,7 @@ impl Db {
             let default = shared.or_else(|| {
                 o.default
                     .as_ref()
-                    .map(|e| self.expr_in_subtype(scope, e, subtype))
+                    .map(|e| self.interface_default_expr(scope, e, subtype))
             });
             let bounds = if self.constrainedness(subtype) == crate::types::Constrainedness::Full {
                 BoundsFrom::Subtype
@@ -1981,12 +2007,12 @@ impl Db {
             .default
             .as_ref()
             .filter(|_| anon.is_empty())
-            .map(|e| self.expr_in_subtype(pscope, e, subtype));
+            .map(|e| self.interface_default_expr(pscope, e, subtype));
         let mut out = Vec::new();
         for (i, &name) in o.names.iter().enumerate() {
             let subtype = anon.get(i).copied().unwrap_or(subtype);
             let default = match (&o.default, anon.is_empty()) {
-                (Some(e), false) => Some(self.expr_in_subtype(pscope, e, subtype)),
+                (Some(e), false) => Some(self.interface_default_expr(pscope, e, subtype)),
                 _ => shared,
             };
             let bounds = if self.constrainedness(subtype) == crate::types::Constrainedness::Full {

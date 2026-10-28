@@ -287,6 +287,10 @@ pub struct Db {
     /// access type definition is being analyzed (alloc.rs, 5.4.2).
     #[serde(skip)]
     pub(crate) incomplete_ok: bool,
+    /// The default expression of an interface object is being analyzed: it may name a
+    /// deferred constant before its full declaration (6.4.2.2, `Db::check_deferred_read`).
+    #[serde(skip)]
+    pub(crate) interface_default: bool,
     /// Implicit operations waiting for a well-known type of `std.standard` (BOOLEAN, STRING, ...).
     #[serde(skip)]
     pub(crate) pending_implicit: Vec<crate::implicit::Pending>,
@@ -1008,6 +1012,7 @@ impl Db {
             ext_uses: Default::default(),
             pkg_targets: Default::default(),
             incomplete_ok: false,
+            interface_default: false,
             context_subtype: None,
             relaxed_target: None,
             top_context: None,

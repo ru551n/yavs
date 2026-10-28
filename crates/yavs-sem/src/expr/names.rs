@@ -1370,7 +1370,10 @@ impl Db {
                 _ => self.poison_expr(),
             },
             (_, Via::Object) => match self.classify(scope, n) {
-                NameRes::One(d) => self.object_expr(d, span),
+                NameRes::One(d) => {
+                    self.check_deferred_read(scope, d, span);
+                    self.object_expr(d, span)
+                }
                 _ => self.poison_expr(),
             },
             _ => self.poison_expr(),

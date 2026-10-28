@@ -1290,6 +1290,9 @@ struct Gen<'a> {
 /// The instructions a deferred register may be live over and still be deferred (`Gen::keep`).
 const MAX_SPAN: u32 = 4;
 
+/// The most values a `Case` lowered as a `Switch` covers (`Inst::Case`).
+const CASE_SWITCH: u128 = 1024;
+
 /// The most registers a block start takes as parameters (`Gen::carry`).
 const CARRY_MAX: usize = 16;
 
@@ -3167,21 +3170,54 @@ fn gen_func(
                     .get(table)
                     .ok_or_else(|| format!("no case table {}", table.0))?;
                 let x = g.ld(v);
-                // ponytail: a compare chain per arm; a Switch for dense tables if case-heavy
-                // code ever shows in profiles.
-                for &(lo, hi, to) in &t.arms {
-                    let ge = g.b.ins().icmp_imm_s(IntCC::SignedGreaterThanOrEqual, x, lo);
-                    let le = g.b.ins().icmp_imm_s(IntCC::SignedLessThanOrEqual, x, hi);
-                    let hit = g.b.ins().band(ge, le);
-                    let next = g.b.create_block();
-                    let tb = block_bb(to)?;
-                    let te = g.edge_block(tb);
-                    g.brif_split(hit, te, next);
-                    g.fill_edge(te, tb);
-                    g.b.switch_to_block(next);
+                // Four arms or more over at most `CASE_SWITCH` values: a `Switch` (jump tables
+                // where the values are dense, a search tree otherwise), as LLVM's `switch`; the
+                // compare chain of GRLIB's decoders missed branches 1.5 times as often (#481).
+                let values: u128 = t
+                    .arms
+                    .iter()
+                    .map(|&(lo, hi, _)| (i128::from(hi) - i128::from(lo) + 1).max(0) as u128)
+                    .sum();
+                if t.arms.len() >= 4 && values <= CASE_SWITCH {
+                    let mut sw = Switch::new();
+                    let mut edges: Vec<(Block, Block)> = Vec::new();
+                    for &(lo, hi, to) in &t.arms {
+                        let tb = block_bb(to)?;
+                        let te = match edges.iter().find(|e| e.1 == tb) {
+                            Some(e) => e.0,
+                            None => {
+                                let te = g.edge_block(tb);
+                                edges.push((te, tb));
+                                te
+                            }
+                        };
+                        // (The arms are sorted and do not overlap: `yavs_ir::verify`.)
+                        for k in lo..=hi {
+                            sw.set_entry(u128::from(k as u64), te);
+                        }
+                    }
+                    let d = block_bb(t.default)?;
+                    let de = g.edge_block(d);
+                    sw.emit(&mut g.b, x, de);
+                    for (te, tb) in edges {
+                        g.fill_edge(te, tb);
+                    }
+                    g.fill_edge(de, d);
+                } else {
+                    for &(lo, hi, to) in &t.arms {
+                        let ge = g.b.ins().icmp_imm_s(IntCC::SignedGreaterThanOrEqual, x, lo);
+                        let le = g.b.ins().icmp_imm_s(IntCC::SignedLessThanOrEqual, x, hi);
+                        let hit = g.b.ins().band(ge, le);
+                        let next = g.b.create_block();
+                        let tb = block_bb(to)?;
+                        let te = g.edge_block(tb);
+                        g.brif_split(hit, te, next);
+                        g.fill_edge(te, tb);
+                        g.b.switch_to_block(next);
+                    }
+                    let d = block_bb(t.default)?;
+                    g.jump_ir(d);
                 }
-                let d = block_bb(t.default)?;
-                g.jump_ir(d);
                 open = false;
             }
             Inst::SigReadScalar { dst, sig } => g.sig_read_scalar(pc, dst, sig),

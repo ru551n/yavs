@@ -736,6 +736,54 @@ fn logic_copies_match_the_interpreter() {
     }
 }
 
+/// `case a` with ranges, a negative arm and a default, as a compare chain (three arms) and as a
+/// `Switch` (six): the arm's value plus `b`.
+#[test]
+fn case_tables_match_the_interpreter() {
+    for arms in [3, 6] {
+        let mut pb = ProgramBuilder::new();
+        let f = pb.declare("f", FuncKind::Function, None);
+        let mut fb = pb.define(f);
+        let sa = fb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+        let sb = fb.param("b", Width::B8, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb);
+        let (pa, pbr) = (fb.addr(AddrSpace::Frame, sa), fb.addr(AddrSpace::Frame, sb));
+        let (a, b) = (load(&mut fb, pa, Width::B8), load(&mut fb, pbr, Width::B8));
+        let ranges = [(-5, -3), (0, 0), (1, 4), (5, 10), (40, 47), (100, 100)];
+        let blocks: Vec<BlockId> = (0..=arms).map(|_| fb.block()).collect();
+        let table = fb.program().case_table(CaseTable {
+            arms: ranges[..arms]
+                .iter()
+                .zip(&blocks)
+                .map(|(&(lo, hi), &bl)| (lo, hi, bl))
+                .collect(),
+            default: blocks[arms],
+        });
+        fb.emit(Inst::Case { v: a, table });
+        for (k, &bl) in blocks.iter().enumerate() {
+            fb.at(bl);
+            let c = fb.int(1000 * (k as i64 + 1));
+            let r = fb.reg(RegTy::I64);
+            fb.emit(Inst::Bin {
+                op: IntOp::Add,
+                dst: r,
+                a: c,
+                b,
+            });
+            fb.emit(Inst::Ret { v: Some(r) });
+        }
+        fb.finish();
+        check(
+            pb.finish().unwrap(),
+            f,
+            &["Case"],
+            &[
+                -6, -5, -4, -3, -2, 0, 1, 3, 4, 5, 10, 11, 40, 47, 48, 99, 100, 101,
+            ],
+        );
+    }
+}
+
 /// `LCopy` of a constant count and offsets inside one plane block on each side (the code of
 /// `lcopy_shape`): the whole block, shifts either way, an overlapping copy within one block and
 /// a copy out of a constant give the interpreter's bytes.

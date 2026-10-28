@@ -1109,7 +1109,24 @@ pub fn run(
     encoding: yavs_syntax::Encoding,
 ) -> ExitCode {
     // First: a descriptor of the token pool the parent closed may be reused by a file below.
-    let tokens = (a.threads > 1 && a.dap.is_none()).then(crate::jobserver::connect);
+    let tokens = match (a.threads > 1 && a.dap.is_none()).then(crate::jobserver::connect) {
+        Some(Err(why)) => {
+            let mut out = Out::new(format, color);
+            out.emit(
+                &SourceMap::default(),
+                &Diagnostic::error("E0128", "the token pool in `MAKEFLAGS` cannot be used")
+                    .with_note(why)
+                    .with_help(
+                        "pass the pool's descriptors or named pipe on to yavs; a parent that does \
+                         not share its pool with this run removes `--jobserver-auth` from \
+                         `MAKEFLAGS` for it",
+                    ),
+            );
+            return out.finish(2);
+        }
+        Some(Ok(p)) => p,
+        None => None,
+    };
     if a.time_report {
         crate::timing::enable();
     }
@@ -1288,21 +1305,6 @@ pub fn run(
     if let Some(seed) = a.shuffle {
         out.emit(&none, &shuffle_note(seed));
     }
-    if let Some(Err(why)) = &tokens {
-        out.emit(
-            &none,
-            &Diagnostic::warning("W0118", "the token pool in `MAKEFLAGS` cannot be used")
-                .with_note(why.clone())
-                .with_note(format!(
-                    "the run uses `--threads={}` as without a token pool",
-                    a.threads
-                ))
-                .with_help(
-                    "have the parent pass the pool's descriptors on to yavs, or remove \
-                     `--jobserver-auth` from `MAKEFLAGS`",
-                ),
-        );
-    }
     let cfg_profile = a
         .profile
         .is_some()
@@ -1408,7 +1410,7 @@ pub fn run(
     if a.vhpi.is_empty() && a.load.is_empty() && !foreign {
         crate::stdout::buffer();
     }
-    if let Some(Ok(Some(p))) = tokens {
+    if let Some(p) = tokens {
         sim.set_tokens(p);
     }
     sim.subscribe(Box::new(Printer));

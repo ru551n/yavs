@@ -122,6 +122,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "E0127",
         "`yavs run --tier=llvm` could not load the LLVM 21 shared library (Linux). It is looked for in `lib/` next to the yavs executable (the release archives with the compiled tier keep it there), then through the dynamic loader, then at the path the build used; the note lists what was tried. Keep the `lib` directory with `yavs`, install LLVM 21, or use `--tier=interp`. With `--tier=auto` the same problem is a warning and the hot code stays interpreted. Exit status 2.",
     ),
+    (
+        "E0128",
+        "`--threads` is above 1 and `MAKEFLAGS` names a token pool (`--jobserver-auth=R,W` or `fifo:PATH`) that yavs cannot use: the descriptors are closed or not a pipe (the parent did not pass them on), the path is not a named pipe, or the platform has no client for the form (descriptors work on Linux, `fifo:PATH` on Unix). The run stops before analysis (exit 2). Pass the pool on to yavs; a parent that does not share its pool with this run removes `--jobserver-auth` from `MAKEFLAGS` for it.",
+    ),
     // yavs-wave
     (
         "E0801",
@@ -207,10 +211,6 @@ const EXPLAIN: &[(&str, &str)] = &[
     (
         "W0117",
         "The compile thread of `--tier=auto` could not be started (the note gives the operating system error). The thread starts a few milliseconds into the run, from the helper thread of the signal handlers. The run goes on interpreted.",
-    ),
-    (
-        "W0118",
-        "`--threads` is above 1 and `MAKEFLAGS` names a token pool (`--jobserver-auth=R,W` or `fifo:PATH`) that yavs cannot use: the descriptors are closed or not a pipe (the parent did not pass them on), the path is not a named pipe, or the platform has no client for the form. The run uses `--threads` as without a token pool. Pass the pool on, or remove `--jobserver-auth` from `MAKEFLAGS`.",
     ),
     // yavs-vhpi
     (

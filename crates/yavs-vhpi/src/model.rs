@@ -285,6 +285,12 @@ pub(crate) const INT_PROPS: &[vhpiIntPropertyT] = &[
     vhpiRightBoundP,
     vhpiIsUpP,
     vhpiIsNullP,
+    vhpiStartLineNoP,
+    vhpiNumPortsP,
+    vhpiNumGensP,
+    vhpiIsSharedP,
+    vhpiGenerateIndexP,
+    vhpiCapabilitiesP,
 ];
 pub(crate) const STR_PROPS: &[vhpiStrPropertyT] = &[
     vhpiNameP,
@@ -296,6 +302,7 @@ pub(crate) const STR_PROPS: &[vhpiStrPropertyT] = &[
     vhpiFileNameP,
     vhpiDefNameP,
     vhpiToolVersionP,
+    vhpiLabelNameP,
 ];
 
 #[derive(Default)]
@@ -770,6 +777,20 @@ impl State {
             (_, vhpiFullCaseNameP) => self.names(obj)?.1,
             (_, vhpiFileNameP) => node?.file.clone()?,
             (Object::Node(_), vhpiDefNameP) => node?.def_name.clone()?,
+            // A statement's label: an instance, block, generate or process without the index.
+            (Object::Node(_), vhpiLabelNameP)
+                if matches!(
+                    node?.kind,
+                    vhpiCompInstStmtK
+                        | vhpiBlockStmtK
+                        | vhpiForGenerateK
+                        | vhpiIfGenerateK
+                        | vhpiProcessStmtK
+                ) =>
+            {
+                let n = &node?.name;
+                n.split_once('(').map_or(n.as_str(), |(l, _)| l).to_owned()
+            }
             _ => return None,
         })
     }
@@ -785,7 +806,39 @@ impl State {
             (Object::Callback(i), vhpiStateP) => self.cbs.get(*i)?.state,
             (Object::Callback(i), vhpiReasonP) => self.cbs.get(*i)?.data.reason,
             (Object::Tool, vhpiArgcP) => vhpiIntT::try_from(self.argv.len()).ok()?,
-            (_, vhpiLineNoP) => node?.line?,
+            // What yavs provides: the hierarchy and static values, foreign models with
+            // `vhpi_create`, values, puts and callbacks at run time.
+            (Object::Tool, vhpiCapabilitiesP) => {
+                vhpiProvidesHierarchy
+                    | vhpiProvidesStaticAccess
+                    | vhpiProvidesForeignModel
+                    | vhpiProvidesAdvancedForeignModel
+                    | vhpiProvidesDebugRuntime
+            }
+            (_, vhpiLineNoP | vhpiStartLineNoP) => node?.line?,
+            (Object::Node(n), vhpiNumPortsP | vhpiNumGensP)
+                if node?.layout.is_none() && node?.kind != vhpiAttrDeclK =>
+            {
+                let k = if prop == vhpiNumPortsP {
+                    vhpiPortDeclK
+                } else {
+                    vhpiGenericDeclK
+                };
+                let d = self.design.node(*n);
+                d.decls
+                    .iter()
+                    .filter(|&&x| self.design.node(x).kind == k)
+                    .count() as vhpiIntT
+            }
+            (Object::Node(_), vhpiIsSharedP) if node?.kind == vhpiVarDeclK => match node?.origin {
+                Origin::Var { proc, .. } => vhpiIntT::from(proc.is_none()),
+                _ => return None,
+            },
+            // The value of a for generate's parameter, when it is an integer.
+            (Object::Node(_), vhpiGenerateIndexP) if node?.kind == vhpiForGenerateK => {
+                let (_, i) = node?.name.strip_suffix(')')?.rsplit_once('(')?;
+                i.parse().ok()?
+            }
             (_, vhpiModeP) => node?.mode?,
             (_, vhpiIsCompositeP) => match self.layout(obj)? {
                 Layout::Scalar(_) => vhpiFalse,
@@ -823,6 +876,12 @@ impl State {
             {
                 node.and_then(|n| n.unit).map(Object::Node).ok_or(false)
             }
+            (vhpiAttrDecl, Some(Object::Node(n))) => self
+                .design
+                .attr_decls
+                .get(n)
+                .map(|&d| Object::Node(d))
+                .ok_or(false),
             (vhpiPrefix | vhpiParent, Some(Object::Elem { base, path })) => {
                 Ok(match &path[..path.len() - 1] {
                     [] => Object::Node(*base),
@@ -911,6 +970,12 @@ impl State {
                     .collect(),
             )
         };
+        // A declaration's user attribute specifications are its `vhpiAttrSpecK` children.
+        if let (vhpiAttrSpecs, Some(Object::Node(n))) = (rel, reference)
+            && self.design.node(*n).layout.is_some()
+        {
+            return decls(*n, Some(vhpiAttrSpecK));
+        }
         let region = match reference {
             Some(Object::Node(n)) if self.design.node(*n).layout.is_none() => Some(*n),
             _ => None,

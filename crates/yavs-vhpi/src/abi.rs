@@ -489,7 +489,7 @@ pub unsafe extern "C" fn vhpi_register_cb(cb: *mut vhpiCbDataT, flags: i32) -> v
             s.fail(Fault::Misuse, "vhpi_register_cb: NULL cb_rtn");
             return std::ptr::null_mut();
         }
-        let watch = if data.reason == vhpiCbValueChange {
+        let watch = if matches!(data.reason, vhpiCbValueChange | vhpiCbSensitivity) {
             s.handles
                 .get(data.obj)
                 .cloned()
@@ -730,6 +730,12 @@ fn get_value(s: &mut State, obj: &Object, v: &mut vhpiValueT) -> c_int {
             return -1;
         }
     };
+    put_encoded(v, encoded)
+}
+
+/// Writes `encoded` into the plugin's `v`: 0, or the buffer size needed when its buffer is
+/// NULL or too small (`numElems` is set either way).
+fn put_encoded(v: &mut vhpiValueT, encoded: Encoded) -> c_int {
     match encoded {
         Encoded::Scalar(u) => {
             v.value = u;
@@ -934,10 +940,51 @@ pub unsafe extern "C" fn vhpi_schedule_transaction(
     })
 }
 
+/// Converts `input` into the format `output` names, as a value of the type `input`'s format
+/// stands for (`value::format_type`): 0, -1 on error, or the buffer size needed.
+///
+/// # Safety
+/// `input` and `output` are NULL or valid; `input`'s buffer is readable as for
+/// `vhpi_put_value`, `output`'s writable as for `vhpi_get_value`.
 #[unsafe(no_mangle)]
-pub extern "C" fn vhpi_format_value(_input: *const vhpiValueT, _output: *mut vhpiValueT) -> c_int {
-    not_implemented("vhpi_format_value");
-    1
+pub unsafe extern "C" fn vhpi_format_value(
+    input: *const vhpiValueT,
+    output: *mut vhpiValueT,
+) -> c_int {
+    // SAFETY: NULL or valid per the contract.
+    let (Some(i), Some(o)) = (unsafe { input.as_ref() }, unsafe { output.as_mut() }) else {
+        with_state(|s| s.fail(Fault::Misuse, "vhpi_format_value: NULL value"));
+        return -1;
+    };
+    with_state(|s| {
+        let res = s.clock.resolution.fs();
+        let name = value::format_name(i.format);
+        // SAFETY: the contract above.
+        let converted = unsafe { given(i, i.format) }
+            .and_then(|g| Some((value::format_type(i.format, &g)?, g)))
+            .ok_or_else(|| value::Error::Unsupported(format!("vhpi_format_value: from {name}")))
+            .and_then(|((ty, n), g)| value::Read::decode(ty, n, i.format, g, res))
+            .and_then(|r| {
+                let f = if o.format == vhpiObjTypeVal {
+                    r.natural()
+                } else {
+                    o.format
+                };
+                o.format = f;
+                r.encode(f, res)
+            });
+        match converted {
+            Ok(e) => put_encoded(o, e),
+            Err(value::Error::Unsupported(m)) => {
+                s.fail(Fault::Unsupported, format!("{m}: {NOT_IMPLEMENTED}"));
+                -1
+            }
+            Err(value::Error::Mismatch(m)) => {
+                s.fail(Fault::Misuse, format!("vhpi_format_value: {m}"));
+                -1
+            }
+        }
+    })
 }
 
 #[unsafe(no_mangle)]

@@ -1015,3 +1015,110 @@ fn plugin_prints_stay_off_the_dap_stream() {
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("plugin: start of simulation"), "{err}");
 }
+
+/// Design of the `extras` plugin: user attributes, a generic, a for generate, a process
+/// variable and a signal that toggles every 10 ns until 30 ns.
+const EXTRAS: &str = "entity top is generic (g : integer := 3); end;\n\
+    architecture a of top is\n\
+    attribute mark : string;\n\
+    attribute weight : integer;\n\
+    signal s : bit := '0';\n\
+    attribute mark of s : signal is \"fast\";\n\
+    attribute weight of s : signal is 7;\n\
+    constant c : integer := 1;\n\
+    begin\n\
+    g1: for i in 2 to 3 generate\n\
+    signal t : bit;\n\
+    begin end generate;\n\
+    p: process variable v : integer := 0; begin\n\
+    for k in 1 to 3 loop wait for 10 ns; s <= not s; end loop; wait;\n\
+    end process;\n\
+    end;\n";
+
+/// Runs `top` of [`EXTRAS`] with the `extras` plugin entry `entry`.
+fn extras(entry: &str) -> (i32, String, String) {
+    let (lib, so) = setup_with("extras", EXTRAS);
+    let spec = format!("--vhpi={}:{entry}", so.display());
+    yavs(&["run", &lib, &spec, "--resolution=ns", "top"])
+}
+
+/// User attribute specifications (`vhpiAttrSpecs`, `vhpiAttrDecl`, their values) and the
+/// tool and region properties of #143.
+#[test]
+fn vhpi_user_attributes_and_properties() {
+    let (code, err, out) = extras("attrs");
+    assert_eq!(code, 0, "{err}");
+    assert!(!err.contains("warning["), "{err}");
+    let lines: Vec<&str> = out
+        .lines()
+        .filter(|l| !l.starts_with("    Process"))
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "top:s: iterator yes error=0",
+            "  vhpiAttrSpecK mark full=:top:s'mark decl=vhpiAttrDeclK mark",
+            "    value: str fast",
+            "  vhpiAttrSpecK weight full=:top:s'weight decl=vhpiAttrDeclK weight",
+            "    value: int 7",
+            "top:c: iterator NULL error=0",
+            "by name s'weight: vhpiAttrSpecK",
+            "root: gens=1 ports=0",
+            "g1(3): label=g1 index=3 line=10",
+            "p:v: shared=0",
+            "tool: capabilities=307",
+        ],
+        "{out}"
+    );
+}
+
+/// The foreign-model callback reasons: a time-out, a repeating one removed after two, and a
+/// sensitivity callback on a signal.
+#[test]
+fn vhpi_time_out_and_sensitivity_callbacks() {
+    let (code, err, out) = extras("timeout");
+    assert_eq!(code, 0, "{err}");
+    let lines: Vec<&str> = out
+        .lines()
+        .filter(|l| !l.starts_with("    Process"))
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "timeout t=5",
+            "rep t=8",
+            "sensitivity t=10 s=1",
+            "rep t=16",
+            "sensitivity t=20 s=0",
+            "sensitivity t=30 s=1",
+        ],
+        "{out}"
+    );
+}
+
+/// `vhpi_format_value` between formats with no object: integers to radix strings, bit
+/// strings to logic vectors and hex; an integer is not a real, a real has no bits (`W0903`).
+#[test]
+fn vhpi_format_value_converts_between_formats() {
+    let (code, err, out) = extras("format");
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(err.matches("W0903").count(), 3, "{err}");
+    let lines: Vec<&str> = out
+        .lines()
+        .filter(|l| !l.starts_with("    Process"))
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "int 10 -> 1: 1010",
+            "int 255 -> 4: FF",
+            "int -42 -> 3: -42",
+            "int 3 -> 8: rc=-1 error=1",
+            "bin 10X1 -> logic vec: rc=0 n=4 3 2 1 3",
+            "bin 10100101 -> hex: rc=0 A5",
+            "real -> bin: rc=-1 error=1",
+            "NULL: rc=-1 error=1",
+        ],
+        "{out}"
+    );
+}

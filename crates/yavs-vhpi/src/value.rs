@@ -831,26 +831,78 @@ pub(crate) fn format_name(f: vhpiFormatT) -> String {
         .map_or_else(|| format!("{f}"), |(n, _)| (*n).to_owned())
 }
 
+/// std_ulogic: the type of the logic formats when no object gives one (`vhpi_format_value`).
+pub(crate) fn std_logic() -> Scalar {
+    let lits: Vec<Lit> = "UX01ZWLH-"
+        .bytes()
+        .map(|c| Lit {
+            name: format!("'{}'", c as char),
+            ch: Some(c),
+        })
+        .collect();
+    Scalar::Enum {
+        lits: lits.into(),
+        logic: true,
+        character: false,
+        bit01: false,
+    }
+}
+
+/// STD.CHARACTER as the character formats see it: every position is its byte.
+fn character() -> Scalar {
+    let lits: Vec<Lit> = (0..=255u8)
+        .map(|c| Lit {
+            name: format!("'{}'", c as char),
+            ch: Some(c),
+        })
+        .collect();
+    Scalar::Enum {
+        lits: lits.into(),
+        logic: false,
+        character: true,
+        bit01: false,
+    }
+}
+
+/// `vhpi_format_value`: the type a value given in `format` stands for without an object, and
+/// its element count (`None`: a scalar). Strings of bits, octal and hex digits are logic
+/// vectors, decimal strings and the enumeration formats integers, characters and strings
+/// CHARACTER values; `None` for a format with no such reading.
+pub(crate) fn format_type(
+    format: vhpiFormatT,
+    given: &Given<'_>,
+) -> Option<(Scalar, Option<usize>)> {
+    let len = match given {
+        Given::Text(t) => t.len(),
+        Given::Vector(v) => v.len() / vector_elem_size(format)?,
+        Given::Scalar(_) => 1,
+    };
+    let int = Scalar::Int { narrow: false };
+    Some(match format {
+        vhpiLogicVal => (std_logic(), None),
+        vhpiLogicVecVal | vhpiBinStrVal => (std_logic(), Some(len)),
+        vhpiOctStrVal => (std_logic(), Some(3 * len)),
+        vhpiHexStrVal => (std_logic(), Some(4 * len)),
+        vhpiIntVal | vhpiLongIntVal | vhpiEnumVal | vhpiSmallEnumVal | vhpiDecStrVal => (int, None),
+        vhpiIntVecVal | vhpiLongIntVecVal | vhpiEnumVecVal | vhpiSmallEnumVecVal => {
+            (int, Some(len))
+        }
+        vhpiRealVal => (Scalar::Real, None),
+        vhpiRealVecVal => (Scalar::Real, Some(len)),
+        vhpiTimeVal => (Scalar::Phys { time: true }, None),
+        vhpiTimeVecVal => (Scalar::Phys { time: true }, Some(len)),
+        vhpiPhysVal => (Scalar::Phys { time: false }, None),
+        vhpiPhysVecVal => (Scalar::Phys { time: false }, Some(len)),
+        vhpiCharVal => (character(), None),
+        vhpiStrVal => (character(), Some(len)),
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use yavs_kernel::LogicVec;
-
-    fn std_logic() -> Scalar {
-        let lits: Vec<Lit> = "UX01ZWLH-"
-            .bytes()
-            .map(|c| Lit {
-                name: format!("'{}'", c as char),
-                ch: Some(c),
-            })
-            .collect();
-        Scalar::Enum {
-            lits: lits.into(),
-            logic: true,
-            character: false,
-            bit01: false,
-        }
-    }
 
     fn bit() -> Scalar {
         Scalar::Enum {

@@ -25,7 +25,7 @@ use yavs_sem::hir::{Direction, Mode, StmtKind, UnitHir};
 use yavs_sem::loader::UnitKind;
 use yavs_sem::stat::{ConstValue, Elems};
 use yavs_sem::types::{Constraint, RangeC, TypeKind};
-use yavs_sem::{Db, DeclId, SubtypeId, TypeId, UnitId};
+use yavs_sem::{AttrValueId, Db, DeclId, SubtypeId, TypeId, UnitId};
 
 use crate::sys::*;
 use crate::types::{Bound, Def, Range, Ty, TyId, Types};
@@ -265,6 +265,8 @@ pub(crate) struct Design {
     by_name: HashMap<String, NodeId>,
     /// Where each kernel leaf is stored (`yavs_elab::NetGraph::loc`).
     pub(crate) locs: Vec<yavs_elab::LeafLoc>,
+    /// `vhpiAttrDecl` of an attribute specification node (`vhpiAttrDeclK` nodes, no parent).
+    pub(crate) attr_decls: HashMap<NodeId, NodeId>,
 }
 
 impl Default for Design {
@@ -317,6 +319,7 @@ impl Design {
             types: Types::default(),
             by_name: HashMap::new(),
             locs: Vec::new(),
+            attr_decls: HashMap::new(),
         }
     }
 
@@ -330,7 +333,12 @@ impl Design {
             scalars: RefCell::default(),
             types: RefCell::default(),
             base_tys: RefCell::default(),
+            attrs: HashMap::new(),
+            attr_nodes: HashMap::new(),
         };
+        for (id, a) in db.attr_values.iter() {
+            b.attrs.entry(a.entity).or_default().push(id);
+        }
         b.region(ScopeId(0), None);
         b.packages();
         b.d.types = b.types.into_inner();
@@ -342,7 +350,10 @@ impl Design {
     /// index (design units are not found by name).
     fn push(&mut self, n: Node) -> NodeId {
         let id = NodeId(self.nodes.len() as u32);
-        let unit = matches!(n.kind, vhpiArchBodyK | vhpiEntityDeclK | vhpiPackDeclK);
+        let unit = matches!(
+            n.kind,
+            vhpiArchBodyK | vhpiEntityDeclK | vhpiPackDeclK | vhpiAttrDeclK
+        );
         if !unit {
             self.by_name.entry(vhpi_name(&n.full)).or_insert(id);
         }
@@ -476,6 +487,10 @@ struct Builder<'a> {
     types: RefCell<Types>,
     /// Type declarations by base type.
     base_tys: RefCell<HashMap<TypeId, TyId>>,
+    /// User attribute specifications by the declaration they decorate.
+    attrs: HashMap<DeclId, Vec<AttrValueId>>,
+    /// The `vhpiAttrDeclK` node of each attribute declaration (made once).
+    attr_nodes: HashMap<DeclId, NodeId>,
 }
 
 impl Builder<'_> {
@@ -696,7 +711,7 @@ impl Builder<'_> {
         };
         let full = format!("{}:{name}", self.d.node(n).full);
         let (file, line) = self.place(decl.name_span());
-        self.d.push(Node {
+        let node = self.d.push(Node {
             kind,
             name,
             full,
@@ -712,6 +727,72 @@ impl Builder<'_> {
             ty: Some(ty),
             origin,
         });
+        self.attr_specs(node, s, d);
+    }
+
+    /// The user attribute specifications of declaration `d` (node `n`), as `vhpiAttrSpecK`
+    /// children of its node (`vhpiAttrSpecs`), named `decl'attr`, valued like constants.
+    fn attr_specs(&mut self, n: NodeId, s: Option<ScopeId>, d: DeclId) {
+        let db = self.db;
+        for a in self.attrs.get(&d).cloned().unwrap_or_default() {
+            let av = &db.attr_values[a];
+            let adecl = &db.decls[av.attr];
+            let DeclKind::Attribute { ty: st } = adecl.kind else {
+                continue;
+            };
+            let v = db.value(av.value);
+            let layout = self.layout(st, v, s);
+            let ty = self.object_ty(st, &layout, s);
+            let name = adecl.name.to_string();
+            let node = self.d.node(n);
+            let full = format!("{}'{name}", node.full);
+            let (file, line) = self.place(db.exprs[av.value].span);
+            let spec = self.d.push(Node {
+                kind: vhpiAttrSpecK,
+                name: name.clone(),
+                full,
+                parent: Some(n),
+                file,
+                line,
+                regions: Vec::new(),
+                decls: Vec::new(),
+                unit: None,
+                def_name: None,
+                mode: None,
+                layout: Some(layout),
+                ty: Some(ty),
+                origin: Origin::Decl {
+                    scope: s,
+                    decl: av.attr,
+                    value: v.cloned(),
+                },
+            });
+            let decl_node = match self.attr_nodes.get(&av.attr) {
+                Some(&x) => x,
+                None => {
+                    let (file, line) = self.place(adecl.name_span());
+                    let x = self.d.push(Node {
+                        kind: vhpiAttrDeclK,
+                        name: name.clone(),
+                        full: name,
+                        parent: None,
+                        file,
+                        line,
+                        regions: Vec::new(),
+                        decls: Vec::new(),
+                        unit: None,
+                        def_name: None,
+                        mode: None,
+                        layout: None,
+                        ty: None,
+                        origin: Origin::Named,
+                    });
+                    self.attr_nodes.insert(av.attr, x);
+                    x
+                }
+            };
+            self.d.attr_decls.insert(spec, decl_node);
+        }
     }
 
     /// Package instances: every analyzed non-generic package and package instantiation the

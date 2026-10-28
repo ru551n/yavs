@@ -13,13 +13,13 @@ not only what cocotb needs.
 | Area | Supported | Not supported yet |
 |---|---|---|
 | Loading | `--vhpi=LIB[:ENTRY]`, several plugins, `+args` | |
-| Hierarchy | instances, blocks, generates, processes, packages, generics, ports, signals, constants, variables, record fields, array elements | aliases, files, equivalent processes of concurrent statements, variables of subprograms |
+| Hierarchy | instances, blocks, generates, processes, packages, generics, ports, signals, constants, variables, record fields, array elements, user attributes of declarations | aliases, files, equivalent processes of concurrent statements, statements, variables of subprograms |
 | Lookup | by name, by index, iterators, parent/prefix handles | |
 | Reading values | all common formats, from callbacks | whole records, protected objects, raw data |
 | Writing values | signals and ports (deposit or force with propagation), variables, driver transactions | forcing variables, constants, generics, non-propagating modes on signals |
-| Callbacks | start/end of simulation and initialization, time step, delta cycle, process and postponed phases, after delay, value change | any other reason (for example sensitivity) |
+| Callbacks | start/end of simulation and initialization, time step, delta cycle, process and postponed phases, after delay, time-out, value change, sensitivity on a signal | transactions, force and release, statements, subprogram calls, tool phases, save and restart |
 | Foreign models | functions, procedures, architectures, library and application hooks | file parameters |
-| Misc calls | `vhpi_control` stop and finish | `vhpi_get_data`, `vhpi_put_data`, `vhpi_format_value`, `vhpi_get_next_time`, `vhpi_protected_call` (exported so plugins link, but they report "not implemented") |
+| Misc calls | `vhpi_control` stop and finish, `vhpi_format_value` | `vhpi_get_data`, `vhpi_put_data`, `vhpi_get_next_time`, `vhpi_protected_call` (exported so plugins link, but they report "not implemented") |
 
 ## cocotb
 
@@ -42,6 +42,29 @@ error-path cases that skip themselves. The result is the same at `--threads 1` a
 An earlier record of 66 of 68 test directories (2026-10-19) had two failures, both in the local
 setup of that time and not in yavs: the time resolution and the plusargs were not passed on, and
 cocotb's Python runner had no yavs entry.
+
+## Coverage of the standard
+
+The audit of yavs against the VHPI of IEEE 1076-2019 (`vhpi_user.h`, every class, relation,
+property, format, mode, reason and function), 2026-10-28. "Partial" names what is missing; each
+gap has an issue.
+
+| Area | Status | What works | Missing (issue) |
+|---|---|---|---|
+| Functions | partial | all 34 exported; every one works except the four on the right | `vhpi_get_next_time` ([#828](https://github.com/ru551n/yavs/issues/828)), `vhpi_get_data`, `vhpi_put_data` ([#832](https://github.com/ru551n/yavs/issues/832)), `vhpi_protected_call` ([#833](https://github.com/ru551n/yavs/issues/833)) |
+| Plugin loading, tool object | supported | startup table or `LIB:ENTRY`, Linux and Windows export tables, `vhpiArgcP`, `vhpiArgvs`, `vhpiNameP`, `vhpiToolVersionP`, `vhpiCapabilitiesP` (hierarchy, static access, foreign models, advanced foreign models, run-time debug) | `vhpiPhaseP` ([#832](https://github.com/ru551n/yavs/issues/832)) |
+| Region classes | partial | root and component instances, blocks, `for` and `if`/`case` generates, processes, package instances, entities, architectures, packages | equivalent processes of concurrent statements, statements ([#829](https://github.com/ru551n/yavs/issues/829)); components, configurations, subprograms, libraries ([#831](https://github.com/ru551n/yavs/issues/831)) |
+| Declaration classes | partial | generics, ports, signals, constants, variables, shared variables, user attribute specifications and declarations of declarations | aliases, files, implicit signals, attribute names ([#831](https://github.com/ru551n/yavs/issues/831)) |
+| Types | supported | type and subtype declarations of every scalar, array and record kind, constraints, literals, record elements, units | access, file and protected types as objects ([#831](https://github.com/ru551n/yavs/issues/831), [#833](https://github.com/ru551n/yavs/issues/833)) |
+| One-to-one relations | partial | `vhpiRootInst`, `vhpiTool`, `vhpiUpperRegion`, `vhpiImmRegion`, `vhpiDesignUnit`, `vhpiPrimaryUnit`, `vhpiPrefix`, `vhpiParent`, `vhpiType`, `vhpiSubtype`, `vhpiBaseType`, `vhpiElemType`, `vhpiAttrDecl` | expressions, statements, stack frames ([#829](https://github.com/ru551n/yavs/issues/829)), connectivity ([#830](https://github.com/ru551n/yavs/issues/830)), aliases and configurations ([#831](https://github.com/ru551n/yavs/issues/831)) |
+| One-to-many relations | partial | the region, declaration, element, type, parameter, driver (foreign models) and argument iterators of the hierarchy table below, `vhpiAttrSpecs` of a declaration | `vhpiSensitivitys`, `vhpiSeqStmts` ([#829](https://github.com/ru551n/yavs/issues/829)), drivers, loads and contributors of signals ([#830](https://github.com/ru551n/yavs/issues/830)), `vhpiAliasDecls`, `vhpiSigAttrs`, `vhpiDesignUnits` ([#831](https://github.com/ru551n/yavs/issues/831)); `vhpiGenerateStmts` deliberately not (both references refuse it) |
+| Properties | partial | names, kind, file and line, mode, size, composite and scalar flags, type properties, `vhpiNumPortsP`, `vhpiNumGensP`, `vhpiLabelNameP`, `vhpiGenerateIndexP`, `vhpiIsSharedP`, `vhpiStartLineNoP`, `vhpiResolutionLimitP` | staticness, passive, postponed, guarded ([#829](https://github.com/ru551n/yavs/issues/829)), resolved, signal kind, forced ([#830](https://github.com/ru551n/yavs/issues/830)), library and component names, end line ([#831](https://github.com/ru551n/yavs/issues/831)) |
+| Value formats | partial | every format except the four on the right, on scalars, arrays of any dimension, record fields | records as a whole, `vhpiRawDataVal`, `vhpiSmallPhysVal`, `vhpiSmallPhysVecVal`, `vhpiPtrVecVal` ([#833](https://github.com/ru551n/yavs/issues/833)) |
+| Put modes | supported | `vhpiDepositPropagate`, `vhpiForcePropagate`, `vhpiRelease`, `vhpiDeposit` on variables, `vhpiSizeConstraint` on foreign results, `vhpi_schedule_transaction` on foreign drivers (inertial with pulse rejection, transport) | `vhpiDeposit` and `vhpiForce` on signals refused on purpose (two of three references refuse them) |
+| Callback reasons | partial | the simulation-cycle reasons, after delay, value change, `vhpiCbTimeOut`, `vhpiCbRepTimeOut`, `vhpiCbSensitivity` on a signal | transaction, force, release ([#830](https://github.com/ru551n/yavs/issues/830)); statement, subprogram call, suspend and resume ([#829](https://github.com/ru551n/yavs/issues/829)); tool, analysis and elaboration phases, quiescence, interrupt, errors, interactive, save, restart and reset ([#832](https://github.com/ru551n/yavs/issues/832)) |
+| Foreign models | supported | `vhpiFuncF`, `vhpiProcF`, `vhpiArchF`, `vhpiLibF`, `vhpiAppF`, `vhpi_create` of processes and drivers | file parameters, `vhpiForeignfs` ([#831](https://github.com/ru551n/yavs/issues/831)) |
+| Simulation control | partial | `vhpi_control(vhpiStop)`, `vhpi_control(vhpiFinish)` | `vhpiReset` ([#832](https://github.com/ru551n/yavs/issues/832)) |
+| Errors and handles | supported | `vhpi_check_error` after every call, `vhpi_assert`, `vhpi_printf`, generational handles, `vhpi_compare_handles`, `vhpi_release_handle`, iterators released when exhausted | |
 
 ## Details
 
@@ -84,11 +107,16 @@ made on demand (`vhpiSelectedNameK`, `vhpiIndexedNameK`).
 
 | Call | Supported |
 |---|---|
-| `vhpi_handle` | root, tool, upper and immediate region, design and primary unit, prefix |
+| `vhpi_handle` | root, tool, upper and immediate region, design and primary unit, prefix, `vhpiAttrDecl` of an attribute specification |
 | `vhpi_handle_by_name` | absolute and relative names, case-insensitive, `.field` and `(index)` selections |
-| `vhpi_handle_by_index`, `vhpi_iterator`, `vhpi_scan` | `vhpiInternalRegions`, `vhpiBlockStmts`, `vhpiCompInstStmts`, `vhpiStmts`, `vhpiDecls`, `vhpiSigDecls`, `vhpiPortDecls`, `vhpiGenericDecls`, `vhpiConstDecls`, `vhpiVarDecls`, `vhpiPackInsts`, `vhpiIndexedNames`, `vhpiSelectedNames`, `vhpiParamDecls`, `vhpiDrivers` |
+| `vhpi_handle_by_index`, `vhpi_iterator`, `vhpi_scan` | `vhpiInternalRegions`, `vhpiBlockStmts`, `vhpiCompInstStmts`, `vhpiStmts`, `vhpiDecls`, `vhpiSigDecls`, `vhpiPortDecls`, `vhpiGenericDecls`, `vhpiConstDecls`, `vhpiVarDecls`, `vhpiPackInsts`, `vhpiIndexedNames`, `vhpiSelectedNames`, `vhpiParamDecls`, `vhpiDrivers`, `vhpiAttrSpecs` (of a declaration) |
 | `vhpi_get`, `vhpi_get_str`, `vhpi_get_real`, `vhpi_get_phys` | name, `vhpiCaseNameP` (original spelling), full name, kind, file, line, mode, `vhpiDefNameP`, size, composite and scalar flags, type properties; other properties report "not implemented" through `vhpi_check_error` |
 | `vhpi_compare_handles`, `vhpi_release_handle`, `vhpi_check_error` | yes |
+
+User attributes: `vhpiAttrSpecs` of a declaration lists its attribute specifications
+(`vhpiAttrSpecK`, named after the attribute, full name `:top:s'mark`, also found by that name);
+`vhpi_get_value` reads their values like constants, and `vhpiAttrDecl` gives the attribute
+declaration (`vhpiAttrDeclK`).
 
 Types: `vhpiType` (and `vhpiSubtype`), `vhpiBaseType` and `vhpiElemType` give kind, name,
 constraints (integer, enumeration, floating and physical ranges with bounds, direction, null
@@ -133,9 +161,20 @@ reasons, each also in its `Rep` (repeating) form where the standard has one:
 - `vhpiCbAfterDelay`
 - `vhpiCbValueChange` on signals, ports and their sub-elements: runs once in every cycle in
   which any element changed, with the value in the format the `value` field asks for.
+- The foreign-model reasons: `vhpiCbTimeOut` and `vhpiCbRepTimeOut` behave as after-delay
+  callbacks (the repeating one every period until removed), `vhpiCbSensitivity` on a signal
+  as a value-change callback.
 
-Any other reason (for example `vhpiCbSensitivity`) is refused with a "not implemented"
-diagnostic.
+Any other reason is refused with a "not implemented" diagnostic.
+
+### Converting values
+
+`vhpi_format_value` converts a value from one format to another without an object: integers
+(and the enumeration formats) to and from decimal, binary, octal and hex strings, bit, octal and
+hex strings to and from logic vectors, reals, times and physical values, characters and strings.
+The input format decides the kind of value (a binary string is a logic vector); a conversion to
+another kind (an integer to a real) is warning `W0903`. The output follows the buffer protocol of
+`vhpi_get_value`.
 
 ### Foreign models
 

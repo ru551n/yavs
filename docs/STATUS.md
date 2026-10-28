@@ -5387,7 +5387,7 @@ with none enabled the observer does not take the state lock. `crates/yavs/tests/
 `vhpi_drives_a_clocked_design` (a counter clocked and reset only from VHPI, force, release and
 deposit on a driven signal, value changes on a signal, a port, a bit and a record; identical at
 `--threads 1` and `4`, `tests/put/expected.txt`) and `vhpi_put_value_misuse_is_reported`
-(`tests/put/errors.txt`). Missing: `vhpi_schedule_transaction`.
+(`tests/put/errors.txt`). `vhpi_schedule_transaction` works on the drivers of foreign models (#330, below).
 
 Done (#309, variables): `vhpi_get_value` and `vhpi_put_value` (deposits) on process variables,
 non-protected shared variables of architectures, blocks and packages, and their record fields
@@ -5450,7 +5450,7 @@ design and primary unit, prefix), `vhpi_handle_by_name` (absolute and relative, 
 Checked by `crates/yavs/tests/vhpi_run.rs` `plugin_walks_the_design_hierarchy` (C plugin
 `crates/yavs-vhpi/tests/plugin/hier.c` against `tests/hier/expected.txt`) and unit tests;
 names and kinds agree with the reference simulator that has VHPI wherever it reports them.
-Missing: equivalent processes of concurrent statements, aliases, files, `vhpiGenerateIndexP`;
+Missing (see `docs/vhpi.md` "Coverage of the standard"): equivalent processes of concurrent statements, aliases, files (#829, #831);
 sub-elements of variables whose bounds are only known at run time (`W0904`).
 
 Done (#270, values): `vhpi_get_value` (`crates/yavs-vhpi/src/value.rs`) on signals, ports,
@@ -5473,9 +5473,11 @@ Types (`crates/yavs-vhpi/src/types.rs`, a table built with the snapshot): `vhpiT
 `vhpiIsAnonymousP`, `vhpiPositionP`, `vhpiPhysPositionP`; the same plugin dumps every object's
 type, and it agrees with the reference simulator on kinds, names, bases, bounds, dimensions,
 literals and fields (yavs also gives enumeration and floating ranges and unit names).
-Missing: variables' values, `vhpiPtrVal`, `vhpiRawDataVal`, `vhpiSmallPhys*`, records as a
-whole (`W0904`); the element subtype of a resolved array subtype (`std_logic_vector`'s
+Missing: `vhpiPtrVal` outside foreign access parameters, `vhpiRawDataVal`, `vhpiSmallPhys*`, records as a
+whole (`W0904`, #833; variables' values came with #309); the element subtype of a resolved array subtype (`std_logic_vector`'s
 elements report `STD_ULOGIC`).
+
+Done (#143, VHPI audit, first round): `docs/vhpi.md` "Coverage of the standard" lists every area of the IEEE 1076-2019 VHPI as supported, partial or missing, with an issue per gap (#828 to #833). New: user attribute specifications of declarations (`vhpiAttrSpecs`, `vhpiAttrSpecK` with its value, `vhpiAttrDecl`), `vhpiCapabilitiesP`, `vhpiNumPortsP`, `vhpiNumGensP`, `vhpiLabelNameP`, `vhpiGenerateIndexP`, `vhpiIsSharedP`, `vhpiStartLineNoP`, the foreign-model reasons `vhpiCbTimeOut`, `vhpiCbRepTimeOut` and `vhpiCbSensitivity` (on a signal), and `vhpi_format_value`; tests in `crates/yavs/tests/vhpi_run.rs` (plugin `tests/plugin/extras.c`).
 
 Done (#122): `tools/cocotb/run.py` installs cocotb 2.1.0 (pinned wheel, tests from the pinned tag, test dependencies pinned) into a venv, builds cocotb's VHPI library from its source without simulator defines (`libcocotbvhpi_yavs`), adds yavs to cocotb's runner and pytest-plugin tables and runs what cocotb's own CI runs for a simulator: the 68 `tests/test_cases` directories, the examples through make and pytest, `pytest -k simulator_required` and the pytest plugin's tests, with cocotb's CI environment (`PYTHONWARNINGS=error`, debug switches). Result on main 2026-10-28: 78 of 78 jobs pass (43 run VHDL tests: 702 tests pass, the 10 failing tests are the expected ones of `test_failure` and `test_max_failures`; the other 35 jobs are Verilog only or error-path cases), identical at `--threads 1` and `4` and with 1 or 6 jobs in parallel; about 20 s. The two directories that failed before (66 of 68) failed in the local integration (time resolution and plusargs not passed, no runner entry), not in VHPI. With yavs added to name gates the recursive walk of `test_iteration_vhdl` finds 2663 objects, the count three reference simulators agree on. CI: the `conformance` workflow runs it on every push to main.
 

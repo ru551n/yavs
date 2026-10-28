@@ -30,10 +30,9 @@ framework's repository and are named by role ("bootstrap library", "VHPI impleme
 `vhpi_put_value`, `vhpi_register_cb`, `vhpi_release_handle`, `vhpi_remove_cb`,
 `vhpi_scan`. No data symbols (`vhpiFS` and friends are unused). This is the
 same list as the framework's `.def` file for the primary reference simulator. yavs exports these and the
-rest of the standard set (`src/exports.txt`); the design hierarchy
-(`vhpi_handle`, `vhpi_handle_by_name`, `vhpi_handle_by_index`,
-`vhpi_iterator`, `vhpi_scan`, names and kinds, #269) works, values and the
-other callbacks come with M5.
+rest of the standard set (`src/exports.txt`); all of these work (hierarchy #269,
+values #270, puts #271, callbacks #272), and cocotb's own regression passes
+(`tools/cocotb`, #122). What is still missing of the standard is in `docs/vhpi.md`.
 
 Behaviour the Python testbench framework relies on, for M5:
 - `vhpi_control(vhpiFinish, vhpiDiagTimeLoc)`: one extra `int` argument
@@ -80,6 +79,10 @@ Behaviour the Python testbench framework relies on, for M5:
   symbols.
 
 ## Changes to propose upstream (M5)
+
+`tools/cocotb` carries items 3 to 5 locally (the makefile, the runner, the runner and pytest-plugin
+table entries) and builds the VHPI library without simulator defines (item 2 on Linux); it runs
+cocotb's own regression with them (#122).
 
 1. A `yavsvhpi.def` file: `LIBRARY "yavs.exe"` plus the
    `EXPORTS` list.

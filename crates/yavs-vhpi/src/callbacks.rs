@@ -112,8 +112,8 @@ pub(crate) struct Callbacks {
     pub(crate) to_cancel: Vec<WakeId>,
 }
 
-/// The reason without `Rep` and whether it repeats; `None` for a reason yavs does not
-/// support. A value-change callback repeats until it is removed.
+/// The reason without `Rep` (the reason it behaves as) and whether it repeats; `None` for a
+/// reason yavs does not support. A value-change callback repeats until it is removed.
 fn split(reason: i32) -> Option<(i32, bool)> {
     Some(match reason {
         vhpiCbValueChange => (reason, true),
@@ -137,6 +137,11 @@ fn split(reason: i32) -> Option<(i32, bool)> {
         vhpiCbRepLastKnownDeltaCycle => (vhpiCbLastKnownDeltaCycle, true),
         vhpiCbRepStartOfPostponed => (vhpiCbStartOfPostponed, true),
         vhpiCbRepEndOfTimeStep => (vhpiCbEndOfTimeStep, true),
+        // The foreign-model reasons: a time-out is an after-delay callback, a sensitivity
+        // callback on a signal is a value-change callback (an event on it).
+        vhpiCbTimeOut => (vhpiCbAfterDelay, false),
+        vhpiCbRepTimeOut => (vhpiCbAfterDelay, true),
+        vhpiCbSensitivity => (vhpiCbValueChange, true),
         _ => return None,
     })
 }
@@ -736,7 +741,7 @@ mod tests {
             Err(RegisterError::Misuse(_))
         ));
         assert!(matches!(
-            cbs.register(data(vhpiCbSensitivity), 0, None, None, &clock),
+            cbs.register(data(vhpiCbStmt), 0, None, None, &clock),
             Err(RegisterError::Unsupported)
         ));
     }

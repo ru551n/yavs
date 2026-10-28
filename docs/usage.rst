@@ -758,8 +758,7 @@ is reported as usual.
        { "type": "yavs", "request": "launch", "name": "Attach to yavs", "port": 4711 }
 
 2. Open the testbench and set breakpoints.
-3. In a terminal, start the one test with the debug flag of the VUnit simulator interface for
-   yavs. It runs the test with ``--dap=4711`` (or the port in ``YAVS_DAP_PORT``) and prints the
+3. In a terminal, start the one test with the test runner's debug flag. It runs the test with ``--dap=4711`` (or the port in ``YAVS_DAP_PORT``) and prints the
    waiting line:
 
    .. code-block:: bash

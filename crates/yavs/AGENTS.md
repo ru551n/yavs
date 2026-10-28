@@ -122,5 +122,5 @@ cargo run -p yavs -- run --work=work:$HOME/.cache/<dir>/work top --threads 4
 - The difftest (`tools/difftest`) and the corpus report (`tools/corpus/report.sh`) drive this
   binary; output format changes break their parsers.
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:cli`): #64 wire
-  lowering, interpreter and kernel into `yavs run`; #110 test runner simulator interface;
+  lowering, interpreter and kernel into `yavs run`; #110 test runner support;
   #135 native Windows build; #22 bootstrap mode.

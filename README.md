@@ -19,7 +19,7 @@ Yet Another VHDL Simulator: VHDL-1993, 2008 and 2019 in Rust.
 - **Coverage:** statement, branch, condition, expression and toggle coverage (`--cov`), per-test attribution and ranking, database merge, text, HTML and Cobertura reports, exclusions by pragma, file or YAML.
 - **Debugging:** a Debug Adapter Protocol server (`--dap`), the graphical debugger `yavs-gui`, diagnostics with source snippets and VHDL call stacks, `yavs --explain CODE` and JSON diagnostics (`--message-format=json`).
 - **VHPI:** `--vhpi` loads VHPI plugins that walk the design, read and put values and register callbacks; the implementation is partial (trace comparison in [`docs/conformance.md`](docs/conformance.md)). Running cocotb over VHPI works for most of its own tests (66 of 68), but that integration is on hold.
-- **Verification libraries:** OSVVM and UVVM testbenches run unmodified; VUnit drives yavs as a simulator through a yavs simulator interface (`VUNIT_SIMULATOR=yavs`; the contract is [`docs/cli-contract.md`](docs/cli-contract.md)).
+- **Verification libraries:** compliant with OSVVM, UVVM and VUnit: their testbenches and test suites run unmodified.
 - **Safe core:** written in Rust; the kernel, interpreter, parser and semantic analysis forbid `unsafe` code. It is confined to the compiled tiers, the foreign-call and VHPI layers, the cache's file mapping and one prefetch hint.
 - **Platforms and licence:** Linux x86_64, Linux aarch64 and Windows x86_64; MIT OR Apache-2.0.
 

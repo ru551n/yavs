@@ -20,13 +20,13 @@
 - **How:** one mechanical sweep (the script, `tools/rename-yavs.sh`, was removed after the rename; see git history; other worktrees ran it on
   their own changes). The GitHub repository is `ru551n/yavs` (the old URL redirects).
 - **Kept:** the `~/.cache/rsim-*` scratch directory names and the `~/git/rsim` checkout (both exist
-  on disk), the test runner integration branch names, and the vendored `lib/std` and `lib/ieee` files, which keep their old
+  on disk), the names of the test runner's branches, and the vendored `lib/std` and `lib/ieee` files, which keep their old
   comments so `lib/SHA256SUMS` stays valid. A library directory that still has the old
   manifest name fails with L0004 and asks to re-analyze: there is no reader for old names.
 
 ## Release trigger and first release (user, 2026-10-18)
 
-When yavs simulates a test runner testbench end to end (issue #110: `run.py --simulator yavs` passes a
+When yavs simulates a test runner testbench end to end (issue #110: the test runner's `run.py` with yavs as the simulator passes a
 minimal test runner testbench on the real binary), CI is added (#134) together with a release workflow
 (#165), and the first release is cut. Rationale: a release is only useful once the first
 milestone users care about works.
@@ -10287,11 +10287,8 @@ base build of 2026-10-25, cold analysis of a whole manifest, one call per file a
   (`analyse_files` for the untimed preparation of the verification-component testbenches and the vhdl-ai-test tree); the documentation (`docs/usage.rst`, `docs/cli-contract.md`).
   `tools/suites` (`pro.py`, `uvvm.py`) already batched with the same repeat; `tools/difftest` has one file per test (and `external.py` passes the files of a script step in one call),
   `tools/discrepancies`, `tools/bench/tiny.py` and `tools/vhpi-conformance` analyze one file by construction, the release smoke test one file.
-- **The VUnit simulator interface for yavs is not in this repository, on this host or on the maintainer's VUnit fork.** `docs/test-runner-requirements.md` describes it (the `rsim-integration` branch
-  of the test runner that sets `supports_batch_compile`, `batch_file_list_arguments = ("@{}",)` and `supports_concurrent_compiles_into_library`); no clone here and no branch of the fork has it, and
-  VUnit's master has no yavs interface. The generic feature is the open VUnit pull request #1236 (`--batch-compile`, branch `batch-compile` of the fork: it groups the files ready at the same time by library
-  and compile options, passes a file list, and compiles a failing batch file by file; the flag is opt-in and an interface sets `supports_batch_compile`). Making it the default for yavs is a change in
-  the missing interface branch, so nothing is changed here; it is the first item to do when that branch is found (flag default for `--simulator yavs`, or the interface passing `batch=True`).
+- **The test runner's side of the yavs support is not in this repository.** `docs/test-runner-requirements.md` describes it (the runner settings `supports_batch_compile`, `batch_file_list_arguments = ("@{}",)` and `supports_concurrent_compiles_into_library`); VUnit's master does not have it. The generic feature is the open VUnit pull request #1236 (`--batch-compile`, branch `batch-compile` of the fork: it groups the files ready at the same time by library
+  and compile options, passes a file list, and compiles a failing batch file by file; the flag is opt-in and the runner's yavs support sets `supports_batch_compile`). Making it the default for yavs is a change on the runner side, so nothing is changed here (flag default for yavs, or the runner passing `batch=True`).
 - **Realbench groups with one more rule, the same for both tools: a file that defines a design unit an earlier file of the call defined starts a new call** (`item_calls`, a regular-expression
   scan of the unit headers, not a parse). The corpus manifests put several projects into one library (the runner's examples define `tb_example` in several directories), and the reference rejects a
   unit that is replaced within one call ("depends on an obsolete version of ..."); yavs accepts it. A real project has no such files, and the rule keeps both tools on the same grouping.

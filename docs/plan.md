@@ -121,7 +121,7 @@ Other open source simulators kept running into these bug classes.
   - textio and file I/O, `env`, package generics, external names.
   - Foreign subprograms with `--load`.
   - The packed-logic layout benchmark and decision.
-- **M4: external test runner end to end.** A minimal testbench, then the runner's own VHDL test suites. Add a yavs simulator interface to the runner so that `run.py --simulator yavs` works.
+- **M4: external test runner end to end.** A minimal testbench, then the runner's own VHDL test suites. Make the runner able to use yavs as its simulator.
 - **M4b: ecosystem libraries.**
   - The Synopsys packages (built in, #117).
   - Functional VITAL.

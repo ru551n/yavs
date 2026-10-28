@@ -1,8 +1,6 @@
 # yavs CLI contract for external test runners
 
-This is the part of the `yavs` command line that an external test runner (its yavs simulator
-interface module) relies on. Anything not listed here is free to change.
-A conforming fake yavs lives in the test runner's acceptance tests.
+This is the part of the `yavs` command line that an external test runner relies on. Anything not listed here is free to change.
 
 Conventions:
 
@@ -52,7 +50,7 @@ Conventions:
   and it raises a clear error before compiling anything when the executable is
   missing, `yavs --version` fails or cannot be parsed, or the version is older
   than the first one implementing this contract (`YAVS_MIN_VERSION` in
-  the runner's yavs interface module).
+  the test runner).
 
 ## 1. Discovery
 

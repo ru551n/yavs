@@ -1,7 +1,6 @@
 # yavs requirements from an external test runner
 
-The test runner's yavs integration (a local branch that merges three open feature requests into its yavs
-support) sets these hooks in its yavs interface module:
+The test runner's yavs support sets these hooks (they come from three open feature requests of the runner):
 
 | Hook | Value | From feature | Needs from yavs |
 |---|---|---|---|
@@ -10,7 +9,7 @@ support) sets these hooks in its yavs interface module:
 | `batch_file_list_arguments` | `("@{}",)` | `--batch-compile` | section 1 (`@FILE`) |
 | `supports_vhdl_reflection()` | True (a target) | `record_dict_pkg` | section 3 (`std.reflection`) |
 
-The test runner's fake yavs implements sections 1 and 2 and passes end to end
+A test double of yavs implements sections 1 and 2 and passes end to end
 with `--parallel-compile -p 8`, `--batch-compile` and both.
 
 ## 1. CLI contract: `yavs analyze FILE...` and `@FILE`
@@ -63,7 +62,7 @@ therefore guarantee:
 - **Exclusive lock for writers.** `analyze` holds the exclusive lock on `<work>/_YAVS_LIB` while it
   reads, changes and writes the manifest. It reads the manifest again after taking the lock and merges
   its own units into it, never into a copy read before the lock: a lost update drops units silently.
-  The fake checks that every file analyzed into `vunit_lib` is in the manifest exactly once.
+  The double checks that every file analyzed into `vunit_lib` is in the manifest exactly once.
 - **Atomic replacement.** The manifest and every unit file are written to a temp file and renamed, so a
   reader without the lock sees either the old or the new version, never a partial file.
 - **Readers of other libraries.** An analyze reading a library that another process is analyzing into
@@ -85,7 +84,7 @@ therefore guarantee:
   `MoveFileEx` with `MOVEFILE_REPLACE_EXISTING` (Rust `std::fs::rename` does this), and must survive
   a reader holding the old manifest open. If not, retry on a sharing violation.
 
-Fake behaviour that a test relies on: two analyzes into one library that interleave without the lock fail
+Behaviour of the test double that a test relies on: two analyzes into one library that interleave without the lock fail
 with exit 3 (`FAKE_YAVS_NO_LOCK=1` shows it). With the lock they never do.
 
 ## 3. `std.reflection` for `tb_record_dict_pkg` (VHDL-2019)
@@ -146,5 +145,5 @@ instance used to test the "not a record" failure.
 - 2019 call paths (`check_only_log` compares the log location), which yavs already reports through
   `supports_vhdl_call_paths`.
 
-Test that defines "done": `VUNIT_SIMULATOR=yavs VUNIT_VHDL_STANDARD=2019 python run.py` in the runner's `record_dict` example directory, 6 of 6 passing (scalars, arrays including ascending ranges and signed/unsigned,
+Test that defines "done": the runner's `run.py` with yavs as the simulator and VHDL-2019 in the runner's `record_dict` example directory, 6 of 6 passing (scalars, arrays including ascending ranges and signed/unsigned,
 nested records, lower-case keys, and the two failure messages).

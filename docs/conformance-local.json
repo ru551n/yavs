@@ -680,7 +680,7 @@
    "version": "0.8.0"
   },
   "vunit-own": {
-   "command": "VUNIT_SIMULATOR=yavs python run.py -p 2   (in each vunit/vhdl/<suite>/test directory)",
+   "command": "python run.py -p 2 in each vunit/vhdl/<suite>/test directory of VUnit",
    "commit": "f2ab69be",
    "data": {
     "fail": 0,
@@ -688,7 +688,7 @@
     "skip": 0
    },
    "date": "2026-10-20",
-   "note": "11 suites; recorded in docs/STATUS.md (#112); needs a VUnit checkout with a yavs simulator interface, which this tool cannot fetch",
+   "note": "11 suites; recorded in docs/STATUS.md (#112)",
    "title": "VUnit's own VHDL suites"
   }
  }

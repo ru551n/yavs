@@ -1512,6 +1512,13 @@ mod clift {
             ("cb_step", Max(10))
         ]
     );
+    // `uniform` is computed in place by this tier too (#481 round 12): no native call for it.
+    clift_case!(
+        uniform,
+        "llvm_uniform",
+        "acc=",
+        [("cb_native", Max(4)), ("cb_host", Max(2))]
+    );
     clift_case!(
         edge_forms,
         "edge_forms",

@@ -1102,9 +1102,10 @@ const HIT: Model = model(1000.0, 1.0, 1.0);
 /// has no pre-keys: the module is generated and keyed by its IR, 12 to 50 us an IR instruction (#785).
 const HIT_GEN: Model = model(1000.0, 20.0, 1.0);
 
-/// `HIT` for a first-level generator (Cranelift): the body is generated again and its code linked,
-/// about 4 us an IR instruction (neorv32 eager: 1 804 functions, 143 723 IR instructions in 536 ms
-/// warm against 4 079 ms compiled, #481).
+/// `HIT` for a first-level generator (Cranelift): the bodies of the tree (`Worker::tree`: the root
+/// and the variants it builds) are generated again and their code linked, about 4 us an IR
+/// instruction (neorv32 eager: 1 804 functions, 143 723 IR instructions in 536 ms warm against
+/// 4 079 ms compiled, #481).
 const FIRST_HIT: Model = model(0.0, 4.0, 1.0);
 
 /// A look-up in the compilation cache generates the code of the function, about this part of a
@@ -1659,7 +1660,9 @@ impl Worker {
             return 0;
         };
         if cached && self.first.is_some() {
-            FIRST_HIT.price(f.code.len())
+            // The variants of the tree are generated again too (#481 round 12).
+            let size = |i: FuncId| self.prog.func(i).map_or(0, |f| f.code.len());
+            FIRST_HIT.price(self.tree(id).iter().map(|&(i, _)| size(i)).sum())
         } else if cached && self.prog.identity.is_some() {
             HIT.price(f.code.len())
         } else if cached {

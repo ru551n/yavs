@@ -26,7 +26,9 @@ use yavs_ir::{
     AddrSpace, BoolOp, CheckKind, CmpOp, FOp, FUnOp, Func, FuncId, FuncKind, Inst, IntOp, IntUnOp,
     Program, Reg, Width,
 };
-use yavs_llvm::native::{Arg, call_fits, closed_frame, ieee_fast, ieee_layout, native_set};
+use yavs_llvm::native::{
+    Arg, call_fits, closed_frame, ieee_fast, ieee_layout, native_set, uniform_regs,
+};
 use yavs_llvm::regs::Live;
 use yavs_llvm::rt::*;
 
@@ -2046,7 +2048,8 @@ fn gen_func(
                 .collect();
         }
         g.iro = mem_ro(&inst);
-        if !g.iro && !matches!(inst, Inst::LCopy { .. } | Inst::CallNative { .. }) {
+        if !g.iro && !matches!(inst, Inst::LCopy { .. }) && (native || !inline_ieee(prog, f, &inst))
+        {
             g.mfacts.clear();
             g.derived.clear();
         }
@@ -3213,6 +3216,9 @@ fn gen_func(
                             }
                             _ => g.signal(pc, e),
                         }
+                    }
+                    None if let Some(v) = uniform_regs(prog, f, native, args, dst) => {
+                        g.uniform_fast(pc, &inst, f, native, args, v)?
                     }
                     None if frame_direct(prog, f, &inst)
                         && yavs_interp::light_native(prog, f, native, args)
@@ -7057,6 +7063,77 @@ impl Gen<'_> {
     /// `Inst::CallNative` of a native `yavs_interp::direct_native` allows, in a frame-mode
     /// function: the argument cells go to `TierHost::native_frame` (`yavs_rt_native`), the
     /// interpreter steps the call where that does not run it.
+    /// `math_real.uniform` computed in place, as the LLVM lowering's `uniform_fast`: both seeds
+    /// read and the generator's step made in integers (`yavs_interp::ieee::uniform_step`), the new
+    /// seeds and the real written back. A seed out of range (the native reports it) or an address
+    /// `host` does not find runs the native, which has changed nothing by then.
+    fn uniform_fast(
+        &mut self,
+        pc: u32,
+        i: &Inst,
+        f: &Func,
+        native: yavs_ir::NativeId,
+        args: yavs_ir::Regs,
+        v: [Reg; 3],
+    ) -> Result<(), String> {
+        let (fb, done) = (self.b.create_block(), self.b.create_block());
+        self.b.set_cold_block(fb);
+        let gf = self.gf;
+        let mut p = Vec::new();
+        for r in v {
+            let a = self.ld(r);
+            p.push(self.host(a, Some(r), Op::C(0), Op::C(8), true, fb));
+        }
+        let s1 = self.b.ins().load(I64, gf, p[0], 0);
+        let s2 = self.b.ins().load(I64, gf, p[1], 0);
+        let ok1 = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::SignedLessThanOrEqual, s1, 2147483562);
+        let ok2 = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::SignedLessThanOrEqual, s2, 2147483398);
+        let okv = self.b.ins().band(ok1, ok2);
+        self.guard(okv, fb);
+        // One generator: k = s / q; t = a * (s - k * q) - k * r; t + m when negative.
+        let lane = |g: &mut Self, s: Value, q: i64, a: i64, r: i64, m: i64| {
+            let qv = g.c64(q);
+            let k = g.b.ins().sdiv(s, qv);
+            let kq = g.b.ins().imul_imm_s(k, q);
+            let rem = g.b.ins().isub(s, kq);
+            let ra = g.b.ins().imul_imm_s(rem, a);
+            let kr = g.b.ins().imul_imm_s(k, r);
+            let t = g.b.ins().isub(ra, kr);
+            let neg = g.b.ins().icmp_imm_s(IntCC::SignedLessThan, t, 0);
+            let wrapped = g.b.ins().iadd_imm_s(t, m);
+            g.b.ins().select(neg, wrapped, t)
+        };
+        let t1 = lane(self, s1, 53668, 40014, 12211, 2147483563);
+        let t2 = lane(self, s2, 52774, 40692, 3791, 2147483399);
+        let z = self.b.ins().isub(t1, t2);
+        let small = self.b.ins().icmp_imm_s(IntCC::SignedLessThan, z, 1);
+        let zw = self.b.ins().iadd_imm_s(z, 2147483562);
+        let z = self.b.ins().select(small, zw, z);
+        let zf = self.b.ins().fcvt_from_sint(F64, z);
+        let scale = self.b.ins().f64const(4.656613e-10);
+        let x = self.b.ins().fmul(zf, scale);
+        let bits = self.b.ins().bitcast(I64, MemFlagsData::new(), x);
+        // The native's order: the seeds, then the real.
+        self.b.ins().store(gf, t1, p[0], 0);
+        self.b.ins().store(gf, t2, p[1], 0);
+        self.b.ins().store(gf, bits, p[2], 0);
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(fb);
+        self.clear();
+        self.native_direct(pc, i, f, native, args, None)?;
+        self.b.ins().jump(done, &[]);
+        // Values in hand before the instruction stay: neither way writes a register.
+        self.b.switch_to_block(done);
+        self.clear_join();
+        Ok(())
+    }
+
     fn native_direct(
         &mut self,
         pc: u32,

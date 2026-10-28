@@ -16,7 +16,7 @@ the design, not what runs today, unless the status column says so.
 The plan's requirement, restated as the acceptance list for M10:
 
 - debugging in the style of commercial simulator debuggers: line breakpoints with conditions and
-  hit counts; signal breakpoints on a change or on a value; step into, over and out within a
+  hit conditions; signal breakpoints on a change or on a value; step into, over and out within a
   process plus a global step to the next statement of any process; run for a time, to the next
   delta or to the next time step; call stack and locals per process; a list of processes with
   what each waits on; time and delta at every stop;
@@ -97,7 +97,7 @@ together with `--dap` (#325) are in (section 5.1).
 | Hierarchy tree | `yavs/hierarchy` | P3 source locations of regions, processes and signals |
 | Objects (signals of the selected region, with values) | `evaluate` per signal, or the Hierarchy scope | P4 `yavs/values` (many paths in one request) |
 | Processes | `threads` | P2 `yavs/processes` (state, wait statement, sensitivity, timeout) |
-| Source view and gutter | `setBreakpoints` (condition, hit count), `stackTrace` (current line), `evaluate` (hover); file text read from disk | P5 `breakpointLocations` (which lines can hold a breakpoint), `loadedSources` (file list) |
+| Source view and gutter | `setBreakpoints` (condition, hit condition), `stackTrace` (current line), `evaluate` (hover); file text read from disk | P5 `breakpointLocations` (which lines can hold a breakpoint), `loadedSources` (file list) |
 | Call stack | `stackTrace` per process | Locals of suspended processes (P7) |
 | Locals and Watch | `scopes`, `variables` (paged), `evaluate`, `setVariable` | P7 |
 | Breakpoints | `setBreakpoints`, `dataBreakpointInfo`, `setDataBreakpoints`, `yavs/setSignalBreakpoints`; the list itself is client state | P8 exception filters (stop on assertion severity, on a runtime error) |
@@ -237,7 +237,7 @@ Panel behaviour:
   deposit, release.
 - **Source**: read-only text view with VHDL keyword colouring (a small lexer of its own over the
   file text, no parser dependency); click in the gutter toggles a breakpoint, right click edits
-  condition and hit count; hover evaluates; the current statement is highlighted per selected
+  condition and hit condition; hover evaluates; the current statement is highlighted per selected
   process.
 - **Call stack**: the stopped process first, then any process chosen in Processes (a waiting
   process shows the `wait` it is on, as `stackTrace` does today).
@@ -245,7 +245,7 @@ Panel behaviour:
   edits (`setVariable`); watch expressions re-evaluated at each stop.
 - **Processes**: one row per process: path, state, waits on (sensitivity list or the `wait`
   statement's location and timeout); selecting a row selects that thread in Call stack and Source.
-- **Breakpoints**: line, signal and exception breakpoints with enable, condition, hit count and
+- **Breakpoints**: line, signal and exception breakpoints with enable, condition, hit condition and
   hits so far; the GUI owns the list and resends a whole set per request kind.
 - **Console**: `output` events (reports, assertions, runtime errors in red) and a command line for
   `run 100 ns`, `step`, `force /tb/x '1'` and the like, each one request from section 1 or 4.
@@ -319,7 +319,7 @@ are on main.
 | S3 | `yavs-dap`, `yavs-wave` | P6 live waves (#325): subscribe, batches, `Recorder` sink seam, `--wave` and `--vhpi` under `--dap` | transcripts; an FST written under `--dap` reads back with wellen and equals the streamed changes | P6 live waves done (#325); `--wave` and `--vhpi` under `--dap` done |
 | S4 | `yavs-dap` (maybe `yavs-interp`) | P7 locals of suspended processes, P8 exception filters | transcripts; a failing assertion stops at its statement | not started (#398) |
 | G1 | `gui/` | workspace, licence, eframe app, `egui_dock` layout with empty tabs, DAP client (launch and attach), toolbar run controls, status bar, console, mock server, kittest harness, CI job | the GUI launches the sample testbench, runs it to the end and shows its reports; tests green on three platforms | done |
-| G2 | `gui/` | source view with gutter, line breakpoints with condition and hit count, call stack, Locals and Watch, hover, Breakpoints panel | breakpoint hit, step in/over/out and global step on the sample; mock and kittest tests | done (hit counts so far are not shown; no global step, S1) |
+| G2 | `gui/` | source view with gutter, line breakpoints with condition and hit condition, call stack, Locals and Watch, hover, Breakpoints panel | breakpoint hit, step in/over/out and global step on the sample; mock and kittest tests | done (hit counts so far are not shown; no global step, S1) |
 | G3 | `gui/` | Hierarchy, Objects, Processes panels; signal breakpoints (change and value); force, deposit and release | the acceptance list items for these panels, with tests | not started |
 | G4 | `gui/` | libsurfer embedding: wellen hierarchy from the subscription, encoder store, snapshot refresh, add to waves from Hierarchy and Objects, cursor at the stop time | live waves on the sample, kept across a restart; store test against an FST of the same run | not started |
 | G5 | `gui/` | restart and `--analyze`, layout persistence and reset, shortcuts, themes, console command line | manual checklist in `gui/AGENTS.md`, kittest for the commands | not started |

@@ -825,7 +825,7 @@ unchanged:
 a ``yavs run --dap=4711`` started by hand. The window is early. It has a toolbar (Run, Pause, Stop,
 step over, in and out, delta, time step, and run for a time), a console with the run's reports and
 the simulator's standard error, source tabs with a gutter for line breakpoints (with VHDL conditions
-and hit counts), a call stack, locals and watch expressions at every stop, and a list of the
+and hit conditions), a call stack, locals and watch expressions at every stop, and a list of the
 breakpoints. The hierarchy, objects, processes and waves panels are not implemented yet, and neither
 are signal breakpoints and force, deposit and release; the VS Code extension and other DAP clients
 offer those (below). The design runs on one thread, as under ``--dap``, and closing the window ends

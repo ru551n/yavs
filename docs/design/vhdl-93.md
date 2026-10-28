@@ -10,8 +10,8 @@ Why: a large third-party processor IP library (the `grlib-1993` corpus and the `
 of `std_ulogic_vector` and the overloads are homographs (LRM 12.3), which every reference simulator
 rejects at 2008. The processor core, the bus controller and the simulation models depend on those
 packages, so the `grlib_leon3mp` test cannot run at 2008 and was `excluded` in
-`tools/realbench/tests.toml` (it now runs at `--std=93`). The same code runs unmodified on sim1 and
-sim2 in their relaxed 1993 modes (the library's own build flags).
+`tools/realbench/tests.toml` (it now runs at `--std=93`). The same code runs unmodified on the two reference
+simulators in their relaxed 1993 modes (the library's own build flags).
 
 ## 1. Scope
 
@@ -21,7 +21,7 @@ sim2 in their relaxed 1993 modes (the library's own build flags).
 | `--std=87` | **Out.** No corpus needs it. 1987 differs from 1993 by a few extra keywords (`xnor`, `sll`..., `shared`, `pure`, `impure`, `group`, `postponed`, `inertial`, `reject`, `literal`, `unaffected`), no `'ascending`/`'path_name` family and the old file declaration form, which 1993 still accepts. A later `--std=87` would be the 1993 mode with a smaller keyword table; nothing here blocks it |
 | `--std=02` (VHDL-2002) | **Out.** 2002 only added protected types and a few relaxations; code that needs them is 2008 code |
 | A relaxed 1993 mode as another simulator spells it | Not a yavs value. yavs is permissive where the LRM is unclear (rule 2), which covers what that mode relaxes |
-| PSL in a 93 file | Not read (the words are not reserved in 1993). Correction 2026-10-28: with `--psl` a `-- psl` comment in a 93 file is still read as a pragma and fails with `E0002`; without `--psl` it is a comment |
+| PSL in a 93 file | Not read (the words are not reserved in 1993). Correction 2026-10-28, from probes only (no regression test pins it): without `--psl` a `-- psl` comment is a comment; with `--psl` it is read in a 93 file in part: `-- psl assert always true @ (clk'event);` analyzes (exit 0), an assert that uses `rising_edge` fails only with `E1100` (the function is not in 1993), and only `-- psl default clock is clk'event;` fails with `E0002` |
 
 ## 2. Principles
 

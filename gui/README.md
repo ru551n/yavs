@@ -49,7 +49,7 @@ waves panels are placeholders that name the slice that will fill them
 | Toolbar | Run, Pause, Stop, step Over, In and Out, Delta, Timestep, and Run for a time (a VHDL time such as `100 ns`) |
 | Status bar | the stop reason with the simulation time and delta, and the process that stopped |
 | Console | the run's reports and output, and the simulator's standard error |
-| Source | tabs per file (a file is opened by path), a gutter with line breakpoints (click to set or clear, right click for a condition and a hit condition, or to disable), the current line, and hover to see a value |
+| Source | tabs per file (a file is opened by path), a gutter with line breakpoints (click to set or clear, right click for a condition and a hit condition (the dialog calls it Hit count; the text is sent as is: `3`, `>= 3`, `% 3`), or to disable), the current line, and hover to see a value |
 | Call stack, Locals, Watch | frames of the stopped process, variables with records by field and large arrays in pages, values you can edit, and watch expressions evaluated at every stop |
 | Breakpoints | the list with enable, condition, hit condition, edit and remove |
 | Hierarchy, Objects, Processes, Waves | not implemented yet |

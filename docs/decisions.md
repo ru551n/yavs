@@ -9591,8 +9591,11 @@ the cache.
   (2) clocked RTL with many small processes (`rtl_lfsr`, `lfsr64`, `hdlm_lfsr` 1.13 to 1.15 warm: `payback_rtl`, the
   host layers of #766 and the drive path); (3) the cache misses of #844 and a pre-key over the tree; (4) cycles on a quiet
   host for `big_process` and the h2h/realbench verdict.
-- Gates on 2ea6c419: fmt; clippy `-D warnings` for default, `llvm`, `clift`, `llvm,clift`; `cargo test --workspace` 1233 /
-  1356 / 1271 / 1391; gc-stress unit tests; difftest 547/547 at 1 and 4 threads for `yavs-interp`, `yavs-auto`, `yavs-llvm` (debug `llvm` build), `yavs-clift`, `yavs-clift-auto` (debug `clift` build, verifier on) and `yavs-clift-auto` with `--tier-heat=0,0,0`; under the collection-stress build `yavs-clift` 546/547 at 1 thread, `composite/aggregate_fill` over 300 s with any tier there (#852).
+- Gates on 154cca04 (the rebased code of this round): fmt; clippy `-D warnings` for default, `llvm`, `clift`, `llvm,clift`;
+  `cargo test --workspace` 1242 / 1365 / 1280 / 1400; gc-stress unit tests of `yavs-interp`, `yavs-llvm`, `yavs-clift`;
+  difftest 549/549 at 1 and 4 threads for `yavs-interp`, `yavs-auto`, `yavs-llvm` (debug `llvm` build), `yavs-clift`,
+  `yavs-clift-auto` (debug `clift` build, verifier on) and `yavs-clift-auto` with `--tier-heat=0,0,0`; `yavs-clift` under the
+  collection-stress build 548/549 at 1 thread: `composite/aggregate_fill` takes over 300 s there with any tier (#852).
 
 ## Frame-mode code tests the temporary area and the object cache inline for addresses it can guess (yavs-llvm `Gen::host`, `rt::track`, #711, 2026-10-24)
 

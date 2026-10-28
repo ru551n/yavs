@@ -1386,6 +1386,33 @@ impl Db {
                     ));
             }
         }
+        // 1993 1.1.1.2: a `buffer` port is associated only with a `buffer` port (besides an
+        // `in` or `linkage` formal); 2008 6.5.6.3 relaxed it (#814).
+        if self.file_rev() == crate::LangRev::Vhdl1993
+            && matches!(&self.decls[f].kind, DeclKind::Object(o) if o.role == ObjRole::Port)
+            && let Some(ObjRoot::Decl(d)) = self.lsp(id).map(|l| l.root)
+            && let DeclKind::Object(o) = &self.decls[d].kind
+            && o.role == ObjRole::Port
+            && let Some(am) = o.mode
+            && matches!(
+                (am, mode),
+                (Mode::Buffer, Some(Mode::Out | Mode::Inout))
+                    | (Mode::Out | Mode::Inout, Some(Mode::Buffer))
+            )
+        {
+            let an = self.decls[d].name;
+            let (fname, fm) = (self.decls[f].name, mode_str(mode));
+            let am = mode_str(Some(am));
+            return Err(self.error(
+                Diagnostic::error(
+                    diag::NOT_IN_REVISION,
+                    format!("port {an} with mode {am} cannot be associated with formal {fname} with mode {fm} in VHDL-1993"),
+                )
+                .with_primary(self.exprs[id].span, format!("mode {am}"))
+                .with_secondary(self.decls[f].span, "formal declared here")
+                .with_note("LRM 1993 1.1.1.2: a formal port of mode buffer takes only a port of mode buffer, and a port of mode buffer is the actual only of a formal of mode in, buffer or linkage (VHDL-2008 allows out and inout too)"),
+            ));
+        }
         if mode != Some(Mode::In) && !self.is_signal_name(id) {
             let what = match self.lsp(id).map(|l| l.root) {
                 Some(ObjRoot::Decl(d)) => match &self.decls[d].kind {

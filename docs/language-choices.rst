@@ -377,9 +377,10 @@ VHDL-1993 mode
   *Portable:* keep such code in a design of 1993 files alone.
 * An explicit declaration hides an implicit one when both are visible through use clauses, as in 2008.
   Other simulators need a switch for this in 1993 mode.
-* Constructs that 2008 relaxed (restrictions on aliases, element types and ``buffer`` ports, among
-  others) are accepted in 93 mode. This is the current behaviour: the 1993 restrictions are not
-  enforced, so a 1993 design is not checked for being valid 1993.
+* The 1993 restrictions that 2008 relaxed are errors in 93 mode (``E1007``, naming the 1993 rule):
+  an alias of a multidimensional array, an unconstrained element type, a ``buffer`` port associated
+  with an ``out`` or ``inout`` port, a package inside a declarative part and an array value as a part
+  of an aggregate. Some other relaxed static and ``case`` rules are still accepted.
 * 2008 syntax that is cheap to recognise is rejected: ``process (all)``, conditional assignments in
   a process, ``elsif`` and ``case`` generate and package generics are errors (``E0011``).
 

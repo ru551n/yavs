@@ -553,6 +553,9 @@ impl Db {
                     self.poison.subtype
                 }
             };
+            if self.check_elem_constrained_93(st, e.subtype.span).is_err() {
+                failed = true;
+            }
             // 2019 allows record elements of protected types (LCS-2016-014).
             if self.file_rev() < crate::LangRev::Vhdl2019
                 && self
@@ -959,6 +962,7 @@ impl Db {
                     idx.push(self.discrete_type_mark(scope, m)?);
                 }
                 let elem = self.subtype_indication(scope, element)?;
+                self.check_elem_constrained_93(elem, element.span)?;
                 let n = idx.len();
                 let _ = n;
                 Ok(self.new_type(
@@ -985,6 +989,7 @@ impl Db {
                     idx.push(ix);
                 }
                 let elem = self.subtype_indication(scope, element)?;
+                self.check_elem_constrained_93(elem, element.span)?;
                 let ty = self.types.next_id();
                 let base_st = self.subtypes.push(SubtypeDef {
                     base: ty,
@@ -1024,6 +1029,25 @@ impl Db {
                 Err(self.unsupported(span, "anonymous generic index types", "S7"))
             }
         }
+    }
+
+    /// `E1007`: in a VHDL-1993 file the element subtype of an array type and the subtype of a
+    /// record element are constrained (1993 3.2.1, 3.2.1.1; 2008 relaxed both, #814).
+    fn check_elem_constrained_93(&mut self, st: SubtypeId, span: Span) -> Result<(), Reported> {
+        if self.file_rev() != crate::LangRev::Vhdl1993
+            || self.constrainedness(st) == Constrainedness::Full
+            || matches!(self.types[self.base(st)].kind, TypeKind::Error)
+        {
+            return Ok(());
+        }
+        Err(self.error(
+            Diagnostic::error(
+                diag::NOT_IN_REVISION,
+                "an element of an unconstrained array subtype is not allowed in VHDL-1993",
+            )
+            .with_primary(span, "not constrained")
+            .with_note("LRM 1993 3.2.1: the element subtype indication of an array type and the subtype of a record element denote constrained subtypes (VHDL-2008 allows unconstrained ones)"),
+        ))
     }
 
     /// One range of an array type's index constraint and its index subtype.

@@ -84,7 +84,7 @@ operators gives the same results with the derived and the 1995 text.
 | S10 | Bit string literals `8x"FF"`, `UB`, `SX`, `D` | only `b`, `o`, `x` without length | error | error | lexer |
 | S11 | Package generics, package instantiation, subprogram generics | not 1993 | error | error | `E0011` for packages; generic subprograms and interface packages are 2008 syntax and fall out as ordinary syntax errors |
 | S12 | Protected types, `context`, `force`/`release`, `default` in generic maps | not 1993 | error | error | the words are identifiers, so a syntax error |
-| S13 | Unconstrained/partially constrained element rules, relaxed static rules, `case` choice rules, relaxed port map conversions, `others` in more places | 2008 relaxed them | | | **accepted** (rule 2: the 1993 text does not make valid 1993 code mean anything else) |
+| S13 | Unconstrained/partially constrained element rules, relaxed static rules, `case` choice rules, relaxed port map conversions, `others` in more places | 2008 relaxed them | | | **accepted** (rule 2: the 1993 text does not make valid 1993 code mean anything else). Superseded for a 93 file (user, 2026-10-28, #814): the 1993 restrictions on object aliases of multidimensional arrays, unconstrained element subtypes, `buffer` port associations, packages in declarative parts and array pieces in aggregates are `E1007`; `out` port reads were already `E1360` |
 | S14 | Homograph conflict of an implicit and an explicit declaration through two `use` clauses | the 1993 rule does not hide the implicit one; the references need a relaxed-mode switch | error without the flag | error without the flag | yavs always hides the implicit one (same as 2008) |
 | S15 | `TIME`, `INTEGER` ranges | 32-bit `INTEGER` is the minimum | | | unchanged from 2008 |
 | S16 | Attributes `'subtype`, `'element` | 2008 | | | accepted in 93 (permissive; `since` rows stay 2008 for documentation) |
@@ -125,8 +125,8 @@ test runner passes each file's own standard and projects mix them freely.
 - `E1007` for 2008 *items* of a package a 93 file names in a 2008 design (items such as `to_string` of
   `std_logic_1164` are not checked; units named from a 93 file are not found at analysis, `E1002`, see 3.3).
 - A native fast path for the 1995 `numeric_std` `std_logic_vector` forms beyond the shared keys.
-- Enforcement of S13 (2008 relaxations): open as #814. In 93 mode the relaxations are accepted today, so yavs
-  does not check that a design is valid 1993 (`docs/language-support.md` and `docs/language-choices.rst` say so).
+- Enforcement of S13 (2008 relaxations): done for the five groups the 1993 suite tests (#814, see S13); other static
+  and `case` rules that 2008 relaxed are still accepted in 93 mode.
 - `--std=87`, `--std=02`: out of scope by decision (section 1); the CLI rejects them with exit status 2.
 
 ## 6. Results

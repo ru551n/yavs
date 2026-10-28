@@ -18,6 +18,7 @@ impl Db {
         scope: ScopeId,
         p: &ast::PackageDecl,
     ) -> Result<(), Reported> {
+        self.not_nested_93(p.name.span, "package declaration")?;
         if p.generic_map.is_some() {
             let d = self.new_decl(scope, Designator::Ident(p.name), DeclKind::Error, p.span);
             let s = self.add_scope(ScopeKind::Instance, Some(scope), Some(d));
@@ -36,6 +37,22 @@ impl Db {
         self.declare(scope, d);
         self.decls_in(s, &p.decls);
         if failed { Err(Reported) } else { Ok(()) }
+    }
+
+    /// `E1007`: in a VHDL-1993 file a package or package body is a library unit only (1993 1.1.2,
+    /// 2.2, 2.5, 2.6, 4: no declarative part lists it; 2008 4.7 added nested packages, #814).
+    fn not_nested_93(&mut self, span: yavs_diag::Span, what: &str) -> Result<(), Reported> {
+        if self.file_rev() != crate::LangRev::Vhdl1993 {
+            return Ok(());
+        }
+        Err(self.error(
+            Diagnostic::error(
+                diag::NOT_IN_REVISION,
+                format!("a {what} inside a declarative part is not allowed in VHDL-1993"),
+            )
+            .with_primary(span, "nested here")
+            .with_note("LRM 1993 1.1.2, 2.2, 2.5, 2.6: a package is a library unit only; packages in declarative parts are VHDL-2008 (LRM 2008 4.7)"),
+        ))
     }
 
     /// `package p is generic (...); generic map (...); ... end;` (4.7, 4.9): the declaration is
@@ -72,6 +89,7 @@ impl Db {
         scope: ScopeId,
         b: &ast::PackageBody,
     ) -> Result<(), Reported> {
+        self.not_nested_93(b.name.span, "package body")?;
         let mut regions = vec![scope];
         regions.extend(self.body_package(scope));
         let found = regions.iter().find_map(|&r| {

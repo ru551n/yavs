@@ -2151,6 +2151,19 @@ fn resolve_value(
     let as_piece = ndims == 1 && piece_ok && fits(db, &c, cx.ty);
     match (as_elem, as_piece) {
         (true, false) => elem_value(db, r, cx, value).map(Val::Elem),
+        // 1993 7.3.2.2: every element is a value of the element type; array pieces are 2008
+        // (9.3.3.3, #814).
+        (false, true) if db.file_rev() == crate::LangRev::Vhdl1993 => Err(db.error(
+            Diagnostic::error(
+                diag::NOT_IN_REVISION,
+                format!(
+                    "an element of type {} is expected: an array value as a part of an aggregate is not allowed in VHDL-1993",
+                    type_name(db, elem_ty)
+                ),
+            )
+            .with_primary(value.span, "a value of the aggregate's own type")
+            .with_note("LRM 1993 7.3.2.2: each element association gives one element; slices and array values as parts of an aggregate are VHDL-2008 (LRM 2008 9.3.3.3)"),
+        )),
         (false, true) => r.resolve(db, value, Expected::Type(cx.ty)).map(Val::Piece),
         // No LRM tie-break (lrm-checks L8): the element type wins, as in sim1.
         (true, true) => elem_value(db, r, cx, value).map(Val::Elem),

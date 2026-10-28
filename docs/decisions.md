@@ -970,7 +970,14 @@ difference, is `docs/design/vhdl-93.md`.
 - **Homographs**: an explicit declaration hides an implicit one of a use clause in every mode (the references need `--relaxed` /
   `-fexplicit` for this at 1993; GRLIB passes both).
 - **Not enforced** (rule 2): the 2008 relaxations (reading `out` ports, case and static rules) are accepted in a 93 file, since valid
-  93 code never depends on them being errors.
+  93 code never depends on them being errors. Superseded for `--std=93` by the next entry.
+- **1993 restrictions enforced in a 93 file** (user, 2026-10-28, #814; supersedes S13 of `docs/design/vhdl-93.md` for a 93 file):
+  a file analysed at 1993 is checked against the 1993 rules that 2008 relaxed, each as `E1007` naming the 1993 clause: an object
+  alias of a multidimensional array (1993 4.3.3.1), an unconstrained element subtype of an array or record type (3.2.1, 3.2.1.1),
+  a `buffer` port associated with an `out` or `inout` formal port or the reverse (1.1.1.2), a package or package body in a
+  declarative part (1.1.2, 2.2, 2.5, 2.6), an array value as a part of an aggregate (7.3.2.2); reading an `out` port was already
+  `E1360` (L138). 2008 and 2019 files are unchanged. Rationale: `--std=93` should tell whether a design is valid 1993; the
+  analysis corpora analysed at 93 (GRLIB, the compliant 1993 suite, the 1993 library) had no file that newly fails.
 - **Natives**: the `std_logic_1164` natives keyed by `std_ulogic_vector` serve `std_logic_vector` too (`yavs-ir` `ieee.rs`): both are
   arrays of `std_ulogic`.
 

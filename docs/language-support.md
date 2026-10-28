@@ -84,9 +84,10 @@ the files again.
 
 The 1993 language suite that yavs is run against at `--std=93` passes for the large majority of its tests (see the
 conformance report); the failures are tracked as issues. One kind of failure matters when you rely on yavs to reject
-bad code: invalid 1993 code that is still accepted. The 2008 relaxations of the 1993 restrictions on aliases, element
-types, `buffer` ports and similar are accepted in 93 mode (current behaviour, not a promise), and some checks of
-1993 and 2008 alike are missing.
+bad code: invalid 1993 code that is still accepted. The 1993 restrictions that 2008 relaxed on aliases of
+multidimensional arrays, unconstrained element types, `buffer` port associations, nested packages and array parts of
+aggregates are errors in 93 mode; some other relaxed static and `case` rules, and some checks of 1993 and 2008 alike,
+are still missing.
 
 ## VHDL-2019
 

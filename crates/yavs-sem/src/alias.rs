@@ -380,6 +380,21 @@ impl Db {
                     .with_note("LRM 6.6.2, 8.1: index and slice expressions of the name must be globally static, and no part may be a function call or `.all`"),
             ));
         }
+        // 1993 4.3.3.1: the type of an object alias is not a multidimensional array type (#814).
+        if self.file_rev() == LangRev::Vhdl1993
+            && let crate::types::TypeKind::Array { indexes, .. } =
+                &self.types[self.base(self.exprs[target].subtype)].kind
+            && indexes.len() > 1
+        {
+            return Err(self.error(
+                Diagnostic::error(
+                    diag::NOT_IN_REVISION,
+                    "an alias of a multidimensional array object is not allowed in VHDL-1993",
+                )
+                .with_primary(self.exprs[target].span, "a multidimensional array")
+                .with_note("LRM 1993 4.3.3.1: the type of an object alias must not be a multidimensional array type (VHDL-2008 allows it)"),
+            ));
+        }
         if let Some(st) = subtype {
             if matches!(self.exprs[target].kind, ExprKind::External(_)) {
                 return Err(self.error(

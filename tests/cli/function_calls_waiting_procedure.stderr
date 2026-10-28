@@ -1,0 +1,11 @@
+error[E1801]: procedure `call_wait` contains a `wait` and is called by function `call_waiter`
+  --> $DIR/function_calls_waiting_procedure.vhd:13:5
+   |
+ 6 |   procedure call_wait (constant dly : in time) is begin wait for dly; end;
+   |                                                         ------------- the `wait`
+...
+13 |     call_wait(dly);
+   |     ^^^^^^^^^^^^^^ called here
+
+error: aborting due to 1 previous error
+

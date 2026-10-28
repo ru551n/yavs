@@ -678,6 +678,13 @@ fn external_mismatch() {
     run_snapshot("external_mismatch", 2);
 }
 
+/// A function calling a procedure of another unit that waits is E1801 at elaboration, not
+/// an internal error (LRM 10.2, #823).
+#[test]
+fn function_calls_waiting_procedure() {
+    run_snapshot("function_calls_waiting_procedure", 2);
+}
+
 /// Analyze `tests/cli/NAME.vhd`, run its entity `NAME`, check the exit code and compare stderr
 /// with `NAME.stderr`.
 fn run_snapshot(name: &str, code: i32) {

@@ -1160,6 +1160,12 @@ impl Db {
                 };
             }
         }
+        // 10.2: a function calls no procedure that waits.
+        if matches!(self.decls[target].kind.subprogram(), Some(s) if matches!(s.kind, SubprogramKind::Function { .. }))
+        {
+            let name = self.decls[target].name.to_string();
+            self.check_calls_wait(&stmts, self.decls[new].name_span(), Some(&name))?;
+        }
         Ok(())
     }
 

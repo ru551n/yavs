@@ -105,6 +105,25 @@ impl Fx<'_, '_> {
             }
             H::Report { report, severity } => self.report(Some(*report), *severity, 0, span),
             H::ProcCall(c) | H::ConcProcCall { call: c, .. } => {
+                // 10.2: a function calls no procedure that waits; sem decides it within one
+                // unit, here every body is known (#823).
+                if self.kind == yavs_ir::FuncKind::Function
+                    && let Some(w) = self.db.procedure_waits(c.callee)
+                {
+                    let name = &self.db.decls[c.callee].name;
+                    self.cx.diags.push(
+                        yavs_diag::Diagnostic::error(
+                            yavs_sem::diag::BAD_WAIT,
+                            format!(
+                                "procedure `{name}` contains a `wait` and is called by function `{}`",
+                                self.name
+                            ),
+                        )
+                        .with_primary(c.span, "called here")
+                        .with_secondary(w, "the `wait`"),
+                    );
+                    return Err(Failed);
+                }
                 self.call(c.callee, &c.args, c.method_of, None, c.span)?;
                 Ok(())
             }

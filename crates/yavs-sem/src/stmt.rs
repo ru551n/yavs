@@ -588,19 +588,32 @@ impl Db {
     /// other procedures, shall not contain a `wait`. Decided for procedures whose body is in the
     /// unit being analysed; others (another unit, a protected method, an instance) are caught
     /// when the `wait` executes (#597).
-    fn check_calls_wait(&mut self, body: &[StmtId], sens: Span) -> Result<(), Reported> {
+    /// The same for a function (`by` names it, `sens` is its designator), #823.
+    pub(crate) fn check_calls_wait(
+        &mut self,
+        body: &[StmtId],
+        sens: Span,
+        by: Option<&str>,
+    ) -> Result<(), Reported> {
         let mut bad = Vec::new();
         self.calls_wait(body, &mut bad);
         let failed = !bad.is_empty();
         for (call, wait) in bad {
             let name = self.decls[call.0].name;
+            let (who, what) = match by {
+                Some(f) => (format!("function `{f}`"), "the function"),
+                None => (
+                    "a process with a sensitivity list".to_string(),
+                    "the sensitivity list",
+                ),
+            };
             let d = Diagnostic::error(
                 diag::BAD_WAIT,
-                format!("procedure `{name}` contains a `wait` and is called by a process with a sensitivity list"),
+                format!("procedure `{name}` contains a `wait` and is called by {who}"),
             )
             .with_primary(call.1, "called here")
             .with_secondary(wait, "the `wait`")
-            .with_secondary(sens, "the sensitivity list");
+            .with_secondary(sens, what);
             self.error(d);
         }
         if failed { Err(Reported) } else { Ok(()) }
@@ -622,18 +635,31 @@ impl Db {
     /// A `wait` in procedure `d` or in a procedure it calls, if its body is in the unit being
     /// analysed.
     fn waits_in(&self, d: DeclId, seen: &mut FxHashSet<DeclId>) -> Option<Span> {
+        self.waits_below(d, seen, true)
+    }
+
+    /// A `wait` in procedure `d` or in a procedure it calls, in any analysed body (10.2): for
+    /// the lowering of a call in a function, when every body of the design is known (#823).
+    pub fn procedure_waits(&self, d: DeclId) -> Option<Span> {
+        self.waits_below(self.entity(d), &mut FxHashSet::default(), false)
+    }
+
+    fn waits_below(&self, d: DeclId, seen: &mut FxHashSet<DeclId>, here: bool) -> Option<Span> {
         let crate::decl::Body::Hir { scope, stmts } = &self.decls[d].kind.subprogram()?.body else {
             return None;
         };
-        let unit = self.cur()?.unit;
-        let mut s = Some(*scope);
-        while let Some(x) = s {
-            if x == self.units[unit].scope {
-                break;
+        if here {
+            let unit = self.cur()?.unit;
+            let mut s = Some(*scope);
+            while let Some(x) = s {
+                if x == self.units[unit].scope {
+                    break;
+                }
+                s = self.scopes[x].parent;
             }
-            s = self.scopes[x].parent;
+            s?;
         }
-        if s.is_none() || !seen.insert(d) {
+        if !seen.insert(d) {
             return None;
         }
         let mut stack = stmts.to_vec();
@@ -641,7 +667,7 @@ impl Db {
             match &self.stmts[s].kind {
                 StmtKind::Wait { .. } => return Some(self.stmts[s].span),
                 StmtKind::ProcCall(c) => {
-                    if let Some(w) = self.waits_in(self.entity(c.callee), seen) {
+                    if let Some(w) = self.waits_below(self.entity(c.callee), seen, here) {
                         return Some(w);
                     }
                 }
@@ -1864,7 +1890,7 @@ impl Db {
         errs.finish(())?;
         let body = body.expect("no error means a body");
         if let Some(sp) = sens_span {
-            self.check_calls_wait(&body, sp)?;
+            self.check_calls_wait(&body, sp, None)?;
         }
         let all = matches!(sensitivity, Sensitivity::All);
         let info = self.process_info(pscope, &body, all);

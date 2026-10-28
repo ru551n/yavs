@@ -34,12 +34,54 @@ Which archive
 Every platform has one archive, and it contains everything: nothing else needs to be installed.
 ``--tier=auto`` (the default) compiles the hot code to machine code during the run, and
 ``--tier=clift`` compiles all of it before time 0; ``--tier=interp`` runs the interpreter alone. The
-output is the same with every tier. ``yavs --version`` shows the tier on its first line::
+output is the same with every tier. The compiled tier of the archive is Cranelift, inside the
+executable; the LLVM tier is only in a build from source (see `From source`_). The next section says
+what the tiers are.
+
+Build variants and tiers
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+yavs runs a design in the interpreter and can compile the hot parts to machine code. Whether a
+compiled tier exists depends on how your ``yavs`` was built. ``yavs --version`` says which you have
+on its first line:
+
+.. code-block:: text
+
 
     yavs 0.8.0 (compiled tier: cranelift)
+    yavs 0.8.0 (compiled tier: llvm)
+    yavs 0.8.0 (interpreter only, no compiled tier)
 
-A yavs you build yourself without either feature prints ``yavs 0.8.0 (interpreter only, no compiled
-tier)``; see `From source`_.
+.. list-table::
+   :header-rows: 1
+
+   * - Build
+     - Compiled tier
+     - Default ``--tier``
+   * - Release archive (``yavs-<version>-<target>``)
+     - Cranelift, inside the executable
+     - ``auto`` (runs as ``clift-auto``)
+   * - ``cargo build --release -p yavs`` (plain source build)
+     - none
+     - ``interp``
+   * - Source build with ``--features llvm`` or ``--features clift``
+     - LLVM (needs LLVM 21) or Cranelift; with both features, both
+     - ``auto``
+
+``--tier=auto`` starts the run in the interpreter. A sampler watches where the interpreter spends its
+time, and one background thread compiles those functions and swaps them in while the simulation
+keeps running; a run shorter than about 5 ms creates no compile thread. Elaboration and package
+initialisation are always interpreted. The output is the same in every tier. Compiled code is kept
+in the work library's cache (``yavs-cache/obj/``), so a repeated run links it instead of compiling it
+again (``--no-cache`` turns that off).
+
+``--tier=llvm`` (LLVM builds) and ``--tier=clift`` (Cranelift builds) compile everything before time
+0 instead. ``--tier=interp`` never compiles. Asking for a tier the build does not have is error
+``E0120``; the plain source build therefore rejects ``--tier=auto`` and ``--tier=llvm``, but runs
+without any ``--tier`` option. A debugger session (``--dap``) always runs the
+interpreter: the default is ``interp`` and an explicit ``--tier`` has no effect there (a known
+limitation). ``--tier=auto3``
+(Cranelift first, LLVM for what stays hot) exists only in a source build with both features.
 
 What is in the archive
 ~~~~~~~~~~~~~~~~~~~~~~

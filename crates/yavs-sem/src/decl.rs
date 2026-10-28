@@ -649,6 +649,29 @@ impl Db {
             }
             D::SubprogramBody(b) => self.subprogram_body(scope, b),
             D::Alias(a) => self.alias_decl(scope, a),
+            D::Component(_) | D::Disconnect(_) | D::ConfigSpec(_)
+                if let Some(s) = self.sequential_owner(scope) =>
+            {
+                // 4.3, 11.3: not process or subprogram declarative items (#808, #824).
+                let what = match d {
+                    D::Component(_) => "a component declaration",
+                    D::Disconnect(_) => "a disconnection specification",
+                    _ => "a configuration specification",
+                };
+                let owner = if self.scopes[s].kind == crate::scope::ScopeKind::Process {
+                    "process"
+                } else {
+                    "subprogram"
+                };
+                Err(self.error(
+                    yavs_diag::Diagnostic::error(
+                        crate::diag::NOT_DECL_ITEM,
+                        format!("{what} is not allowed in a {owner}"),
+                    )
+                    .with_primary(decl_span(d), format!("inside a {owner}"))
+                    .with_help("move it to the enclosing architecture, block or package"),
+                ))
+            }
             D::Component(c) => self.component_decl(scope, c),
             D::SubprogramInstance(x) => self.subprogram_instance(scope, x),
             D::Package(x) => self.nested_package(scope, x),

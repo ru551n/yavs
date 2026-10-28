@@ -68,6 +68,7 @@ Status (2026-10-18): every proposed code in this table is now defined in `yavs-s
 | E1227 | full declaration of a deferred constant with a subtype indication that does not conform | 6.4.2.2 |
 | E1230 | missing body (subprogram, protected type, deferred constant in a package body) | 8.1, 4.8 |
 | E1238 | plain (not shared) variable outside a process, subprogram or protected type | 6.4.2.4 |
+| E1239 | component declaration, configuration or disconnection specification in a process or subprogram | 4.3, 11.3 |
 | E1232 | type, subprogram or package interface in a parameter list | 4.2.2.1 |
 | E1233 | named return value (2019) of a type that is not scalar, array or record, e.g. an access type (#239; scalar types accepted since the user ruling of 2026-10-19) | 4.2.1 (2019) |
 | E1234 | type, subprogram or package interface in a port list | 6.5.6.3 |

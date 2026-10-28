@@ -417,6 +417,32 @@ impl Db {
                     .with_note("LRM 6.6.2: the base types must be the same"),
                 ));
             }
+            // 6.6.2: each element of the object has a matching element of the alias subtype.
+            let have_st = self.exprs[target].subtype;
+            let dims = match &self.types[want].kind {
+                crate::types::TypeKind::Array { indexes, .. } => indexes.len(),
+                _ => 0,
+            };
+            let sr = crate::expr::aggregate::subtype_range;
+            if let Some((w, h)) = (0..dims).find_map(|k| {
+                let (w, h) = (sr(self, st, k)?.len(), sr(self, have_st, k)?.len());
+                (w != h).then_some((w, h))
+            }) {
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::LENGTH_MISMATCH,
+                        format!("the alias subtype has {w} elements, the aliased object {h}"),
+                    )
+                    .with_primary(
+                        ast.subtype.as_ref().map_or(ast.span, |s| s.span),
+                        format!("{w} elements"),
+                    )
+                    .with_secondary(self.exprs[target].span, format!("{h} elements"))
+                    .with_note(
+                        "LRM 6.6.2: each element of the object needs a matching element of the alias subtype",
+                    ),
+                ));
+            }
         }
         // An alias does not read its target (a read through the alias is not tracked, L138).
         self.not_read(target);

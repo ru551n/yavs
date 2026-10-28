@@ -3,6 +3,9 @@
 This sheet compares the wall-clock time of yavs with that of an established open-source VHDL simulator (called "the reference" below) on
 real testbenches of third-party VHDL projects. It holds the current head-to-head run; the full history, the breakdowns and the
 per-phase analysis are in the head-to-head sections of [`docs/STATUS.md`](https://github.com/ru551n/yavs/blob/main/docs/STATUS.md).
+It is a recorded run, not something this page re-runs: every figure carries its conditions (see "Method" and
+"Host"), none is a promise for your design, and the 41 testbenches are a fixed collection, not a random sample.
+Short testbenches mostly measure start-up and analysis; long ones measure the simulation itself.
 
 ## Result
 
@@ -18,7 +21,8 @@ Run of 2026-10-27 on commit `5b2beb73` (head-to-head 7). Ratio = yavs time / ref
 
 Summed over the 41 testbenches the full total is 38 s (yavs) against 70 s (reference) warm and 57 s against 70 s cold. yavs is faster on 36 of 41 warm and
 on 33 of 41 cold. With `grlib_leon3mp` (a LEON3 system, 2.7 times slower than the reference) the geometric means are 0.23 warm and 0.61 cold.
-Ten small hand-written RTL designs (`tools/bench/designs`, group `h2h`) give 0.50 warm and 0.61 cold; `rtl_ff`, `rtl_lfsr` and `lfsr64` are still slower than the reference.
+Ten small hand-written RTL designs (`tools/bench/designs`, group `h2h`) give 0.50 warm and 0.61 cold; `rtl_ff`, `rtl_lfsr` and `lfsr64` are still slower than the reference (`rtl_ff`: 1.02 warm). The raw results of that run are kept outside
+the repository (head-to-head 7, 2026-10-27).
 
 ## Method
 
@@ -30,7 +34,8 @@ Ten small hand-written RTL designs (`tools/bench/designs`, group `h2h`) give 0.5
 - **Repeats:** 5 timed runs per cell, interleaved between the tools, two complete passes, the best cell of the two passes. The two passes agree (warm 0.213 and 0.214, cold 0.587 and 0.582).
 - **Cores:** one timed process per physical core, on three claimed cores of the faster chiplet (cores 9 to 11); the cells of the two tools are interleaved.
   Three long testbenches were timed as controls at the start and at the end of the run to show host drift.
-- **Build:** the benchmark build of yavs with the LLVM code generator (`tools/build-bench.sh --features llvm`), one binary for every cell.
+- **Build:** the benchmark build of yavs with the LLVM code generator (`tools/build-bench.sh --features llvm`), one binary for every cell. It is not a
+  release archive: the archives with and without LLVM (see [install](install.rst)) were not timed in this run, so no figure here applies to the Cranelift tier of the `-nollvm` archives.
 - **Tool:** `tools/realbench`; the designs come from `tools/bench`. Raw results are not committed.
 
 ## Host
@@ -88,3 +93,42 @@ Category is the kind of workload the testbench stresses.
 | `olo_fix_madd` | numeric | 0.07 | 0.44 | 0.09 | 1.26 | 0.55 |
 | `poc_strings` | strings-textio | 0.07 | 0.48 | 0.02 | 0.29 | 0.14 |
 | `uvvm_methods_log` | protected | 0.02 | 0.45 | 0.01 | 0.56 | 0.25 |
+
+## Where yavs is slower
+
+In that run yavs was slower than the reference on 5 of 41 testbenches warm (ratios 1.04 to 1.98):
+the two wide-vector designs, one testbench dominated by record accesses, an RTL datapath with a
+windowing generator, and one memory histogram. Cold, it was slower on 8 of 41; the three that are
+only slower cold are two numeric designs and one state machine. The cold ratio is about 2.7 times the
+warm one in the geometric mean, because analysing the libraries and compiling hot code happens in
+the first run only (the cache is described under "Method"). Among the hand-written RTL designs,
+clocked designs with very many cheap processes are where the reference's fully compiled code leads.
+
+## What a run spends its time on
+
+A run goes through analysis, elaboration, initialisation and simulation, and the first three are
+cached between runs (see [usage](usage.rst)). Short testbenches are dominated by analysis and start-up,
+which is why the cold ratio is higher than the warm one. In a long run, the work is in
+processes, so the tier matters:
+
+* `--tier=interp` runs the interpreter alone: no compile cost, the slowest on long compute-heavy
+  loops.
+* `--tier=auto` (the default in a build with a compiled tier) samples what the interpreter spends
+  time in and compiles those functions on one background thread, starting 5 ms into the run; a run
+  shorter than that creates no compile thread.
+* `--tier=llvm` or `--tier=clift` compiles everything before time 0.
+
+The output is the same with every tier. See [usage](usage.rst) for the options and
+[install](install.rst) for which build has which tier.
+
+## Measure your own design
+
+* `yavs run --time-report` prints the wall and CPU time of analysis, elaboration, initialisation
+  and simulation to standard error.
+* `yavs run --profile[=FILE]` prints the busiest processes, instances and subprograms with
+  file and line (JSON to FILE). Start here for "where does my long run spend its time".
+* Compare `--tier=interp`, `--tier=auto` and, where built in, `--tier=llvm` or `--tier=clift`, with
+  the cache cold (`--no-cache`, or a fresh work library) and warm.
+* Time on an otherwise idle machine, repeat, and compare medians; a short run varies by tens of
+  percent.
+* `--threads` rarely helps: see [parallel](parallel.md).

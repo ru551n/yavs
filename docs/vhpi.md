@@ -3,10 +3,13 @@
 VHPI is the standard C interface (IEEE 1076-2019) that lets a plugin or a test framework look
 into a running VHDL simulation, read and write signals, and react to simulation events. yavs
 implements it: plugins written in C, C++ or Rust can inspect the design hierarchy, read and
-drive values, register callbacks and supply foreign models. cocotb 2.1.0's own regression
-passes in full (78 of 78 jobs, 702 VHDL tests). Full cocotb support is scheduled in epic
+drive values, register callbacks and supply foreign models. The implementation is partial: the
+table below and "Other gaps" say what is missing. The own simulator regression of a Python
+testbench framework that talks VHPI passes in full (78 of 78 jobs, 702 VHDL tests, see "Python
+testbench frameworks"). Full support for such frameworks is scheduled in epic
 [#143](https://github.com/ru551n/yavs/issues/143), and the scope is full VHPI per the standard,
-not only what cocotb needs.
+not only what one framework needs. The call-by-call detail is in `crates/yavs-vhpi/AGENTS.md` in
+the source tree.
 
 ## At a glance
 
@@ -21,27 +24,72 @@ not only what cocotb needs.
 | Foreign models | functions, procedures, architectures, library and application hooks | file parameters |
 | Misc calls | `vhpi_control` stop and finish, `vhpi_format_value` | `vhpi_get_data`, `vhpi_put_data`, `vhpi_get_next_time`, `vhpi_protected_call` (exported so plugins link, but they report "not implemented") |
 
-## cocotb
+## A first plugin
 
-cocotb's own simulator regression runs on yavs with `tools/cocotb/run.py` (VHDL over VHPI, the
-way cocotb's CI runs it for a simulator). It needs `uv`, network access for the pinned cocotb 2.1.0
-and its test dependencies, and a C++ compiler; everything is installed into a virtual environment
-outside the repository.
+The plugin below prints the value of the signal `q` of the top level when the simulation ends.
+Build it with the header from the source tree (`crates/yavs-vhpi/include/vhpi_user.h`; the release
+archives do not contain it). On Linux the `vhpi_*` functions stay unresolved at link time and bind
+to the `yavs` executable when the plugin loads:
+
+```c
+#include <stdio.h>
+#include "vhpi_user.h"
+
+static void at_end(const vhpiCbDataT *cb) {
+  (void)cb;
+  vhpiHandleT root = vhpi_handle(vhpiRootInst, NULL);
+  vhpiHandleT sig = vhpi_handle_by_name("q", root);
+  char buf[16];
+  vhpiValueT v = { .format = vhpiBinStrVal, .bufSize = sizeof buf,
+                   .value.str = (vhpiCharT *)buf };
+  if (sig && vhpi_get_value(sig, &v) == 0)
+    printf("%s q = %s\n", (const char *)vhpi_get_str(vhpiFullNameP, root), buf);
+}
+
+static void startup(void) {
+  vhpiCbDataT cb = { .reason = vhpiCbEndOfSimulation, .cb_rtn = at_end };
+  vhpi_register_cb(&cb, 0);
+}
+
+void (*vhpi_startup_routines[])(void) = { startup, NULL };
+```
 
 ```
-cargo build --release -p yavs
-python3 -I tools/cocotb/run.py --yavs target/release/yavs [--run-args='--threads=4']
+gcc -shared -fPIC -I path/to/yavs/crates/yavs-vhpi/include hello_vhpi.c -o hello_vhpi.so
+yavs analyze --work=lib:out/lib dut.vhd tb.vhd
+yavs run --work=lib:out/lib --vhpi=./hello_vhpi.so tb
 ```
+
+For a top level `tb` with an unsigned signal `q` the run ends with a line such as `:TB q = 0110`
+(the full name of the root instance is upper case; the plugin reads names case-insensitively).
+Without `--vhpi` the plugin does nothing; it is not part of the design.
+
+## Python testbench frameworks
+
+A Python testbench framework that talks VHPI starts by loading a bootstrap library through the
+`vhpi_startup_routines` array, so `--vhpi=LIB` needs no entry name. Its VHPI layer uses the
+handle, lookup, `vhpi_get*`, `vhpi_get_value`, `vhpi_put_value`, callback, `vhpi_check_error` and
+`vhpi_control` calls; yavs exports these and the rest of the standard set, and keeps the original
+spelling of names (`vhpiCaseNameP`), so a framework needs no workaround for upper-case names.
+
+The framework's own simulator regression runs on yavs with a runner in the `tools` directory of the
+source tree (VHDL over VHPI, the way the framework's CI runs it for a simulator; `tools/AGENTS.md`
+names it). It needs `uv`, network access for the pinned framework release and its test
+dependencies, and a C++ compiler; everything is installed into a virtual environment outside the
+repository.
+
+Build yavs with `cargo build --release -p yavs` and run it as `tools/AGENTS.md` describes (the runner takes
+the yavs executable and optional `yavs run` arguments such as `--threads=4`).
 
 Result (2026-10-28, issue [#122](https://github.com/ru551n/yavs/issues/122)): **78 of 78 jobs pass**.
-43 jobs run VHDL tests (702 tests pass; the 10 failing tests are the ones that cocotb's own
-`test_failure` and `test_max_failures` expect to fail); the other 35 are Verilog-only or
+43 jobs run VHDL tests (702 tests pass; the 10 failing tests are the ones that two of the
+framework's own tests expect to fail); the other 35 are Verilog-only or
 error-path cases that skip themselves. The result is the same at `--threads 1` and `4`, and the
 `conformance` CI workflow runs it on every push to `main`.
 
 An earlier record of 66 of 68 test directories (2026-10-19) had two failures, both in the local
 setup of that time and not in yavs: the time resolution and the plusargs were not passed on, and
-cocotb's Python runner had no yavs entry.
+the framework's Python runner had no yavs entry.
 
 ## Coverage of the standard
 
@@ -92,10 +140,14 @@ yavs run --vhpi=LIB[:ENTRY] [--vhpi=...] TOP
 - `vhpi_control` with `vhpiStop` or `vhpiFinish` ends the run with status 0 (an extra argument
   after the command is accepted and ignored). Other commands are refused.
 - `+NAME[=VALUE]` arguments after the top level are available through `vhpiArgcP` and the
-  `vhpiArgvs` iterator.
+  `vhpiArgvs` iterator; the first argument is the program name `yavs`.
 - Time counts in units of `--resolution` (`vhpi_get_time`, `vhpiResolutionLimitP`).
-- Plugin calls are serialized, so a plugin needs no locking whatever `--threads` says. Under
-  `--dap=stdio` a plugin's prints go to standard error.
+- Plugin calls are serialized, so a plugin needs no locking whatever `--threads` says.
+- Under `--dap=stdio` a plugin's prints go to standard error, because standard output carries the
+  debugger protocol. `--vhpi` and `--dap` work together.
+- A call that yavs does not implement fails with a "not implemented" message that the plugin can
+  read with `vhpi_check_error`, and yavs prints warning `W0904` once per message. A misused call
+  (bad handle, property or argument) is warning `W0903`.
 
 ### Hierarchy and navigation
 
@@ -138,7 +190,8 @@ an integer into a logic vector and `vhpiStrVal` text (padded or cut to the strin
 
 - `vhpiDepositPropagate` sets the value until a driver next updates it; `vhpiForcePropagate`
   holds it until `vhpiRelease`. The non-propagating `vhpiDeposit` and `vhpiForce` are refused
-  for signals. Writes take effect in a new delta cycle at the same time.
+  for signals (a decision: they are warning `W0903`). Writes take effect in a new delta cycle at the same
+  time.
 - Writes are refused in the read-only phases (start of postponed, end of time step, end of
   simulation). Constants, generics, whole records and `vhpiSizeConstraint` give `W0903`.
 - Variables take `vhpiDeposit` or `vhpiDepositPropagate`, written at once; forcing or releasing
@@ -176,6 +229,12 @@ The input format decides the kind of value (a binary string is a logic vector); 
 another kind (an integer to a real) is warning `W0903`. The output follows the buffer protocol of
 `vhpi_get_value`.
 
+A value-change callback registered while a cycle's changes are being delivered (for example one a
+framework re-arms from inside its own callback) is also shown the changes of that same cycle, once.
+This is a deliberate choice of yavs and differs from other simulators that implement VHPI: a
+framework that waits repeatedly for the first of several triggers that fire together then does not
+lose the later triggers.
+
 ### Foreign models
 
 A subprogram or architecture whose `foreign` attribute is `"VHPI library model"` runs the model
@@ -186,10 +245,12 @@ drivers made with `vhpi_create`; an unregistered one is error `E0905`), `vhpiLib
 
 ### Other gaps
 
-- Sub-elements of variables whose bounds are only known at run time.
+- `vhpiGenerateIndexP` in the hierarchy, and sub-elements of variables whose bounds are only known at run
+  time.
 - Values: `vhpiRawDataVal`, `vhpiSmallPhys*` formats; `vhpiPtrVal` only for `in` access
   parameters of foreign subprograms.
-- Force and release of constants or generics.
+- Forcing a variable, force and release of constants or generics, and the non-propagating put modes on
+  signals (deliberately refused).
 - The element subtype of a resolved array subtype reports `STD_ULOGIC` for `std_logic_vector`.
 
-For per-area implementation notes see the "VHPI plugins" section of the user guide.
+The rules for loading plugins and the command line are in the "VHPI plugins" section of the [usage](usage.rst) page.

@@ -1,0 +1,39 @@
+{
+  "projectTitle": "yavs",
+  "description": "yavs (Yet Another VHDL Simulator): a VHDL-1993/2008/2019 simulator written in Rust with a command line interface (analyze, elab, run), compiled-code tiers, coverage, FST waveforms, DAP debugging and a VHPI plugin interface.",
+  "excludeFolders": [
+    ".github",
+    "crates",
+    "docs/design",
+    "docs/_build",
+    "editors",
+    "fuzz",
+    "gui",
+    "lib",
+    "release_notes",
+    "tests",
+    "tools",
+    "work"
+  ],
+  "excludeFiles": [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "STATUS.md",
+    "decisions.md",
+    "plan.md",
+    "cli-contract.md",
+    "test-runner-requirements.md"
+  ],
+  "rules": [
+    "yavs is a command line tool: analyze VHDL into a library with `yavs analyze --std=2008 --work=NAME:PATH files...`, then simulate with `yavs run --work=NAME:PATH TOP`. `yavs elab` only checks that a design elaborates.",
+    "Write options in the `--name=value` form (for example `--work=lib:out/lib`, `--stop-time=10ms`); generics are `-gNAME=VALUE`, one argument each.",
+    "Each file is parsed with its own standard (`--std=93`, `2008` or `2019`), so files of different standards can share one project.",
+    "Use `--tier=auto` for speed: it compiles only hot functions in the background while the interpreter runs. The output is identical on every tier; `--tier=interp` is the slowest and the simplest to debug.",
+    "Keep the `yavs-cache/` directory beside the library between runs: the second run of a design stores the analysis and compiled code, later runs and the other test cases of a testbench reuse it. `--no-cache` turns it off.",
+    "`--threads N` (default 1) spreads process evaluation over N threads with byte-identical output; it only pays off in designs with many processes waking in the same delta cycle.",
+    "Coverage workflow: run each test with `yavs run --cov=NAME.ycov --cov-kind=statement,branch,toggle,condition`, then merge and report with `yavs cov report all.ycov --html DIR --cobertura FILE`. Write `--cov=FILE`, not `--cov FILE`.",
+    "Record waveforms with `--wave=FILE.fst` (FST format, readable by common waveform viewers); limit them with `--wave-exclude` globs on large designs.",
+    "Errors and warnings carry stable codes such as E1100; `yavs --explain CODE` prints the explanation. A failed step stops the run: nothing runs after a failed analyze.",
+    "Check `docs/language-support.md` before relying on a VHDL-2019 or PSL feature: PSL is a subset and VHPI support is partial."
+  ]
+}

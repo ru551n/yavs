@@ -1112,10 +1112,10 @@ const HIT: Model = model(1000.0, 1.0, 1.0);
 const HIT_GEN: Model = model(1000.0, 20.0, 1.0);
 
 /// `HIT` for a first-level generator (Cranelift): the bodies of the tree (`Worker::tree`: the root
-/// and the variants it builds) are generated again and their code linked, about 4 us an IR
-/// instruction (neorv32 eager: 1 804 functions, 143 723 IR instructions in 536 ms warm against
-/// 4 079 ms compiled, #481).
-const FIRST_HIT: Model = model(0.0, 4.0, 1.0);
+/// and the variants it builds) are generated again and their code linked: 1.2 ms and 6.5 us an IR
+/// instruction of the tree (30 warm hits of GRLIB, compile-thread CPU, #481 round 12; 4 us an IR
+/// instruction of the root before).
+const FIRST_HIT: Model = model(1000.0, 6.0, 1.0);
 
 /// A look-up in the compilation cache generates the code of the function, about this part of a
 /// compile (generation and the key: 10 to 20 us per IR instruction).

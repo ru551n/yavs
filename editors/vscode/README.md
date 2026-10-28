@@ -57,6 +57,8 @@ testbench" inserts one; `sample/` is a complete workspace):
 | `cwd` | working directory of yavs (default: the first workspace folder) |
 | `port` | attach to a running `yavs run --dap=PORT` instead of starting yavs |
 
+Limitation: `std` accepts only `2008` or `2019`, so VHDL-1993 code (`--std=93`) cannot be debugged from the extension; analyze it yourself and attach to a `yavs run --dap=PORT` started by hand instead.
+
 The design on the command line is the design that is debugged; `args` must not contain `--cov`
 (it cannot be combined with the debugger yet) and the debugger runs the design on one thread, so
 `--threads` is ignored.

@@ -870,7 +870,7 @@ configuration to the testbench's workspace, ``.vscode/launch.json``:
 
 ``sources`` are analyzed into ``work`` in order before every session (leave it empty to analyze
 yourself); ``libraries`` are more ``NAME:PATH`` mappings, ``generics`` become ``-gNAME=VALUE`` and
-``args`` go to ``yavs run`` as they are. Set a breakpoint in the testbench, pick "Debug tb" in the
+``args`` go to ``yavs run`` as they are. ``std`` accepts only ``2008`` or ``2019``: VHDL-1993 code cannot be debugged through the extension (attach to a run started by hand). Set a breakpoint in the testbench, pick "Debug tb" in the
 Run and Debug view and press F5: the call stack lists one thread per process, the Variables view
 shows locals, signals and generics, hovering a signal shows its value, and reports go to the
 Debug Console. With ``"port": 4711`` instead, the extension attaches to a ``yavs run

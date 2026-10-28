@@ -31,7 +31,8 @@ minimal test runner testbench on the real binary), CI is added (#134) together w
 (#165), and the first release is cut. Rationale: a release is only useful once the first
 milestone users care about works.
 
-- Release workflow: triggered by a `v*` tag; builds `yavs` for Linux x86_64, Linux aarch64 and
+- Release workflow: triggered by a `v[0-9]*` tag (user, 2026-10-28: the `vunit-yavs-v*` tags of
+  the Python package must not start a release); builds `yavs` for Linux x86_64, Linux aarch64 and
   Windows x86_64, runs the CI
   checks on the tagged commit first, and attaches archives plus SHA256SUMS to a GitHub release.
 - Packaging (agent, 2026-10-18, #165; revised by the user the same day):

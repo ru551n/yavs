@@ -1,4 +1,5 @@
-# Release on a `v*` tag (#165, docs/decisions.md "Release trigger and first release"): the CI
+# Release on a `v[0-9]*` tag, so `vunit-yavs-v*` tags of the Python package do not start one (#165,
+# docs/decisions.md "Release trigger and first release"): the CI
 # checks on the tagged commit, a release build of `yavs` and `yavs-gui` per platform (std/ieee
 # built in; yavs-gui from the gui/ workspace, shipped in the same archive with its EUPL-1.2
 # licence, docs/decisions.md "GUI (M10)"),
@@ -15,7 +16,7 @@ name: Release
 
 on:
   push:
-    tags: ["v*"]
+    tags: ["v[0-9]*"]
   workflow_dispatch:
     inputs:
       dry_run:

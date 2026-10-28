@@ -579,9 +579,16 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   the compile thread takes it (`auto`, so their order and number depend on timing). The test
   runner passes neither; use `yavs.sim_flags`.
 - Threads: yavs defaults to `--threads=1`. The test runner already runs `-p N`
-  simulations in parallel and never passes a thread count; a user who wants
-  parallel process evaluation inside one simulation opts in with
-  `yavs.sim_flags`, e.g. `["--threads=4"]`.
+  simulations in parallel and passes a thread count only when the user sets one: the sim
+  option `yavs.max_threads` (or the runner argument `--yavs-max-threads N` for every test)
+  becomes `--threads=N` before the raw flags, so `--threads` in `yavs.sim_flags` still wins; none
+  under `--dap` or for `elab`. With the runner's `--yavs-jobserver` and `-p N` above 1, every
+  `yavs run` gets a private GNU make jobserver in `MAKEFLAGS=-jN --jobserver-auth=fifo:PATH` (a
+  named pipe, POSIX only; any outer `MAKEFLAGS` is replaced): the runner lends the CPU slots no
+  test uses as tokens, at most `N - 1` per test and `yavs.max_threads - 1` when set, and takes
+  back the tokens left unread. yavs takes and gives back tokens as the token pool item below
+  says; tokens still held when it exits are a warning of the runner
+  (python/vunit-yavs/README.md "Jobserver").
 - Token pool (#801): with `--threads=N` above 1 (and not `--dap`), yavs reads `MAKEFLAGS` at
   the start of `run`. The last `--jobserver-auth=VALUE` (or `--jobserver-fds=VALUE`) names the
   pool: `R,W` (inherited pipe descriptors; Linux) or `fifo:PATH` (a named pipe; Unix). The
@@ -710,9 +717,17 @@ line on stderr is then exactly `yavs: DAP listening on 127.0.0.1:<port>` (implem
 5); the test runner reads that line to connect the GUI. `--dap=PORT` with a fixed port
 prints the same line.
 
+The runner package `vunit-yavs` (`python/vunit-yavs`) today: `-g` runs `yavs run --gui @FILE`
+(`--gui` outside the response file, so the GUI gets the plain run's arguments).
+`--yavs-debug[=PORT]` runs `yavs run --dap=PORT @FILE` (default 4711, the editor extension's
+attach port; `0` a free one), reads the `DAP listening` line and prints the address on the
+terminal, since the runner shows a test's output only when it fails. It runs one simulation:
+`--yavs-debug` with `--gui`, `--elaborate` or `-p` above 1 is refused at the start, and a second
+simulation of the run is refused before yavs starts. `elab` never gets `--gui` or `--dap`.
+
 ## 7. Environment
 
-The test runner sets no yavs environment variables. `YAVS_STDLIB` overrides the std/ieee
+The test runner sets no yavs environment variables (only `MAKEFLAGS` under `--yavs-jobserver`, section 5). `YAVS_STDLIB` overrides the std/ieee
 tree (section 3); `YAVS_STD_CACHE` names the directory of the shared std/ieee units, or `off`; `--std-cache` overrides it (section 3). Simulator hooks from the test runner packages
 can add `elab_flags`, `run_flags` and run environment; the test runner applies
 `elab_flags` to both `run` and `elab`, and `run_flags` only to `run`. `YAVS_HUGE_HEAP=0` stops yavs

@@ -1,0 +1,2 @@
+[package]
+simulator = "vunit_yavs:YavsInterface"

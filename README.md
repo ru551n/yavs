@@ -14,6 +14,15 @@ Yet Another VHDL Simulator: VHDL-1993, 2008 and 2019 in Rust.
 - **Evidence, not claims:** on every push to `main`, CI re-runs most of the [conformance report](docs/conformance.md), including a comparison of yavs's output with an established simulator's recorded output and two simulators' own regression suites run on yavs; every result says where and when it was produced, and the performance sheet gives its method.
 - **Runs your verification libraries unmodified:** OSVVM's, UVVM's and VUnit's own test suites and Open Logic's testbenches run as published (results below).
 - **Built for CI:** browsable HTML coverage reports with per-line hit counts and per-test attribution plus Cobertura for CI dashboards, identical output at any thread count, a compile cache for repeated runs, and one release archive per platform with nothing else to install.
+- **Readable error messages:** Rust-style diagnostics that point at the exact code, with a stable error code; `yavs --explain E1100` explains any code:
+
+  ```
+  error[E1100]: `cnt` is not declared
+    --> counter.vhd:14:16
+     |
+  14 |       count <= cnt + 1;
+     |                ^^^ not found in this scope
+  ```
 - **Open source and auditable:** MIT OR Apache-2.0, written in Rust; the kernel, interpreter, parser and semantic analysis forbid `unsafe` code.
 
 | At a glance | |

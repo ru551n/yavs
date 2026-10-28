@@ -1,6 +1,6 @@
 # yavs conformance report
 
-Generated: yavs 0.8.0 at commit `7f953a74dc` (2026-10-28) by `tools/conformance/run.py`; do not edit by hand.
+Generated: yavs 0.8.0 at commit `5b9eaf3aad` (2026-10-28) by `tools/conformance/run.py`; do not edit by hand.
 
 This report collects the evidence that yavs behaves as the VHDL language reference and the established open-source simulators do.
 Nothing here is a proof of correctness. Every number comes from a command in the "Reproduce" section; sections marked **CI** are
@@ -30,20 +30,20 @@ One row per suite that yavs simulates (the analysis corpora, which are analysed 
 
 | suite | passed / total | where | date, commit |
 | --- | ---: | --- | --- |
-| Differential corpus (`tests/corpus`), interpreter, 4 threads shuffled | 544/544 | CI | 2026-10-28, `7f953a74dc` |
+| Differential corpus (`tests/corpus`), interpreter, 4 threads shuffled | 544/544 | CI | this report (see Generated) |
 | Differential corpus, tier `auto`, 4 threads shuffled | 535/535 | local | 2026-10-26, `cd5268f8b2` |
 | Differential corpus, tier `llvm`, 4 threads shuffled | 535/535 | local | 2026-10-26, `cd5268f8b2` |
-| Known discrepancy reproducers | 209/209 | CI | 2026-10-28, `7f953a74dc` |
-| sim1's own regression tests (runnable ones) | 1000/1070 | CI | 2026-10-28, `7f953a74dc` |
-| sim2's own regression tests (runnable ones) | 458/504 | CI | 2026-10-28, `7f953a74dc` |
-| VHDL-1993 language suite (VESTs: billowitch, ashenden, clifton-labs) | 3621/3694 | CI | 2026-10-28, `7f953a74dc` |
-| UVVM testbenches | 131/137 | CI | 2026-10-28, `7f953a74dc` |
-| OSVVM regression, VHDL-2008 | 314/314 | CI | 2026-10-28, `7f953a74dc` |
-| OSVVM regression, VHDL-2019 | 314/314 | CI | 2026-10-28, `7f953a74dc` |
+| Known discrepancy reproducers | 209/209 | CI | this report (see Generated) |
+| sim1's own regression tests (runnable ones) | 1000/1070 | CI | this report (see Generated) |
+| sim2's own regression tests (runnable ones) | 458/504 | CI | this report (see Generated) |
+| VHDL-1993 language suite (VESTs: billowitch, ashenden, clifton-labs) | 3621/3694 | CI | this report (see Generated) |
+| UVVM testbenches | 131/137 | CI | this report (see Generated) |
+| OSVVM regression, VHDL-2008 | 314/314 | CI | this report (see Generated) |
+| OSVVM regression, VHDL-2019 | 314/314 | CI | this report (see Generated) |
 | VUnit's own VHDL test suites | 1357/1357 | local | 2026-10-20, `f2ab69be` |
 | cocotb's own tests over VHPI | 66/68 | local | 2026-10-20, `78b1c398` |
 | Open Logic testbenches | not run yet |  |  |
-| Real designs (neorv32 x3, GRLIB LEON3), interpreter | 4/4 | CI | 2026-10-28, `7f953a74dc` |
+| Real designs (neorv32 x3, GRLIB LEON3), interpreter | 4/4 | CI | this report (see Generated) |
 | Waveform equivalence with sim1 (signals of 17 real designs) | 44824/44889 | local | 2026-10-27, `05aa8453fb` |
 | VHPI plugin traces identical to sim1's | 2/23 | local | 2026-10-26, `cd5268f8b2` |
 

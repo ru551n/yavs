@@ -2835,6 +2835,23 @@ fn gen_func(
                 }
                 g.join(join);
             }
+            // A constant range inside one plane block on each side (the LLVM lowering's
+            // `lcopy_const`): masks and shifts are constants, no block arithmetic.
+            Inst::LCopy {
+                dst,
+                dst_off,
+                src,
+                src_off,
+                n,
+            } if g.lcopy_shape(n, src_off, dst_off).is_some() => {
+                let (k, s0, d0, sb, db) = g.lcopy_shape(n, src_off, dst_off).expect("checked");
+                let (slow, join) = g.slow_path(pc, &inst);
+                let (sa, da) = (g.ld(src), g.ld(dst));
+                let ps = g.host(sa, Some(src), Op::C(sb * 32), Op::C(32), false, slow);
+                let pd = g.host(da, Some(dst), Op::C(db * 32), Op::C(32), true, slow);
+                g.lcopy_const(pd, d0, ps, s0, k);
+                g.join(join);
+            }
             Inst::LCopy {
                 dst,
                 dst_off,
@@ -4826,6 +4843,14 @@ impl Gen<'_> {
     /// The length of the descriptor dimension at `dope + off` as `yavs_ir::dim_len`, and
     /// whether it fits a u64 (`dim_len` is not `None`).
     fn dim_len(&mut self, dope: Value, reg: Reg, off: u64, slow: Block) -> (Value, Value) {
+        // A descriptor of the constant pool: its length when the code is made.
+        if off % 24 == 0
+            && let Some((l, r, dir)) = self.const_dim(reg, (off / 24) as u32)
+            && let Some(n) = (if dir == 0 { r - l } else { l - r }).checked_add(1)
+        {
+            let t = self.b.ins().iconst(I8, 1);
+            return (self.c64(n), t);
+        }
         let p = self.host(dope, Some(reg), Op::C(off), Op::C(24), false, slow);
         let (l, r, dir) = self.dope_words(p);
         self.len_of(l, r, dir)
@@ -4855,6 +4880,50 @@ impl Gen<'_> {
         let a = self.ld(base);
         let p = self.host(a, Some(base), Op::V(off), Op::C(32), write, slow);
         (p, self.b.ins().band_imm_s(i, 63))
+    }
+
+    /// `(k, s0, d0, sb, db)` of an `LCopy` of a constant count and offsets that lies inside one
+    /// plane block on each side: 1 to 64 elements, the bit offsets in the blocks and the blocks.
+    fn lcopy_shape(&self, n: Reg, so: Reg, d: Reg) -> Option<(u32, u32, u32, u64, u64)> {
+        let (k, so, d) = (self.kint(n)?, self.kint(so)?, self.kint(d)?);
+        let ok = (1..=64).contains(&k) && (0..1 << 32).contains(&so) && (0..1 << 32).contains(&d);
+        (ok && so >> 6 == (so + k - 1) >> 6 && d >> 6 == (d + k - 1) >> 6).then_some((
+            k as u32,
+            (so & 63) as u32,
+            (d & 63) as u32,
+            (so >> 6) as u64,
+            (d >> 6) as u64,
+        ))
+    }
+
+    /// `Inst::LCopy` of `k` elements from bit `s0` of the plane block at `ps` to bit `d0` of the
+    /// one at `pd` (`lcopy_shape`): the source planes are read first (the ranges may overlap).
+    fn lcopy_const(&mut self, pd: Value, d0: u32, ps: Value, s0: u32, k: u32) {
+        let gf = self.gf;
+        let mask = if k == 64 { u64::MAX } else { (1u64 << k) - 1 };
+        let hole = mask << d0;
+        let mut v = [None; 4];
+        for (plane, x) in v.iter_mut().enumerate() {
+            let w = self.b.ins().load(I64, gf, ps, plane as i32 * 8);
+            *x = Some(if s0 == d0 {
+                self.b.ins().band_imm_s(w, hole as i64)
+            } else {
+                let r = self.b.ins().ushr_imm_s(w, i64::from(s0));
+                let r = self.b.ins().band_imm_s(r, mask as i64);
+                self.b.ins().ishl_imm_s(r, i64::from(d0))
+            });
+        }
+        for (plane, x) in v.into_iter().enumerate() {
+            let x = x.expect("set above");
+            let out = if hole == u64::MAX {
+                x
+            } else {
+                let old = self.b.ins().load(I64, gf, pd, plane as i32 * 8);
+                let keep = self.b.ins().band_imm_s(old, !hole as i64);
+                self.b.ins().bor(keep, x)
+            };
+            self.b.ins().store(gf, out, pd, plane as i32 * 8);
+        }
     }
 
     /// `Inst::LCopy` of `k` (1 to 64) elements from bit `s0` of the one or two plane blocks at

@@ -251,8 +251,8 @@
        52
       ],
       "hierarchy": [
-       81,
-       81
+       82,
+       82
       ],
       "ieee": [
        21,
@@ -267,8 +267,8 @@
        2
       ],
       "process": [
-       36,
-       36
+       38,
+       38
       ],
       "protected": [
        22,
@@ -303,8 +303,8 @@
        4
       ],
       "sigassign": [
-       25,
-       25
+       27,
+       27
       ],
       "std93": [
        6,
@@ -352,8 +352,8 @@
        52
       ],
       "hierarchy": [
-       81,
-       81
+       82,
+       82
       ],
       "ieee": [
        21,
@@ -368,8 +368,8 @@
        2
       ],
       "process": [
-       36,
-       36
+       38,
+       38
       ],
       "protected": [
        22,
@@ -404,8 +404,8 @@
        4
       ],
       "sigassign": [
-       25,
-       25
+       27,
+       27
       ],
       "std93": [
        6,
@@ -453,8 +453,8 @@
        52
       ],
       "hierarchy": [
-       81,
-       81
+       82,
+       82
       ],
       "ieee": [
        21,
@@ -469,8 +469,8 @@
        2
       ],
       "process": [
-       36,
-       36
+       38,
+       38
       ],
       "protected": [
        22,
@@ -505,8 +505,8 @@
        4
       ],
       "sigassign": [
-       25,
-       25
+       27,
+       27
       ],
       "std93": [
        6,
@@ -569,11 +569,162 @@
    "pass": 131,
    "runs": 137,
    "skip": 6
+  },
+  "vests": {
+   "failed": {
+    "807": [
+     "tc2641.vhd",
+     "tc2644.vhd",
+     "tc2749.vhd",
+     "tc2750.vhd",
+     "tc2751.vhd",
+     "tc2859.vhd"
+    ],
+    "808": [
+     "tc2895.vhd",
+     "tc2926.vhd",
+     "tc2933.vhd",
+     "tc2941.vhd",
+     "tc2942.vhd",
+     "tc2943.vhd",
+     "tc2944.vhd",
+     "tc2946.vhd",
+     "tc2947.vhd",
+     "tc2971.vhd"
+    ],
+    "809": [
+     "tc3007.vhd",
+     "tc3008.vhd",
+     "tc3009.vhd",
+     "tc3011.vhd",
+     "tc3012.vhd"
+    ],
+    "810": [
+     "tc3013.vhd",
+     "tc3026.vhd",
+     "tc3028.vhd",
+     "tc3031.vhd"
+    ],
+    "811": [
+     "tc787.vhd",
+     "tc818.vhd",
+     "tc1664.vhd"
+    ],
+    "812": [
+     "tc1313.vhd",
+     "tc1314.vhd",
+     "tc1391.vhd",
+     "tc1746.vhd",
+     "tc1750.vhd",
+     "tc1752.vhd",
+     "tc2447.vhd"
+    ],
+    "813": [
+     "tc122.vhd",
+     "tc123.vhd",
+     "tc124.vhd",
+     "tc125.vhd",
+     "tc315.vhd",
+     "tc316.vhd",
+     "tc553.vhd",
+     "tc2549.vhd",
+     "tc2919.vhd",
+     "tc3058.vhd",
+     "tc3064.vhd"
+    ],
+    "814": [
+     "tc177.vhd",
+     "tc394.vhd",
+     "tc396.vhd",
+     "tc771.vhd",
+     "tc775.vhd",
+     "tc789.vhd",
+     "tc1320.vhd",
+     "tc2927.vhd",
+     "tc2993.vhd"
+    ],
+    "815": [
+     "tc1392.vhd"
+    ],
+    "816": [
+     "tc1781.vhd"
+    ],
+    "817": [
+     "tc3153.vhd",
+     "tc3156.vhd",
+     "tc3159.vhd"
+    ],
+    "818": [
+     "functional/attributes/type/range/simple-range-attribute.vhdl",
+     "functional/statements/for-loops/dynamic_package_procedure_for_loop.vhdl",
+     "functional/statements/for-loops/dynamic_procedure_for_loop.vhdl"
+    ],
+    "819": [
+     "ch_11_fg_11_09.vhd",
+     "ch_11_fg_11_10.vhd"
+    ],
+    "820": [
+     "ch_13_fg_13_24.vhd"
+    ],
+    "821": [
+     "tc2443.vhd",
+     "tc2444.vhd"
+    ],
+    "822": [
+     "tc200.vhd",
+     "tc963.vhd",
+     "tc1476.vhd"
+    ],
+    "823": [
+     "tc1227.vhd"
+    ],
+    "824": [
+     "tc1695.vhd"
+    ]
+   },
+   "groups": {
+    "ashenden/compliant": {
+     "fail": 3,
+     "late": 0,
+     "pass": 448,
+     "skip": 30
+    },
+    "ashenden/non_compliant": {
+     "fail": 0,
+     "late": 0,
+     "pass": 7,
+     "skip": 1
+    },
+    "billowitch/analyzer_failure": {
+     "fail": 61,
+     "late": 24,
+     "pass": 1429,
+     "skip": 0
+    },
+    "billowitch/compliant": {
+     "fail": 5,
+     "late": 0,
+     "pass": 1607,
+     "skip": 0
+    },
+    "billowitch/simulator_failure": {
+     "fail": 1,
+     "late": 0,
+     "pass": 37,
+     "skip": 0
+    },
+    "clifton-labs/compliant": {
+     "fail": 3,
+     "late": 0,
+     "pass": 93,
+     "skip": 13
+    }
+   }
   }
  },
  "generated": {
-  "commit": "4cd961c994",
-  "commit_date": "2026-10-26",
+  "commit": "7f953a74dc",
+  "commit_date": "2026-10-28",
   "version": "0.8.0"
  },
  "local": {
@@ -1258,7 +1409,7 @@
     "version": "0.8.0"
    },
    "vunit-own": {
-    "command": "VUNIT_SIMULATOR=yavs python run.py -p 2   (in each vunit/vhdl/<suite>/test directory)",
+    "command": "python run.py -p 2 in each vunit/vhdl/<suite>/test directory of VUnit",
     "commit": "f2ab69be",
     "data": {
      "fail": 0,
@@ -1266,7 +1417,7 @@
      "skip": 0
     },
     "date": "2026-10-20",
-    "note": "11 suites; recorded in docs/STATUS.md (#112); needs a VUnit checkout with a yavs simulator interface, which this tool cannot fetch",
+    "note": "11 suites; recorded in docs/STATUS.md (#112)",
     "title": "VUnit's own VHDL suites"
    }
   }
@@ -2901,6 +3052,11 @@
   ],
   "platforms": {
    "check": [
+    "ubuntu-24.04",
+    "ubuntu-24.04-arm",
+    "windows-latest"
+   ],
+   "clift": [
     "ubuntu-24.04",
     "ubuntu-24.04-arm",
     "windows-latest"

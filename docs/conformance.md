@@ -1,6 +1,6 @@
 # yavs conformance report
 
-Generated: yavs 0.8.0 at commit `4cd961c994` (2026-10-26) by `tools/conformance/run.py`; do not edit by hand.
+Generated: yavs 0.8.0 at commit `7f953a74dc` (2026-10-28) by `tools/conformance/run.py`; do not edit by hand.
 
 This report collects the evidence that yavs behaves as the VHDL language reference and the established open-source simulators do.
 Nothing here is a proof of correctness. Every number comes from a command in the "Reproduce" section; sections marked **CI** are
@@ -12,16 +12,40 @@ The references are called sim1 and sim2 (two established open-source VHDL simula
 
 | Evidence | Result |
 | --- | --- |
-| Differential corpus, interpreter, 4 threads shuffled | 539/539 testbenches equal to the recorded sim1 output, identical at 1 and 4 threads |
+| Differential corpus, interpreter, 4 threads shuffled | 544/544 testbenches equal to the recorded sim1 output, identical at 1 and 4 threads |
 | sim1's own regression tests | 1000 of 1070 runnable tests pass the suite's own verdict (992 on a gated pass list, 0 regressions); 403 skipped (other languages, VHPI, scripts) |
 | sim2's own regression tests | 458 of 504 runnable tests pass the suite's own verdict (455 on a gated pass list, 0 regressions); 647 skipped (other languages, VHPI, scripts) |
 | Analysis corpora (third-party VHDL code) | 6675 of 6682 files analyse, 33 corpora, all equal to the gated lists |
 | Known discrepancy cases | 209 reproducers, yavs output equals the recorded one: yes |
 | UVVM's own testbenches | 131 of 137 runs pass (6 skipped: vendor libraries absent) |
 | OSVVM's own regression | 2008: 314/314, 2019: 314/314 |
+| VHDL-1993 language suite (VESTs), simulated at `--std=93` | 3621 of 3694 tests pass the suite's own verdict (44 not counted: tests that are not legal VHDL-1993 or that every tool rejects under the suite's own build list) |
 | Real designs run to completion (neorv32 x3, GRLIB LEON3) | 4/4 |
 | Waveform equivalence with sim1 (local, real designs) | 17 designs compared signal by signal and time step by time step, interpreter: 44824 of 44889 signals equal over 50301686 value changes; 65 signals differ, 65 of them classified as reference-simulator differences (catalogued, the language reference leaves the behaviour open), 0 unexplained |
 | VUnit's own VHDL suites (local) | 1357 of 1357 tests pass, 11 suites |
+
+## Every simulated suite
+
+One row per suite that yavs simulates (the analysis corpora, which are analysed only, are in their own section). A pass is the suite's own verdict; where a row was run is CI (this commit) or a local run with its date and commit.
+
+| suite | passed / total | where | date, commit |
+| --- | ---: | --- | --- |
+| Differential corpus (`tests/corpus`), interpreter, 4 threads shuffled | 544/544 | CI | 2026-10-28, `7f953a74dc` |
+| Differential corpus, tier `auto`, 4 threads shuffled | 535/535 | local | 2026-10-26, `cd5268f8b2` |
+| Differential corpus, tier `llvm`, 4 threads shuffled | 535/535 | local | 2026-10-26, `cd5268f8b2` |
+| Known discrepancy reproducers | 209/209 | CI | 2026-10-28, `7f953a74dc` |
+| sim1's own regression tests (runnable ones) | 1000/1070 | CI | 2026-10-28, `7f953a74dc` |
+| sim2's own regression tests (runnable ones) | 458/504 | CI | 2026-10-28, `7f953a74dc` |
+| VHDL-1993 language suite (VESTs: billowitch, ashenden, clifton-labs) | 3621/3694 | CI | 2026-10-28, `7f953a74dc` |
+| UVVM testbenches | 131/137 | CI | 2026-10-28, `7f953a74dc` |
+| OSVVM regression, VHDL-2008 | 314/314 | CI | 2026-10-28, `7f953a74dc` |
+| OSVVM regression, VHDL-2019 | 314/314 | CI | 2026-10-28, `7f953a74dc` |
+| VUnit's own VHDL test suites | 1357/1357 | local | 2026-10-20, `f2ab69be` |
+| cocotb's own tests over VHPI | 66/68 | local | 2026-10-20, `78b1c398` |
+| Open Logic testbenches | not run yet |  |  |
+| Real designs (neorv32 x3, GRLIB LEON3), interpreter | 4/4 | CI | 2026-10-28, `7f953a74dc` |
+| Waveform equivalence with sim1 (signals of 17 real designs) | 44824/44889 | local | 2026-10-27, `05aa8453fb` |
+| VHPI plugin traces identical to sim1's | 2/23 | local | 2026-10-26, `cd5268f8b2` |
 
 ## Reproduce
 
@@ -45,13 +69,14 @@ A `--local` run rewrites `docs/conformance-local.json`; commit it together with 
 | Reference simulators' own tests | CI | `tools/difftest/external.py sim1|sim2 --oracle` |
 | Analysis corpora | CI | `tools/corpus/run.py <manifest> --keep-going` |
 | UVVM, OSVVM suites | CI | `tools/suites/uvvm.py`, `tools/suites/pro.py --std 2008|2019` |
+| VHDL-1993 language suite (VESTs) | CI | `tools/suites/vests.py` |
 | Real designs | CI | `tools/realbench/run.py BIN --tests ... --runs 0` |
 | Waveform equivalence | local, 2026-10-27 at `05aa8453fb` | `python3 -I tools/waveq/run.py BIN` |
 | cocotb regression over VHPI | local, 2026-10-20 at `78b1c398` | `cocotb's own tests with the VHPI plugin (crates/yavs-vhpi/COCOTB.md)` |
 | References against the recorded outputs | local, 2026-10-26 at `cd5268f8b2` | `tools/difftest/difftest.py --candidate sim1|sim2` |
 | The auto and llvm tiers | local, 2026-10-26 at `cd5268f8b2` | `tools/conformance/run.py --local --llvm --only tiers (yavs built with --features llvm)` |
 | VHPI conformance | local, 2026-10-26 at `cd5268f8b2` | `tools/vhpi-conformance/run.py` |
-| VUnit's own VHDL suites | local, 2026-10-20 at `f2ab69be` | `VUNIT_SIMULATOR=yavs python run.py -p 2   (in each vunit/vhdl/<suite>/test directory)` |
+| VUnit's own VHDL suites | local, 2026-10-20 at `f2ab69be` | `python run.py -p 2 in each vunit/vhdl/<suite>/test directory of VUnit` |
 
 ## Differential simulation (CI)
 
@@ -66,11 +91,11 @@ Every testbench of `tests/corpus` runs on yavs and its normalised output is comp
 | env | 14/14 | 14/14 | 14/14 |
 | force | 12/12 | 12/12 | 12/12 |
 | generics | 52/52 | 52/52 | 52/52 |
-| hierarchy | 81/81 | 81/81 | 81/81 |
+| hierarchy | 82/82 | 82/82 | 82/82 |
 | ieee | 21/21 | 21/21 | 21/21 |
 | implicit | 6/6 | 6/6 | 6/6 |
 | postponed | 2/2 | 2/2 | 2/2 |
-| process | 36/36 | 36/36 | 36/36 |
+| process | 38/38 | 38/38 | 38/38 |
 | protected | 22/22 | 22/22 | 22/22 |
 | psl | 13/13 | 13/13 | 13/13 |
 | reflect | 14/14 | 14/14 | 14/14 |
@@ -79,11 +104,11 @@ Every testbench of `tests/corpus` runs on yavs and its normalised output is comp
 | rtl | 4/4 | 4/4 | 4/4 |
 | scalar | 16/16 | 16/16 | 16/16 |
 | shared | 4/4 | 4/4 | 4/4 |
-| sigassign | 25/25 | 25/25 | 25/25 |
+| sigassign | 27/27 | 27/27 | 27/27 |
 | std93 | 6/6 | 6/6 | 6/6 |
 | synopsys | 20/20 | 20/20 | 20/20 |
 | textio | 14/14 | 14/14 | 14/14 |
-| total | 539/539 | 539/539 | 539/539 |
+| total | 544/544 | 544/544 | 544/544 |
 
 Failing: none.
 
@@ -378,8 +403,46 @@ The libraries' own testbenches and regression suites run on yavs, each with the 
 | UVVM maintenance testbenches (CI) | 137 | 131 | 0 | 6 | one run per entity, architecture and generic set the project's own script lists |
 | OSVVM `.pro` regression, VHDL-2008 (CI) | 314 | 314 | 0 | 0 | pass = exit 0 and the library's `DONE PASSED` line |
 | OSVVM `.pro` regression, VHDL-2019 (CI) | 314 | 314 | 0 | 0 | pass = exit 0 and the library's `DONE PASSED` line |
-| VUnit's own VHDL suites (local, 2026-10-20 at `f2ab69be`) | 1357 | 1357 | 0 | 0 | 11 suites; recorded in docs/STATUS.md (#112); needs a VUnit checkout with a yavs simulator interface, which this tool cannot fetch |
+| VUnit's own VHDL suites (local, 2026-10-20 at `f2ab69be`) | 1357 | 1357 | 0 | 0 | 11 suites; recorded in docs/STATUS.md (#112) |
 | cocotb regression over VHPI (local, 2026-10-20 at `78b1c398`) | 68 | 66 | 2 | 0 | counted in test directories, recorded in docs/STATUS.md; the integration work is on hold |
+
+## VHDL-1993 language suite (CI)
+
+VESTs, the VHDL test suite for IEEE 1076-1993 (University of Cincinnati; the billowitch, ashenden and clifton-labs parts), run on yavs at `--std=93` with the suite's own test lists and expectations (`tools/suites/vests.py`, whose docstring has the exact rules). Compliant tests are analysed and run (billowitch, clifton-labs: pass = the test's PASSED line, no FAILED line, no error) or analysed only where the suite only builds them (ashenden); non-compliant tests must fail: the billowitch `analyzer_failure` ones at analysis, the others at any step. Where a test's expectation is wrong by the language reference, or the file is not legal VHDL-1993, or every tool rejects it under the suite's own build list, or the result is implementation-defined, the test carries a recorded reason in the driver: the first kind counts as a pass, the others are not counted. The billowitch `disputed` directory has no expectation and is not run.
+
+| group | pass | not counted |
+| --- | ---: | ---: |
+| billowitch/compliant | **1607/1612** | 0 |
+| billowitch/analyzer_failure | **1429/1490** | 0 |
+| billowitch/simulator_failure | **37/38** | 0 |
+| ashenden/compliant | **448/451** | 30 |
+| ashenden/non_compliant | 7/7 | 1 |
+| clifton-labs/compliant | **93/96** | 13 |
+| total | **3621/3694** | 44 |
+
+Of the 1429 `analyzer_failure` passes, 1405 fail at analysis and 24 are stopped by a yavs error at elaboration or run time before the test's own verdict, each checked to be the error the test is about (values out of range, lengths, delays, non-static actuals: the language reference leaves open when such errors are detected). As in the suite's own runner, an analysis failure counts without a check that it is the error the test is about. In every group that must fail, a first error that is E2001 (not lowered yet), E9999 or a crash is a failure.
+
+Failures by the issue that tracks their cause:
+
+- [#807](https://github.com/ru551n/yavs/issues/807): `tc2641.vhd`, `tc2644.vhd`, `tc2749.vhd`, `tc2750.vhd`, `tc2751.vhd`, `tc2859.vhd`
+- [#808](https://github.com/ru551n/yavs/issues/808): `tc2895.vhd`, `tc2926.vhd`, `tc2933.vhd`, `tc2941.vhd`, `tc2942.vhd`, `tc2943.vhd`, `tc2944.vhd`, `tc2946.vhd`, `tc2947.vhd`, `tc2971.vhd`
+- [#809](https://github.com/ru551n/yavs/issues/809): `tc3007.vhd`, `tc3008.vhd`, `tc3009.vhd`, `tc3011.vhd`, `tc3012.vhd`
+- [#810](https://github.com/ru551n/yavs/issues/810): `tc3013.vhd`, `tc3026.vhd`, `tc3028.vhd`, `tc3031.vhd`
+- [#811](https://github.com/ru551n/yavs/issues/811): `tc787.vhd`, `tc818.vhd`, `tc1664.vhd`
+- [#812](https://github.com/ru551n/yavs/issues/812): `tc1313.vhd`, `tc1314.vhd`, `tc1391.vhd`, `tc1746.vhd`, `tc1750.vhd`, `tc1752.vhd`, `tc2447.vhd`
+- [#813](https://github.com/ru551n/yavs/issues/813): `tc122.vhd`, `tc123.vhd`, `tc124.vhd`, `tc125.vhd`, `tc315.vhd`, `tc316.vhd`, `tc553.vhd`, `tc2549.vhd`, `tc2919.vhd`, `tc3058.vhd`, `tc3064.vhd`
+- [#814](https://github.com/ru551n/yavs/issues/814): `tc177.vhd`, `tc394.vhd`, `tc396.vhd`, `tc771.vhd`, `tc775.vhd`, `tc789.vhd`, `tc1320.vhd`, `tc2927.vhd`, `tc2993.vhd`
+- [#815](https://github.com/ru551n/yavs/issues/815): `tc1392.vhd`
+- [#816](https://github.com/ru551n/yavs/issues/816): `tc1781.vhd`
+- [#817](https://github.com/ru551n/yavs/issues/817): `tc3153.vhd`, `tc3156.vhd`, `tc3159.vhd`
+- [#818](https://github.com/ru551n/yavs/issues/818): `functional/attributes/type/range/simple-range-attribute.vhdl`, `functional/statements/for-loops/dynamic_package_procedure_for_loop.vhdl`, `functional/statements/for-loops/dynamic_procedure_for_loop.vhdl`
+- [#819](https://github.com/ru551n/yavs/issues/819): `ch_11_fg_11_09.vhd`, `ch_11_fg_11_10.vhd`
+- [#820](https://github.com/ru551n/yavs/issues/820): `ch_13_fg_13_24.vhd`
+- [#821](https://github.com/ru551n/yavs/issues/821): `tc2443.vhd`, `tc2444.vhd`
+- [#822](https://github.com/ru551n/yavs/issues/822): `tc200.vhd`, `tc963.vhd`, `tc1476.vhd`
+- [#823](https://github.com/ru551n/yavs/issues/823): `tc1227.vhd`
+- [#824](https://github.com/ru551n/yavs/issues/824): `tc1695.vhd`
+
 
 ## VHPI conformance (local, 2026-10-26 at `cd5268f8b2`)
 
@@ -477,6 +540,7 @@ Differences explained:
 | --- | --- |
 | `check` | ubuntu-24.04, ubuntu-24.04-arm, windows-latest |
 | `llvm` | ubuntu-24.04, ubuntu-24.04-arm, windows-latest |
+| `clift` | ubuntu-24.04, ubuntu-24.04-arm, windows-latest |
 
 The `check` job is `cargo fmt`, `clippy -D warnings` and the whole test suite of the workspace; the `llvm` job the same for the LLVM tier plus a simulation smoke run. The `corpus` and `conformance` jobs run on Linux x86_64 only.
 

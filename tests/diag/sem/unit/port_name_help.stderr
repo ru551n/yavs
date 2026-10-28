@@ -1,0 +1,11 @@
+error[E1100]: entity `leaf` has no port `clck`
+  --> tests/diag/sem/unit/port_name_help.vhd:15:34
+   |
+ 6 |   port (clk : in bit);
+   |         --- similar name declared here
+...
+15 |   u : entity work.leaf port map (clck => c);
+   |                                  ^^^^ not a port of entity `leaf`
+   |
+   = help: a port with a similar name exists: `clk`
+

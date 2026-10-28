@@ -690,18 +690,21 @@ impl Db {
             format!("`{}` is not declared", name.text),
         )
         .with_primary(name.span, "not found in this scope");
-        let keys = self.visible_keys(scope);
-        if let Some(best) =
-            crate::suggest::closest(name.key.as_str(), keys.iter().map(|k| k.as_str()))
-        {
-            d = d.with_help(format!("did you mean `{best}`?"));
-        } else {
-            for p in self.packages_declaring(scope, name.key) {
-                d = d.with_help(format!(
-                    "`{}` is declared in `{p}`; add `use {p}.all;`",
-                    name.text
-                ));
-            }
+        // A package that declares exactly this name beats a near miss.
+        let pkgs = self.packages_declaring(scope, name.key);
+        if pkgs.is_empty() {
+            let cands = self.visible_decls(scope);
+            let found = crate::suggest::similar(
+                name.key.as_str(),
+                cands.iter().filter_map(|&d| self.candidate(d)),
+            );
+            d = self.suggest_decls(d, name.span, &found);
+        }
+        for p in pkgs {
+            d = d.with_help(format!(
+                "`{}` is declared in `{p}`; add `use {p}.all;`",
+                name.text
+            ));
         }
         self.error(d)
     }
@@ -768,25 +771,38 @@ impl Db {
         self.error(d.with_help("use a selected name such as `pkg.name`"))
     }
 
-    /// Every key directly or potentially visible from `scope` (for suggestions).
-    fn visible_keys(&self, scope: ScopeId) -> Vec<Symbol> {
-        let mut out = Vec::new();
+    /// One declaration per name visible from `scope` (direct and potential), innermost first.
+    fn visible_decls(&self, scope: ScopeId) -> Vec<DeclId> {
+        let mut out: Vec<(Symbol, DeclId)> = Vec::new();
         let mut cur = Some(scope);
         let mut outer = None;
         while let Some(s) = cur {
-            out.extend(self.scopes[s].names.keys().copied());
+            out.extend(
+                self.scopes[s]
+                    .names
+                    .iter()
+                    .filter_map(|(&k, v)| Some((k, *v.first()?))),
+            );
             for u in &self.scopes[s].uses {
                 match u {
-                    UseItem::All(p) => out.extend(self.scopes[*p].names.keys().copied()),
-                    UseItem::One(ds) => out.extend(ds.iter().map(|&d| self.decls[d].name.key())),
+                    UseItem::All(p) => out.extend(
+                        self.scopes[*p]
+                            .names
+                            .iter()
+                            .filter_map(|(&k, v)| Some((k, *v.first()?))),
+                    ),
+                    UseItem::One(ds) => {
+                        out.extend(ds.iter().map(|&d| (self.decls[d].name.key(), d)))
+                    }
                     UseItem::Library(_) => {}
                 }
             }
             cur = self.next_region(s, &mut outer);
         }
-        out.sort();
-        out.dedup();
-        out
+        // Stable sort: the innermost of equal keys stays first.
+        out.sort_by_key(|&(k, _)| k);
+        out.dedup_by_key(|&mut (k, _)| k);
+        out.into_iter().map(|(_, d)| d).collect()
     }
 
     /// Span helper for diagnostics about a declaration.

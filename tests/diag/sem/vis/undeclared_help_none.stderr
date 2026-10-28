@@ -1,0 +1,6 @@
+error[E1100]: `nothing_like_it` is not declared
+ --> tests/diag/sem/vis/undeclared_help_none.vhd:7:31
+  |
+7 |   constant other : integer := nothing_like_it;
+  |                               ^^^^^^^^^^^^^^^ not found in this scope
+

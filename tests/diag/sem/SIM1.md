@@ -106,6 +106,7 @@ The second reference simulator as second opinion: files where the second referen
 | `typ/subprogram_body_missing_in_unit` | rejects @7 | The second reference simulator rejects, but reports a different line (it blames the declaration or another construct) |
 | `unit/configuration_others_after_named_ok` | internal error | The second reference simulator crashes (an assertion in its analyzer); the reference simulator accepts |
 | `unit/instance_missing_architecture` | accepts | The second reference simulator accepts (lenient or deferred to elaboration) |
+| `unit/architecture_not_found_help` | accepts | Same as `unit/instance_missing_architecture`: the second reference simulator checks the architecture at elaboration |
 | `v2019/view_in_generic_package_ok` | rejects @15,18,19,20,21,25,26,27 | The second reference simulator 2019 support is partial (views in generic packages) |
 | `v2019/protected_alias_not_method` | rejects @5,6,9,10 | The second reference simulator 2019 support is partial (private variables) |
 | `v2019/conditional_expression_ok` | rejects @5 | The second reference simulator 2019 support is partial (generic type classes, conditional expressions, `image` on records, views) |

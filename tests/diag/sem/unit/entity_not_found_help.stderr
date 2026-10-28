@@ -1,0 +1,9 @@
+error[E1002]: design unit `leff` not found in library `work`
+  --> tests/diag/sem/unit/entity_not_found_help.vhd:15:19
+   |
+15 |   u : entity work.leff port map (clk => c);
+   |                   ^^^^ needed here
+   |
+   = note: the library has only the units of the files analyzed in this run
+   = help: a design unit with a similar name exists: `leaf`
+

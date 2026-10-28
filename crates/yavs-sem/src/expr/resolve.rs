@@ -1247,6 +1247,11 @@ impl Db {
                     return;
                 }
             }
+            if let K::Name(n) = &e.kind
+                && self.unknown_element(scope, n)
+            {
+                return;
+            }
             self.report(
                 Diagnostic::error(diag::NOT_AN_OBJECT, "this name does not denote a value")
                     .with_primary(e.span, "not an object, literal or function"),

@@ -1,0 +1,8 @@
+error[E1002]: architecture `rtll` of entity `leaf` not found in library `work`
+  --> tests/diag/sem/unit/architecture_not_found_help.vhd:15:24
+   |
+15 |   u : entity work.leaf(rtll) port map (clk => c);
+   |                        ^^^^ no architecture with this name
+   |
+   = help: an architecture with a similar name exists: `rtl`
+

@@ -1384,11 +1384,12 @@ fn record_agg(
                             format!("{} has no element `{}`", type_name(db, ty), id.text),
                         )
                         .with_primary(*sp, "unknown element");
-                        if let Some(s) = crate::suggest::closest(
+                        if let Some(h) = crate::suggest::suggest(
                             id.key.as_str(),
-                            elems.iter().map(|e| e.0.key.as_str()),
+                            "element",
+                            elems.iter().map(|e| (e.0.key.as_str(), e.0.text.as_str())),
                         ) {
-                            d = d.with_help(format!("did you mean `{s}`?"));
+                            d = d.with_help(h);
                         }
                         failed = Some(db.error(d));
                     }

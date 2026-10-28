@@ -150,7 +150,16 @@ impl Ctx<'_> {
         d = match best {
             Some((_, loc)) => {
                 let u = self.record(&r.library, &m, loc)?;
-                d.with_help(format!("did you mean {} `{}`?", u.kind.describe(), u.name))
+                let kind = u.kind.describe();
+                let a = if kind.starts_with(['a', 'e', 'i', 'o', 'u']) {
+                    "an"
+                } else {
+                    "a"
+                };
+                d.with_help(format!(
+                    "{a} {kind} with a similar name exists: `{}`",
+                    u.name
+                ))
             }
             None => d.with_help(format!(
                 "library `{}` has no {want}; analyze the file that defines it",

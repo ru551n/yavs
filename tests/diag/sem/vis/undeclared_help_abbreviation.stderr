@@ -1,0 +1,11 @@
+error[E1100]: `cnt` is not declared
+  --> tests/diag/sem/vis/undeclared_help_abbreviation.vhd:11:14
+   |
+ 7 |   signal count : integer;
+   |          ----- similar name declared here
+...
+11 |     count <= cnt + 1;
+   |              ^^^ not found in this scope
+   |
+   = help: a signal with a similar name exists: `count`
+

@@ -1,0 +1,8 @@
+error[E1100]: `rec` has no element `valu`
+  --> tests/diag/sem/expr/record_element_help.vhd:14:36
+   |
+14 |   constant c : integer := work.p.r.valu;
+   |                                    ^^^^ unknown element
+   |
+   = help: an element with a similar name exists: `value`
+

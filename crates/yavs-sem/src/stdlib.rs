@@ -25,6 +25,28 @@ pub(crate) fn is_file(path: &Path) -> bool {
     embedded(path).is_some() || path.is_file()
 }
 
+/// The primary units of the built-in directory `dir` (`<yavs>/lib/ieee/2008`), by file name.
+// ponytail: built-in tree only; a library on disk is suggested from its manifest instead.
+pub(crate) fn unit_stems(dir: &Path) -> Vec<String> {
+    let Ok(rel) = dir.strip_prefix(EMBEDDED) else {
+        return Vec::new();
+    };
+    let parts: Vec<&str> = rel
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(s) => s.to_str(),
+            _ => None,
+        })
+        .collect();
+    let prefix = format!("{}/", parts.join("/"));
+    FILES
+        .iter()
+        .filter_map(|(k, _)| k.strip_prefix(&prefix)?.strip_suffix(".vhdl"))
+        .filter(|s| !s.ends_with("-body") && !s.contains('/'))
+        .map(str::to_lowercase)
+        .collect()
+}
+
 pub(crate) fn read(path: &Path) -> std::io::Result<Vec<u8>> {
     match embedded(path) {
         Some(b) => Ok(b.to_vec()),

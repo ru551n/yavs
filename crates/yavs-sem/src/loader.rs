@@ -211,8 +211,12 @@ impl Db {
                     d = d.with_primary(name.span, "not a mapped library");
                 }
                 d = d.with_note(format!("mapped libraries: {}", known.join(", ")));
-                if let Some(best) = crate::suggest::closest(key, known.iter().map(String::as_str)) {
-                    d = d.with_help(format!("did you mean `{best}`?"));
+                if let Some(h) = crate::suggest::suggest(
+                    key,
+                    "library",
+                    known.iter().map(|k| (k.as_str(), k.as_str())),
+                ) {
+                    d = d.with_help(h);
                 } else {
                     d = d.with_help(format!("map it with `{key}:PATH`"));
                 }
@@ -604,11 +608,25 @@ impl Db {
                 l.name.text
             ),
         )
-        .with_note(looked)
-        .with_help("analyze the file that defines it first, or check the name");
+        .with_note(looked);
         if let Some(at) = at {
             d = d.with_primary(at, "needed here");
         }
+        let hint = match key {
+            UnitKey::Primary(k) => {
+                let names = self.unit_names(lib, None);
+                crate::suggest::suggest(
+                    k.as_str(),
+                    "design unit",
+                    names.iter().map(|n| (n.as_str(), n.as_str())),
+                )
+            }
+            UnitKey::Secondary(..) => None,
+        };
+        d =
+            d.with_help(hint.unwrap_or_else(|| {
+                "analyze the file that defines it first, or check the name".into()
+            }));
         self.error(d)
     }
 
@@ -774,6 +792,47 @@ impl Db {
             crate::units::Answer::Bool(a),
         );
         a
+    }
+
+    /// Names for "did you mean": the primary units of `lib` or, with `entity`, the
+    /// architectures of that entity, among the units the library knows now.
+    pub(crate) fn unit_names(&self, lib: LibId, entity: Option<Symbol>) -> Vec<String> {
+        let mut out: Vec<String> = self.libs[lib]
+            .units
+            .keys()
+            .filter_map(|k| match (k, entity) {
+                (UnitKey::Primary(p), None) => Some(p.to_string()),
+                (UnitKey::Secondary(e, a), Some(want)) if *e == want && a.as_str() != "body" => {
+                    Some(a.to_string())
+                }
+                _ => None,
+            })
+            .collect();
+        match &self.libs[lib].source {
+            LibSource::Manifest(m) => {
+                out.extend(m.units().filter_map(|u| match (u.kind, entity) {
+                    (
+                        LibKind::Entity
+                        | LibKind::Package
+                        | LibKind::PackageInstance
+                        | LibKind::Configuration
+                        | LibKind::Context,
+                        None,
+                    ) => Some(u.key.to_string()),
+                    (LibKind::Architecture, Some(e)) if u.primary == Some(e.as_str()) => {
+                        u.key.rsplit('/').next().map(String::from)
+                    }
+                    _ => None,
+                }))
+            }
+            LibSource::StdDir(dir) if entity.is_none() => {
+                out.extend(crate::stdlib::unit_stems(dir))
+            }
+            _ => {}
+        }
+        out.sort();
+        out.dedup();
+        out
     }
 
     pub(crate) fn unit_known_now(&self, lib: LibId, key: UnitKey) -> bool {

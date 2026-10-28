@@ -150,7 +150,7 @@ fn errors() {
     );
     assert_eq!(
         e(UnitRef::new("work", UnitKind::Package, "counter_pck")),
-        "error[L0031]: unknown package `counter_pck` in library `work`\n  |\n  = help: did you mean package `Counter_Pkg`?\n"
+        "error[L0031]: unknown package `counter_pck` in library `work`\n  |\n  = help: a package with a similar name exists: `Counter_Pkg`\n"
     );
     assert_eq!(
         e(UnitRef::new("work", UnitKind::Package, "zzzzzzzz")),

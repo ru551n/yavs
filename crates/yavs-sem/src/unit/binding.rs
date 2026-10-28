@@ -302,6 +302,12 @@ impl Db {
         let key = UnitKey::Secondary(ekey, a.key);
         if !self.unit_known(lib, key) {
             let lname = self.libs[lib].name.text;
+            let names = self.unit_names(lib, Some(ekey));
+            let hint = crate::suggest::suggest(
+                a.key.as_str(),
+                "architecture",
+                names.iter().map(|n| (n.as_str(), n.as_str())),
+            );
             return Err(self.error(
                 Diagnostic::error(
                     diag::UNIT_NOT_FOUND,
@@ -311,7 +317,11 @@ impl Db {
                     ),
                 )
                 .with_primary(a.span, "no architecture with this name")
-                .with_help("analyze the architecture first, or check the name"),
+                .with_help(
+                    hint.unwrap_or_else(|| {
+                        "analyze the architecture first, or check the name".into()
+                    }),
+                ),
             ));
         }
         self.add_ref(lib, LibKind::Architecture, format!("{ekey}/{}", a.key));
@@ -746,18 +756,18 @@ impl Db {
         let (owner, what) = self.formal_owner(formals);
         let name = root.map_or_else(|| "?".to_string(), |r| r.text.to_string());
         let span = root.map_or(f.span, |r| r.span);
-        let mut d = Diagnostic::error(
+        let d = Diagnostic::error(
             diag::NOT_DECLARED,
             format!("{owner} has no {what} `{name}`"),
         )
         .with_primary(span, format!("not a {what} of {owner}"));
-        let keys: Vec<String> = formals
-            .iter()
-            .map(|&d| self.decls[d].name.to_string())
-            .collect();
-        if let Some(best) = crate::suggest::closest(&name, keys.iter().map(String::as_str)) {
-            d = d.with_help(format!("did you mean `{best}`?"));
-        }
+        let found = root.map_or_else(Vec::new, |r| {
+            crate::suggest::similar(
+                r.key.as_str(),
+                formals.iter().filter_map(|&f| self.candidate(f)),
+            )
+        });
+        let d = self.suggest_decls(d, span, &found);
         Err(self.error(d))
     }
 

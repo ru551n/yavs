@@ -18,10 +18,15 @@ Yet Another VHDL Simulator: VHDL-1993, 2008 and 2019 in Rust.
 
   ```
   error[E1100]: `cnt` is not declared
-    --> counter.vhd:14:16
+    --> counter.vhd:15:16
      |
-  14 |       count <= cnt + 1;
+  10 |   signal count : unsigned(3 downto 0);
+     |          ----- similar name declared here
+  ...
+  15 |       count <= cnt + 1;
      |                ^^^ not found in this scope
+     |
+     = help: a signal with a similar name exists: `count`
   ```
 - **Open source and auditable:** MIT OR Apache-2.0, written in Rust; the kernel, interpreter, parser and semantic analysis forbid `unsafe` code.
 

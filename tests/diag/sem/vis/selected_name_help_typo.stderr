@@ -1,0 +1,11 @@
+error[E1100]: `widht` is not declared in `pkg`
+ --> tests/diag/sem/vis/selected_name_help_typo.vhd:9:36
+  |
+6 |   constant width : integer := 4;
+  |            ----- similar name declared here
+...
+9 |   constant w : integer := work.pkg.widht;
+  |                                    ^^^^^ not found
+  |
+  = help: a constant with a similar name exists: `width`
+

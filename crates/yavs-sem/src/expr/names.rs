@@ -534,6 +534,48 @@ impl Db {
         CandSet::Types(out)
     }
 
+    /// `prefix.id` where the prefix is a value of one record type that has no element `id`:
+    /// report it (with a suggestion) and return true.
+    pub(crate) fn unknown_element(&mut self, scope: ScopeId, n: &ast::Name) -> bool {
+        let ast::NameKind::Selected { prefix, suffix } = &n.kind else {
+            return false;
+        };
+        let ast::Suffix::Ident(id) = suffix else {
+            return false;
+        };
+        if !matches!(self.classify(scope, n), NameRes::Value) {
+            return false;
+        }
+        let Ok(ts) = self.prefix_types(scope, prefix) else {
+            return false;
+        };
+        let recs = self.with_designated(ts);
+        let [t] = recs[..] else { return false };
+        let TypeKind::Record { elems } = &self.types[t].kind else {
+            return false;
+        };
+        let mut d = Diagnostic::error(
+            diag::NOT_DECLARED,
+            format!(
+                "{} has no element `{}`",
+                super::aggregate::type_name(self, t),
+                id.text
+            ),
+        )
+        .with_primary(id.span, "unknown element");
+        if let Some(h) = crate::suggest::suggest(
+            id.key.as_str(),
+            "element",
+            elems
+                .iter()
+                .map(|e| (e.name.key.as_str(), e.name.text.as_str())),
+        ) {
+            d = d.with_help(h);
+        }
+        self.report(d);
+        true
+    }
+
     /// Whether an association is a slice argument: a range, a subtype indication,
     /// a type mark or a range attribute.
     fn is_slice_arg(&mut self, scope: ScopeId, args: &[ast::AssocElem]) -> bool {
@@ -2688,10 +2730,13 @@ impl Db {
                 .with_primary(attr.span, "not a predefined or declared attribute")
             };
             if !declared
-                && let Some(best) =
-                    crate::suggest::closest(attr.key.as_str(), attr::TABLE.iter().map(|i| i.name))
+                && let Some(h) = crate::suggest::suggest(
+                    attr.key.as_str(),
+                    "attribute",
+                    attr::TABLE.iter().map(|i| (i.name, i.name)),
+                )
             {
-                d = d.with_help(format!("did you mean `{best}`?"));
+                d = d.with_help(h);
             }
             self.report(d);
             return true;

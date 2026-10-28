@@ -620,15 +620,19 @@ impl Db {
                 .with_secondary(self.decls[d].span, "declared here"),
             );
         }
-        let mut d = Diagnostic::error(
+        let d = Diagnostic::error(
             diag::NOT_DECLARED,
             format!("`{key}` is not declared in `{owner}`"),
         )
         .with_primary(span, "not found");
-        let keys: Vec<Symbol> = self.scopes[s].names.keys().copied().collect();
-        if let Some(best) = crate::suggest::closest(key.as_str(), keys.iter().map(|k| k.as_str())) {
-            d = d.with_help(format!("did you mean `{best}`?"));
-        }
+        let found = crate::suggest::similar(
+            key.as_str(),
+            self.scopes[s]
+                .names
+                .values()
+                .filter_map(|v| self.candidate(*v.first()?)),
+        );
+        let d = self.suggest_decls(d, span, &found);
         self.error(d)
     }
 

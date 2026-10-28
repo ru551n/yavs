@@ -1,0 +1,9 @@
+error[E1002]: design unit `numeric_sdt` not found in library `ieee`
+ --> tests/diag/sem/use/unit_not_found_help.vhd:6:10
+  |
+6 | use ieee.numeric_sdt.all;
+  |          ^^^^^^^^^^^ needed here
+  |
+  = note: looked in `<yavs>/lib/ieee/2008`
+  = help: a design unit with a similar name exists: `numeric_std`
+

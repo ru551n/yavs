@@ -75,8 +75,13 @@ An error in the VHDL
     error[E1100]: `cnt` is not declared
      --> hello_error.vhd:7:12
       |
+    5 |   signal count : natural;
+      |          ----- similar name declared here
+    6 | begin
     7 |   count <= cnt + 1;
       |            ^^^ not found in this scope
+      |
+      = help: a signal with a similar name exists: `count`
 
     error: aborting due to 1 previous error
 

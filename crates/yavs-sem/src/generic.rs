@@ -1741,18 +1741,16 @@ impl Db {
                         .or_else(|| fits.first().copied());
                     let Some(i) = found else {
                         failed = true;
-                        let mut d = Diagnostic::error(
+                        let d = Diagnostic::error(
                             diag::NOT_DECLARED,
                             format!("{what} has no generic `{key}`"),
                         )
                         .with_primary(span, "no such generic");
-                        let keys: Vec<Symbol> =
-                            formals.iter().map(|d| self.decls[*d].name.key()).collect();
-                        if let Some(best) =
-                            crate::suggest::closest(key.as_str(), keys.iter().map(|k| k.as_str()))
-                        {
-                            d = d.with_help(format!("did you mean `{best}`?"));
-                        }
+                        let found = crate::suggest::similar(
+                            key.as_str(),
+                            formals.iter().filter_map(|&f| self.candidate(f)),
+                        );
+                        let d = self.suggest_decls(d, span, &found);
                         self.report(d);
                         continue;
                     };

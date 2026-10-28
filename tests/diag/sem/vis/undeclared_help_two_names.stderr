@@ -1,0 +1,8 @@
+error[E1100]: `datb` is not declared
+ --> tests/diag/sem/vis/undeclared_help_two_names.vhd:8:31
+  |
+8 |   constant other : integer := datb;
+  |                               ^^^^ not found in this scope
+  |
+  = help: similar names exist: `data` (constant), `datc` (constant)
+

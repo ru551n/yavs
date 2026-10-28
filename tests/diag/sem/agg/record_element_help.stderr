@@ -1,0 +1,8 @@
+error[E1100]: `rec` has no element `valu`
+  --> tests/diag/sem/agg/record_element_help.vhd:10:24
+   |
+10 |   constant c : rec := (valu => 1, valid => true);
+   |                        ^^^^ unknown element
+   |
+   = help: an element with a similar name exists: `value`
+

@@ -1,0 +1,11 @@
+error[E1100]: entity `leaf` has no generic `dpth`
+  --> tests/diag/sem/unit/generic_name_help.vhd:14:37
+   |
+ 6 |   generic (depth : integer := 2);
+   |            ----- similar name declared here
+...
+14 |   u : entity work.leaf generic map (dpth => 3);
+   |                                     ^^^^ not a generic of entity `leaf`
+   |
+   = help: a generic with a similar name exists: `depth`
+

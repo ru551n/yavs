@@ -1,6 +1,8 @@
 # Conformance report (#780): regenerates the parts of docs/conformance.md that need only yavs and the
 # fetched corpora, uploads the report as an artifact and checks the committed copy. Nothing is published
 # outside the repository. On main a stale committed report is a warning; on a release tag it fails the run.
+# It also runs cocotb's own regression over VHPI (tools/cocotb, a pinned cocotb from PyPI and its tests
+# from GitHub); a failing job there fails the run.
 name: conformance
 
 on:
@@ -43,6 +45,12 @@ jobs:
         run: |
           tools/conformance/run.py --check --no-sandbox --core 1 \
             --yavs target/release/yavs --out "$RUNNER_TEMP/conformance"
+      - uses: astral-sh/setup-uv@v6
+      - name: cocotb's own regression over VHPI (tools/cocotb)
+        run: |
+          mkdir -p "$RUNNER_TEMP/conformance"
+          python3 -I tools/cocotb/run.py --no-sandbox --jobs 4 --yavs target/release/yavs \
+            --dir "$RUNNER_TEMP/cocotb" --json "$RUNNER_TEMP/conformance/cocotb-ci.json"
       - name: Stale report warning
         if: steps.report.outcome == 'failure'
         run: echo "::warning::docs/conformance.md differs from the regenerated report; run tools/conformance/run.py and commit"

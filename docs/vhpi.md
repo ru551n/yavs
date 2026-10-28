@@ -112,25 +112,28 @@ File parameters are not supported.
 
 ## cocotb
 
-cocotb 2.1.0's own regression (`tests/test_cases`, 68 directories, `SIM=yavs
-TOPLEVEL_LANG=vhdl`, the VHPI library cocotb ships for another simulator, a local
-`Makefile.yavs` adapted from that simulator's) was last recorded at **66 of 68 directories
-passing** (2026-10-19, tracked in issue #122). The two that fail, per that record:
+`tools/cocotb/run.py` runs cocotb's own simulator regression on yavs, VHDL over VHPI, the way
+cocotb's CI runs it for a simulator: the `tests/test_cases` directories and the examples through
+make, the examples, `pytest -k simulator_required` and the pytest plugin's tests through cocotb's
+Python runner. It installs a pinned cocotb (2.1.0) and its test dependencies into a venv outside
+the repository (default `~/.cache/yavs-cocotb`; needs `uv`, network for pip and the clone of
+cocotb's tests, and a C++ compiler), builds cocotb's VHPI library from its source without any
+simulator-specific define (`libcocotbvhpi_yavs`), and installs the yavs makefile and Python runner
+that cocotb would need upstream (`tools/cocotb/AGENTS.md`).
 
-1. `test_integers`: not a yavs problem. cocotb's own pytest runner has a fixed list of
-   simulators and no yavs entry, so it stops before reaching yavs.
-2. `test_first_on_coincident_triggers`, test `test_repeated_first_no_missed_edges`: it expects a
-   callback registered in the same time step as a change to fire for that change. cocotb marks
-   this test as an expected failure for every simulator with VHPI that it knows; yavs behaves
-   like them, but is not yet in that list.
+```
+cargo build --release -p yavs
+python3 -I tools/cocotb/run.py --yavs target/release/yavs [--run-args='--threads=4']
+```
 
-No VHPI blocker was left in that run. A later run (2026-10-22, interpreter and compiled tier
-alike, identical per-test results) saw non-zero exits in `test_cocotb`
-(`test_timer_with_units`: the local makefile did not pass `--resolution`),
-`test_plusargs` (the local makefile put `+args` before the top unit) and `test_integers`. The
-two makefile problems are in the local integration, not in yavs. Running cocotb's regression
-with yavs as a first-class cocotb simulator (a runner entry, a yavs-specific VHPI library) is
-part of the scheduled work.
+Result (2026-10-28, issue #122): **78 of 78 jobs pass**. 43 jobs run VHDL tests (702 tests pass;
+the 10 failing tests are the ones `test_failure` and `test_max_failures` expect to fail); the
+other 35 are Verilog-only or error-path cases that skip themselves. The same at `--threads 1`
+and `4`. The `conformance` CI workflow runs it on every push to `main`.
+
+The two directories that failed in the earlier record (66 of 68) failed in the local integration,
+not in yavs: the time resolution and the plusargs were not passed on, and cocotb's Python runner
+had no yavs entry.
 
 ## Not supported yet
 

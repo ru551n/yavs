@@ -3,7 +3,7 @@
 Generated: yavs 0.8.0 at commit `ac2c94ffc5` (2026-10-28) by `tools/conformance/run.py`; do not edit by hand.
 
 yavs is checked by running the test suites of VHDL libraries, a VHDL language test suite and real designs on it, and by comparing its output
-with two established open-source VHDL simulators, called sim1 and sim2 here. Each suite judges its own tests. Over the suites below, 8014 of 8211
+with two established open-source VHDL simulators, called sim1 and sim2 here. Each suite judges its own tests. Over the suites below, 8026 of 8221
 tests pass; every failure is tracked as an issue. This is evidence, not a proof of correctness.
 
 | Project or suite | What it is | Passed / total |
@@ -17,7 +17,7 @@ tests pass; every failure is tracked as an issue. This is evidence, not a proof 
 | OSVVM, VHDL-2008 | verification library: its own regression | 314/314 |
 | OSVVM, VHDL-2019 | verification library: its own regression | 314/314 |
 | VUnit | test framework: its own VHDL test suites | 1357/1357 |
-| cocotb | Python test framework: its own tests, over VHPI | 66/68 |
+| cocotb | Python test framework: its own tests, over VHPI | 78/78 |
 | Open Logic | FPGA standard library: its own testbenches | not run yet |
 | Real designs | neorv32 (three configurations) and GRLIB LEON3 run to completion | 4/4 designs |
 | Waveforms of real designs | signals of 17 designs equal to sim1's at every time step | 44824/44889 signals |
@@ -359,7 +359,7 @@ The libraries' own testbenches and regression suites run on yavs, each with the 
 | OSVVM `.pro` regression, VHDL-2008 (CI) | 314 | 314 | 0 | 0 | pass = exit 0 and the library's `DONE PASSED` line |
 | OSVVM `.pro` regression, VHDL-2019 (CI) | 314 | 314 | 0 | 0 | pass = exit 0 and the library's `DONE PASSED` line |
 | VUnit's own VHDL suites (local, 2026-10-20 at `f2ab69be`) | 1357 | 1357 | 0 | 0 | 11 suites; recorded in docs/STATUS.md (#112) |
-| cocotb regression over VHPI (local, 2026-10-20 at `78b1c398`) | 68 | 66 | 2 | 0 | counted in test directories, recorded in docs/STATUS.md; the integration work is on hold |
+| cocotb regression over VHPI (local, 2026-10-28 at `ef30c313de`) | 78 | 78 | 0 | 0 | cocotb 2.1.0, counted in jobs (test directories, examples, pytest groups) by cocotb's own verdict; 43 ran VHDL tests (702 tests pass), the others skip themselves (Verilog only or nothing to simulate) |
 
 ### VESTs, the VHDL-1993 language suite
 
@@ -520,7 +520,7 @@ The `check` job is `cargo fmt`, `clippy -D warnings` and the whole test suite of
 | OSVVM, VHDL-2008 | CI | this report (see Generated) | `tools/suites/pro.py` |
 | OSVVM, VHDL-2019 | CI | this report (see Generated) | `tools/suites/pro.py` |
 | VUnit | local | 2026-10-20, `f2ab69be` | VUnit's own `run.py` scripts |
-| cocotb | local | 2026-10-20, `78b1c398` | cocotb's own test scripts |
+| cocotb | local | 2026-10-28, `ef30c313de` | cocotb's own test scripts |
 | Open Logic | not run |  |  |
 | Real designs | CI | this report (see Generated) | `tools/realbench/run.py` |
 | Waveforms of real designs | local | 2026-10-27, `05aa8453fb` | `tools/waveq` |

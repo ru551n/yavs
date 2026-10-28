@@ -730,16 +730,24 @@
  "local": {
   "records": {
    "cocotb": {
-    "command": "cocotb's own tests with the VHPI plugin (crates/yavs-vhpi/COCOTB.md)",
-    "commit": "78b1c398",
+    "command": "tools/cocotb/run.py",
+    "commit": "ef30c313de",
     "data": {
-     "fail": 2,
-     "pass": 66,
-     "skip": 0
+     "cocotb": "2.1.0",
+     "fail": 0,
+     "pass": 78,
+     "ran": 43,
+     "skip": 0,
+     "tests": {
+      "fail": 10,
+      "pass": 702,
+      "skip": 71
+     }
     },
-    "date": "2026-10-20",
-    "note": "counted in test directories, recorded in docs/STATUS.md; the integration work is on hold",
-    "title": "cocotb regression over VHPI"
+    "date": "2026-10-28",
+    "note": "cocotb 2.1.0, counted in jobs (test directories, examples, pytest groups) by cocotb's own verdict; 43 ran VHDL tests (702 tests pass), the others skip themselves (Verilog only or nothing to simulate)",
+    "title": "cocotb regression over VHPI",
+    "version": "0.8.0"
    },
    "refdiff": {
     "command": "tools/difftest/difftest.py --candidate sim1|sim2",

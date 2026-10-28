@@ -1,0 +1,45 @@
+# yavs simulator makefile for cocotb (installed into the venv by tools/cocotb/run.py).
+# Needs `yavs` on PATH or YAVS_BIN; the VHPI library is cocotb's built without simulator defines.
+ifneq ($(VERILOG_SOURCES),)
+
+$(COCOTB_RESULTS_FILE):
+	@echo "Skipping simulation as Verilog is not supported on simulator=$(SIM)"
+
+else
+
+YAVS ?= $(or $(YAVS_BIN),yavs)
+
+ifdef RTL_LIBRARY
+    TOPLEVEL_LIBRARY ?= $(RTL_LIBRARY)
+else
+    TOPLEVEL_LIBRARY ?= work
+endif
+
+.PHONY: analyse
+
+YAVS_ELAB_FILTER := -g% --cover --cover=%
+YAVS_E_ARGS := $(filter $(YAVS_ELAB_FILTER),$(SIM_ARGS))
+YAVS_R_ARGS := $(filter-out $(YAVS_ELAB_FILTER),$(SIM_ARGS))
+YAVS_MAPS = $(foreach L,$(VHDL_LIB_ORDER) $(TOPLEVEL_LIBRARY),--map=$(L):$(SIM_BUILD)/$(L))
+# cocotb's precision is "1ps"-style; yavs takes the unit (sec for s)
+YAVS_RESOLUTION := $(patsubst s,sec,$(patsubst 1%,%,$(COCOTB_HDL_TIMEPRECISION)))
+YAVS_VHPI_LIB := $(shell cocotb-config --lib-dir)/libcocotbvhpi_yavs$(if $(filter Windows_NT,$(OS)),.dll,.so)
+
+analyse: $(VHDL_SOURCES) $(SIM_BUILD) $(CUSTOM_COMPILE_DEPS)
+	$(foreach LIB, $(VHDL_LIB_ORDER), $(check_vhdl_sources))
+	$(foreach SOURCES_VAR, $(filter VHDL_SOURCES_%, $(.VARIABLES)), $(check_lib_order))
+	$(foreach LIB_VAR,$(VHDL_LIB_ORDER), \
+		$(YAVS) analyze --std=2008 --work=$(LIB_VAR):$(SIM_BUILD)/$(LIB_VAR) $(YAVS_MAPS) $(COMPILE_ARGS) $(VHDL_SOURCES_$(LIB_VAR)) && ) \
+	$(YAVS) analyze --std=2008 --work=$(TOPLEVEL_LIBRARY):$(SIM_BUILD)/$(TOPLEVEL_LIBRARY) $(YAVS_MAPS) $(COMPILE_ARGS) $(VHDL_SOURCES)
+
+$(COCOTB_RESULTS_FILE): analyse $(CUSTOM_SIM_DEPS)
+	$(RM) $(COCOTB_RESULTS_FILE)
+
+	$(COCOTB_ENV) \
+	  $(SIM_CMD_PREFIX) $(YAVS) run --std=2008 --work=$(TOPLEVEL_LIBRARY):$(SIM_BUILD)/$(TOPLEVEL_LIBRARY) $(YAVS_MAPS) \
+	  --resolution=$(YAVS_RESOLUTION) $(YAVS_E_ARGS) --vhpi=$(YAVS_VHPI_LIB) \
+	  $(YAVS_R_ARGS) $(COCOTB_TOPLEVEL) $(call deprecate,PLUSARGS,COCOTB_PLUSARGS) $(SIM_CMD_SUFFIX)
+
+	$(call check_results)
+
+endif

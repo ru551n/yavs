@@ -7,7 +7,7 @@ docs/conformance.md and docs/conformance.json from the results plus the committe
   tools/conformance/run.py --report-only --out DIR      # render from the results saved in DIR
 
 Steps (--only names): difftest, discrepancies, external, corpora, uvvm, osvvm, vests, designs; with --local also
-refdiff, vhpi (reference simulators configured in tools/sims.local.conf); with --llvm (a build with
+refdiff, vhpi (reference simulators configured in tools/sims.local.conf), cocotb (tools/cocotb, a venv with cocotb); with --llvm (a build with
 the `llvm` feature) also difftest of the auto and llvm tiers and the designs under auto. A --local run stores
 what it ran in docs/conformance-local.json with date and commit; CI never writes it. --check renders into --out
 and exits 1 when the committed docs/conformance.md differs outside the `Generated:` line.
@@ -24,7 +24,7 @@ MD, JS, LOCAL = DOCS / "conformance.md", DOCS / "conformance.json", DOCS / "conf
 GH = "https://github.com/ru551n/yavs"
 PY = ["python3", "-I"]
 CI_STEPS = ["difftest", "discrepancies", "external", "corpora", "uvvm", "osvvm", "vests", "designs"]
-LOCAL_STEPS = ["refdiff", "vhpi", "tiers"]
+LOCAL_STEPS = ["refdiff", "vhpi", "tiers", "cocotb"]
 DESIGNS = ["neorv32_dual_full", "neorv32_single_min", "neorv32_single_cache", "grlib_leon3mp"]
 
 
@@ -173,6 +173,17 @@ class Run:
         diffs = [l for f in d.glob("*.diff") for l in f.read_text().splitlines() if l[:1] and l[0] in "+-" and l[:3] not in ("+++", "---")]
         return {"plugins": len(lines), "traces_equal": sum(l.startswith("PASS") for l in lines), "sim1_lines": total,
                 "sim1_lines_not_reproduced": sum(l[0] == "-" for l in diffs), "yavs_extra_lines": sum(l[0] == "+" for l in diffs)}
+
+    def step_cocotb(self):
+        """cocotb's own regression (tools/cocotb, venv in YAVS_COCOTB_DIR); None when its setup cannot run here."""
+        f = self.out / "cocotb-run.json"
+        rc, out = sh(PY + [TOOLS / "cocotb/run.py", "--yavs", self.a.yavs, "--out", self.out / "cocotb", "--json", f, *self.nosb,
+                           "--dir", os.environ.get("YAVS_COCOTB_DIR", "~/.cache/yavs-cocotb")], self.env)
+        if not f.exists():
+            print(f"conformance: cocotb not run: {out.strip().splitlines()[-1] if out.strip() else rc}")
+            return None
+        j = json.loads(f.read_text())
+        return {"pass": j["pass"], "fail": j["jobs"] - j["pass"], "skip": 0, "ran": j["ran"], "tests": j["tests"], "cocotb": j["cocotb"]}
 
 
 def collect(a):
@@ -528,15 +539,18 @@ def main():
     else:
         ci = collect(a)
     gen = meta(a)  # before any file of the tree is written
-    local_now = {k: ci.pop(k) for k in LOCAL_STEPS if k in ci}
+    local_now = {k: v for k in LOCAL_STEPS if k in ci for v in [ci.pop(k)] if v is not None}
     if local_now and not a.report_only:
         loc = json.loads(LOCAL.read_text()) if LOCAL.exists() else {"records": {}}
         m = gen
         cmds = {"refdiff": "tools/difftest/difftest.py --candidate sim1|sim2", "vhpi": "tools/vhpi-conformance/run.py",
-                "tiers": "tools/conformance/run.py --local --llvm --only tiers (yavs built with --features llvm)"}
-        titles = {"refdiff": "References against the recorded outputs", "vhpi": "VHPI conformance", "tiers": "The auto and llvm tiers"}
+                "tiers": "tools/conformance/run.py --local --llvm --only tiers (yavs built with --features llvm)",
+                "cocotb": "tools/cocotb/run.py"}
+        titles = {"refdiff": "References against the recorded outputs", "vhpi": "VHPI conformance", "tiers": "The auto and llvm tiers", "cocotb": "cocotb regression over VHPI"}
         for k, d in local_now.items():
-            loc["records"][k] = {"title": titles[k], "date": datetime.date.today().isoformat(), "commit": m["commit"], "version": m["version"], "command": cmds[k], "data": d, "note": ""}
+            note = (f"cocotb {d['cocotb']}, counted in jobs (test directories, examples, pytest groups) by cocotb's own verdict; {d['ran']} ran VHDL tests "
+                    f"({d['tests']['pass']} tests pass), the others skip themselves (Verilog only or nothing to simulate)") if k == "cocotb" else ""
+            loc["records"][k] = {"title": titles[k], "date": datetime.date.today().isoformat(), "commit": m["commit"], "version": m["version"], "command": cmds[k], "data": d, "note": note}
         LOCAL.write_text(json.dumps(loc, indent=1, sort_keys=True) + "\n")
     R = build(a, ci, gen)
     md, js = render(R), json.dumps(R, indent=1, sort_keys=True) + "\n"

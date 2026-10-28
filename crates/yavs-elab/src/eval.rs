@@ -1944,7 +1944,14 @@ pub fn leaf_values(db: &Db, shape: &Shape, v: Option<&Val>) -> Result<Vec<Value>
     flatten(shape, v, &mut flat, &mut Vec::new())?;
     let mut out = Vec::with_capacity(1);
     for (path, leaf, n) in shape.leaves() {
-        let Shape::Scalar { elem, ty, .. } = leaf else {
+        let Shape::Scalar {
+            elem,
+            ty,
+            sub,
+            range,
+            ..
+        } = leaf
+        else {
             continue;
         };
         let xs: Vec<&Val> = flat
@@ -1953,6 +1960,20 @@ pub fn leaf_values(db: &Db, shape: &Shape, v: Option<&Val>) -> Result<Vec<Value>
             .map(|(v, _)| v)
             .collect();
         debug_assert_eq!(xs.len() as u64, n);
+        // Every scalar of the value lies in its (element) subtype (LRM 6.4.2.3, 9.3.3.3, #821).
+        if v.is_some()
+            && let Some(b) = range
+            && let Some(x) = xs
+                .iter()
+                .filter_map(|x| x.as_int())
+                .find(|&x| b.pos(x).is_none())
+        {
+            let (lo, hi) = b.low_high();
+            return Err(format!(
+                "value {x} is outside subtype `{}` ({lo} to {hi})",
+                db.subtype_name(*sub)
+            ));
+        }
         out.push(encode(*elem, !is_std_ulogic(db, *ty), &xs));
     }
     Ok(out)

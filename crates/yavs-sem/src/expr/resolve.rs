@@ -248,6 +248,26 @@ impl Db {
             );
             return;
         }
+        // A static composite: each scalar lies in its element or field subtype (9.3.3.3, #821).
+        if let Some(v) = self.value(id).cloned()
+            && let Some((x, est)) = self.elem_outside(&v, self.base(st))
+        {
+            let name = self.subtype_name(est);
+            let span = self.exprs[id].span;
+            let x = match x {
+                crate::stat::ConstValue::Int(i) | crate::stat::ConstValue::Phys(i) => i.to_string(),
+                other => format!("{other:?}"),
+            };
+            self.report(
+                Diagnostic::error(
+                    diag::OUT_OF_SUBTYPE,
+                    format!("element value {x} is outside subtype `{name}`"),
+                )
+                .with_primary(span, "an element out of range")
+                .with_note("LRM 9.3.3.3: each element of the value belongs to the element subtype"),
+            );
+            return;
+        }
         let (Some(v), Some((l, d, r))) = (self.value(id).cloned(), self.static_bounds(st)) else {
             return;
         };
@@ -261,6 +281,42 @@ impl Db {
                 )
                 .with_primary(span, "out of range"),
             );
+        }
+    }
+
+    /// The first scalar of the static composite `v` of type `t` outside its element or field
+    /// subtype, with that subtype.
+    fn elem_outside(
+        &self,
+        v: &crate::stat::ConstValue,
+        t: crate::ids::TypeId,
+    ) -> Option<(crate::stat::ConstValue, crate::ids::SubtypeId)> {
+        use crate::stat::{ConstValue as C, Elems};
+        let scalar = |db: &Self, x: &C, st| {
+            let (l, d, r) = db.static_bounds(st)?;
+            (crate::stat::within(x, &l, d, &r) == Some(false)).then(|| (x.clone(), st))
+        };
+        let check = |db: &Self, x: &C, st: crate::ids::SubtypeId| match x {
+            C::Array(_) | C::Record(_) => db.elem_outside(x, db.base(st)),
+            _ => scalar(db, x, st),
+        };
+        match (v, &self.types[t].kind) {
+            (C::Array(a), TypeKind::Array { elem, .. }) => match &a.elems {
+                Elems::Runs(runs) => runs.iter().find_map(|(_, x)| check(self, x, *elem)),
+                Elems::Bytes(b) => {
+                    let mut seen = [false; 256];
+                    b.iter().find_map(|&x| {
+                        (!std::mem::replace(&mut seen[x as usize], true))
+                            .then(|| scalar(self, &C::Enum(u32::from(x)), *elem))
+                            .flatten()
+                    })
+                }
+            },
+            (C::Record(fs), TypeKind::Record { elems }) => fs
+                .iter()
+                .zip(elems.iter())
+                .find_map(|(x, e)| check(self, x, e.subtype)),
+            _ => None,
         }
     }
 

@@ -2065,6 +2065,27 @@ fn unused_constant_index_constraint_is_checked() {
 }
 
 #[test]
+fn signal_initial_value_outside_the_element_subtype() {
+    // #821: each scalar of a signal's initial value lies in its (element) subtype, also when
+    // the value comes from a generic.
+    let src = "entity t is generic (g : integer := 0); end;
+      architecture x of t is
+        type aray is array (0 to 3) of positive;
+        signal ok : aray := (others => g + 1);
+        signal bad : aray := (others => g);
+      begin end;";
+    let (_, r) = try_elab("sigrange", src, "t", &[]);
+    let v = r.err().expect("error");
+    assert_eq!(
+        v,
+        [(
+            codes::EVAL_FAILED,
+            "initial value of `bad` does not fit: value 0 is outside subtype `POSITIVE` (1 to 2147483647)".to_string()
+        )]
+    );
+}
+
+#[test]
 fn clocked_processes_get_edge_triggers() {
     let src = "library ieee; use ieee.std_logic_1164.all;
       entity t is end; architecture a of t is

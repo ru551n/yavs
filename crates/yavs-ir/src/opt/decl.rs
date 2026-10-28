@@ -742,11 +742,14 @@ impl Opt<'_> {
     }
 
     /// Is `o` inside the descriptor of an array variable, `[data, dope, handle, descriptor]`'s
-    /// last `24 * dims` bytes? Nothing writes it after the declaration.
+    /// last `24 * dims` bytes? Nothing writes it after the declaration. (An array of composites
+    /// has a `[data, desc, handle]` slot of 24 bytes and no descriptor in it.)
     fn in_descriptor(&self, o: i64) -> bool {
         self.f.locals.iter().any(|l| {
             matches!(self.prog.types.get(l.ty), Some(Ty::Array { dims, .. })
-                if o >= i64::from(l.slot) + 24 && o < i64::from(l.slot) + 24 + 24 * i64::from(*dims))
+                if o >= i64::from(l.slot) + 24
+                    && o < i64::from(l.slot) + 24 + 24 * i64::from(*dims)
+                    && o < i64::from(l.slot) + i64::from(l.size))
         })
     }
 

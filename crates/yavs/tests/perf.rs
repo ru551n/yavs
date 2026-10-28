@@ -863,6 +863,22 @@ fn spec_record_var() {
     );
 }
 
+/// A variable after an array-of-composite variable, passed by reference: the copy does not fold it
+/// (#856).
+#[test]
+fn spec_comp_slot() {
+    let d = tempdir("spec_comp_slot");
+    let src = include_str!("perf/spec_comp_slot.vhd");
+    let run = |env: &[(&str, &str)]| run_design_env(&d, "spec_comp_slot", src, "interp", &[], env);
+    let (shared, copies) = (
+        run(&[("YAVS_NO_SPEC", "1")]),
+        run(&[("YAVS_SPEC_AFTER", "2")]),
+    );
+    assert_eq!((shared.code, copies.code), (0, 0), "{}", copies.all());
+    assert!(copies.all().contains("k=27"), "{}", copies.all());
+    check_bounds("spec_comp_slot", &copies, &[("spec_switched", Min(1))]);
+}
+
 /// A process with subprograms nested in it, holding an access object and a line (so it runs on the
 /// serial path), switches to a copy too: the nested subprograms reach the frame the copy keeps,
 /// and the copy folds the layouts they do not write (#721): the same report, fewer ops.

@@ -1279,6 +1279,9 @@ pub fn run(
         idle_check: idle_mode == "check",
         // `YAVS_CELLS=off` lists the exact runs of changed elements for every waited part.
         cells: !std::env::var("YAVS_CELLS").is_ok_and(|v| v == "off"),
+        // `YAVS_POOL_ALL=1` hands every batch of two or more processes to the thread pool
+        // (`--threads` above 1): the determinism runs exercise the pooled path with it.
+        pool_all: std::env::var("YAVS_POOL_ALL").is_ok_and(|v| v == "1"),
     };
     if let Some(seed) = a.shuffle {
         out.emit(&none, &shuffle_note(seed));

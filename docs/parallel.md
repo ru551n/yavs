@@ -12,7 +12,7 @@ budget across parallel test runs.
 | Topic | Behaviour |
 |---|---|
 | What runs in parallel | Only process evaluation. Parsing, analysis, elaboration and the rest of a simulation step are single-threaded. |
-| When a group of processes goes to the threads | A "batch" is the set of processes that wake in one delta cycle. A batch of 32 or more processes goes to the threads; a smaller one runs on the main thread, as with `--threads 1`. The rule counts processes, not the work they do. |
+| When a group of processes goes to the threads | A "batch" is the set of processes that wake in one delta cycle. A batch goes to the threads only when its estimated work is worth the hand-over (about 20 microseconds of work that can be split); a smaller one runs on the main thread, as with `--threads 1`. The estimate comes from timing a sample of each process's runs on the main thread. |
 | Processes that stay serial | A process that touches files, shared variables or protected objects, or calls something that does, runs on the main thread. In a batch that goes to the threads the others run first, then the serial ones one after the other. |
 | Signal updates | Spread over the threads only when at least 256 independent signals change in one delta cycle. |
 | Results | Output, reports, waves, coverage and exit status are byte-identical at any thread count, and with `--shuffle` for the same seed. The test corpus is checked at 1 thread, 4 threads and 4 shuffled threads. |
@@ -35,13 +35,32 @@ them as the shape of the effect, not as a promise. The designs are small generat
 | Mid-size batches (32 to 64 processes) | slower: 0.54x to 0.67x (rtl_bus, lfsr64, lfsr64_xor; design study tables), for about 5x the CPU time |
 | Testbench-style designs (verification-library tests, scoreboards, bus models) | about 1.0x |
 
+### By estimated work (2026-10-28)
+
+Since 2026-10-28 a batch goes to the threads by its estimated work, not by its number of processes
+([#497](https://github.com/ru551n/yavs/issues/497)). Speedup over one thread of the same build,
+interpreter, simulation phase, each run pinned to as many cores as threads, median of 5, with the
+previous rule in parentheses:
+
+| Design | 2 threads | 4 threads | 8 threads |
+|---|---|---|---|
+| rtl_fan | 1.14x (1.01x) | 1.20x (1.02x) | 1.11x (0.92x) |
+| rtl_ff | 0.92x (0.91x) | 0.96x (0.84x) | 0.92x (0.81x) |
+| rtl_lfsr | 0.86x (0.89x) | 0.81x (0.80x) | 0.71x (0.72x) |
+| lfsr64, lfsr64_xor, rtl_bus | 0.98x to 1.01x (0.52x to 0.62x) | 0.98x to 1.00x (0.51x to 0.60x) | 0.98x to 1.00x (0.35x to 0.48x) |
+| rtl_chain | 0.97x (1.00x) | 1.02x (1.01x) | 0.99x (0.97x) |
+| Soft-core processor, two cores | 0.83x (0.65x) | 0.75x (0.63x) | 0.57x (0.53x) |
+| Soft-core processor, one minimal core | 1.00x (0.63x) | 0.94x (0.56x) | 0.66x (0.31x) |
+
+The mid-size designs no longer slow down; the batches that still go to the threads lose on the
+hand-over, which the next step addresses.
+
 ## Planned
 
-* **Better choice of parallel or not.** Decide by how much work a batch holds, not by how many
-  processes it has, and split the work of a batch into pieces for the threads. In progress
-  ([#497](https://github.com/ru551n/yavs/issues/497),
-  [#481](https://github.com/ru551n/yavs/issues/481)). A prototype shows no slowdown on mid-size
-  batches and a larger gain on flat RTL; it is not on `main` yet.
+* **Split a batch into pieces for the threads.** The batches that go to the threads are cut into
+  pieces of the process table that the threads and the main thread take in turn, with the commit
+  of the usual clocked process done in the thread
+  ([#481](https://github.com/ru551n/yavs/issues/481)).
 * **Shared CPU budget across parallel test runs**
   ([#801](https://github.com/ru551n/yavs/issues/801)). Today every yavs process uses exactly the
   threads you give it, and nothing shares the CPU between simulations that a test runner starts side by side (`-p N`), and each simulation with a compiled tier adds one compile thread. Until this lands, do not combine a high `-p` with a high

@@ -5652,6 +5652,33 @@ which the design did not elaborate). Its core trapped at the first peripheral st
 in `wfi` for the rest of the run, so the neorv32 rows above and in `docs/design/parallel-kernel.md` time a mostly idle
 CPU and do not stand for the real program. Re-measure them on a fixed build before relying on them.
 
+## Parallel kernel, step 1: pooled by estimated work (#497, #481 item 3, 2026-10-28)
+
+A batch goes to the pool when the estimated work of its parallel processes, less the largest, passes 20 us (per-process
+costs from timed inline activations), no longer from 32 processes; the live-output scan runs only with a serial process in
+the batch; `YAVS_POOL_ALL=1` pools every batch of two or more (`docs/decisions.md` "Parallel kernel, step 1").
+
+Speedup over one thread of the same binary (simulate phase, interpreter, bench builds, median of 5, interleaved; each
+run pinned to N cores of 8 to 15, 1 thread on core 9), main before (`6ea17bde`) in parentheses:
+
+| Design | 2 threads | 4 threads | 8 threads |
+|---|---|---|---|
+| rtl_fan | 1.14 (1.01) | 1.20 (1.02) | 1.11 (0.92) |
+| rtl_ff | 0.92 (0.91) | 0.96 (0.84) | 0.92 (0.81) |
+| rtl_lfsr | 0.86 (0.89) | 0.81 (0.80) | 0.71 (0.72) |
+| lfsr64 | 0.99 (0.52) | 1.00 (0.51) | 0.98 (0.35) |
+| lfsr64_xor | 1.01 (0.62) | 0.99 (0.60) | 1.00 (0.48) |
+| rtl_bus | 0.99 (0.55) | 0.98 (0.51) | 1.00 (0.39) |
+| rtl_chain | 0.97 (1.00) | 1.02 (1.01) | 0.99 (0.97) |
+| neorv32_dual_full (200 us) | 0.83 (0.65) | 0.75 (0.63) | 0.57 (0.53) |
+| neorv32_single_min (300 us) | 1.00 (0.63) | 0.94 (0.56) | 0.66 (0.31) |
+
+CPU time of the mid-size designs at N threads is now that of one thread (lfsr64 0.25 s at 1 to 8 threads, before 0.81 to
+3.10 s). The soft-core program runs (core 0 executes its loop, about 6000 instructions in 200 us; core 1 of the dual
+configuration parks in `wfi` after 49 instructions by program design, not #513). One thread, `tools/realbench/run.py --compare` of main
+before and after on the 42 tests (cores 9 and 10, `--count-runs`), geometric means B/A: wall 1.00 interpreted and 0.99
+with `--tier=auto`, instructions 1.00 and 0.99, cycles 1.00 and 1.00.
+
 ## llvm: native clocked RTL against the interpreter and sim1, cold and warm (#440, #432, #505, 2026-10-21)
 
 Measurement only, nothing changed in the product. Release build with `--features llvm` of main at `3abd2fd7`, single

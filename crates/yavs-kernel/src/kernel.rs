@@ -26,8 +26,13 @@ use yavs_logic::wide::nmask;
 mod hang;
 pub use hang::{DeadClock, LoopCause, LoopLink, ProcWait, StuckProc, StuckReport, StuckSignal};
 
-/// Smallest batch of ready processes handed to the thread pool.
-const PAR_BATCH: usize = 32;
+/// Estimated work (ns) of the parallel processes of a batch, less its largest one, from which
+/// the batch goes to the thread pool; below it the hand-over costs more than it saves (#497).
+const POOL_WORK_NS: u64 = 20_000;
+/// One activation in this many of each process in an inline batch is timed for `SimControl::cost`.
+const COST_EVERY: usize = 16;
+/// One batch in this many that would go to the pool runs inline to refresh the costs.
+const PROBE_EVERY: u32 = 64;
 /// Generators that re-arm themselves in one cycle (clocks that edge together); more resume.
 const SKIP_MAX: usize = 4;
 
@@ -67,6 +72,9 @@ pub struct Config {
     /// per cell (the stretch between two boundaries of the waited ranges), not per run of
     /// changed elements (`Signal::watch_part`). Value-change observers still get exact runs.
     pub cells: bool,
+    /// With `threads` above 1, hand every batch of two or more processes to the pool instead of
+    /// choosing by estimated work (tests: the pooled path must commit as the inline one does).
+    pub pool_all: bool,
 }
 
 impl Default for Config {
@@ -82,6 +90,7 @@ impl Default for Config {
             idle_skip: true,
             idle_check: false,
             cells: true,
+            pool_all: false,
         }
     }
 }
@@ -167,6 +176,8 @@ pub struct Stats {
     pub wakes: u64,
     /// Process runs that took the one-process path of the batch (`run_one`).
     pub single_runs: u64,
+    /// Batches handed to the thread pool (`--threads` above 1, #497).
+    pub pooled_batches: u64,
     /// Update phases by path: the usual delta of one independent signal (or nothing due), the
     /// single timed entry, and the general worklist. The fast cases are the point of many
     /// rounds: a design that moves to `update_general` lost one.
@@ -920,6 +931,12 @@ pub struct SimControl {
     watch_changes: bool,
     wakes: Wakes,
     pool: Option<rayon::ThreadPool>,
+    /// With a pool: per process the estimated time of an activation in ns, an average of timed
+    /// inline activations (0 until one is timed); the count of batches, which places the timed
+    /// activations, and of batches that would pool, which picks the probe batches (#497).
+    cost: Vec<u32>,
+    batches: u32,
+    probe: u32,
     rng: Option<u64>,
     interrupt: Interrupt,
     stats: Stats,
@@ -1213,6 +1230,11 @@ impl SimControl {
         let no_code_signals = signals.iter().filter(|s| s.keeps_no_codes()).count() as u64;
         let skip_signals = signals.iter().filter(|s| s.skip_ok).count() as u64;
         let nsignals = signals.len() as u64;
+        let cost = if pool.is_some() {
+            vec![0; procs.len()]
+        } else {
+            Vec::new()
+        };
         let mut sim = SimControl {
             guard_procs,
             guard_readers,
@@ -1282,7 +1304,10 @@ impl SimControl {
             serial_ran: true,
             watch_changes: false,
             wakes: Wakes::default(),
+            cost,
             pool,
+            batches: 0,
+            probe: 0,
             interrupt: Interrupt::default(),
             stats: Stats {
                 lean_signals,
@@ -3338,6 +3363,7 @@ impl SimControl {
         // The processes the commit loop has to commit, in batch order: those not committed right
         // after they ran.
         let mut late = std::mem::take(&mut self.late);
+        let pooled = self.pool.is_some() && self.pool_batch(&pids);
         {
             let sh = Shared {
                 now: self.now,
@@ -3379,9 +3405,8 @@ impl SimControl {
             };
 
             match &self.pool {
-                // ponytail: fixed cut-off; below it the pool hand-off costs more than the
-                // processes. Inline or pooled, the commit order is the batch order.
-                Some(pool) if pids.len() >= PAR_BATCH => {
+                // Inline or pooled, the commit order is the batch order.
+                Some(pool) if pooled => {
                     late.extend_from_slice(&pids);
                     let (serial, par): (Vec<u32>, Vec<u32>) = pids
                         .iter()
@@ -3397,22 +3422,26 @@ impl SimControl {
                             run(p, &mut s, false)
                         })
                     });
-                    // The serial ones are live when no parallel one wrote or failed.
-                    let live = live_ok
-                        && par.iter().all(|&p| {
-                            let s = lock(&slots[p as usize]);
-                            !stops(s.result.is_err(), &s)
-                                && !(s.st.effects.iter())
-                                    .any(|e| matches!(e, Effect::Report(..) | Effect::Output(..)))
-                        });
-                    for &p in &serial {
-                        let mut s = lock(&slots[p as usize]);
-                        if !init {
-                            resumption(&self.procs, p, &mut s.st);
-                        }
-                        run(p, &mut s, live);
-                        if stops(s.result.is_err(), &s) {
-                            break;
+                    // The serial ones, in batch order as the inline path runs them: none after a
+                    // process that stopped the batch (files are written at run time), and live
+                    // while no earlier parallel one wrote.
+                    if !serial.is_empty() {
+                        let mut live = live_ok;
+                        for &p in &pids {
+                            let ser = procs[p as usize].flags.serial;
+                            let mut s = lock(&slots[p as usize]);
+                            if ser {
+                                if !init {
+                                    resumption(procs, p, &mut s.st);
+                                }
+                                run(p, &mut s, live);
+                            }
+                            if stops(s.result.is_err(), &s) {
+                                break;
+                            }
+                            live &= ser
+                                || !(s.st.effects.iter())
+                                    .any(|e| matches!(e, Effect::Report(..) | Effect::Output(..)));
                         }
                     }
                 }
@@ -3429,104 +3458,134 @@ impl SimControl {
                     } else {
                         usize::MAX
                     };
-                    let caught = catch_unwind(AssertUnwindSafe(|| {
-                        while let Some(&p) = pids.get(i) {
-                            at = i;
-                            if let Some(&n) = pids.get(i.saturating_add(ahead)) {
-                                let next = &mut self.slots[n as usize];
-                                // The slot (the process's kernel state), then the process.
-                                yavs_prefetch::lines(&*next, SLOT_LINES);
-                                yavs_prefetch::lines(&*slot_mut(next).process, PREFETCH_LINES);
-                            }
-                            let s = slot_mut(&mut self.slots[p as usize]);
-                            if !init {
-                                resumption(&self.procs, p, &mut s.st);
-                            }
-                            let mut ctx = Ctx {
-                                sh: &sh,
-                                pid: ProcId(p),
-                                st: &mut s.st,
-                                live: live_ok,
-                            };
-                            // `result` stays `Ok` unless a run failed (a store would drop the old one).
-                            let r = s.process.run(&mut ctx);
-                            let failed = r.is_err();
-                            if failed {
-                                s.result = r;
-                            }
-                            if stops(failed, s) {
-                                late.push(p);
-                                break;
-                            }
-                            i += 1;
-                            // The usual clocked process, committed while its slot is hot: it waited
-                            // again (`Ctx::wait_on_again`) and only scheduled drivers. The commit
-                            // loop skips it (`ProcMeta::ready` is false). The order of the queue
-                            // pushes across processes does not matter: the entries are sorted.
-                            let st = &mut s.st;
-                            let meta = &mut self.procs[p as usize];
-                            if !init
-                                && !postponed
-                                && st.again
-                                && st.act & ACT_SLOW == 0
-                                && meta.perm != 0
-                                && st.wait_key == meta.wkey
-                                && !failed
-                            {
-                                st.check_flags();
-                                st.again = false;
-                                st.matched = 0;
-                                st.wait_key = crate::process::NO_EDGE;
-                                meta.ready = false;
-                                meta.resumed = true;
-                                self.serial_ran |= meta.flags.serial;
-                                if meta.idle_ok
-                                    && note_idle(
-                                        meta,
-                                        &mut self.armed[p as usize],
-                                        sh.signals,
-                                        &self.names[p as usize],
-                                        st,
-                                    )
-                                {
-                                    self.idle_live -= 1;
-                                    self.idle_active = self.idle_live != 0;
+                    // With a pool: one activation in `COST_EVERY` of each process is timed for
+                    // `pool_batch`, at a position that moves from batch to batch.
+                    // The offset is scrambled so batches that come every 2^k batches still see
+                    // every position.
+                    let mut sample = if self.pool.is_some() {
+                        (self.batches.wrapping_mul(0x9e37_79b9) >> 28) as usize % COST_EVERY
+                    } else {
+                        usize::MAX
+                    };
+                    // `$timed`: the loop that times activations, a second copy so the one of a
+                    // run without a pool has no test for it.
+                    macro_rules! batch_loop {
+                        ($timed:literal) => {
+                            catch_unwind(AssertUnwindSafe(|| {
+                                while let Some(&p) = pids.get(i) {
+                                    at = i;
+                                    if let Some(&n) = pids.get(i.saturating_add(ahead)) {
+                                        let next = &mut self.slots[n as usize];
+                                        // The slot (the process's kernel state), then the process.
+                                        yavs_prefetch::lines(&*next, SLOT_LINES);
+                                        yavs_prefetch::lines(&*slot_mut(next).process, PREFETCH_LINES);
+                                    }
+                                    let s = slot_mut(&mut self.slots[p as usize]);
+                                    if !init {
+                                        resumption(&self.procs, p, &mut s.st);
+                                    }
+                                    let mut ctx = Ctx {
+                                        sh: &sh,
+                                        pid: ProcId(p),
+                                        st: &mut s.st,
+                                        live: live_ok,
+                                    };
+                                    // `result` stays `Ok` unless a run failed (a store would drop the old one).
+                                    let r = if !($timed && i == sample) {
+                                        s.process.run(&mut ctx)
+                                    } else {
+                                        sample += COST_EVERY;
+                                        let t = std::time::Instant::now();
+                                        let r = s.process.run(&mut ctx);
+                                        let ns = t.elapsed().as_nanos().min(u128::from(u32::MAX)) as u32;
+                                        let c = &mut self.cost[p as usize];
+                                        *c = *c / 2 + ns / 2;
+                                        r
+                                    };
+                                    let failed = r.is_err();
+                                    if failed {
+                                        s.result = r;
+                                    }
+                                    if stops(failed, s) {
+                                        late.push(p);
+                                        break;
+                                    }
+                                    i += 1;
+                                    // The usual clocked process, committed while its slot is hot: it waited
+                                    // again (`Ctx::wait_on_again`) and only scheduled drivers. The commit
+                                    // loop skips it (`ProcMeta::ready` is false). The order of the queue
+                                    // pushes across processes does not matter: the entries are sorted.
+                                    let st = &mut s.st;
+                                    let meta = &mut self.procs[p as usize];
+                                    if !init
+                                        && !postponed
+                                        && st.again
+                                        && st.act & ACT_SLOW == 0
+                                        && meta.perm != 0
+                                        && st.wait_key == meta.wkey
+                                        && !failed
+                                    {
+                                        st.check_flags();
+                                        st.again = false;
+                                        st.matched = 0;
+                                        st.wait_key = crate::process::NO_EDGE;
+                                        meta.ready = false;
+                                        meta.resumed = true;
+                                        self.serial_ran |= meta.flags.serial;
+                                        if meta.idle_ok
+                                            && note_idle(
+                                                meta,
+                                                &mut self.armed[p as usize],
+                                                sh.signals,
+                                                &self.names[p as usize],
+                                                st,
+                                            )
+                                        {
+                                            self.idle_live -= 1;
+                                            self.idle_active = self.idle_live != 0;
+                                        }
+                                        // A quiet activation (nothing assigned) has nothing to commit.
+                                        if st.act & ACT_ASSIGNED != 0 {
+                                            for &(t, d) in st.scheduled.iter() {
+                                                self.queue.push(now, t, Entry::Driver(d.0));
+                                            }
+                                            st.scheduled.clear();
+                                            // Applied after the batch: the signals are shared until then.
+                                            if let [o] = st.out[..] {
+                                                self.direct.push(o);
+                                                st.out.clear();
+                                            } else if !st.out.is_empty() {
+                                                self.direct.extend_from_slice(&st.out);
+                                                st.out.clear();
+                                            }
+                                            if let [o] = st.outv[..] {
+                                                // One entry (the usual register): a store, not a `memcpy`.
+                                                self.directv.push(o);
+                                                st.outv.clear();
+                                            } else if !st.outv.is_empty() {
+                                                self.directv.extend_from_slice(&st.outv);
+                                                st.outv.clear();
+                                            }
+                                            if !st.outb.is_empty() {
+                                                self.directb.extend_from_slice(&st.outb);
+                                                st.outb.clear();
+                                            }
+                                            if !st.phantoms.is_empty() {
+                                                self.empty_delta |= st.take_phantoms();
+                                            }
+                                        }
+                                    } else {
+                                        late.push(p);
+                                    }
                                 }
-                                // A quiet activation (nothing assigned) has nothing to commit.
-                                if st.act & ACT_ASSIGNED != 0 {
-                                    for &(t, d) in st.scheduled.iter() {
-                                        self.queue.push(now, t, Entry::Driver(d.0));
-                                    }
-                                    st.scheduled.clear();
-                                    // Applied after the batch: the signals are shared until then.
-                                    if let [o] = st.out[..] {
-                                        self.direct.push(o);
-                                        st.out.clear();
-                                    } else if !st.out.is_empty() {
-                                        self.direct.extend_from_slice(&st.out);
-                                        st.out.clear();
-                                    }
-                                    if let [o] = st.outv[..] {
-                                        // One entry (the usual register): a store, not a `memcpy`.
-                                        self.directv.push(o);
-                                        st.outv.clear();
-                                    } else if !st.outv.is_empty() {
-                                        self.directv.extend_from_slice(&st.outv);
-                                        st.outv.clear();
-                                    }
-                                    if !st.outb.is_empty() {
-                                        self.directb.extend_from_slice(&st.outb);
-                                        st.outb.clear();
-                                    }
-                                    if !st.phantoms.is_empty() {
-                                        self.empty_delta |= st.take_phantoms();
-                                    }
-                                }
-                            } else {
-                                late.push(p);
-                            }
-                        }
-                    }));
+                            }))
+                        };
+                    }
+                    let caught = if self.pool.is_some() {
+                        batch_loop!(true)
+                    } else {
+                        batch_loop!(false)
+                    };
                     if let Err(panic) = caught {
                         // The process that was running or being committed (`i` is past it by then).
                         let p = pids[at];
@@ -3538,6 +3597,41 @@ impl SimControl {
             }
         }
         self.commit_rest(late, pids, postponed, init)
+    }
+
+    /// Whether a batch goes to the pool: the estimated work of its parallel processes, less the
+    /// largest one (a batch whose time is one process cannot be split), passes `POOL_WORK_NS`.
+    /// Costs are learnt from inline runs only (a pooled run measures cold caches and would confirm
+    /// itself), so one in `PROBE_EVERY` of the batches that would pool runs inline. Where a batch
+    /// runs changes no output: both paths commit in batch order (#497,
+    /// `docs/design/parallel-kernel.md` 4.1).
+    fn pool_batch(&mut self, pids: &[u32]) -> bool {
+        let pool = if self.cfg.pool_all {
+            pids.len() >= 2
+        } else {
+            self.batches = self.batches.wrapping_add(1);
+            self.worth_pooling(pids) && {
+                self.probe = self.probe.wrapping_add(1);
+                !self.probe.is_multiple_of(PROBE_EVERY)
+            }
+        };
+        self.stats.pooled_batches += u64::from(pool);
+        pool
+    }
+
+    fn worth_pooling(&self, pids: &[u32]) -> bool {
+        let (mut sum, mut max) = (0, 0);
+        for &p in pids {
+            if !self.procs[p as usize].flags.serial {
+                let c = u64::from(self.cost[p as usize]);
+                sum += c;
+                max = max.max(c);
+                if sum - max > POOL_WORK_NS {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// `run_batch` of one process after initialisation (a stage of a chain of processes): no

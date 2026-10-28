@@ -254,8 +254,14 @@ current value and an error while it is disconnected.
 
 Within a delta the kernel has two phases that never overlap:
 
-- **Run phase.** The ready processes run on a rayon pool (`Config::threads`, 1 means inline;
-  a batch of fewer than 32 processes also runs inline, the hand-off costing more than it saves).
+- **Run phase.** The ready processes run on a rayon pool (`Config::threads`, 1 means inline).
+  A batch goes to the pool only when the estimated time of its parallel processes, less the
+  largest one, passes `POOL_WORK_NS` (20 us); a smaller one runs inline, the hand-off costing
+  more than it saves (#497). The estimate of a process is an average of timed inline
+  activations (one in `COST_EVERY` of each process, at a position that moves from batch to
+  batch; a process not yet timed counts 0), and one in `PROBE_EVERY` of the batches that would
+  pool runs inline to refresh them: a pooled run would measure cold caches. `Config::pool_all`
+  pools every batch of two or more (tests). Where a batch runs changes no output.
   Each gets a `Ctx` holding a shared read-only view (`Shared`: time, delta, cycle number, all
   signals, driver table) and `&mut` to its own `ProcState` (a per-process slot with a mutex that only the pooled path locks; the inline path takes none). A
   process can only read current-cycle values and write its own waveforms, its own wait state and

@@ -162,9 +162,20 @@ impl<P: Process> Process for Serial<P> {
 }
 
 fn trace(with_serial: bool, threads: usize, shuffle: Option<u64>) -> Vec<String> {
+    trace_with(with_serial, threads, shuffle, false)
+}
+
+/// `pool_all`: every batch of two or more processes runs on the pool (`Config::pool_all`).
+fn trace_with(
+    with_serial: bool,
+    threads: usize,
+    shuffle: Option<u64>,
+    pool_all: bool,
+) -> Vec<String> {
     let cfg = Config {
         threads,
         shuffle,
+        pool_all,
         ..Config::default()
     };
     let (mut sim, t) = build(design(with_serial), cfg);
@@ -180,6 +191,14 @@ fn threads_give_identical_traces() {
         assert!(one.iter().any(|l| l.contains(pat)), "no {pat} in the trace");
     }
     assert_eq!(one, trace(true, 8, None));
+    // The pooled path commits as the inline one does, for batches of any size (#497).
+    for threads in [2, 4, 8] {
+        assert_eq!(
+            one,
+            trace_with(true, threads, None, true),
+            "{threads} threads, all pooled"
+        );
+    }
 }
 
 #[test]
@@ -188,6 +207,8 @@ fn shuffle_gives_identical_traces_for_order_independent_designs() {
     for seed in [1, 2, 0xdead_beef] {
         assert_eq!(one, trace(false, 1, Some(seed)), "seed {seed}, 1 thread");
         assert_eq!(one, trace(false, 8, Some(seed)), "seed {seed}, 8 threads");
+        let pooled = trace_with(false, 4, Some(seed), true);
+        assert_eq!(one, pooled, "seed {seed}, 4 threads, all pooled");
     }
 }
 

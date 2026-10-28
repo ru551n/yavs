@@ -12371,3 +12371,29 @@ end for those processes. Method as in round 10: bench builds (`llvm`, and `clift
 - **Published guides.** The site publishes `docs/language-support.md`, `docs/coverage.md`, `docs/vhpi.md`, `docs/parallel.md` and `docs/performance.md` beside the usage, install, recipes and language-choices pages. The plan, status, decisions, design notes, the command line contract and the test runner requirements stay developer-only; published pages do not link to them (GitHub URLs or plain text). The language support page and the generated conformance report are published as well (Reference section).
 - **Writing rules applied.** No page, README or guide names another project except in licence notes: this supersedes the entry "README and public docs" above, where the README said it was compliant with three named verification libraries; it now says it with no names and links the conformance report. The README, the landing page and the guides state the same features, limits and numbers (the speed line is `docs/performance.md`'s headline).
 - **Known gaps are documented, not hidden.** Where the implementation differs from `docs/cli-contract.md` the promise stays and a dated "known gap" note says what runs today: `--ieee-warnings`, `analyze -D` in `elab` and `run`, `L0001` for a work library without an index, plain text after `--message-format=json`, an explicit `--tier` under `--dap`. The default tier follows the code (`auto` with LLVM or Cranelift built in).
+
+## Parallel kernel, step 1: a batch is pooled by its estimated work (yavs-kernel `run_batch`, `pool_batch`, #497, #481 item 3, 2026-10-28)
+
+- **Decision: a batch goes to the pool when the estimated work of its parallel processes, less the largest one, passes
+  `POOL_WORK_NS` (20 us)** (`SimControl::pool_batch`), not from a count of 32 (`PAR_BATCH`, gone). The largest process is
+  left out because a batch whose time is one process cannot be split; serial processes do not count. Why: the work per
+  process differs by two orders of magnitude between designs, so any count sends cheap batches of 32 to 64 processes to
+  the pool, where the hand-over costs more than the batch (rtl_bus, lfsr64, lfsr64_xor at 0.35x to 0.62x of one thread).
+- **Decision: per-process costs are learnt from inline runs only** (`SimControl::cost`, ns): one activation in
+  `COST_EVERY` (16) of each process is timed, at a position that moves from batch to batch (scrambled, so a batch that
+  comes every 2^k batches still sees every position), into an average of halves; a process not yet timed counts 0, so a
+  design starts inline. One in `PROBE_EVERY` (64) of the batches that would pool runs inline to refresh the costs. A
+  pooled run measures cold caches and would confirm its own choice (the prototype's finding, design 4.1).
+- **Decision: the timing is in a second copy of the inline loop** (`batch_loop!(true)`), taken only with a pool; the run
+  without a pool keeps the loop without the test. The one compare per activation cost rtl_fan 0.4 percent of its
+  instructions at one thread.
+- **Decision: the live-output scan runs only when the batch has a serial process** (#502), and the serial processes of a
+  pooled batch run in batch order after the parallel ones, none after a process that stopped the batch, live while no
+  earlier parallel process wrote: what the inline loop does. The old scan locked every parallel slot after the pool
+  returned, though nothing read the answer without a serial process.
+- **Decision: `Config::pool_all` (`YAVS_POOL_ALL=1`, a hidden test aid) pools every batch of two or more**, so the
+  differential corpus and the kernel's determinism tests exercise the pooled path; `Stats::pooled_batches` counts the
+  pooled batches (`YAVS_COUNTERS=1`). The corpus passes at 1, 4 and 4 shuffled threads with and without it.
+- **Measured** (`docs/STATUS.md` "Parallel kernel, step 1"): lfsr64, lfsr64_xor and rtl_bus go from 0.35x to 0.62x of one
+  thread to 0.98x to 1.01x at 2, 4 and 8 threads; designs whose batches still pool keep the old pooled path's losses
+  (rtl_lfsr 0.71x to 0.86x, the soft core 0.57x to 0.83x), which step 2 addresses.

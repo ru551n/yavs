@@ -9,17 +9,22 @@
 //! what is there) once it holds 256 KiB, so a small run keeps its small pages. Data sections go
 //! to a second zone of the same reservation (code and data stay within 2 GiB of each other).
 //! Linux x86_64 only (the instruction cache is coherent there); everywhere else, and when the
-//! reservation fails or `YAVS_LLVM_ARENA=0`, LLJIT keeps its default linker.
+//! reservation fails or `YAVS_LLVM_ARENA=0`, LLJIT keeps its default linker. The Cranelift tier
+//! places its code here too (`code`, `data`; `yavs-clift`'s memory provider, #481 round 12).
 //! The arena is also what lets the code be generated for the small code model (`jit.rs` `model`).
 //! `YAVS_LLVM_HUGE=0` keeps the arena but leaves the huge pages out.
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod imp {
-    use std::ffi::{c_char, c_int, c_uint, c_void};
+    #[cfg(feature = "llvm")]
+    use std::ffi::{c_char, c_uint};
+    use std::ffi::{c_int, c_void};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Mutex, OnceLock, PoisonError};
 
+    #[cfg(feature = "llvm")]
     use llvm_sys::orc2::ee::*;
+    #[cfg(feature = "llvm")]
     use llvm_sys::orc2::*;
 
     unsafe extern "C" {
@@ -177,7 +182,24 @@ mod imp {
         arena().is_some()
     }
 
+    /// `size` bytes of code (`align`ed) in the arena, writable and executable at once; `None` when
+    /// the arena is not in use or full.
+    pub fn code(size: usize, align: usize) -> Option<*mut u8> {
+        let mut a = arena()?.lock().unwrap_or_else(PoisonError::into_inner);
+        let huge = a.huge;
+        let p = a.code.alloc(size, align, huge)?;
+        PLACED.fetch_add(size, Ordering::Relaxed);
+        Some(p as *mut u8)
+    }
+
+    /// `size` bytes of data (`align`ed) in the arena's data zone, readable and writable.
+    pub fn data(size: usize, align: usize) -> Option<*mut u8> {
+        let mut a = arena()?.lock().unwrap_or_else(PoisonError::into_inner);
+        a.data.alloc(size, align, false).map(|p| p as *mut u8)
+    }
+
     /// A section that did not fit the arena: a mapping of its own.
+    #[cfg(feature = "llvm")]
     fn overflow(size: usize, prot: c_int) -> *mut u8 {
         OVERFLOW.fetch_add(1, Ordering::Relaxed);
         // The small code model reaches its data and stubs with 32-bit offsets: a section outside
@@ -207,13 +229,16 @@ mod imp {
         }
     }
 
+    #[cfg(feature = "llvm")]
     extern "C" fn create_context(_: *mut c_void) -> *mut c_void {
         // The arena is global: the per-layer context is only a non-null token.
         std::ptr::dangling_mut()
     }
 
+    #[cfg(feature = "llvm")]
     extern "C" fn notify_terminating(_: *mut c_void) {}
 
+    #[cfg(feature = "llvm")]
     extern "C" fn alloc_code(
         _: *mut c_void,
         size: usize,
@@ -235,6 +260,7 @@ mod imp {
         }
     }
 
+    #[cfg(feature = "llvm")]
     extern "C" fn alloc_data(
         _: *mut c_void,
         size: usize,
@@ -257,13 +283,16 @@ mod imp {
     // keeps its instruction cache coherent). ponytail: memory of dropped JITs stays in the
     // arena (a run has a few JITs; a test process with hundreds uses megabytes); free chunks by
     // layer if that ever matters.
+    #[cfg(feature = "llvm")]
     extern "C" fn finalize(_: *mut c_void, _: *mut *mut c_char) -> i32 {
         0
     }
 
+    #[cfg(feature = "llvm")]
     extern "C" fn destroy(_: *mut c_void) {}
 
     /// The `ObjectLinkingLayerCreator` of the LLJIT builder.
+    #[cfg(feature = "llvm")]
     pub extern "C" fn create_layer(
         _: *mut c_void,
         es: LLVMOrcExecutionSessionRef,
@@ -295,6 +324,16 @@ mod imp {
     pub fn enabled() -> bool {
         false
     }
+
+    pub fn code(_: usize, _: usize) -> Option<*mut u8> {
+        None
+    }
+
+    pub fn data(_: usize, _: usize) -> Option<*mut u8> {
+        None
+    }
 }
 
-pub(crate) use imp::*;
+#[cfg(all(feature = "llvm", target_os = "linux", target_arch = "x86_64"))]
+pub(crate) use imp::create_layer;
+pub use imp::{code, data, enabled, stats};

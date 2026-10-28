@@ -369,9 +369,15 @@ struct Tune {
     /// on top of `band_wait`: its compiled code gained 5 percent in the trials that kept it.
     payback_rtl: u64,
     /// Without a main generator: a large subprogram (`native::big`) is `Kind::Big` or `BigLoop`,
-    /// as the main generator's `OptLevel::Fast` makes it. Not a process: Cranelift's code of
-    /// large processes gains (`fletcher_bufferwriter_512`'s `input_proc`, 3.7 percent of the run).
+    /// as the main generator's `OptLevel::Fast` makes it. Not a process below `big_process`:
+    /// Cranelift's code of large processes gains (`fletcher_bufferwriter_512`'s `input_proc`, 1 546
+    /// IR instructions, 3.7 percent of the run).
     big: bool,
+    /// With `big`: a process of this many IR instructions or more is `Big` too (`usize::MAX`:
+    /// none). The code of GRLIB's combinational processes (2 300 to 11 300 IR instructions, 0.2 to
+    /// 1 MB of machine code each) ran 3 times the instruction cache misses of the LLVM build, which
+    /// leaves them interpreted as `Big` (#481 round 12).
+    big_process: usize,
     /// Whether a `Kind::Frame` function is compiled at all. Its frame-mode code moves the rest of
     /// every process that calls it into the interpreter's loop for compiled code
     /// (`run_ops::<true, _>`), which its modelled gain of 9 percent does not cover (#481).
@@ -388,6 +394,7 @@ impl Tune {
         tree_payback: 0,
         payback_rtl: 0,
         big: true,
+        big_process: usize::MAX,
         frame: true,
     };
     const FIRST: Tune = Tune {
@@ -399,11 +406,12 @@ impl Tune {
         tree_payback: 8,
         payback_rtl: 16,
         big: true,
+        big_process: 2048,
         frame: false,
     };
 
     /// `FIRST`, or what `YAVS_FIRST_TUNE=rtl_min=N,band=0|1,instances=N,share=N,o2_after=N,
-    /// tree_payback=N,payback_rtl=N,big=0|1,frame=0|1` changes of it (a measuring aid; an entry that is not understood is ignored).
+    /// tree_payback=N,payback_rtl=N,big=0|1,big_process=N,frame=0|1` changes of it (a measuring aid; an entry that is not understood is ignored).
     fn first() -> Tune {
         static T: std::sync::OnceLock<Tune> = std::sync::OnceLock::new();
         *T.get_or_init(|| {
@@ -419,6 +427,7 @@ impl Tune {
                     ("tree_payback", Ok(n)) => t.tree_payback = n,
                     ("payback_rtl", Ok(n)) => t.payback_rtl = n,
                     ("big", Ok(n)) => t.big = n != 0,
+                    ("big_process", Ok(n)) => t.big_process = n as usize,
                     ("frame", Ok(n)) => t.frame = n != 0,
                     _ => {}
                 }
@@ -1565,7 +1574,9 @@ impl Worker {
         } else if match &self.main {
             Some(m) => m.level_for(&self.prog, f, OptLevel::O2) == OptLevel::Fast,
             None => {
-                self.tune.big && f.kind != FuncKind::Process && crate::native::big(&self.prog, f)
+                self.tune.big
+                    && (f.kind != FuncKind::Process || f.code.len() >= self.tune.big_process)
+                    && crate::native::big(&self.prog, f)
             }
         } {
             if loop_share(&self.prog, f) >= BIG_LOOP_SHARE {

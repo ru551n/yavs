@@ -13,8 +13,7 @@
 // `lower` and `spike` modules.
 #![allow(unsafe_code)]
 
-#[cfg(feature = "llvm")]
-mod arena;
+pub mod arena;
 pub mod auto;
 mod census;
 mod eloop;

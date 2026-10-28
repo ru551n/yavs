@@ -189,6 +189,40 @@ fn flag(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
 }
 
+/// The code arena the LLVM tier links into (`yavs_llvm::arena`, Linux x86_64): the functions of
+/// every compile one after the other in one reservation, writable and executable at once, a 2 MiB
+/// chunk a huge page once it fills. Cranelift's own provider maps every compile's code in pages of
+/// its own: GRLIB warm had 16 times the instruction-TLB misses and 3 times the instruction cache
+/// misses of the LLVM build (#481 round 12).
+struct ArenaMem;
+
+impl cranelift_jit::JITMemoryProvider for ArenaMem {
+    fn allocate(
+        &mut self,
+        size: usize,
+        align: u64,
+        kind: cranelift_jit::JITMemoryKind,
+    ) -> std::io::Result<*mut u8> {
+        let align = usize::try_from(align).unwrap_or(usize::MAX);
+        let p = match kind {
+            cranelift_jit::JITMemoryKind::Executable => yavs_llvm::arena::code(size, align),
+            _ => yavs_llvm::arena::data(size, align),
+        };
+        p.ok_or_else(|| std::io::Error::other("the code arena is full"))
+    }
+
+    // ponytail: memory of dropped JITs stays in the arena, as the LLVM tier's.
+    unsafe fn free_memory(&mut self) {}
+
+    // Writable and executable already; x86_64 keeps its instruction cache coherent.
+    fn finalize(
+        &mut self,
+        _: cranelift_jit::BranchProtection,
+    ) -> cranelift_module::ModuleResult<()> {
+        Ok(())
+    }
+}
+
 impl Jit {
     pub fn new() -> Result<Jit, Error> {
         let opt = flag("YAVS_CLIFT_OPT", "speed");
@@ -212,6 +246,9 @@ impl Jit {
         ];
         let mut b = JITBuilder::with_flags(&flags, cranelift_module::default_libcall_names())
             .map_err(|e| e.to_string())?;
+        if yavs_llvm::arena::enabled() {
+            b.memory_provider(Box::new(ArenaMem));
+        }
         for (n, p) in [
             (STEP, yavs_rt_step as *const u8),
             (HOST, yavs_rt_host as *const u8),

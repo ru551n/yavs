@@ -1192,6 +1192,12 @@ impl Db {
             DeclKind::Subprogram(s) => s.scope.expect("specs have a parameter region"),
             _ => return Err(crate::Reported),
         };
+        if let Some(d) = spec
+            && !mapped
+            && anon_spec.is_none()
+        {
+            self.check_conforms(d, b.spec.span);
+        }
         let target = match spec {
             Some(d) => {
                 // The body's parameter region (its spelling and defaults) becomes the body region.
@@ -1234,6 +1240,80 @@ impl Db {
             self.check_calls_wait(&stmts, self.decls[new].name_span(), Some(&name))?;
         }
         Ok(())
+    }
+
+    /// `E1240`: the body's specification at `body` conforms to the declaration `d` (4.10, #808):
+    /// the same lexical elements, apart from numeric literals of the same value and a simple
+    /// name written as an expanded name. Not checked when a text cannot be read.
+    fn check_conforms(&mut self, d: DeclId, body: Span) {
+        use yavs_syntax::token::Tok;
+        let decl = self.decls[d].span;
+        let text = |s: Span| {
+            let f = self.sources.get(s.file);
+            let t = f.try_text().ok()?;
+            Some(t[f.text_offset(s.start)..f.text_offset(s.end)].to_string())
+        };
+        let (Some(ta), Some(tb)) = (text(decl), text(body)) else {
+            return;
+        };
+        let rev = self.file_rev();
+        let (a, b) = (
+            yavs_syntax::lexical_elements(&ta, rev),
+            yavs_syntax::lexical_elements(&tb, rev),
+        );
+        // The value of an abstract literal, as bits of a REAL or an integer.
+        let num = |t: &str| {
+            use yavs_std::{error::What, value::lex_abstract};
+            let what = if t.contains('.') {
+                What::Real
+            } else {
+                What::Integer
+            };
+            let (v, end) = lex_abstract(t.as_bytes(), 0, what).ok()?;
+            (end == t.len()).then(|| {
+                if v.real {
+                    Some((true, v.to_f64().to_bits() as i128))
+                } else {
+                    v.to_i128().map(|i| (false, i))
+                }
+            })?
+        };
+        let same = |x: &(Tok, &str), y: &(Tok, &str)| match (x.0, y.0) {
+            (Tok::Abstract, Tok::Abstract) => {
+                x.1.eq_ignore_ascii_case(y.1)
+                    || matches!((num(x.1), num(y.1)), (Some(p), Some(q)) if p == q)
+            }
+            (Tok::Ident | Tok::Kw(_), Tok::Ident | Tok::Kw(_)) if !x.1.starts_with('\\') => {
+                x.1.eq_ignore_ascii_case(y.1)
+            }
+            _ => x.0 == y.0 && x.1 == y.1,
+        };
+        // `p.q.n` for `n`: the prefix and its dot are skipped on either side.
+        let prefix = |v: &[(Tok, &str)], i: usize| {
+            matches!(v.get(i), Some((Tok::Ident, _))) && matches!(v.get(i + 1), Some((Tok::Dot, _)))
+        };
+        let (mut i, mut j) = (0, 0);
+        let ok = loop {
+            match (a.get(i), b.get(j)) {
+                (None, None) => break true,
+                (Some(x), Some(y)) if same(x, y) => (i, j) = (i + 1, j + 1),
+                _ if prefix(&a, i) => i += 2,
+                _ if prefix(&b, j) => j += 2,
+                _ => break false,
+            }
+        };
+        if !ok {
+            let name = self.decls[d].name;
+            self.report(
+                yavs_diag::Diagnostic::error(
+                    crate::diag::NOT_CONFORMING,
+                    format!("the body of `{name}` does not conform to its declaration"),
+                )
+                .with_primary(body, "this specification")
+                .with_secondary(decl, "differs from this one")
+                .with_note("LRM 4.10: the two are the same sequence of lexical elements, apart from numeric literals of the same value and simple names written as expanded names"),
+            );
+        }
     }
 
     /// The pending spec in `regions` that a body with `spec`'s header completes, when its
@@ -1454,6 +1534,23 @@ impl Db {
                     format!("function `{name}` has a parameter that is not of mode `in`"),
                 )
                 .with_primary(name_span, "function parameters must have mode `in`"),
+            ));
+        }
+        if let SubprogramKind::Function { pure } = kind
+            && params.iter().any(|p| p.class == ObjClass::Variable)
+            && (pure || self.file_rev() < LangRev::Vhdl2019)
+        {
+            // 4.2.2.1: constant, signal or file; 2019 impure functions take variables (#808).
+            return Err(self.error(
+                yavs_diag::Diagnostic::error(
+                    crate::diag::CLASS_MISUSE,
+                    format!("function `{name}` has a parameter of class `variable`"),
+                )
+                .with_primary(
+                    name_span,
+                    "function parameters are constants, signals or files",
+                )
+                .with_note("LRM 4.2.2.1; VHDL-2019 allows variable parameters of impure functions"),
             ));
         }
         if let Designator::Operator { key, .. } = name {
@@ -1920,6 +2017,17 @@ impl Db {
         o: &ast::InterfaceObject,
         kind: SubprogramKind,
     ) -> Result<Vec<Param>, crate::Reported> {
+        // 4.2.2.3: a formal signal parameter is not declared `bus` (#808).
+        if o.bus {
+            return Err(self.error(
+                yavs_diag::Diagnostic::error(
+                    crate::diag::CLASS_MISUSE,
+                    "a subprogram parameter cannot be declared `bus`",
+                )
+                .with_primary(o.span, "this parameter")
+                .with_note("LRM 4.2.2.3: the reserved word `bus` may not appear in a formal signal parameter declaration"),
+            ));
+        }
         // `signal p : view v [of t]` (2019 4.2.2.3): the view gives the element modes.
         let mut view_subtype = None;
         let mode = match &o.mode {

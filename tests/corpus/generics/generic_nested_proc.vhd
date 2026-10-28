@@ -7,7 +7,7 @@ package generic_nested_pkg is
     a : integer;
   end record;
   procedure monitor generic (type t);
-  procedure monitor is
+  procedure monitor generic (type t) is
     procedure sub is
     begin
       report "sub called";

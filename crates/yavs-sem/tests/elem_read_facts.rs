@@ -119,9 +119,9 @@ fn a_signal_passed_on_is_followed() {
 }
 
 #[test]
-fn a_body_with_other_parameter_names_is_the_spec() {
+fn a_body_completing_a_spec_reads_through_the_spec() {
     let decls = "procedure p (signal x : in std_logic_vector; signal y : in std_logic_vector);
-  procedure p (signal l : in std_logic_vector; signal r : in std_logic_vector) is variable t : std_logic; begin t := r(2); end;";
+  procedure p (signal x : in std_logic_vector; signal y : in std_logic_vector) is variable t : std_logic; begin t := y(2); end;";
     assert_eq!(
         facts("spec_body", decls, "p(a, b); p(c, c);"),
         (false, vec!["b".into(), "c".into()])

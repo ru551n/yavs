@@ -192,6 +192,20 @@ pub fn parse_file(file: FileId, source: &SourceFile, opts: &Options) -> Parsed {
     }
 }
 
+/// The lexical elements of `text` (LRM 15.3) as kind and text, comments and separators
+/// dropped and nothing reported: what the conformance rules compare (LRM 4.10).
+pub fn lexical_elements(text: &str, std: Std) -> Vec<(token::Tok, &str)> {
+    let src = source::Src {
+        bytes: text.as_bytes(),
+        latin1: false,
+    };
+    lexer::lex(FileId(0), src, std, false, &mut Vec::new())
+        .into_iter()
+        .filter(|t| t.kind != token::Tok::Eof)
+        .map(|t| (t.kind, &text[t.start as usize..t.end as usize]))
+        .collect()
+}
+
 /// Parse UTF-8 text that is not in a [`SourceMap`] (tests and tools).
 pub fn parse_str(file: FileId, text: &str, opts: &Options) -> Parsed {
     let mut sources = SourceMap::default();

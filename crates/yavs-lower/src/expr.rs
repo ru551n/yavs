@@ -2043,6 +2043,20 @@ impl<'a> Fx<'a, '_> {
 
     pub fn range(&mut self, rc: &RangeC, span: Span) -> R<Rng> {
         match rc {
+            // A range of a declared type or subtype: the bounds its declaration evaluated.
+            RangeC::Explicit { left, dir, .. } if self.cx.decl_ranges.contains_key(left) => {
+                let (space, off) = self.cx.decl_ranges[left];
+                let t = self.rt_of(self.db.base(self.db.exprs[*left].subtype));
+                let a = self.addr(space, off);
+                let l = self.load(a, Width::B8, t);
+                let b = self.offset(a, 8);
+                let r = self.load(b, Width::B8, t);
+                Ok(Rng {
+                    left: l,
+                    right: r,
+                    dir: Dr::Static(*dir),
+                })
+            }
             RangeC::Explicit { left, dir, right } => {
                 let left = self.scalar_expr(*left)?;
                 let right = self.scalar_expr(*right)?;

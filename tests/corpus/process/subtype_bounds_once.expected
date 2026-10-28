@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:subtype_bounds_once:_p0	process: pst'length=3 calls=2
+diag	note	0	0	:subtype_bounds_once:_p0	p: st'length=4 v'length=4
+diag	note	0	0	:subtype_bounds_once:_p0	q: x'length=4 y(1)'length=4
+diag	note	0	0	:subtype_bounds_once:_p0	r: v1(1)'length=4 w2'length=4
+diag	note	0	0	:subtype_bounds_once:_p0	r calls=2

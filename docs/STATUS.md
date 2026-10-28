@@ -10165,3 +10165,7 @@ The actual of a part of an `out`/`inout`/`buffer` port (`o(0) => p1`) gets the c
 ## Index constraints of element subtypes and of elaborated signals (yavs-lower, yavs-elab, #637, 2026-10-28)
 
 The index ranges of record element and array element constraints are checked against the index subtype where a composite descriptor is filled (`fill_desc`, `E3009` at run time), and those elaboration evaluates (a signal's `string(g to 3)`) in `Model::shape_c` (`E2107`). Left: an architecture constant nothing reads is not elaborated, so its constraint is not checked. Tests: corpus `composite/index_constraint_elem` (`ref=hand`: sim1 does not check it), elab `index_constraint_outside_the_index_subtype`, discrepancy `index-constraint-element-bound`.
+
+## Bounds of local types and subtypes evaluated at the declaration (yavs-lower, #612, 2026-10-28)
+
+A type or subtype declared in a process or subprogram evaluates its non-static ranges once, at the declaration, into frame slots its uses read (`Fx::declared_ranges`): reading a variable that changes later gave a different length at each use before. Left (#612 open): types and subtypes of architectures, blocks and packages still evaluate their bounds at each use, observable only through an impure function in a bound; the plan is in the issue. Tests: corpus `process/subtype_bounds_once`, discrepancy `subtype-range-bound-variable`.

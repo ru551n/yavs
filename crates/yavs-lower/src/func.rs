@@ -8,6 +8,7 @@ use yavs_ir::{
 use yavs_sem::decl::{Alias, Body, DeclKind, ObjClass, ObjRole, Param, SubprogramKind};
 use yavs_sem::hir::{self, Mode as HMode, Sensitivity, StmtKind as HStmt, UnitHir};
 use yavs_sem::scope::ScopeKind;
+use yavs_sem::types::{Constraint, RangeC};
 use yavs_sem::{Db, DeclId, ScopeId, StmtId, SubtypeId, UnitId};
 
 use crate::expr::Place;
@@ -549,6 +550,10 @@ impl<'a, 'b> Fx<'a, 'b> {
                 }
                 continue;
             }
+            if let DeclKind::Type(_) | DeclKind::Subtype(_) = decl.kind {
+                ok &= self.declared_ranges(d).is_ok();
+                continue;
+            }
             let DeclKind::Object(o) = &decl.kind else {
                 continue;
             };
@@ -572,6 +577,66 @@ impl<'a, 'b> Fx<'a, 'b> {
             ok &= r.is_ok();
         }
         if ok { Ok(()) } else { Err(Failed) }
+    }
+
+    /// The non-static ranges of type or subtype declaration `d` are evaluated here, once, into
+    /// frame slots that every later use reads (`Fx::range`): a bound that reads a variable or
+    /// calls an impure function keeps its value at the declaration (LRM 14.4.2.1, #612).
+    fn declared_ranges(&mut self, d: DeclId) -> R<()> {
+        let db = self.db;
+        let mut cs = Vec::new();
+        match &db.decls[d].kind {
+            DeclKind::Subtype(st) => cs.push(&db.subtypes[*st].constraint),
+            DeclKind::Type(t) => {
+                cs.push(&db.subtypes[db.types[*t].first_subtype].constraint);
+                match &db.types[*t].kind {
+                    yavs_sem::types::TypeKind::Array { elem, .. } => {
+                        cs.push(&db.subtypes[*elem].constraint)
+                    }
+                    yavs_sem::types::TypeKind::Record { elems } => {
+                        cs.extend(elems.iter().map(|e| &db.subtypes[e.subtype].constraint))
+                    }
+                    _ => {}
+                }
+            }
+            _ => return Ok(()),
+        }
+        // In declaration order, so side effects of the bounds happen in that order.
+        fn collect<'c>(c: &'c Constraint, out: &mut Vec<&'c RangeC>) {
+            match c {
+                Constraint::Range(rc) => out.push(rc),
+                Constraint::Array { dims, elem } => {
+                    out.extend(dims.iter().flatten());
+                    collect(elem, out);
+                }
+                Constraint::Record { elems } => elems.iter().for_each(|(_, c)| collect(c, out)),
+                Constraint::None | Constraint::FromObject { .. } => {}
+            }
+        }
+        let mut ranges = Vec::new();
+        cs.into_iter().for_each(|c| collect(c, &mut ranges));
+        let span = db.decls[d].span;
+        for rc in ranges {
+            let RangeC::Explicit { left, right, .. } = rc else {
+                continue;
+            };
+            if self.cx.decl_ranges.contains_key(left)
+                || (db.value(*left).is_some() && db.value(*right).is_some())
+            {
+                continue;
+            }
+            self.stmt_start(StmtKind::Decl, span);
+            let r = self.range(rc, span)?;
+            let off = self.fb.slot(16, 8);
+            let a = self.addr(Space::Frame(self.depth), off);
+            self.store(a, r.left, Width::B8);
+            let b = self.offset(a, 8);
+            self.store(b, r.right, Width::B8);
+            self.cx
+                .decl_ranges
+                .insert(*left, (Space::Frame(self.depth), off));
+        }
+        Ok(())
     }
 
     /// An object alias (LRM 6.6.2): the target's storage seen under the alias's subtype.

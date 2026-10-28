@@ -407,6 +407,9 @@ pub(crate) struct Cx {
     /// declared in a method act on its object (LRM 5.6.2, #221).
     pub method_self: HashMap<ScopeId, (TypeId, u8, u32)>,
     pub objs: HashMap<DeclId, Obj>,
+    /// The frame slot of each non-static range of a type or subtype declared in a sequential
+    /// region, by its left bound: evaluated once at the declaration (LRM 14.4.2.1, #612).
+    pub decl_ranges: HashMap<yavs_sem::ExprId, (Space, u32)>,
     /// Array variables (`Obj::Array`) whose descriptor is a constant: reads use it instead of
     /// loading the descriptor pointer from the slot (the optimiser then folds bounds).
     pub const_dope: HashMap<DeclId, yavs_ir::ConstId>,
@@ -704,6 +707,7 @@ impl<'a> Lowerer<'a> {
                 inst_size: 0,
                 names: Vec::new(),
                 sig_dopes: HashMap::new(),
+                decl_ranges: HashMap::new(),
                 pkg_sigs: Vec::new(),
                 arch_scopes: Vec::new(),
                 shared_size: 0,

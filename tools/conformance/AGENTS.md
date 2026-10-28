@@ -20,7 +20,7 @@ report generator or regenerate the report (#780).
 | Path | What |
 |---|---|
 | `run.py` | Steps (`step_*` methods of `Run`), static facts (discrepancy catalogue, recorded sim1 corpus lists, CI platforms from `ci.yml`, known limits), `render()`, `--check` |
-| `../../docs/conformance-local.json` | Records of runs that CI cannot repeat: `--local` rewrites `refdiff` and `vhpi`; `vunit-own` and `cocotb` are hand-kept copies of `docs/STATUS.md` numbers (date, commit, command, note) |
+| `../../docs/conformance-local.json` | Records of runs that CI cannot repeat: `--local` rewrites `refdiff` and `vhpi`; `vunit-own` and `cocotb` are hand-kept copies of `docs/STATUS.md` numbers (date, commit, command, note); `openlogic` is hand-kept too (Open Logic's own `sim/run.py` run with yavs, 6867 tests: re-run it and edit the record by hand) |
 | `../../.github/workflows/conformance.yml` | CI: build, `run.py --check`, upload the report artifact |
 
 ## 3. Design decisions that bind this module

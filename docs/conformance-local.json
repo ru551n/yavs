@@ -20,6 +20,18 @@
    "title": "cocotb regression over VHPI",
    "version": "0.8.0"
   },
+  "openlogic": {
+   "command": "Open Logic's sim/run.py -p 8 (shared variables of non-protected types accepted with --relaxed at analysis and elaboration, as its scripts pass to the other simulators)",
+   "commit": "43000dd6",
+   "data": {
+    "fail": 0,
+    "pass": 6867,
+    "skip": 0
+   },
+   "date": "2026-10-28",
+   "note": "Open Logic 4.7.0 with its en_cl_fix submodule; every test of the project's own run.py (base, axi, intf, fix, ft; 6867 in all)",
+   "title": "Open Logic's own testbenches run with yavs"
+  },
   "refdiff": {
    "command": "tools/difftest/difftest.py --candidate sim1|sim2",
    "commit": "cd5268f8b2",

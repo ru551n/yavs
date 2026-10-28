@@ -292,7 +292,11 @@ def suite_rows(R):
         vt = d.get("tests", {})
         add("cocotb", "Python test framework: its own regression over VHPI" + (f", {vt['pass']} VHDL tests pass" if vt else ""),
             d["pass"], d["pass"] + d["fail"] + d.get("skip", 0), rec("cocotb"), "`tools/cocotb/run.py`", "jobs")
-    add("Open Logic", "FPGA standard library: its own testbenches", None, None, ("", ""), "")
+    if "openlogic" in loc:
+        d = loc["openlogic"]["data"]
+        add("Open Logic", "FPGA standard library: its own testbenches run with yavs", d["pass"], d["pass"] + d["fail"] + d.get("skip", 0), rec("openlogic"), "Open Logic's `sim/run.py`")
+    else:
+        add("Open Logic", "FPGA standard library: its own testbenches run with yavs", None, None, ("", ""), "")
     if "designs" in ci:
         add("Real designs", "neorv32 (three configurations) and GRLIB LEON3 run to completion", sum(all(t.values()) for t in ci["designs"].values()), len(ci["designs"]), here, "`tools/realbench/run.py`", "designs")
     if w:
@@ -405,14 +409,14 @@ and yavs's verdict.
                  "The last column is sim1 on the same files (recorded list `<name>.sim1.expected`). Failures are mostly constructs the corpus uses that yavs rejects "
                  "on purpose or does not support yet, each tracked as an issue.\n\n" + table(["corpus", "yavs passes", "equals gated list", "sim1 passes"], rows, right=(1, 3)))
     # --- suites
-    if "uvvm" in ci or "osvvm" in ci or "vunit-own" in loc:
+    if "uvvm" in ci or "osvvm" in ci or "vunit-own" in loc or "openlogic" in loc:
         rows = []
         if "uvvm" in ci:
             u = ci["uvvm"]
             rows.append(["UVVM maintenance testbenches (CI)", u["runs"], u.get("pass", 0), u.get("fail", 0), u.get("skip", 0), "one run per entity, architecture and generic set the project's own script lists"])
         for s, v in ci.get("osvvm", {}).items():
             rows.append([f"OSVVM `.pro` regression, VHDL-{s} (CI)", v["runs"], v.get("pass", 0), v.get("fail", 0) + v.get("nosummary", 0) + v.get("timeout", 0), v.get("skip", 0), "pass = exit 0 and the library's `DONE PASSED` line"])
-        for k in ("vunit-own", "cocotb"):
+        for k in ("vunit-own", "openlogic", "cocotb"):
             if k in loc:
                 v = loc[k]
                 d = v["data"]

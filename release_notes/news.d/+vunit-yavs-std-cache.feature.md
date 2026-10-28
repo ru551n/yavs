@@ -1,0 +1,1 @@
+The vunit-yavs package keeps the shared std/ieee units in `std_cache` under the simulator output directory (`--std-cache` on every `analyze`, `elab` and `run`), so a VUnit run no longer writes to the user's cache directory. A `--std-cache` in the `yavs.*` flags overrides it.

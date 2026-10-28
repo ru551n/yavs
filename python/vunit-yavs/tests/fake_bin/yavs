@@ -106,6 +106,9 @@ def library_dirs(opts):
             sys.exit(f"yavs: bad library mapping {mapping!r}")
     if len(opts.get("work", [])) != 1:
         sys.exit("yavs: exactly one --work=NAME:PATH required")
+    cache = opts.get("std-cache", ["off"])[-1]
+    if cache != "off" and not os.path.isabs(cache):
+        sys.exit(f"yavs: E0126: --std-cache must be an absolute path, got {cache!r}")
     if opts.get("std", ["2008"])[-1] not in ("2008", "2019"):
         sys.exit(2)
     return opts["work"][0].split(":", 1)

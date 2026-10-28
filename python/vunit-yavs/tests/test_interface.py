@@ -158,6 +158,10 @@ class TestYavsInterface(unittest.TestCase):
         os.chdir(self.cwd)
         self._tempdir.cleanup()
 
+    @property
+    def std_cache_flag(self):
+        return f"--std-cache={Path(self.output_path).resolve() / 'std_cache'}"
+
     @staticmethod
     def _project(*standards):
         """Create a project with one VHDL file per standard"""
@@ -188,6 +192,7 @@ class TestYavsInterface(unittest.TestCase):
                 "--work=lib:lib_path",
                 "--map=lib:lib_path",
                 f"--map=other:{Path('libs') / 'other path'}",
+                self.std_cache_flag,
                 "--color=always",
                 "file0.vhd",
             ],
@@ -207,6 +212,27 @@ class TestYavsInterface(unittest.TestCase):
         cmd = check_output.call_args[0][0]
         self.assertEqual(cmd[-3:], ["--relaxed", "-Werror", "file0.vhd"])
         self.assertIn("--std=2008", cmd)
+
+    @mock.patch("vunit.sim_if.check_output", autospec=True, return_value="")
+    def test_std_cache_is_in_the_output_path_and_not_created(self, check_output):
+        self.simif = YavsInterface(prefix="prefix", output_path="rel_out")
+        self.simif.compile_project(self._project("2008"))
+        flags = [arg for arg in check_output.call_args[0][0] if arg.startswith("--std-cache=")]
+        self.assertEqual(flags, [f"--std-cache={Path('rel_out').resolve() / 'std_cache'}"])
+        path = Path(flags[0].split("=", 1)[1])
+        self.assertTrue(path.is_absolute())
+        self.assertEqual(path.parent, Path(self.output_path) / "rel_out")
+        self.assertFalse(path.exists())
+
+    @mock.patch("vunit.sim_if.check_output", autospec=True, return_value="")
+    def test_std_cache_in_raw_flags_wins(self, check_output):
+        project = self._project("2008")
+        source_file = project.get_source_files_in_order()[0]
+        source_file.set_compile_option("yavs.global_flags", ["--std-cache=off"])
+        self.simif.compile_project(project)
+        cmd = check_output.call_args[0][0]
+        self.assertLess(cmd.index(self.std_cache_flag), cmd.index("--std-cache=off"))
+        self.assertEqual([arg for arg in cmd if arg.startswith("--std-cache=")][-1], "--std-cache=off")
 
     @mock.patch("vunit.sim_if.check_output", autospec=True)
     def test_compile_failure_is_reported(self, check_output):
@@ -265,6 +291,7 @@ class TestYavsInterface(unittest.TestCase):
                 "--work=lib:lib_path",
                 "--map=lib:lib_path",
                 f"--map=other:{Path('libs') / 'other path'}",
+                self.std_cache_flag,
                 "--color=always",
                 "--ieee-warnings=off",
                 "--threads=2",
@@ -282,6 +309,19 @@ class TestYavsInterface(unittest.TestCase):
         config = make_config(vhdl_configuration_name="cfg", vhdl_assert_stop_level="failure")
         _, cmd, _ = self._simulate(config)
         self.assertEqual(cmd[-2:], ["--exit-severity=failure", "cfg"])
+
+    def test_std_cache_on_run_and_elab_and_user_flag_wins(self):
+        config = make_config(sim_options={"yavs.elab_flags": ["--std-cache=off"]})
+        for elaborate_only in (False, True):
+            _, cmd, _ = self._simulate(config, elaborate_only=elaborate_only)
+            self.assertEqual(cmd[1], "elab" if elaborate_only else "run")
+            self.assertLess(cmd.index(self.std_cache_flag), cmd.index("--std-cache=off"))
+            self.assertEqual([arg for arg in cmd if arg.startswith("--std-cache=")][-1], "--std-cache=off")
+        self.assertFalse((Path(self.output_path) / "std_cache").exists())
+
+    def test_debug_keeps_the_std_cache(self):
+        _, cmd, _ = self._simulate(make_config(), mode_flags=["--dap=4711"], debug_port=4711)
+        self.assertIn(self.std_cache_flag, cmd)
 
     def test_elaborate_only(self):
         config = make_config(sim_options={"yavs.elab_flags": ["--relaxed"], "yavs.sim_flags": ["--stop-time=1ms"]})

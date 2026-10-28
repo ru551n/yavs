@@ -85,6 +85,11 @@ class TestFakeYavs(unittest.TestCase):
         self.assertIn("tb_yavs.tb", runs[0])
         self.assertIn("--exit-severity=error", runs[0])
         self.assertFalse(any(arg.startswith(("--threads", "--dap")) for arg in runs[0]))
+        for cmd in calls:
+            if cmd[0] in ("analyze", "elab", "run"):
+                flags = [arg for arg in cmd if arg.startswith("--std-cache=")]
+                self.assertEqual(len(flags), 1, cmd)
+                self.assertRegex(flags[0], r"out with space[/\\]yavs[/\\]std_cache$")
 
     def test_fail(self):
         exit_code, _, results, _ = self._run(fail="test_fail")

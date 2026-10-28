@@ -26,8 +26,6 @@ from test_fake_e2e import COMMA, FAIL, PASS, report
 
 HERE = Path(__file__).parent
 YAVS_DIR = os.environ.get("VUNIT_YAVS_PATH") or (Path(shutil.which("yavs")).parent if shutil.which("yavs") else None)
-# A cache of this tool's own, never the user's std/ieee store (tools/AGENTS.md)
-STD_CACHE = Path(os.environ.get("YAVS_VUNIT_STD_CACHE", Path.home() / ".cache" / "yavs-vunit" / "std-cache"))
 TIMEOUT = 280
 
 
@@ -78,7 +76,6 @@ class TestRealYavs(unittest.TestCase):
             os.environ,
             VUNIT_SIMULATOR="yavs",
             VUNIT_YAVS_PATH=str(YAVS_DIR),
-            YAVS_STD_CACHE=str(STD_CACHE),
         )
 
     def test_run(self):

@@ -8,3 +8,5 @@
 - `yavs.max_threads` and `--yavs-max-threads` cap the threads of each simulation.
 - `--yavs-jobserver` lends the idle CPU slots of `-p N` to the running simulations through a
   jobserver per test.
+- The shared std/ieee units are kept in `std_cache` under the simulator output directory
+  (`--std-cache` on every `analyze`, `elab` and `run`); a `--std-cache` in the `yavs.*` flags wins.

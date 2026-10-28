@@ -56,8 +56,8 @@ uv venv ~/.cache/yavs-vunit-venv && VIRTUAL_ENV=~/.cache/yavs-vunit-venv uv pip 
 VUNIT_YAVS_PATH=<dir of a yavs binary> ~/.cache/yavs-vunit-venv/bin/python -m pytest python/vunit-yavs/tests/test_real_yavs.py
 ```
 
-`test_real_yavs.py` sets `YAVS_STD_CACHE` to `~/.cache/yavs-vunit/std-cache`
-(`YAVS_VUNIT_STD_CACHE` overrides it).
+The interface passes `--std-cache=<output path>/std_cache` to every `analyze`, `elab` and `run`, so a
+run never writes to the user's cache directory; raw flags come later and win.
 
 ## 6. Open issues
 

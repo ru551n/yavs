@@ -281,6 +281,10 @@ class YavsInterface(SimulatorInterface):
         for library in self._project.get_libraries():
             cmd += [f"--map={library.name}:{library.directory}"]
 
+        # Keep the shared std/ieee units in the output directory, not the user's cache. A --std-cache in the raw
+        # flags, which come later, wins (last one wins in yavs).
+        cmd += [f"--std-cache={Path(self._output_path).resolve() / 'std_cache'}"]
+
         if self.use_color:
             cmd += ["--color=always"]
 

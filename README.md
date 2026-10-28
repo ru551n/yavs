@@ -26,10 +26,8 @@ yavs is early: expect gaps and please [report](https://github.com/ru551n/yavs/is
 
 ## Correctness and performance
 
-yavs is checked against recorded output of established open-source VHDL simulators and against the test suites of widely used VHDL libraries and real designs.
-
-**Results per suite, known differences and limits: [`docs/conformance.md`](docs/conformance.md)** (machine-readable: [`docs/conformance.json`](docs/conformance.json); regenerate with `tools/conformance/run.py`).
-**Speed against an established open-source VHDL simulator, with method and every testbench: [`docs/performance.md`](docs/performance.md).**
+- Conformance: [`docs/conformance.md`](docs/conformance.md)
+- Performance: [`docs/performance.md`](docs/performance.md)
 
 ## License
 

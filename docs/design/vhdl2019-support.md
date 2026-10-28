@@ -28,6 +28,10 @@ with the result of the four reference simulators (`sim1` to `sim4`, labels as in
 
 46 LCS rows: 41 supported, 0 partial, 0 unsupported, 0 rejected by decision, 4 not tested, 1 not applicable.
 
+Correction 2026-10-28: the matrix below has 43 rows marked supported, one partly supported (099), one not tested (043) and
+one not applicable (030). The line above was never updated. With the corrections at the end of this page, rows 034 and 050
+are partial too: 41 supported, 3 partial, 1 not tested, 1 not applicable.
+
 For comparison, over the rows that have a probe, the references run the probe (`ok` or `ok (output differs)`) for the following number of rows: sim1 37, sim2 11, sim3 22, sim4 39 (rows with several probes count only when all probes agree).
 
 ## Matrix
@@ -113,3 +117,25 @@ occur in those sources.
 - Directory functions: sim3 reports `is not supported` warnings and returns false.
 - Mode views, conditional compilation, `return .. when`, `open` slices and the std.env additions are
   accepted by sim1 and sim4 and by yavs; sim2 rejects most of them and sim3 rejects the generic and typing additions (see the matrix).
+
+## Corrections and re-probes, 2026-10-28
+
+The matrix above is the 2026-10-19 audit and is kept as written. These rows were probed again on 2026-10-28 at commit
+`ac2c94ff` (`--std=2019`, interpreter, one small design per statement); everything else was not re-probed.
+
+- **006c Directory API**: besides existence and working-directory queries, `dir_open`, `dir_itemisdir`, `dir_itemisfile`,
+  `dir_createdir` and `dir_deletedir` run and return `status_ok`. `dir_deletefile` and the other functions were not probed.
+- **034 Protected types with a generic clause**: a generic map in the protected type header (`type t is protected generic map (..)`)
+  is a syntax error (`E0002`, "expected `;`"), not a not-implemented diagnostic. The row stays partial: `type t is new p.box generic
+  map (..)` works (test `tests/corpus/protected/generic_instance_2019.vhd`).
+- **050 Assert API**: `SetVhdlAssertEnable` and `GetVhdlAssertEnable` run. `SetVhdlAssertFormat` with a non-empty format stops the run
+  (`E3009`, "not implemented yet (#99)"), and `PslAssertFailed` and `PslIsCovered` stop it with `E3009` "native subprogram ... is not implemented in
+  yavs yet" (`lib/NATIVE.md` lists the unimplemented PSL state natives). The matrix row covers the counting functions only.
+- **055a, 071a, 082, 059a, 061**: the probes (`end;` of a component, a trailing semicolon in port, generic and parameter lists, an empty
+  record, `<` on a `real_vector` (an error at `--std=2008`), `` `if `` on `TOOL_NAME`) analyse and run as the matrix says.
+- **026c**: `integer'high` is 9223372036854775807 at `--std=2019` and 2147483647 at `--std=2008` and `--std=93`.
+- **099 Extended ranges**: a range record constant whose value depends on a generic is `E1410` ("needs a constant with a static
+  value"), as the row says.
+- **Rows that now have regression testbenches** (the matrix says "probes were not added"): 011, 012, 014, 016, 034, 036a, 045, 047, 049, 072b, 075,
+  094a and I03 run in `tests/corpus` (`*_2019*`, `hierarchy/mode_view_*`, `protected/`, `generics/`, `process/`). All 544 corpus testbenches pass
+  at 1 and 4 threads with the interpreter on this commit.

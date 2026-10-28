@@ -2,15 +2,16 @@
 
 Status: design and implementation, #629 (user decision 2026-10-23: add a VHDL-93 mode). Written
 before the code; the "Implemented" column of section 3 is kept current in the same commits.
+Checked against the code on 2026-10-28 (see the dated notes in sections 3.3, 5 and 6).
 
-Why: GRLIB (the Gaisler IP library, LEON3) is VHDL-93 code. Two of its packages (`stdio`,
+Why: a large third-party processor IP library (the `grlib-1993` corpus and the `grlib_leon3mp` real design) is VHDL-93 code. Two of its packages (`stdio`,
 `testlib`) overload `HREAD`, `HWRITE`, `compare` and `check` on both `std_logic_vector` and
 `std_ulogic_vector`. In 1993 these are two distinct types; in 2008 `std_logic_vector` is a subtype
 of `std_ulogic_vector` and the overloads are homographs (LRM 12.3), which every reference simulator
 rejects at 2008. The processor core, the bus controller and the simulation models depend on those
-packages, so GRLIB's `leon3mp` test cannot run at 2008 and is `excluded` in
-`tools/realbench/tests.toml`. The same code runs unmodified on sim1 (`--std=93 --relaxed`, GRLIB's
-own flags) and sim2 (`--std=93c --ieee=synopsys -fexplicit`).
+packages, so the `grlib_leon3mp` test cannot run at 2008 and was `excluded` in
+`tools/realbench/tests.toml` (it now runs at `--std=93`). The same code runs unmodified on sim1 and
+sim2 in their relaxed 1993 modes (the library's own build flags).
 
 ## 1. Scope
 
@@ -19,8 +20,8 @@ own flags) and sim2 (`--std=93c --ieee=synopsys -fexplicit`).
 | `--std=93` (value `1993` too) | In: `yavs analyze`, `parse`, `elab`, `run`, library manifests (`std = "1993"`) |
 | `--std=87` | **Out.** No corpus needs it. 1987 differs from 1993 by a few extra keywords (`xnor`, `sll`..., `shared`, `pure`, `impure`, `group`, `postponed`, `inertial`, `reject`, `literal`, `unaffected`), no `'ascending`/`'path_name` family and the old file declaration form, which 1993 still accepts. A later `--std=87` would be the 1993 mode with a smaller keyword table; nothing here blocks it |
 | `--std=02` (VHDL-2002) | **Out.** 2002 only added protected types and a few relaxations; code that needs them is 2008 code |
-| `93c` (a second reference's relaxed 1993 mode) | Not a yavs value. yavs is permissive where the LRM is unclear (rule 2), which covers what that mode relaxes |
-| PSL in a 93 file | Not read (the words are not reserved in 1993) |
+| A relaxed 1993 mode as another simulator spells it | Not a yavs value. yavs is permissive where the LRM is unclear (rule 2), which covers what that mode relaxes |
+| PSL in a 93 file | Not read (the words are not reserved in 1993). Correction 2026-10-28: with `--psl` a `-- psl` comment in a 93 file is still read as a pragma and fails with `E0002`; without `--psl` it is a comment |
 
 ## 2. Principles
 
@@ -34,8 +35,8 @@ own flags) and sim2 (`--std=93c --ieee=synopsys -fexplicit`).
    Nothing in the corpora needs these rejections, so they are the last tier.
 4. **Permissive homograph rule, as the references do with their relaxed flags.** An explicit
    declaration hides an implicit one when both are potentially visible (the 2008 rule, 12.4); the
-   references need `--relaxed` / `-fexplicit` for the same effect in 1993, and GRLIB uses both.
-   yavs applies the rule in every mode (35 GRLIB files use `std_logic_unsigned` with it).
+   references need a relaxed-mode switch for the same effect in 1993, and the library above uses it.
+   yavs applies the rule in every mode (35 of its files use `std_logic_unsigned` with it).
 
 ## 3. The differences yavs honours
 
@@ -84,7 +85,7 @@ operators gives the same results with the derived and the 1995 text.
 | S11 | Package generics, package instantiation, subprogram generics | not 1993 | error | error | `E0011` for packages; generic subprograms and interface packages are 2008 syntax and fall out as ordinary syntax errors |
 | S12 | Protected types, `context`, `force`/`release`, `default` in generic maps | not 1993 | error | error | the words are identifiers, so a syntax error |
 | S13 | Unconstrained/partially constrained element rules, relaxed static rules, `case` choice rules, relaxed port map conversions, `others` in more places | 2008 relaxed them | | | **accepted** (rule 2: the 1993 text does not make valid 1993 code mean anything else) |
-| S14 | Homograph conflict of an implicit and an explicit declaration through two `use` clauses | the 1993 rule does not hide the implicit one; the references need `--relaxed` (sim1) or `-fexplicit` (sim2) | error without the flag | error without the flag | yavs always hides the implicit one (same as 2008) |
+| S14 | Homograph conflict of an implicit and an explicit declaration through two `use` clauses | the 1993 rule does not hide the implicit one; the references need a relaxed-mode switch | error without the flag | error without the flag | yavs always hides the implicit one (same as 2008) |
 | S15 | `TIME`, `INTEGER` ranges | 32-bit `INTEGER` is the minimum | | | unchanged from 2008 |
 | S16 | Attributes `'subtype`, `'element` | 2008 | | | accepted in 93 (permissive; `since` rows stay 2008 for documentation) |
 | S17 | A pure function with an access type result (`E1830`) | no such rule in 1993 (2008 4.2.1) | accepts | accepts | not checked in a 93 file |
@@ -94,7 +95,7 @@ operators gives the same results with the derived and the 1995 text.
 | Situation | Behaviour |
 |---|---|
 | All files of a design closure are 93 | design revision D = 1993: `std` and `ieee` from `lib/{std,ieee}/1993`, `STRING`/`INTEGER` as in the 1993 packages |
-| 93 and 2008 (or 2019) files in one closure | D = the newest standard recorded in the closure (as for 2008 and 2019). The 93 file is parsed with 1993 keywords and checked against its own revision F = 1993, but the types come from the 2008/2019 packages: `std_logic_vector` is then a subtype of `std_ulogic_vector`, so 93 code that overloads on both fails with the ordinary homograph error. A 2008-only library unit named from a 93 file (for example `numeric_std_unsigned`) is `E1007` |
+| 93 and 2008 (or 2019) files in one closure | D = the newest standard recorded in the closure (as for 2008 and 2019). The 93 file is parsed with 1993 keywords and checked against its own revision F = 1993, but the types come from the 2008/2019 packages: `std_logic_vector` is then a subtype of `std_ulogic_vector`, so 93 code that overloads on both fails with the ordinary homograph error (observed 2026-10-28: `E1101` when the closure is analysed at 2008). A 2008-only library unit named from a 93 file (for example `numeric_std_unsigned`) was written here as `E1007`; correction 2026-10-28: `yavs analyze --std=93` reports `E1002` (unit not found in `ieee`), also when the library already holds 2008 files, and no test or run reached `E1007` for a 93 file |
 | `--std=93` given to `run`/`elab` | forces D = 1993 as `--std=2008` forces 2008 |
 | The test runner | passes each file's standard; it refuses VHDL-93 projects itself, so nothing changes on that side (cli-contract section 2) |
 
@@ -121,13 +122,21 @@ test runner passes each file's own standard and projects mix them freely.
 
 ## 5. Not done
 
-- `E1007` for 2008 *items* of a package a 93 file names in a 2008 design (units are checked,
-  items such as `to_string` of `std_logic_1164` are not).
+- `E1007` for 2008 *items* of a package a 93 file names in a 2008 design (items such as `to_string` of
+  `std_logic_1164` are not checked; units named from a 93 file are not found at analysis, `E1002`, see 3.3).
 - A native fast path for the 1995 `numeric_std` `std_logic_vector` forms beyond the shared keys.
-- Enforcement of S13 (2008 relaxations).
-- `--std=87`, `--std=02`.
+- Enforcement of S13 (2008 relaxations): open as #814. In 93 mode the relaxations are accepted today, so yavs
+  does not check that a design is valid 1993 (`docs/language-support.md` and `docs/language-choices.rst` say so).
+- `--std=87`, `--std=02`: out of scope by decision (section 1); the CLI rejects them with exit status 2.
 
 ## 6. Results
 
 See `docs/STATUS.md` "VHDL-1993 mode": `grlib-1993` 454 of 454, `vests-1993` 1936 of 1939 (the three failures are bugs that also exist at
 2008: #643, #657, #658), `grlib_leon3mp` runs unmodified.
+
+Correction 2026-10-28: the counts above are from 2026-10-23 and are superseded by `docs/conformance.md` (generated). It lists
+`grlib-1993` 454 of 454 and `vests-1993` 1939 of 1939 as analysis corpora, and the 1993 language suite simulated at `--std=93`: 3621 of
+3694 (44 not counted), with the failures grouped by issue (#807 to #820). Among them are invalid 1993 programs that yavs accepts
+(the `analyzer_failure` group: 61 of 1490 are not rejected with a proper diagnostic, which includes runs that stop with `E2001`, `E9999` or a crash) and the missing S13 enforcement (#814).
+`std93/` in `tests/corpus` has 6 testbenches that pass at 1 and 4 threads (observed 2026-10-28), and the `v93-*` cases of
+`tests/discrepancies` pass.

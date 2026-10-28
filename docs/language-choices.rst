@@ -6,7 +6,9 @@ standard is clear, yavs follows it and reports a violation early. Where it is un
 yavs is permissive and takes the reading that lets the most designs elaborate; the choices below
 are the ones a design can run into. Each entry gives the construct, what yavs does, the standard
 section (VHDL-2008 unless marked 2019) and, where one exists, a form that behaves the same in
-every simulator. The VHDL-2019 feature status is in ``docs/design/vhdl2019-support.md``.
+every simulator. Which features of each language revision work, and how well that is checked, is
+on the language support page of the repository
+(`docs/language-support.md <https://github.com/ru551n/yavs/blob/main/docs/language-support.md>`_).
 
 Elaboration and delta timing
 ----------------------------
@@ -362,6 +364,34 @@ names an instance of another component, or binds an instance that a configuratio
 specification already binds to a different entity aspect, is an error at analysis (7.3); an
 incremental binding may repeat the entity aspect of the primary binding (7.3.2.1). Some simulators
 check these only at elaboration.
+
+VHDL-1993 mode
+--------------
+
+``--std=93`` runs 1993 code with the 1993 packages. These points are choices, not requirements of the
+1993 standard:
+
+* Standards may be mixed. A design of files of several standards is elaborated with the packages of
+  the newest one, where other simulators refuse to mix. A 1993 file in such a design is checked as a
+  1993 file but sees the newer packages, so 1993 code that overloads a subprogram on both
+  ``std_logic_vector`` and ``std_ulogic_vector`` fails there with a duplicate declaration (``E1101``).
+  *Portable:* keep such code in a design of 1993 files alone.
+* An explicit declaration hides an implicit one when both are visible through use clauses, as in 2008.
+  Other simulators need a switch for this in 1993 mode.
+* Constructs that 2008 relaxed (restrictions on aliases, element types and ``buffer`` ports, among
+  others) are accepted in 93 mode. This is the current behaviour: the 1993 restrictions are not
+  enforced, so a 1993 design is not checked for being valid 1993.
+* 2008 syntax that is cheap to recognise is rejected: ``process (all)``, conditional assignments in
+  a process, ``elsif`` and ``case`` generate and package generics are errors (``E0011``).
+
+``--relaxed``
+-------------
+
+``--relaxed`` turns some errors into warnings of their own: a shared variable of a type that is not
+protected (``W1904``), a pure function that reads or calls something impure (``W1830``) and an
+``others`` aggregate assigned to an object with an unconstrained subtype, which then takes the
+object's bounds at run time (``W1325``). ``run`` and ``elab`` analyse the files again, so give the
+option to them as well as to ``analyze``.
 
 PSL
 ---

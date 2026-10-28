@@ -10125,6 +10125,9 @@ the call is still about 80 ops; the rest is listed there. First 1 us of `grlib_l
   `yavs-interp`, `yavs-llvm` and `yavs-clift`; difftest 548/548 at 1 and 4 threads for `yavs-interp`, `yavs-auto` (also with
   `--tier-heat=1,0,0`), `yavs-llvm`, `yavs-clift`, `yavs-clift-auto` (also heat) with a `table-check` build, and `yavs-auto`/`yavs-clift-auto`
   heat with the bench builds.
+- Measured, not kept: kept scalar drives across a vector drive of another kernel driver (`sc5_fifo_repack` -0.7 percent
+  instructions with LLVM, +0.6 with Cranelift; `hdlm_lfsr` -0.1 / +1.1); `tests/compiled_drive_order.rs` pins the order of kept and
+  vector drives of merged slots.
 - Left (decisions.md "Compiled clocked RTL processes, round 11"): the view's fields, `Env`, the thread's `Mem`, the record's copy in
   `run_direct`; process variables on the heap (#851).
 

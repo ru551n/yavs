@@ -12334,6 +12334,19 @@ end for those processes. Method as in round 10: bench builds (`llvm`, and `clift
   vector variables). Left on the entry: the view's fields (about 80), `Env` (13), the thread's `Mem` (16), `run_direct`'s copy of the
   record in and out (about 12: a lean activation only needs `at`, but the interpreter does not know the flag; passing it would change
   the `Tier` trait).
+- **Measured, not kept: kept scalar drives across a vector `Drive` of another kernel driver** (suggested by kernel rounds 27 and
+  28 for `sc5_fifo_repack`, whose copies of `p_col` hand one kept bit over before each byte drive). A vector `Drive` whose slot no
+  kept site uses skipped the hand-over unless a kept entry was of the same kernel driver, tested at run time (a mask of bit
+  `id % 64` of each kept entry's kernel driver; a machine-wide "all slots apart" flag was tried first and never held:
+  elaboration merges the adjacent per-lane ranges of `sort_data` and of `sort_valid` into one kernel driver each), and `Copy`
+  joined `batch_pure`. Correct (the order test below fails when the test is forced off), `cb_drive` -18 percent on
+  `sc5_fifo_repack` (Cranelift, `--tier-heat=1,0,0`), but instructions (main thread, heat, `--no-cache`): `sc5_fifo_repack` LLVM
+  -0.7 percent, Cranelift +0.6; `hdlm_lfsr` LLVM -0.1, Cranelift +1.1 (the mask costs about 10 instructions at every kept drive in
+  Cranelift code, which does not share the loads). An avoided hand-over is about 33 instructions: the layers around the kernel
+  call are not in the call count, they are per element in `direct_drive_bits` and the commit. Not landed; what would be left
+  to try is the test in a callback only at a vector drive with entries pending (no cost per kept drive). Kept: the order test
+  `crates/yavs/tests/compiled_drive_order.rs` (slots merged into one kernel driver and slots apart, every generator against
+  the interpreter).
 - **The reference simulator (rule 22):** its code generator marks a process that keeps no state of its own between activations, and
   the scheduler then passes it no state at all; every process is entered with one call and its state pointer. The idea taken: what an
   activation sets up is decided when the code is made, from what the code can reach. Ours keeps the per-activation view and the shared

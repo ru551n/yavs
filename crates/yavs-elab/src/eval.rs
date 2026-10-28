@@ -124,6 +124,14 @@ pub struct Model {
     /// While the initial value of a signal is evaluated: a signal of the instance reads as
     /// its initial value (an `in` port's is its actual's, see `walk::Elab::edges`).
     pub(crate) sig_init: bool,
+    /// The ranges of types and subtypes with a bound that is not globally static
+    /// (`Db::dynamic_range`), evaluated once at their declaration in an elaborated scope, by
+    /// left bound (#612); those of packages by left bound, read from the package data.
+    pub(crate) ranges: HashMap<(ScopeId, ExprId), Bounds>,
+    pub(crate) pkg_ranges: HashMap<ExprId, Bounds>,
+    /// The package type or subtype declaring each such range of a run-time package, with the
+    /// position of its left bound among the bounds the package evaluated (`pkg_range`).
+    pub(crate) pkg_range_owners: Option<HashMap<ExprId, (DeclId, i64, Direction)>>,
 }
 
 /// How a scalar crosses the kernel: its element and its class.
@@ -1368,6 +1376,18 @@ impl Model {
 
     /// Evaluate a range constraint.
     pub fn range(&mut self, db: &Db, r: &RangeC, scope: Option<ScopeId>, span: Span) -> R<Bounds> {
+        if let Some(left) = db.dynamic_range(r) {
+            let mut cur = scope;
+            while let Some(s) = cur {
+                if let Some(&b) = self.ranges.get(&(s, left)) {
+                    return Ok(b);
+                }
+                cur = self.hier.scope(s).parent;
+            }
+            if let Some(b) = self.pkg_range(db, left, span)? {
+                return Ok(b);
+            }
+        }
         match r {
             RangeC::Explicit { left, dir, right } => Ok(Bounds {
                 left: int(&self.eval(db, *left, scope)?, db.exprs[*left].span)?,
@@ -1394,6 +1414,63 @@ impl Model {
                 })
             }
         }
+    }
+
+    /// The bounds of range `left` of a type or subtype of a run-time package, as its package
+    /// evaluated them (the elaboration of the package, #612); `None` for another range.
+    fn pkg_range(&mut self, db: &Db, left: ExprId, span: Span) -> R<Option<Bounds>> {
+        if let Some(&b) = self.pkg_ranges.get(&left) {
+            return Ok(Some(b));
+        }
+        let owners = self.pkg_range_owners.get_or_insert_with(|| {
+            let mut m = HashMap::new();
+            for u in crate::sim::run_time_packages(db) {
+                for s in db.package_regions(u).unwrap_or_default() {
+                    for d in db.decls_with_instances(s) {
+                        let rs = db.declared_ranges(d).into_iter();
+                        for (k, r) in rs.filter(|r| db.dynamic_range(r).is_some()).enumerate() {
+                            if let RangeC::Explicit { left, dir, .. } = *r {
+                                m.insert(left, (d, 2 * k as i64, dir));
+                            }
+                        }
+                    }
+                }
+            }
+            m
+        });
+        let Some(&(d, k, dir)) = owners.get(&left) else {
+            return Ok(None);
+        };
+        let mut bound = |k: i64| {
+            let v = self.session.package_range(db, d, k).map_err(|f| match f {
+                crate::pkgcall::Fail::Runtime(m) => err(
+                    codes::EVAL_FAILED,
+                    span,
+                    format!("evaluation fails during elaboration: {m}"),
+                    "while reading the bounds of this package subtype",
+                ),
+                crate::pkgcall::Fail::Lower(m) => err(
+                    codes::NOT_EVALUATED,
+                    span,
+                    format!("the bounds cannot be read during elaboration yet: {m}"),
+                    "read during elaboration",
+                ),
+                crate::pkgcall::Fail::Unsupported(w) => err(
+                    codes::NOT_EVALUATED,
+                    span,
+                    format!("the bounds cannot be read during elaboration yet: {w}"),
+                    "read during elaboration",
+                ),
+            })?;
+            int(&v, span)
+        };
+        let b = Bounds {
+            left: bound(k)?,
+            dir,
+            right: bound(k + 1)?,
+        };
+        self.pkg_ranges.insert(left, b);
+        Ok(Some(b))
     }
 
     pub(crate) fn scalar_bounds(

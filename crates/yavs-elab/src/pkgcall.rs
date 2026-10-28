@@ -625,8 +625,8 @@ pub struct StartState {
 #[derive(Default)]
 pub(crate) struct Session {
     pub(crate) log: Vec<Call>,
-    /// What is lowered after the packages, in order: functions, and package constants read
-    /// from the package data (`true`).
+    /// What is lowered after the packages, in order: functions, and package constants and
+    /// package type bounds read from the package data (`true`).
     lowered: Vec<(DeclId, bool)>,
     /// The shared variables of regions whose creation thunks were lowered after those, in order.
     inits: Vec<DeclId>,
@@ -841,6 +841,11 @@ impl Session {
     /// the package was elaborated).
     pub(crate) fn package_const(&mut self, db: &Db, d: DeclId) -> Result<Val, Fail> {
         self.run(db, d, true, &[], None, None)
+    }
+
+    /// Bound `k` of the ranges package type or subtype `d` evaluated (`Lowerer::package_range`).
+    pub(crate) fn package_range(&mut self, db: &Db, d: DeclId, k: i64) -> Result<Val, Fail> {
+        self.run(db, d, true, &[Val::Int(k)], None, None)
     }
 
     /// Lower `d` (a function, or the reader of a package constant) into the live program, or
@@ -1119,11 +1124,26 @@ pub(crate) fn needs_of(l: &Lowerer, f: yavs_ir::FuncId) -> Needs {
     }
 }
 
-/// Lower function `d`, or the reader of package constant `d` (`constant`), with `l`: its
-/// signature and the objects of regions it reads.
+/// Lower function `d`, or the reader of package constant `d` or of the bounds of package type
+/// or subtype `d` (`constant`), with `l`: its signature and the objects of regions it reads.
 fn item(l: &mut Lowerer, db: &Db, d: DeclId, constant: bool) -> Result<(Sig, Needs), Fail> {
+    let ranges = matches!(
+        db.decls[d].kind,
+        yavs_sem::decl::DeclKind::Type(_) | yavs_sem::decl::DeclKind::Subtype(_)
+    );
     let sig = if !constant {
         sig(l, db, d).map_err(lower_fail)?
+    } else if ranges {
+        let int = db
+            .well_known
+            .integer
+            .ok_or_else(|| Fail::Runtime("internal error: no INTEGER".into()))?;
+        let int = l.ty(int).map_err(lower_fail)?;
+        Sig {
+            func: l.package_range(d).map_err(lower_fail)?,
+            params: vec![int],
+            ret: Some(int),
+        }
     } else {
         let yavs_sem::decl::DeclKind::Object(o) = &db.decls[d].kind else {
             return Err(Fail::Runtime("internal error: not a constant".into()));

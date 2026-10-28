@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	0	:type_bounds_once:b:_p0	block: 3 3
+diag	note	0	0	:type_bounds_once:gen(1):_p0	gen 1: 1 1
+diag	note	0	0	:type_bounds_once:gen(2):_p0	gen 2: 2 2
+diag	note	1000000	0	:type_bounds_once:_p0	calls=9 t=4 s=44444 sv=66 pks=44 u=3 pku=3

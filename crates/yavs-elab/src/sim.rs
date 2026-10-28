@@ -924,6 +924,7 @@ impl Elaborated {
             ext_unbound,
             var_shapes,
             shared_vars,
+            ranges,
             convs,
             elab_calls
         );
@@ -1653,6 +1654,31 @@ impl Elaborated {
                 if let Some(t) = ir.names.get(&(i, n.decl, n.instance)) {
                     UnitIr::write_string(n.off, t, &mut inst.data)
                         .map_err(|m| sim_err(format!("instance data: {m}")))?;
+                }
+            }
+        }
+        // The ranges of declared types and subtypes, as their declarations evaluated them.
+        for r in &u.ranges {
+            let mut cur = Some(i);
+            let mut found = None;
+            while let (Some(s), None) = (cur, found) {
+                found = self.ranges.get(&(s, r.left));
+                cur = self.hier.scope(s).parent;
+            }
+            match found {
+                Some(b) => {
+                    let at = r.off as usize;
+                    inst.data[at..at + 8].copy_from_slice(&b.left.to_le_bytes());
+                    inst.data[at + 8..at + 16].copy_from_slice(&b.right.to_le_bytes());
+                }
+                // Declared in a region that is not elaborated around this one (a sibling
+                // block, a generate not chosen): no process of this region reads it.
+                None if r.scope.is_none_or(|sc| !self.declared_around(i, sc)) => {}
+                None => {
+                    return Err(sim_err(format!(
+                        "internal error: a range of a type of region {} was not elaborated",
+                        self.hier.path_name(i, crate::Case::Original)
+                    )));
                 }
             }
         }

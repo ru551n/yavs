@@ -8,7 +8,7 @@ use yavs_ir::{
 use yavs_sem::decl::{Alias, Body, DeclKind, ObjClass, ObjRole, Param, SubprogramKind};
 use yavs_sem::hir::{self, Mode as HMode, Sensitivity, StmtKind as HStmt, UnitHir};
 use yavs_sem::scope::ScopeKind;
-use yavs_sem::types::{Constraint, RangeC};
+use yavs_sem::types::RangeC;
 use yavs_sem::{Db, DeclId, ScopeId, StmtId, SubtypeId, UnitId};
 
 use crate::expr::Place;
@@ -584,48 +584,18 @@ impl<'a, 'b> Fx<'a, 'b> {
     /// calls an impure function keeps its value at the declaration (LRM 14.4.2.1, #612).
     fn declared_ranges(&mut self, d: DeclId) -> R<()> {
         let db = self.db;
-        let mut cs = Vec::new();
-        match &db.decls[d].kind {
-            DeclKind::Subtype(st) => cs.push(&db.subtypes[*st].constraint),
-            DeclKind::Type(t) => {
-                cs.push(&db.subtypes[db.types[*t].first_subtype].constraint);
-                match &db.types[*t].kind {
-                    yavs_sem::types::TypeKind::Array { elem, .. } => {
-                        cs.push(&db.subtypes[*elem].constraint)
-                    }
-                    yavs_sem::types::TypeKind::Record { elems } => {
-                        cs.extend(elems.iter().map(|e| &db.subtypes[e.subtype].constraint))
-                    }
-                    _ => {}
-                }
-            }
-            _ => return Ok(()),
-        }
-        // In declaration order, so side effects of the bounds happen in that order.
-        fn collect<'c>(c: &'c Constraint, out: &mut Vec<&'c RangeC>) {
-            match c {
-                Constraint::Range(rc) => out.push(rc),
-                Constraint::Array { dims, elem } => {
-                    out.extend(dims.iter().flatten());
-                    collect(elem, out);
-                }
-                Constraint::Record { elems } => elems.iter().for_each(|(_, c)| collect(c, out)),
-                Constraint::None | Constraint::FromObject { .. } => {}
-            }
-        }
-        let mut ranges = Vec::new();
-        cs.into_iter().for_each(|c| collect(c, &mut ranges));
+        let ranges = db.declared_ranges(d);
         let span = db.decls[d].span;
         for rc in ranges {
             let RangeC::Explicit { left, right, .. } = rc else {
                 continue;
             };
-            if self.cx.decl_ranges.contains_key(left)
-                || (db.value(*left).is_some() && db.value(*right).is_some())
-            {
+            if db.value(*left).is_some() && db.value(*right).is_some() {
                 continue;
             }
             self.stmt_start(StmtKind::Decl, span);
+            // A slot of an earlier lowering of this function is stale.
+            self.cx.decl_ranges.remove(left);
             let r = self.range(rc, span)?;
             let off = self.fb.slot(16, 8);
             let a = self.addr(Space::Frame(self.depth), off);
@@ -1418,6 +1388,7 @@ pub(crate) fn architecture(
         names: Vec::new(),
         var_ports: Vec::new(),
         ext_vars: Vec::new(),
+        ranges: Vec::new(),
     };
     cx.inst_size = 0;
     cx.names.clear();
@@ -1730,6 +1701,21 @@ pub(crate) fn region_var_init(
 
 fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d: DeclId) -> R<()> {
     let decl = &db.decls[d];
+    if let DeclKind::Type(_) | DeclKind::Subtype(_) = decl.kind {
+        for left in db
+            .declared_ranges(d)
+            .into_iter()
+            .filter_map(|r| db.dynamic_range(r))
+        {
+            let off = cx.inst_alloc(16);
+            cx.decl_ranges.insert(left, (Space::Inst, off));
+            ir.ranges.push(crate::InstRange {
+                left,
+                off,
+                scope: elab_region(db, decl.scope),
+            });
+        }
+    }
     if let DeclKind::Alias(_) | DeclKind::Subprogram(_) | DeclKind::Type(_) = decl.kind {
         for (h, x) in decl_externals(db, d) {
             external_alias(db, pb, cx, ir, h, x)?;
@@ -2410,6 +2396,9 @@ impl Fx<'_, '_> {
     ) -> R<()> {
         let db = self.db;
         let decl = &db.decls[d];
+        if let DeclKind::Type(_) | DeclKind::Subtype(_) = decl.kind {
+            return self.pkg_ranges(d, p, size);
+        }
         let DeclKind::Object(o) = &decl.kind else {
             return Ok(());
         };
@@ -2595,6 +2584,36 @@ impl Fx<'_, '_> {
             }
             _ => Ok(()),
         }
+    }
+
+    /// The ranges of package type or subtype `d` with a bound that is not globally static,
+    /// evaluated once into package data, one after the other (`Lowerer::package_range` reads
+    /// them for the elaborator), for every use to read (LRM 14.4.2.1, #612).
+    fn pkg_ranges(&mut self, d: DeclId, p: u32, size: &mut u32) -> R<()> {
+        let db = self.db;
+        let span = db.decls[d].span;
+        let ranges: Vec<_> = db
+            .declared_ranges(d)
+            .into_iter()
+            .filter(|r| db.dynamic_range(r).is_some())
+            .collect();
+        let mut off = size.next_multiple_of(8);
+        *size = off + 16 * ranges.len() as u32;
+        for rc in ranges {
+            let RangeC::Explicit { left, .. } = rc else {
+                continue;
+            };
+            self.stmt_start(StmtKind::Decl, span);
+            self.cx.decl_ranges.remove(left);
+            let r = self.range(rc, span)?;
+            let a = self.addr(Space::Pkg(p), off);
+            self.store(a, r.left, Width::B8);
+            let b = self.offset(a, 8);
+            self.store(b, r.right, Width::B8);
+            self.cx.decl_ranges.insert(*left, (Space::Pkg(p), off));
+            off += 16;
+        }
+        Ok(())
     }
 
     /// A package signal `d` of subtype `st` (a declared signal, or the alias of an external

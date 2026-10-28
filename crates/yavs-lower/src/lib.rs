@@ -105,6 +105,19 @@ pub struct UnitIr {
     /// Aliases of external shared variables (#93): the elaborator stores the variable's
     /// object (the cell its own region holds) at `off`.
     pub ext_vars: Vec<InstValue>,
+    /// The ranges of types and subtypes with a bound that is not globally static: the
+    /// elaborator evaluates each once, at its declaration, and writes it here (#612).
+    pub ranges: Vec<InstRange>,
+}
+
+/// A range of a declared type or subtype (`Db::dynamic_range`): its left and right bounds as
+/// two i64 at `off`, as the elaborator evaluated them in the region `scope` (the entity,
+/// architecture, block or generate declaring it).
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct InstRange {
+    pub left: yavs_sem::ExprId,
+    pub off: u32,
+    pub scope: Option<ScopeId>,
 }
 
 /// A `'path_name` (`instance: false`) or `'instance_name` of named entity `decl`, as seen from
@@ -903,6 +916,47 @@ impl<'a> Lowerer<'a> {
         let (name, span) = (format!("{}'value", d.name), d.span);
         let f = func::thunk(self.db, &mut self.pb, &mut self.cx, &name, span, |fx| {
             fx.obj_cell(decl, span)
+        });
+        self.drain();
+        match f {
+            Ok(f) if self.cx.diags.is_empty() => Ok(f),
+            _ => Err(self.cx.take_failed()),
+        }
+    }
+
+    /// A function `(k : integer) return integer` returning bound `k` (left, right, left, ...)
+    /// of the ranges package type or subtype `decl` evaluated into package data
+    /// ([`Lowerer::package`]). For the elaborator, which reads them instead of evaluating
+    /// them again (#612).
+    pub fn package_range(&mut self, decl: DeclId) -> Result<FuncId, Vec<Diagnostic>> {
+        let d = &self.db.decls[decl];
+        let (name, span) = (format!("{}'ranges", d.name), d.span);
+        let first = (self.db.declared_ranges(decl).into_iter())
+            .find_map(|r| self.db.dynamic_range(r))
+            .and_then(|l| self.cx.decl_ranges.get(&l).copied());
+        let f = func::thunk(self.db, &mut self.pb, &mut self.cx, &name, span, |fx| {
+            let Some((space @ Space::Pkg(_), off)) = first else {
+                return Err(fx.cx.ice(span, "package ranges not lowered"));
+            };
+            let int = yavs_ir::RegTy::I64;
+            let k = (fx.fb).param(
+                "k",
+                Width::B8,
+                yavs_ir::ParamClass::Value,
+                yavs_ir::Mode::In,
+                None,
+            );
+            let ka = fx.addr(Space::Frame(0), k);
+            let pos = fx.load(ka, Width::B8, int);
+            let base = fx.addr(space, off);
+            let dst = fx.reg(yavs_ir::RegTy::Ptr);
+            fx.emit(yavs_ir::Inst::Index {
+                dst,
+                base,
+                pos,
+                stride: 8,
+            });
+            Ok(fx.load(dst, Width::B8, int))
         });
         self.drain();
         match f {

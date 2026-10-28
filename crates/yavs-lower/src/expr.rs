@@ -2043,8 +2043,14 @@ impl<'a> Fx<'a, '_> {
 
     pub fn range(&mut self, rc: &RangeC, span: Span) -> R<Rng> {
         match rc {
-            // A range of a declared type or subtype: the bounds its declaration evaluated.
-            RangeC::Explicit { left, dir, .. } if self.cx.decl_ranges.contains_key(left) => {
+            // A range of a declared type or subtype: the bounds its declaration evaluated. An
+            // elaboration-time call has no instance data of the architecture; it evaluates them.
+            // ponytail: there per use, once per call would need them as captured objects.
+            RangeC::Explicit { left, dir, .. }
+                if self.cx.decl_ranges.get(left).is_some_and(|&(sp, _)| {
+                    !(self.cx.capture_free && matches!(sp, Space::Inst))
+                }) =>
+            {
                 let (space, off) = self.cx.decl_ranges[left];
                 let t = self.rt_of(self.db.base(self.db.exprs[*left].subtype));
                 let a = self.addr(space, off);

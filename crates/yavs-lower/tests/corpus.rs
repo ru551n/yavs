@@ -203,6 +203,7 @@ const PASS: &[&str] = &[
     "generics/subprog_header_map_2019",
     "generics/unelaborated_generate_constant",
     "hierarchy/entity_statements",
+    "hierarchy/type_bounds_once",
     "hierarchy/label_path_name",
     "hierarchy/instance_name_generic",
     "hierarchy/component_binding",

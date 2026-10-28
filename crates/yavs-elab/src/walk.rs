@@ -658,6 +658,7 @@ pub(crate) fn elaborate(
         ext_unbound: e.m.ext_unbound,
         shared_vars: e.m.shared_vars,
         var_shapes: e.m.var_shapes,
+        ranges: e.m.ranges,
         warnings: e.warnings,
         ir: None,
         start: e.m.session.finish(),
@@ -1204,6 +1205,29 @@ impl Elab<'_> {
             }
             let db: &Db = self.db;
             let decl = &db.decls[d];
+            // The ranges of a type or subtype that may differ per evaluation are evaluated
+            // here, once and in declaration order; every use reads them (LRM 14.4.2.1, #612).
+            // A process's are its lowered code's.
+            if let DeclKind::Type(_) | DeclKind::Subtype(_) = decl.kind
+                && db.scopes[region].kind != yavs_sem::scope::ScopeKind::Process
+            {
+                for rc in db.declared_ranges(d) {
+                    if let Some(left) = db.dynamic_range(rc) {
+                        // A signal reads as its initial value, as in a constant (#453).
+                        self.m.sig_init = true;
+                        let b = self.m.range(db, rc, Some(s), decl.span);
+                        self.m.sig_init = false;
+                        let b = b.map_err(|x| {
+                            Box::new(x.with_note(format!(
+                                "while elaborating the declaration of `{}` (LRM 14.4.2.1)",
+                                decl.name
+                            )))
+                        })?;
+                        self.m.ranges.insert((s, left), b);
+                    }
+                }
+                continue;
+            }
             let DeclKind::Object(o) = &decl.kind else {
                 continue;
             };

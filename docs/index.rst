@@ -57,12 +57,7 @@ Install yavs (:doc:`install`), then analyze the files into a library and run a t
    install
    usage
    recipes
-   language-support
    language-choices
-   coverage
-   vhpi
-   parallel
-   performance
 
 .. toctree::
    :caption: Reference

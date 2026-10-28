@@ -3,8 +3,9 @@ Sphinx configuration of the yavs user documentation (Read the Docs, .readthedocs
 
 Build with: sphinx-build -W -b html docs docs/_build/html
 
-The other files in docs/ (plan, decisions, status, design notes, the VUnit CLI contract) are for
-developers and agents and are not part of the site. To add a page to the site, see docs/README.md.
+The other files in docs/ (plan, decisions, status, design notes, the command line contract, the
+test runner requirements) are for developers and agents and are not part of the site. To add a page
+to the site, see docs/README.md.
 """
 
 import os

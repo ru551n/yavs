@@ -1845,7 +1845,13 @@ impl Db {
         let op = op.trim_matches('"');
         let ok: &[usize] = match op {
             "+" | "-" => &[1, 2],
-            // 2008 9.2.2: logical operators are also unary reductions.
+            // 2008 9.2.2: logical operators are also unary reductions; 1993 7.2 has binary
+            // ones only (#808, as #814).
+            "and" | "or" | "nand" | "nor" | "xor" | "xnor"
+                if self.file_rev() == crate::LangRev::Vhdl1993 =>
+            {
+                &[2]
+            }
             "and" | "or" | "nand" | "nor" | "xor" | "xnor" => &[1, 2],
             "not" | "abs" | "??" => &[1],
             "=" | "/=" | "<" | "<=" | ">" | ">=" | "?=" | "?/=" | "?<" | "?<=" | "?>" | "?>="

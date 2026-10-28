@@ -1,0 +1,20 @@
+error[E0003]: end designator `f2` does not match `f1`
+ --> end_designator.vhd:2:64
+  |
+2 |   function f1 (a : real) return integer is begin return 1; end f2;
+  |            -- declared here                                    ^^ expected `f1`
+
+error[E0003]: end designator `proc` does not match `proc1`
+ --> end_designator.vhd:3:42
+  |
+3 |   procedure proc1 is begin end procedure proc;
+  |             ----- declared here          ^^^^ expected `proc1`
+
+error[E0003]: end designator `"or"` does not match `"and"`
+ --> end_designator.vhd:4:67
+  |
+4 |   function "and" (a, b : real) return real is begin return a; end "or";
+  |            ----- declared here                                    ^^^^ expected `"and"`
+
+error: aborting due to 3 previous errors
+

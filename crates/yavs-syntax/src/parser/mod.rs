@@ -656,6 +656,33 @@ impl Parser<'_> {
     }
 }
 
+impl Parser<'_> {
+    /// The designator after a subprogram body's `end` repeats the subprogram's (LRM 4.3, #808).
+    fn check_end_designator(&mut self, end: &Designator, name: &Designator) {
+        let key = |d: &Designator| match d {
+            Designator::Ident(i) => (0, i.key.as_str().to_string()),
+            Designator::Operator(s, _) => (1, s.as_str().to_ascii_lowercase()),
+            Designator::Char(c) => (2, c.value.to_string()),
+        };
+        let span_text = |d: &Designator| match d {
+            Designator::Ident(i) => (i.span, i.text.as_str().to_string()),
+            Designator::Operator(s, sp) => (*sp, format!("\"{}\"", s.as_str())),
+            Designator::Char(c) => (c.span, format!("'{}'", c.value)),
+        };
+        if key(end) != key(name) {
+            let ((es, et), (ns, nt)) = (span_text(end), span_text(name));
+            self.report(
+                Diagnostic::error(
+                    codes::END_NAME,
+                    format!("end designator `{et}` does not match `{nt}`"),
+                )
+                .with_primary(es, format!("expected `{nt}`"))
+                .with_secondary(ns, "declared here"),
+            );
+        }
+    }
+}
+
 fn kws_str(kws: &[Kw]) -> String {
     kws.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(" ")
 }

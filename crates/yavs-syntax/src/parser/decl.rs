@@ -1124,6 +1124,9 @@ impl Parser<'_> {
         } else {
             None
         };
+        if let Some(e) = &end_name {
+            self.check_end_designator(e, &spec.designator);
+        }
         self.semi()?;
         Ok(Decl::SubprogramBody(SubprogramBody {
             spec,

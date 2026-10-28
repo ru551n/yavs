@@ -12023,6 +12023,57 @@ Task (orchestrator): the kernel side of element drives and their commit (`sc5_fi
   driver's waveform and queues one deferred update per driver, or per signal for a signal of such drivers); the join of adjacent entries is
   not from it; the staging idea of #802 is. Nothing was copied.
 
+## Kernel round 28, not landed: a staging buffer per direct driver (yavs-kernel, #802, 2026-10-28)
+
+Task (maintainer decision on #802: prototype and measure; land only if `sc5_fifo_repack`, `hdlm_lfsr` and `grlib_leon3mp` gain
+clearly). Bench builds (`llvm,clift`), warm worlds from `tools/realbench --prepare`, a world per binary, A and B interleaved on
+one claimed core of the second CCD, `perf stat` user counts; host load 13 to 43, so instructions are the firmer number.
+
+- **The prototype.** `ProcState::out` and `outv` (the direct entry lists, their order rule, `has_entries` scans, the marks of
+  logic drivers, `extend_outv`, `codes_run`, the per-driver skip-test state `same` and `trim_run` of those lists) gave way to
+  staged plane words: every direct driver owns one word (mask plus four planes) per plane word of the signal its range touches,
+  in its process's state (`DriverInfo::stage` is the index of its first), and the process lists the words it wrote in the run.
+  A drive blends its planes into the word (the last write wins by construction; a batch of element drives is gathered per
+  word in registers first); the commit walks the listed words once, a word of one element through `commit_code` (so
+  `pend_one` stays), others through a new `commit_word` (one masked blend, pending bits by the same mask, the skip test as one
+  compare of the masked word with `cur` and the driving value). A general assignment moves the driver's words into the
+  waveform as one transaction per run of the mask. Byte drivers (`OutB`) were left alone. Checked on the prototype: the
+  kernel tests (with the twin test below) and the three worlds below run to their pass; not run on it: the workspace tests,
+  the work-counter bounds, the llvm and clift tests, difftest and `realbench --compare`.
+- **Measured** (A main, B the prototype; the `grlib_leon3mp` auto row is an earlier build of B that copied the staged words
+  into a batch list after each run, the other rows the final one that commits them from the process's state; one A run of
+  `grlib_leon3mp` auto at 385.6 G is a different compile outcome and left out). The issue estimated 10 to 15 percent of
+  `sc5_fifo_repack`; about 1 to 3 percent is what it gives:
+
+  | test | tier | instructions A | B | cycles A | B |
+  |---|---|---:|---:|---:|---:|
+  | `sc5_fifo_repack` | auto, `--tier-heat=1,0,0` | 18.45 G | 18.28 G (-0.9%) | 6.73 G | 6.51 G (-3%) |
+  | `sc5_fifo_repack` | interp | 32.84 G | 32.53 G (-0.9%) | 9.92 G | 9.84 G (-1%) |
+  | `hdlm_lfsr` | auto, `--tier-heat=1,0,0` | 22.81 G | 23.01 G (+0.9%) | 9.21 G | 9.21 G |
+  | `hdlm_lfsr` | interp | 59.89 G | 58.97 G (-1.5%) | 16.78 G | 16.09 G (-4%) |
+  | `grlib_leon3mp` | auto | 372.1 to 372.8 G | 382.3 to 382.6 G (+2.6%) | noise | noise |
+  | `grlib_leon3mp` | interp | 376.2 to 387.9 G | 397.7 to 398.6 G (+3 to +6%) | 185.6 G | 194 to 196 G (+5%) |
+
+- **Decision: not landed** (the bar was a clear gain on all three). `grlib_leon3mp` loses because most of its direct drives
+  hold the value the signal has (kernel round 25: 96 percent of its wide words): the assign-time skip test answered those
+  without an entry, while staging writes every drive and asks at commit, which costs more. `sc5_fifo_repack` gains a little:
+  its drive side is dominated by the layers around the kernel call, not by the entry lists (profile of B: `yavs_rt_drive` 6.3
+  percent, `Ctx::assign_codes_now` 4.8, `direct_drive_bits` 4.4, the commit 4.4, `finish_direct` 4.0), and each scalar drive
+  is still one kernel call of one element because compiled code flushes its kept scalar drives at every vector drive.
+- **What it would take** (expectations, not measured): the assign-time skip for a drive whose word is not staged yet (round
+  24's gated test) should bring `grlib_leon3mp` back to about level, which still leaves no clear gain; keeping compiled code's
+  scalar drives across a vector drive of another kernel driver (a per-slot kernel-driver flag in the frame, #766), so that a
+  run of element drives reaches the kernel as one call, is the larger lever for `sc5_fifo_repack` and does not need the
+  staging buffer.
+- **Kept:** `direct_paths::direct_drives_match_the_general_path`, a twin test of a 140-element direct driver across plane words
+  (single elements of any code, batches with holes and repeats, vectors across a word boundary, wide vectors, delayed
+  assignments before and after zero-delay ones of the run) against the same process on an identity-resolved signal (the
+  general paths), reporting `'driving_value`, value, `'event`, `'last_value`, `'last_event` and `'active`.
+- **The reference simulator (rule 22):** its fast driver path writes a zero-delay value of a sole-source driver into the
+  driver's one pending slot and queues one deferred update per driver (or per signal) per delta. The prototype took that idea
+  (one staged value per driver, one commit per word); it differs in keeping the staged words in the process's state, so
+  parallel runs write only their own state, and in committing per plane word of the signal. Nothing was copied.
+
 ## llvm: a heap change drops only the objects it changed; interpreter calls keep the machine's objects; native code published past never-run callees (yavs-llvm `rt.rs`, `auto.rs`, yavs-interp `heap.rs`, `exec.rs`, #520, #797, 2026-10-27)
 
 - **Problem.** In `vai_window_gen_interlock` under `--tier=auto` the compiled test-runner library code (queue, string and integer-vector

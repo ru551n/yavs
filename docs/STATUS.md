@@ -10087,6 +10087,13 @@ instructions (-11.1 percent). The other natives on slices (`to_x01`, the numeric
 A `CondBr` whose arms lead to the same block is a `Br` (the null-range test of a local array). Part of the fixed cost of an `HRead` call (`docs/decisions.md` "A branch whose arms lead to the same block"):
 the call is still about 80 ops; the rest is listed there. First 1 us of `grlib_leon3mp` with #768 to #771: 31.37 G to 22.99 G instructions (-26.7 percent), `--tier=interp`.
 
+## kernel round 28, not landed: a staging buffer per direct driver (#802, 2026-10-28)
+
+- Prototype (staged plane words per direct driver in place of the `out`/`outv` entry lists) measured and not landed:
+  `sc5_fifo_repack` -0.9 percent instructions, `hdlm_lfsr` -1.5 to +0.9 percent, `grlib_leon3mp` +2.6 to +6 percent (its held drives
+  lost the assign-time skip). A twin test of direct drives against the general paths is kept
+  (`direct_paths::direct_drives_match_the_general_path`). Details: decisions.md "Kernel round 28, not landed".
+
 ## kernel round 27: adjacent vector entries of a direct driver join (#676, #793, 2026-10-28)
 
 - A vector entry next to the run's last vector entry of the same direct driver joins it (a loop over the bytes of a vector, a sorting

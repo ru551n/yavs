@@ -19,27 +19,36 @@ About yavs
    :alt: CI status
    :target: https://github.com/ru551n/yavs/actions/workflows/ci.yml
 
-yavs ("Yet Another VHDL Simulator") is a VHDL-2008 and VHDL-2019 simulator written in Rust. It
-is early: a pre-release for people who want to try it and report what breaks.
+yavs ("Yet Another VHDL Simulator") is a VHDL-1993, VHDL-2008 and VHDL-2019 simulator written in
+Rust. It is early: a pre-release for people who want to try it and report what breaks.
 
 Key features
 ------------
 
-* VHDL-2008 and VHDL-2019, mixed in one project: each file is parsed with its own standard. VHDL-1993 code runs with ``--std=93``.
+* VHDL-1993, 2008 and 2019, mixed in one project: each file is analyzed with its own standard
+  (``--std=93``, ``--std=2008``, ``--std=2019``). A subset of PSL is supported.
 * :doc:`Diagnostics <usage>` with stable codes, source snippets, help, and VHDL call stacks
   for runtime errors. Fail early, fail clearly: nothing runs after a failed step.
 * The IEEE packages (``std_logic_1164``, ``numeric_std``, ``math_real``, ``fixed_pkg``,
   ``float_pkg`` and the rest) built into the executable and analyzed from source on demand.
-* Parallel process evaluation (``--threads N``) with output identical to a single-threaded run.
+* An interpreter and a compiled tier (LLVM or Cranelift) that compiles the hot code while the
+  simulation runs, with output identical on every tier: see :doc:`install` and :doc:`performance`.
+* FST waveforms, :doc:`code coverage <coverage>`, a Debug Adapter Protocol server for editors, and
+  :doc:`VHPI plugins <vhpi>`.
+* Parallel process evaluation (``--threads N``) with output identical to a single-threaded run,
+  see :doc:`parallel`.
 * One executable for Linux x86_64, Linux aarch64 and Windows x86_64, see :doc:`install`.
 
 Getting started
 ---------------
 
+Install yavs (:doc:`install`), then analyze the files into a library and run a top level. The
+:ref:`quickstart <quickstart>` has the two example files, the output, a failing check and an error.
+
 .. code-block:: bash
 
-    yavs analyze --std=2008 --work=work:out/work tb.vhd
-    yavs run --work=work:out/work tb
+    yavs analyze --work=work:build/work hello_tb.vhd
+    yavs run --work=work:build/work hello_tb
 
 .. toctree::
    :caption: User guide

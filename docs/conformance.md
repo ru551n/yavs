@@ -1,9 +1,9 @@
 # yavs conformance report
 
-Generated: yavs 0.8.0 at commit `17a5bf1a06` (2026-10-28) by `tools/conformance/run.py`; do not edit by hand.
+Generated: yavs 0.8.0 at commit `48ad5c25a6-dirty` (2026-10-28) by `tools/conformance/run.py`; do not edit by hand.
 
 yavs is checked by running the test suites of VHDL libraries, a VHDL language test suite and real designs on it, and by comparing its output
-with two established open-source VHDL simulators, called sim1 and sim2 here. Each suite judges its own tests. Over the suites below, 7954 of 8148
+with two established open-source VHDL simulators, called sim1 and sim2 here. Each suite judges its own tests. Over the suites below, 14821 of 15015
 tests pass; every failure is tracked as an issue. This is evidence, not a proof of correctness.
 
 | Project or suite | What it is | Passed / total |
@@ -18,7 +18,7 @@ tests pass; every failure is tracked as an issue. This is evidence, not a proof 
 | OSVVM, VHDL-2019 | verification library: its own regression | 314/314 |
 | VUnit | test framework: its own VHDL test suites | 1357/1357 |
 | cocotb | Python test framework: its own regression over VHPI, 702 VHDL tests pass | 78/78 jobs |
-| Open Logic | FPGA standard library: its own testbenches | not run yet |
+| Open Logic | FPGA standard library: its own testbenches run with yavs | 6867/6867 |
 | Real designs | neorv32 (three configurations) and GRLIB LEON3 run to completion | 4/4 designs |
 | Waveforms of real designs | signals of 17 designs equal to sim1's at every time step | 44824/44889 signals |
 | Third-party VHDL code | files of 33 libraries and designs that analyse | 6675/6682 files |
@@ -361,6 +361,7 @@ The libraries' own testbenches and regression suites run on yavs, each with the 
 | OSVVM `.pro` regression, VHDL-2008 (CI) | 314 | 314 | 0 | 0 | pass = exit 0 and the library's `DONE PASSED` line |
 | OSVVM `.pro` regression, VHDL-2019 (CI) | 314 | 314 | 0 | 0 | pass = exit 0 and the library's `DONE PASSED` line |
 | VUnit's own VHDL suites (local, 2026-10-20 at `f2ab69be`) | 1357 | 1357 | 0 | 0 | 11 suites; recorded in docs/STATUS.md (#112) |
+| Open Logic's own testbenches run with yavs (local, 2026-10-28 at `43000dd6`) | 6867 | 6867 | 0 | 0 | Open Logic 4.7.0 with its en_cl_fix submodule; every test of the project's own run.py (base, axi, intf, fix, ft; 6867 in all) |
 | cocotb regression over VHPI (local, 2026-10-28 at `ef30c313de`) | 78 | 78 | 0 | 0 | cocotb 2.1.0, counted in jobs (test directories, examples, pytest groups) by cocotb's own verdict; 43 ran VHDL tests (702 tests pass), the others skip themselves (Verilog only or nothing to simulate) |
 
 ### VESTs, the VHDL-1993 language suite
@@ -523,7 +524,7 @@ The `check` job is `cargo fmt`, `clippy -D warnings` and the whole test suite of
 | OSVVM, VHDL-2019 | CI | this report (see Generated) | `tools/suites/pro.py` |
 | VUnit | local | 2026-10-20, `f2ab69be` | VUnit's own `run.py` scripts |
 | cocotb | local | 2026-10-28, `ef30c313de` | `tools/cocotb/run.py` |
-| Open Logic | not run |  |  |
+| Open Logic | local | 2026-10-28, `43000dd6` | Open Logic's `sim/run.py` |
 | Real designs | CI | this report (see Generated) | `tools/realbench/run.py` |
 | Waveforms of real designs | local | 2026-10-27, `05aa8453fb` | `tools/waveq` |
 | Third-party VHDL code | CI | this report (see Generated) | `tools/corpus/run.py` |

@@ -13,23 +13,27 @@ budget across parallel test runs.
 |---|---|
 | What runs in parallel | Only process evaluation. Parsing, analysis, elaboration and the rest of a simulation step are single-threaded. |
 | When a group of processes goes to the threads | A "batch" is the set of processes that wake in one delta cycle. A batch of 32 or more processes goes to the threads; a smaller one runs on the main thread, as with `--threads 1`. The rule counts processes, not the work they do. |
-| Processes that touch files | Run one after the other on the main thread, after the others in the batch. |
+| Processes that stay serial | A process that touches files, shared variables or protected objects, or calls something that does, runs on the main thread. In a batch that goes to the threads the others run first, then the serial ones one after the other. |
 | Signal updates | Spread over the threads only when at least 256 independent signals change in one delta cycle. |
 | Results | Output, reports, waves, coverage and exit status are byte-identical at any thread count, and with `--shuffle` for the same seed. The test corpus is checked at 1 thread, 4 threads and 4 shuffled threads. |
+| Checks | Kernel tests compare 1 and 8 threads and several shuffle seeds, and the CI run of the test corpus at 4 threads compares 1 and 4 threads. |
+| Compile thread | If a compiled tier is built in, `--tier=auto` compiles hot functions on one more background thread (see [install](install.rst)); it is not counted in `--threads`. |
 | Debugging | `--threads` is ignored under `--dap` (warning `W0109`), so a debug session behaves the same every time. |
 
 ## Measured speedup
 
-`--threads 4` against 1, interpreter and `--tier=auto`, each run pinned to performance cores,
-median of 3 (2026-10-21). These figures predate the single-thread speed work of late October and
-are being re-measured.
+`--threads 4` against 1, interpreter and `--tier=auto`, each run pinned to cores, median of 3, on a
+development host shared with other jobs, recorded on 2026-10-21 and 2026-10-22. The figures predate
+the single-thread speed work of late October and were not repeated on the current revision: treat
+them as the shape of the effect, not as a promise. The designs are small generated RTL designs
+(`tools/bench`) and one testbench of a RISC-V soft-core processor.
 
 | Design kind | Speedup |
 |---|---|
-| Soft-core processor testbench (corrected 2026-10-22) | 1.2x to 1.3x at 4 to 8 threads, for twice the CPU time |
+| Soft-core processor testbench (100 us of simulated time, interpreter, corrected 2026-10-22) | 1.15x to 1.3x at 4 to 8 threads, for about twice the CPU time |
 | Flat RTL with large batches | 1.33x (rtl_ff) and 1.20x (rtl_fan) at 4 threads |
-| Mid-size batches (32 to 64 processes) | slower: 0.5x to 0.65x (rtl_bus, lfsr64, lfsr64_xor), for about 5x the CPU time |
-| Testbench-style designs (VUnit, OSVVM and UVVM tests) | about 1.0x |
+| Mid-size batches (32 to 64 processes) | slower: 0.54x to 0.67x (rtl_bus, lfsr64, lfsr64_xor; design study tables), for about 5x the CPU time |
+| Testbench-style designs (verification-library tests, scoreboards, bus models) | about 1.0x |
 
 ## Planned
 
@@ -40,8 +44,7 @@ are being re-measured.
   batches and a larger gain on flat RTL; it is not on `main` yet.
 * **Shared CPU budget across parallel test runs**
   ([#801](https://github.com/ru551n/yavs/issues/801)). Today every yavs process uses exactly the
-  threads you give it, and nothing shares the CPU between simulations that a test runner such as
-  VUnit starts side by side (`-p N`). Until this lands, do not combine a high `-p` with a high
+  threads you give it, and nothing shares the CPU between simulations that a test runner starts side by side (`-p N`), and each simulation with a compiled tier adds one compile thread. Until this lands, do not combine a high `-p` with a high
   `--threads`: the threads of all runs add up.
 
 ## Details
@@ -62,5 +65,9 @@ are being re-measured.
   interrupt), and never blocks waiting for one. `-p` then becomes a total CPU budget and the long
   tail of a regression uses the idle cores. It only pays off once extra threads speed up long
   simulations, so it follows the work above.
+* **Provenance of the figures.** The speedups are from the design study (`docs/design/parallel-kernel.md`
+  in the source tree). The CPU-time costs (twice, about 5x), the 1.33x and 1.20x of the flat designs and
+  the 66 to 108 microseconds per batch were measured during the audit work and cannot be reproduced from
+  the repository: treat them as indicative.
 * Full measurements: "Multi-threaded scaling" in `docs/STATUS.md`. This page is updated as the
   parallel work lands.

@@ -74,6 +74,20 @@ the way: #782 (literals accepted without visible character literals), #783 (inte
 
 (`docs/decisions.md` "Per-op costs, round 3".) `Op::CallIeee` keeps its argument registers and tries a reportless fast path of the native first (`ieee::lookup_fast`): the one-word paths of the `numeric_std` operators and `std_logic_1164` gates, the scalar `is_x`/`to_x01..`, the reductions, and new word-wise paths (`ieee_wide.rs`) for vectors of 65 to 1024 elements (`+`, `-`, comparisons, `to_integer`, `to_unsigned`/`to_signed`, `resize`, `sll`/`srl`, gates), read from the planes in place and written straight into temporary memory. `CallIeee` 323 to 220 instructions an op in `poc_arith_addw`, 398 to 332 in `fletcher_bufferwriter_512`, 300 to 230 in `neorv32_single_min`; whole runs (interp) `poc_arith_addw` 136.4 to 130.8 G, `fletcher_bufferwriter_512` 49.8 to 48.6 G, `neorv32_single_min` 29.0 to 28.75 G, compiled tier (`--tier=auto`, main thread) `fletcher_bufferwriter_512` -1.4 percent, `poc_arith_addw` unchanged (its operators are inline in compiled code). New differential test `native_wide_matches_bodies`. Open: the slice copy before a native (not fused: 1.5 percent of a NEORV32 start-up window).
 
+### Compiled library code keeps its heap objects; native code published past never-run callees (#520, #797, 2026-10-27)
+
+(`docs/decisions.md` "llvm: a heap change drops only the objects it changed ...".) Each heap logs the slots of its last 16 deallocations and
+edits (`Heap::log`); compiled code drops only those objects from its object table instead of all heap objects at every deallocation, and a
+call from the interpreter into native-frame code keeps the calling machine's objects (`TierHost::tier_state`). `--tier=auto` publishes
+native-frame code whose native callees that never ran are not compiled (#797: such code stayed unused for the whole run in some runs, its
+callers stepping out of compiled code). Window generator (`vai_window_gen_interlock`) warm 0.90 to 0.93 wall, 0.96 to 0.98 instructions,
+cold level; object-table callbacks 3.75 to 1.30 million a run; a test-runner queue loop 18 to 16.4 G instructions and no slow mode.
+`tools/realbench --compare` (42 tests): geometric mean 1.00 / 0.99 wall, 1.00 / 1.00 instructions (warm / cold). Against sim1 (run cell,
+elaboration plus run, not the full total of the head-to-heads; two sessions of one core 4 minutes apart, sim1 itself 4.27 and 4.92 s):
+warm 1.77 to 1.76 (instructions 1.69 to 1.67), cold 2.56 to 2.65 (instructions 2.57 to 2.61, the compile outcome of cold runs varies).
+Left: protected-method calls of the random package stepped from compiled code, native steps of `FToIRange`, `LFill`, `LogicOp`, the remaining
+object-table misses (decisions.md).
+
 ### `wait until <edge>` as cheap as the sensitivity-list forms (#767, 2026-10-26)
 
 (`docs/decisions.md` "`wait until <edge>` costs what the sensitivity-list forms cost".) The end of a `wait until rising_edge(clk)` on one
@@ -5929,6 +5943,35 @@ analysis wall 0.62 to 0.89 (`en_cl_fix_pkg` 0.82, `poc_strings` 0.62, `sc5_times
 elaboration plus run, `--tiers auto-cold`) is below sim1 on `en_cl_fix_pkg`, `poc_strings`, `neorv32_single_min` and `fletcher_bufferwriter_prim32` and above it on `sc5_timestamp` (0.59 s against 0.53), `fletcher_bufferreader` (1.64 against 1.13)
 and `fletcher_bufferwriter_512` (4.1 against 1.9): there the run phase is the gap (#519, #523, #740), not the analysis. Not verified: Windows (the fast path is Unix-only), other file systems than ext4.
 
+## Cold minus warm, by phase (#740, 2026-10-27)
+
+Where the cold column of head-to-head 7 loses against the warm one, split per test from its raw cells (cold minus warm of
+the analysis cells, of `interp0` = start-up to time 0 without compiling, and the rest of the `auto` run cell = compile CPU
+on the pinned core plus the time interpreted before compiled code arrives), weighted by the change of the log ratio, so
+by its weight in the geometric mean: **analysis of the libraries 75 percent, start-up (closure, elaboration, lowering)
+19 percent, compiling and its late arrival 6 percent**. The short testbenches (about 30 of 41) lose almost all of their
+cold factor in analysis; the tests above sim1 cold (`sc5_fifo_repack`, `poc_stat_histogram`, `vai_window_gen_interlock`,
+`rtl_lfsr`, `lfsr64`) lose it in the run cell: the `--tier=auto` policy compiles their processes 0.2 to 8 s into the run
+(the compile CPU itself is 7 to 17 percent of their cold CPU). Halving every price of the policy (`YAVS_AUTO_MODEL`,
+compile cost unchanged) moved `poc_stat_histogram` 0.87 to 0.77 s, `sc5_fifo_repack` and the window generator not at all,
+so a cheaper code generator alone does not close those; the policy is #679 (#800 filed: a second compile of a function
+is priced 10 to 20 times below its cost).
+
+Found and fixed: the analysed-unit entries were keyed by the session's `--relaxed`, so a relaxed run of a design whose
+libraries were analysed without it (the open-logic, satcat5, window-generator and GRLIB tests) read no library unit and
+analysed the closure from source in its first two runs. `--relaxed` is now a question a unit asks only where the
+setting changes its analysis (`docs/decisions.md` "`--relaxed` is a question"): window generator cold run 68 unit
+misses to 10 (the rest are bodies with assignments to unconstrained targets, which do depend on it). `tools/realbench
+--compare` (15033264's change against its parent, bench builds, 42 tests, core 9, load 10 to 25): analysis cold 0.97,
+elab cold 0.98 (instructions 0.96; `vai_weight_buffer` 0.65, `vai_pe_array` 0.72, `sc5_timestamp` instructions 0.70),
+`auto-cold` 0.99, `auto` 1.00, no slowdown; full total (analysis + run) 0.975 cold, `vai_pe_array` 1.11 to 0.95 s,
+`vai_weight_buffer` 0.74 to 0.64 s. Against sim1 of head-to-head 7 (other session) the cold geometric mean moves
+0.578 to 0.564.
+
+Also found: entries of files analysed by relative path are never read by `elab`/`run` (#799); in `tools/realbench`
+the libraries' std/ieee entries live in the corpus tool's store, so a run of `--phases run` alone without the analysis
+cells misses std/ieee units the analysis cells would have stored (the full suite is not affected).
+
 ## Real-world performance suite: yavs against sim1, head-to-head 7, 2026-10-27 (`tools/realbench`)
 
 Current headline: `5b2beb73`, bench build with the `llvm` feature, method exactly as head-to-head 6 (batched analysis calls for both tools, `--tier=auto`, total wall incl. analysis, 5 timed
@@ -9901,6 +9944,13 @@ instructions (-11.1 percent). The other natives on slices (`to_x01`, the numeric
 A `CondBr` whose arms lead to the same block is a `Br` (the null-range test of a local array). Part of the fixed cost of an `HRead` call (`docs/decisions.md` "A branch whose arms lead to the same block"):
 the call is still about 80 ops; the rest is listed there. First 1 us of `grlib_leon3mp` with #768 to #771: 31.37 G to 22.99 G instructions (-26.7 percent), `--tier=interp`.
 
+## kernel round 27: adjacent vector entries of a direct driver join (#676, #793, 2026-10-28)
+
+- A vector entry next to the run's last vector entry of the same direct driver joins it (a loop over the bytes of a vector, a sorting
+  network's lanes): `sc5_fifo_repack` -2.9 percent instructions, -2 to -3 percent cycles; `realbench --compare` 42 tests level
+  (instructions 1.00 / 1.00). #793 (store-forwarding stall of the vector entry) measured: removing the reload costs cycles, not kept.
+  Staging per direct driver proposed in #802. Details: decisions.md "Kernel round 27".
+
 ## kernel round 26: the slot of the process ahead, element drive batches as one vector entry (#795, #676, 2026-10-27)
 
 - The batch loop also prefetches the slot (kernel state) of the process three steps ahead: `rtl_ff` -15 to -25 percent cycles on a
@@ -9988,6 +10038,30 @@ natives on slices (`to_x01`, the numeric operators) still copy the slice first; 
   functions); running interpreted callees in place from compiled code was tried and dropped (window generator 1.12, decisions.md); a cache hit
   still generates the module.
 
+## `--tier=auto`: compiled code found before it is generated, profile time summed over runs, warm cache price (yavs-llvm, yavs-ir, yavs-elab, #785, #679, #728, 2026-10-27)
+
+- **Pre-key (#785, maintainer 2026-10-27):** a warm run links a function's object by a key made before generation (program identity from the
+  stage cache, the function's optimised IR, level, part, target, build); no generation on a hit. `YAVS_LLVM_PREKEY_CHECK=1` (CI `llvm` jobs,
+  difftest candidate `yavs-auto-warm`) generates anyway and aborts on another module. `HIT` is 1 ms + 1 us an IR instruction. GRLIB warm with
+  the large copies forced: 52 hits cost the compile thread 0.07 s (35 hits by the IR key on main: 5.26 s); a 19 867 IR function links in
+  9.5 ms (was about 790). Decision: `docs/decisions.md` "llvm: compiled code found before it is generated".
+- **Profile (#679, maintainer 2026-10-27):** a listed process compiles early once the seen time of the earlier runs, summed, repays its
+  price (was one run's times 4). Window generator: `walk_control` compiles early from run 5 (main: run 2) and is kept; steady state equal.
+- `tools/realbench --compare` (bench builds, 097f20ab against all three changes, run phase, one claimed CCD1 core, host load 6 to 13):
+  42 tests `auto` geometric mean 0.99, `auto-cold` 1.00, instructions 0.99 / 1.00; `grlib_leon3mp` 0.99 warm, 0.96 cold (34.4 to 32.8 s
+  warm). Seven-run reruns of the cells off by more than 5 percent: `vai_window_gen_interlock` 0.98 / 0.98 (was 1.13 at equal instructions),
+  `sc5_fifo_repack` 0.99 / 1.00, `uvvm_axistream_vvc` 0.98 / 1.00, `osvvm_axis_random` 1.06 / 1.03 (0.01 s), `poc_arith_addw` 1.06 / 0.92
+  (instructions 1.02 / 0.99; 0.98 to 1.06 warm over three sessions, the same functions compiled, all earlier).
+  Earlier session against 12e07dce (#785 and #679 only): 41 tests `auto` 0.97, `auto-cold` 1.01.
+- **Warm runs and the cache price (#728, maintainer 2026-10-27, option (c)):** a function the cache holds waits only for its payback at the
+  cache price (no `Heat::threshold` floor) and a fully cached tree is picked ahead of the budget; `--tier-heat` and `YAVS_AUTO_PRICE=model`
+  keep the model price. Warm, 9 interleaved runs against the same build without it (on 12e07dce): `rtl_lfsr` 0.93 wall (0.91
+  instructions), `rtl_ff` 0.92, `lfsr64` 0.99. Against 097f20ab with all three changes (15 runs, load spikes): `rtl_ff` 0.97, `rtl_lfsr`
+  1.00 (its `_p1` links at 24 ms, was 52, of a 250 ms run), `lfsr64` 0.99.
+- Left: with the sum a process that the 4-run projection compiled in run 2 waits until its seen time has repaid it (window generator runs
+  2 to 4 0.1 to 0.5 s slower than main's); a process under about 5 percent of a run gains near the judgement's 3 percent when compiled
+  early, so it is kept or lost by noise.
+
 ## Value movement: copies between heap objects, scratch sets (yavs-interp, #677, 2026-10-27)
 
 A copy between two objects of one heap (access values, shared variables of protected types) goes straight across (`Heap::data_pair`) instead of through the staging buffer, and the thread scratch keeps 16 register sets (was 4) so the nine large non-resident processes of `grlib_leon3mp` find their registers filled (`docs/decisions.md` "Value movement"). Interleaved `realbench --compare` (42 tests, cores 10 and 11, 3 runs): `uvvm_axistream_vvc` 0.93 interp / 0.92 auto (instructions 0.96), `grlib_leon3mp` 0.97 / 0.98, geometric mean of the run phase 0.98 / 0.98, nothing worse than noise. Left: frame fills of a call (`Pre::fill`, 8 GB of `memcpy` in `grlib_leon3mp`), `wide::eq_range` and `Signal::direct_same_planes` of same-value drives, `sig_gather`/`scatter_leaves` per-leaf work (runs of scalar leaves tried: no gain, dropped).
@@ -10023,3 +10097,10 @@ frame-mode code runs both instructions through `yavs_rt_signal` instead of a ste
 ## Large value copies: records built in their own object (yavs-ir, yavs-interp, #792, 2026-10-27)
 
 A large initialised record variable or heap node is created in its own object and filled there instead of being built in a temporary and copied (`Opt::defaults_first`); `LFill`s of 'U' into that fresh zero object are dropped; `NewFrame` appends its copy without a zero fill first; small temporary zero fills are one fixed-size store (`docs/decisions.md` "Large value copies"). `uvvm_axistream_vvc`: cycles 0.92 (interp) and 0.92 (auto) of main, memory traffic 23 to 17.7 GB; `realbench --compare` (42 tests) instructions 0.99. Left: the required whole-record assignments of the command path (copy-on-write or sparse values), the frame fill of calls. Copy-on-write of large objects was measured and not built (#798): ceiling about 6 percent of `uvvm_axistream_vvc`, under 1.2 percent on the other verification-library tests, the test is 0.72 of sim1 (`docs/decisions.md` "Large value copies").
+## Jump threading in processes (yavs-ir `opt/cfg.rs`, #791, 2026-10-27)
+
+The clean-up of short-circuit chains (`cfg.rs`, #444) runs on processes too, after the memo: a constant flag that the join of an `and`/`or`
+tests is decided where it is set, the large processes' dead definitions go (the liveness bound counts the tracked registers only), and the
+dead blocks of a specialised copy jump to the next block so fusions run through them. `grlib_leon3mp` -2.9 percent instructions under
+`--tier=interp` and `auto`, `fletcher_bufferwriter_512`, `fletcher_bufferreader` and `neorv32_single_min` -1 to -1.5 percent interpreted
+(`docs/decisions.md` "Interpreter execution of large processes"). `op-census` prints ops by function and by position.

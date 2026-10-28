@@ -123,6 +123,12 @@ pub trait StageCache: Send + Sync + std::fmt::Debug {
     /// A reason an entry was not made, for `YAVS_LOG=debug`.
     fn note(&self, _msg: &str) {}
 
+    /// A name of the entry `get` and `put` use for these arguments, the same in every run that
+    /// would read it (`None`: no such entry is kept).
+    fn identity(&self, _extent: &[usize], _kind: &str, _part: &[u8]) -> Option<String> {
+        None
+    }
+
     /// Whether the closure has entries of its own (it was analyzed before: the images of a
     /// closure are made on its second run). Without them only the library prefixes serve.
     fn closure(&self) -> bool {

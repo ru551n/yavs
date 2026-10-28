@@ -4851,21 +4851,25 @@ impl Machine {
         tf.temp_cap = self.temp.capacity().min(u32::MAX as usize) as u64;
         tf.temp_roots = self.troots.len() as u64;
         tf.temp_base = u64::from(self.frames[self.frames.len() - 1].temp_base);
-        tf.heap_epoch = self.heap_epochs();
+        self.tier_heaps(tf);
     }
 
-    /// `TierFrame::heap_epoch`: changes when an object of the process heap or the shared heap
-    /// is deallocated or edited in place.
+    /// `TierFrame::heap_epoch`, `shared_epoch` and `heap_log`: the epochs change when an object
+    /// of the process heap or the shared heap is deallocated or edited in place.
     #[inline(always)]
-    fn heap_epochs(&self) -> u64 {
+    fn tier_heaps(&self, tf: &mut crate::TierFrame) {
+        tf.heap_epoch = self.heap.epoch();
+        tf.heap_log[0] = self.heap.log().as_ptr();
         // A `hot` process has no shared state: its line of the machine stays unread.
-        if self.hot {
-            return self.heap.epoch();
-        }
-        let shared = self.sh.as_ref().and_then(|sh| sh.heap.as_deref());
-        self.heap
-            .epoch()
-            .wrapping_add(shared.map_or(0, Heap::epoch))
+        let shared = if self.hot {
+            None
+        } else {
+            self.sh.as_ref().and_then(|sh| sh.heap.as_deref())
+        };
+        (tf.shared_epoch, tf.heap_log[1]) = match shared {
+            Some(h) => (h.epoch(), h.log().as_ptr()),
+            None => (0, std::ptr::null()),
+        };
     }
 
     /// `Inst::CallNative`: `Flow::Next`, or the flow a native ends with (a VHDL body it hands
@@ -5701,7 +5705,7 @@ impl Machine {
             // Compiled out of a release build: even an empty call moved the loop's code (+9 percent of
             // the instructions of `calls`).
             #[cfg(any(debug_assertions, feature = "op-census"))]
-            crate::census::tick(ops, k, &f.code);
+            crate::census::tick(ops, k, &f.code, &f.name);
             match ops[k] {
                 Op::Step(pc) => {
                     let inst = *f
@@ -8882,12 +8886,11 @@ impl Machine {
         tf.ndrivers = m.drivers.len() as u64;
         // A process that is `hot` has no shared state (`sh`), which the call paths of a serial
         // process do not promise: its epoch and flags come from the heap and the frame alone.
+        m.tier_heaps(tf);
         if m.hot {
-            tf.heap_epoch = m.heap.epoch();
             tf.flags = u64::from(shared_alloc) * crate::TIER_SHARED_ALLOC
                 + u64::from(STAMPS.load(Ordering::Relaxed)) * crate::TIER_STAMPS;
         } else {
-            tf.heap_epoch = m.heap_epochs();
             tf.flags = m.tier_flags();
         }
         // `frames.len() == 1` above; `tier_flags` (deeper views) never sets it.
@@ -8970,7 +8973,7 @@ impl Machine {
         tf.nregs = (self.regs.v.len() - rbase) as u64;
         tf.stack = self.regs.v.as_ptr();
         tf.max_depth = u64::from(self.rt.limits.max_depth);
-        tf.heap_epoch = self.heap_epochs();
+        self.tier_heaps(tf);
         tf.flags = self.tier_flags();
         tf.owner = self.vc.owner;
         let cov = self
@@ -10851,6 +10854,14 @@ impl crate::TierHost for Host<'_, '_, '_> {
         tf.sigtab_len = m.vc.tier_sigs.len() as u64;
         tf.cycle = c.cycle();
         tf.known = c.resumed_edge_key();
+    }
+
+    fn tier_state(&self) -> crate::TierState {
+        self.m.tier_state
+    }
+
+    fn set_tier_state(&mut self, st: crate::TierState) {
+        self.m.tier_state = st;
     }
 
     fn view_again(&mut self, tf: &mut crate::TierFrame) -> bool {

@@ -1,4 +1,5 @@
-//! Clean-up of the finished code of a subprogram that cannot suspend (#444).
+//! Clean-up of the finished code of a subprogram that cannot suspend (#444) and of a process
+//! (#791: the block it pauses at is never copied or jumped past).
 //!
 //! The passes before this one work on the walk's tables; the shapes lowering and promotion
 //! leave behind are easier to see on the final code: a value computed into a temporary and
@@ -150,21 +151,44 @@ fn small(c: &[Inst]) -> bool {
 }
 
 /// A loop test followed by its step block (`[Bin add/sub, Br]`): the predecoder makes one
-/// operation of the three, which needs them in this order.
-fn latch(code: &[Inst], next: Option<&[Inst]>, l: usize) -> bool {
-    matches!(code.last(), Some(Inst::CondBr { t, f, .. }) if t.0 as usize == l + 1 || f.0 as usize == l + 1)
-        && next.is_some_and(|s| {
-            matches!(
-                s,
-                [
-                    Inst::Bin {
-                        op: IntOp::Add | IntOp::Sub,
-                        ..
-                    },
-                    Inst::Br { .. }
-                ]
+/// operation of the three, which needs them in this order. In a process (`wide`) the step block
+/// can still hold a checked add or a move into the variable: any short block that jumps back
+/// with an add or subtract counts.
+fn latch(code: &[Inst], next: Option<&[Inst]>, l: usize, wide: bool) -> bool {
+    let step = |i: &Inst| {
+        matches!(
+            i,
+            Inst::Bin {
+                op: IntOp::Add | IntOp::Sub,
+                ..
+            }
+        ) || wide
+            && matches!(
+                i,
+                Inst::BinRange {
+                    op: IntOp::Add | IntOp::Sub,
+                    ..
+                }
             )
+    };
+    matches!(code.last(), Some(Inst::CondBr { t, f, .. }) if t.0 as usize == l + 1 || f.0 as usize == l + 1)
+        && next.is_some_and(|s| match s {
+            [i, Inst::Br { .. }] => step(i),
+            _ => {
+                wide && s.len() <= 4
+                    && matches!(s.last(), Some(Inst::Br { to }) if to.0 as usize <= l)
+                    && s.iter().any(step)
+            }
         })
+}
+
+/// Does a block read or define a register defined once by a constant or an address?
+fn reads_konst(code: &[Inst], konst: &[bool]) -> bool {
+    code.iter().any(|i| {
+        let mut hit = false;
+        i.visit(&mut |r, _, _| hit |= konst.get(r.0 as usize).copied().unwrap_or(false));
+        hit
+    })
 }
 
 /// The blocks of a function as `thread` changes them: the original code, except for the
@@ -212,6 +236,31 @@ fn thread(prog: &Program, f: &mut crate::Func, defs: &[u8], uses: &[u32]) -> boo
         }
     }
     let nb = f.blocks.len();
+    // The block a process pauses at before its first run (`Func::body`) stays where it is.
+    let pause = f.body.map(|b| b.0 as usize);
+    // A process: the registers defined once by a constant or an address. The frame starts with
+    // their values, but no register of a process may be read across a suspension, so a block that
+    // reads one (or defines one) is not copied: its copy would need definitions of its own, which
+    // cost an operation where the frame's value cost none.
+    let mut kdef: Vec<bool> = Vec::new();
+    if pause.is_some() {
+        kdef = vec![false; n0];
+        for i in &f.code {
+            if let Inst::Const { dst, .. } | Inst::ConstF { dst, .. } | Inst::AddrOf { dst, .. } =
+                *i
+                && defs[dst.0 as usize] == 1
+                && !matches!(
+                    i,
+                    Inst::AddrOf {
+                        space: AddrSpace::Up(_),
+                        ..
+                    }
+                )
+            {
+                kdef[dst.0 as usize] = true;
+            }
+        }
+    }
     let mut bl = Blocks {
         f,
         changed: FxMap::default(),
@@ -256,6 +305,7 @@ fn thread(prog: &Program, f: &mut crate::Func, defs: &[u8], uses: &[u32]) -> boo
                             ] = *bl.code(edge.0 as usize)
                                 && c2 == c
                                 && edge.0 as usize != a
+                                && Some(edge.0 as usize) != pause
                             {
                                 *edge = if truth { t2 } else { f2 };
                             }
@@ -274,10 +324,17 @@ fn thread(prog: &Program, f: &mut crate::Func, defs: &[u8], uses: &[u32]) -> boo
                 Inst::Br { to } => {
                     let l = to.0 as usize;
                     if l == a
+                        || Some(l) == pause
+                        || pause.is_some() && reads_konst(bl.code(l), &kdef)
                         || l >= nb
                         || grown > budget
                         || !small(bl.code(l))
-                        || latch(bl.code(l), (l + 1 < nb).then(|| bl.code(l + 1)), l)
+                        || latch(
+                            bl.code(l),
+                            (l + 1 < nb).then(|| bl.code(l + 1)),
+                            l,
+                            pause.is_some(),
+                        )
                     {
                         break;
                     }
@@ -365,7 +422,9 @@ fn thread(prog: &Program, f: &mut crate::Func, defs: &[u8], uses: &[u32]) -> boo
 /// Write the rewritten blocks back. The blocks no branch reaches any more are reduced to a
 /// jump to the next block, which the predecoder runs through (as `Opt::kill_unreachable`
 /// does); a constant or address defined once in one of them is a value the frame starts
-/// with and other blocks rely on, so its definition moves to the entry.
+/// with and other blocks rely on, so its definition moves to the entry (in a process no
+/// reachable block reads such a definition of an unreachable block: it would be read before
+/// any definition in the activation).
 fn emit(
     prog: &Program,
     f: &mut crate::Func,
@@ -541,9 +600,6 @@ fn droppable(i: &Inst) -> Option<Reg> {
 fn dead_defs(prog: &Program, f: &mut crate::Func) -> bool {
     let n = f.reg_ty.len();
     let nb = f.blocks.len();
-    if nb * n > 1 << 22 {
-        return false;
-    }
     let mut idx = vec![u32::MAX; n];
     let mut m = 0usize;
     let mut any = false;
@@ -614,7 +670,9 @@ fn dead_defs(prog: &Program, f: &mut crate::Func) -> bool {
             }
         }
     }
-    if !any {
+    // (The sets are as wide as the registers tracked, not all of them: a large process has
+    // thousands of blocks and registers, #791.)
+    if !any || nb * m > 1 << 24 {
         return false;
     }
     let succ = super::memo::successors(prog, f);
@@ -831,7 +889,6 @@ fn equal_arms(f: &mut crate::Func) -> bool {
     any
 }
 
-/// Run the passes over a finished subprogram (one that cannot suspend).
 /// Does some jump go to a block `thread` would copy, or some branch to a block that only
 /// tests its condition again? (Checked on the finished code before anything is copied.)
 fn may_thread(f: &crate::Func) -> bool {
@@ -846,7 +903,12 @@ fn may_thread(f: &crate::Func) -> bool {
             l != a
                 && l < nb
                 && small(code(l))
-                && !latch(code(l), (l + 1 < nb).then(|| code(l + 1)), l)
+                && !latch(
+                    code(l),
+                    (l + 1 < nb).then(|| code(l + 1)),
+                    l,
+                    f.body.is_some(),
+                )
         }
         Some(&Inst::CondBr { t, f: e, .. }) => [t, e]
             .iter()
@@ -883,6 +945,7 @@ pub(super) fn has_back_edge(f: &crate::Func) -> bool {
     })
 }
 
+/// Run the passes over a finished subprogram that cannot suspend, or a process.
 /// Returns whether code was copied into other blocks (the caller walks the result again: what
 /// is known on entry to a block decides the branches of its copy).
 pub(super) fn run(prog: &Program, f: &mut crate::Func) -> bool {

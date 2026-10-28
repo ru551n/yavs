@@ -4,6 +4,13 @@
 use yavs_diag::{FileId, Span};
 use yavs_ir::*;
 
+/// An output: an effect that keeps an arm of a branch apart from the other (an empty arm is a
+/// jump, #791).
+fn effect(fb: &mut FuncBuilder<'_>) {
+    let (a, n) = (fb.addr(AddrSpace::Inst, 0), fb.int(0));
+    fb.emit(Inst::Output { addr: a, len: n });
+}
+
 /// A process that reads generic `G` (8 bytes at instance offset 0), and on each activation stores
 /// 1 or 2 in a frame slot depending on `G == 3`.
 fn process() -> (Program, FuncId) {
@@ -56,6 +63,9 @@ fn process_with(declarations: bool) -> (Program, FuncId) {
             src: k,
             w: Width::B8,
         });
+        if v == 1 {
+            effect(&mut fb);
+        }
         fb.emit(Inst::Br { to: end });
     }
     fb.at(end);
@@ -306,6 +316,7 @@ fn decl_process(rewrites: bool) -> (Program, FuncId) {
         f: e1,
     });
     fb.at(t1);
+    effect(&mut fb);
     fb.emit(Inst::Br { to: e1 });
     fb.at(e1);
     let (w, six, c2, t2, e2) = (
@@ -333,6 +344,7 @@ fn decl_process(rewrites: bool) -> (Program, FuncId) {
         f: e2,
     });
     fb.at(t2);
+    effect(&mut fb);
     fb.emit(Inst::Br { to: e2 });
     fb.at(e2);
     if rewrites {
@@ -473,6 +485,7 @@ fn pkg_process() -> (Program, FuncId) {
         f: e1,
     });
     fb.at(t1);
+    effect(&mut fb);
     fb.emit(Inst::Br { to: e1 });
     fb.at(e1);
     let t = fb.int(1);

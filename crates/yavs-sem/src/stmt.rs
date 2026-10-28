@@ -1007,8 +1007,7 @@ impl Db {
             let mut st = self.exprs[e].subtype;
             // `--relaxed` (R5): an unconstrained target (a port, a formal) gives an `others`
             // aggregate the bounds it has at run time.
-            if self.opts.relaxed && self.constrainedness(st) != crate::types::Constrainedness::Full
-            {
+            if self.constrainedness(st) != crate::types::Constrainedness::Full && self.relaxed() {
                 st = self.runtime_subtype(e, target.span);
                 self.relaxed_target = Some(st);
             }
@@ -1602,7 +1601,7 @@ impl Db {
             sp.impure_reads = true;
         }
         for (span, msg) in found {
-            let d = if self.opts.relaxed {
+            let d = if self.relaxed() {
                 Diagnostic::warning(diag::W_PURE_IMPURE, msg)
             } else {
                 Diagnostic::error(diag::PURE_SIDE_EFFECT, msg)

@@ -1078,12 +1078,17 @@ fn models() -> &'static [Model; 10] {
     })
 }
 
-/// A module linked from the compilation cache (generation, key, link and dropping the module): 2 to 9
-/// ms for functions of 120 to 180 IR instructions, 12 to 25 us an IR instruction from 1 000 to 13 000
-/// (`YAVS_LLVM_TIMES` `objtimes hit`, #785; generation is about half of it). A function whose object is
-/// in the cache is priced so (`Worker::price`, user, 2026-10-25: a warm run uses cached code as soon as
-/// it is seen), not at what compiling it costs.
-const HIT: Model = model(1000.0, 20.0, 1.0);
+/// A module linked from the compilation cache by its pre-key (key, look-up, link, no generation,
+/// #785): 0.1 to 0.7 ms for functions of up to 220 IR instructions, 0.3 to 1 us an IR instruction from
+/// 1 000 to 20 000 (`YAVS_LLVM_TIMES` `prehit total`, GRLIB warm). A function whose object is in the
+/// cache is priced so (`Worker::price`, user, 2026-10-25: a warm run uses cached code as soon as it is
+/// seen), not at what compiling it costs. ponytail: the first run after the program changed has no
+/// pre-keys yet and generates; the price ignores that one run.
+const HIT: Model = model(1000.0, 1.0, 1.0);
+
+/// `HIT` of a program without `Program::identity` (not cached: coverage, large constant pools), which
+/// has no pre-keys: the module is generated and keyed by its IR, 12 to 50 us an IR instruction (#785).
+const HIT_GEN: Model = model(1000.0, 20.0, 1.0);
 
 /// `HIT` for a first-level generator (Cranelift): the body is generated again and its code linked,
 /// about 4 us an IR instruction (neorv32 eager: 1 804 functions, 143 723 IR instructions in 536 ms
@@ -1176,6 +1181,8 @@ struct Worker {
     compute: Vec<std::cell::OnceCell<bool>>,
     /// `kind` per function, once asked.
     kinds: Vec<std::cell::OnceCell<Kind>>,
+    /// `cached`, worked out once per function.
+    in_cache: Vec<std::cell::OnceCell<bool>>,
     /// `native_set` of each function alone, once asked (`nset`).
     nsets: Vec<std::cell::OnceCell<std::collections::HashSet<FuncId>>>,
     /// The sampled time `pick` waits for: the cheapest candidate it last refused fits the budget
@@ -1319,10 +1326,7 @@ impl Worker {
             // The class rules of `threshold` only raise the base, and they analyse everything the
             // function can call (`natively`): not for one still below the base (#544).
             let now = self.group[g];
-            let base = self
-                .prog
-                .func(self.prog.base_of(id))
-                .map_or(u64::MAX, |b| self.heat.threshold(b));
+            let base = self.floor(id);
             let at = if now < base {
                 base
             } else {
@@ -1335,8 +1339,7 @@ impl Worker {
             if let Some(&us) = self.early.get(&self.prog.base_of(id))
                 && !self.lost[id.0 as usize]
                 && !(self.prog.base_of(id) == id && self.prog.specialisable(id))
-                && (self.prog.base_of(id) == id
-                    || us.saturating_mul(profile::EARLY_RUNS) >= self.threshold(id, false))
+                && (self.prog.base_of(id) == id || us >= self.threshold(id, false))
                 && !std::mem::replace(&mut self.asked_for[id.0 as usize], true)
             {
                 pending.early.push((us, id));
@@ -1418,6 +1421,7 @@ impl Worker {
             spent: 0,
             compute: vec![Default::default(); nfuncs],
             kinds: vec![Default::default(); nfuncs],
+            in_cache: vec![Default::default(); nfuncs],
             nsets: vec![Default::default(); nfuncs],
             pick_at: 0,
             note,
@@ -1599,12 +1603,31 @@ impl Worker {
 
     /// Whether the compilation cache holds the object of `id`: an earlier run compiled a function
     /// of its name and size (`listed`). A function of the cache costs `HIT`, whatever its kind.
+    /// Never with `YAVS_AUTO_PRICE=model` (the model's price and `Heat::threshold` for every
+    /// function, cold or warm: counts that do not depend on the cache, #728). Worked out once.
     fn cached(&self, id: FuncId) -> bool {
-        self.lead().is_some_and(|g| g.cache_enabled())
-            && self
-                .prog
-                .func(id)
-                .is_some_and(|f| self.listed.contains(&self.list_key(id, f)))
+        static MODEL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *self.in_cache[id.0 as usize].get_or_init(|| {
+            !*MODEL.get_or_init(|| std::env::var("YAVS_AUTO_PRICE").is_ok_and(|v| v == "model"))
+                && self.lead().is_some_and(|g| g.cache_enabled())
+                && self
+                    .prog
+                    .func(id)
+                    .is_some_and(|f| self.listed.contains(&self.list_key(id, f)))
+        })
+    }
+
+    /// The time any function must be seen before it is compiled: `Heat::threshold` of the process
+    /// `id` is or is a copy of. None for a function whose object is in the cache under the default
+    /// policy (maintainer 2026-10-27, #728): a warm run links it once its cache price repays
+    /// (`need`). `--tier-heat` keeps it.
+    fn floor(&self, id: FuncId) -> u64 {
+        if self.heat.budget != 0 && self.cached(id) {
+            return 0;
+        }
+        self.prog
+            .func(self.prog.base_of(id))
+            .map_or(u64::MAX, |b| self.heat.threshold(b))
     }
 
     /// How the list of the compilation cache names `id` (`f`): name and size, and for a copy of a
@@ -1625,8 +1648,10 @@ impl Worker {
         };
         if cached && self.first.is_some() {
             FIRST_HIT.price(f.code.len())
-        } else if cached {
+        } else if cached && self.prog.identity.is_some() {
             HIT.price(f.code.len())
+        } else if cached {
+            HIT_GEN.price(f.code.len())
         } else if self.first.is_some() {
             (FIRST_US_PER_INSTR * f.code.len() as f64) as u64
         } else {
@@ -1699,10 +1724,7 @@ impl Worker {
             return self.heat.o2_threshold(f, self.tune.o2_after);
         }
         // (A copy's seen time is its process's, `Worker::group`: its threshold is the process's too.)
-        let at = self
-            .prog
-            .func(self.prog.base_of(id))
-            .map_or(u64::MAX, |b| self.heat.threshold(b));
+        let at = self.floor(id);
         if self.heat.budget == 0 {
             at
         } else if self.is_rtl(id) {
@@ -1898,6 +1920,36 @@ impl Worker {
         ids
     }
 
+    /// Whether every function the native-frame code of `id` calls natively is compiled, and they
+    /// in turn. A callee left out of its compile or never seen running ends the walk: nothing
+    /// compiles it until it runs, so it kept `id` and every native caller of `id` unpublished for
+    /// the whole run, each of their calls a step out of compiled code. Once it runs, it is seen
+    /// and compiled like any other function, and the call reaches it through `ntab`.
+    fn ready(&self, id: FuncId) -> bool {
+        let nc = self.nset(id);
+        let mut seen = std::collections::HashSet::from([id]);
+        let mut todo = vec![id];
+        while let Some(g) = todo.pop() {
+            for inst in self.prog.func(g).map_or(&[][..], |f| &f.code[..]) {
+                let (yavs_ir::Inst::Call { func, .. } | yavs_ir::Inst::CallProt { func, .. }) =
+                    *inst
+                else {
+                    continue;
+                };
+                if !nc.contains(&func) || !seen.insert(func) {
+                    continue;
+                }
+                let k = func.0 as usize;
+                if self.nat[k].0 != 0 {
+                    todo.push(func);
+                } else if !self.left[k].get() && self.time[k] != [0, 0] {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
     /// Publish the native-frame code whose callees are all compiled.
     fn publish(&mut self) {
         for k in 0..self.nat.len() {
@@ -1905,11 +1957,7 @@ impl Worker {
             if addr == 0 || done || self.lost[k] {
                 continue;
             }
-            let ready = self
-                .nset(FuncId(k as u32))
-                .iter()
-                .all(|c| self.nat[c.0 as usize].0 != 0 || self.left[c.0 as usize].get());
-            if ready {
+            if self.ready(FuncId(k as u32)) {
                 self.ntab[k].store(addr, Ordering::Release);
                 self.nat[k].1 = true;
                 if let Some(tr) = &self.trace {
@@ -1945,6 +1993,7 @@ impl Worker {
         let mut trees = Vec::new();
         let mut prices = Vec::new();
         let mut waits = Vec::new();
+        let mut links = Vec::new();
         order.retain(|&i| {
             let ids = self.tree(cands[i]);
             let (saves, costs) = self.repays(cands[i], &ids);
@@ -1954,6 +2003,7 @@ impl Worker {
             }
             let cost: u64 = ids.iter().map(|&(i, _)| self.price(i)).sum::<u64>() + self.load_cost();
             prices.push((cost, self.factor(cands[i])));
+            links.push(ids.iter().all(|&(i, _)| self.cached(i)));
             trees.push(ids);
             true
         });
@@ -1971,6 +2021,14 @@ impl Worker {
         }
         if order.is_empty() {
             return None;
+        }
+        // A tree the cache holds whole is a link: it does not wait for the budget (maintainer
+        // 2026-10-27, #728: a warm run uses cached code as soon as its cache price repays).
+        if self.heat.budget != 0
+            && let Some(k) = links.iter().position(|&l| l)
+        {
+            cands.swap_remove(order[k]);
+            return Some(trees.swap_remove(k));
         }
         // The payback rule counts what the callees cost too (`Tune::tree_payback`).
         let mut ready: Vec<usize> = (0..order.len()).collect();
@@ -2052,8 +2110,8 @@ impl Worker {
     /// function's seen time over its kind's payback) and what it costs (the prices of the tree), in
     /// microseconds: compiled when the first is at least the second. The payback rule prices the root
     /// alone, and the callees a native-frame root brings cost up to six times its own price (#757).
-    /// A program the profile says ran before shares the cost among `profile::EARLY_RUNS` runs, as the
-    /// profile does (the compilation cache makes it a link in the next ones). The root's seen time is
+    /// A program the profile says ran before shares the cost among `profile::EARLY_RUNS` runs (the
+    /// compilation cache makes it a link in the next ones). The root's seen time is
     /// what `threshold` reads (a process's pooled over its copies, a copy's own unless it is a clocked
     /// process); a clocked process keeps its own rules, its seen time pays for its callees only.
     fn repays(&self, root: FuncId, ids: &[(FuncId, Part)]) -> (f64, f64) {
@@ -2356,18 +2414,17 @@ impl Worker {
         };
         self.profile_key = Some(key);
         p.remap(|rank| self.profile_order.get(rank as usize).copied());
-        // A function is compiled early when seen long enough that the payback rule would have
-        // compiled it within `EARLY_RUNS` runs of this length: the rule's price, the object cache
-        // making it a link (`threshold`), but the whole run's time in place of the part seen so far.
-        // A process that can have copies is held to it by each copy's own kind when the copy runs
-        // (`see`): a `BigLoop` copy of a `Big` process.
+        // A function is compiled early once the time the earlier runs saw it, summed, repays its
+        // compile by the payback rule (`threshold`: the rule's price, the object cache making it a
+        // link), maintainer 2026-10-27 (#679): the compile is paid once and the cache serves the runs
+        // after. A process that can have copies is held to it by each copy's own kind when the copy
+        // runs (`see`): a `BigLoop` copy of a `Big` process.
         for &(id, us, _) in &p.hot {
             let id = FuncId(id);
             let fine = self.prog.funcs.get(id).is_some_and(|f| !f.spare)
                 && self.prog.base_of(id) == id
                 && !p.lost.contains(&id.0)
-                && (self.prog.specialisable(id)
-                    || us.saturating_mul(profile::EARLY_RUNS) >= self.threshold(id, false));
+                && (self.prog.specialisable(id) || us >= self.threshold(id, false));
             if fine {
                 self.early.insert(id, us);
             }
@@ -2657,6 +2714,7 @@ impl Worker {
                 let key = list_key;
                 if lead && gen_.cache_enabled() && self.listed.insert(key.clone()) {
                     gen_.cache_note(&key.0, key.1);
+                    self.in_cache[id.0 as usize] = Default::default();
                 }
                 if part == Part::Native
                     && sampled
@@ -3678,6 +3736,54 @@ mod tests {
         assert_eq!(calls, vec![ids[1], ids[3]]);
     }
 
+    /// Native-frame code is published once what it reaches through compiled callees is compiled;
+    /// a callee never seen running does not hold it back, one seen running does, one left out
+    /// of a compile does not (#797).
+    #[test]
+    #[cfg(feature = "llvm")]
+    fn native_code_waits_only_for_callees_that_ran() {
+        let mut pb = ProgramBuilder::new();
+        let ids: Vec<_> = ["f", "g", "h"]
+            .into_iter()
+            .map(|n| pb.declare(n, yavs_ir::FuncKind::Procedure, None))
+            .collect();
+        for k in 0..3 {
+            let mut fb = pb.define(ids[k]);
+            fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+            // Something of its own, so the optimiser keeps the call.
+            let keep = fb.slot(8, 8);
+            let at = fb.addr(yavs_ir::AddrSpace::Frame, keep);
+            fb.emit(Inst::Store {
+                addr: at,
+                src: at,
+                w: yavs_ir::Width::B8,
+            });
+            if k < 2 {
+                let args = fb.regs(&[]);
+                fb.emit(Inst::Call {
+                    func: ids[k + 1],
+                    args,
+                    dst: None,
+                });
+            }
+            fb.emit(Inst::Ret { v: None });
+            fb.finish();
+        }
+        let mut w = worker_of(pb.finish().unwrap());
+        let (f, g, h) = (ids[0], ids[1], ids[2]);
+        assert!(w.nset(f).contains(&h));
+        w.nat[f.0 as usize].0 = 1;
+        assert!(w.ready(f), "g never ran");
+        w.time[g.0 as usize][0] = 1;
+        assert!(!w.ready(f), "g ran and is not compiled");
+        w.nat[g.0 as usize].0 = 1;
+        assert!(w.ready(f), "h never ran");
+        w.time[h.0 as usize][0] = 1;
+        assert!(!w.ready(f), "h ran and is not compiled");
+        w.left[h.0 as usize].set(true);
+        assert!(w.ready(f), "h is left out");
+    }
+
     #[test]
     fn an_unreachable_self_jump_is_no_loop() {
         for (reached, is_loop) in [(true, true), (false, false)] {
@@ -4240,11 +4346,28 @@ mod tests {
         assert!(m(Kind::BigLoop).payback() < m(Kind::Big).payback());
         assert!(w3.need(f3) < w.need(f));
         // A function whose object is in the cache is priced at what linking it costs, a process of 200
-        // IR instructions at about 5 ms, whatever its kind (#728, #785).
-        assert_eq!(HIT.price(200), 5_000);
+        // IR instructions at about 1 ms, whatever its kind (#728, #785).
+        assert_eq!(HIT.price(200), 1_200);
         let n2 = w2.prog.func(f2).unwrap().code.len();
-        assert_eq!(w2.price_of(f2, true), HIT.price(n2));
+        // (A program that is not in the stage cache has no pre-keys: its hits generate, #785.)
+        assert_eq!(w2.price_of(f2, true), super::HIT_GEN.price(n2));
         assert!(w2.price_of(f2, true) * 10 < w2.price_of(f2, false));
+    }
+
+    /// A warm run compiles a function whose object is in the cache once its cache price repays,
+    /// without the floor every other function waits for; `--tier-heat` keeps the floor (#728).
+    #[test]
+    #[cfg(feature = "llvm")]
+    fn a_cached_function_waits_for_its_cache_price_only() {
+        let (mut w, f) = worker(200);
+        let floor = w.heat.threshold(w.prog.func(f).unwrap());
+        assert_eq!(w.floor(f), floor, "not in the cache");
+        w.in_cache[f.0 as usize] = std::cell::OnceCell::from(true);
+        assert_eq!(w.floor(f), 0);
+        assert!(w.threshold(f, false) < floor, "{}", w.threshold(f, false));
+        assert_eq!(w.threshold(f, false), w.need(f));
+        w.heat.budget = 0;
+        assert_eq!(w.floor(f), floor, "--tier-heat");
     }
 
     /// What the profile of an earlier run calls hot is a candidate at its first look (#754), whatever
@@ -4602,7 +4725,7 @@ mod tests {
         set(&mut w, c2, Kind::BigLoop);
         let need = w.threshold(c2, false);
         let mut pending = super::Pending::default();
-        w.early.insert(f, need / super::profile::EARLY_RUNS - 1);
+        w.early.insert(f, need - 1);
         w.see(&look(c2, 1), false, &mut pending);
         assert!(pending.early.is_empty());
         w.early.insert(f, need);

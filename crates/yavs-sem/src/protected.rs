@@ -140,7 +140,7 @@ impl Db {
             "shared variable of type `{}`, which is not a protected type",
             self.type_name(t)
         );
-        if self.opts.relaxed {
+        if self.relaxed() {
             self.report(
                 Diagnostic::warning(diag::W_SHARED_NOT_PROTECTED, msg)
                     .with_primary(span, "accepted by `--relaxed`")

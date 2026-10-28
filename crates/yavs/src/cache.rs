@@ -141,6 +141,10 @@ impl StageCache for Stages {
         debug(msg.to_string());
     }
 
+    fn identity(&self, extent: &[usize], kind: &str, part: &[u8]) -> Option<String> {
+        self.key(extent, kind, part).map(|k| k.hex())
+    }
+
     fn put(&self, extent: &[usize], kind: &str, part: &[u8], bytes: &[u8]) {
         if let Some(k) = self.key(extent, kind, part) {
             debug(format!("store {kind} {} ({} bytes)", k.hex(), bytes.len()));

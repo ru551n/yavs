@@ -9,7 +9,7 @@ publish.workspace = true
 [features]
 # LLVM is optional so `cargo build --workspace` works on machines without it.
 # Test with: cargo test -p yavs-llvm --features llvm
-llvm = ["dep:llvm-sys", "dep:libloading"]
+llvm = ["dep:llvm-sys", "dep:libloading", "dep:postcard"]
 # The interpreter's collect-at-every-safepoint build for the unit tests:
 # cargo test -p yavs-llvm --features llvm,gc-stress
 gc-stress = ["yavs-interp/gc-stress"]
@@ -25,6 +25,7 @@ yavs-interp = { path = "../yavs-interp" }
 yavs-kernel = { path = "../yavs-kernel" }
 yavs-ir = { path = "../yavs-ir" }
 yavs-cache = { path = "../yavs-cache" }
+postcard = { workspace = true, optional = true }
 
 [[example]]
 name = "measure"

@@ -168,3 +168,18 @@ PLUGIN_EXPORT void format(void) {
   rc = vhpi_format_value(NULL, &out);
   vhpi_printf("NULL: rc=%d error=%d\n", rc, err());
 }
+
+static void next_cb(const vhpiCbDataT *cb) {
+  (void)cb;
+  vhpiTimeT t = {0, 0};
+  int rc = vhpi_get_next_time(&t);
+  vhpi_printf("end of time step t=%u: rc=%d next=%u\n", now(), rc, rc == 0 ? t.low : 0);
+}
+
+/* nexttime: vhpi_get_next_time in every end-of-time-step phase, and outside one. */
+PLUGIN_EXPORT void nexttime(void) {
+  vhpiTimeT t;
+  int rc = vhpi_get_next_time(&t);
+  vhpi_printf("at load: rc=%d error=%d\n", rc, err());
+  reg(vhpiCbRepEndOfTimeStep, 0, NULL, NULL, next_cb, "next");
+}

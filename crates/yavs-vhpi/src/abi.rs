@@ -987,10 +987,39 @@ pub unsafe extern "C" fn vhpi_format_value(
     })
 }
 
+/// The time of the next scheduled activity, in units of the resolution limit, into `time`:
+/// 0, or `vhpiNoActivity` when nothing is scheduled. The kernel knows it in the
+/// end-of-time-step phase only; elsewhere 1 and `W0903` (#828).
+///
+/// # Safety
+/// `time` is NULL or points to a writable `vhpiTimeT`.
 #[unsafe(no_mangle)]
-pub extern "C" fn vhpi_get_next_time(_time: *mut vhpiTimeT) -> c_int {
-    not_implemented("vhpi_get_next_time");
-    1
+pub unsafe extern "C" fn vhpi_get_next_time(time: *mut vhpiTimeT) -> c_int {
+    let next = with_hook(|h| h.next_time()).flatten();
+    with_state(|s| {
+        let Some(next) = next else {
+            s.fail(
+                Fault::Misuse,
+                "vhpi_get_next_time: the next time is known in the end-of-time-step phase (vhpiCbEndOfTimeStep)",
+            );
+            return 1;
+        };
+        // After-delay callbacks registered in this call reach the kernel after it returns.
+        let pending = s
+            .cbs
+            .to_wake
+            .iter()
+            .filter_map(|&id| s.cbs.due_at(id))
+            .min();
+        let Some(t) = next.into_iter().chain(pending).min() else {
+            return vhpiNoActivity;
+        };
+        // SAFETY: NULL or writable per the contract.
+        if let Some(p) = unsafe { time.as_mut() } {
+            *p = s.clock.vhpi_time(t);
+        }
+        0
+    })
 }
 
 /// Creates a process (`vhpiProcessStmtK`) or a driver (`vhpiDriverK`) of a foreign

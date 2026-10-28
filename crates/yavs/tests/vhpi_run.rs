@@ -1096,6 +1096,30 @@ fn vhpi_time_out_and_sensitivity_callbacks() {
     );
 }
 
+/// `vhpi_get_next_time` (#828): the next activity in each end-of-time-step phase, none after
+/// the last; refused outside that phase.
+#[test]
+fn vhpi_next_time_in_the_read_only_phase() {
+    let (code, err, out) = extras("nexttime");
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(err.matches("W0903").count(), 1, "{err}");
+    let lines: Vec<&str> = out
+        .lines()
+        .filter(|l| !l.starts_with("    Process"))
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "at load: rc=1 error=1",
+            "end of time step t=0: rc=0 next=10",
+            "end of time step t=10: rc=0 next=20",
+            "end of time step t=20: rc=0 next=30",
+            "end of time step t=30: rc=-1 next=0",
+        ],
+        "{out}"
+    );
+}
+
 /// `vhpi_format_value` between formats with no object: integers to radix strings, bit
 /// strings to logic vectors and hex; an integer is not a real, a real has no bits (`W0903`).
 #[test]

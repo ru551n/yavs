@@ -40,7 +40,12 @@ impl Default for Clock {
 impl Clock {
     /// `now` in units of the resolution limit.
     pub(crate) fn vhpi_now(&self) -> vhpiTimeT {
-        let ticks = self.now.as_fs() / self.resolution.fs();
+        self.vhpi_time(self.now)
+    }
+
+    /// Kernel time `t` in units of the resolution limit.
+    pub(crate) fn vhpi_time(&self, t: Time) -> vhpiTimeT {
+        let ticks = t.as_fs() / self.resolution.fs();
         vhpiTimeT {
             high: (ticks >> 32) as i32,
             low: ticks as u32,

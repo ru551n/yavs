@@ -22,7 +22,7 @@ the source tree.
 | Writing values | signals and ports (deposit or force with propagation), variables, driver transactions | forcing variables, constants, generics, non-propagating modes on signals |
 | Callbacks | start/end of simulation and initialization, time step, delta cycle, process and postponed phases, after delay, time-out, value change, sensitivity on a signal | transactions, force and release, statements, subprogram calls, tool phases, save and restart |
 | Foreign models | functions, procedures, architectures, library and application hooks | file parameters |
-| Misc calls | `vhpi_control` stop and finish, `vhpi_format_value` | `vhpi_get_data`, `vhpi_put_data`, `vhpi_get_next_time`, `vhpi_protected_call` (exported so plugins link, but they report "not implemented") |
+| Misc calls | `vhpi_control` stop and finish, `vhpi_format_value`, `vhpi_get_next_time` (in the read-only phase) | `vhpi_get_data`, `vhpi_put_data`, `vhpi_protected_call` (exported so plugins link, but they report "not implemented") |
 
 ## A first plugin
 
@@ -99,7 +99,7 @@ gap has an issue.
 
 | Area | Status | What works | Missing (issue) |
 |---|---|---|---|
-| Functions | partial | all 34 exported; every one works except the four on the right | `vhpi_get_next_time` ([#828](https://github.com/ru551n/yavs/issues/828)), `vhpi_get_data`, `vhpi_put_data` ([#832](https://github.com/ru551n/yavs/issues/832)), `vhpi_protected_call` ([#833](https://github.com/ru551n/yavs/issues/833)) |
+| Functions | partial | all 34 exported; every one works except the three on the right; `vhpi_get_next_time` in the end-of-time-step phase | `vhpi_get_data`, `vhpi_put_data` ([#832](https://github.com/ru551n/yavs/issues/832)), `vhpi_protected_call` ([#833](https://github.com/ru551n/yavs/issues/833)) |
 | Plugin loading, tool object | supported | startup table or `LIB:ENTRY`, Linux and Windows export tables, `vhpiArgcP`, `vhpiArgvs`, `vhpiNameP`, `vhpiToolVersionP`, `vhpiCapabilitiesP` (hierarchy, static access, foreign models, advanced foreign models, run-time debug) | `vhpiPhaseP` ([#832](https://github.com/ru551n/yavs/issues/832)) |
 | Region classes | partial | root and component instances, blocks, `for` and `if`/`case` generates, processes, package instances, entities, architectures, packages | equivalent processes of concurrent statements, statements ([#829](https://github.com/ru551n/yavs/issues/829)); components, configurations, subprograms, libraries ([#831](https://github.com/ru551n/yavs/issues/831)) |
 | Declaration classes | partial | generics, ports, signals, constants, variables, shared variables, user attribute specifications and declarations of declarations | aliases, files, implicit signals, attribute names ([#831](https://github.com/ru551n/yavs/issues/831)) |
@@ -220,6 +220,12 @@ reasons, each also in its `Rep` (repeating) form where the standard has one:
 
 Any other reason is refused with a "not implemented" diagnostic.
 
+A value-change callback registered while a cycle's changes are being delivered (for example one a
+framework re-arms from inside its own callback) is also shown the changes of that same cycle, once.
+This is a deliberate choice of yavs and differs from other simulators that implement VHPI: a
+framework that waits repeatedly for the first of several triggers that fire together then does not
+lose the later triggers.
+
 ### Converting values
 
 `vhpi_format_value` converts a value from one format to another without an object: integers
@@ -229,11 +235,13 @@ The input format decides the kind of value (a binary string is a logic vector); 
 another kind (an integer to a real) is warning `W0903`. The output follows the buffer protocol of
 `vhpi_get_value`.
 
-A value-change callback registered while a cycle's changes are being delivered (for example one a
-framework re-arms from inside its own callback) is also shown the changes of that same cycle, once.
-This is a deliberate choice of yavs and differs from other simulators that implement VHPI: a
-framework that waits repeatedly for the first of several triggers that fire together then does not
-lose the later triggers.
+### Next activity time
+
+`vhpi_get_next_time` gives the time of the next scheduled activity in units of the resolution
+limit (0), or returns `vhpiNoActivity` when nothing is scheduled. It answers in the
+end-of-time-step phase (`vhpiCbEndOfTimeStep`, the read-only phase), where the kernel has just
+computed it; after-delay callbacks registered in the same callback count. Elsewhere it returns 1
+with warning `W0903`.
 
 ### Foreign models
 

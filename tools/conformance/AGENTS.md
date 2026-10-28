@@ -6,7 +6,7 @@ report generator or regenerate the report (#780).
 ## 1. Purpose and boundaries
 
 - `run.py` runs the evidence suites that exist elsewhere in `tools/` (difftest, discrepancies, the
-  reference simulators' own tests, analysis corpora, UVVM and OSVVM suites, real designs, and with
+  reference simulators' own tests, analysis corpora, UVVM, OSVVM and VESTs suites, real designs, and with
   `--local` the reference-simulator baselines and the VHPI trace diff) and renders `docs/conformance.md`
   and `docs/conformance.json`. It is a thin driver: it parses the output of those tools and builds no
   test of its own.

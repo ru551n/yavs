@@ -6,7 +6,7 @@ docs/conformance.md and docs/conformance.json from the results plus the committe
   tools/conformance/run.py [--yavs BIN] [--out DIR] [--only a,b] [--local] [--llvm] [--check]
   tools/conformance/run.py --report-only --out DIR      # render from the results saved in DIR
 
-Steps (--only names): difftest, discrepancies, external, corpora, uvvm, osvvm, designs; with --local also
+Steps (--only names): difftest, discrepancies, external, corpora, uvvm, osvvm, vests, designs; with --local also
 refdiff, vhpi (reference simulators configured in tools/sims.local.conf); with --llvm (a build with
 the `llvm` feature) also difftest of the auto and llvm tiers and the designs under auto. A --local run stores
 what it ran in docs/conformance-local.json with date and commit; CI never writes it. --check renders into --out
@@ -23,7 +23,7 @@ DOCS = ROOT / "docs"
 MD, JS, LOCAL = DOCS / "conformance.md", DOCS / "conformance.json", DOCS / "conformance-local.json"
 GH = "https://github.com/ru551n/yavs"
 PY = ["python3", "-I"]
-CI_STEPS = ["difftest", "discrepancies", "external", "corpora", "uvvm", "osvvm", "designs"]
+CI_STEPS = ["difftest", "discrepancies", "external", "corpora", "uvvm", "osvvm", "vests", "designs"]
 LOCAL_STEPS = ["refdiff", "vhpi", "tiers"]
 DESIGNS = ["neorv32_dual_full", "neorv32_single_min", "neorv32_single_cache", "grlib_leon3mp"]
 
@@ -129,6 +129,20 @@ class Run:
         return {std: self.suite(f"osvvm-{std}", PY + [TOOLS / "suites/pro.py", "--std", std, "--root", self.corpus / "osvvm-libraries", "--yavs", self.a.yavs, "--jobs", "4", "--no-wrap"], 3)
                 for std in ("2008", "2019")}
 
+    def step_vests(self):
+        d = self.out / "vests"
+        rc, text = sh(PY + [TOOLS / "suites/vests.py", "--yavs", self.a.yavs, "-j", self.jobs, "--no-wrap", "--out", d], self.env)
+        if not (d / "results.tsv").exists():
+            sys.exit(f"vests.py wrote no results.tsv (exit {rc}):\n{text[-1500:]}")
+        res, failed = {}, {}
+        for g, t, st, why, issue in (l.split("\t") for l in (d / "results.tsv").read_text().splitlines()):
+            c = res.setdefault(g, {"pass": 0, "fail": 0, "skip": 0, "late": 0})
+            c[st.lower()] += 1
+            c["late"] += why.startswith("rejected at")
+            if st == "FAIL":
+                failed.setdefault(issue or "none", []).append(t)
+        return {"groups": res, "failed": dict(sorted(failed.items()))}
+
     def step_designs(self, tiers="interp", name="designs"):
         d = self.out / name
         rc, out = sh(PY + [TOOLS / "realbench/run.py", self.a.yavs, "--tests", ",".join(DESIGNS), "--tiers", tiers, "--phases", "run",
@@ -229,6 +243,51 @@ LIMITS = [
 
 
 # ------------------------------------------------------------------ rendering
+def vests_totals(vs):
+    g = vs["groups"].values()
+    return {"pass": sum(v["pass"] for v in g), "total": sum(v["pass"] + v["fail"] for v in g), "skip": sum(v["skip"] for v in g)}
+
+
+def suite_rows(R):
+    """passed / total per simulated suite, with where and when it was run (the per-suite table)."""
+    ci, loc, m, w = R["ci"], R["local"]["records"], R["generated"], R.get("waveq")
+    here = ["CI", f"{m['commit_date']}, `{m['commit']}`"]
+    rec = lambda k: ["local", f"{loc[k]['date']}, `{loc[k]['commit']}`"]
+    allg = lambda d: [sum(v[0] for v in d.values()), sum(v[1] for v in d.values())]
+    rows = []
+    if "difftest" in ci:
+        rows.append(["Differential corpus (`tests/corpus`), interpreter, 4 threads shuffled", "{}/{}".format(*allg(ci["difftest"]["interp"]["4 threads shuffled"]["groups"])), *here])
+    if "tiers" in loc:
+        for t in ("auto", "llvm"):
+            rows.append([f"Differential corpus, tier `{t}`, 4 threads shuffled", "{}/{}".format(*allg(loc["tiers"]["data"][t]["4 threads shuffled"]["groups"])), *rec("tiers")])
+    if "discrepancies" in ci:
+        d = ci["discrepancies"]
+        rows.append(["Known discrepancy reproducers", f"{d['cases']}/{d['cases']}" if d["yavs_matches_expected"] else f"not all of {d['cases']}", *here])
+    for s, v in ci.get("external", {}).items():
+        rows.append([f"{s}'s own regression tests (runnable ones)", f"{v['classes'].get('pass', 0) + v['classes'].get('early', 0)}/{v['tests'] - v['classes'].get('skip', 0)}", *here])
+    if "vests" in ci:
+        t = vests_totals(ci["vests"])
+        rows.append(["VHDL-1993 language suite (VESTs: billowitch, ashenden, clifton-labs)", f"{t['pass']}/{t['total']}", *here])
+    if "uvvm" in ci:
+        rows.append(["UVVM testbenches", f"{ci['uvvm'].get('pass', 0)}/{ci['uvvm']['runs']}", *here])
+    for s, v in ci.get("osvvm", {}).items():
+        rows.append([f"OSVVM regression, VHDL-{s}", f"{v.get('pass', 0)}/{v['runs']}", *here])
+    for k, title in (("vunit-own", "VUnit's own VHDL test suites"), ("cocotb", "cocotb's own tests over VHPI")):
+        if k in loc:
+            d = loc[k]["data"]
+            rows.append([title, f"{d['pass']}/{d['pass'] + d['fail'] + d.get('skip', 0)}", *rec(k)])
+    rows.append(["Open Logic testbenches", "not run yet", "", ""])
+    if "designs" in ci:
+        rows.append(["Real designs (neorv32 x3, GRLIB LEON3), interpreter", "{}/{}".format(sum(all(t.values()) for t in ci["designs"].values()), len(ci["designs"])), *here])
+    if w:
+        rows.append([f"Waveform equivalence with sim1 (signals of {w['designs']} real designs)", f"{w['equal']}/{w['signals']}", "local", f"{w['run']['date']}, `{w['run']['commit']}`"])
+    if "vhpi" in loc:
+        d = loc["vhpi"]["data"]
+        rows.append(["VHPI plugin traces identical to sim1's", f"{d['traces_equal']}/{d['plugins']}", *rec("vhpi")])
+    return rows
+
+
+
 def table(head, rows, right=()):
     sep = ["---:" if i in right else "---" for i in range(len(head))]
     return "\n".join("| " + " | ".join(map(str, r)) + " |" for r in [head, sep] + rows) + "\n"
@@ -271,6 +330,9 @@ The references are called sim1 and sim2 (two established open-source VHDL simula
         h.append(("UVVM's own testbenches", f"{u.get('pass', 0)} of {u['runs']} runs pass ({u.get('skip', 0)} skipped: vendor libraries absent)"))
     if "osvvm" in ci:
         h.append(("OSVVM's own regression", ", ".join(f"{s}: {v.get('pass', 0)}/{v['runs']}" for s, v in ci["osvvm"].items())))
+    if "vests" in ci:
+        v = vests_totals(ci["vests"])
+        h.append(("VHDL-1993 language suite (VESTs), simulated at `--std=93`", f"{v['pass']} of {v['total']} tests pass the suite's own verdict ({v['skip']} not counted: tests that are not legal VHDL-1993 or that every tool rejects under the suite's own build list)"))
     if "designs" in ci:
         h.append(("Real designs run to completion (neorv32 x3, GRLIB LEON3)", "{}/{}".format(sum(all(t.values()) for t in ci["designs"].values()), len(ci["designs"]))))
     w = R.get("waveq")
@@ -281,6 +343,9 @@ The references are called sim1 and sim2 (two established open-source VHDL simula
         if k == "vunit-own":
             h.append(("VUnit's own VHDL suites (local)", f"{v['data']['pass']} of {v['data']['pass'] + v['data']['fail']} tests pass, 11 suites"))
     o.append("## Headline\n\n" + table(["Evidence", "Result"], [list(x) for x in h]))
+    o.append("## Every simulated suite\n\nOne row per suite that yavs simulates (the analysis corpora, which are analysed only, are in their own section). "
+             "A pass is the suite's own verdict; where a row was run is CI (this commit) or a local run with its date and commit.\n\n" +
+             table(["suite", "passed / total", "where", "date, commit"], suite_rows(R), right=(1,)))
     o.append("""## Reproduce
 
 ```sh
@@ -300,6 +365,7 @@ A `--local` run rewrites `docs/conformance-local.json`; commit it together with 
             ["Reference simulators' own tests", "CI", "`tools/difftest/external.py sim1|sim2 --oracle`"],
             ["Analysis corpora", "CI", "`tools/corpus/run.py <manifest> --keep-going`"],
             ["UVVM, OSVVM suites", "CI", "`tools/suites/uvvm.py`, `tools/suites/pro.py --std 2008|2019`"],
+            ["VHDL-1993 language suite (VESTs)", "CI", "`tools/suites/vests.py`"],
             ["Real designs", "CI", "`tools/realbench/run.py BIN --tests ... --runs 0`"]]
     if w:
         prov.append(["Waveform equivalence", f"local, {w['run']['date']} at `{w['run']['commit']}`", f"`{w['run']['command']}`"])
@@ -383,6 +449,25 @@ yavs's verdict and who decided.
                 d = v["data"]
                 rows.append([f"{v['title']} (local, {v['date']} at `{v['commit']}`)", d["pass"] + d["fail"] + d.get("skip", 0), d["pass"], d["fail"], d.get("skip", 0), v["note"]])
         o.append("## Verification libraries (UVVM, OSVVM, VUnit)\n\nThe libraries' own testbenches and regression suites run on yavs, each with the library's verdict.\n\n" + table(["suite", "runs", "pass", "fail", "skip", "note"], rows, right=(1, 2, 3, 4)))
+    # --- vests
+    if "vests" in ci:
+        vs = ci["vests"]
+        g = vs["groups"]
+        rows = [[k, frac(v["pass"], v["pass"] + v["fail"]), v["skip"]] for k, v in g.items()]
+        t = vests_totals(vs)
+        rows.append(["total", frac(t["pass"], t["total"]), t["skip"]])
+        an = g.get("billowitch/analyzer_failure", {})
+        o.append("## VHDL-1993 language suite (CI)\n\nVESTs, the VHDL test suite for IEEE 1076-1993 (University of Cincinnati; the billowitch, ashenden and clifton-labs parts), "
+                 "run on yavs at `--std=93` with the suite's own test lists and expectations (`tools/suites/vests.py`, whose docstring has the exact rules). "
+                 "Compliant tests are analysed and run (billowitch, clifton-labs: pass = the test's PASSED line, no FAILED line, no error) or analysed only "
+                 "where the suite only builds them (ashenden); non-compliant tests must fail: the billowitch `analyzer_failure` ones at analysis, the others at any step. "
+                 "Where a test's expectation is wrong by the language reference, or the file is not legal VHDL-1993, or every tool rejects it under the suite's own build list, "
+                 "or the result is implementation-defined, the test carries a recorded reason in the driver: the first kind counts as a pass, the others are not counted. "
+                 f"The billowitch `disputed` directory has no expectation and is not run.\n\n" + table(["group", "pass", "not counted"], rows, right=(1, 2)) +
+                 f"\nOf the {an.get('pass', 0)} `analyzer_failure` passes, {an.get('pass', 0) - an.get('late', 0)} fail at analysis and {an.get('late', 0)} are stopped by a yavs error "
+                 "at elaboration or run time before the test's own verdict (values out of range, lengths, delays: the language reference leaves open when such errors are detected).\n\n"
+                 "Failures by the issue that tracks their cause:\n\n" +
+                 "".join(f"- {'[#' + n + '](' + GH + '/issues/' + n + ')' if n != 'none' else 'no issue'}: " + ", ".join(f"`{x}`" for x in ts) + "\n" for n, ts in vs["failed"].items()) + "\n")
     # --- vhpi
     if "vhpi" in loc:
         v = loc["vhpi"]

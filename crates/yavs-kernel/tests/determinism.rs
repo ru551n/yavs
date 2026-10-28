@@ -199,6 +199,15 @@ fn threads_give_identical_traces() {
             "{threads} threads, all pooled"
         );
     }
+    // A batch without serial processes: every process early-committed in the workers (#481).
+    let plain = trace(false, 1, None);
+    for threads in [2, 4, 8] {
+        assert_eq!(
+            plain,
+            trace_with(false, threads, None, true),
+            "{threads} threads, pieces"
+        );
+    }
 }
 
 #[test]
@@ -215,6 +224,16 @@ fn shuffle_gives_identical_traces_for_order_independent_designs() {
 #[test]
 fn shuffle_exposes_order_dependent_serial_processes() {
     assert_ne!(trace(true, 1, None), trace(true, 1, Some(1)));
+    // The serial processes of a pooled batch run in the shuffled order too, so a seed gives the
+    // same result at any thread count.
+    let one = trace(true, 1, Some(1));
+    for threads in [2, 4] {
+        assert_eq!(
+            one,
+            trace_with(true, threads, Some(1), true),
+            "{threads} threads"
+        );
+    }
 }
 
 /// Resolution fails on 300 independent signals in one cycle (updated in parallel at 8

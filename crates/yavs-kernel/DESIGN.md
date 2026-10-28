@@ -254,16 +254,24 @@ current value and an error while it is disconnected.
 
 Within a delta the kernel has two phases that never overlap:
 
-- **Run phase.** The ready processes run on a rayon pool (`Config::threads`, 1 means inline).
-  A batch goes to the pool only when the estimated time of its parallel processes, less the
-  largest one, passes `POOL_WORK_NS` (20 us); a smaller one runs inline, the hand-off costing
-  more than it saves (#497). The estimate of a process is an average of timed inline
-  activations (one in `COST_EVERY` of each process, at a position that moves from batch to
-  batch; a process not yet timed counts 0), and one in `PROBE_EVERY` of the batches that would
-  pool runs inline to refresh them: a pooled run would measure cold caches. `Config::pool_all`
-  pools every batch of two or more (tests). Where a batch runs changes no output.
+- **Run phase.** The ready processes run on `Config::threads` threads: a rayon pool of one
+  fewer and the kernel thread (1 means inline, no pool). A batch goes to the pool only when the
+  estimated time of its parallel processes, less the largest one, passes a threshold that
+  starts at `POOL_WORK_NS` (20 us) and rises when pooled batches turn out no faster than their
+  estimate (`learn_pooled`); a smaller one runs inline, the hand-off costing more than it saves
+  (#497). The estimate of a process is an average of timed inline activations (one in
+  `COST_EVERY` of each process, at a position that moves from batch to batch; a process not yet
+  timed counts 0), and one in `PROBE_EVERY` of the batches that would pool runs inline to
+  refresh them: a pooled run would measure cold caches. Initialisation and postponed batches
+  run inline; `Config::pool_all` pools every other batch of two or more (tests). A pooled batch
+  is cut into pieces of consecutive process numbers, each with its own sub-slices of the slot,
+  meta and idle arrays (`split_at_mut`, no lock); the workers and the kernel thread claim
+  pieces in turn, run the parallel processes and commit the usual clocked ones into the
+  piece's buffers, which the kernel thread applies after the join; the serial processes then
+  run on the kernel thread in batch order (#481). Where a batch runs changes no output.
   Each gets a `Ctx` holding a shared read-only view (`Shared`: time, delta, cycle number, all
-  signals, driver table) and `&mut` to its own `ProcState` (a per-process slot with a mutex that only the pooled path locks; the inline path takes none). A
+  signals, driver table) and `&mut` to its own `ProcState` (a per-process slot; its mutex is
+  locked only by the parallel update of independent signals). A
   process can only read current-cycle values and write its own waveforms, its own wait state and
   its own effect buffer. No data races are possible without `unsafe`, and the crate forbids
   `unsafe`.

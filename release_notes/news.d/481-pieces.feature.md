@@ -1,0 +1,1 @@
+`--threads N` speeds up large, flat RTL designs, where thousands of processes wake on the same clock edge, and no longer slows down processor models: the processes of a delta cycle are shared out to the threads in pieces, and a design whose processes run no faster on several threads stays on one.

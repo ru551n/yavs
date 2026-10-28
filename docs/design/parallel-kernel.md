@@ -4,8 +4,10 @@ Status: analysis and design (2026-10-21, issue #481 item 3). Nothing here is imp
 prototype measured in section 5 lives on the branch `spike/mt-chunks` (instrumentation plus the run-phase
 changes, behind environment variables); it is evidence, not product code.
 
-Status (2026-10-28, #497): step 1 (section 7) is on `main`: the inline or pooled choice by estimated work (4.1) and
-the live scan only with a serial process in the batch. Measured in `docs/STATUS.md` "Parallel kernel, step 1".
+Status (2026-10-28, #497, #481): steps 1 and 2 (section 7) are on `main`: the inline or pooled choice by estimated
+work (4.1), with a threshold that rises when pooled batches do not gain, and the run phase in pieces of the slot array
+with the early commit in the worker (4.2; every pooled batch, serial processes after the join, `threads - 1` workers).
+Measured in `docs/STATUS.md` "Parallel kernel, step 1" and "step 2". Step 3 (4.5): see `docs/decisions.md`.
 
 Status check (2026-10-28, source at `ac2c94ff`, before step 1): still true. `PAR_BATCH` is a fixed 32, the parallel update cut-off a
 fixed 256, the pooled path partitions serial and parallel processes and the kernel thread then locks and commits every

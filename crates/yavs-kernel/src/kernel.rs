@@ -3,7 +3,7 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rayon::prelude::*;
@@ -33,6 +33,8 @@ const POOL_WORK_NS: u64 = 20_000;
 const COST_EVERY: usize = 16;
 /// One batch in this many that would go to the pool runs inline to refresh the costs.
 const PROBE_EVERY: u32 = 64;
+/// Pieces of a pooled batch per thread: enough to balance processes of different cost.
+const PIECES_PER_THREAD: usize = 4;
 /// Generators that re-arm themselves in one cycle (clocks that edge together); more resume.
 const SKIP_MAX: usize = 4;
 
@@ -73,7 +75,8 @@ pub struct Config {
     /// changed elements (`Signal::watch_part`). Value-change observers still get exact runs.
     pub cells: bool,
     /// With `threads` above 1, hand every batch of two or more processes to the pool instead of
-    /// choosing by estimated work (tests: the pooled path must commit as the inline one does).
+    /// choosing by estimated work, but initialisation and postponed batches (tests: the pooled
+    /// path must commit as the inline one does).
     pub pool_all: bool,
 }
 
@@ -567,6 +570,43 @@ pub(crate) struct Slot {
     pub result: Result<(), SimError>,
 }
 
+/// A piece of a pooled batch (`SimControl::run_batch`): processes of consecutive numbers from
+/// `lo`, with the slices of the slots, metas and idle flags from `lo` on.
+struct Piece<'a> {
+    pids: &'a [u32],
+    lo: usize,
+    slots: &'a mut [Mutex<Slot>],
+    procs: &'a mut [ProcMeta],
+    armed: &'a mut [bool],
+    out: Early,
+}
+
+/// The estimated time of a pooled batch inline (`all`, ns) and of its splittable part (`work`);
+/// `learn`: every process has a cost (`SimControl::learn_pooled`).
+#[derive(Clone, Copy, Default)]
+struct Estimate {
+    all: u64,
+    work: u64,
+    learn: bool,
+}
+
+/// What the processes of a piece committed in the worker, for the kernel thread to apply, and
+/// the processes it left to the commit loop (`late`, in process order).
+#[derive(Default)]
+struct Early {
+    queue: Vec<(Time, u32)>,
+    direct: Vec<Out>,
+    directv: Vec<OutV>,
+    directb: Vec<OutB>,
+    empty_delta: bool,
+    idle_done: u32,
+    late: Vec<u32>,
+    /// Serial processes the worker left for the kernel thread.
+    serial: u32,
+    /// A process of the piece failed.
+    failed: bool,
+}
+
 pub(crate) struct ProcMeta {
     pub flags: ProcFlags,
     /// Bumped on every resumption; stale waiters and timeouts carry an older one.
@@ -933,10 +973,20 @@ pub struct SimControl {
     pool: Option<rayon::ThreadPool>,
     /// With a pool: per process the estimated time of an activation in ns, an average of timed
     /// inline activations (0 until one is timed); the count of batches, which places the timed
-    /// activations, and of batches that would pool, which picks the probe batches (#497).
+    /// activations, and of the batches above and below `pool_ns`, which pick the probes (#497).
     cost: Vec<u32>,
+    /// With a pool: per process, whether it is serial (dense, written only at build: the metas
+    /// are written by the workers).
+    serial_of: Vec<bool>,
+    /// The buffers of the pieces of a pooled batch, kept between batches.
+    early: Vec<Early>,
+    /// The threshold of `pool_batch` in ns: `POOL_WORK_NS`, raised by pooled batches that lost.
+    pool_ns: u64,
+    /// `learn_pooled`: pooled time over the estimate inline, in 1024ths, averaged.
+    pool_ratio: u64,
     batches: u32,
     probe: u32,
+    raise_probe: u32,
     rng: Option<u64>,
     interrupt: Interrupt,
     stats: Stats,
@@ -1060,9 +1110,10 @@ impl SimControl {
                 )));
             }
             1 => None,
+            // The kernel thread works too: N threads in all, so a pinned run is not oversubscribed.
             n => Some(
                 rayon::ThreadPoolBuilder::new()
-                    .num_threads(n)
+                    .num_threads(n - 1)
                     .build()
                     .map_err(|e| SimError::new(ErrorKind::Usage(format!("thread pool: {e}"))))?,
             ),
@@ -1230,10 +1281,13 @@ impl SimControl {
         let no_code_signals = signals.iter().filter(|s| s.keeps_no_codes()).count() as u64;
         let skip_signals = signals.iter().filter(|s| s.skip_ok).count() as u64;
         let nsignals = signals.len() as u64;
-        let cost = if pool.is_some() {
-            vec![0; procs.len()]
+        let (cost, serial_of) = if pool.is_some() {
+            (
+                vec![0; procs.len()],
+                procs.iter().map(|m| m.flags.serial).collect(),
+            )
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
         let mut sim = SimControl {
             guard_procs,
@@ -1305,9 +1359,14 @@ impl SimControl {
             watch_changes: false,
             wakes: Wakes::default(),
             cost,
+            serial_of,
+            early: Vec::new(),
             pool,
+            pool_ns: POOL_WORK_NS,
+            pool_ratio: 512,
             batches: 0,
             probe: 0,
+            raise_probe: 0,
             interrupt: Interrupt::default(),
             stats: Stats {
                 lean_signals,
@@ -3363,7 +3422,15 @@ impl SimControl {
         // The processes the commit loop has to commit, in batch order: those not committed right
         // after they ran.
         let mut late = std::mem::take(&mut self.late);
-        let pooled = self.pool.is_some() && self.pool_batch(&pids);
+        // Initialisation and postponed processes always run inline (their commit differs).
+        // The estimate of a pooled batch, to learn from its time (`learn_pooled`).
+        let est = if self.pool.is_some() && !init && !postponed {
+            self.pool_batch(&pids)
+        } else {
+            None
+        };
+        let pooled = est.is_some();
+        let pooled_at = est.filter(|e| e.learn).map(|_| std::time::Instant::now());
         {
             let sh = Shared {
                 now: self.now,
@@ -3405,44 +3472,173 @@ impl SimControl {
             };
 
             match &self.pool {
-                // Inline or pooled, the commit order is the batch order.
+                // The batch cut into pieces of consecutive process numbers, each with its own
+                // sub-slices of the slots, metas and idle flags (no lock per process); the pool's
+                // threads and this one claim pieces in turn. A process that waited again and only
+                // scheduled drivers is committed in the worker as in the inline loop below, into
+                // the piece's buffers; the others are committed after the batch in batch order.
+                // Serial processes run after the pieces, here, in batch order
+                // (`docs/design/parallel-kernel.md` 4.2).
                 Some(pool) if pooled => {
-                    late.extend_from_slice(&pids);
-                    let (serial, par): (Vec<u32>, Vec<u32>) = pids
-                        .iter()
-                        .partition(|&&p| self.procs[p as usize].flags.serial);
-                    let slots = &self.slots;
-                    let procs = &self.procs;
-                    pool.install(|| {
-                        par.par_iter().for_each(|&p| {
-                            let mut s = lock(&slots[p as usize]);
-                            if !init {
-                                resumption(procs, p, &mut s.st);
-                            }
-                            run(p, &mut s, false)
-                        })
-                    });
-                    // The serial ones, in batch order as the inline path runs them: none after a
-                    // process that stopped the batch (files are written at run time), and live
-                    // while no earlier parallel one wrote.
-                    if !serial.is_empty() {
-                        let mut live = live_ok;
-                        for &p in &pids {
-                            let ser = procs[p as usize].flags.serial;
-                            let mut s = lock(&slots[p as usize]);
-                            if ser {
-                                if !init {
-                                    resumption(procs, p, &mut s.st);
+                    let mut sorted = pids.clone();
+                    if !sorted.is_sorted() {
+                        sorted.sort_unstable();
+                    }
+                    let k = pool.current_num_threads() + 1;
+                    let per = sorted.len().div_ceil(k * PIECES_PER_THREAD);
+                    let (mut slots, mut procs, mut armed) = (
+                        &mut self.slots[..],
+                        &mut self.procs[..],
+                        &mut self.armed[..],
+                    );
+                    let mut base = 0;
+                    let mut parts = Vec::with_capacity(sorted.len().div_ceil(per));
+                    let mut bufs = std::mem::take(&mut self.early);
+                    for c in sorted.chunks(per) {
+                        let (lo, hi) = (c[0] as usize, c[c.len() - 1] as usize + 1);
+                        let (s, rest) =
+                            std::mem::take(&mut slots)[lo - base..].split_at_mut(hi - lo);
+                        slots = rest;
+                        let (m, rest) =
+                            std::mem::take(&mut procs)[lo - base..].split_at_mut(hi - lo);
+                        procs = rest;
+                        let (a, rest) =
+                            std::mem::take(&mut armed)[lo - base..].split_at_mut(hi - lo);
+                        armed = rest;
+                        base = hi;
+                        parts.push(Mutex::new(Piece {
+                            pids: c,
+                            lo,
+                            slots: s,
+                            procs: m,
+                            armed: a,
+                            out: bufs.pop().unwrap_or_default(),
+                        }));
+                    }
+                    let (next, names) = (AtomicUsize::new(0), &self.names);
+                    let work = || {
+                        while let Some(part) = parts.get(next.fetch_add(1, Ordering::Relaxed)) {
+                            let mut part = part.lock().unwrap_or_else(PoisonError::into_inner);
+                            let Piece {
+                                pids,
+                                lo,
+                                slots,
+                                procs,
+                                armed,
+                                out,
+                            } = &mut *part;
+                            for &p in pids.iter() {
+                                let i = p as usize - *lo;
+                                if procs[i].flags.serial {
+                                    out.serial += 1;
+                                    out.late.push(p);
+                                    continue;
                                 }
-                                run(p, &mut s, live);
+                                let slot = slot_mut(&mut slots[i]);
+                                resumption(procs, i as u32, &mut slot.st);
+                                run(p, slot, false);
+                                let (st, meta) = (&mut slot.st, &mut procs[i]);
+                                // As the early commit of the inline loop below.
+                                if st.again
+                                    && st.act & ACT_SLOW == 0
+                                    && meta.perm != 0
+                                    && st.wait_key == meta.wkey
+                                    && slot.result.is_ok()
+                                {
+                                    st.check_flags();
+                                    st.again = false;
+                                    st.matched = 0;
+                                    st.wait_key = crate::process::NO_EDGE;
+                                    meta.ready = false;
+                                    meta.resumed = true;
+                                    if meta.idle_ok
+                                        && note_idle(
+                                            meta,
+                                            &mut armed[i],
+                                            sh.signals,
+                                            &names[p as usize],
+                                            st,
+                                        )
+                                    {
+                                        out.idle_done += 1;
+                                    }
+                                    if st.act & ACT_ASSIGNED != 0 {
+                                        out.queue
+                                            .extend(st.scheduled.drain(..).map(|(t, d)| (t, d.0)));
+                                        out.direct.append(&mut st.out);
+                                        out.directv.append(&mut st.outv);
+                                        out.directb.append(&mut st.outb);
+                                        if !st.phantoms.is_empty() {
+                                            out.empty_delta |= st.take_phantoms();
+                                        }
+                                    }
+                                } else {
+                                    out.failed |= slot.result.is_err();
+                                    out.late.push(p);
+                                }
                             }
-                            if stops(s.result.is_err(), &s) {
+                        }
+                    };
+                    pool.in_place_scope(|sc| {
+                        for _ in 1..k {
+                            sc.spawn(|_| work());
+                        }
+                        work();
+                    });
+                    // The pieces in process order, so their late lists join in process order.
+                    let (mut lates, mut serial, mut failed) = (Vec::new(), 0, false);
+                    for part in parts {
+                        let mut out = part
+                            .into_inner()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .out;
+                        for (t, d) in out.queue.drain(..) {
+                            self.queue.push(self.now, t, Entry::Driver(d));
+                        }
+                        self.direct.append(&mut out.direct);
+                        self.directv.append(&mut out.directv);
+                        self.directb.append(&mut out.directb);
+                        self.empty_delta |= std::mem::take(&mut out.empty_delta);
+                        self.idle_live -= std::mem::take(&mut out.idle_done);
+                        serial += std::mem::take(&mut out.serial);
+                        failed |= std::mem::take(&mut out.failed);
+                        lates.append(&mut out.late);
+                        bufs.push(out);
+                    }
+                    self.early = bufs;
+                    self.idle_active = self.idle_live != 0;
+                    // The serial processes in batch order, as the inline loop runs them: none
+                    // after a process that stopped the batch (it is not committed either), and
+                    // live while no earlier one wrote.
+                    let mut unrun = 0;
+                    if serial != 0 || failed {
+                        let mut live = live_ok;
+                        for (n, &p) in pids.iter().enumerate() {
+                            let ser = self.serial_of[p as usize];
+                            let s = slot_mut(&mut self.slots[p as usize]);
+                            if ser && serial != 0 {
+                                resumption(&self.procs, p, &mut s.st);
+                                run(p, s, live);
+                            }
+                            if stops(s.result.is_err(), s) {
+                                unrun = n + 1;
                                 break;
                             }
                             live &= ser
                                 || !(s.st.effects.iter())
                                     .any(|e| matches!(e, Effect::Report(..) | Effect::Output(..)));
                         }
+                    }
+                    // After a stop, as inline: nothing later in the batch is committed.
+                    let ran = if unrun == 0 {
+                        &pids[..]
+                    } else {
+                        &pids[..unrun]
+                    };
+                    if lates.len() == pids.len() && unrun == 0 {
+                        late.extend_from_slice(&pids);
+                    } else if !lates.is_empty() {
+                        late.extend(ran.iter().filter(|p| lates.binary_search(p).is_ok()));
                     }
                 }
                 // No other thread touches the slots: no lock. One unwind guard for the batch
@@ -3596,42 +3792,70 @@ impl SimControl {
                 }
             }
         }
+        if let (Some(t), Some(e)) = (pooled_at, est) {
+            self.learn_pooled(e, t.elapsed().as_nanos() as u64);
+        }
         self.commit_rest(late, pids, postponed, init)
     }
 
-    /// Whether a batch goes to the pool: the estimated work of its parallel processes, less the
-    /// largest one (a batch whose time is one process cannot be split), passes `POOL_WORK_NS`.
-    /// Costs are learnt from inline runs only (a pooled run measures cold caches and would confirm
-    /// itself), so one in `PROBE_EVERY` of the batches that would pool runs inline. Where a batch
-    /// runs changes no output: both paths commit in batch order (#497,
-    /// `docs/design/parallel-kernel.md` 4.1).
-    fn pool_batch(&mut self, pids: &[u32]) -> bool {
-        let pool = if self.cfg.pool_all {
-            pids.len() >= 2
-        } else {
-            self.batches = self.batches.wrapping_add(1);
-            self.worth_pooling(pids) && {
-                self.probe = self.probe.wrapping_add(1);
-                !self.probe.is_multiple_of(PROBE_EVERY)
-            }
-        };
-        self.stats.pooled_batches += u64::from(pool);
-        pool
+    /// The time of a pooled batch over its estimate inline, averaged (`pool_ratio`, 1024 is
+    /// even): when the average reaches even, the threshold of `pool_batch` rises to twice the
+    /// batch's splittable work; a batch at least a fifth faster lowers it to its splittable
+    /// work, not below `POOL_WORK_NS`. Processes with much state lose more to the caches of
+    /// other cores than the estimate shows (a processor's pipeline, #497); the average keeps a
+    /// late worker or a preempted core from raising it.
+    fn learn_pooled(&mut self, e: Estimate, ns: u64) {
+        let r = (ns.saturating_mul(1024) / e.all.max(1)).min(8 * 1024);
+        self.pool_ratio = self.pool_ratio - self.pool_ratio / 16 + r / 16;
+        if self.pool_ratio >= 1024 {
+            self.pool_ns = self.pool_ns.max(e.work.saturating_mul(2));
+        } else if r < 1024 * 4 / 5 {
+            self.pool_ns = self.pool_ns.min(e.work).max(POOL_WORK_NS);
+        }
     }
 
-    fn worth_pooling(&self, pids: &[u32]) -> bool {
-        let (mut sum, mut max) = (0, 0);
+    /// Whether a batch goes to the pool, with its estimate: the estimated work of its parallel
+    /// processes, less the largest one (a batch whose time is one process cannot be split),
+    /// passes `pool_ns`. Costs are learnt from inline runs only (a pooled run measures cold
+    /// caches and would confirm itself), so one in `PROBE_EVERY` of the batches that would pool
+    /// runs inline; and one in `PROBE_EVERY` of those between `POOL_WORK_NS` and a raised
+    /// `pool_ns` is pooled, so a threshold raised early can come down (`learn_pooled`). Where a
+    /// batch runs changes no output: both paths commit in batch order (#497,
+    /// `docs/design/parallel-kernel.md` 4.1).
+    fn pool_batch(&mut self, pids: &[u32]) -> Option<Estimate> {
+        if self.cfg.pool_all {
+            let pool = pids.len() >= 2;
+            self.stats.pooled_batches += u64::from(pool);
+            return pool.then_some(Estimate::default());
+        }
+        self.batches = self.batches.wrapping_add(1);
+        let (mut all, mut sum, mut max, mut known) = (0, 0, 0, true);
         for &p in pids {
-            if !self.procs[p as usize].flags.serial {
-                let c = u64::from(self.cost[p as usize]);
+            let c = u64::from(self.cost[p as usize]);
+            all += c;
+            known &= c != 0;
+            if !self.serial_of[p as usize] {
                 sum += c;
                 max = max.max(c);
-                if sum - max > POOL_WORK_NS {
-                    return true;
-                }
             }
         }
-        false
+        let work = sum - max;
+        let pool = if work > self.pool_ns {
+            self.probe = self.probe.wrapping_add(1);
+            !self.probe.is_multiple_of(PROBE_EVERY)
+        } else if work > POOL_WORK_NS {
+            self.raise_probe = self.raise_probe.wrapping_add(1);
+            self.raise_probe.is_multiple_of(PROBE_EVERY)
+        } else {
+            false
+        };
+        self.stats.pooled_batches += u64::from(pool);
+        // A batch with a process not yet timed teaches nothing.
+        pool.then_some(Estimate {
+            all,
+            work,
+            learn: known,
+        })
     }
 
     /// `run_batch` of one process after initialisation (a stage of a chain of processes): no

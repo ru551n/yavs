@@ -5679,6 +5679,40 @@ configuration parks in `wfi` after 49 instructions by program design, not #513).
 before and after on the 42 tests (cores 9 and 10, `--count-runs`), geometric means B/A: wall 1.00 interpreted and 0.99
 with `--tier=auto`, instructions 1.00 and 0.99, cycles 1.00 and 1.00.
 
+## Parallel kernel, step 2: pieces of the slot array, commit in the worker (#481 item 3, 2026-10-28)
+
+A pooled batch runs in pieces of consecutive process numbers that `threads - 1` workers and the kernel thread claim in
+turn, without a lock per process; the usual clocked process is committed in the worker; serial processes run after the
+join in batch order; the pooling threshold rises when pooled batches turn out no faster than their estimate
+(`docs/decisions.md` "Parallel kernel, step 2").
+
+Speedup over one thread of the same binary, simulate phase (whole-run wall in parentheses), interpreter, bench builds,
+median of 5 rounds that interleave the thread counts and the two binaries, runs pinned to N free cores of 8 to 15 during a
+reserved timing window; main before step 1 (`6ea17bde`) for comparison:
+
+| Design | 2 threads | 4 threads | 8 threads | before: 2 / 4 / 8 | CPU s at 4 threads (1 thread) |
+|---|---|---|---|---|---|
+| rtl_fan | 1.70 (1.61) | 2.63 (2.39) | 3.89 (3.25) | 0.94 / 1.02 / 1.04 | 1.13 (0.85) |
+| rtl_ff | 1.37 (1.33) | 2.10 (1.93) | 3.04 (2.64) | 1.15 / 1.45 / 1.56 | 1.01 (0.67) |
+| rtl_lfsr | 1.41 (1.33) | 1.86 (1.69) | 2.41 (2.07) | 1.06 / 1.15 / 1.19 | 0.73 (0.38) |
+| lfsr64 | 0.96 (0.97) | 0.95 (0.97) | 0.96 (0.97) | 0.49 / 0.52 / 0.56 | 0.18 (0.17) |
+| lfsr64_xor | 0.98 (0.98) | 0.98 (0.96) | 0.98 (0.95) | 0.57 / 0.61 / 0.60 | 0.07 (0.07) |
+| rtl_bus | 1.00 (0.96) | 0.99 (0.97) | 0.98 (1.00) | 0.53 / 0.54 / 0.53 | 0.21 (0.21) |
+| rtl_chain | 1.03 (1.07) | 1.03 (1.02) | 1.03 (1.01) | 1.01 / 1.02 / 1.00 | 0.13 (0.13) |
+| neorv32_dual_full (200 us) | 1.00 (1.00) | 0.98 (0.98) | 0.98 (0.98) | 0.70 / 0.74 / 0.74 | 1.86 (1.79) |
+| neorv32_single_min (300 us) | 0.94 (0.94) | 0.96 (0.96) | 0.97 (0.97) | 0.74 / 0.71 / 0.68 | 2.52 (2.41) |
+
+The designs that never pool (lfsr64, lfsr64_xor, rtl_bus, rtl_chain; the soft cores pool 12 to 320 batches as probes)
+pay the timed activations of the cost estimate (+1.2 to 2 percent instructions) at N threads. At 4 threads the kernel
+thread still spends 13 percent (rtl_ff: `commit_codes`, the batch gather) and 17 percent (rtl_lfsr: `finish_direct`,
+`commit_planes_run`) of the run in the serial commit and update; the threads are otherwise balanced (each 25 percent of
+the samples). The realbench set at 4 threads (`YAVS_BENCH_TIERFLAGS=--threads=4` for both, interpreter, each test on
+cores 8 to 11 or 12 to 15), this step against main before step 1: geometric means wall 0.98, CPU 0.79, instructions 0.98,
+summed wall 0.82; `poc_arith_addw` 0.49, `fletcher_bufferwriter_512` 0.65, the three neorv32 tests 0.71 to 0.78 (CPU 0.13
+to 0.30), the short tests unchanged. One thread, `tools/realbench/run.py --compare` of main
+before step 1 and this step on the 42 tests (cores 14 and 15, `--count-runs`), geometric means B/A: wall 0.99
+interpreted and 1.00 with `--tier=auto`, instructions 1.00 and 1.00, cycles 1.00 and 1.00.
+
 ## llvm: native clocked RTL against the interpreter and sim1, cold and warm (#440, #432, #505, 2026-10-21)
 
 Measurement only, nothing changed in the product. Release build with `--features llvm` of main at `3abd2fd7`, single

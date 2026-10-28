@@ -12397,3 +12397,39 @@ end for those processes. Method as in round 10: bench builds (`llvm`, and `clift
 - **Measured** (`docs/STATUS.md` "Parallel kernel, step 1"): lfsr64, lfsr64_xor and rtl_bus go from 0.35x to 0.62x of one
   thread to 0.98x to 1.01x at 2, 4 and 8 threads; designs whose batches still pool keep the old pooled path's losses
   (rtl_lfsr 0.71x to 0.86x, the soft core 0.57x to 0.83x), which step 2 addresses.
+
+## Parallel kernel, step 2: pooled batches run in pieces of the slot array (yavs-kernel `run_batch`, `learn_pooled`, #481 item 3, 2026-10-28)
+
+- **Decision: a pooled batch is cut into pieces of consecutive process numbers** (`PIECES_PER_THREAD` (4) per thread), each
+  with its own sub-slices of the slots, metas and idle flags (`split_at_mut`, `Piece`): no lock per process, safe Rust.
+  The workers and the kernel thread claim pieces from an atomic counter (`in_place_scope`); the pool has `threads - 1`
+  workers, so `--threads N` is N busy threads and a run pinned to N cores is not oversubscribed. Why: the old pooled path
+  locked every slot twice and committed every process on the kernel thread, reading lines another core had just written
+  (`docs/design/parallel-kernel.md` 3.3), while the kernel thread waited in `install`.
+- **Decision: the usual clocked process (waited again, only scheduled drivers) is committed in the worker** as the inline
+  loop does, into the piece's buffers (`Early`: queue entries, direct entries, phantoms, idle counts; kept between
+  batches), which the kernel thread applies after the join; the order of direct entries across processes does not matter
+  (sole sources), the queue is sorted. The others go to `commit_rest` in batch order.
+- **Decision: every pooled batch takes the pieces; serial processes are left by the workers and run after the join on
+  the kernel thread in batch order** (none after a process that stopped the batch, live while no earlier parallel process
+  wrote), so `--shuffle` runs them in the shuffled order at any thread count; after a stop nothing later in the batch is
+  committed. Initialisation and postponed batches run inline (their commits differ; `pool_all` leaves them inline too).
+- **Decision: the threshold learns from the pooled batches** (`learn_pooled`): the time of a pooled batch over its
+  estimate inline is averaged (weight 1/16); when the average reaches even the threshold rises to twice the batch's
+  splittable work, a batch at least a fifth faster lowers it to its splittable work (not below 20 us), and one in 64
+  batches between the two is pooled to test it. Why: the processes of a soft-core processor carry much state, which another
+  core's caches lack; with the fixed threshold the dual-core neorv32 ran at 0.6x to 0.8x of one thread. A single sample
+  raised the threshold on a late worker wake-up and cost rtl_fan a third of its gain, hence the average.
+- **Measured** (`docs/STATUS.md` "Parallel kernel, step 2"): 4 threads rtl_fan 2.6x, rtl_ff 2.1x, rtl_lfsr 1.9x of one
+  thread; 8 threads 3.9x, 3.0x, 2.4x; the soft-core runs and the designs that never pool stay at 0.94x to 1.0x.
+- **The reference simulator (rule 22)** runs the processes of a delta one after the other on one thread (a deferred task
+  list with a prefetch of the next task); its work queues for other jobs keep per-thread task lists that idle threads
+  steal from. The idea used is work handed out in pieces that idle threads take, not per process; ours keeps the
+  batch-order commit of effects on the kernel thread and adds the learned inline-or-pooled choice. Nothing was copied.
+- **Step 3 (parallel update, design 4.5) measured, not started.** With steps 1 and 2 the threads are balanced at 4 threads
+  (each 25 percent of the samples), and the kernel thread spends 13 percent (rtl_ff: `commit_codes`, the gather after the
+  join) and 17 percent (rtl_lfsr: `finish_direct`, `commit_planes_run`) of the run in the serial commit and update of the
+  one wide signal those designs drive. A split by element range saves at most three quarters of that at 4 threads (about
+  10 to 13 percent of the run, more at 8) and needs a split view of `Signal` (planes, codes, stamps, pending bits and
+  changed runs per 64-element range) with every invariant of `Signal::codes` and the stamps held per piece. Left for the
+  maintainer to decide (#481).

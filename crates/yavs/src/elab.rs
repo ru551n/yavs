@@ -1108,6 +1108,8 @@ pub fn run(
     color: bool,
     encoding: yavs_syntax::Encoding,
 ) -> ExitCode {
+    // First: a descriptor of the token pool the parent closed may be reused by a file below.
+    let tokens = (a.threads > 1 && a.dap.is_none()).then(crate::jobserver::connect);
     if a.time_report {
         crate::timing::enable();
     }
@@ -1286,6 +1288,21 @@ pub fn run(
     if let Some(seed) = a.shuffle {
         out.emit(&none, &shuffle_note(seed));
     }
+    if let Some(Err(why)) = &tokens {
+        out.emit(
+            &none,
+            &Diagnostic::warning("W0118", "the token pool in `MAKEFLAGS` cannot be used")
+                .with_note(why.clone())
+                .with_note(format!(
+                    "the run uses `--threads={}` as without a token pool",
+                    a.threads
+                ))
+                .with_help(
+                    "have the parent pass the pool's descriptors on to yavs, or remove \
+                     `--jobserver-auth` from `MAKEFLAGS`",
+                ),
+        );
+    }
     let cfg_profile = a
         .profile
         .is_some()
@@ -1391,6 +1408,9 @@ pub fn run(
     if a.vhpi.is_empty() && a.load.is_empty() && !foreign {
         crate::stdout::buffer();
     }
+    if let Some(Ok(Some(p))) = tokens {
+        sim.set_tokens(p);
+    }
     sim.subscribe(Box::new(Printer));
     let on_pipe = sim.interrupt();
     crate::stdout::on_broken(move || on_pipe.stop());
@@ -1452,6 +1472,9 @@ pub fn run(
             crate::stdout::flush();
             exit_after_signal(130, keep_exit);
         }));
+    } else if crate::jobserver::active() {
+        // The default action would keep the tokens the kernel holds.
+        hooks.first = Some(Box::new(move || exit_after_signal(130, keep_exit)));
     }
     if let Err(err) = yavs_wave::interrupt::start(hooks) {
         if recorder.is_some() {
@@ -1694,6 +1717,7 @@ fn wave_error(path: &str, err: yavs_wave::Error) -> Diagnostic {
 /// the process ends without exit handlers, unless `keep_exit` (foreign libraries or VHPI plugins
 /// loaded, whose exit handlers must run).
 fn exit_after_signal(code: u8, keep_exit: bool) -> ! {
+    crate::jobserver::close();
     #[cfg(feature = "llvm")]
     if !keep_exit {
         yavs_llvm::exit_now(code);

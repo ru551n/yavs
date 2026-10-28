@@ -10383,3 +10383,17 @@ Types and subtypes of packages, entities, architectures, blocks and generates wh
 ## "A similar name exists" suggestions (yavs-sem, #853, 2026-10-28)
 
 Unknown-name diagnostics share `suggest::similar` and `suggest::help`: edit distance within `max(1, len/3)` or an abbreviation (`cnt` for `count`), best one or two equally close, worded `a signal with a similar name exists: `count`` with the declaration's spelling and kind (`Db::decl_noun`), plus a label at the declaration when it is in the same file. Sites: undeclared names, selected names, record elements (also in expressions, where `r.valu` was a bare E1361), formals in port and generic maps, attributes, libraries, design units (including the built-in `std`/`ieee` units) and architectures. A package that declares exactly the name now takes precedence over a near miss. Snapshots: `tests/diag/sem/**/*help*.vhd`.
+
+## Thread budget: a token pool in `MAKEFLAGS` (yavs, yavs-kernel, #801 M3, 2026-10-28)
+
+`yavs run --threads=N` with N above 1 takes its extra threads from a token pool named in `MAKEFLAGS`
+(`--jobserver-auth=R,W` on Linux, `fifo:PATH` on Unix): at most N - 1 tokens, taken without blocking only for a batch worth
+pooling, an empty pool runs the batch inline; tokens go back after 64 batches in a row that did not pool, when a run
+returns (also after an error) and on the first Ctrl-C/SIGTERM/SIGHUP; an unusable pool is W0118 and the run behaves as
+without one (`docs/parallel.md` "Thread budget across parallel test runs", `docs/decisions.md` "Thread budget").
+`crates/yavs/tests/jobserver.rs` checks, for a named pipe and for inherited descriptors, the cap, the tokens back after
+the end, a failure and Ctrl-C (plain and with `--wave`), no pooled batch with an empty pool, identical output at 0, 1, 3
+and 8 tokens and without a pool, and W0118 for unusable pools; a pipe made by a separate parent with distinct `R,W`
+descriptors was checked by hand. Not
+done: the Windows semaphore form, descriptors on Unix systems other than Linux, the producer side, and the M0/M1
+measurements of #801 (speedup and tail gain); none of this was timed.

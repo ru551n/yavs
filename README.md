@@ -13,7 +13,7 @@ Yet Another VHDL Simulator: VHDL-1993, 2008 and 2019 in Rust.
 - **Fast:** on 41 real testbenches the geometric mean of the full run time (analysis included, `--tier=auto`) is 0.22 of an established open-source VHDL simulator's with a warm cache and 0.59 with a cold one; see [`docs/performance.md`](docs/performance.md).
 - **Languages:** VHDL-1993, 2008 and 2019 files mix in one project; the IEEE libraries (including the VITAL and Synopsys packages) are built in. A subset of PSL is supported. What is supported and what is not is listed in [`docs/language-support.md`](docs/language-support.md). Plain Verilog (not SystemVerilog), for vendor IP and vendor libraries, is [planned](https://github.com/ru551n/yavs/issues/776).
 - **Verification libraries:** compliant with OSVVM, UVVM and VUnit: their testbenches and test suites run unmodified.
-- **Code generation:** a [Cranelift](https://cranelift.dev/) code generator is bundled inside the simulator binary; LLVM, which is linked as an external library, is supported as well for now and is scheduled for removal, so that everything ships in one binary. `--tier=auto` chooses per function, and compiled code is cached on disk. The output is identical on every tier.
+- **Code generation:** yavs generates native code with [Cranelift](https://cranelift.dev/) instead of LLVM, to avoid external dependencies. `--tier=auto` chooses per function, and compiled code is cached on disk. The output is identical on every tier.
 - **Coverage:** statement, branch, condition, expression and toggle coverage with per-test attribution and ranking, database merge, and text, HTML and Cobertura reports; see [`docs/coverage.md`](docs/coverage.md).
 - **Waveforms:** FST (`--wave`) with records and arrays as scopes, include and exclude globs, a size cap and optional process variables (`--wave-variables`).
 - **Debugging:** `yavs run --dap=PORT` lets you debug a simulation from VS Code (extension in `editors/vscode`) or any Debug Adapter Protocol editor: breakpoints on VHDL lines (with VHDL conditions and hit counts) and on signal changes, stepping through the statements of each process, pausing a running simulation, and inspecting or changing signal and variable values. See [`docs/usage.rst`](docs/usage.rst).
@@ -28,6 +28,10 @@ yavs is early: expect gaps and please [report](https://github.com/ru551n/yavs/is
 
 - Conformance: [`docs/conformance.md`](docs/conformance.md)
 - Performance: [`docs/performance.md`](docs/performance.md)
+
+## Installation
+
+Download the archive for your platform from the [releases](https://github.com/ru551n/yavs/releases) page, unpack it and put the directory on `PATH`. There is one archive per platform: `yavs-<version>-x86_64-unknown-linux-gnu.tar.gz`, `yavs-<version>-aarch64-unknown-linux-gnu.tar.gz` and `yavs-<version>-x86_64-pc-windows-msvc.zip`. See [`docs/install.rst`](docs/install.rst) for checks and building from source.
 
 ## License
 
@@ -45,7 +49,3 @@ The graphical debugger `yavs-gui` (`gui/`) is a separate program under the EUPL-
 (`gui/LICENSE`), because the waveform viewer library it embeds (libsurfer) is. It talks to yavs
 over the Debug Adapter Protocol and links no yavs code. In the release archives its licence is
 `LICENSE-EUPL-1.2-yavs-gui`, which applies to the `yavs-gui` binary only.
-
-The archives with the compiled tier contain LLVM (`lib/libLLVM.so.21.1` on Linux, linked into
-`yavs.exe` on Windows), under the Apache License v2.0 with LLVM Exceptions
-(`LICENSE-LLVM`).

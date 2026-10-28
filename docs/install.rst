@@ -17,18 +17,11 @@ aarch64 is also known as arm64; run ``uname -m`` to see which one you need.
 Which archive
 ~~~~~~~~~~~~~
 
-Every platform has two archives. The one named as above has the compiled tier: ``--tier=auto``
-(the default) compiles the hot code with LLVM 21 during the run and ``--tier=llvm`` compiles all of it
-before time 0. The Linux archive carries LLVM as ``lib/libLLVM.so.21.1`` next to the
-executable (keep the ``lib`` directory with ``yavs``; it needs nothing else installed), the Windows
-executable has LLVM linked in. The archive with ``-nollvm`` added before the extension
-(``yavs-<version>-<target>-nollvm.tar.gz``, ``.zip`` on Windows) has no LLVM inside and is smaller: its
-compiled tier is Cranelift, and ``--tier=auto`` (the default there too) compiles the hot code with it
-during the run, ``--tier=clift`` all of it before time 0. Its compiled code is mostly as fast as LLVM's;
-tight compute loops run faster with LLVM. ``--tier=llvm`` stops with error E0120 in it.
-``yavs --version`` shows the difference on its first line::
+Every platform has one archive, and it contains everything: nothing else needs to be installed.
+``--tier=auto`` (the default) compiles the hot code to machine code during the run, and
+``--tier=clift`` compiles all of it before time 0; ``--tier=interp`` runs the interpreter alone. The
+output is the same with every tier. ``yavs --version`` shows the tier on its first line::
 
-    yavs 0.8.0 (compiled tier: llvm)
     yavs 0.8.0 (compiled tier: cranelift)
 
 The Linux archives require glibc 2.17 or newer (RHEL/CentOS 7+, Debian 8+, Ubuntu 14.04+).

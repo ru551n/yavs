@@ -23,7 +23,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change or ru
 | `gen_native_md.py` | Generate `lib/NATIVE.md` (`python3 -I tools/gen_native_md.py > lib/NATIVE.md`) |
 | `check-sim1.sh [2008|2019]` | Analyze `lib/` with the reference simulator in `lib/ORDER.md` order (scratch `~/.cache/rsim-libs/work`, `YAVS_LIBS_SCRATCH`) |
 | `conformance/` | The conformance report generator: runs the evidence suites, writes `docs/conformance.md` and `.json` (`tools/conformance/AGENTS.md`) |
-| `release/build-libllvm.sh PREFIX` | Builds the self-contained libLLVM (shared, C API, host target, no extra libraries) of the Linux release archives inside a manylinux2014 container, so glibc 2.17 holds; checks its glibc symbols and needed libraries (`docs/decisions.md` "Release archives with and without the compiled tier") |
+| `release/build-libllvm.sh PREFIX` | Not used by the release since 2026-10-28 (kept for the later LLVM removal decision). Builds the self-contained libLLVM (shared, C API, host target, no extra libraries) of the Linux release archives inside a manylinux2014 container, so glibc 2.17 holds; checks its glibc symbols and needed libraries (`docs/decisions.md` "Release archives with and without the compiled tier", "One archive per platform") |
 | `claim <take|release|list|stale|core|build>` | Issue claims on GitHub for multi-agent work, plus host-local core and build locks (root `AGENTS.md` section 3a; `claim selftest` checks the comment parser) |
 | `suites/` | Drivers that simulate an external library's own testbenches on yavs (`tools/suites/AGENTS.md`) |
 | `corpus/` | Analysis corpus manifests, runner, report (`tools/corpus/AGENTS.md`) |

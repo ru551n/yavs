@@ -2,7 +2,7 @@
 
 Read the root `AGENTS.md` first. This file is for an agent about to change `crates/yavs-clift`.
 The Cranelift tier of #481, on main behind the `clift` feature (not a default feature) and the compiled
-tier of the `-nollvm` release archives (user, 2026-10-27); tuning rounds are paused. Measurements in
+tier of the release archives (user, 2026-10-28: one archive per platform); tuning rounds are paused. Measurements in
 `docs/STATUS.md` "clift", decisions in `docs/decisions.md` "Cranelift tier" and its rounds.
 
 ## 1. Purpose and boundaries

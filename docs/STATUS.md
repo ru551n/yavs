@@ -36,16 +36,16 @@ run as the kernel's own `MuxProcess` and `GateProcess`. Corpus `sigassign/mux_ga
 
 ### Release archives with and without the compiled tier (#780, 2026-10-27)
 
-`release.yml` builds two archives per platform: `yavs-<version>-<target>` with the compiled tier (Linux: `lib/libLLVM.so.21.1`
-from `tools/release/build-libllvm.sh`, built for glibc 2.17; Windows: LLVM linked statically) and `...-nollvm` with the Cranelift tier instead (`--features clift`,
-`--tier=auto` by default, `compiled tier: cranelift`; user 2026-10-27, #481).
-`yavs --version` names the tiers built in. A `workflow_dispatch` dry run builds and smoke-tests all of them (centos:7 for the Linux
-ones, `--tier=llvm` from the extracted archive) without tagging. Decisions: `docs/decisions.md` "Release archives with and without the compiled tier".
+`release.yml` builds ONE archive per platform, `yavs-<version>-<target>` (since 2026-10-28; before that two, the second named `-nollvm`),
+with the Cranelift tier (`--features clift`, `--tier=auto` by default, `compiled tier: cranelift`; nothing bundled). The LLVM archive
+and the libLLVM build (`tools/release/build-libllvm.sh`, kept) are no longer part of the release; LLVM stays in the code and in CI.
+`yavs --version` names the tiers built in. A `workflow_dispatch` dry run builds and smoke-tests all three archives (centos:7 for the Linux
+ones, `--tier=clift` from the extracted archive) without tagging. Decisions: `docs/decisions.md` "Release archives with and without the compiled tier".
 
 ### Cranelift tier on main (#481, 2026-10-28)
 
 The Cranelift tier of `spike/clift2` (rounds 1 to 11, `crates/yavs-clift`, the generator-generic `--tier=auto` policy in
-`yavs-llvm`) is on main behind the `clift` feature, which is not a default feature; the `-nollvm` release archives are built
+`yavs-llvm`) is on main behind the `clift` feature, which is not a default feature; the release archives are built
 with it. Builds without `clift` are unchanged: realbench `--compare` of bench builds of main and the merged head (097f20ab, then again at f774d440)
 over 7 tests (`hdlm_fifo_sync`, `poc_arith_addw`, `uvvm_sb_slv`, `fletcher_bufferwriter_512`, `sc5_fifo_repack`,
 `uvvm_axistream_vvc`, `neorv32_single_min`): default build `interp` instructions equal in every test (elaboration too); `llvm`

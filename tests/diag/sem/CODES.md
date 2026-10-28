@@ -15,6 +15,7 @@ Status (2026-10-18): every proposed code in this table is now defined in `yavs-s
 | E1623 | attribute dimension argument out of range for the prefix (`m'length(2)` of a 1-D array) | 6.3 / 4.2 "attribute dimension arguments" | `stat/attribute_dimension_out_of_range` |
 | E1700 | instantiated name is not a component, entity or configuration | 3.3 (`l: p;` re-interpretation) | `unit/component_instance_not_a_component` |
 | W1325 | R5 relaxation: an `others` aggregate takes the bounds of an unconstrained assignment target | 8.4 R5, LRM 9.3.3.3 | `relax/others_unconstrained_target_relaxed` |
+| W1361 | R6 relaxation: a non-static actual of a signal parameter | 8.4 R6, LRM 4.2.2.3 | `relax/signal_actual_not_static_relaxed` |
 | W1830 | R2 relaxation: pure function calls something impure (own warning code per relaxation, 8.4) | 8.4 R2, 6.6 | `relax/pure_function_calls_impure_relaxed` |
 | W1904 | R1 relaxation: shared variable of non-protected type | 6.6 names `W1904` explicitly; 8.1 only lists `W1990` | `relax/shared_variable_unprotected_relaxed` |
 | W1401 | static overflow where the value is not required; run-time check kept | Q5 (11), not in 8.1 | `stat/integer_overflow_addition`, `stat/integer_overflow_multiplication` |

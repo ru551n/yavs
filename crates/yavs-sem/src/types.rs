@@ -347,6 +347,21 @@ impl Db {
             }
             ast::TypeDef::File(n) => {
                 let elem = self.type_mark(scope, n)?;
+                // 5.5.1: not a multidimensional array (#813; sim1 and sim2 agree in 2008).
+                if let TypeKind::Array { indexes, .. } = &self.types[self.base(elem)].kind
+                    && indexes.len() > 1
+                {
+                    return Err(self.error(
+                        Diagnostic::error(
+                            diag::BAD_FILE_ELEMENT,
+                            format!(
+                                "a file cannot contain multidimensional array type `{}`",
+                                self.type_name(self.base(elem))
+                            ),
+                        )
+                        .with_primary(n.span, "not a valid file element type"),
+                    ));
+                }
                 if let Some((what, bad)) = self.bad_elem(self.base(elem), true) {
                     return Err(self.error(
                         Diagnostic::error(
@@ -553,7 +568,9 @@ impl Db {
                     self.poison.subtype
                 }
             };
-            if self.check_elem_constrained_93(st, e.subtype.span).is_err() {
+            if self.check_elem_constrained_93(st, e.subtype.span).is_err()
+                || self.check_elem_not_file(st, e.subtype.span).is_err()
+            {
                 failed = true;
             }
             // 2019 allows record elements of protected types (LCS-2016-014).
@@ -963,6 +980,7 @@ impl Db {
                 }
                 let elem = self.subtype_indication(scope, element)?;
                 self.check_elem_constrained_93(elem, element.span)?;
+                self.check_elem_not_file(elem, element.span)?;
                 let n = idx.len();
                 let _ = n;
                 Ok(self.new_type(
@@ -990,6 +1008,7 @@ impl Db {
                 }
                 let elem = self.subtype_indication(scope, element)?;
                 self.check_elem_constrained_93(elem, element.span)?;
+                self.check_elem_not_file(elem, element.span)?;
                 let ty = self.types.next_id();
                 let base_st = self.subtypes.push(SubtypeDef {
                     base: ty,
@@ -1033,6 +1052,25 @@ impl Db {
 
     /// `E1007`: in a VHDL-1993 file the element subtype of an array type and the subtype of a
     /// record element are constrained (1993 3.2.1, 3.2.1.1; 2008 relaxed both, #814).
+    /// 5.3.1: an element of a composite type is not of a file type (#813).
+    fn check_elem_not_file(&mut self, st: SubtypeId, span: Span) -> Result<(), Reported> {
+        let t = self.base(st);
+        if !matches!(self.types[t].kind, TypeKind::File { .. }) {
+            return Ok(());
+        }
+        Err(self.error(
+            Diagnostic::error(
+                diag::BAD_TYPE_DECL,
+                format!(
+                    "an element of a composite type cannot be of file type `{}`",
+                    self.type_name(t)
+                ),
+            )
+            .with_primary(span, "file type")
+            .with_note("LRM 5.3.1: the elements of an array or record type are not of a file type"),
+        ))
+    }
+
     fn check_elem_constrained_93(&mut self, st: SubtypeId, span: Span) -> Result<(), Reported> {
         if self.file_rev() != crate::LangRev::Vhdl1993
             || self.constrainedness(st) == Constrainedness::Full

@@ -2192,6 +2192,39 @@ impl Db {
                 | (C::File, Some(C::File))
         );
         if fits {
+            // 4.2.2.3: the actual of a signal parameter is a static signal name (#813).
+            if class == C::Signal
+                && let Some((_, _, s, cut)) = self.lsp_parts(e)
+                && (cut || s == Staticness::None)
+            {
+                // `--relaxed` (R6): accepted with a warning, as by sim1's relaxed switch.
+                if self.relaxed() {
+                    self.report(
+                        Diagnostic::warning(
+                            diag::W_SIGNAL_ACTUAL_NOT_STATIC,
+                            format!(
+                                "the actual of signal parameter `{}` is not a static name",
+                                formal.text
+                            ),
+                        )
+                        .with_primary(self.exprs[id].span, "accepted by `--relaxed`")
+                        .with_note("LRM 4.2.2.3 needs a static signal name here"),
+                    );
+                    return true;
+                }
+                self.report(
+                    Diagnostic::error(
+                        diag::CLASS_MISUSE,
+                        format!(
+                            "the actual of signal parameter `{}` must be a static name",
+                            formal.text
+                        ),
+                    )
+                    .with_primary(self.exprs[id].span, "not a static name")
+                    .with_note("LRM 4.2.2.3: every index and slice of the actual of a signal parameter is a static expression"),
+                );
+                return false;
+            }
             return true;
         }
         let word = |c: C| match c {
@@ -2345,7 +2378,16 @@ impl Db {
                     indexes: ib,
                     elem: eb,
                 },
-            ) => ia.len() == ib.len() && self.closely_related(self.base(*ea), self.base(*eb)),
+            ) => {
+                ia.len() == ib.len()
+                    && self.closely_related(self.base(*ea), self.base(*eb))
+                    // 1993 7.3.5: closely related index types and the same element type (#813).
+                    && (self.file_rev() >= crate::LangRev::Vhdl2008
+                        || (self.base(*ea) == self.base(*eb)
+                            && ia.iter().zip(ib.iter()).all(|(x, y)| {
+                                self.closely_related(self.base(*x), self.base(*y))
+                            })))
+            }
             // 2019 (LCS-2016-075): records with the same element names, closely related types.
             (K::Record { elems: ra }, K::Record { elems: rb })
                 if self.file_rev() >= crate::LangRev::Vhdl2019 =>
@@ -2411,6 +2453,25 @@ impl Db {
                 let p = self.resolve_prefix(scope, prefix, t);
                 if !a.reads_value() {
                     self.not_read(p);
+                }
+                // 6.5.2: a `linkage` port is read only as the actual of a `linkage` formal,
+                // so not through an attribute of its value either (#813).
+                if a.reads_value()
+                    && let Some(crate::hir::ObjRoot::Decl(d)) = self.lsp(p).map(|l| l.root)
+                    && matches!(&self.decls[d].kind, DeclKind::Object(o) if o.mode == Some(crate::hir::Mode::Linkage))
+                {
+                    self.report(
+                        Diagnostic::error(
+                            diag::CLASS_MISUSE,
+                            format!(
+                                "cannot read `'{}` of port `{}` of mode `linkage`",
+                                attr.text, self.decls[d].name
+                            ),
+                        )
+                        .with_primary(prefix.span, "a `linkage` port")
+                        .with_note("a `linkage` port can only be associated with another `linkage` port (LRM 6.5.2)"),
+                    );
+                    return self.poison_expr();
                 }
                 // 4.2.2.2: of a formal signal parameter these attributes are not allowed;
                 // of another signal they are, and the implicit signal lives outside the

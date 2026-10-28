@@ -154,6 +154,7 @@ codes! {
     W_GENERIC_EQ = "W1506", "An instance of a generic with a 2008 `type T` (or 2019 `type T is private`) compares values with the actual type's predefined `=`/`/=` (LRM 6.5.3), while a different user `\"=\"` for the actual type is visible at the instantiation; sim1 would use that one (decision U-6). To use the user operator, declare a formal `function \"=\" (l, r : t) return boolean is <>`.";
     W_DEFAULT_BINDING = "W1703", "Default binding found an entity in the library of the component declaration (or a directly visible one) and a different one in `work`; the former is used.";
     W_OTHERS_TARGET = "W1325", "`--relaxed` (R5): an aggregate with `others` is assigned to an object whose subtype is unconstrained (a port, a formal); it takes the bounds of the object at run time.";
+    W_SIGNAL_ACTUAL_NOT_STATIC = "W1361", "`--relaxed` (R6): the actual of a signal parameter is not a static name (an index by a variable or loop parameter); LRM 4.2.2.3 requires one, the call passes the element the index selects at the call.";
     W_PURE_IMPURE = "W1830", "`--relaxed` (R2): a pure function reads or calls something impure.";
     W_SHARED_NOT_PROTECTED = "W1904", "`--relaxed` (R1): a shared variable of a non-protected type is accepted; the processes using it run serially.";
 }

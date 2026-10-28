@@ -1,8 +1,9 @@
 # AGENTS.md: yavs-clift
 
 Read the root `AGENTS.md` first. This file is for an agent about to change `crates/yavs-clift`.
-Spike for #481 item 1; measurements in `docs/STATUS.md` "clift", decision in `docs/decisions.md`
-"Cranelift tier (spike)".
+The Cranelift tier of #481, on main behind the `clift` feature (not a default feature) and the compiled
+tier of the `-nollvm` release archives (user, 2026-10-27); tuning rounds are paused. Measurements in
+`docs/STATUS.md` "clift", decisions in `docs/decisions.md` "Cranelift tier" and its rounds.
 
 ## 1. Purpose and boundaries
 

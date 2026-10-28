@@ -9499,6 +9499,15 @@ the cache.
   threads for `yavs-clift`, `-clift-auto`, `-auto3`, `-mixed`, `-llvm`, `-auto` (debug build of 250d590c, verifier on), and again for `yavs-clift`, `-clift-auto`,
   `-auto3`, `-auto` on the debug build of 921b3059.
 
+## Cranelift tier on main (yavs-clift, yavs-llvm, release workflow, #481, #780, user, 2026-10-27)
+
+- **Decision (user):** the Cranelift tier lands on main behind the `clift` feature, not in the default features; the
+  `-nollvm` release archive is built with it ("Release archives with and without the compiled tier"). LLVM stays the
+  compiled tier wherever it is built. Cranelift tuning rounds are paused; the go list of round 11 stays open.
+- **History:** `spike/clift2` with main merged in, fast-forwarded onto main, so the commits the rounds cite stay reachable.
+- **No change without `clift`:** checked by realbench instructions and difftest (STATUS.md "Cranelift tier on main");
+  the per-generator rules of round 11 apply only when a first-level generator runs.
+
 ## Frame-mode code tests the temporary area and the object cache inline for addresses it can guess (yavs-llvm `Gen::host`, `rt::track`, #711, 2026-10-24)
 
 - **Finding:** the `yavs_rt_host` calls of `llvm_ieee` (`cb_host` 1416, then 2019 after the in-place `numeric_std`

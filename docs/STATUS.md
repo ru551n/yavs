@@ -42,6 +42,21 @@ from `tools/release/build-libllvm.sh`, built for glibc 2.17; Windows: LLVM linke
 `yavs --version` names the tiers built in. A `workflow_dispatch` dry run builds and smoke-tests all of them (centos:7 for the Linux
 ones, `--tier=llvm` from the extracted archive) without tagging. Decisions: `docs/decisions.md` "Release archives with and without the compiled tier".
 
+### Cranelift tier on main (#481, 2026-10-28)
+
+The Cranelift tier of `spike/clift2` (rounds 1 to 11, `crates/yavs-clift`, the generator-generic `--tier=auto` policy in
+`yavs-llvm`) is on main behind the `clift` feature, which is not a default feature; the `-nollvm` release archives are built
+with it. Builds without `clift` are unchanged: realbench `--compare` of bench builds of main (097f20ab) and the merged head
+over 7 tests (`hdlm_fifo_sync`, `poc_arith_addw`, `uvvm_sb_slv`, `fletcher_bufferwriter_512`, `sc5_fifo_repack`,
+`uvvm_axistream_vvc`, `neorv32_single_min`): default build `interp` instructions equal in every test (elaboration too); `llvm`
+build instruction geomeans 1.00 `interp`, 1.00 `llvm`, 1.00 codegen, 0.99 `auto` warm and 1.01 cold (`auto` varies between
+runs), no slowdown flagged. The round-11 rules (`Tune::big`, `Tune::frame`, `YAVS_FIRST_TUNE`) apply only with a first-level
+generator (`Tune::first()` when `first` is set, else `Tune::MAIN`). Gates on the merged head: fmt; clippy `-D warnings` for
+default, `llvm`, `clift`, `llvm,clift`; `cargo test --workspace` 1230 / 1351 / 1264 / 1382; gc-stress unit tests of
+`yavs-interp`, `yavs-llvm` and `yavs-clift`; difftest 544/544 at 1 and 4 threads for `yavs-interp`, `yavs-auto`, `yavs-llvm`
+(debug `llvm` build) and `yavs` (debug `clift` build, `--tier=auto` = Cranelift). CI: the `clift` job (clippy, tests,
+gc-stress, difftest smoke) and the `auto3` step. Flaky once: #805.
+
 ### Conformance report (#780, 2026-10-26)
 
 `tools/conformance/run.py` generates `docs/conformance.md` (and `.json`): pass counts of the differential corpus per group and thread count, the reference simulators' own tests, the discrepancy catalogue, the analysis corpora against the recorded sim1 lists, the UVVM and OSVVM suites, neorv32 and GRLIB LEON3 runs, platforms and known limits. The `conformance` workflow regenerates the CI-capable parts on `main` and release tags and checks the committed copy (`tools/conformance/AGENTS.md`). Open: waveform equivalence on real designs (a slot in the report), a public page (maintainer's decision).

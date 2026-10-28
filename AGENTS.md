@@ -49,7 +49,7 @@ to, and those documents win over your memory.
 | `crates/yavs-dap` | Debug Adapter Protocol server (`yavs run --dap`) |
 | `crates/yavs-cov` | Code coverage: counters to a mergeable database, text and Cobertura reports |
 | `crates/yavs-llvm` | LLVM 21 ORC JIT tier, behind the `llvm` feature (off by default) |
-| `crates/yavs-clift` | Cranelift tier (spike, #481), behind the `clift` feature (off by default); shares `yavs-llvm`'s `rt` module |
+| `crates/yavs-clift` | Cranelift tier (#481), behind the `clift` feature (off by default; the compiled tier of the `-nollvm` release archives); shares `yavs-llvm`'s `rt` module |
 | `crates/yavs` | The `yavs` binary |
 | `lib/` | Vendored IEEE std/ieee sources (2008, 2019), patched only via `tools/derive_libs.py` |
 | `tests/diag/` | Rendered-diagnostic snapshots; `tests/diag/sem/` negative suite with `-- expect:` headers |

@@ -88,7 +88,7 @@ Status (2026-10-18): every proposed code in this table is now defined in `yavs-s
 | E1322 | record aggregate: element duplicate or too many positional | 3.4 |
 | E1323 | aggregate element type / `others` types / dimension depth | 3.4 |
 | E1325 | `others` misplaced or needs a constrained subtype | 3.4 |
-| E1326 | mixed named/positional, non-static choice misuse | 3.4 |
+| E1326 | mixed named/positional, non-static or null range choice misuse | 3.4 |
 | E1327 | duplicate or overlapping aggregate choice | 3.4 |
 | E1328 | index not covered | 3.4 |
 | E1334 | array values under range choices of different directions in one aggregate (L84) | 3.4 |

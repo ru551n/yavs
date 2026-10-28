@@ -1704,6 +1704,23 @@ fn array_agg(
                 _ => Staticness::Locally,
             };
             stat = stat.min(s);
+            // A null range choice, too, only as the single choice (1993 7.3.2.2, #812); in later
+            // revisions sim1 and sim2 accept it, so yavs does too.
+            let null = db.file_rev() == crate::LangRev::Vhdl1993
+                && matches!(c, Choice::Range(rc) if range_value(db, rc).is_some_and(|r| r.is_null()));
+            if null && !single {
+                let sp = choice_span(db, c, span);
+                return Err(db.error(
+                    Diagnostic::error(
+                        diag::AGG_NONSTATIC_CHOICE,
+                        "a null range choice must be the only choice",
+                    )
+                    .with_primary(sp, "null range")
+                    .with_note(
+                        "only an aggregate with a single association and a single choice may use a null range choice (LRM 9.3.3.3)",
+                    ),
+                ));
+            }
             if s < Staticness::Locally && !single {
                 let sp = choice_span(db, c, span);
                 return Err(db.error(

@@ -1073,6 +1073,33 @@ impl Db {
         Ok((target, delay, rhs))
     }
 
+    /// 11.6: the target of a concurrent signal assignment is all guarded signals or none,
+    /// and a guarded one needs a guarded assignment (#812; sim1 and sim2 agree).
+    fn check_guarded_target(&mut self, t: &Target, guarded: bool) -> Result<(), Reported> {
+        let kinds: Vec<bool> = t
+            .lsps
+            .iter()
+            .filter_map(|l| match l.root {
+                ObjRoot::Decl(d) => Some(
+                    matches!(&self.decls[d].kind, DeclKind::Object(o) if o.signal_kind.is_some()),
+                ),
+                _ => None,
+            })
+            .collect();
+        let msg = if kinds.contains(&true) && kinds.contains(&false) {
+            "the target mixes guarded and unguarded signals"
+        } else if kinds.contains(&true) && !guarded {
+            "a guarded signal is the target of an unguarded concurrent signal assignment"
+        } else {
+            return Ok(());
+        };
+        Err(self.error(
+            Diagnostic::error(diag::CLASS_MISUSE, msg)
+                .with_primary(self.exprs[t.expr].span, "")
+                .with_note("LRM 11.6: the target is either guarded (all its signals are guarded, and the statement is `guarded`) or unguarded"),
+        ))
+    }
+
     /// 10.5.2.2: a `null` waveform element needs a guarded signal target.
     fn check_null_waveform(&mut self, t: &Target, nulls: &[Span]) -> Result<(), Reported> {
         let Some(&span) = nulls.first() else {
@@ -1310,6 +1337,19 @@ impl Db {
                 if matches!(self.exprs[a.value].kind, ExprKind::Aggregate { .. }) {
                     stack.push(a.value);
                 } else {
+                    // 10.5.2.1, 10.6.2.1: each element is a locally static name (#812).
+                    if let Some((_, _, s, cut)) = self.lsp_parts(a.value)
+                        && (cut || s < crate::stat::Staticness::Locally)
+                    {
+                        return Err(self.error(
+                            Diagnostic::error(
+                                diag::NOT_STATIC,
+                                "an element of an aggregate target must be a locally static name",
+                            )
+                            .with_primary(self.exprs[a.value].span, "not locally static")
+                            .with_note("LRM 10.5.2.1, 10.6.2.1: every index and slice of an aggregate target element is locally static"),
+                        ));
+                    }
                     leaves.push((a.value, self.exprs[a.value].span));
                 }
             }
@@ -1757,6 +1797,7 @@ impl Db {
                 };
                 let (target, delay, rhs) =
                     self.signal_assign(scope, &sa.target, delay.as_ref(), rhs)?;
+                self.check_guarded_target(&target, sa.guarded)?;
                 self.stmts[id].kind = StmtKind::ConcSignalAssign {
                     postponed,
                     guarded: sa.guarded,

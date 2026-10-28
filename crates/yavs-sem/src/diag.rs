@@ -46,6 +46,7 @@ codes! {
     BAD_RESOLUTION = "E1225", "A resolution function must be a pure function with one constant parameter of a one-dimensional unconstrained array of the resolved type, returning that type.";
     DEFERRED_EARLY = "E1226", "A deferred constant is named before the end of its full declaration (LRM 6.4.2.2): in an initial value of its package, or anywhere in its package body (subprogram bodies included) before the full declaration. Its value is not known yet there. Only the default expression of a local generic, port or formal parameter may name it.";
     DEFERRED_SUBTYPE = "E1227", "The subtype indication of the full declaration of a deferred constant does not conform to the deferred declaration's (LRM 6.4.2.2): use the same type mark and constraint.";
+    NOT_CONFORMING = "E1240", "A subprogram body's specification does not conform to the declaration it completes (LRM 4.10): both must be the same sequence of lexical elements, apart from a numeric literal written with another value spelling and a simple name written as an expanded name. Grouping parameters differently (`x, y : t` against `x : t; y : t`) or writing a mode or class in one of them only is not conforming.";
     MISSING_BODY = "E1230", "A subprogram or protected type is declared but its body is missing, or a deferred constant of a package has no full declaration in the package body (LRM 4.8).";
     BAD_TYPE_DECL = "E1231", "The type definition is not legal, for example a range whose bounds are not of an integer or floating point type.";
     NON_OBJECT_PARAM = "E1232", "A subprogram's parameter list declares only interface constants, signals, variables and files (LRM 4.2.2.1). Type, subprogram and package interfaces belong in its generic list: `function f generic (type t) parameter (x : t) return t`.";
@@ -72,7 +73,7 @@ codes! {
     AGG_ELEMENT = "E1323", "An array aggregate element is neither of the element type nor of the aggregate type, an element of a multidimensional aggregate is not an aggregate (or string literal) for the next dimension, or one value is given for record elements of different types.";
     // E1324 is retired (mixed named and positional associations are E1326); never reuse it.
     AGG_OTHERS = "E1325", "`others` must be last and alone, and needs a constrained context subtype.";
-    AGG_NONSTATIC_CHOICE = "E1326", "A choice that is not locally static must be the only choice of the only association, and named and positional associations do not mix (only a final `others` may follow positional ones).";
+    AGG_NONSTATIC_CHOICE = "E1326", "A choice that is not locally static, or a null range choice, must be the only choice of the only association, and named and positional associations do not mix (only a final `others` may follow positional ones).";
     CHOICE_OVERLAP = "E1327", "Choices overlap or repeat a value.";
     CHOICE_UNCOVERED = "E1328", "Choices do not cover every value of the subtype and there is no `others`.";
     AGG_RECORD_CHOICE = "E1329", "A record aggregate choice must be an element name, not an expression or a range.";

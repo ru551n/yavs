@@ -1,9 +1,17 @@
 # M10 GUI: yavs-gui
 
-Status: accepted (#384, epic #148, #133); the user's decisions are in section 12. Slices G1
-(#388) and G2 (#399) are implemented in `gui/` (see `gui/AGENTS.md`). Binding inputs: `docs/plan.md`
-(the `yavs-gui` row of the architecture table, "Designed for the GUI from the start", M10) and the
-M8 DAP server as it is on main (`crates/yavs-dap/AGENTS.md`).
+Status: accepted (#384, epic #148, #133); the user's decisions are in section 12. Binding inputs:
+`docs/plan.md` (the `yavs-gui` row of the architecture table, "Designed for the GUI from the
+start", M10) and the M8 DAP server as it is on main (`crates/yavs-dap/AGENTS.md`).
+
+Implementation status, as of 2026-10-28: slices G1 (#388) and G2 (#399) are in
+`gui/` (see `gui/AGENTS.md`), `yavs run --gui` starts it, and release archives ship it. The
+Hierarchy, Objects and Processes panels (G3) and the Waves panel (G4) are still placeholder tabs.
+Of the server additions in section 4, only P6 (live waves, #325) is implemented; P1 to P5 and
+P7 to P9 are not, so the status bar parses time and delta from the `description` of `stopped`
+and there is no global step from inside a process. The section 10 table has a status column.
+The M8 server of section 1 is implemented and used by `editors/vscode`. Sections 2 to 6 describe
+the design, not what runs today, unless the status column says so.
 
 The plan's requirement, restated as the acceptance list for M10:
 
@@ -34,7 +42,7 @@ The server (`crates/yavs-dap`, `yavs run --dap=PORT|stdio`) on main:
 | Time and delta | the `description` of `stopped`: `"<reason> at <time>, delta <n>"` | text only |
 
 Also on main: the editor extension in `editors/vscode/` (a client of the same requests, useful as
-a second reference client), and the wave recorder `crates/yavs-wave` (`yavs run --wave`: FST
+a second reference client; its user guide is `editors/vscode/README.md`), and the wave recorder `crates/yavs-wave` (`yavs run --wave`: FST
 through `wavefst`, hierarchy with records and arrays as scopes, enum tables, include and exclude
 globs, an array size cap, final value per time step). Live waves and `--wave`/`--vhpi`
 together with `--dap` (#325) are in (section 5.1).
@@ -304,18 +312,18 @@ Each slice is one agent, one issue under epic #148. Server slices come first and
 the editor extension too; the GUI slices after G1 can run in parallel with them once their P-items
 are on main.
 
-| Slice | Where | Content | Done when |
-|---|---|---|---|
-| S1 | `yavs-dap` | P1 structured time and delta, P2 `yavs/processes`, P9 `yavs/stepAny` | transcripts for each; editor extension shows time and delta from P1 |
-| S2 | `yavs-dap` | P3 source locations in `yavs/hierarchy`, P4 `yavs/values`, P5 `breakpointLocations`, `loadedSources` | transcripts |
-| S3 | `yavs-dap`, `yavs-wave` | P6 live waves (#325): subscribe, batches, `Recorder` sink seam, `--wave` and `--vhpi` under `--dap` | transcripts; an FST written under `--dap` reads back with wellen and equals the streamed changes |
-| S4 | `yavs-dap` (maybe `yavs-interp`) | P7 locals of suspended processes, P8 exception filters | transcripts; a failing assertion stops at its statement |
-| G1 | `gui/` | workspace, licence, eframe app, `egui_dock` layout with empty tabs, DAP client (launch and attach), toolbar run controls, status bar, console, mock server, kittest harness, CI job | the GUI launches the sample testbench, runs it to the end and shows its reports; tests green on three platforms |
-| G2 | `gui/` | source view with gutter, line breakpoints with condition and hit count, call stack, Locals and Watch, hover, Breakpoints panel | breakpoint hit, step in/over/out and global step on the sample; mock and kittest tests |
-| G3 | `gui/` | Hierarchy, Objects, Processes panels; signal breakpoints (change and value); force, deposit and release | the acceptance list items for these panels, with tests |
-| G4 | `gui/` | libsurfer embedding: wellen hierarchy from the subscription, encoder store, snapshot refresh, add to waves from Hierarchy and Objects, cursor at the stop time | live waves on the sample, kept across a restart; store test against an FST of the same run |
-| G5 | `gui/` | restart and `--analyze`, layout persistence and reset, shortcuts, themes, console command line | manual checklist in `gui/AGENTS.md`, kittest for the commands |
-| G6 | `gui/`, release | end-to-end test against the real `yavs`, release archives, user documentation page | M10 check: the acceptance list in the introduction, walked through on the sample on Linux and Windows |
+| Slice | Where | Content | Done when | Status (2026-10-28) |
+|---|---|---|---|---|
+| S1 | `yavs-dap` | P1 structured time and delta, P2 `yavs/processes`, P9 `yavs/stepAny` | transcripts for each; editor extension shows time and delta from P1 | not started (#396) |
+| S2 | `yavs-dap` | P3 source locations in `yavs/hierarchy`, P4 `yavs/values`, P5 `breakpointLocations`, `loadedSources` | transcripts | not started (#397) |
+| S3 | `yavs-dap`, `yavs-wave` | P6 live waves (#325): subscribe, batches, `Recorder` sink seam, `--wave` and `--vhpi` under `--dap` | transcripts; an FST written under `--dap` reads back with wellen and equals the streamed changes | P6 live waves done (#325); `--wave` and `--vhpi` under `--dap` done |
+| S4 | `yavs-dap` (maybe `yavs-interp`) | P7 locals of suspended processes, P8 exception filters | transcripts; a failing assertion stops at its statement | not started (#398) |
+| G1 | `gui/` | workspace, licence, eframe app, `egui_dock` layout with empty tabs, DAP client (launch and attach), toolbar run controls, status bar, console, mock server, kittest harness, CI job | the GUI launches the sample testbench, runs it to the end and shows its reports; tests green on three platforms | done |
+| G2 | `gui/` | source view with gutter, line breakpoints with condition and hit count, call stack, Locals and Watch, hover, Breakpoints panel | breakpoint hit, step in/over/out and global step on the sample; mock and kittest tests | done (hit counts so far are not shown; no global step, S1) |
+| G3 | `gui/` | Hierarchy, Objects, Processes panels; signal breakpoints (change and value); force, deposit and release | the acceptance list items for these panels, with tests | not started |
+| G4 | `gui/` | libsurfer embedding: wellen hierarchy from the subscription, encoder store, snapshot refresh, add to waves from Hierarchy and Objects, cursor at the stop time | live waves on the sample, kept across a restart; store test against an FST of the same run | not started |
+| G5 | `gui/` | restart and `--analyze`, layout persistence and reset, shortcuts, themes, console command line | manual checklist in `gui/AGENTS.md`, kittest for the commands | not started |
+| G6 | `gui/`, release | end-to-end test against the real `yavs`, release archives, user documentation page | M10 check: the acceptance list in the introduction, walked through on the sample on Linux and Windows | not started (release archives already ship `yavs-gui`) |
 
 ## 11. Ceilings and what is left out
 

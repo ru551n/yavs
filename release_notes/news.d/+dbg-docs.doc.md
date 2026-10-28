@@ -1,0 +1,1 @@
+The coverage and VHPI plugin guides are now part of the documentation, with a worked plugin example, and the VS Code extension and the graphical debugger have their own README files describing how to start them and what they can do today.

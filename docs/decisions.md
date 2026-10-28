@@ -35,11 +35,16 @@ milestone users care about works.
   the Python package must not start a release); builds `yavs` for Linux x86_64, Linux aarch64 and
   Windows x86_64, runs the CI
   checks on the tagged commit first, and attaches archives plus SHA256SUMS to a GitHub release.
+- Every release also attaches the conformance report of the tagged commit (user, 2026-10-28):
+  the committed `docs/conformance.md` and `docs/conformance.json` as
+  `yavs-<version>-conformance.md` and `.json`, listed in SHA256SUMS. Rationale: users see what
+  the release passes; the conformance workflow already fails a tag whose committed report is
+  stale, so the release workflow copies it and does not regenerate it.
 - Packaging (agent, 2026-10-18, #165; revised by the user the same day):
   `yavs-<version>-<target>.tar.gz` (Linux) or `.zip` (Windows) holding the `yavs` executable,
   `LICENSE-MIT`, `LICENSE-APACHE`, `LICENSE-IEEE` (the Apache-2.0 licence of the built-in IEEE
   sources) and `README.md`. The tag must equal `v<workspace version>`. `workflow_dispatch` with
-  `dry_run` builds the archives as workflow artifacts and publishes nothing.
+  `dry_run` builds the archives and the conformance report as workflow artifacts and publishes nothing.
 - **std/ieee are built into the binary** (user, 2026-10-18: "how can we avoid packaging all the
   stdlibs?"). `yavs-sem/build.rs` embeds `lib/std` and `lib/ieee` (2.9 MB of source) under the
   virtual root `<yavs>/lib`; `$YAVS_STDLIB` replaces it with a tree on disk. This supersedes

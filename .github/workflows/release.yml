@@ -4,14 +4,16 @@
 # built in; yavs-gui from the gui/ workspace, shipped in the same archive with its EUPL-1.2
 # licence, docs/decisions.md "GUI (M10)"),
 # SHA256SUMS and a GitHub pre-release with notes from release_notes/<version>.md (towncrier,
-# collected and renamed in the commit that bumps the version).
+# collected and renamed in the commit that bumps the version). The committed conformance report of
+# the tagged commit (docs/conformance.md and .json) is attached as yavs-<version>-conformance.md
+# and .json, listed in SHA256SUMS (user, 2026-10-28).
 # One archive per platform (docs/decisions.md "Release archives", #780): yavs-<version>-<target>,
 # built with the Cranelift compiled tier (`--features clift`, nothing to bundle; `--tier=auto`
 # is the default, `yavs --version` says `compiled tier: cranelift`; user 2026-10-28, #481).
 # The Linux archives are built with cargo-zigbuild against glibc 2.17 (docs/decisions.md "Linux
 # release archives") and smoke-tested in centos:7.
-# workflow_dispatch with dry_run builds and packages the same archives as workflow artifacts
-# and publishes nothing.
+# workflow_dispatch with dry_run builds and packages the same archives and conformance report as
+# workflow artifacts and publishes nothing.
 name: Release
 
 on:
@@ -176,18 +178,28 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: SHA256SUMS and notes
+      - name: SHA256SUMS, notes and conformance report
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
           test -s "release_notes/$version.md" || { echo "release_notes/$version.md is missing"; exit 1; }
           cp "release_notes/$version.md" notes.md
+          # The committed report of the tagged commit; the conformance workflow fails a tag whose report is stale.
+          for ext in md json; do
+            test -s "docs/conformance.$ext" || { echo "docs/conformance.$ext is missing"; exit 1; }
+            cp "docs/conformance.$ext" "dist/yavs-$version-conformance.$ext"
+          done
           cd dist && sha256sum yavs-* > SHA256SUMS && cat SHA256SUMS
+          grep -q " yavs-$version-conformance.md$" SHA256SUMS
+          grep -q " yavs-$version-conformance.json$" SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
-          name: SHA256SUMS-and-notes
+          name: SHA256SUMS-notes-and-conformance
           path: |
             dist/SHA256SUMS
+            dist/yavs-*-conformance.md
+            dist/yavs-*-conformance.json
             notes.md
+          if-no-files-found: error
       - name: GitHub release
         if: github.event_name == 'push' || !inputs.dry_run
         env:

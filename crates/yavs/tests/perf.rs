@@ -1500,6 +1500,18 @@ mod clift {
             ("cb_lcopy", Max(55)),
         ]
     );
+    // Frame-mode `numeric_std` natives computed in place: their result words are known to the
+    // reads after them (no `yavs_rt_host`), the native itself only for an 'X' operand.
+    clift_case!(
+        ieee_words,
+        "clift_ieee_words",
+        "words=",
+        [
+            ("cb_native", Max(340)),
+            ("cb_host", Max(100)),
+            ("cb_step", Max(10))
+        ]
+    );
     clift_case!(
         edge_forms,
         "edge_forms",

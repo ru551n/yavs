@@ -3410,16 +3410,13 @@ impl Gen<'_> {
         }
     }
 
-    /// The jump of an edge block made by `edge_block` (none for `bb` itself). The values in hand
-    /// are those of the block that branches there, its only way in.
+    /// The jump of an edge block made by `edge_block` (none for `bb` itself), made after the
+    /// branch that ends the current block. The values in hand are those of that block, whose
+    /// branch is the edge block's only way in.
     fn fill_edge(&mut self, e: Block, bb: Block) {
         if e != bb {
-            let cur = self.b.current_block();
             self.b.switch_to_block(e);
             self.jump_ir(bb);
-            if let Some(c) = cur {
-                self.b.switch_to_block(c);
-            }
         }
     }
 
@@ -3599,6 +3596,67 @@ impl Gen<'_> {
                 } => Some(imm.bits()),
                 _ => None,
             },
+            _ => None,
+        }
+    }
+
+    /// The value of integer `v` when the instructions that make it fold to a constant (a few
+    /// levels of constants, adds, subtractions, compares and selects).
+    fn static_val(&self, v: Value, depth: u32) -> Option<i64> {
+        use ir::InstructionData as D;
+        use ir::Opcode as O;
+        let dfg = &self.b.func.dfg;
+        let ir::ValueDef::Result(i, 0) = dfg.value_def(v) else {
+            return None;
+        };
+        let sv = |x: Value| {
+            if depth == 0 {
+                None
+            } else {
+                self.static_val(x, depth - 1)
+            }
+        };
+        let cmp = |cc: IntCC, a: i64, b: i64| -> i64 {
+            let (ua, ub) = (a as u64, b as u64);
+            i64::from(match cc {
+                IntCC::Equal => a == b,
+                IntCC::NotEqual => a != b,
+                IntCC::SignedLessThan => a < b,
+                IntCC::SignedGreaterThanOrEqual => a >= b,
+                IntCC::SignedGreaterThan => a > b,
+                IntCC::SignedLessThanOrEqual => a <= b,
+                IntCC::UnsignedLessThan => ua < ub,
+                IntCC::UnsignedGreaterThanOrEqual => ua >= ub,
+                IntCC::UnsignedGreaterThan => ua > ub,
+                IntCC::UnsignedLessThanOrEqual => ua <= ub,
+            })
+        };
+        match dfg.insts[i] {
+            D::UnaryImm {
+                opcode: O::Iconst,
+                imm,
+            } => Some(imm.bits()),
+            D::Binary { opcode, args } => {
+                let (a, b) = (sv(args[0])?, sv(args[1])?);
+                match opcode {
+                    O::Iadd => a.checked_add(b),
+                    O::Isub => a.checked_sub(b),
+                    O::Umax => Some((a as u64).max(b as u64) as i64),
+                    O::Umin => Some((a as u64).min(b as u64) as i64),
+                    _ => None,
+                }
+            }
+            D::Ternary {
+                opcode: O::Select,
+                args,
+            } => {
+                if sv(args[0])? != 0 {
+                    sv(args[1])
+                } else {
+                    sv(args[2])
+                }
+            }
+            D::IntCompare { cond, args, .. } => Some(cmp(cond, sv(args[0])?, sv(args[1])?)),
             _ => None,
         }
     }
@@ -5787,6 +5845,10 @@ impl Gen<'_> {
         let carry = self.nat.is_none();
         let res = self.cache[d.0 as usize].filter(|_| carry);
         let words = words.filter(|_| carry);
+        let fixed_dims: [Option<i64>; 3] = match words {
+            Some(w) => [2, 3, 4].map(|k| self.static_val(w[k], 12)),
+            None => [None; 3],
+        };
         let fast: Vec<BlockArg> = res
             .into_iter()
             .chain(words.into_iter().flatten())
@@ -5815,6 +5877,14 @@ impl Gen<'_> {
             let dims: Vec<Value> = (0..3)
                 .map(|k| self.b.ins().load(I64, gf, pd, k * 8))
                 .collect();
+            // A dimension the fast path makes the same every time: the native's must be it (else
+            // leave), so the words are constants after the join.
+            for (k, &x) in dims.iter().enumerate() {
+                if let Some(c) = fixed_dims[k] {
+                    let same = self.b.ins().icmp_imm_s(IntCC::Equal, x, c);
+                    self.guard(same, lv);
+                }
+            }
             let pp = self.host(data, None, self::Op::C(0), self::Op::C(32), false, lv);
             let planes: Vec<Value> = (0..4)
                 .map(|k| self.b.ins().load(I64, gf, pp, k * 8))
@@ -5848,6 +5918,10 @@ impl Gen<'_> {
                     self.mfacts.insert((p, 8 * k as i64), v);
                 }
                 for (k, v) in [l, r, dir].into_iter().enumerate() {
+                    let v = match fixed_dims[k] {
+                        Some(c) => self.c64(c),
+                        None => v,
+                    };
                     self.mfacts.insert((dope, 8 * k as i64), v);
                 }
                 for (k, v) in [p0, p1, p2, p3].into_iter().enumerate() {

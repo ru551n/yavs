@@ -81,12 +81,12 @@ LATE = set("tc310 tc342 tc738 tc764 tc1068 tc1124 tc1127 tc1136 tc1141 tc1142 tc
 
 # Failing tests by the yavs issue that tracks their cause (the report groups failures by these).
 ISSUES = {
-    807: "tc2641 tc2644 tc2749 tc2750 tc2751 tc2859", 808: "tc2895 tc2926 tc2933 tc2941 tc2942 tc2943 tc2944 tc2946 tc2947 tc2971",
-    810: "tc3013 tc3026 tc3028 tc3031", 811: "tc787 tc818 tc1664",
+    807: "tc2641 tc2644 tc2749 tc2750 tc2751 tc2859", 808: "tc2895 tc2933 tc2941 tc2942 tc2943 tc2944",
+    810: "tc3013 tc3026 tc3028 tc3031",
     812: "tc1313 tc1314 tc1391 tc1746 tc1750 tc1752 tc2447", 813: "tc122 tc123 tc124 tc125 tc315 tc316 tc553 tc2549 tc2919 tc3064",
     816: "tc1781", 817: "tc3153 tc3156 tc3159",
     818: "simple-range-attribute dynamic_procedure_for_loop dynamic_package_procedure_for_loop", 819: "ch_11_fg_11_09 ch_11_fg_11_10",
-    820: "ch_13_fg_13_24", 824: "tc1695",
+    820: "ch_13_fg_13_24",
 }
 ISSUE_OF = {t: n for n, ts in ISSUES.items() for t in ts.split()}
 

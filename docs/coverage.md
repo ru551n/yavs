@@ -48,7 +48,7 @@ tells you whether one of the two tests adds nothing the other lacks.
 | `--cov-test=NAME` | the name of this run's test in the database |
 | `--cov-exclude-translate-off` | also leave `translate_off` ... `translate_on` regions out |
 
-`--cov` cannot be combined with `--dap` yet.
+`--cov` cannot be combined with `--dap` yet: the run stops before time 0 with a "not implemented" error (exit 2).
 
 ## Commands
 
@@ -168,9 +168,10 @@ warning into an error.
 | `W0114` | an excluded item did run |
 | `W0115` | a signal was left out of toggle coverage because of `--cov-toggle-max` |
 
-**Execution tiers and threads.** Counts are the same in every execution tier and at any
+**Execution tiers and threads.** Counts are the same in every execution tier (`--tier=interp`, `llvm`, `auto` and the Cranelift tiers) and at any
 `--threads`. This is tested by comparing the database files byte for byte: the same design is
 run in each tier and with one and four threads, and the files must be identical for all kinds,
 including condition and expression rows. Those tier comparisons only run in builds that include
-the compiled tiers. A further test checks that per-instance specialised code counts like shared
+the LLVM tier. For the Cranelift tiers the equality was observed on a small design but is not
+covered by a test. A further test checks that per-instance specialised code counts like shared
 code.

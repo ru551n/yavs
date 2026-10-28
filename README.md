@@ -10,7 +10,7 @@ Yet Another VHDL Simulator: VHDL-1993, 2008 and 2019 in Rust.
 
 ## Features
 
-- **Languages:** VHDL-1993, 2008 and 2019 files mix in one project; the IEEE libraries (including the VITAL and Synopsys packages) are built in. A subset of PSL is supported. What is supported and what is not is listed in [`docs/language-support.md`](docs/language-support.md).
+- **Languages:** VHDL-1993, 2008 and 2019 files mix in one project; the IEEE libraries (including the VITAL and Synopsys packages) are built in. A subset of PSL is supported. What is supported and what is not is listed in [`docs/language-support.md`](docs/language-support.md). Plain Verilog (not SystemVerilog), for vendor IP and vendor libraries, is [planned](https://github.com/ru551n/yavs/issues/776).
 - **Code generation:** a Cranelift code generator is bundled inside the simulator binary; LLVM, which is linked as an external library, is supported as well for now and is scheduled for removal, so that everything ships in one binary. `--tier=auto` chooses per function, and compiled code is cached on disk. The output is identical on every tier.
 - **Fast:** on 41 real testbenches the geometric mean of the full run time (analysis included, `--tier=auto`) is 0.22 of an established open-source VHDL simulator's with a warm cache and 0.59 with a cold one; see [`docs/performance.md`](docs/performance.md).
 - **Parallel kernel:** `--threads N` evaluates processes in parallel; output is identical at any thread count.

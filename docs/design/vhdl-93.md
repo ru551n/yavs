@@ -138,5 +138,7 @@ Correction 2026-10-28: the counts above are from 2026-10-23 and are superseded b
 `grlib-1993` 454 of 454 and `vests-1993` 1939 of 1939 as analysis corpora, and the 1993 language suite simulated at `--std=93`: 3621 of
 3694 (44 not counted), with the failures grouped by issue (#807 to #820). Among them are invalid 1993 programs that yavs accepts
 (the `analyzer_failure` group: 61 of 1490 are not rejected with a proper diagnostic, which includes runs that stop with `E2001`, `E9999` or a crash) and the missing S13 enforcement (#814).
+Update 2026-10-28 (#809, #813 tc3058, #814, #815, #821, #822, #823): 3643 of 3694; `analyzer_failure` 1449 of 1490, `simulator_failure`
+38 of 38, billowitch compliant 1608 of 1612.
 `std93/` in `tests/corpus` has 6 testbenches that pass at 1 and 4 threads (observed 2026-10-28), and the `v93-*` cases of
 `tests/discrepancies` pass.

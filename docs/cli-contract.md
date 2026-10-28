@@ -43,7 +43,11 @@ Conventions:
   (notes then help, each `{level, message, spans, children, rendered}`) and
   `rendered` (the human text, without colour). Names follow the JSON diagnostics of common compilers.
   The test runner may later pass it to surface diagnostics in its own
-  report; until then it uses the human format.
+  report; until then it uses the human format. `--message-format=short` prints one line per
+  diagnostic (`FILE:LINE:COLUMN: error[CODE]: message`). Known gap (checked 2026-10-28, not yet
+  fixed): when `analyze` stops at a failing file of several, the note that names the failing file
+  and the files recorded before it (section 4) is written as plain text lines after the JSON
+  objects, so the stream is not JSON only.
 - The test runner's side: it merges yavs's stderr into stdout and shows all of it, it
   never masks the exit code (a non-zero `analyze` is a compile failure, a
   non-zero `run`/`elab` fails the test even when `vunit_results` says done),
@@ -127,7 +131,9 @@ directly (`docs/design/vhdl-93.md`).
   `L0004` naming the directory; delete it and analyze its files again (libraries are not converted).
 - A missing or empty directory is a valid empty library. `analyze` creates the
   directory (and its parents) on first use. The test runner does not run an init command;
-  it only creates the parent of the library directory.
+  it only creates the parent of the library directory. Known gap (checked 2026-10-28): this holds
+  for a mapped library and for `analyze --work`; for the `--work` library of `run` and `elab` a
+  directory without `yavs-lib.toml` is error `L0001` (exit 2) instead of "top level not found".
 - `std` and `ieee` (and any other library yavs ships) are resolved by yavs
   itself, on demand from the std/ieee sources built into the `yavs` executable
   (nothing is installed next to it). `$YAVS_STDLIB`, if set,
@@ -298,7 +304,8 @@ yavs analyze --std=FILE_STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=alwa
   - `--psl` (also `yavs parse`): read `-- psl` comments as PSL pragmas, as the reference
     simulators do only when asked (native VHDL-2008 PSL statements are always read). Pass it to
     `analyze`, `elab` and `run` alike, as the sources are read again at elaboration.
-  - `-Werror`: every warning is an error (exit 1 after the batch).
+  - `-Werror`: every warning is an error (`analyze`: exit 1 after the batch; `run` and `elab`: exit 2,
+    as any error before the simulation starts).
   - `-Werror=CODE`: that warning is an error. `-Wno-CODE`: that warning is not
     printed. `-WCODE`: that warning stays a warning even under `-Werror`.
   - For one code the last option wins; `CODE` must be a registered warning code
@@ -357,7 +364,9 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   runtime errors (bound check, overflow, null access, delta limit, internal) stop
   at once whatever the level. The test runner passes its `vhdl_assert_stop_level` sim option.
 - `--ieee-warnings=off`: suppress the warnings raised inside `ieee` packages
-  (the test runner `disable_ieee_warnings`).
+  (the test runner `disable_ieee_warnings`). Known gap (checked 2026-10-28): the option is accepted
+  with any value and has no effect yet (`crates/yavs/src/elab.rs` "no ieee processes run yet"): such
+  warnings, for example `NUMERIC_STD.TO_INTEGER: metavalue detected`, are still printed.
 - `--wave=FILE.fst`: write an FST of the whole design. Hierarchy follows the
   elaborated design (instances, generate scopes, records and arrays as scopes);
   std_logic family and bit are written as characters, other enumerations with an
@@ -390,7 +399,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   design, packages and dead code included, is error `E2120` before time 0 (exit 2; the first 10
   locations are listed); `0 fs` and values such as `0.4 ns` under `ns` are legal. The built-in
   std and ieee sources are exempt. A design that ran with a coarse limit before can now fail.
-- `--stop-time=TIME` (e.g. `10ms`), `--threads=N`, `--shuffle`, `--load=LIB`,
+- `--stop-time=TIME` (e.g. `10ms` or `10 ns`; a bare number is `E0105`), `--threads=N` (0 is treated as 1), `--shuffle`, `--load=LIB`,
   `--vhpi=LIB[:ENTRY]`, `--dap=PORT`: not passed by the test runner, used through
   `yavs.sim_flags` or simulator hooks (a test runner package can add `--load`).
 - Stuck and hung simulations (#582), `run` only, all as diagnostics (code, labels, notes, help; JSON
@@ -416,8 +425,8 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   - `W3102`: a process whose body has no wait statement, no sensitivity list and no call of a
     procedure that waits, printed before time 0. It never gives control back, so time cannot
     advance (only `stop` or `finish` ends the run).
-  - `--shuffle[=SEED]` (seed 1 without a value) prints `note: process order is shuffled with seed N;
-    replay it with --shuffle=N` on stderr at the start, and the runtime diagnostics of a shuffled
+  - `--shuffle[=SEED]` (seed 1 without a value) prints ``note: process order is shuffled with seed N;
+    replay it with `--shuffle=N` `` on stderr at the start, and the runtime diagnostics of a shuffled
     run repeat the seed. That is the only run-time randomness; there is no time-based seed.
 - `--no-collapse-ports` (`run` and `elab`): keep every `in` port its own signal. By default the
   formal of an `in` port whose actual is a signal name (a whole signal, record elements, an
@@ -664,8 +673,8 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
 
 The test runner's `-g/--gui` option (until `yavs-gui` exists): the test runner runs `yavs run ...
 --wave=<output>/yavs/<entity>.fst`, then opens the file in the viewer:
-`--viewer` argument, then `yavs.viewer.gui` sim option, then `surfer`, then
-`gtkwave`. `yavs.viewer_script.gui` is passed to the viewer as
+`--viewer` argument, then `yavs.viewer.gui` sim option, then the default FST
+viewers the runner knows, found on `PATH`. `yavs.viewer_script.gui` is passed to the viewer as
 `--script FILE`. Only FST is written; the test runner warns and ignores `--viewer-fmt`
 values other than `fst`.
 

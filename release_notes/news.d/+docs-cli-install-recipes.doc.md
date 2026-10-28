@@ -1,0 +1,1 @@
+The installation page now lists what each release archive contains, the requirements of the executable and the graphical debugger, the environment variables yavs reads and the first errors a new user can meet, and the runner recipes state the exit statuses and options as the command line implements them.

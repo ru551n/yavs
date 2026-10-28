@@ -1,5 +1,14 @@
 # yavs requirements from an external test runner
 
+> Status note (2026-10-28, checked against the CLI): this is the original request, kept as written.
+> Section 1 (several files per call, `@FILE`, stop at the first failing file, the lock held for the
+> whole call) and section 2 (library locking) are implemented and described in `docs/cli-contract.md`
+> sections 3 and 4. The per-file report `yavs: analyzed FILE` (and its JSON object) is not
+> implemented: a successful `analyze` prints nothing, and a failing call of several files prints the
+> failing file and the files recorded before it. Section 3 (`std.reflection`) is no longer
+> pending: yavs ships it in its 2019 `std` (`docs/decisions.md` "Reflection"), so the sentence
+> "Reflection is not in the yavs plan yet" below is out of date.
+
 The test runner's yavs support sets these hooks (they come from three open feature requests of the runner):
 
 | Hook | Value | From feature | Needs from yavs |

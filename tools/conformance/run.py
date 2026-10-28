@@ -289,7 +289,9 @@ def suite_rows(R):
         add("VUnit", "test framework: its own VHDL test suites", d["pass"], d["pass"] + d["fail"] + d.get("skip", 0), rec("vunit-own"), "VUnit's own `run.py` scripts")
     if "cocotb" in loc:
         d = loc["cocotb"]["data"]
-        add("cocotb", "Python test framework: its own tests, over VHPI", d["pass"], d["pass"] + d["fail"] + d.get("skip", 0), rec("cocotb"), "cocotb's own test scripts")
+        vt = d.get("tests", {})
+        add("cocotb", "Python test framework: its own regression over VHPI" + (f", {vt['pass']} VHDL tests pass" if vt else ""),
+            d["pass"], d["pass"] + d["fail"] + d.get("skip", 0), rec("cocotb"), "`tools/cocotb/run.py`", "jobs")
     add("Open Logic", "FPGA standard library: its own testbenches", None, None, ("", ""), "")
     if "designs" in ci:
         add("Real designs", "neorv32 (three configurations) and GRLIB LEON3 run to completion", sum(all(t.values()) for t in ci["designs"].values()), len(ci["designs"]), here, "`tools/realbench/run.py`", "designs")

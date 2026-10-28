@@ -59,8 +59,7 @@ pub(crate) fn active() -> bool {
     POOL.get().is_some()
 }
 
-/// The pool named in `MAKEFLAGS`, if any; `Err` is the note of warning W0118 (the run then
-/// uses `--threads` as without a pool). Call before the run opens any file: a descriptor
+/// The pool named in `MAKEFLAGS`, if any; `Err` is the note of error E0128. Call before the run opens any file: a descriptor
 /// the parent closed may be reused by one.
 pub(crate) fn connect() -> Result<Option<Arc<Pool>>, String> {
     let Some(flags) = std::env::var_os("MAKEFLAGS") else {

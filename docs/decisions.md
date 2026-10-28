@@ -12494,11 +12494,13 @@ end for those processes. Method as in round 10: bench builds (`llvm`, and `clift
   dependency already in the lock file). A new open file description leaves the parent's descriptor blocking. Only `R`
   is used, read and written. The bytes read are written back unchanged. Descriptors elsewhere (`/dev/fd` shares the
   description) and the Windows semaphore form have no client yet (`ponytail:`).
-- **Decision: a pool that cannot be used is warning `W0118`, not an error,** and the run uses `--threads` as without one.
-  Why: a parent can keep `--jobserver-auth` in `MAKEFLAGS` while closing the descriptors for a child it does not mean to
-  share the pool with, and failing those runs would break working builds; the warning names the value and the fix
-  (rule 1: not silent). `MAKEFLAGS` is read first thing in `run`, before any file is opened, so a closed descriptor
-  number is not yet reused by one of ours, and only a FIFO is accepted. To be confirmed by the user.
+- **Decision: a pool that cannot be used is error `E0128` at the start of `run`, before analysis (exit 2)** (user,
+  2026-10-29): closed descriptors, not a pipe, a path that is not a named pipe, a form with no client. The note gives the
+  cause, the help the fix: pass the pool on, or, for a parent that does not share its pool with this run, remove
+  `--jobserver-auth` from the child's `MAKEFLAGS`. Why: fail early, no silent fallback (rule 1, as #801 asked); a
+  warning was considered first because a parent may keep `--jobserver-auth` while closing the descriptors, and the
+  user chose the error. `MAKEFLAGS` is read first thing in `run`, before any file is opened, so a closed descriptor
+  number is not yet reused by one of ours, and only a FIFO is accepted.
 - **Decision: `MAKEFLAGS` is not read at all with `--threads 1` or `--dap`.**
 - **Known cost, not measured: a simulation under an empty pool is not the `--threads 1` run.** It keeps the per-process
   cost sampling of a run with a pool (about 1 to 2 percent, `docs/parallel.md`) and makes one failed non-blocking read

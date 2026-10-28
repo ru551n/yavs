@@ -66,8 +66,9 @@ that pool ([#801](https://github.com/ru551n/yavs/issues/801)):
   `--threads` behaves as before. `--dap` runs on one thread and ignores the pool.
 * A pool yavs cannot use (descriptors the parent did not pass on, so they are closed or not a
   pipe; a path that is not a named pipe; the semaphore form of Windows, which has no client yet;
-  descriptors on systems other than Linux, where only `fifo:PATH` works) is warning `W0118`, and
-  the run uses `--threads` as without a pool.
+  descriptors on systems other than Linux, where only `fifo:PATH` works) is error `E0128` before
+  analysis (exit 2). A parent that does not share its pool with yavs removes `--jobserver-auth`
+  from the child's `MAKEFLAGS`.
 * Without a pool, nothing shares the CPU between simulations run side by side: do not combine a
   high `-p` with a high `--threads`, the threads of all runs add up.
 

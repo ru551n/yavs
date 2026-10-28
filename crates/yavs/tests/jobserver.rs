@@ -199,7 +199,7 @@ fn tokens_come_back(fifo: bool) {
             .wait_with_output()
             .expect("run");
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-        assert!(!String::from_utf8_lossy(&o.stderr).contains("W0118"));
+        assert!(!String::from_utf8_lossy(&o.stderr).contains("E0128"));
         assert_eq!(o.stdout, one.stdout, "{tokens} tokens");
         assert_eq!(pool.count(), tokens, "tokens back after the end");
         let pooled = counter(&o, "pooled_batches");
@@ -270,33 +270,36 @@ fn ctrl_c_gives_the_tokens_back() {
 }
 
 #[test]
-fn an_unusable_pool_is_a_warning() {
+fn an_unusable_pool_is_an_error() {
     let t = common::tempdir("jobserver-bad");
     let lib = analyze(&t);
     std::fs::write(t.join("plain"), "").expect("write");
     let plain = format!("fifo:{}", t.join("plain").display());
+    let run = |args: &[&str], auth: &str| {
+        yavs()
+            .arg("run")
+            .args(args)
+            .args([lib.as_str(), "tok"])
+            .env("MAKEFLAGS", format!("-j --jobserver-auth={auth}"))
+            .stdin(Stdio::null())
+            .output()
+            .expect("run")
+    };
     // Descriptors the parent closed, a path that is not a named pipe, a form with no client.
     for auth in ["97,98", &plain, "sem_name"] {
-        let o = yavs()
-            .args(["run", &lib, "--threads=4", "tok"])
-            .env("YAVS_POOL_ALL", "1")
-            .env("YAVS_COUNTERS", "1")
-            .env("MAKEFLAGS", format!("-j --jobserver-auth={auth}"))
-            .output()
-            .expect("run");
-        assert!(o.status.success());
+        let o = run(&["--threads=4"], auth);
+        assert_eq!(o.status.code(), Some(2));
         let err = String::from_utf8_lossy(&o.stderr);
-        assert!(err.contains("warning[W0118]"), "{err}");
+        assert!(err.contains("error[E0128]"), "{err}");
         assert!(err.contains(&format!("--jobserver-auth={auth}")), "{err}");
-        // The run as without a pool.
-        assert!(counter(&o, "pooled_batches") > 0);
+        assert!(err.contains("removes `--jobserver-auth`"), "{err}");
+        assert!(o.stdout.is_empty(), "nothing ran");
     }
-    // Not read at all with one thread.
-    let o = yavs()
-        .args(["run", &lib, "--threads=1", "tok"])
-        .env("MAKEFLAGS", "-j --jobserver-auth=97,98")
-        .output()
-        .expect("run");
+    // Not read at all with one thread or under the debugger (which then starts: W0109).
+    let o = run(&["--threads=1"], "97,98");
     assert!(o.status.success());
-    assert!(!String::from_utf8_lossy(&o.stderr).contains("W0118"));
+    assert!(!String::from_utf8_lossy(&o.stderr).contains("E0128"));
+    let o = run(&["--threads=4", "--dap=stdio"], "97,98");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!err.contains("E0128") && err.contains("W0109"), "{err}");
 }

@@ -589,14 +589,16 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   when a group of processes goes to the threads; with none it runs that group on one thread.
   It writes back the bytes it read: after 64 groups in a row on one thread, at the end of the
   run (also after an error), and on the first SIGINT, SIGTERM or SIGHUP (a run that would have
-  died of the signal then exits with status 130). A pool that cannot be used is warning
-  `W0118` and the run uses `--threads=N` as without one. Without a pool, or with
+  died of the signal then exits with status 130). A pool that cannot be used is error
+  `E0128` at the start of `run`, before analysis (exit 2): the note gives the cause, the help
+  the fix (a parent that does not share its pool removes `--jobserver-auth` from the child's
+  `MAKEFLAGS`). Without a pool, or with
   `--threads=1`, nothing changes. Output and exit status do not depend on the tokens. The
   producer fills the pool with the bytes it wants (any value; they are returned unchanged).
   It must keep its own handle of the pipe open (a named pipe: opened for reading and writing)
   for as long as the simulation runs: a pipe's contents are lost when its last handle closes,
   so tokens written back at the end would be lost otherwise. `MAKEFLAGS` is split at
-  whitespace, so the path of `fifo:PATH` must not contain any (W0118 otherwise).
+  whitespace, so the path of `fifo:PATH` must not contain any (E0128 otherwise).
 - Garbage collection: `--gc-threshold=SIZE` (bytes, or a `k`, `m`, `g` suffix; default
   `1m`) sets how much access-value memory is allocated before the heap is collected. The
   test runner never passes it; a user who wants fewer collections opts in with

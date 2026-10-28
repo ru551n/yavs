@@ -365,6 +365,19 @@ case!(
         ("process_runs", Max(1030)),
         ("update_general", Max(0)),
         ("ops", Max(465)),
+        // The kernel commits the copies itself, outside the batch (#519).
+        ("copy_forwards", Min(885)),
+    ]
+);
+case!(
+    copy_forward,
+    "s=325679",
+    &[],
+    [
+        ("cycles", Max(147)),
+        ("process_runs", Max(277)),
+        // Bus, slice, integer and record copies committed by the kernel (#519): 166.
+        ("copy_forwards", Min(161)),
     ]
 );
 case!(

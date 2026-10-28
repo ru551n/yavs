@@ -12433,3 +12433,34 @@ end for those processes. Method as in round 10: bench builds (`llvm`, and `clift
   10 to 13 percent of the run, more at 8) and needs a split view of `Signal` (planes, codes, stamps, pending bits and
   changed runs per 64-element range) with every invariant of `Signal::codes` and the stamps held per piece. Left for the
   maintainer to decide (#481).
+
+## Concurrent copies committed by the kernel, not run in the batch (yavs-kernel `forward_copies`, #519, 2026-10-28)
+
+- **Found by profiling the fletcher testbenches against sim1** (`--tier=auto`, Cranelift build first, then the LLVM build; `perf` instructions
+  and cycles of the whole run, `YAVS_COUNTERS`): no single hot spot; the kernel is 46 to 54 percent of the run, the processes (interpreted,
+  compiled and their runtime calls) 35 to 45. Half of all process runs are `CopyProcess` runs (writer 4.71 of 9.08 M, reader 3.96 of
+  7.87 M; `neorv32_single_min` and `poc_cache_cpu` 18 percent, `sc5_fifo_repack` 18), each paying the batch (`run_one`/`run_batch`, `Ctx`,
+  `resumption`, the `OutV` list, `commit_out`) for a read and a commit: about 280 instructions a copy beyond the copy itself.
+- **Decision: a copy resumed in a cycle is made by the kernel after the wake loop and before the batch** (`SimControl::forward_copies`):
+  the source parts are read from `cur` and committed to the copy's drivers (`Signal::commit_planes`, a run of `OutV` blocks through
+  `commit_planes_run` for parts over 64 elements, `commit_bytes`), the copy counts as a process run and leaves the ready list. The values
+  are the ones the copy would read in its run (nothing changes `cur` in the process phase) and the commit is the one its run would make
+  (zero delay, its own direct drivers, which nothing else writes), so the next update sees the same pending elements; the order of
+  commits across drivers does not matter (`changed_sigs` is sorted).
+- **Which copies** (`copy_forwards`, at build): every part to a direct driver of the copy (`DriverInfo::direct` for logic; `bdirect` for one
+  element of a byte signal of the source's element size), not postponed. At run time the copy's waits must be resident
+  (`ProcMeta::perm`, so the wait it would make is the one standing); its waveforms are idle there by construction (a `debug_assert`).
+  Not in the delta before the delta limit, so the limit's report and loop search still see the copies of the last batch. Other copies run
+  as before.
+- **Measured** (bench builds, `--tier=auto` warm, one claimed core of the second CCD, medians of 3 interleaved runs, host at load 27 to 50,
+  so instructions are the figure): Cranelift build `fletcher_bufferreader` instructions 0.93, cycles 0.93; `fletcher_bufferwriter_512`
+  0.91 to 0.97 and 0.88 to 0.93; `neorv32_single_min` 0.97, `poc_cache_cpu` 0.98 to 0.99, `sc5_fifo_repack` 1.00. LLVM build 0.92, 0.98,
+  0.98, 0.98. `tools/realbench --compare` over 42 tests (Cranelift build): wall 0.97 interp, 0.96 auto, 0.98 auto-cold,
+  instructions 1.00, 0.99, 1.00. Work-counter designs `copy_chain` (912 of 936 copies) and `copy_forward` (a 200-element bus, a slice, an integer and a record).
+- **The reference simulator (rule 22):** it runs a concurrent signal assignment as an ordinary compiled process and queues the update of
+  each driver as a deferred work item. The idea taken is only that the work of a driver update needs no process context; ours goes
+  further and makes no activation for a plain copy at all. Nothing was copied.
+- **Left** (measured, not done): the wake of the copy is still paid (waiter lists); `Signal::commit_planes` is about 65 instructions a block;
+  the kernel's own gates, muxes and programs still run in the batch; the rest of the fletcher gap is diffuse: per-delta work of `cycle` and
+  `finish_direct`, the interpreted record gather and scatter of two-process designs, and compiled straight-line processes that are no
+  faster than interpreted ones (#679).

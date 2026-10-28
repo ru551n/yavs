@@ -74,6 +74,12 @@ pub trait Process: Send {
     fn as_any(&mut self) -> Option<&mut dyn std::any::Any> {
         None
     }
+
+    /// A [`CopyProcess`]: its parts, so the kernel can make a run of it itself
+    /// (`SimControl::forward_copies`).
+    fn copy_parts(&self) -> Option<&[(SigRef, DriverId, Range)]> {
+        None
+    }
 }
 
 impl<F: FnMut(&mut Ctx<'_>) -> Result<(), SimError> + Send> Process for F {
@@ -130,6 +136,10 @@ impl Process for CopyProcess {
             }
         }
         Ok(())
+    }
+
+    fn copy_parts(&self) -> Option<&[(SigRef, DriverId, Range)]> {
+        Some(&self.parts)
     }
 }
 

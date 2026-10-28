@@ -208,6 +208,9 @@ pub struct Stats {
     /// Assignments that took the general path of `Ctx::assign` (waveform lists, preemption);
     /// summed over the processes when asked.
     pub general_assigns: u64,
+    /// Runs of concurrent copies the kernel made itself (`SimControl::forward_copies`), also
+    /// counted in `process_runs`.
+    pub copy_forwards: u64,
 }
 
 /// A pending observer wake-up (`Hook::wake_at`). Ordered by time, then registration.
@@ -943,6 +946,11 @@ pub struct SimControl {
     /// Some observer wants `obs_next` (`Observer::wants_next_time`).
     next_wanted: bool,
     postponed: Vec<u32>,
+    /// Per process, the parts of a concurrent copy the kernel commits itself
+    /// (`forward_copies`); empty when the design has none.
+    fwd: Vec<Option<Box<[Fwd]>>>,
+    /// The blocks of a wide copy part, kept between runs.
+    fwd_run: Vec<OutV>,
     last_ran: Vec<u32>,
     /// The commit list of `run_batch`, kept between batches.
     late: Vec<u32>,
@@ -1180,6 +1188,7 @@ impl SimControl {
                 && s.resolution.is_none()
                 && !s.drivers[d.slot as usize].shared;
         }
+        let fwd = copy_forwards(&mut slots, &procs, &signals, &drivers);
         // Clocked processes that can be left suspended when none of the signals they read had an
         // event: pure ones (`Builder::idle_skip`) that drive signals allowing skipped assignments.
         let mut idle_active = false;
@@ -1338,6 +1347,8 @@ impl SimControl {
             skip_wake: [0; SKIP_MAX],
             skip_n: 0,
             postponed: Vec::new(),
+            fwd,
+            fwd_run: Vec::new(),
             last_ran: Vec::new(),
             late: Vec::new(),
             order_keys: Vec::new(),
@@ -2363,6 +2374,10 @@ impl SimControl {
             self.idle_filter(&mut ready);
         }
         self.phase(Phase::StartOfProcesses);
+        // Not in the delta before the limit: its report names the processes of the last batch.
+        if !self.fwd.is_empty() && !ready.is_empty() && self.delta + 1 < self.cfg.max_deltas {
+            self.forward_copies(&mut ready);
+        }
         if ready.is_empty() {
             // Nothing resumed (the falling edge of a clock, a transaction nobody waits for):
             // the batch would only commit the direct entries there are none of, and note that
@@ -3396,6 +3411,94 @@ impl SimControl {
             }
         }
         self.order_keys = keyed;
+    }
+
+    /// Runs of the concurrent copies in `ready` (#519): a copy whose waits stay (resident) and
+    /// whose drivers have nothing pending does nothing but commit its sources' values to its direct
+    /// drivers, so the kernel does that here, as its commit would, and drops it from the batch.
+    fn forward_copies(&mut self, ready: &mut Vec<u32>) {
+        let mut keep = 0;
+        for i in 0..ready.len() {
+            let p = ready[i];
+            if !self.forward_copy(p) {
+                ready[keep] = p;
+                keep += 1;
+            }
+        }
+        ready.truncate(keep);
+    }
+
+    #[inline]
+    fn forward_copy(&mut self, p: u32) -> bool {
+        let Some(Some(parts)) = self.fwd.get(p as usize) else {
+            return false;
+        };
+        if self.procs[p as usize].perm == 0 {
+            return false;
+        }
+        // Its zero-delay drives never leave anything in its waveforms past the next update.
+        debug_assert!({
+            let st = &slot_mut(&mut self.slots[p as usize]).st;
+            parts.iter().all(|f| {
+                st.waveforms
+                    .get(f.local as usize)
+                    .is_some_and(|w| w.idle() && w.phantom.is_empty())
+            })
+        });
+        for f in parts.iter() {
+            if f.es == 0 {
+                let Buf::Planes { b, .. } = &self.signals[f.src as usize].cur else {
+                    unreachable!("copy part checked at build: logic source");
+                };
+                let block = |k: u32| {
+                    let n = (f.len - k).min(64);
+                    let planes =
+                        yavs_logic::wide::get_block(b, (f.src_off + k) as usize, n as usize)
+                            .map(|w| w & nmask(n as usize));
+                    OutV {
+                        sig: f.dst,
+                        slot: f.slot,
+                        elem: f.dst_off + k,
+                        len: n,
+                        planes,
+                    }
+                };
+                let first = if f.len <= 64 {
+                    let o = block(0);
+                    self.signals[f.dst as usize].commit_planes(o.slot, o.elem, o.len, o.planes)
+                } else {
+                    // A bus: its blocks as one run, the signal's storage looked up once.
+                    let mut run = std::mem::take(&mut self.fwd_run);
+                    run.clear();
+                    run.extend((0..f.len).step_by(64).map(block));
+                    let first = self.signals[f.dst as usize].commit_planes_run(&run);
+                    self.fwd_run = run;
+                    first
+                };
+                if first {
+                    self.direct_sigs.push(f.dst);
+                }
+            } else {
+                let es = f.es as usize;
+                let Buf::Bytes { data, .. } = &self.signals[f.src as usize].cur else {
+                    unreachable!("copy part checked at build: byte source");
+                };
+                let at = f.src_off as usize * es;
+                let mut val = [0u8; 8];
+                val[..es].copy_from_slice(&data[at..at + es]);
+                match self.signals[f.dst as usize].commit_bytes(f.slot, f.dst_off, es, &val) {
+                    Some(true) => self.direct_sigs.push(f.dst),
+                    Some(false) => {}
+                    None => self.empty_delta = true,
+                }
+            }
+        }
+        let m = &mut self.procs[p as usize];
+        m.ready = false;
+        m.resumed = true;
+        self.stats.process_runs += 1;
+        self.stats.copy_forwards += 1;
+        true
     }
 
     /// Run `pids` (in parallel where allowed), then commit their effects and waits in
@@ -4785,6 +4888,71 @@ const PREFETCH_AHEAD: usize = 3;
 const PREFETCH_LINES: usize = 5;
 /// Every line a slot can touch: it need not start on a line.
 const SLOT_LINES: usize = std::mem::size_of::<Mutex<Slot>>().div_ceil(yavs_prefetch::LINE) + 1;
+
+/// A part of a concurrent copy the kernel commits itself (`SimControl::forward_copies`): source
+/// elements, the direct driver (signal and source slot) and its target elements.
+#[derive(Clone, Copy)]
+struct Fwd {
+    src: u32,
+    src_off: u32,
+    len: u32,
+    dst: u32,
+    slot: u32,
+    dst_off: u32,
+    /// Index of the driver in its process's `ProcState::waveforms`.
+    local: u32,
+    /// Bytes per element of a byte signal (one element), 0 for logic.
+    es: u32,
+}
+
+/// The concurrent copies whose every part goes to a direct driver of the copy (logic, or one
+/// element of a byte signal of the source's element size): `SimControl::fwd`.
+fn copy_forwards(
+    slots: &mut [Mutex<Slot>],
+    procs: &[ProcMeta],
+    signals: &[Signal],
+    drivers: &[DriverInfo],
+) -> Vec<Option<Box<[Fwd]>>> {
+    let (mut fwd, n) = (Vec::new(), slots.len());
+    for (p, slot) in slots.iter_mut().enumerate() {
+        let Some(parts) = slot_mut(slot).process.copy_parts() else {
+            continue;
+        };
+        if procs[p].flags.postponed {
+            continue;
+        }
+        let part = |&(src, d, r): &(SigRef, DriverId, Range)| {
+            let info = drivers.get(d.0 as usize)?;
+            let sr = src.range?;
+            let es = match (
+                signals.get(src.signal.0 as usize)?.ty.elem,
+                signals.get(info.signal.0 as usize)?.ty.elem,
+            ) {
+                (Elem::Logic, Elem::Logic) if info.direct => 0,
+                (Elem::Bytes(a), Elem::Bytes(b)) if a == b && info.bdirect && r.len == 1 => a,
+                _ => return None,
+            };
+            (info.owner.0 as usize == p && sr.len == r.len && r.len > 0 && info.range.contains(r))
+                .then_some(Fwd {
+                    src: src.signal.0,
+                    src_off: sr.offset,
+                    len: r.len,
+                    dst: info.signal.0,
+                    slot: info.slot,
+                    dst_off: r.offset,
+                    local: info.local,
+                    es,
+                })
+        };
+        if let Some(f) = parts.iter().map(part).collect::<Option<Box<[Fwd]>>>() {
+            if fwd.is_empty() {
+                fwd = vec![None; n];
+            }
+            fwd[p] = Some(f);
+        }
+    }
+    fwd
+}
 
 fn slot_mut(m: &mut Mutex<Slot>) -> &mut Slot {
     m.get_mut().unwrap_or_else(PoisonError::into_inner)

@@ -9375,6 +9375,24 @@ the call is still about 80 ops; the rest is listed there. First 1 us of `grlib_l
   (`rtl_lfsr` 262 ms, `lfsr64` 131 ms, `rtl_ff` 545 ms warm): the kernel is about a quarter of their activation; the rest is the
   interpreted start of warm runs (#728) and the host layers (#766). Details: decisions.md "Kernel round 26".
 
+## llvm: compiled clocked RTL, round 10: the view made inside the tier (#766, 2026-10-28)
+
+- `Tier::run_cached` takes the interpreter's `yavs_interp::Host` (now `pub`) instead of `dyn TierHost`; `rt::enter`/`enter_on` are generic
+  over `rt::View`, so a process activation's view is `Host::view_root_again` inlined into the tier. `run_direct` reads the function inline
+  (`Program::func_inline`), tests the host's fault in place and ends the host without drop calls; small trims in `enter_on`, `keep_heap`
+  and the view's flags. A second code generator changes only its `run_cached` parameter type (#481).
+- Instructions an activation (stepcount, base 3d0e1f3d / round 10): `rtl_lfsr` 1422.5 / 1380.6, `lfsr64` 1475.1 / 1433.2, `rtl_ff`
+  1116.5 / 1074.5; the host layers (`InterpProcess::run` with `run_direct` and `Program::func`, `run_cached` with `enter_on` and the view,
+  `yavs_rt_wait_same`) 538 / 496. Cycles, warm, min of 7, core 9: `--tier=auto` `rtl_ff` -2.6 percent, `lfsr64` -1.6, `rtl_lfsr` -0.9;
+  `--tier-heat=1,0,0` `rtl_ff` -3.2, `rtl_lfsr` -1.9, `lfsr64` -1.4; `rtl_chain` (interpreted) level.
+- `tools/realbench --compare` (42 tests, run phase, interpreter and auto, 3 runs, core 8): wall geometric mean 0.99 / 1.00, instructions
+  1.00 / 1.00, CPU 0.99 / 1.00; `hdlm_lfsr` auto 0.94 wall and instructions; `vai_window_gen_interlock` auto instructions 1.10 in that run,
+  0.98 in 5 more runs (the policy's compile timing).
+- Checks: fmt, clippy with and without `llvm`, both test suites, `gc-stress` tests of `yavs-interp` and `yavs-llvm`; difftest 542/542 at
+  1 and 4 threads for `yavs-interp`, `yavs-auto`, `yavs-llvm` and `yavs-auto` with `--tier-heat=1,0,0`.
+- Left (decisions.md "Compiled clocked RTL processes, round 10"): the view's fields, the object table's tags, the policy's bookkeeping,
+  `Env` and the thread's `Mem`, in steps of 3 to 15 instructions.
+
 ## kernel: prefetch of the next process in a batch (#766, 2026-10-27)
 
 - A batch of 128 or more processes prefetches the five hot cache lines of the process three steps ahead (`yavs-prefetch`, the one

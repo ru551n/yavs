@@ -525,7 +525,8 @@ impl Mem {
         if self.tags[space::HEAP as usize] != t << 32 {
             self.set(&HEAP_SPACES, t);
         }
-        from == to || self.drop_changed(from, to)
+        // Word by word: the array compare went through the stack.
+        from[0] == to[0] && from[1] == to[1] || self.drop_changed(from, to)
     }
 
     /// Drop the table's entries of the heap slots the heaps changed from epochs `from` to `to`
@@ -2386,14 +2387,47 @@ pub unsafe fn yavs_rt_obj(env: *mut c_void, mem: *mut Mem, addr: u64, write: u32
     }
 }
 
+/// How an activation makes its view: any host through `TierHost::view_again` (`Tier::run`), the
+/// interpreter's own `Host` of a process activation (`Tier::run_cached`) without the virtual call.
+pub trait View {
+    fn make_view(&mut self, fr: &mut TierFrame);
+    fn as_host(&mut self) -> &mut dyn TierHost;
+}
+
+impl View for dyn TierHost + '_ {
+    #[inline(always)]
+    fn make_view(&mut self, fr: &mut TierFrame) {
+        if !self.view_again(fr) {
+            self.view(fr);
+        }
+    }
+    #[inline(always)]
+    fn as_host(&mut self) -> &mut dyn TierHost {
+        self
+    }
+}
+
+impl View for yavs_interp::Host<'_, '_, '_> {
+    #[inline(always)]
+    fn make_view(&mut self, fr: &mut TierFrame) {
+        if !self.view_root_again(fr) {
+            TierHost::view(self, fr);
+        }
+    }
+    #[inline(always)]
+    fn as_host(&mut self) -> &mut dyn TierHost {
+        self
+    }
+}
+
 /// Run compiled `f` (generated for `nregs` registers) from `pc` (`Tier::run`); `lookup`
 /// finds the compiled code of the functions it calls.
 #[inline(always)]
-pub fn enter(
+pub fn enter<H: View + ?Sized>(
     f: RunFn,
     nregs: usize,
     pc: u32,
-    host: &mut dyn TierHost,
+    host: &mut H,
     lookup: Lookup<'_>,
     ntab: *const usize,
     state: Option<&mut yavs_interp::TierState>,
@@ -2433,19 +2467,17 @@ thread_local! {
 /// carried out of a callback.
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
-pub fn enter_on(
+pub fn enter_on<H: View + ?Sized>(
     mem: &mut Mem,
     f: RunFn,
     nregs: usize,
     pc: u32,
-    host: &mut dyn TierHost,
+    host: &mut H,
     lookup: Lookup<'_>,
     ntab: *const usize,
     state: Option<&mut yavs_interp::TierState>,
 ) -> Result<Option<u32>, Box<dyn Any + Send>> {
-    if !host.view_again(&mut mem.fr) {
-        host.view(&mut mem.fr);
-    }
+    host.make_view(&mut mem.fr);
     // Only an activation with a record can leave the pc of its wait there.
     if state.is_none() {
         mem.fr.flags &= !yavs_interp::TIER_ROOT_WAIT;
@@ -2460,13 +2492,15 @@ pub fn enter_on(
         return Ok(None);
     }
     let mut env = Env {
-        host,
+        host: host.as_host(),
         lookup,
-        stack_lo: stack_here().saturating_sub(NEST_STACK),
+        stack_lo: 0,
         panic: None,
         pending: Vec::new(),
         windows: None,
     };
+    // `env` is a local whose address the call takes anyway: where the native stack is.
+    env.stack_lo = (&raw const env as usize).saturating_sub(NEST_STACK);
     mem.ntab = ntab;
     mem.stack_lo = env.stack_lo as u64;
     // The frames of native calls are at most `max_depth` deep: their slots are registered here.

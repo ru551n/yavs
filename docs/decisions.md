@@ -11482,3 +11482,37 @@ subprograms that cannot suspend.
   run): `rtl_lfsr` 0.909 instructions, 0.94 CPU, 0.93 wall (`_p1` linked at 28 ms of the run, was 57); `rtl_ff` 0.99 / 0.92 / 0.92;
   `lfsr64` 1.00 / 1.00 / 0.99 (its copy is compiled early by the run-to-run profile already, at 30 ms).
 
+## Compiled clocked RTL processes, round 10: the view made inside the tier, the entry's copies and drops (yavs-interp, yavs-llvm, yavs-ir, #766, 2026-10-28)
+
+Task (#766): the host layers between the kernel and compiled code, about 490 of the 1 390 instructions of a `rtl_lfsr` activation in kernel
+round 26. Method as in rounds 8 and 9: bench builds with `llvm`, `tools/stepcount` windows of 2 048 (`rtl_lfsr`, `lfsr64`) or 4 096 (`rtl_ff`)
+compiled activations (entries of `AutoTier::run_cached`, `--tier=auto --tier-heat=1,0,0`, `--threads 1`), cycles as the minimum of 7
+interleaved warm runs on one claimed core of the second CCD. `perf record -e '{cycles,instructions}:u'` gave each layer the same share of
+cycles as of instructions (`InterpProcess::run` 13.7 / 14.0 percent, `run_cached` 10.0 / 9.7, `view_again` 11.4 / 15.6): the layers are
+instruction-bound, so this round removes instructions; the prefetch rounds had taken the misses.
+
+- **Decision: `Tier::run_cached` takes the interpreter's own host, `&mut yavs_interp::Host`** (was `&mut dyn TierHost`; `Host` is `pub` with
+  private fields), and `rt::enter`/`enter_on` are generic over `rt::View` (`dyn TierHost` and `Host`), so a process activation makes its view
+  with `Host::view_root_again` inlined into the tier instead of the virtual `TierHost::view_again` (its call, six-register prologue and
+  epilogue, and the reload of the host's fields). `Tier::run` and `Tier::call` keep `dyn TierHost`; the callbacks get `dyn TierHost` as
+  before. `view_root` and `tier_cov` are `#[inline]` for that. A second code generator changes its `run_cached` parameter type and gets
+  the saving by calling `enter` with the host (heads-up on #481). Why: about 18 instructions of every compiled activation, no state kept.
+- **Decision: `run_direct` reads the root function through `Program::func_inline`** (the body of `Program::func`, `#[inline(always)]`;
+  `func` itself is unchanged for its other callers), tests `Host::fault` in place instead of moving the 32-byte `Option<Fault>` out, and
+  ends the host with `mem::forget` once the fault is known to be `None` and `up` is dropped (the drop of the `None` fault was a call of
+  its drop glue). The view writes `TierFrame::flags` once, the stack bound of `enter_on` is the address of its `Env` (no `black_box`
+  store and reload), and `Mem::keep_heap` compares the two epochs word by word (the array compare went through the stack).
+- **Measured** (instructions an activation, stepcount, base 3d0e1f3d / round 10): `rtl_lfsr` 1 422.5 / 1 380.6, `lfsr64` 1 475.1 / 1 433.2,
+  `rtl_ff` 1 116.5 / 1 074.5. By layer (`rtl_lfsr`; `lfsr64` and `rtl_ff` alike): `InterpProcess::run` with `run_direct` and `Program::func`
+  203.9 / 181.9, `AutoTier::run_cached` with `enter_on` and `view_again` 311.8 / 291.8, `yavs_rt_wait_same` 21.9 / 21.9: the host layers
+  538 / 496. Cycles, minimum of 7 warm runs, core 9: `--tier=auto` `rtl_ff` -2.6 percent, `lfsr64` -1.6, `rtl_lfsr` -0.9, `rtl_chain`
+  -2.0 (interpreted, same instructions: noise); with `--tier-heat=1,0,0` `rtl_ff` -3.2, `rtl_lfsr` -1.9, `lfsr64` -1.4, `rtl_chain` +0.3.
+- **Not done, and why.** What is left of the 496 is the work itself in steps of 3 to 15 instructions: the view's 35 fields (about 75), the
+  object table's tags (`Mem::begin` and `save_tag`, about 55; a generator-proven "no object table" flag stays not now, decision of
+  2026-10-26), the tier's policy bookkeeping in `run_direct` (sampling slot, `activated`, `execs`, about 30), the `Env` and the thread's
+  `Mem` (about 35), the record's copy in and out (about 15). Every activation is another machine, so nothing of the view or the tags can be
+  kept on the thread; a persistent per-process view stays ruled out (#634). Tried and dropped: putting `rt_run` back without its drop test
+  (a nested `run_quick` in a callback may refill it: a leaked runtime for 3 instructions).
+- **The reference simulator (rule 22):** its process entry calls the compiled closure with the process's state pointer and nothing between
+  the scheduler and the code. The idea taken: the code that makes the activation's context is static code in the caller, not a virtual
+  call back into the host. Ours keeps the per-activation view (#634). Nothing was copied.

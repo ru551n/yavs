@@ -95,6 +95,12 @@ impl Program {
     /// frame, parameters and flags agree, instruction numbers, blocks and resume points do not.
     #[inline]
     pub fn func(&self, f: FuncId) -> Option<&Func> {
+        self.func_inline(f)
+    }
+
+    /// [`Program::func`], inlined: for a caller on every activation of a process.
+    #[inline(always)]
+    pub fn func_inline(&self, f: FuncId) -> Option<&Func> {
         let raw = self.funcs.get(f)?;
         match raw.opt.get() {
             Some(Some(o)) => Some(o),

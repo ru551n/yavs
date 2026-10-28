@@ -54,7 +54,7 @@ pub use debug::{
     DebugSession, Debugger, FrameView, HitCond, Hits, LineBp, LocalView, ProcState, ProcStatus,
     Resume, SignalBreak, Stop, StopReason, Watches, format_scalar,
 };
-pub use exec::{SPIN_CHECK, SPIN_LIMIT, copy_bits};
+pub use exec::{Host, SPIN_CHECK, SPIN_LIMIT, copy_bits};
 pub use heap::{HEAP_LOG, Heap, collections as gc_collections};
 pub use ieee::{code_table, edge_native};
 pub use pmemo::{pmemo_off, pmemo_stats};
@@ -369,12 +369,13 @@ pub trait Tier: Send + Sync {
 
     /// [`Tier::run`] for a process that suspends compiled over and over: `state` is the tier's
     /// own record of this process, kept inline in the machine between activations (a box was a
-    /// cache line of its own per process, #766).
+    /// cache line of its own per process, #766). `host` is the interpreter's own, so the tier
+    /// can make the view without a virtual call ([`Host::view_root_again`]).
     fn run_cached(
         &self,
         func: FuncId,
         pc: u32,
-        host: &mut dyn TierHost,
+        host: &mut Host<'_, '_, '_>,
         _state: &mut TierState,
     ) -> Option<u32> {
         self.run(func, pc, host)

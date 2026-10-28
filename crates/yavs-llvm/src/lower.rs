@@ -69,7 +69,7 @@ impl Tier for LlvmTier {
         &self,
         func: FuncId,
         pc: u32,
-        host: &mut dyn TierHost,
+        host: &mut yavs_interp::Host<'_, '_, '_>,
         state: &mut yavs_interp::TierState,
     ) -> Option<u32> {
         let &(f, nregs) = self.funcs.get(func.0 as usize)?.as_ref()?;

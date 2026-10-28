@@ -5250,7 +5250,7 @@ impl Gen<'_> {
             return self.len_of(l, r, dir);
         }
         // A descriptor of the constant pool: its length when the code is made.
-        if off % 24 == 0
+        if off.is_multiple_of(24)
             && let Some((l, r, dir)) = self.const_dim(reg, (off / 24) as u32)
             && let Some(n) = (if dir == 0 { r - l } else { l - r }).checked_add(1)
         {

@@ -183,3 +183,27 @@ PLUGIN_EXPORT void nexttime(void) {
   vhpi_printf("at load: rc=%d error=%d\n", rc, err());
   reg(vhpiCbRepEndOfTimeStep, 0, NULL, NULL, next_cb, "next");
 }
+
+static void never(const vhpiCbDataT *cb) { (void)cb; }
+
+/* attrs_misuse: what does not apply to attribute specifications and declarations. */
+PLUGIN_EXPORT void attrs_misuse(void) {
+  vhpiHandleT a = vhpi_handle_by_name("top:s'weight", NULL);
+  vhpiValueT v;
+  memset(&v, 0, sizeof v);
+  v.format = vhpiIntVal;
+  v.value.intg = 3;
+  int rc = vhpi_put_value(a, &v, vhpiDepositPropagate);
+  vhpi_printf("put: rc=%d error=%d\n", rc, err());
+  vhpiValueT cv;
+  memset(&cv, 0, sizeof cv);
+  cv.format = vhpiIntVal;
+  vhpiHandleT h = reg(vhpiCbValueChange, 0, a, &cv, never, "vc");
+  vhpi_printf("value change: %s error=%d\n", h ? "handle" : "NULL", err());
+  vhpi_printf("decl value:\n");
+  show_value(vhpi_handle(vhpiAttrDecl, a));
+  vhpiHandleT it = vhpi_iterator(vhpiAttrSpecs, vhpi_handle_by_name("top:c2", NULL));
+  vhpiHandleT g = it ? vhpi_scan(it) : NULL;
+  vhpi_printf("generic-valued %s:\n", g ? (const char *)vhpi_get_str(vhpiCaseNameP, g) : "none");
+  if (g) show_value(g);
+}

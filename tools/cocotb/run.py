@@ -14,7 +14,7 @@ SIM=yavs TOPLEVEL_LANG=vhdl under a 300 s timeout and (without --no-sandbox) a 2
 exits 0 (cocotb's own verdict, expected failures included). Exit status 1 when a job fails or one
 in EXPECTED_FAIL passes. Python stdlib only.
 """
-import argparse, concurrent.futures as cf, json, os, shutil, subprocess, sys, xml.etree.ElementTree as ET
+import argparse, concurrent.futures as cf, hashlib, json, os, shutil, subprocess, sys, xml.etree.ElementTree as ET
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -27,21 +27,22 @@ REPO = "https://github.com/cocotb/cocotb"
 EXAMPLES = ["adder/tests", "simple_dff", "matrix_multiplier/tests", "mixed_language/tests"]
 PYTEST_EXAMPLES = ["adder", "simple_dff", "matrix_multiplier", "mixed_language"]
 TEST_DEPS = ["pytest==9.1.1", "ipython==9.16.1", "pexpect==4.9.0", "psutil==7.2.2"]
-# Gates on the simulator name that leave yavs out only because cocotb does not know it yet: yavs is
-# added in the scratch copy, as the upstream change would (file, text, replacement; every occurrence).
+# Gates on the simulator name that leave yavs out only because cocotb does not know it yet: in the
+# scratch copy the gating line becomes one that names yavs, as the upstream change would. Each entry
+# is (file, sha256 prefix of the pinned file, {line number: new line}); a changed file stops the run.
+# The gates: VHDL libraries, the top-level library, waves, timescale, IPython, the recursive object
+# count of test_iteration_vhdl (the one three reference simulators agree on), an example's generics.
+LIBS = "$(filter yavs,$(shell echo $(SIM) | tr A-Z a-z))"
 GATES = [
-    ("tests/test_cases/test_vhdl_libraries/Makefile", "nvc questa-compat", "yavs nvc questa-compat"),
-    ("tests/test_cases/test_vhdl_libraries_multiple/Makefile", "nvc questa-compat", "yavs nvc questa-compat"),
-    ("tests/test_cases/test_toplevel_library/Makefile", "ifeq ($(SIM)_$(TOPLEVEL_LANG),questa_vhdl)",
-     "ifneq ($(filter questa_vhdl yavs_vhdl,$(SIM)_$(TOPLEVEL_LANG)),)"),
-    ("tests/pytest/test_vhdl_libraries_multiple.py", '["ghdl", "nvc",', '["ghdl", "yavs", "nvc",'),
-    ("tests/pytest/test_waves.py", '"xcelium", "nvc", "ghdl"]', '"xcelium", "nvc", "ghdl", "yavs"]'),
-    ("tests/pytest/test_waves.py", 'elif sim == "nvc":\n        dumpfile_path', 'elif sim in ("nvc", "yavs"):\n        dumpfile_path'),
-    ("tests/pytest/test_timescale.py", '["icarus", "ghdl", "verilator", "dsim"]', '["icarus", "ghdl", "verilator", "dsim", "yavs"]'),
-    ("tests/pytest/test_ipython_support.py", '"ghdl", "nvc", "xcelium"]', '"ghdl", "nvc", "xcelium", "yavs"]'),
-    # the object count of the recursive walk that three reference simulators agree on
-    ("tests/test_cases/test_iteration_vhdl/test_iteration.py", '"riviera",', '"riviera", "yavs",'),
-    ("examples/matrix_multiplier/tests/Makefile", "ghdl questa modelsim riviera activehdl nvc", "ghdl questa modelsim riviera activehdl nvc yavs"),
+    ("tests/test_cases/test_vhdl_libraries/Makefile", "af2b8730b4e99ffb", {15: f"ifneq ({LIBS},)", 23: f"else ifeq ({LIBS},)"}),
+    ("tests/test_cases/test_vhdl_libraries_multiple/Makefile", "3876e7bc4c263dea", {20: f"ifneq ({LIBS},)", 28: f"else ifeq ({LIBS},)"}),
+    ("tests/test_cases/test_toplevel_library/Makefile", "9a7c2e64b78fcfe0", {5: "ifeq ($(SIM)_$(TOPLEVEL_LANG),yavs_vhdl)"}),
+    ("tests/pytest/test_vhdl_libraries_multiple.py", "5a0e063a48340a20", {29: '    os.getenv("SIM", "") not in ["yavs"],'}),
+    ("tests/pytest/test_waves.py", "92ec7c30e64bc254", {74: '    sim not in ["yavs"],', 85: '    elif sim == "yavs":'}),
+    ("tests/pytest/test_timescale.py", "74a6d90f58fd8685", {38: '    os.getenv("SIM", "") not in ["yavs"],'}),
+    ("tests/pytest/test_ipython_support.py", "e21734081055400e", {58: '    sim not in ["yavs"],'}),
+    ("tests/test_cases/test_iteration_vhdl/test_iteration.py", "d6ee967ccf4af126", {36: '            "yavs",'}),
+    ("examples/matrix_multiplier/tests/Makefile", "a039ac826a358156", {38: "    ifneq ($(filter $(SIM),yavs),)"}),
 ]
 # jobs that fail for reasons outside yavs, with the reason (none today)
 EXPECTED_FAIL: dict[str, str] = {}
@@ -140,11 +141,14 @@ def main():
     mark.touch()
     for x in ["tests", "examples", "pyproject.toml"]:
         (shutil.copytree if (src / x).is_dir() else shutil.copy)(src / x, out / x)
-    for f, old, new in GATES:
-        text = (out / f).read_text()
-        if old not in text:
-            sys.exit(f"error: {f}: `{old}` not found; update GATES for cocotb {COCOTB}")
-        (out / f).write_text(text.replace(old, new))
+    for f, sha, lines in GATES:
+        text = (out / f).read_bytes()
+        if hashlib.sha256(text).hexdigest()[:16] != sha:
+            sys.exit(f"error: {f} is not the pinned cocotb {COCOTB} file; update GATES")
+        ls = text.decode().split("\n")
+        for n, line in lines.items():
+            ls[n - 1] = line
+        (out / f).write_text("\n".join(ls))
     # --run-args reach both the makefile and the Python runner through a wrapper of yavs
     if a.run_args:
         w = out / "yavs"

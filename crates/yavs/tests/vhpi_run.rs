@@ -1026,6 +1026,8 @@ const EXTRAS: &str = "entity top is generic (g : integer := 3); end;\n\
     attribute mark of s : signal is \"fast\";\n\
     attribute weight of s : signal is 7;\n\
     constant c : integer := 1;\n\
+    constant c2 : integer := 2;\n\
+    attribute weight of c2 : constant is g * 2;\n\
     begin\n\
     g1: for i in 2 to 3 generate\n\
     signal t : bit;\n\
@@ -1064,11 +1066,41 @@ fn vhpi_user_attributes_and_properties() {
             "top:c: iterator NULL error=0",
             "by name s'weight: vhpiAttrSpecK",
             "root: gens=1 ports=0",
-            "g1(3): label=g1 index=3 line=10",
+            "g1(3): label=g1 index=3 line=12",
             "p:v: shared=0",
             "tool: capabilities=307",
         ],
         "{out}"
+    );
+}
+
+/// What does not apply to user attributes is misuse, never a crash or an internal error.
+#[test]
+fn vhpi_user_attribute_misuse() {
+    let (code, err, out) = extras("attrs_misuse");
+    assert_eq!(code, 0, "{err}");
+    assert!(!err.contains("bug in yavs"), "{err}");
+    let lines: Vec<&str> = out
+        .lines()
+        .filter(|l| !l.starts_with("    Process"))
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "put: rc=1 error=1",
+            "value change: NULL error=1",
+            "decl value:",
+            "    value: error",
+            "generic-valued weight:",
+            "    value: error",
+        ],
+        "{out}"
+    );
+    assert_eq!(err.matches("W0903").count(), 3, "{err}");
+    // An attribute value analysis cannot fold (it depends on a generic) is not read yet.
+    assert!(
+        err.contains("W0904") && err.contains("without an elaborated value"),
+        "{err}"
     );
 }
 

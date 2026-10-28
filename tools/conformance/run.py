@@ -465,7 +465,9 @@ yavs's verdict and who decided.
                  "or the result is implementation-defined, the test carries a recorded reason in the driver: the first kind counts as a pass, the others are not counted. "
                  f"The billowitch `disputed` directory has no expectation and is not run.\n\n" + table(["group", "pass", "not counted"], rows, right=(1, 2)) +
                  f"\nOf the {an.get('pass', 0)} `analyzer_failure` passes, {an.get('pass', 0) - an.get('late', 0)} fail at analysis and {an.get('late', 0)} are stopped by a yavs error "
-                 "at elaboration or run time before the test's own verdict (values out of range, lengths, delays: the language reference leaves open when such errors are detected).\n\n"
+                 "at elaboration or run time before the test's own verdict, each checked to be the error the test is about (values out of range, lengths, delays, non-static actuals: "
+                 "the language reference leaves open when such errors are detected). As in the suite's own runner, an analysis failure counts without a check that it is the error "
+                 "the test is about. In every group that must fail, a first error that is E2001 (not lowered yet), E9999 or a crash is a failure.\n\n"
                  "Failures by the issue that tracks their cause:\n\n" +
                  "".join(f"- {'[#' + n + '](' + GH + '/issues/' + n + ')' if n != 'none' else 'no issue'}: " + ", ".join(f"`{x}`" for x in ts) + "\n" for n, ts in vs["failed"].items()) + "\n")
     # --- vhpi

@@ -12,15 +12,17 @@ what each command expects:
   build_compliant_test F    analyse F into the current library (LIBRARY=lib, else work); create_lib and delete_lib
                             are followed in order, so the group runs sequentially. Pass: analysis succeeds
   run_non_compliant_test F  analyse and run as above. Pass: some step fails. In `analyzer_failure` the suite expects
-                            the analysis to fail; LATE: a yavs error at elaboration or run time (a diagnostic E0xxx to
-                            E8xxx, not E2001 "not lowered yet") before the test's own verdict line also counts, because
-                            the language reference leaves open when most of these errors are detected (values out of
-                            range, lengths, delays); the report gives the strict count of analysis failures too
+                            the analysis to fail; the tests in LATE also pass when a yavs error at elaboration or run
+                            time stops them before their verdict line: each was checked to be the error the test is
+                            about (values out of range, lengths, delays, non-static actuals), whose detection time the
+                            language reference leaves open; the report gives the strict count of analysis failures too.
+                            In every must-fail group a first error E2001 (not lowered yet), E9999 or a crash is no
+                            rejection: the test fails
 The billowitch `disputed` directory has no list and is not run. Tests that read or write the shared
 `iofile.NN` files run one after the other in one directory seeded with the suite's copies, in list order.
 OVERRIDES holds the tests whose expectation is wrong or cannot be judged, each with its reason; ISSUES the yavs
 issue of each failing test. Every yavs call runs under `timeout 120 systemd-run --user --scope -p MemoryMax=2G`
-(not with --no-wrap). Results: DIR/results.tsv (group, test, PASS|FAIL|SKIP, detail, issue); a table of pass,
+(--no-wrap drops the systemd-run scope, not the timeout). Results: DIR/results.tsv (group, test, PASS|FAIL|SKIP, detail, issue); a table of pass,
 total (without SKIP) and skip per group is printed. Exit 0 always (a measurement).
 """
 import argparse, concurrent.futures as cf, os, re, shutil, subprocess
@@ -61,6 +63,7 @@ OVERRIDES = {
        ("functional/types/array-types/subprogram-dynamic-type.vhdl", "functional/types/integer-types/subprogram-dynamic-type.vhdl")},
     **{t: ("SKIP", _BROKEN + "undeclared names or ports, or syntax errors") for t in
        ("ch_04_tb_04_01.vhd", "ch_13_fg_13_20.vhd", "ch_17_ch_17_06.vhd", "ch_18_fg_18_09.vhd", "ch_19_srvr.vhd")},
+    "ch_17_fg_17_14.vhd": ("SKIP", "not counted: every tool stops at a unit the suite never builds for it (stimulus_types), before the error the test is about"),
     "ch_19_random-b.vhd": ("SKIP", _BROKEN + "a pre-standard math package (library math)"),
     "ch_13_ch_13_01.vhd": ("SKIP", _BROKEN + "an architecture named before it is analysed, and a port binding one reference rejects"),
     **{t: ("SKIP", _BROKEN + "it uses a unit that the list builds into another library, never builds, or builds from a broken file") for t in
@@ -71,14 +74,19 @@ OVERRIDES = {
        ("functional/textio/read/character_array_read.vhdl", "functional/textio/read/character_read.vhdl", "functional/textio/read/simple-read.vhdl")},
 }
 
+# analyzer_failure tests that yavs rejects at elaboration or run time with the error the test is about (checked one by
+# one); they count as passes because the language reference leaves open when such value errors are detected.
+LATE = set("tc310 tc342 tc738 tc764 tc1068 tc1124 tc1127 tc1136 tc1141 tc1142 tc1143 tc1144 tc1146 tc1217 tc1333 tc1334 tc1345 tc1346 "
+           "tc1416 tc1726 tc2255 tc2523 tc2536 tc2548".split())
+
 # Failing tests by the yavs issue that tracks their cause (the report groups failures by these).
 ISSUES = {
     807: "tc2641 tc2644 tc2749 tc2750 tc2751 tc2859", 808: "tc2895 tc2926 tc2933 tc2941 tc2942 tc2943 tc2944 tc2946 tc2947 tc2971",
     809: "tc3007 tc3008 tc3009 tc3011 tc3012", 810: "tc3013 tc3026 tc3028 tc3031", 811: "tc787 tc818 tc1664",
-    812: "tc1313 tc1391 tc1746 tc1750 tc2447", 813: "tc122 tc123 tc124 tc125 tc315 tc316 tc553 tc2549 tc2919 tc3058 tc3064",
-    814: "tc177 tc394 tc396 tc771 tc775 tc789 tc2927 tc2993", 815: "tc1392", 816: "tc1781", 817: "tc3153 tc3156 tc3159",
+    812: "tc1313 tc1314 tc1391 tc1746 tc1750 tc1752 tc2447", 813: "tc122 tc123 tc124 tc125 tc315 tc316 tc553 tc2549 tc2919 tc3058 tc3064",
+    814: "tc177 tc394 tc396 tc771 tc775 tc789 tc1320 tc2927 tc2993", 815: "tc1392", 816: "tc1781", 817: "tc3153 tc3156 tc3159",
     818: "simple-range-attribute dynamic_procedure_for_loop dynamic_package_procedure_for_loop", 819: "ch_11_fg_11_09 ch_11_fg_11_10",
-    820: "ch_13_fg_13_24", 821: "tc2443 tc2444",
+    820: "ch_13_fg_13_24", 821: "tc2443 tc2444", 822: "tc200 tc963 tc1476", 823: "tc1227", 824: "tc1695",
 }
 ISSUE_OF = {t: n for n, ts in ISSUES.items() for t in ts.split()}
 
@@ -89,8 +97,7 @@ class Ctx:
 
     def call(self, args, cwd, log):
         cmd = [self.a.yavs, *args]
-        if not self.a.no_wrap:
-            cmd = ["timeout", "120", "systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G"] + cmd
+        cmd = ["timeout", "120"] + ([] if self.a.no_wrap else ["systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G"]) + cmd
         r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, errors="replace")
         out = r.stdout + r.stderr
         with open(log, "a") as f:
@@ -134,14 +141,20 @@ def simulate(c, f, cwd, libs=(), work="work"):
     return None, out
 
 
-def judge(kind, step, out):
+NOT_A_REJECTION = r"^error\[E(2001|9999)\]|panicked|overflowed"  # first error: not implemented, internal error, crash
+
+
+def judge(kind, step, out, test):
+    why = f"{step}: {first_error(out)}" if step else ""
     if kind == "run":
-        return ("FAIL", f"{step}: {first_error(out)}") if step else ("PASS", "")
-    if kind == "analysis-fails":  # rejected later by a yavs error, before the test's own verdict: see LATE in the docstring
-        if step == "analysis" or (step == "run" and re.search(r"^error\[E(?!2001\])[0-8]", re.sub(r"\x1b\[[0-9;]*m", "", out), re.M)):
-            return ("PASS", "" if step == "analysis" else f"rejected at run: {first_error(out)}")
-        return ("FAIL", "analysis accepted" + ("" if step is None else f", {step}: {first_error(out)}"))
-    return ("PASS", f"{step}: {first_error(out)}") if step else ("FAIL", "every step passed")
+        return ("FAIL", why) if step else ("PASS", "")
+    if step and re.search(NOT_A_REJECTION, first_error(out)):
+        return ("FAIL", f"no real rejection, {why}")
+    if kind == "analysis-fails":
+        if step == "analysis" or (step == "run" and Path(test).stem in LATE):
+            return ("PASS", why if step == "analysis" else f"rejected at run: {first_error(out)}")
+        return ("FAIL", "analysis accepted" + (f", {why}" if step else ""))
+    return ("PASS", why) if step else ("FAIL", "every step passed")
 
 
 def lines(path):
@@ -188,7 +201,7 @@ def run_group(c, root, group, out):
         for inp in f.parent.glob(f.name.rsplit(".", 1)[0] + "*.in"):  # clifton-labs input files (INPUT=)
             shutil.copy(inp, cwd)
         step, o = simulate(c, f, cwd)
-        return (group, t, *judge(kind, step, o))
+        return (group, t, *judge(kind, step, o, t))
 
     names = [t for cmd, t, _ in tests if cmd.startswith("run_")]
     io = [t for t in names if "iofile" in (d / t).read_text(errors="replace")]
@@ -202,7 +215,7 @@ def run_group(c, root, group, out):
 
 
 def apply_overrides(rows):
-    return [(g, t, *((OVERRIDES[t][0], f"override: {OVERRIDES[t][1]}") if t in OVERRIDES and s == "FAIL" else (s, w))) for g, t, s, w in rows]
+    return [(g, t, *((o[0], f"override: {o[1]}") if (o := OVERRIDES.get(t)) and (s == "FAIL" or o[0] == "SKIP") else (s, w))) for g, t, s, w in rows]
 
 
 def main():

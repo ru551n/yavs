@@ -1,1 +1,0 @@
-A short `yavs run` with the default tiered execution starts faster: the background compile thread is only started once a run has lasted a few milliseconds, and cache entries are refreshed and mapped with fewer system calls.

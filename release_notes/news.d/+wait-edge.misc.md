@@ -1,1 +1,0 @@
-A `wait until` whose condition needs a clock edge (`wait until rising_edge(clk) and ready = '1';`) no longer wakes its process for events in cycles without that edge, so clocked testbenches run fewer activations.

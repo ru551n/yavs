@@ -1,1 +1,0 @@
-PSL `restrict`, `restrict_guarantee`, `assume_guarantee`, `fairness`, `strong fairness` and directives that call `nondet` or `nondet_vector` are for formal tools only and are now skipped without the `W0004` warning.

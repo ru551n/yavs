@@ -25,7 +25,7 @@ build and no 32-bit build.
 On Windows, compare ``(Get-FileHash yavs-<version>-x86_64-pc-windows-msvc.zip).Hash`` in
 PowerShell with the line of ``SHA256SUMS``, unzip the archive and add its directory to ``PATH``.
 ``yavs --version`` prints the version and the kind of archive, for example
-``yavs 0.8.0 (compiled tier: cranelift)``. Next: :doc:`getting-started`.
+``yavs 0.9.0 (compiled tier: cranelift)``. Next: :doc:`getting-started`.
 
 Every platform has one archive with everything in it: nothing else needs to be installed. Its
 ``yavs`` has the compiled tier built in (:doc:`running-faster`).

@@ -1,1 +1,0 @@
-Simulations of finite-state machines written in the two-process style run faster: processes that assign their variables before they use them, by field or inside a branch, and debug code under a generic that is false, no longer keep a process from being skipped when nothing it reads has changed.

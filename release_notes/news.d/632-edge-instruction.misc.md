@@ -1,1 +1,0 @@
-Every spelling of a clock edge (`rising_edge`, `clk'event and clk = '1'`, `not clk'stable and clk = '1'`, `wait until clk = '1'`, on `std_logic`, `std_ulogic`, `bit` and `boolean`) now costs the same, in the interpreter and in compiled code; `not clk'stable` no longer creates an implicit signal.

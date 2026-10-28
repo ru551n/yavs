@@ -1,1 +1,0 @@
-Message building with chains of `&`, string searches, process variables of logic vectors and clocked processes run faster in the interpreter, and an `if` with arms that compute values from generics keeps those values per instance.

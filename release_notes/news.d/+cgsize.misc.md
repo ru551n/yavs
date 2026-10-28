@@ -1,1 +1,0 @@
-Compiled code of large processes (`--tier=llvm`, `--tier=auto`) is about a third smaller: fewer values are kept across the checks of an instruction, the sensitivity list of a process needs no register stores, and signal reads of vectors are one call each. The hidden aid `YAVS_LLVM_KINDLOC` attributes the machine code to IR instruction kinds.

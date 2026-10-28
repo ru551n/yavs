@@ -1,1 +1,0 @@
-Elaboration-time calls of library functions no longer pay the code optimiser for functions that run only a few times, which makes the elaboration of testbenches that use verification libraries faster.

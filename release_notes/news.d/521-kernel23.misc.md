@@ -1,1 +1,0 @@
-Records and registers that are assigned in pieces, a whole record and then one of its fields in the same activation, simulate faster: the kernel keeps all the assignments of the activation on its direct path. Results are unchanged.

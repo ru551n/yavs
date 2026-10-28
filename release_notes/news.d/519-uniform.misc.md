@@ -1,1 +1,0 @@
-Testbenches that draw random numbers with `math_real.uniform` simulate faster in compiled code (`--tier=llvm`, `--tier=auto`), also when the seeds are variables passed by reference to a nested procedure.

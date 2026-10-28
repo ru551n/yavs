@@ -1,1 +1,0 @@
-A VHDL-1993 file that reads an `out` port or an `out` parameter (including `'event`, `'stable` and the other attributes that read the value) is now rejected with `E1360`, as the 1993 rules require; VHDL-2008 and 2019 files may still read them.

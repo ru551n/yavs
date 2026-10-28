@@ -1,1 +1,0 @@
-The language support page, now published on the documentation site, lists per language revision what works, what works in part and what is not implemented, with how each statement is checked, and the accepted `--std` values (`93`, `2008`, `2019`).

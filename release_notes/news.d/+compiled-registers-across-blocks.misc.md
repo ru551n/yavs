@@ -1,1 +1,0 @@
-Compiled loops keep registers and frame variables in machine registers across blocks instead of storing and loading them at every block boundary, so tight integer and real loops run with fewer instructions under `--tier=llvm` and `--tier=auto`.

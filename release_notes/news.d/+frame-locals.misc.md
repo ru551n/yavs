@@ -1,1 +1,0 @@
-Subprograms with local arrays and records whose size is known only at run time (strings built from their parameters, `std_logic_vector` copies) run faster and give the garbage collector less to do: the variable's storage lives in the call's temporary memory instead of a heap object.

@@ -1,1 +1,0 @@
-A clocked process that depends on nothing but signals and constants (no variable, call or report) stays suspended at an edge when none of the signals it reads changed since its last activation: a CPU testbench runs about a quarter faster and a stream pipeline testbench a fifth. Results are unchanged.

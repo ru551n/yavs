@@ -1,1 +1,0 @@
-Simulation of designs that use `'delayed`, `'stable`, `'quiet` or `'transaction` (vendor memory models, VITAL-style timing checks) is faster: one such signal no longer slows down the updates of every other signal in the design, and `'last_value` of a single logic element is read without building a value.

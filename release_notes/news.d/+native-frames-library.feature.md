@@ -1,1 +1,0 @@
-Compiled code (`--tier=llvm`, `--tier=auto`) now runs most functions of large verification libraries on native frames: string handling, natives such as `to_string`, protected-object calls and nested subprograms no longer need the interpreter's frames, which speeds up compiled library testbenches; output, error messages and call stacks are unchanged.

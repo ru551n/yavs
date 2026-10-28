@@ -1,1 +1,0 @@
-Elaboration is much faster when a function called at elaboration time reads a package constant built by other functions, such as a board or device table in a configuration package: the table is built once instead of at every call.

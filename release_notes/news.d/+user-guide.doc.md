@@ -1,1 +1,0 @@
-The documentation is now a user guide: getting started, libraries, waveforms, coverage, debugging, VHPI, running faster, a command-line reference and a troubleshooting page, with short reference pages for language support, conformance and performance.

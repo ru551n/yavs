@@ -1,1 +1,0 @@
-PSL sequences and properties can be declared with `sequence` and `property`, with `boolean`, `const`, `sequence` and `property` formals, and used in covers, suffix implications and as the property of an assertion.

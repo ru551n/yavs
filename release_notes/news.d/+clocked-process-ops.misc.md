@@ -1,1 +1,0 @@
-Clocked processes run faster in the interpreter: reading a signal element, the rising or falling edge test, a wait on a signal, a signal assignment and the scalar `std_logic` operators are executed directly by the interpreter loop, and a process that starts after another process of the same kind reuses its register image.

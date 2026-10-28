@@ -1,1 +1,0 @@
-Procedures that assign signals and functions that read vector signals or slices of them run faster in compiled code, and calls of nested subprograms and of procedures with reference parameters are cheaper in the interpreter; results are unchanged.

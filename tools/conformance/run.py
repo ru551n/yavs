@@ -249,43 +249,48 @@ def vests_totals(vs):
 
 
 def suite_rows(R):
-    """passed / total per simulated suite, with where and when it was run (the per-suite table)."""
-    ci, loc, m, w = R["ci"], R["local"]["records"], R["generated"], R.get("waveq")
-    here = ["CI", "this report (see Generated)"]  # the commit stays in the Generated line only, so --check can compare
-    rec = lambda k: ["local", f"{loc[k]['date']}, `{loc[k]['commit']}`"]
+    """One row per suite: name, what it is, passed, total (None when not run), unit, where, when, tool."""
+    ci, loc, w = R["ci"], R["local"]["records"], R.get("waveq")
+    here = ("CI", "this report (see Generated)")  # the commit stays in the Generated line only, so --check can compare
+    rec = lambda k: ("local", f"{loc[k]['date']}, `{loc[k]['commit']}`")
     allg = lambda d: [sum(v[0] for v in d.values()), sum(v[1] for v in d.values())]
     rows = []
+    add = lambda name, what, p, t, where, tool, unit="tests": rows.append(dict(name=name, what=what, p=p, t=t, unit=unit, where=where[0], when=where[1], tool=tool))
     if "difftest" in ci:
-        rows.append(["Differential corpus (`tests/corpus`), interpreter, 4 threads shuffled", "{}/{}".format(*allg(ci["difftest"]["interp"]["4 threads shuffled"]["groups"])), *here])
+        add("Differential testbenches", "small testbenches of this repository; output must equal sim1's, at 1 and 4 threads", *allg(ci["difftest"]["interp"]["4 threads shuffled"]["groups"]), here, "`tools/difftest/difftest.py`")
     if "tiers" in loc:
         for t in ("auto", "llvm"):
-            rows.append([f"Differential corpus, tier `{t}`, 4 threads shuffled", "{}/{}".format(*allg(loc["tiers"]["data"][t]["4 threads shuffled"]["groups"])), *rec("tiers")])
+            add(f"Differential testbenches, `{t}` tier", "the same testbenches with compiled code", *allg(loc["tiers"]["data"][t]["4 threads shuffled"]["groups"]), rec("tiers"), "`tools/conformance/run.py --local --llvm`")
     if "discrepancies" in ci:
         d = ci["discrepancies"]
-        rows.append(["Known discrepancy reproducers", f"{d['cases']}/{d['cases']}" if d["yavs_matches_expected"] else f"not all of {d['cases']}", *here])
+        add("Known simulator differences", "one reproducer per case where simulators disagree", d["cases"] if d["yavs_matches_expected"] else 0, d["cases"], here, "`tools/discrepancies/run.py`")
     for s, v in ci.get("external", {}).items():
-        rows.append([f"{s}'s own regression tests (runnable ones)", f"{v['classes'].get('pass', 0) + v['classes'].get('early', 0)}/{v['tests'] - v['classes'].get('skip', 0)}", *here])
+        add(f"{s}'s regression tests", "a reference simulator's own self-checking tests (runnable ones)", v["classes"].get("pass", 0) + v["classes"].get("early", 0), v["tests"] - v["classes"].get("skip", 0), here, "`tools/difftest/external.py`")
     if "vests" in ci:
         t = vests_totals(ci["vests"])
-        rows.append(["VHDL-1993 language suite (VESTs: billowitch, ashenden, clifton-labs)", f"{t['pass']}/{t['total']}", *here])
+        add("VESTs", "VHDL-1993 language test suite", t["pass"], t["total"], here, "`tools/suites/vests.py`")
     if "uvvm" in ci:
-        rows.append(["UVVM testbenches", f"{ci['uvvm'].get('pass', 0)}/{ci['uvvm']['runs']}", *here])
+        add("UVVM", "verification library: its own testbenches", ci["uvvm"].get("pass", 0), ci["uvvm"]["runs"], here, "`tools/suites/uvvm.py`")
     for s, v in ci.get("osvvm", {}).items():
-        rows.append([f"OSVVM regression, VHDL-{s}", f"{v.get('pass', 0)}/{v['runs']}", *here])
-    for k, title in (("vunit-own", "VUnit's own VHDL test suites"), ("cocotb", "cocotb's own tests over VHPI")):
-        if k in loc:
-            d = loc[k]["data"]
-            rows.append([title, f"{d['pass']}/{d['pass'] + d['fail'] + d.get('skip', 0)}", *rec(k)])
-    rows.append(["Open Logic testbenches", "not run yet", "", ""])
+        add(f"OSVVM, VHDL-{s}", "verification library: its own regression", v.get("pass", 0), v["runs"], here, "`tools/suites/pro.py`")
+    if "vunit-own" in loc:
+        d = loc["vunit-own"]["data"]
+        add("VUnit", "test framework: its own VHDL test suites", d["pass"], d["pass"] + d["fail"] + d.get("skip", 0), rec("vunit-own"), "VUnit's own `run.py` scripts")
+    if "cocotb" in loc:
+        d = loc["cocotb"]["data"]
+        add("cocotb", "Python test framework: its own tests, over VHPI", d["pass"], d["pass"] + d["fail"] + d.get("skip", 0), rec("cocotb"), "cocotb's own test scripts")
+    add("Open Logic", "FPGA standard library: its own testbenches", None, None, ("", ""), "")
     if "designs" in ci:
-        rows.append(["Real designs (neorv32 x3, GRLIB LEON3), interpreter", "{}/{}".format(sum(all(t.values()) for t in ci["designs"].values()), len(ci["designs"])), *here])
+        add("Real designs", "neorv32 (three configurations) and GRLIB LEON3 run to completion", sum(all(t.values()) for t in ci["designs"].values()), len(ci["designs"]), here, "`tools/realbench/run.py`", "designs")
     if w:
-        rows.append([f"Waveform equivalence with sim1 (signals of {w['designs']} real designs)", f"{w['equal']}/{w['signals']}", "local", f"{w['run']['date']}, `{w['run']['commit']}`"])
+        add("Waveforms of real designs", f"signals of {w['designs']} designs equal to sim1's at every time step", w["equal"], w["signals"], ("local", f"{w['run']['date']}, `{w['run']['commit']}`"), "`tools/waveq`", "signals")
+    if "corpora" in ci:
+        cs = [v for v in ci["corpora"].values() if "total" in v]
+        add("Third-party VHDL code", f"files of {len(cs)} libraries and designs that analyse", sum(v["pass"] for v in cs), sum(v["total"] for v in cs), here, "`tools/corpus/run.py`", "files")
     if "vhpi" in loc:
         d = loc["vhpi"]["data"]
-        rows.append(["VHPI plugin traces identical to sim1's", f"{d['traces_equal']}/{d['plugins']}", *rec("vhpi")])
+        add("VHPI", "plugin call traces identical to sim1's", d["traces_equal"], d["plugins"], rec("vhpi"), "`tools/vhpi-conformance/run.py`", "traces")
     return rows
-
 
 
 def table(head, rows, right=()):
@@ -299,82 +304,33 @@ def frac(p, t):
 
 def render(R):
     ci, loc, st, m = R["ci"], R["local"]["records"], R["static"], R["generated"]
+    allg = lambda d: [sum(v[0] for v in d.values()), sum(v[1] for v in d.values())]
+    dt = ci.get("difftest", {}).get("interp", {})
+    w = R.get("waveq")
+    srows = suite_rows(R)
+    tests = [r for r in srows if r["unit"] == "tests" and r["t"] and "tier" not in r["name"]]
+    tp, tt = sum(r["p"] for r in tests), sum(r["t"] for r in tests)
     o = [f"""# yavs conformance report
 
 Generated: yavs {m['version']} at commit `{m['commit']}` ({m['commit_date']}) by `tools/conformance/run.py`; do not edit by hand.
 
-This report collects the evidence that yavs behaves as the VHDL language reference and the established open-source simulators do.
-Nothing here is a proof of correctness. Every number comes from a command in the "Reproduce" section; sections marked **CI** are
-regenerated by the `conformance` workflow on every push to `main` and on release tags (artifact `conformance-report`), sections
-marked **local** need installed reference simulators or vendor libraries and were run by hand on the date and commit shown.
-The references are called sim1 and sim2 (two established open-source VHDL simulators).
+yavs is checked by running the test suites of VHDL libraries, a VHDL language test suite and real designs on it, and by comparing its output
+with two established open-source VHDL simulators, called sim1 and sim2 here. Each suite judges its own tests. Over the suites below, {tp} of {tt}
+tests pass; every failure is tracked as an issue. This is evidence, not a proof of correctness.
+
+| Project or suite | What it is | Passed / total |
+| --- | --- | ---: |
+""" + "".join(f"| {r['name']} | {r['what']} | " + ("not run yet" if r["t"] is None else f"{r['p']}/{r['t']}" + ("" if r["unit"] == "tests" else f" {r['unit']}")) + " |\n" for r in srows if "tier" not in r["name"]) + """
+Terms used here: *passed / total* counts the tests a suite judges itself, out of the tests that can be judged (a test whose own
+expectation is wrong or depends on the implementation is not counted, with its reason, see Details). To *analyse* a file is to
+check it and store it in a library; to *simulate* is to elaborate the design and run it. A *tier* is the interpreter or one of the
+compilers (LLVM, Cranelift) that run a design; every tier gives the same output. The *language reference* is the IEEE 1076 standard.
 """]
-    # --- headline
-    dt = ci.get("difftest", {}).get("interp", {})
-    t4 = dt.get("4 threads shuffled", {}).get("groups", {})
-    allg = lambda d: [sum(v[0] for v in d.values()), sum(v[1] for v in d.values())]
-    h = []
-    if t4:
-        h.append(("Differential corpus, interpreter, 4 threads shuffled", "{}/{} testbenches equal to the recorded sim1 output, identical at 1 and 4 threads".format(*allg(t4))))
-    for s, v in ci.get("external", {}).items():
-        run = v["tests"] - v["classes"].get("skip", 0)
-        h.append((f"{s}'s own regression tests", f"{v['classes'].get('pass', 0) + v['classes'].get('early', 0)} of {run} runnable tests pass the suite's own verdict ({v['pass_list']} on a gated pass list, {len(v['pass_list_regressions'])} regressions); {v['classes'].get('skip', 0)} skipped (other languages, VHPI, scripts)"))
-    if "corpora" in ci:
-        cs = [v for v in ci["corpora"].values() if "total" in v]
-        gated = "all" if all(v["matches_expected"] for v in cs) else "NOT ALL"
-        h.append(("Analysis corpora (third-party VHDL code)", f"{sum(v['pass'] for v in cs)} of {sum(v['total'] for v in cs)} files analyse, {len(cs)} corpora, {gated} equal to the gated lists"))
-    if "discrepancies" in ci:
-        h.append(("Known discrepancy cases", f"{ci['discrepancies']['cases']} reproducers, yavs output equals the recorded one: {'yes' if ci['discrepancies']['yavs_matches_expected'] else 'NO'}"))
-    if "uvvm" in ci:
-        u = ci["uvvm"]
-        h.append(("UVVM's own testbenches", f"{u.get('pass', 0)} of {u['runs']} runs pass ({u.get('skip', 0)} skipped: vendor libraries absent)"))
-    if "osvvm" in ci:
-        h.append(("OSVVM's own regression", ", ".join(f"{s}: {v.get('pass', 0)}/{v['runs']}" for s, v in ci["osvvm"].items())))
-    if "vests" in ci:
-        v = vests_totals(ci["vests"])
-        h.append(("VHDL-1993 language suite (VESTs), simulated at `--std=93`", f"{v['pass']} of {v['total']} tests pass the suite's own verdict ({v['skip']} not counted: tests that are not legal VHDL-1993 or that every tool rejects under the suite's own build list)"))
-    if "designs" in ci:
-        h.append(("Real designs run to completion (neorv32 x3, GRLIB LEON3)", "{}/{}".format(sum(all(t.values()) for t in ci["designs"].values()), len(ci["designs"]))))
-    w = R.get("waveq")
-    if w:
-        h.append(("Waveform equivalence with sim1 (local, real designs)", f"{w['designs']} designs compared signal by signal and time step by time step, interpreter: {w['equal']} of {w['signals']} signals equal over {w['changes']} value changes; "
-                  f"{w['different']} signals differ, {w['different'] - w['unexplained']} of them classified as reference-simulator differences (catalogued, the language reference leaves the behaviour open), {w['unexplained']} unexplained"))
-    for k, v in loc.items():
-        if k == "vunit-own":
-            h.append(("VUnit's own VHDL suites (local)", f"{v['data']['pass']} of {v['data']['pass'] + v['data']['fail']} tests pass, 11 suites"))
-    o.append("## Headline\n\n" + table(["Evidence", "Result"], [list(x) for x in h]))
-    o.append("## Every simulated suite\n\nOne row per suite that yavs simulates (the analysis corpora, which are analysed only, are in their own section). "
-             "A pass is the suite's own verdict; where a row was run is CI (this commit) or a local run with its date and commit.\n\n" +
-             table(["suite", "passed / total", "where", "date, commit"], suite_rows(R), right=(1,)))
-    o.append("""## Reproduce
-
-```sh
-tools/fetch-corpus.sh                        # external corpora at pinned commits, ~/.cache/rsim-corpus
-cargo build --release -p yavs                # add --features llvm for the LLVM tier (needs LLVM 21)
-tools/conformance/run.py --yavs target/release/yavs --out ~/.cache/yavs-conformance          # the CI steps
-tools/conformance/run.py --yavs target/release/yavs --out ~/.cache/yavs-conformance --local --llvm   # plus the local ones
-tools/conformance/run.py --check --yavs target/release/yavs --out ~/.cache/yavs-conformance # is the committed report current?
-```
-
-The local steps need the reference simulators configured in the untracked `tools/sims.local.conf` (`tools/AGENTS.md` section 2a).
-A `--local` run rewrites `docs/conformance-local.json`; commit it together with the regenerated report.
-""")
-    # --- provenance table
-    prov = [["Differential corpus, interpreter", "CI", "`tools/difftest/difftest.py --candidate yavs-interp [--threads 4 [--shuffle 1]]`"],
-            ["Known discrepancy cases", "CI", "`tools/discrepancies/run.py --sims yavs --check`"],
-            ["Reference simulators' own tests", "CI", "`tools/difftest/external.py sim1|sim2 --oracle`"],
-            ["Analysis corpora", "CI", "`tools/corpus/run.py <manifest> --keep-going`"],
-            ["UVVM, OSVVM suites", "CI", "`tools/suites/uvvm.py`, `tools/suites/pro.py --std 2008|2019`"],
-            ["VHDL-1993 language suite (VESTs)", "CI", "`tools/suites/vests.py`"],
-            ["Real designs", "CI", "`tools/realbench/run.py BIN --tests ... --runs 0`"]]
-    if w:
-        prov.append(["Waveform equivalence", f"local, {w['run']['date']} at `{w['run']['commit']}`", f"`{w['run']['command']}`"])
-    for k, v in loc.items():
-        prov.append([v["title"], f"local, {v['date']} at `{v['commit']}`", f"`{v['command']}`"])
-    o.append("## What was run where\n\n" + table(["Evidence", "Where", "Command"], prov))
+    o.append("## Details\n\nThe sections below give each result in full. The last table says where and when each was produced: on CI for every push to `main` "
+             "and every release tag, or by a local run with installed reference simulators, with its date and commit.\n")
     # --- difftest
     if dt:
-        o.append("## Differential simulation (CI)\n\nEvery testbench of `tests/corpus` runs on yavs and its normalised output is compared with the "
+        o.append("### Differential testbenches\n\nEvery testbench of `tests/corpus` runs on yavs and its normalised output is compared with the "
                  "recorded output of sim1 (`tools/difftest/README.md`). Strict mode: no ignored fields unless the test says so with a comment. "
                  "The 4-thread columns also require output byte-identical to the 1-thread run.\n")
         names = sorted(dt["1 thread"]["groups"])
@@ -398,7 +354,7 @@ A `--local` run rewrites `docs/conformance-local.json`; commit it together with 
                      "This shows how far the oracle is itself stable across simulators.\n")
     # --- external
     if "external" in ci:
-        o.append("## The reference simulators' own regression tests (CI)\n\nEach reference simulator ships a suite of self-checking tests. They run in place from the "
+        o.append("### The reference simulators' own regression tests\n\nEach reference simulator ships a suite of self-checking tests. They run in place from the "
                  "fetched checkout on yavs and are judged by the suite's own verdict. The pass lists (`tools/difftest/external-*.pass`) are gated: "
                  "a listed test that stops passing fails CI. The others fail the suite's own verdict, fail to analyse or elaborate, or are skipped (other languages, VHPI, scripts); "
                  "the suites contain tests of features yavs does not implement and tests of reference-specific behaviour.\n")
@@ -410,19 +366,19 @@ A `--local` run rewrites `docs/conformance-local.json`; commit it together with 
     cnt = {}
     for r in rows:
         cnt[kind_of(r["kind"])] = cnt.get(kind_of(r["kind"]), 0) + 1
-    o.append(f"""## Known discrepancies (CI for yavs's side)
+    o.append(f"""### Known simulator differences
 
 `docs/design/simulator-discrepancies.md` lists every case where the references disagree with each other, with the language reference or with yavs:
 {len(rows)} catalogued behaviours, each with a reproducer under `tests/discrepancies/<case>/`. CI runs every reproducer on yavs and fails when yavs's output
 differs from the recorded one ({'matches' if ci.get('discrepancies', {}).get('yavs_matches_expected') else 'checked by CI'}). Kinds: """ + ", ".join(f"{k} {n}" for k, n in sorted(cnt.items(), key=lambda kv: -kv[1])) + """.
 
-Policy (user decision, `docs/plan.md`): where the language reference is clear, yavs follows it even against all references; where it is unclear yavs is permissive
+Policy (`docs/plan.md`): where the language reference is clear, yavs follows it even against all references; where it is unclear yavs is permissive
 and follows the majority of the references that run the construct. The verdicts of each reference are in the catalogue; the table gives the clause, the kind,
-yavs's verdict and who decided.
+and yavs's verdict.
 
 <details><summary>All catalogued cases</summary>
 
-""" + table(["case", "LRM", "kind", "yavs", "decided"], [[f"[`{r['case']}`]({GH}/tree/main/tests/discrepancies/{r['case']})", r["lrm"][:60], kind_of(r["kind"]), r["yavs"][:40], r["decided"][:70]] for r in rows]) + "\n</details>\n")
+""" + table(["case", "LRM", "kind", "yavs"], [[f"[`{r['case']}`]({GH}/tree/main/tests/discrepancies/{r['case']})", r["lrm"][:60], kind_of(r["kind"]), r["yavs"][:40]] for r in rows]) + "\n</details>\n")
     # --- corpora
     if "corpora" in ci:
         refs = st["corpus_refs"]
@@ -431,7 +387,7 @@ yavs's verdict and who decided.
             rf = refs.get(k)
             rows.append([k] + ([frac(v["pass"], v["total"]), "yes" if v["matches_expected"] else "**no**"] if "total" in v else [v.get("skipped") or "error", ""]) +
                         [f"{rf['pass']}/{rf['total']}" if rf else "-"])
-        o.append("## Analysis corpora (CI)\n\nThird-party VHDL libraries and designs, fetched at pinned commits, analysed file by file in build order. "
+        o.append("### Third-party VHDL code\n\nThird-party VHDL libraries and designs, fetched at pinned commits, analysed file by file in build order. "
                  "A file counts as passing when yavs analyses it; the gated list (`tools/corpus/<name>.expected`) must match exactly, in both directions. "
                  "The last column is sim1 on the same files (recorded list `<name>.sim1.expected`). Failures are mostly constructs the corpus uses that yavs rejects "
                  "on purpose or does not support yet, each tracked as an issue.\n\n" + table(["corpus", "yavs passes", "equals gated list", "sim1 passes"], rows, right=(1, 3)))
@@ -448,7 +404,7 @@ yavs's verdict and who decided.
                 v = loc[k]
                 d = v["data"]
                 rows.append([f"{v['title']} (local, {v['date']} at `{v['commit']}`)", d["pass"] + d["fail"] + d.get("skip", 0), d["pass"], d["fail"], d.get("skip", 0), v["note"]])
-        o.append("## Verification libraries (UVVM, OSVVM, VUnit)\n\nThe libraries' own testbenches and regression suites run on yavs, each with the library's verdict.\n\n" + table(["suite", "runs", "pass", "fail", "skip", "note"], rows, right=(1, 2, 3, 4)))
+        o.append("### Verification libraries and test frameworks\n\nThe libraries' own testbenches and regression suites run on yavs, each with the library's verdict.\n\n" + table(["suite", "runs", "pass", "fail", "skip", "note"], rows, right=(1, 2, 3, 4)))
     # --- vests
     if "vests" in ci:
         vs = ci["vests"]
@@ -457,7 +413,7 @@ yavs's verdict and who decided.
         t = vests_totals(vs)
         rows.append(["total", frac(t["pass"], t["total"]), t["skip"]])
         an = g.get("billowitch/analyzer_failure", {})
-        o.append("## VHDL-1993 language suite (CI)\n\nVESTs, the VHDL test suite for IEEE 1076-1993 (University of Cincinnati; the billowitch, ashenden and clifton-labs parts), "
+        o.append("### VESTs, the VHDL-1993 language suite\n\nVESTs, the VHDL test suite for IEEE 1076-1993 (University of Cincinnati; the billowitch, ashenden and clifton-labs parts), "
                  "run on yavs at `--std=93` with the suite's own test lists and expectations (`tools/suites/vests.py`, whose docstring has the exact rules). "
                  "Compliant tests are analysed and run (billowitch, clifton-labs: pass = the test's PASSED line, no FAILED line, no error) or analysed only "
                  "where the suite only builds them (ashenden); non-compliant tests must fail: the billowitch `analyzer_failure` ones at analysis, the others at any step. "
@@ -474,25 +430,38 @@ yavs's verdict and who decided.
     if "vhpi" in loc:
         v = loc["vhpi"]
         d = v["data"]
-        o.append(f"## VHPI conformance (local, {v['date']} at `{v['commit']}`)\n\nSmall C plugins call the VHPI functions in a fixed order on small designs ({d['plugins']} plugin runs); the traces from yavs and sim1 are diffed "
+        o.append(f"### VHPI\n\nSmall C plugins call the VHPI functions in a fixed order on small designs ({d['plugins']} plugin runs); the traces from yavs and sim1 are diffed "
                  f"(`tools/vhpi-conformance`). {d['traces_equal']} traces are identical. Of sim1's {d['sim1_lines']} trace lines yavs reproduces {d['sim1_lines'] - d['sim1_lines_not_reproduced']}; "
                  f"{d['sim1_lines_not_reproduced']} differ and yavs prints {d['yavs_extra_lines']} lines sim1 does not. Differences are judged one by one: many are properties or callbacks "
                  "that sim1 reports as unsupported and yavs provides, some are deliberate (`tools/vhpi-conformance/AGENTS.md`), real defects become issues.\n")
     else:
-        o.append("## VHPI conformance\n\nNot in this report: run `tools/vhpi-conformance/run.py` (needs gcc and sim1); see `tools/vhpi-conformance/AGENTS.md`.\n")
+        o.append("### VHPI\n\nNot in this report: run `tools/vhpi-conformance/run.py` (needs gcc and sim1); see `tools/vhpi-conformance/AGENTS.md`.\n")
     # --- designs
     if "designs" in ci:
-        o.append("## Real designs (CI)\n\nComplete designs, run with the interpreter. neorv32: a RISC-V system running its built-in program until the stop time, three configurations (pass = the run finishes with status 0). "
+        o.append("### Real designs\n\nComplete designs, run with the interpreter. neorv32: a RISC-V system running its built-in program until the stop time, three configurations (pass = the run finishes with status 0). "
                  "GRLIB LEON3: the template design boots from its PROM image and runs GRLIB's own system test (pass = status 0 and the line `Test passed`).\n\n" +
                  table(["design", *sorted({t for v in ci["designs"].values() for t in v})], [[n, *["pass" if v.get(t) else "**FAIL**" for t in sorted({t for v in ci["designs"].values() for t in v})]] for n, v in sorted(ci["designs"].items())]))
     if "tiers" in loc:
         v = loc["tiers"]
         o.append(f"Under the `auto` tier (local, {v['date']} at `{v['commit']}`): " + ", ".join(f"{n} {'pass' if all(t.values()) else '**FAIL**'}" for n, t in sorted(v["data"]["designs"].items())) + ".\n")
-    o.append("## Waveform equivalence on real designs\n\n" + R["trust2"] + "\n")
+    if w:
+        o.append(f"### Waveforms of real designs\n\n{w['designs']} real designs, among them neorv32 and GRLIB LEON3, were run on yavs and the references and compared signal by signal "
+                 f"and time step by time step: with the interpreter {w['equal']} of {w['signals']} signals are equal over {w['changes']} value changes; {w['different'] - w['unexplained']} of the "
+                 f"{w['different']} that differ are differences between the reference simulators themselves, {w['unexplained']} are unexplained.\n")
+    o.append(("" if w else "### Waveforms of real designs\n\n") + "<details><summary>Every design and signal class</summary>\n\n" + R["trust2"] + "\n\n</details>\n")
     # --- platforms and limits
-    o.append("## Platforms covered by CI\n\n" + table(["job", "runs on"], [[f"`{j}`", ", ".join(os_)] for j, os_ in st["platforms"].items()]) +
+    o.append("### Platforms covered by CI\n\n" + table(["job", "runs on"], [[f"`{j}`", ", ".join(os_)] for j, os_ in st["platforms"].items()]) +
              "\nThe `check` job is `cargo fmt`, `clippy -D warnings` and the whole test suite of the workspace; the `llvm` job the same for the LLVM tier plus a simulation smoke run. "
              "The `corpus` and `conformance` jobs run on Linux x86_64 only.\n")
+    o.append("### Where and when each result was produced\n\n" + table(["suite", "where", "date, commit", "tool"], [[r["name"], r["where"] or "not run", r["when"], r["tool"]] for r in srows]))
+    o.append("## How to reproduce\n\n```sh\n"
+             "tools/fetch-corpus.sh                        # the external suites and libraries at pinned commits, ~/.cache/rsim-corpus\n"
+             "cargo build --release -p yavs                # add --features llvm for the LLVM tier (needs LLVM 21)\n"
+             "tools/conformance/run.py --yavs target/release/yavs --out ~/.cache/yavs-conformance                 # what CI runs\n"
+             "tools/conformance/run.py --yavs target/release/yavs --out ~/.cache/yavs-conformance --local --llvm  # plus the local results\n"
+             "tools/conformance/run.py --check --yavs target/release/yavs --out ~/.cache/yavs-conformance         # is the committed report current?\n"
+             "```\n\nThe local results need the reference simulators, configured in the untracked `tools/sims.local.conf`; a `--local` run rewrites "
+             "`docs/conformance-local.json`, which is committed with the regenerated report. Each tool in the table above documents its own options.\n")
     o.append("## Known limits\n\n" + table(["area", "state"], [list(x) for x in LIMITS]))
     return "\n".join(o)
 

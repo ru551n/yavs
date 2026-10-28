@@ -96,8 +96,8 @@ def setup(d):
 
 
 def counts(files):
-    """Test counts of JUnit files: pass, fail, skip."""
-    n = [0, 0, 0]
+    """Test counts of JUnit files: pass, fail, skip; and the names of the failing tests."""
+    n, failed = [0, 0, 0], []
     for f in files:
         try:
             root = ET.parse(f).getroot()
@@ -106,7 +106,8 @@ def counts(files):
         for tc in root.iter("testcase"):
             k = 1 if tc.find("failure") is not None or tc.find("error") is not None else 2 if tc.find("skipped") is not None else 0
             n[k] += 1
-    return n
+            failed += [tc.get("name")] if k == 1 else []
+    return n, failed
 
 
 def main():
@@ -164,7 +165,7 @@ def main():
         jobs = [j for j in jobs if j[0] in a.cases or j[0].split("/")[-1] in a.cases]
     # cocotb's noxfile settings for every simulator test (configure_test_env)
     env = {**os.environ, "PYTHONWARNINGS": "error,ignore::DeprecationWarning:site,ignore:coroutine :RuntimeWarning",
-           "COCOTB_SCHEDULER_DEBUG": "1", "GPI_DEBUG": "1", "PYGPI_DEBUG": "1", "PATH": f"{venv / 'bin'}{os.pathsep}{os.environ['PATH']}", "VIRTUAL_ENV": str(venv),
+           "COCOTB_SCHEDULER_DEBUG": "1", "PYTHON_VERSION": PYTHON, "GPI_DEBUG": "1", "PYGPI_DEBUG": "1", "PATH": f"{venv / 'bin'}{os.pathsep}{os.environ['PATH']}", "VIRTUAL_ENV": str(venv),
            "SIM": "yavs", "TOPLEVEL_LANG": "vhdl", "VHDL_GPI_INTERFACE": "vhpi", "YAVS_BIN": str(yavs),
            "YAVS_STD_CACHE": str(out / "std")}
     env.pop("PYTHONHOME", None)
@@ -178,23 +179,28 @@ def main():
         if xml is None:
             # cases that check their own expected failures delete results.xml and keep the combined file
             xml = [*cd.glob("results*.xml"), *cd.glob("sim_build/**/*.result.xml")] or [*cd.glob("combined_results.xml")]
-        return name, p.returncode, counts(xml)
+        n, failed = counts(xml)
+        return name, p.returncode, n, failed
 
     with cf.ThreadPoolExecutor(a.jobs) as ex:
         res = sorted(ex.map(one, jobs))
     bad = []
-    for c, rc, (p, f, s) in res:
+    for c, rc, (p, f, s), failed in res:
         ok = (rc == 0) != (c in EXPECTED_FAIL)
         bad += [] if ok else [c]
         print(f"{'PASS' if ok else 'FAIL'} {c} rc={rc} tests: {p} pass, {f} fail, {s} skip")
+        if not ok:
+            print(f"  failing tests: {' '.join(failed) or 'none recorded'}; log tail:")
+            log = (out / f"{c.replace('/', '-')}.log").read_text().splitlines()
+            print("\n".join("  | " + l for l in log[-40:]))
     t = [sum(r[2][i] for r in res) for i in range(3)]
-    ran = [c for c, _, n in res if n[0] + n[1]]
+    ran = [c for c, _, n, _ in res if n[0] + n[1]]
     print(f"cocotb {COCOTB}: {len(res) - len(bad)}/{len(res)} jobs pass ({len(ran)} ran tests, {len([c for c in ran if c not in bad])} of them pass; "
           f"the rest skip themselves: Verilog only or nothing to simulate); tests {t[0]} pass, {t[1]} fail (expected by their jobs), {t[2]} skip; logs in {out}")
     if a.json:
         a.json.write_text(json.dumps({"cocotb": COCOTB, "jobs": len(res), "pass": len(res) - len(bad), "failed": bad, "ran": len(ran),
                                       "tests": dict(zip(["pass", "fail", "skip"], t)), "run_args": a.run_args,
-                                      "per_job": {c: {"rc": rc, "tests": n} for c, rc, n in res}}, indent=1, sort_keys=True))
+                                      "per_job": {c: {"rc": rc, "tests": n, "failed": f} for c, rc, n, f in res}}, indent=1, sort_keys=True))
     sys.exit(1 if bad else 0)
 
 

@@ -465,9 +465,9 @@ PASS 2008 vests/vhdl-93/ashenden/non_compliant/ch_03_ch_03_09.vhd
 PASS 2008 vests/vhdl-93/ashenden/non_compliant/ch_03_ch_03_15.vhd
 PASS 2008 vests/vhdl-93/ashenden/non_compliant/ch_04_ch_04_03.vhd
 PASS 2008 vests/vhdl-93/ashenden/non_compliant/ch_04_ch_04_09.vhd
-FAIL 2008 vests/vhdl-93/ashenden/non_compliant/ch_17_fg_17_12.vhd  # E0001 unexpected character
+FAIL 2008 vests/vhdl-93/ashenden/non_compliant/ch_17_fg_17_12.vhd  # E0001 unexpected character `«` (U+00AB)
 PASS 2008 vests/vhdl-93/ashenden/non_compliant/ch_17_fg_17_14.vhd
-FAIL 2008 vests/vhdl-93/ashenden/non_compliant/ch_17_fg_17_16.vhd  # E0001 unexpected character
+FAIL 2008 vests/vhdl-93/ashenden/non_compliant/ch_17_fg_17_16.vhd  # E0001 unexpected character `«` (U+00AB)
 PASS 2008 vests/vhdl-93/billowitch/compliant/tc1.vhd
 PASS 2008 vests/vhdl-93/billowitch/compliant/tc10.vhd
 PASS 2008 vests/vhdl-93/billowitch/compliant/tc100.vhd
@@ -3020,7 +3020,7 @@ FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2577.vhd  # 
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2579.vhd  # E0002 expected declaration, found identifier
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2580.vhd  # E0001 unterminated string literal
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2581.vhd  # E0002 expected `:`, found `|`
-FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2582.vhd  # E0001 unexpected character
+FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2582.vhd  # E0001 unexpected character `#` (U+0023)
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2583.vhd  # E0001 unterminated string literal
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2584.vhd  # E0002 expected `:`, found `^`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2585.vhd  # E0002 expected `:`, found `&`
@@ -3028,7 +3028,7 @@ FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2586.vhd  # 
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2587.vhd  # E0002 expected `:`, found `(`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2588.vhd  # E0002 expected `:`, found `)`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2589.vhd  # E0002 expected `:`, found `+`
-FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2590.vhd  # E0001 unexpected character
+FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2590.vhd  # E0001 unexpected character `~` (U+007E)
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2591.vhd  # E0002 expected `:`, found `-`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2592.vhd  # E0002 expected `:`, found `=`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2593.vhd  # E0001 unexpected character
@@ -3050,7 +3050,7 @@ FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2608.vhd  # 
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2609.vhd  # E0002 expected identifier, found number
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2610.vhd  # E0002 expected `:`, found `|`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2611.vhd  # E0002 expected `:`, found `|`
-FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2612.vhd  # E0001 unexpected character
+FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2612.vhd  # E0001 unexpected character `#` (U+0023)
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2613.vhd  # E0001 unterminated string literal
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2614.vhd  # E0002 expected `:`, found `^`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2615.vhd  # E0002 expected `:`, found `&`
@@ -3058,7 +3058,7 @@ FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2616.vhd  # 
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2617.vhd  # E0002 expected `:`, found `(`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2618.vhd  # E0002 expected `:`, found `)`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2619.vhd  # E0002 expected `:`, found `+`
-FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2620.vhd  # E0001 unexpected character
+FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2620.vhd  # E0001 unexpected character `~` (U+007E)
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2621.vhd  # E0002 expected `:`, found `-`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2622.vhd  # E0002 expected `:`, found `=`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2623.vhd  # E0002 expected `:`, found `begin`
@@ -3079,9 +3079,9 @@ FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2637.vhd  # 
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2638.vhd  # E0001 unterminated extended identifier
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2639.vhd  # E0002 expected `:`, found `|`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2640.vhd  # E0002 expected `:`, found identifier
-PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2641.vhd
-PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2644.vhd
-FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2645.vhd  # E0001 unexpected character
+FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2641.vhd  # E0001 an underline in an identifier must stand between two letters or digits
+FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2644.vhd  # E0001 an underline in an identifier must stand between two letters or digits
+FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2645.vhd  # E0001 unexpected character `#` (U+0023)
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2646.vhd  # E0002 expected identifier, found `&`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2647.vhd  # E0002 expected identifier, found `'`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2648.vhd  # E0002 expected identifier, found `(`
@@ -3097,10 +3097,10 @@ FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2657.vhd  # 
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2658.vhd  # E0002 expected identifier, found `=`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2659.vhd  # E0002 expected identifier, found `>`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc266.vhd  # E0002 expected type definition, found `units`
-FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2660.vhd  # E0001 unexpected character
+FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2660.vhd  # E0001 unexpected character `_` (U+005F)
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2661.vhd  # E0002 expected identifier, found `|`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2662.vhd  # E0002 expected identifier, found `|`
-FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2663.vhd  # E0001 unexpected character
+FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2663.vhd  # E0001 unexpected character `$` (U+0024)
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2664.vhd  # E0001 unterminated string literal
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2665.vhd  # E0002 expected identifier, found `@`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2666.vhd  # E0002 expected identifier, found `?`
@@ -3112,21 +3112,21 @@ FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2670.vhd  # 
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2671.vhd  # E0002 expected identifier, found `begin`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2672.vhd  # E0002 expected identifier, found `{`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2673.vhd  # E0002 expected identifier, found `}`
-FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2674.vhd  # E0001 unexpected character
+FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2674.vhd  # E0001 unexpected character `~` (U+007E)
 PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2678.vhd
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc268.vhd  # E0002 expected `=`, found `;`
-FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2680.vhd  # E0001 unexpected character
-FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2681.vhd  # E0001 unexpected character
+FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2680.vhd  # E0001 unexpected character `_` (U+005F)
+FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2681.vhd  # E0001 unexpected character `_` (U+005F)
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2682.vhd  # E0002 expected expression, found `.`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2683.vhd  # E0002 expected `;`, found `.`
-FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2684.vhd  # E0001 unexpected character
+FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2684.vhd  # E0001 unexpected character `_` (U+005F)
 PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2685.vhd
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2686.vhd  # E0002 expected `;`, found `.`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2687.vhd  # E0002 expected `;`, found `.`
 PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2688.vhd
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2689.vhd  # E0002 expected `;`, found number
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc269.vhd  # E0002 expected `;`, found identifier
-PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2691.vhd
+FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2691.vhd  # E0001 an underline in a numeric literal must stand between two letters or digits
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2692.vhd  # E0002 expected `;`, found `end`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2693.vhd  # E0002 expected expression, found `+`
 PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2694.vhd
@@ -3139,8 +3139,8 @@ PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2714.vhd
 PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2715.vhd
 PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2716.vhd
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2717.vhd  # E0001 malformed numeric literal
-FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2720.vhd  # E0001 unexpected character
-PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2721.vhd
+FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2720.vhd  # E0001 unexpected character `#` (U+0023)
+FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2721.vhd  # E0001 an underline in a numeric literal must stand between two letters or digits
 PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2723.vhd
 PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2727.vhd
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2728.vhd  # E0002 expected expression, found `'`
@@ -3153,10 +3153,10 @@ PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc274.vhd
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2741.vhd  # E0001 unterminated string literal
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2746.vhd  # E0002 expected attribute name, found number
 PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2748.vhd
-PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2749.vhd
+FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2749.vhd  # E0001 an underline in a bit string literal must stand between two of its digits
 PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc275.vhd
-PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2750.vhd
-PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2751.vhd
+FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2750.vhd  # E0001 an underline in a bit string literal must stand between two of its digits
+FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2751.vhd  # E0001 an underline in a bit string literal must stand between two of its digits
 PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2752.vhd
 PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2753.vhd
 PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2754.vhd
@@ -3254,7 +3254,7 @@ FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2850.vhd  # 
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2851.vhd  # E0002 expected identifier, found `xor`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2852.vhd  # E0002 expected identifier, found `register`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2855.vhd  # E0001 malformed numeric literal
-FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2856.vhd  # E0001 unexpected character
+FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2856.vhd  # E0001 unexpected character `#` (U+0023)
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2857.vhd  # E0001 unterminated string literal
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2858.vhd  # E0001 unterminated string literal
 PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2859.vhd
@@ -3319,8 +3319,8 @@ PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2941.vhd
 PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2942.vhd
 PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2943.vhd
 PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2944.vhd
-PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2946.vhd
-PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2947.vhd
+FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2946.vhd  # E0003 end designator `func2` does not match `func1`
+FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2947.vhd  # E0003 end designator `proc` does not match `proc1`
 PASS 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2953.vhd
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2954.vhd  # E0002 expected designator, found `is`
 FAIL 2008 vests/vhdl-93/billowitch/non_compliant/analyzer_failure/tc2956.vhd  # E0002 expected declaration, found `assert`

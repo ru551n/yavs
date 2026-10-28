@@ -17,7 +17,7 @@ FAIL 2008 sim2/testsuite/gna/bug0100/emptyquote2.vhdl  # E0002 expected attribut
 FAIL 2008 sim2/testsuite/gna/bug0100/emptyrec.vhdl  # E0004 an empty record requires VHDL-2019
 PASS 2008 sim2/testsuite/gna/bug0100/extname1.vhdl
 PASS 2008 sim2/testsuite/gna/bug0100/forloop.vhdl
-PASS 2008 sim2/testsuite/gna/bug0100/id2.vhdl
+FAIL 2008 sim2/testsuite/gna/bug0100/id2.vhdl  # E0001 an underline in an identifier must stand between two letters or digits
 FAIL 2008 sim2/testsuite/gna/bug0100/inst1.vhdl  # E0002 expected name, found `;`
 FAIL 2008 sim2/testsuite/gna/bug0100/inst2.vhdl  # E0002 expected `generate`, found identifier
 PASS 2008 sim2/testsuite/gna/bug0100/inter1.vhdl
@@ -89,7 +89,7 @@ PASS 2008 sim2/testsuite/gna/bug0120/print1.vhdl
 PASS 2008 sim2/testsuite/gna/bug0120/print4.vhdl
 PASS 2008 sim2/testsuite/gna/bug0120/proc1.vhdl
 PASS 2008 sim2/testsuite/gna/bug0120/proc2.vhdl
-FAIL 2008 sim2/testsuite/gna/bug0122/tab1.vhdl  # E0001 unexpected character `_` (U+005F)
+FAIL 2008 sim2/testsuite/gna/bug0122/tab1.vhdl  # E0001 an underline in an identifier must stand between two letters or digits
 PASS 2008 sim2/testsuite/gna/bug0123/repro.vhdl
 PASS 2008 sim2/testsuite/gna/bug0124/repro.vhdl
 PASS 2008 sim2/testsuite/gna/bug0124/repro2.vhdl
@@ -130,7 +130,7 @@ PASS 2008 sim2/testsuite/gna/bug0141/LFSR_segfault.vhdl
 PASS 2008 sim2/testsuite/gna/bug0143/t.vhdl
 PASS 2008 sim2/testsuite/gna/bug0144/badloc.vhdl
 FAIL 2008 sim2/testsuite/gna/bug0144/quote1.vhdl  # E0001 unterminated string literal
-PASS 2008 sim2/testsuite/gna/bug0144/underscore1.vhdl
+FAIL 2008 sim2/testsuite/gna/bug0144/underscore1.vhdl  # E0001 an underline in a bit string literal must stand between two of its digits
 PASS 2008 sim2/testsuite/gna/bug0145/repro.vhdl
 PASS 2008 sim2/testsuite/gna/bug015/phys.vhdl
 PASS 2008 sim2/testsuite/gna/bug015/phys2.vhdl
@@ -1567,7 +1567,7 @@ PASS 2008 sim2/testsuite/gna/issue2427/repro3b.vhdl
 PASS 2008 sim2/testsuite/gna/issue2429/my_entity.vhdl
 PASS 2008 sim2/testsuite/gna/issue2429/repro1.vhdl
 PASS 2008 sim2/testsuite/gna/issue243/test.vhdl
-FAIL 2008 sim2/testsuite/gna/issue2430/my_entity.vhdl  # E0002 expected `to` or `downto`, found `)`
+PASS 2008 sim2/testsuite/gna/issue2430/my_entity.vhdl
 PASS 2008 sim2/testsuite/gna/issue2432/repro1.vhdl
 PASS 2008 sim2/testsuite/gna/issue2432/test_tb.vhdl
 PASS 2008 sim2/testsuite/gna/issue2433/dummy.vhdl

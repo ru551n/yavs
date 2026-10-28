@@ -127,6 +127,36 @@ impl Lexer<'_> {
         );
     }
 
+    /// LRM 15.4.1, 15.5, 15.8 (1993 13.3.1, 13.4, 13.7): an underline stands between two
+    /// letters or digits of an identifier or abstract literal, and between two characters of a
+    /// bit value (#807). `inner` is the bit value of a bit string literal.
+    fn check_underlines(&mut self, start: usize, end: usize, inner: bool, what: &str) {
+        let s = &self.b[start..end];
+        // The PSL keywords `until_` and `before_` (PSL 1.1 in 2008, 1.2).
+        if !inner && (s.eq_ignore_ascii_case(b"until_") || s.eq_ignore_ascii_case(b"before_")) {
+            return;
+        }
+        let near = |c: u8| {
+            if inner {
+                c != b'_'
+            } else {
+                c.is_ascii_alphanumeric() || c >= 0x80
+            }
+        };
+        let bad = s.iter().enumerate().position(|(i, &c)| {
+            c == b'_' && !(i > 0 && i + 1 < s.len() && near(s[i - 1]) && near(s[i + 1]))
+        });
+        if let Some(i) = bad {
+            let between = if inner {
+                "two of its digits"
+            } else {
+                "two letters or digits"
+            };
+            let msg = format!("an underline in {what} must stand between {between}");
+            self.error(start + i, start + i + 1, &msg, "misplaced underline");
+        }
+    }
+
     fn push(&mut self, kind: Tok, start: usize) {
         if self.pragma == Pragma::Open {
             self.pragma = Pragma::Off;
@@ -158,8 +188,17 @@ impl Lexer<'_> {
                     self.check_latin1(start, self.pos, "string literal");
                 }
                 b'%' => {
-                    // Replacement character for `"` (LRM 15.10).
+                    // Replacement character for `"` (LRM 15.10); in 1993 (13.10) only for a
+                    // string without a quotation mark (#807).
                     self.string(b'%');
+                    if self.std == Std::Vhdl1993 && self.b[start..self.pos].contains(&b'"') {
+                        self.error(
+                            start,
+                            self.pos,
+                            "a string literal in `%` brackets may not contain `\"` in VHDL-1993",
+                            "",
+                        );
+                    }
                     self.push(Tok::Str, start);
                     self.check_latin1(start, self.pos, "string literal");
                 }
@@ -377,6 +416,15 @@ impl Lexer<'_> {
     }
 
     /// Scan a string literal body delimited by `q`, with doubled `q` as escape.
+    /// The string of a bit string literal: its bit value keeps the underline rule.
+    fn bit_value(&mut self, q: u8) {
+        let open = self.pos;
+        self.string(q);
+        if self.pos > open + 1 && self.b[self.pos - 1] == q {
+            self.check_underlines(open + 1, self.pos - 1, true, "a bit string literal");
+        }
+    }
+
     fn string(&mut self, q: u8) {
         let start = self.pos;
         self.pos += 1;
@@ -484,7 +532,7 @@ impl Lexer<'_> {
         });
         let q = self.peek(0);
         if matches!(q, b'"' | b'%') && lower.is_some_and(|l| self.is_base(l)) {
-            self.string(q);
+            self.bit_value(q);
             self.push(Tok::BitStr, start);
             self.check_latin1(start, self.pos, "bit string literal");
             return true;
@@ -493,6 +541,7 @@ impl Lexer<'_> {
             Some(kw) => Tok::Kw(kw),
             None => Tok::Ident,
         };
+        self.check_underlines(start, p, false, "an identifier");
         self.push(kind, start);
         true
     }
@@ -509,12 +558,13 @@ impl Lexer<'_> {
             .to_ascii_lowercase();
         let q = self.peek(0);
         if matches!(q, b'"' | b'%') && self.is_base(lower.as_bytes()) {
-            self.string(q);
+            self.bit_value(q);
             self.push(Tok::BitStr, start);
             self.check_latin1(start, self.pos, "bit string literal");
             return;
         }
         self.check_latin1(start, self.pos, "identifier");
+        self.check_underlines(start, self.pos, false, "an identifier");
         let kind = match Kw::lookup(&lower, self.std) {
             Some(kw) => Tok::Kw(kw),
             None => Tok::Ident,
@@ -555,7 +605,7 @@ impl Lexer<'_> {
             if BASES.contains(&base.as_str()) {
                 let q = self.b[word];
                 self.pos = word;
-                self.string(q);
+                self.bit_value(q);
                 self.push(Tok::BitStr, start);
                 self.check_latin1(start, self.pos, "bit string literal");
                 return;
@@ -612,6 +662,8 @@ impl Lexer<'_> {
         }
         if !ok {
             self.error(start, self.pos, "malformed numeric literal", "");
+        } else {
+            self.check_underlines(start, self.pos, false, "a numeric literal");
         }
         self.push(Tok::Abstract, start);
     }

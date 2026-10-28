@@ -1211,8 +1211,8 @@ PASS 2008 sim1/test/parse/array.vhd
 PASS 2008 sim1/test/parse/attr.vhd
 PASS 2008 sim1/test/parse/badprimary.vhd
 PASS 2008 sim1/test/parse/based.vhd
-FAIL 2008 sim1/test/parse/basic_identifier.vhd  # E0001 unexpected character `_` (U+005F)
-FAIL 2008 sim1/test/parse/bitstring.vhd  # E0001 unterminated string literal
+FAIL 2008 sim1/test/parse/basic_identifier.vhd  # E0001 an underline in an identifier must stand between two letters or digits
+FAIL 2008 sim1/test/parse/bitstring.vhd  # E0001 an underline in a bit string literal must stand between two of its digits
 PASS 2008 sim1/test/parse/block.vhd
 PASS 2008 sim1/test/parse/comp.vhd
 PASS 2008 sim1/test/parse/conc.vhd
@@ -1340,7 +1340,7 @@ PASS 2008 sim1/test/parse/issue961.vhd
 PASS 2008 sim1/test/parse/issue977.vhd
 PASS 2008 sim1/test/parse/issue991.vhd
 PASS 2019 sim1/test/parse/lcs2016_i03.vhd
-PASS 2008 sim1/test/parse/literal.vhd
+FAIL 2008 sim1/test/parse/literal.vhd  # E0001 an underline in a numeric literal must stand between two letters or digits
 PASS 2008 sim1/test/parse/loc.vhd
 PASS 2008 sim1/test/parse/names.vhd
 PASS 2008 sim1/test/parse/names2.vhd

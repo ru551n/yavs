@@ -8,6 +8,16 @@ include!(concat!(env!("OUT_DIR"), "/stdlib_files.rs"));
 /// The root of the built-in tree. Diagnostics show `<yavs>/lib/ieee/2008/numeric_std.vhdl`.
 pub const EMBEDDED: &str = "<yavs>/lib";
 
+/// `path` for a diagnostic: the virtual built-in tree always shows `/`, as on Linux.
+pub(crate) fn display(path: &Path) -> String {
+    let s = path.display().to_string();
+    if path.starts_with(EMBEDDED) {
+        s.replace('\\', "/")
+    } else {
+        s
+    }
+}
+
 fn embedded(path: &Path) -> Option<&'static [u8]> {
     let rel = path.strip_prefix(EMBEDDED).ok()?;
     let key: Vec<_> = rel
@@ -57,6 +67,12 @@ pub(crate) fn read(path: &Path) -> std::io::Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_uses_forward_slashes() {
+        let p = Path::new(EMBEDDED).join("ieee").join("2008");
+        assert_eq!(display(&p), "<yavs>/lib/ieee/2008");
+    }
 
     #[test]
     fn embedded_tree_is_complete() {

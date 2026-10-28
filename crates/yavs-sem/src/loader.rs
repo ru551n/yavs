@@ -608,7 +608,7 @@ impl Db {
                 Some(dir) => format!("looked in the manifest of `{}`", dir.dir.display()),
                 None => "looked in the library manifest".into(),
             },
-            LibSource::StdDir(d) => format!("looked in `{}`", d.display()),
+            LibSource::StdDir(d) => format!("looked in `{}`", crate::stdlib::display(d)),
             LibSource::Files => {
                 "the library has only the units of the files analyzed in this run".into()
             }

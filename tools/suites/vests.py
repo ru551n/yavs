@@ -51,7 +51,7 @@ OVERRIDES = {
     "ch_04_ch_04_09.vhd": ("PASS", _COMMENTED),
     "functional/attributes/signal/simple-event-attribute.vhdl": ("PASS", "the test expects an event at 36 ns, but the signal changes at 10, 20, 30 and 40 ns (14.1 'EVENT)"),
     "ch_18_ch_18_07.vhd": ("SKIP", _ILLEGAL + "a formal of a file type must be of class file (2.1.1), the file uses a variable"),
-    "ch_16_fg_16_06.vhd": ("SKIP", _ILLEGAL + "a formal signal parameter declared with bus (2008 4.2.2.3; yavs rejects the file for its null assignment instead, #808)"),
+    "ch_16_fg_16_06.vhd": ("SKIP", _ILLEGAL + "a formal signal parameter declared with bus (2008 4.2.2.3, #808)"),
     "functional/functions/integer-type-overload.vhdl": ("SKIP", _ILLEGAL + "the initial value 3 is outside integer_t1 (4.3.1.3)"),
     "functional/generics/entity-generic-defines-port-type.vhdl": ("SKIP", _ILLEGAL + "an entity of library work named without the prefix work. is not visible (10.4, 11.2)"),
     "functional/std_logic_1164/test_std_logic_type.vhdl": ("SKIP", _ILLEGAL + "'LEFT of a scalar object is not a 1993 attribute (14.1)"),
@@ -81,9 +81,6 @@ LATE = set("tc310 tc342 tc738 tc764 tc1068 tc1124 tc1127 tc1136 tc1141 tc1142 tc
 
 # Failing tests by the yavs issue that tracks their cause (the report groups failures by these).
 ISSUES = {
-    807: "tc2641 tc2644 tc2749 tc2750 tc2751 tc2859", 808: "tc2895 tc2933 tc2941 tc2942 tc2943 tc2944",
-    810: "tc3013 tc3026 tc3028 tc3031",
-    812: "tc1313 tc1314 tc1391 tc1746 tc1750 tc1752 tc2447", 813: "tc122 tc123 tc124 tc125 tc315 tc316 tc553 tc2549 tc2919 tc3064",
     816: "tc1781", 817: "tc3153 tc3156 tc3159",
     818: "simple-range-attribute dynamic_procedure_for_loop dynamic_package_procedure_for_loop", 819: "ch_11_fg_11_09 ch_11_fg_11_10",
     820: "ch_13_fg_13_24",

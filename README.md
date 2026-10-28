@@ -8,6 +8,8 @@
 
 Yet Another VHDL Simulator: VHDL-1993, 2008 and 2019 in Rust.
 
+The documentation is also available to coding assistants through [Context7](https://context7.com/ru551n/yavs).
+
 ## Features
 
 - **Fast:** on 41 real testbenches the geometric mean of the full run time (analysis included, `--tier=auto`) is 0.22 of an established open-source VHDL simulator's with a warm cache and 0.59 with a cold one; see [`docs/performance.md`](docs/performance.md).

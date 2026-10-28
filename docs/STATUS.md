@@ -10153,3 +10153,7 @@ tests is decided where it is set, the large processes' dead definitions go (the 
 dead blocks of a specialised copy jump to the next block so fusions run through them. `grlib_leon3mp` -2.9 percent instructions under
 `--tier=interp` and `auto`, `fletcher_bufferwriter_512`, `fletcher_bufferreader` and `neorv32_single_min` -1 to -1.5 percent interpreted
 (`docs/decisions.md` "Interpreter execution of large processes"). `op-census` prints ops by function and by position.
+
+## Mode checks of the parts of a port in an individual association (yavs-sem, #654, 2026-10-28)
+
+The actual of a part of an `out`/`inout`/`buffer` port (`o(0) => p1`) gets the checks of a whole port's actual (`check_written_actual`): an `in` port or parameter is `E1360`, and so is an expression that is not a signal name, which stopped elaboration with an internal error before.

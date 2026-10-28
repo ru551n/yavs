@@ -1322,6 +1322,27 @@ impl Db {
                 .with_primary(self.exprs[id].span, "not allowed here"),
             ));
         }
+        self.check_written_actual(f, mode, id)?;
+        Ok(match formal_conv {
+            Some(_) => Actual::Converted {
+                formal_conv,
+                actual_conv: None,
+                actual: id,
+                copy_in: None,
+                copy_out: None,
+            },
+            None => Actual::Expr(id),
+        })
+    }
+
+    /// The actual `id` of port `f` (or of a part of it) with `mode`: a formal that is
+    /// written needs a signal name that can be written (6.5.6.3, 6.5.7.1).
+    fn check_written_actual(
+        &mut self,
+        f: DeclId,
+        mode: Option<Mode>,
+        id: ExprId,
+    ) -> Result<(), Reported> {
         // 6.5.6.3: a formal that is written (out, inout, buffer) needs an
         // actual that can be written; an `in` port or parameter cannot (#654). A linkage
         // formal takes an actual of any mode.
@@ -1338,14 +1359,14 @@ impl Db {
                 let (an, am) = (self.decls[d].name, mode_str(o.mode));
                 let (fname, fm) = (self.decls[f].name, mode_str(mode));
                 return Err(self.error(
-                    Diagnostic::error(
-                        diag::CLASS_MISUSE,
-                        format!("{an} with mode {am} cannot be associated with formal {fname} with mode {fm}"),
-                    )
-                    .with_primary(self.exprs[id].span, format!("mode {am} cannot be written"))
-                    .with_secondary(self.decls[f].span, "formal declared here")
-                    .with_note("LRM 6.5.6.3: the actual of a formal that is written must itself be writable"),
-                ));
+                        Diagnostic::error(
+                            diag::CLASS_MISUSE,
+                            format!("{an} with mode {am} cannot be associated with formal {fname} with mode {fm}"),
+                        )
+                        .with_primary(self.exprs[id].span, format!("mode {am} cannot be written"))
+                        .with_secondary(self.decls[f].span, "formal declared here")
+                        .with_note("LRM 6.5.6.3: the actual of a formal that is written must itself be writable"),
+                    ));
             }
         }
         if mode != Some(Mode::In) && !self.is_signal_name(id) {
@@ -1370,16 +1391,7 @@ impl Db {
                 )),
             ));
         }
-        Ok(match formal_conv {
-            Some(_) => Actual::Converted {
-                formal_conv,
-                actual_conv: None,
-                actual: id,
-                copy_in: None,
-                copy_out: None,
-            },
-            None => Actual::Expr(id),
-        })
+        Ok(())
     }
 
     /// `t => integer`, `t => std_logic_vector(7 downto 0)`: a generic type's actual.
@@ -1657,6 +1669,16 @@ impl Db {
             let id = self.expr_in_subtype(scope, e, st);
             if self.is_poison_expr(id) {
                 errs.0 = true;
+                continue;
+            }
+            // A part of a written signal port needs a writable signal name, as a whole port.
+            if let DeclKind::Object(o) = &self.decls[f].kind
+                && o.role == ObjRole::Port
+                && o.class == ObjClass::Signal
+                && errs
+                    .keep(self.check_written_actual(f, o.mode, id))
+                    .is_none()
+            {
                 continue;
             }
             out.push((steps.into_boxed_slice(), id, fe, inertial));

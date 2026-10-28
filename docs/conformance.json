@@ -231,8 +231,8 @@
        8
       ],
       "composite": [
-       117,
-       117
+       118,
+       118
       ],
       "delta": [
        13,
@@ -332,8 +332,8 @@
        8
       ],
       "composite": [
-       117,
-       117
+       118,
+       118
       ],
       "delta": [
        13,
@@ -433,8 +433,8 @@
        8
       ],
       "composite": [
-       117,
-       117
+       118,
+       118
       ],
       "delta": [
        13,
@@ -525,7 +525,7 @@
    }
   },
   "discrepancies": {
-   "cases": 213,
+   "cases": 214,
    "output_tail": "",
    "yavs_matches_expected": true
   },
@@ -534,10 +534,9 @@
     "classes": {
      "analysis": 22,
      "elab": 16,
-     "oracle": 29,
+     "oracle": 30,
      "pass": 1002,
-     "skip": 403,
-     "timeout": 1
+     "skip": 403
     },
     "pass_list": 992,
     "pass_list_regressions": [],
@@ -583,33 +582,17 @@
     ],
     "808": [
      "tc2895.vhd",
-     "tc2926.vhd",
      "tc2933.vhd",
      "tc2941.vhd",
      "tc2942.vhd",
      "tc2943.vhd",
-     "tc2944.vhd",
-     "tc2946.vhd",
-     "tc2947.vhd",
-     "tc2971.vhd"
-    ],
-    "809": [
-     "tc3007.vhd",
-     "tc3008.vhd",
-     "tc3009.vhd",
-     "tc3011.vhd",
-     "tc3012.vhd"
+     "tc2944.vhd"
     ],
     "810": [
      "tc3013.vhd",
      "tc3026.vhd",
      "tc3028.vhd",
      "tc3031.vhd"
-    ],
-    "811": [
-     "tc787.vhd",
-     "tc818.vhd",
-     "tc1664.vhd"
     ],
     "812": [
      "tc1313.vhd",
@@ -630,22 +613,7 @@
      "tc553.vhd",
      "tc2549.vhd",
      "tc2919.vhd",
-     "tc3058.vhd",
      "tc3064.vhd"
-    ],
-    "814": [
-     "tc177.vhd",
-     "tc394.vhd",
-     "tc396.vhd",
-     "tc771.vhd",
-     "tc775.vhd",
-     "tc789.vhd",
-     "tc1320.vhd",
-     "tc2927.vhd",
-     "tc2993.vhd"
-    ],
-    "815": [
-     "tc1392.vhd"
     ],
     "816": [
      "tc1781.vhd"
@@ -666,21 +634,6 @@
     ],
     "820": [
      "ch_13_fg_13_24.vhd"
-    ],
-    "821": [
-     "tc2443.vhd",
-     "tc2444.vhd"
-    ],
-    "822": [
-     "tc200.vhd",
-     "tc963.vhd",
-     "tc1476.vhd"
-    ],
-    "823": [
-     "tc1227.vhd"
-    ],
-    "824": [
-     "tc1695.vhd"
     ]
    },
    "groups": {
@@ -697,21 +650,21 @@
      "skip": 1
     },
     "billowitch/analyzer_failure": {
-     "fail": 61,
+     "fail": 33,
      "late": 24,
-     "pass": 1429,
+     "pass": 1457,
      "skip": 0
     },
     "billowitch/compliant": {
-     "fail": 5,
+     "fail": 4,
      "late": 0,
-     "pass": 1607,
+     "pass": 1608,
      "skip": 0
     },
     "billowitch/simulator_failure": {
-     "fail": 1,
+     "fail": 0,
      "late": 0,
-     "pass": 37,
+     "pass": 38,
      "skip": 0
     },
     "clifton-labs/compliant": {
@@ -724,7 +677,7 @@
   }
  },
  "generated": {
-  "commit": "4a359edb5f-dirty",
+  "commit": "a4dc53c1a8",
   "commit_date": "2026-10-28",
   "version": "0.8.0"
  },
@@ -3041,6 +2994,13 @@
     "kind": "LRM clear",
     "lrm": "9.3.3.2, 5.2.1",
     "yavs": "FATAL"
+   },
+   {
+    "case": "aggregate-target-self-value",
+    "decided": "agent, 2026-10-28 (#815)",
+    "kind": "LRM clear",
+    "lrm": "10.6.2.1",
+    "yavs": "OK"
    },
    {
     "case": "package-instance-path-name",

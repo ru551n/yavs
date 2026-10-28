@@ -316,6 +316,8 @@ pub struct LlvmTier {
     /// Keeps the code alive; never used after construction.
     _jit: Mutex<Jit>,
     funcs: Vec<Option<(RunFn, usize)>>,
+    /// Per function, `regs::no_table` (`rt::enter`'s `lean`).
+    lean: Vec<bool>,
     /// Per function, its native-frame code's address or 0 (`Mem::ntab`).
     natives: Vec<usize>,
     /// Per function, its `CallFn` or 0 (`Tier::call`).
@@ -340,7 +342,16 @@ impl Tier for LlvmTier {
     fn run(&self, func: FuncId, pc: u32, host: &mut dyn TierHost) -> Option<u32> {
         let &(f, nregs) = self.funcs.get(func.0 as usize)?.as_ref()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize).copied().flatten();
-        enter(f, nregs, pc, host, &lookup, self.natives.as_ptr(), None)
+        enter(
+            f,
+            nregs,
+            pc,
+            host,
+            &lookup,
+            self.natives.as_ptr(),
+            None,
+            false,
+        )
     }
 
     fn run_cached(
@@ -360,6 +371,7 @@ impl Tier for LlvmTier {
             &lookup,
             self.natives.as_ptr(),
             Some(state),
+            self.lean.get(func.0 as usize) == Some(&true),
         )
     }
 
@@ -960,6 +972,14 @@ pub fn compile(prog: &Program, opt: OptLevel, max_size: usize) -> Result<LlvmTie
     interpreted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     Ok(LlvmTier {
         _jit: Mutex::new(jit),
+        lean: (0..prog.funcs.len())
+            .map(|i| {
+                funcs[i].is_some()
+                    && prog
+                        .func(FuncId(i as u32))
+                        .is_some_and(crate::regs::no_table)
+            })
+            .collect(),
         funcs,
         natives,
         calls,

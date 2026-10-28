@@ -35,6 +35,8 @@ pub struct ClifTier {
     /// Keeps the code alive; never used after construction.
     pub(crate) _jit: Mutex<Jit>,
     pub(crate) funcs: Vec<Option<(RunFn, usize)>>,
+    /// Per function, `yavs_llvm::regs::no_table` (`enter`'s `lean`).
+    pub(crate) lean: Vec<bool>,
     /// Per function, the address of its native-frame code (`Mem::ntab`) and of its `CallFn`
     /// (`Tier::call`), 0 for none.
     pub(crate) natives: Vec<usize>,
@@ -72,7 +74,17 @@ impl ClifTier {
     ) -> Option<u32> {
         let &(f, nregs) = self.funcs.get(func.0 as usize)?.as_ref()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize).copied().flatten();
-        enter(f, nregs, pc, host, &lookup, self.natives.as_ptr(), state)
+        let lean = self.lean.get(func.0 as usize) == Some(&true);
+        enter(
+            f,
+            nregs,
+            pc,
+            host,
+            &lookup,
+            self.natives.as_ptr(),
+            state,
+            lean,
+        )
     }
 }
 

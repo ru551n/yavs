@@ -10110,6 +10110,24 @@ the call is still about 80 ops; the rest is listed there. First 1 us of `grlib_l
   (`rtl_lfsr` 262 ms, `lfsr64` 131 ms, `rtl_ff` 545 ms warm): the kernel is about a quarter of their activation; the rest is the
   interpreted start of warm runs (#728) and the host layers (#766). Details: decisions.md "Kernel round 26".
 
+## llvm and clift: compiled clocked RTL, round 11: lean activations (#766, 2026-10-28)
+
+- A process that calls nothing and reaches no heap, access, package or shared object (`yavs_llvm::regs::no_table`, an IR analysis both
+  code generators share) is `lean`: its activations skip the object table's machine and heap tags (`Mem::begin`, `save_tag`) and the
+  native-call set-up (`set_nslots`, `ntab`, `stack_lo`), under `--tier=auto`, `llvm`, `clift` and `clift-auto` alike, every clock-edge
+  form alike (`tests/compiled_lean.rs`). Debug builds and `--features table-check` check that a lean activation never reaches the table.
+- Instructions an activation (stepcount, base e1e9dc1f / round 11): `rtl_lfsr` 1 384.6 / 1 308.8 (LLVM build), 1 465.3 / 1 389.5
+  (Cranelift build); `rtl_ff` 1 196.5 / 1 120.5 and 1 233.5 / 1 157.5; `lfsr64` (not lean: a vector variable on the heap, #851)
+  1 442.6 / 1 446.6. The host layers 496 to 420. Cycles warm (min of 7, one core): `rtl_lfsr` -5.9 percent (LLVM build), -5.8 (Cranelift build),
+  `rtl_ff` -3.9 and -5.9; against sim1 warm `rtl_lfsr` 1.33 to 1.26 and 1.45 to 1.43, `rtl_ff` 1.00 to 0.94 and 1.08 to 0.97.
+  `realbench --compare` 42 tests: instructions 1.00 (interp and auto, both builds), wall 1.00 to 1.03 (load about 20).
+- Checks: fmt, clippy (default, `llvm`, `clift`, both), `cargo test --workspace`, the `llvm` and `clift` tests, `gc-stress` of
+  `yavs-interp`, `yavs-llvm` and `yavs-clift`; difftest 548/548 at 1 and 4 threads for `yavs-interp`, `yavs-auto` (also with
+  `--tier-heat=1,0,0`), `yavs-llvm`, `yavs-clift`, `yavs-clift-auto` (also heat) with a `table-check` build, and `yavs-auto`/`yavs-clift-auto`
+  heat with the bench builds.
+- Left (decisions.md "Compiled clocked RTL processes, round 11"): the view's fields, `Env`, the thread's `Mem`, the record's copy in
+  `run_direct`; process variables on the heap (#851).
+
 ## llvm: compiled clocked RTL, round 10: the view made inside the tier (#766, 2026-10-28)
 
 - `Tier::run_cached` takes the interpreter's `yavs_interp::Host` (now `pub`) instead of `dyn TierHost`; `rt::enter`/`enter_on` are generic

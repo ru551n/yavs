@@ -140,6 +140,10 @@ pub struct Mem {
     /// The `Suspend` a wait ended on the kernel itself stopped at (`TIER_ROOT_WAIT`), for the
     /// process's record (`TierState::at`); `NO_PC` otherwise.
     wait_at: u32,
+    /// The check mode of `lean` activations (debug builds, feature `table-check`): set while one
+    /// runs, with the machine and heap tags it replaced by `POISON` (`begin_lean`, `end_lean`).
+    lean: bool,
+    saved: [u64; 8],
 }
 
 /// The slots of a native frame, registered at its entry in `Mem::nslots`.
@@ -246,6 +250,13 @@ const TAG_END: u64 = 1 << 31;
 
 /// A tag in the low half of a record word (`Mem::save_tag`).
 const TAG_MASK: u64 = (1 << 32) - 1;
+
+/// The machine and heap tags of a `lean` activation in the check mode: never issued (tags stay
+/// below `TAG_END`), so every lookup of those spaces misses into the runtime, which panics.
+const POISON: u64 = TAG_MASK << 32;
+
+/// The check mode of `lean` activations is on.
+const LEAN_CHECK: bool = cfg!(any(debug_assertions, feature = "table-check"));
 
 /// A process's record (`TierState`): the `Mem` identity, the process heap's epoch, the heap tag and
 /// the machine tag of its objects in one word, the shared heap's epoch (`Mem::save_tag`).
@@ -404,6 +415,7 @@ impl Mem {
     /// The entry of the object of high half `hi`, if the table holds it.
     #[inline(always)]
     pub fn get(&self, hi: u64) -> Option<&Obj> {
+        self.check_lean(hi);
         let (at, k) = self.slot(hi);
         let o = &self.objs[at];
         (o.hi == k).then_some(o)
@@ -530,6 +542,45 @@ impl Mem {
         self.next_tag = 5;
     }
 
+    /// The start of a `lean` activation (`regs::no_table`, #766): it reaches no object of the
+    /// machine's or the heaps' tags, so they are not set and the record is not read. The owner is
+    /// forgotten: a `forget` on a cold path may set this machine's heap epochs, which the next
+    /// `begin` without a record must not take for the last owner's. Constants keep their tag.
+    #[inline(always)]
+    pub fn begin_lean(&mut self) {
+        if (self.fr.owner ^ self.rt_owner) >> yavs_interp::OWNER_RT_SHIFT != 0 {
+            self.new_runtime();
+        }
+        self.cur_owner = u64::MAX;
+        cb(Cb::Lean);
+        if LEAN_CHECK {
+            self.lean = true;
+            self.saved = self.tags;
+            self.set(&MACHINE_SPACES, POISON >> 32);
+            self.set(&HEAP_SPACES, POISON >> 32);
+        }
+    }
+
+    /// The end of a `lean` activation: the check mode puts the tags back.
+    #[inline(always)]
+    pub fn end_lean(&mut self) {
+        if LEAN_CHECK {
+            self.lean = false;
+            for sp in MACHINE_SPACES.into_iter().chain(HEAP_SPACES) {
+                let t = self.saved[sp as usize] >> 32;
+                self.set(&[sp], t);
+            }
+        }
+    }
+
+    /// The check mode: a `lean` activation reached an object of the machine's or a heap's tag.
+    #[inline(always)]
+    fn check_lean(&self, hi: u64) {
+        if LEAN_CHECK && self.lean && matches!(life(hi), Life::Machine | Life::Heap) {
+            lean_touched(hi);
+        }
+    }
+
     /// Keep the machine's tags in the process's record for its next activation.
     #[inline(always)]
     pub fn save_tag(&self, st: &mut yavs_interp::TierState) {
@@ -548,6 +599,7 @@ impl Mem {
     /// Enter object `o` (`o.hi`: the high half of its addresses) at its entry.
     #[inline(always)]
     pub fn put_obj(&mut self, mut o: Obj) {
+        self.check_lean(o.hi);
         let (at, k) = self.slot(o.hi);
         self.transient |= life(o.hi) == Life::Volatile;
         o.hi = k;
@@ -585,6 +637,14 @@ impl Mem {
             self.cur_epochs = to;
         }
     }
+}
+
+#[cold]
+#[inline(never)]
+fn lean_touched(hi: u64) -> ! {
+    panic!(
+        "a lean activation (regs::no_table) reached the object table for address high half {hi:#x}: this is a bug in yavs"
+    )
 }
 
 /// How long an object of `Mem::objs` stays where it was found: until the next host call that
@@ -2283,6 +2343,7 @@ pub unsafe extern "C" fn yavs_rt_fast(
                     // inline.
                     let m = unsafe { &mut *mem };
                     let hi = addr >> 32;
+                    m.check_lean(hi);
                     let (at, k) = m.slot(hi);
                     let e = &mut m.objs[at];
                     if e.hi == k && e.w != 0 {
@@ -2389,7 +2450,10 @@ impl View for yavs_interp::Host<'_, '_, '_> {
 }
 
 /// Run compiled `f` (generated for `nregs` registers) from `pc` (`Tier::run`); `lookup`
-/// finds the compiled code of the functions it calls.
+/// finds the compiled code of the functions it calls. `lean` (with a record only): `f` is of a
+/// process `regs::no_table` passes, which calls nothing and reaches no object of the machine's or
+/// the heaps' tags.
+#[allow(clippy::too_many_arguments)]
 #[inline(always)]
 pub fn enter<H: View + ?Sized>(
     f: RunFn,
@@ -2399,6 +2463,7 @@ pub fn enter<H: View + ?Sized>(
     lookup: Lookup<'_>,
     ntab: *const usize,
     state: Option<&mut yavs_interp::TierState>,
+    lean: bool,
 ) -> Option<u32> {
     // This thread's `Mem`, or a new one inside an activation that holds it.
     let p = MEM.replace(std::ptr::null_mut());
@@ -2408,7 +2473,14 @@ pub fn enter<H: View + ?Sized>(
         // SAFETY: `MEM` holds a `Box` of this thread's that nothing else uses (taken above).
         unsafe { Box::from_raw(p) }
     };
-    let r = enter_on(&mut mem, f, nregs, pc, host, lookup, ntab, state);
+    host.make_view(&mut mem.fr);
+    // Two copies of the rest, so that neither tests `lean` again (the view is made once: two
+    // copies of it were a call).
+    let r = if lean {
+        enter_on::<H, true>(&mut mem, f, nregs, pc, host, lookup, ntab, state)
+    } else {
+        enter_on::<H, false>(&mut mem, f, nregs, pc, host, lookup, ntab, state)
+    };
     if MEM.get().is_null() {
         MEM.set(Box::into_raw(mem));
     }
@@ -2431,11 +2503,11 @@ thread_local! {
     static MEM: std::cell::Cell<*mut Mem> = const { std::cell::Cell::new(std::ptr::null_mut()) };
 }
 
-/// `enter` on `mem` (a fresh or reused `Mem`): what the compiled code returns, or the panic it
-/// carried out of a callback.
+/// `enter` on `mem` (a fresh or reused `Mem` whose view was just made): what the compiled code
+/// returns, or the panic it carried out of a callback. `LEAN` as `enter`'s `lean`.
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
-pub fn enter_on<H: View + ?Sized>(
+pub fn enter_on<H: View + ?Sized, const LEAN: bool>(
     mem: &mut Mem,
     f: RunFn,
     nregs: usize,
@@ -2445,19 +2517,24 @@ pub fn enter_on<H: View + ?Sized>(
     ntab: *const usize,
     state: Option<&mut yavs_interp::TierState>,
 ) -> Result<Option<u32>, Box<dyn Any + Send>> {
-    host.make_view(&mut mem.fr);
     // Only an activation with a record can leave the pc of its wait there.
     if state.is_none() {
         mem.fr.flags &= !yavs_interp::TIER_ROOT_WAIT;
     }
+    let lean = LEAN && state.is_some();
     mem.wait_at = yavs_interp::NO_PC;
     mem.temp_seen = mem.fr.temp_len;
-    mem.ndeopt = 0;
-    // The objects this machine found before, on this thread, at this heap epoch.
-    mem.begin(state.as_deref());
+    if !lean {
+        mem.ndeopt = 0;
+        // The objects this machine found before, on this thread, at this heap epoch.
+        mem.begin(state.as_deref());
+    }
     // A frame index beyond the address format is the interpreter's error.
     if mem.fr.nregs != nregs as u64 || mem.fr.frame >= 1 << 29 {
         return Ok(None);
+    }
+    if lean {
+        mem.begin_lean();
     }
     let mut env = Env {
         host: host.as_host(),
@@ -2467,13 +2544,16 @@ pub fn enter_on<H: View + ?Sized>(
         pending: Vec::new(),
         windows: None,
     };
-    // `env` is a local whose address the call takes anyway: where the native stack is.
-    env.stack_lo = (&raw const env as usize).saturating_sub(NEST_STACK);
-    mem.ntab = ntab;
-    mem.stack_lo = env.stack_lo as u64;
-    // The frames of native calls are at most `max_depth` deep: their slots are registered here.
-    let depth = mem.fr.max_depth.min(1 << 20) as usize;
-    mem.set_nslots(depth);
+    // A lean function calls nothing: no native callee, no deoptimisation, no compiled callee.
+    if !lean {
+        // `env` is a local whose address the call takes anyway: where the native stack is.
+        env.stack_lo = (&raw const env as usize).saturating_sub(NEST_STACK);
+        mem.ntab = ntab;
+        mem.stack_lo = env.stack_lo as u64;
+        // The frames of native calls are at most `max_depth` deep: their slots are registered here.
+        let depth = mem.fr.max_depth.min(1 << 20) as usize;
+        mem.set_nslots(depth);
+    }
     // SAFETY: `f` was generated for this function with `nregs` registers and only
     // indexes `regs` below that (checked at compile time); it accesses memory only
     // within the bounds in `mem`; `env` and `mem` outlive the call.
@@ -2489,7 +2569,12 @@ pub fn enter_on<H: View + ?Sized>(
     mem.sync(env.host);
     mem.forget_end();
     if let Some(slot) = state {
-        mem.save_tag(slot);
+        if lean {
+            mem.end_lean();
+            slot.at = mem.wait_at;
+        } else {
+            mem.save_tag(slot);
+        }
     }
     match env.panic {
         Some(p) => Err(p),

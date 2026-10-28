@@ -12279,6 +12279,66 @@ instruction-bound, so this round removes instructions; the prefetch rounds had t
   the scheduler and the code. The idea taken: the code that makes the activation's context is static code in the caller, not a virtual
   call back into the host. Ours keeps the per-activation view (#634). Nothing was copied.
 
+## Compiled clocked RTL processes, round 11: lean activations (yavs-llvm, yavs-clift, #766, 2026-10-28)
+
+Task (#766, maintainer 2026-10-28: the per-activation "no object table" flag, ruled "not now" on 2026-10-26, may be tried for compiled
+processes that touch no heap or access objects; per-process persistent state stays ruled out, #634): skip the object table's set-up and
+end for those processes. Method as in round 10: bench builds (`llvm`, and `clift`), `tools/stepcount` windows of 2 048 (`rtl_lfsr`,
+`lfsr64`) or 4 096 (`rtl_ff`) entries of `AutoTier::run_cached` (`--tier=auto --tier-heat=1,0,0`, `--threads 1`).
+
+- **Decision: a process is `lean` when `yavs_llvm::regs::no_table` passes**, an analysis of the IR shared by both code generators: no
+  `Call`, `CallForeign`, `CallIndirect`, `CallProt`, `New`, `NewFill`, `Free`, `Deref`, `PkgAlloc`, no `Handle` register, no
+  parameter, and every address register (`Ptr`) defined only by `AddrOf` of its frame, the instance data or a constant, `Alloc`,
+  `NewFrame`, `LayoutOf`, or `Index`/`Field`/`Move`/`Select` of such registers (a flow-insensitive fixpoint), and defined before it is
+  read. Any other definition of an address (a `Load`, a native's result) fails it, so a new instruction fails it until someone decides
+  otherwise. Natives (`CallNative`) are allowed: they run on the interpreter's own memory. Why: the addresses such a process uses are
+  found by the generated code or by `Mem::find` in the frame, the temporary area or the instance data; only constants without a module
+  copy reach the table, under the runtime's tag, which stays checked.
+- **Decision: a lean activation does not set or save the table's machine and heap tags** (`rt::enter` with `lean`, `enter_on::<_, true>`):
+  `Mem::begin_lean` instead of `Mem::begin` (the runtime's constants tag is still renewed on a new runtime), `TierState::at` written
+  instead of `save_tag`, and, since it calls nothing, no `set_nslots`, `ntab`, `stack_lo` or `ndeopt`. `begin_lean` forgets the table's
+  owner (`cur_owner`): a `forget` on a cold path (a stepped instruction) may set this machine's heap epochs, which the next `begin`
+  without a record must not take for the previous owner's. The flag is published with the code (`AutoTier`: the top bit of
+  `Entry::nregs`; `LlvmTier`, `ClifTier`: a vector filled at compile time). The entry has two monomorphic copies and makes the view
+  once before choosing between them (two inlined views made `view_root` a call). Why: the tags were about 70 of the instructions of
+  every activation of a small clocked process; per-process state is not needed for it.
+- **Decision: the check mode** (debug builds, and release builds with `--features table-check`) poisons the machine and heap tags of
+  a lean activation with a tag never issued, so any inline lookup misses into the runtime, and `Mem::get`, `Mem::put_obj` and
+  `yavs_rt_fast` panic on an object of those spaces (`check_lean`); the tags are put back at the end. `cb_lean` counts lean
+  activations (`YAVS_COUNTERS`, debug). The difftest ran with it (below), and forcing every process lean made `lfsr64` abort at
+  once, so the check sees a wrong flag.
+- **Measured** (instructions an activation, stepcount, base e1e9dc1f / round 11; host layers as in round 10):
+
+  | | `InterpProcess::run` + `run_direct` | `run_cached` + `enter_on` + view | `yavs_rt_wait_same` | host layers | whole activation |
+  |---|---:|---:|---:|---:|---:|
+  | `rtl_lfsr`, LLVM build | 181.9 / 181.9 | 291.8 / 216.0 | 21.9 / 21.9 | 495.6 / 419.8 | 1 384.6 / 1 308.8 |
+  | `rtl_lfsr`, Cranelift build | 181.9 / 181.9 | 291.8 / 216.0 | 21.9 / 21.9 | 495.6 / 419.8 | 1 465.3 / 1 389.5 |
+  | `rtl_ff`, LLVM build | 182.0 / 182.0 | 291.9 / 216.0 | 22.0 / 22.0 | 495.9 / 420.0 | 1 196.5 / 1 120.5 |
+  | `rtl_ff`, Cranelift build | 182.0 / 182.0 | 291.9 / 216.0 | 22.0 / 22.0 | 495.9 / 420.0 | 1 233.5 / 1 157.5 |
+  | `lfsr64` (not lean), LLVM build | 184.9 / 184.9 | 291.9 / 295.9 | 22.0 / 22.0 | 498.8 / 502.8 | 1 442.6 / 1 446.6 |
+  | `lfsr64` (not lean), Cranelift build | 184.9 / 184.9 | 291.9 / 295.9 | 22.0 / 22.0 | 498.8 / 502.8 | 1 986.2 / 1 990.2 |
+
+  A process that is not lean pays 4 instructions (the flag's test and mask). Cycles, minimum of 7 interleaved runs of a private world
+  per binary on one claimed core of the second CCD (host load about 20), base / round 11: warm `--tier=auto` `rtl_lfsr` -5.9 percent
+  (LLVM build) and -5.8 (Cranelift build), `rtl_ff` -3.9 and -5.9, `lfsr64` +1.7 and -0.7 (not lean: noise), `rtl_chain` level;
+  cold `rtl_ff` -3.2 and -9.4, `rtl_lfsr` +1.0 and -2.5. Against sim1 (median wall, same core): warm `rtl_lfsr` 1.33 to 1.26 (LLVM
+  build), 1.45 to 1.43 (Cranelift build); `rtl_ff` 1.00 to 0.94 and 1.08 to 0.97; `lfsr64` 1.08 to 1.07 and 1.23 to 1.20; `rtl_chain`
+  0.74 and 0.72 both. `tools/realbench --compare` (42 tests, run phase, 3 runs, cores 11 to 14): LLVM build wall geometric mean 1.02
+  (interp) / 1.00 (auto), instructions 1.00 / 1.00; Cranelift build wall 1.03 / 0.99, instructions 1.00 / 1.00. The single-test flags
+  (`uvvm_axistream_vvc` and `sc5_fifo_repack` auto instructions 1.08 to 1.13, `grlib_leon3mp` wall at equal instructions) were the
+  policy's compile timing and load: 5 more runs gave 0.92 to 1.02. `hdlm_lfsr` and `neorv32_single_min` (LLVM build, 5 runs): instructions
+  1.00 warm and cold.
+- **Not lean, and why.** `lfsr64`'s processes keep `v : unsigned(15 downto 0)` in a heap object (`New`, `Deref` in the first block, the
+  pointer loaded from frame slot 0 at every activation): they touch the heap, so they keep the tags (#851: such a variable could live
+  in the frame). `hdlm_lfsr` and `neorv32_single_min` gained nothing in instructions (their busy processes call subprograms or use
+  vector variables). Left on the entry: the view's fields (about 80), `Env` (13), the thread's `Mem` (16), `run_direct`'s copy of the
+  record in and out (about 12: a lean activation only needs `at`, but the interpreter does not know the flag; passing it would change
+  the `Tier` trait).
+- **The reference simulator (rule 22):** its code generator marks a process that keeps no state of its own between activations, and
+  the scheduler then passes it no state at all; every process is entered with one call and its state pointer. The idea taken: what an
+  activation sets up is decided when the code is made, from what the code can reach. Ours keeps the per-activation view and the shared
+  table and only drops the tags for processes that cannot reach them; nothing was copied.
+
 ## README and public docs (maintainer, 2026-10-28)
 
 - **The README links the evidence instead of repeating it.** Correctness: `docs/conformance.md` (generated); speed: `docs/performance.md` (method, headline geometric means, every testbench; updated with each head-to-head run); supported language features: `docs/language-support.md`. The README keeps one line per topic.

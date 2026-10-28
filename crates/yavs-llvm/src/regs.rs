@@ -843,6 +843,75 @@ pub fn spaces(prog: &Program, f: &Func, starts: &[bool]) -> Option<Vec<Vec<(u32,
     )
 }
 
+/// A process whose activations reach no object of the machine's or the heaps' tags in
+/// `Mem::objs` (#766): no call, no access value, no heap object, no package or shared data, and
+/// every address register made only from its own frame, the instance data, a constant or the
+/// temporary area (a flow-insensitive fixpoint over their definitions). Such an activation skips
+/// the table's tags (`rt::enter`, `lean`).
+pub fn no_table(f: &Func) -> bool {
+    if f.kind != yavs_ir::FuncKind::Process
+        || !f.params.is_empty()
+        || f.reg_ty.contains(&RegTy::Handle)
+    {
+        return false;
+    }
+    let n = f.reg_ty.len();
+    let is_ptr = |r: Reg| f.reg_ty.get(r.0 as usize) == Some(&RegTy::Ptr);
+    // Per address register: still of a known space, and defined somewhere.
+    let mut ok = vec![true; n];
+    let mut defined = vec![false; n];
+    let good = |ok: &[bool], r: Reg| !is_ptr(r) || ok[r.0 as usize];
+    loop {
+        let mut changed = false;
+        for i in &f.code {
+            let safe = match *i {
+                Inst::Call { .. }
+                | Inst::CallForeign { .. }
+                | Inst::CallIndirect { .. }
+                | Inst::CallProt { .. }
+                | Inst::New { .. }
+                | Inst::NewFill { .. }
+                | Inst::Free { .. }
+                | Inst::Deref { .. }
+                | Inst::PkgAlloc { .. }
+                | Inst::Elab { .. } => return false,
+                Inst::AddrOf { space, .. } => matches!(
+                    space,
+                    AddrSpace::Frame | AddrSpace::Inst | AddrSpace::Const(_)
+                ),
+                Inst::Alloc { .. } | Inst::NewFrame { .. } | Inst::LayoutOf { .. } => true,
+                Inst::Move { src, .. } => good(&ok, src),
+                Inst::Index { base, .. } | Inst::Field { base, .. } => good(&ok, base),
+                Inst::Select { a, b, .. } => good(&ok, a) && good(&ok, b),
+                // Anything else that makes an address (a load, a native's result) may point
+                // anywhere.
+                _ => false,
+            };
+            i.visit(&mut |r, role, _| {
+                if role == Role::Def && is_ptr(r) {
+                    defined[r.0 as usize] = true;
+                    if !safe && ok[r.0 as usize] {
+                        ok[r.0 as usize] = false;
+                        changed = true;
+                    }
+                }
+            });
+        }
+        if !changed {
+            break;
+        }
+    }
+    // An address register read before any definition is one the interpreter preloaded: unknown.
+    let known = |r: Reg| !is_ptr(r) || ok[r.0 as usize] && defined[r.0 as usize];
+    f.code.iter().all(|i| {
+        let mut all = true;
+        i.visit(&mut |r, role, _| all &= role == Role::Def || known(r));
+        all && i
+            .list()
+            .is_none_or(|l| f.regs(l).is_some_and(|rs| rs.iter().all(|&r| known(r))))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

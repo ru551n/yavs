@@ -7185,6 +7185,14 @@ pub fn compile(prog: &Program, max_size: usize) -> Result<crate::ClifTier, Error
     interpreted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     Ok(crate::ClifTier {
         _jit: std::sync::Mutex::new(jit),
+        lean: (0..prog.funcs.len())
+            .map(|i| {
+                funcs[i].is_some()
+                    && prog
+                        .func(FuncId(i as u32))
+                        .is_some_and(yavs_llvm::regs::no_table)
+            })
+            .collect(),
         funcs,
         natives,
         calls,

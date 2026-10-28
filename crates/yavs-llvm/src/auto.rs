@@ -797,28 +797,40 @@ const PAYBACK_RA: u64 = 12;
 /// it stays interpreted (or at its first level).
 pub type Note = Box<dyn FnMut(FuncId, OptLevel, Result<std::time::Duration, String>) + Send>;
 
-/// The compiled code of a function: its entry (0 while it has none) and register count. The
-/// O2 recompile replaces the entry; code once published stays valid as long as the tier.
+/// The compiled code of a function: its entry (0 while it has none) and register count, with
+/// `LEAN` set for a process `regs::no_table` passes. The O2 recompile replaces the entry; code
+/// once published stays valid as long as the tier.
 #[derive(Default)]
 struct Entry {
     run: AtomicUsize,
     nregs: AtomicUsize,
 }
 
+/// The bit of `Entry::nregs` that says the function is `lean` (`rt::enter`).
+const LEAN: usize = 1 << (usize::BITS - 1);
+
 impl Entry {
     fn get(&self) -> Option<(RunFn, usize)> {
+        self.get_lean().map(|(f, n, _)| (f, n))
+    }
+
+    #[inline(always)]
+    fn get_lean(&self) -> Option<(RunFn, usize, bool)> {
         let run = self.run.load(Ordering::Acquire);
+        let n = self.nregs.load(Ordering::Relaxed);
         // SAFETY: a nonzero `run` was stored by `set` from a `RunFn`.
         (run != 0).then(|| unsafe {
             (
                 std::mem::transmute::<usize, RunFn>(run),
-                self.nregs.load(Ordering::Relaxed),
+                n & !LEAN,
+                n & LEAN != 0,
             )
         })
     }
 
-    fn set(&self, (run, nregs): (RunFn, usize)) {
-        self.nregs.store(nregs, Ordering::Relaxed);
+    fn set(&self, (run, nregs): (RunFn, usize), lean: bool) {
+        self.nregs
+            .store(nregs | (usize::from(lean) * LEAN), Ordering::Relaxed);
         self.run.store(run as usize, Ordering::Release);
     }
 
@@ -2275,7 +2287,7 @@ impl Worker {
         {
             return;
         }
-        let (run, (_, published)) = (self.table[k].get(), self.nat[k]);
+        let (run, (_, published)) = (self.table[k].get_lean(), self.nat[k]);
         let native = self.ntab[k].load(Ordering::Acquire);
         let call = self.ctab[k].load(Ordering::Acquire);
         // Nothing of its own to swap, or its native-frame code still waits for its callees.
@@ -2285,8 +2297,8 @@ impl Worker {
         // Compiled callers find a callee without native-frame code (null) and leave to the interpreter.
         let mut swap = |compiled: bool| {
             if compiled {
-                if let Some(r) = run {
-                    self.table[k].set(r);
+                if let Some((f, n, lean)) = run {
+                    self.table[k].set((f, n), lean);
                     self.native.set(id);
                 }
                 self.ntab[k].store(native, Ordering::Release);
@@ -2756,7 +2768,8 @@ impl Worker {
                     self.publish();
                 }
                 if let Some(run) = entry.run {
-                    self.table[id.0 as usize].set((run, entry.nregs));
+                    let lean = self.prog.func(id).is_some_and(crate::regs::no_table);
+                    self.table[id.0 as usize].set((run, entry.nregs), lean);
                     self.native.set(id);
                 }
                 if self.early_root && !self.early_done.contains(&id) {
@@ -3501,7 +3514,16 @@ impl Tier for AutoTier {
         let (f, nregs) = self.funcs.get(func.0 as usize)?.get()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize)?.get();
         // `AtomicUsize` has the layout of `usize`: compiled code loads the entries atomically.
-        enter(f, nregs, pc, host, &lookup, self.ntab.as_ptr().cast(), None)
+        enter(
+            f,
+            nregs,
+            pc,
+            host,
+            &lookup,
+            self.ntab.as_ptr().cast(),
+            None,
+            false,
+        )
     }
 
     fn run_cached(
@@ -3511,7 +3533,7 @@ impl Tier for AutoTier {
         host: &mut yavs_interp::Host<'_, '_, '_>,
         state: &mut yavs_interp::TierState,
     ) -> Option<u32> {
-        let (f, nregs) = self.funcs.get(func.0 as usize)?.get()?;
+        let (f, nregs, lean) = self.funcs.get(func.0 as usize)?.get_lean()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize)?.get();
         enter(
             f,
@@ -3521,6 +3543,7 @@ impl Tier for AutoTier {
             &lookup,
             self.ntab.as_ptr().cast(),
             Some(state),
+            lean,
         )
     }
 

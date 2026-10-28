@@ -15,6 +15,9 @@ llvm = ["dep:llvm-sys", "dep:libloading", "dep:postcard"]
 gc-stress = ["yavs-interp/gc-stress"]
 # Count the callbacks of compiled code in release builds too (always counted in debug builds).
 op-census = ["yavs-interp/op-census"]
+# Release builds check that `lean` activations (`regs::no_table`) never reach the object table
+# (always checked in debug builds): the difftest build of #766.
+table-check = []
 
 [dependencies]
 # Pinned to LLVM 21.1 (design rule 5). Dynamic linking keeps link memory low;

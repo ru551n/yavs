@@ -292,7 +292,7 @@ suite's pass list).
 ## performance (`tools/bench`, #387)
 
 The shared benchmark harness (`tools/bench/AGENTS.md`) measures every performance change the same way:
-`python3 -I tools/bench/run.py --compare A B`. Phase times come from `yavs run --time-report`. Testbenches of real projects (41, against sim1 and between binaries): `tools/realbench`. Analysis cells are batched calls since #745 (section "Analysis in batched calls"; tables before it are one call per file and not comparable). Current comparison with sim1 (rule 23: `--tier=auto`, total wall incl. analysis, cold and warm): section "Real-world performance suite: yavs against sim1, head-to-head 7, 2026-10-27" (0.22 warm, 0.59 cold; head-to-head 6 below it is the detailed one), on the batched-call analysis basis (#745, both tools analyse consecutive files of a library in one call; head-to-head 1 to 5 were one call per file and are not comparable): geomean of the 41 realbench totals (libraries analysed too) 0.22 warm, 0.64 cold (the same run on the old per-file basis 0.24 and 0.42; head-to-head 5 had 0.23 and 0.43); own files + elab + run 0.23 and 0.49, elab + run 0.23 and 0.47, executed instructions yavs / sim1 0.31 and 0.60, tiny-test corpus 0.11 and 0.25, the h2h designs 0.56 and 0.78. The tables below are older measurements on the earlier host.
+`python3 -I tools/bench/run.py --compare A B`. Phase times come from `yavs run --time-report`. Testbenches of real projects (41, against sim1 and between binaries): `tools/realbench`. Analysis cells are batched calls since #745 (section "Analysis in batched calls"; tables before it are one call per file and not comparable). Current comparison with sim1 (rule 23: `--tier=auto`, total wall incl. analysis, cold and warm): section "Real-world performance suite: yavs against sim1, sim2 and sim4, head-to-head 8, 2026-10-28" (0.20 warm, 0.58 cold with the LLVM build, 0.21 and 0.57 with the Cranelift build; head-to-head 7 and 6 below it are the earlier ones), on the batched-call analysis basis (#745, both tools analyse consecutive files of a library in one call; head-to-head 1 to 5 were one call per file and are not comparable): geomean of the 41 realbench totals (libraries analysed too) 0.22 warm, 0.64 cold (the same run on the old per-file basis 0.24 and 0.42; head-to-head 5 had 0.23 and 0.43); own files + elab + run 0.23 and 0.49, elab + run 0.23 and 0.47, executed instructions yavs / sim1 0.31 and 0.60, tiny-test corpus 0.11 and 0.25, the h2h designs 0.56 and 0.78. The tables below are older measurements on the earlier host.
 
 Baseline of main at the commit that added the harness (release build, Intel Core Ultra 9 275HX, 24 CPUs,
 host shared with other agents; median CPU seconds of 3 runs, phase CPU in 10 ms steps, `--threads 1`):
@@ -5997,6 +5997,108 @@ elab cold 0.98 (instructions 0.96; `vai_weight_buffer` 0.65, `vai_pe_array` 0.72
 Also found: entries of files analysed by relative path are never read by `elab`/`run` (#799); in `tools/realbench`
 the libraries' std/ieee entries live in the corpus tool's store, so a run of `--phases run` alone without the analysis
 cells misses std/ieee units the analysis cells would have stored (the full suite is not affected).
+
+## Real-world performance suite: yavs against sim1, sim2 and sim4, head-to-head 8, 2026-10-28 (`tools/realbench`)
+
+Current headline: `1a8edb76` (main with the Cranelift tier behind the `clift` feature), method as head-to-head 7 (batched analysis calls for the tools, `--tier=auto`, total wall incl. analysis, 5 timed
+runs, two complete passes merged by the best cell, three claimed cores, controls of the three long tests at the start and the end; the raw data, scripts and logs are kept locally, not committed).
+Two builds against sim1: the bench build with the `llvm` feature (the h2h7 build; two passes, 09:08 to 10:03, host load average 2 to 12 with a median of 5 to 6, of which about 3 is the run's own timed
+processes: the closest to a quiet host this day) and the bench build with the `clift` feature (the `-nollvm` archive: Cranelift is the compiled tier of `--tier=auto`; passes at 10:08 and 11:38, load median 17 and 25 with bursts to
+200 and more from other jobs, and interactive use of the host from 10:32). Geometric mean over the same 41 tests, ratio yavs / sim1 (in brackets head-to-head 7):
+
+| basis | LLVM build warm | LLVM build cold | Cranelift build warm | Cranelift build cold |
+|---|---:|---:|---:|---:|
+| **total, libraries analysed too** | **0.201 (0.215)** | **0.576 (0.587)** | 0.206 | 0.571 |
+| own files + elab + run | 0.211 (0.219) | 0.481 (0.489) | 0.213 | 0.473 |
+| elab + run only | 0.216 (0.224) | 0.479 (0.483) | 0.215 | 0.468 |
+| with `grlib_leon3mp` (42) | 0.214 (0.229) | 0.597 (0.610) | 0.219 | 0.594 |
+| executed instructions (run cell), yavs / sim1 | 0.29 (0.30) | 0.59 (0.59) | not counted | not counted |
+
+Summed over the 41 tests the full total is 34.0 s (yavs) against 64.0 s (sim1) warm and 51.3 s against 64.0 s cold (h2h7: 37.9 / 70.4 and 56.9 / 69.9); faster than sim1: 37 of 41 warm, 34 of 41 cold
+(36, 33). Cranelift build: 37.8 s against 69.2 s warm, 52.3 s against 68.8 s cold, faster on 36 and 34. The two LLVM passes agree (0.203 and 0.197 warm, 0.577 and 0.578 cold); the repeat pass of the Cranelift
+build at load 25 gave 0.212 / 0.573, the merged cell (best of the two) is in the table. Instruction sums, run cell warm: 449 G (yavs) against 514 G (sim1). The h2h designs (10, `xor_sig` left out): 0.50 warm, 0.62 cold
+(0.50 and 0.61 at h2h7); with `xor_sig` (11): 0.44 and 0.56. `rtl_lfsr` 1.37 / 1.95, `lfsr64` 1.12 / 1.41, `rtl_ff` 1.06 / 1.23 stay above sim1; `rtl_chain` 0.72, `rtl_ram` 0.91, `rtl_fan` 0.84.
+Controls (run cell, sim1 / yavs seconds), start then end: `fletcher_bufferwriter_512` 1.77 / 3.59 then 1.91 / 3.90; `poc_arith_addw` 5.08 / 4.76 then 5.32 / 4.96; `vai_window_gen_interlock` 3.72 / 6.61
+then 3.98 / 7.12 (the end ran at load 6 to 7: 5 to 8 percent up for both tools).
+
+Tests above sim1 (LLVM build, full total warm / cold; Cranelift build in brackets): `grlib_leon3mp` 2.48 / 2.63 (2.89 / 2.91; outside the 41), `fletcher_bufferwriter_512` 1.89 / 2.03 (1.93 / 2.09),
+`vai_window_gen_interlock` 1.51 / 2.21 (1.49 / 1.77), `fletcher_bufferreader` 1.27 / 1.35 (1.26 / 1.35), `sc5_fifo_repack` 1.08 / 2.03 (1.25 / 1.77); cold only: `poc_stat_histogram` 0.58 / 1.69 (1.00 / 1.29 with
+Cranelift: warm level), `poc_arith_addw` 0.91 / 1.07 (0.98 / 1.01), `sc5_timestamp` 0.77 / 1.10 (0.69 / 1.00 with Cranelift). Warm above 1: 4 of the 41 plus grlib (h2h7: 5 plus grlib); cold above 1: 7 of the 41 with the LLVM build
+(h2h7: 8), 6 with the Cranelift build. Movers since h2h7: `poc_stat_histogram` 1.04 to 0.58 warm (yavs 0.55 to 0.30 s); sim1 itself got 9 percent cheaper on the quiet host (sum of the 41 warm 70.4 to 64.0 s), yavs 10 percent
+(37.9 to 34.0 s): `neorv32_dual_full` 2.02 to 1.75 s, `neorv32_single_min` 2.62 to 2.36 s, `uvvm_axistream_vvc` 2.53 to 2.16 s, `poc_arith_addw` 5.21 to 4.86 s, `fletcher_bufferwriter_512` 3.99 to 3.55 s, `vai_window_gen_interlock`
+8.07 to 7.45 s. The ratios of the longest tests moved the other way where sim1 gained more: `vai_window_gen_interlock` 1.29 to 1.51 (sim1 6.24 to 4.93 s, the h2h7 sim1 cell had run at load 5 to 10), `uvvm_axistream_vvc` 0.52 to 0.59
+(sim1 4.83 to 3.65 s). The 30 short tests are level (deltas of 0.00 to 0.02).
+
+### Against sim2 (open-source, mcode code generator) and sim4 (a commercial simulator)
+
+Added at the request of the maintainer; each is a separate pass of `tools/realbench --ref simN --phases analyze,run` with the Cranelift build, every pair timed on the same core (sim4: one claimed core, strictly one
+test at a time, the single licence seat; the libraries of both are analysed once untimed, as their normal workflow would; neither has a compile cache, so cold and warm differ only in the analysis cells). Local, untracked
+wrappers in the ignored `tools/sims.local.conf` (sim2 is run with `--elab-run` and `-frelaxed`, which the UVVM and Open Logic sources need; sim4 with one `vsim -c -do` script per test). **These passes ran while the host was in
+interactive use (from 10:32) and other jobs ran: load median 20, yavs's own seconds 30 to 50 percent above the quiet LLVM pass (sum of the 41 warm: 51 s against 34 s), so only the ratios are used;** the
+same ratios came out of the first passes with the LLVM build (sim2 0.171 / 0.475, sim4 0.159 / 0.398) within 0.011.
+
+| reference | tests | warm | cold | faster warm / cold | sums warm (yavs / ref) |
+|---|---:|---:|---:|---:|---:|
+| sim2 | 41 | 0.182 | 0.482 | 41 / 40 | 51.1 / 237.0 s |
+| sim4 | 29 | 0.164 | 0.397 | 24 / 22 | 36.5 / 93.7 s |
+| (sim1, the same Cranelift build) | 41 | 0.206 | 0.571 | 36 / 34 | 37.8 / 69.2 s |
+
+The same 29 tests against sim1: 0.234 / 0.607; against sim2: 0.192 / 0.472. sim4 elaboration plus run only (no analysis): 0.28 warm on 40 tests (its start-up is about 0.3 s per test); own files + elab + run on the 29:
+0.30 / 0.58. n/a cells: `grlib_leon3mp` (sim2 exits 1 after about 100 s at elaboration or run in this setup, cause not looked at; sim4 reports 16 compile errors in the GRLIB libraries);
+sim4 rejects `sine_calculator.vhd` (`'latency` of a user attribute on an entity, COMP96_0361: the testbench does not run); sim4 analyses 3 hdl-modules library groups with errors (`hard_fifo` needs the vendor primitives
+library, `sine_generator`), which fails the analysis cells of the 8 other `hdlm_*` tests (their elab + run exists: 0.3 to 0.9 s); the analysis of the own files of the three `vai_*` tests fails under sim4 in this setup
+(not looked at; elab + run exists, `vai_window_gen_interlock` 5.4 s). Slower than sim4 (Cranelift build, warm / cold): `fletcher_bufferwriter_512` 1.77 / 2.05, `poc_arith_addw` 1.34 / 1.44,
+`neorv32_dual_full` 1.32 / 1.43, `neorv32_single_cache` 1.41 / 1.64, `neorv32_single_min` 1.29 / 1.44; cold only `fletcher_bufferreader` 1.11, `sc5_fifo_repack` 1.09. Above sim2: only `sc5_fifo_repack` cold 1.08.
+
+Per test (full total ratio yavs / reference; "h2h7" is the same cell of head-to-head 7 and "delta" the change, LLVM build; the last three columns are the Cranelift build against sim1, sim2 and sim4, warm / cold):
+
+| test | warm | h2h7 | delta | cold | h2h7 | delta | yavs warm s | sim1 warm s | Cranelift build warm / cold | sim2 warm / cold | sim4 warm / cold |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| grlib_leon3mp | 2.48 | 2.67 | -0.19 | 2.63 | 2.84 | -0.22 | 33.40 | 13.48 | 2.89 / 2.91 | n/a | n/a |
+| fletcher_bufferwriter_512 | 1.89 | 1.98 | -0.09 | 2.03 | 2.15 | -0.13 | 3.55 | 1.88 | 1.93 / 2.09 | 0.09 / 0.10 | 1.77 / 2.05 |
+| vai_window_gen_interlock | 1.51 | 1.29 | +0.22 | 2.21 | 1.98 | +0.23 | 7.45 | 4.93 | 1.49 / 1.77 | 0.60 / 0.77 | n/a |
+| fletcher_bufferreader | 1.27 | 1.36 | -0.09 | 1.35 | 1.43 | -0.08 | 1.44 | 1.13 | 1.26 / 1.35 | 0.28 / 0.31 | 1.00 / 1.11 |
+| sc5_fifo_repack | 1.08 | 1.12 | -0.04 | 2.03 | 1.97 | +0.05 | 1.16 | 1.07 | 1.25 / 1.77 | 0.79 / 1.08 | 0.81 / 1.09 |
+| poc_arith_addw | 0.91 | 0.95 | -0.04 | 1.07 | 1.12 | -0.04 | 4.86 | 5.34 | 0.98 / 1.01 | 0.12 / 0.13 | 1.34 / 1.44 |
+| hdlm_lfsr | 0.79 | 0.84 | -0.05 | 0.97 | 1.07 | -0.10 | 1.34 | 1.70 | 0.78 / 0.97 | 0.20 / 0.25 | n/a |
+| sc5_timestamp | 0.77 | 0.72 | +0.05 | 1.10 | 1.02 | +0.08 | 0.40 | 0.52 | 0.69 / 1.00 | 0.14 / 0.19 | 0.26 / 0.37 |
+| neorv32_single_min | 0.70 | 0.70 | -0.00 | 0.78 | 0.80 | -0.02 | 2.36 | 3.37 | 0.71 / 0.79 | 0.42 / 0.44 | 1.29 / 1.44 |
+| poc_cache_cpu | 0.62 | 0.65 | -0.03 | 0.72 | 0.74 | -0.03 | 0.60 | 0.96 | 0.60 / 0.72 | 0.61 / 0.75 | 0.52 / 0.60 |
+| uvvm_axistream_vvc | 0.59 | 0.52 | +0.07 | 0.72 | 0.61 | +0.11 | 2.16 | 3.65 | 0.60 / 0.69 | 0.41 / 0.49 | 0.75 / 0.88 |
+| poc_stat_histogram | 0.58 | 1.04 | -0.46 | 1.69 | 2.00 | -0.31 | 0.30 | 0.52 | 1.00 / 1.29 | 0.65 / 0.85 | 0.47 / 0.63 |
+| neorv32_single_cache | 0.53 | 0.55 | -0.02 | 0.62 | 0.65 | -0.03 | 2.05 | 3.88 | 0.56 / 0.63 | 0.34 / 0.39 | 1.41 / 1.64 |
+| uvvm_sb_slv | 0.46 | 0.44 | +0.01 | 0.68 | 0.62 | +0.06 | 0.63 | 1.38 | 0.40 / 0.63 | 0.54 / 0.87 | 0.26 / 0.40 |
+| uvvm_util_rand | 0.45 | 0.44 | +0.01 | 0.69 | 0.70 | -0.01 | 0.73 | 1.61 | 0.42 / 0.69 | 0.58 / 0.87 | 0.28 / 0.49 |
+| neorv32_dual_full | 0.41 | 0.44 | -0.03 | 0.52 | 0.53 | -0.02 | 1.75 | 4.24 | 0.44 / 0.49 | 0.33 / 0.37 | 1.32 / 1.43 |
+| osvvm_axi4_random | 0.24 | 0.25 | -0.01 | 0.45 | 0.46 | -0.01 | 0.68 | 2.81 | 0.25 / 0.45 | 0.25 / 0.45 | 0.11 / 0.22 |
+| poc_fifo_ic_assembly | 0.24 | 0.26 | -0.02 | 0.50 | 0.50 | +0.00 | 0.10 | 0.42 | 0.24 / 0.51 | 0.25 / 0.52 | 0.10 / 0.21 |
+| olo_fix_cordic_rot | 0.16 | 0.16 | +0.00 | 0.49 | 0.50 | -0.01 | 0.21 | 1.35 | 0.16 / 0.51 | 0.18 / 0.57 | 0.09 / 0.26 |
+| osvvm_axis_random | 0.15 | 0.15 | -0.01 | 0.37 | 0.39 | -0.02 | 0.34 | 2.34 | 0.15 / 0.38 | 0.14 / 0.34 | 0.07 / 0.17 |
+| hdlm_axis_bfm | 0.13 | 0.14 | -0.00 | 0.41 | 0.42 | -0.02 | 0.12 | 0.89 | 0.13 / 0.42 | 0.17 / 0.53 | n/a |
+| fletcher_bufferwriter_prim32 | 0.12 | 0.12 | +0.00 | 0.25 | 0.24 | +0.01 | 0.08 | 0.67 | 0.11 / 0.24 | 0.27 / 0.62 | 0.07 / 0.17 |
+| hdlm_axi_fifo | 0.12 | 0.12 | +0.00 | 0.42 | 0.42 | -0.00 | 0.12 | 1.02 | 0.11 / 0.43 | 0.14 / 0.51 | n/a |
+| hdlm_axi_crossbar | 0.11 | 0.12 | -0.01 | 0.41 | 0.43 | -0.02 | 0.12 | 1.06 | 0.11 / 0.43 | 0.13 / 0.51 | n/a |
+| hdlm_ring_buffer | 0.11 | 0.12 | -0.01 | 0.38 | 0.40 | -0.02 | 0.10 | 0.92 | 0.10 / 0.41 | 0.14 / 0.52 | n/a |
+| uvvm_func_cov | 0.10 | 0.11 | -0.01 | 0.41 | 0.40 | +0.01 | 0.13 | 1.25 | 0.11 / 0.39 | 0.21 / 0.76 | 0.08 / 0.33 |
+| hdlm_sine_generator | 0.10 | 0.12 | -0.01 | 0.37 | 0.38 | -0.00 | 0.10 | 0.98 | 0.09 / 0.38 | 0.15 / 0.53 | n/a |
+| hdlm_unsigned_divider | 0.10 | 0.12 | -0.02 | 0.40 | 0.41 | -0.01 | 0.09 | 0.90 | 0.09 / 0.40 | 0.13 / 0.53 | n/a |
+| vunit_axi_dma | 0.10 | 0.11 | -0.01 | 0.45 | 0.44 | +0.01 | 0.09 | 0.90 | 0.10 / 0.44 | 0.10 / 0.41 | 0.05 / 0.19 |
+| hdlm_register_file | 0.10 | 0.11 | -0.01 | 0.39 | 0.42 | -0.03 | 0.10 | 1.01 | 0.10 / 0.41 | 0.13 / 0.49 | n/a |
+| hdlm_fifo_sync | 0.10 | 0.10 | -0.00 | 0.40 | 0.43 | -0.03 | 0.09 | 0.92 | 0.09 / 0.43 | 0.14 / 0.52 | n/a |
+| vai_weight_buffer | 0.09 | 0.09 | -0.00 | 0.41 | 0.46 | -0.04 | 0.11 | 1.24 | 0.10 / 0.42 | 0.12 / 0.55 | n/a |
+| en_cl_fix_pkg | 0.09 | 0.10 | -0.02 | 0.47 | 0.47 | +0.01 | 0.05 | 0.58 | 0.10 / 0.48 | 0.10 / 0.49 | 0.04 / 0.20 |
+| poc_uart_rx | 0.08 | 0.08 | +0.00 | 0.42 | 0.42 | +0.00 | 0.03 | 0.36 | 0.08 / 0.43 | 0.14 / 0.61 | 0.03 / 0.16 |
+| vunit_logging | 0.08 | 0.09 | -0.01 | 0.39 | 0.39 | +0.00 | 0.07 | 0.85 | 0.08 / 0.39 | 0.10 / 0.45 | 0.04 / 0.16 |
+| vai_pe_array | 0.08 | 0.09 | -0.01 | 0.33 | 0.38 | -0.05 | 0.14 | 1.75 | 0.10 / 0.35 | 0.13 / 0.53 | n/a |
+| olo_base_cam | 0.07 | 0.07 | -0.00 | 0.42 | 0.43 | -0.01 | 0.09 | 1.28 | 0.07 / 0.43 | 0.08 / 0.53 | 0.04 / 0.22 |
+| olo_fix_madd | 0.07 | 0.07 | -0.00 | 0.44 | 0.44 | -0.00 | 0.08 | 1.15 | 0.06 / 0.45 | 0.09 / 0.53 | 0.04 / 0.21 |
+| olo_intf_i2c_master | 0.07 | 0.07 | -0.00 | 0.51 | 0.52 | -0.01 | 0.07 | 1.01 | 0.07 / 0.51 | 0.08 / 0.54 | 0.04 / 0.21 |
+| poc_strings | 0.07 | 0.07 | +0.00 | 0.48 | 0.48 | +0.00 | 0.02 | 0.29 | 0.07 / 0.50 | 0.12 / 0.71 | 0.03 / 0.16 |
+| olo_axi_master_full | 0.07 | 0.08 | -0.01 | 0.42 | 0.44 | -0.01 | 0.09 | 1.33 | 0.07 / 0.44 | 0.10 / 0.56 | 0.04 / 0.22 |
+| uvvm_methods_log | 0.01 | 0.02 | -0.01 | 0.45 | 0.45 | +0.00 | 0.00 | 0.51 | 0.02 / 0.46 | 0.02 / 0.41 | 0.01 / 0.19 |
+
+Not verified: the Cranelift passes were not on a quiet host (see above); sim2 and sim4 have one pass each with the Cranelift build; the cause of the sim2 `grlib_leon3mp` and the sim4 `vai_*` analysis failures was not
+looked at; the output of the references was not compared with yavs's beyond the exit status.
 
 ## Real-world performance suite: yavs against sim1, head-to-head 7, 2026-10-27 (`tools/realbench`)
 

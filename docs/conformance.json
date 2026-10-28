@@ -723,7 +723,7 @@
   }
  },
  "generated": {
-  "commit": "ac2c94ffc5",
+  "commit": "c08e7dd72c",
   "commit_date": "2026-10-28",
   "version": "0.8.0"
  },
@@ -3055,6 +3055,20 @@
     "decided": "agent, 2026-10-24",
     "kind": "LRM clear",
     "lrm": "9.2.2",
+    "yavs": "OK"
+   },
+   {
+    "case": "index-constraint-element-bound",
+    "decided": "agent, 2026-10-28 (#637)",
+    "kind": "LRM clear",
+    "lrm": "5.3.2.2",
+    "yavs": "FATAL"
+   },
+   {
+    "case": "subtype-range-bound-variable",
+    "decided": "agent, 2026-10-28 (#612, L146)",
+    "kind": "LRM clear",
+    "lrm": "14.4.2.1",
     "yavs": "OK"
    }
   ],

@@ -1,9 +1,9 @@
 # yavs conformance report
 
-Generated: yavs 0.8.0 at commit `ac2c94ffc5` (2026-10-28) by `tools/conformance/run.py`; do not edit by hand.
+Generated: yavs 0.8.0 at commit `c08e7dd72c` (2026-10-28) by `tools/conformance/run.py`; do not edit by hand.
 
 yavs is checked by running the test suites of VHDL libraries, a VHDL language test suite and real designs on it, and by comparing its output
-with two established open-source VHDL simulators, called sim1 and sim2 here. Each suite judges its own tests. Over the suites below, 8026 of 8221
+with two established open-source VHDL simulators, called sim1 and sim2 here. Each suite judges its own tests. Over the suites below, 7948 of 8143
 tests pass; every failure is tracked as an issue. This is evidence, not a proof of correctness.
 
 | Project or suite | What it is | Passed / total |
@@ -17,7 +17,7 @@ tests pass; every failure is tracked as an issue. This is evidence, not a proof 
 | OSVVM, VHDL-2008 | verification library: its own regression | 314/314 |
 | OSVVM, VHDL-2019 | verification library: its own regression | 314/314 |
 | VUnit | test framework: its own VHDL test suites | 1357/1357 |
-| cocotb | Python test framework: its own tests, over VHPI | 78/78 |
+| cocotb | Python test framework: its own regression over VHPI, 702 VHDL tests pass | 78/78 jobs |
 | Open Logic | FPGA standard library: its own testbenches | not run yet |
 | Real designs | neorv32 (three configurations) and GRLIB LEON3 run to completion | 4/4 designs |
 | Waveforms of real designs | signals of 17 designs equal to sim1's at every time step | 44824/44889 signals |
@@ -85,8 +85,8 @@ Not passing: sim1: 70; sim2: 46 (the classes of each are in `docs/conformance.js
 ### Known simulator differences
 
 `docs/design/simulator-discrepancies.md` lists every case where the references disagree with each other, with the language reference or with yavs:
-209 catalogued behaviours, each with a reproducer under `tests/discrepancies/<case>/`. CI runs every reproducer on yavs and fails when yavs's output
-differs from the recorded one (matches). Kinds: LRM clear 126, LRM ambiguity 77, reference bug 5, library availability 1.
+211 catalogued behaviours, each with a reproducer under `tests/discrepancies/<case>/`. CI runs every reproducer on yavs and fails when yavs's output
+differs from the recorded one (matches). Kinds: LRM clear 128, LRM ambiguity 77, reference bug 5, library availability 1.
 
 Policy (`docs/plan.md`): where the language reference is clear, yavs follows it even against all references; where it is unclear yavs is permissive
 and follows the majority of the references that run the construct. The verdicts of each reference are in the catalogue; the table gives the clause, the kind,
@@ -305,6 +305,8 @@ and yavs's verdict.
 | [`subprogram-signature-instance-name`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/subprogram-signature-instance-name) | 16.2.5 | LRM ambiguity | OK: `show[string, std_logic, natural]` ( |
 | [`psl-edge-unknown-value`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/psl-edge-unknown-value) | PSL (IEEE 1850) 5.2.3.4, 5.2.3.5 | LRM ambiguity | OK |
 | [`short-circuit-constant-false-effect`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/short-circuit-constant-false-effect) | 9.2.2 | LRM clear | OK |
+| [`index-constraint-element-bound`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/index-constraint-element-bound) | 5.3.2.2 | LRM clear | FATAL |
+| [`subtype-range-bound-variable`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/subtype-range-bound-variable) | 14.4.2.1 | LRM clear | OK |
 
 </details>
 
@@ -520,7 +522,7 @@ The `check` job is `cargo fmt`, `clippy -D warnings` and the whole test suite of
 | OSVVM, VHDL-2008 | CI | this report (see Generated) | `tools/suites/pro.py` |
 | OSVVM, VHDL-2019 | CI | this report (see Generated) | `tools/suites/pro.py` |
 | VUnit | local | 2026-10-20, `f2ab69be` | VUnit's own `run.py` scripts |
-| cocotb | local | 2026-10-28, `ef30c313de` | cocotb's own test scripts |
+| cocotb | local | 2026-10-28, `ef30c313de` | `tools/cocotb/run.py` |
 | Open Logic | not run |  |  |
 | Real designs | CI | this report (see Generated) | `tools/realbench/run.py` |
 | Waveforms of real designs | local | 2026-10-27, `05aa8453fb` | `tools/waveq` |

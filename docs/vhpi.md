@@ -1,15 +1,10 @@
-# VHPI support
+# VHPI
 
-VHPI is the standard C interface (IEEE 1076-2019) that lets a plugin or a test framework look
-into a running VHDL simulation, read and write signals, and react to simulation events. yavs
-implements it: plugins written in C, C++ or Rust can inspect the design hierarchy, read and
-drive values, register callbacks and supply foreign models. The implementation is partial: the
-table below and "Other gaps" say what is missing. The own simulator regression of a Python
-testbench framework that talks VHPI passes in full (78 of 78 jobs, 702 VHDL tests, see "Python
-testbench frameworks"). Full support for such frameworks is scheduled in epic
-[#143](https://github.com/ru551n/yavs/issues/143), and the scope is full VHPI per the standard,
-not only what one framework needs. The call-by-call detail is in `crates/yavs-vhpi/AGENTS.md` in
-the source tree.
+VHPI is the standard C interface (IEEE 1076-2019) that lets a plugin look into a running VHDL
+simulation, read and write signals, and react to simulation events. yavs implements it: plugins
+written in C, C++ or Rust can inspect the design hierarchy, read and drive values, register
+callbacks and supply foreign models. Support is partial: the tables below say what is missing.
+For calling a plain C function from VHDL without a plugin, see "Calling C from VHDL" below.
 
 ## At a glance
 
@@ -27,7 +22,8 @@ the source tree.
 ## A first plugin
 
 The plugin below prints the value of the signal `q` of the top level when the simulation ends.
-Build it with the header from the source tree (`crates/yavs-vhpi/include/vhpi_user.h`; the release
+Build it with the header from the source tree,
+[`vhpi_user.h`](https://github.com/ru551n/yavs/blob/main/crates/yavs-vhpi/include/vhpi_user.h) (the release
 archives do not contain it). On Linux the `vhpi_*` functions stay unresolved at link time and bind
 to the `yavs` executable when the plugin loads:
 
@@ -63,33 +59,6 @@ yavs run --work=lib:out/lib --vhpi=./hello_vhpi.so tb
 For a top level `tb` with an unsigned signal `q` the run ends with a line such as `:TB q = 0110`
 (the full name of the root instance is upper case; the plugin reads names case-insensitively).
 Without `--vhpi` the plugin does nothing; it is not part of the design.
-
-## Python testbench frameworks
-
-A Python testbench framework that talks VHPI starts by loading a bootstrap library through the
-`vhpi_startup_routines` array, so `--vhpi=LIB` needs no entry name. Its VHPI layer uses the
-handle, lookup, `vhpi_get*`, `vhpi_get_value`, `vhpi_put_value`, callback, `vhpi_check_error` and
-`vhpi_control` calls; yavs exports these and the rest of the standard set, and keeps the original
-spelling of names (`vhpiCaseNameP`), so a framework needs no workaround for upper-case names.
-
-The framework's own simulator regression runs on yavs with a runner in the `tools` directory of the
-source tree (VHDL over VHPI, the way the framework's CI runs it for a simulator; `tools/AGENTS.md`
-names it). It needs `uv`, network access for the pinned framework release and its test
-dependencies, and a C++ compiler; everything is installed into a virtual environment outside the
-repository.
-
-Build yavs with `cargo build --release -p yavs` and run it as `tools/AGENTS.md` describes (the runner takes
-the yavs executable and optional `yavs run` arguments such as `--threads=4`).
-
-Result (2026-10-28, issue [#122](https://github.com/ru551n/yavs/issues/122)): **78 of 78 jobs pass**.
-43 jobs run VHDL tests (702 tests pass; the 10 failing tests are the ones that two of the
-framework's own tests expect to fail); the other 35 are Verilog-only or
-error-path cases that skip themselves. The result is the same at `--threads 1` and `4`, and the
-`conformance` CI workflow runs it on every push to `main`.
-
-An earlier record of 66 of 68 test directories (2026-10-19) had two failures, both in the local
-setup of that time and not in yavs: the time resolution and the plusargs were not passed on, and
-the framework's Python runner had no yavs entry.
 
 ## Coverage of the standard
 
@@ -260,4 +229,39 @@ drivers made with `vhpi_create`; an unregistered one is error `E0905`), `vhpiLib
   signals (deliberately refused).
 - The element subtype of a resolved array subtype reports `STD_ULOGIC` for `std_logic_vector`.
 
-The rules for loading plugins and the command line are in the "VHPI plugins" section of the [usage](usage.rst) page.
+## Plusargs
+
+Arguments of the form `+NAME` or `+NAME=VALUE` after the top level are passed to plugins, in order:
+`yavs run --work=lib:out/lib --vhpi=./plugin.so tb +seed=7 +verbose`. A plugin reads them with
+`vhpi_get(vhpiArgcP, tool)` and the `vhpiArgvs` iterator; the first argument is the program name
+`yavs`. VHDL code cannot see them.
+
+## Calling C from VHDL
+
+A subprogram whose `foreign` attribute is `"VHPIDIRECT symbol"` calls the C function `symbol`.
+`--load=LIB` loads a shared library (repeatable); symbols are looked up in the libraries in order,
+then in the `yavs` executable. A symbol that is defined nowhere is warning `W0108` before the
+simulation starts and error `E0107` when the subprogram is called.
+
+```vhdl
+function add1 (x : integer) return integer;
+attribute foreign of add1 : function is "VHPIDIRECT add1";
+function add1 (x : integer) return integer is begin return 0; end; -- placeholder, never runs
+```
+
+```c
+int32_t add1(int32_t x) { return x + 1; }
+```
+
+```
+yavs run --work=lib:out/lib --load=./libadd.so tb
+```
+
+Types map to C as follows: an integer subtype to the smallest of `int8_t` to `int64_t` that holds
+its range (`integer` is `int32_t`), an enumeration to the smallest unsigned type that holds its
+literals (`boolean`, `bit`, `character` and `std_logic` are `uint8_t`), `real` to `double`, a
+physical type to `int64_t`. Scalar `out` and `inout` parameters are passed as pointers. An array is
+a pointer to its elements from left to right (a `std_logic` element is one byte, `'0'` is 2 and
+`'1'` is 3), and an unconstrained array parameter is followed by one `int64_t` length per
+dimension. A record of scalars is a pointer to a C struct, an access value a pointer to the
+designated object.

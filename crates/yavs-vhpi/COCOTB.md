@@ -130,3 +130,16 @@ M5 plan:
 3. On Windows, run the same plugins built with the `dynamic` feature
    (`vhpi-shim`), which exercises yavs.exe's export table directly.
 4. Track pass counts per plugin in `docs/STATUS.md` next to the framework's regression.
+
+## Result of cocotb's own regression
+
+Moved here from `docs/vhpi.md` (cocotb is not named in user documents, user 2026-10-28). Runner:
+`tools/cocotb/run.py` (needs `uv`, network access for the pinned cocotb release and its test
+dependencies, and a C++ compiler; installs into a virtual environment outside the repository).
+
+Result (2026-10-28, #122): **78 of 78 jobs pass**. 43 jobs run VHDL tests (702 tests pass; the 10
+failing tests are the ones that two of cocotb's own tests expect to fail); the other 35 are
+Verilog-only or error-path cases that skip themselves. The result is the same at `--threads 1` and
+`4`, and the `conformance` CI workflow runs it on every push to `main`. Full support is scheduled in
+epic #143. An earlier record of 66 of 68 test directories (2026-10-19) had two failures, both in the
+local setup of that time and not in yavs.

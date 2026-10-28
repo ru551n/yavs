@@ -4,12 +4,123 @@ Command line
 yavs works like the other command line simulators: analyze the files into libraries, then
 elaborate and run a top level. ``yavs --help`` and ``yavs <command> --help`` list every option.
 
+.. _quickstart:
+
+Your first simulation
+---------------------
+
+You need ``yavs`` on ``PATH`` (:doc:`install`) and two small files, ``hello_tb.vhd`` and
+``hello_error.vhd``, which are in ``docs/examples`` of the source tree. The testbench counts clock
+edges, reports the count after 32 ns, checks it with an ``assert`` against the generic ``EXPECTED``
+and ends the run with ``finish``:
+
+.. literalinclude:: examples/hello_tb.vhd
+   :language: vhdl
+   :caption: hello_tb.vhd
+
+Analyze the file into a library, then run the top level. A library is a directory:
+``--work=work:build/work`` is the library named ``work`` kept in ``build/work``, which ``analyze``
+creates.
+
+.. code-block:: bash
+
+    yavs analyze --work=work:build/work hello_tb.vhd
+    yavs run --work=work:build/work hello_tb
+
+``analyze`` prints nothing when it succeeds. ``run`` prints the reports of the simulation on standard
+output:
+
+.. code-block:: text
+
+    ** Note: 32000000fs+0: hello, count is 3
+        Process :hello_tb:check
+    ** Note: 32000000fs+0: done
+        Process :hello_tb:check
+    ** Note: 32000000fs+0: FINISH called with status 0
+
+Each report shows its severity, the simulation time in femtoseconds (``32000000fs`` is 32 ns), the
+delta cycle after the plus sign, and the text; the next line is the path of the process that
+reported it. The exit status is 0 (``echo $?`` in a shell, ``$LASTEXITCODE`` in PowerShell).
+The top level is the entity name, or ``hello_tb.sim`` to pick the architecture; do not put the
+library name in front of it.
+
+A failing check
+~~~~~~~~~~~~~~~
+
+Override the generic so that the assertion fails:
+
+.. code-block:: bash
+
+    yavs run --work=work:build/work hello_tb -gEXPECTED=5
+
+.. code-block:: text
+
+    ** Note: 32000000fs+0: hello, count is 3
+        Process :hello_tb:check
+    ** Failure: 32000000fs+0: expected 5, got 3
+        Process :hello_tb:check
+
+An assertion of severity ``failure`` stops the simulation and the exit status is 1: a test runner or
+a script sees the test as failed. By default an ``error`` report does not stop the simulation, but the
+exit status is still 1 at the end; ``--exit-severity=LEVEL`` changes the level at which a report stops
+it. A string generic is taken as written: ``"-gGREETING=hi there: C:\x"`` needs no VHDL quotes.
+
+An error in the VHDL
+~~~~~~~~~~~~~~~~~~~~
+
+``hello_error.vhd`` uses a name that does not exist:
+
+.. literalinclude:: examples/hello_error.vhd
+   :language: vhdl
+   :caption: hello_error.vhd
+
+.. code-block:: bash
+
+    yavs analyze --work=work:build/work hello_error.vhd
+
+Diagnostics go to standard error, and the exit status is 1:
+
+.. code-block:: text
+
+    error[E1100]: `cnt` is not declared
+     --> hello_error.vhd:7:12
+      |
+    7 |   count <= cnt + 1;
+      |            ^^^ not found in this scope
+
+    error: aborting due to 1 previous error
+
+``E1100`` is a stable code: ``yavs --explain E1100`` prints what it means. yavs stops at the first
+failing step and never runs a design after an error. With several files, ``analyze`` stops at the
+first failing one; the files before it stay analyzed.
+
+Things to know early
+~~~~~~~~~~~~~~~~~~~~
+
+* Analyze the files in dependency order, packages before the units that use them (several files
+  in one call, or one call per file). After you edit a file, analyze it again before ``run``:
+  ``run`` stops with ``L0034`` for a file that changed and ``L0033`` for one that moved.
+* ``run`` on a library that nothing was analyzed into is ``L0001``, library not found: check that the
+  ``--work`` path is the one ``analyze`` used.
+* A testbench with a free-running clock and no ``finish`` or ``stop`` never ends by itself. Add
+  ``--stop-time=1us`` (exit status 0 when it is reached) or press Ctrl-C (exit status 130).
+  A process with no ``wait`` statement and no sensitivity list never lets time advance:
+  yavs warns about it with ``W3102`` before time 0, and ``--hang-report`` explains a run that does
+  not finish.
+* ``--wave=hello.fst`` records the waveforms of the whole design in an FST file for a waveform viewer
+  (`Waveforms`_). ``--threads=4`` evaluates processes on four threads with identical output.
+* ``yavs --help`` and ``yavs run --help`` list every option. The exit statuses and the options a
+  test runner uses are in :doc:`recipes`.
+
 Libraries
 ---------
 
 A library is a directory, given as ``NAME:PATH``. ``--work`` is the library a command works in,
-``--map`` adds another one (repeatable). A missing or empty directory is an empty library;
-``analyze`` creates it. ``std`` and ``ieee`` are always available and cannot be mapped.
+``--map`` adds another one (repeatable). A missing or empty directory is an empty library when it is
+mapped with ``--map``; ``analyze`` creates its ``--work`` directory (and parents). The ``--work``
+library of ``run`` and ``elab`` must have been analyzed into: a directory without an index is error
+``L0001``. The library records the absolute path and content hash of each source file, and ``run``
+re-reads the sources: a moved file is ``L0033``, an edited one ``L0034`` (analyze it again). ``std`` and ``ieee`` are always available and cannot be mapped.
 
 A library records which file holds which unit, and ``elab`` and ``run`` analyze the units the top
 level needs. They keep the result in a cache next to the library, see `Compilation cache`_, so
@@ -24,8 +135,14 @@ Analyze
 
 The files are analyzed in order; the first failing file stops the batch. Pass the consecutive files of one library and standard in one call: the call shares its parsed dependencies and the library index,
 which makes the cold analysis of a whole library 26 to 50 percent cheaper in user instructions than one call per file, and a failing call is repeated file by file when each file's own result is needed. ``--std`` is the
-standard of these files (``2008`` by default). ``-D NAME=VALUE`` defines a conditional analysis
-identifier. An argument ``@FILE`` is replaced by the arguments in FILE, one per line.
+standard of these files (``93``, ``2008`` or ``2019``; ``2008`` by default; ``1993`` is accepted as
+``93``). ``-D NAME=VALUE`` defines a conditional analysis identifier for this ``analyze`` call only.
+``elab`` and ``run`` read the sources again without it, so a file whose conditional analysis needs
+``-D`` analyzes but then fails to run with ``E0007`` (known gap; ``TOOL_NAME``, ``TOOL_VENDOR`` and
+``VHDL_VERSION`` are always defined). ``--relaxed``, ``--psl``, ``-W...`` (see Diagnostics),
+``--encoding=auto|latin1|utf8`` and ``--no-cache`` are accepted by ``analyze``; ``--relaxed``,
+``--psl``, ``-W`` and ``--encoding`` also by ``elab`` and ``run``. ``yavs parse FILE...`` only
+checks that files parse. An argument ``@FILE`` is replaced by the arguments in FILE, one per line.
 
 Elaborate and run
 -----------------
@@ -37,6 +154,14 @@ Elaborate and run
 The top level is ``ENTITY``, ``ENTITY.ARCH`` or a configuration. The design is analyzed against
 one revision of ``std`` and ``ieee``, the newest standard of its files, unless ``--std`` says
 otherwise.
+
+* ``--stop-time=TIME`` (``10ms``, ``10 ns``; a bare number is ``E0105``) ends the run at that time
+  with exit status 0.
+* Exit status: 0 success (event starvation, ``stop``/``finish`` with 0, ``--stop-time``); 1 a failed
+  assertion at or above the exit severity or a runtime error; the status N of ``stop(N)``/``finish(N)``
+  when 1 to 125 (so ``finish(2)`` exits 2); 2 usage, library or elaboration error (also ``-Werror`` on
+  ``run``); 3 internal error; 130 Ctrl-C or SIGTERM (1 with ``--wave``); 141 write error on standard
+  output. ``analyze`` exits 0, 1 (a file has errors), 2, 3.
 
 * ``--exit-severity=failure`` (the default): a report of that severity or higher stops the
   simulation with exit status 1. An ``error`` report below it is printed, the run continues,
@@ -52,14 +177,14 @@ otherwise.
   file and line), instances, subprograms and source lines to standard error, for example
   ``profile:   93.2     2280  :top:dut:hot (dut.vhd:15)``. Give a file name to also get all rows
   as JSON. Press Ctrl-C to stop a long run: the profile of the time so far is printed (and
-  written) and the exit status is 130. The output of the design is unchanged and the run is slowed by by about 2 to 3 percent.
+  written) and the exit status is 130. The output of the design is unchanged and the run is slowed by about 2 to 3 percent.
   Source lines are known for interpreted code only (``--tier=interp``, or code that
   ``--tier=auto`` has not compiled yet); a small subprogram is inlined into its caller and
   counts as the caller in the subprogram table. With ``--threads N`` a sample counts every
   thread that runs a process, so shares can add up to more than 100 percent. ``--profile``
   cannot be combined with ``--dap`` (``E0125``).
-* ``--threads N`` evaluates processes on N threads (default 1). The output is identical for any
-  N. ``--shuffle[=SEED]`` randomizes the process order to find testbenches that depend on it.
+* ``--threads N`` evaluates processes on N threads (default 1; ``0`` is treated as 1). The output
+  is identical for any N. ``--shuffle[=SEED]`` randomizes the process order to find testbenches that depend on it.
 * ``--max-deltas N`` sets how many delta cycles may run at one simulated time (default 10000)
   before the run fails with ``E3002``. The error names the processes and signals of the loop and
   how they wake each other; raise the limit only for a design that needs more deltas.
@@ -84,17 +209,22 @@ otherwise.
 * ``--tier=auto`` compiles only the functions that become hot, on a background thread while the
   simulation runs in the interpreter; ``--tier=llvm`` compiles every function with LLVM before
   time 0 and runs that code; ``--tier=interp`` runs the interpreter alone. The output is the same
-  with every tier. ``auto`` is the default in a yavs built with the ``llvm`` feature (LLVM 21),
-  except under ``--dap``, which runs in the interpreter unless you ask for a tier;
-  a yavs built with neither ``llvm`` nor ``clift`` always defaults to ``--tier=interp``, and
-  ``--tier=auto`` or ``--tier=llvm`` on it is an error (E0120); ``yavs --version`` says which kind
-  you have. Functions of
-  more than ``--tier-max-size`` IR instructions (default 50000) stay interpreted. ``--verbose``
-  prints what the LLVM tier compiles and what it leaves to the interpreter.
-  ``--tier=clift`` and ``--tier=clift-auto`` do the same with Cranelift instead of LLVM, in a yavs built
-  with the ``clift`` feature; that needs no LLVM install. Without ``llvm``, ``--tier=auto`` is
-  ``--tier=clift-auto`` and the default (the release archives, see :doc:`install`).
-  ``--tier=auto3`` combines them (Cranelift for warm functions, LLVM O2 for those that stay hot) in a yavs built with both features.
+  with every tier. Which tiers exist and which is the default depends on how your ``yavs`` was
+  built, see "Build variants and tiers" in :doc:`install`: ``--tier=auto`` is the default in a
+  yavs with a compiled tier (LLVM 21 or Cranelift) and ``--tier=interp`` in one with neither,
+  where ``--tier=auto`` and ``--tier=llvm`` are error ``E0120``; ``yavs --version`` says which kind
+  you have. The release archives have the Cranelift tier. A source build with the ``llvm`` feature
+  finds the LLVM library in ``lib/`` next to the executable, then through the dynamic loader; if it is
+  missing, ``--tier=llvm`` stops with an error naming the places looked in, and ``--tier=auto`` warns
+  once and keeps the hot code interpreted. Functions of more than
+  ``--tier-max-size`` IR instructions (default 50000) stay interpreted. ``--verbose`` prints what
+  the compiled tier compiles and what it leaves to the interpreter.
+  ``--tier=clift`` and ``--tier=clift-auto`` do the same with Cranelift instead of LLVM, in a yavs
+  built with the ``clift`` feature; that needs no LLVM install. Without LLVM, ``--tier=auto`` is
+  ``--tier=clift-auto`` (the release archives). ``--tier=auto3`` combines them
+  (Cranelift for warm functions, LLVM O2 for those that stay hot) in a yavs built with both
+  features. Known limitation: a debugger session (``--dap``) always runs the interpreter, so
+  ``--tier`` has no effect there.
 * ``--resolution=ps`` sets the time resolution limit (``fs``, ``ps``, ``ns``, ``us``, ``ms`` or
   ``sec``; default ``fs``). It is what ``std.env.resolution_limit`` returns and the unit of TIME
   values in ``std.reflection`` mirrors. A TIME literal with a unit below the limit anywhere in
@@ -105,6 +235,7 @@ otherwise.
   signal and no copy each delta cycle, with the same output, waveforms and names.
   ``--no-collapse-ports`` keeps every port its own signal. Ports that are forced, and all ports
   under ``--dap`` or ``--vhpi``, always are.
+* ``--ieee-warnings=off`` is accepted but has no effect yet.
 * ``--wave out.fst`` records waveforms, see `Waveforms`_.
 * ``--cov[=FILE]`` counts code and toggle coverage, see `Code coverage`_.
 
@@ -138,8 +269,8 @@ are kept once next to the library (about 10 MB for a large verification library;
 directory keeps at most 512 MiB of entries), made when a few different test cases (four) have asked for them, so the
 first run of a new test case does not make them again.
 
-With ``--tier=llvm`` or ``--tier=auto`` the machine code of the compiled tier is kept there as
-well (``yavs-cache/obj/``). The next run of the design, and the other test cases of a testbench,
+With a compiled tier (``--tier=auto``, ``llvm``, ``clift`` or ``clift-auto``) the machine code is
+kept there as well (``yavs-cache/obj/``). The next run of the design, and the other test cases of a testbench,
 link that code instead of compiling it again; ``--tier=auto`` uses the stored code of a hot
 computation loop as soon as the loop is hot, without waiting until compiling it would pay off. The
 code is the same that compiling makes, so the results are too.
@@ -553,8 +684,11 @@ Diagnostics
 
 Errors and warnings have a stable code, such as ``E1100``. ``yavs --explain E1100`` prints its
 explanation. ``-Werror`` turns warnings into errors, ``-Werror=CODE``, ``-Wno-CODE`` and
-``-WCODE`` change one code. ``--message-format=json`` prints one JSON object per diagnostic,
-``--color=never`` turns colour off (``NO_COLOR`` is honoured).
+``-WCODE`` change one code. ``--message-format=human|short|json``: ``short`` is one line per diagnostic, ``json`` one JSON
+object per line (when ``analyze`` stops at a failing file of several, plain text lines naming the
+files analyzed before it follow the objects; known gap). ``--color=auto|always|never``
+(``NO_COLOR`` is honoured on a terminal under ``auto``). ``yavs --explain CODE`` prints the text
+on standard output, exit 2 for an unknown code.
 
 VHPI plugins
 ------------
@@ -688,9 +822,14 @@ unchanged:
     yavs run --gui --work=lib:out/lib tb --stop-time=1ms
 
 ``yavs-gui -- <run arguments>`` does the same, and ``yavs-gui --attach 127.0.0.1:4711`` connects to
-a ``yavs run --dap=4711`` started by hand. The window has Run, Pause and Stop, a console with the
-run's reports, and docked panels for the hierarchy, source, waves, call stack and variables, which
-are being filled in step by step; closing the window ends the simulation.
+a ``yavs run --dap=4711`` started by hand. The window is early. It has a toolbar (Run, Pause, Stop,
+step over, in and out, delta, time step, and run for a time), a console with the run's reports and
+the simulator's standard error, source tabs with a gutter for line breakpoints (with VHDL conditions
+and hit counts), a call stack, locals and watch expressions at every stop, and a list of the
+breakpoints. The hierarchy, objects, processes and waves panels are not implemented yet, and neither
+are signal breakpoints and force, deposit and release; the VS Code extension and other DAP clients
+offer those (below). The design runs on one thread, as under ``--dap``, and closing the window ends
+the simulation. ``gui/README.md`` in the source tree has the current list.
 
 VS Code
 ~~~~~~~
@@ -737,11 +876,11 @@ shows locals, signals and generics, hovering a signal shows its value, and repor
 Debug Console. With ``"port": 4711`` instead, the extension attaches to a ``yavs run
 --dap=4711`` started by hand (see the recipe below).
 
-Recipe: debug one VUnit test from VS Code
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Recipe: debug one test of a test runner from VS Code
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 ``yavs run --dap=PORT`` listens first and holds the simulation until a client attaches, so a test
-runner can start it and VS Code can join afterwards. It prints ``yavs: DAP listening on
+runner that starts ``yavs run`` for each test can start it and VS Code can join afterwards. It prints ``yavs: DAP listening on
 127.0.0.1:PORT`` and then ``yavs: waiting for a debugger on port PORT`` on stderr. The runner's
 own output and exit status work as in a normal run: when you disconnect or the run ends, the test
 is reported as usual.
@@ -754,22 +893,16 @@ is reported as usual.
        { "type": "yavs", "request": "launch", "name": "Attach to yavs", "port": 4711 }
 
 2. Open the testbench and set breakpoints.
-3. In a terminal, start the one test with the test runner's debug flag. It runs the test with ``--dap=4711`` (or the port in ``YAVS_DAP_PORT``) and prints the
-   waiting line:
-
-   .. code-block:: bash
-
-       python run.py lib.tb_fifo.test_full --debug
-
-   Exactly one test must be selected and ``-p`` must be 1, since only one run can own the port;
-   ``--debug`` cannot be combined with ``--gui``.
+3. In a terminal, start the one test with whatever makes your test runner pass ``--dap=4711`` to
+   ``yavs run`` (the runner's own debug option, or an extra simulator argument). It prints the waiting line. Run exactly one test at a time and no parallel
+   jobs, since only one run can own the port.
 4. Pick "Attach to yavs" in the Run and Debug view and press F5. The breakpoints are sent
    before the run starts, the run continues and stops on the first one. Continue, step, inspect
    as in any session.
-5. Disconnect, or let the test finish: VUnit then prints the result of the test.
+5. Disconnect, or let the test finish: the runner then reports the result of the test.
 
-The run also writes its waveform to ``wave.fst`` in the test's output directory (the path is in
-the ``yavs run`` line VUnit prints). Under ``--dap`` yavs flushes the file at every stop, so at a
+A run that records a waveform (the runner passes ``--wave``, or add ``--wave=out.fst`` to the
+arguments) writes it as usual. Under ``--dap`` yavs flushes the file at every stop, so at a
 breakpoint or step it holds every change of the completed time steps up to the stop (the time
 step in progress shows once it ends). To follow it next to the debug session, open the file with
 a VS Code waveform extension that opens FST files and add the signals you want. Viewers with an
@@ -838,9 +971,10 @@ simulation ends the client gets the exit status of the run; disconnecting ends t
 (exit status 1 if it had not ended).
 
 ``--wave`` and ``--vhpi`` work under ``--dap``: the waveform file is the one the same run
-without the debugger writes, finished when the session ends. A VHPI plugin's own prints go to
-standard output, which ``--dap=stdio`` uses for the protocol, so debug a run with ``--vhpi``
-over a port.
+without the debugger writes, finished when the session ends. Under ``--dap=stdio`` standard output
+carries the protocol, so yavs moves file descriptor 1 to standard error: the prints of a VHPI
+plugin or a foreign library appear on standard error. With a port they go to standard output as in
+a normal run.
 
 **Live waves** for a waveform viewer: the custom request ``yavs/waveSubscribe`` selects signals
 (and variables) with the globs and limits of ``--wave-include``, ``--wave-exclude``,

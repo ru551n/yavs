@@ -1,1 +1,0 @@
-The test runner package `vunit-yavs` (`python/vunit-yavs`) selects yavs from a run script with one `add_package` call, debugs one test under the debugger with `--yavs-debug`, caps the threads of each simulation with `yavs.max_threads`, and lends the idle CPU slots of a parallel run to the simulations through a jobserver with `--yavs-jobserver`.

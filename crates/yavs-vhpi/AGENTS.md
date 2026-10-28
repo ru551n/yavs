@@ -3,7 +3,9 @@
 Read the root `AGENTS.md` first. This file is for an agent about to change `crates/yavs-vhpi`.
 The ABI and export decisions are in `docs/decisions.md` "VHPI ABI and symbol export"; what
 the Python testbench framework needs (startup, symbol list, Linux and Windows linking, upstream changes) is in
-`crates/yavs-vhpi/COCOTB.md`.
+`crates/yavs-vhpi/COCOTB.md`. The audit of the standard and the call-by-call behaviour are in
+`crates/yavs-vhpi/STANDARD.md` (internal; the user page `docs/vhpi.md` keeps only the summary table
+and how to load a plugin: update both when support changes).
 
 ## 1. Purpose and boundaries
 
@@ -179,6 +181,6 @@ cargo run -p yavs-vhpi --bin yavs-vhpi-host -- <plugin>[:entry]
 
 - cocotb's own regression: `tools/cocotb/run.py` (a venv outside the repository, approved by the user for #122); run it after any change here.
 - Open issues (snapshot 2026-10-28, `gh issue list -R ru551n/yavs --label crate:vhpi`): the gaps
-  of the VHPI audit in `docs/vhpi.md` ("Coverage of the standard"): #829 statements and equivalent processes, #830 connectivity, #831 more declarations and units,
+  of the VHPI audit in `crates/yavs-vhpi/STANDARD.md` ("Coverage of the standard"): #829 statements and equivalent processes, #830 connectivity, #831 more declarations and units,
   #832 tool phases and save/restart, #833 whole records, raw formats and protected objects; #273
   the Rust plugin crate as a second conformance client.

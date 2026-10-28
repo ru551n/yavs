@@ -32,7 +32,7 @@ framework's repository and are named by role ("bootstrap library", "VHPI impleme
 same list as the framework's `.def` file for the primary reference simulator. yavs exports these and the
 rest of the standard set (`src/exports.txt`); all of these work (hierarchy #269,
 values #270, puts #271, callbacks #272), and cocotb's own regression passes
-(`tools/cocotb`, #122). What is still missing of the standard is in `docs/vhpi.md`.
+(`tools/cocotb`, #122). What is still missing of the standard is in `STANDARD.md`.
 
 Behaviour the Python testbench framework relies on, for M5:
 - `vhpi_control(vhpiFinish, vhpiDiagTimeLoc)`: one extra `int` argument

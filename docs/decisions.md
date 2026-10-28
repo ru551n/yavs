@@ -12470,3 +12470,36 @@ end for those processes. Method as in round 10: bench builds (`llvm`, and `clift
   the kernel's own gates, muxes and programs still run in the batch; the rest of the fletcher gap is diffuse: per-delta work of `cycle` and
   `finish_direct`, the interpreted record gather and scatter of two-process designs, and compiled straight-line processes that are no
   faster than interpreted ones (#679).
+
+## Thread budget: a token pool in `MAKEFLAGS` (yavs `jobserver.rs`, yavs-kernel `Tokens`, #801, 2026-10-28)
+
+- **Decision: `--threads N` is the cap, the tokens decide how many of the N threads run.** With N above 1 and a pool in
+  `MAKEFLAGS` (`--jobserver-auth=R,W` or `fifo:PATH`, the last one wins; `--jobserver-fds` too), the simulation owns one
+  implicit token and takes at most N - 1. The rayon pool of N - 1 workers is still built at the start (a pool cannot be
+  resized, parked workers cost nothing); a pooled batch is cut for, and spawns, one worker per token held, and the
+  parallel signal update splits into at most that many pieces plus one (`with_min_len`). Why: the maintainer's
+  mechanism (b) in #801; a cap keeps a simulation from taking a whole pool that its batches cannot use.
+- **Decision: tokens are taken only when a batch is worth pooling (`pool_batch` said yes), without blocking; with none
+  the batch runs inline** and is not counted in `Stats::pooled_batches`. A batch on fewer threads than the pool has does
+  not teach `learn_pooled` (its time says nothing about the full pool).
+- **Decision: tokens are held across batches and given back after `TOKEN_IDLE` (64) batches in a row that did not pool
+  (`run_one` counts), whenever `run_until`/`step_*` return (the kernel's `guard`, also on errors), and by the CLI before
+  every exit while a run may hold some** (`jobserver::close` in `exit_after_signal`, the broken-pipe exit; a first
+  SIGINT/SIGTERM/SIGHUP with no other handler now exits 130 after giving them back). Why: a read and a write per pooled
+  batch cost a few percent of a batch at the 20 us threshold; the count is a `ponytail:` (a long serial batch right
+  after a pooled one keeps them meanwhile).
+- **Decision: in-tree client, no `jobserver` crate.** About 100 lines, no `unsafe`: the descriptors are reopened through
+  `/proc/self/fd/R` (Linux) and a named pipe by its path, read and write, `O_NONBLOCK` (from `libc`, a new direct
+  dependency already in the lock file). A new open file description leaves the parent's descriptor blocking. Only `R`
+  is used, read and written. The bytes read are written back unchanged. Descriptors elsewhere (`/dev/fd` shares the
+  description) and the Windows semaphore form have no client yet (`ponytail:`).
+- **Decision: a pool that cannot be used is warning `W0118`, not an error,** and the run uses `--threads` as without one.
+  Why: a parent can keep `--jobserver-auth` in `MAKEFLAGS` while closing the descriptors for a child it does not mean to
+  share the pool with, and failing those runs would break working builds; the warning names the value and the fix
+  (rule 1: not silent). `MAKEFLAGS` is read first thing in `run`, before any file is opened, so a closed descriptor
+  number is not yet reused by one of ours, and only a FIFO is accepted. To be confirmed by the user.
+- **Decision: `MAKEFLAGS` is not read at all with `--threads 1` or `--dap`.**
+- **Known cost, not measured: a simulation under an empty pool is not the `--threads 1` run.** It keeps the per-process
+  cost sampling of a run with a pool (about 1 to 2 percent, `docs/parallel.md`) and makes one failed non-blocking read
+  per batch worth pooling. The sampling is what tells it when a batch is worth a token, so it stays; #801's bulk gate
+  (within 2 percent of today) has not been measured.

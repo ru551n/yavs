@@ -20,8 +20,8 @@ pub use builder::{
 pub use error::{ErrorInfo, ErrorKind, SimError, StmtId};
 pub use kernel::{
     Config, DeadClock, EndReason, Hook, Interrupt, LoopCause, LoopLink, Observer, Phase, ProcWait,
-    Report, RunStatus, SigView, SimControl, Stats, StuckProc, StuckReport, StuckSignal, WakeId,
-    progress,
+    Report, RunStatus, SigView, SimControl, Stats, StuckProc, StuckReport, StuckSignal, Tokens,
+    WakeId, progress,
 };
 pub use process::{
     Cond, CopyProcess, Ctx, EDGE_LEVEL, Gate, GateProcess, Lit, LiveSink, MuxPart, MuxProcess,

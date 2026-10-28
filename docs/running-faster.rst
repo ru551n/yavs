@@ -38,7 +38,9 @@ Threads
 processes of a delta cycle go to the threads only when their estimated work is worth the
 hand-over; smaller groups run on one thread. It helps only large, flat designs where many
 processes wake in the same delta cycle; leave it at 1 (the default) unless you measured a gain. A test runner that already
-runs tests in parallel should leave it at 1. Measurements are in
+runs tests in parallel should leave it at 1, unless it passes a token pool in ``MAKEFLAGS``
+(``--jobserver-auth=``): the extra threads then run only on tokens taken from the pool, so the
+simulations share one CPU budget. Measurements and the token pool are in
 `parallel.md <https://github.com/ru551n/yavs/blob/main/docs/parallel.md>`__.
 
 Finding where the time goes

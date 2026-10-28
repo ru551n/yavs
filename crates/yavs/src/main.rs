@@ -11,6 +11,7 @@ mod cov;
 mod elab;
 mod explain;
 mod gui;
+mod jobserver;
 mod profile;
 mod stdout;
 mod stuck;

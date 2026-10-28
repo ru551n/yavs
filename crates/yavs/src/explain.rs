@@ -208,6 +208,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "W0117",
         "The compile thread of `--tier=auto` could not be started (the note gives the operating system error). The thread starts a few milliseconds into the run, from the helper thread of the signal handlers. The run goes on interpreted.",
     ),
+    (
+        "W0118",
+        "`--threads` is above 1 and `MAKEFLAGS` names a token pool (`--jobserver-auth=R,W` or `fifo:PATH`) that yavs cannot use: the descriptors are closed or not a pipe (the parent did not pass them on), the path is not a named pipe, or the platform has no client for the form. The run uses `--threads` as without a token pool. Pass the pool on, or remove `--jobserver-auth` from `MAKEFLAGS`.",
+    ),
     // yavs-vhpi
     (
         "E0901",

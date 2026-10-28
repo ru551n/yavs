@@ -582,6 +582,21 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   simulations in parallel and never passes a thread count; a user who wants
   parallel process evaluation inside one simulation opts in with
   `yavs.sim_flags`, e.g. `["--threads=4"]`.
+- Token pool (#801): with `--threads=N` above 1 (and not `--dap`), yavs reads `MAKEFLAGS` at
+  the start of `run`. The last `--jobserver-auth=VALUE` (or `--jobserver-fds=VALUE`) names the
+  pool: `R,W` (inherited pipe descriptors; Linux) or `fifo:PATH` (a named pipe; Unix). The
+  simulation owns one implicit token and takes at most N - 1 more, without blocking, only
+  when a group of processes goes to the threads; with none it runs that group on one thread.
+  It writes back the bytes it read: after 64 groups in a row on one thread, at the end of the
+  run (also after an error), and on the first SIGINT, SIGTERM or SIGHUP (a run that would have
+  died of the signal then exits with status 130). A pool that cannot be used is warning
+  `W0118` and the run uses `--threads=N` as without one. Without a pool, or with
+  `--threads=1`, nothing changes. Output and exit status do not depend on the tokens. The
+  producer fills the pool with the bytes it wants (any value; they are returned unchanged).
+  It must keep its own handle of the pipe open (a named pipe: opened for reading and writing)
+  for as long as the simulation runs: a pipe's contents are lost when its last handle closes,
+  so tokens written back at the end would be lost otherwise. `MAKEFLAGS` is split at
+  whitespace, so the path of `fifo:PATH` must not contain any (W0118 otherwise).
 - Garbage collection: `--gc-threshold=SIZE` (bytes, or a `k`, `m`, `g` suffix; default
   `1m`) sets how much access-value memory is allocated before the heap is collected. The
   test runner never passes it; a user who wants fewer collections opts in with

@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:part_conv:b:_p0	r.x=0 r.z=-2147483648 a=7,0,2
+diag	note	0	1	:part_conv:b:_p0	r.x=2 r.z=0 a=7,2,2
+diag	note	0	2	:part_conv:b:_p0	r.x=2 r.z=2 a=7,2,2
+diag	note	1000000	0	:part_conv:b:_p0	r.x=1 r.z=2 a=7,1,2
+diag	note	1000000	1	:part_conv:b:_p0	r.x=1 r.z=1 a=7,1,2
+diag	note	2000000	0	:part_conv:b:_p0	r.x=1 r.z=1 a=7,1,5

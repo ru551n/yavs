@@ -10157,3 +10157,7 @@ dead blocks of a specialised copy jump to the next block so fusions run through 
 ## Mode checks of the parts of a port in an individual association (yavs-sem, #654, 2026-10-28)
 
 The actual of a part of an `out`/`inout`/`buffer` port (`o(0) => p1`) gets the checks of a whole port's actual (`check_written_actual`): an `in` port or parameter is `E1360`, and so is an expression that is not a signal name, which stopped elaboration with an internal error before.
+
+## Conversions in individual port associations (yavs-sem, yavs-elab, #611, 2026-10-28)
+
+`r.x => popcount(s)` (a conversion of a signal as the actual of a part of an `in` port) is a converted port edge, as `x => popcount(s)` on a whole port: the HIR's individual part carries the flag (analysed-unit cache `FORMAT` 9). Corpus test `hierarchy/part_conversion_actual`.

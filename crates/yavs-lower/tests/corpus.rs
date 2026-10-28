@@ -259,6 +259,7 @@ const PASS: &[&str] = &[
     "hierarchy/package_signal_alias",
     "hierarchy/port_conv_composite",
     "hierarchy/port_conv_inout",
+    "hierarchy/part_conversion_actual",
     "hierarchy/port_conv_inout_formal_only",
     "hierarchy/port_conv_inout_formal_only_composite",
     "hierarchy/port_conv_record",

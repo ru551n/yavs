@@ -353,7 +353,7 @@ impl Db {
         match a {
             Actual::Expr(e) | Actual::Converted { actual: e, .. } => self.walk_expr(*e, f),
             Actual::Individual(parts) => {
-                for (_, e, _, _) in parts.iter() {
+                for (_, e, ..) in parts.iter() {
                     self.walk_expr(*e, f);
                 }
             }
@@ -548,7 +548,7 @@ impl Db {
         match a {
             Actual::Expr(e) | Actual::Converted { actual: e, .. } => f(*e, u),
             Actual::Individual(parts) => {
-                for (_, e, _, _) in parts.iter() {
+                for (_, e, ..) in parts.iter() {
                     f(*e, u);
                 }
             }
@@ -802,7 +802,7 @@ impl Db {
             let mut es = Vec::new();
             match &a.actual {
                 Actual::Individual(parts) if matches!(mode, Mode::View { .. }) => {
-                    for (steps, e, _, _) in parts.iter() {
+                    for (steps, e, ..) in parts.iter() {
                         es.push((*e, self.view_driven_below(mode, steps)));
                     }
                 }

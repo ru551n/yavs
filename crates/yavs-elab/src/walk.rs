@@ -1604,17 +1604,69 @@ impl Elab<'_> {
                 let shape = match own {
                     Some(sh) => sh,
                     None => {
-                        let ps: Vec<_> = parts.iter().map(|(p, e, _, _)| (&p[..], *e)).collect();
+                        let ps: Vec<_> = parts.iter().map(|(p, e, ..)| (&p[..], *e)).collect();
                         self.m.parts_shape(self.db, s, subtype, &ps, sc, decl)?
                     }
                 };
                 let fo = self
                     .m
                     .add_obj(self.db, s, p, kind, shape, init.as_ref(), span)?;
-                for (steps, e, _, inertial) in parts {
+                for (steps, e, _, inertial, conv) in parts {
                     let espan = self.db.exprs[*e].span;
                     let fsels = self.m.steps(self.db, None, steps, sc, espan)?;
                     let (fl, fshape) = self.m.select(fo, &fsels, espan)?;
+                    if *conv {
+                        // `f.x => conv(s)`: a port edge that converts, as for a whole formal
+                        // (LRM 6.5.7.1, #611).
+                        let db: &Db = self.db;
+                        let (c, x) = match &db.exprs[*e].kind {
+                            ExprKind::Call { callee, args, .. } => match args.first() {
+                                Some(Arg {
+                                    actual: Actual::Expr(x),
+                                    ..
+                                }) => (*callee, *x),
+                                _ => {
+                                    return Err(Box::new(ice(espan, "conversion without operand")));
+                                }
+                            },
+                            ExprKind::Conv { to, operand } => {
+                                (db.types[db.base(*to)].decl, *operand)
+                            }
+                            _ => {
+                                return Err(Box::new(ice(
+                                    espan,
+                                    "part conversion of another kind",
+                                )));
+                            }
+                        };
+                        let Some((ao, asels)) = self.m.name_ref(db, x, sc)? else {
+                            return Err(Box::new(ice(
+                                espan,
+                                "converted part actual without a signal",
+                            )));
+                        };
+                        let (al, ashape) = self.m.select(ao, &asels, espan)?;
+                        let k = crate::eval::conv_fn(db, c, &ashape, &fshape, espan)?;
+                        self.m.convs.push(k);
+                        let to_formal = Some(self.m.convs.len() as u32 - 1);
+                        match (fl.as_slice(), al.as_slice()) {
+                            ([f], [a]) => self.m.nets.ports.push(PortEdge {
+                                formal: *f,
+                                actual: *a,
+                                mode,
+                                to_formal,
+                                to_actual: None,
+                            }),
+                            _ => self.m.nets.conv_ports.push(crate::hier::ConvPort {
+                                formal: fl,
+                                actual: al,
+                                mode,
+                                to_formal,
+                                to_actual: None,
+                            }),
+                        }
+                        continue;
+                    }
                     // `inertial` makes even a signal name an expression actual (LRM 6.5.6.3).
                     let name = match self.m.name_ref(self.db, *e, sc)? {
                         Some(_) if *inertial => None,

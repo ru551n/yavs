@@ -133,9 +133,11 @@ pub struct Arg {
     pub inertial: bool,
 }
 
-/// One part of an individual association: its path, actual, formal part and whether the actual
-/// was written `inertial` (an expression actual even for a signal name, LRM 6.5.6.3).
-pub type IndividualPart = (Box<[LspStep]>, ExprId, ExprId, bool);
+/// One part of an individual association: its path, actual, formal part, whether the actual
+/// was written `inertial` (an expression actual even for a signal name, LRM 6.5.6.3) and, for
+/// a part of an `in` port, whether the actual is a conversion `conv(signal)` (6.5.7.1): a
+/// `Call` of one argument or a `Conv` whose operand is the signal name.
+pub type IndividualPart = (Box<[LspStep]>, ExprId, ExprId, bool, bool);
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub enum Actual {

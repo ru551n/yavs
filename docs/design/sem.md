@@ -1262,7 +1262,7 @@ pub enum Actual {
     Expr(ExprId),
     Default,                                     // the formal's default
     Open,
-    Individual(Box<[(Box<[LspStep]>, ExprId, ExprId, bool)]>), // sub-element association: path, actual, formal part, written `inertial` (#261)
+    Individual(Box<[(Box<[LspStep]>, ExprId, ExprId, bool, bool)]>), // sub-element association: path, actual, formal part, written `inertial` (#261), the actual of an `in` port's part is a conversion `conv(signal)` (#611)
     Converted { formal_conv: Option<DeclId>, actual_conv: Option<DeclId>, actual: ExprId,
                 copy_in: Option<ExprId>, copy_out: Option<ExprId> }, // calls: actual part, formal part as expressions
     Subtype(SubtypeId),     // actual of a generic type in an instance's generic map

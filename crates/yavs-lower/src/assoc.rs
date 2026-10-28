@@ -48,7 +48,7 @@ impl Fx<'_, '_> {
                 cells.extend(dope);
             }
             sh @ (Shape::Sig | Shape::SigOut) => {
-                let [(_, e, _, _)] = parts else {
+                let [(_, e, ..)] = parts else {
                     return Err(self.cx.ice(span, "individual association without parts"));
                 };
                 let (d, sref, adope) = self.sig_name(*e)?;
@@ -195,7 +195,7 @@ impl Fx<'_, '_> {
             }
             _ => return Err(self.cx.ice(span, "conversion of a signal or file formal")),
         };
-        let part: Part = (Box::new([]), actual, copy_out, false);
+        let part: Part = (Box::new([]), actual, copy_out, false, false);
         self.writeback_parts.push((obj, f, Box::new([part])));
         Ok(())
     }
@@ -216,7 +216,7 @@ impl Fx<'_, '_> {
     ) -> R<Reg> {
         let n = parts.len() as u32;
         let table = self.alloc_n(n * yavs_ir::SIG_PART_BYTES);
-        for (k, &(_, e, _, _)) in parts.iter().enumerate() {
+        for (k, &(_, e, ..)) in parts.iter().enumerate() {
             let (d, sref, _) = self.sig_name(e)?;
             let slot = if out {
                 self.out_driver_slot(d, e)?
@@ -250,7 +250,7 @@ impl Fx<'_, '_> {
         };
         let saved = self.cx.objs.insert(f, obj);
         let r = (|| {
-            for (k, &(_, _, formal, _)) in parts.iter().enumerate() {
+            for (k, &(_, _, formal, ..)) in parts.iter().enumerate() {
                 let (_, fref, _) = self.sig_name(formal)?;
                 let buf = self.alloc_n(16);
                 self.store(buf, fref, Width::Sig);
@@ -349,7 +349,7 @@ impl Fx<'_, '_> {
         let out = out && tree.is_none();
         // Per formal leaf: (actual reference, slot, first element) of each part over it.
         let mut per: Vec<Vec<(Reg, Reg, Reg)>> = vec![Vec::new(); leaves.len()];
-        for &(_, e, formal, _) in parts {
+        for &(_, e, formal, ..) in parts {
             let es = db.exprs[e].span;
             // The actual's leaves, in order, each with its driver slot (a view: the leaf and
             // the actual's signal, whose slot is found per formal leaf below).
@@ -485,7 +485,7 @@ impl Fx<'_, '_> {
         let saved = self.cx.objs.insert(f, obj);
         let r = (|| {
             let db = self.db;
-            for &(_, actual, formal, _) in parts {
+            for &(_, actual, formal, ..) in parts {
                 let (from, to) = if into {
                     (actual, formal)
                 } else {
@@ -534,7 +534,7 @@ impl Fx<'_, '_> {
         }
         let ix = indexes[0];
         let mut bounds: Option<(Reg, Reg)> = None;
-        for (steps, _, _, _) in parts {
+        for (steps, ..) in parts {
             let (l, h) = match steps.first() {
                 Some(LspStep::Index(i)) if i.len() == 1 => {
                     let v = self.scalar_expr(i[0])?;

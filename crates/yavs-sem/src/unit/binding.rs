@@ -1194,48 +1194,7 @@ impl Db {
             }
             return Ok(Actual::Expr(id));
         }
-        // Port actuals (6.5.6.3, 6.5.7.1): a conversion of a signal, or for
-        // modes other than `in` a signal name. A conversion is written `name(actual)`: an
-        // operator (`not s`) or an `inertial` actual is an expression.
-        let call_syntax =
-            matches!(a, ast::Actual::Expr(x) if matches!(x.kind, ast::ExprKind::Name(_)));
-        // The type mark of a type conversion actual, by its own declaration: a subtype keeps
-        // the constraint that bounds an unconstrained formal (5.3.2.2).
-        let mark = match (&self.exprs[id].kind, &e.kind) {
-            (ExprKind::Conv { .. }, ast::ExprKind::Name(n)) => match &n.kind {
-                ast::NameKind::Apply { prefix, .. } => Some(prefix),
-                _ => None,
-            },
-            _ => None,
-        };
-        let mark = mark
-            .and_then(|p| self.expanded_name_decl(scope, p).ok())
-            .map(|d| self.entity(d))
-            .filter(|&d| matches!(self.decls[d].kind, DeclKind::Subtype(_)));
-        let actual_conv = match &self.exprs[id].kind {
-            _ if !call_syntax => None,
-            // A predefined operator in call syntax (`"not"(s)`) is an expression, not a
-            // conversion function: it has no body to convert with.
-            ExprKind::Call { callee, args, .. }
-                if args.len() == 1
-                    && !self.decls[*callee].kind.subprogram().is_some_and(|sp| {
-                        matches!(
-                            sp.body,
-                            crate::decl::Body::Implicit(_) | crate::decl::Body::Native(_)
-                        )
-                    }) =>
-            {
-                match &args[0].actual {
-                    Actual::Expr(x) if self.is_signal_name(*x) => Some((Some(*callee), *x)),
-                    _ => None,
-                }
-            }
-            ExprKind::Conv { to, operand } if self.is_signal_name(*operand) => {
-                let t = self.types[self.subtypes[*to].base].decl;
-                Some((Some(mark.unwrap_or(t)), *operand))
-            }
-            _ => None,
-        };
+        let actual_conv = self.port_conversion(scope, a, id);
         // An actual conversion feeding a formal that is not fully constrained gives it its
         // bounds (5.3.2.2): the function's result subtype or the type mark must define them.
         if actual_conv.is_some()
@@ -1333,6 +1292,64 @@ impl Db {
             },
             None => Actual::Expr(id),
         })
+    }
+
+    /// The conversion of port actual `a` (resolved as `id`) written `conv(name)` of a signal
+    /// name (6.5.7.1): the function or type mark and the name; `None` for an expression.
+    fn port_conversion(
+        &mut self,
+        scope: ScopeId,
+        a: &ast::Actual,
+        id: ExprId,
+    ) -> Option<(Option<DeclId>, ExprId)> {
+        // Port actuals (6.5.6.3, 6.5.7.1): a conversion of a signal, or for
+        // modes other than `in` a signal name. A conversion is written `name(actual)`: an
+        // operator (`not s`) or an `inertial` actual is an expression.
+        let call_syntax =
+            matches!(a, ast::Actual::Expr(x) if matches!(x.kind, ast::ExprKind::Name(_)));
+        // The type mark of a type conversion actual, by its own declaration: a subtype keeps
+        // the constraint that bounds an unconstrained formal (5.3.2.2).
+        let mark = match (&self.exprs[id].kind, a) {
+            (
+                ExprKind::Conv { .. },
+                ast::Actual::Expr(ast::Expr {
+                    kind: ast::ExprKind::Name(n),
+                    ..
+                }),
+            ) => match &n.kind {
+                ast::NameKind::Apply { prefix, .. } => Some(prefix),
+                _ => None,
+            },
+            _ => None,
+        };
+        let mark = mark
+            .and_then(|p| self.expanded_name_decl(scope, p).ok())
+            .map(|d| self.entity(d))
+            .filter(|&d| matches!(self.decls[d].kind, DeclKind::Subtype(_)));
+        match &self.exprs[id].kind {
+            _ if !call_syntax => None,
+            // A predefined operator in call syntax (`"not"(s)`) is an expression, not a
+            // conversion function: it has no body to convert with.
+            ExprKind::Call { callee, args, .. }
+                if args.len() == 1
+                    && !self.decls[*callee].kind.subprogram().is_some_and(|sp| {
+                        matches!(
+                            sp.body,
+                            crate::decl::Body::Implicit(_) | crate::decl::Body::Native(_)
+                        )
+                    }) =>
+            {
+                match &args[0].actual {
+                    Actual::Expr(x) if self.is_signal_name(*x) => Some((Some(*callee), *x)),
+                    _ => None,
+                }
+            }
+            ExprKind::Conv { to, operand } if self.is_signal_name(*operand) => {
+                let t = self.types[self.subtypes[*to].base].decl;
+                Some((Some(mark.unwrap_or(t)), *operand))
+            }
+            _ => None,
+        }
     }
 
     /// The actual `id` of port `f` (or of a part of it) with `mode`: a formal that is
@@ -1671,17 +1688,22 @@ impl Db {
                 errs.0 = true;
                 continue;
             }
+            let port = match &self.decls[f].kind {
+                DeclKind::Object(o) if o.role == ObjRole::Port && o.class == ObjClass::Signal => {
+                    Some(o.mode)
+                }
+                _ => None,
+            };
             // A part of a written signal port needs a writable signal name, as a whole port.
-            if let DeclKind::Object(o) = &self.decls[f].kind
-                && o.role == ObjRole::Port
-                && o.class == ObjClass::Signal
-                && errs
-                    .keep(self.check_written_actual(f, o.mode, id))
-                    .is_none()
+            if let Some(mode) = port
+                && errs.keep(self.check_written_actual(f, mode, id)).is_none()
             {
                 continue;
             }
-            out.push((steps.into_boxed_slice(), id, fe, inertial));
+            // `f.x => conv(s)` of an `in` port converts in the port association (#611).
+            let conv = port == Some(Some(Mode::In))
+                && self.port_conversion(scope, &a.actual, id).is_some();
+            out.push((steps.into_boxed_slice(), id, fe, inertial, conv));
         }
         if !errs.0 && out.len() == parts.len() {
             let spans: Vec<Span> = parts.iter().map(|p| p.1).collect();

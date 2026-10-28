@@ -49,6 +49,10 @@ Getting started
    usage
    recipes
    language-choices
+   coverage
+   vhpi
+   parallel
+   performance
 
 .. toctree::
    :caption: Reference

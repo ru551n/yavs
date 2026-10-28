@@ -37,6 +37,7 @@ report generator or regenerate the report (#780).
 
 ## 4. Invariants and pitfalls
 
+- The site shows only the summary: `docs/conf.py` cuts `conformance.md` at the `## Details` heading and fails the docs build without it. Keep that heading.
 - Exit statuses of the underlying tools are results, not errors (a failing suite is a number in the report), except `realbench`, whose failure stops the run.
 - The report text must be deterministic for a given commit: no timestamps outside the `Generated:` line, no timings, sorted keys.
 - A `--local` run needs a clean tree to record a meaningful commit (`-dirty` is appended otherwise); commit `docs/conformance-local.json` with the regenerated report.

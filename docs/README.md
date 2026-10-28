@@ -7,8 +7,7 @@ status, decisions, design notes, CLI contract, parallel kernel measurements, the
 report) is for developers and agents and is listed in `exclude_patterns` in [`conf.py`](conf.py).
 The site shows the summary of `conformance.md` (`conformance.rst`). Keep developer detail
 (environment variables for development, counters, cache formats, crate names, measurement
-method) out of the site pages; link the developer document on GitHub instead. Do not name
-cocotb in site pages (maintainer, 2026-10-28).
+method) out of the site pages; link the developer document on GitHub instead.
 
 ## Add a page
 

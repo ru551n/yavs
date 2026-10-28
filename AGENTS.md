@@ -257,6 +257,7 @@ cargo test -p yavs --features llvm --test perf                   # plus the LLVM
 
 - Update `docs/STATUS.md` for what you changed, and `docs/decisions.md` for any decision you made.
 - Add a release note fragment in `release_notes/news.d/` for every user-visible change (rule 25),
-  and update the user documentation in `docs/*.rst` when the change shows there.
+  and update the user documentation in `docs/*.rst` when the change shows there. The site is a
+  short user guide (`docs/README.md`): full behaviour detail goes in `docs/cli-contract.md`.
 - Report: commits pushed, what works now (with test and corpus numbers), what is left, and
   every decision the user should confirm. Say plainly what you did not verify.

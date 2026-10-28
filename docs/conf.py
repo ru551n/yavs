@@ -94,4 +94,6 @@ for _path in _unreleased + _releases:
 # The site shows the summary of the generated conformance report, the part before "## Details",
 # cut here so that llms-full.txt (which ignores include options) holds only the summary too.
 _report = (ROOT / "docs" / "conformance.md").read_text()
+if "\n## Details\n" not in _report:
+    raise RuntimeError("docs/conformance.md has no '## Details' heading to cut the site summary at")
 (ROOT / "docs" / "conformance-summary.md").write_text(_report.split("\n## Details\n", 1)[0] + "\n")

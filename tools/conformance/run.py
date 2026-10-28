@@ -251,7 +251,7 @@ def vests_totals(vs):
 def suite_rows(R):
     """passed / total per simulated suite, with where and when it was run (the per-suite table)."""
     ci, loc, m, w = R["ci"], R["local"]["records"], R["generated"], R.get("waveq")
-    here = ["CI", f"{m['commit_date']}, `{m['commit']}`"]
+    here = ["CI", "this report (see Generated)"]  # the commit stays in the Generated line only, so --check can compare
     rec = lambda k: ["local", f"{loc[k]['date']}, `{loc[k]['commit']}`"]
     allg = lambda d: [sum(v[0] for v in d.values()), sum(v[1] for v in d.values())]
     rows = []

@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:aggregate_target_self:_p0	4321 4321
+diag	note	0	0	:aggregate_target_self:_p0	4321
+diag	note	0	0	:aggregate_target_self:_p0	0011

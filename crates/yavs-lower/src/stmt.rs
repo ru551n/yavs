@@ -820,6 +820,26 @@ impl Fx<'_, '_> {
         let v = self.value_expr(e)?;
         if let ExprKind::Aggregate { .. } = &self.db.exprs[target].kind {
             let t = self.db.base(self.db.exprs[e].subtype);
+            // The value may be one of the target variables (`(r.b, r.a) := r`, #815): copy it
+            // whole before the first element is written.
+            let fresh = matches!(
+                self.db.exprs[e].kind,
+                ExprKind::Aggregate { .. } | ExprKind::Call { .. }
+            );
+            let v = match v {
+                crate::expr::V::A(data, desc) if !fresh => {
+                    let tid = self.ty(t, span)?;
+                    let size = self.size_of(tid, desc);
+                    let dst = self.alloc_val(size, tid, Some(desc));
+                    self.emit(Inst::Copy {
+                        dst,
+                        src: data,
+                        bytes: size,
+                    });
+                    crate::expr::V::A(dst, desc)
+                }
+                s => s,
+            };
             return self.assign_aggregate(target, v, t, span);
         }
         let p: Place = self.place(target)?;

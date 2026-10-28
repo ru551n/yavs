@@ -6,7 +6,7 @@
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 [![CI status](https://github.com/ru551n/yavs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ru551n/yavs/actions/workflows/ci.yml)
 
-**Yet Another VHDL Simulator: fast, open-source VHDL-1993, 2008 and 2019 simulation built for CI, with the evidence published.**
+Yet Another VHDL Simulator: VHDL-1993, 2008 and 2019 in Rust.
 
 ## Why yavs
 

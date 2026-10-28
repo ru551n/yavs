@@ -1,18 +1,18 @@
 # yavs conformance report
 
-Generated: yavs 0.8.0 at commit `a4dc53c1a8` (2026-10-28) by `tools/conformance/run.py`; do not edit by hand.
+Generated: yavs 0.9.0 at commit `a89e38656d` (2026-10-28) by `tools/conformance/run.py`; do not edit by hand.
 
 yavs is checked by running the test suites of VHDL libraries, a VHDL language test suite and real designs on it, and by comparing its output
-with two established open-source VHDL simulators, called sim1 and sim2 here. Each suite judges its own tests. Over the suites below, 14857 of 15020
+with two established open-source VHDL simulators, called sim1 and sim2 here. Each suite judges its own tests. Over the suites below, 14894 of 15021
 tests pass; every failure is tracked as an issue. This is evidence, not a proof of correctness.
 
 | Project or suite | What it is | Passed / total |
 | --- | --- | ---: |
-| Differential testbenches | small testbenches of this repository; output must equal sim1's, at 1 and 4 threads | 549/549 |
+| Differential testbenches | small testbenches of this repository; output must equal sim1's, at 1 and 4 threads | 550/550 |
 | Known simulator differences | one reproducer per case where simulators disagree | 214/214 |
 | sim1's regression tests | a reference simulator's own self-checking tests (runnable ones) | 1002/1070 |
 | sim2's regression tests | a reference simulator's own self-checking tests (runnable ones) | 458/504 |
-| VESTs | VHDL-1993 language test suite | 3651/3694 |
+| VESTs | VHDL-1993 language test suite | 3687/3694 |
 | UVVM | verification library: its own testbenches | 131/137 |
 | OSVVM, VHDL-2008 | verification library: its own regression | 314/314 |
 | OSVVM, VHDL-2019 | verification library: its own regression | 314/314 |
@@ -56,13 +56,13 @@ Every testbench of `tests/corpus` runs on yavs and its normalised output is comp
 | report | 10/10 | 10/10 | 10/10 |
 | resolution | 22/22 | 22/22 | 22/22 |
 | rtl | 4/4 | 4/4 | 4/4 |
-| scalar | 16/16 | 16/16 | 16/16 |
+| scalar | 17/17 | 17/17 | 17/17 |
 | shared | 4/4 | 4/4 | 4/4 |
 | sigassign | 27/27 | 27/27 | 27/27 |
 | std93 | 6/6 | 6/6 | 6/6 |
 | synopsys | 20/20 | 20/20 | 20/20 |
 | textio | 14/14 | 14/14 | 14/14 |
-| total | 549/549 | 549/549 | 549/549 |
+| total | 550/550 | 550/550 | 550/550 |
 
 Failing: none.
 
@@ -76,7 +76,7 @@ Each reference simulator ships a suite of self-checking tests. They run in place
 
 | suite | tests | pass | gated pass list | regressions |
 | --- | ---: | ---: | ---: | ---: |
-| sim1 | 1473 | 1002 | 992 | 0 |
+| sim1 | 1473 | 1002 | 990 | 0 |
 | sim2 | 1151 | 458 | 455 | 0 |
 
 Not passing: sim1: 68; sim2: 46 (the classes of each are in `docs/conformance.json`; a timeout under load moves a test between them, so the report does not).
@@ -372,25 +372,19 @@ VESTs, the VHDL test suite for IEEE 1076-1993 (University of Cincinnati; the bil
 | group | pass | not counted |
 | --- | ---: | ---: |
 | billowitch/compliant | **1608/1612** | 0 |
-| billowitch/analyzer_failure | **1457/1490** | 0 |
+| billowitch/analyzer_failure | 1490/1490 | 0 |
 | billowitch/simulator_failure | 38/38 | 0 |
 | ashenden/compliant | **448/451** | 30 |
 | ashenden/non_compliant | 7/7 | 1 |
-| clifton-labs/compliant | **93/96** | 13 |
-| total | **3651/3694** | 44 |
+| clifton-labs/compliant | 96/96 | 13 |
+| total | **3687/3694** | 44 |
 
-Of the 1457 `analyzer_failure` passes, 1433 fail at analysis and 24 are stopped by a yavs error at elaboration or run time before the test's own verdict, each checked to be the error the test is about (values out of range, lengths, delays, non-static actuals: the language reference leaves open when such errors are detected). As in the suite's own runner, an analysis failure counts without a check that it is the error the test is about. In every group that must fail, a first error that is E2001 (not lowered yet), E9999 or a crash is a failure.
+Of the 1490 `analyzer_failure` passes, 1466 fail at analysis and 24 are stopped by a yavs error at elaboration or run time before the test's own verdict, each checked to be the error the test is about (values out of range, lengths, delays, non-static actuals: the language reference leaves open when such errors are detected). As in the suite's own runner, an analysis failure counts without a check that it is the error the test is about. In every group that must fail, a first error that is E2001 (not lowered yet), E9999 or a crash is a failure.
 
 Failures by the issue that tracks their cause:
 
-- [#807](https://github.com/ru551n/yavs/issues/807): `tc2641.vhd`, `tc2644.vhd`, `tc2749.vhd`, `tc2750.vhd`, `tc2751.vhd`, `tc2859.vhd`
-- [#808](https://github.com/ru551n/yavs/issues/808): `tc2895.vhd`, `tc2933.vhd`, `tc2941.vhd`, `tc2942.vhd`, `tc2943.vhd`, `tc2944.vhd`
-- [#810](https://github.com/ru551n/yavs/issues/810): `tc3013.vhd`, `tc3026.vhd`, `tc3028.vhd`, `tc3031.vhd`
-- [#812](https://github.com/ru551n/yavs/issues/812): `tc1313.vhd`, `tc1314.vhd`, `tc1391.vhd`, `tc1746.vhd`, `tc1750.vhd`, `tc1752.vhd`, `tc2447.vhd`
-- [#813](https://github.com/ru551n/yavs/issues/813): `tc122.vhd`, `tc123.vhd`, `tc124.vhd`, `tc125.vhd`, `tc315.vhd`, `tc316.vhd`, `tc553.vhd`, `tc2549.vhd`, `tc2919.vhd`, `tc3064.vhd`
 - [#816](https://github.com/ru551n/yavs/issues/816): `tc1781.vhd`
 - [#817](https://github.com/ru551n/yavs/issues/817): `tc3153.vhd`, `tc3156.vhd`, `tc3159.vhd`
-- [#818](https://github.com/ru551n/yavs/issues/818): `functional/attributes/type/range/simple-range-attribute.vhdl`, `functional/statements/for-loops/dynamic_package_procedure_for_loop.vhdl`, `functional/statements/for-loops/dynamic_procedure_for_loop.vhdl`
 - [#819](https://github.com/ru551n/yavs/issues/819): `ch_11_fg_11_09.vhd`, `ch_11_fg_11_10.vhd`
 - [#820](https://github.com/ru551n/yavs/issues/820): `ch_13_fg_13_24.vhd`
 

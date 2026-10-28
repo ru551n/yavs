@@ -4,9 +4,10 @@ Sphinx configuration of the yavs user documentation (Read the Docs, .readthedocs
 Build with: sphinx-build -W -b html docs docs/_build/html
 
 The other files in docs/ (plan, decisions, status, design notes, the VUnit CLI contract) are for
-developers and agents and are not part of the site.
+developers and agents and are not part of the site. To add a page to the site, see docs/README.md.
 """
 
+import os
 import tomllib
 from pathlib import Path
 
@@ -20,7 +21,7 @@ author = "the yavs authors"
 with (ROOT / "Cargo.toml").open("rb") as fptr:
     release = tomllib.load(fptr)["workspace"]["package"]["version"]
 
-extensions = ["myst_parser", "sphinxcontrib.towncrier.ext"]
+extensions = ["myst_parser", "sphinxcontrib.towncrier.ext", "sphinx_llms_txt"]
 # The release notes start at ## since they are included under a version heading
 suppress_warnings = ["myst.header"]
 exclude_patterns = [
@@ -30,16 +31,23 @@ exclude_patterns = [
     "decisions.md",
     "cli-contract.md",
     "test-runner-requirements.md",
-    "conformance.md",
-    "performance.md",
-    "language-support.md",
-    "parallel.md",
-    "vhpi.md",
-    "coverage.md",
     "design",
     "AGENTS.md",
+    "README.md",
     "CLAUDE.md",
 ]
+
+# llms.txt and llms-full.txt (sphinx-llms-txt) are written to the root of the built site, for
+# language-model tools such as Context7. html_baseurl makes the links in llms.txt absolute: Read
+# the Docs sets the URL of the version being built, the fallback is the latest one. Point it at
+# the new address if the site is published elsewhere (GitHub Pages job in the docs workflow).
+html_baseurl = os.environ.get("READTHEDOCS_CANONICAL_URL", "https://yavs.readthedocs.io/en/latest/")
+llms_txt_uri_template = "{base_url}{docname}.html"
+llms_txt_summary = (
+    "yavs (Yet Another VHDL Simulator) is a VHDL-1993/2008/2019 simulator written in Rust, "
+    "with a command line interface (analyze, elab, run), compiled-code tiers, coverage, FST "
+    "waveforms, DAP debugging and a VHPI plugin interface."
+)
 
 html_theme = "sphinx_rtd_theme"
 html_theme_options = {

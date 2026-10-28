@@ -1,7 +1,7 @@
 name: docs
 
 # Builds the documentation with warnings as errors, as Read the Docs does, and keeps the HTML
-# as an artifact. Read the Docs publishes it, see .readthedocs.yaml: a push to main builds
+# as an artifact (it holds llms.txt and llms-full.txt too). Read the Docs publishes it, see .readthedocs.yaml: a push to main builds
 # latest, and a release tag vX.Y.Z gets a version of its own and updates stable.
 
 on:
@@ -60,3 +60,27 @@ jobs:
             -d '{"active": true, "hidden": false}' "$API/versions/$GITHUB_REF_NAME/"
           curl --fail-with-body -X POST -H "$AUTH" "$API/versions/$GITHUB_REF_NAME/builds/"
           curl --fail-with-body -X POST -H "$AUTH" "$API/versions/stable/builds/"
+
+  # GitHub Pages deploy, DISABLED: publishing a second site is the maintainer's decision. To turn
+  # it on: set Settings > Pages > Source to "GitHub Actions", remove the `if: false` line, and
+  # set html_baseurl in docs/conf.py to https://ru551n.github.io/yavs/ for that build.
+  pages:
+    needs: docs
+    if: false && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: docs-html
+          path: site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v4

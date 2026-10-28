@@ -2,7 +2,7 @@
 
 This sheet compares the wall-clock time of yavs with that of an established open-source VHDL simulator (called "the reference" below) on
 real testbenches of third-party VHDL projects. It holds the current head-to-head run; the full history, the breakdowns and the
-per-phase analysis are in the head-to-head sections of [`docs/STATUS.md`](STATUS.md).
+per-phase analysis are in the head-to-head sections of [`docs/STATUS.md`](https://github.com/ru551n/yavs/blob/main/docs/STATUS.md).
 
 ## Result
 

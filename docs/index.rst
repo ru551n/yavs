@@ -51,6 +51,17 @@ Getting started
    language-choices
 
 .. toctree::
+   :caption: Reference
+   :hidden:
+
+   language-support
+   conformance
+   performance
+   parallel
+   vhpi
+   coverage
+
+.. toctree::
    :caption: About
    :hidden:
 

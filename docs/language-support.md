@@ -16,7 +16,7 @@ Supported as defined (`--std=93`, `--std=08`).
 
 Each approved language addition ("LCS" is the number of its change specification), checked with a small test
 program per feature (`--std=2019`, 2026-10-19, with the fixes made since). The detailed audit is in
-[`design/vhdl2019-support.md`](design/vhdl2019-support.md).
+[`design/vhdl2019-support.md`](https://github.com/ru551n/yavs/blob/main/docs/design/vhdl2019-support.md).
 
 **Supported:**
 

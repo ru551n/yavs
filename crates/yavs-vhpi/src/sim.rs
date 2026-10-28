@@ -163,6 +163,11 @@ fn change(
 }
 
 impl yavs_kernel::Observer for VhpiObserver {
+    /// `vhpi_get_next_time` (#828).
+    fn wants_next_time(&self) -> bool {
+        true
+    }
+
     fn phase(&mut self, hook: &mut Hook<'_>, phase: Phase) {
         let reasons: &[i32] = match phase {
             Phase::StartOfSim => &[vhpiCbStartOfSimulation, vhpiCbStartOfInitialization],

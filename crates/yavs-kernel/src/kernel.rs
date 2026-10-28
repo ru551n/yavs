@@ -433,8 +433,8 @@ impl Hook<'_> {
     }
 
     /// The time of the next scheduled activity (`Some(None)`: nothing is scheduled), known only
-    /// to end-of-time-step observers (`None` in every other call); wake-ups scheduled from the
-    /// current call count.
+    /// to end-of-time-step observers when one says `Observer::wants_next_time` (`None` in every
+    /// other call); wake-ups scheduled from the current call count.
     pub fn next_time(&self) -> Option<Option<Time>> {
         let queued = self.next?;
         let wake = self.wakes.pending.first_key_value().map(|(id, _)| id.time);
@@ -477,6 +477,11 @@ pub trait Observer: Send {
     /// Whether this observer reads `value_change` (the default is yes).
     fn wants_value_changes(&self) -> bool {
         true
+    }
+    /// Whether this observer asks `Hook::next_time` in the end-of-time-step phase (the default
+    /// is no: the kernel then does not compute it there).
+    fn wants_next_time(&self) -> bool {
+        false
     }
     /// Whether `phase` matters to this observer only in a cycle after which a serial process
     /// ran (`ProcFlags::serial`, `Process::serial`): state only serial processes change, such
@@ -884,6 +889,8 @@ pub struct SimControl {
     known_next: Option<Option<Time>>,
     /// The next activity time while end-of-time-step observers run (`Hook::next_time`).
     obs_next: Option<Option<Time>>,
+    /// Some observer wants `obs_next` (`Observer::wants_next_time`).
+    next_wanted: bool,
     postponed: Vec<u32>,
     last_ran: Vec<u32>,
     /// The commit list of `run_batch`, kept between batches.
@@ -1223,6 +1230,7 @@ impl SimControl {
             waiters: signals.iter().map(|s| Waiters::new(s.ty.len)).collect(),
             known_next: None,
             obs_next: None,
+            next_wanted: false,
             work: None,
             signals,
             drivers,
@@ -1622,6 +1630,7 @@ impl SimControl {
             .filter(|&&p| self.observers.iter().any(|o| o.wants_phase(p)))
             .fold(0, |m, &p| m | 1 << p as u32);
         self.watch_changes = self.observers.iter().any(|o| o.wants_value_changes());
+        self.next_wanted = self.observers.iter().any(|o| o.wants_next_time());
         if self.watch_changes {
             self.signals.iter_mut().for_each(|s| {
                 s.watched = true;
@@ -2321,7 +2330,7 @@ impl SimControl {
                     self.phase(Phase::StartOfPostponed);
                     self.run_batch(postponed, true, false)?;
                 }
-                if self.phase_mask & 1u16 << Phase::EndOfTimeStep as u32 != 0 {
+                if self.next_wanted && self.phase_mask & 1u16 << Phase::EndOfTimeStep as u32 != 0 {
                     self.obs_next = Some(self.next_time());
                 }
                 self.phase(Phase::EndOfTimeStep);

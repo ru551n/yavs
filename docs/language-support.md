@@ -36,9 +36,7 @@ Each statement has one of these evidence levels.
 limits are listed. What is not implemented stops with a diagnostic that names the construct (see
 "Known gaps" below); yavs does not silently run it differently.
 
-The differential corpus of 544 testbenches passes at 1 and 4 threads with identical output on the interpreter, the
-LLVM tier and the Cranelift tier (544/544; the warm-cache `auto` variant is 543/544, one known failure, #806; recorded
-2026-10-28 in the status log). Pass counts
+The differential corpus of 544 testbenches passes at 1 and 4 threads with identical output on the interpreter and on the compiled tiers (544/544; the warm-cache `auto` variant is 543/544, one known failure, #806; recorded 2026-10-28 in the status log). Pass counts
 of the third-party suites yavs is also run against are in the
 [conformance report](https://github.com/ru551n/yavs/blob/main/docs/conformance.md). Passing tests are evidence, not
 proof, and the corpus is smaller than the language.

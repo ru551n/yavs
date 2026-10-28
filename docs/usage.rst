@@ -207,24 +207,16 @@ otherwise.
   and uses more memory on designs that allocate heavily; the default is ``1m``. The output is
   the same for any value. There is no way to switch collection off.
 * ``--tier=auto`` compiles only the functions that become hot, on a background thread while the
-  simulation runs in the interpreter; ``--tier=llvm`` compiles every function with LLVM before
-  time 0 and runs that code; ``--tier=interp`` runs the interpreter alone. The output is the same
-  with every tier. Which tiers exist and which is the default depends on how your ``yavs`` was
-  built, see "Build variants and tiers" in :doc:`install`: ``--tier=auto`` is the default in a
-  yavs with a compiled tier (LLVM 21 or Cranelift) and ``--tier=interp`` in one with neither,
-  where ``--tier=auto`` and ``--tier=llvm`` are error ``E0120``; ``yavs --version`` says which kind
-  you have. The release archives have the Cranelift tier. A source build with the ``llvm`` feature
-  finds the LLVM library in ``lib/`` next to the executable, then through the dynamic loader; if it is
-  missing, ``--tier=llvm`` stops with an error naming the places looked in, and ``--tier=auto`` warns
-  once and keeps the hot code interpreted. Functions of more than
-  ``--tier-max-size`` IR instructions (default 50000) stay interpreted. ``--verbose`` prints what
-  the compiled tier compiles and what it leaves to the interpreter.
-  ``--tier=clift`` and ``--tier=clift-auto`` do the same with Cranelift instead of LLVM, in a yavs
-  built with the ``clift`` feature; that needs no LLVM install. Without LLVM, ``--tier=auto`` is
-  ``--tier=clift-auto`` (the release archives). ``--tier=auto3`` combines them
-  (Cranelift for warm functions, LLVM O2 for those that stay hot) in a yavs built with both
-  features. Known limitation: a debugger session (``--dap``) always runs the interpreter, so
-  ``--tier`` has no effect there.
+  simulation runs in the interpreter; ``--tier=clift`` compiles every function before time 0 and
+  runs that code; ``--tier=interp`` runs the interpreter alone. ``--tier=clift-auto`` is the same
+  policy as ``auto``. The output is the same with every tier. Which tiers exist and which is the
+  default depends on how your ``yavs`` was built, see "Build variants and tiers" in :doc:`install`:
+  ``--tier=auto`` is the default in a yavs with a compiled tier (the release archives) and
+  ``--tier=interp`` in one without, where ``--tier=auto`` and ``--tier=clift`` are error ``E0120``;
+  ``yavs --version`` says which kind you have. Functions of more than ``--tier-max-size`` IR
+  instructions (default 50000) stay interpreted. ``--verbose`` prints what the compiled tier
+  compiles and what it leaves to the interpreter. Known limitation: a debugger session
+  (``--dap``) always runs the interpreter, so ``--tier`` has no effect there.
 * ``--resolution=ps`` sets the time resolution limit (``fs``, ``ps``, ``ns``, ``us``, ``ms`` or
   ``sec``; default ``fs``). It is what ``std.env.resolution_limit`` returns and the unit of TIME
   values in ``std.reflection`` mirrors. A TIME literal with a unit below the limit anywhere in
@@ -269,7 +261,7 @@ are kept once next to the library (about 10 MB for a large verification library;
 directory keeps at most 512 MiB of entries), made when a few different test cases (four) have asked for them, so the
 first run of a new test case does not make them again.
 
-With a compiled tier (``--tier=auto``, ``llvm``, ``clift`` or ``clift-auto``) the machine code is
+With a compiled tier (``--tier=auto``, ``clift`` or ``clift-auto``) the machine code is
 kept there as well (``yavs-cache/obj/``). The next run of the design, and the other test cases of a testbench,
 link that code instead of compiling it again; ``--tier=auto`` uses the stored code of a hot
 computation loop as soon as the loop is hot, without waiting until compiling it would pay off. The

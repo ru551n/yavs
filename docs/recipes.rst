@@ -44,8 +44,8 @@ The examples on this page use the testbench ``docs/examples/hello_tb.vhd`` of th
 
 ``yavs --version`` prints ``yavs MAJOR.MINOR.PATCH[-PRERELEASE] [(details)]`` on the first line
 of standard output. A runner can parse the first ``MAJOR.MINOR`` it finds to refuse a version that
-is too old. The details say whether a compiled tier is built in (``compiled tier: llvm``,
-``compiled tier: cranelift``, or ``interpreter only, no compiled tier``). The executable is looked
+is too old. The details say whether a compiled tier is built in (``compiled tier: cranelift`` or
+``interpreter only, no compiled tier``). The executable is looked
 up on ``PATH``. The reports of a simulation (``report``, ``assert``, ``std.textio`` output to
 ``output``) go to standard output; every diagnostic of yavs itself goes to standard error.
 

@@ -31,7 +31,7 @@ Key features
   for runtime errors. Fail early, fail clearly: nothing runs after a failed step.
 * The IEEE packages (``std_logic_1164``, ``numeric_std``, ``math_real``, ``fixed_pkg``,
   ``float_pkg`` and the rest) built into the executable and analyzed from source on demand.
-* An interpreter and a compiled tier (LLVM or Cranelift) that compiles the hot code while the
+* An interpreter and a compiled tier that compiles the hot code while the
   simulation runs, with output identical on every tier: see :doc:`install` and :doc:`performance`.
 * FST waveforms, :doc:`code coverage <coverage>`, a Debug Adapter Protocol server for editors, and
   :doc:`VHPI plugins <vhpi>`.

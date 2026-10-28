@@ -35,8 +35,7 @@ Every platform has one archive, and it contains everything: nothing else needs t
 ``--tier=auto`` (the default) compiles the hot code to machine code during the run, and
 ``--tier=clift`` compiles all of it before time 0; ``--tier=interp`` runs the interpreter alone. The
 output is the same with every tier. The compiled tier of the archive is Cranelift, inside the
-executable; the LLVM tier is only in a build from source (see `From source`_). The next section says
-what the tiers are.
+executable. The next section says what the tiers are.
 
 Build variants and tiers
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -49,7 +48,6 @@ on its first line:
 
 
     yavs 0.8.0 (compiled tier: cranelift)
-    yavs 0.8.0 (compiled tier: llvm)
     yavs 0.8.0 (interpreter only, no compiled tier)
 
 .. list-table::
@@ -64,8 +62,8 @@ on its first line:
    * - ``cargo build --release -p yavs`` (plain source build)
      - none
      - ``interp``
-   * - Source build with ``--features llvm`` or ``--features clift``
-     - LLVM (needs LLVM 21) or Cranelift; with both features, both
+   * - Source build with ``--features clift``
+     - Cranelift
      - ``auto``
 
 ``--tier=auto`` starts the run in the interpreter. A sampler watches where the interpreter spends its
@@ -75,13 +73,11 @@ initialisation are always interpreted. The output is the same in every tier. Com
 in the work library's cache (``yavs-cache/obj/``), so a repeated run links it instead of compiling it
 again (``--no-cache`` turns that off).
 
-``--tier=llvm`` (LLVM builds) and ``--tier=clift`` (Cranelift builds) compile everything before time
-0 instead. ``--tier=interp`` never compiles. Asking for a tier the build does not have is error
-``E0120``; the plain source build therefore rejects ``--tier=auto`` and ``--tier=llvm``, but runs
-without any ``--tier`` option. A debugger session (``--dap``) always runs the
-interpreter: the default is ``interp`` and an explicit ``--tier`` has no effect there (a known
-limitation). ``--tier=auto3``
-(Cranelift first, LLVM for what stays hot) exists only in a source build with both features.
+``--tier=clift`` compiles everything before time 0 instead. ``--tier=interp`` never compiles. Asking
+for a tier the build does not have is error ``E0120``; the plain source build therefore rejects
+``--tier=auto`` and ``--tier=clift``, but runs without any ``--tier`` option. A debugger session
+(``--dap``) always runs the interpreter: the default is ``interp`` and an explicit ``--tier`` has no
+effect there (a known limitation).
 
 What is in the archive
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -116,7 +112,7 @@ Requirements
 * The Linux archives require glibc 2.17 or newer (RHEL/CentOS 7+, Debian 8+, Ubuntu 14.04+). On
   musl-based systems such as Alpine, install the ``gcompat`` package. The archives are tested on
   x86_64 and aarch64 Linux and on Windows x86_64.
-* ``yavs`` needs nothing else installed: no VHDL libraries, no LLVM, no Python. Python
+* ``yavs`` needs nothing else installed: no VHDL libraries, no Python. Python
   testbench frameworks and VHPI plugins are separate (:doc:`recipes`, :doc:`usage`).
 * ``yavs-gui`` needs a display (X11 or Wayland on Linux) and an OpenGL driver; software rendering
   works. It loads those libraries when it starts, so it needs no development packages.
@@ -173,7 +169,7 @@ current stable) and a C compiler (a small C file of the VHPI layer is compiled a
     cd gui && cargo build --release  # gui/target/release/yavs-gui (optional)
 
 This yavs has no compiled tier: ``yavs --version`` says ``interpreter only, no compiled tier``, the
-default tier is ``--tier=interp``, and ``--tier=auto`` and ``--tier=llvm`` stop with error E0120. The
+default tier is ``--tier=interp``, and ``--tier=auto`` and ``--tier=clift`` stop with error E0120. The
 graphical debugger needs Rust 1.95 or newer (``rust-version`` in ``gui/Cargo.toml``) and network access
 and ``git``: one of its dependencies is fetched from a git repository.
 
@@ -187,34 +183,6 @@ With the Cranelift tier
 This is how the release archives are built. It needs nothing but Rust: ``yavs --version`` says
 ``compiled tier: cranelift`` and ``--tier=auto`` (the default) compiles the hot code with Cranelift.
 
-With the LLVM tier
-~~~~~~~~~~~~~~~~~~
-
-The release archives do not contain the LLVM tier. ``yavs run --tier=llvm`` needs a build from source
-with the ``llvm`` feature and LLVM 21.1 (pinned). Point
-``LLVM_SYS_211_PREFIX`` at the install if ``llvm-config`` is not on ``PATH``.
-
-.. code-block:: bash
-
-    # Linux x86_64 and aarch64 (apt.llvm.org packages, as the CI installs them)
-    sudo apt-get install llvm-21-dev libzstd-dev
-    export LLVM_SYS_211_PREFIX=/usr/lib/llvm-21
-    cargo build --release -p yavs --features llvm
-
-On Linux the build needs the shared LLVM library (``llvm-config --link-shared``). The executable does
-not link it: it opens ``libLLVM.so.21.1`` the first time the compiled tier is used, from ``lib/`` next to
-the executable, then through the dynamic loader's search, then at the path of the build, and if none
-loads, ``--tier=llvm`` stops with error ``E0127`` and ``--tier=auto`` warns once and keeps the hot code
-interpreted. Both features can be built together (``--features llvm,clift``), which adds
-``--tier=auto3``.
-
-On Windows (x86_64-pc-windows-msvc) use the official ``clang+llvm-21.1.8-x86_64-pc-windows-msvc``
-release archive (static libraries, ``llvm-config.exe``) with ``RUSTFLAGS="-C
-target-feature=+crt-static"``. The archive lacks ``libxml2s.lib``: create an empty one with
-``llvm-lib /llvmlibempty /out:<prefix>\lib\libxml2s.lib``, and copy ``psapi``, ``shell32``,
-``ole32``, ``uuid``, ``advapi32``, ``ws2_32`` and ``ntdll`` ``.lib`` from the Windows SDK into
-``<prefix>\lib`` (see the ``llvm`` job in ``.github/workflows/ci.yml`` for the exact steps).
-
 If something goes wrong
 -----------------------
 
@@ -226,12 +194,9 @@ If something goes wrong
      - What to do
    * - ``yavs: command not found``
      - The directory of the archive is not on ``PATH``.
-   * - ``error[E0120]: `--tier=llvm` needs a yavs built with the LLVM tier``
-     - The release archives and builds without the ``llvm`` feature have no LLVM tier. Use
-       ``--tier=auto`` or ``--tier=clift``, or build from source with ``--features llvm``.
-   * - ``error[E0127]: the LLVM library cannot be loaded``
-     - Only in a source build with the ``llvm`` feature: the library was not found next to ``yavs``
-       or through the dynamic loader. Install LLVM 21 or use ``--tier=interp``.
+   * - ``error[E0120]``
+     - A build from source without the ``clift`` feature has no compiled tier. Build with
+       ``--features clift`` or use ``--tier=interp``.
    * - ``error[E0122]: `yavs-gui` was not found``
      - ``yavs-gui`` is not next to ``yavs`` and not on ``PATH``.
    * - ``error[L0001]: library `work` not found``

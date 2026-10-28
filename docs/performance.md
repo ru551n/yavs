@@ -34,8 +34,8 @@ the repository (head-to-head 7, 2026-10-27).
 - **Repeats:** 5 timed runs per cell, interleaved between the tools, two complete passes, the best cell of the two passes. The two passes agree (warm 0.213 and 0.214, cold 0.587 and 0.582).
 - **Cores:** one timed process per physical core, on three claimed cores of the faster chiplet (cores 9 to 11); the cells of the two tools are interleaved.
   Three long testbenches were timed as controls at the start and at the end of the run to show host drift.
-- **Build:** the benchmark build of yavs with the LLVM code generator (`tools/build-bench.sh --features llvm`), one binary for every cell. It is not a
-  release archive: the release archives ship the Cranelift tier (see [install](install.rst)), which was not timed in this run, so no figure here applies to it.
+- **Build:** a benchmark build of yavs with a compiled tier, one binary for every cell (the build script and its flags are in `tools/`). It is not a
+  release archive: the compiled tier of the release archives (Cranelift, see [install](install.rst)) was not timed in this run, so no figure here applies to it.
 - **Tool:** `tools/realbench`; the designs come from `tools/bench`. Raw results are not committed.
 
 ## Host
@@ -116,7 +116,7 @@ processes, so the tier matters:
 * `--tier=auto` (the default in a build with a compiled tier) samples what the interpreter spends
   time in and compiles those functions on one background thread, starting 5 ms into the run; a run
   shorter than that creates no compile thread.
-* `--tier=llvm` or `--tier=clift` compiles everything before time 0.
+* `--tier=clift` compiles everything before time 0.
 
 The output is the same with every tier. See [usage](usage.rst) for the options and
 [install](install.rst) for which build has which tier.
@@ -127,7 +127,7 @@ The output is the same with every tier. See [usage](usage.rst) for the options a
   and simulation to standard error.
 * `yavs run --profile[=FILE]` prints the busiest processes, instances and subprograms with
   file and line (JSON to FILE). Start here for "where does my long run spend its time".
-* Compare `--tier=interp`, `--tier=auto` and, where built in, `--tier=llvm` or `--tier=clift`, with
+* Compare `--tier=interp`, `--tier=auto` and, where built in, `--tier=clift`, with
   the cache cold (`--no-cache`, or a fresh work library) and warm.
 * Time on an otherwise idle machine, repeat, and compare medians; a short run varies by tens of
   percent.

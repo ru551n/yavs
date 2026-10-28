@@ -5,6 +5,14 @@ Update (user, 2026-10-19): the no-cache premise of this study is lifted, see `do
 Status: study (2026-10-19, issue #395 and the performance section of `docs/STATUS.md`). Nothing here
 is implemented by this document; section 9 is the ranked list the crate owners work from.
 
+Correction (2026-10-28): this is the study as of 2026-10-19 and is kept as history. Much of section 9 has
+since been built or measured (compilation cache, compiled tiers with `--tier=auto` as the default of
+a build with a compiled tier, Cranelift as a second generator, port collapsing, specialised copies of
+processes); `docs/STATUS.md` has the outcome per item. The "measured gap" in section 0 below is the
+2026-10-19 figure and no longer holds: the current comparison with conditions is `docs/performance.md`.
+Statements below that say "no cache", "interpreter only by default" or "LLVM only" describe the state
+of that day.
+
 ## 0. Scope, method, caveats
 
 The user asked (2026-10-19): "regarding performance, take inspiration from how the reference

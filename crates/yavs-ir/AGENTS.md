@@ -14,7 +14,7 @@ calling and native conventions, and the Requests log are in `crates/yavs-ir/READ
 - Does not: execute (`yavs-interp`), lower HIR (`yavs-lower`), elaborate (`yavs-elab`), or JIT
   (`yavs-llvm`, M6). It has no VHDL front-end knowledge.
 - Depends on: `yavs-diag`, `yavs-kernel` (`StmtId`), `yavs-ffi` (foreign signatures). Called by:
-  `yavs-lower` and `yavs-elab` (producers), `yavs-interp` (consumer); later `yavs-llvm`.
+  `yavs-lower` and `yavs-elab` (producers), `yavs-interp` (consumer); `yavs-llvm` and `yavs-clift` (compiled tiers, behind their features).
 
 ## 2. Map
 

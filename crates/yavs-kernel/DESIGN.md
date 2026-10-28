@@ -253,7 +253,7 @@ Within a delta the kernel has two phases that never overlap:
 - **Run phase.** The ready processes run on a rayon pool (`Config::threads`, 1 means inline;
   a batch of fewer than 32 processes also runs inline, the hand-off costing more than it saves).
   Each gets a `Ctx` holding a shared read-only view (`Shared`: time, delta, cycle number, all
-  signals, driver table) and `&mut` to its own `ProcState` behind its own uncontended mutex. A
+  signals, driver table) and `&mut` to its own `ProcState` (a per-process slot with a mutex that only the pooled path locks; the inline path takes none). A
   process can only read current-cycle values and write its own waveforms, its own wait state and
   its own effect buffer. No data races are possible without `unsafe`, and the crate forbids
   `unsafe`.
@@ -303,7 +303,7 @@ process itself between instructions (#355). Protected-type locks are never held 
 
 ## How the IR plugs in
 
-The interpreter and the JIT tier implement:
+The interpreter implements it; compiled code (`yavs-llvm`, `yavs-clift`) runs inside the interpreter's process object, not as separate `Process` implementations:
 
 ```rust
 pub trait Process: Send {

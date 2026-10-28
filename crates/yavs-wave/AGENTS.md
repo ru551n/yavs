@@ -79,4 +79,4 @@ cargo run -p yavs-wave --example demo
 
 - Open issues (snapshot 2026-10-18; #306 done, `gh issue list -R ru551n/yavs --label crate:wave`): #129 FST
   output as an event-bus subscriber, hierarchy, enum tables, globs and size caps; #116 `--wave`
-  wired into `yavs run`. Epic: #145 (M7).
+  wired into `yavs run` (done: `yavs run --wave` exists, `docs/cli-contract.md`). Epic: #145 (M7).

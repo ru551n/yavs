@@ -1,7 +1,10 @@
 # M2 middle end: yavs-ir, yavs-interp, yavs-elab
 
-Status: `yavs-ir` and `yavs-interp` implemented (M2, built against hand-written IR); lowering
-(`yavs-lower`) and `yavs-elab` in progress. Deviations from this design are listed in section 9.
+Status (corrected 2026-10-28): all four crates are implemented and run every `yavs run`; the
+interpreter is the semantic reference and two optional code generators (`yavs-llvm`, `yavs-clift`)
+sit behind it. The sections below are the M2 design as written, kept as history; where the
+implementation differs, section 9 and the dated notes in sections 4, 5 and 8 say how. The first
+section after this header is the architecture as built.
 Binding inputs: `docs/plan.md` (architecture table, "Designed for
 the GUI", "Parallel kernel design", rules 1 to 12, the error-handling motto) and
 `docs/decisions.md`. Interfaces read from: the kernel worktree (`yavs-kernel`: `Process`, `Ctx`,
@@ -18,6 +21,86 @@ HIR (yavs-sem) --lower, once per design unit--> Program (yavs-ir, immutable, Arc
                                                     Design::build() --> yavs_kernel::SimControl
                                                     (InterpProcess per process instance)
 ```
+
+## Architecture as built (2026-10-28)
+
+Everything in this section was checked against the source at commit `ac2c94ff`. "Implemented"
+means on `main` and run by `yavs run`; where something is design intent or future work it says so.
+
+### The pipeline
+
+```
+files --yavs-syntax--> AST --yavs-sem (with yavs-lib manifests)--> typed HIR in a Db
+   Db --yavs-elab: find_top, elaborate--> Elaborated { hierarchy, nets, process instances }
+   Elaborated::lower_with --yavs-lower--> yavs_ir::Program   (immutable, shared)
+   Elaborated::build_full_once --> yavs_kernel::SimControl + yavs_interp::Runtime (InterpProcess per process)
+   use_tier (crates/yavs/src/elab.rs) --> optional compiled code installed on the Runtime
+   SimControl::run_until --> kernel cycle, processes run in the interpreter or in compiled code
+```
+
+| Stage | Crate | Input to output | Notes |
+|---|---|---|---|
+| Parse | `yavs-syntax` | text to owned AST (1993, 2008, 2019) | single-threaded; no name resolution |
+| Analyse | `yavs-sem`, `yavs-lib` | AST to typed HIR (`Db`) | libraries and unit closure from manifests; diagnostics `E1xxx` |
+| Elaborate | `yavs-elab` | HIR to hierarchy, net graph, process instances | generics, constants and generate ranges are evaluated by running IR in `yavs-interp`, so elaboration is always interpreted |
+| Lower | `yavs-lower`, called from `Elaborated::lower_with` | typed HIR to `Program` | one function per process or subprogram per design unit, shared by all instances; subprograms are lowered on first reference |
+| Optimise | `yavs-ir` `opt` | per function, at first use | `Program::funcs` keeps the unoptimised code; the optimised copy is made when a function is first asked for |
+| Build | `yavs-elab` `sim.rs` | `Elaborated` to a kernel model | package initialisation and elaboration-time calls are interpreted here; the kernel knows processes only as `Process` trait objects |
+| Tier | `yavs` `use_tier` | installs a compiled tier on the runtime | runs after the build, so elaboration and package initialisation never use compiled code |
+| Run | `yavs-kernel` | LRM 14.7 cycle | process evaluation may use a thread pool (`--threads`, see `docs/parallel.md`). A few simple concurrent statements (a plain copy, a clock toggle, small gates and multiplexers and expression trees of them) become kernel-native processes (`CopyProcess`, `ToggleProcess`, `GateProcess`, `MuxProcess`, `ProgProcess` in `process.rs`) that run neither in the interpreter nor in compiled code, so no tier applies to them |
+
+Consumers of the finished model: `yavs-wave` (FST), `yavs-cov`, `yavs-vhpi`, `yavs-dap` subscribe to the
+kernel's event bus or read the elaborated hierarchy; `yavs-cache` stores cache entries and is VHDL-agnostic.
+
+### Crate boundaries that are easy to get wrong
+
+* `yavs-kernel` does not know the IR, VHDL types or the heap. `yavs-ir` depends on `yavs-kernel`
+  only for `StmtId`.
+* `yavs-lower` depends on `yavs-sem`, `yavs-ir` and `yavs-kernel`; it does not depend on `yavs-elab`
+  or `yavs-interp` (those are dev-dependencies for its tests). `yavs-elab` depends on `yavs-lower`
+  and `yavs-interp`.
+* `yavs-clift` depends on `yavs-llvm` (built without LLVM) for the shared `rt` module, the policy of
+  `--tier=auto` (`AutoTier`) and the `Generator` trait; the Cranelift generator is `yavs_clift::First`.
+* `yavs` (the binary) is the only place that decides which tier a run uses.
+
+### Execution tiers (implemented)
+
+| Tier | Where | What it does |
+|---|---|---|
+| Interpreter | `yavs-interp` | Executes IR (a predecoded form of each function in the fast loop, the plain IR when a debugger or a compiled tier is attached). The semantic reference: every other tier must give identical output (root rule 3). |
+| LLVM | `yavs-llvm`, feature `llvm`, LLVM 21 | `--tier=llvm` compiles every non-elaboration function before time 0; `--tier=auto` compiles functions the interpreter is seen to spend time in, one at a time on one background thread, and swaps them in at the next call, return or within 256 jumps. Compiled code runs on the interpreter frame's registers and returns to the interpreter for everything it does not compile. |
+| Cranelift | `yavs-clift`, feature `clift` | The same compiled-code contract with a different code generator: `--tier=clift` (everything before time 0) and `--tier=clift-auto` (the `auto` policy with Cranelift as the only generator). |
+| Both | features `llvm` and `clift` | `--tier=auto3`: Cranelift for warm functions, LLVM O2 for those that stay hot. Built in CI; not what a release archive contains. |
+
+How the CLI picks a tier, and what `--tier=auto` means in each build, is in `crates/yavs/AGENTS.md`
+and `docs/usage.rst` and `docs/install.rst`. Summary: `yavs` has no default cargo features, so
+a plain `cargo build -p yavs` is interpreter-only; with `llvm` or `clift` the default is `auto`
+(`auto` with LLVM when `llvm` is built in, else `clift-auto`), except under `--dap`, which never
+installs a compiled tier.
+
+### Compilation cache (implemented)
+
+All entries live under `<work library>/yavs-cache/` (store: `yavs-cache`; policy: `crates/yavs/src/cache.rs`
+and `yavs-elab` `libstage.rs`): the analysed design (`sem-*.img`), analysed units (`units/`), the lowered
+design and package state (`ir-*`, `low-*`, `init-*`, and the library-prefix kinds `lib-*`, `libinit-*`,
+`libopt-*`), compiled code (`obj/obj-*.img` for LLVM, `obj/clif-*.img` for Cranelift) and the shared
+analysed `std`/`ieee` units in a per-user store. Every entry is keyed by everything it depends on, damaged or
+foreign entries are misses, and `--no-cache` neither reads nor writes. The behaviour is specified in
+`docs/cli-contract.md` and described for users in `docs/usage.rst`.
+
+### Parallel kernel (implemented, and what is not)
+
+Implemented: a rayon pool of `--threads` workers evaluates the processes of a delta cycle when the batch
+has at least 32 processes (`PAR_BATCH`), serial processes run afterwards on the kernel thread, the
+update phase is parallel from 256 independent signals, and the commit order is fixed so output does
+not depend on the thread count. Not implemented: a work-based inline or pooled choice, in-worker commit,
+a shared thread budget (`docs/design/parallel-kernel.md`, `docs/parallel.md`).
+
+### Design intent and future work (not implemented)
+
+* Replacing LLVM by Cranelift as the only bundled generator (the README states the intention; both exist today).
+* `--threads auto`, a token pool across test runs, element-range parallel update (parallel-kernel.md sections 6.4, 7).
+* A tier-up protocol based on resumption counters (section 5 below): superseded by the sampled-time policy.
 
 ## 0. Assumptions about the HIR (to reconcile with sem.md)
 
@@ -563,6 +646,10 @@ called again for an in-process restart (rule 4).
 Port collapsing is a separate pass over the net graph, off by default in M2 (`--collapse-ports`),
 with every difftest group run both ways (rule 3, Q2).
 
+*Correction 2026-10-28:* collapsing is on by default since 2026-10-19 (`--no-collapse-ports` keeps
+every port apart; `--dap` and `--vhpi` also switch it off): `docs/decisions.md` "`in` ports collapse
+into their actuals", `ElabConfig::collapse_ports`.
+
 ### 4.1 Multi-part ports (#74)
 
 A converted association whose formal or actual is more than one kernel leaf (a record port, an
@@ -659,6 +746,11 @@ return or (every 256) jumps rather than only at entries and resumptions (safe be
 share the frame and compiled code enters at any pc). Registers a frame starts with: the preloaded `Const`/`ConstF`/`AddrOf` values, zero elsewhere, except that the registers holding the address of a lean function's parameter slot are zero too (`Pre::next` skips their `AddrOf`): compiled code entering at any pc must not read them (#566). The size cap is 50k yavs IR instructions by default, `--tier-max-size=N`
 (user, 2026-10-19, #126).
 
+*Update 2026-10-28:* a second generator, Cranelift (`yavs-clift`, feature `clift`), implements the same
+compiled-code contract and the same `--tier=auto` policy (`yavs-llvm` `AutoTier` with a different
+`Generator`); the release archives without LLVM use it. The hot-function size cap and the `--tier-max-size`
+option apply to both.
+
 **Identical semantics:** the interpreter is the reference (rule 5). CI runs every difftest group
 `--tier interp` and `--tier llvm` (everything compiled, threshold ignored except over-size) and
 requires identical canonical output.
@@ -718,7 +810,7 @@ range, division by zero and the delta limit.
 | # | Question | Decision |
 |---|---|---|
 | Q1 | Logic array layout | Bit-planes everywhere now, signals included (1.3, K7). Transposes only at waves, VHPI, DAP, foreign calls and string conversion. |
-| Q2 | Port collapsing default | Off in M2; every difftest group runs collapsed and uncollapsed. |
+| Q2 | Port collapsing default | Off in M2; every difftest group runs collapsed and uncollapsed. Superseded 2026-10-19: on by default, `--no-collapse-ports` to keep ports apart (`docs/decisions.md`). |
 | Q3 | Protected types under `--threads N` | All protected callers serial through M3; per-instance locks later only if benchmarks ask for it. |
 | Q4 | Generic types | Shared code with runtime descriptors; specialisation is a later LLVM-tier option. |
 | Q5 | VHPIDIRECT calls | No libffi: own per-ABI trampolines in `yavs-ffi` (1.7), tested on SysV x86_64, AAPCS64 and Win64. |

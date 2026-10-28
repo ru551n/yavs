@@ -140,7 +140,7 @@ single_min has 134 instances (that own processes) of 67 architectures; counted p
 instance or a generate iteration) there are 540 distinct value sets, 90 when the parameters of
 `for` generates are left out. `hdlm_axi_crossbar`: 15 instances, 43 sets. `poc_cache_cpu`: 38
 instances, 40 sets, 16 generate-neutral. `sc5_fifo_repack`: 11 instances, 28 sets, 11
-generate-neutral. `vai_pe_array`: 6 instances, 139 sets, 7 generate-neutral. The OSVVM and UVVM
+generate-neutral. `vai_pe_array`: 6 instances, 139 sets, 7 generate-neutral. The verification-library
 testbenches are single-instance testbenches (1.0 to 1.2 regions per architecture); their
 polymorphism is in generic packages, which are already specialised per instance.
 
@@ -436,7 +436,7 @@ step and made `hdlm_lfsr` better than main in the interleaved run (30.46 against
 - **Against the prototype** (section 6; its base was older and slower: neorv32 94.7 G where main is now 65.0): `poc_arith_addw` -12.6 percent
   there, -11.0 here (cap 1.5; -11.3 without); `fletcher_bufferwriter_512` -7.2 / -7.3; `hdlm_lfsr` -3.0 / -3.3; `neorv32_single_min` -3.3 / -2.5
   (the memoisation and the other interpreter rounds since took part of what the copies gained there: its hot processes read little instance data;
-  of 847 process functions 287 take an instance-data address and 171 process instances reach 1024 activations in 300 us); OSVVM 0 / 0.
+  of 847 process functions 287 take an instance-data address and 171 process instances reach 1024 activations in 300 us); verification-library testbenches 0 / 0.
 - **RSS** within 4 MB everywhere in the table (slots are 0.9 KB each and sized by the cap; one `Pre` per copy; `neorv32_single_min` +4 MB, 5 percent;
   a synthetic design of 4096 one-process instances +0.7 MB of 35).
 - **The stage cache** (kind `spec`): 44 KB for `sc5_fifo_repack` (21 copies), 71 KB for `poc_cache_cpu` (49), 220 KB for

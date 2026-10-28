@@ -4,6 +4,13 @@ Status: analysis and design (2026-10-21, issue #481 item 3). Nothing here is imp
 prototype measured in section 5 lives on the branch `spike/mt-chunks` (instrumentation plus the run-phase
 changes, behind environment variables); it is evidence, not product code.
 
+Status check (2026-10-28, source at `ac2c94ff`): still true. `PAR_BATCH` is a fixed 32, the parallel update cut-off a
+fixed 256, the pooled path partitions serial and parallel processes and the kernel thread then locks and commits every
+slot as section 2 describes; none of steps 1 to 6 of section 7 is on `main`, and no token pool exists (#801 is an
+investigation). The single-thread kernel work since 2026-10-21 (prefetch of the next slot in a big inline batch, fast
+update paths, quiet-activation skips) changed the inline path, so the "today" columns of the tables below describe
+the pooled path of 2026-10-21 and have not been re-measured. The user-facing summary is `docs/parallel.md`.
+
 Caveat (#513, #521): every neorv32 number in this document (and in `docs/STATUS.md` "Multi-threaded scaling") was taken on a
 run in which the core slept in `wfi` after about 70 instructions. The corrected scaling on the real program is in
 `docs/STATUS.md` "neorv32 processor testbench against sim1" (Threads): 1.2x to 1.3x at 4 to 8 threads, not 1.8x to 2.3x.

@@ -194,7 +194,7 @@ bottleneck after step 4.
 
 ## 5. Migration, each step landable
 
-Every step keeps difftest 505/505 on all tiers and the OSVVM/UVVM suites green, adds or moves
+Every step keeps difftest 505/505 on all tiers and the verification-library suites green, adds or moves
 `crates/yavs/tests/perf.rs` bounds, and lands only if `realbench --compare` instructions do not
 regress at `--tier=interp` and `--tier=llvm`. A switch `YAVS_PACKS=off` (like `YAVS_LEAN_EVENTS`)
 gives the old one-leaf-per-signal layout for A/B runs and as a fallback while the steps land;
@@ -204,8 +204,8 @@ coverage, a debugger and VHPI keep the packs (nothing observable depends on them
 |---|---|---|
 | 0 | Measurement (section 1) and this document | none |
 | 1 | `LeafLoc` map with identity values; every consumer (build.rs call sites, `inst_data`, `actual_process`, collapse output, lean, wave, coverage, VHPI, DAP, hang and stuck names) goes through `kref`/`leaves_at`; `ProcDriver::range` convention | none (level instructions); prerequisite |
-| 2 | Packs of logic leaves of record signals with no port edge (internal registers such as `r`, `rin` of the integer unit; a port collapsed into them follows them); drivers stay one per leaf, idle-skip reads armed by their range | rec233: kernel per-leaf commit and finish become per pack: estimate 10 to 15% of rec233. LEON3: iu, dctrl, ictrl register records: 2 to 4%. neorv32: internal control records, 1 to 3%. fletcher, OSVVM, UVVM: about 0 (wide vectors; user-resolved transaction records; testbench-bound) |
-| 3 | Packs with port edges (the same edges and peers), coalesced edges | GRLIB AHB/APB record ports, the hdl-modules and Open Logic AXI record tests, fletcher's stream records: fewer port edges and port updates per cycle, estimate 2 to 8% on the `records` category, LEON3 1 to 3% |
+| 2 | Packs of logic leaves of record signals with no port edge (internal registers such as `r`, `rin` of the integer unit; a port collapsed into them follows them); drivers stay one per leaf, idle-skip reads armed by their range | rec233: kernel per-leaf commit and finish become per pack: estimate 10 to 15% of rec233. LEON3: iu, dctrl, ictrl register records: 2 to 4%. neorv32: internal control records, 1 to 3%. fletcher, the verification-library testbenches: about 0 (wide vectors; user-resolved transaction records; testbench-bound) |
+| 3 | Packs with port edges (the same edges and peers), coalesced edges | AHB/APB record ports of a processor system, AXI record tests of two open-source libraries, a stream-processing project's records: fewer port edges and port updates per cycle, estimate 2 to 8% on the `records` category, LEON3 1 to 3% |
 | 4 | Bulk access over runs: #677's gather/scatter tables of runs, `Ctx::codes`, adjacent drivers of a process in a pack merged (a drive without a target then names its leaf range), one assignment per pack, one wait per run | rec233: kernel share 37% to under 5% of what remains after #677; LEON3: `comb`'s record work (19% of the run before #677) to 1 to 2%, together with #677 about 15% of LEON3 |
 | 5 | Measure, then decide: raise the 64-element cap (a 233-scalar pack would be one read of 233 codes, but loses the per-element stamps compiled code reads) | open; measured on LEON3 and neorv32 |
 | 6 | Byte leaves (enumerations, integers) in packs of one element size, with a multi-element byte fast path (today only one byte element has `bquick`/`OutB`) | small: LEON3's register records have few byte fields; FSM-heavy records more |

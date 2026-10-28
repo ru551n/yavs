@@ -429,8 +429,6 @@ test hit:
 ``yavs cov report DB ... --tests`` prints every item that ran as an exclusion row followed by
 ``# tests:`` and the tests that hit it. Both take ``--exclude``.
 
-HTML reports are not available yet.
-
 Calling C from VHDL
 -------------------
 

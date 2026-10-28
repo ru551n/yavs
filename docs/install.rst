@@ -44,7 +44,7 @@ Each archive unpacks into one directory of the same name (without ``.tar.gz`` or
    * - ``yavs``, ``yavs.exe``
      - The simulator. The ``std`` and ``ieee`` sources are built into it.
    * - ``yavs-gui``, ``yavs-gui.exe``
-     - The graphical debugger (:doc:`debugging`). ``yavs run --gui`` looks for it
+     - An early graphical debugger. ``yavs run --gui`` looks for it
        next to ``yavs``, so keep the two together.
    * - ``LICENSE-MIT``, ``LICENSE-APACHE``
      - The licences of yavs, MIT or Apache-2.0 at your option.

@@ -38,6 +38,6 @@
     "Record waveforms with `--wave=FILE.fst` (FST format, readable by common waveform viewers); limit them with `--wave-exclude` globs on large designs.",
     "Errors and warnings carry stable codes such as E1100; `yavs --explain CODE` prints the explanation. A failed step stops the run: nothing runs after a failed analyze.",
     "Check `docs/language-support.md` before relying on a VHDL-2019 or PSL feature: PSL is a subset. VHPI support is partial, see `docs/vhpi.md`.",
-    "Start with the Getting started page (a testbench in `docs/examples`: analyze, run, `-gEXPECTED=5` for a failing run, exit statuses 0 and 1). The Command-line reference page lists the user-facing options; `yavs --explain CODE` and the Errors and troubleshooting page explain diagnostics. Debugging: `yavs run --dap` for editors, the VS Code extension and the separate `yavs-gui` (`yavs run --gui`); VHPI plugins load with `--vhpi`."
+    "Start with the Getting started page (a testbench in `docs/examples`: analyze, run, `-gEXPECTED=5` for a failing run, exit statuses 0 and 1). The Command-line reference page lists the user-facing options; `yavs --explain CODE` and the Errors and troubleshooting page explain diagnostics. Debugging: `yavs run --dap` for VS Code (extension in `editors/vscode`) and other Debug Adapter Protocol clients; VHPI plugins load with `--vhpi`."
   ]
 }

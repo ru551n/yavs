@@ -85,7 +85,7 @@ Waveforms, coverage, debugging, plugins
   ``--wave-max-array=N``: :doc:`waveforms`.
 * ``--cov[=FILE]``, ``--cov-kind=LIST``, ``--cov-test=NAME``, ``--cov-toggle-max=N``,
   ``--cov-exclude-translate-off``: :doc:`coverage`.
-* ``--dap=PORT|stdio``, ``--gui``: :doc:`debugging`.
+* ``--dap=PORT|stdio``: :doc:`debugging`.
 * ``--vhpi=LIB[:ENTRY]``, ``--load=LIB``: :doc:`vhpi`.
 
 Performance

@@ -2,7 +2,7 @@ Debugging
 =========
 
 yavs has a debugger built in. It speaks the Debug Adapter Protocol (DAP), the protocol of the
-debug views of VS Code and most other editors, and ships a small graphical debugger of its own.
+debug views of VS Code and most other editors.
 
 VS Code
 -------
@@ -78,19 +78,6 @@ start one test and VS Code can attach to it:
 
 Add ``--wave=out.fst`` to follow the waveforms next to the session: the file is flushed at every
 stop, so a viewer that reloads it shows the run up to the breakpoint.
-
-Graphical debugger
-------------------
-
-``yavs run --gui`` opens the run in ``yavs-gui``, which ships next to ``yavs``:
-
-.. code-block:: bash
-
-    yavs run --gui --work=work:build/work tb --stop-time=1ms
-
-It is early: it has run, pause and step controls, a console, source tabs with line breakpoints, a
-call stack, locals and watch expressions. Signal breakpoints, force and deposit are not in it yet;
-use VS Code for those. ``yavs-gui --attach 127.0.0.1:4711`` connects to a ``yavs run --dap=4711``.
 
 Other editors
 -------------

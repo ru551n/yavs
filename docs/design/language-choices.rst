@@ -1,5 +1,9 @@
-Where simulators differ
-=======================
+Where simulators differ: the full list
+======================================
+
+Internal reference (moved off the site 2026-10-28; the user page ``docs/language-choices.rst``
+keeps only the differences a user runs into, with the flag to change them). Links of the form
+``:doc:`` below refer to site pages.
 
 The VHDL standard leaves some points open, and simulators do not always agree on them. Where the
 standard is clear, yavs follows it and reports a violation early. Where it is unclear or silent,
@@ -396,7 +400,7 @@ option to them as well as to ``analyze``.
 PSL
 ---
 
-yavs runs a subset of PSL (see the usage page) and reads it in ``-- psl`` comments only with
+yavs runs a subset of PSL (see ``docs/language-support.md``) and reads it in ``-- psl`` comments only with
 the option ``--psl``, as the simulators that read PSL in comments do; some simulators reject PSL
 altogether. A directive is checked in the delta cycle of its clock event, with the values the
 signals have then. yavs also accepts an ``@`` clock on a directive, ``assume`` and a ``severity``

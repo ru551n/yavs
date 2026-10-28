@@ -105,6 +105,11 @@ milestone users care about works.
   is linked on GitHub; `parallel.md` and the full `conformance.md` are off the site (the site shows
   the report's summary, cut in `conf.py`). The site and README name OSVVM, UVVM and VUnit as
   libraries yavs is compliant with, and never name cocotb (maintainer, 2026-10-28).
+  Follow-up (maintainer, 2026-10-28): "Where simulators differ" is a short table of the differences a
+  user runs into with the flag to change them (the full list moved to `docs/design/language-choices.rst`);
+  the VHPI page keeps the "At a glance" table and how to load a plugin (the audit of the standard and
+  call-by-call behaviour moved to `crates/yavs-vhpi/STANDARD.md`); the Debugging page covers DAP and
+  VS Code only, not `yavs-gui`; the README names OSVVM, UVVM and VUnit.
 - CI (agent, 2026-10-18, #134): fmt, clippy and tests with default features on ubuntu-24.04,
   ubuntu-24.04-arm and windows-latest (MSVC). No LLVM, no external corpora (#63), no qemu/Wine
   runs (the aarch64 and Windows runners are native). The release workflow calls the same

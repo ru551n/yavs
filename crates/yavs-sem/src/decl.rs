@@ -681,6 +681,24 @@ impl Db {
         if matches!(class, ObjClass::Signal | ObjClass::SharedVariable) {
             self.check_not_sequential(scope, first, None)?;
         }
+        // 6.4.2.4: a variable outside a process, subprogram or protected type (2019 private
+        // variables) is shared (#811).
+        if class == ObjClass::Variable
+            && self.sequential_owner(scope).is_none()
+            && !matches!(
+                self.scopes[scope].kind,
+                crate::scope::ScopeKind::ProtectedBody | crate::scope::ScopeKind::Protected
+            )
+        {
+            return Err(self.error(
+                yavs_diag::Diagnostic::error(
+                    crate::diag::NON_SHARED_VARIABLE,
+                    "a variable declared here must be a shared variable",
+                )
+                .with_primary(first, "not in a process, subprogram or protected type body")
+                .with_help("write `shared variable`, or declare the variable in a process"),
+            ));
+        }
         match class {
             ObjClass::Constant => self.check_not_access_or_file("constant", subtype, first)?,
             ObjClass::Signal => self.check_not_access_or_file("signal", subtype, first)?,

@@ -251,8 +251,8 @@
        52
       ],
       "hierarchy": [
-       83,
-       83
+       84,
+       84
       ],
       "ieee": [
        21,
@@ -352,8 +352,8 @@
        52
       ],
       "hierarchy": [
-       83,
-       83
+       84,
+       84
       ],
       "ieee": [
        21,
@@ -453,8 +453,8 @@
        52
       ],
       "hierarchy": [
-       83,
-       83
+       84,
+       84
       ],
       "ieee": [
        21,
@@ -525,7 +525,7 @@
    }
   },
   "discrepancies": {
-   "cases": 211,
+   "cases": 213,
    "output_tail": "",
    "yavs_matches_expected": true
   },
@@ -534,8 +534,8 @@
     "classes": {
      "analysis": 22,
      "elab": 16,
-     "oracle": 30,
-     "pass": 1001,
+     "oracle": 29,
+     "pass": 1002,
      "skip": 403,
      "timeout": 1
     },
@@ -724,7 +724,7 @@
   }
  },
  "generated": {
-  "commit": "48ad5c25a6-dirty",
+  "commit": "4a359edb5f-dirty",
   "commit_date": "2026-10-28",
   "version": "0.8.0"
  },
@@ -3083,6 +3083,20 @@
     "kind": "LRM clear",
     "lrm": "14.4.2.1",
     "yavs": "OK"
+   },
+   {
+    "case": "subtype-of-subtype-bound-once",
+    "decided": "agent, 2026-10-28 (#612, L146)",
+    "kind": "LRM clear",
+    "lrm": "14.4.2.1",
+    "yavs": "OK"
+   },
+   {
+    "case": "unused-constant-index-constraint",
+    "decided": "agent, 2026-10-28 (#825, L108)",
+    "kind": "LRM clear",
+    "lrm": "5.3.2.2, 14.4.2.1",
+    "yavs": "REJECT"
    }
   ],
   "platforms": {

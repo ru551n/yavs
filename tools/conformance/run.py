@@ -259,9 +259,17 @@ def vests_totals(vs):
     return {"pass": sum(v["pass"] for v in g), "total": sum(v["pass"] + v["fail"] for v in g), "skip": sum(v["skip"] for v in g)}
 
 
+# Records kept in docs/conformance-local.json but not shown in the user report (external tools, maintainer 2026-10-28)
+INTERNAL_RECORDS = {"cocotb"}
+
+
+def user_records(R):
+    return {k: v for k, v in R["local"]["records"].items() if k not in INTERNAL_RECORDS}
+
+
 def suite_rows(R):
     """One row per suite: name, what it is, passed, total (None when not run), unit, where, when, tool."""
-    ci, loc, w = R["ci"], R["local"]["records"], R.get("waveq")
+    ci, loc, w = R["ci"], user_records(R), R.get("waveq")
     here = ("CI", "this report (see Generated)")  # the commit stays in the Generated line only, so --check can compare
     rec = lambda k: ("local", f"{loc[k]['date']}, `{loc[k]['commit']}`")
     allg = lambda d: [sum(v[0] for v in d.values()), sum(v[1] for v in d.values())]
@@ -320,7 +328,7 @@ def frac(p, t):
 
 
 def render(R):
-    ci, loc, st, m = R["ci"], R["local"]["records"], R["static"], R["generated"]
+    ci, loc, st, m = R["ci"], user_records(R), R["static"], R["generated"]
     allg = lambda d: [sum(v[0] for v in d.values()), sum(v[1] for v in d.values())]
     dt = ci.get("difftest", {}).get("interp", {})
     w = R.get("waveq")
@@ -339,7 +347,7 @@ tests pass; every failure is tracked as an issue. This is evidence, not a proof 
 | --- | --- | ---: |
 """ + "".join(f"| {r['name']} | {r['what']} | " + ("not run yet" if r["t"] is None else f"{r['p']}/{r['t']}" + ("" if r["unit"] == "tests" else f" {r['unit']}")) + " |\n" for r in srows if "tier" not in r["name"]) + """
 Terms used here: *passed / total* counts the tests a suite judges itself, out of the tests that can be judged (a test whose own
-expectation is wrong or depends on the implementation is not counted, with its reason, see Details). To *analyse* a file is to
+expectation is wrong or depends on the implementation is not counted, with its reason). To *analyse* a file is to
 check it and store it in a library; to *simulate* is to elaborate the design and run it. A *tier* is the interpreter or one of the
 compilers (LLVM, Cranelift) that run a design; every tier gives the same output. The *language reference* is the IEEE 1076 standard.
 """]

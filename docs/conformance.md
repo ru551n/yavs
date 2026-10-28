@@ -1,23 +1,22 @@
 # yavs conformance report
 
-Generated: yavs 0.8.0 at commit `48ad5c25a6-dirty` (2026-10-28) by `tools/conformance/run.py`; do not edit by hand.
+Generated: yavs 0.8.0 at commit `4a359edb5f-dirty` (2026-10-28) by `tools/conformance/run.py`; do not edit by hand.
 
 yavs is checked by running the test suites of VHDL libraries, a VHDL language test suite and real designs on it, and by comparing its output
-with two established open-source VHDL simulators, called sim1 and sim2 here. Each suite judges its own tests. Over the suites below, 14821 of 15015
+with two established open-source VHDL simulators, called sim1 and sim2 here. Each suite judges its own tests. Over the suites below, 14825 of 15018
 tests pass; every failure is tracked as an issue. This is evidence, not a proof of correctness.
 
 | Project or suite | What it is | Passed / total |
 | --- | --- | ---: |
-| Differential testbenches | small testbenches of this repository; output must equal sim1's, at 1 and 4 threads | 547/547 |
-| Known simulator differences | one reproducer per case where simulators disagree | 211/211 |
-| sim1's regression tests | a reference simulator's own self-checking tests (runnable ones) | 1001/1070 |
+| Differential testbenches | small testbenches of this repository; output must equal sim1's, at 1 and 4 threads | 548/548 |
+| Known simulator differences | one reproducer per case where simulators disagree | 213/213 |
+| sim1's regression tests | a reference simulator's own self-checking tests (runnable ones) | 1002/1070 |
 | sim2's regression tests | a reference simulator's own self-checking tests (runnable ones) | 458/504 |
 | VESTs | VHDL-1993 language test suite | 3621/3694 |
 | UVVM | verification library: its own testbenches | 131/137 |
 | OSVVM, VHDL-2008 | verification library: its own regression | 314/314 |
 | OSVVM, VHDL-2019 | verification library: its own regression | 314/314 |
 | VUnit | test framework: its own VHDL test suites | 1357/1357 |
-| cocotb | Python test framework: its own regression over VHPI, 702 VHDL tests pass | 78/78 jobs |
 | Open Logic | FPGA standard library: its own testbenches run with yavs | 6867/6867 |
 | Real designs | neorv32 (three configurations) and GRLIB LEON3 run to completion | 4/4 designs |
 | Waveforms of real designs | signals of 17 designs equal to sim1's at every time step | 44824/44889 signals |
@@ -25,7 +24,7 @@ tests pass; every failure is tracked as an issue. This is evidence, not a proof 
 | VHPI | plugin call traces identical to sim1's | 2/23 traces |
 
 Terms used here: *passed / total* counts the tests a suite judges itself, out of the tests that can be judged (a test whose own
-expectation is wrong or depends on the implementation is not counted, with its reason, see Details). To *analyse* a file is to
+expectation is wrong or depends on the implementation is not counted, with its reason). To *analyse* a file is to
 check it and store it in a library; to *simulate* is to elaborate the design and run it. A *tier* is the interpreter or one of the
 compilers (LLVM, Cranelift) that run a design; every tier gives the same output. The *language reference* is the IEEE 1076 standard.
 
@@ -46,7 +45,7 @@ Every testbench of `tests/corpus` runs on yavs and its normalised output is comp
 | env | 14/14 | 14/14 | 14/14 |
 | force | 12/12 | 12/12 | 12/12 |
 | generics | 52/52 | 52/52 | 52/52 |
-| hierarchy | 83/83 | 83/83 | 83/83 |
+| hierarchy | 84/84 | 84/84 | 84/84 |
 | ieee | 21/21 | 21/21 | 21/21 |
 | implicit | 6/6 | 6/6 | 6/6 |
 | postponed | 2/2 | 2/2 | 2/2 |
@@ -63,7 +62,7 @@ Every testbench of `tests/corpus` runs on yavs and its normalised output is comp
 | std93 | 6/6 | 6/6 | 6/6 |
 | synopsys | 20/20 | 20/20 | 20/20 |
 | textio | 14/14 | 14/14 | 14/14 |
-| total | 547/547 | 547/547 | 547/547 |
+| total | 548/548 | 548/548 | 548/548 |
 
 Failing: none.
 
@@ -77,16 +76,16 @@ Each reference simulator ships a suite of self-checking tests. They run in place
 
 | suite | tests | pass | gated pass list | regressions |
 | --- | ---: | ---: | ---: | ---: |
-| sim1 | 1473 | 1001 | 992 | 0 |
+| sim1 | 1473 | 1002 | 992 | 0 |
 | sim2 | 1151 | 458 | 455 | 0 |
 
-Not passing: sim1: 69; sim2: 46 (the classes of each are in `docs/conformance.json`; a timeout under load moves a test between them, so the report does not).
+Not passing: sim1: 68; sim2: 46 (the classes of each are in `docs/conformance.json`; a timeout under load moves a test between them, so the report does not).
 
 ### Known simulator differences
 
 `docs/design/simulator-discrepancies.md` lists every case where the references disagree with each other, with the language reference or with yavs:
-211 catalogued behaviours, each with a reproducer under `tests/discrepancies/<case>/`. CI runs every reproducer on yavs and fails when yavs's output
-differs from the recorded one (matches). Kinds: LRM clear 128, LRM ambiguity 77, reference bug 5, library availability 1.
+213 catalogued behaviours, each with a reproducer under `tests/discrepancies/<case>/`. CI runs every reproducer on yavs and fails when yavs's output
+differs from the recorded one (matches). Kinds: LRM clear 130, LRM ambiguity 77, reference bug 5, library availability 1.
 
 Policy (`docs/plan.md`): where the language reference is clear, yavs follows it even against all references; where it is unclear yavs is permissive
 and follows the majority of the references that run the construct. The verdicts of each reference are in the catalogue; the table gives the clause, the kind,
@@ -307,6 +306,8 @@ and yavs's verdict.
 | [`short-circuit-constant-false-effect`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/short-circuit-constant-false-effect) | 9.2.2 | LRM clear | OK |
 | [`index-constraint-element-bound`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/index-constraint-element-bound) | 5.3.2.2 | LRM clear | FATAL |
 | [`subtype-range-bound-variable`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/subtype-range-bound-variable) | 14.4.2.1 | LRM clear | OK |
+| [`subtype-of-subtype-bound-once`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/subtype-of-subtype-bound-once) | 14.4.2.1 | LRM clear | OK |
+| [`unused-constant-index-constraint`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/unused-constant-index-constraint) | 5.3.2.2, 14.4.2.1 | LRM clear | REJECT |
 
 </details>
 
@@ -362,7 +363,6 @@ The libraries' own testbenches and regression suites run on yavs, each with the 
 | OSVVM `.pro` regression, VHDL-2019 (CI) | 314 | 314 | 0 | 0 | pass = exit 0 and the library's `DONE PASSED` line |
 | VUnit's own VHDL suites (local, 2026-10-20 at `f2ab69be`) | 1357 | 1357 | 0 | 0 | 11 suites; recorded in docs/STATUS.md (#112) |
 | Open Logic's own testbenches run with yavs (local, 2026-10-28 at `43000dd6`) | 6867 | 6867 | 0 | 0 | Open Logic 4.7.0 with its en_cl_fix submodule; every test of the project's own run.py (base, axi, intf, fix, ft; 6867 in all) |
-| cocotb regression over VHPI (local, 2026-10-28 at `ef30c313de`) | 78 | 78 | 0 | 0 | cocotb 2.1.0, counted in jobs (test directories, examples, pytest groups) by cocotb's own verdict; 43 ran VHDL tests (702 tests pass), the others skip themselves (Verilog only or nothing to simulate) |
 
 ### VESTs, the VHDL-1993 language suite
 
@@ -523,7 +523,6 @@ The `check` job is `cargo fmt`, `clippy -D warnings` and the whole test suite of
 | OSVVM, VHDL-2008 | CI | this report (see Generated) | `tools/suites/pro.py` |
 | OSVVM, VHDL-2019 | CI | this report (see Generated) | `tools/suites/pro.py` |
 | VUnit | local | 2026-10-20, `f2ab69be` | VUnit's own `run.py` scripts |
-| cocotb | local | 2026-10-28, `ef30c313de` | `tools/cocotb/run.py` |
 | Open Logic | local | 2026-10-28, `43000dd6` | Open Logic's `sim/run.py` |
 | Real designs | CI | this report (see Generated) | `tools/realbench/run.py` |
 | Waveforms of real designs | local | 2026-10-27, `05aa8453fb` | `tools/waveq` |

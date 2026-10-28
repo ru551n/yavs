@@ -31,6 +31,7 @@ report generator or regenerate the report (#780).
 | The reference simulators appear as sim1/sim2 in the report; no product names | Repo rule 11 | root `AGENTS.md` |
 | The committed report is compared with the regenerated one ignoring the `Generated:` line. On `main` a difference is a warning, on a release tag it fails the run | Ten agents push to `main`: failing every push for a changed count would block them; a release must carry a current report | #780 |
 | The report is user-facing: it opens with a short plain-language summary and one table (suite, what it is, passed / total), terms explained once; everything else (per-suite detail, where and when each result was produced, gated lists, discrepancies, commands) follows under "Details", "How to reproduce" and "Known limits". No internal jargon (no agent names, tool option names or rule numbers); CI rows name no commit (only the `Generated:` line does, so `--check` can compare) | Maintainer instruction | #780, 2026-10-28 |
+| Records of external tools that are not user-facing (`INTERNAL_RECORDS` in `run.py`: cocotb) stay in `conformance-local.json` and are left out of `conformance.md` | Maintainer: cocotb is an external tool and is not named in user documents | user, 2026-10-28 |
 | Nothing is published outside the repository (no Pages) | Needs the maintainer's decision | #780 |
 | Corpus results come from `tools/corpus/run.py` against the gated `.expected` lists; sim1's numbers are the recorded `.sim1.expected` lists, not a rerun | Same files, no reference needed in CI | #780 |
 

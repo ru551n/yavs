@@ -31,7 +31,7 @@ minimal test runner testbench on the real binary), CI is added (#134) together w
 (#165), and the first release is cut. Rationale: a release is only useful once the first
 milestone users care about works.
 
-- Release workflow: triggered by a `v*` tag; builds `yavs` for Linux x86_64, Linux aarch64 and
+- Release workflow: triggered by a `v<version>` tag (`v[0-9]*`, so the `vunit-yavs-v*` tags of the Python package never start it); builds `yavs` for Linux x86_64, Linux aarch64 and
   Windows x86_64, runs the CI
   checks on the tagged commit first, and attaches archives plus SHA256SUMS to a GitHub release.
 - Packaging (agent, 2026-10-18, #165; revised by the user the same day):
@@ -12470,3 +12470,29 @@ end for those processes. Method as in round 10: bench builds (`llvm`, and `clift
   the kernel's own gates, muxes and programs still run in the batch; the rest of the fletcher gap is diffuse: per-delta work of `cycle` and
   `finish_direct`, the interpreted record gather and scatter of two-process designs, and compiled straight-line processes that are no
   faster than interpreted ones (#679).
+
+## Test runner package vunit-yavs (python/vunit-yavs, 2026-10-28)
+
+- **One Python distribution** `vunit-yavs` (import `vunit_yavs`) in `python/vunit-yavs` holds everything yavs-specific on the
+  runner's Python side: the simulator interface (declared by the `simulator` key of its `vunit_pkg.toml`, added with
+  `add_package("vunit-yavs", allow_setup=True)` before anything else), `--yavs-debug`, the thread cap, the jobserver, the version
+  check. Nothing yavs-specific goes into the runner itself (user, 2026-10-28). Licence MPL-2.0, the licence the interface was first
+  written under (agent; the user to confirm).
+- **`--yavs-debug[=PORT]`** (agent, 2026-10-28; the user asked for `--debug`): default 4711 (the editor extension's attach port),
+  `0` a free port; `yavs run --dap=PORT`, the address printed on the terminal. The `yavs-` prefix because the runner parses its
+  argv once before packages are added, with prefix matching, and takes a bare `--debug` as another simulator's `--debugger`. One
+  simulation: refused with `--gui`, `--elaborate` or `-p` above 1 at the start; a second simulation is refused before yavs starts
+  (the interface sees no test list earlier). A suite run in one simulation (several tests) is one session.
+- **Thread cap** (user, 2026-10-28): sim option `yavs.max_threads` over the runner argument `--yavs-max-threads N`, passed as
+  `--threads=N` before the raw flags (an explicit `--threads` in `yavs.sim_flags` wins); unset passes nothing; not under
+  `--yavs-debug` or for `elab`.
+- **Jobserver** (user, 2026-10-28): opt-in `--yavs-jobserver`, POSIX only (an error on Windows), only with `-p N` above 1. One
+  private GNU fifo jobserver per test (`MAKEFLAGS=-jN --jobserver-auth=fifo:PATH`, replacing an outer value; joining an outer
+  jobserver is not supported) in a temporary directory, since `MAKEFLAGS` cannot hold a path with spaces (agent: the user asked
+  for the test output directory). Free tokens `N - max(k, 1) - lent` for `k` running tests; lent breadth first, newest test first,
+  capped by `yavs.max_threads - 1`; a test that left tokens unread at the last 50 ms tick gets at most one more than it uses.
+  Steady-state total `N`, not a hard cap (a test starting while all tokens are out runs at once). Tokens held at a simulation's
+  exit, or at the end of the run, are a warning.
+- **Releases** (user, 2026-10-28): tag `vunit-yavs-v<version>` runs `.github/workflows/vunit-yavs-release.yml` (tests against the
+  yavs binary release of the same version, then TestPyPI and PyPI by trusted publishing); the binary release now runs on
+  `v[0-9]*` only, so neither tag starts the other workflow. `python/vunit-yavs/RELEASING.md` has the order.

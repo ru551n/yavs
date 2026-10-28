@@ -72,7 +72,9 @@ start one test and VS Code can attach to it:
        { "type": "yavs", "request": "launch", "name": "Attach to yavs", "port": 4711 }
 
 2. Start exactly one test so that the runner passes ``--dap=4711`` to ``yavs run`` (as an extra
-   simulator argument). It prints ``yavs: waiting for a debugger on port 4711``.
+   simulator argument). It prints ``yavs: waiting for a debugger on port 4711``. With the runner
+   package ``vunit-yavs`` (``python/vunit-yavs`` in the source tree), ``python run.py
+   lib.tb.test_name --yavs-debug`` does this and prints where to attach.
 3. Pick "Attach to yavs" and press F5. The run stops at your breakpoints; when you disconnect or
    the run ends, the runner reports the test as usual.
 

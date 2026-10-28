@@ -1,0 +1,129 @@
+# Release of the Python package vunit-yavs (python/vunit-yavs, RELEASING.md) on a
+# `vunit-yavs-v<version>` tag: the tag must equal the version in pyproject.toml; the sdist and
+# wheel are built, unit-tested and checked, tested against the yavs binary release of the same
+# version (downloaded, so that release comes first), published to TestPyPI and then PyPI by trusted
+# publishing (OIDC, environments `testpypi` and `pypi`, no tokens), and attached to a GitHub
+# release. The binary release (release.yml) runs on `v[0-9]*` tags only.
+name: vunit-yavs release
+
+on:
+  push:
+    tags: ["vunit-yavs-v*"]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: python/vunit-yavs
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Tag equals the package version
+        run: |
+          version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          if [[ "$GITHUB_REF_NAME" != "vunit-yavs-v$version" ]]; then
+            echo "tag $GITHUB_REF_NAME does not match the package version $version (pyproject.toml)"; exit 1
+          fi
+      - name: Build
+        run: |
+          python -m pip install build twine
+          python -m build
+          python -m twine check --strict dist/*
+      - name: Unit tests against the wheel
+        run: |
+          python -m pip install dist/*.whl pytest
+          cd "$RUNNER_TEMP"  # Out of the source tree, so the tests import the installed wheel
+          python -m pytest "$GITHUB_WORKSPACE/python/vunit-yavs/tests"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: python/vunit-yavs/dist/
+          if-no-files-found: error
+
+  # The package against the released yavs of the same version (the binary release comes first)
+  real-yavs:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: python/vunit-yavs/dist/
+      - name: Download yavs ${{ github.ref_name }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=${GITHUB_REF_NAME#vunit-yavs-v}
+          name=yavs-$version-x86_64-unknown-linux-gnu
+          gh release download "v$version" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP" \
+            --pattern "$name.tar.gz" --pattern SHA256SUMS \
+            || { echo "no yavs v$version release: release the binary first (RELEASING.md)"; exit 1; }
+          (cd "$RUNNER_TEMP" && grep " $name.tar.gz\$" SHA256SUMS | sha256sum -c - && tar xzf "$name.tar.gz")
+          echo "VUNIT_YAVS_PATH=$RUNNER_TEMP/$name" >> "$GITHUB_ENV"
+      - name: Real-binary tests against the wheel
+        run: |
+          python -m pip install dist/*.whl pytest
+          "$VUNIT_YAVS_PATH/yavs" --version
+          cd "$RUNNER_TEMP"
+          python -m pytest -v "$GITHUB_WORKSPACE/python/vunit-yavs/tests/test_real_yavs.py"
+
+  testpypi:
+    needs: [build, real-yavs]
+    runs-on: ubuntu-24.04
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  pypi:
+    needs: testpypi
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    needs: pypi
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Create the release
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Not the latest release: that stays the yavs binary's
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --latest=false \
+            --title "vunit-yavs ${GITHUB_REF_NAME#vunit-yavs-v}" \
+            --notes "The Python package vunit-yavs, also on PyPI. Changes: python/vunit-yavs/CHANGELOG.md."

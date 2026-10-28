@@ -1,16 +1,16 @@
 # yavs conformance report
 
-Generated: yavs 0.8.0 at commit `c08e7dd72c` (2026-10-28) by `tools/conformance/run.py`; do not edit by hand.
+Generated: yavs 0.8.0 at commit `17a5bf1a06` (2026-10-28) by `tools/conformance/run.py`; do not edit by hand.
 
 yavs is checked by running the test suites of VHDL libraries, a VHDL language test suite and real designs on it, and by comparing its output
-with two established open-source VHDL simulators, called sim1 and sim2 here. Each suite judges its own tests. Over the suites below, 7948 of 8143
+with two established open-source VHDL simulators, called sim1 and sim2 here. Each suite judges its own tests. Over the suites below, 7954 of 8148
 tests pass; every failure is tracked as an issue. This is evidence, not a proof of correctness.
 
 | Project or suite | What it is | Passed / total |
 | --- | --- | ---: |
-| Differential testbenches | small testbenches of this repository; output must equal sim1's, at 1 and 4 threads | 544/544 |
-| Known simulator differences | one reproducer per case where simulators disagree | 209/209 |
-| sim1's regression tests | a reference simulator's own self-checking tests (runnable ones) | 1000/1070 |
+| Differential testbenches | small testbenches of this repository; output must equal sim1's, at 1 and 4 threads | 547/547 |
+| Known simulator differences | one reproducer per case where simulators disagree | 211/211 |
+| sim1's regression tests | a reference simulator's own self-checking tests (runnable ones) | 1001/1070 |
 | sim2's regression tests | a reference simulator's own self-checking tests (runnable ones) | 458/504 |
 | VESTs | VHDL-1993 language test suite | 3621/3694 |
 | UVVM | verification library: its own testbenches | 131/137 |
@@ -41,16 +41,16 @@ Every testbench of `tests/corpus` runs on yavs and its normalised output is comp
 | --- | --- | --- | --- |
 | access | 8/8 | 8/8 | 8/8 |
 | arith | 8/8 | 8/8 | 8/8 |
-| composite | 116/116 | 116/116 | 116/116 |
+| composite | 117/117 | 117/117 | 117/117 |
 | delta | 13/13 | 13/13 | 13/13 |
 | env | 14/14 | 14/14 | 14/14 |
 | force | 12/12 | 12/12 | 12/12 |
 | generics | 52/52 | 52/52 | 52/52 |
-| hierarchy | 82/82 | 82/82 | 82/82 |
+| hierarchy | 83/83 | 83/83 | 83/83 |
 | ieee | 21/21 | 21/21 | 21/21 |
 | implicit | 6/6 | 6/6 | 6/6 |
 | postponed | 2/2 | 2/2 | 2/2 |
-| process | 38/38 | 38/38 | 38/38 |
+| process | 39/39 | 39/39 | 39/39 |
 | protected | 22/22 | 22/22 | 22/22 |
 | psl | 13/13 | 13/13 | 13/13 |
 | reflect | 14/14 | 14/14 | 14/14 |
@@ -63,7 +63,7 @@ Every testbench of `tests/corpus` runs on yavs and its normalised output is comp
 | std93 | 6/6 | 6/6 | 6/6 |
 | synopsys | 20/20 | 20/20 | 20/20 |
 | textio | 14/14 | 14/14 | 14/14 |
-| total | 544/544 | 544/544 | 544/544 |
+| total | 547/547 | 547/547 | 547/547 |
 
 Failing: none.
 
@@ -77,10 +77,10 @@ Each reference simulator ships a suite of self-checking tests. They run in place
 
 | suite | tests | pass | gated pass list | regressions |
 | --- | ---: | ---: | ---: | ---: |
-| sim1 | 1473 | 1000 | 992 | 0 |
+| sim1 | 1473 | 1001 | 992 | 0 |
 | sim2 | 1151 | 458 | 455 | 0 |
 
-Not passing: sim1: 70; sim2: 46 (the classes of each are in `docs/conformance.json`; a timeout under load moves a test between them, so the report does not).
+Not passing: sim1: 69; sim2: 46 (the classes of each are in `docs/conformance.json`; a timeout under load moves a test between them, so the report does not).
 
 ### Known simulator differences
 

@@ -2275,14 +2275,7 @@ impl<'a> Fx<'a, '_> {
         let indexes = index_subtypes(db, db.base(st));
         for (i, rc) in dims.iter().enumerate() {
             let r = self.range(rc, span)?;
-            // LRM 5.3.2.2: the index range lies inside the index subtype. An
-            // attribute range (`string(x'range)`) is checked too (#637).
-            if let Some(&ix) = indexes.as_ref().and_then(|v| v.get(i))
-                && !ty::is_real(db, db.base(ix))
-                && !self.range_within(rc, ix)
-            {
-                self.check_range_in(r, ix, "index constraint", span)?;
-            }
+            self.check_index_range(indexes.as_deref(), i, rc, r, span)?;
             let d = self.dir_reg(r.dir);
             parts.extend([r.left, r.right, d]);
         }
@@ -2781,6 +2774,25 @@ impl<'a> Fx<'a, '_> {
         self.jump(j);
         self.at(j);
         Ok(())
+    }
+
+    /// LRM 5.3.2.2: index range `r` (of `rc`, dimension `k`) lies inside its index subtype
+    /// among `indexes`, whatever form the range has (`string(x'range)`, #637); nothing is
+    /// emitted for a range known to be inside.
+    pub(crate) fn check_index_range(
+        &mut self,
+        indexes: Option<&[SubtypeId]>,
+        k: usize,
+        rc: &RangeC,
+        r: Rng,
+        span: Span,
+    ) -> R<()> {
+        match indexes.and_then(|v| v.get(k)) {
+            Some(&ix) if !ty::is_real(self.db, self.db.base(ix)) && !self.range_within(rc, ix) => {
+                self.check_range_in(r, ix, "index constraint", span)
+            }
+            _ => Ok(()),
+        }
     }
 
     /// The static index ranges `dims` of `st` that are not inside their index subtypes fail
@@ -5783,7 +5795,7 @@ pub fn deferred_completion(db: &Db, d: DeclId) -> Option<DeclId> {
 }
 
 /// The index subtypes of array type `t`.
-fn index_subtypes(db: &Db, t: yavs_sem::TypeId) -> Option<Vec<SubtypeId>> {
+pub(crate) fn index_subtypes(db: &Db, t: yavs_sem::TypeId) -> Option<Vec<SubtypeId>> {
     match &db.types[t].kind {
         TypeKind::Array { indexes, .. } => Some(indexes.to_vec()),
         _ => None,

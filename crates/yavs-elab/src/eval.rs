@@ -1421,6 +1421,43 @@ impl Model {
         }
     }
 
+    /// LRM 5.3.2.2: a non-null index range lies inside its index subtype `ix` (#637).
+    fn check_index_range(
+        &mut self,
+        db: &Db,
+        b: Bounds,
+        ix: SubtypeId,
+        scope: Option<ScopeId>,
+        span: Span,
+    ) -> R<()> {
+        if b.is_empty() {
+            return Ok(());
+        }
+        let ib = self.scalar_bounds(db, ix, scope, span)?;
+        if ib.pos(b.left).is_some() && ib.pos(b.right).is_some() {
+            return Ok(());
+        }
+        let dir = |d| match d {
+            Direction::To => "to",
+            Direction::Downto => "downto",
+        };
+        Err(err(
+            codes::EVAL_FAILED,
+            span,
+            format!(
+                "index range {} {} {} is outside index subtype `{}` ({} {} {})",
+                b.left,
+                dir(b.dir),
+                b.right,
+                db.subtype_name(ix),
+                ib.left,
+                dir(ib.dir),
+                ib.right
+            ),
+            "index constraint out of range",
+        ))
+    }
+
     /// The fully constrained shape of subtype `st`; `None` when it is not fully constrained.
     pub fn shape(
         &mut self,
@@ -1505,7 +1542,7 @@ impl Model {
                     res,
                 }))
             }
-            TypeKind::Array { elem, .. } => {
+            TypeKind::Array { elem, indexes } => {
                 let (elem, (dims, ec)) = (
                     *elem,
                     match c {
@@ -1520,8 +1557,10 @@ impl Model {
                 let ds = match (dims, arr) {
                     (Some(dims), _) => {
                         let mut ds = Vec::with_capacity(dims.len());
-                        for d in dims.iter() {
-                            ds.push(self.range(db, d, scope, span)?);
+                        for (d, &ix) in dims.iter().zip(indexes.iter()) {
+                            let b = self.range(db, d, scope, span)?;
+                            self.check_index_range(db, b, ix, scope, span)?;
+                            ds.push(b);
                         }
                         ds
                     }

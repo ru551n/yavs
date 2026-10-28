@@ -441,8 +441,11 @@ impl Fx<'_, '_> {
             } => {
                 match c {
                     Constraint::Array { dims: Some(ds), .. } => {
+                        let indexes = crate::expr::index_subtypes(db, t);
                         for (k, rc) in ds.iter().enumerate() {
                             let r = self.range(rc, span)?;
+                            // Element and field constraints too (#637).
+                            self.check_index_range(indexes.as_deref(), k, rc, r, span)?;
                             let d = self.dir_reg(r.dir);
                             let at = self.offset(dst, 24 * k as u32);
                             self.store(at, r.left, Width::B8);

@@ -10161,3 +10161,7 @@ The actual of a part of an `out`/`inout`/`buffer` port (`o(0) => p1`) gets the c
 ## Conversions in individual port associations (yavs-sem, yavs-elab, #611, 2026-10-28)
 
 `r.x => popcount(s)` (a conversion of a signal as the actual of a part of an `in` port) is a converted port edge, as `x => popcount(s)` on a whole port: the HIR's individual part carries the flag (analysed-unit cache `FORMAT` 9). Corpus test `hierarchy/part_conversion_actual`.
+
+## Index constraints of element subtypes and of elaborated signals (yavs-lower, yavs-elab, #637, 2026-10-28)
+
+The index ranges of record element and array element constraints are checked against the index subtype where a composite descriptor is filled (`fill_desc`, `E3009` at run time), and those elaboration evaluates (a signal's `string(g to 3)`) in `Model::shape_c` (`E2107`). Left: an architecture constant nothing reads is not elaborated, so its constraint is not checked. Tests: corpus `composite/index_constraint_elem` (`ref=hand`: sim1 does not check it), elab `index_constraint_outside_the_index_subtype`, discrepancy `index-constraint-element-bound`.

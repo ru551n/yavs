@@ -111,6 +111,7 @@ const PASS: &[&str] = &[
     "composite/array_records",
     "composite/index_constraint_compat",
     "composite/index_constraint_attr",
+    "composite/index_constraint_elem",
     "composite/array_conversion_index",
     "composite/nested_alias_slices",
     "composite/nested_selections",

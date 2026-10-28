@@ -2023,6 +2023,27 @@ fn record_port_element_bounds_check_the_index() {
 }
 
 #[test]
+fn index_constraint_outside_the_index_subtype() {
+    // #637, LRM 5.3.2.2: a non-null index range from a generic must lie inside POSITIVE; a null
+    // one may have any bounds.
+    let src = "entity t is generic (g : integer := 0); end;
+      architecture x of t is
+        signal ok : string(g + 1 to 3);
+        signal null_r : string(g to -1);
+        signal bad : string(g to 3);
+      begin end;";
+    let (_, r) = try_elab("idxsub", src, "t", &[]);
+    let v = r.err().expect("error");
+    assert_eq!(
+        v,
+        [(
+            codes::EVAL_FAILED,
+            "index range 0 to 3 is outside index subtype `POSITIVE` (1 to 2147483647)".to_string()
+        )]
+    );
+}
+
+#[test]
 fn clocked_processes_get_edge_triggers() {
     let src = "library ieee; use ieee.std_logic_1164.all;
       entity t is end; architecture a of t is

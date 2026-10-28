@@ -1,0 +1,4 @@
+exit	1
+diag	note	0	0	:index_constraint_elem:_p0	foo len 4 4
+diag	note	0	0	:index_constraint_elem:_p0	foo len 0 0
+diag	fatal	0	0	:index_constraint_elem:_p0	value 0 outside of POSITIVE range 1 to 2147483647 for index constraint

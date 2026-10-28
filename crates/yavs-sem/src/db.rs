@@ -465,6 +465,14 @@ impl Db {
                 ObjClass::Constant => o.default.is_some_and(|e| self.exprs[e].value.is_none()),
                 _ => true,
             },
+            DeclKind::Type(_) | DeclKind::Subtype(_)
+                if self
+                    .declared_ranges(d)
+                    .into_iter()
+                    .any(|r| self.dynamic_range(r).is_some()) =>
+            {
+                true
+            }
             _ => self.decl_subprograms(d).into_iter().any(|m| {
                 !self
                     .external_uses(crate::external::ExtOwner::Sub(m))
@@ -482,6 +490,84 @@ impl Db {
             })
             .map(|(id, _)| id)
             .collect()
+    }
+
+    /// The ranges type or subtype declaration `d` introduces, in declaration order: index,
+    /// element, field and scalar ranges, which its elaboration evaluates (LRM 14.4.2.1). Ranges
+    /// merged in from a type mark (`subtype s2 is s`, `array (0 to 3) of s`) are the type
+    /// mark's declaration's. Empty for other kinds of declarations.
+    pub fn declared_ranges(&self, d: DeclId) -> Vec<&crate::types::RangeC> {
+        use crate::types::RangeC;
+        let (mut all, mut inherited) = (Vec::new(), Vec::new());
+        // The ranges of `st` not merged in from the nearest named subtype it derives from
+        // (all of them for an element of a named subtype).
+        let mut part = |st: SubtypeId, own: bool| {
+            let sd = &self.subtypes[st];
+            all.extend(self.subtype_ranges(st));
+            let mut mark = if own || sd.name.is_none() {
+                sd.parent
+            } else {
+                Some(st)
+            };
+            while let Some(m) = mark.filter(|&m| self.subtypes[m].name.is_none()) {
+                mark = self.subtypes[m].parent;
+            }
+            if let Some(m) = mark {
+                inherited.extend(self.subtype_ranges(m));
+            }
+        };
+        match &self.decls[d].kind {
+            DeclKind::Subtype(st) => part(*st, true),
+            DeclKind::Type(t) => {
+                part(self.types[*t].first_subtype, true);
+                match &self.types[*t].kind {
+                    TypeKind::Array { elem, .. } => part(*elem, false),
+                    TypeKind::Record { elems } => elems.iter().for_each(|e| part(e.subtype, false)),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        let key = |r: &RangeC| match *r {
+            RangeC::Explicit { left, .. } => Some(left),
+            RangeC::Attr { .. } => None,
+        };
+        let mut seen: HashSet<ExprId> = inherited.iter().filter_map(|r| key(r)).collect();
+        all.retain(|r| key(r).is_none_or(|l| seen.insert(l)));
+        all
+    }
+
+    /// Every range of the constraint of subtype `st`: index, element, field and scalar ranges.
+    pub fn subtype_ranges(&self, st: SubtypeId) -> Vec<&crate::types::RangeC> {
+        fn collect<'c>(c: &'c Constraint, out: &mut Vec<&'c crate::types::RangeC>) {
+            match c {
+                Constraint::Range(rc) => out.push(rc),
+                Constraint::Array { dims, elem } => {
+                    out.extend(dims.iter().flatten());
+                    collect(elem, out);
+                }
+                Constraint::Record { elems } => elems.iter().for_each(|(_, c)| collect(c, out)),
+                Constraint::None | Constraint::FromObject { .. } => {}
+            }
+        }
+        let mut out = Vec::new();
+        collect(&self.subtypes[st].constraint, &mut out);
+        out
+    }
+
+    /// The left bound of `rc` when it is an explicit range with a bound that is not globally
+    /// static (an impure call, a shared variable): one a declared type or subtype of a design
+    /// unit or package evaluates once, at its declaration, for every later use (#612).
+    pub fn dynamic_range(&self, rc: &crate::types::RangeC) -> Option<ExprId> {
+        match *rc {
+            crate::types::RangeC::Explicit { left, right, .. }
+                if self.exprs[left].stat < Staticness::Globally
+                    || self.exprs[right].stat < Staticness::Globally =>
+            {
+                Some(left)
+            }
+            _ => None,
+        }
     }
 
     /// [`Db::run_time_package_set`] as stored by [`Db::to_image`], while the design has not

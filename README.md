@@ -6,22 +6,43 @@
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 [![CI status](https://github.com/ru551n/yavs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ru551n/yavs/actions/workflows/ci.yml)
 
-Yet Another VHDL Simulator: VHDL-2008 and VHDL-2019 in Rust.
+Yet Another VHDL Simulator: VHDL-1993, 2008 and 2019 in Rust.
 
-## Overview
+## Features
 
-- **Language:** VHDL-2008 and VHDL-2019 files mix in one project; the IEEE libraries are built in.
-- **Execution:** an interpreter plus an LLVM-compiled tier; `--tier=auto` (the default) compiles
-  the hot code during the run. Analysed units, elaboration and compiled code are cached between runs.
-- **Kernel:** event-driven, with a parallel mode (`--threads N`).
-- **Debugging:** FST waveforms (`--wave`), a Debug Adapter Protocol server (`--dap`) and the
-  graphical debugger `yavs-gui`, diagnostics with source snippets and VHDL call stacks,
-  `yavs --explain CODE` and JSON diagnostics (`--message-format=json`).
-- **Integration:** VHPI (`--vhpi`) and code and toggle coverage (`--cov`).
-- **Libraries:** testbenches built on OSVVM, UVVM and VUnit run; cocotb runs over VHPI.
+- **Languages:** VHDL-1993, 2008 and 2019 files mix in one project; the IEEE libraries (including the VITAL and Synopsys packages) are built in. A PSL subset (simple sequences, `assert`/`cover`, `always`, `never`, `next`, `until`, `before`, `abort`) runs as checker processes; the rest of PSL is skipped with a warning.
+- **Three execution tiers:** an interpreter, LLVM and Cranelift. `--tier=auto` starts in the interpreter and compiles hot functions on a background thread, guided by a profile of the previous run; compiled code is cached on disk under a key made before code generation, so warm runs reuse it. The release archives come with LLVM or, as `-nollvm`, with Cranelift instead (see Installation); both run `--tier=auto` by default. The output is identical on every tier.
+- **Fast:** on 41 real testbenches against an established open-source VHDL simulator, the geometric mean of the full run time (analysis included, `--tier=auto`) is 0.22 of the reference simulator's with a warm cache and 0.59 with a cold one; faster on 36 of 41 warm. A few designs are still slower; see the
+  [head-to-head 7 section](docs/STATUS.md#real-world-performance-suite-yavs-against-sim1-head-to-head-7-2026-10-27-toolsrealbench) of `docs/STATUS.md` for method and every cell.
+- **Parallel kernel:** `--threads N` evaluates processes in parallel; output is identical at any thread count.
+- **Waveforms:** FST (`--wave`) with records and arrays as scopes, include and exclude globs, a size cap and optional process variables (`--wave-variables`).
+- **Coverage:** statement, branch, condition, expression and toggle coverage (`--cov`), per-test attribution and ranking, database merge, text, HTML and Cobertura reports, exclusions by pragma, file or YAML.
+- **Debugging:** a Debug Adapter Protocol server (`--dap`), the graphical debugger `yavs-gui`, diagnostics with source snippets and VHDL call stacks, `yavs --explain CODE` and JSON diagnostics (`--message-format=json`).
+- **VHPI:** `--vhpi` loads VHPI plugins that walk the design, read and put values and register callbacks; the implementation is partial (trace comparison in [`docs/conformance.md`](docs/conformance.md)). Running cocotb over VHPI works for most of its own tests (66 of 68), but that integration is on hold.
+- **Verification libraries:** OSVVM and UVVM testbenches run unmodified; VUnit drives yavs as a simulator through a yavs simulator interface (`VUNIT_SIMULATOR=yavs`; the contract is [`docs/cli-contract.md`](docs/cli-contract.md)).
+- **Safe core:** written in Rust; the kernel, interpreter, parser and semantic analysis forbid `unsafe` code. It is confined to the compiled tiers, the foreign-call and VHPI layers, the cache's file mapping and one prefetch hint.
+- **Platforms and licence:** Linux x86_64, Linux aarch64 and Windows x86_64; MIT OR Apache-2.0.
 
-Performance work is in progress. yavs is early: expect gaps and please
-[report](https://github.com/ru551n/yavs/issues) what breaks.
+yavs is early: expect gaps and please [report](https://github.com/ru551n/yavs/issues) what breaks.
+
+## Correctness evidence
+
+yavs is checked against recorded output of two established open-source VHDL simulators and against the test suites of widely used VHDL libraries. The full report, with per-suite tables, the known differences from the language reference and the simulators, the platforms covered by CI and the known limits, is in [`docs/conformance.md`](docs/conformance.md) (machine-readable: [`docs/conformance.json`](docs/conformance.json)). Headline numbers:
+
+- **539 of 539** differential testbenches give the recorded reference output with the interpreter, at 1 thread, 4 threads and 4 shuffled threads (output identical at every thread count); the compiled tiers give the same output (checked locally).
+- **6675 of 6682** files of 33 third-party VHDL corpora (neorv32, GRLIB, OSVVM, UVVM, VUnit, hdl-modules, Open Logic, PoC and others) analyse; the 7 that do not are listed and tracked.
+- **314 of 314** OSVVM regression tests (VHDL-2008 and VHDL-2019), **131 of 137** UVVM testbench runs (the other 6 need vendor libraries), **1357 of 1357** VUnit tests.
+- **1458** self-checking tests from the reference simulators' own regression suites pass; each suite's pass list is gated in CI.
+- **209** documented cases where simulators disagree with each other or with the language reference, each with a reproducer and a recorded decision.
+- neorv32 (three configurations) and GRLIB LEON3 run to completion. The waveforms of 17 designs, among them neorv32 and GRLIB LEON3, were compared signal by signal and time step by time step with the reference simulators: 44824 of 44889 signals equal over 50 million value changes; the 65 that differ are classified as differences between the reference simulators themselves (details in the report).
+
+Parts of the report are regenerated by CI on every push to `main` and on release tags; the parts that need installed reference simulators carry the date and commit of the local run. To reproduce:
+
+```sh
+tools/fetch-corpus.sh
+cargo build --release -p yavs
+tools/conformance/run.py --yavs target/release/yavs
+```
 
 ## Installation
 
@@ -48,25 +69,6 @@ yavs run --work=work:out/work tb
 ```
 
 See the [documentation](https://yavs.readthedocs.io) for the command line and the release notes. Contributors start with [`AGENTS.md`](AGENTS.md) and [`docs/STATUS.md`](docs/STATUS.md).
-
-## Correctness evidence
-
-yavs is checked against recorded output of two established open-source VHDL simulators and against the test suites of widely used VHDL libraries. The full report, with per-suite tables, the known differences from the language reference and the simulators, the platforms covered by CI and the known limits, is in [`docs/conformance.md`](docs/conformance.md) (machine-readable: [`docs/conformance.json`](docs/conformance.json)). Headline numbers:
-
-- **539 of 539** differential testbenches give the recorded reference output with the interpreter, at 1 thread, 4 threads and 4 shuffled threads (output identical at every thread count); the compiled tiers give the same output (checked locally).
-- **6675 of 6682** files of 33 third-party VHDL corpora (neorv32, GRLIB, OSVVM, UVVM, VUnit, hdl-modules, Open Logic, PoC and others) analyse; the 7 that do not are listed and tracked.
-- **314 of 314** OSVVM regression tests (VHDL-2008 and VHDL-2019), **131 of 137** UVVM testbench runs (the other 6 need vendor libraries), **1357 of 1357** VUnit tests.
-- **1458** self-checking tests from the reference simulators' own regression suites pass; each suite's pass list is gated in CI.
-- **208** documented cases where simulators disagree with each other or with the language reference, each with a reproducer and a recorded decision.
-- neorv32 (three configurations) and GRLIB LEON3 run to completion. The waveforms of 17 designs, among them neorv32 and GRLIB LEON3, were compared signal by signal and time step by time step with the reference simulators: 44824 of 44889 signals equal over 50 million value changes; the 65 that differ are classified as differences between the reference simulators themselves (details in the report).
-
-Parts of the report are regenerated by CI on every push to `main` and on release tags; the parts that need installed reference simulators carry the date and commit of the local run. To reproduce:
-
-```sh
-tools/fetch-corpus.sh
-cargo build --release -p yavs
-tools/conformance/run.py --yavs target/release/yavs
-```
 
 ## License
 

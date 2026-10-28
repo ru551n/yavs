@@ -6159,6 +6159,23 @@ matrix. The other three tests have no element loop: `sc5_fifo_repack` is the sig
 `commit_codes` 25 percent for `hdlm_lfsr`); their run-to-run instruction counts move by 5 percent with the policy's timing-dependent
 decisions, so a single pair of runs of `hdlm_lfsr` can differ by that much in either direction. All 41 tests of the run phase `--compare` (auto warm and cold): wall and instruction geomeans 0.99 to 1.00; the four tests flagged once (instructions +6 to +8 percent) were level on a re-run of 5.
 
+Second follow-up (#757, 2026-10-28, decisions.md "Native-frame calls find their fresh frames, results and argument regions inline"): what was
+left was the path around each call of `get_row` and `to_slm` (callbacks for the fresh frame, the argument regions and the copy; a held descriptor
+region that always missed). Bench builds with `llvm`, `--tier=auto`, against `8e4cd334`. Histogram warm, one claimed core, `perf stat`, interleaved:
+instructions 10.42 to 6.97 G, cycles 2.21 to 1.49 G. `tools/realbench`, sim1 on the same cores (total = analysis of the compile order, cold, plus the
+run cell, as in head-to-head 7):
+
+| test | sim1 total s | auto warm total s (ratio), before / after | auto cold total s (ratio), before / after | run cell warm s, before / after (sim1) |
+|---|---:|---:|---:|---:|
+| poc_stat_histogram | 0.55 | 0.60 (1.07) / 0.46 (0.84) | 1.02 (1.82) / 0.95 (1.73) | 0.47 / 0.33 (0.32) |
+| sc5_fifo_repack | 1.09 | 1.52 (1.36) / 1.46 (1.34) | 2.31 (2.06) / 2.21 (2.03) | 1.35 / 1.29 (0.84) |
+
+`sc5_fifo_repack` has no element loop and none of its time is in the call path changed here (signal drives and interpreted processes, as above).
+All 42 tests of the run phase `--compare` (auto warm and cold, 5 runs, cores 13 to 15): wall geomean 0.97 warm, 1.00 cold, instructions 0.99 and
+1.00; no test above 1.05 instructions but `uvvm_methods_log` (0.05 G, x1.06). What is left in the histogram's warm cycles: the plans of the two
+element loops at the head of `get_row` and `to_slm` (about 20 percent: overflow and bounds tests of every step), the interpreted processes that
+call `to_slvv_8` and `to_slm` (13), the call memo probes of `get_row` from compiled code (4, #762), `yavs_rt_lcopy` of the rows into the result (3).
+
 ## Real-world performance suite: yavs against sim1, head-to-head 5, 2026-10-25 (`tools/realbench`)
 
 This was the headline of the fifth run, superseded by head-to-head 6 above (one analysis call per file for both tools; `9e75d84e`, bench build with the `llvm` feature, one binary for every cell; the previous run, head-to-head 4 at `18b290ef`, is in brackets). Basis (root rule 23): `--tier=auto`
@@ -9975,6 +9992,24 @@ the call is still about 80 ops; the rest is listed there. First 1 us of `grlib_l
 - `realbench --compare` 42 tests: wall 0.98 (interp) / 1.00 (auto), instructions 1.00 / 1.00. Head-to-head designs against sim1 unchanged
   (`rtl_lfsr` 262 ms, `lfsr64` 131 ms, `rtl_ff` 545 ms warm): the kernel is about a quarter of their activation; the rest is the
   interpreted start of warm runs (#728) and the host layers (#766). Details: decisions.md "Kernel round 26".
+
+## llvm: compiled clocked RTL, round 10: the view made inside the tier (#766, 2026-10-28)
+
+- `Tier::run_cached` takes the interpreter's `yavs_interp::Host` (now `pub`) instead of `dyn TierHost`; `rt::enter`/`enter_on` are generic
+  over `rt::View`, so a process activation's view is `Host::view_root_again` inlined into the tier. `run_direct` reads the function inline
+  (`Program::func_inline`), tests the host's fault in place and ends the host without drop calls; small trims in `enter_on`, `keep_heap`
+  and the view's flags. A second code generator changes only its `run_cached` parameter type (#481).
+- Instructions an activation (stepcount, base 3d0e1f3d / round 10): `rtl_lfsr` 1422.5 / 1380.6, `lfsr64` 1475.1 / 1433.2, `rtl_ff`
+  1116.5 / 1074.5; the host layers (`InterpProcess::run` with `run_direct` and `Program::func`, `run_cached` with `enter_on` and the view,
+  `yavs_rt_wait_same`) 538 / 496. Cycles, warm, min of 7, core 9: `--tier=auto` `rtl_ff` -2.6 percent, `lfsr64` -1.6, `rtl_lfsr` -0.9;
+  `--tier-heat=1,0,0` `rtl_ff` -3.2, `rtl_lfsr` -1.9, `lfsr64` -1.4; `rtl_chain` (interpreted) level.
+- `tools/realbench --compare` (42 tests, run phase, interpreter and auto, 3 runs, core 8): wall geometric mean 0.99 / 1.00, instructions
+  1.00 / 1.00, CPU 0.99 / 1.00; `hdlm_lfsr` auto 0.94 wall and instructions; `vai_window_gen_interlock` auto instructions 1.10 in that run,
+  0.98 in 5 more runs (the policy's compile timing).
+- Checks: fmt, clippy with and without `llvm`, both test suites, `gc-stress` tests of `yavs-interp` and `yavs-llvm`; difftest 542/542 at
+  1 and 4 threads for `yavs-interp`, `yavs-auto`, `yavs-llvm` and `yavs-auto` with `--tier-heat=1,0,0`.
+- Left (decisions.md "Compiled clocked RTL processes, round 10"): the view's fields, the object table's tags, the policy's bookkeeping,
+  `Env` and the thread's `Mem`, in steps of 3 to 15 instructions.
 
 ## kernel: prefetch of the next process in a batch (#766, 2026-10-27)
 

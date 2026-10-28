@@ -347,7 +347,7 @@ impl Tier for LlvmTier {
         &self,
         func: FuncId,
         pc: u32,
-        host: &mut dyn TierHost,
+        host: &mut yavs_interp::Host<'_, '_, '_>,
         state: &mut yavs_interp::TierState,
     ) -> Option<u32> {
         let &(f, nregs) = self.funcs.get(func.0 as usize)?.as_ref()?;
@@ -492,7 +492,6 @@ pub(crate) fn new_jit(opt: OptLevel) -> Result<Jit, Error> {
             (SCAN, yavs_rt_scan as *const () as usize),
             (ELOOP, yavs_rt_eloop as *const () as usize),
             (ELOOP_EXEC, yavs_rt_eloop_exec as *const () as usize),
-            (ELOOP_HOST, yavs_rt_eloop_host as *const () as usize),
             (CODES, yavs_rt_codes as *const () as usize),
             (SCALAR, yavs_rt_scalar as *const () as usize),
             (PLANES, yavs_rt_planes as *const () as usize),
@@ -1168,9 +1167,6 @@ struct Gen {
     /// `yavs_rt_eloop_exec(src, s_e0, s_step, dst, d_e0, d_step, code, m) -> iterations`.
     eloop_exec_ty: LLVMTypeRef,
     eloop_exec: LLVMValueRef,
-    /// `yavs_rt_eloop_host(env, mem, a, extra, n, write, depth, fhi, slots, slots_len) -> ptr`.
-    eloop_host_ty: LLVMTypeRef,
-    eloop_host: LLVMValueRef,
     /// `yavs_rt_codes(codes, groups, mask, out)`.
     codes_ty: LLVMTypeRef,
     codes: LLVMValueRef,
@@ -1531,8 +1527,6 @@ impl Gen {
             let eloop_ty = LLVMFunctionType(i64, elparams.as_mut_ptr(), 12, 0);
             let mut exparams = [ptr, i64, i64, ptr, i64, i64, i64, i64];
             let eloop_exec_ty = LLVMFunctionType(i64, exparams.as_mut_ptr(), 8, 0);
-            let mut ehparams = [ptr, ptr, i64, i64, i64, i32, i64, i64, ptr, i64];
-            let eloop_host_ty = LLVMFunctionType(ptr, ehparams.as_mut_ptr(), 10, 0);
             let mut cparams = [ptr, i64, i64, ptr];
             let codes_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), cparams.as_mut_ptr(), 4, 0);
             let mut scaparams = [ptr, i64, ptr];
@@ -1616,8 +1610,6 @@ impl Gen {
                 eloop: add(ELOOP, eloop_ty),
                 eloop_exec_ty,
                 eloop_exec: add(ELOOP_EXEC, eloop_exec_ty),
-                eloop_host_ty,
-                eloop_host: add(ELOOP_HOST, eloop_host_ty),
                 codes_ty,
                 codes: add(CODES, codes_ty),
                 scalar_ty,
@@ -1723,9 +1715,6 @@ impl Gen {
                 self.attr(self.eloop_exec, false, a, 0);
             }
             self.attr(self.eloop_exec, false, "memory", mem_effects(RW, 0, 0));
-            self.attr(self.eloop_host, false, "nounwind", 0);
-            self.attr(self.eloop_host, false, "willreturn", 0);
-            self.attr(self.eloop_host, false, "memory", mem_effects(RW, RW, 0));
             for f in [
                 self.host,
                 self.region,
@@ -3042,18 +3031,49 @@ impl Gen {
                 }
                 // Where the address parameters point (`yavs_rt_region`), held for the activation.
                 let stable = stable_activation(f);
+                let fixed = !stable && fixed_activation(f);
                 let first = if f.parent.is_some() { 5 } else { 3 };
                 for pa in &pas {
-                    let out = LLVMBuildAlloca(self.b, LLVMArrayType2(self.i64, 2), c"".as_ptr());
-                    let flags = self.c32(u32::from(pa.write) | u32::from(stable) << 1);
-                    let mut args = [
-                        c.env,
-                        mem,
-                        LLVMGetParam(fv, (first + pa.cell) as u32),
-                        nat.depth,
-                        flags,
-                        out,
-                    ];
+                    let a = LLVMGetParam(fv, (first + pa.cell) as u32);
+                    let out = self.entry_alloca(&c, 16);
+                    // An object the table holds (not a frame or the temporary area: those are
+                    // the runtime's to judge) is found inline where the activation keeps it in
+                    // place; the rest asks the runtime.
+                    let probe = (stable || fixed).then(|| {
+                        let hi = LLVMBuildLShr(self.b, a, self.c64(32), c"".as_ptr());
+                        let sp = LLVMBuildLShr(self.b, hi, self.c64(29), c"".as_ptr());
+                        let (tk, mx) = self.obj_tag(&c, Some(hi));
+                        let e = self.obj_entry(&c, a, false, mx);
+                        let key = LLVMBuildOr(self.b, hi, tk, c"".as_ptr());
+                        let mut hit = self.icmp(IP::LLVMIntEQ, self.load(self.i64, e), key);
+                        if pa.write {
+                            let w = self.load(self.i64, self.gep(e, self.c64(OBJ_W as i64)));
+                            let w = self.icmp(IP::LLVMIntNE, w, self.c64(0));
+                            hit = LLVMBuildAnd(self.b, hit, w, c"".as_ptr());
+                        }
+                        let other = |k: u8| self.icmp(IP::LLVMIntNE, sp, self.c64(i64::from(k)));
+                        let ok = LLVMBuildAnd(
+                            self.b,
+                            hit,
+                            LLVMBuildAnd(
+                                self.b,
+                                other(space::FRAME),
+                                other(space::TEMP),
+                                c"".as_ptr(),
+                            ),
+                            c"".as_ptr(),
+                        );
+                        let (fast, call) = (self.block(&c), self.block(&c));
+                        self.cond_br(ok, fast, call, true);
+                        LLVMPositionBuilderAtEnd(self.b, fast);
+                        let base = self.load(self.ptr, self.gep(e, self.c64(OBJ_PTR as i64)));
+                        let len = self.load(self.i64, self.gep(e, self.c64(OBJ_LEN as i64)));
+                        LLVMPositionBuilderAtEnd(self.b, call);
+                        (fast, base, len)
+                    });
+                    let flags = self
+                        .c32(u32::from(pa.write) | u32::from(stable) << 1 | u32::from(fixed) << 2);
+                    let mut args = [c.env, mem, a, nat.depth, flags, out];
                     LLVMBuildCall2(
                         self.b,
                         self.region_ty,
@@ -3062,9 +3082,25 @@ impl Gen {
                         6,
                         c"".as_ptr(),
                     );
+                    let mut ptr = self.load(self.ptr, out);
+                    let mut len = self.load(self.i64, self.gep(out, self.c64(8)));
+                    if let Some((fast, base, blen)) = probe {
+                        let (from, join) = (LLVMGetInsertBlock(self.b), self.block(&c));
+                        LLVMBuildBr(self.b, join);
+                        LLVMPositionBuilderAtEnd(self.b, fast);
+                        LLVMBuildBr(self.b, join);
+                        LLVMPositionBuilderAtEnd(self.b, join);
+                        let (p, l) = (
+                            LLVMBuildPhi(self.b, self.ptr, c"".as_ptr()),
+                            LLVMBuildPhi(self.b, self.i64, c"".as_ptr()),
+                        );
+                        LLVMAddIncoming(p, [base, ptr].as_mut_ptr(), [fast, from].as_mut_ptr(), 2);
+                        LLVMAddIncoming(l, [blen, len].as_mut_ptr(), [fast, from].as_mut_ptr(), 2);
+                        (ptr, len) = (p, l);
+                    }
                     c.pres.borrow_mut().push(PRes {
-                        ptr: self.load(self.ptr, out),
-                        len: self.load(self.i64, self.gep(out, self.c64(8))),
+                        ptr,
+                        len,
                         write: pa.write,
                     });
                 }
@@ -7835,10 +7871,9 @@ impl Gen {
         }
     }
 
-    /// The host pointer to `n` bytes at `a` plus `extra` for `eloop_plan`: where the generator
-    /// knows the region (`host`: the held parameter regions, the frame, constants, the temporary
-    /// area, instance data) inline, else `yavs_rt_eloop_host` (every object a loop in a native
-    /// frame can reach); `slow` is taken where they are not there.
+    /// The host pointer to `n` bytes at `a` plus `extra` for `eloop_plan`: `host`'s inline tests,
+    /// the temporary area first where the generator knows nothing (a caller's argument or a fresh
+    /// object there is the common case); `slow` is taken where the bytes are not found.
     #[allow(clippy::too_many_arguments)]
     unsafe fn eloop_host(
         &self,
@@ -7850,46 +7885,8 @@ impl Gen {
         write: bool,
         slow: LLVMBasicBlockRef,
     ) -> LLVMValueRef {
-        // SAFETY: blocks of c.f; a call with the declared signature.
-        unsafe {
-            if matches!(
-                at,
-                Some(
-                    Known::Param(_)
-                        | Known::Frame(_)
-                        | Known::Const(..)
-                        | Known::Temp
-                        | Known::Inst(_)
-                        | Known::InstAny
-                        | Known::Heap(Some(_))
-                )
-            ) {
-                return self.host(c, a, at, extra, n, write, slow);
-            }
-            let nat = c.nat.as_ref();
-            let mut args = [
-                c.env,
-                c.mem,
-                a,
-                extra,
-                n,
-                self.c32(u32::from(write)),
-                nat.map_or(self.c64(0), |n| n.depth),
-                nat.map_or(self.c64(0), |n| n.fhi),
-                nat.map_or(LLVMConstPointerNull(self.ptr), |n| n.slots),
-                self.c64(c.frame_len as i64),
-            ];
-            let p = LLVMBuildCall2(
-                self.b,
-                self.eloop_host_ty,
-                self.eloop_host,
-                args.as_mut_ptr(),
-                10,
-                c"".as_ptr(),
-            );
-            self.guard(c, LLVMBuildIsNotNull(self.b, p, c"".as_ptr()), slow);
-            p
-        }
+        // SAFETY: as `host`.
+        unsafe { self.host(c, a, at.or(Some(Known::LikelyTemp)), extra, n, write, slow) }
     }
 
     /// The iterations of an element loop but the last, planned and done in the code itself
@@ -8161,8 +8158,85 @@ impl Gen {
                             (LLVMConstPointerNull(self.ptr), c0, c0, code)
                         };
                         self.guard(c, not(bad), generic);
+                        // A copy within one plane block each side, the same direction, the blocks
+                        // apart: the plane copy of `eloop::exec` inline.
+                        let short = (cc >= 0).then(|| {
+                            let lo = |e0, d| {
+                                let e = LLVMBuildAdd(
+                                    b,
+                                    e0,
+                                    LLVMBuildMul(b, d, last, c"".as_ptr()),
+                                    c"".as_ptr(),
+                                );
+                                sel(self.icmp(IP::LLVMIntULT, e, e0), e, e0)
+                            };
+                            let (ls, ld) = (lo(s_e0, s_step), lo(x.0, x.1));
+                            let bits = |e| LLVMBuildAnd(b, e, self.c64(63), c"".as_ptr());
+                            let blk = |p: LLVMValueRef, e| {
+                                let k = LLVMBuildLShr(b, e, self.c64(6), c"".as_ptr());
+                                self.gep(p, LLVMBuildShl(b, k, self.c64(5), c"".as_ptr()))
+                            };
+                            let (os, od) = (bits(ls), bits(ld));
+                            let (ps, pd) = (blk(sp, ls), blk(dp, ld));
+                            let fits = |o| {
+                                let end = LLVMBuildAdd(b, o, m, c"".as_ptr());
+                                self.icmp(IP::LLVMIntULE, end, self.c64(64))
+                            };
+                            // The blocks' bytes apart, as `exec` compares them.
+                            let (is, id) = (
+                                LLVMBuildPtrToInt(b, ps, self.i64, c"".as_ptr()),
+                                LLVMBuildPtrToInt(b, pd, self.i64, c"".as_ptr()),
+                            );
+                            let before = |u, v| {
+                                let end = LLVMBuildAdd(b, u, self.c64(32), c"".as_ptr());
+                                self.icmp(IP::LLVMIntULE, end, v)
+                            };
+                            let unit = self.or(
+                                self.icmp(IP::LLVMIntEQ, s_step, c1),
+                                self.icmp(IP::LLVMIntEQ, s_step, self.c64(-1)),
+                            );
+                            let ok = and(
+                                and(
+                                    and(unit, self.icmp(IP::LLVMIntEQ, s_step, x.1)),
+                                    and(fits(os), fits(od)),
+                                ),
+                                self.or(before(is, id), before(id, is)),
+                            );
+                            let (inl, call, join) = (self.block(c), self.block(c), self.block(c));
+                            self.cond_br(ok, inl, call, true);
+                            LLVMPositionBuilderAtEnd(b, inl);
+                            // `m` is 2 to 64: `(2 << (m - 1)) - 1` is its mask.
+                            let sh = LLVMBuildShl(
+                                b,
+                                self.c64(2),
+                                LLVMBuildSub(b, m, c1, c"".as_ptr()),
+                                c"".as_ptr(),
+                            );
+                            let mask = LLVMBuildSub(b, sh, c1, c"".as_ptr());
+                            let hole = LLVMBuildNot(
+                                b,
+                                LLVMBuildShl(b, mask, od, c"".as_ptr()),
+                                c"".as_ptr(),
+                            );
+                            for k in 0..4 {
+                                let (qs, qd) =
+                                    (self.gep(ps, self.c64(8 * k)), self.gep(pd, self.c64(8 * k)));
+                                let w = LLVMBuildAnd(
+                                    b,
+                                    LLVMBuildLShr(b, self.load(self.i64, qs), os, c"".as_ptr()),
+                                    mask,
+                                    c"".as_ptr(),
+                                );
+                                let keep =
+                                    LLVMBuildAnd(b, self.load(self.i64, qd), hole, c"".as_ptr());
+                                self.store(self.or(keep, LLVMBuildShl(b, w, od, c"".as_ptr())), qd);
+                            }
+                            LLVMBuildBr(b, join);
+                            LLVMPositionBuilderAtEnd(b, call);
+                            (inl, join)
+                        });
                         let mut args = [sp, s_e0, s_step, dp, x.0, x.1, code, m];
-                        let done = LLVMBuildCall2(
+                        let mut done = LLVMBuildCall2(
                             b,
                             self.eloop_exec_ty,
                             self.eloop_exec,
@@ -8170,6 +8244,19 @@ impl Gen {
                             8,
                             c"".as_ptr(),
                         );
+                        if let Some((inl, join)) = short {
+                            let from = LLVMGetInsertBlock(b);
+                            LLVMBuildBr(b, join);
+                            LLVMPositionBuilderAtEnd(b, join);
+                            let phi = LLVMBuildPhi(b, self.i64, c"".as_ptr());
+                            LLVMAddIncoming(
+                                phi,
+                                [m, done].as_mut_ptr(),
+                                [inl, from].as_mut_ptr(),
+                                2,
+                            );
+                            done = phi;
+                        }
                         let moved = LLVMBuildMul(b, done, step, c"".as_ptr());
                         self.st(c, l.ind, LLVMBuildAdd(b, ind, moved, c"".as_ptr()));
                         LLVMBuildBr(b, generic);
@@ -8485,7 +8572,8 @@ impl Gen {
                 let pf = self.gep(r.ptr, off);
                 LLVMBuildBr(self.b, join);
                 LLVMPositionBuilderAtEnd(self.b, miss);
-                let pm = self.host_lookup(c, a, None, extra, n, write, slow);
+                // What the entry could not hold is mostly an argument in the temporary area.
+                let pm = self.host_lookup(c, a, Some(Known::LikelyTemp), extra, n, write, slow);
                 let from = LLVMGetInsertBlock(self.b);
                 LLVMBuildBr(self.b, join);
                 LLVMPositionBuilderAtEnd(self.b, join);
@@ -8584,6 +8672,32 @@ impl Gen {
                 let kind = if base == MEM_TEMP { AA_TEMP } else { AA_INST };
                 return self.gep(self.tag(self.mem_ld(c, base, self.ptr), kind), o);
             }
+            // An address that is probably in the temporary area (a call's result, the words loaded
+            // from it) gets that one test first (#711); a miss asks the runtime as ever, or in a
+            // native frame takes the frame and object tests below.
+            let likely = matches!(at, Some(Known::LikelyTemp));
+            // The same for the object cache: a heap object the code found here with a `Deref`, or
+            // a pointer loaded from a variable's slot (a composite variable's object).
+            let likely_heap =
+                c.nat.is_none() && matches!(at, Some(Known::LikelyHeap | Known::Heap(None)));
+            let direct = c.nat.is_none() && !likely && !likely_heap;
+            let mut found = Vec::new();
+            let merge_at = self.block(c);
+            if likely {
+                let hi = LLVMBuildLShr(self.b, a, self.c64(32), c"".as_ptr());
+                let lo = LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr());
+                let o = LLVMBuildAdd(self.b, lo, extra, c"".as_ptr());
+                let hit = self.icmp(IP::LLVMIntEQ, hi, self.c64(i64::from(space::TEMP) << 29));
+                let len = self.mem_ld(c, MEM_TEMP_LEN, self.i64);
+                let ok = LLVMBuildAnd(self.b, hit, self.in_range(o, n, len), c"".as_ptr());
+                let (fast, miss) = (self.block(c), self.block(c));
+                self.cond_br(ok, fast, miss, true);
+                LLVMPositionBuilderAtEnd(self.b, fast);
+                let pf = self.gep(self.tag(self.mem_ld(c, MEM_TEMP, self.ptr), AA_TEMP), o);
+                LLVMBuildBr(self.b, merge_at);
+                found.push((pf, fast));
+                LLVMPositionBuilderAtEnd(self.b, miss);
+            }
             // A native frame's own slots are found here: the interpreter has no frame for it.
             let heap = matches!(at, Some(Known::Heap(_) | Known::LikelyHeap));
             let (own, other, merge) = match &c.nat {
@@ -8648,35 +8762,10 @@ impl Gen {
             // chain inline (first the object's entry, then the temporary area and, reading, the
             // instance data, then `yavs_rt_host`): its accesses are the hot loops of library code
             // (#432, #510).
-            let mut found = Vec::new();
-            let merge_at = self.block(c);
             // Frame-mode code asks `yavs_rt_host` (the same lookup, once, in the runtime): the inline
             // chain of four tests per access was most of the code of a process and branch sites
             // the front end paid for (#634); native frames keep it.
-            // An address that is probably in the temporary area (a call's result, the words loaded
-            // from it) gets that one test first (#711); a miss asks the runtime as ever.
-            let likely = c.nat.is_none() && matches!(at, Some(Known::LikelyTemp));
-            // The same for the object cache: a heap object the code found here with a `Deref`, or
-            // a pointer loaded from a variable's slot (a composite variable's object).
-            let likely_heap =
-                c.nat.is_none() && matches!(at, Some(Known::LikelyHeap | Known::Heap(None)));
-            let direct = c.nat.is_none() && !likely && !likely_heap;
-            if likely {
-                let hi = LLVMBuildLShr(self.b, a, self.c64(32), c"".as_ptr());
-                let lo = LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr());
-                let o = LLVMBuildAdd(self.b, lo, extra, c"".as_ptr());
-                let hit = self.icmp(IP::LLVMIntEQ, hi, self.c64(i64::from(space::TEMP) << 29));
-                let len = self.mem_ld(c, MEM_TEMP_LEN, self.i64);
-                let ok = LLVMBuildAnd(self.b, hit, self.in_range(o, n, len), c"".as_ptr());
-                let (fast, miss) = (self.block(c), self.block(c));
-                self.cond_br(ok, fast, miss, true);
-                LLVMPositionBuilderAtEnd(self.b, fast);
-                let pf = self.gep(self.tag(self.mem_ld(c, MEM_TEMP, self.ptr), AA_TEMP), o);
-                LLVMBuildBr(self.b, merge_at);
-                found.push((pf, fast));
-                LLVMPositionBuilderAtEnd(self.b, miss);
-            }
-            if !direct && !likely {
+            if !direct && (!likely || c.nat.is_some()) {
                 let hi = LLVMBuildLShr(self.b, a, self.c64(32), c"".as_ptr());
                 let lo = LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr());
                 let o = LLVMBuildAdd(self.b, lo, extra, c"".as_ptr());

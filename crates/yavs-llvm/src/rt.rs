@@ -54,7 +54,6 @@ pub const LAYOUT_WORD: &str = "yavs_rt_layout_word";
 pub const SCAN: &str = "yavs_rt_scan";
 pub const ELOOP: &str = "yavs_rt_eloop";
 pub const ELOOP_EXEC: &str = "yavs_rt_eloop_exec";
-pub const ELOOP_HOST: &str = "yavs_rt_eloop_host";
 
 pub const CODES: &str = "yavs_rt_codes";
 
@@ -463,7 +462,8 @@ impl Mem {
         if self.tags[space::HEAP as usize] != t << 32 {
             self.set(&HEAP_SPACES, t);
         }
-        from == to || self.drop_changed(from, to)
+        // Word by word: the array compare went through the stack.
+        from[0] == to[0] && from[1] == to[1] || self.drop_changed(from, to)
     }
 
     /// Drop the table's entries of the heap slots the heaps changed from epochs `from` to `to`
@@ -1923,7 +1923,9 @@ pub unsafe extern "C" fn yavs_rt_region(
     out: *mut [u64; 2],
 ) {
     cb(Cb::Region);
-    let (write, stable) = (flags & 1 != 0, flags & 2 != 0);
+    // Flag 4: everything but the temporary area stays where it is (`fixed_activation`).
+    let fixed = flags & 4 != 0 && a >> 32 != u64::from(space::TEMP) << 29;
+    let (write, stable) = (flags & 1 != 0, flags & 2 != 0 || fixed);
     // SAFETY: as in `yavs_rt_step`.
     let mut r = unsafe { &*mem }.region(a, depth, write, stable);
     if r.is_none() && stable && unsafe { yavs_rt_obj(env, mem, a, u32::from(write)) } != 0 {
@@ -2098,45 +2100,6 @@ pub unsafe extern "C" fn yavs_rt_eloop_exec(
     cb(Cb::Eloop);
     // SAFETY: compiled code checked every element against the memory the pointers point into.
     unsafe { crate::eloop::exec_planned(src, s_e0, s_step, dst, d_e0, d_step, code as u8, m) }
-}
-
-/// `yavs_rt_eloop_host(env, mem, a, extra, n, write, depth, fhi, slots, slots_len) -> pointer`:
-/// the host pointer to `n` bytes at address `a` plus `extra` for a loop planned in compiled code,
-/// or null where the objects do not reach them (the loop then runs as it is).
-#[allow(clippy::too_many_arguments)]
-pub unsafe extern "C" fn yavs_rt_eloop_host(
-    env: *mut c_void,
-    mem: *mut Mem,
-    a: u64,
-    extra: u64,
-    n: u64,
-    write: u32,
-    depth: u64,
-    fhi: u64,
-    slots: *mut u8,
-    slots_len: u64,
-) -> *mut u8 {
-    cb(Cb::EloopHost);
-    use crate::eloop::LoopMem;
-    let mut objs = LoopObjects {
-        env,
-        mem,
-        depth,
-        fhi,
-        slots,
-        slots_len,
-    };
-    let Some((p, len)) = objs.region(a, write != 0) else {
-        return std::ptr::null_mut();
-    };
-    // `extra` is below 2^63: no wrap.
-    let off = (a & 0xffff_ffff) + extra;
-    if n <= len && off <= len - n {
-        // SAFETY: the `n` bytes at `off` lie in the object.
-        unsafe { p.add(off as usize) }
-    } else {
-        std::ptr::null_mut()
-    }
 }
 
 /// The most iterations one call of `yavs_rt_eloop` does (the generic code asks again after it).
@@ -2392,14 +2355,47 @@ pub unsafe fn yavs_rt_obj(env: *mut c_void, mem: *mut Mem, addr: u64, write: u32
     }
 }
 
+/// How an activation makes its view: any host through `TierHost::view_again` (`Tier::run`), the
+/// interpreter's own `Host` of a process activation (`Tier::run_cached`) without the virtual call.
+pub trait View {
+    fn make_view(&mut self, fr: &mut TierFrame);
+    fn as_host(&mut self) -> &mut dyn TierHost;
+}
+
+impl View for dyn TierHost + '_ {
+    #[inline(always)]
+    fn make_view(&mut self, fr: &mut TierFrame) {
+        if !self.view_again(fr) {
+            self.view(fr);
+        }
+    }
+    #[inline(always)]
+    fn as_host(&mut self) -> &mut dyn TierHost {
+        self
+    }
+}
+
+impl View for yavs_interp::Host<'_, '_, '_> {
+    #[inline(always)]
+    fn make_view(&mut self, fr: &mut TierFrame) {
+        if !self.view_root_again(fr) {
+            TierHost::view(self, fr);
+        }
+    }
+    #[inline(always)]
+    fn as_host(&mut self) -> &mut dyn TierHost {
+        self
+    }
+}
+
 /// Run compiled `f` (generated for `nregs` registers) from `pc` (`Tier::run`); `lookup`
 /// finds the compiled code of the functions it calls.
 #[inline(always)]
-pub fn enter(
+pub fn enter<H: View + ?Sized>(
     f: RunFn,
     nregs: usize,
     pc: u32,
-    host: &mut dyn TierHost,
+    host: &mut H,
     lookup: Lookup<'_>,
     ntab: *const usize,
     state: Option<&mut yavs_interp::TierState>,
@@ -2439,19 +2435,17 @@ thread_local! {
 /// carried out of a callback.
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
-pub fn enter_on(
+pub fn enter_on<H: View + ?Sized>(
     mem: &mut Mem,
     f: RunFn,
     nregs: usize,
     pc: u32,
-    host: &mut dyn TierHost,
+    host: &mut H,
     lookup: Lookup<'_>,
     ntab: *const usize,
     state: Option<&mut yavs_interp::TierState>,
 ) -> Result<Option<u32>, Box<dyn Any + Send>> {
-    if !host.view_again(&mut mem.fr) {
-        host.view(&mut mem.fr);
-    }
+    host.make_view(&mut mem.fr);
     // Only an activation with a record can leave the pc of its wait there.
     if state.is_none() {
         mem.fr.flags &= !yavs_interp::TIER_ROOT_WAIT;
@@ -2466,13 +2460,15 @@ pub fn enter_on(
         return Ok(None);
     }
     let mut env = Env {
-        host,
+        host: host.as_host(),
         lookup,
-        stack_lo: stack_here().saturating_sub(NEST_STACK),
+        stack_lo: 0,
         panic: None,
         pending: Vec::new(),
         windows: None,
     };
+    // `env` is a local whose address the call takes anyway: where the native stack is.
+    env.stack_lo = (&raw const env as usize).saturating_sub(NEST_STACK);
     mem.ntab = ntab;
     mem.stack_lo = env.stack_lo as u64;
     // The frames of native calls are at most `max_depth` deep: their slots are registered here.
@@ -3323,51 +3319,71 @@ pub struct ParamAddr {
 /// so the host pointers of the regions its parameters point into stay good for the whole
 /// activation (`yavs_rt_region`).
 pub fn stable_activation(f: &Func) -> bool {
+    f.code.iter().all(steady)
+}
+
+/// The instructions of a function none of which can free or move a heap object or the
+/// interpreter's slot stack while it runs: those of `stable_activation` and the ones that only
+/// allocate in or end statements of the temporary area (which may move, `yavs_rt_region` flag 4).
+pub fn fixed_activation(f: &Func) -> bool {
     f.code.iter().all(|i| {
-        matches!(
-            i,
-            Inst::Const { .. }
-                | Inst::ConstF { .. }
-                | Inst::Move { .. }
-                | Inst::Select { .. }
-                | Inst::AddrOf { .. }
-                | Inst::Load { .. }
-                | Inst::Store { .. }
-                | Inst::Copy { .. }
-                | Inst::Fill { .. }
-                | Inst::Zero { .. }
-                | Inst::Pos { .. }
-                | Inst::SlicePos { .. }
-                | Inst::Index { .. }
-                | Inst::Field { .. }
-                | Inst::Bin { .. }
-                | Inst::Un { .. }
-                | Inst::FBin { .. }
-                | Inst::FUn { .. }
-                | Inst::IToF { .. }
-                | Inst::FToI { .. }
-                | Inst::Cmp { .. }
-                | Inst::FCmp { .. }
-                | Inst::Bool { .. }
-                | Inst::LogicOp { .. }
-                | Inst::LEq { .. }
-                | Inst::MemEq { .. }
-                | Inst::LGet { .. }
-                | Inst::LSet { .. }
-                | Inst::LFill { .. }
-                | Inst::LCopy { .. }
-                | Inst::Check { .. }
-                | Inst::FCheck { .. }
-                | Inst::BinRange { .. }
-                | Inst::DopeLen { .. }
-                | Inst::SubtypeCheck { .. }
-                | Inst::Br { .. }
-                | Inst::CondBr { .. }
-                | Inst::Case { .. }
-                | Inst::Ret { .. }
-                | Inst::Unreachable { .. }
-        )
+        steady(i)
+            || matches!(
+                i,
+                Inst::Alloc { .. }
+                    | Inst::NewFrame { .. }
+                    | Inst::Stmt
+                    | Inst::TempRoot { .. }
+                    | Inst::MakeDope { .. }
+                    | Inst::LayoutOf { .. }
+            )
     })
+}
+
+fn steady(i: &Inst) -> bool {
+    matches!(
+        i,
+        Inst::Const { .. }
+            | Inst::ConstF { .. }
+            | Inst::Move { .. }
+            | Inst::Select { .. }
+            | Inst::AddrOf { .. }
+            | Inst::Load { .. }
+            | Inst::Store { .. }
+            | Inst::Copy { .. }
+            | Inst::Fill { .. }
+            | Inst::Zero { .. }
+            | Inst::Pos { .. }
+            | Inst::SlicePos { .. }
+            | Inst::Index { .. }
+            | Inst::Field { .. }
+            | Inst::Bin { .. }
+            | Inst::Un { .. }
+            | Inst::FBin { .. }
+            | Inst::FUn { .. }
+            | Inst::IToF { .. }
+            | Inst::FToI { .. }
+            | Inst::Cmp { .. }
+            | Inst::FCmp { .. }
+            | Inst::Bool { .. }
+            | Inst::LogicOp { .. }
+            | Inst::LEq { .. }
+            | Inst::MemEq { .. }
+            | Inst::LGet { .. }
+            | Inst::LSet { .. }
+            | Inst::LFill { .. }
+            | Inst::LCopy { .. }
+            | Inst::Check { .. }
+            | Inst::FCheck { .. }
+            | Inst::BinRange { .. }
+            | Inst::DopeLen { .. }
+            | Inst::SubtypeCheck { .. }
+            | Inst::Br { .. }
+            | Inst::CondBr { .. }
+            | Inst::Case { .. }
+            | Inst::Ret { .. }
+            | Inst::Unreachable { .. }
+    )
 }
 
 /// The address parameters of `f` worth resolving once at entry: a register loaded from a
@@ -3588,7 +3604,8 @@ pub fn track<V: Copy>(known: &mut [Option<Known<V>>], fixed: &[Option<i64>], f: 
             space: AddrSpace::Up(d @ 1..=2),
             ..
         } => Some((dst, Known::Up(d))),
-        Inst::Alloc { dst, .. } => Some((dst, Known::Temp)),
+        // A local composite's object (`NewFrame`) is made in the temporary area too.
+        Inst::Alloc { dst, .. } | Inst::NewFrame { dst, .. } => Some((dst, Known::Temp)),
         // A result that is an array or a record is the address of a fat pair in the temporary
         // area, and the words of a layout are made there too.
         Inst::Call { dst: Some(dst), .. }

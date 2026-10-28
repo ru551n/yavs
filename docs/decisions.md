@@ -10809,7 +10809,7 @@ it 2.6 million times; `eloop::run`, `LoopObjects::region` and `yavs_rt_eloop` we
   (a fresh frame the caller made, a heap vector) through one call, `yavs_rt_eloop_host`, which finds what `LoopObjects`
   finds (also the slots of the calling native frames) and bounds-checks `extra + n`. An inline probe of the object cache entry
   in front of that call was tried and dropped: the new frame of `get_row` is not in the cache yet (the call loads it), so
-  the probe only added instructions (10.4 G to 10.7 G, cycles +3 percent).
+  the probe only added instructions (10.4 G to 10.7 G, cycles +3 percent). Superseded by "Native-frame calls find their fresh frames, results and argument regions inline": the fresh frame is a known temporary now and the call is gone.
 - **`eloop::exec` decides overlap by host addresses**, not by "same object": the byte ranges of the blocks each stream
   touches are compared as addresses, which is what the code handing it pointers (not objects) needs, and is as exact for the
   helper.
@@ -10821,6 +10821,46 @@ it 2.6 million times; `eloop::run`, `LoopObjects::region` and `yavs_rt_eloop` we
   and result around the loop), `to_slvv_8` and `to_slm` 16, `exec_planned` 6, `yavs_rt_eloop_host` with its object look-up 10
   (for the fresh frame and the vector read), the interpreter's part (`run_ops`, `op_loop`) 10.
 
+
+## Native-frame calls find their fresh frames, results and argument regions inline (yavs-llvm, #757, 2026-10-28)
+
+What was left in `poc_stat_histogram` after the planned element loops was the path around each call of a short native-frame
+function (`get_row` 2.6 million times, `to_slm`), not the loops: per call two `yavs_rt_eloop_host` callbacks and a
+`yavs_rt_region` callback, a parameter region test that always failed and fell into the whole lookup chain, the chain again for
+the call's result, and a runtime call to copy eight elements. The fixes are general, for every function on a native frame:
+
+- **`NewFrame` is a temporary-area address** (`rt::track`, `regs::spaces`): the object of a local composite is made there, as
+  `Alloc`'s is, so `Known::Temp` and its one bounds test, in its block and across blocks. (`cat_block`'s "fresh block" rule is the
+  interpreter's own, which reads the space of the address, so it holds for these objects too.)
+- **`Known::LikelyTemp` in native frames too** (`Gen::host_lookup`): a call's result, the words loaded from it and a layout get the
+  temporary-area test first, then the native chain as before (own frame, the callers' slots, the object table, the views,
+  `yavs_rt_host`); frame-mode code keeps going to the runtime on a miss. A held parameter region that misses (`Gen::host`) takes
+  the same order: what an activation cannot hold is mostly an argument in the temporary area.
+- **Element-loop memory is found by `Gen::host`** (`Gen::eloop_host`): the plan's vectors and descriptors of unknown space get the
+  inline chain, the temporary area first. `yavs_rt_eloop_host` is gone (an inline probe of the object table in front of it was
+  slower when the fresh frame was not a known temporary, decisions above; it is now).
+- **Activations that move only the temporary area hold every other region** (`rt::fixed_activation`, `yavs_rt_region` flag 4):
+  `stable_activation`'s allowlist plus `Alloc`, `NewFrame`, `Stmt`, `TempRoot`, `MakeDope` and `LayoutOf`. None of them frees or
+  moves a heap object or pushes a frame, also in its slow path (native frames materialise there, or `native_step` does a layout in
+  the temporary area); the temporary area itself may grow, so it is not held. A function that returns a vector was never stable,
+  so its descriptor parameters were never held and every access took the full chain.
+- **The entry finds a held region in the object table inline** (`Gen::func`, native prologue): where the activation holds objects
+  (`stable` or `fixed`), the parameter's entry of `Mem::objs` is probed before `yavs_rt_region` (not for a frame or the temporary
+  area, which stay the runtime's to judge); a hit is the region.
+- **A planned copy inside one plane block each side is inline** (`Gen::eloop_plan`): the same step of 1 or -1 on both sides, the
+  elements of each side within one 64-element block, the two blocks' bytes apart (the test `eloop::exec` makes) is the plane copy
+  of `exec` as four masked word moves; anything else calls `yavs_rt_eloop_exec` as before.
+- **Not changed:** the optimisation level of native frames (#729/#785): the full `O2` pipeline on these three functions was measured
+  level with `LEAN` (cycles 1.89 against 1.88 G); the cost is in the generated code, not in what LLVM does with it.
+- **Measured** (bench builds, `--tier=auto` warm, one claimed core, `perf stat`, interleaved, against `8e4cd334`): histogram
+  instructions 10.42 to 6.97 G, cycles 2.21 to 1.49 G; step by step (cycles): fresh frames and the element-loop temporary test
+  -14 percent, `LikelyTemp` in native frames -3, `fixed_activation` -11, the plan through `Gen::host` -3, the entry probe -3, the
+  inline copy -5. `llvm_eloop` work counters: `cb_region` 160 to 1, `cb_host` 22 to 0. realbench run phase `--compare` (42 tests):
+  see docs/STATUS.md.
+- **sim1:** its argument is a machine pointer and a function's result a pointer into a bump-allocated thread-local area, so neither
+  costs a lookup; the idea taken is to treat fresh objects and results as what they are (temporary-area addresses, one test) and
+  to resolve an argument's region once, inline where the object table has it. Its element-wise loops were not taken (decisions
+  above).
 
 ## A process that never suspends stays in compiled code under a bound of 10^9 jumps back (yavs-llvm, yavs-interp, yavs-kernel, #583, #761, 2026-10-26)
 
@@ -12136,3 +12176,37 @@ subprograms that cannot suspend.
   run): `rtl_lfsr` 0.909 instructions, 0.94 CPU, 0.93 wall (`_p1` linked at 28 ms of the run, was 57); `rtl_ff` 0.99 / 0.92 / 0.92;
   `lfsr64` 1.00 / 1.00 / 0.99 (its copy is compiled early by the run-to-run profile already, at 30 ms).
 
+## Compiled clocked RTL processes, round 10: the view made inside the tier, the entry's copies and drops (yavs-interp, yavs-llvm, yavs-ir, #766, 2026-10-28)
+
+Task (#766): the host layers between the kernel and compiled code, about 490 of the 1 390 instructions of a `rtl_lfsr` activation in kernel
+round 26. Method as in rounds 8 and 9: bench builds with `llvm`, `tools/stepcount` windows of 2 048 (`rtl_lfsr`, `lfsr64`) or 4 096 (`rtl_ff`)
+compiled activations (entries of `AutoTier::run_cached`, `--tier=auto --tier-heat=1,0,0`, `--threads 1`), cycles as the minimum of 7
+interleaved warm runs on one claimed core of the second CCD. `perf record -e '{cycles,instructions}:u'` gave each layer the same share of
+cycles as of instructions (`InterpProcess::run` 13.7 / 14.0 percent, `run_cached` 10.0 / 9.7, `view_again` 11.4 / 15.6): the layers are
+instruction-bound, so this round removes instructions; the prefetch rounds had taken the misses.
+
+- **Decision: `Tier::run_cached` takes the interpreter's own host, `&mut yavs_interp::Host`** (was `&mut dyn TierHost`; `Host` is `pub` with
+  private fields), and `rt::enter`/`enter_on` are generic over `rt::View` (`dyn TierHost` and `Host`), so a process activation makes its view
+  with `Host::view_root_again` inlined into the tier instead of the virtual `TierHost::view_again` (its call, six-register prologue and
+  epilogue, and the reload of the host's fields). `Tier::run` and `Tier::call` keep `dyn TierHost`; the callbacks get `dyn TierHost` as
+  before. `view_root` and `tier_cov` are `#[inline]` for that. A second code generator changes its `run_cached` parameter type and gets
+  the saving by calling `enter` with the host (heads-up on #481). Why: about 18 instructions of every compiled activation, no state kept.
+- **Decision: `run_direct` reads the root function through `Program::func_inline`** (the body of `Program::func`, `#[inline(always)]`;
+  `func` itself is unchanged for its other callers), tests `Host::fault` in place instead of moving the 32-byte `Option<Fault>` out, and
+  ends the host with `mem::forget` once the fault is known to be `None` and `up` is dropped (the drop of the `None` fault was a call of
+  its drop glue). The view writes `TierFrame::flags` once, the stack bound of `enter_on` is the address of its `Env` (no `black_box`
+  store and reload), and `Mem::keep_heap` compares the two epochs word by word (the array compare went through the stack).
+- **Measured** (instructions an activation, stepcount, base 3d0e1f3d / round 10): `rtl_lfsr` 1 422.5 / 1 380.6, `lfsr64` 1 475.1 / 1 433.2,
+  `rtl_ff` 1 116.5 / 1 074.5. By layer (`rtl_lfsr`; `lfsr64` and `rtl_ff` alike): `InterpProcess::run` with `run_direct` and `Program::func`
+  203.9 / 181.9, `AutoTier::run_cached` with `enter_on` and `view_again` 311.8 / 291.8, `yavs_rt_wait_same` 21.9 / 21.9: the host layers
+  538 / 496. Cycles, minimum of 7 warm runs, core 9: `--tier=auto` `rtl_ff` -2.6 percent, `lfsr64` -1.6, `rtl_lfsr` -0.9, `rtl_chain`
+  -2.0 (interpreted, same instructions: noise); with `--tier-heat=1,0,0` `rtl_ff` -3.2, `rtl_lfsr` -1.9, `lfsr64` -1.4, `rtl_chain` +0.3.
+- **Not done, and why.** What is left of the 496 is the work itself in steps of 3 to 15 instructions: the view's 35 fields (about 75), the
+  object table's tags (`Mem::begin` and `save_tag`, about 55; a generator-proven "no object table" flag stays not now, decision of
+  2026-10-26), the tier's policy bookkeeping in `run_direct` (sampling slot, `activated`, `execs`, about 30), the `Env` and the thread's
+  `Mem` (about 35), the record's copy in and out (about 15). Every activation is another machine, so nothing of the view or the tags can be
+  kept on the thread; a persistent per-process view stays ruled out (#634). Tried and dropped: putting `rt_run` back without its drop test
+  (a nested `run_quick` in a callback may refill it: a leaked runtime for 3 instructions).
+- **The reference simulator (rule 22):** its process entry calls the compiled closure with the process's state pointer and nothing between
+  the scheduler and the code. The idea taken: the code that makes the activation's context is static code in the caller, not a virtual
+  call back into the host. Ours keeps the per-activation view (#634). Nothing was copied.

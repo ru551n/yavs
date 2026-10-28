@@ -1817,7 +1817,7 @@ impl Machine {
         let [fr] = &self.frames[..] else {
             return Direct::No;
         };
-        let func = fr.func;
+        let (func, pc) = (fr.func, fr.pc);
         let Some(flags) = self.rt.native.func.get(func.0 as usize) else {
             return Direct::No;
         };
@@ -1834,7 +1834,7 @@ impl Machine {
         };
         let slot = crate::slot();
         rt.native.activated(func);
-        let Some(f) = rt.prog.func(func) else {
+        let Some(f) = rt.prog.func_inline(func) else {
             self.rt_run = Some(rt);
             return Direct::No;
         };
@@ -1842,7 +1842,6 @@ impl Machine {
             u64::from(rt.id) << 32 | u64::from(func.0),
             Ordering::Relaxed,
         );
-        let pc = self.frames[0].pc;
         let mut state = self.tier_state;
         let mut host = Host {
             m: self,
@@ -1855,14 +1854,22 @@ impl Machine {
             stop: false,
         };
         let ran = tier.run_cached(func, pc, &mut host, &mut state);
-        let fault = host.fault;
-        self.tier_state = state;
-        self.rt_run = Some(rt);
-        if let Some(e) = fault {
+        // Tested in place: a move of the `Option<Fault>` copies it on every activation.
+        if host.fault.is_some() {
+            let e = host.fault.take();
+            self.tier_state = state;
+            self.rt_run = Some(rt);
             slot.store(0, Ordering::Relaxed);
-            self.quick_fault = Some(e);
+            self.quick_fault = e;
             return Direct::Done(Quick::Fault);
         }
+        // The rest of the host is references and the `None` fault: no drop call for them.
+        if host.up.capacity() != 0 {
+            drop(std::mem::take(&mut host.up));
+        }
+        std::mem::forget(host);
+        self.tier_state = state;
+        self.rt_run = Some(rt);
         match ran {
             Some(crate::TIER_SUSPEND) => {
                 // A wait compiled code ended on the kernel itself left its pc in the record
@@ -8845,6 +8852,7 @@ impl Machine {
 
     /// The view of a process in its root frame, every field written straight from the machine's
     /// fields (`TierHost::view_again`); `false` (nothing written) when it is not one.
+    #[inline]
     fn view_root(&mut self, tf: &mut crate::TierFrame, c: &Ctx<'_>) -> bool {
         let m = self;
         if m.frames.len() != 1 || m.vc.tier_sigs.len() != m.vc.nsigs {
@@ -8887,16 +8895,15 @@ impl Machine {
         // A process that is `hot` has no shared state (`sh`), which the call paths of a serial
         // process do not promise: its epoch and flags come from the heap and the frame alone.
         m.tier_heaps(tf);
-        if m.hot {
-            tf.flags = u64::from(shared_alloc) * crate::TIER_SHARED_ALLOC
-                + u64::from(STAMPS.load(Ordering::Relaxed)) * crate::TIER_STAMPS;
+        let flags = if m.hot {
+            u64::from(shared_alloc) * crate::TIER_SHARED_ALLOC
+                + u64::from(STAMPS.load(Ordering::Relaxed)) * crate::TIER_STAMPS
         } else {
-            tf.flags = m.tier_flags();
-        }
+            m.tier_flags()
+        };
         // `frames.len() == 1` above; `tier_flags` (deeper views) never sets it.
-        if m.root_process && m.dbg.is_none() {
-            tf.flags |= crate::TIER_ROOT_WAIT;
-        }
+        let root_wait = m.root_process && m.dbg.is_none();
+        tf.flags = flags | (u64::from(root_wait) * crate::TIER_ROOT_WAIT);
         tf.cycle = c.cycle();
         tf.known = c.resumed_edge_key();
         true
@@ -8926,6 +8933,7 @@ impl Machine {
     }
 
     /// The coverage counters of this machine's instance in the view.
+    #[inline]
     fn tier_cov(&self, tf: &mut crate::TierFrame) {
         // Compiled `Inst::Cover` exists only with counters, so without them the view is not read.
         if self.rt.cov.is_empty() {
@@ -10580,8 +10588,8 @@ impl Machine {
     }
 }
 
-/// The interpreter under compiled code (`Machine::run_tier`).
-struct Host<'a, 'c, 'x> {
+/// The interpreter under compiled code (`Machine::run_tier`, `Tier::run_cached`).
+pub struct Host<'a, 'c, 'x> {
     m: &'a mut Machine,
     rt: &'a Runtime,
     prog: &'a Program,
@@ -10780,6 +10788,20 @@ impl Host<'_, '_, '_> {
     }
 }
 
+impl Host<'_, '_, '_> {
+    /// [`crate::TierHost::view_again`] without the virtual call, for [`crate::Tier::run_cached`]
+    /// (inlined into the tier: the call and its prologue were about 25 instructions of every
+    /// compiled activation, #766).
+    #[inline]
+    pub fn view_root_again(&mut self, tf: &mut crate::TierFrame) -> bool {
+        let Some(c) = self.ctx.as_deref_mut() else {
+            return false;
+        };
+        tf.kctx = (c as *mut Ctx<'_>).cast();
+        self.m.view_root(tf, c)
+    }
+}
+
 impl crate::TierHost for Host<'_, '_, '_> {
     fn view(&mut self, tf: &mut crate::TierFrame) {
         self.m.tier_view(tf);
@@ -10865,11 +10887,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
     }
 
     fn view_again(&mut self, tf: &mut crate::TierFrame) -> bool {
-        let Some(c) = self.ctx.as_deref_mut() else {
-            return false;
-        };
-        tf.kctx = (c as *mut Ctx<'_>).cast();
-        self.m.view_root(tf, c)
+        self.view_root_again(tf)
     }
 
     fn step(&mut self, tf: &mut crate::TierFrame, at: u32) -> crate::Stepped {

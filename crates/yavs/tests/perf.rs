@@ -1368,12 +1368,17 @@ mod llvm {
         llvm_eloop,
         "acc=",
         [
-            ("cb_eloop", Min(175)),
-            // The vector and the descriptor the planned loops cannot find inline: a call each.
-            ("cb_eloop_host", Max(360)),
+            // The fills of `ones`; the row copies (one plane block each side) are inline: a
+            // copy that takes the runtime call again raises it (180 before #757 round 2).
+            ("cb_eloop", Min(20)),
+            ("cb_eloop", Max(20)),
             ("cb_step", Max(6)),
             ("cb_deopt", Max(0)),
-            ("cb_host", Max(22)),
+            // The planned loops find their vectors and descriptors inline (fresh frames, the
+            // caller's temporaries, held parameter regions, the object table): no lookup call.
+            ("cb_host", Max(0)),
+            // The descriptor parameter's region is found in the object table at the entry.
+            ("cb_region", Max(1)),
             ("llvm_native_frames", Min(2)),
         ]
     );

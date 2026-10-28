@@ -63,11 +63,11 @@ impl ClifTier {
 
 #[cfg(feature = "clift")]
 impl ClifTier {
-    fn go(
+    fn go<H: yavs_llvm::rt::View + ?Sized>(
         &self,
         func: FuncId,
         pc: u32,
-        host: &mut dyn TierHost,
+        host: &mut H,
         state: Option<&mut yavs_interp::TierState>,
     ) -> Option<u32> {
         let &(f, nregs) = self.funcs.get(func.0 as usize)?.as_ref()?;
@@ -172,7 +172,7 @@ impl Tier for ClifTier {
         &self,
         func: FuncId,
         pc: u32,
-        host: &mut dyn TierHost,
+        host: &mut yavs_interp::Host<'_, '_, '_>,
         state: &mut yavs_interp::TierState,
     ) -> Option<u32> {
         self.go(func, pc, host, Some(state))

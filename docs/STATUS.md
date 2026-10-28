@@ -244,6 +244,7 @@ Correctness fixes found by reviewing the non-pass entries (2026-10-23):
 - `x'element` of an array formal with open element bounds as the target of an `others` aggregate (`issue3204`, second suite): the aggregate takes the actual's element bounds.
 - An aggregate with `others` as a case choice takes the case expression's subtype (9.3.3.3; `issue1360`, second suite).
 - `--relaxed` rule R5 (`W1325`): an `others` aggregate assigned to an unconstrained port or formal takes the object's run-time bounds, as both reference simulators do under their relaxed switch (`issue1191`, `issue2421`, second suite). The harness reads `--std=93c` as relaxed.
+- `--relaxed` rule R6 (`W1361`, #813): the actual of a signal parameter that is not a static name (`p(s(i))` with a variable or loop parameter `i`) is a warning instead of `E1360`, as the first reference simulator does under its relaxed switch.
 - `x'subtype(value)` (and `'element`, `'base`) is a type conversion (9.3.6; `ieee9`, first suite, `issue2097`, second suite).
 - The function form of `file_open` returned no value (internal error), and `file_position (f, FILE_ORIGIN_END)` was negative (a NATURAL error); it is the distance to the end now (`file12`, first suite).
 - `T'VALUE` of an array type (2019, `value2`, `value4`) is E2001 (not implemented) instead of an internal error; `T'VALUE` of composites is still missing.

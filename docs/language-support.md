@@ -55,8 +55,9 @@ probed:
 - PSL: a subset, see "PSL" below.
 
 `--relaxed` turns a few errors that verification code often trips over into warnings: a shared variable of a type
-that is not protected (`W1904`), a pure function that calls an impure one (`W1830`), and an `others` aggregate assigned
-to an object with an unconstrained subtype (`W1325`). Pass it to `analyze` and also to `run` and `elab`, which analyse
+that is not protected (`W1904`), a pure function that calls an impure one (`W1830`), an `others` aggregate assigned
+to an object with an unconstrained subtype (`W1325`), and a signal parameter's actual that is not a static name
+(`W1361`). Pass it to `analyze` and also to `run` and `elab`, which analyse
 the files again.
 
 ## VHDL-1993

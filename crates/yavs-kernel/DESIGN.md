@@ -131,6 +131,10 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   pending. A wake-up before `now` is `ErrorKind::DeadlineInPast` (E3005); one at `now` gives the
   next delta (counted against the delta limit). With no observer there are no wake-ups and
   nothing changes.
+- **Next activity time** (`Hook::next_time`, #828): in the end-of-time-step phase the kernel has
+  just computed `Tn` (`next_time`, stale queue entries dropped) and hands it to the hook, so a
+  VHPI plugin can ask for the next active time; wake-ups scheduled from the current call are
+  added. Other phases get `None`: the queue may still change in them.
 - **Waiters**: per signal, `(proc, range, generation)`. A process's generation increases on every
   resumption, invalidating its other waiters and its timeout in O(1). Each signal buckets its
   waiters by chunk of 8 elements, 64 for a signal over 4096 elements (a waiter over at most 4 chunks

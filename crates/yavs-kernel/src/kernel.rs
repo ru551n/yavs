@@ -289,6 +289,8 @@ pub struct Hook<'a> {
     wakes: &'a mut Wakes,
     empty_delta: &'a mut bool,
     slots: &'a [Mutex<Slot>],
+    /// The next activity time, known in the end-of-time-step phase (`Kernel::obs_next`).
+    next: Option<Option<Time>>,
     /// Index of the observer being called.
     observer: usize,
 }
@@ -428,6 +430,18 @@ impl Hook<'_> {
         self.wakes.next += 1;
         self.wakes.pending.insert(id, self.observer);
         Ok(id)
+    }
+
+    /// The time of the next scheduled activity (`Some(None)`: nothing is scheduled), known only
+    /// to end-of-time-step observers (`None` in every other call); wake-ups scheduled from the
+    /// current call count.
+    pub fn next_time(&self) -> Option<Option<Time>> {
+        let queued = self.next?;
+        let wake = self.wakes.pending.first_key_value().map(|(id, _)| id.time);
+        Some(match (queued, wake) {
+            (Some(q), Some(w)) => Some(q.min(w)),
+            (q, w) => q.or(w),
+        })
     }
 
     /// Cancel a pending wake-up; false if it already fired or was cancelled.
@@ -868,6 +882,8 @@ pub struct SimControl {
     idle_live_possible: bool,
     /// `Tn` as the last delta computed it (only a cycle sets it, only `run_until` takes it).
     known_next: Option<Option<Time>>,
+    /// The next activity time while end-of-time-step observers run (`Hook::next_time`).
+    obs_next: Option<Option<Time>>,
     postponed: Vec<u32>,
     last_ran: Vec<u32>,
     /// The commit list of `run_batch`, kept between batches.
@@ -1206,6 +1222,7 @@ impl SimControl {
             cfg,
             waiters: signals.iter().map(|s| Waiters::new(s.ty.len)).collect(),
             known_next: None,
+            obs_next: None,
             work: None,
             signals,
             drivers,
@@ -2304,7 +2321,11 @@ impl SimControl {
                     self.phase(Phase::StartOfPostponed);
                     self.run_batch(postponed, true, false)?;
                 }
+                if self.phase_mask & 1u16 << Phase::EndOfTimeStep as u32 != 0 {
+                    self.obs_next = Some(self.next_time());
+                }
                 self.phase(Phase::EndOfTimeStep);
+                self.obs_next = None;
                 if !watched && none {
                     self.known_next = Some(next);
                 }
@@ -4001,6 +4022,7 @@ impl SimControl {
             wakes: &mut self.wakes,
             empty_delta: &mut self.empty_delta,
             slots: &self.slots,
+            next: self.obs_next,
             observer: 0,
         };
         for (i, o) in observers.iter_mut().enumerate() {
@@ -4032,6 +4054,7 @@ impl SimControl {
             wakes: &mut self.wakes,
             empty_delta: &mut self.empty_delta,
             slots: &self.slots,
+            next: self.obs_next,
             observer: 0,
         };
         for (i, o) in observers.iter_mut().enumerate() {

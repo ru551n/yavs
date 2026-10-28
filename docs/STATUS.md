@@ -62,6 +62,18 @@ default, `llvm`, `clift`, `llvm,clift`; `cargo test --workspace` 1232 / 1355 / 1
 543/544 (`file_append_2019`, the same on main: #806). CI: the `clift` job (clippy, tests,
 gc-stress, difftest smoke) and the `auto3` step. Flaky once: #805.
 
+### Cranelift tier, round 12 (#481, 2026-10-28)
+
+Frame-mode code keeps values in hand across slow-path joins and into jumped-to blocks, knows the words a light `ieee`
+native computed in place wrote, copies constant `LCopy` ranges with constant masks, reads constant descriptors when the
+code is made, tests real results finite as integers, computes `math_real.uniform` in place and lowers dense `case` tables
+to a `Switch`; its code goes into the LLVM tier's code arena (Linux x86_64), and without a main generator a process of
+2 048 IR instructions or more is `Big`. Cranelift-only / LLVM build, `--tier=auto` (loaded host, instructions primary):
+h2h instructions 1.039 warm / 0.874 cold (main: 1.207 / 0.994), realbench 42 tests 1.009 / 0.985, cycles 1.013 / 0.970;
+`poc_stat_histogram` 1.9 warm (LLVM's element-loop plans of #757 are not ported). LLVM-only builds unchanged. Cache hits of
+the Cranelift build are priced over the tree (`FIRST_HIT`); a run-dependent tree makes some functions miss every run (#844).
+LLVM removal: not yet (decisions.md "Cranelift tier, round 12" lists what is left).
+
 ### Conformance report (#780, 2026-10-26)
 
 `tools/conformance/run.py` generates `docs/conformance.md` (and `.json`): pass counts of the differential corpus per group and thread count, the reference simulators' own tests, the discrepancy catalogue, the analysis corpora against the recorded sim1 lists, the UVVM and OSVVM suites, neorv32 and GRLIB LEON3 runs, platforms and known limits. The `conformance` workflow regenerates the CI-capable parts on `main` and release tags and checks the committed copy (`tools/conformance/AGENTS.md`). Open: waveform equivalence on real designs (a slot in the report), a public page (maintainer's decision).

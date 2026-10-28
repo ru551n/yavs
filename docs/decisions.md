@@ -9528,6 +9528,72 @@ the cache.
 - **No change without `clift`:** checked by realbench instructions and difftest (STATUS.md "Cranelift tier on main");
   the per-generator rules of round 11 apply only when a first-level generator runs.
 
+## Cranelift tier, round 12: frame-mode loops, the code arena, case tables, hit pricing (yavs-clift, yavs-llvm `auto.rs`, `arena.rs`, #481, #844, 2026-10-28)
+
+- **Frame-mode compute loops** (go list item 1). Found by attributing the loop of `xor_types` per IR instruction (Cranelift
+  about 565 instructions a pass, LLVM about 254):
+  - the general `LCopy` (128-bit shifts over one or two plane blocks) was a third of the pass: a constant count and offsets
+    inside one block are now masks and shifts of constants (`lcopy_shape`, `lcopy_const`, the LLVM lowering's own);
+  - a descriptor of the constant pool is read when the code is made (`dim_len`, `SubtypeCheck` and `DopeLen`);
+  - the words a light `ieee` native computed in place writes (fat pair, dimension, plane block) are known to the reads after
+    it (`Gen::mfacts`: 8-byte `Load`s, `Index` by a constant, descriptor reads, the source of a constant `LCopy`), until a block
+    start or an instruction that may write memory. The native is no resume point (it calls nothing back), so no block start
+    splits it from its reads; its fallback reads the native's own words back and requires a dimension the fast path makes
+    constant to be that constant, else it leaves at the next instruction. This is what LLVM's GVN does with those stores;
+  - a slow path's join keeps the values in hand from before the instruction except the registers it defines (the step
+    executes that one instruction), and a block start a jump leads to takes the values of up to 16 registers its block reads
+    as block parameters (they are clean: the jump stores what was deferred);
+  - `FBin` is tested finite as integers on the bits that are stored anyway, and an `FCheck` against the whole range of `real`
+    of a value so tested is left out (`compute_h2h`: three per pass);
+  - `math_real.uniform` in place (`uniform_fast`, the LLVM lowering's): `sc5_fifo_repack`'s `rand_next` spent 20 percent of
+    the run materialising frames for the native.
+  No `yavs_ir::opt` change: the go-list loops have no loop-invariant `DopeLen` or `SubtypeCheck`; each checks a native's fresh
+  result every pass, which the facts above answer.
+- **Cache misses of compiled clocked processes** (item 2). GRLIB warm, Cranelift-only build against the LLVM build (single
+  runs, `perf stat`): instructions 0.98, cycles 1.16, L1 instruction cache misses 3.0 times, instruction-TLB misses 16 times,
+  branch misses 1.4 times. Three causes, three changes:
+  - **Decision: Cranelift's code goes into the LLVM tier's code arena** (`yavs_llvm::arena`, Linux x86_64; built without
+    the `llvm` feature too, `code` and `data`; `yavs-clift` `ArenaMem`). Cranelift's own provider maps every compile's code
+    in pages of its own, so each hot function sat on its own pages starting at offset 0. Instruction-TLB misses 115 M to
+    2.3 M (LLVM 7.2 M), instruction cache misses 603 M to 475 M.
+  - **Decision: a `Case` of four arms or more over at most 1 024 values is a Cranelift `Switch`** (jump tables where the
+    values are dense, a search tree otherwise), as LLVM's `switch`; it was a compare chain per arm (GRLIB's decoders).
+  - **Decision: without a main generator, a process of 2 048 IR instructions or more is `Kind::Big`** (`Tune::big_process`;
+    `YAVS_FIRST_TUNE=big_process=N`), as the LLVM build, which leaves GRLIB's combinational processes (2 300 to 11 300 IR
+    instructions, 0.2 to 1.1 MB of Cranelift code each) interpreted. Instruction cache misses 475 M to 307 M, cycles 193 G to
+    176 G in one pair of runs, instructions 357 G to 382 G (LLVM 370 G). `fletcher_bufferwriter_512`'s `input_proc` (1 546)
+    stays compiled. Not confirmed on a quiet host: the A/B of the knob in realbench ran at loads of 23 to 190 (an
+    unrelated job used 9 cores), where the cycles of single GRLIB runs spread by 50 percent.
+- **Hit pricing** (item 3). Warm hits of the Cranelift build cost more than `FIRST_HIT` (4 us an IR instruction of the root):
+  the bodies of the whole tree are generated again. **Decision:** `FIRST_HIT` prices the tree (`Worker::tree`) at 1 ms and
+  6 us an IR instruction, a fit of 30 GRLIB warm hits (1.2 ms and 6.5 us, compile-thread CPU). The pre-key of #785 was not
+  ported: a root's Cranelift body depends on the tree its compile was given, and that differs from run to run, so some
+  functions miss the cache in every run (#844); a key before generation has the same problem.
+- **Measured and not taken:** `YAVS_CLIFT_PIN` (the `Mem` view in Cranelift's pinned register `r15`, saved and restored by
+  every function): reloads of `Mem` became register moves, h2h cycles geomean 0.998 warm and cold (`xor_*` 0.88 to 0.93,
+  `rtl_ff` 1.13), instructions 1.010; removed. `YAVS_FIRST_TUNE=payback_rtl=0` (LLVM's rule for clocked processes): h2h
+  instructions 0.988 warm / 0.944 cold, cycles 0.992 / 0.957 (`rtl_lfsr` 0.95 / 0.88); realbench (42 tests, same binary) instructions 1.005 / 1.003, cycles 1.008 / 1.005: `payback_rtl` stays 16.
+- **Breadth** (bench builds of 2ea6c419, Cranelift-only / LLVM, `--tier=auto`; the host was loaded throughout, loads 15 to
+  44, an unrelated job on 9 cores: instructions are the measure). h2h, 11 designs, 11 interleaved runs, warm / cold:
+  instructions 1.039 / 0.874, cycles 1.042 / 0.839 (before, main 20055f61: 1.207 / 0.994 and 1.177 / 0.942; `xor_types`
+  2.15 to 1.11, `compute_h2h` 1.20 to 1.00, `lfsr64` 1.30 to 1.13). Realbench, 42 tests, `--runs auto --count-runs`:
+  instructions 1.009 / 0.985, cycles 1.013 / 0.970, wall 1.018 / 0.974. Losers warm (instructions): `poc_stat_histogram` 1.90
+  (LLVM's element-loop plans and native-frame call path of #757, f444b2f3 and 366f378a, are not in the Cranelift lowering),
+  `rtl_lfsr` 1.15, `lfsr64` 1.13, `hdlm_lfsr` 1.13, `xor_sig` 1.13, `xor_types` 1.11, `sc5_fifo_repack` 1.05. Winners:
+  `uvvm_sb_slv` 0.80, `uvvm_axistream_vvc` 0.91, `uvvm_util_rand` 0.93; cold `compute_h2h` 0.63, `xor_*` 0.68,
+  `sc5_fifo_repack` 0.84, the window generator 0.83. LLVM-only builds are unchanged: h2h instructions 1.003 / 1.001 against
+  main. Against sim1 (`tools/bench/run.py --ref sim1 --tiers auto`, warm, elaboration and run, 5 runs): Cranelift build
+  geomean 0.47 (0.44 by fastest runs), total 5.07 s against 11.10 s (0.46; `rtl_ff`'s runs spread from 1.2 to 2.8 s); LLVM
+  build 0.43 (0.43), total 3.87 s against 11.00 s (0.35). Tables and raw data: `~/.cache/yavs-h2h-keep/2026-10-28-clift15/`.
+- **Is removing LLVM justified now?** Not yet. On the testbench-like realbench set the Cranelift build is level (1.01
+  instructions warm, 0.99 cold) and on the compute loops of the go list within 4 percent warm in geomean, but the
+  remaining go list is: (1) LLVM's element-loop plans (#757) in the Cranelift lowering (`poc_stat_histogram` 1.9x warm);
+  (2) clocked RTL with many small processes (`rtl_lfsr`, `lfsr64`, `hdlm_lfsr` 1.13 to 1.15 warm: `payback_rtl`, the
+  host layers of #766 and the drive path); (3) the cache misses of #844 and a pre-key over the tree; (4) cycles on a quiet
+  host for `big_process` and the h2h/realbench verdict.
+- Gates on 2ea6c419: fmt; clippy `-D warnings` for default, `llvm`, `clift`, `llvm,clift`; `cargo test --workspace` 1233 /
+  1356 / 1271 / 1391; gc-stress unit tests; difftest 547/547 at 1 and 4 threads for `yavs-interp`, `yavs-auto`, `yavs-llvm` (debug `llvm` build), `yavs-clift`, `yavs-clift-auto` (debug `clift` build, verifier on) and `yavs-clift-auto` with `--tier-heat=0,0,0`; under the collection-stress build `yavs-clift` 546/547 at 1 thread, `composite/aggregate_fill` over 300 s with any tier there (#852).
+
 ## Frame-mode code tests the temporary area and the object cache inline for addresses it can guess (yavs-llvm `Gen::host`, `rt::track`, #711, 2026-10-24)
 
 - **Finding:** the `yavs_rt_host` calls of `llvm_ieee` (`cb_host` 1416, then 2019 after the in-place `numeric_std`

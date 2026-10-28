@@ -1,0 +1,1 @@
+The Cranelift tier runs tight loops over `numeric_std` vectors, real arithmetic and `math_real.uniform` in its compiled code without leaving it, lowers `case` statements to jump tables, and places its code in one contiguous region, so loop-heavy testbenches and large designs run faster.

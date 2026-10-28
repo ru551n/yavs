@@ -1162,6 +1162,26 @@ struct Gen<'a> {
     /// Values of registers loaded or stored since the block began (invalidated at block
     /// starts, joins and after every callback).
     cache: Vec<Option<Value>>,
+    /// Frame mode: the number of the instruction that put each register's value in `cache`, and
+    /// the number of the instruction being generated with the registers it defines. A slow path's
+    /// join keeps the values in hand from before the instruction that it does not define (the
+    /// step executes that one instruction, `TierHost::step`).
+    cstamp: Vec<u32>,
+    ictr: u32,
+    idefs: Vec<u32>,
+    /// Frame mode: the registers a block start a jump leads to takes as block parameters (`carry`),
+    /// by block, and those parameters.
+    carry: HashMap<Block, (Vec<u32>, Vec<Value>)>,
+    /// The bits of `f64` values known to be finite (`FBin` results, which were tested).
+    finite: HashSet<Value>,
+    /// Frame mode: words of guest memory known since a native computed in place wrote its result
+    /// (`ieee_native`): (address, byte offset) to value, and the addresses an `Index` by a
+    /// constant made from another (`derived`). Dropped at block starts and at every instruction
+    /// that may write memory (`mem_ro`).
+    mfacts: HashMap<(Value, i64), Value>,
+    derived: HashMap<Value, (Value, i64)>,
+    /// The instruction being generated writes no memory (`mem_ro`).
+    iro: bool,
     slows: Vec<Slow>,
     /// Kinds of the instructions left to the interpreter whole (`step`).
     stepped: Vec<String>,
@@ -1231,6 +1251,9 @@ struct Gen<'a> {
 /// The instructions a deferred register may be live over and still be deferred (`Gen::keep`).
 const MAX_SPAN: u32 = 4;
 
+/// The most registers a block start takes as parameters (`Gen::carry`).
+const CARRY_MAX: usize = 16;
+
 /// Frame-mode instructions that leave the frame to the interpreter only through `leave_at` at
 /// their own pc or a slow path, and call out to nothing that reads the registers: deferred
 /// stores of earlier instructions pass them, and their own definitions are deferred.
@@ -1266,6 +1289,34 @@ fn quiet(i: &Inst) -> bool {
                 | Inst::MakeDope { .. }
         ),
     }
+}
+
+/// A `CallNative` of a light `ieee` function the code computes in place (`Gen::ieee_native`).
+fn inline_ieee(prog: &Program, f: &Func, i: &Inst) -> bool {
+    matches!(*i, Inst::CallNative { native, args, dst }
+        if native_kind(prog, f, native, args, dst).is_none()
+            && frame_direct(prog, f, i)
+            && yavs_interp::light_native(prog, f, native, args)
+            && ieee_fast(prog, f, native, args, dst).is_some())
+}
+
+/// Instructions that write no memory (the words of `Gen::mfacts` stay).
+fn mem_ro(i: &Inst) -> bool {
+    matches!(
+        i,
+        Inst::Load { .. }
+            | Inst::Index { .. }
+            | Inst::SubtypeCheck { .. }
+            | Inst::DopeLen { .. }
+            | Inst::Check { .. }
+            | Inst::Bin { .. }
+            | Inst::BinRange { .. }
+            | Inst::Cmp { .. }
+            | Inst::Const { .. }
+            | Inst::Move { .. }
+            | Inst::Br { .. }
+            | Inst::CondBr { .. }
+    )
 }
 
 /// Zero-delay scalar logic drives (`yavs_interp::ScalarDrive`, `batched_drives`) are not handed to
@@ -1494,7 +1545,9 @@ fn gen_func(
     // Address spaces that hold at the start of an IR block whatever path reached it.
     let space_facts = yavs_llvm::regs::spaces(prog, f, &leader);
     for (i, inst) in f.code.iter().enumerate() {
-        if resumes(prog, f, inst) {
+        // (A native computed in place in frame mode calls nothing back: the interpreter never
+        // resumes after it, and the words it wrote stay known, `Gen::mfacts`.)
+        if resumes(prog, f, inst) && (native || !inline_ieee(prog, f, inst)) {
             leader[i + 1] = true;
         }
     }
@@ -1688,6 +1741,14 @@ fn gen_func(
         mem,
         exit,
         cache: vec![None; f.reg_ty.len()],
+        cstamp: vec![0; f.reg_ty.len()],
+        ictr: 1,
+        idefs: Vec::new(),
+        carry: HashMap::new(),
+        finite: HashSet::new(),
+        mfacts: HashMap::new(),
+        derived: HashMap::new(),
+        iro: false,
         slows: Vec::new(),
         stepped: Vec::new(),
         nat,
@@ -1748,6 +1809,41 @@ fn gen_func(
                 g.b.ins().jump(first, &[]);
             }
             None => return Err("no code".into()),
+        }
+    }
+    // Frame mode: a block start a jump leads to takes the values in hand of the registers its
+    // block reads before defining them as parameters (the frame holds them too: the jump stores
+    // what was deferred), instead of loading them from the frame.
+    if g.nat.is_none() && g.live.is_some() {
+        let mut i = 0;
+        while i < n {
+            let end = (i + 1..n).find(|&k| leader[k]).unwrap_or(n);
+            if let (true, Some(bb)) = (jumped[i], bbs[i]) {
+                let mut rs: Vec<u32> = Vec::new();
+                let mut defd: Vec<u32> = Vec::new();
+                for inst in &f.code[i..end] {
+                    let (uses, defs) = yavs_interp::inst_regs(f, inst);
+                    for r in uses {
+                        let k = r.0 as usize;
+                        if k < g.preset.len()
+                            && !g.preset[k]
+                            && !defd.contains(&r.0)
+                            && !rs.contains(&r.0)
+                            && g.live_at(i as u32, k)
+                            && rs.len() < CARRY_MAX
+                        {
+                            rs.push(r.0);
+                        }
+                    }
+                    defd.extend(defs.iter().map(|r| r.0));
+                }
+                if !rs.is_empty() {
+                    let ps = rs.iter().map(|_| g.b.append_block_param(bb, I64)).collect();
+                    lparams[i].clone_from(&rs);
+                    g.carry.insert(bb, (rs, ps));
+                }
+            }
+            i = end;
         }
     }
     let block_bb = |bl: yavs_ir::BlockId| -> Result<Block, String> {
@@ -1912,14 +2008,19 @@ fn gen_func(
                     lparams[i] = rs.iter().map(|x| x.0).collect();
                 } else {
                     g.spill(pc);
-                    g.b.ins().jump(bb, &[]);
+                    g.jump_ir(bb);
                 }
             }
             g.b.switch_to_block(bb);
             g.drop_pend();
             g.clear();
+            if let Some((rs, ps)) = g.carry.get(&bb).cloned() {
+                for (r, v) in rs.into_iter().zip(ps) {
+                    g.cput(r as usize, v);
+                }
+            }
             for (r, v, dirty) in carried {
-                g.cache[r as usize] = Some(v);
+                g.cput(r as usize, v);
                 if dirty {
                     g.pend[r as usize] = Some(v);
                     g.plist.push(r);
@@ -1936,6 +2037,19 @@ fn gen_func(
         // Deferred stores pass the quiet instructions; the others find the frame as the
         // interpreter would.
         g.pc = pc;
+        g.ictr += 1;
+        if g.nat.is_none() {
+            g.idefs = yavs_interp::inst_regs(f, &inst)
+                .1
+                .iter()
+                .map(|r| r.0)
+                .collect();
+        }
+        g.iro = mem_ro(&inst);
+        if !g.iro && !matches!(inst, Inst::LCopy { .. } | Inst::CallNative { .. }) {
+            g.mfacts.clear();
+            g.derived.clear();
+        }
         g.defer = g.nat.is_none()
             && g.live.is_some()
             && quiet(&inst)
@@ -2084,14 +2198,10 @@ fn gen_func(
                         continue;
                     }
                 };
-                // Not finite: |v| is not below infinity (NaN compares false).
-                let abs = g.b.ins().fabs(v);
-                let inf = g.b.ins().f64const(f64::INFINITY);
-                let fin =
-                    g.b.ins()
-                        .fcmp(FloatCC::UnorderedOrGreaterThanOrEqual, abs, inf);
-                g.exit_if(fin, pc);
-                g.stf(dst, v);
+                let bits = g.b.ins().bitcast(I64, MemFlagsData::new(), v);
+                g.exit_unless_finite(bits, pc);
+                g.finite.insert(bits);
+                g.st(dst, bits);
             }
             Inst::FUn { op, dst, a } => {
                 let x = g.ldf(a);
@@ -2172,6 +2282,15 @@ fn gen_func(
                     }
                 }
             }
+            // The whole range of `real` holds every finite value: an `FBin` result passes as is.
+            Inst::FCheck { v, lo, hi, .. }
+                if g.fconst(lo) == Some(-f64::MAX) && g.fconst(hi) == Some(f64::MAX) =>
+            {
+                let bits = g.ld(v);
+                if !g.finite.contains(&bits) {
+                    g.exit_unless_finite(bits, pc);
+                }
+            }
             Inst::FCheck { v, lo, hi, .. } => {
                 let (x, l, h) = (g.ldf(v), g.ldf(lo), g.ldf(hi));
                 // !(l <= x && x <= h), NaN included.
@@ -2213,7 +2332,10 @@ fn gen_func(
                                 g.exit_if(big, pc);
                                 sum_out = Some(sum);
                             }
-                            g.b.ins().iadd_imm_s(a, off as i64)
+                            let v = g.b.ins().iadd_imm_s(a, off as i64);
+                            let (b0, o0) = g.derived.get(&a).copied().unwrap_or((a, 0));
+                            g.derived.insert(v, (b0, o0 + off as i64));
+                            v
                         }
                         // Always the interpreter's error.
                         _ => {
@@ -2370,6 +2492,14 @@ fn gen_func(
                 let x = g.ld(src);
                 let c = canon(&mut g.b, w, x);
                 g.b.def_var(var, c);
+            }
+            Inst::Load {
+                dst,
+                addr,
+                w: Width::B8,
+            } if g.fact(addr, 0).is_some() => {
+                let v = g.fact(addr, 0).expect("checked");
+                g.st(dst, v);
             }
             Inst::Load { dst, addr, w } => {
                 let (slow, join) = g.slow_path(pc, &inst);
@@ -2847,9 +2977,22 @@ fn gen_func(
                 let (k, s0, d0, sb, db) = g.lcopy_shape(n, src_off, dst_off).expect("checked");
                 let (slow, join) = g.slow_path(pc, &inst);
                 let (sa, da) = (g.ld(src), g.ld(dst));
-                let ps = g.host(sa, Some(src), Op::C(sb * 32), Op::C(32), false, slow);
+                // The source planes a native computed in place wrote (`mfacts`), else loaded.
+                let known: Option<Vec<Value>> = (0..4)
+                    .map(|p| g.fact(src, sb as i64 * 32 + p * 8))
+                    .collect();
+                let ws = match known {
+                    Some(ws) => ws,
+                    None => {
+                        let ps = g.host(sa, Some(src), Op::C(sb * 32), Op::C(32), false, slow);
+                        let gf = g.gf;
+                        (0..4).map(|p| g.b.ins().load(I64, gf, ps, p * 8)).collect()
+                    }
+                };
                 let pd = g.host(da, Some(dst), Op::C(db * 32), Op::C(32), true, slow);
-                g.lcopy_const(pd, d0, ps, s0, k);
+                g.lcopy_const(pd, d0, &ws, s0, k);
+                g.mfacts.clear();
+                g.derived.clear();
                 g.join(join);
             }
             Inst::LCopy {
@@ -2960,7 +3103,10 @@ fn gen_func(
             Inst::CondBr { c: r, t, f: e } => {
                 let x = g.ld(r);
                 let (tb, eb) = (block_bb(t)?, block_bb(e)?);
-                g.brif_split(x, tb, eb);
+                let (te, ee) = (g.edge_block(tb), g.edge_block(eb));
+                g.brif_split(x, te, ee);
+                g.fill_edge(te, tb);
+                g.fill_edge(ee, eb);
                 open = false;
             }
             Inst::Br { to } => {
@@ -2972,7 +3118,7 @@ fn gen_func(
                 if backs.contains(&pc) && f.blocks.get(to).is_some_and(|b| b.start <= pc) {
                     g.spin_poll(pc);
                 }
-                g.b.ins().jump(tb, &[]);
+                g.jump_ir(tb);
                 open = false;
             }
             Inst::Case { v, table } => {
@@ -2989,11 +3135,13 @@ fn gen_func(
                     let hit = g.b.ins().band(ge, le);
                     let next = g.b.create_block();
                     let tb = block_bb(to)?;
-                    g.brif_split(hit, tb, next);
+                    let te = g.edge_block(tb);
+                    g.brif_split(hit, te, next);
+                    g.fill_edge(te, tb);
                     g.b.switch_to_block(next);
                 }
                 let d = block_bb(t.default)?;
-                g.b.ins().jump(d, &[]);
+                g.jump_ir(d);
                 open = false;
             }
             Inst::SigReadScalar { dst, sig } => g.sig_read_scalar(pc, dst, sig),
@@ -3235,10 +3383,94 @@ fn gen_func(
 }
 
 impl Gen<'_> {
+    /// Jump to the start `bb` of an IR block, with the values of the registers it takes (`carry`):
+    /// those in hand, else loaded from the frame (which holds them: the jump stored what was
+    /// deferred).
+    fn jump_ir(&mut self, bb: Block) {
+        let rs = self.carry.get(&bb).map(|c| c.0.clone()).unwrap_or_default();
+        let args: Vec<BlockArg> = rs
+            .iter()
+            .map(|&r| {
+                BlockArg::Value(match self.cache[r as usize] {
+                    Some(v) => v,
+                    None => self.b.ins().load(I64, self.rf, self.regs, r as i32 * 8),
+                })
+            })
+            .collect();
+        self.b.ins().jump(bb, &args);
+    }
+
+    /// The block a branch to IR block start `bb` goes through: `bb` itself unless it takes
+    /// parameters (`fill_edge` then makes the jump).
+    fn edge_block(&mut self, bb: Block) -> Block {
+        if self.carry.contains_key(&bb) {
+            self.b.create_block()
+        } else {
+            bb
+        }
+    }
+
+    /// The jump of an edge block made by `edge_block` (none for `bb` itself). The values in hand
+    /// are those of the block that branches there, its only way in.
+    fn fill_edge(&mut self, e: Block, bb: Block) {
+        if e != bb {
+            let cur = self.b.current_block();
+            self.b.switch_to_block(e);
+            self.jump_ir(bb);
+            if let Some(c) = cur {
+                self.b.switch_to_block(c);
+            }
+        }
+    }
+
+    /// Put the value of register `r` in hand (`cache`).
+    fn cput(&mut self, r: usize, v: Value) {
+        self.cache[r] = Some(v);
+        self.cstamp[r] = self.ictr;
+    }
+
+    /// At a slow path's join: drop the values in hand put there by the instruction being generated
+    /// (they need not dominate the join) and those of the registers it defines (the step wrote
+    /// them); the rest are what the frame holds or deferred, on both ways in.
+    fn clear_join(&mut self) {
+        if self.nat.is_some() {
+            return self.clear();
+        }
+        for (r, c) in self.cache.iter_mut().enumerate() {
+            if self.cstamp[r] == self.ictr {
+                *c = None;
+            }
+        }
+        for &r in &self.idefs {
+            if let Some(c) = self.cache.get_mut(r as usize) {
+                *c = None;
+            }
+        }
+        for &r in &self.plist {
+            if self.pend[r as usize].is_some() && self.cache[r as usize].is_none() {
+                self.cache[r as usize] = self.pend[r as usize];
+            }
+        }
+        if !self.iro {
+            self.mfacts.clear();
+            self.derived.clear();
+        }
+        self.slots = None;
+    }
+
+    /// The value of the 8-byte word register `r` points at plus `off`, when known (`mfacts`).
+    fn fact(&self, r: Reg, off: i64) -> Option<Value> {
+        let a = self.cache.get(r.0 as usize).copied().flatten()?;
+        let (base, o) = self.derived.get(&a).copied().unwrap_or((a, 0));
+        self.mfacts.get(&(base, o + off)).copied()
+    }
+
     fn clear(&mut self) {
         // A deferred register of an earlier instruction keeps its value: it dominates every block
         // of the instructions after it up to the next block start, which stores it.
         self.cache.fill(None);
+        self.mfacts.clear();
+        self.derived.clear();
         for &r in &self.plist {
             self.cache[r as usize] = self.pend[r as usize];
         }
@@ -3393,7 +3625,7 @@ impl Gen<'_> {
             return *v;
         }
         let v = self.b.ins().load(I64, self.rf, self.regs, r.0 as i32 * 8);
-        self.cache[r.0 as usize] = Some(v);
+        self.cput(r.0 as usize, v);
         v
     }
 
@@ -3424,7 +3656,7 @@ impl Gen<'_> {
             return;
         }
         let k = r.0 as usize;
-        self.cache[k] = Some(v);
+        self.cput(k, v);
         if self.preset[k] {
             return;
         }
@@ -3440,7 +3672,35 @@ impl Gen<'_> {
 
     fn ldf(&mut self, r: Reg) -> Value {
         let v = self.ld(r);
+        // The bits of a value computed here: that value, not a move through an integer register.
+        let dfg = &self.b.func.dfg;
+        if let ir::ValueDef::Result(i, 0) = dfg.value_def(v)
+            && dfg.insts[i].opcode() == ir::Opcode::Bitcast
+            && let [x] = dfg.inst_args(i)
+            && dfg.value_type(*x) == F64
+        {
+            return *x;
+        }
         self.b.ins().bitcast(F64, MemFlagsData::new(), v)
+    }
+
+    /// The value of a register defined once by a `ConstF` (or known to hold those bits).
+    fn fconst(&self, r: Reg) -> Option<f64> {
+        let bits = self
+            .kint(r)
+            .or_else(|| self.fixed.get(r.0 as usize).copied().flatten())?;
+        Some(f64::from_bits(bits as u64))
+    }
+
+    /// Leave at `pc` unless the `f64` of `bits` is finite (its exponent is not all ones).
+    fn exit_unless_finite(&mut self, bits: Value, pc: u32) {
+        let sh = self.b.ins().ishl_imm_s(bits, 1);
+        let bad = self.b.ins().icmp_imm_s(
+            IntCC::UnsignedGreaterThanOrEqual,
+            sh,
+            0xFFE0_0000_0000_0000_u64 as i64,
+        );
+        self.exit_if(bad, pc);
     }
 
     fn stf(&mut self, r: Reg, v: Value) {
@@ -4372,10 +4632,10 @@ impl Gen<'_> {
         self.b.ins().jump(join, &args);
         self.b.switch_to_block(join);
         let fresh = std::mem::take(&mut self.fresh);
-        self.clear();
+        self.clear_join();
         self.fresh = fresh;
         for (&r, v) in rs.iter().zip(ps) {
-            self.cache[r as usize] = Some(v);
+            self.cput(r as usize, v);
         }
         if !rs.is_empty() {
             self.jparams.insert(join, rs);
@@ -4843,6 +5103,15 @@ impl Gen<'_> {
     /// The length of the descriptor dimension at `dope + off` as `yavs_ir::dim_len`, and
     /// whether it fits a u64 (`dim_len` is not `None`).
     fn dim_len(&mut self, dope: Value, reg: Reg, off: u64, slow: Block) -> (Value, Value) {
+        // The words a native computed in place wrote (`mfacts`).
+        let o = off as i64;
+        if let (Some(l), Some(r), Some(dir)) = (
+            self.fact(reg, o),
+            self.fact(reg, o + 8),
+            self.fact(reg, o + 16),
+        ) {
+            return self.len_of(l, r, dir);
+        }
         // A descriptor of the constant pool: its length when the code is made.
         if off % 24 == 0
             && let Some((l, r, dir)) = self.const_dim(reg, (off / 24) as u32)
@@ -4896,15 +5165,14 @@ impl Gen<'_> {
         ))
     }
 
-    /// `Inst::LCopy` of `k` elements from bit `s0` of the plane block at `ps` to bit `d0` of the
-    /// one at `pd` (`lcopy_shape`): the source planes are read first (the ranges may overlap).
-    fn lcopy_const(&mut self, pd: Value, d0: u32, ps: Value, s0: u32, k: u32) {
+    /// `Inst::LCopy` of `k` elements from bit `s0` of the plane words `ws` (read first: the ranges
+    /// may overlap) to bit `d0` of the plane block at `pd` (`lcopy_shape`).
+    fn lcopy_const(&mut self, pd: Value, d0: u32, ws: &[Value], s0: u32, k: u32) {
         let gf = self.gf;
         let mask = if k == 64 { u64::MAX } else { (1u64 << k) - 1 };
         let hole = mask << d0;
         let mut v = [None; 4];
-        for (plane, x) in v.iter_mut().enumerate() {
-            let w = self.b.ins().load(I64, gf, ps, plane as i32 * 8);
+        for (x, &w) in v.iter_mut().zip(ws) {
             *x = Some(if s0 == d0 {
                 self.b.ins().band_imm_s(w, hole as i64)
             } else {
@@ -5482,6 +5750,11 @@ impl Gen<'_> {
             }
             _ => return Err("not a native computed in place".into()),
         };
+        // Frame mode: the words of a vector result as written (`mfacts`): the fat pair, the
+        // dimension and the plane block.
+        let mut words: Option<[Value; 9]> = None;
+        self.mfacts.clear();
+        self.derived.clear();
         match out {
             Out::Scalar(v) => self.st(d, v),
             Out::Vector(n, bits, up) => {
@@ -5507,15 +5780,19 @@ impl Gen<'_> {
                     self.b.ins().store(gf, w, p, 8 * k as i32);
                 }
                 self.st(d, at);
+                words = Some([data, dope, left, right, down, masked, mask, c0, c0]);
             }
         }
-        // Frame mode: the result goes on as a parameter of `done`.
+        // Frame mode: the result goes on as a parameter of `done`, a vector result's words too.
         let carry = self.nat.is_none();
         let res = self.cache[d.0 as usize].filter(|_| carry);
-        self.b.ins().jump(
-            done,
-            &res.map(BlockArg::Value).into_iter().collect::<Vec<_>>(),
-        );
+        let words = words.filter(|_| carry);
+        let fast: Vec<BlockArg> = res
+            .into_iter()
+            .chain(words.into_iter().flatten())
+            .map(BlockArg::Value)
+            .collect();
+        self.b.ins().jump(done, &fast);
         self.b.switch_to_block(fb);
         self.clear();
         self.native_direct(pc, inst, f, native, args, dst)?;
@@ -5523,14 +5800,60 @@ impl Gen<'_> {
             Some(v) => v,
             None => self.b.ins().load(I64, self.rf, self.regs, d.0 as i32 * 8),
         });
-        self.b.ins().jump(
-            done,
-            &alt.map(BlockArg::Value).into_iter().collect::<Vec<_>>(),
-        );
+        let mut slow: Vec<BlockArg> = alt.into_iter().map(BlockArg::Value).collect();
+        if let (Some(a), Some(_)) = (alt, words) {
+            // The native's own result read back (a result the reads do not fit leaves after it).
+            let lv = self.b.create_block();
+            self.b.set_cold_block(lv);
+            let gf = self.gf;
+            let pr = self.host(a, None, self::Op::C(0), self::Op::C(16), false, lv);
+            let (data, dope) = (
+                self.b.ins().load(I64, gf, pr, 0),
+                self.b.ins().load(I64, gf, pr, 8),
+            );
+            let pd = self.host(dope, None, self::Op::C(0), self::Op::C(24), false, lv);
+            let dims: Vec<Value> = (0..3)
+                .map(|k| self.b.ins().load(I64, gf, pd, k * 8))
+                .collect();
+            let pp = self.host(data, None, self::Op::C(0), self::Op::C(32), false, lv);
+            let planes: Vec<Value> = (0..4)
+                .map(|k| self.b.ins().load(I64, gf, pp, k * 8))
+                .collect();
+            slow.extend(
+                [data, dope]
+                    .into_iter()
+                    .chain(dims)
+                    .chain(planes)
+                    .map(BlockArg::Value),
+            );
+            self.b.ins().jump(done, &slow);
+            self.b.switch_to_block(lv);
+            self.leave_at(pc + 1);
+        } else {
+            self.b.ins().jump(done, &slow);
+        }
         let p = res.map(|_| self.b.append_block_param(done, I64));
-        self.start(done);
+        let ws: Vec<Value> = words
+            .iter()
+            .flatten()
+            .map(|_| self.b.append_block_param(done, I64))
+            .collect();
+        // Values in hand before the instruction stay: the native call writes its result only.
+        self.b.switch_to_block(done);
+        self.clear_join();
         if let Some(p) = p {
-            self.cache[d.0 as usize] = Some(p);
+            self.cput(d.0 as usize, p);
+            if let [data, dope, l, r, dir, p0, p1, p2, p3] = ws[..] {
+                for (k, v) in [data, dope].into_iter().enumerate() {
+                    self.mfacts.insert((p, 8 * k as i64), v);
+                }
+                for (k, v) in [l, r, dir].into_iter().enumerate() {
+                    self.mfacts.insert((dope, 8 * k as i64), v);
+                }
+                for (k, v) in [p0, p1, p2, p3].into_iter().enumerate() {
+                    self.mfacts.insert((data, 8 * k as i64), v);
+                }
+            }
         }
         Ok(())
     }
@@ -6734,7 +7057,7 @@ impl Gen<'_> {
         self.start(cont);
         match res {
             Some((d, v)) if self.nat.is_none() => {
-                self.cache[d.0 as usize] = Some(v);
+                self.cput(d.0 as usize, v);
                 self.join_with(join, &[d.0]);
             }
             _ => self.join(join),
@@ -7103,7 +7426,7 @@ impl Gen<'_> {
             self.b.ins().jump(c, &args);
             self.start(c);
             let ps = self.b.block_params(c).to_vec();
-            self.cache[dst.0 as usize] = Some(ps[2]);
+            self.cput(dst.0 as usize, ps[2]);
             let off = self.c64(0);
             self.objnew = Some((
                 dst,

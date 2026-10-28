@@ -7,8 +7,7 @@ yavs is permissive and takes the reading that lets the most designs elaborate; t
 are the ones a design can run into. Each entry gives the construct, what yavs does, the standard
 section (VHDL-2008 unless marked 2019) and, where one exists, a form that behaves the same in
 every simulator. Which features of each language revision work, and how well that is checked, is
-on the language support page of the repository
-(`docs/language-support.md <https://github.com/ru551n/yavs/blob/main/docs/language-support.md>`_).
+on the :doc:`language-support` page.
 
 Elaboration and delta timing
 ----------------------------

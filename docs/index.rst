@@ -25,8 +25,8 @@ Rust. It is early: a pre-release for people who want to try it and report what b
 Key features
 ------------
 
-* VHDL-1993, 2008 and 2019, mixed in one project: each file is analyzed with its own standard
-  (``--std=93``, ``--std=2008``, ``--std=2019``). A subset of PSL is supported.
+* VHDL-1993 (``--std=93``), VHDL-2008 and VHDL-2019, mixed in one project: each file keeps its own
+  standard. A subset of PSL is supported; :doc:`language-support` lists what works.
 * :doc:`Diagnostics <usage>` with stable codes, source snippets, help, and VHDL call stacks
   for runtime errors. Fail early, fail clearly: nothing runs after a failed step.
 * The IEEE packages (``std_logic_1164``, ``numeric_std``, ``math_real``, ``fixed_pkg``,
@@ -57,6 +57,7 @@ Install yavs (:doc:`install`), then analyze the files into a library and run a t
    install
    usage
    recipes
+   language-support
    language-choices
    coverage
    vhpi

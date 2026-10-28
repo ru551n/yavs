@@ -805,6 +805,30 @@ impl Db {
     }
 
     /// Attributes (16.2 predefined through the `attr::TABLE`, 6.7 user-defined).
+    /// `p'range'left` (or `p'range(n)'left`): a range attribute is not a name, but sim1 and sim2
+    /// read `'left`, `'right`, `'low`, `'high` and `'ascending` of it as the same attribute of
+    /// `p`. Returns `p`, that attribute and the dimension argument (#818). Not of
+    /// `'reverse_range`, where the two references give different values.
+    fn range_attr_alias(
+        prefix: &ast::Name,
+        attr: Ident,
+    ) -> Option<(&ast::Name, Ident, &[ast::AssocElem])> {
+        let (p, r, args) = match &prefix.kind {
+            ast::NameKind::Attribute { prefix: p, attr: r } => (p.as_ref(), *r, &[][..]),
+            ast::NameKind::Apply { prefix: q, args } if args.len() == 1 => match &q.kind {
+                ast::NameKind::Attribute { prefix: p, attr: r } => (p.as_ref(), *r, &args[..]),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        (r.key.as_str() == "range"
+            && matches!(
+                attr.key.as_str(),
+                "left" | "right" | "low" | "high" | "ascending"
+            ))
+        .then_some((p, attr, args))
+    }
+
     fn attr_cands(
         &mut self,
         scope: ScopeId,
@@ -812,6 +836,11 @@ impl Db {
         attr: Ident,
         args: &[ast::AssocElem],
     ) -> CandSet {
+        if args.is_empty()
+            && let Some((p, a, dim)) = Self::range_attr_alias(prefix, attr)
+        {
+            return self.attr_cands(scope, p, a, dim);
+        }
         if attr.key.as_str() == "value"
             && args.is_empty()
             && let Some(r) = self.range_attr(scope, prefix)
@@ -2415,6 +2444,11 @@ impl Db {
         i: Interp,
         span: Span,
     ) -> ExprId {
+        if args.is_empty()
+            && let Some((p, a, dim)) = Self::range_attr_alias(prefix, attr)
+        {
+            return self.build_attr(scope, p, a, dim, i, span);
+        }
         let Some(a) = PredefAttr::from_key(attr.key) else {
             return self.build_user_attr(scope, prefix, attr, span);
         };

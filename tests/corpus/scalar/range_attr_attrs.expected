@@ -1,0 +1,9 @@
+exit	0
+diag	note	0	0	:range_attr_attrs:_p0	input 7 2
+diag	note	0	0	:range_attr_attrs:_p0	input 0 2
+diag	note	0	0	:range_attr_attrs:_p0	i 7
+diag	note	0	0	:range_attr_attrs:_p0	i 6
+diag	note	0	0	:range_attr_attrs:_p0	i 5
+diag	note	0	0	:range_attr_attrs:_p0	i 4
+diag	note	0	0	:range_attr_attrs:_p0	i 3
+diag	note	0	0	:range_attr_attrs:_p0	i 2

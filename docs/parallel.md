@@ -59,8 +59,8 @@ flat RTL gained at most 1.6x.
   threads, and yavs learns that and keeps them on one thread. Testbench-style designs spend most
   of their process time in processes that must stay serial (files, shared variables, protected
   objects). Their levers are single-thread speed and the shared CPU budget above.
-* **What it costs when nothing goes to the threads.** About 1 to 2 percent more instructions for
-  the timed sample of process runs; the design runs at 0.95x to 1.0x of one thread.
+* **What it costs when nothing goes to the threads.** About 1 to 2 percent more instructions; the
+  design runs at about 0.95x to 1.0x of one thread.
 * **How the shared budget would work.** It uses the token-pool protocol that `make -j` and cargo
   use. The test runner owns the pool, one token per CPU slot, and passes it on in the
   `MAKEFLAGS` environment variable. Each simulation owns one implicit token, takes extra tokens

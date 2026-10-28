@@ -12430,13 +12430,15 @@ end for those processes. Method as in round 10: bench builds (`llvm`, and `clift
   list with a prefetch of the next task); its work queues for other jobs keep per-thread task lists that idle threads
   steal from. The idea used is work handed out in pieces that idle threads take, not per process; ours keeps the
   batch-order commit of effects on the kernel thread and adds the learned inline-or-pooled choice. Nothing was copied.
-- **Step 3 (parallel update, design 4.5) measured, not started.** With steps 1 and 2 the threads are balanced at 4 threads
-  (each 25 percent of the samples), and the kernel thread spends 13 percent (rtl_ff: `commit_codes`, the gather after the
-  join) and 17 percent (rtl_lfsr: `finish_direct`, `commit_planes_run`) of the run in the serial commit and update of the
-  one wide signal those designs drive. A split by element range saves at most three quarters of that at 4 threads (about
-  10 to 13 percent of the run, more at 8) and needs a split view of `Signal` (planes, codes, stamps, pending bits and
-  changed runs per 64-element range) with every invariant of `Signal::codes` and the stamps held per piece. Left for the
-  maintainer to decide (#481).
+- **Step 3 (parallel update, design 4.5): one half does not pay, the other is left unfinished.** Many independent signals
+  below the 256 cut-off: on the soft core (the design with many) the whole update is about 6 percent of a one-thread run,
+  well under a microsecond per delta, against a hand-over of several microseconds per pooled step, and its batches do not
+  pool anyway: does not pay. One wide signal split by element range: with steps 1 and 2 the threads are balanced at 4
+  threads and the kernel thread spends 13 percent (rtl_ff: `commit_codes`, the gather after the join) and 17 percent
+  (rtl_lfsr: `finish_direct`, `commit_planes_run`) of the run in that serial commit and update; a split saves at most
+  three quarters of it (about 10 to 13 percent of the run at 4 threads, more at 8). It needs a split view of `Signal`
+  (planes, codes, stamps, pending bits and changed runs per 64-element range) with every invariant of `Signal::codes` and
+  the stamps held per piece: not done in this round (#481, open scope).
 
 ## Concurrent copies committed by the kernel, not run in the batch (yavs-kernel `forward_copies`, #519, 2026-10-28)
 

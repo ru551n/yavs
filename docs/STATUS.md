@@ -5708,7 +5708,8 @@ reserved timing window; main before step 1 (`6ea17bde`) for comparison:
 | neorv32_single_min (300 us) | 0.94 (0.94) | 0.96 (0.96) | 0.97 (0.97) | 0.74 / 0.71 / 0.68 | 2.52 (2.41) |
 
 The designs that never pool (lfsr64, lfsr64_xor, rtl_bus, rtl_chain; the soft cores pool 12 to 320 batches as probes)
-pay the timed activations of the cost estimate (+1.2 to 2 percent instructions) at N threads. At 4 threads the kernel
+run 1.2 to 2 percent more instructions at N threads; timing one activation in 64 instead of 16 left that unchanged, so
+the timed sample is not the cause (not yet identified, #858). At 4 threads the kernel
 thread still spends 13 percent (rtl_ff: `commit_codes`, the batch gather) and 17 percent (rtl_lfsr: `finish_direct`,
 `commit_planes_run`) of the run in the serial commit and update; the threads are otherwise balanced (each 25 percent of
 the samples). The realbench set at 4 threads (`YAVS_BENCH_TIERFLAGS=--threads=4` for both, interpreter, each test on

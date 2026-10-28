@@ -1,8 +1,8 @@
 # AGENTS.md: working on yavs
 
-yavs is a production VHDL simulator in Rust: VHDL-2008 and 2019, an IR interpreter plus an
-optional JIT tier, a parallel kernel, VHPI for Python testbench frameworks, external test runner support, and later a DAP server and a
-GUI. The name stands for "Yet Another VHDL Simulator". This file is for AI agents (and humans) changing the code. Read it
+yavs is a production VHDL simulator in Rust: VHDL-1993, 2008 and 2019, an IR interpreter plus optional compiled tiers
+(LLVM or Cranelift), a parallel kernel, VHPI (partial) for Python testbench frameworks, external test runner support, a DAP
+server (with a VS Code extension) and an early graphical debugger. The name stands for "Yet Another VHDL Simulator". This file is for AI agents (and humans) changing the code. Read it
 fully before your first edit. It is short on purpose: the details live in the documents it points
 to, and those documents win over your memory.
 
@@ -48,7 +48,7 @@ to, and those documents win over your memory.
 | `crates/yavs-wave` | FST waveform sink |
 | `crates/yavs-dap` | Debug Adapter Protocol server (`yavs run --dap`) |
 | `crates/yavs-cov` | Code coverage: counters to a mergeable database, text and Cobertura reports |
-| `crates/yavs-llvm` | LLVM 21 ORC JIT tier, behind the `llvm` feature (off by default) |
+| `crates/yavs-llvm` | LLVM 21 ORC JIT tier, behind the `llvm` feature (not a default feature; not shipped in the release archives, build it from source) |
 | `crates/yavs-clift` | Cranelift tier (#481), behind the `clift` feature (off by default; the compiled tier of the release archives); shares `yavs-llvm`'s `rt` module |
 | `crates/yavs` | The `yavs` binary |
 | `lib/` | Vendored IEEE std/ieee sources (2008, 2019), patched only via `tools/derive_libs.py` |

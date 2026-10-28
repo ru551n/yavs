@@ -10174,7 +10174,7 @@ The actual of a part of an `out`/`inout`/`buffer` port (`o(0) => p1`) gets the c
 
 ## Index constraints of element subtypes and of elaborated signals (yavs-lower, yavs-elab, #637, 2026-10-28)
 
-The index ranges of record element and array element constraints are checked against the index subtype where a composite descriptor is filled (`fill_desc`, `E3009` at run time), and those elaboration evaluates (a signal's `string(g to 3)`) in `Model::shape_c` (`E2107`). Left: an architecture constant nothing reads is not elaborated, so its constraint is not checked. Tests: corpus `composite/index_constraint_elem` (`ref=hand`: sim1 does not check it), elab `index_constraint_outside_the_index_subtype`, discrepancy `index-constraint-element-bound`.
+The index ranges of record element and array element constraints are checked against the index subtype where a composite descriptor is filled (`fill_desc`, `E3009` at run time), and those elaboration evaluates (a signal's `string(g to 3)`) in `Model::shape_c` (`E2107`). An architecture constant nothing reads has its index constraint checked at the declaration too (`walk::decls`, #825; elab test `unused_constant_index_constraint_is_checked`, discrepancy `unused-constant-index-constraint`). Tests: corpus `composite/index_constraint_elem` (`ref=hand`: sim1 does not check it), elab `index_constraint_outside_the_index_subtype`, discrepancy `index-constraint-element-bound`.
 
 ## Bounds of local types and subtypes evaluated at the declaration (yavs-lower, #612, 2026-10-28)
 

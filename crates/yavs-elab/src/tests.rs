@@ -2044,6 +2044,27 @@ fn index_constraint_outside_the_index_subtype() {
 }
 
 #[test]
+fn unused_constant_index_constraint_is_checked() {
+    // #825, LRM 5.3.2.2, 14.4.2.1: the subtype indication of a constant nothing reads is
+    // elaborated with its declaration, so its index range is checked too.
+    let src = "entity t is end;
+      architecture x of t is
+        function n return integer is begin return 0; end;
+        constant ok : string(n + 1 to 3) := \"abc\";
+        constant bad : string(n to 2) := \"abc\";
+      begin end;";
+    let (_, r) = try_elab("unusedc", src, "t", &[]);
+    let v = r.err().expect("error");
+    assert_eq!(
+        v,
+        [(
+            codes::EVAL_FAILED,
+            "index range 0 to 2 is outside index subtype `POSITIVE` (1 to 2147483647)".to_string()
+        )]
+    );
+}
+
+#[test]
 fn clocked_processes_get_edge_triggers() {
     let src = "library ieee; use ieee.std_logic_1164.all;
       entity t is end; architecture a of t is

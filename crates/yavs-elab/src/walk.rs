@@ -1231,6 +1231,26 @@ impl Elab<'_> {
             let DeclKind::Object(o) = &decl.kind else {
                 continue;
             };
+            // A constant nothing reads is never evaluated, but the constraint of its subtype
+            // indication is elaborated with the declaration (LRM 5.3.2.2, 14.4.2.1): its shape
+            // checks the index ranges (#825). An impure bound is left to the evaluation.
+            if o.class == ObjClass::Constant
+                && o.role == ObjRole::Plain
+                && db.scopes[region].kind != yavs_sem::scope::ScopeKind::Process
+                && db.subtypes[o.subtype].name.is_none()
+            {
+                let rs = db.subtype_ranges(o.subtype);
+                let unfolded = rs.iter().any(|r| {
+                    matches!(r, yavs_sem::hir::RangeC::Explicit { left, right, .. }
+                        if db.value(*left).is_none() || db.value(*right).is_none())
+                });
+                if unfolded && rs.iter().all(|r| db.dynamic_range(r).is_none()) {
+                    match self.m.shape(db, o.subtype, Some(s), decl.span) {
+                        Err(x) if x.code != codes::NOT_EVALUATED => return Err(x),
+                        _ => {}
+                    }
+                }
+            }
             match (o.class, &o.role) {
                 // The actual of a variable port finds its object here (#188).
                 (ObjClass::SharedVariable, _) => {

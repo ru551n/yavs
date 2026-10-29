@@ -2,9 +2,8 @@
 # every artifact", #903), on a `v[0-9]*` tag:
 # - the version of yavs, vunit-yavs and the VS Code extension must equal the tag
 #   (tools/release/bump.py --check);
-# - the CI checks on the tagged commit, a release build of `yavs` and `yavs-gui` per platform
-#   (std/ieee built in, the Cranelift compiled tier, `--features clift`; yavs-gui from the gui/
-#   workspace with its EUPL-1.2 licence), one archive yavs-<version>-<target> each (docs/decisions.md
+# - the CI checks on the tagged commit, a release build of `yavs` per platform
+#   (std/ieee built in, the Cranelift compiled tier, `--features clift`), one archive yavs-<version>-<target> each (docs/decisions.md
 #   "Release archives", "One release archive per platform"); the Linux ones built with
 #   cargo-zigbuild against glibc 2.17 and smoke-tested in centos:7;
 # - the vunit-yavs wheel and sdist, tested on every platform against the archives of this run;
@@ -58,12 +57,8 @@ jobs:
     if: github.event_name == 'push' || inputs.checks
     uses: ./.github/workflows/ci.yml
 
-  gui-checks:
-    if: github.event_name == 'push' || inputs.checks
-    uses: ./.github/workflows/gui.yml
-
   build:
-    needs: [versions, checks, gui-checks]
+    needs: [versions, checks]
     # Skipped checks (a dispatch without them) do not stop the build; failed ones do.
     if: ${{ !failure() && !cancelled() }}
     timeout-minutes: 240
@@ -82,10 +77,6 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            .
-            gui
       - name: Install zig and cargo-zigbuild
         if: runner.os == 'Linux'
         run: |
@@ -103,20 +94,13 @@ jobs:
             # glibc 2.17; the target directory and the archive name stay the plain triple.
             cargo zigbuild --release --locked -p yavs --features clift --target $t.2.17
             cp target/$t/release/yavs stage/
-            (cd gui && cargo zigbuild --release --locked --target $t.2.17)
-            cp gui/target/$t/release/yavs-gui stage/
-            # The GUI loads its windowing and OpenGL libraries at run time; only glibc is linked.
-            for b in stage/yavs stage/yavs-gui; do
-              v=$(objdump -T "$b" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n1)
-              echo "$b: highest glibc symbol version: $v"
-              [[ "$(printf '%s\n' GLIBC_2.17 "$v" | sort -V | tail -n1)" == GLIBC_2.17 ]] || { echo "needs more than glibc 2.17"; exit 1; }
-            done
+            v=$(objdump -T stage/yavs | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n1)
+            echo "stage/yavs: highest glibc symbol version: $v"
+            [[ "$(printf '%s\n' GLIBC_2.17 "$v" | sort -V | tail -n1)" == GLIBC_2.17 ]] || { echo "needs more than glibc 2.17"; exit 1; }
             readelf -d stage/yavs | grep NEEDED
           else
             cargo build --release --locked -p yavs --features clift
             cp target/release/yavs.exe stage/
-            (cd gui && cargo build --release --locked)
-            cp gui/target/release/yavs-gui.exe stage/
           fi
       - name: Package
         run: |
@@ -131,9 +115,6 @@ jobs:
           cp LICENSE-MIT LICENSE-APACHE README.md "$dir/"
           cp lib/LICENSE "$dir/LICENSE-IEEE"
           cp lib/LICENSE-IEEE-VITAL lib/LICENSE-SYNOPSYS "$dir/"
-          # yavs-gui is EUPL-1.2 (libsurfer); this licence applies to the yavs-gui binary only
-          # (README.md "License").
-          cp gui/LICENSE "$dir/LICENSE-EUPL-1.2-yavs-gui"
           cp stage/yavs* "$dir/"
           if [[ "$RUNNER_OS" == Windows ]]; then
             # No VHPI import library: plugins bring their own (user, 2026-10-18, #124).
@@ -162,13 +143,11 @@ jobs:
           # Without LLVM the LLVM tier is refused (fail early, no fallback).
           if "$name/yavs" run --tier=llvm --work=work:$w t 2> err.txt; then echo "--tier=llvm ran without LLVM"; exit 1; fi
           grep -q E0120 err.txt
-          # The GUI starts without a display for --version.
-          "$name/yavs-gui" --version
           # Linux: the same smoke test in the oldest environment the archive claims (glibc 2.17).
           # centos:7 is multi-arch, so the arm64 runner runs the arm64 image natively.
           if [[ "$RUNNER_OS" == Linux ]]; then
             docker run --rm -v "$PWD:/w" -w /w centos:7 sh -ec \
-              "rm -rf w2; ldd $name/yavs; $name/yavs --version; $name/yavs analyze --work=work:w2 t.vhd && $name/yavs run --work=work:w2 t | grep -q ': ok' && $name/yavs run --tier=clift --work=work:w2 t | grep -q ': ok' && $name/yavs-gui --version"
+              "rm -rf w2; ldd $name/yavs; $name/yavs --version; $name/yavs analyze --work=work:w2 t.vhd && $name/yavs run --work=work:w2 t | grep -q ': ok' && $name/yavs run --tier=clift --work=work:w2 t | grep -q ': ok'"
           fi
       - uses: actions/upload-artifact@v4
         with:

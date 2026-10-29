@@ -367,10 +367,12 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   that prints `error` reports and ends normally exits 0. yavs's own
   runtime errors (bound check, overflow, null access, delta limit, internal) stop
   at once whatever the level. The test runner passes its `vhdl_assert_stop_level` sim option.
-- `--ieee-warnings=off`: suppress the warnings raised inside `ieee` packages
-  (the test runner `disable_ieee_warnings`). Known gap (checked 2026-10-28): the option is accepted
-  with any value and has no effect yet (`crates/yavs/src/elab.rs` "no ieee processes run yet"): such
-  warnings, for example `NUMERIC_STD.TO_INTEGER: metavalue detected`, are still printed.
+- `--ieee-warnings=on|off` (default `on`; any other value is a usage error, exit 2): `off` suppresses the
+  warnings raised inside `ieee` packages (the test runner `disable_ieee_warnings`), for example
+  `NUMERIC_STD.TO_INTEGER: metavalue detected`. Only reports of severity `warning` made by a statement of
+  the `ieee` library's own sources are dropped (the native subprograms and the VHDL bodies alike,
+  also when the optimiser inlined the body); they are neither printed nor counted, so a user's own
+  `report ... severity warning` and every other severity stay (#836).
 - `--wave=FILE.fst`: write an FST of the whole design. Hierarchy follows the
   elaborated design (instances, generate scopes, records and arrays as scopes);
   std_logic family and bit are written as characters, other enumerations with an

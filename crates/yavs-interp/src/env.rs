@@ -75,6 +75,11 @@ impl Sources {
         self.files[i] = Some(Arc::new((path.to_string(), starts)));
     }
 
+    /// File path of a span.
+    pub(crate) fn path(&self, span: Span) -> Option<&str> {
+        Some(&self.files.get(span.file.0 as usize)?.as_ref()?.0)
+    }
+
     /// File path and 1-based line of a span.
     fn locate(&self, span: Span) -> Option<(&str, i64)> {
         let (path, starts) = &**self.files.get(span.file.0 as usize)?.as_ref()?;

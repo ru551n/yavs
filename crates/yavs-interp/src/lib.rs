@@ -304,6 +304,20 @@ pub fn set_default_gc_threshold(bytes: u64) {
     GC_THRESHOLD.store(bytes, std::sync::atomic::Ordering::Relaxed);
 }
 
+static IEEE_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// `yavs run --ieee-warnings=off`: a report of severity warning made by a native `ieee`
+/// subprogram, or by a statement of a source file under `ieee_dir` (the `ieee` tree of the
+/// standard library), is neither shown nor counted. For the whole process, set before
+/// elaboration.
+pub fn suppress_ieee_warnings(ieee_dir: std::path::PathBuf) {
+    let _ = IEEE_DIR.set(ieee_dir);
+}
+
+pub(crate) fn ieee_warnings_off() -> bool {
+    IEEE_DIR.get().is_some()
+}
+
 impl Default for Limits {
     fn default() -> Limits {
         Limits {

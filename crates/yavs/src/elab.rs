@@ -68,6 +68,13 @@ pub struct Common {
 }
 
 #[cfg_attr(test, derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum OnOffArg {
+    On,
+    Off,
+}
+
+#[cfg_attr(test, derive(Debug))]
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum ResolutionArg {
     Fs,
@@ -88,9 +95,10 @@ pub struct RunArgs {
     /// and exits 1 at the end; given explicitly, a report below the level never fails the run.
     #[arg(long, value_enum)]
     exit_severity: Option<SeverityArg>,
-    /// Suppress warnings raised inside `ieee` packages.
-    #[arg(long, value_name = "on|off")]
-    ieee_warnings: Option<String>,
+    /// `off` suppresses the warnings raised inside `ieee` packages, such as `NUMERIC_STD.TO_INTEGER:
+    /// metavalue detected` (default `on`).
+    #[arg(long, value_name = "on|off", value_enum)]
+    ieee_warnings: Option<OnOffArg>,
     /// Write an FST of the whole design.
     #[arg(long, value_name = "FILE.fst")]
     wave: Option<String>,
@@ -1208,6 +1216,10 @@ pub fn run(
     if a.time_report {
         crate::timing::enable();
     }
+    // Before elaboration: its constant evaluation reports warnings too.
+    if a.ieee_warnings == Some(OnOffArg::Off) {
+        yavs_interp::suppress_ieee_warnings(yavs_sem::default_stdlib().join("ieee"));
+    }
     // Before elaboration: its constant evaluation collects with the same threshold.
     if let Some(b) = a.gc_threshold {
         yavs_interp::set_default_gc_threshold(b);
@@ -1393,7 +1405,6 @@ pub fn run(
         .profile
         .is_some()
         .then(yavs_kernel::profile::Profile::install);
-    let _ = &a.ieee_warnings; // ponytail: no ieee processes run yet; filter reports once they do
     let stop = match &a.stop_time {
         None => yavs_kernel::Time::MAX,
         Some(t) => match parse_time(t) {

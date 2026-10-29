@@ -286,6 +286,9 @@ pub(crate) fn report(m: &mut Machine, ctx: Cx<'_, '_, '_>, s: Severity, text: &s
     if let Some(p) = m.pm.as_mut() {
         p.reports += 1;
     }
+    if s == Severity::Warning && crate::ieee_warnings_off() {
+        return Ok(());
+    }
     match ctx.as_deref_mut() {
         Some(c) => {
             if !m.rt.asserts.report(c, s) {

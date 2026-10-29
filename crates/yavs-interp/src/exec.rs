@@ -1546,6 +1546,21 @@ impl Machine {
         }
     }
 
+    /// The statement of the instruction at the top frame's pc is in a source file of the `ieee`
+    /// library (also when its function was inlined: the statement stays the original one).
+    fn in_ieee(&self, prog: &Program, f: &Func) -> bool {
+        let pc = self.frames.last().map_or(0, |fr| fr.pc as usize);
+        let path = f
+            .loc
+            .get(pc)
+            .and_then(|&s| prog.stmts.get(s))
+            .and_then(|st| self.rt.sources.path(st.span));
+        match (path, crate::IEEE_DIR.get()) {
+            (Some(p), Some(dir)) => std::path::Path::new(p).starts_with(dir),
+            _ => false,
+        }
+    }
+
     /// The VHDL call stack, innermost first.
     fn trace(&self) -> Vec<StmtId> {
         self.frames
@@ -10520,6 +10535,13 @@ impl Machine {
                     p.reports += 1;
                 }
                 let s = sev(self.r(severity))?;
+                // `--ieee-warnings=off`: the warnings of the ieee bodies, also inlined ones.
+                if s == yavs_kernel::Severity::Warning
+                    && crate::ieee_warnings_off()
+                    && self.in_ieee(prog, f)
+                {
+                    return Ok(Flow::Next);
+                }
                 let text: String = self
                     .rd(self.r(msg), self.r(len))?
                     .iter()

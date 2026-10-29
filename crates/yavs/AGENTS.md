@@ -92,7 +92,7 @@ into `docs/cli-contract.md` (root `AGENTS.md` rule 24).
 - `yavs --explain CODE` is `src/explain.rs`: its table covers every code except `yavs-sem`'s
   (`yavs_sem::diag::EXPLAIN`). A test scans all `crates/*/src` for code literals, so a new code
   fails `cargo test -p yavs` until it has a text (#136).
-- `--ieee-warnings` is accepted and ignored on purpose (`ponytail:` comment in `elab.rs`).
+- `--ieee-warnings=on|off`: `off` calls `yavs_interp::suppress_ieee_warnings` with the `ieee` tree of the standard library before elaboration; the interpreter drops warning reports of natives and of statements in files under it (#836).
 - std/ieee come from `yavs_sem::default_stdlib()`: `$YAVS_STDLIB`, else the copy built into the
   binary (test `standalone_binary` in `tests/cli.rs` runs a lone copy of the executable).
 - Tests run the built binary (`env!("CARGO_BIN_EXE_yavs")`); scratch dirs come from

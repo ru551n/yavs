@@ -1613,6 +1613,67 @@ fn json_stream_and_numeric_options() {
     assert!(!err.contains("invalid unit value"), "{err}");
 }
 
+/// `--ieee-warnings=off` drops the warnings raised inside `ieee` packages, from the native
+/// subprograms and from the VHDL bodies alike, and nothing else; any other value is a usage
+/// error (#836).
+#[test]
+fn ieee_warnings_option() {
+    let tmp = tempdir("ieeew");
+    let src = tmp.join("t.vhd");
+    std::fs::write(
+        &src,
+        "library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;\n\
+         entity t is end;\n\
+         architecture a of t is signal u : unsigned(3 downto 0) := \"01X1\"; begin\n\
+           process variable i : integer; begin\n\
+             i := to_integer(u);\n\
+             i := to_integer(unsigned'(\"1X\"));\n\
+             report \"mine\" severity warning;\n\
+             wait; end process; end;\n",
+    )
+    .unwrap();
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let yavs = |args: &[&str], bodies: bool| {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_yavs"));
+        c.args(["--color", "never"]).args(args);
+        if bodies {
+            c.env("YAVS_NO_NATIVE_IEEE", "1");
+        }
+        let o = c.output().expect("run");
+        (
+            o.status.code().expect("code"),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+        )
+    };
+    assert_eq!(
+        yavs(&["analyze", &lib, &src.display().to_string()], false).0,
+        0
+    );
+    for bodies in [false, true] {
+        for flag in [None, Some("--ieee-warnings=on")] {
+            let mut args = vec!["run", &lib, "t"];
+            args.extend(flag);
+            let (code, out, err) = yavs(&args, bodies);
+            assert_eq!(code, 0, "{err}");
+            assert_eq!(
+                out.matches("NUMERIC_STD.TO_INTEGER: metavalue detected")
+                    .count(),
+                2,
+                "{out}"
+            );
+            assert!(out.contains("mine"), "{out}");
+        }
+        let (code, out, err) = yavs(&["run", &lib, "t", "--ieee-warnings=off"], bodies);
+        assert_eq!(code, 0, "{err}");
+        assert!(!out.contains("NUMERIC_STD"), "{out}");
+        assert!(out.contains("** Warning: 0fs+0: mine"), "{out}");
+    }
+    let (code, _, err) = yavs(&["run", &lib, "t", "--ieee-warnings=maybe"], false);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("invalid value 'maybe'"), "{err}");
+}
+
 /// The help and the explanation of `E0120` describe the tiers this build has and point at no
 /// developer document (#845, #850).
 #[test]

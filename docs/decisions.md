@@ -2952,7 +2952,7 @@ user's performance priority:
   like `Inst::Report` (`Machine::ieee_stop`).
 - **Known difference:** a run-time error inside a replaced body (only `to_integer` of a value
   beyond INTEGER) has the same message and exit status but no frames for the body in its
-  `called from` trace. `--ieee-warnings` is still ignored, so natives always warn like the bodies.
+  `called from` trace. `--ieee-warnings=off` drops the warnings of natives and of the bodies alike (`yavs_interp::suppress_ieee_warnings`, #836: a native checks the flag in `ieee::report`; a body report is dropped when its statement is in a source file under the `ieee` tree of the standard library).
 - **math_real on `f64` (orchestrator, 2026-10-19):** `SQRT`, `EXP`, `LOG` (also with a base),
   `LOG2`, `LOG10`, `SIN`, `COS`, both `**`, `CEIL`, `FLOOR`, `ROUND`, `TRUNC` and `SIGN` use the
   platform's `f64` functions, as the reference simulators do. The bodies are series and Newton

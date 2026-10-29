@@ -497,5 +497,5 @@ class YavsVersion:
         return f"YavsVersion({self.version_string!r})"
 
 
-# The first yavs with what this package uses (--dap, response files). Raise it with the CLI contract it relies on.
-YAVS_MIN_VERSION = YavsVersion("0.10.0")
+# The first yavs with what this package uses (--dap, response files, YAVS_TOKENS). Raise it with the CLI contract it relies on.
+YAVS_MIN_VERSION = YavsVersion("0.11.0")

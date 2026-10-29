@@ -461,8 +461,8 @@ class TestYavsInterface(unittest.TestCase):
                 write_response_file(Path(self.output_path) / "args.rsp", [arg])
 
     def test_check_version(self):
-        with mock.patch.object(YavsInterface, "_get_version_output", return_value="yavs 0.10.0\n"):
-            self.assertEqual(YavsInterface.check_version("prefix"), YavsVersion("0.10.0"))
+        with mock.patch.object(YavsInterface, "_get_version_output", return_value="yavs 0.11.0\n"):
+            self.assertEqual(YavsInterface.check_version("prefix"), YavsVersion("0.11.0"))
 
         with (
             mock.patch.object(YavsInterface, "_get_version_output", return_value="garbage"),

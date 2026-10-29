@@ -52,7 +52,7 @@ jobs:
   real-yavs:
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -62,6 +62,18 @@ jobs:
         with:
           name: dist
           path: python/vunit-yavs/dist/
+      # The two tags may be pushed together: wait up to 90 minutes for release.yml to publish it.
+      - name: Wait for the yavs release of YAVS_MIN_VERSION
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(python -c 'import re; print(re.search(r"^YAVS_MIN_VERSION = YavsVersion\(\"([^\"]+)\"\)", open("vunit_yavs/__init__.py").read(), re.M).group(1))')
+          for i in $(seq 90); do
+            gh release view "v$version" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' 2>/dev/null \
+              | grep -qx SHA256SUMS && exit 0
+            sleep 60
+          done
+          echo "yavs v$version (the YAVS_MIN_VERSION of the package) was not published with SHA256SUMS within 90 minutes"; exit 1
       - name: Download the yavs release of YAVS_MIN_VERSION
         env:
           GH_TOKEN: ${{ github.token }}

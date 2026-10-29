@@ -90,6 +90,17 @@ class YavsInterface(SimulatorInterface):
         PositiveIntegerOption("yavs.max_threads"),
     ]
 
+    # For VUnit packages that load a native library: their VHDL calls it through VHPIDIRECT
+    # foreign subprograms, and native_library_hooks makes yavs load it
+    foreign_language_interface = "VHPIDIRECT"
+
+    @staticmethod
+    def native_library_hooks(library_file):
+        """
+        The simulator hooks loading a native library: --load on every 'yavs run'
+        """
+        return {"run_flags": lambda simulator_interface: [f"--load={library_file}"]}
+
     @staticmethod
     def add_arguments(parser):
         """

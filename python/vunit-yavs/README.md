@@ -41,6 +41,13 @@ or later (`pip install vunit-yavs` installs it, a pre-release) and yavs 0.10.0 o
 Without `yavs.max_threads` or `--yavs-max-threads` no thread count is passed, and yavs runs with
 its default. An explicit `--threads` in `yavs.sim_flags` comes after the cap and wins.
 
+## Native libraries of VUnit packages
+
+A VUnit package that loads a native library can ask the simulator interface how: `YavsInterface`
+has `foreign_language_interface = "VHPIDIRECT"` (the VHDL calls the library through foreign
+subprograms with a `"VHPIDIRECT ..."` attribute) and `native_library_hooks(library_file)`, which
+returns the simulator hooks that pass `--load=<library_file>` to every `yavs run`.
+
 ## Debugging one test
 
 ```sh

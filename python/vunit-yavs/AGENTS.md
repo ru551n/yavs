@@ -17,7 +17,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change the P
 
 | Path | What |
 |---|---|
-| `vunit_yavs/__init__.py` | `YavsInterface` (the `SimulatorInterface`), its arguments, `check_debug_args`, `write_response_file`, `YavsVersion` |
+| `vunit_yavs/__init__.py` | `YavsInterface` (the `SimulatorInterface`), its arguments, the native library hooks, `check_debug_args`, `write_response_file`, `YavsVersion` |
 | `vunit_yavs/jobserver.py` | `lend_order` (the lending priority), `Client` (one fifo), `Jobserver` (accounting, distributor thread, leak warnings) |
 | `vunit_yavs/vunit_pkg.toml` | `simulator = "vunit_yavs:YavsInterface"`, shipped as package data |
 | `tests/test_interface.py` | Unit tests of the interface, with the package registered in a fresh simulator factory |
@@ -35,6 +35,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change the P
 | `--yavs-debug[=PORT]`, default 4711, `0` a free port; the run's address is printed to the terminal | 4711 is the editor extension's attach port; the test runner shows a test's output only on failure |
 | `--yavs-debug` is one simulation: refused with `--gui`, `--elaborate` or `-p` above 1 in `from_args`, and a second simulation raises before yavs starts | The interface sees no test list before the run; the second simulation is the earliest point |
 | `yavs.max_threads` (sim option) over `--yavs-max-threads` (default) to `--threads=N`, before the raw flags; none under `--yavs-debug` or for `elab` | Raw flags stay the last word; a DAP run is one thread |
+| `foreign_language_interface = "VHPIDIRECT"` and `native_library_hooks(library_file)` returning only `run_flags` `--load=<library_file>` (user, 2026-10-29) | A test runner package that loads a native library asks the selected simulator interface how, instead of knowing yavs; the library is needed when the design runs, so `analyze` and the elaborate-only `elab` get nothing |
 | The jobserver is opt-in (`--yavs-jobserver`), POSIX only (error on Windows), created only with `-p` above 1 | No change for anyone who does not ask |
 | One private fifo per test in a temporary directory, `MAKEFLAGS=-jN --jobserver-auth=fifo:PATH` replacing any outer value | Plain GNU protocol; MAKEFLAGS cannot hold a path with spaces, so not under the output path |
 | Accounting: free = N - max(running, 1) - lent; lending breadth first, newest first, per-test cap `max_threads - 1`, at most one token more than in use for a test that left tokens unread at the last tick | Steady-state total N; tokens are not parked in tests that cannot use them |

@@ -22,6 +22,7 @@ from vunit.exceptions import CompileError
 from vunit.ostools import Process, renew_path, write_file
 from vunit.project import Project
 from vunit.sim_if.factory import SimulatorFactory
+from vunit.sim_if.hooks import SimulatorHooks
 from vunit.test.suites import encode_dict
 from vunit.ui import VUnit
 from vunit.vhdl_standard import VHDL
@@ -334,6 +335,24 @@ class TestYavsInterface(unittest.TestCase):
         self.assertIn("--relaxed", cmd)
         self.assertNotIn("--stop-time=1ms", cmd)
         self.assertFalse(any(arg.startswith("--exit-severity") for arg in cmd))
+
+    @mock.patch("vunit.sim_if.check_output", autospec=True, return_value="")
+    def test_native_library_hooks_load_the_library_on_run_only(self, check_output):
+        self.assertEqual(YavsInterface.foreign_language_interface, "VHPIDIRECT")
+        library_file = Path("lib dir") / "libnative.so"
+        registry = SimulatorHooks()
+        registry.register("yavs", **YavsInterface.native_library_hooks(library_file))
+        self.simif.simulator_hooks = registry
+        load = f"--load={library_file}"
+
+        self.simif.compile_project(self._project("2008"))
+        self.assertNotIn(load, check_output.call_args[0][0])
+        # With the run flags, after yavs.sim_flags
+        _, run, _ = self._simulate(make_config(sim_options={"yavs.sim_flags": ["--stop-time=1ms"]}))
+        self.assertEqual(run[run.index("--stop-time=1ms") + 1], load)
+        self.assertEqual(run.count(load), 1)
+        _, elab, _ = self._simulate(make_config(), elaborate_only=True)
+        self.assertNotIn(load, elab)
 
     def test_simulate_failure_is_not_swallowed(self):
         status, _, _ = self._simulate(make_config(), returncode=1)

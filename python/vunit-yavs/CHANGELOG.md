@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Native library hooks for VUnit packages that load a native library: `YavsInterface` has
+  `foreign_language_interface = "VHPIDIRECT"` and `native_library_hooks(library_file)`, which
+  passes `--load=<library_file>` to `yavs run`.
+
 ## 0.10.0 (2026-10-29)
 
 - First release. Needs VUnit 5.0.0.dev16 or later and yavs 0.10.0 or later.

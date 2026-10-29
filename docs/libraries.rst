@@ -38,6 +38,36 @@ Test runners
 A test runner drives yavs through the three commands ``analyze``, ``elab`` and ``run``. VUnit's
 test suites run with yavs. To drive yavs from your own scripts, see "Scripting" in :doc:`cli`.
 
+.. _vunit-token-server:
+
+Sharing CPU between parallel VUnit tests
+----------------------------------------
+
+With ``-p N`` VUnit runs N tests side by side, and at the end of a run most of those N slots are
+idle while a few long simulations finish alone. The token server lends the idle slots to the
+simulations still running as extra threads, so the long tail ends sooner. A run never keeps more
+than N threads busy once it has settled (a test that starts while every slot is lent starts at
+once, so the total can briefly exceed N). The output is identical to a run without it. It works on
+Linux and Windows.
+
+It is part of the ``vunit-yavs`` package (``pip install vunit-yavs``, with yavs 0.11.0 or later).
+It is off by default; turn it on with ``--yavs-jobserver`` together with ``-p`` above 1 (with
+``-p 1`` there is nothing to lend and the flag does nothing):
+
+.. code-block:: bash
+
+    python run.py -p 8 --yavs-jobserver
+    python run.py -p 8 --yavs-jobserver --yavs-max-threads 4
+
+``--yavs-max-threads N`` caps the threads of one simulation (default: ``-p N``); a test can set its
+own cap with the ``yavs.max_threads`` simulation option, e.g.
+``vu.set_sim_option("yavs.max_threads", 2)``.
+
+It helps when the long tests are large designs that split across threads, such as many parallel
+processes on one clock. Small testbench-style tests and processor models keep their work on one
+thread, so for them it gains nothing and costs nothing. Measurements are in
+`parallel.md <https://github.com/ru551n/yavs/blob/main/docs/parallel.md>`__.
+
 Vendor libraries
 ----------------
 

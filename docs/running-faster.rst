@@ -40,7 +40,7 @@ hand-over; smaller groups run on one thread. It helps only large, flat designs w
 processes wake in the same delta cycle; leave it at 1 (the default) unless you measured a gain. A test runner that already
 runs tests in parallel should leave it at 1, unless it runs a token server and names it in ``YAVS_TOKENS``:
 the extra threads then run only on tokens it lends, so the simulations share one CPU budget, on
-Linux and Windows alike. Measurements and the token server are in
+Linux and Windows alike (for VUnit, see :ref:`vunit-token-server`). Measurements and the token server are in
 `parallel.md <https://github.com/ru551n/yavs/blob/main/docs/parallel.md>`__.
 
 Finding where the time goes

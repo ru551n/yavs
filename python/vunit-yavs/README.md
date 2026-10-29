@@ -18,8 +18,8 @@ pip install vunit-yavs
 VUNIT_SIMULATOR=yavs python run.py
 ```
 
-`yavs` is found on `PATH`, or in the directory named by `VUNIT_YAVS_PATH`. It needs a VUnit with
-simulator packages (the `simulator` key of `vunit_pkg.toml`).
+`yavs` is found on `PATH`, or in the directory named by `VUNIT_YAVS_PATH`. It needs VUnit 5.0.0.dev16
+or later (`pip install vunit-yavs` installs it, a pre-release) and yavs 0.10.0 or later.
 
 ## Options
 

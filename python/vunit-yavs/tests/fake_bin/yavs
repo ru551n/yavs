@@ -236,7 +236,7 @@ def main(argv):
     log(argv)
 
     if argv == ["--version"]:
-        print(f"yavs {os.environ.get('FAKE_YAVS_VERSION', '0.9.0')}-fake (test double)")
+        print(f"yavs {os.environ.get('FAKE_YAVS_VERSION', '0.10.0')}-fake (test double)")
         return 0
     if argv and argv[0] == "analyze":
         return analyze(argv[1:])

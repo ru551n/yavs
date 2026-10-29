@@ -1,7 +1,8 @@
 # Changelog
 
-## 0.9.0 (unreleased)
+## 0.10.0 (2026-10-29)
 
+- First release. Needs VUnit 5.0.0.dev16 or later and yavs 0.10.0 or later.
 - The yavs simulator interface as a VUnit package: `vu.add_package("vunit-yavs", allow_setup=True)`
   and `VUNIT_SIMULATOR=yavs`.
 - `--yavs-debug[=PORT]` runs one test under the yavs debugger for an editor to attach to.

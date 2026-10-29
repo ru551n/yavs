@@ -1,8 +1,8 @@
 # Release of the Python package vunit-yavs (python/vunit-yavs, RELEASING.md) on a
 # `vunit-yavs-v<version>` tag: the tag must equal the version in pyproject.toml; the sdist and
 # wheel are built, unit-tested and checked, tested against the yavs binary release of the same
-# version (downloaded, so that release comes first), published to TestPyPI and then PyPI by trusted
-# publishing (OIDC, environments `testpypi` and `pypi`, no tokens), and attached to a GitHub
+# version (downloaded, so that release comes first), published to PyPI by trusted
+# publishing (OIDC, environment `pypi`, no tokens), and attached to a GitHub
 # release. The binary release (release.yml) runs on `v[0-9]*` tags only.
 name: vunit-yavs release
 
@@ -80,23 +80,8 @@ jobs:
           cd "$RUNNER_TEMP"
           python -m pytest -v "$GITHUB_WORKSPACE/python/vunit-yavs/tests/test_real_yavs.py"
 
-  testpypi:
-    needs: [build, real-yavs]
-    runs-on: ubuntu-24.04
-    environment: testpypi
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
-
   pypi:
-    needs: testpypi
+    needs: [build, real-yavs]
     runs-on: ubuntu-24.04
     environment: pypi
     permissions:

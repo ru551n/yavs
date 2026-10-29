@@ -6,15 +6,13 @@ which never start each other:
 | Tag | Workflow | Does |
 |---|---|---|
 | `v<version>` (`v[0-9]*`) | `.github/workflows/release.yml` | yavs binaries, GitHub pre-release |
-| `vunit-yavs-v<version>` | `.github/workflows/vunit-yavs-release.yml` | checks the tag equals `pyproject.toml`, builds sdist and wheel, unit tests, `twine check`, the real-binary tests against the downloaded yavs `v<version>` Linux archive, TestPyPI, PyPI (trusted publishing, no tokens), GitHub release |
+| `vunit-yavs-v<version>` | `.github/workflows/vunit-yavs-release.yml` | checks the tag equals `pyproject.toml`, builds sdist and wheel, unit tests, `twine check`, the real-binary tests against the downloaded yavs `v<version>` Linux archive, PyPI (trusted publishing, no tokens), GitHub release |
 
 ## One-time setup (owner)
 
-1. PyPI and https://test.pypi.org: "Add a new pending publisher": project `vunit-yavs`, owner
-   `ru551n`, repository `yavs`, workflow `vunit-yavs-release.yml`, environment `pypi`
-   (TestPyPI: `testpypi`).
-2. GitHub, Settings, Environments: create `testpypi` and `pypi` (a required reviewer on `pypi`
-   is a good idea).
+1. PyPI: "Add a new pending publisher": project `vunit-yavs`, owner `ru551n`, repository `yavs`,
+   workflow `vunit-yavs-release.yml`, environment `pypi`.
+2. GitHub, Settings, Environments: create `pypi` (a required reviewer is a good idea).
 
 ## Before tagging
 

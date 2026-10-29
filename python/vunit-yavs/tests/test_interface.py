@@ -8,6 +8,7 @@
 Unit tests of the yavs interface
 """
 
+import importlib
 import io
 import os
 import subprocess
@@ -50,7 +51,10 @@ def make_config(**kwargs):
 def use_fresh_factory(test):
     """Register simulators in a factory of the test's own, so each test can add the package again."""
     factory = SimulatorFactory()
-    for module in ("vunit.builtins", "vunit.ui", "vunit.vunit_cli", "vunit.configuration", "vunit.source_file"):
+    modules = ("vunit.builtins", "vunit.ui", "vunit.vunit_cli", "vunit.configuration", "vunit.source_file")
+    for module in modules + ("vunit.packages",):
+        if "SIMULATOR_FACTORY" not in vars(importlib.import_module(module)):
+            continue  # Not every VUnit release imports the factory in every module
         patcher = mock.patch(f"{module}.SIMULATOR_FACTORY", factory)
         patcher.start()
         test.addCleanup(patcher.stop)
@@ -434,8 +438,8 @@ class TestYavsInterface(unittest.TestCase):
                 write_response_file(Path(self.output_path) / "args.rsp", [arg])
 
     def test_check_version(self):
-        with mock.patch.object(YavsInterface, "_get_version_output", return_value="yavs 0.9.0\n"):
-            self.assertEqual(YavsInterface.check_version("prefix"), YavsVersion("0.9.0"))
+        with mock.patch.object(YavsInterface, "_get_version_output", return_value="yavs 0.10.0\n"):
+            self.assertEqual(YavsInterface.check_version("prefix"), YavsVersion("0.10.0"))
 
         with (
             mock.patch.object(YavsInterface, "_get_version_output", return_value="garbage"),
@@ -452,10 +456,10 @@ class TestYavsInterface(unittest.TestCase):
 
         with (
             mock.patch("vunit_yavs.YAVS_MIN_VERSION", YavsVersion("1.0")),
-            mock.patch.object(YavsInterface, "_get_version_output", return_value="yavs 0.9.0"),
+            mock.patch.object(YavsInterface, "_get_version_output", return_value="yavs 0.10.0"),
             self.assertRaisesRegex(
                 RuntimeError,
-                r"yavs 0.9.0 at prefix.yavs is too old for vunit-yavs, which needs yavs 1.0.0 or later\. Install",
+                r"yavs 0.10.0 at prefix.yavs is too old for vunit-yavs, which needs yavs 1.0.0 or later\. Install",
             ),
         ):
             YavsInterface.check_version("prefix")

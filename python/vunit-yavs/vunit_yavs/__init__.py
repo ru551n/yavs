@@ -489,4 +489,4 @@ class YavsVersion:
 
 
 # The first yavs with what this package uses (--dap, response files). Raise it with the CLI contract it relies on.
-YAVS_MIN_VERSION = YavsVersion("0.9.0")
+YAVS_MIN_VERSION = YavsVersion("0.10.0")

@@ -4,13 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vunit-yavs"
-version = "0.9.0.dev0"
+version = "0.10.0"
 description = "The yavs VHDL simulator for VUnit, as a VUnit package"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MPL-2.0"
-# Placeholder bound: the first VUnit release with simulator packages (the vunit_pkg.toml key
-# 'simulator') is not out yet. Set it to that release before the first upload (RELEASING.md).
+# The first VUnit release with simulator packages (the vunit_pkg.toml key 'simulator')
 dependencies = ["vunit_hdl>=5.0.0.dev16"]
 
 [project.urls]

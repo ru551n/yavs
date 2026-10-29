@@ -109,9 +109,6 @@ class YavsInterface(SimulatorInterface):
 
     name = "yavs"
     executable = environ.get("YAVS", "yavs")
-    supports_gui_flag = True
-    # yavs-gui drives the run over a debug protocol, so no terminal colour codes
-    supports_colors_in_gui = False
 
     compile_options = [
         ListOfStringOption("yavs.global_flags"),
@@ -231,6 +228,11 @@ class YavsInterface(SimulatorInterface):
         """
         Create instance from args namespace
         """
+        if getattr(args, "gui", False):
+            raise RuntimeError(
+                "yavs has no graphical debugger, so -g/--gui is not supported. Drop it; to debug a test, "
+                "use --yavs-debug and attach a DAP client such as VS Code."
+            )
         # Arguments added by a package are missing from a namespace the run script built itself
         debug_port = getattr(args, "yavs_debug", None)
         interactive = getattr(args, "yavs_interactive", False)
@@ -254,7 +256,6 @@ class YavsInterface(SimulatorInterface):
         return cls(
             output_path=output_path,
             prefix=prefix,
-            gui=args.gui,
             debug_port=debug_port,
             interactive=interactive,
             surfer=surfer,
@@ -275,9 +276,9 @@ class YavsInterface(SimulatorInterface):
         return cls.find_toolchain([cls.executable])
 
     def __init__(
-        self, output_path, prefix, *, gui=False, debug_port=None, interactive=False, surfer=None, max_threads=None, tokens=None, coverage=None
+        self, output_path, prefix, *, debug_port=None, interactive=False, surfer=None, max_threads=None, tokens=None, coverage=None
     ):  # pylint: disable=too-many-arguments
-        SimulatorInterface.__init__(self, output_path, gui)
+        SimulatorInterface.__init__(self, output_path, False)
         self._coverage = coverage or CoverageArgs()
         self._coverage_files = set()  # The database of every simulation run with coverage
         self._prefix = prefix
@@ -508,10 +509,10 @@ class YavsInterface(SimulatorInterface):
 
         print(" ".join([f"'{word}'" if " " in word else word for word in cmd]))
 
-        # Everything after the subcommand goes through a response file. --gui and --dap stay on the command
+        # Everything after the subcommand goes through a response file. --dap stays on the command
         # line, so the run has exactly the arguments of the plain run.
         response_file = write_response_file(script_path / "args.rsp", cmd[2:])
-        mode_flags = ["--gui"] if self._gui and not elaborate_only else []
+        mode_flags = []
         if debug and not interactive:
             mode_flags = [f"--dap={self._debug_port}"]
         if interactive:
@@ -637,10 +638,6 @@ def check_debug_args(args):
     """
     Raise an error for arguments that cannot be combined with --yavs-debug
     """
-    if getattr(args, "gui", False):
-        raise RuntimeError(
-            "--yavs-debug and --gui cannot be combined: both drive the run over the debug protocol. Drop one of them."
-        )
     if getattr(args, "elaborate", False):
         raise RuntimeError(
             "--yavs-debug and --elaborate cannot be combined: --elaborate only elaborates, so there is no run to debug. "
@@ -662,8 +659,6 @@ def check_interactive_args(args, debug_port):
             "--yavs-interactive and --yavs-debug cannot be combined: the terminal or a debug client drives the run. "
             "Drop one of them."
         )
-    if getattr(args, "gui", False):
-        raise RuntimeError("--yavs-interactive and --gui cannot be combined. Drop one of them.")
     if getattr(args, "elaborate", False):
         raise RuntimeError(
             "--yavs-interactive and --elaborate cannot be combined: --elaborate only elaborates, so there is no run. "

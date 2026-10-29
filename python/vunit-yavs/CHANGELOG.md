@@ -13,6 +13,8 @@
   `vunit_compile` and `vunit_restart` work there and in the Debug Console under `--yavs-debug`, with the sim options
   `yavs.init_files.after_load`, `yavs.init_files.before_run` and `yavs.init_file.gui`. Needs a yavs with the console
   hook.
+- `-g/--gui` is refused at the start with a message that points to `--yavs-debug`: yavs has no
+  graphical debugger and no `yavs run --gui` any more.
 
 ## 0.11.0 (2026-10-29)
 

@@ -11,7 +11,6 @@ mod counters;
 mod cov;
 mod elab;
 mod explain;
-mod gui;
 mod profile;
 #[cfg(test)]
 mod reference;
@@ -316,7 +315,6 @@ fn main() -> ExitCode {
         } => (std, defines, psl, dump_ast, files),
         Command::Analyze(a) => return analyze::run(a, format, color, encoding),
         Command::Elab(a) => return guard(format, color, || elab::elab(a, format, color, encoding)),
-        Command::Run(a) if a.gui => return gui::launch(&args, format, color),
         Command::Run(a) => {
             return guard(format, color, || {
                 elab::run(a, args, format, color, encoding)

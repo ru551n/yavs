@@ -38,7 +38,6 @@ or later (`pip install vunit-yavs` installs it, a pre-release) and yavs 0.11.0 o
 
 | Command line | What it does |
 |---|---|
-| `-g/--gui` | Opens the run in the graphical debugger (`yavs run --gui`) |
 | `--yavs-debug[=PORT]` | Runs the selected test under `yavs run --dap=PORT` (default 4711, `0` picks a free port) and prints where to attach; write the port as `--yavs-debug=PORT` |
 | `--yavs-interactive` | Runs the selected test at the yavs console: a `yavs>` prompt at time 0 (below) |
 | `--yavs-surfer[=HOST:PORT]` | Shows the waves of the one selected test in Surfer 0.6.0 or later while it runs (`yavs run --surfer`); strictly opt-in. Combines with `--yavs-debug` and `--yavs-interactive`, where the cursor follows the stops |
@@ -92,7 +91,7 @@ session ends, the test is reported as usual.
 
 `--yavs-debug` runs one simulation. A second simulation of the run (a second test, or the same
 test in another configuration) is an error before yavs starts, naming both tests. `--yavs-debug`
-together with `--gui`, `--elaborate` or `-p` above 1 is an error at the start. A bare
+together with `--elaborate` or `-p` above 1 is an error at the start. A bare
 `--yavs-debug` reads a following test name as its port: put test names first, or write
 `--yavs-debug=4711`.
 

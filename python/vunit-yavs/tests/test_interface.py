@@ -511,19 +511,9 @@ class TestYavsInterface(unittest.TestCase):
         status, _, _ = self._simulate(make_config(), returncode=1)
         self.assertFalse(status)
 
-    def test_gui_runs_yavs_gui_with_the_same_arguments(self):
-        config = make_config(
-            generics={"runner_cfg": "x", "width": 8},
-            sim_options={"yavs.sim_flags": ["--stop-time=1ms"], "yavs.global_flags": ["--threads=2"]},
-        )
-        _, plain, _ = self._simulate(config)
-        _, gui, _ = self._simulate(config, mode_flags=["--gui"], gui=True)
-        self.assertEqual(gui, [arg for arg in plain if arg != "--color=always"])
-        self.assertFalse(any("--wave" in arg for arg in gui))
-
-    def test_gui_elaborate_only_has_no_gui_flag(self):
-        _, cmd, _ = self._simulate(make_config(), elaborate_only=True, gui=True)
-        self.assertEqual(cmd[1], "elab")
+    def test_gui_is_refused(self):
+        with self.assertRaisesRegex(RuntimeError, "no graphical debugger.*--yavs-debug"):
+            YavsInterface.from_args(SimpleNamespace(gui=True), self.output_path)
 
     def test_max_threads_from_the_command_line(self):
         _, cmd, _ = self._simulate(make_config(), max_threads=3)
@@ -583,10 +573,9 @@ class TestYavsInterface(unittest.TestCase):
         self.assertEqual(terminal.getvalue(), "Debugging lib.tb.t: attach a DAP client to 127.0.0.1:40123\n")
 
     def test_debug_rejects_conflicting_arguments(self):
-        base = {"gui": False, "elaborate": False, "num_threads": 1}
+        base = {"elaborate": False, "num_threads": 1}
         check_debug_args(SimpleNamespace(**base))
         for change, message in [
-            ({"gui": True}, "--yavs-debug and --gui cannot be combined"),
             ({"elaborate": True}, "--yavs-debug and --elaborate cannot be combined"),
             ({"num_threads": 4}, "-p 4 asks for parallel simulations"),
         ]:
@@ -699,9 +688,9 @@ class TestYavsInterface(unittest.TestCase):
         self.assertEqual(tokens._clients, [])  # pylint: disable=protected-access
 
     def test_from_args_checks_debug_before_the_executable(self):
-        args = SimpleNamespace(gui=True, yavs_debug=4711)
+        args = SimpleNamespace(gui=False, elaborate=True, num_threads=1, yavs_debug=4711)
         with (
             mock.patch.object(YavsInterface, "find_prefix", side_effect=AssertionError("not reached")),
-            self.assertRaisesRegex(RuntimeError, "--yavs-debug and --gui"),
+            self.assertRaisesRegex(RuntimeError, "--yavs-debug and --elaborate"),
         ):
             YavsInterface.from_args(args, self.output_path)

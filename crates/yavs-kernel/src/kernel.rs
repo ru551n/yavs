@@ -179,7 +179,7 @@ pub struct Report {
     pub message: String,
 }
 
-/// Counters for benchmarks and the GUI status bar.
+/// Counters for benchmarks and status displays.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
     pub cycles: u64,
@@ -495,7 +495,7 @@ impl Hook<'_> {
     }
 }
 
-/// A subscriber on the event bus: waves, VHPI, DAP, the GUI.
+/// A subscriber on the event bus: waves, VHPI, DAP.
 pub trait Observer: Send {
     /// Whether `phase` needs this observer: the kernel does not call `phase` for one that
     /// says no (the default is yes), so an observer of a few phases costs nothing in the rest.

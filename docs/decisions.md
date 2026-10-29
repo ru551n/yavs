@@ -12537,3 +12537,13 @@ end for those processes. Method as in round 10: bench builds (`llvm`, and `clift
 - **Releases** (user, 2026-10-28): tag `vunit-yavs-v<version>` runs `.github/workflows/vunit-yavs-release.yml` (tests against the
   yavs binary release of the same version, then TestPyPI and PyPI by trusted publishing); the binary release now runs on
   `v[0-9]*` only, so neither tag starts the other workflow. `python/vunit-yavs/RELEASING.md` has the order.
+
+## CLI corrections from the documentation audit (#845, #850, #835, #838, #839, #836, #837; agent, 2026-10-29)
+
+- **Help names the build** (#845, #850): the `--tier` help and `--explain E0120` say which compiled tiers the executable has (`elab::tiers_built`, from the cargo features) and what each tier needs; option help names no developer document.
+- **`--tier` under `--dap`** (#835): checked like without it (`use_tier(None, ..)`: a tier the build lacks is `E0120`, exit 2); a debugger session still runs the interpreter and compiles nothing.
+- **Empty and missing libraries** (#838): the contract wins (a missing or empty directory is a valid empty library, also for the `--work` library of `run` and `elab`, which never create it); the miss is `E0104` "top level not found" with the directory named in the help. `L0031` stays for a unit the design needs.
+- **`--threads=0`** (#839): a usage error (fail early, no silent fallback), where the contract said it was treated as 1; the test runner never passes 0.
+- **JSON stream** (#839): the batch stop note of `analyze` is a note diagnostic with an empty code in the JSON and short formats, so those streams hold only diagnostics. `finish(N)` still exits with N when it fits 1..125 (so `finish(2)` is exit 2): left to the user to decide.
+- **`--ieee-warnings`** (#836): `on|off`, off drops warnings of the `ieee` library (natives and bodies) by origin file, not by severity of the caller.
+- **Conditional analysis definitions** (#837): `-D` is passed to `elab` and `run` like `--psl`, not recorded in the library manifest (no format change; one rule for the options that change how a source is read).

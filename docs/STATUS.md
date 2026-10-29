@@ -2559,7 +2559,7 @@ An installed binary finds `lib/` next to itself (#43).
 - A package declaration with a generic map aspect (4.7, 4.9, #598, L128) is analysed as an invisible
   generic package and instantiated, in a library and in a declarative part, and runs:
   `tests/diag/sem/unit/package_generic_map_*`, difftest `generics/package_generic_map`, catalogue
-  `package-generic-map`; its package body is `E9999`.
+  `package-generic-map`; its package body is `E1999`.
 - A call of a procedure that waits (directly or through other procedures) from a process with a
   sensitivity list is `E1801` at analysis when the bodies are in the process's design unit (#597,
   L129): `tests/diag/sem/expr/wait_in_procedure_called_by_*`; across units it stays a run-time error
@@ -2567,6 +2567,8 @@ An installed binary finds `lib/` next to itself (#43).
 - Negative suite `tests/diag/sem` run by `tests/diag_sem.rs` (exact code, line and column; optional
   rendered `.stderr` snapshots); what still fails is in `tests/diag_sem_xfail.txt` (the
   aggregates and case choices group passes, #45; external names and literals, #49; aliases, #46).
+- A construct the semantic analysis does not implement yet is `E1999`, naming the slice; `E9999` is
+  only for internal errors (#842).
 - Overload diagnostics (#51): association errors of the only candidate (`E1100` unknown formal,
   `E1310` formal twice, `E1311` missing actual, `E1301` at the first extra argument), procedures
   used as functions and functions used as statements (`E1300`), no function with the expected
@@ -2661,7 +2663,7 @@ An installed binary finds `lib/` next to itself (#43).
   generic units; private variables visible only in the protected body (`E1105`), method aliases
   that forward to a private variable (`E1906` for an alias of anything else), and aliases of
   methods of shared variables and variables (#237; prefixes other than an object name are
-  `E9999`; a call of such a failed alias reports nothing more, #245). View ports, nested and array views, and calls through method aliases simulate
+  `E1999`; a call of such a failed alias reports nothing more, #245). View ports, nested and array views, and calls through method aliases simulate
   (`hierarchy/mode_view_*`, `protected/private_variables`, `protected/method_alias_objects`), and so do signal
   parameters with a view (record, nested, `'converse` and array views, slices, several calling processes; #254), also associated element by element (#265).
   `buffer` and `linkage` subprogram parameters are `E1236`.

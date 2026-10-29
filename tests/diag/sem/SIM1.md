@@ -61,7 +61,7 @@ The reference simulator (the primary reference). Every file the reference simula
 | `drv/multiple_sources_two_processes` | accepts | accepts | Both reject at elaboration (the reference simulator `-e -r`: "unresolved signal has multiple sources"; the second reference simulator `--elab-run`: "too many drivers"), same signal. yavs reports at analysis what holds for every elaboration of the architecture (sources outside generates with locally static prefixes); the rest is elab's. Checked by hand, not by `check_ref.py`. |
 | `v2019/generic_class_array_elem_mismatch` | accepts | rejects @5,6 | The reference simulator does not check this 2019 rule at analysis; the second reference simulator rejects (but for lack of 2019 syntax support, so no real second opinion). |
 | `v2019/method_alias_ok` | rejects @12 | rejects @10,11,15,16 | The reference simulator crashes (internal error) on the call of the method alias `set` with the implicit object inside the protected body; LRM 2019 5.6.2 allows the alias (L15). The second reference simulator lacks private variables. |
-| `v2019/method_alias_of_dereference` | accepts | rejects | Not implemented in yavs (`E9999`): an alias of a method through a prefix that is not an object name (`ptr.all.set`), #237. |
+| `v2019/method_alias_of_dereference` | accepts | rejects | Not implemented in yavs (`E1999`): an alias of a method through a prefix that is not an object name (`ptr.all.set`), #237. |
 | `v2019/method_alias_of_objects_ok` | rejects @27 | accepts | The reference simulator crashes (internal error) on the first call through an alias of a method of a shared variable; LRM 2019 6.6.3 allows the alias and the call runs on the aliased object (L15, #237). |
 | `gen/nested_package_body_missing` | accepts | rejects @6 | LRM 4.8 is clear: a package declaring a subprogram needs a body with its body (#34). The reference simulator does not check nested packages; the second reference simulator reports at the package, yavs at the subprogram (as for library packages). |
 | `gen/nested_package_body_twice` | accepts | accepts | LRM 4.8, 12.1: a package has one body; both accept a second nested one silently (#34). |
@@ -646,7 +646,7 @@ only checks at elaboration. No test depended on U-1 to U-6 or the L8 tie.
 | `generic_class_scalar_actual_record` | E1503 @10 | rejects @10 | rejects @5,6 |
 | `generic_class_scalar_ops_ok` | none | accepts | rejects @5,6,7 |
 | `image_on_record_ok` | none | accepts | rejects @7 |
-| `method_alias_of_dereference` | E9999 @22 | accepts | rejects |
+| `method_alias_of_dereference` | E1999 @22 | accepts | rejects |
 | `method_alias_of_objects_ok` | none | rejects @27 | accepts |
 | `method_alias_ok` | none | rejects @12 | rejects @10,11,15,16 |
 | `private_variable_outside_body` | E1105 @27 | rejects @27 | rejects @8,9,11,12 |

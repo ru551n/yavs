@@ -933,6 +933,10 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
 
 ## Semantic analysis (yavs-sem, M1)
 
+- **A construct analysis does not implement yet is `E1999`, not `E9999`** (#842, agent,
+  2026-10-29): `E9999` means an internal error only, so a report of it is always a bug, and the
+  suite drivers count both (with lowering's `E2001`) as no rejection. Elaboration and command
+  not-implemented errors still use `E9999` (#868).
 - **Static values outside the base range** of their type (the declared range, Q2) are overflow:
   `E1401` in required contexts, `W1401` elsewhere. Array type definition bounds are required
   contexts (Q5), so `array (0 to integer'high * 2)` is an error.

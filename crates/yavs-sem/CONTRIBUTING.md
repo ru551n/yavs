@@ -56,7 +56,7 @@ through the orchestrator.
 - **Fail early, fail clearly.** Every problem is a `yavs_diag::Diagnostic` reported through
   `Db::report`/`Db::error`, with a code, primary span, labels, notes and help. Never
   `unwrap_or(default)` on anything that comes from the design. A construct a later slice will
-  handle reports `Db::unsupported(span, what, "S<n>")` (code `E9999`, says which slice): never a
+  handle reports `Db::unsupported(span, what, "S<n>")` (code `E1999`, says which slice): never a
   silent default, never `todo!()`.
 - **Codes.** Every diagnostic uses a constant from `diag.rs` (ranges in sem.md 8.1). A new code
   gets its constant and its explain text in the same `codes!` entry. Negative tests live in
@@ -103,7 +103,7 @@ From sem robustness (fuzzing, `fuzz/fuzz_targets/sem.rs`):
   (`NameRes::Value`) as `E1300` "expected `what`" and ends in `Db::ice` for `One`/`Overloads`,
   which every caller must handle itself. Regression tests: `tests/diag/sem/fuzz/report_name_*.vhd`.
 - **lead** (decl.rs): aliases of indexed and sliced object names (`alias a : t is v(3)`) are
-  `E9999` (S3), selected ones (`alias a : t is rec.f`) too; the corpus (an external verification library's utility package) needs both.
+  `E1999` (S3), selected ones (`alias a : t is rec.f`) too; the corpus (an external verification library's utility package) needs both.
 
 From s6 (alias/external/protected/view). The S6/S7 checks exist as `Db` methods with unit tests;
 they need calls from the analyzers that own the constructs:
@@ -155,7 +155,7 @@ Hooks the M1 lead calls; the module owner fills the body (keep the signature):
 
 - **stmt.rs** `Db::seq_stmts(&mut self, scope: ScopeId, stmts: &[ast::SeqStmt]) -> Box<[StmtId]>`:
   called for subprogram bodies with the subprogram's parameter region (its `owner` is the
-  subprogram decl). Currently a stub reporting `E9999`.
+  subprogram decl). Currently a stub reporting `E1999`.
 - **implicit.rs** `declare_implicit_ops(ty, scope)` after every type declaration (also the
   universal types at the start of `std.standard`), `flush_pending_implicit()` after every
   `std.standard` type and subtype.
@@ -191,7 +191,7 @@ From aggregate (expr/aggregate.rs, attr.rs). The analyses exist with unit tests;
 `stmt.rs` reaches other modules through the `st_*` hooks at its bottom. Wired: `st_expr`
 (`expr`), `st_name` (`name_cands` + `build_name`), `st_discrete_range` (`discrete_range`),
 `st_decls` (`decls_in`), `st_case_choices` (aggregate.rs `resolve_choices` + `check_case`),
-`st_lookup_guard` (`lookup`), labels and parameters through `declare`. Still `E9999`, wanted:
+`st_lookup_guard` (`lookup`), labels and parameters through `declare`. Still `E1999`, wanted:
 
 | Hook | Wanted | Owner |
 |---|---|---|
@@ -257,7 +257,7 @@ From cli (`yavs analyze`):
   manifest or analysis order.
 - `Unit::refs` are manifest dependencies on units not loaded during analysis (an instance's
   named architecture, the default-bound entity of a component); `unit_record` adds them.
-- Generic types, subprograms and packages on entities, components and blocks report `E9999`
+- Generic types, subprograms and packages on entities, components and blocks report `E1999`
   (S4, generic). A subtype indication as a generate specification (`for g(natural range 1 to
   2)`) is a `GenSelect::Range` over the subtype (#35).
 - An entity and its architecture are one region (12.1): `declare` in an architecture checks the

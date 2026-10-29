@@ -402,7 +402,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     // every stage
     (
         "E9999",
-        "An internal compiler error (\"this is a bug in yavs\"), or a feature that is not implemented yet and names the slice or milestone. Please report the former with the input that triggers it.",
+        "An internal compiler error (\"this is a bug in yavs\"), or a feature of elaboration or of a command that is not implemented yet and names the milestone (semantic analysis reports those as E1999, lowering as E2001). Please report the former with the input that triggers it.",
     ),
 ];
 

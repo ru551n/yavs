@@ -1127,7 +1127,7 @@ and result) is unique among homographs, so there is no code for it.
   forwarding alias of a chain. An alias of a method of any other object (`alias push is
   sv.push [integer];`, a shared variable or a variable, by simple or expanded name) forwards the
   same way: the call's `method_of` is a fresh object reference to it, replacing the object the
-  call had (#237, [L15]). Other prefixes (`f(x).m`, `p.all.m`) report `E9999` (S7).
+  call had (#237, [L15]). Other prefixes (`f(x).m`, `p.all.m`) report `E1999` (S7).
 - Body: bodies for every declared method (`E1230` for missing), plus any declarations.
 - Methods get an implicit first parameter `self` in the HIR (matches NATIVE.md's native calling
   convention); calls are `Call{callee, method_of: Some(obj)}`.
@@ -1307,7 +1307,8 @@ and statements, package scope, configuration tree). Spans everywhere; identifier
 ### 8.1 Code ranges
 
 Existing: `E00xx` syntax (M0), `E01xx` driver/CLI, `E9999` internal error, `W00xx` syntax.
-Sem takes `E1xxx` / `W1xxx`:
+Sem takes `E1xxx` / `W1xxx`; `E1999` is a construct sem does not implement yet, naming the slice
+of section 10 (`Db::unsupported`; #842: `E9999` is only for internal errors):
 
 | Range | Area | Examples |
 |---|---|---|

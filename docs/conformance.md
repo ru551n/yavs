@@ -379,7 +379,7 @@ VESTs, the VHDL test suite for IEEE 1076-1993 (University of Cincinnati; the bil
 | clifton-labs/compliant | 96/96 | 13 |
 | total | **3687/3694** | 44 |
 
-Of the 1490 `analyzer_failure` passes, 1466 fail at analysis and 24 are stopped by a yavs error at elaboration or run time before the test's own verdict, each checked to be the error the test is about (values out of range, lengths, delays, non-static actuals: the language reference leaves open when such errors are detected). As in the suite's own runner, an analysis failure counts without a check that it is the error the test is about. In every group that must fail, a first error that is E2001 (not lowered yet), E9999 or a crash is a failure.
+Of the 1490 `analyzer_failure` passes, 1466 fail at analysis and 24 are stopped by a yavs error at elaboration or run time before the test's own verdict, each checked to be the error the test is about (values out of range, lengths, delays, non-static actuals: the language reference leaves open when such errors are detected). As in the suite's own runner, an analysis failure counts without a check that it is the error the test is about. In every group that must fail, a first error that is E1999 (not analysed yet), E2001 (not lowered yet), E9999 or a crash is a failure.
 
 Failures by the issue that tracks their cause:
 

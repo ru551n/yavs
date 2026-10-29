@@ -1,5 +1,5 @@
 -- yavs-test: std=2019
--- expect: E9999 22:16 aliases of methods of objects not denoted by a simple or expanded name
+-- expect: E1999 22:16 aliases of methods of objects not denoted by a simple or expanded name
 -- LRM 2019 6.6.3 (forwarding through a prefix that is not an object name is not implemented;
 -- a call of the poisoned alias reports nothing more)
 package p is

@@ -145,6 +145,7 @@ codes! {
     PROTECTED_ITEM = "E1906", "This declaration is not allowed in a protected type declaration or body (LRM 5.6): the declaration holds method declarations, use clauses, attribute specifications and, in VHDL-2019, private variables and aliases of methods; the body holds no signals or shared variables.";
     PROTECTED_COMPOSITE_PORT = "E1907", "A variable port of a composite (array or record) of protected types is not supported by yavs, and most reference simulators reject it too. Use a variable port of the protected type, one per object.";
     NEEDS_2019 = "E1910", "The construct needs VHDL-2019.";
+    NOT_IMPLEMENTED = "E1999", "The design uses a construct that yavs's semantic analysis does not implement yet. This is a limitation of yavs, not an error in the design; the note names the slice of the semantic analysis plan that is to implement it. Please report it with the construct if no issue exists yet.";
     // Warnings
     W_CHANGED_MEANING = "W1008", "The construct means something different under the design's VHDL-2019 std/ieee than under VHDL-2008, for example `integer'high`.";
     W_OVERFLOW = "W1401", "Static arithmetic overflows in a context that does not require the value; the runtime check stays.";

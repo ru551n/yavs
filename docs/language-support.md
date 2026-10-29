@@ -232,8 +232,9 @@ Not implemented, so the run or the analysis stops with an error that names the c
 `E3009` at run time, or a "not implemented" message from analysis):
 
 - `'driving` and `'driving_value` of signal parameters and of record parts of a signal (`E2001`).
-- Attributes of a range attribute such as `m'range(2)'left`. These are reported as an internal error
-  (`E9999`) whose note says it is a limitation of yavs.
+- Attributes of a range attribute other than `'left`, `'right`, `'low`, `'high` and `'ascending`,
+  such as `t'range'length` or any attribute of `t'reverse_range`. These are reported as not
+  implemented (`E1999`), with a note that says it is a limitation of yavs.
 - `std.env` PSL state functions and non-empty `SetVhdlAssertFormat` (see LCS-050).
 - A generic map in the header of a protected type (LCS-034) and range records known only at run time (LCS-099).
 - PSL outside the subset above.

@@ -1082,7 +1082,7 @@ impl Db {
     pub(crate) fn unsupported(&mut self, span: Span, what: &str, slice: &str) -> Reported {
         self.error(
             Diagnostic::error(
-                diag::INTERNAL,
+                diag::NOT_IMPLEMENTED,
                 format!("{what} is not implemented yet in yavs's semantic analysis"),
             )
             .with_primary(span, "not supported yet")

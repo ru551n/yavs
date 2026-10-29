@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.10.1 (2026-10-29)
 
 - Native library hooks for VUnit packages that load a native library: `YavsInterface` has
   `foreign_language_interface = "VHPIDIRECT"` and `native_library_hooks(library_file)`, which

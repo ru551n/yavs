@@ -1,7 +1,7 @@
 # Release of the Python package vunit-yavs (python/vunit-yavs, RELEASING.md) on a
 # `vunit-yavs-v<version>` tag: the tag must equal the version in pyproject.toml; the sdist and
-# wheel are built, unit-tested and checked, tested against the yavs binary release of the same
-# version (downloaded, so that release comes first), published to PyPI by trusted
+# wheel are built, unit-tested and checked, tested against the yavs binary release of the
+# package's YAVS_MIN_VERSION (downloaded), published to PyPI by trusted
 # publishing (OIDC, environment `pypi`, no tokens), and attached to a GitHub
 # release. The binary release (release.yml) runs on `v[0-9]*` tags only.
 name: vunit-yavs release
@@ -48,7 +48,7 @@ jobs:
           path: python/vunit-yavs/dist/
           if-no-files-found: error
 
-  # The package against the released yavs of the same version (the binary release comes first)
+  # The package against the released yavs of its minimum version (YAVS_MIN_VERSION)
   real-yavs:
     needs: build
     runs-on: ubuntu-24.04
@@ -62,15 +62,15 @@ jobs:
         with:
           name: dist
           path: python/vunit-yavs/dist/
-      - name: Download yavs ${{ github.ref_name }}
+      - name: Download the yavs release of YAVS_MIN_VERSION
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version=${GITHUB_REF_NAME#vunit-yavs-v}
+          version=$(python -c 'import re; print(re.search(r"^YAVS_MIN_VERSION = YavsVersion\(\"([^\"]+)\"\)", open("vunit_yavs/__init__.py").read(), re.M).group(1))')
           name=yavs-$version-x86_64-unknown-linux-gnu
           gh release download "v$version" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP" \
             --pattern "$name.tar.gz" --pattern SHA256SUMS \
-            || { echo "no yavs v$version release: release the binary first (RELEASING.md)"; exit 1; }
+            || { echo "no yavs v$version release (the YAVS_MIN_VERSION of the package)"; exit 1; }
           (cd "$RUNNER_TEMP" && grep " $name.tar.gz\$" SHA256SUMS | sha256sum -c - && tar xzf "$name.tar.gz")
           echo "VUNIT_YAVS_PATH=$RUNNER_TEMP/$name" >> "$GITHUB_ENV"
       - name: Real-binary tests against the wheel

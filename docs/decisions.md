@@ -12539,8 +12539,8 @@ end for those processes. Method as in round 10: bench builds (`llvm`, and `clift
   Steady-state total `N`, not a hard cap (a test starting while all tokens are out runs at once). Tokens held at a simulation's
   exit, or at the end of the run, are a warning.
 - **Releases** (user, 2026-10-28): tag `vunit-yavs-v<version>` runs `.github/workflows/vunit-yavs-release.yml` (tests against the
-  yavs binary release of the same version, then PyPI by trusted publishing; no TestPyPI step, user 2026-10-29); the binary release now runs on
-  `v[0-9]*` only, so neither tag starts the other workflow. `python/vunit-yavs/RELEASING.md` has the order.
+  yavs binary release of the package's `YAVS_MIN_VERSION`, then PyPI by trusted publishing; no TestPyPI step, user 2026-10-29); the binary release now runs on
+  `v[0-9]*` only, so neither tag starts the other workflow. `python/vunit-yavs/RELEASING.md` has the order. The package is released on its own (user, 2026-10-29): its version is independent of yavs's, and a package release that needs a newer yavs raises `YAVS_MIN_VERSION` first.
 
 ## CLI corrections from the documentation audit (#845, #850, #835, #838, #839, #836, #837; agent, 2026-10-29)
 

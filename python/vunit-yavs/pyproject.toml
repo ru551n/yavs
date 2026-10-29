@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vunit-yavs"
-version = "0.10.0"
+version = "0.10.1"
 description = "The yavs VHDL simulator for VUnit, as a VUnit package"
 readme = "README.md"
 requires-python = ">=3.11"

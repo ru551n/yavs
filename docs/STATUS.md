@@ -23,6 +23,7 @@ The site is a user guide (2026-10-28, maintainer): `index`, `install`, `getting-
 ### CLI correctness fixes from the documentation audit (#845, #850, #835, #838, #839, #836, #837, 2026-10-29)
 
 - `--tier` help and `--explain E0120` name the tiers this executable has and no developer documents (#845, #850); no other option help names a developer document.
+- `--dap` checks `--tier` like `run` without it: a tier the build lacks is `E0120` (#835); the session still runs the interpreter.
 
 ### Kernel gates (#779, 2026-10-26)
 

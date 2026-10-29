@@ -1232,6 +1232,12 @@ pub fn run(
             .with_note("this is a limitation of yavs, not an error in the design")
     };
     if a.dap.is_some() {
+        // A debugger session runs the interpreter whatever `--tier` says, but a tier this build
+        // lacks is E0120 as without `--dap` (#835): nothing is compiled, so no runtime is given.
+        if let Err(d) = use_tier(None, &a) {
+            out.emit(&none, &d);
+            return out.finish(2);
+        }
         if a.profile.is_some() {
             out.emit(
                 &none,

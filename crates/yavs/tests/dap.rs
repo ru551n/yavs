@@ -513,3 +513,27 @@ fn wave_file_is_readable_at_a_stop() {
     child.wait().expect("wait");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `--tier` under `--dap` is checked like without it (#835): a tier whose feature this build
+/// lacks is `E0120`, exit 2, not a quiet interpreted session.
+#[test]
+fn missing_tier_is_e0120_under_dap() {
+    let tier = if !cfg!(feature = "clift") {
+        "clift"
+    } else if !cfg!(feature = "llvm") {
+        "llvm"
+    } else {
+        return; // every tier is built in
+    };
+    let dir = setup("tier");
+    let out = yavs()
+        .current_dir(&dir)
+        .args(["run", "--work=work:lib", "tb", "--dap=stdio"])
+        .arg(format!("--tier={tier}"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("yavs");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{err}");
+    assert!(err.contains("error[E0120]"), "{err}");
+}

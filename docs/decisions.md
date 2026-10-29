@@ -1288,8 +1288,21 @@ a note and a help suggesting an access type, as the reference simulators reject 
   data, never evaluated again. The calls are logged with their argument values; building the
   simulation initialises the packages again and replays the log before any instance data, so
   the processes see the same state and `build` stays repeatable (rule 4); a replayed call
-  returning another value is an internal error. Not chosen: handing the session's heap and
-  package data to the simulation program, whose type, function and constant-pool ids differ.
+  returning another value is an internal error. The packages are initialised in the order the
+  session initialised them, each after the calls made before it (`Session::order`,
+  `pkgcall::Replay`, `Ir::calls_before`; #873, replay agent, 2026-10-29): a run-time package loaded during elaboration
+  (an architecture reached through a default-bound component brings it) is initialised after
+  the calls made so far, and every later initialisation (a rebuild of the session, the
+  build's replay, the build's package order) keeps that order, so the calls return what they
+  returned and the values are those of the reference simulators. The package state after
+  initialisation is read from or stored to the stage cache only for the packages initialised
+  before any call. A package needed by one initialised before it is an internal error.
+  Still open: packages known when the session starts are all initialised before its first
+  call, while the reference simulators elaborate a package with the first unit that uses it
+  (#875). Not chosen: handing the session's heap and package data to the simulation program,
+  whose type, function and constant-pool ids differ; initialising a grown package set whole
+  and then replaying (the new package's initialiser took the ids the logged calls had used: an
+  internal error on the queue handles of a verification library).
   `NOW` is 0 fs during elaboration (yavs-interp). ponytail: a new function relowers the
   session and replays the log (O(functions x calls)); a constant with an impure initial value
   elaboration cannot evaluate at all (E2106: a null multi-dimensional aggregate, `'PATH_NAME` of

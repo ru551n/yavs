@@ -60,6 +60,8 @@ pub struct Ir {
     pub var_pkgs: HashMap<yavs_sem::DeclId, yavs_ir::FuncId>,
     /// The functions of `Elaborated::elab_calls` and what they read of regions, for the replay.
     pub(crate) elab: crate::pkgcall::Items,
+    /// Per package of `packages`: the elaboration-time calls made before it was initialised.
+    pub(crate) calls_before: Vec<usize>,
     /// The slot thunk (packages) and value type of each non-protected shared variable
     /// (`Lowerer::var_slots`), for [`Built::vars`].
     pub var_slots: Vec<yavs_lower::VarSlot>,
@@ -322,7 +324,9 @@ impl Elaborated {
                 archs.push(arch);
             }
         }
-        let packages = run_time_packages(db);
+        // In the order elaboration initialised them, those it never saw last (#873).
+        let known: Vec<UnitId> = self.elab_pkgs.iter().map(|&(u, _)| u).collect();
+        let packages = run_time_order(db, &known).map_err(|d| vec![*d])?;
         // A declaration's constant calling a subprogram of its own package runs before the
         // body is elaborated (LRM 14.4.2): E2114, also for constants only processes read
         // (#197).
@@ -506,6 +510,15 @@ impl Elaborated {
             models: Vec::new(),
             var_pkgs: var_pkgs.into_iter().collect(),
             elab,
+            calls_before: packages
+                .iter()
+                .map(|u| {
+                    self.elab_pkgs
+                        .iter()
+                        .find(|(k, _)| k == u)
+                        .map_or(self.elab_calls.len(), |&(_, n)| n)
+                })
+                .collect(),
             var_slots,
             start,
             learn,
@@ -926,7 +939,8 @@ impl Elaborated {
             shared_vars,
             ranges,
             convs,
-            elab_calls
+            elab_calls,
+            elab_pkgs
         );
         self.start = None;
     }
@@ -978,7 +992,11 @@ impl Elaborated {
         }));
         // Cells of instance-level constants and shared variables, computed once per instance.
         let mut once: HashMap<(ScopeId, yavs_sem::DeclId), CallVal> = HashMap::new();
-        // Package data, created once in order: each initialisation sees the packages before it.
+        // Package data, created once in order: each initialisation sees the packages before it,
+        // and the elaboration-time calls made before it (#873).
+        let mut replay = start
+            .is_none()
+            .then(|| crate::pkgcall::Replay::new(&ir.elab, &self.elab_calls, &ir.calls_before));
         let mut rt = crate::pkgcall::init_packages(
             &ir.program,
             self.cov_rows() * ir.program.cov.len(),
@@ -993,6 +1011,7 @@ impl Elaborated {
             start.as_ref().map(|s| &s.data[..]),
             ir.init_key.as_ref(),
             true,
+            replay.as_mut(),
             |p, d| {
                 // Descriptors of the package's array signals (none for an unbound alias of an
                 // external signal: its subprogram fails when called).
@@ -1031,7 +1050,9 @@ impl Elaborated {
             // The side effects of elaboration-time calls on package state, in their order
             // (#77); the shared variables of regions they created are the instances' own.
             None => {
-                let vars = crate::pkgcall::replay(&rt, &shared, &ir.elab, &self.elab_calls)
+                let vars = replay
+                    .ok_or_else(|| sim_err("internal error: no replay of the elaboration-time calls; this is a bug in yavs".into()))?
+                    .finish(&rt, &shared)
                     .map_err(|m| SimError::new(ErrorKind::Runtime(m)))?;
                 // The replay ran functions as lowered: the simulation runs them optimised (#705).
                 if !yavs_interp::Runtime::forget_raw(&mut rt) {
@@ -1867,6 +1888,34 @@ pub(crate) fn run_time_packages(db: &Db) -> Vec<UnitId> {
         .stored_run_time_packages()
         .map_or_else(|| db.run_time_package_set(), <[UnitId]>::to_vec);
     dependency_order(db, wanted)
+}
+
+/// [`run_time_packages`] in the order elaboration initialised them (#873): `known` first, as it
+/// initialised them, then the packages loaded since (an architecture loaded on demand brings
+/// them). One of those needed by a known package is an internal error: the known one ran first.
+pub(crate) fn run_time_order(db: &Db, known: &[UnitId]) -> Result<Vec<UnitId>, Box<Diagnostic>> {
+    let now = run_time_packages(db);
+    if known.is_empty() {
+        return Ok(now);
+    }
+    let seen: std::collections::HashSet<_> = known.iter().copied().collect();
+    let mut all = known.to_vec();
+    all.extend(now.into_iter().filter(|u| !seen.contains(u)));
+    // `known` is in dependency order, so it stays in front unless it needs a later package.
+    let all = dependency_order(db, all);
+    match known.iter().zip(&all).find(|(k, a)| k != a) {
+        None => Ok(all),
+        Some((&k, _)) => Err(Box::new(
+            Diagnostic::error(
+                crate::codes::INTERNAL,
+                format!(
+                    "internal error: package `{}` was elaborated before a package it needs",
+                    db.units[k].name.text
+                ),
+            )
+            .with_primary(db.units[k].name.span, "this is a bug in yavs"),
+        )),
+    }
 }
 
 /// `packages` (in unit order) with every package after those its declaration or body names

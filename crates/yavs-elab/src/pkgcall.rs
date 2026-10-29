@@ -360,6 +360,8 @@ impl LibInit {
 /// the elaboration session, [`Start`]). With `cache` (and no `start`), the state the
 /// initialisers made is read from the stage cache and they do not run; a cold run stores it
 /// unless they did more than compute. `fix` must then change nothing the initialisers read.
+/// With `calls`, the elaboration-time calls made before a package was initialised run before
+/// it ([`Replay`]); the caller runs the rest with the runtime returned.
 #[allow(clippy::too_many_arguments)] // ponytail: one more setting; bundle into a struct when the next one comes
 pub(crate) fn init_packages(
     prog: &Arc<Program>,
@@ -375,6 +377,7 @@ pub(crate) fn init_packages(
     start: Option<&[InstData]>,
     cache: Option<&InitKey>,
     fix_writes: bool,
+    mut calls: Option<&mut Replay>,
     mut fix: impl FnMut(&PackageIr, &mut InstData) -> Result<(), SimError>,
 ) -> Result<Arc<Runtime>, SimError> {
     let mut data: Vec<Arc<InstData>> = Vec::new();
@@ -395,6 +398,8 @@ pub(crate) fn init_packages(
         )));
     }
     let cache = cache.filter(|_| start.is_none() && !packages.is_empty());
+    // The state of the packages initialised before any call, the only one a cache entry holds.
+    let clean = calls.as_ref().map_or(packages.len(), |r| r.clean());
     // The descriptors `fix` writes (`fix_writes`) are read by the initialisers that follow (a
     // package array signal's bounds): the state is cached only up to the packages without any.
     let dope = |ps: &[PackageIr]| {
@@ -403,7 +408,7 @@ pub(crate) fn init_packages(
                 .iter()
                 .any(|p| p.signals.iter().any(|s| s.dope.is_some()))
     };
-    let whole = cache.filter(|_| !dope(packages));
+    let whole = cache.filter(|_| !dope(packages) && clean == packages.len());
     if let Some(k) = whole
         && let Some(bytes) = k.get(resolution)
         && let vars = shared.lock().map_or(0, |s| s.vars.len())
@@ -424,7 +429,8 @@ pub(crate) fn init_packages(
         let n = packages[..l.packages.min(packages.len())]
             .iter()
             .position(|p| dope(std::slice::from_ref(p)))
-            .unwrap_or(l.packages.min(packages.len()));
+            .unwrap_or(l.packages.min(packages.len()))
+            .min(clean);
         (n > 0).then_some((l, n))
     });
     let mut first = 0;
@@ -448,6 +454,17 @@ pub(crate) fn init_packages(
     // The runtime of the last initialiser: the files the initialisers open are handed on (#834).
     let mut last: Option<Arc<Runtime>> = None;
     for (i, p) in packages.iter().enumerate().skip(first) {
+        if let Some(r) = calls.as_deref_mut()
+            && r.due(i)
+        {
+            let rt = Runtime::new(prog.clone(), bind(&data))?;
+            if let Some(l) = &last {
+                rt.adopt_files(l);
+            }
+            r.upto(&rt, shared, i)
+                .map_err(|m| SimError::new(yavs_kernel::ErrorKind::Runtime(m)))?;
+            last = Some(rt);
+        }
         let mut d = match start {
             Some(s) => s[i].clone(),
             None => {
@@ -539,20 +556,80 @@ fn fail_text(f: Fail) -> String {
     }
 }
 
-/// Run `log` again, in order, on freshly initialised packages: the side effects of
-/// elaboration. Every call must return what it returned during elaboration. Gives the
-/// handles of the shared variables the calls created, in this run.
-pub(crate) fn replay(
-    rt: &Arc<Runtime>,
-    shared: &Arc<Mutex<SharedState>>,
-    items: &Items,
-    log: &[Call],
-) -> Result<HashMap<VarKey, u64>, String> {
-    // The reports of these calls were printed when they first ran (#390).
-    rt.set_replay(true);
-    let r = replay_calls(rt, shared, items, log);
-    rt.set_replay(false);
-    r
+/// The elaboration-time calls to run again on freshly initialised packages, in their order
+/// among the packages' initialisations (#77, #873): the side effects of elaboration. Every call
+/// must return what it returned during elaboration.
+pub(crate) struct Replay<'a> {
+    items: &'a Items,
+    log: &'a [Call],
+    /// Per package, in initialisation order: the calls made before it was initialised.
+    before: &'a [usize],
+    done: usize,
+    /// The handles of the shared variables of regions the calls created, in this run.
+    vars: HashMap<VarKey, u64>,
+}
+
+impl<'a> Replay<'a> {
+    pub(crate) fn new(items: &'a Items, log: &'a [Call], before: &'a [usize]) -> Self {
+        Replay {
+            items,
+            log,
+            before,
+            done: 0,
+            vars: HashMap::new(),
+        }
+    }
+
+    /// The leading packages initialised before any call: only their state may come from or go
+    /// to the stage cache.
+    fn clean(&self) -> usize {
+        self.before.iter().take_while(|&&n| n == 0).count()
+    }
+
+    /// The calls package `i` was initialised after, if any are still to run.
+    fn due(&self, i: usize) -> bool {
+        self.before.get(i).is_some_and(|&n| n > self.done)
+    }
+
+    /// Run the calls up to the one package `i` (or, past the last package, the end) was
+    /// initialised after.
+    fn upto(
+        &mut self,
+        rt: &Arc<Runtime>,
+        shared: &Arc<Mutex<SharedState>>,
+        i: usize,
+    ) -> Result<(), String> {
+        let n = self
+            .before
+            .get(i)
+            .map_or(self.log.len(), |&n| n.min(self.log.len()));
+        if n <= self.done {
+            return Ok(());
+        }
+        // The reports of these calls were printed when they first ran (#390).
+        rt.set_replay(true);
+        let r = replay_calls(
+            rt,
+            shared,
+            self.items,
+            &self.log[self.done..n],
+            &mut self.vars,
+        );
+        rt.set_replay(false);
+        self.done = n;
+        r
+    }
+
+    /// Run the calls left, made after every package was initialised; gives the shared
+    /// variables the calls created.
+    pub(crate) fn finish(
+        mut self,
+        rt: &Arc<Runtime>,
+        shared: &Arc<Mutex<SharedState>>,
+    ) -> Result<HashMap<VarKey, u64>, String> {
+        self.upto(rt, shared, usize::MAX)?;
+        Ok(self.vars)
+    }
 }
 
 fn replay_calls(
@@ -560,8 +637,8 @@ fn replay_calls(
     shared: &Arc<Mutex<SharedState>>,
     items: &Items,
     log: &[Call],
-) -> Result<HashMap<VarKey, u64>, String> {
-    let mut vars: HashMap<VarKey, u64> = HashMap::new();
+    vars: &mut HashMap<VarKey, u64>,
+) -> Result<(), String> {
     for c in log {
         let name = &c.name;
         let s = items
@@ -575,12 +652,12 @@ fn replay_calls(
             for cr in &f.creates {
                 let init = items.inits.get(&cr.key.1).ok_or_else(not_lowered)?;
                 let needs = items.needs.get(&cr.key.1).ok_or_else(not_lowered)?;
-                let data = inst_data(&rt.prog, needs, &cr.items, &vars).map_err(fail_text)?;
+                let data = inst_data(&rt.prog, needs, &cr.items, vars).map_err(fail_text)?;
                 let h = create_var(rt, shared, *init, data).map_err(fail_text)?;
                 vars.insert(cr.key, h);
             }
             let needs = items.needs.get(&c.func).ok_or_else(not_lowered)?;
-            inst = Some(inst_data(&rt.prog, needs, &f.items, &vars).map_err(fail_text)?);
+            inst = Some(inst_data(&rt.prog, needs, &f.items, vars).map_err(fail_text)?);
         }
         match run(rt, s, &c.args, Some(shared), inst) {
             Ok(v) if v == c.result => {}
@@ -593,7 +670,7 @@ fn replay_calls(
             Err(e) => return Err(fail_text(e)),
         }
     }
-    Ok(vars)
+    Ok(())
 }
 
 /// The program and package state elaboration-time calls run against.
@@ -650,8 +727,13 @@ pub(crate) struct Session {
     live: Option<Live>,
     /// A call failed after it may have changed the package state.
     dirty: bool,
-    /// `run_time_packages` for a `Db` of that size (it only grows, by instantiation).
-    packages: Option<((usize, usize, usize), Vec<UnitId>)>,
+    /// The size of the `Db` `order` was last extended for (it only grows: instantiation, units
+    /// loaded on demand).
+    packages: Option<(usize, usize, usize)>,
+    /// The run-time packages in the order they are initialised, each with the number of logged
+    /// calls made before it (#873): a package loaded during elaboration is initialised after
+    /// the calls made so far, and a rebuild or the simulation's replay keeps that order.
+    pub(crate) order: Vec<(UnitId, usize)>,
     /// Shared variables of regions created for the call being prepared; the next logged call
     /// takes them.
     pending: Vec<Create>,
@@ -816,17 +898,19 @@ impl Session {
         })
     }
 
-    /// The run-time packages of `db`, found again only when `db` has grown.
-    fn run_time_packages(&mut self, db: &Db) -> Vec<UnitId> {
+    /// The run-time packages of `db` in [`Session::order`], extended only when `db` has grown.
+    fn run_time_packages(&mut self, db: &Db) -> Result<Vec<UnitId>, Fail> {
         let key = (db.units.len(), db.decls.len(), db.exprs.len());
-        match &self.packages {
-            Some((k, p)) if *k == key => p.clone(),
-            _ => {
-                let p = crate::sim::run_time_packages(db);
-                self.packages = Some((key, p.clone()));
-                p
-            }
+        if self.packages != Some(key) {
+            let known: Vec<UnitId> = self.order.iter().map(|&(u, _)| u).collect();
+            let all =
+                crate::sim::run_time_order(db, &known).map_err(|d| Fail::Runtime(d.message))?;
+            let n = self.log.len();
+            self.order
+                .extend(all[known.len()..].iter().map(|&u| (u, n)));
+            self.packages = Some(key);
         }
+        Ok(self.order.iter().map(|&(u, _)| u).collect())
     }
 
     /// A point to return to with [`Session::undo`].
@@ -840,10 +924,16 @@ impl Session {
             return Ok(());
         }
         self.log.truncate(mark);
+        // A package initialised after an undone call is initialised after the calls kept.
+        for (_, n) in &mut self.order {
+            *n = (*n).min(mark);
+        }
         self.pending.clear();
         self.live = None;
-        let pkgs = self.run_time_packages(db);
-        match self.rebuild(db, pkgs) {
+        let r = self
+            .run_time_packages(db)
+            .and_then(|pkgs| self.rebuild(db, pkgs));
+        match r {
             Ok(l) => {
                 self.live = Some(l);
                 self.dirty = false;
@@ -919,7 +1009,7 @@ impl Session {
         lower: impl FnOnce(&mut Lowerer, &mut Items) -> Result<(), Fail>,
     ) -> Result<(), Fail> {
         // A failed call may have left the package state half changed: rebuild it then.
-        let pkgs = self.run_time_packages(db);
+        let pkgs = self.run_time_packages(db)?;
         let added = match self.live.as_mut() {
             Some(live) if !self.dirty => add(live, db, &pkgs, lower),
             _ => None,
@@ -997,7 +1087,8 @@ impl Session {
             .is_some_and(|l| l.shared.lock().is_ok_and(|s| !s.is_tainted()))
     }
 
-    /// Lower the packages and `lowered`, initialise the packages and replay the log.
+    /// Lower the packages `pkgs` (`order`) and `lowered`, initialise the packages and replay the
+    /// log, each call after the packages initialised before it.
     fn rebuild(&self, db: &Db, pkgs: Vec<UnitId>) -> Result<Live, Fail> {
         let lower = lower_fail;
         let (mut l, lib) = package_lowerer(db, &pkgs, LowerOptions::default()).map_err(lower)?;
@@ -1022,6 +1113,8 @@ impl Session {
             lw.shared_size as usize
         ])));
         let sources = Sources::of(&prog, &db.sources);
+        let before: Vec<usize> = self.order.iter().map(|&(_, n)| n).collect();
+        let mut calls = Replay::new(&items, &self.log, &before);
         // ponytail: foreign subprograms are bound only for the simulation (`yavs run
         // --load`), so calling one during elaboration is a runtime error.
         let rt = init_packages(
@@ -1038,10 +1131,11 @@ impl Session {
             None,
             init.as_ref(),
             false,
+            Some(&mut calls),
             |_, _| Ok(()),
         )
         .map_err(runtime)?;
-        let vars = replay(&rt, &shared, &items, &self.log).map_err(Fail::Runtime)?;
+        let vars = calls.finish(&rt, &shared).map_err(Fail::Runtime)?;
         Ok(Live {
             rt,
             shared,

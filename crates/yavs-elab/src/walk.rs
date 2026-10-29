@@ -663,6 +663,7 @@ pub(crate) fn elaborate(
         ir: None,
         start: e.m.session.finish(),
         elab_calls: std::mem::take(&mut e.m.session.log),
+        elab_pkgs: std::mem::take(&mut e.m.session.order),
     })
 }
 

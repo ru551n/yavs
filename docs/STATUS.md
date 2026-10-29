@@ -5171,6 +5171,7 @@ index or designated subtypes. The CLI has no resolution option yet, so TIME mirr
 exercised end to end in femtoseconds only (other resolutions: a unit test).
 
 - A `report` in a function run without a kernel (elaboration time) prints `** Note: (init): msg` on stderr and goes on; severity failure stops (#299; difftest `report/elab_report`); it is counted in the VHDL assert counts, so an error exits 1 at the end (#349; `report/elab_report_error`, catalogue `elab-time-report-error`). Calls replayed on fresh package state (a session rebuild, building the simulation) print and count their reports no more (#390; `report/elab_report_replay`).
+- A run-time package loaded during elaboration (behind a default-bound component) is initialised after the elaboration-time calls made before it, and every later initialisation (session rebuild, the build's replay, warm runs, every tier) keeps that order, so a replayed call returns what it returned (#873; `crates/yavs/tests/late_packages.rs`); before, the replay on the reordered packages ended in an internal error. Open: packages known when elaboration starts are all initialised before its first call (#875), and package initialiser reports print again when the packages are initialised a second time (#874).
 
 ### Shared heap collector: overhead measurement (#303, 2026-10-19)
 

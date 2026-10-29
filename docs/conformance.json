@@ -295,8 +295,8 @@
        4
       ],
       "scalar": [
-       17,
-       17
+       20,
+       20
       ],
       "shared": [
        4,
@@ -315,8 +315,8 @@
        20
       ],
       "textio": [
-       14,
-       14
+       15,
+       15
       ]
      }
     },
@@ -396,8 +396,8 @@
        4
       ],
       "scalar": [
-       17,
-       17
+       20,
+       20
       ],
       "shared": [
        4,
@@ -416,8 +416,8 @@
        20
       ],
       "textio": [
-       14,
-       14
+       15,
+       15
       ]
      }
     },
@@ -497,8 +497,8 @@
        4
       ],
       "scalar": [
-       17,
-       17
+       20,
+       20
       ],
       "shared": [
        4,
@@ -517,15 +517,15 @@
        20
       ],
       "textio": [
-       14,
-       14
+       15,
+       15
       ]
      }
     }
    }
   },
   "discrepancies": {
-   "cases": 214,
+   "cases": 218,
    "output_tail": "",
    "yavs_matches_expected": true
   },
@@ -629,9 +629,9 @@
   }
  },
  "generated": {
-  "commit": "a89e38656d",
-  "commit_date": "2026-10-28",
-  "version": "0.9.0"
+  "commit": "a3e95822df",
+  "commit_date": "2026-10-29",
+  "version": "0.11.0"
  },
  "local": {
   "records": {
@@ -2059,6 +2059,20 @@
     "yavs": "OK"
    },
    {
+    "case": "package-expanded-name-in-body-body-item",
+    "decided": "agent (L155, #854)",
+    "kind": "LRM clear",
+    "lrm": "8.3, 12.1",
+    "yavs": "OK"
+   },
+   {
+    "case": "package-expanded-name-in-body-decl-item",
+    "decided": "agent (L155, #854)",
+    "kind": "LRM clear",
+    "lrm": "8.3, 12.1",
+    "yavs": "OK"
+   },
+   {
     "case": "package-instance-local",
     "decided": "agent (#101)",
     "kind": "LRM clear",
@@ -2295,6 +2309,20 @@
     "kind": "LRM clear",
     "lrm": "9.3.7, 12.5",
     "yavs": "OK"
+   },
+   {
+    "case": "static-intermediate-outside-integer",
+    "decided": "user, 2026-10-29 (#872)",
+    "kind": "LRM clear (strictly an error at `2 ** 31`)",
+    "lrm": "9.3.6, 5.2.3.1",
+    "yavs": "OK"
+   },
+   {
+    "case": "static-intermediate-generate-parameter",
+    "decided": "agent, 2026-10-29 (#872)",
+    "kind": "LRM clear (an error at `2 ** j`)",
+    "lrm": "9.4.3, 5.2.3.1",
+    "yavs": "FATAL"
    },
    {
     "case": "array-nested-resolved-whole",

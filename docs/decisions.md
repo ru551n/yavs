@@ -133,7 +133,7 @@ milestone users care about works.
   user runs into with the flag to change them (the full list moved to `docs/design/language-choices.rst`);
   the VHPI page keeps the "At a glance" table and how to load a plugin (the audit of the standard and
   call-by-call behaviour moved to `crates/yavs-vhpi/STANDARD.md`); the Debugging page covers DAP and
-  VS Code only, not `yavs-gui`; the README names OSVVM, UVVM and VUnit.
+  VS Code only; the README names OSVVM, UVVM and VUnit.
 - CI (agent, 2026-10-18, #134): fmt, clippy and tests with default features on ubuntu-24.04,
   ubuntu-24.04-arm and windows-latest (MSVC). No LLVM, no external corpora (#63), no qemu/Wine
   runs (the aarch64 and Windows runners are native). The release workflow calls the same
@@ -2753,6 +2753,8 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   counters, the plain run's number with toggle alone, same output).
 
 ## GUI (M10, #384, #388, user, 2026-10-19)
+
+Superseded on 2026-10-29: `yavs-gui` was removed, see "yavs-gui removed" at the end of this file.
 
 Design: `docs/design/gui.md` (section 12 lists the same decisions).
 
@@ -12778,3 +12780,23 @@ duplicate implementations without changing diagnostics (issue #894; implemented 
 - **A breakpoint under `vunit_run` prints `Test Run Failed!`** (user, 2026-10-30, exact VUnit behaviour): the test suite did not finish.
 - **Lean calls are off under a debugger** (agent, 2026-10-31, #863): the debug loop runs a function's prologue, which reads the parameter slots a lean call leaves empty.
 
+
+## yavs-gui removed (#871, maintainer, 2026-10-29)
+
+- **`yavs-gui` is removed from the releases and the repository** (maintainer, 2026-10-29). Why: the debugger is
+  any DAP client (VS Code, `yavs run --dap`); a second client with its own EUPL-1.2 licence, a pinned git
+  dependency and a display requirement was not worth shipping. Removed: `gui/`, `.github/workflows/gui.yml` and
+  its call from `release.yml`, the GUI's dependabot entry, `docs/design/gui.md`, `yavs run --gui` (`src/gui.rs`)
+  and its test, the install and troubleshooting rows, the README licence paragraph.
+- **`E0122` is retired and never reused** (codes are stable, `crates/yavs-diag`): its `--explain` text is gone,
+  `yavs run --gui` is a usage error like any unknown option.
+- **Release archives:** `yavs`, the licences without `LICENSE-EUPL-1.2-yavs-gui`, and `README.md`. The release
+  smoke test no longer runs `yavs-gui --version`; the glibc 2.17 check covers `yavs` only. This supersedes "Smoke test"
+  of the Cranelift release entry and "One release archive" of the GUI section above, for future releases.
+- **The published 0.9.0 release is not changed:** its archives still contain `yavs-gui` and
+  `LICENSE-EUPL-1.2-yavs-gui` (changing assets would change published checksums). The removal starts with the next
+  release.
+- **DAP extensions kept:** `yavs/waveSubscribe` and the requests added for the GUI stay in `yavs-dap`, tested and
+  usable by any client. #396 and #397 (structured stops, source locations) stay open as DAP requests.
+- **Python runner package:** `-g/--gui` is refused at the start with a message pointing to `--yavs-debug`
+  (fail early, no fallback), and `supports_gui_flag` is dropped.

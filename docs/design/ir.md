@@ -509,7 +509,7 @@ impl yavs_kernel::Process for InterpProcess {
 
 ### 3.4 Debug hooks (the reference simulators style)
 
-Implemented in `yavs-interp` (`debug.rs`); the DAP server (M8) and the GUI (M10) build on it
+Implemented in `yavs-interp` (`debug.rs`); the DAP server (M8) builds on it
 without interpreter changes.
 
 ```rust

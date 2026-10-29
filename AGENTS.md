@@ -2,7 +2,7 @@
 
 yavs is a production VHDL simulator in Rust: VHDL-1993, 2008 and 2019, an IR interpreter plus optional compiled tiers
 (LLVM or Cranelift), a parallel kernel, VHPI (partial) for Python testbench frameworks, external test runner support, a DAP
-server (with a VS Code extension) and an early graphical debugger. The name stands for "Yet Another VHDL Simulator". This file is for AI agents (and humans) changing the code. Read it
+server (with a VS Code extension). The name stands for "Yet Another VHDL Simulator". This file is for AI agents (and humans) changing the code. Read it
 fully before your first edit. It is short on purpose: the details live in the documents it points
 to, and those documents win over your memory.
 
@@ -26,7 +26,6 @@ to, and those documents win over your memory.
 | diagnostics, logic, std natives | `crates/yavs-{diag,logic,std}/AGENTS.md` |
 | FFI, VHPI, waves, DAP, coverage, LLVM | `crates/yavs-{ffi,vhpi,wave,dap,cov,llvm}/AGENTS.md` |
 | `lib/` (std/ieee sources) | `lib/AGENTS.md`, `lib/README.md`, `lib/SOURCES.md`, `lib/NATIVE.md` |
-| the GUI (`gui/`) | `gui/AGENTS.md`, `docs/design/gui.md` |
 | tests and tools | `tests/AGENTS.md` (and `tests/{diag,corpus,parse-corpus,discrepancies}/AGENTS.md`), `tools/AGENTS.md` (and `tools/{corpus,difftest,discrepancies}/AGENTS.md`), `fuzz/AGENTS.md` |
 | releases, version numbers, `.github/workflows/release.yml` | `RELEASING.md` (one release with every artifact, one version, `tools/release/bump.py`) |
 
@@ -60,7 +59,6 @@ to, and those documents win over your memory.
 | `tools/corpus/` | Analysis corpus manifests (external libraries, `lib`), `run.py`, `RESULTS.md` |
 | `fuzz/` | cargo-fuzz targets (own workspace) |
 | `editors/vscode/` | VS Code extension contributing the `yavs` debugger (plain JS) |
-| `gui/` | `yavs-gui`, the graphical debugger: its own workspace, EUPL-1.2, DAP client only (`gui/AGENTS.md`) |
 | `python/vunit-yavs/` | The Python test runner package `vunit-yavs`: simulator interface, `--yavs-debug`, thread cap, token server, PyPI release (`python/vunit-yavs/AGENTS.md`) |
 
 ## 3. Rules (mandatory)

@@ -1,4 +1,4 @@
-//! Live waves (#325, `docs/design/gui.md` 5.1): `yavs/waveSubscribe` records the selected
+//! Live waves (#325): `yavs/waveSubscribe` records the selected
 //! signals (and variables) with a `yavs_wave::Recorder`, the same hierarchy and final value per
 //! time step as `--wave` writes; this module is its [`Sink`]. Changes of completed time steps
 //! are collected into a batch, sent as a `yavs/waves` event once `flushMs` have passed or

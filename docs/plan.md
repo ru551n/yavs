@@ -1,7 +1,7 @@
 # Plan: yavs, a production VHDL simulator in Rust
 
 ## Context
-yavs is a new VHDL simulator. The aim is that it can replace the other major simulators for users of external test runners, verification libraries and Python testbench frameworks, with a commercial-style debugging GUI. The first proof point is a real test-runner testbench running end to end. The name is yavs, "Yet Another VHDL Simulator" (user decision 2026-10-18; formerly the working name rsim). Every crate is `yavs-*` with `publish = false`.
+yavs is a new VHDL simulator. The aim is that it can replace the other major simulators for users of external test runners, verification libraries and Python testbench frameworks, with a commercial-style debugger (DAP). The first proof point is a real test-runner testbench running end to end. The name is yavs, "Yet Another VHDL Simulator" (user decision 2026-10-18; formerly the working name rsim). Every crate is `yavs-*` with `publish = false`.
 
 Decisions made with the user:
 - Written in Rust, with **its own parser and its own semantic analysis**.
@@ -11,7 +11,7 @@ Decisions made with the user:
 - **Diagnostics with codes, source snippets, labels, notes and help**: coloured, with VHDL stacktraces.
 - **A compilation cache** (user, 2026-10-19, replaces the earlier "no incremental compilation cache" decision; `docs/decisions.md` "Compilation cache"): analysis results are kept in the work library and read back by later `elab`/`run` of the same design, results byte-identical to a run without it.
 - **Interfaces:** VHPI for Python testbench frameworks (**mandatory**), code coverage, and a DAP debug server with HDL extensions.
-- **GUI:** egui with an embedded **waveform viewer library**, as a separate process. It is built last, but everything before it is designed for it.
+- **GUI:** none (maintainer, 2026-10-29: `yavs-gui` was removed, `docs/decisions.md` "yavs-gui removed"). Debugging is the DAP server, for VS Code and any other DAP client; "designed for the GUI" below now means designed for DAP clients.
 - **Platforms (all tier 1, in CI from M0):** Linux x86_64, Linux aarch64 and Windows x86_64.
   - Windows includes LLVM and Python testbench framework support.
   - VHPI uses no separate DLL. `yavs.exe` exports the `vhpi_*` symbols. **No import library is built or shipped** (user, 2026-10-18): a plugin brings its own, as Python testbench frameworks do with their `.def` files.
@@ -30,7 +30,7 @@ Decisions made with the user:
   - Installation is documented as test-runner library recipes, with no installer command.
 - **Repo:** `ru551n/yavs` on GitHub is **public** (made public 2026-10-18 after the rename and a history audit). **Initial phase:** agents push straight to `main`, with no PRs and no CI. Once something works, CI is added on Linux x86_64, Linux aarch64 and Windows, and each milestone then lands as a PR that the user merges.
 - **External test inputs (never copied into the repo):** conformance suites and the reference simulators' own test suites, fetched in CI or read from local checkouts, for parse, sem and differential runs.
-- **Licensing:** MIT/Apache, published once the repo goes public. The GUI crate alone is EUPL-1.2, because the embedded viewer library is.
+- **Licensing:** MIT/Apache, published once the repo goes public.
 - **Workflow:** one subagent per milestone.
 
 What the research found locally:
@@ -64,12 +64,12 @@ What the research found locally:
 | `yavs-vhpi` | IEEE 1076 VHPI C ABI (`vhpi_user.h`) and `vhpi_startup_routines` loading for Python testbench frameworks. |
 | `yavs-dap` | Debug Adapter Protocol server: breakpoints, step in/over per process, stack, and variables. Extensions add hierarchy browsing, signal peek/force/deposit, run-to-time, and live waveform streaming. |
 | `yavs` | The CLI: `yavs analyze`, `yavs elab`, `yavs run [--wave] [--cov] [--vhpi lib] [--dap port]`. The exit code follows `env.stop`/`finish` and severity, as test runners expect. |
-| `yavs-gui` (EUPL-1.2, **built last**) | egui/eframe app embedding the waveform viewer library. It connects to `yavs --dap`. It provides the hierarchy and source panes, breakpoints, a console and live waves. **Debugging matches the other major simulators** (user, 2026-10-18): line breakpoints with conditions and hit counts; signal breakpoints (on change or on a value); step into/over/out within a process plus a global step to the next statement of any process; run for a time, to the next delta or to the next time step; call stack and locals per process; a list of active and waiting processes with what they wait on; time and delta shown at every stop. **Look: a modern commercial simulator style** (dockable panels, hierarchy tree, source view with breakpoint gutter, embedded waves), not a classic Tk look. |
+| `yavs --dap` clients (the former `yavs-gui` was removed 2026-10-29) | The debugger is any DAP client. **Debugging matches the other major simulators** (user, 2026-10-18): line breakpoints with conditions and hit counts; signal breakpoints (on change or on a value); step into/over/out within a process plus a global step to the next statement of any process; run for a time, to the next delta or to the next time step; call stack and locals per process; a list of active and waiting processes with what they wait on; time and delta shown at every stop. |
 
 **Designed for the GUI from the start** (none of it is built until M10):
 - **The kernel is driven through a `SimControl` API**: run-for, run-until, step-delta, pause, plus breakpoint and watch hooks. The CLI, DAP and VHPI all call this one API, and nothing else drives simulation.
 - **Every IR instruction carries a source span and a statement id**, and every elaborated object has a stable hierarchical path. The same ids feed DAP stack frames, VHPI handles, coverage and the hierarchy view.
-- **Value change events go to a subscriber bus.** Waves (`wellen`), VHPI value-change callbacks and DAP live streaming are all subscribers, so a live GUI is just one more subscriber.
+- **Value change events go to a subscriber bus.** Waves (`wellen`), VHPI value-change callbacks and DAP live streaming are all subscribers, so a live viewer is just one more subscriber.
 - **The simulation can be paused at defined points**: at the end of a delta, at a timestep, or at a statement while running in the interpreter. Signals can be peeked, forced and deposited while paused.
 
 **Parallel kernel design**
@@ -135,7 +135,7 @@ Other open source simulators kept running into these bug classes.
 - **M9b: embedded Python scripting (deferred).**
   - A pyo3 `yavs` module over `SimControl`: run, step, force, examine, breakpoints, waves.
   - libpython is loaded dynamically, and an interpreter that a Python testbench framework or a test-runner package has already started is reused (one CPython per process).
-- **M10: GUI (later).** yavs-gui with the embedded waveform viewer library, connected over DAP. Nothing in it should need kernel changes.
+- **M10: GUI.** Dropped (maintainer, 2026-10-29): `yavs-gui` was built (G1, G2) and removed again; DAP clients cover debugging.
 
 ## Working rules for the milestone subagents
 - One background agent at a time (an earlier memory records OOM crashes when agents fanned out). Each one works on a branch, and I review and merge.

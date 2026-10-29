@@ -720,35 +720,29 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   yavs's own and may change with its version line; versions 2 to 4 are still read (2 and 3 without
   tests, 2 to 4 without conditions). Cobertura output has no toggles.
 
-## 6. GUI and waves
+## 6. Waves and the runner's debug option
 
-The test runner's `-g/--gui` option (this describes the viewer path; `yavs-gui` exists
-now and the last paragraph of this section is the plan for using it): the test runner runs `yavs run ...
+The test runner's `-g/--gui` option (the viewer path): the test runner runs `yavs run ...
 --wave=<output>/yavs/<entity>.fst`, then opens the file in the viewer:
 `--viewer` argument, then `yavs.viewer.gui` sim option, then the default FST
 viewers the runner knows, found on `PATH`. `yavs.viewer_script.gui` is passed to the viewer as
 `--script FILE`. Only FST is written; the test runner warns and ignores `--viewer-fmt`
 values other than `fst`.
 
-`yavs run --gui <arguments>` opens the run in the graphical debugger: it starts `yavs-gui
---yavs <this yavs> -- <arguments>` (the run arguments without `--gui`), which runs `yavs run
-<arguments> --dap=stdio` and drives it. `yavs-gui` is looked for next to the yavs executable,
-then on PATH; neither is error `E0122` (exit 2). The exit status is the GUI's. `--gui` and
-`--dap` together are a usage error (exit 2).
+yavs has no graphical debugger of its own and no `yavs run --gui` (removed 2026-10-29, #871; the
+option is now a usage error like any unknown option). Debug with any DAP client (`yavs run --dap`,
+section 5, for example VS Code with the extension in `editors/vscode/`). A test runner reaches a
+client with `yavs run --dap=0 ...`: `--dap=0` makes yavs pick a free port, and its first line on
+stderr is then exactly `yavs: DAP listening on 127.0.0.1:<port>` (section 5); `--dap=PORT` with a
+fixed port prints the same line.
 
-Planned, test runner side (`yavs-gui` exists now; nothing here says the runner uses it yet): `-g` will run
-`yavs run --dap=0 ...` and start `yavs-gui` attached to it. `--dap=0` makes yavs pick a free port, and its first
-line on stderr is then exactly `yavs: DAP listening on 127.0.0.1:<port>` (implemented, section
-5); the test runner reads that line to connect the GUI. `--dap=PORT` with a fixed port
-prints the same line.
-
-The runner package `vunit-yavs` (`python/vunit-yavs`) today: `-g` runs `yavs run --gui @FILE`
-(`--gui` outside the response file, so the GUI gets the plain run's arguments).
+The runner package `vunit-yavs` (`python/vunit-yavs`) today: `-g/--gui` is refused at the start
+(there is nothing to open the run in).
 `--yavs-debug[=PORT]` runs `yavs run --dap=PORT @FILE` (default 4711, the editor extension's
 attach port; `0` a free one), reads the `DAP listening` line and prints the address on the
 terminal, since the runner shows a test's output only when it fails. It runs one simulation:
-`--yavs-debug` with `--gui`, `--elaborate` or `-p` above 1 is refused at the start, and a second
-simulation of the run is refused before yavs starts. `elab` never gets `--gui` or `--dap`.
+`--yavs-debug` with `--elaborate` or `-p` above 1 is refused at the start, and a second
+simulation of the run is refused before yavs starts. `elab` never gets `--dap`.
 `--yavs-interactive` runs `yavs run --interactive @FILE` on the terminal, with the same limits, and serves the console hook (section "Console hook"); `--yavs-debug` serves it too.
 `--yavs-surfer[=HOST:PORT]` adds `--wave=<test output>/yavs/wave.fst --surfer[=HOST:PORT]`, one simulation like the others.
 

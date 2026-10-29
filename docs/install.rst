@@ -43,17 +43,11 @@ Each archive unpacks into one directory of the same name (without ``.tar.gz`` or
      - What it is
    * - ``yavs``, ``yavs.exe``
      - The simulator. The ``std`` and ``ieee`` sources are built into it.
-   * - ``yavs-gui``, ``yavs-gui.exe``
-     - An early graphical debugger. ``yavs run --gui`` looks for it
-       next to ``yavs``, so keep the two together.
    * - ``LICENSE-MIT``, ``LICENSE-APACHE``
      - The licences of yavs, MIT or Apache-2.0 at your option.
    * - ``LICENSE-IEEE``, ``LICENSE-IEEE-VITAL``, ``LICENSE-SYNOPSYS``
      - The licence and notices of the built-in ``std`` and ``ieee`` sources, the VITAL packages and the
        Synopsys packages.
-   * - ``LICENSE-EUPL-1.2-yavs-gui``
-     - The licence of ``yavs-gui``, EUPL-1.2. It applies to the ``yavs-gui`` binary only; everything
-       else is MIT or Apache-2.0.
    * - ``README.md``
      - The project readme.
 
@@ -64,8 +58,6 @@ Requirements
   musl-based systems such as Alpine, install the ``gcompat`` package. The archives are tested on
   x86_64 and aarch64 Linux and on Windows x86_64.
 * ``yavs`` needs nothing else installed: no VHDL libraries, no Python.
-* ``yavs-gui`` needs a display (X11 or Wayland on Linux) and an OpenGL driver; software rendering
-  works. It loads those libraries when it starts, so it needs no development packages.
 
 Updating and removing
 ~~~~~~~~~~~~~~~~~~~~~
@@ -87,11 +79,9 @@ release archives are:
     git clone https://github.com/ru551n/yavs
     cd yavs
     cargo build --release -p yavs --features clift   # target/release/yavs
-    cd gui && cargo build --release                  # gui/target/release/yavs-gui (optional)
 
 Without ``--features clift`` the build has no compiled tier: ``yavs --version`` says
 ``interpreter only, no compiled tier``, the default is ``--tier=interp``, and ``--tier=auto`` is
-error ``E0120``. The graphical debugger needs network access and ``git`` to fetch one of its
-dependencies.
+error ``E0120``.
 
 Problems with the installation are covered in :doc:`troubleshooting`.

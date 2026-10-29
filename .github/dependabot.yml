@@ -1,5 +1,5 @@
-# Dependabot for the Rust dependencies. The root workspace covers crates/*; gui/ and fuzz/ are
-# separate Cargo workspaces with their own lockfiles, so they get their own entries.
+# Dependabot for the Rust dependencies. The root workspace covers crates/*; fuzz/ is a separate
+# Cargo workspace with its own lockfile, so it gets its own entry.
 # CI (ci.yml) runs on every pull_request, Dependabot PRs included.
 version: 2
 updates:
@@ -24,18 +24,6 @@ updates:
       # (docs/STATUS.md, "clift"); patch releases come with the group above.
       - dependency-name: "cranelift*"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
-
-  - package-ecosystem: cargo
-    directory: "/gui"
-    schedule:
-      interval: weekly
-      day: monday
-    open-pull-requests-limit: 5
-    commit-message:
-      prefix: "deps"
-    groups:
-      cargo-minor-patch:
-        update-types: [minor, patch]
 
   - package-ecosystem: cargo
     directory: "/fuzz"

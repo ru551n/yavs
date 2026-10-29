@@ -8,7 +8,6 @@
     "docs/_build",
     "editors",
     "fuzz",
-    "gui",
     "lib",
     "release_notes",
     "tests",

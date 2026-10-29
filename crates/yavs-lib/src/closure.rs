@@ -87,7 +87,12 @@ impl Ctx<'_> {
                         .with_help(format!("map it with `{lib}:PATH`")),
                 ));
             };
-            let (m, guard) = l.read_locked()?;
+            // A directory without an index is an empty library (cli-contract section 3).
+            let (m, guard) = if l.has_manifest() {
+                l.read_locked()?
+            } else {
+                (Default::default(), None)
+            };
             self.guards.extend(guard);
             self.manifests.insert(lib.to_string(), m);
         }
@@ -129,15 +134,15 @@ impl Ctx<'_> {
         if let Some(loc) = m.find(r.kind, &r.key) {
             return self.record(&r.library, &m, loc);
         }
-        let want = format!("{} {}", r.kind.describe(), r.key);
+        // An architecture is keyed `entity/architecture`.
+        let shown = match (r.kind, r.key.split_once('/')) {
+            (UnitKind::Architecture, Some((e, a))) => format!("`{a}` of entity `{e}`"),
+            _ => format!("`{}`", r.key),
+        };
+        let want = format!("{} {shown}", r.kind.describe());
         let mut d = err(
             "L0031",
-            format!(
-                "unknown {} `{}` in library `{}`",
-                r.kind.describe(),
-                r.key,
-                r.library
-            ),
+            format!("unknown {want} in library `{}`", r.library),
         );
         if let Some(by) = needed_by {
             d = d.with_note(format!("needed by {by}"));
@@ -159,6 +164,23 @@ impl Ctx<'_> {
                 d.with_help(format!(
                     "{a} {kind} with a similar name exists: `{}`",
                     u.name
+                ))
+            }
+            None if m.units().next().is_none() => {
+                let dir = self
+                    .libs
+                    .get(&r.library)
+                    .map(|l| l.dir.display().to_string());
+                d.with_help(format!(
+                    "library `{}` holds no design units{}; analyze the files into it first or fix its `NAME:PATH` mapping",
+                    r.library,
+                    match dir {
+                        Some(dir) if !Path::new(&dir).exists() => {
+                            format!(" (its directory `{dir}` does not exist)")
+                        }
+                        Some(dir) => format!(" (its directory `{dir}` has no analyzed files)"),
+                        None => String::new(),
+                    }
                 ))
             }
             None => d.with_help(format!(
@@ -409,7 +431,8 @@ pub fn closure(libs: &Libraries, top: &UnitRef) -> Result<Vec<ClosureFile>> {
             .file(&path)
             .expect("file of a reachable unit");
         if !fe.unchanged() {
-            check_hash(&lib, &path, fe.hash)?;
+            let dir = cx.libs.get(&lib).map(|l| l.dir.as_path());
+            check_hash(&lib, dir, fe.std, &path, fe.hash)?;
         }
         out.push(ClosureFile {
             library: lib,
@@ -421,7 +444,7 @@ pub fn closure(libs: &Libraries, top: &UnitRef) -> Result<Vec<ClosureFile>> {
     Ok(out)
 }
 
-fn check_hash(lib: &str, path: &Path, recorded: &str) -> Result<()> {
+fn check_hash(lib: &str, dir: Option<&Path>, std: &str, path: &Path, recorded: &str) -> Result<()> {
     let bytes = std::fs::read(path).map_err(|e| {
         Box::new(
             err(
@@ -445,7 +468,8 @@ fn check_hash(lib: &str, path: &Path, recorded: &str) -> Result<()> {
                 ),
             )
             .with_help(format!(
-                "re-analyze it: `yavs analyze --work {lib} {}`",
+                "re-analyze it: `yavs analyze --std={std} --work={lib}:{} {}`",
+                dir.unwrap_or(Path::new("DIR")).display(),
                 path.display()
             )),
         ));

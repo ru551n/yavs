@@ -88,7 +88,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "E0103",
         "An unsupported `-W` option. Use `-Werror`, `-Werror=CODE`, `-Wno-CODE` or `-WCODE` with a warning code such as `W1008`.",
     ),
-    ("E0104", "The design has no top level to elaborate."),
+    (
+        "E0104",
+        "The top level named on the command line (`ENTITY`, `ENTITY.ARCH` or a configuration, with no library prefix) is not in the work library. The note says what was looked for and the help what the library holds; an empty or missing library directory is a valid empty library, so the cause may be a wrong `--work` path or a file not analyzed yet.",
+    ),
     ("E0105", "`--stop-time` is not a valid time such as `10ms`."),
     (
         "E0120",

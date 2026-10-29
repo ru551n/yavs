@@ -131,9 +131,13 @@ directly (`docs/design/vhdl-93.md`).
   `L0004` naming the directory; delete it and analyze its files again (libraries are not converted).
 - A missing or empty directory is a valid empty library. `analyze` creates the
   directory (and its parents) on first use. The test runner does not run an init command;
-  it only creates the parent of the library directory. Known gap (checked 2026-10-28): this holds
-  for a mapped library and for `analyze --work`; for the `--work` library of `run` and `elab` a
-  directory without `yavs-lib.toml` is error `L0001` (exit 2) instead of "top level not found".
+  it only creates the parent of the library directory. This holds for every library, the `--work`
+  library of `run` and `elab` included (#838): they never create it, and a top level that is not
+  in it is error `E0104` (exit 2), "top level `X` not found in library `work`", whose help says
+  the library holds no design units and whether its directory does not exist or has no analyzed
+  files. `E0104` is also the error for a wrong `TOP` in a library with units (the help suggests
+  a similar name), and explains that `TOP` takes no library prefix (`work.top`). `L0031` remains
+  the error for a unit that the design needs and the library lacks.
 - `std` and `ieee` (and any other library yavs ships) are resolved by yavs
   itself, on demand from the std/ieee sources built into the `yavs` executable
   (nothing is installed next to it). `$YAVS_STDLIB`, if set,

@@ -388,23 +388,34 @@ fn elaborate(
         ],
     };
     let mut files = Err(None);
+    // A top level that is not in the library: `L0031` for the top itself, without the "needed by"
+    // note of a missing dependency.
+    let miss = |d: &Diagnostic| d.code == "L0031" && d.notes.is_empty();
     for r in &refs {
         match yavs_lib::closure(&libs, r) {
             Ok(f) => {
                 files = Ok(f);
                 break;
             }
-            // The last "unknown unit" is reported, but never in place of a real failure of an
-            // earlier try (a changed or unreadable source file, a cycle).
-            Err(d) if matches!(&files, Err(None)) => files = Err(Some(d)),
-            Err(d) if matches!(&files, Err(Some(p)) if p.code == "L0031") => files = Err(Some(d)),
-            Err(_) => {}
+            Err(d) => match &files {
+                Err(None) => files = Err(Some(d)),
+                // The first miss stays; a real failure (a changed or unreadable source file, a
+                // cycle, a missing dependency) is never reported in place of it or hidden by a
+                // later miss.
+                Err(Some(p)) if miss(p) && !miss(&d) => files = Err(Some(d)),
+                Err(Some(_)) => {}
+                Ok(_) => {}
+            },
         }
     }
     let files = match files {
         Ok(f) => f,
         Err(d) => {
-            let d = d.unwrap_or_else(|| Box::new(Diagnostic::error("E0104", "no top level")));
+            let d = match d {
+                Some(d) if miss(&d) => top_not_found(&c.top, &work, *d),
+                Some(d) => d,
+                None => Box::new(Diagnostic::error("E0104", "no top level")),
+            };
             out.emit(&none, &d);
             return Err((out, 2));
         }
@@ -482,6 +493,35 @@ fn elaborate(
             Err((out, 2))
         }
     }
+}
+
+/// `E0104`: TOP names no entity, architecture or configuration of the work library. `miss` is
+/// the library layer's `L0031` for it, whose help says what the library holds.
+fn top_not_found(top: &str, work: &str, miss: Diagnostic) -> Box<Diagnostic> {
+    let mut d = Diagnostic::error(
+        "E0104",
+        format!("top level `{top}` not found in library `{work}`"),
+    );
+    match top.split_once('.') {
+        Some((e, a)) => {
+            d = d.with_note(format!(
+                "no architecture `{a}` of entity `{e}` in the library"
+            ));
+            if yavs_lib::fold(e) == work {
+                d = d.with_help(format!(
+                    "TOP has no library prefix: write `{a}` or `{a}.ARCH` for an entity or \
+                     configuration of the work library"
+                ));
+            }
+        }
+        None => {
+            d = d.with_note("neither an entity nor a configuration of that name is in the library");
+        }
+    }
+    for h in miss.help {
+        d = d.with_help(h);
+    }
+    Box::new(d)
 }
 
 /// Loads the `--load` libraries and binds every foreign subprogram of the program to its

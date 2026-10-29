@@ -1063,7 +1063,7 @@ fn elab_and_run() {
     assert!(err.contains("error[E2104]"), "{err}");
     let (code, err, _) = yavs(&["elab", &lib, "nothing"]);
     assert_eq!(code, 2);
-    assert!(err.contains("error[L0031]"), "{err}");
+    assert!(err.contains("error[E0104]"), "{err}");
     // A design without processes runs to event starvation.
     let (code, err, _) = yavs(&["run", &lib, "--exit-severity=error", "top"]);
     assert_eq!(code, 0, "{err}");
@@ -1455,6 +1455,69 @@ fn explain() {
     let sem = yavs("E1100");
     assert!(sem.status.success());
     assert_eq!(yavs("E0000").status.code(), Some(2));
+}
+
+/// An empty or missing work directory is a valid empty library (cli-contract section 3): `run`
+/// and `elab` report the top level as not found (`E0104`) and name the directory, not `L0001`;
+/// a wrong top level gets no "unknown configuration" and a library prefix is explained (#838).
+#[test]
+fn top_level_not_found() {
+    let tmp = tempdir("notop");
+    let src = tmp.join("t.vhd");
+    std::fs::write(
+        &src,
+        "entity good is end;\narchitecture a of good is begin end;\n",
+    )
+    .unwrap();
+    let yavs = |args: &[&str]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["--color", "never"])
+            .args(args)
+            .output()
+            .expect("run");
+        (
+            o.status.code().expect("code"),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+        )
+    };
+    let missing = format!("--work=work:{}/none", tmp.display());
+    let empty = tmp.join("empty");
+    std::fs::create_dir(&empty).unwrap();
+    let empty = format!("--work=work:{}", empty.display());
+    for cmd in ["run", "elab"] {
+        let (code, err) = yavs(&[cmd, &missing, "good"]);
+        assert_eq!(code, 2, "{err}");
+        assert!(
+            err.contains("error[E0104]: top level `good` not found in library `work`"),
+            "{err}"
+        );
+        assert!(err.contains("none` does not exist"), "{err}");
+        assert!(!err.contains("L0001"), "{err}");
+        let (code, err) = yavs(&[cmd, &empty, "good"]);
+        assert_eq!(code, 2, "{err}");
+        assert!(err.contains("error[E0104]"), "{err}");
+        assert!(err.contains("has no analyzed files"), "{err}");
+    }
+    assert!(
+        !tmp.join("none").exists(),
+        "run and elab never create the library"
+    );
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    assert_eq!(yavs(&["analyze", &lib, &src.display().to_string()]).0, 0);
+    let (code, err) = yavs(&["run", &lib, "nosuch"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(
+        err.contains("error[E0104]: top level `nosuch` not found"),
+        "{err}"
+    );
+    assert!(!err.contains("unknown configuration"), "{err}");
+    let (code, err) = yavs(&["run", &lib, "work.good"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(
+        err.contains("TOP has no library prefix: write `good`"),
+        "{err}"
+    );
+    assert_eq!(yavs(&["run", &lib, "good.a"]).0, 0);
 }
 
 /// The help and the explanation of `E0120` describe the tiers this build has and point at no

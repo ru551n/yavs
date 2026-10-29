@@ -154,8 +154,28 @@ fn errors() {
     );
     assert_eq!(
         e(UnitRef::new("work", UnitKind::Package, "zzzzzzzz")),
-        "error[L0031]: unknown package `zzzzzzzz` in library `work`\n  |\n  = help: library `work` has no package zzzzzzzz; analyze the file that defines it\n"
+        "error[L0031]: unknown package `zzzzzzzz` in library `work`\n  |\n  = help: library `work` has no package `zzzzzzzz`; analyze the file that defines it\n"
     );
+    // A directory without an index is an empty library: the unit is not found in it, and the
+    // help names the directory (cli-contract section 3).
+    let mut libs = Libraries::new();
+    libs.add("work", t.path().join("none"));
+    assert_eq!(
+        snap(
+            &closure(&libs, &UnitRef::new("work", UnitKind::Entity, "top")).unwrap_err(),
+            t.path()
+        ),
+        "error[L0031]: unknown entity `top` in library `work`\n  |\n  = help: library `work` holds no design units (its directory `<tmp>/none` does not exist); analyze the files into it first or fix its `NAME:PATH` mapping\n"
+    );
+    std::fs::create_dir(t.path().join("none")).unwrap();
+    assert!(
+        snap(
+            &closure(&libs, &UnitRef::new("work", UnitKind::Entity, "top")).unwrap_err(),
+            t.path()
+        )
+        .contains("(its directory `<tmp>/none` has no analyzed files)")
+    );
+    std::fs::remove_dir(t.path().join("none")).unwrap();
     let missing = Library::new("work", t.path().join("none"));
     assert_eq!(
         snap(&missing.read().unwrap_err(), t.path()),
@@ -184,7 +204,7 @@ fn missing_dependency_names_the_user() {
     );
     assert_eq!(
         s,
-        "error[L0031]: unknown package `gone` in library `work`\n  |\n  = note: needed by package `work.A`\n  = help: library `work` has no package gone; analyze the file that defines it\n"
+        "error[L0031]: unknown package `gone` in library `work`\n  |\n  = note: needed by package `work.A`\n  = help: library `work` has no package `gone`; analyze the file that defines it\n"
     );
 }
 
@@ -199,7 +219,7 @@ fn stale_hash() {
     );
     assert_eq!(
         s,
-        "error[L0034]: `<tmp>/a.vhd` changed on disk since it was analyzed into library `work`\n  |\n  = help: re-analyze it: `yavs analyze --work work <tmp>/a.vhd`\n"
+        "error[L0034]: `<tmp>/a.vhd` changed on disk since it was analyzed into library `work`\n  |\n  = help: re-analyze it: `yavs analyze --std=2008 --work=work:<tmp>/work <tmp>/a.vhd`\n"
     );
     std::fs::remove_file(&a).unwrap();
     let s = snap(

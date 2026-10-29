@@ -230,7 +230,7 @@ class TestYavsInterface(unittest.TestCase):
         self.assertEqual(flags, [f"--std-cache={Path('rel_out').resolve() / 'std_cache'}"])
         path = Path(flags[0].split("=", 1)[1])
         self.assertTrue(path.is_absolute())
-        self.assertEqual(path.parent, Path(self.output_path) / "rel_out")
+        self.assertEqual(path.parent, (Path(self.output_path) / "rel_out").resolve())  # Windows: 8.3 temp names
         self.assertFalse(path.exists())
 
     @mock.patch("vunit.sim_if.check_output", autospec=True, return_value="")

@@ -78,6 +78,33 @@ free. This pays only where more threads speed a simulation up: flat RTL designs 
 speedup above). Processors and testbench-style designs keep their batches on one thread and gain
 nothing from extra tokens. A compiled tier's compile thread (`--tier=auto`) is not counted.
 
+## Token server, measured
+
+Measured 2026-10-29 on a regression of 24 testbenches from a downstream FPGA project (2 to 4 per
+module, 0.1 s to 3.7 minutes each: AXI and Ethernet blocks, a soft-core processor, a CNN
+accelerator, board-level system benches), `python run.py -p 8` with and without
+`--yavs-jobserver`, yavs 0.11.0, the whole run pinned to 8 cores. Median of 3 runs that alternate
+the two modes, after one untimed warm-up run of each. All 24 tests pass in both modes. The
+"tail" is the time from the first moment, once the last test has started, that fewer than 8
+simulations run, to the end of the last one.
+
+| | without | with `--yavs-jobserver` |
+|---|---|---|
+| Total wall | 225.7 s | 234.4 s (+3.9 %) |
+| Tail | 194.8 s | 201.4 s (+3.4 %) |
+
+The token server gained nothing here, and cost about 4 percent. The run is decided by one test,
+a soft-core processor benchmark that takes 222 s alone on one thread; it keeps all its work on
+one thread (CPU time equals wall time), so the 7 other cores that sat idle during the tail were
+never used. It ran 4 percent longer with the server (230 s against 222 s), probably because
+other tests borrowed threads while all 8 slots were busy. Of the 24 tests only three used more
+than one thread on average (a CNN-accelerator system bench 1.8, a board boot bench 1.8, a
+firmware bench 1.3); they ended between 4.6 s earlier and 4.7 s later than without the server
+and none of them is on the critical path. The rest ran at 0.9 to 1.1 threads. The server pays
+only when the long tail is a flat RTL design (see "Measured speedup"); a regression whose long
+tests are processors or testbenches does not gain, and with the server the processors cost a
+little more than without.
+
 ## Details
 
 * **Why mid-size batches no longer slow down.** Handing a batch to the threads has a fixed cost of

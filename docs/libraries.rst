@@ -60,9 +60,22 @@ Add the package in ``run.py`` before anything else; the rest of the script is a 
     vu.add_library("lib").add_source_files("*.vhd")
     vu.main()
 
-Make VUnit select yavs as described in the
-`package README <https://github.com/ru551n/yavs/blob/main/python/vunit-yavs/README.md>`__;
-if another simulator is installed, VUnit may otherwise choose that one.
+Select yavs with the ``VUNIT_SIMULATOR`` environment variable; without it VUnit picks the first
+simulator it finds on ``PATH``, which may be another one:
+
+.. code-block:: bash
+
+    VUNIT_SIMULATOR=yavs python run.py
+
+or set it at the top of ``run.py``, before VUnit is created:
+
+.. code-block:: python
+
+    import os
+    os.environ.setdefault("VUNIT_SIMULATOR", "yavs")
+
+More options are in the
+`package README <https://github.com/ru551n/yavs/blob/main/python/vunit-yavs/README.md>`__.
 
 .. _vunit-token-server:
 

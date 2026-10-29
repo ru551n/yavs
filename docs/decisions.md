@@ -12483,6 +12483,9 @@ end for those processes. Method as in round 10: bench builds (`llvm`, and `clift
 
 ## Thread budget: a token pool in `MAKEFLAGS` (yavs `jobserver.rs`, yavs-kernel `Tokens`, #801, 2026-10-28)
 
+Superseded on 2026-10-29 by "Thread budget: a token server in `YAVS_TOKENS`" below: the `MAKEFLAGS` client is removed.
+The kernel decisions (cap, take only for a batch worth pooling, `TOKEN_IDLE`) stand.
+
 - **Decision: `--threads N` is the cap, the tokens decide how many of the N threads run.** With N above 1 and a pool in
   `MAKEFLAGS` (`--jobserver-auth=R,W` or `fifo:PATH`, the last one wins; `--jobserver-fds` too), the simulation owns one
   implicit token and takes at most N - 1. The rayon pool of N - 1 workers is still built at the start (a pool cannot be
@@ -12516,6 +12519,37 @@ end for those processes. Method as in round 10: bench builds (`llvm`, and `clift
   per batch worth pooling. The sampling is what tells it when a batch is worth a token, so it stays; #801's bulk gate
   (within 2 percent of today) has not been measured.
 
+## Thread budget: a token server in `YAVS_TOKENS` (yavs `tokens.rs`, vunit-yavs `tokens.py`, #801, 2026-10-29)
+
+- **Decision: one cross-platform token mechanism, a token server on a localhost TCP socket, replacing the `MAKEFLAGS`
+  (GNU make jobserver) client in yavs and the fifo jobserver of vunit-yavs** (user, 2026-10-29, on #801). The runner
+  listens on 127.0.0.1 at a free port and gives each test a random secret of its own; yavs gets
+  `YAVS_TOKENS=<port>:<secret>`. Why: the same code on Linux and Windows (the fifo form had no Windows client), and a
+  closed connection gives every token back, so a crashed or killed simulation can no longer lose tokens.
+- **Decision: a level protocol with numbered answers** (agent). yavs sends `<want>` only when its demand changes (N - 1
+  or 0, the kernel's `take`/`give`); the server answers the k-th line at once with `<k> <lent>` and again when it lends
+  more, `lent <= want`. yavs uses only answers to its latest line, so a late answer to an older `want` (sent before a
+  `0`) can never make it run on tokens already lent elsewhere. The secret is message 0, answered `0 0`, so a wrong
+  secret is seen at the start. Why: a pipe of token bytes lets the server read back unused tokens, a socket does not;
+  with the demand known the server parks no token where it cannot be used, and the 50 ms reclaim tick and its
+  "one more than in use" heuristic are gone.
+- **Decision: the server never takes a token back**; tokens return by a lower `want` or a closed connection. The first
+  simulation to ask may get every free token; what it gives back goes breadth first, newest test first (`lend_order`,
+  unchanged), capped per test by `yavs.max_threads - 1`. Free tokens are `N - max(k, 1) - lent` for `k` running tests.
+  Why: the kernel holds tokens only while it pools and gives them back after 64 groups that did not; a revocation it
+  would see only at its next take.
+- **Decision: no explicit give-back on exit paths in yavs.** The operating system closes the socket on every exit
+  (normal, error, Ctrl-C, SIGTERM, a kill, a crash); `exit_after_signal`, the broken-pipe exit and the signal hook that
+  existed only to return tokens are removed, and with them the `libc` dependency of the `yavs` crate.
+- **Decision: an unusable `YAVS_TOKENS` is error `E0128` at the start of `run`** (the user's 2026-10-29 rule for the old
+  pool, kept): not `<port>:<secret>`, connect refused or timed out (10 s), the secret not answered with `0 0`. The secret
+  is never printed. A server that goes away during the run is not an error: the rest of the run is on one thread
+  (output does not depend on tokens). Not read with `--threads 1` or `--dap`.
+- **Decision: the runner passes `--threads=N` itself when its token server runs** (user, 2026-10-29): `yavs.max_threads`
+  (or `--yavs-max-threads`) when set, else the `-p N` value, so idle slots speed up the tail of a regression without
+  further options. The opt-in flag keeps its name `--yavs-jobserver` (agent: 0.10 users keep their command lines) and
+  works on Windows now.
+
 ## Test runner package vunit-yavs (python/vunit-yavs, 2026-10-28)
 
 - **One Python distribution** `vunit-yavs` (import `vunit_yavs`) in `python/vunit-yavs` holds everything yavs-specific on the
@@ -12537,7 +12571,8 @@ end for those processes. Method as in round 10: bench builds (`llvm`, and `clift
   for the test output directory). Free tokens `N - max(k, 1) - lent` for `k` running tests; lent breadth first, newest test first,
   capped by `yavs.max_threads - 1`; a test that left tokens unread at the last 50 ms tick gets at most one more than it uses.
   Steady-state total `N`, not a hard cap (a test starting while all tokens are out runs at once). Tokens held at a simulation's
-  exit, or at the end of the run, are a warning.
+  exit, or at the end of the run, are a warning. Superseded on 2026-10-29 by the token server ("Thread budget: a token server in
+  `YAVS_TOKENS`").
 - **Releases** (user, 2026-10-28): tag `vunit-yavs-v<version>` runs `.github/workflows/vunit-yavs-release.yml` (tests against the
   yavs binary release of the package's `YAVS_MIN_VERSION`, then PyPI by trusted publishing; no TestPyPI step, user 2026-10-29); the binary release now runs on
   `v[0-9]*` only, so neither tag starts the other workflow. `python/vunit-yavs/RELEASING.md` has the order. The package is released on its own (user, 2026-10-29): its version is independent of yavs's, and a package release that needs a newer yavs raises `YAVS_MIN_VERSION` first.

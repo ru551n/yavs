@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `--yavs-jobserver` runs a token server on a localhost socket instead of a fifo jobserver per test, on Linux and
+  Windows: each simulation gets `YAVS_TOKENS` and, unless `yavs.max_threads` says otherwise, `--threads=N` for `-p N`,
+  so the idle slots of `-p N` speed up the tests still running. Needs a yavs with the token server client; the
+  `MAKEFLAGS` jobserver is gone from both sides.
+
 ## 0.10.1 (2026-10-29)
 
 - Native library hooks for VUnit packages that load a native library: `YavsInterface` has

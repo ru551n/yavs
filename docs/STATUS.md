@@ -10409,3 +10409,18 @@ and 8 tokens and without a pool, and E0128 for unusable pools; a pipe made by a 
 descriptors was checked by hand. Not
 done: the Windows semaphore form, descriptors on Unix systems other than Linux, the producer side, and the M0/M1
 measurements of #801 (speedup and tail gain); none of this was timed.
+
+## Thread budget: a token server in `YAVS_TOKENS` (yavs, vunit-yavs, #801, 2026-10-29)
+
+Replaces the `MAKEFLAGS` token pool above (removed, with the `libc` dependency of the `yavs` crate) and the fifo jobserver
+of vunit-yavs. The runner's `--yavs-jobserver` starts a token server on 127.0.0.1 (`vunit_yavs/tokens.py`, stdlib
+`selectors`), gives each test a secret, passes `YAVS_TOKENS=<port>:<secret>` and `--threads=N`; yavs (`src/tokens.rs`,
+std only, no `unsafe`) connects at the start of `run`, sends `<want>` when its demand changes and reads numbered
+`<k> <lent>` answers without blocking only when a batch is worth pooling; the closed connection returns every token
+(protocol: `docs/cli-contract.md` "Token server"; decisions: `docs/decisions.md` "Thread budget: a token server").
+Same code on Linux and Windows. Tests: `crates/yavs/tests/tokens.rs` (in-test server: cap, tokens back after end,
+failure, kill and on Unix SIGINT with and without `--wave` and SIGTERM, stdout identical at 0/1/3/8 tokens, E0128
+for bad values, no server, wrong secret); `python/vunit-yavs/tests/test_tokens.py` (lending order, answers per
+message, caps, returns on close, kill, a garbled line, stale secrets), `test_interface.py`, `test_fake_e2e.py` and
+`test_real_yavs.py` (a real yavs runs on a lent token with unchanged output); the new CI job `vunit-yavs` runs the
+package tests against the commit's yavs on Linux and Windows. Not done: the tail-gain measurements of #801.

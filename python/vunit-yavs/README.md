@@ -36,10 +36,10 @@ or later (`pip install vunit-yavs` installs it, a pre-release) and yavs 0.10.0 o
 | `-g/--gui` | Opens the run in the graphical debugger (`yavs run --gui`) |
 | `--yavs-debug[=PORT]` | Runs the selected test under `yavs run --dap=PORT` (default 4711, `0` picks a free port) and prints where to attach; write the port as `--yavs-debug=PORT` |
 | `--yavs-max-threads N` | `yavs.max_threads` for every test that does not set it |
-| `--yavs-jobserver` | Lends the CPU slots of `-p N` that no test uses to the running simulations (below) |
+| `--yavs-jobserver` | Lends the CPU slots of `-p N` that no test uses to the running simulations through a token server (below) |
 
 Without `yavs.max_threads` or `--yavs-max-threads` no thread count is passed, and yavs runs with
-its default. An explicit `--threads` in `yavs.sim_flags` comes after the cap and wins.
+its default, unless the token server runs (`--threads=N` for `-p N`, below). An explicit `--threads` in `yavs.sim_flags` comes after the cap and wins.
 
 ## Native libraries of VUnit packages
 
@@ -64,22 +64,20 @@ together with `--gui`, `--elaborate` or `-p` above 1 is an error at the start. A
 `--yavs-debug` reads a following test name as its port: put test names first, or write
 `--yavs-debug=4711`.
 
-## Jobserver
+## Token server
 
-With `-p N --yavs-jobserver` (POSIX only; on Windows it is an error) every running test gets a
-private GNU make jobserver, a named pipe in `MAKEFLAGS=-jN --jobserver-auth=fifo:PATH`, and a
-thread of the run script lends tokens into the pipes: one CPU slot per running test is free, the
-other `N - k` slots (for `k` running tests) are lent, breadth first (every test gets one extra
-before any gets a second) and newest test first within a round, capped per test by
-`yavs.max_threads - 1`. Tokens a simulation leaves unread are taken back and lent again every
-50 ms, and a test that leaves tokens unread gets at most one more than it uses. A test that
-starts while every token is in use runs at once, so the total is `N` in the steady state, not at
-every instant. A simulation that exits holding tokens, or a run that ends with tokens out, is
-reported with a warning.
-
-`MAKEFLAGS` from an outer `make -j` is replaced, not passed on: joining an outer jobserver is not
-supported. The pipes live in a temporary directory of their own, since `MAKEFLAGS` cannot hold a
-path with spaces.
+With `-p N --yavs-jobserver` (Linux and Windows) the run script starts a token server on
+127.0.0.1 and lends the CPU slots of `-p N` that no test uses to the running simulations. Every
+simulation runs with `--threads=N` (`yavs.max_threads` or `--yavs-max-threads` caps it) and gets
+`YAVS_TOKENS=<port>:<secret>`, a secret of its own; yavs runs its extra threads only on tokens the
+server lends, and asks for them only while it has work for them. One CPU slot per running test is
+free, the other `N - k` (for `k` running tests) are lent: breadth first (every test gets one extra
+before any gets a second) and newest test first within a round, at most `yavs.max_threads - 1` per
+test. A token in use is never taken back, so a test that starts while every token is out runs at
+once: the total is `N` in the steady state, not at every instant. A simulation gives its tokens
+back when it stops using them and when it ends in any way, also when it is killed. The tail of a
+regression, a few long tests on a machine of idle slots, gets faster on designs whose processes
+run in parallel well.
 
 ## Licence
 

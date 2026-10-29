@@ -21,6 +21,7 @@ lock (FAKE_YAVS_NO_LOCK=1). A wait for the lock is logged as ["lock-wait", libra
 import fcntl
 import json
 import os
+import socket
 import sys
 import time
 from pathlib import Path
@@ -159,23 +160,24 @@ def analyze_files(files, path):
     return status
 
 
-def use_jobserver():
-    """With a fifo jobserver in MAKEFLAGS, take one token if one comes within 0.5 s, log it and return it"""
-    flags = os.environ.get("MAKEFLAGS", "")
-    if "--jobserver-auth=fifo:" not in flags:
+def use_tokens():
+    """With a token server in YAVS_TOKENS, ask for one token, log whether it came within 0.5 s, and exit (closing)"""
+    value = os.environ.get("YAVS_TOKENS")
+    if value is None:
         return
-    fd = os.open(flags.split("--jobserver-auth=fifo:")[1].split()[0], os.O_RDWR | os.O_NONBLOCK)
-    token = b""
-    deadline = time.time() + 0.5
-    while not token and time.time() < deadline:
+    port, secret = value.split(":")
+    with socket.create_connection(("127.0.0.1", int(port)), timeout=0.5) as sock:
+        stream = sock.makefile("rb")
+        sock.sendall(secret.encode() + b"\n")
+        assert stream.readline() == b"0 0\n"
+        sock.sendall(b"1\n")
+        lent = 0
         try:
-            token = os.read(fd, 1)
-        except BlockingIOError:
-            time.sleep(0.01)
-    log(["jobserver", flags, token.decode()])
-    if token:
-        os.write(fd, token)
-    os.close(fd)
+            while not lent:
+                lent = int(stream.readline().split()[1])
+        except (OSError, IndexError):
+            pass
+    log(["tokens", lent])
 
 
 def run(args, elaborate_only):
@@ -190,7 +192,7 @@ def run(args, elaborate_only):
         return 2
     if elaborate_only:
         return 0
-    use_jobserver()
+    use_tokens()
     if "dap" in opts:
         port = opts["dap"][-1]
         print(f"yavs: DAP listening on 127.0.0.1:{port}", file=sys.stderr)

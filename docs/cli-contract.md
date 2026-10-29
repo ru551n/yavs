@@ -594,30 +594,31 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   simulations in parallel and passes a thread count only when the user sets one: the sim
   option `yavs.max_threads` (or the runner argument `--yavs-max-threads N` for every test)
   becomes `--threads=N` before the raw flags, so `--threads` in `yavs.sim_flags` still wins; none
-  under `--dap` or for `elab`. With the runner's `--yavs-jobserver` and `-p N` above 1, every
-  `yavs run` gets a private GNU make jobserver in `MAKEFLAGS=-jN --jobserver-auth=fifo:PATH` (a
-  named pipe, POSIX only; any outer `MAKEFLAGS` is replaced): the runner lends the CPU slots no
-  test uses as tokens, at most `N - 1` per test and `yavs.max_threads - 1` when set, and takes
-  back the tokens left unread. yavs takes and gives back tokens as the token pool item below
-  says; tokens still held when it exits are a warning of the runner
-  (python/vunit-yavs/README.md "Jobserver").
-- Token pool (#801): with `--threads=N` above 1 (and not `--dap`), yavs reads `MAKEFLAGS` at
-  the start of `run`. The last `--jobserver-auth=VALUE` (or `--jobserver-fds=VALUE`) names the
-  pool: `R,W` (inherited pipe descriptors; Linux) or `fifo:PATH` (a named pipe; Unix). The
-  simulation owns one implicit token and takes at most N - 1 more, without blocking, only
-  when a group of processes goes to the threads; with none it runs that group on one thread.
-  It writes back the bytes it read: after 64 groups in a row on one thread, at the end of the
-  run (also after an error), and on the first SIGINT, SIGTERM or SIGHUP (a run that would have
-  died of the signal then exits with status 130). A pool that cannot be used is error
-  `E0128` at the start of `run`, before analysis (exit 2): the note gives the cause, the help
-  the fix (a parent that does not share its pool removes `--jobserver-auth` from the child's
-  `MAKEFLAGS`). Without a pool, or with
-  `--threads=1`, nothing changes. Output and exit status do not depend on the tokens. The
-  producer fills the pool with the bytes it wants (any value; they are returned unchanged).
-  It must keep its own handle of the pipe open (a named pipe: opened for reading and writing)
-  for as long as the simulation runs: a pipe's contents are lost when its last handle closes,
-  so tokens written back at the end would be lost otherwise. `MAKEFLAGS` is split at
-  whitespace, so the path of `fifo:PATH` must not contain any (E0128 otherwise).
+  under `--dap` or for `elab`. With the runner's `--yavs-jobserver` and `-p N` above 1, the
+  runner starts a token server and every `yavs run` gets `--threads=N` (or `yavs.max_threads`
+  when set, before the raw flags) and its own `YAVS_TOKENS`: the runner lends the CPU slots no
+  test uses as tokens, at most `yavs.max_threads - 1` per test when set, breadth first, newest
+  test first, and never takes back a token in use (python/vunit-yavs/README.md "Token server").
+- Token server (#801): with `--threads=N` above 1 (and not `--dap`), yavs reads
+  `YAVS_TOKENS=<port>:<secret>` at the start of `run`. The simulation owns one implicit token and
+  runs at most N - 1 more threads, only on tokens the server lends. Protocol, lines of ASCII
+  ending in `\n` over TCP to `127.0.0.1:<port>`:
+  1. yavs connects and sends `<secret>`; the server answers `0 0`, or closes the connection
+     when it does not know the secret.
+  2. yavs sends `<want>` (a decimal count, at most N - 1) when the number of tokens it could use
+     changes: N - 1 when a group of processes is worth the threads, `0` after 64 groups in a row
+     on one thread. Its k-th such line is answered at once with `<k> <lent>` and again whenever
+     the server lends it more (`<k> <lent>`, `lent` at most `want`). yavs uses the `lent` of the
+     answers to its latest line only, reads them without blocking only when a group of
+     processes is worth the threads, and runs a group on one thread while none is lent.
+  3. Closing the connection (any exit of yavs, also a crash or a kill) gives every token back.
+     A lower `<want>` gives back the tokens above it. The server never takes back a token.
+  A value that is not `<port>:<secret>`, a port where nothing listens (connect timeout 10 s)
+  and a secret the server does not accept (no answer within 10 s, or a closed connection) are
+  error `E0128` at the start of `run`, before analysis (exit 2); the message never contains the
+  secret. A server that goes away during the run leaves yavs on one thread to the end. Without
+  `YAVS_TOKENS`, or with `--threads=1`, nothing changes. Output and exit status do not depend
+  on the tokens.
 - Garbage collection: `--gc-threshold=SIZE` (bytes, or a `k`, `m`, `g` suffix; default
   `1m`) sets how much access-value memory is allocated before the heap is collected. The
   test runner never passes it; a user who wants fewer collections opts in with
@@ -739,7 +740,7 @@ simulation of the run is refused before yavs starts. `elab` never gets `--gui` o
 
 ## 7. Environment
 
-The test runner sets no yavs environment variables (only `MAKEFLAGS` under `--yavs-jobserver`, section 5). `YAVS_STDLIB` overrides the std/ieee
+The test runner sets no yavs environment variables (only `YAVS_TOKENS` under `--yavs-jobserver`, section 5). `YAVS_STDLIB` overrides the std/ieee
 tree (section 3); `YAVS_STD_CACHE` names the directory of the shared std/ieee units, or `off`; `--std-cache` overrides it (section 3). Simulator hooks from the test runner packages
 can add `elab_flags`, `run_flags` and run environment; the test runner applies
 `elab_flags` to both `run` and `elab`, and `run_flags` only to `run`. `YAVS_HUGE_HEAP=0` stops yavs

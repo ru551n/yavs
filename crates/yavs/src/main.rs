@@ -11,11 +11,11 @@ mod cov;
 mod elab;
 mod explain;
 mod gui;
-mod jobserver;
 mod profile;
 mod stdout;
 mod stuck;
 mod timing;
+mod tokens;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use yavs_diag::{ColorChoice, Diagnostic, MessageFormat, Severity, SourceMap};

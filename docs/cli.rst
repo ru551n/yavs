@@ -95,8 +95,8 @@ Performance
 ``run``:
 
 * ``--tier=auto|clift|interp``: the execution tier (:doc:`running-faster`).
-* ``--threads=N``: evaluate processes on N threads (at least 1, default 1); under a token pool in ``MAKEFLAGS``
-  the extra threads run only on tokens taken from it.
+* ``--threads=N``: evaluate processes on N threads (at least 1, default 1); under a token server in ``YAVS_TOKENS``
+  the extra threads run only on tokens it lends.
 * ``--time-report``, ``--profile[=FILE]``: where the time goes.
 * ``--std-cache=DIR|off``: where the analyzed ``std`` and ``ieee`` packages are kept.
 

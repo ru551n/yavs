@@ -60,7 +60,7 @@ to, and those documents win over your memory.
 | `fuzz/` | cargo-fuzz targets (own workspace) |
 | `editors/vscode/` | VS Code extension contributing the `yavs` debugger (plain JS) |
 | `gui/` | `yavs-gui`, the graphical debugger: its own workspace, EUPL-1.2, DAP client only (`gui/AGENTS.md`) |
-| `python/vunit-yavs/` | The Python test runner package `vunit-yavs`: simulator interface, `--yavs-debug`, thread cap, jobserver, PyPI release (`python/vunit-yavs/AGENTS.md`) |
+| `python/vunit-yavs/` | The Python test runner package `vunit-yavs`: simulator interface, `--yavs-debug`, thread cap, token server, PyPI release (`python/vunit-yavs/AGENTS.md`) |
 
 ## 3. Rules (mandatory)
 

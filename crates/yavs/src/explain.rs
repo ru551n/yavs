@@ -127,7 +127,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "E0128",
-        "`--threads` is above 1 and `MAKEFLAGS` names a token pool (`--jobserver-auth=R,W` or `fifo:PATH`) that yavs cannot use: the descriptors are closed or not a pipe (the parent did not pass them on), the path is not a named pipe, or the platform has no client for the form (descriptors work on Linux, `fifo:PATH` on Unix). The run stops before analysis (exit 2). Pass the pool on to yavs; a parent that does not share its pool with this run removes `--jobserver-auth` from `MAKEFLAGS` for it.",
+        "`--threads` is above 1 and `YAVS_TOKENS` names a token server that yavs cannot use: the value is not `<port>:<secret>`, nothing listens on that port of 127.0.0.1, or the server did not accept the secret (often a `YAVS_TOKENS` left over from a test runner that has ended). The run stops before analysis (exit 2). Unset `YAVS_TOKENS` to run without a token server.",
     ),
     // yavs-wave
     (

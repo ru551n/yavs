@@ -23,10 +23,35 @@ import unittest
 from pathlib import Path
 
 from test_fake_e2e import COMMA, FAIL, PASS, report
+from vunit_yavs.tokens import TokenServer
 
 HERE = Path(__file__).parent
 YAVS_DIR = os.environ.get("VUNIT_YAVS_PATH") or (Path(shutil.which("yavs")).parent if shutil.which("yavs") else None)
 TIMEOUT = 280
+
+# 64 registers on one clock: with YAVS_POOL_ALL=1 every rising edge goes to the threads
+TOK_DESIGN = """
+entity tok is end;
+architecture a of tok is
+  signal clk : bit := '0';
+  type arr is array (0 to 63) of natural;
+  signal r : arr := (others => 0);
+begin
+  clk <= not clk after 5 ns when now < 3 us;
+  g : for i in 0 to 63 generate
+    process (clk) begin
+      if clk'event and clk = '1' then
+        r(i) <= (r(i) * 7 + i + 1) mod 65521;
+      end if;
+    end process;
+  end generate;
+  process begin
+    wait for 3 us + 1 ns;
+    report "r(63) " & integer'image(r(63));
+    wait;
+  end process;
+end;
+"""
 
 
 def send(sock, message):
@@ -91,10 +116,10 @@ class TestRealYavs(unittest.TestCase):
         self.assertEqual(proc.returncode, 1, proc.stdout)
         self.assertEqual(report(self.xml), {PASS: "passed", COMMA: "passed", FAIL: "failed"}, proc.stdout)
 
-    def test_run_with_jobserver(self):
-        # A yavs that reads no tokens leaves them in its pipe; the run ends with every token back
+    def test_run_with_token_server(self):
+        # Each simulation runs with --threads=2 and connects; a bad YAVS_TOKENS would be error E0128
         proc = subprocess.run(
-            self._command("-p", "2", "--yavs-jobserver", "--yavs-max-threads=2", PASS, COMMA),
+            self._command("-p", "2", "--yavs-jobserver", "-v", PASS, COMMA),
             env=self._env(),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -104,7 +129,48 @@ class TestRealYavs(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, proc.stdout)
         self.assertEqual(report(self.xml), {PASS: "passed", COMMA: "passed"})
-        self.assertNotIn("jobserver", proc.stdout.replace("--yavs-jobserver", ""))
+        self.assertIn("--threads=2", proc.stdout)
+        self.assertNotIn("E0128", proc.stdout)
+
+    def test_yavs_runs_on_lent_tokens(self):
+        # A design whose every clock edge is worth the threads: yavs takes the token, output unchanged
+        (self.tempdir / "tok.vhd").write_text(TOK_DESIGN)
+        lib = f"--work=work:{self.tempdir / 'lib'}"
+        yavs = str(Path(YAVS_DIR) / "yavs")
+        std_cache = f"--std-cache={self.tempdir / 'std'}"
+        subprocess.run([yavs, "analyze", "--std=2008", std_cache, lib, str(self.tempdir / "tok.vhd")], check=True)
+        server = TokenServer(2)
+        self.addCleanup(server.close)
+
+        def run(threads, env):
+            return subprocess.run(
+                [yavs, "run", std_cache, lib, f"--threads={threads}", "tok"],
+                env=dict(env, YAVS_POOL_ALL="1", YAVS_COUNTERS="1"),
+                capture_output=True,
+                text=True,
+                timeout=TIMEOUT,
+                check=True,
+            )
+
+        def pooled(proc):
+            lines = [line for line in proc.stderr.splitlines() if line.startswith("counters: pooled_batches=")]
+            self.assertEqual(len(lines), 1, proc.stderr)
+            return int(lines[0].split("=")[1])
+
+        alone = run(1, os.environ)
+        client = server.add()
+        lent = run(2, server.env(client, os.environ))
+        server.remove(client)
+        self.assertEqual(lent.stdout, alone.stdout)
+        self.assertGreater(pooled(lent), 0)
+        # Two tests running on -p 2: no free slot, so nothing goes to the threads
+        busy = server.add()
+        client = server.add()
+        none = run(2, server.env(client, os.environ))
+        server.remove(client)
+        server.remove(busy)
+        self.assertEqual(none.stdout, alone.stdout)
+        self.assertEqual(pooled(none), 0)
 
     def _debug_session(self):
         """

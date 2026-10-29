@@ -26,9 +26,6 @@ yavs-llvm = { path = "../yavs-llvm", optional = true }
 yavs-clift = { path = "../yavs-clift", optional = true }
 yavs-vhpi = { path = "../yavs-vhpi" }
 
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
 [build-dependencies]
 sha2 = "0.11"
 

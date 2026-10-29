@@ -33,7 +33,6 @@ fn buf() -> MutexGuard<'static, Vec<u8>> {
 fn put(bytes: &[u8]) {
     if let Some(t) = BROKEN.get() {
         if t.elapsed() > GRACE {
-            crate::jobserver::close();
             std::process::exit(BROKEN_STATUS.into());
         }
         return;

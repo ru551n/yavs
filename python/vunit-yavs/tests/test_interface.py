@@ -12,6 +12,7 @@ import importlib
 import io
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -28,9 +29,11 @@ from vunit.ui import VUnit
 from vunit.vhdl_standard import VHDL
 
 from vunit_yavs import YavsInterface, YavsVersion, check_debug_args, write_response_file
-from vunit_yavs.jobserver import Jobserver
+from vunit_yavs.tokens import TokenServer
 
 FAKE_BIN = Path(__file__).parent / "fake_bin"
+# The fake yavs runs as a script; Windows finds and starts only yavs.exe
+NEEDS_FAKE_BIN = unittest.skipIf(sys.platform == "win32", "The fake yavs is a Python script without an .exe wrapper")
 
 
 def make_config(**kwargs):
@@ -85,6 +88,7 @@ class TestYavsVersion(unittest.TestCase):
             version < YavsVersion("1.0")  # pylint: disable=expression-not-assigned
 
 
+@NEEDS_FAKE_BIN
 class TestPackage(unittest.TestCase):
     """
     The package route: add_package registers the interface, its arguments and its options
@@ -491,6 +495,7 @@ class TestYavsInterface(unittest.TestCase):
         ):
             YavsInterface.from_args(args, self.output_path)
 
+    @NEEDS_FAKE_BIN
     def test_from_args_with_a_namespace_of_the_run_script(self):
         # A namespace the run script built itself has no package arguments
         with mock.patch.dict("os.environ", {"VUNIT_YAVS_PATH": str(FAKE_BIN)}):
@@ -502,40 +507,47 @@ class TestYavsInterface(unittest.TestCase):
         with mock.patch.dict("os.environ", {"VUNIT_YAVS_PATH": str(FAKE_BIN)}):
             return YavsInterface.from_args(SimpleNamespace(gui=False, **kwargs), self.output_path)
 
-    def test_jobserver_only_with_the_flag_and_parallel_runs(self):
-        self.assertIsNone(self._from_args(num_threads=4)._jobserver)  # pylint: disable=protected-access
-        self.assertIsNone(self._from_args(num_threads=1, yavs_jobserver=True)._jobserver)
-        jobserver = self._from_args(num_threads=4, yavs_jobserver=True)._jobserver
-        self.assertEqual(jobserver.num_threads, 4)
-        jobserver.close()
+    @NEEDS_FAKE_BIN
+    def test_token_server_only_with_the_flag_and_parallel_runs(self):
+        self.assertIsNone(self._from_args(num_threads=4)._tokens)  # pylint: disable=protected-access
+        self.assertIsNone(self._from_args(num_threads=1, yavs_jobserver=True)._tokens)
+        tokens = self._from_args(num_threads=4, yavs_jobserver=True)._tokens
+        self.assertEqual(tokens.num_threads, 4)
+        tokens.close()
 
-    def test_jobserver_on_windows_is_a_clear_error(self):
-        with (
-            mock.patch("vunit_yavs.sys.platform", "win32"),
-            self.assertRaisesRegex(RuntimeError, "--yavs-jobserver needs POSIX named pipes"),
-        ):
-            self._from_args(num_threads=4, yavs_jobserver=True)
+    def _simulate_with_tokens(self, config, elaborate_only=False):
+        tokens = TokenServer(4)
+        self.addCleanup(tokens.close)
+        status, cmd, process = self._simulate(config, elaborate_only=elaborate_only, tokens=tokens)
+        self.assertEqual(tokens._clients, [])  # pylint: disable=protected-access
+        return cmd, process.call_args[1]["env"], tokens
 
-    def test_simulate_with_jobserver(self):
-        jobserver = Jobserver(4, interval=3600)
-        self.addCleanup(jobserver.close)
-        config = make_config(sim_options={"yavs.max_threads": 2})
-        _, _, process = self._simulate(config, jobserver=jobserver)
-        flags = process.call_args[1]["env"]["MAKEFLAGS"]
-        self.assertRegex(flags, r"^-j4 --jobserver-auth=fifo:\S+/fifo0$")
-        self.assertFalse(Path(flags.split("fifo:")[1]).exists())  # Removed when the test ended
-        self.assertEqual(jobserver._clients, [])  # pylint: disable=protected-access
+    def test_simulate_with_tokens_passes_threads_and_the_server(self):
+        cmd, env, tokens = self._simulate_with_tokens(make_config())
+        self.assertIn("--threads=4", cmd)
+        self.assertRegex(env["YAVS_TOKENS"], rf"^{tokens.port}:[0-9a-f]{{32}}$")
 
-    def test_simulate_with_jobserver_unregisters_on_error(self):
-        jobserver = Jobserver(4, interval=3600)
-        self.addCleanup(jobserver.close)
-        self.simif = YavsInterface(prefix="prefix", output_path=self.output_path, jobserver=jobserver)
+    def test_simulate_with_tokens_and_a_cap(self):
+        cmd, env, _ = self._simulate_with_tokens(make_config(sim_options={"yavs.max_threads": 2}))
+        self.assertIn("--threads=2", cmd)
+        self.assertNotIn("--threads=4", cmd)
+        self.assertIn("YAVS_TOKENS", env)
+
+    def test_elaborate_only_has_no_tokens(self):
+        cmd, env, _ = self._simulate_with_tokens(make_config(), elaborate_only=True)
+        self.assertFalse(any(arg.startswith("--threads") for arg in cmd))
+        self.assertNotIn("YAVS_TOKENS", env or {})
+
+    def test_simulate_with_tokens_unregisters_on_error(self):
+        tokens = TokenServer(4)
+        self.addCleanup(tokens.close)
+        self.simif = YavsInterface(prefix="prefix", output_path=self.output_path, tokens=tokens)
         self.simif.setup_library_mapping(self._project("2008"))
         with mock.patch("vunit_yavs.Process", autospec=True) as process, self.assertRaises(OSError):
             process.NonZeroExitCode = Process.NonZeroExitCode
             process.side_effect = OSError("boom")
             self.simif.simulate(self.output_path, "lib.tb", make_config(), False)
-        self.assertEqual(jobserver._clients, [])  # pylint: disable=protected-access
+        self.assertEqual(tokens._clients, [])  # pylint: disable=protected-access
 
     def test_from_args_checks_debug_before_the_executable(self):
         args = SimpleNamespace(gui=True, yavs_debug=4711)

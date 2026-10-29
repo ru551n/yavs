@@ -114,21 +114,19 @@ class TestFakeYavs(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertIn("--threads=3", self._runs(calls)[0])
 
-    def test_jobserver(self):
-        exit_code, output, results, calls = self._run("-p", "2", "--yavs-jobserver", "--yavs-max-threads=2")
+    def test_token_server(self):
+        exit_code, output, results, calls = self._run("-p", "2", "--yavs-jobserver")
         self.assertEqual(exit_code, 0, output)
         self.assertEqual(set(results.values()), {"passed"})
-        uses = [call for call in calls if call[0] == "jobserver"]
-        self.assertEqual(len(uses), 3)
-        for _, flags, _ in uses:
-            self.assertRegex(flags, r"^-j2 --jobserver-auth=fifo:\S+/fifo\d+$")
-        # A test running alone gets the one free slot of -p 2
-        self.assertIn("+", [token for _, _, token in uses])
-        self.assertNotIn("token(s) without returning them", output)
+        self.assertEqual(len([call for call in calls if call[0] == "tokens"]), 3)
+        # Every simulation may use the -p slots; a test running alone gets the one free slot of -p 2
+        self.assertTrue(all("--threads=2" in run for run in self._runs(calls)))
+        self.assertIn(["tokens", 1], calls)
 
-    def test_no_jobserver_without_the_flag(self):
+    def test_no_token_server_without_the_flag(self):
         _, _, _, calls = self._run("-p", "2", PASS, COMMA)
-        self.assertFalse([call for call in calls if call[0] == "jobserver"])
+        self.assertFalse([call for call in calls if call[0] == "tokens"])
+        self.assertFalse(any("--threads=2" in run for run in self._runs(calls)))
 
     def test_debug_one_test(self):
         exit_code, output, results, calls = self._run("--yavs-debug=5000", "--yavs-max-threads=3", PASS)

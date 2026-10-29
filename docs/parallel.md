@@ -6,7 +6,7 @@ the same moment. Large, flat RTL designs, where thousands of processes wake on t
 run up to about 2.5 times faster on 4 threads and 3.5 times on 8. Testbench-style designs and
 processor models run as fast as on one thread: yavs then keeps the work on one thread. Leave it at
 1 for regressions that already run tests side by side, and measure before you rely on it. Under a
-token pool passed in `MAKEFLAGS`, several simulations share one CPU budget (see "Thread budget
+token server named in `YAVS_TOKENS`, several simulations share one CPU budget (see "Thread budget
 across parallel test runs" below).
 
 ## What it does
@@ -48,33 +48,32 @@ flat RTL gained at most 1.6x.
 
 ## Thread budget across parallel test runs
 
-When yavs runs with `--threads N` above 1 and the environment variable `MAKEFLAGS` names a
-token pool (`--jobserver-auth=R,W` with two inherited pipe descriptors, or
-`--jobserver-auth=fifo:PATH` with a named pipe; the jobserver protocol), the threads come from
-that pool ([#801](https://github.com/ru551n/yavs/issues/801)):
+When yavs runs with `--threads N` above 1 and the environment variable `YAVS_TOKENS` names a
+token server (`<port>:<secret>`: a server on 127.0.0.1 that the test runner starts, the same on
+Linux and Windows), the threads come from that server
+([#801](https://github.com/ru551n/yavs/issues/801)):
 
-* `--threads N` is the cap. Each simulation owns one implicit token, its main thread, and can take
-  at most N - 1 more from the pool. The tokens decide how many of the N threads run at a time.
-* A token is taken only when a group of processes is worth handing to the threads, never by
-  waiting: if the pool is empty, the group runs on the main thread, as with `--threads 1`.
-* Tokens taken are held while groups keep going to the threads and given back after 64 groups in a
-  row that stayed on the main thread, when the run ends (normally or with an error) and on Ctrl-C,
-  SIGTERM or SIGHUP. A simulation that is killed outright loses the tokens it held.
+* `--threads N` is the cap. Each simulation owns one implicit token, its main thread, and can use
+  at most N - 1 more lent by the server. The tokens decide how many of the N threads run at a time.
+* Tokens are asked for only when a group of processes is worth handing to the threads, never by
+  waiting: while none is lent, the group runs on the main thread, as with `--threads 1`.
+* Tokens are held while groups keep going to the threads and given back after 64 groups in a row
+  that stayed on the main thread. The connection to the server closes when the simulation ends in
+  any way (normally, with an error, on Ctrl-C, killed or crashed), and that gives every token back.
 * Output, reports, waves, coverage and exit status do not depend on the tokens: they are the
   same at any token count, as at any thread count.
-* Without a pool in `MAKEFLAGS`, or with `--threads 1` (the default), `MAKEFLAGS` is not read and
-  `--threads` behaves as before. `--dap` runs on one thread and ignores the pool.
-* A pool yavs cannot use (descriptors the parent did not pass on, so they are closed or not a
-  pipe; a path that is not a named pipe; the semaphore form of Windows, which has no client yet;
-  descriptors on systems other than Linux, where only `fifo:PATH` works) is error `E0128` before
-  analysis (exit 2). A parent that does not share its pool with yavs removes `--jobserver-auth`
-  from the child's `MAKEFLAGS`.
-* Without a pool, nothing shares the CPU between simulations run side by side: do not combine a
-  high `-p` with a high `--threads`, the threads of all runs add up.
+* Without `YAVS_TOKENS`, or with `--threads 1` (the default), it is not read and `--threads`
+  behaves as before. `--dap` runs on one thread and ignores it.
+* A `YAVS_TOKENS` yavs cannot use (not `<port>:<secret>`, nothing listening, a secret the server
+  does not accept, often a value left over from a test runner that ended) is error `E0128` before
+  analysis (exit 2). Unset it to run without a token server.
+* Without a token server, nothing shares the CPU between simulations run side by side: do not
+  combine a high `-p` with a high `--threads`, the threads of all runs add up.
 
-A test runner that runs `-p N` simulations side by side can hand each of them `--threads` of the
-core count and put the cores beyond N in the pool, adding one token each time one of its N
-slots runs out of tests. The long tests at the end of a regression then use the cores that are
+The protocol is in `docs/cli-contract.md` ("Token server") in the source tree.
+
+A test runner that runs `-p N` simulations side by side can hand each of them `--threads N` and
+lend the slots no test uses as tokens: one more each time one of its N slots runs out of tests. The long tests at the end of a regression then use the cores that are
 free. This pays only where more threads speed a simulation up: flat RTL designs (see the measured
 speedup above). Processors and testbench-style designs keep their batches on one thread and gain
 nothing from extra tokens. A compiled tier's compile thread (`--tier=auto`) is not counted.
@@ -88,7 +87,7 @@ nothing from extra tokens. A compiled tier's compile thread (`--tier=auto`) is n
   carry much state that another core's caches lack, so their batches run no faster on several
   threads, and yavs learns that and keeps them on one thread. Testbench-style designs spend most
   of their process time in processes that must stay serial (files, shared variables, protected
-  objects). Their levers are single-thread speed, and a token pool gives them no extra speed.
+  objects). Their levers are single-thread speed, and a token server gives them no extra speed.
 * **What it costs when nothing goes to the threads.** About 1 to 2 percent more instructions; the
   design runs at about 0.95x to 1.0x of one thread.
 * Full measurements: "Parallel kernel, step 1" and "step 2" in `docs/STATUS.md`; the design is

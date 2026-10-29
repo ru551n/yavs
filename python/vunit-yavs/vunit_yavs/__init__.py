@@ -31,7 +31,7 @@ from vunit.ostools import Process
 from vunit.sim_if import ListOfStringOption, Option, SimulatorInterface, check_executable, hooks
 from vunit.vhdl_standard import VHDL
 
-from .jobserver import Jobserver
+from .tokens import TokenServer
 
 LOGGER = logging.getLogger(__name__)
 
@@ -132,8 +132,8 @@ class YavsInterface(SimulatorInterface):
             "--yavs-jobserver",
             action="store_true",
             default=False,
-            help="Lend the CPU slots of -p N that no test uses to the running simulations through a jobserver "
-            "(POSIX only); yavs.max_threads caps each test.",
+            help="Lend the CPU slots of -p N that no test uses to the running simulations through a token server; "
+            "each simulation runs with --threads=N (yavs.max_threads or --yavs-max-threads caps it).",
         )
 
     @classmethod
@@ -146,15 +146,10 @@ class YavsInterface(SimulatorInterface):
         if debug_port is not None:
             check_debug_args(args)
 
-        jobserver = None
-        if getattr(args, "yavs_jobserver", False):
-            if sys.platform == "win32":
-                raise RuntimeError(
-                    "--yavs-jobserver needs POSIX named pipes, which Windows does not have. Drop --yavs-jobserver."
-                )
-            if args.num_threads > 1:
-                jobserver = Jobserver(args.num_threads)
-                atexit.register(jobserver.close)
+        tokens = None
+        if getattr(args, "yavs_jobserver", False) and args.num_threads > 1:
+            tokens = TokenServer(args.num_threads)
+            atexit.register(tokens.close)
 
         prefix = cls.find_prefix()
         check_executable("YAVS", prefix, cls.executable)
@@ -166,7 +161,7 @@ class YavsInterface(SimulatorInterface):
             gui=args.gui,
             debug_port=debug_port,
             max_threads=getattr(args, "yavs_max_threads", None),
-            jobserver=jobserver,
+            tokens=tokens,
         )
 
     @classmethod
@@ -177,7 +172,7 @@ class YavsInterface(SimulatorInterface):
         return cls.find_toolchain([cls.executable])
 
     def __init__(
-        self, output_path, prefix, *, gui=False, debug_port=None, max_threads=None, jobserver=None
+        self, output_path, prefix, *, gui=False, debug_port=None, max_threads=None, tokens=None
     ):  # pylint: disable=too-many-arguments
         SimulatorInterface.__init__(self, output_path, gui)
         self._prefix = prefix
@@ -186,7 +181,7 @@ class YavsInterface(SimulatorInterface):
         self._max_threads = max_threads
         self._debug_lock = threading.Lock()
         self._debugged = None
-        self._jobserver = jobserver  # Shared by all simulations of the run
+        self._tokens = tokens  # The token server shared by all simulations of the run
 
     @classmethod
     def _get_version_output(cls, prefix):
@@ -329,8 +324,11 @@ class YavsInterface(SimulatorInterface):
         if not elaborate_only and config.sim_options.get("disable_ieee_warnings", False):
             cmd += ["--ieee-warnings=off"]
 
-        # The cap goes first, so --threads in the raw flags below wins (last one wins); a DAP run is one thread
+        # The cap goes first, so --threads in the raw flags below wins (last one wins); a DAP run is one thread.
+        # With a token server every simulation may use all -p N slots, on tokens.
         max_threads = config.sim_options.get("yavs.max_threads", self._max_threads)
+        if max_threads is None and self._tokens is not None:
+            max_threads = self._tokens.num_threads
         if max_threads is not None and not elaborate_only and not debug:
             cmd += [f"--threads={max_threads}"]
 
@@ -363,9 +361,9 @@ class YavsInterface(SimulatorInterface):
 
         env = hooks.get_run_env(self)
         client = None
-        if self._jobserver is not None and not elaborate_only:
-            client = self._jobserver.add(None if max_threads is None else max_threads - 1)
-            env = self._jobserver.env(client, env)
+        if self._tokens is not None and not elaborate_only:
+            client = self._tokens.add(max_threads - 1)
+            env = self._tokens.env(client, environ if env is None else env)
 
         status = True
         try:
@@ -375,7 +373,7 @@ class YavsInterface(SimulatorInterface):
             status = False
         finally:
             if client is not None:
-                self._jobserver.remove(client)
+                self._tokens.remove(client)
 
         return status
 

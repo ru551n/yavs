@@ -445,12 +445,25 @@ pub(crate) fn init_packages(
         data = d.into_iter().map(Arc::new).collect();
         first = n;
     }
+    // The runtime of the last initialiser: the files the initialisers open are handed on (#834).
+    let mut last: Option<Arc<Runtime>> = None;
     for (i, p) in packages.iter().enumerate().skip(first) {
         let mut d = match start {
             Some(s) => s[i].clone(),
             None => {
                 let rt = Runtime::new(prog.clone(), bind(&data))?;
-                yavs_interp::init_package(rt, p.init, p.index, p.size as usize, Some(shared))?
+                if let Some(l) = &last {
+                    rt.adopt_files(l);
+                }
+                let d = yavs_interp::init_package(
+                    rt.clone(),
+                    p.init,
+                    p.index,
+                    p.size as usize,
+                    Some(shared),
+                )?;
+                last = Some(rt);
+                d
             }
         };
         fix(p, &mut d)?;
@@ -481,7 +494,11 @@ pub(crate) fn init_packages(
             Err(why) => k.cache.note(&format!("no init entry: {why}")),
         }
     }
-    Runtime::new(prog.clone(), bind(&data))
+    let rt = Runtime::new(prog.clone(), bind(&data))?;
+    if let Some(l) = &last {
+        rt.adopt_files(l);
+    }
+    Ok(rt)
 }
 
 /// The std/ieee revision the design runs against (INTEGER bounds, FILE_OPEN_KIND, `vhdl_version`).

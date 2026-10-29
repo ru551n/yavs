@@ -1841,6 +1841,13 @@ impl Runtime {
         self.files.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
+    /// Take over the file objects `from` opened (its table is left empty): package
+    /// initialisers each run on a runtime of their own, and their files must stay open (#834).
+    pub fn adopt_files(&self, from: &Runtime) {
+        let taken = std::mem::take(&mut *from.files.lock().unwrap_or_else(|e| e.into_inner()));
+        *self.files.lock().unwrap_or_else(|e| e.into_inner()) = taken;
+    }
+
     /// Start from `from`'s VHDL assert state (enables and the like, as code run by `from`
     /// left it): a simulation going on from package state that elaboration-time calls made.
     pub fn inherit(&self, from: &Runtime) {

@@ -1457,6 +1457,44 @@ fn explain() {
     assert_eq!(yavs("E0000").status.code(), Some(2));
 }
 
+/// The help and the explanation of `E0120` describe the tiers this build has and point at no
+/// developer document (#845, #850).
+#[test]
+fn tier_help_and_e0120_describe_the_build() {
+    let text = |args: &[&str]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(args)
+            .output()
+            .expect("run yavs");
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    let has = if cfg!(all(feature = "llvm", feature = "clift")) {
+        "the Cranelift and LLVM tiers"
+    } else if cfg!(feature = "clift") {
+        "the Cranelift tier"
+    } else if cfg!(feature = "llvm") {
+        "the LLVM tier"
+    } else {
+        "no compiled tier, only `interp`"
+    };
+    let help = text(&["run", "--help"]);
+    assert!(help.contains(&format!("this yavs has {has}")), "{help}");
+    let e0120 = text(&["--explain", "E0120"]);
+    assert!(e0120.contains("clift"), "{e0120}");
+    assert!(e0120.contains(&format!("This yavs has {has}.")), "{e0120}");
+    // No help names a developer document.
+    for cmd in ["analyze", "elab", "run", "parse", "cache", "cov"] {
+        let help = text(&[cmd, "--help"]);
+        for internal in ["sem.md", "cli-contract", "docs/", "AGENTS"] {
+            assert!(
+                !help.contains(internal),
+                "`{cmd} --help` names {internal}:\n{help}"
+            );
+        }
+    }
+    assert!(!e0120.contains("docs/"), "{e0120}");
+}
+
 fn etxtbsy(e: &std::io::Error) -> bool {
     cfg!(unix) && e.raw_os_error() == Some(26)
 }

@@ -92,7 +92,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ("E0105", "`--stop-time` is not a valid time such as `10ms`."),
     (
         "E0120",
-        "`yavs run --tier=llvm` or `--tier=auto` on a yavs built without the LLVM tier (the `llvm` cargo feature, which needs LLVM 21). Use `--tier=interp`.",
+        "`yavs run --tier=...` names a compiled tier that this yavs was built without. `clift`, `clift-auto` and, in a build without LLVM, `auto` need the `clift` cargo feature (Cranelift, which the release archives are built with); `llvm` and `auto` in a build without Cranelift need the `llvm` feature (LLVM 21); `auto3` needs both. Use a tier the build has, or `--tier=interp`, which every build has. The user guide page \"Running faster\" describes the tiers: https://yavs.readthedocs.io/en/latest/running-faster.html",
     ),
     (
         "E0121",

@@ -75,8 +75,9 @@ Common problems
    * - ``E0105``
      - A time needs a unit: ``--stop-time=10us``, not ``10``.
    * - ``E0120``, tier not available
-     - A source build without ``--features clift`` has no compiled tier: use ``--tier=interp`` or
-       rebuild (:doc:`install`).
+     - ``--tier`` names a compiled tier this yavs was built without (``yavs --version`` lists the
+       tiers it has; ``yavs --explain E0120`` says which tier needs which build). Use a tier it
+       has or ``--tier=interp``, or rebuild (:doc:`install`).
    * - ``E0122``, ``yavs-gui`` was not found
      - Keep ``yavs-gui`` next to ``yavs`` or on ``PATH``.
 

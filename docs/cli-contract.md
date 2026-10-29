@@ -568,8 +568,10 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   than N IR instructions stays interpreted (user, 2026-10-19, #126). `--tier-heat=BASE,PER_INSTR,PERIOD`
   (hidden, for tests and tuning): with `auto`, a function is hot once a sample every PERIOD
   microseconds has seen the interpreter in it for BASE microseconds plus PER_INSTR nanoseconds
-  per IR instruction of it (PERIOD `0`, as in `1,0,0`: from its first call or jump). Both tiers need a yavs
-  built with the `llvm` cargo feature (LLVM 21): otherwise asking for them explicitly is error `E0120` (exit 2); a
+  per IR instruction of it (PERIOD `0`, as in `1,0,0`: from its first call or jump). `llvm` needs a yavs
+  built with the `llvm` cargo feature (LLVM 21), `auto` one built with `llvm` or `clift`: otherwise asking for them
+  explicitly is error `E0120` (exit 2). `--help` for `--tier` and `--explain E0120` name the tiers the executable
+  has (#845, #850); a
   design the tier cannot compile (or a compile thread that cannot start) is `E0121` (exit 3, a
   bug in yavs); an LLVM library that cannot be loaded (Linux: `lib/` next to `yavs`, else the
   system's) is `E0127` for `--tier=llvm` (exit 2), and a warning for `--tier=auto`, whose hot code stays

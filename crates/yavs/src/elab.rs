@@ -33,13 +33,16 @@ pub struct Common {
     /// Another library, `NAME:PATH` (repeatable).
     #[arg(long = "map", value_name = "NAME:PATH")]
     maps: Vec<String>,
-    /// Relax some LRM checks (sem.md 8.4).
+    /// Turn some errors into warnings: a shared variable of a non-protected type, a pure function
+    /// that calls an impure one, an `others` aggregate for an unconstrained target, a non-static
+    /// actual of a signal parameter.
     #[arg(long)]
     relaxed: bool,
     /// Read `-- psl` comments as PSL pragmas (native PSL statements are always read).
     #[arg(long)]
     psl: bool,
-    /// Warning control: `-Werror`, `-Werror=CODE`, `-Wno-CODE`, `-WCODE` (docs/cli-contract.md 4).
+    /// Warning control: `-Werror` (every warning is an error), `-Werror=CODE`, `-Wno-CODE` (do not
+    /// print it), `-WCODE` (stays a warning under `-Werror`).
     #[arg(short = 'W', value_name = "FLAG")]
     warn: Vec<String>,
     /// Neither read nor write the compilation cache of the work library.
@@ -49,7 +52,8 @@ pub struct Common {
     /// else `yavs/std` in the user's cache directory).
     #[arg(long, value_name = "DIR|off")]
     std_cache: Option<std::ffi::OsString>,
-    /// Keep every `in` port its own signal instead of an alias of its actual (docs/cli-contract.md).
+    /// Keep every `in` port its own signal instead of an alias of its actual (to compare against
+    /// the default).
     #[arg(long)]
     no_collapse_ports: bool,
     /// Print the elaborated hierarchy (for debugging yavs).
@@ -167,16 +171,10 @@ pub struct RunArgs {
     /// Load a VHPI plugin, `LIB[:ENTRY]`.
     #[arg(long, value_name = "LIB[:ENTRY]")]
     vhpi: Vec<String>,
-    /// Execution tier: `auto` to compile the functions that become hot on a background thread
-    /// while the simulation runs; `llvm` to compile every function with LLVM before time 0; or
-    /// `interp` for the interpreter alone. `llvm` and `auto` need a yavs built with the `llvm`
-    /// feature. Default: `auto` with a compiled tier, but `interp` with `--dap` and without one.
-    /// `clift` and `clift-auto` are `llvm` and `auto` with Cranelift (the `clift` feature; in a
-    /// build with it and without `llvm`, `auto` is `clift-auto`);
-    /// `auto3` has Cranelift compile warm functions and LLVM O2 those that stay hot.
-    #[arg(long, value_enum)]
+    // The text names the tiers this build has, so it is built by `tier_help`.
+    #[arg(long, value_enum, help = tier_help())]
     tier: Option<TierArg>,
-    /// With `--tier=llvm` or `auto`: functions of more than N IR instructions stay
+    /// With a compiled tier: functions of more than N IR instructions stay
     /// interpreted (compile time grows faster than their size).
     #[arg(long, value_name = "N", default_value = "50000")]
     tier_max_size: usize,
@@ -186,7 +184,7 @@ pub struct RunArgs {
     /// enters (for tests and tuning).
     #[arg(long, value_name = "BASE,PER_INSTR,PERIOD", value_parser = heat, hide = true)]
     tier_heat: Option<[u32; 3]>,
-    /// Print notes on how the run is set up (functions the LLVM tier leaves interpreted or
+    /// Print notes on how the run is set up (functions a compiled tier leaves interpreted or
     /// compiles).
     #[arg(long)]
     verbose: bool,
@@ -201,6 +199,29 @@ pub struct RunArgs {
     /// Plusargs `+NAME[=VALUE]` after the top level, seen by VHPI plugins as tool arguments.
     #[arg(value_name = "+NAME[=VALUE]", value_parser = plusarg)]
     plusargs: Vec<String>,
+}
+
+/// The compiled tiers of this build, for sentences like "this yavs has ...".
+pub(crate) fn tiers_built() -> &'static str {
+    match (cfg!(feature = "llvm"), cfg!(feature = "clift")) {
+        (true, true) => "the Cranelift and LLVM tiers",
+        (false, true) => "the Cranelift tier",
+        (true, false) => "the LLVM tier",
+        (false, false) => "no compiled tier, only `interp`",
+    }
+}
+
+/// The help of `--tier`: what the tiers are and which of them this build has.
+fn tier_help() -> String {
+    let built = tiers_built();
+    format!(
+        "Execution tier: `interp` runs the interpreter alone; `auto` runs it and compiles the \
+         functions that become hot on a background thread; `clift` and `llvm` compile every \
+         function before time 0; `clift-auto` is `auto` with Cranelift; `auto3` has Cranelift \
+         compile warm functions and LLVM O2 those that stay hot. A tier needs its code generator \
+         in the build: this yavs has {built}. Default: `auto` with a compiled tier, `interp` with \
+         `--dap` and without one."
+    )
 }
 
 /// `YAVS_WAVE_FLUSH` duration: whole `s` or `ms` (`5s`, `500ms`).
@@ -954,7 +975,10 @@ fn use_tier(
                 "`--tier=clift` needs a yavs built with the Cranelift tier",
             )
             .with_note("this yavs was built without the `clift` cargo feature")
-            .with_help("use `--tier=interp`, or build yavs with `--features clift`"),
+            .with_help(
+                "use `--tier=interp`, or install a yavs release archive or build yavs with \
+                 `--features clift`",
+            ),
         ));
     }
     use_llvm_tier(rt, a)
@@ -1098,7 +1122,13 @@ fn use_llvm_tier(
             format!("`--tier={name}` needs a yavs built with the LLVM tier"),
         )
         .with_note("this yavs was built without the `llvm` cargo feature")
-        .with_help("use `--tier=interp`, or build yavs with `--features llvm` (needs LLVM 21)"),
+        .with_help(if cfg!(feature = "clift") {
+            "use `--tier=auto` or `--tier=clift`, which this yavs has, or `--tier=interp`; \
+             `--tier=llvm` needs a yavs built with `--features llvm` (needs LLVM 21)"
+        } else {
+            "use `--tier=interp`, or build yavs with `--features clift` (Cranelift, as the \
+             release archives) or `--features llvm` (needs LLVM 21)"
+        }),
     ))
 }
 

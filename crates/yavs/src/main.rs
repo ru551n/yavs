@@ -248,7 +248,11 @@ fn main() -> ExitCode {
     if let Some(code) = &cli.top.explain {
         return match explain::explain(&code.to_ascii_uppercase()) {
             Some(text) => {
-                println!("{}: {text}", code.to_ascii_uppercase());
+                let code = code.to_ascii_uppercase();
+                println!("{code}: {text}");
+                if code == "E0120" {
+                    println!("This yavs has {}.", elab::tiers_built());
+                }
                 ExitCode::SUCCESS
             }
             None => {

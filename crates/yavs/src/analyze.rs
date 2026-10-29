@@ -24,7 +24,9 @@ pub struct Args {
     /// Another library, `NAME:PATH` (repeatable).
     #[arg(long = "map", value_name = "NAME:PATH")]
     maps: Vec<String>,
-    /// Relax some LRM checks (sem.md 8.4).
+    /// Turn some errors into warnings: a shared variable of a non-protected type, a pure function
+    /// that calls an impure one, an `others` aggregate for an unconstrained target, a non-static
+    /// actual of a signal parameter.
     #[arg(long)]
     relaxed: bool,
     /// Read `-- psl` comments as PSL pragmas (native PSL statements are always read).
@@ -33,7 +35,8 @@ pub struct Args {
     /// Define a conditional analysis identifier, `NAME=VALUE`.
     #[arg(long = "define", short = 'D', value_name = "NAME=VALUE", value_parser = crate::parse_define)]
     defines: Vec<(String, String)>,
-    /// Warning control: `-Werror`, `-Werror=CODE`, `-Wno-CODE`, `-WCODE` (docs/cli-contract.md 4).
+    /// Warning control: `-Werror` (every warning is an error), `-Werror=CODE`, `-Wno-CODE` (do not
+    /// print it), `-WCODE` (stays a warning under `-Werror`).
     #[arg(short = 'W', value_name = "FLAG")]
     warn: Vec<String>,
     /// Allow `std`/`ieee` as `--work`/`--map` (analyzes yavs's own lib/ into a library).

@@ -27,6 +27,7 @@ The site is a user guide (2026-10-28, maintainer): `index`, `install`, `getting-
 - `run` and `elab` treat a missing or empty `--work` directory as an empty library (#838): a top level that is not there is `E0104` naming the directory (the contract said so; it was `L0001`); a wrong `TOP` no longer reports "unknown configuration", `work.top` is explained, and the `L0034` help gives a working `yavs analyze` command line.
 - `--message-format=json` and `short` print the batch stop note of `analyze` as a note diagnostic, so the JSON stream has nothing else; `--threads=0` is a usage error; a bare number for `--stop-time` says a time needs a unit (#839). Not changed: `finish(N)` exits with N when it fits 1..125 (documented), so `finish(2)` looks like a usage error.
 - `--ieee-warnings=off` works (natives and bodies, #836); a value other than `on` or `off` is a usage error.
+- `elab` and `run` accept `-D NAME=VALUE` like `analyze` (#837): the definitions are not recorded in the library, the sources are read again, so the same ones are passed to every step (like `--psl`).
 
 ### Kernel gates (#779, 2026-10-26)
 

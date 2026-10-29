@@ -1674,6 +1674,48 @@ fn ieee_warnings_option() {
     assert!(err.contains("invalid value 'maybe'"), "{err}");
 }
 
+/// `-D NAME=VALUE` is accepted by `elab` and `run` as by `analyze`: the sources are read again
+/// there, so a file that needs a conditional analysis identifier needs it at every step (#837).
+#[test]
+fn defines_reach_elab_and_run() {
+    let tmp = tempdir("defines");
+    let src = tmp.join("t.vhd");
+    std::fs::write(
+        &src,
+        "entity t is end;\narchitecture a of t is begin process begin\n\
+         `if FOO = \"1\" then\nreport \"foo one\";\n`else\nreport \"foo other\";\n`end if\n\
+         wait; end process; end;\n",
+    )
+    .unwrap();
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let yavs = |args: &[&str]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["--color", "never"])
+            .args(args)
+            .output()
+            .expect("run");
+        (
+            o.status.code().expect("code"),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+        )
+    };
+    let file = src.display().to_string();
+    let (code, _, err) = yavs(&["analyze", &lib, "-D", "FOO=1", &file]);
+    assert_eq!(code, 0, "{err}");
+    let (code, _, err) = yavs(&["run", &lib, "t"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("error[E0007]"), "{err}");
+    let (code, out, err) = yavs(&["run", &lib, "-D", "FOO=1", "t"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("foo one"), "{out}");
+    let (code, out, err) = yavs(&["run", &lib, "--define=FOO=2", "t"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("foo other"), "{out}");
+    let (code, _, err) = yavs(&["elab", &lib, "-DFOO=1", "t"]);
+    assert_eq!(code, 0, "{err}");
+}
+
 /// The help and the explanation of `E0120` describe the tiers this build has and point at no
 /// developer document (#845, #850).
 #[test]

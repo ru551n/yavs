@@ -42,7 +42,8 @@ Libraries and sources
   ``run`` uses the standard recorded per file.
 * ``--relaxed``: a few errors common in verification code become warnings.
 * ``--psl``: read PSL in ``-- psl`` comments.
-* ``-D NAME=VALUE``: define a conditional analysis identifier (``analyze``).
+* ``-D NAME=VALUE``: define a conditional analysis identifier. ``run`` and ``elab`` read the
+  sources again, so pass the same definitions to them as to ``analyze``.
 * ``--encoding=auto|latin1|utf8``: how source files are read (default: UTF-8 when valid, else
   Latin-1).
 * ``--no-cache``: do not use the compilation cache.

@@ -41,6 +41,10 @@ pub struct Common {
     /// Read `-- psl` comments as PSL pragmas (native PSL statements are always read).
     #[arg(long)]
     psl: bool,
+    /// Define a conditional analysis identifier, `NAME=VALUE`: the same definitions as when the
+    /// files were analyzed, because the sources are read again.
+    #[arg(long = "define", short = 'D', value_name = "NAME=VALUE", value_parser = crate::parse_define)]
+    defines: Vec<(String, String)>,
     /// Warning control: `-Werror` (every warning is an error), `-Werror=CODE`, `-Wno-CODE` (do not
     /// print it), `-WCODE` (stays a warning under `-Werror`).
     #[arg(short = 'W', value_name = "FLAG")]
@@ -450,6 +454,7 @@ fn elaborate(
     opts.libraries = libs;
     opts.relaxed = c.relaxed;
     opts.psl = c.psl;
+    opts.defines = c.defines.clone();
     opts.encoding = encoding;
     let work_dir = c.work.split_once(':').map_or("", |(_, d)| d);
     let shared = match crate::cache::shared_std_dir(c.std_cache.as_deref()) {

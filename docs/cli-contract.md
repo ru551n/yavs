@@ -179,7 +179,7 @@ library's directory, `<dir>/yavs-cache/sem-<key>.img` (user decision 2026-10-19,
 analyzing the sources again; the output, the diagnostics (warnings included) and the exit status are
 identical to a run without it, at any `--threads`.
 
-- The key is a hash of the yavs build, `--std`, `--relaxed`, `--psl`, `--encoding` and every file of the
+- The key is a hash of the yavs build, `--std`, `--relaxed`, `--psl`, `--encoding`, `-D` and every file of the
   closure (library, path, recorded content hash, standard). Editing a file (or any file it depends
   on) is found by the content hash check of the closure (`L0034`, re-analyze it); an entry also records
   the bytes of the built-in `std` and `ieee` files it was made from and is used only if they are
@@ -308,6 +308,10 @@ yavs analyze --std=FILE_STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=alwa
   - `--psl` (also `yavs parse`): read `-- psl` comments as PSL pragmas, as the reference
     simulators do only when asked (native VHDL-2008 PSL statements are always read). Pass it to
     `analyze`, `elab` and `run` alike, as the sources are read again at elaboration.
+  - `-D NAME=VALUE` (`--define`, also `yavs parse`; repeatable): define a conditional analysis identifier
+    (`` `if NAME = "VALUE" ``). Pass it to `analyze`, `elab` and `run` alike, like `--psl`: the library does
+    not record it, `elab` and `run` read the sources again, and an identifier they do not know is `E0007`
+    (#837). The test runner's global flags reach all three.
   - `-Werror`: every warning is an error (`analyze`: exit 1 after the batch; `run` and `elab`: exit 2,
     as any error before the simulation starts).
   - `-Werror=CODE`: that warning is an error. `-Wno-CODE`: that warning is not

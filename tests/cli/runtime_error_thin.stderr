@@ -1,8 +1,8 @@
 error[E3009]: division by zero
-  --> $DIR/runtime_error_thin.vhd:11:7
+  --> $DIR/runtime_error_thin.vhd:11:14
    |
 11 |       return n / x;
-   |       ^^^^^^^^^^^^^
+   |              ^^^^^
 ...
 18 |     return counter.divide(x);
    |     ------------------------- called from here

@@ -699,6 +699,18 @@ impl FuncBuilder<'_> {
         std::mem::replace(&mut self.stmt, s)
     }
 
+    /// Attribute the next instructions to a new statement entry at `span` without starting a
+    /// statement (no `Stmt`): an `elsif` condition, lowered after the previous branch (#872).
+    pub fn locate(&mut self, kind: StmtKind, span: Span) {
+        let id = self.pb.prog.stmts.push(StmtInfo {
+            span,
+            func: self.id,
+            kind,
+            parent: None,
+        });
+        self.stmt = Some(id);
+    }
+
     /// Start a statement: records it in the program's statement table and emits `Stmt`.
     pub fn stmt(&mut self, kind: StmtKind, span: Span) -> StmtId {
         let id = self.pb.prog.stmts.push(StmtInfo {

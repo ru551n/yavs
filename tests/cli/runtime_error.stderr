@@ -1,8 +1,8 @@
 error[E3009]: division by zero
-  --> $DIR/runtime_error.vhd:5:5
+  --> $DIR/runtime_error.vhd:5:12
    |
  5 |     return 10 / x;
-   |     ^^^^^^^^^^^^^^
+   |            ^^^^^^
 ...
  9 |     return g(x - 1) + 1;
    |     -------------------- called from here

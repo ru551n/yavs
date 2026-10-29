@@ -262,9 +262,10 @@ pub struct Db {
     #[serde(skip)]
     pub(crate) top_context: Option<(usize, SubtypeId)>,
     /// Folds that overflowed in the complete context being resolved (Q5).
-    /// `Some(why)` when the operation has no value (division by zero, ...).
+    /// `Some(why)` when the operation has no value (division by zero, ...); the value when
+    /// only the base range is exceeded, which a folded parent of the same type absorbs (#872).
     #[serde(skip)]
-    pub(crate) overflow: Vec<(ExprId, Option<&'static str>)>,
+    pub(crate) overflow: Vec<(ExprId, Option<&'static str>, Option<ConstValue>)>,
     /// Bounds being resolved are required at analysis time (Q5: array type bounds).
     #[serde(skip)]
     pub(crate) required_ctx: bool,

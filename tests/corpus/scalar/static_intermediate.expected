@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:static_intermediate:_p0	condition
+diag	note	0	0	:static_intermediate:_p0	2147483647 -2147483648 -2147483648
+diag	note	0	0	:static_intermediate:_p0	2147483647 536870912
+diag	note	0	0	:static_intermediate:_p0	50 70 2147483647 fs
+diag	note	0	0	:static_intermediate:_p0	2147483647

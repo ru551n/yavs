@@ -940,6 +940,20 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
 - **Static values outside the base range** of their type (the declared range, Q2) are overflow:
   `E1401` in required contexts, `W1401` elsewhere. Array type definition bounds are required
   contexts (Q5), so `array (0 to integer'high * 2)` is an error.
+- **A static integer or physical expression keeps its exact value up to the outermost operation
+  of its type** (#872, user, 2026-10-29, from a bug report: `natural range 0 to 2 ** 31 - 1` is
+  common in real designs and sim1 accepts it): an operand of predefined arithmetic (`+ - * / mod
+  rem ** abs`, unary `+ -`) of the same type that is itself such arithmetic is not checked against
+  the base range; the value leaving the arithmetic is (a parameter of another type such as
+  `2 ** 40 * 1 fs`, a call, a conversion, an assignment, the root). Checked i64 stays (rule 7):
+  `2 ** 63 - 1` overflows. In sem (`stat.rs` `absorbable`), elaboration (`fold_with`, already
+  so) and lowering (`expr.rs` `arith_operand`: an i64-wide `BinRange`, the outermost checks the
+  type), for operands known at elaboration (locally static, generics, constants computed from
+  them); a variable, a subprogram or generate parameter, or a constant computed from one checks
+  every operation (both references fail `2 ** j - 1` with a generate parameter `j = 31`). This narrows U-1 (intermediate results of `type T is range L to
+  R` checked against the declared range) for such expressions: `(60 + 60) - 50` of a type
+  `range 0 to 100` is 70, as sim1 gives for literals and generics. Reals are unchanged (f64
+  throughout). lrm-checks L156.
 - **Division by zero, `mod`/`rem` by zero, negative integer exponent** in a static expression go
   through the same rule: `E1401` where the value is required, `W1401` with the run-time check kept
   otherwise.

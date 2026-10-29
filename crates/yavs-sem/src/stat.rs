@@ -104,7 +104,18 @@ impl Db {
     /// Fold expression `id` in place when sem can (4.2); overflow is recorded for
     /// the complete context (`E1401` or `W1401`, Q5). The tree stays either way.
     pub(crate) fn fold_into(&mut self, id: ExprId) {
-        match self.fold(id) {
+        let mut absorbed = Vec::new();
+        let r = self.fold_operands(id, &mut |e| {
+            self.value(e).cloned().or_else(|| {
+                let k = self.absorbable(id, e)?;
+                absorbed.push(k);
+                self.overflow[k].2.clone()
+            })
+        });
+        if !matches!(r, Err(Fold::No)) {
+            self.drop_overflows(absorbed);
+        }
+        match r {
             Ok(v) => {
                 // Outside the base range of its type is overflow too (Q2: the declared range).
                 let bs = self.types[self.base(self.exprs[id].subtype)].base_subtype;
@@ -112,15 +123,76 @@ impl Db {
                     .static_bounds(bs)
                     .is_some_and(|(l, d, r)| within(&v, &l, d, &r) == Some(false))
                 {
-                    self.overflow.push((id, None));
+                    self.overflow.push((id, None, Some(v)));
                     return;
                 }
                 let c = self.add_const(v);
                 self.exprs[id].value = Some(c);
             }
-            Err(Fold::Overflow) => self.overflow.push((id, None)),
-            Err(Fold::Fails(why)) => self.overflow.push((id, Some(why))),
+            Err(Fold::Overflow) => self.overflow.push((id, None, None)),
+            Err(Fold::Fails(why)) => self.overflow.push((id, Some(why), None)),
             Err(Fold::No) => {}
+        }
+    }
+
+    /// A globally static arithmetic operation absorbs the out-of-range operands its value is
+    /// computed from at elaboration or run time (#872).
+    pub(crate) fn absorb_overflows(&mut self, id: ExprId) {
+        let ExprKind::Call { args, .. } = &self.exprs[id].kind else {
+            return;
+        };
+        let ks = args
+            .iter()
+            .filter_map(|a| match a.actual {
+                Actual::Expr(e) => self.absorbable(id, e),
+                _ => None,
+            })
+            .collect();
+        self.drop_overflows(ks);
+    }
+
+    /// The `overflow` entry of operand `e` of `parent` when `parent` is predefined arithmetic of
+    /// the same integer or physical type and `e` only exceeds that type's base range: the
+    /// static value stays exact (checked i64) up to the outermost operation (#872, lrm-checks.md
+    /// L156).
+    fn absorbable(&self, parent: ExprId, e: ExprId) -> Option<usize> {
+        let p = &self.exprs[parent];
+        let ExprKind::Call { callee, .. } = &p.kind else {
+            return None;
+        };
+        let Body::Implicit(op) = &self.decls[*callee].kind.subprogram()?.body else {
+            return None;
+        };
+        let t = self.base(p.subtype);
+        (matches!(
+            op.family,
+            Family::Add
+                | Family::Sub
+                | Family::Mul
+                | Family::Div
+                | Family::Rem
+                | Family::Mod
+                | Family::Exp
+                | Family::Neg
+                | Family::Pos
+                | Family::Abs
+        ) && matches!(
+            self.types[t].kind,
+            TypeKind::Integer | TypeKind::Physical { .. }
+        ) && self.base(self.exprs[e].subtype) == t)
+            .then(|| {
+                self.overflow
+                    .iter()
+                    .rposition(|o| o.0 == e && o.2.is_some())
+            })
+            .flatten()
+    }
+
+    fn drop_overflows(&mut self, mut ks: Vec<usize>) {
+        ks.sort_unstable();
+        ks.dedup();
+        for k in ks.into_iter().rev() {
+            self.overflow.remove(k);
         }
     }
 
@@ -136,10 +208,6 @@ impl Db {
             _ => None,
         };
         e.and_then(operand).ok_or(Fold::No)
-    }
-
-    fn fold(&self, id: ExprId) -> Result<ConstValue, Fold> {
-        self.fold_operands(id, &mut |e| self.value(e).cloned())
     }
 
     /// Fold `id` with operand values from `operand` instead of the folded cache: elaboration

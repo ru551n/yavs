@@ -131,6 +131,11 @@ impl Fx<'_, '_> {
                 let at = self.cur;
                 let j = self.block();
                 for (k, (c, body)) in branches.iter().enumerate() {
+                    if k > 0 {
+                        // Run-time errors of the condition point at it, not at the previous
+                        // branch's last statement (#872).
+                        self.fb.locate(StmtKind::Implicit, self.db.exprs[*c].span);
+                    }
                     let c = self.cond_expr(*c)?;
                     let (t, f) = (self.block(), self.block());
                     self.branch(c, t, f);

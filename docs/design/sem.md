@@ -868,7 +868,9 @@ pub enum Elems {
 
 - Integer and physical arithmetic is **checked i64** (rule 7); overflow is an error (`E1401`,
   see Q5 for non-required contexts). The result is also checked against the result subtype when
-  that subtype is static (`E1403`).
+  that subtype is static (`E1403`). An operand of predefined arithmetic of the same integer or
+  physical type keeps its exact value outside the base range: only the value leaving that
+  arithmetic is checked, so `2 ** 31 - 1` folds to INTEGER'HIGH (#872, lrm-checks L156).
 - Reals: f64 arithmetic, no fast-math; `**` with integer exponent by repeated multiplication in
   the same order the runtime uses (M2 must match, rule 5).
 - What sem folds itself: scalar implicit operations, relational and logical ops on enums and

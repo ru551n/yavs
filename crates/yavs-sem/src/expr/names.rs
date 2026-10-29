@@ -1784,6 +1784,8 @@ impl Db {
         });
         if implicit && stat == Staticness::Locally {
             self.fold_into(id);
+        } else if implicit && stat == Staticness::Globally {
+            self.absorb_overflows(id);
         }
         id
     }

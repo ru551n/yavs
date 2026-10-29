@@ -4,14 +4,14 @@
 use yavs_diag::Span;
 use yavs_ir::{
     AttrKind, BoolOp, CmpOp, ConstData, Dir, FOp, FUnOp, IntOp, IntUnOp, LOp, PhysOp, Reg, RegTy,
-    Ty, TyId, Width,
+    StmtKind, Ty, TyId, Width,
 };
 use yavs_ir::{CheckKind, Inst};
-use yavs_sem::decl::{Alias, Body, DeclKind, Param, Subprogram};
+use yavs_sem::decl::{Alias, Body, DeclKind, ObjClass, ObjRole, Param, Subprogram};
 use yavs_sem::hir::UnitHir;
 use yavs_sem::hir::{Actual, AggAssoc, AggBounds, Arg, AttrPrefix, Choice, ExprKind, PredefAttr};
 use yavs_sem::implicit::{Family, Form, ImplicitOp};
-use yavs_sem::stat::{ConstValue, Elems};
+use yavs_sem::stat::{ConstValue, Elems, Staticness};
 use yavs_sem::types::{Constraint, Direction, RangeC, TypeKind};
 use yavs_sem::{Db, DeclId, ExprId, SubtypeId, TypeId};
 
@@ -2897,13 +2897,15 @@ impl<'a> Fx<'a, '_> {
     }
 
     /// Integer or physical arithmetic checked against the base range of the result type
-    /// (rule 7, U-1); universal results are only checked for i64 overflow.
+    /// (rule 7, U-1); universal results, and without `check` an operand of static arithmetic
+    /// of the same type (#872), are only checked for i64 overflow.
     fn bin_checked(
         &mut self,
         op: IntOp,
         a: Reg,
         b: Reg,
         res: Option<SubtypeId>,
+        check: bool,
         span: Span,
     ) -> R<Reg> {
         let db = self.db;
@@ -2917,11 +2919,19 @@ impl<'a> Fx<'a, '_> {
         };
         let t = db.base(st);
         let bs = db.types[t].base_subtype;
-        let r = self.scalar_bounds(bs, span)?;
-        let (lo, hi) = self.low_high(r);
+        // A `BinRange` over all of i64 rather than a `Bin`: the optimiser knows more about it.
+        let (lo, hi) = if check {
+            let r = self.scalar_bounds(bs, span)?;
+            self.low_high(r)
+        } else {
+            (self.int(i64::MIN), self.int(i64::MAX))
+        };
         let name = db.types[t].name.text.as_str().to_ascii_uppercase();
         let what = self.fb.program().check_msg_for("", Dir::To, &name);
         let dst = self.reg(RegTy::I64);
+        // An overflow points at the operation, not at the start of its statement (#872).
+        let stmt = self.fb.set_stmt(None);
+        self.fb.locate(StmtKind::Implicit, span);
         self.emit(Inst::BinRange {
             op,
             dst,
@@ -2931,6 +2941,7 @@ impl<'a> Fx<'a, '_> {
             hi,
             what,
         });
+        self.fb.set_stmt(stmt);
         Ok(dst)
     }
 
@@ -3532,7 +3543,7 @@ impl<'a> Fx<'a, '_> {
                 self.select(c, a, b, rt)
             }
             Add | Sub | Mul | Div | Rem | Mod | Exp | Neg | Pos | Abs => {
-                return self.arith(op, &ex, res, span).map(|r| Some(V::S(r)));
+                return self.arith(op, &ex, res, true, span).map(|r| Some(V::S(r)));
             }
             Eq | Neq | Lt | Le | Gt | Ge if ty::is_array(db, t) => {
                 let a = self.expr(ex[0])?;
@@ -3583,19 +3594,25 @@ impl<'a> Fx<'a, '_> {
         Ok(Some(V::S(v)))
     }
 
+    /// Predefined arithmetic; without `check` the result is only checked for i64 overflow.
     fn arith(
         &mut self,
         op: &ImplicitOp,
         ex: &[ExprId],
         res: Option<SubtypeId>,
+        check: bool,
         span: Span,
     ) -> R<Reg> {
         use Family::*;
         let db = self.db;
         let real = ty::is_real(db, op.ty);
-        let a = self.scalar_expr(ex[0])?;
+        // Static operands keep exact values up to the outermost operation (#872).
+        let wide = res
+            .filter(|_| ex.iter().all(|&e| elab_known(db, e)))
+            .map(|st| db.base(st));
+        let a = self.arith_operand(ex[0], wide)?;
         let b = match ex.get(1) {
-            Some(&e) => Some(self.scalar_expr(e)?),
+            Some(&e) => Some(self.arith_operand(e, wide)?),
             None => None,
         };
         let r = match (op.family, b) {
@@ -3688,12 +3705,12 @@ impl<'a> Fx<'a, '_> {
                         Exp => IntOp::Pow,
                         _ => return Err(self.cx.ice(span, "arithmetic family")),
                     };
-                    return self.bin_checked(o, a, b, res, span);
+                    return self.bin_checked(o, a, b, res, check, span);
                 }
             },
             _ => return Err(self.cx.ice(span, "binary operation with one operand")),
         };
-        if let Some(st) = res {
+        if let Some(st) = res.filter(|_| check) {
             // `-x` and `abs x` overflow only at the most negative value of the base range.
             self.check_scalar(
                 r,
@@ -3704,6 +3721,57 @@ impl<'a> Fx<'a, '_> {
             )?;
         }
         Ok(r)
+    }
+
+    /// Operand `e` of arithmetic of type `wide` whose operands are known at elaboration: when it is predefined arithmetic of that
+    /// integer or physical type itself, its value is not checked against the base range, only
+    /// the outermost operation's is (#872, lrm-checks.md L156).
+    fn arith_operand(&mut self, e: ExprId, wide: Option<TypeId>) -> R<Reg> {
+        let db = self.db;
+        let x = &db.exprs[e];
+        if let Some(t) = wide
+            && x.value.is_none()
+            && db.base(x.subtype) == t
+            && matches!(
+                db.types[t].kind,
+                TypeKind::Integer | TypeKind::Physical { .. }
+            )
+            && let ExprKind::Call {
+                callee,
+                args,
+                method_of: None,
+                ..
+            } = &x.kind
+            && let Some(sp) = db.decls[*callee].kind.subprogram()
+            && let Body::Implicit(op) = &sp.body
+            && matches!(
+                op.family,
+                Family::Add
+                    | Family::Sub
+                    | Family::Mul
+                    | Family::Div
+                    | Family::Rem
+                    | Family::Mod
+                    | Family::Exp
+                    | Family::Neg
+                    | Family::Pos
+                    | Family::Abs
+            )
+        {
+            let mut ex = Vec::with_capacity(args.len());
+            for a in args.iter() {
+                let Some(p) = sp.params.get(a.formal as usize) else {
+                    return Err(self.cx.ice(x.span, "argument for a missing formal"));
+                };
+                ex.push(self.actual(a, p, x.span)?);
+            }
+            let r = self.arith(op, &ex, sp.ret, false, x.span)?;
+            if !self.cov_inputs.is_empty() {
+                self.cov_input(e, V::S(r));
+            }
+            return Ok(r);
+        }
+        self.scalar_expr(e)
     }
 
     /// Element `i` (0-based from the left) of a 1-D array with `n` elements.
@@ -5819,5 +5887,48 @@ pub(crate) fn index_subtypes(db: &Db, t: yavs_sem::TypeId) -> Option<Vec<Subtype
     match &db.types[t].kind {
         TypeKind::Array { indexes, .. } => Some(indexes.to_vec()),
         _ => None,
+    }
+}
+
+/// `e`'s value is fixed once the design is elaborated: locally static, or built from generics
+/// and constants whose own values are (#872). A parameter, or a constant computed from one, is
+/// globally static too but varies per call; a generate parameter fails in both references.
+fn elab_known(db: &Db, e: ExprId) -> bool {
+    let x = &db.exprs[e];
+    if x.value.is_some() || x.stat == Staticness::Locally {
+        return true;
+    }
+    if x.stat == Staticness::None {
+        return false;
+    }
+    match &x.kind {
+        ExprKind::Obj(d) => match &db.decls[*d].kind {
+            DeclKind::Object(o) => match o.role {
+                ObjRole::Generic => true,
+                ObjRole::Plain => {
+                    o.class == ObjClass::Constant && o.default.is_some_and(|i| elab_known(db, i))
+                }
+                _ => false,
+            },
+            _ => false,
+        },
+        ExprKind::Call {
+            callee,
+            args,
+            method_of: None,
+            ..
+        } => {
+            db.decls[*callee]
+                .kind
+                .subprogram()
+                .is_some_and(|sp| matches!(sp.body, Body::Implicit(_)))
+                && args
+                    .iter()
+                    .all(|a| matches!(a.actual, Actual::Expr(i) if elab_known(db, i)))
+        }
+        ExprKind::ImplicitConv { operand }
+        | ExprKind::Qualified { operand, .. }
+        | ExprKind::Conv { operand, .. } => elab_known(db, *operand),
+        _ => false,
     }
 }

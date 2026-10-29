@@ -1,0 +1,5 @@
+exit	1
+diag	note	0	0	:static_intermediate_param:_p0	536870911
+diag	note	0	0	:static_intermediate_param:_p0	1073741823
+diag	note	0	0	:static_intermediate_param:_p0	0
+diag	fatal	0	0	:static_intermediate_param:_p0	result of 2 ** 31 cannot be represented as INTEGER

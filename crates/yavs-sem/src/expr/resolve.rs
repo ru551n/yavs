@@ -370,7 +370,7 @@ impl Db {
             .map(|st| (top as *const ast::Expr as usize, st));
         let id = self.resolve(scope, e, exp);
         self.top_context = saved_top;
-        for (o, why) in std::mem::replace(&mut self.overflow, saved_overflow) {
+        for (o, why, _) in std::mem::replace(&mut self.overflow, saved_overflow) {
             let span = self.exprs[o].span;
             let msg = match why {
                 Some(w) => format!("{w} in a static expression"),
@@ -753,6 +753,8 @@ impl Db {
         });
         if implicit && stat == Staticness::Locally {
             self.fold_into(id);
+        } else if implicit && stat == Staticness::Globally {
+            self.absorb_overflows(id);
         }
         id
     }

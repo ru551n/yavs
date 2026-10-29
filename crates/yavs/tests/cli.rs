@@ -90,6 +90,30 @@ const CASES: &[Case] = &[
         code: 1,
     },
     Case {
+        name: "batch_fail_json",
+        args: &[
+            "--message-format=json",
+            "analyze",
+            "--work=work:$TMP/lib",
+            "ok.vhd",
+            "bad.vhd",
+            "ok2.vhd",
+        ],
+        code: 1,
+    },
+    Case {
+        name: "batch_fail_short",
+        args: &[
+            "--message-format=short",
+            "analyze",
+            "--work=work:$TMP/lib",
+            "ok.vhd",
+            "bad.vhd",
+            "ok2.vhd",
+        ],
+        code: 1,
+    },
+    Case {
         name: "batch_first_fails",
         args: &["analyze", "--work=work:$TMP/lib", "bad.vhd", "ok.vhd"],
         code: 1,
@@ -1518,6 +1542,75 @@ fn top_level_not_found() {
         "{err}"
     );
     assert_eq!(yavs(&["run", &lib, "good.a"]).0, 0);
+}
+
+/// `--message-format=json` prints nothing but JSON objects, one per line, also when `analyze`
+/// stops at one file of several (#839); `--threads=0` and a unit-less `--stop-time` are usage
+/// errors that say what to write.
+#[test]
+fn json_stream_and_numeric_options() {
+    let tmp = tempdir("jsonstream");
+    std::fs::write(
+        tmp.join("ok.vhd"),
+        "entity ok is end;\narchitecture a of ok is begin end;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.join("bad.vhd"),
+        "entity bad is end;\narchitecture a of bad is begin x <= 1; end;\n",
+    )
+    .unwrap();
+    let yavs = |args: &[&str]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["--color", "never"])
+            .args(args)
+            .current_dir(&*tmp)
+            .output()
+            .expect("run");
+        (
+            o.status.code().expect("code"),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+        )
+    };
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let (code, err) = yavs(&[
+        "--message-format=json",
+        "analyze",
+        &lib,
+        "ok.vhd",
+        "bad.vhd",
+    ]);
+    assert_eq!(code, 1, "{err}");
+    let lines: Vec<&str> = err.lines().collect();
+    assert!(lines.len() >= 2, "{err}");
+    for l in &lines {
+        let v: serde_json::Value =
+            serde_json::from_str(l).unwrap_or_else(|e| panic!("`{l}`: {e}\n{err}"));
+        assert!(v["level"].is_string() && v["message"].is_string(), "{l}");
+    }
+    assert!(
+        lines
+            .last()
+            .unwrap()
+            .contains("analysis stopped at `bad.vhd`"),
+        "{err}"
+    );
+    assert!(lines.last().unwrap().contains("ok.vhd"), "{err}");
+    // The numeric options of `run`.
+    assert_eq!(yavs(&["analyze", &lib, "ok.vhd"]).0, 0);
+    let (code, err) = yavs(&["run", &lib, "ok", "--threads=0"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(
+        err.contains("the number of threads must be at least 1"),
+        "{err}"
+    );
+    let (code, err) = yavs(&["run", &lib, "ok", "--threads=2"]);
+    assert_eq!(code, 0, "{err}");
+    let (code, err) = yavs(&["run", &lib, "ok", "--stop-time=10"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("a time needs a unit"), "{err}");
+    assert!(err.contains("--stop-time=10ns"), "{err}");
+    assert!(!err.contains("invalid unit value"), "{err}");
 }
 
 /// The help and the explanation of `E0120` describe the tiers this build has and point at no

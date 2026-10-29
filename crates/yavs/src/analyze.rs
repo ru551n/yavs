@@ -367,13 +367,13 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
             let _ = std::io::stderr()
                 .lock()
                 .write_all(yavs_diag::render(&none, &d, format, color).as_bytes());
-            note_batch(&a.files, current.get(), &done.borrow());
+            note_batch(&a.files, current.get(), &done.borrow(), format, color);
             return out.finish(3);
         }
         Ok(f) => f,
     };
     if let Some(i) = failed {
-        note_batch(&a.files, i, &done.borrow());
+        note_batch(&a.files, i, &done.borrow(), format, color);
         return out.finish(1);
     }
     if !matches!(flushed, Ok(Ok(()))) {
@@ -385,28 +385,62 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
     out.finish(0)
 }
 
-/// For a batch (more than one file) say where it stopped and what was recorded.
-fn note_batch(files: &[PathBuf], failed: usize, done: &[String]) {
+/// For a batch (more than one file) say where it stopped and what was recorded. Plain lines in
+/// the human format; a note diagnostic in the others, so that the stream stays what the format
+/// promises (#839).
+fn note_batch(
+    files: &[PathBuf],
+    failed: usize,
+    done: &[String],
+    format: MessageFormat,
+    color: bool,
+) {
     if files.len() < 2 {
         return;
     }
-    let mut m = format!(
-        "analysis stopped at `{}` (file {} of {}); the remaining {} file(s) were not analyzed\n",
+    let rest = files.len() - failed - 1;
+    let head = format!(
+        "analysis stopped at `{}` (file {} of {}){}",
         files[failed].display(),
         failed + 1,
         files.len(),
-        files.len() - failed - 1
-    );
-    if done.is_empty() {
-        m.push_str("no file of this call was analyzed successfully\n");
-    } else {
-        m.push_str(&format!(
-            "analyzed successfully and recorded before it ({}):\n",
-            done.len()
-        ));
-        for f in done {
-            m.push_str(&format!("  {f}\n"));
+        if rest == 0 {
+            String::new()
+        } else {
+            format!("; the remaining {rest} file(s) were not analyzed")
         }
-    }
-    let _ = std::io::stderr().lock().write_all(m.as_bytes());
+    );
+    let text = if format == MessageFormat::Human {
+        let mut m = format!("{head}\n");
+        if done.is_empty() {
+            m.push_str("no file of this call was analyzed successfully\n");
+        } else {
+            m.push_str(&format!(
+                "analyzed successfully and recorded before it ({}):\n",
+                done.len()
+            ));
+            for f in done {
+                m.push_str(&format!("  {f}\n"));
+            }
+        }
+        m
+    } else {
+        let recorded = if done.is_empty() {
+            "no file of this call was analyzed successfully".to_string()
+        } else {
+            format!(
+                "analyzed successfully and recorded before it ({}): {}",
+                done.len(),
+                done.join(", ")
+            )
+        };
+        // The short format has the message only; the JSON one has the details as a child.
+        let d = if format == MessageFormat::Short {
+            Diagnostic::new(Severity::Note, "", format!("{head}; {recorded}"))
+        } else {
+            Diagnostic::new(Severity::Note, "", head).with_note(recorded)
+        };
+        yavs_diag::render(&SourceMap::default(), &d, format, color)
+    };
+    let _ = std::io::stderr().lock().write_all(text.as_bytes());
 }

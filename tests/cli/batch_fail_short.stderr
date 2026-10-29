@@ -1,0 +1,2 @@
+bad.vhd:2:27: error[E1100]: `undefined_name` is not declared
+note: analysis stopped at `bad.vhd` (file 2 of 3); the remaining 1 file(s) were not analyzed; analyzed successfully and recorded before it (1): ok.vhd

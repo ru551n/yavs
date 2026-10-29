@@ -131,8 +131,8 @@ pub struct RunArgs {
     /// Time resolution limit (`std.env.resolution_limit`, TIME values in reflection).
     #[arg(long, value_enum, default_value = "fs")]
     resolution: ResolutionArg,
-    /// Worker threads for process evaluation.
-    #[arg(long, default_value = "1")]
+    /// Worker threads for process evaluation (at least 1).
+    #[arg(long, default_value = "1", value_parser = parse_threads)]
     threads: usize,
     /// Collect the heap of access values once this much was allocated since the last
     /// collection (and as much as that collection kept): plain bytes or a `k`, `m` or `g`
@@ -255,6 +255,14 @@ fn parse_size(s: &str) -> Result<u64, String> {
         Some(0) => Err("the threshold must be at least 1 byte".into()),
         Some(b) => Ok(b),
         None => Err(format!("`{s}` is too large")),
+    }
+}
+
+fn parse_threads(s: &str) -> Result<usize, String> {
+    match s.trim().parse::<usize>() {
+        Ok(0) => Err("the number of threads must be at least 1".into()),
+        Ok(n) => Ok(n),
+        Err(e) => Err(format!("`{s}` is not a number of threads: {e}")),
     }
 }
 
@@ -1350,7 +1358,7 @@ pub fn run(
     }
     let idle_mode = std::env::var("YAVS_IDLE_SKIP").unwrap_or_default();
     let cfg = yavs_kernel::Config {
-        threads: a.threads.max(1),
+        threads: a.threads,
         shuffle: a.shuffle,
         max_deltas: a.max_deltas,
         resolution,
@@ -1391,9 +1399,17 @@ pub fn run(
         Some(t) => match parse_time(t) {
             Ok(t) => t,
             Err(m) => {
+                // A bare number is the common mistake: say so instead of the parser's words.
+                let bare = t.trim().chars().all(|c| c.is_ascii_digit() || c == '.');
+                let d = Diagnostic::error("E0105", format!("invalid `--stop-time={t}`"));
                 out.emit(
                     &none,
-                    &Diagnostic::error("E0105", format!("invalid `--stop-time={t}`")).with_note(m),
+                    &if bare && !t.trim().is_empty() {
+                        d.with_note("a time needs a unit")
+                            .with_help("write the unit after the number, for example `--stop-time=10ns` (fs, ps, ns, us, ms, sec, min, hr)")
+                    } else {
+                        d.with_note(m)
+                    },
                 );
                 return out.finish(2);
             }

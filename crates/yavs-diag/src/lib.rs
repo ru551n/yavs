@@ -774,15 +774,18 @@ fn location(sources: &SourceMap, span: Span) -> (&str, usize, usize) {
 
 fn render_short(sources: &SourceMap, diag: &Diagnostic) -> String {
     let sev = diag.severity.as_str();
+    // A diagnostic without a code (a plain note) has no brackets.
+    let code = if diag.code.is_empty() {
+        String::new()
+    } else {
+        format!("[{}]", diag.code)
+    };
     match &diag.primary {
         Some(l) => {
             let (path, line, col) = location(sources, l.span);
-            format!(
-                "{path}:{line}:{col}: {sev}[{}]: {}\n",
-                diag.code, diag.message
-            )
+            format!("{path}:{line}:{col}: {sev}{code}: {}\n", diag.message)
         }
-        None => format!("{sev}[{}]: {}\n", diag.code, diag.message),
+        None => format!("{sev}{code}: {}\n", diag.message),
     }
 }
 

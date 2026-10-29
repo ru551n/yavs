@@ -44,10 +44,10 @@ Conventions:
   `rendered` (the human text, without colour). Names follow the JSON diagnostics of common compilers.
   The test runner may later pass it to surface diagnostics in its own
   report; until then it uses the human format. `--message-format=short` prints one line per
-  diagnostic (`FILE:LINE:COLUMN: error[CODE]: message`). Known gap (checked 2026-10-28, not yet
-  fixed): when `analyze` stops at a failing file of several, the note that names the failing file
-  and the files recorded before it (section 4) is written as plain text lines after the JSON
-  objects, so the stream is not JSON only.
+  diagnostic (`FILE:LINE:COLUMN: error[CODE]: message`). In the JSON and short formats the
+  note that names the failing file of a batch and the files recorded before it (section 4) is a note
+  diagnostic too (`"level":"note"`, `"code":""`; the short format has the recorded files in its one
+  line), so the JSON stream is nothing but JSON objects, one per line (#839).
 - The test runner's side: it merges yavs's stderr into stdout and shows all of it, it
   never masks the exit code (a non-zero `analyze` is a compile failure, a
   non-zero `run`/`elab` fails the test even when `vunit_results` says done),
@@ -403,7 +403,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   design, packages and dead code included, is error `E2120` before time 0 (exit 2; the first 10
   locations are listed); `0 fs` and values such as `0.4 ns` under `ns` are legal. The built-in
   std and ieee sources are exempt. A design that ran with a coarse limit before can now fail.
-- `--stop-time=TIME` (e.g. `10ms` or `10 ns`; a bare number is `E0105`), `--threads=N` (0 is treated as 1), `--shuffle`, `--load=LIB`,
+- `--stop-time=TIME` (e.g. `10ms` or `10 ns`; a bare number is `E0105`), `--threads=N` (at least 1; 0 is a usage error, exit 2, #839), `--shuffle`, `--load=LIB`,
   `--vhpi=LIB[:ENTRY]`, `--dap=PORT`: not passed by the test runner, used through
   `yavs.sim_flags` or simulator hooks (a test runner package can add `--load`).
 - Stuck and hung simulations (#582), `run` only, all as diagnostics (code, labels, notes, help; JSON

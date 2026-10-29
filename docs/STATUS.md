@@ -2606,7 +2606,8 @@ An installed binary finds `lib/` next to itself (#43).
   `prot/composite_of_protected_*`, difftest `protected/composites_2019_hand`.
 - Use clauses and visibility (#54): expanded names into labelled statements and subprograms
   (8.3, `E1103` outside them), and with a protected type prefix inside its body (`pt.n`, `pt.get`,
-  #250), body declarations named from outside the package (`E1105`), use
+  #250) or with its own package as prefix inside the package or its body (`p.s`, #854), body
+  declarations named from outside the package (`E1105`), use
   and context prefixes of the wrong kind (`E1104` at the suffix), and a missing-use-clause help
   for undeclared names that a loaded package (with `ieee` visible: `ieee_std_context`) declares.
 - Static checks (#53): array attribute dimensions must be locally static (`E1410`) and exist

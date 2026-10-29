@@ -79,6 +79,7 @@ The reference simulator (the primary reference). Every file the reference simula
 | `grp/group_too_many` | accepts | rejects @7 | As `grp/group_too_few`. |
 | `grp/group_wrong_class` | accepts | rejects @8 | LRM 6.10 is clear: a constituent has the entity class of its entry. The reference simulator does not check it. |
 | `grp/group_constituent_not_declared` | accepts | rejects @6 | The reference simulator does not look the constituent up at all; the name is undeclared (LRM 6.10). |
+| `vis/expanded_name_own_package_ok` | rejects @19,29,42 | rejects @14,28,35 | LRM 8.3 and 12.1 are clear: a package declaration and its body are one declarative region, so inside either `p.x` names `x` declared in the declaration or in the body (as `pt.x` in a protected body, L74). The reference simulator looks only in the body, the second only in the declaration (catalogue `package-expanded-name-in-body-*`, L155, #854). |
 
 The second reference simulator as second opinion: files where the second reference simulator disagrees but the reference simulator agrees.
 
@@ -663,11 +664,12 @@ only checks at elaboration. No test depended on U-1 to U-6 or the L8 tie.
 | `view_port_mode_misuse` | E1903 @20 | rejects @20 | rejects @20 |
 | `view_unknown` | E1100 @9 | rejects @9 | rejects @9 |
 
-### vis (22)
+### vis (23)
 
 | File | Expected | The reference simulator | The second reference simulator |
 |---|---|---|---|
 | `body_item_from_outside` | E1105 @12 | rejects @12 | rejects @12 |
+| `expanded_name_own_package_ok` | none | rejects @19,29,42 | rejects @14,28,35 |
 | `expanded_name_process_variable_outside` | E1103 @14 | rejects @14 | rejects @14 |
 | `generic_not_visible_in_other_unit` | E1100 @13 | rejects @13 | rejects @13 |
 | `hide_type_by_object` | E1201 @6 | rejects @6 | rejects @6 |

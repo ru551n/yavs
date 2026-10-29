@@ -13,9 +13,10 @@ use crate::attr::{self, AttrInfo, Kind, PredefAttr, PrefixForm};
 use crate::db::{Db, Reported};
 use crate::decl::{Alias, DeclKind, char_key, operator_key};
 use crate::diag;
-use crate::hir::{Actual, Arg, AttrPrefix, Expr, ExprKind};
+use crate::hir::{Actual, Arg, AttrPrefix, Expr, ExprKind, UnitHir};
 use crate::ids::{ConstId, DeclId, ExprId, ScopeId, SubtypeId, TypeId};
-use crate::scope::Visible;
+use crate::loader::UnitKind;
+use crate::scope::{ScopeKind, Visible};
 use crate::stat::{ConstValue, Staticness};
 use crate::types::{Direction, TypeKind};
 use crate::unit::{Region, suffix_key, suffix_span};
@@ -85,6 +86,12 @@ impl Db {
                     };
                 };
                 match self.classify(scope, prefix) {
+                    // `p.x` inside package `p` or its body: one region (12.1, #854).
+                    NameRes::One(d) if let Some(regions) = self.own_package(scope, d) => {
+                        let at = suffix_span(suffix, n.span);
+                        let r = self.own_lookup(regions, at, key);
+                        self.rev_gate(r, n.span, at)
+                    }
                     NameRes::One(d) => {
                         let region = match self.decls[self.entity(d)].kind {
                             DeclKind::Library(l) => Region::Library(l),
@@ -265,9 +272,19 @@ impl Db {
                 .unwrap_or(decl_scope);
             return NameRes::NotInRegion(home, at, key);
         }
-        // Normal visibility from the region, keeping only its own declarations: one walk
-        // for hiding and overloading (a parameter `n` of a method does not hide `pt.n`).
-        let own = |db: &Db, x: DeclId| [Some(decl_scope), body].contains(&Some(db.decls[x].scope));
+        self.own_lookup((region, decl_scope, body), at, key)
+    }
+
+    /// `key` seen from `region` (one of the two parts `decl` and `body` of one declarative
+    /// region), keeping only the declarations of those parts: one walk for hiding and
+    /// overloading (a parameter `n` of a method does not hide `pt.n`).
+    fn own_lookup(
+        &mut self,
+        (region, decl, body): (ScopeId, ScopeId, Option<ScopeId>),
+        at: Span,
+        key: Symbol,
+    ) -> NameRes {
+        let own = |db: &Db, x: DeclId| [Some(decl), body].contains(&Some(db.decls[x].scope));
         match self.lookup(region, key) {
             Visible::One(x) if own(self, x) => NameRes::One(x),
             Visible::Overloads(ds) => {
@@ -280,6 +297,49 @@ impl Db {
             }
             _ => NameRes::NotInRegion(region, at, key),
         }
+    }
+
+    /// When `d` names a package (its declaration or its body, a design unit or nested) and
+    /// `scope` lies within it: the part `scope` is in, the declaration's region and the body's.
+    fn own_package(
+        &self,
+        scope: ScopeId,
+        d: DeclId,
+    ) -> Option<(ScopeId, ScopeId, Option<ScopeId>)> {
+        let (decl, body) = match self.decls[self.entity(d)].kind {
+            // `hir` is set only once the unit is analysed.
+            DeclKind::Unit(u) => match self.units[u].kind {
+                UnitKind::PackageBody => {
+                    let package = *self.units[u].deps.first()?;
+                    (self.units[package].scope, Some(self.units[u].scope))
+                }
+                UnitKind::Package if !matches!(self.units[u].hir, UnitHir::PackageInst(_)) => {
+                    (self.units[u].scope, None)
+                }
+                _ => return None,
+            },
+            DeclKind::Package { scope, body, .. } => (scope, body),
+            _ => return None,
+        };
+        if !self.is_within(scope, decl) {
+            return None;
+        }
+        // A unit body's region lies under its context region, under the package's.
+        let body = body.or_else(|| {
+            let mut cur = Some(scope);
+            while let Some(s) = cur {
+                let up = self.scopes[s].parent;
+                if self.scopes[s].kind == ScopeKind::PackageBody
+                    && up.and_then(|c| self.scopes[c].parent) == Some(decl)
+                {
+                    return Some(s);
+                }
+                cur = up;
+            }
+            None
+        });
+        let region = body.filter(|&b| self.is_within(scope, b)).unwrap_or(decl);
+        Some((region, decl, body))
     }
 
     /// The region of the construct (labelled statement or subprogram) one of `ds` names,

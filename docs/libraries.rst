@@ -38,6 +38,32 @@ Test runners
 A test runner drives yavs through the three commands ``analyze``, ``elab`` and ``run``. VUnit's
 test suites run with yavs. To drive yavs from your own scripts, see "Scripting" in :doc:`cli`.
 
+Using yavs from VUnit
+---------------------
+
+The ``vunit-yavs`` package adds yavs to VUnit as a simulator. It needs yavs 0.11.0 or later on
+``PATH``. VUnit 5.0.0.dev16 or later is a pre-release, which ``pip`` picks up for this package:
+
+.. code-block:: bash
+
+    pip install vunit-yavs
+
+Add the package in ``run.py`` before anything else; the rest of the script is a normal VUnit script:
+
+.. code-block:: python
+
+    from vunit import VUnit
+
+    vu = VUnit.from_argv()
+    vu.add_package("vunit-yavs", allow_setup=True)  # first: it provides the simulator
+    vu.add_vhdl_builtins()
+    vu.add_library("lib").add_source_files("*.vhd")
+    vu.main()
+
+Make VUnit select yavs as described in the
+`package README <https://github.com/ru551n/yavs/blob/main/python/vunit-yavs/README.md>`__;
+if another simulator is installed, VUnit may otherwise choose that one.
+
 .. _vunit-token-server:
 
 Sharing CPU between parallel VUnit tests

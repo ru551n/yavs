@@ -102,10 +102,24 @@ It is off by default; turn it on with ``--yavs-jobserver`` together with ``-p`` 
 own cap with the ``yavs.max_threads`` simulation option, e.g.
 ``vu.set_sim_option("yavs.max_threads", 2)``.
 
-It helps when the long tests are large designs that split across threads, such as many parallel
-processes on one clock. Small testbench-style tests and processor models keep their work on one
-thread, so for them it gains nothing and costs nothing. Measurements are in
-`parallel.md <https://github.com/ru551n/yavs/blob/main/docs/parallel.md>`__.
+yavs splits the processes that wake in the same delta cycle across threads, and only when there is
+enough work to share. It helps designs where many instances do real work on the same clock edge:
+
+* generate loops of processing elements, multi-lane or multi-channel datapaths, MAC or systolic arrays;
+* processes with heavy work per clock edge (wide arithmetic, vector loops, records);
+* large flat RTL with many independent clocked processes.
+
+It does not help (and today costs a few percent) when the long tests are:
+
+* processor models or other designs where one or a few large processes do most of the work;
+* testbench-style tests (a stimulus process, a checker and a small design);
+* long chains of delta cycles that wake only a few processes each;
+* processes that must run in order, such as file or text I/O and shared access or protected objects.
+
+To decide, run the longest test of the regression alone with ``yavs run --threads=4`` and with
+``--threads=1``. If it is at least about 1.3 times faster with 4, turn the token server on for that
+regression, with a cap such as ``--yavs-max-threads 4``: most designs gain little beyond 4 threads.
+Measurements are in `parallel.md <https://github.com/ru551n/yavs/blob/main/docs/parallel.md>`__.
 
 Vendor libraries
 ----------------

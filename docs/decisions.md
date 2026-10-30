@@ -12643,3 +12643,8 @@ The kernel decisions (cap, take only for a batch worth pooling, `TOKEN_IDLE`) st
 - **PyPI after the GitHub release** (agent, 2026-10-30): the `pypi` job (environment `pypi`, trusted publishing) runs after the
   release is created, so a refused upload is re-run alone. PyPI must list `release.yml` with environment `pypi` as a trusted
   publisher (a one-time maintainer step, `RELEASING.md`); without it the job fails and names that step.
+## Typo suggestion distances (#894, 2026-10-30)
+
+Use `strsim::osa_distance` in semantic suggestions and `strsim::levenshtein` in library
+suggestions, preserving the existing thresholds and character-based distances. This removes
+duplicate implementations without changing diagnostics (issue #894; implemented by codex/strsim894).

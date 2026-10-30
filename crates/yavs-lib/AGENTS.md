@@ -12,7 +12,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 - Does not: parse or analyze VHDL (the analyzer hands in `UnitRecord`s: kind, name, dependencies,
   standard), store compiled units (the compilation cache is `yavs-cache` plus `yavs-sem` `image.rs`), or know
   about `std`/`ieee` (those come from `lib/` through `yavs-sem`).
-- Depends on: `yavs-diag`, `serde`, `toml`, `sha2`. Called by: `yavs-sem` (`Libraries` in
+- Depends on: `yavs-diag`, `serde`, `sha2`, `strsim` (`toml` for tests). Called by: `yavs-sem` (`Libraries` in
   `Options`), `yavs-elab`, `yavs` (analyze records files; elab computes the closure).
 
 ## 2. Map

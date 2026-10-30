@@ -10438,3 +10438,9 @@ for bad values, no server, wrong secret); `python/vunit-yavs/tests/test_tokens.p
 message, caps, returns on close, kill, a garbled line, stale secrets), `test_interface.py`, `test_fake_e2e.py` and
 `test_real_yavs.py` (a real yavs runs on a lent token with unchanged output); the new CI job `vunit-yavs` runs the
 package tests against the commit's yavs on Linux and Windows. Not done: the tail-gain measurements of #801.
+The analysed units of the built-in `std`/`ieee` live in one store per user (`$YAVS_STD_CACHE`, else `yavs/std` in the user's cache directory) instead of every library's `yavs-cache/units/`; a fresh library reads them. `YAVS_STD_CACHE=off` keeps the old per-library placement; `E0126` for an unusable directory; a mapped (bootstrap) `ieee` is never shared; `crates/yavs/build.rs` hashes `lib/` into the build id. Cold batched analysis (shared store warm, bench builds, core 8): instructions 0.72 to 0.83 of before on `en_cl_fix_pkg`, `poc_strings`, `neorv32_single_min`, `sc5_timestamp`, `fletcher_bufferreader`, wall 0.75 to 0.92; first call into an empty store unchanged. Decision and numbers: `docs/decisions.md` "Shared std/ieee units". Tests: `crates/yavs/tests/std_share.rs`.
+
+### Typo suggestion implementation (#894)
+
+The semantic and library diagnostics use `strsim` for their existing edit-distance algorithms.
+Semantic suggestions retain adjacent transpositions; library suggestions retain plain Levenshtein distance.

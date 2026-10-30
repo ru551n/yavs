@@ -208,20 +208,7 @@ impl Ctx<'_> {
 
 /// Levenshtein distance.
 fn edit_distance(a: &str, b: &str) -> usize {
-    let b: Vec<char> = b.chars().collect();
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    for (i, ca) in a.chars().enumerate() {
-        let mut cur = vec![i + 1];
-        for (j, cb) in b.iter().enumerate() {
-            cur.push(
-                (prev[j] + usize::from(ca != *cb))
-                    .min(prev[j + 1] + 1)
-                    .min(cur[j] + 1),
-            );
-        }
-        prev = cur;
-    }
-    prev[b.len()]
+    strsim::levenshtein(a, b)
 }
 
 /// Ordered list of files (dependencies first, across libraries) needed to elaborate `top`.
@@ -475,4 +462,14 @@ fn check_hash(lib: &str, dir: Option<&Path>, std: &str, path: &Path, recorded: &
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn edit_distance_counts_edits_without_transpositions() {
+        assert_eq!(super::edit_distance("ab", "ba"), 2);
+        assert_eq!(super::edit_distance("café", "cafe"), 1);
+        assert_eq!(super::edit_distance("", "é"), 1);
+    }
 }

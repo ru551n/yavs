@@ -45,7 +45,7 @@ One file per area. "Slice" is the sem.md section 10 slice that fills it.
 | `hir.rs` | HIR node shapes M2 consumes (section 7) | all | shapes fixed; changes need a note in sem.md |
 | `validate.rs` | HIR invariants (7.3) | S2 onward | owner: literal |
 | `diag.rs` | codes (8.1) and `--explain` texts | all | add codes additively |
-| `suggest.rs` | did-you-mean (8.3) | S1 | done; didyoumean: kind noun, abbreviations, declaration label, `similar`/`suggest`/`help` shared by every unknown-name site (#853) |
+| `suggest.rs` | did-you-mean (8.3) | S1 | done; didyoumean: kind noun, abbreviations, declaration label, `similar`/`suggest`/`help` shared by every unknown-name site (#853); codex/strsim894: use strsim distances (#894) |
 
 To take a module, edit its row in your first commit (`owner: <short name>`), push, then work.
 If you need a function in a module someone else owns, add it in a small separate commit, or ask

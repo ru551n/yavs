@@ -17,7 +17,7 @@ It summarises and links; the binding documents are `docs/design/sem.md` (design)
   anything, or decide when to cache: `image.rs` only turns a settled `Db` into bytes and back (`docs/decisions.md` "Compilation cache"); the key, the files and the policy are `yavs-cache` and the CLI.
   Single-threaded by design.
 - Depends on: `yavs-diag`, `yavs-syntax`, `yavs-lib` (`Libraries`, `UnitRecord`), `yavs-std`
-  (`value::lex_abstract` for literals). Called by: `yavs` (analyze, elab), `yavs-lower`,
+  (`value::lex_abstract` for literals), `strsim` (typo suggestion distances). Called by: `yavs` (analyze, elab), `yavs-lower`,
   `yavs-elab`, `fuzz/` (target `sem`).
 
 ## 2. Map

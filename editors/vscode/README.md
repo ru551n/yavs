@@ -12,8 +12,9 @@ yavs 0.11.0 or newer must be on `PATH`, or set `yavsPath` in the launch configur
 extension needs VS Code 1.80 or newer.
 
 Download `yavs-debug-<version>.vsix` from the
-[releases of yavs](https://github.com/ru551n/yavs/releases) (the ones titled "yavs VS Code
-debugger"; `SHA256SUMS` is next to it) and install it:
+[releases of yavs](https://github.com/ru551n/yavs/releases) (the yavs releases after 0.11.0 carry the
+extension of the same version, 0.1.0 is the release "yavs VS Code debugger 0.1.0"; `SHA256SUMS`
+is next to it) and install it:
 
 ```
 code --install-extension yavs-debug-<version>.vsix
@@ -126,6 +127,7 @@ server can also stream waves to a client (`yavs/waveSubscribe`); this extension 
 ## Tests
 
 CI (`.github/workflows/vscode.yml`) runs both tests and packages the extension on every change to
-this directory, against the released yavs named in that workflow. They are described in
+this directory, against yavs built from the same commit; a release tests it against the release
+archive. They are described in
 `AGENTS.md`: `test/client.js` drives `yavs run --dap=stdio` the way VS Code does, and
 `test/vscode/run.js` runs a real VS Code headless on `sample/`.

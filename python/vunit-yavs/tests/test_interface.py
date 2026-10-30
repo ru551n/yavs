@@ -28,7 +28,7 @@ from vunit.test.suites import encode_dict
 from vunit.ui import VUnit
 from vunit.vhdl_standard import VHDL
 
-from vunit_yavs import YavsInterface, YavsVersion, check_debug_args, write_response_file
+from vunit_yavs import YAVS_MIN_VERSION, YavsInterface, YavsVersion, check_debug_args, write_response_file
 from vunit_yavs.tokens import TokenServer
 
 FAKE_BIN = Path(__file__).parent / "fake_bin"
@@ -461,8 +461,8 @@ class TestYavsInterface(unittest.TestCase):
                 write_response_file(Path(self.output_path) / "args.rsp", [arg])
 
     def test_check_version(self):
-        with mock.patch.object(YavsInterface, "_get_version_output", return_value="yavs 0.11.0\n"):
-            self.assertEqual(YavsInterface.check_version("prefix"), YavsVersion("0.11.0"))
+        with mock.patch.object(YavsInterface, "_get_version_output", return_value=f"yavs {YAVS_MIN_VERSION}\n"):
+            self.assertEqual(YavsInterface.check_version("prefix"), YAVS_MIN_VERSION)
 
         with (
             mock.patch.object(YavsInterface, "_get_version_output", return_value="garbage"),

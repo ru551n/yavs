@@ -1,19 +1,24 @@
-# Release on a `v[0-9]*` tag, so `vunit-yavs-v*` tags of the Python package do not start one (#165,
-# docs/decisions.md "Release trigger and first release"): the CI
-# checks on the tagged commit, a release build of `yavs` and `yavs-gui` per platform (std/ieee
-# built in; yavs-gui from the gui/ workspace, shipped in the same archive with its EUPL-1.2
-# licence, docs/decisions.md "GUI (M10)"),
-# SHA256SUMS and a GitHub pre-release with notes from release_notes/<version>.md (towncrier,
-# collected and renamed in the commit that bumps the version). The committed conformance report of
-# the tagged commit (docs/conformance.md and .json) is attached as yavs-<version>-conformance.md
-# and .json, listed in SHA256SUMS (user, 2026-10-28).
-# One archive per platform (docs/decisions.md "Release archives", #780): yavs-<version>-<target>,
-# built with the Cranelift compiled tier (`--features clift`, nothing to bundle; `--tier=auto`
-# is the default, `yavs --version` says `compiled tier: cranelift`; user 2026-10-28, #481).
-# The Linux archives are built with cargo-zigbuild against glibc 2.17 (docs/decisions.md "Linux
-# release archives") and smoke-tested in centos:7.
-# workflow_dispatch with dry_run builds and packages the same archives and conformance report as
-# workflow artifacts and publishes nothing.
+# One release per version with every artifact (RELEASING.md, docs/decisions.md "One release with
+# every artifact", #903), on a `v[0-9]*` tag:
+# - the version of yavs, vunit-yavs and the VS Code extension must equal the tag
+#   (tools/release/bump.py --check);
+# - the CI checks on the tagged commit, a release build of `yavs` and `yavs-gui` per platform
+#   (std/ieee built in, the Cranelift compiled tier, `--features clift`; yavs-gui from the gui/
+#   workspace with its EUPL-1.2 licence), one archive yavs-<version>-<target> each (docs/decisions.md
+#   "Release archives", "One release archive per platform"); the Linux ones built with
+#   cargo-zigbuild against glibc 2.17 and smoke-tested in centos:7;
+# - the vunit-yavs wheel and sdist, tested on every platform against the archives of this run;
+#   the VS Code extension (.vsix, vscode.yml) tested against the Linux x86_64 archive of this run;
+# - the committed conformance report (docs/conformance.md and .json) as
+#   yavs-<version>-conformance.md and .json;
+# - one SHA256SUMS over everything, one GitHub pre-release with notes from
+#   release_notes/<version>.md, and the wheel and sdist on PyPI (trusted publishing, environment
+#   `pypi`).
+# Not done here: the VS Code Marketplace and Open VSX (needs the maintainer's publisher tokens). Add
+# a job after `publish` that downloads the `vsix` artifact and runs `vsce publish --packagePath`
+# (secret VSCE_PAT) and `ovsx publish` (secret OVSX_PAT).
+# workflow_dispatch with dry_run builds, tests and packages everything as workflow artifacts and
+# publishes nothing.
 name: Release
 
 on:
@@ -37,6 +42,18 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  versions:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: yavs, vunit-yavs and the extension carry the release version
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            python3 -I tools/release/bump.py --check "${GITHUB_REF_NAME#v}"
+          else
+            python3 -I tools/release/bump.py --check
+          fi
+
   checks:
     if: github.event_name == 'push' || inputs.checks
     uses: ./.github/workflows/ci.yml
@@ -46,7 +63,7 @@ jobs:
     uses: ./.github/workflows/gui.yml
 
   build:
-    needs: [checks, gui-checks]
+    needs: [versions, checks, gui-checks]
     # Skipped checks (a dispatch without them) do not stop the build; failed ones do.
     if: ${{ !failure() && !cancelled() }}
     timeout-minutes: 240
@@ -77,12 +94,7 @@ jobs:
           echo "$RUNNER_TEMP/zb/bin" >> "$GITHUB_PATH"
           rustup target add ${{ matrix.target }}
       - name: Version
-        run: |
-          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
-          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$version" ]]; then
-            echo "tag $GITHUB_REF_NAME does not match the workspace version $version"; exit 1
-          fi
-          echo "VERSION=$version" >> "$GITHUB_ENV"
+        run: echo "VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)" >> "$GITHUB_ENV"
       - name: Build
         run: |
           t=${{ matrix.target }}
@@ -166,31 +178,122 @@ jobs:
             dist/yavs-*.zip
           if-no-files-found: error
 
-  publish:
+  # The vunit-yavs sdist and wheel
+  python-dist:
+    needs: versions
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: python/vunit-yavs
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Build
+        run: |
+          python -m pip install build twine
+          python -m build
+          python -m twine check --strict dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vunit-yavs-dist
+          path: python/vunit-yavs/dist/
+          if-no-files-found: error
+
+  # The package's tests (unit, fake end to end, real binary) against the wheel and the archive of
+  # each platform built in this run
+  vunit-yavs:
+    needs: [build, python-dist]
+    if: ${{ !failure() && !cancelled() }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v4
+        with:
+          name: yavs-${{ matrix.target }}
+          path: ${{ runner.temp }}/yavs
+      - uses: actions/download-artifact@v4
+        with:
+          name: vunit-yavs-dist
+          path: ${{ runner.temp }}/dist
+      - name: Unpack the archive, install the wheel
+        run: |
+          cd "$RUNNER_TEMP/yavs"
+          if [[ "$RUNNER_OS" == Windows ]]; then 7z x -y yavs-*.zip > /dev/null; else tar xzf yavs-*.tar.gz; fi
+          echo "VUNIT_YAVS_PATH=$(echo "$PWD"/yavs-*-${{ matrix.target }})" >> "$GITHUB_ENV"
+          python -m pip install "$RUNNER_TEMP"/dist/*.whl pytest
+      - name: Package tests
+        run: |
+          "$VUNIT_YAVS_PATH/yavs" --version
+          cd "$RUNNER_TEMP"  # Out of the source tree, so the tests import the installed wheel
+          YAVS_STD_CACHE="$RUNNER_TEMP/std" python -m pytest -v "$GITHUB_WORKSPACE/python/vunit-yavs/tests"
+
+  # The VS Code extension against the Linux x86_64 archive of this run; uploads the artifact `vsix`
+  vscode:
     needs: build
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/vscode.yml
+    with:
+      yavs_artifact: yavs-x86_64-unknown-linux-gnu
+
+  publish:
+    needs: [build, python-dist, vunit-yavs, vscode]
     if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v5
+      # Only the release files: the archives, the wheel and sdist, the .vsix
       - uses: actions/download-artifact@v4
         with:
+          pattern: yavs-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: vunit-yavs-dist
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: vsix
+          path: dist
       - name: SHA256SUMS, notes and conformance report
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
           test -s "release_notes/$version.md" || { echo "release_notes/$version.md is missing"; exit 1; }
-          cp "release_notes/$version.md" notes.md
+          cat "release_notes/$version.md" - > notes.md <<NOTES
+
+          ---
+
+          The test runner package \`vunit-yavs\` $version is on PyPI (\`pip install vunit-yavs==$version\`); its wheel and sdist are attached too. The VS Code debugger extension: \`code --install-extension yavs-debug-$version.vsix\`. Verify every download with \`SHA256SUMS\`.
+          NOTES
           # The committed report of the tagged commit; the conformance workflow fails a tag whose report is stale.
           for ext in md json; do
             test -s "docs/conformance.$ext" || { echo "docs/conformance.$ext is missing"; exit 1; }
             cp "docs/conformance.$ext" "dist/yavs-$version-conformance.$ext"
           done
-          cd dist && sha256sum yavs-* > SHA256SUMS && cat SHA256SUMS
-          grep -q " yavs-$version-conformance.md$" SHA256SUMS
-          grep -q " yavs-$version-conformance.json$" SHA256SUMS
+          cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+          for f in yavs-$version-{x86_64-unknown-linux-gnu.tar.gz,aarch64-unknown-linux-gnu.tar.gz,x86_64-pc-windows-msvc.zip} \
+            yavs-$version-conformance.{md,json} vunit_yavs-$version{-py3-none-any.whl,.tar.gz} yavs-debug-$version.vsix; do
+            grep -q " $f\$" SHA256SUMS || { echo "$f is missing from the release files"; exit 1; }
+          done
+          [[ $(wc -l < SHA256SUMS) == 8 ]] || { echo "unexpected files in the release"; exit 1; }
       - uses: actions/upload-artifact@v4
         with:
           name: SHA256SUMS-notes-and-conformance
@@ -207,3 +310,24 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" dist/* --prerelease --verify-tag \
             --title "yavs ${GITHUB_REF_NAME#v}" --notes-file notes.md
+
+  # vunit-yavs to PyPI by trusted publishing (OIDC, no tokens) after the GitHub release, so a refused
+  # upload can be re-run alone. PyPI must list release.yml with environment `pypi` (RELEASING.md).
+  pypi:
+    needs: publish
+    if: github.event_name == 'push' || !inputs.dry_run
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: vunit-yavs-dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Explain a refused upload
+        if: failure()
+        run: |
+          echo "::error::PyPI refused vunit-yavs. If it says invalid-publisher: on pypi.org, project vunit-yavs, Publishing, add a GitHub trusted publisher with owner ru551n, repository yavs, workflow release.yml, environment pypi (RELEASING.md), then re-run this job."
+          exit 1

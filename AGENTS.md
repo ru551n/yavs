@@ -28,6 +28,7 @@ to, and those documents win over your memory.
 | `lib/` (std/ieee sources) | `lib/AGENTS.md`, `lib/README.md`, `lib/SOURCES.md`, `lib/NATIVE.md` |
 | the GUI (`gui/`) | `gui/AGENTS.md`, `docs/design/gui.md` |
 | tests and tools | `tests/AGENTS.md` (and `tests/{diag,corpus,parse-corpus,discrepancies}/AGENTS.md`), `tools/AGENTS.md` (and `tools/{corpus,difftest,discrepancies}/AGENTS.md`), `fuzz/AGENTS.md` |
+| releases, version numbers, `.github/workflows/release.yml` | `RELEASING.md` (one release with every artifact, one version, `tools/release/bump.py`) |
 
 ## 2. Repository map
 

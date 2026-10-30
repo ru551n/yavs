@@ -17,6 +17,8 @@ import unittest
 from pathlib import Path
 from xml.etree import ElementTree
 
+from vunit_yavs import YAVS_MIN_VERSION
+
 HERE = Path(__file__).parent
 PASS = "lib.tb_yavs.test_pass"
 COMMA = "lib.tb_yavs.test with, comma: and colon"
@@ -42,7 +44,7 @@ class TestFakeYavs(unittest.TestCase):
     Run a real run.py with VUNIT_SIMULATOR=yavs against the fake yavs
     """
 
-    def _run(self, *args, fail="", version="0.11.0"):
+    def _run(self, *args, fail="", version=str(YAVS_MIN_VERSION)):
         """Run run.py and return the exit code, the output, the JUnit results and the logged yavs calls"""
         with tempfile.TemporaryDirectory() as tempdir:
             tempdir = Path(tempdir)
@@ -106,7 +108,7 @@ class TestFakeYavs(unittest.TestCase):
         exit_code, output, _, calls = self._run(PASS, version="0.8.2")
         self.assertNotEqual(exit_code, 0)
         self.assertIn("yavs 0.8.2 at ", output)
-        self.assertIn("which needs yavs 0.11.0 or later", output)
+        self.assertIn(f"which needs yavs {YAVS_MIN_VERSION} or later", output)
         self.assertFalse([call for call in calls if call[0] == "analyze"])
 
     def test_max_threads(self):

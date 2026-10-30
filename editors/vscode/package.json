@@ -2,7 +2,7 @@
   "name": "yavs-debug",
   "displayName": "yavs VHDL debugger",
   "description": "Debug VHDL testbenches with the yavs simulator (Debug Adapter Protocol).",
-  "version": "0.1.0",
+  "version": "0.11.0",
   "publisher": "ru551n",
   "license": "MIT OR Apache-2.0",
   "repository": {

@@ -35,6 +35,8 @@ milestone users care about works.
   the Python package must not start a release); builds `yavs` for Linux x86_64, Linux aarch64 and
   Windows x86_64, runs the CI
   checks on the tagged commit first, and attaches archives plus SHA256SUMS to a GitHub release.
+  Since 2026-10-30 the same release also carries vunit-yavs and the VS Code extension: "One release
+  with every artifact".
 - Every release also attaches the conformance report of the tagged commit (user, 2026-10-28):
   the committed `docs/conformance.md` and `docs/conformance.json` as
   `yavs-<version>-conformance.md` and `.json`, listed in SHA256SUMS. Rationale: users see what
@@ -12602,7 +12604,7 @@ The kernel decisions (cap, take only for a batch worth pooling, `TOKEN_IDLE`) st
   `YAVS_TOKENS`").
 - **Releases** (user, 2026-10-28): tag `vunit-yavs-v<version>` runs `.github/workflows/vunit-yavs-release.yml` (tests against the
   yavs binary release of the package's `YAVS_MIN_VERSION`, then PyPI by trusted publishing; no TestPyPI step, user 2026-10-29); the binary release now runs on
-  `v[0-9]*` only, so neither tag starts the other workflow. `python/vunit-yavs/RELEASING.md` has the order. The package is released on its own (user, 2026-10-29): its version is independent of yavs's, and a package release that needs a newer yavs raises `YAVS_MIN_VERSION` first.
+  `v[0-9]*` only, so neither tag starts the other workflow. `python/vunit-yavs/RELEASING.md` has the order. The package is released on its own (user, 2026-10-29): its version is independent of yavs's, and a package release that needs a newer yavs raises `YAVS_MIN_VERSION` first. Superseded on 2026-10-30: "One release with every artifact" (one release, one version, `vunit-yavs-release.yml` removed).
 
 ## CLI corrections from the documentation audit (#845, #850, #835, #838, #839, #836, #837; agent, 2026-10-29)
 
@@ -12618,3 +12620,26 @@ The kernel decisions (cap, take only for a batch worth pooling, `TOKEN_IDLE`) st
 
 - **Deferred constant used in its package body before the full declaration** (#861): an analysis error, `E1226` (option a), kept. No run-time error and no per-revision split.
 - **Null range choice next to other associations in an aggregate** (#860): `E1326` in 1993 files only (option a); 2008 and 2019 accept it. See `docs/design/lrm-checks.md`.
+
+## One release with every artifact (release.yml, tools/release/bump.py, RELEASING.md, #903, maintainer, 2026-10-30)
+
+- **One release per version holds everything** (maintainer, 2026-10-30): the simulator archives (Linux x86_64, Linux aarch64,
+  Windows x86_64), the vunit-yavs wheel and sdist (also on PyPI), the VS Code extension `.vsix`, the conformance report, one
+  `SHA256SUMS` over all of them and one set of release notes (`release_notes/<version>.md`, a summary line and at most 10
+  one-line bullets first, as before; the package's and the extension's fragments are part of it). Marketplace and Open VSX
+  publishing stays for later (the hook is described in `release.yml`). Rationale: one place and one version for users.
+- **Lockstep versions** (maintainer, 2026-10-30): the Cargo workspace, vunit-yavs (`pyproject.toml` and `YAVS_MIN_VERSION`) and the
+  extension (`package.json`, the minimum yavs in its README) carry the release version; every release bumps all three with
+  `tools/release/bump.py X.Y.Z`. The extension went from 0.1.0 to 0.11.0 on `main` to join (agent, 2026-10-30; nothing was
+  released with that version).
+- **No development versions** (agent, 2026-10-30): `main` carries the last released version everywhere until the release commit.
+  `tools/release/bump.py --check` (the `versions` job of `ci.yml`, and `release.yml` with the tag's version) fails when a spot
+  differs. Rationale: the Cargo workspace already worked this way; a plain equality check needs no rules. Replaces the `.dev0`
+  step of the old vunit-yavs release steps. The package tests take the version from `YAVS_MIN_VERSION`, so a bump needs no test edit.
+- **The separate flows are gone** (maintainer, 2026-10-30): `vunit-yavs-release.yml` (`vunit-yavs-v*` tags) and
+  `vscode-release.yml` (`vscode-v*` tags) are removed; their tags and releases stay. `release.yml` tests the package (on all three
+  platforms) and the extension (`vscode.yml`, Linux x86_64) against the archives built in the same run, not a downloaded release.
+  `vscode.yml` on its own builds yavs from the same commit, so it no longer names a yavs version.
+- **PyPI after the GitHub release** (agent, 2026-10-30): the `pypi` job (environment `pypi`, trusted publishing) runs after the
+  release is created, so a refused upload is re-run alone. PyPI must list `release.yml` with environment `pypi` as a trusted
+  publisher (a one-time maintainer step, `RELEASING.md`); without it the job fails and names that step.

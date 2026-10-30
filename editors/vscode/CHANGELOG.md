@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The extension is released with yavs and carries its version (one release with every artifact).
+
 ## 0.1.0
 
 First release. The `yavs` debugger type (launch and attach over the Debug Adapter Protocol),

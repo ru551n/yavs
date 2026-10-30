@@ -21,6 +21,7 @@ lock (FAKE_YAVS_NO_LOCK=1). A wait for the lock is logged as ["lock-wait", libra
 import fcntl
 import json
 import os
+import re
 import socket
 import sys
 import time
@@ -232,13 +233,19 @@ def expand_response_files(argv):
     return result
 
 
+def min_version():
+    """The package's YAVS_MIN_VERSION from the source tree, so a version bump needs no test edit."""
+    init = (Path(__file__).resolve().parents[2] / "vunit_yavs" / "__init__.py").read_text(encoding="utf-8")
+    return re.search(r'^YAVS_MIN_VERSION = YavsVersion\("([^"]+)"\)', init, re.M).group(1)
+
+
 def main(argv):
     """Run the yavs command argv and return its exit code."""
     argv = expand_response_files(argv)
     log(argv)
 
     if argv == ["--version"]:
-        print(f"yavs {os.environ.get('FAKE_YAVS_VERSION', '0.11.0')}-fake (test double)")
+        print(f"yavs {os.environ.get('FAKE_YAVS_VERSION') or min_version()}-fake (test double)")
         return 0
     if argv and argv[0] == "analyze":
         return analyze(argv[1:])

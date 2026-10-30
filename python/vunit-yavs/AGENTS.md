@@ -24,7 +24,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change the P
 | `tests/test_tokens.py` | Lending order, the protocol over real sockets: answers per message, caps, tokens back on close, kill and test end, bad secrets and lines |
 | `tests/test_fake_e2e.py` | `tests/project/run.py` end to end against `tests/fake_bin/yavs` |
 | `tests/test_real_yavs.py` | The same project on a real yavs (`VUNIT_YAVS_PATH` or `PATH`, skipped otherwise), plain, with the token server, a real yavs on a lent token, and under `--yavs-debug` with a minimal DAP client |
-| `README.md`, `CHANGELOG.md`, `RELEASING.md` | User guide, changes per version, release steps (`.github/workflows/vunit-yavs-release.yml`) |
+| `README.md`, `CHANGELOG.md`, `RELEASING.md` | User guide, changes per version, a pointer to the release steps (root `RELEASING.md`: one release with yavs, one version) |
 
 ## 3. Design decisions that bind this module
 

@@ -1011,6 +1011,16 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Lower a resolution function, wrapping a predefined or native body when necessary.
+    pub fn resolver(&mut self, decl: DeclId) -> Result<FuncId, Vec<Diagnostic>> {
+        let f = func::resolver(self.db, &mut self.pb, &mut self.cx, decl);
+        self.drain();
+        match f {
+            Ok(f) if self.cx.diags.is_empty() => Ok(f),
+            _ => Err(self.cx.take_failed()),
+        }
+    }
+
     /// The IR type of `t` (lowered once), for callers marshalling values of it.
     pub fn ty(&mut self, t: yavs_sem::TypeId) -> Result<yavs_ir::TyId, Vec<Diagnostic>> {
         match ty::lower(self.db, &mut self.cx, &mut self.pb, t, Span::default()) {

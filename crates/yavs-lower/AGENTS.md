@@ -107,6 +107,10 @@ yavs-interp and yavs-elab and the Requests are in `crates/yavs-lower/DESIGN.md`;
 | A choice range of an aggregate of a one-dimensional array with at most four static elements (`AGG_UNROLL`, `(0 to 0 => cin)`) is written element by element (`Pos` and the store per element), not as a loop | A loop made the process a compute loop for `--tier=auto` (the full `O2` pipeline, 58 ms for a 135-instruction adder process) and kept the writes of the signal out of the `CopyDrive` fusion (#713) | `docs/decisions.md` "Carry-in aggregates and copies of the same module" |
 | A slice of a signal of a plain array type (`s(h downto l)`, the prefix a signal name) is read as the sub-signal the slice selects (`Fx::sig_slice`, `sig_steps`), not as a read of the whole signal followed by an `LCopy` of the slice | The copy out of the whole read cost two operations and the bytes of the whole signal for every slice operand of an adder process, and for a slice of a wide bus the whole bus (#713) | `docs/decisions.md` "Carry-in aggregates and copies of the same module" |
 
+Predefined and native resolution functions get a callable wrapper (`Lowerer::resolver`):
+its array argument uses the VHDL body ABI, then crosses to the native as a fat pair.
+VHDL resolution bodies continue through normal subprogram lowering (#608).
+
 Module-local decisions go in this section and DESIGN.md in the same commit (root `AGENTS.md`
 rule 24).
 

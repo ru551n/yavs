@@ -1268,7 +1268,7 @@ fn nested_element_resolution() {
 }
 
 #[test]
-fn resolution_function_in_a_block_fails_early() {
+fn resolution_function_in_a_block() {
     let src = "
       entity t is end;
       architecture a of t is
@@ -1283,16 +1283,14 @@ fn resolution_function_in_a_block_fails_early() {
         end block;
       end;";
     let (mut db, mut e) = elab("res_block", src, "t", &[]);
-    let errors = e.lower(&mut db).expect_err("not implemented");
-    assert_eq!(errors.len(), 1);
-    assert_eq!(errors[0].code, "E2199");
-    let span = errors[0]
-        .primary
-        .as_ref()
-        .expect("declaration location")
-        .span;
-    let source = db.sources.get(span.file);
-    assert_eq!(source.line_col(span.start).0, 7);
+    e.lower(&mut db).expect("lower block resolver");
+    let mut sim = e.build(yavs_kernel::Config::default()).expect("build");
+    sim.run_for(yavs_kernel::Time::ns(1)).expect("run");
+    let signal = sim.signal_id(":t:b:s").expect("block signal");
+    assert_eq!(
+        sim.value(signal).expect("value"),
+        yavs_kernel::Value::Bytes(1i32.to_le_bytes().to_vec())
+    );
 }
 
 #[test]
@@ -3059,4 +3057,24 @@ fn record_leaves_share_kernel_signals() {
     };
     let (r, _, _) = locs(&off);
     assert!(r.windows(2).all(|w| w[0].0 + 1 == w[1].0 && w[1].1 == 0));
+}
+
+#[test]
+fn a_block_resolver_without_processes_is_lowered() {
+    let src = "entity t is generic (g : integer := 7); end;
+      architecture a of t is begin
+        b : block
+          type iv is array (natural range <>) of integer;
+          function r(v : iv) return integer is begin return g; end;
+          subtype ri is r integer;
+          signal s : ri := 0;
+        begin end block;
+      end;";
+    let (mut db, mut e) = elab("idle_block_resolver", src, "t", &[]);
+    e.lower(&mut db).expect("lower");
+    let ir = e.ir.as_ref().expect("resolver IR");
+    assert_eq!(ir.resolvers.len(), 1);
+    let region = *ir.res_regions.values().next().expect("resolver region");
+    assert_eq!(e.hier.path_name(region, Case::Lrm), ":t:b:");
+    e.build(yavs_kernel::Config::default()).expect("build");
 }

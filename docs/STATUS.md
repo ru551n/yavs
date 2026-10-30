@@ -10452,3 +10452,11 @@ without evaluating impure bound functions again (#848). Unsupported elaboration 
 use E2199 and unsupported command combinations use E0199, with explain texts; E9999
 is reserved for internal errors (#868). Suite verdicts keep limitations separate from
 valid rejections.
+
+### Resolution function fixes (#889: #608, #817)
+
+Predefined functions used through aliases as resolution functions lower to callable native
+wrappers (#608). Functions declared in blocks and generate regions now resolve signals
+using the constants, generics and generate parameters of their declaring region (#817),
+including signals declared in an inner block. Regression tests cover both supported
+revisions for block/generate cases, cache reuse, coverage and one or four threads.

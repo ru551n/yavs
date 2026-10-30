@@ -12657,3 +12657,13 @@ duplicate implementations without changing diagnostics (issue #894; implemented 
 - Unsupported elaboration features use E2199; unsupported command combinations use E0199.
   E9999 denotes internal errors only. Suite drivers treat the new limitation codes as no
   language rejection, preserving their verdict rules (#868; agent codex/elab889).
+
+## Resolution functions in native code and nested regions (#889, 2026-10-30)
+
+- Wrap predefined and native resolution functions in the normal callable array ABI before
+  invoking the existing native with a fat pair. Resolution uses the existing implementations
+  rather than trying to lower a missing VHDL body (#608; agent codex/resolvers889).
+- Bind a block or generate resolution function to the enclosing elaborated region that
+  declares it, walking outward from the signal. Its region data supplies captured constants,
+  generics and iteration parameters; lower its containing architecture even if it has no
+  processes (#817; agent codex/resolvers889).

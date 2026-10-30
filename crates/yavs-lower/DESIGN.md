@@ -102,6 +102,10 @@ a call into your module in a small commit.
   one-dimensional descriptor of its range (`left`, `right`, direction; a floating point
   bound as its bits), read back by `r`'s range (`Db::scalar_range`, #327). The elaborator
   passes a value of that subtype in the same place (for a scalar: its bounds only).
+- A predefined or native resolution function has a wrapper with the ordinary single-array
+  function ABI (`Lowerer::resolver`). The wrapper packs data and descriptor into the native
+  fat pair, calls the existing native, and returns its result. The wrapper is shared per
+  declaration; VHDL resolution bodies use the normal subprogram path (#608).
 - Natives: NATIVE.md symbols; implicit families via `yavs_sem::mangle::implicit_native` with the
   operated type as `NativeRef::ty`; `'image` is `yavs.attr.image` (type mark and 2019 object
   forms; a 2019 array or record value as a fat pair, formatted by the interpreter), `'value`

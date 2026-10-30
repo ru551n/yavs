@@ -147,6 +147,70 @@ pub(crate) fn func_of(
     Ok(f)
 }
 
+/// Give a native resolution function the same callable ABI as a VHDL body.
+pub(crate) fn resolver(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, d: DeclId) -> R<FuncId> {
+    if let Some(&f) = cx.funcs.get(&d) {
+        return Ok(f);
+    }
+    let decl = &db.decls[d];
+    let Some(sp) = decl.kind.subprogram() else {
+        return Err(cx.ice(decl.span, "resolution function is not a subprogram"));
+    };
+    let (symbol, native_ty) = match &sp.body {
+        Body::Implicit(op) => (yavs_sem::mangle::implicit_native(db, op), Some(op.ty)),
+        Body::Native(sym) => (sym.to_string(), None),
+        _ => return func_of(db, pb, cx, d, decl.span),
+    };
+    let ([param], Some(ret)) = (&sp.params[..], sp.ret) else {
+        return Err(cx.ice(decl.span, "resolution function has an invalid profile"));
+    };
+    let f = pb.declare(&decl.name.to_string(), FuncKind::Function, None);
+    let mut fx = Fx::new(
+        db,
+        cx,
+        pb.define(f),
+        0,
+        FuncKind::Function,
+        decl.name.to_string(),
+    );
+    fx.stmt_start(StmtKind::Subprogram, decl.span);
+    let ret_ty = fx.ty(db.base(ret), decl.span)?;
+    fx.fb.ret_ty(ret_ty);
+    if let SubprogramKind::Function { pure: true } = sp.kind {
+        fx.fb.flag(FuncFlags::PURE);
+    }
+    let data = fx
+        .fb
+        .param("values", Width::B8, ParamClass::Value, Mode::In, None);
+    let dope = fx
+        .fb
+        .param("values'dope", Width::B8, ParamClass::Value, Mode::In, None);
+    let param_ty = fx.ty(db.base(param.subtype), decl.span)?;
+    fx.fb.param_array(data, param_ty);
+    fx.fb.root(data, RootKind::Addr);
+    fx.fb.root(dope, RootKind::Addr);
+    let data_addr = fx.addr(Space::Frame(0), data);
+    let data = fx.load(data_addr, Width::B8, RegTy::Ptr);
+    let dope_addr = fx.addr(Space::Frame(0), dope);
+    let dope = fx.load(dope_addr, Width::B8, RegTy::Ptr);
+    let fat = fx.make_fat(data, dope);
+    let native_ty = native_ty.map(|t| fx.ty(t, decl.span)).transpose()?;
+    let result = fx.native(&symbol, native_ty, &[fat], Some(ret), decl.span)?;
+    let result = match result {
+        Some(crate::expr::V::S(v)) => v,
+        Some(crate::expr::V::A(data, dope)) => fx.make_fat(data, dope),
+        None => {
+            return Err(fx
+                .cx
+                .ice(decl.span, "resolution function returned no value"));
+        }
+    };
+    fx.ret_term(Some(result));
+    fx.end(decl.span);
+    cx.funcs.insert(d, f);
+    Ok(f)
+}
+
 /// Lowering state of one function.
 pub(crate) struct Fx<'a, 'b> {
     pub db: &'a Db,

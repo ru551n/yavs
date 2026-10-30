@@ -32,8 +32,8 @@ pub struct Ir {
     /// resolution function's parameter: the driving values arrive as an array from that left
     /// bound in that direction (lrm-checks L101).
     pub res_index: HashMap<yavs_sem::DeclId, (i64, bool)>,
-    /// Leaves resolved by a function declared in an entity or architecture: the instance
-    /// whose data the function reads (its constants and generics, #164).
+    /// Leaves resolved by a function declared in an elaborated region: the instance, block
+    /// or generate iteration whose data the function reads (#164, #817).
     pub res_regions: std::collections::BTreeMap<crate::LeafId, ScopeId>,
     /// Instances without processes whose declarative part runs at the start (constants that
     /// can fail).
@@ -287,8 +287,8 @@ impl Elaborated {
                 init_regions.push(ScopeId(k as u32));
             }
         }
-        // A resolution function declared in an entity or architecture reads that instance's
-        // data, so its architecture is lowered even when it owns no process.
+        // A resolution function reads its declaring region's data, so the containing
+        // architecture is lowered even when it owns no process.
         let mut res_regions = std::collections::BTreeMap::new();
         for (k, leaf) in self.nets.leaves.iter().enumerate() {
             let Some(LeafRes::Func(d) | LeafRes::Whole(d)) = leaf.resolution else {
@@ -297,7 +297,7 @@ impl Elaborated {
             let Some(region) = self.res_region(db, d, self.nets.obj(leaf.obj).scope)? else {
                 continue;
             };
-            if let ScopeKind::Instance { arch, .. } = self.hier.scope(region).kind
+            if let ScopeKind::Instance { arch, .. } = self.hier.scope(self.instance_of(region)).kind
                 && !archs.contains(&arch)
             {
                 archs.push(arch);
@@ -600,7 +600,7 @@ impl Elaborated {
             if let Some(LeafRes::Func(d) | LeafRes::Whole(d)) = leaf.resolution
                 && !resolvers.iter().any(|&(x, _)| x == d)
             {
-                resolvers.push((d, l.subprogram(d)?));
+                resolvers.push((d, l.resolver(d)?));
             }
             if let Some(LeafRes::Func(d) | LeafRes::Whole(d)) = leaf.resolution
                 && !res_types.iter().any(|&(x, _)| x == d)
@@ -739,7 +739,7 @@ impl Elaborated {
 
     /// The instance whose data resolution function `d` reads when it resolves a signal
     /// declared in `obj_scope`: `None` for a function declared in a package (no instance
-    /// data). Functions declared in blocks, generates or subprograms are not supported yet.
+    /// data). Blocks and generate iterations supply their own region data.
     fn res_region(
         &self,
         db: &Db,
@@ -750,14 +750,13 @@ impl Elaborated {
         let ds = db.decls[d].scope;
         match db.scopes[ds].kind {
             S::Package | S::PackageBody => return Ok(None),
-            S::Entity | S::Architecture => {}
+            S::Entity | S::Architecture | S::Block | S::Generate => {}
             _ => {
                 return Err(vec![
                     Diagnostic::error(
                         crate::codes::NOT_IMPLEMENTED,
                         format!(
-                            "resolution function `{}` declared in a block, generate or \
-                             subprogram is not implemented yet",
+                            "resolution function `{}` declared in this region is not implemented yet",
                             db.decls[d].name
                         ),
                     )
@@ -766,24 +765,27 @@ impl Elaborated {
                 ]);
             }
         }
-        let i = self.instance_of(obj_scope);
-        match self.hier.scope(i).kind {
-            ScopeKind::Instance { entity, arch }
-                if db.units[arch].scope == ds || db.units[entity].scope == ds =>
+        let mut region = Some(obj_scope);
+        while let Some(s) = region {
+            if self
+                .regions
+                .get(&s)
+                .is_some_and(|scopes| scopes.contains(&ds))
             {
-                Ok(Some(i))
+                return Ok(Some(s));
             }
-            _ => Err(vec![
-                Diagnostic::error(
-                    crate::codes::INTERNAL,
-                    format!(
-                        "internal error: no instance declares resolution function `{}`",
-                        db.decls[d].name
-                    ),
-                )
-                .with_primary(db.decls[d].span, "this is a bug in yavs"),
-            ]),
+            region = self.hier.scope(s).parent;
         }
+        Err(vec![
+            Diagnostic::error(
+                crate::codes::INTERNAL,
+                format!(
+                    "internal error: no region declares resolution function `{}`",
+                    db.decls[d].name
+                ),
+            )
+            .with_primary(db.decls[d].span, "this is a bug in yavs"),
+        ])
     }
 
     /// `'path_name` (or `'instance_name`) of named entity `d` seen from `region` (LRM 16.2.5,

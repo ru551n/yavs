@@ -1,7 +1,7 @@
 Open performance issues in the kernel cycle loop, drivers, commits, parallel update and process classification. Common theme: per-event and per-drive instruction cost, and processes classified serial when they could run lean or in parallel.
 
 ## Issues
-- [ ] #420 perf: kernel fast paths still open after #385 (skip unchanged assignments, static sensitivity, resolution tables, more edge-trigger shapes)
+- [x] #420 perf: kernel fast paths still open after #385 (skip unchanged assignments, static sensitivity, resolution tables, more edge-trigger shapes)
 - [ ] #676 perf: single-element drives of a vector signal in a loop (state(i) <= x) are one commit entry each: 21 percent of hdlm_lfsr
 - [ ] #734 perf: finishing a changed word of a narrow signal costs about 410 instructions (finish_direct 7% of neorv32_single_min): stamps, run lists and codes
 - [ ] #795 perf: kernel cycle loop of small clocked RTL (cycle, finish_direct, assign_codes_now, commit_codes) against sim1

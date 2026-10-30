@@ -1,7 +1,7 @@
 Open issues on compiled code: tier policy and heat, compile cost, cache hits across warm runs, native-frame code, and the missing LLVM instruction coverage. Common theme: compiled code that is not faster than the interpreter, or whose compile cost is not repaid.
 
 ## Issues
-- [ ] #125 llvm: lower IR to LLVM 21 with tiering and background compilation
+- [x] #125 llvm: lower IR to LLVM 21 with tiering and background compilation
 - [ ] #844 perf: Cranelift compilation cache misses across warm runs: a root's body depends on the run's compile tree
 - [ ] #800 perf: --tier=auto charges the second compile of a function (other code kind) 10 to 20 times less than it costs
 - [ ] #729 tier=auto with --tier-heat: native-frame code of a function stays at the first compile level (O0)

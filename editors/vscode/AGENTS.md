@@ -38,7 +38,7 @@ VS Code).
 
 ## 4. How to work here
 
-Not in CI (no Node there). Run both tests after changing this directory or `yavs-dap`:
+CI (`.github/workflows/vscode.yml`, on changes under this directory) runs both tests against the released yavs of its `YAVS_MIN_VERSION` and packages the .vsix; `vscode-release.yml` publishes it on a `vscode-v<version>` tag (the tag must equal `package.json` version; bump `CHANGELOG.md` too). Marketplace and Open VSX publishing is not wired (needs tokens). Run both tests locally after changing this directory or `yavs-dap` (a newer yavs than the released one):
 
 ```sh
 npm install --prefix ~/.cache/<dir>/npm @vscode/debugadapter-testsupport @vscode/test-electron @vscode/vsce

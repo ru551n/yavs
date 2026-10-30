@@ -232,4 +232,4 @@ main()
     process.exitCode = 0;
   })
   .catch((e) => console.error(e))
-  .finally(() => dc.stop());
+  .finally(() => dc.stopAdapter());

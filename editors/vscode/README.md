@@ -8,8 +8,18 @@ without another VHDL extension (it does not highlight or lint VHDL).
 
 ## Install
 
-The extension is built from the yavs source tree (it is plain JavaScript, no bundler). yavs must
-be on `PATH`, or set `yavsPath` in the launch configuration.
+yavs 0.11.0 or newer must be on `PATH`, or set `yavsPath` in the launch configuration. The
+extension needs VS Code 1.80 or newer.
+
+Download `yavs-debug-<version>.vsix` from the
+[releases of yavs](https://github.com/ru551n/yavs/releases) (the ones titled "yavs VS Code
+debugger"; `SHA256SUMS` is next to it) and install it:
+
+```
+code --install-extension yavs-debug-<version>.vsix
+```
+
+Or build it from the yavs source tree (plain JavaScript, no bundler):
 
 ```
 cd editors/vscode
@@ -17,8 +27,7 @@ npx @vscode/vsce package --out yavs-debug.vsix
 code --install-extension yavs-debug.vsix
 ```
 
-To try it without installing, open `editors/vscode` in VS Code and press F5. It needs VS Code
-1.80 or newer.
+To try it without installing, open `editors/vscode` in VS Code and press F5.
 
 ## Launch configuration
 
@@ -116,7 +125,7 @@ server can also stream waves to a client (`yavs/waveSubscribe`); this extension 
 
 ## Tests
 
-The extension is not built or tested in CI (there is no Node there). After changing this
-directory or the DAP server, run both tests, which are described in `AGENTS.md`:
-`test/client.js` drives `yavs run --dap=stdio` the way VS Code does, and `test/vscode/run.js` runs
-a real VS Code headless on `sample/`.
+CI (`.github/workflows/vscode.yml`) runs both tests and packages the extension on every change to
+this directory, against the released yavs named in that workflow. They are described in
+`AGENTS.md`: `test/client.js` drives `yavs run --dap=stdio` the way VS Code does, and
+`test/vscode/run.js` runs a real VS Code headless on `sample/`.

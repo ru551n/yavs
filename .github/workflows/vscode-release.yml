@@ -1,0 +1,70 @@
+# Release of the VS Code debugger extension (editors/vscode) on a `vscode-v<version>` tag: the tag
+# must equal the version in editors/vscode/package.json; vscode.yml tests and packages it; the
+# .vsix and SHA256SUMS are attached to a GitHub release (not the latest one: that stays the yavs
+# binary's). workflow_dispatch with dry_run runs everything but the release.
+# Not done here: publishing to the VS Code Marketplace and Open VSX (needs the maintainer's
+# publisher tokens). Add a job after `release` that downloads the `vsix` artifact and runs
+# `vsce publish --packagePath` (secret VSCE_PAT) and `ovsx publish` (secret OVSX_PAT).
+name: VS Code extension release
+
+on:
+  push:
+    tags: ["vscode-v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Test and package only, do not publish
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Tag equals the extension version
+        id: v
+        run: |
+          version=$(jq -r .version editors/vscode/package.json)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "vscode-v$version" ]]; then
+            echo "tag $GITHUB_REF_NAME does not match the extension version $version (editors/vscode/package.json)"; exit 1
+          fi
+
+  checks:
+    needs: version
+    uses: ./.github/workflows/vscode.yml
+
+  release:
+    needs: [version, checks]
+    if: github.event_name == 'push' || !inputs.dry_run
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: vsix
+          path: dist
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          min=$(sed -n 's/^  YAVS_MIN_VERSION: "\(.*\)"$/\1/p' .github/workflows/vscode.yml)
+          (cd dist && sha256sum yavs-debug-*.vsix > SHA256SUMS && cat SHA256SUMS)
+          cat > notes.md <<NOTES
+          The yavs VHDL debugger for VS Code: debug a testbench with the yavs simulator from the Run and Debug view (Debug Adapter Protocol).
+
+          Install: download \`yavs-debug-$VERSION.vsix\`, then run \`code --install-extension yavs-debug-$VERSION.vsix\`. Needs VS Code 1.80 or newer and yavs $min or newer on \`PATH\` (or \`yavsPath\` in the launch configuration). Verify the download with \`SHA256SUMS\`.
+
+          Changes: editors/vscode/CHANGELOG.md.
+          NOTES
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --latest=false \
+            --title "yavs VS Code debugger $VERSION" --notes-file notes.md

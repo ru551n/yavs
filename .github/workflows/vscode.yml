@@ -1,0 +1,73 @@
+# The VS Code debugger extension (editors/vscode): the DAP client test against a released yavs, the
+# test in a real headless VS Code, and `vsce package`; the .vsix is uploaded as the artifact
+# `vsix`. vscode-release.yml calls this workflow on a `vscode-v*` tag and publishes that artifact.
+name: VS Code extension
+
+on:
+  push:
+    branches: [main]
+    paths: ["editors/vscode/**", ".github/workflows/vscode*.yml"]
+  pull_request:
+    paths: ["editors/vscode/**", ".github/workflows/vscode*.yml"]
+  workflow_call:
+
+permissions:
+  contents: read
+
+# Same pattern as ci.yml: a newer push cancels the older run, tags are never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  # The yavs release the tests run against, and the minimum yavs version of the extension.
+  YAVS_MIN_VERSION: "0.11.0"
+
+jobs:
+  test-and-package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      # VS Code (Electron) needs these libraries; the test runs it headless under xvfb.
+      - name: System libraries for VS Code
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb libgbm1 libnss3 libasound2t64 libgtk-3-0t64 libxkbfile1 libsecret-1-0
+      - name: Download yavs ${{ env.YAVS_MIN_VERSION }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          name=yavs-$YAVS_MIN_VERSION-x86_64-unknown-linux-gnu
+          gh release download "v$YAVS_MIN_VERSION" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP" \
+            --pattern "$name.tar.gz" --pattern SHA256SUMS
+          (cd "$RUNNER_TEMP" && grep " $name.tar.gz\$" SHA256SUMS | sha256sum -c - && tar xzf "$name.tar.gz")
+          echo "YAVS=$RUNNER_TEMP/$name/yavs" >> "$GITHUB_ENV"
+          echo "YAVS_STD_CACHE=$RUNNER_TEMP/yavs-std" >> "$GITHUB_ENV"
+      # The extension has no dependencies; these are only what its tests and packaging use.
+      - name: Install test and packaging tools
+        run: |
+          npm install --no-audit --no-fund --prefix "$RUNNER_TEMP/npm" \
+            @vscode/debugadapter-testsupport@1.68.0 @vscode/test-electron@3.1.0 @vscode/vsce@4.1.0
+          echo "NODE_PATH=$RUNNER_TEMP/npm/node_modules" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/npm/node_modules/.bin" >> "$GITHUB_PATH"
+      - name: DAP client test
+        working-directory: editors/vscode
+        run: node test/client.js "$YAVS"
+      - name: Test in a headless VS Code
+        working-directory: editors/vscode
+        run: xvfb-run -a node test/vscode/run.js "$YAVS"
+      - name: Package
+        working-directory: editors/vscode
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          vsce package --out "yavs-debug-$version.vsix"
+          unzip -l "yavs-debug-$version.vsix" | grep -E ' extension/(extension\.js|package\.json)$' | wc -l | grep -qx 2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix
+          path: editors/vscode/yavs-debug-*.vsix
+          if-no-files-found: error

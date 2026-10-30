@@ -2,3 +2,6 @@ test/**
 sample/**
 *.vsix
 .gitignore
+.vscode-test/**
+AGENTS.md
+CLAUDE.md

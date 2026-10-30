@@ -7,8 +7,16 @@ debug views of VS Code and most other editors.
 VS Code
 -------
 
-The extension in ``editors/vscode`` of the source tree adds a ``yavs`` debugger. Build and install
-it once (yavs must be on ``PATH``, or set ``yavsPath``):
+The VS Code extension adds a ``yavs`` debugger. Download ``yavs-debug-<version>.vsix`` from the
+`releases of yavs <https://github.com/ru551n/yavs/releases>`_ (the releases titled "yavs VS Code
+debugger"; ``SHA256SUMS`` is attached) and install it. yavs must be on ``PATH``, or set
+``yavsPath``:
+
+.. code-block:: bash
+
+    code --install-extension yavs-debug-<version>.vsix
+
+To build it from the source tree instead (``editors/vscode``):
 
 .. code-block:: bash
 

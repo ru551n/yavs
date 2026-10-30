@@ -78,6 +78,28 @@ yavs is early: expect gaps and please [report](https://github.com/ru551n/yavs/is
 
 Download the archive for your platform from the [releases](https://github.com/ru551n/yavs/releases) page, unpack it and put the directory on `PATH`. Every platform has one archive, with the Cranelift compiled tier built in and nothing else to install. See [`docs/install.rst`](docs/install.rst) for checks, the build variants and building from source.
 
+## Using yavs with VUnit
+
+Install the `vunit-yavs` package next to VUnit; it needs yavs 0.11.0 or later on `PATH`:
+
+```
+pip install vunit-yavs
+```
+
+Add it in `run.py` before anything else, then select yavs when you run:
+
+```python
+vu = VUnit.from_argv()
+vu.add_package("vunit-yavs", allow_setup=True)  # first: it provides the simulator
+```
+
+```
+VUNIT_SIMULATOR=yavs python run.py
+```
+
+Options, debugging a test with `--yavs-debug`, and sharing CPUs between parallel tests are in
+[Using yavs from VUnit](https://yavs.readthedocs.io/en/latest/libraries.html#using-yavs-from-vunit).
+
 ## License
 
 yavs is licensed under either of [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your

@@ -14,6 +14,6 @@ Open issues where analysis accepts invalid code, rejects valid code, or reports 
 - [ ] #617 sem: a type conversion with a slice as the formal part of a port association is rejected
 - [x] #616 syntax: 'subtype of an indexed name as a type mark is a parse error
 - [x] #614 sem: a binding indication with a generic map of a type shares the entity's type between two instances
-- [ ] #607 sem: an access subtype with an index constraint is E1211
+- [x] #607 sem: an access subtype with an index constraint is E1211
 - [ ] #605 sem: a package body of a package with a generic map is E9999
 - [ ] #44 sem: names/units wiring leftovers and fuzz regression guard

@@ -5,7 +5,7 @@ Open issues on compiled code: tier policy and heat, compile cost, cache hits acr
 - [ ] #844 perf: Cranelift compilation cache misses across warm runs: a root's body depends on the run's compile tree
 - [ ] #800 perf: --tier=auto charges the second compile of a function (other code kind) 10 to 20 times less than it costs
 - [ ] #729 tier=auto with --tier-heat: native-frame code of a function stays at the first compile level (O0)
-- [ ] #728 decision: should a warm run price a function whose object is in the cache at the cache price (rtl_ff, lfsr64: 10 to 16 percent of the wall)
+- [x] #728 decision: should a warm run price a function whose object is in the cache at the cache price (rtl_ff, lfsr64: 10 to 16 percent of the wall)
 - [ ] #718 perf: --tier=clift-auto runs short verification-library testbenches at 1.2 to 1.5 times the interpreter's instructions (translated native variants gain nothing)
 - [ ] #679 perf: compiled code of processes of 1 000 to 30 000 IR instructions is level with the interpreter, never faster (iu comb, state_register, exec_comb)
 - [ ] #675 perf: --tier=auto never compiles the heavy combinational processes of neorv32 or the serial testbench process of hdlm_lfsr, and says nothing about it
@@ -13,7 +13,7 @@ Open issues on compiled code: tier policy and heat, compile cost, cache hits acr
 - [ ] #634 perf: compiled clocked RTL executes 20% fewer instructions than the interpreter and takes 5 to 15% more cycles (front end: branch, L1i and iTLB misses)
 - [ ] #538 perf: --tier=llvm compiles the whole closure before time 0 (8 to 25 s on library testbenches) and a warm object cache still costs 1 to 3 s
 - [ ] #532 perf: --tier=llvm on the neorv32 testbench: 14 to 17 s whole-program compile, and the run itself is slower than the interpreter (dual and cache configurations pass 300 s)
-- [ ] #432 llvm tier: compile cost per IR instruction, side-exit cost, and startup cost of the llvm build
+- [x] #432 llvm tier: compile cost per IR instruction, side-exit cost, and startup cost of the llvm build
 - [ ] #740 perf: cold column against the reference simulator: where cold minus warm goes, compile cost of --tier=auto
 - [ ] #341 llvm tier: real conversions, powers and physical-times-real
 - [ ] #340 llvm tier: heap instructions (New, Deref, Free)

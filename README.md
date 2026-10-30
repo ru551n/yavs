@@ -62,22 +62,6 @@ The example files are in [`docs/examples/`](docs/examples); the output and a fai
 
 The documentation is also available to coding assistants through [Context7](https://context7.com/ru551n/yavs).
 
-## Features
-
-- **Languages:** VHDL-1993 (`--std=93`), VHDL-2008 and VHDL-2019, mixed in one project with each file keeping its own standard; the IEEE libraries (including the VITAL and Synopsys packages) are built in; a subset of PSL. Details in [`docs/language-support.md`](docs/language-support.md). Plain Verilog (not SystemVerilog), for vendor IP and vendor libraries, is [planned](https://github.com/ru551n/yavs/issues/776).
-- **Code generation:** with `--tier=auto` a run starts in the interpreter while a background thread compiles the hot functions with the bundled [Cranelift](https://cranelift.dev/) code generator and swaps them in; `--tier=clift` compiles everything before time 0. Compiled code is cached on disk, and every tier gives identical output. See [Running faster](https://yavs.readthedocs.io/en/latest/running-faster.html).
-- **Coverage:** statement, branch, condition, expression and toggle coverage; databases of several runs merge, `yavs cov rank` finds a small set of tests that reaches the same coverage, and reports come as text, HTML or Cobertura. See [`docs/coverage.md`](docs/coverage.md).
-- **Waveforms:** standard FST (`--wave`) with records and arrays as scopes, include and exclude globs, a size cap and optional process variables (`--wave-variables`).
-- **Debugging:** `yavs run --dap=PORT` debugs a simulation from VS Code (extension in `editors/vscode`) or any Debug Adapter Protocol editor: breakpoints on VHDL lines (with VHDL conditions and hit conditions such as `>= 3`) and on signal changes, stepping through each process, pausing, and inspecting or changing signal and variable values. A debugger session runs the interpreter on one thread. See [Debugging](https://yavs.readthedocs.io/en/latest/debugging.html).
-- **VHPI:** `--vhpi` loads VHPI plugins; the implementation is partial, see [`docs/vhpi.md`](docs/vhpi.md).
-- **Parallel kernel:** `--threads N` (default 1) evaluates processes in parallel; it helps only large, flat designs. See [`docs/parallel.md`](docs/parallel.md).
-
-yavs is early: expect gaps and please [report](https://github.com/ru551n/yavs/issues) what breaks.
-
-## Installation
-
-Download the archive for your platform from the [releases](https://github.com/ru551n/yavs/releases) page, unpack it and put the directory on `PATH`. Every platform has one archive, with the Cranelift compiled tier built in and nothing else to install. See [`docs/install.rst`](docs/install.rst) for checks, the build variants and building from source.
-
 ## Using yavs with VUnit
 
 Install the `vunit-yavs` package next to VUnit; it needs yavs 0.11.0 or later on `PATH`:
@@ -99,6 +83,22 @@ VUNIT_SIMULATOR=yavs python run.py
 
 Options, debugging a test with `--yavs-debug`, and sharing CPUs between parallel tests are in
 [Using yavs from VUnit](https://yavs.readthedocs.io/en/latest/libraries.html#using-yavs-from-vunit).
+
+## Features
+
+- **Languages:** VHDL-1993 (`--std=93`), VHDL-2008 and VHDL-2019, mixed in one project with each file keeping its own standard; the IEEE libraries (including the VITAL and Synopsys packages) are built in; a subset of PSL. Details in [`docs/language-support.md`](docs/language-support.md). Plain Verilog (not SystemVerilog), for vendor IP and vendor libraries, is [planned](https://github.com/ru551n/yavs/issues/776).
+- **Code generation:** with `--tier=auto` a run starts in the interpreter while a background thread compiles the hot functions with the bundled [Cranelift](https://cranelift.dev/) code generator and swaps them in; `--tier=clift` compiles everything before time 0. Compiled code is cached on disk, and every tier gives identical output. See [Running faster](https://yavs.readthedocs.io/en/latest/running-faster.html).
+- **Coverage:** statement, branch, condition, expression and toggle coverage; databases of several runs merge, `yavs cov rank` finds a small set of tests that reaches the same coverage, and reports come as text, HTML or Cobertura. See [`docs/coverage.md`](docs/coverage.md).
+- **Waveforms:** standard FST (`--wave`) with records and arrays as scopes, include and exclude globs, a size cap and optional process variables (`--wave-variables`).
+- **Debugging:** `yavs run --dap=PORT` debugs a simulation from VS Code (extension in `editors/vscode`) or any Debug Adapter Protocol editor: breakpoints on VHDL lines (with VHDL conditions and hit conditions such as `>= 3`) and on signal changes, stepping through each process, pausing, and inspecting or changing signal and variable values. A debugger session runs the interpreter on one thread. See [Debugging](https://yavs.readthedocs.io/en/latest/debugging.html).
+- **VHPI:** `--vhpi` loads VHPI plugins; the implementation is partial, see [`docs/vhpi.md`](docs/vhpi.md).
+- **Parallel kernel:** `--threads N` (default 1) evaluates processes in parallel; it helps only large, flat designs. See [`docs/parallel.md`](docs/parallel.md).
+
+yavs is early: expect gaps and please [report](https://github.com/ru551n/yavs/issues) what breaks.
+
+## Installation
+
+Download the archive for your platform from the [releases](https://github.com/ru551n/yavs/releases) page, unpack it and put the directory on `PATH`. Every platform has one archive, with the Cranelift compiled tier built in and nothing else to install. See [`docs/install.rst`](docs/install.rst) for checks, the build variants and building from source.
 
 ## License
 

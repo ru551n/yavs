@@ -12613,3 +12613,8 @@ The kernel decisions (cap, take only for a batch worth pooling, `TOKEN_IDLE`) st
 - **JSON stream** (#839): the batch stop note of `analyze` is a note diagnostic with an empty code in the JSON and short formats, so those streams hold only diagnostics. `finish(N)` still exits with N when it fits 1..125 (so `finish(2)` is exit 2): left to the user to decide.
 - **`--ieee-warnings`** (#836): `on|off`, off drops warnings of the `ieee` library (natives and bodies) by origin file, not by severity of the caller.
 - **Conditional analysis definitions** (#837): `-D` is passed to `elab` and `run` like `--psl`, not recorded in the library manifest (no format change; one rule for the options that change how a source is read).
+
+## Deferred constant used early, null range choice (#861, #860; user, 2026-10-30)
+
+- **Deferred constant used in its package body before the full declaration** (#861): an analysis error, `E1226` (option a), kept. No run-time error and no per-revision split.
+- **Null range choice next to other associations in an aggregate** (#860): `E1326` in 1993 files only (option a); 2008 and 2019 accept it. See `docs/design/lrm-checks.md`.

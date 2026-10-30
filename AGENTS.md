@@ -232,7 +232,7 @@ AArch64 under qemu and Windows under Wine: see the commands in `docs/STATUS.md` 
 asserting its own result) with `YAVS_COUNTERS=1 --tier=interp --threads 1` and checks counters of
 work against bounds: kernel (`cycles`, `process_runs`, `wakes`, `events`, update paths,
 quick and direct commits), interpreter `ops` executed, elaboration call cache hits, analysed-unit
-cache hits, recorded wave variables, and under `--features llvm` (the CI `llvm` job) the
+cache hits, recorded wave variables, and under `--features llvm` (no CI job since 2026-10-30, #898) the
 callbacks of compiled code and the instructions left to the interpreter. A bound is a ceiling
 (`Max`) or, where fewer is the regression, a floor (`Min`). `ops` and `cb_*` are counted in debug
 builds and with `--features op-census` only (a release test run skips them).

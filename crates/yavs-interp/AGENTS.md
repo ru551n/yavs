@@ -162,7 +162,7 @@ YAVS_BIN=target/release/yavs python3 tools/difftest/difftest.py --candidate yavs
   after changing roots, lowering of access values, the dispatch loop or compiled code; it is
   about 100 times slower, so two `synopsys/` tests exceed the harness timeout.
   Its unit tests run under it too (`cargo test -p yavs-interp --features gc-stress`, and
-  `-p yavs-llvm --features llvm,gc-stress`; the CI `llvm` job does both on Linux, #500): a test that
+  `-p yavs-llvm --features llvm,gc-stress`; the CI `clift` job runs the interp one, #500): a test that
   counts heap slots checks the live objects there instead, because no slot is reused.
 
 - `op-census` (cargo feature, off by default, any profile) counts the ops the dispatch loop executes

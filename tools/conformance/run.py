@@ -476,7 +476,7 @@ and yavs's verdict.
     o.append(("" if w else "### Waveforms of real designs\n\n") + "<details><summary>Every design and signal class</summary>\n\n" + R["trust2"] + "\n\n</details>\n")
     # --- platforms and limits
     o.append("### Platforms covered by CI\n\n" + table(["job", "runs on"], [[f"`{j}`", ", ".join(os_)] for j, os_ in st["platforms"].items()]) +
-             "\nThe `check` job is `cargo fmt`, `clippy -D warnings` and the whole test suite of the workspace; the `llvm` job the same for the LLVM tier plus a simulation smoke run. "
+             "\nThe `check` job is `cargo fmt`, `clippy -D warnings` and the whole test suite of the workspace; the `clift` job the same for the Cranelift tier plus a simulation smoke run. "
              "The `corpus` and `conformance` jobs run on Linux x86_64 only.\n")
     o.append("### Where and when each result was produced\n\n" + table(["suite", "where", "date, commit", "tool"], [[r["name"], r["where"] or "not run", r["when"], r["tool"]] for r in srows]))
     o.append("## How to reproduce\n\n```sh\n"

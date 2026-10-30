@@ -105,6 +105,21 @@ only when the long tail is a flat RTL design (see "Measured speedup"); a regress
 tests are processors or testbenches does not gain, and with the server the processors cost a
 little more than without.
 
+A single large test run alone at `-p 8`, so that it can borrow up to 7 tokens (same host and method,
+median of 3 interleaved runs after an untimed warm-up of each mode, simulation wall time and CPU time of the
+`yavs run` process):
+
+| Test | Mode | Wall | CPU | Average threads | Change in wall |
+|---|---|---|---|---|---|
+| CNN accelerator system bench | without | 47.7 s | 48.9 s | 1.02 | |
+| | with `--yavs-jobserver` | 36.0 s | 77.4 s | 2.18 | 1.33x faster |
+| Soft-core processor benchmark | without | 219.9 s | 221.2 s | 1.01 | |
+| | with `--yavs-jobserver` | 224.7 s | 226.1 s | 1.01 | 2.2 % slower |
+
+The accelerator bench pools: it gains a third with 2.2 threads on average, and the extra threads cost
+58 percent more CPU time for that third. The processor model never uses a token, and the token mode alone
+costs it 2 percent even with seven cores free ([#882](https://github.com/ru551n/yavs/issues/882)).
+
 ## Details
 
 * **Why mid-size batches no longer slow down.** Handing a batch to the threads has a fixed cost of

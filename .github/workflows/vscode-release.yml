@@ -1,7 +1,8 @@
 # Release of the VS Code debugger extension (editors/vscode) on a `vscode-v<version>` tag: the tag
 # must equal the version in editors/vscode/package.json; vscode.yml tests and packages it; the
-# .vsix and SHA256SUMS are attached to a GitHub release (not the latest one: that stays the yavs
-# binary's). workflow_dispatch with dry_run runs everything but the release.
+# .vsix and SHA256SUMS are attached to a GitHub release (a pre-release like the yavs ones: GitHub
+# lets a plain release take the "Latest" badge even with --latest=false).
+# workflow_dispatch with dry_run runs everything but the release.
 # Not done here: publishing to the VS Code Marketplace and Open VSX (needs the maintainer's
 # publisher tokens). Add a job after `release` that downloads the `vsix` artifact and runs
 # `vsce publish --packagePath` (secret VSCE_PAT) and `ovsx publish` (secret OVSX_PAT).
@@ -66,5 +67,5 @@ jobs:
 
           Changes: editors/vscode/CHANGELOG.md.
           NOTES
-          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --latest=false \
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease --latest=false \
             --title "yavs VS Code debugger $VERSION" --notes-file notes.md

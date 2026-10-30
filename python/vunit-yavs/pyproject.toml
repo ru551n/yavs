@@ -9,6 +9,7 @@ description = "The yavs VHDL simulator for VUnit, as a VUnit package"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MPL-2.0"
+keywords = ["vunitpkg"]
 # The first VUnit release with simulator packages (the vunit_pkg.toml key 'simulator')
 dependencies = ["vunit_hdl>=5.0.0.dev16"]
 

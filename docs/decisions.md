@@ -12648,3 +12648,12 @@ The kernel decisions (cap, take only for a batch worth pooling, `TOKEN_IDLE`) st
 Use `strsim::osa_distance` in semantic suggestions and `strsim::levenshtein` in library
 suggestions, preserving the existing thresholds and character-based distances. This removes
 duplicate implementations without changing diagnostics (issue #894; implemented by codex/strsim894).
+
+## Elaboration range index and limitation diagnostics (#889, 2026-10-30)
+
+- Rebuild the package range-owner index when `Db::units.len()` grows, retaining already
+  evaluated bounds. A package loaded on demand must reuse its initialised subtype bounds
+  rather than invoke impure bound functions again (#848; agent codex/elab889).
+- Unsupported elaboration features use E2199; unsupported command combinations use E0199.
+  E9999 denotes internal errors only. Suite drivers treat the new limitation codes as no
+  language rejection, preserving their verdict rules (#868; agent codex/elab889).

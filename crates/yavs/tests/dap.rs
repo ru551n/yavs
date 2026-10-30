@@ -537,3 +537,26 @@ fn missing_tier_is_e0120_under_dap() {
     assert_eq!(out.status.code(), Some(2), "{err}");
     assert!(err.contains("error[E0120]"), "{err}");
 }
+
+#[test]
+fn coverage_with_dap_reports_a_command_limitation() {
+    let d = setup("cov-unsupported");
+    let out = yavs()
+        .current_dir(&d)
+        .args([
+            "--color",
+            "never",
+            "run",
+            "--work=work:lib",
+            "--dap=stdio",
+            "--cov=a.ycov",
+            "tb",
+        ])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("error[E0199]"), "{err}");
+    assert!(err.contains("not implemented yet"), "{err}");
+    assert!(!err.contains("E9999"), "{err}");
+}

@@ -448,7 +448,7 @@ and yavs's verdict.
                  f"\nOf the {an.get('pass', 0)} `analyzer_failure` passes, {an.get('pass', 0) - an.get('late', 0)} fail at analysis and {an.get('late', 0)} are stopped by a yavs error "
                  "at elaboration or run time before the test's own verdict, each checked to be the error the test is about (values out of range, lengths, delays, non-static actuals: "
                  "the language reference leaves open when such errors are detected). As in the suite's own runner, an analysis failure counts without a check that it is the error "
-                 "the test is about. In every group that must fail, a first error that is E1999 (not analysed yet), E2001 (not lowered yet), E9999 or a crash is a failure.\n\n"
+                 "the test is about. In every group that must fail, a first error that is E1999 (not analysed yet), E2001 (not lowered yet), E2199 (not elaborated yet), E0199 (command limitation), E9999 or a crash is a failure.\n\n"
                  "Failures by the issue that tracks their cause:\n\n" +
                  "".join(f"- {'[#' + n + '](' + GH + '/issues/' + n + ')' if n != 'none' else 'no issue'}: " + ", ".join(f"`{x}`" for x in ts) + "\n" for n, ts in vs["failed"].items()) + "\n")
     # --- vhpi

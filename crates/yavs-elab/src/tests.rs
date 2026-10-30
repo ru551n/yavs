@@ -1283,13 +1283,16 @@ fn resolution_function_in_a_block_fails_early() {
         end block;
       end;";
     let (mut db, mut e) = elab("res_block", src, "t", &[]);
-    let codes: Vec<_> = e
-        .lower(&mut db)
-        .expect_err("not implemented")
-        .into_iter()
-        .map(|d| d.code)
-        .collect();
-    assert_eq!(codes, [codes::NOT_IMPLEMENTED]);
+    let errors = e.lower(&mut db).expect_err("not implemented");
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].code, "E2199");
+    let span = errors[0]
+        .primary
+        .as_ref()
+        .expect("declaration location")
+        .span;
+    let source = db.sources.get(span.file);
+    assert_eq!(source.line_col(span.start).0, 7);
 }
 
 #[test]

@@ -10444,3 +10444,11 @@ The analysed units of the built-in `std`/`ieee` live in one store per user (`$YA
 
 The semantic and library diagnostics use `strsim` for their existing edit-distance algorithms.
 Semantic suggestions retain adjacent transpositions; library suggestions retain plain Levenshtein distance.
+
+### Elaboration tracker fixes (#889: #848, #868)
+
+Subtype bounds of packages loaded during elaboration are read from the package state,
+without evaluating impure bound functions again (#848). Unsupported elaboration features
+use E2199 and unsupported command combinations use E0199, with explain texts; E9999
+is reserved for internal errors (#868). Suite verdicts keep limitations separate from
+valid rejections.

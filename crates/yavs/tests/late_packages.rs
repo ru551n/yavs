@@ -215,3 +215,54 @@ fn clift_tiers_keep_the_order() {
         check_values(&run(&dir, &[tier, "--cov=c.ycov"]));
     }
 }
+
+#[test]
+fn subtype_bounds_of_a_late_package_are_read_from_its_initialisation() {
+    let dir = tempdir("late-pkg-bounds");
+    let early = "library idl; use idl.idpkg.all;
+      package early_pkg is
+        subtype t is bit_vector(new_id to 8);
+        constant expected : natural := t'left;
+      end package;";
+    let top = "use work.comp_pkg.all;
+      entity top is end;
+      use work.early_pkg.all;
+      architecture a of top is
+        signal s : t;
+      begin
+        assert s'left = expected report \"early bound evaluated again\" severity failure;
+        c : child;
+      end;";
+    let late = "library idl; use idl.idpkg.all;
+      package late_pkg is
+        subtype t is bit_vector(new_id to 8);
+        constant expected : natural := t'left;
+      end package;
+      entity child is end;
+      use work.late_pkg.all;
+      architecture a of child is
+        signal s : t;
+      begin
+        assert s'left = expected report \"late bound evaluated again\" severity failure;
+        process begin report \"late bound preserved\"; wait; end process;
+      end;";
+    for (lib, file, text) in [
+        ("idl", "id.vhd", ID),
+        ("work", "early.vhd", early),
+        ("work", "comp.vhd", COMP),
+        ("work", "top.vhd", top),
+        ("work", "late.vhd", late),
+    ] {
+        std::fs::write(dir.join(file), text).expect("write");
+        let work = format!("--work={lib}:{lib}");
+        let mut args = vec!["analyze", "--std=2008", &work];
+        args.extend(MAPS);
+        args.push(file);
+        let (ok, out) = yavs(&dir, &args);
+        assert!(ok, "{file}: {out}");
+    }
+    for extra in [&["--no-cache"][..], &[][..], &[][..]] {
+        let out = run(&dir, extra);
+        assert!(out.contains("late bound preserved"), "{out}");
+    }
+}

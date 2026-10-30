@@ -132,6 +132,8 @@ pub struct Model {
     /// The package type or subtype declaring each such range of a run-time package, with the
     /// position of its left bound among the bounds the package evaluated (`pkg_range`).
     pub(crate) pkg_range_owners: Option<HashMap<ExprId, (DeclId, i64, Direction)>>,
+    /// Unit count when the range-owner index was built; later packages invalidate it.
+    pub(crate) pkg_range_units: usize,
 }
 
 /// How a scalar crosses the kernel: its element and its class.
@@ -1421,6 +1423,11 @@ impl Model {
     fn pkg_range(&mut self, db: &Db, left: ExprId, span: Span) -> R<Option<Bounds>> {
         if let Some(&b) = self.pkg_ranges.get(&left) {
             return Ok(Some(b));
+        }
+        let units = db.units.len();
+        if self.pkg_range_units != units {
+            self.pkg_range_owners = None;
+            self.pkg_range_units = units;
         }
         let owners = self.pkg_range_owners.get_or_insert_with(|| {
             let mut m = HashMap::new();

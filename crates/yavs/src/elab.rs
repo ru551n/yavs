@@ -1299,7 +1299,7 @@ pub fn run(
     }
     let none = SourceMap::default();
     let unsupported = |what: &str| {
-        Diagnostic::error("E9999", format!("{what} is not implemented yet in yavs"))
+        Diagnostic::error("E0199", format!("{what} is not implemented yet in yavs"))
             .with_note("this is a limitation of yavs, not an error in the design")
     };
     if a.dap.is_some() {

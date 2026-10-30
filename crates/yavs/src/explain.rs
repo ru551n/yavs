@@ -129,6 +129,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "E0128",
         "`--threads` is above 1 and `YAVS_TOKENS` names a token server that yavs cannot use: the value is not `<port>:<secret>`, nothing listens on that port of 127.0.0.1, or the server did not accept the secret (often a `YAVS_TOKENS` left over from a test runner that has ended). The run stops before analysis (exit 2). Unset `YAVS_TOKENS` to run without a token server.",
     ),
+    (
+        "E0199",
+        "A command option or combination is not implemented yet. The message names the limitation. This is a limitation of yavs, not an internal compiler error. Exit status 2.",
+    ),
     // yavs-wave
     (
         "E0801",
@@ -358,6 +362,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "W2118",
         "A constant whose initial value calls an impure function cannot be evaluated during elaboration yet; it is evaluated when the simulation starts, so its calls run after the elaboration-time calls instead of in declaration order.",
     ),
+    (
+        "E2199",
+        "A feature needed during elaboration is not implemented yet. The message names the limitation and its location in the design. This is a limitation of yavs, not an internal compiler error.",
+    ),
     // yavs-kernel runtime errors
     (
         "E3001",
@@ -402,7 +410,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     // every stage
     (
         "E9999",
-        "An internal compiler error (\"this is a bug in yavs\"), or a feature of elaboration or of a command that is not implemented yet and names the milestone (semantic analysis reports those as E1999, lowering as E2001). Please report the former with the input that triggers it.",
+        "An internal compiler error (\"this is a bug in yavs\"). Please report it with the input that triggers it.",
     ),
 ];
 

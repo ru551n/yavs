@@ -16,7 +16,7 @@ what each command expects:
                             time stops them before their verdict line: each was checked to be the error the test is
                             about (values out of range, lengths, delays, non-static actuals), whose detection time the
                             language reference leaves open; the report gives the strict count of analysis failures too.
-                            In every must-fail group a first error E1999 (not analysed yet), E2001 (not lowered yet), E9999 or a crash is no
+                            In every must-fail group a first error E1999 (not analysed yet), E2001 (not lowered yet), E2199 (not elaborated yet), E0199 (command limitation), E9999 or a crash is no
                             rejection: the test fails
 The billowitch `disputed` directory has no list and is not run. Tests that read or write the shared
 `iofile.NN` files run one after the other in one directory seeded with the suite's copies, in list order.
@@ -138,7 +138,7 @@ def simulate(c, f, cwd, libs=(), work="work"):
     return None, out
 
 
-NOT_A_REJECTION = r"^error\[E(1999|2001|9999)\]|panicked|overflowed"  # first error: not implemented, internal error, crash
+NOT_A_REJECTION = r"^error\[E(0199|1999|2001|2199|9999)\]|panicked|overflowed"  # first error: not implemented, internal error, crash
 
 
 def judge(kind, step, out, test):

@@ -516,7 +516,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   `YAVS_COUNTERS` prints the run's work counters on stderr when the session ends, as without `--dap`.
   `--wave` and `--vhpi` work with `--dap` (the waveform file is flushed at every stop and finished before `exited`; a
   plugin's own prints go to stdout, so use a port with `--vhpi`); `--cov` with `--dap` is
-  `E9999` not implemented (exit 2). A port that cannot be opened is `E0701` (exit 2). Custom requests, served while stopped: `yavs/runFor` and
+  `E0199` not implemented (exit 2). A port that cannot be opened is `E0701` (exit 2). Custom requests, served while stopped: `yavs/runFor` and
   `yavs/runUntil` (argument `time`, a TIME literal such as `"10 ns"` or `"10ns"`, relative to the
   current time or absolute), `yavs/stepDelta` and `yavs/stepTimestep` (no arguments); each
   answers, sends `continued`, and the next `stopped` event's `description` gives the time and

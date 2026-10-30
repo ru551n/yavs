@@ -199,7 +199,7 @@ Module-local decisions go in this section in the same commit (root `AGENTS.md` r
 - A pre-key hit skips generation (#785): the generator may read only the program (named by
   `Program::identity`), the function, the level, `full` and the part. A new input from outside them
   (an environment variable, a process-wide setting, something of the run) must go into
-  `objcache::pre_key` or `GEN_SWITCHES`; `YAVS_LLVM_PREKEY_CHECK=1` (the CI `llvm` jobs, the
+  `objcache::pre_key` or `GEN_SWITCHES`; `YAVS_LLVM_PREKEY_CHECK=1` (formerly the CI `llvm` jobs, the
   `yavs-auto-warm` difftest candidate) is what catches one that does not.
 - `cargo test --workspace` does **not** build this crate's code (feature off): run the feature
   build yourself after any change here.
@@ -208,7 +208,7 @@ Module-local decisions go in this section in the same commit (root `AGENTS.md` r
   `llvm-config` (Windows packages have none, see WINDOWS.md).
 - Codegen cost grows faster than linearly with function size; measure with
   `examples/measure.rs` before changing thresholds, one process per row.
-- CI (`llvm` job in `.github/workflows/ci.yml`, #127, #128) clippys, tests and runs 47 difftest cases
+- CI: the `llvm` job was removed on 2026-10-30 (#898); it clippyed, tests and runs 47 difftest cases
   with `--tier=llvm` and with `--tier=auto --tier-heat=1,0,0` (at 1 and 4 threads) on Linux x86_64, Linux aarch64 (native runner) and Windows x86_64 (tests only,
   the difftest harness needs a POSIX shell). Windows needs the steps in WINDOWS.md section 4: static
   CRT, empty `libxml2s.lib`, SDK import libs copied into the LLVM `lib` dir.

@@ -90,7 +90,7 @@ release scripts started producing it **[verified]** for 21.1.8.
   - `memcpy`/`memset` libcalls from aggregate copies need absolute symbols on every OS.
   - Calls from JIT code to far absolute addresses go through RuntimeDyld stubs.
 
-## 4. CI recipe (GitHub Actions, `windows-latest`)
+## 4. CI recipe (GitHub Actions, `windows-latest`; the CI job and `.github/actions/llvm-windows` were removed on 2026-10-30, #898, the recipe is kept for reference)
 
 ```yaml
 llvm-windows:

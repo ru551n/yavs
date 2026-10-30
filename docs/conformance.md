@@ -497,7 +497,7 @@ Differences explained:
 | `llvm` | ubuntu-24.04, ubuntu-24.04-arm, windows-latest |
 | `clift` | ubuntu-24.04, ubuntu-24.04-arm, windows-latest |
 
-The `check` job is `cargo fmt`, `clippy -D warnings` and the whole test suite of the workspace; the `llvm` job the same for the LLVM tier plus a simulation smoke run. The `corpus` and `conformance` jobs run on Linux x86_64 only.
+The `check` job is `cargo fmt`, `clippy -D warnings` and the whole test suite of the workspace; the `clift` job the same for the Cranelift tier plus a simulation smoke run. The `corpus` and `conformance` jobs run on Linux x86_64 only.
 
 ### Where and when each result was produced
 

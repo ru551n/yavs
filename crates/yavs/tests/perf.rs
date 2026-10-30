@@ -1255,7 +1255,7 @@ fn wave_vars() {
 }
 
 /// Under the LLVM tier (`--tier=llvm`, compiled before the run, so the same every time): the
-/// callbacks compiled code makes and what it leaves to the interpreter. Run by the `llvm` job of
+/// callbacks compiled code makes and what it leaves to the interpreter. Formerly run by the `llvm` job of
 /// CI (`cargo test -p yavs --features llvm`).
 #[cfg(feature = "llvm")]
 mod llvm {

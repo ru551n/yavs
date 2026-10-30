@@ -38,6 +38,7 @@ exclude_patterns = [
     "conformance.md",
     "conformance-summary.md",
     "design",
+    "trackers",
     "AGENTS.md",
     "README.md",
     "CLAUDE.md",

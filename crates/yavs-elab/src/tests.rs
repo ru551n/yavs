@@ -2140,6 +2140,38 @@ fn unused_constant_index_constraint_is_checked() {
 }
 
 #[test]
+fn unused_subtype_and_package_constant_constraints_are_checked() {
+    // #847: the same for a subtype declaration and a package's constant or subtype.
+    let want = [(
+        codes::EVAL_FAILED,
+        "index range 0 to 2 is outside index subtype `POSITIVE` (1 to 2147483647)".to_string(),
+    )];
+    let sub = "entity t is end;
+      architecture x of t is
+        function n return integer is begin return 0; end;
+        subtype ok is string(n + 1 to 3);
+        subtype s is string(n to 2);
+      begin end;";
+    let (_, r) = try_elab("unuseds", sub, "t", &[]);
+    assert_eq!(r.err().expect("error"), want);
+    for decl in [
+        "constant c : string(n to 2) := \"abc\";",
+        "subtype s is string(n to 2);",
+    ] {
+        let src = format!(
+            "package fp is function n return integer; end;
+             package body fp is function n return integer is begin return 0; end; end package body;
+             use work.fp.all;
+             package sp is constant ok : string(n + 1 to 3) := \"abc\"; {decl} end;
+             use work.sp.all;
+             entity t is end; architecture x of t is begin end;"
+        );
+        let (_, r) = try_elab("unusedp", &src, "t", &[]);
+        assert_eq!(r.err().expect("error"), want, "{decl}");
+    }
+}
+
+#[test]
 fn signal_initial_value_outside_the_element_subtype() {
     // #821: each scalar of a signal's initial value lies in its (element) subtype, also when
     // the value comes from a generic.

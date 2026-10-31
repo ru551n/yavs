@@ -588,6 +588,30 @@ pub(crate) fn elaborate(
                 e.errors.push(*x);
             }
         }
+        // The constraints of package constants and subtypes nothing may read (#847).
+        let checked: Vec<(yavs_sem::SubtypeId, Span)> =
+            e.db.units
+                .iter()
+                .filter(|(_, u)| !builtin_lib(e.db, u.lib))
+                .flat_map(|(u, _)| e.db.package_regions(u).unwrap_or_default())
+                .flat_map(|s| e.db.decls_with_instances(s))
+                .filter_map(|d| match &e.db.decls[d].kind {
+                    DeclKind::Subtype(st) => Some((*st, e.db.decls[d].span)),
+                    DeclKind::Object(o)
+                        if o.class == ObjClass::Constant
+                            && o.role == ObjRole::Plain
+                            && e.db.subtypes[o.subtype].name.is_none() =>
+                    {
+                        Some((o.subtype, e.db.decls[d].span))
+                    }
+                    _ => None,
+                })
+                .collect();
+        for (st, at) in checked {
+            if let Err(x) = e.m.check_constraint(e.db, st, None, at) {
+                e.errors.push(*x);
+            }
+        }
         // The shapes of the shared variables of loaded packages (waves, #321).
         let vars: Vec<DeclId> =
             e.db.units
@@ -1268,6 +1292,10 @@ impl Elab<'_> {
                         self.m.ranges.insert((s, left), b);
                     }
                 }
+                // A subtype nothing uses is checked as a constant is below (#847).
+                if let DeclKind::Subtype(st) = decl.kind {
+                    self.m.check_constraint(db, st, Some(s), decl.span)?;
+                }
                 continue;
             }
             let DeclKind::Object(o) = &decl.kind else {
@@ -1281,17 +1309,7 @@ impl Elab<'_> {
                 && db.scopes[region].kind != yavs_sem::scope::ScopeKind::Process
                 && db.subtypes[o.subtype].name.is_none()
             {
-                let rs = db.subtype_ranges(o.subtype);
-                let unfolded = rs.iter().any(|r| {
-                    matches!(r, yavs_sem::hir::RangeC::Explicit { left, right, .. }
-                        if db.value(*left).is_none() || db.value(*right).is_none())
-                });
-                if unfolded && rs.iter().all(|r| db.dynamic_range(r).is_none()) {
-                    match self.m.shape(db, o.subtype, Some(s), decl.span) {
-                        Err(x) if x.code != codes::NOT_EVALUATED => return Err(x),
-                        _ => {}
-                    }
-                }
+                self.m.check_constraint(db, o.subtype, Some(s), decl.span)?;
             }
             match (o.class, &o.role) {
                 // The actual of a variable port finds its object here (#188).

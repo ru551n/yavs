@@ -1179,6 +1179,31 @@ impl Model {
         init_val(db, &obj.shape, &self.nets, &mut next)
     }
 
+    /// The constraint of a subtype indication is elaborated with its declaration even when
+    /// nothing reads the object (LRM 5.3.2.2, 14.4.2.1): its shape checks the index ranges
+    /// (#825, #847). A locally static bound was checked by sem; an impure one is left to the
+    /// evaluation; what elaboration cannot evaluate is left to its first use.
+    pub(crate) fn check_constraint(
+        &mut self,
+        db: &Db,
+        st: SubtypeId,
+        scope: Option<ScopeId>,
+        span: Span,
+    ) -> R<()> {
+        let rs = db.subtype_ranges(st);
+        let unfolded = rs.iter().any(|r| {
+            matches!(r, yavs_sem::hir::RangeC::Explicit { left, right, .. }
+                if db.value(*left).is_none() || db.value(*right).is_none())
+        });
+        if unfolded && rs.iter().all(|r| db.dynamic_range(r).is_none()) {
+            match self.shape(db, st, scope, span) {
+                Err(x) if x.code != codes::NOT_EVALUATED => return Err(x),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     /// Array value `v` of a constant of subtype `st`: with the bounds of `st` when it is
     /// constrained, not those of the initial value (LRM 6.4.2.2, 5.3.2.2).
     pub(crate) fn as_subtype(

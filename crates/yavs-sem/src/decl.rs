@@ -1168,7 +1168,11 @@ impl Db {
         let base = self.base(subtype);
         if !matches!(
             self.types[base].kind,
-            crate::types::TypeKind::File { .. } | crate::types::TypeKind::Error
+            crate::types::TypeKind::File { .. }
+                | crate::types::TypeKind::Generic {
+                    class: crate::generic::GenericClass::File { .. }
+                }
+                | crate::types::TypeKind::Error
         ) {
             return Err(self.error(
                 yavs_diag::Diagnostic::error(

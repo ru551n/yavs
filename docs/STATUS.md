@@ -20,6 +20,15 @@
 
 The site is a user guide (2026-10-28, maintainer): `index`, `install`, `getting-started` (quickstart checked against the default build: analyze, run, a failing check, an analysis error), `libraries`, `waveforms`, `coverage`, `debugging`, `vhpi`, `running-faster`, `cli` (checked against `yavs run --help`), `troubleshooting`, and the reference pages `language-support`, `language-choices`, `conformance` (the summary of `conformance.md`) and `performance`. `usage.rst` and `recipes.rst` were split into those pages; `parallel.md` and the full conformance report are off the site; no cocotb in user documents. `language-choices` is a short table (full list in `docs/design/language-choices.rst`), `vhpi` keeps the summary table and plugin loading (audit and call details in `crates/yavs-vhpi/STANDARD.md`), `debugging` covers DAP and VS Code only. The README and the landing page agree with the guides. Corrections made to this file: the M5 and M10 rows, the vhpi export count, the M6 "opt-in" wording, the M8 limits. Known gaps found while checking (dated notes in `docs/cli-contract.md`, to be filed as issues): `--ieee-warnings=off` has no effect; `analyze -D` is not applied by `elab` and `run`, so such a file fails to run with `E0007`; the `--work` library of `run` and `elab` without an index is `L0001`, where the contract says "top level not found"; `--message-format=json` is followed by plain text lines when `analyze` stops at one of several files; an explicit `--tier` is ignored under `--dap`; the language support page spelled `--std=08`, which is rejected (`93`, `2008`, `2019`; `1993` is an accepted alias): corrected the same day.
 
+### Generated command-line reference (#905, 2026-10-31)
+
+`docs/cli-reference.rst` (site page "Command-line reference") lists every command and non-hidden option with values, defaults,
+repeatability, conflicts, the diagnostic codes the help texts name, and fixed tables of environment variables and exit statuses.
+It is generated from the clap command tree by `crates/yavs/src/reference.rs` (test code only); the test `cli_reference_is_current`
+fails with the regenerate command (`YAVS_BLESS=1 cargo test -p yavs --bin yavs cli_reference`) when the page is stale, and
+`help_texts_are_for_users` keeps file names out of help texts. `docs/vunit-yavs.rst` lists the VUnit package's sim options and
+flags by hand; `python/vunit-yavs/tests/test_docs.py` checks its names against the option definitions. `docs/cli.rst` stays the overview.
+
 ### Static integer intermediates and condition locations (#872, 2026-10-29)
 
 - A static integer or physical expression keeps its exact value up to the outermost operation of its type (L156): `natural range 0 to 2 ** 31 - 1`, `-2 ** 31`, `2 ** g - 1` with a generic `g = 31` (also in a process) work in 2008; a variable or subprogram parameter operand still checks each operation. Sem (`stat.rs` `absorbable`) and lowering (`expr.rs` `arith_operand`) agree, so every tier does.

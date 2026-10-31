@@ -1,8 +1,11 @@
-Command-line reference
-======================
+Command line
+============
 
-``yavs --help`` and ``yavs <command> --help`` list every option. Write options as
-``--name=value``; they go before or after the positional arguments.
+The commands and the options you need most, by task. :doc:`cli-reference` lists every command
+and option with its values, defaults, environment variables and exit statuses, and
+:doc:`vunit-yavs` the options of the VUnit package; ``yavs --help`` and ``yavs <command> --help``
+print the same. Write options as ``--name=value``; they go before or after the positional
+arguments.
 
 Commands
 --------
@@ -148,7 +151,7 @@ quoting). Use it for long file lists and long generic values.
 Environment variables
 ---------------------
 
-None is needed.
+None is needed; all are listed in :doc:`cli-reference`.
 
 * ``NO_COLOR``: no colour in diagnostics.
 * ``YAVS_STD_CACHE=DIR|off``: like ``--std-cache``.

@@ -103,7 +103,7 @@ pub struct RunArgs {
     /// metavalue detected` (default `on`).
     #[arg(long, value_name = "on|off", value_enum)]
     ieee_warnings: Option<OnOffArg>,
-    /// Write an FST of the whole design.
+    /// Write an FST waveform file of the whole design (an unwritable path is E0801).
     #[arg(long, value_name = "FILE.fst")]
     wave: Option<String>,
     /// Record only signals whose path (`top.u1.sig`) matches this glob (repeatable).
@@ -115,8 +115,8 @@ pub struct RunArgs {
     /// Leave out arrays and vectors with more elements than this.
     #[arg(long, value_name = "N", default_value = "65536")]
     wave_max_array: usize,
-    /// Also record the scalar variables of processes (sampled at the end of each time step);
-    /// the include and exclude globs apply to `top.proc.var`.
+    /// With `--wave`: also record the scalar variables of processes (sampled at the end of each
+    /// time step); the include and exclude globs apply to `top.proc.var`.
     #[arg(long, requires = "wave")]
     wave_variables: bool,
     /// Print the wall and CPU time of each phase (analyze, elaborate, init, simulate) to
@@ -128,7 +128,8 @@ pub struct RunArgs {
     /// JSON.
     #[arg(long, value_name = "FILE", num_args = 0..=1, require_equals = true)]
     profile: Option<Option<String>>,
-    /// Stop the simulation at this time, e.g. `10ms`.
+    /// Stop the simulation at this time and exit 0: a number and a unit, `10ms` or `10 ns`
+    /// (a bare number is E0105).
     #[arg(long, value_name = "TIME")]
     stop_time: Option<String>,
     /// Print what every waiting process waits for when the run ends at `--stop-time` without
@@ -143,15 +144,17 @@ pub struct RunArgs {
     /// Time resolution limit (`std.env.resolution_limit`, TIME values in reflection).
     #[arg(long, value_enum, default_value = "fs")]
     resolution: ResolutionArg,
-    /// Worker threads for process evaluation (at least 1).
-    #[arg(long, default_value = "1", value_parser = parse_threads)]
+    /// Worker threads for process evaluation (at least 1). The output does not depend on it.
+    #[arg(long, value_name = "N", default_value = "1", value_parser = parse_threads)]
     threads: usize,
     /// Collect the heap of access values once this much was allocated since the last
     /// collection (and as much as that collection kept): plain bytes or a `k`, `m` or `g`
     /// suffix (powers of 1024), at least 1. Default 1m.
     #[arg(long, value_name = "SIZE", value_parser = parse_size)]
     gc_threshold: Option<u64>,
-    /// Randomize process execution order, with an optional seed.
+    /// Run the processes of a delta cycle in a random order, to find testbenches that depend on
+    /// the order. SEED defaults to 1; the seed is printed at the start so that a failing run can
+    /// be replayed with `--shuffle=SEED`.
     #[arg(long, value_name = "SEED", num_args = 0..=1, require_equals = true, default_missing_value = "1")]
     shuffle: Option<u64>,
     /// Count statement, branch and toggle coverage and write the run's coverage database to
@@ -163,6 +166,7 @@ pub struct RunArgs {
         long,
         value_enum,
         value_delimiter = ',',
+        value_name = "KIND,...",
         default_value = "statement,branch,toggle"
     )]
     cov_kind: Vec<CovKindArg>,
@@ -177,10 +181,12 @@ pub struct RunArgs {
     /// With `--cov`: also leave `translate_off` ... `translate_on` regions out of the coverage.
     #[arg(long)]
     cov_exclude_translate_off: bool,
-    /// Load a shared library for foreign subprograms.
+    /// Load a shared library for foreign subprograms (E0106 when it cannot be loaded, E0107 when a
+    /// subprogram cannot be bound).
     #[arg(long, value_name = "LIB")]
     load: Vec<String>,
-    /// Load a VHPI plugin, `LIB[:ENTRY]`.
+    /// Load a VHPI plugin, `LIB[:ENTRY]` (E0901 when it cannot be loaded, E0902 when the entry
+    /// point is missing).
     #[arg(long, value_name = "LIB[:ENTRY]")]
     vhpi: Vec<String>,
     // The text names the tiers this build has, so it is built by `tier_help`.
@@ -201,7 +207,7 @@ pub struct RunArgs {
     #[arg(long)]
     verbose: bool,
     /// Run under a Debug Adapter Protocol client: on 127.0.0.1:PORT (0 picks a free port) or
-    /// on standard input and output (`stdio`).
+    /// on standard input and output (`stdio`). A port that cannot be opened is E0701.
     #[arg(long, value_name = "PORT|stdio", value_parser = yavs_dap::parse_transport)]
     dap: Option<yavs_dap::Transport>,
     /// Open the run in the graphical debugger: starts `yavs-gui` (next to this executable, else
@@ -215,6 +221,10 @@ pub struct RunArgs {
 
 /// The compiled tiers of this build, for sentences like "this yavs has ...".
 pub(crate) fn tiers_built() -> &'static str {
+    #[cfg(test)]
+    if crate::reference::GENERIC_TIERS.get() {
+        return "the tiers `yavs --version` names";
+    }
     match (cfg!(feature = "llvm"), cfg!(feature = "clift")) {
         (true, true) => "the Cranelift and LLVM tiers",
         (false, true) => "the Cranelift tier",
@@ -231,7 +241,7 @@ fn tier_help() -> String {
          functions that become hot on a background thread; `clift` and `llvm` compile every \
          function before time 0; `clift-auto` is `auto` with Cranelift; `auto3` has Cranelift \
          compile warm functions and LLVM O2 those that stay hot. A tier needs its code generator \
-         in the build: this yavs has {built}. Default: `auto` with a compiled tier, `interp` with \
+         in the build (error E0120 otherwise): this yavs has {built}. Default: `auto` with a compiled tier, `interp` with \
          `--dap` and without one."
     )
 }
@@ -325,8 +335,11 @@ impl RunArgs {
 #[cfg_attr(test, derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum TierArg {
+    /// The interpreter alone.
     Interp,
+    /// LLVM: every function before time 0 (the `llvm` feature).
     Llvm,
+    /// The interpreter, and the functions that become hot compiled on a background thread.
     Auto,
     /// Cranelift: every function before time 0 (the `clift` feature).
     Clift,
@@ -340,10 +353,15 @@ pub enum TierArg {
 #[cfg_attr(test, derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum CovKindArg {
+    /// Each statement executed.
     Statement,
+    /// Each arm of `if`, `case`, conditional and selected assignments, and loop bodies.
     Branch,
+    /// The 0 to 1 and 1 to 0 changes of every `bit` and `std_ulogic` scalar of signals and ports.
     Toggle,
+    /// Each input and value of conditions with two or more inputs.
     Condition,
+    /// The same for the logic expression assigned to a signal or variable.
     Expression,
 }
 

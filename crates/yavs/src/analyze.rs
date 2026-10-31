@@ -39,7 +39,7 @@ pub struct Args {
     /// print it), `-WCODE` (stays a warning under `-Werror`).
     #[arg(short = 'W', value_name = "FLAG")]
     warn: Vec<String>,
-    /// Allow `std`/`ieee` as `--work`/`--map` (analyzes yavs's own lib/ into a library).
+    /// Allow `std` and `ieee` as `--work` or `--map`: for building the standard libraries from their sources.
     #[arg(long)]
     bootstrap: bool,
     /// Neither read nor write the analysed-unit cache of the libraries.

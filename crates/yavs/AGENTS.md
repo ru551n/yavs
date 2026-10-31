@@ -26,6 +26,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `src/tokens.rs` | The client of a test runner's token server in `YAVS_TOKENS=<port>:<secret>` (`connect`, at the start of `run` with `--threads` above 1 and no `--dap`: TCP to 127.0.0.1, secret, `0 0` answer, then non-blocking; `Pool` implements `yavs_kernel::Tokens` with `<want>` lines and numbered `<k> <lent>` answers); the socket closing at any exit gives the tokens back; E0128 when it cannot be used (#801, `docs/parallel.md`, protocol in `docs/cli-contract.md`) |
 | `src/timing.rs` | `--time-report`: phase marks (`mark`, one atomic load when off), `report` to stderr; CPU from `/proc/self/stat` (10 ms steps, no new dependency) |
 | `src/counters.rs` | `YAVS_COUNTERS=1`: the work counters of a run as `counters: NAME=VALUE` lines on stderr (kernel `Stats`, `ops`, call cache, wave variables, `llvm_*`, `cb_*`; `YAVS_COUNTERS=kinds|pc` adds `cb_<entry>.<Kind>` lines, the calls compiled code makes into the host by instruction kind); hidden test aid |
+| `src/reference.rs` (tests only) | Generates `docs/cli-reference.rst`, the full command-line reference of the user guide, from the clap command tree (every non-hidden command and option, values, defaults, repeatability, conflicts, codes named in help texts); the exit status and environment variable tables are fixed text at its end. `cli_reference_is_current` fails when the committed page is stale; `help_texts_are_for_users` fails when a help text points into the repository (`.md`, `docs/`, `crates/`) |
 | `src/elab.rs` (`YAVS_LEAN_EVENTS`) | Hidden test aid: `YAVS_LEAN_EVENTS=off` keeps the event history of every wide signal (`Elaborated::lean` cleared); otherwise a signal of more than 64 elements that no `'last_event`/`'last_value` can ask the history of single elements of keeps only each block's last event (#519), and every signal keeps its history when coverage, a debugger or a VHPI plugin observes the run |
 | `src/elab.rs` (`YAVS_CELLS`) | Hidden test aid: `YAVS_CELLS=off` makes a wide signal that processes wait on parts of list the exact runs of its changed elements (`Config::cells` false); otherwise it lists the changes per cell between the waited ranges (#519); value-change observers get exact runs either way |
 | `src/elab.rs` (`YAVS_POOL_ALL`) | Hidden test aid: `YAVS_POOL_ALL=1` with `--threads` above 1 hands every batch of two or more processes to the thread pool, except at initialisation and postponed ones (`Config::pool_all`) instead of choosing by estimated work, so the differential corpus exercises the pooled path (#497) |
@@ -101,6 +102,14 @@ into `docs/cli-contract.md` (root `AGENTS.md` rule 24).
   directory that a failing test would leave behind.
 
 ## 5. How to work here
+
+**After any change to an option, a default, an accepted value, a subcommand or a help text, regenerate the reference page and commit it** (the test `cli_reference_is_current` fails otherwise, with this command):
+
+```sh
+YAVS_BLESS=1 cargo test -p yavs --bin yavs cli_reference
+```
+
+Help texts are the documentation: write them for a user (no file names, no internals), give every positional argument a doc comment, and name the diagnostic code of the failure an option can cause. A hidden option (`hide = true`) stays out of the page. A new user-visible environment variable or exit status goes into the fixed text at the end of `src/reference.rs`. On a rebase conflict in `docs/cli-reference.rst`, take either side and regenerate.
 
 ```sh
 CARGO_BUILD_JOBS=6 cargo test -p yavs                    # cli, diag snapshots, lib/ parse

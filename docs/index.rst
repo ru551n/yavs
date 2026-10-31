@@ -61,6 +61,8 @@ Start with :doc:`install` and :doc:`getting-started`.
    :caption: Reference
    :hidden:
 
+   cli-reference
+   vunit-yavs
    language-support
    language-choices
    conformance

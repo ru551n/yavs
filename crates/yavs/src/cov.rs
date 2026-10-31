@@ -25,6 +25,7 @@ pub enum Command {
         /// The merged database.
         #[arg(short, long, value_name = "FILE")]
         output: PathBuf,
+        /// The coverage databases (`.ycov` files written by `yavs run --cov`).
         #[arg(required = true, value_name = "DB")]
         inputs: Vec<PathBuf>,
     },
@@ -61,6 +62,7 @@ pub enum Command {
         /// Warning control, as for `analyze`: `-Werror`, `-Wno-CODE`, ...
         #[arg(short = 'W', value_name = "FLAG")]
         warn: Vec<String>,
+        /// The coverage databases (`.ycov` files written by `yavs run --cov`).
         #[arg(required = true, value_name = "DB")]
         inputs: Vec<PathBuf>,
     },
@@ -73,6 +75,7 @@ pub enum Command {
         /// Warning control, as for `analyze`: `-Werror`, `-Wno-CODE`, ...
         #[arg(short = 'W', value_name = "FLAG")]
         warn: Vec<String>,
+        /// The coverage databases (`.ycov` files written by `yavs run --cov`).
         #[arg(required = true, value_name = "DB")]
         inputs: Vec<PathBuf>,
     },

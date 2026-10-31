@@ -116,4 +116,4 @@ Next steps
 * Record waveforms with ``--wave=tb.fst``: :doc:`waveforms`.
 * Use OSVVM, UVVM, VUnit or vendor libraries: :doc:`libraries`.
 * Set breakpoints in VS Code: :doc:`debugging`.
-* Every option in one place: :doc:`cli`.
+* Every option in one place: :doc:`cli-reference`.

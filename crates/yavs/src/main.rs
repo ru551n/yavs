@@ -12,6 +12,8 @@ mod elab;
 mod explain;
 mod gui;
 mod profile;
+#[cfg(test)]
+mod reference;
 mod stdout;
 mod stuck;
 mod timing;
@@ -59,10 +61,11 @@ struct Cli {
 #[cfg_attr(test, derive(Debug))]
 #[derive(clap::Args)]
 struct Top {
-    /// When to colour diagnostics.
+    /// When to colour diagnostics: `auto` colours on a terminal unless `NO_COLOR` is set.
     #[arg(long, global = true, value_enum, default_value = "auto")]
     color: Color,
-    /// How to print diagnostics.
+    /// How to print diagnostics on standard error: `human` (source snippets), `short` (one line
+    /// each, `FILE:LINE:COL: severity[CODE]: message`) or `json` (one JSON object per diagnostic).
     #[arg(long, global = true, value_enum, default_value = "human")]
     message_format: Format,
     /// How to read source files: UTF-8 when valid and ISO-8859-1 otherwise
@@ -144,6 +147,7 @@ enum Command {
         /// Print the syntax tree (for debugging yavs).
         #[arg(long, hide = true)]
         dump_ast: bool,
+        /// The files to check.
         #[arg(required = true)]
         files: Vec<PathBuf>,
     },

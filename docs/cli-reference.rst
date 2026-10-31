@@ -519,7 +519,25 @@ Arguments:
 
 .. option:: --root=DIR
 
-   Strip DIR from the front of the source paths the HTML report shows (default: the current directory). Sources are still read from the paths in the database.
+   Strip DIR from the front of the source paths the reports show (default: the current directory); a file outside DIR keeps its full path. The HTML report still reads sources from the paths in the database.
+
+.. option:: --kind=LIST
+
+   Report only these kinds of item (``statement``, ``branch``, ``toggle``, ``condition``, ``expression``, comma separated); ``--total`` and ``--fail-under`` then count only them.
+
+   Accepted: ``statement``, ``branch``, ``toggle``, ``condition``, ``expression``.
+
+   A list, values separated by ``,``.
+
+.. option:: --total
+
+   Print only the total coverage, as one percentage (``70.0%``, rounded down): items that ran over all items, after exclusions. A database with nothing to count is ``E0115``.
+
+   Cannot be combined with ``--uncovered``, ``--tests``.
+
+.. option:: --fail-under=PCT
+
+   Exit with status 1 and ``E0114`` when the total coverage is below PCT (0 to 100, such as 80 or 92.5); the report is printed as usual. A PCT outside 0 to 100 is a usage error.
 
 .. option:: --exclude=FILE
 
@@ -540,6 +558,8 @@ Arguments:
    Warning control, as for ``analyze``: ``-Werror``, ``-Wno-CODE``, ...
 
    May be repeated.
+
+Diagnostics named above: ``E0114``, ``E0115``; ``yavs --explain CODE`` explains each.
 
 ``yavs cov rank``
 -----------------
@@ -663,7 +683,7 @@ Exit status
    * - 1
      - ``parse`` and ``analyze``: a file has errors. ``run``: a failed assertion or report at the
        exit severity, a runtime error, or ``stop(N)`` or ``finish(N)`` with N other than 0 (the
-       status is N when N is from 1 to 125). ``cov`` and ``cache``: a file could not be written.
+       status is N when N is from 1 to 125). ``cov``: a database or exclusion file could not be read or a report written, or the total is below ``--fail-under``. ``cache``: a file could not be written.
    * - 2
      - Usage error, or a library, analysis or elaboration error; also an unknown code for
        ``--explain``. A runtime error while the design is initialized, before time 0, is an

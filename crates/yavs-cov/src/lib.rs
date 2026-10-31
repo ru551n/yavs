@@ -41,6 +41,17 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// The word `--kind` and the reports use.
+    pub fn name(self) -> &'static str {
+        match self {
+            Kind::Statement => "statement",
+            Kind::Branch(_) => "branch",
+            Kind::Toggle(_) => "toggle",
+            Kind::Condition(_) => "condition",
+            Kind::Expression(_) => "expression",
+        }
+    }
+
     /// A condition or expression row.
     pub fn is_fec(self) -> bool {
         matches!(self, Kind::Condition(_) | Kind::Expression(_))
@@ -143,6 +154,33 @@ fn display(text: &str) -> String {
     match s.char_indices().nth(60) {
         Some((i, _)) => format!("{}...", &s[..i]),
         None => s,
+    }
+}
+
+/// A branch arm as a report names it: `if rst = '1'`, `elsif en`, `else`, `when IDLE`,
+/// `(no arm taken)`. `source` is the text of a span of the file.
+fn arm_name(
+    arm: yavs_ir::CovArm,
+    k: u32,
+    in_if: bool,
+    source: &dyn Fn(yavs_diag::Span) -> String,
+) -> String {
+    use yavs_ir::CovArm::{Body, Choice, Cond, Else, Implicit, Others};
+    let flat = |sp| {
+        let s = source(sp).split_whitespace().collect::<Vec<_>>().join(" ");
+        match s.char_indices().nth(60) {
+            Some((i, _)) => format!("{}...", &s[..i]),
+            None => s,
+        }
+    };
+    match arm {
+        Cond(sp) if in_if => format!("{} {}", if k == 0 { "if" } else { "elsif" }, flat(sp)),
+        Cond(sp) | Choice(Some(sp)) => format!("when {}", flat(sp)),
+        Choice(None) => "when (choices)".into(),
+        Others => "when others".into(),
+        Else => "else".into(),
+        Implicit => "(no arm taken)".into(),
+        Body => "loop body".into(),
     }
 }
 
@@ -284,9 +322,16 @@ pub fn collect(
                 .as_ref()
                 .map(|r| display(at(r.input)))
                 .unwrap_or_default(),
-            text: match &c.row {
-                Some(r) => format!("{} {}", r.result, display(text)),
-                None => display(text),
+            text: match (&c.row, c.arm, c.kind) {
+                (Some(r), ..) => format!("{} {}", r.result, display(text)),
+                (None, Some(a), yavs_ir::CovKind::Branch(k)) => {
+                    let in_if = prog
+                        .stmts
+                        .get(c.stmt)
+                        .is_some_and(|s| s.kind == yavs_ir::StmtKind::If);
+                    arm_name(a, k, in_if, &|sp| at(sp).to_string())
+                }
+                _ => display(text),
             },
             skip: rg.iter().any(|&(a, b)| a <= line && line <= b),
             unit,
@@ -711,13 +756,7 @@ impl Database {
 
     /// A plain text summary: totals, one line per path, then every item never reached.
     pub fn summary(&self) -> String {
-        let pct = |h: usize, t: usize| {
-            if t == 0 {
-                "-".to_string()
-            } else {
-                format!("{:.1}%", 100.0 * h as f64 / t as f64)
-            }
-        };
+        let pct = percent;
         let col = |h: usize, t: usize| format!("{h}/{t} {}", pct(h, t));
         // Per path: statements, branches, toggles, conditions, expressions (hit, total each).
         let mut per: BTreeMap<&str, [usize; 10]> = BTreeMap::new();
@@ -792,23 +831,59 @@ impl Database {
         if !missed.is_empty() {
             s.push_str("\nnot covered:\n");
         }
-        for (k, e) in missed {
-            let what = match k.kind {
-                Kind::Statement => "statement".to_string(),
-                Kind::Branch(a) => format!("branch {a}"),
-                Kind::Toggle(r) => format!("toggle {} {}", k.sig, arrow(r)),
-                Kind::Condition(r) | Kind::Expression(r) => {
-                    let w = if matches!(k.kind, Kind::Condition(_)) {
-                        "condition"
-                    } else {
-                        "expression"
-                    };
-                    format!("{w} input {} is {}", k.sig, r % 2)
-                }
-            };
-            let _ = writeln!(s, "  {}:{}  {what}  {}", e.file, e.line, k.path);
+        // Location, kind, item and instance in aligned columns.
+        let rows: Vec<[String; 4]> = missed
+            .iter()
+            .map(|(k, e)| {
+                let item = match k.kind {
+                    Kind::Toggle(r) => format!("{} {}", k.sig, arrow(r)),
+                    Kind::Condition(_) | Kind::Expression(_) => fec_text(k, e),
+                    _ => e.text.clone(),
+                };
+                [
+                    format!("{}:{}", e.file, e.line),
+                    k.kind.name().to_string(),
+                    item,
+                    k.path.clone(),
+                ]
+            })
+            .collect();
+        let w: Vec<usize> = (0..3)
+            .map(|c| rows.iter().map(|r| r[c].chars().count()).max().unwrap_or(0))
+            .collect();
+        for r in &rows {
+            let _ = writeln!(
+                s,
+                "  {:<w0$}  {:<w1$}  {:<w2$}  {}",
+                r[0],
+                r[1],
+                r[2],
+                r[3],
+                w0 = w[0],
+                w1 = w[1],
+                w2 = w[2]
+            );
         }
         s
+    }
+
+    /// The items of the kinds named (`Kind::name`) only.
+    pub fn only(&self, kinds: &[String]) -> Database {
+        Database {
+            items: self
+                .items
+                .iter()
+                .filter(|(k, _)| kinds.iter().any(|n| n == k.kind.name()))
+                .map(|(k, e)| (k.clone(), e.clone()))
+                .collect(),
+            tests: self.tests.clone(),
+        }
+    }
+
+    /// The items that ran and all items: what `--total` and `--fail-under` count.
+    pub fn totals(&self) -> (usize, usize) {
+        let hit = self.items.values().filter(|e| e.count > 0).count();
+        (hit, self.items.len())
     }
 
     /// A Cobertura XML report: one class per source file, counts summed over every path. A
@@ -942,9 +1017,20 @@ pub fn fec_text(k: &Key, e: &Entry) -> String {
     format!("{} is {v}{res} in {whole}", k.sig)
 }
 
-/// `0->1` or `1->0`.
+/// `rise (0->1)` or `fall (1->0)`.
 pub fn arrow(rise: bool) -> &'static str {
-    if rise { "0->1" } else { "1->0" }
+    if rise { "rise (0->1)" } else { "fall (1->0)" }
+}
+
+/// A percentage in tenths, rounded down: a gate never rounds a missing item up (99.95 is
+/// 99.9). `None` without items.
+pub fn tenths(hit: usize, all: usize) -> Option<u64> {
+    (all > 0).then(|| (hit as u64 * 1000) / all as u64)
+}
+
+/// [`tenths`] as `88.8%`, or `-` without items.
+pub fn percent(hit: usize, all: usize) -> String {
+    tenths(hit, all).map_or_else(|| "-".to_string(), |t| format!("{}.{}%", t / 10, t % 10))
 }
 
 fn xml(s: &str) -> String {
@@ -1025,7 +1111,19 @@ mod tests {
             s.starts_with("statements 1/2 50.0%\nbranches   1/1 100.0%\n"),
             "{s}"
         );
-        assert!(s.contains("a&b.vhd:9  statement  work.p"), "{s}");
+        assert!(s.contains("a&b.vhd:9  statement  x := 1;  work.p"), "{s}");
+    }
+
+    #[test]
+    fn percentages_round_down() {
+        assert_eq!(tenths(0, 0), None);
+        assert_eq!(percent(0, 0), "-");
+        assert_eq!(percent(8, 9), "88.8%");
+        assert_eq!(percent(1999, 2000), "99.9%");
+        assert_eq!(percent(2000, 2000), "100.0%");
+        assert_eq!(percent(0, 7), "0.0%");
+        assert_eq!(arrow(true), "rise (0->1)");
+        assert_eq!(arrow(false), "fall (1->0)");
     }
 
     #[test]

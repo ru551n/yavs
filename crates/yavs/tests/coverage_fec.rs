@@ -208,7 +208,7 @@ fn counts_threads_and_reports() {
         "{text}"
     );
     assert!(
-        text.contains("condition input x is 1\n") || text.contains("condition input x is 1 "),
+        text.contains("condition  x is 1 (result 1) in x and y  "),
         "{text}"
     );
     let o = yavs(&tmp, &["cov", "report", "a.ycov", "--uncovered"]);

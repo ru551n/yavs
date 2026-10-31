@@ -188,6 +188,14 @@ const EXPLAIN: &[(&str, &str)] = &[
         "A source file named by the coverage database cannot be read, so `yavs cov report --html DIR` cannot show it; the note gives the reason. Run the command where the paths in the database resolve.",
     ),
     (
+        "E0114",
+        "The total coverage of `yavs cov report` is below the percentage of `--fail-under=PCT`. The normal report was printed first; the message gives the total and the requirement. Run more tests, or lower the requirement. Percentages are rounded down, so `--fail-under=100` needs every item covered.",
+    ),
+    (
+        "E0115",
+        "`yavs cov report --total` or `--fail-under` has no item to count: the coverage database holds none of the kinds selected with `--kind` (or nothing is left after the exclusions). Run with `--cov-kind` naming the kinds, or change `--kind`.",
+    ),
+    (
         "E0112",
         "An exclusion file given to `yavs cov report --exclude` cannot be read or has a malformed row or entry (a `.yaml` or `.yml` file is read as YAML, any other as text rows); the note names the line. Rows start with `statement`, `branch`, `toggle`, `instance`, `unit` or `file`; a YAML entry has the same word as its `kind`.",
     ),

@@ -2515,6 +2515,42 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   is within a log factor of the minimal set; an exact set cover is NP-hard. Items no test hit
   are not counted; `--exclude` applies before ranking.
 
+## Readable coverage report, `--total`, `--fail-under` (yavs-cov, yavs-ir, yavs-lower, CLI, vunit-yavs, #877, 2026-10-31)
+
+- **Paths:** every text report (summary, `--uncovered`, `--tests`, the excluded list) and the HTML
+  report show source paths relative to the current directory or to `--root DIR` (a file outside it
+  keeps its path), by one rewrite of `Entry::file` after the exclusions are applied (file globs
+  match the stored path). Cobertura keeps the stored paths. Why: absolute paths made the list
+  unreadable; the HTML report already did it (#689).
+- **Branch arm names:** lowering records for each branch counter what names its arm
+  (`yavs_ir::CovArm`: the source span of the condition or choices, `others`, a written `else`, the
+  implicit arm, a loop body) and `yavs-cov` writes `if C`, `elsif C`, `else`, `(no arm taken)`,
+  `when CHOICES`, `when others`, `loop body` into `Entry::text`, the display field. The identity
+  (statement text hash, occurrence, arm number) and the database format are unchanged, so old
+  databases still merge and exclusions still match; an old database shows its statement text.
+  A `case` or selected choice that is a range of an attribute of a subtype has no source span:
+  `when (choices)`.
+- **One toggle wording:** `rise (0->1)` and `fall (1->0)` everywhere (summary, comments of
+  `--uncovered`, excluded list, HTML). Exclusion rows keep `rise` and `fall`.
+- **Percentages round down** to one decimal everywhere: a gate must not pass by rounding up (99.95
+  is `99.9%`; `--fail-under=100` needs every item). The total counts every item of every kind
+  alike, toggles per direction, after exclusions and `--kind`.
+- **`--total`, `--fail-under=PCT`, `--kind=LIST`:** see `docs/cli-contract.md` section 5.
+  Below the threshold is the coded error `E0114` (exit 1, after the normal output, so
+  `--message-format=json` carries it); a PCT that is not a number in 0 to 100 is a usage error
+  (exit 2, clap). A total with nothing to count is `E0115` (exit 1), not 0% or 100%: an empty
+  selection is nearly always a missing `--cov-kind`. (Maintainer asked for the behaviour above on
+  2026-10-29; the rounding, E0115 and the `--kind` name are this change's choices.)
+- **vunit-yavs:** `supports_coverage()` is True. `enable_coverage` (VUnit's option) or
+  `--yavs-cov` adds `--cov=<test output>/yavs/coverage.ycov --cov-test=<test name>`; the sim
+  option `yavs.cov_kind` adds `--cov-kind`; `results.merge_coverage(file, args)` runs `yavs cov
+  merge` into `file.ycov` and, with `args`, `--yavs-cov-html` or `--yavs-cov-fail-under`, `yavs
+  cov report`. A failing report registers an exit hook that ends the process with status 1 once
+  VUnit has written its reports (an exception in `post_run` would skip the JUnit file). Coverage
+  with `--yavs-debug` is refused (`--cov` with `--dap` is not implemented).
+- **Not applicable:** the VS Code extension (the debugger cannot collect coverage, `--cov` with
+  `--dap` is not implemented) and the Python scripting API (#132 does not exist yet).
+
 ## Condition and expression coverage (yavs-lower, yavs-ir, yavs-cov, CLI, #688, user, 2026-10-24)
 
 - **Requirement (user):** focused expression coverage (FEC) with exclusion per row. For every

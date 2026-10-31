@@ -745,7 +745,7 @@ mod tests {
         }
         // A scalar missed one way names the direction; missed both ways, none.
         let u = d.uncovered();
-        assert!(u.contains("toggle :t a rise   # never 0->1"), "{u}");
+        assert!(u.contains("toggle :t a rise   # never rise (0->1)"), "{u}");
         assert!(u.contains("toggle :t b   # never toggled"), "{u}");
         assert_eq!(u.lines().count(), 2, "{u}");
         let y = d.uncovered_yaml();

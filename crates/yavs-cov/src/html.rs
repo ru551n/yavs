@@ -99,7 +99,10 @@ fn cell(h: usize, t: usize) -> String {
         return "<td class=\"n dim\">-</td>".to_string();
     }
     let p = 100.0 * h as f64 / t as f64;
-    format!("<td><span class=\"bar\"><i style=\"width:{p:.1}%\"></i></span>{h}/{t} {p:.1}%</td>")
+    format!(
+        "<td><span class=\"bar\"><i style=\"width:{p:.1}%\"></i></span>{h}/{t} {}</td>",
+        crate::percent(h, t)
+    )
 }
 
 /// Hit and total of statements, branches and toggles.
@@ -241,10 +244,10 @@ const LEGEND: &str = "<p class=\"legend dim\">click a line (or focus it and pres
 <span class=\"part\">branch arm or toggle missed</span><span class=\"ex\">excluded</span></p>\n";
 
 /// What an item counts, as a popup group title.
-fn what(k: &Key) -> String {
+fn what(k: &Key, e: &Entry) -> String {
     match k.kind {
         Kind::Statement => "statement".to_string(),
-        Kind::Branch(a) => format!("branch arm {a}"),
+        Kind::Branch(a) => format!("branch arm {a}: {}", e.text),
         Kind::Toggle(r) => format!("toggle {} {}", k.sig, arrow(r)),
         Kind::Condition(_) | Kind::Expression(_) => String::new(),
     }
@@ -276,7 +279,7 @@ fn popup(db: &Database, n: usize, its: &[LineItem], summary: &str) -> String {
                 e.text.split_once(' ').map_or(&e.text[..], |x| x.1)
             )
         } else {
-            what(k)
+            what(k, e)
         };
         if t != title {
             if !title.is_empty() {

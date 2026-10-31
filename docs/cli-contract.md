@@ -84,7 +84,7 @@ The test runner's capability answers for yavs (`SimulatorInterface` hooks):
 | `supports_vhdl_call_paths` | True | 2019 `std.env` call paths (`get_call_path`, `file_name`, `file_line`), implemented (#99) |
 | `has_valid_exit_code` | True | see section 5 |
 | `supports_vhpi` | True | M5 (`--vhpi`) |
-| `supports_coverage` | False | `--cov` exists, the runner does not drive it yet (section 8) |
+| `supports_coverage` | True | `enable_coverage` adds `--cov`, `merge_coverage` runs `cov merge` and `cov report` (section 5) |
 | `supports_gui_flag` | True | waves opened in the viewer, section 6 |
 
 ## 2. Standards
@@ -680,14 +680,26 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   `yavs.ycov`, relative to the working directory) after the simulation, whatever its exit
   status; an elaboration failure writes none. The file is overwritten, never appended to:
   one database per run, merged afterwards with `yavs cov merge A B ... -o OUT`. `yavs cov report
-  DB ... [--cobertura FILE.xml] [--html DIR [--root DIR]] [--exclude FILE] [--uncovered] [-W...]` prints a text summary on
-  stdout and writes Cobertura XML. `--html DIR` writes a static HTML report (`index.html`,
+  DB ... [--cobertura FILE.xml] [--html DIR] [--root DIR] [--kind LIST] [--total] [--fail-under PCT] [--exclude FILE] [--uncovered] [-W...]` prints a text summary on
+  stdout and writes Cobertura XML. The summary ends with the items that never ran in aligned
+  columns (`FILE:LINE  KIND  ITEM  INSTANCE`; a branch is named by its arm in the source:
+  `if C`, `elsif C`, `else`, `when CHOICES`, `(no arm taken)`, `loop body`; a toggle is `SIGNAL
+  rise (0->1)` or `fall (1->0)`). Source paths in the text reports, `--uncovered`, `--tests`
+  and the HTML report are relative to the current directory or to `--root DIR` (a file outside it
+  keeps its path; Cobertura keeps the stored paths). `--kind=LIST` (`statement`, `branch`,
+  `toggle`, `condition`, `expression`) keeps only those items in every report. `--total` prints
+  only the percentage of items that ran over all items, after exclusions and `--kind`, rounded
+  down to one decimal (`74.3%`); it conflicts with `--uncovered` and `--tests`. `--fail-under
+  PCT` (0 to 100, decimals allowed) exits 1 with `E0114` (`coverage 70.0% is below the
+  required 80.0%`, after the normal output) when that total is lower; a PCT that is not a number
+  in range is a clap usage error with exit status 2. A total with no item to count (`--total`
+  or `--fail-under` with a `--kind` the database lacks) is `E0115`, exit 1. `--html DIR` writes a static HTML report (`index.html`,
   `src-N.html` per source file in name order; inline CSS and one inline script, no external
   resources, no timestamp, so equal databases give equal bytes; source paths shown relative to
-  the current directory or to `--root DIR`); sources are read from the paths in the
+  the current directory or to `--root DIR`, as in the text reports); sources are read from the paths in the
   database at report time and an unreadable one is `E0113` with nothing written. `--uncovered` prints instead one exclusion row per item that
   never ran (`statement|branch INSTANCE ID FILE:LINE   # text`, `condition|expression INSTANCE HEX12.OCC ROW FILE:LINE   # input, value, result, condition`, `toggle PATH SCALAR rise|fall
-  # never 0->1|1->0 (FILE:LINE)`, or `toggle PATH SCALAR   # never toggled` when both
+  # never rise (0->1)|fall (1->0) (FILE:LINE)`, or `toggle PATH SCALAR   # never toggled` when both
   directions never happened); `--uncovered=yaml` prints the same items as a YAML exclusion file
   (`exclude:` list of `kind`/`instance`/`hash`/`line` or `signal`/`direction` maps); `--exclude FILE` takes the
   items such a file lists out of the summary and the Cobertura report and lists them under
@@ -708,7 +720,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   `# tests: A, B`; `yavs cov rank DB... [--exclude FILE] [-W...]` prints a greedy minimal set
   of tests reaching the same coverage (`  NAME  +NEW  SO_FAR/HIT` per pick, then `not needed:
   ...`) and per test its items and the items no other test hit. `yavs cov` exits 0, or 1 with `E0111` (a database cannot be
-  read), `E0112` (an exclusion file cannot be read or has a malformed row) or `E0110` (a file
+  read), `E0114`, `E0115`, `E0112` (an exclusion file cannot be read or has a malformed row) or `E0110` (a file
   cannot be written), or when `-Werror` makes a warning an error; `run` exits at least 1 when the database cannot be written (`E0110`). The
   database format (a `yavs-coverage 5` line, a tests section of `test`, id, name lines with
   ids numbering the names in sorted order, then one tab-separated item per line: kind `s` or
@@ -764,5 +776,5 @@ the run's speed); `never` is the default; any other value is error E0801.
 
 ## 8. Not covered yet
 
-Coverage through the test runner: the runner still reports `supports_coverage() == False`;
-users pass `--cov=FILE` in `yavs.sim_flags` and merge the databases themselves (section 5).
+Condition-combination exclusions (#883): inline `-- yavs cov exclude ...` directives and the
+opt-in combination metric they refine are not implemented.

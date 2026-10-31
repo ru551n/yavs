@@ -18,12 +18,28 @@ yavs run --work=lib:out/lib --cov=b.ycov --cov-kind=statement,branch,toggle,cond
 yavs cov merge a.ycov b.ycov -o all.ycov
 yavs cov report all.ycov --html cov-html --cobertura coverage.xml
 yavs cov report all.ycov --uncovered=yaml > exclusions.yaml
+yavs cov report all.ycov --total
+yavs cov report all.ycov --fail-under=80
 yavs cov rank all.ycov
 ```
 
 The two runs write `a.ycov` and `b.ycov` (named `tb(test=a)` and `tb(test=b)` in the database,
 unless you pass `--cov-test`). The report prints one line each for statements, branches,
-toggles and conditions with hit/total and a percentage, then a table per instance. Open
+toggles and conditions with hit/total and a percentage, then a table per instance, then the items that
+never ran, with the source text that says what each one is:
+
+```
+not covered:
+  tb.vhd:6   toggle     rst fall (1->0)                                        :tb
+  tb.vhd:24  branch     if rst = '1'                                           :tb
+  tb.vhd:25  statement  count <= 0;                                            :tb
+  tb.vhd:26  condition  count < 15 is 0 (result 0) in en = '1' and count < 15  :tb
+```
+
+Source paths are relative to the current directory (`--root DIR` changes that; a file outside it keeps
+its full path). A branch is named by its arm in the source: `if cond`, `elsif cond`, `else`, `when
+choice` for a `case` alternative or a `when` of an assignment, `(no arm taken)` for the implicit arm of
+an `if` or conditional assignment without `else`. Open
 `cov-html/index.html` to click through the missed lines. Edit `exclusions.yaml`, deleting the
 entries that must stay as gaps, and pass it back with `--exclude exclusions.yaml`. `rank`
 tells you whether one of the two tests adds nothing the other lacks.
@@ -64,10 +80,47 @@ Report options:
 |--------|--------|
 | (none) | totals such as `statements 18/24 75.0%` for each kind the database holds, one line per instance or package, then the excluded items with their reasons |
 | `--cobertura FILE.xml` | Cobertura XML for CI services, one entry per source line (it has no toggles, so those are only in the text and HTML reports) |
-| `--html DIR [--root DIR]` | static pages that open from disk (`index.html`); `--root` changes which path prefix is stripped from the names shown |
+| `--html DIR` | static pages that open from disk (`index.html`) |
+| `--root DIR` | the prefix stripped from the source paths in every report (default: the current directory) |
+| `--kind=LIST` | report only these kinds (`statement`, `branch`, `toggle`, `condition`, `expression`, comma separated); `--total` and `--fail-under` then count only them |
+| `--total` | print only the total coverage as one percentage such as `74.3%`: the items that ran over all items, after exclusions; cannot be combined with `--uncovered` or `--tests` |
+| `--fail-under=PCT` | exit with status 1 when the total is below PCT (`80`, `92.5`); the report is printed as usual and `error[E0114]: coverage 70.0% is below the required 80.0%` follows on standard error. With `--total` the percentage is printed too |
 | `--uncovered[=yaml]` | one exclusion row per item that never ran, with file, line and the statement as a comment; `=yaml` prints a YAML exclusion file |
 | `--tests` | one row per item that ran, followed by `# tests:` and the tests that hit it; cannot be combined with `--uncovered` |
 | `--exclude FILE` | apply an exclusion file (see Exclusions) |
+
+## Coverage in CI
+
+`--fail-under` makes the coverage a gate and `--total` gives a number for a badge or a log line:
+
+```yaml
+- run: yavs run --work=lib:out/lib --cov=cov/a.ycov --cov-kind=statement,branch tb
+- run: yavs cov merge cov/*.ycov -o cov/all.ycov
+- run: yavs cov report cov/all.ycov --html cov-html --cobertura coverage.xml --fail-under=85
+- run: echo "coverage $(yavs cov report cov/all.ycov --total)"
+```
+
+The percentages are rounded down, so a gate never passes by rounding up: 99.95% is `99.9%`, and
+`--fail-under=100` passes only when every item ran. Count a few kinds only with `--kind`, for
+example `--kind=statement,branch --fail-under=90`. A report with nothing to count, such as
+`--kind=toggle` on a database without toggles, is the error `E0115` rather than 0% or 100%.
+
+## Coverage from VUnit
+
+With the `vunit-yavs` package the test runner collects, merges and checks coverage for you:
+
+```python
+vu.set_sim_option("enable_coverage", True)      # or pass --yavs-cov to run.py
+vu.set_sim_option("yavs.cov_kind", ["statement", "branch"])   # optional, as --cov-kind
+vu.main(post_run=lambda results: results.merge_coverage("coverage"))
+```
+
+Every simulation writes a database named after its test; `merge_coverage("coverage")` merges them
+into `coverage.ycov`. `python run.py --yavs-cov-html cov-html --yavs-cov-fail-under 85` then also
+writes the HTML report and fails the run (exit status 1, after the test results are written) when
+the total is below 85%. Further arguments for `yavs cov report` go in
+`merge_coverage("coverage", args=["--cobertura", "coverage.xml"])`. Coverage is not available
+under `--yavs-debug`.
 
 ## Excluding code
 
@@ -147,6 +200,9 @@ databases stay mergeable after edits elsewhere in the file. A statement exclusio
 way: it is matched by path and text hash, so it stays excluded when the statement moves, and the
 line number in the row is only for reading.
 
+**Toggle wording.** A toggle is `rise (0->1)` or `fall (1->0)` in every report; exclusion rows use
+`rise` and `fall`.
+
 **Toggle values.** `'L'` counts as 0 and `'H'` as 1; other values are neither, so a change
 through `'Z'` or `'X'` counts nothing.
 
@@ -170,8 +226,12 @@ items per instance, with counts and the tests that hit them. Each file also has 
 its gaps. Sources are read from the paths stored in the database, so run the command where they
 resolve.
 
-**Exit status and diagnostics.** `yavs cov` exits 0, or 1 on an error or when `-Werror` turns a
-warning into an error.
+**Percentages.** Every percentage is rounded down to one decimal (a gate must not round a missing
+item up). The total counts every item of every kind alike: toggles are one item per direction.
+
+**Exit status and diagnostics.** `yavs cov` exits 0, or 1 on an error, when `-Werror` turns a
+warning into an error, or when the total is below `--fail-under`; a malformed option, such as a
+`--fail-under` that is not a number from 0 to 100, is a usage error with exit status 2.
 
 | Code | Meaning |
 |------|---------|
@@ -179,6 +239,8 @@ warning into an error.
 | `E0111` | cannot read a database |
 | `E0112` | bad exclusion file |
 | `E0113` | HTML report cannot find a source file at its stored path; nothing is written |
+| `E0114` | the total coverage is below `--fail-under` (the report was printed) |
+| `E0115` | `--total` or `--fail-under` has no item to count: the database holds none of the `--kind`s |
 | `W0110` | an exclusion row's line number is stale (the statement is still matched by its hash) |
 | `W0111` | an exclusion row matches nothing |
 | `W0112` | a `coverage off` region is never closed, so it excludes the rest of the file |

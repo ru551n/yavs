@@ -24,7 +24,9 @@ Commands
    * - ``yavs elab [options] TOP``
      - Elaborate only: check that the design builds.
    * - ``yavs cov merge|report|rank ...``
-     - Merge and report coverage databases (:doc:`coverage`).
+     - Merge and report coverage databases (:doc:`coverage`): ``cov report`` takes ``--html DIR``,
+       ``--cobertura FILE``, ``--root DIR``, ``--kind=LIST``, ``--exclude FILE``, ``--uncovered``,
+       ``--tests``, ``--total`` (only the percentage) and ``--fail-under=PCT`` (exit status 1 below).
    * - ``yavs cache clean --work=NAME:PATH``
      - Empty the compilation cache of a library (:doc:`running-faster`).
    * - ``yavs vendor vivado --out=DIR [--vivado=DIR]``
@@ -90,7 +92,9 @@ Waveforms, coverage, debugging, plugins
 * ``--wave=FILE.fst``, ``--wave-include=GLOB``, ``--wave-exclude=GLOB``, ``--wave-variables``,
   ``--wave-max-array=N``: :doc:`waveforms`.
 * ``--cov[=FILE]``, ``--cov-kind=LIST``, ``--cov-test=NAME``, ``--cov-toggle-max=N``,
-  ``--cov-exclude-translate-off``: :doc:`coverage`.
+  ``--cov-exclude-translate-off``: :doc:`coverage`. A coverage gate for CI is
+  ``yavs cov report all.ycov --fail-under=85`` (exit status 1 below 85%, 2 for a bad percentage);
+  ``--total`` prints only the percentage; the CI example is in :doc:`coverage`.
 * ``--dap=PORT|stdio``: :doc:`debugging`.
 * ``--vhpi=LIB[:ENTRY]``, ``--load=LIB``: :doc:`vhpi`.
 

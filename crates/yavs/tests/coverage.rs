@@ -403,6 +403,8 @@ fn toggle_coverage() {
     let o = yavs(&tmp, &["cov", "report", "a.ycov"]);
     let text = String::from_utf8(o.stdout).expect("utf-8");
     assert!(text.contains("\ntoggles    8/16 50.0%\n"), "{text}");
+    // The summary and `--uncovered` say the direction the same way.
+    assert!(text.contains("  toggle  s fall (1->0)  "), "{text}");
     let o = yavs(&tmp, &["cov", "report", "a.ycov", "--uncovered"]);
     let rows = String::from_utf8(o.stdout).expect("utf-8");
     let toggle_rows: Vec<_> = rows.lines().filter(|l| l.starts_with("toggle ")).collect();
@@ -413,7 +415,7 @@ fn toggle_coverage() {
     );
     assert!(
         rows.lines()
-            .any(|l| l.starts_with("toggle :cov_toggle s fall   # never 1->0")),
+            .any(|l| l.starts_with("toggle :cov_toggle s fall   # never fall (1->0)")),
         "{rows}"
     );
     assert_eq!(toggle_rows.len(), 6, "{rows}");
@@ -617,7 +619,7 @@ fn html_report() {
     assert!(!src.contains("class=\"it ") && !src.contains("<tr id=\"L1\" class=\"\" tabindex"));
     // Counts per instance and tests in the popup.
     assert!(
-        src.contains("<h4>branch arm 0</h4><table><tr class=\"\"><td>:cov_run</td><td class=\"n\">3</td><td class=\"dim\">tests: cov_run</td>"),
+        src.contains("<h4>branch arm 0: loop body</h4><table><tr class=\"\"><td>:cov_run</td><td class=\"n\">3</td><td class=\"dim\">tests: cov_run</td>"),
         "{src}"
     );
     // Excluded items are greyed, with the (escaped) reason.
@@ -723,7 +725,7 @@ fn html_toggles() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let src = page(&tmp, "src-0.html");
     assert!(
-        src.contains("<h4>toggle v(1) 0-&gt;1</h4><table><tr class=\"miss\"><td>:cov_toggle</td><td class=\"n\">0</td>"),
+        src.contains("<h4>toggle v(1) rise (0-&gt;1)</h4><table><tr class=\"miss\"><td>:cov_toggle</td><td class=\"n\">0</td>"),
         "{src}"
     );
     assert!(

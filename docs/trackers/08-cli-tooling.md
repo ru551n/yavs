@@ -7,7 +7,7 @@ Open issues in the command line, the DAP server, coverage reports, profiling and
 - [ ] #864 dap: over TCP the session is not closed after `terminated` when the run ends with an internal error
 - [ ] #863 dap: E9999 "read of 8 bytes at 0 outside a frame object of 0 bytes" in a test runner testbench under --dap
 - [x] #696 YAVS_COUNTERS prints nothing in a --dap session
-- [ ] #877 cov report: readable text output (relative paths, named branch arms, one toggle wording) and --total for the coverage percentage only
+- [x] #877 cov report: readable text output (relative paths, named branch arms, one toggle wording) and --total for the coverage percentage only
 - [ ] #883 Coverage: inline condition-combination exclusions with shorthand and default validation
 - [ ] #876 run: drive the Surfer waveform viewer over WCP (--surfer): plan
 - [x] #587 profile: source lines of compiled code, profile on Ctrl-C (follow-up of #580)

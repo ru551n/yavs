@@ -17,6 +17,42 @@ pub enum UncoveredFormat {
     Yaml,
 }
 
+/// A kind of item `--kind` selects.
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum KindArg {
+    Statement,
+    Branch,
+    Toggle,
+    Condition,
+    Expression,
+}
+
+impl KindArg {
+    fn name(self) -> String {
+        let k = match self {
+            KindArg::Statement => yavs_cov::Kind::Statement,
+            KindArg::Branch => yavs_cov::Kind::Branch(0),
+            KindArg::Toggle => yavs_cov::Kind::Toggle(true),
+            KindArg::Condition => yavs_cov::Kind::Condition(0),
+            KindArg::Expression => yavs_cov::Kind::Expression(0),
+        };
+        k.name().to_string()
+    }
+}
+
+/// A percentage for `--fail-under`: 0 to 100, in tenths.
+fn percentage(text: &str) -> Result<u64, String> {
+    let v: f64 = text
+        .parse()
+        .map_err(|_| format!("`{text}` is not a number; write a percentage such as 80 or 92.5"))?;
+    if !(0.0..=100.0).contains(&v) {
+        return Err(format!("`{text}` is outside 0 to 100"));
+    }
+    // Needs at least the tenths the threshold names: 92.55 asks for 92.6.
+    Ok((v * 10.0 - 1e-9).ceil().max(0.0) as u64)
+}
+
 #[cfg_attr(test, derive(Debug))]
 #[derive(Subcommand)]
 pub enum Command {
@@ -38,10 +74,24 @@ pub enum Command {
         /// database) into DIR.
         #[arg(long, value_name = "DIR")]
         html: Option<PathBuf>,
-        /// Strip DIR from the front of the source paths the HTML report shows (default: the
-        /// current directory). Sources are still read from the paths in the database.
-        #[arg(long, value_name = "DIR", requires = "html")]
+        /// Strip DIR from the front of the source paths the reports show (default: the
+        /// current directory); a file outside DIR keeps its full path. The HTML report still
+        /// reads sources from the paths in the database.
+        #[arg(long, value_name = "DIR")]
         root: Option<PathBuf>,
+        /// Report only these kinds of item (`statement`, `branch`, `toggle`, `condition`,
+        /// `expression`, comma separated); `--total` and `--fail-under` then count only them.
+        #[arg(long, value_name = "LIST", value_delimiter = ',')]
+        kind: Vec<KindArg>,
+        /// Print only the total coverage, as one percentage (`70.0%`, rounded down): items that
+        /// ran over all items, after exclusions. A database with nothing to count is `E0115`.
+        #[arg(long, conflicts_with_all = ["uncovered", "tests"])]
+        total: bool,
+        /// Exit with status 1 and `E0114` when the total coverage is below PCT (0 to 100, such
+        /// as 80 or 92.5); the report is printed as usual. A PCT outside 0 to 100 is a usage
+        /// error.
+        #[arg(long, value_name = "PCT", value_parser = percentage)]
+        fail_under: Option<u64>,
         /// Leave out the items an exclusion file lists (rows pasted from `--uncovered`; a
         /// `.yaml` or `.yml` file is read as YAML).
         #[arg(long, value_name = "FILE")]
@@ -89,6 +139,10 @@ const EXCLUDE_ERROR: &str = "E0112";
 const READ_ERROR: &str = "E0111";
 /// Cannot read a source file named by the database (`--html`).
 const SOURCE_ERROR: &str = "E0113";
+/// The total coverage is below `--fail-under`.
+const BELOW_ERROR: &str = "E0114";
+/// `--total` or `--fail-under` over a database with no item of the selected kinds.
+const EMPTY_ERROR: &str = "E0115";
 
 fn merged(inputs: &[PathBuf]) -> Result<Database, Box<Diagnostic>> {
     let mut db = Database::default();
@@ -215,6 +269,37 @@ fn relative(file: &str, root: &str) -> String {
     }
 }
 
+/// The directory the shown paths are relative to: `--root`, else the current directory.
+fn root_dir(root: Option<PathBuf>) -> Result<String, Box<Diagnostic>> {
+    let root = match root {
+        Some(r) => std::path::absolute(&r).map_err(|e| {
+            Box::new(
+                Diagnostic::error(SOURCE_ERROR, format!("cannot resolve `{}`", r.display()))
+                    .with_note(e.to_string()),
+            )
+        })?,
+        None => std::env::current_dir().map_err(|e| {
+            Box::new(
+                Diagnostic::error(SOURCE_ERROR, "cannot find the current directory")
+                    .with_note(e.to_string())
+                    .with_help("pass `--root DIR`"),
+            )
+        })?,
+    };
+    Ok(root.display().to_string())
+}
+
+/// The database and excluded items with source paths relative to `root`.
+fn shown(db: &Database, excluded: &Excluded, root: &str) -> (Database, Excluded) {
+    let (mut db, mut excluded) = (db.clone(), excluded.clone());
+    let all = db
+        .items
+        .values_mut()
+        .chain(excluded.iter_mut().map(|x| &mut x.1));
+    all.for_each(|e| e.file = relative(&e.file, root));
+    (db, excluded)
+}
+
 /// Write the HTML report into `dir`; every source file the database names must be readable.
 /// Pages show the paths without the prefix `root` (default the current directory).
 fn write_html(
@@ -236,29 +321,8 @@ fn write_html(
         })?;
         sources.insert(f.to_string(), t);
     }
-    let root = match root {
-        Some(r) => std::path::absolute(&r).map_err(|e| {
-            Box::new(
-                Diagnostic::error(SOURCE_ERROR, format!("cannot resolve `{}`", r.display()))
-                    .with_note(e.to_string()),
-            )
-        })?,
-        None => std::env::current_dir().map_err(|e| {
-            Box::new(
-                Diagnostic::error(SOURCE_ERROR, "cannot find the current directory")
-                    .with_note(e.to_string())
-                    .with_help("pass `--root DIR`"),
-            )
-        })?,
-    };
-    let mut db = db.clone();
-    let mut excluded = excluded.clone();
-    let shown = db
-        .items
-        .values_mut()
-        .chain(excluded.iter_mut().map(|x| &mut x.1));
-    let root = root.display().to_string();
-    shown.for_each(|e| e.file = relative(&e.file, &root));
+    let root = root_dir(root)?;
+    let (db, excluded) = shown(db, excluded, &root);
     let sources = sources
         .into_iter()
         .map(|(f, t)| (relative(&f, &root), t))
@@ -276,33 +340,71 @@ fn write_html(
     Ok(())
 }
 
-fn report(
-    out: &mut Out,
-    db: Database,
+/// What `yavs cov report` was asked for besides the database.
+struct Report {
     cobertura: Option<PathBuf>,
-    html: Option<(PathBuf, Option<PathBuf>)>,
+    html: Option<PathBuf>,
+    root: Option<PathBuf>,
     exclude: Option<PathBuf>,
+    kinds: Vec<String>,
     uncovered: Option<UncoveredFormat>,
     tests: bool,
-) -> Result<(), Box<Diagnostic>> {
-    let (db, excluded) = excluded(out, db, exclude)?;
-    if let Some(f) = uncovered {
-        match f {
-            UncoveredFormat::Text => print!("{}", db.uncovered()),
-            UncoveredFormat::Yaml => print!("{}", db.uncovered_yaml()),
-        }
-    } else if tests {
-        print!("{}", db.hits_by_test());
+    total: bool,
+    fail_under: Option<u64>,
+}
+
+fn report(out: &mut Out, db: Database, r: Report) -> Result<(), Box<Diagnostic>> {
+    let (db, mut excluded) = excluded(out, db, r.exclude)?;
+    let db = if r.kinds.is_empty() {
+        db
     } else {
-        print!("{}", db.summary());
-        print!("{}", yavs_cov::exclude::excluded_text(&excluded));
+        excluded.retain(|x| r.kinds.iter().any(|n| n == x.0.kind.name()));
+        db.only(&r.kinds)
+    };
+    let root = root_dir(r.root.clone())?;
+    let (shown_db, shown_excluded) = shown(&db, &excluded, &root);
+    let (hit, all) = db.totals();
+    if (r.total || r.fail_under.is_some()) && all == 0 {
+        return Err(Box::new(
+            Diagnostic::error(EMPTY_ERROR, "no coverage items to total")
+                .with_note(if r.kinds.is_empty() {
+                    "the database has no items after the exclusions".to_string()
+                } else {
+                    format!("the database has no `{}` items", r.kinds.join("`, `"))
+                })
+                .with_help("run with `--cov-kind` naming the kinds to count"),
+        ));
     }
-    if let Some((d, root)) = html {
-        write_html(&d, root, &db, &excluded)?;
+    if let Some(f) = r.uncovered {
+        match f {
+            UncoveredFormat::Text => print!("{}", shown_db.uncovered()),
+            UncoveredFormat::Yaml => print!("{}", shown_db.uncovered_yaml()),
+        }
+    } else if r.tests {
+        print!("{}", shown_db.hits_by_test());
+    } else if r.total {
+        println!("{}", yavs_cov::percent(hit, all));
+    } else {
+        print!("{}", shown_db.summary());
+        print!("{}", yavs_cov::exclude::excluded_text(&shown_excluded));
     }
-    match cobertura {
-        Some(p) => write(&p, db.cobertura()),
-        None => Ok(()),
+    if let Some(d) = r.html {
+        write_html(&d, r.root, &db, &excluded)?;
+    }
+    if let Some(p) = r.cobertura {
+        write(&p, db.cobertura())?;
+    }
+    match (r.fail_under, yavs_cov::tenths(hit, all)) {
+        (Some(need), Some(have)) if have < need => Err(Box::new(Diagnostic::error(
+            BELOW_ERROR,
+            format!(
+                "coverage {} is below the required {}.{}%",
+                yavs_cov::percent(hit, all),
+                need / 10,
+                need % 10
+            ),
+        ))),
+        _ => Ok(()),
     }
 }
 
@@ -316,6 +418,9 @@ pub fn run(c: Command, format: MessageFormat, color: bool) -> ExitCode {
             cobertura,
             html,
             root,
+            kind,
+            total,
+            fail_under,
             exclude,
             uncovered,
             tests,
@@ -325,8 +430,18 @@ pub fn run(c: Command, format: MessageFormat, color: bool) -> ExitCode {
             .set_warn(&warn)
             .and_then(|()| merged(&inputs))
             .and_then(|db| {
-                let html = html.map(|d| (d, root));
-                report(&mut out, db, cobertura, html, exclude, uncovered, tests)
+                let r = Report {
+                    cobertura,
+                    html,
+                    root,
+                    exclude,
+                    kinds: kind.into_iter().map(KindArg::name).collect(),
+                    uncovered,
+                    tests,
+                    total,
+                    fail_under,
+                };
+                report(&mut out, db, r)
             }),
         Command::Rank {
             exclude,

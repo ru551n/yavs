@@ -95,7 +95,9 @@ Debug one test
 
 In VS Code, with the yavs extension installed, set your breakpoints and press F5, or run "yavs: Attach"
 (:doc:`debugging`). Write another port as ``--yavs-debug=PORT``, and ``0`` picks a free one. A test name after a
-bare ``--yavs-debug`` would be read as the port, so put the name first.
+bare ``--yavs-debug`` would be read as the port, so put the name first. The simulation's output goes to the
+editor's Debug Console, not to VUnit's log: a failing check shows as ``fail`` in the terminal without its message,
+and so does a test you disconnect from before it ends.
 
 Newer than 0.11.0, there are two more ways to look at one test:
 

@@ -118,7 +118,8 @@ Limits
 * A debugger session runs the interpreter on one thread, so every session behaves the same;
   ``--threads`` and ``--tier`` have no effect there.
 * ``--cov`` and ``--profile`` cannot be combined with ``--dap``.
-* Breakpoint conditions cannot call functions or use attributes.
+* Breakpoint conditions cannot call functions or use attributes. That includes the ``numeric_std`` operators: compare
+  an ``unsigned`` with a literal of its own type (``cnt = "00000011"``), not with an integer (``cnt = 3``).
 
 See also
 --------

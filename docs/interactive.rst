@@ -87,7 +87,9 @@ In VS Code
 The same commands work in the Debug Console of a ``yavs`` session (:doc:`debugging`): type
 ``run 10 ns``, ``break list`` or ``restart``. A plain name still shows its value. ``restart`` stops
 at time 0 and keeps the breakpoints of the editor. Unlike at the prompt, the session ends with the
-run.
+run. Breakpoints made with ``break`` belong to the session only: the editor's Breakpoints list does not
+show them, or their deletion. Watch expressions and hovers take plain names; only ``examine`` takes a part of
+a signal (``slv(3 downto 0)``, ``rec.field``).
 
 With a test runner
 ------------------

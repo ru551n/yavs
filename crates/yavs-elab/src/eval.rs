@@ -21,7 +21,7 @@ use yavs_sem::types::{Constraint, Resolution, TypeKind};
 use yavs_sem::{Db, DeclId, ExprId, SubtypeId, TypeId};
 
 use crate::codes;
-use crate::hier::{Bounds, Hierarchy, NetGraph, ObjId, ScopeId, Shape};
+use crate::hier::{Bounds, Hierarchy, NetGraph, ObjId, ScopeId, ScopeKind, Shape};
 
 pub type Val = yavs_sem::stat::ConstValue;
 
@@ -594,7 +594,13 @@ impl Model {
                 if let Some(v) = self.vals.get(s.index()).and_then(|m| m.get(&d)) {
                     return Some(v);
                 }
-                cur = self.hier.scope(s).parent;
+                // An object of an instance is its own: in a recursive design the instance
+                // above has a value of the same declaration (#913).
+                let scope = self.hier.scope(s);
+                cur = match scope.kind {
+                    ScopeKind::Instance { .. } => None,
+                    _ => scope.parent,
+                };
             }
         }
         self.pkg.get(&d)

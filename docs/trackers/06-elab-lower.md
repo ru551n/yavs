@@ -1,6 +1,7 @@
 Open issues where valid VHDL gives an elaboration or lowering error (E2xxx, E3004, E9999) or the wrong diagnostic code. Most come from conformance suites; each links its failing test names.
 
 ## Issues
+- [x] #913 elab: a recursive entity instantiation using an architecture constant as generic actual never terminates (E2109)
 - [x] #912 elab: a constant initialised by a direct method call of a protected shared variable that bounds a signal is E2106
 - [x] #909 lower: an aggregate with others and an impure composite expression runs others on every element first
 - [x] #907 elab: an others aggregate in a constant or signal initial value calls an impure function once, not once per element (records)

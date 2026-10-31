@@ -109,8 +109,27 @@ them into ``coverage.ycov``. With ``--yavs-cov-html``, ``--yavs-cov-fail-under``
 reports on the merged database. The reports, exclusions and numbers are in :doc:`coverage`;
 a CI gate is ``python run.py --yavs-cov --yavs-cov-fail-under 85``.
 
+Run scripts you do not write
+----------------------------
+
+A third-party ``run.py`` knows nothing about yavs. Run it through a small wrapper that adds the package
+(``vu.add_package("vunit-yavs", allow_setup=True)``) after the script creates its ``VUnit`` object, and
+note:
+
+* The simulator registry is global to the Python process: a script that creates two ``VUnit`` objects
+  can add the package only once (the second ``add_package`` fails with "already registered"), so the
+  wrapper catches that error for the second object.
+* A script with a command line of its own has no ``--yavs-max-threads``: set the environment variable
+  ``VUNIT_YAVS_MAX_THREADS`` instead.
+* ``yavs.max_threads`` is one integer, not a list: ``set_sim_option("yavs.max_threads", 4)``. VUnit's
+  ``overwrite=False`` appends to a list option and fails for an integer.
+* Scripts that turn on relaxed mode or VHDL-2019 only for the simulators they know need it told for
+  yavs: ``set_compile_option("yavs.global_flags", ["--relaxed"])`` and the same as a sim option, and
+  ``VUNIT_VHDL_STANDARD=2019`` in the environment.
+
 Environment variables
 ---------------------
 
-``VUNIT_SIMULATOR=yavs`` selects the simulator. ``VUNIT_YAVS_PATH`` names the directory of the
+``VUNIT_SIMULATOR=yavs`` selects the simulator. ``VUNIT_YAVS_MAX_THREADS=N`` is ``--yavs-max-threads`` for a run script that
+parses its own command line. ``VUNIT_YAVS_PATH`` names the directory of the
 ``yavs`` executable (otherwise it is found on ``PATH``).

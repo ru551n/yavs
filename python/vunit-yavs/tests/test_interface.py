@@ -668,6 +668,16 @@ class TestYavsInterface(unittest.TestCase):
             return YavsInterface.from_args(SimpleNamespace(gui=False, **kwargs), self.output_path)
 
     @NEEDS_FAKE_BIN
+    def test_max_threads_from_the_environment_for_scripts_with_their_own_command_line(self):
+        with mock.patch.dict("os.environ", {"VUNIT_YAVS_MAX_THREADS": "3"}):
+            self.assertEqual(self._from_args()._max_threads, 3)  # pylint: disable=protected-access
+            # The flag wins
+            self.assertEqual(self._from_args(yavs_max_threads=5)._max_threads, 5)  # pylint: disable=protected-access
+        with mock.patch.dict("os.environ", {"VUNIT_YAVS_MAX_THREADS": "0"}):
+            with self.assertRaisesRegex(RuntimeError, "VUNIT_YAVS_MAX_THREADS: expected an integer of at least 1"):
+                self._from_args()
+
+    @NEEDS_FAKE_BIN
     def test_token_server_only_with_the_flag_and_parallel_runs(self):
         self.assertIsNone(self._from_args(num_threads=4)._tokens)  # pylint: disable=protected-access
         self.assertIsNone(self._from_args(num_threads=1, yavs_jobserver=True)._tokens)

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `VUNIT_YAVS_MAX_THREADS` sets the thread cap for run scripts that parse their own command line (no `--yavs-max-threads`).
 - The token server: a simulation uses at most 8 threads unless `yavs.max_threads` or `--yavs-max-threads` says more (many
   idle threads at a large `-p`), and a server that cannot start is a warning, every simulation then runs on one thread.
 - Tests of a native library and of Python embedded in it, called from VHDL through foreign subprograms

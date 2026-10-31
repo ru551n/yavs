@@ -76,6 +76,17 @@ def _max_threads(text):
     return int(text)
 
 
+def _max_threads_from_environment():
+    """VUNIT_YAVS_MAX_THREADS, for a run script that parses its own command line and so has no --yavs-max-threads"""
+    text = environ.get("VUNIT_YAVS_MAX_THREADS")
+    if text is None:
+        return None
+    try:
+        return _max_threads(text)
+    except argparse.ArgumentTypeError as exc:
+        raise RuntimeError(f"VUNIT_YAVS_MAX_THREADS: {exc}") from exc
+
+
 def _exit_with_failure():
     """At exit: end the process with status 1, which VUnit's own exit cannot be told to do from post_run"""
     sys.stdout.flush()
@@ -201,7 +212,8 @@ class YavsInterface(SimulatorInterface):
             default=None,
             metavar="N",
             help="Run each simulation with at most N threads (yavs run --threads=N); "
-            "the sim option yavs.max_threads overrides it per test.",
+            "the sim option yavs.max_threads overrides it per test. Default: the environment variable "
+            "VUNIT_YAVS_MAX_THREADS, for run scripts with a command line of their own.",
         )
         group.add_argument(
             "--yavs-jobserver",
@@ -274,7 +286,7 @@ class YavsInterface(SimulatorInterface):
             debug_port=debug_port,
             interactive=interactive,
             surfer=surfer,
-            max_threads=getattr(args, "yavs_max_threads", None),
+            max_threads=getattr(args, "yavs_max_threads", None) or _max_threads_from_environment(),
             tokens=tokens,
             coverage=CoverageArgs(
                 enabled=getattr(args, "yavs_cov", False),

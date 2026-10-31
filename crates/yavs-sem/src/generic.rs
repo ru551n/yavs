@@ -2771,9 +2771,16 @@ impl Db {
         let iscope = self.insts[inst].scope;
         let span = self.decls[site].span;
         let overflow = self.overflow.len();
+        // A library package with a generic map: its body is a unit, as a generic package's (#605).
+        let unit = match (&self.decls[g].kind, &self.decls[site].kind) {
+            (DeclKind::Unit(u), _) | (DeclKind::Package { body: None, .. }, DeclKind::Unit(u)) => {
+                Some(*u)
+            }
+            _ => None,
+        };
         let out = match &self.decls[g].kind {
-            DeclKind::Unit(u) => {
-                let u = *u;
+            _ if unit.is_some() => {
+                let u = unit.expect("just matched");
                 let lib = self.units[u].lib;
                 let key = UnitKey::body(self.units[u].name.key);
                 if !self.unit_known(lib, key) {

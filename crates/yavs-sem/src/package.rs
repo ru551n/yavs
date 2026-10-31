@@ -99,23 +99,26 @@ impl Db {
                     .find(|&d| matches!(self.decls[d].kind, DeclKind::Package { .. }))
             })
         });
-        let Some(d) = found else {
-            // The declaration is a mapped package, not an instance of a generic package.
-            if regions.iter().any(|&r| {
-                self.scopes[r].names.get(&b.name.key).is_some_and(|ds| {
-                    ds.iter().any(|&d| {
-                        matches!(self.decls[d].kind, DeclKind::PackageInst(i)
-                            if self.decls[self.insts[i].generic].name == self.decls[d].name
-                                && self.decls[self.insts[i].generic].scope == self.decls[d].scope)
+        // A package with a generic map: the body completes its invisible generic package, and
+        // the instance gets a clone (`instance_body`, #605).
+        let found = found.or_else(|| {
+            regions.iter().find_map(|&r| {
+                self.scopes[r]
+                    .names
+                    .get(&b.name.key)?
+                    .iter()
+                    .find_map(|&d| {
+                        let DeclKind::PackageInst(i) = self.decls[d].kind else {
+                            return None;
+                        };
+                        let g = self.insts[i].generic;
+                        (self.decls[g].name == self.decls[d].name
+                            && self.decls[g].scope == self.decls[d].scope)
+                            .then_some(g)
                     })
-                })
-            }) {
-                return Err(self.unsupported(
-                    b.name.span,
-                    "a package body of a package with a generic map",
-                    "S4",
-                ));
-            }
+            })
+        });
+        let Some(d) = found else {
             return Err(self.error(
                 Diagnostic::error(
                     diag::NO_PRIMARY,

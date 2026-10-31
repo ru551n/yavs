@@ -240,15 +240,20 @@ impl Db {
             }
             L::PackageBody(b) => {
                 let package = self.units[unit].deps[0];
-                if matches!(self.units[package].hir, UnitHir::PackageInst(_)) {
-                    return Err(self.unsupported(
-                        b.name.span,
-                        "a package body of a package with a generic map",
-                        "S4",
-                    ));
+                let mut pscope = self.units[package].scope;
+                if let UnitHir::PackageInst(i) = self.units[package].hir {
+                    // The body of a package with a generic map completes the invisible generic
+                    // package, and its instance gets a clone (`instance_body`, #605).
+                    let DeclKind::Package { scope: hidden, .. } =
+                        self.decls[self.insts[i].generic].kind
+                    else {
+                        // `load_unit` refuses a body of `package p is new g`.
+                        return Err(self.ice(b.name.span, "a package body of an instance"));
+                    };
+                    self.scopes[context].parent = Some(hidden);
+                    pscope = hidden;
                 }
                 self.decls_in(scope, &b.decls);
-                let pscope = self.units[package].scope;
                 let _ = self.check_protected_bodies(pscope, b.span);
                 if let UnitHir::Package { generics: Some(g) } = &self.units[package].hir {
                     let g = g.clone();

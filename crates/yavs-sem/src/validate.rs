@@ -272,7 +272,12 @@ impl<'a> Cx<'a> {
             .units
             .iter()
             .filter_map(|(_, u)| match u.hir {
-                UnitHir::PackageBody { package } => Some(self.db.units[package].scope),
+                // An instance's region (a package with a generic map) is cloned lazily.
+                UnitHir::PackageBody { package }
+                    if !matches!(self.db.units[package].hir, UnitHir::PackageInst(_)) =>
+                {
+                    Some(self.db.units[package].scope)
+                }
                 _ => None,
             })
             .chain(self.db.decls.iter().filter_map(|(_, d)| match d.kind {

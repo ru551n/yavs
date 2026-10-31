@@ -272,6 +272,105 @@ fn ctrl_c_and_sigterm_give_the_tokens_back() {
     }
 }
 
+/// The threads of a process (Linux).
+#[cfg(target_os = "linux")]
+fn threads_of(pid: u32) -> usize {
+    std::fs::read_dir(format!("/proc/{pid}/task"))
+        .expect("task list")
+        .count()
+}
+
+/// `--threads=8` under a token server starts its worker threads with the first token, not at the
+/// start: a run that is lent nothing has none (#879).
+#[cfg(target_os = "linux")]
+#[test]
+fn worker_threads_start_with_the_first_token() {
+    let t = common::tempdir("tokens-lazy");
+    let lib = analyze(&t);
+    let args = ["tok", "-gforever=true"];
+    let s = Server::new(0);
+    let mut child = spawn(&lib, Some(&s), "--threads=8", &args);
+    // It asked (want 7) and was lent nothing: let it ask for a while.
+    s.wait_for("a request", |s| s.accepted == 1);
+    std::thread::sleep(Duration::from_millis(500));
+    let idle = threads_of(child.id());
+    child.kill().expect("kill");
+    let _ = child.wait();
+    assert!(idle < 6, "{idle} threads in a run that holds no token");
+    let s = Server::new(8);
+    let mut child = spawn(&lib, Some(&s), "--threads=8", &args);
+    s.wait_for("a token", |s| s.held > 0);
+    let start = Instant::now();
+    while threads_of(child.id()) < 8 {
+        assert!(
+            start.elapsed() < Duration::from_secs(60),
+            "no worker threads"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    child.kill().expect("kill");
+    let _ = child.wait();
+}
+
+/// Tokens only speed a run up: a server nobody can reach, or one that goes away, is warning W0118
+/// and the run is on one thread with the output of every other run (#878).
+#[test]
+fn an_unreachable_token_server_is_a_warning() {
+    let t = common::tempdir("tokens-gone");
+    let lib = analyze(&t);
+    let one = spawn(&lib, None, "--threads=1", &["tok"])
+        .wait_with_output()
+        .expect("run");
+    // A port nothing listens on.
+    let gone = TcpListener::bind("127.0.0.1:0")
+        .expect("bind")
+        .local_addr()
+        .expect("addr")
+        .port();
+    let mut c = yavs();
+    c.args(["run", lib.as_str(), "--threads=4", "tok"])
+        .env("YAVS_TOKENS", format!("{gone}:{SECRET}"))
+        .stdin(Stdio::null());
+    let o = c.output().expect("run");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    assert!(err.contains("warning[W0118]"), "{err}");
+    assert!(err.contains("the token server on 127.0.0.1:"), "{err}");
+    assert!(!err.contains(SECRET), "the secret is never printed: {err}");
+    assert_eq!(o.stdout, one.stdout);
+    // A server that answers the secret and is gone at the first token request.
+    let l = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = l.local_addr().expect("addr").port();
+    let server = std::thread::spawn(move || {
+        let (c, _) = l.accept().expect("accept");
+        let mut w = c.try_clone().expect("clone");
+        let mut line = String::new();
+        BufReader::new(c).read_line(&mut line).expect("secret");
+        w.write_all(b"0 0\n").expect("answer");
+    });
+    let o = spawn_with(&lib, &format!("{port}:{SECRET}"))
+        .wait_with_output()
+        .expect("run");
+    server.join().expect("server");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    assert!(err.contains("warning[W0118]"), "{err}");
+    assert!(err.contains("closed the connection"), "{err}");
+    assert_eq!(o.stdout, one.stdout);
+}
+
+fn spawn_with(lib: &str, tokens: &str) -> Child {
+    yavs()
+        .args(["run", lib, "--threads=4", "tok"])
+        .env("YAVS_POOL_ALL", "1")
+        .env("YAVS_TOKENS", tokens)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn")
+}
+
 #[test]
 fn an_unusable_token_server_is_an_error() {
     let t = common::tempdir("tokens-bad");
@@ -286,12 +385,7 @@ fn an_unusable_token_server_is_an_error() {
             .output()
             .expect("run")
     };
-    // A port nothing listens on, and a server that does not know the secret.
-    let gone = TcpListener::bind("127.0.0.1:0")
-        .expect("bind")
-        .local_addr()
-        .expect("addr")
-        .port();
+    // A server that does not know the secret.
     let s = Server::new(8);
     let bad = [
         ("", "is not `<port>:<secret>`"),
@@ -299,7 +393,6 @@ fn an_unusable_token_server_is_an_error() {
         ("0:abc", "is not `<port>:<secret>`"),
         ("70000:abc", "is not `<port>:<secret>`"),
         ("4711:", "is not `<port>:<secret>`"),
-        (&format!("{gone}:abc"), "the token server on 127.0.0.1:"),
         (&format!("{}:wrong", s.port), "did not accept the secret"),
     ];
     for (value, why) in bad {

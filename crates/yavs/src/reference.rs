@@ -418,7 +418,7 @@ None is needed. Command-line options win over the variables.
    * - ``YAVS_TOKENS=PORT:SECRET``
      - The token server of a test runner that lends CPU slots: with ``--threads`` above 1 the
        extra threads run only on tokens it lends (:doc:`running-faster`). A value yavs cannot
-       use is error ``E0128`` and exit status 2.
+       use is error ``E0128`` and exit status 2; a server that cannot be reached is warning ``W0118`` and the run has one thread.
    * - ``YAVS_HUGE_HEAP=0``
      - Do not ask for transparent huge pages on the heap at start (Linux only).
 

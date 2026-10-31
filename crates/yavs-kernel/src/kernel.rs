@@ -89,6 +89,9 @@ pub struct Config {
     /// choosing by estimated work, but initialisation and postponed batches (tests: the pooled
     /// path must commit as the inline one does).
     pub pool_all: bool,
+    /// With `threads` above 1, start the worker threads when a token first lets a batch use them
+    /// (`set_tokens`), not at the start: a run that never holds a token creates none (#879).
+    pub lazy_pool: bool,
 }
 
 impl Default for Config {
@@ -105,6 +108,7 @@ impl Default for Config {
             idle_check: false,
             cells: true,
             pool_all: false,
+            lazy_pool: false,
         }
     }
 }
@@ -990,6 +994,8 @@ pub struct SimControl {
     watch_changes: bool,
     wakes: Wakes,
     pool: Option<rayon::ThreadPool>,
+    /// The worker threads `--threads` asks for, built or not (`Config::lazy_pool`).
+    workers: usize,
     /// The token pool that decides how many of the pool's workers may run (`set_tokens`), the
     /// tokens held and the batches in a row that did not pool since.
     tokens: Option<std::sync::Arc<dyn Tokens>>,
@@ -1037,6 +1043,14 @@ pub struct SimControl {
 }
 
 /// Signal `a` to read and signal `b` to write (distinct).
+/// The worker threads of a run with `--threads` above 1.
+fn build_pool(workers: usize) -> Result<rayon::ThreadPool, SimError> {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .build()
+        .map_err(|e| SimError::new(ErrorKind::Usage(format!("thread pool: {e}"))))
+}
+
 fn signal_pair(v: &mut [Signal], a: usize, b: usize) -> (&Signal, &mut Signal) {
     if a < b {
         let (x, y) = v.split_at_mut(b);
@@ -1127,20 +1141,19 @@ impl SimControl {
             }
         }
         let cfg_edge_triggers = cfg.edge_triggers;
-        let pool = match cfg.threads {
+        // The kernel thread works too: N threads in all, so a pinned run is not oversubscribed.
+        let workers = match cfg.threads {
             0 => {
                 return Err(SimError::new(ErrorKind::Usage(
                     "threads must be at least 1".into(),
                 )));
             }
-            1 => None,
-            // The kernel thread works too: N threads in all, so a pinned run is not oversubscribed.
-            n => Some(
-                rayon::ThreadPoolBuilder::new()
-                    .num_threads(n - 1)
-                    .build()
-                    .map_err(|e| SimError::new(ErrorKind::Usage(format!("thread pool: {e}"))))?,
-            ),
+            n => n - 1,
+        };
+        let pool = if workers > 0 && !cfg.lazy_pool {
+            Some(build_pool(workers)?)
+        } else {
+            None
         };
         let mut ports_up = vec![Vec::new(); signals.len()];
         let mut ports_down = vec![Vec::new(); signals.len()];
@@ -1306,7 +1319,7 @@ impl SimControl {
         let no_code_signals = signals.iter().filter(|s| s.keeps_no_codes()).count() as u64;
         let skip_signals = signals.iter().filter(|s| s.skip_ok).count() as u64;
         let nsignals = signals.len() as u64;
-        let (cost, serial_of) = if pool.is_some() {
+        let (cost, serial_of) = if workers > 0 {
             (
                 vec![0; procs.len()],
                 procs.iter().map(|m| m.flags.serial).collect(),
@@ -1389,6 +1402,7 @@ impl SimControl {
             serial_of,
             early: Vec::new(),
             pool,
+            workers,
             tokens: None,
             held: 0,
             token_idle: 0,
@@ -1782,13 +1796,27 @@ impl SimControl {
     /// The workers a pooled step may use: all of them without a token pool, else the tokens
     /// held, topped up without blocking.
     fn helpers(&mut self) -> usize {
-        let n = self.pool.as_ref().map_or(0, |p| p.current_num_threads());
-        let Some(t) = &self.tokens else { return n };
-        self.token_idle = 0;
-        if self.held < n {
-            self.held = t.take(n);
+        let n = self.workers;
+        if let Some(t) = &self.tokens {
+            self.token_idle = 0;
+            if self.held < n {
+                self.held = t.take(n);
+            }
         }
-        self.held
+        let usable = if self.tokens.is_some() { self.held } else { n };
+        if usable > 0 && self.pool.is_none() {
+            // ponytail: workers that cannot be started leave the run on one thread, as a token
+            // server that cannot be reached does; the output does not depend on them.
+            match build_pool(n) {
+                Ok(p) => self.pool = Some(p),
+                Err(_) => {
+                    self.give_tokens();
+                    self.workers = 0;
+                    return 0;
+                }
+            }
+        }
+        usable
     }
 
     /// A batch that did not pool: after `TOKEN_IDLE` in a row the tokens go back.
@@ -3080,7 +3108,7 @@ impl SimControl {
         // with no job and result lists. An error is taken at the first signal that has one, after
         // all of them were updated, as below.
         // ponytail: the cut-off is the pool's below.
-        let helpers = if self.pool.is_none() || due.len() < 256 {
+        let helpers = if self.workers == 0 || due.len() < 256 {
             0
         } else {
             self.helpers()
@@ -3616,7 +3644,7 @@ impl SimControl {
         let mut late = std::mem::take(&mut self.late);
         // Initialisation and postponed processes always run inline (their commit differs).
         // The estimate of a pooled batch, to learn from its time (`learn_pooled`).
-        let mut est = if self.pool.is_some() && !init && !postponed {
+        let mut est = if self.workers > 0 && !init && !postponed {
             self.pool_batch(&pids)
         } else {
             None
@@ -3631,10 +3659,7 @@ impl SimControl {
         self.stats.pooled_batches += u64::from(est.is_some());
         let pooled = est.is_some();
         // A batch on fewer threads than the pool has teaches nothing about the threshold.
-        let full = self
-            .pool
-            .as_ref()
-            .is_some_and(|p| p.current_num_threads() == helpers);
+        let full = self.workers == helpers;
         let pooled_at = est
             .filter(|e| e.learn && full)
             .map(|_| std::time::Instant::now());
@@ -3865,7 +3890,7 @@ impl SimControl {
                     // `pool_batch`, at a position that moves from batch to batch.
                     // The offset is scrambled so batches that come every 2^k batches still see
                     // every position.
-                    let mut sample = if self.pool.is_some() {
+                    let mut sample = if self.workers > 0 {
                         (self.batches.wrapping_mul(0x9e37_79b9) >> 28) as usize % COST_EVERY
                     } else {
                         usize::MAX
@@ -3984,7 +4009,7 @@ impl SimControl {
                             }))
                         };
                     }
-                    let caught = if self.pool.is_some() {
+                    let caught = if self.workers > 0 {
                         batch_loop!(true)
                     } else {
                         batch_loop!(false)

@@ -74,6 +74,17 @@ fn parse(line: &[u8]) -> Option<(u64, usize)> {
     Some((k.parse().ok()?, n.parse().ok()?))
 }
 
+impl Pool {
+    /// The server is gone: the connection closed or a write to it failed.
+    pub(crate) fn lost(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .sock
+            .is_none()
+    }
+}
+
 impl yavs_kernel::Tokens for Pool {
     fn take(&self, want: usize) -> usize {
         let mut st = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -92,10 +103,20 @@ impl yavs_kernel::Tokens for Pool {
     }
 }
 
-/// The token server named in `YAVS_TOKENS`, if any; `Err` is the note of error E0128.
-pub(crate) fn connect() -> Result<Option<Arc<Pool>>, String> {
+/// What `connect` found.
+pub(crate) enum Server {
+    /// `YAVS_TOKENS` is not set.
+    None,
+    Pool(Arc<Pool>),
+    /// Nothing answers at the address (warning W0118: the run is on one thread); the note says why.
+    Unreachable(String),
+}
+
+/// The token server named in `YAVS_TOKENS`; `Err` is the note of error E0128 (a value that is not
+/// `<port>:<secret>`, or a secret the server does not accept).
+pub(crate) fn connect() -> Result<Server, String> {
     let Some(value) = std::env::var_os(VAR) else {
-        return Ok(None);
+        return Ok(Server::None);
     };
     // The secret is never printed.
     let (port, secret) = value
@@ -106,12 +127,20 @@ pub(crate) fn connect() -> Result<Option<Arc<Pool>>, String> {
         .ok_or_else(|| format!("`{VAR}` is not `<port>:<secret>`"))?;
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     let fail = |e: std::io::Error| format!("the token server on {addr}: {e}");
-    let mut s = TcpStream::connect_timeout(&addr, TIMEOUT).map_err(fail)?;
+    // Tokens only speed a run up: a server that cannot be reached leaves the run on one thread.
+    let gone = |e: std::io::Error| Ok(Server::Unreachable(fail(e)));
+    let mut s = match TcpStream::connect_timeout(&addr, TIMEOUT) {
+        Ok(s) => s,
+        Err(e) => return gone(e),
+    };
     // A token line must not wait for more bytes to fill a packet.
-    s.set_nodelay(true).map_err(fail)?;
-    s.set_read_timeout(Some(TIMEOUT)).map_err(fail)?;
-    s.write_all(format!("{secret}\n").as_bytes())
-        .map_err(fail)?;
+    if let Err(e) = s
+        .set_nodelay(true)
+        .and_then(|()| s.set_read_timeout(Some(TIMEOUT)))
+        .and_then(|()| s.write_all(format!("{secret}\n").as_bytes()))
+    {
+        return gone(e);
+    }
     // The server answers the secret with `0 0` (message 0, no tokens), or closes the connection.
     let mut answer = Vec::new();
     let mut byte = [0u8];
@@ -121,12 +150,12 @@ pub(crate) fn connect() -> Result<Option<Arc<Pool>>, String> {
             Ok(_) => answer.push(byte[0]),
             Err(e) if e.kind() == ErrorKind::Interrupted => {}
             Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
-                return Err(format!(
+                return Ok(Server::Unreachable(format!(
                     "the token server on {addr} did not answer within {} s",
                     TIMEOUT.as_secs()
-                ));
+                )));
             }
-            Err(e) => return Err(fail(e)),
+            Err(e) => return gone(e),
         }
     }
     if parse(&answer) != Some((0, 0)) {
@@ -134,8 +163,10 @@ pub(crate) fn connect() -> Result<Option<Arc<Pool>>, String> {
             "the token server on {addr} did not accept the secret (a stale `{VAR}` from a run that ended?)"
         ));
     }
-    s.set_nonblocking(true).map_err(fail)?;
-    Ok(Some(Arc::new(Pool {
+    if let Err(e) = s.set_nonblocking(true) {
+        return gone(e);
+    }
+    Ok(Server::Pool(Arc::new(Pool {
         state: Mutex::new(State {
             sock: Some(s),
             buf: Vec::new(),

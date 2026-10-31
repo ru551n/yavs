@@ -123,7 +123,11 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "E0128",
-        "`--threads` is above 1 and `YAVS_TOKENS` names a token server that yavs cannot use: the value is not `<port>:<secret>`, nothing listens on that port of 127.0.0.1, or the server did not accept the secret (often a `YAVS_TOKENS` left over from a test runner that has ended). The run stops before analysis (exit 2). Unset `YAVS_TOKENS` to run without a token server.",
+        "`--threads` is above 1 and `YAVS_TOKENS` names a token server that yavs cannot use: the value is not `<port>:<secret>`, or the server did not accept the secret (often a `YAVS_TOKENS` left over from a test runner that has ended). The run stops before analysis (exit 2). Unset `YAVS_TOKENS` to run without a token server. A server that cannot be reached is warning `W0118`.",
+    ),
+    (
+        "W0118",
+        "`--threads` is above 1 and the token server named in `YAVS_TOKENS` cannot be reached (nothing listens on that port of 127.0.0.1, it does not answer, or the connection broke during the run; the note says which). Tokens only speed a run up, so the run goes on with one thread and its output is the same. A value that is not `<port>:<secret>` or a secret the server does not accept is error `E0128`.",
     ),
     (
         "E0199",

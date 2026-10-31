@@ -1251,6 +1251,7 @@ fn prepare(
     format: MessageFormat,
     color: bool,
     encoding: yavs_syntax::Encoding,
+    lazy_pool: bool,
 ) -> Result<Prepared, (Out, u8)> {
     let kind = |k| a.cov.is_some() && a.cov_kind.contains(&k);
     let lowering_counters = kind(CovKindArg::Statement)
@@ -1397,6 +1398,8 @@ fn prepare(
         // `YAVS_POOL_ALL=1` hands every batch of two or more processes to the thread pool
         // (`--threads` above 1): the determinism runs exercise the pooled path with it.
         pool_all: std::env::var("YAVS_POOL_ALL").is_ok_and(|v| v == "1"),
+        // Under a token server the worker threads start with the first token (#879).
+        lazy_pool,
     };
     if let Some(seed) = a.shuffle {
         out.emit(&none, &shuffle_note(seed));
@@ -1454,7 +1457,7 @@ fn reloader(
         let mut args = argv.clone();
         args.extend_from_slice(extra);
         let a = crate::run_args(&args)?;
-        match prepare(&a, format, color, encoding) {
+        match prepare(&a, format, color, encoding, false) {
             Ok(p) => Ok(yavs_dap::Loaded {
                 db: Arc::new(p.db),
                 e: Arc::new(p.e),
@@ -1478,6 +1481,18 @@ struct Prepared {
     stop: yavs_kernel::Time,
 }
 
+/// Warning W0118: the tokens are gone; the result of the run does not depend on them.
+fn token_gone(why: String) -> Diagnostic {
+    Diagnostic::warning(
+        "W0118",
+        format!(
+            "the token server in `{}` cannot be used; the run goes on with one thread",
+            crate::tokens::VAR
+        ),
+    )
+    .with_note(why)
+}
+
 pub fn run(
     mut a: RunArgs,
     argv: Vec<String>,
@@ -1493,31 +1508,34 @@ pub fn run(
         a.wave = Some(dir.join(format!("{unit}.fst")).display().to_string());
         a.wave_default = true;
     }
-    // First: an unusable token server stops the run before any work.
-    let tokens = match (a.threads > 1 && !a.debugged()).then(crate::tokens::connect) {
-        Some(Err(why)) => {
-            let mut out = Out::new(format, color);
-            out.emit(
-                &SourceMap::default(),
-                &Diagnostic::error(
-                    "E0128",
-                    format!(
-                        "the token server in `{}` cannot be used",
-                        crate::tokens::VAR
-                    ),
-                )
-                .with_note(why)
-                .with_help(format!(
-                    "a test runner sets `{}` for each simulation while its token server runs; \
+    // First: a token server that is not `<port>:<secret>` or refuses the secret stops the run before
+    // any work; one that cannot be reached is a warning, below, and the run has one thread.
+    let (tokens, token_warning) =
+        match (a.threads > 1 && !a.debugged()).then(crate::tokens::connect) {
+            Some(Err(why)) => {
+                let mut out = Out::new(format, color);
+                out.emit(
+                    &SourceMap::default(),
+                    &Diagnostic::error(
+                        "E0128",
+                        format!(
+                            "the token server in `{}` cannot be used",
+                            crate::tokens::VAR
+                        ),
+                    )
+                    .with_note(why)
+                    .with_help(format!(
+                        "a test runner sets `{}` for each simulation while its token server runs; \
                      unset it to run without one",
-                    crate::tokens::VAR
-                )),
-            );
-            return out.finish(2);
-        }
-        Some(Ok(p)) => p,
-        None => None,
-    };
+                        crate::tokens::VAR
+                    )),
+                );
+                return out.finish(2);
+            }
+            Some(Ok(crate::tokens::Server::Pool(p))) => (Some(p), None),
+            Some(Ok(crate::tokens::Server::Unreachable(why))) => (None, Some(why)),
+            _ => (None, None),
+        };
     if a.time_report {
         crate::timing::enable();
     }
@@ -1570,11 +1588,14 @@ pub fn run(
         mut e,
         cfg,
         stop,
-    } = match prepare(&a, format, color, encoding) {
+    } = match prepare(&a, format, color, encoding, tokens.is_some()) {
         Ok(p) => p,
         Err((out, code)) => return out.finish(code),
     };
     let none = SourceMap::default();
+    if let Some(why) = token_warning {
+        out.emit(&none, &token_gone(why));
+    }
     let cfg_profile = a
         .profile
         .is_some()
@@ -1708,8 +1729,8 @@ pub fn run(
     if a.vhpi.is_empty() && a.load.is_empty() && !foreign {
         crate::stdout::buffer();
     }
-    if let Some(p) = tokens {
-        sim.set_tokens(p);
+    if let Some(p) = &tokens {
+        sim.set_tokens(p.clone());
     }
     sim.subscribe(Box::new(Printer));
     let on_pipe = sim.interrupt();
@@ -1958,6 +1979,12 @@ pub fn run(
             );
             code = code.max(1);
         }
+    }
+    if tokens.is_some_and(|p| p.lost()) {
+        out.emit(
+            &none,
+            &token_gone("the server closed the connection during the run".into()),
+        );
     }
     let code = if out.errors > 0 { code.max(1) } else { code };
     let code = if crate::stdout::is_broken() {

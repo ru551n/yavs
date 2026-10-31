@@ -14,7 +14,7 @@ use yavs_sem::stat::{ArrayConst, Elems};
 use yavs_sem::types::Direction;
 
 use crate::eval::Val;
-use crate::hier::Bounds;
+use crate::hier::{Bounds, Sel, index_at};
 
 pub(crate) fn bounds_of(a: &ArrayConst) -> Vec<Bounds> {
     a.bounds
@@ -65,6 +65,65 @@ pub(crate) fn elem_at(a: &ArrayConst, mut k: u64) -> Option<Val> {
             }
             None
         }
+    }
+}
+
+/// `x` with the bounds of `like`, which holds the part it replaces; `None` when a length differs.
+fn fitted(x: &Val, like: &Val) -> Option<Val> {
+    match (x, like) {
+        (Val::Array(a), Val::Array(l)) => a.with_bounds(&l.bounds).map(Val::Array),
+        (Val::Record(xs), Val::Record(ls)) if xs.len() == ls.len() => xs
+            .iter()
+            .zip(ls.iter())
+            .map(|(x, l)| fitted(x, l))
+            .collect::<Option<Box<[Val]>>>()
+            .map(Val::Record),
+        _ => Some(x.clone()),
+    }
+}
+
+/// Replace the part `sels` of `v` by `part` (an individual association of a generic, #816);
+/// `None` when the part is outside `v` or does not fit.
+pub(crate) fn with_part(v: &mut Val, sels: &[Sel], part: &Val) -> Option<()> {
+    let Some((sel, rest)) = sels.split_first() else {
+        *v = fitted(part, v)?;
+        return Some(());
+    };
+    match (v, sel) {
+        (Val::Record(fs), Sel::Field(k)) => with_part(fs.get_mut(*k as usize)?, rest, part),
+        (Val::Array(a), Sel::Index(xs)) => {
+            let bs = bounds_of(a);
+            let mut k = 0;
+            for (b, &x) in bs.iter().zip(xs) {
+                k = k * b.len() + b.pos(x)?;
+            }
+            let mut es = elems(a);
+            with_part(es.get_mut(k as usize)?, rest, part)?;
+            let Val::Array(n) = make(&bs, es) else {
+                return None;
+            };
+            *a = n;
+            Some(())
+        }
+        (Val::Array(a), Sel::Slice(s)) => {
+            let bs = bounds_of(a);
+            let [b] = bs[..] else { return None };
+            let mut es = elems(a);
+            let Val::Array(p) = part else { return None };
+            let ps = elems(p);
+            if ps.len() as u64 != s.len() || !rest.is_empty() {
+                return None;
+            }
+            for (i, x) in ps.into_iter().enumerate() {
+                *es.get_mut(b.pos(index_at(*s, i as u64))? as usize)? = x;
+            }
+            let Val::Array(n) = make(&bs, es) else {
+                return None;
+            };
+            *a = n;
+            Some(())
+        }
+        _ => None,
     }
 }
 

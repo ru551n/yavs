@@ -2295,7 +2295,7 @@ fn init_val(db: &Db, shape: &Shape, nets: &NetGraph, next: &mut usize) -> Option
 }
 
 /// A value of `shape`, each scalar its subtype's `'left`.
-fn shape_value(shape: &Shape) -> Val {
+pub(crate) fn shape_value(shape: &Shape) -> Val {
     match shape {
         Shape::Scalar { left, .. } => left.clone(),
         Shape::Array { dims, elem, .. } => Val::Array(ArrayConst {

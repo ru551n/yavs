@@ -984,10 +984,35 @@ impl Elab<'_> {
                     "generic type actual of a constant",
                 )));
             }
-            (_, A::Parts(_) | A::Conv { .. }) => {
+            (_, A::Parts(parts)) => {
+                let Some(sc) = gscope else {
+                    return Err(Box::new(ice(decl.span, "generic parts without a map")));
+                };
+                let ps: Vec<_> = parts.iter().map(|(p, e, ..)| (&p[..], *e)).collect();
+                let shape = self.m.parts_shape(db, s, o.subtype, &ps, sc, decl)?;
+                let mut v = crate::eval::shape_value(&shape);
+                for (steps, e, ..) in parts {
+                    let espan = db.exprs[*e].span;
+                    self.m.actual_of = Some(s);
+                    let part = self.m.eval(db, *e, gscope);
+                    self.m.actual_of = None;
+                    let sels = self.m.steps(db, None, steps, sc, espan)?;
+                    crate::value::with_part(&mut v, &sels, &part?).ok_or_else(|| {
+                        Box::new(
+                            Diagnostic::error(
+                                codes::EVAL_FAILED,
+                                format!("actual does not fit a part of generic `{}`", decl.name),
+                            )
+                            .with_primary(espan, "here"),
+                        )
+                    })?;
+                }
+                v
+            }
+            (_, A::Conv { .. }) => {
                 return Err(unsupported(
                     decl.span,
-                    "individual or converted generic associations",
+                    "converted generic associations",
                     "M3",
                 ));
             }

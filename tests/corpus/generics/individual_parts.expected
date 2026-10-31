@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	0	:tb_individual_parts:u1:_p0	5 890 7 101 101
+diag	note	0	0	:tb_individual_parts:u1:_p0	01 2 01 '1' 10 0110
+diag	note	0	0	:tb_individual_parts:u2:_p0	4 3 1 111 110
+diag	note	0	0	:tb_individual_parts:u2:_p0	10 0 10 '0' 01 1011

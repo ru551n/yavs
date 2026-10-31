@@ -3391,6 +3391,7 @@ impl<'a> Opt<'a> {
             | Inst::Drive { .. }
             | Inst::DriveSlot { .. }
             | Inst::Disconnect { .. }
+            | Inst::DisconnectSlot { .. }
             | Inst::Force { .. }
             | Inst::Release { .. }
             | Inst::WaitOn { .. }

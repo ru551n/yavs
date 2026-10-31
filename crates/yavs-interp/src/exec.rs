@@ -10496,6 +10496,35 @@ impl Machine {
                 };
                 kc!().disconnect(d.id, range, after, mode)?;
             }
+            Inst::DisconnectSlot {
+                slot,
+                target,
+                after,
+                mode,
+            } => {
+                let after = match after {
+                    Some(a) => Some(to_time(self.ri(a))?),
+                    None => None,
+                };
+                let mode = match mode {
+                    DriveMode::Transport => DelayMode::Transport,
+                    DriveMode::Inertial => DelayMode::INERTIAL,
+                };
+                if self.is_multi(target) {
+                    for (sr, _, part) in self.sigparts(target)? {
+                        let part =
+                            part.ok_or_else(|| ice_s!("a signal part without a driver is driven"))?;
+                        let d = self.driver(part)?;
+                        kc!().disconnect(d.id, sr.range, after, mode)?;
+                    }
+                } else {
+                    let slot = u32::try_from(self.r(slot))
+                        .map_err(|_| ice_s!("driver slot out of range"))?;
+                    let d = self.driver(slot)?;
+                    let range = self.sigref(target)?.0.range;
+                    kc!().disconnect(d.id, range, after, mode)?;
+                }
+            }
             Inst::Force { sig, kind, value } => {
                 let parts = self.sigparts(sig)?;
                 let elem = same_elem(&parts)?;

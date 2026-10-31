@@ -525,6 +525,7 @@ impl Dr<'_> {
                 }),
                 Inst::DriveSlot { .. }
                 | Inst::Disconnect { .. }
+                | Inst::DisconnectSlot { .. }
                 | Inst::Force { .. }
                 | Inst::Release { .. }
                 | Inst::Driving { .. }

@@ -421,7 +421,7 @@ covers ranges of several kernel signals. Such a reference keeps the two-register
   `Drive`/`DriveSlot` split each waveform element and drive each part through the slot it
   carries (the instruction's own slot cell is `-1` for such a formal). So reads, drives and
   attributes stay in the same delta, need no kernel change, and do not depend on the thread
-  count. `Disconnect` of such a reference is an ICE (no guarded signal parameters yet).
+  count. `DisconnectSlot` disconnects each part through the slot it came with.
 - A record formal (one reference per leaf, #215) gets one such reference per leaf; its first
   driver slot cell is `-1` as well, since each leaf's parts carry their own slots.
 

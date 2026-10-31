@@ -794,6 +794,14 @@ pub enum Inst {
         after: Option<Reg>,
         mode: DriveMode,
     },
+    /// [`Inst::Disconnect`] through the driver slot in register `slot`: a null waveform element
+    /// assigned to a signal parameter.
+    DisconnectSlot {
+        slot: Reg,
+        target: Reg,
+        after: Option<Reg>,
+        mode: DriveMode,
+    },
     Force {
         sig: Reg,
         kind: ForceKind,
@@ -1328,6 +1336,18 @@ impl Inst {
                 if let Some(t) = target {
                     f(t, Use, s);
                 }
+                if let Some(a) = after {
+                    f(a, Use, i);
+                }
+            }
+            Inst::DisconnectSlot {
+                slot,
+                target,
+                after,
+                ..
+            } => {
+                f(slot, Use, i);
+                f(target, Use, s);
                 if let Some(a) = after {
                     f(a, Use, i);
                 }

@@ -1,0 +1,6 @@
+exit	0
+diag	note	1000000	0	:null_waveform_targets:_p0	110101
+diag	note	3000000	0	:null_waveform_targets:_p0	ZZZZZZ
+diag	note	4000000	0	:null_waveform_targets:_p0	10
+diag	note	6000000	0	:null_waveform_targets:_p0	ZZ
+diag	note	9000000	0	:null_waveform_targets:_p0	11

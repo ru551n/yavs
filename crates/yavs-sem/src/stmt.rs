@@ -1106,9 +1106,10 @@ impl Db {
             return Ok(());
         };
         let guarded = t.lsps.iter().all(|l| match l.root {
+            // A signal parameter is guarded when its actual is (LRM 4.2.2.3), found at run time.
             ObjRoot::Decl(d) => matches!(
                 &self.decls[d].kind,
-                DeclKind::Object(o) if o.signal_kind.is_some()
+                DeclKind::Object(o) if o.signal_kind.is_some() || o.role == ObjRole::Param
             ),
             _ => false,
         });

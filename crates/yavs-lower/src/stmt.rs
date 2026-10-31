@@ -1803,6 +1803,36 @@ impl Fx<'_, '_> {
         span: Span,
     ) -> R<()> {
         let db = self.db;
+        if elems.iter().any(|e| e.value.is_none()) {
+            return self.drive_nulls(
+                elems,
+                delay,
+                span,
+                |fx, one, dl| fx.drive_record(d, steps, base, covered, target, dl, one, span),
+                |fx, after, mode| {
+                    let p = fx.comp_select(d, steps, span)?;
+                    for (leaf, sref, _) in &p.leaves {
+                        let drv = match base {
+                            Ok(b) => {
+                                let Some(k) = covered.iter().position(|l| l.path == leaf.path)
+                                else {
+                                    return Err(fx
+                                        .cx
+                                        .ice(span, "signal target outside its driver"));
+                                };
+                                Ok(b + k as u32)
+                            }
+                            Err(b) => {
+                                let k = fx.int(i64::from(leaf.sig));
+                                Err(fx.bin(IntOp::Add, b, k))
+                            }
+                        };
+                        fx.emit_disconnect(drv, *sref, after, mode);
+                    }
+                    Ok(())
+                },
+            );
+        }
         // A record signal, or a part of one that is a record or an array of records (a field, an
         // element, a slice), driven by one waveform element through its own drivers, one per
         // leaf in leaf order: one `SigScatter` instead of a drive per leaf (#677).
@@ -1822,9 +1852,7 @@ impl Fx<'_, '_> {
         let mut vals = Vec::new();
         for el in elems {
             let Some(v) = el.value else {
-                return Err(self
-                    .cx
-                    .unsupported(span, "null waveform elements of record signals"));
+                return Err(self.cx.ice(span, "null element in a value waveform"));
             };
             let at = match el.after {
                 Some(a) => self.scalar_expr(a)?,
@@ -1954,14 +1982,44 @@ impl Fx<'_, '_> {
                 .cx
                 .unsupported(span, "aggregate targets with choice lists"));
         }
+        if elems.iter().any(|e| e.value.is_none()) {
+            return self.drive_nulls(
+                elems,
+                delay,
+                span,
+                |fx, one, d| fx.drive_aggregate(target, d, one, span),
+                |fx, after, mode| {
+                    let mut leaves = Vec::with_capacity(target.lsps.len());
+                    fx.agg_leaf_names(target.expr, &mut leaves);
+                    for (&x, lsp) in leaves.iter().zip(&target.lsps) {
+                        if fx.comp_steps(x).is_some_and(|(d, s)| {
+                            let path: Vec<u32> = s
+                                .iter()
+                                .filter_map(|s| match *s {
+                                    crate::expr::Step::Field(n) => Some(n),
+                                    _ => None,
+                                })
+                                .collect();
+                            fx.leaves_under(d, &path).len() != 1
+                        }) {
+                            return Err(fx
+                                .cx
+                                .unsupported(span, "record elements of aggregate signal targets"));
+                        }
+                        let drv = fx.leaf_driver(lsp, x, span)?;
+                        let (_, sref, _) = fx.sig_name(x)?;
+                        fx.emit_disconnect(drv, sref, after, mode);
+                    }
+                    Ok(())
+                },
+            );
+        }
         let t = db.base(db.exprs[target.expr].subtype);
         let mut ats = Vec::with_capacity(elems.len());
         let mut vals = Vec::with_capacity(elems.len());
         for el in elems {
             let Some(v) = el.value else {
-                return Err(self
-                    .cx
-                    .unsupported(span, "null waveform elements in aggregate targets"));
+                return Err(self.cx.ice(span, "null element in a value waveform"));
             };
             ats.push(match el.after {
                 Some(a) => self.scalar_expr(a)?,
@@ -2001,6 +2059,18 @@ impl Fx<'_, '_> {
                 }
             },
         )
+    }
+
+    /// The target elements below aggregate target `e` that are not aggregates, in order.
+    fn agg_leaf_names(&self, e: ExprId, out: &mut Vec<ExprId>) {
+        match &self.db.exprs[e].kind {
+            ExprKind::Aggregate { assocs, .. } => {
+                for a in assocs.iter() {
+                    self.agg_leaf_names(a.value, out);
+                }
+            }
+            _ => out.push(e),
+        }
     }
 
     /// The number of target elements below aggregate target `e` that are not aggregates.
@@ -2463,57 +2533,28 @@ impl Fx<'_, '_> {
             None => (self.int(if logic { 8 + 32 } else { 16 }), None),
         };
         let what = self.target_name(target.expr);
+        let drv = param_slot.map_or(Ok(slot), Err);
         if elems.iter().any(|e| e.value.is_none()) {
-            if param_slot.is_some() {
-                return Err(self
-                    .cx
-                    .unsupported(span, "null waveform elements of signal parameters"));
-            }
-            let (mode, reject) = self.drive_mode(delay)?;
             return self.drive_nulls(
                 elems,
-                slot,
-                sref,
-                mode,
-                reject,
+                delay,
                 span,
-                |fx, k| fx.delay_time(elems[k].after),
-                |fx, k, mode, reject| {
-                    let one = &elems[k..=k];
+                |fx, one, d| {
+                    let (mode, reject) = fx.drive_mode(d)?;
                     let (wave, n) =
                         fx.wave_of(one, st, tid, tdope, size, stride, logic, &what, span)?;
-                    fx.emit(Inst::Drive {
-                        driver: slot,
-                        target: Some(sref),
-                        wave,
-                        n,
-                        mode,
-                        reject,
-                    });
+                    fx.emit_drive(drv, sref, wave, n, mode, reject);
+                    Ok(())
+                },
+                |fx, after, mode| {
+                    fx.emit_disconnect(drv, sref, after, mode);
                     Ok(())
                 },
             );
         }
         let (wave, n) = self.wave_of(elems, st, tid, tdope, size, stride, logic, &what, span)?;
         let (mode, reject) = self.drive_mode(delay)?;
-        match param_slot {
-            Some(slot) => self.emit(Inst::DriveSlot {
-                slot,
-                target: sref,
-                wave,
-                n,
-                mode,
-                reject,
-            }),
-            None => self.emit(Inst::Drive {
-                driver: slot,
-                target: Some(sref),
-                wave,
-                n,
-                mode,
-                reject,
-            }),
-        }
+        self.emit_drive(drv, sref, wave, n, mode, reject);
         Ok(())
     }
 
@@ -2628,44 +2669,50 @@ impl Fx<'_, '_> {
 
     /// A waveform with null elements (LRM 10.5.2.2, #352): one transaction per element in order.
     /// The first has the assignment's delay mechanism and preempts the driver's later
-    /// transactions; the others are transport, which adds them after it. A null element
-    /// disconnects the driver of a guarded signal at its time, a value is driven as usual.
-    #[allow(clippy::too_many_arguments)]
+    /// transactions; the others are transport, which adds them after it. `value` drives one
+    /// value element, `null` disconnects the target at its time and in its mode.
     fn drive_nulls(
         &mut self,
         elems: &[yavs_sem::hir::WaveElem],
-        slot: u32,
-        sref: Reg,
-        mode: DriveMode,
-        reject: Option<Reg>,
+        delay: &Delay,
         span: Span,
-        mut time: impl FnMut(&mut Self, usize) -> R<Reg>,
-        mut value: impl FnMut(&mut Self, usize, DriveMode, Option<Reg>) -> R<()>,
+        mut value: impl FnMut(&mut Self, &[yavs_sem::hir::WaveElem], &Delay) -> R<()>,
+        mut null: impl FnMut(&mut Self, Reg, DriveMode) -> R<()>,
     ) -> R<()> {
         for (k, el) in elems.iter().enumerate() {
-            let (mode, reject) = if k == 0 {
-                (mode, reject)
-            } else {
-                (DriveMode::Transport, None)
-            };
+            let d = if k == 0 { delay } else { &Delay::Transport };
             if el.value.is_some() {
-                value(self, k, mode, reject)?;
+                value(self, &elems[k..=k], d)?;
                 continue;
             }
+            let (mode, reject) = self.drive_mode(d)?;
             if reject.is_some() {
                 return Err(self
                     .cx
                     .unsupported(span, "a pulse rejection limit with a null first element"));
             }
-            let after = time(self, k)?;
-            self.emit(Inst::Disconnect {
-                driver: slot,
-                target: Some(sref),
-                after: Some(after),
-                mode,
-            });
+            let after = self.delay_time(el.after)?;
+            null(self, after, mode)?;
         }
         Ok(())
+    }
+
+    /// `Disconnect` or `DisconnectSlot` of a target through driver `drv`.
+    fn emit_disconnect(&mut self, drv: Result<u32, Reg>, target: Reg, after: Reg, mode: DriveMode) {
+        self.emit(match drv {
+            Ok(driver) => Inst::Disconnect {
+                driver,
+                target: Some(target),
+                after: Some(after),
+                mode,
+            },
+            Err(slot) => Inst::DisconnectSlot {
+                slot,
+                target,
+                after: Some(after),
+                mode,
+            },
+        });
     }
 
     /// `WaitOn` for each signal of a sensitivity list.

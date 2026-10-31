@@ -1,0 +1,2 @@
+exit	1
+diag	fatal	0	0	:null_waveform_unguarded_param:_p0	invalid signal assignment: null transaction on unguarded signal :null_waveform_unguarded_param:u

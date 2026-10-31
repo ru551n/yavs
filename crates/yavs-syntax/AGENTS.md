@@ -11,7 +11,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
   conversion, `label: p;` call vs instance, choices that may be subtypes), type anything, or read
   library manifests. All of that is `yavs-sem`.
 - Single-threaded by design (`docs/plan.md`: parsing and analysis run on one thread).
-- Depends on: `yavs-diag`. Called by: `yavs-sem` (main consumer), `yavs-lower` and `yavs-elab`
+- Depends on: `yavs-diag`, `yavs-std` (the tool identifiers of conditional analysis, #919). Called by: `yavs-sem` (main consumer), `yavs-lower` and `yavs-elab`
   (AST types, `Symbol`), `yavs` (the `parse` command), `fuzz/`.
 
 ## 2. Map

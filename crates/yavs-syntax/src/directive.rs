@@ -20,11 +20,11 @@ fn lookup(name: &str, std: Std, defines: &[(String, String)]) -> Option<String> 
     }
     let v = match name.to_ascii_uppercase().as_str() {
         "VHDL_VERSION" => std.as_str(),
-        "TOOL_TYPE" => "SIMULATION",
-        "TOOL_VENDOR" => "yavs",
-        "TOOL_NAME" => "yavs",
-        "TOOL_EDITION" => "",
-        "TOOL_VERSION" => env!("CARGO_PKG_VERSION"),
+        "TOOL_TYPE" => yavs_std::env::TOOL_TYPE,
+        "TOOL_VENDOR" => yavs_std::env::TOOL_VENDOR,
+        "TOOL_NAME" => yavs_std::env::TOOL_NAME,
+        "TOOL_EDITION" => yavs_std::env::TOOL_EDITION,
+        "TOOL_VERSION" => yavs_std::env::TOOL_VERSION,
         _ => return None,
     };
     Some(v.to_string())
@@ -352,6 +352,15 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
         (text, d)
+    }
+
+    /// The tool identifiers are those of `std.env` (#919).
+    #[test]
+    fn tool_identifiers_are_the_ones_of_std_env() {
+        assert_eq!(
+            lookup("TOOL_EDITION", Std::Vhdl2019, &[]).as_deref(),
+            Some(yavs_std::env::TOOL_EDITION)
+        );
     }
 
     #[test]

@@ -2315,6 +2315,7 @@ dependencies = [
  "rustc-hash",
  "serde",
  "yavs-diag",
+ "yavs-std",
 ]
 
 [[package]]

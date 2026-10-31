@@ -742,7 +742,7 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   (`VHDL_VERSION` is `"2008"`), since 2008 already allows tool directives and the evaluation is
   harmless. Unknown directives warn (W0002) and skip their line; `` `protect begin_protected ``
   (and `` `pragma protect begin_protected ``) is the exception, see "Encrypted sources" below. `TOOL_VENDOR`
-  and `TOOL_NAME` are `yavs`, `TOOL_TYPE` is `SIMULATION`, `TOOL_EDITION` is empty.
+  and `TOOL_NAME` are `yavs`, `TOOL_TYPE` is `SIMULATION`, `TOOL_EDITION` is the value of `std.env.TOOL_EDITION`; conditional analysis takes all of them from `yavs_std::env`, one definition (#919; was empty here).
 - **Encrypted sources (#775, #776 D8):** an IEEE 1735 envelope (`` `protect begin_protected ``,
   also `` `pragma protect ``, any case) is one error `E0012` at the line that opens it, with the
   encrypt agent and the number of vendor key blocks as a note and the fix as help; the lexer stops

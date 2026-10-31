@@ -32,6 +32,10 @@ fails with the regenerate command (`YAVS_BLESS=1 cargo test -p yavs --bin yavs c
 `help_texts_are_for_users` keeps file names out of help texts. `docs/vunit-yavs.rst` lists the VUnit package's sim options and
 flags by hand; `python/vunit-yavs/tests/test_docs.py` checks its names against the option definitions. `docs/cli.rst` stays the overview.
 
+### One definition of the tool identifiers (#919, 2026-10-31)
+
+Conditional analysis takes `TOOL_*` from `yavs_std::env`; `TOOL_EDITION` no longer differs between the two.
+
 ### Port actuals in 1993 files (#926, 2026-10-31)
 
 An expression that is not globally static as a port actual is `E1360` in a 1993 file (L168).

@@ -10,6 +10,7 @@ publish.workspace = true
 serde.workspace = true
 rustc-hash.workspace = true
 yavs-diag.workspace = true
+yavs-std = { path = "../yavs-std" }
 
 [dev-dependencies]
 postcard.workspace = true

@@ -226,6 +226,21 @@ fn restart_recreates_the_wave_file() {
     assert!(t < 20_000_000, "{t}");
 }
 
+/// `wave` without `--surfer` is an error that says what to do (found testing the console by hand).
+#[test]
+fn wave_commands_need_a_viewer() {
+    let d = setup("wave");
+    for cmd in ["wave add cnt", "wave cursor"] {
+        let o = script(&d, "tb", cmd);
+        assert_eq!(o.status.code(), Some(1), "{cmd}");
+        assert!(
+            stderr(&o).contains("`wave` needs a viewer: run with `--surfer`"),
+            "{cmd}: {}",
+            stderr(&o)
+        );
+    }
+}
+
 #[test]
 fn source_files() {
     let d = setup("source");

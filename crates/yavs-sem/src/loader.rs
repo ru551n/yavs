@@ -141,6 +141,9 @@ pub struct Unit {
     /// Units named but not analyzed for this one (an instance's architecture, a
     /// default-bound entity): manifest dependencies only (unit.rs).
     pub refs: Vec<UnitRef>,
+    /// Architectures named by an instance or binding: pulled into the closure, ordering no file,
+    /// and possibly not analyzed yet (#819).
+    pub weak_refs: Vec<UnitRef>,
     pub file: FileId,
     pub span: Span,
     /// The file's own revision `F`.
@@ -1052,6 +1055,7 @@ impl Db {
                 rec.depends_on.push(r.clone());
             }
         }
+        rec.weak = unit.weak_refs.clone();
         rec
     }
 }

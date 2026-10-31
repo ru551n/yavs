@@ -281,7 +281,7 @@ fn component_instance_with_specification_and_dependencies() {
             .contains(&UnitRef::new("work", LibKind::Entity, "sub"))
     );
     assert!(
-        arch.depends_on
+        arch.weak
             .contains(&UnitRef::new("work", LibKind::Architecture, "sub/rtl"))
     );
 }

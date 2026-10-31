@@ -260,6 +260,13 @@ pub fn closure(libs: &Libraries, top: &UnitRef) -> Result<Vec<ClosureFile>> {
             order_edges.push((n.clone(), Ctx::node(dl, du)));
         }
         let mut pulls: Vec<(String, UnitRecord)> = deps;
+        // Weak: pulled in if it exists, no file order; elaboration reports a missing one (#819).
+        for d in &u.weak {
+            let m = cx.manifest(&d.library)?;
+            if let Some(loc) = m.find(d.kind, &d.key) {
+                pulls.push((d.library.clone(), cx.record(&d.library, &m, loc)?));
+            }
+        }
         // Pull-only: an entity brings its latest architecture, a package its body.
         match u.kind {
             UnitKind::Entity => {

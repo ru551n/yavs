@@ -266,6 +266,29 @@ fn cycle() {
     );
 }
 
+/// A weak reference pulls the architecture in without ordering its file, so a file naming an
+/// architecture of its own entity in a later file is no cycle; a missing one is no error (#819).
+#[test]
+fn weak_reference_pulls_without_order() {
+    let (t, libs, work, _) = setup();
+    let weak = UnitRef::new("work", UnitKind::Architecture, "sub/rtl");
+    let mut top = UnitRecord::new(UnitKind::Entity, "top", STD);
+    top.weak.push(weak);
+    let sub = UnitRecord::new(UnitKind::Entity, "sub", STD);
+    let first = analyze(&work, t.path(), "first.vhd", "a", vec![sub, top]);
+    let want = UnitRef::new("work", UnitKind::Entity, "top");
+    let files = closure(&libs, &want).unwrap();
+    assert_eq!(files.len(), 1, "missing architecture");
+    let arch = UnitRecord::architecture("sub", "rtl", STD).depends("work", UnitKind::Entity, "sub");
+    let second = analyze(&work, t.path(), "second.vhd", "b", vec![arch]);
+    let paths: Vec<_> = closure(&libs, &want)
+        .unwrap()
+        .into_iter()
+        .map(|f| f.path)
+        .collect();
+    assert_eq!(paths, [first, second]);
+}
+
 #[test]
 fn same_file_units_are_not_a_cycle() {
     let (t, libs, work, _) = setup();
@@ -457,7 +480,7 @@ fn old_format_manifest() {
     std::fs::write(work.dir.join("yavs-lib.toml"), old).unwrap();
     assert_eq!(
         snap(&work.read().unwrap_err(), t.path()),
-        "error[L0004]: library manifest `<tmp>/work/yavs-lib.toml` has format version 2, this yavs reads version 3\n  |\n  = help: delete the library directory `<tmp>/work` and analyze its files again (a library of another format version is not converted)\n"
+        "error[L0004]: library manifest `<tmp>/work/yavs-lib.toml` has format version 2, this yavs reads version 4\n  |\n  = help: delete the library directory `<tmp>/work` and analyze its files again (a library of another format version is not converted)\n"
     );
     // Closures fail the same way, and analyzing into it fails early rather than overwriting.
     let mut libs = Libraries::new();

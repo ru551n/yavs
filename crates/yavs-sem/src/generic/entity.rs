@@ -164,6 +164,7 @@ impl Db {
             context: o.context,
             deps: o.deps.clone(),
             refs: Vec::new(),
+            weak_refs: Vec::new(),
             file: o.file,
             span: o.span,
             rev: o.rev,

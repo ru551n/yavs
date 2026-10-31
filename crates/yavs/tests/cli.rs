@@ -1893,6 +1893,58 @@ fn same_file_in_two_libraries() {
 }
 
 /// Runs `yavs` with colours off.
+/// An entity aspect may name an architecture analyzed later; a missing one fails elaboration,
+/// and analyzing the first file again after the second makes no cycle (#819).
+#[test]
+fn architecture_named_before_it_is_analyzed() {
+    let t = tempfile::tempdir().unwrap();
+    let f1 = t.path().join("f1.vhd");
+    let f2 = t.path().join("f2.vhd");
+    std::fs::write(
+        &f1,
+        "entity sub is port (x : in bit); end;
+         entity top is end;
+         architecture s of top is
+           signal c : bit;
+         begin
+           m1 : entity work.sub(behavioral) port map (x => c);
+         end;",
+    )
+    .unwrap();
+    std::fs::write(
+        &f2,
+        "architecture behavioral of sub is begin
+           process begin report \"behavioral\"; wait; end process;
+         end;",
+    )
+    .unwrap();
+    let work = format!("--work=work:{}", t.path().join("work").display());
+    let analyze = |f: &std::path::Path| {
+        let o = yavs_cmd(&["analyze", "--std=2008", &work, f.to_str().unwrap()]);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    };
+    let run = || yavs_cmd(&["run", "--std=2008", &work, "top"]);
+    analyze(&f1);
+    let o = run();
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(!o.status.success() && all.contains("error[E1002]"), "{all}");
+    analyze(&f2);
+    let o = run();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    analyze(&f1);
+    let o = run();
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(o.status.success() && out.contains("behavioral"), "{out}");
+}
+
 fn yavs_cmd(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_yavs"))
         .args(["--color", "never"])
@@ -2158,4 +2210,29 @@ fn package_init_report_is_printed_once() {
         assert_eq!(o.status.code(), Some(1), "{err}");
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The entity of `entity e(a)` comes first in the closure when it is visible only through
+/// `use work.all`, its file not named by the instance's own unit (#819).
+#[test]
+fn named_architecture_of_an_entity_visible_through_use_all() {
+    let t = tempfile::tempdir().unwrap();
+    analyze_into(
+        t.path(),
+        "work",
+        &[],
+        &[
+            (
+                "leaf.vhd",
+                "entity leaf is end;\narchitecture rtl of leaf is begin end;\n",
+            ),
+            (
+                "top.vhd",
+                "use work.all;\nentity top is end;\narchitecture a of top is begin\n  u : entity leaf(rtl);\nend;\n",
+            ),
+        ],
+    );
+    let work = format!("--work=work:{}/work", t.path().display());
+    let o = yavs_cmd(&["elab", "--std=2008", &work, "top"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 }

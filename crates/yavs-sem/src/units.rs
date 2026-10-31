@@ -57,7 +57,7 @@ use crate::{LangRev, UnitStore};
 pub type Hash = [u8; 32];
 
 /// The layout of entries; part of every identity.
-const FORMAT: u32 = 10;
+const FORMAT: u32 = 11;
 
 /// Entries of `Db::new` (index 0 of these arenas): the same in every session.
 const BASE: [u32; KINDS] = [0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0];

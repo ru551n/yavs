@@ -12679,6 +12679,10 @@ The kernel decisions (cap, take only for a batch worth pooling, `TOKEN_IDLE`) st
 - **`--ieee-warnings`** (#836): `on|off`, off drops warnings of the `ieee` library (natives and bodies) by origin file, not by severity of the caller.
 - **Conditional analysis definitions** (#837): `-D` is passed to `elab` and `run` like `--psl`, not recorded in the library manifest (no format change; one rule for the options that change how a source is read).
 
+## Weak dependencies: an architecture named before it is analysed (#819; maintainer, 2026-10-31)
+
+- An entity aspect or binding indication naming an architecture (`entity work.e(a)`) is accepted at analysis whether or not the architecture exists yet. The record of the unit lists it under `weak` (manifest format 4): the closure pulls it in when it exists and it orders no file, because the architecture's file depends on the entity, often in the naming file. A missing architecture is `E1002` at elaboration of the instance. A library of an older format is refused with `L0004` and analysed again once.
+
 ## Deferred constant used early, null range choice (#861, #860; user, 2026-10-30)
 
 - **Deferred constant used in its package body before the full declaration** (#861): an analysis error, `E1226` (option a), kept. No run-time error and no per-revision split.

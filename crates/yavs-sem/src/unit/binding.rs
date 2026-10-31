@@ -205,7 +205,7 @@ impl Db {
             ast::InstantiatedUnit::Entity { name, arch } => {
                 let unit = self.entity_unit(scope, name)?;
                 if let Some(a) = arch {
-                    self.check_arch(unit, *a)?;
+                    self.note_arch(unit, *a);
                 }
                 Ok(InstTarget::Entity { unit, arch: *arch })
             }
@@ -296,36 +296,25 @@ impl Db {
 
     /// Architecture `a` of entity `entity` must exist (it is not analyzed:
     /// an architecture may instantiate itself). Recorded as a dependency.
-    fn check_arch(&mut self, entity: UnitId, a: Ident) -> Result<(), Reported> {
+    /// An architecture named by an instance or binding (`e(a)`): it may be analyzed later, so
+    /// this records a weak reference; elaboration reports one that is missing (#819).
+    fn note_arch(&mut self, entity: UnitId, a: Ident) {
         let lib = self.units[entity].lib;
-        let ekey = self.units[entity].name.key;
-        let key = UnitKey::Secondary(ekey, a.key);
-        if !self.unit_known(lib, key) {
-            let lname = self.libs[lib].name.text;
-            let names = self.unit_names(lib, Some(ekey));
-            let hint = crate::suggest::suggest(
-                a.key.as_str(),
-                "architecture",
-                names.iter().map(|n| (n.as_str(), n.as_str())),
-            );
-            return Err(self.error(
-                Diagnostic::error(
-                    diag::UNIT_NOT_FOUND,
-                    format!(
-                        "architecture `{}` of entity `{}` not found in library `{lname}`",
-                        a.text, self.units[entity].name.text
-                    ),
-                )
-                .with_primary(a.span, "no architecture with this name")
-                .with_help(
-                    hint.unwrap_or_else(|| {
-                        "analyze the architecture first, or check the name".into()
-                    }),
-                ),
-            ));
+        if matches!(self.libs[lib].source, LibSource::StdDir(_)) {
+            return;
         }
-        self.add_ref(lib, LibKind::Architecture, format!("{ekey}/{}", a.key));
-        Ok(())
+        let Some(c) = self.cur() else { return };
+        let r = UnitRef {
+            library: self.libs[lib].name.key.to_string(),
+            kind: LibKind::Architecture,
+            key: format!("{}/{}", self.units[entity].name.key, a.key),
+        };
+        if !self.units[c.unit].weak_refs.contains(&r) {
+            self.units[c.unit].weak_refs.push(r);
+        }
+        // The entity itself comes first, also when it is visible through `use work.all`.
+        let ekey = self.units[entity].name.key.to_string();
+        self.add_ref(lib, LibKind::Entity, ekey);
     }
 
     /// A manifest dependency of the unit being analyzed on a unit it does not load.
@@ -2149,7 +2138,7 @@ impl Db {
             Some(ast::EntityAspect::Entity { name, arch }) => {
                 let u = self.entity_unit(scope, name)?;
                 if let Some(a) = arch {
-                    self.check_arch(u, *a)?;
+                    self.note_arch(u, *a);
                 }
                 (
                     Some(EntityAspect::Entity {

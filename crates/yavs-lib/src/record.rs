@@ -26,22 +26,30 @@ pub(crate) fn render(path: &str, units: &[UnitRecord]) -> String {
             put_line(&mut o, "primary", p);
         }
         put_line(&mut o, "std", &u.std);
-        o.push_str("depends_on = [");
-        for (i, d) in u.depends_on.iter().enumerate() {
-            if i > 0 {
-                o.push_str(", ");
-            }
-            o.push('[');
-            put_str(&mut o, &d.library);
-            o.push_str(", ");
-            put_str(&mut o, d.kind.text());
-            o.push_str(", ");
-            put_str(&mut o, &d.key);
-            o.push(']');
+        put_refs(&mut o, "depends_on", &u.depends_on);
+        if !u.weak.is_empty() {
+            put_refs(&mut o, "weak", &u.weak);
         }
-        o.push_str("]\n");
     }
     o
+}
+
+fn put_refs(o: &mut String, key: &str, refs: &[UnitRef]) {
+    o.push_str(key);
+    o.push_str(" = [");
+    for (i, d) in refs.iter().enumerate() {
+        if i > 0 {
+            o.push_str(", ");
+        }
+        o.push('[');
+        put_str(o, &d.library);
+        o.push_str(", ");
+        put_str(o, d.kind.text());
+        o.push_str(", ");
+        put_str(o, &d.key);
+        o.push(']');
+    }
+    o.push_str("]\n");
 }
 
 /// The digest that names a record: the first 16 bytes of the SHA-256 of its text.
@@ -73,8 +81,15 @@ fn parse(text: &str, path: &Path) -> std::result::Result<Vec<UnitRecord>, String
     }
     let mut units: Vec<UnitRecord> = Vec::new();
     // Fields of the unit being read.
-    let (mut kind, mut name, mut key, mut primary, mut std, mut deps) =
-        (None, None, None, None, None, None::<Vec<UnitRef>>);
+    let (mut kind, mut name, mut key, mut primary, mut std, mut deps, mut weak) = (
+        None,
+        None,
+        None,
+        None,
+        None,
+        None::<Vec<UnitRef>>,
+        None::<Vec<UnitRef>>,
+    );
     let mut in_unit = false;
     macro_rules! end_unit {
         ($n:expr) => {
@@ -88,6 +103,7 @@ fn parse(text: &str, path: &Path) -> std::result::Result<Vec<UnitRecord>, String
                     depends_on: deps
                         .take()
                         .ok_or_else(|| bad($n, "a unit lacks `depends_on`"))?,
+                    weak: weak.take().unwrap_or_default(),
                     file: path.to_path_buf(),
                 });
             }
@@ -131,7 +147,7 @@ fn parse(text: &str, path: &Path) -> std::result::Result<Vec<UnitRecord>, String
             "key" => key = Some(string(&mut c)?),
             "primary" => primary = Some(string(&mut c)?),
             "std" => std = Some(string(&mut c)?),
-            "depends_on" => {
+            k @ ("depends_on" | "weak") => {
                 let mut v = Vec::new();
                 let sep = |c: &mut Cur| c.eat(b',').and_then(|()| c.eat(b' '));
                 c.eat(b'[').ok_or_else(|| bad(n, "expected ["))?;
@@ -155,7 +171,11 @@ fn parse(text: &str, path: &Path) -> std::result::Result<Vec<UnitRecord>, String
                 c.eat(b']')
                     .filter(|()| c.done())
                     .ok_or_else(|| bad(n, "bad dependencies"))?;
-                deps = Some(v);
+                if k == "weak" {
+                    weak = Some(v);
+                } else {
+                    deps = Some(v);
+                }
             }
             _ => return Err(bad(n, "unknown key")),
         }

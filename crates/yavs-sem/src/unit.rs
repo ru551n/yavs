@@ -67,6 +67,7 @@ impl Db {
             context: root,
             deps: Vec::new(),
             refs: Vec::new(),
+            weak_refs: Vec::new(),
             file,
             span: ast.span,
             rev,

@@ -65,7 +65,7 @@ OVERRIDES = {
        ("ch_04_tb_04_01.vhd", "ch_13_fg_13_20.vhd", "ch_17_ch_17_06.vhd", "ch_18_fg_18_09.vhd", "ch_19_srvr.vhd")},
     "ch_17_fg_17_14.vhd": ("SKIP", "not counted: every tool stops at a unit the suite never builds for it (stimulus_types), before the error the test is about"),
     "ch_19_random-b.vhd": ("SKIP", _BROKEN + "a pre-standard math package (library math)"),
-    "ch_13_ch_13_01.vhd": ("SKIP", _BROKEN + "an architecture named before it is analysed, and a port binding one reference rejects"),
+    "ch_13_ch_13_01.vhd": ("SKIP", _BROKEN + "a port binding one reference rejects: component port `c` of `nand3` has no match in `nand2`"),
     **{t: ("SKIP", _BROKEN + "it uses a unit that the list builds into another library, never builds, or builds from a broken file") for t in
        ("ap_a_ap_a_03.vhd", "ch_13_fg_13_05.vhd", "ch_13_fg_13_07.vhd", "ch_13_fg_13_08.vhd", "ch_13_fg_13_09.vhd", "ch_13_fg_13_22.vhd", "ch_14_fg_14_11.vhd",
         "ch_14_fg_14_12.vhd", "ch_15_dlxr.vhd", "ch_15_dlxstsv.vhd", "ch_15_dlxtstr.vhd", "ch_19_ds-qn.vhd", "ch_19_srvr-b.vhd", "ch_19_tb-frk.vhd",
@@ -76,12 +76,11 @@ OVERRIDES = {
 
 # analyzer_failure tests that yavs rejects at elaboration or run time with the error the test is about (checked one by
 # one); they count as passes because the language reference leaves open when such value errors are detected.
-LATE = set("tc310 tc342 tc738 tc764 tc1068 tc1124 tc1127 tc1136 tc1141 tc1142 tc1143 tc1144 tc1146 tc1217 tc1333 tc1334 tc1345 tc1346 "
+LATE = set("tc310 tc342 tc738 tc764 tc841 tc1068 tc1124 tc1127 tc1136 tc1141 tc1142 tc1143 tc1144 tc1146 tc1217 tc1333 tc1334 tc1345 tc1346 "
            "tc1416 tc1726 tc2255 tc2523 tc2536 tc2548".split())
 
 # Failing tests by the yavs issue that tracks their cause (the report groups failures by these).
 ISSUES = {
-    819: "ch_11_fg_11_09 ch_11_fg_11_10",
 }
 ISSUE_OF = {t: n for n, ts in ISSUES.items() for t in ts.split()}
 

@@ -1213,6 +1213,35 @@ fn incremental_binding() {
     assert_eq!(lens, [1, 3]);
 }
 
+/// An incremental binding changes only what its maps name: the primary binding's other generics
+/// and its whole port map stay, also when the names differ from the component's (7.3.2.1, #820).
+#[test]
+fn incremental_binding_keeps_the_rest_of_the_primary() {
+    let src = "entity gate is generic (w, a, b : natural := 1); port (i : in bit_vector(1 to w)); end;
+      architecture rtl of gate is signal s : bit_vector(1 to a * 10 + b); begin end;
+      configuration gate_cfg of gate is for rtl end for; end;
+      entity top is end;
+      architecture t of top is
+        component c is generic (n : natural); port (x : in bit_vector(1 to n)); end component;
+        for u : c use entity work.gate(rtl) generic map (w => n, a => 2, b => 3) port map (i => x);
+        for v : c use configuration work.gate_cfg generic map (w => n, a => 2, b => 3) port map (i => x);
+        signal z : bit_vector(1 to 4);
+      begin
+        u : c generic map (n => 4) port map (x => z);
+        v : c generic map (n => 4) port map (x => z);
+      end;
+      configuration cfg of top is
+        for t
+          for u : c generic map (a => 5); end for;
+          for v : c generic map (b => 7); end for;
+        end for;
+      end;";
+    let (_, e) = elab("incremental_rest", src, "cfg", &[]);
+    let lens: Vec<u32> = e.nets.leaves.iter().map(|l| l.ty.len).collect();
+    // z (the collapsed ports share it), then s of each instance.
+    assert_eq!(lens, [4, 53, 27]);
+}
+
 /// A conversion of a part of an unconstrained `out` formal: the formal takes its bounds from the
 /// named parts (6.5.7.1, #617).
 #[test]

@@ -30,6 +30,10 @@ fails with the regenerate command (`YAVS_BLESS=1 cargo test -p yavs --bin yavs c
 `help_texts_are_for_users` keeps file names out of help texts. `docs/vunit-yavs.rst` lists the VUnit package's sim options and
 flags by hand; `python/vunit-yavs/tests/test_docs.py` checks its names against the option definitions. `docs/cli.rst` stays the overview.
 
+### Incremental binding with a partial map (#820, 2026-10-31)
+
+A binding indication without an entity aspect has associations only for what its maps name; a primary binding of a configuration can be incremented too (L158).
+
 ### Conversions of a part of a formal in a port map (#617, 2026-10-31)
 
 `signed(res(7 downto 0)) => a` on `out`, `buffer` and `inout` ports: sem resolves the part (`partial`), `IndividualPart` carries the conversion, elaboration makes a converted port edge. Not in subprogram calls (L157).

@@ -559,6 +559,19 @@ impl Db {
         assocs: &[ast::AssocElem],
         at: Span,
     ) -> Result<Box<[Arg]>, Reported> {
+        self.assoc_list_of(scope, formals, assocs, at, false)
+    }
+
+    /// With `incremental` a formal without an association keeps what the primary binding
+    /// gave it, so it gets no `Arg` (7.3.2.1, #820).
+    fn assoc_list_of(
+        &mut self,
+        scope: ScopeId,
+        formals: &[DeclId],
+        assocs: &[ast::AssocElem],
+        at: Span,
+        incremental: bool,
+    ) -> Result<Box<[Arg]>, Reported> {
         let mut errs = Errs::default();
         let mut map: Vec<Assoc> = formals.iter().map(|_| Assoc::None).collect();
         // The hidden types of anonymous interface types come last and take no actual.
@@ -635,7 +648,7 @@ impl Db {
             };
             let actual = match m {
                 // After an association error a missing actual is likely a cascade.
-                Assoc::None if errs.0 => None,
+                Assoc::None if errs.0 || incremental => None,
                 Assoc::None => errs.keep(self.missing_actual(scope, f, at)),
                 Assoc::Whole { idx, conv, span } => {
                     errs.keep(self.actual(scope, f, &assocs[idx].actual, conv, span))
@@ -2216,12 +2229,16 @@ impl Db {
         // the port map of this binding only: two bindings of one generic entity get
         // one instance each, not the first binding's types (#614).
         self.inst_types.clear();
+        // An incremental binding (no entity aspect) only changes what its maps name (7.3.2.1).
+        let incremental = b.entity_aspect.is_none();
         let generic_map = match &b.generic_map {
-            Some(m) => errs.keep(self.assoc_list(cscope, &eg, m, b.span)),
+            Some(m) => errs.keep(self.assoc_list_of(cscope, &eg, m, b.span, incremental)),
+            None if incremental => Some(Box::default()),
             None => errs.keep(self.default_map(&locals_g, &eg, e, &types, at)),
         };
         let port_map = match &b.port_map {
-            Some(m) => errs.keep(self.assoc_list(cscope, &ep, m, b.span)),
+            Some(m) => errs.keep(self.assoc_list_of(cscope, &ep, m, b.span, incremental)),
+            None if incremental => Some(Box::default()),
             None => errs.keep(self.default_map(&locals_p, &ep, e, &types, at)),
         };
         self.inst_types.clear();
@@ -2231,6 +2248,7 @@ impl Db {
             self.not_read_actual(&a.actual);
         }
         let generic_map = match (generic_map, &port_map) {
+            (Some(g), Some(_)) if incremental => Some(g),
             (Some(g), Some(p)) => errs.keep(self.with_hidden_args(&eg, &ep, g, p, b.span)),
             _ => None,
         };
@@ -2669,6 +2687,7 @@ impl Db {
         let spec = self.spec_for(regions, &instances, named, comp);
         let bound = spec.as_ref().and_then(|a| match a {
             Some(EntityAspect::Entity { unit, .. }) => Some(*unit),
+            Some(EntityAspect::Configuration(u)) => self.config_entity(*u),
             _ => None,
         });
         let binding = match &c.binding {

@@ -83,7 +83,6 @@ LATE = set("tc310 tc342 tc738 tc764 tc1068 tc1124 tc1127 tc1136 tc1141 tc1142 tc
 ISSUES = {
     816: "tc1781", 817: "tc3153 tc3156 tc3159",
     819: "ch_11_fg_11_09 ch_11_fg_11_10",
-    820: "ch_13_fg_13_24",
 }
 ISSUE_OF = {t: n for n, ts in ISSUES.items() for t in ts.split()}
 

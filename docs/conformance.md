@@ -16,7 +16,7 @@ tests pass; every failure is tracked as an issue. This is evidence, not a proof 
 | UVVM | verification library: its own testbenches | 131/137 |
 | OSVVM, VHDL-2008 | verification library: its own regression | 314/314 |
 | OSVVM, VHDL-2019 | verification library: its own regression | 314/314 |
-| VUnit | test framework: its own VHDL test suites | 1357/1357 |
+| VUnit | test framework: its own VHDL test suites | 1338/1338 |
 | Open Logic | FPGA standard library: its own testbenches run with yavs | 6867/6867 |
 | Real designs | neorv32 (three configurations) and GRLIB LEON3 run to completion | 4/4 designs |
 | Waveforms of real designs | signals of 17 designs equal to sim1's at every time step | 44824/44889 signals |
@@ -366,7 +366,7 @@ The libraries' own testbenches and regression suites run on yavs, each with the 
 | UVVM maintenance testbenches (CI) | 137 | 131 | 0 | 6 | one run per entity, architecture and generic set the project's own script lists |
 | OSVVM `.pro` regression, VHDL-2008 (CI) | 314 | 314 | 0 | 0 | pass = exit 0 and the library's `DONE PASSED` line |
 | OSVVM `.pro` regression, VHDL-2019 (CI) | 314 | 314 | 0 | 0 | pass = exit 0 and the library's `DONE PASSED` line |
-| VUnit's own VHDL suites (local, 2026-10-20 at `f2ab69be`) | 1357 | 1357 | 0 | 0 | 11 suites; recorded in docs/STATUS.md (#112) |
+| VUnit's own VHDL suites (local, 2026-10-31 at `afda5bf7`) | 1338 | 1338 | 0 | 0 | 10 suites; recorded in docs/STATUS.md (#112) |
 | Open Logic's own testbenches run with yavs (local, 2026-10-28 at `43000dd6`) | 6867 | 6867 | 0 | 0 | Open Logic 4.7.0 with its en_cl_fix submodule; every test of the project's own run.py (base, axi, intf, fix, ft; 6867 in all) |
 
 ### VESTs, the VHDL-1993 language suite
@@ -513,7 +513,7 @@ The `check` job is `cargo fmt`, `clippy -D warnings` and the whole test suite of
 | UVVM | CI | this report (see Generated) | `tools/suites/uvvm.py` |
 | OSVVM, VHDL-2008 | CI | this report (see Generated) | `tools/suites/pro.py` |
 | OSVVM, VHDL-2019 | CI | this report (see Generated) | `tools/suites/pro.py` |
-| VUnit | local | 2026-10-20, `f2ab69be` | VUnit's own `run.py` scripts |
+| VUnit | local | 2026-10-31, `afda5bf7` | VUnit's own `run.py` scripts |
 | Open Logic | local | 2026-10-28, `43000dd6` | Open Logic's `sim/run.py` |
 | Real designs | CI | this report (see Generated) | `tools/realbench/run.py` |
 | Waveforms of real designs | local | 2026-10-27, `05aa8453fb` | `tools/waveq` |

@@ -700,15 +700,15 @@
    "version": "0.8.0"
   },
   "vunit-own": {
-   "command": "python run.py -p 2 in each vunit/vhdl/<suite>/test directory of VUnit",
-   "commit": "f2ab69be",
+   "command": "tools/suites/vunit_suites.py -p 4 (each vunit/vhdl/<suite>/run.py of VUnit through vunit-yavs)",
+   "commit": "afda5bf7",
    "data": {
     "fail": 0,
-    "pass": 1357,
+    "pass": 1338,
     "skip": 0
    },
-   "date": "2026-10-20",
-   "note": "11 suites; recorded in docs/STATUS.md (#112)",
+   "date": "2026-10-31",
+   "note": "10 suites; recorded in docs/STATUS.md (#112)",
    "title": "VUnit's own VHDL suites"
   }
  }

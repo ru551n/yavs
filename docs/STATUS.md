@@ -187,22 +187,26 @@ A function declared in a block or architecture and called during elaboration rea
 
 ### External test runner: its own VHDL suites (#112)
 
-yavs as the simulator, `-p 2`, release build of main at f2ab69be (re-measured 2026-10-20); pass / fail / skipped tests per
-suite (`vunit/vhdl/<suite>/test`), including `tb_axi_stream_protocol_checker` with its generic configurations. All 11 suites pass: 1357 tests, no failure, no skip (the one failure of the previous measurement, #281, is fixed). Wall time per suite at `-p 2` (host load average about 20): check 23 s, com 23 s, data_types 38 s, logging 16 s, string_ops 3 s, the rest under 6 s, verification_components 134 s with its protocol checker configurations (238 s at 666f5ee3, 224 s plus 20 s at b9dcddb6) (the previous measurement: 671 s at `-p 4`).
+`tools/suites/vunit_suites.py` runs each suite's own `run.py` (`vunit/vhdl/<suite>/run.py`, the 10 suites of the released runner,
+runner release 5.0.0.dev16, and a source checkout with the simulator-package and batch-compile changes) through the `vunit-yavs` package, `-p 4`,
+release build with `--features clift` of main at afda5bf7 (2026-10-31). VHDL-2008: every suite passes, 1338 tests, no failure, no skip.
+Wall time of all ten suites together 90 s. The old table counted 1357 with the `record_dict` suite (6 tests, VHDL-2019), which is not in the released
+runner; its testbench from the closed pull request still passes (6 of 6) when run through a hand-written run script.
+VHDL-2019 (`--std 2019`, which the suites do not claim to support): 983 pass, 242 fail, 113 skip, the failing set identical, test by test,
+to the one the reference simulator sim1 gives with the same checkout (the testbenches compare logged locations, which differ once call paths are on); no yavs defect.
 
 | Suite | Pass | Fail | Skip | Root causes (issues) |
 |---|---|---|---|---|
-| check | 257 | 0 | 0 | none (#281 fixed; the 13 skipped tests of `tb_check_stable` now run) |
-| com | 145 | 0 | 0 | none (#246 fixed; re-measured after it) |
+| check | 257 | 0 | 0 | none |
+| com | 145 | 0 | 0 | none |
 | data_types | 210 | 0 | 0 | none |
 | dictionary | 8 | 0 | 0 | none |
 | logging | 113 | 0 | 0 | none |
 | path | 2 | 0 | 0 | none |
 | random | 4 | 0 | 0 | none |
-| record_dict (2019) | 6 | 0 | 0 | none |
 | run | 5 | 0 | 0 | none |
 | string_ops | 15 | 0 | 0 | none |
-| verification_components | 579 | 0 | 0 | none (#251, #248, #252 fixed; all 52 `tb_axi_stream_protocol_checker` configurations pass) |
+| verification_components | 579 | 0 | 0 | none (all 52 `tb_axi_stream_protocol_checker` configurations pass) |
 
 ### Verification library: its own testbenches (#277)
 

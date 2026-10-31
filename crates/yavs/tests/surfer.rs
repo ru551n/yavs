@@ -5,7 +5,7 @@ mod common;
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -558,7 +558,7 @@ fn go_to_declaration_shows_the_place() {
 
 /// A fake `surfer` first on PATH that writes its arguments and stays.
 #[cfg(unix)]
-fn fake_surfer(d: &Path, body: &str) -> PathBuf {
+fn fake_surfer(d: &Path, body: &str) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let bin = d.join("bin");
     std::fs::create_dir_all(&bin).expect("mkdir");

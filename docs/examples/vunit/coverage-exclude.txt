@@ -1,0 +1,2 @@
+# VUnit's own packages are not your design
+file */vunit/vhdl/*

@@ -141,6 +141,28 @@ class TestRealYavs(unittest.TestCase):
             VUNIT_YAVS_PATH=str(YAVS_DIR),
         )
 
+    def test_guide_example(self):
+        """docs/examples/vunit, the run script of the user guide: plain and with coverage"""
+        example = HERE.parents[2] / "docs" / "examples" / "vunit" / "run.py"
+        if not example.exists():
+            self.skipTest("Not run from the yavs repository")
+        coverage = ["--yavs-cov", "--yavs-cov-html", "cov-html", "--yavs-cov-fail-under", "85"]
+        for flags in ([], coverage):
+            proc = subprocess.run(
+                [sys.executable, str(example), "-p", "2", "-x", str(self.xml), *flags],
+                cwd=self.tempdir,
+                env=self._env(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=TIMEOUT,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout)
+            self.assertEqual(list(report(self.xml).values()), ["passed"] * 4, proc.stdout)
+        self.assertTrue((self.tempdir / "coverage.ycov").exists())
+        self.assertTrue((self.tempdir / "cov-html" / "index.html").exists())
+
     def test_run(self):
         proc = subprocess.run(
             self._command("--yavs-max-threads=2"),

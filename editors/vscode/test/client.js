@@ -197,6 +197,17 @@ async function main() {
   assert.match(cb.body.breakpoints[2].message, /does not parse/);
   s = await stop(dc.continueRequest({ threadId: 1 }));
   assert.deepEqual([s.reason, s.description], ['breakpoint', 'breakpoint at 30 ns, delta 0']);
+  // The console's commands in the Debug Console (context `repl`); other contexts stay evaluations.
+  const repl = async (expression) => (await dc.evaluateRequest({ expression, context: 'repl' })).body.result;
+  assert.match(await repl('help'), /restart: back to time 0/);
+  assert.match(await repl('where'), /^time /);
+  assert.match(await repl('break list'), /tb\.vhd|no breakpoints|:/);
+  await assert.rejects(dc.evaluateRequest({ expression: 'where', context: 'hover' }), /no variable or signal/);
+  const [, back] = await Promise.all([repl('restart'), dc.waitForEvent('stopped')]);
+  assert.equal(back.body.reason, 'entry');
+  assert.match(await repl('where'), /^time 0 fs, delta 0/);
+  const [, ran] = await Promise.all([repl('run 1 ns'), dc.waitForEvent('stopped')]);
+  assert.match(ran.body.description, /^step at 1 ns/);
   await dc.setBreakpointsRequest({ source: { path: src }, breakpoints: [] });
 
   // Run to the end.

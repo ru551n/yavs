@@ -6,6 +6,19 @@ starts `yavs run --dap=stdio` and connects to it over the Debug Adapter Protocol
 registers the `vhdl` language for `.vhd` and `.vhdl` files so that breakpoints can be set
 without another VHDL extension (it does not highlight or lint VHDL).
 
+## Debug a VUnit test
+
+No configuration, nothing to analyze:
+
+```
+python run.py lib.tb.test_name --yavs-debug
+```
+
+Set breakpoints in your source files and press F5, or run "yavs: Attach" from the command palette. The extension
+attaches to port 4711, and asks for a port only if nothing listens there. Breakpoints in your own files work with
+VUnit's location and check preprocessing on, and the stack shows your files. The Debug Console takes the yavs
+console's commands (`run 10 ns`, `restart`, `vunit_restart`).
+
 ## Install
 
 yavs 0.11.0 or newer must be on `PATH`, or set `yavsPath` in the launch configuration. The

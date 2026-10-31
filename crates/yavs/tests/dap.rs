@@ -230,6 +230,12 @@ fn run_to_time_and_steps() {
     script_case("runto", &["--threads=4"]);
 }
 
+/// The console's commands in `evaluate` with context `repl`, a run from there and a restart.
+#[test]
+fn console_commands_in_evaluate() {
+    script_case("console", &[]);
+}
+
 /// Signal breakpoints: data breakpoint info for a signal, a local and unknown names, stops on
 /// changes (`setDataBreakpoints`, one with a condition that never holds) and on values
 /// (`yavs/setSignalBreakpoints`), rejected values. Identical at `--threads=4`.
@@ -363,6 +369,16 @@ fn counters() {
 /// `--dap=0` listens on a free port and announces it on stderr (docs/cli-contract.md 6).
 #[test]
 fn tcp() {
+    tcp_session(false);
+}
+
+/// A connection closed at once (an editor looking whether the port is open) is no session.
+#[test]
+fn tcp_probe_is_no_session() {
+    tcp_session(true);
+}
+
+fn tcp_session(probe: bool) {
     let dir = setup("tcp");
     let mut child = spawn(&dir, "tb", &["--dap=0"]);
     let mut err = BufReader::new(child.stderr.take().expect("stderr"));
@@ -372,6 +388,9 @@ fn tcp() {
         .trim()
         .strip_prefix("yavs: DAP listening on 127.0.0.1:")
         .unwrap_or_else(|| panic!("first stderr line: {line}"));
+    if probe {
+        drop(std::net::TcpStream::connect(format!("127.0.0.1:{port}")).expect("probe"));
+    }
     let s = std::net::TcpStream::connect(format!("127.0.0.1:{port}")).expect("connect");
     let mut c = Client {
         w: s.try_clone().expect("clone"),

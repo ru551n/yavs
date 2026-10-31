@@ -120,6 +120,30 @@ fn char_pos(t: &EnumType, c: u8) -> Option<usize> {
 }
 
 impl Cond {
+    /// The names a condition reads (prefixes of fields and elements included, which do no harm).
+    pub(crate) fn names(&self) -> Vec<String> {
+        fn expr(c: &Cond, e: &Expr, out: &mut Vec<String>) {
+            match &e.kind {
+                ExprKind::Name(n) => out.push(
+                    c.src
+                        .get(n.span.start as usize..n.span.end as usize)
+                        .unwrap_or_default()
+                        .to_string(),
+                ),
+                ExprKind::Paren(x) => expr(c, x, out),
+                ExprKind::Unary { operand, .. } => expr(c, operand, out),
+                ExprKind::Binary { left, right, .. } => {
+                    expr(c, left, out);
+                    expr(c, right, out);
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        expr(self, &self.expr, &mut out);
+        out
+    }
+
     fn text(&self, e: &Expr) -> String {
         let (a, b) = (e.span.start as usize, e.span.end as usize);
         self.src.get(a..b).unwrap_or_default().to_string()

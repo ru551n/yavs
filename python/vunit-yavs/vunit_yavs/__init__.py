@@ -29,9 +29,10 @@ from pathlib import Path
 
 from vunit.exceptions import CompileError
 from vunit.ostools import Process
-from vunit.sim_if import ListOfStringOption, Option, SimulatorInterface, check_executable, hooks
+from vunit.sim_if import ListOfStringOption, Option, SimulatorInterface, StringOption, check_executable, hooks
 from vunit.vhdl_standard import VHDL
 
+from .console import START, VunitCommands
 from .tokens import TokenServer
 
 LOGGER = logging.getLogger(__name__)
@@ -149,6 +150,10 @@ class YavsInterface(SimulatorInterface):
         ListOfStringOption("yavs.sim_flags"),
         PositiveIntegerOption("yavs.max_threads"),
         ListOfStringOption("yavs.cov_kind"),
+        # Files of console commands, sourced at the points VUnit sources its init files
+        ListOfStringOption("yavs.init_files.after_load"),
+        ListOfStringOption("yavs.init_files.before_run"),
+        StringOption("yavs.init_file.gui"),
     ]
 
     # For VUnit packages that load a native library: their VHDL calls it through VHPIDIRECT
@@ -186,6 +191,16 @@ class YavsInterface(SimulatorInterface):
                 "Run the one selected test under the yavs debugger: yavs waits for a Debug Adapter Protocol "
                 f"client on 127.0.0.1:PORT (default {DEFAULT_DEBUG_PORT}, 0 picks a free port) before the "
                 "simulation starts. Write the port as --yavs-debug=PORT."
+            ),
+        )
+        group.add_argument(
+            "--yavs-interactive",
+            action="store_true",
+            default=False,
+            help=(
+                "Run the one selected test at the yavs console (yavs run --interactive): a yavs> prompt at time 0, "
+                "with the yavs commands and vunit_help, vunit_load, vunit_run, vunit_compile, vunit_restart and "
+                "vunit_user_init."
             ),
         )
         group.add_argument(
@@ -233,8 +248,11 @@ class YavsInterface(SimulatorInterface):
         """
         # Arguments added by a package are missing from a namespace the run script built itself
         debug_port = getattr(args, "yavs_debug", None)
+        interactive = getattr(args, "yavs_interactive", False)
         if debug_port is not None:
             check_debug_args(args)
+        if interactive:
+            check_interactive_args(args, debug_port)
 
         tokens = None
         if getattr(args, "yavs_jobserver", False) and args.num_threads > 1:
@@ -250,6 +268,7 @@ class YavsInterface(SimulatorInterface):
             prefix=prefix,
             gui=args.gui,
             debug_port=debug_port,
+            interactive=interactive,
             max_threads=getattr(args, "yavs_max_threads", None),
             tokens=tokens,
             coverage=CoverageArgs(
@@ -267,7 +286,7 @@ class YavsInterface(SimulatorInterface):
         return cls.find_toolchain([cls.executable])
 
     def __init__(
-        self, output_path, prefix, *, gui=False, debug_port=None, max_threads=None, tokens=None, coverage=None
+        self, output_path, prefix, *, gui=False, debug_port=None, interactive=False, max_threads=None, tokens=None, coverage=None
     ):  # pylint: disable=too-many-arguments
         SimulatorInterface.__init__(self, output_path, gui)
         self._coverage = coverage or CoverageArgs()
@@ -275,6 +294,7 @@ class YavsInterface(SimulatorInterface):
         self._prefix = prefix
         self._project = None
         self._debug_port = debug_port
+        self._interactive = interactive
         self._max_threads = max_threads
         self._debug_lock = threading.Lock()
         self._debugged = None
@@ -408,7 +428,8 @@ class YavsInterface(SimulatorInterface):
         """
         Simulate with entity as top level using generics
         """
-        debug = self._debug_port is not None and not elaborate_only
+        interactive = self._interactive and not elaborate_only
+        debug = (self._debug_port is not None or interactive) and not elaborate_only
         if debug:
             self._take_debug_session(test_suite_name)
 
@@ -432,8 +453,9 @@ class YavsInterface(SimulatorInterface):
         if not elaborate_only and (self._coverage.enabled or config.sim_options.get("enable_coverage", False)):
             if debug:
                 raise RuntimeError(
-                    "--yavs-debug and coverage cannot be combined: yavs does not collect coverage under the debugger. "
-                    "Drop --yavs-cov and the enable_coverage option, or drop --yavs-debug."
+                    f"{'--yavs-interactive' if interactive else '--yavs-debug'} and coverage cannot be combined: "
+                    "yavs does not collect coverage under the debugger. "
+                    "Drop --yavs-cov and the enable_coverage option, or the debug flag."
                 )
             database = script_path / "coverage.ycov"
             cmd += [f"--cov={database}", f"--cov-test={test_suite_name}"]
@@ -445,6 +467,9 @@ class YavsInterface(SimulatorInterface):
         cmd += config.sim_options.get("yavs.global_flags", [])
         cmd += config.sim_options.get("yavs.elab_flags", [])
         cmd += hooks.get_flags(self, "elab_flags")
+
+        if debug:
+            cmd += source_map_flags(self._project)
 
         if not elaborate_only:
             cmd += config.sim_options.get("yavs.sim_flags", [])
@@ -466,14 +491,27 @@ class YavsInterface(SimulatorInterface):
         # line, so the run has exactly the arguments of the plain run.
         response_file = write_response_file(script_path / "args.rsp", cmd[2:])
         mode_flags = ["--gui"] if self._gui and not elaborate_only else []
-        if debug:
+        if debug and not interactive:
             mode_flags = [f"--dap={self._debug_port}"]
+        if interactive:
+            mode_flags = ["--interactive", f"--do={START}"]
 
         env = hooks.get_run_env(self)
+        # The VUnit commands of the console, in the debug console of an editor too
+        commands = VunitCommands(output_path, config) if debug else None
+        if commands is not None:
+            env = commands.hook.env(env)
         client = None
         if self._tokens is not None and not elaborate_only:
             client = self._tokens.add(max_threads - 1)
             env = self._tokens.env(client, environ if env is None else env)
+
+        if interactive:
+            try:
+                # The terminal is yavs's: no capture of its output
+                return subprocess.call(cmd[:2] + mode_flags + [f"@{response_file}"], env=env) == 0
+            finally:
+                commands.hook.close()
 
         status = True
         try:
@@ -484,6 +522,8 @@ class YavsInterface(SimulatorInterface):
         finally:
             if client is not None:
                 self._tokens.remove(client)
+            if commands is not None:
+                commands.hook.close()
 
         return status
 
@@ -533,10 +573,12 @@ class YavsInterface(SimulatorInterface):
                 self._debugged = test_suite_name
                 return
             first = self._debugged
+        flag = "--yavs-interactive" if self._interactive else "--yavs-debug"
+        example = "--yavs-interactive" if self._interactive else "--yavs-debug=PORT"
         raise RuntimeError(
-            f"--yavs-debug runs one simulation, but {test_suite_name} would start after {first}.\n"
+            f"{flag} runs one simulation, but {test_suite_name} would start after {first}.\n"
             "Cause: the test patterns select more than one test (or one test in several configurations).\n"
-            "Fix: name exactly one test, for example 'python run.py --yavs-debug=PORT lib.tb.test_name' "
+            f"Fix: name exactly one test, for example 'python run.py {example} lib.tb.test_name' "
             "(see 'python run.py --list')."
         )
 
@@ -557,6 +599,17 @@ class YavsInterface(SimulatorInterface):
         return callback
 
 
+def source_map_flags(project):
+    """
+    Flags that make a debug session show the user's files where the project compiles preprocessed copies
+    """
+    return [
+        f"--source-map={Path(source_file.name).absolute()}={Path(str(source_file.original_name)).absolute()}"
+        for source_file in project.get_source_files_in_order()
+        if str(source_file.original_name) != source_file.name
+    ]
+
+
 def check_debug_args(args):
     """
     Raise an error for arguments that cannot be combined with --yavs-debug
@@ -573,6 +626,29 @@ def check_debug_args(args):
     if getattr(args, "num_threads", 1) != 1:
         raise RuntimeError(
             f"--yavs-debug runs one test, but -p {args.num_threads} asks for parallel simulations. "
+            "Drop -p (or use -p 1) and name one test."
+        )
+
+
+def check_interactive_args(args, debug_port):
+    """
+    Raise an error for arguments that cannot be combined with --yavs-interactive
+    """
+    if debug_port is not None:
+        raise RuntimeError(
+            "--yavs-interactive and --yavs-debug cannot be combined: the terminal or a debug client drives the run. "
+            "Drop one of them."
+        )
+    if getattr(args, "gui", False):
+        raise RuntimeError("--yavs-interactive and --gui cannot be combined. Drop one of them.")
+    if getattr(args, "elaborate", False):
+        raise RuntimeError(
+            "--yavs-interactive and --elaborate cannot be combined: --elaborate only elaborates, so there is no run. "
+            "Drop one of them."
+        )
+    if getattr(args, "num_threads", 1) != 1:
+        raise RuntimeError(
+            f"--yavs-interactive runs one test, but -p {args.num_threads} asks for parallel simulations. "
             "Drop -p (or use -p 1) and name one test."
         )
 

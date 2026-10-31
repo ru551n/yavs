@@ -440,7 +440,7 @@ Arguments:
 
 .. option:: --tier=interp|llvm|auto|clift|clift-auto|auto3
 
-   Execution tier: ``interp`` runs the interpreter alone; ``auto`` runs it and compiles the functions that become hot on a background thread; ``clift`` and ``llvm`` compile every function before time 0; ``clift-auto`` is ``auto`` with Cranelift; ``auto3`` has Cranelift compile warm functions and LLVM O2 those that stay hot. A tier needs its code generator in the build (error E0120 otherwise): this yavs has the tiers ``yavs --version`` names. Default: ``auto`` with a compiled tier, ``interp`` with ``--dap`` and without one.
+   Execution tier: ``interp`` runs the interpreter alone; ``auto`` runs it and compiles the functions that become hot on a background thread; ``clift`` and ``llvm`` compile every function before time 0; ``clift-auto`` is ``auto`` with Cranelift; ``auto3`` has Cranelift compile warm functions and LLVM O2 those that stay hot. A tier needs its code generator in the build (error E0120 otherwise): this yavs has the tiers ``yavs --version`` names. Default: ``auto`` with a compiled tier, ``interp`` with ``--dap``, ``--interactive`` or ``--do``, and without one.
 
    Values:
 
@@ -465,11 +465,29 @@ Arguments:
 
    Run under a Debug Adapter Protocol client: on 127.0.0.1:PORT (0 picks a free port) or on standard input and output (``stdio``). A port that cannot be opened is E0701.
 
+.. option:: --interactive
+
+   Run from a ``yavs>`` prompt: stops at time 0, then takes console commands (``help`` lists them; run, step, examine, force, breakpoints, restart, source, quit).
+
+   Cannot be combined with ``--dap``.
+
+.. option:: --do=COMMANDS
+
+   Run these console commands, separated by ``;``. Repeatable, in order. Without ``--interactive`` the run then exits with its status (1 at a command that fails).
+
+   May be repeated. Cannot be combined with ``--dap``.
+
+.. option:: --source-map=COMPILED=ORIGINAL
+
+   In a debug session (``--dap``, ``--interactive``, ``--do``), show the source file COMPILED as ORIGINAL and take breakpoints in ORIGINAL: for files compiled from a rewritten copy with the same lines. Repeatable.
+
+   May be repeated.
+
 .. option:: --gui
 
    Open the run in the graphical debugger: starts ``yavs-gui`` (next to this executable, else on PATH) with these run arguments.
 
-   Cannot be combined with ``--dap``.
+   Cannot be combined with ``--dap``, ``--interactive``, ``--do``.
 
 Diagnostics named above: ``E0105``, ``E0106``, ``E0107``, ``E0120``, ``E0701``, ``E0801``, ``E0901``, ``E0902``, ``E3002``; ``yavs --explain CODE`` explains each.
 

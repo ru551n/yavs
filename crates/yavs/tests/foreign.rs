@@ -176,6 +176,11 @@ fn load_and_call_c() {
     assert_eq!(code, 0, "{err}");
     assert!(out.contains("foreign ok"), "{out}");
 
+    // The state of a loaded library cannot be reset: the console says so (#904).
+    let (code, err, _) = yavs(&["run", &lib, &load, "tb", "--do=restart"]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("restart cannot reset the state"), "{err}");
+
     // A result outside its VHDL type is a runtime error, not a wrong value.
     let (code, err, _) = yavs(&["run", &lib, &load, "bad"]);
     assert_eq!(code, 1, "{err}");

@@ -32,11 +32,15 @@ or later (`pip install vunit-yavs` installs it, a pre-release) and yavs 0.11.0 o
 | `yavs.max_threads` (integer, at least 1) | `yavs run --threads=N`, the most threads of one simulation |
 | `enable_coverage` (VUnit's option) | `yavs run --cov=<test output>/yavs/coverage.ycov --cov-test=<test name>` (coverage, below) |
 | `yavs.cov_kind` (list of strings) | `yavs run --cov-kind=LIST`: `statement`, `branch`, `toggle`, `condition`, `expression` |
+| `yavs.init_files.after_load` | Console command files sourced after each `vunit_load` |
+| `yavs.init_files.before_run` | Console command files sourced before each `vunit_run` |
+| `yavs.init_file.gui` | A console command file sourced by `vunit_user_init` and at the start of `--yavs-interactive` |
 
 | Command line | What it does |
 |---|---|
 | `-g/--gui` | Opens the run in the graphical debugger (`yavs run --gui`) |
 | `--yavs-debug[=PORT]` | Runs the selected test under `yavs run --dap=PORT` (default 4711, `0` picks a free port) and prints where to attach; write the port as `--yavs-debug=PORT` |
+| `--yavs-interactive` | Runs the selected test at the yavs console: a `yavs>` prompt at time 0 (below) |
 | `--yavs-max-threads N` | `yavs.max_threads` for every test that does not set it |
 | `--yavs-cov` | Collects coverage in every simulation, as `enable_coverage` does for the tests it is set for |
 | `--yavs-cov-html DIR` | `results.merge_coverage()` also writes the HTML coverage report into DIR |
@@ -98,7 +102,8 @@ VUNIT_SIMULATOR=yavs python run.py lib.tb.test_name --yavs-debug
 ```
 
 yavs waits for a Debug Adapter Protocol client on `127.0.0.1:4711` before the simulation starts;
-attach the editor (the yavs extension's "Attach to yavs" configuration uses that port). When the
+press F5 or run "yavs: Attach" in VS Code with the yavs extension: no launch configuration is needed. Set breakpoints
+in your own files: with location or check preprocessing on, the debugger maps the rewritten copies to them. When the
 session ends, the test is reported as usual.
 
 `--yavs-debug` runs one simulation. A second simulation of the run (a second test, or the same
@@ -125,3 +130,27 @@ run in parallel well.
 ## Licence
 
 Mozilla Public License 2.0 (https://mozilla.org/MPL/2.0/), see the header of each file.
+
+## The console
+
+```sh
+VUNIT_SIMULATOR=yavs python run.py lib.tb.test_name --yavs-interactive
+```
+
+The test stops at time 0 at a `yavs>` prompt. All commands of the yavs console work (`run`, `step`,
+`examine`, `force`, `break`, `restart`, `source`, `help`, `quit`), and this package adds VUnit's own,
+which behave as in VUnit's other simulator interfaces. They are also in the Debug Console under
+`--yavs-debug`.
+
+| Command | What it does | Returns |
+|---|---|---|
+| `vunit_help` | Lists these commands | |
+| `vunit_load [flags]` | Loads the test at time 0, with extra `yavs run` flags if given, and sources `yavs.init_files.after_load` | `false`, `true` on failure |
+| `vunit_user_init` | Sources `yavs.init_file.gui` | `0`, `true` on failure |
+| `vunit_run` | Sources `yavs.init_files.before_run`, runs, and prints `Test Run Failed!` unless the test suite finished (so also when a breakpoint stops the run) | `false`, `true` on failure |
+| `vunit_compile` | Runs `run.py --compile` with your arguments, without `--clean` | `false`, `true` on failure |
+| `vunit_restart` | `vunit_compile`, and if that worked: the new design at time 0, breakpoints kept, and `vunit_run` | as `vunit_run` |
+
+The yavs `restart` goes back to time 0 with the design as loaded; `vunit_restart` compiles first. Init files are
+files of console commands; `$vunit_tb_path` and `$vunit_tb_name` are replaced as VUnit defines them. When you `quit`,
+the test is reported as usual. A session that compiled at `vunit_compile` and failed keeps the old design loaded.

@@ -4,6 +4,7 @@
 'use strict';
 
 const assert = require('assert');
+const cp = require('child_process');
 const vscode = require('vscode');
 
 function waitFor(what, ms, register) {
@@ -106,6 +107,42 @@ async function run() {
   await session.customRequest('continue', { threadId: 1 });
   await ended;
   assert.equal(stops.length, 4);
+
+  await attachWithNoConfiguration(folder, tb, () => waitFor('stopped when attached', 60000, (r) => (onStop = r)));
+}
+
+/** The VUnit flow: a run waits on port 4711, and "yavs: Attach" needs no launch.json entry. A
+ * look at the port first must not take the run's one session. */
+async function attachWithNoConfiguration(folder, tb, stoppedAgain) {
+  vscode.debug.addBreakpoints([
+    new vscode.SourceBreakpoint(new vscode.Location(tb, new vscode.Position(19, 0))),
+  ]);
+  const run = cp.spawn('yavs', ['run', '--work=work:.yavs/work', '--dap=4711', 'tb'], {
+    cwd: folder.uri.fsPath,
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  const exited = new Promise((resolve) => run.on('exit', resolve));
+  await new Promise((resolve, reject) => {
+    run.on('error', reject);
+    run.stderr.on('data', (d) => d.toString().includes('waiting for a debugger') && resolve());
+  });
+  const stopped = stoppedAgain();
+  await vscode.commands.executeCommand('yavs.attach');
+  const s = await stopped;
+  assert.equal(s.reason, 'breakpoint');
+  const session = vscode.debug.activeDebugSession;
+  assert.equal(session.configuration.request, 'attach');
+  assert.equal(session.configuration.port, 4711);
+  const st = await session.customRequest('stackTrace', { threadId: s.threadId });
+  assert.equal(st.stackFrames[0].line, 20);
+  assert.equal(vscode.Uri.file(st.stackFrames[0].source.path).toString(), tb.toString());
+  // Offered without a launch.json entry; F5 with nothing configured resolves to it.
+  const ended = waitFor('end of the attached session', 60000, (r) => vscode.debug.onDidTerminateDebugSession(r));
+  vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
+  await new Promise((r) => setTimeout(r, 500));
+  await session.customRequest('continue', { threadId: s.threadId });
+  await ended;
+  await exited;
 }
 
 module.exports = { run };

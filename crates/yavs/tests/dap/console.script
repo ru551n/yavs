@@ -1,0 +1,20 @@
+request initialize {"adapterID": "yavs"}
+request launch {"stopOnEntry": true}
+request configurationDone {}
+event stopped
+request evaluate {"expression": "help; where", "context": "watch"}
+request evaluate {"expression": "cnt", "context": "repl"}
+request evaluate {"expression": "where", "context": "repl"}
+request evaluate {"expression": "break tb.vhd:24; break list", "context": "repl"}
+request evaluate {"expression": "run 10 ns; examine cnt", "context": "repl"}
+event stopped
+request evaluate {"expression": "bogus", "context": "repl"}
+request evaluate {"expression": "run", "context": "repl"}
+event stopped
+request evaluate {"expression": "restart", "context": "repl"}
+event stopped
+request evaluate {"expression": "where; examine cnt", "context": "repl"}
+request evaluate {"expression": "break delete all", "context": "repl"}
+request continue {}
+event terminated
+request disconnect {}

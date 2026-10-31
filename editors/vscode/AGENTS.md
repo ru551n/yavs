@@ -15,6 +15,8 @@ VS Code).
   signal value breakpoints (kept per session in the extension, since the request replaces the
   set), force, deposit and release of a signal (also in the Variables view's context menu of a
   signal; called with `{signal, value, mode}` they ask nothing). "Break on Value Change" is VS Code's own (DAP data breakpoints).
+- `yavs: Attach` (`yavs.attach`, the dynamic configuration, and F5 with nothing configured, `Configurations`) needs no launch.json: port 4711, and an input box only if nothing listens there. The look at the port connects and closes, which the server takes for no session. Nothing is analyzed. The flow: `python run.py lib.tb.test --yavs-debug`, breakpoints, F5.
+- The Debug Console needs nothing here: it sends `evaluate` with context `repl`, and the server takes the console's commands that way (`run 10 ns`, `restart`, #904).
 - Does not: implement DAP (all of it is `yavs-dap`), highlight or lint VHDL.
 - Plain JavaScript, no bundler, no runtime dependencies.
 

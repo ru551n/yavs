@@ -2,6 +2,7 @@
 'use strict';
 
 const vscode = require('vscode');
+const net = require('net');
 const { spawnSync } = require('child_process');
 
 /** The `yavs` arguments common to analyze and run. */
@@ -19,6 +20,41 @@ function runArgs(c) {
   for (const [k, v] of Object.entries(c.generics || {})) a.push(`-g${k}=${v}`);
   a.push(...(c.args || []), '--dap=stdio', c.top);
   return a;
+}
+
+const ATTACH_PORT = 4711;
+const ATTACH = { type: 'yavs', request: 'attach', name: 'yavs: Attach', port: ATTACH_PORT };
+
+/** Whether something listens on the port. The server takes a connection closed at once for no
+ * session. */
+function listening(port) {
+  return new Promise((resolve) => {
+    const s = net.connect({ port, host: '127.0.0.1' });
+    const done = (v) => {
+      s.destroy();
+      resolve(v);
+    };
+    s.once('connect', () => done(true));
+    s.once('error', () => done(false));
+    s.setTimeout(1000, () => done(false));
+  });
+}
+
+/** "yavs: Attach" with no launch.json: offered in the Run and Debug view and taken by F5 when
+ * nothing is configured. It asks for a port only if nothing listens on the default. */
+class Configurations {
+  async resolveDebugConfiguration(_folder, c) {
+    if (!c.type && !c.request && !c.name) c = { ...ATTACH };
+    if (c.request !== 'attach') return c;
+    const port = c.port || ATTACH_PORT;
+    if (await listening(port)) return { ...c, port };
+    const answer = await vscode.window.showInputBox({
+      prompt: `Nothing listens on 127.0.0.1:${port}. Start a test with: python run.py lib.tb.test --yavs-debug. Port to attach to:`,
+      value: String(port),
+      validateInput: (v) => (/^[1-9][0-9]*$/.test(v) && Number(v) < 65536 ? null : 'A port number'),
+    });
+    return answer ? { ...c, port: Number(answer) } : undefined;
+  }
 }
 
 class Factory {
@@ -128,6 +164,15 @@ function signalOp(command, withValue) {
 function activate(context) {
   const reg = vscode.commands.registerCommand;
   context.subscriptions.push(
+    vscode.debug.registerDebugConfigurationProvider(
+      'yavs',
+      { provideDebugConfigurations: () => [ATTACH] },
+      vscode.DebugConfigurationProviderTriggerKind.Dynamic,
+    ),
+    vscode.debug.registerDebugConfigurationProvider('yavs', new Configurations()),
+    vscode.commands.registerCommand('yavs.attach', () =>
+      vscode.debug.startDebugging(vscode.workspace.workspaceFolders?.[0], ATTACH),
+    ),
     vscode.debug.registerDebugAdapterDescriptorFactory('yavs', new Factory()),
     reg('yavs.runFor', custom('yavs/runFor', 'Run for how long (from now)?')),
     reg('yavs.runUntil', custom('yavs/runUntil', 'Run until which simulation time?')),

@@ -24,6 +24,7 @@ The design is `docs/plan.md` (`yavs-dap`, M8) on the interpreter's debug hooks,
 | `src/cond.rs` | Breakpoint conditions: `parse` (a VHDL expression through `yavs-syntax`, unsupported constructs rejected), `Cond::eval` over an `Env` of `Lit` values (predefined operators; literals read in the other operand's type) |
 | `src/design.rs` | `Design`: what the debugger shows, extracted from `Db`/`Elaborated` before the run: statement locations, line table, the hierarchy (`Region`, `roots`), signals (`Sig`: `Fmt` walks its kernel leaves with its `LitType`, `value`/`show` decode, `parse`/`encode` for deposits and value breakpoints), locals (`ir_lit`, `to_const` between interpreter values and `Lit`), per process its regions, signals and generics |
 | `src/waves.rs` | Live waves (#325): `Tap` (the bus observer forwarding to the subscription's `yavs_wave::Recorder`, started late at the time of the values), `StreamSink` (the recorder's `Sink`: values as base64 of the recorder's bytes, batches per `flushMs`), `Stream` (pending batch, bounded queue, merge when full), `sender` thread, `hierarchy` (subscribe response, with each signal's `encoding`) |
+| `src/console.rs` | The console (`--interactive`, `--do`, `evaluate` with context `repl`): `split` (a line into commands), `exec` (one command), `Batch` and `work` (commands served at a stop; a resuming one leaves the stop and the batch goes on at the next), `Kept` (breakpoints as asked for, resolved again after a restart), `Hook`, `on_hook`, `reload` (a test runner's commands) |
 | `src/wire.rs` | `Content-Length` framing (`read_message`, `write_message`) |
 | `../../editors/vscode/` | The VS Code extension and its client and in-editor tests (run them after changing this crate, `editors/vscode/AGENTS.md`) |
 | `../yavs/tests/dap.rs`, `../yavs/tests/dap/` | Scripted sessions over stdio (`NAME.script` in, `NAME.expected` transcript, `YAVS_BLESS=1`), pause, TCP |
@@ -56,6 +57,8 @@ The design is `docs/plan.md` (`yavs-dap`, M8) on the interpreter's debug hooks,
 | Reports and `OUTPUT` text are `output` events (stdout carries DAP in `stdio` mode); runtime errors an `output` event of category `stderr` | stdout is the protocol channel | `docs/cli-contract.md` 5 |
 | Disconnect stops the run (`Interrupt::stop`), then `exited`, `terminated` and the disconnect response, in that order | Deterministic transcript | this file |
 | Over TCP the server shuts down its write side after the last message and waits up to 2 s for the client to close before exiting | Exiting with the socket open resets the connection on Windows and the client loses the last messages | CI, Windows |
+| `Shared` is one simulation; `Link` is what outlives it (connection, queue of requests, `Kept`, console state). `serve_on` loops over `one_run`; the reader thread takes the current `Shared` per request. `restart` and `reload` end a `one_run` with `Outcome::Again`: `terminating` and `discard` make the old simulation end silently (`Interrupt::stop`, also out of a process that never suspends) | `restart` needs no state reset in the kernel or the interpreter: a new build from the same `Elaborated`, the same path as the first | issue #904 |
+| The console is a DAP client of this server (terminal side in `crates/yavs/src/console.rs`, over a pipe); all commands are in `console.rs` here. `launch` with `yavsConsole: true` adds: a stop at time 0 before the first cycle, staying at the end of the run, stop notices (`important`), the `yavs/prompt` event | No second run control; the terminal, `--do`, `source` and an editor's Debug Console share one parser | issue #904 |
 | Paths in frames and breakpoints are `std::path::absolute` of the source path (lower-cased as a key on Windows) | No `\\?\` prefixes; clients differ in drive letter case | this file |
 
 ## 4. Invariants and pitfalls
@@ -70,7 +73,7 @@ The design is `docs/plan.md` (`yavs-dap`, M8) on the interpreter's debug hooks,
   thread); never the other order. A subscription's recorder is locked inside `Shared::wave`.
 - Under `--dap=stdio` the CLI first dup2s descriptor 1 onto stderr (`yavs_vhpi::divert_stdout`) and hands the server a private duplicate of the original stdout (`set_stdout`), so plugin and foreign-library prints cannot corrupt the framing (#389). Any new stdout write in the CLI goes to stderr in such a run.
 - Codes owned: `E0700`-`E0799`/`W0700`-`W0799` (in use: `E0701` connection cannot be opened,
-  `E0702` live waves failed).
+  `E0702` live waves failed, `E0703` the console hook).
 
 ## 5. How to work here
 

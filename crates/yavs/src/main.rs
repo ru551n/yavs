@@ -6,6 +6,7 @@ use std::process::ExitCode;
 
 mod analyze;
 mod cache;
+mod console;
 mod counters;
 mod cov;
 mod elab;
@@ -211,6 +212,17 @@ pub(crate) fn parse_define(s: &str) -> Result<(String, String), String> {
     }
 }
 
+/// The run arguments of a `yavs run` command line (a console session's `reload`).
+pub(crate) fn run_args(args: &[String]) -> Result<elab::RunArgs, String> {
+    match Cli::try_parse_from(args)
+        .map_err(|e| e.to_string())?
+        .command
+    {
+        Some(Command::Run(a)) => Ok(a),
+        _ => Err("this is a bug in yavs: a reload of something else than `run`".into()),
+    }
+}
+
 /// Run `f`; a panic becomes an `E9999` internal-compiler-error diagnostic and exit status 3.
 fn guard(format: MessageFormat, color: bool, f: impl FnOnce() -> ExitCode) -> ExitCode {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|p| {
@@ -308,7 +320,11 @@ fn main() -> ExitCode {
         Command::Analyze(a) => return analyze::run(a, format, color, encoding),
         Command::Elab(a) => return guard(format, color, || elab::elab(a, format, color, encoding)),
         Command::Run(a) if a.gui => return gui::launch(&args, format, color),
-        Command::Run(a) => return guard(format, color, || elab::run(a, format, color, encoding)),
+        Command::Run(a) => {
+            return guard(format, color, || {
+                elab::run(a, args, format, color, encoding)
+            });
+        }
         Command::Cov(c) => return guard(format, color, || cov::run(c, format, color)),
         Command::Cache(c) => return guard(format, color, || cache::run(c, format, color)),
         Command::Vendor(c) => {

@@ -4,6 +4,20 @@ Debugging
 yavs has a debugger built in. It speaks the Debug Adapter Protocol (DAP), the protocol of the
 debug views of VS Code and most other editors.
 
+VS Code with a test runner
+--------------------------
+
+With the extension installed (below) and the Python package ``vunit-yavs``, debugging one test needs no configuration:
+
+.. code-block:: bash
+
+    python run.py lib.tb.test_name --yavs-debug
+
+Set breakpoints in your source files and press F5, or run "yavs: Attach" from the command palette. It attaches to port
+4711 and asks for a port only if nothing listens there. Breakpoints in your own files bind and the stack shows them, also
+when the test runner compiles rewritten copies of them (location and check preprocessing). When you disconnect or the
+run ends, the test is reported as usual.
+
 VS Code
 -------
 
@@ -67,27 +81,24 @@ What you can do:
 
 Reports go to the Debug Console, and the session ends with the exit status of the run.
 
-Debug one test of a test runner
--------------------------------
+Attach to a run started elsewhere
+---------------------------------
 
-``yavs run --dap=PORT`` waits for a debugger before it starts the simulation, so a test runner can
-start one test and VS Code can attach to it:
+``yavs run --dap=PORT`` waits for a debugger before it starts the simulation; "yavs: Attach" connects to it. For a
+fixed port in ``launch.json``:
 
-1. Add an attach configuration (the snippet "yavs: Attach to yavs" inserts it):
+.. code-block:: json
 
-   .. code-block:: json
+    { "type": "yavs", "request": "attach", "name": "yavs: Attach", "port": 4711 }
 
-       { "type": "yavs", "request": "launch", "name": "Attach to yavs", "port": 4711 }
-
-2. Start exactly one test so that the runner passes ``--dap=4711`` to ``yavs run`` (as an extra
-   simulator argument). It prints ``yavs: waiting for a debugger on port 4711``. With the runner
-   package ``vunit-yavs`` (``python/vunit-yavs`` in the source tree), ``python run.py
-   lib.tb.test_name --yavs-debug`` does this and prints where to attach.
-3. Pick "Attach to yavs" and press F5. The run stops at your breakpoints; when you disconnect or
-   the run ends, the runner reports the test as usual.
+A run compiled from rewritten copies of your files can show the originals: ``--source-map=COMPILED=ORIGINAL``
+(repeatable; the copy must keep the lines of the original).
 
 Add ``--wave=out.fst`` to follow the waveforms next to the session: the file is flushed at every
 stop, so a viewer that reloads it shows the run up to the breakpoint.
+
+The Debug Console takes the commands of the :doc:`interactive` too (``run 10 ns``, ``restart``,
+``break list``).
 
 Other editors
 -------------

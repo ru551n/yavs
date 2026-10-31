@@ -11,6 +11,7 @@
 //! `frameId << 2 | scope` with scopes locals (1), signals (2) and generics (3).
 
 mod cond;
+mod console;
 mod design;
 mod waves;
 mod wire;
@@ -35,6 +36,7 @@ use yavs_kernel::{
 use yavs_sem::Db;
 use yavs_std::value::{Lit, LitType, literal, literal_image};
 
+pub use console::HOOK_VAR;
 use design::Design;
 pub use wire::{read_message, write_message};
 
@@ -77,6 +79,8 @@ enum Run {
     Delta,
     /// `step_timestep`.
     Timestep,
+    /// `run_until` the stop time, whatever a stop on the way was running to (console `run`).
+    ToEnd,
 }
 
 /// How a stop ends.
@@ -84,23 +88,53 @@ enum Run {
 enum Next {
     Resume(Resume),
     Run(Run),
+    /// Back to time 0; `Shared::restart` says with which design.
+    Restart,
+    /// The console's `quit`.
+    Quit,
 }
 
 /// What the run loop hands the requests it serves while stopped.
 enum Msg {
     Request(Json),
+    /// A message of the test runner's hook (`console::Hook`).
+    Hook(Json),
+    /// The test runner closed its hook.
+    HookGone,
     Start,
     Eof,
 }
 
-/// State shared by the reader thread, the simulation thread and the front end.
-struct Shared {
+/// What outlives one simulation of a session (`restart`, `reload`): the connection to the
+/// client, what it asked for, and the console.
+struct Link {
     out: Mutex<Box<dyn Write + Send>>,
     seq: Mutex<i64>,
+    rx: Mutex<Receiver<Msg>>,
+    stream: Arc<waves::Stream>,
+    /// The `disconnect` request to answer last.
+    disconnect: Mutex<Option<Json>>,
+    /// A terminal or a script drives the session: stop at time 0 before anything has run, stay
+    /// at the end of the run, say so at each stop.
+    console: AtomicBool,
+    stop_on_entry: AtomicBool,
+    /// End of input from the client.
+    eof: AtomicBool,
+    kept: Mutex<console::Kept>,
+    con: Mutex<console::State>,
+    hook: OnceLock<console::Hook>,
+    /// Why `restart` is refused, if it is.
+    no_restart: Option<String>,
+    source_map: Vec<(String, String)>,
+    reload: Mutex<Option<ReloadFn>>,
+}
+
+/// State shared by the reader thread, the simulation thread and the front end, for one simulation.
+struct Shared {
+    link: Arc<Link>,
     design: Design,
     session: OnceLock<Arc<DebugSession>>,
     interrupt: OnceLock<Interrupt>,
-    rx: Mutex<Receiver<Msg>>,
     /// The simulation thread serves requests.
     stopped: AtomicBool,
     /// Disconnect or end of input: let the simulation finish without stops.
@@ -109,15 +143,19 @@ struct Shared {
     pause_req: AtomicBool,
     /// A process stopped for the pause, so the kernel's pause after its cycle is not a stop.
     paused_in_process: AtomicBool,
-    stop_on_entry: AtomicBool,
+    /// This simulation is being left: what it still prints is dropped.
+    discard: AtomicBool,
+    /// The simulation has ended and the session stays (nothing runs any more).
+    ended: AtomicBool,
+    /// A restart under way, with the new design of a `reload`.
+    restart: Mutex<Option<Option<Loaded>>>,
     /// A run requested at a stop inside a process, taken once its cycle has ended.
     queued: Mutex<Option<Run>>,
-    /// The `disconnect` request to answer last.
-    disconnect: Mutex<Option<Json>>,
     /// Breakpoint statements per absolute file path, so a request replaces one file's set.
     bps: Mutex<HashMap<String, Vec<yavs_ir::StmtId>>>,
-    /// Signal breakpoints: those of `setDataBreakpoints` and of `yavs/setSignalBreakpoints`.
-    sig_bps: Mutex<[Vec<SigBp>; 2]>,
+    /// Signal breakpoints: those of `setDataBreakpoints`, of `yavs/setSignalBreakpoints`, of the
+    /// console's `break` and of its `run until` (`SIG_SETS`).
+    sig_bps: Mutex<[Vec<SigBp>; SIG_SETS]>,
     /// What the kernel's `SignalBreak` watches (every leaf of `sig_bps`) and its hits.
     watches: OnceLock<Watches>,
     hits: OnceLock<Hits>,
@@ -132,7 +170,6 @@ struct Shared {
     /// Live waves (`waves`): the subscription's recorder and the batches it streams; the
     /// design and the shared state a recorder is built from.
     wave: Arc<Mutex<Option<waves::Sub>>>,
-    stream: Arc<waves::Stream>,
     db: Arc<Db>,
     elab: Arc<Elaborated>,
     built: OnceLock<Built>,
@@ -149,6 +186,23 @@ pub type Sync = Box<dyn Fn() + Send + std::marker::Sync>;
 
 /// Work after the run, with the final kernel statistics and interpreter runtime.
 pub type Report = Box<dyn FnOnce(yavs_kernel::Stats, Option<&yavs_interp::Runtime>)>;
+
+/// A design to run: what `reload` hands the session.
+pub struct Loaded {
+    pub db: Arc<Db>,
+    pub e: Arc<Elaborated>,
+    pub cfg: Config,
+    pub stop: Time,
+}
+
+/// Elaborate again from the libraries, with these extra run flags; the error says why not, and
+/// the session stays on the design it has.
+pub type ReloadFn = Box<dyn FnMut(&[String]) -> Result<Loaded, String> + Send>;
+
+/// The sets of `Shared::sig_bps`.
+const SIG_SETS: usize = 4;
+const CONSOLE_BREAKS: usize = 2;
+const RUN_UNTIL: usize = 3;
 
 /// The first variables reference of the per-stop table (`Shared::nodes`); the stateless
 /// references of scopes stay below it.
@@ -228,7 +282,7 @@ struct Op {
     leaves: Vec<(SigRef, Option<Value>)>,
 }
 
-impl Shared {
+impl Link {
     /// Send `m` after the queued wave batches, so events keep the order they were made in.
     fn send(&self, m: Json) {
         let mut out = self.out.lock().unwrap_or_else(|p| p.into_inner());
@@ -258,12 +312,12 @@ impl Shared {
         let _ = write_message(&mut **out, &m);
     }
 
-    fn lock_wave(&self) -> MutexGuard<'_, Option<waves::Sub>> {
-        self.wave.lock().unwrap_or_else(|p| p.into_inner())
-    }
-
     fn event(&self, event: &str, body: Json) {
         self.send(json!({"type": "event", "event": event, "body": body}));
+    }
+
+    fn output(&self, category: &str, text: &str) {
+        self.event("output", json!({"category": category, "output": text}));
     }
 
     fn respond(&self, req: &Json, body: Json) {
@@ -285,13 +339,35 @@ impl Shared {
             "message": message,
         }));
     }
+}
+
+impl Shared {
+    fn send(&self, m: Json) {
+        self.link.send(m);
+    }
+
+    fn lock_wave(&self) -> MutexGuard<'_, Option<waves::Sub>> {
+        self.wave.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn event(&self, event: &str, body: Json) {
+        self.send(json!({"type": "event", "event": event, "body": body}));
+    }
+
+    fn respond(&self, req: &Json, body: Json) {
+        self.link.respond(req, body);
+    }
+
+    fn fail(&self, req: &Json, message: &str) {
+        self.link.fail(req, message);
+    }
 
     fn session(&self) -> &Arc<DebugSession> {
         self.session.get().expect("set before the reader starts")
     }
 
     fn output(&self, category: &str, text: &str) {
-        self.event("output", json!({"category": category, "output": text}));
+        self.link.output(category, text);
     }
 }
 
@@ -380,7 +456,7 @@ impl Debugger for Front {
                 Err(m) => ("exception", Some(m)),
             },
             StopReason::Step => ("step", None),
-            StopReason::GlobalStep if sh.stop_on_entry.swap(false, Ordering::Relaxed) => {
+            StopReason::GlobalStep if sh.link.stop_on_entry.swap(false, Ordering::Relaxed) => {
                 ("entry", None)
             }
             StopReason::GlobalStep => ("step", None),
@@ -412,7 +488,7 @@ impl Debugger for Front {
                 }
                 Resume::Continue
             }
-            None => Resume::Continue,
+            Some(Next::Restart | Next::Quit) | None => Resume::Continue,
         }
     }
 }
@@ -422,22 +498,44 @@ fn serve_stop(sh: &Shared, at: &At<'_, '_>, stopped: Json) -> Option<Next> {
     sh.nodes.lock().unwrap_or_else(|p| p.into_inner()).clear();
     sh.stopped.store(true, Ordering::Relaxed);
     // The waves of the completed time steps, then the stop.
-    sh.stream.push();
+    sh.link.stream.push();
     if let Some(sync) = sh.sync.get() {
         sync();
     }
+    console::on_stop(sh, at, &stopped);
     sh.event("stopped", stopped);
-    let rx = sh.rx.lock().unwrap_or_else(|p| p.into_inner());
+    let rx = sh.link.rx.lock().unwrap_or_else(|p| p.into_inner());
     loop {
+        if let Some(n) = console::work(sh, at) {
+            return leave(sh, at, n, None);
+        }
         let req = match rx.recv() {
             Ok(Msg::Request(r)) => r,
+            Ok(Msg::Hook(m)) => {
+                if let Some(n) = console::on_hook(sh, at, m) {
+                    return leave(sh, at, n, None);
+                }
+                continue;
+            }
+            Ok(Msg::HookGone) => {
+                console::hook_gone(sh);
+                continue;
+            }
             Ok(Msg::Start) => continue,
             Ok(Msg::Eof) | Err(_) => {
                 sh.stopped.store(false, Ordering::Relaxed);
                 return None;
             }
         };
+        let ended = sh.ended.load(Ordering::Relaxed);
         let resume = match req["command"].as_str().unwrap_or_default() {
+            "continue" | "next" | "stepIn" | "stepOut" | "yavs/runFor" | "yavs/runUntil"
+            | "yavs/stepDelta" | "yavs/stepTimestep"
+                if ended =>
+            {
+                sh.fail(&req, console::ENDED);
+                None
+            }
             "continue" => Some(Next::Resume(Resume::Continue)),
             "next" => Some(Next::Resume(Resume::StepOver)),
             "stepIn" => Some(Next::Resume(Resume::StepIn)),
@@ -469,7 +567,11 @@ fn serve_stop(sh: &Shared, at: &At<'_, '_>, stopped: Json) -> Option<Next> {
                 None
             }
             "evaluate" => {
-                evaluate(sh, at, &req);
+                if console::is_command(sh, &req) {
+                    console::start(sh, req.clone());
+                } else {
+                    evaluate(sh, at, &req);
+                }
                 None
             }
             "yavs/force" | "yavs/deposit" | "yavs/release" => {
@@ -487,32 +589,51 @@ fn serve_stop(sh: &Shared, at: &At<'_, '_>, stopped: Json) -> Option<Next> {
             }
         };
         if let Some(n) = resume {
-            // Between cycles every step is a global step: the next statement of any process.
-            let n = match (at, n) {
-                (At::Kernel(_), Next::Resume(r)) if r != Resume::Continue => {
-                    Next::Resume(Resume::GlobalStep)
-                }
-                (_, n) => n,
-            };
-            sh.stopped.store(false, Ordering::Relaxed);
-            match n {
-                Next::Resume(Resume::Continue) => {
-                    sh.respond(&req, json!({"allThreadsContinued": true}))
-                }
-                Next::Resume(_) => sh.respond(&req, json!({})),
-                // A client knows only its own requests resume: tell it.
-                Next::Run(_) => {
-                    sh.respond(&req, json!({}));
-                    let tid = at.process().map_or(1, |p| p + 1);
-                    sh.event(
-                        "continued",
-                        json!({"threadId": tid, "allThreadsContinued": true}),
-                    );
-                }
-            }
-            return Some(n);
+            return leave(sh, at, n, Some(&req));
         }
     }
+}
+
+/// End a stop with `n`, answering the request that resumed, if a request did.
+fn leave(sh: &Shared, at: &At<'_, '_>, n: Next, req: Option<&Json>) -> Option<Next> {
+    // Between cycles every step is a global step: the next statement of any process.
+    let n = match (at, n) {
+        (At::Kernel(_), Next::Resume(r)) if r != Resume::Continue => {
+            Next::Resume(Resume::GlobalStep)
+        }
+        (_, n) => n,
+    };
+    sh.stopped.store(false, Ordering::Relaxed);
+    let tid = at.process().map_or(1, |p| p + 1);
+    let continued = || {
+        sh.event(
+            "continued",
+            json!({"threadId": tid, "allThreadsContinued": true}),
+        )
+    };
+    match (n, req) {
+        (Next::Resume(Resume::Continue), Some(req)) => {
+            sh.respond(req, json!({"allThreadsContinued": true}))
+        }
+        (Next::Resume(_), Some(req)) => sh.respond(req, json!({})),
+        // A client knows only its own requests resume: tell it.
+        (_, Some(req)) => {
+            sh.respond(req, json!({}));
+            continued();
+        }
+        (_, None) => continued(),
+    }
+    if let Next::Quit = n {
+        return None;
+    }
+    if let Next::Restart = n {
+        sh.terminating.store(true, Ordering::Relaxed);
+        sh.discard.store(true, Ordering::Relaxed);
+        if let Some(i) = sh.interrupt.get() {
+            i.stop();
+        }
+    }
+    Some(n)
 }
 
 /// The absolute time a `yavs/runFor` (relative) or `yavs/runUntil` (absolute) runs to.
@@ -539,7 +660,7 @@ fn stash_disconnect(sh: &Shared, req: Json) {
     if let Some(i) = sh.interrupt.get() {
         i.stop();
     }
-    *sh.disconnect.lock().unwrap_or_else(|p| p.into_inner()) = Some(req);
+    *sh.link.disconnect.lock().unwrap_or_else(|p| p.into_inner()) = Some(req);
 }
 
 /// The source of a location, as DAP wants it.
@@ -915,6 +1036,14 @@ fn evaluate(sh: &Shared, at: &At<'_, '_>, req: &Json) {
         Some(f) => (f >> 16, (f & 0xffff) as usize),
         None => (at.process().map_or(0, |p| p as i64 + 1), 0),
     };
+    match eval_var(sh, at, tid, i, expr) {
+        Ok(j) => sh.respond(req, j),
+        Err(m) => sh.fail(req, &m),
+    }
+}
+
+/// The value of `expr` seen from frame `i` of thread `tid`, as an `evaluate` response body.
+fn eval_var(sh: &Shared, at: &At<'_, '_>, tid: i64, i: usize, expr: &str) -> Result<Json, String> {
     let names = Names {
         sh,
         at,
@@ -925,9 +1054,7 @@ fn evaluate(sh: &Shared, at: &At<'_, '_>, req: &Json) {
     let found = names.find(expr);
     let mut j = match found {
         Some(Ok((frame, name))) => {
-            let Some(s) = stop_of(at, tid) else {
-                return sh.fail(req, "no locals here");
-            };
+            let s = stop_of(at, tid).ok_or("no locals here")?;
             match local(sh, s, frame, &name) {
                 Some((t, v, _)) => value_var(sh, &name, &t, &v, || Node::Local {
                     tid,
@@ -944,7 +1071,7 @@ fn evaluate(sh: &Shared, at: &At<'_, '_>, req: &Json) {
             }
         }
         Some(Err(k)) => signal_var(sh, at, k),
-        None => return sh.fail(req, &format!("no variable or signal `{expr}` here")),
+        None => return Err(format!("no variable or signal `{expr}` here")),
     };
     // A variable becomes a result.
     if let Some(o) = j.as_object_mut() {
@@ -954,16 +1081,23 @@ fn evaluate(sh: &Shared, at: &At<'_, '_>, req: &Json) {
             o.insert("result".into(), v);
         }
     }
-    sh.respond(req, j)
+    Ok(j)
 }
 
 /// `yavs/force`, `yavs/deposit` and `yavs/release` of a whole signal (`signal`: a name seen
 /// from `frameId` or the stopped process, or a path; `value`: a literal of its type; `mode`:
 /// `in`, the default, or `out`).
 fn signal_op(sh: &Shared, at: &At<'_, '_>, req: &Json) {
-    let a = &req["arguments"];
     let cmd = req["command"].as_str().unwrap_or_default();
-    let r = (|| -> Result<Json, String> {
+    match signal_change(sh, at, cmd, &req["arguments"]) {
+        Ok(b) => sh.respond(req, b),
+        Err(m) => sh.fail(req, &m),
+    }
+}
+
+/// What `signal_op` does, for the request's arguments.
+fn signal_change(sh: &Shared, at: &At<'_, '_>, cmd: &str, a: &Json) -> Result<Json, String> {
+    {
         let name = a["signal"].as_str().ok_or("expected a `signal` argument")?;
         let tid = match a["frameId"].as_i64() {
             Some(f) => f >> 16,
@@ -996,10 +1130,6 @@ fn signal_op(sh: &Shared, at: &At<'_, '_>, req: &Json) {
         set_part(&mut whole, &paths, &v)?;
         put(sh, at, k, &paths, Some(&whole), kind)?;
         Ok(json!({"signal": target, "value": literal_image(&v, &ty)}))
-    })();
-    match r {
-        Ok(b) => sh.respond(req, b),
-        Err(m) => sh.fail(req, &m),
     }
 }
 
@@ -1315,7 +1445,10 @@ fn handle(sh: &Shared, tx: &Sender<Msg>, req: Json) {
         }
         "launch" | "attach" => {
             let entry = req["arguments"]["stopOnEntry"].as_bool().unwrap_or(false);
-            sh.stop_on_entry.store(entry, Ordering::Relaxed);
+            sh.link.stop_on_entry.store(entry, Ordering::Relaxed);
+            if req["arguments"]["yavsConsole"] == true {
+                sh.link.console.store(true, Ordering::Relaxed);
+            }
             sh.respond(&req, json!({}));
         }
         "setBreakpoints" => set_breakpoints(sh, &req),
@@ -1327,7 +1460,7 @@ fn handle(sh: &Shared, tx: &Sender<Msg>, req: Json) {
         "yavs/waveSubscribe" => wave_subscribe(sh, &req),
         "yavs/waveUnsubscribe" => {
             sh.lock_wave().take();
-            sh.stream.push();
+            sh.link.stream.push();
             sh.respond(&req, json!({}));
         }
         "configurationDone" => {
@@ -1348,11 +1481,18 @@ fn handle(sh: &Shared, tx: &Sender<Msg>, req: Json) {
             // The response first: the stop it causes may otherwise reach the client before it
             // (#441), and a client waiting for the stop after the response would wait forever.
             sh.respond(&req, json!({}));
-            sh.pause_req.store(true, Ordering::Relaxed);
-            sh.session().request_pause();
-            if let Some(i) = sh.interrupt.get() {
-                i.pause();
-            }
+            pause(sh);
+        }
+        // The console's `stop`: the one command a running simulation takes.
+        "evaluate"
+            if !sh.stopped.load(Ordering::Relaxed)
+                && req["arguments"]["context"] == "repl"
+                && req["arguments"]["expression"]
+                    .as_str()
+                    .is_some_and(|e| e.trim() == "stop") =>
+        {
+            sh.respond(&req, json!({"result": "", "variablesReference": 0}));
+            pause(sh);
         }
         "disconnect" | "terminate" => {
             sh.terminating.store(true, Ordering::Relaxed);
@@ -1365,6 +1505,14 @@ fn handle(sh: &Shared, tx: &Sender<Msg>, req: Json) {
             let _ = tx.send(Msg::Request(req));
         }
         _ => sh.fail(&req, "the simulation is running"),
+    }
+}
+
+fn pause(sh: &Shared) {
+    sh.pause_req.store(true, Ordering::Relaxed);
+    sh.session().request_pause();
+    if let Some(i) = sh.interrupt.get() {
+        i.pause();
     }
 }
 
@@ -1387,23 +1535,39 @@ fn hierarchy(sh: &Shared) -> Json {
     json!({"regions": sh.design.roots.iter().map(|&r| region(sh, r)).collect::<Vec<_>>()})
 }
 
-/// Map each requested line to the statements starting on it (or the next line that has
-/// some) and replace the file's breakpoints.
+/// `setBreakpoints`: replace a file's breakpoints.
 fn set_breakpoints(sh: &Shared, req: &Json) {
     let a = &req["arguments"];
-    let path = a["source"]["path"].as_str().unwrap_or_default();
-    let key = design::absolute(path);
+    let key = design::absolute(a["source"]["path"].as_str().unwrap_or_default());
+    let list = a["breakpoints"].as_array().cloned().unwrap_or_default();
+    sh.link
+        .kept
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .set_lines(&key, list);
+    let out = apply_lines(sh, &key);
+    sh.respond(req, json!({"breakpoints": out}));
+}
+
+/// Map each kept line breakpoint of file `key` to the statements starting on its line (or the
+/// next line that has some) and replace the file's breakpoints; what a client is told of each.
+fn apply_lines(sh: &Shared, key: &str) -> Vec<Json> {
+    let list = sh
+        .link
+        .kept
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .lines(key);
     let session = sh.session();
     let mut set = sh.bps.lock().unwrap_or_else(|p| p.into_inner());
     let mut conds = sh.conds.lock().unwrap_or_else(|p| p.into_inner());
-    for s in set.remove(&key).into_iter().flatten() {
+    for s in set.remove(key).into_iter().flatten() {
         session.clear_breakpoint(s);
         conds.remove(&s);
     }
     let mut ids = Vec::new();
     let mut out = Vec::new();
-    let empty = Vec::new();
-    for bp in a["breakpoints"].as_array().unwrap_or(&empty) {
+    for bp in &list {
         let line = bp["line"].as_u64().unwrap_or(0) as u32;
         let hit = match bp["hitCondition"].as_str().map(parse_hit) {
             None => Ok(HitCond::Always),
@@ -1421,7 +1585,7 @@ fn set_breakpoints(sh: &Shared, req: &Json) {
                 (HitCond::Always, Some(c))
             }),
         });
-        let found = sh.design.line_stmts(&key, line);
+        let found = sh.design.line_stmts(key, line);
         match (found, hit) {
             (Some((l, stmts)), Ok((hit, c))) => {
                 for &s in stmts {
@@ -1431,7 +1595,7 @@ fn set_breakpoints(sh: &Shared, req: &Json) {
                     }
                     ids.push(s);
                 }
-                out.push(json!({"verified": true, "line": l, "source": source(&key)}));
+                out.push(json!({"verified": true, "line": l, "source": source(key)}));
             }
             (None, _) => out.push(json!({
                 "verified": false,
@@ -1441,8 +1605,8 @@ fn set_breakpoints(sh: &Shared, req: &Json) {
             (_, Err(m)) => out.push(json!({"verified": false, "line": line, "message": m})),
         }
     }
-    set.insert(key, ids);
-    sh.respond(req, json!({"breakpoints": out}));
+    set.insert(key.to_string(), ids);
+    out
 }
 
 /// `yavs/waveSubscribe`: replace the live wave subscription by a recorder of the signals (and,
@@ -1471,9 +1635,9 @@ fn wave_subscribe(sh: &Shared, req: &Json) {
     // The previous subscription's batches go first.
     let mut cur = sh.lock_wave();
     cur.take();
-    sh.stream.push();
+    sh.link.stream.push();
     let r = yavs_wave::record_to(&sh.db, &sh.elab, sel, built, |_| {
-        Ok(waves::sink(&sh.stream, every))
+        Ok(waves::sink(&sh.link.stream, every))
     });
     match r {
         Ok((rec, h)) => {
@@ -1522,12 +1686,32 @@ fn data_breakpoint_info(sh: &Shared, req: &Json) {
 /// and an optional `value`), then the watch list.
 fn set_signal_breakpoints(sh: &Shared, req: &Json, set: usize) {
     let a = &req["arguments"];
-    let tid = a["frameId"].as_i64().map_or(0, |f| f >> 16);
-    let p = thread_proc(sh, tid);
+    let mut list = a["breakpoints"].as_array().cloned().unwrap_or_default();
+    for bp in &mut list {
+        bp["frameId"] = a["frameId"].clone();
+    }
+    sh.link
+        .kept
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .set_signals(set, list);
+    let out = apply_signals(sh, set);
+    sh.respond(req, json!({"breakpoints": out}));
+}
+
+/// Resolve the kept signal breakpoints of `set`; what a client is told of each.
+fn apply_signals(sh: &Shared, set: usize) -> Vec<Json> {
+    let list = sh
+        .link
+        .kept
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .signals(set);
     let mut bps = Vec::new();
     let mut out = Vec::new();
-    let empty = Vec::new();
-    for bp in a["breakpoints"].as_array().unwrap_or(&empty) {
+    for bp in &list {
+        let tid = bp["frameId"].as_i64().map_or(0, |f| f >> 16);
+        let p = thread_proc(sh, tid);
         let name = bp[if set == 0 { "dataId" } else { "signal" }]
             .as_str()
             .unwrap_or_default();
@@ -1566,8 +1750,14 @@ fn set_signal_breakpoints(sh: &Shared, req: &Json, set: usize) {
             Err(m) => json!({"verified": false, "message": m}),
         });
     }
-    let mut all = sh.sig_bps.lock().unwrap_or_else(|p| p.into_inner());
-    all[set] = bps;
+    sh.sig_bps.lock().unwrap_or_else(|p| p.into_inner())[set] = bps;
+    rewatch(sh);
+    out
+}
+
+/// The kernel's watch list: every leaf of every signal breakpoint.
+fn rewatch(sh: &Shared) {
+    let all = sh.sig_bps.lock().unwrap_or_else(|p| p.into_inner());
     let w: Vec<(SignalId, Option<Value>)> = all
         .iter()
         .flatten()
@@ -1579,7 +1769,6 @@ fn set_signal_breakpoints(sh: &Shared, req: &Json, set: usize) {
         .expect("set before the reader starts")
         .lock()
         .unwrap_or_else(|p| p.into_inner()) = w;
-    sh.respond(req, json!({"breakpoints": out}));
 }
 
 /// After a pause: whether a watched signal changed in the last cycle, and the first signal
@@ -1660,30 +1849,50 @@ fn parse_hit(s: &str) -> Result<HitCond, String> {
         .map_err(|_| format!("hit condition `{s}`: expected N, = N, >= N or % N"))
 }
 
+/// What the caller adds to a session besides the design.
+#[derive(Default)]
+pub struct Options {
+    /// Why `restart` cannot work in this run (state outside the simulation).
+    pub no_restart: Option<String>,
+    pub reload: Option<ReloadFn>,
+    /// The test runner's hook, `<port>:<secret>` (`console::HOOK_VAR`).
+    pub hook: Option<String>,
+    /// Source paths as compiled, and as the debugger shows and takes them (`--source-map`).
+    pub source_map: Vec<(String, String)>,
+}
+
+/// The callback that subscribes the caller's observers (`--wave`, `--vhpi`) to each built
+/// simulation and returns what to do at its end.
+pub trait Attach:
+    FnMut(
+    &mut SimControl,
+    Option<&Built>,
+    &Arc<Db>,
+    &Arc<Elaborated>,
+) -> Result<Option<(Finish, Sync)>, Box<Diagnostic>>
+{
+}
+impl<F> Attach for F where
+    F: FnMut(
+        &mut SimControl,
+        Option<&Built>,
+        &Arc<Db>,
+        &Arc<Elaborated>,
+    ) -> Result<Option<(Finish, Sync)>, Box<Diagnostic>>
+{
+}
+
 /// Run the elaborated design under a DAP client until it ends; returns the exit status of
 /// the run (docs/cli-contract.md section 5). `attach` subscribes the caller's observers
 /// (`--wave`, `--vhpi`) to the built simulation and returns what to do at its end. `report`
 /// receives the final statistics before the exit events.
 pub fn serve(
-    db: Arc<Db>,
-    e: Arc<Elaborated>,
-    cfg: Config,
-    stop: Time,
+    loaded: Loaded,
     transport: Transport,
-    attach: impl FnOnce(
-        &mut SimControl,
-        Option<&Built>,
-    ) -> Result<Option<(Finish, Sync)>, Box<Diagnostic>>,
+    options: Options,
+    attach: impl Attach,
     report: Report,
 ) -> Result<u8, Box<Diagnostic>> {
-    let (db_arc, e_arc) = (db, e);
-    let (db, e) = (&*db_arc, &*e_arc);
-    let Some(ir) = &e.ir else {
-        return Err(Box::new(
-            Diagnostic::error("E9999", "internal compiler error: this is a bug in yavs")
-                .with_note("the design was not lowered before the DAP server started"),
-        ));
-    };
     let io_err = |what: &str, err: std::io::Error| {
         Box::new(Diagnostic::error(IO_ERROR, format!("DAP: {what}")).with_note(err.to_string()))
     };
@@ -1709,27 +1918,214 @@ pub fn serve(
                 .map_err(|err| io_err("no local address", err))?;
             eprintln!("yavs: DAP listening on 127.0.0.1:{}", addr.port());
             eprintln!("yavs: waiting for a debugger on port {}", addr.port());
-            let (s, _) = l.accept().map_err(|err| io_err("accept failed", err))?;
+            // A client that closes before it says anything (an editor probing the port) is no
+            // session: wait for the next.
+            let s = loop {
+                let (s, _) = l.accept().map_err(|err| io_err("accept failed", err))?;
+                if s.peek(&mut [0u8; 1]).is_ok_and(|n| n > 0) {
+                    break s;
+                }
+            };
             let r = s.try_clone().map_err(|err| io_err("accept failed", err))?;
             closer = s.try_clone().ok();
             (Box::new(r), Box::new(s))
         }
     };
+    serve_on(loaded, reader, writer, closer, options, attach, report)
+}
+
+/// How one simulation of a session ended.
+enum Outcome {
+    Exit(u8),
+    /// Run again, at time 0.
+    Again(Loaded),
+}
+
+/// [`serve`] over a connection the caller made: the console speaks DAP to the server over a pipe.
+pub fn serve_on(
+    loaded: Loaded,
+    reader: Box<dyn Read + Send>,
+    writer: Box<dyn Write + Send>,
+    closer: Option<std::net::TcpStream>,
+    options: Options,
+    mut attach: impl Attach,
+    report: Report,
+) -> Result<u8, Box<Diagnostic>> {
     let (tx, rx) = channel();
-    let sh = Arc::new(Shared {
+    let link = Arc::new(Link {
         out: Mutex::new(writer),
         seq: Mutex::new(0),
-        design: Design::new(db, e, &ir.program),
+        rx: Mutex::new(rx),
+        stream: Arc::default(),
+        disconnect: Mutex::new(None),
+        console: AtomicBool::new(false),
+        stop_on_entry: AtomicBool::new(false),
+        eof: AtomicBool::new(false),
+        kept: Mutex::default(),
+        con: Mutex::default(),
+        hook: OnceLock::new(),
+        no_restart: options.no_restart,
+        source_map: options.source_map,
+        reload: Mutex::new(options.reload),
+    });
+    if let Some(value) = &options.hook {
+        let (hook, lines) = console::Hook::connect(value).map_err(|why| {
+            Box::new(
+                Diagnostic::error(
+                    console::HOOK_ERROR,
+                    format!("the console hook in `{}` cannot be used", console::HOOK_VAR),
+                )
+                .with_note(why)
+                .with_help(format!(
+                    "a test runner sets `{}` for a session while it serves the hook; unset it to \
+                     run without one",
+                    console::HOOK_VAR
+                )),
+            )
+        })?;
+        let _ = link.hook.set(hook);
+        let (link, tx) = (link.clone(), tx.clone());
+        std::thread::spawn(move || console::hook_reader(lines, &link, &tx));
+    }
+    {
+        let link = link.clone();
+        std::thread::spawn(move || {
+            waves::sender(link.stream.clone(), || {
+                let mut out = link.out.lock().unwrap_or_else(|p| p.into_inner());
+                link.drain(&mut out);
+            })
+        });
+    }
+    let current: Arc<Mutex<Option<Arc<Shared>>>> = Arc::default();
+    let mut start = Some((reader, tx));
+    let mut report = Some(report);
+    let mut loaded = loaded;
+    let code = loop {
+        let first = start.is_some();
+        // The reader thread starts once the first simulation can take requests.
+        let begin = |sh: &Arc<Shared>, start: &mut Option<(Box<dyn Read + Send>, Sender<Msg>)>| {
+            *current.lock().unwrap_or_else(|p| p.into_inner()) = Some(sh.clone());
+            let Some((reader, tx)) = start.take() else {
+                return;
+            };
+            let current = current.clone();
+            let link = sh.link.clone();
+            std::thread::spawn(move || {
+                let live = || {
+                    current
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .clone()
+                        .expect("set before the reader starts")
+                };
+                let mut r = BufReader::new(reader);
+                while let Ok(Some(m)) = read_message(&mut r) {
+                    if m["type"] == "request" {
+                        handle(&live(), &tx, m);
+                    }
+                }
+                link.eof.store(true, Ordering::Relaxed);
+                let sh = live();
+                sh.terminating.store(true, Ordering::Relaxed);
+                if let Some(i) = sh.interrupt.get() {
+                    i.stop();
+                }
+                let _ = tx.send(Msg::Eof);
+            });
+        };
+        match one_run(
+            &link,
+            loaded,
+            first,
+            |sh| begin(sh, &mut start),
+            &mut attach,
+            &mut report,
+        )? {
+            Outcome::Exit(code) => break code,
+            Outcome::Again(next) => loaded = next,
+        }
+    };
+    // Answer the disconnect, or wait for it.
+    let mut pending = link
+        .disconnect
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take();
+    let rx = link.rx.lock().unwrap_or_else(|p| p.into_inner());
+    let mut eof = false;
+    while pending.is_none() {
+        match rx.recv() {
+            Ok(Msg::Request(r))
+                if matches!(r["command"].as_str(), Some("disconnect" | "terminate")) =>
+            {
+                pending = Some(r)
+            }
+            Ok(Msg::Request(r)) => link.fail(&r, "the simulation has ended"),
+            Ok(Msg::Eof) | Err(_) => {
+                eof = true;
+                break;
+            }
+            Ok(_) => {}
+        }
+    }
+    if let Some(d) = pending {
+        link.respond(&d, json!({}));
+    }
+    // Exiting with the socket open resets the connection on some systems, and the client can
+    // lose the last messages: send FIN, then give the client a moment to close its side.
+    if let Some(s) = closer {
+        let _ = s.shutdown(std::net::Shutdown::Write);
+        while !eof {
+            match rx.recv_timeout(std::time::Duration::from_secs(2)) {
+                Ok(Msg::Eof) | Err(_) => eof = true,
+                Ok(_) => {}
+            }
+        }
+    }
+    Ok(code)
+}
+
+/// Build one simulation of a session and serve it until it ends or restarts.
+fn one_run(
+    link: &Arc<Link>,
+    loaded: Loaded,
+    first: bool,
+    begin: impl FnOnce(&Arc<Shared>),
+    attach: &mut impl Attach,
+    report: &mut Option<Report>,
+) -> Result<Outcome, Box<Diagnostic>> {
+    let Loaded {
+        db: db_arc,
+        e: e_arc,
+        cfg,
+        stop,
+    } = loaded;
+    let again = |db_arc: &Arc<Db>, e_arc: &Arc<Elaborated>, cfg: &Config| Loaded {
+        db: db_arc.clone(),
+        e: e_arc.clone(),
+        cfg: cfg.clone(),
+        stop,
+    };
+    let (db, e) = (&*db_arc, &*e_arc);
+    let Some(ir) = &e.ir else {
+        return Err(Box::new(
+            Diagnostic::error("E9999", "internal compiler error: this is a bug in yavs")
+                .with_note("the design was not lowered before the DAP server started"),
+        ));
+    };
+    let sh = Arc::new(Shared {
+        link: link.clone(),
+        design: Design::new(db, e, &ir.program, &link.source_map),
         session: OnceLock::new(),
         interrupt: OnceLock::new(),
-        rx: Mutex::new(rx),
         stopped: AtomicBool::new(false),
-        terminating: AtomicBool::new(false),
+        terminating: AtomicBool::new(link.eof.load(Ordering::Relaxed)),
         pause_req: AtomicBool::new(false),
         paused_in_process: AtomicBool::new(false),
-        stop_on_entry: AtomicBool::new(false),
+        discard: AtomicBool::new(false),
+        ended: AtomicBool::new(false),
+        restart: Mutex::new(None),
         queued: Mutex::new(None),
-        disconnect: Mutex::new(None),
         bps: Mutex::new(HashMap::new()),
         sig_bps: Mutex::default(),
         watches: OnceLock::new(),
@@ -1739,7 +2135,6 @@ pub fn serve(
         nodes: Mutex::new(Vec::new()),
         conds: Mutex::new(HashMap::new()),
         wave: Arc::default(),
-        stream: Arc::default(),
         db: db_arc.clone(),
         elab: e_arc.clone(),
         built: OnceLock::new(),
@@ -1748,8 +2143,11 @@ pub fn serve(
     let session = DebugSession::new(&ir.program, Box::new(Front(sh.clone())));
     let _ = sh.session.set(session.clone());
     // Stops inside a process need one thread (ir.md 3.4).
-    let cfg = Config { threads: 1, ..cfg };
-    let (mut sim, built) = match e.build_debug(cfg, &session) {
+    let cfg_run = Config {
+        threads: 1,
+        ..cfg.clone()
+    };
+    let (mut sim, built) = match e.build_debug(cfg_run, &session) {
         Ok(x) => x,
         Err(err) => return Err(Box::new(e.runtime_diagnostic(&err))),
     };
@@ -1767,7 +2165,7 @@ pub fn serve(
         sub: sh.wave.clone(),
         last: 0,
     }));
-    let finish = match attach(&mut sim, built.as_ref())? {
+    let mut finish = match attach(&mut sim, built.as_ref(), &db_arc, &e_arc)? {
         Some((finish, sync)) => {
             let _ = sh.sync.set(sync);
             Some(finish)
@@ -1778,34 +2176,11 @@ pub fn serve(
     if let Some(b) = built {
         let _ = sh.built.set(b);
     }
-    {
-        let sh = sh.clone();
-        std::thread::spawn(move || {
-            waves::sender(sh.stream.clone(), || {
-                let mut out = sh.out.lock().unwrap_or_else(|p| p.into_inner());
-                sh.drain(&mut out);
-            })
-        });
-    }
-    {
-        let sh = sh.clone();
-        std::thread::spawn(move || {
-            let mut r = BufReader::new(reader);
-            while let Ok(Some(m)) = read_message(&mut r) {
-                if m["type"] == "request" {
-                    handle(&sh, &tx, m);
-                }
-            }
-            sh.terminating.store(true, Ordering::Relaxed);
-            if let Some(i) = sh.interrupt.get() {
-                i.stop();
-            }
-            let _ = tx.send(Msg::Eof);
-        });
-    }
+    console::keep_breakpoints(&sh);
+    begin(&sh);
     // Wait for the configuration.
-    {
-        let rx = sh.rx.lock().unwrap_or_else(|p| p.into_inner());
+    if first {
+        let rx = link.rx.lock().unwrap_or_else(|p| p.into_inner());
         loop {
             match rx.recv() {
                 Ok(Msg::Start) => break,
@@ -1817,22 +2192,44 @@ pub fn serve(
                     sh.fail(&r, "the simulation has not started");
                 }
                 Ok(Msg::Eof) | Err(_) => break,
+                Ok(_) => {}
             }
         }
     }
-    if sh.stop_on_entry.load(Ordering::Relaxed) {
+    // A console stops at time 0, before any process has run, and so does every restart.
+    let mut at_entry =
+        !sh.terminating.load(Ordering::Relaxed) && (!first || link.console.load(Ordering::Relaxed));
+    if !at_entry && link.stop_on_entry.load(Ordering::Relaxed) {
         session.request_global_step();
     }
     // The time the run goes to: `stop`, or earlier while a `yavs/runFor` is under way. A stop
     // on the way does not cancel it: continuing resumes it.
     let mut limit = stop;
     let mut next = None;
-    let r = loop {
+    let requested = Ok(RunStatus::Ended(EndReason::Requested));
+    let r = 'run: loop {
+        if std::mem::take(&mut at_entry) {
+            let body = json!({
+                "reason": "entry",
+                "allThreadsStopped": true,
+                "description": format!("entry at {}, delta {}", sim.now(), sim.delta()),
+            });
+            match serve_stop(&sh, &At::Kernel(&sim), body) {
+                Some(Next::Resume(Resume::GlobalStep)) => session.request_global_step(),
+                Some(Next::Run(run)) => next = Some(run),
+                Some(Next::Resume(_)) => {}
+                Some(Next::Restart | Next::Quit) | None => break 'run requested,
+            }
+        }
         apply_ops(&sh, &mut sim);
         let (r, step) = match next.take() {
             None => (sim.run_until(limit), false),
             Some(Run::Until(t)) => {
                 limit = t.min(stop);
+                (sim.run_until(limit), false)
+            }
+            Some(Run::ToEnd) => {
+                limit = stop;
                 (sim.run_until(limit), false)
             }
             Some(Run::Delta) => (sim.step_delta(), true),
@@ -1884,10 +2281,24 @@ pub fn serve(
             Some(Next::Resume(Resume::GlobalStep)) => session.request_global_step(),
             Some(Next::Run(run)) => next = Some(run),
             Some(Next::Resume(_)) => {}
+            Some(Next::Restart | Next::Quit) => break requested,
             None => break sim.run_until(stop),
         }
     };
-    report(sim.stats(), rt.as_deref());
+    // Leave this simulation: its files are finished, so that the next one can write them.
+    let restart = |sh: &Shared| sh.restart.lock().unwrap_or_else(|p| p.into_inner()).take();
+    if let Some(new) = restart(&sh) {
+        sh.lock_wave().take();
+        if let Some(f) = finish.take() {
+            let _ = f(&sim);
+        }
+        if let Some(rt) = &rt {
+            rt.close_files();
+        }
+        return Ok(Outcome::Again(
+            new.unwrap_or_else(|| again(&db_arc, &e_arc, &cfg)),
+        ));
+    }
     let code = match r {
         Ok(RunStatus::Ended(EndReason::Stop(c) | EndReason::Finish(c))) => {
             let what = match r {
@@ -1915,7 +2326,7 @@ pub fn serve(
             if err.exit_status() == 101 { 3 } else { 1 }
         }
     };
-    let failed = rt.is_some_and(|rt| {
+    let failed = rt.as_ref().is_some_and(|rt| {
         rt.assert_count(yavs_kernel::Severity::Error)
             + rt.assert_count(yavs_kernel::Severity::Failure)
             > 0
@@ -1928,53 +2339,40 @@ pub fn serve(
             Diagnostic::error("E0702", "the live waves failed").with_note(err.to_string())
         })
     });
-    for d in live.into_iter().chain(finish.and_then(|f| f(&sim))) {
+    for d in live.into_iter().chain(finish.take().and_then(|f| f(&sim))) {
         sh.output(
             "stderr",
             &yavs_diag::render(&db.sources, &d, MessageFormat::Human, false),
         );
         code = code.max(1);
     }
+    // A console, or a test runner's command waiting for this run, stays at the end.
+    let hold = !sh.terminating.load(Ordering::Relaxed)
+        && (link.console.load(Ordering::Relaxed) || console::awaiting(&sh));
+    if hold {
+        sh.ended.store(true, Ordering::Relaxed);
+        let body = json!({
+            "reason": "pause",
+            "allThreadsStopped": true,
+            "description": format!("the simulation ended at {}, delta {}", sim.now(), sim.delta()),
+        });
+        if let Some(Next::Restart) = serve_stop(&sh, &At::Kernel(&sim), body) {
+            if let Some(rt) = &rt {
+                rt.close_files();
+            }
+            let new = restart(&sh).flatten();
+            return Ok(Outcome::Again(
+                new.unwrap_or_else(|| again(&db_arc, &e_arc, &cfg)),
+            ));
+        }
+    }
+    if let Some(report) = report.take() {
+        report(sim.stats(), rt.as_deref());
+    }
+    let code = console::exit_status(&sh).unwrap_or(code);
     sh.event("exited", json!({"exitCode": code}));
     sh.event("terminated", json!({}));
-    // Answer the disconnect, or wait for it.
-    let mut pending = sh
-        .disconnect
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .take();
-    let rx = sh.rx.lock().unwrap_or_else(|p| p.into_inner());
-    let mut eof = false;
-    while pending.is_none() {
-        match rx.recv() {
-            Ok(Msg::Request(r))
-                if matches!(r["command"].as_str(), Some("disconnect" | "terminate")) =>
-            {
-                pending = Some(r)
-            }
-            Ok(Msg::Request(r)) => sh.fail(&r, "the simulation has ended"),
-            Ok(Msg::Start) => {}
-            Ok(Msg::Eof) | Err(_) => {
-                eof = true;
-                break;
-            }
-        }
-    }
-    if let Some(d) = pending {
-        sh.respond(&d, json!({}));
-    }
-    // Exiting with the socket open resets the connection on some systems, and the client can
-    // lose the last messages: send FIN, then give the client a moment to close its side.
-    if let Some(s) = closer {
-        let _ = s.shutdown(std::net::Shutdown::Write);
-        while !eof {
-            match rx.recv_timeout(std::time::Duration::from_secs(2)) {
-                Ok(Msg::Eof) | Err(_) => eof = true,
-                Ok(_) => {}
-            }
-        }
-    }
-    Ok(code)
+    Ok(Outcome::Exit(code))
 }
 
 /// Reports and textio `OUTPUT` text as DAP output events, in the format `yavs run` prints.
@@ -1985,6 +2383,9 @@ struct Output {
 
 impl yavs_kernel::Observer for Output {
     fn report(&mut self, hook: &mut yavs_kernel::Hook<'_>, r: &yavs_kernel::Report) {
+        if self.sh.discard.load(Ordering::Relaxed) {
+            return;
+        }
         let sev = match r.severity {
             yavs_kernel::Severity::Note => "Note",
             yavs_kernel::Severity::Warning => "Warning",
@@ -2010,6 +2411,8 @@ impl yavs_kernel::Observer for Output {
     }
 
     fn output(&mut self, _: &mut yavs_kernel::Hook<'_>, _: yavs_kernel::ProcId, bytes: &[u8]) {
-        self.sh.output("stdout", &String::from_utf8_lossy(bytes));
+        if !self.sh.discard.load(Ordering::Relaxed) {
+            self.sh.output("stdout", &String::from_utf8_lossy(bytes));
+        }
     }
 }

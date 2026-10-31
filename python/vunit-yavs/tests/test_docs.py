@@ -39,7 +39,7 @@ class TestOptionPage(unittest.TestCase):
 
     def test_sim_and_compile_options(self):
         defined = {o.name for o in YavsInterface.sim_options + YavsInterface.compile_options}
-        self.check("sim or compile options", defined, r"``(yavs\.[a-z_]+)``")
+        self.check("sim or compile options", defined, r"``(yavs\.[a-z_.]+)``")
 
     def test_command_line_flags(self):
         parser = argparse.ArgumentParser()

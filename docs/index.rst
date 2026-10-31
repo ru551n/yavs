@@ -52,6 +52,7 @@ Start with :doc:`install` and :doc:`getting-started`.
    waveforms
    coverage
    debugging
+   interactive
    vhpi
    running-faster
    cli

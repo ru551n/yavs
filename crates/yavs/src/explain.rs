@@ -164,12 +164,18 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "W0109",
-        "`--threads` is ignored with `--dap`: the debugger stops inside processes, which needs the simulation on one thread. The run is the same as with `--threads=1`.",
+        "`--threads` is ignored with `--dap`, `--interactive` and `--do`: a debug session stops inside processes, which needs the simulation on one thread. The run is the same as with `--threads=1`.",
     ),
     // yavs-dap
     (
         "E0701",
         "The Debug Adapter Protocol connection (`--dap`) cannot be opened: the port is in use or not allowed, or accepting the client failed.",
+    ),
+    (
+        "E0703",
+        "The console hook named in `YAVS_CONSOLE_HOOK` cannot be used: the value is not `<port>:<secret>`, nothing \
+         answers on that port within 30 seconds, or what it registers is not valid (a yavs command's name). A test \
+         runner sets this variable while it serves the hook; unset it to run without one.",
     ),
     (
         "E0702",

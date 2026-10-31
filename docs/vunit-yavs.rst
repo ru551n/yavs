@@ -36,6 +36,13 @@ as ``--name=value``.
      - ``yavs run --cov-kind=LIST``: the kinds of coverage to count (``statement``, ``branch``,
        ``toggle``, ``condition``, ``expression``). Used with VUnit's own ``enable_coverage``
        sim option, which makes every run write a coverage database (:ref:`vunit-coverage`).
+   * - ``yavs.init_files.after_load``
+     - Files of console commands sourced after each ``vunit_load`` (:doc:`interactive`).
+   * - ``yavs.init_files.before_run``
+     - Files of console commands sourced before each ``vunit_run``.
+   * - ``yavs.init_file.gui``
+     - A file of console commands sourced by ``vunit_user_init`` and at the start of
+       ``--yavs-interactive``.
 
 Command-line flags
 ------------------
@@ -55,6 +62,10 @@ Flags of the run script (``python run.py ...``), next to VUnit's own:
        ``127.0.0.1:PORT`` (default ``4711``, ``0`` picks a free port). Write the port as
        ``--yavs-debug=PORT``: a test name after a bare ``--yavs-debug`` is read as the port.
        Not with ``--gui``, ``--elaborate``, ``-p`` above 1 or more than one simulation.
+   * - ``--yavs-interactive``
+     - Runs the one selected test at the yavs console (``yavs run --interactive``, :doc:`interactive`),
+       with the ``vunit_*`` commands. Not with ``--yavs-debug``, ``--gui``, ``--elaborate``, ``-p`` above 1
+       or more than one simulation.
    * - ``--yavs-max-threads N``
      - ``yavs.max_threads`` for every test that does not set it.
    * - ``--yavs-cov``

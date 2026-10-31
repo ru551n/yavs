@@ -12751,3 +12751,19 @@ duplicate implementations without changing diagnostics (issue #894; implemented 
 - **Decision: the marker `yavs-vendor.txt` holds the yavs version, standard and source directory; a different value deletes the libraries first.** Analysing a second install over the first would leave units of files only the first has, and a library of an older yavs is `L0004`, which asks for exactly this deletion.
 - **Decision: in `vunit-yavs` a helper for `run.py`, `add_vivado_libraries(vu)`, and no command line flag.** A project declares its libraries in `run.py`, and the install is already named by the environment; a flag would add a second way to say it.
 - **Not applicable (rule 32):** the VS Code extension needs no change, its launch configuration's `libraries` takes `NAME:PATH`; the Python scripting API (#132) does not exist yet.
+
+## VS Code and test runner: install and forget (#902, 2026-10-31)
+
+- **"yavs: Attach" needs no launch.json** (user, 2026-10-31): a dynamic configuration, a palette command, F5 with nothing configured; port 4711, a question only if nothing listens. The look at the port is a connection closed at once, so the server does not take such a connection for its one session.
+- **Preprocessed files map at the debugger, per file** (agent, 2026-10-31): `--source-map=COMPILED=ORIGINAL`; the test runner package knows the pairs, and the design's paths are mapped where the debugger reads them. Location and check preprocessing keep lines (test in `vunit-yavs`). Diagnostics keep the compiled path, which is the file yavs read.
+
+## Interactive console (#904, 2026-10-31)
+
+- **The console is a DAP client of the DAP server, in the same process** (agent, on the maintainer's "no second implementation", 2026-10-30): a pipe as the connection, each line an `evaluate` with context `repl`, all commands in `yavs-dap/src/console.rs`. The terminal, `--do`, `source` and an editor's Debug Console share one parser and one run control.
+- **Generic commands in yavs, VUnit's in `vunit-yavs`, through a hook** (user, 2026-10-30): plain names in yavs; `vunit_*` with VUnit's wording in the package; recompiling depends on what only the test runner knows. The hook has `reload` (elaborate again) rather than a console word, as a user at the plain console has `restart` and nothing to compile with (agent, 2026-10-31).
+- **`restart` is a new build from the same elaboration** (user, 2026-10-30: no VHPI save and restart needed): breakpoints are kept as asked for and resolved again, which `reload` needs anyway. Refused with `--vhpi` and `--load`, whose state cannot be reset (agent, 2026-10-31).
+- **The stop at time 0 is before the first cycle** (agent, 2026-10-31): breakpoints can be set on a process's first statement. `run` past the end prints a line and is no error, as a simulator's run past the end; `step` is an error.
+- **`--do` without `--interactive` is a batch** (agent, 2026-10-31): it ends at the end of the script, with status 1 at a failing command. Stop notices go to standard error so that standard output equals a batch run.
+- **A breakpoint under `vunit_run` prints `Test Run Failed!`** (user, 2026-10-30, exact VUnit behaviour): the test suite did not finish.
+- **Lean calls are off under a debugger** (agent, 2026-10-31, #863): the debug loop runs a function's prologue, which reads the parameter slots a lean call leaves empty.
+

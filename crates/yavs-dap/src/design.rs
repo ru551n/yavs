@@ -335,14 +335,19 @@ fn file_key(p: &str) -> String {
 }
 
 impl Design {
-    pub fn new(db: &Db, e: &Elaborated, prog: &Program) -> Design {
+    /// `source_map`: source paths as compiled, and as the debugger shows and takes them.
+    pub fn new(db: &Db, e: &Elaborated, prog: &Program, source_map: &[(String, String)]) -> Design {
         let mut paths: HashMap<yavs_diag::FileId, String> = HashMap::new();
         let mut locs = Vec::with_capacity(prog.stmts.len());
         for (_, st) in prog.stmts.iter() {
             let f = db.sources.get(st.span.file);
             let path = paths
                 .entry(st.span.file)
-                .or_insert_with(|| absolute(&f.path))
+                .or_insert_with(|| {
+                    let p = absolute(&f.path);
+                    let map = source_map.iter().find(|(from, _)| absolute(from) == p);
+                    map.map_or(p, |(_, to)| absolute(to))
+                })
                 .clone();
             let (line, col) = f.line_col(st.span.start);
             locs.push(Some(Loc {
@@ -501,6 +506,30 @@ impl Design {
     pub fn line_stmts(&self, path: &str, line: u32) -> Option<(u32, &[StmtId])> {
         let (&l, ids) = self.lines.get(&file_key(path))?.range(line..).next()?;
         Some((l, ids))
+    }
+
+    /// The source file `name` means: its path, or the one file whose path ends in it.
+    pub fn source_file(&self, name: &str) -> Result<String, String> {
+        let key = file_key(name);
+        if self.lines.contains_key(&key) {
+            return Ok(key);
+        }
+        let tail = format!("/{}", name.replace('\\', "/"));
+        let of = |f: &&String| f.replace('\\', "/").ends_with(&tail);
+        let mut found: Vec<&String> = self.lines.keys().filter(of).collect();
+        found.sort();
+        match found[..] {
+            [f] => Ok(f.clone()),
+            [] => Err(format!("`{name}` is not a source file of this design")),
+            _ => Err(format!(
+                "`{name}` could be {}: write more of the path",
+                found
+                    .iter()
+                    .map(|f| f.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" or ")
+            )),
+        }
     }
 
     pub fn proc(&self, name: &str) -> Option<&Proc> {

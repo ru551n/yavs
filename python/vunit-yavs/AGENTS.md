@@ -18,6 +18,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change the P
 | Path | What |
 |---|---|
 | `vunit_yavs/__init__.py` | `YavsInterface` (the `SimulatorInterface`), its arguments, `CoverageArgs` and `merge_coverage`, the native library hooks, `add_vivado_libraries`, `check_debug_args`, `write_response_file`, `YavsVersion` |
+| `vunit_yavs/console.py` | The console hook of yavs (`Hook`) and the `vunit_*` commands (`VunitCommands`) |
 | `vunit_yavs/tokens.py` | `lend_order` (the lending priority), `Client` (one test: secret, cap), `Connection`, `TokenServer` (127.0.0.1 listener, selector thread, accounting) |
 | `vunit_yavs/vunit_pkg.toml` | `simulator = "vunit_yavs:YavsInterface"`, shipped as package data |
 | `tests/test_interface.py` | Unit tests of the interface, with the package registered in a fresh simulator factory |
@@ -38,6 +39,8 @@ Read the root `AGENTS.md` first. This file is for an agent about to change the P
 | `foreign_language_interface = "VHPIDIRECT"` and `native_library_hooks(library_file)` returning only `run_flags` `--load=<library_file>` (user, 2026-10-29) | A test runner package that loads a native library asks the selected simulator interface how, instead of knowing yavs; the library is needed when the design runs, so `analyze` and the elaborate-only `elab` get nothing |
 | Vendor libraries are a helper `add_vivado_libraries(vu, ...)` for `run.py`, not a command line flag; the install comes from `vivado=` or `XILINX_VIVADO`, which yavs itself reads (#119) | The sources are declared in `run.py` like every other library, and one more flag would only repeat the environment variable |
 | Coverage: `enable_coverage` (VUnit's option) or `--yavs-cov` adds `--cov=<test output>/yavs/coverage.ycov --cov-test=NAME` before the raw flags; `merge_coverage` merges to `<file>.ycov` and runs `yavs cov report` when there are `args`, `--yavs-cov-html` or `--yavs-cov-fail-under`; a failing report registers an `os._exit(1)` exit hook | `post_run` runs before the JUnit file is written, so raising there would lose it; `--cov` with `--dap` is not implemented, so the combination is refused before yavs starts (#877) |
+| The `vunit_*` console commands keep VUnit's names, wording, arguments and return values, from its vsim-family interfaces (help text says yavs for the other simulator's name); they live here, never in yavs (user, 2026-10-30, #904). `vunit_restart` compiles through `run.py --compile` and then `reload`s, since only VUnit knows the preprocessing, files and options. Init files are console command files whose `$vunit_tb_path` and `$vunit_tb_name` this package substitutes, line by line through `exec` | The maintainer's split; keeps variables out of the yavs console |
+| `--yavs-interactive` runs one test on the terminal: the child inherits stdin and stdout, not `Process.consume_output`; refused with `--yavs-debug`, `--gui`, `--elaborate`, `-p` above 1, and a second simulation raises | The terminal is yavs's; one session |
 | The token server is opt-in (`--yavs-jobserver`, name kept from 0.10), created only with `-p` above 1; Linux and Windows (user, 2026-10-29: one cross-platform mechanism, the fifo jobserver removed) | No change for anyone who does not ask |
 | A localhost TCP server at a free port, one random secret per test, `YAVS_TOKENS=<port>:<secret>`; protocol in `docs/cli-contract.md` "Token server" | Same code on every platform; the secret names the test (its cap) and keeps other local processes out |
 | With the server, every run gets `--threads=N` (`max_threads` when set) (user, 2026-10-29) | Idle slots speed up the tail without further options |
@@ -50,8 +53,6 @@ Read the root `AGENTS.md` first. This file is for an agent about to change the P
   modules: the shared factory refuses a second registration.
 - `TokenServer.remove` runs in a `finally`: a test that raises still gives its tokens back (its connections are shut down).
 - Only the selector thread registers, unregisters and closes sockets; other threads shut a connection down and the selector thread closes it.
-- The real-binary test under the debugger is an expected failure while yavs reports an internal
-  error for the runner's `active_python_runner` under `--dap` (see section 6).
 
 ## 5. How to work here
 
@@ -66,8 +67,5 @@ run never writes to the user's cache directory; raw flags come later and win.
 
 ## 6. Open issues
 
-- Under `--dap`, the test runner's `active_python_runner` (run_api.vhd:167) is `E9999` "read of
-  8 bytes at 0 outside a frame object of 0 bytes" in the interpreter; the same test passes without
-  `--dap`.
 - The `vunit_hdl` dependency bound is a placeholder until a test runner release has simulator
   packages.

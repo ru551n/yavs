@@ -8,6 +8,10 @@
   simulation, `yavs.cov_kind` chooses the kinds, and `results.merge_coverage(file, args)` merges them into
   `file.ycov` and, with `--yavs-cov-html DIR`, `--yavs-cov-fail-under PCT` or `args`, runs `yavs cov report`; a
   total below the threshold makes the run exit with status 1 after VUnit's own reports are written.
+- `--yavs-interactive` runs one test at the yavs console. `vunit_help`, `vunit_load`, `vunit_user_init`, `vunit_run`,
+  `vunit_compile` and `vunit_restart` work there and in the Debug Console under `--yavs-debug`, with the sim options
+  `yavs.init_files.after_load`, `yavs.init_files.before_run` and `yavs.init_file.gui`. Needs a yavs with the console
+  hook.
 
 ## 0.11.0 (2026-10-29)
 

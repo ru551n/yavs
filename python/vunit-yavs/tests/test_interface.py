@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import re
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,6 +29,8 @@ from vunit.test.suites import encode_dict
 from vunit.ui import VUnit
 from vunit.vhdl_standard import VHDL
 
+from vunit.sim_if import vsim_simulator_mixin
+from vunit_yavs.console import HELP
 from vunit_yavs import YAVS_MIN_VERSION, CoverageArgs, YavsInterface, YavsVersion, check_debug_args, write_response_file
 from vunit_yavs.tokens import TokenServer
 
@@ -63,6 +66,18 @@ def use_fresh_factory(test):
         patcher.start()
         test.addCleanup(patcher.stop)
     return factory
+
+
+class TestVunitConsoleText(unittest.TestCase):
+    """
+    The console commands word their help as VUnit's other simulator interfaces do
+    """
+
+    def test_help_is_vunits(self):
+        source = Path(vsim_simulator_mixin.__file__).read_text(encoding="utf-8")
+        theirs = {line.rstrip() for line in re.findall(r"puts \{(.*)\}", source)}
+        for line in HELP.splitlines():
+            self.assertIn(line.replace("yavs_extra_args", "vsim_extra_args").replace("to yavs", "to vsim"), theirs)
 
 
 class TestYavsVersion(unittest.TestCase):

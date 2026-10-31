@@ -5136,6 +5136,15 @@ impl Machine {
                     Inst::Br { to } => jump!(to),
                     Inst::CondBr { c, t, f: e } => jump!(if self.r(c) != 0 { t } else { e }),
                     Inst::Stmt => {
+                        // A debugger ending the run gets out of a process that never gives
+                        // control back, as `step_out` does without one.
+                        // ponytail: the process's own statements; a loop in a subprogram holds on.
+                        if DEBUG
+                            && f.kind == FuncKind::Process
+                            && ctx.as_deref().is_some_and(|c| c.stop_requested())
+                        {
+                            return Ok(Outcome::Suspended);
+                        }
                         self.end_stmt();
                         pc += 1;
                         continue;

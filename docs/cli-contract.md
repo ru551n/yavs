@@ -761,6 +761,42 @@ attach port; `0` a free one), reads the `DAP listening` line and prints the addr
 terminal, since the runner shows a test's output only when it fails. It runs one simulation:
 `--yavs-debug` with `--gui`, `--elaborate` or `-p` above 1 is refused at the start, and a second
 simulation of the run is refused before yavs starts. `elab` never gets `--gui` or `--dap`.
+`--yavs-interactive` runs `yavs run --interactive @FILE` on the terminal, with the same limits, and serves the console hook (section "Console hook"); `--yavs-debug` serves it too.
+
+`--source-map=COMPILED=ORIGINAL` (repeatable) in a debug session shows frames and takes breakpoints in `ORIGINAL` for the statements of the file compiled from `COMPILED`; lines must correspond. Diagnostics keep the compiled path. `vunit-yavs` passes it for preprocessed files under `--yavs-debug` and `--yavs-interactive`. `--dap=PORT` does not take a connection closed before it has sent anything for its session, so a client may look whether the port is open.
+
+### Console: `--interactive` and `--do`
+
+`yavs run --interactive` serves the run with a console on the terminal; `--do=COMMANDS` (repeatable, in order) runs
+commands first, and without `--interactive` the process then exits. Both conflict with `--dap`. They are a debug
+session like `--dap`: interpreter, one thread (`W0109`), no `--cov` (`E0199`) or `--profile` (`E0125`).
+The session stops at time 0 before any process has run, and stays after the end of the run until `quit`.
+
+- Commands: `run [TIME | until COND]`, `step [delta | timestep]`, `next`, `stop`, `examine`/`print`, `force`, `deposit`, `release`, `where`, `break`, `restart`/`reset`, `source`, `help`, `quit [STATUS]`. `;` separates; `#` at the start of a command and `--` start a comment.
+- Standard output: reports, textio output, results of commands (a `--do="run; quit"` session prints what a plain run prints, with the same exit status). Standard error: notices of stops and of the end, errors of commands, diagnostics.
+- Exit status: the `quit` argument; else the run's (section 5) when it has ended, else 0. A `--do` command that fails without `--interactive` ends the session with 1. End of input is `quit`.
+- A failed command does not end a session with `--interactive`. No prompt is printed when standard input is not a terminal.
+- Ctrl-C: under `--interactive` every SIGINT pauses a running simulation (no second-signal exit); with a pipe as standard input, a SIGINT while nothing runs exits 130. SIGTERM keeps its default action. Without `--interactive` SIGINT keeps its default action too.
+- `restart` rebuilds the simulation from the same elaboration: package and process state, files and `--wave` start over, breakpoints stay. With `--vhpi` or `--load` it is an error, as the library's state cannot be reset.
+
+DAP: `evaluate` with `context: "repl"` takes the same lines when the first word is a command (a plain name stays an evaluation); other contexts are unchanged. The response carries the result text; a command that resumes answers first and sends `continued`, and the next results come as `output` events (`console`). `stop` is taken while the simulation runs. `restart` ends in a `stopped` event with reason `entry`. A plain `--dap` session still ends with the run, except while a test runner's command waits for that run.
+
+### Console hook
+
+A test runner registers its own commands with `YAVS_CONSOLE_HOOK=<port>:<secret>` in the environment of `yavs run --interactive`, `--do` or `--dap`. yavs connects to `127.0.0.1:<port>` before the session starts; anything wrong (a bad value, no connection, no answer in 30 s, a name that is a yavs command) is `E0703`, exit 2, and the secret is not printed. The test runner listens; every message is one line of JSON.
+
+| Direction | Message | Meaning |
+|---|---|---|
+| yavs to runner | `{"hello":1,"secret":S}` | First line of the connection |
+| runner to yavs | `{"commands":[{"name":N,"help":H},...]}` | First answer; a name without spaces. An empty help keeps it out of `help` |
+| yavs to runner | `{"call":ID,"name":N,"args":TEXT}` | The command was given; the rest of its line is `args` |
+| runner to yavs | `{"print":TEXT}` | Show `TEXT` as it is (add the newline) on the console, or in `output` events under `--dap` |
+| runner to yavs | `{"exec":K,"line":TEXT}` | Run a console line. The answer comes when it is done: a run at the next stop or at the end of the simulation |
+| runner to yavs | `{"reload":K,"args":[FLAGS]}` | Analyse nothing, elaborate again from the libraries with the run's command line plus `FLAGS`, and go to time 0 with breakpoints kept. On failure the old design stays loaded and its state is untouched. Refused with `--vhpi` or `--load` |
+| yavs to runner | `{"result":K,"ok":B,"text":T,"error":E}` | Answer to `exec` and `reload` |
+| runner to yavs | `{"done":ID,"result":TEXT}` or `{"done":ID,"result":"","error":E}` | The call ended. A non-empty `result` is shown like a result of a command; `error` fails the command |
+
+While a call is under way, the simulation stays at its end if it gets there. If the connection closes, a waiting command fails with an error and the session goes on. The hook's commands appear in `help`, never in `yavs run --help`.
 
 ## 7. Environment
 

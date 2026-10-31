@@ -210,9 +210,22 @@ pub struct RunArgs {
     /// on standard input and output (`stdio`). A port that cannot be opened is E0701.
     #[arg(long, value_name = "PORT|stdio", value_parser = yavs_dap::parse_transport)]
     dap: Option<yavs_dap::Transport>,
+    /// Run from a `yavs>` prompt: stops at time 0, then takes console commands (`help` lists
+    /// them; run, step, examine, force, breakpoints, restart, source, quit).
+    #[arg(long, conflicts_with = "dap")]
+    interactive: bool,
+    /// Run these console commands, separated by `;`. Repeatable, in order. Without
+    /// `--interactive` the run then exits with its status (1 at a command that fails).
+    #[arg(long = "do", value_name = "COMMANDS", conflicts_with = "dap")]
+    do_commands: Vec<String>,
+    /// In a debug session (`--dap`, `--interactive`, `--do`), show the source file COMPILED as
+    /// ORIGINAL and take breakpoints in ORIGINAL: for files compiled from a rewritten copy with
+    /// the same lines. Repeatable.
+    #[arg(long, value_name = "COMPILED=ORIGINAL", value_parser = crate::parse_define)]
+    source_map: Vec<(String, String)>,
     /// Open the run in the graphical debugger: starts `yavs-gui` (next to this executable, else
     /// on PATH) with these run arguments.
-    #[arg(long, conflicts_with = "dap")]
+    #[arg(long, conflicts_with_all = ["dap", "interactive", "do_commands"])]
     pub(crate) gui: bool,
     /// Plusargs `+NAME[=VALUE]` after the top level, seen by VHPI plugins as tool arguments.
     #[arg(value_name = "+NAME[=VALUE]", value_parser = plusarg)]
@@ -242,7 +255,7 @@ fn tier_help() -> String {
          function before time 0; `clift-auto` is `auto` with Cranelift; `auto3` has Cranelift \
          compile warm functions and LLVM O2 those that stay hot. A tier needs its code generator \
          in the build (error E0120 otherwise): this yavs has {built}. Default: `auto` with a compiled tier, `interp` with \
-         `--dap` and without one."
+         `--dap`, `--interactive` or `--do`, and without one."
     )
 }
 
@@ -314,11 +327,16 @@ fn plusarg(s: &str) -> Result<String, String> {
 }
 
 impl RunArgs {
+    /// Whether the run goes through the debug server: a client or the console drives it.
+    fn debugged(&self) -> bool {
+        self.dap.is_some() || self.interactive || !self.do_commands.is_empty()
+    }
+
     /// The tier of this run: the one asked for, else `auto` where it is built in and nothing
     /// needs the interpreter alone (a debugger reads frame slots).
     pub(crate) fn tier(&self) -> TierArg {
         let compiled = cfg!(feature = "llvm") || cfg!(feature = "clift");
-        let t = self.tier.unwrap_or(if compiled && self.dap.is_none() {
+        let t = self.tier.unwrap_or(if compiled && !self.debugged() {
             TierArg::Auto
         } else {
             TierArg::Interp
@@ -1211,14 +1229,249 @@ fn use_llvm_tier(
     ))
 }
 
+/// Everything from the libraries to the design a run builds: the first time, and at each reload
+/// of a console session.
+fn prepare(
+    a: &RunArgs,
+    format: MessageFormat,
+    color: bool,
+    encoding: yavs_syntax::Encoding,
+) -> Result<Prepared, (Out, u8)> {
+    let kind = |k| a.cov.is_some() && a.cov_kind.contains(&k);
+    let lowering_counters = kind(CovKindArg::Statement)
+        || kind(CovKindArg::Branch)
+        || kind(CovKindArg::Condition)
+        || kind(CovKindArg::Expression);
+    let lowering = yavs_elab::LowerOptions {
+        coverage: kind(CovKindArg::Statement) || kind(CovKindArg::Branch),
+        cov_condition: kind(CovKindArg::Condition),
+        cov_expression: kind(CovKindArg::Expression),
+        ..yavs_elab::LowerOptions::default()
+    };
+    // A debugger or VHPI plugin may force or deposit any port: those runs keep ports apart.
+    let collapse = !a.debugged() && a.vhpi.is_empty();
+    let (mut out, db, e) = elaborate(
+        &a.common,
+        lowering,
+        matches!(a.tier(), TierArg::Llvm | TierArg::Clift),
+        collapse,
+        format,
+        color,
+        encoding,
+    )?;
+    if a.common.print_hierarchy {
+        print_hierarchy(&db, &e);
+    }
+    let none = SourceMap::default();
+    let unsupported = |what: &str| {
+        Diagnostic::error("E0199", format!("{what} is not implemented yet in yavs"))
+            .with_note("this is a limitation of yavs, not an error in the design")
+    };
+    let flag = if a.dap.is_some() {
+        "--dap"
+    } else {
+        "--interactive"
+    };
+    if a.debugged() {
+        // A debugger session runs the interpreter whatever `--tier` says, but a tier this build
+        // lacks is E0120 as without `--dap` (#835): nothing is compiled, so no runtime is given.
+        if let Err(d) = use_tier(None, a) {
+            out.emit(&none, &d);
+            return Err((out, 2));
+        }
+        if a.profile.is_some() {
+            out.emit(
+                &none,
+                &Diagnostic::error(
+                    "E0125",
+                    format!("`--profile` cannot be combined with `{flag}`"),
+                )
+                .with_note("a stop at a breakpoint would be sampled as time in the stopped process")
+                .with_help(format!("profile a run without `{flag}`")),
+            );
+            return Err((out, 2));
+        }
+        if a.cov.is_some() {
+            out.emit(
+                &none,
+                &unsupported(&format!("`--cov` together with `{flag}` (M8)")),
+            );
+            return Err((out, 2));
+        }
+        if a.threads > 1 {
+            out.emit(
+                &none,
+                &Diagnostic::warning("W0109", format!("`--threads` is ignored with `{flag}`"))
+                    .with_note("a stop inside a process needs the simulation on one thread"),
+            );
+        }
+    }
+    let resolution = match a.resolution {
+        ResolutionArg::Fs => yavs_kernel::Unit::Fs,
+        ResolutionArg::Ps => yavs_kernel::Unit::Ps,
+        ResolutionArg::Ns => yavs_kernel::Unit::Ns,
+        ResolutionArg::Us => yavs_kernel::Unit::Us,
+        ResolutionArg::Ms => yavs_kernel::Unit::Ms,
+        ResolutionArg::Sec => yavs_kernel::Unit::Sec,
+    };
+    // Plugins load after elaboration and before initialisation; a load failure is fatal.
+    if !a.vhpi.is_empty() {
+        yavs_vhpi::set_resolution(resolution);
+        yavs_vhpi::set_design(&db, &e);
+        let mut argv = vec!["yavs".to_string()];
+        argv.extend(a.plusargs.iter().cloned());
+        yavs_vhpi::set_argv(argv);
+        for spec in &a.vhpi {
+            let p: yavs_vhpi::PluginSpec = spec.parse().unwrap_or_else(|e| match e {});
+            let loaded = yavs_vhpi::load(&p).map_err(|err| err.to_diagnostic());
+            if let Err(d) = loaded {
+                out.emit(&none, &d);
+                return Err((out, 2));
+            }
+        }
+    }
+    // The models of VHPI foreign architectures run now, before the build (#330).
+    let mut e = e;
+    if !e.foreign_archs.is_empty() {
+        match yavs_vhpi::elaborate_foreign(&e) {
+            Ok(procs) => e.ext_procs = procs,
+            Err(d) => {
+                out.emit(&none, &d);
+                return Err((out, 2));
+            }
+        }
+    }
+    let others_free = !a.debugged() && a.vhpi.is_empty();
+    let observed_free = a.cov.is_none() && others_free;
+    let cov_counters = lowering_counters;
+    // Wide signals nothing asks the history of keep only each block's last event, unless
+    // something observes the run; hidden test aid: `YAVS_LEAN_EVENTS=off` keeps all histories.
+    if !observed_free || std::env::var("YAVS_LEAN_EVENTS").is_ok_and(|v| v == "off") {
+        e.lean.clear();
+    }
+    // Hidden test aid: `YAVS_CODES=all` keeps the byte codes of every logic signal.
+    if std::env::var("YAVS_CODES").is_ok_and(|v| v == "all") {
+        e.no_codes.clear();
+    }
+    let idle_mode = std::env::var("YAVS_IDLE_SKIP").unwrap_or_default();
+    let cfg = yavs_kernel::Config {
+        threads: a.threads,
+        shuffle: a.shuffle,
+        max_deltas: a.max_deltas,
+        resolution,
+        stop_severity: match a.exit_severity.unwrap_or(SeverityArg::Failure) {
+            SeverityArg::Note => yavs_kernel::Severity::Note,
+            SeverityArg::Warning => yavs_kernel::Severity::Warning,
+            SeverityArg::Error => yavs_kernel::Severity::Error,
+            SeverityArg::Failure => yavs_kernel::Severity::Failure,
+        },
+        // A process left suspended by its edge trigger would be visible to a debugger stepping
+        // through it and to foreign callbacks. Coverage accepts it: the statement of a pure
+        // edge test counts the activations at its edge only (#707).
+        edge_triggers: !a.debugged() && a.vhpi.is_empty(),
+        // Coverage keeps the count-neutral skips (user, 2026-10-24, #707): an unchanged assignment
+        // queues no transaction under every kind, but the idle skip leaves activations out and
+        // so is off when statement, branch, condition or expression counters count them.
+        skip_unchanged: others_free && !db.facts().reads_activity,
+        // Hidden switches for comparing runs: `YAVS_IDLE_SKIP=off` runs every activation,
+        // `check` runs the ones the kernel would skip and fails when one does something else.
+        idle_skip: idle_mode != "off" && !cov_counters,
+        idle_check: idle_mode == "check",
+        // `YAVS_CELLS=off` lists the exact runs of changed elements for every waited part.
+        cells: !std::env::var("YAVS_CELLS").is_ok_and(|v| v == "off"),
+        // `YAVS_POOL_ALL=1` hands every batch of two or more processes to the thread pool
+        // (`--threads` above 1): the determinism runs exercise the pooled path with it.
+        pool_all: std::env::var("YAVS_POOL_ALL").is_ok_and(|v| v == "1"),
+    };
+    if let Some(seed) = a.shuffle {
+        out.emit(&none, &shuffle_note(seed));
+    }
+    let stop = match &a.stop_time {
+        None => yavs_kernel::Time::MAX,
+        Some(t) => match parse_time(t) {
+            Ok(t) => t,
+            Err(m) => {
+                // A bare number is the common mistake: say so instead of the parser's words.
+                let bare = t.trim().chars().all(|c| c.is_ascii_digit() || c == '.');
+                let d = Diagnostic::error("E0105", format!("invalid `--stop-time={t}`"));
+                out.emit(
+                    &none,
+                    &if bare && !t.trim().is_empty() {
+                        d.with_note("a time needs a unit")
+                            .with_help("write the unit after the number, for example `--stop-time=10ns` (fs, ps, ns, us, ms, sec, min, hr)")
+                    } else {
+                        d.with_note(m)
+                    },
+                );
+                return Err((out, 2));
+            }
+        },
+    };
+    let mut e = e;
+    let bound = bind_foreign(&a.load, &mut e, &mut out);
+    if let Err(d) = bound {
+        out.emit(&none, &d);
+    }
+    if out.errors > 0 {
+        return Err((out, 2));
+    }
+    if let Some(d) = yavs_elab::check_time_resolution(&db, cfg.resolution) {
+        out.emit(&db.sources, &d);
+        return Err((out, 2));
+    }
+    Ok(Prepared {
+        out,
+        db,
+        e,
+        cfg,
+        stop,
+    })
+}
+
+/// A console session's `reload`: the run's command line, these flags added, elaborated again.
+fn reloader(
+    argv: Vec<String>,
+    format: MessageFormat,
+    color: bool,
+    encoding: yavs_syntax::Encoding,
+) -> yavs_dap::ReloadFn {
+    Box::new(move |extra| {
+        let mut args = argv.clone();
+        args.extend_from_slice(extra);
+        let a = crate::run_args(&args)?;
+        match prepare(&a, format, color, encoding) {
+            Ok(p) => Ok(yavs_dap::Loaded {
+                db: Arc::new(p.db),
+                e: Arc::new(p.e),
+                cfg: p.cfg,
+                stop: p.stop,
+            }),
+            Err((out, code)) => {
+                out.finish(code);
+                Err("the design did not elaborate: the diagnostics are on standard error".into())
+            }
+        }
+    })
+}
+
+/// The design of a run, ready to build.
+struct Prepared {
+    out: Out,
+    db: yavs_sem::Db,
+    e: yavs_elab::Elaborated,
+    cfg: yavs_kernel::Config,
+    stop: yavs_kernel::Time,
+}
+
 pub fn run(
     a: RunArgs,
+    argv: Vec<String>,
     format: MessageFormat,
     color: bool,
     encoding: yavs_syntax::Encoding,
 ) -> ExitCode {
     // First: an unusable token server stops the run before any work.
-    let tokens = match (a.threads > 1 && a.dap.is_none()).then(crate::tokens::connect) {
+    let tokens = match (a.threads > 1 && !a.debugged()).then(crate::tokens::connect) {
         Some(Err(why)) => {
             let mut out = Out::new(format, color);
             out.emit(
@@ -1255,7 +1508,7 @@ pub fn run(
     }
     // A debugger reads and writes the variables of subprograms in their frame slots: keep them
     // there, before any function is optimised.
-    if a.dap.is_some() {
+    if a.debugged() {
         yavs_interp::keep_variables();
     }
     // Eager Cranelift compiles the whole program before time 0 like `--tier=llvm` (no specialised
@@ -1288,193 +1541,42 @@ pub fn run(
         }
     }
     let kind = |k| a.cov.is_some() && a.cov_kind.contains(&k);
-    let lowering_counters = kind(CovKindArg::Statement)
-        || kind(CovKindArg::Branch)
-        || kind(CovKindArg::Condition)
-        || kind(CovKindArg::Expression);
-    let lowering = yavs_elab::LowerOptions {
-        coverage: kind(CovKindArg::Statement) || kind(CovKindArg::Branch),
-        cov_condition: kind(CovKindArg::Condition),
-        cov_expression: kind(CovKindArg::Expression),
-        ..yavs_elab::LowerOptions::default()
-    };
-    // A debugger or VHPI plugin may force or deposit any port: those runs keep ports apart.
-    let collapse = a.dap.is_none() && a.vhpi.is_empty();
-    let (mut out, mut db, e) = match elaborate(
-        &a.common,
-        lowering,
-        matches!(a.tier(), TierArg::Llvm | TierArg::Clift),
-        collapse,
-        format,
-        color,
-        encoding,
-    ) {
-        Ok(x) => x,
+    let Prepared {
+        mut out,
+        mut db,
+        mut e,
+        cfg,
+        stop,
+    } = match prepare(&a, format, color, encoding) {
+        Ok(p) => p,
         Err((out, code)) => return out.finish(code),
     };
-    if a.common.print_hierarchy {
-        print_hierarchy(&db, &e);
-    }
     let none = SourceMap::default();
-    let unsupported = |what: &str| {
-        Diagnostic::error("E0199", format!("{what} is not implemented yet in yavs"))
-            .with_note("this is a limitation of yavs, not an error in the design")
-    };
-    if a.dap.is_some() {
-        // A debugger session runs the interpreter whatever `--tier` says, but a tier this build
-        // lacks is E0120 as without `--dap` (#835): nothing is compiled, so no runtime is given.
-        if let Err(d) = use_tier(None, &a) {
-            out.emit(&none, &d);
-            return out.finish(2);
-        }
-        if a.profile.is_some() {
-            out.emit(
-                &none,
-                &Diagnostic::error("E0125", "`--profile` cannot be combined with `--dap`")
-                    .with_note(
-                        "a stop at a breakpoint would be sampled as time in the stopped process",
-                    )
-                    .with_help("profile a run without `--dap`"),
-            );
-            return out.finish(2);
-        }
-        if a.cov.is_some() {
-            out.emit(&none, &unsupported("`--cov` together with `--dap` (M8)"));
-            return out.finish(2);
-        }
-        if a.threads > 1 {
-            out.emit(
-                &none,
-                &Diagnostic::warning("W0109", "`--threads` is ignored with `--dap`")
-                    .with_note("a stop inside a process needs the simulation on one thread"),
-            );
-        }
-    }
-    let resolution = match a.resolution {
-        ResolutionArg::Fs => yavs_kernel::Unit::Fs,
-        ResolutionArg::Ps => yavs_kernel::Unit::Ps,
-        ResolutionArg::Ns => yavs_kernel::Unit::Ns,
-        ResolutionArg::Us => yavs_kernel::Unit::Us,
-        ResolutionArg::Ms => yavs_kernel::Unit::Ms,
-        ResolutionArg::Sec => yavs_kernel::Unit::Sec,
-    };
-    // Plugins load after elaboration and before initialisation; a load failure is fatal.
-    if !a.vhpi.is_empty() {
-        yavs_vhpi::set_resolution(resolution);
-        yavs_vhpi::set_design(&db, &e);
-        let mut argv = vec!["yavs".to_string()];
-        argv.extend(a.plusargs.iter().cloned());
-        yavs_vhpi::set_argv(argv);
-        for spec in &a.vhpi {
-            let p: yavs_vhpi::PluginSpec = spec.parse().unwrap_or_else(|e| match e {});
-            let loaded = yavs_vhpi::load(&p).map_err(|err| err.to_diagnostic());
-            if let Err(d) = loaded {
-                out.emit(&none, &d);
-                return out.finish(2);
-            }
-        }
-    }
-    // The models of VHPI foreign architectures run now, before the build (#330).
-    let mut e = e;
-    if !e.foreign_archs.is_empty() {
-        match yavs_vhpi::elaborate_foreign(&e) {
-            Ok(procs) => e.ext_procs = procs,
-            Err(d) => {
-                out.emit(&none, &d);
-                return out.finish(2);
-            }
-        }
-    }
-    let others_free = a.dap.is_none() && a.vhpi.is_empty();
-    let observed_free = a.cov.is_none() && others_free;
-    let cov_counters = lowering_counters;
-    // Wide signals nothing asks the history of keep only each block's last event, unless
-    // something observes the run; hidden test aid: `YAVS_LEAN_EVENTS=off` keeps all histories.
-    if !observed_free || std::env::var("YAVS_LEAN_EVENTS").is_ok_and(|v| v == "off") {
-        e.lean.clear();
-    }
-    // Hidden test aid: `YAVS_CODES=all` keeps the byte codes of every logic signal.
-    if std::env::var("YAVS_CODES").is_ok_and(|v| v == "all") {
-        e.no_codes.clear();
-    }
-    let idle_mode = std::env::var("YAVS_IDLE_SKIP").unwrap_or_default();
-    let cfg = yavs_kernel::Config {
-        threads: a.threads,
-        shuffle: a.shuffle,
-        max_deltas: a.max_deltas,
-        resolution,
-        stop_severity: match a.exit_severity.unwrap_or(SeverityArg::Failure) {
-            SeverityArg::Note => yavs_kernel::Severity::Note,
-            SeverityArg::Warning => yavs_kernel::Severity::Warning,
-            SeverityArg::Error => yavs_kernel::Severity::Error,
-            SeverityArg::Failure => yavs_kernel::Severity::Failure,
-        },
-        // A process left suspended by its edge trigger would be visible to a debugger stepping
-        // through it and to foreign callbacks. Coverage accepts it: the statement of a pure
-        // edge test counts the activations at its edge only (#707).
-        edge_triggers: a.dap.is_none() && a.vhpi.is_empty(),
-        // Coverage keeps the count-neutral skips (user, 2026-10-24, #707): an unchanged assignment
-        // queues no transaction under every kind, but the idle skip leaves activations out and
-        // so is off when statement, branch, condition or expression counters count them.
-        skip_unchanged: others_free && !db.facts().reads_activity,
-        // Hidden switches for comparing runs: `YAVS_IDLE_SKIP=off` runs every activation,
-        // `check` runs the ones the kernel would skip and fails when one does something else.
-        idle_skip: idle_mode != "off" && !cov_counters,
-        idle_check: idle_mode == "check",
-        // `YAVS_CELLS=off` lists the exact runs of changed elements for every waited part.
-        cells: !std::env::var("YAVS_CELLS").is_ok_and(|v| v == "off"),
-        // `YAVS_POOL_ALL=1` hands every batch of two or more processes to the thread pool
-        // (`--threads` above 1): the determinism runs exercise the pooled path with it.
-        pool_all: std::env::var("YAVS_POOL_ALL").is_ok_and(|v| v == "1"),
-    };
-    if let Some(seed) = a.shuffle {
-        out.emit(&none, &shuffle_note(seed));
-    }
     let cfg_profile = a
         .profile
         .is_some()
         .then(yavs_kernel::profile::Profile::install);
-    let stop = match &a.stop_time {
-        None => yavs_kernel::Time::MAX,
-        Some(t) => match parse_time(t) {
-            Ok(t) => t,
-            Err(m) => {
-                // A bare number is the common mistake: say so instead of the parser's words.
-                let bare = t.trim().chars().all(|c| c.is_ascii_digit() || c == '.');
-                let d = Diagnostic::error("E0105", format!("invalid `--stop-time={t}`"));
-                out.emit(
-                    &none,
-                    &if bare && !t.trim().is_empty() {
-                        d.with_note("a time needs a unit")
-                            .with_help("write the unit after the number, for example `--stop-time=10ns` (fs, ps, ns, us, ms, sec, min, hr)")
-                    } else {
-                        d.with_note(m)
-                    },
-                );
-                return out.finish(2);
-            }
-        },
-    };
-    let mut e = e;
-    let bound = bind_foreign(&a.load, &mut e, &mut out);
-    if let Err(d) = bound {
-        out.emit(&none, &d);
-    }
-    if out.errors > 0 {
-        return out.finish(2);
-    }
-    if let Some(d) = yavs_elab::check_time_resolution(&db, cfg.resolution) {
-        out.emit(&db.sources, &d);
-        return out.finish(2);
-    }
-    if let Some(t) = a.dap {
+    if a.debugged() {
         let (db, e) = (Arc::new(db), Arc::new(e));
-        let attach = |sim: &mut yavs_kernel::SimControl, built: Option<&yavs_elab::Built>| {
-            let rec = observers(&a, &db, &e, sim, built, &mut out)?;
-            if rec.is_some() {
+        // One signal thread, for the simulation of the moment.
+        let live: Arc<std::sync::Mutex<Option<yavs_kernel::Interrupt>>> = Arc::default();
+        let mut hooked = false;
+        let attach = |sim: &mut yavs_kernel::SimControl,
+                      built: Option<&yavs_elab::Built>,
+                      db: &Arc<yavs_sem::Db>,
+                      e: &Arc<yavs_elab::Elaborated>| {
+            let rec = observers(&a, db, e, sim, built, &mut out)?;
+            *live.lock().unwrap_or_else(|p| p.into_inner()) = Some(sim.interrupt());
+            if rec.is_some() && a.dap.is_some() && !std::mem::replace(&mut hooked, true) {
                 // Ctrl-C ends the run between cycles so the file is finished (rule 11).
                 let mut hooks = yavs_wave::interrupt::Handlers::default();
-                ctrl_c_stops(&mut hooks, sim.interrupt(), Arc::default(), true);
+                let live = live.clone();
+                let stop = move || {
+                    if let Some(i) = &*live.lock().unwrap_or_else(|p| p.into_inner()) {
+                        i.stop();
+                    }
+                };
+                ctrl_c_stops(&mut hooks, stop, Arc::default(), true);
                 yavs_wave::interrupt::start(hooks).map_err(handler_error)?;
             }
             Ok(rec.map(|(path, rec)| {
@@ -1489,7 +1591,33 @@ pub fn run(
             crate::counters::report(stats, rt);
             yavs_interp::census_dump(40);
         });
-        let r = yavs_dap::serve(db.clone(), e.clone(), cfg, stop, t, attach, report);
+        let options = yavs_dap::Options {
+            no_restart: (!a.vhpi.is_empty() || !a.load.is_empty()).then(|| {
+                "restart cannot reset the state of a library loaded with `--vhpi` or `--load`: \
+                 start the run again"
+                    .to_string()
+            }),
+            reload: Some(reloader(argv, format, color, encoding)),
+            hook: std::env::var(yavs_dap::HOOK_VAR).ok(),
+            source_map: a.source_map.clone(),
+        };
+        let loaded = yavs_dap::Loaded {
+            db: db.clone(),
+            e: e.clone(),
+            cfg,
+            stop,
+        };
+        let r = match a.dap {
+            Some(t) => yavs_dap::serve(loaded, t, options, attach, report),
+            None => crate::console::serve(
+                loaded,
+                &a.do_commands,
+                a.interactive,
+                options,
+                attach,
+                report,
+            ),
+        };
         return match r {
             Ok(code) => out.finish(code),
             Err(d) => {
@@ -1600,7 +1728,8 @@ pub fn run(
         } else {
             &signalled
         };
-        ctrl_c_stops(&mut hooks, sim.interrupt(), flag.clone(), keep_exit);
+        let i = sim.interrupt();
+        ctrl_c_stops(&mut hooks, move || i.stop(), flag.clone(), keep_exit);
     } else if crate::stdout::is_on() {
         hooks.first = Some(Box::new(move || {
             crate::stdout::flush();
@@ -1860,13 +1989,13 @@ fn exit_after_signal(code: u8, keep_exit: bool) -> ! {
 /// the buffered output and exits.
 fn ctrl_c_stops(
     hooks: &mut yavs_wave::interrupt::Handlers,
-    stop: yavs_kernel::Interrupt,
+    stop: impl Fn() + Send + 'static,
     flag: Arc<AtomicBool>,
     keep_exit: bool,
 ) {
     hooks.first = Some(Box::new(move || {
         flag.store(true, Ordering::SeqCst);
-        stop.stop();
+        stop();
     }));
     hooks.at_exit = Some(Box::new(move || {
         crate::stdout::flush();

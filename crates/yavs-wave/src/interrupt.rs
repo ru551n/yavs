@@ -176,3 +176,28 @@ pub fn start(h: Handlers) -> std::io::Result<()> {
     }
     Ok(())
 }
+
+/// Call `f` at every SIGINT (Ctrl-C on Windows), for a run that pauses on it instead of ending;
+/// SIGTERM and SIGHUP keep their default action.
+#[cfg(unix)]
+pub fn every_ctrl_c(f: impl Fn() + Send + 'static) -> std::io::Result<()> {
+    use std::io::Read;
+    let (mut rx, tx) = std::os::unix::net::UnixStream::pair()?;
+    tx.set_nonblocking(true)?;
+    std::thread::Builder::new()
+        .name("yavs-signals".into())
+        .spawn(move || {
+            let mut buf = [0u8; 64];
+            while rx.read(&mut buf).is_ok_and(|n| n > 0) {
+                f();
+            }
+        })?;
+    signal_hook::low_level::pipe::register(signal_hook::consts::SIGINT, tx)?;
+    Ok(())
+}
+
+/// Call `f` at every Ctrl-C.
+#[cfg(not(unix))]
+pub fn every_ctrl_c(f: impl Fn() + Send + 'static) -> std::io::Result<()> {
+    ctrlc::set_handler(f).map_err(std::io::Error::other)
+}

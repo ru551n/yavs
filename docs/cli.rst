@@ -96,6 +96,8 @@ Waveforms, coverage, debugging, plugins
   ``yavs cov report all.ycov --fail-under=85`` (exit status 1 below 85%, 2 for a bad percentage);
   ``--total`` prints only the percentage; the CI example is in :doc:`coverage`.
 * ``--dap=PORT|stdio``: :doc:`debugging`.
+* ``--interactive``, ``--do=COMMANDS``: :doc:`interactive`.
+* ``--source-map=COMPILED=ORIGINAL``: :doc:`debugging`.
 * ``--vhpi=LIB[:ENTRY]``, ``--load=LIB``: :doc:`vhpi`.
 
 Performance

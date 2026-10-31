@@ -23,6 +23,7 @@ import sys
 import threading
 import warnings
 from functools import total_ordering
+import os
 from os import environ, makedirs
 from pathlib import Path
 
@@ -97,6 +98,35 @@ def add_vivado_libraries(vu, vivado=None, output_path=None, std="2008"):
         vu.add_external_library(name, out / name)
 
 
+def _exit_with_failure():
+    """At exit: end the process with status 1, which VUnit's own exit cannot be told to do from post_run"""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(1)  # pylint: disable=protected-access
+
+
+def _percentage(text):
+    """argparse type of --yavs-cov-fail-under: 0 to 100, kept as written for yavs to check"""
+    try:
+        valid = 0 <= float(text) <= 100
+    except ValueError:
+        valid = False
+    if not valid:
+        raise argparse.ArgumentTypeError(f"expected a percentage from 0 to 100, got {text!r}")
+    return text
+
+
+class CoverageArgs:  # pylint: disable=too-few-public-methods
+    """
+    The coverage command line arguments: --yavs-cov, --yavs-cov-html, --yavs-cov-fail-under
+    """
+
+    def __init__(self, enabled=False, html=None, fail_under=None):
+        self.enabled = enabled
+        self.html = html
+        self.fail_under = fail_under
+
+
 class YavsInterface(SimulatorInterface):
     """
     Interface for the yavs simulator
@@ -118,11 +148,19 @@ class YavsInterface(SimulatorInterface):
         ListOfStringOption("yavs.elab_flags"),
         ListOfStringOption("yavs.sim_flags"),
         PositiveIntegerOption("yavs.max_threads"),
+        ListOfStringOption("yavs.cov_kind"),
     ]
 
     # For VUnit packages that load a native library: their VHDL calls it through VHPIDIRECT
     # foreign subprograms, and native_library_hooks makes yavs load it
     foreign_language_interface = "VHPIDIRECT"
+
+    @staticmethod
+    def supports_coverage():
+        """
+        Returns True when the simulator supports coverage
+        """
+        return True
 
     @staticmethod
     def native_library_hooks(library_file):
@@ -166,6 +204,28 @@ class YavsInterface(SimulatorInterface):
             "each simulation runs with --threads=N (yavs.max_threads or --yavs-max-threads caps it).",
         )
 
+        group.add_argument(
+            "--yavs-cov",
+            action="store_true",
+            default=False,
+            help="Collect coverage in every simulation, as the VUnit option enable_coverage does for the tests "
+            "it is set for. Merge and report with results.merge_coverage() in the post_run function.",
+        )
+        group.add_argument(
+            "--yavs-cov-html",
+            default=None,
+            metavar="DIR",
+            help="Write an HTML coverage report into DIR when results.merge_coverage() merges the databases.",
+        )
+        group.add_argument(
+            "--yavs-cov-fail-under",
+            type=_percentage,
+            default=None,
+            metavar="PCT",
+            help="Print the coverage report and exit with status 1 when results.merge_coverage() finds the total "
+            "coverage below PCT percent.",
+        )
+
     @classmethod
     def from_args(cls, args, output_path, **kwargs):
         """
@@ -192,6 +252,11 @@ class YavsInterface(SimulatorInterface):
             debug_port=debug_port,
             max_threads=getattr(args, "yavs_max_threads", None),
             tokens=tokens,
+            coverage=CoverageArgs(
+                enabled=getattr(args, "yavs_cov", False),
+                html=getattr(args, "yavs_cov_html", None),
+                fail_under=getattr(args, "yavs_cov_fail_under", None),
+            ),
         )
 
     @classmethod
@@ -202,9 +267,11 @@ class YavsInterface(SimulatorInterface):
         return cls.find_toolchain([cls.executable])
 
     def __init__(
-        self, output_path, prefix, *, gui=False, debug_port=None, max_threads=None, tokens=None
+        self, output_path, prefix, *, gui=False, debug_port=None, max_threads=None, tokens=None, coverage=None
     ):  # pylint: disable=too-many-arguments
         SimulatorInterface.__init__(self, output_path, gui)
+        self._coverage = coverage or CoverageArgs()
+        self._coverage_files = set()  # The database of every simulation run with coverage
         self._prefix = prefix
         self._project = None
         self._debug_port = debug_port
@@ -362,6 +429,19 @@ class YavsInterface(SimulatorInterface):
         if max_threads is not None and not elaborate_only and not debug:
             cmd += [f"--threads={max_threads}"]
 
+        if not elaborate_only and (self._coverage.enabled or config.sim_options.get("enable_coverage", False)):
+            if debug:
+                raise RuntimeError(
+                    "--yavs-debug and coverage cannot be combined: yavs does not collect coverage under the debugger. "
+                    "Drop --yavs-cov and the enable_coverage option, or drop --yavs-debug."
+                )
+            database = script_path / "coverage.ycov"
+            cmd += [f"--cov={database}", f"--cov-test={test_suite_name}"]
+            kinds = config.sim_options.get("yavs.cov_kind", [])
+            if kinds:
+                cmd += [f"--cov-kind={','.join(kinds)}"]
+            self._coverage_files.add(str(database))
+
         cmd += config.sim_options.get("yavs.global_flags", [])
         cmd += config.sim_options.get("yavs.elab_flags", [])
         cmd += hooks.get_flags(self, "elab_flags")
@@ -406,6 +486,43 @@ class YavsInterface(SimulatorInterface):
                 self._tokens.remove(client)
 
         return status
+
+    def merge_coverage(self, file_name, args=None):
+        """
+        Merge the coverage databases of all simulations into file_name (".ycov" is added unless it ends so).
+
+        args are further arguments for 'yavs cov report', which runs on the merged database when there are
+        any, or --yavs-cov-html or --yavs-cov-fail-under are given. A report that fails, for example a total
+        below --yavs-cov-fail-under, makes the run exit with status 1 once VUnit has written its reports.
+        """
+        databases = []
+        for database in sorted(self._coverage_files):
+            if Path(database).exists():
+                databases.append(database)
+            else:
+                LOGGER.warning("Missing coverage database: %s", database)
+        if not databases:
+            raise RuntimeError(
+                "There is no coverage database to merge: no simulation ran with coverage. "
+                "Set the sim option enable_coverage or pass --yavs-cov."
+            )
+
+        merged = Path(file_name)
+        if merged.suffix != ".ycov":
+            merged = merged.with_name(merged.name + ".ycov")
+        yavs = str(Path(self._prefix) / self.executable)
+
+        print(f"Merging {len(databases)} coverage databases into {merged}...")
+        subprocess.run([yavs, "cov", "merge", "-o", str(merged), *databases], check=True)
+
+        report = list(args or [])
+        if self._coverage.html is not None:
+            report += ["--html", self._coverage.html]
+        if self._coverage.fail_under is not None:
+            report += [f"--fail-under={self._coverage.fail_under}"]
+        if report and subprocess.run([yavs, "cov", "report", str(merged), *report], check=False).returncode != 0:
+            # post_run runs before VUnit writes the JUnit report, which an exception here would skip
+            atexit.register(_exit_with_failure)
 
     def _take_debug_session(self, test_suite_name):
         """

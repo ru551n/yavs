@@ -28,7 +28,7 @@ from vunit.test.suites import encode_dict
 from vunit.ui import VUnit
 from vunit.vhdl_standard import VHDL
 
-from vunit_yavs import YAVS_MIN_VERSION, YavsInterface, YavsVersion, check_debug_args, write_response_file
+from vunit_yavs import YAVS_MIN_VERSION, CoverageArgs, YavsInterface, YavsVersion, check_debug_args, write_response_file
 from vunit_yavs.tokens import TokenServer
 
 FAKE_BIN = Path(__file__).parent / "fake_bin"
@@ -133,6 +133,26 @@ class TestPackage(unittest.TestCase):
             vu.get_simulator_name()
         self.assertIn("Write the port as --yavs-debug=PORT", stderr.getvalue())
 
+    def test_coverage_arguments(self):
+        vu = self._vunit("--yavs-cov", "--yavs-cov-html=cov html", "--yavs-cov-fail-under=92.5")
+        vu.get_simulator_name()
+        args = vu._args  # pylint: disable=protected-access
+        self.assertEqual((args.yavs_cov, args.yavs_cov_html, args.yavs_cov_fail_under), (True, "cov html", "92.5"))
+        vu = self._vunit()
+        vu.get_simulator_name()
+        args = vu._args  # pylint: disable=protected-access
+        self.assertEqual((args.yavs_cov, args.yavs_cov_html, args.yavs_cov_fail_under), (False, None, None))
+        for bad in ("101", "-1", "abc", ""):
+            vu = self._vunit(f"--yavs-cov-fail-under={bad}")
+            with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr, self.assertRaises(SystemExit):
+                vu.get_simulator_name()
+            self.assertIn("expected a percentage from 0 to 100", stderr.getvalue())
+
+    def test_coverage_options(self):
+        self._vunit().get_simulator_name()
+        self.factory.check_sim_option("enable_coverage", True)
+        self.factory.check_sim_option("yavs.cov_kind", ["statement", "branch"])
+
     def test_max_threads_argument(self):
         vu = self._vunit("--yavs-max-threads", "3")
         vu.get_simulator_name()
@@ -187,7 +207,7 @@ class TestYavsInterface(unittest.TestCase):
         self.assertTrue(YavsInterface.supports_vhdl_package_generics())
         self.assertTrue(YavsInterface.supports_vhdl_call_paths())
         self.assertTrue(YavsInterface.supports_vhpi())
-        self.assertFalse(YavsInterface.supports_coverage())
+        self.assertTrue(YavsInterface.supports_coverage())
 
     @mock.patch("vunit.sim_if.check_output", autospec=True, return_value="")
     def test_compile_project(self, check_output):
@@ -313,6 +333,90 @@ class TestYavsInterface(unittest.TestCase):
                 "-gwidth=8",
             ],
         )
+
+    def test_simulate_with_coverage(self):
+        database = Path(self.output_path) / "yavs" / "coverage.ycov"
+        config = make_config(
+            sim_options={
+                "enable_coverage": True,
+                "yavs.cov_kind": ["statement", "branch", "toggle"],
+                "yavs.sim_flags": ["--cov-kind=condition"],
+            }
+        )
+        _, cmd, _ = self._simulate(config, suite="lib.tb.test_a")
+        # The options come before the raw flags, which win
+        at = cmd.index(f"--cov={database}")
+        self.assertEqual(
+            cmd[at : at + 3], [f"--cov={database}", "--cov-test=lib.tb.test_a", "--cov-kind=statement,branch,toggle"]
+        )
+        self.assertLess(at, cmd.index("--cov-kind=condition"))
+        # Not for an elaboration, and not without the option
+        _, cmd, _ = self._simulate(config, elaborate_only=True)
+        self.assertFalse(any(arg.startswith("--cov") for arg in cmd))
+        _, cmd, _ = self._simulate(make_config())
+        self.assertFalse(any(arg.startswith("--cov") for arg in cmd))
+
+    def test_command_line_enables_coverage_without_kinds(self):
+        _, cmd, _ = self._simulate(make_config(), coverage=CoverageArgs(enabled=True))
+        self.assertEqual(len([arg for arg in cmd if arg.startswith("--cov")]), 2)
+        self.assertFalse(any(arg.startswith("--cov-kind") for arg in cmd))
+
+    def test_coverage_refuses_the_debugger(self):
+        with (
+            mock.patch("vunit_yavs.Process", autospec=True) as process,
+            self.assertRaisesRegex(RuntimeError, "--yavs-debug and coverage cannot be combined"),
+        ):
+            self.simif = YavsInterface(prefix="prefix", output_path=self.output_path, debug_port=4711)
+            self.simif.setup_library_mapping(self._project("2008"))
+            self.simif.simulate(self.output_path, "lib.tb", make_config(sim_options={"enable_coverage": True}), False)
+        process.assert_not_called()
+
+    def _simulate_with_coverage(self, **kwargs):
+        """Run a simulation with coverage; yavs would write its database at yavs/coverage.ycov"""
+        self.simif = YavsInterface(prefix="prefix", output_path=self.output_path, **kwargs)
+        self._simulate(make_config(sim_options={"enable_coverage": True}))
+
+    def test_merge_coverage(self):
+        self._simulate_with_coverage()
+        database = Path(self.output_path) / "yavs" / "coverage.ycov"
+        database.write_text("db", encoding="utf-8")
+        merged = str(Path(self.output_path) / "all.ycov")
+        yavs = str(Path("prefix") / "yavs")
+        with mock.patch("vunit_yavs.subprocess.run", autospec=True) as run:
+            self.simif.merge_coverage(str(Path(self.output_path) / "all"))
+        run.assert_called_once_with([yavs, "cov", "merge", "-o", merged, str(database)], check=True)
+        # A file name that ends in .ycov is used as it is; arguments make a report on the merged database
+        with mock.patch("vunit_yavs.subprocess.run", autospec=True) as run:
+            run.return_value.returncode = 0
+            self.simif.merge_coverage(merged, args=["--cobertura", "c.xml"])
+        self.assertEqual(
+            run.call_args_list[1].args[0], [yavs, "cov", "report", merged, "--cobertura", "c.xml"]
+        )
+
+    def test_merge_coverage_report_and_threshold(self):
+        self._simulate_with_coverage(coverage=CoverageArgs(html="cov html", fail_under="80"))
+        (Path(self.output_path) / "yavs" / "coverage.ycov").write_text("db", encoding="utf-8")
+        merged = str(Path(self.output_path) / "all.ycov")
+        report = [str(Path("prefix") / "yavs"), "cov", "report", merged, "--html", "cov html", "--fail-under=80"]
+        with mock.patch("vunit_yavs.subprocess.run", autospec=True) as run, mock.patch("vunit_yavs.atexit") as atexit:
+            run.return_value.returncode = 0
+            self.simif.merge_coverage(merged)
+            atexit.register.assert_not_called()
+            # A failing report ends the process with status 1 at exit, after VUnit wrote its reports
+            run.return_value.returncode = 1
+            self.simif.merge_coverage(merged)
+        self.assertEqual(run.call_args_list[1].args[0], report)
+        atexit.register.assert_called_once()
+        with mock.patch("vunit_yavs.os._exit") as exit_:
+            atexit.register.call_args.args[0]()
+        exit_.assert_called_once_with(1)
+
+    def test_merge_coverage_needs_a_database(self):
+        with self.assertRaisesRegex(RuntimeError, "no simulation ran with coverage"):
+            self.simif.merge_coverage("all")
+        self._simulate_with_coverage()  # Their databases were never written
+        with self.assertLogs("vunit_yavs", "WARNING"), self.assertRaisesRegex(RuntimeError, "no coverage database"):
+            self.simif.merge_coverage("all")
 
     def test_simulate_configuration_and_stop_level(self):
         config = make_config(vhdl_configuration_name="cfg", vhdl_assert_stop_level="failure")

@@ -7,7 +7,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change the P
 
 - Everything yavs-specific on the test runner's Python side, in one distribution `vunit-yavs`
   (import name `vunit_yavs`): the simulator interface, `--yavs-debug`, `--yavs-max-threads` and
-  `yavs.max_threads`, the token server, the version check, `vunit_pkg.toml`. Nothing of it goes into
+  `yavs.max_threads`, coverage (`enable_coverage`, `--yavs-cov*`, `merge_coverage`), the token server, the version check, `vunit_pkg.toml`. Nothing of it goes into
   the test runner itself or into a crate.
 - It drives the CLI contract (`docs/cli-contract.md`); a change of the contract that it relies on
   changes this package in the same commit.
@@ -17,7 +17,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change the P
 
 | Path | What |
 |---|---|
-| `vunit_yavs/__init__.py` | `YavsInterface` (the `SimulatorInterface`), its arguments, the native library hooks, `add_vivado_libraries`, `check_debug_args`, `write_response_file`, `YavsVersion` |
+| `vunit_yavs/__init__.py` | `YavsInterface` (the `SimulatorInterface`), its arguments, `CoverageArgs` and `merge_coverage`, the native library hooks, `add_vivado_libraries`, `check_debug_args`, `write_response_file`, `YavsVersion` |
 | `vunit_yavs/tokens.py` | `lend_order` (the lending priority), `Client` (one test: secret, cap), `Connection`, `TokenServer` (127.0.0.1 listener, selector thread, accounting) |
 | `vunit_yavs/vunit_pkg.toml` | `simulator = "vunit_yavs:YavsInterface"`, shipped as package data |
 | `tests/test_interface.py` | Unit tests of the interface, with the package registered in a fresh simulator factory |
@@ -37,6 +37,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change the P
 | `yavs.max_threads` (sim option) over `--yavs-max-threads` (default) to `--threads=N`, before the raw flags; none under `--yavs-debug` or for `elab` | Raw flags stay the last word; a DAP run is one thread |
 | `foreign_language_interface = "VHPIDIRECT"` and `native_library_hooks(library_file)` returning only `run_flags` `--load=<library_file>` (user, 2026-10-29) | A test runner package that loads a native library asks the selected simulator interface how, instead of knowing yavs; the library is needed when the design runs, so `analyze` and the elaborate-only `elab` get nothing |
 | Vendor libraries are a helper `add_vivado_libraries(vu, ...)` for `run.py`, not a command line flag; the install comes from `vivado=` or `XILINX_VIVADO`, which yavs itself reads (#119) | The sources are declared in `run.py` like every other library, and one more flag would only repeat the environment variable |
+| Coverage: `enable_coverage` (VUnit's option) or `--yavs-cov` adds `--cov=<test output>/yavs/coverage.ycov --cov-test=NAME` before the raw flags; `merge_coverage` merges to `<file>.ycov` and runs `yavs cov report` when there are `args`, `--yavs-cov-html` or `--yavs-cov-fail-under`; a failing report registers an `os._exit(1)` exit hook | `post_run` runs before the JUnit file is written, so raising there would lose it; `--cov` with `--dap` is not implemented, so the combination is refused before yavs starts (#877) |
 | The token server is opt-in (`--yavs-jobserver`, name kept from 0.10), created only with `-p` above 1; Linux and Windows (user, 2026-10-29: one cross-platform mechanism, the fifo jobserver removed) | No change for anyone who does not ask |
 | A localhost TCP server at a free port, one random secret per test, `YAVS_TOKENS=<port>:<secret>`; protocol in `docs/cli-contract.md` "Token server" | Same code on every platform; the secret names the test (its cap) and keeps other local processes out |
 | With the server, every run gets `--threads=N` (`max_threads` when set) (user, 2026-10-29) | Idle slots speed up the tail without further options |

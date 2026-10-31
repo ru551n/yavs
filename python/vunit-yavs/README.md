@@ -30,12 +30,17 @@ or later (`pip install vunit-yavs` installs it, a pre-release) and yavs 0.11.0 o
 | `yavs.elab_flags` | `yavs run` and `elab` |
 | `yavs.sim_flags` | `yavs run` |
 | `yavs.max_threads` (integer, at least 1) | `yavs run --threads=N`, the most threads of one simulation |
+| `enable_coverage` (VUnit's option) | `yavs run --cov=<test output>/yavs/coverage.ycov --cov-test=<test name>` (coverage, below) |
+| `yavs.cov_kind` (list of strings) | `yavs run --cov-kind=LIST`: `statement`, `branch`, `toggle`, `condition`, `expression` |
 
 | Command line | What it does |
 |---|---|
 | `-g/--gui` | Opens the run in the graphical debugger (`yavs run --gui`) |
 | `--yavs-debug[=PORT]` | Runs the selected test under `yavs run --dap=PORT` (default 4711, `0` picks a free port) and prints where to attach; write the port as `--yavs-debug=PORT` |
 | `--yavs-max-threads N` | `yavs.max_threads` for every test that does not set it |
+| `--yavs-cov` | Collects coverage in every simulation, as `enable_coverage` does for the tests it is set for |
+| `--yavs-cov-html DIR` | `results.merge_coverage()` also writes the HTML coverage report into DIR |
+| `--yavs-cov-fail-under PCT` | `results.merge_coverage()` prints the coverage report and the run exits with status 1 when the total is below PCT percent |
 | `--yavs-jobserver` | Lends the CPU slots of `-p N` that no test uses to the running simulations through a token server (below) |
 
 Without `yavs.max_threads` or `--yavs-max-threads` no thread count is passed, and yavs runs with
@@ -57,6 +62,27 @@ add_vivado_libraries(vu)  # after add_package; the install comes from XILINX_VIV
 libraries go (default: inside the VUnit output path), `std="2019"` their standard. Without an install
 it raises an error that names what it looked at and the fix. It runs `yavs vendor vivado`, so it
 needs a yavs with that command; the sources stay in the install. Which primitives run: "Vendor libraries" in the yavs user guide.
+
+## Coverage
+
+```python
+vu.set_sim_option("enable_coverage", True)      # or run with --yavs-cov
+vu.set_sim_option("yavs.cov_kind", ["statement", "branch"])   # optional; default statement, branch, toggle
+vu.main(post_run=lambda results: results.merge_coverage("coverage"))
+```
+
+Each simulation writes a yavs coverage database named after its test. `results.merge_coverage("coverage")`
+merges them into `coverage.ycov` (`yavs cov merge`); with `--yavs-cov-html DIR` or
+`--yavs-cov-fail-under PCT`, or arguments in `merge_coverage("coverage", args=["--cobertura", "c.xml"])`, it
+then runs `yavs cov report` on the merged database. A total below the threshold makes the run exit with status 1
+after VUnit has written its reports (a JUnit file included). For a CI gate:
+
+```sh
+VUNIT_SIMULATOR=yavs python run.py --yavs-cov --yavs-cov-html cov-html --yavs-cov-fail-under 85
+```
+
+Coverage cannot be combined with `--yavs-debug`. Reports, exclusions and the numbers are in the yavs
+documentation page on coverage. The coverage options need the yavs release that has `yavs cov report --fail-under`.
 
 ## Native libraries of VUnit packages
 

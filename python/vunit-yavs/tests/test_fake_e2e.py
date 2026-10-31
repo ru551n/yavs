@@ -44,11 +44,14 @@ class TestFakeYavs(unittest.TestCase):
     Run a real run.py with VUNIT_SIMULATOR=yavs against the fake yavs
     """
 
-    def _run(self, *args, fail="", version=str(YAVS_MIN_VERSION)):
+    def _run(self, *args, fail="", version=str(YAVS_MIN_VERSION), env=None):
         """Run run.py and return the exit code, the output, the JUnit results and the logged yavs calls"""
         with tempfile.TemporaryDirectory() as tempdir:
             tempdir = Path(tempdir)
             log = tempdir / "yavs.log"
+            env_vars = dict(env or {})
+            if "RUN_PY_MERGE_COVERAGE" in env_vars:  # The merged database goes into the scratch directory
+                env_vars["RUN_PY_MERGE_COVERAGE"] = str(tempdir / env_vars["RUN_PY_MERGE_COVERAGE"])
             env = dict(
                 os.environ,
                 VUNIT_SIMULATOR="yavs",
@@ -56,6 +59,7 @@ class TestFakeYavs(unittest.TestCase):
                 FAKE_YAVS_LOG=str(log),
                 FAKE_YAVS_FAIL=fail,
                 FAKE_YAVS_VERSION=version,
+                **env_vars,
             )
             xml = tempdir / "x.xml"
             proc = subprocess.run(
@@ -129,6 +133,41 @@ class TestFakeYavs(unittest.TestCase):
         _, _, _, calls = self._run("-p", "2", PASS, COMMA)
         self.assertFalse([call for call in calls if call[0] == "tokens"])
         self.assertFalse(any("--threads=2" in run for run in self._runs(calls)))
+
+    def test_coverage_is_collected_merged_and_reported(self):
+        merged = "merged"
+        env = {"RUN_PY_MERGE_COVERAGE": merged, "RUN_PY_COVERAGE_ARGS": "--cobertura x.xml"}
+        exit_code, output, _, calls = self._run("--yavs-cov", "--yavs-cov-fail-under=80", PASS, COMMA, env=env)
+        self.assertEqual(exit_code, 0, output)
+        for run in self._runs(calls):
+            self.assertTrue(any(arg.startswith("--cov=") and arg.endswith("coverage.ycov") for arg in run), run)
+        (merge,) = [call for call in calls if call[:2] == ["cov", "merge"]]
+        self.assertEqual(len(merge), 6)  # cov, merge, -o, OUT, and the two databases
+        (report_call,) = [call for call in calls if call[:2] == ["cov", "report"]]
+        self.assertEqual(report_call[3:], ["--cobertura", "x.xml", "--fail-under=80"])
+        self.assertIn("fake report of ", output)
+
+    def test_coverage_below_the_threshold_fails_the_run(self):
+        env = {"RUN_PY_MERGE_COVERAGE": "merged", "FAKE_YAVS_COVERAGE": "70"}
+        exit_code, output, results, _ = self._run("--yavs-cov", "--yavs-cov-fail-under=80", PASS, env=env)
+        self.assertEqual(exit_code, 1, output)
+        self.assertEqual(results, {PASS: "passed"})
+        self.assertIn("coverage 70.0% is below the required 80.0%", output)
+
+    def test_no_coverage_without_a_request(self):
+        _, _, _, calls = self._run(PASS)
+        self.assertFalse(any(arg.startswith("--cov") for run in self._runs(calls) for arg in run))
+
+    def test_merging_without_coverage_is_a_clear_error(self):
+        exit_code, output, _, _ = self._run(PASS, env={"RUN_PY_MERGE_COVERAGE": "merged"})
+        self.assertEqual(exit_code, 1)
+        self.assertIn("no simulation ran with coverage", output)
+
+    def test_coverage_refuses_the_debugger(self):
+        exit_code, output, _, calls = self._run("--yavs-debug=5000", "--yavs-cov", PASS)
+        self.assertEqual(exit_code, 1)
+        self.assertIn("--yavs-debug and coverage cannot be combined", output)
+        self.assertFalse(self._runs(calls))
 
     def test_debug_one_test(self):
         exit_code, output, results, calls = self._run("--yavs-debug=5000", "--yavs-max-threads=3", PASS)

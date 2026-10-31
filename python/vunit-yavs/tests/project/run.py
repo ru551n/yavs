@@ -8,6 +8,7 @@
 A tiny project run on yavs through the package route
 """
 
+import os
 from pathlib import Path
 from vunit import VUnit
 
@@ -16,4 +17,10 @@ VU = VUnit.from_argv()
 VU.add_package("vunit-yavs", allow_setup=True)
 VU.add_vhdl_builtins()
 VU.add_library("lib").add_source_files(Path(__file__).parent / "tb_yavs.vhd")
-VU.main()
+
+def post_run(results):
+    """Merge the coverage databases when the test asks for it"""
+    results.merge_coverage(os.environ["RUN_PY_MERGE_COVERAGE"], args=os.environ.get("RUN_PY_COVERAGE_ARGS", "").split())
+
+
+VU.main(post_run=post_run if "RUN_PY_MERGE_COVERAGE" in os.environ else None)

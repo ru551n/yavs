@@ -116,6 +116,36 @@ class TestRealYavs(unittest.TestCase):
         self.assertEqual(proc.returncode, 1, proc.stdout)
         self.assertEqual(report(self.xml), {PASS: "passed", COMMA: "passed", FAIL: "failed"}, proc.stdout)
 
+    def _coverage_run(self, *args, **env):
+        return subprocess.run(
+            self._command("--yavs-cov", PASS, COMMA, *args),
+            env=dict(self._env(), RUN_PY_MERGE_COVERAGE=str(self.tempdir / "all"), **env),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=TIMEOUT,
+            check=False,
+        )
+
+    def test_coverage_merged_and_reported(self):
+        proc = self._coverage_run("--yavs-cov-html", str(self.tempdir / "html"), "--yavs-cov-fail-under=0")
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(report(self.xml), {PASS: "passed", COMMA: "passed"})
+        self.assertTrue((self.tempdir / "all.ycov").is_file(), proc.stdout)
+        self.assertTrue((self.tempdir / "html" / "index.html").is_file(), proc.stdout)
+        # The merged database names both tests and the report is the usual one
+        database = (self.tempdir / "all.ycov").read_text(encoding="utf-8")
+        self.assertIn(f"\t{PASS}\n", database)
+        self.assertIn(f"\t{COMMA}\n", database)
+        self.assertIn("statements ", proc.stdout)
+
+    def test_coverage_below_the_threshold_fails_after_the_reports(self):
+        proc = self._coverage_run("--yavs-cov-fail-under=100")
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+        # VUnit still wrote its report, and yavs said why the run failed
+        self.assertEqual(report(self.xml), {PASS: "passed", COMMA: "passed"})
+        self.assertRegex(proc.stdout, r"error\[E0114\]: coverage [0-9.]+% is below the required 100.0%")
+
     def test_run_with_token_server(self):
         # Each simulation runs with --threads=2 and connects; a bad YAVS_TOKENS would be error E0128
         proc = subprocess.run(

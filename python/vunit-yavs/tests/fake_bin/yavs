@@ -194,6 +194,8 @@ def run(args, elaborate_only):
     if elaborate_only:
         return 0
     use_tokens()
+    if "cov" in opts:
+        Path(opts["cov"][-1]).write_text(f"fake database of {opts.get('cov-test', ['?'])[-1]}\n", encoding="utf-8")
     if "dap" in opts:
         port = opts["dap"][-1]
         print(f"yavs: DAP listening on 127.0.0.1:{port}", file=sys.stderr)
@@ -215,6 +217,36 @@ def run(args, elaborate_only):
                 return 1
         fptr.write("test_suite_done\n")
     return 0
+
+
+def cov(args):
+    """
+    'cov merge -o OUT DB...' concatenates the databases; 'cov report DB [--fail-under=PCT] [--html DIR]' prints a
+    line and fails like yavs when the total in FAKE_YAVS_COVERAGE (default 100) is below PCT.
+    """
+    command, rest = args[0], args[1:]
+    if command == "merge":
+        out = rest[rest.index("-o") + 1]
+        inputs = [arg for arg in rest if arg != "-o" and arg != out]
+        for name in inputs:
+            if not Path(name).is_file():
+                print(f"error[E0111]: cannot read coverage database `{name}`", file=sys.stderr)
+                return 1
+        Path(out).write_text("".join(Path(name).read_text(encoding="utf-8") for name in inputs), encoding="utf-8")
+        return 0
+    if command == "report":
+        opts, positional = options(rest)
+        total = float(os.environ.get("FAKE_YAVS_COVERAGE", "100"))
+        print(f"fake report of {positional[0]}: {total}%")
+        if "html" in opts:
+            Path(opts["html"][-1]).mkdir(parents=True, exist_ok=True)
+        need = float(opts["fail-under"][-1]) if "fail-under" in opts else None
+        if need is not None and total < need:
+            print(f"error[E0114]: coverage {total}% is below the required {need}%", file=sys.stderr)
+            return 1
+        return 0
+    print(f"yavs: unsupported cov command {args!r}")
+    return 2
 
 
 def expand_response_files(argv):
@@ -249,6 +281,8 @@ def main(argv):
         return 0
     if argv and argv[0] == "analyze":
         return analyze(argv[1:])
+    if argv and argv[0] == "cov":
+        return cov(argv[1:])
     if argv and argv[0] in ("run", "elab"):
         return run(argv[1:], argv[0] == "elab")
     print(f"yavs: unsupported command {argv!r}")

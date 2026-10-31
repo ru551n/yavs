@@ -4,6 +4,10 @@
 
 - `add_vivado_libraries(vu)` builds `unisim`, `unimacro` and `unifast` from your own Vivado install with
   `yavs vendor vivado` and adds them to the project as external libraries. Needs a yavs with that command.
+- Coverage: `supports_coverage()` is true. `enable_coverage` or `--yavs-cov` collects a yavs coverage database per
+  simulation, `yavs.cov_kind` chooses the kinds, and `results.merge_coverage(file, args)` merges them into
+  `file.ycov` and, with `--yavs-cov-html DIR`, `--yavs-cov-fail-under PCT` or `args`, runs `yavs cov report`; a
+  total below the threshold makes the run exit with status 1 after VUnit's own reports are written.
 
 ## 0.11.0 (2026-10-29)
 

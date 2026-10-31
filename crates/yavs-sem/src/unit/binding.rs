@@ -1317,6 +1317,9 @@ impl Db {
             ));
         }
         self.check_written_actual(f, mode, id)?;
+        if mode == Some(Mode::In) {
+            self.check_in_actual_93(f, id)?;
+        }
         Ok(match formal_conv {
             Some(_) => Actual::Converted {
                 formal_conv,
@@ -1391,6 +1394,26 @@ impl Db {
     /// name (`conv(q(s))`, a signal subscript) makes the actual an expression (#880).
     fn is_conv_operand(&self, x: ExprId) -> bool {
         self.is_signal_name(x) && self.is_static_object_name(x)
+    }
+
+    /// `E1360` in a 1993 file: an `in` port takes a static signal name, a conversion of one or a
+    /// globally static expression (1993 1.1.1.2); 2008 allows any expression (#926).
+    fn check_in_actual_93(&mut self, f: DeclId, id: ExprId) -> Result<(), Reported> {
+        if self.file_rev() != crate::LangRev::Vhdl1993
+            || self.exprs[id].stat >= crate::stat::Staticness::Globally
+            || (self.is_signal_name(id) && self.is_static_object_name(id))
+        {
+            return Ok(());
+        }
+        let name = self.decls[f].name;
+        Err(self.error(
+            Diagnostic::error(
+                diag::CLASS_MISUSE,
+                format!("the actual of port `{name}` must be a static signal name or a globally static expression in VHDL-1993"),
+            )
+            .with_primary(self.exprs[id].span, "not static")
+            .with_note("LRM 1993 1.1.1.2; VHDL-2008 allows any expression for a port of mode `in`"),
+        ))
     }
 
     /// The actual `id` of port `f` (or of a part of it) with `mode`: a formal that is
@@ -1861,6 +1884,12 @@ impl Db {
             // the actual side of `conv(f.x) => conv(s)` of an `inout` port.
             let conv = (port == Some(Some(Mode::In)) || actual_converts)
                 && self.port_conversion(scope, &a.actual, id).is_some();
+            if port == Some(Some(Mode::In))
+                && !conv
+                && errs.keep(self.check_in_actual_93(f, id)).is_none()
+            {
+                continue;
+            }
             out.push((
                 steps.into_boxed_slice(),
                 id,

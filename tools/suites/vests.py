@@ -76,7 +76,7 @@ OVERRIDES = {
 
 # analyzer_failure tests that yavs rejects at elaboration or run time with the error the test is about (checked one by
 # one); they count as passes because the language reference leaves open when such value errors are detected.
-LATE = set("tc310 tc342 tc738 tc764 tc841 tc1068 tc1124 tc1127 tc1136 tc1141 tc1142 tc1143 tc1144 tc1146 tc1217 tc1333 tc1334 tc1345 tc1346 "
+LATE = set("tc310 tc342 tc738 tc841 tc1068 tc1124 tc1127 tc1136 tc1141 tc1142 tc1143 tc1144 tc1146 tc1217 tc1333 tc1334 tc1345 tc1346 "
            "tc1416 tc1726 tc2255 tc2523 tc2536 tc2548".split())
 
 # Failing tests by the yavs issue that tracks their cause (the report groups failures by these).

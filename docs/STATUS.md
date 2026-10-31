@@ -32,6 +32,10 @@ fails with the regenerate command (`YAVS_BLESS=1 cargo test -p yavs --bin yavs c
 `help_texts_are_for_users` keeps file names out of help texts. `docs/vunit-yavs.rst` lists the VUnit package's sim options and
 flags by hand; `python/vunit-yavs/tests/test_docs.py` checks its names against the option definitions. `docs/cli.rst` stays the overview.
 
+### Port actuals in 1993 files (#926, 2026-10-31)
+
+An expression that is not globally static as a port actual is `E1360` in a 1993 file (L168).
+
 ### Files of a generic file type (#915, 2026-10-31)
 
 `file f : file_type;` of a generic type of class file (L167); the instance in an architecture is #925.

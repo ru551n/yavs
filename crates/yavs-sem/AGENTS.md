@@ -119,6 +119,7 @@ Full module table with owners: `CONTRIBUTING.md` "Module map". Entry points and 
 | `E1239`: `decl.rs` `check_decl_item` rejects what the declarative part of an entity, package declaration or package body does not list; processes and subprograms (`sequential_owner`) and protected types (`E1906`) check their own (#867) | LRM 3.2.3, 4.7, 4.8; sim1 and sim2 reject | `docs/design/lrm-checks.md` L159 |
 | A static scalar actual of a generic or port outside the formal's subtype is `W1403` (`actual_in_subtype`), elaboration of the instance fails it: analysis cannot know whether the enclosing generate runs (#910) | sim1 runs it, sim2 warns; a real design configures blocks off this way | `docs/design/lrm-checks.md` L164 |
 | An architecture named by an instance or binding (`e(a)`) is not checked at analysis: `note_arch` records a weak reference (`Unit::weak_refs`, the record's `weak`), elaboration reports a missing one as `E1002` (#819) | Maintainer 2026-10-31; a configuration's `for a` still needs it | `docs/decisions.md` "Weak dependencies", `docs/design/lrm-checks.md` L165 |
+| An alias of a subtype-denoting attribute is a `DeclKind::Subtype` of its mark (`alias_decl`, #914) | LRM 6.6.3, 16.2; sim1 accepts | `docs/design/lrm-checks.md` L166 |
 | Unimplemented constructs report `Db::unsupported(span, what, "S<n>")` (`E1999`; `E9999` is only for internal errors, #842) | Fail early, no `todo!()` | CONTRIBUTING "Conventions" |
 
 Module-local decisions go in this section and in the matching sem.md section, LRM readings in

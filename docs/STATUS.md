@@ -32,6 +32,10 @@ fails with the regenerate command (`YAVS_BLESS=1 cargo test -p yavs --bin yavs c
 `help_texts_are_for_users` keeps file names out of help texts. `docs/vunit-yavs.rst` lists the VUnit package's sim options and
 flags by hand; `python/vunit-yavs/tests/test_docs.py` checks its names against the option definitions. `docs/cli.rst` stays the overview.
 
+### Aliases of subtype attributes (#914, 2026-10-31)
+
+`alias e is a'element;` and the other attributes that denote a subtype (L166).
+
 ### Weak dependencies (#819, 2026-10-31)
 
 An architecture named by an instance or binding may be analysed later: manifest format 4 lists it as `weak`, pulled into the closure without ordering its file (L165).

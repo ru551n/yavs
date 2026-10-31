@@ -923,6 +923,32 @@ impl Db {
             self.declare(scope, d);
             return Ok(());
         }
+        // `alias t is a'element;`: an attribute that denotes a subtype. The alias is a name of
+        // that subtype, declared as one (#914).
+        // ponytail: the implicit operations are the base type's, visible where it is; aliasing
+        // them too (6.6.3) needs an alias per operation.
+        let attr_key = match &name.kind {
+            ast::NameKind::Attribute { attr, .. } => Some(attr.key),
+            ast::NameKind::Apply { prefix, .. } => match &prefix.kind {
+                ast::NameKind::Attribute { attr, .. } => Some(attr.key),
+                _ => None,
+            },
+            _ => None,
+        };
+        if a.subtype.is_none()
+            && attr_key.is_some_and(|k| {
+                matches!(
+                    k.as_str(),
+                    "subtype" | "base" | "element" | "index" | "designated_subtype" | "record"
+                )
+            })
+            && let ast::Designator::Ident(id) = a.designator
+        {
+            let st = self.type_mark(scope, name)?;
+            let d = self.new_decl(scope, Designator::Ident(id), DeclKind::Subtype(st), id.span);
+            self.declare(scope, d);
+            return Ok(());
+        }
         let res = match &name.kind {
             ast::NameKind::Simple(_)
             | ast::NameKind::Selected { .. }

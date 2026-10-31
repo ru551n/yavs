@@ -64,15 +64,23 @@ pub fn expand_response_files(
             out.push(a);
             continue;
         };
-        let text = std::fs::read(path)
-            .map_err(|e| e.to_string())
-            .and_then(|b| String::from_utf8(b).map_err(|_| "not valid UTF-8".to_string()))
-            .map_err(|e| {
-                Box::new(
-                    Diagnostic::error("E0101", format!("cannot read response file `{path}`"))
-                        .with_note(e),
-                )
-            })?;
+        let error = |note: String| {
+            Diagnostic::error("E0101", format!("cannot read response file `{path}`"))
+                .with_note(note)
+        };
+        let bytes = std::fs::read(path).map_err(|e| Box::new(error(e.to_string())))?;
+        let text = String::from_utf8(bytes).map_err(|e| {
+            Box::new(
+                error(format!(
+                    "not valid UTF-8 (first bad byte at offset {})",
+                    e.utf8_error().valid_up_to()
+                ))
+                .with_help(
+                    "write the file as UTF-8; a program that writes it in the system's code page \
+                     (Windows) breaks file names with accents",
+                ),
+            )
+        })?;
         let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
         if text.is_empty() {
             continue;

@@ -23,6 +23,7 @@ import unittest
 from pathlib import Path
 
 from test_fake_e2e import COMMA, FAIL, PASS, report
+from vunit.vunit_cli import VUnitCLI
 from vunit_yavs.console import HELP
 from vunit_yavs.tokens import TokenServer
 
@@ -52,6 +53,42 @@ begin
     wait;
   end process;
 end;
+"""
+
+
+NON_ASCII_PACKAGE = """
+package pkg is
+  constant answer : integer := 42;
+end package;
+"""
+
+NON_ASCII_TESTBENCH = """
+library vunit_lib;
+context vunit_lib.vunit_context;
+use work.pkg.all;
+entity tb is
+  generic (runner_cfg : string);
+end entity;
+architecture a of tb is
+begin
+  main : process
+  begin
+    test_runner_setup(runner, runner_cfg);
+    check_equal(answer, 42);
+    test_runner_cleanup(runner);
+    wait;
+  end process;
+end architecture;
+"""
+
+NON_ASCII_RUN = """
+from pathlib import Path
+from vunit import VUnit
+VU = VUnit.from_argv()
+VU.add_package("vunit-yavs", allow_setup=True)
+VU.add_vhdl_builtins()
+VU.add_library("lib").add_source_files(Path(__file__).parent / "src-é" / "*.vhd")
+VU.main()
 """
 
 
@@ -146,6 +183,47 @@ class TestRealYavs(unittest.TestCase):
         # VUnit still wrote its report, and yavs said why the run failed
         self.assertEqual(report(self.xml), {PASS: "passed", COMMA: "passed"})
         self.assertRegex(proc.stdout, r"error\[E0114\]: coverage [0-9.]+% is below the required 100.0%")
+
+    def test_non_ascii_file_names_compile_in_batches(self):
+        # Several files in one library with non-ASCII names go in one call, also with the runner's own
+        # --batch-compile and --parallel-compile where it has them (#114)
+        src = self.tempdir / "src-é"
+        src.mkdir()
+        (src / "pkg_ü.vhd").write_text(NON_ASCII_PACKAGE, encoding="utf-8")
+        (src / "tb_ñ.vhd").write_text(NON_ASCII_TESTBENCH, encoding="utf-8")
+        run = self.tempdir / "run.py"
+        run.write_text(NON_ASCII_RUN, encoding="utf-8")
+        flags = [flag for flag in ("--batch-compile", "--parallel-compile") if flag in VUnitCLI().parser.format_help()]
+        for extra in ([], flags):
+            with self.subTest(flags=extra):
+                proc = subprocess.run(
+                    [sys.executable, str(run), "-o", str(self.tempdir / "out"), "-x", str(self.xml), *extra],
+                    env=self._env(),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    timeout=TIMEOUT,
+                    check=False,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stdout)
+                self.assertEqual(list(report(self.xml).values()), ["passed"], proc.stdout)
+                self.assertNotIn("in one call failed", proc.stdout)
+                shutil.rmtree(self.tempdir / "out")
+
+    def test_response_file_in_the_locale_encoding_is_a_clear_error(self):
+        # What a runner writing a file list in a Windows code page produces: yavs says what is wrong
+        (self.tempdir / "list.txt").write_bytes("é.vhd\n".encode("latin-1"))
+        proc = subprocess.run(
+            [str(Path(YAVS_DIR) / "yavs"), "analyze", "--std=2008", f"--work=work:{self.tempdir / 'lib'}"]
+            + ["@" + str(self.tempdir / "list.txt")],
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("error[E0101]", proc.stderr)
+        self.assertIn("UTF-8", proc.stderr)
 
     def test_run_with_token_server(self):
         # Each simulation runs with --threads=2 and connects; a bad YAVS_TOKENS would be error E0128

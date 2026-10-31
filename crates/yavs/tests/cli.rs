@@ -74,6 +74,15 @@ const CASES: &[Case] = &[
         code: 2,
     },
     Case {
+        name: "response_file_latin1",
+        args: &[
+            "analyze",
+            "--work=work:$TMP/lib",
+            "@response_file_latin1.rsp",
+        ],
+        code: 2,
+    },
+    Case {
         name: "batch_ok",
         args: &["analyze", "--work=work:$TMP/lib", "ok.vhd", "ok2.vhd"],
         code: 0,

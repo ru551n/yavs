@@ -1,0 +1,5 @@
+error[E0101]: cannot read response file `response_file_latin1.rsp`
+  |
+  = note: not valid UTF-8 (first bad byte at offset 0)
+  = help: write the file as UTF-8; a program that writes it in the system's code page (Windows) breaks file names with accents
+

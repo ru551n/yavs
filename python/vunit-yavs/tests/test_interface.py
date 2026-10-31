@@ -703,11 +703,11 @@ class TestYavsInterface(unittest.TestCase):
         self.assertNotIn("--threads=4", cmd)
         self.assertIn("YAVS_TOKENS", env)
 
-    def test_threads_with_tokens_are_capped_at_eight_by_default(self):
+    def test_threads_with_tokens_are_capped_at_four_by_default(self):
         tokens = TokenServer(16)
         self.addCleanup(tokens.close)
         _, cmd, _ = self._simulate(make_config(), tokens=tokens)
-        self.assertIn("--threads=8", cmd)
+        self.assertIn("--threads=4", cmd)
         _, cmd, _ = self._simulate(make_config(sim_options={"yavs.max_threads": 12}), tokens=tokens)
         self.assertIn("--threads=12", cmd)
 

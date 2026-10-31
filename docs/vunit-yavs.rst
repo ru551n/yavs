@@ -29,7 +29,7 @@ as ``--name=value``.
    * - ``yavs.sim_flags``
      - ``yavs run`` (sim option).
    * - ``yavs.max_threads``
-     - ``yavs run --threads=N``: the most threads one simulation uses (with the token server, ``-p N`` but at most 8 when not set). An integer of at least 1.
+     - ``yavs run --threads=N``: the most threads one simulation uses (with the token server, ``-p N`` but at most 4 when not set). An integer of at least 1.
        It overrides ``--yavs-max-threads`` for a test. Not passed under ``--yavs-debug`` or to
        ``elab``. A ``--threads`` in ``yavs.sim_flags`` comes after it and wins.
    * - ``yavs.cov_kind``

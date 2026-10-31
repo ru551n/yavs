@@ -126,7 +126,7 @@ It is off by default; turn it on with ``--yavs-jobserver`` together with ``-p`` 
     python run.py -p 8 --yavs-jobserver
     python run.py -p 8 --yavs-jobserver --yavs-max-threads 4
 
-``--yavs-max-threads N`` caps the threads of one simulation (default: ``-p N``, at most 8, since more
+``--yavs-max-threads N`` caps the threads of one simulation (default: ``-p N``, at most 4, since more
 threads buy little and each costs memory in every simulation); a test can set its own cap with the
 ``yavs.max_threads`` simulation option, e.g. ``vu.set_sim_option("yavs.max_threads", 2)``. A simulation
 starts its extra threads only when it is lent its first token. If the server cannot start (a blocked

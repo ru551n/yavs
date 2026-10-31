@@ -46,8 +46,9 @@ DAP_LISTENING = "yavs: DAP listening on "
 # The file names of one yavs analyze call: well below the Windows command line limit of 32767 characters
 MAX_BATCH_CHARS = 20000
 # With a token server a simulation uses at most this many threads unless told otherwise: more buys little
-# (docs/parallel.md) and each thread costs memory in every one of -p N simulations (#879)
-DEFAULT_MAX_THREADS = 8
+# (docs/parallel.md) and each thread costs memory in every one of -p N simulations (#879). 4 until
+# --threads=auto exists (#901)
+DEFAULT_MAX_THREADS = 4
 
 
 class PositiveIntegerOption(Option):

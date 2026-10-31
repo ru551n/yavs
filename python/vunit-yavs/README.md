@@ -52,7 +52,7 @@ Compiling: consecutive files of one library, standard and flags go to `yavs anal
 `--batch-compile` and `--parallel-compile`, those flags work with yavs too (several files per call, several calls at once).
 
 Without `yavs.max_threads` or `--yavs-max-threads` no thread count is passed, and yavs runs with
-its default, unless the token server runs (`--threads=min(N, 8)` for `-p N`, below). An explicit `--threads` in `yavs.sim_flags` comes after the cap and wins.
+its default, unless the token server runs (`--threads=min(N, 4)` for `-p N`, below). An explicit `--threads` in `yavs.sim_flags` comes after the cap and wins.
 
 ## Coverage
 
@@ -108,7 +108,7 @@ together with `--elaborate` or `-p` above 1 is an error at the start. A bare
 
 With `-p N --yavs-jobserver` (Linux and Windows) the run script starts a token server on
 127.0.0.1 and lends the CPU slots of `-p N` that no test uses to the running simulations. Every
-simulation runs with `--threads=N` (at most 8 unless `yavs.max_threads` or `--yavs-max-threads` says more) and gets
+simulation runs with `--threads=N` (at most 4 unless `yavs.max_threads` or `--yavs-max-threads` says more) and gets
 `YAVS_TOKENS=<port>:<secret>`, a secret of its own; yavs runs its extra threads only on tokens the
 server lends, and asks for them only while it has work for them. One CPU slot per running test is
 free, the other `N - k` (for `k` running tests) are lent: breadth first (every test gets one extra

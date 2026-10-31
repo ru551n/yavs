@@ -14,7 +14,7 @@ test's own extra files are analysed on top, all in a private world directory per
 `interp`, `auto`, `llvm` are warm (an untimed run fills the compilation cache of the world, then the timed
 runs); `<tier>-cold` copies the pristine world before every timed run (empty compilation cache). The
 reference (--ref, label sim1) runs elaboration plus run, analysis excluded. Every timed run is pinned to one
-core of --cores (one test at a time per core), under systemd-run MemoryMax=2G and timeout 300, wall, CPU,
+core of --cores (one test at a time per core), under systemd-run MemoryMax=2G and timeout 300 (`--timeout`), wall, CPU,
 peak RSS and (perf) instructions as in tools/bench/run.py --ref, which supplies the timing code.
 Phases (--phases, default all four), each timed apart for yavs and the reference, with a ratio yavs / reference per test, per category
 and overall: `analyze` (the test's whole compile order, consecutive files of one library and standard in ONE CALL by default, for both tools
@@ -192,7 +192,7 @@ def record_driver(t, Y, key):
 
 
 def sh(argv, cwd=None, wrap=True, timeout=1800):
-    pre = ["timeout", "300", "systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G"] if wrap else []
+    pre = ["timeout", str(B.TIMEOUT), "systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G"] if wrap else []
     return subprocess.run(pre + [str(a) for a in argv], cwd=cwd, capture_output=True, text=True, errors="replace", timeout=timeout)
 
 
@@ -203,7 +203,7 @@ def ensure_base(tool, manifest, Y=None, key=None):
     if log.exists() and re.search(r"\[\w+\]: \d+ PASS, \d+ FAIL of \d+ run", log.read_text()[-300:]) and d.is_dir():
         return d
     d.parent.mkdir(parents=True, exist_ok=True)
-    argv = [sys.executable, "-I", str(REPO / "tools/corpus/run.py"), manifest, "--out", str(d), "--keep-going", "--expected", "none", "--root", str(CORPUS)]
+    argv = [sys.executable, "-I", str(REPO / "tools/corpus/run.py"), manifest, "--out", str(d), "--std-cache", str(CACHE / "std"), "--keep-going", "--expected", "none", "--root", str(CORPUS)]
     argv += ["--cmd", f"{Y} analyze --std={{std}} --work={{lib}}:{{dir}}/{{lib}} {{map}} {{flags}} {{file}}"] if tool == "yavs" else ["--tool", tool]
     p = subprocess.run(argv, capture_output=True, text=True, errors="replace")
     log.write_text(p.stdout + p.stderr)
@@ -973,6 +973,7 @@ def main():
     ap.add_argument("--no-instructions", action="store_true")
     ap.add_argument("--count-runs", action="store_true", help="count instructions and cycles in every timed run (median `cyc`, `ins_med`)")
     ap.add_argument("--out", default=str(CACHE))
+    ap.add_argument("--timeout", type=int, default=300, help="seconds before a run is killed and reported failed (rc 124); raise it on a loaded host (#796)")
     ap.add_argument("--label", default="")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--include-excluded", action="store_true", help="also run the tests marked `excluded` in tests.toml (known failures on yavs or the reference)")
@@ -982,6 +983,7 @@ def main():
     a = ap.parse_args()
     global COUNT_RUNS
     COUNT_RUNS = a.count_runs
+    B.TIMEOUT = a.timeout
     try:
         return run(a)
     except Fail as e:

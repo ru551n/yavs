@@ -65,6 +65,7 @@ def main():
     ap.add_argument("--tool", default="yavs", help="yavs or a reference label (sim1, ...)")
     ap.add_argument("--cmd")
     ap.add_argument("--root", action="append", default=[])
+    ap.add_argument("--std-cache", help="shared std/ieee store (default: std next to the --out directory); realbench passes its own so the libraries and the timed cells share one (#804)")
     ap.add_argument("--out", help="library directory (default ~/.cache/yavs-corpus-out/<tool>-<name>-<pid>, unique per run)")
     ap.add_argument("--expected", help="expected-results list ('none' to skip the comparison)")
     ap.add_argument("--extra-map", action="append", default=[], metavar="NAME:PATH", help="another library for {map} (e.g. unisim:DIR/unisim from a vendor run)")
@@ -104,7 +105,7 @@ def main():
         base[s["id"]] = d
     out = Path(a.out or f"~/.cache/yavs-corpus-out/{a.tool}-{name}-{os.getpid()}").expanduser()
     # the shared std/ieee store (#564) is private to this tool, never the user's
-    os.environ["YAVS_STD_CACHE"] = str(out.resolve().parent / "std")
+    os.environ["YAVS_STD_CACHE"] = str(Path(a.std_cache).resolve() if a.std_cache else out.resolve().parent / "std")
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
 

@@ -46,7 +46,9 @@ YAVS_AUTO = YAVS.replace("--threads=", "--tier=auto --threads=")
 # one compiled, by the pre-keys of the compilation cache (with YAVS_LLVM_PREKEY_CHECK set it
 # generates the code anyway and checks it, #785).
 _RUN = YAVS_AUTO.index('"$R" run')
-YAVS_AUTO_WARM = YAVS_AUTO + " >/dev/null 2>&1; " + YAVS_AUTO[_RUN:]
+# The first run is in a directory of its own, so files a test writes (file_append) are not seen by the second.
+YAVS_AUTO_WARM = ("mkdir w1; (cd w1 && " + YAVS_AUTO + ") >/dev/null 2>&1; s=$?; if [ $s = 97 ] || [ $s = 98 ]; then exit $s; fi; "
+                  "R=${{YAVS_BIN:-yavs}}; " + YAVS_AUTO[_RUN:])
 # yavs with the Cranelift tier (needs a yavs built with `--features clift`): every function
 # compiled before time 0, and hot functions compiled in the background.
 YAVS_CLIFT = YAVS.replace("--threads=", "--tier=clift --threads=")
@@ -379,6 +381,7 @@ def main():
     ap.add_argument("--bless", action="store_true", help="regenerate .expected from sim1 (candidate must be sim1)")
     ap.add_argument("--jobs", type=int, default=8, help=f"parallel simulations (max {MAX_JOBS})")
     ap.add_argument("--filter", default="", help="regex on the corpus-relative path")
+    ap.add_argument("--exclude", default="", help="regex on the corpus-relative path: skip these (a gc-stress build: '^composite/aggregate_fill', #852)")
     ap.add_argument("--threads", type=lambda s: [1] + [int(x) for x in s.split(",") if x and int(x) != 1],
                     default=[1], help="candidate thread counts to compare, e.g. 4 (runs 1 and 4); needs {threads} in the template")
     ap.add_argument("--shuffle", default="", help="seed passed to the candidate as {shuffle}/{shuffle_flag}")
@@ -397,7 +400,7 @@ def main():
     args.candidate_id = args.candidate if known else "custom-%x" % zlib.crc32(args.candidate.encode())
     default_ignore = DEFAULT_IGNORE.get(args.candidate) or simconf.get(args.candidate, "difftest_ignore", "")
     ignore = set((default_ignore if args.ignore is None else args.ignore).split(","))
-    tests = sorted(p for p in CORPUS.rglob("*.vhd") if re.search(args.filter, str(p.relative_to(CORPUS))))
+    tests = sorted(p for p in CORPUS.rglob("*.vhd") if re.search(args.filter, str(p.relative_to(CORPUS))) and not (args.exclude and re.search(args.exclude, str(p.relative_to(CORPUS)))))
     if args.list:
         print("\n".join(str(p.relative_to(CORPUS)) for p in tests)); return
     jobs = max(1, min(args.jobs, MAX_JOBS))

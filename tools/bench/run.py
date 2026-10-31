@@ -29,6 +29,7 @@ OUT = CACHE / "bench-out.fst"
 os.environ["YAVS_STD_CACHE"] = str(CACHE / "std")
 PHASES = ["analyze", "elaborate", "init", "simulate"]
 STD = "2008"
+TIMEOUT = 300  # seconds per timed run and reference run (--timeout)
 INTERNAL = ["compute_loop", "ff_rtl", "resolved_bus", "delta_chain", "textio_heavy", "protected_scoreboard", "protected_queue", "calls", "strings_heavy", "access_heavy", "report_heavy", "file_io", "ieee_heavy", "elab_heavy"]
 # head-to-head designs (group h2h; AGENTS.md maps them to the old names)
 H2H = ["rtl_ff", "rtl_lfsr", "rtl_chain", "rtl_fan", "rtl_bus", "rtl_ram", "lfsr64_xor", "lfsr64", "compute_h2h", "xor_sig", "xor_types"]
@@ -228,7 +229,7 @@ PEAK = re.compile(r"^peak-kb (\d+)\n?", re.M)
 def run_ru(argv, cwd):
     """subprocess.run(capture_output) with the child's peak RSS in KiB (0 when `time` is missing).
     A wait4 rusage of our own child is floored by this Python's RSS at fork, so `time -f %M` measures."""
-    pre = ["timeout", "300"]
+    pre = ["timeout", str(TIMEOUT)]
     if TIME:
         pre += [TIME, "-f", "peak-kb %M"]
     p = subprocess.run(pre + argv, cwd=cwd, capture_output=True, text=True, errors="replace")
@@ -272,7 +273,7 @@ def measure(cmds, Y, tr):
 
 
 def measure_sim(tpl, sub):
-    cmd = ["timeout", "300", "systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G", "bash", "-c", _sub(tpl[1], sub)]
+    cmd = ["timeout", str(TIMEOUT), "systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G", "bash", "-c", _sub(tpl[1], sub)]
     c0 = resource.getrusage(resource.RUSAGE_CHILDREN)
     t0 = time.perf_counter()
     p = subprocess.run(cmd, cwd=sub["work"], capture_output=True, text=True, errors="replace")
@@ -423,7 +424,7 @@ def timed(script, cwd, cores, env=None, instr=None, ref=True, ok=None):
         inner = f"perf stat -x, -e {instr},{instr.replace('instructions', 'cycles')} -o {pf} {inner}"
     if ref:
         inner = "ulimit -s unlimited; " + inner  # a deep native stack for the reference tools
-    cmd = ["timeout", "300", "systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G", "taskset", "-c", cores, "bash", "-c", inner]
+    cmd = ["timeout", str(TIMEOUT), "systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G", "taskset", "-c", cores, "bash", "-c", inner]
     load = os.getloadavg()[0]
     p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, errors="replace", env={**os.environ, **(env or {})})
     r = {"wall": None, "cpu": None, "rss": None, "ins": None, "cyc": None, "load": load, "rc": p.returncode, "tail": (p.stdout + p.stderr)[-200:],
@@ -579,10 +580,13 @@ def main():
     ap.add_argument("--tiny", action="store_true", help="--ref: then run the tiny-test corpus too (tiny.py, same references)")
     ap.add_argument("--instructions", action="store_true", help="--ref: one extra perf-stat run per cell for the instruction count")
     ap.add_argument("--out", default=str(CACHE))
+    ap.add_argument("--timeout", type=int, default=300, help="seconds before a timed or reference run is killed and reported failed (rc 124); raise it on a loaded host")
     ap.add_argument("--label", default="", help="tag stored in the JSON file name")
     ap.add_argument("--fail-on-regression", action="store_true")
     ap.add_argument("--list", action="store_true")
     a = ap.parse_args()
+    global TIMEOUT
+    TIMEOUT = a.timeout
     if a.list:
         for n, (g, _) in reg.items():
             print(f"{g:9} {n}")
@@ -633,7 +637,7 @@ def main():
             sub = dict(file=str(HERE / "designs" / f"{n}.vhd"), top=f"bench_{n}", std=STD, std2=STD[2:], work=str(work), res="fs")
             try:
                 subprocess.run(["bash", "-c", _sub(tpl[0], sub)],
-                               cwd=work, capture_output=True, timeout=300)
+                               cwd=work, capture_output=True, timeout=TIMEOUT)
                 runs = [measure_sim(tpl, sub) for _ in range(a.runs)]
             except Exception:
                 continue

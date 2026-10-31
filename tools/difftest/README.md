@@ -19,6 +19,7 @@ Python 3 stdlib only.
     YAVS_LLVM_PREKEY_CHECK=1 tools/difftest/difftest.py --candidate yavs-auto-warm  # a second `--tier=auto` run, linking what the first compiled (the check generates it anyway and compares, #785)
     tools/difftest/difftest.py --bless              # regenerate .expected from the reference simulator
     tools/difftest/difftest.py --filter 'report/|env/' --jobs 4 -v
+    tools/difftest/difftest.py --exclude '^composite/aggregate_fill'  # a gc-stress build: 70001 allocations, over 300 s there (#852)
 
 Every simulator run is `timeout 300 systemd-run --user --scope -p MemoryMax=2G bash -c ...`,
 at most 8 at a time (`--jobs` is clamped). Work libraries and raw `stdout.txt`/`stderr.txt`

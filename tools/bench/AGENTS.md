@@ -15,7 +15,7 @@ performance change. Everyone measures with this one harness, so numbers are comp
 
 | Path | What |
 |---|---|
-| `run.py` | The harness: `--list`, `BIN` (one binary), `--compare A B`, `--bench a,b`, `--group internal\|h2h\|external\|all`, `--runs N` (default 3), `--sims sim1,sim2`, `--threshold`, `--fail-on-regression`, `--label`, `--out`; head-to-head mode `--ref sim1,sim2 [--cores L] [--tiers interp,auto] [--instructions] [--tiny]` (section 7) |
+| `run.py` | The harness: `--list`, `BIN` (one binary), `--compare A B`, `--bench a,b`, `--group internal\|h2h\|external\|all`, `--runs N` (default 3), `--sims sim1,sim2`, `--threshold`, `--fail-on-regression`, `--label`, `--out`, `--timeout SECONDS` (default 300, #796); head-to-head mode `--ref sim1,sim2 [--cores L] [--tiers interp,auto] [--instructions] [--tiny]` (section 7) |
 | `tiny.py` | Head-to-head on the tiny-test corpus `tests/corpus`: per-test wall time of one run, yavs against the references (section 7) |
 | `designs/*.vhd` | Checked-in designs written for this harness; top level `bench_<name>`, default generics (the head-to-head designs carry the parameters their results are quoted at) |
 | `vc_tests.tsv` | The fixed 30 test cases (`testbench<TAB>test case`) of benchmark `vunit_vc30` |

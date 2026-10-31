@@ -293,6 +293,14 @@ def compare(ref, got, base):
 EARLY_OK = re.compile(r"\[(E1405|E1812|E2103|E2107|E2110|E2111|E2113|E2117)\]")
 
 
+# Tests that print a difference of two wall clock readings: never equal between two runs.
+WALL_DELTA = {"issue1381"}
+
+
+def wall(got):
+    return [dt.mask(g, ["wallclock"]) for g in got]
+
+
 def one(t, args):
     if "skip" in t:
         return {"name": t["name"], "class": "skip", "msg": t["skip"]}
@@ -306,7 +314,7 @@ def one(t, args):
         ref = [dt.normalise(*r) for r in runs]
     outs = []
     for th in args.threads:
-        rc, err, runs = execute("yavs", t, work / f"yavs-t{th}", not args.no_sandbox, th)
+        rc, err, runs = execute("yavs", t, work / "yavs", not args.no_sandbox, th)  # same directory name for every thread count: tests print it
         if rc == 124 or any(r[0] == 124 for r in runs):
             return {**res, "class": "timeout", "msg": ""}
         if rc in (97, 98):
@@ -318,8 +326,10 @@ def one(t, args):
             got = [["exit\t0"] + g[1:] if errexit_ok(g) else g for g in got]
         outs.append((runs, got))
     runs, got = outs[0]
-    if any(g != outs[0][1] for _, g in outs[1:]):
-        return {**res, "class": "threads", "msg": "output differs between thread counts"}
+    for th, (_, g) in zip(args.threads[1:] if t["name"] not in WALL_DELTA else [], outs[1:]):  # the time of day (std.env tests) differs between two runs
+        if wall(g) != wall(outs[0][1]):
+            d = [f"t1: {a}\nt{th}: {b}" for r, q in zip(wall(outs[0][1]), wall(g)) for a, b in zip(r + [""] * 99, q + [""] * 99) if a != b]
+            return {**res, "class": "threads", "msg": "output differs between thread counts\n" + "\n".join(d)[:1500]}
     if args.oracle:
         return {**res, "class": "pass" if meets(t, runs, True) else "oracle", "msg": "\n".join(l for g in got for l in g)[:2000]}
     if [g[0] == "exit\t0" for g in got] != [r[0] == "exit\t0" for r in ref]:

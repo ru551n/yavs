@@ -195,7 +195,7 @@ impl Fx<'_, '_> {
             }
             _ => return Err(self.cx.ice(span, "conversion of a signal or file formal")),
         };
-        let part: Part = (Box::new([]), actual, copy_out, false, false);
+        let part: Part = (Box::new([]), actual, copy_out, false, false, None);
         self.writeback_parts.push((obj, f, Box::new([part])));
         Ok(())
     }

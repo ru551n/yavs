@@ -279,6 +279,7 @@ const PASS: &[&str] = &[
     "hierarchy/port_individual_unconstrained",
     "hierarchy/port_modes_conversion",
     "hierarchy/record_port_parts_nested",
+    "hierarchy/port_part_formal_conv",
     "hierarchy/record_port_parts_open",
     "hierarchy/use_work_all",
     "ieee/fixed_pkg_ops",

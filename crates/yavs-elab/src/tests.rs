@@ -1213,6 +1213,32 @@ fn incremental_binding() {
     assert_eq!(lens, [1, 3]);
 }
 
+/// A conversion of a part of an unconstrained `out` formal: the formal takes its bounds from the
+/// named parts (6.5.7.1, #617).
+#[test]
+fn port_part_formal_conversion_unconstrained() {
+    let src = "library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
+      entity c is port (o : out std_logic_vector); end;
+      architecture a of c is begin o <= x\"a5\"; end;
+      library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
+      entity t is end; architecture a of t is
+        signal x, y : signed(3 downto 0);
+      begin
+        u : entity work.c port map (signed(o(0 to 3)) => x, signed(o(4 to 7)) => y);
+      end;";
+    let (_, e) = elab("partconv", src, "t", &[]);
+    assert_eq!(e.convs.len(), 2);
+    let mut sim = e
+        .build_with(yavs_kernel::Config::default(), |_, _| Ok(Box::new(Idle)))
+        .expect("build");
+    sim.run_for(yavs_kernel::Time::ns(1)).expect("run");
+    let id = sim.signal_id(":t:u:o").expect("o");
+    let yavs_kernel::Value::Logic(o) = sim.value(id).expect("value") else {
+        panic!("logic")
+    };
+    assert_eq!(o.len(), 8);
+}
+
 /// Conversion functions and type conversions in port maps run in the update phase (#74).
 #[test]
 fn port_conversions() {

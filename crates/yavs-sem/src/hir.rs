@@ -135,9 +135,11 @@ pub struct Arg {
 
 /// One part of an individual association: its path, actual, formal part, whether the actual
 /// was written `inertial` (an expression actual even for a signal name, LRM 6.5.6.3) and, for
-/// a part of an `in` port, whether the actual is a conversion `conv(signal)` (6.5.7.1): a
-/// `Call` of one argument or a `Conv` whose operand is the signal name.
-pub type IndividualPart = (Box<[LspStep]>, ExprId, ExprId, bool, bool);
+/// a part of an `in` port or a two-way converted part of an `inout` port, whether the actual is
+/// a conversion `conv(signal)` (6.5.7.1): a `Call` of one argument or a `Conv` whose operand is
+/// the signal name; last the formal conversion `conv(f(part)) =>` of a part of a port: its
+/// function, type or subtype declaration (#617).
+pub type IndividualPart = (Box<[LspStep]>, ExprId, ExprId, bool, bool, Option<DeclId>);
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub enum Actual {

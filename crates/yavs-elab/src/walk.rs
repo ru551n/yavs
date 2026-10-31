@@ -1656,32 +1656,39 @@ impl Elab<'_> {
                 let fo = self
                     .m
                     .add_obj(self.db, s, p, kind, shape, init.as_ref(), span)?;
-                for (steps, e, _, inertial, conv) in parts {
+                for (steps, e, _, inertial, conv, formal_conv) in parts {
                     let espan = self.db.exprs[*e].span;
                     let fsels = self.m.steps(self.db, None, steps, sc, espan)?;
                     let (fl, fshape) = self.m.select(fo, &fsels, espan)?;
-                    if *conv {
-                        // `f.x => conv(s)`: a port edge that converts, as for a whole formal
-                        // (LRM 6.5.7.1, #611).
+                    if *conv || formal_conv.is_some() {
+                        // `f.x => conv(s)`, `conv(f.x) => s`: a port edge that converts, as for
+                        // a whole formal (LRM 6.5.7.1, #611, #617).
                         let db: &Db = self.db;
-                        let (c, x) = match &db.exprs[*e].kind {
-                            ExprKind::Call { callee, args, .. } => match args.first() {
-                                Some(Arg {
-                                    actual: Actual::Expr(x),
-                                    ..
-                                }) => (*callee, *x),
-                                _ => {
-                                    return Err(Box::new(ice(espan, "conversion without operand")));
+                        let (c, x) = if !*conv {
+                            (None, *e)
+                        } else {
+                            match &db.exprs[*e].kind {
+                                ExprKind::Call { callee, args, .. } => match args.first() {
+                                    Some(Arg {
+                                        actual: Actual::Expr(x),
+                                        ..
+                                    }) => (Some(*callee), *x),
+                                    _ => {
+                                        return Err(Box::new(ice(
+                                            espan,
+                                            "conversion without operand",
+                                        )));
+                                    }
+                                },
+                                ExprKind::Conv { to, operand } => {
+                                    (Some(db.types[db.base(*to)].decl), *operand)
                                 }
-                            },
-                            ExprKind::Conv { to, operand } => {
-                                (db.types[db.base(*to)].decl, *operand)
-                            }
-                            _ => {
-                                return Err(Box::new(ice(
-                                    espan,
-                                    "part conversion of another kind",
-                                )));
+                                _ => {
+                                    return Err(Box::new(ice(
+                                        espan,
+                                        "part conversion of another kind",
+                                    )));
+                                }
                             }
                         };
                         let Some((ao, asels)) = self.m.name_ref(db, x, sc)? else {
@@ -1691,23 +1698,30 @@ impl Elab<'_> {
                             )));
                         };
                         let (al, ashape) = self.m.select(ao, &asels, espan)?;
-                        let k = crate::eval::conv_fn(db, c, &ashape, &fshape, espan)?;
-                        self.m.convs.push(k);
-                        let to_formal = Some(self.m.convs.len() as u32 - 1);
+                        let mut conv_idx = |f: Option<DeclId>, from: &Shape, to: &Shape| match f {
+                            None => Ok(None),
+                            Some(f) => {
+                                let k = crate::eval::conv_fn(db, f, from, to, espan)?;
+                                self.m.convs.push(k);
+                                Ok::<_, Box<Diagnostic>>(Some(self.m.convs.len() as u32 - 1))
+                            }
+                        };
+                        let to_formal = conv_idx(c, &ashape, &fshape)?;
+                        let to_actual = conv_idx(*formal_conv, &fshape, &ashape)?;
                         match (fl.as_slice(), al.as_slice()) {
                             ([f], [a]) => self.m.nets.ports.push(PortEdge {
                                 formal: *f,
                                 actual: *a,
                                 mode,
                                 to_formal,
-                                to_actual: None,
+                                to_actual,
                             }),
                             _ => self.m.nets.conv_ports.push(crate::hier::ConvPort {
                                 formal: fl,
                                 actual: al,
                                 mode,
                                 to_formal,
-                                to_actual: None,
+                                to_actual,
                             }),
                         }
                         continue;

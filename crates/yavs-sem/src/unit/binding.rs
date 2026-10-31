@@ -707,8 +707,8 @@ impl Db {
         (owner, what)
     }
 
-    /// The formal a named association designates: `(index, formal
-    /// conversion, whole)`. `f`, `f(i)`, `f.e`, `f(1 to 3)` and `conv(f)`.
+    /// The formal a named association designates: `(index, formal conversion, whole)`. `f`,
+    /// `f(i)`, `f.e`, `f(1 to 3)`, `conv(f)` and `conv(f(1 to 3))` (`partial` resolves the part).
     fn formal_of(
         &mut self,
         scope: ScopeId,
@@ -747,10 +747,14 @@ impl Db {
                 },
             ] = &args[..]
             && let ast::ExprKind::Name(inner) = &e.kind
-            && let ast::NameKind::Simple(i) = &inner.kind
+            && let Some(i) = root_ident(inner)
             && let Some(p) = find(self, i.key)
         {
-            let conv = self.formal_conversion(scope, prefix, formals[p])?;
+            if !matches!(inner.kind, ast::NameKind::Simple(_)) {
+                return Ok((p, None, false));
+            }
+            let ft = self.formal_subtype(formals[p]).map(|st| self.base(st));
+            let conv = self.formal_conversion(scope, prefix, ft)?;
             return Ok((p, Some(conv), true));
         }
         let (owner, what) = self.formal_owner(formals);
@@ -771,15 +775,14 @@ impl Db {
         Err(self.error(d))
     }
 
-    /// The function or type mark `conv` in `conv(formal) => ...`: one
-    /// parameter of the formal's type (4.2.2.? and 6.5.7.1).
+    /// The function or type mark `conv` in `conv(formal) => ...`: one parameter of type `ft`,
+    /// the type of the formal or of its part (6.5.7.1).
     fn formal_conversion(
         &mut self,
         scope: ScopeId,
         conv: &ast::Name,
-        formal: DeclId,
+        ft: Option<TypeId>,
     ) -> Result<DeclId, Reported> {
-        let ft = self.formal_subtype(formal).map(|st| self.base(st));
         let d = self.expanded_name_decl(scope, conv)?;
         if matches!(
             self.decls[self.entity(d)].kind,
@@ -829,6 +832,52 @@ impl Db {
 
     /// Whether `d` is the hidden generic type of an anonymous interface type (`c : type
     /// is (<>)`), which an entity lists after its generics (#283).
+    /// The subtype a formal conversion gives: the type mark's, or the function's result.
+    fn formal_conv_result(&self, c: DeclId) -> Option<SubtypeId> {
+        match &self.decls[c].kind {
+            DeclKind::Type(t) => Some(self.types[*t].first_subtype),
+            DeclKind::Subtype(s) => Some(*s),
+            k => k.subprogram().and_then(|s| s.ret),
+        }
+    }
+
+    /// A formal conversion that is a type mark converts the formal (or its part) of type `from`
+    /// to `to` (9.3.6): the two must be closely related.
+    fn check_formal_mark(
+        &mut self,
+        c: DeclId,
+        from: TypeId,
+        to: TypeId,
+        span: Span,
+    ) -> Result<(), Reported> {
+        if !matches!(self.decls[c].kind, DeclKind::Type(_) | DeclKind::Subtype(_))
+            || self.closely_related(from, to)
+        {
+            return Ok(());
+        }
+        let (from, to) = (self.type_name(from), self.type_name(to));
+        Err(self.error(
+            Diagnostic::error(
+                diag::BAD_CONVERSION,
+                format!("cannot convert `{from}` to `{to}`"),
+            )
+            .with_primary(span, "these types are not closely related")
+            .with_note("9.3.6: a type mark as formal part is a type conversion of the formal"),
+        ))
+    }
+
+    /// Whether the actual `e` of an `inout` formal with a formal conversion is itself a
+    /// conversion (`conv(f) => conv(a)`): that one maps the actual to the formal's type
+    /// `st` (6.5.7.1).
+    fn actual_converts(&mut self, scope: ScopeId, e: &ast::Expr, st: SubtypeId) -> bool {
+        matches!(&e.kind, ast::ExprKind::Name(n) if matches!(n.kind, ast::NameKind::Apply { .. }))
+            && {
+                let c = self.cands(scope, e);
+                self.best_cost(&c, crate::expr::Expected::Type(self.base(st)))
+                    .is_some()
+            }
+    }
+
     pub(crate) fn hidden_type(&self, d: DeclId) -> bool {
         matches!(self.decls[d].kind, DeclKind::GenericType(t) if self.types[t].anonymous)
     }
@@ -1123,39 +1172,13 @@ impl Db {
         let actual_converts = formal_conv.is_some()
             && mode != Some(Mode::Out)
             && mode != Some(Mode::Buffer)
-            && matches!(&e.kind, ast::ExprKind::Name(n)
-                if matches!(n.kind, ast::NameKind::Apply { .. }))
-            && {
-                let c = self.cands(scope, e);
-                self.best_cost(&c, crate::expr::Expected::Type(self.base(st)))
-                    .is_some()
-            };
-        let back = match formal_conv {
-            Some(c) => match &self.decls[c].kind {
-                DeclKind::Type(t) => self.types[*t].first_subtype,
-                DeclKind::Subtype(s) => *s,
-                k => k.subprogram().and_then(|s| s.ret).unwrap_or(st),
-            },
-            None => st,
-        };
-        // A formal conversion that is a type mark converts the formal to the actual's type
-        // (9.3.6): the two must be closely related.
-        if let Some(c) = formal_conv
-            && matches!(self.decls[c].kind, DeclKind::Type(_) | DeclKind::Subtype(_))
-            && !self.closely_related(self.base(st), self.base(back))
-        {
-            let (from, to) = (
-                self.type_name(self.base(st)),
-                self.type_name(self.base(back)),
-            );
-            return Err(self.error(
-                Diagnostic::error(
-                    diag::BAD_CONVERSION,
-                    format!("cannot convert `{from}` to `{to}`"),
-                )
-                .with_primary(fspan, "these types are not closely related")
-                .with_note("9.3.6: a type mark as formal part is a type conversion of the formal"),
-            ));
+            && self.actual_converts(scope, e, st);
+        let back = formal_conv
+            .and_then(|c| self.formal_conv_result(c))
+            .unwrap_or(st);
+        if let Some(c) = formal_conv {
+            let (from, to) = (self.base(st), self.base(back));
+            self.check_formal_mark(c, from, to, fspan)?;
         }
         let id = match anon {
             Some(_) if formal_conv.is_some() => {
@@ -1648,6 +1671,27 @@ impl Db {
         for &(k, span) in parts {
             let a = &assocs[k];
             let Some(fname) = &a.formal else { continue };
+            // `conv(f(1 to 3)) => a`: a conversion of a part of the formal (6.5.7.1, #617).
+            let (conv_name, fname) = match &fname.kind {
+                ast::NameKind::Apply { prefix, args }
+                    if root_ident(fname).is_none_or(|r| r.key != key) =>
+                {
+                    match &args[..] {
+                        [
+                            ast::AssocElem {
+                                actual:
+                                    ast::Actual::Expr(ast::Expr {
+                                        kind: ast::ExprKind::Name(inner),
+                                        ..
+                                    }),
+                                ..
+                            },
+                        ] => (Some(prefix.as_ref()), inner),
+                        _ => (None, fname),
+                    }
+                }
+                _ => (None, fname),
+            };
             let saved = std::mem::take(&mut self.memo);
             let cs = self.name_cands(fscope, fname);
             let fe = match cs {
@@ -1720,10 +1764,72 @@ impl Db {
                 continue;
             }
             let st = self.exprs[fe].subtype;
-            let id = self.expr_in_subtype(scope, e, st);
+            let formal_mode = match &self.decls[f].kind {
+                DeclKind::Object(o) if o.role == ObjRole::Port => o.mode,
+                _ => None,
+            };
+            let formal_conv = match conv_name {
+                Some(c) if matches!(formal_mode, Some(Mode::Out | Mode::Inout | Mode::Buffer)) => {
+                    let (ft, cspan) = (self.base(st), c.span);
+                    let Some(d) = errs.keep(self.formal_conversion(scope, c, Some(ft))) else {
+                        continue;
+                    };
+                    let to = self.formal_conv_result(d).map_or(ft, |r| self.base(r));
+                    if errs
+                        .keep(self.check_formal_mark(d, ft, to, cspan))
+                        .is_none()
+                    {
+                        continue;
+                    }
+                    Some(d)
+                }
+                Some(c) => {
+                    errs.keep::<()>(Err(self.error(
+                        Diagnostic::error(
+                            diag::CONV_MISUSE,
+                            "a formal conversion needs a port of mode `out`, `inout` or `buffer`",
+                        )
+                        .with_primary(c.span, "the value of this formal does not flow out"),
+                    )));
+                    continue;
+                }
+                None => None,
+            };
+            let back = formal_conv
+                .and_then(|c| self.formal_conv_result(c))
+                .unwrap_or(st);
+            let actual_converts = formal_conv.is_some()
+                && formal_mode == Some(Mode::Inout)
+                && self.actual_converts(scope, e, st);
+            let id = self.expr_in_subtype(scope, e, if actual_converts { st } else { back });
             if self.is_poison_expr(id) {
                 errs.0 = true;
                 continue;
+            }
+            // The way out of an `inout` part: the formal part gives the actual's type; with no
+            // actual conversion the way in passes the actual unchanged (L72, as for a whole port).
+            if formal_mode == Some(Mode::Inout) && formal_conv.is_some() {
+                let want = match self.actual_conversion(id).filter(|_| actual_converts) {
+                    Some((_, x)) => self.base(self.exprs[x].subtype),
+                    None => self.base(st),
+                };
+                let have = if actual_converts {
+                    self.base(back)
+                } else {
+                    self.base(self.exprs[id].subtype)
+                };
+                if have != want {
+                    let tn = self.type_name(want);
+                    errs.keep::<()>(Err(self.error(
+                        Diagnostic::error(
+                            diag::NO_OVERLOAD,
+                            format!("this conversion of a part of an `inout` formal does not fit the actual's type `{tn}`"),
+                        )
+                        .with_primary(span, format!("expected type `{tn}`"))
+                        .with_help("convert both ways: `conv(formal(part)) => conv(actual)`"),
+                    )));
+                    continue;
+                }
             }
             let port = match &self.decls[f].kind {
                 DeclKind::Object(o) if o.role == ObjRole::Port && o.class == ObjClass::Signal => {
@@ -1732,15 +1838,29 @@ impl Db {
                 _ => None,
             };
             // A part of a written signal port needs a writable signal name, as a whole port.
+            let written = match self.actual_conversion(id).filter(|_| actual_converts) {
+                Some((_, x)) => x,
+                None => id,
+            };
             if let Some(mode) = port
-                && errs.keep(self.check_written_actual(f, mode, id)).is_none()
+                && errs
+                    .keep(self.check_written_actual(f, mode, written))
+                    .is_none()
             {
                 continue;
             }
-            // `f.x => conv(s)` of an `in` port converts in the port association (#611).
-            let conv = port == Some(Some(Mode::In))
+            // `f.x => conv(s)` of an `in` port converts in the port association (#611), as does
+            // the actual side of `conv(f.x) => conv(s)` of an `inout` port.
+            let conv = (port == Some(Some(Mode::In)) || actual_converts)
                 && self.port_conversion(scope, &a.actual, id).is_some();
-            out.push((steps.into_boxed_slice(), id, fe, inertial, conv));
+            out.push((
+                steps.into_boxed_slice(),
+                id,
+                fe,
+                inertial,
+                conv,
+                formal_conv,
+            ));
         }
         if !errs.0 && out.len() == parts.len() {
             let spans: Vec<Span> = parts.iter().map(|p| p.1).collect();

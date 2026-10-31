@@ -30,6 +30,10 @@ fails with the regenerate command (`YAVS_BLESS=1 cargo test -p yavs --bin yavs c
 `help_texts_are_for_users` keeps file names out of help texts. `docs/vunit-yavs.rst` lists the VUnit package's sim options and
 flags by hand; `python/vunit-yavs/tests/test_docs.py` checks its names against the option definitions. `docs/cli.rst` stays the overview.
 
+### Conversions of a part of a formal in a port map (#617, 2026-10-31)
+
+`signed(res(7 downto 0)) => a` on `out`, `buffer` and `inout` ports: sem resolves the part (`partial`), `IndividualPart` carries the conversion, elaboration makes a converted port edge. Not in subprogram calls (L157).
+
 ### Static integer intermediates and condition locations (#872, 2026-10-29)
 
 - A static integer or physical expression keeps its exact value up to the outermost operation of its type (L156): `natural range 0 to 2 ** 31 - 1`, `-2 ** 31`, `2 ** g - 1` with a generic `g = 31` (also in a process) work in 2008; a variable or subprogram parameter operand still checks each operation. Sem (`stat.rs` `absorbable`) and lowering (`expr.rs` `arith_operand`) agree, so every tier does.

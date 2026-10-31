@@ -1,0 +1,5 @@
+exit	0
+diag	note	1000000	0	:port_part_formal_conv:v:_p1	10100101
+diag	note	2000000	0	:port_part_formal_conv:_p0	52 18
+diag	note	2000000	0	:port_part_formal_conv:_p0	'0' '1'
+diag	note	2000000	0	:port_part_formal_conv:_p0	0101 1010

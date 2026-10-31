@@ -390,7 +390,7 @@ pub(crate) fn optimize_copy(
 }
 
 /// Is a debugger keeping the variables of subprograms in their slots?
-fn keep_variables_on() -> bool {
+pub fn keep_variables_on() -> bool {
     KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed)
 }
 

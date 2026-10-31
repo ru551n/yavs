@@ -207,7 +207,8 @@ impl Pre {
         let mut code = Code::new(f, prog, &skip, &known, &next, budget);
         let params: Box<[(u32, Width)]> = f.params.iter().map(|p| (p.slot, p.width)).collect();
         let pro = prologue(&mut code, &params);
-        let lean = lean_params(f, prog, &code, &pro);
+        // The debug loop enters at the prologue, which reads the parameters' slots (#863).
+        let lean = !yavs_ir::opt::keep_variables_on() && lean_params(f, prog, &code, &pro);
         // The registers holding the address of a parameter's slot are only read by the
         // prologue the call skips: they need no address.
         if lean {

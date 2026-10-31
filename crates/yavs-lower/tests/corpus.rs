@@ -361,6 +361,7 @@ const PASS: &[&str] = &[
     "protected/stack",
     "protected/variable_ports",
     "protected/variable_ports_same_delta",
+    "protected/aggregate_impure_per_element",
     "reflect/access_file_prot",
     "reflect/arrays",
     "reflect/arrays2",

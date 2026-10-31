@@ -1,0 +1,11 @@
+exit	0
+diag	note	0	0	:aggregate_impure_per_element:_p0	k 1 2 3
+diag	note	0	0	:aggregate_impure_per_element:_p0	s 4 5 6
+diag	note	0	0	:aggregate_impure_per_element:_p0	k2 8 7 9
+diag	note	0	0	:aggregate_impure_per_element:_p0	k3 10 12 11
+diag	note	0	0	:aggregate_impure_per_element:_p0	k4 13 14 15
+diag	note	0	0	:aggregate_impure_per_element:_p0	m 16 17 18 19 20 21
+diag	note	0	0	:aggregate_impure_per_element:_p0	r 22 23
+diag	note	0	0	:aggregate_impure_per_element:_p0	d 24 25 26
+diag	note	0	0	:aggregate_impure_per_element:_p0	v 27 28 29
+diag	note	0	0	:aggregate_impure_per_element:_p0	v2 30 31 32

@@ -127,6 +127,14 @@ pub(crate) fn with_part(v: &mut Val, sels: &[Sel], part: &Val) -> Option<()> {
     }
 }
 
+/// Whether an aggregate's expression runs once per associated element, not once per association:
+/// a composite value with an impure call (#907, LRM 9.3.3). A scalar keeps one call, on which the
+/// reference simulators differ.
+fn each_element(db: &Db, value: ExprId) -> bool {
+    !db.types[db.base(db.exprs[value].subtype)].kind.is_scalar()
+        && crate::eval::calls_impure(db, value)
+}
+
 /// An array value: bytes for 1-D arrays of small enumeration positions, else runs.
 pub(crate) fn make(bounds: &[Bounds], xs: Vec<Val>) -> Val {
     let bounds: Box<[_]> = bounds.iter().map(|b| (b.left, b.dir, b.right)).collect();
@@ -1278,13 +1286,26 @@ impl Model {
                         next += 1;
                         continue;
                     }
+                    // Once per associated element (#907); the first takes the value above.
+                    let again = each_element(db, a.value);
+                    let mut first = Some(v);
+                    let mut next_value = |m: &mut Self| match (first.take(), again) {
+                        (Some(v), _) => {
+                            if !again {
+                                first = Some(v.clone());
+                            }
+                            Ok(v)
+                        }
+                        (None, _) => m.eval(db, a.value, scope),
+                    };
                     for c in a.choices.iter() {
                         match c {
-                            Choice::Element(i) => vs[*i as usize] = Some(v.clone()),
-                            Choice::Others => vs
-                                .iter_mut()
-                                .filter(|x| x.is_none())
-                                .for_each(|x| *x = Some(v.clone())),
+                            Choice::Element(i) => vs[*i as usize] = Some(next_value(self)?),
+                            Choice::Others => {
+                                for x in vs.iter_mut().filter(|x| x.is_none()) {
+                                    *x = Some(next_value(self)?);
+                                }
+                            }
                             _ => return Err(not_yet(db, e, "this record aggregate choice")),
                         }
                     }
@@ -1300,6 +1321,22 @@ impl Model {
                 Ok(make(&bs, xs))
             }
             _ => Err(not_yet(db, e, "an aggregate of this type")),
+        }
+    }
+
+    /// The value of one element, or one row of the deeper dimensions, of an array aggregate.
+    fn agg_item(
+        &mut self,
+        db: &Db,
+        e: ExprId,
+        last: bool,
+        dim: usize,
+        scope: Option<ScopeId>,
+    ) -> R<Vec<Val>> {
+        if last {
+            Ok(vec![self.eval(db, e, scope)?])
+        } else {
+            Ok(self.array_agg(db, e, dim + 1, scope)?.1)
         }
     }
 
@@ -1332,7 +1369,9 @@ impl Model {
         // of the deeper dimensions each otherwise.
         let mut deeper: Option<Vec<Bounds>> = None;
         let mut pos: Vec<Vec<Val>> = Vec::new();
-        let mut named: Vec<(&Choice, Vec<Val>)> = Vec::new();
+        // Each with its values; an expression that runs per element (#907) is evaluated here for
+        // all but `others`, whose count is known once the other choices are placed.
+        let mut named: Vec<(&Choice, Vec<Vec<Val>>, &AggAssoc)> = Vec::new();
         for a in assocs.iter() {
             let item = if last {
                 match self.eval(db, a.value, scope)? {
@@ -1364,8 +1403,24 @@ impl Model {
             if a.choices.is_empty() {
                 pos.push(item);
             } else {
+                let each = each_element(db, a.value);
+                let mut first = Some(item);
                 for c in a.choices.iter() {
-                    named.push((c, item.clone()));
+                    let n = match c {
+                        Choice::Range(r) if each => self.range(db, r, scope, ex.span)?.len(),
+                        _ => 1,
+                    };
+                    let mut vals = Vec::new();
+                    for _ in 0..n {
+                        vals.push(match first.take() {
+                            Some(v) => v,
+                            None => self.agg_item(db, a.value, last, dim, scope)?,
+                        });
+                    }
+                    if !each {
+                        first = vals.first().cloned();
+                    }
+                    named.push((c, vals, a));
                 }
             }
         }
@@ -1415,7 +1470,16 @@ impl Model {
         for (k, v) in pos.into_iter().enumerate() {
             xs[k] = Some(v);
         }
-        for (c, v) in named {
+        for (c, vals, a) in named {
+            let each = each_element(db, a.value);
+            let mut k = 0;
+            let mut value = |m: &mut Self| -> R<Vec<Val>> {
+                k += 1;
+                match vals.get(if each { k - 1 } else { 0 }) {
+                    Some(v) => Ok(v.clone()),
+                    None => m.agg_item(db, a.value, last, dim, scope),
+                }
+            };
             match c {
                 Choice::Expr(x) => {
                     let i = int(&self.eval(db, *x, scope)?, db.exprs[*x].span)?;
@@ -1426,7 +1490,7 @@ impl Model {
                             format!("choice {i} is outside the aggregate's bounds"),
                         )
                     })?;
-                    xs[p as usize] = Some(v);
+                    xs[p as usize] = Some(value(self)?);
                 }
                 Choice::Range(r) => {
                     let r = self.range(db, r, scope, ex.span)?;
@@ -1439,13 +1503,14 @@ impl Model {
                                 format!("choice {i} is outside the aggregate's bounds"),
                             )
                         })?;
-                        xs[p as usize] = Some(v.clone());
+                        xs[p as usize] = Some(value(self)?);
                     }
                 }
-                Choice::Others => xs
-                    .iter_mut()
-                    .filter(|x| x.is_none())
-                    .for_each(|x| *x = Some(v.clone())),
+                Choice::Others => {
+                    for x in xs.iter_mut().filter(|x| x.is_none()) {
+                        *x = Some(value(self)?);
+                    }
+                }
                 Choice::Element(_) => {
                     return Err(not_yet(db, e, "an element choice in an array aggregate"));
                 }

@@ -489,12 +489,6 @@ Arguments:
 
    May be repeated.
 
-.. option:: --gui
-
-   Open the run in the graphical debugger: starts ``yavs-gui`` (next to this executable, else on PATH) with these run arguments.
-
-   Cannot be combined with ``--dap``, ``--interactive``, ``--do``.
-
 Diagnostics named above: ``E0105``, ``E0106``, ``E0107``, ``E0120``, ``E0701``, ``E0801``, ``E0901``, ``E0902``, ``E3002``; ``yavs --explain CODE`` explains each.
 
 ``yavs cov merge``

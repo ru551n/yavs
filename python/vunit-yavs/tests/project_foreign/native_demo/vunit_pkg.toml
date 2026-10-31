@@ -1,0 +1,6 @@
+[package]
+library = "native_demo"
+setup = "native_demo_setup:setup"
+
+[[package.sources]]
+include = ["native_pkg.vhd"]

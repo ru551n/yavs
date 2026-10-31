@@ -1593,9 +1593,16 @@ impl Fx<'_, '_> {
                 }
             }
         };
+        // An `others` expression with an impure call runs after the other choices, once per
+        // element they leave (LRM 9.3.3, #909); any other is written first and overwritten.
+        let others_last = assocs.iter().any(|a| {
+            a.choices.iter().any(|c| matches!(c, Choice::Others)) && self.calls_impure(a.value)
+        });
+        let mut covered: Vec<(Reg, Reg)> = Vec::new();
         for a in assocs
             .iter()
             .filter(|a| a.choices.iter().any(|c| matches!(c, Choice::Others)))
+            .filter(|_| !others_last)
         {
             let e = a.value;
             if let Some(w) = fill.filter(|_| self.fill_value(e)) {
@@ -1620,6 +1627,7 @@ impl Fx<'_, '_> {
             if a.choices.is_empty() {
                 let pos = self.int(n);
                 n += 1;
+                covered.push((pos, pos));
                 put(self, pos, a.value)?;
                 continue;
             }
@@ -1636,6 +1644,7 @@ impl Fx<'_, '_> {
                             idx: i,
                             what: m,
                         });
+                        covered.push((pos, pos));
                         put(self, pos, a.value)?;
                     }
                     Choice::Range(rc) => {
@@ -1653,6 +1662,22 @@ impl Fx<'_, '_> {
                         let left = r.left;
                         let dope = self.offset(desc, 24 * u32::from(k));
                         let e = a.value;
+                        if others_last {
+                            let (from, to) = (self.reg(RegTy::I64), self.reg(RegTy::I64));
+                            for (dst, idx) in [(from, r.left), (to, r.right)] {
+                                self.emit(Inst::Pos {
+                                    dst,
+                                    dope,
+                                    dim: 0,
+                                    idx,
+                                    what: m,
+                                });
+                            }
+                            let c = self.cmp(CmpOp::Lt, from, to);
+                            let lo = self.select(c, from, to, RegTy::I64);
+                            let hi = self.select(c, to, from, RegTy::I64);
+                            covered.push((lo, hi));
+                        }
                         let done = self.block();
                         if let Some(w) = fill.filter(|_| self.fill_value(e)) {
                             let right = r.right;
@@ -1688,7 +1713,46 @@ impl Fx<'_, '_> {
                 }
             }
         }
+        if others_last {
+            for a in assocs
+                .iter()
+                .filter(|a| a.choices.iter().any(|c| matches!(c, Choice::Others)))
+            {
+                let e = a.value;
+                self.for_n(len, |fx, i| {
+                    let (go, skip) = (fx.block(), fx.block());
+                    let mut seen = fx.int(0);
+                    for &(lo, hi) in &covered {
+                        let (ge, le) = (fx.cmp(CmpOp::Ge, i, lo), fx.cmp(CmpOp::Le, i, hi));
+                        let inside = fx.select(ge, le, ge, RegTy::I64);
+                        seen = fx.select(inside, inside, seen, RegTy::I64);
+                    }
+                    fx.branch(seen, skip, go);
+                    fx.at(go);
+                    put(fx, i, e)?;
+                    fx.jump(skip);
+                    fx.at(skip);
+                    Ok(())
+                })?;
+            }
+        }
         Ok(())
+    }
+
+    /// Whether expression `e` calls an impure function.
+    fn calls_impure(&self, e: ExprId) -> bool {
+        let mut found = false;
+        self.db.walk_expr(e, &mut |x| {
+            if let ExprKind::Call { callee, .. } = self.db.exprs[x].kind {
+                found |= self.db.decls[callee].kind.subprogram().is_some_and(|s| {
+                    matches!(
+                        s.kind,
+                        yavs_sem::decl::SubprogramKind::Function { pure: false }
+                    )
+                });
+            }
+        });
+        found
     }
 
     /// Width of the elements of array type `tid` when they are plain scalars (not bit-planes).

@@ -366,6 +366,7 @@ const PASS: &[&str] = &[
     "protected/aggregate_impure_per_element",
     "protected/aggregate_others_impure",
     "protected/protected_method_elab",
+    "protected/protected_var_path_name",
     "reflect/access_file_prot",
     "reflect/arrays",
     "reflect/arrays2",

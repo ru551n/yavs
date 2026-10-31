@@ -1769,7 +1769,9 @@ pub(crate) fn region_var_init(
     );
     thunk(db, pb, cx, &name, span, |fx| {
         if protected {
-            fx.prot_new(t, true, span)
+            let h = fx.prot_new(t, true, span)?;
+            fx.prot_name(d, t, h, span)?;
+            Ok(h)
         } else {
             Ok(fx.new_shared_slot(d, t, &name, span)?.1)
         }
@@ -2626,6 +2628,7 @@ impl Fx<'_, '_> {
                 }
                 self.stmt_start(StmtKind::Decl, span);
                 let h = self.prot_new(t, true, span)?;
+                self.prot_name(d, t, h, span)?;
                 let off = alloc(8);
                 let a = self.addr(Space::Pkg(p), off);
                 self.store(a, h, Width::B8);

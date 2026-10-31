@@ -36,6 +36,15 @@ pub fn package_prefix(db: &Db, scope: yavs_sem::ScopeId) -> (String, Option<Stri
         match (sd.kind, sd.owner) {
             (S::Subprogram, Some(o)) => parts.push(format!("{}:", subprogram_element(db, o))),
             (S::Loop | S::SeqBlock, _) => {}
+            // A variable of an object with no name of its own (`Fx::entity_name`, #916).
+            (S::Protected | S::ProtectedBody, o) => {
+                if let Some(o) = o {
+                    let name = format!("{}:", db.decls[o].name.to_string().to_ascii_lowercase());
+                    if parts.last() != Some(&name) {
+                        parts.push(name);
+                    }
+                }
+            }
             // A body continues in its package (a library unit's body hangs off its context region).
             (S::PackageBody, _) => {
                 sc = db.body_package(s);

@@ -1730,6 +1730,77 @@ impl<'a> Fx<'a, '_> {
             .ok_or_else(|| self.cx.ice(span, "composite signal part without leaves"))
     }
 
+    /// `'path_name` or `'instance_name` of entity `d`. A variable of a protected body is named
+    /// through the object that holds it, known at run time (LCS-2016-032, #916).
+    pub(crate) fn entity_name(&mut self, d: DeclId, instance: bool, span: Span) -> R<V> {
+        let db = self.db;
+        if let (Some((depth, off)), yavs_sem::scope::ScopeKind::ProtectedBody) =
+            (self.prot_self, &db.scopes[db.decls[d].scope].kind)
+        {
+            let a = self.addr(Space::Frame(depth), off);
+            let h = self.load(a, Width::B8, RegTy::Handle);
+            let own = format!(":{}", db.decls[d].name.to_string().to_ascii_lowercase());
+            let st = self.string_subtype(span)?;
+            let v = ConstValue::Array(yavs_sem::stat::ArrayConst {
+                bounds: Box::new([(1, Direction::To, own.len() as i64)]),
+                elems: Elems::Bytes(own.into_bytes().into_boxed_slice()),
+            });
+            let V::A(sd, sq) = self.konst(&v, st, span)? else {
+                return Err(self.cx.ice(span, "a string constant that is no array"));
+            };
+            let suffix = self.make_fat(sd, sq);
+            let V::A(fd, fq) = self.static_entity_name(d, instance, span)? else {
+                return Err(self.cx.ice(span, "a name that is no array"));
+            };
+            let fallback = self.make_fat(fd, fq);
+            let which = self.int(i64::from(instance));
+            return self
+                .native(
+                    "yavs.prot.name_get",
+                    None,
+                    &[h, which, suffix, fallback],
+                    Some(st),
+                    span,
+                )?
+                .ok_or(Failed);
+        }
+        self.static_entity_name(d, instance, span)
+    }
+
+    pub(crate) fn static_entity_name(&mut self, d: DeclId, instance: bool, span: Span) -> R<V> {
+        let db = self.db;
+        // An item of a library-unit package is named the same in every instance, and the
+        // subprogram that reads it is shared by them: a constant, not an instance slot.
+        if let Some(name) = crate::pathname::library_package_item_name(db, d) {
+            let st = self.string_subtype(span)?;
+            let v = ConstValue::Array(yavs_sem::stat::ArrayConst {
+                bounds: Box::new([(1, Direction::To, name.len() as i64)]),
+                elems: Elems::Bytes(name.into_bytes().into_boxed_slice()),
+            });
+            return self.konst(&v, st, span);
+        }
+        let off = match self
+            .cx
+            .names
+            .iter()
+            .find(|n| n.decl == d && n.instance == instance)
+        {
+            Some(n) => n.off,
+            None => {
+                let off = self.cx.inst_alloc(16);
+                self.cx.context_funcs.push(self.fb.id());
+                self.cx.names.push(crate::InstName {
+                    decl: d,
+                    instance,
+                    off,
+                });
+                off
+            }
+        };
+        let (data, dope) = self.inst_array(None, Space::Inst, off);
+        Ok(V::A(data, dope))
+    }
+
     /// `'driving` or `'driving_value` of signal name `e` that is not a whole driver of the
     /// process: a signal parameter, a part, or a composite over several drivers (LRM 16.2.4,
     /// #615). The interpreter finds the drivers of the elements named.
@@ -4957,37 +5028,7 @@ impl<'a> Fx<'a, '_> {
                 self.konst(&v, st, span)
             }
             AttrPrefix::Entity(d) if matches!(attr, PathName | InstanceName) => {
-                // An item of a library-unit package is named the same in every instance, and the
-                // subprogram that reads it is shared by them: a constant, not an instance slot.
-                if let Some(name) = crate::pathname::library_package_item_name(db, d) {
-                    let st = self.string_subtype(span)?;
-                    let v = ConstValue::Array(yavs_sem::stat::ArrayConst {
-                        bounds: Box::new([(1, Direction::To, name.len() as i64)]),
-                        elems: Elems::Bytes(name.into_bytes().into_boxed_slice()),
-                    });
-                    return self.konst(&v, st, span);
-                }
-                let instance = attr == InstanceName;
-                let off = match self
-                    .cx
-                    .names
-                    .iter()
-                    .find(|n| n.decl == d && n.instance == instance)
-                {
-                    Some(n) => n.off,
-                    None => {
-                        let off = self.cx.inst_alloc(16);
-                        self.cx.context_funcs.push(self.fb.id());
-                        self.cx.names.push(crate::InstName {
-                            decl: d,
-                            instance,
-                            off,
-                        });
-                        off
-                    }
-                };
-                let (data, dope) = self.inst_array(None, Space::Inst, off);
-                Ok(V::A(data, dope))
+                self.entity_name(d, attr == InstanceName, span)
             }
             AttrPrefix::Entity(_) => Err(self.cx.unsupported(
                 span,

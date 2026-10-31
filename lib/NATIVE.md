@@ -156,6 +156,8 @@ name the subprograms in this table. The `std_logic_textio` package is aliases on
 | `yavs.env.pslisassertcovered.void.r_boolean` | `function pslisassertcovered return boolean` | 2019 |
 | `yavs.env.clearpslstate.void` | `procedure clearpslstate` | 2019 |
 
+Internal, called by lowering only (#916): `yavs.prot.name_set` gives a protected object its `'path_name` and `'instance_name`; `yavs.prot.name_get` reads a variable's name through its object.
+
 ### std.reflection (123)
 
 | Native symbol | Signature | Revision |

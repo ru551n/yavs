@@ -382,7 +382,9 @@ pub(crate) fn init_packages(
     mut fix: impl FnMut(&PackageIr, &mut InstData) -> Result<(), SimError>,
 ) -> Result<Arc<Runtime>, SimError> {
     let mut data: Vec<Arc<InstData>> = Vec::new();
+    let prot_names = yavs_interp::ProtNames::default();
     let bind = |data: &Vec<Arc<InstData>>| Bindings {
+        prot_names: prot_names.clone(),
         packages: data.clone(),
         sources: sources.clone(),
         foreign: foreign.to_vec(),

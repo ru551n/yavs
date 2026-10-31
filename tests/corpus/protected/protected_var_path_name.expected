@@ -1,0 +1,13 @@
+exit	0
+diag	note	0	0	:protected_var_path_name:u:tb	path:     :protected_var_path_name:u:tb:t:value
+diag	note	0	0	:protected_var_path_name:u:tb	instance: :protected_var_path_name(arch):u@e_pvp(arch):tb:t:value
+diag	note	0	0	:protected_var_path_name:u:tb	path:     :protected_var_path_name:u:sh:value
+diag	note	0	0	:protected_var_path_name:u:tb	instance: :protected_var_path_name(arch):u@e_pvp(arch):sh:value
+diag	note	0	0	:protected_var_path_name:g(0):p	path:     :protected_var_path_name:g(0):p:t:value
+diag	note	0	0	:protected_var_path_name:g(0):p	instance: :protected_var_path_name(arch):g(0):p:t:value
+diag	note	0	0	:protected_var_path_name:g(0):p	path:     :work:pk2_pvp:s:value
+diag	note	0	0	:protected_var_path_name:g(0):p	instance: :work:pk2_pvp:s:value
+diag	note	0	0	:protected_var_path_name:g(1):p	path:     :protected_var_path_name:g(1):p:t:value
+diag	note	0	0	:protected_var_path_name:g(1):p	instance: :protected_var_path_name(arch):g(1):p:t:value
+diag	note	0	0	:protected_var_path_name:g(1):p	path:     :work:pk2_pvp:s:value
+diag	note	0	0	:protected_var_path_name:g(1):p	instance: :work:pk2_pvp:s:value

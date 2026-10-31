@@ -121,6 +121,8 @@ fn implemented(symbol: &str, family: Option<&str>, attr: Option<&str>) -> Option
         (_, _, Some("value")) => value_attr,
         (_, _, Some("image")) => image_attr,
         ("yavs.env.resolution_limit.void.r_delay_length", _, _) => resolution_limit,
+        ("yavs.prot.name_set", _, _) => prot_name_set,
+        ("yavs.prot.name_get", _, _) => prot_name_get,
         ("yavs.env.getenv.string.r_string", _, _) => getenv_string,
         ("yavs.env.getenv.string.r_line", _, _) => getenv_line,
         ("yavs.env.vhdl_version.void.r_string", _, _) => vhdl_version,
@@ -1000,6 +1002,45 @@ fn resolution_limit(
     _: &[u64],
 ) -> R<Option<u64>> {
     Ok(Some(env::resolution_limit(m.rt.resolution) as u64))
+}
+
+/// `yavs.prot.name_set (object, path, instance)`: the names of a protected object (#916).
+fn prot_name_set(
+    m: &mut Machine,
+    _: &mut Option<&mut Ctx<'_>>,
+    _: Option<TyId>,
+    a: &[u64],
+) -> R<Option<u64>> {
+    let names = [m.fat_bytes(targ(a, 1)?)?, m.fat_bytes(targ(a, 2)?)?];
+    m.rt.prot_names
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(targ(a, 0)?, names);
+    Ok(None)
+}
+
+/// `yavs.prot.name_get (object, instance, suffix, fallback)`: a variable's name through its
+/// object; the fallback for an object without a name (an element of a composite, an allocator).
+fn prot_name_get(
+    m: &mut Machine,
+    _: &mut Option<&mut Ctx<'_>>,
+    _: Option<TyId>,
+    a: &[u64],
+) -> R<Option<u64>> {
+    let name =
+        m.rt.prot_names
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&targ(a, 0)?)
+            .map(|n| n[usize::from(targ(a, 1).is_ok_and(|w| w != 0))].clone());
+    let text = match name {
+        Some(mut t) => {
+            t.extend(m.fat_bytes(targ(a, 2)?)?);
+            t
+        }
+        None => m.fat_bytes(targ(a, 3)?)?,
+    };
+    m.ret_string(&text).map(Some)
 }
 
 fn getenv_string(

@@ -6,7 +6,7 @@
 use yavs_diag::Span;
 use yavs_ir::{Dir, Inst, Mode, ParamClass, Reg, RegTy, RootKind, Ty, TyId, Width};
 use yavs_sem::decl::{Body, DeclKind, ObjClass, ObjRole};
-use yavs_sem::hir::Arg;
+use yavs_sem::hir::{Arg, AttrPrefix, ExprKind, PredefAttr};
 use yavs_sem::types::TypeKind;
 use yavs_sem::{Db, DeclId, ExprId, ScopeId, SubtypeId, TypeId};
 
@@ -454,6 +454,34 @@ impl Fx<'_, '_> {
         self.store_at(ft, a, val, span)
     }
 
+    /// Name the object `h` of variable `d`: only for a type whose body asks the name of one of
+    /// its variables (`Fx::entity_name`), since the name takes a cell per instance (#916).
+    pub(crate) fn prot_name(&mut self, d: DeclId, t: TypeId, h: Reg, span: Span) -> R<()> {
+        let db = self.db;
+        let vars = state_vars(db, t);
+        if !db.exprs.iter().any(|(_, x)| {
+            matches!(
+                x.kind,
+                ExprKind::Attr {
+                    attr: PredefAttr::PathName | PredefAttr::InstanceName,
+                    prefix: AttrPrefix::Entity(v),
+                    ..
+                } if vars.contains(&v)
+            )
+        }) {
+            return Ok(());
+        }
+        let mut cells = vec![h];
+        for instance in [false, true] {
+            let V::A(data, dope) = self.static_entity_name(d, instance, span)? else {
+                return Err(self.cx.ice(span, "a name that is no array"));
+            };
+            cells.push(self.make_fat(data, dope));
+        }
+        self.native("yavs.prot.name_set", None, &cells, None, span)?;
+        Ok(())
+    }
+
     /// A process-local variable of a protected type.
     pub fn local_prot(&mut self, d: DeclId, t: TypeId, span: Span) -> R<()> {
         let tid = self.ty(t, span)?;
@@ -461,6 +489,7 @@ impl Fx<'_, '_> {
         let off = self.fb.local(&name, tid, 8, 8);
         self.fb.root(off, RootKind::Handle);
         let h = self.prot_new(t, false, span)?;
+        self.prot_name(d, t, h, span)?;
         let a = self.addr(Space::Frame(self.depth), off);
         self.store(a, h, Width::B8);
         self.cx.objs.insert(
@@ -502,7 +531,11 @@ pub(crate) fn shared_var(
                 w: Width::B8,
             },
         );
-        crate::func::thunk(db, pb, cx, &name, span, |fx| fx.prot_new(t, true, span))?
+        crate::func::thunk(db, pb, cx, &name, span, |fx| {
+            let h = fx.prot_new(t, true, span)?;
+            fx.prot_name(d, t, h, span)?;
+            Ok(h)
+        })?
     } else {
         // `--relaxed` (W1904): the thunk creates the variable's slot in the shared heap and
         // returns its address; names of it reach it through the cell (`Space::Region`).

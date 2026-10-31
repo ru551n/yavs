@@ -1,6 +1,8 @@
 Open issues where valid VHDL gives an elaboration or lowering error (E2xxx, E3004, E9999) or the wrong diagnostic code. Most come from conformance suites; each links its failing test names.
 
 ## Issues
+- [x] #917 run-time: std.env.getenv ignores the conditional analysis identifiers
+- [x] #916 run-time: 'path_name and 'instance_name of a variable in a protected type body omit the declaring process and the object (LCS-2016-032)
 - [x] #913 elab: a recursive entity instantiation using an architecture constant as generic actual never terminates (E2109)
 - [x] #912 elab: a constant initialised by a direct method call of a protected shared variable that bounds a signal is E2106
 - [x] #909 lower: an aggregate with others and an impure composite expression runs others on every element first

@@ -350,7 +350,12 @@ pub struct Bindings {
     pub resolution: TimeResolution,
     /// The design's source files, for `std.env` call paths ([`Sources::of`]).
     pub sources: Sources,
+    /// The names of protected objects (#916): one table for the runtimes of one state.
+    pub prot_names: ProtNames,
 }
+
+/// By object handle: `'path_name`, `'instance_name` of the variable holding it.
+pub type ProtNames = Arc<Mutex<std::collections::HashMap<u64, [Vec<u8>; 2]>>>;
 
 impl Default for Bindings {
     fn default() -> Bindings {
@@ -358,6 +363,7 @@ impl Default for Bindings {
             foreign: Vec::new(),
             models: Vec::new(),
             searched: String::new(),
+            prot_names: Default::default(),
             packages: Vec::new(),
             cov_counters: None,
             limits: Limits::default(),
@@ -1283,6 +1289,8 @@ pub struct Runtime {
     pub(crate) sources: Sources,
     /// VHDL assert counts and enables (`env.rs`).
     pub(crate) asserts: env::Asserts,
+    /// The names of the protected objects whose type's body asks them (#916): path, instance.
+    pub(crate) prot_names: ProtNames,
     /// Open file objects; a file cell holds index + 1 (0: never opened).
     pub(crate) files: Mutex<Vec<textio::FileSlot>>,
     /// Compiled code, set once before the simulation starts (`set_tier`).
@@ -1671,6 +1679,7 @@ impl Runtime {
             resolution: b.resolution,
             sources: b.sources,
             asserts: Default::default(),
+            prot_names: b.prot_names,
             files: Mutex::new(textio::FileSlot::preopened()),
             tier: Default::default(),
             replay: Default::default(),
@@ -1856,6 +1865,15 @@ impl Runtime {
     /// left it): a simulation going on from package state that elaboration-time calls made.
     pub fn inherit(&self, from: &Runtime) {
         self.asserts.inherit(&from.asserts);
+        let names = from
+            .prot_names
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        self.prot_names
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend(names);
     }
 
     /// While `on`, calls run again what they ran before (elaboration-time calls replayed on

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The problem matcher `$yavs` puts the diagnostics of a yavs task in the Problems view.
 - The extension is released with yavs and carries its version (one release with every artifact).
 
 ## 0.1.0

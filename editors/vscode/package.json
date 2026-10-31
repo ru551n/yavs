@@ -39,6 +39,23 @@
         "language": "vhdl"
       }
     ],
+    "problemMatchers": [
+      {
+        "name": "yavs",
+        "owner": "yavs",
+        "source": "yavs",
+        "fileLocation": ["autoDetect", "${workspaceFolder}"],
+        "pattern": {
+          "regexp": "^(.+?):(\\d+):(\\d+): (error|warning|note)\\[([^\\]]*)\\]: (.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "code": 5,
+          "message": 6
+        }
+      }
+    ],
     "commands": [
       {
         "command": "yavs.attach",

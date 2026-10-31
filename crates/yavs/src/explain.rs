@@ -402,6 +402,18 @@ const EXPLAIN: &[(&str, &str)] = &[
         "More delta cycles than the limit ran at one simulated time, usually a zero-delay feedback loop. The labels and the note name the processes of the loop and the signals through which they wake each other: two processes (or concurrent assignments) that assign each other's inputs with no delay, a process that waits only on a signal it assigns, a combinational loop through concurrent statements, or a process that waits for 0 ns in a loop. `--max-deltas=N` raises the limit (default 10000) for a design that needs more deltas at one time.",
     ),
     (
+        "E0133",
+        "`yavs lint` was given nothing to check, a path that does not exist, or a rule that does not exist: name files or directories, or give `--work` with an analyzed library.",
+    ),
+    (
+        "E0134",
+        "`yavs lint` cannot use its configuration or waiver file: it cannot be read, is not valid YAML, or names a key, class or rule that does not exist. The note names the line.",
+    ),
+    (
+        "E0135",
+        "`yavs lint` cannot write a report file, named by `--json`, `--sarif`, `--junit`, `--quality-report` or `--sonarqube`.",
+    ),
+    (
         "E3003",
         "A postponed process scheduled a delta cycle (LRM 14.7.5.3).",
     ),

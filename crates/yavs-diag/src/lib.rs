@@ -23,6 +23,7 @@
 //! | `W3100`-`W3199` | run-time warnings of `yavs run` about a stuck or hung simulation (`yavs_elab::stuck`: W3101 hang report, W3102 process that never suspends) |
 //! | `L0000`-`L0099` | `yavs-lib`: library manifests and closure queries |
 //! | `E2000`-`E2099` | `yavs-lower`: HIR to IR lowering (E2001 not lowered yet) |
+//! | `lint_NNN` | `yavs-lint`: findings of `yavs lint`, their own namespace (`yavs_lint::RULES`) |
 //! | `E9999` | internal compiler error in any stage ("this is a bug in yavs") |
 //!
 //! A code is never reused for a different meaning. An empty code is only for

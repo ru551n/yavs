@@ -24,7 +24,7 @@ to, and those documents win over your memory.
 | kernel (`yavs-kernel`) | `crates/yavs-kernel/AGENTS.md`, `crates/yavs-kernel/DESIGN.md` |
 | CLI, libraries, test-runner integration | `crates/yavs/AGENTS.md`, `crates/yavs-lib/AGENTS.md`, `docs/cli-contract.md` (external test runners depend on it: change it deliberately) |
 | diagnostics, logic, std natives | `crates/yavs-{diag,logic,std}/AGENTS.md` |
-| FFI, VHPI, waves, DAP, coverage, LLVM | `crates/yavs-{ffi,vhpi,wave,dap,cov,llvm}/AGENTS.md` |
+| FFI, VHPI, waves, DAP, coverage, LLVM, lint | `crates/yavs-{ffi,vhpi,wave,dap,cov,llvm,lint}/AGENTS.md` |
 | `lib/` (std/ieee sources) | `lib/AGENTS.md`, `lib/README.md`, `lib/SOURCES.md`, `lib/NATIVE.md` |
 | tests and tools | `tests/AGENTS.md` (and `tests/{diag,corpus,parse-corpus,discrepancies}/AGENTS.md`), `tools/AGENTS.md` (and `tools/{corpus,difftest,discrepancies}/AGENTS.md`), `fuzz/AGENTS.md` |
 | releases, version numbers, `.github/workflows/release.yml` | `RELEASING.md` (one release with every artifact, one version, `tools/release/bump.py`) |
@@ -48,6 +48,7 @@ to, and those documents win over your memory.
 | `crates/yavs-wave` | FST waveform sink |
 | `crates/yavs-dap` | Debug Adapter Protocol server (`yavs run --dap`) |
 | `crates/yavs-cov` | Code coverage: counters to a mergeable database, text and Cobertura reports |
+| `crates/yavs-lint` | `yavs lint`: rules over the analysed HIR, certainty classes, configuration, waivers, reports |
 | `crates/yavs-llvm` | LLVM 21 ORC JIT tier, behind the `llvm` feature (not a default feature; not shipped in the release archives, build it from source) |
 | `crates/yavs-clift` | Cranelift tier (#481), behind the `clift` feature (off by default; the compiled tier of the release archives); shares `yavs-llvm`'s `rt` module |
 | `crates/yavs` | The `yavs` binary |

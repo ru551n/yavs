@@ -486,6 +486,42 @@ mod tests {
         );
     }
 
+    /// The rule reference of the user guide is what the rule list says now; the same command
+    /// regenerates it.
+    #[test]
+    fn cli_reference_lint_rules_is_current() {
+        let page =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/lint-rules.rst");
+        let mut now = String::from(
+            "..\n   Generated from the rule list: YAVS_BLESS=1 cargo test -p yavs --bin yavs cli_reference\n\nLint rules\n==========\n\nEvery rule of :doc:`yavs lint <lint>`. ``yavs lint --explain RULE`` prints the same.\n",
+        );
+        for r in yavs_lint::RULES {
+            let class = if r.certainty == yavs_lint::Certainty::Definite {
+                "definite error, on by default".to_string()
+            } else {
+                format!("{}, off by default", r.certainty.name())
+            };
+            write!(
+                now,
+                "\n{id}\n{bar}\n\n{class}. {summary}\n\n{explain}\n",
+                id = r.id,
+                bar = "-".repeat(r.id.len()),
+                summary = rst(r.summary),
+                explain = rst(r.explain),
+            )
+            .unwrap();
+        }
+        if std::env::var_os("YAVS_BLESS").is_some() {
+            std::fs::write(&page, &now).unwrap();
+            return;
+        }
+        assert!(
+            std::fs::read_to_string(&page).unwrap_or_default() == now,
+            "docs/lint-rules.rst is out of date: the rule list changed.\nRegenerate it:\n\n    \
+             YAVS_BLESS=1 cargo test -p yavs --bin yavs cli_reference\n"
+        );
+    }
+
     /// The page is a user guide: help texts do not point into the repository or name internals.
     #[test]
     fn help_texts_are_for_users() {

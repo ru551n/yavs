@@ -18,6 +18,7 @@ VS Code).
 - `yavs: Attach` (`yavs.attach`, the dynamic configuration, and F5 with nothing configured, `Configurations`) needs no launch.json: port 4711, and an input box only if nothing listens there. The look at the port connects and closes, which the server takes for no session. Nothing is analyzed. The flow: `python run.py lib.tb.test --yavs-debug`, breakpoints, F5.
 - `surfer` in a launch configuration is `--surfer[=HOST:PORT]`; the custom event `yavs/showSource` (Surfer's go to declaration) opens the file at the line.
 - The Debug Console needs nothing here: it sends `evaluate` with context `repl`, and the server takes the console's commands that way (`run 10 ns`, `restart`, #904).
+- Contributes the problem matcher `$yavs` for a task that runs yavs with `--message-format=short` (`yavs lint`, `yavs analyze`): a language server would be the way to live diagnostics, and yavs has none, so a task is the one surface that needs no code here.
 - Does not: implement DAP (all of it is `yavs-dap`), highlight or lint VHDL.
 - Plain JavaScript, no bundler, no runtime dependencies.
 
@@ -25,7 +26,7 @@ VS Code).
 
 | File | Responsibility |
 |---|---|
-| `package.json` | Manifest: `contributes.debuggers`, languages, breakpoints, snippets |
+| `package.json` | Manifest: `contributes.debuggers`, languages, breakpoints, snippets, `problemMatchers` |
 | `extension.js` | The adapter descriptor factory (`runArgs`, `libArgs`) and the commands (`custom`) |
 | `sample/` | A testbench workspace with `.vscode/launch.json` (used by the tests) |
 | `test/client.js` | A VS Code style session through the DAP test client against `yavs run --dap=stdio`: data breakpoints, `setVariable`, force and release, a deposit of an element, conditional line breakpoints, a paged array, the Hierarchy scope and `yavs/hierarchy`, live waves (`yavs/waveSubscribe`, `yavs/waves` events, values decoded from base64 by the hierarchy's `encoding`) |

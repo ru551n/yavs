@@ -154,6 +154,41 @@ class TestRealYavs(unittest.TestCase):
         self.assertEqual(proc.returncode, 1, proc.stdout)
         self.assertEqual(report(self.xml), {PASS: "passed", COMMA: "passed", FAIL: "failed"}, proc.stdout)
 
+    def test_lint_after_compile(self):
+        def run(*args):
+            return subprocess.run(
+                self._command("--compile", *args),
+                env=self._env(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=TIMEOUT,
+                check=False,
+            )
+
+        proc = run("--yavs-lint")
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertIn("finding", proc.stdout)
+        # A library with a finding fails the compile step, and is not checked without the flag.
+        design = self.tempdir / "bad.vhd"
+        design.write_text("entity bad is end;\narchitecture a of bad is\nbegin\n  process begin report \"x\"; end process;\nend;\n")
+        env = dict(self._env(), EXTRA_VHDL=str(design))
+        self.assertEqual(
+            subprocess.run(self._command("--compile"), env=env, stdout=subprocess.DEVNULL, timeout=TIMEOUT, check=False).returncode,
+            0,
+        )
+        proc = subprocess.run(
+            self._command("--compile", "--yavs-lint"),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=TIMEOUT,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+        self.assertIn("lint_770", proc.stdout)
+
     def _coverage_run(self, *args, **env):
         return subprocess.run(
             self._command("--yavs-cov", PASS, COMMA, *args),

@@ -34,6 +34,7 @@ What you get:
   unchanged (:doc:`libraries`).
 * Clear diagnostics with stable codes and VHDL call stacks; nothing runs after a failed step
   (:doc:`troubleshooting`).
+* :doc:`Static analysis <lint>` of what can be proved wrong before a simulation runs.
 * FST :doc:`waveforms`, :doc:`code coverage <coverage>`, a debugger for VS Code and other editors
   (:doc:`debugging`) and :doc:`VHPI plugins <vhpi>`.
 * Fast start-up and a compiled tier that compiles the hot code while the simulation runs, with
@@ -49,6 +50,7 @@ Start with :doc:`install` and :doc:`getting-started`.
    install
    getting-started
    libraries
+   lint
    waveforms
    coverage
    debugging
@@ -63,6 +65,7 @@ Start with :doc:`install` and :doc:`getting-started`.
    :hidden:
 
    cli-reference
+   lint-rules
    vunit-yavs
    language-support
    language-choices

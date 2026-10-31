@@ -2075,6 +2075,7 @@ dependencies = [
  "yavs-ir",
  "yavs-kernel",
  "yavs-lib",
+ "yavs-lint",
  "yavs-llvm",
  "yavs-sem",
  "yavs-std",
@@ -2223,6 +2224,16 @@ dependencies = [
  "tempfile",
  "toml",
  "yavs-diag",
+]
+
+[[package]]
+name = "yavs-lint"
+version = "0.11.0"
+dependencies = [
+ "saphyr-parser",
+ "serde_json",
+ "yavs-diag",
+ "yavs-sem",
 ]
 
 [[package]]

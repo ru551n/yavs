@@ -721,6 +721,32 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   yavs's own and may change with its version line; versions 2 to 4 are still read (2 and 3 without
   tests, 2 to 4 without conditions). Cobertura output has no toggles.
 
+## 5a. `yavs lint`
+
+```
+yavs lint [FILE|DIR ...] [--recursive] [--work=NAME:PATH] [--map=NAME:PATH ...] [--std=STD]
+          [--config=FILE] [--waivers=FILE] [--list-rules] [--explain=RULE] [-W...]
+          [--json=FILE] [--sarif=FILE] [--junit=FILE] [--quality-report=FILE] [--sonarqube=FILE]
+```
+
+- Reads sources again with the analysis `yavs analyze` does and writes nothing into any library: no record, no
+  index, no cache entry (the analysed-unit cache is read). `--define`, `--psl` and `--relaxed` must be those the
+  files were analyzed with, as for `elab`.
+- Without `FILE|DIR`, every file recorded in `--work`, in the order of the library. With them, the files recorded
+  in a mapped library come first in that library's order and into that library; the others follow in the order
+  given, into the work library (`work` when `--work` is not given, kept in memory). A directory is its `.vhd` and
+  `.vhdl` files, sorted, with its subdirectories under `--recursive`. `std` and `ieee` cannot be mapped (`E0102`).
+- A file that fails analysis prints its errors (not its warnings, which are `yavs analyze`'s) and is not checked;
+  the others are.
+- Exit status: 0 no finding of severity error; 1 a finding of severity error; 2 usage, a bad configuration or
+  waiver file (`E0134`), an unwritable report (`E0135`), nothing to check (`E0133`), a file that fails analysis; 3
+  internal error.
+- Findings are diagnostics with the rule id as their code on standard error, in `--message-format`; `-W` takes
+  rule ids. Report files are written whatever the findings. A waived finding is in no report.
+- Configuration: `--config`, else `yavs-lint.yaml` in the working directory or an ancestor. Waivers: `--waivers`,
+  else `yavs-lint-waivers.yaml` next to the configuration or in the working directory or an ancestor. Not a contract
+  with test runners; `analyze`, `elab` and `run` never read them.
+
 ## 6. Waves and the runner's debug option
 
 yavs has no graphical debugger of its own and no `yavs run --gui` (removed 2026-10-29, #871; the

@@ -125,6 +125,15 @@ impl Out {
 
     /// Apply the `-W` options in order: `error`, `error=CODE`, `no-CODE`, `CODE`.
     pub(crate) fn set_warn(&mut self, opts: &[String]) -> Result<(), Box<Diagnostic>> {
+        self.set_warn_with(opts, &|_| false)
+    }
+
+    /// [`Out::set_warn`] with more codes it may name (`yavs lint`: the rule ids).
+    pub(crate) fn set_warn_with(
+        &mut self,
+        opts: &[String],
+        also: &dyn Fn(&str) -> bool,
+    ) -> Result<(), Box<Diagnostic>> {
         for o in opts {
             let (action, code) = match o.as_str() {
                 "error" => {
@@ -137,7 +146,7 @@ impl Out {
                     _ => (Action::Keep, o.as_str()),
                 },
             };
-            if !code.starts_with('W') || crate::explain::explain(code).is_none() {
+            if !also(code) && (!code.starts_with('W') || crate::explain::explain(code).is_none()) {
                 return Err(Box::new(
                     Diagnostic::error("E0103", format!("unsupported warning option `-W{o}`"))
                         .with_help(
@@ -149,6 +158,11 @@ impl Out {
             self.codes.insert(code.to_string(), action);
         }
         Ok(())
+    }
+
+    /// Whether a warning of this code is reported at all (`-Wno-CODE`).
+    pub(crate) fn keeps(&self, code: &str) -> bool {
+        self.codes.get(code).copied() != Some(Action::Allow)
     }
 
     pub(crate) fn emit(&mut self, sources: &SourceMap, d: &Diagnostic) {

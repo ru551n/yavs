@@ -7,7 +7,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change the P
 
 - Everything yavs-specific on the test runner's Python side, in one distribution `vunit-yavs`
   (import name `vunit_yavs`): the simulator interface, `--yavs-debug`, `--yavs-max-threads` and
-  `yavs.max_threads`, coverage (`enable_coverage`, `--yavs-cov*`, `merge_coverage`), the token server, the version check, `vunit_pkg.toml`. Nothing of it goes into
+  `yavs.max_threads`, coverage (`enable_coverage`, `--yavs-cov*`, `merge_coverage`), `--yavs-lint` (`compile_project`), the token server, the version check, `vunit_pkg.toml`. Nothing of it goes into
   the test runner itself or into a crate.
 - It drives the CLI contract (`docs/cli-contract.md`); a change of the contract that it relies on
   changes this package in the same commit.

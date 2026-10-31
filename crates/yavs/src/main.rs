@@ -11,6 +11,7 @@ mod counters;
 mod cov;
 mod elab;
 mod explain;
+mod lint;
 mod profile;
 #[cfg(test)]
 mod reference;
@@ -161,6 +162,8 @@ enum Command {
     /// Merge coverage databases and write reports.
     #[command(subcommand)]
     Cov(cov::Command),
+    /// Report what can be proved wrong about a design before it is simulated.
+    Lint(lint::Args),
     /// Manage the compilation cache kept in library directories.
     #[command(subcommand)]
     Cache(cache::Command),
@@ -261,6 +264,10 @@ fn main() -> ExitCode {
         }
     };
     let cli = parse_hot(&args).unwrap_or_else(|| Cli::parse_from(&args));
+    if let Some(text) = cli.top.explain.as_ref().and_then(|c| lint::explain_text(c)) {
+        println!("{text}");
+        return ExitCode::SUCCESS;
+    }
     if let Some(code) = &cli.top.explain {
         return match explain::explain(&code.to_ascii_uppercase()) {
             Some(text) => {
@@ -321,6 +328,7 @@ fn main() -> ExitCode {
             });
         }
         Command::Cov(c) => return guard(format, color, || cov::run(c, format, color)),
+        Command::Lint(a) => return guard(format, color, || lint::run(a, format, color, encoding)),
         Command::Cache(c) => return guard(format, color, || cache::run(c, format, color)),
     };
     let opts = Options {
@@ -505,6 +513,7 @@ mod tests {
             &["yavs", "run", "-h"],
             &["yavs", "parse", "x.vhd"],
             &["yavs", "cov", "merge"],
+            &["yavs", "lint", "a.vhd"],
             &["yavs", "run"],
             &["yavs", "run", "--bogus", "t"],
             &["yavs", "--bogus", "run", "t"],

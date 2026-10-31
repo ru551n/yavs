@@ -69,6 +69,9 @@ Flags of the run script (``python run.py ...``), next to VUnit's own:
        :doc:`waveforms`). Not with ``-p`` above 1 or more than one simulation.
    * - ``--yavs-max-threads N``
      - ``yavs.max_threads`` for every test that does not set it.
+   * - ``--yavs-lint``
+     - After compiling, runs ``yavs lint`` (:doc:`lint`) on every library of the project that is not
+       external; a finding of severity error fails the compile step.
    * - ``--yavs-cov``
      - Collects coverage in every simulation, as ``enable_coverage`` does for the tests it is set
        for. Not with ``--yavs-debug``.

@@ -145,3 +145,17 @@ this directory, against yavs built from the same commit; a release tests it agai
 archive. They are described in
 `AGENTS.md`: `test/client.js` drives `yavs run --dap=stdio` the way VS Code does, and
 `test/vscode/run.js` runs a real VS Code headless on `sample/`.
+
+## Problems view
+
+The extension contributes the problem matcher `$yavs`: a task that runs yavs with `--message-format=short`
+puts its diagnostics in the Problems view and in the editor, for example `yavs lint`:
+
+```json
+{
+  "label": "yavs lint",
+  "type": "shell",
+  "command": "yavs lint --message-format=short --recursive src",
+  "problemMatcher": "$yavs"
+}
+```

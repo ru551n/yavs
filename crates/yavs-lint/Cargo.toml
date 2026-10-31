@@ -1,0 +1,16 @@
+[package]
+name = "yavs-lint"
+description = "Static analysis of analysed VHDL: rules with a certainty class, configuration, waivers, reports"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+saphyr-parser = "0.2.2"
+serde_json = "1"
+yavs-diag.workspace = true
+yavs-sem = { path = "../yavs-sem" }
+
+[lints]
+workspace = true

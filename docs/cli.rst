@@ -27,6 +27,11 @@ Commands
      - Merge and report coverage databases (:doc:`coverage`): ``cov report`` takes ``--html DIR``,
        ``--cobertura FILE``, ``--root DIR``, ``--kind=LIST``, ``--exclude FILE``, ``--uncovered``,
        ``--tests``, ``--total`` (only the percentage) and ``--fail-under=PCT`` (exit status 1 below).
+   * - ``yavs lint [options] [FILE|DIR...]``
+     - Report what can be proved wrong about a design before it is simulated (:doc:`lint`):
+       ``--work``, ``--map``, ``--recursive``, ``--config``, ``--waivers``, ``--list-rules``,
+       ``--explain RULE``, ``--json``, ``--sarif``, ``--junit``, ``--quality-report``,
+       ``--sonarqube``. Exit status 1 with a finding of severity error.
    * - ``yavs cache clean --work=NAME:PATH``
      - Empty the compilation cache of a library (:doc:`running-faster`).
    * - ``yavs parse FILE...``

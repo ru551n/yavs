@@ -27,6 +27,7 @@ import os
 from os import environ, makedirs
 from pathlib import Path
 
+from vunit.color_printer import NO_COLOR_PRINTER
 from vunit.exceptions import CompileError
 from vunit.ostools import Process
 from vunit import sim_if as vunit_sim_if
@@ -224,6 +225,13 @@ class YavsInterface(SimulatorInterface):
         )
 
         group.add_argument(
+            "--yavs-lint",
+            action="store_true",
+            default=False,
+            help="After compiling, run yavs lint on every library of the project; a finding of severity error "
+            "fails the compile step.",
+        )
+        group.add_argument(
             "--yavs-cov",
             action="store_true",
             default=False,
@@ -288,6 +296,7 @@ class YavsInterface(SimulatorInterface):
             surfer=surfer,
             max_threads=getattr(args, "yavs_max_threads", None) or _max_threads_from_environment(),
             tokens=tokens,
+            lint=getattr(args, "yavs_lint", False),
             coverage=CoverageArgs(
                 enabled=getattr(args, "yavs_cov", False),
                 html=getattr(args, "yavs_cov_html", None),
@@ -303,9 +312,20 @@ class YavsInterface(SimulatorInterface):
         return cls.find_toolchain([cls.executable])
 
     def __init__(
-        self, output_path, prefix, *, debug_port=None, interactive=False, surfer=None, max_threads=None, tokens=None, coverage=None
+        self,
+        output_path,
+        prefix,
+        *,
+        debug_port=None,
+        interactive=False,
+        surfer=None,
+        max_threads=None,
+        tokens=None,
+        coverage=None,
+        lint=False,
     ):  # pylint: disable=too-many-arguments
         SimulatorInterface.__init__(self, output_path, False)
+        self._lint = lint
         self._coverage = coverage or CoverageArgs()
         self._coverage_files = set()  # The database of every simulation run with coverage
         self._prefix = prefix
@@ -398,6 +418,23 @@ class YavsInterface(SimulatorInterface):
                     f"yavs supports VHDL-2008 and VHDL-2019 only, found VHDL-{source_file.get_vhdl_standard()}"
                     f" for {source_file.name}"
                 )
+
+    def compile_project(self, project, printer=NO_COLOR_PRINTER, continue_on_error=False, target_files=None):
+        """
+        Compile the project, then run yavs lint on it under --yavs-lint
+        """
+        super().compile_project(project, printer, continue_on_error, target_files)
+        if not self._lint:
+            return
+        failed = False
+        for library in project.get_libraries():
+            # An external library is not this project's, and a library without files has nothing to check
+            if library.is_external or not (Path(library.directory) / "yavs-lib.toml").exists():
+                continue
+            cmd = self._get_command("lint", library.name, library.directory)
+            failed |= subprocess.run(cmd, check=False).returncode != 0
+        if failed:
+            raise CompileError
 
     def compile_source_file_command(self, source_file):
         """

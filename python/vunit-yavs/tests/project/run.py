@@ -16,7 +16,10 @@ VU = VUnit.from_argv()
 # The simulator package goes first: it must be added before anything selects the simulator
 VU.add_package("vunit-yavs", allow_setup=True)
 VU.add_vhdl_builtins()
-VU.add_library("lib").add_source_files(Path(__file__).parent / "tb_yavs.vhd")
+LIB = VU.add_library("lib")
+LIB.add_source_files(Path(__file__).parent / "tb_yavs.vhd")
+if "EXTRA_VHDL" in os.environ:
+    LIB.add_source_files(os.environ["EXTRA_VHDL"])
 
 def post_run(results):
     """Merge the coverage databases when the test asks for it"""

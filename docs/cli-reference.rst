@@ -37,6 +37,8 @@ Commands
      - Print a text summary of coverage databases (merged), and write other reports
    * - ``yavs cov rank [OPTIONS] DB...``
      - Rank the tests of merged databases: a minimal set reaching the same coverage, and what each test alone covers
+   * - ``yavs lint [OPTIONS] [FILE|DIR...]``
+     - Report what can be proved wrong about a design before it is simulated
    * - ``yavs cache clean [OPTIONS] --work=NAME:PATH``
      - Remove the cache entries of libraries
    * - ``yavs --explain CODE``
@@ -603,6 +605,105 @@ Arguments:
    Warning control, as for ``analyze``: ``-Werror``, ``-Wno-CODE``, ...
 
    May be repeated.
+
+``yavs lint``
+-------------
+
+.. program:: yavs lint
+
+Report what can be proved wrong about a design before it is simulated.
+
+.. code-block:: text
+
+   yavs lint [OPTIONS] [FILE|DIR...]
+
+Arguments:
+
+* ``FILE|DIR`` (any number): The files and directories to check (``.vhd``, ``.vhdl``), read in this order. Default: every file recorded in the work library, which then needs ``--work``.
+
+.. option:: -r, --recursive
+
+   Look for files in the subdirectories of a directory too.
+
+.. option:: --work=NAME:PATH
+
+   The library the files belong to, ``NAME:PATH``. Without it they are read as library ``work``. Nothing is written into it; a file recorded in a library is read in the order of the library.
+
+.. option:: --map=NAME:PATH
+
+   Another library, ``NAME:PATH`` (repeatable).
+
+   May be repeated.
+
+.. option:: --std=93|2008|2019
+
+   Language standard: the design revision, and the standard of a file no library records. Default: 2008 for such a file, and the newest standard among the files for the design.
+
+.. option:: --config=FILE
+
+   The configuration file. Default: ``yavs-lint.yaml`` in the working directory or an ancestor. Fails with E0134.
+
+.. option:: --waivers=FILE
+
+   The waiver file. Default: ``yavs-lint-waivers.yaml`` next to the configuration, or in the working directory or an ancestor. Fails with E0134.
+
+.. option:: --list-rules
+
+   Print every rule with its class and whether this configuration runs it, and exit.
+
+.. option:: --explain=RULE
+
+   Print what a rule reports and what it needs to report it, and exit.
+
+.. option:: --json=FILE
+
+   Write the findings as JSON. Fails with E0135.
+
+.. option:: --sarif=FILE
+
+   Write the findings as SARIF 2.1.0 for code scanning. Fails with E0135.
+
+.. option:: --junit=FILE
+
+   Write the findings as a JUnit file, one test case per source file. Fails with E0135.
+
+.. option:: --quality-report=FILE
+
+   Write the findings as a Code Climate report (GitLab code quality). Fails with E0135.
+
+.. option:: --sonarqube=FILE
+
+   Write the findings as SonarQube generic issues. Fails with E0135.
+
+.. option:: -W FLAG
+
+   Finding control, by rule id: ``-Werror`` (a finding of severity warning is an error), ``-Werror=RULE``, ``-Wno-RULE`` (do not report it), ``-WRULE`` (stays a warning under ``-Werror``).
+
+   May be repeated.
+
+.. option:: --relaxed
+
+   Turn some analysis errors into warnings, as ``yavs analyze --relaxed`` does.
+
+.. option:: --psl
+
+   Read ``-- psl`` comments as PSL pragmas (native PSL statements are always read).
+
+.. option:: -D NAME=VALUE, --define=NAME=VALUE
+
+   Define a conditional analysis identifier, ``NAME=VALUE``: the same definitions as when the files were analyzed, because the sources are read again.
+
+   May be repeated.
+
+.. option:: --no-cache
+
+   Do not read the analysed-unit cache of the libraries.
+
+.. option:: --std-cache=DIR|off
+
+   Directory of the std/ieee units shared by all libraries, or ``off`` (default: ``$YAVS_STD_CACHE``, else ``yavs/std`` in the user's cache directory).
+
+Diagnostics named above: ``E0134``, ``E0135``; ``yavs --explain CODE`` explains each.
 
 ``yavs cache clean``
 --------------------

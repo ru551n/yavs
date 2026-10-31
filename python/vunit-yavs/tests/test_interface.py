@@ -711,6 +711,7 @@ class TestYavsInterface(unittest.TestCase):
         _, cmd, _ = self._simulate(make_config(sim_options={"yavs.max_threads": 12}), tokens=tokens)
         self.assertIn("--threads=12", cmd)
 
+    @NEEDS_FAKE_BIN
     def test_token_server_that_cannot_start_is_a_warning_and_no_tokens(self):
         with mock.patch("vunit_yavs.TokenServer", side_effect=OSError("no loopback")), self.assertLogs(
             "vunit_yavs", "WARNING"

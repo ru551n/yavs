@@ -1,0 +1,12 @@
+exit	0
+diag	note	0	0	:tb_nonstatic_port_actual:u1:_p1	n=0
+diag	note	0	0	:tb_nonstatic_port_actual:u2:_p1	n=1
+diag	note	0	0	:tb_nonstatic_port_actual:u3:_p0	d=-2147483648
+diag	note	0	1	:tb_nonstatic_port_actual:u1:_p1	n=3
+diag	note	0	1	:tb_nonstatic_port_actual:u3:_p0	d=1
+diag	note	1000000	0	:tb_nonstatic_port_actual:_p0	01 11
+diag	note	1000000	2	:tb_nonstatic_port_actual:u1:_p1	n=4
+diag	note	1000000	2	:tb_nonstatic_port_actual:u3:_p0	d=2
+diag	note	2000000	0	:tb_nonstatic_port_actual:_p0	10 00
+diag	note	3000000	0	:tb_nonstatic_port_actual:_p0	11 10
+diag	note	3000000	2	:tb_nonstatic_port_actual:u1:_p1	n=7

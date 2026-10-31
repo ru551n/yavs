@@ -51,6 +51,21 @@ enum A {
 /// The associations of a map as `(formal index, association)`.
 type Pairs = Vec<(usize, A)>;
 
+/// The signal an actual names. A name with a subscript that is not static is, for an `in`
+/// port, an expression actual (LRM 6.5.6.3, #880), so `None`; other modes keep the error.
+fn actual_name(
+    m: &mut crate::Model,
+    db: &Db,
+    e: ExprId,
+    sc: ScopeId,
+    mode: PortMode,
+) -> R<Option<(ObjId, Vec<Sel>)>> {
+    match m.name_ref(db, e, sc) {
+        Err(d) if d.code == codes::NOT_EVALUATED && mode == PortMode::In => Ok(None),
+        r => r,
+    }
+}
+
 fn pairs(args: &[Arg]) -> Pairs {
     let n = args
         .iter()
@@ -1488,54 +1503,69 @@ impl Elab<'_> {
         };
         // The actual: a signal name, a value, or nothing.
         let actual = match (a, ascope) {
-            (A::Expr(e, inertial), Some(sc)) => match self.m.name_ref(self.db, *e, sc)? {
-                // `inertial` makes even a signal name an expression actual (LRM 6.5.6.3).
-                Some(n) if !*inertial => Some((n, db.exprs[*e].span)),
-                _ => {
-                    if mode != PortMode::In {
-                        return Err(Box::new(ice(
-                            db.exprs[*e].span,
-                            "expression actual of a non-in port",
-                        )));
-                    }
-                    // 2008 expression actual: a static value is the port's value; any other
-                    // drives the port through an equivalent process (LRM 6.5.6.3).
-                    // The actual's context subtype may name the instance's generics (#475).
-                    self.m.actual_of = Some(s);
-                    let v = match self.m.eval(db, *e, Some(sc)) {
-                        Ok(v) => v,
-                        Err(d) if d.code == codes::NOT_EVALUATED => {
-                            let espan = db.exprs[*e].span;
-                            let shape = match own {
-                                Some(sh) => sh,
-                                None => self
-                                    .m
-                                    .shape(db, db.exprs[*e].subtype, Some(sc), espan)?
-                                    .ok_or_else(|| not_static_subtype(espan, span, decl))?,
-                            };
-                            let fo =
-                                self.m
-                                    .add_obj(self.db, s, p, kind, shape, init.as_ref(), span)?;
-                            self.m.actual_of = None;
-                            return self.actual_process(s, sc, fo, Vec::new(), *e, Some(subtype));
+            (A::Expr(e, inertial), Some(sc)) => {
+                match actual_name(&mut self.m, self.db, *e, sc, mode)? {
+                    // `inertial` makes even a signal name an expression actual (LRM 6.5.6.3).
+                    Some(n) if !*inertial => Some((n, db.exprs[*e].span)),
+                    _ => {
+                        if mode != PortMode::In {
+                            return Err(Box::new(ice(
+                                db.exprs[*e].span,
+                                "expression actual of a non-in port",
+                            )));
                         }
-                        Err(d) => return Err(d),
-                    };
-                    self.m.actual_of = None;
-                    // An unconstrained formal takes the bounds of the static value.
-                    let espan = db.exprs[*e].span;
-                    let shape = match own {
-                        Some(sh) => sh,
-                        None => self
-                            .m
-                            .shape_init(db, subtype, Some(&v), Some(s), espan)?
-                            .ok_or_else(|| not_static_subtype(espan, span, decl))?,
-                    };
-                    self.m
-                        .add_obj(self.db, s, p, kind, shape, Some(&v), espan)?;
-                    return Ok(());
+                        // 2008 expression actual: a static value is the port's value; any other
+                        // drives the port through an equivalent process (LRM 6.5.6.3).
+                        // The actual's context subtype may name the instance's generics (#475).
+                        self.m.actual_of = Some(s);
+                        let v = match self.m.eval(db, *e, Some(sc)) {
+                            Ok(v) => v,
+                            Err(d) if d.code == codes::NOT_EVALUATED => {
+                                let espan = db.exprs[*e].span;
+                                let shape = match own {
+                                    Some(sh) => sh,
+                                    None => self
+                                        .m
+                                        .shape(db, db.exprs[*e].subtype, Some(sc), espan)?
+                                        .ok_or_else(|| not_static_subtype(espan, span, decl))?,
+                                };
+                                let fo = self.m.add_obj(
+                                    self.db,
+                                    s,
+                                    p,
+                                    kind,
+                                    shape,
+                                    init.as_ref(),
+                                    span,
+                                )?;
+                                self.m.actual_of = None;
+                                return self.actual_process(
+                                    s,
+                                    sc,
+                                    fo,
+                                    Vec::new(),
+                                    *e,
+                                    Some(subtype),
+                                );
+                            }
+                            Err(d) => return Err(d),
+                        };
+                        self.m.actual_of = None;
+                        // An unconstrained formal takes the bounds of the static value.
+                        let espan = db.exprs[*e].span;
+                        let shape = match own {
+                            Some(sh) => sh,
+                            None => self
+                                .m
+                                .shape_init(db, subtype, Some(&v), Some(s), espan)?
+                                .ok_or_else(|| not_static_subtype(espan, span, decl))?,
+                        };
+                        self.m
+                            .add_obj(self.db, s, p, kind, shape, Some(&v), espan)?;
+                        return Ok(());
+                    }
                 }
-            },
+            }
             (A::Local(l), Some(sc)) => match self.m.signal(sc, *l) {
                 Some(o) => Some(((o, Vec::new()), at)),
                 None => return Err(Box::new(ice(at, "component port without object"))),
@@ -1727,7 +1757,7 @@ impl Elab<'_> {
                         continue;
                     }
                     // `inertial` makes even a signal name an expression actual (LRM 6.5.6.3).
-                    let name = match self.m.name_ref(self.db, *e, sc)? {
+                    let name = match actual_name(&mut self.m, self.db, *e, sc, mode)? {
                         Some(_) if *inertial => None,
                         n => n,
                     };

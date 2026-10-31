@@ -1386,16 +1386,22 @@ impl Db {
                     }) =>
             {
                 match &args[0].actual {
-                    Actual::Expr(x) if self.is_signal_name(*x) => Some((Some(*callee), *x)),
+                    Actual::Expr(x) if self.is_conv_operand(*x) => Some((Some(*callee), *x)),
                     _ => None,
                 }
             }
-            ExprKind::Conv { to, operand } if self.is_signal_name(*operand) => {
+            ExprKind::Conv { to, operand } if self.is_conv_operand(*operand) => {
                 let t = self.types[self.subtypes[*to].base].decl;
                 Some((Some(mark.unwrap_or(t)), *operand))
             }
             _ => None,
         }
+    }
+
+    /// Whether a port conversion can follow this operand: a static signal name. Any other
+    /// name (`conv(q(s))`, a signal subscript) makes the actual an expression (#880).
+    fn is_conv_operand(&self, x: ExprId) -> bool {
+        self.is_signal_name(x) && self.is_static_object_name(x)
     }
 
     /// The actual `id` of port `f` (or of a part of it) with `mode`: a formal that is

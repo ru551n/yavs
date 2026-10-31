@@ -12834,4 +12834,5 @@ duplicate implementations without changing diagnostics (issue #894; implemented 
 - **lint_006 reports nothing of its own** (agent, 2026-10-31): the parser rejects a context clause with no unit after it (E0002).
 - **lint_790 is not ported** (agent, 2026-10-31): the plan lists it, the source project at the revision read has no such rule. Naming it is an unknown rule.
 - **Design facts: `--facts=FILE`, `schema_version` 1** (maintainer, 2026-10-30, format by the agent): per architecture; a state machine has `type`, `signals`, `states`, `transitions`, `reset_state` (the initial value of its first signal, or null); `clock_domains`, `reset_domains`, `crossings`.
+- **No conformance row for lint** (agent, 2026-10-31, plan M4 listed one): the report counts suites that judge yavs, and a lint rule is not judged by a suite; `tools/corpus/lint.py` in the `corpus` job is the evidence.
 - **Extension point** (maintainer, 2026-10-30, not built): `yavs lint --elaborate` could judge widths after generics are resolved.

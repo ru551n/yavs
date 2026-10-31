@@ -291,6 +291,7 @@ const PASS: &[&str] = &[
     "generics/package_generic_map_body",
     "generics/alias_subtype_attr",
     "generics/generic_file_package",
+    "generics/generic_file_package_arch",
     "hierarchy/record_port_parts_open",
     "hierarchy/use_work_all",
     "hierarchy/nonstatic_port_actual",

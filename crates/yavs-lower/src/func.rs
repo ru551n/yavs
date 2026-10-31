@@ -2002,8 +2002,11 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
         // A file of an architecture: a cell in the shared heap (instance data is read-only
         // while processes run), made and opened by a thunk at elaboration; its instance cell
         // holds the address (`Space::Region`, serial processes). One per instance only: a
-        // block or generate would need one per declaring region (#249).
-        ObjClass::File if cx.arch_scopes.contains(&decl.scope) => {
+        // block or generate would need one per declaring region (#249). A local package
+        // instance counts as its region (#925).
+        ObjClass::File
+            if elab_region(db, decl.scope).is_some_and(|r| cx.arch_scopes.contains(&r)) =>
+        {
             let off = cx.inst_alloc(8);
             cx.objs.insert(
                 d,

@@ -17,7 +17,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change or ru
 
 | Path | What |
 |---|---|
-| `fetch-corpus.sh [DIR]` | Fetch the external corpora (test-runner and verification libraries, third-party VHDL libraries, the reference simulators' own tests and a conformance suite; the list is in the script) at pinned commits into `DIR` (default `~/.cache/rsim-corpus`), sparse where possible |
+| `fetch-corpus.sh [DIR]` | Fetch the external corpora (test-runner and verification libraries, third-party VHDL libraries, the reference simulators' own tests, a conformance suite and the CPU benchmark programs' sources; the list is in the script) at pinned commits into `DIR` (default `~/.cache/rsim-corpus`), sparse where possible |
 | `derive_libs.py <packages-checkout> <outdir>` | Derive `lib/std` and `lib/ieee` from IEEE VASG Packages: byte-for-byte upstream plus the edits listed in `lib/SOURCES.md` |
 | `update-ieee-libs.sh [--write]` | Re-fetch the pinned VASG commit, verify `lib/UPSTREAM.sha256`, derive, compare (default) or rewrite |
 | `gen_native_md.py` | Generate `lib/NATIVE.md` (`python3 -I tools/gen_native_md.py > lib/NATIVE.md`) |
@@ -31,7 +31,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change or ru
 | `cocotb/` | cocotb's own regression over VHPI: venv setup, the yavs makefile and Python runner for cocotb (`tools/cocotb/AGENTS.md`) |
 | `vhpi-conformance/` | VHPI plugin traces on yavs and the reference simulator, diffed (`tools/vhpi-conformance/AGENTS.md`) |
 | `bench/` | Shared performance benchmarks: phase timings, A/B comparison, JSON results (`tools/bench/AGENTS.md`) |
-| `realbench/` | Real-world performance suite: about 30 testbenches of real projects, timed against the reference and between two binaries (`tools/realbench/AGENTS.md`) |
+| `realbench/` | Real-world performance suite: about 30 testbenches of real projects, timed against the reference and between two binaries; plus the opt-in CoreMark workloads on two processors (NEORV32, Microwatt) measured in simulated cycles per second (`tools/realbench/AGENTS.md`, section 7) |
 | `stepcount/` | Exact instruction counts per function and per source line for a window of a run (ptrace single-stepper in C plus a Python report; `tools/stepcount/AGENTS.md`) |
 | `waveq/` | Waveform equivalence: real designs on yavs and the reference simulators, compared signal by signal (`tools/waveq/AGENTS.md`) |
 | `discrepancies/` | Simulator discrepancy runner and verdict table (`tools/discrepancies/AGENTS.md`, catalogue `docs/design/simulator-discrepancies.md`) |

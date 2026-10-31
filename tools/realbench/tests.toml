@@ -8,6 +8,10 @@
 # ok (regex the output must match), excluded (reason; the test is listed but only runs with --tests or --include-excluded). A `driver` test
 # (driver args and pick) takes its library set and run command from a recorded run of tools/suites.
 # Nothing here is copied from the sources: they are read in place from the corpus cache.
+# CPU workloads (category cpubench, see AGENTS.md section 7): image (a program built by programs.py from pinned sources into the cache;
+# a file with source "@image" is read from the built image directory), clock (the clock period; with stop it gives the simulated cycles
+# and the report's cycles per second), console (true: the standard output must be equal on every tool, or the cell gets no time),
+# expect (regexes the console must match), optin (reason; the test only runs when named with --tests or selected with --category).
 
 [[test]]
 name = "hdlm_fifo_sync"
@@ -583,3 +587,107 @@ files = [
   { lib = "cnn_accel", source = "vhdl-ai-test", path = "modules/cnn_accel/test/tb_cnn_accel_weight_buffer.vhd" },
 ]
 allow_skipped = true
+
+[[test]]
+name = "neorv32_coremark"
+category = "cpubench"
+why = "Single-core NEORV32 with instruction and data caches (the crypto, Zfinx and custom-function units off, as neorv32_single_min: they warn on every cycle) running EEMBC CoreMark (fixed iterations, UART simulation mode); the CPU is the clocked design, the program is the load: one long run of a real processor. The clock is 100 kHz (CLOCK_FREQUENCY, a 10 us period) so that the program's own timer sees the 10 s CoreMark needs for a valid result; the cycles are what counts"
+source = "neorv32"
+path = "sim/neorv32_tb.vhd"
+top = "neorv32_tb"
+toplib = "neorv32"
+corpus = ["neorv32-2008"]
+generics = ["JTAG_TESTS_EN=false", "SMC_PSRAM_EN=false", "DUAL_CORE_EN=false", "TRACE_SIMLOG_EN=false", "RISCV_ISA_Zknd=false", "RISCV_ISA_Zkne=false", "RISCV_ISA_Zknh=false", "RISCV_ISA_Zksed=false", "RISCV_ISA_Zksh=false", "RISCV_ISA_Zfinx=false", "RISCV_ISA_Xcfu=false", "CLOCK_FREQUENCY=100000", "IMEM_SIZE=65536", "DMEM_SIZE=65536"]
+stop = "36200ms"
+clock = "10us"
+image = { program = "neorv32_coremark", iterations = 3 }
+console = true
+expect = ["Correct operation validated", "Iterations +: 3$", "Execution completed"]
+quiet = true
+optin = "long (minutes) and needs a RISC-V GCC, see AGENTS.md section 7"
+files = [
+  { lib = "neorv32", source = "@image", path = "neorv32_imem_image.vhd" },
+  { lib = "neorv32", source = "neorv32", path = "rtl/core/neorv32_imem.vhd" },
+  { lib = "neorv32", source = "neorv32", path = "rtl/core/neorv32_top.vhd" },
+  { lib = "neorv32", source = "neorv32", path = "sim/neorv32_tb.vhd" },
+]
+
+[[test]]
+name = "microwatt_coremark"
+category = "cpubench"
+why = "Microwatt (POWER ISA 3.0, in-order core with MMU, FPU, caches, 16550 UART model) running EEMBC CoreMark: a deeper pipeline than the RISC-V core, heavy per-cycle report and string work in every unit; the foreign-code console and memory helpers of the upstream testbench are replaced by VHDL (tools/realbench/cpu/microwatt)"
+source = "@harness"
+path = "microwatt/microwatt_bench_tb.vhdl"
+top = "microwatt_bench_tb"
+toplib = "work"
+corpus = []
+stop = "20ms"
+cycles = 613910
+exit_code = 1
+quiet = true
+image = { program = "microwatt_coremark", iterations = 1 }
+console = true
+expect = ["Correct operation validated", "Iterations +: 1$", "Execution completed"]
+optin = "long (minutes) and needs a POWER cross compiler, see AGENTS.md section 7"
+data = [
+  { source = "@image", path = "main_ram.hex" },
+]
+files = [
+  { lib = "unisim", source = "microwatt", path = "sim-unisim/unisim_vcomponents.vhdl" },
+  { lib = "unisim", source = "microwatt", path = "sim-unisim/BSCANE2.vhdl" },
+  { lib = "unisim", source = "microwatt", path = "sim-unisim/BUFG.vhdl" },
+  { lib = "work", source = "microwatt", path = "decode_types.vhdl" },
+  { lib = "work", source = "microwatt", path = "wishbone_types.vhdl" },
+  { lib = "work", source = "microwatt", path = "utils.vhdl" },
+  { lib = "work", source = "microwatt", path = "plrufn.vhdl" },
+  { lib = "work", source = "microwatt", path = "cache_ram.vhdl" },
+  { lib = "work", source = "microwatt", path = "helpers.vhdl" },
+  { lib = "work", source = "microwatt", path = "insn_helpers.vhdl" },
+  { lib = "work", source = "microwatt", path = "ppc_fx_insns.vhdl" },
+  { lib = "work", source = "microwatt", path = "logical.vhdl" },
+  { lib = "work", source = "microwatt", path = "countbits.vhdl" },
+  { lib = "work", source = "microwatt", path = "bitsort.vhdl" },
+  { lib = "work", source = "microwatt", path = "wishbone_arbiter.vhdl" },
+  { lib = "work", source = "microwatt", path = "sync_fifo.vhdl" },
+  { lib = "work", source = "microwatt", path = "wishbone_debug_master.vhdl" },
+  { lib = "work", source = "microwatt", path = "gpio.vhdl" },
+  { lib = "work", source = "microwatt", path = "spi_rxtx.vhdl" },
+  { lib = "work", source = "microwatt", path = "spi_flash_ctrl.vhdl" },
+  { lib = "work", source = "@image", path = "git.vhdl" },
+  { lib = "work", source = "@harness", path = "microwatt/sim_console.vhdl" },
+  { lib = "work", source = "microwatt", path = "sim_pp_uart.vhdl" },
+  { lib = "work", source = "@harness", path = "microwatt/sim_jtag_socket.vhdl" },
+  { lib = "work", source = "microwatt", path = "sim_jtag.vhdl" },
+  { lib = "work", source = "microwatt", path = "dmi_dtm_xilinx.vhdl" },
+  { lib = "work", source = "microwatt", path = "sim_16550_uart.vhdl" },
+  { lib = "work", source = "microwatt", path = "nonrandom.vhdl" },
+  { lib = "work", source = "microwatt", path = "fpga/main_bram.vhdl" },
+  { lib = "work", source = "microwatt", path = "common.vhdl" },
+  { lib = "work", source = "microwatt", path = "fetch1.vhdl" },
+  { lib = "work", source = "microwatt", path = "predecode.vhdl" },
+  { lib = "work", source = "microwatt", path = "decode1.vhdl" },
+  { lib = "work", source = "microwatt", path = "control.vhdl" },
+  { lib = "work", source = "microwatt", path = "decode2.vhdl" },
+  { lib = "work", source = "microwatt", path = "register_file.vhdl" },
+  { lib = "work", source = "microwatt", path = "cr_file.vhdl" },
+  { lib = "work", source = "microwatt", path = "crhelpers.vhdl" },
+  { lib = "work", source = "microwatt", path = "rotator.vhdl" },
+  { lib = "work", source = "microwatt", path = "multiply.vhdl" },
+  { lib = "work", source = "microwatt", path = "multiply-32s.vhdl" },
+  { lib = "work", source = "microwatt", path = "divider.vhdl" },
+  { lib = "work", source = "microwatt", path = "loadstore1.vhdl" },
+  { lib = "work", source = "microwatt", path = "mmu.vhdl" },
+  { lib = "work", source = "microwatt", path = "dcache.vhdl" },
+  { lib = "work", source = "microwatt", path = "writeback.vhdl" },
+  { lib = "work", source = "microwatt", path = "core_debug.vhdl" },
+  { lib = "work", source = "microwatt", path = "fpu.vhdl" },
+  { lib = "work", source = "microwatt", path = "pmu.vhdl" },
+  { lib = "work", source = "microwatt", path = "wishbone_bram_wrapper.vhdl" },
+  { lib = "work", source = "microwatt", path = "xics.vhdl" },
+  { lib = "work", source = "microwatt", path = "syscon.vhdl" },
+  { lib = "work", source = "microwatt", path = "icache.vhdl" },
+  { lib = "work", source = "microwatt", path = "execute1.vhdl" },
+  { lib = "work", source = "microwatt", path = "core.vhdl" },
+  { lib = "work", source = "microwatt", path = "soc.vhdl" },
+  { lib = "work", source = "@harness", path = "microwatt/microwatt_bench_tb.vhdl" },
+]

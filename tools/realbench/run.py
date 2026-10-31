@@ -34,15 +34,21 @@ import simconf  # noqa: E402
 _spec = importlib.util.spec_from_file_location("bench_run", REPO / "tools/bench/run.py")
 B = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(B)
+_pspec = importlib.util.spec_from_file_location("realbench_programs", HERE / "programs.py")
+P = importlib.util.module_from_spec(_pspec)
+_pspec.loader.exec_module(P)
 
 CACHE = Path(os.environ.get("YAVS_REALBENCH_CACHE", "~/.cache/yavs-realbench")).expanduser()
 CORPUS = Path(os.environ.get("YAVS_CORPUS", "~/.cache/rsim-corpus")).expanduser()
 # the shared std/ieee store (#564) is private to this tool, never the user's
 os.environ["YAVS_STD_CACHE"] = str(CACHE / "std")
 SPECIAL = {"vhdl-ai-test": "YAVS_BENCH_VHDL_AI_TEST"}  # source id -> environment variable naming its checkout
+IMAGE = "@image"  # source id of a test's built program image (programs.py): the directory is t["image_dir"]
+HARNESS = "@harness"  # source id of the harness's own VHDL and C for the cpubench tests: tools/realbench/cpu
 COLD = "-cold"
 ANALYZE_CALLS = "batched"  # analysis cells and replays: "batched" (consecutive files of a library and standard per call) or "per-file"
 RECORDER = (None, None)  # (binary, key) that records the suite drivers for the reference worlds
+TIERS_DEFAULT = "interp,auto,auto-cold"
 TIERS_ALL = ("interp", "auto", "llvm", "clift", "clift-auto", "auto3")
 
 
@@ -75,6 +81,14 @@ def load_tests(path=HERE / "tests.toml"):
         t.setdefault("vunit", False)
         t.setdefault("ok", "")
         t.setdefault("excluded", "")
+        t.setdefault("optin", "")  # reason a test only runs when named (--tests) or selected by its category
+        t.setdefault("console", False)  # true: the standard output must be equal on every tool and match every regex of `expect`
+        t.setdefault("expect", [])
+        t.setdefault("cycles", 0)
+        t.setdefault("clock", "")  # clock period: with `stop`, the simulated cycles of a run (cycles per second in the report)
+        t.setdefault("exit_code", 0)  # exit status of a passing run cell (a program that ends the simulation with a failure report: 1)
+        t.setdefault("quiet", False)  # true: standard error is discarded (a design that reports on every cycle would fill gigabytes)
+        t.setdefault("image", None)  # {program = ..., parameters}: built by programs.py before the run
     return tests
 
 
@@ -89,6 +103,8 @@ def fetch_pins():
 
 
 def source_root(sid):
+    if sid == HARNESS:
+        return HERE / "cpu"
     if sid in SPECIAL:
         if not os.environ.get(SPECIAL[sid]):
             raise Fail(f"source `{sid}`: set ${SPECIAL[sid]} to its checkout")
@@ -100,7 +116,7 @@ def check_sources(tests):
     """Every source checkout a selected test uses must exist, at its pinned commit. Returns {id: commit}."""
     pins, used, bad, got = fetch_pins(), {}, [], {}
     for t in tests:
-        ids = {t["source"]} | {f["source"] for f in t["files"] + t["data"]}
+        ids = ({t["source"]} | {f["source"] for f in t["files"] + t["data"]}) - {IMAGE, HARNESS}
         for sid in ids:
             used.setdefault(sid, []).append(t["name"])
         for m in t["corpus"]:
@@ -253,7 +269,7 @@ def expand_files(t):
     """The test's extra files as [(lib, path)] in analysis order; glob entries are sorted."""
     out = []
     for f in t["files"]:
-        root = source_root(f["source"])
+        root = Path(t["image_dir"]) if f["source"] == IMAGE else source_root(f["source"])
         paths = sorted(p for p in root.glob(f["glob"]) if p.is_file()) if "glob" in f else [root / f["path"]]
         for p in paths:  # lib "@module": the directory after `modules/` (the hdl-modules convention)
             out.append((p.relative_to(root).parts[p.relative_to(root).parts.index("modules") + 1] if f["lib"] == "@module" else f["lib"], p))
@@ -282,7 +298,7 @@ def make_pristine(t, tool, Y, key, dest):
     copy_corpus_libs(t, tool, Y, key, dest)
     (dest / "out").mkdir()
     for d in t["data"]:  # files the testbench reads at run time from its working directory (the world)
-        shutil.copy(source_root(d["source"]) / d["path"], dest)
+        shutil.copy((Path(t["image_dir"]) if d["source"] == IMAGE else source_root(d["source"])) / d["path"], dest)
     pending = expand_files(t)
     done, skipped = [], []
     while pending:  # fixed point: retry what failed until a pass makes no progress (files given in dependency order pass at once)
@@ -363,18 +379,28 @@ def gen_args(t, w):
     return [f"-g{g}" for g in gens]
 
 
+OUT, ERR = "stdout.txt", "stderr.txt"  # the output files of a `quiet` test, in the world directory
+
+
+def quiet(t, w):
+    """The prefix of a run script for a test with `quiet`: both streams go to files in the world (the same for every tool; the harness reads
+    the console from the first and deletes both), so a design that reports on every cycle does not fill a pipe or the harness's memory."""
+    return f"cd {shlex.quote(str(w))} && exec >{OUT} 2>{ERR}; " if t.get("quiet") else ""
+
+
 def yavs_script(Y, t, w, tier, sub="run", stop=None, extra=()):
     tier, *envs = tier.split("+")  # `tier+VAR=VALUE`: the tier with environment variables set (measurement knobs)
+    tier, _, threads = tier.partition("@")  # `tier@N`: N worker threads (the cell is pinned to N cores)
     a = [Y, sub, f"--std={t['std']}"] + (["--relaxed"] if t["relaxed"] else []) + [f"--work={t['toplib']}:{w}/{t['toplib']}"]
     a += [f"--map={l}:{w}/{l}" for l in libs_of(w) if l != t["toplib"]]
     if sub == "run":
-        a += [f"--tier={tier}"] + os.environ.get("YAVS_BENCH_TIERFLAGS", "").split()
+        a += [f"--tier={tier}"] + ([f"--threads={threads}"] if threads else []) + os.environ.get("YAVS_BENCH_TIERFLAGS", "").split()
         stop = stop or t["stop"]
         a += [f"--stop-time={stop}"] if stop else []
         a += [f"--exit-severity={t['severity']}"] if t.get("severity") else []
     a += list(extra) + [t["top"]] + gen_args(t, w)
     pre = "env " + " ".join(shlex.quote(e) for e in envs) + " " if envs else ""
-    return f"cd {shlex.quote(str(w))} && " + pre + " ".join(shlex.quote(x) for x in a)
+    return quiet(t, w) + f"cd {shlex.quote(str(w))} && " + pre + " ".join(shlex.quote(x) for x in a)
 
 
 def ref_script(tool, t, w, what="both", extra=""):
@@ -387,7 +413,7 @@ def ref_script(tool, t, w, what="both", extra=""):
     sub = dict(std=t["std"], lib=t["toplib"], dir=str(w), relaxed=rel, gens=gens, top=t["top"].replace(".", "-", 1),  # a recorded ENTITY.ARCH is ENTITY-ARCH here
                rest=" ".join(x for x in (f"--stop-time={t['stop']}" if t["stop"] else "", extra) if x))
     f = lambda s: s.replace("{{", "\0").replace("}}", "\1").format(**sub).replace("\0", "{").replace("\1", "}")
-    return f"cd {shlex.quote(str(w))} && {f(el)}" + (f" || exit 98; {f(rn)}" if what == "both" else "")
+    return quiet(t, w) + f"cd {shlex.quote(str(w))} && {f(el)}" + (f" || exit 98; {f(rn)}" if what == "both" else "")
 
 
 # ---- the analysis phase: the compile order of a test, consecutive files of a library and standard per call (#745) ----
@@ -518,6 +544,7 @@ class Cell:
 
     def __init__(self, name, tool, binary=None, tier=None, cold=False, phase="run", mode="run", part=None, shared=None):
         self.name, self.tool, self.binary, self.tier, self.cold = name, tool, binary, tier, cold
+        self.threads = int(tier.split("+")[0].partition("@")[2] or 1) if tier else 1  # tier `auto@4`: yavs --threads=4 on 4 cores
         self.phase, self.mode, self.part, self.shared = phase, mode, part, shared
         self.world, self.files = None, None
         # a warm yavs cell needs two untimed runs: the first leaves a note, the second makes the cache entries (analysis cells: the first run is the cold one)
@@ -594,24 +621,104 @@ def ok_run(t, c, w):
     return not w["rc"] and (c.mode != "run" or not t["ok"] or w["ok_match"])
 
 
+REPORT = re.compile(r"^\*\* (Note|Warning|Error|Failure):")
+
+
+def console_of(lines):
+    """The console of a run from its standard output: yavs prints `report` and `assert` messages there (a `** Note:` line and indented lines
+    under it), the reference prints them on standard error; those records are dropped, what the design writes to `output` is kept."""
+    out, skip = [], False
+    for line in lines:
+        line = line.rstrip("\n")
+        if REPORT.match(line):
+            skip = True
+        elif skip and line[:1] in (" ", "\t"):
+            continue
+        else:
+            skip = False
+            out.append(line)
+    return "\n".join(out) + "\n"
+
+
+def run_output(t, c, w):
+    """The console text of a finished run (consuming the output files of a `quiet` test), and for a failed one the end of its output in w["tail"]."""
+    if not t.get("quiet"):
+        return console_of(w.pop("out", "").splitlines())
+    fo, fe = Path(c.world) / OUT, Path(c.world) / ERR
+    try:
+        if w["rc"]:
+            w["tail"] = "".join(f.read_bytes()[-300:].decode(errors="replace") for f in (fo, fe) if f.exists())[-300:]
+        with open(fo, errors="replace") as f:
+            return console_of(f)
+    except OSError:
+        return ""
+    finally:
+        fo.unlink(missing_ok=True)
+        fe.unlink(missing_ok=True)
+
+
+def console_diff(a, b):
+    """None when two console texts (standard output, trailing blanks and empty lines ignored) are equal, else where they first differ."""
+    x, y = [l.rstrip() for l in a.splitlines() if l.strip()], [l.rstrip() for l in b.splitlines() if l.strip()]
+    for i in range(max(len(x), len(y))):
+        if i >= len(x) or i >= len(y) or x[i] != y[i]:
+            return f"line {i + 1}: {x[i] if i < len(x) else '<end>'!r} against {y[i] if i < len(y) else '<end>'!r}"
+    return None
+
+
+def console_problem(t, out, ref):
+    """Why a console text is not valid for the test (`expect` regexes missing, or different from the reference text `ref`), else None."""
+    for rx in t["expect"]:
+        if not re.search(rx, out, re.M):
+            return f"console lacks /{rx}/"
+    return console_diff(out, ref) and f"console differs from the reference: {console_diff(out, ref)}"
+
+
+def timed(t, c, script, cores, **kw):
+    """B.timed for a cell of test t: a run cell that ends with the test's expected exit status counts as passed (rc 0)."""
+    w = B.timed(script, str(kw.pop("cwd")), cores, **kw)
+    if c.mode == "run" and t.get("exit_code") and w["rc"] == t["exit_code"]:
+        w["rc"] = 0
+    return w
+
+
 def measure_group(t, cells, ctx, cores, runs, instr, scratch):
     """The cells of one phase, as the run phase always was: an untimed check run, `runs` timed rounds with the cells interleaved
-    (order swapped every round), one counted run per cell."""
+    (order swapped every round), one counted run per cell. A test with `console` keeps the standard output of every run of a run cell:
+    all must be equal to the reference's (the first reference cell, else the first yavs cell) and match `expect`, or the cell has no time."""
     out = {c.name: [] for c in cells}
     bad = {}
+    cl = cores.split(",")
+    cc = lambda c: ",".join(cl[:c.threads])  # a cell of N threads runs on the first N cores of the list (one core: the usual case)
+    keep = lambda c: bool(t["console"]) and c.mode == "run"
+    texts = {}
     for c in cells:
         for _ in range(c.warmups):
-            w = B.timed(c.prepare(ctx, scratch, t), str(scratch), cores, ref=c.tool != "yavs", ok=t["ok"] or None)
+            w = timed(t, c, c.prepare(ctx, scratch, t), cc(c), cwd=scratch, ref=c.tool != "yavs", ok=t["ok"] or None, keep=keep(c))
+            txt = run_output(t, c, w) if keep(c) else None
             if not ok_run(t, c, w):
                 bad[c.name] = {"rc": w["rc"], "tail": w["tail"]}
                 break
+        if txt is not None and c.name not in bad:
+            texts[c.name] = txt
         out[c.name].append(dict(w, warm=True))
+    ref_text = None
+    if texts:
+        ref_name = next((c.name for c in cells if c.name in texts and c.tool != "yavs"), next(iter(texts)))
+        ref_text = texts[ref_name]
+        for n, txt in texts.items():
+            if (why := console_problem(t, txt, ref_text)):
+                bad[n] = {"rc": 0, "tail": f"{why} (reference cell {ref_name})"}
     live = [c for c in cells if c.name not in bad]
     if runs == "auto":
         runs = auto_runs(max([out[c.name][0]["wall"] or 0 for c in live] + [0]))
     for rep in range(runs):
         for c in (live if rep % 2 == 0 else live[::-1]):
-            out[c.name].append(B.timed(c.prepare(ctx, scratch, t), str(scratch), cores, instr=COUNT_RUNS and instr, ref=c.tool != "yavs"))
+            w = timed(t, c, c.prepare(ctx, scratch, t), cc(c), cwd=scratch, instr=COUNT_RUNS and instr, ref=c.tool != "yavs", keep=keep(c))
+            txt = run_output(t, c, w) if keep(c) else None
+            if txt is not None and c.name not in bad and (why := console_problem(t, txt, ref_text)):
+                bad[c.name] = {"rc": 0, "tail": f"timed run {rep + 1}: {why}"}
+            out[c.name].append(w)
     res = {}
     for c in cells:
         if c.name in bad:
@@ -619,7 +726,9 @@ def measure_group(t, cells, ctx, cores, runs, instr, scratch):
             continue
         ins = None
         if instr and runs:  # the counted run must pass too: a run that stops early counts fewer instructions
-            w = B.timed(c.prepare(ctx, scratch, t), str(scratch), cores, instr=instr, ref=c.tool != "yavs", ok=t["ok"] or None)
+            w = timed(t, c, c.prepare(ctx, scratch, t), cc(c), cwd=scratch, instr=instr, ref=c.tool != "yavs", ok=t["ok"] or None)
+            for n in (OUT, ERR) if t.get("quiet") else ():
+                (Path(c.world) / n).unlink(missing_ok=True)
             if not ok_run(t, c, w):
                 res[c.name] = {"wall": None, "cpu": None, "rss": None, "ins": None, "ok": 0, "runs": 0, "rcs": [w["rc"]], "tail": w["tail"]}
                 continue
@@ -658,8 +767,8 @@ def make_cells(binaries, refs, tiers, phases, compare=False):
         for p in phases:
             if p == "run":
                 for tk in tiers if yavs else ["run"]:
-                    if yavs and tk.removesuffix(COLD).split("+")[0] not in TIERS_ALL:
-                        raise Fail(f"unknown tier `{tk}` (interp, auto, llvm, clift, clift-auto, auto3, each also with {COLD})")
+                    if yavs and tk.removesuffix(COLD).split("+")[0].partition("@")[0] not in TIERS_ALL:
+                        raise Fail(f"unknown tier `{tk}` (interp, auto, llvm, clift, clift-auto, auto3, each also with {COLD} and as tier@N for N threads)")
                     cells.append(Cell(nm(tk), tool, b, tk.removesuffix(COLD) if yavs else None, tk.endswith(COLD)))
                     ph[p].append(nm(tk))
                     if yavs and ref0:
@@ -690,6 +799,30 @@ def make_cells(binaries, refs, tiers, phases, compare=False):
     if compare:  # two binaries: B is divided by A, cell by cell
         basis = {n: "A/" + n[2:] for names in ph.values() for n in names if n.startswith("B/")}
     return cells, derived, dict(phases=ph, basis=basis, hidden=hidden)
+
+
+# ---- simulated cycles ----
+
+UNITS = {"fs": 1e-6, "ps": 1e-3, "ns": 1.0, "us": 1e3, "ms": 1e6, "sec": 1e9}
+
+
+def ns_of(text):
+    """A VHDL time such as `10ns` or `3 ms` in nanoseconds."""
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(fs|ps|ns|us|ms|sec)\s*", text)
+    if not m:
+        raise Fail(f"cannot read the time `{text}` (number and one of {', '.join(UNITS)})")
+    return float(m[1]) * UNITS[m[2]]
+
+
+def sim_cycles(t):
+    """Simulated clock cycles of a run: `stop` over `clock` (None for a test without `clock`)."""
+    if t.get("cycles"):  # a program that ends the simulation itself: the cycles it took, calibrated by hand (AGENTS.md section 7)
+        return int(t["cycles"])
+    if not t["clock"]:
+        return None
+    if not t["stop"]:
+        raise Fail(f"{t['name']}: `clock` needs `stop`: the cycles of a run are its stop time over the clock period")
+    return round(ns_of(t["stop"]) / ns_of(t["clock"]))
 
 
 # ---- statistics and report ----
@@ -827,6 +960,33 @@ def analysis_md(tests, names, bas):
     return L + [""]
 
 
+def cpu_md(res):
+    """Tests with simulated cycles (`clock`): per cell the cycles per wall second (cycles over the wall time of the whole run cell, elaboration and
+    compilation included), the wall time, CPU, peak RSS, the host load at the timed runs and the rate against the reference; elaboration alone below."""
+    meta = res["meta"]
+    ph = phases_of(meta)
+    ref = meta["refs"][0] if meta["refs"] else None
+    L = []
+    for tn, r in res["tests"].items():
+        cyc = r.get("cycles")
+        if not cyc:
+            continue
+        L += [f"### {tn}: {cyc:,} simulated clock cycles", "", "| cell | cycles/s | wall s | cpu s | peak MiB | max load | rate vs " + (ref or "-") + " |", "|---|---:|---:|---:|---:|---:|---:|"]
+        rc = (r["cells"].get(ref) or {}).get("wall") if ref else None
+        for n in ph.get("run", []) + ph.get("elab", []):
+            c = r["cells"].get(n)
+            if not c or c.get("wall") is None:
+                L.append(f"| {n} | FAILED | - | - | - | - | - |")
+                continue
+            run_cell = n in ph.get("run", [])
+            lo = max((x for x in c.get("loads", []) if x is not None), default=None)
+            compiled = run_cell and n != ref and n.removesuffix(COLD).partition("@")[0].partition("+")[0] != "interp"  # root rule 23: the interpreter is not compared with the reference
+            L.append(f"| {n} | " + (f"{cyc / c['wall']:,.0f}" if run_cell else "-") + f" | {c['wall']:.2f} | {c['cpu']:.2f} | {c['rss']:.0f} | " + (f"{lo:.1f}" if lo is not None else "-") + " | "
+                     + (f"{rc / c['wall']:.2f}" if compiled and rc else "-") + " |")
+        L.append("")
+    return (["## CPU workloads: simulated clock cycles per wall-clock second (higher is faster; rate = cycles/s over the reference's)", ""] + L) if L else []
+
+
 def markdown(res):
     meta, tests = res["meta"], res["tests"]
     phases = phases_of(meta)
@@ -846,6 +1006,7 @@ def markdown(res):
         L.append("")
     for ph, names in phases.items():
         L += phase_md(res, ph, names, len(phases) > 1)
+    L += cpu_md(res)
     if meta["compare"]:  # slowdowns of B: instructions up by more than 5 percent, or wall up by more than 10 percent and 0.05 s
         worse = []
         for tn, r in tests.items():
@@ -856,6 +1017,8 @@ def markdown(res):
                     worse.append(f"- {tn} / {n[2:]}: wall " + (f"x{wi:.2f}" if wi else "-") + (f", instructions x{ii:.2f}" if ii else ""))
         L += ["Slowdowns of B (instructions above 1.05, or wall above 1.10 and 0.05 s): " + ("none" if not worse else ""), ""] + worse + ([""] if worse else [])
     hidden = set(meta.get("hidden", []))
+    if meta.get("skipped"):
+        L += ["Tests left out (their program could not be built):", ""] + [f"- {n}: {why}" for n, why in meta["skipped"].items()] + [""]
     fails = [(tn, n, c) for tn, r in tests.items() for n, c in r["cells"].items() if c.get("wall") is None and n not in hidden]
     if fails:
         L += ["Cells that failed:", ""] + [f"- {tn} / {n}: rc {c['rcs']}, {c.get('tail', '').strip()[-150:]!r}" for tn, n, c in fails] + [""]
@@ -872,7 +1035,7 @@ def self_test():
     pins = fetch_pins()
     assert "vunit" in pins and len(pins["vunit"]) == 40
     for t in tests:
-        assert isinstance(t["generics"], list) and t["category"] and ("driver" in t or (t["top"] and t["corpus"]))
+        assert isinstance(t["generics"], list) and t["category"] and ("driver" in t or (t["top"] and (t["corpus"] or t["files"])))
         for m in t["corpus"]:
             assert (REPO / "tools/corpus" / f"{m}.toml").exists(), (t["name"], m)
     global CORPUS
@@ -926,16 +1089,49 @@ def self_test():
     assert "## Phase: analyze" in md3 and "| analyze-cold | 1 | **2.00**" in md3 and "| codegen-cold | 1 | **10.00**" in md3 and "Analysis per file" in md3 and "100.0" in md3
     assert "hidden" not in md3 and "analyze-cold-lib | " in md3
     # the counted run is matched against `ok` like the check run (#794): a pass text beyond the output tail must not fail the cell
-    fake = lambda m: lambda script, cwd, cores, env=None, instr=None, ref=True, ok=None: dict(rc=0, wall=1.0, cpu=1.0, rss=1.0, ins=5, tail="", ok_match=None if ok is None else m)
-    cl = types.SimpleNamespace(name="x", tool="yavs", mode="run", warmups=1, prepare=lambda *a: "")
+    fake = lambda m: lambda script, cwd, cores, env=None, instr=None, ref=True, ok=None, keep=False: dict(rc=0, wall=1.0, cpu=1.0, rss=1.0, ins=5, tail="", ok_match=None if ok is None else m)
+    cl = types.SimpleNamespace(name="x", tool="yavs", mode="run", warmups=1, threads=1, prepare=lambda *a: "")
     real_timed = B.timed
     try:
         for m, want in ((True, 1), (False, 0)):
             B.timed = fake(m)
-            r = measure_group({"ok": "Test passed"}, [cl], None, "0", 1, "instructions:u", None)["x"]
+            r = measure_group({"ok": "Test passed", "console": False, "expect": []}, [cl], None, "0", 1, "instructions:u", None)["x"]
             assert r["ok"] == want and (m or r["ins"] is None), r
     finally:
         B.timed = real_timed
+    # cpubench: console texts decide whether a time may be reported; cycles come from stop and clock; `tier@N` is N threads on N cores
+    out_of = {"sim1": "hello\nCorrect operation validated.\n", "yavs": "hello\n\nCorrect operation validated.  \n", "bad": "hello\nCorrect operation\n"}
+    tc = {"ok": "", "console": True, "expect": ["validated"]}
+    cs_ = [types.SimpleNamespace(name=n, tool="yavs" if n != "sim1" else "sim1", mode="run", warmups=1, threads=1, prepare=lambda *a, n=n: n) for n in out_of]
+    B.timed = lambda script, cwd, cores, env=None, instr=None, ref=True, ok=None, keep=False: dict(rc=0, wall=1.0, cpu=1.0, rss=1.0, ins=5, tail="", ok_match=None, out=out_of[script])
+    try:
+        r = measure_group(tc, cs_, None, "0", 1, None, None)
+    finally:
+        B.timed = real_timed
+    assert r["sim1"]["wall"] == 1.0 and r["yavs"]["wall"] == 1.0 and r["bad"]["wall"] is None and "lacks /validated/" in r["bad"]["tail"], r
+    yv = ["hi\n", "  indented console line\n", "** Note: 0fs+0: boot\n", "    Process :tb:x\n", "** Warning: 1ns+0: w\n", "  Process :y\n", "bye\n"]
+    assert console_of(yv) == "hi\n  indented console line\nbye\n", console_of(yv)
+    with tempfile.TemporaryDirectory() as qd:  # a quiet test: the console is read from the output file, which is then removed
+        (Path(qd) / OUT).write_text("".join(yv))
+        (Path(qd) / ERR).write_text("junk\n")
+        wq = {"rc": 1, "tail": ""}
+        assert run_output({"quiet": True}, types.SimpleNamespace(world=qd), wq) == "hi\n  indented console line\nbye\n" and "bye" in wq["tail"] and not any(Path(qd).iterdir())
+    assert console_diff("a\nb\n", "a\nc\n") == "line 2: 'b' against 'c'" and console_diff("a\n", "a\n\n") is None and "<end>" in console_diff("a\n", "a\nb\n")
+    assert ns_of("10 ns") == 10 and ns_of("3ms") == 3e6 and sim_cycles({"name": "t", "clock": "10ns", "stop": "2us"}) == 200 and sim_cycles({"clock": ""}) is None
+    for bad_t in ("10", "10 parsecs"):
+        try:
+            ns_of(bad_t)
+            raise AssertionError(bad_t)
+        except Fail:
+            pass
+    assert Cell("auto@4", "yavs", bins[0], "auto@4").threads == 4 and Cell("auto", "yavs", bins[0], "auto").threads == 1 and Cell("x+A=1", "yavs", bins[0], "auto@2+A=1").threads == 2
+    with tempfile.TemporaryDirectory() as wd:
+        assert "--threads=4" in yavs_script("/y", {"std": "2008", "relaxed": False, "toplib": "w", "top": "tb", "stop": "", "vunit": False, "generics": []}, wd, "auto@4")
+    mc = markdown({"meta": dict(meta, phases={"run": ["sim1", "interp", "auto"], "elab": []}, basis={"auto": "sim1"}, cells=["sim1", "interp", "auto"]), "tests": {"a": {"category": "cpubench", "cycles": 1000,
+                   "cells": {"sim1": cell(2, 10), "interp": cell(8, 10), "auto": cell(4, 10)}}}})
+    assert "a: 1,000 simulated clock cycles" in mc and "| sim1 | 500 |" in mc and "| auto | 250 |" in mc and "| 0.50 |" in mc, mc
+    # root rule 23: no rate against the reference for the interpreter
+    assert [l for l in mc.splitlines() if l.startswith("| interp | 125")][0].endswith("| - |"), mc
     # analysis calls (#745): consecutive files of one library, standard and flags share a call; --analyze-calls per-file splits them
     it = lambda lib, f, std="2008", fl=None: dict(lib=lib, std=std, file=f, flags=fl)
     items = [it("a", "1"), it("a", "2"), it("b", "3"), it("a", "4"), it("a", "5", "2019"), it("a", "6", "2019", ["--relaxed"])]
@@ -961,11 +1157,13 @@ def main():
     ap.add_argument("bin", nargs="?", help="yavs binary")
     ap.add_argument("--compare", nargs=2, metavar=("A", "B"))
     ap.add_argument("--ref", default="", help="reference labels, e.g. sim1")
+    ap.add_argument("--cpubench", action="store_true", help="the CPU workloads (neorv32_coremark, microwatt_coremark) in one command: category cpubench, phases elab and run, "
+                    "tiers interp,auto,auto-cold,auto@4 (1 and 4 threads: --cores needs 4 CPUs, e.g. 9,10,11,12), 3 runs, counted cycles, timeout 900, label cpubench; each option still wins when given")
     ap.add_argument("--phases", default=",".join(PHASES), help="comma separated: analyze (the compile order, cold and warm; see --analyze-calls), elab (elaboration only), "
                     "codegen (llvm tier minus interp up to time 0), run (the --tiers cells)")
     ap.add_argument("--analyze-calls", choices=("batched", "per-file"), default="batched",
                     help="analysis cells, both tools: consecutive files of a library and standard in one call (default, #745) or one call per file")
-    ap.add_argument("--tiers", default="interp,auto,auto-cold", help="run phase: comma separated: interp, auto, llvm, each also as <tier>-cold")
+    ap.add_argument("--tiers", default=TIERS_DEFAULT, help="run phase: comma separated: interp, auto, llvm, each also as <tier>-cold")
     ap.add_argument("--tests", default="", help="comma separated test names")
     ap.add_argument("--category", default="", help="only this category")
     ap.add_argument("--runs", default="auto", help="timed runs per cell (default auto: 5, 3 or 2 by test length; 0 = probe)")
@@ -981,6 +1179,13 @@ def main():
     ap.add_argument("--report", metavar="JSON")
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
+    if a.cpubench:
+        a.category = a.category or "cpubench"
+        a.tiers = a.tiers if a.tiers != TIERS_DEFAULT else "interp,auto,auto-cold,auto@4"
+        a.phases = a.phases if a.phases != ",".join(PHASES) else "elab,run"
+        a.runs = "3" if a.runs == "auto" else a.runs
+        a.timeout = 900 if a.timeout == 300 else a.timeout
+        a.count_runs, a.label = True, a.label or "cpubench"
     global COUNT_RUNS
     COUNT_RUNS = a.count_runs
     B.TIMEOUT = a.timeout
@@ -1008,10 +1213,12 @@ def run(a):
         tests = [t for t in tests if t["category"] == a.category]
     if a.list:
         for t in tests:
-            print(f"{t['category']:18} {t['name']:34} {t['source']}/{t['path']}" + (f"   EXCLUDED: {t['excluded']}" if t["excluded"] else ""))
+            print(f"{t['category']:18} {t['name']:34} {t['source']}/{t['path']}" + (f"   EXCLUDED: {t['excluded']}" if t["excluded"] else "") + (f"   OPT-IN: {t['optin']}" if t["optin"] else ""))
         return 0
     if not a.tests and not a.include_excluded:  # a test named with --tests runs even when excluded
         tests = [t for t in tests if not t["excluded"]]
+    if not a.tests and not a.category:  # opt-in tests (long, need a cross compiler) only when named or selected by category
+        tests = [t for t in tests if not t["optin"]]
     bins = a.compare or ([a.bin] if a.bin else None)
     if not bins:
         raise Fail("give a yavs binary, --compare A B, --report, --list or --self-test")
@@ -1041,6 +1248,21 @@ def run(a):
     ANALYZE_CALLS = a.analyze_calls
     RECORDER = (binaries[0]["path"], binaries[0]["key"])
     pins = check_sources(tests)
+    skipped = {}
+    for t in list(tests):  # program images of the cpubench tests: built once into the cache (programs.py), or the missing tool named
+        if t["image"]:
+            try:
+                t["image_dir"] = str(P.build(t["image"]))
+            except P.Fail as e:
+                if a.tests:  # named on the command line: stop
+                    raise Fail(f"{t['name']}: {e}")
+                skipped[t["name"]] = str(e)  # selected as part of a group: the others still run, the report says what was left out and why
+                tests.remove(t)
+                print(f"realbench: SKIPPED {t['name']}: {e}", file=sys.stderr, flush=True)
+                continue
+        sim_cycles(t)  # a bad clock or stop stops the run before anything is timed
+    if not tests:
+        raise Fail("nothing left to run")
     if a.prepare:
         for t in tests:
             for b in binaries:
@@ -1059,6 +1281,11 @@ def run(a):
         for r in refs:
             ensure_base(r, m)
     results, lock = {}, threading.Lock()
+    nthreads = max([int(x.split("+")[0].partition("@")[2] or 1) for x in tiers] + [1])
+    if nthreads > 1:  # a multi-thread cell owns its cores: the tests run one at a time, each cell on the first N of --cores
+        if len(cores) < nthreads:
+            raise Fail(f"a tier with {nthreads} threads needs {nthreads} cores in --cores (got {len(cores)}); a CCD is 8 physical cores")
+        cores = [",".join(cores)]
     free = list(cores)
     cond = threading.Condition(lock)
 
@@ -1075,7 +1302,7 @@ def run(a):
             except Fail as e:
                 cellres = {n: {"wall": None, "cpu": None, "rss": None, "ins": None, "ok": 0, "runs": 0, "rcs": [-1], "tail": str(e)} for n in [c.name for c in mine] + [d[0] for d in mine_derived]}
             with lock:
-                results[t["name"]] = {"category": t["category"], "cells": cellres}
+                results[t["name"]] = {"category": t["category"], "cells": cellres, "cycles": sim_cycles(t)}
                 msg = " ".join(f"{n}={c['wall']:.2f}s" if c.get("wall") is not None else f"{n}=FAILED" for n, c in cellres.items() if n not in spec["hidden"] and not DETAIL.search(n))
                 print(f"[{core}] {t['name']} ({time.time() - t0:.0f}s): {msg}", flush=True)
         finally:
@@ -1089,7 +1316,7 @@ def run(a):
     meta = {"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "cores": a.cores, "runs": runs, "instr_event": instr, "refs": refs, "compare": bool(a.compare),
             "tiers": tiers, "phase_list": phases, "phases": spec["phases"], "basis": spec["basis"], "hidden": spec["hidden"],
             "cells": [n for v in spec["phases"].values() for n in v], "binaries": {b["label"]: b["key"] for b in binaries}, "binary_paths": {b["label"]: b["path"] for b in binaries},
-            "sources": pins, "host_cpus": os.cpu_count(), "analyze_calls": a.analyze_calls}
+            "sources": pins, "host_cpus": os.cpu_count(), "analyze_calls": a.analyze_calls, "skipped": skipped}
     res = {"meta": meta, "tests": {n: results[n] for n in order}}
     outdir = Path(a.out).expanduser() / "results"
     outdir.mkdir(parents=True, exist_ok=True)

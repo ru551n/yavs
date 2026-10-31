@@ -410,11 +410,11 @@ def instr_event(cores):
     return None
 
 
-def timed(script, cwd, cores, env=None, instr=None, ref=True, ok=None):
+def timed(script, cwd, cores, env=None, instr=None, ref=True, ok=None, keep=False):
     """One pinned run of a bash script under a memory cap: wall, cpu (user+system of the process tree),
     peak RSS (MiB, largest process, `time -f %M`), exit status and, with instr, the instruction count. With ok (a regex) `ok_match`
     tells whether it matches anywhere in the output (stdout then stderr), not only in the tail. `cyc` counts the cycles
-    with the instructions; `load` is the host's 1-minute load average at the start."""
+    with the instructions; `load` is the host's 1-minute load average at the start. keep: also return the standard output as `out`."""
     wait_mem()
     fd, tf = tempfile.mkstemp(prefix="yavs-bench-")
     os.close(fd)
@@ -429,6 +429,8 @@ def timed(script, cwd, cores, env=None, instr=None, ref=True, ok=None):
     p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, errors="replace", env={**os.environ, **(env or {})})
     r = {"wall": None, "cpu": None, "rss": None, "ins": None, "cyc": None, "load": load, "rc": p.returncode, "tail": (p.stdout + p.stderr)[-200:],
          "ok_match": None if ok is None else bool(re.search(ok, p.stdout + p.stderr))}
+    if keep:
+        r["out"] = p.stdout
     try:
         f = Path(tf).read_text().split()[-4:]
         r.update(wall=float(f[0]), cpu=float(f[1]) + float(f[2]), rss=int(f[3]) / 1024)

@@ -10550,3 +10550,13 @@ checked by `crates/yavs/tests/env_registry.rs` against the string literals in `c
 `docs/error-codes.rst` is generated from the `--explain` tables by the `cli_reference` tests, with the same
 `YAVS_BLESS` flow. `crates/yavs/tests/docs_examples.rs` and `test_guide_example` in
 `python/vunit-yavs/tests/test_real_yavs.py` run `docs/examples` and compare what the pages show.
+
+## CPU workloads in the real-world suite (#924, 2026-10-31)
+
+`tools/realbench` has a category `cpubench` (opt-in): EEMBC CoreMark on NEORV32 and on Microwatt, built from pinned sources in the
+corpus cache (`tools/realbench/programs.py`), reported as simulated clock cycles per wall-clock second next to the wall time (cold and
+warm), elaboration time and peak RSS, for 1 and 4 threads of the compiled tier. The console of every run must equal the reference's and
+contain CoreMark's validation line, or the cell gets no time. One command: `run.py BIN --ref sim1 --cores 9,10,11,12 --cpubench`
+(`tools/realbench/AGENTS.md` section 7). Microwatt's simulation C helpers use the other foreign-string convention and cannot run
+unchanged (#928); the harness replaces the console and JTAG-socket helpers with VHDL. No reference numbers are recorded here: the full
+measurement is for the speed wave.

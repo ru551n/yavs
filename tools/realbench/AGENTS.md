@@ -22,11 +22,13 @@ for an agent that tunes performance or measures a performance change on real tes
 |---|---|
 | `run.py` | The runner: `--list`, `BIN --ref sim1 --cores 6,7 [--phases analyze,elab,codegen,run]`, `--compare A B`, `--report JSON`, `--self-test` |
 | `tests.toml` | One `[[test]]` per testbench: source, path, top, library, generics, why it is in the set, category (field list in its header) |
+| `programs.py` | Builds the program images of the CPU workloads (section 7) from pinned sources into `<cache>/images`; also a command: `programs.py PROGRAM key=value` |
+| `cpu/` | The harness's own VHDL and C for the CPU workloads: the Microwatt console, JTAG-socket and testbench replacements and its CoreMark port (source id `@harness` in `tests.toml`) |
 
 `YAVS_BENCH_TIERFLAGS` (extra arguments after `--tier=` of every yavs run cell, e.g. `--tier-heat=1,0,0` to compile every function at its first call) is not part of the cell name: set it for both binaries of a `--compare`.
 
 Categories (`--category`): `rtl-datapath`, `fsm`, `numeric`, `memory`, `records`, `wide-vectors`, `bus-tristate`, `strings-textio`,
-`protected`, `cpu`. Run `run.py --list` for the current selection.
+`protected`, `cpu`, and `cpubench` (the long CPU workloads of section 7, opt-in). Run `run.py --list` for the current selection.
 
 ## 3. Design decisions that bind this module
 
@@ -86,3 +88,45 @@ Results (raw samples reduced to medians, plus the markdown) go to `~/.cache/yavs
 ## 6. Coordination
 
 - The baselines and the worst tests are in `docs/STATUS.md` ("Real-world performance suite, baseline 2026-10-21" for run, "Real-world suite: analysis, elaboration and code generation vs sim1, 2026-10-22" for the other phases). Slow spots are `perf` issues.
+
+## 7. CPU workloads: CoreMark on NEORV32 and Microwatt (category `cpubench`, #924)
+
+Two processors running a fixed program, to measure the simulator on long clocked runs of real CPUs. Primary number: simulated clock cycles per
+wall-clock second (`stop` over `clock`, divided by the wall time of the whole run cell, elaboration and compilation included); next to it the
+wall time (cold and warm cache), the elaboration alone (`elab-cold`, `elab-warm`), CPU time, peak RSS and the host load of the timed runs.
+The rate against the reference (cycles per second ratio, above 1 is faster) is the last column. Fair comparison (root rule 23): only the compiled
+tier `auto` (cold and warm) is compared with the reference; `interp` has its own before/after.
+
+One command for a clean measurement (needs 4 quiet performance cores, `9,10,11,12` (rule 19: timed runs on 9-15, SMT siblings idle): the 4-thread cell runs on all four, the other cells on the first;
+tests run one at a time; check `uptime` first and re-run if the load is above the cores in use):
+
+```sh
+tools/fetch-corpus.sh                                   # neorv32 (with sw/), neorv32-coremark, eembc-coremark, microwatt
+tools/build-bench.sh --features llvm
+export YAVS_RISCV_PREFIX=/path/to/bin/riscv-none-elf-   # or a RISC-V GCC on PATH
+export YAVS_PPC_ZIG=/path/to/zig                         # or YAVS_PPC_PREFIX=powerpc64le-linux-gnu-, or that GCC on PATH
+python3 -I tools/realbench/run.py target/release/yavs --ref sim1 --cores 9,10,11,12 --cpubench
+```
+
+Duration: sim1 needs about 2 minutes per test (NEORV32 3.6 M cycles at about 25 k cycles/s, Microwatt 0.6 M cycles at about 6 k cycles/s on a quiet core); yavs cells run per test one untimed check (two for warm cells), 3 timed runs and one counted run, for 5 cells, so expect 3 to 5 hours for both tests. `interp` is the slowest cell; a run that exceeds `--timeout` is reported as failed (rc 124) and the numbers of that cell are lost, so raise it rather than trusting a partial result.
+
+`--cpubench` is shorthand for `--category cpubench --phases elab,run --tiers interp,auto,auto-cold,auto@4 --runs 3 --count-runs --timeout 900
+--label cpubench`; any of them can be given to override. A tier `auto@4` is `--tier=auto --threads=4` on the first 4 `--cores`. A test whose
+cross compiler is missing is left out with the reason (printed and in the report); naming it with `--tests` stops instead. `--prepare` builds the
+worlds and prints the commands, `programs.py` alone builds an image.
+
+| Decision | Why |
+|---|---|
+| Programs are built from pinned sources fetched into the corpus cache (`tools/fetch-corpus.sh`), never vendored; the image is stored per pins, parameters and compiler under `<cache>/images/<program>-<key>` and reused | Root rule 7; a build is a few seconds but the toolchains are not always present |
+| No toolchain is installed by the harness: `programs.py` finds one through `YAVS_RISCV_PREFIX` / `YAVS_PPC_PREFIX` / `YAVS_PPC_ZIG` or PATH and otherwise stops naming what is needed | Root rule 9 |
+| NEORV32: the CoreMark port (separate repository) is built against the pinned NEORV32 `sw/` with `-DUART0_SIM_MODE` (console text goes to standard output in simulation, not through the baud-timed UART) and `-DITERATIONS=N`; the generated `neorv32_imem_image.vhd` is analysed on top of the corpus library together with the units that depend on it (`neorv32_imem`, `neorv32_top`, the testbench). Edits made on the build copy: the port's unconditional `ITERATIONS` define and the makefile's flag line | The imem image is a VHDL package; the sources of the processor are not touched |
+| Microwatt: its simulation uses C helpers (`sim_console`, `sim_bram_helpers`, `sim_jtag_socket`, `glibc_random_helpers`) written for the foreign interface of sim2, which passes strings as bounds-carrying fat pointers. Tried through the foreign interface of sim1 and yavs (`--load`): `from_string` dereferences that fat pointer and crashes (sim1: SIGSEGV at elaboration of the memory), yavs follows the other convention (docs/vhpi.md: an unconstrained array is a pointer followed by its length), so the helpers cannot be used unchanged. `cpu/microwatt/` replaces `sim_console.vhdl` (lines of standard output, no input) and `sim_jtag_socket.vhdl` (never a message) and adds `microwatt_bench_tb.vhdl` (the SoC of `core_tb` with the memory file as a generic); the memory is Microwatt's own `fpga/main_bram.vhdl` (hex file read with textio) in place of `sim_bram.vhdl`, and `nonrandom.vhdl` replaces the libc `random` helper. No Microwatt logic is changed | Foreign C helpers are not part of what is measured |
+| Microwatt CoreMark is built from the EEMBC sources with the port in `cpu/microwatt/coremark` (barebones port, integer only, timebase) and Microwatt's own `head.S` and `lib/console.c`; the barebones `ee_printf.c` is used with its empty `uart_send_char` renamed away on the build copy | The project has no CoreMark port |
+| `quiet = true`: standard output and error of the run go to files in the world (`stdout.txt`, `stderr.txt`, same for every tool), the console is read from the first and both are deleted. Microwatt reports a line per unit per cycle (about 2 KB per clock cycle), and yavs prints reports on standard output; through a pipe that would be gigabytes in the harness. The console is the standard output without report records (`** Note:` and similar lines with their indented continuation lines), because the reference prints those on standard error. The simulators still do the formatting and writing, so it stays part of the measurement | A failed run shows the last 300 characters of both files |
+| `console = true`: the console of every run cell (the untimed check run and every timed run) must be line-for-line equal to the reference's (the first reference cell, else the first yavs cell) and match every regex of `expect` (the validation line, the iteration count, the last line of the program); otherwise the cell has no time and is listed under "Cells that failed" with the first differing line | A speed number of a run that computed something else is worthless |
+| NEORV32 runs at `CLOCK_FREQUENCY=100000` (a 10 us period, `clock = "10us"`): CoreMark calls a run invalid below 10 s of its own timer, which at 100 MHz is a billion cycles. The port's timer reads the cycle counter over the clock frequency; at 100 kHz a few million cycles read as more than 10 s and the program prints its validation line. The Microwatt port scales its timebase to 10 kHz for the same reason. Cycles are unaffected | A valid CoreMark result is an output check that tells a wrong computation from a right one |
+| `stop` is calibrated just after the program prints its last line (the processor loops afterwards, the simulation does not end by itself), so the cycles of a test are `stop` over `clock` with no long idle tail. After changing `iterations`, recalibrate: run with a generous `stop` and shorten it until `expect` (which includes the last line) still matches, then add about 1 percent | Cycles per second needs a cycle count that is the work done |
+
+Licences of the programs (nothing is committed from them): NEORV32 BSD-3-Clause, the NEORV32 CoreMark port and EEMBC CoreMark Apache-2.0,
+Microwatt CC-BY-4.0 with IBM's additional-rights notice (its `fpga/` files BSD-3-Clause). `cpu/microwatt/coremark` is derived from the EEMBC
+barebones port (Apache-2.0, header says so).

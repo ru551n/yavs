@@ -73,7 +73,13 @@ fetch vhlib https://github.com/abs-tudelft/vhlib b69bbdaf7dacc06c861dd0982bb6653
 fetch hvhdl-float https://github.com/hVHDL/hVHDL_floating_point 345b06cec458b3ad42ee2563deab817d52d8fdee
 fetch neotrng https://github.com/stnolting/neoTRNG c688149f70fbd582eac1029cbfec4fcf97b719b2
 fetch vhdl-ideas https://github.com/bpadalino/vhdl-ideas f5970bd9f66bf12179f651ab43bfa0db946a7035
-fetch neorv32 https://github.com/stnolting/neorv32 b2620454ebb2407e81a6a1965ef52e2a860b0432 '/rtl/' '/sim/' '/LICENSE'
+# '/sw/' (runtime, linker script, image generator) builds the CoreMark image of tools/realbench/programs.py.
+fetch neorv32 https://github.com/stnolting/neorv32 b2620454ebb2407e81a6a1965ef52e2a860b0432 '/rtl/' '/sim/' '/sw/' '/LICENSE'
+# CPU benchmark programs (tools/realbench/programs.py, category cpubench): the NEORV32 CoreMark port (Apache-2.0), EEMBC CoreMark (Apache-2.0)
+# and Microwatt (CC-BY-4.0 with IBM's additional-rights notice, see its LICENSE; fpga/LICENSE covers the files in fpga/). Built into images in the realbench cache, never committed.
+fetch neorv32-coremark https://github.com/stnolting/neorv32-coremark e1553f10106faf3edfb34d86780b414782bc2aea
+fetch eembc-coremark https://github.com/eembc/coremark 1f483d5b8316753a742cbf5590caf5bd0a4e4777
+fetch microwatt https://github.com/antonblanchard/microwatt f341bed306a9a7281bf65200df8cc1f0a002617d '/*.vhdl' '/*.in' '/*.c' '/*.h' '/microwatt.core' '/fpga/' '/sim-unisim/' '/hello_world/' '/lib/' '/include/' '/micropython/' '/scripts/' '/LICENSE'
 fetch surf https://github.com/slaclab/surf f0b5e3a7b5ab191be1cb5f4453e418299181c9d8 '*.vhd' '*.vhdl' '/LICENSE*'
 # GRLIB IP library with the LEON3 and NOEL-V templates (GPL-2.0), release 2026.3 build 4301. The commit is the tagged release in a
 # git mirror and is file-identical to the official tarball (https://download.gaisler.com/products/GRLIB/bin/grlib-gpl-2026.3-b4301.tar.gz,

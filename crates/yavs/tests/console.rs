@@ -106,7 +106,11 @@ fn step_and_next() {
     let out = stdout(&o);
     let at: Vec<&str> = out
         .lines()
-        .filter_map(|l| l.rsplit('/').next().filter(|t| t.starts_with("tb.vhd:")))
+        .filter_map(|l| {
+            l.rsplit(['/', '\\'])
+                .next()
+                .filter(|t| t.starts_with("tb.vhd:"))
+        })
         .collect();
     // The set line and the stop, into the function, then its next line; nothing after the steps.
     assert_eq!(

@@ -216,6 +216,13 @@
                 "description": "More arguments for yavs run, such as --stop-time=1ms.",
                 "default": []
               },
+              "surfer": {
+                "type": [
+                  "boolean",
+                  "string"
+                ],
+                "description": "Show the waves in Surfer 0.6.0 or later while the session runs: true starts surfer from PATH, HOST:PORT connects to a running one. The cursor follows the stops."
+              },
               "stopOnEntry": {
                 "type": "boolean",
                 "description": "Stop at the first statement.",

@@ -4,6 +4,7 @@
 
 - Consecutive files of one library, standard and flags are analyzed in one `yavs analyze` call, which makes a first
   compile faster; a call that fails is repeated file by file, so failures are reported as before.
+- `--yavs-surfer[=HOST:PORT]` shows the waves of one test in Surfer while it runs.
 - Coverage: `supports_coverage()` is true. `enable_coverage` or `--yavs-cov` collects a yavs coverage database per
   simulation, `yavs.cov_kind` chooses the kinds, and `results.merge_coverage(file, args)` merges them into
   `file.ycov` and, with `--yavs-cov-html DIR`, `--yavs-cov-fail-under PCT` or `args`, runs `yavs cov report`; a

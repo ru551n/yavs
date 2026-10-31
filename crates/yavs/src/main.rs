@@ -17,6 +17,7 @@ mod profile;
 mod reference;
 mod stdout;
 mod stuck;
+mod surfer;
 mod timing;
 mod tokens;
 

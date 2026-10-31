@@ -1,0 +1,1 @@
+The VS Code extension attaches with no configuration: start a test with `python run.py lib.tb.test --yavs-debug`, set breakpoints in your files and press F5 or run "yavs: Attach". Breakpoints and stack frames use your original files when the test runner compiles preprocessed copies (`--source-map`).

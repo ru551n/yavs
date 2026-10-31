@@ -66,6 +66,10 @@ const COMMANDS: &[(&str, &str)] = &[
         "break [FILE:]LINE [if CONDITION] | SIGNAL [= VALUE] [if CONDITION] | list | delete N | delete all",
     ),
     (
+        "wave",
+        "wave add NAME... | wave cursor [TIME]: with `--surfer`, show signals or scopes in the viewer; move its cursor (default: now)",
+    ),
+    (
         "restart",
         "restart: back to time 0 with the same design and breakpoints (also `reset`)",
     ),
@@ -622,7 +626,11 @@ fn break_line(
         apply_lines(sh, &key);
         return Err(r["message"].as_str().unwrap_or_default().to_string());
     }
-    Ok(format!("breakpoint {id}: {key}:{}", r["line"]))
+    Ok(format!(
+        "breakpoint {id}: {}:{}",
+        sh.design.shown_file(&key),
+        r["line"]
+    ))
 }
 
 fn break_list(sh: &Shared) -> String {
@@ -630,7 +638,7 @@ fn break_list(sh: &Shared) -> String {
     let mut out = Vec::new();
     for (f, list) in &k.lines {
         for b in list {
-            let mut t = format!("{} {f}:{}", b["yavsId"], b["line"]);
+            let mut t = format!("{} {}:{}", b["yavsId"], sh.design.shown_file(f), b["line"]);
             if let Some(c) = b["condition"].as_str() {
                 t += &format!(" if {c}");
             }
@@ -790,6 +798,7 @@ fn exec(sh: &Shared, at: &At<'_, '_>, line: &str) -> Result<Exec, String> {
         "where" => Ok(Exec::Text(where_text(sh, at))),
         "break" => break_cmd(sh, at, rest).map(Exec::Text),
         "restart" | "reset" => restart(sh),
+        "wave" => wave(sh, at, rest).map(Exec::Text),
         "source" => {
             let text =
                 std::fs::read_to_string(rest).map_err(|e| format!("cannot read `{rest}`: {e}"))?;
@@ -808,6 +817,118 @@ fn exec(sh: &Shared, at: &At<'_, '_>, line: &str) -> Result<Exec, String> {
                 .map_err(|_| format!("unknown command or signal `{cmd}`: see `help`"))
         }
     }
+}
+
+/// The console's `wave` commands.
+fn wave(sh: &Shared, at: &At<'_, '_>, rest: &str) -> Result<String, String> {
+    let Some(v) = sh.link.viewer.get() else {
+        return Err("`wave` needs a viewer: run with `--surfer`".into());
+    };
+    let (sub, mut args) = word(rest);
+    match sub {
+        "add" => {
+            let mut items = Vec::new();
+            while !args.is_empty() {
+                let (name, more) = name_word(args);
+                items.push(viewer_name(sh, at, name)?);
+                args = more;
+            }
+            if items.is_empty() {
+                return Err("`wave add` needs a signal or scope".into());
+            }
+            Ok(format!("{} added", v.add(items)?))
+        }
+        "cursor" => {
+            let t = if args.is_empty() {
+                at.now().ok_or("no simulation time at this stop")?
+            } else {
+                yavs_std::value::time_literal(args)
+                    .map_err(|e| e.to_string())
+                    .and_then(|fs| Time::from_vhdl(fs).map_err(|e| e.to_string()))
+                    .map_err(|e| format!("`{args}` is not a time: {e}"))?
+            };
+            v.cursor(t.as_fs());
+            Ok(String::new())
+        }
+        _ => Err(format!("`wave {sub}`: expected `add` or `cursor`")),
+    }
+}
+
+/// A signal or scope name of the console as the viewer writes it: `top.u1.s`.
+fn viewer_name(sh: &Shared, at: &At<'_, '_>, name: &str) -> Result<String, String> {
+    let bad = || format!("no signal or scope `{name}` here");
+    let proc = thread_proc(sh, thread_of(at));
+    if let Some(k) = sh.design.find(proc, &qualify(sh, at, name)) {
+        return Ok(dotted(&sh.design.sigs[k].path));
+    }
+    let lower = name.to_ascii_lowercase().replace('.', ":");
+    let wanted = lower.trim_matches(':').to_string();
+    sh.design
+        .regions
+        .iter()
+        .find(|r| {
+            let p = r.path.trim_matches(':');
+            p == wanted
+                || sh.design.roots.iter().any(|&t| {
+                    p == format!("{}:{wanted}", sh.design.regions[t].path.trim_matches(':'))
+                })
+        })
+        .map(|r| dotted(&r.path))
+        .ok_or_else(bad)
+}
+
+/// A design path (`:top:u1:s`) as the viewer writes it.
+fn dotted(path: &str) -> String {
+    path.trim_matches(':').replace(':', ".")
+}
+
+/// Tell the viewer of a stop: it reloads, moves its cursor, marks a breakpoint and colours the
+/// stopped process's signals.
+pub(crate) fn tell_viewer(sh: &Shared, at: &At<'_, '_>, stopped: &Json) {
+    let Some(v) = sh.link.viewer.get() else {
+        return;
+    };
+    let reason = stopped["reason"].as_str().unwrap_or_default();
+    let proc = thread_proc(sh, thread_of(at));
+    v.stop(crate::ViewStop {
+        now_fs: at.now().map(|t| t.as_fs()),
+        breakpoint: matches!(reason, "breakpoint" | "data breakpoint"),
+        signals: proc
+            .into_iter()
+            .flat_map(|p| &p.signals)
+            .map(|&k| dotted(&sh.design.sigs[k].path))
+            .collect(),
+    });
+}
+
+/// Take the viewer of the session, once. Its "go to declaration" prints the place and asks an
+/// editor to open it (`yavs/showSource`).
+pub(crate) fn set_viewer(link: &std::sync::Arc<Link>, v: std::sync::Arc<dyn crate::Viewer>) {
+    if link.viewer.set(v.clone()).is_err() {
+        return;
+    }
+    let link = std::sync::Arc::downgrade(link);
+    v.on_goto(Box::new(move |name| {
+        let Some(link) = link.upgrade() else {
+            return;
+        };
+        let sh = link
+            .current
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let Some(sh) = sh else {
+            return;
+        };
+        let decl = sh
+            .design
+            .find(None, name)
+            .and_then(|k| sh.design.sigs[k].decl.clone());
+        if let Some((path, line)) = decl {
+            link.output("console", &format!("{name}: {path}:{line}\n"));
+            link.event("yavs/showSource", json!({"path": path, "line": line}));
+        }
+    }));
 }
 
 fn quit(sh: &Shared, rest: &str) -> Result<Exec, String> {

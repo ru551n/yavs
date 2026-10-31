@@ -189,6 +189,8 @@ pub(crate) struct Sig {
     /// Lower-case path, `:top:u1:s`.
     pub path: String,
     pub ty: String,
+    /// Where it is declared: the file and line.
+    pub decl: Option<(String, u32)>,
     /// The type values are read and written in.
     pub lit: LitType,
     /// Per leaf, the kernel signal and the elements that store it.
@@ -334,6 +336,20 @@ fn file_key(p: &str) -> String {
     if cfg!(windows) { a.to_lowercase() } else { a }
 }
 
+/// The file and line of a declaration, as the debugger shows them.
+fn decl_of(db: &Db, at: yavs_diag::Span, source_map: &[(String, String)]) -> Option<(String, u32)> {
+    let f = db.sources.get(at.file);
+    let (line, _) = f.line_col(at.start);
+    Some((shown_path(&f.path, source_map), line as u32))
+}
+
+/// A source path as the debugger shows it (`--source-map`).
+fn shown_path(path: &str, source_map: &[(String, String)]) -> String {
+    let p = absolute(path);
+    let map = source_map.iter().find(|(from, _)| absolute(from) == p);
+    map.map_or(p, |(_, to)| absolute(to))
+}
+
 impl Design {
     /// `source_map`: source paths as compiled, and as the debugger shows and takes them.
     pub fn new(db: &Db, e: &Elaborated, prog: &Program, source_map: &[(String, String)]) -> Design {
@@ -343,11 +359,7 @@ impl Design {
             let f = db.sources.get(st.span.file);
             let path = paths
                 .entry(st.span.file)
-                .or_insert_with(|| {
-                    let p = absolute(&f.path);
-                    let map = source_map.iter().find(|(from, _)| absolute(from) == p);
-                    map.map_or(p, |(_, to)| absolute(to))
-                })
+                .or_insert_with(|| shown_path(&f.path, source_map))
                 .clone();
             let (line, col) = f.line_col(st.span.start);
             locs.push(Some(Loc {
@@ -400,6 +412,7 @@ impl Design {
                     name: obj.name.text.to_string(),
                     path: path.clone(),
                     ty: db.types[obj.shape.ty()].name.text.to_string(),
+                    decl: decl_of(db, obj.name.span, source_map),
                     leaves: (obj.leaves.0.0..obj.leaves.1.0)
                         .map(|l| {
                             let l = yavs_elab::LeafId(l);
@@ -506,6 +519,16 @@ impl Design {
     pub fn line_stmts(&self, path: &str, line: u32) -> Option<(u32, &[StmtId])> {
         let (&l, ids) = self.lines.get(&file_key(path))?.range(line..).next()?;
         Some((l, ids))
+    }
+
+    /// The path a file key (`file_key`, lower case on Windows) is shown with.
+    pub fn shown_file(&self, key: &str) -> String {
+        let stmt = self
+            .lines
+            .get(&file_key(key))
+            .and_then(|l| l.values().next()?.first());
+        stmt.and_then(|&s| self.loc(s))
+            .map_or_else(|| key.to_string(), |l| l.path.clone())
     }
 
     /// The source file `name` means: its path, or the one file whose path ends in it.

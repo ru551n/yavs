@@ -94,8 +94,8 @@ fixed port in ``launch.json``:
 A run compiled from rewritten copies of your files can show the originals: ``--source-map=COMPILED=ORIGINAL``
 (repeatable; the copy must keep the lines of the original).
 
-Add ``--wave=out.fst`` to follow the waveforms next to the session: the file is flushed at every
-stop, so a viewer that reloads it shows the run up to the breakpoint.
+Add ``--surfer`` to follow the waveforms in Surfer, the cursor at each stop (:doc:`waveforms`). ``--wave=out.fst`` alone
+flushes the file at every stop, so any viewer that reloads it shows the run up to the breakpoint.
 
 The Debug Console takes the commands of the :doc:`interactive` too (``run 10 ns``, ``restart``,
 ``break list``).

@@ -51,6 +51,8 @@ Commands
     Back to time 0 with the same design and breakpoints; nothing is compiled. A wave file is
     written again from the start. Runs with ``--vhpi`` or ``--load`` refuse it, as the state of
     the library cannot be reset: start the run again.
+``wave add NAME...``, ``wave cursor [TIME]``
+    With ``--surfer`` (:doc:`waveforms`): show signals or scopes in the viewer; move its cursor, by default to now.
 ``source FILE``
     Runs the commands of a file. The first command that fails ends it.
 ``help``, ``quit [STATUS]``

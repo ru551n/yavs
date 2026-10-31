@@ -96,6 +96,7 @@ Waveforms, coverage, debugging, plugins
 * ``--dap=PORT|stdio``: :doc:`debugging`.
 * ``--interactive``, ``--do=COMMANDS``: :doc:`interactive`.
 * ``--source-map=COMPILED=ORIGINAL``: :doc:`debugging`.
+* ``--surfer[=HOST:PORT]``, ``--surfer-refresh=DURATION``: :doc:`waveforms`.
 * ``--vhpi=LIB[:ENTRY]``, ``--load=LIB``: :doc:`vhpi`.
 
 Performance

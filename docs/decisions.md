@@ -12756,6 +12756,13 @@ duplicate implementations without changing diagnostics (issue #894; implemented 
 - **`unisims/secureip` and the XPM macros are not supported:** the secureip files need a library the install holds only in encrypted Verilog, and an instance stays unbound as for every missing entity (`W2108`). The XPM macros are SystemVerilog.
 - **`vunit-yavs` analyzes consecutive files in one call,** as "Batched analysis calls" decided for integrations; it had not done so yet. A first compile of the libraries took twice as long, one process per file.
 
+## Surfer through WCP (#876, 2026-10-31)
+
+- Opt-in by `--surfer` only; default file next to the work library; 1 s refresh; the viewer never changes the status, and W0131 stays a warning under `-W error`; goto_declaration jumps to source; the stepped process's signals coloured; a marker at each breakpoint; records and arrays one level; at most 200 signals on their own (user, 2026-10-30, #876).
+- **A viewer is a trait of `yavs-dap`, WCP lives in the binary** (agent, 2026-10-31): `Viewer` in the session keeps the DAP crate free of a protocol it does not need. Its codes are `E0130` and `W0131`.
+- **1 s stays the default** (agent, 2026-10-31): only runs with `--surfer` pay for it. Measured with `--wave` on two long RTL benches, one thread, `--tier` default, median of three on a loaded host, so noisy: wall time about 2 to 5 percent more than no clock flush, the file at most 1 percent larger.
+- **Colours are reset to the default theme's green** (agent, 2026-10-31): WCP cannot clear an item's colour.
+
 ## VS Code and test runner: install and forget (#902, 2026-10-31)
 
 - **"yavs: Attach" needs no launch.json** (user, 2026-10-31): a dynamic configuration, a palette command, F5 with nothing configured; port 4711, a question only if nothing listens. The look at the port is a connection closed at once, so the server does not take such a connection for its one session.

@@ -218,6 +218,18 @@ pub struct RunArgs {
     /// `--interactive` the run then exits with its status (1 at a command that fails).
     #[arg(long = "do", value_name = "COMMANDS", conflicts_with = "dap")]
     do_commands: Vec<String>,
+    /// Show the waveform in Surfer (0.6.0 or later) while the run writes it: start `surfer` from
+    /// PATH, or with `=HOST:PORT` connect to a running one whose WCP server listens there.
+    /// Without `--wave`, records `<top>.fst` in the directory that holds the work library.
+    #[arg(long, value_name = "HOST:PORT", num_args = 0..=1, require_equals = true)]
+    surfer: Option<Option<String>>,
+    /// How often the waveform is written out and Surfer reloads it (default `1s`; `500ms`,
+    /// `10s`); wins over `YAVS_WAVE_FLUSH`.
+    #[arg(long, value_name = "DURATION", requires = "surfer", value_parser = parse_refresh)]
+    surfer_refresh: Option<std::time::Duration>,
+    /// `--wave` was not given and `--surfer` chose the file.
+    #[arg(skip)]
+    wave_default: bool,
     /// In a debug session (`--dap`, `--interactive`, `--do`), show the source file COMPILED as
     /// ORIGINAL and take breakpoints in ORIGINAL: for files compiled from a rewritten copy with
     /// the same lines. Repeatable.
@@ -257,6 +269,13 @@ fn tier_help() -> String {
          in the build (error E0120 otherwise): this yavs has {built}. Default: `auto` with a compiled tier, `interp` with \
          `--dap`, `--interactive` or `--do`, and without one."
     )
+}
+
+/// `--surfer-refresh`: a duration above zero.
+fn parse_refresh(s: &str) -> Result<std::time::Duration, String> {
+    parse_flush_interval(s)
+        .filter(|d| !d.is_zero())
+        .ok_or_else(|| format!("`{s}`: use a duration above zero such as `1s` or `500ms`"))
 }
 
 /// `YAVS_WAVE_FLUSH` duration: whole `s` or `ms` (`5s`, `500ms`).
@@ -1464,12 +1483,20 @@ struct Prepared {
 }
 
 pub fn run(
-    a: RunArgs,
+    mut a: RunArgs,
     argv: Vec<String>,
     format: MessageFormat,
     color: bool,
     encoding: yavs_syntax::Encoding,
 ) -> ExitCode {
+    // `--surfer` without `--wave`: `<top>.fst` beside the work library directory.
+    if a.surfer.is_some() && a.wave.is_none() {
+        let dir = a.common.work.split_once(':').map_or("", |(_, d)| d);
+        let unit = a.common.top.split(['.', '(']).next().unwrap_or_default();
+        let dir = std::path::Path::new(dir).parent().unwrap_or("".as_ref());
+        a.wave = Some(dir.join(format!("{unit}.fst")).display().to_string());
+        a.wave_default = true;
+    }
     // First: an unusable token server stops the run before any work.
     let tokens = match (a.threads > 1 && !a.debugged()).then(crate::tokens::connect) {
         Some(Err(why)) => {
@@ -1561,11 +1588,13 @@ pub fn run(
         // One signal thread, for the simulation of the moment.
         let live: Arc<std::sync::Mutex<Option<yavs_kernel::Interrupt>>> = Arc::default();
         let mut hooked = false;
+        let view: ViewSlot = Arc::default();
+        let viewer = view.clone();
         let attach = |sim: &mut yavs_kernel::SimControl,
                       built: Option<&yavs_elab::Built>,
                       db: &Arc<yavs_sem::Db>,
                       e: &Arc<yavs_elab::Elaborated>| {
-            let rec = observers(&a, db, e, sim, built, &mut out)?;
+            let rec = observers(&a, db, e, sim, built, &mut out, &view)?;
             *live.lock().unwrap_or_else(|p| p.into_inner()) = Some(sim.interrupt());
             if rec.is_some() && a.dap.is_some() && !std::mem::replace(&mut hooked, true) {
                 // Ctrl-C ends the run between cycles so the file is finished (rule 11).
@@ -1579,13 +1608,24 @@ pub fn run(
                 ctrl_c_stops(&mut hooks, stop, Arc::default(), true);
                 yavs_wave::interrupt::start(hooks).map_err(handler_error)?;
             }
-            Ok(rec.map(|(path, rec)| {
-                let r = rec.clone();
-                let finish: yavs_dap::Finish =
-                    Box::new(move |sim| rec.finish(sim).err().map(|err| wave_error(&path, err)));
-                let sync: yavs_dap::Sync = Box::new(move || r.sync());
-                (finish, sync)
-            }))
+            let viewer = view.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            let viewer = viewer.map(|v| v as Arc<dyn yavs_dap::Viewer>);
+            let (finish, sync) = match rec {
+                Some((path, rec)) => {
+                    let r = rec.clone();
+                    let finish: yavs_dap::Finish = Box::new(move |sim| {
+                        rec.finish(sim).err().map(|err| wave_error(&path, err))
+                    });
+                    let sync: yavs_dap::Sync = Box::new(move || r.sync());
+                    (Some(finish), Some(sync))
+                }
+                None => (None, None),
+            };
+            Ok(yavs_dap::Attached {
+                finish,
+                sync,
+                viewer,
+            })
         };
         let report: yavs_dap::Report = Box::new(|stats, rt| {
             crate::counters::report(stats, rt);
@@ -1618,6 +1658,8 @@ pub fn run(
                 report,
             ),
         };
+        // The file is finished: Surfer shows the whole run; the status never depends on it.
+        view_end(&viewer, format, color);
         return match r {
             Ok(code) => out.finish(code),
             Err(d) => {
@@ -1697,7 +1739,8 @@ pub fn run(
         t
     });
     let interrupted = Arc::new(AtomicBool::new(false));
-    let recorder = match observers(&a, &db, &e, &mut sim, built.as_ref(), &mut out) {
+    let view: ViewSlot = Arc::default();
+    let recorder = match observers(&a, &db, &e, &mut sim, built.as_ref(), &mut out, &view) {
         Ok(r) => r,
         Err(d) => {
             out.emit(&none, &d);
@@ -1869,6 +1912,8 @@ pub fn run(
         out.emit(&none, &wave_error(&path, err));
         code = code.max(1);
     }
+    // After the file is finished; the viewer never changes the status.
+    view_end(&view, format, color);
     // A report of severity error or failure fails the run even below `--exit-severity`, unless
     // ClearVhdlAssert cleared the counts since: the status follows the VHDL assert counts of
     // std.env (as the reference simulator; test runners only look at zero or non-zero).
@@ -2009,8 +2054,25 @@ fn handler_error(err: std::io::Error) -> Box<Diagnostic> {
     )
 }
 
+/// The `--surfer` viewer of a run, made with its first recorder.
+type ViewSlot = Arc<std::sync::Mutex<Option<Arc<crate::surfer::Surfer>>>>;
+
+/// Show the whole run in the viewer. Lost contact is a warning that `-W error` does not promote
+/// (user, 2026-10-30): the viewer never changes the status of a run.
+fn view_end(view: &ViewSlot, format: MessageFormat, color: bool) {
+    let v = view.lock().unwrap_or_else(|p| p.into_inner()).take();
+    if let Some(w) = v.and_then(|v| v.end()) {
+        crate::stdout::flush();
+        eprint!(
+            "{}",
+            yavs_diag::render(&SourceMap::default(), &w, format, color)
+        );
+    }
+}
+
 /// Subscribe the VHPI observer (`--vhpi`) and the waveform recorder (`--wave`) to `sim`, for
-/// `yavs run` with or without `--dap`; returns the recorder and its file.
+/// `yavs run` with or without `--dap`; returns the recorder and its file. `--surfer` starts the
+/// viewer with the first recorder, and tells it of the next ones.
 fn observers(
     a: &RunArgs,
     db: &yavs_sem::Db,
@@ -2018,6 +2080,7 @@ fn observers(
     sim: &mut yavs_kernel::SimControl,
     built: Option<&yavs_elab::Built>,
     out: &mut Out,
+    view: &ViewSlot,
 ) -> Result<Option<(String, yavs_wave::Recorder)>, Box<Diagnostic>> {
     let none = SourceMap::default();
     if !a.vhpi.is_empty() {
@@ -2035,9 +2098,15 @@ fn observers(
                 max_array_elems: a.wave_max_array,
             };
             let mut cfg = yavs_wave::WaveConfig::default();
+            // `--surfer` flushes every second unless `--surfer-refresh` or the variable say
+            // otherwise (#876).
+            if a.surfer.is_some() {
+                cfg.flush_interval = Some(std::time::Duration::from_secs(1));
+            }
             // Default: no flush by the clock (reproducible bytes); a duration opts in (#666).
             match std::env::var("YAVS_WAVE_FLUSH").as_deref() {
-                Err(_) | Ok("never") => {}
+                Err(_) => {}
+                Ok("never") => cfg.flush_interval = None,
                 Ok(v) => match parse_flush_interval(v) {
                     Some(d) => cfg.flush_interval = Some(d),
                     None => {
@@ -2053,6 +2122,10 @@ fn observers(
                     }
                 },
             }
+            if a.surfer_refresh.is_some() {
+                cfg.flush_interval = a.surfer_refresh;
+            }
+            let every = cfg.flush_interval;
             match yavs_wave::record(
                 db,
                 e,
@@ -2061,8 +2134,8 @@ fn observers(
                 cfg,
                 built.filter(|_| a.wave_variables),
             ) {
-                Ok((rec, skipped)) => {
-                    for s in skipped {
+                Ok((rec, hier)) => {
+                    for s in &hier.skipped {
                         let why = match s.elems {
                             Some(n) => format!(
                                 "it has {n} elements, more than `--wave-max-array={}`",
@@ -2080,6 +2153,40 @@ fn observers(
                         );
                     }
                     sim.subscribe(Box::new(rec.clone()));
+                    if let Some(addr) = &a.surfer {
+                        // The file holds its hierarchy once a block is written.
+                        rec.sync();
+                        let mut slot = view.lock().unwrap_or_else(|p| p.into_inner());
+                        match &*slot {
+                            Some(v) => v.restart(),
+                            None => {
+                                if a.wave_default {
+                                    let note = format!("the waveform is written to `{path}`");
+                                    out.emit(
+                                        &none,
+                                        &Diagnostic::new(yavs_diag::Severity::Note, "", note),
+                                    );
+                                }
+                                let all = !a.wave_include.is_empty();
+                                let (names, over) = crate::surfer::names(&hier, all);
+                                if over > 0 {
+                                    let note = format!(
+                                        "{over} more signals are recorded but not shown: `wave add` or Surfer's own commands add them"
+                                    );
+                                    out.emit(
+                                        &none,
+                                        &Diagnostic::new(yavs_diag::Severity::Note, "", note),
+                                    );
+                                }
+                                *slot = Some(crate::surfer::Surfer::start(
+                                    addr.as_deref(),
+                                    std::path::Path::new(path),
+                                    names,
+                                    every,
+                                )?);
+                            }
+                        }
+                    }
                     Some((path.clone(), rec))
                 }
                 Err(err) => return Err(Box::new(wave_error(path, err))),

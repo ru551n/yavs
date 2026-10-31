@@ -41,6 +41,7 @@ or later (`pip install vunit-yavs` installs it, a pre-release) and yavs 0.11.0 o
 | `-g/--gui` | Opens the run in the graphical debugger (`yavs run --gui`) |
 | `--yavs-debug[=PORT]` | Runs the selected test under `yavs run --dap=PORT` (default 4711, `0` picks a free port) and prints where to attach; write the port as `--yavs-debug=PORT` |
 | `--yavs-interactive` | Runs the selected test at the yavs console: a `yavs>` prompt at time 0 (below) |
+| `--yavs-surfer[=HOST:PORT]` | Shows the waves of the one selected test in Surfer 0.6.0 or later while it runs (`yavs run --surfer`); strictly opt-in. Combines with `--yavs-debug` and `--yavs-interactive`, where the cursor follows the stops |
 | `--yavs-max-threads N` | `yavs.max_threads` for every test that does not set it |
 | `--yavs-cov` | Collects coverage in every simulation, as `enable_coverage` does for the tests it is set for |
 | `--yavs-cov-html DIR` | `results.merge_coverage()` also writes the HTML coverage report into DIR |

@@ -18,6 +18,7 @@ function libArgs(c) {
 function runArgs(c) {
   const a = ['run', ...libArgs(c)];
   for (const [k, v] of Object.entries(c.generics || {})) a.push(`-g${k}=${v}`);
+  if (c.surfer) a.push(c.surfer === true ? '--surfer' : `--surfer=${c.surfer}`);
   a.push(...(c.args || []), '--dap=stdio', c.top);
   return a;
 }
@@ -170,6 +171,13 @@ function activate(context) {
       vscode.DebugConfigurationProviderTriggerKind.Dynamic,
     ),
     vscode.debug.registerDebugConfigurationProvider('yavs', new Configurations()),
+    // Surfer's "go to declaration" (`--surfer`).
+    vscode.debug.onDidReceiveDebugSessionCustomEvent(async (e) => {
+      if (e.session.type !== 'yavs' || e.event !== 'yavs/showSource') return;
+      const doc = await vscode.workspace.openTextDocument(e.body.path);
+      const at = new vscode.Position(e.body.line - 1, 0);
+      await vscode.window.showTextDocument(doc, { selection: new vscode.Range(at, at) });
+    }),
     vscode.commands.registerCommand('yavs.attach', () =>
       vscode.debug.startDebugging(vscode.workspace.workspaceFolders?.[0], ATTACH),
     ),

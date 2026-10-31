@@ -475,6 +475,14 @@ Arguments:
 
    May be repeated. Cannot be combined with ``--dap``.
 
+.. option:: --surfer, --surfer=HOST:PORT
+
+   Show the waveform in Surfer (0.6.0 or later) while the run writes it: start ``surfer`` from PATH, or with ``=HOST:PORT`` connect to a running one whose WCP server listens there. Without ``--wave``, records ``<top>.fst`` in the directory that holds the work library.
+
+.. option:: --surfer-refresh=DURATION
+
+   How often the waveform is written out and Surfer reloads it (default ``1s``; ``500ms``, ``10s``); wins over ``YAVS_WAVE_FLUSH``.
+
 .. option:: --source-map=COMPILED=ORIGINAL
 
    In a debug session (``--dap``, ``--interactive``, ``--do``), show the source file COMPILED as ORIGINAL and take breakpoints in ORIGINAL: for files compiled from a rewritten copy with the same lines. Repeatable.

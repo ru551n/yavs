@@ -5,6 +5,7 @@
 
 const assert = require('assert');
 const cp = require('child_process');
+const net = require('net');
 const vscode = require('vscode');
 
 function waitFor(what, ms, register) {
@@ -109,6 +110,61 @@ async function run() {
   assert.equal(stops.length, 4);
 
   await attachWithNoConfiguration(folder, tb, () => waitFor('stopped when attached', 60000, (r) => (onStop = r)));
+  await surferGoesToTheDeclaration(folder, tb, () => waitFor('stopped under Surfer', 60000, (r) => (onStop = r)));
+}
+
+/** `surfer` in a launch configuration: a fake WCP endpoint asks for a declaration, and the file
+ * opens at its line. */
+async function surferGoesToTheDeclaration(folder, tb, stoppedAgain) {
+  let send;
+  const server = net.createServer((sock) => {
+    let buf = Buffer.alloc(0);
+    send = (m) => sock.write(`${JSON.stringify(m)}\0`);
+    sock.on('data', (d) => {
+      buf = Buffer.concat([buf, d]);
+      for (let end; (end = buf.indexOf(0)) >= 0; buf = buf.subarray(end + 1)) {
+        const m = JSON.parse(buf.subarray(0, end).toString());
+        if (m.type === 'greeting') {
+          send({ type: 'greeting', version: '0', commands: [] });
+        } else if (m.command === 'add_items' || m.command === 'add_markers') {
+          send({ type: 'response', command: m.command, ids: [] });
+        } else {
+          send({ type: 'response', command: 'ack' });
+        }
+        if (m.command === 'load' || m.command === 'reload') {
+          send({ type: 'event', event: 'waveforms_loaded', source: 'x' });
+        }
+      }
+    });
+    sock.on('error', () => {});
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const stopped = stoppedAgain();
+  const started = await vscode.debug.startDebugging(folder, {
+    type: 'yavs',
+    request: 'launch',
+    name: 'Debug tb in Surfer',
+    top: 'tb',
+    work: 'work:${workspaceFolder}/.yavs/work',
+    stopOnEntry: true,
+    surfer: `127.0.0.1:${server.address().port}`,
+  });
+  assert.ok(started, 'startDebugging failed');
+  await stopped;
+  const session = vscode.debug.activeDebugSession;
+  // After VS Code has shown the stop itself.
+  await new Promise((r) => setTimeout(r, 1000));
+  send({ type: 'event', event: 'goto_declaration', variable: 'tb.cnt' });
+  const t0 = Date.now();
+  while (!(vscode.window.activeTextEditor?.document.uri.toString() === tb.toString() &&
+           vscode.window.activeTextEditor.selection.active.line === 5)) {
+    assert.ok(Date.now() - t0 < 60000, 'the declaration did not open');
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  const ended = waitFor('end of the Surfer session', 60000, (r) => vscode.debug.onDidTerminateDebugSession(r));
+  await session.customRequest('continue', { threadId: 1 });
+  await ended;
+  server.close();
 }
 
 /** The VUnit flow: a run waits on port 4711, and "yavs: Attach" needs no launch.json entry. A

@@ -191,7 +191,7 @@ impl Sink for WaveWriter {
 }
 
 /// Build the hierarchy of `e` under `sel`, create the FST at `path` and return the recorder
-/// and the arrays left out by the size cap.
+/// and the hierarchy written (`Hierarchy::skipped`: the arrays left out by the size cap).
 pub fn record(
     db: &Db,
     e: &Elaborated,
@@ -199,12 +199,11 @@ pub fn record(
     sel: Selection,
     cfg: WaveConfig,
     built: Option<&Built>,
-) -> Result<(Recorder, Vec<Skipped>), Error> {
+) -> Result<(Recorder, Hierarchy), Error> {
     // A file names equal values once (FST aliases); a live stream keeps one id per name.
     record_with(db, e, sel, built, true, |h| {
         Ok(Box::new(WaveWriter::create(path, h, cfg)?))
     })
-    .map(|(r, h)| (r, h.skipped))
 }
 
 /// [`record`] into the sink `sink` makes for the hierarchy; returns the recorder and the

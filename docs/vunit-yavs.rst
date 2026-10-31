@@ -66,6 +66,9 @@ Flags of the run script (``python run.py ...``), next to VUnit's own:
      - Runs the one selected test at the yavs console (``yavs run --interactive``, :doc:`interactive`),
        with the ``vunit_*`` commands. Not with ``--yavs-debug``, ``--gui``, ``--elaborate``, ``-p`` above 1
        or more than one simulation.
+   * - ``--yavs-surfer[=HOST:PORT]``
+     - Shows the waves of the one selected test in Surfer while it runs (``yavs run --surfer``,
+       :doc:`waveforms`). Not with ``-p`` above 1 or more than one simulation.
    * - ``--yavs-max-threads N``
      - ``yavs.max_threads`` for every test that does not set it.
    * - ``--yavs-cov``

@@ -750,8 +750,13 @@ terminal, since the runner shows a test's output only when it fails. It runs one
 `--yavs-debug` with `--gui`, `--elaborate` or `-p` above 1 is refused at the start, and a second
 simulation of the run is refused before yavs starts. `elab` never gets `--gui` or `--dap`.
 `--yavs-interactive` runs `yavs run --interactive @FILE` on the terminal, with the same limits, and serves the console hook (section "Console hook"); `--yavs-debug` serves it too.
+`--yavs-surfer[=HOST:PORT]` adds `--wave=<test output>/yavs/wave.fst --surfer[=HOST:PORT]`, one simulation like the others.
 
 `--source-map=COMPILED=ORIGINAL` (repeatable) in a debug session shows frames and takes breakpoints in `ORIGINAL` for the statements of the file compiled from `COMPILED`; lines must correspond. Diagnostics keep the compiled path. `vunit-yavs` passes it for preprocessed files under `--yavs-debug` and `--yavs-interactive`. `--dap=PORT` does not take a connection closed before it has sent anything for its session, so a client may look whether the port is open.
+
+### Surfer: `--surfer`
+
+`--surfer` starts `surfer --wcp-initiate PORT` from PATH (its stdio to null; yavs listens on `127.0.0.1:0` and waits up to 30 s), `--surfer=HOST:PORT` connects to a Surfer whose WCP server listens there. Surfer 0.6.0 or later. Strictly opt-in: no other flag, variable or file starts or connects. Without `--wave` the file is `<top>.fst` in the parent of the work library directory, kept after the run, its path a note on stderr (`--wave=FILE` wins; a file that cannot be written is `E0801`, with no fallback). Shown at the start: signals of the top scope with records and arrays one level down, or with `--wave-include` every recorded one; at most 200. Refresh: `--surfer-refresh=DURATION` (above zero), then `YAVS_WAVE_FLUSH`, then 1 s; without `--surfer` nothing changes. End: reload, then `zoom_to_fit`; Surfer stays open. Stops in a debug session, before `stopped`: sync, reload, `set_cursor` and `set_viewport_to` in fs, a marker at a breakpoint, `set_item_color` on the stopped process's signals. `goto_declaration` from Surfer: `NAME: FILE:LINE` as `output` and the event `yavs/showSource` `{path, line}`. `restart` reloads the new file. `E0130`: cannot start, connect, greet or load, before the simulation, exit 2. `W0131`: lost during the run, printed after the status is fixed; never promoted by `-W error`. All WCP traffic is on a thread of its own; the simulation waits only for the answer to a console's `wave add`.
 
 ### Console: `--interactive` and `--do`
 

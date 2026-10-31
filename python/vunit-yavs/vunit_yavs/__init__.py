@@ -178,6 +178,17 @@ class YavsInterface(SimulatorInterface):
             ),
         )
         group.add_argument(
+            "--yavs-surfer",
+            nargs="?",
+            const="",
+            default=None,
+            metavar="HOST:PORT",
+            help=(
+                "Show the waves of the one selected test in Surfer while it runs (yavs run --surfer): start surfer from "
+                "PATH, or with --yavs-surfer=HOST:PORT connect to a running one. Write the address with =."
+            ),
+        )
+        group.add_argument(
             "--yavs-max-threads",
             type=_max_threads,
             default=None,
@@ -223,6 +234,9 @@ class YavsInterface(SimulatorInterface):
         # Arguments added by a package are missing from a namespace the run script built itself
         debug_port = getattr(args, "yavs_debug", None)
         interactive = getattr(args, "yavs_interactive", False)
+        surfer = getattr(args, "yavs_surfer", None)
+        if surfer is not None:
+            check_surfer_args(args)
         if debug_port is not None:
             check_debug_args(args)
         if interactive:
@@ -243,6 +257,7 @@ class YavsInterface(SimulatorInterface):
             gui=args.gui,
             debug_port=debug_port,
             interactive=interactive,
+            surfer=surfer,
             max_threads=getattr(args, "yavs_max_threads", None),
             tokens=tokens,
             coverage=CoverageArgs(
@@ -260,7 +275,7 @@ class YavsInterface(SimulatorInterface):
         return cls.find_toolchain([cls.executable])
 
     def __init__(
-        self, output_path, prefix, *, gui=False, debug_port=None, interactive=False, max_threads=None, tokens=None, coverage=None
+        self, output_path, prefix, *, gui=False, debug_port=None, interactive=False, surfer=None, max_threads=None, tokens=None, coverage=None
     ):  # pylint: disable=too-many-arguments
         SimulatorInterface.__init__(self, output_path, gui)
         self._coverage = coverage or CoverageArgs()
@@ -269,6 +284,7 @@ class YavsInterface(SimulatorInterface):
         self._project = None
         self._debug_port = debug_port
         self._interactive = interactive
+        self._surfer = surfer
         self._max_threads = max_threads
         self._debug_lock = threading.Lock()
         self._debugged = None
@@ -431,7 +447,8 @@ class YavsInterface(SimulatorInterface):
         """
         interactive = self._interactive and not elaborate_only
         debug = (self._debug_port is not None or interactive) and not elaborate_only
-        if debug:
+        surfer = self._surfer is not None and not elaborate_only
+        if debug or surfer:
             self._take_debug_session(test_suite_name)
 
         libdir = self._project.get_library(config.library_name).directory
@@ -471,6 +488,9 @@ class YavsInterface(SimulatorInterface):
 
         if debug:
             cmd += source_map_flags(self._project)
+        if surfer:
+            # The waves of the test next to its other output
+            cmd += [f"--wave={script_path / 'wave.fst'}", f"--surfer={self._surfer}" if self._surfer else "--surfer"]
 
         if not elaborate_only:
             cmd += config.sim_options.get("yavs.sim_flags", [])
@@ -575,7 +595,9 @@ class YavsInterface(SimulatorInterface):
                 return
             first = self._debugged
         flag = "--yavs-interactive" if self._interactive else "--yavs-debug"
-        example = "--yavs-interactive" if self._interactive else "--yavs-debug=PORT"
+        if self._surfer is not None and not self._interactive and self._debug_port is None:
+            flag = "--yavs-surfer"
+        example = "--yavs-debug=PORT" if flag == "--yavs-debug" else flag
         raise RuntimeError(
             f"{flag} runs one simulation, but {test_suite_name} would start after {first}.\n"
             "Cause: the test patterns select more than one test (or one test in several configurations).\n"
@@ -678,6 +700,17 @@ def _batches(source_files):
             length = len(source_file.name) + 1
         runs[-1].append(source_file)
     return [run for run in runs if len(run) > 1]
+
+
+def check_surfer_args(args):
+    """
+    Raise an error for arguments that cannot be combined with --yavs-surfer
+    """
+    if getattr(args, "num_threads", 1) != 1:
+        raise RuntimeError(
+            f"--yavs-surfer shows one test, but -p {args.num_threads} asks for parallel simulations. "
+            "Drop -p (or use -p 1) and name one test."
+        )
 
 
 def write_response_file(file_name, args):

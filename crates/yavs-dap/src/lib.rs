@@ -122,6 +122,9 @@ struct Link {
     eof: AtomicBool,
     kept: Mutex<console::Kept>,
     con: Mutex<console::State>,
+    /// The simulation of the moment.
+    current: Mutex<Option<Arc<Shared>>>,
+    viewer: OnceLock<Arc<dyn Viewer>>,
     hook: OnceLock<console::Hook>,
     /// Why `restart` is refused, if it is.
     no_restart: Option<String>,
@@ -186,6 +189,34 @@ pub type Sync = Box<dyn Fn() + Send + std::marker::Sync>;
 
 /// Work after the run, with the final kernel statistics and interpreter runtime.
 pub type Report = Box<dyn FnOnce(yavs_kernel::Stats, Option<&yavs_interp::Runtime>)>;
+
+/// What a waveform viewer (`--surfer`) is told of a stop, before `stopped` is sent.
+pub struct ViewStop {
+    pub now_fs: Option<u64>,
+    pub breakpoint: bool,
+    /// The signals of the stopped process, as `top.u1.s`, lower case.
+    pub signals: Vec<String>,
+}
+
+/// Where a viewer's "go to declaration" goes, with the signal as `top.u1.s`.
+pub type GotoFn = Box<dyn Fn(&str) + Send + std::marker::Sync>;
+
+/// A waveform viewer following the session; it never holds the simulation up, except for the
+/// answer to a console's `wave add`.
+pub trait Viewer: Send + std::marker::Sync {
+    fn stop(&self, s: ViewStop);
+    /// Add signals or scopes (`top.u1.s`) to the view; how many were added.
+    fn add(&self, items: Vec<String>) -> Result<usize, String>;
+    fn cursor(&self, fs: u64);
+    fn on_goto(&self, f: GotoFn);
+}
+
+/// What `attach` adds to one simulation: what to do at its end and at each stop.
+pub struct Attached {
+    pub finish: Option<Finish>,
+    pub sync: Option<Sync>,
+    pub viewer: Option<Arc<dyn Viewer>>,
+}
 
 /// A design to run: what `reload` hands the session.
 pub struct Loaded {
@@ -502,6 +533,7 @@ fn serve_stop(sh: &Shared, at: &At<'_, '_>, stopped: Json) -> Option<Next> {
     if let Some(sync) = sh.sync.get() {
         sync();
     }
+    console::tell_viewer(sh, at, &stopped);
     console::on_stop(sh, at, &stopped);
     sh.event("stopped", stopped);
     let rx = sh.link.rx.lock().unwrap_or_else(|p| p.into_inner());
@@ -1869,7 +1901,7 @@ pub trait Attach:
     Option<&Built>,
     &Arc<Db>,
     &Arc<Elaborated>,
-) -> Result<Option<(Finish, Sync)>, Box<Diagnostic>>
+) -> Result<Attached, Box<Diagnostic>>
 {
 }
 impl<F> Attach for F where
@@ -1878,7 +1910,7 @@ impl<F> Attach for F where
         Option<&Built>,
         &Arc<Db>,
         &Arc<Elaborated>,
-    ) -> Result<Option<(Finish, Sync)>, Box<Diagnostic>>
+    ) -> Result<Attached, Box<Diagnostic>>
 {
 }
 
@@ -1963,6 +1995,8 @@ pub fn serve_on(
         eof: AtomicBool::new(false),
         kept: Mutex::default(),
         con: Mutex::default(),
+        current: Mutex::new(None),
+        viewer: OnceLock::new(),
         hook: OnceLock::new(),
         no_restart: options.no_restart,
         source_map: options.source_map,
@@ -1996,7 +2030,6 @@ pub fn serve_on(
             })
         });
     }
-    let current: Arc<Mutex<Option<Arc<Shared>>>> = Arc::default();
     let mut start = Some((reader, tx));
     let mut report = Some(report);
     let mut loaded = loaded;
@@ -2004,15 +2037,14 @@ pub fn serve_on(
         let first = start.is_some();
         // The reader thread starts once the first simulation can take requests.
         let begin = |sh: &Arc<Shared>, start: &mut Option<(Box<dyn Read + Send>, Sender<Msg>)>| {
-            *current.lock().unwrap_or_else(|p| p.into_inner()) = Some(sh.clone());
+            *sh.link.current.lock().unwrap_or_else(|p| p.into_inner()) = Some(sh.clone());
             let Some((reader, tx)) = start.take() else {
                 return;
             };
-            let current = current.clone();
             let link = sh.link.clone();
             std::thread::spawn(move || {
                 let live = || {
-                    current
+                    link.current
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
                         .clone()
@@ -2165,13 +2197,14 @@ fn one_run(
         sub: sh.wave.clone(),
         last: 0,
     }));
-    let mut finish = match attach(&mut sim, built.as_ref(), &db_arc, &e_arc)? {
-        Some((finish, sync)) => {
-            let _ = sh.sync.set(sync);
-            Some(finish)
-        }
-        None => None,
-    };
+    let attached = attach(&mut sim, built.as_ref(), &db_arc, &e_arc)?;
+    let mut finish = attached.finish;
+    if let Some(sync) = attached.sync {
+        let _ = sh.sync.set(sync);
+    }
+    if let Some(v) = attached.viewer {
+        console::set_viewer(link, v);
+    }
     let rt = built.as_ref().map(|b| b.rt.clone());
     if let Some(b) = built {
         let _ = sh.built.set(b);

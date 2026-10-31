@@ -252,10 +252,73 @@ class TestRealYavs(unittest.TestCase):
         output += list(iter(lines.get, None))
         return events, exit_code, proc.wait(timeout=TIMEOUT), "".join(output)
 
+    def test_surfer_gets_the_wave_file_of_the_test(self):
+        frames = []
+        listener = socket.create_server(("127.0.0.1", 0))
+        self.addCleanup(listener.close)
+
+        def fake_surfer():
+            conn, _ = listener.accept()
+            with conn, conn.makefile("rb") as stream:
+                buffer = b""
+                while True:
+                    byte = stream.read(1)
+                    if not byte:
+                        return
+                    if byte != b"\0":
+                        buffer += byte
+                        continue
+                    message = json.loads(buffer)
+                    buffer = b""
+                    frames.append(message)
+                    if message["type"] == "greeting":
+                        answer = {"type": "greeting", "version": "0", "commands": []}
+                    elif message["command"] == "add_items":
+                        answer = {"type": "response", "command": "add_items", "ids": list(range(len(message["items"])))}
+                    else:
+                        answer = {"type": "response", "command": "ack"}
+                    conn.sendall(json.dumps(answer).encode() + b"\0")
+                    if message.get("command") in ("load", "reload"):
+                        event = {"type": "event", "event": "waveforms_loaded", "source": "x"}
+                        conn.sendall(json.dumps(event).encode() + b"\0")
+
+        thread = threading.Thread(target=fake_surfer)
+        thread.start()
+        port = listener.getsockname()[1]
+        proc = subprocess.run(
+            self._command(f"--yavs-surfer=127.0.0.1:{port}", PASS),
+            env=self._env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=TIMEOUT,
+            check=False,
+        )
+        thread.join(timeout=TIMEOUT)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        load = next(f for f in frames if f.get("command") == "load")
+        self.assertTrue(load["source"].endswith("wave.fst"), load)
+        self.assertTrue(Path(load["source"]).exists())
+        self.assertEqual(frames[-1]["command"], "zoom_to_fit")
+
+    def test_surfer_refuses_parallel_runs(self):
+        proc = subprocess.run(
+            self._command("--yavs-surfer", "-p", "2", PASS),
+            env=self._env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=TIMEOUT,
+            check=False,
+        )
+        self.assertNotEqual(proc.returncode, 0, proc.stdout)
+        self.assertIn("--yavs-surfer shows one test", proc.stdout)
+
     def _preprocessed_project(self):
         """A project with location and check preprocessing on, and the line of the marker statement"""
         project = self.tempdir / "pp"
         project.mkdir()
+        project = project.resolve()  # A short temporary path on Windows is not what a client sends
         text = (
             "library vunit_lib;\ncontext vunit_lib.vunit_context;\n\n"
             "entity tb_pp is\n  generic (runner_cfg : string);\nend entity;\n\n"
@@ -315,6 +378,7 @@ class TestRealYavs(unittest.TestCase):
             stderr=subprocess.STDOUT,
             text=True,
         )
+        self.addCleanup(proc.wait)
         self.addCleanup(proc.kill)
         address = None
         output = []
@@ -460,7 +524,7 @@ class TestRealYavs(unittest.TestCase):
         self.assertEqual(code, 0, out)
 
     def test_interactive_init_files(self):
-        project = self._copy_project()
+        project = self._copy_project().resolve()
         (project / "after.do").write_text("# $vunit_tb_name\nexamine ${vunit_tb_name}_unknown_is_an_error\n")
         (project / "before.do").write_text("where\n")
         (project / "gui.do").write_text("where\n")

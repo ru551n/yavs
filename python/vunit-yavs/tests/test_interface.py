@@ -29,7 +29,7 @@ from vunit.test.suites import encode_dict
 from vunit.ui import VUnit
 from vunit.vhdl_standard import VHDL
 
-from vunit.sim_if import vsim_simulator_mixin
+import vunit
 from vunit_yavs.console import HELP
 from vunit_yavs import YAVS_MIN_VERSION, CoverageArgs, YavsInterface, YavsVersion, check_debug_args, write_response_file
 from vunit_yavs.tokens import TokenServer
@@ -74,10 +74,17 @@ class TestVunitConsoleText(unittest.TestCase):
     """
 
     def test_help_is_vunits(self):
-        source = Path(vsim_simulator_mixin.__file__).read_text(encoding="utf-8")
-        theirs = {line.rstrip() for line in re.findall(r"puts \{(.*)\}", source)}
+        interfaces = (Path(vunit.__file__).parent / "sim_if").glob("*.py")
+        source = "\n".join(p.read_text(encoding="utf-8") for p in interfaces)
+        theirs = re.findall(r"puts \{(.*)\}", source)
+        self.assertTrue(theirs)
+
+        def neutral(line):
+            return re.sub(r"\w+_extra_args|flags to \w+", "@", line.rstrip())
+
+        theirs = {neutral(line) for line in theirs}
         for line in HELP.splitlines():
-            self.assertIn(line.replace("yavs_extra_args", "vsim_extra_args").replace("to yavs", "to vsim"), theirs)
+            self.assertIn(neutral(line), theirs)
 
 
 class TestYavsVersion(unittest.TestCase):

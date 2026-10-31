@@ -168,6 +168,18 @@ const EXPLAIN: &[(&str, &str)] = &[
         "The Debug Adapter Protocol connection (`--dap`) cannot be opened: the port is in use or not allowed, or accepting the client failed.",
     ),
     (
+        "E0130",
+        "`--surfer` cannot use Surfer: `surfer` is not on PATH, it ended or did not connect within 30 seconds, the address \
+         does not answer, it refuses the greeting, or it does not load the file. Install Surfer 0.6.0 or later on PATH. With \
+         `--surfer=HOST:PORT`, start its WCP server (`wcp_server_start`, or `[wcp] autostart = true` in its configuration; \
+         the default address is 127.0.0.1:54321).",
+    ),
+    (
+        "W0131",
+        "The connection to Surfer failed during the run, or Surfer stopped answering for 30 seconds. The viewer stopped \
+         following; the simulation and its exit status are not affected, and `-W error` does not make this an error.",
+    ),
+    (
         "E0703",
         "The console hook named in `YAVS_CONSOLE_HOOK` cannot be used: the value is not `<port>:<secret>`, nothing \
          answers on that port within 30 seconds, or what it registers is not valid (a yavs command's name). A test \

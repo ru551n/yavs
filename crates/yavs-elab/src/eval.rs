@@ -792,14 +792,16 @@ impl Model {
                 return Err(not_scalar("a parameter that is not an `in` constant"));
             }
             let a = args.iter().find(|a| a.formal as usize == i);
-            vals.push(match a.map(|a| &a.actual) {
+            let v = match a.map(|a| &a.actual) {
                 Some(yavs_sem::hir::Actual::Expr(x)) => self.eval(db, *x, scope)?,
                 Some(yavs_sem::hir::Actual::Default) | None => match p.default {
                     Some(d) => self.eval(db, d, scope)?,
                     None => return Err(not_scalar("a missing argument")),
                 },
                 Some(_) => return Err(not_scalar("an individual or converted argument")),
-            });
+            };
+            // A constrained formal has its own bounds, not those of the actual (LRM 5.3.2.2).
+            vals.push(self.as_subtype(db, p.subtype, v, scope, ex.span)?);
         }
         if sp.ret.is_none() {
             return Err(not_scalar("not a function"));
@@ -1201,7 +1203,7 @@ impl Model {
             None => Err(err(
                 codes::NOT_EVALUATED,
                 span,
-                "the initial value does not match the length of the constant's subtype",
+                "the value does not match the length of the subtype of its object",
                 "bound error",
             )),
         }

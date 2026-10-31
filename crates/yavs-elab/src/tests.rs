@@ -910,6 +910,25 @@ fn elaboration_calls_user_functions() {
     assert_eq!(e.nets.leaves[0].ty.len, 20);
 }
 
+/// A constrained formal of an elaboration-time call has its own bounds, whichever the actual has:
+/// the slice in the function is in the formal's direction.
+#[test]
+fn elaboration_call_formal_has_its_own_bounds() {
+    let src = "entity leaf is generic (P : bit_vector(3 downto 0)); end;
+      architecture a of leaf is
+        signal s : bit_vector(P'range) := P;
+      begin end;
+      entity t is generic (G : bit_vector := X\"03\"); end;
+      architecture a of t is
+        function f(x : bit_vector(7 downto 0)) return bit_vector is
+        begin return x(3 downto 0); end;
+      begin
+        u : entity work.leaf generic map (P => f(G));
+      end;";
+    let (_, e) = elab("formal_bounds", src, "t", &[]);
+    assert_eq!(e.nets.leaves[0].ty.len, 4);
+}
+
 /// A package whose subprograms need a body that does not exist.
 #[test]
 fn package_body_missing() {

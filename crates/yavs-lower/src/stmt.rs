@@ -1667,24 +1667,9 @@ impl Fx<'_, '_> {
     pub(crate) fn driver_of(&mut self, lsp: &Lsp) -> R<u32> {
         match self.driver_index(lsp) {
             Some(k) => Ok(self.driver_base.get(k).copied().unwrap_or(k as u32)),
-            None => {
-                // The plain assignment to a signal parameter takes the caller's driver slot
-                // (`drive`); the leaves of an aggregate target do not yet.
-                let param = self.cx.root_decl(self.db, lsp.root).is_some_and(|d| {
-                    matches!(
-                        self.cx.objs.get(&d),
-                        Some(Obj::SignalRef { .. } | Obj::RecSignal(Some(_)))
-                    )
-                });
-                if param {
-                    return Err(self
-                        .cx
-                        .unsupported(lsp.span, "aggregate targets with signal parameters"));
-                }
-                Err(self
-                    .cx
-                    .ice(lsp.span, "signal target without a driver of the process"))
-            }
+            None => Err(self
+                .cx
+                .ice(lsp.span, "signal target without a driver of the process")),
         }
     }
 
@@ -2210,7 +2195,7 @@ impl Fx<'_, '_> {
         span: Span,
     ) -> R<Reg> {
         let vlogic = yavs_ir::Ty::logic_leaf(self.fb.program().types(), vtid).is_some();
-        let slot = self.driver_of(lsp)?;
+        let drv = self.leaf_driver(lsp, x, span)?;
         let (_, sref, tdope) = self.sig_name(x)?;
         let Some(td) = tdope else {
             return Err(self.cx.ice(span, "slice piece of a scalar signal"));
@@ -2285,14 +2270,7 @@ impl Fx<'_, '_> {
                 });
             }
         }
-        self.emit(Inst::Drive {
-            driver: slot,
-            target: Some(sref),
-            wave,
-            n: nv,
-            mode,
-            reject,
-        });
+        self.emit_drive(drv, sref, wave, nv, mode, reject);
         Ok(len)
     }
 
@@ -2310,7 +2288,7 @@ impl Fx<'_, '_> {
         span: Span,
     ) -> R<()> {
         let db = self.db;
-        let slot = self.driver_of(lsp)?;
+        let drv = self.leaf_driver(lsp, x, span)?;
         let (_, sref, tdope) = self.sig_name(x)?;
         if tdope.is_some() {
             return Err(self
@@ -2343,15 +2321,83 @@ impl Fx<'_, '_> {
             }
         }
         let n = self.int(xs.len() as i64);
-        self.emit(Inst::Drive {
-            driver: slot,
-            target: Some(sref),
-            wave,
-            n,
-            mode,
-            reject,
-        });
+        self.emit_drive(drv, sref, wave, n, mode, reject);
         Ok(())
+    }
+
+    /// The caller's driver slot of signal parameter `root`, the target of `lsp`: for a record
+    /// formal that of its first leaf. `None` when the target is no parameter.
+    fn param_slot(&mut self, lsp: &Lsp, root: yavs_sem::DeclId, span: Span) -> R<Option<Reg>> {
+        if !matches!(lsp.root, ObjRoot::Decl(_)) {
+            return Ok(None);
+        }
+        match self.cx.objs.get(&root).copied() {
+            Some(Obj::SignalRef { out: true, .. }) => Ok(Some(self.driver_slot_of(root, span)?)),
+            Some(Obj::RecSignal(Some(p))) if p.out => {
+                let a = self.addr(p.space, p.slot_off());
+                Ok(Some(self.load(a, Width::B8, RegTy::I64)))
+            }
+            Some(Obj::SignalRef { out: false, .. } | Obj::RecSignal(Some(_))) => {
+                Err(self.cx.ice(span, "assignment to an `in` signal parameter"))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// The driver of leaf `x` of an aggregate target (the signal of `lsp`): the process's slot,
+    /// or for a signal parameter the caller's slot of that leaf (#610).
+    fn leaf_driver(&mut self, lsp: &Lsp, x: ExprId, span: Span) -> R<Result<u32, Reg>> {
+        let Some(root) = self.cx.root_decl(self.db, lsp.root) else {
+            return Ok(Ok(self.driver_of(lsp)?));
+        };
+        let Some(base) = self.param_slot(lsp, root, span)? else {
+            return Ok(Ok(self.driver_of(lsp)?));
+        };
+        if let Some((d, steps)) = self.comp_steps(x) {
+            let path: Vec<u32> = steps
+                .iter()
+                .filter_map(|s| match *s {
+                    crate::expr::Step::Field(n) => Some(n),
+                    _ => None,
+                })
+                .collect();
+            let leaves = self.leaves_under(d, &path);
+            if let [l] = leaves.as_slice() {
+                let k = self.int(i64::from(l.sig));
+                return Ok(Err(self.bin(IntOp::Add, base, k)));
+            }
+        }
+        Ok(Err(base))
+    }
+
+    /// `Drive` or `DriveSlot` of a waveform through driver `drv`.
+    fn emit_drive(
+        &mut self,
+        drv: Result<u32, Reg>,
+        target: Reg,
+        wave: Reg,
+        n: Reg,
+        mode: DriveMode,
+        reject: Option<Reg>,
+    ) {
+        self.emit(match drv {
+            Ok(driver) => Inst::Drive {
+                driver,
+                target: Some(target),
+                wave,
+                n,
+                mode,
+                reject,
+            },
+            Err(slot) => Inst::DriveSlot {
+                slot,
+                target,
+                wave,
+                n,
+                mode,
+                reject,
+            },
+        });
     }
 
     fn drive(&mut self, target: &Target, delay: &Delay, w: &Waveform, span: Span) -> R<()> {
@@ -2371,25 +2417,7 @@ impl Fx<'_, '_> {
                 "assignments to external names and implicit signals",
             ));
         };
-        let param_slot = match lsp.root {
-            ObjRoot::Decl(_) => match self.cx.objs.get(&root).copied() {
-                Some(Obj::SignalRef { out: true, .. }) => Some(self.driver_slot_of(root, span)?),
-                Some(Obj::SignalRef { out: false, .. }) => {
-                    return Err(self.cx.ice(span, "assignment to an `in` signal parameter"));
-                }
-                // The caller's driver slot of the formal's first leaf.
-                Some(Obj::RecSignal(Some(p))) if p.out => {
-                    let a = self.addr(p.space, p.slot_off());
-                    Some(self.load(a, Width::B8, RegTy::I64))
-                }
-                Some(Obj::RecSignal(Some(_))) => {
-                    return Err(self.cx.ice(span, "assignment to an `in` signal parameter"));
-                }
-                _ => None,
-            },
-            _ => None,
-        };
-        let mut param_slot = param_slot;
+        let mut param_slot = self.param_slot(lsp, root, span)?;
         let mut slot = match param_slot {
             Some(_) => 0,
             None => self.driver_of(lsp)?,

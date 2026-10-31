@@ -1,0 +1,4 @@
+exit	0
+diag	note	2000000	0	:aggregate_target_signal_param:_p0	101100 11 '1'
+diag	note	2000000	0	:aggregate_target_signal_param:_p0	'1''1'0110
+diag	note	4000000	0	:aggregate_target_signal_param:_p0	'0''0'10

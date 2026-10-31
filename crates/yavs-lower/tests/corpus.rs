@@ -478,6 +478,7 @@ const PASS: &[&str] = &[
     "sigassign/transaction_init",
     "sigassign/vector_forms",
     "sigassign/waveforms",
+    "sigassign/aggregate_target_signal_param",
     "textio/file_in_architecture",
     "textio/file_in_package",
     "textio/file_roundtrip",

@@ -2145,6 +2145,5 @@ fn aggregate_target_of_signal_parameter_is_not_an_ice() {
     let o = yavs_cmd(&["elab", "--std=2008", &lib, "top"]);
     let _ = std::fs::remove_dir_all(&dir);
     let err = String::from_utf8_lossy(&o.stderr);
-    assert!(err.contains("E2001"), "{err}");
-    assert!(!err.contains("E9999"), "{err}");
+    assert!(o.status.success(), "{err}");
 }

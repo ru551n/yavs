@@ -1636,29 +1636,38 @@ impl Ctx<'_> {
     /// `'driving_value`: the current value of this process's driver. An error while the driver
     /// is disconnected (LRM 16.2.4).
     pub fn driving_value(&self, d: DriverId) -> Result<Value, SimError> {
-        if !self.driving(d)? {
+        self.driving_value_of(d, None)
+    }
+
+    /// [`Ctx::driving`] of elements `target` of driver `d` (the whole driver when `None`).
+    pub fn driving_of(&self, d: DriverId, target: Option<Range>) -> Result<bool, SimError> {
+        let (_, r) = self.target(d, target)?;
+        let info = self.own(d)?;
+        let slot = &self.sh.signals[info.signal.0 as usize].drivers[info.slot as usize];
+        Ok(slot.off.as_ref().is_none_or(|off| {
+            r.elems()
+                .all(|e| crate::value::bits(off, e - info.range.offset as usize, 1) == 0)
+        }))
+    }
+
+    /// [`Ctx::driving_value`] of elements `target` of driver `d` (the whole driver when `None`).
+    pub fn driving_value_of(&self, d: DriverId, target: Option<Range>) -> Result<Value, SimError> {
+        if !self.driving_of(d, target)? {
             return Err(self.error(ErrorKind::Runtime(
                 "'driving_value of a disconnected driver".into(),
             )));
         }
         let info = self.own(d)?;
         let s = &self.sh.signals[info.signal.0 as usize];
-        // A direct driver whose commits wrote only the driving value (`Signal::lag`).
-        if s.lag && (info.direct || info.bdirect) {
+        let v = if s.lag && (info.direct || info.bdirect) {
             let r = info.range;
-            return Ok(s
-                .driving
+            s.driving
                 .extract(r.offset as usize, r.len as usize)
-                .to_value());
-        }
-        Ok(s.drivers[info.slot as usize].value.to_value())
-    }
-
-    /// [`Ctx::driving_value`] of elements `target` of driver `d` (the whole driver when `None`).
-    pub fn driving_value_of(&self, d: DriverId, target: Option<Range>) -> Result<Value, SimError> {
-        let v = self.driving_value(d)?;
+                .to_value()
+        } else {
+            s.drivers[info.slot as usize].value.to_value()
+        };
         let (_, r) = self.target(d, target)?;
-        let info = self.own(d)?;
         if r == info.range {
             return Ok(v);
         }

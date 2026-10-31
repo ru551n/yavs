@@ -101,7 +101,7 @@ fn classify(f: &crate::Func, i: &Inst) -> Option<Use> {
             u.ok.extend_from_slice(f.regs(parts)?);
         }
         Inst::SigRead { dst, .. } | Inst::SigLastValue { dst, .. } => u.ok.push(dst),
-        Inst::DrivingValue { dst, .. } => u.ok.push(dst),
+        Inst::DrivingValue { dst, .. } | Inst::SigDrivingValue { dst, .. } => u.ok.push(dst),
         Inst::Drive { wave, .. } | Inst::DriveSlot { wave, .. } => u.ok.push(wave),
         Inst::Force { value, .. } => u.ok.push(value),
         Inst::Report { msg, .. } => u.ok.push(msg),

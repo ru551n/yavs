@@ -2901,6 +2901,8 @@ pub fn keeps_objects(i: &Inst) -> bool {
             | Inst::SigAttr { .. }
             | Inst::Edge { .. }
             | Inst::Driving { .. }
+            | Inst::SigDriving { .. }
+            | Inst::SigDrivingValue { .. }
             | Inst::DrivingValue { .. }
             | Inst::SigGather { .. }
             | Inst::SigScatter { .. }

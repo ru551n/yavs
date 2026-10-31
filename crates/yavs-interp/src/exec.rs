@@ -3382,6 +3382,49 @@ impl Machine {
             .ok_or_else(|| ice_f!("no driver slot {d}"))
     }
 
+    /// The drivers of this process that hold the elements of `sr`, in element order, with the
+    /// elements each holds; the error `what` when an element has none (LRM 16.2.4).
+    fn drivers_over(
+        &self,
+        sr: SigRef,
+        what: yavs_ir::CheckMsgId,
+    ) -> R<Vec<(ProcDriver, yavs_kernel::Range)>> {
+        let want = sr
+            .range
+            .ok_or_else(|| ice_s!("a signal part without a range"))?;
+        let mut held = Vec::new();
+        for d in &self.drivers {
+            let (r, _) = self.driver_ref(d)?;
+            if let Some(dr) = r
+                .range
+                .filter(|&dr| r.signal == sr.signal && dr.overlaps(want))
+            {
+                held.push((*d, dr));
+            }
+        }
+        held.sort_by_key(|h| h.1.offset);
+        let mut out = Vec::with_capacity(held.len());
+        let mut at = want.offset;
+        for (d, dr) in held {
+            if dr.end() > at && dr.offset <= at {
+                let end = dr.end().min(want.end());
+                out.push((
+                    d,
+                    yavs_kernel::Range {
+                        offset: at,
+                        len: end - at,
+                    },
+                ));
+                at = end;
+            }
+        }
+        if at < want.end() {
+            let (w, _) = self.check_msg(what);
+            return rt_err(w);
+        }
+        Ok(out)
+    }
+
     fn driver_ref(&self, d: &ProcDriver) -> R<(SigRef, Elem)> {
         let s = self
             .inst
@@ -10428,6 +10471,27 @@ impl Machine {
                 // pack a process drives, #686).
                 let (sr, _) = self.driver_ref(&d)?;
                 let v = kc!().driving_value_of(d.id, sr.range)?;
+                self.put_value(self.r(dst), &v)?;
+            }
+            Inst::SigDriving { dst, sig, what } => {
+                let mut v = true;
+                for (sr, ..) in self.sigparts(sig)? {
+                    for (d, r) in self.drivers_over(sr, what)? {
+                        v &= kc!().driving_of(d.id, Some(r))?;
+                    }
+                }
+                self.set(dst, v.into());
+            }
+            Inst::SigDrivingValue { dst, sig, what } => {
+                let parts = self.sigparts(sig)?;
+                let elem = same_elem(&parts)?;
+                let mut vals = Vec::new();
+                for &(sr, ..) in &parts {
+                    for (d, r) in self.drivers_over(sr, what)? {
+                        vals.push(kc!().driving_value_of(d.id, Some(r))?);
+                    }
+                }
+                let v = concat(elem, &vals)?;
                 self.put_value(self.r(dst), &v)?;
             }
             Inst::Drive {

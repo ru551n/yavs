@@ -529,6 +529,8 @@ impl Dr<'_> {
                 | Inst::Force { .. }
                 | Inst::Release { .. }
                 | Inst::Driving { .. }
+                | Inst::SigDriving { .. }
+                | Inst::SigDrivingValue { .. }
                 | Inst::DrivingValue { .. }
                 | Inst::CallProt { .. }
                 | Inst::CallIndirect { .. }

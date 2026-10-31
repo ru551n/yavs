@@ -1,0 +1,2 @@
+exit	1
+diag	fatal	1000000	0	:driving_no_driver:_p1	'driving of signal y in a process that does not contain a driver for it (LRM 16.2.4)

@@ -134,6 +134,24 @@ fn ir_dir(d: Dr) -> Dir {
     }
 }
 
+/// What a leaf-by-leaf read of a composite signal part reads.
+#[derive(Clone, Copy, PartialEq)]
+enum Read {
+    Value,
+    Last,
+    Driving(yavs_ir::CheckMsgId),
+}
+
+impl Read {
+    fn inst(self, dst: Reg, sig: Reg) -> Inst {
+        match self {
+            Read::Value => Inst::SigRead { dst, sig },
+            Read::Last => Inst::SigLastValue { dst, sig },
+            Read::Driving(what) => Inst::SigDrivingValue { dst, sig, what },
+        }
+    }
+}
+
 impl<'a> Fx<'a, '_> {
     pub fn arr(&mut self, v: V, span: Span) -> R<(Reg, Reg)> {
         match v {
@@ -1712,6 +1730,95 @@ impl<'a> Fx<'a, '_> {
             .ok_or_else(|| self.cx.ice(span, "composite signal part without leaves"))
     }
 
+    /// `'driving` or `'driving_value` of signal name `e` that is not a whole driver of the
+    /// process: a signal parameter, a part, or a composite over several drivers (LRM 16.2.4,
+    /// #615). The interpreter finds the drivers of the elements named.
+    fn part_driving(&mut self, attr: PredefAttr, e: ExprId, span: Span) -> R<V> {
+        let db = self.db;
+        let driving = attr == PredefAttr::Driving;
+        let what = self.msg(
+            &format!(
+                "'{} of signal {} in a process that does not contain a driver for it (LRM 16.2.4)",
+                if driving { "driving" } else { "driving_value" },
+                db.lsp(e)
+                    .and_then(|l| self.cx.root_decl(db, l.root))
+                    .map_or("target".into(), |d| db.decls[d].name.to_string())
+            ),
+            yavs_ir::Dir::To,
+        );
+        if let Some((d, steps)) = self.comp_steps(e) {
+            let p = self.comp_select(d, &steps, span)?;
+            if !matches!(p.leaves.as_slice(), [(l, _, _)] if l.path == p.path) {
+                if !driving {
+                    let size = self.size_of(p.tid, p.desc);
+                    let val = self.alloc(size);
+                    self.read_leaves_into(&p, Read::Driving(what), val, span)?;
+                    return Ok(V::A(val, p.desc));
+                }
+                let mut acc = None;
+                for &(_, sig, _) in &p.leaves {
+                    let dst = self.reg(RegTy::I64);
+                    self.emit(Inst::SigDriving { dst, sig, what });
+                    acc = Some(match acc {
+                        None => dst,
+                        Some(a) => {
+                            let r = self.reg(RegTy::I64);
+                            self.emit(Inst::Bool {
+                                op: BoolOp::And,
+                                dst: r,
+                                a,
+                                b: dst,
+                            });
+                            r
+                        }
+                    });
+                }
+                return acc
+                    .map(V::S)
+                    .ok_or_else(|| self.cx.ice(span, "composite signal part without leaves"));
+            }
+        }
+        let (_, sig, dope) = self.sig_name(e)?;
+        if driving {
+            let dst = self.reg(RegTy::I64);
+            self.emit(Inst::SigDriving { dst, sig, what });
+            return Ok(V::S(dst));
+        }
+        let st = db.exprs[e].subtype;
+        let tid = self.ty(db.base(st), span)?;
+        if let Some(dope) = dope {
+            let size = self.size_of(tid, dope);
+            let buf = self.alloc(size);
+            self.emit(Inst::SigDrivingValue {
+                dst: buf,
+                sig,
+                what,
+            });
+            return Ok(V::A(buf, dope));
+        }
+        let (_, rt, w) = self.sig_scalar(st, span)?;
+        let logic = self.is_logic(tid);
+        // A logic leaf arrives as one block of planes.
+        let buf = self.alloc_n(if logic { 32 } else { 8 });
+        self.emit(Inst::SigDrivingValue {
+            dst: buf,
+            sig,
+            what,
+        });
+        if logic {
+            let z = self.int(0);
+            let dst = self.reg(RegTy::I64);
+            self.emit(Inst::LGet {
+                dst,
+                base: buf,
+                idx: z,
+            });
+            let bias = self.code_bias(tid);
+            return Ok(V::S(self.dec(dst, bias)));
+        }
+        Ok(V::S(self.load(buf, w, rt)))
+    }
+
     /// Read part `p` of a composite signal into a new value, leaf by leaf.
     pub fn read_comp(&mut self, p: &SigPart, span: Span) -> R<V> {
         self.read_leaves(p, false, span)
@@ -1722,7 +1829,8 @@ impl<'a> Fx<'a, '_> {
     fn read_leaves(&mut self, p: &SigPart, last: bool, span: Span) -> R<V> {
         let size = self.size_of(p.tid, p.desc);
         let val = self.alloc(size);
-        self.read_leaves_into(p, last, val, span)?;
+        let kind = if last { Read::Last } else { Read::Value };
+        self.read_leaves_into(p, kind, val, span)?;
         Ok(V::A(val, p.desc))
     }
 
@@ -1803,7 +1911,7 @@ impl<'a> Fx<'a, '_> {
             }),
             None => {
                 let p = self.comp_select(d, &[], span)?;
-                self.read_leaves_into(&p, false, data, span)?;
+                self.read_leaves_into(&p, Read::Value, data, span)?;
             }
         }
         self.fb.emit(Inst::Br { to: rest });
@@ -1827,7 +1935,7 @@ impl<'a> Fx<'a, '_> {
     }
 
     /// [`Fx::read_leaves`] into the value at `val`.
-    fn read_leaves_into(&mut self, p: &SigPart, last: bool, val: Reg, span: Span) -> R<()> {
+    fn read_leaves_into(&mut self, p: &SigPart, kind: Read, val: Reg, span: Span) -> R<()> {
         // The addresses of the records on the path to the leaf last made, to share with the next
         // leaf: (field, address and descriptor of what the field selects, its type).
         let mut walked: Vec<(u32, Reg, Reg, TypeId)> = Vec::new();
@@ -1835,7 +1943,7 @@ impl<'a> Fx<'a, '_> {
             let facts = self.leaf_facts(l, span)?;
             let rel = &l.path[p.path.len()..];
             // A `std_ulogic` field below records only: its code, stored where it lies.
-            if !last
+            if kind == Read::Value
                 && facts.0
                 && ty::array_of(self.db, self.db.base(l.st)).is_none()
                 && !rel.is_empty()
@@ -1881,26 +1989,12 @@ impl<'a> Fx<'a, '_> {
                     (a, d) = self.field_addr(tid, a, d, n, span)?;
                     t = self.db.base(self.field_subtype(t, n)?);
                 }
-                self.emit(if last {
-                    Inst::SigLastValue { dst: a, sig: *sref }
-                } else {
-                    Inst::SigRead { dst: a, sig: *sref }
-                });
+                self.emit(kind.inst(a, *sref));
                 continue;
             }
             let size = self.leaf_size(l, *len, span)?;
             let buf = self.alloc(size);
-            self.emit(if last {
-                Inst::SigLastValue {
-                    dst: buf,
-                    sig: *sref,
-                }
-            } else {
-                Inst::SigRead {
-                    dst: buf,
-                    sig: *sref,
-                }
-            });
+            self.emit(kind.inst(buf, *sref));
             let k = self.int(0);
             self.leaf_walk(p.t, val, p.desc, rel, k, (buf, *len), facts, true, span)?;
         }
@@ -4711,6 +4805,9 @@ impl<'a> Fx<'a, '_> {
             }
             AttrPrefix::Expr(e) if matches!(attr, Driving | DrivingValue) => {
                 // The process's own driver of the whole signal (LRM 16.2.4).
+                if self.comp_steps(e).is_some() {
+                    return self.part_driving(attr, e, span);
+                }
                 let slot = match db.exprs[e].kind {
                     ExprKind::Obj(d) => self.drivers.iter().position(|l| {
                         l.root == yavs_sem::hir::ObjRoot::Decl(d) && l.path.is_empty()
@@ -4719,8 +4816,7 @@ impl<'a> Fx<'a, '_> {
                 };
                 let Some(slot) = slot else {
                     // A signal this process does not drive at all (LRM 16.2.4: an error when
-                    // evaluated, so at run time, as the reference simulators do). Signal
-                    // parameters and partly driven composites stay unlowered.
+                    // evaluated, so at run time, as the reference simulators do).
                     if let ExprKind::Obj(d) = db.exprs[e].kind {
                         let root = yavs_sem::hir::ObjRoot::Decl(d);
                         if !self.drivers.iter().any(|l| l.root == root)
@@ -4748,9 +4844,7 @@ impl<'a> Fx<'a, '_> {
                             });
                         }
                     }
-                    return Err(self
-                        .cx
-                        .unsupported(span, "'driving of signal parameters and sub-elements"));
+                    return self.part_driving(attr, e, span);
                 };
                 let slot = self.driver_base.get(slot).copied().unwrap_or(slot as u32);
                 if attr == Driving {

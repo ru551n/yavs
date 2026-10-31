@@ -3388,6 +3388,8 @@ impl<'a> Opt<'a> {
             | Inst::SigAttr { .. }
             | Inst::Edge { .. }
             | Inst::Driving { .. }
+            | Inst::SigDriving { .. }
+            | Inst::SigDrivingValue { .. }
             | Inst::Drive { .. }
             | Inst::DriveSlot { .. }
             | Inst::Disconnect { .. }

@@ -1,0 +1,10 @@
+exit	0
+diag	note	1000000	0	:driving_parts:_p0	true 0
+diag	note	1000000	0	:driving_parts:_p0	true 01
+diag	note	1000000	0	:driving_parts:_p0	true 01
+diag	note	1000000	0	:driving_parts:_p0	true
+diag	note	1000000	0	:driving_parts:_p0	U
+diag	note	1000000	0	:driving_parts:_p0	true UUUU
+diag	note	1000000	0	:driving_parts:_p0	true U true 01
+diag	note	2000000	0	:driving_parts:_p0	1
+diag	note	2000000	0	:driving_parts:_p0	true UU

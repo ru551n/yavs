@@ -484,6 +484,8 @@ const PASS: &[&str] = &[
     "sigassign/null_record",
     "sigassign/null_waveform_targets",
     "sigassign/null_waveform_unguarded_param",
+    "sigassign/driving_parts",
+    "sigassign/driving_no_driver",
     "textio/file_in_architecture",
     "textio/file_in_package",
     "textio/file_roundtrip",

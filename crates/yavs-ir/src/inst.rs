@@ -769,6 +769,19 @@ pub enum Inst {
         dst: Reg,
         driver: u32,
     },
+    /// `'driving` of the signal part `sig`, through whichever drivers of the process hold its
+    /// elements (a signal parameter, a part of a driver, #615); `what` is the error without one.
+    SigDriving {
+        dst: Reg,
+        sig: Reg,
+        what: CheckMsgId,
+    },
+    /// `'driving_value` of the signal part `sig`, as [`Inst::SigDriving`], written at `dst`.
+    SigDrivingValue {
+        dst: Reg,
+        sig: Reg,
+        what: CheckMsgId,
+    },
     /// `n` `(time, value)` pairs at `wave`, each `8 + value size rounded up to 8` bytes.
     Drive {
         driver: u32,
@@ -1299,6 +1312,14 @@ impl Inst {
                 f(desc, Use, p);
             }
             Inst::Driving { dst, .. } => d(dst, i),
+            Inst::SigDriving { dst, sig, .. } => {
+                d(dst, i);
+                f(sig, Use, s);
+            }
+            Inst::SigDrivingValue { dst, sig, .. } => {
+                f(dst, Use, p);
+                f(sig, Use, s);
+            }
             Inst::DrivingValue { dst, .. } => f(dst, Use, p),
             Inst::Drive {
                 target,

@@ -1213,6 +1213,43 @@ fn incremental_binding() {
     assert_eq!(lens, [1, 3]);
 }
 
+/// A static generic actual outside the formal's subtype is an error only for an instance that
+/// is elaborated (#910).
+#[test]
+fn static_generic_outside_subtype_only_when_elaborated() {
+    let src = |cond: &str| {
+        format!(
+            "entity c is generic (g : integer range 1 to 8 := 8); end;
+             architecture a of c is begin end;
+             entity t is end;
+             architecture a of t is
+               constant n : integer := 0;
+             begin
+               gen : if {cond} generate
+                 u : entity work.c generic map (g => n);
+               end generate;
+             end;"
+        )
+    };
+    let run = |cond: &str| {
+        let tmp = tempfile::tempdir().expect("scratch dir");
+        let p = tmp.path().join("t.vhd");
+        std::fs::write(&p, src(cond)).expect("write");
+        let rev = LangRev::Vhdl2008;
+        let mut db = Db::new(Options::new(rev, yavs_sem::default_stdlib()));
+        assert!(db.analyze_file("work", &p, rev).is_ok());
+        let codes: Vec<&str> = db.diagnostics().iter().map(|d| d.code).collect();
+        assert_eq!(codes, ["W1403"]);
+        crate::find_top(&mut db, "work", "t")
+            .and_then(|t| crate::elaborate(&mut db, t, &[], &ElabConfig::default()))
+            .map(|_| ())
+            .map_err(|v| v.into_iter().map(|d| d.code).collect::<Vec<_>>())
+    };
+    assert!(run("n /= 0").is_ok());
+    let errs = run("n = 0").expect_err("an elaborated instance fails the check");
+    assert!(errs.contains(&codes::GENERIC_RANGE), "{errs:?}");
+}
+
 /// An incremental binding changes only what its maps name: the primary binding's other generics
 /// and its whole port map stay, also when the names differ from the component's (7.3.2.1, #820).
 #[test]

@@ -186,6 +186,24 @@ impl Db {
         id
     }
 
+    /// The actual of a generic or port (or a part of one): typed as `expr_in_subtype`, but a static
+    /// scalar outside the formal's subtype is a warning, since the instance may be in a generate
+    /// branch that is never elaborated; elaboration checks it (#910).
+    pub(crate) fn actual_in_subtype(
+        &mut self,
+        scope: ScopeId,
+        e: &ast::Expr,
+        st: crate::ids::SubtypeId,
+    ) -> ExprId {
+        self.context_subtype = Some(st);
+        let t = self.base(st);
+        let id = self.expr(scope, e, Expected::Type(t));
+        if !self.warn_if_outside(id, st, self.exprs[id].span) {
+            self.check_in_subtype(id, st);
+        }
+        id
+    }
+
     /// `W1403`: the static scalar value of `id` lies outside subtype `st`, which a qualified
     /// expression or a type conversion applies (9.3.5, 9.3.6). The value is not used and the
     /// run-time check fails (the code may never run, like `W1404`).
@@ -201,13 +219,18 @@ impl Db {
         if crate::stat::within(v, &l, d, &r) != Some(false) {
             return false;
         }
+        let range = match (l.as_int(), r.as_int()) {
+            (Some(l), Some(r)) if d == crate::hir::Direction::To => format!("outside {l} to {r}"),
+            (Some(l), Some(r)) => format!("outside {l} downto {r}"),
+            _ => "out of range".to_string(),
+        };
         let name = self.subtype_name(st);
         self.report(
             Diagnostic::warning(
                 diag::W_STATIC_OUTSIDE,
                 format!("static value is outside subtype `{name}`"),
             )
-            .with_primary(span, "out of range")
+            .with_primary(span, range)
             .with_note(
                 "the code may never run, so this is checked again at run time (LRM 9.3.5, 9.3.6)",
             ),

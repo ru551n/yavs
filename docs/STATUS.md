@@ -31,6 +31,10 @@ fails with the regenerate command (`YAVS_BLESS=1 cargo test -p yavs --bin yavs c
 `help_texts_are_for_users` keeps file names out of help texts. `docs/vunit-yavs.rst` lists the VUnit package's sim options and
 flags by hand; `python/vunit-yavs/tests/test_docs.py` checks its names against the option definitions. `docs/cli.rst` stays the overview.
 
+### Static actuals outside the formal's subtype (#910, 2026-10-31)
+
+`W1403` at analysis, an error only when the instance is elaborated, so a generate branch configured off analyses (L164).
+
 ### Package bodies of packages with a generic map (#605, 2026-10-31)
 
 Library and nested: the body completes the invisible generic package and the instance clones it (L128).

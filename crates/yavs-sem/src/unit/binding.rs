@@ -1214,7 +1214,7 @@ impl Db {
                 self.inst_types.push((t, st));
                 id
             }
-            None => self.expr_in_subtype(scope, e, if actual_converts { st } else { back }),
+            None => self.actual_in_subtype(scope, e, if actual_converts { st } else { back }),
         };
         if self.is_poison_expr(id) {
             return Err(Reported);
@@ -1820,7 +1820,7 @@ impl Db {
             let actual_converts = formal_conv.is_some()
                 && formal_mode == Some(Mode::Inout)
                 && self.actual_converts(scope, e, st);
-            let id = self.expr_in_subtype(scope, e, if actual_converts { st } else { back });
+            let id = self.actual_in_subtype(scope, e, if actual_converts { st } else { back });
             if self.is_poison_expr(id) {
                 errs.0 = true;
                 continue;

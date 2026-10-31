@@ -1,6 +1,8 @@
 Open issues where valid VHDL gives an elaboration or lowering error (E2xxx, E3004, E9999) or the wrong diagnostic code. Most come from conformance suites; each links its failing test names.
 
 ## Issues
+- [x] #909 lower: an aggregate with others and an impure composite expression runs others on every element first
+- [x] #907 elab: an others aggregate in a constant or signal initial value calls an impure function once, not once per element (records)
 - [x] #880 elab: port actual indexed by a signal is rejected (E2106) although the reference simulators run it
 - [x] #875 elab: run-time packages are initialised before every elaboration-time call; the reference simulators elaborate a package when the first unit using it is elaborated
 - [x] #874 elab: package initialisation reports are printed again when the packages are initialised a second time (coverage run, session rebuild)

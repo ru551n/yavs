@@ -48,6 +48,10 @@ the tag's version. A new version spot goes into the `SPOTS` table of `bump.py`.
      `release_notes/unreleased.md` to `release_notes/X.Y.Z.md`. Put a summary line and at most 10
      one-line bullets on top (see `release_notes/0.11.0.md`). The fragments of the package and
      the extension are part of these notes;
+     The release notes page of the user guide (Read the Docs) is generated from these files at
+     build time: the new `X.Y.Z.md` appears there, newest first, with no docs edit. Until then the
+     pending fragments show under "Unreleased". The text is public, so it follows the user
+     documentation rules (AGENTS.md rule 25): no internal paths, no other tools;
    - edit the new sections of the two CHANGELOGs if the generated line is not enough;
    - the `vunit_hdl` bound in `python/vunit-yavs/pyproject.toml` names a released version that
      installs.

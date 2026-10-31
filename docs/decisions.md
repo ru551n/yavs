@@ -115,7 +115,7 @@ milestone users care about works.
   `release_notes/X.Y.Z.md` with a one-line summary on top, run the rule 13 checks, commit
   "Release X.Y.Z", push, then an annotated tag `vX.Y.Z` on that commit. The tag triggers
   release.yml and the Read the Docs version.
-- **User documentation** (user, 2026-10-18): Sphinx (sphinx_rtd_theme, MyST, sphinxcontrib-towncrier for the "Unreleased" section) in `docs/`,
+- **User documentation** (user, 2026-10-18): Sphinx (sphinx_rtd_theme, MyST, towncrier draft for the "Unreleased" section) in `docs/`,
   published on Read the Docs as project `yavs` (`.readthedocs.yaml`). `.github/workflows/docs.yml`
   builds with `-W` on every push and, through the Read the Docs API (secret
   `READTHEDOCS_TOKEN`), rebuilds `latest` on main and activates a version per release tag plus

@@ -58,7 +58,7 @@ The example files are in [`docs/examples/`](docs/examples); the output and a fai
 [installation](https://yavs.readthedocs.io/en/latest/install.html), [libraries](https://yavs.readthedocs.io/en/latest/libraries.html),
 [waveforms](https://yavs.readthedocs.io/en/latest/waveforms.html), [coverage](https://yavs.readthedocs.io/en/latest/coverage.html),
 [debugging](https://yavs.readthedocs.io/en/latest/debugging.html), [VHPI](https://yavs.readthedocs.io/en/latest/vhpi.html),
-[running faster](https://yavs.readthedocs.io/en/latest/running-faster.html) and the [command line](https://yavs.readthedocs.io/en/latest/cli.html).
+[running faster](https://yavs.readthedocs.io/en/latest/running-faster.html) and the [command line](https://yavs.readthedocs.io/en/latest/cli.html). What changed in each version is in the [release notes](https://yavs.readthedocs.io/en/latest/release_notes.html).
 
 The documentation is also available to coding assistants through [Context7](https://context7.com/ru551n/yavs).
 

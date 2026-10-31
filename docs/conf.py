@@ -10,6 +10,9 @@ the site, see docs/README.md.
 """
 
 import os
+import re
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -23,9 +26,7 @@ author = "the yavs authors"
 with (ROOT / "Cargo.toml").open("rb") as fptr:
     release = tomllib.load(fptr)["workspace"]["package"]["version"]
 
-extensions = ["myst_parser", "sphinxcontrib.towncrier.ext", "sphinx_llms_txt"]
-# The release notes start at ## since they are included under a version heading
-suppress_warnings = ["myst.header"]
+extensions = ["myst_parser", "sphinx_llms_txt"]
 exclude_patterns = [
     "_build",
     "plan.md",
@@ -72,24 +73,44 @@ html_context = {
 
 
 # The release notes page, generated from release_notes: the draft of the news fragments in
-# news.d, rendered by towncrier, and unreleased.md, then the releases, newest first. It is
-# Markdown, since towncrier writes Markdown and the draft is parsed like the page.
-towncrier_draft_autoversion_mode = "draft"
-towncrier_draft_include_empty = False
-towncrier_draft_working_directory = ROOT
-towncrier_draft_config_path = ROOT / "release_notes" / "towncrier.toml"
+# news.d (towncrier), and unreleased.md if a release is being prepared, then the releases, newest
+# first. The text is written into the page itself, since llms-full.txt does not expand includes.
+def _under_version(text):
+    """Move the headings of release notes text to level 3, below the version heading."""
+    lines, fence, levels = text.strip().split("\n"), False, []
+    for line in lines:
+        fence ^= line.startswith("```")
+        if not fence and re.match(r"#{1,6} ", line):
+            levels.append(len(line) - len(line.lstrip("#")))
+    shift = 3 - min(levels, default=3)
+    fence = False
+    for i, line in enumerate(lines):
+        fence ^= line.startswith("```")
+        if not fence and re.match(r"#{1,6} ", line):
+            lines[i] = "#" * shift + line
+    return "\n".join(lines) + "\n"
+
+
+def _unreleased_notes():
+    """The collected fragments, and unreleased.md between 'towncrier build' and the rename."""
+    notes, notes_dir = "", ROOT / "release_notes"
+    if any(p.name != "README.md" for p in (notes_dir / "news.d").glob("*.md")):
+        notes = subprocess.run(
+            [sys.executable, "-m", "towncrier", "build", "--draft", "--version", "Unreleased",
+             "--config", str(notes_dir / "towncrier.toml"), "--dir", str(notes_dir)],
+            check=True, capture_output=True, text=True,
+        ).stdout
+    return notes + (notes_dir / "unreleased.md").read_text() if (notes_dir / "unreleased.md").exists() else notes
+
+
 _notes = ["# Release notes", ""]
-_unreleased = sorted((ROOT / "release_notes").glob("unreleased.md"))
-_fragments = [p for p in (ROOT / "release_notes" / "news.d").glob("*.md") if p.name != "README.md"]
-if _unreleased or _fragments:
-    _notes += ["## Unreleased", "", "```{towncrier-draft-entries}", "```", ""]
-_releases = sorted(
+_unreleased = _unreleased_notes()
+if _unreleased.strip():
+    _notes += ["## Unreleased", "", _under_version(_unreleased)]
+for _path in sorted(
     (ROOT / "release_notes").glob("[0-9]*.md"), key=lambda path: Version(path.stem), reverse=True
-)
-for _path in _unreleased + _releases:
-    if _path.stem != "unreleased":
-        _notes += [f"## {_path.stem}", ""]
-    _notes += [f"```{{include}} ../release_notes/{_path.name}", ":heading-offset: 1", "```", ""]
+):
+    _notes += [f"## {_path.stem}", "", _under_version(_path.read_text())]
 (ROOT / "docs" / "release_notes.md").write_text("\n".join(_notes))
 
 # The site shows the summary of the generated conformance report, the part before "## Details",

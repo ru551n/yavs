@@ -163,7 +163,10 @@ rule 24).
   its leaves (leaf order, one code byte per logic element). The parts may be leaf slices (#333:
   one element of an array of resolved records), a signal may be in several groups, which must
   cover it. The parts must share their sources (same owners in the same order, each covering
-  the part) and port level; `build` refuses anything else, guarded composites included.
+  the part) and port level; `build` refuses anything else. A guarded composite (`Builder::guard`
+  on each leaf after the groups, same kind on all) disconnects as a unit: a source takes part
+  while some element of it is connected, a bus with none calls the resolver with an empty list,
+  a register keeps its value (#595).
 - Wake order is not an interface: a path that appends processes to `ready` may do so in any order (`ProcMeta::ready` makes it idempotent and
   `order()` sorts the batch); only a shuffled run (`Config::shuffle`) sees it, so `take_woken` is `ordered` then. Do not rely on it, and do not
   rebuild an order that `order()` makes again.

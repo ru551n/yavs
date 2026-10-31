@@ -1,0 +1,5 @@
+exit	0
+diag	note	2000000	0	:null_record:_p0	n2 '1' 5
+diag	note	4000000	0	:null_record:_p0	n4 '0' -1
+diag	note	5000000	0	:null_record:_p0	n5 '1' 7
+diag	note	6000000	0	:null_record:_p0	n6 '0' -1

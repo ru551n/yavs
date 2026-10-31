@@ -16,10 +16,11 @@ use crate::process::{
     ProcState, Process, Severity, Shared, SignalOp, check_ref, make_op,
 };
 use crate::signal::{
-    DelayMode, DriverId, ForceMode, Hits, Range, Reg, SigRef, Signal, SignalId, Waiter, Waiters,
+    DelayMode, DriverId, ForceMode, GuardKind, Hits, Range, Reg, SigRef, Signal, SignalId, Waiter,
+    Waiters,
 };
 use crate::time::{Time, Unit};
-use crate::value::{Buf, Elem, SignalType, Value, ValueRef, fill_bits};
+use crate::value::{Buf, Elem, SignalType, Value, ValueRef, bits, fill_bits};
 use yavs_logic::StdULogic;
 use yavs_logic::wide::nmask;
 
@@ -3222,6 +3223,26 @@ impl SimControl {
         if n == 0 {
             return Ok(());
         }
+        // A guarded composite (all parts have the same kind, checked at build) takes part
+        // with the sources that have some element connected (LRM 6.4.2.3, 14.7.3.2).
+        let guard = lead.guard;
+        let live_src = |k: usize| {
+            guard.is_none()
+                || parts.iter().any(|&(l, r)| {
+                    let s = &self.signals[l as usize];
+                    let d = s.drivers.iter().filter(|d| d.range.overlaps(r)).nth(k);
+                    d.is_some_and(|d| {
+                        d.off.as_ref().is_none_or(|off| {
+                            r.elems()
+                                .any(|e| bits(off, e - d.range.offset as usize, 1) == 0)
+                        })
+                    })
+                })
+        };
+        let conn: Vec<bool> = (0..n).map(live_src).collect();
+        if guard == Some(GuardKind::Register) && !conn.contains(&true) {
+            return Ok(());
+        }
         let mut srcs: Vec<Vec<u8>> = vec![Vec::new(); n];
         let mut out = Vec::new();
         for &(l, r) in parts {
@@ -3234,7 +3255,9 @@ impl SimControl {
                     .codes(r.offset as usize, r.len as usize),
             );
         }
-        let views: Vec<&[u8]> = srcs.iter().map(Vec::as_slice).collect();
+        let views: Vec<&[u8]> = (srcs.iter().zip(&conn))
+            .filter_map(|(v, &c)| c.then_some(v.as_slice()))
+            .collect();
         let r = if self.live {
             let (r, reps) = crate::callout::capture(|| f(&views, &mut out));
             let ctx = format!("resolution of {}", lead.name);

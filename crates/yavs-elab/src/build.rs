@@ -79,6 +79,7 @@ impl Elaborated {
     ) -> Result<SimControl, SimError> {
         let mut b = Builder::new();
         let nets = &self.nets;
+        let mut guards = Vec::new();
         for (k, &(a, z)) in nets.packs.iter().enumerate() {
             if z.0 != a.0 + 1 {
                 // A pack of record leaves (#686): logic, unresolved or `resolved`, no guard.
@@ -144,7 +145,7 @@ impl Elaborated {
                 b.no_codes(id);
             }
             if let Some(g) = leaf.guard {
-                b.guard(id, g, leaf.disconnect);
+                guards.push((id, g, leaf.disconnect));
             }
         }
         // Composites resolved as a whole (#193): one group per instance, one resolver each.
@@ -160,6 +161,10 @@ impl Elaborated {
                 let parts: Vec<_> = (parts.iter()).map(|&(l, r)| nets.kref(l, r)).collect();
                 b.resolved_composite(&parts, f.clone());
             }
+        }
+        // After the groups: a leaf of a composite resolved as a whole is resolved by them.
+        for (id, g, d) in guards {
+            b.guard(id, g, d);
         }
         let sig = |&(l, r): &(crate::LeafId, yavs_kernel::Range)| nets.kref(l, r);
         let conv = |i: Option<u32>| -> Option<yavs_kernel::Converter> {

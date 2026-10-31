@@ -577,11 +577,39 @@ impl Fx<'_, '_> {
                 return Err(self.cx.unsupported(span, "aggregate signal targets"));
             };
             let slot = self.driver_of(lsp)?;
-            let (_, sref, _) = self.sig_name(target.expr)?;
             let mode = match delay {
                 Delay::Transport => DriveMode::Transport,
                 _ => DriveMode::Inertial,
             };
+            // A record target: each leaf's driver, as `drive_record` addresses them.
+            if let Some((d, steps)) = self.comp_steps(target.expr) {
+                let path: Vec<u32> = steps
+                    .iter()
+                    .filter_map(|s| match *s {
+                        crate::expr::Step::Field(n) => Some(n),
+                        _ => None,
+                    })
+                    .collect();
+                if !matches!(self.leaves_under(d, &path).as_slice(), [l] if l.path == path) {
+                    let covered = self.leaves_under(d, &crate::func::lsp_fields(lsp));
+                    let p = self.comp_select(d, &steps, span)?;
+                    for (leaf, sref, _) in &p.leaves {
+                        let Some(k) = covered.iter().position(|l| l.path == leaf.path) else {
+                            return Err(self.cx.ice(span, "signal target outside its driver"));
+                        };
+                        self.emit(Inst::Disconnect {
+                            driver: slot + k as u32,
+                            target: Some(*sref),
+                            after: None,
+                            mode,
+                        });
+                    }
+                    self.jump(j);
+                    self.at(j);
+                    return Ok(());
+                }
+            }
+            let (_, sref, _) = self.sig_name(target.expr)?;
             // `after: None`: the kernel signal's disconnection time (set by elab from the
             // disconnection specification, 0 without one).
             self.emit(Inst::Disconnect {

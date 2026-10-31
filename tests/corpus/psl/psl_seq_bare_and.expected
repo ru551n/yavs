@@ -1,0 +1,6 @@
+exit	1
+diag	error	5000000	0	-	both
+diag	error	25000000	0	-	two
+diag	error	25000000	0	-	right side
+diag	error	35000000	0	-	two
+diag	error	35000000	0	-	right side

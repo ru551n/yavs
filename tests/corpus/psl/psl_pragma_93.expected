@@ -1,0 +1,6 @@
+exit	1
+diag	error	5000000	0	-	always
+diag	error	15000000	0	-	always
+diag	error	15000000	0	-	never
+diag	error	25000000	0	-	always
+diag	error	25000000	0	-	never

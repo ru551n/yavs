@@ -304,10 +304,10 @@ impl<'a> Parser<'a> {
                 )
                 .with_primary(span, "PSL starts here")
                 .with_note(
-                    "yavs runs only clocked `assert`/`assume` with `always`, `never`, `->`, \
-                         `next[n]`, `|->` and `|=>` over booleans and braced sequences, and \
-                         `cover` of a boolean or a sequence; other PSL declarations, directives \
-                         and verification units are ignored, so their properties are not checked",
+                    "yavs runs clocked `assert`, `assume` and `cover` over booleans, sequences and \
+                         the weak temporal operators, with declared sequences and properties; \
+                         strong operators, other PSL directives and verification units are \
+                         ignored, so their properties are not checked",
                 ),
             );
         }

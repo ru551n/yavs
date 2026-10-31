@@ -30,6 +30,10 @@ fails with the regenerate command (`YAVS_BLESS=1 cargo test -p yavs --bin yavs c
 `help_texts_are_for_users` keeps file names out of help texts. `docs/vunit-yavs.rst` lists the VUnit package's sim options and
 flags by hand; `python/vunit-yavs/tests/test_docs.py` checks its names against the option definitions. `docs/cli.rst` stays the overview.
 
+### PSL: `&&` between booleans, pragmas in 1993 files (#841, 2026-10-31)
+
+`{ a && b }` runs, the `W0004` note describes what runs, and `--psl` reads `-- psl` comments in a 1993 file (L160).
+
 ### Declarative items per region (#867, 2026-10-31)
 
 `E1239` now also covers a body in a package declaration and the other items an entity, package or package body does not list (L159).

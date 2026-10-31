@@ -995,6 +995,22 @@ fn checkers(src: &str) -> Vec<(Option<String>, usize, usize)> {
         .collect()
 }
 
+/// `&&` between booleans of a sequence runs; in a 1993 file the PSL words are reserved only in
+/// a `-- psl` pragma (#841).
+#[test]
+fn psl_bare_and_and_pragma_words_in_93() {
+    assert!(psl_warnings("entity e is end; architecture a of e is signal clk, x, y : bit; default clock is clk'event; begin assert never { x && y }; end;").is_empty());
+    ok_std(
+        "entity e is end; architecture a of e is signal clk, x : bit; signal default : bit;
+         begin
+           -- psl default clock is clk'event and clk = '1';
+           -- psl assert always x = '1';
+           x <= default;
+         end;",
+        Std::Vhdl1993,
+    );
+}
+
 #[test]
 fn psl_subset_becomes_checker_processes() {
     // (label, declarations, statements): `wait until` plus the check; `next[n]` adds one

@@ -4,7 +4,7 @@ warning[W0004]: PSL outside the supported subset is skipped
 10 |   assert eventually! ok;
    |   ^^^^^^ PSL starts here
    |
-   = note: yavs runs only clocked `assert`/`assume` with `always`, `never`, `->`, `next[n]`, `|->` and `|=>` over booleans and braced sequences, and `cover` of a boolean or a sequence; other PSL declarations, directives and verification units are ignored, so their properties are not checked
+   = note: yavs runs clocked `assert`, `assume` and `cover` over booleans, sequences and the weak temporal operators, with declared sequences and properties; strong operators, other PSL directives and verification units are ignored, so their properties are not checked
 
 warning[W0004]: PSL outside the supported subset is skipped
   --> psl_run.vhd:23:1
@@ -12,7 +12,7 @@ warning[W0004]: PSL outside the supported subset is skipped
 23 | vunit psl_checks (psl_run) {
    | ^^^^^ PSL starts here
    |
-   = note: yavs runs only clocked `assert`/`assume` with `always`, `never`, `->`, `next[n]`, `|->` and `|=>` over booleans and braced sequences, and `cover` of a boolean or a sequence; other PSL declarations, directives and verification units are ignored, so their properties are not checked
+   = note: yavs runs clocked `assert`, `assume` and `cover` over booleans, sequences and the weak temporal operators, with declared sequences and properties; strong operators, other PSL directives and verification units are ignored, so their properties are not checked
 
 error: aborting due to 2 previous errors
 

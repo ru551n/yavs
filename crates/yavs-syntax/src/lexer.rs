@@ -537,7 +537,12 @@ impl Lexer<'_> {
             self.check_latin1(start, self.pos, "bit string literal");
             return true;
         }
-        let kind = match lower.and_then(|l| Kw::lookup_bytes(l, self.std)) {
+        let lookup = if self.pragma == Pragma::Line {
+            Kw::lookup_psl_pragma
+        } else {
+            Kw::lookup_bytes
+        };
+        let kind = match lower.and_then(|l| lookup(l, self.std)) {
             Some(kw) => Tok::Kw(kw),
             None => Tok::Ident,
         };

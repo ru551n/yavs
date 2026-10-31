@@ -104,6 +104,24 @@ impl Kw {
             kw => Some(kw),
         }
     }
+
+    /// In a `-- psl` pragma the PSL words are reserved in every revision (#841).
+    pub fn lookup_psl_pragma(lower: &[u8], std: Std) -> Option<Kw> {
+        Kw::lookup_bytes(lower, std).or_else(|| {
+            Kw::from_lower(lower).filter(|k| {
+                !matches!(
+                    k,
+                    Kw::Context
+                        | Kw::Force
+                        | Kw::Parameter
+                        | Kw::Private
+                        | Kw::Protected
+                        | Kw::Release
+                        | Kw::View
+                )
+            })
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

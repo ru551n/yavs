@@ -254,6 +254,10 @@ impl Parser<'_> {
             self.term()?
         };
         while let Some(op) = adding_op(self.peek()) {
+            // `&&` is the PSL length-matching operator: it ends a boolean of a sequence.
+            if self.peek() == Tok::Amp && self.nth(1) == Tok::Amp {
+                break;
+            }
             self.bump();
             let r = self.term()?;
             l = binary(op, l, r);

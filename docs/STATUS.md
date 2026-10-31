@@ -10495,3 +10495,14 @@ wrappers (#608). Functions declared in blocks and generate regions now resolve s
 using the constants, generics and generate parameters of their declaring region (#817),
 including signals declared in an inner block. Regression tests cover both supported
 revisions for block/generate cases, cache reuse, coverage and one or four threads.
+
+## Elaboration and lowering gaps closed (#889, 2026-10-31)
+
+A signal name with a non-static subscript is an expression actual of an `in` port (#880); a generic
+associated in parts (#816); an unconstrained record formal in parts and aggregate targets of arrays of
+logic arrays (#618); aggregate targets over signal parameters (#610); null waveform elements on
+aggregate targets, records and signal parameters, `Inst::DisconnectSlot` (#602); `'driving` and
+`'driving_value` of signal parameters, parts and records, `Inst::SigDriving`, `SigDrivingValue` (#615);
+package initialisation reports printed once (#874); unused subtypes and package constants have their
+constraints checked (#847). Guarded record signals resolved as a whole are back (#595): a rebase had
+removed them.

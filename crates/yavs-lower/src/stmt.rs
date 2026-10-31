@@ -5,12 +5,12 @@ use yavs_diag::Span;
 use yavs_ir::{
     BlockId, CaseTable, CmpOp, Dir, DriveMode, Inst, IntOp, Reg, RegTy, StmtKind, Width,
 };
-use yavs_ir::{CheckKind, Ty};
+use yavs_ir::{CheckKind, CovArm, Ty};
 use yavs_sem::hir::{
-    Choice, ChoiceSet, Delay, ExprKind, LoopScheme, Lsp, LspStep, ObjRoot, Rhs, StmtKind as H,
-    Target, Waveform,
+    AttrPrefix, Choice, ChoiceSet, Delay, ExprKind, LoopScheme, Lsp, LspStep, ObjRoot, Rhs,
+    StmtKind as H, Target, Waveform,
 };
-use yavs_sem::types::{Direction, TypeKind};
+use yavs_sem::types::{Direction, RangeC, TypeKind};
 use yavs_sem::{ExprId, StmtId, TypeId};
 
 use crate::expr::{Dr, Place};
@@ -49,6 +49,29 @@ fn ir_kind(k: &H) -> StmtKind {
 }
 
 impl Fx<'_, '_> {
+    /// What names the arm of a `case` alternative or selected assignment in coverage reports:
+    /// its choices from the first to the last in the source.
+    fn choice_arm(&self, set: &ChoiceSet) -> CovArm {
+        if matches!(&*set.choices, [Choice::Others]) {
+            return CovArm::Others;
+        }
+        let at = |e: &ExprId| self.db.exprs[*e].span;
+        let spans = set.choices.iter().flat_map(|c| match c {
+            Choice::Expr(e) => vec![at(e)],
+            Choice::Range(RangeC::Explicit { left, right, .. }) => vec![at(left), at(right)],
+            Choice::Range(RangeC::Attr {
+                prefix: AttrPrefix::Expr(e),
+                ..
+            }) => vec![at(e)],
+            _ => vec![],
+        });
+        CovArm::Choice(spans.reduce(|a, b| Span {
+            file: a.file,
+            start: a.start.min(b.start),
+            end: a.end.max(b.end),
+        }))
+    }
+
     /// Lower `stmts` in order; every failing statement reports, the rest still lower.
     pub fn stmts(&mut self, stmts: &[StmtId]) -> R<()> {
         let mut ok = true;
@@ -136,11 +159,12 @@ impl Fx<'_, '_> {
                         // branch's last statement (#872).
                         self.fb.locate(StmtKind::Implicit, self.db.exprs[*c].span);
                     }
+                    let label = CovArm::Cond(self.db.exprs[*c].span);
                     let c = self.cond_expr(*c)?;
                     let (t, f) = (self.block(), self.block());
                     self.branch(c, t, f);
                     self.at(t);
-                    self.cover_branch(at, k as u32);
+                    self.cover_branch(at, k as u32, label);
                     let r = self.stmts(body);
                     if self.live {
                         self.jump(j);
@@ -149,7 +173,12 @@ impl Fx<'_, '_> {
                     r?;
                 }
                 // The `else` arm, written or not.
-                self.cover_branch(at, branches.len() as u32);
+                let label = if else_.is_some() {
+                    CovArm::Else
+                } else {
+                    CovArm::Implicit
+                };
+                self.cover_branch(at, branches.len() as u32, label);
                 if let Some(body) = else_ {
                     self.stmts(body)?;
                 }
@@ -169,9 +198,10 @@ impl Fx<'_, '_> {
                 let at = self.cur;
                 let j = self.block();
                 let mut ok = true;
-                for (k, ((_, body), b)) in alts.iter().zip(blocks).enumerate() {
+                for (k, ((set, body), b)) in alts.iter().zip(blocks).enumerate() {
                     self.at(b);
-                    self.cover_branch(at, k as u32);
+                    let label = self.choice_arm(set);
+                    self.cover_branch(at, k as u32, label);
                     ok &= self.stmts(body).is_ok();
                     if self.live {
                         self.jump(j);
@@ -801,20 +831,22 @@ impl Fx<'_, '_> {
                 let j = self.block();
                 for (k, &(e, c)) in alts.iter().enumerate() {
                     let next = self.block();
+                    let mut label = CovArm::Else;
                     if let Some(c) = c {
+                        label = CovArm::Cond(self.db.exprs[c].span);
                         let c = self.cond_expr(c)?;
                         let t = self.block();
                         self.branch(c, t, next);
                         self.at(t);
                     }
-                    self.cover_branch(self.cur, k as u32);
+                    self.cover_branch(self.cur, k as u32, label);
                     self.assign(target.expr, e, &what, span)?;
                     self.jump(j);
                     self.at(next);
                 }
                 // No final `else`: the arm where no condition holds.
                 if alts.last().is_some_and(|a| a.1.is_some()) {
-                    self.cover_branch(self.cur, alts.len() as u32);
+                    self.cover_branch(self.cur, alts.len() as u32, CovArm::Implicit);
                 }
                 self.jump(j);
                 self.at(j);
@@ -828,9 +860,10 @@ impl Fx<'_, '_> {
                 let sets: Vec<&ChoiceSet> = alts.iter().map(|a| &a.1).collect();
                 let blocks = self.case_blocks(*expr, *matching, &sets, span)?;
                 let j = self.block();
-                for (k, (&(e, _), b)) in alts.iter().zip(blocks).enumerate() {
+                for (k, (&(e, ref set), b)) in alts.iter().zip(blocks).enumerate() {
                     self.at(b);
-                    self.cover_branch(self.cur, k as u32);
+                    let label = self.choice_arm(set);
+                    self.cover_branch(self.cur, k as u32, label);
                     self.assign(target.expr, e, &what, span)?;
                     self.jump(j);
                 }
@@ -1466,20 +1499,22 @@ impl Fx<'_, '_> {
                 let j = self.block();
                 for (k, (w, c)) in alts.iter().enumerate() {
                     let next = self.block();
+                    let mut label = CovArm::Else;
                     if let Some(c) = c {
+                        label = CovArm::Cond(self.db.exprs[*c].span);
                         let c = self.cond_expr(*c)?;
                         let t = self.block();
                         self.branch(c, t, next);
                         self.at(t);
                     }
-                    self.cover_branch(self.cur, k as u32);
+                    self.cover_branch(self.cur, k as u32, label);
                     self.drive(target, delay, w, span)?;
                     self.jump(j);
                     self.at(next);
                 }
                 // No final `else`: the arm where no condition holds.
                 if alts.last().is_some_and(|a| a.1.is_some()) {
-                    self.cover_branch(self.cur, alts.len() as u32);
+                    self.cover_branch(self.cur, alts.len() as u32, CovArm::Implicit);
                 }
                 self.jump(j);
                 self.at(j);
@@ -1493,9 +1528,10 @@ impl Fx<'_, '_> {
                 let sets: Vec<&ChoiceSet> = alts.iter().map(|a| &a.1).collect();
                 let blocks = self.case_blocks(*expr, *matching, &sets, span)?;
                 let j = self.block();
-                for (k, ((w, _), b)) in alts.iter().zip(blocks).enumerate() {
+                for (k, ((w, set), b)) in alts.iter().zip(blocks).enumerate() {
                     self.at(b);
-                    self.cover_branch(self.cur, k as u32);
+                    let label = self.choice_arm(set);
+                    self.cover_branch(self.cur, k as u32, label);
                     self.drive(target, delay, w, span)?;
                     self.jump(j);
                 }
@@ -2744,7 +2780,7 @@ impl Fx<'_, '_> {
                 let c = self.cond_expr(*c)?;
                 self.branch(c, b, exit);
                 self.at(b);
-                self.cover_branch(self.cur, 0);
+                self.cover_branch(self.cur, 0, CovArm::Body);
                 self.loops.push((id, head, exit));
                 let r = self.stmts(body);
                 self.loops.pop();
@@ -2810,7 +2846,7 @@ impl Fx<'_, '_> {
                 let (b, next, inc, exit) = (self.block(), self.block(), self.block(), self.block());
                 self.branch(null, exit, b);
                 self.at(b);
-                self.cover_branch(self.cur, 0);
+                self.cover_branch(self.cur, 0, CovArm::Body);
                 self.loops.push((id, next, exit));
                 let res = self.stmts(body);
                 self.loops.pop();

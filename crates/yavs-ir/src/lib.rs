@@ -34,7 +34,7 @@ pub use inst::{
 pub use memo_fn::{MemoArg, MemoArr, MemoSig, native_is_pure};
 pub use program::COV_INPUTS;
 pub use program::{
-    Block, CaseTable, CheckMsg, ConstData, CovCond, CovInfo, CovKind, CovNode, CovRow, Dir,
+    Block, CaseTable, CheckMsg, ConstData, CovArm, CovCond, CovInfo, CovKind, CovNode, CovRow, Dir,
     ElabRaw, ForeignArg, ForeignMode, ForeignRef, Func, FuncFlags, FuncKind, Local, Mode,
     NativeRef, OptCopy, Param, ParamClass, Program, RootKind, StmtInfo, StmtKind, VhpiIndex,
     VhpiModel, VhpiParam, ViaNode,

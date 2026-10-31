@@ -521,25 +521,38 @@ impl<'a, 'b> Fx<'a, 'b> {
                 kind,
                 StmtKind::Decl | StmtKind::Process | StmtKind::Subprogram | StmtKind::Implicit
             )
-            && let Some(item) =
-                self.cx
-                    .cover(self.fb.program(), id, span, yavs_ir::CovKind::Statement)
+            && let Some(item) = self.cx.cover(
+                self.fb.program(),
+                id,
+                span,
+                yavs_ir::CovKind::Statement,
+                None,
+            )
         {
             self.emit(Inst::Cover { item });
         }
         id
     }
 
-    /// A counter for arm `arm` of branching statement `stmt` (the statement being lowered when
-    /// the caller started it: arms lower nested statements).
-    pub fn cover_branch(&mut self, stmt: Option<(yavs_ir::StmtId, Span)>, arm: u32) {
+    /// A counter for arm `arm`, named `label`, of branching statement `stmt` (the statement
+    /// being lowered when the caller started it: arms lower nested statements).
+    pub fn cover_branch(
+        &mut self,
+        stmt: Option<(yavs_ir::StmtId, Span)>,
+        arm: u32,
+        label: yavs_ir::CovArm,
+    ) {
         let Some((stmt, span)) = stmt else {
             return;
         };
         if self.cov
-            && let Some(item) =
-                self.cx
-                    .cover(self.fb.program(), stmt, span, yavs_ir::CovKind::Branch(arm))
+            && let Some(item) = self.cx.cover(
+                self.fb.program(),
+                stmt,
+                span,
+                yavs_ir::CovKind::Branch(arm),
+                Some(label),
+            )
         {
             self.emit(Inst::Cover { item });
         }

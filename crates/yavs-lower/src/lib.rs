@@ -610,6 +610,7 @@ impl Cx {
             stmt,
             kind,
             row: Some(row),
+            arm: None,
         })
     }
 
@@ -619,12 +620,14 @@ impl Cx {
         stmt: yavs_ir::StmtId,
         span: Span,
         kind: CovKind,
+        arm: Option<yavs_ir::CovArm>,
     ) -> Option<CovItem> {
         (self.opts.coverage && !self.cov_skip.contains(&span.file)).then(|| {
             pb.cov(CovInfo {
                 stmt,
                 kind,
                 row: None,
+                arm,
             })
         })
     }

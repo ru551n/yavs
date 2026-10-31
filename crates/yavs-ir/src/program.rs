@@ -1097,6 +1097,27 @@ pub struct CovInfo {
     pub kind: CovKind,
     /// A condition or expression row: what it is about.
     pub row: Option<CovRow>,
+    /// A branch arm: what names it in reports.
+    pub arm: Option<CovArm>,
+}
+
+/// What names a branch arm in a report (`if rst = '1'`, `else`, `when IDLE`).
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CovArm {
+    /// The arm of a condition (`if`, `elsif`, `when`): its source, which the first arm of an
+    /// `if` is the condition of.
+    Cond(Span),
+    /// The choices of a `case` alternative or selected assignment: their source, or `None`
+    /// where a choice has none (a range of a subtype's attribute).
+    Choice(Option<Span>),
+    /// `when others`.
+    Others,
+    /// A written `else`.
+    Else,
+    /// An `if` or conditional assignment without `else`: no condition held.
+    Implicit,
+    /// The body of a loop.
+    Body,
 }
 
 /// The source of a condition or expression row.

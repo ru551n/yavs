@@ -1,7 +1,12 @@
-# Root AGENTS.md rule 13 on the three release platforms (#134). The `check` job builds default
-# features only; the `clift` job builds and tests the Cranelift tier (`--features clift`, #481). The
-# LLVM tier (`--features llvm`) has no CI job since 2026-10-30 (#898).
-# The qemu/Wine ffi runs are not part of CI yet.
+# Root AGENTS.md rule 13 (#134, #888). The platform set follows the maintainer's matrix decision
+# (docs/decisions.md "CI matrix"): every push and pull request runs Linux x86_64 only; the `plan` job
+# adds the Windows jobs when the push touches path, file or process sensitive code; a nightly run
+# (nightly.yml), a manual run and a release tag (release.yml calls this file) run all three platforms.
+# Job names are stable (`check (<os>)`, `clift (<os>)`, `corpus`, `vunit-yavs (<os>)`): a skipped
+# platform has no job, so only the Linux names can be required checks on main.
+# The `check` job builds default features only; the `clift` job builds and tests the Cranelift tier
+# (`--features clift`, #481) and runs the difftest smoke. The LLVM tier (`--features llvm`) has no CI
+# job since 2026-10-30 (#898). The qemu/Wine ffi runs are not part of CI yet.
 # The `corpus` job gates the analysis corpora (#63) and the discrepancy cases on Linux x86_64.
 # The `versions` job checks that yavs, vunit-yavs and the VS Code extension carry one version (#903).
 name: CI
@@ -10,22 +15,66 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
   workflow_call:
 
 permissions:
   contents: read
 
-# A newer push to the same branch or pull request cancels the older run. Tags are never cancelled
-# (a release's CI call). github.workflow is the caller's name, so a release run has its own group.
+# A newer push to a branch or pull request cancels the older run. On main and on tags every commit
+# has a group of its own and finishes, so each main commit has a result (#888). github.workflow is the
+# caller's name, so a release or nightly run has its own group.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  group: ${{ github.workflow }}-${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') }}
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_PROFILE_DEV_DEBUG: 0
 
 jobs:
+  # Which platforms run. github.event_name and github.ref are the caller's in a called workflow, so a
+  # tag run of release.yml and a nightly.yml run are "full" without an input. full = every platform;
+  # otherwise Linux x86_64 plus Windows when a changed file matches `sensitive`.
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      os: ${{ steps.p.outputs.os }}
+      vunit_os: ${{ steps.p.outputs.vunit_os }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - id: p
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BEFORE: ${{ github.event.before }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # CLI, cache, library paths, FFI/VHPI loading, tools, vunit-yavs (with the token server), the
+          # VS Code extension, the workflows themselves and the lock file (new dependencies).
+          sensitive='^(crates/(yavs|yavs-cache|yavs-lib|yavs-ffi|yavs-vhpi)/|tools/|python/vunit-yavs/|editors/vscode/|\.github/|Cargo\.lock$)'
+          full=false; windows=false
+          case "$EVENT" in
+            push|pull_request)
+              [[ "$REF" == refs/tags/* ]] && full=true
+              if [[ $full == false ]]; then
+                if [[ "$EVENT" == pull_request ]]; then range="$BASE...HEAD"; else range="$BEFORE..HEAD"; fi
+                if [[ "$BEFORE" =~ ^0+$ ]] || ! files=$(git diff --name-only $range); then
+                  echo "::notice::no usable diff range ($range): Windows jobs on"; windows=true
+                elif grep -Eq "$sensitive" <<<"$files"; then
+                  echo "::notice::Windows jobs on: $(grep -E "$sensitive" <<<"$files" | head -n3 | paste -sd' ')"; windows=true
+                fi
+              fi ;;
+            *) full=true ;;  # schedule, workflow_dispatch
+          esac
+          os='["ubuntu-24.04"'; vunit=$os
+          if [[ $full == true ]]; then os="$os,\"ubuntu-24.04-arm\""; fi
+          if [[ $full == true || $windows == true ]]; then os="$os,\"windows-latest\""; vunit="$vunit,\"windows-latest\""; fi
+          echo "os=$os]" >> "$GITHUB_OUTPUT"; echo "vunit_os=$vunit]" >> "$GITHUB_OUTPUT"
+          echo "platforms: $os] (vunit-yavs $vunit])"
+
   # yavs, vunit-yavs and the VS Code extension carry one version (RELEASING.md)
   versions:
     runs-on: ubuntu-24.04
@@ -35,10 +84,11 @@ jobs:
 
   check:
     name: check (${{ matrix.os }})
+    needs: plan
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, ubuntu-24.04-arm, windows-latest]
+        os: ${{ fromJSON(needs.plan.outputs.os) }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -50,13 +100,14 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked --no-fail-fast
 
-  # The Cranelift tier (`--features clift`, no external dependency) on the same three platforms.
+  # The Cranelift tier (`--features clift`, no external dependency) on the same platforms.
   clift:
     name: clift (${{ matrix.os }})
+    needs: plan
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, ubuntu-24.04-arm, windows-latest]
+        os: ${{ fromJSON(needs.plan.outputs.os) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
@@ -129,10 +180,11 @@ jobs:
   # tests (token server included) against this commit's yavs, on Linux and Windows.
   vunit-yavs:
     name: vunit-yavs (${{ matrix.os }})
+    needs: plan
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-latest]
+        os: ${{ fromJSON(needs.plan.outputs.vunit_os) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:

@@ -1,0 +1,44 @@
+# The full CI matrix on main every night (docs/decisions.md "CI matrix", #888): ci.yml with every
+# platform (Linux x86_64, Linux aarch64, Windows x86_64; ci.yml's plan job sees a schedule or
+# manual run and turns them all on). A red run opens one issue labelled `nightly` or, while one is
+# open, adds a comment to it. Pushes and pull requests run Linux x86_64 only (ci.yml).
+name: nightly
+
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  report:
+    needs: ci
+    if: ${{ always() && needs.ci.result != 'success' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Open or update the nightly issue
+        run: |
+          failed=$(gh api "repos/$GH_REPO/actions/runs/${{ github.run_id }}/jobs" --paginate \
+            --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out") | "- " + .name + " (" + .conclusion + ")"')
+          body=$(printf 'Nightly run %s on `%s` (%s): result `%s`.\n\nJobs that did not pass:\n\n%s\n' \
+            "$RUN_URL" "$GITHUB_REF_NAME" "$GITHUB_SHA" "${{ needs.ci.result }}" "${failed:-none found, see the run}")
+          gh label create nightly --color B60205 --description "Red nightly CI run on main" 2>/dev/null || true
+          n=$(gh issue list --label nightly --state open --json number -q '.[0].number')
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --body "$body"
+            echo "commented on #$n"
+          else
+            gh issue create --label nightly --title "Nightly CI is red on main" \
+              --body "$(printf '%s\n\nThis issue is kept up to date by .github/workflows/nightly.yml: later red nightly runs comment here. Close it when main is green again.' "$body")"
+          fi

@@ -2541,8 +2541,9 @@ internal 0.982. Difftest 409/409 for `yavs`, `yavs-llvm` and `yavs-auto` with
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on
-ubuntu-24.04, ubuntu-24.04-arm and windows-latest (MSVC) for every push to main and every pull
-request (#134); a `corpus` job (Linux x86_64) fetches the pinned external corpora and fails on any difference from `tools/corpus/*.expected` (#63) and on any test of `tools/difftest/external-*.pass` that no longer meets its suite's verdict (#354); not yet in CI: JIT tier. `.github/workflows/gui.yml` checks the `gui/` workspace
+ubuntu-24.04 for every push to main and every pull request, plus windows-latest (MSVC) when the change
+touches path or process sensitive code, and plus ubuntu-24.04-arm in the nightly run (`nightly.yml`, which
+opens or updates an issue when red), a manual run and a release (#134, #888, `docs/decisions.md` "CI matrix"); a `corpus` job (Linux x86_64) fetches the pinned external corpora and fails on any difference from `tools/corpus/*.expected` (#63) and on any test of `tools/difftest/external-*.pass` that no longer meets its suite's verdict (#354); not yet in CI: JIT tier. `.github/workflows/gui.yml` checks the `gui/` workspace
 (#388): fmt, clippy and tests on Linux x86_64, a build on Linux aarch64 and Windows, only when
 `gui/` changes. `.github/workflows/release.yml`
 builds and packages `yavs` and `yavs-gui` (with `LICENSE-EUPL-1.2-yavs-gui`) with `lib/` for the three targets on a `v*` tag and publishes a

@@ -12667,3 +12667,23 @@ duplicate implementations without changing diagnostics (issue #894; implemented 
   declares it, walking outward from the signal. Its region data supplies captured constants,
   generics and iteration parameters; lower its containing architecture even if it has no
   processes (#817; agent codex/resolvers889).
+
+## CI matrix (#888, 2026-10-31)
+
+- Every push and pull request runs Linux x86_64 only (`ci.yml`: fmt, clippy, tests, the Cranelift
+  tier with the difftest smoke, the analysis corpora, vunit-yavs). Reason: three platforms on every
+  push cost about 30 minutes each and made red runs mostly platform noise (maintainer, 2026-10-30).
+- A `plan` job in `ci.yml` adds the Windows jobs (`check`, `clift`, `vunit-yavs`) when the push or
+  pull request touches path, file or process sensitive code: `crates/yavs`, `yavs-cache`, `yavs-lib`,
+  `yavs-ffi`, `yavs-vhpi`, `tools/`, `python/vunit-yavs/` (with the token server), `editors/vscode/`,
+  `.github/` and `Cargo.lock` (the last four crate and file entries are the agent's reading of
+  "path, file or process sensitive"; trim the `sensitive` pattern there to change it).
+- `nightly.yml` runs `ci.yml` on main every night with every platform (Linux x86_64, Linux aarch64,
+  Windows x86_64). A red run opens one issue labelled `nightly`, or comments on the open one.
+- A release tag or a release dry run (`release.yml` calls `ci.yml`) and a manual run of `ci.yml`
+  run every platform, because `github.event_name` in a called workflow is the caller's.
+- Pushes to main are never cancelled by a newer push (a group per commit), so every main commit has
+  a CI result; branches and pull requests still cancel older runs.
+- Job names stay `check (<os>)`, `clift (<os>)`, `corpus`, `vunit-yavs (<os>)`, `versions`. A skipped
+  platform has no job, so only the `ubuntu-24.04` names can be required checks on main
+  (maintainer, 2026-10-30; agent cc-host1/ci).

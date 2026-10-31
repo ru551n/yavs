@@ -123,8 +123,9 @@ to, and those documents win over your memory.
 
 ### Git and collaboration
 17. **Current phase: push straight to `main`** (no branches, no PRs). CI
-    (`.github/workflows/ci.yml`) runs the rule 13 checks (plus the analysis corpus gate, Linux x86_64 only) on Linux x86_64, Linux aarch64 and
-    Windows x86_64 for every push: watch your run (`gh run watch`) and fix a red one. Rebase on
+    (`.github/workflows/ci.yml`) runs the rule 13 checks (plus the analysis corpus gate) on Linux x86_64 for every push,
+    and on Windows x86_64 too when the push touches path or process sensitive code; the nightly run and a release
+    run Linux aarch64 as well (`docs/decisions.md` "CI matrix"): watch your run (`gh run watch`) and fix a red one. Rebase on
     `origin/main` first; push only with no rebase in progress and a clean tree. If the push is
     rejected, rebase again and re-run the checks. **Before every push run
     `git diff --stat origin/main..HEAD`** (or `git show --stat HEAD`) and confirm every path is

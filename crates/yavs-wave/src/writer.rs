@@ -108,8 +108,6 @@ pub struct WaveWriter {
     scratch: Vec<u8>,
     cfg: WaveConfig,
     last_flush: Instant,
-    flush_due: bool,
-    since_check: u32,
 }
 
 impl WaveWriter {
@@ -131,8 +129,6 @@ impl WaveWriter {
             now: None,
             scratch: Vec::new(),
             last_flush: Instant::now(),
-            flush_due: false,
-            since_check: 0,
             cfg,
         };
         for it in h.items() {
@@ -367,17 +363,11 @@ impl WaveWriter {
             .codec;
         let fst = self.fst.as_mut().expect("writer finished");
         if self.now.is_some_and(|t| time > t) {
-            self.since_check += 1;
-            if self.since_check >= 256 {
-                self.since_check = 0;
-                self.flush_due |= self
-                    .cfg
-                    .flush_interval
-                    .is_some_and(|i| self.last_flush.elapsed() >= i);
-            }
-            if self.flush_due {
+            // Each time step: a run with few long steps must flush too (`--surfer`), and only a
+            // run that asked for the clock reads it.
+            let due = self.cfg.flush_interval;
+            if due.is_some_and(|i| self.last_flush.elapsed() >= i) {
                 fst.flush()?;
-                self.flush_due = false;
                 self.last_flush = Instant::now();
             }
         }

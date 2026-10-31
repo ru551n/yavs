@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:individual_record_formal:_p0	'0' 01 0
+diag	note	0	0	:individual_record_formal:_p0	'1' 010 3
+diag	note	0	0	:individual_record_formal:_p0	'0' 1010 4

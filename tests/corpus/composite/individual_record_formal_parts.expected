@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:individual_record_formal_parts:_p0	'1' 10 2
+diag	note	0	0	:individual_record_formal_parts:_p0	'0' 10 6
+diag	note	0	0	:individual_record_formal_parts:_p0	4 010 3 hello
+diag	note	0	0	:individual_record_formal_parts:_p0	4 11 0 xy
+diag	note	0	0	:individual_record_formal_parts:_p0	'1' 10

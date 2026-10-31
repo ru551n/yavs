@@ -1076,9 +1076,12 @@ impl Fx<'_, '_> {
         }
         let ttid = self.ty(t, span)?;
         if general && self.is_logic(ttid) {
-            return Err(self
-                .cx
-                .unsupported(span, "aggregate targets of arrays of logic arrays"));
+            if dims > 1 {
+                return Err(self
+                    .cx
+                    .unsupported(span, "aggregate targets of matrices of logic arrays"));
+            }
+            return self.walk_logic_rows(assocs, t, ttid, elem, vals, span, cb);
         }
         if dims > 1 {
             if general {
@@ -1128,6 +1131,123 @@ impl Fx<'_, '_> {
                 subs.push(self.elem_value_at(elem, addr, ed, span)?);
             }
             self.walk_elem(a.value, elem, &subs, span, cb)?;
+        }
+        Ok(())
+    }
+
+    /// An aggregate target of an array of logic arrays (#618): the rows of a value are bit
+    /// planes, so each target element gets a copy of its row, a 2008 piece of its rows.
+    #[allow(clippy::too_many_arguments)]
+    fn walk_logic_rows(
+        &mut self,
+        assocs: &[yavs_sem::hir::AggAssoc],
+        t: TypeId,
+        tid: yavs_ir::TyId,
+        elem: yavs_sem::SubtypeId,
+        vals: &[crate::expr::V],
+        span: Span,
+        cb: HitFn<Self>,
+    ) -> R<()> {
+        let db = self.db;
+        let named = self.named_target_positions(assocs, t, 0, span)?;
+        let mut parts = Vec::with_capacity(vals.len());
+        for &v in vals {
+            let (data, dope) = self.arr(v, span)?;
+            let (etid, ed) = self.elem_desc(tid, dope)?;
+            let count = self.layout_count(tid, dope);
+            let row = self.layout_count(etid, ed);
+            parts.push((data, dope, etid, ed, count, row));
+        }
+        // The aggregate must cover every value exactly, checked first.
+        let want = if named.is_none() && assocs.iter().any(|a| a.slice_piece) {
+            let mut n = self.int(0);
+            for a in assocs {
+                let len = if a.slice_piece {
+                    let d = self.dope_of(a.value)?;
+                    self.dope_len(d)
+                } else {
+                    self.int(1)
+                };
+                n = self.bin(IntOp::Add, n, len);
+            }
+            let (z, one) = (self.int(0), self.int(1));
+            let last = self.bin(IntOp::Sub, n, one);
+            Some(self.one_dope(z, last, z))
+        } else {
+            self.cover_dope(assocs, named.as_deref(), false, span)?
+        };
+        if let Some(want) = want {
+            for &(_, dope, ..) in &parts {
+                let what = self.msg("target", Dir::To);
+                self.emit(Inst::SubtypeCheck {
+                    dope,
+                    want,
+                    dims: 1,
+                    what,
+                });
+            }
+        }
+        let mut k = self.int(0);
+        for (i, a) in assocs.iter().enumerate() {
+            let piece = if a.slice_piece {
+                Some(self.dope_of(a.value)?)
+            } else {
+                None
+            };
+            let pos = match (piece, a.choices.first()) {
+                (Some(pd), _) if let Some(ps) = &named => self.named_piece(ps[i], pd),
+                (_, None) | (Some(_), _) => k,
+                (None, Some(Choice::Expr(_))) if let Some(ps) = &named => self.int(ps[i].0),
+                (None, Some(&Choice::Expr(c))) => {
+                    let dopes: Vec<Reg> = parts.iter().map(|p| p.1).collect();
+                    self.lone_choice(c, t, &dopes, span)?;
+                    self.int(0)
+                }
+                _ => return Err(self.cx.ice(span, "unmapped aggregate target choice")),
+            };
+            let rows = match piece {
+                Some(pd) => self.dope_len(pd),
+                None => self.int(1),
+            };
+            let mut subs = Vec::with_capacity(parts.len());
+            for &(data, _, etid, ed, count, row) in &parts {
+                let (size, desc) = match piece {
+                    Some(pd) => {
+                        // A piece has its target's bounds: the rows must have its row length.
+                        let (_, pe) = self.elem_desc(tid, pd)?;
+                        let what = self.msg("target", Dir::To);
+                        self.emit(Inst::SubtypeCheck {
+                            dope: ed,
+                            want: pe,
+                            dims: 1,
+                            what,
+                        });
+                        (self.size_of(tid, pd), pd)
+                    }
+                    None => (self.size_of(etid, ed), ed),
+                };
+                let buf = self.alloc(size);
+                // Planes hold the leftmost element last.
+                let end = self.bin(IntOp::Add, pos, rows);
+                let before = self.bin(IntOp::Mul, end, row);
+                let src_off = self.bin(IntOp::Sub, count, before);
+                let n = self.bin(IntOp::Mul, rows, row);
+                let z = self.int(0);
+                self.emit(Inst::LCopy {
+                    dst: buf,
+                    dst_off: z,
+                    src: data,
+                    src_off,
+                    n,
+                });
+                subs.push(crate::expr::V::A(buf, desc));
+            }
+            if piece.is_some() {
+                cb(self, Hit::Leaf(a.value), &subs, db.exprs[a.value].subtype)?;
+            } else {
+                self.walk_elem(a.value, elem, &subs, span, cb)?;
+            }
+            k = self.bin(IntOp::Add, pos, rows);
         }
         Ok(())
     }
@@ -1931,13 +2051,21 @@ impl Fx<'_, '_> {
                 .unsupported(span, "record elements of aggregate signal targets"));
         }
         if let Some((elem, _)) = ty::array_of(db, t) {
-            if self.is_general(t, span)? || ty::array_of(db, t).is_some_and(|x| x.1 != 1) {
+            let vtid = self.ty(t, span)?;
+            let logic_rows = self.is_logic(vtid);
+            if (self.is_general(t, span)? && !logic_rows)
+                || ty::array_of(db, t).is_some_and(|x| x.1 != 1)
+            {
                 return Err(self
                     .cx
                     .unsupported(span, "composite array elements of aggregate signal targets"));
             }
-            let vtid = self.ty(t, span)?;
-            let (_, _, vw) = self.elem_scalar(elem, span)?;
+            // The width is that of a scalar element; a logic value is copied by planes.
+            let vw = if logic_rows {
+                Width::B1
+            } else {
+                self.elem_scalar(elem, span)?.2
+            };
             let mut vals = Vec::with_capacity(subs.len());
             for (&at, &v) in ats.iter().zip(subs) {
                 vals.push((at, self.arr(v, span)?));
@@ -2130,16 +2258,17 @@ impl Fx<'_, '_> {
             let va = self.offset(e, 8);
             if vlogic {
                 // Planes hold the leftmost element last.
-                let count = self.dope_len(dope);
+                let count = self.layout_count(vtid, dope);
+                let n = self.layout_count(vtid, td);
                 let r = self.bin(IntOp::Sub, count, k);
-                let src_off = self.bin(IntOp::Sub, r, len);
+                let src_off = self.bin(IntOp::Sub, r, n);
                 let z = self.int(0);
                 self.emit(Inst::LCopy {
                     dst: va,
                     dst_off: z,
                     src: data,
                     src_off,
-                    n: len,
+                    n,
                 });
             } else {
                 let p = self.reg(RegTy::Ptr);

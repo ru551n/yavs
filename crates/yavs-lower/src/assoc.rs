@@ -6,11 +6,11 @@
 //! part for `inout`, back through the formal part.
 
 use yavs_diag::Span;
-use yavs_ir::{CmpOp, Inst, Reg, RegTy, Width};
+use yavs_ir::{CmpOp, Inst, Reg, RegTy, Ty, Width};
 use yavs_sem::decl::Param;
 use yavs_sem::hir::{IndividualPart as Part, LspStep, Mode};
 use yavs_sem::types::{Constrainedness, TypeKind};
-use yavs_sem::{DeclId, ExprId};
+use yavs_sem::{DeclId, ExprId, TypeId};
 
 use crate::expr::{Conv, Place};
 use crate::func::{Fx, Shape, shape};
@@ -517,14 +517,62 @@ impl Fx<'_, '_> {
             return Ok(Some(d));
         }
         let t = db.base(p.subtype);
-        let TypeKind::Array { indexes, .. } = &db.types[t].kind else {
-            if matches!(db.types[t].kind, TypeKind::Record { .. }) {
-                return Err(self.cx.unsupported(
-                    span,
-                    "individual association of an unconstrained record formal",
-                ));
-            }
+        if !matches!(
+            db.types[t].kind,
+            TypeKind::Array { .. } | TypeKind::Record { .. }
+        ) {
             return Ok(None);
+        }
+        let parts: Vec<_> = parts.iter().map(|(s, e, ..)| (&s[..], *e)).collect();
+        self.parts_desc(t, &parts, span).map(Some)
+    }
+
+    /// The descriptor of type `t` from the parts naming it (steps relative to it, and actual):
+    /// a part that is the whole object has its actual's, a record field by field, a
+    /// one-dimensional array of scalars from the indices named.
+    fn parts_desc(&mut self, t: TypeId, parts: &[(&[LspStep], ExprId)], span: Span) -> R<Reg> {
+        let db = self.db;
+        if let [([], e)] = parts {
+            // ponytail: a call as the actual is evaluated here and again when it is copied in;
+            // keep its value if an impure actual with open bounds ever matters.
+            return self.dope_of(*e);
+        }
+        if let TypeKind::Record { elems } = &db.types[t].kind {
+            let tid = self.ty(t, span)?;
+            let Some(Ty::Record { fields }) = self.fb.program().types().get(tid).cloned() else {
+                return Err(self.cx.ice(span, "record formal of a non-record type"));
+            };
+            let size = self.desc_size(tid);
+            let desc = self.alloc_n(size);
+            let mut off = 0;
+            for (i, f) in fields.iter().enumerate() {
+                if f.desc.is_some() || !Ty::needs_desc(self.fb.program().types(), f.ty) {
+                    continue;
+                }
+                let sub: Vec<_> = parts
+                    .iter()
+                    .filter_map(|&(steps, e)| match steps.first() {
+                        Some(LspStep::Field(k)) if *k as usize == i => Some((&steps[1..], e)),
+                        _ => None,
+                    })
+                    .collect();
+                let d = self.parts_desc(db.base(elems[i].subtype), &sub, span)?;
+                let at = self.offset(desc, off);
+                let n = self.desc_size(f.ty);
+                let bytes = self.int(i64::from(n));
+                self.emit(Inst::Copy {
+                    dst: at,
+                    src: d,
+                    bytes,
+                });
+                off += n;
+            }
+            return Ok(desc);
+        }
+        let TypeKind::Array { indexes, .. } = &db.types[t].kind else {
+            return Err(self
+                .cx
+                .ice(span, "formal part of a scalar with open bounds"));
         };
         if indexes.len() != 1 || self.is_general(t, span)? {
             return Err(self.cx.unsupported(
@@ -534,7 +582,7 @@ impl Fx<'_, '_> {
         }
         let ix = indexes[0];
         let mut bounds: Option<(Reg, Reg)> = None;
-        for (steps, ..) in parts {
+        for (steps, _) in parts {
             let (l, h) = match steps.first() {
                 Some(LspStep::Index(i)) if i.len() == 1 => {
                     let v = self.scalar_expr(i[0])?;
@@ -569,6 +617,6 @@ impl Fx<'_, '_> {
         let at = self.alloc_n(24);
         let parts = self.fb.regs(&[left, right, d]);
         self.emit(Inst::MakeDope { at, parts });
-        Ok(Some(at))
+        Ok(at)
     }
 }

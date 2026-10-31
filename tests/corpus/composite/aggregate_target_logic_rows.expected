@@ -1,0 +1,10 @@
+exit	0
+diag	note	0	0	:tb_aggregate_target_logic_rows:_p1	1010 1011 1100 1101
+diag	note	0	0	:tb_aggregate_target_logic_rows:_p1	1100 1101 1010 1011
+diag	note	1000000	0	:tb_aggregate_target_logic_rows:_p1	00110100
+diag	note	3000000	0	:tb_aggregate_target_logic_rows:_p1	01010110
+diag	note	5000000	0	:tb_aggregate_target_logic_rows:_p1	UUUU UUUU UUUU 0010
+diag	note	7000000	0	:tb_aggregate_target_logic_rows:_p1	UUUU UUUU 0010 0100
+diag	note	9000000	0	:tb_aggregate_target_logic_rows:_p1	UUUU 0010 0100 1000
+diag	note	11000000	0	:tb_aggregate_target_logic_rows:_p1	0010 0100 1000 0001
+diag	note	13000000	0	:tb_aggregate_target_logic_rows:_p1	0100 1000 0001 0010

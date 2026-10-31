@@ -108,7 +108,7 @@ textual dump.
 - `InstData` gains child instances and package links when elaboration needs them.
 - Binary (non-TEXT) file `read`/`write` handle scalars, arrays of scalars, records and arrays
   of composites; the PSL natives are out of scope (`lib/NATIVE.md` section 4; a runtime error naming the symbol);
-  `SetVhdlAssertFormat` accepts only the empty (default) format.
+  `SetVhdlAssertFormat` formats the message text of reports (`yavs-interp` `env.rs`, #922).
 - Call paths need `Bindings::sources` (`yavs_interp::Sources::of(program, source_map)`;
   yavs-elab passes it); without it they are a runtime error.
 

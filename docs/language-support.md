@@ -127,7 +127,7 @@ LCS set; it is not checked against every change of the published standard.
 | 045a, 045c | Mode view declarations, `'CONVERSE` of a mode view | supported | simulated | view ports, signal parameters of a view, an array of a viewed record, individual association |
 | 047 | Variable ports of protected type | supported | simulated | |
 | 049 | Generic map on a subprogram call | supported | simulated | also expanded names and concurrent calls |
-| 050 | Assert API | partial | simulated | the counting functions (`GetVhdlAssertCount`, `IsVhdlAssertFailed`, `ClearVhdlAssert`) and `SetVhdlAssertEnable` run; `SetVhdlAssertFormat` with a non-empty format and the PSL status functions (`PslAssertFailed`, `PslIsCovered` and relatives) stop the run with a not-implemented error |
+| 050 | Assert API | partial | simulated | the counting functions (`GetVhdlAssertCount`, `IsVhdlAssertFailed`, `ClearVhdlAssert`) and `SetVhdlAssertEnable` and `SetVhdlAssertFormat` run; the PSL status functions (`PslAssertFailed`, `PslIsCovered` and relatives) stop the run with a not-implemented error |
 | 055a | Syntax regularisation: component declarations | supported | probed 2026-10-28 | |
 | 059 | Array type generics and the generic type classes | supported | simulated | |
 | 059a | Ordering on any scalar array | supported | probed 2026-10-28 | `<` on a `real_vector`; an error in 2008 |
@@ -195,7 +195,7 @@ Not implemented, so the run or the analysis stops with an error that names the c
 - Attributes of a range attribute other than `'left`, `'right`, `'low`, `'high` and `'ascending`,
   such as `t'range'length` or any attribute of `t'reverse_range`. These are reported as not
   implemented (`E1999`), with a note that says it is a limitation of yavs.
-- `std.env` PSL state functions and non-empty `SetVhdlAssertFormat` (see LCS-050).
+- `std.env` PSL state functions (see LCS-050). `SetVhdlAssertFormat` changes the message text of a report only: the `** Severity: time:` line around it stays.
 - A generic map in the header of a protected type (LCS-034) and range records known only at run time (LCS-099).
 - PSL outside [the subset](psl.md).
 

@@ -1177,6 +1177,11 @@ impl Ctx<'_> {
         self.pid
     }
 
+    /// The name of the running process, as its reports print it.
+    pub fn process_name(&self) -> &str {
+        &self.sh.names[self.pid.0 as usize]
+    }
+
     /// `Interrupt::stop` was called (Ctrl-C): a process that never suspends polls it at the
     /// jump back of its loop, because the kernel only looks between cycles.
     #[inline]

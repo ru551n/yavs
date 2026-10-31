@@ -1092,8 +1092,13 @@ difference, is `docs/design/vhdl-93.md`.
     no-argument `GetVhdlAssertCount`/`IsVhdlAssertFailed` cover warning, error and failure;
     the read severity starts at ERROR. The exit status follows the error and failure counts
     at the end of the run, so `ClearVhdlAssert` clears a pending exit 1, as the reference simulator (#191).
-  - `SetVhdlAssertFormat` with a non-empty format is a "not implemented" runtime error; the
-    format stays the default and `GetVhdlAssertFormat` returns "".
+  - `SetVhdlAssertFormat` (#922, user-visible rule of #99 replaced): the format is kept per severity as set
+    (`GetVhdlAssertFormat` returns it unchanged; the reference simulator returns a normalised form), the empty
+    string is the default. An invalid format is `Valid => false`, or a runtime error without `Valid`. A report of
+    that severity has its message text replaced by the format with `{s}`, `{S}`, `{r}`, `{t[:.unit]}`, `{i}`
+    filled in; the `** Severity: time:` line and the process line around it stay (the reference simulator drops
+    them; that needs a raw flag on `yavs_kernel::Report`). The setting follows the per-cycle log of the other
+    assert state (determinism across `--threads`).
   - Call path elements are innermost first, names upper case, the line of the calling
     statement, `file_path` the absolute directory; `to_string` of an element is the reference simulator's
     `<path>/<file>:<line>:<NAME>`. `to_string` of a vector honours `Separator` (LRM); the reference simulator

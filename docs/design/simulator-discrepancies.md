@@ -371,6 +371,7 @@ majority of the references that run it.
 | `subtype-range-bound-variable` | `subtype sr is integer range 0 to n` in a procedure, `n` a variable assigned 7 after the declaration, then `sr'high` | 14.4.2.1 | LRM clear | FATAL | OK | not run | not run | OK | the range is the one evaluated at the declaration (`sr'high` = 3); NVC reads `n` again for `'high` and then fails the range check of the assignment | agent, 2026-10-28 (#612, L146) |
 | `subtype-of-subtype-bound-once` | `subtype s is bit_vector(f(4) downto 0)` with `f` an impure function that counts its calls, `subtype s2 is s`, a variable of `s2` | 14.4.2.1 | LRM clear | OK* | OK | not run | not run | OK | the bounds of `s` are evaluated once, at its declaration; `s2` adds no constraint, so `f` runs once (NVC calls it twice) | agent, 2026-10-28 (#612, L146) |
 | `unused-constant-index-constraint` | `constant c : string(n to 2) := "abc"` in an architecture, `n` a function returning 0, `c` never read | 5.3.2.2, 14.4.2.1 | LRM clear | OK | REJECT | not run | not run | REJECT | the declaration's subtype indication is elaborated with it, read or not: `E2107` at the declaration (NVC accepts) | agent, 2026-10-28 (#825, L108) |
+| `assert-format-get` | `GetVhdlAssertFormat` after `SetVhdlAssertFormat` with a format that has a fill and alignment | std.env (2019) | LRM ambiguity | OK | OK* | unsupported | not run | not run | the string as set; NVC returns a normalised form (`{t: >} x {r:#<10}`) | agent, 2026-10-31 (#922) |
 
 ## Adding a case
 

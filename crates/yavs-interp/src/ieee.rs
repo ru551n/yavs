@@ -291,9 +291,9 @@ pub(crate) fn report(m: &mut Machine, ctx: Cx<'_, '_, '_>, s: Severity, text: &s
     }
     match ctx.as_deref_mut() {
         Some(c) => {
-            if !m.rt.asserts.report(c, s) {
+            let Some(text) = m.rt.asserts.report(c, s, text.to_string()) else {
                 return Ok(());
-            }
+            };
             c.report(s, text);
             if s >= c.stop_severity() {
                 m.ieee_stop = true;

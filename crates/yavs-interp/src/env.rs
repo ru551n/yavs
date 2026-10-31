@@ -317,6 +317,8 @@ struct AssertState {
     counts: [u64; 4],
     enabled: [bool; 4],
     read_severity: Severity,
+    /// `SetVhdlAssertFormat` per severity; `None` is the default format.
+    formats: [Option<Arc<Format>>; 4],
 }
 
 impl Default for AssertState {
@@ -326,11 +328,12 @@ impl Default for AssertState {
             counts: [0; 4],
             enabled: [true; 4],
             read_severity: Severity::Error,
+            formats: Default::default(),
         }
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum Op {
     /// `n` reports of the severity (consecutive counts are merged: `Asserts::with` replays the
     /// log on every report, so a log with one entry per report is quadratic).
@@ -338,6 +341,7 @@ enum Op {
     Clear,
     Enable(Severity, bool),
     ReadSeverity(Severity),
+    Format(Severity, Option<Arc<Format>>),
 }
 
 impl AssertState {
@@ -347,6 +351,7 @@ impl AssertState {
             Op::Clear => self.counts = [0; 4],
             Op::Enable(s, b) => self.enabled[s as usize] = b,
             Op::ReadSeverity(s) => self.read_severity = s,
+            Op::Format(s, f) => self.formats[s as usize] = f,
         }
     }
 }
@@ -413,8 +418,8 @@ impl Asserts {
         }
         let pid = ctx.process().0;
         let mut st = g.base.clone();
-        for &o in g.logs.get(&pid).into_iter().flatten() {
-            st.apply(o);
+        for o in g.logs.get(&pid).into_iter().flatten() {
+            st.apply(o.clone());
         }
         let r = f(&st);
         if let Some(op) = op {
@@ -444,8 +449,8 @@ impl Asserts {
     pub(crate) fn counts(&self) -> [u64; 4] {
         let g = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let mut st = g.base.clone();
-        for &op in g.logs.values().flatten() {
-            st.apply(op);
+        for op in g.logs.values().flatten() {
+            st.apply(op.clone());
         }
         st.counts
     }
@@ -472,14 +477,21 @@ impl Asserts {
         on
     }
 
-    /// A report or assertion violation of severity `s`: false when that severity is disabled
-    /// (not shown, not counted, as sim1).
-    pub(crate) fn report(&self, ctx: &Ctx<'_>, s: Severity) -> bool {
-        let on = self.with(ctx, None, |st| st.enabled[s as usize]);
-        if on {
-            self.with(ctx, Some(Op::Count(s, 1)), |_| ());
+    /// A report or assertion violation of severity `s` with message `text`: `None` when that
+    /// severity is disabled (not shown, not counted, as sim1), else the text to show (`text`
+    /// through the severity's `SetVhdlAssertFormat` format).
+    pub(crate) fn report(&self, ctx: &Ctx<'_>, s: Severity, text: String) -> Option<String> {
+        let (on, fmt) = self.with(ctx, None, |st| {
+            (st.enabled[s as usize], st.formats[s as usize].clone())
+        });
+        if !on {
+            return None;
         }
-        on
+        self.with(ctx, Some(Op::Count(s, 1)), |_| ());
+        Some(match fmt {
+            Some(f) => f.apply(s, &text, ctx.now().as_fs(), ctx.process_name()),
+            None => text,
+        })
     }
 }
 
@@ -544,7 +556,6 @@ assert_natives! {
     get_enable => (none, |st, a| Ok(Some(u64::from(st.enabled[sev(arg(a, 0)?)? as usize])))),
     get_read_severity => (none, |st, _| Ok(Some(st.read_severity as u64))),
     set_read_severity => (|a| Ok(Some(Op::ReadSeverity(sev(arg(a, 0)?)?))), |_, _| Ok(None)),
-    get_format => (none, |_, _| Ok(None)),
 }
 
 /// `SetVhdlAssertEnable(Enable)`: all four severities, logged as four changes.
@@ -579,44 +590,243 @@ fn set_enable(
     Ok(None)
 }
 
-/// `GetVhdlAssertFormat`: always the empty string (the default format).
+/// `GetVhdlAssertFormat`: the format as set, the empty string for the default.
 fn get_format_string(
     m: &mut Machine,
     ctx: &mut Option<&mut Ctx<'_>>,
-    t: Option<TyId>,
+    _: Option<TyId>,
     a: &[u64],
 ) -> R<Option<u64>> {
-    get_format(m, ctx, t, a)?;
-    m.ret_string(b"").map(Some)
+    let (c, s) = (kctx(ctx)?, sev(arg(a, 0)?)?);
+    let rt = m.rt.clone();
+    let src = rt.asserts.with(c, None, |st| {
+        st.formats[s as usize].as_ref().map(|f| f.src.clone())
+    });
+    let bytes: Vec<u8> = src.unwrap_or_default().chars().map(|c| c as u8).collect();
+    m.ret_string(&bytes).map(Some)
 }
 
-/// `SetVhdlAssertFormat`: only the empty format (the default) is supported.
-fn set_format(m: &mut Machine, a: &[u64]) -> R<()> {
-    if !m.fat_bytes(arg(a, 1)?)?.is_empty() {
-        return rt_err("SetVhdlAssertFormat with a non-empty format is not implemented yet (#99)");
+/// `SetVhdlAssertFormat`; `valid` is the position of the `Valid` argument. An invalid format
+/// leaves the old one and is `Valid => false`, or a run-time error without `Valid` (as sim1).
+fn set_format(
+    m: &mut Machine,
+    ctx: &mut Option<&mut Ctx<'_>>,
+    a: &[u64],
+    valid: Option<usize>,
+) -> R<Option<u64>> {
+    let (s, bytes) = (sev(arg(a, 0)?)?, m.fat_bytes(arg(a, 1)?)?);
+    let text: String = bytes.iter().map(|&b| b as char).collect();
+    // The empty format is the default (no change of output, nothing to log).
+    let parsed = if text.is_empty() {
+        Ok(None)
+    } else {
+        Format::parse(&text).map(|f| Some(Arc::new(f)))
+    };
+    let ok = parsed.is_ok();
+    match (parsed, valid) {
+        (Ok(f), _) => {
+            let c = kctx(ctx)?;
+            m.rt.asserts.with(c, Some(Op::Format(s, f)), |_| ());
+        }
+        (Err(_), Some(_)) => {}
+        (Err(e), None) => return rt_err(format!("invalid assert format \"{text}\": {e}")),
     }
-    Ok(())
+    if let Some(i) = valid {
+        m.store(arg(a, i)?, Width::B1, u64::from(ok))?;
+    }
+    Ok(None)
 }
 
 fn set_format_proc(
     m: &mut Machine,
-    _: &mut Option<&mut Ctx<'_>>,
+    ctx: &mut Option<&mut Ctx<'_>>,
     _: Option<TyId>,
     a: &[u64],
 ) -> R<Option<u64>> {
-    set_format(m, a)?;
-    Ok(None)
+    set_format(m, ctx, a, None)
 }
 
 fn set_format_valid(
     m: &mut Machine,
-    _: &mut Option<&mut Ctx<'_>>,
+    ctx: &mut Option<&mut Ctx<'_>>,
     _: Option<TyId>,
     a: &[u64],
 ) -> R<Option<u64>> {
-    set_format(m, a)?;
-    m.store(arg(a, 2)?, Width::B1, 1)?;
-    Ok(None)
+    set_format(m, ctx, a, Some(2))
+}
+
+/// A parsed `SetVhdlAssertFormat` format (LRM 2019, std.env): text with `{variable[:spec]}`
+/// replacements, `variable ::= s | S | r | t | i`, `spec ::= [[fill] align] [width] [.precision]`.
+#[derive(Debug)]
+pub(crate) struct Format {
+    /// The format as set (what `GetVhdlAssertFormat` returns).
+    src: String,
+    parts: Vec<Part>,
+}
+
+#[derive(Debug)]
+enum Part {
+    Text(String),
+    Rep {
+        var: char,
+        fill: char,
+        align: char,
+        width: usize,
+        /// `.precision` of `t`: the unit in femtoseconds and its name.
+        unit: Option<(u64, &'static str)>,
+    },
+}
+
+const UNITS: [(&str, u64); 9] = [
+    ("fs", 1),
+    ("ps", 1_000),
+    ("ns", 1_000_000),
+    ("us", 1_000_000_000),
+    ("ms", 1_000_000_000_000),
+    ("sec", 1_000_000_000_000_000),
+    ("min", 60_000_000_000_000_000),
+    ("m", 60_000_000_000_000_000),
+    ("hr", 3_600_000_000_000_000_000),
+];
+
+impl Format {
+    fn parse(src: &str) -> Result<Format, String> {
+        let c: Vec<char> = src.chars().collect();
+        let (mut parts, mut text, mut i) = (Vec::new(), String::new(), 0);
+        while i < c.len() {
+            i += 1;
+            if c[i - 1] != '{' {
+                text.push(c[i - 1]);
+                continue;
+            }
+            parts.push(Part::Text(std::mem::take(&mut text)));
+            let var = *c.get(i).ok_or("unterminated replacement")?;
+            if !"sSrti".contains(var) {
+                return Err(format!("invalid replacement variable '{var}'"));
+            }
+            i += 1;
+            let (mut fill, mut align, mut width, mut unit) =
+                (' ', if var == 't' { '>' } else { '<' }, 0, None);
+            if c.get(i) == Some(&':') {
+                i += 1;
+                let is_align = |k: usize| matches!(c.get(k), Some('<' | '>' | '^'));
+                if is_align(i + 1) {
+                    (fill, align) = (c[i], c[i + 1]);
+                    i += 2;
+                } else if is_align(i) {
+                    align = c[i];
+                    i += 1;
+                }
+                while let Some(d) = c.get(i).and_then(|x| x.to_digit(10)) {
+                    width = width * 10 + d as usize;
+                    i += 1;
+                }
+                if c.get(i) == Some(&'.') {
+                    i += 1;
+                    let rest: String = c[i..].iter().collect();
+                    // "min" before "m": the longest unit name that matches.
+                    let (name, fs) = UNITS
+                        .iter()
+                        .filter(|(n, _)| rest.starts_with(n))
+                        .max_by_key(|(n, _)| n.len())
+                        .ok_or_else(|| {
+                            let p: String = rest.chars().take_while(|&x| x != '}').collect();
+                            format!("invalid precision '{p}'")
+                        })?;
+                    if var != 't' {
+                        return Err("a precision is only valid for 't'".into());
+                    }
+                    unit = Some((*fs, *name));
+                    i += name.len();
+                }
+            }
+            if c.get(i) != Some(&'}') {
+                return Err("expected '}'".into());
+            }
+            i += 1;
+            parts.push(Part::Rep {
+                var,
+                fill,
+                align,
+                width,
+                unit,
+            });
+        }
+        parts.push(Part::Text(text));
+        Ok(Format {
+            src: src.to_string(),
+            parts,
+        })
+    }
+
+    /// The message for a report of severity `s`, text `msg`, at `now_fs` in the process `proc`.
+    fn apply(&self, s: Severity, msg: &str, now_fs: u64, proc: &str) -> String {
+        let mut out = String::new();
+        for p in &self.parts {
+            let Part::Rep {
+                var,
+                fill,
+                align,
+                width,
+                unit,
+            } = p
+            else {
+                if let Part::Text(t) = p {
+                    out.push_str(t);
+                }
+                continue;
+            };
+            let sev = ["note", "warning", "error", "failure"][s as usize];
+            let v = match var {
+                'r' => msg.to_string(),
+                's' => sev.to_string(),
+                'S' => sev.to_uppercase(),
+                't' => match unit {
+                    None => format!("{now_fs} fs"),
+                    Some((fs, name)) => format!("{} {name}", fmt_g15(now_fs as f64 / *fs as f64)),
+                },
+                // The instance path: the process name without its label.
+                _ => proc.rsplit_once(':').map_or(proc, |(i, _)| i).to_string(),
+            };
+            let pad = (*width as i64) - v.chars().count() as i64;
+            let (l, r) = match align {
+                '>' => (pad, 0),
+                '<' => (0, pad),
+                _ => (pad / 2, pad - (pad / 2).max(0)),
+            };
+            out.extend(std::iter::repeat_n(*fill, l.max(0) as usize));
+            out.push_str(&v);
+            out.extend(std::iter::repeat_n(*fill, r.max(0) as usize));
+        }
+        out
+    }
+}
+
+/// `printf("%.15g")`.
+fn fmt_g15(x: f64) -> String {
+    if x == 0.0 {
+        return "0".into();
+    }
+    let sci = format!("{x:.14e}");
+    let (mant, exp) = sci.split_once('e').unwrap_or((&sci, "0"));
+    let exp: i32 = exp.parse().unwrap_or(0);
+    let trim = |s: String| {
+        if s.contains('.') {
+            s.trim_end_matches('0').trim_end_matches('.').to_string()
+        } else {
+            s
+        }
+    };
+    if (-4..15).contains(&exp) {
+        trim(format!("{x:.*}", (14 - exp) as usize))
+    } else {
+        format!(
+            "{}e{}{:02}",
+            trim(mant.to_string()),
+            if exp < 0 { '-' } else { '+' },
+            exp.abs()
+        )
+    }
 }
 
 // ---- time_record ----
@@ -805,4 +1015,35 @@ pub(crate) fn lookup(symbol: &str) -> Option<NativeFn> {
         "to_string.time_record_integer.r_string" => trec_string,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn g15_as_printf() {
+        for (x, s) in [
+            (0.0, "0"),
+            (5.0, "5"),
+            (0.005, "0.005"),
+            (5e-6, "5e-06"),
+            (1234.5, "1234.5"),
+            (1e15, "1e+15"),
+        ] {
+            assert_eq!(fmt_g15(x), s);
+        }
+    }
+
+    #[test]
+    fn format_parse_and_apply() {
+        let f = Format::parse("[{S:>8}|{r:*^7}|{t:.ns}|{t}]").expect("valid");
+        assert_eq!(
+            f.apply(Severity::Error, "ab", 5000, ":top:p"),
+            "[   ERROR|**ab***|0.005 ns|5000 fs]"
+        );
+        for bad in ["{Q}", "{t:.x}", "{s:.ns}", "{t", "{t:<5"] {
+            assert!(Format::parse(bad).is_err(), "{bad}");
+        }
+    }
 }

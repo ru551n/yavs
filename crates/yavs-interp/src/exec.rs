@@ -10668,9 +10668,9 @@ impl Machine {
                     Some(c) => {
                         // A severity disabled by SetVhdlAssertEnable is neither shown nor
                         // counted (as sim1).
-                        if !self.rt.asserts.report(c, s) {
+                        let Some(text) = self.rt.asserts.report(c, s, text) else {
                             return Ok(Flow::Next);
-                        }
+                        };
                         c.report(s, text);
                         // The simulation ends after this cycle: execute no further.
                         if s >= c.stop_severity() {

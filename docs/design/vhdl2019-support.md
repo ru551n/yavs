@@ -128,8 +128,7 @@ The matrix above is the 2026-10-19 audit and is kept as written. These rows were
 - **034 Protected types with a generic clause**: a generic map in the protected type header (`type t is protected generic map (..)`)
   is a syntax error (`E0002`, "expected `;`"), not a not-implemented diagnostic. The row stays partial: `type t is new p.box generic
   map (..)` works (test `tests/corpus/protected/generic_instance_2019.vhd`).
-- **050 Assert API**: `SetVhdlAssertEnable` and `GetVhdlAssertEnable` run. `SetVhdlAssertFormat` with a non-empty format stops the run
-  (`E3009`, "not implemented yet (#99)"), and `PslAssertFailed` and `PslIsCovered` stop it with `E3009` "native subprogram ... is not implemented in
+- **050 Assert API**: `SetVhdlAssertEnable` and `GetVhdlAssertEnable` run. `SetVhdlAssertFormat` and `GetVhdlAssertFormat` run (#922), and `PslAssertFailed` and `PslIsCovered` stop it with `E3009` "native subprogram ... is not implemented in
   yavs yet" (`lib/NATIVE.md` lists the unimplemented PSL state natives). The matrix row covers the counting functions only.
 - **055a, 071a, 082, 059a, 061**: the probes (`end;` of a component, a trailing semicolon in port, generic and parameter lists, an empty
   record, `<` on a `real_vector` (an error at `--std=2008`), `` `if `` on `TOOL_NAME`) analyse and run as the matrix says.

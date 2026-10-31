@@ -56,7 +56,7 @@ codes! {
     PARAM_MODE = "E1236", "A subprogram parameter has mode `in`, `out` or `inout` (LRM 4.2.2.1); `buffer` and `linkage` are port modes. A mode view on a signal parameter may still give record elements those modes.";
     SEQUENTIAL_SIGNAL = "E1237", "A process or subprogram declares no signals and no shared variables (LRM 11.3, 4.3), also not in a package declared there or through a package instance there (LRM 4.7, 4.9): such objects belong to the concurrent region around it.";
     NON_SHARED_VARIABLE = "E1238", "A variable declared in an entity, architecture, block, generate or package is a shared variable and needs `shared` (LRM 6.4.2.4); a plain `variable` belongs in a process, subprogram or protected type body.";
-    NOT_DECL_ITEM = "E1239", "A component declaration, configuration specification or disconnection specification is not a declarative item of a process or subprogram (LRM 4.3, 11.3): it belongs in an architecture, block, generate or package.";
+    NOT_DECL_ITEM = "E1239", "The declarative part does not list this item. A process or subprogram takes no component declaration, configuration specification or disconnection specification (LRM 4.3, 11.3); an entity no component declaration or configuration specification (3.2.3); a package declaration no subprogram body, package body or configuration specification (4.7); a package body no signal, component declaration, configuration specification or disconnection specification (4.8).";
     // E13xx expressions and overloading
     TYPE_MISMATCH = "E1300", "The expression has a different type than the context requires.";
     NO_OVERLOAD = "E1301", "None of the visible subprograms or literals with this name accepts these operands.";

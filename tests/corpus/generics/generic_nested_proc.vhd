@@ -7,6 +7,8 @@ package generic_nested_pkg is
     a : integer;
   end record;
   procedure monitor generic (type t);
+end package;
+package body generic_nested_pkg is
   procedure monitor generic (type t) is
     procedure sub is
     begin
@@ -15,7 +17,7 @@ package generic_nested_pkg is
   begin
     sub;
   end procedure;
-end package;
+end package body;
 use work.generic_nested_pkg.all;
 entity generic_nested_proc is end;
 architecture a of generic_nested_proc is

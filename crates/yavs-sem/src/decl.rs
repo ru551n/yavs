@@ -651,8 +651,49 @@ impl Db {
         }
     }
 
+    /// `E1239`: an item the declarative part of an entity, package or package body does not
+    /// list (3.2.3, 4.7, 4.8, #867). Processes, subprograms and protected types check their own.
+    fn check_decl_item(&mut self, scope: ScopeId, d: &ast::Decl) -> Result<(), crate::Reported> {
+        use crate::scope::ScopeKind as K;
+        use ast::Decl as D;
+        let kind = self.scopes[scope].kind;
+        let what = match d {
+            D::Component(_) if matches!(kind, K::Entity | K::PackageBody) => {
+                "a component declaration"
+            }
+            D::ConfigSpec(_) if matches!(kind, K::Entity | K::Package | K::PackageBody) => {
+                "a configuration specification"
+            }
+            D::Disconnect(_) if kind == K::PackageBody => "a disconnection specification",
+            D::Object(o) if kind == K::PackageBody && o.class == ast::ObjectClass::Signal => {
+                "a signal declaration"
+            }
+            D::SubprogramBody(_) if kind == K::Package => "a subprogram body",
+            D::PackageBody(_) if kind == K::Package => "a package body",
+            _ => return Ok(()),
+        };
+        let owner = match kind {
+            K::Entity => "an entity",
+            K::Package => "a package declaration",
+            _ => "a package body",
+        };
+        let help = match d {
+            D::SubprogramBody(_) | D::PackageBody(_) => "move it to the package body",
+            _ => "move it to an architecture, or a package declaration where that is allowed",
+        };
+        Err(self.error(
+            yavs_diag::Diagnostic::error(
+                crate::diag::NOT_DECL_ITEM,
+                format!("{what} is not allowed in {owner}"),
+            )
+            .with_primary(decl_span(d), format!("inside {owner}"))
+            .with_help(help),
+        ))
+    }
+
     fn decl_item(&mut self, scope: ScopeId, d: &ast::Decl) -> Result<(), crate::Reported> {
         use ast::Decl as D;
+        self.check_decl_item(scope, d)?;
         match d {
             D::Type(t) => self.type_decl(scope, t),
             D::Subtype(s) => self.subtype_decl(scope, s),

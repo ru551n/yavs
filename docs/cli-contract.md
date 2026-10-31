@@ -22,8 +22,8 @@ Conventions:
   - Expansion is not recursive: a line starting with `@` is a literal
     argument. An argument containing a line break cannot be written; the test runner
     raises an error for one.
-  - A relative FILE is relative to the current directory. A missing or
-    unreadable FILE is a usage error (exit 2).
+  - A relative FILE is relative to the current directory. A missing,
+    unreadable or not UTF-8 FILE is error E0101 and a usage error (exit 2); the note gives the offset of the first bad byte.
   - The test runner always passes `yavs run @FILE` / `yavs elab @FILE`, with everything
     after the subcommand in `<test output>/yavs/args.rsp`. That keeps
     `runner_cfg` clear of the Windows 32K command line limit and quoting.
@@ -613,10 +613,11 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
      processes is worth the threads, and runs a group on one thread while none is lent.
   3. Closing the connection (any exit of yavs, also a crash or a kill) gives every token back.
      A lower `<want>` gives back the tokens above it. The server never takes back a token.
-  A value that is not `<port>:<secret>`, a port where nothing listens (connect timeout 10 s)
-  and a secret the server does not accept (no answer within 10 s, or a closed connection) are
-  error `E0128` at the start of `run`, before analysis (exit 2); the message never contains the
-  secret. A server that goes away during the run leaves yavs on one thread to the end. Without
+  A value that is not `<port>:<secret>` and a secret the server does not accept (a closed
+  connection or another answer) are error `E0128` at the start of `run`, before analysis (exit 2);
+  the message never contains the secret. A port where nothing listens (connect timeout 10 s), a
+  server that does not answer within 10 s and a server that goes away during the run are warning
+  `W0118` (one warning; the run is on one thread from then on, tokens only speed it up). Without
   `YAVS_TOKENS`, or with `--threads=1`, nothing changes. Output and exit status do not depend
   on the tokens.
 - Garbage collection: `--gc-threshold=SIZE` (bytes, or a `k`, `m`, `g` suffix; default

@@ -55,6 +55,8 @@ Linux and Windows), the threads come from that server
 
 * `--threads N` is the cap. Each simulation owns one implicit token, its main thread, and can use
   at most N - 1 more lent by the server. The tokens decide how many of the N threads run at a time.
+  The worker threads are started when the run is lent its first token (#879), so a simulation that
+  never gets one has no more threads than a run with `--threads 1`.
 * Tokens are asked for only when a group of processes is worth handing to the threads, never by
   waiting: while none is lent, the group runs on the main thread, as with `--threads 1`.
 * Tokens are held while groups keep going to the threads and given back after 64 groups in a row
@@ -64,9 +66,11 @@ Linux and Windows), the threads come from that server
   same at any token count, as at any thread count.
 * Without `YAVS_TOKENS`, or with `--threads 1` (the default), it is not read and `--threads`
   behaves as before. `--dap` runs on one thread and ignores it.
-* A `YAVS_TOKENS` yavs cannot use (not `<port>:<secret>`, nothing listening, a secret the server
-  does not accept, often a value left over from a test runner that ended) is error `E0128` before
-  analysis (exit 2). Unset it to run without a token server.
+* A `YAVS_TOKENS` yavs cannot use (not `<port>:<secret>`, or a secret the server does not accept,
+  often a value left over from a test runner that ended) is error `E0128` before analysis (exit 2).
+  Unset it to run without a token server. A server that cannot be reached, because nothing listens,
+  it does not answer or the connection breaks during the run, is warning `W0118`: the run goes on
+  with one thread and gives the same output.
 * Without a token server, nothing shares the CPU between simulations run side by side: do not
   combine a high `-p` with a high `--threads`, the threads of all runs add up.
 

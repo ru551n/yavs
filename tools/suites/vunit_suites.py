@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run the test runner's own VHDL suites (vunit/vhdl/<suite>/run.py) on yavs through vunit-yavs (#112).
 
-    vunit_suites.py [--vhdl DIR] [--yavs BIN] [--out DIR] [-p N] [--std 2008|2019] [--mem M] [--only SUITE,...]
+    vunit_suites.py [--vhdl DIR] [--yavs BIN] [--out DIR] [-p N] [--std 2008|2019] [--run-flags FLAGS] [--mem M] [--only SUITE,...]
 
 Needs the packages `vunit_hdl` and `vunit-yavs` in the Python running this script. DIR is the
 `vunit/vhdl` directory of the installed test runner unless given (a source checkout works too).
@@ -12,6 +12,7 @@ failure; writes DIR/results.tsv and DIR/<suite>.log.
 
 import argparse
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -58,7 +59,7 @@ def run_suite(vhdl, suite, args, out):
     env = dict(os.environ, VUNIT_SIMULATOR="yavs", VUNIT_YAVS_PATH=str(Path(args.yavs).parent))
     env.setdefault("YAVS_STD_CACHE", str(out / "std"))
     env["VUNIT_VHDL_STANDARD"] = args.std
-    cmd = [sys.executable, "-c", WRAPPER, "run.py", "-p", str(args.p), "--xunit-xml", str(xml)]
+    cmd = [sys.executable, "-c", WRAPPER, "run.py", "-p", str(args.p), "--xunit-xml", str(xml), *shlex.split(args.run_flags)]
     cmd += ["--output-path", str(out / suite)]
     if shutil.which("systemd-run"):
         cmd = ["systemd-run", "--user", "--scope", "-q", "-p", f"MemoryMax={args.mem}"] + cmd
@@ -74,6 +75,7 @@ def main():
     parser.add_argument("--yavs", default=shutil.which("yavs"), help="the yavs executable (default: on PATH)")
     parser.add_argument("--out", type=Path, required=True, help="output directory, outside the repository")
     parser.add_argument("-p", type=int, default=4, help="simulations at once per suite (default 4)")
+    parser.add_argument("--run-flags", default="", help="more flags for each run script, e.g. '--batch-compile --parallel-compile'")
     parser.add_argument("--std", default="2008", choices=["2008", "2019"], help="VHDL standard (default 2008)")
     parser.add_argument("--mem", default="12G", help="MemoryMax of a suite (default 12G)")
     parser.add_argument("--only", default="", help="comma-separated suites (default: all)")

@@ -324,6 +324,28 @@ class TestYavsInterface(unittest.TestCase):
         self.assertEqual(alone[-1][-1], "file1.vhd")
         self.assertNotIn("file0.vhd", alone[-1])
 
+    def test_batch_and_parallel_compile_are_supported_with_names_on_the_command_line(self):
+        # A runner with --batch-compile and --parallel-compile reads these. yavs reads a file list as UTF-8 and
+        # the runner writes it in the locale encoding, so the file names go on the command line (#114).
+        self.assertTrue(YavsInterface.supports_batch_compile)
+        self.assertTrue(YavsInterface.supports_concurrent_compiles_into_library)
+        self.assertIsNone(YavsInterface.batch_file_list_arguments)
+
+    @mock.patch("vunit.sim_if.SimulatorInterface.compile_source_files")
+    @mock.patch("vunit.sim_if.check_output", autospec=True, return_value="")
+    def test_a_runner_with_batches_or_threads_compiles_by_itself(self, check_output, compile_source_files):
+        project = self._project("2008", "2008")
+        self.simif.setup_library_mapping(project)
+        self.simif.compile_source_files(project, batch=True, num_threads=4)
+        self.simif.compile_source_files(project, num_threads=2)
+        self.assertEqual(compile_source_files.call_count, 2)
+        self.assertEqual(compile_source_files.call_args_list[0].kwargs, {"batch": True, "num_threads": 4})
+        check_output.assert_not_called()
+        # The runner's defaults (one thread, no batches) keep the package's own batching
+        self.simif.compile_source_files(project, batch=False, num_threads=1)
+        self.assertEqual(len(check_output.call_args_list), 1)
+        self.assertEqual(sorted(check_output.call_args[0][0][-2:]), ["file0.vhd", "file1.vhd"])
+
     def _simulate(self, config, elaborate_only=False, mode_flags=(), returncode=0, suite="lib.tb", **kwargs):
         """Simulate config with a mocked yavs process and return its status, command line and process mock"""
         if kwargs:
@@ -670,6 +692,23 @@ class TestYavsInterface(unittest.TestCase):
         self.assertIn("--threads=2", cmd)
         self.assertNotIn("--threads=4", cmd)
         self.assertIn("YAVS_TOKENS", env)
+
+    def test_threads_with_tokens_are_capped_at_eight_by_default(self):
+        tokens = TokenServer(16)
+        self.addCleanup(tokens.close)
+        _, cmd, _ = self._simulate(make_config(), tokens=tokens)
+        self.assertIn("--threads=8", cmd)
+        _, cmd, _ = self._simulate(make_config(sim_options={"yavs.max_threads": 12}), tokens=tokens)
+        self.assertIn("--threads=12", cmd)
+
+    def test_token_server_that_cannot_start_is_a_warning_and_no_tokens(self):
+        with mock.patch("vunit_yavs.TokenServer", side_effect=OSError("no loopback")), self.assertLogs(
+            "vunit_yavs", "WARNING"
+        ) as logs:
+            simif = self._from_args(num_threads=4, yavs_jobserver=True)
+        self.assertIsNone(simif._tokens)  # pylint: disable=protected-access
+        self.assertIn("no loopback", logs.output[0])
+        self.assertIn("one thread", logs.output[0])
 
     def test_elaborate_only_has_no_tokens(self):
         cmd, env, _ = self._simulate_with_tokens(make_config(), elaborate_only=True)

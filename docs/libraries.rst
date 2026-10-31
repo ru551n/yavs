@@ -77,6 +77,34 @@ or set it at the top of ``run.py``, before VUnit is created:
 More options are in the
 `package README <https://github.com/ru551n/yavs/blob/main/python/vunit-yavs/README.md>`__.
 
+.. _vunit-native-library:
+
+Native libraries and Python from VHDL
+-------------------------------------
+
+A VUnit package or a project can call a native library from VHDL through foreign subprograms
+(``attribute foreign of f : function is "VHPIDIRECT f"``), and a native library can embed Python,
+so a testbench calls Python (a golden model, a file reader) from VHDL. yavs binds the subprograms
+to the libraries named by ``--load=LIB`` (:doc:`cli-reference`). ``vunit-yavs`` knows this: the
+simulator interface has ``foreign_language_interface = "VHPIDIRECT"`` and
+``native_library_hooks(library_file)``, which returns the simulator hooks that pass
+``--load=library_file`` to every ``yavs run``. A package registers them from its setup function:
+
+.. code-block:: python
+
+    def setup(context):
+        library = build_native_library(context.output_path / "foo")
+        context.register_simulator_hooks("yavs", **YavsInterface.native_library_hooks(library))
+
+The repository holds a working example, ``python/vunit-yavs/tests/project_foreign``: a package that
+compiles a C file (with the Python of the run script embedded where its headers and shared library
+exist) and a testbench that calls ``native_add1`` and evaluates Python expressions from VHDL.
+
+Text crosses the boundary as the characters of the VHDL string, one byte each. yavs reads a UTF-8
+source file as ISO-8859-1 characters (``"é"`` is one character), so a literal with an accent reaches
+the library as one byte that is not valid UTF-8. Give ``--encoding=latin1`` to ``yavs.a_flags`` and to
+``yavs.global_flags`` as a sim option when the library expects the UTF-8 bytes of the file.
+
 .. _vunit-token-server:
 
 Sharing CPU between parallel VUnit tests
@@ -98,9 +126,12 @@ It is off by default; turn it on with ``--yavs-jobserver`` together with ``-p`` 
     python run.py -p 8 --yavs-jobserver
     python run.py -p 8 --yavs-jobserver --yavs-max-threads 4
 
-``--yavs-max-threads N`` caps the threads of one simulation (default: ``-p N``); a test can set its
-own cap with the ``yavs.max_threads`` simulation option, e.g.
-``vu.set_sim_option("yavs.max_threads", 2)``.
+``--yavs-max-threads N`` caps the threads of one simulation (default: ``-p N``, at most 8, since more
+threads buy little and each costs memory in every simulation); a test can set its own cap with the
+``yavs.max_threads`` simulation option, e.g. ``vu.set_sim_option("yavs.max_threads", 2)``. A simulation
+starts its extra threads only when it is lent its first token. If the server cannot start (a blocked
+local socket), the run prints a warning and every simulation uses one thread; a yavs that cannot reach
+the server warns with ``W0118`` and does the same.
 
 yavs splits the processes that wake in the same delta cycle across threads, and only when there is
 enough work to share. It helps designs where many instances do real work on the same clock edge:

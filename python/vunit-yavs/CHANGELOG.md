@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- The token server: a simulation uses at most 8 threads unless `yavs.max_threads` or `--yavs-max-threads` says more (many
+  idle threads at a large `-p`), and a server that cannot start is a warning, every simulation then runs on one thread.
+- Tests of a native library and of Python embedded in it, called from VHDL through foreign subprograms
+  (`tests/project_foreign`); the README says how a package registers the hooks.
+- A runner's `--parallel-compile` and `--batch-compile` work with yavs (`supports_concurrent_compiles_into_library`,
+  `supports_batch_compile`); the file names of a batch go on the command line. Without those flags the package batches
+  consecutive files as before.
 - Consecutive files of one library, standard and flags are analyzed in one `yavs analyze` call, which makes a first
   compile faster; a call that fails is repeated file by file, so failures are reported as before.
 - `--yavs-surfer[=HOST:PORT]` shows the waves of one test in Surfer while it runs.

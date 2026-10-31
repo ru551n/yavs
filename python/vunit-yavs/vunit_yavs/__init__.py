@@ -44,6 +44,9 @@ DEFAULT_DEBUG_PORT = 4711
 DAP_LISTENING = "yavs: DAP listening on "
 # The file names of one yavs analyze call: well below the Windows command line limit of 32767 characters
 MAX_BATCH_CHARS = 20000
+# With a token server a simulation uses at most this many threads unless told otherwise: more buys little
+# (docs/parallel.md) and each thread costs memory in every one of -p N simulations (#879)
+DEFAULT_MAX_THREADS = 8
 
 
 class PositiveIntegerOption(Option):
@@ -109,6 +112,13 @@ class YavsInterface(SimulatorInterface):
 
     name = "yavs"
     executable = environ.get("YAVS", "yavs")
+    # yavs locks a library for each analyze call and takes many files in one call, so a runner with
+    # --parallel-compile and --batch-compile may use both. The file names of a batch go on the command
+    # line, not in a file list (batch_file_list_arguments stays None): the runner writes such a list in
+    # the locale encoding and yavs reads UTF-8 (#114).
+    supports_concurrent_compiles_into_library = True
+    supports_batch_compile = True
+    batch_file_list_arguments = None
 
     compile_options = [
         ListOfStringOption("yavs.global_flags"),
@@ -246,8 +256,13 @@ class YavsInterface(SimulatorInterface):
 
         tokens = None
         if getattr(args, "yavs_jobserver", False) and args.num_threads > 1:
-            tokens = TokenServer(args.num_threads)
-            atexit.register(tokens.close)
+            try:
+                tokens = TokenServer(args.num_threads)
+            except OSError as exc:
+                # Tokens only speed a run up: every simulation then runs on one thread (#878)
+                LOGGER.warning("--yavs-jobserver: cannot start the token server (%s); simulations use one thread", exc)
+            else:
+                atexit.register(tokens.close)
 
         prefix = cls.find_prefix()
         check_executable("YAVS", prefix, cls.executable)
@@ -404,12 +419,18 @@ class YavsInterface(SimulatorInterface):
 
         return cmd
 
-    def compile_source_files(self, project, printer=NO_COLOR_PRINTER, continue_on_error=False, target_files=None):
+    def compile_source_files(
+        self, project, printer=NO_COLOR_PRINTER, continue_on_error=False, target_files=None, *args, **kwargs
+    ):  # pylint: disable=keyword-arg-before-vararg
         """
         Analyze consecutive files of one library, standard and flags in one yavs call: the dependencies are read
         once. A call that fails leaves its files and all later ones to VUnit's own loop, file by file, which reports
         the failing file and skips what depends on it.
+
+        A runner with --parallel-compile or --batch-compile passes num_threads or batch: it then does all of it.
         """
+        if args or kwargs.get("batch") or kwargs.get("num_threads", 1) != 1:
+            return super().compile_source_files(project, printer, continue_on_error, target_files, *args, **kwargs)
         if target_files is None:
             files = project.get_files_in_compile_order()
         else:
@@ -465,7 +486,7 @@ class YavsInterface(SimulatorInterface):
         # With a token server every simulation may use all -p N slots, on tokens.
         max_threads = config.sim_options.get("yavs.max_threads", self._max_threads)
         if max_threads is None and self._tokens is not None:
-            max_threads = self._tokens.num_threads
+            max_threads = min(self._tokens.num_threads, DEFAULT_MAX_THREADS)
         if max_threads is not None and not elaborate_only and not debug:
             cmd += [f"--threads={max_threads}"]
 

@@ -47,8 +47,11 @@ or later (`pip install vunit-yavs` installs it, a pre-release) and yavs 0.11.0 o
 | `--yavs-cov-fail-under PCT` | `results.merge_coverage()` prints the coverage report and the run exits with status 1 when the total is below PCT percent |
 | `--yavs-jobserver` | Lends the CPU slots of `-p N` that no test uses to the running simulations through a token server (below) |
 
+Compiling: consecutive files of one library, standard and flags go to `yavs analyze` in one call. With a VUnit that has
+`--batch-compile` and `--parallel-compile`, those flags work with yavs too (several files per call, several calls at once).
+
 Without `yavs.max_threads` or `--yavs-max-threads` no thread count is passed, and yavs runs with
-its default, unless the token server runs (`--threads=N` for `-p N`, below). An explicit `--threads` in `yavs.sim_flags` comes after the cap and wins.
+its default, unless the token server runs (`--threads=min(N, 8)` for `-p N`, below). An explicit `--threads` in `yavs.sim_flags` comes after the cap and wins.
 
 ## Coverage
 
@@ -76,7 +79,12 @@ documentation page on coverage. The coverage options need the yavs release that 
 A VUnit package that loads a native library can ask the simulator interface how: `YavsInterface`
 has `foreign_language_interface = "VHPIDIRECT"` (the VHDL calls the library through foreign
 subprograms with a `"VHPIDIRECT ..."` attribute) and `native_library_hooks(library_file)`, which
-returns the simulator hooks that pass `--load=<library_file>` to every `yavs run`.
+returns the simulator hooks that pass `--load=<library_file>` to every `yavs run`. A package registers them with
+`context.register_simulator_hooks("yavs", **YavsInterface.native_library_hooks(library))`. The repository's
+`tests/project_foreign` is a package that builds a C library, with Python embedded where the host allows it, and a
+testbench that calls Python from VHDL. A VHDL string reaches the library as one byte per character, and yavs reads a
+UTF-8 source file as Latin-1 characters: give `--encoding=latin1` to `yavs.a_flags` and (as a sim option) to
+`yavs.global_flags` when the library needs the UTF-8 bytes of an accented literal.
 
 ## Debugging one test
 
@@ -99,7 +107,7 @@ together with `--elaborate` or `-p` above 1 is an error at the start. A bare
 
 With `-p N --yavs-jobserver` (Linux and Windows) the run script starts a token server on
 127.0.0.1 and lends the CPU slots of `-p N` that no test uses to the running simulations. Every
-simulation runs with `--threads=N` (`yavs.max_threads` or `--yavs-max-threads` caps it) and gets
+simulation runs with `--threads=N` (at most 8 unless `yavs.max_threads` or `--yavs-max-threads` says more) and gets
 `YAVS_TOKENS=<port>:<secret>`, a secret of its own; yavs runs its extra threads only on tokens the
 server lends, and asks for them only while it has work for them. One CPU slot per running test is
 free, the other `N - k` (for `k` running tests) are lent: breadth first (every test gets one extra
@@ -108,7 +116,8 @@ test. A token in use is never taken back, so a test that starts while every toke
 once: the total is `N` in the steady state, not at every instant. A simulation gives its tokens
 back when it stops using them and when it ends in any way, also when it is killed. The tail of a
 regression, a few long tests on a machine of idle slots, gets faster on designs whose processes
-run in parallel well.
+run in parallel well. If the server cannot start (a blocked local socket) the run warns and every
+simulation uses one thread.
 
 ## Licence
 

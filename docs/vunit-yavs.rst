@@ -29,7 +29,7 @@ as ``--name=value``.
    * - ``yavs.sim_flags``
      - ``yavs run`` (sim option).
    * - ``yavs.max_threads``
-     - ``yavs run --threads=N``: the most threads one simulation uses. An integer of at least 1.
+     - ``yavs run --threads=N``: the most threads one simulation uses (with the token server, ``-p N`` but at most 8 when not set). An integer of at least 1.
        It overrides ``--yavs-max-threads`` for a test. Not passed under ``--yavs-debug`` or to
        ``elab``. A ``--threads`` in ``yavs.sim_flags`` comes after it and wins.
    * - ``yavs.cov_kind``
@@ -83,6 +83,14 @@ Flags of the run script (``python run.py ...``), next to VUnit's own:
 
 Without ``yavs.max_threads`` or ``--yavs-max-threads`` no thread count is passed and yavs runs
 with its default, unless the token server runs.
+
+Compiling
+---------
+
+The package analyzes consecutive files of one library, standard and flags in one ``yavs analyze`` call. A VUnit
+release with ``--batch-compile`` and ``--parallel-compile`` does the compiling itself when you give those flags:
+yavs accepts compiling into one library from several processes and several files in a call, and the file
+names go on the command line.
 
 .. _vunit-coverage:
 

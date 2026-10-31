@@ -1009,7 +1009,7 @@ fn getenv_string(
     a: &[u64],
 ) -> R<Option<u64>> {
     let name = m.fat_bytes(targ(a, 0)?)?;
-    let v = env::getenv(&name).unwrap_or_default();
+    let v = env::getenv(&name, m.rt.revision).unwrap_or_default();
     m.ret_string(&v).map(Some)
 }
 
@@ -1020,7 +1020,7 @@ fn getenv_line(
     a: &[u64],
 ) -> R<Option<u64>> {
     let name = m.fat_bytes(targ(a, 0)?)?;
-    match env::getenv(&name) {
+    match env::getenv(&name, m.rt.revision) {
         // A result is not stored in shared memory: the private heap.
         Some(v) => m.new_line(0, &v).map(Some),
         None => Ok(Some(0)),

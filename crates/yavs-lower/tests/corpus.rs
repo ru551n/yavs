@@ -155,6 +155,7 @@ const PASS: &[&str] = &[
     "env/stop_status",
     "env/stop_time_limit",
     "env/time_records",
+    "env/getenv_identifiers",
     "force/ext_force_out_port",
     "force/force_composite",
     "force/force_composite_ports",

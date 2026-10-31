@@ -58,10 +58,23 @@ pub const TOOL_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// `DIR_SEPARATOR`.
 pub const DIR_SEPARATOR: &str = if cfg!(windows) { "\\" } else { "/" };
 
-/// `getenv(name)`: `None` when the variable is not set (the STRING form
-/// then returns `""`, the LINE form `null`). Values are returned as raw
+/// `getenv(name)`: a conditional analysis identifier (LRM 24.2) is part of the environment and
+/// wins over a variable of that name (LCS-2016-006e, #917); else `None` when the variable is not
+/// set (the STRING form then returns `""`, the LINE form `null`). Values are returned as raw
 /// bytes on Unix and Latin-1 encoded elsewhere.
-pub fn getenv(name: &[u8]) -> Option<Vec<u8>> {
+pub fn getenv(name: &[u8], rev: Revision) -> Option<Vec<u8>> {
+    let predefined = match name {
+        b"VHDL_VERSION" => Some(vhdl_version(rev)),
+        b"TOOL_TYPE" => Some(TOOL_TYPE),
+        b"TOOL_VENDOR" => Some(TOOL_VENDOR),
+        b"TOOL_NAME" => Some(TOOL_NAME),
+        b"TOOL_EDITION" => Some(TOOL_EDITION),
+        b"TOOL_VERSION" => Some(TOOL_VERSION),
+        _ => None,
+    };
+    if let Some(v) = predefined {
+        return Some(v.as_bytes().to_vec());
+    }
     let v = std::env::var_os(crate::error::latin1(name))?;
     #[cfg(unix)]
     {
@@ -562,6 +575,17 @@ mod tests {
         assert_eq!(dir_deletedir(&n, false), DirDeleteStatus::NotEmpty);
         assert_eq!(dir_deletedir(&n, true), DirDeleteStatus::Ok);
         assert!(!dir_itemexists(&n));
-        assert_eq!(getenv(b"YAVS_STD_SURELY_UNSET_VARIABLE"), None);
+        assert_eq!(
+            getenv(b"YAVS_STD_SURELY_UNSET_VARIABLE", Revision::Vhdl2019),
+            None
+        );
+        assert_eq!(
+            getenv(b"TOOL_NAME", Revision::Vhdl2019),
+            Some(TOOL_NAME.as_bytes().to_vec())
+        );
+        assert_eq!(
+            getenv(b"VHDL_VERSION", Revision::Vhdl2019),
+            Some(b"2019".to_vec())
+        );
     }
 }

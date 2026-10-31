@@ -1,5 +1,5 @@
-sim1 2019 REJECT
-sim2 2019 CRASH
 sim3 2019 REJECT
 sim4 2019 OK
-# 2026-10-21: sim2 CRASH (was REJECT): an internal error of the reference (its banner and exception), not an ordinary report.
+sim1 2019 REJECT
+sim2 2019 REJECT
+# 2026-10-31: sim2 REJECT (was CRASH): the reference now reports an ordinary error.

@@ -7,8 +7,7 @@ Command-line reference
 ======================
 
 Every command and option of ``yavs``, as ``yavs --help`` and ``yavs COMMAND --help`` print them.
-:doc:`cli` is the shorter, task-oriented overview; the options of ``vunit-yavs`` are in
-:doc:`vunit-yavs`.
+:doc:`cli` is the task-oriented guide; the options of ``vunit-yavs`` are in :doc:`vunit-yavs`.
 
 Write an option with a value as ``--name=value``. Options go before or after the positional
 arguments. An argument ``@FILE`` is replaced by the arguments in FILE, one per line, taken as
@@ -729,29 +728,7 @@ Remove the cache entries of libraries.
 Environment variables
 ---------------------
 
-None is needed. Command-line options win over the variables.
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 70
-
-   * - Variable
-     - Meaning
-   * - ``NO_COLOR``
-     - When set, diagnostics have no colour; ``--color=always`` still forces it.
-   * - ``YAVS_STD_CACHE=DIR|off``
-     - Where the analyzed ``std`` and ``ieee`` packages are kept, as ``--std-cache``. ``off``
-       keeps them in each library. Default: ``yavs/std`` in the user's cache directory
-       (``XDG_CACHE_HOME`` on Linux, ``LOCALAPPDATA`` on Windows).
-   * - ``YAVS_WAVE_FLUSH=5s|500ms``
-     - Also end a waveform block after that much run time, so that a killed run leaves more of
-       the file (:doc:`waveforms`). Any other value is error ``E0801``.
-   * - ``YAVS_TOKENS=PORT:SECRET``
-     - The token server of a test runner that lends CPU slots: with ``--threads`` above 1 the
-       extra threads run only on tokens it lends (:doc:`running-faster`). A value yavs cannot
-       use is error ``E0128`` and exit status 2; a server that cannot be reached is warning ``W0118`` and the run has one thread.
-   * - ``YAVS_HUGE_HEAP=0``
-     - Do not ask for transparent huge pages on the heap at start (Linux only).
+None is needed, and options win over them. :doc:`environment` lists every one.
 
 Exit status
 -----------
@@ -789,5 +766,13 @@ Errors and warnings go to standard error with a stable code: ``E`` for errors an
 warnings. ``--message-format`` picks the form and ``yavs --explain CODE`` prints a longer
 explanation. Codes by range: ``E0xxx`` syntax, command line, libraries, waveforms, coverage,
 debugger and plugins; ``E1xxx`` semantic analysis; ``E2xxx`` elaboration; ``E3xxx`` runtime
-errors; ``E9999`` an internal error. The messages and the common problems are in
-:doc:`troubleshooting`.
+errors; ``E9999`` an internal error. :doc:`error-codes` lists every code with its meaning, and
+:doc:`troubleshooting` the common problems.
+
+See also
+--------
+
+* :doc:`cli`: running simulations, by task.
+* :doc:`vunit-yavs`: the options of the VUnit package.
+* :doc:`environment`: environment variables.
+* :doc:`error-codes`: every diagnostic code.

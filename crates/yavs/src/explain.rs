@@ -461,6 +461,16 @@ pub fn explain(code: &str) -> Option<&'static str> {
         .or_else(|| yavs_sem::diag::explain(code))
 }
 
+/// Every code with its explanation, for the index page of the user guide.
+#[cfg(test)]
+pub(crate) fn all() -> Vec<(&'static str, &'static str)> {
+    EXPLAIN
+        .iter()
+        .chain(yavs_sem::diag::EXPLAIN)
+        .copied()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

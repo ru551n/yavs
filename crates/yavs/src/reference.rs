@@ -9,9 +9,12 @@
 //! YAVS_BLESS=1 cargo test -p yavs --bin yavs cli_reference
 //! ```
 //!
-//! Options hidden from `--help` are left out. The exit statuses and environment variables are
-//! not part of the clap definition: they are the fixed text at the end of this file, kept
-//! next to the generator so that a change of `docs/cli-contract.md` finds it.
+//! Options hidden from `--help` are left out. The exit statuses are not part of the clap
+//! definition: they are the fixed text at the end of this file, kept next to the generator so that
+//! a change of `docs/cli-contract.md` finds it.
+//!
+//! The same command regenerates `docs/error-codes.rst`, the index of diagnostic codes, from the
+//! tables behind `yavs --explain` (`error_index`).
 
 use clap::{Arg, ArgAction, Command, CommandFactory};
 use std::cell::Cell;
@@ -385,8 +388,7 @@ Command-line reference
 ======================
 
 Every command and option of ``yavs``, as ``yavs --help`` and ``yavs COMMAND --help`` print them.
-:doc:`cli` is the shorter, task-oriented overview; the options of ``vunit-yavs`` are in
-:doc:`vunit-yavs`.
+:doc:`cli` is the task-oriented guide; the options of ``vunit-yavs`` are in :doc:`vunit-yavs`.
 
 Write an option with a value as ``--name=value``. Options go before or after the positional
 arguments. An argument ``@FILE`` is replaced by the arguments in FILE, one per line, taken as
@@ -398,29 +400,7 @@ const TAIL: &str = "\
 Environment variables
 ---------------------
 
-None is needed. Command-line options win over the variables.
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 70
-
-   * - Variable
-     - Meaning
-   * - ``NO_COLOR``
-     - When set, diagnostics have no colour; ``--color=always`` still forces it.
-   * - ``YAVS_STD_CACHE=DIR|off``
-     - Where the analyzed ``std`` and ``ieee`` packages are kept, as ``--std-cache``. ``off``
-       keeps them in each library. Default: ``yavs/std`` in the user's cache directory
-       (``XDG_CACHE_HOME`` on Linux, ``LOCALAPPDATA`` on Windows).
-   * - ``YAVS_WAVE_FLUSH=5s|500ms``
-     - Also end a waveform block after that much run time, so that a killed run leaves more of
-       the file (:doc:`waveforms`). Any other value is error ``E0801``.
-   * - ``YAVS_TOKENS=PORT:SECRET``
-     - The token server of a test runner that lends CPU slots: with ``--threads`` above 1 the
-       extra threads run only on tokens it lends (:doc:`running-faster`). A value yavs cannot
-       use is error ``E0128`` and exit status 2; a server that cannot be reached is warning ``W0118`` and the run has one thread.
-   * - ``YAVS_HUGE_HEAP=0``
-     - Do not ask for transparent huge pages on the heap at start (Linux only).
+None is needed, and options win over them. :doc:`environment` lists every one.
 
 Exit status
 -----------
@@ -458,32 +438,160 @@ Errors and warnings go to standard error with a stable code: ``E`` for errors an
 warnings. ``--message-format`` picks the form and ``yavs --explain CODE`` prints a longer
 explanation. Codes by range: ``E0xxx`` syntax, command line, libraries, waveforms, coverage,
 debugger and plugins; ``E1xxx`` semantic analysis; ``E2xxx`` elaboration; ``E3xxx`` runtime
-errors; ``E9999`` an internal error. The messages and the common problems are in
-:doc:`troubleshooting`.
+errors; ``E9999`` an internal error. :doc:`error-codes` lists every code with its meaning, and
+:doc:`troubleshooting` the common problems.
+
+See also
+--------
+
+* :doc:`cli`: running simulations, by task.
+* :doc:`vunit-yavs`: the options of the VUnit package.
+* :doc:`environment`: environment variables.
+* :doc:`error-codes`: every diagnostic code.
+";
+
+/// The index of diagnostic codes, relative to the repository root.
+const CODES_PAGE: &str = "docs/error-codes.rst";
+
+/// An explanation as reStructuredText, cut at its first sentence: code spans become literals, and
+/// a span written with double backticks (it holds a backtick) stays one literal.
+fn first_sentence(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(c) = rest.chars().next() {
+        let tick = if rest.starts_with("``") { "``" } else { "`" };
+        if c == '`' {
+            let body = &rest[tick.len()..];
+            let end = body.find(tick).unwrap_or(body.len());
+            let _ = write!(out, "``{}``", body[..end].trim());
+            rest = body[end..].strip_prefix(tick).unwrap_or("");
+            continue;
+        }
+        rest = &rest[c.len_utf8()..];
+        if matches!(c, '*' | '|' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+        if c == '.' && (rest.is_empty() || rest.starts_with(char::is_whitespace)) {
+            break;
+        }
+    }
+    out
+}
+
+/// `docs/error-codes.rst`: every code of the tables behind `yavs --explain`, by the stage it
+/// belongs to, with the first sentence of its explanation.
+fn error_index() -> String {
+    const GROUPS: [(&str, &str, &str); 6] = [
+        (
+            "E0",
+            "Syntax, command line, waveforms, coverage, debugger, plugins",
+            "E0 and W0",
+        ),
+        ("L0", "Libraries", "L0"),
+        ("E1", "Semantic analysis", "E1 and W1"),
+        ("E2", "Elaboration", "E2 and W2"),
+        ("E3", "Run time", "E3 and W3"),
+        ("E9", "Internal errors", "E9"),
+    ];
+    let mut codes = crate::explain::all();
+    codes.sort_by_key(|(c, _)| (c[1..].to_string(), *c));
+    let mut out = String::from(CODES_HEAD);
+    for (key, title, prefixes) in GROUPS {
+        let digit = &key[1..2];
+        let rows: Vec<_> = codes
+            .iter()
+            .filter(|(c, _)| match key {
+                "L0" => c.starts_with('L'),
+                _ => !c.starts_with('L') && c[1..2] == *digit,
+            })
+            .collect();
+        let head = format!("{title} ({prefixes})");
+        let _ = writeln!(out, "{head}\n{}\n", "-".repeat(head.len()));
+        out.push_str(
+            ".. list-table::\n   :header-rows: 1\n   :widths: 12 88\n\n   * - Code\n     - Meaning\n",
+        );
+        for (code, text) in rows {
+            let _ = writeln!(out, "   * - _`{code}`\n     - {}", first_sentence(text));
+        }
+        out.push('\n');
+    }
+    out.push_str(CODES_TAIL);
+    out
+}
+
+const CODES_HEAD: &str = "\
+.. This page is generated from the tables behind ``yavs --explain`` (crates/yavs/src/reference.rs).
+.. Do not edit it. After a change to a code or its explanation regenerate it with:
+..
+..     YAVS_BLESS=1 cargo test -p yavs --bin yavs cli_reference
+
+Error codes
+===========
+
+Every diagnostic code of yavs with its meaning, for looking up a code you got: ``E`` is an error,
+``W`` a warning and ``L`` a library error. ``yavs --explain CODE`` prints the whole explanation.
+The search box of this site finds a code, and a link to one ends in ``#e1100``.
+
+.. contents:: On this page
+   :local:
+
+";
+
+const CODES_TAIL: &str = "\
+See also
+--------
+
+* :doc:`troubleshooting`: how to read a diagnostic, and the common problems.
+* :doc:`cli-reference`: ``--message-format``, ``-Werror`` and exit statuses.
 ";
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The committed page is what the command line defines now.
-    #[test]
-    fn cli_reference_is_current() {
+    /// A generated page is what its source defines now, or rewritten under `YAVS_BLESS`.
+    fn check_page(rel: &str, now: &str, what: &str) {
         let page = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join(PAGE);
-        let now = render();
+            .join(rel);
         if std::env::var_os("YAVS_BLESS").is_some() {
-            std::fs::write(&page, &now).unwrap();
+            std::fs::write(&page, now).unwrap();
             return;
         }
         let committed = std::fs::read_to_string(&page).unwrap_or_default();
         assert!(
             committed == now,
-            "{PAGE} is out of date: the command line changed (an option, default, value or help \
-             text).\nRegenerate it and commit the result:\n\n    \
+            "{rel} is out of date: {what} changed.\nRegenerate it and commit the result:\n\n    \
              YAVS_BLESS=1 cargo test -p yavs --bin yavs cli_reference\n"
         );
+    }
+
+    /// The committed page is what the command line defines now.
+    #[test]
+    fn cli_reference_is_current() {
+        check_page(
+            PAGE,
+            &render(),
+            "the command line (an option, default, value or help text)",
+        );
+    }
+
+    /// The committed index is what the `--explain` tables hold now.
+    #[test]
+    fn cli_reference_error_index_is_current() {
+        check_page(
+            CODES_PAGE,
+            &error_index(),
+            "a diagnostic code or its explanation",
+        );
+    }
+
+    #[test]
+    fn first_sentence_of_an_explanation() {
+        assert_eq!(first_sentence("One `a.b`. Two."), "One ``a.b``.");
+        assert_eq!(first_sentence("Bad `` `if `` here"), "Bad ```if`` here");
+        assert_eq!(first_sentence("A * b"), "A \\* b");
     }
 
     /// The rule reference of the user guide is what the rule list says now; the same command

@@ -572,7 +572,19 @@ impl Elaborated {
             l.capture_free_objects(true);
         }
         for c in &self.elab_calls {
-            if !elab.sigs.contains_key(&c.func) {
+            if let Some(e) = c.expr {
+                if let std::collections::hash_map::Entry::Vacant(slot) = elab.exprs.entry(e) {
+                    let t = crate::pkgcall::expr_item(&mut l, db, e).map_err(|f| match f {
+                        crate::pkgcall::Fail::Lower(m) | crate::pkgcall::Fail::Runtime(m) => {
+                            vec![Diagnostic::error(crate::codes::INTERNAL, m)]
+                        }
+                        crate::pkgcall::Fail::Unsupported(w) => {
+                            vec![Diagnostic::error(crate::codes::INTERNAL, w.to_string())]
+                        }
+                    })?;
+                    slot.insert(t);
+                }
+            } else if !elab.sigs.contains_key(&c.func) {
                 let sig = crate::pkgcall::sig(&mut l, db, c.func)?;
                 elab.needs
                     .insert(c.func, crate::pkgcall::needs_of(&l, sig.func));

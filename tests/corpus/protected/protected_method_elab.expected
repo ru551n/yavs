@@ -1,0 +1,8 @@
+exit	0
+diag	note	0	0	:protected_method_elab:u1:_p0	sub_me g=1 l=2
+diag	note	0	0	:protected_method_elab:g1(1):u:_p0	sub_me g=2 l=3
+diag	note	0	0	:protected_method_elab:g1(1):_p0	1 c=2
+diag	note	0	0	:protected_method_elab:g1(2):u:_p0	sub_me g=5 l=6
+diag	note	0	0	:protected_method_elab:g1(2):_p0	2 c=5
+diag	note	0	0	:protected_method_elab:_p0	w2 = 5 s'length = 5 w3=6 s3=6 s4=3 w5=6
+diag	note	0	0	:protected_method_elab:_p0	8

@@ -715,6 +715,19 @@ impl Model {
         {
             return self.call(db, e, *callee, args, scope);
         }
+        // A method call of a shared variable, in elaboration order like a function's (#912).
+        if let ExprKind::Call {
+            callee,
+            method_of: Some(_),
+            ..
+        } = &ex.kind
+            && db.decls[*callee]
+                .kind
+                .subprogram()
+                .is_some_and(|s| s.ret.is_some())
+        {
+            return self.method_call(db, e, *callee, scope);
+        }
         if let Some(v) = self.composite(db, e, scope)? {
             return Ok(v);
         }
@@ -892,6 +905,46 @@ impl Model {
                 Err(f) => Err(failed(f)),
             },
         }
+    }
+
+    /// A protected method call `e` of `callee`: a thunk of the expression run in the session,
+    /// reading the object and the arguments' objects as a function reads those of its region.
+    fn method_call(
+        &mut self,
+        db: &Db,
+        e: ExprId,
+        callee: DeclId,
+        scope: Option<ScopeId>,
+    ) -> R<Val> {
+        let span = db.exprs[e].span;
+        let failed = |f: crate::pkgcall::Fail| match f {
+            crate::pkgcall::Fail::Unsupported(w) => err(
+                codes::NOT_EVALUATED,
+                span,
+                format!("this call cannot be evaluated during elaboration yet: {w}"),
+                "called during elaboration",
+            ),
+            crate::pkgcall::Fail::Runtime(msg) => err(
+                codes::EVAL_FAILED,
+                span,
+                format!("evaluation fails during elaboration: {msg}"),
+                "in this call",
+            ),
+            crate::pkgcall::Fail::Lower(why) => not_callable(db, callee, span, &why),
+        };
+        let needs = self.session.expr_needs(db, e).map_err(failed)?;
+        let items = match self.fill_items(db, &needs, scope, span) {
+            Ok(Ok(items)) => items,
+            Ok(Err(f)) => {
+                self.session.abandon();
+                return Err(failed(f));
+            }
+            Err(d) => {
+                self.session.abandon();
+                return Err(d);
+            }
+        };
+        self.session.call_expr(db, callee, e, items).map_err(failed)
     }
 
     /// Call `callee` in the session (package state, shared variables of regions): the objects

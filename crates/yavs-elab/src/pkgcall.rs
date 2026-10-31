@@ -23,7 +23,7 @@ use yavs_interp::{Bindings, CallVal, InstData, Runtime, SharedState, Sources};
 use yavs_ir::{FuncId, Program, TyId};
 use yavs_kernel::SimError;
 use yavs_lower::{FreeObj, LowerOptions, Lowerer, PackageIr};
-use yavs_sem::{Db, DeclId, UnitId};
+use yavs_sem::{Db, DeclId, ExprId, UnitId};
 
 use crate::eval::Val;
 use crate::hier::ScopeId;
@@ -544,6 +544,8 @@ pub struct Call {
     pub(crate) result: Val,
     /// The objects of its region it read (`None`: none).
     pub(crate) fill: Option<Fill>,
+    /// A method call runs as a thunk of this expression, not as `func` (#912).
+    pub(crate) expr: Option<ExprId>,
 }
 
 /// The functions lowered for running calls again: their signatures, the captured objects each
@@ -554,6 +556,8 @@ pub(crate) struct Items {
     /// By function, and by shared variable for its thunk.
     pub(crate) needs: HashMap<DeclId, Needs>,
     pub(crate) inits: HashMap<DeclId, yavs_ir::FuncId>,
+    /// The thunks of method calls (`Call::expr`) and what each reads.
+    pub(crate) exprs: HashMap<ExprId, (Sig, Needs)>,
 }
 
 fn fail_text(f: Fail) -> String {
@@ -648,9 +652,10 @@ fn replay_calls(
 ) -> Result<(), String> {
     for c in log {
         let name = &c.name;
-        let s = items
-            .sigs
-            .get(&c.func)
+        let thunk = c.expr.and_then(|e| items.exprs.get(&e));
+        let s = thunk
+            .map(|t| &t.0)
+            .or_else(|| items.sigs.get(&c.func))
             .ok_or_else(|| format!("internal error: `{name}` is not lowered for the replay"))?;
         let mut inst = None;
         if let Some(f) = &c.fill {
@@ -663,7 +668,10 @@ fn replay_calls(
                 let h = create_var(rt, shared, *init, data).map_err(fail_text)?;
                 vars.insert(cr.key, h);
             }
-            let needs = items.needs.get(&c.func).ok_or_else(not_lowered)?;
+            let needs = thunk
+                .map(|t| &t.1)
+                .or_else(|| items.needs.get(&c.func))
+                .ok_or_else(not_lowered)?;
             inst = Some(inst_data(&rt.prog, needs, &f.items, vars).map_err(fail_text)?);
         }
         match run(rt, s, &c.args, Some(shared), inst) {
@@ -731,6 +739,8 @@ pub(crate) struct Session {
     lowered: Vec<(DeclId, bool)>,
     /// The shared variables of regions whose creation thunks were lowered after those, in order.
     inits: Vec<DeclId>,
+    /// The method calls lowered as thunks, in order.
+    exprs: Vec<ExprId>,
     live: Option<Live>,
     /// A call failed after it may have changed the package state.
     dirty: bool,
@@ -767,6 +777,7 @@ impl Session {
             args,
             result: result.clone(),
             fill: None,
+            expr: None,
         });
         Ok(result)
     }
@@ -791,6 +802,68 @@ impl Session {
                 items,
                 creates: std::mem::take(&mut self.pending),
             }),
+            expr: None,
+        });
+        Ok(result)
+    }
+
+    /// The captured objects the thunk of method call `e` reads, lowering it if needed.
+    pub(crate) fn expr_needs(&mut self, db: &Db, e: ExprId) -> Result<Needs, Fail> {
+        if !self
+            .live
+            .as_ref()
+            .is_some_and(|l| l.items.exprs.contains_key(&e))
+        {
+            self.exprs.push(e);
+            let r = self.lower_more(db, |l, items| {
+                let t = expr_item(l, db, e)?;
+                items.exprs.insert(e, t);
+                Ok(())
+            });
+            if let Err(f) = r {
+                self.exprs.pop();
+                return Err(f);
+            }
+        }
+        self.live
+            .as_ref()
+            .and_then(|l| l.items.exprs.get(&e))
+            .map(|t| t.1.clone())
+            .ok_or_else(|| Fail::Runtime("internal error: not lowered".into()))
+    }
+
+    /// Run the thunk of method call `e` of `f` with the objects it reads, and log the call.
+    pub(crate) fn call_expr(
+        &mut self,
+        db: &Db,
+        f: DeclId,
+        e: ExprId,
+        items: Vec<(DeclId, FillItem)>,
+    ) -> Result<Val, Fail> {
+        self.expr_needs(db, e)?;
+        let live = self
+            .live
+            .as_mut()
+            .ok_or_else(|| Fail::Runtime("internal error: no package state".into()))?;
+        let (s, needs) = live
+            .items
+            .exprs
+            .get(&e)
+            .ok_or_else(|| Fail::Runtime("internal error: not lowered".into()))?;
+        let inst = inst_data(&live.rt.prog, needs, &items, &live.vars)?;
+        let r = run(&live.rt, s, &[], Some(&live.shared), Some(inst));
+        self.dirty |= r.is_err();
+        let result = r?;
+        self.log.push(Call {
+            func: f,
+            name: db.decls[f].name.to_string(),
+            args: Vec::new(),
+            result: result.clone(),
+            fill: Some(Fill {
+                items,
+                creates: std::mem::take(&mut self.pending),
+            }),
+            expr: Some(e),
         });
         Ok(result)
     }
@@ -880,8 +953,9 @@ impl Session {
                 .unwrap_or_else(|| (*live.rt.prog).clone()),
         );
         // What read the objects of regions was laid out for the calls, not for the design.
-        let captured =
-            !live.items.inits.is_empty() || live.items.needs.values().any(|n| !n.free.is_empty());
+        let captured = !live.items.inits.is_empty()
+            || !live.items.exprs.is_empty()
+            || live.items.needs.values().any(|n| !n.free.is_empty());
         lowerer.forget_free_objects();
         let data = live
             .rt
@@ -1115,6 +1189,9 @@ impl Session {
             items.inits.insert(v, func);
             items.needs.insert(v, needs);
         }
+        for &e in &self.exprs {
+            items.exprs.insert(e, expr_item(&mut l, db, e)?);
+        }
         let lw = l.snapshot_take().map_err(lower)?;
         let lowerer = Some((l.suspend(), pkgs));
         let prog = Arc::new(lw.program);
@@ -1288,6 +1365,19 @@ fn init_item(l: &mut Lowerer, var: DeclId) -> Result<(yavs_ir::FuncId, Needs), F
     let f = l.region_var_init(var).map_err(lower_fail)?;
     let needs = needs_of(l, f);
     Ok((f, needs))
+}
+
+/// Lower the thunk of method call `e`: no parameters, the call's value.
+pub(crate) fn expr_item(l: &mut Lowerer, db: &Db, e: ExprId) -> Result<(Sig, Needs), Fail> {
+    let func = l.expr_thunk(e).map_err(lower_fail)?;
+    let ret = l.ty(db.base(db.exprs[e].subtype)).map_err(lower_fail)?;
+    let needs = needs_of(l, func);
+    let sig = Sig {
+        func,
+        params: Vec::new(),
+        ret: Some(ret),
+    };
+    Ok((sig, needs))
 }
 
 /// Add what `lower` lowers to `live`'s program, keeping the package state. `None` when it

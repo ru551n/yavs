@@ -927,6 +927,29 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// A function without parameters returning the value of expression `e`, for an
+    /// elaboration-time evaluation of a protected method call (#912). The objects it reads are
+    /// captured as for a function (`capture_free_objects`).
+    pub fn expr_thunk(&mut self, e: yavs_sem::ExprId) -> Result<FuncId, Vec<Diagnostic>> {
+        let span = self.db.exprs[e].span;
+        let f = func::thunk(
+            self.db,
+            &mut self.pb,
+            &mut self.cx,
+            "'expr",
+            span,
+            |fx| match fx.expr(e)? {
+                crate::expr::V::S(r) => Ok(r),
+                crate::expr::V::A(data, desc) => Ok(fx.make_fat(data, desc)),
+            },
+        );
+        self.drain();
+        match f {
+            Ok(f) if self.cx.diags.is_empty() => Ok(f),
+            _ => Err(self.cx.take_failed()),
+        }
+    }
+
     /// A function `(k : integer) return integer` returning bound `k` (left, right, left, ...)
     /// of the ranges package type or subtype `decl` evaluated into package data
     /// ([`Lowerer::package`]). For the elaborator, which reads them instead of evaluating

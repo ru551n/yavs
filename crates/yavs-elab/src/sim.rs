@@ -1013,6 +1013,7 @@ impl Elaborated {
             start.as_ref().map(|s| &s.data[..]),
             ir.init_key.as_ref(),
             true,
+            self.elab_printed,
             replay.as_mut(),
             |p, d| {
                 // Descriptors of the package's array signals (none for an unbound alias of an

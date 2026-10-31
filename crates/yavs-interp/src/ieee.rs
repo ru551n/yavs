@@ -300,7 +300,7 @@ pub(crate) fn report(m: &mut Machine, ctx: Cx<'_, '_, '_>, s: Severity, text: &s
             }
         }
         None => {
-            if !m.rt.asserts.report_elab(s) {
+            if m.init_report_seen(s, text) || !m.rt.asserts.report_elab(s) {
                 return Ok(());
             }
             crate::env::print_elab(s, text);

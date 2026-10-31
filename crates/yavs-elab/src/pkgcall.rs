@@ -377,6 +377,7 @@ pub(crate) fn init_packages(
     start: Option<&[InstData]>,
     cache: Option<&InitKey>,
     fix_writes: bool,
+    printed: usize,
     mut calls: Option<&mut Replay>,
     mut fix: impl FnMut(&PackageIr, &mut InstData) -> Result<(), SimError>,
 ) -> Result<Arc<Runtime>, SimError> {
@@ -398,6 +399,10 @@ pub(crate) fn init_packages(
         )));
     }
     let cache = cache.filter(|_| start.is_none() && !packages.is_empty());
+    let set_printed = |st: &mut SharedState| st.set_init_printed(printed);
+    if let Ok(mut s) = shared.lock() {
+        set_printed(&mut s);
+    }
     // The state of the packages initialised before any call, the only one a cache entry holds.
     let clean = calls.as_ref().map_or(packages.len(), |r| r.clean());
     // The descriptors `fix` writes (`fix_writes`) are read by the initialisers that follow (a
@@ -412,8 +417,9 @@ pub(crate) fn init_packages(
     if let Some(k) = whole
         && let Some(bytes) = k.get(resolution)
         && let vars = shared.lock().map_or(0, |s| s.vars.len())
-        && let Some((d, st)) = yavs_interp::restore_state(&bytes, packages.len(), vars)
+        && let Some((d, mut st)) = yavs_interp::restore_state(&bytes, packages.len(), vars)
     {
+        set_printed(&mut st);
         st.replay_init_reports();
         *shared.lock().map_err(|_| {
             SimError::new(yavs_kernel::ErrorKind::Internal(
@@ -439,9 +445,10 @@ pub(crate) fn init_packages(
             l.cache
                 .prefix_get(l.level, crate::libstage::INIT, &l.part(resolution, n))
         && let total = shared.lock().map_or(0, |s| s.vars.len())
-        && let Some((d, st)) =
+        && let Some((d, mut st)) =
             yavs_interp::restore_state_prefix(&bytes, n, l.shared as usize, total)
     {
+        set_printed(&mut st);
         st.replay_init_reports();
         *shared.lock().map_err(|_| {
             SimError::new(yavs_kernel::ErrorKind::Internal(
@@ -734,6 +741,9 @@ pub(crate) struct Session {
     /// calls made before it (#873): a package loaded during elaboration is initialised after
     /// the calls made so far, and a rebuild or the simulation's replay keeps that order.
     pub(crate) order: Vec<(UnitId, usize)>,
+    /// The reports package initialisation has printed so far: a later initialisation of the
+    /// same packages in the same order does not print them again (#874).
+    pub(crate) init_printed: usize,
     /// Shared variables of regions created for the call being prepared; the next logged call
     /// takes them.
     pending: Vec<Create>,
@@ -1089,7 +1099,7 @@ impl Session {
 
     /// Lower the packages `pkgs` (`order`) and `lowered`, initialise the packages and replay the
     /// log, each call after the packages initialised before it.
-    fn rebuild(&self, db: &Db, pkgs: Vec<UnitId>) -> Result<Live, Fail> {
+    fn rebuild(&mut self, db: &Db, pkgs: Vec<UnitId>) -> Result<Live, Fail> {
         let lower = lower_fail;
         let (mut l, lib) = package_lowerer(db, &pkgs, LowerOptions::default()).map_err(lower)?;
         l.capture_free_objects(true);
@@ -1131,10 +1141,14 @@ impl Session {
             None,
             init.as_ref(),
             false,
+            self.init_printed,
             Some(&mut calls),
             |_, _| Ok(()),
         )
         .map_err(runtime)?;
+        if let Ok(s) = shared.lock() {
+            self.init_printed = self.init_printed.max(s.init_report_count());
+        }
         let vars = calls.finish(&rt, &shared).map_err(Fail::Runtime)?;
         Ok(Live {
             rt,

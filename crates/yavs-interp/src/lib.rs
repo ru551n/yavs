@@ -149,6 +149,9 @@ pub struct SharedState {
     /// What package initialisation reported (printed at once, to stderr), in order: a restored
     /// state prints it again ([`SharedState::replay_init_reports`], #407).
     pub(crate) init_reports: Vec<(u8, String)>,
+    /// How many of those were printed by an earlier initialisation of the same packages (a
+    /// session rebuild, the build's replay): not printed or counted again (#874).
+    pub(crate) init_printed: usize,
 }
 
 /// A serial process's shared-heap roots: the handles its frames' root maps and recorded
@@ -174,6 +177,7 @@ impl SharedState {
             started: false,
             tainted: None,
             init_reports: Vec::new(),
+            init_printed: 0,
         }
     }
 
@@ -2578,6 +2582,7 @@ pub fn init_package(
         None => None,
     };
     if let Some(g) = guard.as_mut() {
+        m.reports_seen = g.init_printed.saturating_sub(g.init_reports.len());
         m.sh = Some(std::mem::take(&mut **g));
     }
     let r = m.enter(func, &[]).and_then(|()| m.run(None, 0));

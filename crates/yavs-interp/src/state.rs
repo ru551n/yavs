@@ -203,7 +203,18 @@ impl SharedState {
     /// Print (and count for the exit status) the reports the initialisers made when this state was
     /// made, as they did then; call right after [`restore_state`].
     pub fn replay_init_reports(&self) {
-        crate::env::replay_elab(&self.init_reports);
+        let printed = self.init_printed.min(self.init_reports.len());
+        crate::env::replay_elab(&self.init_reports[printed..]);
+    }
+
+    /// The reports of an earlier initialisation of these packages, already printed (#874).
+    pub fn set_init_printed(&mut self, n: usize) {
+        self.init_printed = n;
+    }
+
+    /// How many reports package initialisation made so far.
+    pub fn init_report_count(&self) -> usize {
+        self.init_reports.len()
     }
 
     /// The state after the initialisation of `data`'s packages as bytes for [`restore_state`].

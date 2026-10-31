@@ -2117,10 +2117,10 @@ fn composite_value_attribute() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 }
 
-/// An aggregate target made of fields of a signal parameter is not lowered yet: an explicit
-/// E2001, not an internal error (the second reference suite's `issue3030`).
+/// An aggregate target made of fields of a signal parameter elaborates (the second reference
+/// suite's `issue3030`, #610).
 #[test]
-fn aggregate_target_of_signal_parameter_is_not_an_ice() {
+fn aggregate_target_of_signal_parameter_elaborates() {
     let dir = tempdir("agg_target_param");
     let lib = format!("--work=work:{}/lib", dir.display());
     let src = dir.join("top.vhd");
@@ -2146,4 +2146,53 @@ fn aggregate_target_of_signal_parameter_is_not_an_ice() {
     let _ = std::fs::remove_dir_all(&dir);
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(o.status.success(), "{err}");
+}
+
+/// A package initialisation report of a run whose build initialises the packages again (a
+/// coverage run) is printed and counted once, and still drives the exit status (#874).
+#[test]
+fn package_init_report_is_printed_once() {
+    let dir = tempdir("init_report_once");
+    let lib = format!("--work=work:{}/lib", dir.display());
+    let src = dir.join("top.vhd");
+    std::fs::write(
+        &src,
+        "package r is\n\
+           function say return natural;\n\
+           constant k : natural;\n\
+         end package;\n\
+         package body r is\n\
+           function say return natural is begin report \"r init\" severity error; return 5; end function;\n\
+           constant k : natural := say;\n\
+         end package body;\n\
+         package p is\n\
+           impure function f return natural;\n\
+         end package;\n\
+         package body p is\n\
+           shared variable n : natural := 0;\n\
+           impure function f return natural is begin n := n + 1; return n; end function;\n\
+         end package body;\n\
+         use work.p.all; use work.r.all;\n\
+         entity top is end;\n\
+         architecture a of top is\n\
+           constant a0 : natural := f;\n\
+         begin\n\
+           process begin report integer'image(a0 + k); wait; end process;\n\
+         end;\n",
+    )
+    .expect("write");
+    let path = src.display().to_string();
+    let o = yavs_cmd(&["analyze", "--relaxed", "--std=2008", &lib, &path]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let cov = format!("--cov={}/x.ycov", dir.display());
+    for args in [vec![], vec![cov.as_str()]] {
+        let mut run = vec!["run", "--relaxed", "--std=2008", &lib];
+        run.extend(args);
+        run.push("top");
+        let o = yavs_cmd(&run);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(err.matches("r init").count(), 1, "{err}");
+        assert_eq!(o.status.code(), Some(1), "{err}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

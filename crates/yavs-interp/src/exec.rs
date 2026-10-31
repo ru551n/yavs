@@ -639,6 +639,8 @@ pub(crate) struct Machine {
     /// The reports it printed, to print again when its state is restored (`Some` while a
     /// package is initialised or a traced call runs, `call_values_traced`).
     pub(crate) init_reports: Option<Vec<(u8, String)>>,
+    /// The first reports of this initialisation were printed by an earlier one (#874).
+    pub(crate) reports_seen: usize,
     pub entry: FuncId,
     waits: Waits,
     /// The last `LayoutOf` of each type (indexed by `TyId`): descriptor size, descriptor bytes
@@ -1238,6 +1240,7 @@ impl Machine {
             pkg_init: None,
             tainted: None,
             init_reports: None,
+            reports_seen: 0,
             entry,
             dbg: None,
             waits: Waits::default(),
@@ -3423,6 +3426,18 @@ impl Machine {
             return rt_err(w);
         }
         Ok(out)
+    }
+
+    /// A report an earlier initialisation of this package already printed and counted.
+    pub(crate) fn init_report_seen(&mut self, s: yavs_kernel::Severity, text: &str) -> bool {
+        if self.reports_seen == 0 {
+            return false;
+        }
+        self.reports_seen -= 1;
+        if let Some(r) = self.init_reports.as_mut() {
+            r.push((s as u8, text.to_string()));
+        }
+        true
     }
 
     fn driver_ref(&self, d: &ProcDriver) -> R<(SigRef, Elem)> {
@@ -10666,7 +10681,9 @@ impl Machine {
                     // to stderr at once, ahead of the first cycle, as the reference does. Severity failure stops
                     // elaboration as it stops a run.
                     None => {
-                        if self.rt.replay.load(std::sync::atomic::Ordering::Relaxed) {
+                        if self.rt.replay.load(std::sync::atomic::Ordering::Relaxed)
+                            || self.init_report_seen(s, &text)
+                        {
                             return Ok(Flow::Next);
                         }
                         if !self.rt.asserts.report_elab(s) {

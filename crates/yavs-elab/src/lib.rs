@@ -457,6 +457,8 @@ pub struct Elaborated {
     /// The run-time packages in the order elaboration initialised them, each with the number of
     /// those calls made before it (#873); empty when no call ran with package state.
     pub(crate) elab_pkgs: Vec<(yavs_sem::UnitId, usize)>,
+    /// The package initialisation reports elaboration printed (`Session::init_printed`).
+    pub(crate) elab_printed: usize,
     /// The package state those calls left, for the simulation to start from (#383).
     pub(crate) start: Option<pkgcall::Start>,
 }

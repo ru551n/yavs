@@ -3,8 +3,8 @@ Open issues on running yavs under the VUnit test runner and sharing CPUs across 
 ## Issues
 - [x] #865 vunit-yavs: test runner package with --yavs-debug, thread cap and jobserver (branch vunit-interface)
 - [x] #870 vunit-yavs: native library hooks for VUnit packages that load a native library
-- [ ] #881 A VUnit AXI-stream elementwise testbench times out under yavs only for 64-bit words and no stall
+- [x] #881 A VUnit AXI-stream elementwise testbench times out under yavs only for 64-bit words and no stall (cause was #907, fixed in dda92e01; the downstream testbench was not re-run, it is not on this host)
 - [ ] #882 perf: --yavs-jobserver slows a single-thread processor-model test by about 4 percent
-- [ ] #879 token server at large -p: cap threads per simulation by default and grow the thread pool only when tokens arrive
-- [ ] #878 token server: fall back to one thread instead of failing when the socket cannot be used
+- [x] #879 token server at large -p: cap threads per simulation by default and grow the thread pool only when tokens arrive (7ee0ff2f, 35e4e54b; the thread-count and memory measurement at a large -p was not run)
+- [x] #878 token server: fall back to one thread instead of failing when the socket cannot be used (7ee0ff2f, 35e4e54b)
 - [ ] #801 investigate: VUnit hands free CPU slots to running yavs simulations in the tail of a -p N regression (jobserver-style token pool)

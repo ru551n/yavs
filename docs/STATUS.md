@@ -2845,6 +2845,8 @@ in 2008 and 2019 against yavs's std/ieee and fails on a panic, a hang (`-timeout
 any diagnostic carrying "this is a bug in yavs". The negative suite fails on any ICE too, xfail or not.
 `yavs analyze` over all ten `tools/corpus` manifests (debug build, so the HIR validator runs; `timeout 60`
 per file) shows no panic and no timeout.
+Rechecked 2026-10-31 (#44): all 34 manifests with a debug build, no panic, no timeout, no difference from the expected lists;
+the scheduled fuzz workflow (`.github/workflows/fuzz.yml`) green on its runs of the last five days. The workflow is the standing guard.
 
 External library corpora (`tools/corpus/gen_external.py`, validated per file with the reference simulators; rejects and reasons in `tools/corpus/rejects/`): `en_cl_fix`, `open-logic`, `poc`, `json-for-vhdl`, `vhdl-extras`,
 `vhlib`, `fletcher`, `satcat5`, `surf`, `neorv32`, `neotrng`, `vhdl-compliance`, `vhdl-interfaces`, `vhdl-tool-checks`,

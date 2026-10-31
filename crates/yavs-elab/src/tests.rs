@@ -2172,6 +2172,23 @@ fn unused_subtype_and_package_constant_constraints_are_checked() {
 }
 
 #[test]
+fn package_instance_subtype_with_a_generic_bound_elaborates() {
+    // The check of #847 skips package instances: their generics have no value at this level.
+    let src = "package b is generic (a : positive);
+        subtype addr_t is bit_vector(a - 1 downto 0);
+      end package;
+      package c is new work.b generic map (a => 10);
+      package d is generic (a : positive);
+        subtype addr_t is bit_vector(a - 1 downto 0);
+      end package;
+      package e is new work.d generic map (a => work.c.a);
+      use work.e.all;
+      entity t is end; architecture x of t is begin end;";
+    let (_, r) = try_elab("pkginstsub", src, "t", &[]);
+    assert!(r.is_ok());
+}
+
+#[test]
 fn signal_initial_value_outside_the_element_subtype() {
     // #821: each scalar of a signal's initial value lies in its (element) subtype, also when
     // the value comes from a generic.

@@ -589,12 +589,14 @@ pub(crate) fn elaborate(
             }
         }
         // The constraints of package constants and subtypes nothing may read (#847).
+        // Not of a package instance: its generics have values only in its own lowering.
         let checked: Vec<(yavs_sem::SubtypeId, Span)> =
             e.db.units
                 .iter()
                 .filter(|(_, u)| !builtin_lib(e.db, u.lib))
+                .filter(|(_, u)| matches!(u.hir, UnitHir::Package { generics: None }))
                 .flat_map(|(u, _)| e.db.package_regions(u).unwrap_or_default())
-                .flat_map(|s| e.db.decls_with_instances(s))
+                .flat_map(|s| e.db.scopes[s].order.iter().copied())
                 .filter_map(|d| match &e.db.decls[d].kind {
                     DeclKind::Subtype(st) => Some((*st, e.db.decls[d].span)),
                     DeclKind::Object(o)

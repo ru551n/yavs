@@ -70,7 +70,7 @@ testbench" inserts one; `sample/` is a complete workspace):
 |---|---|
 | `top` | required: the top level, `ENTITY`, `ENTITY.ARCH` or a configuration in the work library |
 | `work` | the work library as `NAME:PATH` (default `work:.yavs/work`) |
-| `libraries` | more libraries as `NAME:PATH`, passed as `--map`, such as those `yavs vendor` builds |
+| `libraries` | more libraries as `NAME:PATH`, passed as `--map` |
 | `sources` | files analyzed into the work library, in order, before every session; empty means you analyze yourself |
 | `std` | `2008` or `2019`, passed as `--std` to analyze and run |
 | `generics` | generics of the top level, passed as `-gNAME=VALUE` |

@@ -19,7 +19,6 @@ mod stdout;
 mod stuck;
 mod timing;
 mod tokens;
-mod vendor;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use yavs_diag::{ColorChoice, Diagnostic, MessageFormat, Severity, SourceMap};
@@ -165,9 +164,6 @@ enum Command {
     /// Manage the compilation cache kept in library directories.
     #[command(subcommand)]
     Cache(cache::Command),
-    /// Build vendor simulation libraries from your own install of the vendor's tools.
-    #[command(subcommand)]
-    Vendor(vendor::Command),
 }
 
 #[cfg_attr(test, derive(Debug))]
@@ -327,9 +323,6 @@ fn main() -> ExitCode {
         }
         Command::Cov(c) => return guard(format, color, || cov::run(c, format, color)),
         Command::Cache(c) => return guard(format, color, || cache::run(c, format, color)),
-        Command::Vendor(c) => {
-            return guard(format, color, || vendor::run(c, format, color, encoding));
-        }
     };
     let opts = Options {
         std: match std {

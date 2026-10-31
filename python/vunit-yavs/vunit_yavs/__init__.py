@@ -11,7 +11,7 @@ The yavs simulator interface for VUnit, added as a package:
     vu.add_package("vunit-yavs", allow_setup=True)  # before any other call
     ...
 
-and selected with VUNIT_SIMULATOR=yavs. add_vivado_libraries adds the vendor simulation libraries.
+and selected with VUNIT_SIMULATOR=yavs.
 """
 
 import argparse
@@ -29,6 +29,8 @@ from pathlib import Path
 
 from vunit.exceptions import CompileError
 from vunit.ostools import Process
+from vunit import sim_if as vunit_sim_if
+from vunit.color_printer import NO_COLOR_PRINTER
 from vunit.sim_if import ListOfStringOption, Option, SimulatorInterface, StringOption, check_executable, hooks
 from vunit.vhdl_standard import VHDL
 
@@ -40,6 +42,8 @@ LOGGER = logging.getLogger(__name__)
 # The attach port of the editor extension's "Attach to yavs" configuration
 DEFAULT_DEBUG_PORT = 4711
 DAP_LISTENING = "yavs: DAP listening on "
+# The file names of one yavs analyze call: well below the Windows command line limit of 32767 characters
+MAX_BATCH_CHARS = 20000
 
 
 class PositiveIntegerOption(Option):
@@ -67,36 +71,6 @@ def _max_threads(text):
     if not text.isdigit() or int(text) < 1:
         raise argparse.ArgumentTypeError(f"expected an integer of at least 1, got {text!r}")
     return int(text)
-
-
-def add_vivado_libraries(vu, vivado=None, output_path=None, std="2008"):
-    """
-    Build unisim, unimacro and unifast from the user's Vivado install with 'yavs vendor vivado' and add them
-    to the project as external libraries. A build that is up to date takes a fraction of a second.
-
-    vivado -- the directory of the install that holds data/vhdl/src (default: the environment's XILINX_VIVADO)
-    output_path -- the directory the libraries are built in (default: inside the VUnit output path)
-    std -- the language standard of the libraries, "2008" or "2019"
-    """
-    if vu.get_simulator_name() != YavsInterface.name:
-        raise RuntimeError(f"add_vivado_libraries needs the yavs simulator, not {vu.get_simulator_name()}")
-    base = Path(vu._simulator_output_path)  # pylint: disable=protected-access
-    out = Path(output_path) if output_path is not None else base / "vendor"
-    cmd = [
-        str(Path(YavsInterface.find_prefix()) / YavsInterface.executable),
-        "vendor",
-        "vivado",
-        f"--out={out}",
-        f"--std={std}",
-        f"--std-cache={base.resolve() / 'std_cache'}",
-    ]
-    if vivado is not None:
-        cmd += [f"--vivado={vivado}"]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    if proc.returncode != 0:
-        raise RuntimeError(f"{' '.join(cmd)} failed:\n{proc.stdout}{proc.stderr}")
-    for name in ("unisim", "unimacro", "unifast"):
-        vu.add_external_library(name, out / name)
 
 
 def _exit_with_failure():
@@ -413,6 +387,33 @@ class YavsInterface(SimulatorInterface):
 
         return cmd
 
+    def compile_source_files(self, project, printer=NO_COLOR_PRINTER, continue_on_error=False, target_files=None):
+        """
+        Analyze consecutive files of one library, standard and flags in one yavs call: the dependencies are read
+        once. A call that fails leaves its files and all later ones to VUnit's own loop, file by file, which reports
+        the failing file and skips what depends on it.
+        """
+        if target_files is None:
+            files = project.get_files_in_compile_order()
+        else:
+            files = project.get_minimal_file_set_in_compile_order(target_files)
+        batched = False
+        for batch in _batches(files):
+            cmd = self.compile_vhdl_file_command(batch[0])[:-1] + [source_file.name for source_file in batch]
+            try:
+                output = vunit_sim_if.check_output(cmd, env=self.get_env())
+            except subprocess.CalledProcessError:
+                break
+            printer.write(output)
+            for source_file in batch:
+                printer.write(f"Compiling into {source_file.library.name}: {source_file.name} passed\n")
+                project.update(source_file)
+            batched = True
+        if batched and not project.get_files_in_compile_order():
+            printer.write("Compile passed\n", fg="gi")
+            return
+        super().compile_source_files(project, printer, continue_on_error, target_files)
+
     def compile_vhdl_file_command(self, source_file):
         """
         Returns the command to compile a VHDL file
@@ -651,6 +652,32 @@ def check_interactive_args(args, debug_port):
             f"--yavs-interactive runs one test, but -p {args.num_threads} asks for parallel simulations. "
             "Drop -p (or use -p 1) and name one test."
         )
+
+
+def _batches(source_files):
+    """
+    The runs of two or more consecutive VHDL files that can share a yavs call, each short enough for a command line
+    on any platform. Single files stay with VUnit's own loop. Stops at a file that is not VHDL: order must hold.
+    """
+    runs = []
+    key = None
+    length = 0
+    for source_file in source_files:
+        if not source_file.is_vhdl:
+            break
+        file_key = (
+            source_file.library.name,
+            source_file.get_vhdl_standard(),
+            tuple(source_file.compile_options.get("yavs.global_flags", [])),
+            tuple(source_file.compile_options.get("yavs.a_flags", [])),
+        )
+        length += len(source_file.name) + 1
+        if file_key != key or length > MAX_BATCH_CHARS:
+            runs.append([])
+            key = file_key
+            length = len(source_file.name) + 1
+        runs[-1].append(source_file)
+    return [run for run in runs if len(run) > 1]
 
 
 def write_response_file(file_name, args):

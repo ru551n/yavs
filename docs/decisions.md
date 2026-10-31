@@ -12749,17 +12749,12 @@ duplicate implementations without changing diagnostics (issue #894; implemented 
   platform has no job, so only the `ubuntu-24.04` names can be required checks on main
   (maintainer, 2026-10-30; agent cc-host1/ci).
 
-## Vendor libraries from the user's install (CLI, vunit-yavs, #119, 2026-10-31)
+## Vendor libraries from the user's install (#119, 2026-10-31)
 
 - **UNISIM and UNIMACRO come from the user's own Vivado install; sources are never redistributed or committed** (user, 2026-10-30). Intel and Lattice libraries later.
-- **Decision: a command, `yavs vendor vivado --out=DIR`, not a recipe.** Analysis of the whole library is about a second and a repeat a tenth of that, so there is no prebuilt form, no stamp logic and nothing to download. A library records the paths of the install's files and copies none of them. Why not a recipe: the file order is the install's own lists, the same three lines in every project's script.
-- **Decision: the install comes from `--vivado`, else `XILINX_VIVADO`; no searching.** That is the variable of the install's `settings64.sh`. Searching default locations would pick a version silently. Anything else is `E0129` naming the path and the fix.
-- **Decision: the tool is named in user-facing text** (`vivado`, `XILINX_VIVADO`). It is the install the user must have and the variable they must set, not one of the reference simulators of `SIMULATORS` rule 11; the error the maintainer asked for has to name it. To confirm with the user.
-- **Decision: `unisims/secureip` is left out,** with its primitives (`ISERDESE2`, `OSERDESE2`, `PHASER_*`, transceivers, ...): the files need a `secureip` library the install holds only in encrypted Verilog. An instance stays unbound, as for every missing entity (`W2108`). The XPM macros are SystemVerilog, so they are out too. The Verilog plan (#776) does not cover encrypted models.
-- **Decision: `unifast` is built too.** Three files, and a design that names the library then just works.
-- **Decision: the marker `yavs-vendor.txt` holds the yavs version, standard and source directory; a different value deletes the libraries first.** Analysing a second install over the first would leave units of files only the first has, and a library of an older yavs is `L0004`, which asks for exactly this deletion.
-- **Decision: in `vunit-yavs` a helper for `run.py`, `add_vivado_libraries(vu)`, and no command line flag.** A project declares its libraries in `run.py`, and the install is already named by the environment; a flag would add a second way to say it.
-- **Not applicable (rule 32):** the VS Code extension needs no change, its launch configuration's `libraries` takes `NAME:PATH`; the Python scripting API (#132) does not exist yet.
+- **Decision (maintainer, 2026-10-31): no vendor command.** A `yavs vendor vivado` command and a helper in `vunit-yavs` existed for a few hours on main, unreleased, and were removed: "I simply need to be able to build the vendor code with good performance." The way to build is `yavs analyze` over the install's files and VUnit's `add_library` with `add_source_files`, a few lines in `docs/libraries.rst`. The command did nothing plain analyze cannot do: a shell glob is a valid order for `unisim`, and `unimacro` needs only its component package first.
+- **`unisims/secureip` and the XPM macros are not supported:** the secureip files need a library the install holds only in encrypted Verilog, and an instance stays unbound as for every missing entity (`W2108`). The XPM macros are SystemVerilog.
+- **`vunit-yavs` analyzes consecutive files in one call,** as "Batched analysis calls" decided for integrations; it had not done so yet. A first compile of the libraries took twice as long, one process per file.
 
 ## VS Code and test runner: install and forget (#902, 2026-10-31)
 

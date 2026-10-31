@@ -130,10 +130,6 @@ const EXPLAIN: &[(&str, &str)] = &[
         "`--threads` is above 1 and `YAVS_TOKENS` names a token server that yavs cannot use: the value is not `<port>:<secret>`, nothing listens on that port of 127.0.0.1, or the server did not accept the secret (often a `YAVS_TOKENS` left over from a test runner that has ended). The run stops before analysis (exit 2). Unset `YAVS_TOKENS` to run without a token server.",
     ),
     (
-        "E0129",
-        "`yavs vendor vivado` cannot find the simulation sources in the install: `--vivado` is not given and `XILINX_VIVADO` is not set, or the directory they name has no `data/vhdl/src/unisims`. The message names the path it looked at. Pass `--vivado=DIR` with the directory of your install that holds `data/vhdl/src`, or source the `settings64.sh` of the install. Exit status 2.",
-    ),
-    (
         "E0199",
         "A command option or combination is not implemented yet. The message names the limitation. This is a limitation of yavs, not an internal compiler error. Exit status 2.",
     ),

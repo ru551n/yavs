@@ -171,18 +171,6 @@ directly (`docs/design/vhdl-93.md`).
   time goes unnoticed (as with build tools in general); re-analyze such a file. A file recorded without
   the two fields (one edited right before it was analyzed) is always hashed.
 
-- `yavs vendor vivado --out=DIR [--vivado=DIR] [--std=93|2008|2019] [--std-cache=DIR|off]` (#119) builds
-  `DIR/unisim`, `DIR/unimacro` and `DIR/unifast` from `<install>/data/vhdl/src`, `<install>` being `--vivado`, else
-  `$XILINX_VIVADO` (the variable of the install's `settings64.sh`). It is `analyze` over the install's own lists
-  (`unisim_VPKG.vhd`, `unisim_retarget_VCOMP.vhd`, then `vhdl_analyze_order` of `unisims/primitive`,
-  `unisims/retarget`, `unimacro`, `unifast/primitive`), with its diagnostics and exit codes; the sources stay in the
-  install. `unisims/secureip` is not analyzed. On success stdout has one `NAME: N files` line per library and a last
-  line with the `--map` options. No install, a directory without `data/vhdl/src/unisims` or a missing list is
-  `E0129` naming the path (exit 2), before anything is written. `DIR/yavs-vendor.txt` records the yavs version,
-  the standard and the source directory; when one of them differs the three libraries are deleted and built afresh, so no
-  library keeps units of another install. Running it again with the same values is safe and takes a fraction of a
-  second, as `analyze` of unchanged files does.
-
 ### Compilation cache
 
 `yavs elab` and `yavs run` keep what analysis of the design's closure produced in the work

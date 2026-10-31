@@ -503,33 +503,22 @@ class TestRealYavs(unittest.TestCase):
         self.assertEqual(vunit_exit_code, 0, output)
         self.assertEqual(report(self.xml), {PASS: "passed"})
 
-    def _vendor_run(self, env):
-        return subprocess.run(
-            [sys.executable, str(HERE / "project" / "run_vendor.py"), "-o", str(self.tempdir / "out"), "-x", str(self.xml)],
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=TIMEOUT,
-            check=False,
-        )
-
-    def test_vendor_libraries_without_an_install(self):
-        env = self._env()
-        env.pop("XILINX_VIVADO", None)
-        proc = self._vendor_run(env)
-        self.assertNotEqual(proc.returncode, 0, proc.stdout)
-        self.assertIn("E0129", proc.stdout)
-        self.assertIn("settings64.sh", proc.stdout)
-
     @unittest.skipUnless(
         Path(os.environ.get("XILINX_VIVADO", "/nowhere"), "data/vhdl/src/unisims").is_dir(),
         "no vendor install: set XILINX_VIVADO",
     )
     def test_vendor_libraries_of_an_install(self):
-        proc = self._vendor_run(self._env())
-        self.assertEqual(proc.returncode, 0, proc.stdout)
-        self.assertEqual(report(self.xml), {"lib.tb_vendor.all": "passed"}, proc.stdout)
-        # Again: the built libraries are kept and the test still passes.
-        proc = self._vendor_run(self._env())
-        self.assertEqual(proc.returncode, 0, proc.stdout)
+        command = [sys.executable, str(HERE / "project" / "run_vendor.py"), "-o", str(self.tempdir / "out")]
+        command += ["-x", str(self.xml)]
+        for _ in range(2):  # The second run has nothing to analyze
+            proc = subprocess.run(
+                command,
+                env=self._env(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=TIMEOUT,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout)
+            self.assertEqual(report(self.xml), {"lib.tb_vendor.all": "passed"}, proc.stdout)

@@ -5,8 +5,8 @@ yavs is compliant with OSVVM, UVVM and VUnit: their own regression and test suit
 and so do the testbenches of other open-source VHDL libraries. The current numbers
 are in :doc:`conformance`.
 
-yavs has no precompiled libraries. Using a library means analyzing its VHDL sources into a library
-of the name it expects; ``yavs vendor`` does that for the vendor simulation libraries.
+yavs has no precompiled libraries and no installer command. Using a library means analyzing its
+VHDL sources into a library of the name it expects.
 
 Compile a library from source
 -----------------------------
@@ -124,26 +124,37 @@ Measurements are in `parallel.md <https://github.com/ru551n/yavs/blob/main/docs/
 Vendor libraries
 ----------------
 
-Vendor simulation libraries are not shipped, because the vendor licenses their sources. yavs builds
-them from your own install. ``unisim``, ``unimacro`` and ``unifast`` come from a Vivado install:
+Vendor simulation libraries are not shipped, because the vendor licenses their sources. Analyze
+them from your own install like any other library. For a Vivado install, with ``S`` the directory
+``<install>/data/vhdl/src``:
 
 .. code-block:: bash
 
-    source <install>/settings64.sh         # sets XILINX_VIVADO; or pass --vivado=<install>
-    yavs vendor vivado --out=build/vendor
-    yavs analyze --std=2008 --work=work:build/work --map=unisim:build/vendor/unisim my_design.vhd
-    yavs run --work=work:build/work --map=unisim:build/vendor/unisim my_design
+    S=$XILINX_VIVADO/data/vhdl/src   # the variable comes from the install's settings64.sh
+    yavs analyze --work=unisim:build/unisim \
+        $S/unisims/unisim_VPKG.vhd $S/unisims/unisim_retarget_VCOMP.vhd \
+        $S/unisims/primitive/*.vhd $S/unisims/retarget/*.vhd
+    yavs analyze --work=unimacro:build/unimacro --map=unisim:build/unisim \
+        $S/unimacro/unimacro_VCOMP.vhd $S/unimacro/*.vhd
+    yavs analyze --work=work:build/work --map=unisim:build/unisim my_design.vhd
+    yavs run --work=work:build/work --map=unisim:build/unisim my_design
 
-``--vivado`` names the directory that holds ``data/vhdl/src``. The command prints the ``--map``
-options of the libraries, takes about a second, and takes a fraction of that when nothing changed,
-so a build script can run it every time. ``--std`` gives the standard the sources are analyzed with
-(default 2008). Without an install it stops with error ``E0129``, which names the path it looked
-at.
+This takes between one and two seconds, and a fraction of a second when nothing changed, so a build
+script can run it every time. On Windows, give the file list in a response file (:doc:`cli`).
+Leave out ``unisim_VCOMP.vhd``, which defines the same package as ``unisim_retarget_VCOMP.vhd``.
+A library records where its sources are and copies nothing, so the install must stay in place; after
+it changes, analyze again (``L0034`` tells you).
 
-The sources stay in the install and are never copied: a library only records where they are, and a
-design reads the primitives it reaches. So the install must stay in place, and after it changes
-you run the command again (``L0034`` tells you). The analysis results in ``yavs-cache/`` are derived
-from the sources, so do not publish the directory.
+With VUnit, the same with ``add_library``; VUnit works out the order:
+
+.. code-block:: python
+
+    S = Path(os.environ["XILINX_VIVADO"]) / "data" / "vhdl" / "src"
+    unisim = vu.add_library("unisim")
+    unisim.add_source_files([S / "unisims" / "unisim_VPKG.vhd", S / "unisims" / "unisim_retarget_VCOMP.vhd"])
+    unisim.add_source_files(S / "unisims" / "primitive" / "*.vhd")
+    unisim.add_source_files(S / "unisims" / "retarget" / "*.vhd")
+    vu.add_library("unimacro").add_source_files(S / "unimacro" / "*.vhd")
 
 The libraries run for functional simulation: timing models run with zero delay and no SDF file is
 read. The VITAL and Synopsys packages these models use are built into yavs.
@@ -152,21 +163,11 @@ Buffers, registers, LUTs, shift registers, clocking (``MMCME2``, ``MMCME4``, ``P
 ``BUFG`` and its relatives), block RAM (``RAMB18E1``, ``RAMB36E1``, ``RAMB18E2``, ``RAMB36E2``), DSP
 slices (``DSP48E1``, ``DSP48E2``), hard FIFOs (``FIFO18E1``, ``FIFO36E1``, ``FIFO36E2``), the DDR
 registers (``IDDR``, ``ODDR``, ``IDDRE1``, ``ODDRE1``), the delay elements and the ``unimacro`` macros
-all run. Not available, because the install has them only as encrypted Verilog models:
+all run. Not available, because the install has them only as encrypted Verilog models or as
+SystemVerilog:
 
 * the primitives of ``unisims/secureip``: ``ISERDESE2``, ``ISERDESE3``, ``OSERDESE2``, ``OSERDESE3``,
   ``PHASER_*``, ``PHY_CONTROL``, ``IN_FIFO``, ``OUT_FIFO``, the bitslices, and the transceiver, PCIe,
   CMAC, Interlaken, HBM, RF converter and PS8 blocks. An instance of one stays unbound (warning
   ``W2108``) and its outputs stay ``'U'``: give it a behavioural model of your own for simulation.
-* the XPM macros, which the install holds as SystemVerilog.
-
-With VUnit, ``add_vivado_libraries`` runs the command and adds the libraries to the project:
-
-.. code-block:: python
-
-    from vunit_yavs import add_vivado_libraries
-
-    add_vivado_libraries(vu)  # after add_package; the install comes from XILINX_VIVADO
-
-In VS Code, list them under ``libraries`` in the launch configuration:
-``"libraries": ["unisim:${workspaceFolder}/build/vendor/unisim"]``.
+* the XPM macros.

@@ -50,23 +50,6 @@ or later (`pip install vunit-yavs` installs it, a pre-release) and yavs 0.11.0 o
 Without `yavs.max_threads` or `--yavs-max-threads` no thread count is passed, and yavs runs with
 its default, unless the token server runs (`--threads=N` for `-p N`, below). An explicit `--threads` in `yavs.sim_flags` comes after the cap and wins.
 
-## Vendor libraries
-
-`add_vivado_libraries` builds `unisim`, `unimacro` and `unifast` from your own Vivado install and
-adds them to the project as external libraries; your code then uses them with `library unisim;` as
-usual:
-
-```python
-from vunit_yavs import add_vivado_libraries
-
-add_vivado_libraries(vu)  # after add_package; the install comes from XILINX_VIVADO
-```
-
-`vivado=DIR` names the install (the directory that holds `data/vhdl/src`), `output_path=DIR` where the
-libraries go (default: inside the VUnit output path), `std="2019"` their standard. Without an install
-it raises an error that names what it looked at and the fix. It runs `yavs vendor vivado`, so it
-needs a yavs with that command; the sources stay in the install. Which primitives run: "Vendor libraries" in the yavs user guide.
-
 ## Coverage
 
 ```python

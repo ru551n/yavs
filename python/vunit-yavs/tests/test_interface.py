@@ -294,6 +294,29 @@ class TestYavsInterface(unittest.TestCase):
         stds = {call[0][0][-1]: call[0][0][2] for call in check_output.call_args_list}
         self.assertEqual(stds, {"file0.vhd": "--std=2008", "file1.vhd": "--std=2019"})
 
+    @mock.patch("vunit.sim_if.check_output", autospec=True, return_value="")
+    def test_consecutive_files_share_one_call(self, check_output):
+        self.simif.compile_project(self._project("2008", "2008", "2019"))
+        calls = [call[0][0] for call in check_output.call_args_list]
+        self.assertEqual([cmd[2] for cmd in calls], ["--std=2008", "--std=2019"])
+        self.assertEqual(sorted(calls[0][-2:]), ["file0.vhd", "file1.vhd"])
+        self.assertEqual(calls[1][-1], "file2.vhd")
+
+    @mock.patch("vunit.sim_if.check_output", autospec=True)
+    def test_failing_call_is_repeated_file_by_file(self, check_output):
+        def fail_with_file1(cmd, env=None):  # pylint: disable=unused-argument
+            if "file1.vhd" in cmd:
+                raise subprocess.CalledProcessError(1, "yavs", output="error[E0001]: bad")
+            return ""
+
+        check_output.side_effect = fail_with_file1
+        with self.assertRaises(CompileError):
+            self.simif.compile_project(self._project("2008", "2008"))
+        batch, *alone = [call[0][0] for call in check_output.call_args_list]
+        self.assertEqual(sorted(batch[-2:]), ["file0.vhd", "file1.vhd"])
+        self.assertEqual(alone[-1][-1], "file1.vhd")
+        self.assertNotIn("file0.vhd", alone[-1])
+
     def _simulate(self, config, elaborate_only=False, mode_flags=(), returncode=0, suite="lib.tb", **kwargs):
         """Simulate config with a mocked yavs process and return its status, command line and process mock"""
         if kwargs:

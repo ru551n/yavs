@@ -419,9 +419,6 @@ None is needed. Command-line options win over the variables.
      - The token server of a test runner that lends CPU slots: with ``--threads`` above 1 the
        extra threads run only on tokens it lends (:doc:`running-faster`). A value yavs cannot
        use is error ``E0128`` and exit status 2.
-   * - ``XILINX_VIVADO=DIR``
-     - The install ``yavs vendor vivado`` builds from when ``--vivado`` is not given
-       (:doc:`libraries`). Set by the ``settings64.sh`` of the install.
    * - ``YAVS_HUGE_HEAP=0``
      - Do not ask for transparent huge pages on the heap at start (Linux only).
 

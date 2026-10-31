@@ -55,16 +55,14 @@ Flags of the run script (``python run.py ...``), next to VUnit's own:
 
    * - Flag
      - What it does
-   * - ``-g``, ``--gui``
-     - Opens the run in the graphical debugger (``yavs run --gui``).
    * - ``--yavs-debug[=PORT]``
      - Runs the one selected test under ``yavs run --dap=PORT`` and waits for a debugger on
        ``127.0.0.1:PORT`` (default ``4711``, ``0`` picks a free port). Write the port as
        ``--yavs-debug=PORT``: a test name after a bare ``--yavs-debug`` is read as the port.
-       Not with ``--gui``, ``--elaborate``, ``-p`` above 1 or more than one simulation.
+       Not with ``--elaborate``, ``-p`` above 1 or more than one simulation.
    * - ``--yavs-interactive``
      - Runs the one selected test at the yavs console (``yavs run --interactive``, :doc:`interactive`),
-       with the ``vunit_*`` commands. Not with ``--yavs-debug``, ``--gui``, ``--elaborate``, ``-p`` above 1
+       with the ``vunit_*`` commands. Not with ``--yavs-debug``, ``--elaborate``, ``-p`` above 1
        or more than one simulation.
    * - ``--yavs-surfer[=HOST:PORT]``
      - Shows the waves of the one selected test in Surfer while it runs (``yavs run --surfer``,

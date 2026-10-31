@@ -102,7 +102,7 @@ fn what_analysis_rejects_first() {
         ),
         (
             "config.vhd",
-            "entity d is end entity;\narchitecture rtl of d is begin end architecture;\nentity t is end entity;\narchitecture s of t is\n  component d is end component;\nbegin\n  i : d;\nend architecture;\nconfiguration c of t is\n  for s\n    for i : d\n      use entity work.d(no_such);\n    end for;\n  end for;\nend configuration;\n",
+            "entity t is end entity;\narchitecture s of t is begin end architecture;\nconfiguration c of t is\n  for no_such\n  end for;\nend configuration;\n",
             "E1002",
         ),
     ] {

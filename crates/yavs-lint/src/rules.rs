@@ -48,7 +48,7 @@ pub static RULES: &[Rule] = &[
         "lint_751",
         D,
         "A configuration names an architecture that is not declared.",
-        "A binding indication `use entity work.e(a)` names architecture `a` of `e`, and elaboration would fail when the library has no such architecture. Analysis already rejects it, as E1002, so a lint run shows that error and this rule never adds a finding of its own; it stays so that a configuration can name it.",
+        "A block configuration `for a` names architecture `a` of the entity. Analysis rejects a missing one, as E1002, so a lint run shows that error and this rule never adds a finding of its own; it stays so that a configuration can name it. A binding indication `use entity work.e(a)` may name an architecture analyzed later: elaboration reports a missing one.",
     ),
     rule(
         "lint_770",

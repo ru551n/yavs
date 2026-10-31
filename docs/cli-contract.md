@@ -722,13 +722,6 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
 
 ## 6. Waves and the runner's debug option
 
-The test runner's `-g/--gui` option (the viewer path): the test runner runs `yavs run ...
---wave=<output>/yavs/<entity>.fst`, then opens the file in the viewer:
-`--viewer` argument, then `yavs.viewer.gui` sim option, then the default FST
-viewers the runner knows, found on `PATH`. `yavs.viewer_script.gui` is passed to the viewer as
-`--script FILE`. Only FST is written; the test runner warns and ignores `--viewer-fmt`
-values other than `fst`.
-
 yavs has no graphical debugger of its own and no `yavs run --gui` (removed 2026-10-29, #871; the
 option is now a usage error like any unknown option). Debug with any DAP client (`yavs run --dap`,
 section 5, for example VS Code with the extension in `editors/vscode/`). A test runner reaches a

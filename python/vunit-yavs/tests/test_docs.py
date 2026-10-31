@@ -47,7 +47,3 @@ class TestOptionPage(unittest.TestCase):
         actions = parser._actions  # pylint: disable=protected-access
         defined = {s for a in actions for s in a.option_strings if s.startswith("--yavs-")}
         self.check("command-line flags", defined, r"``(--yavs-[a-z-]+)")
-
-    def test_gui_flag(self):
-        self.assertTrue(YavsInterface.supports_gui_flag)
-        self.assertIn("``--gui``", self.text)

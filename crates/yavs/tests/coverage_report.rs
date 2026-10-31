@@ -92,7 +92,10 @@ fn root_changes_the_prefix_stripped() {
     let o = yavs(&tmp, &["cov", "report", "a.ycov", "--root", "elsewhere"]);
     let out = text(&o.stdout);
     // The source is outside the root: its full path stays.
-    assert!(out.contains("/cov_report.vhd:25"), "{out}");
+    assert!(
+        out.contains("/cov_report.vhd:25") || out.contains("\\cov_report.vhd:25"),
+        "{out}"
+    );
     assert!(!out.contains("\n  cov_report.vhd:25"), "{out}");
     let o = yavs(&tmp, &["cov", "report", "a.ycov", "--root", "."]);
     assert!(

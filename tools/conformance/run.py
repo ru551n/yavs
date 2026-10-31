@@ -393,7 +393,7 @@ compilers (LLVM, Cranelift) that run a design; every tier gives the same output.
         cnt[kind_of(r["kind"])] = cnt.get(kind_of(r["kind"]), 0) + 1
     o.append(f"""### Known simulator differences
 
-`docs/design/simulator-discrepancies.md` lists every case where the references disagree with each other, with the language reference or with yavs:
+[`docs/design/simulator-discrepancies.md`]({GH}/blob/main/docs/design/simulator-discrepancies.md) lists every case where the references disagree with each other, with the language reference or with yavs:
 {len(rows)} catalogued behaviours, each with a reproducer under `tests/discrepancies/<case>/`. CI runs every reproducer on yavs and fails when yavs's output
 differs from the recorded one ({'matches' if ci.get('discrepancies', {}).get('yavs_matches_expected') else 'checked by CI'}). Kinds: """ + ", ".join(f"{k} {n}" for k, n in sorted(cnt.items(), key=lambda kv: -kv[1])) + """.
 

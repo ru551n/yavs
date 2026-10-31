@@ -22,7 +22,7 @@ Read the root `AGENTS.md` and `tools/AGENTS.md` first. The catalogue is
 
 | Decision | Why | Source |
 |---|---|---|
-| The label to tool mapping is never committed; command names appear only as `TEMPLATES` keys | Root rule 11 (no other project names in docs) | user, 2026-10-19 |
+| The label to tool mapping is never committed; command names appear only as `TEMPLATES` keys | Root rule 11 (no other project names in docs); the catalogue itself may name NVC (`sim1`) and GHDL (`sim2`), never the proprietary simulators | user, 2026-10-19; maintainer, 2026-10-31 |
 | A verdict is `REJECT`, `OK`, `OK*`, `CRASH`, `FATAL` or `TIMEOUT`; the observable result of a runnable case is its `report` messages, compared order-insensitively for simulators and exactly for yavs | Simulators order same-cycle reports differently | `docs/design/simulator-discrepancies.md` |
 | Runs are sequential by default, at most 2 parallel, each under `timeout 300 systemd-run --user --scope -p MemoryMax=2G` | Root rule 15 | AGENTS.md |
 

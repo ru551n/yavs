@@ -176,7 +176,8 @@ to, and those documents win over your memory.
     release notes) describes yavs as a simulator on its own: never mention other projects there
     (test runners, simulators, libraries, frameworks), and the same holds for every document in the
     repository (developer docs, `AGENTS.md` files, `docs/STATUS.md`, tool and test docs), except licence notes
-    (user, 2026-10-18, widened the same day). Never write `release_notes/<version>.md` by hand
+    (user, 2026-10-18, widened the same day) and `docs/design/simulator-discrepancies.md`, which names the
+    open source simulators NVC and GHDL (not the proprietary ones, which stay `sim3`, `sim4`; maintainer, 2026-10-31). Never write `release_notes/<version>.md` by hand
     outside a release. The user documentation (Sphinx, `docs/conf.py`, `docs/*.rst`, published
     on Read the Docs) shows the fragments under "Unreleased"; build it with
     `sphinx-build -W -b html docs docs/_build/html` after `pip install -r docs/requirements.txt`.

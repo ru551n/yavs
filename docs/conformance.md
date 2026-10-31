@@ -83,7 +83,7 @@ Not passing: sim1: 68; sim2: 46 (the classes of each are in `docs/conformance.js
 
 ### Known simulator differences
 
-`docs/design/simulator-discrepancies.md` lists every case where the references disagree with each other, with the language reference or with yavs:
+[`docs/design/simulator-discrepancies.md`](https://github.com/ru551n/yavs/blob/main/docs/design/simulator-discrepancies.md) lists every case where the references disagree with each other, with the language reference or with yavs:
 218 catalogued behaviours, each with a reproducer under `tests/discrepancies/<case>/`. CI runs every reproducer on yavs and fails when yavs's output
 differs from the recorded one (matches). Kinds: LRM clear 135, LRM ambiguity 77, reference bug 5, library availability 1.
 

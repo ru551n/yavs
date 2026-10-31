@@ -11,5 +11,5 @@ discrepancy (`docs/design/simulator-discrepancies.md`), run by `tools/discrepanc
 | `<id>/verdicts` | Recorded verdicts per simulator label and revision (`sim1 2008 REJECT`) |
 
 Rules: write fresh reproducers (some were reduced from the differential corpus or the negative
-sem suite); no simulator or project names in files (use `sim1`, `sim2`, ...); a new case needs a
+sem suite); no simulator or project names in case files (use `sim1`, `sim2`, ...; only the catalogue `docs/design/simulator-discrepancies.md` names NVC and GHDL, never the proprietary ones); a new case needs a
 row in the catalogue in the same commit; the case must end by itself.

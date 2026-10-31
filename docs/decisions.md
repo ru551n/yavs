@@ -17,6 +17,11 @@
   behaviour under `tests/discrepancies/`, run by `tools/discrepancies/run.py` on yavs and on any
   configured simulator (labels `sim1` to `sim4`; the label to tool mapping stays local). A new
   disagreement found by anyone gets a row and a case in the same commit as the decision.
+- **Naming (maintainer, 2026-10-31):** the catalogue names the open source simulators, NVC (`sim1`)
+  and GHDL (`sim2`); the proprietary ones stay `sim3` and `sim4`, with no vendor, product or version
+  named in it. Every other tracked file, the `verdicts` files and the tools keep labels only. The
+  catalogue is linked from the README and the conformance report. Why: readers of the evidence need to
+  know which open source simulators disagree.
 - **Majority rule (user, 2026-10-19):** yavs is never counted in a majority; a majority means 2
   of the 3 reference simulators.
 - **Why:** the fourth simulator can then be checked with one command, and each choice shows who
@@ -99,6 +104,7 @@ milestone users care about works.
   simulators", "other simulators", "external test runners", "Python testbench frameworks").
   Exceptions: licence notes, and commands, flags, environment variables, file and directory names,
   crate and dependency names, code identifiers and corpus identifiers, which stay as they are.
+  One more exception (maintainer, 2026-10-31): the discrepancy catalogue, see "Simulator discrepancy catalogue".
 - **When to release** (delegated by the user, 2026-10-18: "decide when to cut new releases.
   often is not bad"): the orchestrator cuts a release whenever main is green (CI and docs) and
   `release_notes/news.d/` holds at least one `feature`, `bugfix` or `breaking` fragment,

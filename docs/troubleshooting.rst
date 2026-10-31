@@ -63,6 +63,9 @@ Common problems
      - Try ``--relaxed`` on ``analyze`` and ``run`` (:doc:`libraries`).
    * - ``W2108``, an instance is unbound, its outputs stay ``'U'``
      - Analyze the entity of that component (for vendor primitives, see :doc:`libraries`).
+   * - ``E0129``
+     - ``yavs vendor vivado`` found no install: pass ``--vivado=DIR`` or source ``settings64.sh``
+       (:doc:`libraries`).
    * - The run never ends
      - A testbench with a free-running clock needs ``finish``, ``stop`` or ``--stop-time``.
        ``--hang-report`` explains a run that stops without finishing: what each waiting process

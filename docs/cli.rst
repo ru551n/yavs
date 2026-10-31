@@ -27,6 +27,8 @@ Commands
      - Merge and report coverage databases (:doc:`coverage`).
    * - ``yavs cache clean --work=NAME:PATH``
      - Empty the compilation cache of a library (:doc:`running-faster`).
+   * - ``yavs vendor vivado --out=DIR [--vivado=DIR]``
+     - Build the vendor simulation libraries from your own install (:doc:`libraries`).
    * - ``yavs parse FILE...``
      - Only check that files parse.
    * - ``yavs --explain CODE``

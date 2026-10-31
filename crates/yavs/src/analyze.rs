@@ -54,6 +54,31 @@ pub struct Args {
     files: Vec<PathBuf>,
 }
 
+impl Args {
+    /// A batch of `files` into `work` with the other options at their defaults, for `yavs vendor`.
+    pub(crate) fn batch(
+        std: StdArg,
+        work: String,
+        maps: Vec<String>,
+        std_cache: Option<std::ffi::OsString>,
+        files: Vec<PathBuf>,
+    ) -> Args {
+        Args {
+            std,
+            work,
+            maps,
+            relaxed: false,
+            psl: false,
+            defines: Vec::new(),
+            warn: Vec::new(),
+            bootstrap: false,
+            no_cache: false,
+            std_cache,
+            files,
+        }
+    }
+}
+
 /// Replace every `@FILE` argument (after the program name) by the lines of FILE.
 pub fn expand_response_files(
     args: impl Iterator<Item = String>,

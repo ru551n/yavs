@@ -17,13 +17,13 @@ Read the root `AGENTS.md` first. This file is for an agent about to change the P
 
 | Path | What |
 |---|---|
-| `vunit_yavs/__init__.py` | `YavsInterface` (the `SimulatorInterface`), its arguments, the native library hooks, `check_debug_args`, `write_response_file`, `YavsVersion` |
+| `vunit_yavs/__init__.py` | `YavsInterface` (the `SimulatorInterface`), its arguments, the native library hooks, `add_vivado_libraries`, `check_debug_args`, `write_response_file`, `YavsVersion` |
 | `vunit_yavs/tokens.py` | `lend_order` (the lending priority), `Client` (one test: secret, cap), `Connection`, `TokenServer` (127.0.0.1 listener, selector thread, accounting) |
 | `vunit_yavs/vunit_pkg.toml` | `simulator = "vunit_yavs:YavsInterface"`, shipped as package data |
 | `tests/test_interface.py` | Unit tests of the interface, with the package registered in a fresh simulator factory |
 | `tests/test_tokens.py` | Lending order, the protocol over real sockets: answers per message, caps, tokens back on close, kill and test end, bad secrets and lines |
 | `tests/test_fake_e2e.py` | `tests/project/run.py` end to end against `tests/fake_bin/yavs` |
-| `tests/test_real_yavs.py` | The same project on a real yavs (`VUNIT_YAVS_PATH` or `PATH`, skipped otherwise), plain, with the token server, a real yavs on a lent token, and under `--yavs-debug` with a minimal DAP client |
+| `tests/test_real_yavs.py` | The same project on a real yavs (`VUNIT_YAVS_PATH` or `PATH`, skipped otherwise), plain, with the token server, a real yavs on a lent token, and under `--yavs-debug` with a minimal DAP client; `tests/project/run_vendor.py` on the libraries of a real install (skipped without `XILINX_VIVADO`) and its error without one |
 | `README.md`, `CHANGELOG.md`, `RELEASING.md` | User guide, changes per version, a pointer to the release steps (root `RELEASING.md`: one release with yavs, one version) |
 
 ## 3. Design decisions that bind this module
@@ -36,6 +36,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change the P
 | `--yavs-debug` is one simulation: refused with `--gui`, `--elaborate` or `-p` above 1 in `from_args`, and a second simulation raises before yavs starts | The interface sees no test list before the run; the second simulation is the earliest point |
 | `yavs.max_threads` (sim option) over `--yavs-max-threads` (default) to `--threads=N`, before the raw flags; none under `--yavs-debug` or for `elab` | Raw flags stay the last word; a DAP run is one thread |
 | `foreign_language_interface = "VHPIDIRECT"` and `native_library_hooks(library_file)` returning only `run_flags` `--load=<library_file>` (user, 2026-10-29) | A test runner package that loads a native library asks the selected simulator interface how, instead of knowing yavs; the library is needed when the design runs, so `analyze` and the elaborate-only `elab` get nothing |
+| Vendor libraries are a helper `add_vivado_libraries(vu, ...)` for `run.py`, not a command line flag; the install comes from `vivado=` or `XILINX_VIVADO`, which yavs itself reads (#119) | The sources are declared in `run.py` like every other library, and one more flag would only repeat the environment variable |
 | The token server is opt-in (`--yavs-jobserver`, name kept from 0.10), created only with `-p` above 1; Linux and Windows (user, 2026-10-29: one cross-platform mechanism, the fifo jobserver removed) | No change for anyone who does not ask |
 | A localhost TCP server at a free port, one random secret per test, `YAVS_TOKENS=<port>:<secret>`; protocol in `docs/cli-contract.md` "Token server" | Same code on every platform; the secret names the test (its cap) and keeps other local processes out |
 | With the server, every run gets `--threads=N` (`max_threads` when set) (user, 2026-10-29) | Idle slots speed up the tail without further options |

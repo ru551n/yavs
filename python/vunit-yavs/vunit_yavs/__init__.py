@@ -11,7 +11,7 @@ The yavs simulator interface for VUnit, added as a package:
     vu.add_package("vunit-yavs", allow_setup=True)  # before any other call
     ...
 
-and selected with VUNIT_SIMULATOR=yavs.
+and selected with VUNIT_SIMULATOR=yavs. add_vivado_libraries adds the vendor simulation libraries.
 """
 
 import argparse
@@ -65,6 +65,36 @@ def _max_threads(text):
     if not text.isdigit() or int(text) < 1:
         raise argparse.ArgumentTypeError(f"expected an integer of at least 1, got {text!r}")
     return int(text)
+
+
+def add_vivado_libraries(vu, vivado=None, output_path=None, std="2008"):
+    """
+    Build unisim, unimacro and unifast from the user's Vivado install with 'yavs vendor vivado' and add them
+    to the project as external libraries. A build that is up to date takes a fraction of a second.
+
+    vivado -- the directory of the install that holds data/vhdl/src (default: the environment's XILINX_VIVADO)
+    output_path -- the directory the libraries are built in (default: inside the VUnit output path)
+    std -- the language standard of the libraries, "2008" or "2019"
+    """
+    if vu.get_simulator_name() != YavsInterface.name:
+        raise RuntimeError(f"add_vivado_libraries needs the yavs simulator, not {vu.get_simulator_name()}")
+    base = Path(vu._simulator_output_path)  # pylint: disable=protected-access
+    out = Path(output_path) if output_path is not None else base / "vendor"
+    cmd = [
+        str(Path(YavsInterface.find_prefix()) / YavsInterface.executable),
+        "vendor",
+        "vivado",
+        f"--out={out}",
+        f"--std={std}",
+        f"--std-cache={base.resolve() / 'std_cache'}",
+    ]
+    if vivado is not None:
+        cmd += [f"--vivado={vivado}"]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise RuntimeError(f"{' '.join(cmd)} failed:\n{proc.stdout}{proc.stderr}")
+    for name in ("unisim", "unimacro", "unifast"):
+        vu.add_external_library(name, out / name)
 
 
 class YavsInterface(SimulatorInterface):

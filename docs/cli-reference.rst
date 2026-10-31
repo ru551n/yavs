@@ -39,6 +39,8 @@ Commands
      - Rank the tests of merged databases: a minimal set reaching the same coverage, and what each test alone covers
    * - ``yavs cache clean [OPTIONS] --work=NAME:PATH``
      - Remove the cache entries of libraries
+   * - ``yavs vendor vivado [OPTIONS] --out=DIR``
+     - Build ``unisim``, ``unimacro`` and ``unifast`` from a Vivado install into ``DIR/<library>``
    * - ``yavs --explain CODE``
      - Print the explanation of a diagnostic code.
    * - ``yavs --version``
@@ -585,6 +587,37 @@ Remove the cache entries of libraries.
 
    Also remove the shared std/ieee units from DIR (default: ``$YAVS_STD_CACHE``, else the user's cache directory); ``off`` leaves them.
 
+``yavs vendor vivado``
+----------------------
+
+.. program:: yavs vendor vivado
+
+Build ``unisim``, ``unimacro`` and ``unifast`` from a Vivado install into ``DIR/<library>``.
+
+.. code-block:: text
+
+   yavs vendor vivado [OPTIONS] --out=DIR
+
+.. option:: --vivado=DIR
+
+   The directory of the install that holds ``data/vhdl/src`` (default: ``$XILINX_VIVADO``).
+
+.. option:: --out=DIR
+
+   The directory the libraries are built in.
+
+   Required.
+
+.. option:: --std=93|2008|2019
+
+   Language standard the sources are analyzed with.
+
+   Default: ``2008``.
+
+.. option:: --std-cache=DIR|off
+
+   Directory of the std/ieee units shared by all libraries, or ``off``, as for ``yavs analyze``.
+
 Environment variables
 ---------------------
 
@@ -609,6 +642,9 @@ None is needed. Command-line options win over the variables.
      - The token server of a test runner that lends CPU slots: with ``--threads`` above 1 the
        extra threads run only on tokens it lends (:doc:`running-faster`). A value yavs cannot
        use is error ``E0128`` and exit status 2.
+   * - ``XILINX_VIVADO=DIR``
+     - The install ``yavs vendor vivado`` builds from when ``--vivado`` is not given
+       (:doc:`libraries`). Set by the ``settings64.sh`` of the install.
    * - ``YAVS_HUGE_HEAP=0``
      - Do not ask for transparent huge pages on the heap at start (Linux only).
 

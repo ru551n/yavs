@@ -64,4 +64,5 @@ Environment variables
 ---------------------
 
 ``VUNIT_SIMULATOR=yavs`` selects the simulator. ``VUNIT_YAVS_PATH`` names the directory of the
-``yavs`` executable (otherwise it is found on ``PATH``).
+``yavs`` executable (otherwise it is found on ``PATH``). ``XILINX_VIVADO`` names the install that
+``add_vivado_libraries`` builds the vendor libraries from (:doc:`libraries`).

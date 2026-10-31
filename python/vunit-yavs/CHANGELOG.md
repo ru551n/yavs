@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `add_vivado_libraries(vu)` builds `unisim`, `unimacro` and `unifast` from your own Vivado install with
+  `yavs vendor vivado` and adds them to the project as external libraries. Needs a yavs with that command.
+
 ## 0.11.0 (2026-10-29)
 
 - `--yavs-jobserver` runs a token server on a localhost socket instead of a fifo jobserver per test, on Linux and

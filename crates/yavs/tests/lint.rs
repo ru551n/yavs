@@ -211,6 +211,75 @@ fn configuration() {
     regression("configuration.vhd");
 }
 
+#[test]
+fn instance_names_an_architecture() {
+    regression("instance.vhd");
+}
+
+#[test]
+fn signal_declared_too_wide() {
+    regression_with(
+        "scope.vhd",
+        Some("rule:\n  lint_790:\n    disable: false\n"),
+    );
+}
+
+/// `exclude` is relative to the configuration file, covers directories and globs, and a file it
+/// covers can still be needed by another.
+#[test]
+fn exclude_in_the_configuration() {
+    let dir = tempdir("lint");
+    std::fs::create_dir_all(dir.join("gen/deep")).unwrap();
+    std::fs::create_dir_all(dir.join("work")).unwrap();
+    two(&dir);
+    two(&dir.join("gen/deep"));
+    std::fs::write(dir.join("old_pk.vhd"), PKG).unwrap();
+    std::fs::write(dir.join("a_user.vhd"), USER).unwrap();
+    std::fs::write(
+        dir.join("yavs-lint.yaml"),
+        "exclude:\n  - gen\n  - 'old_*.vhd'\n",
+    )
+    .unwrap();
+    // From another directory: the patterns are the configuration file's.
+    let args = [
+        "lint",
+        "--message-format=short",
+        "--config=../yavs-lint.yaml",
+    ];
+    let o = yavs(
+        &dir.join("work"),
+        &[&args[..], &["../gen/deep/two.vhd"]].concat(),
+    );
+    assert_eq!(findings(&stderr(&o)), Vec::new(), "{}", stderr(&o));
+    assert_eq!(status(&o), 0, "nothing left to check is no error");
+    let o = yavs(&dir.join("work"), &[&args[..], &["../two.vhd"]].concat());
+    assert_eq!(findings(&stderr(&o)).len(), 2, "{}", stderr(&o));
+    // The excluded package is read for the file that uses it, and its finding is not reported.
+    let o = yavs(
+        &dir.join("work"),
+        &[&args[..], &["../old_pk.vhd", "../a_user.vhd"]].concat(),
+    );
+    assert_eq!(
+        findings(&stderr(&o)),
+        vec![(6, "lint_770".to_string())],
+        "{}",
+        stderr(&o)
+    );
+    // The same for what a library records.
+    let analyze = yavs(
+        &dir,
+        &["analyze", "--work=mine:lib", "old_pk.vhd", "a_user.vhd"],
+    );
+    assert!(analyze.status.success(), "{}", stderr(&analyze));
+    let o = yavs(&dir, &["lint", "--message-format=short", "--work=mine:lib"]);
+    assert_eq!(
+        findings(&stderr(&o)),
+        vec![(6, "lint_770".to_string())],
+        "{}",
+        stderr(&o)
+    );
+}
+
 /// lint_782 names what analysis rejects first (E1403), so the run says so with that code, and the
 /// rule stays only for a configuration to name.
 #[test]

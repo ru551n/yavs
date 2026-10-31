@@ -145,6 +145,8 @@ pub struct Config {
     global: Layer,
     groups: Vec<(Certainty, Layer)>,
     rules: Vec<(&'static str, Layer)>,
+    /// `exclude`: paths or globs of what is not checked, relative to the configuration file.
+    exclude: Vec<String>,
 }
 
 impl Config {
@@ -152,8 +154,27 @@ impl Config {
     pub fn parse(text: &str) -> Result<Config, String> {
         let mut cfg = Config::default();
         for (l, key, v) in top(text)? {
+            if key == "exclude" {
+                let items = match v {
+                    Node::Seq(items) => items,
+                    Node::Scalar(s) if s.is_empty() => Vec::new(),
+                    _ => return Err(format!("line {l}: `exclude` must be a list")),
+                };
+                for n in items {
+                    let Node::Scalar(s) = n else {
+                        return Err(format!(
+                            "line {l}: `exclude` must be a list of paths or globs"
+                        ));
+                    };
+                    cfg.exclude
+                        .push(normalize(&s).trim_end_matches('/').to_owned());
+                }
+                continue;
+            }
             if key != "rule" {
-                return Err(format!("line {l}: unknown key `{key}` (expected `rule`)"));
+                return Err(format!(
+                    "line {l}: unknown key `{key}` (expected `rule` or `exclude`)"
+                ));
             }
             let Node::Map(rules) = &v else {
                 return Err(format!("line {l}: `rule` must be a map"));
@@ -204,6 +225,41 @@ impl Config {
             class.map_or(Layer::default(), |x| x.1.clone()),
             self.global.clone(),
         ]
+    }
+
+    /// Whether `exclude` covers this file, `base` being the directory of the configuration file, or
+    /// a directory the file is in. A pattern is relative to `base`; one that starts with `/` or `**`
+    /// also matches the absolute path, for files outside `base`. Both paths are absolute.
+    pub fn excluded(&self, file: &Path, base: &Path) -> bool {
+        if self.exclude.is_empty() {
+            return false;
+        }
+        let (file, base) = (lexical(file), lexical(base));
+        let relative = file
+            .strip_prefix(&base)
+            .ok()
+            .map(|p| p.to_string_lossy().replace('\\', "/"));
+        let absolute = file.to_string_lossy().replace('\\', "/");
+        // The file and every directory above it.
+        let covers = |pattern: &str, path: &str| {
+            let mut upto = path;
+            loop {
+                if glob(pattern.as_bytes(), upto.as_bytes()) {
+                    return true;
+                }
+                match upto.rfind('/') {
+                    Some(i) if i > 0 => upto = &upto[..i],
+                    _ => return false,
+                }
+            }
+        };
+        self.exclude.iter().any(|p| {
+            relative.as_deref().is_some_and(|r| covers(p, r))
+                || ((p.starts_with('/')
+                    || p.starts_with("**")
+                    || p.as_bytes().get(1) == Some(&b':'))
+                    && covers(p, &absolute))
+        })
     }
 
     /// The list a rule's own settings give (`suffixes`, `prefixes`), empty when not set.
@@ -353,6 +409,21 @@ impl Waivers {
     }
 }
 
+/// `path` with `.` and `..` taken out, without asking the file system.
+fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// The nearest file called `name` in `dir` or its ancestors.
 pub fn find_up(dir: &Path, name: &str) -> Option<PathBuf> {
     dir.ancestors().map(|d| d.join(name)).find(|p| p.is_file())
@@ -377,6 +448,31 @@ mod tests {
         let own = crate::rule("lint_771").unwrap();
         assert!(cfg.enabled(own));
         assert!(cfg.severity(own) == Severity::Error);
+    }
+
+    #[test]
+    fn exclude_paths_and_globs() {
+        let cfg = Config::parse(
+            "exclude:\n  - gen/\n  - 'src/**/old_*.vhd'\n  - ./one.vhd\n  - '**/vunit/vhdl/**'\n",
+        )
+        .unwrap();
+        let base = Path::new("/p/q");
+        let hit = |f: &str| cfg.excluded(Path::new(f), base);
+        assert!(hit("/p/q/gen/a.vhd"));
+        assert!(hit("/p/q/gen/deep/a.vhd"));
+        assert!(hit("/p/q/src/x/old_a.vhd"));
+        assert!(hit("/p/q/x/../one.vhd"));
+        assert!(hit("/site/vunit/vhdl/check/src/a.vhd"), "outside the base");
+        assert!(!hit("/p/q/src/x/new.vhd"));
+        assert!(!hit("/p/q/x/gen/a.vhd"), "relative to the configuration");
+        assert!(!hit("/other/gen/a.vhd"), "relative to the configuration");
+        assert!(!hit("/p/q/generated.vhd"));
+        assert!(Config::parse("exclude: gen\n").is_err());
+        assert!(
+            !Config::parse("exclude:\n")
+                .unwrap()
+                .excluded(Path::new("/a"), base)
+        );
     }
 
     #[test]

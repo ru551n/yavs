@@ -85,6 +85,17 @@ which rules run and how a finding counts. A rule's own setting wins over its cla
 are allowed. An unknown key or rule is an error naming it, with status 2. ``-Wno-RULE``, ``-Werror`` and
 ``-Werror=RULE`` do the same for one run; ``-Werror`` makes a finding of severity warning an error.
 
+To leave files out, list them under ``exclude``: paths or globs, relative to the configuration file,
+of files or directories. A pattern that starts with ``**`` also matches files outside that directory.
+An excluded file is still read when another file needs it:
+
+.. code-block:: yaml
+
+   exclude:
+     - generated                # a directory
+     - 'src/**/old_*.vhd'       # `*` and `?` stop at `/`, `**` does not
+     - '**/vunit/vhdl/**'       # a test runner's own libraries, wherever they are installed
+
 Waivers
 -------
 
@@ -152,7 +163,8 @@ With VUnit
 ----------
 
 ``python run.py --compile --yavs-lint`` checks every library the run compiled, after compiling, and
-fails the run with a finding of severity error (:doc:`vunit-yavs`).
+fails the run with a finding of severity error (:doc:`vunit-yavs`). It reads ``yavs-lint.yaml`` from
+the directory you run in or an ancestor, so ``exclude`` applies.
 
 In VS Code
 ----------

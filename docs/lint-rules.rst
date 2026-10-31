@@ -163,9 +163,9 @@ A component is a hand-written copy of an entity's interface, and copies drift. P
 lint_751
 --------
 
-definite error, on by default. A configuration names an architecture that is not declared.
+definite error, on by default. A binding indication or an instance names an architecture that is not declared.
 
-A binding indication ``use entity work.e(a)`` names architecture ``a`` of ``e``, and elaboration fails when the library has no such architecture. Analysis accepts it, as the architecture may come later. The library's own list is the evidence, so analyze the whole library first. A block configuration ``for a`` with no such architecture is an analysis error, E1002.
+``use entity work.e(a)`` in a configuration and ``i : entity work.e(a)`` in an architecture name architecture ``a`` of ``e``, and elaboration fails when the library has no such architecture. Analysis accepts them, as the architecture may come later. The library's own list is the evidence, so analyze the whole library first. A block configuration ``for a`` with no such architecture is an analysis error, E1002.
 
 lint_760
 --------
@@ -215,3 +215,10 @@ lint_782
 definite error, on by default. An assignment of a value outside the declared range of its target.
 
 The value has to belong to the target's subtype, so the assignment raises an error when it runs. Analysis already rejects this when the value and the range both fold, as E1403, so a lint run shows that error and this rule never adds a finding of its own; it stays so that a configuration can name it.
+
+lint_790
+--------
+
+advisory, off by default. A signal declared in a wider region than the one that uses it.
+
+Where a signal is declared says who it belongs to. Declared in the architecture and used only inside one block or generate body, it reads as shared state when it is not; in a ``for ... generate`` it is one signal for every iteration, where one per iteration was probably meant. The guard and maps of a block and the header of a generate are read in the region around them. An unused signal, and one with an attribute specification, are not reported.

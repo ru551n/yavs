@@ -9,12 +9,14 @@ use yavs_diag::Span;
 use yavs_sem::decl::{Body, Decl, DeclKind, Subprogram, SubprogramKind};
 use yavs_sem::hir::{
     Actual, Arg, BlockConfig, Choice, ChoiceSet, ConfigItem, ConstValue, Direction, EntityAspect,
-    ExprKind, GenAlt, LoopScheme, RangeC, Rhs, Sensitivity, StmtKind, UnitHir, Waveform,
+    ExprKind, GenAlt, InstTarget, LoopScheme, RangeC, Rhs, Sensitivity, StmtKind, UnitHir,
+    Waveform,
 };
 use yavs_sem::implicit::Family;
 use yavs_sem::loader::UnitKey;
 use yavs_sem::types::{Constraint, TypeKind};
 use yavs_sem::{Db, DeclId, ExprId, LibId, ScopeId, StmtId, SubtypeId, UnitId};
+use yavs_syntax::ast::Ident;
 
 const fn rule(
     id: &'static str,
@@ -172,8 +174,8 @@ pub static RULES: &[Rule] = &[
     rule(
         "lint_751",
         D,
-        "A configuration names an architecture that is not declared.",
-        "A binding indication `use entity work.e(a)` names architecture `a` of `e`, and elaboration fails when the library has no such architecture. Analysis accepts it, as the architecture may come later. The library's own list is the evidence, so analyze the whole library first. A block configuration `for a` with no such architecture is an analysis error, E1002.",
+        "A binding indication or an instance names an architecture that is not declared.",
+        "`use entity work.e(a)` in a configuration and `i : entity work.e(a)` in an architecture name architecture `a` of `e`, and elaboration fails when the library has no such architecture. Analysis accepts them, as the architecture may come later. The library's own list is the evidence, so analyze the whole library first. A block configuration `for a` with no such architecture is an analysis error, E1002.",
     ),
     rule(
         "lint_760",
@@ -216,6 +218,12 @@ pub static RULES: &[Rule] = &[
         D,
         "An assignment of a value outside the declared range of its target.",
         "The value has to belong to the target's subtype, so the assignment raises an error when it runs. Analysis already rejects this when the value and the range both fold, as E1403, so a lint run shows that error and this rule never adds a finding of its own; it stays so that a configuration can name it.",
+    ),
+    rule(
+        "lint_790",
+        A,
+        "A signal declared in a wider region than the one that uses it.",
+        "Where a signal is declared says who it belongs to. Declared in the architecture and used only inside one block or generate body, it reads as shared state when it is not; in a `for ... generate` it is one signal for every iteration, where one per iteration was probably meant. The guard and maps of a block and the header of a generate are read in the region around them. An unused signal, and one with an attribute specification, are not reported.",
     ),
 ];
 
@@ -389,9 +397,28 @@ impl Walk<'_> {
         self.within = outer;
     }
 
+    /// `lint_751`: an architecture named for `unit` that its library does not have.
+    fn named_architecture(&mut self, unit: UnitId, arch: &Ident, what: &str) {
+        let db = self.db;
+        let UnitKey::Primary(entity) = db.units[unit].key else {
+            return;
+        };
+        let lib = db.units[unit].lib;
+        let key = UnitKey::Secondary(entity, arch.key);
+        if !db.libs[lib].units.contains_key(&key) && db.locate(lib, key).is_none() {
+            self.out.push((
+                "lint_751",
+                arch.span,
+                format!(
+                    "{what} architecture `{}` of `{}`, which is not declared",
+                    arch.text, db.units[unit].name.text
+                ),
+            ));
+        }
+    }
+
     /// `lint_751`: the architecture a binding indication names, in this block and those below it.
     fn configuration(&mut self, block: &BlockConfig) {
-        let db = self.db;
         for item in &block.items {
             match item {
                 ConfigItem::Block(b) => self.configuration(b),
@@ -401,20 +428,8 @@ impl Walk<'_> {
                             unit,
                             arch: Some(arch),
                         }) = &binding.aspect
-                        && let UnitKey::Primary(entity) = db.units[*unit].key
                     {
-                        let lib = db.units[*unit].lib;
-                        let key = UnitKey::Secondary(entity, arch.key);
-                        if !db.libs[lib].units.contains_key(&key) && db.locate(lib, key).is_none() {
-                            self.out.push((
-                                "lint_751",
-                                arch.span,
-                                format!(
-                                    "Configuration binds to architecture `{}` of `{}`, which is not declared",
-                                    arch.text, db.units[*unit].name.text
-                                ),
-                            ));
-                        }
+                        self.named_architecture(*unit, arch, "Configuration binds to");
                     }
                     if let Some(b) = &c.block {
                         self.configuration(b);
@@ -723,10 +738,18 @@ impl Walk<'_> {
                 self.list(body);
             }
             StmtKind::Instance {
+                target,
                 generic_map,
                 port_map,
                 ..
             } => {
+                if let InstTarget::Entity {
+                    unit,
+                    arch: Some(arch),
+                } = target
+                {
+                    self.named_architecture(*unit, arch, "Instance names");
+                }
                 self.args(generic_map);
                 self.args(port_map);
             }

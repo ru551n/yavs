@@ -99,6 +99,7 @@ pub struct Args {
 struct Source {
     library: String,
     path: PathBuf,
+    /// The standard a library records for it; `None` for a file no library records.
     rev: Option<LangRev>,
 }
 
@@ -218,7 +219,7 @@ fn read_file(path: &Path) -> Result<String, Box<Diagnostic>> {
 }
 
 /// The configuration and waivers named or found, with their errors naming the file.
-fn load_settings(a: &Args) -> Result<(Config, Waivers), Box<Diagnostic>> {
+fn load_settings(a: &Args) -> Result<(Config, Waivers, PathBuf), Box<Diagnostic>> {
     let cwd = std::env::current_dir().unwrap_or_default();
     let bad = |p: &Path, e: String| {
         Box::new(Diagnostic::error("E0134", format!("invalid file `{}`", p.display())).with_note(e))
@@ -243,7 +244,13 @@ fn load_settings(a: &Args) -> Result<(Config, Waivers), Box<Diagnostic>> {
         Some(p) => Waivers::parse(&read_file(p)?).map_err(|e| bad(p, e))?,
         None => Waivers::default(),
     };
-    Ok((cfg, w))
+    // Relative to the configuration file, and only ever used with its patterns.
+    let base = config
+        .as_deref()
+        .and_then(|p| std::path::absolute(p).ok())
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+        .unwrap_or(cwd);
+    Ok((cfg, w, base))
 }
 
 fn class(c: Certainty) -> &'static str {
@@ -285,7 +292,7 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
             }
         };
     }
-    let (cfg, waivers) = match load_settings(&a) {
+    let (cfg, waivers, base) = match load_settings(&a) {
         Ok(s) => s,
         Err(d) => {
             out.emit(&none, &d);
@@ -376,6 +383,15 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
     let mut shown = 0;
     let mut checked: Vec<String> = Vec::new();
     for s in &sources {
+        // What `exclude` covers is not checked. A file a library records is found there if another
+        // file needs it; a loose one is read, as a later file may need it.
+        let excluded = cfg.excluded(
+            &std::path::absolute(&s.path).unwrap_or_else(|_| s.path.clone()),
+            &base,
+        );
+        if excluded && s.rev.is_some() {
+            continue;
+        }
         let r = db.analyze_file(&s.library, &s.path, file_rev(s));
         // `yavs analyze` prints the warnings of analysis; this run adds only what stops it.
         for d in &db.diagnostics()[shown..] {
@@ -384,10 +400,10 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
             }
         }
         shown = db.diagnostics().len();
-        if r.is_ok() {
-            checked.push(s.path.display().to_string());
-        } else {
-            failed = true;
+        match r {
+            Ok(_) if !excluded => checked.push(s.path.display().to_string()),
+            Ok(_) => {}
+            Err(_) => failed = true,
         }
     }
     let units: Vec<_> = db

@@ -301,6 +301,7 @@ pub(crate) fn architecture(db: &Db, u: UnitId, cfg: &Config, out: &mut Vec<Raw>)
     a.sensitivity();
     a.latches();
     a.unused();
+    a.over_wide();
     let domains = a.domains(cfg);
     let machines = a.machines();
     json!({
@@ -671,6 +672,46 @@ impl Arch<'_> {
         }
     }
 
+    /// `lint_790`: a signal used only inside one block or generate body below its declaration. A
+    /// signal with an attribute specification stays: moving it means moving that too.
+    fn over_wide(&mut self) {
+        let db = self.db;
+        let mut uses = Uses::default();
+        uses.regions.push(Region {
+            parent: None,
+            name: String::new(),
+            per_iteration: false,
+        });
+        uses.scope(db, self.scopes[0], 0, true);
+        uses.region(db, self.stmts, 0);
+        let decorated: HashSet<DeclId> = db.attr_index.iter().map(|((d, _), _)| *d).collect();
+        let mut found = Vec::new();
+        for (d, at) in &uses.declared {
+            let Some(&used) = uses.used.get(d) else {
+                continue;
+            };
+            if used != *at && !decorated.contains(d) {
+                let region = &uses.regions[used];
+                let per = if region.per_iteration {
+                    ": declared there, each iteration has one of its own instead of all of them sharing it"
+                } else {
+                    ""
+                };
+                found.push((
+                    db.decls[*d].name_span(),
+                    format!(
+                        "Signal `{}` is only used inside {}{per}",
+                        name(db, *d),
+                        region.name
+                    ),
+                ));
+            }
+        }
+        for (span, m) in found {
+            self.push("lint_790", span, m);
+        }
+    }
+
     /// `lint_004`: a signal, constant or variable of this architecture nothing names. A
     /// declaration of a package can be used anywhere, and types and subprograms are not judged.
     fn unused(&mut self) {
@@ -774,6 +815,211 @@ fn range_exprs(r: &yavs_sem::types::RangeC) -> Vec<ExprId> {
             ..
         } => vec![*e],
         yavs_sem::types::RangeC::Attr { .. } => Vec::new(),
+    }
+}
+
+/// A region a signal can be declared in, for `lint_790`: the architecture, a block, a generate body.
+struct Region {
+    parent: Option<usize>,
+    /// As a reader names it: `generate `g``.
+    name: String,
+    per_iteration: bool,
+}
+
+/// Where each signal of an architecture is declared and used, by the regions around the uses.
+#[derive(Default)]
+struct Uses {
+    regions: Vec<Region>,
+    declared: Vec<(DeclId, usize)>,
+    /// The innermost region that holds every use.
+    used: HashMap<DeclId, usize>,
+}
+
+impl Uses {
+    fn chain(&self, mut r: usize) -> Vec<usize> {
+        let mut out = vec![r];
+        while let Some(p) = self.regions[r].parent {
+            out.push(p);
+            r = p;
+        }
+        out
+    }
+
+    fn mark(&mut self, d: DeclId, at: usize) {
+        let joined = match self.used.get(&d) {
+            None => at,
+            Some(&was) => {
+                let theirs = self.chain(was);
+                self.chain(at)
+                    .into_iter()
+                    .find(|r| theirs.contains(r))
+                    .expect("every chain ends in the architecture")
+            }
+        };
+        self.used.insert(d, joined);
+    }
+
+    fn expr(&mut self, db: &Db, e: ExprId, at: usize) {
+        let mut roots = Vec::new();
+        db.walk_expr(e, &mut |x| {
+            if let Some(yavs_sem::lsp::NameRoot::Obj(r)) = db.name_root(x) {
+                roots.extend(decl(r));
+            }
+        });
+        for d in roots {
+            self.mark(d, at);
+        }
+    }
+
+    /// The declarations of `scope` use what their values and ranges name, at `at`. `signals`: the
+    /// region's own signals are candidates; a process or subprogram declares none.
+    fn scope(&mut self, db: &Db, scope: ScopeId, at: usize, signals: bool) {
+        for &d in &db.scopes[scope].order {
+            match &db.decls[d].kind {
+                DeclKind::Object(o) => {
+                    if signals && o.class == ObjClass::Signal && o.role == ObjRole::Plain {
+                        self.declared.push((d, at));
+                    }
+                    if let Some(e) = o.default {
+                        self.expr(db, e, at);
+                    }
+                    for r in db.subtype_ranges(o.subtype) {
+                        for e in range_exprs(r) {
+                            self.expr(db, e, at);
+                        }
+                    }
+                }
+                DeclKind::Type(_) | DeclKind::Subtype(_) => {
+                    for r in db.declared_ranges(d) {
+                        for e in range_exprs(r) {
+                            self.expr(db, e, at);
+                        }
+                    }
+                }
+                DeclKind::Alias(yavs_sem::decl::Alias::Object { target, .. }) => {
+                    self.expr(db, *target, at);
+                }
+                DeclKind::Subprogram(sp) => {
+                    if let Body::Hir { scope, stmts } = &sp.body {
+                        self.scope(db, *scope, at, false);
+                        self.statements(db, stmts, at);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Sequential statements, or a process and what is below it: all at `at`.
+    fn statements(&mut self, db: &Db, list: &[StmtId], at: usize) {
+        let mut all = Vec::new();
+        deep(db, list, &mut all);
+        for s in all {
+            let mut exprs = Vec::new();
+            db.stmt_exprs(s, &mut |e, _| exprs.push(e));
+            for e in exprs {
+                self.expr(db, e, at);
+            }
+            let mut reads = Vec::new();
+            db.stmt_reads(s, &mut reads);
+            for d in reads.iter().filter_map(|l| decl(l.root)) {
+                self.mark(d, at);
+            }
+            match &db.stmts[s].kind {
+                StmtKind::Process {
+                    sensitivity, scope, ..
+                } => {
+                    self.scope(db, *scope, at, false);
+                    if let Sensitivity::List(l) = sensitivity {
+                        for d in l.iter().filter_map(|l| decl(l.root)) {
+                            self.mark(d, at);
+                        }
+                    }
+                }
+                StmtKind::SeqBlock { scope, .. } => self.scope(db, *scope, at, false),
+                _ => {}
+            }
+        }
+    }
+
+    fn open(&mut self, name: String, per_iteration: bool, parent: usize) -> usize {
+        self.regions.push(Region {
+            parent: Some(parent),
+            name,
+            per_iteration,
+        });
+        self.regions.len() - 1
+    }
+
+    /// The statements of region `at`: a block's guard and maps, and a generate's header, are read
+    /// in the region around it.
+    fn region(&mut self, db: &Db, list: &[StmtId], at: usize) {
+        for &s in list {
+            let stmt = &db.stmts[s];
+            let label = stmt
+                .label
+                .map_or(String::new(), |l| format!(" `{}`", l.text));
+            let mut exprs = Vec::new();
+            db.stmt_exprs(s, &mut |e, _| exprs.push(e));
+            match &stmt.kind {
+                StmtKind::Block {
+                    scope,
+                    guard,
+                    generic_map,
+                    port_map,
+                    body,
+                    ..
+                } => {
+                    if let Some(g) = guard
+                        && let DeclKind::Object(o) = &db.decls[*g].kind
+                    {
+                        exprs.extend(o.default);
+                    }
+                    for a in generic_map.iter().chain(port_map.iter()) {
+                        match &a.actual {
+                            Actual::Expr(e) | Actual::Converted { actual: e, .. } => exprs.push(*e),
+                            Actual::Individual(parts) => exprs.extend(parts.iter().map(|p| p.1)),
+                            _ => {}
+                        }
+                    }
+                    for e in exprs {
+                        self.expr(db, e, at);
+                    }
+                    let r = self.open(format!("block{label}"), false, at);
+                    self.scope(db, *scope, r, true);
+                    self.region(db, body, r);
+                }
+                StmtKind::ForGenerate { scope, body, .. } => {
+                    for e in exprs {
+                        self.expr(db, e, at);
+                    }
+                    let r = self.open(format!("generate{label}"), true, at);
+                    self.scope(db, *scope, r, true);
+                    self.region(db, body, r);
+                }
+                StmtKind::IfGenerate { alts } => {
+                    for e in exprs {
+                        self.expr(db, e, at);
+                    }
+                    for alt in alts {
+                        let r = self.open(format!("generate{label}"), false, at);
+                        self.scope(db, alt.scope, r, true);
+                        self.region(db, &alt.body, r);
+                    }
+                }
+                StmtKind::CaseGenerate { alts, .. } => {
+                    for e in exprs {
+                        self.expr(db, e, at);
+                    }
+                    for (_, alt) in alts {
+                        let r = self.open(format!("generate{label}"), false, at);
+                        self.scope(db, alt.scope, r, true);
+                        self.region(db, &alt.body, r);
+                    }
+                }
+                _ => self.statements(db, &[s], at),
+            }
+        }
     }
 }
 

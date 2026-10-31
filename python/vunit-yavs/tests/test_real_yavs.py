@@ -212,6 +212,21 @@ class TestRealYavs(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 1, proc.stdout)
         self.assertIn("lint_770", proc.stdout)
+        # The configuration of the directory it runs in applies, and an excluded library is no error.
+        (self.tempdir / "yavs-lint.yaml").write_text("exclude: ['**/bad.vhd', '**/vunit/vhdl/**']\n")
+        proc = subprocess.run(
+            self._command("--compile", "--yavs-lint"),
+            env=env,
+            cwd=self.tempdir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            encoding="utf-8",
+            errors="replace",
+            timeout=TIMEOUT,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertNotIn("lint_770", proc.stdout)
 
     def _coverage_run(self, *args, **env):
         return subprocess.run(

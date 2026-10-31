@@ -736,6 +736,7 @@ yavs lint [FILE|DIR ...] [--recursive] [--work=NAME:PATH] [--map=NAME:PATH ...] 
   in a mapped library come first in that library's order and into that library; the others follow in the order
   given, into the work library (`work` when `--work` is not given, kept in memory). A directory is its `.vhd` and
   `.vhdl` files, sorted, with its subdirectories under `--recursive`. `std` and `ieee` cannot be mapped (`E0102`).
+- `exclude` in the configuration lists files and directories not to check, relative to the configuration file; a file no library records is still read. A run with nothing left to check is status 0.
 - A file that fails analysis prints its errors (not its warnings, which are `yavs analyze`'s) and is not checked;
   the others are.
 - Exit status: 0 no finding of severity error; 1 a finding of severity error; 2 usage, a bad configuration or

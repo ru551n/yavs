@@ -71,7 +71,9 @@ Flags of the run script (``python run.py ...``), next to VUnit's own:
      - ``yavs.max_threads`` for every test that does not set it.
    * - ``--yavs-lint``
      - After compiling, runs ``yavs lint`` (:doc:`lint`) on every library of the project that is not
-       external; a finding of severity error fails the compile step.
+       external; a finding of severity error fails the compile step. VUnit's own libraries are among
+       them: to leave them out, put ``exclude: ['**/vunit/vhdl/**']`` in ``yavs-lint.yaml`` in the
+       directory you run in or an ancestor.
    * - ``--yavs-cov``
      - Collects coverage in every simulation, as ``enable_coverage`` does for the tests it is set
        for. Not with ``--yavs-debug``.

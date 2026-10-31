@@ -3,6 +3,10 @@
 PSL is the property language used for assertions. This page lists the subset yavs runs, as checker processes,
 and what it skips. The exact behaviour where simulators differ is in [Where simulators differ](language-choices.rst).
 
+```{contents} On this page
+:local:
+```
+
 ## Writing a directive
 
 A directive is written as a VHDL-2008 statement in an architecture,

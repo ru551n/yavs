@@ -1,8 +1,8 @@
 vunit-yavs options
 ==================
 
-The ``vunit-yavs`` package (``pip install vunit-yavs``) adds yavs to VUnit as a simulator; see
-:doc:`libraries` for the setup. This page lists its options. The options of the ``yavs``
+The ``vunit-yavs`` package (``pip install vunit-yavs``) adds yavs to VUnit as a simulator; :doc:`vunit` is the guide.
+This page lists its options. The options of the ``yavs``
 executable itself are in :doc:`cli-reference`. The names below are checked against the package
 by its tests.
 
@@ -82,7 +82,7 @@ Flags of the run script (``python run.py ...``), next to VUnit's own:
        (after VUnit has written its reports) when the total coverage is below PCT percent.
    * - ``--yavs-jobserver``
      - With ``-p N`` above 1: lends the CPU slots that no test uses to the running simulations
-       through a token server (:ref:`vunit-token-server`).
+       through a token server (:doc:`threads`).
 
 Without ``yavs.max_threads`` or ``--yavs-max-threads`` no thread count is passed and yavs runs
 with its default, unless the token server runs.
@@ -135,4 +135,11 @@ Environment variables
 
 ``VUNIT_SIMULATOR=yavs`` selects the simulator. ``VUNIT_YAVS_MAX_THREADS=N`` is ``--yavs-max-threads`` for a run script that
 parses its own command line. ``VUNIT_YAVS_PATH`` names the directory of the
-``yavs`` executable (otherwise it is found on ``PATH``).
+``yavs`` executable (otherwise it is found on ``PATH``). :doc:`environment` lists all of them.
+
+See also
+--------
+
+* :doc:`vunit`: the guide, from installing to running.
+* :doc:`threads`: threads and the token server.
+* :doc:`cli-reference`: the options of the ``yavs`` executable.

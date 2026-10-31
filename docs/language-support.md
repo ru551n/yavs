@@ -5,8 +5,12 @@ project. Of the approved VHDL-2019 language additions most work, three work in p
 (see the table below). PSL (the property language used for assertions) is supported as a subset. Plain Verilog is
 planned ([#776](https://github.com/ru551n/yavs/issues/776)).
 
-Which parts of VHDL and PSL yavs accepts and runs, and how well that is checked. The choices yavs makes where the
+This page says which parts of VHDL yavs accepts and runs, and how well that is checked. The choices yavs makes where the
 language reference is open are in [Where simulators differ](language-choices.rst).
+
+```{contents} On this page
+:local:
+```
 
 ## Choosing the standard
 
@@ -52,7 +56,7 @@ probed:
   extended bit string literals (probed), delimited comments (probed).
 - Unconstrained element types, `'subtype` and `'element`, protected types, `std.env` (`stop`, `finish`,
   `resolution_limit`).
-- PSL: a subset, see "PSL" below.
+- PSL: a subset, see [PSL](psl.md).
 
 `--relaxed` turns a few errors that verification code often trips over into warnings: a shared variable of a type
 that is not protected (`W1904`), a pure function that calls an impure one (`W1830`), an `others` aggregate assigned
@@ -145,53 +149,7 @@ standard.
 
 ## PSL
 
-yavs runs a subset of PSL as checker processes. A directive is written as a VHDL-2008 statement in an architecture,
-block or generate statement or, with `--psl` (on `analyze` and `run`), in a comment that starts with `-- psl`:
-
-```text
-default clock is rising_edge(clk);
-p1: assert always count < 16 report "count overflow";
-p2: assert always req -> next[2] ack severity warning;
-p3: assert always {start; req} |=> {busy[*1 to 3]; ack};
-c1: cover {req; busy[*2 to 4]; done} report "transfer";
--- psl p4: assert always start -> next busy;
-```
-
-A failing `assert` or `assume` reports like a VHDL assertion, with severity `error` unless the directive gives
-one; a `cover` prints its `report` text each time it is hit. The subset below is simulated.
-
-Supported:
-
-- `default clock is <condition>;`, an `@<condition>` clock on a directive, `report` and `severity` clauses.
-- Directives `assert`, `assume` and `cover`, with a property on VHDL conditions (`boolean`, `bit` or `std_ulogic`).
-- Properties: `always`, `never`, `->`, `<->` and `iff`, `and` and `or` of properties, `next`, `next[n]` (n up to 256),
-  `next_a`, `next_e`, `next_event`, `next_event_a`, `next_event_e`, `until`, `until_`, `before`, `before_`, `abort`,
-  `sync_abort` and `async_abort`, and a property on the right of `|->` and `|=>`. `abort` and `async_abort` are
-  checked at the clock tick, not between ticks as the PSL standard defines the asynchronous abort. These properties
-  are weak: an obligation still open at the end of the run is not a failure.
-- Sequences in braces: concatenation `;`, fusion `:`, `|`, `&&`, `&`, `within`, and the repetitions `[*]`, `[+]`,
-  `[*n]`, `[*m to n]`, `[*m to inf]`, `[=n]` and `[->n]`, in `cover`, in `assert never`, and on either side of `|->`
-  and `|=>`. The operands of `&&` and `&` must each be written in braces, `{ {a; b} && {c; d} }`: with bare
-  operands, `&&` is skipped (`W0004`) and `&` is read as VHDL concatenation (`E1340`).
-- Built-in functions `prev`, `stable`, `rose`, `fell`, `isunknown`, `countones`, `onehot` and `onehot0`.
-- Named `sequence` and `property` declarations with `boolean`, `const`, `sequence` and `property` formals.
-
-Skipped with warning `W0004`, once per design unit, so that the rest of the design runs (`-Werror=W0004` makes it an
-error). The skipped directive is not checked:
-
-- the strong forms (`eventually!`, `next!`, `until!`, `before!`, a sequence followed by `!`);
-- `not` of a temporal property, `forall`, the LTL spellings (`G`, `F`, `X`, `U`, `W`), declarations with typed formals
-  such as `bit`, the `next` and `ended` functions, directives without a clock, and verification units (`vunit`,
-  `vmode`, `vprop`);
-- a directive that tests more than 6 different conditions on the right side of `|->` or `|=>`.
-
-Skipped without a warning, as they have nothing to check in a simulation: `restrict`, `restrict_guarantee`,
-`assume_guarantee`, `fairness`, `strong fairness` and directives that call `nondet` or `nondet_vector`.
-
-A PSL directive written inside a process is a syntax error (`E0002`). The 2019 `std.env` functions that report PSL
-state are not implemented (see LCS-050).
-
-The warning text of `W0004` lists a smaller subset than the one above; this page is the more complete list.
+yavs runs a subset of PSL, the property language for assertions. [PSL](psl.md) lists the subset.
 
 ## Libraries
 
@@ -226,6 +184,8 @@ on it.
 Mixed-language designs are not supported. Foreign subprograms (`VHPIDIRECT`) and VHPI plugins are described in
 [VHPI](vhpi.md).
 
+(known-gaps)=
+
 ## Known gaps
 
 Not implemented, so the run or the analysis stops with an error that names the construct (usually `E2001` or
@@ -237,7 +197,7 @@ Not implemented, so the run or the analysis stops with an error that names the c
   implemented (`E1999`), with a note that says it is a limitation of yavs.
 - `std.env` PSL state functions and non-empty `SetVhdlAssertFormat` (see LCS-050).
 - A generic map in the header of a protected type (LCS-034) and range records known only at run time (LCS-099).
-- PSL outside the subset above.
+- PSL outside [the subset](psl.md).
 
 Invalid code that is accepted, or reported with a misleading message, in some cases: a variable that is not
 shared in an entity, architecture or block declarative part, several subprogram, aggregate, deferred constant and
@@ -247,3 +207,10 @@ type checks, and the 1993 restrictions that 2008 relaxed. These are tracked as b
 A file declared in a package with a file open clause (`file f : text open read_mode is "x.txt";` in a package) is
 not opened when the package is elaborated, and the first access fails with `E3009` "file is not open". Declare the
 file in an architecture, or open it with `file_open`. This is a bug.
+
+## See also
+
+- [PSL](psl.md): the subset of PSL that runs.
+- [Where simulators differ](language-choices.rst): the choices yavs makes.
+- [Mixing language standards](mixing-standards.rst): files of different standards in one project.
+- [Conformance](conformance.rst): the test suites behind these statements.

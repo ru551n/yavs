@@ -1,6 +1,11 @@
 Installation
 ============
 
+This page says how to get yavs: a release archive for your platform, or a build from source.
+
+.. contents:: On this page
+   :local:
+
 Releases
 --------
 
@@ -85,3 +90,10 @@ Without ``--features clift`` the build has no compiled tier: ``yavs --version`` 
 error ``E0120``.
 
 Problems with the installation are covered in :doc:`troubleshooting`.
+
+See also
+--------
+
+* :doc:`getting-started`: your first simulation.
+* :doc:`vunit`: install the VUnit package.
+* :doc:`on-disk`: what yavs keeps on disk.

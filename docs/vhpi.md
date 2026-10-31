@@ -6,6 +6,10 @@ written in C, C++ or Rust can inspect the design hierarchy, read and drive value
 callbacks and supply foreign models. Support is partial: the table below says what is missing.
 For calling a plain C function from VHDL without a plugin, see "Calling C from VHDL" below.
 
+```{contents} On this page
+:local:
+```
+
 ## At a glance
 
 | Area | Supported | Not supported yet |
@@ -122,3 +126,8 @@ designated object.
 
 The per-area audit of the standard with the open issues, and call-by-call behaviour, are in
 [`crates/yavs-vhpi/STANDARD.md`](https://github.com/ru551n/yavs/blob/main/crates/yavs-vhpi/STANDARD.md).
+
+## See also
+
+- [Command-line reference](cli-reference.rst): `--vhpi` and `--load`.
+- [Error codes](error-codes.rst): `E0901`, `W0903` and the others.

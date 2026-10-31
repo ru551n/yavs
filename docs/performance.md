@@ -1,10 +1,16 @@
 # Performance
 
+This page gives the measured speed of yavs against other simulators, and how it was measured.
+
 **In short:** on 41 real third-party testbenches, yavs finishes a repeated (warm) run in about a fifth of the time of an established
 open-source VHDL simulator, roughly 5 times faster, and a first (cold) run in a little over half of it, roughly 1.7 times faster. Against an
 open-source simulator with its mcode code generator the figures are about 5.5 times (warm) and 2 times (cold), and against a commercial
 simulator about 6 times and 2.5 times, on the testbenches it can run. yavs is slower on a few long, compute-heavy testbenches (below).
 Every figure is a recorded run with its conditions in "How we measured" at the end, not a promise for your design.
+
+```{contents} On this page
+:local:
+```
 
 ## What the numbers mean
 
@@ -53,3 +59,9 @@ the same CPU core, in turn, on a shared Linux host (AMD Ryzen 9 7950X3D), repeat
 other simulators are not named; all of them run compiled or generated code. The per-testbench tables, the
 method in full and earlier runs are in
 [`docs/STATUS.md`](https://github.com/ru551n/yavs/blob/main/docs/STATUS.md) ("Real-world performance suite").
+
+## See also
+
+- [Running faster](running-faster.rst): what you can change for your own design.
+- [Threads and the token server](threads.rst): when more threads help.
+- [Conformance](conformance.rst): the conformance sheet.

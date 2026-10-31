@@ -1,5 +1,8 @@
 # Parallel simulation
 
+The user guide has the page for users: [Threads and the token server](https://yavs.readthedocs.io/en/latest/threads.html).
+This document holds the behaviour in detail and the measurements behind it, for developers.
+
 `yavs run --threads N` lets one simulation use N CPU threads (default 1, no thread pool). Only
 the evaluation of VHDL processes is spread over the threads, and only when many processes wake at
 the same moment. Large, flat RTL designs, where thousands of processes wake on the same clock edge,

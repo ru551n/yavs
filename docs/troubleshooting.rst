@@ -1,6 +1,12 @@
 Errors and troubleshooting
 ==========================
 
+This page says how to read a diagnostic, and what to do about the problems people run into most.
+:doc:`error-codes` lists every code.
+
+.. contents:: On this page
+   :local:
+
 Reading a diagnostic
 --------------------
 
@@ -21,16 +27,13 @@ The first line gives the severity, a stable code and the message; then the file,
 and the source with the problem marked. Notes and help lines below it, when present, say why and
 what to do. A runtime error also shows the VHDL call stack.
 
-* ``yavs --explain E1100`` prints a longer explanation of a code.
+* ``yavs --explain E1100`` prints a longer explanation of a code, and :doc:`error-codes` lists all of them.
 * Diagnostics go to standard error; the reports of the simulation go to standard output.
 * yavs stops at the first failing step: nothing runs after a failed ``analyze``, and an exit
   status other than 0 always comes with a diagnostic.
-* ``--message-format=short`` prints one line per diagnostic (``FILE:LINE:COLUMN: error[CODE]:
-  message``), ``--message-format=json`` one JSON object per line, for editors and scripts.
-* ``-Werror`` makes warnings errors; ``-Wno-CODE`` silences one warning and ``-Werror=CODE``
-  makes one an error.
+* ``--message-format`` and the ``-W`` options change the form and the severity: :doc:`cli-reference`.
 
-Exit statuses are listed in :doc:`cli`. Status 3 is an internal error: please
+Exit statuses are listed in :doc:`cli-reference`. Status 3 is an internal error: please
 `report it <https://github.com/ru551n/yavs/issues>`__ with the input that caused it.
 
 Common problems
@@ -60,9 +63,9 @@ Common problems
    * - ``E0011`` in a ``--std=93`` file
      - The construct needs VHDL-2008: analyze the file with ``--std=2008`` or ``2019``.
    * - Errors in verification code, such as a shared variable that is not protected
-     - Try ``--relaxed`` on ``analyze`` and ``run`` (:doc:`libraries`).
+     - Try ``--relaxed`` on ``analyze`` and ``run`` (:doc:`migrating`).
    * - ``W2108``, an instance is unbound, its outputs stay ``'U'``
-     - Analyze the entity of that component (for vendor primitives, see :doc:`libraries`).
+     - Analyze the entity of that component (for vendor primitives, see :doc:`vendor-libraries`).
    * - The run never ends
      - A testbench with a free-running clock needs ``finish``, ``stop`` or ``--stop-time``.
        ``--hang-report`` explains a run that stops without finishing: what each waiting process
@@ -82,3 +85,10 @@ Common problems
 A run that behaves differently than in another simulator may be one of the points where the
 standard leaves a choice open: see :doc:`language-choices`. ``--shuffle`` runs the processes in a
 random order to find testbenches that depend on it.
+
+See also
+--------
+
+* :doc:`error-codes`: every diagnostic code.
+* :doc:`faq`: questions and known limitations.
+* :doc:`language-choices`: where simulators differ.

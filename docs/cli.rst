@@ -1,11 +1,11 @@
-Command line
-============
+Running simulations
+===================
 
-The commands and the options you need most, by task. :doc:`cli-reference` lists every command
-and option with its values, defaults, environment variables and exit statuses, and
-:doc:`vunit-yavs` the options of the VUnit package; ``yavs --help`` and ``yavs <command> --help``
-print the same. Write options as ``--name=value``; they go before or after the positional
-arguments.
+This page shows the commands you use day to day, by task. :doc:`cli-reference` lists every command and
+option with its values and defaults, and ``yavs --help`` and ``yavs COMMAND --help`` print the same.
+
+.. contents:: On this page
+   :local:
 
 Commands
 --------
@@ -16,134 +16,72 @@ Commands
 
    * - Command
      - What it does
-   * - ``yavs analyze [options] FILE...``
-     - Check files and store them in the ``--work`` library, in order; the first failing file
-       stops.
-   * - ``yavs run [options] TOP [-gNAME=VALUE...] [+ARG...]``
+   * - ``yavs analyze --work=NAME:PATH FILE...``
+     - Check files and store them in a library, in order; the first failing file stops.
+   * - ``yavs run --work=NAME:PATH TOP``
      - Elaborate and simulate ``TOP``: an entity, ``ENTITY.ARCH`` or a configuration.
-   * - ``yavs elab [options] TOP``
+   * - ``yavs elab --work=NAME:PATH TOP``
      - Elaborate only: check that the design builds.
    * - ``yavs cov merge|report|rank ...``
-     - Merge and report coverage databases (:doc:`coverage`): ``cov report`` takes ``--html DIR``,
-       ``--cobertura FILE``, ``--root DIR``, ``--kind=LIST``, ``--exclude FILE``, ``--uncovered``,
-       ``--tests``, ``--total`` (only the percentage) and ``--fail-under=PCT`` (exit status 1 below).
+     - Merge and report coverage databases (:doc:`coverage`).
    * - ``yavs lint [options] [FILE|DIR...]``
      - Report what can be proved wrong about a design before it is simulated (:doc:`lint`):
        ``--work``, ``--map``, ``--recursive``, ``--config``, ``--waivers``, ``--list-rules``,
        ``--explain RULE``, ``--json``, ``--sarif``, ``--junit``, ``--quality-report``,
        ``--sonarqube``. Exit status 1 with a finding of severity error.
    * - ``yavs cache clean --work=NAME:PATH``
-     - Empty the compilation cache of a library (:doc:`running-faster`).
+     - Empty the compile cache of a library (:doc:`on-disk`).
    * - ``yavs parse FILE...``
      - Only check that files parse.
    * - ``yavs --explain CODE``
-     - Explain a diagnostic code.
+     - Explain a diagnostic code (:doc:`error-codes`).
    * - ``yavs --version``
      - Print the version and whether a compiled tier is built in.
 
-Libraries and sources
----------------------
+Write options as ``--name=value``. They go before or after the positional arguments.
 
-``analyze``, ``elab`` and ``run``:
+Say which libraries to use
+--------------------------
 
-* ``--work=NAME:PATH``: the library to analyze into, or that holds the top level.
-* ``--map=NAME:PATH``: another library (repeatable). ``std`` and ``ieee`` are built in.
-* ``--std=93|2008|2019``: the standard of the files of this ``analyze`` call (default ``2008``).
-  ``run`` uses the standard recorded per file.
-* ``--relaxed``: a few errors common in verification code become warnings.
-* ``--psl``: read PSL in ``-- psl`` comments.
-* ``-D NAME=VALUE``: define a conditional analysis identifier. ``run`` and ``elab`` read the
-  sources again, so pass the same definitions to them as to ``analyze``.
-* ``--encoding=auto|latin1|utf8``: how source files are read (default: UTF-8 when valid, else
-  Latin-1).
-* ``--no-cache``: do not use the compilation cache.
+Each command names its libraries: ``--work=NAME:PATH`` for the one to analyze into or that holds the top
+level, and ``--map=NAME:PATH`` for each other one. ``std`` and ``ieee`` are built in.
 
-Simulation
-----------
+``--std`` on ``analyze`` is the standard of the files of that call, ``2008`` by default. A few options change how
+source files are read, and go on ``analyze``, ``elab`` and ``run`` alike, because the last two read the sources
+again: ``--relaxed`` (a few errors common in verification code become warnings), ``--psl`` (read PSL in
+``-- psl`` comments) and ``-D NAME=VALUE`` (conditional analysis identifiers).
 
-``run``:
+Control a run
+-------------
 
-* ``-gNAME=VALUE``: set a generic of the top level. A string value is taken as written, without
-  VHDL quotes.
-* ``--stop-time=TIME``: end the run at that time (``10ms``, ``10 ns``) with exit status 0.
-* ``--exit-severity=note|warning|error|failure``: a report at or above this level stops the run
-  with exit status 1 (default ``failure``; an ``error`` report then still makes the exit status 1
-  at the end).
-* ``--resolution=fs|ps|ns|us|ms|sec``: the time resolution limit (default ``fs``).
-* ``--max-deltas=N``: delta cycles allowed at one time before error ``E3002`` (default 10000).
-* ``--hang-report``: when a run ends without ``finish`` or ``stop``, say what the waiting processes
-  wait for.
-* ``--shuffle[=SEED]``: run processes in a random order, to find testbenches that depend on the
-  order; the seed is printed so the run can be repeated.
-* ``+NAME[=VALUE]`` after the top level: arguments for VHPI plugins.
+* Set a generic of the top level with ``-gNAME=VALUE`` (:doc:`generics`).
+* End the run at a time with ``--stop-time=10ms``. The exit status is then 0.
+* Stop at a report of a lower severity with ``--exit-severity=error``. By default a ``failure`` stops the run, and
+  an ``error`` report does not, but it still makes the exit status 1 at the end.
+* A run that ends without ``finish`` or ``stop``: ``--hang-report`` says what the waiting processes wait for.
+* A testbench that may depend on process order: ``--shuffle`` runs the processes in a random order and prints the
+  seed, so the run can be repeated with ``--shuffle=SEED``.
 
-Output and diagnostics
-----------------------
+Waves, coverage and debugging are options of ``run`` too: :doc:`waveforms`, :doc:`coverage`, :doc:`debugging`,
+:doc:`interactive`. Plugins are in :doc:`vhpi`, and speed in :doc:`running-faster`.
 
-All commands:
+Read the output
+---------------
 
-* ``--message-format=human|short|json``: the form of diagnostics on standard error.
-* ``--color=auto|always|never``: colour of diagnostics (``NO_COLOR`` is honoured).
-* ``-Werror``, ``-Werror=CODE``, ``-Wno-CODE``, ``-WCODE``: turn warnings into errors, or change
-  one code.
-
-Waveforms, coverage, debugging, plugins
----------------------------------------
-
-``run``:
-
-* ``--wave=FILE.fst``, ``--wave-include=GLOB``, ``--wave-exclude=GLOB``, ``--wave-variables``,
-  ``--wave-max-array=N``: :doc:`waveforms`.
-* ``--cov[=FILE]``, ``--cov-kind=LIST``, ``--cov-test=NAME``, ``--cov-toggle-max=N``,
-  ``--cov-exclude-translate-off``: :doc:`coverage`. A coverage gate for CI is
-  ``yavs cov report all.ycov --fail-under=85`` (exit status 1 below 85%, 2 for a bad percentage);
-  ``--total`` prints only the percentage; the CI example is in :doc:`coverage`.
-* ``--dap=PORT|stdio``: :doc:`debugging`.
-* ``--interactive``, ``--do=COMMANDS``: :doc:`interactive`.
-* ``--source-map=COMPILED=ORIGINAL``: :doc:`debugging`.
-* ``--surfer[=HOST:PORT]``, ``--surfer-refresh=DURATION``: :doc:`waveforms`.
-* ``--vhpi=LIB[:ENTRY]``, ``--load=LIB``: :doc:`vhpi`.
-
-Performance
------------
-
-``run``:
-
-* ``--tier=auto|clift|interp``: the execution tier (:doc:`running-faster`).
-* ``--threads=N``: evaluate processes on N threads (at least 1, default 1); under a token server in ``YAVS_TOKENS``
-  the extra threads run only on tokens it lends.
-* ``--time-report``, ``--profile[=FILE]``: where the time goes.
-* ``--std-cache=DIR|off``: where the analyzed ``std`` and ``ieee`` packages are kept.
+The reports of the simulation go to standard output, and diagnostics to standard error. ``--message-format=short``
+gives one line per diagnostic, ``json`` one JSON object per line, for scripts and editors. :doc:`troubleshooting`
+explains the form of a diagnostic.
 
 Exit status
 -----------
 
-.. list-table::
-   :header-rows: 1
-   :widths: 15 85
-
-   * - Status
-     - Meaning
-   * - 0
-     - Success. For ``run``: the simulation ended without failure (no more events, ``stop`` or
-       ``finish`` with 0, or ``--stop-time`` reached).
-   * - 1
-     - ``analyze``: a file has errors. ``run``: a failed assertion or report at the exit severity,
-       or a runtime error.
-   * - 2
-     - Usage, library or elaboration error.
-   * - 3
-     - Internal error: please report it.
-   * - N
-     - ``run``: ``stop(N)`` or ``finish(N)`` with N from 1 to 125.
-   * - 130
-     - ``run``: stopped by Ctrl-C or SIGTERM.
+0 is success, 1 a failed check or runtime error, 2 a usage, library or elaboration error and 3 an internal error.
+``stop(N)`` and ``finish(N)`` give N. :doc:`cli-reference` has the whole table, and :doc:`ci` what it means in a CI step.
 
 Scripting
 ---------
 
-A script or test runner calls ``yavs`` directly with an argument list, without a shell. Reports of
-the simulation go to standard output and diagnostics to standard error; never ignore a non-zero
+A script or test runner calls ``yavs`` directly with an argument list, without a shell. Never ignore a non-zero
 exit status.
 
 .. code-block:: python
@@ -157,15 +95,18 @@ exit status.
     result = yavs("run", "--work=lib:out/lib", "-gEXPECTED=3", "hello_tb")
     print(result.returncode, result.stdout)
 
-An argument ``@FILE`` is replaced by the arguments in FILE, one per line, taken as written (no
-quoting). Use it for long file lists and long generic values.
+An argument ``@FILE`` is replaced by the arguments in FILE, one per line, taken as written (no quoting). Use it for
+long file lists and long generic values.
 
 Environment variables
 ---------------------
 
-None is needed; all are listed in :doc:`cli-reference`.
+None is needed; :doc:`environment` lists all of them.
 
-* ``NO_COLOR``: no colour in diagnostics.
-* ``YAVS_STD_CACHE=DIR|off``: like ``--std-cache``.
-* ``YAVS_WAVE_FLUSH=5s``: also write a waveform block every 5 seconds of run time
-  (:doc:`waveforms`).
+See also
+--------
+
+* :doc:`cli-reference`: every command and option.
+* :doc:`project-walkthrough`: these commands in a small project.
+* :doc:`generics`: generics of the top level.
+* :doc:`troubleshooting`: when a command fails.

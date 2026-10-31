@@ -31,34 +31,60 @@ It is early: a pre-release for people who want to try it and report what breaks.
 What you get:
 
 * The IEEE packages built in, and the verification libraries OSVVM, UVVM and VUnit running
-  unchanged (:doc:`libraries`).
+  unchanged (:doc:`libraries`, :doc:`vunit`).
 * Clear diagnostics with stable codes and VHDL call stacks; nothing runs after a failed step
   (:doc:`troubleshooting`).
 * :doc:`Static analysis <lint>` of what can be proved wrong before a simulation runs.
 * FST :doc:`waveforms`, :doc:`code coverage <coverage>`, a debugger for VS Code and other editors
   (:doc:`debugging`) and :doc:`VHPI plugins <vhpi>`.
 * Fast start-up and a compiled tier that compiles the hot code while the simulation runs, with
-  identical output on every tier (:doc:`running-faster`).
+  identical output on every tier (:doc:`running-faster`, :doc:`threads`).
 * Linux x86_64, Linux aarch64 and Windows x86_64.
 
-Start with :doc:`install` and :doc:`getting-started`.
+Where to start:
+
+* New to yavs: :doc:`install`, :doc:`getting-started`, then :doc:`project-walkthrough`.
+* Coming from another simulator: :doc:`migrating`.
+* Using VUnit: :doc:`vunit`.
+* Looking something up: :doc:`cli-reference`, :doc:`error-codes`, :doc:`environment`.
+
+This guide describes the current development version. What is not in a release yet is under "Unreleased" in
+the :doc:`release_notes`, and pages say when a feature needs a release newer than 0.11.0.
 
 .. toctree::
-   :caption: User guide
+   :caption: Get started
    :hidden:
 
    install
    getting-started
-   libraries
+   project-walkthrough
+   migrating
+
+.. toctree::
+   :caption: Run and debug
+   :hidden:
+
+   cli
+   generics
    lint
    waveforms
-   coverage
    debugging
    interactive
-   vhpi
+   coverage
    running-faster
-   cli
+   threads
    troubleshooting
+
+.. toctree::
+   :caption: Libraries and integration
+   :hidden:
+
+   vunit
+   libraries
+   vendor-libraries
+   mixing-standards
+   vhpi
+   ci
 
 .. toctree::
    :caption: Reference
@@ -67,14 +93,19 @@ Start with :doc:`install` and :doc:`getting-started`.
    cli-reference
    lint-rules
    vunit-yavs
+   environment
+   error-codes
+   on-disk
    language-support
    language-choices
-   conformance
-   performance
+   psl
 
 .. toctree::
-   :caption: About
+   :caption: Project
    :hidden:
 
+   conformance
+   performance
    release_notes
+   faq
    GitHub <https://github.com/ru551n/yavs>

@@ -1,12 +1,18 @@
 Waveforms
 =========
 
+This page says how to record a run in a waveform file, how to choose what is recorded, and how to watch waves
+while the simulation runs.
+
 .. code-block:: bash
 
     yavs run --work=work:build/work --wave=tb.fst tb
 
 ``--wave=FILE.fst`` records every signal and port of the design in an FST file, which common
 waveform viewers open. Two runs of the same design write identical files, at any ``--threads``.
+
+.. contents:: On this page
+   :local:
 
 Choosing what is recorded
 -------------------------
@@ -47,7 +53,7 @@ steps, so a viewer that reloads the file shows the run up to the breakpoint (:do
 Watching in Surfer
 ------------------
 
-``--surfer`` shows the waveform in the `Surfer <https://surfer-project.org>`__ viewer (0.6.0 or later) while the run writes it:
+``--surfer`` needs a release newer than 0.11.0. It shows the waveform in the `Surfer <https://surfer-project.org>`__ viewer (0.6.0 or later) while the run writes it:
 
 .. code-block:: sh
 
@@ -69,3 +75,10 @@ moves the cursor.
 
 The simulation never waits for the viewer, and its output and exit status do not depend on it: losing Surfer during a run is
 warning ``W0131``, also under ``-W error``. Starting it or connecting to it is checked first (``E0130``).
+
+See also
+--------
+
+* :doc:`debugging`: stop at a breakpoint and look at the waves up to it.
+* :doc:`cli-reference`: every ``--wave`` option.
+* :doc:`environment`: ``YAVS_WAVE_FLUSH``.

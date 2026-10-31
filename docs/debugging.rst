@@ -1,8 +1,11 @@
 Debugging
 =========
 
-yavs has a debugger built in. It speaks the Debug Adapter Protocol (DAP), the protocol of the
+This page says how to debug a simulation from VS Code or another editor. yavs has a debugger built in. It speaks the Debug Adapter Protocol (DAP), the protocol of the
 debug views of VS Code and most other editors.
+
+.. contents:: On this page
+   :local:
 
 VS Code with a test runner
 --------------------------
@@ -116,3 +119,10 @@ Limits
   ``--threads`` and ``--tier`` have no effect there.
 * ``--cov`` and ``--profile`` cannot be combined with ``--dap``.
 * Breakpoint conditions cannot call functions or use attributes.
+
+See also
+--------
+
+* :doc:`interactive`: the same from a terminal prompt.
+* :doc:`vunit`: debug one test of a run script.
+* :doc:`waveforms`: waves while debugging.

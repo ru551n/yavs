@@ -10534,3 +10534,15 @@ aggregate targets, records and signal parameters, `Inst::DisconnectSlot` (#602);
 package initialisation reports printed once (#874); unused subtypes and package constants have their
 constraints checked (#847). Guarded record signals resolved as a whole are back (#595): a rebase had
 removed them.
+
+## User guide: gaps filled, grouped by task (#923, 2026-10-31)
+
+The site toctrees are by task: Get started, Run and debug, Libraries and integration, Reference, Project. New
+flat pages: `project-walkthrough`, `migrating`, `generics`, `threads`, `vunit`, `vendor-libraries`,
+`mixing-standards`, `ci`, `environment`, `error-codes`, `on-disk`, `psl`, `faq`. Old anchors stay as stubs
+(`libraries.rst`, `language-support.md`). `docs/parallel.md` stays as design material and measurements; the README
+links `threads`. `docs/environment.rst` lists every environment variable (users first, then development),
+checked by `crates/yavs/tests/env_registry.rs` against the string literals in `crates/` and `python/vunit-yavs`.
+`docs/error-codes.rst` is generated from the `--explain` tables by the `cli_reference` tests, with the same
+`YAVS_BLESS` flow. `crates/yavs/tests/docs_examples.rs` and `test_guide_example` in
+`python/vunit-yavs/tests/test_real_yavs.py` run `docs/examples` and compare what the pages show.

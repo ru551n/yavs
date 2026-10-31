@@ -8,3 +8,10 @@ The full report, with every suite in detail, the known simulator differences and
 each result, is
 `docs/conformance.md <https://github.com/ru551n/yavs/blob/main/docs/conformance.md>`__ in the
 repository.
+
+See also
+--------
+
+* :doc:`language-support`: the state of each VHDL feature.
+* :doc:`language-choices`: where simulators differ.
+* :doc:`performance`: the performance sheet.

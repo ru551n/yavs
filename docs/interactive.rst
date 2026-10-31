@@ -1,7 +1,7 @@
 Interactive mode
 ================
 
-``yavs run --interactive`` runs a simulation from a terminal prompt, without an editor. It
+``yavs run --interactive`` (needs a release newer than 0.11.0) runs a simulation from a terminal prompt, without an editor. It
 elaborates the design, stops at time 0 before any process has run, and waits at ``yavs>``:
 
 .. code-block:: text
@@ -22,6 +22,9 @@ elaborates the design, stops at time 0 before any process has run, and waits at 
 
 The prompt has line editing and history. Ctrl-C pauses a running simulation and returns to the
 prompt; at the prompt it drops the line. Ctrl-D or the end of piped input is ``quit``.
+
+.. contents:: On this page
+   :local:
 
 Commands
 --------
@@ -104,3 +107,10 @@ Limits
 The console is a debug session: the interpreter on one thread (``--threads`` and ``--tier`` have no
 effect), no ``--cov`` or ``--profile``, and breakpoint conditions cannot call functions.
 ``run until`` watches signals, so a condition on variables alone is refused.
+
+See also
+--------
+
+* :doc:`debugging`: the same session in VS Code.
+* :doc:`vunit`: the console with a test of a run script.
+* :doc:`waveforms`: ``--surfer`` and the ``wave`` commands.

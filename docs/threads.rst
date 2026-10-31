@@ -92,7 +92,7 @@ and the flag does nothing:
     python run.py -p 8 --yavs-jobserver --yavs-max-threads 4
 
 ``--yavs-max-threads N`` caps the threads of one simulation; the default with the server is the ``-p``
-value, at most 8, since more threads buy little and each costs memory in every simulation. A test can have its
+value, at most 4, since more threads buy little and each costs memory in every simulation. A test can have its
 own cap with ``vu.set_sim_option("yavs.max_threads", 2)``. Without the server ``--yavs-max-threads N`` simply runs
 each simulation with ``--threads=N``. If the server cannot start (a blocked local socket), the run prints a
 warning and every simulation uses one thread. A run script with a command line of its own can set

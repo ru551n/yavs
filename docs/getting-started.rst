@@ -1,8 +1,9 @@
 Getting started
 ===============
 
-yavs works in two steps: ``analyze`` checks VHDL files and stores them in a library, ``run``
-elaborates a top level and simulates it.
+This page takes you through your first simulation, a failing check and an error in the VHDL. yavs works in
+two steps: ``analyze`` checks VHDL files and stores them in a library, ``run`` elaborates a top level and
+simulates it.
 
 .. _quickstart:
 
@@ -91,8 +92,8 @@ design after an error; :doc:`troubleshooting` has more.
 A project with several files and libraries
 ------------------------------------------
 
-Analyze files in dependency order, packages before the units that use them. Several files can go
-in one call; a library other than ``--work`` is mapped with ``--map=NAME:PATH``:
+Analyze files in dependency order, packages before the units that use them. A library other than
+``--work`` is mapped with ``--map=NAME:PATH``:
 
 .. code-block:: bash
 
@@ -100,9 +101,6 @@ in one call; a library other than ``--work`` is mapped with ``--map=NAME:PATH``:
     yavs analyze --work=work:build/work --map=mylib:build/mylib tb/tb.vhd
     yavs run --work=work:build/work --map=mylib:build/mylib tb --stop-time=10us
 
-* ``--std=93``, ``--std=2008`` (the default) or ``--std=2019`` sets the standard of the files of
-  one ``analyze`` call. A project can mix standards: call ``analyze`` once per standard; ``run``
-  needs no ``--std``.
 * After you edit a file, analyze it again before ``run``: ``run`` stops with ``L0034`` for a file
   that changed since it was analyzed.
 * ``std`` and ``ieee`` (with ``numeric_std``, ``fixed_pkg``, ``float_pkg``, the VITAL and the
@@ -110,10 +108,13 @@ in one call; a library other than ``--work`` is mapped with ``--map=NAME:PATH``:
 * A testbench with a free-running clock and no ``finish`` or ``stop`` never ends by itself: add
   ``--stop-time=1us`` or press Ctrl-C.
 
-Next steps
-----------
+:doc:`project-walkthrough` goes through all of this with a small project.
 
-* Record waveforms with ``--wave=tb.fst``: :doc:`waveforms`.
-* Use OSVVM, UVVM, VUnit or vendor libraries: :doc:`libraries`.
-* Set breakpoints in VS Code: :doc:`debugging`.
-* Every option in one place: :doc:`cli-reference`.
+See also
+--------
+
+* :doc:`project-walkthrough`: several libraries, rebuilds, generics, waves and coverage.
+* :doc:`migrating`: what is different if you know another simulator.
+* :doc:`vunit`: running tests with VUnit.
+* :doc:`debugging`: breakpoints in VS Code.
+* :doc:`cli-reference`: every option in one place.

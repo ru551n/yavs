@@ -11,7 +11,7 @@ Yet Another VHDL Simulator: VHDL-1993, 2008 and 2019 in Rust.
 ## Why yavs
 
 - **Measured speed:** about 5 times faster than an established open-source VHDL simulator on repeated runs and 1.7 times on first runs, over 41 real testbenches with analysis included ([performance](docs/performance.md)).
-- **Multi-threaded:** `--threads 4` runs large, flat RTL designs, where thousands of processes wake on the same clock edge, 2.4 to 2.6 times faster than one thread (whole run, measured 2026-10-28); processor models and testbench-style designs run at about their one-thread speed, with identical output at any thread count ([parallel simulation](docs/parallel.md)).
+- **Multi-threaded:** `--threads 4` runs large, flat RTL designs, where thousands of processes wake on the same clock edge, 2.4 to 2.6 times faster than one thread (whole run, measured 2026-10-28); processor models and testbench-style designs run at about their one-thread speed, with identical output at any thread count ([threads](https://yavs.readthedocs.io/en/latest/threads.html)).
 - **Evidence, not claims:** on every push to `main`, CI re-runs most of the [conformance report](docs/conformance.md) (with the [known differences between simulators](docs/design/simulator-discrepancies.md)), including a comparison of yavs's output with an established simulator's recorded output and two simulators' own regression suites run on yavs; every result says where and when it was produced, and the performance sheet gives its method.
 - **Runs your verification libraries unmodified:** OSVVM's, UVVM's and VUnit's own test suites and Open Logic's testbenches run as published (results below).
 - **Built for CI:** browsable HTML coverage reports with per-line hit counts and per-test attribution plus Cobertura for CI dashboards, identical output at any thread count, a compile cache for repeated runs, and one release archive per platform with nothing else to install.
@@ -58,7 +58,7 @@ The example files are in [`docs/examples/`](docs/examples); the output and a fai
 [installation](https://yavs.readthedocs.io/en/latest/install.html), [libraries](https://yavs.readthedocs.io/en/latest/libraries.html),
 [waveforms](https://yavs.readthedocs.io/en/latest/waveforms.html), [coverage](https://yavs.readthedocs.io/en/latest/coverage.html),
 [debugging](https://yavs.readthedocs.io/en/latest/debugging.html), [VHPI](https://yavs.readthedocs.io/en/latest/vhpi.html),
-[running faster](https://yavs.readthedocs.io/en/latest/running-faster.html) and the [command line](https://yavs.readthedocs.io/en/latest/cli.html). What changed in each version is in the [release notes](https://yavs.readthedocs.io/en/latest/release_notes.html).
+[running faster](https://yavs.readthedocs.io/en/latest/running-faster.html) and [running simulations](https://yavs.readthedocs.io/en/latest/cli.html), with a [walkthrough of a real project](https://yavs.readthedocs.io/en/latest/project-walkthrough.html) and a page on [moving from another simulator](https://yavs.readthedocs.io/en/latest/migrating.html). Look things up in the [command-line reference](https://yavs.readthedocs.io/en/latest/cli-reference.html), [error codes](https://yavs.readthedocs.io/en/latest/error-codes.html) and [environment variables](https://yavs.readthedocs.io/en/latest/environment.html). What changed in each version is in the [release notes](https://yavs.readthedocs.io/en/latest/release_notes.html).
 
 The documentation is also available to coding assistants through [Context7](https://context7.com/ru551n/yavs).
 
@@ -82,17 +82,17 @@ VUNIT_SIMULATOR=yavs python run.py
 ```
 
 Options, debugging a test with `--yavs-debug`, and sharing CPUs between parallel tests are in
-[Using yavs from VUnit](https://yavs.readthedocs.io/en/latest/libraries.html#using-yavs-from-vunit).
+[Using yavs from VUnit](https://yavs.readthedocs.io/en/latest/vunit.html).
 
 ## Features
 
-- **Languages:** VHDL-1993 (`--std=93`), VHDL-2008 and VHDL-2019, mixed in one project with each file keeping its own standard; the IEEE libraries (including the VITAL and Synopsys packages) are built in; a subset of PSL. Details in [`docs/language-support.md`](docs/language-support.md). Plain Verilog (not SystemVerilog), for vendor IP and vendor libraries, is [planned](https://github.com/ru551n/yavs/issues/776).
+- **Languages:** VHDL-1993 (`--std=93`), VHDL-2008 and VHDL-2019, mixed in one project with each file keeping its own standard; the IEEE libraries (including the VITAL and Synopsys packages) are built in; a [subset of PSL](https://yavs.readthedocs.io/en/latest/psl.html). Details in [`docs/language-support.md`](docs/language-support.md). Plain Verilog (not SystemVerilog), for vendor IP and vendor libraries, is [planned](https://github.com/ru551n/yavs/issues/776).
 - **Code generation:** with `--tier=auto` a run starts in the interpreter while a background thread compiles the hot functions with the bundled [Cranelift](https://cranelift.dev/) code generator and swaps them in; `--tier=clift` compiles everything before time 0. Compiled code is cached on disk, and every tier gives identical output. See [Running faster](https://yavs.readthedocs.io/en/latest/running-faster.html).
 - **Coverage:** statement, branch, condition, expression and toggle coverage; databases of several runs merge, `yavs cov rank` finds a small set of tests that reaches the same coverage, and reports come as text, HTML or Cobertura. See [`docs/coverage.md`](docs/coverage.md).
 - **Waveforms:** standard FST (`--wave`) with records and arrays as scopes, include and exclude globs, a size cap and optional process variables (`--wave-variables`).
 - **Debugging:** `yavs run --dap=PORT` debugs a simulation from VS Code (extension in `editors/vscode`) or any Debug Adapter Protocol editor: breakpoints on VHDL lines (with VHDL conditions and hit conditions such as `>= 3`) and on signal changes, stepping through each process, pausing, and inspecting or changing signal and variable values. A debugger session runs the interpreter on one thread. See [Debugging](https://yavs.readthedocs.io/en/latest/debugging.html).
 - **VHPI:** `--vhpi` loads VHPI plugins; the implementation is partial, see [`docs/vhpi.md`](docs/vhpi.md).
-- **Parallel kernel:** `--threads N` (default 1) evaluates processes in parallel; it helps only large, flat designs. See [`docs/parallel.md`](docs/parallel.md).
+- **Parallel kernel:** `--threads N` (default 1) evaluates processes in parallel; it helps only large, flat designs. See [Threads and the token server](https://yavs.readthedocs.io/en/latest/threads.html).
 
 yavs is early: expect gaps and please [report](https://github.com/ru551n/yavs/issues) what breaks.
 

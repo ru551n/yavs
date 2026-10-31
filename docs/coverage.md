@@ -9,6 +9,10 @@ two-step workflow:
 You get a `.ycov` database per run, and from it a text summary, an HTML site, Cobertura XML
 for CI, or a list of items that never ran. Without `--cov` there are no counters and no cost.
 
+```{contents} On this page
+:local:
+```
+
 ## Example
 
 ```
@@ -82,16 +86,17 @@ Report options:
 | `--cobertura FILE.xml` | Cobertura XML for CI services, one entry per source line (it has no toggles, so those are only in the text and HTML reports) |
 | `--html DIR` | static pages that open from disk (`index.html`) |
 | `--root DIR` | the prefix stripped from the source paths in every report (default: the current directory) |
-| `--kind=LIST` | report only these kinds (`statement`, `branch`, `toggle`, `condition`, `expression`, comma separated); `--total` and `--fail-under` then count only them |
-| `--total` | print only the total coverage as one percentage such as `74.3%`: the items that ran over all items, after exclusions; cannot be combined with `--uncovered` or `--tests` |
-| `--fail-under=PCT` | exit with status 1 when the total is below PCT (`80`, `92.5`); the report is printed as usual and `error[E0114]: coverage 70.0% is below the required 80.0%` follows on standard error. With `--total` the percentage is printed too |
+| `--kind=LIST` (newer than 0.11.0) | report only these kinds (`statement`, `branch`, `toggle`, `condition`, `expression`, comma separated); `--total` and `--fail-under` then count only them |
+| `--total` (newer than 0.11.0) | print only the total coverage as one percentage such as `74.3%`: the items that ran over all items, after exclusions; cannot be combined with `--uncovered` or `--tests` |
+| `--fail-under=PCT` (newer than 0.11.0) | exit with status 1 when the total is below PCT (`80`, `92.5`); the report is printed as usual and `error[E0114]: coverage 70.0% is below the required 80.0%` follows on standard error. With `--total` the percentage is printed too |
 | `--uncovered[=yaml]` | one exclusion row per item that never ran, with file, line and the statement as a comment; `=yaml` prints a YAML exclusion file |
 | `--tests` | one row per item that ran, followed by `# tests:` and the tests that hit it; cannot be combined with `--uncovered` |
 | `--exclude FILE` | apply an exclusion file (see Exclusions) |
 
 ## Coverage in CI
 
-`--fail-under` makes the coverage a gate and `--total` gives a number for a badge or a log line:
+`--fail-under` (a release newer than 0.11.0) makes the coverage a gate and `--total` gives a number for a badge
+or a log line. A whole job is in [Continuous integration](ci.rst).
 
 ```yaml
 - run: yavs run --work=lib:out/lib --cov=cov/a.ycov --cov-kind=statement,branch tb
@@ -107,7 +112,7 @@ example `--kind=statement,branch --fail-under=90`. A report with nothing to coun
 
 ## Coverage from VUnit
 
-With the `vunit-yavs` package the test runner collects, merges and checks coverage for you:
+With the `vunit-yavs` package (a release newer than 0.11.0) the test runner collects, merges and checks coverage for you:
 
 ```python
 vu.set_sim_option("enable_coverage", True)      # or pass --yavs-cov to run.py
@@ -249,3 +254,9 @@ warning into an error, or when the total is below `--fail-under`; a malformed op
 | `W0115` | a signal was left out of toggle coverage because of `--cov-toggle-max` |
 
 **Tiers and threads.** Counts are the same in every tier and at any `--threads`.
+
+## See also
+
+- [Using yavs from VUnit](vunit.rst): coverage in a run script.
+- [Continuous integration](ci.rst): a coverage gate in a CI job.
+- [Error codes](error-codes.rst): every diagnostic code.

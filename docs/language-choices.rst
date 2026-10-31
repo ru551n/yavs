@@ -47,3 +47,10 @@ yavs, with what to do about each.
 The complete list of choices, with the sections of the standard and portable forms, is kept in the
 repository: `docs/design/language-choices.rst
 <https://github.com/ru551n/yavs/blob/main/docs/design/language-choices.rst>`__.
+
+See also
+--------
+
+* :doc:`migrating`: moving a project from another simulator.
+* :doc:`language-support`: what each standard supports.
+* :doc:`psl`: the subset of PSL.

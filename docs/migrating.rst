@@ -49,8 +49,6 @@ The same tasks in yavs
      - ``-Wno-CODE``. ``-Werror`` makes warnings errors.
    * - Find out what a message means
      - ``yavs --explain CODE`` (:doc:`error-codes`).
-   * - Compile the vendor libraries
-     - Plain ``analyze``, there is no special command (:doc:`vendor-libraries`).
    * - Run a regression
      - VUnit with the ``vunit-yavs`` package (:doc:`vunit`), or call ``yavs`` from a script (:doc:`cli`).
 
@@ -66,8 +64,8 @@ file and no setup command, so a script holds everything it needs:
     yavs analyze --work=work:build/work --map=mylib:build/mylib tb.vhd
     yavs run --work=work:build/work --map=mylib:build/mylib tb
 
-``std`` and ``ieee`` are built in. They cannot be mapped to a library of your own. Vendor and
-verification libraries are analyzed from their sources; there are no precompiled ones.
+``std`` and ``ieee`` are built in. They cannot be mapped to a library of your own. Verification
+libraries are analyzed from their sources; there are no precompiled ones.
 
 Analyze, then run
 -----------------

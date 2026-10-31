@@ -60,15 +60,9 @@ Sharing CPU between parallel VUnit tests
 
 Moved to :doc:`threads`.
 
-Vendor libraries
-----------------
-
-Moved to :doc:`vendor-libraries`.
-
 See also
 --------
 
 * :doc:`vunit`: using yavs from VUnit.
-* :doc:`vendor-libraries`: Xilinx, and what cannot work.
 * :doc:`mixing-standards`: a library used under several standards.
 * :doc:`conformance`: how the libraries' own test suites do.

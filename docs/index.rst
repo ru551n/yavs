@@ -81,7 +81,6 @@ the :doc:`release_notes`, and pages say when a feature needs a release newer tha
 
    vunit
    libraries
-   vendor-libraries
    mixing-standards
    vhpi
    ci

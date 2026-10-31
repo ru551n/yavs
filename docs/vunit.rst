@@ -150,7 +150,7 @@ Other libraries in a test
 -------------------------
 
 Add them as in any VUnit script. VUnit's own libraries come from ``add_vhdl_builtins``, and OSVVM comes from
-the ``vunit-osvvm`` package: ``pip install vunit-osvvm``, then ``vu.add_package("vunit-osvvm")``. Vendor libraries are in :doc:`vendor-libraries`.
+the ``vunit-osvvm`` package: ``pip install vunit-osvvm``, then ``vu.add_package("vunit-osvvm")``.
 
 .. _vunit-native-library:
 

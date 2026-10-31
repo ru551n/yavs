@@ -71,14 +71,12 @@ Libraries
 ~~~~~~~~~
 
 * Encrypted IP does not work: yavs does not decrypt it (``E0012``).
-* Xilinx ``UNISIM``, ``UNIMACRO`` and ``UNIFAST`` work; the ``secureip`` primitives and XPM macros cannot, and Intel
-  and Lattice libraries are not done: :doc:`vendor-libraries`.
 * No precompiled libraries are shipped. You analyze libraries from their sources (:doc:`libraries`).
 
 Simulation
 ~~~~~~~~~~
 
-* No timing simulation: no SDF file is read, and vendor timing models run with zero delay.
+* No timing simulation: no SDF file is read, and delays in timing models are ignored.
 * Threads help only some designs (:doc:`threads`).
 
 Tools

@@ -149,26 +149,6 @@ Read by vunit-yavs and VUnit
      - ``vunit-yavs``
      - ``vunit-yavs`` 0.10.0
 
-Used by scripts in this guide
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. list-table::
-   :header-rows: 1
-   :widths: 20 36 14 10 12 8
-
-   * - Variable
-     - Purpose
-     - Values
-     - Default
-     - Read by
-     - Since
-   * - ``XILINX_VIVADO``
-     - Your Vivado install, set by its ``settings64.sh``. yavs does not read it. The recipe in :doc:`vendor-libraries` uses it to find the sources, and the vendor tests of the repository run only when it is set.
-     - a directory
-     - unset
-     - your script, tests
-     - 
-
 For development and diagnostics
 -------------------------------
 

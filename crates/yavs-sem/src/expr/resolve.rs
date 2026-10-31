@@ -918,6 +918,67 @@ impl Db {
     }
 
     /// 9.2.9: a condition of a type other than BOOLEAN goes through a visible `??`.
+    /// A boolean of a PSL directive in a 1993 file, of type `bit` or `std_ulogic`: 1993 has no
+    /// `??`, and PSL takes these types as booleans in any revision, so it is `e = '1'` (#911).
+    // ponytail: `'H'` is false here and true under the 2008 `??`; needs the `??` table if a 1993
+    // design relies on it.
+    fn psl_bool_93(&mut self, scope: ScopeId, e: &ast::Expr, is: &[Interp]) -> Option<ExprId> {
+        if self.file_rev() != crate::LangRev::Vhdl1993
+            || !matches!(
+                self.stmt_owners.last(),
+                Some(crate::stmt::Owner::Process { psl: true, .. })
+            )
+        {
+            return None;
+        }
+        let t = is.iter().map(|i| i.ty).find(|&t| {
+            let n = self.type_name(t).to_ascii_uppercase();
+            n == "BIT" || n == "STD_ULOGIC"
+        })?;
+        let boolean = self.well_known.boolean?;
+        let sc = self.decls[self.types[t].decl].scope;
+        let eq = self.scopes[sc]
+            .names
+            .get(&operator_key("="))?
+            .iter()
+            .copied()
+            .find(|&d| {
+                self.decls[d].kind.subprogram().is_some_and(|s| {
+                    s.params.len() == 2
+                        && s.params.iter().all(|p| self.base(p.subtype) == t)
+                        && s.ret.map(|r| self.base(r)) == Some(boolean)
+                })
+            })?;
+        let one = ast::Expr {
+            kind: ast::ExprKind::Literal(ast::Literal {
+                kind: ast::LiteralKind::Char('1'),
+                span: e.span,
+            }),
+            span: e.span,
+        };
+        let (op, one) = (
+            self.resolve(scope, e, Expected::Type(t)),
+            self.resolve(scope, &one, Expected::Type(t)),
+        );
+        let arg = |formal, x| Arg {
+            formal,
+            actual: Actual::Expr(x),
+            inertial: false,
+        };
+        Some(self.add_expr(Expr {
+            kind: ExprKind::Call {
+                callee: eq,
+                args: Box::new([arg(0, op), arg(1, one)]),
+                method_of: None,
+                implicit_cond: false,
+            },
+            subtype: self.types[boolean].first_subtype,
+            span: e.span,
+            stat: self.exprs[op].stat.min(Staticness::Globally),
+            value: None,
+        }))
+    }
+
     fn implicit_condition(&mut self, scope: ScopeId, e: &ast::Expr, is: &[Interp]) -> ExprId {
         let boolean = self.well_known.boolean;
         let mut found: Vec<(DeclId, TypeId)> = Vec::new();
@@ -983,6 +1044,7 @@ impl Db {
                     value: None,
                 })
             }
+            [] if let Some(x) = self.psl_bool_93(scope, e, is) => x,
             [] => {
                 let found = is.first().map(|i| self.type_name(i.ty));
                 let mut d = Diagnostic::error(diag::NOT_BOOLEAN, "condition is not BOOLEAN")

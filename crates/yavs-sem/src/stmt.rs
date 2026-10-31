@@ -38,8 +38,12 @@ use crate::types::{BoundsFrom, RangeC, Resolution};
 /// What contains the sequential statements being analyzed.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Owner {
-    /// `sensitivity`: the span of the process's sensitivity list, if any.
-    Process { sensitivity: Option<Span> },
+    /// `sensitivity`: the span of the process's sensitivity list, if any; `psl`: the checker
+    /// process of a PSL directive.
+    Process {
+        sensitivity: Option<Span>,
+        psl: bool,
+    },
     Subprogram {
         decl: DeclId,
         kind: SubprogramKind,
@@ -115,7 +119,9 @@ impl Db {
         };
         let kind = sp.kind;
         let (in_process, parent_ban) = match self.stmt_owners.last() {
-            Some(Owner::Process { sensitivity }) => (true, sensitivity.map(WaitBan::Sensitized)),
+            Some(Owner::Process { sensitivity, .. }) => {
+                (true, sensitivity.map(WaitBan::Sensitized))
+            }
             Some(Owner::Subprogram {
                 in_process,
                 wait_ban,
@@ -558,6 +564,7 @@ impl Db {
         let (msg, sec) = match cx.owner {
             Owner::Process {
                 sensitivity: Some(sp),
+                ..
             } => (
                 "`wait` is not allowed in a process with a sensitivity list",
                 Some((sp, "the sensitivity list")),
@@ -1917,6 +1924,7 @@ impl Db {
         };
         let owner = Owner::Process {
             sensitivity: sens_span,
+            psl: p.psl,
         };
         self.stmt_owners.push(owner);
         errs.keep(self.st_decls(pscope, &p.decls, s.span));

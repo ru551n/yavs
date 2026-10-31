@@ -800,6 +800,7 @@ impl Parser<'_> {
         };
         let end_label = self.end(open, "process", kws, false, label)?;
         Ok(ProcessStmt {
+            psl: false,
             sensitivity,
             decls,
             stmts,

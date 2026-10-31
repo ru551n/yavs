@@ -497,6 +497,7 @@ fn checker(
         stmts.push(when(b, vec![stmt(then)]));
         stmts.extend(bi.post);
         return ProcessStmt {
+            psl: true,
             sensitivity: None,
             decls: bi.decls,
             stmts,
@@ -557,6 +558,7 @@ fn checker(
     }
     stmts.extend(bi.post);
     ProcessStmt {
+        psl: true,
         sensitivity: None,
         decls,
         stmts,

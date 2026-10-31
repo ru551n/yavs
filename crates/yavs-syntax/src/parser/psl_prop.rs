@@ -895,6 +895,7 @@ pub(super) fn temporal_checker(
     all.extend(stmts);
     all.extend(bi.post);
     Ok(ProcessStmt {
+        psl: true,
         sensitivity: None,
         decls: bi.decls,
         stmts: all,

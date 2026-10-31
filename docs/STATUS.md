@@ -32,6 +32,10 @@ fails with the regenerate command (`YAVS_BLESS=1 cargo test -p yavs --bin yavs c
 `help_texts_are_for_users` keeps file names out of help texts. `docs/vunit-yavs.rst` lists the VUnit package's sim options and
 flags by hand; `python/vunit-yavs/tests/test_docs.py` checks its names against the option definitions. `docs/cli.rst` stays the overview.
 
+### PSL booleans in 1993 files (#911, 2026-10-31)
+
+A `bit` or `std_ulogic` boolean of a PSL directive works at `--std=93` (L160).
+
 ### One definition of the tool identifiers (#919, 2026-10-31)
 
 Conditional analysis takes `TOOL_*` from `yavs_std::env`; `TOOL_EDITION` no longer differs between the two.

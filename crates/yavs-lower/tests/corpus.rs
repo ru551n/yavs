@@ -286,6 +286,7 @@ const PASS: &[&str] = &[
     "hierarchy/port_part_formal_conv",
     "psl/psl_seq_bare_and",
     "psl/psl_pragma_93",
+    "psl/psl_pragma_93_logic",
     "generics/package_generic_map_body",
     "generics/alias_subtype_attr",
     "generics/generic_file_package",

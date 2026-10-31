@@ -307,6 +307,7 @@ fn procedure_inside_sensitized_process_or_function_cannot_wait() {
     let (decl, scope) = add_subprogram(&mut db, "f", SubprogramKind::Procedure);
     // As if decl.rs analyzed it while a sensitized process was open.
     db.stmt_owners.push(Owner::Process {
+        psl: false,
         sensitivity: Some(Span::new(file, 0, 1)),
     });
     assert!(

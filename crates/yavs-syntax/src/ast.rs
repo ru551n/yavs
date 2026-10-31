@@ -1093,6 +1093,8 @@ pub enum ConcStmtKind {
 
 #[derive(Debug)]
 pub struct ProcessStmt {
+    /// The checker process of a PSL directive, made by the parser.
+    pub psl: bool,
     pub sensitivity: Option<Sensitivity>,
     pub decls: Vec<Decl>,
     pub stmts: Vec<SeqStmt>,

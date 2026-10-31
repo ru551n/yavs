@@ -726,7 +726,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
 ```
 yavs lint [FILE|DIR ...] [--recursive] [--work=NAME:PATH] [--map=NAME:PATH ...] [--std=STD]
           [--config=FILE] [--waivers=FILE] [--list-rules] [--explain=RULE] [-W...]
-          [--json=FILE] [--sarif=FILE] [--junit=FILE] [--quality-report=FILE] [--sonarqube=FILE]
+          [--json=FILE] [--sarif=FILE] [--junit=FILE] [--quality-report=FILE] [--sonarqube=FILE] [--facts=FILE]
 ```
 
 - Reads sources again with the analysis `yavs analyze` does and writes nothing into any library: no record, no

@@ -11,6 +11,7 @@ saphyr-parser = "0.2.2"
 serde_json = "1"
 yavs-diag.workspace = true
 yavs-sem = { path = "../yavs-sem" }
+yavs-syntax.workspace = true
 
 [lints]
 workspace = true

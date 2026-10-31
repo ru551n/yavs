@@ -9,7 +9,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
   "Static analysis"; command line: `crates/yavs/src/lint.rs`, `docs/cli-contract.md` 5a.
 - Does not: parse or analyze (`yavs-sem`), choose the files, render console output (`yavs-diag`
   through the CLI), run during `analyze`, `elab` or `run`.
-- Depends on: `yavs-diag`, `yavs-sem`, `saphyr-parser`, `serde_json`. Called by: `yavs`.
+- Depends on: `yavs-diag`, `yavs-sem`, `yavs-syntax` (lint_005), `saphyr-parser`, `serde_json`. Called by: `yavs`.
 - The rules and their test cases come from the owner's project of the same licence, MIT OR
   Apache-2.0 (licence note; copied once, not kept in sync, maintainer 2026-10-30).
 
@@ -17,8 +17,9 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 
 | File | Responsibility |
 |---|---|
-| `src/lib.rs` | `Certainty`, `Rule`, `rule`, `Finding`, `lint` (configuration applied, order, dedup) |
-| `src/rules.rs` | `RULES`, the one list; `check` and `Walk`: the regions and statements of a unit, each rule's test |
+| `src/lib.rs` | `Certainty`, `Rule`, `rule`, `Finding`, `lint` (configuration applied, order, dedup; facts) |
+| `src/rules.rs` | `RULES`, the one list; `check` and `Walk`: the regions and statements of a unit, the definite rules and lint_712, 713, 760; lint_005 |
+| `src/design.rs` | One architecture as a design, flattened to `Conc`: lint_001, 002, 004, 600, 601, 602, 603, 700, 701, 702, 703, 710, 711, 720, 730; `shape` says what a process is; the design facts; `component` (lint_750) |
 | `src/config.rs` | YAML to `Config` (`rule:`, levels global, group, rule) and `Waivers`, `find_up` |
 | `src/report.rs` | `Reports`: JSON, SARIF, JUnit, Code Climate, SonarQube |
 

@@ -77,10 +77,12 @@ fn top(text: &str) -> Result<Vec<(usize, String, Node)>, String> {
 }
 
 /// `disable` and `severity` as set at one level.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct Layer {
     disable: Option<bool>,
     severity: Option<Severity>,
+    /// `suffixes` of lint_602, `prefixes` of lint_603.
+    list: Vec<String>,
 }
 
 fn layer(line: usize, name: &str, n: &Node) -> Result<Layer, String> {
@@ -91,6 +93,21 @@ fn layer(line: usize, name: &str, n: &Node) -> Result<Layer, String> {
     };
     let mut out = Layer::default();
     for (l, key, v) in fields {
+        if matches!(
+            (name, key.as_str()),
+            ("lint_602", "suffixes") | ("lint_603", "prefixes")
+        ) {
+            let Node::Seq(items) = v else {
+                return Err(format!("line {l}: `{name}.{key}` must be a list"));
+            };
+            for n in items {
+                let Node::Scalar(s) = n else {
+                    return Err(format!("line {l}: `{name}.{key}` must be a list of words"));
+                };
+                out.list.push(s.clone());
+            }
+            continue;
+        }
         let text = match v {
             Node::Scalar(s) => s.as_str(),
             _ => return Err(format!("line {l}: `{name}.{key}` must be a single value")),
@@ -113,7 +130,7 @@ fn layer(line: usize, name: &str, n: &Node) -> Result<Layer, String> {
             }
             _ => {
                 return Err(format!(
-                    "line {l}: unknown key `{key}` in the settings of `{name}` (expected `disable` or `severity`)"
+                    "line {l}: unknown key `{key}` in the settings of `{name}` (expected `disable` or `severity`, and on lint_602 `suffixes`, on lint_603 `prefixes`)"
                 ));
             }
         }
@@ -183,10 +200,26 @@ impl Config {
         let own = self.rules.iter().rev().find(|(id, _)| *id == r.id);
         let class = self.groups.iter().rev().find(|(c, _)| *c == r.certainty);
         [
-            own.map_or(Layer::default(), |x| x.1),
-            class.map_or(Layer::default(), |x| x.1),
-            self.global,
+            own.map_or(Layer::default(), |x| x.1.clone()),
+            class.map_or(Layer::default(), |x| x.1.clone()),
+            self.global.clone(),
         ]
+    }
+
+    /// The list a rule's own settings give (`suffixes`, `prefixes`), empty when not set.
+    pub(crate) fn option_list(&self, id: &str) -> &[String] {
+        self.rules
+            .iter()
+            .rev()
+            .find(|(r, _)| *r == id)
+            .map_or(&[], |x| &x.1.list)
+    }
+
+    /// Whether anything but the definite class runs.
+    pub(crate) fn beyond_definite(&self) -> bool {
+        crate::RULES
+            .iter()
+            .any(|r| r.certainty != Certainty::Definite && self.enabled(r))
     }
 
     /// Whether this configuration runs the rule.
@@ -223,7 +256,7 @@ fn normalize(name: &str) -> String {
 }
 
 /// `*` and `?` stop at `/`, `**` does not.
-fn glob(pattern: &[u8], text: &[u8]) -> bool {
+pub(crate) fn glob(pattern: &[u8], text: &[u8]) -> bool {
     match pattern {
         [] => text.is_empty(),
         [b'*', b'*', rest @ ..] => {

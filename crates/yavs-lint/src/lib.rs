@@ -6,12 +6,14 @@
 //! all read it. See `AGENTS.md` in this crate.
 
 mod config;
+mod design;
 mod report;
 mod rules;
 
 pub use config::{Config, Waivers, find_up};
 pub use report::{Entry, Reports};
 
+use serde_json::Value;
 use yavs_diag::{Severity, Span};
 use yavs_sem::{Db, UnitId};
 
@@ -65,14 +67,16 @@ pub struct Finding {
     pub message: String,
 }
 
-/// The findings of the enabled rules in `units`, in source order. Instances of generic units carry
-/// the spans of the generic, so a finding is reported once per place.
-pub fn lint(db: &Db, units: &[UnitId], cfg: &Config) -> Vec<Finding> {
-    let mut found = rules::check(db, units);
+/// What a run found: the findings of the enabled rules in `units` in source order, and the design
+/// facts when `facts` asks for them. A rule beyond the definite class costs a walk of its own, which
+/// a default run does not take. Instances of generics carry the spans of the generic, so a finding
+/// is reported once per place.
+pub fn lint(db: &Db, units: &[UnitId], cfg: &Config, facts: bool) -> (Vec<Finding>, Value) {
+    let (mut found, facts) = rules::check(db, units, cfg, facts);
     found.retain(|(id, _, _)| rule(id).is_some_and(|r| cfg.enabled(r)));
     found.sort_by_key(|(id, span, _)| (span.file.0, span.start, span.end, *id));
     found.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
-    found
+    let found = found
         .into_iter()
         .map(|(id, span, message)| {
             let rule = rule(id).expect("kept above");
@@ -83,5 +87,6 @@ pub fn lint(db: &Db, units: &[UnitId], cfg: &Config) -> Vec<Finding> {
                 message,
             }
         })
-        .collect()
+        .collect();
+    (found, facts)
 }

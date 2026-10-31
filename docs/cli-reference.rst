@@ -674,6 +674,10 @@ Arguments:
 
    Write the findings as SonarQube generic issues. Fails with E0135.
 
+.. option:: --facts=FILE
+
+   Write the design facts as JSON: state machines, clock domains, reset domains and crossings of each architecture. Fails with E0135.
+
 .. option:: -W FLAG
 
    Finding control, by rule id: ``-Werror`` (a finding of severity warning is an error), ``-Werror=RULE``, ``-Wno-RULE`` (do not report it), ``-WRULE`` (stays a warning under ``-Werror``).

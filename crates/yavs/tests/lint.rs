@@ -47,17 +47,30 @@ fn findings(text: &str) -> Vec<(usize, String)> {
 }
 
 fn regression(name: &str) {
+    regression_with(name, None);
+}
+
+fn regression_with(name: &str, config: Option<&str>) {
     let path = case(name);
     let text = std::fs::read_to_string(&path).unwrap();
-    let want: Vec<(usize, String)> = text
+    let mut want: Vec<(usize, String)> = text
         .lines()
         .enumerate()
-        .filter_map(|(i, l)| {
-            let (_, rule) = l.split_once("-- expect: ")?;
-            Some((i + 1, rule.trim().to_string()))
+        .flat_map(|(i, l)| {
+            l.split_once("-- expect: ")
+                .map_or(Vec::new(), |(_, rules)| {
+                    rules
+                        .split(", ")
+                        .map(|r| (i + 1, r.trim().to_string()))
+                        .collect()
+                })
         })
         .collect();
+    want.sort();
     let dir = tempdir("lint");
+    if let Some(c) = config {
+        std::fs::write(dir.join("yavs-lint.yaml"), c).unwrap();
+    }
     let o = yavs(
         &dir,
         &["lint", "--message-format=short", path.to_str().unwrap()],
@@ -67,6 +80,110 @@ fn regression(name: &str) {
     found.sort();
     assert_eq!(found, want, "{got}");
     assert_eq!(status(&o), i32::from(!want.is_empty()), "{got}");
+}
+
+/// lint_602 and lint_603 report every register of the file, so they have a test of their own.
+const EVERY_CLASS: &str = "rule:\n  group:\n    advisory:\n      disable: false\n    experimental:\n      disable: false\n  lint_713:\n    disable: false\n";
+
+#[test]
+fn design() {
+    regression_with("design.vhd", Some(EVERY_CLASS));
+}
+
+/// The default run takes none of those rules.
+#[test]
+fn only_the_definite_class_by_default() {
+    let dir = tempdir("lint");
+    let o = yavs(
+        &dir,
+        &[
+            "lint",
+            "--message-format=short",
+            case("design.vhd").to_str().unwrap(),
+        ],
+    );
+    assert_eq!(findings(&stderr(&o)), Vec::new(), "{}", stderr(&o));
+    assert_eq!(status(&o), 0);
+}
+
+#[test]
+fn design_facts() {
+    let dir = tempdir("lint");
+    let o = yavs(
+        &dir,
+        &[
+            "lint",
+            "--facts=f.json",
+            case("design.vhd").to_str().unwrap(),
+        ],
+    );
+    assert_eq!(status(&o), 0, "{}", stderr(&o));
+    let facts: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("f.json")).unwrap()).unwrap();
+    assert_eq!(facts["schema_version"], 1);
+    let a = facts["architectures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["unit"] == "design(rtl)")
+        .unwrap();
+    let fsm = a["state_machines"].as_array().unwrap();
+    let machine = fsm.iter().find(|m| m["type"] == "state_t").unwrap();
+    assert_eq!(machine["states"].as_array().unwrap().len(), 4);
+    assert_eq!(machine["reset_state"], "idle");
+    assert!(
+        machine["transitions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["from"] == "idle" && t["to"] == "running")
+    );
+    let clocks = a["clock_domains"].as_array().unwrap();
+    assert!(clocks.iter().any(|c| {
+        c["clock"] == "clk2"
+            && c["registers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r == "in_b")
+    }));
+    let resets = a["reset_domains"].as_array().unwrap();
+    assert!(resets.iter().any(|c| c["reset"] == "rst"));
+    let crossing = a["crossings"].as_array().unwrap();
+    assert!(crossing.iter().any(|c| c["kind"] == "clock"
+        && c["signal"] == "q_a"
+        && c["from"] == "clk"
+        && c["to"] == "clk2"));
+}
+
+/// lint_602 and lint_603 take their lists from the configuration.
+#[test]
+fn register_names_from_the_configuration() {
+    let dir = tempdir("lint");
+    std::fs::write(
+        dir.join("r.vhd"),
+        "library ieee; use ieee.std_logic_1164.all;\nentity r is port (clk, d : in std_logic); end entity;\narchitecture a of r is\n  signal x_p1, y : std_logic;\nbegin\n  process (clk) begin\n    if rising_edge(clk) then\n      x_p1 <= d;\n      y <= x_p1;\n    end if;\n  end process;\nend architecture;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("yavs-lint.yaml"),
+        "rule:\n  lint_602:\n    disable: false\n    suffixes: ['_p*']\n",
+    )
+    .unwrap();
+    let o = yavs(&dir, &["lint", "--message-format=short", "r.vhd"]);
+    assert_eq!(
+        findings(&stderr(&o)),
+        vec![(9, "lint_602".to_string())],
+        "{}",
+        stderr(&o)
+    );
+    std::fs::write(
+        dir.join("yavs-lint.yaml"),
+        "rule:\n  lint_770:\n    suffixes: ['_p']\n",
+    )
+    .unwrap();
+    let o = yavs(&dir, &["lint", "r.vhd"]);
+    assert_eq!(status(&o), 2, "`suffixes` belongs to lint_602 alone");
 }
 
 #[test]
@@ -89,8 +206,13 @@ fn evaluated() {
     regression("evaluated.vhd");
 }
 
-/// lint_751 and lint_782 name what analysis rejects first (E1002, E1403), so the run says so with
-/// that code, and the rules stay only for a configuration to name.
+#[test]
+fn configuration() {
+    regression("configuration.vhd");
+}
+
+/// lint_782 names what analysis rejects first (E1403), so the run says so with that code, and the
+/// rule stays only for a configuration to name.
 #[test]
 fn what_analysis_rejects_first() {
     let dir = tempdir("lint");
@@ -114,7 +236,7 @@ fn what_analysis_rejects_first() {
     let cfg = "rule:\n  lint_751:\n    disable: true\n  lint_782:\n    disable: true\n";
     std::fs::write(dir.join("yavs-lint.yaml"), cfg).unwrap();
     let o = yavs(&dir, &["lint", "--list-rules"]);
-    assert_eq!(status(&o), 0, "a configuration may name both");
+    assert_eq!(status(&o), 0, "a configuration may name it");
 }
 
 const TWO_FINDINGS: &str = "entity two is end entity;\narchitecture r of two is\nbegin\n  p : process begin report \"x\"; end process;\n  q : process begin report \"y\"; end process;\nend architecture;\n";

@@ -161,6 +161,11 @@ jobs:
               || { failed="$failed $m"; echo "::group::$m differs"; grep -h '^DIFF\|differ from' "$RUNNER_TEMP/$m.log"; echo "::endgroup::"; }
           done
           test -z "$failed" || { echo "corpora differing from their expected lists:$failed"; exit 1; }
+      # yavs lint on what those runs built: no internal error, and the definite findings are the
+      # confirmed ones.
+      - name: Run yavs lint over the corpus libraries
+        run: |
+          PATH="$PWD/target/release:$PATH" python3 tools/corpus/lint.py "$RUNNER_TEMP/corpus"
       # Discrepancy cases (tests/discrepancies): yavs's output must match each expected-yavs.
       # Reference simulators are not needed; only yavs is run.
       - name: Check the discrepancy cases against expected-yavs

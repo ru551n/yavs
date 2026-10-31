@@ -81,7 +81,8 @@ which rules run and how a finding counts. A rule's own setting wins over its cla
        disable: true          # one rule off
        severity: error
 
-An unknown key or rule is an error naming it, with status 2. ``-Wno-RULE``, ``-Werror`` and
+``lint_602`` takes ``suffixes`` and ``lint_603`` takes ``prefixes``, lists in which ``*`` and ``?``
+are allowed. An unknown key or rule is an error naming it, with status 2. ``-Wno-RULE``, ``-Werror`` and
 ``-Werror=RULE`` do the same for one run; ``-Werror`` makes a finding of severity warning an error.
 
 Waivers
@@ -123,6 +124,29 @@ work as for every command. For a pipeline, write them to files as well:
      - Code Climate, for GitLab code quality.
    * - ``--sonarqube=FILE``
      - SonarQube generic issues. A finding of a definite rule is a bug.
+
+Design facts
+------------
+
+``--facts=FILE`` writes what the analysis knows about each architecture as JSON, whichever rules are
+on, with a ``schema_version``:
+
+.. code-block:: json
+
+   {
+     "schema_version": 1,
+     "architectures": [{
+       "unit": "fifo(rtl)",
+       "file": "src/fifo.vhd",
+       "state_machines": [{
+         "type": "state_t", "signals": ["state"], "states": ["idle", "run"],
+         "transitions": [{"from": "idle", "to": "run"}], "reset_state": "idle"
+       }],
+       "clock_domains": [{"clock": "clk", "registers": ["state"]}],
+       "reset_domains": [{"reset": "rst", "registers": ["state"]}],
+       "crossings": [{"kind": "clock", "signal": "flag", "from": "clk_a", "to": "clk_b", "line": 42}]
+     }]
+   }
 
 With VUnit
 ----------

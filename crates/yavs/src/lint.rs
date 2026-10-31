@@ -68,6 +68,10 @@ pub struct Args {
     /// Write the findings as SonarQube generic issues. Fails with E0135.
     #[arg(long, value_name = "FILE")]
     sonarqube: Option<PathBuf>,
+    /// Write the design facts as JSON: state machines, clock domains, reset domains and crossings
+    /// of each architecture. Fails with E0135.
+    #[arg(long, value_name = "FILE")]
+    facts: Option<PathBuf>,
     /// Finding control, by rule id: `-Werror` (a finding of severity warning is an error),
     /// `-Werror=RULE`, `-Wno-RULE` (do not report it), `-WRULE` (stays a warning under `-Werror`).
     #[arg(short = 'W', value_name = "FLAG")]
@@ -396,7 +400,8 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
     let mut entries = Vec::new();
     let mut waived = 0usize;
     let analysis_errors = out.errors;
-    for f in yavs_lint::lint(&db, &units, &cfg) {
+    let (found, facts) = yavs_lint::lint(&db, &units, &cfg, a.facts.is_some());
+    for f in found {
         let file = db.sources.get(f.span.file);
         let (line, column) = file.line_col(f.span.start);
         if waivers.waives(&file.path, f.rule.id, line) {
@@ -433,6 +438,9 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
         (&a.junit, &|| reports.junit()),
         (&a.quality_report, &|| reports.quality()),
         (&a.sonarqube, &|| reports.sonarqube()),
+        (&a.facts, &|| {
+            serde_json::to_string_pretty(&facts).expect("a JSON value") + "\n"
+        }),
     ];
     for (path, text) in writes {
         if let Some(p) = path

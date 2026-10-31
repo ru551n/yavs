@@ -2234,6 +2234,7 @@ dependencies = [
  "serde_json",
  "yavs-diag",
  "yavs-sem",
+ "yavs-syntax",
 ]
 
 [[package]]

@@ -24,7 +24,7 @@ const MAX_BYTES: u32 = 64 * 1024;
 /// at it (the pass is off for them), and the walk takes it as one object of unknown type.
 pub(crate) const OBJECT_TY: TyId = TyId(u32::MAX);
 /// The same for an object a specialised copy takes over at the switch ([`for_copy`]).
-const MOVED_TY: TyId = TyId(u32::MAX - 1);
+pub(crate) const MOVED_TY: TyId = TyId(u32::MAX - 1);
 
 /// Are composite variables of processes kept in their frames? Off with `YAVS_NO_PROC_OBJECTS` set
 /// to anything but `0` or the empty string (differential testing).

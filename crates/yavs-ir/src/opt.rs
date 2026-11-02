@@ -35,6 +35,7 @@
 //! pass off (differential testing).
 
 mod cfg;
+mod deadvar;
 mod decl;
 mod drives;
 mod inline;
@@ -220,13 +221,14 @@ pub fn fingerprint() -> String {
         slots_enabled(),
         frame_blocks_on(),
         proc_objects::enabled(),
+        deadvar::enabled(),
     ])
 }
 
-fn fingerprint_of(f: [bool; 12]) -> String {
+fn fingerprint_of(f: [bool; 13]) -> String {
     let names = [
         "iropt", "memo", "cfg", "inline", "keep", "compiled", "external", "layouts", "drives",
-        "slots", "blocks", "objects",
+        "slots", "blocks", "objects", "deadvar",
     ];
     let parts: Vec<String> = names
         .iter()
@@ -243,9 +245,9 @@ mod fingerprint_tests {
     /// Every switch is part of the fingerprint (#491).
     #[test]
     fn each_switch_changes_the_fingerprint() {
-        let base = fingerprint_of([false; 12]);
-        for i in 0..12 {
-            let mut f = [false; 12];
+        let base = fingerprint_of([false; 13]);
+        for i in 0..13 {
+            let mut f = [false; 13];
             f[i] = true;
             assert_ne!(fingerprint_of(f), base, "switch {i}");
         }
@@ -501,6 +503,8 @@ fn optimize_body_with(
     if had_inst && f.kind == FuncKind::Process && f.via.is_empty() {
         drop_declarations(prog, &mut f);
     }
+    deadvar::census(prog, id, &f);
+    deadvar::run(prog, &mut f, &mut layouts);
     renumber(prog, &mut f);
     crate::build::number_func(&mut f, |c| {
         prog.funcs

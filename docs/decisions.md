@@ -13565,3 +13565,28 @@ Written by Claude. Step 7 of the iterative plan. Bar per item, fixed before codi
 - **What got worse:** nothing found in cold. The warm `run.py` CPU geomean read 1.05 (runs of 0.01 to 0.2 s, CPU quantised); it was not repeated in paired rounds, so it is neither confirmed nor ruled out.
 - **Why 4 and not more:** the payback rule (a Frame process needs 12 times its price seen) puts `rec_pair`'s `comb` at 1.25 s of a 2.5 s run whatever the factor, so the gain stays at 0.92; the budget only decides whether it may then compile (it needs 3.1 times the 2 percent at that moment). In Microwatt `execute1_1`, `loadstore1_1` and `loadstore1_2`, the biggest, are still refused at factors 4 and 16 by the "leave the compiled code" rule, a different gate.
 - **Not re-measured here:** this entry applies the measured patch; the commit got a sanity run on `rec_pair` that the factor takes effect, and the correctness gates (difftest on all tiers, external lists, `cargo test --workspace`, clippy, CI on every platform) below.
+
+## Dead bytes of frame objects (yavs-ir `opt/deadvar.rs`, #1046, 2026-11-02, branch `perf/inv-deadvar`, prototype)
+
+- **What:** a backward liveness per byte of the frame objects of a process (the composite variables of
+  `opt/proc_objects.rs`), run on the optimised body before registers are numbered. A write into an object
+  whose bytes no path reads before they are written again is dropped (`Store`, `Copy`, `Zero`, and `LCopy`
+  or `LFill` that cover whole plane blocks of a leaf), a `Copy` with large dead runs is cut to at most two
+  live pieces, and `v := r` (a `SigGather` into a temporary that only a `Copy` of all of it into an object
+  reads) gathers into the object itself. `YAVS_NO_DEADVAR=1` turns it off (fingerprint `deadvar`).
+  `YAVS_DEADVAR_CENSUS=1` prints a line per process (`=2` also each copy).
+- **Why it is safe:** every `Suspend`, and every call that may suspend, reads all object bytes
+  (`Persist::Keep`): nothing about the next activation is assumed, so the frame at every suspension is the
+  one the unchanged code leaves. Waves, VHPI, the debugger, the console and the switch to a specialised copy
+  only look at frames there, and they turn frame objects off anyway (`keep_variables`, `external_variables`).
+  Only the body is edited, never the declarative part. Both tiers run the same optimised IR, so a side exit
+  finds the same bytes. A pointer the pass cannot follow (stored, copied out of a block that holds pointers,
+  passed to a foreign subprogram, any object of a process with nested subprograms) makes its object live
+  everywhere. A call reads all of every object an argument may point into; an `ieee` native and the logic
+  and array instructions read the leaf their address is in. Not with coverage counters (a guard; `Cover`
+  reads no frame).
+- **What it does not do:** `rin <= v` reads every byte of `v`, so a field `v := r` copies in and the body
+  never writes is live up to the scatter; dropping it would need a scatter of only the written leaves,
+  which drives different transactions. Gathering only the live leaves needs a leaf mask on `SigGather`
+  (the program cannot grow a constant after it is built): not built. Assuming the variable is dead at the
+  suspension (`Persist::Dead`) is the census's question only.

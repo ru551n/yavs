@@ -1,0 +1,45 @@
+exit	0
+diag	warning	0	0	:record_var_paths:comb_s	NUMERIC_STD.TO_INTEGER: metavalue detected, returning 0
+diag	warning	0	0	:record_var_paths:comb_s	NUMERIC_STD.TO_INTEGER: metavalue detected, returning 0
+diag	warning	0	0	:record_var_paths:comb_s	NUMERIC_STD.TO_INTEGER: metavalue detected, returning 0
+diag	warning	0	0	:record_var_paths:comb_s	NUMERIC_STD.TO_INTEGER: metavalue detected, returning 0
+diag	note	10000000	0	:record_var_paths:check	cycle 1 r 80 s 2 q 2 a 2 total 331
+diag	note	20000000	0	:record_var_paths:check	cycle 2 r 1503 s 2 q 123 a 3 total 3026
+diag	note	30000000	0	:record_var_paths:check	cycle 3 r 3678 s 24 q 123 a 3 total 8363
+diag	note	40000000	0	:record_var_paths:check	cycle 4 r 3878 s 46 q 143 a 3 total 14625
+diag	note	50000000	0	:record_var_paths:check	cycle 5 r 4139 s 574 q 143 a 3 total 22338
+diag	note	60000000	0	:record_var_paths:check	cycle 6 r 1483 s 1102 q 159 a 3 total 28511
+diag	note	70000000	0	:record_var_paths:check	cycle 7 r 3482 s 2752 q 159 a 3 total 42027
+diag	note	80000000	0	:record_var_paths:check	cycle 8 r 3666 s 4402 q 191 a 3 total 61385
+diag	note	90000000	0	:record_var_paths:check	cycle 9 r 3929 s 10474 q 191 a 3 total 98828
+diag	note	100000000	0	:record_var_paths:check	cycle 10 r 2535 s 5546 q 207 a 3 total 119625
+diag	note	110000000	0	:record_var_paths:check	cycle 11 r 4326 s 7280 q 207 a 3 total 147809
+diag	note	120000000	0	:record_var_paths:check	cycle 12 r 4530 s 8358 q 223 a 3 total 180059
+diag	note	130000000	0	:record_var_paths:check	cycle 13 r 4789 s 2374 q 223 a 3 total 194222
+diag	note	140000000	0	:record_var_paths:check	cycle 14 r 4651 s 7390 q 255 a 3 total 222907
+diag	note	150000000	0	:record_var_paths:check	cycle 15 r 6252 s 5696 q 255 a 3 total 248505
+diag	note	160000000	0	:record_var_paths:check	cycle 16 r 6452 s 4002 q 271 a 3 total 269849
+diag	note	170000000	0	:record_var_paths:check	cycle 17 r 6713 s 2330 q 271 a 3 total 286044
+diag	note	180000000	0	:record_var_paths:check	cycle 18 r 4633 s 658 q 303 a 3 total 294755
+diag	note	190000000	0	:record_var_paths:check	cycle 19 r 6044 s 6224 q 303 a 3 total 321969
+diag	note	200000000	0	:record_var_paths:check	cycle 20 r 6240 s 790 q 319 a 3 total 333705
+diag	note	210000000	0	:record_var_paths:check	cycle 21 r 6503 s 4046 q 319 a 3 total 355078
+diag	note	220000000	0	:record_var_paths:check	cycle 22 r 5695 s 7302 q 335 a 3 total 384943
+diag	note	230000000	0	:record_var_paths:check	cycle 23 r 6900 s 2880 q 335 a 3 total 403141
+diag	note	240000000	0	:record_var_paths:check	cycle 24 r 7098 s 9458 q 367 a 3 total 441979
+diag	note	250000000	0	:record_var_paths:check	cycle 25 r 7363 s 10074 q 367 a 3 total 482536
+diag	note	260000000	0	:record_var_paths:check	cycle 26 r 7801 s 10690 q 383 a 3 total 524911
+diag	note	270000000	0	:record_var_paths:check	cycle 27 r 8830 s 7896 q 383 a 3 total 560327
+diag	note	280000000	0	:record_var_paths:check	cycle 28 r 9026 s 5102 q 399 a 3 total 588185
+diag	note	290000000	0	:record_var_paths:check	cycle 29 r 9287 s 3430 q 399 a 3 total 610894
+diag	note	300000000	0	:record_var_paths:check	cycle 30 r 7783 s 1758 q 431 a 3 total 626695
+diag	note	310000000	0	:record_var_paths:check	cycle 31 r 8618 s 8424 q 431 a 3 total 663723
+diag	note	320000000	0	:record_var_paths:check	cycle 32 r 8828 s 4090 q 447 a 3 total 688587
+diag	note	330000000	0	:record_var_paths:check	cycle 33 r 9077 s 746 q 447 a 3 total 703274
+diag	note	340000000	0	:record_var_paths:check	cycle 34 r 8835 s 8402 q 479 a 3 total 740299
+diag	note	350000000	0	:record_var_paths:check	cycle 35 r 9474 s 9480 q 479 a 3 total 781591
+diag	note	360000000	0	:record_var_paths:check	cycle 36 r 9672 s 10558 q 495 a 3 total 826943
+diag	note	370000000	0	:record_var_paths:check	cycle 37 r 9945 s 6774 q 495 a 3 total 860822
+diag	note	380000000	0	:record_var_paths:check	cycle 38 r 10951 s 2990 q 511 a 3 total 883887
+diag	note	390000000	0	:record_var_paths:check	cycle 39 r 11400 s 10096 q 511 a 3 total 929113
+diag	note	400000000	0	:record_var_paths:check	cycle 40 r 11600 s 6202 q 543 a 3 total 963565

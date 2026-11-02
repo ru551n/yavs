@@ -189,6 +189,11 @@ Diagnostics of a run
      - any value
      - unset
      - ``run``
+   * - ``YAVS_DEADVAR_CENSUS``
+     - Prints, per process with record variables in its frame, how many of their bytes are written before they are read. ``2`` adds a line per whole copy.
+     - ``1``, ``2``
+     - unset
+     - ``run``
    * - ``YAVS_CENSUS_TOP``
      - Rows per table of the op census (a build with the ``op-census`` feature).
      - a number
@@ -256,6 +261,11 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - ``run``
    * - ``YAVS_NO_DRIVES``
      - Turns the drive pass off.
+     - not ``0``
+     - unset
+     - ``run``
+   * - ``YAVS_NO_DEADVAR``
+     - Keeps the writes of process record variables that nothing reads, and the copy of ``v := r``.
      - not ``0``
      - unset
      - ``run``

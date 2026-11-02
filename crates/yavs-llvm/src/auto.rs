@@ -1233,6 +1233,17 @@ struct Worker {
     /// Per function: the rank of the generator that made its native-frame code (1: the first
     /// level, 2: the optimising one).
     nat_by: Vec<u8>,
+    /// Per function: the rank of the generator that found it has no native-frame variant (its
+    /// static `native_set` says it runs on one, the generator's lowering refuses it or a callee);
+    /// 0: none found. Such a function gets frame-mode code instead (`compile`).
+    no_native: Vec<u8>,
+    /// Functions in `no_native`.
+    refusals: usize,
+    /// Per function: its frame-mode code was left for later because nothing compiled calls it
+    /// yet (`frame_instead`).
+    declined: Vec<bool>,
+    /// Who calls each function (any `Call` or `CallProt` in its code), worked out once.
+    callers: std::cell::OnceCell<Vec<Vec<u32>>>,
     /// Per function: the address of its `CallFn` (0: none), published with `nat`.
     calls: Vec<usize>,
     /// Microseconds each function was seen interpreted, and running compiled.
@@ -1385,7 +1396,13 @@ impl Worker {
                 continue;
             }
             let k = id.0 as usize;
-            if self.frame_at[k] != 0 && *t >= self.frame_at[k] {
+            let seen_now = *t;
+            if self.declined[k] && !self.done[k][0] && !self.lost[k] && self.entered_from_code(id) {
+                self.declined[k] = false;
+                pending.cands.push(id);
+                self.pick_at = 0;
+            }
+            if self.frame_at[k] != 0 && seen_now >= self.frame_at[k] {
                 self.frame_at[k] = 0;
                 self.asked_for[k] = true;
                 if !self.done[k][0] && !self.lost[k] {
@@ -1480,6 +1497,10 @@ impl Worker {
             fast: vec![false; nfuncs],
             nat: vec![(0, false); nfuncs],
             nat_by: vec![0; nfuncs],
+            no_native: vec![0; nfuncs],
+            refusals: 0,
+            declined: vec![false; nfuncs],
+            callers: Default::default(),
             calls: vec![0; nfuncs],
             prog,
             table,
@@ -1591,7 +1612,7 @@ impl Worker {
     /// seen interpreted after that (`frame_at`); with `--tier-heat` (no budget) both at once.
     fn natural_part(&self, id: FuncId) -> Part {
         match self.prog.func(id) {
-            Some(f) if f.parent.is_none() && self.nset(id).contains(&id) => {
+            Some(f) if f.parent.is_none() && self.native_ok(id) => {
                 if self.heat.budget == 0 && loops(&self.prog, f) {
                     Part::Both
                 } else {
@@ -1782,6 +1803,33 @@ impl Worker {
         })
     }
 
+    /// Whether the generator of `rank` found that `id`, or a function it reaches on native frames,
+    /// has no native-frame variant (`no_native`): `id` cannot have one either, since a native
+    /// variant is made only when every native callee can be called.
+    fn refused_at(&self, id: FuncId, rank: u8) -> bool {
+        self.refusals > 0
+            && self
+                .nset(id)
+                .iter()
+                .any(|c| self.no_native[c.0 as usize] == rank)
+    }
+
+    /// `native_set` says `id` runs on native frames and no generator of the first level has
+    /// found otherwise: the part the policy chooses for it (`natural_part`, `tree`).
+    fn native_ok(&self, id: FuncId) -> bool {
+        self.nset(id).contains(&id) && !self.refused_at(id, self.rank_of(false))
+    }
+
+    /// The rank of the generator a compile at `o2` goes to: native-frame code of the first level
+    /// is replaced by the optimising generator's when the function is compiled again.
+    fn rank_of(&self, o2: bool) -> u8 {
+        if self.first.is_some() && (!o2 || self.main.is_none()) {
+            1
+        } else {
+            2
+        }
+    }
+
     /// Whether `id` is a compute loop (`compute`), worked out once.
     fn is_compute(&self, id: FuncId) -> bool {
         *self.compute[id.0 as usize]
@@ -1875,15 +1923,16 @@ impl Worker {
         let size = |i: FuncId| self.prog.func(i).map_or(0, |f| f.code.len());
         let hot = self.hot(root);
         let nc = self.nset(root);
+        let native = nc.contains(&root) && !self.refused_at(root, self.rank_of(false));
         // The frame-mode code `frame_at` asks for: the root alone, the callees its native-frame code
         // left out stay so (they were never seen running).
-        if nc.contains(&root)
+        if native
             && self.nat[root.0 as usize].0 != 0
             && self.prog.func(root).is_some_and(|f| loops(&self.prog, f))
         {
             return vec![(root, Part::Frame)];
         }
-        if nc.contains(&root) {
+        if native {
             // (A hash set iterates in a different order in every process: sorted, so the callees
             // compile in the same order in every run, #670.)
             let mut todo: Vec<FuncId> = nc
@@ -1940,7 +1989,7 @@ impl Worker {
                     && !natives.iter().any(|n| n.0 == *func)
                     && g.code.len() <= CALLEE_MAX
                     && total + g.code.len() <= TREE_MAX
-                    && self.nset(*func).contains(func)
+                    && self.native_ok(*func)
                     && !self.unseen(*func, &hot)
                 {
                     // Compiled for the interpreter's calls (frame-mode code only): its
@@ -1958,7 +2007,7 @@ impl Worker {
             .map(|(k, i)| {
                 let native_only = k > 0
                     && self.prog.func(i).is_some_and(|f| {
-                        f.parent.is_none() && !loops(&self.prog, f) && self.nset(i).contains(&i)
+                        f.parent.is_none() && !loops(&self.prog, f) && self.native_ok(i)
                     });
                 (
                     i,
@@ -2589,9 +2638,19 @@ impl Worker {
     /// of a function with a loop that the cache had brings its frame-mode code along when the cache has
     /// that too (a link costs a millisecond; `frame_at` decides only about compiling it).
     fn compile(&mut self, id: FuncId, o2: bool, sampled: bool, part: Part) -> bool {
+        let k = id.0 as usize;
+        // A function with no native-frame variant gets frame-mode code instead, as one the
+        // static `native_set` did not allow: its callers reach it through the interpreter, which
+        // runs that code (a compile of native-frame code that makes none is not a compile).
+        let rank = self.rank_of(o2);
+        if part == Part::Native && self.refused_at(id, rank) {
+            return self.frame_instead(id, o2, sampled);
+        }
         let hits = self.hits_of(o2);
         let ok = self.compile_part(id, o2, sampled, part);
-        let k = id.0 as usize;
+        if part == Part::Native && !ok && self.refused_at(id, rank) {
+            return self.frame_instead(id, o2, sampled);
+        }
         if ok
             && part == Part::Native
             && self.hits_of(o2) != hits
@@ -2613,6 +2672,72 @@ impl Worker {
         ok
     }
 
+    /// The frame-mode code of a function that has no native-frame variant, when compiled code
+    /// calls it: the call is a step out of that code either way, and the step lands in code
+    /// instead of an interpreter frame. Called by the interpreter alone it gains little (entering
+    /// compiled code costs about what it saves, the reason `Tune::frame_calls` is off) and it can
+    /// lose: the frame-mode code of a function with a loop of natives, called from interpreted
+    /// callers, ran 1.4 times the instructions of the interpreter. Left for later: `see` asks for
+    /// it again once a caller is compiled.
+    fn frame_instead(&mut self, id: FuncId, o2: bool, sampled: bool) -> bool {
+        if !self.entered_from_code(id) {
+            if let Some(tr) = &self.trace
+                && !self.declined[id.0 as usize]
+            {
+                tr.line(format!(
+                    "{id} `{}`: frame-mode code waits for a compiled caller",
+                    self.prog.func(id).map_or("?", |f| f.name.as_str())
+                ));
+            }
+            self.declined[id.0 as usize] = true;
+            return false;
+        }
+        self.declined[id.0 as usize] = false;
+        self.compile_part(id, o2, sampled, Part::Frame)
+    }
+
+    /// Whether a function that calls `id` has compiled code that `id` is called from: frame-mode
+    /// code, or native-frame code that is published.
+    fn entered_from_code(&self, id: FuncId) -> bool {
+        let callers = self.callers.get_or_init(|| {
+            let mut v = vec![Vec::new(); self.prog.funcs.len()];
+            for k in 0..self.prog.funcs.len() {
+                let Some(f) = self.prog.func(FuncId(k as u32)) else {
+                    continue;
+                };
+                for i in &f.code {
+                    if let yavs_ir::Inst::Call { func, .. } | yavs_ir::Inst::CallProt { func, .. } =
+                        i
+                        && v[func.0 as usize].last() != Some(&(k as u32))
+                    {
+                        v[func.0 as usize].push(k as u32);
+                    }
+                }
+            }
+            v
+        });
+        callers[id.0 as usize].iter().any(|&c| {
+            c != id.0
+                && (self.table[c as usize].run.load(Ordering::Relaxed) != 0
+                    || self.nat[c as usize].1)
+        })
+    }
+
+    /// Take over the native-frame code a compile made of other functions on the way.
+    fn keep_extra(&mut self, entry: &crate::native::Compiled, rank: u8) {
+        for &(g, native, call) in &entry.extra {
+            let k = g.0 as usize;
+            if native != 0 && self.nat.get(k).is_some_and(|n| n.0 == 0) {
+                // Made with the root, so its compile call later finds nothing to do and
+                // charges nothing.
+                self.spent += self.price(g);
+                self.nat[k] = (native, false);
+                self.nat_by[k] = rank;
+                self.calls[k] = call;
+            }
+        }
+    }
+
     /// The cache hits so far of the generator a compile at `o2` goes to.
     fn hits_of(&self, o2: bool) -> usize {
         let g = if self.first.is_some() && (!o2 || self.main.is_none()) {
@@ -2624,13 +2749,7 @@ impl Worker {
     }
 
     fn compile_part(&mut self, id: FuncId, o2: bool, sampled: bool, part: Part) -> bool {
-        // The generator of this compile, and its rank: native-frame code of the first level is
-        // replaced by the optimising generator's when the function is compiled again.
-        let rank = if self.first.is_some() && (!o2 || self.main.is_none()) {
-            1
-        } else {
-            2
-        };
+        let rank = self.rank_of(o2);
         // Native-frame code and frame-mode code are modules of their own, so the compilation
         // cache holds each one whatever was compiled with it (#510). Native-frame code is made
         // once.
@@ -2642,6 +2761,10 @@ impl Worker {
         if part == Part::Both {
             if !native_done && self.nset(id).contains(&id) {
                 let ok = self.compile(id, o2, sampled, Part::Native);
+                // No native-frame variant: `compile` made its frame-mode code.
+                if self.refused_at(id, rank) {
+                    return ok;
+                }
                 // Refused (a sampled function too short, say): no frame-mode code either.
                 if !ok && sampled && !self.probing {
                     return false;
@@ -2684,9 +2807,12 @@ impl Worker {
                 cold(seen, self.total, self.tune)
             })
             .flatten();
+        let waived = called_natively(&self.prog, f, id) && !self.refused_at(id, rank);
         let short = (sampled && !o2)
             .then(|| {
-                too_short(&self.prog, f, id)
+                // (A function with no native-frame variant is not called natively: no waiver.)
+                crate::rt::too_short(&self.prog, f)
+                    .filter(|_| !waived)
                     .or_else(|| fused_search(&self.prog, f))
                     .or_else(|| too_many_callbacks(&self.prog, f, id, self.tune.wait_same))
                     .or(few)
@@ -2755,6 +2881,28 @@ impl Worker {
             None => gen_.compile(&self.prog, id, f, level, part),
         };
         match r {
+            // Native-frame code that came to nothing: the generator refused the function or a
+            // callee it must call directly. Nothing was compiled, so nothing is charged or
+            // listed; the callees it did make go on below, and `compile` makes frame-mode code.
+            Ok(entry) if part == Part::Native && entry.native == 0 && entry.run.is_none() => {
+                let k = id.0 as usize;
+                if self.no_native[k] == 0 {
+                    self.no_native[k] = rank;
+                    self.refusals += 1;
+                }
+                if let Some(tr) = &self.trace {
+                    tr.line(format!(
+                        "{id} no native-frame variant of `{}` ({} IR)",
+                        f.name,
+                        f.code.len()
+                    ));
+                }
+                self.keep_extra(&entry, rank);
+                if !entry.extra.is_empty() {
+                    self.publish();
+                }
+                false
+            }
             Ok(entry) => {
                 let took = t0.elapsed();
                 let cpu = cpu0
@@ -2819,17 +2967,7 @@ impl Worker {
                 {
                     self.frame_at[id.0 as usize] = self.time[id.0 as usize][0] + frame_need;
                 }
-                for &(g, native, call) in &entry.extra {
-                    let k = g.0 as usize;
-                    if native != 0 && self.nat.get(k).is_some_and(|n| n.0 == 0) {
-                        // Made with the root, so its compile call later finds nothing to do and
-                        // charges nothing.
-                        self.spent += self.price(g);
-                        self.nat[k] = (native, false);
-                        self.nat_by[k] = rank;
-                        self.calls[k] = call;
-                    }
-                }
+                self.keep_extra(&entry, rank);
                 // (The first level reports the variants it has again with a frame-mode compile:
                 // not to replace the optimising generator's.)
                 if entry.native != 0 && self.nat_by[id.0 as usize] <= rank {

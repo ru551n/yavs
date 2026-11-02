@@ -8427,10 +8427,9 @@ impl Machine {
         })
     }
 
-    /// `Op::LCopy`, out of line.
-    #[inline(never)]
     /// `Inst::LogicOp` of a gate or `not` of `n` elements, block by block in place with no
     /// vectors built; `false` for the other operations, which take the vector path.
+    #[inline(never)]
     pub(crate) fn logic_blocks(&mut self, op: LOp, dst: Reg, a: Reg, b: Reg, n: u64) -> R<bool> {
         let Some(f) = block_gate(op).filter(|_| n > 0) else {
             return Ok(false);
@@ -8455,6 +8454,8 @@ impl Machine {
         Ok(true)
     }
 
+    /// `Op::LCopy`, out of line.
+    #[inline(never)]
     fn op_lcopy(&mut self, dst: u32, doff: u32, src: u32, soff: u32, n: u32) -> R<()> {
         self.lcopy(
             self.regs[dst as usize],

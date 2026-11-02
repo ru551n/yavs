@@ -30,6 +30,7 @@ WINDOWS = {
     "neorv32_single_cache": ("40us", "280us"),
     "microwatt_coremark": ("300us", "800us"),
 }
+FE_EVENT = "de_no_dispatch_per_slot.no_ops_from_frontend:u"  # Zen 4: dispatch slots with no op from the front end (`--fe`)
 EVENTS = {"cycles": "cycles:u", "instructions": "instructions:u", "l1i": "L1-icache-load-misses:u", "itlb": "iTLB-load-misses:u", "branch": "branch-misses:u"}
 METRICS = tuple(EVENTS)
 REF = "sim1"
@@ -235,7 +236,7 @@ def band(r):
 
 def table(names, results, bars):
     """The aligned table: one line per test and variant (ratios to the first variant and to sim1), then the geomean of each variant's ratios."""
-    head = ["test", "variant", "cycles G", "instr G", "IPC", "L1i/k", "iTLB/k", "br/k", "wall s", "cycles", "instr", "L1i", "iTLB", "branch", "cyc band", "cyc/sim1", "ins/sim1", "bar"]
+    head = ["test", "variant", "cycles G", "instr G", "IPC", "L1i/k", "iTLB/k", BRLABEL, "wall s", "cycles", "instr", "L1i", "iTLB", "branch", "cyc band", "cyc/sim1", "ins/sim1", "bar"]
     rows = [head]
     ratios = {n: [] for n in names[1:]}
     to_sim1 = {n: {"cycles": [], "instructions": []} for n in names if n != REF}
@@ -326,7 +327,11 @@ def self_test():
     print("window self-test: ok")
 
 
+BRLABEL = "br/k"
+
+
 def main():
+    global BRLABEL
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("variants", nargs="*", help="CHECKOUT_OR_BINARY[:TIER], default this checkout's Cranelift build at tier auto; ratios are against the first and against sim1")
     ap.add_argument("--bar", action="append", default=[], help="kill bar, COUNTER:RATIO, largest passing ratio to the first variant; counters " + ", ".join(METRICS))
@@ -339,8 +344,12 @@ def main():
     ap.add_argument("--core", type=int, help=f"timing core, default a free one of {TIMED_CORES.start}-{TIMED_CORES.stop - 1}")
     ap.add_argument("--timeout", type=int, default=1500, help="seconds before a run is killed and its test reported failed")
     ap.add_argument("--json", help="also write the results to this file")
+    ap.add_argument("--fe", action="store_true", help="count front-end dispatch slots (Zen 4 de_no_dispatch_per_slot.no_ops_from_frontend) in place of branch misses; the `branch` and `br/k` columns then hold slots")
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
+    if a.fe:
+        EVENTS["branch"] = FE_EVENT
+        BRLABEL = "fe/k"
     if a.self_test:
         return self_test() or 0
     specs = a.variants or [str(R.REPO)]

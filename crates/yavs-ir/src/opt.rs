@@ -693,6 +693,7 @@ fn drop_markers(prog: &Program, f: &mut crate::Func, layouts: &mut FxMap<TyId, O
         layouts,
     );
     o.drop_statements();
+    o.gather_into();
     if !o.changed {
         return;
     }
@@ -2786,6 +2787,117 @@ impl<'a> Opt<'a> {
     /// marker that finds the frame clean changes no other marker's answer. A process starts
     /// clean again after a suspension (the machine empties its temporaries then). Only in
     /// subprograms while no debugger runs (it stops at markers).
+    /// A whole `SigGather` into a temporary of the frame that only its zeroing and a `Copy` of all
+    /// of it read, with nothing but address and constant definitions between the gather and the
+    /// copy, becomes the gather into the copy's destination (#1065): `v := r` reads the signal
+    /// once and moves nothing.
+    fn gather_into(&mut self) {
+        if std::env::var_os("YAVS_NO_GATHER_INTO").is_some() {
+            return;
+        }
+        let n = self.f.reg_ty.len();
+        let (mut uses, mut defs) = (vec![0u32; n], vec![0u32; n]);
+        let mut addr: FxMap<Reg, (AddrSpace, u32)> = FxMap::default();
+        let mut konst: FxMap<Reg, i64> = FxMap::default();
+        for i in &self.code {
+            i.visit(&mut |r, role, _| {
+                let c = match role {
+                    Role::Def => &mut defs,
+                    Role::Use => &mut uses,
+                };
+                if let Some(x) = c.get_mut(r.0 as usize) {
+                    *x += 1;
+                }
+            });
+            if let Some(l) = i.list()
+                && let Some(rs) = self.f.regs(l)
+            {
+                for r in rs {
+                    if let Some(x) = uses.get_mut(r.0 as usize) {
+                        *x += 1;
+                    }
+                }
+            }
+            match *i {
+                Inst::AddrOf { dst, space, off } => {
+                    addr.insert(dst, (space, off));
+                }
+                Inst::Const { dst, v } => {
+                    konst.insert(dst, v);
+                }
+                _ => {}
+            }
+        }
+        let once = |r: Reg| defs.get(r.0 as usize) == Some(&1);
+        for b in 0..self.blocks.len() {
+            let pcs: Vec<usize> = self.range(b).collect();
+            for (x, &pc) in pcs.iter().enumerate() {
+                let Inst::SigGather {
+                    dst: t,
+                    desc,
+                    tab,
+                    part: None,
+                } = self.code[pc]
+                else {
+                    continue;
+                };
+                let Some(&(AddrSpace::Frame, toff)) = addr.get(&t).filter(|_| once(t)) else {
+                    continue;
+                };
+                // The zeroing right before it, of the temporary's size.
+                let Some(&z) = x.checked_sub(1).and_then(|y| pcs.get(y)) else {
+                    continue;
+                };
+                let Inst::Zero { addr: za, bytes } = self.code[z] else {
+                    continue;
+                };
+                let mut copy = None;
+                for &q in &pcs[x + 1..] {
+                    match self.code[q] {
+                        Inst::Copy {
+                            dst,
+                            src,
+                            bytes: nb,
+                        } if src == t => {
+                            copy = Some((q, dst, nb));
+                            break;
+                        }
+                        Inst::AddrOf { dst, .. } | Inst::Const { dst, .. } if dst != desc => {}
+                        _ => break,
+                    }
+                }
+                let Some((q, v, nb)) = copy else {
+                    continue;
+                };
+                let fits = za == t
+                    && uses.get(t.0 as usize) == Some(&3)
+                    && once(nb)
+                    && konst.get(&nb) == Some(&i64::from(bytes))
+                    && once(v)
+                    && match addr.get(&v) {
+                        // Another object, or bytes of the frame apart from the temporary's.
+                        Some(&(AddrSpace::Frame, voff)) => {
+                            voff >= toff + bytes || voff + bytes <= toff
+                        }
+                        Some(_) => true,
+                        None => false,
+                    };
+                if !fits {
+                    continue;
+                }
+                self.code[z] = dead();
+                self.code[pc] = dead();
+                self.code[q] = Inst::SigGather {
+                    dst: v,
+                    desc,
+                    tab,
+                    part: None,
+                };
+                self.changed = true;
+            }
+        }
+    }
+
     fn drop_statements(&mut self) {
         if KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed)
             || !(self.nosusp && self.f.body.is_none() || self.f.kind == FuncKind::Process)

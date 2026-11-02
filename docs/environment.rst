@@ -299,6 +299,11 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - any value
      - unset
      - ``run``
+   * - ``YAVS_NO_GATHER_INTO``
+     - Keeps the temporary of ``v := r`` for a record signal ``r``: the signal is read into it and copied, not read into ``v``.
+     - any value
+     - unset
+     - ``run``
    * - ``YAVS_NO_NATIVE_IEEE``
      - Runs the ``ieee`` packages from their VHDL bodies only, without native fast paths.
      - any value

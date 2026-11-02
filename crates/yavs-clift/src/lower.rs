@@ -1316,6 +1316,11 @@ struct Gen<'a> {
     jparams: HashMap<Block, Vec<u32>>,
     /// A broken invariant of the deferral (a deferred value lost at a block start).
     broken: Option<String>,
+    /// Frame mode: the frame offset a pointer loaded from a slot was stored as (`slot_targets`),
+    /// by register: a guess, tested at its use (`Gen::host`).
+    fguess: Vec<Option<u64>>,
+    /// The guess the instruction being generated makes for its result, entered after `track`.
+    fnew: Option<(Reg, u64)>,
 }
 
 /// The instructions a deferred register may be live over and still be deferred (`Gen::keep`).
@@ -1498,6 +1503,54 @@ fn lcopy_shape(n: Option<i64>, so: Option<i64>, d: Option<i64>) -> Option<(u64, 
     let (n, so, d) = (small(n?)?, small(so?)?, small(d?)?);
     let fits = |off: u64| (off % 64 + n).div_ceil(64) <= LCOPY_BLOCKS;
     (fits(so) && fits(d)).then_some((n, so, d))
+}
+
+/// The frame slots every `Store` of which (at 8 bytes) stores the plain address of one frame
+/// offset, by slot offset, as far as registers defined once show it: a pointer loaded from such a
+/// slot is probably that address (the descriptor of a variable sized at elaboration lives in the
+/// frame, its pointer in a slot). A guess, never a fact: a callee or the interpreter may store
+/// something else, so `Gen::host` compares the address first.
+fn slot_targets(f: &Func) -> HashMap<u64, u64> {
+    let mut defs = vec![0u8; f.reg_ty.len()];
+    for i in &f.code {
+        i.visit(&mut |r, role, _| {
+            if role == yavs_ir::Role::Def
+                && let Some(d) = defs.get_mut(r.0 as usize)
+            {
+                *d = d.saturating_add(1);
+            }
+        });
+    }
+    let mut addr: HashMap<u32, u64> = HashMap::new();
+    for i in &f.code {
+        if let Inst::AddrOf {
+            dst,
+            space: AddrSpace::Frame,
+            off,
+        } = *i
+            && defs.get(dst.0 as usize) == Some(&1)
+            && yavs_ir::frame_object_addr(f, off).is_none()
+        {
+            addr.insert(dst.0, u64::from(off));
+        }
+    }
+    let mut out: HashMap<u64, Option<u64>> = HashMap::new();
+    for i in &f.code {
+        if let Inst::Store {
+            addr: a,
+            src,
+            w: yavs_ir::Width::B8,
+        } = *i
+            && let Some(&o) = addr.get(&a.0)
+        {
+            let t = addr.get(&src.0).copied();
+            let e = out.entry(o).or_insert(t);
+            if *e != t {
+                *e = None;
+            }
+        }
+    }
+    out.into_iter().filter_map(|(o, t)| Some((o, t?))).collect()
 }
 
 fn ok<T>(r: Option<T>, what: &str) -> Result<T, String> {
@@ -1843,6 +1896,8 @@ fn gen_func(
         snaps: HashMap::new(),
         jparams: HashMap::new(),
         broken: None,
+        fguess: vec![None; f.reg_ty.len()],
+        fnew: None,
     };
     // Processes only: they hold the hot frame-mode code, and the analysis costs every compile.
     if g.nat.is_none() && f.kind == FuncKind::Process {
@@ -1884,6 +1939,11 @@ fn gen_func(
             None => return Err("no code".into()),
         }
     }
+    let targets_of = if g.nat.is_none() {
+        slot_targets(f)
+    } else {
+        HashMap::new()
+    };
     let block_bb = |bl: yavs_ir::BlockId| -> Result<Block, String> {
         f.blocks
             .get(bl)
@@ -1955,6 +2015,15 @@ fn gen_func(
                         *o = None;
                     }
                 }
+            }
+            // A guess lapses where its register is defined again.
+            for d in yavs_interp::inst_regs(f, &p).1 {
+                if let Some(x) = g.fguess.get_mut(d.0 as usize) {
+                    *x = None;
+                }
+            }
+            if let Some((r, t)) = g.fnew.take() {
+                g.fguess[r.0 as usize] = Some(t);
             }
             if let Some((r, o)) = g.objnew.take()
                 && let Some(k) = g.known.get_mut(r.0 as usize)
@@ -2120,6 +2189,15 @@ fn gen_func(
             g.leave_at(pc);
             open = false;
             continue;
+        }
+        if let Inst::Load {
+            dst,
+            addr,
+            w: yavs_ir::Width::B8,
+        } = inst
+            && let Some(t) = g.frame_of(addr).and_then(|o| targets_of.get(&o))
+        {
+            g.fnew = Some((dst, *t));
         }
         match inst {
             _ if skipped.contains(&pc) => {}
@@ -4672,6 +4750,40 @@ impl Gen<'_> {
         write: bool,
         slow: Block,
     ) -> Value {
+        // A pointer loaded from a slot that holds a frame address (`slot_targets`): one compare of
+        // the whole address, then the frame's own bytes; anything else takes the lookup below.
+        if self.nat.is_none()
+            && let Some(r) = reg
+            && let Some(t) = self.fguess.get(r.0 as usize).copied().flatten()
+        {
+            self.tag(21);
+            let fh = self.mem_ld(MEM_FRAME);
+            let hi = self.b.ins().ishl_imm_s(fh, 32);
+            let want = self.b.ins().bor_imm_s(hi, t as i64);
+            let is = self.b.ins().icmp(IntCC::Equal, a, want);
+            let (hit, miss, done) = (
+                self.b.create_block(),
+                self.b.create_block(),
+                self.b.create_block(),
+            );
+            let p = self.b.append_block_param(done, I64);
+            self.brif_split(is, hit, miss);
+            let (known, slots) = (self.known[r.0 as usize], self.slots);
+            self.b.switch_to_block(hit);
+            self.known[r.0 as usize] = Some(Known::Frame(t));
+            self.fguess[r.0 as usize] = None;
+            let ph = self.host_in(a, reg, extra, n, write, slow);
+            self.b.ins().jump(done, &[BlockArg::Value(ph)]);
+            // Neither branch's values dominate the join.
+            (self.known[r.0 as usize], self.slots) = (known, slots);
+            self.b.switch_to_block(miss);
+            let pm = self.host_in(a, reg, extra, n, write, slow);
+            self.b.ins().jump(done, &[BlockArg::Value(pm)]);
+            (self.known[r.0 as usize], self.slots) = (known, slots);
+            self.fguess[r.0 as usize] = Some(t);
+            self.b.switch_to_block(done);
+            return p;
+        }
         // An address parameter of a native frame (or an `Index` of one): a test against the region
         // resolved at the entry, the ordinary lookup when it fails.
         if self.nat.is_some()
@@ -4864,13 +4976,25 @@ impl Gen<'_> {
                 let okc = self.b.ins().band(fits, inside);
                 let okc = self.b.ins().band(okc, is_t);
                 let (fast, miss) = (self.b.create_block(), self.b.create_block());
-                self.b.set_cold_block(miss);
                 self.brif_split(okc, fast, miss);
                 self.b.switch_to_block(fast);
                 let base = self.mem_ld(MEM_TEMP);
                 let pf = self.b.ins().iadd(base, off);
                 self.b.ins().jump(done, &[BlockArg::Value(pf)]);
                 self.b.switch_to_block(miss);
+            }
+            // The object table (heap objects and constants found before: most of what the runtime
+            // finds), then the runtime.
+            {
+                self.tag(20);
+                let hi = self.b.ins().ushr_imm_s(a, 32);
+                let lo = self.lo32(a);
+                let off = self.b.ins().iadd(lo, extra);
+                let miss = self.b.create_block();
+                self.b.set_cold_block(miss);
+                self.obj_try(a, hi, off, n, write, false, done, miss);
+                self.b.switch_to_block(miss);
+                self.tag(8);
             }
             let c = self
                 .b

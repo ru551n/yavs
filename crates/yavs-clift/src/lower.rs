@@ -93,6 +93,15 @@ pub const NOT_CACHED: &str = "not in the compilation cache";
 type PerfEntry = (String, ClifId, usize, Vec<(u32, u32, u32)>);
 
 /// A Cranelift JIT module with the runtime callbacks compiled code calls.
+/// What stays fixed for one process instance once it is elaborated (prototype, branch
+/// perf/inv-postelab): view fields by `MEM_*` offset and the instance's signal table, compiled in as
+/// constants (`Jit::define_post`). Valid only while the view has these values (`ClifTier::choose`).
+pub struct Post {
+    pub view: Vec<(u64, u64)>,
+    pub tab: u64,
+    pub sigs: Vec<yavs_interp::TierSig>,
+}
+
 pub struct Jit {
     module: JITModule,
     step: ClifId,
@@ -145,6 +154,10 @@ pub struct Jit {
     /// Frame-mode code by its body and the functions and data it refers to: the copies of a process
     /// that are the same code share one definition.
     bodies: HashMap<String, ClifId>,
+    /// The instance facts of the body being built (`define_post`).
+    post: Option<Rc<Post>>,
+    /// Post bodies made so far (their names: `p<id>i<n>`).
+    post_n: usize,
 }
 
 /// The native-frame variant `n<id>` of a function, in the calling convention of the LLVM tier
@@ -516,6 +529,8 @@ impl Jit {
             cached_only: false,
             missed: false,
             bodies: HashMap::new(),
+            post: None,
+            post_n: 0,
         })
     }
 
@@ -540,6 +555,23 @@ impl Jit {
         Ok((c, s))
     }
 
+    /// The frame-mode code `p<id>` of `f` for one instance (`Post`): its view fields and signal
+    /// table as constants. Finalized; the caller enters it only while the view matches.
+    pub fn define_post(
+        &mut self,
+        prog: &Program,
+        id: FuncId,
+        f: &Func,
+        post: Post,
+    ) -> Result<RunFn, Error> {
+        self.post = Some(Rc::new(post));
+        let r = self.build(prog, id, f, false);
+        self.post = None;
+        let (c, _, _) = r?;
+        self.finalize()?;
+        Ok(self.entry(c))
+    }
+
     /// `Generator::cached_only`: from now on compile nothing the compilation cache does not have.
     pub fn set_cached_only(&mut self, on: bool) {
         self.cached_only = on;
@@ -558,7 +590,7 @@ impl Jit {
         if srcmap() {
             srcmap_cold(&mut ctx.func);
         }
-        let Some(store) = crate::cache::store() else {
+        let Some(store) = crate::cache::store().filter(|_| self.post.is_none()) else {
             return self
                 .module
                 .define_function(fid, ctx)
@@ -1011,6 +1043,8 @@ impl Jit {
             consts: cons,
             natives,
             cc: self.sig.call_conv,
+            // The facts are the root body's; variants it makes on the way are shared code.
+            post: self.post.clone().filter(|_| !native),
         };
         let cfg = self.module.target_config();
         let stepped = gen_func(&mut ctx, &mut fctx, cfg, prog, f, imports, id, native)?;
@@ -1044,7 +1078,16 @@ impl Jit {
                 .map(|(g, n)| (g.0, n.is_some()))
                 .collect::<Vec<_>>()
         });
-        let body = (!native && prog.base_of(id) != id).then(|| {
+        // The symbol: `f<id>`, `n<id>`, or `p<id>i<n>` for the n-th post body (`define_post`).
+        let sym = if native {
+            format!("n{}", id.0)
+        } else if self.post.is_some() {
+            self.post_n += 1;
+            format!("p{}i{}", id.0, self.post_n)
+        } else {
+            format!("f{}", id.0)
+        };
+        let body = (!native && self.post.is_none() && prog.base_of(id) != id).then(|| {
             let names: Vec<(u32, u32)> = ctx
                 .func
                 .params
@@ -1072,11 +1115,7 @@ impl Jit {
         }
         let fid = self
             .module
-            .declare_function(
-                &format!("{}{}", if native { "n" } else { "f" }, id.0),
-                Linkage::Export,
-                &ctx.func.signature,
-            )
+            .declare_function(&sym, Linkage::Export, &ctx.func.signature)
             .map_err(|e| e.to_string())?;
         let shared = body;
         let body = native.then(|| ctx.func.clone());
@@ -1119,7 +1158,6 @@ impl Jit {
             );
         }
         if let (Some(list), Some(c)) = (self.perfmap.as_mut(), ctx.compiled_code()) {
-            let kind = if native { "n" } else { "f" };
             // IR pc of each stretch of machine code (`YAVS_CLIFT_CODEDIR`: `<name>.srcmap`).
             let map = if srcmap() {
                 c.buffer
@@ -1138,7 +1176,7 @@ impl Jit {
                 Vec::new()
             };
             list.push((
-                format!("{kind}{}_{}", id.0, f.name.replace(' ', "_")),
+                format!("{sym}_{}", f.name.replace(' ', "_")),
                 fid,
                 c.code_info().total_size as usize,
                 map,
@@ -1248,6 +1286,7 @@ struct Imports {
     wait_edge: FuncRef,
     /// `yavs_rt_scan(env, mem, ctl, dope, base, i0, x, e, delta, out, depth) -> iterations`.
     scan: FuncRef,
+    post: Option<Rc<Post>>,
     tables: HashMap<Vec<u8>, GlobalValue>,
     /// Copies of the constants (up to 4 KiB of bytes) the function takes the address of, which
     /// never change: reads of them need no lookup.
@@ -1386,6 +1425,8 @@ struct Slow {
 
 struct Gen<'a> {
     b: FunctionBuilder<'a>,
+    /// The instance facts of a `p<id>` body (`Jit::define_post`).
+    post: Option<Rc<Post>>,
     /// The program (the constant pool: descriptors `const_dim` reads at compile time).
     prog: &'a Program,
     imp: Imports,
@@ -2025,6 +2066,7 @@ fn gen_func(
             .with_notrap()
             .with_alias_region(Some(gr)),
         mf: MemFlagsData::trusted().with_alias_region(Some(mr)),
+        post: imp.post.clone(),
         b,
         imp,
         env,
@@ -3827,6 +3869,63 @@ impl Gen<'_> {
         self.b.ins().iconst(I64, v)
     }
 
+    /// A view field that is a constant of this instance (`Post`).
+    fn post_view(&self, field: u64) -> Option<u64> {
+        let p = self.post.as_ref()?;
+        p.view.iter().find(|x| x.0 == field).map(|x| x.1)
+    }
+
+    /// The signal table entry at `ent` when it is a constant of this instance (`Post`).
+    fn post_ent(&self, ent: Value) -> Option<&yavs_interp::TierSig> {
+        let p = self.post.as_ref()?;
+        let a = self.const_of(ent)? as u64;
+        let k = a.checked_sub(p.tab)?;
+        (k % SIG_ENT as u64 == 0)
+            .then(|| p.sigs.get((k / SIG_ENT as u64) as usize))
+            .flatten()
+    }
+
+    /// The truth of a condition fixed when the code is made (a compare of constants).
+    fn truth(&self, v: Value) -> Option<bool> {
+        let dfg = &self.b.func.dfg;
+        let ir::ValueDef::Result(inst, 0) = dfg.value_def(v) else {
+            return None;
+        };
+        let cmp = |cc: IntCC, a: i64, b: i64| -> bool {
+            let (ua, ub) = (a as u64, b as u64);
+            match cc {
+                IntCC::Equal => a == b,
+                IntCC::NotEqual => a != b,
+                IntCC::SignedLessThan => a < b,
+                IntCC::SignedGreaterThanOrEqual => a >= b,
+                IntCC::SignedGreaterThan => a > b,
+                IntCC::SignedLessThanOrEqual => a <= b,
+                IntCC::UnsignedLessThan => ua < ub,
+                IntCC::UnsignedGreaterThanOrEqual => ua >= ub,
+                IntCC::UnsignedGreaterThan => ua > ub,
+                IntCC::UnsignedLessThanOrEqual => ua <= ub,
+            }
+        };
+        match dfg.insts[inst] {
+            ir::InstructionData::UnaryImm {
+                opcode: ir::Opcode::Iconst,
+                imm,
+            } => Some(imm.bits() != 0),
+            ir::InstructionData::IntCompare { cond, args, .. } => {
+                Some(cmp(cond, self.const_of(args[0])?, self.const_of(args[1])?))
+            }
+            ir::InstructionData::Binary {
+                opcode: ir::Opcode::Band,
+                args,
+            } => Some(self.truth(args[0])? && self.truth(args[1])?),
+            ir::InstructionData::Binary {
+                opcode: ir::Opcode::Bor,
+                args,
+            } => Some(self.truth(args[0])? || self.truth(args[1])?),
+            _ => None,
+        }
+    }
+
     /// The value of `v` when it is an integer constant.
     fn const_of(&self, v: Value) -> Option<i64> {
         let dfg = &self.b.func.dfg;
@@ -3924,6 +4023,9 @@ impl Gen<'_> {
     }
 
     fn mem_ld(&mut self, field: u64) -> Value {
+        if let Some(v) = self.post_view(field) {
+            return self.c64(v as i64);
+        }
         let old = self.tag(17);
         let v = self.b.ins().load(I64, self.mf, self.mem, field as i32);
         self.b.set_srcloc(old);
@@ -4853,6 +4955,12 @@ impl Gen<'_> {
     /// compare (a compare and a conditional jump each, where the combined truth value is two
     /// `setcc`s, an `and` and a `test`).
     fn brif_split(&mut self, c: Value, t: Block, f: Block) {
+        if self.post.is_some()
+            && let Some(k) = self.truth(c)
+        {
+            self.b.ins().jump(if k { t } else { f }, &[]);
+            return;
+        }
         if let Some((a, b)) = self.bool_pair(c, true) {
             let mid = self.b.create_block();
             self.brif_split(a, mid, f);
@@ -6561,6 +6669,22 @@ impl Gen<'_> {
 impl Gen<'_> {
     /// A field of a `TierSig` entry (kernel memory: no alias region).
     fn ent_ld(&mut self, ent: Value, field: i64) -> Value {
+        if let Some(e) = self.post_ent(ent) {
+            let v = match field {
+                SIG_CODES => e.codes,
+                SIG_LEN => e.len,
+                SIG_SIGNAL => e.signal,
+                SIG_OFF => e.off,
+                SIG_CAP => e.cap,
+                SIG_STAMPS => e.stamps,
+                SIG_LAST => e.last,
+                SIG_PLANES => e.planes,
+                SIG_PLEN => e.plen,
+                SIG_BYTES => e.bytes,
+                _ => e.es,
+            };
+            return self.c64(v as i64);
+        }
         self.b
             .ins()
             .load(I64, MemFlagsData::trusted(), ent, field as i32)
@@ -6624,6 +6748,12 @@ impl Gen<'_> {
             && sv.dst == sig
             && len.map_or(sv.len != 0, |k| k == sv.len)
         {
+            if let Some(p) = &self.post {
+                let a = p.tab as i64 + i64::from(sv.sig) * SIG_ENT;
+                let ent = self.c64(a);
+                let off = self.c64(sv.off);
+                return (ent, off);
+            }
             let tab = self
                 .b
                 .ins()
@@ -6678,6 +6808,17 @@ impl Gen<'_> {
     /// to the other forms, out of line: the form depends on the instance, a body does not fix it.
     fn sig_read_fixed(&mut self, pc: u32, dst: Reg, sv: SigConst) {
         let (sig, off) = (sv.sig, sv.off);
+        // An instance's table (`Post`): the element's byte at a constant address, no test.
+        if let Some(e) = self.post.as_ref().and_then(|p| p.sigs.get(sig as usize))
+            && e.codes != 0
+            && (off as u64) < e.len
+        {
+            let a = (e.codes + off as u64) as i64;
+            let p = self.c64(a);
+            let byte = self.b.ins().uload8(I64, MemFlagsData::trusted(), p, 0);
+            self.st(dst, byte);
+            return;
+        }
         let (step, join) = self.slow_signal(pc, 0);
         let other = self.b.create_block();
         let ro = self.mf.with_readonly();
@@ -8038,6 +8179,7 @@ pub fn compile(prog: &Program, max_size: usize) -> Result<crate::ClifTier, Error
     let mut interpreted: Vec<(String, usize)> = kinds.into_iter().collect();
     interpreted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     Ok(crate::ClifTier {
+        post: None,
         _jit: std::sync::Mutex::new(jit),
         lean: (0..prog.funcs.len())
             .map(|i| {

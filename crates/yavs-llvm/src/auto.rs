@@ -3597,6 +3597,19 @@ impl Tier for AutoTier {
     fn run(&self, func: FuncId, pc: u32, host: &mut dyn TierHost) -> Option<u32> {
         let (f, nregs) = self.funcs.get(func.0 as usize)?.get()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize)?.get();
+        if let Some(h) = crate::rt::POST_HOOK.get() {
+            return crate::rt::enter_post(
+                f,
+                nregs,
+                pc,
+                host,
+                &lookup,
+                self.ntab.as_ptr().cast(),
+                None,
+                false,
+                &|fr, f| h(func, fr, f),
+            );
+        }
         // `AtomicUsize` has the layout of `usize`: compiled code loads the entries atomically.
         enter(
             f,
@@ -3619,6 +3632,19 @@ impl Tier for AutoTier {
     ) -> Option<u32> {
         let (f, nregs, lean) = self.funcs.get(func.0 as usize)?.get_lean()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize)?.get();
+        if let Some(h) = crate::rt::POST_HOOK.get() {
+            return crate::rt::enter_post(
+                f,
+                nregs,
+                pc,
+                host,
+                &lookup,
+                self.ntab.as_ptr().cast(),
+                Some(state),
+                lean,
+                &|fr, f| h(func, fr, f),
+            );
+        }
         enter(
             f,
             nregs,

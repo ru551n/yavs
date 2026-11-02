@@ -2542,6 +2542,48 @@ pub fn enter<H: View + ?Sized>(
     }
 }
 
+/// What chooses the body of a process instance under `--tier=auto` (`enter_post`; prototype, branch
+/// perf/inv-postelab, set by `yavs-clift`).
+pub type PostHook = Box<dyn Fn(FuncId, &TierFrame, RunFn) -> RunFn + Send + Sync>;
+pub static POST_HOOK: std::sync::OnceLock<PostHook> = std::sync::OnceLock::new();
+
+/// `enter` with the code to run chosen once the view is made (`choose`: the body compiled for this
+/// instance or the shared one; prototype, branch perf/inv-postelab).
+#[allow(clippy::too_many_arguments)]
+pub fn enter_post<H: View + ?Sized>(
+    f: RunFn,
+    nregs: usize,
+    pc: u32,
+    host: &mut H,
+    lookup: Lookup<'_>,
+    ntab: *const usize,
+    state: Option<&mut yavs_interp::TierState>,
+    lean: bool,
+    choose: &dyn Fn(&TierFrame, RunFn) -> RunFn,
+) -> Option<u32> {
+    let p = MEM.replace(std::ptr::null_mut());
+    let mut mem = if p.is_null() {
+        new_mem()
+    } else {
+        // SAFETY: as in `enter`.
+        unsafe { Box::from_raw(p) }
+    };
+    host.make_view(&mut mem.fr);
+    let f = choose(&mem.fr, f);
+    let r = if lean {
+        enter_on::<H, true>(&mut mem, f, nregs, pc, host, lookup, ntab, state)
+    } else {
+        enter_on::<H, false>(&mut mem, f, nregs, pc, host, lookup, ntab, state)
+    };
+    if MEM.get().is_null() {
+        MEM.set(Box::into_raw(mem));
+    }
+    match r {
+        Ok(next) => next,
+        Err(p) => resume_unwind(p),
+    }
+}
+
 /// A new `Mem` (out of line: its 64 KB would otherwise be a stack probe in every `enter`).
 #[inline(never)]
 fn new_mem() -> Box<Mem> {

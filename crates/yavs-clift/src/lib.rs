@@ -57,6 +57,57 @@ pub struct ClifTier {
     pub instrs: usize,
     /// Per function: IR instructions and the time `Jit::define` took.
     pub times: Vec<(usize, std::time::Duration)>,
+    /// Prototype (perf/inv-postelab, `YAVS_CLIFT_POSTELAB`): bodies per process instance.
+    pub post: Option<PostSet>,
+}
+
+/// The body of a process compiled for one instance (`lower::Post`): run only while the view's
+/// `checks` (`MEM_*` offset, value) hold for that `owner`.
+#[cfg(feature = "clift")]
+pub(crate) struct PostBody {
+    owner: u64,
+    checks: Vec<(u64, u64)>,
+    f: Option<RunFn>,
+}
+
+/// Instances of one process that get a body of their own; the others run the shared body.
+#[cfg(feature = "clift")]
+pub(crate) const POST_INSTANCES: usize = 4;
+
+/// The view fields a post body takes as constants: fixed for a process in its root frame.
+#[cfg(feature = "clift")]
+const POST_VIEW: [u64; 15] = {
+    use yavs_llvm::rt::*;
+    [
+        MEM_SLOTS,
+        MEM_SLOTS_LEN,
+        MEM_FRAME,
+        MEM_FRAME_IDX,
+        MEM_ROOT_SLOTS,
+        MEM_INST,
+        MEM_INST_LEN,
+        MEM_NSIGS,
+        MEM_SIGTAB,
+        MEM_SIGTAB_LEN,
+        MEM_STOP,
+        MEM_SPIN,
+        MEM_COV,
+        MEM_COV_LEN,
+        MEM_MAX_DEPTH,
+    ]
+};
+
+/// The word at `off` (a `MEM_*` offset: `Mem` starts with its `TierFrame`) of the view.
+#[cfg(feature = "clift")]
+fn view_word(fr: &yavs_interp::TierFrame, off: u64) -> u64 {
+    // SAFETY: every `POST_VIEW` offset is that of a u64 or pointer field of the `repr(C)` view.
+    unsafe {
+        (fr as *const yavs_interp::TierFrame)
+            .cast::<u8>()
+            .add(off as usize)
+            .cast::<u64>()
+            .read()
+    }
 }
 
 #[cfg(feature = "clift")]
@@ -79,6 +130,19 @@ impl ClifTier {
         let &(f, nregs) = self.funcs.get(func.0 as usize)?.as_ref()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize).copied().flatten();
         let lean = self.lean.get(func.0 as usize) == Some(&true);
+        if let Some(ps) = self.post.as_ref().filter(|ps| ps.on(func)) {
+            return yavs_llvm::rt::enter_post(
+                f,
+                nregs,
+                pc,
+                host,
+                &lookup,
+                self.natives.as_ptr(),
+                state,
+                lean,
+                &|fr, f| ps.choose(func, fr, f),
+            );
+        }
         enter(
             f,
             nregs,
@@ -89,6 +153,142 @@ impl ClifTier {
             state,
             lean,
         )
+    }
+}
+
+/// Prototype (perf/inv-postelab, `YAVS_CLIFT_POSTELAB=all|name,...`): the processes that get a
+/// body of their own per instance (up to `POST_INSTANCES`), made at its first entry from its view
+/// (`lower::Post`), in a module of their own.
+#[cfg(feature = "clift")]
+pub struct PostSet {
+    jit: Mutex<Jit>,
+    prog: std::sync::Arc<yavs_ir::Program>,
+    /// The filter, and per function whether it passes (asked at its first entry: a copy is made late).
+    want: String,
+    on: Vec<std::sync::OnceLock<bool>>,
+    posts: Vec<[std::sync::OnceLock<PostBody>; POST_INSTANCES]>,
+    /// Under `--tier=auto`: callees through `Mem::ntab` (the policy did not choose them).
+    auto: bool,
+    /// Entries that took the shared body although the process has post bodies.
+    refused: std::sync::atomic::AtomicU64,
+}
+
+#[cfg(feature = "clift")]
+impl PostSet {
+    /// `None` without `YAVS_CLIFT_POSTELAB`.
+    pub fn new(prog: std::sync::Arc<yavs_ir::Program>, auto: bool) -> Option<PostSet> {
+        let want = std::env::var("YAVS_CLIFT_POSTELAB").ok()?;
+        let n = prog.funcs.len();
+        let on = (0..n).map(|_| Default::default()).collect();
+        Some(PostSet {
+            jit: Mutex::new(Jit::new().ok()?),
+            want,
+            on,
+            posts: (0..n)
+                .map(|_| std::array::from_fn(|_| Default::default()))
+                .collect(),
+            prog,
+            auto,
+            refused: Default::default(),
+        })
+    }
+
+    fn on(&self, func: FuncId) -> bool {
+        let Some(c) = self.on.get(func.0 as usize) else {
+            return false;
+        };
+        *c.get_or_init(|| {
+            self.prog.func(func).is_some_and(|f| {
+                let w = &self.want;
+                f.kind == yavs_ir::FuncKind::Process
+                    && (w == "all" || w.split(',').any(|x| f.name.contains(x)))
+            })
+        })
+    }
+
+    /// Under `--tier=auto`: run this set's bodies for the compiled processes (`rt::POST_HOOK`).
+    pub fn install(self) {
+        let ps = self;
+        let _ = yavs_llvm::rt::POST_HOOK.set(Box::new(move |func, fr, f| {
+            if ps.on(func) {
+                ps.choose(func, fr, f)
+            } else {
+                f
+            }
+        }));
+    }
+
+    /// The body to run for this view: the instance's own (made at its first entry), else `f`.
+    fn choose(&self, func: FuncId, fr: &yavs_interp::TierFrame, f: RunFn) -> RunFn {
+        for cell in &self.posts[func.0 as usize] {
+            let pb = match cell.get() {
+                Some(pb) if pb.owner != fr.owner => continue,
+                Some(pb) => pb,
+                // Only a root frame with its whole signal table and a kernel has the facts.
+                None if fr.frame != 0 || fr.sigtab_len != fr.nsigs || fr.kctx.is_null() => {
+                    return f;
+                }
+                None => cell.get_or_init(|| self.build_post(func, fr)),
+            };
+            if let Some(p) = pb.f
+                && pb.owner == fr.owner
+                && pb.checks.iter().all(|&(o, v)| view_word(fr, o) == v)
+            {
+                return p;
+            }
+            break;
+        }
+        let n = self
+            .refused
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        if n.is_power_of_two() {
+            eprintln!(
+                "note: postelab: {n} entries took the shared body (last f{})",
+                func.0
+            );
+        }
+        f
+    }
+
+    fn build_post(&self, func: FuncId, fr: &yavs_interp::TierFrame) -> PostBody {
+        let checks: Vec<(u64, u64)> = POST_VIEW.iter().map(|&o| (o, view_word(fr, o))).collect();
+        let mut pb = PostBody {
+            owner: fr.owner,
+            checks: checks.clone(),
+            f: None,
+        };
+        let prog = &self.prog;
+        let Some(fun) = prog.func(func) else {
+            return pb;
+        };
+        // SAFETY: the view's table has `sigtab_len` entries for the activation (`TierHost::view`).
+        let sigs =
+            unsafe { std::slice::from_raw_parts(fr.sigtab, fr.sigtab_len as usize) }.to_vec();
+        let post = lower::Post {
+            view: checks,
+            tab: fr.sigtab as u64,
+            sigs,
+        };
+        let t = std::time::Instant::now();
+        let Ok(mut jit) = self.jit.lock() else {
+            return pb;
+        };
+        if self.auto {
+            jit.allow(&[func]);
+        }
+        match jit.define_post(prog, func, fun, post) {
+            Ok(p) => pb.f = Some(p),
+            Err(e) => eprintln!("note: postelab: f{} `{}`: {e}", func.0, fun.name),
+        }
+        eprintln!(
+            "note: postelab: f{} `{}` ({} IR) built in {} us",
+            func.0,
+            fun.name,
+            fun.code.len(),
+            t.elapsed().as_micros()
+        );
+        pb
     }
 }
 

@@ -1156,7 +1156,8 @@ fn use_clift(
         )
     };
     if a.tier() == TierArg::Clift {
-        let tier = yavs_clift::compile(&rt.prog, a.tier_max_size).map_err(bug)?;
+        let mut tier = yavs_clift::compile(&rt.prog, a.tier_max_size).map_err(bug)?;
+        tier.post = yavs_clift::PostSet::new(rt.prog.clone(), false);
         if a.verbose {
             for (f, why) in &tier.notes {
                 let name = rt.prog.func(*f).map_or("?", |f| f.name.as_str());
@@ -1231,6 +1232,9 @@ fn use_clift(
         }
     });
     let first = yavs_clift::First::new().map_err(bug)?;
+    if let Some(ps) = yavs_clift::PostSet::new(rt.prog.clone(), true) {
+        ps.install();
+    }
     let t = yavs_llvm::AutoTier::start_deferred_with(
         rt,
         yavs_llvm::OptLevel::O2,

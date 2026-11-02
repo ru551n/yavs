@@ -1,6 +1,7 @@
 //! `LCopy` of a known length and offsets (`yavs-clift` `Gen::lcopy_const`): every length and offset
 //! within a 16-element vector, slices around block edges, wider runs, the same variable as source
-//! and destination. Every result is checked against a model written here, and
+//! and destination, and a known count at offsets known at run time only (`Gen::lcopy_inline`).
+//! Every result is checked against a model written here, and
 //! the interpreter and the compiled tiers must print it. Needs the `clift` feature.
 #![cfg(feature = "clift")]
 
@@ -38,6 +39,7 @@ const CHUNK: usize = 40;
 fn processes(
     width: usize,
     shapes: &[(usize, usize, usize)],
+    dynamic: bool,
     at: &mut usize,
     src: &mut String,
     want: &mut Vec<String>,
@@ -50,18 +52,22 @@ fn processes(
             src,
             "  process
     variable a, b : std_ulogic_vector(0 to {});
+    variable i : natural;
   begin
-    wait for {at} ns;",
+    wait for {at} ns;
+    i := zero;",
             width - 1
         )
         .expect("to a string");
         for &(k, s, d) in chunk {
             let (se, de) = (s + k - 1, d + k - 1);
+            // With `+ i` (0 at run time) the offsets are not known when the code is made.
+            let p = if dynamic { " + i" } else { "" };
             writeln!(
                 src,
                 "    a := {av}; b := {bv};
-    b({d} to {de}) := a({s} to {se});
-    a({d} to {de}) := a({s} to {se});
+    b({d}{p} to {de}{p}) := a({s}{p} to {se}{p});
+    a({d}{p} to {de}{p}) := a({s}{p} to {se}{p});
     report to_string(b) & \" \" & to_string(a);"
             )
             .expect("to a string");
@@ -107,14 +113,27 @@ fn design() -> (String, Vec<String>) {
             }
         }
     }
+    // A known count at offsets known only at run time (#1063): one and two blocks each side.
+    let mut moving = Vec::new();
+    for k in [1, 2, 3, 8, 31, 32, 33, 62, 63, 64] {
+        for s in [0, 1, 31, 62, 63, 64, 65, 100] {
+            for d in [0, 1, 32, 63, 64, 66, 127] {
+                if s + k <= 192 && d + k <= 192 {
+                    moving.push((k, s, d));
+                }
+            }
+        }
+    }
     let (mut body, mut want, mut at) = (String::new(), Vec::new(), 0);
-    processes(16, &small, &mut at, &mut body, &mut want);
-    processes(192, &edges, &mut at, &mut body, &mut want);
-    processes(700, &wide, &mut at, &mut body, &mut want);
+    processes(16, &small, false, &mut at, &mut body, &mut want);
+    processes(192, &edges, false, &mut at, &mut body, &mut want);
+    processes(700, &wide, false, &mut at, &mut body, &mut want);
+    processes(192, &moving, true, &mut at, &mut body, &mut want);
     let src = format!(
         "library ieee; use ieee.std_logic_1164.all;
 entity clift_lcopy_shapes is end;
 architecture t of clift_lcopy_shapes is
+  signal zero : natural := 0;
 begin
 {body}end;
 "
@@ -177,7 +196,7 @@ fn constant_shape_copies_match_the_model_on_every_tier() {
             "{tier:?}: {}",
             &err[err.len().saturating_sub(800)..]
         );
-        // The general lowering is the one that shifts in 128 bits: it must not have been used.
+        // No site shifts in 128 bits: not the constant shapes, not those of run-time offsets.
         if env.is_some() {
             assert!(
                 err.contains("clif of frame code"),

@@ -34,7 +34,6 @@ const I64: Type = types::I64;
 const I32: Type = types::I32;
 const I8: Type = types::I8;
 const F64: Type = types::F64;
-const I128: Type = types::I128;
 
 /// Zero `n` bytes (`Inst::Alloc`).
 extern "C" fn clift_zero(p: *mut u8, n: u64) {
@@ -5119,44 +5118,55 @@ impl Gen<'_> {
         let two_s = self.b.ins().icmp_imm_s(IntCC::Equal, ns, 2);
         let two_d = self.b.ins().icmp_imm_s(IntCC::Equal, nd, 2);
         let zero = self.c64(0);
-        let wide = |g: &mut Self, p: Value, plane: i32, two: Value| -> Value {
-            let l = g.b.ins().load(I64, gf, p, plane * 8);
-            // Block 1 is only read when there is one.
+        // The word of the second block, or 0 without one (block 0 is read again in its place, so
+        // nothing past the run is touched).
+        let high = |g: &mut Self, p: Value, plane: i32, two: Value| -> Value {
             let b1 = g.b.ins().iadd_imm_s(p, 32);
             let hp = g.b.ins().select(two, b1, p);
             let h = g.b.ins().load(I64, gf, hp, plane * 8);
-            let h = g.b.ins().select(two, h, zero);
-            let (l, h) = (g.b.ins().uextend(I128, l), g.b.ins().uextend(I128, h));
-            let hs = g.b.ins().ishl_imm_s(h, 64);
-            g.b.ins().bor(l, hs)
+            g.b.ins().select(two, h, zero)
         };
-        let s128 = self.b.ins().uextend(I128, s0);
-        let d128 = self.b.ins().uextend(I128, d0);
+        // `x << (64 - s)` and `x >> (64 - s)` for `s` in 0..64 as two shifts (`63 - s` is
+        // `s ^ 63`): 0 at `s = 0`, never a shift by 64, which Cranelift takes modulo 64.
+        let up = |g: &mut Self, x: Value, s: Value| {
+            let c = g.b.ins().bxor_imm_s(s, 63);
+            let x = g.b.ins().ishl_imm_s(x, 1);
+            g.b.ins().ishl(x, c)
+        };
+        let down = |g: &mut Self, x: Value, s: Value| {
+            let c = g.b.ins().bxor_imm_s(s, 63);
+            let x = g.b.ins().ushr_imm_s(x, 1);
+            g.b.ins().ushr(x, c)
+        };
         let mut vals = [zero; 4];
         for (plane, v) in vals.iter_mut().enumerate() {
-            let w = wide(self, ps, plane as i32, two_s);
-            let sh = self.b.ins().ushr(w, s128);
-            let low = self.b.ins().ireduce(I64, sh);
-            *v = self.b.ins().band(low, mask);
+            let lo = self.b.ins().load(I64, gf, ps, plane as i32 * 8);
+            let hi = high(self, ps, plane as i32, two_s);
+            let lo = self.b.ins().ushr(lo, s0);
+            let hi = up(self, hi, s0);
+            let w = self.b.ins().bor(lo, hi);
+            *v = self.b.ins().band(w, mask);
         }
-        let m128 = self.b.ins().uextend(I128, mask);
-        let hole = self.b.ins().ishl(m128, d128);
+        let hole = self.b.ins().ishl(mask, d0);
         let keep = self.b.ins().bnot(hole);
+        let hole1 = down(self, mask, d0);
+        let keep1 = self.b.ins().bnot(hole1);
         for (plane, v) in vals.iter().enumerate() {
-            let w = wide(self, pd, plane as i32, two_d);
-            let v128 = self.b.ins().uextend(I128, *v);
-            let put = self.b.ins().ishl(v128, d128);
-            let kept = self.b.ins().band(w, keep);
-            let out = self.b.ins().bor(kept, put);
-            let lo = self.b.ins().ireduce(I64, out);
-            self.b.ins().store(gf, lo, pd, plane as i32 * 8);
-            // The second block: the high half, when the destination has one.
+            let at = plane as i32 * 8;
+            let old = self.b.ins().load(I64, gf, pd, at);
+            let kept = self.b.ins().band(old, keep);
+            let put = self.b.ins().ishl(*v, d0);
+            let lo = self.b.ins().bor(kept, put);
+            self.b.ins().store(gf, lo, pd, at);
+            // The second block, when the destination has one.
             let (hi_bb, done) = (self.b.create_block(), self.b.create_block());
             self.brif_split(two_d, hi_bb, done);
             self.b.switch_to_block(hi_bb);
-            let top = self.b.ins().ushr_imm_s(out, 64);
-            let hi = self.b.ins().ireduce(I64, top);
-            self.b.ins().store(gf, hi, pd, 32 + plane as i32 * 8);
+            let old = self.b.ins().load(I64, gf, pd, 32 + at);
+            let kept = self.b.ins().band(old, keep1);
+            let put = down(self, *v, d0);
+            let hi = self.b.ins().bor(kept, put);
+            self.b.ins().store(gf, hi, pd, 32 + at);
             self.b.ins().jump(done, &[]);
             self.b.switch_to_block(done);
         }

@@ -3742,6 +3742,12 @@ pub fn track<V: Copy>(known: &mut [Option<Known<V>>], fixed: &[Option<i64>], f: 
         },
         Inst::Deref { dst, .. } => Some((dst, Known::Heap(None))),
         Inst::Move { dst, src } => get(src).map(|k| (dst, k)),
+        // A record's field is in the record's space, at an offset its layout decides. A guess of
+        // a heap object stays a runtime lookup: the inline lookup is more code than the call.
+        Inst::Field { dst, base, .. } => get(base)
+            .filter(|k| !matches!(k, Known::LikelyHeap))
+            .and_then(|k| unknown_offset(f, k))
+            .map(|k| (dst, k)),
         // As the interpreter computes it when it is no error.
         Inst::Index {
             dst,
@@ -3765,24 +3771,8 @@ pub fn track<V: Copy>(known: &mut [Option<Known<V>>], fixed: &[Option<i64>], f: 
                 (Some(Known::Inst(o)), Some(Known::Int(p))) => {
                     at(o, p).map(|a| (dst, Known::Inst(a)))
                 }
-                (Some(Known::Frame(o)), _) => f
-                    .locals
-                    .iter()
-                    .find(|l| {
-                        yavs_ir::is_frame_object(l)
-                            && u64::from(l.slot) <= o
-                            && o < u64::from(l.slot) + u64::from(l.size)
-                    })
-                    .map(|l| (dst, Known::FrameObj(l.slot, l.slot + l.size))),
-                (Some(Known::FrameObj(s, e)), _) => Some((dst, Known::FrameObj(s, e))),
                 // An offset past 4 GiB leaves the block through the instruction's own exit.
-                (Some(Known::Inst(_) | Known::InstAny), _) => Some((dst, Known::InstAny)),
-                (Some(Known::Up(d)), _) => Some((dst, Known::Up(d))),
-                (Some(Known::Temp), _) => Some((dst, Known::Temp)),
-                (Some(Known::LikelyTemp), _) => Some((dst, Known::LikelyTemp)),
-                (Some(Known::LikelyHeap), _) => Some((dst, Known::LikelyHeap)),
-                (Some(Known::Heap(_)), _) => Some((dst, Known::Heap(None))),
-                (Some(Known::Param(k)), _) => Some((dst, Known::Param(k))),
+                (Some(k), _) => unknown_offset(f, k).map(|k| (dst, k)),
                 _ => None,
             }
         }
@@ -3817,6 +3807,31 @@ pub fn track<V: Copy>(known: &mut [Option<Known<V>>], fixed: &[Option<i64>], f: 
         {
             *x = Some(Known::Int(i64::from(sig) << 32 | o));
         }
+    }
+}
+
+/// What is known of an address at a run-time offset into the object `k` names (an `Index` by a
+/// run-time position, a record's `Field`): its space, not its offset.
+fn unknown_offset<V: Copy>(f: &Func, k: Known<V>) -> Option<Known<V>> {
+    match k {
+        Known::Frame(o) => f
+            .locals
+            .iter()
+            .find(|l| {
+                yavs_ir::is_frame_object(l)
+                    && u64::from(l.slot) <= o
+                    && o < u64::from(l.slot) + u64::from(l.size)
+            })
+            .map(|l| Known::FrameObj(l.slot, l.slot + l.size)),
+        Known::FrameObj(s, e) => Some(Known::FrameObj(s, e)),
+        Known::Inst(_) | Known::InstAny => Some(Known::InstAny),
+        Known::Up(d) => Some(Known::Up(d)),
+        Known::Temp => Some(Known::Temp),
+        Known::LikelyTemp => Some(Known::LikelyTemp),
+        Known::LikelyHeap => Some(Known::LikelyHeap),
+        Known::Heap(_) => Some(Known::Heap(None)),
+        Known::Param(k) => Some(Known::Param(k)),
+        Known::Int(_) | Known::Const(..) => None,
     }
 }
 

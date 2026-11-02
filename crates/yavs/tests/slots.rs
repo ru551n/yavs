@@ -97,6 +97,90 @@ fn frame_temporaries_change_nothing_anyone_sees() {
     );
 }
 
+/// Scalar byte signals (integer, real, enumeration) assigned at zero delay take `ByteDrive`;
+/// a delay, a second assignment of the run, a resolved signal and an element of an array
+/// take its replay or the kernel's other paths, and print what the unfused ops print.
+const BYTES: &str = "
+entity t is end;
+architecture a of t is
+  type st_t is (idle, run, done);
+  type res_t is array (natural range <>) of integer;
+  function rf(v : res_t) return integer is
+    variable m : integer := integer'low;
+  begin
+    for i in v'range loop
+      if v(i) > m then m := v(i); end if;
+    end loop;
+    return m;
+  end;
+  subtype rint is rf integer;
+  signal clk : bit := '0';
+  signal c, same, twice, late, tr, narrow : integer := 0;
+  signal x : real := 0.0;
+  signal st : st_t := idle;
+  signal arr : integer_vector(0 to 3) := (others => 7);
+  signal bus1 : rint := 0;
+  signal chk : integer := 0;
+begin
+  clk <= not clk after 5 ns when now < 400 ns;
+  process (clk)
+    variable n : integer := 0;
+  begin
+    if clk = '1' then
+      n := n + 1;
+      c <= n;
+      same <= 5;
+      twice <= 1;
+      twice <= n mod 3;
+      late <= n after 3 ns;
+      tr <= transport n;
+      narrow <= n mod 7 when n < 30 else 0;
+      x <= real(n) * 0.5;
+      st <= run when st = idle else done when st = run else idle;
+      arr(n mod 4) <= n;
+      bus1 <= n;
+    end if;
+  end process;
+  process (clk) begin
+    if clk = '1' then bus1 <= 3; end if;
+  end process;
+  -- every event with its time and the values, so a wrong delay shows
+  process (c, twice, late, tr, narrow, x, st, arr, bus1)
+    variable h : integer := 0;
+  begin
+    h := (h * 31 + (now / 1 ns) + c + twice * 3 + late * 5 + tr * 7 + narrow * 11 + integer(x * 2.0)
+      + st_t'pos(st) * 13 + arr(0) + arr(1) * 2 + arr(2) * 3 + arr(3) * 4 + bus1 * 17) mod 1000003;
+    chk <= h;
+  end process;
+  process begin
+    wait for 395 ns;
+    report \"chk=\" & integer'image(chk) & \" c=\" & integer'image(c) & \" same=\" & integer'image(same)
+      & \" twice=\" & integer'image(twice) & \" late=\" & integer'image(late)
+      & \" tr=\" & integer'image(tr) & \" narrow=\" & integer'image(narrow)
+      & \" x=\" & real'image(x) & \" st=\" & st_t'image(st)
+      & \" arr=\" & integer'image(arr(0)) & integer'image(arr(1)) & integer'image(arr(2))
+      & integer'image(arr(3)) & \" bus=\" & integer'image(bus1);
+    wait;
+  end process;
+end;
+";
+
+#[test]
+fn byte_drives_run_as_one_op_and_replay_what_the_fast_path_leaves() {
+    let d = tmp("slots_bytes");
+    std::fs::write(d.join("t.vhd"), BYTES).expect("write");
+    let with = run(&d, &[], "interp");
+    let without = run(&d, &[("YAVS_NO_SLOTS", "1")], "interp");
+    assert_eq!(with.0, 0, "{}", with.1);
+    assert!(with.1.contains("c=39 same=5"), "{}", with.1);
+    assert_eq!(with, without);
+    let (_, dump) = run(&d, &[("YAVS_DUMPIR", "1")], "interp");
+    assert!(
+        dump.contains("ByteDrive {") && dump.contains("size: 32784"),
+        "{dump}"
+    );
+}
+
 #[cfg(feature = "llvm")]
 #[test]
 fn the_same_in_compiled_code() {

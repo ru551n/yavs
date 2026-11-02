@@ -1299,6 +1299,21 @@ pub(crate) enum Op {
         n: u32,
         res: u32,
     },
+    /// A waveform in the frame that is not run (its `Zero` unless the stores cover it, the `Store`
+    /// of the time unless it is 0), the `Store` of the value `v` (of width `wd`) at 8 bytes in
+    /// and the one-element `Drive` of it, which nothing else reads, without delay limit: a
+    /// scalar byte signal (integer, enumeration, real) assigned straight to the kernel. `size`
+    /// (`FRAME_WAVE` and the bytes), `time` and `w` are the registers and size of the waveform,
+    /// for the cases the fast path does not take (a delay, a reference of several parts).
+    ByteDrive {
+        v: u32,
+        driver: u16,
+        target: u16,
+        time: u16,
+        size: u16,
+        w: u16,
+        wd: Width,
+    },
 }
 
 // Small enough for three ops to a cache line.
@@ -2231,6 +2246,8 @@ fn peephole(
         LSet(u32),
         /// `LCopy` into element 0: the source, its first element, the count.
         LCopy(u32, u32, u32),
+        /// `Store` of a scalar byte value at 8 bytes in (frame waveforms only).
+        Byte(u32, Width),
     }
     let int = |r: u32| match known.get(r as usize) {
         Some(&Known::Int(v)) => Some(v),
@@ -2254,6 +2271,18 @@ fn peephole(
         .and_then(|r| u16::try_from(r).ok());
     // The reads of each register in the function, found when a waveform needs them.
     let total = std::cell::OnceCell::new();
+    // The `Drive`s of a waveform in the frame, by op index, with the frame offset of the waveform.
+    let frame_drives: Vec<(usize, u32)> = old
+        .iter()
+        .enumerate()
+        .filter_map(|(k, o)| match *o {
+            Op::Drive { wave, .. } => match known.get(wave as usize) {
+                Some(&Known::Frame(off)) => Some((k, off)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
     let mut i = 0;
     while i < old.len() {
         let here = ops.len() as u32;
@@ -2367,6 +2396,7 @@ fn peephole(
                                     n,
                                     inertial,
                                 },
+                                Val::Byte(..) => return None,
                             },
                         )),
                         _ => None,
@@ -2434,6 +2464,9 @@ fn peephole(
                             soff,
                             n: cnt,
                         } if at_e(dst) && int(doff) == Some(0) => (Val::LCopy(src, soff, cnt), dst),
+                        Op::StoreSlot { src, off: o, w: wd } if Some(o) == off.checked_add(8) => {
+                            (Val::Byte(src, wd), 0)
+                        }
                         _ => return None,
                     };
                     let from = from as usize;
@@ -2516,6 +2549,15 @@ fn peephole(
                                 n,
                                 inertial,
                             },
+                            Val::Byte(v, wd) => Op::ByteDrive {
+                                v,
+                                driver,
+                                target,
+                                time,
+                                size,
+                                w: w16,
+                                wd,
+                            },
                         },
                     ))
                 });
@@ -2533,6 +2575,74 @@ fn peephole(
                 let (_, op, first) = dropped.swap_remove(p);
                 no_tier.push((first, here));
                 (Some(op), 2)
+            }
+            // A scalar byte waveform in the frame with no `Zero` (the two `Store`s cover it): the
+            // `Store` of the time starts it and the first `Drive` after it must be its own.
+            (
+                Op::StoreSlot {
+                    src: time,
+                    off,
+                    w: Width::B8,
+                },
+                ..,
+            ) if let Some(&from) = old_at.get(i)
+                && let Some(&(dj, o)) =
+                    frame_drives.get(frame_drives.partition_point(|d| d.0 <= i))
+                && o == off
+                && let Some(j) = dj.checked_sub(1)
+                && let Some(&Op::StoreSlot {
+                    src: v,
+                    off: voff,
+                    w: wd @ Width::B8,
+                }) = old.get(j)
+                && j > i
+                && voff == off + 8
+                && let Some(&Op::Drive {
+                    driver,
+                    target,
+                    wave,
+                    n,
+                    reject: NONE,
+                    ..
+                }) = old.get(dj)
+                && int(n) == Some(1)
+                && let Some(&to) = old_at.get(dj)
+                && free(dj)
+                && frame_wave_is_private(
+                    f,
+                    known,
+                    block_start,
+                    &total,
+                    (from as usize, to as usize),
+                    (off, 16),
+                    3,
+                )
+                && !(from as usize + 1..to as usize).any(|p| {
+                    let mut def = false;
+                    f.code[p].visit(&mut |r, role, _| def |= role == Role::Def && r.0 == time);
+                    def
+                })
+                && let Ok(driver) = u16::try_from(driver)
+                && let Ok(target) = u16::try_from(target)
+                && let Ok(time) = u16::try_from(time)
+                && let Ok(w) = u16::try_from(wave) =>
+            {
+                dropped.push((
+                    j,
+                    Op::ByteDrive {
+                        v,
+                        driver,
+                        target,
+                        time,
+                        size: FRAME_WAVE | 16,
+                        w,
+                        wd,
+                    },
+                    ops.len() as u32,
+                ));
+                remap[i] = ops.len() as u32;
+                i += 1;
+                continue;
             }
             (
                 Op::AffPL {

@@ -3179,6 +3179,45 @@ impl Machine {
             && c.assign_code_now(d.id, yavs_kernel::Range::new(s.off + v as u32, 1), code)
     }
 
+    /// `drive_code_now` for a byte signal (an integer, an enumeration, a real): the low bytes of
+    /// `x`, as a `Store` of width `wd` leaves them in the waveform, straight to the kernel's
+    /// fast case (`Ctx::assign_bytes_now`, which holds the skip test of a direct driver).
+    #[inline(always)]
+    fn drive_byte_now(
+        &mut self,
+        ctx: &mut Option<&mut Ctx<'_>>,
+        driver: u32,
+        target: Reg,
+        x: u64,
+        wd: Width,
+    ) -> bool {
+        let (v, len) = (self.r(target), self.r(Reg(target.0 + 1)));
+        if len != 1 || v >> 32 == MULTI {
+            return false;
+        }
+        let (Some(d), Some(s), Some(c)) = (
+            self.drivers.get(driver as usize),
+            self.inst.sigs.get((v >> 32) as usize),
+            ctx.as_deref_mut(),
+        ) else {
+            return false;
+        };
+        let x = match wd {
+            Width::B1 => x & 0xff,
+            Width::B4 => x & 0xffff_ffff,
+            _ => x,
+        };
+        let Elem::Bytes(es) = s.ty.elem else {
+            return false;
+        };
+        es <= 8
+            && c.assign_bytes_now(
+                d.id,
+                yavs_kernel::Range::new(s.off + v as u32, 1),
+                &x.to_le_bytes()[..es as usize],
+            )
+    }
+
     /// The drives of `run`, from the front, that change nothing: each is skipped as `LSetDrive`
     /// would skip it, with the registers its ops write set. Returns how many; the next one, or
     /// the whole run when the count is short or the process has no kernel, is left to its ops.
@@ -3301,7 +3340,8 @@ impl Machine {
         Ok(a)
     }
 
-    /// The `LSet` at IR pc `pc` and the `Drive` after it, as the IR has them.
+    /// The `LSet` or the value `Store` of a dropped waveform at IR pc `pc` and the `Drive` after
+    /// it, as the IR has them.
     #[cold]
     #[inline(never)]
     fn replay_lset_drive(
@@ -7024,6 +7064,37 @@ impl Machine {
                     if !done {
                         // Not a scalar logic signal (or a bad code): the instructions as the IR has them.
                         t!(self.waveform_head(size, time, w, e));
+                        self.replay_lset_drive(
+                            prog,
+                            f,
+                            code.at.get(k).copied().unwrap_or(0),
+                            top,
+                            ctx,
+                        )?;
+                    }
+                    k += 1;
+                    enter!();
+                }
+                Op::ByteDrive {
+                    v,
+                    driver,
+                    target,
+                    time,
+                    size,
+                    w,
+                    wd,
+                } => {
+                    if self.regs[time as usize] != 0
+                        || !self.drive_byte_now(
+                            ctx,
+                            driver.into(),
+                            Reg(target.into()),
+                            self.regs[v as usize],
+                            wd,
+                        )
+                    {
+                        // A delay, or not a lone byte signal: the instructions as the IR has them.
+                        t!(self.waveform_head(size, time, w, 0));
                         self.replay_lset_drive(
                             prog,
                             f,

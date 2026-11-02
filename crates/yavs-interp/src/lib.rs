@@ -1200,7 +1200,7 @@ pub const SHARED_TAG: u8 = heap::SHARED;
 /// element, `len` of them (0: read through [`TierHost::signal`]); the kernel signal and the
 /// first element's offset in it. The bytes change only while no process runs.
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TierSig {
     /// The address of the first code (an integer so a machine stays `Send`).
     pub codes: u64,

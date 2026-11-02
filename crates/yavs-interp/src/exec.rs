@@ -11278,6 +11278,51 @@ impl Host<'_, '_, '_> {
     }
 }
 
+/// The `TierFrame::sigtab` entry of instance signal `s`.
+fn tier_sig(c: &Ctx<'_>, s: &crate::InstSig) -> crate::TierSig {
+    let view = c.code_view(s.signal).filter(|_| s.ty.elem == Elem::Logic);
+    let stamps = c.event_view(s.signal).map_or(0, |p| p as u64);
+    let last = c
+        .last_view(s.signal)
+        .filter(|_| view.is_some())
+        .map_or(0, |p| p as u64);
+    let (planes, mut plen) = c
+        .planes_view(s.signal)
+        .filter(|_| s.ty.elem == Elem::Logic)
+        .map_or((0, 0), |(p, n)| {
+            (p as u64, n.saturating_sub(s.off as usize) as u64)
+        });
+    let (bytes, es) = match (s.ty.elem, c.bytes_view(s.signal)) {
+        (Elem::Bytes(w), Some((p, es, n))) if es == w as usize => {
+            plen = n.saturating_sub(s.off as usize) as u64;
+            (p as u64, es as u64)
+        }
+        _ => (0, 0),
+    };
+    let (codes, len, cap) = match view {
+        // The instance signal's own elements start at `s.off`.
+        Some((p, n)) if (s.off as usize) < n => (
+            p as u64 + u64::from(s.off),
+            (n - s.off as usize) as u64,
+            c.code_cap(s.signal).saturating_sub(s.off as usize) as u64,
+        ),
+        _ => (0, 0, 0),
+    };
+    crate::TierSig {
+        codes,
+        len,
+        signal: u64::from(s.signal.0),
+        off: u64::from(s.off),
+        cap,
+        stamps,
+        last,
+        planes,
+        plen,
+        bytes,
+        es,
+    }
+}
+
 impl crate::TierHost for Host<'_, '_, '_> {
     fn view(&mut self, tf: &mut crate::TierFrame) {
         self.m.tier_view(tf);
@@ -11299,55 +11344,17 @@ impl crate::TierHost for Host<'_, '_, '_> {
         tf.stop = c.interrupt_flags();
         tf.spin = &raw mut m.spin;
         if m.vc.tier_sigs.len() != m.vc.nsigs {
-            m.vc.tier_sigs = m
-                .inst
+            m.vc.tier_sigs = m.inst.sigs.iter().map(|s| tier_sig(c, s)).collect();
+        }
+        // A signal's form and addresses are fixed once the simulation is built.
+        debug_assert!(
+            m.inst
                 .sigs
                 .iter()
-                .map(|s| {
-                    let view = c.code_view(s.signal).filter(|_| s.ty.elem == Elem::Logic);
-                    let stamps = c.event_view(s.signal).map_or(0, |p| p as u64);
-                    let last = c
-                        .last_view(s.signal)
-                        .filter(|_| view.is_some())
-                        .map_or(0, |p| p as u64);
-                    let (planes, mut plen) = c
-                        .planes_view(s.signal)
-                        .filter(|_| s.ty.elem == Elem::Logic)
-                        .map_or((0, 0), |(p, n)| {
-                            (p as u64, n.saturating_sub(s.off as usize) as u64)
-                        });
-                    let (bytes, es) = match (s.ty.elem, c.bytes_view(s.signal)) {
-                        (Elem::Bytes(w), Some((p, es, n))) if es == w as usize => {
-                            plen = n.saturating_sub(s.off as usize) as u64;
-                            (p as u64, es as u64)
-                        }
-                        _ => (0, 0),
-                    };
-                    let (codes, len, cap) = match view {
-                        // The instance signal's own elements start at `s.off`.
-                        Some((p, n)) if (s.off as usize) < n => (
-                            p as u64 + u64::from(s.off),
-                            (n - s.off as usize) as u64,
-                            c.code_cap(s.signal).saturating_sub(s.off as usize) as u64,
-                        ),
-                        _ => (0, 0, 0),
-                    };
-                    crate::TierSig {
-                        codes,
-                        len,
-                        signal: u64::from(s.signal.0),
-                        off: u64::from(s.off),
-                        cap,
-                        stamps,
-                        last,
-                        planes,
-                        plen,
-                        bytes,
-                        es,
-                    }
-                })
-                .collect();
-        }
+                .zip(&m.vc.tier_sigs)
+                .all(|(s, t)| tier_sig(c, s) == *t),
+            "a signal's view changed during the run"
+        );
         tf.sigtab = m.vc.tier_sigs.as_ptr();
         tf.sigtab_len = m.vc.tier_sigs.len() as u64;
         tf.cycle = c.cycle();

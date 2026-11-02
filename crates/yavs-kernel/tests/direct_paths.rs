@@ -501,10 +501,11 @@ fn random_bytes(general: bool, seed: u64) -> Vec<String> {
                     if r.is_multiple_of(7) {
                         continue;
                     }
-                    if k == 0 {
-                        c.assign_bytes(d, None, ns(delay), &v.to_le_bytes(), mode)?;
-                    } else {
-                        c.assign_bytes(d, None, ns(delay), &[v as u8], mode)?;
+                    let (bytes, elem) = (v.to_le_bytes(), k.saturating_sub(1) as u32);
+                    let bytes = if k == 0 { &bytes[..] } else { &bytes[..1] };
+                    // The one-pass path of compiled drives, where it applies, else the general one.
+                    if !(delay == 0 && !general && c.assign_direct_bytes(d, elem, bytes)) {
+                        c.assign_bytes(d, None, ns(delay), bytes, mode)?;
                     }
                 }
                 c.report(

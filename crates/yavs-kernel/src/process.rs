@@ -2353,6 +2353,56 @@ impl Ctx<'_> {
         true
     }
 
+    /// One zero-delay element of direct byte driver `info` with nothing pending: skipped when the
+    /// signal and the driver hold `bytes` and nothing of this run is pending (the commit would
+    /// find no change, `Signal::commit_bytes`), else an `OutB` entry. A later assignment of the
+    /// run to the driver is another entry (the last one wins).
+    #[inline(always)]
+    fn direct_bytes_entry(&mut self, info: &DriverInfo, elem: u32, bytes: &[u8]) {
+        let sig = info.signal.0;
+        if !self.has_entries(info, 3)
+            && self.st.same_wanted(info.local)
+            && self.st.same_seen(
+                info.local,
+                self.sh.signals[sig as usize].direct_same_bytes(info.slot, elem, bytes),
+            )
+        {
+            self.note_skipped();
+            return;
+        }
+        self.mark_entries(info, 3);
+        self.st.act |= ACT_ASSIGNED;
+        self.st.outb.push(OutB {
+            sig,
+            slot: info.slot,
+            elem,
+            es: bytes.len() as u32,
+            val: pack8(bytes),
+        });
+    }
+
+    /// `assign_bytes_now` of one element for the usual case, an idle direct byte driver, in one
+    /// pass. False, nothing done, for anything else (`assign_bytes_fast` decides those).
+    #[inline(always)]
+    pub fn assign_direct_bytes(&mut self, d: DriverId, elem: u32, bytes: &[u8]) -> bool {
+        let n = bytes.len();
+        let Some(info) = self.sh.drivers.get(d.0 as usize) else {
+            return false;
+        };
+        if !info.bdirect
+            || info.owner != self.pid
+            || n == 0
+            || n > 8
+            || elem.wrapping_sub(info.range.offset) >= info.range.len
+            || !self.st.calm(info.local as usize)
+            || !matches!(self.sh.signals[info.signal.0 as usize].ty.elem, crate::value::Elem::Bytes(es) if es as usize == n)
+        {
+            return false;
+        }
+        self.direct_bytes_entry(info, elem, bytes);
+        true
+    }
+
     /// `assign_bytes` of one element with zero delay (transport or inertial without rejection):
     /// true when the usual fast case took it, false (nothing done) where `assign_bytes` must
     /// run, which also produces every error.
@@ -2489,29 +2539,7 @@ impl Ctx<'_> {
         let at = at.unwrap_or(now);
         if info.bdirect {
             if at == now {
-                // The signal and the driver hold the value and nothing of this run is pending:
-                // the commit would find no change (`Signal::commit_bytes`), so no entry.
-                if !self.has_entries(info, 3)
-                    && self.st.same_wanted(info.local)
-                    && self.st.same_seen(
-                        info.local,
-                        self.sh.signals[sig].direct_same_bytes(info.slot, r.offset, bytes),
-                    )
-                {
-                    self.note_skipped();
-                    return true;
-                }
-                // The commit writes it to the signal; a later assignment of the run to the driver
-                // is another entry (the last one wins), one that needs the waveform moves them.
-                self.mark_entries(info, 3);
-                self.st.act |= ACT_ASSIGNED;
-                self.st.outb.push(OutB {
-                    sig: sig as u32,
-                    slot: info.slot,
-                    elem: r.offset,
-                    es: n as u32,
-                    val: pack8(bytes),
-                });
+                self.direct_bytes_entry(info, r.offset, bytes);
                 return true;
             }
             // The entries commit at the end of the run, before this one: the general path

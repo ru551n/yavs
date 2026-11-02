@@ -1734,6 +1734,28 @@ fn prepare(
         pool_all: std::env::var("YAVS_POOL_ALL").is_ok_and(|v| v == "1"),
         // Under a token server the worker threads start with the first token (#879).
         lazy_pool,
+        // Hidden prototype switch (#1064): `YAVS_SETTLE_LIST=FILE` names the processes settle-phase
+        // deferral may leave to the next delta, one per line.
+        settle: std::env::var_os("YAVS_SETTLE_LIST")
+            .and_then(|f| std::fs::read_to_string(f).ok())
+            .filter(|_| a.threads <= 1 && !a.debugged() && a.vhpi.is_empty() && !cov_counters)
+            .map(|t| std::sync::Arc::new(t.lines().map(str::to_string).collect())),
+        // `YAVS_SETTLE_EXACT=FILE`: `signal offset length` per line, the parts the others see.
+        settle_exact: std::env::var_os("YAVS_SETTLE_EXACT")
+            .and_then(|f| std::fs::read_to_string(f).ok())
+            .map(|t| {
+                std::sync::Arc::new(
+                    (t.lines())
+                        .filter_map(|l| {
+                            let v: Vec<u32> = l
+                                .split_whitespace()
+                                .filter_map(|x| x.parse().ok())
+                                .collect();
+                            (v.len() == 3).then(|| (v[0], v[1], v[2]))
+                        })
+                        .collect(),
+                )
+            }),
     };
     if let Some(seed) = a.shuffle {
         out.emit(&none, &shuffle_note(seed));
@@ -2311,6 +2333,10 @@ fn run_design(
     let max = a.hang_report.unwrap_or(30);
     let r = loop {
         let r = sim.run_until(stop);
+        // Hidden measuring aid (#1064): `YAVS_SETTLE_CENSUS=FILE` writes the settle census.
+        if let Some(f) = std::env::var_os("YAVS_SETTLE_CENSUS") {
+            let _ = std::fs::write(f, sim.settle_census());
+        }
         if r.is_ok()
             && let Some(cfg) = &cfg_again
             && yavs_vhpi::reset_pending()

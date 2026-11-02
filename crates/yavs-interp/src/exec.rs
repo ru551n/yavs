@@ -2385,7 +2385,7 @@ impl Machine {
     }
 
     /// The memory object of space `sp` and index `idx`, for reading.
-    fn obj(&self, sp: u8, idx: u32) -> R<&[u8]> {
+    pub(crate) fn obj(&self, sp: u8, idx: u32) -> R<&[u8]> {
         Ok(match sp {
             FRAME => match &self.nwin {
                 Some(w) if (self.nwin_from..=self.nwin_to).contains(&(idx as usize)) => {

@@ -68,6 +68,11 @@ pub trait Process: Send {
         None
     }
 
+    /// Settle census lines (#1064, a measuring aid): `None` when the process does not say.
+    fn settle_census(&self) -> Option<Vec<String>> {
+        None
+    }
+
     /// The process is a clock generator (`ToggleProcess`): its driver and the delay it assigns
     /// the complement after. The kernel then re-arms the transaction itself when it matures
     /// (`SimControl::rearm`) and leaves the process suspended.
@@ -113,6 +118,10 @@ impl CopyProcess {
 }
 
 impl Process for CopyProcess {
+    fn settle_census(&self) -> Option<Vec<String>> {
+        Some(vec!["kernel copy delay=0".to_string()])
+    }
+
     fn run(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         let ty = |ctx: &Ctx<'_>, r: SigRef| {
             ctx.sh
@@ -355,6 +364,10 @@ impl GateProcess {
 }
 
 impl Process for GateProcess {
+    fn settle_census(&self) -> Option<Vec<String>> {
+        Some(vec![format!("kernel gate delay={}", self.delay.as_fs())])
+    }
+
     fn run(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         if self.len == 1 {
             let c = self.gate.code(self.a.code(ctx)?, self.b.code(ctx)?);
@@ -455,6 +468,13 @@ impl MuxProcess {
 }
 
 impl Process for MuxProcess {
+    fn settle_census(&self) -> Option<Vec<String>> {
+        Some(vec![format!(
+            "kernel mux delay={}",
+            self.delay[0].as_fs().max(self.delay[1].as_fs())
+        )])
+    }
+
     fn run(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         let sel = match &self.cond {
             Cond::Mask { sig, mask } => {
@@ -694,6 +714,13 @@ fn blocks<'a>(
 }
 
 impl Process for ProgProcess {
+    fn settle_census(&self) -> Option<Vec<String>> {
+        Some(vec![format!(
+            "kernel prog delay={}",
+            self.arms.iter().map(|a| a.delay.as_fs()).max().unwrap_or(0)
+        )])
+    }
+
     fn run(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         for ai in 0..self.arms.len() {
             let arm = &self.arms[ai];
@@ -787,6 +814,10 @@ impl ToggleProcess {
 }
 
 impl Process for ToggleProcess {
+    fn settle_census(&self) -> Option<Vec<String>> {
+        Some(vec!["kernel toggle delay=1".to_string()])
+    }
+
     fn generator(&self) -> Option<(DriverId, Time)> {
         Some((self.driver, self.delay))
     }

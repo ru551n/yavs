@@ -96,6 +96,13 @@ pub struct Config {
     /// With `threads` above 1, start the worker threads when a token first lets a batch use them
     /// (`set_tokens`), not at the start: a run that never holds a token creates none (#879).
     pub lazy_pool: bool,
+    /// Settle-phase deferral prototype (#1064): the processes that may be left to the next delta
+    /// while a signal they wait on has a change pending, by name, in the order to run them.
+    pub settle: Option<std::sync::Arc<Vec<String>>>,
+    /// With `settle`: the signal parts (signal, offset, length) whose every value the processes
+    /// that are not deferred may see. When none of them has a change pending after those
+    /// processes ran, a batch that holds both kinds may defer too.
+    pub settle_exact: Option<std::sync::Arc<Vec<(u32, u32, u32)>>>,
 }
 
 impl Default for Config {
@@ -113,6 +120,8 @@ impl Default for Config {
             cells: true,
             pool_all: false,
             lazy_pool: false,
+            settle: None,
+            settle_exact: None,
         }
     }
 }
@@ -215,6 +224,8 @@ pub struct Stats {
     /// Activations of clocked processes skipped (or, with `Config::idle_check`, checked) because
     /// none of the signals they read had an event since the last one.
     pub idle_skips: u64,
+    /// Settle-phase deferral prototype (#1064): runs left to the next delta.
+    pub settle_defers: u64,
     /// Signals of more than 64 elements that keep only each block's last event
     /// (`Builder::lean_events`); fixed when the model is built.
     pub lean_signals: u64,
@@ -1026,6 +1037,8 @@ pub struct SimControl {
     /// Per signal, the processes of `idle_ok` that read it: `readers[readers_start[s]..
     /// readers_start[s + 1]]` (empty without such a process).
     readers_start: Vec<u32>,
+    /// Settle prototype (#1064): per process its rank in `Config::settle`, `u32::MAX` if absent.
+    settle_rank: Vec<u32>,
     /// Per process: a signal it reads had an event since its last activation (`Builder::idle_skip`;
     /// a dense array, the readers' loop of every event touches one byte per reader).
     armed: Vec<bool>,
@@ -1416,7 +1429,23 @@ impl SimControl {
         } else {
             (Vec::new(), Vec::new())
         };
+        // Settle prototype: one thread, no postponed process (the delta it runs in shows).
+        let settle_rank = match &cfg.settle {
+            Some(list) if cfg.threads <= 1 && !procs.iter().any(|m| m.flags.postponed) => {
+                let rank: HashMap<&str, u32> = list
+                    .iter()
+                    .enumerate()
+                    .map(|(i, n)| (n.as_str(), i as u32))
+                    .collect();
+                names
+                    .iter()
+                    .map(|n| rank.get(n.as_str()).copied().unwrap_or(u32::MAX))
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
         let mut sim = SimControl {
+            settle_rank,
             guard_procs,
             guard_readers,
             guard_due: Vec::new(),
@@ -1818,6 +1847,79 @@ impl SimControl {
     }
 
     /// Runs `f` on process `p`, between cycles, when every process is suspended (a debugger stop).
+    /// Settle census (#1064, a measuring aid): per process its kernel facts and what the process
+    /// says about one activation (`Process::settle_census`).
+    pub fn settle_census(&mut self) -> String {
+        use std::fmt::Write as _;
+        let mut o = String::new();
+        for p in 0..self.slots.len() {
+            let m = &self.procs[p];
+            let slot = slot_mut(&mut self.slots[p]);
+            let _ = writeln!(
+                o,
+                "P {p} trig={} idle={} postponed={} serial={} several={} {}",
+                u8::from(m.trigger.is_some()),
+                u8::from(m.idle_static),
+                u8::from(m.flags.postponed),
+                u8::from(m.flags.serial || slot.process.serial()),
+                u8::from(m.flags.several_waits || slot.process.several_waits()),
+                self.names[p]
+            );
+            for (s, r) in &slot.st.sens_prev {
+                let _ = writeln!(o, "  sens {} {} {}", s.0, r.offset, r.len);
+            }
+            for d in self.drivers.iter().filter(|d| d.owner.0 as usize == p) {
+                let _ = writeln!(
+                    o,
+                    "  driver {} {} {}",
+                    d.signal.0, d.range.offset, d.range.len
+                );
+            }
+            for l in slot
+                .process
+                .settle_census()
+                .unwrap_or_else(|| vec!["opaque".to_string()])
+            {
+                let _ = writeln!(o, "  {l}");
+            }
+        }
+        for s in 0..self.readers_start.len().saturating_sub(1) {
+            let (a, b) = (
+                self.readers_start[s] as usize,
+                self.readers_start[s + 1] as usize,
+            );
+            for r in &self.readers[a..b] {
+                let _ = writeln!(
+                    o,
+                    "I {} {s} {} {} {}",
+                    r.p,
+                    r.r.offset,
+                    r.r.len,
+                    u8::from(r.g != NO_GUARD)
+                );
+            }
+        }
+        for e in &self.ports {
+            let parts = |v: &[(SignalId, Range)]| {
+                v.iter()
+                    .map(|(s, r)| format!("{}:{}:{}", s.0, r.offset, r.len))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+            let _ = writeln!(
+                o,
+                "E {:?} {} {}",
+                e.mode,
+                parts(&e.formal),
+                parts(&e.actual)
+            );
+        }
+        for (s, sig) in self.signals.iter().enumerate() {
+            let _ = writeln!(o, "S {s} {} {}", sig.ty.len, sig.name);
+        }
+        o
+    }
+
     pub fn with_process(&self, p: ProcId, f: &mut dyn FnMut(&mut dyn Process)) -> bool {
         let Some(slot) = self.slots.get(p.0 as usize) else {
             return false;
@@ -2568,6 +2670,9 @@ impl SimControl {
         if !self.fwd.is_empty() && !ready.is_empty() && self.delta + 1 < self.cfg.max_deltas {
             self.forward_copies(&mut ready);
         }
+        if self.settle_ok(&ready) {
+            return self.settle_batch(ready);
+        }
         if ready.is_empty() {
             // Nothing resumed (the falling edge of a clock, a transaction nobody waits for):
             // the batch would only commit the direct entries there are none of, and note that
@@ -2590,6 +2695,69 @@ impl SimControl {
         }
         self.phase(Phase::EndOfProcesses);
 
+        self.last_delta()
+    }
+
+    /// Settle prototype (#1064): every process of the batch may be deferred, and the delta is
+    /// early in the time step and far from the delta limit.
+    fn settle_ok(&self, ready: &[u32]) -> bool {
+        let listed = |p: &u32| {
+            self.settle_rank[*p as usize] != u32::MAX && self.procs[*p as usize].perm != 0
+        };
+        !self.settle_rank.is_empty()
+            && ready.len() > 1
+            && if self.cfg.settle_exact.is_some() {
+                ready.iter().any(listed)
+            } else {
+                ready.iter().all(listed)
+            }
+            && self.delta < 32
+            && self.delta + 64 < self.cfg.max_deltas
+            && self.rng.is_none()
+            && self.ops.is_empty()
+            && !self.watch_changes
+    }
+
+    /// Run the batch one process at a time in list order; a process one of whose resident
+    /// waits has a real change pending for the next delta is left to it (it wakes then).
+    fn settle_batch(&mut self, ready: Vec<u32>) -> Result<(), SimError> {
+        let mut ran = Vec::with_capacity(ready.len());
+        let listed = |s: &Self, p: u32| {
+            s.settle_rank[p as usize] != u32::MAX && s.procs[p as usize].perm != 0
+        };
+        // The others first, in batch order; then whether the values they wake on are settled.
+        let (mut defer, others): (Vec<u32>, Vec<u32>) =
+            ready.iter().partition(|&&p| listed(self, p));
+        for &p in &others {
+            self.run_one(p, vec![p])?;
+            ran.push(p);
+        }
+        let quiet = others.is_empty()
+            || self.queue.next_delta.is_empty()
+                && self.cfg.settle_exact.as_ref().is_some_and(|ex| {
+                    ex.iter().all(|&(s, o, l)| {
+                        !self.signals[s as usize].pending_change(Range::new(o, l))
+                    })
+                });
+        defer.sort_by_key(|&p| self.settle_rank[p as usize]);
+        for &p in &defer {
+            let pending = quiet && {
+                let st = &slot_mut(&mut self.slots[p as usize]).st;
+                st.sens_prev
+                    .iter()
+                    .any(|&(s, r)| self.signals[s.0 as usize].pending_change(r))
+            };
+            if pending {
+                self.procs[p as usize].ready = false;
+                self.stats.settle_defers += 1;
+                continue;
+            }
+            self.run_one(p, vec![p])?;
+            ran.push(p);
+        }
+        self.batch_mono = false;
+        self.last_ran = ran;
+        self.phase(Phase::EndOfProcesses);
         self.last_delta()
     }
 

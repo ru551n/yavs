@@ -1435,6 +1435,23 @@ impl Signal {
 
     /// Something besides direct transactions is left to finish (`finish_signal`).
     #[inline(always)]
+    /// Settle prototype (#1064): the sole-source commit of this cycle left a driving value on
+    /// part of `r` that differs from the current one, so the next update changes it there.
+    pub(crate) fn pending_change(&self, r: Range) -> bool {
+        if !self.lag || self.exact || self.force_eff.is_some() || self.force_drv.is_some() {
+            return false;
+        }
+        let (mut o, end) = (r.offset as usize, (r.offset + r.len) as usize);
+        while o < end {
+            let k = (end - o).min(64);
+            if self.cur.diff_chunk(o, &self.driving, o, k) != 0 {
+                return true;
+            }
+            o += k;
+        }
+        false
+    }
+
     pub fn unfinished(&self) -> bool {
         !self.dirty.is_empty() || !self.fast_dirty.is_empty() || self.fuse_n != 0
     }

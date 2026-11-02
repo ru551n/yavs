@@ -23,6 +23,7 @@ mod gather;
 mod pmemo;
 mod pre;
 mod scan;
+mod settle;
 pub use eloop::{ElemLoop, elem_loops};
 pub use foreign::{
     ForeignBinder, ForeignModel, ModelArg, ModelCall, ModelSignal, ModelTxn, ScalarKind,
@@ -2430,6 +2431,10 @@ impl Process for InterpProcess {
 
     fn wait_stmt(&self) -> Option<u32> {
         self.m.suspended_at().map(|s| s.0)
+    }
+
+    fn settle_census(&self) -> Option<Vec<String>> {
+        Some(crate::settle::census(&self.m))
     }
 
     fn as_any(&mut self) -> Option<&mut dyn std::any::Any> {

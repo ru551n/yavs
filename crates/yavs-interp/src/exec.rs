@@ -1107,6 +1107,24 @@ fn plane_words_at(b: &[u8], at: usize) -> [u64; 4] {
     plane_words(&b[at..at + 32])
 }
 
+type BlockFn = fn([u64; 4], [u64; 4]) -> [u64; 4];
+
+/// The block function of a two-operand gate or `not` (`LogicOp` of one block); the others take
+/// the vector path.
+pub(crate) fn block_gate(op: LOp) -> Option<BlockFn> {
+    use yavs_logic::{BinOp, Planes};
+    Some(match op {
+        LOp::And => |x, y| Planes::bin_block(BinOp::And, x, y),
+        LOp::Or => |x, y| Planes::bin_block(BinOp::Or, x, y),
+        LOp::Xor => |x, y| Planes::bin_block(BinOp::Xor, x, y),
+        LOp::Nand => |x, y| Planes::not_block(Planes::bin_block(BinOp::And, x, y)),
+        LOp::Nor => |x, y| Planes::not_block(Planes::bin_block(BinOp::Or, x, y)),
+        LOp::Xnor => |x, y| Planes::not_block(Planes::bin_block(BinOp::Xor, x, y)),
+        LOp::Not => |x, _| Planes::not_block(x),
+        _ => return None,
+    })
+}
+
 /// The four plane words of the block `b` (32 bytes).
 #[inline(always)]
 fn plane_words(b: &[u8]) -> [u64; 4] {
@@ -7077,6 +7095,11 @@ impl Machine {
                     k += 1;
                     enter!();
                 }
+                Op::LogicGate { op, dst, a, b, n } => {
+                    let n = self.regs[n as usize];
+                    t!(self.logic_blocks(op, Reg(dst), Reg(a), Reg(b), n));
+                    k += 1;
+                }
                 Op::WaitOn { sig } => {
                     t!(self.wait_on(Reg(sig), ctx));
                     k += 1;
@@ -8406,6 +8429,32 @@ impl Machine {
 
     /// `Op::LCopy`, out of line.
     #[inline(never)]
+    /// `Inst::LogicOp` of a gate or `not` of `n` elements, block by block in place with no
+    /// vectors built; `false` for the other operations, which take the vector path.
+    pub(crate) fn logic_blocks(&mut self, op: LOp, dst: Reg, a: Reg, b: Reg, n: u64) -> R<bool> {
+        let Some(f) = block_gate(op).filter(|_| n > 0) else {
+            return Ok(false);
+        };
+        // (`b` of a unary op is any register: never read.)
+        let unary = op == LOp::Not;
+        let (pa, pb, pd) = (self.r(a), self.r(b), self.r(dst));
+        for (i, k) in (0..n.div_ceil(64)).zip((0..).step_by(32)) {
+            let x = plane_words(self.rd_hot(add_addr(pa, k)?, 32)?);
+            let y = if unary {
+                x
+            } else {
+                plane_words(self.rd_hot(add_addr(pb, k)?, 32)?)
+            };
+            let m = yavs_logic::wide::nmask((n - 64 * i).min(64) as usize);
+            let v = f(x, y).map(|w| w & m);
+            let out = self.wr(add_addr(pd, k)?, 32)?;
+            for (c, w) in out.as_chunks_mut::<8>().0.iter_mut().zip(v) {
+                *c = w.to_le_bytes();
+            }
+        }
+        Ok(true)
+    }
+
     fn op_lcopy(&mut self, dst: u32, doff: u32, src: u32, soff: u32, n: u32) -> R<()> {
         self.lcopy(
             self.regs[dst as usize],
@@ -10307,6 +10356,9 @@ impl Machine {
             }
             Inst::LogicOp { op, dst, a, b, n } => {
                 let n = self.r(n);
+                if self.logic_blocks(op, dst, a, b, n)? {
+                    return Ok(Flow::Next);
+                }
                 let x = self.planes(self.r(a), n)?;
                 let unary = matches!(op, LOp::Not | LOp::ToX01 | LOp::ToX01Z | LOp::ToUx01);
                 let y = if unary {

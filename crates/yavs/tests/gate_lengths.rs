@@ -1,7 +1,8 @@
 //! The result length of a gate of two vectors (`and`..`xnor`, `not`, `to_x01`) is a fact the
 //! optimiser folds the target's length check with only when the operand lengths are proven equal
 //! (#1063). A target of another length, operands of different lengths, and lengths a generic
-//! decides per instance still fail at the statement, with the same message, in every tier.
+//! decides per instance still fail at the statement, with the same message, in every tier. A gate
+//! of equal known lengths is a `LogicOp` (no native call): every element equals the scalar gate.
 
 mod common;
 use common::tempdir;
@@ -46,6 +47,44 @@ entity gl_gen is end;
 architecture a of gl_gen is begin
   ok: entity work.gl_gen_u generic map (W => 8);
   bad: entity work.gl_gen_u generic map (W => 9);
+end;
+library ieee; use ieee.std_logic_1164.all;
+entity gl_table is end;
+architecture a of gl_table is
+  signal clk : std_ulogic := '0';
+begin
+  clk <= not clk after 5 ns;
+  -- Every pair of the nine values, in one block (9 elements) and over two (81): each element of a
+  -- vector gate equals the scalar gate of its elements.
+  process (clk)
+    constant V : std_ulogic_vector(0 to 8) := "UX01ZWLH-";
+    variable a, b, r : std_ulogic_vector(0 to 80);
+    variable s, t, q : std_ulogic_vector(0 to 8);
+    variable bv : bit_vector(0 to 9) := "0110100110";
+    variable n : natural := 0;
+  begin
+    if rising_edge(clk) then
+      n := n + 1;
+      for i in 0 to 80 loop a(i) := V(i / 9); b(i) := V(i mod 9); end loop;
+      s := V; t := V(4 to 8) & V(0 to 3);
+      r := a and b; for i in r'range loop assert r(i) = (a(i) and b(i)) report "and" severity failure; end loop;
+      r := a nand b; for i in r'range loop assert r(i) = (a(i) nand b(i)) report "nand" severity failure; end loop;
+      r := a or b; for i in r'range loop assert r(i) = (a(i) or b(i)) report "or" severity failure; end loop;
+      r := a nor b; for i in r'range loop assert r(i) = (a(i) nor b(i)) report "nor" severity failure; end loop;
+      r := a xor b; for i in r'range loop assert r(i) = (a(i) xor b(i)) report "xor" severity failure; end loop;
+      r := a xnor b; for i in r'range loop assert r(i) = (a(i) xnor b(i)) report "xnor" severity failure; end loop;
+      r := not a; for i in r'range loop assert r(i) = not a(i) report "not" severity failure; end loop;
+      r := to_x01(b); for i in r'range loop assert r(i) = to_x01(b(i)) report "to_x01" severity failure; end loop;
+      r := to_x01z(b); for i in r'range loop assert r(i) = to_x01z(b(i)) report "to_x01z" severity failure; end loop;
+      r := to_ux01(b); for i in r'range loop assert r(i) = to_ux01(b(i)) report "to_ux01" severity failure; end loop;
+      q := s xor t; for i in q'range loop assert q(i) = (s(i) xor t(i)) report "xor 9" severity failure; end loop;
+      q := s nor t; for i in q'range loop assert q(i) = (s(i) nor t(i)) report "nor 9" severity failure; end loop;
+      q := not t; for i in q'range loop assert q(i) = not t(i) report "not 9" severity failure; end loop;
+      -- A `not` of the lowering's own (an implicit operator), whose second operand is no array.
+      bv := not bv; assert bv = "1001011001" report "bit not" severity failure; bv := not bv;
+      if n = 3 then report "table ok"; std.env.finish; end if;
+    end if;
+  end process;
 end;
 library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
 entity gl_ok is end;
@@ -128,6 +167,11 @@ fn gate_lengths_still_fail_and_equal_ones_compute() {
                 assert!(e.contains(&format!("g.vhd:{line}:")), "{top} {tier:?}: {e}");
             }
         }
+        let o = run("gl_table");
+        let e =
+            String::from_utf8_lossy(&o.stderr).into_owned() + &String::from_utf8_lossy(&o.stdout);
+        assert_eq!(o.status.code(), Some(0), "gl_table {tier:?}: {e}");
+        assert!(e.contains("table ok"), "gl_table {tier:?}: {e}");
         let o = run("gl_ok");
         let e =
             String::from_utf8_lossy(&o.stderr).into_owned() + &String::from_utf8_lossy(&o.stdout);

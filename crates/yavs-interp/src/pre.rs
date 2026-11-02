@@ -1138,6 +1138,14 @@ pub(crate) enum Op {
         native: u32,
         start: u32,
     },
+    /// `Inst::LogicOp` of a gate or `not` (`Machine::logic_blocks`).
+    LogicGate {
+        op: yavs_ir::LOp,
+        dst: u32,
+        a: u32,
+        b: u32,
+        n: u32,
+    },
     /// Scalar `not` of a `std_ulogic`.
     NotL {
         dst: u32,
@@ -5032,6 +5040,15 @@ impl Code {
                     a: a.0,
                     b: b.0,
                 },
+                Inst::LogicOp { op, dst, a, b, n } if crate::exec::block_gate(op).is_some() => {
+                    Op::LogicGate {
+                        op,
+                        dst: dst.0,
+                        a: a.0,
+                        b: b.0,
+                        n: n.0,
+                    }
+                }
                 Inst::LCopy {
                     dst,
                     dst_off,

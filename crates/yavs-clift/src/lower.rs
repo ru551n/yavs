@@ -5834,6 +5834,44 @@ impl Gen<'_> {
             op,
             yavs_ir::LOp::Not | yavs_ir::LOp::ToX01 | yavs_ir::LOp::ToUx01
         );
+        // One block of a known count: straight code, the mask a constant.
+        if let Some(k) = self.kint(n).filter(|k| (1..=64).contains(k)) {
+            let av = self.ld(a);
+            let pa = self.host(av, Some(a), Op::C(0), Op::C(32), false, slow);
+            let pb = if unary {
+                pa
+            } else {
+                let bv = self.ld(b);
+                self.host(bv, Some(b), Op::C(0), Op::C(32), false, slow)
+            };
+            let dv = self.ld(dst);
+            let pd = self.host(dv, Some(dst), Op::C(0), Op::C(32), true, slow);
+            let gf = self.gf;
+            let zero = self.c64(0);
+            let (mut x, mut y) = ([zero; 4], [zero; 4]);
+            for j in 0..4 {
+                x[j] = self.b.ins().load(I64, gf, pa, j as i32 * 8);
+                y[j] = if unary {
+                    x[j]
+                } else {
+                    self.b.ins().load(I64, gf, pb, j as i32 * 8)
+                };
+            }
+            let r = self.logic_block(op, x, y);
+            let mask = (u64::MAX >> (64 - k)) as i64;
+            for (j, w) in r.into_iter().take(2).enumerate() {
+                let w = if k == 64 {
+                    w
+                } else {
+                    self.b.ins().band_imm_s(w, mask)
+                };
+                self.b.ins().store(gf, w, pd, j as i32 * 8);
+            }
+            self.b.ins().store(gf, zero, pd, 16);
+            self.b.ins().store(gf, zero, pd, 24);
+            self.join(join);
+            return;
+        }
         let cnt = self.ld(n);
         let small = self
             .b

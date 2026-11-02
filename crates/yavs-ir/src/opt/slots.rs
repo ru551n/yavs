@@ -536,6 +536,21 @@ fn scan_block(
                                 }
                                 end_fresh(c);
                             }
+                            // Every block of planes written (the bits past the length zero).
+                            Inst::LogicOp { op, dst, a, b, n }
+                                if own(owner.get(&dst))
+                                    && !owner.contains_key(&a)
+                                    && (unary_lop(op) || !owner.contains_key(&b))
+                                    && off.get(&dst) == Some(&0)
+                                    && konst_of(&cv, n).is_some_and(|n| {
+                                        n > 0 && (n as u64).div_ceil(64) * 32 >= u64::from(c.size)
+                                    }) =>
+                            {
+                                if c.fresh {
+                                    c.covered = full(c.size);
+                                }
+                                end_fresh(c);
+                            }
                             _ if u.pure_derive => {}
                             _ => end_fresh(c),
                         }
@@ -679,6 +694,12 @@ fn live_out(prog: &Program, f: &crate::Func, tracked: &[Reg]) -> Option<Vec<Vec<
         }
     }
     Some(live)
+}
+
+/// A `LogicOp` that reads `a` only (`b` names any register).
+fn unary_lop(op: crate::LOp) -> bool {
+    use crate::LOp::*;
+    matches!(op, Not | ToX01 | ToX01Z | ToUx01)
 }
 
 fn local_bit(local: &[usize], g: usize) -> usize {

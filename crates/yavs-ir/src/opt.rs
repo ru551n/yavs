@@ -1776,6 +1776,12 @@ impl<'a> Opt<'a> {
         self.drop_clean_roots();
         // (Temporaries nothing reads are gone before the markers that free them are judged.)
         self.dce();
+        if self.has_gate_native() {
+            self.reanalyse();
+            if self.gate_results() {
+                self.dce();
+            }
+        }
         self.drop_statements();
         self.merge_consts();
         self.dce();
@@ -1785,6 +1791,129 @@ impl<'a> Opt<'a> {
             self.defaults_first();
             self.dce();
         }
+    }
+
+    /// The `LogicOp` of a gate native (`std_logic_1164` or `numeric_std` gates, `not`, the `to_x01`
+    /// family on vectors), or `None`.
+    fn gate_op(&self, native: crate::NativeId) -> Option<LOp> {
+        use crate::ieee::{Gate, Op};
+        let key = crate::ieee::symbol_key(&self.prog.natives.get(native)?.symbol)?;
+        let gate = |g| match g {
+            Gate::And => LOp::And,
+            Gate::Nand => LOp::Nand,
+            Gate::Or => LOp::Or,
+            Gate::Nor => LOp::Nor,
+            Gate::Xor => LOp::Xor,
+            Gate::Xnor => LOp::Xnor,
+        };
+        Some(match crate::ieee::parse(key)? {
+            Op::VecGate(g) | Op::NumGate(g) => gate(g),
+            Op::VecNot | Op::NumNot => LOp::Not,
+            Op::Conv(0, true) => LOp::ToX01,
+            Op::Conv(1, true) => LOp::ToX01Z,
+            Op::Conv(_, true) => LOp::ToUx01,
+            _ => return None,
+        })
+    }
+
+    /// A scan: is there a call of a gate native at all (`gate_results` needs fresh tables)?
+    fn has_gate_native(&self) -> bool {
+        self.code.iter().any(|i| {
+            matches!(*i, Inst::CallNative { native, dst: Some(_), .. }
+                if self.gate_op(native).is_some())
+        })
+    }
+
+    /// A gate native of operands of known, equal lengths whose result only the read of its data
+    /// takes (its bounds are read nowhere: the checks of them folded) is a `LogicOp` into a block
+    /// of its own (#1063): no fat pair, no descriptor, the same elements, and nothing the native
+    /// could report (lengths that differ keep the call).
+    fn gate_results(&mut self) -> bool {
+        let reads = |s: &Self, i: &Inst, r: Reg| {
+            let mut hit = false;
+            i.visit(&mut |x, role, _| hit |= role == Role::Use && x == r);
+            if let Some(l) = i.list() {
+                hit |= s
+                    .operands
+                    .get(l.start as usize..(l.start + l.len) as usize)
+                    .is_some_and(|rs| rs.contains(&r));
+            }
+            hit
+        };
+        let mut done = false;
+        for b in 0..self.blocks.len() {
+            for pc in self.range(b) {
+                let Inst::CallNative {
+                    native,
+                    args,
+                    dst: Some(p),
+                } = self.code[pc]
+                else {
+                    continue;
+                };
+                let Some(op) = self.gate_op(native) else {
+                    continue;
+                };
+                let Some(rs) = self
+                    .operands
+                    .get(args.start as usize..(args.start + args.len) as usize)
+                    .map(<[Reg]>::to_vec)
+                else {
+                    continue;
+                };
+                let alen = |s: &Self, a: &[Reg]| match (s.opn(a[1]), s.opn(a[2]), s.opn(a[3])) {
+                    (Opn::K(l), Opn::K(r), Opn::K(d)) => {
+                        dim_len(l, r, d == 1).filter(|&n| (1..1 << 31).contains(&n))
+                    }
+                    _ => None,
+                };
+                let unary = matches!(op, LOp::Not | LOp::ToX01 | LOp::ToX01Z | LOp::ToUx01);
+                let want = if unary { 4 } else { 8 };
+                if rs.len() != want {
+                    continue;
+                }
+                let Some(n) = alen(self, &rs[..4]) else {
+                    continue;
+                };
+                if !unary && alen(self, &rs[4..]) != Some(n) {
+                    continue;
+                }
+                if !self.single(p) {
+                    continue;
+                }
+                // One reader, in this block: the load of the data pointer.
+                let mut readers = (0..self.code.len()).filter(|&q| reads(self, &self.code[q], p));
+                let (Some(lpc), None) = (readers.next(), readers.next()) else {
+                    continue;
+                };
+                let Inst::Load {
+                    dst: x,
+                    w: Width::B8,
+                    ..
+                } = self.code[lpc]
+                else {
+                    continue;
+                };
+                if !self.range(b).contains(&lpc) || lpc < pc || !self.single(x) {
+                    continue;
+                }
+                let size = self.const_reg(b, pc, (n.div_ceil(64) * 32) as i64);
+                let q = self.fresh(RegTy::Ptr, 1);
+                self.inserts.push((pc, Inst::Alloc { dst: q, size }));
+                let cnt = self.const_reg(b, pc, n as i64);
+                self.code[pc] = Inst::LogicOp {
+                    op,
+                    dst: q,
+                    a: rs[0],
+                    b: if unary { rs[0] } else { rs[4] },
+                    n: cnt,
+                };
+                self.code[lpc] = Inst::Move { dst: x, src: q };
+                self.changed = true;
+                done = true;
+            }
+        }
+        done
     }
 
     /// Does the code make an object of a constant size of 4 KiB or more from a copy (`New`,

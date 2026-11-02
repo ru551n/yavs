@@ -143,9 +143,9 @@ impl Images {
                     for t in g {
                         write_item(sig, t, &mut bytes);
                     }
-                    // The runs of every change, exact: cost follows the leaves that changed.
+                    // The changes listed, as their cover when no waiter wants them exact: exact
+                    // runs cost every waiter scan of a record that changes in many places.
                     sig.watched = true;
-                    sig.fine = true;
                     let w = g[0].sig.0 as usize / 64;
                     if self.has.len() <= w {
                         self.has.resize(w + 1, 0);

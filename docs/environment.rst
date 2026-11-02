@@ -279,6 +279,11 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - not ``0``
      - unset
      - ``run``
+   * - ``YAVS_NO_FACTS``
+     - Specialised copies are made without facts about the instance's signals (a measuring aid).
+     - any value
+     - unset
+     - ``run``
    * - ``YAVS_NO_SPEC``
      - Turns per-instance copies of process code off.
      - not ``0``

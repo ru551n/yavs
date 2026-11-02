@@ -2451,7 +2451,7 @@ impl Process for InterpProcess {
             // Started, running, no shared state, no debugger: the activation of a process.
             self.m.execs += 1;
             if self.m.execs == u64::from(self.m.spec_at) {
-                self.m.specialise();
+                self.m.specialise(Some(&*ctx));
             }
             if let Err(e) = self.m.borrow_scratch() {
                 return Err(self.m.error(e, Some(ctx)));
@@ -2544,7 +2544,7 @@ impl InterpProcess {
     fn exec(&mut self, ctx: Option<&mut Ctx<'_>>) -> Result<Outcome, Fault> {
         self.m.execs += 1;
         if self.m.execs == u64::from(self.m.spec_at) {
-            self.m.specialise();
+            self.m.specialise(ctx.as_deref());
         }
         let shared = self.shared.clone();
         let mut guard = match &shared {

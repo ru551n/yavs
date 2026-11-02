@@ -1716,7 +1716,7 @@ impl Machine {
     /// exists (the tier decides what to compile) or the copy cannot be had.
     #[cold]
     #[inline(never)]
-    pub(crate) fn specialise(&mut self) {
+    pub(crate) fn specialise(&mut self, c: Option<&Ctx<'_>>) {
         if self.spec.is_some() && self.execs < crate::spec_after() {
             if let Some(n) = self.rt.native.resumed.get(self.entry.0 as usize) {
                 n.store(true, Ordering::Relaxed);
@@ -1751,7 +1751,8 @@ impl Machine {
                 return;
             }
         }
-        let Ok(id) = prog.copy_of_pkgs(base, &self.inst.data, &holes, &*rt) else {
+        let facts = self.inst_facts(c);
+        let Ok(id) = prog.copy_of_pkgs(base, &self.inst.data, &holes, &*rt, facts) else {
             return;
         };
         let (Some(old), Some(new), Some(raw)) = (prog.func(base), prog.func(id), prog.raw(base))
@@ -1835,6 +1836,26 @@ impl Machine {
                 }
             }
         }
+    }
+
+    /// The facts of this instance for a tier that compiles copies (`YAVS_NO_FACTS=1`: none): the
+    /// other tiers have no use for them, and they would only split copies.
+    fn inst_facts(&self, c: Option<&Ctx<'_>>) -> yavs_ir::InstFacts {
+        static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let off = *OFF.get_or_init(|| std::env::var_os("YAVS_NO_FACTS").is_some());
+        let Some(c) = c.filter(|_| !off && self.rt.tier.get().is_some_and(|t| t.compiles_copies()))
+        else {
+            return yavs_ir::InstFacts::default();
+        };
+        let sigs = self.rt.prog.sig_uses(self.entry);
+        yavs_ir::InstFacts::new(
+            sigs.iter()
+                .filter_map(|&i| {
+                    let s = self.inst.sigs.get(i as usize)?;
+                    Some((i, sig_fact(s, &tier_sig(c, s))?))
+                })
+                .collect(),
+        )
     }
 
     /// After the root frame is entered: a small process keeps its working vectors
@@ -11276,6 +11297,22 @@ impl Host<'_, '_, '_> {
         tf.kctx = (c as *mut Ctx<'_>).cast();
         self.m.view_root(tf, c)
     }
+}
+
+/// The form of instance signal `s` as a fact; none when its table entry `t` does not cover the
+/// elements of the instance signal.
+fn sig_fact(s: &crate::InstSig, t: &crate::TierSig) -> Option<yavs_ir::SigFact> {
+    let len = u64::from(s.ty.len);
+    let covers = (t.codes == 0 || t.len >= len) && (t.planes == 0 && t.bytes == 0 || t.plen >= len);
+    debug_assert!(covers, "the table does not cover signal {:?}", s.signal);
+    covers.then_some(yavs_ir::SigFact {
+        codes: t.codes != 0,
+        planes: t.planes != 0,
+        stamps: t.stamps != 0,
+        last: t.last != 0,
+        es: u8::try_from(t.es).ok()?,
+        len: s.ty.len,
+    })
 }
 
 /// The `TierFrame::sigtab` entry of instance signal `s`.

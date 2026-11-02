@@ -133,6 +133,41 @@ fn nothing_is_stored_for_the_slots() {
     assert!(p.export_optimized().iter().all(|c| c.func == f));
 }
 
+/// Other facts about the instance's signals are another copy of the same code, with a tag of its
+/// own; equal facts share one.
+#[test]
+fn a_copy_is_per_data_and_facts() {
+    if !yavs_ir::opt::specialise_on() {
+        return;
+    }
+    let fact = |codes| yavs_ir::SigFact {
+        codes,
+        planes: true,
+        stamps: true,
+        last: codes,
+        es: 0,
+        len: 1,
+    };
+    let facts = |codes| yavs_ir::InstFacts::new(vec![(0, fact(codes))]);
+    let (mut p, f) = process();
+    p.reserve_copies(3);
+    let d = data(3, 0);
+    let copy = |codes| {
+        p.copy_of_pkgs(f, &d, &[], &NoPkgs, facts(codes))
+            .expect("a copy")
+    };
+    let (a, b) = (copy(true), copy(false));
+    assert_ne!(a, b);
+    assert_eq!(copy(true), a);
+    assert_ne!(p.copy_tag(a), p.copy_tag(b));
+    assert_eq!(p.facts(a).and_then(|x| x.sig(0)), Some(fact(true)));
+    assert_eq!(p.facts(a).and_then(|x| x.sig(1)), None);
+    assert_eq!(p.facts(f), None);
+    // The optimised IR does not depend on them: one stored function.
+    let _ = (p.func(a), p.func(b));
+    assert_eq!(p.export_copies().len(), 1);
+}
+
 /// The tag that names a copy (compiled code is named and keyed by it, #661) depends on the
 /// process and the data alone, not on the order in which the copies were asked for.
 #[test]
@@ -522,13 +557,24 @@ fn a_copy_knows_what_a_package_constant_made() {
     let none = p.copy_of(f, &[0; 8], &[]).expect("a copy");
     assert_eq!(branches(&p, none), 1);
     let (c3, c4) = (
-        p.copy_of_pkgs(f, &[0; 8], &[], &Packages(3))
+        p.copy_of_pkgs(f, &[0; 8], &[], &Packages(3), InstFacts::default())
             .expect("a copy"),
-        p.copy_of_pkgs(f, &[0; 8], &[], &Packages(4))
+        p.copy_of_pkgs(f, &[0; 8], &[], &Packages(4), InstFacts::default())
             .expect("a copy"),
     );
     assert!(![none, c3].contains(&c4) && none != c3, "keys differ");
-    assert_eq!(p.copy_of_pkgs(f, &[0; 8], &[], &Packages(3)), Ok(c3));
+    assert_eq!(
+        p.copy_of_pkgs(f, &[0; 8], &[], &Packages(3), InstFacts::default()),
+        Ok(c3)
+    );
     assert_eq!((branches(&p, c3), branches(&p, c4)), (0, 0));
     assert_ne!(p.copy_tag(c3), p.copy_tag(c4));
+}
+
+struct NoPkgs;
+
+impl yavs_ir::PkgSource for NoPkgs {
+    fn package(&self, _: u32) -> Option<yavs_ir::PkgData> {
+        None
+    }
 }

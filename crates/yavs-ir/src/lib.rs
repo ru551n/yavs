@@ -24,7 +24,8 @@ mod verify;
 pub use build::{FuncBuilder, ProgramBuilder};
 pub use casetab::CaseTab;
 pub use copies::{
-    Copies, CopyBlob, CopyLoader, CopyStats, NoCopy, PkgData, PkgSource, cap_percent,
+    Copies, CopyBlob, CopyLoader, CopyStats, InstFacts, NoCopy, PkgData, PkgSource, SigFact,
+    cap_percent,
 };
 pub use inst::{
     AddrSpace, AttrKind, BoolOp, CheckKind, CmpOp, DriveMode, EdgeKind, FOp, FUnOp, ForceKind,

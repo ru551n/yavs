@@ -3192,10 +3192,6 @@ impl SimControl {
             self.arm_readers(s);
         }
         let sig = &self.signals[s as usize];
-        // Images are written from `changed_sigs`.
-        if !sig.images.is_empty() {
-            return false;
-        }
         let [r] = sig.changed[..] else {
             return false;
         };
@@ -3210,6 +3206,10 @@ impl SimControl {
             return false;
         }
         let p = w.proc;
+        // The signal leaves `changed_sigs`: its images are written here.
+        if !self.signals[s as usize].images.is_empty() {
+            self.stats.image_writes += self.images.push_sig(&self.signals[s as usize]);
+        }
         let sig = &mut self.signals[s as usize];
         self.stats.events += 1 + std::mem::take(&mut sig.nruns);
         sig.changed.clear();

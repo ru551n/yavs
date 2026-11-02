@@ -184,13 +184,20 @@ impl Images {
             {
                 continue;
             }
-            let sig = &signals[s as usize];
-            for im in &sig.images {
-                let img = &mut self.list[im.image as usize];
-                let w = write_runs(sig, &im.items, &sig.changed, &mut img.bytes);
-                img.writes += w;
-                n += w;
-            }
+            n += self.push_sig(&signals[s as usize]);
+        }
+        n
+    }
+
+    /// `push` of one signal.
+    #[inline]
+    pub fn push_sig(&mut self, sig: &Signal) -> u64 {
+        let mut n = 0;
+        for im in &sig.images {
+            let img = &mut self.list[im.image as usize];
+            let w = write_runs(sig, &im.items, &sig.changed, &mut img.bytes);
+            img.writes += w;
+            n += w;
         }
         n
     }

@@ -13670,3 +13670,4 @@ Written by Claude. Two commits, each revertible alone; whether they reach `main`
 
 **Why.** A generic-sized vector drive in GRLIB's SDRAM model kept a wave object in temporary memory only because the model's process has nested procedures; the length checks of `iu3`'s signal copies stayed run-time checks only because of the block number of their declaration.
 
+A formal array or record parameter of a locally static subtype reads its descriptor from the constant pool in the body, as an array variable does: every call passes the formal's own bounds (`param_dope`, LRM 4.2.2.3), so the pointer in the slot adds nothing. `ahb_slv_dec_cache` of GRLIB spent 11 percent of compiled code's instructions on a descriptor it could have known.

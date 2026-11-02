@@ -1363,6 +1363,16 @@ pub(crate) fn subprogram(
                 fx.fb.param_array(off, t);
                 fx.fb.root(off, RootKind::Addr);
                 fx.fb.root(dope, RootKind::Addr);
+                // A formal of a static subtype has its own bounds in every call (`param_dope`):
+                // the body reads them from the pool, as an array variable does.
+                let c = &db.subtypes[p.subtype].constraint;
+                if let Some(b) =
+                    crate::composite::static_desc(db, fx.fb.program(), db.base(p.subtype), c, t)
+                    && !b.is_empty()
+                {
+                    let k = fx.fb.program().konst(yavs_ir::ConstData::Bytes(b));
+                    fx.cx.const_dope.insert(pd, k);
+                }
                 Obj::Array {
                     space: Space::Frame(depth),
                     off,

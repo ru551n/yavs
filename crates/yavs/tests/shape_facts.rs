@@ -170,3 +170,105 @@ fn folded_shapes_change_no_result_and_no_error_text() {
         (&eager.0, &eager.1, &eager.2)
     );
 }
+
+const FORMALS: &str = r#"
+package p is
+  type rc is record
+    a : bit_vector(3 downto 0);
+    b : bit_vector(0 to 4);
+  end record;
+  type rv is array (2 downto 0) of rc;
+  subtype w8 is bit_vector(7 downto 0);
+  function first(x : bit_vector(7 downto 0)) return integer;
+  function sum(x : rv) return integer;
+  procedure flip(x : inout w8);
+  procedure bad_index(x : bit_vector(7 downto 0); i : integer);
+end package;
+
+package body p is
+  function first(x : bit_vector(7 downto 0)) return integer is
+  begin
+    assert x'left = 7 and x'right = 0 and not x'ascending report "bounds of the formal" severity failure;
+    if x(7) = '1' then return 1; else return 0; end if;
+  end function;
+  function sum(x : rv) return integer is
+    variable n : integer := 0;
+  begin
+    assert x'left = 2 and x'length = 3 report "bounds of the record array" severity failure;
+    for i in x'range loop
+      if x(i).a(3) = '1' then n := n + 1; end if;
+      if x(i).b(4) = '1' then n := n + 10; end if;
+    end loop;
+    return n;
+  end function;
+  procedure flip(x : inout w8) is
+  begin
+    assert x'left = 7 report "bounds of the inout formal" severity failure;
+    x(7) := not x(7);
+    x(0) := not x(0);
+  end procedure;
+  procedure bad_index(x : bit_vector(7 downto 0); i : integer) is
+  begin
+    assert x(i) = '0' or x(i) = '1';
+  end procedure;
+end package body;
+
+use work.p.all;
+entity top is
+  generic (index : integer := 3; wide : boolean := false);
+end entity;
+
+architecture a of top is
+  signal v : bit_vector(0 to 7) := "10000001";
+  signal r : rv := (others => (a => "1000", b => "00001"));
+begin
+  process
+    variable lv : bit_vector(0 to 7) := "10000000";
+    variable lw : bit_vector(0 to 8) := "100000000";
+    variable k : integer := 0;
+  begin
+    report integer'image(first(lv)) & " " & integer'image(first(v)) & " " & integer'image(sum(r));
+    flip(lv);
+    report integer'image(first(lv)) & " " & integer'image(first(lv(0 to 7)));
+    bad_index(lv, index);
+    if wide then
+      k := first(lw);
+    end if;
+    report "end " & integer'image(k);
+    wait;
+  end process;
+end architecture;
+"#;
+
+/// A formal of a static subtype reads its bounds from the pool: an actual of other bounds shows
+/// the formal's, a slice and an `inout` work, a failing index and a failing length keep their text.
+#[test]
+fn a_formal_of_a_static_subtype_has_its_own_bounds_in_every_tier() {
+    let d = tempdir("shape_facts_formals");
+    std::fs::write(d.join("f.vhd"), FORMALS).expect("write");
+    let work = format!("work:{}", d.join("lib").display());
+    let a = yavs(
+        &d,
+        &[],
+        &["analyze", "--std=2008", "--work", &work, "f.vhd"],
+    );
+    assert_eq!(a.0, 0, "{}", a.2);
+    for (gens, ok, text) in [
+        (&[][..], true, "end 0"),
+        (&["-gindex=9"][..], false, "index"),
+        (&["-gwide=true"][..], false, "length"),
+    ] {
+        let interp = run(&d, &work, &[], &["--tier=interp"], &["--no-cache"], gens);
+        let all = format!("{}{}", interp.1, interp.2);
+        assert_eq!(interp.0 == 0, ok, "{all}");
+        assert!(all.contains(text), "{all}");
+        for (env, tier) in [(&[SPEC][..], &EAGER[..]), (&[][..], &["--tier=clift"][..])] {
+            let got = run(&d, &work, env, tier, &["--no-cache"], gens);
+            assert_eq!(
+                (&interp.0, &interp.1, &interp.2),
+                (&got.0, &got.1, &got.2),
+                "{tier:?} {gens:?}"
+            );
+        }
+    }
+}

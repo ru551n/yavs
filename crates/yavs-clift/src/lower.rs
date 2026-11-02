@@ -7226,9 +7226,10 @@ impl Gen<'_> {
 
     /// A `Drive` of one waveform element at a constant reference of 1 to 64 elements of a
     /// signal the entry's table test covers, the waveform in the frame (16 bytes at least inside
-    /// it): `yavs_rt_drive_f` gets the handle, the count and the waveform's address with the
-    /// bytes it may read, and finds the target's form itself, so the call site checks and
-    /// computes nothing of it. False, nothing generated, for any other `Drive`.
+    /// it) or in the temporary area: `yavs_rt_drive_f` gets the handle, the count and the
+    /// waveform's address with the bytes it may read, and finds the target's form itself, so the
+    /// call site checks and computes nothing of it. False, nothing generated, for any other
+    /// `Drive`.
     fn drive_thin(
         &mut self,
         pc: u32,
@@ -7238,32 +7239,61 @@ impl Gen<'_> {
         n: Reg,
         mode: yavs_ir::DriveMode,
     ) -> bool {
-        let (Ok(driver), Some(1), Some(o)) = (driver, self.kint(n), self.frame_of(wave)) else {
+        let temp = matches!(self.known.get(wave.0 as usize), Some(Some(Known::Temp)));
+        let (Ok(driver), Some(1)) = (driver, self.kint(n)) else {
             return false;
         };
-        if self.nat.is_some() || !self.sig_ok {
+        let frame = self.frame_of(wave);
+        if self.nat.is_some() || !self.sig_ok || (frame.is_none() && !temp) {
             return false;
         }
-        // The bytes from the waveform to the end of its composite variable or of the frame.
-        let end = self
-            .objs
-            .iter()
-            .find(|&&(s, e)| u64::from(s) <= o && o < u64::from(e))
-            .map_or(self.frame_len, |&(_, e)| u64::from(e));
-        let avail = end.saturating_sub(o).min(40);
+        // The bytes from a frame waveform to the end of its composite variable or of the frame.
+        let fixed = frame.map(|o| {
+            let end = self
+                .objs
+                .iter()
+                .find(|&&(s, e)| u64::from(s) <= o && o < u64::from(e))
+                .map_or(self.frame_len, |&(_, e)| u64::from(e));
+            (o, end.saturating_sub(o))
+        });
         let (lo, len) = (self.ld(target), self.ld(Reg(target.0 + 1)));
         let (Some(l), Some(k)) = (self.const_of(lo), self.const_of(len)) else {
             return false;
         };
-        if avail < 16 || !(1..=64).contains(&k) || (l as u64 >> 32) > u64::from(self.sig_max) {
+        if fixed.is_some_and(|f| f.1 < 16)
+            || !(1..=64).contains(&k)
+            || (l as u64 >> 32) > u64::from(self.sig_max)
+        {
             return false;
         }
-        let slots = self.slots();
-        let w = self.b.ins().iadd_imm_s(slots, o as i64);
         let inertial = i64::from(mode == yavs_ir::DriveMode::Inertial);
-        let lf = self.c64(k | inertial << 32 | (avail as i64) << 33);
         let (pcv, drv) = (self.c32(pc), self.c32(driver));
+        let (w, lf, join) = match fixed {
+            Some((o, avail)) => {
+                let slots = self.slots();
+                let w = self.b.ins().iadd_imm_s(slots, o as i64);
+                let lf = self.c64(k | inertial << 32 | (avail.min(40) as i64) << 33);
+                (w, lf, None)
+            }
+            None => {
+                // The temporary area: the waveform starts inside it, the callee gets the rest.
+                let (slow, join) = self.slow_signal(pc, 0);
+                let a = self.ld(wave);
+                let off = self.lo32(a);
+                let tl = self.mem_ld(MEM_TEMP_LEN);
+                let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, tl);
+                self.guard(inside, slow);
+                let avail = self.b.ins().isub(tl, off);
+                let avail = self.b.ins().ishl_imm_s(avail, 33);
+                let lf = self.b.ins().bor_imm_s(avail, k | inertial << 32);
+                let base = self.mem_ld(MEM_TEMP);
+                (self.b.ins().iadd(base, off), lf, Some(join))
+            }
+        };
         self.call_go(self.imp.drive_f, &[pcv, drv, lo, w, lf], false);
+        if let Some(join) = join {
+            self.join(join);
+        }
         true
     }
 

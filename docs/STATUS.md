@@ -10776,3 +10776,7 @@ A record signal, an array of records or an array of arrays is an element of an a
 ## Frame objects in processes (#1048, plan step 1, 2026-11-01, branch `perf/iterative`)
 
 Composite variables of processes of a fixed size, without handles, live in the frame; signal copies up to 4 KiB too (`docs/decisions.md` "Frame objects in processes"). `YAVS_NO_PROC_OBJECTS=1` turns it off. Not moved: variables with handles, over 16 KiB, a size only known at run time, under a debugger or external variables.
+
+## Fused byte drive in the interpreter (#1046, 2026-11-02, branch `perf/inv-bytedrive`)
+
+`Op::ByteDrive`: an integer, enumeration or real assignment from a private frame waveform is one op in the interpreter, zero delay through the kernel's direct-driver skip test (`docs/decisions.md` "A fused byte drive in the interpreter"). Per statement, unchanged and changed integer: 580 and 1005 instructions to 334 and 759 interpreted; unchanged in compiled code (262 and 655), which does not use the op. Windows, instructions geomean: 0.980 interpreted, 0.990 at `--tier=auto`.

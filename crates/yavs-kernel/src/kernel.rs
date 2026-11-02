@@ -1879,6 +1879,7 @@ impl SimControl {
         if self.watch_changes {
             self.signals.iter_mut().for_each(|s| {
                 s.watched = true;
+                s.image_watched = false;
                 s.fine = true;
                 s.cuts = Box::default();
             });
@@ -4536,6 +4537,7 @@ impl SimControl {
             for &(s, range) in list {
                 let sig = &mut self.signals[s.0 as usize];
                 sig.watched = true;
+                sig.image_watched = false;
                 if range != Range::new(0, sig.ty.len) {
                     sig.watch_part(range, self.cfg.cells && !self.watch_changes);
                 }

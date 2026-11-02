@@ -145,7 +145,10 @@ impl Images {
                     }
                     // The changes listed, as their cover when no waiter wants them exact: exact
                     // runs cost every waiter scan of a record that changes in many places.
-                    sig.watched = true;
+                    if !sig.watched {
+                        sig.watched = true;
+                        sig.image_watched = true;
+                    }
                     let w = g[0].sig.0 as usize / 64;
                     if self.has.len() <= w {
                         self.has.resize(w + 1, 0);
@@ -205,10 +208,15 @@ impl Images {
         for s in std::mem::take(&mut im.sigs) {
             let sig = &mut signals[s.0 as usize];
             sig.images.retain(|x| x.image != id);
-            if sig.images.is_empty()
-                && let Some(w) = self.has.get_mut(s.0 as usize / 64)
-            {
-                *w &= !(1 << (s.0 % 64));
+            if sig.images.is_empty() {
+                if let Some(w) = self.has.get_mut(s.0 as usize / 64) {
+                    *w &= !(1 << (s.0 % 64));
+                }
+                // Nothing lists the changes now (no update runs between two phases here).
+                if sig.image_watched {
+                    sig.watched = false;
+                    sig.image_watched = false;
+                }
             }
         }
         im.bytes = Box::default();

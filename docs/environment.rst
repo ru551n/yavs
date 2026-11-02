@@ -402,6 +402,11 @@ Compiled tiers: Cranelift
      - ``1``
      - ``0``
      - ``run``
+   * - ``YAVS_CLIFT_ONCE``
+     - ``0``: compiled processes keep the blocks that run at most once.
+     - ``0``, ``1``
+     - ``1``
+     - ``run``
    * - ``YAVS_CLIFT_OPT``
      - The Cranelift optimisation level.
      - ``speed``, ``none``

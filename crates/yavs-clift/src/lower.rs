@@ -227,6 +227,105 @@ fn pin_mem(func: &mut ir::Function, at: usize) {
     }
 }
 
+/// Per pc, whether it starts a block no cycle of the block graph reaches (`leader`: the block
+/// starts; `targets`: the block starts an instruction jumps to; `jumps`: it does not fall through).
+fn once_blocks(
+    f: &Func,
+    leader: &[bool],
+    targets: &dyn Fn(&Inst) -> Vec<usize>,
+    jumps: &dyn Fn(&Inst) -> bool,
+) -> Vec<bool> {
+    let n = f.code.len();
+    let starts: Vec<usize> = (0..n).filter(|&i| leader[i]).collect();
+    let mut node = vec![usize::MAX; n + 1];
+    for (k, &s) in starts.iter().enumerate() {
+        node[s] = k;
+    }
+    let m = starts.len();
+    let succ: Vec<Vec<usize>> = (0..m)
+        .map(|k| {
+            let end = starts.get(k + 1).copied().unwrap_or(n);
+            let last = &f.code[end - 1];
+            let mut to = targets(last);
+            if !jumps(last) && end < n {
+                to.push(end);
+            }
+            to.into_iter()
+                .filter_map(|t| node.get(t).copied())
+                .filter(|&t| t < m)
+                .collect()
+        })
+        .collect();
+    // The strongly connected parts (two passes of depth-first search), then what a cyclic one reaches.
+    let mut pred: Vec<Vec<usize>> = vec![Vec::new(); m];
+    for (k, ss) in succ.iter().enumerate() {
+        for &t in ss {
+            pred[t].push(k);
+        }
+    }
+    let mut order = Vec::with_capacity(m);
+    let mut seen = vec![false; m];
+    for r in 0..m {
+        if seen[r] {
+            continue;
+        }
+        seen[r] = true;
+        let mut stack = vec![(r, 0usize)];
+        while let Some(&mut (v, ref mut i)) = stack.last_mut() {
+            if let Some(&w) = succ[v].get(*i) {
+                *i += 1;
+                if !seen[w] {
+                    seen[w] = true;
+                    stack.push((w, 0));
+                }
+            } else {
+                order.push(v);
+                stack.pop();
+            }
+        }
+    }
+    let mut comp = vec![usize::MAX; m];
+    let mut size = Vec::new();
+    for &r in order.iter().rev() {
+        if comp[r] != usize::MAX {
+            continue;
+        }
+        let c = size.len();
+        size.push(0usize);
+        let mut stack = vec![r];
+        comp[r] = c;
+        while let Some(v) = stack.pop() {
+            size[c] += 1;
+            for &w in &pred[v] {
+                if comp[w] == usize::MAX {
+                    comp[w] = c;
+                    stack.push(w);
+                }
+            }
+        }
+    }
+    let mut kept = vec![false; m];
+    let mut stack: Vec<usize> = (0..m)
+        .filter(|&k| size[comp[k]] > 1 || succ[k].contains(&k))
+        .collect();
+    for &k in &stack {
+        kept[k] = true;
+    }
+    while let Some(v) = stack.pop() {
+        for &w in &succ[v] {
+            if !kept[w] {
+                kept[w] = true;
+                stack.push(w);
+            }
+        }
+    }
+    let mut once = vec![false; n];
+    for (k, &s) in starts.iter().enumerate() {
+        once[s] = !kept[k];
+    }
+    once
+}
+
 /// Whether the machine code carries the IR pc of each stretch (`YAVS_CLIFT_CODEDIR` set).
 fn srcmap() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -1704,6 +1803,14 @@ fn gen_func(
     let bbs: Vec<Option<Block>> = (0..n)
         .map(|i| leader[i].then(|| b.create_block()))
         .collect();
+    // A process's blocks no loop reaches run at most once (the declarations' initial values, what
+    // comes before the first wait): no entry, so the interpreter runs them and enters this code
+    // at the first jump into a loop. `YAVS_CLIFT_ONCE=0` keeps them.
+    let once = if !native && f.kind == FuncKind::Process && flag("YAVS_CLIFT_ONCE", "1") != "0" {
+        once_blocks(f, &leader, &targets, &is_jump)
+    } else {
+        vec![false; n]
+    };
     // The registers each block start takes as parameters (`dispatch`).
     let mut lparams: Vec<Vec<u32>> = vec![Vec::new(); n];
     // The jumps back that poll the stop request (#737) and count the activation (#583), see
@@ -3286,7 +3393,9 @@ fn gen_func(
         let mut sw = Switch::new();
         let mut stubs = Vec::new();
         for (i, bb) in bbs.iter().enumerate() {
-            if let Some(bb) = *bb {
+            if let Some(bb) = *bb
+                && !once[i]
+            {
                 let to = if lparams[i].is_empty() {
                     bb
                 } else {

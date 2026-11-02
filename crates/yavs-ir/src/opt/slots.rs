@@ -149,7 +149,7 @@ fn operands(f: &crate::Func, i: &Inst, out: &mut Vec<Reg>, defs: &mut Vec<Reg>) 
 /// Take the temporaries of process `f` that can live in its frame. Returns whether the code
 /// changed (the caller then drops the `Stmt` markers left with nothing to free).
 pub(super) fn run(prog: &Program, f: &mut crate::Func) -> bool {
-    if f.kind != FuncKind::Process || f.nested {
+    if f.kind != FuncKind::Process {
         return false;
     }
     let nreg = f.reg_ty.len();

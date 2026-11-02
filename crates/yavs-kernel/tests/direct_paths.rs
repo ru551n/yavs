@@ -581,7 +581,10 @@ fn forced_byte_drivers(direct: bool) -> Vec<String> {
                     );
                 }
                 let v = [1u8, 0, 2, 2, 1][((t + i) % 5) as usize];
-                c.assign_bytes(d, None, Time::ZERO, &[v], DelayMode::INERTIAL)?;
+                // (The one-pass path of compiled drives first, where it applies.)
+                if !(direct && c.assign_direct_bytes(d, i, &[v])) {
+                    c.assign_bytes(d, None, Time::ZERO, &[v], DelayMode::INERTIAL)?;
+                }
                 c.wait_for(ns(1))
             }),
         );
@@ -600,7 +603,9 @@ fn forced_byte_drivers(direct: bool) -> Vec<String> {
                     c.report(Severity::Note, format!("{got:?}"));
                 }
                 let v = [7u32, 7, 9, 100000, 7][((t + i) % 5) as usize];
-                c.assign_bytes(d, None, Time::ZERO, &v.to_le_bytes(), DelayMode::INERTIAL)?;
+                if !(direct && c.assign_direct_bytes(d, i, &v.to_le_bytes())) {
+                    c.assign_bytes(d, None, Time::ZERO, &v.to_le_bytes(), DelayMode::INERTIAL)?;
+                }
                 // A delayed one now and then, on the same driver.
                 if t.is_multiple_of(4) {
                     c.assign_bytes(d, None, ns(2), &(v + 1).to_le_bytes(), DelayMode::INERTIAL)?;

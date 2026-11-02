@@ -13364,32 +13364,20 @@ Written by Claude. On branch `perf/iterative`, approved as a plan by the maintai
 - **Measured, 2026-11-01, Cranelift, against merge base 383ac32e; host load 10 to 58 with other agents on the timing cores:** instructions per clock of the micros, compiled: m9 13 094 to 7 340, net of the clock 1.04x m16 (bar 2x); m15 16 761 to 12 435; a procedure that may wait taking the record 23 211 to 14 777; nested 20 519 to 16 980. At `--tier=auto`, where these stay interpreted: m9 24 966 to 17 987, m15 25 634 to 25 704, m17 28 117 to 28 201, m18 34 842 to 34 606 (0.3 percent up on m15 and m17). One more record bit statement, compiled: 114 to 19 instructions, sim1 5.6. GRLIB window instructions 0.979, Microwatt 0.981, whole Microwatt run 0.984. **The GRLIB bar of 3 percent cycles cannot be decided on this host** (#1055: band half-width 19.5 percent over 8 rounds). Readings ran from 0.87 to 1.31. Band-limited cycles: `sc5_fifo_repack` 0.995 +-3.2, `sc5_timestamp` 0.989 +-1.6, `neorv32_single_cache` 1.021 +-2.4.
 - **Why fixed sizes only, and no held pointers:** later plan steps. Frames do not move during an activation, so an address stays valid; registers do not live across a suspension, so nothing holds an object's old address at the switch.
 
-## The seam keeps its last gather and scatter of a whole record (yavs-interp, yavs-kernel, #1050, 2026-11-01)
+## The seam's last gather and scatter of a whole record: dropped by the maintainer (#1050, 2026-11-02)
 
-Step 5 of the iterative plan on `perf/iterative` (tracker #1046, candidates B4 and B5 of the design study #1048). Bars fixed first: instructions down at
-least 3 percent on GRLIB or Microwatt, no test up more than 1 percent, cycles not up.
+Written by Claude. Step 5 of the iterative plan on `perf/iterative` (tracker #1046, candidates B4 and B5 of the design study #1048) kept, per plan, the last
+whole-record gather and scatter of a bound plan and compared plane words and run bytes with the last ones, to skip rebuilding leaves and equal runs. Commit 4b659c0e
+landed it, a revert commit on top of the branch removes it again. The maintainer dropped it on 2026-11-02.
 
-- **A bound plan used 16 times keeps what its last whole-value gather and scatter made** (`Gathered`, `Scattered` in `gather.rs`; `YAVS_SEAM_AFTER`; values up to
-  64 KiB). A gather compares each plane word it would read with the word it read last time and rebuilds the leaves of that group only; the value still goes to the
-  frame by copy. A scatter compares a run's bytes with its last miss and takes the planes it kept, not `leaf_planes`.
-- **No new semantic test, on purpose.** The plan named a stamp on the gather and a generation for force and deposit. Neither was needed for this much: the leaves
-  of a gather are a function of the plane word, read now, so a force or a deposit is a different word. A run's planes are a function of its bytes. Whether an equal
-  run is left out is still `Signal::direct_same_planes`, the kernel's own test against `cur` and the driving value (`skip_ok` covers `'transaction`, `'active` and
-  observers). A stamp would save the read of the signal too, and a missed write path would be a wrong result; not done.
-- **Runs of one scatter name different elements**, so what the scatter itself left on a driver does not stop its later equal runs being left out (`Ctx::direct_quiet`,
-  asked before the driver's first entry, then `Ctx::run_same`).
-- **Spans that share bytes keep no image:** the leaves of an array of records lie between each other, and a miss of one run wrote over the bytes another compared with:
-  a changed leaf was never driven. Found in review, `composite/sigrec_seam_array` is that shape.
-- `Signal::direct_same_planes` tests a block with no value built (`wide::block_is`). The reference simulator also compares a new value with the driver's before doing
-  anything; ours compares before conversion to planes, because its values are bytes and ours are not.
-- **Measured** against 383ac32e, Cranelift `--tier=auto`, core shared with a loaded host (load 15 to 60). Instructions, windows: GRLIB 0.967 to 0.977, Microwatt 0.910
-  to 1.003 (its own `auto` varies by world). Whole process to 700 us and 800 us, A and B started together, cores swapped, six pairs: instructions 0.983 and 0.949, cycles
-  geomean 1.001 (band 0.96 to 1.04) and 0.906 (band 0.75 to 1.10). So "cycles not up" is undecidable at this load (#1055), no rise seen. `--tier=interp`, which has no tier policy: GRLIB 0.978, Microwatt 0.961. Peak RSS not up on either. Estimated 10 to 15
-  percent; less than half of it holds: 30 percent of runs and groups are not plane words (one kernel signal per scalar or byte leaf), and each leaf that remains still
-  loads its signal.
-- **Not attributed: `vai_window_gen_interlock`** read 0.995 to 1.069 under `auto` over several sittings, against 0.978 to 1.016 for the same code again and a build with a dead branch, with cycles 0.95 to 1.04.
-  The seam is 0.1 percent of its instructions, `--tier=interp` reads 1.000, the images turned off on one binary read higher than on, and a build with only `block_is` read
-  0.986 and 1.026. So I read it as the compile outcome of `auto` (#673), not as this change, but I did not find what moves that outcome.
+- **Why:** the gain was under half of the estimate (estimated 10 to 15 percent of the seam; measured instructions against 383ac32e on Cranelift `--tier=auto`:
+  Microwatt 0.949 and 0.983 in two sets, GRLIB 0.983), and the GRLIB `vai_window_gen_interlock` window read 1.07 and 1.22 for L1i misses, a rise nobody could
+  explain. That commit's own entry had already recorded the instruction reading 0.995 to 1.069 as not attributed.
+- **What stays:** the corpus tests it added, `composite/sigrec_seam` and `composite/sigrec_seam_array` (force, delayed entries, a resolved leaf, `'transaction`,
+  records whose runs share bytes), guard the semantics of record signal assignment and stay. Their expected files are unchanged by the revert.
+- **For anyone retrying:** the soundness argument was that a gather's leaves are a function of the plane words read now, and a run's planes of its bytes, so no stamp
+  or generation for force and deposit was needed; spans that share bytes (arrays of records) must keep no image. `git show 4b659c0e` has the code.
+
 ## Cranelift: a function keeps its first route (yavs-clift, #1035, 2026-11-01)
 
 The body of a function says how it reaches its native callees: directly (so Cranelift may inline them) or through `Mem::ntab`. The tier chose by what the policy compiled with the function, which follows the samples, so one function of an unchanged design had several bodies, each its own key and entry, read only by a run that took the same choice. Both routes run the same code, so results do not depend on it. The LLVM tier does not have this: its callees are always reached through the table.

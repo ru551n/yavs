@@ -1840,16 +1840,16 @@ impl Signal {
         let Buf::Planes { b: cur, .. } = &self.cur else {
             return false;
         };
-        if !yavs_logic::wide::block_is(cur, e, n, &planes) {
+        if yavs_logic::wide::get_block(cur, e, n) != planes {
             return false;
         }
         if self.exact {
             let d = &self.drivers[slot as usize];
             matches!(&d.value, Buf::Planes { b, .. }
-                if yavs_logic::wide::block_is(b, e - d.range.offset as usize, n, &planes))
+                if yavs_logic::wide::get_block(b, e - d.range.offset as usize, n) == planes)
         } else {
             matches!(&self.driving, Buf::Planes { b, .. }
-                if yavs_logic::wide::block_is(b, e, n, &planes))
+                if yavs_logic::wide::get_block(b, e, n) == planes)
         }
     }
 

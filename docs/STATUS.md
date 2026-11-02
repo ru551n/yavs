@@ -10772,8 +10772,3 @@ A record signal, an array of records or an array of arrays is an element of an a
 ## Frame objects in processes (#1048, plan step 1, 2026-11-01, branch `perf/iterative`)
 
 Composite variables of processes of a fixed size, without handles, live in the frame; signal copies up to 4 KiB too (`docs/decisions.md` "Frame objects in processes"). `YAVS_NO_PROC_OBJECTS=1` turns it off. Not moved: variables with handles, over 16 KiB, a size only known at run time, under a debugger or external variables.
-
-## Seam: kept gather and scatter of a whole record (#1050, 2026-11-01)
-
-A plan used 16 times keeps its last whole-value gather and scatter (`gather.rs`, `YAVS_SEAM_AFTER`); `Ctx::run_same` asks the kernel's skip test for a run with equal bytes. On branch `perf/iterative`. Tests: `crates/yavs/tests/seam.rs`, `composite/sigrec_seam`, `composite/sigrec_seam_array`, perf design `seam_runs`. Numbers in `docs/decisions.md`.
-

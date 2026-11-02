@@ -2147,40 +2147,6 @@ impl Ctx<'_> {
         self.assign_bytes_fast(d, Some(r), Time::ZERO, bytes, DelayMode::Transport)
     }
 
-    /// Whether `d` is a direct driver of this process, idle, with no entry of this run. While that
-    /// held before a group of assignments to elements none of them shares, each may ask
-    /// [`Ctx::run_same`].
-    #[inline]
-    pub fn direct_quiet(&self, d: DriverId) -> bool {
-        let Some(info) = self.sh.drivers.get(d.0 as usize) else {
-            return false;
-        };
-        if !info.direct || info.owner != self.pid {
-            return false;
-        }
-        let w = &self.st.waveforms[info.local as usize];
-        w.idle() && w.phantom.is_empty() && !self.has_entries(info, 1) && !self.has_entries(info, 2)
-    }
-
-    /// A zero-delay assignment of `planes` (no bit past `r.len`) to `r` of a driver for which
-    /// [`Ctx::direct_quiet`] held, left out as `assign_planes_fast` leaves it out: true when the
-    /// signal allows skipping and it and its driving value hold the value. False, nothing done:
-    /// the assignment must run.
-    #[inline]
-    pub fn run_same(&mut self, d: DriverId, r: Range, planes: [u64; 4]) -> bool {
-        let Some(info) = self.sh.drivers.get(d.0 as usize) else {
-            return false;
-        };
-        let same = r.len <= 64
-            && info.range.contains(r)
-            && self.sh.signals[info.signal.0 as usize]
-                .direct_same_planes(info.slot, r.offset, r.len, planes);
-        if same {
-            self.note_skipped();
-        }
-        same
-    }
-
     /// `assign_blocks` of at most 64 elements given as their four planes to `r` (the whole driver
     /// when `None`) of driver `d` with
     /// zero delay (transport or inertial without rejection): true when the usual fast case took

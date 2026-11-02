@@ -661,15 +661,6 @@ case!(
         ("ops", Max(3564)),
     ]
 );
-// A whole record read and driven at every clock, one leaf of four changing (#1050): no direct
-// entry for the three that hold. The images a plan keeps are not counted here: they save
-// conversion, not kernel work; `tests/seam.rs` checks they change nothing.
-case!(
-    seam_runs,
-    "seam_runs 100",
-    &[],
-    [("direct_planes", Max(206)), ("cycles", Max(722))]
-);
 // Repeated drives of inout ports (not direct) in one activation, mostly of the value held: the
 // first leaves a skipped assignment, the repeats are skipped on the fast paths too (300 general
 // assignments before, #720).

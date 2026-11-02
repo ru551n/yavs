@@ -7,6 +7,7 @@
 mod builder;
 pub mod callout;
 mod error;
+mod image;
 mod kernel;
 mod process;
 pub mod profile;
@@ -18,6 +19,7 @@ pub use builder::{
     Builder, Converter, EdgeTrigger, IdleLit, IdleRead, PortConv, PortMode, ProcFlags,
 };
 pub use error::{ErrorInfo, ErrorKind, SimError, StmtId};
+pub use image::{ImageItem, ImageKind, ImageSpec, NO_IMAGE};
 pub use kernel::{
     ChangingSignal, Config, DeadClock, EndReason, Hook, Interrupt, LoopCause, LoopLink, Observer,
     Phase, PortLink, ProcWait, Report, RunStatus, SigView, SignalSources, SimControl, SourceInfo,

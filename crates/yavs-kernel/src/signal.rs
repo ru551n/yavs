@@ -791,6 +791,8 @@ pub(crate) struct Signal {
     pub inactive: bool,
     /// The element and code of the last `commit_code`.
     last_commit: (u32, u8),
+    /// The record images with a leaf in this signal (`image.rs`).
+    pub images: Vec<crate::image::SigImage>,
 }
 
 /// The elements of a block of 64 whose last event was one `update_word`, with its cycle and
@@ -1075,6 +1077,7 @@ impl Signal {
             exact: false,
             inactive: false,
             last_commit: (u32::MAX, 0),
+            images: Vec::new(),
         };
         sig.sync_codes();
         sig

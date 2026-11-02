@@ -227,6 +227,14 @@ pub struct Stats {
     /// Assignments that took the general path of `Ctx::assign` (waveform lists, preemption);
     /// summed over the processes when asked.
     pub general_assigns: u64,
+    /// Whole record gathers answered by a copy of an image, and read leaf by leaf; summed over
+    /// the processes when asked (`image.rs`).
+    pub gathers_copied: u64,
+    pub gathers_read: u64,
+    /// Leaves written into record images, the images and the bytes they hold.
+    pub image_writes: u64,
+    pub images: u64,
+    pub image_bytes: u64,
     /// Runs of concurrent copies the kernel made itself (`SimControl::forward_copies`), also
     /// counted in `process_runs`.
     pub copy_forwards: u64,
@@ -500,6 +508,7 @@ impl Hook<'_> {
             resolution: self.cfg.resolution,
             stop_severity: self.cfg.stop_severity,
             signals: self.signals,
+            images: None,
             drivers: self.drivers,
             names: self.names,
             live: None,
@@ -999,6 +1008,8 @@ pub struct SimControl {
     ops: Vec<SignalOp>,
     /// Signals with events in the current cycle.
     changed_sigs: Vec<u32>,
+    /// Images of record signals (`image.rs`).
+    images: crate::image::Images,
     ready: Vec<u32>,
     /// `ready` is ascending and holds no process whose place in the batch order is special
     /// (`order` has nothing to do for it).
@@ -1455,6 +1466,7 @@ impl SimControl {
             direct_sigs: Vec::new(),
             ops: Vec::new(),
             changed_sigs: Vec::new(),
+            images: Default::default(),
             ready: Vec::new(),
             ready_mono: true,
             ready_several: Vec::new(),
@@ -1769,6 +1781,10 @@ impl SimControl {
     pub fn stats(&self) -> Stats {
         Stats {
             general_assigns: self.slots.iter().map(|s| lock(s).st.general).sum(),
+            gathers_copied: self.slots.iter().map(|s| lock(s).st.gathers_copied).sum(),
+            gathers_read: self.slots.iter().map(|s| lock(s).st.gathers_read).sum(),
+            images: self.images.memory().0,
+            image_bytes: self.images.memory().1,
             ..self.stats
         }
     }
@@ -2314,10 +2330,19 @@ impl SimControl {
         if !self.wakes.pending.is_empty() {
             self.fire_wakes();
         }
+        if self.images.asked() {
+            self.images.install(&mut self.signals);
+        }
         self.update().map_err(|k| self.err(k))?;
         self.commit_callouts();
+        if !self.images.list.is_empty() {
+            self.stats.image_writes += self.images.push(&self.signals, &self.changed_sigs);
+        }
         if !self.guard_procs.is_empty() {
             self.run_guards()?;
+            if !self.images.list.is_empty() {
+                self.images.push(&self.signals, &self.changed_sigs);
+            }
         }
         if self.changed_sigs.len() > 1 {
             self.changed_sigs.sort_unstable();
@@ -3166,6 +3191,10 @@ impl SimControl {
             self.arm_readers(s);
         }
         let sig = &self.signals[s as usize];
+        // Images are written from `changed_sigs`.
+        if !sig.images.is_empty() {
+            return false;
+        }
         let [r] = sig.changed[..] else {
             return false;
         };
@@ -3788,6 +3817,7 @@ impl SimControl {
                 resolution: self.cfg.resolution,
                 stop_severity: self.cfg.stop_severity,
                 signals: &self.signals,
+                images: Some(&self.images),
                 drivers: &self.drivers,
                 names: &self.names,
                 live: self.live_sink.as_deref(),
@@ -4218,6 +4248,7 @@ impl SimControl {
             resolution: self.cfg.resolution,
             stop_severity: self.cfg.stop_severity,
             signals: &self.signals,
+            images: Some(&self.images),
             drivers: &self.drivers,
             names: &self.names,
             live: self.live_sink.as_deref(),

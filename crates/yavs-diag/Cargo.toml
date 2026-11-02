@@ -10,7 +10,7 @@ publish.workspace = true
 serde.workspace = true
 strsim.workspace = true
 annotate-snippets.workspace = true
-saphyr-parser = "0.2.2"
+saphyr-parser = "0.3.3"
 twox-hash = { version = "2.1", default-features = false, features = ["xxhash3_64", "std"] }
 
 [dev-dependencies]

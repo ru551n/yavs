@@ -7113,6 +7113,31 @@ impl Gen<'_> {
         // A waveform element of 16 bytes (time and cell) for a signal of integer, enumeration or
         // real elements, 40 (time and the first plane block) for a logic one, 8 and a block of
         // planes per 64 elements beyond 64.
+        if let Some((sv, f)) = self.sig_known(target) {
+            let (bytes, wide) = (f.es != 0, sv.len > 64);
+            let want = if bytes {
+                16
+            } else if wide {
+                (sv.len + 63) / 64 * 32 + 8
+            } else {
+                40
+            };
+            let a = self.ld(wave);
+            let w = self.host(a, Some(wave), Op::C(0), Op::C(want as u64), false, slow);
+            let kind = if bytes {
+                2
+            } else if wide {
+                4
+            } else {
+                0
+            };
+            let flags = self.c32(kind | u32::from(mode == yavs_ir::DriveMode::Inertial));
+            let (lo, len) = (self.ld(target), self.ld(Reg(target.0 + 1)));
+            let pcv = self.c32(pc);
+            self.call_go(self.imp.drive, &[pcv, drv, lo, len, w, flags], false);
+            self.join(join);
+            return;
+        }
         let (ent, _) = self.sig_entry(target, None, slow);
         let es = self.ent_ld(ent, SIG_ES);
         let bytes = self.b.ins().icmp_imm_s(IntCC::NotEqual, es, 0);
@@ -7208,16 +7233,24 @@ impl Gen<'_> {
             self.ld(Reg(s.target.0 + 1)),
             self.ld(s.value),
         );
-        let base = self.b.ins().ushr_imm_s(v, 32);
-        let n = self.mem_ld(MEM_SIGTAB_LEN);
-        let has = self.b.ins().icmp(IntCC::UnsignedLessThan, base, n);
-        let one = self.b.ins().icmp_imm_s(IntCC::Equal, l, 1);
+        // The facts say it is one element of a signal the kernel offers: only the code to test.
+        let sure = self
+            .sig_known(s.target)
+            .is_some_and(|(sv, f)| sv.len == 1 && (f.codes || f.planes));
         let small = self
             .b
             .ins()
             .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, code, 8);
-        let ok = self.b.ins().band(has, one);
-        let ok = self.b.ins().band(ok, small);
+        let ok = if sure {
+            small
+        } else {
+            let base = self.b.ins().ushr_imm_s(v, 32);
+            let n = self.mem_ld(MEM_SIGTAB_LEN);
+            let has = self.b.ins().icmp(IntCC::UnsignedLessThan, base, n);
+            let one = self.b.ins().icmp_imm_s(IntCC::Equal, l, 1);
+            let ok = self.b.ins().band(has, one);
+            self.b.ins().band(ok, small)
+        };
         let (chk, slow, fast, join) = (
             self.b.create_block(),
             self.b.create_block(),
@@ -7227,19 +7260,24 @@ impl Gen<'_> {
         self.b.set_cold_block(slow);
         self.brif_split(ok, chk, slow);
         self.b.switch_to_block(chk);
-        let tab = self.mem_ld(MEM_SIGTAB);
-        let at = self.b.ins().imul_imm_s(base, SIG_ENT);
-        let ent = self.b.ins().iadd(tab, at);
-        let codes = self.ent_ld(ent, SIG_CODES);
-        let planes = self.ent_ld(ent, SIG_PLANES);
-        let logic = self.b.ins().bor(codes, planes);
         let k = self.b.use_var(bt.count);
         let room =
             self.b
                 .ins()
                 .icmp_imm_s(IntCC::UnsignedLessThan, k, yavs_interp::DRIVE_BATCH as i64);
-        let isl = self.b.ins().icmp_imm_s(IntCC::NotEqual, logic, 0);
-        let fits = self.b.ins().band(isl, room);
+        let fits = if sure {
+            room
+        } else {
+            let base = self.b.ins().ushr_imm_s(v, 32);
+            let tab = self.mem_ld(MEM_SIGTAB);
+            let at = self.b.ins().imul_imm_s(base, SIG_ENT);
+            let ent = self.b.ins().iadd(tab, at);
+            let codes = self.ent_ld(ent, SIG_CODES);
+            let planes = self.ent_ld(ent, SIG_PLANES);
+            let logic = self.b.ins().bor(codes, planes);
+            let isl = self.b.ins().icmp_imm_s(IntCC::NotEqual, logic, 0);
+            self.b.ins().band(isl, room)
+        };
         self.brif_split(fits, fast, slow);
         // Slow: what was kept, then this one alone.
         self.b.switch_to_block(slow);

@@ -4531,7 +4531,14 @@ impl Gen<'_> {
         } else {
             self.regs
         };
-        let mut args = vec![self.env, regs, self.mem];
+        // Every callback here takes the activation's `env` from the view when given none
+        // (`rt::env_or`): frame-mode code is entered only through `rt::enter`, which sets it.
+        let env = if self.nat.is_none() {
+            self.c64(0)
+        } else {
+            self.env
+        };
+        let mut args = vec![env, regs, self.mem];
         args.extend_from_slice(rest);
         let call = self.b.ins().call(f, &args);
         let r = self.b.inst_results(call)[0];

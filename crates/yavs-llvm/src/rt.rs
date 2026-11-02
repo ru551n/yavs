@@ -130,6 +130,9 @@ pub struct Mem {
     pub ndeopt: u64,
     /// Per function, the address of its native-frame code (`Gen::native_call`), 0 for none.
     pub ntab: *const usize,
+    /// The `Env` of the activation running on this view (`enter_on`): a callback given a null
+    /// `env` (Cranelift's frame-mode code, `env_or`) takes this one.
+    pub env: *mut c_void,
     /// Below this native stack address no native callee is entered (`NEST_STACK`).
     pub stack_lo: u64,
     /// Per frame index, the slots of the native frame living there (`NSlot`): a native callee
@@ -719,6 +722,19 @@ pub fn stack_here() -> usize {
     std::hint::black_box(&x) as *const u8 as usize
 }
 
+/// The `env` a callback was given, or the activation's when it is null (`Mem::env`).
+///
+/// # Safety
+/// `mem` is the view compiled code was given.
+#[inline(always)]
+unsafe fn env_or(env: *mut c_void, mem: *mut Mem) -> *mut c_void {
+    if env.is_null() {
+        unsafe { (*mem).env }
+    } else {
+        env
+    }
+}
+
 /// Executes one instruction in the interpreter (`TierHost::step`) and returns `GO`, or what
 /// the compiled code returns: the pc after a fault, `TIER_SUSPEND`, `TIER_UNWIND`. A frame the
 /// instruction pushed runs here when its function has compiled code, and the call continues
@@ -731,6 +747,8 @@ pub unsafe extern "C" fn yavs_rt_step(
     pc: u32,
 ) -> u32 {
     cb(Cb::Step);
+    // SAFETY: `mem` is what compiled code was given.
+    let env = unsafe { env_or(env, mem) };
     // SAFETY: `env` and `mem` are what `enter` (or this function, for a callee) passed to the
     // compiled function, which is blocked in this call; `regs` points into the register
     // stack, which the compiled code does not touch until we return (it passes it only so
@@ -768,6 +786,8 @@ pub unsafe extern "C" fn yavs_rt_signal(
     edge: u32,
 ) -> u32 {
     cb(Cb::Signal);
+    // SAFETY: `mem` is what compiled code was given.
+    let env = unsafe { env_or(env, mem) };
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
     unsafe { (*mem).sync(&mut *(*envp).host) };
@@ -884,6 +904,8 @@ pub unsafe extern "C" fn yavs_rt_drive(
     flags: u32,
 ) -> u32 {
     cb(Cb::Drive);
+    // SAFETY: `mem` is what compiled code was given.
+    let env = unsafe { env_or(env, mem) };
     // SAFETY: as in `yavs_rt_step`; the caller checked 40 readable bytes at `wave`, 16 where
     // the target keeps bytes (bit 1 of `flags`: one scalar, whose cell is the first word).
     let envp = env as *mut Env<'_>;
@@ -1046,6 +1068,8 @@ pub unsafe extern "C" fn yavs_rt_drive_bit(
     code: u64,
 ) -> u32 {
     cb(Cb::Drive);
+    // SAFETY: `mem` is what compiled code was given.
+    let env = unsafe { env_or(env, mem) };
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
     if delay == 0 {
@@ -1146,6 +1170,8 @@ pub unsafe extern "C" fn yavs_rt_wait(
     len: u64,
 ) -> u32 {
     cb(Cb::Wait);
+    // SAFETY: `mem` is what compiled code was given.
+    let env = unsafe { env_or(env, mem) };
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
     // On the kernel itself (#766), else through the host.
@@ -1185,6 +1211,8 @@ pub extern "C" fn yavs_rt_wait_on(
     len: u64,
 ) -> u32 {
     cb(Cb::WaitOn);
+    // SAFETY: `mem` is what compiled code was given.
+    let env = unsafe { env_or(env, mem) };
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
     if unsafe { (*envp).host.wait_on_again([lo, len]) } {
@@ -1217,6 +1245,8 @@ pub extern "C" fn yavs_rt_wait_same(
     _len: u64,
 ) -> u32 {
     cb(Cb::WaitSame);
+    // SAFETY: `mem` is what compiled code was given.
+    let env = unsafe { env_or(env, mem) };
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
     // On the kernel itself (#766), else through the host. Neither reads the temporary area.
@@ -2579,14 +2609,8 @@ pub fn enter_on<H: View + ?Sized, const LEAN: bool>(
     // SAFETY: `f` was generated for this function with `nregs` registers and only
     // indexes `regs` below that (checked at compile time); it accesses memory only
     // within the bounds in `mem`; `env` and `mem` outlive the call.
-    let next = unsafe {
-        f(
-            &mut env as *mut Env<'_> as *mut c_void,
-            mem.fr.regs,
-            mem,
-            pc,
-        )
-    };
+    mem.env = &mut env as *mut Env<'_> as *mut c_void;
+    let next = unsafe { f(mem.env, mem.fr.regs, mem, pc) };
     mem.fr.kctx = std::ptr::null_mut();
     mem.sync(env.host);
     mem.forget_end();

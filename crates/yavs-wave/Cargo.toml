@@ -16,7 +16,7 @@ yavs-kernel = { path = "../yavs-kernel" }
 yavs-sem = { path = "../yavs-sem" }
 
 [target.'cfg(unix)'.dependencies]
-signal-hook = "0.3"
+signal-hook = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 ctrlc = { version = "3.5.2", features = ["termination"] }

@@ -117,6 +117,8 @@ pub struct Jit {
     /// Debugging: the most native variants to make (`YAVS_CLIFT_NATIVE_MAX`).
     native_limit: usize,
     inline_max: usize,
+    /// The `Mem` view lives in Cranelift's pinned register (`pin_mem`, `YAVS_CLIFT_PIN`).
+    pin: bool,
     /// Per function: its native-frame variant, or `None` when it has none.
     natives: HashMap<FuncId, Option<Rc<NatInfo>>>,
     building: HashSet<FuncId>,
@@ -180,6 +182,51 @@ unsafe impl Send for Jit {}
 #[doc(hidden)]
 pub static BREAK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// The `Mem` view (parameter `at` of the entry block) in the pinned register: set at the entry,
+/// read where it is used, the caller's value back before each return. Without it the view is one
+/// value live through the whole function, spilled and reloaded from the stack at most uses (8 bytes
+/// each, 8 to 14 percent of the code of big processes).
+fn pin_mem(func: &mut ir::Function, at: usize) {
+    use cranelift_codegen::cursor::{Cursor, FuncCursor};
+    let Some(entry) = func.layout.entry_block() else {
+        return;
+    };
+    let mem = func.dfg.block_params(entry)[at];
+    let insts: Vec<ir::Inst> = func
+        .layout
+        .blocks()
+        .flat_map(|b| func.layout.block_insts(b).collect::<Vec<_>>())
+        .collect();
+    let mut pos = FuncCursor::new(func);
+    pos.goto_first_insertion_point(entry);
+    let saved = pos.ins().get_pinned_reg(I64);
+    pos.ins().set_pinned_reg(mem);
+    for inst in insts {
+        let loc = pos.func.srcloc(inst);
+        pos.goto_inst(inst);
+        pos.set_srcloc(loc);
+        if pos.func.dfg.insts[inst].opcode() == ir::Opcode::Return {
+            pos.ins().set_pinned_reg(saved);
+        }
+        let uses = pos
+            .func
+            .dfg
+            .inst_args(inst)
+            .iter()
+            .filter(|&&v| v == mem)
+            .count();
+        if uses == 0 {
+            continue;
+        }
+        let m = pos.ins().get_pinned_reg(I64);
+        for v in pos.func.dfg.inst_args_mut(inst) {
+            if *v == mem {
+                *v = m;
+            }
+        }
+    }
+}
+
 /// Whether the machine code carries the IR pc of each stretch (`YAVS_CLIFT_CODEDIR` set).
 fn srcmap() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -224,6 +271,7 @@ impl Jit {
             .parse()
             .unwrap_or(usize::MAX);
         let inline_max = flag("YAVS_CLIFT_INLINE", "150").parse().unwrap_or(0);
+        let pin = flag("YAVS_CLIFT_PIN", "1") != "0";
         let flags = [
             ("opt_level", opt.as_str()),
             (
@@ -231,6 +279,7 @@ impl Jit {
                 if verify == "1" { "true" } else { "false" },
             ),
             ("regalloc_algorithm", ra.as_str()),
+            ("enable_pinned_reg", if pin { "true" } else { "false" }),
         ];
         let mut b = JITBuilder::with_flags(&flags, cranelift_module::default_libcall_names())
             .map_err(|e| e.to_string())?;
@@ -357,6 +406,7 @@ impl Jit {
             native_on,
             native_limit,
             inline_max,
+            pin,
             natives: HashMap::new(),
             building: HashSet::new(),
             nsets: HashMap::new(),
@@ -866,6 +916,9 @@ impl Jit {
         };
         let cfg = self.module.target_config();
         let stepped = gen_func(&mut ctx, &mut fctx, cfg, prog, f, imports, id, native)?;
+        if self.pin {
+            pin_mem(&mut ctx.func, if native { 1 } else { 2 });
+        }
         // `YAVS_CLIFT_CLIF=<function id>`: the Cranelift IR of that function (variant) on stderr.
         if std::env::var("YAVS_CLIFT_CLIF")
             .is_ok_and(|v| v == "all" || v.parse::<u32>().is_ok_and(|n| n == id.0))

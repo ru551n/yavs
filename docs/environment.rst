@@ -412,6 +412,11 @@ Compiled tiers: Cranelift
      - ``1``
      - ``0``
      - ``run``
+   * - ``YAVS_CLIFT_PIN``
+     - ``0``: the frame view is not kept in the pinned register.
+     - ``0``, ``1``
+     - ``1``
+     - ``run``
    * - ``YAVS_CLIFT_RA``
      - The register allocator.
      - ``backtracking``, ``single_pass``

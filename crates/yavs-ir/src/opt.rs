@@ -3925,6 +3925,13 @@ impl<'a> Opt<'a> {
                     a.checked_add(b)?
                 })
             }
+            // Only proven equal operands: unequal ones keep the native's report and the check
+            // of the result (#1063).
+            Op::VecGate(_) | Op::NumGate(_) => {
+                let (a, b) = (alen(0)?, alen(1)?);
+                (a == b).then_some(a)
+            }
+            Op::VecNot | Op::NumNot | Op::Conv(_, true) => alen(0),
             _ => None,
         }
     }

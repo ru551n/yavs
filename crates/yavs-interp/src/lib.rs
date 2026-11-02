@@ -1063,7 +1063,21 @@ pub fn direct_drive_now(
     delay: i64,
     block: [u64; 4],
 ) -> bool {
-    if delay != 0 || target[1] == 0 || target[1] > 64 {
+    direct_drive_wave(c, drivers, sigs, driver, target, |_| (delay, block))
+}
+
+/// [`direct_drive_now`] where the waveform element is read once the target signal's kind is
+/// known: `read(bytes)` gives its delay and its first block (the cell of a byte signal in word 0).
+#[inline(always)]
+pub fn direct_drive_wave(
+    c: &mut Ctx<'_>,
+    drivers: &[ProcDriver],
+    sigs: &[TierSig],
+    driver: u32,
+    target: [u64; 2],
+    read: impl FnOnce(bool) -> (i64, [u64; 4]),
+) -> bool {
+    if target[1] == 0 || target[1] > 64 {
         return false;
     }
     let (Some(d), Some(s)) = (
@@ -1074,14 +1088,20 @@ pub fn direct_drive_now(
     };
     let r = Range::new(s.off as u32 + target[0] as u32, target[1] as u32);
     if s.bytes != 0 {
+        let (delay, block) = read(true);
         let es = s.es as usize;
         let b = block[0].to_le_bytes();
-        return target[1] == 1
+        return delay == 0
+            && target[1] == 1
             && es <= 8
             && (c.assign_direct_bytes(d.id, r.offset, &b[..es])
                 || c.assign_bytes_now(d.id, r, &b[..es]));
     }
     if s.codes | s.planes == 0 {
+        return false;
+    }
+    let (delay, block) = read(false);
+    if delay != 0 {
         return false;
     }
     if target[1] == 1 {

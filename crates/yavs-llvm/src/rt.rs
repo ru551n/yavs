@@ -49,6 +49,7 @@ pub const FAST_SUBTYPE: u32 = 2;
 pub const FAST_FAT_ROOT: u32 = 3;
 pub const FAST_DEREF: u32 = 4;
 pub const DRIVE_BIT: &str = "yavs_rt_drive_bit";
+pub const DRIVE_F: &str = "yavs_rt_drive_f";
 
 pub const LAYOUT_WORD: &str = "yavs_rt_layout_word";
 pub const SCAN: &str = "yavs_rt_scan";
@@ -928,6 +929,72 @@ pub unsafe extern "C" fn yavs_rt_drive(
         }
     }
     yavs_rt_drive_slow(env, regs, mem, pc, driver, lo, len, wave, flags)
+}
+
+/// `yavs_rt_drive` for a `Drive` of one waveform element at a constant reference of 1 to 64
+/// elements whose waveform is in the frame (the call site knows nothing of the target's form):
+/// the form comes from the signal table, the element is read after it. `lf` is the element
+/// count, bit 32 for an inertial assignment and from bit 33 the bytes readable at `wave`.
+pub unsafe extern "C" fn yavs_rt_drive_f(
+    mem: *mut Mem,
+    pc: u32,
+    driver: u32,
+    lo: u64,
+    wave: *const u8,
+    lf: u64,
+) -> u32 {
+    cb(Cb::Drive);
+    // SAFETY: as in `yavs_rt_drive`; `avail` bytes are readable at `wave`, and 16 (a byte
+    // signal's time and cell) or 40 (a logic signal's time and first block) are read, no more.
+    let word = |k: usize| unsafe { std::ptr::read_unaligned(wave.add(k * 8).cast::<u64>()) };
+    if let Some((c, ds, ss)) = unsafe { direct(&(*mem).fr) }
+        && yavs_interp::direct_drive_wave(c, ds, ss, driver, [lo, lf & 0xffff_ffff], |bytes| {
+            if drive_f_short(lf, bytes) {
+                // A delay: the kernel takes nothing, `drive_f_rest` sends it to the interpreter.
+                (1, [0; 4])
+            } else if bytes {
+                (word(0) as i64, [word(1), 0, 0, 0])
+            } else {
+                (word(0) as i64, unsafe { plane_block(wave) })
+            }
+        })
+    {
+        return GO;
+    }
+    drive_f_rest(mem, pc, driver, lo, wave, lf)
+}
+
+/// Whether the `avail` bytes of `yavs_rt_drive_f` (bits 33 and up of `lf`) do not hold the
+/// waveform element of a byte (16 bytes) or logic (40) signal.
+#[inline(always)]
+fn drive_f_short(lf: u64, bytes: bool) -> bool {
+    lf >> 33 < if bytes { 16 } else { 40 }
+}
+
+/// `yavs_rt_drive_f` where the kernel's fastest path did not take the assignment.
+#[cold]
+#[inline(never)]
+fn drive_f_rest(mem: *mut Mem, pc: u32, driver: u32, lo: u64, wave: *const u8, lf: u64) -> u32 {
+    // SAFETY: as in `yavs_rt_drive_f`.
+    let fr = unsafe { &(*mem).fr };
+    let env = unsafe { env_or(std::ptr::null_mut(), mem) };
+    let (len, inertial) = (lf & 0xffff_ffff, (lf >> 32) as u32 & 1);
+    let kernel = !fr.kctx.is_null();
+    // SAFETY: the table `view` wrote.
+    let ss = unsafe { std::slice::from_raw_parts(fr.sigtab, fr.sigtab_len as usize) };
+    let bytes = ss.get((lo >> 32) as usize).is_some_and(|s| s.es != 0);
+    // The waveform of the form is not all in reach: the interpreter runs the `Drive`.
+    if drive_f_short(lf, bytes) {
+        return unsafe { yavs_rt_signal(env, std::ptr::null_mut(), mem, pc, 0) };
+    }
+    let flags = inertial | (2 * u32::from(bytes));
+    let regs = std::ptr::null_mut();
+    if kernel {
+        yavs_rt_drive_slow(env, regs, mem, pc, driver, lo, len, wave, flags)
+    } else {
+        // (The kernel's fastest path is not there: `TierHost::drive_now` first.)
+        unsafe { yavs_rt_drive(env, regs, mem, pc, driver, lo, len, wave, flags) }
+    }
 }
 
 /// `yavs_rt_drive` for a native frame (`TierHost::drive_try`): no frame view and no pc, any delay.

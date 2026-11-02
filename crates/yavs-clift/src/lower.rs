@@ -107,7 +107,7 @@ pub struct Jit {
     deopt_slots: ClifId,
     deopt_end: ClifId,
     /// The kernel-facing callbacks of `rt.rs`, in the order of `KERNEL`.
-    kernel: [ClifId; 21],
+    kernel: [ClifId; 22],
     tables: HashMap<Vec<u8>, DataId>,
     sig: Signature,
     /// Calls between compiled functions without a frame in the interpreter (`NatInfo`) and
@@ -377,6 +377,7 @@ impl Jit {
             (WAIT_SAME, yavs_rt_wait_same as *const u8),
             (DRIVE, yavs_rt_drive as *const u8),
             (DRIVE_BIT, yavs_rt_drive_bit as *const u8),
+            (DRIVE_F, yavs_rt_drive_f as *const u8),
             (CODES, yavs_rt_codes as *const u8),
             (PLANES, yavs_rt_planes as *const u8),
             (NATIVE, yavs_rt_native as *const u8),
@@ -459,6 +460,7 @@ impl Jit {
             imp(REGION, &[I64, I64, I64, I64, I32, I64], None)?,
             imp(WAIT_EDGE, &[I64, I64, I64, I64, I32], Some(I32))?,
             imp(SCAN, &[I64; 11], Some(I32))?,
+            imp(DRIVE_F, &[I64, I32, I32, I64, I64, I64], Some(I32))?,
         ];
         let mut sig = module.make_signature();
         sig.params.extend([AbiParam::new(I64); 3]);
@@ -983,6 +985,9 @@ impl Jit {
             scan: self
                 .module
                 .declare_func_in_func(self.kernel[20], &mut ctx.func),
+            drive_f: self
+                .module
+                .declare_func_in_func(self.kernel[21], &mut ctx.func),
             tables: tabs,
             consts: cons,
             natives,
@@ -1224,6 +1229,9 @@ struct Imports {
     wait_edge: FuncRef,
     /// `yavs_rt_scan(env, mem, ctl, dope, base, i0, x, e, delta, out, depth) -> iterations`.
     scan: FuncRef,
+    /// `yavs_rt_drive_f(mem, pc, driver, lo, wave, len_inertial) -> u32`: a `Drive` of a frame
+    /// waveform at a constant reference, the target's form found by the callee.
+    drive_f: FuncRef,
     tables: HashMap<Vec<u8>, GlobalValue>,
     /// Copies of the constants (up to 4 KiB of bytes) the function takes the address of, which
     /// never change: reads of them need no lookup.
@@ -1431,6 +1439,8 @@ struct Gen<'a> {
     /// Frame mode with the entry's test of the signal table (`sig_hi`): a constant signal
     /// reference needs no test of its own.
     sig_ok: bool,
+    /// The highest signal index of the body's `SigVal`s (the table test of the entry covers it).
+    sig_max: u32,
     /// The `SigVal` of constants just before this instruction, and the one to hand to the next.
     sigval: Option<SigConst>,
     sigval_next: Option<SigConst>,
@@ -2025,6 +2035,7 @@ fn gen_func(
         fresh: Vec::new(),
         defer: false,
         sig_ok: sig_hi.is_some(),
+        sig_max: sig_hi.unwrap_or(0),
         sigval: None,
         sigval_next: None,
         pc: 0,
@@ -4662,7 +4673,11 @@ impl Gen<'_> {
         } else {
             self.env
         };
-        let mut args = vec![env, regs, self.mem];
+        let mut args = if f == self.imp.drive_f {
+            vec![self.mem]
+        } else {
+            vec![env, regs, self.mem]
+        };
         args.extend_from_slice(rest);
         let call = self.b.ins().call(f, &args);
         let r = self.b.inst_results(call)[0];
@@ -6541,6 +6556,22 @@ impl Gen<'_> {
             return (ent, off);
         }
         let (v, l) = (self.ld(sig), self.ld(Reg(sig.0 + 1)));
+        // A constant reference to a signal the entry's table test covers needs no test of its own.
+        if self.sig_ok
+            && let (Some(cv), Some(cl)) = (self.const_of(v), self.const_of(l))
+            && (cv as u64 >> 32) <= u64::from(self.sig_max)
+            && len.map_or(cl != 0, |k| k == cl)
+        {
+            let tab = self
+                .b
+                .ins()
+                .load(I64, self.mf.with_readonly(), self.mem, MEM_SIGTAB as i32);
+            let ent = self
+                .b
+                .ins()
+                .iadd_imm_s(tab, (cv as u64 >> 32) as i64 * SIG_ENT);
+            return (ent, self.c64(cv & 0xffff_ffff));
+        }
         let base = self.b.ins().ushr_imm_s(v, 32);
         let off = self.lo32(v);
         let n = self.mem_ld(MEM_SIGTAB_LEN);
@@ -6976,6 +7007,9 @@ impl Gen<'_> {
         n: Reg,
         mode: yavs_ir::DriveMode,
     ) {
+        if self.drive_thin(pc, driver, target, wave, n, mode) {
+            return;
+        }
         let (slow, join) = self.slow_signal(pc, 0);
         let nv = self.ld(n);
         let one = self.b.ins().icmp_imm_s(IntCC::Equal, nv, 1);
@@ -7045,6 +7079,49 @@ impl Gen<'_> {
         let pcv = self.c32(pc);
         self.call_go(self.imp.drive, &[pcv, drv, lo, len, w, flags], false);
         self.join(join);
+    }
+
+    /// A `Drive` of one waveform element at a constant reference of 1 to 64 elements of a
+    /// signal the entry's table test covers, the waveform in the frame (16 bytes at least inside
+    /// it): `yavs_rt_drive_f` gets the handle, the count and the waveform's address with the
+    /// bytes it may read, and finds the target's form itself, so the call site checks and
+    /// computes nothing of it. False, nothing generated, for any other `Drive`.
+    fn drive_thin(
+        &mut self,
+        pc: u32,
+        driver: Result<u32, Reg>,
+        target: Reg,
+        wave: Reg,
+        n: Reg,
+        mode: yavs_ir::DriveMode,
+    ) -> bool {
+        let (Ok(driver), Some(1), Some(o)) = (driver, self.kint(n), self.frame_of(wave)) else {
+            return false;
+        };
+        if self.nat.is_some() || !self.sig_ok {
+            return false;
+        }
+        // The bytes from the waveform to the end of its composite variable or of the frame.
+        let end = self
+            .objs
+            .iter()
+            .find(|&&(s, e)| u64::from(s) <= o && o < u64::from(e))
+            .map_or(self.frame_len, |&(_, e)| u64::from(e));
+        let avail = end.saturating_sub(o).min(40);
+        let (lo, len) = (self.ld(target), self.ld(Reg(target.0 + 1)));
+        let (Some(l), Some(k)) = (self.const_of(lo), self.const_of(len)) else {
+            return false;
+        };
+        if avail < 16 || !(1..=64).contains(&k) || (l as u64 >> 32) > u64::from(self.sig_max) {
+            return false;
+        }
+        let slots = self.slots();
+        let w = self.b.ins().iadd_imm_s(slots, o as i64);
+        let inertial = i64::from(mode == yavs_ir::DriveMode::Inertial);
+        let lf = self.c64(k | inertial << 32 | (avail as i64) << 33);
+        let (pcv, drv) = (self.c32(pc), self.c32(driver));
+        self.call_go(self.imp.drive_f, &[pcv, drv, lo, w, lf], false);
+        true
     }
 
     /// `yavs_rt_drive_flush` of the `n` kept entries.

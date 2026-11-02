@@ -1169,6 +1169,26 @@ fn via_signal(i: &Inst) -> bool {
     )
 }
 
+/// A signal reference made of constants (`Inst::SigVal`).
+#[derive(Clone, Copy)]
+struct SigConst {
+    dst: Reg,
+    sig: u32,
+    off: i64,
+    len: i64,
+}
+
+/// The out-of-line part of a fixed signal read: the table, the entry's offset in it, the element,
+/// the register it defines and the block that steps the instruction.
+#[derive(Clone, Copy)]
+struct FixedRead {
+    tab: Value,
+    at: i64,
+    off: i64,
+    dst: Reg,
+    step: Block,
+}
+
 /// A slow path left to emit after the function body: step `inst` at `pc` and go on at `join`.
 #[derive(Clone, Copy)]
 struct Slow {
@@ -1178,6 +1198,9 @@ struct Slow {
     keep: bool,
     /// Through `yavs_rt_signal` with this edge argument instead of `yavs_rt_step`.
     edge: Option<u32>,
+    /// A fixed signal read of a signal without codes (`Gen::sig_read_fixed`): the other forms, out
+    /// of line, instead of a step.
+    read: Option<FixedRead>,
     /// In a native frame: `yavs_rt_endstmt` (the end of a statement that recorded temporaries)
     /// instead of leaving.
     endstmt: bool,
@@ -1254,6 +1277,12 @@ struct Gen<'a> {
     fresh: Vec<u32>,
     /// The instruction being generated defers its definitions (`quiet`).
     defer: bool,
+    /// Frame mode with the entry's test of the signal table (`sig_hi`): a constant signal
+    /// reference needs no test of its own.
+    sig_ok: bool,
+    /// The `SigVal` of constants just before this instruction, and the one to hand to the next.
+    sigval: Option<SigConst>,
+    sigval_next: Option<SigConst>,
     /// Its pc.
     pc: u32,
     /// Registers live over more than `MAX_SPAN` instructions: stored at the definition.
@@ -1672,9 +1701,34 @@ fn gen_func(
     });
     // Frame mode: the switch over the entries is made at the end (`dispatch`), when the registers
     // each block start takes as parameters are known.
+    // One test per activation of the table every constant signal reference of the body uses:
+    // no table (no kernel, elaboration) leaves at the entry, where the interpreter reports it.
+    let sig_hi = f
+        .code
+        .iter()
+        .filter_map(|i| match i {
+            Inst::SigVal { sig, .. } => Some(*sig),
+            _ => None,
+        })
+        .max()
+        .filter(|_| !native);
     let dispatch = (!native).then(|| {
         let d = b.create_block();
-        b.ins().jump(d, &[]);
+        if let Some(hi) = sig_hi {
+            let no = b.create_block();
+            b.set_cold_block(no);
+            let n = b
+                .ins()
+                .load(I64, MemFlagsData::trusted(), p[2], MEM_SIGTAB_LEN as i32);
+            let ok = b
+                .ins()
+                .icmp_imm_s(IntCC::UnsignedGreaterThan, n, i64::from(hi));
+            b.ins().brif(ok, d, &[], no, &[]);
+            b.switch_to_block(no);
+            b.ins().jump(exit, &[BlockArg::Value(p[3])]);
+        } else {
+            b.ins().jump(d, &[]);
+        }
         d
     });
     let region = |b: &mut FunctionBuilder<'_>, id: u32, name: &'static str| {
@@ -1758,6 +1812,9 @@ fn gen_func(
         plist: Vec::new(),
         fresh: Vec::new(),
         defer: false,
+        sig_ok: sig_hi.is_some(),
+        sigval: None,
+        sigval_next: None,
         pc: 0,
         keep: vec![true; f.reg_ty.len()],
         snaps: HashMap::new(),
@@ -1990,9 +2047,16 @@ fn gen_func(
         // Deferred stores pass the quiet instructions; the others find the frame as the
         // interpreter would.
         g.pc = pc;
+        g.sigval = g.sigval_next.take().filter(|_| bbs[i].is_none());
+        let fixed = match inst {
+            Inst::SigReadScalar { sig, .. } => g
+                .sigval
+                .filter(|sv| sv.dst == sig && sv.len == 1 && sv.off <= i64::from(i32::MAX / 2)),
+            _ => None,
+        };
         g.defer = g.nat.is_none()
             && g.live.is_some()
-            && quiet(&inst)
+            && (quiet(&inst) || fixed.is_some())
             && (g.batch.is_none() || batch_pure(prog, f, &inst));
         if g.nat.is_none() && !g.defer {
             g.spill(pc);
@@ -2885,10 +2949,28 @@ fn gen_func(
                 offset,
                 len,
             } => {
+                // A constant reference: the entry tested the table.
+                let max = i64::from(u32::MAX);
+                if g.sig_ok
+                    && let (Some(o), Some(l)) = (g.kint(offset), g.kint(len))
+                    && (0..=max).contains(&o)
+                    && (0..=max).contains(&l)
+                {
+                    let v = g.c64(i64::from(sig) << 32 | o);
+                    g.st(dst, v);
+                    let lv = g.c64(l);
+                    g.st(Reg(dst.0 + 1), lv);
+                    g.sigval_next = Some(SigConst {
+                        dst,
+                        sig,
+                        off: o,
+                        len: l,
+                    });
+                    continue;
+                }
                 // `Machine::sig_val`: element range within u32, an instance signal.
                 let (slow, join) = g.slow_path(pc, &inst);
                 let (o, l) = (g.ld(offset), g.ld(len));
-                let max = i64::from(u32::MAX);
                 let n = g.mem_ld(MEM_NSIGS);
                 let a = g.b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, o, max);
                 let b = g.b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, l, max);
@@ -3094,6 +3176,9 @@ fn gen_func(
                 g.b.ins().jump(d, &[]);
                 open = false;
             }
+            Inst::SigReadScalar { dst, .. } if let Some(sv) = fixed => {
+                g.sig_read_fixed(pc, dst, sv)
+            }
             Inst::SigReadScalar { dst, sig } => g.sig_read_scalar(pc, dst, sig),
             Inst::Edge { dst, kind, sig } => g.edge(pc, kind, sig, dst, 0),
             Inst::SigAttr {
@@ -3252,6 +3337,18 @@ fn gen_func(
                     .collect()
             })
         };
+        if let Some(r) = s.read {
+            let ent = g.b.ins().iadd_imm_s(r.tab, r.at);
+            let off = g.c64(r.off);
+            let first = g.b.func.dfg.num_blocks();
+            let v = g.sig_read_other(ent, off, r.step);
+            for k in first..g.b.func.dfg.num_blocks() {
+                g.b.set_cold_block(Block::from_u32(k as u32));
+            }
+            g.b.ins().store(g.rf, v, g.regs, r.dst.0 as i32 * 8);
+            g.b.ins().jump(s.join, &[BlockArg::Value(v)]);
+            continue;
+        }
         if s.xstep && g.nat.is_some() {
             let inst = f.code[s.pc as usize];
             g.native_step(s.pc, &inst, f);
@@ -4368,6 +4465,7 @@ impl Gen<'_> {
             pc,
             keep: keeps_objects(i),
             edge: via_signal(i).then_some(0),
+            read: None,
             endstmt: false,
             xstep: false,
         });
@@ -6044,12 +6142,19 @@ impl Gen<'_> {
     /// `slow_path` for a signal operation: the slow block calls `yavs_rt_signal` (`edge`).
     fn slow_signal(&mut self, pc: u32, edge: u32) -> (Block, Block) {
         let (block, join) = (self.b.create_block(), self.b.create_block());
+        if self.nat.is_none() {
+            let rs = self.pend_live(pc);
+            if !rs.is_empty() {
+                self.snaps.insert(block, rs);
+            }
+        }
         self.slows.push(Slow {
             block,
             join,
             pc,
             keep: false,
             edge: Some(edge),
+            read: None,
             endstmt: false,
             xstep: false,
         });
@@ -6071,6 +6176,19 @@ impl Gen<'_> {
     /// and the element offset in it; takes `slow` unless the reference is a plain one of `len`
     /// elements (any number but 0 for `None`) to an instance signal the table has.
     fn sig_entry(&mut self, sig: Reg, len: Option<i64>, slow: Block) -> (Value, Value) {
+        // The `SigVal` of constants before it: the function's entry tested the table.
+        if let Some(sv) = self.sigval
+            && sv.dst == sig
+            && len.map_or(sv.len != 0, |k| k == sv.len)
+        {
+            let tab = self
+                .b
+                .ins()
+                .load(I64, self.mf.with_readonly(), self.mem, MEM_SIGTAB as i32);
+            let ent = self.b.ins().iadd_imm_s(tab, i64::from(sv.sig) * SIG_ENT);
+            let off = self.c64(sv.off);
+            return (ent, off);
+        }
         let (v, l) = (self.ld(sig), self.ld(Reg(sig.0 + 1)));
         let base = self.b.ins().ushr_imm_s(v, 32);
         let off = self.lo32(v);
@@ -6106,6 +6224,65 @@ impl Gen<'_> {
         self.st(dst, byte);
         self.b.ins().jump(join, &[]);
         self.start(planes);
+        let v = self.sig_read_other(ent, off, slow);
+        self.st(dst, v);
+        self.join(join);
+    }
+
+    /// `Inst::SigReadScalar` of the `SigVal` before it (`fixed_read`): the entry's table was tested
+    /// at the function's entry and neither the table nor its entries change during a simulation
+    /// (`TierHost::view`), so they load read-only. A signal with no code for the element goes
+    /// to the other forms, out of line: the form depends on the instance, a body does not fix it.
+    fn sig_read_fixed(&mut self, pc: u32, dst: Reg, sv: SigConst) {
+        let (sig, off) = (sv.sig, sv.off);
+        let (step, join) = self.slow_signal(pc, 0);
+        let other = self.b.create_block();
+        let ro = self.mf.with_readonly();
+        let tab = self.b.ins().load(I64, ro, self.mem, MEM_SIGTAB as i32);
+        let at = i64::from(sig) * SIG_ENT;
+        let ero = MemFlagsData::trusted().with_readonly();
+        let field = |g: &mut Self, f: i64| g.b.ins().load(I64, ero, tab, (at + f) as i32);
+        let codes = field(self, SIG_CODES);
+        // No codes is length 0 and a null pointer; element 0 needs only the second.
+        let has = if off == 0 {
+            self.b.ins().icmp_imm_s(IntCC::NotEqual, codes, 0)
+        } else {
+            let len = field(self, SIG_LEN);
+            self.b
+                .ins()
+                .icmp_imm_s(IntCC::UnsignedGreaterThan, len, off)
+        };
+        self.guard(has, other);
+        let byte = self
+            .b
+            .ins()
+            .uload8(I64, MemFlagsData::trusted(), codes, off as i32);
+        self.st(dst, byte);
+        self.slows.push(Slow {
+            block: other,
+            join,
+            pc,
+            keep: false,
+            edge: None,
+            read: Some(FixedRead {
+                tab,
+                at,
+                off,
+                dst,
+                step,
+            }),
+            endstmt: false,
+            xstep: false,
+        });
+        // The value stays in hand after the join, a register stored here too.
+        self.join_with(join, &[dst.0]);
+    }
+
+    /// A read of the element at `off` of the signal at `ent` that is not in its codes: the four
+    /// plane bits of a logic signal, or the bytes of an enumeration, integer, boolean or real one.
+    fn sig_read_other(&mut self, ent: Value, off: Value, slow: Block) -> Value {
+        let out = self.b.create_block();
+        let res = self.b.append_block_param(out, I64);
         let plen = self.ent_ld(ent, SIG_PLEN);
         let inside = self.b.ins().icmp(IntCC::UnsignedLessThan, off, plen);
         self.guard(inside, slow);
@@ -6148,8 +6325,7 @@ impl Gen<'_> {
         let v4 = self.b.ins().sload32(MemFlagsData::trusted(), p, 0);
         self.b.ins().jump(done, &[BlockArg::Value(v4)]);
         self.start(done);
-        self.st(dst, v);
-        self.b.ins().jump(join, &[]);
+        self.b.ins().jump(out, &[BlockArg::Value(v)]);
         // A logic signal wider than its codes: the four plane bits.
         self.start(logic);
         let first = self.ent_ld(ent, SIG_OFF);
@@ -6166,8 +6342,9 @@ impl Gen<'_> {
             let bit = self.b.ins().ishl_imm_s(bit, i64::from(k));
             code = self.b.ins().bor(code, bit);
         }
-        self.st(dst, code);
-        self.join(join);
+        self.b.ins().jump(out, &[BlockArg::Value(code)]);
+        self.start(out);
+        res
     }
 
     /// The clock-edge test `kind` of one element (`Inst::Edge`, or the `rising_edge` /

@@ -184,45 +184,57 @@ pub static BREAK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 /// The `Mem` view (parameter `at` of the entry block) in the pinned register: set at the entry,
 /// read where it is used, the caller's value back before each return. Without it the view is one
 /// value live through the whole function, spilled and reloaded from the stack at most uses (8 bytes
-/// each, 8 to 14 percent of the code of big processes).
+/// each, 8 to 14 percent of the code of big processes). One read serves the uses that follow it in
+/// the block (and in blocks that only it reaches) up to the next call, which would spill it;
+/// `get_pinned_reg` is a real `mov`, never merged or used as an address by Cranelift.
 fn pin_mem(func: &mut ir::Function, at: usize) {
     use cranelift_codegen::cursor::{Cursor, FuncCursor};
+    use cranelift_codegen::flowgraph::ControlFlowGraph;
     let Some(entry) = func.layout.entry_block() else {
         return;
     };
     let mem = func.dfg.block_params(entry)[at];
-    let insts: Vec<ir::Inst> = func
+    let cfg = ControlFlowGraph::with_function(func);
+    let blocks: Vec<(ir::Block, Vec<ir::Inst>)> = func
         .layout
         .blocks()
-        .flat_map(|b| func.layout.block_insts(b).collect::<Vec<_>>())
+        .map(|b| (b, func.layout.block_insts(b).collect()))
         .collect();
+    // The pinned-register read live at the end of each block, once the block is done.
+    let mut out: HashMap<ir::Block, Option<ir::Value>> = HashMap::new();
     let mut pos = FuncCursor::new(func);
     pos.goto_first_insertion_point(entry);
     let saved = pos.ins().get_pinned_reg(I64);
     pos.ins().set_pinned_reg(mem);
-    for inst in insts {
-        let loc = pos.func.srcloc(inst);
-        pos.goto_inst(inst);
-        pos.set_srcloc(loc);
-        if pos.func.dfg.insts[inst].opcode() == ir::Opcode::Return {
-            pos.ins().set_pinned_reg(saved);
-        }
-        let uses = pos
-            .func
-            .dfg
-            .inst_args(inst)
-            .iter()
-            .filter(|&&v| v == mem)
-            .count();
-        if uses == 0 {
-            continue;
-        }
-        let m = pos.ins().get_pinned_reg(I64);
-        for v in pos.func.dfg.inst_args_mut(inst) {
-            if *v == mem {
-                *v = m;
+    for (b, insts) in blocks {
+        // A block with one predecessor, already done, continues its read (it dominates the block).
+        let mut preds = cfg.pred_iter(b);
+        let mut cur = match (preds.next(), preds.next()) {
+            (Some(p), None) if p.block != b => out.get(&p.block).copied().flatten(),
+            _ => None,
+        };
+        for inst in insts {
+            let loc = pos.func.srcloc(inst);
+            pos.goto_inst(inst);
+            pos.set_srcloc(loc);
+            let op = pos.func.dfg.insts[inst].opcode();
+            if op == ir::Opcode::Return {
+                pos.ins().set_pinned_reg(saved);
+            }
+            let uses = pos.func.dfg.inst_args(inst).contains(&mem);
+            if uses {
+                let m = *cur.get_or_insert_with(|| pos.ins().get_pinned_reg(I64));
+                for v in pos.func.dfg.inst_args_mut(inst) {
+                    if *v == mem {
+                        *v = m;
+                    }
+                }
+            }
+            if op.is_call() {
+                cur = None;
             }
         }
+        out.insert(b, cur);
     }
 }
 

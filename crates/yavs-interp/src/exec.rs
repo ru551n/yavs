@@ -3202,11 +3202,6 @@ impl Machine {
         ) else {
             return false;
         };
-        let x = match wd {
-            Width::B1 => x & 0xff,
-            Width::B4 => x & 0xffff_ffff,
-            _ => x,
-        };
         let Elem::Bytes(es) = s.ty.elem else {
             return false;
         };
@@ -3214,8 +3209,42 @@ impl Machine {
             && c.assign_bytes_now(
                 d.id,
                 yavs_kernel::Range::new(s.off + v as u32, 1),
-                &x.to_le_bytes()[..es as usize],
+                &store_bytes(x, wd)[..es as usize],
             )
+    }
+
+    /// `drive_byte_now` with a delay: `drive_at`'s one scalar byte case without the waveform.
+    /// False, nothing done, for a reference of several parts or another kind of signal.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
+    fn drive_byte_at(
+        &mut self,
+        ctx: &mut Option<&mut Ctx<'_>>,
+        driver: u32,
+        target: Reg,
+        time: u64,
+        x: u64,
+        wd: Width,
+        mode: DriveMode,
+    ) -> R<bool> {
+        if self.is_multi(target) {
+            return Ok(false);
+        }
+        let (sr, ty) = self.sigref(target)?;
+        let Elem::Bytes(es) = ty.elem else {
+            return Ok(false);
+        };
+        if es > 8 || sr.range.map_or(0, |r| r.len) != 1 {
+            return Ok(false);
+        }
+        let d = self.driver(driver)?;
+        let t = to_time(time as i64)?;
+        let mode = self.delay_mode(mode, None)?;
+        let Some(c) = ctx.as_deref_mut() else {
+            return rt_err_s!("signal or wait operation during elaboration");
+        };
+        c.assign_bytes(d.id, sr.range, t, &store_bytes(x, wd)[..es as usize], mode)?;
+        Ok(true)
     }
 
     /// The drives of `run`, from the front, that change nothing: each is skipped as `LSetDrive`
@@ -7083,26 +7112,25 @@ impl Machine {
                     size,
                     w,
                     wd,
+                    inertial,
                 } => {
-                    if self.regs[time as usize] != 0
-                        || !self.drive_byte_now(
-                            ctx,
+                    self.op_byte_drive(
+                        prog,
+                        f,
+                        code,
+                        k,
+                        top,
+                        ctx,
+                        [
+                            v,
                             driver.into(),
-                            Reg(target.into()),
-                            self.regs[v as usize],
-                            wd,
-                        )
-                    {
-                        // A delay, or not a lone byte signal: the instructions as the IR has them.
-                        t!(self.waveform_head(size, time, w, 0));
-                        self.replay_lset_drive(
-                            prog,
-                            f,
-                            code.at.get(k).copied().unwrap_or(0),
-                            top,
-                            ctx,
-                        )?;
-                    }
+                            target.into(),
+                            time.into(),
+                            size.into(),
+                            w.into(),
+                        ],
+                        (wd, inertial),
+                    )?;
                     k += 1;
                     enter!();
                 }
@@ -8374,6 +8402,48 @@ impl Machine {
         } else {
             let d = self.driver(driver)?;
             self.drive(ctx, d, Some(target), wave, n, mode, reject)?;
+        }
+        Ok(())
+    }
+
+    /// `Op::ByteDrive`, out of line (as an arm of `run_ops` it moved the loop's code generation).
+    /// `r` is `v, driver, target, time, size, w`.
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
+    fn op_byte_drive(
+        &mut self,
+        prog: &Program,
+        f: &Func,
+        code: &pre::Code,
+        k: usize,
+        top: usize,
+        ctx: &mut Option<&mut Ctx<'_>>,
+        r: [u32; 6],
+        (wd, inertial): (Width, bool),
+    ) -> R<()> {
+        let [v, driver, target, time, size, w] = r;
+        let tg = Reg(target);
+        let (x, at) = (self.regs[v as usize], self.regs[time as usize]);
+        let done = if at == 0 {
+            self.drive_byte_now(ctx, driver, tg, x, wd)
+        } else {
+            let mode = if inertial {
+                DriveMode::Inertial
+            } else {
+                DriveMode::Transport
+            };
+            match self.drive_byte_at(ctx, driver, tg, at, x, wd, mode) {
+                Ok(done) => done,
+                Err(e) => return Err(self.fault_at(top, code, k, e)),
+            }
+        };
+        if !done {
+            // A reference of several parts or not a lone byte signal: the instructions as the IR
+            // has them.
+            if let Err(e) = self.waveform_head(size as u16, time as u16, w as u16, 0) {
+                return Err(self.fault_at(top, code, k, e));
+            }
+            self.replay_lset_drive(prog, f, code.at.get(k).copied().unwrap_or(0), top, ctx)?;
         }
         Ok(())
     }
@@ -12457,6 +12527,16 @@ pub(crate) fn cell(b: &[u8]) -> u64 {
     let n = b.len().min(8);
     x[..n].copy_from_slice(&b[..n]);
     u64::from_le_bytes(x)
+}
+
+/// The 8 bytes a waveform temporary holds after a zeroing and a `Store` of `v` with width `w`.
+#[inline(always)]
+fn store_bytes(v: u64, w: Width) -> [u8; 8] {
+    match w {
+        Width::B1 => (v & 0xff).to_le_bytes(),
+        Width::B4 => (v & 0xffff_ffff).to_le_bytes(),
+        _ => v.to_le_bytes(),
+    }
 }
 
 /// [`cell`] of `w.bytes()` bytes, `w` known: `B4` sign-extends.

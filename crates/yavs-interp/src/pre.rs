@@ -5040,7 +5040,7 @@ impl Code {
                     a: a.0,
                     b: b.0,
                 },
-                Inst::LogicOp { op, dst, a, b, n } if crate::exec::block_gate(op).is_some() => {
+                Inst::LogicOp { op, dst, a, b, n } if crate::exec::is_block_gate(op) => {
                     Op::LogicGate {
                         op,
                         dst: dst.0,

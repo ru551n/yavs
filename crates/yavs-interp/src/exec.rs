@@ -1107,22 +1107,27 @@ fn plane_words_at(b: &[u8], at: usize) -> [u64; 4] {
     plane_words(&b[at..at + 32])
 }
 
-type BlockFn = fn([u64; 4], [u64; 4]) -> [u64; 4];
+/// Is `op` a gate or `not` (`LogicOp` of blocks, `gate_block`)? The others take the vector path.
+pub(crate) fn is_block_gate(op: LOp) -> bool {
+    matches!(
+        op,
+        LOp::And | LOp::Or | LOp::Xor | LOp::Nand | LOp::Nor | LOp::Xnor | LOp::Not
+    )
+}
 
-/// The block function of a two-operand gate or `not` (`LogicOp` of one block); the others take
-/// the vector path.
-pub(crate) fn block_gate(op: LOp) -> Option<BlockFn> {
+/// One block of a gate or `not` (`is_block_gate`); `y` is unused by `Not`.
+#[inline(always)]
+fn gate_block(op: LOp, x: [u64; 4], y: [u64; 4]) -> [u64; 4] {
     use yavs_logic::{BinOp, Planes};
-    Some(match op {
-        LOp::And => |x, y| Planes::bin_block(BinOp::And, x, y),
-        LOp::Or => |x, y| Planes::bin_block(BinOp::Or, x, y),
-        LOp::Xor => |x, y| Planes::bin_block(BinOp::Xor, x, y),
-        LOp::Nand => |x, y| Planes::not_block(Planes::bin_block(BinOp::And, x, y)),
-        LOp::Nor => |x, y| Planes::not_block(Planes::bin_block(BinOp::Or, x, y)),
-        LOp::Xnor => |x, y| Planes::not_block(Planes::bin_block(BinOp::Xor, x, y)),
-        LOp::Not => |x, _| Planes::not_block(x),
-        _ => return None,
-    })
+    match op {
+        LOp::And => Planes::bin_block(BinOp::And, x, y),
+        LOp::Or => Planes::bin_block(BinOp::Or, x, y),
+        LOp::Xor => Planes::bin_block(BinOp::Xor, x, y),
+        LOp::Nand => Planes::not_block(Planes::bin_block(BinOp::And, x, y)),
+        LOp::Nor => Planes::not_block(Planes::bin_block(BinOp::Or, x, y)),
+        LOp::Xnor => Planes::not_block(Planes::bin_block(BinOp::Xor, x, y)),
+        _ => Planes::not_block(x),
+    }
 }
 
 /// The four plane words of the block `b` (32 bytes).
@@ -8431,21 +8436,45 @@ impl Machine {
     /// vectors built; `false` for the other operations, which take the vector path.
     #[inline(never)]
     pub(crate) fn logic_blocks(&mut self, op: LOp, dst: Reg, a: Reg, b: Reg, n: u64) -> R<bool> {
-        let Some(f) = block_gate(op).filter(|_| n > 0) else {
+        if n == 0 || !is_block_gate(op) {
             return Ok(false);
-        };
+        }
         // (`b` of a unary op is any register: never read.)
         let unary = op == LOp::Not;
         let (pa, pb, pd) = (self.r(a), self.r(b), self.r(dst));
-        for (i, k) in (0..n.div_ceil(64)).zip((0..).step_by(32)) {
+        let nb = n.div_ceil(64) as usize;
+        let mask = |i: usize| yavs_logic::wide::nmask((n - 64 * i as u64).min(64) as usize);
+        // Up to 8 blocks: one lookup per operand and one for the result, computed before the write.
+        if nb <= 8 {
+            let mut res = [[0u64; 4]; 8];
+            let len = 32 * nb as u64;
+            let sa = self.rd_hot(pa, len)?;
+            let sb = if unary { sa } else { self.rd_hot(pb, len)? };
+            for (i, r) in res.iter_mut().take(nb).enumerate() {
+                let x = plane_words_at(sa, 32 * i);
+                let y = if unary { x } else { plane_words_at(sb, 32 * i) };
+                *r = gate_block(op, x, y).map(|w| w & mask(i));
+            }
+            let out = self.wr(pd, len)?;
+            for (c, w) in out
+                .as_chunks_mut::<8>()
+                .0
+                .iter_mut()
+                .zip(res.as_flattened())
+            {
+                *c = w.to_le_bytes();
+            }
+            return Ok(true);
+        }
+        for i in 0..nb {
+            let k = 32 * i as u64;
             let x = plane_words(self.rd_hot(add_addr(pa, k)?, 32)?);
             let y = if unary {
                 x
             } else {
                 plane_words(self.rd_hot(add_addr(pb, k)?, 32)?)
             };
-            let m = yavs_logic::wide::nmask((n - 64 * i).min(64) as usize);
-            let v = f(x, y).map(|w| w & m);
+            let v = gate_block(op, x, y).map(|w| w & mask(i));
             let out = self.wr(add_addr(pd, k)?, 32)?;
             for (c, w) in out.as_chunks_mut::<8>().0.iter_mut().zip(v) {
                 *c = w.to_le_bytes();

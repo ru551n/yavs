@@ -3585,6 +3585,10 @@ runs (`clift` eager 0.5 s, LLVM O2 0.37 s). On clocked RTL it executes more inst
 (rtl_ff 26.5 G against 16 G): the entry and exit of compiled code and the callbacks cost more than the interpreter's
 predecoded dispatch.
 
+### Record signal images and gathers into the variable (2026-11-02, #1065, branch `perf/inv-mirror2`)
+
+A whole record signal read by a process 16 times gets an image in the value's layout, kept by the kernel and written where a leaf changed; a whole read is then one copy, and a process gives the image up when it is written more than it saves. `v := r` reads the signal into `v` directly. Microwatt -5 percent instructions interpreted and all compiled, GRLIB -2.5 percent; nothing measured worse beyond its noise. Details: `docs/decisions.md` "Record signal images".
+
 ### Frame objects: full fact table and whole copies (2026-11-02, #1059, branch `perf/iterative`)
 
 A block of many slices between process variables lost its folding after eight statements, 2x the instructions at auto; a full table of memory facts now forgets temporaries. A whole copy between two variables has a direct path. Nine windows at auto within the noise; details in `docs/decisions.md`.

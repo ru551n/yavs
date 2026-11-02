@@ -1,0 +1,2 @@
+exit	1
+diag	fatal	1000000	10000	-	limit of 10000 delta cycles reached\n   = Note: you can increase this limit with --stop-delta

@@ -1,0 +1,2 @@
+exit	0
+diag	note	2000000	0	:settle_latch:check	q=1

@@ -1,0 +1,7 @@
+exit	0
+diag	note	10000000	0	:settle_tree:show	acc=00
+diag	note	20000000	0	:settle_tree:show	acc=10
+diag	note	30000000	0	:settle_tree:show	acc=22
+diag	note	40000000	0	:settle_tree:show	acc=50
+diag	note	50000000	0	:settle_tree:show	acc=AA
+diag	note	60000000	0	:settle_tree:show	acc=51

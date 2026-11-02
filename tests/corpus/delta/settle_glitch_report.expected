@@ -1,0 +1,4 @@
+exit	0
+diag	note	1000000	1	:settle_glitch_report:mon	x and y both high
+diag	note	3000000	1	:settle_glitch_report:mon	x and y both high
+diag	note	5000000	1	:settle_glitch_report:mon	x and y both high

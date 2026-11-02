@@ -1011,6 +1011,8 @@ pub struct SimControl {
     ops: Vec<SignalOp>,
     /// Signals with events in the current cycle.
     changed_sigs: Vec<u32>,
+    /// Per signal: it is on `changed_sigs`.
+    in_changed: Vec<bool>,
     /// Images of record signals (`image.rs`).
     images: crate::image::Images,
     ready: Vec<u32>,
@@ -1206,6 +1208,18 @@ fn convert(
 pub(crate) struct Group {
     pub(crate) parts: Vec<(u32, Range)>,
     pub(crate) f: crate::Resolver,
+}
+
+/// Signal `$s` had an event: onto `changed_sigs` once per cycle (the flag, not a sort and dedup).
+macro_rules! mark_changed {
+    ($self:ident, $s:expr) => {{
+        let s: u32 = $s;
+        let f = &mut $self.in_changed[s as usize];
+        if !*f {
+            *f = true;
+            $self.changed_sigs.push(s);
+        }
+    }};
 }
 
 impl SimControl {
@@ -1469,6 +1483,7 @@ impl SimControl {
             direct_sigs: Vec::new(),
             ops: Vec::new(),
             changed_sigs: Vec::new(),
+            in_changed: vec![false; nsignals as usize],
             images: Default::default(),
             ready: Vec::new(),
             ready_mono: true,
@@ -2348,9 +2363,10 @@ impl SimControl {
                 self.images.push(&self.signals, &self.changed_sigs);
             }
         }
-        if self.changed_sigs.len() > 1 {
+        // Wake order does not depend on the signal order (`order` sorts the batch), except for a
+        // shuffled run and the observers of value changes, which see the signals in id order.
+        if self.changed_sigs.len() > 1 && (self.rng.is_some() || self.watch_changes) {
             self.changed_sigs.sort_unstable();
-            self.changed_sigs.dedup();
         }
 
         // Value-change bus, then 14.7.5.3 d: resume sensitive processes.
@@ -2361,6 +2377,7 @@ impl SimControl {
         // Nothing below adds to `changed_sigs`: walked in place, cleared after.
         for i in 0..self.changed_sigs.len() {
             let s = self.changed_sigs[i];
+            self.in_changed[s as usize] = false;
             if self.idle_active {
                 self.arm_readers(s);
             }
@@ -2695,7 +2712,7 @@ impl SimControl {
                     }
                     self.queue.next_delta.clear();
                     if finish_signal(sig, now, cycle)? {
-                        self.changed_sigs.push(s0);
+                        mark_changed!(self, s0);
                     }
                 }
                 self.finish_direct()?;
@@ -2790,7 +2807,7 @@ impl SimControl {
                     }
                 }
                 if finish_signal(sig, now, cycle)? {
-                    self.changed_sigs.push(s0);
+                    mark_changed!(self, s0);
                 }
                 entries.clear();
             }
@@ -2902,7 +2919,7 @@ impl SimControl {
             }
             sig.eff_dirty = eff;
             if changed {
-                self.changed_sigs.push(s);
+                mark_changed!(self, s);
             }
             for f in self.push_down(s, true)? {
                 let sig = &mut self.signals[f as usize];
@@ -2988,7 +3005,7 @@ impl SimControl {
             fused
         };
         if changed {
-            self.changed_sigs.push(s0);
+            mark_changed!(self, s0);
         }
         if fused
             && let Some(q) = quick
@@ -3154,7 +3171,7 @@ impl SimControl {
         {
             self.direct_sigs.clear();
             if changed && !(!self.watch_changes && self.wake_sole(s)) {
-                self.changed_sigs.push(s);
+                mark_changed!(self, s);
             }
             return Ok(());
         }
@@ -3174,7 +3191,7 @@ impl SimControl {
                 if !self.watch_changes && self.wake_sole(s) {
                     continue;
                 }
-                self.changed_sigs.push(s);
+                mark_changed!(self, s);
             }
         }
         self.direct_sigs.clear();
@@ -3254,7 +3271,7 @@ impl SimControl {
                 );
             }
             if finish_signal(sig, now, cycle)? {
-                self.changed_sigs.push(s as u32);
+                mark_changed!(self, s as u32);
             }
             return Ok(());
         }
@@ -3286,7 +3303,7 @@ impl SimControl {
                     );
                 }
                 match finish_signal(sig, now, cycle) {
-                    Ok(true) => self.changed_sigs.push(s as u32),
+                    Ok(true) => mark_changed!(self, s as u32),
                     Ok(false) => {}
                     Err(e) => _ = failed.get_or_insert(e),
                 }
@@ -3351,7 +3368,7 @@ impl SimControl {
         };
         for (run, changed) in due.chunk_by(|a, b| a.0 == b.0).zip(results) {
             if changed? {
-                self.changed_sigs.push(run[0].0);
+                mark_changed!(self, run[0].0);
             }
         }
         Ok(())
@@ -3567,7 +3584,7 @@ impl SimControl {
                 sig.driving.copy(0, &v, 0, full.len as usize);
                 sig.mark_active(full, now, cycle);
                 if sig.update_effective(full, now, cycle) {
-                    self.changed_sigs.push(self.implicits[i].sig.0);
+                    mark_changed!(self, self.implicits[i].sig.0);
                 }
             }
         }

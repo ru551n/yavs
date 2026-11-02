@@ -1760,12 +1760,16 @@ impl Signal {
                 }),
             }
         } else {
+            // The block's two stamp rows as slices, bounds checked once, not per element.
+            let end = (base + 64).min(len);
+            let (a, b) = st.split_at_mut(2 * len);
+            let (ec, et) = (&mut a[base..end], &mut b[base..end]);
             let mut v = m;
             while v != 0 {
-                let e = base + v.trailing_zeros() as usize;
+                let i = v.trailing_zeros() as usize;
                 v &= v - 1;
-                st[e] = cycle;
-                st[2 * len + e] = t;
+                ec[i] = cycle;
+                et[i] = t;
             }
         }
         if self.watched && !self.cuts.is_empty() {

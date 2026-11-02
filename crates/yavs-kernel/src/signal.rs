@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use smallvec::{SmallVec, smallvec};
 
-use crate::error::ErrorKind;
+use crate::error::{ErrorKind, cold};
 use crate::time::Time;
 use crate::value::{
     Buf, Elem, SignalType, Value, bits, bytes_eq, fill_bits, plane_code, plane_is, put_bits,
@@ -1356,8 +1356,12 @@ impl Signal {
                         .copy(part.offset as usize, &d.value, rel, part.len as usize);
                 }
                 (None, _) => {
-                    let msg = format!("unresolved signal {} has several sources", self.name);
-                    return Err(ErrorKind::Internal(msg));
+                    return Err(cold(|| {
+                        ErrorKind::Internal(format!(
+                            "unresolved signal {} has several sources",
+                            self.name
+                        ))
+                    }));
                 }
                 (Some(res), ds) => {
                     // An unguarded signal has the one run of all its sources: no list of runs.

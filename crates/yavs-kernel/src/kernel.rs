@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use smallvec::SmallVec;
 
 use crate::builder::{PortConv, PortMode, ProcFlags};
-use crate::error::{ErrorKind, SimError};
+use crate::error::{ErrorKind, SimError, cold};
 use crate::process::{
     ACT_ASSIGNED, ACT_SLOW, Ctx, DriverInfo, Effect, LiveSink, OpMode, Out, OutB, OutV, ProcId,
     ProcState, Process, Severity, Shared, SignalOp, check_ref, make_op,
@@ -340,6 +340,8 @@ impl Hook<'_> {
         self.delta
     }
 
+    #[cold]
+    #[inline(never)]
     fn err(&self, k: ErrorKind) -> SimError {
         SimError::at(k, self.now, self.delta)
     }
@@ -1634,7 +1636,9 @@ impl SimControl {
                 self.live.then_some(&mut self.callouts),
             )?;
             if p.slots.len() != p.actual.len() {
-                return Err(ErrorKind::Internal("out-port without a source slot".into()));
+                return Err(cold(|| {
+                    ErrorKind::Internal("out-port without a source slot".into())
+                }));
             }
             let same = p.conv.to_actual.is_none() && p.formal.len() == p.actual.len();
             for (i, ((v, &(a, ar)), &slot)) in
@@ -1685,7 +1689,9 @@ impl SimControl {
                 };
                 let (src, formal) = signal_pair(&mut self.signals, a.0 as usize, f.0 as usize);
                 let layer = formal.port_in.as_mut().ok_or_else(|| {
-                    ErrorKind::Internal(format!("in-port {} without a port layer", formal.name))
+                    cold(|| {
+                        ErrorKind::Internal(format!("in-port {} without a port layer", formal.name))
+                    })
                 })?;
                 layer.value.copy(
                     fr.offset as usize,
@@ -1740,7 +1746,9 @@ impl SimControl {
                 };
                 let formal = &mut self.signals[f.0 as usize];
                 let layer = formal.port_in.as_mut().ok_or_else(|| {
-                    ErrorKind::Internal(format!("in-port {} without a port layer", formal.name))
+                    cold(|| {
+                        ErrorKind::Internal(format!("in-port {} without a port layer", formal.name))
+                    })
                 })?;
                 layer.value.copy(fr.offset as usize, &v, 0, fr.len as usize);
                 if active {
@@ -1807,7 +1815,7 @@ impl SimControl {
     pub fn process_name(&self, p: ProcId) -> Result<&str, SimError> {
         let name = (self.names)
             .get(p.0 as usize)
-            .ok_or_else(|| self.err(ErrorKind::BadRef(format!("no process {}", p.0))))?;
+            .ok_or_else(|| cold(|| self.err(ErrorKind::BadRef(format!("no process {}", p.0)))))?;
         Ok(name)
     }
 
@@ -3202,10 +3210,9 @@ impl SimControl {
         // The usual clocked case, every driver on one signal: no job list, no pool.
         if due.first().map(|d| d.0) == due.last().map(|d| d.0) {
             let s = due[0].0 as usize;
-            let sig = self
-                .signals
-                .get_mut(s)
-                .ok_or_else(|| ErrorKind::Internal(format!("driver of missing signal {s}")))?;
+            let sig = self.signals.get_mut(s).ok_or_else(|| {
+                cold(|| ErrorKind::Internal(format!("driver of missing signal {s}")))
+            })?;
             for &(_, d) in due.iter() {
                 let info = &self.drivers[d as usize];
                 let slot = slot_mut(&mut self.slots[info.owner.0 as usize]);
@@ -3234,10 +3241,9 @@ impl SimControl {
             let mut failed = None;
             for run in due.chunk_by(|a, b| a.0 == b.0) {
                 let s = run[0].0 as usize;
-                let sig = self
-                    .signals
-                    .get_mut(s)
-                    .ok_or_else(|| ErrorKind::Internal(format!("driver of missing signal {s}")))?;
+                let sig = self.signals.get_mut(s).ok_or_else(|| {
+                    cold(|| ErrorKind::Internal(format!("driver of missing signal {s}")))
+                })?;
                 for &(_, d) in run {
                     let info = &self.drivers[d as usize];
                     let slot = slot_mut(&mut self.slots[info.owner.0 as usize]);
@@ -3261,9 +3267,9 @@ impl SimControl {
         let mut next = 0;
         for run in due.chunk_by(|a, b| a.0 == b.0) {
             let s = run[0].0 as usize;
-            let sig = it
-                .nth(s - next)
-                .ok_or_else(|| ErrorKind::Internal(format!("driver of missing signal {s}")))?;
+            let sig = it.nth(s - next).ok_or_else(|| {
+                cold(|| ErrorKind::Internal(format!("driver of missing signal {s}")))
+            })?;
             next = s + 1;
             jobs.push((sig, run));
         }

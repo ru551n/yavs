@@ -1215,6 +1215,8 @@ impl Ctx<'_> {
 
     /// An error with this process, time and delta attached. The interpreter adds its call
     /// stack to `trace`.
+    #[cold]
+    #[inline(never)]
     pub fn error(&self, kind: ErrorKind) -> SimError {
         let mut e = SimError::at(kind, self.sh.now, self.sh.delta);
         e.process = Some((self.pid, self.sh.names[self.pid.0 as usize].clone()));

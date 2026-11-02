@@ -525,7 +525,7 @@ impl Machine {
                 .inst
                 .sigs
                 .get(l.sig as usize)
-                .ok_or_else(|| ice(format!("no instance signal {}", l.sig)))?;
+                .ok_or_else(|| cold(|| ice(format!("no instance signal {}", l.sig))))?;
             let ok = match l.kind {
                 LeafKind::LogicScalar | LeafKind::LogicVec => s.ty.elem == Elem::Logic,
                 LeafKind::Scalar => matches!(s.ty.elem, Elem::Bytes(es) if es <= 8),

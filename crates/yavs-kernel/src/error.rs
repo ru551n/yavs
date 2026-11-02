@@ -78,6 +78,14 @@ pub enum ErrorKind {
     Internal(String),
 }
 
+/// Runs `f` out of line: an error built inline in a hot function puts its message and arguments in
+/// that function's code and stack, and its block lands in the straight-line path of the layout.
+#[cold]
+#[inline(never)]
+pub(crate) fn cold<T>(f: impl FnOnce() -> T) -> T {
+    f()
+}
+
 impl SimError {
     /// An error without process context, at time zero (builder errors).
     pub fn new(kind: ErrorKind) -> SimError {
@@ -90,6 +98,8 @@ impl SimError {
         }))
     }
 
+    #[cold]
+    #[inline(never)]
     pub(crate) fn at(kind: ErrorKind, time: Time, delta: u32) -> SimError {
         let mut e = SimError::new(kind);
         e.time = time;

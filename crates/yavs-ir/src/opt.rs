@@ -2854,7 +2854,11 @@ impl<'a> Opt<'a> {
                 let mut copy = None;
                 for &q in &pcs[x + 1..] {
                     match self.code[q] {
-                        Inst::Copy { dst, src, bytes: nb } if src == t => {
+                        Inst::Copy {
+                            dst,
+                            src,
+                            bytes: nb,
+                        } if src == t => {
                             copy = Some((q, dst, nb));
                             break;
                         }

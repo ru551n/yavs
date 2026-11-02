@@ -132,7 +132,11 @@ impl Images {
         for &s in changed {
             // A bit per signal: most changed signals have no image, and their `Signal` line
             // stays cold.
-            if self.has.get(s as usize / 64).is_none_or(|w| w >> (s % 64) & 1 == 0) {
+            if self
+                .has
+                .get(s as usize / 64)
+                .is_none_or(|w| w >> (s % 64) & 1 == 0)
+            {
                 continue;
             }
             let sig = &signals[s as usize];

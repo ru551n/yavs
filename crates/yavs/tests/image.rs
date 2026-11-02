@@ -34,16 +34,32 @@ fn images_change_nothing() {
         let d = tempdir(design);
         let file = corpus.join(format!("{design}.vhd"));
         let work = format!("work:{}", d.join("lib").display());
-        let a = yavs(&d, OFF, &["analyze", "--work", &work, file.to_str().unwrap()]);
+        let a = yavs(
+            &d,
+            OFF,
+            &["analyze", "--work", &work, file.to_str().unwrap()],
+        );
         assert!(a.status.success(), "analyze {design}: {a:?}");
         let (wa, wb) = (d.join("off.fst"), d.join("on.fst"));
         for (env, f) in [(OFF, &wa), (ON, &wb)] {
             let wave = format!("--wave={}", f.display());
-            let args = ["run", "--work", &work, "--tier=interp", "--no-cache", &wave, design];
+            let args = [
+                "run",
+                "--work",
+                &work,
+                "--tier=interp",
+                "--no-cache",
+                &wave,
+                design,
+            ];
             let r = yavs(&d, env, &args);
             assert!(r.status.code().is_some(), "{design} waves: {r:?}");
         }
-        assert_eq!(std::fs::read(&wa).unwrap(), std::fs::read(&wb).unwrap(), "{design}: waves");
+        assert_eq!(
+            std::fs::read(&wa).unwrap(),
+            std::fs::read(&wb).unwrap(),
+            "{design}: waves"
+        );
         for extra in [
             &["--threads", "1"][..],
             &["--threads", "4"],
@@ -53,7 +69,11 @@ fn images_change_nothing() {
             args.extend_from_slice(extra);
             args.push(design);
             let (off, on) = (yavs(&d, OFF, &args), yavs(&d, ON, &args));
-            assert_eq!(off.status.code(), on.status.code(), "{design} {extra:?}: exit status");
+            assert_eq!(
+                off.status.code(),
+                on.status.code(),
+                "{design} {extra:?}: exit status"
+            );
             assert_eq!(off.stdout, on.stdout, "{design} {extra:?}: stdout");
             assert_eq!(off.stderr, on.stderr, "{design} {extra:?}: stderr");
         }

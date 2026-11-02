@@ -63,7 +63,10 @@ enum Img {
     /// Asked for: there from a later run phase.
     Asked(Box<ImageSpec>),
     /// Copied from image `id`; with `check`, also read leaf by leaf and compared.
-    Ready { id: u32, check: bool },
+    Ready {
+        id: u32,
+        check: bool,
+    },
     Off,
 }
 
@@ -94,19 +97,23 @@ fn image_spec(b: &Bound) -> Option<ImageSpec> {
     if b.plan.size > IMAGE_MAX {
         return None;
     }
-    let items = b.items.iter().filter(|t| t.vsize > 0 && t.len > 0).map(|t| ImageItem {
-        sig: b.sigs[t.leaf as usize].signal,
-        k: t.k,
-        len: t.len,
-        voff: t.voff,
-        vsize: t.vsize,
-        kind: match t.kind {
-            LeafKind::LogicScalar => ImageKind::Code(t.bias),
-            LeafKind::LogicVec => ImageKind::Planes,
-            LeafKind::Scalar => ImageKind::Scalar,
-            LeafKind::Bytes => ImageKind::Raw,
-        },
-    });
+    let items = b
+        .items
+        .iter()
+        .filter(|t| t.vsize > 0 && t.len > 0)
+        .map(|t| ImageItem {
+            sig: b.sigs[t.leaf as usize].signal,
+            k: t.k,
+            len: t.len,
+            voff: t.voff,
+            vsize: t.vsize,
+            kind: match t.kind {
+                LeafKind::LogicScalar => ImageKind::Code(t.bias),
+                LeafKind::LogicVec => ImageKind::Planes,
+                LeafKind::Scalar => ImageKind::Scalar,
+                LeafKind::Bytes => ImageKind::Raw,
+            },
+        });
     Some(ImageSpec {
         size: b.plan.size as u32,
         items: items.collect(),

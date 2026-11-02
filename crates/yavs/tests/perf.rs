@@ -945,6 +945,31 @@ fn spec_nested() {
     );
 }
 
+/// A memory-model process: a nested procedure indexes an array variable of the process and writes
+/// a variable the body drives a signal from. Its constant-offset addresses into the frame are
+/// followed, not taken as escapes, so the copy still has the facts of its declarative part
+/// (#1063): the same report, fewer ops.
+#[test]
+fn spec_nested_mem() {
+    let d = tempdir("spec_nested_mem");
+    let src = include_str!("perf/spec_nested_mem.vhd");
+    let run = |env: &[(&str, &str)]| run_design_env(&d, "spec_nested_mem", src, "interp", &[], env);
+    let (shared, copies) = (
+        run(&[("YAVS_NO_SPEC", "1")]),
+        run(&[("YAVS_SPEC_AFTER", "2")]),
+    );
+    assert_eq!((shared.code, copies.code), (0, 0), "{}", copies.all());
+    assert!(copies.all().contains("sum="), "{}", copies.all());
+    assert_eq!(shared.stdout, copies.stdout);
+    check_bounds(
+        "spec_nested_mem",
+        &copies,
+        // Without the facts: 52 425 ops (shared code 56 077); the margin is tighter than 3 percent so
+        // that a lost fact shows.
+        &[("spec_switched", Min(2)), ("ops", Max(51_800))],
+    );
+}
+
 /// The idle skip changes nothing a run shows: the same output (values, times and deltas of the
 /// reports) with it off, on and checked (a skipped activation run and compared), and it skips.
 /// `idle_regs`: clocked processes, `idle_comb`: combinational ones, clocked concurrent

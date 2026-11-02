@@ -807,6 +807,8 @@ impl Opt<'_> {
         };
         match *i {
             Inst::Load { .. } => {}
+            // A derived address whose own uses are classified.
+            Inst::Index { dst, .. } if fa(dst).is_some() => {}
             Inst::Store { addr, src, w } => {
                 if let Some(o) = fa(addr)
                     && writes
@@ -897,6 +899,41 @@ impl Opt<'_> {
             if up.keys().any(|&r| defs.get(r as usize) != Some(&1)) {
                 esc.push((0, i64::MAX));
                 continue;
+            }
+            // An address a constant away from one of those (a word of a variable's slot) is
+            // followed like them: its uses are classified, it is no escape of the object.
+            let consts: FxMap<u32, i64> = g
+                .code
+                .iter()
+                .filter_map(|i| match *i {
+                    Inst::Const { dst, v } if defs.get(dst.0 as usize) == Some(&1) => {
+                        Some((dst.0, v))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let mut grew = true;
+            while grew {
+                grew = false;
+                for i in &g.code {
+                    if let Inst::Index {
+                        dst,
+                        base,
+                        pos,
+                        stride,
+                    } = *i
+                        && defs.get(dst.0 as usize) == Some(&1)
+                        && !up.contains_key(&dst.0)
+                        && let Some(&o) = up.get(&base.0)
+                        && let Some(at) = consts
+                            .get(&pos.0)
+                            .and_then(|p| p.checked_mul(i64::from(stride)))
+                            .and_then(|d| o.checked_add(d))
+                    {
+                        up.insert(dst.0, at);
+                        grew = true;
+                    }
+                }
             }
             let fa = |r: Reg| up.get(&r.0).copied();
             let kc = |r: Reg| {

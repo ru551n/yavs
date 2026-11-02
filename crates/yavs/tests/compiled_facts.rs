@@ -1,6 +1,7 @@
 //! The facts of a process copy (`yavs_ir::InstFacts`): compiled code that assumes each signal's
 //! form gives what the interpreter gives, for every form, through force and multi-source updates.
 //! Two instances with equal generics and another form of one signal are two copies.
+#![cfg(feature = "clift")]
 
 mod common;
 use common::tempdir;
@@ -157,7 +158,6 @@ fn facts_change_no_result_and_split_copies_by_form() {
     let spec = ("YAVS_SPEC_AFTER", "2");
     for tier in [
         &["--tier=auto", "--tier-heat=1,0,0"][..],
-        #[cfg(feature = "clift")]
         &["--tier=clift-auto", "--tier-heat=1,0,0"][..],
     ] {
         for threads in ["1", "4"] {

@@ -10780,3 +10780,7 @@ A record signal, an array of records or an array of arrays is an element of an a
 ## Frame objects in processes (#1048, plan step 1, 2026-11-01, branch `perf/iterative`)
 
 Composite variables of processes of a fixed size, without handles, live in the frame; signal copies up to 4 KiB too (`docs/decisions.md` "Frame objects in processes"). `YAVS_NO_PROC_OBJECTS=1` turns it off. Not moved: variables with handles, over 16 KiB, a size only known at run time, under a debugger or external variables.
+
+## Facts of a process copy
+
+A process copy is made per instance data and per the forms of the signals its body names (`yavs_ir::InstFacts`); Cranelift's code of a copy reads and drives those signals without testing their form. Only for a tier that compiles copies, so not under `--tier=clift`. `docs/decisions.md` "Facts of a process copy".

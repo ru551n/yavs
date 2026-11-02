@@ -1899,6 +1899,15 @@ impl SimControl {
                 );
             }
         }
+        for m in &self.implicits {
+            let mut src = vec![(m.src, m.range)];
+            src.extend(m.more.iter().copied());
+            let v: Vec<String> = src
+                .iter()
+                .map(|(s, r)| format!("{}:{}:{}", s.0, r.offset, r.len))
+                .collect();
+            let _ = writeln!(o, "M {} {}", m.sig.0, v.join(","));
+        }
         for e in &self.ports {
             let parts = |v: &[(SignalId, Range)]| {
                 v.iter()

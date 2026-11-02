@@ -147,6 +147,7 @@ struct An<'a> {
     state_t: u32,
     plans: HashMap<(u32, Vec<u8>), Option<Rc<Plan>>>,
     waits: BTreeSet<(u32, u32, u32)>,
+    hist: BTreeSet<(u32, u32, u32)>,
     pc: usize,
     /// The successor a branch on a constant takes (0: the first).
     taken: Option<usize>,
@@ -239,6 +240,21 @@ impl An<'_> {
         }
         self.why("sig_unknown");
         a.t
+    }
+
+    /// A read of a signal's history (`'event`, `'last_value`, an edge, ...): kept apart, since
+    /// a removed intermediate value changes it in later time steps too.
+    fn hist_read(&mut self, a: Av) {
+        let k = match a.v {
+            V::Sig { sig, off, len } => self.krange(sig, off, len),
+            _ => None,
+        };
+        match k {
+            Some(k) => {
+                self.hist.insert(k);
+            }
+            None => self.why("history_unknown"),
+        }
     }
 
     fn get(&self, regs: &HashMap<u32, Av>, r: Reg) -> Av {
@@ -1408,6 +1424,7 @@ impl An<'_> {
             }
             Inst::SigLastValue { dst, sig } => {
                 let a = self.get(regs, sig);
+                self.hist_read(a);
                 let t = self.read_sig(a);
                 let t = wt(self, t);
                 let d = self.get(regs, dst).v;
@@ -1415,6 +1432,7 @@ impl An<'_> {
             }
             Inst::SigAttr { dst, sig, .. } | Inst::Edge { dst, sig, .. } => {
                 let a = self.get(regs, sig);
+                self.hist_read(a);
                 let t = self.read_sig(a);
                 set(regs, dst, V::Top, t);
             }
@@ -1934,6 +1952,7 @@ pub(crate) fn census(m: &Machine) -> Vec<String> {
         state_t: NONE,
         plans: HashMap::new(),
         waits: BTreeSet::new(),
+        hist: BTreeSet::new(),
         pc: 0,
         taken: None,
         read_pcs: Vec::new(),
@@ -2036,6 +2055,7 @@ pub(crate) fn census(m: &Machine) -> Vec<String> {
         a.read_pcs.clear();
         a.read_ids.clear();
         a.waits.clear();
+        a.hist.clear();
         a.conds = vec![NONE; g.nodes.len()];
         a.any_cond = NONE;
         let mem: Vec<Rc<Mem>> = (0..a.objs.len())
@@ -2154,6 +2174,9 @@ pub(crate) fn census(m: &Machine) -> Vec<String> {
         }
         for w in &a.waits {
             out.push(format!("wait {} {} {}", w.0, w.1, w.2));
+        }
+        for h in &a.hist {
+            out.push(format!("hist {} {} {}", h.0, h.1, h.2));
         }
         let j = |v: &[u32]| {
             v.iter()

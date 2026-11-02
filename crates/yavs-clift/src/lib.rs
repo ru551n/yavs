@@ -70,6 +70,16 @@ pub(crate) struct PostBody {
     f: Option<RunFn>,
 }
 
+/// A note of the prototype on stderr, with `YAVS_CLIFT_POSTELAB_NOTES=1` only.
+#[cfg(feature = "clift")]
+macro_rules! post_note {
+    ($($t:tt)*) => {
+        if std::env::var_os("YAVS_CLIFT_POSTELAB_NOTES").is_some() {
+            eprintln!($($t)*);
+        }
+    };
+}
+
 /// Instances of one process that get a body of their own; the others run the shared body.
 #[cfg(feature = "clift")]
 pub(crate) const POST_INSTANCES: usize = 4;
@@ -245,7 +255,7 @@ impl PostSet {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             + 1;
         if n.is_power_of_two() {
-            eprintln!(
+            post_note!(
                 "note: postelab: {n} entries took the shared body (last f{})",
                 func.0
             );
@@ -281,9 +291,9 @@ impl PostSet {
         }
         match jit.define_post(prog, func, fun, post) {
             Ok(p) => pb.f = Some(p),
-            Err(e) => eprintln!("note: postelab: f{} `{}`: {e}", func.0, fun.name),
+            Err(e) => post_note!("note: postelab: f{} `{}`: {e}", func.0, fun.name),
         }
-        eprintln!(
+        post_note!(
             "note: postelab: f{} `{}` ({} IR) built in {} us",
             func.0,
             fun.name,

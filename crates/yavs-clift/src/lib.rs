@@ -177,7 +177,9 @@ pub struct PostSet {
 impl PostSet {
     /// `None` without `YAVS_CLIFT_POSTELAB`.
     pub fn new(prog: std::sync::Arc<yavs_ir::Program>, auto: bool) -> Option<PostSet> {
-        let want = std::env::var("YAVS_CLIFT_POSTELAB").ok()?;
+        let want = std::env::var("YAVS_CLIFT_POSTELAB")
+            .ok()
+            .filter(|w| !w.is_empty())?;
         let n = prog.funcs.len();
         let on = (0..n).map(|_| Default::default()).collect();
         Some(PostSet {

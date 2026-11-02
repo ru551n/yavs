@@ -8,7 +8,7 @@
 //! come later, so a record with bounds from generics costs one comparison of its descriptor.
 
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, RwLock};
 
 use yavs_ir::gather::{self, Leaf, LeafKind, Plan, PlanError};
 use yavs_ir::{
@@ -53,113 +53,6 @@ pub(crate) struct Bound {
     items: Box<[Item]>,
     reads: Box<[Grp]>,
     runs: Box<[Grp]>,
-    /// What the last gather and scatter of a whole value made, once the plan has been used
-    /// `memo_after` times (#1050).
-    gathered: Option<Box<Gathered>>,
-    scattered: Option<Box<Scattered>>,
-    gathers: u32,
-    scatters: u32,
-    after: u32,
-}
-
-/// The last whole-value gather: the plane word each group of `reads` was read from (`seen`, unused
-/// for a group without a word) and the leaves it gave (`image`). The leaves of a group are a
-/// function of its word, so a word that is equal needs no read: no test of force or deposit, this
-/// looks at the value they would have changed.
-struct Gathered {
-    seen: Box<[yavs_logic::Block]>,
-    image: Box<[u8]>,
-    spans: Box<[(u32, u32)]>,
-    valid: bool,
-}
-
-/// The last whole-value scatter: the value (`image`) and the planes built for each group of `runs`
-/// (`planes`), and the bytes of the value each group is made from (`spans`; empty where they are
-/// too far apart to compare). Equal bytes give equal planes; whether the assignment may be left out
-/// is still the kernel's question (`Ctx::run_same`).
-struct Scattered {
-    image: Box<[u8]>,
-    planes: Box<[[u64; 4]]>,
-    spans: Box<[(u32, u32)]>,
-    valid: bool,
-}
-
-/// Uses of a plan before it keeps images: a process that runs a few times does not pay their
-/// memory. `YAVS_SEAM_AFTER=n` sets it (1 for tests that run a few times: from the first use).
-fn memo_after() -> u32 {
-    static AFTER: OnceLock<u32> = OnceLock::new();
-    *AFTER.get_or_init(|| {
-        std::env::var("YAVS_SEAM_AFTER")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(16)
-    })
-}
-
-/// The largest value that keeps images.
-const MEMO_MAX_SIZE: u64 = 1 << 16;
-
-/// Bytes between two leaves that are copied with them: at most the alignment padding of a record.
-const MEMO_GAP: u32 = 8;
-
-impl Gathered {
-    fn new(b: &Bound) -> Box<Self> {
-        let mut at: Vec<(u32, u32)> = b.items.iter().map(|t| (t.voff, t.voff + t.vsize)).collect();
-        at.sort_unstable();
-        let mut spans: Vec<(u32, u32)> = Vec::new();
-        for (a, e) in at {
-            match spans.last_mut() {
-                Some(l) if a <= l.1 + MEMO_GAP => l.1 = l.1.max(e),
-                _ => spans.push((a, e)),
-            }
-        }
-        Box::new(Self {
-            seen: vec![[0; 4]; b.reads.len()].into(),
-            image: vec![0; b.plan.size as usize].into(),
-            spans: spans.into(),
-            valid: false,
-        })
-    }
-}
-
-impl Scattered {
-    fn new(b: &Bound) -> Box<Self> {
-        let mut spans: Vec<(u32, u32)> = b
-            .runs
-            .iter()
-            .map(|g| {
-                let ts = &b.items[g.first as usize..][..g.n as usize];
-                let a = ts.iter().map(|t| t.voff).min().unwrap_or(0);
-                let e = ts.iter().map(|t| t.voff + t.vsize).max().unwrap_or(0);
-                let bytes: u32 = ts.iter().map(|t| t.vsize + MEMO_GAP).sum();
-                if e - a <= bytes { (a, e) } else { (0, 0) }
-            })
-            .collect();
-        // Spans that share bytes keep no image: a run's image holds what its own last miss saw,
-        // and a miss of one must not write over the bytes another compares with (leaves of an
-        // array of records lie between each other).
-        let mut order: Vec<usize> = (0..spans.len())
-            .filter(|&i| spans[i].0 < spans[i].1)
-            .collect();
-        order.sort_unstable_by_key(|&i| spans[i]);
-        let mut end = (0, None);
-        for &i in &order {
-            let (a, e) = spans[i];
-            if let (true, Some(last)) = (a < end.0, end.1) {
-                spans[i] = (0, 0);
-                spans[last] = (0, 0);
-            }
-            if e > end.0 {
-                end = (e, Some(i));
-            }
-        }
-        Box::new(Self {
-            image: vec![0; b.plan.size as usize].into(),
-            planes: vec![[0; 4]; b.runs.len()].into(),
-            spans: spans.into(),
-            valid: false,
-        })
-    }
 }
 
 /// One instance of a leaf in a whole value: the leaf, its byte offset in the value and its first
@@ -284,18 +177,6 @@ fn leaf_planes(kind: LeafKind, len: u32, bias: u8, v: &[u8]) -> [u64; 4] {
             let mask = if len == 64 { u64::MAX } else { (1 << len) - 1 };
             [0, 1, 2, 3].map(|i| w.get(i).map_or(0, |c| u64::from_le_bytes(*c)) & mask)
         }
-    }
-}
-
-/// `a == b`, the sizes leaves have without a call of `memcmp`.
-#[inline(always)]
-fn bytes_eq(a: &[u8], b: &[u8]) -> bool {
-    if let (Some(x), Some(y)) = (a.as_array::<8>(), b.as_array::<8>()) {
-        return x == y;
-    }
-    match (a.as_array::<32>(), b.as_array::<32>()) {
-        (Some(x), Some(y)) => x == y,
-        _ => a == b,
     }
 }
 
@@ -561,11 +442,6 @@ impl Machine {
                 items,
                 reads,
                 runs,
-                gathered: None,
-                scattered: None,
-                gathers: 0,
-                scatters: 0,
-                after: memo_after(),
             })
         }))
     }
@@ -624,10 +500,10 @@ impl Machine {
         part: Option<Part>,
         ctx: &mut Option<&mut Ctx<'_>>,
     ) -> R<()> {
-        let (at, mut b) = self.take_plan(prog, tab, self.r(desc))?;
+        let (at, b) = self.take_plan(prog, tab, self.r(desc))?;
         // The plan goes back on both arms: an `R` kept across `put_plan` is reloaded through
         // memory, a stall of its own.
-        match self.gather_leaves(&mut b, dst, part, ctx) {
+        match self.gather_leaves(&b, dst, part, ctx) {
             Ok(()) => {
                 self.put_plan(at, b);
                 Ok(())
@@ -641,28 +517,20 @@ impl Machine {
 
     fn gather_leaves(
         &mut self,
-        b: &mut Bound,
+        b: &Bound,
         dst: Reg,
         part: Option<Part>,
         ctx: &mut Option<&mut Ctx<'_>>,
     ) -> R<()> {
-        let (first, outer) = part_of(self, &b.plan, part)?;
+        let plan = &*b.plan;
+        let (first, outer) = part_of(self, plan, part)?;
         let Some(c) = ctx.as_deref_mut() else {
             return cold(|| rt_err("signal or wait operation during elaboration"));
         };
         let base = self.r(dst);
-        let out = self.wr(base, b.plan.size)?;
+        let out = self.wr(base, plan.size)?;
         if part.is_none() && !b.items.is_empty() {
-            if b.gathered.is_none() && b.plan.size <= MEMO_MAX_SIZE {
-                b.gathers += 1;
-                if b.gathers >= b.after {
-                    b.gathered = Some(Gathered::new(b));
-                }
-            }
-            let mut m = b.gathered.take();
-            let plan = &*b.plan;
-            let valid = m.as_ref().is_some_and(|m| m.valid);
-            for (i, g) in b.reads.iter().enumerate() {
+            for g in &*b.reads {
                 let ts = &b.items[g.first as usize..][..g.n as usize];
                 // One plane word of the signal for all items of the group.
                 let blk = match g.word {
@@ -671,21 +539,9 @@ impl Machine {
                         .planes(g.sig)
                         .and_then(|(p, _)| p.get(w as usize).copied()),
                 };
-                let into: &mut [u8] = match &mut m {
-                    Some(m) => {
-                        if let Some(w) = blk {
-                            if valid && m.seen[i] == w {
-                                continue;
-                            }
-                            m.seen[i] = w;
-                        }
-                        &mut m.image
-                    }
-                    None => &mut *out,
-                };
                 for t in ts {
                     let at = t.voff as usize;
-                    let o = into
+                    let o = out
                         .get_mut(at..at + t.vsize as usize)
                         .ok_or_else(|| cold(|| ice("a leaf outside its value")))?;
                     let Some(blk) = blk else {
@@ -709,17 +565,8 @@ impl Machine {
                     }
                 }
             }
-            if let Some(m) = &mut m {
-                m.valid = true;
-                for &(a, e) in &*m.spans {
-                    let (a, e) = (a as usize, e as usize);
-                    out[a..e].copy_from_slice(&m.image[a..e]);
-                }
-            }
-            b.gathered = m;
             return Ok(());
         }
-        let plan = &*b.plan;
         for (l, s) in plan.leaves.iter().zip(&*b.sigs) {
             for j in 0..l.insts as usize {
                 let at = l.off(j);
@@ -770,8 +617,8 @@ impl Machine {
             ),
             _ => return Err(cold(|| ice("a scatter with the wrong operands"))),
         };
-        let (at, mut b) = self.take_plan(prog, tab, self.r(desc))?;
-        match self.scatter_leaves(&mut b, driver, src, part, after, mode, reject, ctx) {
+        let (at, b) = self.take_plan(prog, tab, self.r(desc))?;
+        match self.scatter_leaves(&b, driver, src, part, after, mode, reject, ctx) {
             Ok(()) => {
                 self.put_plan(at, b);
                 Ok(())
@@ -786,7 +633,7 @@ impl Machine {
     #[allow(clippy::too_many_arguments)]
     fn scatter_leaves(
         &mut self,
-        b: &mut Bound,
+        b: &Bound,
         driver: u32,
         src: Reg,
         part: Option<Part>,
@@ -795,63 +642,28 @@ impl Machine {
         reject: Option<Reg>,
         ctx: &mut Option<&mut Ctx<'_>>,
     ) -> R<()> {
-        let (first, outer) = part_of(self, &b.plan, part)?;
+        let plan = &*b.plan;
+        let (first, outer) = part_of(self, plan, part)?;
         let t = to_time(self.ri(after))?;
         let now = t == yavs_kernel::Time::ZERO && reject.is_none();
         let mode = self.delay_mode(mode, reject)?;
         let Some(c) = ctx.as_deref_mut() else {
             return cold(|| rt_err("signal or wait operation during elaboration"));
         };
-        let data = self.rd(self.r(src), b.plan.size)?;
+        let data = self.rd(self.r(src), plan.size)?;
         let ds = self
             .drivers
-            .get(driver as usize..driver as usize + b.plan.leaves.len())
+            .get(driver as usize..driver as usize + plan.leaves.len())
             .ok_or_else(|| cold(|| ice(format!("no driver slots from {driver}"))))?;
         let when = (t, now, mode);
         let mut run = None;
         if part.is_none() && !b.items.is_empty() {
-            if b.scattered.is_none() && b.plan.size <= MEMO_MAX_SIZE {
-                b.scatters += 1;
-                if b.scatters >= b.after {
-                    b.scattered = Some(Scattered::new(b));
-                }
-            }
-            let mut m = b.scattered.take();
-            let plan = &*b.plan;
-            let valid = m.as_ref().is_some_and(|m| m.valid);
-            // The driver last asked about and whether it had nothing of this activation then:
-            // the runs of one scatter name different elements, so what this scatter itself
-            // leaves on it does not stop the next run being left out.
-            let mut idle: Option<(yavs_kernel::DriverId, bool)> = None;
-            for (i, g) in b.runs.iter().enumerate() {
+            for g in &*b.runs {
                 let ts = &b.items[g.first as usize..][..g.n as usize];
                 let id = ds[ts[0].leaf as usize].id;
                 // One run of one driver: its planes built in registers, one assignment.
                 if g.word != NO_WORD && ts.iter().all(|t| ds[t.leaf as usize].id == id) {
                     flush_run(c, &mut run, when)?;
-                    let at = ts[0].k;
-                    let r = Range::new(at, g.word);
-                    let quiet = now && m.is_some() && {
-                        if idle.is_none_or(|(d, _)| d != id) {
-                            idle = Some((id, c.direct_quiet(id)));
-                        }
-                        idle.is_some_and(|(_, q)| q)
-                    };
-                    let kept = match &m {
-                        Some(m) if valid => {
-                            let (a, e) = m.spans[i];
-                            let (a, e) = (a as usize, e as usize);
-                            (a < e && bytes_eq(&data[a..e], &m.image[a..e])).then(|| m.planes[i])
-                        }
-                        _ => None,
-                    };
-                    if let Some(p) = kept {
-                        if quiet && c.run_same(id, r, p) {
-                            continue;
-                        }
-                        flush_planes(c, id, r, p, when)?;
-                        continue;
-                    }
                     let (mut p, mut at) = ([0u64; 4], 0);
                     for t in ts {
                         let o = t.voff as usize;
@@ -863,13 +675,7 @@ impl Machine {
                         }
                         at += t.len;
                     }
-                    if let Some(m) = &mut m {
-                        let (a, e) = m.spans[i];
-                        let (a, e) = (a as usize, e as usize);
-                        m.image[a..e].copy_from_slice(&data[a..e]);
-                        m.planes[i] = p;
-                    }
-                    flush_planes(c, id, r, p, when)?;
+                    flush_planes(c, id, Range::new(ts[0].k, at), p, when)?;
                     continue;
                 }
                 for t in ts {
@@ -882,13 +688,8 @@ impl Machine {
                     write_leaf(c, d, l, Range::new(t.k, l.len), v, &mut run, when)?;
                 }
             }
-            if let Some(m) = &mut m {
-                m.valid = true;
-            }
-            b.scattered = m;
             return flush_run(c, &mut run, when);
         }
-        let plan = &*b.plan;
         for ((l, s), d) in plan.leaves.iter().zip(&*b.sigs).zip(ds) {
             let n = l.insts as usize;
             for i in 0..n {

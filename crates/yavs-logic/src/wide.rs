@@ -37,20 +37,6 @@ pub fn get_block(b: &[Block], off: usize, n: usize) -> Block {
     })
 }
 
-/// Whether `get_block(b, off, n)` is `v`, whose bits past `n` are zero: inside one block with no
-/// value built, a word of the block tested against the shifted `v`.
-#[inline(always)]
-pub fn block_is(b: &[Block], off: usize, n: usize, v: &Block) -> bool {
-    let (w, s) = (off / 64, off % 64);
-    if s + n > 64 {
-        return get_block(b, off, n) == *v;
-    }
-    let x = &b[w];
-    let diff =
-        (x[0] ^ (v[0] << s)) | (x[1] ^ (v[1] << s)) | (x[2] ^ (v[2] << s)) | (x[3] ^ (v[3] << s));
-    diff & (nmask(n) << s) == 0
-}
-
 /// Write the elements of `v` selected by `sel` (low `n` bits) at `off`.
 #[inline(always)]
 pub fn put_block(b: &mut [Block], off: usize, n: usize, v: Block, sel: u64) {
@@ -370,27 +356,5 @@ pub fn match_eq(a: &[Block], aoff: usize, b: &[Block], boff: usize, n: usize) ->
         1
     } else {
         3
-    }
-}
-
-#[cfg(test)]
-mod block_is_tests {
-    use super::*;
-
-    #[test]
-    fn agrees_with_get_block() {
-        let b = [[0x1234_5678_9abc_def0, !0, 0, 0x8000_0000_0000_0001]; 2];
-        for off in [0, 1, 7, 63, 64, 70] {
-            for n in [1, 2, 8, 57, 64] {
-                if off + n > 128 {
-                    continue;
-                }
-                let v = get_block(&b, off, n);
-                assert!(block_is(&b, off, n, &v), "{off} {n}");
-                let mut u = v;
-                u[2] ^= 1;
-                assert!(!block_is(&b, off, n, &u), "{off} {n}");
-            }
-        }
     }
 }

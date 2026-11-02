@@ -733,6 +733,10 @@ const NATIVE_BUDGET: u64 = 16;
 /// An `rtl` process gets this many times the budget (its compiled code can be a third faster).
 const RTL_BUDGET: u64 = 16;
 
+/// A `Kind::Frame` process (a large combinational one) gets this many times the budget: at one
+/// time the 2 percent refused every one of them in a first cold run (#1046).
+const FRAME_BUDGET: u64 = 4;
+
 /// Whether a callee that was seen running for `seen` microseconds and has `size` IR instructions is
 /// left out of the compile of its caller: with a budget (the sampled times mean something),
 /// never seen and not small. Compiling the closure of calls of a function brought every
@@ -2208,6 +2212,7 @@ impl Worker {
             _ if self.is_compute(id) => COMPUTE_BUDGET,
             Some(_) if self.is_rtl(id) => RTL_BUDGET,
             Some(_) if self.natively(id) => NATIVE_BUDGET,
+            Some(_) if self.kind(id) == Kind::Frame => FRAME_BUDGET,
             _ => 1,
         }
     }

@@ -294,11 +294,6 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - a number
      - ``250``
      - ``run``
-   * - ``YAVS_SEAM_AFTER``
-     - Uses of a whole record signal's plan before it keeps what its last read and drive made. No effect on results.
-     - a number, ``4294967295`` for never
-     - ``16``
-     - ``run``
    * - ``YAVS_NO_PMEMO``
      - Turns the memo of pure function calls in the interpreter off.
      - any value

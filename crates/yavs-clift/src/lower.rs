@@ -343,6 +343,27 @@ fn srcmap() -> bool {
     *ON.get_or_init(|| std::env::var_os("YAVS_CLIFT_CODEDIR").is_some())
 }
 
+/// Bit of a srcmap pc that marks code of a cold block (`YAVS_CLIFT_CODEDIR` only, a measurement aid).
+const SRCMAP_COLD: u32 = 1 << 30;
+/// The srcmap pc plus one is in the bits below this one; above it, up to the cold bit, the mechanism
+/// the code is for (`Gen::tag`; 0: the instruction's own code).
+const SRCMAP_MECH: u32 = 20;
+
+/// Marks the instructions of cold blocks in their source locations, for the srcmap.
+fn srcmap_cold(func: &mut ir::Function) {
+    let cold: Vec<ir::Inst> = func
+        .layout
+        .blocks()
+        .filter(|&b| func.layout.is_cold(b))
+        .flat_map(|b| func.layout.block_insts(b).collect::<Vec<_>>())
+        .collect();
+    for i in cold {
+        let at = func.srcloc(i);
+        let bits = if at.is_default() { 0 } else { at.bits() };
+        func.set_srcloc(i, ir::SourceLoc::new(bits | SRCMAP_COLD));
+    }
+}
+
 fn flag(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
 }
@@ -548,6 +569,9 @@ impl Jit {
     /// (`cache.rs`), else compiled, and stored when there is a cache.
     fn define_code(&mut self, fid: ClifId, ctx: &mut Context) -> Result<(), String> {
         crate::cold::propagate(&mut ctx.func);
+        if srcmap() {
+            srcmap_cold(&mut ctx.func);
+        }
         let Some(store) = crate::cache::store() else {
             return self
                 .module
@@ -3552,6 +3576,9 @@ fn gen_func(
     g.drop_pend();
     g.defer = false;
     if let Some(d) = dispatch {
+        if srcmap() {
+            g.b.set_srcloc(ir::SourceLoc::new(16 << SRCMAP_MECH));
+        }
         g.b.switch_to_block(d);
         let other = g.b.create_block();
         let mut sw = Switch::new();
@@ -3589,12 +3616,14 @@ fn gen_func(
         g.b.set_cold_block(s.block);
         g.b.switch_to_block(s.block);
         if srcmap() {
-            g.b.set_srcloc(ir::SourceLoc::new(s.pc + 1));
+            g.b.set_srcloc(ir::SourceLoc::new((s.pc + 1) | (12 << SRCMAP_MECH)));
         }
         g.clear();
         // The registers deferred before the instruction, for the step.
         if let Some(rs) = g.snaps.remove(&s.block) {
+            let old = g.tag(11);
             g.store_regs(&rs);
+            g.b.set_srcloc(old);
         }
         // The definitions the join takes, from the frame the step wrote.
         let back = |g: &mut Gen| -> Vec<BlockArg> {
@@ -3637,6 +3666,7 @@ fn gen_func(
         if let Some(e) = s.edge {
             let (p, ev) = (g.c32(s.pc), g.c32(e));
             g.call_go(g.imp.signal, &[p, ev], false);
+            g.tag(13);
             let args = back(&mut g);
             g.b.ins().jump(s.join, &args);
             continue;
@@ -3644,6 +3674,7 @@ fn gen_func(
         let at = if s.keep { s.pc | KEEP } else { s.pc };
         let pcv = g.c32(at);
         g.call_go(g.imp.step, &[pcv], false);
+        g.tag(13);
         let args = back(&mut g);
         g.b.ins().jump(s.join, &args);
     }
@@ -3651,7 +3682,11 @@ fn gen_func(
         return Err(format!("deferred stores: {why} (a bug in yavs)"));
     }
     // The exit block.
-    g.b.set_srcloc(ir::SourceLoc::default());
+    g.b.set_srcloc(if srcmap() {
+        ir::SourceLoc::new(14 << SRCMAP_MECH)
+    } else {
+        ir::SourceLoc::default()
+    });
     g.b.switch_to_block(g.exit);
     if cfg!(debug_assertions) && BREAK.load(std::sync::atomic::Ordering::Relaxed) {
         // Test aid (`tests/verifier.rs`): a type error only the verifier sees.
@@ -3740,9 +3775,11 @@ impl Gen<'_> {
     }
 
     fn store_regs(&mut self, rs: &[(u32, Value)]) {
+        let old = self.tag(18);
         for &(r, v) in rs {
             self.b.ins().store(self.rf, v, self.regs, r as i32 * 8);
         }
+        self.b.set_srcloc(old);
     }
 
     /// The definitions of the instruction just generated become deferred registers.
@@ -3855,7 +3892,9 @@ impl Gen<'_> {
         if let Some(Some(v)) = self.cache.get(r.0 as usize) {
             return *v;
         }
+        let old = self.tag(19);
         let v = self.b.ins().load(I64, self.rf, self.regs, r.0 as i32 * 8);
+        self.b.set_srcloc(old);
         self.cache[r.0 as usize] = Some(v);
         v
     }
@@ -3897,7 +3936,9 @@ impl Gen<'_> {
             }
             return;
         }
+        let old = self.tag(18);
         self.b.ins().store(self.rf, v, self.regs, r.0 as i32 * 8);
+        self.b.set_srcloc(old);
         self.pend[k] = None;
     }
 
@@ -3912,7 +3953,10 @@ impl Gen<'_> {
     }
 
     fn mem_ld(&mut self, field: u64) -> Value {
-        self.b.ins().load(I64, self.mf, self.mem, field as i32)
+        let old = self.tag(17);
+        let v = self.b.ins().load(I64, self.mf, self.mem, field as i32);
+        self.b.set_srcloc(old);
+        v
     }
 
     fn mem_st(&mut self, field: u64, v: Value) {
@@ -4329,6 +4373,12 @@ impl Gen<'_> {
     /// array the frame is recorded from (`record_frame`), the preloaded ones are stored by the
     /// exit block.
     fn leave_at(&mut self, pc: u32) {
+        let old = self.tag(15);
+        self.leave_in(pc);
+        self.b.set_srcloc(old);
+    }
+
+    fn leave_in(&mut self, pc: u32) {
         if self.nat.is_some() {
             let n = self.vars.len();
             let row: Option<Vec<u64>> = self.live.as_ref().map(|l| l.row(pc as usize).to_vec());
@@ -4779,9 +4829,27 @@ impl Gen<'_> {
 
     /// Go on in a new block when `okc`, else take `slow`.
     fn guard(&mut self, okc: Value, slow: Block) {
+        let old = self.tag(10);
         let go = self.b.create_block();
         self.brif_split(okc, go, slow);
         self.b.switch_to_block(go);
+        self.b.set_srcloc(old);
+    }
+
+    /// `YAVS_CLIFT_CODEDIR` only: code from here on is for mechanism `m` (`SRCMAP_MECH`); returns the
+    /// location to restore. A measurement aid: no code changes.
+    fn tag(&mut self, m: u32) -> ir::SourceLoc {
+        let old = self.b.srcloc();
+        if srcmap() {
+            let pc = if old.is_default() {
+                0
+            } else {
+                old.bits() & ((1 << SRCMAP_MECH) - 1)
+            };
+            self.b
+                .set_srcloc(ir::SourceLoc::new(pc | (m << SRCMAP_MECH)));
+        }
+        old
     }
 
     /// The operands of `v` when it is the `band` (`and`) or `bor` of two truth values (compare
@@ -4882,6 +4950,21 @@ impl Gen<'_> {
         write: bool,
         slow: Block,
     ) -> Value {
+        let old = self.b.srcloc();
+        let v = self.host_in(a, reg, extra, n, write, slow);
+        self.b.set_srcloc(old);
+        v
+    }
+
+    fn host_in(
+        &mut self,
+        a: Value,
+        reg: Option<Reg>,
+        extra: Op,
+        n: Op,
+        write: bool,
+        slow: Block,
+    ) -> Value {
         // A pointer loaded from a slot that holds a frame address (`slot_targets`): one compare of
         // the whole address, then the frame's own bytes; anything else takes the lookup below.
         if self.nat.is_none()
@@ -4922,6 +5005,7 @@ impl Gen<'_> {
             && let Some(&(ptr, len, w)) = self.pres.get(usize::from(*k))
             && (w || !write)
         {
+            self.tag(9);
             let (ev, nv) = (self.op(extra), self.op(n));
             let lo = self.lo32(a);
             let off = self.b.ins().iadd(lo, ev);
@@ -4945,6 +5029,7 @@ impl Gen<'_> {
         }
         if let Some(Some(Known::FrameObj(s, e))) = reg.and_then(|r| self.known.get(r.0 as usize)) {
             let (s, e) = (*s, *e);
+            self.tag(3);
             let (ev, nv) = (self.op(extra), self.op(n));
             let lo = self.lo32(a);
             let off = self.b.ins().iadd(lo, ev);
@@ -4966,6 +5051,7 @@ impl Gen<'_> {
         });
         if let Some(Some(o)) = heap {
             // An object in hand: only the bounds of the access.
+            self.tag(6);
             let (ev, nv) = (self.op(extra), self.op(n));
             let off = self.b.ins().iadd(o.off, ev);
             let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, nv, o.len);
@@ -4977,6 +5063,7 @@ impl Gen<'_> {
         }
         if heap.is_some() && frame.is_none() {
             // A heap object, in no frame, temporary area, instance data or constant: its entry.
+            self.tag(7);
             let (ev, nv) = (self.op(extra), self.op(n));
             let hi = self.b.ins().ushr_imm_s(a, 32);
             let lo = self.lo32(a);
@@ -4996,6 +5083,7 @@ impl Gen<'_> {
             && let Some(Some(Known::Const(k, o))) = self.known.get(r.0 as usize).copied()
             && let Some(&(gv, len)) = self.imp.consts.get(&k)
         {
+            self.tag(4);
             let (ev, nv) = (self.op(extra), self.op(n));
             let off = self.b.ins().iadd_imm_s(ev, o as i64);
             let lenv = self.c64(len as i64);
@@ -5019,6 +5107,7 @@ impl Gen<'_> {
             _ => None,
         });
         if let Some((base_f, len_f)) = area {
+            self.tag(5);
             let (ev, nv) = (self.op(extra), self.op(n));
             let lo = self.lo32(a);
             let off = self.b.ins().iadd(lo, ev);
@@ -5044,9 +5133,11 @@ impl Gen<'_> {
                     .and_then(|x| x.checked_add(k))
                     .is_some_and(|end| end <= obj_end.unwrap_or(self.frame_len))
             {
+                self.tag(1);
                 let slots = self.slots();
                 return self.b.ins().iadd_imm_s(slots, (o + e) as i64);
             }
+            self.tag(2);
             let (ev, nv) = (self.op(extra), self.op(n));
             // `extra` is below 2^63, the sum cannot wrap.
             let off = self.b.ins().iadd_imm_s(ev, o as i64);
@@ -5065,6 +5156,7 @@ impl Gen<'_> {
             let slots = self.slots();
             return self.b.ins().iadd(slots, off);
         }
+        self.tag(8);
         let (extra, n) = (self.op(extra), self.op(n));
         if self.nat.is_none() {
             // Frame-mode code asks the runtime (`Mem::find`): the chain of tests inline at every

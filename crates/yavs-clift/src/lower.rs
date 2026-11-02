@@ -1434,6 +1434,9 @@ struct Gen<'a> {
     /// The `SigVal` of constants just before this instruction, and the one to hand to the next.
     sigval: Option<SigConst>,
     sigval_next: Option<SigConst>,
+    /// What this body may assume about its instance's signals: frame-mode code of a process copy
+    /// (`Program::facts`); instances with other facts have another copy.
+    facts: Option<&'a yavs_ir::InstFacts>,
     /// Its pc.
     pc: u32,
     /// Registers live over more than `MAX_SPAN` instructions: stored at the definition.
@@ -2027,6 +2030,9 @@ fn gen_func(
         sig_ok: sig_hi.is_some(),
         sigval: None,
         sigval_next: None,
+        facts: prog
+            .facts(id)
+            .filter(|_| !native && f.kind == FuncKind::Process),
         pc: 0,
         keep: vec![true; f.reg_ty.len()],
         snaps: HashMap::new(),
@@ -6523,13 +6529,32 @@ impl Gen<'_> {
         self.brif_split(cond, t, f);
     }
 
+    /// The constant reference in registers `sig`, `sig + 1`, inside its instance signal, and that
+    /// signal's facts: its table entry has the form they say, so nothing needs a test.
+    fn sig_known(&self, sig: Reg) -> Option<(SigConst, yavs_ir::SigFact)> {
+        let facts = self.facts?;
+        let sv = self.sigval.filter(|sv| sv.dst == sig).or_else(|| {
+            let (v, len) = (self.kint(sig)?, self.kint(Reg(sig.0 + 1))?);
+            Some(SigConst {
+                dst: sig,
+                sig: (v as u64 >> 32) as u32,
+                off: v & 0xffff_ffff,
+                len,
+            })
+        })?;
+        let f = facts.sig(sv.sig)?;
+        (sv.len >= 1 && sv.off + sv.len <= i64::from(f.len)).then_some((sv, f))
+    }
+
     /// The `TierSig` entry of the instance signal that reference registers `sig`, `sig + 1` name,
     /// and the element offset in it; takes `slow` unless the reference is a plain one of `len`
     /// elements (any number but 0 for `None`) to an instance signal the table has.
     fn sig_entry(&mut self, sig: Reg, len: Option<i64>, slow: Block) -> (Value, Value) {
         // The `SigVal` of constants before it: the function's entry tested the table.
-        if let Some(sv) = self.sigval
-            && sv.dst == sig
+        if let Some(sv) = self
+            .sigval
+            .filter(|sv| sv.dst == sig)
+            .or_else(|| self.sig_known(sig).map(|k| k.0))
             && len.map_or(sv.len != 0, |k| k == sv.len)
         {
             let tab = self
@@ -6561,6 +6586,9 @@ impl Gen<'_> {
     /// the kernel's blocks; the bytes of an enumeration, integer, boolean or real signal; anything
     /// else through `TierHost::signal`.
     fn sig_read_scalar(&mut self, pc: u32, dst: Reg, sig: Reg) {
+        if self.sig_read_known(dst, sig) {
+            return;
+        }
         // (A native frame is materialised where the table has no answer: `slow_signal`.)
         let (slow, join) = self.slow_signal(pc, 0);
         let (ent, off) = self.sig_entry(sig, None, slow);
@@ -6585,6 +6613,9 @@ impl Gen<'_> {
     /// (`TierHost::view`), so they load read-only. A signal with no code for the element goes
     /// to the other forms, out of line: the form depends on the instance, a body does not fix it.
     fn sig_read_fixed(&mut self, pc: u32, dst: Reg, sv: SigConst) {
+        if self.sig_read_known(dst, sv.dst) {
+            return;
+        }
         let (sig, off) = (sv.sig, sv.off);
         let (step, join) = self.slow_signal(pc, 0);
         let other = self.b.create_block();
@@ -6627,6 +6658,62 @@ impl Gen<'_> {
         });
         // The value stays in hand after the join, a register stored here too.
         self.join_with(join, &[dst.0]);
+    }
+
+    /// `Inst::SigReadScalar` of a reference and form the generator knows (`sig_known`): the load
+    /// of that form, no test and no other block; false when it knows neither.
+    fn sig_read_known(&mut self, dst: Reg, sig: Reg) -> bool {
+        let Some((sv, f)) = self.sig_known(sig) else {
+            return false;
+        };
+        if sv.off > i64::from(i32::MAX / 2) || !(f.codes || f.planes || matches!(f.es, 1 | 4 | 8)) {
+            return false;
+        }
+        let ro = self.mf.with_readonly();
+        let tab = self.b.ins().load(I64, ro, self.mem, MEM_SIGTAB as i32);
+        let at = i64::from(sv.sig) * SIG_ENT;
+        let ero = MemFlagsData::trusted().with_readonly();
+        let field = |g: &mut Self, k: i64| g.b.ins().load(I64, ero, tab, (at + k) as i32);
+        let t = MemFlagsData::trusted();
+        let v = if f.codes {
+            let codes = field(self, SIG_CODES);
+            self.b.ins().uload8(I64, t, codes, sv.off as i32)
+        } else {
+            let first = field(self, SIG_OFF);
+            let e = self.b.ins().iadd_imm_s(first, sv.off);
+            if f.planes {
+                let blocks = field(self, SIG_PLANES);
+                self.plane_code(blocks, e)
+            } else {
+                let data = field(self, SIG_BYTES);
+                let at = self.b.ins().imul_imm_s(e, i64::from(f.es));
+                let p = self.b.ins().iadd(data, at);
+                match f.es {
+                    1 => self.b.ins().uload8(I64, t, p, 0),
+                    4 => self.b.ins().sload32(t, p, 0),
+                    _ => self.b.ins().load(I64, t, p, 0),
+                }
+            }
+        };
+        self.st(dst, v);
+        true
+    }
+
+    /// The code of kernel element `e` from the four planes of its plane block.
+    fn plane_code(&mut self, blocks: Value, e: Value) -> Value {
+        let blk = self.b.ins().ushr_imm_s(e, 6);
+        let at = self.b.ins().ishl_imm_s(blk, 5);
+        let pb = self.b.ins().iadd(blocks, at);
+        let sh = self.b.ins().band_imm_s(e, 63);
+        let mut code = self.c64(0);
+        for k in 0..4 {
+            let w = self.b.ins().load(I64, MemFlagsData::trusted(), pb, 8 * k);
+            let bit = self.b.ins().ushr(w, sh);
+            let bit = self.b.ins().band_imm_s(bit, 1);
+            let bit = self.b.ins().ishl_imm_s(bit, i64::from(k));
+            code = self.b.ins().bor(code, bit);
+        }
+        code
     }
 
     /// A read of the element at `off` of the signal at `ent` that is not in its codes: the four
@@ -6681,18 +6768,7 @@ impl Gen<'_> {
         self.start(logic);
         let first = self.ent_ld(ent, SIG_OFF);
         let e = self.b.ins().iadd(first, off);
-        let blk = self.b.ins().ushr_imm_s(e, 6);
-        let at = self.b.ins().ishl_imm_s(blk, 5);
-        let pb = self.b.ins().iadd(blocks, at);
-        let sh = self.b.ins().band_imm_s(e, 63);
-        let mut code = self.c64(0);
-        for k in 0..4 {
-            let w = self.b.ins().load(I64, MemFlagsData::trusted(), pb, 8 * k);
-            let bit = self.b.ins().ushr(w, sh);
-            let bit = self.b.ins().band_imm_s(bit, 1);
-            let bit = self.b.ins().ishl_imm_s(bit, i64::from(k));
-            code = self.b.ins().bor(code, bit);
-        }
+        let code = self.plane_code(blocks, e);
         self.b.ins().jump(out, &[BlockArg::Value(code)]);
         self.start(out);
         res
@@ -6708,6 +6784,10 @@ impl Gen<'_> {
             return;
         }
         let (slow, join) = self.slow_signal(pc, edge);
+        // The form has the stamps, the codes and, for the IEEE function, the `'last_value`.
+        let sure = self.sig_known(sig).is_some_and(|(sv, f)| {
+            sv.len == 1 && f.stamps && f.codes && (f.last || kind.to_level())
+        });
         let (ent, off) = self.sig_entry(sig, Some(1), slow);
         let signal = self.ent_ld(ent, SIG_SIGNAL);
         let first = self.ent_ld(ent, SIG_OFF);
@@ -6727,16 +6807,20 @@ impl Gen<'_> {
         self.b.ins().jump(join, &[]);
         self.start(rest);
         let stamps = self.ent_ld(ent, SIG_STAMPS);
-        let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, stamps, 0);
-        self.guard(has, slow);
-        let last = self.ent_ld(ent, SIG_LAST);
-        if !kind.to_level() {
-            let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, last, 0);
+        if !sure {
+            let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, stamps, 0);
             self.guard(has, slow);
         }
-        let len = self.ent_ld(ent, SIG_LEN);
-        let inside = self.b.ins().icmp(IntCC::UnsignedLessThan, off, len);
-        self.guard(inside, slow);
+        let last = self.ent_ld(ent, SIG_LAST);
+        if !sure {
+            if !kind.to_level() {
+                let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, last, 0);
+                self.guard(has, slow);
+            }
+            let len = self.ent_ld(ent, SIG_LEN);
+            let inside = self.b.ins().icmp(IntCC::UnsignedLessThan, off, len);
+            self.guard(inside, slow);
+        }
         let at = self.b.ins().ishl_imm_s(elem, 3);
         let sp = self.b.ins().iadd(stamps, at);
         let stamp = self.b.ins().load(I64, MemFlagsData::trusted(), sp, 0);
@@ -6795,10 +6879,15 @@ impl Gen<'_> {
             return;
         }
         let (slow, join) = self.slow_signal(pc, 0);
+        let sure = self
+            .sig_known(sig)
+            .is_some_and(|(sv, f)| sv.len == 1 && f.stamps);
         let (ent, off) = self.sig_entry(sig, Some(1), slow);
         let stamps = self.ent_ld(ent, SIG_STAMPS);
-        let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, stamps, 0);
-        self.guard(has, slow);
+        if !sure {
+            let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, stamps, 0);
+            self.guard(has, slow);
+        }
         let first = self.ent_ld(ent, SIG_OFF);
         let elem = self.b.ins().iadd(first, off);
         let at = self.b.ins().ishl_imm_s(elem, 3);
@@ -6813,7 +6902,9 @@ impl Gen<'_> {
 
     /// `Inst::SigRead` of `l` elements from the kernel's plane blocks of the signal whose entry is
     /// `ent` (`off` the first element in it), through `yavs_rt_planes`; `slow` when it offers
-    /// none or has fewer elements. The builder ends in a block that jumps to `join`.
+    /// none or has fewer elements (`sure`: the facts say it offers them). The builder ends in a
+    /// block that jumps to `join`.
+    #[allow(clippy::too_many_arguments)]
     fn sig_read_planes(
         &mut self,
         ent: Value,
@@ -6822,24 +6913,29 @@ impl Gen<'_> {
         dst: Reg,
         slow: Block,
         join: Block,
+        sure: bool,
     ) {
         let blocks = self.ent_ld(ent, SIG_PLANES);
-        let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, blocks, 0);
-        self.guard(has, slow);
-        // A count and an offset are below 2^32 where the reference was made; checked, so the sum
-        // below cannot wrap.
-        let small = self
-            .b
-            .ins()
-            .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, l, i64::from(u32::MAX));
-        self.guard(small, slow);
+        if !sure {
+            let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, blocks, 0);
+            self.guard(has, slow);
+            // A count and an offset are below 2^32 where the reference was made; checked, so the
+            // sum below cannot wrap.
+            let small =
+                self.b
+                    .ins()
+                    .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, l, i64::from(u32::MAX));
+            self.guard(small, slow);
+        }
         let plen = self.ent_ld(ent, SIG_PLEN);
-        let used = self.b.ins().iadd(off, l);
-        let fits = self
-            .b
-            .ins()
-            .icmp(IntCC::UnsignedLessThanOrEqual, used, plen);
-        self.guard(fits, slow);
+        if !sure {
+            let used = self.b.ins().iadd(off, l);
+            let fits = self
+                .b
+                .ins()
+                .icmp(IntCC::UnsignedLessThanOrEqual, used, plen);
+            self.guard(fits, slow);
+        }
         let first = self.ent_ld(ent, SIG_OFF);
         let bit0 = self.b.ins().iadd(first, off);
         let nelem = self.b.ins().iadd(first, plen);
@@ -6857,7 +6953,9 @@ impl Gen<'_> {
     }
 
     /// A `SigRead` of `l` (1 to 64, known) elements that lie in one word of each of the kernel's
-    /// planes: four loads, no call (#766); else on to the codes in a new current block.
+    /// planes: four loads, no call (#766); else on to the codes in a new current block. `sure`:
+    /// the facts say the signal offers its planes and has the elements.
+    #[allow(clippy::too_many_arguments)]
     fn sig_read_word(
         &mut self,
         ent: Value,
@@ -6866,18 +6964,21 @@ impl Gen<'_> {
         dst: Reg,
         slow: Block,
         join: Block,
+        sure: bool,
     ) {
         let codes_at = self.b.create_block();
         let blocks = self.ent_ld(ent, SIG_PLANES);
-        let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, blocks, 0);
-        self.guard(has, codes_at);
-        let plen = self.ent_ld(ent, SIG_PLEN);
-        let used = self.b.ins().iadd_imm_s(off, l);
-        let fits = self
-            .b
-            .ins()
-            .icmp(IntCC::UnsignedLessThanOrEqual, used, plen);
-        self.guard(fits, codes_at);
+        if !sure {
+            let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, blocks, 0);
+            self.guard(has, codes_at);
+            let plen = self.ent_ld(ent, SIG_PLEN);
+            let used = self.b.ins().iadd_imm_s(off, l);
+            let fits = self
+                .b
+                .ins()
+                .icmp(IntCC::UnsignedLessThanOrEqual, used, plen);
+            self.guard(fits, codes_at);
+        }
         let first = self.ent_ld(ent, SIG_OFF);
         let bit0 = self.b.ins().iadd(first, off);
         let sh = self.b.ins().band_imm_s(bit0, 63);
@@ -6920,25 +7021,41 @@ impl Gen<'_> {
             return;
         }
         let (slow, join) = self.slow_signal(pc, 0);
+        // The form of a reference of this length, when the facts say (`known` is constant then).
+        let form = self
+            .sig_known(sig)
+            .filter(|(sv, _)| known == Some(sv.len))
+            .map(|k| k.1);
+        let sure = form.is_some_and(|f| f.planes);
         let (ent, off) = self.sig_entry(sig, known, slow);
         let lv = self.ld(Reg(sig.0 + 1));
         if known.is_some_and(|l| l > 64) {
-            self.sig_read_planes(ent, off, lv, dst, slow, join);
+            self.sig_read_planes(ent, off, lv, dst, slow, join, sure);
             self.start(join);
             return;
         }
-        if let Some(l) = known {
-            self.sig_read_word(ent, off, l, dst, slow, join);
+        if let Some(l) = known
+            && form.is_none_or(|f| f.planes)
+        {
+            self.sig_read_word(ent, off, l, dst, slow, join, sure);
+        }
+        // No codes: the planes, no test.
+        if form.is_some_and(|f| !f.codes) {
+            self.sig_read_planes(ent, off, lv, dst, slow, join, sure);
+            self.start(join);
+            return;
         }
         // Up to 64 elements from the codes, else (or without the codes) from the planes.
         let alt = self.b.create_block();
-        let l1 = self.b.ins().iadd_imm_s(lv, -1);
-        let small = self.b.ins().icmp_imm_s(IntCC::UnsignedLessThan, l1, 64);
-        self.guard(small, alt);
-        let tl = self.ent_ld(ent, SIG_LEN);
-        let used = self.b.ins().iadd(off, lv);
-        let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, used, tl);
-        self.guard(fits, alt);
+        if form.is_none() {
+            let l1 = self.b.ins().iadd_imm_s(lv, -1);
+            let small = self.b.ins().icmp_imm_s(IntCC::UnsignedLessThan, l1, 64);
+            self.guard(small, alt);
+            let tl = self.ent_ld(ent, SIG_LEN);
+            let used = self.b.ins().iadd(off, lv);
+            let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, used, tl);
+            self.guard(fits, alt);
+        }
         let groups = self.b.ins().iadd_imm_s(lv, 7);
         let groups = self.b.ins().ushr_imm_s(groups, 3);
         let gb = self.b.ins().ishl_imm_s(groups, 3);
@@ -6958,7 +7075,7 @@ impl Gen<'_> {
         self.b.ins().call(self.imp.codes, &[base, groups, mask, pd]);
         self.b.ins().jump(join, &[]);
         self.start(alt);
-        self.sig_read_planes(ent, off, lv, dst, slow, join);
+        self.sig_read_planes(ent, off, lv, dst, slow, join, sure);
         self.start(join);
     }
 

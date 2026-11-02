@@ -329,6 +329,21 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - ``off``
      - on
      - ``run``
+   * - ``YAVS_SETTLE_CENSUS``
+     - A measuring aid for settle-phase deferral: at the end of the run, write per process what one activation reads, waits on and drives, what each driven part depends on, and why it is not a pure function of its waits, to this file.
+     - a file path
+     - unset
+     - ``run``
+   * - ``YAVS_SETTLE_EXACT``
+     - With ``YAVS_SETTLE_LIST``: the signal parts (``signal offset length`` per line) every other process may see, so a batch that also holds other processes can defer once none of them has a change pending.
+     - a file path
+     - unset
+     - ``run``
+   * - ``YAVS_SETTLE_LIST``
+     - A prototype, not a feature: with one thread, the processes named in this file (one per line, in the order to run them) may be left to the next delta while a signal they wait on has a change pending. Outside its conditions the run is as without it; it can change results for processes that are not pure.
+     - a file path
+     - unset
+     - ``run``
    * - ``YAVS_IDLE_SKIP``
      - ``off`` runs every activation of a clocked process; ``check`` also runs the ones the kernel would skip and fails when one does something else.
      - ``on``, ``off``, ``check``

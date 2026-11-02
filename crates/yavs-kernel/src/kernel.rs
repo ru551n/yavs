@@ -1042,6 +1042,10 @@ pub struct SimControl {
     /// Per signal, the processes of `idle_ok` that read it: `readers[readers_start[s]..
     /// readers_start[s + 1]]` (empty without such a process).
     readers_start: Vec<u32>,
+    /// Per signal, the processes of `idle_ok` that read all of it with no condition: armed by any
+    /// event (`whole[whole_start[s]..whole_start[s + 1]]`); `readers` has the other reads.
+    whole_start: Vec<u32>,
+    whole: Vec<u32>,
     /// Per process: a signal it reads had an event since its last activation (`Builder::idle_skip`;
     /// a dense array, the readers' loop of every event touches one byte per reader).
     armed: Vec<bool>,
@@ -1386,11 +1390,14 @@ impl SimControl {
             }
         }
         let mut readers_start = Vec::new();
+        let mut whole_start = Vec::new();
+        let mut whole_readers = Vec::new();
         let mut readers = Vec::new();
         let mut reader_guards = Vec::new();
         if idle_active {
             for l in readers_of {
                 readers_start.push(readers.len() as u32);
+                whole_start.push(whole_readers.len() as u32);
                 for (p, g, r) in l {
                     // A read of part of the signal is armed by its changed runs: list them.
                     let sig = &mut signals[readers_start.len() - 1];
@@ -1398,6 +1405,10 @@ impl SimControl {
                     if r != Range::new(0, sig.ty.len) {
                         sig.watched = true;
                         sig.watch_part(r, cfg.cells);
+                    }
+                    if whole && g.is_none() {
+                        whole_readers.push(p);
+                        continue;
                     }
                     let g = g.map_or(NO_GUARD, |g| {
                         reader_guards.push(match &g[..] {
@@ -1416,6 +1427,7 @@ impl SimControl {
                 }
             }
             readers_start.push(readers.len() as u32);
+            whole_start.push(whole_readers.len() as u32);
         }
         // The guard processes of guarded blocks, by the signals their conditions read.
         let mut guard_procs = Vec::new();
@@ -1449,6 +1461,8 @@ impl SimControl {
             guard_readers,
             guard_due: Vec::new(),
             readers_start,
+            whole_start,
+            whole: whole_readers,
             armed: vec![true; procs.len()],
             readers,
             reader_guards,
@@ -2195,6 +2209,13 @@ impl SimControl {
     /// Signal `s` had an event: the clocked processes that read it must run at their next edge.
     #[inline(always)]
     fn arm_readers(&mut self, s: u32) {
+        let (a, b) = (
+            self.whole_start[s as usize] as usize,
+            self.whole_start[s as usize + 1] as usize,
+        );
+        for &p in &self.whole[a..b] {
+            self.armed[p as usize] = true;
+        }
         if self.readers_start[s as usize] != self.readers_start[s as usize + 1] {
             self.arm_readers_of(s);
         }

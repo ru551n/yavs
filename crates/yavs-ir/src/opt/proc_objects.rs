@@ -599,7 +599,15 @@ pub(super) fn for_copy(
     o.drop_statements();
     o.analyse();
     let facts = o.decl_facts()?;
+    // What runs after the declarative part, whatever the number of its block (`decl.rs`).
+    let reached = o.reached_from(vec![body.0 as usize]);
     drop(o);
+    let mut later = vec![false; raw.code.len()];
+    for (b, _) in reached.iter().enumerate().filter(|r| *r.1) {
+        if let Some(r) = raw.blocks.get(BlockId(b as u32)) {
+            later[r.start as usize..r.end as usize].fill(true);
+        }
+    }
     if facts.objects.is_empty() {
         return None;
     }
@@ -616,7 +624,6 @@ pub(super) fn for_copy(
         Some(V::Fr(o)) => Some(o),
         _ => None,
     };
-    let body_pc = raw.blocks.get(body)?.start as usize;
     let mut f = Box::new(raw.clone());
     let base = f.frame.next_multiple_of(8);
     let mut next = base;
@@ -627,7 +634,7 @@ pub(super) fn for_copy(
             || next - base + total > MAX_BYTES
             || next + total > MAX_START
             || !plain(&prog.types, ty, 0)
-            || !only_in_its_slot(raw, &at, slot, body_pc)
+            || !only_in_its_slot(raw, &at, slot, &later)
         {
             continue;
         }
@@ -646,15 +653,15 @@ pub(super) fn for_copy(
     }
     f.frame = next;
     // (The word of the descriptor stays: its bytes are facts of the walk, wherever they are.)
-    for pc in body_pc..f.code.len() {
+    for (i, _) in later.iter().enumerate().filter(|l| *l.1) {
         if let Inst::Load {
             dst,
             addr,
             w: Width::B8,
-        } = f.code[pc]
+        } = f.code[i]
             && let Some(&off) = at(addr).and_then(|o| targets.get(&o))
         {
-            f.code[pc] = Inst::AddrOf {
+            f.code[i] = Inst::AddrOf {
                 dst,
                 space: AddrSpace::Frame,
                 off,
@@ -670,19 +677,19 @@ fn only_in_its_slot(
     raw: &crate::Func,
     at: &impl Fn(Reg) -> Option<u32>,
     slot: u32,
-    body_pc: usize,
+    later: &[bool],
 ) -> bool {
     let inside = |r: Reg| at(r).is_some_and(|o| slot <= o && o < slot + 24);
     for (pc, i) in raw.code.iter().enumerate() {
         match *i {
             Inst::Load { addr, w, .. } if inside(addr) => {
                 let o = at(addr).unwrap_or(0) - slot;
-                if pc < body_pc || w != Width::B8 || o >= 16 {
+                if !later[pc] || w != Width::B8 || o >= 16 {
                     return false;
                 }
             }
             Inst::Store { addr, src, .. } if inside(addr) => {
-                if pc >= body_pc || inside(src) {
+                if later[pc] || inside(src) {
                     return false;
                 }
             }

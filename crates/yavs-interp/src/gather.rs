@@ -75,12 +75,17 @@ const IMAGE_AFTER: u32 = 16;
 const IMAGE_MAX: u64 = 1 << 16;
 
 /// What the environment says about images: `YAVS_NO_IMAGE=1` none, `YAVS_IMAGE_CHECK=1` every
-/// copy checked against the leaves (off, on).
-fn image_env() -> (bool, bool) {
-    static E: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
+/// copy checked against the leaves, `YAVS_IMAGE_AFTER=n` asked for after `n` gathers (off, on,
+/// after).
+fn image_env() -> (bool, bool, u32) {
+    static E: std::sync::OnceLock<(bool, bool, u32)> = std::sync::OnceLock::new();
     *E.get_or_init(|| {
         let on = |k: &str| std::env::var_os(k).is_some_and(|v| v != "0");
-        (on("YAVS_NO_IMAGE"), on("YAVS_IMAGE_CHECK"))
+        let after = std::env::var("YAVS_IMAGE_AFTER")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(IMAGE_AFTER);
+        (on("YAVS_NO_IMAGE"), on("YAVS_IMAGE_CHECK"), after)
     })
 }
 
@@ -138,7 +143,7 @@ fn image_step(b: &mut Bound, c: &mut Ctx<'_>) {
     match &mut b.img {
         Img::Count(n) => {
             *n += 1;
-            if *n < IMAGE_AFTER {
+            if *n < image_env().2 {
                 return;
             }
             b.img = match image_spec(b) {

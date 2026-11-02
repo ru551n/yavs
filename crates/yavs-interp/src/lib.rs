@@ -1075,9 +1075,11 @@ pub fn direct_drive_now(
     let r = Range::new(s.off as u32 + target[0] as u32, target[1] as u32);
     if s.bytes != 0 {
         let es = s.es as usize;
+        let b = block[0].to_le_bytes();
         return target[1] == 1
             && es <= 8
-            && c.assign_bytes_now(d.id, r, &block[0].to_le_bytes()[..es]);
+            && (c.assign_direct_bytes(d.id, r.offset, &b[..es])
+                || c.assign_bytes_now(d.id, r, &b[..es]));
     }
     if s.codes | s.planes == 0 {
         return false;

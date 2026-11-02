@@ -759,7 +759,9 @@ impl Opt<'_> {
     /// Frame ranges the body writes, and those whose address is used other than directly by a
     /// load or store anywhere (a pointer may reach them), by the walk's view of the addresses.
     fn frame_writes(&self) -> (Ranges, Ranges) {
-        let body = self.f.body.map_or(0, |b| b.0 as usize);
+        // A block the body cannot reach runs before it, whatever its number (the lowering splices
+        // the declarations of a process's signal copies in behind the first blocks of the body).
+        let after = self.reached_from(vec![self.f.body.map_or(0, |b| b.0 as usize)]);
         let (mut wr, mut esc) = (Vec::new(), Vec::new());
         let fa = |r: Reg| match self.opn(r) {
             Opn::A(AddrSpace::Frame, o) => Some(i64::from(o)),
@@ -769,17 +771,9 @@ impl Opt<'_> {
             Opn::K(n) => Some(n),
             _ => None,
         };
-        for b in 0..self.blocks.len() {
+        for (b, &after) in after.iter().enumerate() {
             for pc in self.range(b) {
-                self.classify(
-                    self.f,
-                    &self.code[pc],
-                    &fa,
-                    &k,
-                    b >= body,
-                    &mut wr,
-                    &mut esc,
-                );
+                self.classify(self.f, &self.code[pc], &fa, &k, after, &mut wr, &mut esc);
             }
         }
         (wr, esc)

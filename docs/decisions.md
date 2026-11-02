@@ -13663,3 +13663,10 @@ Written by Claude. Two commits, each revertible alone; whether they reach `main`
 **Why it holds.** A signal's `cur` and `codes` are replaced only in `SimControl::settle`, before any process runs; force, release, deposit and resolved updates write those buffers in place (`crates/yavs-kernel/tests/signal_forms.rs`, and a debug assertion in `Host::view`). So every signal may have a form fact, forced and multi-source ones included.
 
 **Rejected.** Code per instance with addresses as constants, chosen by a test at each entry: the test cost more than it saved and the extra bodies cost the front end (design study of the post-elaboration prototype).
+
+## Shape facts in process copies (`opt/slots.rs`, `opt/decl.rs`, 2026-11-02)
+
+**Decision.** Constant-size temporaries are frame bytes in a process with nested subprograms too: a nested subprogram reaches the frame through `AddrOf Up` below the lowered frame, so the bytes past it are as private as in any other process. And what the declarative part leaves in the frame counts as written by the body only when a block the body can reach writes it (`Opt::reached_from`), not by block number: the lowering splices the declarations of a process's signal copies in behind the first blocks of the body, and those stores kept the descriptors of the copies from being facts.
+
+**Why.** A generic-sized vector drive in GRLIB's SDRAM model kept a wave object in temporary memory only because the model's process has nested procedures; the length checks of `iu3`'s signal copies stayed run-time checks only because of the block number of their declaration.
+

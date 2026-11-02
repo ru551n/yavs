@@ -145,10 +145,7 @@ fn a_warm_run_with_other_generics_is_a_cold_run_with_them() {
     // And back: the first entry still serves its own generics.
     let base = run(&d, &work, &[], &["--tier=interp"], &["--no-cache"], &[]);
     let again = run(&d, &work, &[SPEC], &EAGER, &[], &[]);
-    assert_eq!(
-        (&base.0, &base.1, &base.2),
-        (&again.0, &again.1, &again.2)
-    );
+    assert_eq!((&base.0, &base.1, &base.2), (&again.0, &again.1, &again.2));
 }
 
 /// Every tier gives what the interpreter gives, and a length that does not match fails at its

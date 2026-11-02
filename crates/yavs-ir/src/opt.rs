@@ -1610,11 +1610,17 @@ impl<'a> Opt<'a> {
     /// the instruction: in the same block, unless that ends the block, and then the next
     /// block is entered by no branch.
     fn reachable(&self) -> Vec<bool> {
-        let mut seen = vec![false; self.blocks.len()];
         // (The block a process pauses at is entered by the interpreter, not by a branch.)
-        let mut work: Vec<usize> = std::iter::once(0)
-            .chain(self.f.body.map(|b| b.0 as usize))
-            .collect();
+        self.reached_from(
+            std::iter::once(0)
+                .chain(self.f.body.map(|b| b.0 as usize))
+                .collect(),
+        )
+    }
+
+    /// The blocks the blocks `work` can reach, a suspension's continuation included.
+    fn reached_from(&self, mut work: Vec<usize>) -> Vec<bool> {
+        let mut seen = vec![false; self.blocks.len()];
         while let Some(b) = work.pop() {
             if seen.get(b) != Some(&false) {
                 continue;

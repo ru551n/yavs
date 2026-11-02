@@ -442,6 +442,131 @@ fn a_word_the_body_writes_is_not_known() {
     assert_eq!(branches(&p, c), 1);
 }
 
+/// A block of the declarative part the blocks of the body come before: what it writes runs once,
+/// before the body, so the body's test of the word folds. The same block, also reached from the
+/// body (`again`), may write it at any activation: nothing is known.
+fn late_decl_process(again: bool) -> (Program, FuncId) {
+    let mut pb = ProgramBuilder::new();
+    let f = pb.declare("p", FuncKind::Process, None);
+    let mut fb = pb.define(f);
+    fb.slot(16, 8);
+    fb.stmt(StmtKind::Wait, Span::new(FileId(0), 0, 1));
+    let (head, late) = (fb.block(), fb.block());
+    fb.body(head);
+    let (a8, zero) = (fb.addr(AddrSpace::Frame, 8), fb.int(0));
+    fb.emit(Inst::Store {
+        addr: a8,
+        src: zero,
+        w: Width::B8,
+    });
+    fb.emit(Inst::Br { to: late });
+    fb.at(head);
+    let (a, w, six, c, t, e) = (
+        fb.addr(AddrSpace::Frame, 0),
+        fb.reg(RegTy::I64),
+        fb.int(6),
+        fb.reg(RegTy::I64),
+        fb.block(),
+        fb.block(),
+    );
+    fb.emit(Inst::Load {
+        dst: w,
+        addr: a,
+        w: Width::B8,
+    });
+    fb.emit(Inst::Cmp {
+        op: CmpOp::Eq,
+        dst: c,
+        a: w,
+        b: six,
+    });
+    fb.emit(Inst::CondBr { c, t, f: e });
+    fb.at(t);
+    effect(&mut fb);
+    fb.emit(Inst::Br { to: e });
+    fb.at(e);
+    let one = fb.int(1);
+    fb.emit(Inst::WaitFor { t: one });
+    fb.emit(Inst::Suspend { resume: 0 });
+    if again {
+        let (a8, c) = (fb.addr(AddrSpace::Frame, 8), fb.reg(RegTy::I64));
+        fb.emit(Inst::Load {
+            dst: c,
+            addr: a8,
+            w: Width::B8,
+        });
+        fb.emit(Inst::CondBr {
+            c,
+            t: late,
+            f: head,
+        });
+    } else {
+        fb.emit(Inst::Br { to: head });
+    }
+    fb.at(late);
+    // Word 0 = G + word 8 (0, the first time), word 8 + 1.
+    let (ga, g, a0, a8, n, sum, more, one) = (
+        fb.addr(AddrSpace::Inst, 0),
+        fb.reg(RegTy::I64),
+        fb.addr(AddrSpace::Frame, 0),
+        fb.addr(AddrSpace::Frame, 8),
+        fb.reg(RegTy::I64),
+        fb.reg(RegTy::I64),
+        fb.reg(RegTy::I64),
+        fb.int(1),
+    );
+    fb.emit(Inst::Load {
+        dst: g,
+        addr: ga,
+        w: Width::B8,
+    });
+    fb.emit(Inst::Load {
+        dst: n,
+        addr: a8,
+        w: Width::B8,
+    });
+    fb.emit(Inst::Bin {
+        op: IntOp::Add,
+        dst: sum,
+        a: g,
+        b: n,
+    });
+    fb.emit(Inst::Store {
+        addr: a0,
+        src: sum,
+        w: Width::B8,
+    });
+    fb.emit(Inst::Bin {
+        op: IntOp::Add,
+        dst: more,
+        a: n,
+        b: one,
+    });
+    fb.emit(Inst::Store {
+        addr: a8,
+        src: more,
+        w: Width::B8,
+    });
+    fb.emit(Inst::Br { to: head });
+    fb.finish();
+    (pb.finish().expect("verifies"), f)
+}
+
+#[test]
+fn a_late_block_of_the_declarative_part_is_no_write_of_the_body() {
+    if !yavs_ir::opt::specialise_on() {
+        return;
+    }
+    let (mut p, f) = late_decl_process(false);
+    p.reserve_copies(1);
+    let c = p.copy_of(f, &6i64.to_le_bytes(), &[]).expect("a copy");
+    assert_eq!(branches(&p, c), 0);
+    let (mut p, f) = late_decl_process(true);
+    p.reserve_copies(1);
+    let c = p.copy_of(f, &6i64.to_le_bytes(), &[]).expect("a copy");
+    assert_eq!(branches(&p, c), 2, "the test of the word and the way back");
+}
+
 /// A process whose declarative part branches on a package constant (`Pkg(0)`, word 0) and stores
 /// 7 or 9 in a frame word; the body tests the word against 7.
 fn pkg_process() -> (Program, FuncId) {

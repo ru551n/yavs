@@ -3589,6 +3589,10 @@ predecoded dispatch.
 
 A block of many slices between process variables lost its folding after eight statements, 2x the instructions at auto; a full table of memory facts now forgets temporaries. A whole copy between two variables has a direct path. Nine windows at auto within the noise; details in `docs/decisions.md`.
 
+### Shape as a compile-time fact (2026-11-02, #1063, branch `perf/inv-shape`)
+
+A process copy keeps the facts of its declarative part when a nested subprogram reads a word of a variable's slot; the result length of a vector gate, `not` or `to_x01` is a fact when the operand lengths are proven equal, so its length check folds and the gate is a `LogicOp` instead of a native call; a slice copy of known count at run-time offsets shifts in 64 bits in Cranelift. Forced compiled: GRLIB instructions -2.8 percent, Microwatt -2.8 percent, bytes -2.0 and -1.5 percent; interpreted GRLIB -1.2 percent. At `--tier=auto` the single rounds read within their noise. A constant offset for record fields before the first descriptor-sized one was built and made GRLIB worse: dropped. Numbers and gaps in `docs/decisions.md` "Shape as a compile-time fact".
+
 ### clift: constant-shape `LCopy` (2026-11-02, #1057, branch `perf/iterative`)
 
 A slice copy with count and offsets known has its shape settled when the code is made. Forced compiled: instructions -5 percent, bytes -7.7 to -10.2 percent; at `--tier=auto` GRLIB -3 to -4 percent, Microwatt not established, since its big processes stay interpreted. A count known with a run-time offset still uses the general form. Numbers and gaps in `docs/decisions.md` "Constant-shape LCopy in Cranelift".

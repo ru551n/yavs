@@ -2247,7 +2247,7 @@ impl SimControl {
         for i in 0..pids.len() {
             let p = pids[i];
             let m = &mut self.procs[p as usize];
-            if m.idle_ok && !self.armed[p as usize] && m.idle_state != 0 && m.perm != 0 {
+            if !self.armed[p as usize] && m.idle_ok && m.idle_state != 0 && m.perm != 0 {
                 self.stats.idle_skips += 1;
                 m.idle_hits = m.idle_hits.saturating_add(1);
                 m.idle_win = m.idle_win.saturating_add(1);
@@ -4053,11 +4053,7 @@ impl SimControl {
                     let (mut i, mut at) = (0, 0);
                     // A big batch misses the cache on every process: ask for the hot lines of
                     // a process a few steps ahead (#766).
-                    let ahead = if pids.len() >= PREFETCH_BATCH {
-                        PREFETCH_AHEAD
-                    } else {
-                        usize::MAX
-                    };
+                    let prefetch = pids.len() >= PREFETCH_BATCH;
                     // With a pool: one activation in `COST_EVERY` of each process is timed for
                     // `pool_batch`, at a position that moves from batch to batch.
                     // The offset is scrambled so batches that come every 2^k batches still see
@@ -4074,7 +4070,7 @@ impl SimControl {
                             catch_unwind(AssertUnwindSafe(|| {
                                 while let Some(&p) = pids.get(i) {
                                     at = i;
-                                    if let Some(&n) = pids.get(i.saturating_add(ahead)) {
+                                    if prefetch && let Some(&n) = pids.get(i + PREFETCH_AHEAD) {
                                         let next = &mut self.slots[n as usize];
                                         // The slot (the process's kernel state), then the process.
                                         yavs_prefetch::lines(&*next, SLOT_LINES);
@@ -5034,11 +5030,13 @@ fn note_idle(
             }
         }
     }
-    let assigned = !(st.out.is_empty()
-        && st.outv.is_empty()
-        && st.outb.is_empty()
-        && st.scheduled.is_empty()
-        && st.phantoms.is_empty());
+    // The flag is set whenever a list is not empty: a quiet activation skips the five loads.
+    let assigned = st.act & ACT_ASSIGNED != 0
+        && !(st.out.is_empty()
+            && st.outv.is_empty()
+            && st.outb.is_empty()
+            && st.scheduled.is_empty()
+            && st.phantoms.is_empty());
     if std::mem::take(&mut meta.shadow) {
         let forced = |s: u32| {
             let s = &signals[s as usize];

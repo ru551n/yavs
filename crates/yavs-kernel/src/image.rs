@@ -58,6 +58,8 @@ pub(crate) struct Images {
     /// What processes asked for in this run phase, read after it.
     asked: Mutex<Vec<ImageSpec>>,
     any_asked: AtomicBool,
+    /// Bit `s` set: signal `s` has a leaf in an image.
+    has: Vec<u64>,
 }
 
 impl Images {
@@ -108,6 +110,11 @@ impl Images {
                     // The runs of every change, exact: cost follows the leaves that changed.
                     sig.watched = true;
                     sig.fine = true;
+                    let w = g[0].sig.0 as usize / 64;
+                    if self.has.len() <= w {
+                        self.has.resize(w + 1, 0);
+                    }
+                    self.has[w] |= 1 << (g[0].sig.0 % 64);
                     sig.images.push(SigImage {
                         image: id,
                         items: g.into(),
@@ -123,12 +130,15 @@ impl Images {
     pub fn push(&mut self, signals: &[Signal], changed: &[u32]) -> u64 {
         let mut n = 0;
         for &s in changed {
+            // A bit per signal: most changed signals have no image, and their `Signal` line
+            // stays cold.
+            if self.has.get(s as usize / 64).is_none_or(|w| w >> (s % 64) & 1 == 0) {
+                continue;
+            }
             let sig = &signals[s as usize];
             for im in &sig.images {
                 let bytes = &mut self.list[im.image as usize];
-                for &r in &sig.changed {
-                    n += write_run(sig, &im.items, r, bytes);
-                }
+                n += write_runs(sig, &im.items, &sig.changed, bytes);
             }
         }
         n
@@ -179,18 +189,34 @@ fn fits(spec: &ImageSpec, signals: &[Signal]) -> bool {
     })
 }
 
-/// The items among `items` that run `r` touches, written; how many.
+/// The items among `items` (in element order) that the runs touch, written; how many. Runs come
+/// mostly in element order: the walk goes on from the last item and searches only when a run starts
+/// before it.
 #[inline(always)]
-fn write_run(sig: &Signal, items: &[ImageItem], r: Range, bytes: &mut [u8]) -> u64 {
-    let mut i = items.partition_point(|t| t.k + t.len <= r.offset);
-    let at = i;
-    while let Some(t) = items.get(i)
-        && t.k < r.end()
-    {
-        write_item(sig, t, bytes);
-        i += 1;
+fn write_runs(sig: &Signal, items: &[ImageItem], runs: &[Range], bytes: &mut [u8]) -> u64 {
+    let (mut n, mut i, mut at) = (0, 0, 0);
+    for &r in runs {
+        if r.offset < at {
+            i = items.partition_point(|t| t.k + t.len <= r.offset);
+        }
+        while let Some(t) = items.get(i)
+            && t.k + t.len <= r.offset
+        {
+            i += 1;
+        }
+        let mut j = i;
+        while let Some(t) = items.get(j)
+            && t.k < r.end()
+        {
+            write_item(sig, t, bytes);
+            j += 1;
+        }
+        n += (j - i) as u64;
+        // An item may span the next run too: start the next search from it.
+        i = j.saturating_sub(1).max(i);
+        at = r.end();
     }
-    (i - at) as u64
+    n
 }
 
 /// The current value of a leaf into its place (`fits` holds).

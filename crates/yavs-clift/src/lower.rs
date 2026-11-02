@@ -4518,7 +4518,20 @@ impl Gen<'_> {
         if self.nat.is_none() {
             self.spill(self.pc);
         }
-        let mut args = vec![self.env, self.regs, self.mem];
+        // The step, signal and wait callbacks never read the register array (LLVM's code passes
+        // it for its alias analysis): a zero, not a reload of `regs` from the stack.
+        let unused = [
+            self.imp.step,
+            self.imp.signal,
+            self.imp.wait,
+            self.imp.wait_same,
+        ];
+        let regs = if unused.contains(&f) {
+            self.c64(0)
+        } else {
+            self.regs
+        };
+        let mut args = vec![self.env, regs, self.mem];
         args.extend_from_slice(rest);
         let call = self.b.ins().call(f, &args);
         let r = self.b.inst_results(call)[0];

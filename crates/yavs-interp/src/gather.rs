@@ -14,7 +14,7 @@ use yavs_ir::gather::{self, Leaf, LeafKind, Plan, PlanError};
 use yavs_ir::{
     ConstData, ConstId, DriveMode, Func, Part, Program, Reg, Regs, SCATTER_PART, SCATTER_REJECT, Ty,
 };
-use yavs_kernel::{Ctx, Elem, Range};
+use yavs_kernel::{Ctx, Elem, ImageItem, ImageKind, ImageSpec, NO_IMAGE, Range};
 
 use crate::InstSig;
 use crate::exec::{CONST, Machine, R, cell, cold, ice, rt_err, split, to_time};
@@ -53,6 +53,160 @@ pub(crate) struct Bound {
     items: Box<[Item]>,
     reads: Box<[Grp]>,
     runs: Box<[Grp]>,
+    img: Img,
+}
+
+/// Where a bound plan stands with its record image (kernel `image.rs`).
+enum Img {
+    /// Whole gathers so far.
+    Count(u32),
+    /// Asked for: there from a later run phase.
+    Asked(Box<ImageSpec>),
+    /// Copied from image `id`; with `check`, also read leaf by leaf and compared. `copies` since
+    /// the last review, when the image had `writes` leaves written.
+    Ready {
+        id: u32,
+        check: bool,
+        copies: u32,
+        writes: u64,
+    },
+    Off,
+}
+
+/// Whole gathers of a plan before it asks for an image: a process that runs a few times does not
+/// pay one.
+const IMAGE_AFTER: u32 = 16;
+
+/// Copies between two looks at whether an image pays (`image_review`).
+const IMAGE_REVIEW: u32 = 1024;
+
+/// A leaf written into an image costs about this many leaves read by a gather (#1065): an image
+/// written more than that per copy is given up.
+const WRITE_COST: u64 = 4;
+
+/// The largest value with an image.
+const IMAGE_MAX: u64 = 1 << 16;
+
+/// What the environment says about images: `YAVS_NO_IMAGE=1` none, `YAVS_IMAGE_CHECK=1` every
+/// copy checked against the leaves, `YAVS_IMAGE_AFTER=n` asked for after `n` gathers (off, on,
+/// after).
+fn image_env() -> (bool, bool, u32) {
+    static E: std::sync::OnceLock<(bool, bool, u32)> = std::sync::OnceLock::new();
+    *E.get_or_init(|| {
+        let on = |k: &str| std::env::var_os(k).is_some_and(|v| v != "0");
+        let after = std::env::var("YAVS_IMAGE_AFTER")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(IMAGE_AFTER);
+        (on("YAVS_NO_IMAGE"), on("YAVS_IMAGE_CHECK"), after)
+    })
+}
+
+/// The spec of the image of a whole value.
+fn image_spec(b: &Bound) -> Option<ImageSpec> {
+    if b.plan.size > IMAGE_MAX {
+        return None;
+    }
+    let items = b
+        .items
+        .iter()
+        .filter(|t| t.vsize > 0 && t.len > 0)
+        .map(|t| ImageItem {
+            sig: b.sigs[t.leaf as usize].signal,
+            k: t.k,
+            len: t.len,
+            voff: t.voff,
+            vsize: t.vsize,
+            kind: match t.kind {
+                LeafKind::LogicScalar => ImageKind::Code(t.bias),
+                LeafKind::LogicVec => ImageKind::Planes,
+                LeafKind::Scalar => ImageKind::Scalar,
+                LeafKind::Bytes => ImageKind::Raw,
+            },
+        });
+    Some(ImageSpec {
+        size: b.plan.size as u32,
+        items: items.collect(),
+    })
+}
+
+/// Whether the image of `b` paid for its last `IMAGE_REVIEW` copies: fewer leaves written than a
+/// `WRITE_COST`th of those the copies stood for. If not, this process lets it go.
+#[cold]
+#[inline(never)]
+fn image_review(b: &mut Bound, c: &mut Ctx<'_>) {
+    let leaves = b.items.len() as u64;
+    let Img::Ready {
+        id, copies, writes, ..
+    } = &mut b.img
+    else {
+        return;
+    };
+    let now = c.image_writes(*id);
+    let wrote = now.saturating_sub(*writes);
+    if wrote * WRITE_COST > u64::from(*copies) * leaves {
+        c.image_release(*id);
+        b.img = Img::Off;
+        return;
+    }
+    (*copies, *writes) = (0, now);
+}
+
+/// `YAVS_IMAGE_CHECK`: the leaves of a value just read leaf by leaf against its image.
+#[cold]
+#[inline(never)]
+fn image_check(b: &Bound, im: Option<&[u8]>, out: &[u8]) -> R<()> {
+    let Some(im) = im else {
+        return Err(ice("a record image that is gone"));
+    };
+    for t in &*b.items {
+        let (a, e) = (t.voff as usize, (t.voff + t.vsize) as usize);
+        if out[a..e] != im[a..e] {
+            return Err(ice(format!(
+                "record image out of step: signal {:?} element {} length {}: value {:?}, image {:?}",
+                b.sigs[t.leaf as usize].signal,
+                t.k,
+                t.len,
+                &out[a..e],
+                &im[a..e]
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// A whole gather read leaf by leaf: the plan's next step towards its image.
+#[cold]
+#[inline(never)]
+fn image_step(b: &mut Bound, c: &mut Ctx<'_>) {
+    match &mut b.img {
+        Img::Count(n) => {
+            *n += 1;
+            if *n < image_env().2 {
+                return;
+            }
+            b.img = match image_spec(b) {
+                Some(s) if !image_env().0 => {
+                    c.image_ask(s.clone());
+                    Img::Asked(s.into())
+                }
+                _ => Img::Off,
+            };
+        }
+        Img::Asked(s) => {
+            b.img = match c.image_id(s) {
+                None => return,
+                Some(NO_IMAGE) => Img::Off,
+                Some(id) => Img::Ready {
+                    id,
+                    check: image_env().1,
+                    copies: 0,
+                    writes: c.image_writes(id),
+                },
+            };
+        }
+        Img::Ready { .. } | Img::Off => {}
+    }
 }
 
 /// One instance of a leaf in a whole value: the leaf, its byte offset in the value and its first
@@ -442,6 +596,7 @@ impl Machine {
                 items,
                 reads,
                 runs,
+                img: Img::Count(0),
             })
         }))
     }
@@ -500,10 +655,10 @@ impl Machine {
         part: Option<Part>,
         ctx: &mut Option<&mut Ctx<'_>>,
     ) -> R<()> {
-        let (at, b) = self.take_plan(prog, tab, self.r(desc))?;
+        let (at, mut b) = self.take_plan(prog, tab, self.r(desc))?;
         // The plan goes back on both arms: an `R` kept across `put_plan` is reloaded through
         // memory, a stall of its own.
-        match self.gather_leaves(&b, dst, part, ctx) {
+        match self.gather_leaves(&mut b, dst, part, ctx) {
             Ok(()) => {
                 self.put_plan(at, b);
                 Ok(())
@@ -517,7 +672,7 @@ impl Machine {
 
     fn gather_leaves(
         &mut self,
-        b: &Bound,
+        b: &mut Bound,
         dst: Reg,
         part: Option<Part>,
         ctx: &mut Option<&mut Ctx<'_>>,
@@ -530,6 +685,23 @@ impl Machine {
         let base = self.r(dst);
         let out = self.wr(base, plan.size)?;
         if part.is_none() && !b.items.is_empty() {
+            if let Img::Ready {
+                id,
+                check: false,
+                ref mut copies,
+                ..
+            } = b.img
+                && let Some(im) = c.image(id)
+            {
+                out.copy_from_slice(im);
+                c.note_gather(true);
+                *copies += 1;
+                if *copies >= IMAGE_REVIEW {
+                    image_review(b, c);
+                }
+                return Ok(());
+            }
+            c.note_gather(false);
             for g in &*b.reads {
                 let ts = &b.items[g.first as usize..][..g.n as usize];
                 // One plane word of the signal for all items of the group.
@@ -564,6 +736,15 @@ impl Machine {
                         }
                     }
                 }
+            }
+            if let Img::Ready {
+                id, check: true, ..
+            } = b.img
+            {
+                image_check(b, c.image(id), out)?;
+            }
+            if !matches!(b.img, Img::Ready { .. } | Img::Off) {
+                image_step(b, c);
             }
             return Ok(());
         }

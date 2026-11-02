@@ -304,6 +304,21 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - any value
      - unset
      - ``run``
+   * - ``YAVS_NO_IMAGE``
+     - Turns record images off: every read of a whole record signal reads it field by field.
+     - any value
+     - unset
+     - ``run``
+   * - ``YAVS_IMAGE_CHECK``
+     - Reads a whole record signal field by field as well as from its image and stops with an internal error when they differ.
+     - any value
+     - unset
+     - ``run``
+   * - ``YAVS_IMAGE_AFTER``
+     - Reads of a whole record signal by one process before it asks for an image of it.
+     - a number
+     - ``16``
+     - ``run``
    * - ``YAVS_NO_NATIVE_IEEE``
      - Runs the ``ieee`` packages from their VHDL bodies only, without native fast paths.
      - any value

@@ -946,6 +946,9 @@ pub(crate) struct ProcState {
     pub same: [u8; SAME_DRIVERS],
     /// Assignments that took the general path of `assign` (`Stats::general_assigns`).
     pub general: u64,
+    /// `Stats::gathers_copied`, `Stats::gathers_read`.
+    pub gathers_copied: u64,
+    pub gathers_read: u64,
 }
 
 /// Drivers of a process with a skip-test state (`ProcState::same`); later ones always ask it.
@@ -1141,6 +1144,8 @@ pub(crate) struct Shared<'a> {
     pub resolution: Unit,
     pub stop_severity: Severity,
     pub signals: &'a [Signal],
+    /// Record images (`image.rs`); none where no process runs.
+    pub images: Option<&'a crate::image::Images>,
     pub drivers: &'a [DriverInfo],
     pub names: &'a [String],
     /// Where a live process (`Ctx::live`) writes its reports.
@@ -1432,6 +1437,49 @@ impl Ctx<'_> {
     #[inline]
     pub fn planes_view(&self, s: SignalId) -> Option<(*const yavs_logic::Block, usize)> {
         self.sh.signals.get(s.0 as usize)?.planes_view()
+    }
+
+    /// The bytes of record image `id` (`image.rs`).
+    #[inline(always)]
+    pub fn image(&self, id: u32) -> Option<&[u8]> {
+        Some(&*self.sh.images?.list.get(id as usize)?.bytes)
+    }
+
+    /// The leaves written into image `id` so far.
+    pub fn image_writes(&self, id: u32) -> u64 {
+        self.sh
+            .images
+            .and_then(|i| i.list.get(id as usize))
+            .map_or(0, |i| i.writes)
+    }
+
+    /// This process copies image `id` no more (`image.rs`).
+    pub fn image_release(&self, id: u32) {
+        if let Some(i) = self.sh.images {
+            i.release(id);
+        }
+    }
+
+    /// Ask for an image of `spec`: there from the next run phase on (`image_id`).
+    pub fn image_ask(&self, spec: crate::image::ImageSpec) {
+        if let Some(i) = self.sh.images {
+            i.ask(spec);
+        }
+    }
+
+    /// The image of `spec` if it was made (`NO_IMAGE`: it cannot have one).
+    pub fn image_id(&self, spec: &crate::image::ImageSpec) -> Option<u32> {
+        self.sh.images?.find(spec)
+    }
+
+    /// Count a whole record gather (`Stats::gathers_copied`, `Stats::gathers_read`).
+    #[inline(always)]
+    pub fn note_gather(&mut self, copied: bool) {
+        if copied {
+            self.st.gathers_copied += 1;
+        } else {
+            self.st.gathers_read += 1;
+        }
     }
 
     /// The plane blocks of the current value of logic signal `s` and its element count: whole

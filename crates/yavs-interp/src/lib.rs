@@ -1091,6 +1091,24 @@ pub fn direct_drive_now(
     c.assign_planes_now(d.id, Some(r), block)
 }
 
+/// [`direct_drive_now`] where the waveform element is read once the target signal's kind is
+/// known: `read(bytes)` gives its delay and its first block (the cell of a byte signal in word 0).
+#[inline(always)]
+pub fn direct_drive_wave(
+    c: &mut Ctx<'_>,
+    drivers: &[ProcDriver],
+    sigs: &[TierSig],
+    driver: u32,
+    target: [u64; 2],
+    read: impl FnOnce(bool) -> (i64, [u64; 4]),
+) -> bool {
+    let Some(s) = sigs.get((target[0] >> 32) as usize) else {
+        return false;
+    };
+    let (delay, block) = read(s.bytes != 0);
+    direct_drive_now(c, drivers, sigs, driver, target, delay, block)
+}
+
 /// [`TierHost::wait_same`] on the kernel context (`TierFrame::kctx`): whether the kernel took the
 /// wait as the last one. The caller checked [`TIER_ROOT_WAIT`] and records the pc.
 #[inline(always)]

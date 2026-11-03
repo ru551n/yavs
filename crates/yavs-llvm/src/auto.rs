@@ -19,6 +19,10 @@
 //! the process, a few windows in turn, and takes it back for good when the run did not progress
 //! faster. The static rules before the swap (size, instances, share, callbacks, search loops) are
 //! the first guess; the measure corrects what they cannot see.
+//!
+//! With Cranelift as the only generator the count rule comes on top (`Worker::waits`, [`count_rule_on`],
+//! docs/decisions.md "`--tier=auto`: the count rule"): the interpreter counts the entries of each
+//! function and asks for it (`Tier::asked`); the looks keep deciding what the count does not reach.
 
 use std::panic::resume_unwind;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -27,7 +31,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use yavs_interp::{Runtime, Tier, TierHost};
+use yavs_interp::{CountStat, Runtime, Tier, TierHost};
 use yavs_ir::{FuncId, FuncKind};
 
 use crate::generator::{Generator, OptLevel, StartError};
@@ -910,6 +914,8 @@ pub struct AutoTier {
     ctab: Arc<[AtomicUsize]>,
     /// Functions `hot` sent to the thread already.
     queued: Box<[AtomicBool]>,
+    /// `Tier::asked` waits for the compile (`YAVS_AUTO_SYNC`, tests).
+    sync: bool,
     queue: Mutex<Option<Sender<Msg>>>,
     shared: Arc<Shared>,
     /// The compile thread: not started until [`AutoTier::launch`] (a run of a few milliseconds
@@ -1169,6 +1175,11 @@ const HIT_GEN: Model = model(1000.0, 20.0, 1.0);
 /// warm against 4 079 ms compiled, #481).
 const FIRST_HIT: Model = model(0.0, 4.0, 1.0);
 
+/// `FIRST_HIT` since a hit links without the body (a pre-key), under the count rule (the old policy
+/// keeps its numbers, for comparing): about 0.26 us an IR instruction by the work clock on the
+/// measured designs, rounded up.
+const FIRST_LINK: Model = model(0.0, 0.3, 1.0);
+
 /// A look-up in the compilation cache generates the code of the function, about this part of a
 /// compile (generation and the key: 10 to 20 us per IR instruction).
 const PROBE_PART: u64 = 50;
@@ -1200,6 +1211,59 @@ const HOT_ROOT_MAX: usize = 4000;
 /// The most IR instructions of a function and the functions it calls on native frames that
 /// compile together (`Worker::tree`).
 const NATIVE_MAX: usize = 3000;
+
+/// Interpreted entries before the count rule asks for a function, a process: half of them before it
+/// switches to its copy, which has the other half (`NativeFlags::arm_count`). Half and double move
+/// nothing measurable (`docs/decisions.md` "`--tier=auto`: the count rule").
+const COUNT: u32 = 100;
+/// The work the simulation threads did, in the looks' microseconds (`work::per_us`), before the count
+/// rule compiles anything: a test of a few hundred milliseconds does not get a compile back.
+const COUNT_GATE: u64 = 160_000;
+/// The CPU time of its last run from which a program does not wait for that gate (microseconds, as the
+/// run-to-run profile has it): the gate's work is about half of this, and half of this lets more short
+/// suite tests link what they do not get back (OSVVM warm 1.14 against 1.09 in sum).
+const COUNT_GATE_CPU: u64 = 400_000;
+
+/// Work between two looks at the native frames left to the interpreter (`Worker::guard`), in the looks'
+/// microseconds, and instructions a frame left costs: pushing it, and running the rest of its
+/// function interpreted (about 8 000 on the window generator).
+const GUARD_STRETCH: u64 = 50_000;
+const LEFT_COST: u64 = 8_000;
+/// Native-frame code is suspect when the frames it leaves cost this part of the work of a stretch...
+const GUARD_SHARE: u64 = 32;
+/// ...and stays taken back if, per unit of work, the interpreter called the function more often than
+/// the native code left (a tenth more, or the run is no faster without it) but less than this many
+/// times as often (at that many calls per frame left a native call pays for the frames).
+const GUARD_CALLS: u64 = 16;
+/// Where the count of a function under trial starts: it never runs out.
+const GUARD_ARM: u32 = 1 << 31;
+
+/// Whether `--tier=auto` asks by the count rule (`YAVS_AUTO_POLICY=sampled`: as before it, with no
+/// native variant of the two instructions, for comparing the two; read once).
+pub fn count_rule_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("YAVS_AUTO_POLICY").map_or(true, |v| v != "sampled"))
+}
+
+/// `YAVS_AUTO_GUARD_SHARE` (0: no guard), `YAVS_AUTO_GUARD_CALLS`: tests and sensitivity runs.
+fn guard_knobs() -> (u64, u64) {
+    let num = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<u64>().ok());
+    (
+        num("YAVS_AUTO_GUARD_SHARE").unwrap_or(GUARD_SHARE),
+        num("YAVS_AUTO_GUARD_CALLS").unwrap_or(GUARD_CALLS),
+    )
+}
+
+/// The rule's numbers, and whether the tier is asked and waits for the compile (`YAVS_AUTO_COUNT`,
+/// `YAVS_AUTO_GATE`, `YAVS_AUTO_SYNC`: tests and sensitivity runs).
+fn count_knobs() -> (u32, u64, bool) {
+    let num = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<u64>().ok());
+    (
+        num("YAVS_AUTO_COUNT").map_or(COUNT, |n| n.clamp(1, u64::from(u32::MAX)) as u32),
+        num("YAVS_AUTO_GATE").unwrap_or(COUNT_GATE),
+        std::env::var_os("YAVS_AUTO_SYNC").is_some(),
+    )
+}
 
 /// The compile thread's state.
 struct Worker {
@@ -1242,8 +1306,10 @@ struct Worker {
     /// Per function: its frame-mode code was left for later because nothing compiled calls it
     /// yet (`frame_instead`).
     declined: Vec<bool>,
-    /// Who calls each function (any `Call` or `CallProt` in its code), worked out once.
+    /// Who calls each function (any `Call` or `CallProt` in its code), worked out once, so without the
+    /// copies of processes made since: under the count rule `copy_compiled` stands for those, per process.
     callers: std::cell::OnceCell<Vec<Vec<u32>>>,
+    copy_compiled: Vec<bool>,
     /// Per function: the address of its `CallFn` (0: none), published with `nat`.
     calls: Vec<usize>,
     /// Microseconds each function was seen interpreted, and running compiled.
@@ -1322,7 +1388,41 @@ struct Worker {
     lost_bases: Vec<u32>,
     early_done: Vec<FuncId>,
     early_root: bool,
+    /// The count rule is on (`count_rule_on`, a run with a budget and Cranelift alone): a function
+    /// the interpreter entered `COUNT` times is asked for (`Tier::asked`) and compiled unless `waits`.
+    counted: bool,
+    /// Functions asked for that wait (`waits`), and those that did at some time.
+    waiting: Vec<FuncId>,
+    held: Vec<bool>,
+    /// Callees that keep compiled native-frame code unpublished, to ask for (`publish`), and whether
+    /// they were.
+    want: Vec<FuncId>,
+    wanted: Vec<bool>,
+    /// The sampled work before anything is compiled by the count (`COUNT_GATE`), the count, and the
+    /// CPU time of the last run from which a warm run does not wait (`COUNT_GATE_CPU`).
+    gate: u64,
+    count: u32,
+    gate_cpu: u64,
+    /// `Worker::guard`: the work at its last look, per function the frames it left by then and whether
+    /// it was published then, the functions under trial, the ones found to gain, and its numbers
+    /// (0: no guard).
+    guard_at: u64,
+    left_seen: Vec<u64>,
+    live: Vec<bool>,
+    trying: Vec<Trying>,
+    proven: Vec<bool>,
+    guard_share: u64,
+    guard_calls: u64,
     trace: Option<Trace>,
+}
+
+/// Native-frame code taken back to see how often it is called (`Worker::guard`): since the work `at`,
+/// after `frames` left in the work `over`.
+struct Trying {
+    id: FuncId,
+    at: u64,
+    frames: u64,
+    over: u64,
 }
 
 /// `YAVS_AUTO_TRACE=1`, a tuning aid: the compile thread's timeline on stderr (a line per compile
@@ -1501,6 +1601,7 @@ impl Worker {
             refusals: 0,
             declined: vec![false; nfuncs],
             callers: Default::default(),
+            copy_compiled: vec![false; nfuncs],
             calls: vec![0; nfuncs],
             prog,
             table,
@@ -1543,6 +1644,21 @@ impl Worker {
             lost_bases: Vec::new(),
             early_done: Vec::new(),
             early_root: false,
+            counted: false,
+            waiting: Vec::new(),
+            held: vec![false; nfuncs],
+            want: Vec::new(),
+            wanted: vec![false; nfuncs],
+            gate: 0,
+            count: 0,
+            gate_cpu: COUNT_GATE_CPU,
+            guard_at: 0,
+            left_seen: vec![0; nfuncs],
+            live: vec![false; nfuncs],
+            trying: Vec::new(),
+            proven: vec![false; nfuncs],
+            guard_share: GUARD_SHARE,
+            guard_calls: GUARD_CALLS,
             trace: std::env::var_os("YAVS_AUTO_TRACE").map(|_| Trace {
                 t0: std::time::Instant::now(),
                 first: Default::default(),
@@ -1604,6 +1720,148 @@ impl Worker {
                 rtl(&self.prog, f)
             }
         })
+    }
+
+    /// Whether a function the count asked for waits: the run is still short (`gate`, read from the
+    /// looks), or a subprogram no compiled code calls (a call between interpreted caller and
+    /// compiled callee costs what the callee saves, the natfall lesson as a rule).
+    fn waits(&self, id: FuncId) -> bool {
+        let sub = self
+            .prog
+            .func(id)
+            .is_some_and(|f| f.kind != FuncKind::Process);
+        (self.total < self.gate && !self.link_early(id)) || (sub && !self.entered_from_code(id))
+    }
+
+    /// What the cache lists is a link, and the last run of this program was long enough: it does not
+    /// wait for the gate. The list alone says too little: all the tests of a library share it, and a
+    /// short one lost four times over linking what longer ones had compiled.
+    fn link_early(&self, id: FuncId) -> bool {
+        self.long_before() && self.cached(id)
+    }
+
+    /// The last run of this program (`Profile::base`, CPU microseconds) passed the gate.
+    fn long_before(&self) -> bool {
+        self.earlier.base.is_some_and(|b| b >= self.gate_cpu)
+    }
+
+    /// The functions that wait no more, and the callees `publish` wants.
+    fn freed(&mut self) -> Vec<FuncId> {
+        if self.total >= self.gate {
+            self.native.open_copies();
+        }
+        if self.gate != 0
+            && self.total >= self.gate
+            && let Some(tr) = &self.trace
+        {
+            tr.line(format!(
+                "count gate open at {} us of work, simulation CPU {:?}",
+                self.total,
+                sim_cpu()
+            ));
+            self.gate = 0;
+        }
+        let mut go = std::mem::take(&mut self.want);
+        if !self.waiting.is_empty() {
+            let wait = std::mem::take(&mut self.waiting);
+            let (stay, free): (Vec<_>, Vec<_>) = wait.into_iter().partition(|&i| self.waits(i));
+            self.waiting = stay;
+            go.extend(free);
+        }
+        go
+    }
+
+    /// Stop paying for native-frame code that leaves to the interpreter at most of its calls. A left
+    /// frame is seen, a native call is not (a count in the code would cost every call), so code whose
+    /// frames cost a good part of the work over a whole stretch is taken back, and its calls are
+    /// counted in the interpreter for a stretch. Many more calls than frames per work: native code
+    /// left rarely and gains. About as many or fewer: every call left, and the run is no faster
+    /// interpreted. Both bring it back. In between it left on most calls and the run is faster without
+    /// it, so it stays out. A function called only by direct calls of other native code counts few
+    /// calls and comes back: it leaves through those callers, which are judged by their own frames.
+    /// Read from the looks' work and the frames, no clock.
+    fn guard(&mut self) {
+        let work = self.total - self.guard_at;
+        if !self.counted || self.guard_share == 0 || work < GUARD_STRETCH {
+            return;
+        }
+        self.guard_at = self.total;
+        let (total, calls_per) = (self.total, self.guard_calls);
+        let mut back = false;
+        let native = self.native.clone();
+        self.trying.retain(|t| {
+            let over = total - t.at;
+            if over < GUARD_STRETCH {
+                return true;
+            }
+            let calls = u64::from(GUARD_ARM - native.count_left(t.id));
+            native.set_count(t.id, 0);
+            let (now, before) = (calls * t.over, t.frames * over);
+            let gains = now >= calls_per * before || now * 10 < before * 11;
+            if gains {
+                let k = t.id.0 as usize;
+                self.lost[k] = false;
+                self.proven[k] = true;
+                back = true;
+            } else {
+                native.count_stat(CountStat::Withdrawn);
+            }
+            if let Some(tr) = &self.trace {
+                tr.line(format!(
+                    "{} native-frame code {}: {calls} calls in {over} us, {} frames left in {} us before",
+                    t.id,
+                    if gains { "back" } else { "taken back for good" },
+                    t.frames,
+                    t.over,
+                ));
+            }
+            false
+        });
+        if back {
+            self.publish();
+        }
+        for k in 0..self.nat.len() {
+            let id = FuncId(k as u32);
+            let left = self.native.materialised(id);
+            let frames = left - std::mem::replace(&mut self.left_seen[k], left);
+            // (Published over the whole stretch: `live`.)
+            let whole = std::mem::replace(&mut self.live[k], self.nat[k].1);
+            if frames == 0
+                || !whole
+                || !self.nat[k].1
+                || self.lost[k]
+                || self.proven[k]
+                || frames * LEFT_COST < work * crate::work::per_us() / self.guard_share
+            {
+                continue;
+            }
+            self.lost[k] = true;
+            self.nat[k].1 = false;
+            self.ntab[k].store(0, Ordering::Release);
+            self.ctab[k].store(0, Ordering::Release);
+            self.native.clear_call(id);
+            self.native.set_count(id, GUARD_ARM);
+            self.trying.push(Trying {
+                id,
+                at: total,
+                frames,
+                over: work,
+            });
+        }
+    }
+
+    /// What the count compiles of `id`: native-frame code where it can run on one and has no loop,
+    /// the interpreter entering it there; else frame-mode code, and native-frame code too if it has.
+    fn asked_part(&self, id: FuncId) -> Part {
+        if !self.counted {
+            return Part::Both;
+        }
+        match self.prog.func(id) {
+            Some(f) if f.parent.is_none() && self.native_ok(id) && !loops(&self.prog, f) => {
+                Part::Native
+            }
+            _ => Part::Both,
+        }
     }
 
     /// The modules `tree` first makes of `id` as a root: native-frame code for a function that runs
@@ -1742,7 +2000,8 @@ impl Worker {
             return 0;
         };
         if cached && self.first.is_some() {
-            FIRST_HIT.price(f.code.len())
+            let link = self.counted && self.prog.identity.is_some();
+            if link { FIRST_LINK } else { FIRST_HIT }.price(f.code.len())
         } else if cached && self.prog.identity.is_some() {
             HIT.price(f.code.len())
         } else if cached {
@@ -2054,12 +2313,12 @@ impl Worker {
         ids
     }
 
-    /// Whether every function the native-frame code of `id` calls natively is compiled, and they
-    /// in turn. A callee left out of its compile or never seen running ends the walk: nothing
-    /// compiles it until it runs, so it kept `id` and every native caller of `id` unpublished for
-    /// the whole run, each of their calls a step out of compiled code. Once it runs, it is seen
-    /// and compiled like any other function, and the call reaches it through `ntab`.
-    fn ready(&self, id: FuncId) -> bool {
+    /// The function that keeps the native-frame code of `id` unpublished: every one it calls natively
+    /// must be compiled, and they in turn. A callee left out of its compile or never seen running ends
+    /// the walk: nothing compiles it until it runs, so it kept `id` and every native caller of `id`
+    /// unpublished for the whole run, each of their calls a step out of compiled code. Once it runs, it
+    /// is seen and compiled like any other function, and the call reaches it through `ntab`.
+    fn missing(&self, id: FuncId) -> Option<FuncId> {
         let nc = self.nset(id);
         let mut seen = std::collections::HashSet::from([id]);
         let mut todo = vec![id];
@@ -2076,12 +2335,16 @@ impl Worker {
                 let k = func.0 as usize;
                 if self.nat[k].0 != 0 {
                     todo.push(func);
-                } else if !self.left[k].get() && self.time[k] != [0, 0] {
-                    return false;
+                } else if !self.left[k].get()
+                    && (self.time[k] != [0, 0]
+                        || (self.counted && self.native.count_left(func) != self.count))
+                {
+                    // (Under the count rule "it ran" is the count, no matter of what a look caught.)
+                    return Some(func);
                 }
             }
         }
-        true
+        None
     }
 
     /// Publish the native-frame code whose callees are all compiled.
@@ -2091,7 +2354,16 @@ impl Worker {
             if addr == 0 || done || self.lost[k] {
                 continue;
             }
-            if self.ready(FuncId(k as u32)) {
+            let missing = self.missing(FuncId(k as u32));
+            // Under the count rule a callee that ran is what compiled code calls: it does not wait for
+            // its count, or a rare one would keep its callers unpublished.
+            if let Some(c) = missing
+                && self.counted
+                && !std::mem::replace(&mut self.wanted[c.0 as usize], true)
+            {
+                self.want.push(c);
+            }
+            if missing.is_none() {
                 self.ntab[k].store(addr, Ordering::Release);
                 self.nat[k].1 = true;
                 if let Some(tr) = &self.trace {
@@ -2680,7 +2952,7 @@ impl Worker {
     /// callers, ran 1.4 times the instructions of the interpreter. Left for later: `see` asks for
     /// it again once a caller is compiled.
     fn frame_instead(&mut self, id: FuncId, o2: bool, sampled: bool) -> bool {
-        if !self.entered_from_code(id) {
+        if !self.counted && !self.entered_from_code(id) {
             if let Some(tr) = &self.trace
                 && !self.declined[id.0 as usize]
             {
@@ -2719,7 +2991,11 @@ impl Worker {
         callers[id.0 as usize].iter().any(|&c| {
             c != id.0
                 && (self.table[c as usize].run.load(Ordering::Relaxed) != 0
-                    || self.nat[c as usize].1)
+                    || self.nat[c as usize].1
+                    || self.copy_compiled[c as usize]
+                    // (Native-frame code waits to be published for what it calls, so under the count
+                    // rule made is enough, or each would wait for the other.)
+                    || (self.counted && self.nat[c as usize].0 != 0))
         })
     }
 
@@ -2993,6 +3269,9 @@ impl Worker {
                     let lean = self.prog.func(id).is_some_and(crate::regs::no_table);
                     self.table[id.0 as usize].set((run, entry.nregs), lean);
                     self.native.set(id);
+                    if self.counted {
+                        self.copy_compiled[self.prog.base_of(id).0 as usize] = true;
+                    }
                 }
                 if self.early_root && !self.early_done.contains(&id) {
                     self.early_done.push(id);
@@ -3280,6 +3559,22 @@ impl AutoTier {
             Duration::from_millis(20)
         };
         let sample_every = Duration::from_micros(heat.period.into());
+        // The count rule: Cranelift alone (an LLVM compile costs about seven times as much, and the
+        // rule was measured on Cranelift only), and not in the test mode without a budget.
+        let counted = count_rule_on() && heat.budget != 0 && main.is_none() && first.is_some();
+        let (count, gate, sync) = count_knobs();
+        let sync = counted && sync;
+        if counted {
+            rt.native_flags().arm_count(
+                &rt.prog,
+                count,
+                u64::from(count / 2).max(2),
+                (count / 2).max(1),
+            );
+            if gate == 0 {
+                rt.native_flags().open_copies();
+            }
+        }
         let mut w = Worker::new(
             prog,
             table,
@@ -3293,6 +3588,14 @@ impl AutoTier {
             first,
             note,
         );
+        (w.counted, w.gate, w.count) = (counted, gate, count);
+        if let Some(n) = std::env::var("YAVS_AUTO_WARM_GATE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+        {
+            w.gate_cpu = n;
+        }
+        (w.guard_share, w.guard_calls) = guard_knobs();
         let spawn = move |wait: bool| {
             std::thread::Builder::new()
                 .name("yavs-tier-up".into())
@@ -3333,6 +3636,9 @@ impl AutoTier {
                     if !sh.halt.load(Ordering::SeqCst) {
                         w.listed = w.lead().map(|g| g.cache_list()).unwrap_or_default();
                         w.load_profile();
+                        if w.counted && w.long_before() {
+                            w.native.open_copies();
+                        }
                     }
                     if let (Some(key), Some(store)) = (w.profile_key, w.store.clone()) {
                         let cpu0 = sim_cpu().map_or(0, |c| u64::try_from(c.as_micros()).unwrap_or(0));
@@ -3375,6 +3681,7 @@ impl AutoTier {
                     if !looks.is_empty() {
                         inbox.push_back(std::mem::take(&mut looks));
                     }
+                    let mut unfinished: Vec<FuncId> = Vec::new();
                     loop {
                         while let Ok(m) = rx.try_recv() {
                             route(m, &mut pending, &mut inbox);
@@ -3391,6 +3698,9 @@ impl AutoTier {
                         for look in inbox.pop_front().unwrap_or_default() {
                             w.see(&look, upgrade, &mut pending);
                         }
+                        let free = w.freed();
+                        pending.asked.extend(free);
+                        w.guard();
                         loop {
                             publish(&w);
                             while let Ok(m) = rx.try_recv() {
@@ -3405,10 +3715,21 @@ impl AutoTier {
                             let Some((ids, o2, sampled)) = probe
                                 .map(|id| (vec![(id, Part::Both)], false, true))
                                 .or_else(|| {
-                                    pending
-                                        .asked
-                                        .pop_front()
-                                        .map(|id| (vec![(id, Part::Both)], false, false))
+                                    while let Some(id) = pending.asked.pop_front() {
+                                        if !w.counted || !w.waits(id) {
+                                            return Some((vec![(id, w.asked_part(id))], false, false));
+                                        }
+                                        if !w.held[id.0 as usize] {
+                                            w.held[id.0 as usize] = true;
+                                            w.native.count_stat(CountStat::Held);
+                                        }
+                                        w.waiting.push(id);
+                                        // (A run that waits for a compile goes on interpreted.)
+                                        if let Some(f) = sh.finished.get(id.0 as usize) {
+                                            f.store(true, Ordering::Release);
+                                        }
+                                    }
+                                    None
                                 })
                                 .or_else(|| {
                                     pending
@@ -3426,6 +3747,12 @@ impl AutoTier {
                                     w.pick(&mut pending.cands).map(|ids| (ids, false, true))
                                 })
                             else {
+                                // (All that was left to do for them waits, `YAVS_AUTO_SYNC`.)
+                                for id in unfinished.drain(..) {
+                                    if let Some(f) = sh.finished.get(id.0 as usize) {
+                                        f.store(true, Ordering::Release);
+                                    }
+                                }
                                 break;
                             };
                             // `busy` before `halt` here and `halt` before `busy` in `stop` (both
@@ -3462,6 +3789,14 @@ impl AutoTier {
                                 }
                             }
                             w.early_root = false;
+                            if let (Some(id), true) = (first, w.counted && root_done && !sampled && !o2) {
+                                w.native.count_stat(CountStat::Compiled);
+                                if w.prog.base_of(id) != id {
+                                    w.native.count_stat(CountStat::Copies);
+                                }
+                            }
+                            let free = w.freed();
+                            pending.asked.extend(free);
                             // (Not a root the profile asked for: its share of the run is not known
                             // yet, and the run as a whole is judged at its end.)
                             if let (Some(id), true) =
@@ -3471,8 +3806,15 @@ impl AutoTier {
                                 w.trial(id, &sh.halt);
                                 sh.trial.store(false, Ordering::SeqCst);
                             }
-                            if let Some(f) = first.and_then(|id| sh.finished.get(id.0 as usize)) {
-                                f.store(true, Ordering::Release);
+                            // `YAVS_AUTO_SYNC`: what this compile freed comes before the run goes on.
+                            if sync && !pending.asked.is_empty() {
+                                unfinished.extend(first);
+                                continue;
+                            }
+                            for id in unfinished.drain(..).chain(first) {
+                                if let Some(f) = sh.finished.get(id.0 as usize) {
+                                    f.store(true, Ordering::Release);
+                                }
                             }
                             sh.busy.store(false, Ordering::SeqCst);
                         }
@@ -3508,6 +3850,18 @@ impl AutoTier {
                                 ));
                             }
                         }
+                        let mut m: Vec<(u64, usize)> = (0..w.time.len())
+                            .map(|k| (w.native.materialised(FuncId(k as u32)), k))
+                            .filter(|x| x.0 != 0)
+                            .collect();
+                        m.sort_unstable();
+                        for &(n, k) in m.iter().rev().take(20) {
+                            let name = w.prog.func(FuncId(k as u32)).map_or("?", |f| f.name.as_str());
+                            tr.line(format!(
+                                "f{k} `{name}`: {n} native frames left to the interpreter, seen {:?}",
+                                w.time[k]
+                            ));
+                        }
                         tr.line(format!(
                             "sampled {} us, compiled for {} us (clock: {} instructions, {} us of CPU time, process CPU less the sampler's and the compile thread's)",
                             w.total,
@@ -3524,6 +3878,7 @@ impl AutoTier {
         };
         let tier = Arc::new(AutoTier {
             queued: (0..funcs.len()).map(|_| AtomicBool::new(false)).collect(),
+            sync,
             funcs,
             ntab,
             ctab,
@@ -3539,6 +3894,8 @@ impl AutoTier {
         }
         if heat.eager() {
             rt.set_eager();
+        }
+        if heat.eager() || sync {
             // `Tier::hot` of an eager tier waits for the compile: the thread cannot wait for the run.
             tier.start_thread(false)?;
         }
@@ -3788,6 +4145,20 @@ impl Tier for AutoTier {
         call(c, cells, obj, pc, host, &lookup, self.ntab.as_ptr().cast())
     }
 
+    fn asked(&self, func: FuncId) {
+        if self.sync {
+            return self.hot(func);
+        }
+        let Some(q) = self.queued.get(func.0 as usize) else {
+            return;
+        };
+        if !q.swap(true, Ordering::Relaxed)
+            && let Some(q) = &*self.queue.lock().unwrap_or_else(PoisonError::into_inner)
+        {
+            let _ = q.send(Msg::Hot(func));
+        }
+    }
+
     fn hot(&self, func: FuncId) {
         let Some(q) = self.queued.get(func.0 as usize) else {
             return;
@@ -3818,6 +4189,310 @@ impl Tier for AutoTier {
 
 #[cfg(test)]
 mod tests {
+    /// A worker of the count rule: no generator, so nothing compiles; the rule's decisions only.
+    fn counted(prog: yavs_ir::Program, gate: u64) -> super::Worker {
+        let rt = yavs_interp::Runtime::new(std::sync::Arc::new(prog), Default::default()).unwrap();
+        let n = rt.prog.funcs.len();
+        let tab = || -> std::sync::Arc<[std::sync::atomic::AtomicUsize]> {
+            (0..n)
+                .map(|_| std::sync::atomic::AtomicUsize::new(0))
+                .collect()
+        };
+        let mut w = super::Worker::new(
+            rt.prog.clone(),
+            (0..n).map(|_| super::Entry::default()).collect(),
+            tab(),
+            tab(),
+            rt.native_flags(),
+            super::Heat::DEFAULT,
+            crate::OptLevel::O2,
+            usize::MAX,
+            None,
+            None,
+            Box::new(|_, _, _| {}),
+        );
+        w.counted = true;
+        w.gate = gate;
+        w
+    }
+
+    /// A process that calls a function.
+    fn caller_callee() -> (yavs_ir::Program, yavs_ir::FuncId, yavs_ir::FuncId) {
+        let mut pb = ProgramBuilder::new();
+        let g = pb.declare("g", yavs_ir::FuncKind::Procedure, None);
+        let p = pb.declare("p", yavs_ir::FuncKind::Process, None);
+        let mut fb = pb.define(g);
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        // Something of its own, so the optimiser keeps the call.
+        let keep = fb.slot(8, 8);
+        let at = fb.addr(yavs_ir::AddrSpace::Frame, keep);
+        fb.emit(Inst::Store {
+            addr: at,
+            src: at,
+            w: yavs_ir::Width::B8,
+        });
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+        let mut fb = pb.define(p);
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let args = fb.regs(&[]);
+        fb.emit(Inst::Call {
+            func: g,
+            args,
+            dst: None,
+        });
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+        (pb.finish().unwrap(), p, g)
+    }
+
+    fn look(us: u64) -> super::Look {
+        super::Look {
+            running: vec![(yavs_ir::FuncId(0), false, us)],
+        }
+    }
+
+    /// The hold: a subprogram waits for a compiled caller, whichever kind of code that is; a process
+    /// does not.
+    #[test]
+    fn a_subprogram_waits_for_a_compiled_caller() {
+        let (prog, caller, callee) = caller_callee();
+        let mut w = counted(prog, 0);
+        assert!(!w.waits(caller));
+        assert!(w.waits(callee));
+        w.waiting.push(callee);
+        assert!(w.freed().is_empty());
+        assert_eq!(w.waiting, [callee]);
+        w.nat[caller.0 as usize].0 = 64;
+        assert!(!w.waits(callee));
+        assert_eq!(w.freed(), [callee]);
+        assert!(w.waiting.is_empty());
+    }
+
+    /// A warm run links what the cache lists before the gate only if its own last run was long: the
+    /// list is shared by all the tests of a library.
+    #[test]
+    fn only_a_long_last_run_links_before_the_gate() {
+        let (prog, caller, _) = caller_callee();
+        let mut w = counted(prog, u64::MAX);
+        w.in_cache[caller.0 as usize].set(true).unwrap();
+        assert!(w.waits(caller), "no last run");
+        w.earlier.base = Some(super::COUNT_GATE_CPU - 1);
+        assert!(w.waits(caller), "a short last run");
+        w.earlier.base = Some(super::COUNT_GATE_CPU);
+        assert!(!w.waits(caller));
+        w.in_cache = vec![Default::default(); w.in_cache.len()];
+        w.in_cache[caller.0 as usize].set(false).unwrap();
+        assert!(w.waits(caller), "not in the cache");
+    }
+
+    /// A function that ran keeps its compiled native callers unpublished until it has code: it is
+    /// asked for at once, not left to wait for its count (a rare callee would hold them for good).
+    #[test]
+    fn a_callee_that_holds_up_publication_is_wanted() {
+        let (prog, top, leaf) = native_chain();
+        let mut w = counted(prog, 0);
+        w.nat[top.0 as usize] = (64, false);
+        w.count = 100;
+        w.native.set_count(leaf, 100);
+        w.publish();
+        assert_ne!(
+            w.ntab[top.0 as usize].load(std::sync::atomic::Ordering::Acquire),
+            0,
+            "the callee has not run"
+        );
+        w.nat[top.0 as usize] = (64, false);
+        w.ntab[top.0 as usize].store(0, std::sync::atomic::Ordering::Release);
+        w.native.tick(leaf.0);
+        w.publish();
+        assert_eq!(
+            w.ntab[top.0 as usize].load(std::sync::atomic::Ordering::Acquire),
+            0
+        );
+        assert_eq!(w.freed(), [leaf]);
+        w.publish();
+        assert!(w.freed().is_empty(), "asked for once");
+        w.nat[leaf.0 as usize] = (32, false);
+        w.publish();
+        assert_eq!(
+            w.ntab[top.0 as usize].load(std::sync::atomic::Ordering::Acquire),
+            64
+        );
+    }
+
+    /// A procedure that runs on native frames and calls another.
+    fn native_chain() -> (yavs_ir::Program, yavs_ir::FuncId, yavs_ir::FuncId) {
+        let mut pb = ProgramBuilder::new();
+        let leaf = pb.declare("leaf", yavs_ir::FuncKind::Procedure, None);
+        let top = pb.declare("top", yavs_ir::FuncKind::Procedure, None);
+        let mut fb = pb.define(leaf);
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let keep = fb.slot(8, 8);
+        let at = fb.addr(yavs_ir::AddrSpace::Frame, keep);
+        fb.emit(Inst::Store {
+            addr: at,
+            src: at,
+            w: yavs_ir::Width::B8,
+        });
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+        let mut fb = pb.define(top);
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let args = fb.regs(&[]);
+        fb.emit(Inst::Call {
+            func: leaf,
+            args,
+            dst: None,
+        });
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+        (pb.finish().unwrap(), top, leaf)
+    }
+
+    /// The gate is a count of work, read from the looks: not a clock.
+    #[test]
+    fn the_gate_opens_with_the_work_the_looks_saw() {
+        let (prog, caller, _) = caller_callee();
+        let mut w = counted(prog, 1000);
+        let mut pending = super::Pending::default();
+        assert!(w.waits(caller));
+        w.see(&look(999), false, &mut pending);
+        assert!(w.waits(caller));
+        w.see(&look(1), false, &mut pending);
+        assert!(!w.waits(caller));
+    }
+
+    /// A worker with published native-frame code of `f`, which the look at `f` will judge.
+    fn guarded() -> (super::Worker, yavs_ir::FuncId) {
+        let (prog, _, g) = caller_callee();
+        let mut w = counted(prog, 0);
+        let k = g.0 as usize;
+        w.nat[k] = (64, true);
+        w.ntab[k].store(64, std::sync::atomic::Ordering::Release);
+        w.ctab[k].store(128, std::sync::atomic::Ordering::Release);
+        w.native.set_call(g);
+        (w, g)
+    }
+
+    fn work_on(w: &mut super::Worker, us: u64) {
+        let mut pending = super::Pending::default();
+        w.see(&look(us), false, &mut pending);
+    }
+
+    fn published(w: &super::Worker, g: yavs_ir::FuncId) -> bool {
+        w.ntab[g.0 as usize].load(std::sync::atomic::Ordering::Acquire) != 0
+    }
+
+    /// Frames enough to be an eighth of `us` of work.
+    fn frames_for(us: u64) -> usize {
+        (us * crate::work::per_us() / 8 / super::LEFT_COST) as usize
+    }
+
+    /// A worker that took `f` back after a stretch of frames, its calls now counted.
+    fn on_trial() -> (super::Worker, yavs_ir::FuncId, usize) {
+        let (mut w, g) = guarded();
+        let n = frames_for(100_000);
+        // The first look: published since then, so the first stretch is not judged.
+        work_on(&mut w, 100_000);
+        w.guard();
+        for _ in 0..n {
+            w.native.note_left(g);
+        }
+        work_on(&mut w, 100_000);
+        w.guard();
+        assert!(!published(&w, g));
+        assert!(w.lost[g.0 as usize]);
+        (w, g, n)
+    }
+
+    /// Few frames: the code stays. A stretch it was not published for all of: not judged.
+    #[test]
+    fn native_code_that_leaves_now_and_then_stays() {
+        let (mut w, g) = guarded();
+        work_on(&mut w, 100_000);
+        for _ in 0..frames_for(100_000) {
+            w.native.note_left(g);
+        }
+        w.guard();
+        assert!(published(&w, g));
+        work_on(&mut w, 100_000);
+        w.native.note_left(g);
+        w.guard();
+        assert!(published(&w, g));
+    }
+
+    /// More calls than frames per work, but not many: it left at most calls and the run gains without
+    /// it, so it stays out for good.
+    #[test]
+    fn native_code_that_leaves_at_most_calls_is_taken_back() {
+        let (mut w, g, n) = on_trial();
+        for _ in 0..2 * n {
+            w.native.tick(g.0);
+        }
+        work_on(&mut w, 100_000);
+        w.guard();
+        assert!(!published(&w, g));
+        assert!(w.lost[g.0 as usize]);
+        assert!(w.trying.is_empty());
+        assert_eq!(w.native.count_left(g), 0);
+        assert_eq!(
+            w.native.count_stats()[yavs_interp::CountStat::Withdrawn as usize],
+            1
+        );
+    }
+
+    /// Many calls per frame: native code gains, back it goes, and it is not judged again.
+    #[test]
+    fn native_code_called_often_comes_back() {
+        let (mut w, g, n) = on_trial();
+        for _ in 0..n * super::GUARD_CALLS as usize {
+            w.native.tick(g.0);
+        }
+        work_on(&mut w, 100_000);
+        w.guard();
+        assert!(published(&w, g));
+        assert!(!w.lost[g.0 as usize]);
+        assert_eq!(
+            w.native.count_stats()[yavs_interp::CountStat::Withdrawn as usize],
+            0
+        );
+        work_on(&mut w, 100_000);
+        for _ in 0..n {
+            w.native.note_left(g);
+        }
+        w.guard();
+        assert!(published(&w, g));
+    }
+
+    /// As many calls as frames per work, or fewer: the run is no faster without it. Back it goes.
+    #[test]
+    fn native_code_that_is_no_slower_comes_back() {
+        let (mut w, g, n) = on_trial();
+        for _ in 0..n {
+            w.native.tick(g.0);
+        }
+        work_on(&mut w, 100_000);
+        w.guard();
+        assert!(published(&w, g));
+    }
+
+    /// The looks go on deciding under the rule: a loop the count does not reach still becomes a
+    /// candidate by its time seen (`compute_h2h`, `xor_sig`, `xor_types` under a plain count).
+    #[test]
+    fn a_long_loop_stays_with_the_sampler_under_the_count() {
+        let (prog, f) = padded_loop(40);
+        let mut w = counted(prog, u64::MAX);
+        let mut pending = super::Pending::default();
+        w.see(
+            &super::Look {
+                running: vec![(f, false, 10_000_000)],
+            },
+            false,
+            &mut pending,
+        );
+        assert_eq!(pending.cands, [f]);
+    }
+
     use super::{
         BY_ENTRIES, BY_RUNS, COMPUTE_BUDGET, NATIVE_BUDGET, Pace, Rule, Trial, Tune, UNSEEN_MIN,
         band_wait, cold, compute, decide, first_fit, fused_search, left_out, loops, must_calls,
@@ -3848,7 +4523,6 @@ mod tests {
 
     /// A function of `n` frees whose last block loops on itself: a compute loop for
     /// `compute`, whatever its size.
-    #[cfg(feature = "llvm")]
     fn padded_loop(n: usize) -> (yavs_ir::Program, yavs_ir::FuncId) {
         let mut pb = ProgramBuilder::new();
         let f = pb.declare("f", yavs_ir::FuncKind::Procedure, None);
@@ -4018,15 +4692,15 @@ mod tests {
         let (f, g, h) = (ids[0], ids[1], ids[2]);
         assert!(w.nset(f).contains(&h));
         w.nat[f.0 as usize].0 = 1;
-        assert!(w.ready(f), "g never ran");
+        assert!(w.missing(f).is_none(), "g never ran");
         w.time[g.0 as usize][0] = 1;
-        assert!(!w.ready(f), "g ran and is not compiled");
+        assert!(w.missing(f).is_some(), "g ran and is not compiled");
         w.nat[g.0 as usize].0 = 1;
-        assert!(w.ready(f), "h never ran");
+        assert!(w.missing(f).is_none(), "h never ran");
         w.time[h.0 as usize][0] = 1;
-        assert!(!w.ready(f), "h ran and is not compiled");
+        assert!(w.missing(f).is_some(), "h ran and is not compiled");
         w.left[h.0 as usize].set(true);
-        assert!(w.ready(f), "h is left out");
+        assert!(w.missing(f).is_none(), "h is left out");
     }
 
     #[test]

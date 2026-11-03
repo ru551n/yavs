@@ -141,7 +141,8 @@ jobs:
           YAVS_BIN="$PWD/target/debug/yavs" YAVS_RUN_FLAGS=--tier-heat=0,0,0 python3 tools/difftest/difftest.py --candidate yavs-clift-auto --threads 4 --no-sandbox --jobs 2 --filter '^(arith|delta|generics)/'
       # The other tiers reach hardly any process copy on the corpus, whose runs are short: here every
       # process that can have one has a copy from its third activation, with its facts and shape
-      # facts, and every skip of a drive in generated code is held against the kernel's full test.
+      # facts, and every skip of a drive in generated code or of a whole record drive against its
+      # image is held against the kernel's full test.
       - name: Corpus on process copies, skips checked
         if: runner.os == 'Linux'
         run: |

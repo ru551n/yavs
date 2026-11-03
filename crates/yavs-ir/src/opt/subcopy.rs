@@ -55,7 +55,7 @@ fn copyable(f: &Func) -> bool {
         && !f.flags.contains(FuncFlags::MAY_SUSPEND)
 }
 
-/// Slots to reserve for copies of subprograms: four per subprogram that takes a descriptor
+/// Slots to reserve for copies of subprograms: four per subprogram that takes such a descriptor
 /// (`YAVS_SUB_SLOTS` is the most, 1024).
 pub(crate) fn slots(prog: &Program) -> usize {
     if !enabled() {
@@ -65,7 +65,12 @@ pub(crate) fn slots(prog: &Program) -> usize {
         .funcs
         .values()
         .iter()
-        .filter(|f| copyable(f) && f.params.iter().any(|p| p.arr.is_some()))
+        .filter(|f| {
+            copyable(f)
+                && f.params
+                    .iter()
+                    .any(|p| p.arr.is_some_and(|t| worth_keying(prog, t)))
+        })
         .count();
     n.saturating_mul(4).min(env_usize("YAVS_SUB_SLOTS", 1024))
 }
@@ -199,6 +204,28 @@ pub(crate) fn decode(mut d: &[u8]) -> Vec<(u32, &[u8])> {
         d = &d[8 + n..];
     }
     out
+}
+
+/// A type whose layout compiled code cannot make inline from a length: a record, or an array of
+/// composites. Knowing such a descriptor removes callbacks and steps and lets the subprogram run on
+/// native frames; knowing one of a plain vector removes an arithmetic step or two and splits the
+/// code of the subprogram, which the first compile has to pay again.
+fn worth_keying(prog: &Program, ty: crate::TyId) -> bool {
+    static ALL: OnceLock<bool> = OnceLock::new();
+    if *ALL.get_or_init(|| std::env::var_os("YAVS_SUB_ALL").is_some()) {
+        return true;
+    }
+    match prog.types.get(ty) {
+        Some(Ty::Record { .. }) => true,
+        Some(Ty::Array { elem, dims, .. }) => {
+            *dims > 1
+                || matches!(
+                    prog.types.get(*elem),
+                    Some(Ty::Record { .. } | Ty::Array { .. })
+                )
+        }
+        _ => false,
+    }
 }
 
 /// What a register is known to point at.
@@ -399,7 +426,7 @@ impl Walk<'_> {
             let Some(ty) = g.params[j - 1].arr else {
                 continue;
             };
-            if !reads.contains(&p.slot) {
+            if !reads.contains(&p.slot) || !worth_keying(self.prog, ty) {
                 continue;
             }
             let Some(n) = Ty::desc_size(&self.prog.types, ty).filter(|&n| 0 < n && n <= MAX_DESC)
@@ -523,12 +550,15 @@ mod tests {
         yavs_diag::Span::new(yavs_diag::FileId(0), 0, 1)
     }
 
-    const A: [u8; 24] = [
-        3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
-    ];
-    const B: [u8; 24] = [
-        7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
-    ];
+    /// The descriptors of a two-dimensional array: `(left, right, direction)` per dimension.
+    fn desc(left: u8) -> Vec<u8> {
+        let mut d = vec![0u8; 48];
+        d[0] = left;
+        d[16] = 1;
+        d[24] = 1;
+        d[40] = 1;
+        d
+    }
 
     /// `f(x : array)`: its length, or (`write`) a store to the slot of the descriptor first, or
     /// (`unread`) nothing about the descriptor.
@@ -537,7 +567,7 @@ mod tests {
         let t = pb.ty(Ty::Array {
             elem,
             elem_desc: None,
-            dims: 1,
+            dims: 2,
         });
         let f = pb.declare("f", FuncKind::Function, None);
         let mut fb = pb.define(f);
@@ -649,8 +679,8 @@ mod tests {
     fn built(same: bool, moved: bool, write: bool, unread: bool) -> (Program, FuncId, FuncId) {
         let mut pb = ProgramBuilder::new();
         let f = callee(&mut pb, write, unread);
-        let a = pb.konst(ConstData::Bytes(A.to_vec()));
-        let b = pb.konst(ConstData::Bytes(B.to_vec()));
+        let a = pb.konst(ConstData::Bytes(desc(3)));
+        let b = pb.konst(ConstData::Bytes(desc(7)));
         let g = caller(&mut pb, f, a, if same { a } else { b }, moved);
         let mut p = pb.finish().expect("a program");
         p.reserve_copies(1);
@@ -684,7 +714,7 @@ mod tests {
             assert_eq!(p.base_of(t), f);
             let params = p.sub_copy_params(t);
             assert_eq!(params.len(), 1);
-            assert_eq!(params[0].1, A);
+            assert_eq!(params[0].1, desc(3));
             assert_eq!(target(&p, g, None, NONE), t);
             assert_eq!(p.copy_stats().subs, 1);
             // The copy knows the length; the subprogram still asks.
@@ -749,13 +779,13 @@ mod tests {
         let mut p = pb.finish().expect("a program");
         p.reserve_copies(1);
         let mut data = vec![0u8; 8];
-        data.extend_from_slice(&A);
+        data.extend_from_slice(&desc(3));
         let hole = [(16u32, 8u32)];
         assert_eq!(target(&p, g, None, (&data, &hole, &[], &[])), f);
         let t = target(&p, g, None, (&data, &[], &[], &[]));
         assert_ne!(t, f);
         // Out of the data: nothing to key on either.
-        assert_eq!(target(&p, g, None, (&data[..20], &[], &[], &[])), f);
+        assert_eq!(target(&p, g, None, (&data[..30], &[], &[], &[])), f);
     }
 
     /// The most copies of one subprogram; a limit of one is one copy for two descriptors.
@@ -779,5 +809,40 @@ mod tests {
         encode(&mut d, 8, &[200; 8]);
         assert!(p.sub_copy(f, &d).is_none());
         assert!(p.copy_stats().copies < st.reserved);
+    }
+}
+
+#[cfg(test)]
+mod worth {
+    use super::*;
+    use crate::{ProgramBuilder, Ty};
+
+    /// Only descriptors whose layout compiled code cannot make from a length are keyed on.
+    #[test]
+    fn a_plain_vector_is_not_worth_a_copy() {
+        if std::env::var_os("YAVS_SUB_ALL").is_some() {
+            return;
+        }
+        let mut pb = ProgramBuilder::new();
+        let int = pb.ty(Ty::Int { lo: 0, hi: 9 });
+        let plain = pb.ty(Ty::Array {
+            elem: int,
+            elem_desc: None,
+            dims: 1,
+        });
+        let matrix = pb.ty(Ty::Array {
+            elem: int,
+            elem_desc: None,
+            dims: 2,
+        });
+        let nested = pb.ty(Ty::Array {
+            elem: plain,
+            elem_desc: None,
+            dims: 1,
+        });
+        let p = pb.finish().expect("a program");
+        assert!(!worth_keying(&p, plain));
+        assert!(worth_keying(&p, matrix));
+        assert!(worth_keying(&p, nested));
     }
 }

@@ -72,6 +72,8 @@ fn yavs(dir: &Path, args: &[&str]) -> Output {
     let o = std::process::Command::new(env!("CARGO_BIN_EXE_yavs"))
         .args(args)
         .env("YAVS_AUTO_TRACE", "1")
+        // (New code has a variant for every function: this is the rule for what the old has not.)
+        .env("YAVS_CLIFT_EXITS", "old")
         .env("YAVS_AUTO_FORCE", "step,_p0")
         .env("YAVS_COUNTERS", "1")
         .env("YAVS_SPEC_AFTER", "2")

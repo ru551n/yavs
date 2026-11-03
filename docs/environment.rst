@@ -322,17 +322,17 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - unset
      - ``run``
    * - ``YAVS_NO_IMAGE``
-     - Turns record images off: every read of a whole record signal reads it field by field.
+     - Turns record images off: every read of a whole record signal reads it field by field, and every assignment of a whole record signal goes to the simulation kernel field by field.
      - any value
      - unset
      - ``run``
    * - ``YAVS_IMAGE_CHECK``
-     - Reads a whole record signal field by field as well as from its image and stops with an internal error when they differ.
+     - Reads a whole record signal field by field as well as from its image, holds every assignment of a whole record signal that its image makes unnecessary against the kernel's full test, and stops with an internal error on a difference.
      - any value
      - unset
      - ``run``
    * - ``YAVS_IMAGE_AFTER``
-     - Reads of a whole record signal by one process before it asks for an image of it.
+     - Reads, or zero-delay assignments, of a whole record signal by one process before it asks for an image of it.
      - a number
      - ``16``
      - ``run``

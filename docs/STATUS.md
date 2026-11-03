@@ -10804,3 +10804,7 @@ The optimiser reads an element of a logic row or slice, and copies a row or slic
 ## Drive compare in compiled code
 
 A zero-delay drive at a constant reference in a process copy compares with the signal's current value in Cranelift code and makes no call when equal (`YAVS_INLCMP=off` turns it off, `check` holds every skip against the kernel's full test, always in debug builds; `docs/decisions.md` "Drive compare in compiled code"). CI runs the corpus on process copies with skips checked (difftest candidate `yavs-clift-check`).
+
+## Record drive compare
+
+A whole zero-delay assignment of a record signal compares the value with the record image, as a whole and then per run of leaves, and makes no kernel call for what holds (`YAVS_NO_IMAGE` turns it off with the images, `YAVS_IMAGE_CHECK` holds every skip against the kernel's full test, always in debug builds; `docs/decisions.md` "Record drive compare"). Not served: a part of a record signal, drivers that are not direct. Its gain in cycles has not been measured on a quiet host.

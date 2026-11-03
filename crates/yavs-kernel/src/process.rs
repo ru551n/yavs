@@ -978,9 +978,10 @@ pub(crate) struct ProcState {
     /// For good: a direct driver of this process was given a waveform (a delay, a preemption, a
     /// skipped general assignment), or some signal was forced, released or deposited.
     pub gate_shut: bool,
-    /// `Stats::gathers_copied`, `Stats::gathers_read`.
+    /// `Stats::gathers_copied`, `Stats::gathers_read`, `Stats::scatter_spared`.
     pub gathers_copied: u64,
     pub gathers_read: u64,
+    pub scatter_spared: u64,
 }
 
 /// Drivers of a process with a skip-test state (`ProcState::same`); later ones always ask it.
@@ -1249,6 +1250,15 @@ pub struct Ctx<'a> {
     /// The process runs where its reports may go straight to `Shared::live`: nothing that
     /// commits before them is still unwritten.
     pub(crate) live: bool,
+}
+
+impl<'a> Ctx<'a> {
+    /// The bytes of record image `id` (`image.rs`), for as long as the run phase lasts.
+    #[inline(always)]
+    pub fn image(&self, id: u32) -> Option<&'a [u8]> {
+        let sh: &'a Shared<'a> = self.sh;
+        Some(&*sh.images?.list.get(id as usize)?.bytes)
+    }
 }
 
 impl Ctx<'_> {
@@ -1525,12 +1535,6 @@ impl Ctx<'_> {
         self.sh.signals.get(s.0 as usize)?.planes_view()
     }
 
-    /// The bytes of record image `id` (`image.rs`).
-    #[inline(always)]
-    pub fn image(&self, id: u32) -> Option<&[u8]> {
-        Some(&*self.sh.images?.list.get(id as usize)?.bytes)
-    }
-
     /// The leaves written into image `id` so far.
     pub fn image_writes(&self, id: u32) -> u64 {
         self.sh
@@ -1556,6 +1560,40 @@ impl Ctx<'_> {
     /// The image of `spec` if it was made (`NO_IMAGE`: it cannot have one).
     pub fn image_id(&self, spec: &crate::image::ImageSpec) -> Option<u32> {
         self.sh.images?.find(spec)
+    }
+
+    /// Whether `d` is this process's direct driver of elements `r` of `s`, on a signal that allows
+    /// skipping an assignment of the value it holds. Fixed when the simulation is built.
+    pub fn drive_skip_ok(&self, d: DriverId, s: SignalId, r: Range) -> bool {
+        self.sh.drivers.get(d.0 as usize).is_some_and(|i| {
+            (i.direct || i.bdirect)
+                && i.owner == self.pid
+                && i.signal == s
+                && i.range.contains(r)
+                && self.sh.signals[s.0 as usize].skip_ok
+        })
+    }
+
+    /// Whether assigning `ds` (each `drive_skip_ok`) what their signals hold changes nothing now:
+    /// no entry of this run, nothing pending, and no force or deposit that makes the current value
+    /// differ from the driving one.
+    #[inline]
+    pub fn drive_clean(&self, ds: &[DriverId]) -> bool {
+        ds.iter().all(|d| {
+            let info = &self.sh.drivers[d.0 as usize];
+            let s = &self.sh.signals[info.signal.0 as usize];
+            self.st.calm(info.local as usize)
+                && !s.exact
+                && s.force_eff.is_none()
+                && s.force_drv.is_none()
+                && !self.direct_entries(info)
+        })
+    }
+
+    /// Count the leaves a compare spared a whole record scatter (`Stats::scatter_spared`).
+    #[inline(always)]
+    pub fn note_spared(&mut self, leaves: u32) {
+        self.st.scatter_spared += u64::from(leaves);
     }
 
     /// Count a whole record gather (`Stats::gathers_copied`, `Stats::gathers_read`).
@@ -2308,14 +2346,15 @@ impl Ctx<'_> {
         }
     }
 
-    /// Compiled code skipped assignments of this run by itself (`ProcState::gate`): the same effect
-    /// as the kernel's own skip, the run's delta stays.
+    /// Assignments of this run were skipped without asking the kernel (`ProcState::gate` in compiled
+    /// code, a record drive against its image): the same effect as the kernel's own skip, the run's
+    /// delta stays.
     #[inline]
     pub fn gate_skipped(&mut self) {
         self.note_skipped();
     }
 
-    /// Checks a skip compiled code made against the full test of the direct paths: the driver is
+    /// Checks a skip made without asking the kernel against the full test of the direct paths: the driver is
     /// this process's, direct and covers the elements, its waveform is calm, it has no entry of
     /// this run, and the signal and the driving value hold the value. `Err` says what failed.
     pub fn gate_check(

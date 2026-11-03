@@ -115,13 +115,13 @@ impl Images {
             Ok(a) => std::mem::take(a),
             Err(_) => return,
         };
-        for req in asked {
-            let spec = match req {
-                Req::Ask(s) => s,
-                Req::Release(id) => {
-                    self.drop_user(id, signals);
-                    continue;
-                }
+        // Asks first: a process that found the id of an image in this run phase and asked for it
+        // keeps it, whatever the order of the requests, when its last other user lets it go.
+        let (asks, gone): (Vec<_>, Vec<_>) =
+            asked.into_iter().partition(|r| matches!(r, Req::Ask(_)));
+        for req in asks {
+            let Req::Ask(spec) = req else {
+                continue;
             };
             if let Some(&id) = self.index.get(&spec) {
                 if let Some(im) = self.list.get_mut(id as usize) {
@@ -168,6 +168,11 @@ impl Images {
                 });
             }
             self.index.insert(spec, id);
+        }
+        for req in gone {
+            if let Req::Release(id) = req {
+                self.drop_user(id, signals);
+            }
         }
     }
 

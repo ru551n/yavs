@@ -58,6 +58,7 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         ("general_assigns", s.general_assigns),
         ("gathers_copied", s.gathers_copied),
         ("gathers_read", s.gathers_read),
+        ("scatter_spared", s.scatter_spared),
         ("image_writes", s.image_writes),
         ("images", s.images),
         ("image_bytes", s.image_bytes),

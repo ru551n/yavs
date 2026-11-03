@@ -361,6 +361,28 @@ case!(
         ("ops", Max(870)),
     ]
 );
+// A whole record drive against the record's image: what holds its value makes no kernel call.
+case!(
+    rec_cmp,
+    "n=44 i=7",
+    &[],
+    [
+        ("scatter_spared", Min(6900)),
+        ("image_writes", Max(305)),
+        ("images", Min(1)),
+    ]
+);
+// A record that changes in every leaf gives its image up at the first review.
+case!(
+    rec_cmp_drop,
+    "i=1400 n=120",
+    &[],
+    [
+        ("scatter_spared", Max(0)),
+        ("image_writes", Max(5280)),
+        ("images", Max(0)),
+    ]
+);
 // The fields of a record sensitivity are one waiter, woken where the update finishes (#1069):
 // 202 waiter-list scans before.
 case!(

@@ -13757,3 +13757,6 @@ Written by Claude. The inline `Alloc` tested its end against 4 GiB, against the 
 
 Written by Claude. `"0" & s(i downto i)` read the one-element slice into a 32-byte plane block through the vector read and the `Cat` copied its element out. When that block is read by nothing but one logic `Cat` of one unit per element and no bias (`std_ulogic` arrays; a `bit` piece is a position, not a code), and the reference has constant length 1, the optimiser reads the element as `SigReadScalar` and makes that piece a scalar piece (`Opt::cat_reads`, after `forward_logic_copies`, no switch). The block, its `Alloc` and the vector read are gone; the element is the same code the vector read stored. Pieces of two or more elements, `bit` pieces and blocks with a second reader keep the vector read.
 
+## A descending `Pos` in a copy is a check and a subtraction (yavs-ir `opt.rs`, 2026-11-03)
+
+The split of `Pos` (`pos_to_check`, #519) took ascending ranges only: the `Check` that replaces it prints the bounds in the direction of the message, and an index message says `to`. A new `CheckKind::IndexDown` prints `hi downto lo`, the text `pos_fail` gives. Most vectors are descending, and a `Pos` of a descriptor in instance data is 28 instructions of compiled code against 3 for the compare and the subtraction.

@@ -249,7 +249,7 @@ fn classify(f: &crate::Func, i: &Inst, inv: &[bool], ro: &[bool], fused: &[bool]
             v, lo, hi, kind, ..
         } if ok(v)
             && (kind == CheckKind::Null || ok(lo))
-            && (!matches!(kind, CheckKind::Range | CheckKind::Index) || ok(hi)) =>
+            && (!matches!(kind, CheckKind::Range | CheckKind::Index | CheckKind::IndexDown) || ok(hi)) =>
         {
             (K::Memo, false)
         }

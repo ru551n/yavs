@@ -960,10 +960,10 @@ pub(crate) struct ProcState {
     pub same: [u8; SAME_DRIVERS],
     /// Assignments that took the general path of `assign` (`Stats::general_assigns`).
     pub general: u64,
-    /// Some waveform of this process was ever given a transaction or a skipped assignment
-    /// (`schedule`, `phantom_of`, the kernel's clock skip); never cleared. While false every
-    /// waveform is idle with no phantom, and the direct paths leave out that test.
-    pub waved: bool,
+    /// The waveforms that were ever given a transaction or a skipped assignment (`mark_waved`),
+    /// bit `local` modulo 64; never cleared. Under a clear bit they are idle with no phantom, and
+    /// `calm` does not load them (3 of a waveform's lines per drive).
+    pub waved: u64,
     /// The skip gate of compiled code (`Ctx::gate_init`), bit `k` for the `k`th driver of the
     /// machine: compiled code may compare a drive of that driver with the signal's current value
     /// and, when equal, make no call. A bit goes with the driver's first direct entry of a run;
@@ -1091,17 +1091,23 @@ fn code_planes(c: u8) -> [u64; 4] {
 }
 
 impl ProcState {
-    /// A transaction of driver `d` at `at` for the kernel's queue: the process is no longer quiet.
+    /// Waveform `local` gets a transaction or a skipped assignment (`waved`).
     #[inline(always)]
-    fn schedule(&mut self, at: Time, d: DriverId) {
-        self.waved = true;
+    pub(crate) fn mark_waved(&mut self, local: u32) {
+        self.waved |= 1 << (local & 63);
+    }
+
+    /// A transaction of driver `d`, waveform `local`, at `at` for the kernel's queue.
+    #[inline(always)]
+    fn schedule(&mut self, at: Time, d: DriverId, local: u32) {
+        self.mark_waved(local);
         self.scheduled.push((at, d));
     }
 
     /// Driver `local` holds skipped assignments of this run (`Waveform::phantom`).
     #[inline(always)]
     fn phantom_of(&mut self, local: u32) {
-        self.waved = true;
+        self.mark_waved(local);
         self.phantoms.push(local);
     }
 
@@ -1120,10 +1126,10 @@ impl ProcState {
         *self.gate.get_mut() = 0;
     }
 
-    /// Whether waveform `local` is idle with no phantom; `waved` false says so with no load.
+    /// Whether waveform `local` is idle with no phantom; a clear bit of `waved` says so with no load.
     #[inline(always)]
     fn calm(&self, local: usize) -> bool {
-        if !self.waved {
+        if self.waved >> (local & 63) & 1 == 0 {
             debug_assert!(
                 self.waveforms
                     .get(local)
@@ -1178,11 +1184,10 @@ impl ProcState {
         );
         debug_assert!(!self.again || self.sens.is_empty(), "again with sens");
         debug_assert!(
-            self.waved
-                || self
-                    .waveforms
-                    .iter()
-                    .all(|w| w.idle() && w.phantom.is_empty()),
+            self.waveforms
+                .iter()
+                .enumerate()
+                .all(|(l, w)| self.waved >> (l & 63) & 1 != 0 || (w.idle() && w.phantom.is_empty())),
             "stale ProcState::waved"
         );
     }
@@ -1784,11 +1789,11 @@ impl Ctx<'_> {
                     range: r,
                     value: Some(value),
                 });
-                self.st.waved = true;
+                self.st.mark_waved(local as u32);
                 self.st.shut_gate();
                 self.st.waveforms[local].schedule(r, None, &mut t);
                 self.st.act |= ACT_ASSIGNED;
-                self.st.schedule(now, d);
+                self.st.schedule(now, d, local as u32);
             }
             return;
         }
@@ -1822,11 +1827,11 @@ impl Ctx<'_> {
                 value: Some(value),
             });
             // Transport: a transaction at `now` replaces the earlier ones at `now`.
-            self.st.waved = true;
+            self.st.mark_waved(local as u32);
             self.st.shut_gate();
             self.st.waveforms[local].schedule(r, None, &mut t);
             self.st.act |= ACT_ASSIGNED;
-            self.st.schedule(now, d);
+            self.st.schedule(now, d, local as u32);
         }
     }
 
@@ -1954,7 +1959,7 @@ impl Ctx<'_> {
             }
             .map_err(|m| self.error(ErrorKind::InvalidAssign(m)))?;
             let now = self.sh.now;
-            self.st.waved = true;
+            self.st.mark_waved(local as u32);
             self.shut_direct(d);
             self.st.waveforms[local].pending.push(Txn {
                 time: now,
@@ -1962,7 +1967,7 @@ impl Ctx<'_> {
                 value: Some(buf),
             });
             self.st.act |= ACT_ASSIGNED;
-            self.st.schedule(now, d);
+            self.st.schedule(now, d, local as u32);
             return Ok(());
         }
         let mut new = TxnList::new();
@@ -2041,9 +2046,10 @@ impl Ctx<'_> {
         {
             return false;
         }
-        let w = &mut self.st.waveforms[info.local as usize];
-        if !w.idle() || !w.phantom.is_empty() {
-            let again = w.idle() && !info.direct && at == Some(self.sh.now);
+        if !self.st.calm(info.local as usize) {
+            let again = self.st.waveforms[info.local as usize].idle()
+                && !info.direct
+                && at == Some(self.sh.now);
             return again && self.skip_again(d, r, code_planes(code));
         }
         let now = self.sh.now;
@@ -2068,7 +2074,7 @@ impl Ctx<'_> {
                 code,
             });
             self.st.act |= ACT_ASSIGNED;
-            self.st.schedule(at, d);
+            self.st.schedule(at, d, info.local);
             return true;
         }
         if info.direct {
@@ -2126,19 +2132,19 @@ impl Ctx<'_> {
             ds.value.code((r.offset - ds.range.offset) as usize) == code
                 && (!ds.shared || s.sole(r))
         } {
-            w.phantom.push(r);
+            self.st.waveforms[info.local as usize].phantom.push(r);
             self.st.act |= ACT_ASSIGNED;
             self.st.phantom_of(info.local);
             return true;
         }
         let now = self.sh.now;
-        w.quick = Some(Quick {
+        self.st.waveforms[info.local as usize].quick = Some(Quick {
             time: now,
             elem: r.offset,
             code,
         });
         self.st.act |= ACT_ASSIGNED;
-        self.st.schedule(now, d);
+        self.st.schedule(now, d, info.local);
         true
     }
 
@@ -2202,9 +2208,8 @@ impl Ctx<'_> {
         if code >= 9 || info.owner != self.pid || r.len != 1 || !info.range.contains(r) {
             return false;
         }
-        let w = &self.st.waveforms[info.local as usize];
-        if !w.idle() || !w.phantom.is_empty() {
-            let again = w.idle() && !info.direct;
+        if !self.st.calm(info.local as usize) {
+            let again = self.st.waveforms[info.local as usize].idle() && !info.direct;
             return again && self.skip_again(d, r, code_planes(code));
         }
         let s = &self.sh.signals[info.signal.0 as usize];
@@ -2440,8 +2445,7 @@ impl Ctx<'_> {
             let (elem, code) = run(0);
             return usize::from(self.assign_code_now(d, Range::new(elem, 1), code));
         }
-        let w = &self.st.waveforms[info.local as usize];
-        if info.owner != self.pid || !w.idle() || !w.phantom.is_empty() || self.has_entries(info, 2)
+        if info.owner != self.pid || !self.st.calm(info.local as usize) || self.has_entries(info, 2)
         {
             return 0;
         }
@@ -2732,9 +2736,8 @@ impl Ctx<'_> {
             return false;
         }
         let local = info.local as usize;
-        let w = &mut self.st.waveforms[local];
-        if !w.idle() || !w.phantom.is_empty() {
-            let again = w.idle() && !info.bdirect && at == Some(self.sh.now);
+        if !self.st.calm(local) {
+            let again = self.st.waveforms[local].idle() && !info.bdirect && at == Some(self.sh.now);
             return again && self.skip_again_bytes(d, r, bytes);
         }
         let now = self.sh.now;
@@ -2766,7 +2769,7 @@ impl Ctx<'_> {
             val,
         });
         self.st.act |= ACT_ASSIGNED;
-        self.st.schedule(at, d);
+        self.st.schedule(at, d, local as u32);
         true
     }
 
@@ -2799,9 +2802,10 @@ impl Ctx<'_> {
         {
             return false;
         }
-        let w = &mut self.st.waveforms[info.local as usize];
-        if !w.idle() || !w.phantom.is_empty() {
-            let again = w.idle() && !info.direct && at == Some(self.sh.now);
+        if !self.st.calm(info.local as usize) {
+            let again = self.st.waveforms[info.local as usize].idle()
+                && !info.direct
+                && at == Some(self.sh.now);
             return again && self.skip_again(d, r, planes);
         }
         let now = self.sh.now;
@@ -2826,7 +2830,7 @@ impl Ctx<'_> {
                 planes,
             });
             self.st.act |= ACT_ASSIGNED;
-            self.st.schedule(at, d);
+            self.st.schedule(at, d, info.local);
             return true;
         }
         if info.direct {
@@ -2876,20 +2880,20 @@ impl Ctx<'_> {
             && yavs_logic::wide::get_block(cv, r.offset as usize, n) == planes
             && (!ds.shared || s.sole(r))
         {
-            w.phantom.push(r);
+            self.st.waveforms[info.local as usize].phantom.push(r);
             self.st.act |= ACT_ASSIGNED;
             self.st.phantom_of(info.local);
             return true;
         }
         let now = self.sh.now;
-        w.vquick = Some(VQuick {
+        self.st.waveforms[info.local as usize].vquick = Some(VQuick {
             time: now,
             elem: r.offset,
             len,
             planes,
         });
         self.st.act |= ACT_ASSIGNED;
-        self.st.schedule(now, d);
+        self.st.schedule(now, d, info.local);
         true
     }
 
@@ -2920,8 +2924,7 @@ impl Ctx<'_> {
         {
             return false;
         }
-        let w = &self.st.waveforms[info.local as usize];
-        if !w.idle() || !w.phantom.is_empty() {
+        if !self.st.calm(info.local as usize) {
             return false;
         }
         self.mark_entries(info, 2);
@@ -2977,17 +2980,16 @@ impl Ctx<'_> {
         {
             return false;
         }
-        let w = &mut self.st.waveforms[info.local as usize];
-        if !w.idle() || !w.phantom.is_empty() {
+        if !self.st.calm(info.local as usize) {
             return false;
         }
-        w.quick = Some(Quick {
+        self.st.waveforms[info.local as usize].quick = Some(Quick {
             time: at,
             elem,
             code,
         });
         self.st.act |= ACT_ASSIGNED;
-        self.st.schedule(at, d);
+        self.st.schedule(at, d, info.local);
         true
     }
 
@@ -3119,11 +3121,11 @@ impl Ctx<'_> {
                 range: r,
                 value,
             });
-            self.st.waved = true;
+            self.st.mark_waved(local as u32);
             self.shut_direct(d);
             self.st.waveforms[local].schedule(r, Some(time), &mut t);
             self.st.act |= ACT_ASSIGNED;
-            self.st.schedule(time, d);
+            self.st.schedule(time, d, local as u32);
         }
         Ok(())
     }
@@ -3227,7 +3229,7 @@ impl Ctx<'_> {
         self.shut_direct(d);
         self.st.act |= ACT_ASSIGNED;
         self.st.scheduled.extend(new.iter().map(|t| (t.time, d)));
-        self.st.waved = true;
+        self.st.mark_waved(local as u32);
         self.st.waveforms[local].schedule(r, reject_from, new);
         Ok(())
     }

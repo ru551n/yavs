@@ -13741,17 +13741,10 @@ Written by Claude. Item R1 of the kernel redesign study; taken towards the perf 
 - **Not served.** Parts of a record signal, drivers that are not direct, signals forced or deposited once, values of more than `IMAGE_MAX` bytes, a compare in generated code (a held value still exits to the host).
 - **Reference.** The study found no reference that compares a whole record; sim1 compares per net before queueing, an idea of the existing skip. No code read for this.
 
-## Whole-record reads and drives in Cranelift frame-mode code (yavs-clift, perf/land-lowitems, 2026-11-03)
-
-Written by Claude. `SigGather` and `SigScatter` were stepped through the generic step callback in frame-mode code; the LLVM lowering has sent them through the signal callback since #790. The Cranelift lowering does the same (one arm in `gen_func`); native-frame variants keep their way (an instruction they cannot step makes the function frame-mode only). Forced compiled window, instructions of the simulation thread: Microwatt 0.991, GRLIB 0.995; code bytes of everything compiled +0.01 percent. `perf.rs` `clift::record_signals` holds the steps at 1 and the signal callbacks at about 407 on a design with record signals.
 
 
-## Inline temporary allocation in Cranelift (yavs-clift `temp_alloc`, perf/land-lowitems, 2026-11-03)
+## Data layout items (yavs-kernel, yavs-interp, perf/try-dataitems, 2026-11-03)
 
-Written by Claude. The inline `Alloc` tested its end against 4 GiB, against the capacity and for a wrapped sum, inverted the result, and branched on the alignment of the area's end to choose between stores and a call. `TierFrame::temp_cap` never exceeds `u32::MAX`, so one compare of the end against it is the test for a size known when the code is made, and a size from a register adds one compare of the size against it (a size within the capacity cannot wrap the sum). The pad up to the aligned start is cleared by one 8-byte store at the old end, which the object always covers (sizes of 8 bytes and more, and a run time size of 32); the object itself is cleared by stores at the aligned start. Sizes below 8 keep the branch. The slow path and the interpreter are unchanged. Forced compiled window: Microwatt 0.990, GRLIB 0.995 (instructions); code bytes of everything compiled: 3.5 percent fewer on Microwatt, 2.0 percent on GRLIB.
+Written by Claude. Trials of the cheap items of a data attribution study on a side branch; whether they land is the maintainer's decision. Numbers: Microwatt at forced Cranelift with a warm cache, main thread, three interleaved rounds on a shared host, ratio to the base before the first item: `ls_dmnd_fills_from_sys.all` (L1d) and what of it did not come from L2 (L2 data). Exact lines per kernel cycle from a stepped window of 299 cycles.
 
-
-## One-element signal reads taken by a concatenation (yavs-ir `opt/place.rs`, perf/land-lowitems, 2026-11-03)
-
-Written by Claude. `"0" & s(i downto i)` read the one-element slice into a 32-byte plane block through the vector read and the `Cat` copied its element out. When that block is read by nothing but one logic `Cat` of one unit per element and no bias (`std_ulogic` arrays; a `bit` piece is a position, not a code), and the reference has constant length 1, the optimiser reads the element as `SigReadScalar` and makes that piece a scalar piece (`Opt::cat_reads`, after `forward_logic_copies`, no switch). The block, its `Alloc` and the vector read are gone; the element is the same code the vector read stored. Pieces of two or more elements, `bit` pieces and blocks with a second reader keep the vector read.
-
+- **`ProcState::waved` per waveform.** Probe lines of `Waveform` 279 to 7 per cycle (kernel tables 710 to 437), instructions 0.994, L1d 0.961, L2 data 0.949; GRLIB instructions 0.997, L2 data 0.929. A bit is never cleared: a direct driver that once got a waveform keeps paying the load, 2 lines per cycle here, not worth a store.

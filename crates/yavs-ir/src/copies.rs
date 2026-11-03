@@ -299,7 +299,7 @@ impl Copies {
 impl Program {
     /// Can process `base` have copies: a process that has one wait statement (the resume point
     /// of a suspended process maps to the copy's one, `Machine::specialise`) and reads instance
-    /// data; and the optimiser's specialisation is on (`opt::specialise_on`). Subprograms nested
+    /// data or names a signal (whose facts a copy knows); and the optimiser's specialisation is on (`opt::specialise_on`). Subprograms nested
     /// in the process and shared state (files, the shared heap) do not matter: the copy keeps the
     /// frame layout, so a nested subprogram reaches its variables, and the optimiser assumes
     /// nothing about frame bytes they write (`opt/decl.rs`).
@@ -318,8 +318,8 @@ impl Program {
             };
             raw.kind == FuncKind::Process
                 && self.single_suspend(base)
-                // (Test aid: a process that reads no instance data gains facts only, which the
-                // checks of compiled code want to see on any design.)
+                // (A process that reads no instance data gains the facts of its signals only; a
+                // process with neither gains nothing, `YAVS_SPEC_ALL` makes it a test aid.)
                 && (std::env::var_os("YAVS_SPEC_ALL").is_some()
                     || raw.code.iter().any(|i| {
                         matches!(
@@ -327,7 +327,7 @@ impl Program {
                             Inst::AddrOf {
                                 space: AddrSpace::Inst,
                                 ..
-                            }
+                            } | Inst::SigVal { .. }
                         )
                     }))
         })

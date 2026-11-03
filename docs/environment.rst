@@ -302,7 +302,7 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - ``1024``
      - ``run``
    * - ``YAVS_SPEC_ALL``
-     - Every process with one suspension point gets a copy, also one that reads no instance data.
+     - Every process with one suspension point gets a copy, also one that reads no instance data and names no signal.
      - any value
      - unset
      - ``run``

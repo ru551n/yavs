@@ -725,3 +725,40 @@ impl yavs_ir::PkgSource for NoPkgs {
         None
     }
 }
+
+/// A process that reads no instance data but names a signal can have copies (they know the
+/// signal's form); one that names neither cannot (`YAVS_SPEC_ALL` makes every process one).
+#[test]
+fn a_process_naming_a_signal_can_have_copies() {
+    if !yavs_ir::opt::specialise_on() || std::env::var_os("YAVS_SPEC_ALL").is_some() {
+        return;
+    }
+    for names_signal in [false, true] {
+        let mut pb = ProgramBuilder::new();
+        let f = pb.declare("p", FuncKind::Process, None);
+        let mut fb = pb.define(f);
+        fb.stmt(StmtKind::Wait, Span::new(FileId(0), 0, 1));
+        let head = fb.block();
+        fb.body(head);
+        fb.emit(Inst::Br { to: head });
+        fb.at(head);
+        if names_signal {
+            let (off, len, s) = (fb.int(0), fb.int(1), fb.reg(RegTy::Sig));
+            fb.emit(Inst::SigVal {
+                dst: s,
+                sig: 0,
+                offset: off,
+                len,
+            });
+            fb.emit(Inst::WaitOn { sig: s });
+        } else {
+            let t = fb.int(1);
+            fb.emit(Inst::WaitFor { t });
+        }
+        fb.emit(Inst::Suspend { resume: 0 });
+        fb.emit(Inst::Br { to: head });
+        fb.finish();
+        let p = pb.finish().expect("verifies");
+        assert_eq!(p.specialisable(f), names_signal);
+    }
+}

@@ -887,7 +887,7 @@ case!(
 );
 
 /// Processes of instances with their own generics switch to copies specialised to their instance
-/// data (`docs/design/specialisation.md`): the same report, fewer ops, three copies for the six
+/// data (`docs/design/specialisation.md`): the same report, fewer ops, five copies for the six
 /// processes (the iterations of a generate and the instances with equal generics share one).
 #[test]
 fn spec_copies() {
@@ -906,7 +906,7 @@ fn spec_copies() {
         "spec_copies",
         &copies,
         &[
-            ("spec_copies", Max(3)),
+            ("spec_copies", Max(5)),
             ("spec_switched", Min(6)),
             ("spec_capped", Max(0)),
             ("spec_full", Max(0)),

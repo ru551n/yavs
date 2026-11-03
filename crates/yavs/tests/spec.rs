@@ -495,3 +495,73 @@ end;
         );
     }
 }
+
+/// A procedure nested in a process is called on a native frame from the process's copy too: the
+/// copy's frame is the static link, and a variable passed by reference and one reached through the
+/// link are the same ones as in the shared code.
+#[cfg(feature = "clift")]
+#[test]
+fn a_copy_calls_what_is_nested_in_its_process_on_a_native_frame() {
+    let design = "copy_nested";
+    let src = "entity copy_nested is generic (W : positive := 3); end;
+architecture a of copy_nested is
+  signal clk : bit := '0';
+  signal s : integer := 0;
+begin
+  clk <= not clk after 5 ns when now < 2 us;
+  process (clk)
+    variable total : integer := 0;
+    variable mine : integer := 0;
+    procedure add(variable x : inout integer; n : integer) is
+    begin
+      for i in 1 to n loop
+        x := x + W;
+        total := total + i;
+      end loop;
+    end procedure;
+  begin
+    if clk = '1' then
+      if W > 100 then report \"big\"; end if;
+      add(mine, 40);
+      add(total, 3);
+      s <= mine + total;
+      if now > 1950 ns then
+        report integer'image(mine) & \" \" & integer'image(total);
+      end if;
+    end if;
+  end process;
+end;
+";
+    let d = tempdir(design);
+    std::fs::write(d.join(format!("{design}.vhd")), src).expect("write");
+    let work = format!("work:{}", d.join("lib").display());
+    let a = yavs(
+        &d,
+        &[],
+        &["analyze", "--work", &work, &format!("{design}.vhd")],
+    );
+    assert_eq!(a.code, 0, "analyze: {}", a.stderr);
+    let want = run(&d, design, "1", &[("YAVS_NO_SPEC", "1")]);
+    assert_eq!(want.code, 0, "{}", want.stderr);
+    let c = yavs(
+        &d,
+        &[("YAVS_SPEC_AFTER", "2")],
+        &[
+            "run",
+            "--work",
+            &work,
+            "--tier=auto",
+            "--tier-heat=1,0,0",
+            "--no-cache",
+            "--threads=1",
+            design,
+        ],
+    );
+    assert_eq!(c.code, want.code, "{}", c.stderr);
+    assert_eq!(c.stderr, want.stderr, "stderr");
+    assert!(c.counters["spec_switched"] > 0, "no copy");
+    // 200 activations of two calls each (a release test build has no such counter).
+    if let Some(&steps) = c.counters.get("cb_step") {
+        assert!(steps < 100, "the calls were stepped: {steps}");
+    }
+}

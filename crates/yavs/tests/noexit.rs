@@ -70,6 +70,7 @@ entity t is end;
 architecture a of t is
   type ints is array (natural range <>) of integer;
   type acc_int is access integer;
+  type acc_ints is access ints;
 {inner}
 begin
   process
@@ -241,6 +242,13 @@ const CASES: &[Case] = &[
         decl: "variable v : unsigned(64 downto 0);",
         stmt: "v := resize(to_unsigned(x, 64), 65) + resize(to_unsigned(y, 64), 65) + '1'; assert v(0) = '1' or v(0) = '0'; v := v + to_unsigned(1 / (y + 100 - x), 3);",
         bad: ("100", "0"),
+    },
+    // The position comes from a run-time descriptor: a slow path, its operand a deferred register.
+    Case {
+        name: "index_heap",
+        decl: "variable p : acc_ints; variable w : integer;",
+        stmt: "p := new ints(0 to y + 3); w := p(x + y); deallocate(p);",
+        bad: ("9", "1"),
     },
     Case {
         name: "power",
@@ -477,6 +485,32 @@ fn a_process_that_never_suspends_is_polled_and_bounded() {
     assert!(show(&i).contains("E3009"), "{}", show(&i));
     let c = yavs(&dir, &args("--tier=clift"), &[]);
     assert_eq!(show(&c), show(&i));
+}
+
+/// The same at a limit past the first poll (`SPIN_CHECK` jumps): the count goes on after it.
+#[test]
+fn the_count_of_jumps_back_goes_on_after_a_poll() {
+    let dir = tempdir("noexit_spin2");
+    std::fs::write(dir.join("t.vhd"), NO_WAIT).expect("write");
+    let a = yavs(
+        &dir,
+        &["analyze", "--std=2008", "--work=work:work", "t.vhd"],
+        &[],
+    );
+    assert!(a.status.success(), "{a:?}");
+    let c = yavs(
+        &dir,
+        &[
+            "run",
+            "--std=2008",
+            "--work=work:work",
+            "--no-cache",
+            "--tier=clift",
+            "t",
+        ],
+        &[("YAVS_SPIN_LIMIT", "1100000")],
+    );
+    assert!(show(&c).contains("E3009"), "{}", show(&c));
 }
 
 /// A collection waits for native frames to end, so a function that allocates in a loop keeps

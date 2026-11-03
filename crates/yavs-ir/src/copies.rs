@@ -318,15 +318,18 @@ impl Program {
             };
             raw.kind == FuncKind::Process
                 && self.single_suspend(base)
-                && raw.code.iter().any(|i| {
-                    matches!(
-                        i,
-                        Inst::AddrOf {
-                            space: AddrSpace::Inst,
-                            ..
-                        }
-                    )
-                })
+                // (Test aid: a process that reads no instance data gains facts only, which the
+                // checks of compiled code want to see on any design.)
+                && (std::env::var_os("YAVS_SPEC_ALL").is_some()
+                    || raw.code.iter().any(|i| {
+                        matches!(
+                            i,
+                            Inst::AddrOf {
+                                space: AddrSpace::Inst,
+                                ..
+                            }
+                        )
+                    }))
         })
     }
 

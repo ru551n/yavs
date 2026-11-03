@@ -479,6 +479,11 @@ architecture a of unit is
   signal kv, kw : std_logic_vector(7 downto 0) := x"00";
   signal ka, kb : ints := (others => 0);
   signal kr : pair := ('0', x"00");
+  type counts is record
+    x, y : integer;
+    z : boolean;
+  end record;
+  signal rb : counts := (0, 0, false);
 begin
   clk <= not clk after 5 ns;
   process (clk) begin if rising_edge(clk) then n <= n + 1; end if; end process;
@@ -502,6 +507,16 @@ begin
       kr.c(3 downto 2) <= kr.c(3 downto 2);
     end if;
   end process;
+  record_scatter : process (clk) begin
+    if rising_edge(clk) then
+      if g > 1000 then report "g"; end if;
+      if n mod 3 = 2 then
+        rb <= (rb.x + 1, rb.y + 1, not rb.z);
+      end if;
+      rb.y <= rb.y;
+      rb.z <= rb.z;
+    end if;
+  end process;
   whole_first : process (clk)
     variable k : natural;
   begin
@@ -520,7 +535,8 @@ begin
     if falling_edge(clk) then
       report integer'image(n) & " " & to_hstring(kv) & to_hstring(kw) & to_hstring(kr.c)
         & integer'image(ka(0)) & " " & integer'image(ka(1)) & " " & integer'image(ka(2)) & " " & integer'image(ka(3))
-        & " " & integer'image(kb(0)) & " " & integer'image(kb(2));
+        & " " & integer'image(kb(0)) & " " & integer'image(kb(2))
+        & " " & integer'image(rb.x) & " " & integer'image(rb.y) & " " & boolean'image(rb.z);
       if n = 60 then std.env.finish; end if;
     end if;
   end process;
@@ -693,6 +709,277 @@ begin
       report integer'image(n) & std_logic'image(two) & std_ulogic'image(ur) & std_logic'image(one) & std_logic'image(more);
       if n = 40 then std.env.finish; end if;
     end if;
+  end process;
+end architecture;
+entity top is
+end entity;
+architecture a of top is
+begin
+  u0 : entity work.unit generic map (0);
+  u1 : entity work.unit generic map (1);
+end architecture;
+"#;
+
+/// What the compare itself must tell apart: values that differ in one plane or only in the last
+/// element, elements of one signal at other places, a wide vector.
+const FORMS: &str = r#"
+library ieee;
+use ieee.std_logic_1164.all;
+entity unit is
+  generic (g : natural);
+end entity;
+architecture a of unit is
+  type ints is array (0 to 3) of integer;
+  signal clk : std_logic := '0';
+  signal n : natural := 0;
+  -- Codes that share planes, in a vector.
+  signal pl : std_logic_vector(3 downto 0) := "0000";
+  -- Only the last element of the part differs.
+  signal la : std_logic_vector(7 downto 0) := x"00";
+  -- An element that differs from the first of its signal.
+  signal e1 : std_logic_vector(7 downto 0) := x"01";
+  signal e2 : std_logic_vector(99 downto 0) := (0 => '1', others => '0');
+  signal ea : ints := (5, 0, 0, 0);
+  -- A wide vector as a whole, then what a part held.
+  signal w1 : std_logic_vector(99 downto 0) := (others => '0');
+begin
+  clk <= not clk after 5 ns;
+  process (clk) begin if rising_edge(clk) then n <= n + 1; end if; end process;
+  planes : process (clk) begin
+    if rising_edge(clk) then
+      if g > 1000 then report "g"; end if;
+      case n mod 5 is
+        when 0 => pl <= "0000";
+        when 1 => pl <= "ZZZZ";
+        when 2 => pl <= "LLLL";
+        when 3 => pl <= "UUUU";
+        when others => pl <= "0000";
+      end case;
+    end if;
+  end process;
+  last_element : process (clk) begin
+    if rising_edge(clk) then
+      if g > 1000 then report "g"; end if;
+      if n mod 4 = 1 then
+        la(3 downto 0) <= "1000";
+      else
+        la(3 downto 0) <= "0000";
+      end if;
+    end if;
+  end process;
+  other_element : process (clk) begin
+    if rising_edge(clk) then
+      if g > 1000 then report "g"; end if;
+      if n mod 4 = 2 then
+        e1(5) <= '1';
+        e2(70) <= '1';
+      else
+        e1(5) <= '0';
+        e2(70) <= '0';
+      end if;
+    end if;
+  end process;
+  other_byte : process (clk) begin
+    if rising_edge(clk) then
+      if g > 1000 then report "g"; end if;
+      if n mod 4 = 2 then
+        ea(2) <= 5;
+      else
+        ea(2) <= 0;
+      end if;
+    end if;
+  end process;
+  wide : process (clk) begin
+    if rising_edge(clk) then
+      if g > 1000 then report "g"; end if;
+      if n mod 5 = 2 then
+        w1 <= not w1;
+        w1(3) <= w1(3);
+        w1(70 downto 66) <= w1(70 downto 66);
+      end if;
+      w1(4) <= w1(4);
+    end if;
+  end process;
+  process (clk) begin
+    if falling_edge(clk) then
+      report integer'image(n) & " " & to_string(pl)
+        & to_hstring(la) & to_hstring(e1) & to_hstring(e2) & integer'image(ea(2)) & " " & to_hstring(w1);
+      if n = 60 and g = 0 then std.env.finish; end if;
+    end if;
+  end process;
+end architecture;
+entity top is
+end entity;
+architecture a of top is
+begin
+  u0 : entity work.unit generic map (0);
+  u1 : entity work.unit generic map (1);
+end architecture;
+"#;
+
+/// A delay on the value held is a transaction later and no delta now: alone in its time step, so
+/// a skip that should not be there moves the delta number the postponed process reports. The
+/// count changes on the other edge. The delay shuts the process's gate, so each process has one
+/// chance, late enough for it to be compiled.
+const DELAYED: &str = r#"
+library ieee;
+use ieee.std_logic_1164.all;
+entity unit is
+  generic (g : natural);
+end entity;
+architecture a of unit is
+  signal clk : std_logic := '0';
+  signal n : natural := 0;
+  signal ds : std_logic := '0';
+  signal dv : std_logic_vector(3 downto 0) := x"0";
+  signal di : integer := 0;
+  signal k : std_logic := '0';
+begin
+  clk <= not clk after 5 ns;
+  process (clk) begin if falling_edge(clk) then n <= n + 1; end if; end process;
+  held_on_the_other_edge : process (clk) begin
+    if falling_edge(clk) then
+      if g > 1000 or n < 0 then report "g"; end if;
+      k <= k;
+    end if;
+  end process;
+  delay_scalar : process (clk) begin
+    if rising_edge(clk) then
+      if g > 1000 then report "g"; end if;
+      if n mod 6 = 1 and n > 12 then ds <= ds after 3 ns; end if;
+    end if;
+  end process;
+  delay_vector : process (clk) begin
+    if rising_edge(clk) then
+      if g > 1000 then report "g"; end if;
+      if n mod 6 = 2 and n > 12 then dv <= dv after 3 ns; end if;
+    end if;
+  end process;
+  delay_bytes : process (clk) begin
+    if rising_edge(clk) then
+      if g > 1000 then report "g"; end if;
+      if n mod 6 = 3 and n > 12 then di <= di after 3 ns; end if;
+    end if;
+  end process;
+  postponed process (clk) begin
+    report integer'image(n) & " pp " & std_logic'image(clk);
+    if n = 40 and g = 0 then std.env.finish; end if;
+  end postponed process;
+end architecture;
+entity top is
+end entity;
+architecture a of top is
+begin
+  u0 : entity work.unit generic map (0);
+  u1 : entity work.unit generic map (1);
+end architecture;
+"#;
+
+/// A drive in a procedure of the process, which is not the process's own compiled code, then the
+/// held value in the process.
+const NESTED: &str = r#"
+library ieee;
+use ieee.std_logic_1164.all;
+entity unit is
+  generic (g : natural);
+end entity;
+architecture a of unit is
+  signal clk : std_logic := '0';
+  signal n : natural := 0;
+  signal v : std_logic_vector(7 downto 0) := x"00";
+  signal w : std_logic_vector(7 downto 0) := x"00";
+  signal i : integer := 0;
+  signal u : std_logic := '0';
+begin
+  clk <= not clk after 5 ns;
+  process (clk) begin if rising_edge(clk) then n <= n + 1; end if; end process;
+  process (clk)
+    procedure flip is
+    begin
+      v(1) <= not v(1);
+    end procedure;
+    procedure count is
+    begin
+      i <= i + 1;
+    end procedure;
+    procedure flip_part is
+    begin
+      w(3 downto 2) <= not w(3 downto 2);
+    end procedure;
+    procedure put (signal t : out std_logic; x : std_logic) is
+    begin
+      t <= x;
+    end procedure;
+  begin
+    if rising_edge(clk) then
+      if g > 1000 then report "g"; end if;
+      if n mod 3 = 0 then
+        flip;
+      end if;
+      v(1) <= v(1);
+      if n mod 7 = 3 then
+        put(u, not u);
+      end if;
+      u <= u;
+      if n mod 4 = 1 then
+        count;
+      end if;
+      i <= i;
+      if n mod 5 = 2 then
+        flip_part;
+      end if;
+      w(3 downto 2) <= w(3 downto 2);
+    end if;
+  end process;
+  process (clk) begin
+    if falling_edge(clk) then
+      report integer'image(n) & " " & to_hstring(v) & to_hstring(w) & integer'image(i) & std_logic'image(u);
+      if n = 60 and g = 0 then std.env.finish; end if;
+    end if;
+  end process;
+end architecture;
+entity top is
+end entity;
+architecture a of top is
+begin
+  u0 : entity work.unit generic map (0);
+  u1 : entity work.unit generic map (1);
+end architecture;
+"#;
+
+/// A signal whose activity is read (`'transaction`) stays out of the compare; another of the same
+/// process is in it.
+const ACTIVITY: &str = r#"
+library ieee;
+use ieee.std_logic_1164.all;
+entity unit is
+  generic (g : natural);
+end entity;
+architecture a of unit is
+  signal clk : std_logic := '0';
+  signal n : natural := 0;
+  signal s, q, o : std_logic := '0';
+  signal i : integer := 0;
+  signal v : std_logic_vector(3 downto 0) := x"0";
+begin
+  clk <= not clk after 5 ns;
+  process (clk) begin if rising_edge(clk) then n <= n + 1; end if; end process;
+  process (clk) begin
+    if rising_edge(clk) then
+      if g > 1000 then report "g"; end if;
+      s <= s;
+      q <= q;
+      i <= i;
+      v(2) <= v(2);
+      o <= o;
+    end if;
+  end process;
+  process begin wait on s'transaction; report "s"; end process;
+  process begin wait on i'transaction; report "i"; end process;
+  process begin wait on v(2)'transaction; report "v"; end process;
+  process (q'quiet) begin report "q " & boolean'image(q'quiet); end process;
+  process (clk) begin
+    if falling_edge(clk) and n = 30 and g = 0 then std.env.finish; end if;
   end process;
 end architecture;
 entity top is
@@ -922,4 +1209,28 @@ fn another_generic_in_a_warm_cache() {
         assert_eq!((interp.0, &interp.1), (got.0, &got.1), "{g}");
         assert!(got.2.contains("counters: gate_checked="), "{g}: {}", got.2);
     }
+}
+
+#[test]
+fn the_compare_tells_values_and_delays_apart() {
+    let hits = against_interp("compiled_gate_forms", FORMS);
+    assert!(hits > 100, "the compare took only {hits} skips");
+}
+
+#[test]
+fn a_drive_in_a_procedure_then_the_held_value_in_the_process() {
+    let hits = against_interp("compiled_gate_nested", NESTED);
+    assert!(hits > 20, "the compare took only {hits} skips");
+}
+
+#[test]
+fn a_signal_whose_activity_is_read_is_not_skipped() {
+    let hits = against_interp("compiled_gate_activity", ACTIVITY);
+    assert!(hits > 20, "the compare took only {hits} skips");
+}
+
+#[test]
+fn a_delay_on_the_held_value_is_no_skip() {
+    let hits = against_interp("compiled_gate_delayed", DELAYED);
+    assert!(hits > 20, "the compare took only {hits} skips");
 }

@@ -248,7 +248,14 @@ end;
     let run = |env: &[(&str, &str)], args: &[&str]| {
         let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
             .envs(env.iter().copied())
-            .args(["--color", "never", "run", &lib, "--resolution=ns", "--no-cache"])
+            .args([
+                "--color",
+                "never",
+                "run",
+                &lib,
+                "--resolution=ns",
+                "--no-cache",
+            ])
             .args(args)
             .arg("top")
             .output()

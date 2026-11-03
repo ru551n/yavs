@@ -29,5 +29,4 @@ entity held_reject is end;
 architecture a of held_reject is
 begin
   u0 : entity work.held_reject_u generic map (0);
-  u1 : entity work.held_reject_u generic map (1);
 end;

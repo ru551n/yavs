@@ -2759,7 +2759,9 @@ pub unsafe extern "C" fn yavs_rt_gate_check(
         if kept == 0 {
             Ok(())
         } else {
-            Err(format!("{kept} drives of its kernel driver are kept in the batch"))
+            Err(format!(
+                "{kept} drives of its kernel driver are kept in the batch"
+            ))
         }
     }) {
         eprintln!(

@@ -301,6 +301,11 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - a number, at least 2
      - ``1024``
      - ``run``
+   * - ``YAVS_SPEC_ALL``
+     - Every process with one suspension point gets a copy, also one that reads no instance data.
+     - any value
+     - unset
+     - ``run``
    * - ``YAVS_SPEC_CAP``
      - Limit on copies, in percent of the shared optimised process code. ``0``: no limit.
      - a number

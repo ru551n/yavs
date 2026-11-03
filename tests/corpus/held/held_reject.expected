@@ -1,17 +1,9 @@
 exit	1
 diag	note	5000000	0	:held_reject:u0:_p2	ok at 0
-diag	note	5000000	0	:held_reject:u1:_p2	ok at 0
 diag	note	15000000	0	:held_reject:u0:_p2	ok at 1
-diag	note	15000000	0	:held_reject:u1:_p2	ok at 1
 diag	note	25000000	0	:held_reject:u0:_p2	ok at 2
-diag	note	25000000	0	:held_reject:u1:_p2	ok at 2
 diag	note	35000000	0	:held_reject:u0:_p2	ok at 3
-diag	note	35000000	0	:held_reject:u1:_p2	ok at 3
 diag	note	45000000	0	:held_reject:u0:_p2	ok at 4
-diag	note	45000000	0	:held_reject:u1:_p2	ok at 4
 diag	note	55000000	0	:held_reject:u0:_p2	ok at 5
-diag	note	55000000	0	:held_reject:u1:_p2	ok at 5
 diag	note	65000000	0	:held_reject:u0:_p2	ok at 6
-diag	note	65000000	0	:held_reject:u1:_p2	ok at 6
 diag	fatal	75000000	0	:held_reject:u0:_p2	signal S pulse reject limit 1ns is greater than delay 0ms
-diag	fatal	75000000	0	:held_reject:u1:_p2	signal S pulse reject limit 1ns is greater than delay 0ms

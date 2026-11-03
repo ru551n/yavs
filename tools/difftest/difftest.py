@@ -59,7 +59,11 @@ YAVS_AUTO3_EAGER = YAVS.replace("--threads=", "--tier=auto3 --tier-heat=0,0,0 --
 # `auto3` eager with LLVM compiling the functions of even id and Cranelift the others, calls through
 # the native-frame table (`YAVS_MIXED`, `YAVS_CLIFT_NTAB`): the two generators call each other.
 YAVS_MIXED = "export YAVS_MIXED=1 YAVS_CLIFT_NTAB=1; " + YAVS_AUTO3_EAGER
-TEMPLATES = {"yavs-mixed": YAVS_MIXED, "yavs": YAVS, "yavs-interp": YAVS_INTERP, "yavs-llvm": YAVS_LLVM, "yavs-auto": YAVS_AUTO, "yavs-auto-warm": YAVS_AUTO_WARM, "yavs-clift": YAVS_CLIFT, "yavs-clift-auto": YAVS_CLIFT_AUTO, "yavs-auto3": YAVS_AUTO3, "yavs-auto3-eager": YAVS_AUTO3_EAGER}
+# Cranelift with a copy of every process that can have one from its third activation, every skip of
+# a drive in generated code held against the kernel's full test: what `gate_checked` counts. The
+# other templates reach that compare on hardly any test of the corpus, whose runs are short.
+YAVS_CLIFT_CHECK = "export YAVS_SPEC_ALL=1 YAVS_SPEC_AFTER=2 YAVS_INLCMP=check; " + YAVS.replace("--threads=", "--tier=clift-auto --tier-heat=1,0,0 --threads=")
+TEMPLATES = {"yavs-clift-check": YAVS_CLIFT_CHECK, "yavs-mixed": YAVS_MIXED, "yavs": YAVS, "yavs-interp": YAVS_INTERP, "yavs-llvm": YAVS_LLVM, "yavs-auto": YAVS_AUTO, "yavs-auto-warm": YAVS_AUTO_WARM, "yavs-clift": YAVS_CLIFT, "yavs-clift-auto": YAVS_CLIFT_AUTO, "yavs-auto3": YAVS_AUTO3, "yavs-auto3-eager": YAVS_AUTO3_EAGER}
 # yavs repeats analysis warnings when it loads the units: W1904 (a shared variable of a
 # non-protected type) is the warning `relaxed` tests are about.
 _RX = "--relaxed -Wno-W1904 -Wno-W1325 -Wno-W1501"

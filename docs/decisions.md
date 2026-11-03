@@ -13730,3 +13730,8 @@ Written by Claude. Item R1 of the kernel redesign study; taken towards the perf 
 
 Written by Claude. `SigGather` and `SigScatter` were stepped through the generic step callback in frame-mode code; the LLVM lowering has sent them through the signal callback since #790. The Cranelift lowering does the same (one arm in `gen_func`); native-frame variants keep their way (an instruction they cannot step makes the function frame-mode only). Forced compiled window, instructions of the simulation thread: Microwatt 0.991, GRLIB 0.995; code bytes of everything compiled +0.01 percent. `perf.rs` `clift::record_signals` holds the steps at 1 and the signal callbacks at about 407 on a design with record signals.
 
+
+## Inline temporary allocation in Cranelift (yavs-clift `temp_alloc`, perf/land-lowitems, 2026-11-03)
+
+Written by Claude. The inline `Alloc` tested its end against 4 GiB, against the capacity and for a wrapped sum, inverted the result, and branched on the alignment of the area's end to choose between stores and a call. `TierFrame::temp_cap` never exceeds `u32::MAX`, so one compare of the end against it is the test for a size known when the code is made, and a size from a register adds one compare of the size against it (a size within the capacity cannot wrap the sum). The pad up to the aligned start is cleared by one 8-byte store at the old end, which the object always covers (sizes of 8 bytes and more, and a run time size of 32); the object itself is cleared by stores at the aligned start. Sizes below 8 keep the branch. The slow path and the interpreter are unchanged. Forced compiled window: Microwatt 0.990, GRLIB 0.995 (instructions); code bytes of everything compiled: 3.5 percent fewer on Microwatt, 2.0 percent on GRLIB.
+

@@ -10812,3 +10812,7 @@ A whole zero-delay assignment of a record signal compares the value with the rec
 ## Whole-record reads and drives in Cranelift frame-mode code
 
 `SigGather` and `SigScatter` run through the signal callback instead of the generic step, as in the LLVM tier (`yavs-clift`; `docs/decisions.md` "Whole-record reads and drives in Cranelift frame-mode code"). Forced compiled windows execute 0.5 to 0.9 percent fewer instructions.
+
+## Inline temporary allocation in Cranelift
+
+The inline `Alloc` checks its limit once and clears the pad and the object by stores without a branch on alignment (`docs/decisions.md` "Inline temporary allocation in Cranelift"). Code bytes of everything compiled: 3.5 percent fewer on Microwatt, 2.0 percent on GRLIB; forced compiled windows execute 0.5 to 1.0 percent fewer instructions.

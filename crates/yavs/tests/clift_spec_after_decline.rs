@@ -212,7 +212,11 @@ fn copies_are_not_lost_at_scale() {
     let interp = run(&[], &["--tier=interp"]);
     for threads in ["--threads=1", "--threads=4"] {
         let tier = ["--tier=clift-auto", "--tier-heat=0,0,0", threads];
-        let o = run(&[("YAVS_AUTO_TRACE", "1")], &tier);
+        // (New code has a variant for every function: the old has none of `step`.)
+        let o = run(
+            &[("YAVS_AUTO_TRACE", "1"), ("YAVS_CLIFT_EXITS", "old")],
+            &tier,
+        );
         let err = String::from_utf8_lossy(&o.stderr);
         assert_eq!(o.stdout, interp.stdout, "{threads}");
         assert!(

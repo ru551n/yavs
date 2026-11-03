@@ -1249,6 +1249,11 @@ impl Drop for Machine {
 /// writes of the heap objects it keeps (`TIER_STAMPS`).
 static STAMPS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Prototype: a temporary area reserved once, that never moves within an activation.
+static RD_TEMP: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+    if std::env::var_os("YAVS_RD_TEMP").is_some() { 1 << 28 } else { 512 }
+});
+
 impl Machine {
     pub(crate) fn new(
         rt: Arc<Runtime>,
@@ -1389,7 +1394,7 @@ impl Machine {
             return;
         }
         // A resident process has no debugger (`set_resident`) and keeps its vectors.
-        if self.resident && (self.temp.capacity() <= RESIDENT_TEMP || std::env::var_os("YAVS_RD_TEMP").is_some()) {
+        if self.resident && (self.temp.capacity() <= RESIDENT_TEMP || *RD_TEMP != 512) {
             self.temp.clear();
             if !self.troots.is_empty() {
                 self.troots.clear();
@@ -9483,11 +9488,7 @@ impl Machine {
     /// capacity of 0 made every `Alloc` of compiled code a step, or the end of a native frame.
     #[inline(always)]
     fn reserve_temp(&mut self) {
-        const TIER_TEMP: usize = 512;
         // Prototype: a temporary area that never moves within an activation, virtual memory only.
-        static RD_TEMP: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
-            if std::env::var_os("YAVS_RD_TEMP").is_some() { 1 << 28 } else { TIER_TEMP }
-        });
         if self.temp.capacity() < *RD_TEMP {
             self.temp.reserve(*RD_TEMP - self.temp.len());
         }

@@ -429,10 +429,13 @@ impl Walk<'_> {
             if !reads.contains(&p.slot) || !worth_keying(self.prog, ty) {
                 continue;
             }
-            let Some(n) = Ty::desc_size(&self.prog.types, ty).filter(|&n| 0 < n && n <= MAX_DESC)
-            else {
+            let Some(n) = Ty::desc_size(&self.prog.types, ty).filter(|&n| n > 0) else {
                 continue;
             };
+            if n > MAX_DESC {
+                self.prog.note_sub_big();
+                continue;
+            }
             if let Some(b) = self.bytes(regs[j], n as usize) {
                 encode(&mut data, p.slot, &b);
             }
@@ -493,6 +496,7 @@ pub(super) fn rewrite_calls(
     let mut budget = MAX_VISITS.max(blocks.len().saturating_mul(32));
     while let Some(b) = dirty.pop() {
         if budget == 0 {
+            prog.note_sub_gave_up();
             return;
         }
         budget -= 1;

@@ -2605,6 +2605,12 @@ fn gen_func(
             && (quiet(&inst) || fixed.is_some())
             && (g.batch.is_none() || batch_pure(prog, f, &inst));
         if g.nat.is_none() && !g.defer {
+            // A branch only reads its condition: stored only if a block it leads to reads it too.
+            if let Inst::CondBr { c: r, .. } | Inst::Case { v: r, .. } = inst
+                && !targets(&inst).iter().any(|&t| g.live_at(t as u32, r.0 as usize))
+            {
+                g.pend[r.0 as usize] = None;
+            }
             g.spill(pc);
         }
         if let Some(l) = eloops.get(&pc) {

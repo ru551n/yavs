@@ -2103,6 +2103,8 @@ dependencies = [
  "cranelift-jit",
  "cranelift-module",
  "cranelift-native",
+ "postcard",
+ "serde",
  "yavs-cache",
  "yavs-diag",
  "yavs-interp",

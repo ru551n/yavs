@@ -58,6 +58,7 @@ pub(crate) struct Bound {
     /// change. A scatter from other driver slots looks them up each time.
     refs: std::cell::OnceCell<(u32, Box<[Option<yavs_kernel::DirectRef>]>)>,
     img: Img,
+    cmp: Cmp,
 }
 
 /// Where a bound plan stands with its record image (kernel `image.rs`).
@@ -77,23 +78,68 @@ enum Img {
     Off,
 }
 
-/// Whole gathers of a plan before it asks for an image: a process that runs a few times does not
-/// pay one.
+/// Where a bound plan stands with comparing its whole zero-delay scatters with the record image
+/// (`docs/decisions.md` "Record drive compare").
+enum Cmp {
+    /// Scatters that could compare so far.
+    Count(u32),
+    /// Asked for: there from a later run phase.
+    Asked(Box<ImageSpec>),
+    Ready(Box<CmpReady>),
+    Off,
+}
+
+/// What a plan's scatters compare with.
+struct CmpReady {
+    id: u32,
+    /// Every skip is held against the kernel's full test (`cmp_check`).
+    check: bool,
+    /// Scatters since the last review, the leaves they spared, the image's writes at that review.
+    seen: u32,
+    spared: u64,
+    writes: u64,
+    /// The plan's distinct kernel drivers.
+    drivers: Box<[yavs_kernel::DriverId]>,
+    /// Run `r` of `Bound::runs` lies at `ranges[at[r]..at[r + 1]]` of the value, adjacent leaves
+    /// joined; a null leaf has no range, and its run is never taken for unchanged.
+    ranges: Box<[(u32, u32)]>,
+    at: Box<[u32]>,
+}
+
+impl CmpReady {
+    /// Whether run `r` of `data` holds what image `im` holds.
+    #[inline(always)]
+    fn run_same(&self, r: usize, data: &[u8], im: &[u8]) -> bool {
+        let rs = &self.ranges[self.at[r] as usize..self.at[r + 1] as usize];
+        !rs.is_empty()
+            && rs.iter().all(|&(o, n)| {
+                let (o, n) = (o as usize, n as usize);
+                data[o..o + n] == im[o..o + n]
+            })
+    }
+}
+
+/// Whole gathers of a plan, or whole zero-delay scatters, before it asks for an image: a process
+/// that runs a few times does not pay one.
 const IMAGE_AFTER: u32 = 16;
 
-/// Copies between two looks at whether an image pays (`image_review`).
+/// Copies or scatters between two looks at whether an image pays (`image_review`, `cmp_review`).
 const IMAGE_REVIEW: u32 = 1024;
 
 /// A leaf written into an image costs about this many leaves read by a gather (#1065): an image
 /// written more than that per copy is given up.
 const WRITE_COST: u64 = 4;
 
+/// A leaf written into an image costs about this many leaves a scatter's compare spares: an image
+/// written more than that per spared leaf is given up by the scatter.
+const CMP_WRITE_COST: u64 = 2;
+
 /// The largest value with an image.
 const IMAGE_MAX: u64 = 1 << 16;
 
 /// What the environment says about images: `YAVS_NO_IMAGE=1` none, `YAVS_IMAGE_CHECK=1` every
-/// copy checked against the leaves, `YAVS_IMAGE_AFTER=n` asked for after `n` gathers (off, on,
-/// after).
+/// copy checked against the leaves and every skip against the kernel's full test,
+/// `YAVS_IMAGE_AFTER=n` asked for after `n` gathers or scatters (off, on, after).
 fn image_env() -> (bool, bool, u32) {
     static E: std::sync::OnceLock<(bool, bool, u32)> = std::sync::OnceLock::new();
     *E.get_or_init(|| {
@@ -211,6 +257,140 @@ fn image_step(b: &mut Bound, c: &mut Ctx<'_>) {
         }
         Img::Ready { .. } | Img::Off => {}
     }
+}
+
+/// Per run its byte ranges in the value (`CmpReady::ranges`, `at`).
+fn cmp_ranges(items: &[Item], runs: &[Grp]) -> (Vec<(u32, u32)>, Vec<u32>) {
+    let (mut ranges, mut at) = (Vec::new(), vec![0u32]);
+    for g in runs {
+        let ts = &items[g.first as usize..][..g.n as usize];
+        if ts.iter().all(|t| t.vsize > 0 && t.len > 0) {
+            let mut v: Vec<(u32, u32)> = ts.iter().map(|t| (t.voff, t.vsize)).collect();
+            v.sort_unstable();
+            let first = ranges.len();
+            for (o, n) in v {
+                match ranges[first..].last_mut() {
+                    Some((po, pn)) if *po + *pn == o => *pn += n,
+                    _ => ranges.push((o, n)),
+                }
+            }
+        }
+        at.push(ranges.len() as u32);
+    }
+    (ranges, at)
+}
+
+/// A whole zero-delay scatter that does not compare yet: the plan's next step towards its image.
+/// Every leaf must go through a driver of this process that a skip is right for.
+#[cold]
+#[inline(never)]
+fn cmp_step(cmp: Cmp, b: &Bound, c: &mut Ctx<'_>, ds: &[crate::ProcDriver]) -> Cmp {
+    match cmp {
+        Cmp::Count(n) if n + 1 < image_env().2 => Cmp::Count(n + 1),
+        Cmp::Count(_) => {
+            let leaves = |t: &&Item| t.vsize > 0 && t.len > 0;
+            let ok = !image_env().0
+                && b.items.iter().filter(leaves).all(|t| {
+                    let (id, s) = (ds[t.leaf as usize].id, b.sigs[t.leaf as usize].signal);
+                    c.drive_skip_ok(id, s, Range::new(t.k, t.len))
+                });
+            match image_spec(b) {
+                Some(s) if ok => {
+                    c.image_ask(s.clone());
+                    Cmp::Asked(s.into())
+                }
+                _ => Cmp::Off,
+            }
+        }
+        Cmp::Asked(s) => match c.image_id(&s) {
+            None => Cmp::Asked(s),
+            Some(NO_IMAGE) => Cmp::Off,
+            Some(id) => {
+                let mut drivers: Vec<_> = ds.iter().map(|d| d.id).collect();
+                drivers.sort_unstable_by_key(|d| d.0);
+                drivers.dedup();
+                let (ranges, at) = cmp_ranges(&b.items, &b.runs);
+                Cmp::Ready(Box::new(CmpReady {
+                    id,
+                    check: cfg!(debug_assertions) || image_env().1,
+                    seen: 0,
+                    spared: 0,
+                    writes: c.image_writes(id),
+                    drivers: drivers.into(),
+                    ranges: ranges.into(),
+                    at: at.into(),
+                }))
+            }
+        },
+        other => other,
+    }
+}
+
+/// Whether the image of a plan paid for its last `IMAGE_REVIEW` scatters: its writes cost no more
+/// than the leaves spared. If not, this scatter lets it go.
+#[cold]
+#[inline(never)]
+fn cmp_review(cmp: &mut Cmp, c: &mut Ctx<'_>) {
+    let Cmp::Ready(r) = cmp else {
+        return;
+    };
+    let now = c.image_writes(r.id);
+    if now.saturating_sub(r.writes) * CMP_WRITE_COST > r.spared {
+        c.image_release(r.id);
+        *cmp = Cmp::Off;
+        return;
+    }
+    (r.seen, r.spared, r.writes) = (0, 0, now);
+}
+
+/// Debug builds and `YAVS_IMAGE_CHECK`: the runs a compare would skip against the kernel's full
+/// test, before the scatter makes its first entry, since the test refuses a driver with one.
+#[cold]
+#[inline(never)]
+fn cmp_check(
+    b: &Bound,
+    r: &CmpReady,
+    c: &Ctx<'_>,
+    ds: &[crate::ProcDriver],
+    data: &[u8],
+    im: &[u8],
+) -> R<()> {
+    for (ri, g) in b.runs.iter().enumerate() {
+        if !r.run_same(ri, data, im) {
+            continue;
+        }
+        for t in &b.items[g.first as usize..][..g.n as usize] {
+            let v = &data[t.voff as usize..(t.voff + t.vsize) as usize];
+            let l = &b.plan.leaves[t.leaf as usize];
+            let d = ds[t.leaf as usize].id;
+            let res = match t.kind {
+                LeafKind::LogicVec if t.len > 64 => (v.as_chunks::<32>().0.iter().enumerate())
+                    .try_for_each(|(i, w)| {
+                        let p = [0, 1, 2, 3].map(|k| {
+                            u64::from_le_bytes(w[k * 8..k * 8 + 8].try_into().unwrap_or_default())
+                        });
+                        let at = 64 * i as u32;
+                        c.gate_check(d, t.k + at, (t.len - at).min(64), p)
+                    }),
+                LeafKind::LogicScalar | LeafKind::LogicVec => {
+                    c.gate_check(d, t.k, t.len, leaf_planes(t.kind, t.len, t.bias, v))
+                }
+                LeafKind::Scalar | LeafKind::Bytes => (0..t.len).try_for_each(|e| {
+                    let mut w = [0u8; 8];
+                    let es = l.ew as usize;
+                    w[..es].copy_from_slice(&v[e as usize * es..][..es]);
+                    c.gate_check(d, t.k + e, 1, [u64::from_le_bytes(w), 0, 0, 0])
+                }),
+            };
+            res.map_err(|e| {
+                ice(format!(
+                    "a record drive skipped by its image: signal {:?} element {} length {}: {e}",
+                    b.sigs[t.leaf as usize].signal, t.k, t.len
+                ))
+            })?;
+        }
+    }
+    Ok(())
 }
 
 /// One instance of a leaf in a whole value: the leaf, its byte offset in the value and its first
@@ -525,6 +705,85 @@ fn write_leaf(
     Ok(())
 }
 
+/// Run `g` of a whole value `data`, driven through driver slots `ds`.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn scatter_run(
+    c: &mut Ctx<'_>,
+    plan: &Plan,
+    items: &[Item],
+    g: &Grp,
+    ds: &[crate::ProcDriver],
+    data: &[u8],
+    refs: &[Option<yavs_kernel::DirectRef>],
+    run: &mut Option<Run>,
+    when: When,
+) -> R<()> {
+    let ts = &items[g.first as usize..][..g.n as usize];
+    let id = ds[ts[0].leaf as usize].id;
+    // One run of one driver: its planes built in registers, one assignment.
+    if g.word != NO_WORD && ts.iter().all(|t| ds[t.leaf as usize].id == id) {
+        flush_run(c, run, when)?;
+        let (mut p, mut at) = ([0u64; 4], 0);
+        for t in ts {
+            let o = t.voff as usize;
+            let v = data
+                .get(o..o + t.vsize as usize)
+                .ok_or_else(|| cold(|| ice("a leaf outside its value")))?;
+            for (p, b) in p.iter_mut().zip(leaf_planes(t.kind, t.len, t.bias, v)) {
+                *p |= b << at;
+            }
+            at += t.len;
+        }
+        return flush_planes(c, id, Range::new(ts[0].k, at), p, when);
+    }
+    for t in ts {
+        let l = &plan.leaves[t.leaf as usize];
+        let at = t.voff as usize;
+        let v = data
+            .get(at..at + l.vsize as usize)
+            .ok_or_else(|| cold(|| ice("a leaf outside its value")))?;
+        let d = ds[t.leaf as usize].id;
+        let dref = refs.get(t.leaf as usize).and_then(Option::as_ref);
+        write_leaf(c, d, l, Range::new(t.k, l.len), v, run, when, dref)?;
+    }
+    Ok(())
+}
+
+/// A whole zero-delay scatter against its image `im`: the leaves spared. Out of line, so that a
+/// scatter that does not compare keeps its shape: inlined, this cost `rec_pair` about 1 percent.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn scatter_compared(
+    b: &Bound,
+    r: &CmpReady,
+    im: &[u8],
+    c: &mut Ctx<'_>,
+    ds: &[crate::ProcDriver],
+    data: &[u8],
+    refs: &[Option<yavs_kernel::DirectRef>],
+    when: When,
+) -> R<u32> {
+    if r.check {
+        cmp_check(b, r, c, ds, data, im)?;
+    }
+    if *data == *im {
+        c.gate_skipped();
+        return Ok(b.items.len() as u32);
+    }
+    let (mut spared, mut run) = (0, None);
+    for (ri, g) in b.runs.iter().enumerate() {
+        if r.run_same(ri, data, im) {
+            c.gate_skipped();
+            spared += g.n;
+        } else {
+            scatter_run(c, &b.plan, &b.items, g, ds, data, refs, &mut run, when)?;
+        }
+    }
+    flush_run(c, &mut run, when)?;
+    Ok(spared)
+}
+
 impl Machine {
     /// The plan of table `tab` for the value whose descriptor is at `desc`, out of this machine's
     /// list; give it back with [`Machine::put_plan`].
@@ -608,6 +867,7 @@ impl Machine {
                 runs,
                 refs: std::cell::OnceCell::new(),
                 img: Img::Count(0),
+                cmp: Cmp::Count(0),
             })
         }))
     }
@@ -809,8 +1069,8 @@ impl Machine {
             ),
             _ => return Err(cold(|| ice("a scatter with the wrong operands"))),
         };
-        let (at, b) = self.take_plan(prog, tab, self.r(desc))?;
-        match self.scatter_leaves(&b, driver, src, part, after, mode, reject, ctx) {
+        let (at, mut b) = self.take_plan(prog, tab, self.r(desc))?;
+        match self.scatter_leaves(&mut b, driver, src, part, after, mode, reject, ctx) {
             Ok(()) => {
                 self.put_plan(at, b);
                 Ok(())
@@ -825,7 +1085,7 @@ impl Machine {
     #[allow(clippy::too_many_arguments)]
     fn scatter_leaves(
         &mut self,
-        b: &Bound,
+        b: &mut Bound,
         driver: u32,
         src: Reg,
         part: Option<Part>,
@@ -856,35 +1116,32 @@ impl Machine {
         let refs: &[Option<yavs_kernel::DirectRef>] = if *base == driver { cached } else { &[] };
         let mut run = None;
         if part.is_none() && !b.items.is_empty() {
-            for g in &*b.runs {
-                let ts = &b.items[g.first as usize..][..g.n as usize];
-                let id = ds[ts[0].leaf as usize].id;
-                // One run of one driver: its planes built in registers, one assignment.
-                if g.word != NO_WORD && ts.iter().all(|t| ds[t.leaf as usize].id == id) {
-                    flush_run(c, &mut run, when)?;
-                    let (mut p, mut at) = ([0u64; 4], 0);
-                    for t in ts {
-                        let o = t.voff as usize;
-                        let v = data
-                            .get(o..o + t.vsize as usize)
-                            .ok_or_else(|| cold(|| ice("a leaf outside its value")))?;
-                        for (p, b) in p.iter_mut().zip(leaf_planes(t.kind, t.len, t.bias, v)) {
-                            *p |= b << at;
-                        }
-                        at += t.len;
-                    }
-                    flush_planes(c, id, Range::new(ts[0].k, at), p, when)?;
-                    continue;
+            // The value against the image of the signal: what holds its value needs no planes
+            // built and no kernel call.
+            let mut cmp = None;
+            if now && *base == driver {
+                if matches!(b.cmp, Cmp::Count(_) | Cmp::Asked(_)) {
+                    b.cmp = cmp_step(std::mem::replace(&mut b.cmp, Cmp::Off), b, c, ds);
+                } else if let Cmp::Ready(r) = &b.cmp
+                    && c.drive_clean(&r.drivers)
+                {
+                    cmp = c.image(r.id).map(|i| (&**r, i));
                 }
-                for t in ts {
-                    let l = &plan.leaves[t.leaf as usize];
-                    let at = t.voff as usize;
-                    let v = data
-                        .get(at..at + l.vsize as usize)
-                        .ok_or_else(|| cold(|| ice("a leaf outside its value")))?;
-                    let d = ds[t.leaf as usize].id;
-                    let dref = refs.get(t.leaf as usize).and_then(Option::as_ref);
-                    write_leaf(c, d, l, Range::new(t.k, l.len), v, &mut run, when, dref)?;
+            }
+            let mut spared = 0;
+            if let Some((r, im)) = cmp {
+                spared = scatter_compared(b, r, im, c, ds, data, refs, when)?;
+            } else {
+                for g in &*b.runs {
+                    scatter_run(c, plan, &b.items, g, ds, data, refs, &mut run, when)?;
+                }
+            }
+            if let Cmp::Ready(r) = &mut b.cmp {
+                c.note_spared(spared);
+                r.seen += 1;
+                r.spared += u64::from(spared);
+                if r.seen >= IMAGE_REVIEW {
+                    cmp_review(&mut b.cmp, c);
                 }
             }
             return flush_run(c, &mut run, when);

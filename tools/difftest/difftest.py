@@ -44,7 +44,7 @@ YAVS_LLVM = YAVS.replace("--threads=", "--tier=llvm --threads=")
 YAVS_AUTO = YAVS.replace("--threads=", "--tier=auto --threads=")
 # `--tier=auto` after a dropped first pass (in its own directory: file_append, #806), comparing a second `elab` and
 # `run`: `.expected` holds both stages (#1030). The run links what the first compiled by pre-keys of the compilation
-# cache (with YAVS_LLVM_PREKEY_CHECK set it generates the code anyway and checks it, #785).
+# cache (with YAVS_LLVM_PREKEY_CHECK or YAVS_CLIFT_PREKEY_CHECK set it generates the code anyway and checks it, #785).
 _ELAB = YAVS_AUTO.index('"$R" elab')
 YAVS_AUTO_WARM = (YAVS_AUTO[:_ELAB] + "mkdir w1; (cd w1 && " + YAVS_AUTO[_ELAB:] + ") >/dev/null 2>&1; " + YAVS_AUTO[_ELAB:])
 # yavs with the Cranelift tier (needs a yavs built with `--features clift`): every function
@@ -62,7 +62,7 @@ YAVS_MIXED = "export YAVS_MIXED=1 YAVS_CLIFT_NTAB=1; " + YAVS_AUTO3_EAGER
 # Cranelift with a copy of every process that can have one from its third activation, every skip of
 # a drive in generated code held against the kernel's full test: what `gate_checked` counts. The
 # other templates reach that compare on hardly any test of the corpus, whose runs are short.
-YAVS_CLIFT_CHECK = "export YAVS_SPEC_ALL=1 YAVS_SPEC_AFTER=2 YAVS_INLCMP=check; " + YAVS.replace("--threads=", "--tier=clift-auto --tier-heat=1,0,0 --threads=")
+YAVS_CLIFT_CHECK = "export YAVS_SPEC_ALL=1 YAVS_SPEC_AFTER=2 YAVS_INLCMP=check YAVS_IMAGE_AFTER=1 YAVS_IMAGE_CHECK=1; " + YAVS.replace("--threads=", "--tier=clift-auto --tier-heat=1,0,0 --threads=")
 # The count rule of `--tier=auto` at its tightest: every function asked for at its first call, a copy of
 # every process that can have one from its second activation, the run waiting for what it asks
 # (`YAVS_AUTO_SYNC`), so the rule's paths run on every test however short.

@@ -1175,6 +1175,11 @@ const HIT_GEN: Model = model(1000.0, 20.0, 1.0);
 /// warm against 4 079 ms compiled, #481).
 const FIRST_HIT: Model = model(0.0, 4.0, 1.0);
 
+/// `FIRST_HIT` since a hit links without the body (a pre-key), under the count rule (the old policy
+/// keeps its numbers, for comparing): about 0.26 us an IR instruction by the work clock on the
+/// measured designs, rounded up.
+const FIRST_LINK: Model = model(0.0, 0.3, 1.0);
+
 /// A look-up in the compilation cache generates the code of the function, about this part of a
 /// compile (generation and the key: 10 to 20 us per IR instruction).
 const PROBE_PART: u64 = 50;
@@ -1718,11 +1723,20 @@ impl Worker {
             .prog
             .func(id)
             .is_some_and(|f| f.kind != FuncKind::Process);
-        self.total < self.gate || (sub && !self.entered_from_code(id))
+        (self.total < self.gate && !self.link_early(id)) || (sub && !self.entered_from_code(id))
+    }
+
+    /// What the cache lists is a link, about a thousandth of a compile: it does not wait for the gate.
+    fn link_early(&self, id: FuncId) -> bool {
+        static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        !*OFF.get_or_init(|| std::env::var_os("YAVS_AUTO_WARM_GATE").is_some()) && self.cached(id)
     }
 
     /// The functions that wait no more, and the callees `publish` wants.
     fn freed(&mut self) -> Vec<FuncId> {
+        if self.total >= self.gate {
+            self.native.open_copies();
+        }
         if self.gate != 0
             && self.total >= self.gate
             && let Some(tr) = &self.trace
@@ -1973,7 +1987,8 @@ impl Worker {
             return 0;
         };
         if cached && self.first.is_some() {
-            FIRST_HIT.price(f.code.len())
+            let link = self.counted && self.prog.identity.is_some();
+            if link { FIRST_LINK } else { FIRST_HIT }.price(f.code.len())
         } else if cached && self.prog.identity.is_some() {
             HIT.price(f.code.len())
         } else if cached {
@@ -3543,6 +3558,9 @@ impl AutoTier {
                 u64::from(count / 2).max(2),
                 (count / 2).max(1),
             );
+            if gate == 0 {
+                rt.native_flags().open_copies();
+            }
         }
         let mut w = Worker::new(
             prog,
@@ -3598,6 +3616,13 @@ impl AutoTier {
                     // (The end of the run wakes this thread: nothing to list then.)
                     if !sh.halt.load(Ordering::SeqCst) {
                         w.listed = w.lead().map(|g| g.cache_list()).unwrap_or_default();
+                        // (A run that compiled before was long enough for copies.)
+                        if w.counted
+                            && !w.listed.is_empty()
+                            && std::env::var_os("YAVS_AUTO_WARM_GATE").is_none()
+                        {
+                            w.native.open_copies();
+                        }
                         w.load_profile();
                     }
                     if let (Some(key), Some(store)) = (w.profile_key, w.store.clone()) {
@@ -3707,6 +3732,12 @@ impl AutoTier {
                                     w.pick(&mut pending.cands).map(|ids| (ids, false, true))
                                 })
                             else {
+                                // (All that was left to do for them waits, `YAVS_AUTO_SYNC`.)
+                                for id in unfinished.drain(..) {
+                                    if let Some(f) = sh.finished.get(id.0 as usize) {
+                                        f.store(true, Ordering::Release);
+                                    }
+                                }
                                 break;
                             };
                             // `busy` before `halt` here and `halt` before `busy` in `stop` (both

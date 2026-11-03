@@ -229,13 +229,21 @@ architecture a of top is
   signal hv : integer := 0;
   signal hs : std_logic := '0';
   signal n : natural := 0;
+  type rec is record
+    a : std_logic;
+    b : integer;
+  end record;
+  signal hr : rec := ('0', 3);
 begin
   clk <= not clk after 5 ns;
-  process (clk) begin
+  process (clk)
+    variable v : rec := ('0', 3);
+  begin
     if rising_edge(clk) then
       if g > 1000 or n < 0 then report "g"; end if;
       hv <= hv;
       hs <= hs;
+      hr <= v;
       n <= n + 1;
       report integer'image(n) & " " & integer'image(hv) & " " & std_logic'image(hs);
       if n = 12 then std.env.finish; end if;
@@ -270,10 +278,16 @@ end;
         ("YAVS_SPEC_AFTER", "2"),
         ("YAVS_INLCMP", "check"),
         ("YAVS_COUNTERS", "1"),
+        ("YAVS_IMAGE_AFTER", "1"),
     ];
     let heat = "--tier-heat=1,0,0";
     let plain = run(&env, &["--tier=clift-auto", heat]);
     assert!(plain.2.contains("counters: gate_checked="), "{}", plain.2);
+    assert!(
+        !plain.2.contains("counters: scatter_spared=0\n"),
+        "{}",
+        plain.2
+    );
     let interp = run(&[], &[&spec, "--tier=interp"]);
     assert_eq!(interp.0, Some(0), "{}", interp.2);
     assert!(interp.1.contains("vhpi: deposit hv=0\n"), "{}", interp.1);
@@ -281,6 +295,8 @@ end;
     assert_eq!((interp.0, &interp.1), (got.0, &got.1), "{}", got.2);
     assert!(got.2.contains("counters: skip_signals=0\n"), "{}", got.2);
     assert!(!got.2.contains("counters: gate_checked="), "{}", got.2);
+    // The compare of a record drive asks the same `skip_ok`.
+    assert!(got.2.contains("counters: scatter_spared=0\n"), "{}", got.2);
 }
 
 #[test]

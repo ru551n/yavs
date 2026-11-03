@@ -231,6 +231,8 @@ pub struct Stats {
     /// the processes when asked (`image.rs`).
     pub gathers_copied: u64,
     pub gathers_read: u64,
+    /// Leaves of whole record scatters that compared equal with their image (`gather.rs`).
+    pub scatter_spared: u64,
     /// Leaves written into record images, the images and the bytes they hold.
     pub image_writes: u64,
     pub images: u64,
@@ -1805,6 +1807,7 @@ impl SimControl {
             general_assigns: self.slots.iter().map(|s| lock(s).st.general).sum(),
             gathers_copied: self.slots.iter().map(|s| lock(s).st.gathers_copied).sum(),
             gathers_read: self.slots.iter().map(|s| lock(s).st.gathers_read).sum(),
+            scatter_spared: self.slots.iter().map(|s| lock(s).st.scatter_spared).sum(),
             images: self.images.memory().0,
             image_bytes: self.images.memory().1,
             ..self.stats

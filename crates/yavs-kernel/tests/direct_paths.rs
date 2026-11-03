@@ -1483,3 +1483,131 @@ fn drivers_that_become_busy_keep_values_and_deltas() {
         assert_eq!(waved_drivers(true, threads), plain, "threads {threads}");
     }
 }
+
+/// `Ctx::drive_clean` of a direct driver at every run, as (at the start of the run, at its end),
+/// `act` being what the run at 1 ns does.
+fn clean_runs(
+    act: impl Fn(&mut Ctx<'_>, DriverId, SignalId) -> Result<(), SimError> + Send + 'static,
+) -> Vec<(bool, bool)> {
+    let mut b = Builder::new();
+    let s = b.signal(
+        "s",
+        SignalType::logic(4),
+        &"0000".parse::<LogicVec>().unwrap(),
+    );
+    let d = b.driver(s);
+    let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = got.clone();
+    let mut step = 0;
+    b.process(
+        "p",
+        NONE,
+        &[d],
+        p(move |c| {
+            assert!(c.drive_skip_ok(d, s, Range::new(0, 4)), "direct, skip_ok");
+            let before = c.drive_clean(&[d]);
+            if step == 1 {
+                act(c, d, s)?;
+            }
+            seen.lock().unwrap().push((before, c.drive_clean(&[d])));
+            step += 1;
+            c.wait_for(ns(1))
+        }),
+    );
+    let mut sim = b
+        .build(Config {
+            skip_unchanged: true,
+            ..Config::default()
+        })
+        .unwrap();
+    sim.run_until(ns(7)).unwrap();
+    std::mem::take(&mut *got.lock().unwrap())
+}
+
+/// What a record drive compared with an image asks: no entry of the run, nothing pending, no force
+/// or deposit on the signal. A force's layer stays after its release, and a deposit makes the
+/// signal exact for good: such a signal goes on asking the kernel leaf by leaf.
+#[test]
+fn a_driver_is_clean_only_with_nothing_of_the_run_pending_and_nothing_forced() {
+    let v = || "0101".parse::<LogicVec>().unwrap();
+    let (t, f) = ((true, true), (false, false));
+    let entry = (true, false);
+    let got =
+        clean_runs(move |c, d, _| c.assign(d, None, &[(Time::ZERO, &v())], DelayMode::INERTIAL));
+    assert_eq!(got, [t, entry, t, t, t, t, t, t], "an entry of the run");
+    let got = clean_runs(move |c, d, _| c.assign(d, None, &[(ns(3), &v())], DelayMode::INERTIAL));
+    assert_eq!(
+        got,
+        [t, entry, f, f, t, t, t, t],
+        "a waveform, until it matures"
+    );
+    let got = clean_runs(move |c, _, s| c.force(s, ForceMode::Effective, &v()));
+    assert_eq!(got, [t, t, f, f, f, f, f, f], "the effective value forced");
+    let got = clean_runs(move |c, _, s| c.force(s, ForceMode::Driving, &v()));
+    assert_eq!(got, [t, t, f, f, f, f, f, f], "the driving value forced");
+    let got = clean_runs(move |c, _, s| c.deposit(s, &v()));
+    assert_eq!(got, [t, t, f, f, f, f, f, f], "a deposit");
+}
+
+/// A process that finds an image in the run phase its last other user lets it go in, and asks for
+/// it, keeps it: its bytes stay, whichever of the two requests came first.
+#[test]
+fn an_image_asked_for_while_its_last_user_lets_it_go_stays() {
+    let mut b = Builder::new();
+    let s = b.signal(
+        "s",
+        SignalType::logic(4),
+        &"0101".parse::<LogicVec>().unwrap(),
+    );
+    let spec = ImageSpec {
+        size: 32,
+        items: Box::new([ImageItem {
+            sig: s,
+            k: 0,
+            len: 4,
+            voff: 0,
+            vsize: 32,
+            kind: ImageKind::Planes,
+        }]),
+    };
+    let (first, second) = (spec.clone(), spec);
+    let mut step = 0;
+    b.process(
+        "goes",
+        NONE,
+        &[],
+        p(move |c| {
+            match step {
+                0 => c.image_ask(first.clone()),
+                1 => c.image_release(c.image_id(&first).expect("made")),
+                _ => {}
+            }
+            step += 1;
+            c.wait_for(ns(1))
+        }),
+    );
+    let mut step = 0;
+    let lens = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = lens.clone();
+    b.process(
+        "stays",
+        NONE,
+        &[],
+        p(move |c| {
+            if step == 1 {
+                c.image_ask(second.clone());
+            }
+            if step >= 1 {
+                let id = c.image_id(&second).expect("the id");
+                seen.lock()
+                    .unwrap()
+                    .push(c.image(id).map_or(0, <[u8]>::len));
+            }
+            step += 1;
+            c.wait_for(ns(1))
+        }),
+    );
+    let mut sim = b.build(Config::default()).unwrap();
+    sim.run_until(ns(4)).unwrap();
+    assert_eq!(*lens.lock().unwrap(), [32, 32, 32, 32]);
+}

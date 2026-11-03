@@ -10805,6 +10805,32 @@ The optimiser reads an element of a logic row or slice, and copies a row or slic
 
 A zero-delay drive at a constant reference in a process copy compares with the signal's current value in Cranelift code and makes no call when equal (`YAVS_INLCMP=off` turns it off, `check` holds every skip against the kernel's full test, always in debug builds; `docs/decisions.md` "Drive compare in compiled code"). CI runs the corpus on process copies with skips checked (difftest candidate `yavs-clift-check`).
 
+## Cranelift: compiled code found before the body is made
+
+A warm `--tier=auto` run on Cranelift finds a function's code by a key made before the body is lowered (`yavs-clift` `cache.rs`, `Jit::link`; `docs/decisions.md` "Cranelift: compiled code found before the body is made"): the third run of a design is the first that links so, the second writes the entries. `YAVS_CLIFT_PREKEY_CHECK`, always on in debug builds, lowers anyway and aborts on a difference. A program with no identity (coverage, constant pools too large for the stage cache, such as `hdlm_lfsr`) keeps the key over the body and gains nothing. See `docs/decisions.md` for what the key holds and the mutation test.
+
+Instructions in G, new against 176f5ec7, bench builds, `--threads=1`, all threads / main thread, median of 3 rounds unless said. Host loaded: no cycle figures.
+
+| run | cold, all | warm, all | warm, ratio all / main | store, MB of files |
+|---|---:|---:|---:|---:|
+| GRLIB whole | 342.3 to 342.2 | 263.6 to 249.3 | 0.946 / 0.974 | 7.39 to 7.85 |
+| GRLIB to 100 us, all compiled at first entry | 169.3 to 169.3 | 67.2 to 33.6 | 0.500 / 0.999 | 29.75 to 30.12 |
+| Microwatt whole, cold one round | 1 594.7 to 1 595.4 | 1 458.3 to 1 383.2 | 0.948 / 0.956 | 7.38 to 7.34 |
+| Microwatt to 600 us | 201.0 to 198.6 | 171.9 to 168.3 | 0.979 / 1.011 | 3.62 to 3.44 |
+| Microwatt to 100 us, all compiled at first entry | 92.3 to 92.3 | 42.6 to 25.9 | 0.608 / 1.000 | |
+| `uvvm_sb_slv` | 11.67 to 11.82 | 8.48 to 8.26 | 0.975 / 0.987 | 0.28 to 0.33 |
+| `neorv32_single_cache` | 24.13 to 24.13 | 21.11 to 20.59 | 0.975 / 0.990 | 0.26 to 0.26 |
+| `sc5_fifo_repack` | 28.31 to 28.32 | 22.08 to 21.99 | 0.996 / 1.010 | 0.67 to 0.74 |
+| `uvvm_util_rand` | 14.15 to 14.41 | 11.44 to 9.85 | 0.862 / 0.871 | 0.46 to 0.50 |
+| `hdlm_lfsr`, no identity | 25.44 to 25.08 | 23.19 to 23.23 | 1.002 / 1.001 | 0.04 to 0.04 |
+| `uvvm_sb_slv`, all compiled at first entry | 43.87 to 43.87 | 12.85 to 7.15 | 0.557 / 1.000 | |
+| `vunit_logging`, all compiled at first entry | 15.22 to 15.22 | 2.99 to 0.74 | 0.247 / 0.985 | 5.18 to 5.41 |
+
+GRLIB, all compiled: the compile thread 34.7 to 1.09 G, for 355 listed functions of 261 159 IR instructions: about 133 000 to 4 200 instructions an IR instruction. `vunit_logging` compiles nothing at auto, so there is nothing to gain: on one world path 0.1765 against 0.1766 G main. Its count moves with the length of the path, which it passes to the design as a generic, so compare runs on the same path. The set compiled warm varies between rounds, `uvvm_util_rand` most: base 10.38 to 11.60, new 9.82 to 10.21, so 0.862 is not a bound. Whole Microwatt warm, all threads: base 1 457.8, 1 458.3, 1 458.9; new 1 383.2, 1 448.8, 1 380.5. So two rounds in three gain 5 percent on the main thread and one gains 0.7 percent: the code arrives earlier and what the policy then compiles flips; not traced, and the 600 us span does not show it. Only the compile thread's part (13 to 3 G) is firm. The run that writes the entries is level (Microwatt second run 1.003). Console and exit status equal to the base on whole GRLIB and Microwatt, cold and warm; Microwatt exits 1 on both, an error assertion at 25 ns in `log_buffer`.
+
+## Record drive compare
+
+A whole zero-delay assignment of a record signal compares the value with the record image, as a whole and then per run of leaves, and makes no kernel call for what holds (`YAVS_NO_IMAGE` turns it off with the images, `YAVS_IMAGE_CHECK` holds every skip against the kernel's full test, always in debug builds; `docs/decisions.md` "Record drive compare"). Not served: a part of a record signal, drivers that are not direct. Its gain in cycles has not been measured on a quiet host.
 ## The count rule of `--tier=auto` (branch `perf/land-policy`, 2026-11-03)
 
 `--tier=auto` on Cranelift compiles what the interpreter entered 100 times, a process's copy after 50 and 50, a subprogram once a caller has compiled code, nothing by the count before a run has done 2.56 G instructions of work; the sampler stays for the rest; native-frame code that leaves to the interpreter at most calls is taken back after a trial. `YAVS_AUTO_POLICY=sampled` is the rule before. Not decided: a quiet comparison in cycles is due, and no cycle gain is claimed (`docs/decisions.md` "`--tier=auto`: the count rule"). Tests: `crates/yavs/tests/auto_count.rs`, the unit tests of `auto.rs` that need no LLVM, difftest candidate `yavs-clift-count1` in the `clift` job of CI.

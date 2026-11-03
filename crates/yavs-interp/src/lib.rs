@@ -1413,6 +1413,8 @@ pub struct NativeFlags {
     left: Box<[std::sync::atomic::AtomicU32]>,
     /// The activation a process switches to its copy under the count (`arm_count`; 0: `spec_after`).
     spec_count: std::sync::atomic::AtomicU64,
+    /// The run is still too short for the copies the count switches to (`open_copies`).
+    copies_wait: std::sync::atomic::AtomicBool,
     /// Per function, the native frames of it that left to the interpreter (`materialised`).
     left_native: Box<[std::sync::atomic::AtomicU64]>,
     /// What the count rule did, for `YAVS_COUNTERS` (`CountStat`).
@@ -1436,7 +1438,8 @@ pub enum CountStat {
 impl NativeFlags {
     /// Count the entries of every function: the tier is asked for one after `count` of them
     /// (`Tier::asked`), for a process that can have a copy it is the copy after `copy`, which it
-    /// switches to at activation `switch` (`Machine::specialise`). Before the run.
+    /// switches to at activation `switch` (`Machine::specialise`), once `open_copies` was called.
+    /// Before the run.
     pub fn arm_count(&self, prog: &Program, count: u32, switch: u64, copy: u32) {
         for (k, c) in self.left.iter().enumerate() {
             // (A slot still empty will hold a copy; asking for it now would fix it empty.)
@@ -1444,6 +1447,16 @@ impl NativeFlags {
             c.store(if spare { copy } else { count }, Ordering::Relaxed);
         }
         self.spec_count.store(switch, Ordering::Relaxed);
+        self.copies_wait.store(!spec_forced(), Ordering::Relaxed);
+    }
+
+    /// The run is long enough for copies.
+    pub fn open_copies(&self) {
+        self.copies_wait.store(false, Ordering::Relaxed);
+    }
+
+    pub(crate) fn copies_wait(&self) -> bool {
+        self.copies_wait.load(Ordering::Relaxed)
     }
 
     /// One more of `what`.
@@ -1867,6 +1880,7 @@ impl Runtime {
                 dirty: Default::default(),
                 left: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
                 spec_count: Default::default(),
+                copies_wait: Default::default(),
                 left_native: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
                 count_stat: Default::default(),
             }),

@@ -1728,6 +1728,13 @@ impl Machine {
             self.spec_at = u32::try_from(after).unwrap_or(u32::MAX);
             return;
         }
+        // Under the count rule a short run makes no copies, which cost more than it would get back;
+        // looked at again after as many activations, and never later than without the rule.
+        let usual = crate::spec_after();
+        if self.spec.is_some() && self.rt.native.copies_wait() && self.execs < usual {
+            self.spec_at = u32::try_from((self.execs + after).min(usual)).unwrap_or(u32::MAX);
+            return;
+        }
         let base = self.entry;
         self.switch_to_copy(c);
         // No copy for good: the count that waited for it goes to the shared code.

@@ -5,10 +5,11 @@
 //! failing inline instruction returns its pc and the interpreter re-executes it.
 
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
 use std::rc::Rc;
 
-use cranelift_codegen::Context;
 use cranelift_codegen::inline::{Inline, InlineCommand};
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{
@@ -17,10 +18,13 @@ use cranelift_codegen::ir::{
     types,
 };
 use cranelift_codegen::isa::CallConv;
+use cranelift_codegen::{CompiledCode, Context};
 
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{DataDescription, DataId, FuncId as ClifId, Linkage, Module, ModuleReloc};
+use cranelift_module::{
+    DataDescription, DataId, FuncId as ClifId, FuncOrDataId, Linkage, Module, ModuleReloc,
+};
 use yavs_interp::space;
 use yavs_ir::{
     AddrSpace, BoolOp, CheckKind, CmpOp, FOp, FUnOp, Func, FuncId, FuncKind, Inst, IntOp, IntUnOp,
@@ -29,6 +33,8 @@ use yavs_ir::{
 use yavs_llvm::native::{Arg, call_fits, closed_frame, ieee_fast, ieee_layout, native_set};
 use yavs_llvm::regs::Live;
 use yavs_llvm::rt::*;
+
+use crate::cache::{HashBytes, Name, Pre, PreInputs, body_key};
 
 const I64: Type = types::I64;
 const I32: Type = types::I32;
@@ -108,7 +114,10 @@ pub struct Jit {
     deopt_end: ClifId,
     /// The kernel-facing callbacks of `rt.rs`, in the order of `KERNEL`.
     kernel: [ClifId; 23],
-    tables: HashMap<Vec<u8>, DataId>,
+    /// Module data by its bytes and whether it is 8-byte aligned.
+    tables: HashMap<(Vec<u8>, bool), DataId>,
+    /// What a body's reference to module data names in another run (`Name::Data`), by data id.
+    table_names: HashMap<u32, Name>,
     sig: Signature,
     /// Calls between compiled functions without a frame in the interpreter (`NatInfo`) and
     /// whether Cranelift inlines them (`YAVS_CLIFT_NATIVE`, `YAVS_CLIFT_INLINE`).
@@ -145,6 +154,8 @@ pub struct Jit {
     /// Frame-mode code by its body and the functions and data it refers to: the copies of a process
     /// that are the same code share one definition.
     bodies: HashMap<String, ClifId>,
+    /// The target and the switches in a pre-key (`cache::pre_key`); none: this run has no pre-keys.
+    pre_target: Option<(String, String)>,
 }
 
 /// The native-frame variant `n<id>` of a function, in the calling convention of the LLVM tier
@@ -156,8 +167,22 @@ struct NatInfo {
     /// The `CallFn` adapter `c<id>` for the interpreter's calls (`Tier::call`); none for a nested
     /// function.
     call: Option<ClifId>,
-    /// The Cranelift body, for the inliner.
-    body: ir::Function,
+    /// The Cranelift body, for the inliner; made on demand when the variant came from the cache
+    /// (`Jit::body_of`).
+    body: RefCell<Option<Rc<ir::Function>>>,
+    /// The route it was made with: per native callee, direct or not.
+    nats: Vec<(FuncId, bool)>,
+    /// Its pre-key, part of its direct callers'.
+    pre: Option<yavs_cache::Key>,
+}
+
+/// What `Jit::build` made or linked.
+struct Built {
+    fid: ClifId,
+    stepped: Vec<String>,
+    body: Option<Rc<ir::Function>>,
+    nats: Vec<(FuncId, bool)>,
+    pre: Option<yavs_cache::Key>,
 }
 
 /// What `Jit::native_of` found for a callee.
@@ -484,6 +509,7 @@ impl Jit {
         sig.params.extend([AbiParam::new(I64); 3]);
         sig.params.push(AbiParam::new(I32));
         sig.returns.push(AbiParam::new(I32));
+        let pre_target = crate::cache::pre_target(module.isa(), &format!("{:?}", inlcmp_mode()));
         Ok(Jit {
             module,
             step,
@@ -499,6 +525,7 @@ impl Jit {
             deopt_end,
             kernel,
             tables: HashMap::new(),
+            table_names: HashMap::new(),
             sig,
             native_on,
             native_limit,
@@ -515,6 +542,7 @@ impl Jit {
             cached_only: false,
             missed: false,
             bodies: HashMap::new(),
+            pre_target,
         })
     }
 
@@ -534,9 +562,9 @@ impl Jit {
         if std::env::var_os("YAVS_CLIFT_DUMP").is_some() {
             eprintln!("{}", prog.dump_func(id));
         }
-        let (c, s, _) = self.build(prog, id, f, false)?;
-        self.frames.insert(id, c);
-        Ok((c, s))
+        let b = self.build(prog, id, f, false)?;
+        self.frames.insert(id, b.fid);
+        Ok((b.fid, b.stepped))
     }
 
     /// `Generator::cached_only`: from now on compile nothing the compilation cache does not have.
@@ -553,7 +581,6 @@ impl Jit {
     /// Compile `ctx` into `fid`: linked from the compilation cache when it has the function
     /// (`cache.rs`), else compiled, and stored when there is a cache.
     fn define_code(&mut self, fid: ClifId, ctx: &mut Context) -> Result<(), String> {
-        crate::cold::propagate(&mut ctx.func);
         let Some(store) = crate::cache::store() else {
             return self
                 .module
@@ -574,11 +601,21 @@ impl Jit {
             crate::cache::note_hit();
         }
         let code = ctx.compiled_code().ok_or("no compiled code")?;
+        self.define_compiled(fid, &ctx.func, code)
+    }
+
+    /// Define `fid` as `code`, whose references are named by `func`'s parameters.
+    fn define_compiled(
+        &mut self,
+        fid: ClifId,
+        func: &ir::Function,
+        code: &CompiledCode,
+    ) -> Result<(), String> {
         let relocs: Vec<ModuleReloc> = code
             .buffer
             .relocs()
             .iter()
-            .map(|r| ModuleReloc::from_mach_reloc(r, &ctx.func, fid))
+            .map(|r| ModuleReloc::from_mach_reloc(r, func, fid))
             .collect();
         let align = u64::from(code.buffer.min_alignment);
         self.module
@@ -653,7 +690,7 @@ impl Jit {
         if self.natives.values().flatten().count() >= self.native_limit {
             return None;
         }
-        let (cid, _, body) = match self.build(prog, id, f, true) {
+        let built = match self.build(prog, id, f, true) {
             Ok(r) => r,
             Err(why) => {
                 if dump {
@@ -662,6 +699,7 @@ impl Jit {
                 return None;
             }
         };
+        let cid = built.fid;
         let call = if f.parent.is_none() {
             match self.define_adapter(f, cid) {
                 Ok(c) => Some(c),
@@ -686,7 +724,9 @@ impl Jit {
         Some(Rc::new(NatInfo {
             id: cid,
             call,
-            body: body?,
+            body: RefCell::new(built.body),
+            nats: built.nats,
+            pre: built.pre,
         }))
     }
 
@@ -731,6 +771,7 @@ impl Jit {
                 &ctx.func.signature,
             )
             .map_err(|e| e.to_string())?;
+        crate::cold::propagate(&mut ctx.func);
         if let Err(e) = self.define_code(fid, &mut ctx) {
             if e == NOT_CACHED {
                 return Err(e);
@@ -765,14 +806,15 @@ impl Jit {
     }
 
     /// Translate `f` into a function defined in the module: the frame-mode `f<id>`, or (`native`)
-    /// the native-frame variant `n<id>`, whose Cranelift body is returned too.
+    /// the native-frame variant `n<id>`, whose Cranelift body is returned when it was made. The
+    /// compilation cache is asked by the pre-key before anything is lowered (`cache::pre_key`).
     fn build(
         &mut self,
         prog: &Program,
         id: FuncId,
         f: &Func,
         native: bool,
-    ) -> Result<(ClifId, Vec<String>, Option<ir::Function>), Error> {
+    ) -> Result<Built, Error> {
         // The callees that run on native frames (the LLVM tier's rule): called directly when
         // they have a variant in this module, else through `Mem::ntab`. A native variant is made
         // only when every such callee can be called.
@@ -819,6 +861,373 @@ impl Jit {
                 NatVar::No => None,
             };
         }
+        let route_now: Vec<(u32, bool)> = nats.iter().map(|(g, n)| (g.0, n.is_some())).collect();
+        let fresh_route = self.allowed.is_some() && route.is_none();
+        let mut route_of: Vec<(FuncId, bool)> =
+            nats.iter().map(|(&g, n)| (g, n.is_some())).collect();
+        route_of.sort_unstable_by_key(|r| r.0.0);
+        let pre = self.pre_key(prog, id, f, native, &nats);
+        let stored = pre.as_ref().and_then(crate::cache::pre_get);
+        let check = crate::cache::check();
+        let linked = |jit: &mut Jit, stored: &Option<Pre>| -> Result<Option<Built>, Error> {
+            let Some(Pre::Code {
+                clif,
+                names,
+                stepped,
+            }) = stored
+            else {
+                return Ok(None);
+            };
+            let Some(fid) = jit.link(prog, id, f, native, clif, names)? else {
+                return Ok(None);
+            };
+            if fresh_route {
+                jit.routes.add(tag, native, route_now.iter().copied());
+            }
+            Ok(Some(Built {
+                fid,
+                stepped: crate::cache::stepped_list(stepped),
+                body: None,
+                nats: route_of.clone(),
+                pre,
+            }))
+        };
+        if !check {
+            if let Some(Pre::Refused(why)) = &stored {
+                return Err(why.clone());
+            }
+            if let Some(b) = linked(self, &stored)? {
+                return Ok(b);
+            }
+        }
+        crate::cache::note_lowered(id.0, native);
+        let (mut ctx, stepped) = match self.lower(prog, id, f, native, &nats) {
+            Ok(r) => r,
+            Err(why) => {
+                if let Some(k) = &pre {
+                    let now = Pre::Refused(why.clone());
+                    crate::cache::pre_note(k, stored.as_ref(), &now, &f.name, id.0, native);
+                }
+                return Err(why);
+            }
+        };
+        let body = native.then(|| Rc::new(ctx.func.clone()));
+        crate::cold::propagate(&mut ctx.func);
+        // The instances of a process with equal code (`Program::copy_of` of data the code does not
+        // read) are one function, as the LLVM tier's twins.
+        let copy = !native && prog.base_of(id) != id;
+        let clif =
+            (copy || pre.is_some()).then(|| crate::cache::clif_key(self.module.isa(), &ctx.func));
+        let now = pre.as_ref().zip(clif).map(|(k, clif)| {
+            let now = Pre::Code {
+                clif,
+                names: self.names_of(&ctx.func),
+                stepped: crate::cache::stepped_counts(&stepped),
+            };
+            crate::cache::pre_check(k, stored.as_ref(), &now, &f.name, id.0, native);
+            (k, now)
+        });
+        // (The check made sure the entry is this code: go on as a run without the check does.)
+        if check && let Some(b) = linked(self, &stored)? {
+            return Ok(Built { body, ..b });
+        }
+        let shared = clif.filter(|_| copy).map(|c| body_key(&c, &ctx.func));
+        if let Some(&c) = shared.as_ref().and_then(|k| self.bodies.get(k)) {
+            // Counts as linked from the cache, so `--tier=auto` charges a link (the LLVM tier's
+            // twins do the same).
+            crate::cache::note_hit();
+            self.module.clear_context(&mut ctx);
+            if let Some((k, now)) = &now {
+                crate::cache::pre_note(k, stored.as_ref(), now, &f.name, id.0, native);
+            }
+            if fresh_route {
+                self.routes.add(tag, native, route_now.iter().copied());
+            }
+            return Ok(Built {
+                fid: c,
+                stepped,
+                body: None,
+                nats: route_of,
+                pre,
+            });
+        }
+        let fid = self
+            .module
+            .declare_function(
+                &format!("{}{}", if native { "n" } else { "f" }, id.0),
+                Linkage::Export,
+                &ctx.func.signature,
+            )
+            .map_err(|e| e.to_string())?;
+        // `YAVS_CLIFT_ASM=<function id>`: the machine code of that function (variant) on stderr.
+        let asm = std::env::var("YAVS_CLIFT_ASM")
+            .is_ok_and(|v| v.parse::<u32>().is_ok_and(|n| n == id.0));
+        ctx.set_disasm(asm);
+        if let Err(e) = self.define_code(fid, &mut ctx) {
+            if e == NOT_CACHED {
+                return Err(e);
+            }
+            // A Cranelift error (the verifier is on in debug builds) is a bug of the lowering:
+            // debug builds stop with the function, release builds leave it interpreted.
+            if cfg!(debug_assertions) {
+                panic!(
+                    "Cranelift rejected f{}{}: {e:?}\n{}",
+                    id.0,
+                    if native {
+                        " (native-frame variant)"
+                    } else {
+                        ""
+                    },
+                    ctx.func.display()
+                );
+            }
+            return Err(format!("Cranelift: {e} (a bug in yavs)"));
+        }
+        if let Some((k, now)) = &now {
+            crate::cache::pre_note(k, stored.as_ref(), now, &f.name, id.0, native);
+        }
+        if fresh_route {
+            self.routes.add(tag, native, route_now.iter().copied());
+        }
+        if let Some(v) = ctx
+            .compiled_code()
+            .and_then(|c| c.vcode.as_ref())
+            .filter(|_| asm)
+        {
+            eprintln!(
+                "asm of {} f{}:\n{v}",
+                if native { "variant" } else { "frame code" },
+                id.0
+            );
+        }
+        if let (Some(list), Some(c)) = (self.perfmap.as_mut(), ctx.compiled_code()) {
+            let kind = if native { "n" } else { "f" };
+            // IR pc of each stretch of machine code (`YAVS_CLIFT_CODEDIR`: `<name>.srcmap`).
+            let map = if srcmap() {
+                c.buffer
+                    .get_srclocs_sorted()
+                    .iter()
+                    .map(|m| {
+                        let at = if m.loc.is_rel() {
+                            m.loc.relocate(ctx.func.params.base_srcloc())
+                        } else {
+                            m.loc.as_abs()
+                        };
+                        (m.start, m.end, if at.is_default() { 0 } else { at.bits() })
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            list.push((
+                format!("{kind}{}_{}", id.0, f.name.replace(' ', "_")),
+                fid,
+                c.code_info().total_size as usize,
+                map,
+            ));
+        }
+        self.module.clear_context(&mut ctx);
+        if let Some(k) = shared {
+            self.bodies.insert(k, fid);
+        }
+        Ok(Built {
+            fid,
+            stepped,
+            body,
+            nats: route_of,
+            pre,
+        })
+    }
+
+    /// The pre-key of a function about to be made with the callees `nats`; none in a run without
+    /// pre-keys, for a program not cached and when a direct callee has none.
+    fn pre_key(
+        &self,
+        prog: &Program,
+        id: FuncId,
+        f: &Func,
+        native: bool,
+        nats: &HashMap<FuncId, Option<Rc<NatInfo>>>,
+    ) -> Option<yavs_cache::Key> {
+        let (target, switches) = self.pre_target.as_ref()?;
+        let identity = prog.identity.as_deref()?;
+        crate::cache::store()?;
+        if f.code.is_empty() || BREAK.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        let mut callees = Vec::with_capacity(nats.len());
+        for (g, n) in nats {
+            callees.push((
+                g.0,
+                match n {
+                    Some(n) => Some(n.pre?),
+                    None => None,
+                },
+            ));
+        }
+        callees.sort_unstable_by_key(|c| c.0);
+        let func = postcard::to_stdvec(f).ok()?;
+        let mut facts = HashBytes(Vec::new());
+        prog.facts(id).hash(&mut facts);
+        Some(crate::cache::pre_key(&PreInputs {
+            fingerprint: &yavs_ir::opt::fingerprint(),
+            target,
+            switches,
+            identity,
+            base: prog.base_of(id).0,
+            native,
+            func: &func,
+            facts: &facts.0,
+            callees: &callees,
+        }))
+    }
+
+    /// The symbols `func` refers to, as any run names them, in the order of its references.
+    fn names_of(&self, func: &ir::Function) -> Vec<Name> {
+        let decls = self.module.declarations();
+        func.params
+            .user_named_funcs()
+            .values()
+            .map(|n| {
+                if n.namespace == 0 {
+                    let c = ClifId::from_u32(n.index);
+                    Name::Func(decls.get_function_decl(c).linkage_name(c).into_owned())
+                } else {
+                    self.table_names[&n.index].clone()
+                }
+            })
+            .collect()
+    }
+
+    /// Define the code the entry of a pre-key names, with its symbols resolved in this module and
+    /// nothing lowered; none when the code or a symbol is not there.
+    fn link(
+        &mut self,
+        prog: &Program,
+        id: FuncId,
+        f: &Func,
+        native: bool,
+        clif: &[u8; 32],
+        names: &[Name],
+    ) -> Result<Option<ClifId>, Error> {
+        let mut func = ir::Function::new();
+        for (at, n) in names.iter().enumerate() {
+            let (namespace, index) = match n {
+                Name::Func(s) => match self.module.get_name(s) {
+                    Some(FuncOrDataId::Func(c)) => (0, c.as_u32()),
+                    _ => return Ok(None),
+                },
+                Name::Data { bytes, align8 } => (1, self.table(bytes, *align8)?.as_u32()),
+            };
+            let r = func.declare_imported_user_function(ir::UserExternalName { namespace, index });
+            // (The code names its symbols by this position.)
+            if r.as_u32() as usize != at {
+                return Ok(None);
+            }
+        }
+        let shared = (!native && prog.base_of(id) != id).then(|| body_key(clif, &func));
+        if let Some(&c) = shared.as_ref().and_then(|k| self.bodies.get(k)) {
+            crate::cache::note_hit();
+            return Ok(Some(c));
+        }
+        let Some(code) = crate::cache::stored_code(clif, &func) else {
+            return Ok(None);
+        };
+        let signature = if native {
+            native_sig(self.sig.call_conv, f)
+        } else {
+            self.sig.clone()
+        };
+        let name = format!("{}{}", if native { "n" } else { "f" }, id.0);
+        let fid = self
+            .module
+            .declare_function(&name, Linkage::Export, &signature)
+            .map_err(|e| e.to_string())?;
+        self.define_compiled(fid, &func, &code)?;
+        crate::cache::note_hit();
+        crate::cache::note_prehit(clif);
+        if let Some(list) = self.perfmap.as_mut() {
+            let size = code.code_info().total_size as usize;
+            list.push((
+                format!("{name}_{}", f.name.replace(' ', "_")),
+                fid,
+                size,
+                Vec::new(),
+            ));
+        }
+        if let Some(k) = shared {
+            self.bodies.insert(k, fid);
+        }
+        Ok(Some(fid))
+    }
+
+    /// The data `bytes` of the module (`align8`: 8-byte aligned), defined at the first use.
+    fn table(&mut self, bytes: &[u8], align8: bool) -> Result<DataId, Error> {
+        let key = (bytes.to_vec(), align8);
+        if let Some(&d) = self.tables.get(&key) {
+            return Ok(d);
+        }
+        let name = format!("t{}", self.tables.len());
+        let d = self
+            .module
+            .declare_data(&name, Linkage::Local, false, false)
+            .map_err(|e| e.to_string())?;
+        let mut dd = DataDescription::new();
+        dd.define(bytes.to_vec().into_boxed_slice());
+        if align8 {
+            dd.set_align(8);
+        }
+        self.module.define_data(d, &dd).map_err(|e| e.to_string())?;
+        self.tables.insert(key, d);
+        let name = Name::Data {
+            bytes: bytes.to_vec(),
+            align8,
+        };
+        self.table_names.insert(d.as_u32(), name);
+        Ok(d)
+    }
+
+    /// The Cranelift body of a variant, for a caller that inlines: lowered now when the variant
+    /// was linked from the cache, with the callees it was made with.
+    fn body_of(
+        &mut self,
+        prog: &Program,
+        g: FuncId,
+        n: &NatInfo,
+    ) -> Result<Rc<ir::Function>, Error> {
+        if let Some(b) = n.body.borrow().as_ref() {
+            return Ok(b.clone());
+        }
+        let f = prog.func(g).ok_or("no such function")?;
+        let nats = n
+            .nats
+            .iter()
+            .map(|&(h, direct)| {
+                let v = if direct {
+                    self.natives.get(&h).cloned().flatten()
+                } else {
+                    None
+                };
+                (h, v)
+            })
+            .collect();
+        crate::cache::note_lowered(g.0, true);
+        let (ctx, _) = self.lower(prog, g, f, true, &nats)?;
+        let b = Rc::new(ctx.func.clone());
+        *n.body.borrow_mut() = Some(b.clone());
+        Ok(b)
+    }
+
+    /// The Cranelift function of `f` (the frame-mode code or, `native`, the variant) with the
+    /// callees `nats`, the small ones inlined, and the kinds of instruction it steps.
+    fn lower(
+        &mut self,
+        prog: &Program,
+        id: FuncId,
+        f: &Func,
+        native: bool,
+        nats: &HashMap<FuncId, Option<Rc<NatInfo>>>,
+    ) -> Result<(Context, Vec<String>), Error> {
         let mut ctx = self.module.make_context();
         let mut fctx = FunctionBuilderContext::new();
         // Data for the table natives this function uses.
@@ -828,21 +1237,7 @@ impl Jit {
                 && let Some(NativeKind::Table(t, ..)) = native_kind(prog, f, native, args, dst)
                 && !tabs.contains_key(&t)
             {
-                let did = match self.tables.get(&t) {
-                    Some(&d) => d,
-                    None => {
-                        let name = format!("t{}", self.tables.len());
-                        let d = self
-                            .module
-                            .declare_data(&name, Linkage::Local, false, false)
-                            .map_err(|e| e.to_string())?;
-                        let mut dd = DataDescription::new();
-                        dd.define(t.clone().into_boxed_slice());
-                        self.module.define_data(d, &dd).map_err(|e| e.to_string())?;
-                        self.tables.insert(t.clone(), d);
-                        d
-                    }
-                };
+                let did = self.table(&t, false)?;
                 let gv = self.module.declare_data_in_func(did, &mut ctx.func);
                 tabs.insert(t, gv);
             }
@@ -854,22 +1249,7 @@ impl Jit {
                 if tabs.contains_key(&t) {
                     continue;
                 }
-                let did = match self.tables.get(&t) {
-                    Some(&d) => d,
-                    None => {
-                        let name = format!("t{}", self.tables.len());
-                        let d = self
-                            .module
-                            .declare_data(&name, Linkage::Local, false, false)
-                            .map_err(|e| e.to_string())?;
-                        let mut dd = DataDescription::new();
-                        dd.define(t.clone().into_boxed_slice());
-                        dd.set_align(8);
-                        self.module.define_data(d, &dd).map_err(|e| e.to_string())?;
-                        self.tables.insert(t.clone(), d);
-                        d
-                    }
-                };
+                let did = self.table(&t, true)?;
                 let gv = self.module.declare_data_in_func(did, &mut ctx.func);
                 tabs.insert(t, gv);
             }
@@ -885,21 +1265,7 @@ impl Jit {
                 && let Some(yavs_ir::ConstData::Bytes(bytes)) = prog.consts.get(k)
                 && bytes.len() <= 4096
             {
-                let did = match self.tables.get(bytes) {
-                    Some(&d) => d,
-                    None => {
-                        let name = format!("t{}", self.tables.len());
-                        let d = self
-                            .module
-                            .declare_data(&name, Linkage::Local, false, false)
-                            .map_err(|e| e.to_string())?;
-                        let mut dd = DataDescription::new();
-                        dd.define(bytes.clone().into_boxed_slice());
-                        self.module.define_data(d, &dd).map_err(|e| e.to_string())?;
-                        self.tables.insert(bytes.clone(), d);
-                        d
-                    }
-                };
+                let did = self.table(bytes, false)?;
                 let gv = self.module.declare_data_in_func(did, &mut ctx.func);
                 cons.insert(k, (gv, bytes.len() as u64));
             }
@@ -911,7 +1277,7 @@ impl Jit {
         };
         ctx.func.name = UserFuncName::user(u32::from(native), id.0);
         let mut natives = HashMap::new();
-        let mut bodies: HashMap<FuncRef, Rc<NatInfo>> = HashMap::new();
+        let mut bodies: HashMap<FuncRef, Rc<ir::Function>> = HashMap::new();
         // (In id order: the body, and so its key in the compilation cache, is the same every run.)
         let mut order: Vec<_> = nats.iter().collect();
         order.sort_by_key(|(g, _)| g.0);
@@ -920,8 +1286,10 @@ impl Jit {
                 .as_ref()
                 .map(|n| self.module.declare_func_in_func(n.id, &mut ctx.func));
             natives.insert(g, NatRef { fr });
-            if let (Some(fr), Some(n)) = (fr, n) {
-                bodies.insert(fr, n.clone());
+            if let (Some(fr), Some(n)) = (fr, n)
+                && self.inline_max > 0
+            {
+                bodies.insert(fr, self.body_of(prog, g, n)?);
             }
         }
         let imports = Imports {
@@ -1039,118 +1407,7 @@ impl Jit {
             ctx.inline(inl)
                 .map_err(|e| format!("Cranelift inline: {e:?}"))?;
         }
-        // The instances of a process with equal code (`Program::copy_of` of data the code does not
-        // read) are one function, as the LLVM tier's twins.
-        let fresh_route = (self.allowed.is_some() && route.is_none()).then(|| {
-            nats.iter()
-                .map(|(g, n)| (g.0, n.is_some()))
-                .collect::<Vec<_>>()
-        });
-        let body = (!native && prog.base_of(id) != id).then(|| {
-            let names: Vec<(u32, u32)> = ctx
-                .func
-                .params
-                .user_named_funcs()
-                .values()
-                .map(|n| (n.namespace, n.index))
-                .collect();
-            format!(
-                "{} {names:?}",
-                cranelift_codegen::incremental_cache::compute_cache_key(
-                    self.module.isa(),
-                    &ctx.func
-                )
-            )
-        });
-        if let Some(&c) = body.as_ref().and_then(|k| self.bodies.get(k)) {
-            // Counts as linked from the cache, so `--tier=auto` charges a link (the LLVM tier's
-            // twins do the same).
-            crate::cache::note_hit();
-            self.module.clear_context(&mut ctx);
-            if let Some(r) = fresh_route {
-                self.routes.add(tag, native, r.into_iter());
-            }
-            return Ok((c, stepped, None));
-        }
-        let fid = self
-            .module
-            .declare_function(
-                &format!("{}{}", if native { "n" } else { "f" }, id.0),
-                Linkage::Export,
-                &ctx.func.signature,
-            )
-            .map_err(|e| e.to_string())?;
-        let shared = body;
-        let body = native.then(|| ctx.func.clone());
-        // `YAVS_CLIFT_ASM=<function id>`: the machine code of that function (variant) on stderr.
-        let asm = std::env::var("YAVS_CLIFT_ASM")
-            .is_ok_and(|v| v.parse::<u32>().is_ok_and(|n| n == id.0));
-        ctx.set_disasm(asm);
-        if let Err(e) = self.define_code(fid, &mut ctx) {
-            if e == NOT_CACHED {
-                return Err(e);
-            }
-            // A Cranelift error (the verifier is on in debug builds) is a bug of the lowering:
-            // debug builds stop with the function, release builds leave it interpreted.
-            if cfg!(debug_assertions) {
-                panic!(
-                    "Cranelift rejected f{}{}: {e:?}\n{}",
-                    id.0,
-                    if native {
-                        " (native-frame variant)"
-                    } else {
-                        ""
-                    },
-                    ctx.func.display()
-                );
-            }
-            return Err(format!("Cranelift: {e} (a bug in yavs)"));
-        }
-        if let Some(r) = fresh_route {
-            self.routes.add(tag, native, r.into_iter());
-        }
-        if let Some(v) = ctx
-            .compiled_code()
-            .and_then(|c| c.vcode.as_ref())
-            .filter(|_| asm)
-        {
-            eprintln!(
-                "asm of {} f{}:\n{v}",
-                if native { "variant" } else { "frame code" },
-                id.0
-            );
-        }
-        if let (Some(list), Some(c)) = (self.perfmap.as_mut(), ctx.compiled_code()) {
-            let kind = if native { "n" } else { "f" };
-            // IR pc of each stretch of machine code (`YAVS_CLIFT_CODEDIR`: `<name>.srcmap`).
-            let map = if srcmap() {
-                c.buffer
-                    .get_srclocs_sorted()
-                    .iter()
-                    .map(|m| {
-                        let at = if m.loc.is_rel() {
-                            m.loc.relocate(ctx.func.params.base_srcloc())
-                        } else {
-                            m.loc.as_abs()
-                        };
-                        (m.start, m.end, if at.is_default() { 0 } else { at.bits() })
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            list.push((
-                format!("{kind}{}_{}", id.0, f.name.replace(' ', "_")),
-                fid,
-                c.code_info().total_size as usize,
-                map,
-            ));
-        }
-        self.module.clear_context(&mut ctx);
-        if let Some(k) = shared {
-            self.bodies.insert(k, fid);
-        }
-        Ok((fid, stepped, body))
+        Ok((ctx, stepped))
     }
 
     pub fn finalize(&mut self) -> Result<(), Error> {
@@ -1269,7 +1526,7 @@ struct Imports {
 /// is in this module, else through `Mem::ntab`.
 /// The compare of a drive with the signal's current value in the generated code
 /// (`YAVS_INLCMP`: `off`; `check` asks the kernel's full test at every skip, always in debug builds).
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InlCmp {
     Off,
     On,
@@ -1314,7 +1571,7 @@ fn native_sig(cc: CallConv, f: &Func) -> Signature {
 /// Inlines the native-frame variants that are small, up to a budget of Cranelift instructions
 /// per caller (`YAVS_CLIFT_INLINE`: the largest callee, 0 for none).
 struct Inl<'a> {
-    bodies: &'a HashMap<FuncRef, Rc<NatInfo>>,
+    bodies: &'a HashMap<FuncRef, Rc<ir::Function>>,
     max: usize,
     budget: usize,
 }
@@ -1333,19 +1590,18 @@ impl Inline for Inl<'_> {
             // table) with the callee's name reference, which names another symbol in the caller
             // (#765): a body that has one stays a call.
             Some(n)
-                if n.body
-                    .global_values
+                if n.global_values
                     .values()
                     .any(|g| matches!(g, ir::GlobalValueData::Symbol { .. })) =>
             {
                 InlineCommand::KeepCall
             }
             Some(n) => {
-                let size = n.body.dfg.num_insts();
+                let size = n.dfg.num_insts();
                 if size <= self.max && size <= self.budget {
                     self.budget -= size;
                     InlineCommand::Inline {
-                        callee: Cow::Borrowed(&n.body),
+                        callee: Cow::Borrowed(n.as_ref()),
                         visit_callee: false,
                     }
                 } else {

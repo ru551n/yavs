@@ -175,7 +175,9 @@ Per run, at run time:
 - drive: the run's plane block is built from the IR fields (one `put_plane_code` per scalar, one
   funnel copy per vector) and assigned with one `Ctx::assign_planes_now`/`assign_blocks` per pack:
   one `OutV` entry, one `commit_planes_run`, one `finish_pend` word, events by XOR; an unchanged
-  pack is one compare of four words (the equal-value drop at block granularity);
+  pack is one compare of four words (the equal-value drop at block granularity). A whole
+  zero-delay drive compares the value with the record image first, whole and then per run, and a
+  run that holds builds no block at all (`docs/decisions.md` "Record drive compare");
 - wait: one `wait_on` per run.
 
 The only kernel additions are a slice view of a signal's codes (`Ctx::codes(signal, range)`, the

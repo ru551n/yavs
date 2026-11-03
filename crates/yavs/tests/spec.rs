@@ -178,10 +178,24 @@ fn copies_are_stored_between_runs() {
     assert!(kinds.iter().any(|n| n.starts_with("spec-")), "{kinds:?}");
 }
 
-/// Under `--tier=auto` a copy is a function like any other: with every function compiled when
-/// the interpreter enters it (`--tier-heat=1,0,0`) the processes that switched run compiled
-/// copies, and the report is the one of the shared code.
-#[cfg(feature = "llvm")]
+/// The tiers that tier up under heat modes: `auto` is the LLVM tier where that is built in (a build
+/// with both features keeps `auto` for LLVM), and Cranelift runs as `clift-auto`, so the gate that
+/// builds only Cranelift runs these tests.
+#[cfg(any(feature = "llvm", feature = "clift"))]
+fn auto_tiers() -> Vec<&'static str> {
+    vec![
+        #[cfg(feature = "llvm")]
+        "auto",
+        #[cfg(feature = "clift")]
+        "clift-auto",
+    ]
+}
+
+/// Under tier-up a copy is a function like any other: with every function compiled when the
+/// interpreter enters it (`--tier-heat=1,0,0`, which waits for each compile, so nothing here
+/// depends on the sampler) the processes that switched run compiled copies, and the report is the
+/// one of the shared code.
+#[cfg(any(feature = "llvm", feature = "clift"))]
 #[test]
 fn copies_compile_under_auto() {
     let d = tempdir("spec_auto");
@@ -193,36 +207,50 @@ fn copies_compile_under_auto() {
     let work = format!("work:{}", d.join("lib").display());
     let a = yavs(&d, &[], &["analyze", "--work", &work, "spec_copies.vhd"]);
     assert_eq!(a.code, 0, "{}", a.stderr);
-    let go = |env: &[(&str, &str)], heat: &[&str]| {
-        let mut args = vec![
-            "run",
-            "--work",
-            &work,
-            "--tier=auto",
-            "--no-cache",
-            "--threads",
-            "1",
-        ];
-        args.extend_from_slice(heat);
-        args.push("spec_copies");
-        yavs(&d, env, &args)
-    };
-    let shared = go(&[("YAVS_NO_SPEC", "1")], &[]);
-    assert_eq!(shared.code, 0, "{}", shared.stderr);
-    for heat in [&[][..], &["--tier-heat=1,0,0"][..]] {
-        let copies = go(&[("YAVS_SPEC_AFTER", "2")], heat);
-        assert_eq!(copies.code, 0, "{heat:?}: {}", copies.stderr);
-        assert_eq!(copies.stdout, shared.stdout, "{heat:?}");
-        assert_eq!(copies.stderr, shared.stderr, "{heat:?}");
-        assert!(copies.counters["spec_switched"] >= 6, "{heat:?}");
+    for tier in auto_tiers() {
+        let tier = format!("--tier={tier}");
+        let go = |env: &[(&str, &str)], heat: &[&str]| {
+            let mut args = vec![
+                "run",
+                "--work",
+                &work,
+                &tier,
+                "--no-cache",
+                "--threads",
+                "1",
+            ];
+            args.extend_from_slice(heat);
+            args.push("spec_copies");
+            yavs(&d, env, &args)
+        };
+        let shared = go(&[("YAVS_NO_SPEC", "1")], &[]);
+        assert_eq!(shared.code, 0, "{tier}: {}", shared.stderr);
+        for heat in [&[][..], &["--tier-heat=1,0,0"][..]] {
+            let copies = go(&[("YAVS_SPEC_AFTER", "2")], heat);
+            assert_eq!(copies.code, 0, "{tier} {heat:?}: {}", copies.stderr);
+            assert_eq!(copies.stdout, shared.stdout, "{tier} {heat:?}");
+            assert_eq!(copies.stderr, shared.stderr, "{tier} {heat:?}");
+            assert!(copies.counters["spec_switched"] >= 6, "{tier} {heat:?}");
+        }
+        // The compile trace names the copies compiled (the sampler's trace format is shared by
+        // the tiers; only Cranelift's is checked here). All three copies are asked for on
+        // entry and the run waits for each.
+        if tier == "--tier=clift-auto" {
+            let traced = go(
+                &[("YAVS_SPEC_AFTER", "2"), ("YAVS_AUTO_TRACE", "1")],
+                &["--tier-heat=1,0,0"],
+            );
+            let n = traced.stderr.matches(", copy of f").count();
+            assert!(n >= 3, "{n} compiled copies:\n{}", traced.stderr);
+        }
     }
 }
 
-/// Under `--tier=auto` with every function compiled when the interpreter enters it
+/// Under tier-up with every function compiled when the interpreter enters it
 /// (`--tier-heat=1,0,0`) a process switches to its copy after the default number of activations
 /// although its shared code is compiled (`Tier::compiles_copies`, #679), and the report is the
 /// interpreter's.
-#[cfg(feature = "llvm")]
+#[cfg(any(feature = "llvm", feature = "clift"))]
 #[test]
 fn compiled_processes_switch_to_copies_under_auto() {
     let d = tempdir("spec_auto_default");
@@ -243,10 +271,13 @@ fn compiled_processes_switch_to_copies_under_auto() {
     };
     let interp = go(&["--tier=interp"]);
     assert_eq!(interp.code, 0, "{}", interp.stderr);
-    let heat = go(&["--tier=auto", "--tier-heat=1,0,0"]);
-    assert_eq!(heat.code, 0, "{}", heat.stderr);
-    assert_eq!(heat.stdout, interp.stdout);
-    assert!(heat.counters["spec_switched"] >= 6);
+    for tier in auto_tiers() {
+        let tier = format!("--tier={tier}");
+        let heat = go(&[&tier, "--tier-heat=1,0,0"]);
+        assert_eq!(heat.code, 0, "{tier}: {}", heat.stderr);
+        assert_eq!(heat.stdout, interp.stdout, "{tier}");
+        assert!(heat.counters["spec_switched"] >= 6, "{tier}");
+    }
 }
 
 /// Compiled code is kept in the compilation cache under a key made of the generated code. A copy

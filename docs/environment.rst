@@ -307,9 +307,14 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - ``100``
      - ``run``
    * - ``YAVS_AUTO_GATE``
-     - Work of the simulation threads before the count rule compiles anything, in the sampler's microseconds of work (16 000 instructions each, CPU microseconds where the counters are refused).
+     - Work of the simulation threads before the count rule compiles anything or makes a copy of a process, in the sampler's microseconds of work (16 000 instructions each, CPU microseconds where the counters are refused).
      - a number
      - ``160000``
+     - ``run``
+   * - ``YAVS_AUTO_WARM_GATE``
+     - Set: what the cache lists waits for ``YAVS_AUTO_GATE`` too, and so do the copies of a run that compiled before. For comparing.
+     - any value
+     - unset
      - ``run``
    * - ``YAVS_AUTO_GUARD_SHARE``
      - Native-frame code is suspect when the frames it leaves to the interpreter cost one part in this many of the work seen. ``0``: no guard.
@@ -352,17 +357,17 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - unset
      - ``run``
    * - ``YAVS_NO_IMAGE``
-     - Turns record images off: every read of a whole record signal reads it field by field.
+     - Turns record images off: every read of a whole record signal reads it field by field, and every assignment of a whole record signal goes to the simulation kernel field by field.
      - any value
      - unset
      - ``run``
    * - ``YAVS_IMAGE_CHECK``
-     - Reads a whole record signal field by field as well as from its image and stops with an internal error when they differ.
+     - Reads a whole record signal field by field as well as from its image, holds every assignment of a whole record signal that its image makes unnecessary against the kernel's full test, and stops with an internal error on a difference.
      - any value
      - unset
      - ``run``
    * - ``YAVS_IMAGE_AFTER``
-     - Reads of a whole record signal by one process before it asks for an image of it.
+     - Reads, or zero-delay assignments, of a whole record signal by one process before it asks for an image of it.
      - a number
      - ``16``
      - ``run``
@@ -478,6 +483,16 @@ Compiled tiers: Cranelift
      - The Cranelift optimisation level.
      - ``speed``, ``none``
      - ``speed``
+     - ``run``
+   * - ``YAVS_CLIFT_PREKEY_CHECK``
+     - Lowers the function even on a cache hit and fails when the body is not the one the cache names. On by default in a debug build.
+     - not ``0``
+     - unset
+     - ``run``
+   * - ``YAVS_CLIFT_PREKEY_DROP``
+     - Debug builds, the test of the check: leaves these inputs out of the key that finds compiled code.
+     - names, comma separated
+     - unset
      - ``run``
    * - ``YAVS_CLIFT_PERFMAP``
      - Writes ``/tmp/perf-<pid>.map`` for ``perf report``.

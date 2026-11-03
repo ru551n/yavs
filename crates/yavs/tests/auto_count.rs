@@ -220,6 +220,33 @@ fn a_process_switches_to_a_copy_and_the_copy_compiles() {
     assert_eq!(counter(&o, "count_copies"), 3, "{}", err(&o));
 }
 
+/// At a design's size: 24 instances, each with its own copy, none lost on the way. (The copy-slot bug
+/// lost them without a change in the output.)
+#[test]
+fn every_instance_has_its_copy_compiled() {
+    let src = COPIES
+        .replace("signal q1, q2, q3 : natural;", "type qs is array (1 to 24) of natural;\n  signal q : qs;")
+        .replace(
+            "u1 : entity work.tick generic map (1) port map (clk, q1);\n  u2 : entity work.tick generic map (2) port map (clk, q2);\n  u3 : entity work.tick generic map (3) port map (clk, q3);",
+            "g : for i in 1 to 24 generate\n    u : entity work.tick generic map (i * 3) port map (clk, q(i));\n  end generate;",
+        )
+        .replace("integer'image(q1) & integer'image(q2) & integer'image(q3)", "integer'image(q(1)) & integer'image(q(24))");
+    let dir = setup("auto_count_many", &src);
+    let o = counted(&dir, "copies", "40", &[("YAVS_SPEC_CAP", "0")]);
+    assert_eq!(counter(&o, "spec_switched"), 24, "{}", err(&o));
+    assert_eq!(
+        counter(&o, "count_copies"),
+        counter(&o, "spec_copies"),
+        "{}",
+        err(&o)
+    );
+    assert!(counter(&o, "spec_copies") >= 1, "{}", err(&o));
+    // Where a cap stops the copies, the shared code is what the count asks for.
+    let o = counted(&dir, "copies", "40", &[("YAVS_SPEC_CAP", "1")]);
+    assert_eq!(counter(&o, "spec_switched"), 0, "{}", err(&o));
+    assert_eq!(counter(&o, "count_compiled"), 1, "{}", err(&o));
+}
+
 /// Half the count: the switch and the copy's own count follow it.
 #[test]
 fn the_switch_comes_at_half_the_count() {
@@ -321,6 +348,98 @@ fn nothing_compiles_by_the_count_before_the_gate() {
     let o = counted(&dir, "counted", "20", &[("YAVS_AUTO_GATE", "100000000000")]);
     assert_eq!(counter(&o, "count_compiled"), 0, "{}", err(&o));
     assert!(counter(&o, "count_held") >= 1, "{}", err(&o));
+}
+
+const LEAVES: &str = "entity leaves is end;
+architecture a of leaves is
+  type ints is array (0 to 3) of integer;
+  signal s : ints;
+  procedure drive_it(signal t : out ints; x : integer) is
+    variable v : ints;
+  begin
+    v := (x, x + 1, x + 2, x + 3);
+    t <= v;
+  end;
+  signal clk : bit := '0';
+begin
+  clk <= not clk after 5 ns;
+  process
+    variable x : integer := 1;
+  begin
+    for i in 1 to 300 loop
+      wait until clk = '1';
+      drive_it(s, i);
+      x := (x + s(1)) mod 1009;
+    end loop;
+    report integer'image(x);
+    std.env.finish;
+  end process;
+end;
+";
+
+/// A native frame that leaves at every call: the frames are counted, and whether the guard takes it
+/// back at any moment (a share that any frame reaches; when depends on the looks) the output stays.
+#[test]
+fn native_code_that_leaves_every_time_is_counted() {
+    let dir = setup("auto_count_leaves", LEAVES);
+    let o = counted(&dir, "leaves", "20", &[("YAVS_AUTO_GUARD_SHARE", "0")]);
+    assert!(counter(&o, "materialised") >= 200, "{}", err(&o));
+    counted(
+        &dir,
+        "leaves",
+        "20",
+        &[("YAVS_AUTO_GUARD_SHARE", "1000000000")],
+    );
+}
+
+/// What the cache lists is a link: a warm run does not wait for the gate for it, and with it switched
+/// on again (`YAVS_AUTO_WARM_GATE`) waits.
+#[test]
+fn what_the_cache_lists_does_not_wait_for_the_gate() {
+    let dir = setup("auto_count_warm", CALLS);
+    let run = |env: &[(&str, &str)]| {
+        let o = yavs(
+            &dir,
+            env,
+            &[
+                "run",
+                "--std=2008",
+                "--work=work:work",
+                "--threads=1",
+                "--tier=clift-auto",
+                "counted",
+            ],
+        );
+        assert!(o.status.success(), "{o:?}");
+        o
+    };
+    let open = [
+        ("YAVS_AUTO_COUNT", "20"),
+        ("YAVS_AUTO_GATE", "0"),
+        ("YAVS_AUTO_SYNC", "1"),
+    ];
+    for _ in 0..3 {
+        run(&open);
+    }
+    let shut = [
+        ("YAVS_AUTO_COUNT", "20"),
+        ("YAVS_AUTO_GATE", "100000000000"),
+        ("YAVS_AUTO_SYNC", "1"),
+    ];
+    let warm = run(&shut);
+    assert!(counter(&warm, "count_compiled") >= 5, "{}", err(&warm));
+    let mut held = shut.to_vec();
+    held.push(("YAVS_AUTO_WARM_GATE", "1"));
+    assert_eq!(counter(&run(&held), "count_compiled"), 0);
+}
+
+/// A gate no test reaches keeps the copies back too, up to the activation they would come at without
+/// the rule (`spec_after`): a short run does not pay for what it would not get back.
+#[test]
+fn a_short_run_makes_no_copies() {
+    let dir = setup("auto_count_no_copies", COPIES);
+    let o = counted(&dir, "copies", "40", &[("YAVS_AUTO_GATE", "100000000000")]);
+    assert_eq!(counter(&o, "spec_switched"), 0, "{}", err(&o));
 }
 
 const POW: &str = "entity pow is end;

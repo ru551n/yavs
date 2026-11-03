@@ -1756,6 +1756,8 @@ struct Gen<'a> {
     /// by slow block; and the registers its join takes as block parameters, by join block.
     snaps: HashMap<Block, Vec<(u32, Value)>>,
     jparams: HashMap<Block, Vec<u32>>,
+    /// A subprogram nested in another: addresses of unknown space try the enclosing frame first.
+    nested: bool,
     /// A broken invariant of the deferral (a deferred value lost at a block start).
     broken: Option<String>,
     /// Frame mode: the frame offset a pointer loaded from a slot was stored as (`slot_targets`),
@@ -2349,6 +2351,7 @@ fn gen_func(
         keep: vec![true; f.reg_ty.len()],
         snaps: HashMap::new(),
         jparams: HashMap::new(),
+        nested: f.parent.is_some(),
         broken: None,
         fguess: vec![None; f.reg_ty.len()],
         fnew: None,
@@ -5383,6 +5386,28 @@ impl Gen<'_> {
                 let lo = self.lo32(a);
                 let off = self.b.ins().iadd(lo, extra);
                 self.frame_object_try(hi, off, n, done, slow);
+            }
+            // In a nested subprogram: a variable of the enclosing frame passed by reference, as
+            // `Mem::find` asks for it, before the object table misses and the runtime is called.
+            if self.nested {
+                let hi = self.b.ins().ushr_imm_s(a, 32);
+                let lo = self.lo32(a);
+                let off = self.b.ins().iadd(lo, extra);
+                let up = self.mem_ld(MEM_UP);
+                let is = self.b.ins().icmp(IntCC::Equal, hi, up);
+                let len = self.mem_ld(MEM_UP_LEN);
+                let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, n, len);
+                let rest = self.b.ins().isub(len, n);
+                let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, rest);
+                let okc = self.b.ins().band(fits, inside);
+                let okc = self.b.ins().band(okc, is);
+                let (fast, miss) = (self.b.create_block(), self.b.create_block());
+                self.brif_split(okc, fast, miss);
+                self.b.switch_to_block(fast);
+                let base = self.mem_ld(MEM_UP_SLOTS);
+                let pf = self.b.ins().iadd(base, off);
+                self.b.ins().jump(done, &[BlockArg::Value(pf)]);
+                self.b.switch_to_block(miss);
             }
             if likely {
                 let hi = self.b.ins().ushr_imm_s(a, 32);

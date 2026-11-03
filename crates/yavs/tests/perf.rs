@@ -1601,6 +1601,13 @@ mod clift {
         };
     }
 
+    // A by-reference address of the enclosing frame in frame-mode code: no callback per access.
+    clift_case!(
+        nested_byref,
+        "clift_nested_byref",
+        "c=400",
+        [("cb_host", Max(20))]
+    );
     // `uniform` is computed in place by this tier too: no native call for it.
     clift_case!(
         uniform,

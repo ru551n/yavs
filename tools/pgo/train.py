@@ -214,6 +214,8 @@ def main():
         bad = [r for r in ex.map(lambda p: corpus_run(p, yavs, scratch, env, a.timeout, root), sweep) if r]
     for b in bad[:20]:
         print("train: corpus run differs from its header:", b)
+    if bad:
+        sys.exit(f"train: {len(bad)} tests/corpus runs do not end as their header says (first lines above): fix them or the build")
     if sweep:
         print(f"train: corpus sweep {len(sweep)} files, {len(bad)} not as their header says, {time.time() - t1:.0f} s")
     for name, log in done:

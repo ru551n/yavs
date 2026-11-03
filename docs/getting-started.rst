@@ -102,7 +102,7 @@ Profile-guided build
 
 A build can be optimised with a profile of yavs's own run time. ``tools/pgo/build.sh`` builds
 yavs with instrumentation, runs a set of bundled testbenches with it, and builds again using what
-the runs recorded. It needs the ``llvm-tools`` component of the Rust toolchain:
+the runs recorded. It needs the ``llvm-tools`` component of the Rust toolchain, a ``bash`` and ``python3``:
 
 .. code-block:: bash
 

@@ -81,9 +81,10 @@ Among the hand-written RTL designs, clocked designs with very many cheap process
 Every figure on this page is from a plain release build (the build of the release archives), not from a profile-guided one. A
 build from source can be profile-guided (`tools/pgo/build.sh`, see [Getting started](getting-started.rst)); it runs the same code
 with its branches and functions laid out for the paths a simulation takes. On 36 real testbenches (none of them in the training) it executed about 5.6 percent fewer instructions than the plain build (geometric mean;
-no testbench more than 0.1 percent above), and the run was about 10 percent shorter on a shared, loaded host, so read that figure as rough.
+no testbench above the plain build, 0.999 at most), and the run was about 10 percent shorter on a shared, loaded host, so read that figure as rough.
 Elaboration and analysis gain less (3 and 1 percent fewer instructions), and the instruction count of one testbench rose by 5 percent in elaboration.
-We have not repeated the head-to-head comparison above with a profile-guided build.
+These figures are from builds with 64-byte aligned functions (`tools/build-bench.sh`) on both sides; the build you get from `tools/pgo/build.sh` has no alignment flag, and
+we measured that flavour only on two whole processor designs (4 to 5 percent fewer instructions). We have not repeated the head-to-head comparison above with a profile-guided build.
 
 ## Measure your own design
 

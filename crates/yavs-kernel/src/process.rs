@@ -1221,6 +1221,15 @@ pub struct Ctx<'a> {
     pub(crate) live: bool,
 }
 
+impl<'a> Ctx<'a> {
+    /// Prototype (drive compare): `image` for as long as the phase runs.
+    #[inline(always)]
+    pub fn image_run(&self, id: u32) -> Option<&'a [u8]> {
+        let sh: &'a Shared<'a> = self.sh;
+        Some(&*sh.images?.list.get(id as usize)?.bytes)
+    }
+}
+
 impl Ctx<'_> {
     /// What makes up the value of signal `s` now (a debugger stopped inside a process).
     pub fn sources(&self, s: SignalId) -> Option<crate::SignalSources> {
@@ -1493,6 +1502,43 @@ impl Ctx<'_> {
     #[inline]
     pub fn planes_view(&self, s: SignalId) -> Option<(*const yavs_logic::Block, usize)> {
         self.sh.signals.get(s.0 as usize)?.planes_view()
+    }
+
+    /// Prototype (drive compare): driver `d` is this process's direct driver on a signal that
+    /// allows skipping an assignment of the value it holds. Fixed when the simulation is built.
+    pub fn drive_skip_static(&self, d: DriverId) -> bool {
+        let Some(info) = self.sh.drivers.get(d.0 as usize) else {
+            return false;
+        };
+        (info.direct || info.bdirect)
+            && info.owner == self.pid
+            && self.sh.signals[info.signal.0 as usize].skip_ok
+    }
+
+    /// Prototype (drive compare): an assignment to any of `ds` of the value its signal holds
+    /// changes nothing now: no entry of this run, nothing pending, driving and effective value
+    /// equal.
+    #[inline]
+    pub fn drive_skip_ready(&self, ds: &[DriverId]) -> bool {
+        ds.iter().all(|d| {
+            let info = &self.sh.drivers[d.0 as usize];
+            let w = &self.st.waveforms[info.local as usize];
+            let s = &self.sh.signals[info.signal.0 as usize];
+            w.idle()
+                && w.phantom.is_empty()
+                && !s.exact
+                && s.force_eff.is_none()
+                && s.force_drv.is_none()
+                && !self.has_entries(info, 1)
+                && !self.has_entries(info, 2)
+                && !self.has_entries(info, 3)
+        })
+    }
+
+    /// Prototype (drive compare): an assignment was skipped.
+    #[inline]
+    pub fn note_skip(&mut self) {
+        self.note_skipped();
     }
 
     /// The bytes of record image `id` (`image.rs`).

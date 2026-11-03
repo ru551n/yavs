@@ -58,6 +58,13 @@ pub(crate) struct Bound {
     /// change. A scatter from other driver slots looks them up each time.
     refs: std::cell::OnceCell<(u32, Box<[Option<yavs_kernel::DirectRef>]>)>,
     img: Img,
+    /// Prototype (drive compare): the image a whole zero-delay scatter compares with.
+    dimg: std::cell::Cell<DriveImg>,
+    /// The distinct drivers of the first scatter (no drive compare from other slots).
+    dids: std::cell::OnceCell<Box<[yavs_kernel::DriverId]>>,
+    /// Per run the byte ranges of its leaves, adjacent ones joined (`drive_ranges`).
+    rng: Box<[(u32, u32)]>,
+    rix: Box<[u32]>,
 }
 
 /// Where a bound plan stands with its record image (kernel `image.rs`).
@@ -75,6 +82,37 @@ enum Img {
         writes: u64,
     },
     Off,
+}
+
+/// Where a plan stands with the image of its drive compare.
+#[derive(Clone, Copy)]
+enum DriveImg {
+    Count(u32),
+    Asked,
+    Ready(u32),
+    Off,
+}
+
+/// Per run of `runs`, the byte ranges of its leaves in the value, adjacent ones joined; none for a
+/// run with an empty leaf, which is then never taken for unchanged.
+fn drive_ranges(items: &[Item], runs: &[Grp]) -> (Box<[(u32, u32)]>, Box<[u32]>) {
+    let (mut rng, mut rix) = (Vec::new(), vec![0u32]);
+    for g in runs {
+        let ts = &items[g.first as usize..][..g.n as usize];
+        if ts.iter().all(|t| t.vsize > 0 && t.len > 0) {
+            let mut v: Vec<(u32, u32)> = ts.iter().map(|t| (t.voff, t.vsize)).collect();
+            v.sort_unstable();
+            let at = rng.len();
+            for (o, n) in v {
+                match rng[at..].last_mut() {
+                    Some((po, pn)) if *po + *pn == o => *pn += n,
+                    _ => rng.push((o, n)),
+                }
+            }
+        }
+        rix.push(rng.len() as u32);
+    }
+    (rng.into(), rix.into())
 }
 
 /// Whole gathers of a plan before it asks for an image: a process that runs a few times does not
@@ -600,6 +638,7 @@ impl Machine {
         };
         Ok((at, {
             let (items, reads, runs) = groups(&plan, &sigs);
+            let (rng, rix) = drive_ranges(&items, &runs);
             Box::new(Bound {
                 plan,
                 sigs: sigs.into(),
@@ -608,6 +647,10 @@ impl Machine {
                 runs,
                 refs: std::cell::OnceCell::new(),
                 img: Img::Count(0),
+                dimg: std::cell::Cell::new(DriveImg::Count(0)),
+                dids: std::cell::OnceCell::new(),
+                rng,
+                rix,
             })
         }))
     }
@@ -856,7 +899,65 @@ impl Machine {
         let refs: &[Option<yavs_kernel::DirectRef>] = if *base == driver { cached } else { &[] };
         let mut run = None;
         if part.is_none() && !b.items.is_empty() {
-            for g in &*b.runs {
+            let dids = b.dids.get_or_init(|| {
+                let mut v: Vec<_> = ds.iter().map(|d| d.id).collect();
+                v.sort_unstable_by_key(|d| d.0);
+                v.dedup();
+                v.into()
+            });
+            // The value against the image of the signal: runs that hold their value need
+            // no planes built and no kernel call (prototype).
+            let im = match b.dimg.get() {
+                DriveImg::Ready(id)
+                    if now && *base == driver && c.drive_skip_ready(dids) =>
+                {
+                    c.image_run(id)
+                }
+                DriveImg::Off | DriveImg::Ready(_) => None,
+                DriveImg::Count(n) => {
+                    if n + 1 < 16 {
+                        b.dimg.set(DriveImg::Count(n + 1));
+                    } else {
+                        b.dimg.set(match image_spec(b) {
+                            Some(sp) if dids.iter().all(|&d| c.drive_skip_static(d)) => {
+                                c.image_ask(sp);
+                                DriveImg::Asked
+                            }
+                            _ => DriveImg::Off,
+                        });
+                    }
+                    None
+                }
+                DriveImg::Asked => {
+                    if let Some(sp) = image_spec(b) {
+                        match c.image_id(&sp) {
+                            None => {}
+                            Some(NO_IMAGE) => b.dimg.set(DriveImg::Off),
+                            Some(id) => b.dimg.set(DriveImg::Ready(id)),
+                        }
+                    }
+                    None
+                }
+            };
+            if let Some(im) = im
+                && *data == *im
+            {
+                c.note_skip();
+                return Ok(());
+            }
+            for (ri, g) in b.runs.iter().enumerate() {
+                if let Some(im) = im {
+                    let rs = &b.rng[b.rix[ri] as usize..b.rix[ri + 1] as usize];
+                    if !rs.is_empty()
+                        && rs.iter().all(|&(o, n)| {
+                            let (o, n) = (o as usize, n as usize);
+                            data[o..o + n] == im[o..o + n]
+                        })
+                    {
+                        c.note_skip();
+                        continue;
+                    }
+                }
                 let ts = &b.items[g.first as usize..][..g.n as usize];
                 let id = ds[ts[0].leaf as usize].id;
                 // One run of one driver: its planes built in registers, one assignment.

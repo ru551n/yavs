@@ -100,8 +100,12 @@ fn a_function_without_a_native_variant_gets_frame_mode_code() {
     let t0 = std::time::Instant::now();
     let cold = run();
     let took = t0.elapsed();
-    panic!("DIAG interp took {interp_took:?} cold took {took:?}\n{}", String::from_utf8_lossy(&cold.stderr));
-    #[allow(unreachable_code)]
+    if std::env::var_os("PATH").is_some() {
+        panic!(
+            "DIAG interp took {interp_took:?} cold took {took:?}\n{}",
+            String::from_utf8_lossy(&cold.stderr)
+        );
+    }
     assert_eq!(cold.stdout, interp.stdout);
     assert_eq!(lines(&cold, "no native-frame variant").len(), 1, "{cold:?}");
     let compiled = lines(&cold, " compiled `");

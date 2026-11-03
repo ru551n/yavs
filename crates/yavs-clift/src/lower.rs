@@ -399,11 +399,42 @@ fn no_proofs() -> bool {
     *ON.get_or_init(|| std::env::var_os("YAVS_CLIFT_NO_PROOFS").is_some())
 }
 
-/// Whether the machine code carries the IR pc of each stretch (`YAVS_CLIFT_CODEDIR` set).
+/// Whether the machine code carries the IR pc of each stretch (`YAVS_CLIFT_CODEDIR` or
+/// `YAVS_CLIFT_EXITMAP` set).
 fn srcmap() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("YAVS_CLIFT_CODEDIR").is_some())
+    *ON.get_or_init(|| {
+        std::env::var_os("YAVS_CLIFT_CODEDIR").is_some()
+            || std::env::var_os("YAVS_CLIFT_EXITMAP").is_some()
+    })
 }
+
+/// What a stretch of machine code is, for the census of exits (`YAVS_CLIFT_EXITMAP`): the tag is
+/// the top bits of the source location, above `pc + 1`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Why {
+    Body = 0,
+    /// The cold block of a failing guard (`exit_if`): stores and the jump to the exit.
+    Guard = 1,
+    /// Another way out at a pc (`leave_at` outside a guard or a slow path).
+    Other = 2,
+    /// A native caller records itself after its callee unwound.
+    Unwind = 3,
+    /// The slow path of a native frame that leaves.
+    NatSlow = 4,
+    /// The slow path of a native frame or frame-mode code that returns (a step, an `xstep`).
+    Slow = 5,
+    /// The function's exit block.
+    Exit = 6,
+    /// The switch over the entries and its stubs.
+    Entry = 7,
+    /// A frame-mode `Ret`.
+    Ret = 8,
+}
+const WHY_NAMES: [&str; 9] = [
+    "body", "guard", "other", "unwind", "natslow", "slow", "exit", "entry", "ret",
+];
+const WHY_SHIFT: u32 = 26;
 
 fn flag(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
@@ -1140,6 +1171,11 @@ impl Jit {
                 id.0
             );
         }
+        if let Some(out) = std::env::var_os("YAVS_CLIFT_EXITMAP")
+            && let Some(c) = ctx.compiled_code()
+        {
+            exit_map(&out, native, id, f, c, &ctx.func);
+        }
         if let (Some(list), Some(c)) = (self.perfmap.as_mut(), ctx.compiled_code()) {
             let kind = if native { "n" } else { "f" };
             // IR pc of each stretch of machine code (`YAVS_CLIFT_CODEDIR`: `<name>.srcmap`).
@@ -1618,6 +1654,60 @@ impl Jit {
         let p = self.module.get_finalized_function(id);
         // SAFETY: `define` generated the function with the `RunFn` signature.
         unsafe { std::mem::transmute::<*const u8, RunFn>(p) }
+    }
+}
+
+/// `YAVS_CLIFT_EXITMAP=<file>`: per function the bytes of machine code by `Why` and IR kind, as
+/// lines appended to the file (`tools/exitmap.py` sums them). Needs `--no-cache`: a body from the
+/// store has no source locations.
+fn exit_map(
+    out: &std::ffi::OsStr,
+    native: bool,
+    id: FuncId,
+    f: &Func,
+    c: &cranelift_codegen::CompiledCode,
+    func: &ir::Function,
+) {
+    use std::io::Write;
+    let mut by: std::collections::BTreeMap<(usize, String), u64> = Default::default();
+    let mut seen = 0u64;
+    for m in c.buffer.get_srclocs_sorted() {
+        let at = if m.loc.is_rel() {
+            m.loc.relocate(func.params.base_srcloc())
+        } else {
+            m.loc.as_abs()
+        };
+        let bits = if at.is_default() { 0 } else { at.bits() };
+        let why = (bits >> WHY_SHIFT) as usize;
+        let pc = bits & ((1 << WHY_SHIFT) - 1);
+        let kind = match pc.checked_sub(1).and_then(|p| f.code.get(p as usize)) {
+            Some(i) => {
+                let d = format!("{i:?}");
+                d.split([' ', '{', '(']).next().unwrap_or("").to_string()
+            }
+            None => "nopc".into(),
+        };
+        *by.entry((why, kind)).or_insert(0) += u64::from(m.end - m.start);
+        seen += u64::from(m.end - m.start);
+    }
+    let total = u64::from(c.code_info().total_size);
+    let mut text = String::new();
+    let kind = if native { "n" } else { "f" };
+    for ((why, k), n) in by {
+        let w = WHY_NAMES.get(why).copied().unwrap_or("?");
+        text.push_str(&format!("{kind} {} {w} {k} {n}\n", id.0));
+    }
+    text.push_str(&format!(
+        "{kind} {} body unmapped {}\n",
+        id.0,
+        total.saturating_sub(seen)
+    ));
+    if let Ok(mut o) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(out)
+    {
+        let _ = o.write_all(text.as_bytes());
     }
 }
 
@@ -2882,6 +2972,7 @@ fn gen_func(
                 };
                 g.b.ins().return_(&[val]);
             } else {
+                g.tag(Why::Ret, pc);
                 g.leave_at(pc);
             }
             open = false;
@@ -2889,6 +2980,7 @@ fn gen_func(
         }
         if g.nat.is_some() && matches!(inst, Inst::Unreachable { .. }) {
             // The interpreter reports it, with the frame materialised.
+            g.tag(Why::Other, pc);
             g.leave_at(pc);
             open = false;
             continue;
@@ -4183,6 +4275,7 @@ fn gen_func(
     g.known.clone_from(&base_known);
     if let Some(d) = dispatch {
         g.b.switch_to_block(d);
+        g.tag(Why::Entry, 0);
         let other = g.b.create_block();
         let mut sw = Switch::new();
         let mut stubs = Vec::new();
@@ -4249,6 +4342,7 @@ fn gen_func(
         }
         if s.xstep && g.nat.is_some() {
             let inst = f.code[s.pc as usize];
+            g.tag(Why::Slow, s.pc);
             g.native_step(s.pc, &inst, f);
             g.hold_recheck();
             g.b.ins().jump(s.join, &[]);
@@ -4263,9 +4357,11 @@ fn gen_func(
         }
         if g.nat.is_some() {
             // The interpreter executes the instruction in the materialised frame.
+            g.tag(Why::NatSlow, s.pc);
             g.leave_at(s.pc);
             continue;
         }
+        g.tag(Why::Slow, s.pc);
         if let Some(e) = s.edge {
             let (p, ev) = (g.c32(s.pc), g.c32(e));
             g.call_go(g.imp.signal, &[p, ev], false);
@@ -4284,6 +4380,7 @@ fn gen_func(
     }
     // The exit block.
     g.b.set_srcloc(ir::SourceLoc::default());
+    g.tag(Why::Exit, 0);
     g.b.switch_to_block(g.exit);
     if cfg!(debug_assertions) && BREAK.load(std::sync::atomic::Ordering::Relaxed) {
         // Test aid (`tests/verifier.rs`): a type error only the verifier sees.
@@ -4330,6 +4427,14 @@ fn gen_func(
 }
 
 impl Gen<'_> {
+    /// Tag the code from here on for the census (`Why`).
+    fn tag(&mut self, why: Why, pc: u32) {
+        if srcmap() {
+            self.b
+                .set_srcloc(ir::SourceLoc::new((why as u32) << WHY_SHIFT | (pc + 1)));
+        }
+    }
+
     fn clear(&mut self) {
         // A deferred register of an earlier instruction keeps its value: it dominates every block
         // of the instructions after it up to the next block start, which stores it.
@@ -5067,6 +5172,7 @@ impl Gen<'_> {
         self.b.set_cold_block(out);
         self.brif_split(nd, out, cont);
         self.b.switch_to_block(out);
+        self.tag(Why::Unwind, pc);
         if self.nat.is_some() {
             // This frame is recorded too, at its call.
             self.leave_at(pc);
@@ -5079,6 +5185,7 @@ impl Gen<'_> {
             let r = self.b.inst_results(c)[0];
             self.leave(r);
         }
+        self.tag(Why::Body, pc);
         self.b.switch_to_block(cont);
         let val = match memo {
             Some((st, buf, out, dep, n, merge)) => {
@@ -5174,7 +5281,9 @@ impl Gen<'_> {
         let go = self.b.create_block();
         self.brif_split(declined, out, go);
         self.b.switch_to_block(out);
+        self.tag(Why::Other, pc);
         self.leave_at(pc);
+        self.tag(Why::Body, pc);
         self.b.switch_to_block(go);
         let v = match fu.base {
             None => w,
@@ -5335,7 +5444,9 @@ impl Gen<'_> {
         self.b.set_cold_block(out);
         self.brif_split(bad, out, cont);
         self.b.switch_to_block(out);
+        self.tag(Why::Guard, pc);
         self.leave_at(pc);
+        self.tag(Why::Body, pc);
         self.b.switch_to_block(cont);
     }
 
@@ -8835,7 +8946,9 @@ impl Gen<'_> {
     /// Materialise a native frame at `pc` (its exit block); the builder goes on in a new block,
     /// which nothing reaches.
     fn deopt_here(&mut self, pc: u32) {
+        self.tag(Why::Other, pc);
         self.leave_at(pc);
+        self.tag(Why::Body, pc);
         let dead = self.b.create_block();
         self.start(dead);
     }
@@ -9000,7 +9113,9 @@ impl Gen<'_> {
         self.b.set_cold_block(out);
         self.branch(stop, out, cont);
         self.start(out);
+        self.tag(Why::Other, pc);
         self.leave_at(pc + 1);
+        self.tag(Why::Body, pc);
         self.start(cont);
         self.join(join);
     }
@@ -9143,7 +9258,9 @@ impl Gen<'_> {
         self.branch(stop, out, cont);
         self.start(out);
         if self.nat.is_some() {
+            self.tag(Why::Other, pc);
             self.leave_at(pc + 1);
+            self.tag(Why::Body, pc);
         } else {
             let v = self.c32(yavs_interp::TIER_SUSPEND);
             self.leave(v);

@@ -1922,6 +1922,7 @@ pub unsafe fn step_in(env: *mut Env<'_>, mem: *mut Mem, pc: u32) -> u32 {
         // The callee runs here when it has compiled code, the register stack did not move
         // (the callers' compiled code holds pointers into it) and native stack is left.
         let Some((run, nregs)) = ((*env).lookup)(callee) else {
+            yavs_interp::note_unwind("unwind_nocode", "", pc);
             return TIER_UNWIND;
         };
         let fr = &(*mem).fr;
@@ -1930,6 +1931,15 @@ pub unsafe fn step_in(env: *mut Env<'_>, mem: *mut Mem, pc: u32) -> u32 {
             || fr.frame >= 1 << 29
             || stack_here() < (*env).stack_lo
         {
+            yavs_interp::note_unwind(
+                if fr.stack != stack {
+                    "unwind_moved"
+                } else {
+                    "unwind_stack"
+                },
+                "",
+                pc,
+            );
             return TIER_UNWIND;
         }
         // The callee runs on the same `Mem`: the interpreter keeps its view current. The push

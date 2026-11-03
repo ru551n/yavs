@@ -60,6 +60,8 @@ pub(crate) struct Bound {
     img: Img,
     /// Prototype (drive compare): the image a whole zero-delay scatter compares with.
     dimg: std::cell::Cell<DriveImg>,
+    /// Since the last review of the drive compare: scatters, runs, runs that held their value.
+    dseen: std::cell::Cell<(u32, u32, u32)>,
     /// The distinct drivers of the first scatter (no drive compare from other slots).
     dids: std::cell::OnceCell<Box<[yavs_kernel::DriverId]>>,
     /// Per run the byte ranges of its leaves, adjacent ones joined (`drive_ranges`).
@@ -91,6 +93,38 @@ enum DriveImg {
     Asked,
     Ready(u32),
     Off,
+}
+
+/// Scatters between two looks at whether the drive compare pays.
+const DRIVE_REVIEW: u32 = 1024;
+
+/// The percentage of runs that must hold their value for the drive compare to stay on
+/// (`YAVS_DRIVE_KEEP`).
+fn drive_keep() -> u64 {
+    static E: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *E.get_or_init(|| {
+        std::env::var("YAVS_DRIVE_KEEP")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(25)
+    })
+}
+
+/// One scatter compared: `same` of `runs` runs held their value. The image is let go when
+/// too few do: writing it for nothing is the cost of a value that changes everywhere.
+#[inline]
+fn drive_review(b: &Bound, c: &mut Ctx<'_>, id: u32, runs: u32, same: u32) {
+    let (n, r, s) = b.dseen.get();
+    let (n, r, s) = (n + 1, r + runs, s + same);
+    if n < DRIVE_REVIEW {
+        b.dseen.set((n, r, s));
+        return;
+    }
+    b.dseen.set((0, 0, 0));
+    if u64::from(s) * 100 < u64::from(r) * drive_keep() {
+        c.image_release(id);
+        b.dimg.set(DriveImg::Off);
+    }
 }
 
 /// Per run of `runs`, the byte ranges of its leaves in the value, adjacent ones joined; none for a
@@ -648,6 +682,7 @@ impl Machine {
                 refs: std::cell::OnceCell::new(),
                 img: Img::Count(0),
                 dimg: std::cell::Cell::new(DriveImg::Count(0)),
+                dseen: std::cell::Cell::new((0, 0, 0)),
                 dids: std::cell::OnceCell::new(),
                 rng,
                 rix,
@@ -943,8 +978,12 @@ impl Machine {
                 && *data == *im
             {
                 c.note_skip();
+                if let DriveImg::Ready(id) = b.dimg.get() {
+                    drive_review(b, c, id, b.runs.len() as u32, b.runs.len() as u32);
+                }
                 return Ok(());
             }
+            let mut same = 0u32;
             for (ri, g) in b.runs.iter().enumerate() {
                 if let Some(im) = im {
                     let rs = &b.rng[b.rix[ri] as usize..b.rix[ri + 1] as usize];
@@ -955,6 +994,7 @@ impl Machine {
                         })
                     {
                         c.note_skip();
+                        same += 1;
                         continue;
                     }
                 }

@@ -433,6 +433,10 @@ pub trait Tier: Send + Sync {
     /// that a run cannot end before its compile).
     fn hot(&self, _func: FuncId) {}
 
+    /// The entries of `func` were counted out (`NativeFlags::arm_count`): the tier decides. Called
+    /// from simulation threads, it returns at once.
+    fn asked(&self, _func: FuncId) {}
+
     /// Call `func` from the interpreter's top frame, which waits at its `Call` (or `CallProt`
     /// on the protected object `obj`) at `pc`, on a frame of the compiled code's own (native
     /// frame), with argument `cells` (one per parameter, two for a signal; the object first):
@@ -1405,9 +1409,103 @@ pub struct NativeFlags {
     fresh: Mutex<Vec<u32>>,
     /// `fresh` is not empty.
     dirty: std::sync::atomic::AtomicBool,
+    /// Per function, the entries left before the tier is asked for it (`arm_count`; 0: not counted).
+    left: Box<[std::sync::atomic::AtomicU32]>,
+    /// The activation a process switches to its copy under the count (`arm_count`; 0: `spec_after`).
+    spec_count: std::sync::atomic::AtomicU64,
+    /// Per function, the native frames of it that left to the interpreter (`materialised`).
+    left_native: Box<[std::sync::atomic::AtomicU64]>,
+    /// What the count rule did, for `YAVS_COUNTERS` (`CountStat`).
+    count_stat: [std::sync::atomic::AtomicU64; CountStat::Withdrawn as usize + 1],
+}
+
+/// What the count rule of `--tier=auto` did in a run (`YAVS_COUNTERS`), so a test sees it stop.
+#[derive(Clone, Copy, Debug)]
+pub enum CountStat {
+    /// Functions whose count ran out and reached the tier.
+    Asked,
+    /// Of them, the ones that had to wait (`Worker::waits`) at least once.
+    Held,
+    /// Compiles the count asked for, and the copies of processes among them.
+    Compiled,
+    Copies,
+    /// Native-frame code taken back because it leaves to the interpreter too often.
+    Withdrawn,
 }
 
 impl NativeFlags {
+    /// Count the entries of every function: the tier is asked for one after `count` of them
+    /// (`Tier::asked`), for a process that can have a copy it is the copy after `copy`, which it
+    /// switches to at activation `switch` (`Machine::specialise`). Before the run.
+    pub fn arm_count(&self, prog: &Program, count: u32, switch: u64, copy: u32) {
+        for (k, c) in self.left.iter().enumerate() {
+            // (A slot still empty will hold a copy; asking for it now would fix it empty.)
+            let spare = prog.funcs.get(FuncId(k as u32)).is_none_or(|f| f.spare);
+            c.store(if spare { copy } else { count }, Ordering::Relaxed);
+        }
+        self.spec_count.store(switch, Ordering::Relaxed);
+    }
+
+    /// One more of `what`.
+    pub fn count_stat(&self, what: CountStat) {
+        self.count_stat[what as usize].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// What the count rule did so far, by `CountStat`.
+    pub fn count_stats(&self) -> [u64; CountStat::Withdrawn as usize + 1] {
+        std::array::from_fn(|i| self.count_stat[i].load(Ordering::Relaxed))
+    }
+
+    /// How often native frames of `func` were left to the interpreter.
+    pub fn materialised(&self, func: FuncId) -> u64 {
+        self.left_native
+            .get(func.0 as usize)
+            .map_or(0, |n| n.load(Ordering::Relaxed))
+    }
+
+    /// The native frames left to the interpreter so far.
+    pub fn materialised_all(&self) -> u64 {
+        self.left_native
+            .iter()
+            .map(|n| n.load(Ordering::Relaxed))
+            .sum()
+    }
+
+    /// A native frame of `func` was left to the interpreter.
+    pub fn note_left(&self, func: FuncId) {
+        if let Some(n) = self.left_native.get(func.0 as usize) {
+            n.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Count the entries of `func` from `n` on, or stop (0): `Tier::asked` will not be called.
+    pub fn set_count(&self, func: FuncId, n: u32) {
+        if let Some(c) = self.left.get(func.0 as usize) {
+            c.store(n, Ordering::Relaxed);
+        }
+    }
+
+    /// The entries `func` has left of its count.
+    pub fn count_left(&self, func: FuncId) -> u32 {
+        self.left
+            .get(func.0 as usize)
+            .map_or(0, |c| c.load(Ordering::Relaxed))
+    }
+
+    /// One more entry of `func`; true when its count just ran out.
+    #[inline(always)]
+    pub fn tick(&self, func: u32) -> bool {
+        let Some(c) = self.left.get(func as usize) else {
+            return false;
+        };
+        let v = c.load(Ordering::Relaxed);
+        if v == 0 {
+            return false;
+        }
+        c.store(v - 1, Ordering::Relaxed);
+        v == 1
+    }
+
     /// `func` got a flag: `Runtime::sync_native` tells its `Pre`.
     fn note(&self, func: u32) {
         self.fresh
@@ -1767,6 +1865,10 @@ impl Runtime {
                 retiers: Default::default(),
                 fresh: Default::default(),
                 dirty: Default::default(),
+                left: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
+                spec_count: Default::default(),
+                left_native: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
+                count_stat: Default::default(),
             }),
             live: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
             plans: Default::default(),
@@ -1862,6 +1964,40 @@ impl Runtime {
             p.native = self.native.flagged(id.0).into();
             p
         }))
+    }
+
+    /// The entries of `func` ran out (`NativeFlags::tick`): ask the tier, unless it is a process that
+    /// switches to a copy, which has a count of its own. `no_copy`: no copy is coming, as far as is
+    /// known: the entries were counted in a running loop, and such a process may not come back for its
+    /// next activation in a long time, or the process has no switch planned.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn counted_out(&self, func: FuncId, no_copy: bool) {
+        let copies = self.prog.base_of(func) == func && self.prog.specialisable(func);
+        if (no_copy || !copies)
+            && let Some(t) = self.tier.get()
+        {
+            self.native.count_stat(CountStat::Asked);
+            t.asked(func);
+        }
+    }
+
+    /// A process that will have no copy after all: its shared code is what the count asks for.
+    pub(crate) fn counted_out_shared(&self, func: FuncId) {
+        if self.native.spec_count.load(Ordering::Relaxed) != 0
+            && let Some(t) = self.tier.get()
+        {
+            self.native.count_stat(CountStat::Asked);
+            t.asked(func);
+        }
+    }
+
+    /// The activation at which a process switches to its copy.
+    pub(crate) fn copy_after(&self) -> u64 {
+        match self.native.spec_count.load(Ordering::Relaxed) {
+            n if n != 0 && !spec_forced() => n,
+            _ => spec_after(),
+        }
     }
 
     /// Set `Pre::native` of the functions flagged since the last call. The fast loops call it where
@@ -2597,6 +2733,9 @@ impl InterpProcess {
         self.m.execs += 1;
         if self.m.execs == u64::from(self.m.spec_at) {
             self.m.specialise(ctx.as_deref());
+        }
+        if self.m.rt.native.tick(self.m.entry.0) {
+            self.m.rt.counted_out(self.m.entry, self.m.spec.is_none());
         }
         let shared = self.shared.clone();
         let mut guard = match &shared {

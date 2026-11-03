@@ -12,7 +12,9 @@ Tiers
 
 * ``--tier=auto`` (the default in the release archives) starts the run in the interpreter and
   compiles the functions that become hot on a background thread, with the bundled Cranelift code generator, while the
-  simulation goes on.
+  simulation goes on. A run of about half a second of simulation work or less compiles little: such a
+  run would not get the compile time back. Longer runs compile the processes that keep waking up and
+  what compiled code calls, and loops that run for long.
 * ``--tier=clift`` compiles everything before time 0. It can pay off for a long run of a
   compute-heavy design.
 * ``--tier=interp`` runs the interpreter alone; it is the default of a source build without a

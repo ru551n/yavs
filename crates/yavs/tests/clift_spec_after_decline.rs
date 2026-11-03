@@ -70,6 +70,8 @@ fn yavs(dir: &Path, args: &[&str]) -> Output {
         .env("YAVS_AUTO_FORCE", "step,_p0")
         .env("YAVS_COUNTERS", "1")
         .env("YAVS_SPEC_AFTER", "2")
+        // (The count rule has native-frame code of `**`, and declines nothing here.)
+        .env("YAVS_AUTO_POLICY", "sampled")
         .current_dir(dir)
         .output()
         .expect("run yavs");

@@ -10804,3 +10804,7 @@ The optimiser reads an element of a logic row or slice, and copies a row or slic
 ## Drive compare in compiled code
 
 A zero-delay drive at a constant reference in a process copy compares with the signal's current value in Cranelift code and makes no call when equal (`YAVS_INLCMP=off` turns it off, `check` holds every skip against the kernel's full test, always in debug builds; `docs/decisions.md` "Drive compare in compiled code"). CI runs the corpus on process copies with skips checked (difftest candidate `yavs-clift-check`).
+
+## The count rule of `--tier=auto` (branch `perf/land-policy`, 2026-11-03)
+
+`--tier=auto` on Cranelift compiles what the interpreter entered 100 times, a process's copy after 50 and 50, a subprogram once a caller has compiled code, nothing by the count before a run has done 2.56 G instructions of work; the sampler stays for the rest; native-frame code that leaves to the interpreter at most calls is taken back after a trial. `YAVS_AUTO_POLICY=sampled` is the rule before. Not decided: a quiet comparison in cycles is due, and no cycle gain is claimed (`docs/decisions.md` "`--tier=auto`: the count rule"). Tests: `crates/yavs/tests/auto_count.rs`, the unit tests of `auto.rs` that need no LLVM, difftest candidate `yavs-clift-count1` in the `clift` job of CI.

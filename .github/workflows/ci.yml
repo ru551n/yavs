@@ -146,6 +146,12 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           YAVS_BIN="$PWD/target/debug/yavs" python3 tools/difftest/difftest.py --candidate yavs-clift-check --threads 1,4 --shuffle 11 --no-sandbox --jobs 4
+      # The count rule of --tier=auto at its tightest: every function asked for at its first call, the
+      # run waiting for the compile, so the rule's paths run on every test however short.
+      - name: Corpus on the count rule at a count of 1
+        if: runner.os == 'Linux'
+        run: |
+          YAVS_BIN="$PWD/target/debug/yavs" python3 tools/difftest/difftest.py --candidate yavs-clift-count1 --threads 1,4 --shuffle 11 --no-sandbox --jobs 4
 
   # Analysis corpora (tools/corpus): fetched at pinned revisions into the runner cache, never
   # part of the repository. Fails on any difference from the checked-in expected lists, in

@@ -2459,6 +2459,13 @@ fn gen_func(
                         g.range_exit(v, l, h, pc);
                         g.st(dst, v);
                     }
+                    // (`**` on a native frame, as the other generator.)
+                    None if g.nat.is_some()
+                        && yavs_llvm::count_rule_on()
+                        && xstep_wide(f, &inst) =>
+                    {
+                        g.native_step(pc, &inst, f)
+                    }
                     None => g.step(pc, &inst),
                 }
             }
@@ -2783,6 +2790,10 @@ fn gen_func(
                     }
                     g.st(dst, a);
                     g.join(join);
+                }
+                // (A layout from a run-time descriptor on a native frame, as the other generator.)
+                None if g.nat.is_some() && yavs_llvm::count_rule_on() && xstep_wide(f, &inst) => {
+                    g.native_step(pc, &inst, f)
                 }
                 None => g.step(pc, &inst),
             },

@@ -6137,6 +6137,8 @@ impl Machine {
                     .ok_or_else(|| ice_f!("call of missing function {cid}"))?;
                 let cpre = rt.pre(cid, cf).ok_or_else(|| ice_f!("no function {cid}"))?;
                 count_call!(cid);
+                #[cfg(debug_assertions)]
+                t!(self.check_sub_args(prog, f, cid, cf, args));
                 callee_look!(callee, cpre);
                 // The memo of pure calls answers a repeated call before the call is made, by the
                 // compiled tier or not (out of line: it keeps this loop's frame as it was).
@@ -10081,8 +10083,48 @@ impl Machine {
         let pre = rt
             .pre(func, callee)
             .ok_or_else(|| ice_f!("no function {func}"))?;
+        #[cfg(debug_assertions)]
+        self.check_sub_args(prog, f, func, callee, args)?;
         self.call_pre(f, callee, func, pre, args, dst, None)?;
         Ok(Flow::Call)
+    }
+
+    /// A copy of a subprogram runs only on the descriptors it was made for (`yavs_ir::opt::subcopy`):
+    /// what the callers pass is compared, in a debug build.
+    #[cfg(debug_assertions)]
+    fn check_sub_args(
+        &self,
+        prog: &Program,
+        f: &Func,
+        func: FuncId,
+        callee: &Func,
+        args: yavs_ir::Regs,
+    ) -> R<()> {
+        let regs = f
+            .regs(args)
+            .ok_or_else(|| ice_s!("operand list out of range"))?;
+        for (slot, want) in prog.sub_copy_params(func) {
+            let j = callee.params.iter().position(|p| p.slot == slot);
+            let Some(&r) = j.and_then(|j| regs.get(j)) else {
+                return Err(ice_f!(
+                    "no argument for the descriptor at slot {slot} of {}",
+                    callee.name
+                ));
+            };
+            let a = self.r(r);
+            for (k, w) in want.chunks(8).enumerate() {
+                let got = self.load(add_addr(a, 8 * k as u64)?, Width::B8)?;
+                let mut x = [0u8; 8];
+                x[..w.len()].copy_from_slice(w);
+                if w.len() == 8 && got != u64::from_le_bytes(x) {
+                    return Err(ice_f!(
+                        "a copy of {} was called with another descriptor at slot {slot}",
+                        callee.name
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// `Inst::Call` of function `func` (`callee`, with its `pre`): the arguments go from the
@@ -10212,6 +10254,12 @@ impl Machine {
         args: yavs_ir::Regs,
         dst: Option<Reg>,
     ) -> R<Flow> {
+        #[cfg(debug_assertions)]
+        if first.is_none()
+            && let Some(callee) = prog.func(func)
+        {
+            self.check_sub_args(prog, f, func, callee, args)?;
+        }
         let mut cells = std::mem::take(&mut self.cells);
         cells.clear();
         cells.extend(first);

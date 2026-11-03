@@ -238,6 +238,8 @@ fn worth(f: &Func) -> bool {
 impl Program {
     /// What the calls of function `id` can be memoised on, if they can (see the module).
     pub fn memo_sig(&self, id: FuncId) -> Option<&MemoSig> {
+        // (A copy of a subprogram answers to the same calls.)
+        let id = self.base_of(id);
         let raw = self.funcs.get(id)?;
         raw.memo
             .get_or_init(|| self.work_out_sig(id, raw))

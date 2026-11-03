@@ -51,6 +51,7 @@ pub use range::{FULL as IV_FULL, Iv, iv_after, no_overflow};
 mod share;
 mod sink;
 mod slots;
+pub(crate) mod subcopy;
 
 pub(crate) use proc_objects::OBJECT_TY;
 
@@ -225,13 +226,14 @@ pub fn fingerprint() -> String {
         frame_blocks_on(),
         proc_objects::enabled(),
         dopes::enabled(),
+        subcopy::enabled(),
     ])
 }
 
-fn fingerprint_of(f: [bool; 13]) -> String {
+fn fingerprint_of(f: [bool; 14]) -> String {
     let names = [
         "iropt", "memo", "cfg", "inline", "keep", "compiled", "external", "layouts", "drives",
-        "slots", "blocks", "objects", "dopes",
+        "slots", "blocks", "objects", "dopes", "subcopy",
     ];
     let parts: Vec<String> = names
         .iter()
@@ -248,9 +250,9 @@ mod fingerprint_tests {
     /// Every switch is part of the fingerprint (#491).
     #[test]
     fn each_switch_changes_the_fingerprint() {
-        let base = fingerprint_of([false; 13]);
+        let base = fingerprint_of([false; 14]);
         for i in 0..13 {
-            let mut f = [false; 13];
+            let mut f = [false; 14];
             f[i] = true;
             assert_ne!(fingerprint_of(f), base, "switch {i}");
         }
@@ -323,7 +325,8 @@ fn optimize_func_with(
     id: FuncId,
     inst: Option<InstView<'_>>,
 ) -> Option<Box<crate::Func>> {
-    let mut f = optimize_body_with(prog, id, inst)?;
+    let mut facts = None;
+    let mut f = optimize_body_with(prog, id, inst, Some(&mut facts))?;
     if inline::run(prog, id, &mut f, 1) | inline::run_wide(prog, id, &mut f) {
         // The inlined bodies are code of this function now: what is known at the call decides
         // their branches and repeated reads are shared.
@@ -333,7 +336,7 @@ fn optimize_func_with(
                 .0
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            tidy(prog, &mut f, &mut layouts, None);
+            tidy(prog, &mut f, &mut layouts, inst);
         }
         // What the inlined callees read only on one branch is computed there.
         sink::run(prog, &mut f);
@@ -377,6 +380,10 @@ fn optimize_func_with(
             assert!(errs.is_empty(), "optimiser broke {}: {errs:?}", f.name);
         }
     }
+    // Last, so no pass above reads a copy's empty slot as the callee.
+    if let Some(view) = inst {
+        subcopy::rewrite_calls(prog, &mut f, view, facts.as_ref());
+    }
     Some(f)
 }
 
@@ -384,7 +391,14 @@ fn optimize_func_with(
 /// folded.
 /// The instance data a copy is for, its `for` generate parameters (not folded) and the data of the
 /// packages its declarative part reads.
-type InstView<'a> = (&'a [u8], &'a [(u32, u32)], &'a [(u32, &'a [u8])]);
+/// Then, for a copy of a subprogram (`opt/subcopy.rs`), the descriptor bytes of its parameters by
+/// the slot of the `'dope` parameter.
+type InstView<'a> = (
+    &'a [u8],
+    &'a [(u32, u32)],
+    &'a [(u32, &'a [u8])],
+    &'a [(u32, &'a [u8])],
+);
 
 /// The copy of process `id` for the instance data `data` (`holes` are not folded): the
 /// function optimised as [`optimize_func`] does, with reads of the data folded.
@@ -395,7 +409,16 @@ pub(crate) fn optimize_copy(
     holes: &[(u32, u32)],
     pkgs: &[(u32, &[u8])],
 ) -> Option<Box<crate::Func>> {
-    optimize_func_with(prog, id, Some((data, holes, pkgs)))
+    optimize_func_with(prog, id, Some((data, holes, pkgs, &[])))
+}
+
+/// The copy of subprogram `id` for the descriptors `params` (`opt/subcopy.rs`).
+pub(crate) fn optimize_sub(
+    prog: &Program,
+    id: FuncId,
+    params: &[(u32, &[u8])],
+) -> Option<Box<crate::Func>> {
+    optimize_func_with(prog, id, Some((&[], &[], &[], params)))
 }
 
 /// Is a debugger keeping the variables of subprograms in their slots?
@@ -405,13 +428,14 @@ pub fn keep_variables_on() -> bool {
 
 /// The function optimised, without inlining: the copy [`optimize_func`] starts from.
 pub(crate) fn optimize_body(prog: &Program, id: FuncId) -> Option<Box<crate::Func>> {
-    optimize_body_with(prog, id, None)
+    optimize_body_with(prog, id, None, None)
 }
 
 fn optimize_body_with(
     prog: &Program,
     id: FuncId,
     inst: Option<InstView<'_>>,
+    facts: Option<&mut Option<decl::Facts>>,
 ) -> Option<Box<crate::Func>> {
     if !enabled() {
         return None;
@@ -443,6 +467,9 @@ fn optimize_body_with(
     o.fid = Some(id);
     let had_inst = o.inst.is_some();
     o.run();
+    if let Some(out) = facts {
+        *out = o.wf.take();
+    }
     let split = o.split;
     let mut loc = raw.loc.clone();
     let blocks = o.changed.then(|| o.compact(&mut loc, None));
@@ -476,7 +503,7 @@ fn optimize_body_with(
     {
         let threaded = cfg::run(prog, &mut f);
         if licm::run(prog, &mut f) | threaded {
-            tidy(prog, &mut f, &mut layouts, None);
+            tidy(prog, &mut f, &mut layouts, inst);
         }
     } else if cfg_enabled() && f.kind == FuncKind::Process {
         // Loops of a process that do not suspend (#541).
@@ -551,6 +578,7 @@ fn tidy(
         );
         o.inst = inst;
         o.analyse();
+        o.wf = o.param_facts();
         o.pass();
         let mut again = 0;
         while o.pruned && again < 4 {
@@ -1753,6 +1781,8 @@ impl<'a> Opt<'a> {
         self.analyse();
         if self.inst.is_some() && self.f.kind == FuncKind::Process && self.f.body.is_some() {
             self.wf = self.decl_facts();
+        } else if self.inst.is_some() {
+            self.wf = self.param_facts();
         }
         if self.frame_objects() {
             self.reanalyse();
@@ -4080,7 +4110,7 @@ impl<'a> Opt<'a> {
             }
             return true;
         }
-        if let (Opn::A(AddrSpace::Pkg(p), o), Some((_, _, pkgs))) = (a, self.inst) {
+        if let (Opn::A(AddrSpace::Pkg(p), o), Some((_, _, pkgs, _))) = (a, self.inst) {
             // Package data are written during initialisation only.
             let (o, n) = (o as usize, out.len());
             return pkgs
@@ -4092,7 +4122,7 @@ impl<'a> Opt<'a> {
                     true
                 });
         }
-        if let (Opn::A(AddrSpace::Inst, o), Some((data, holes, _))) = (a, self.inst) {
+        if let (Opn::A(AddrSpace::Inst, o), Some((data, holes, _, _))) = (a, self.inst) {
             let (o, n) = (o as usize, out.len());
             if holes
                 .iter()
@@ -5208,8 +5238,14 @@ impl<'a> Opt<'a> {
             // (A byte holds a boolean, a bit, a character or another enumeration value: the
             // register keeps the same number.)
             let bytes = i64::from(a.w.bytes());
-            // (A variable in the frame and a descriptor are also written whole, by a `Copy`.)
+            // (A variable in the frame and a descriptor are also written whole, by a `Copy`; a
+            // slot whose descriptor a copy of a subprogram knows stays a load, `Opt::wf`.)
             if self.in_descriptor(o)
+                || (!process
+                    && self
+                        .wf
+                        .as_ref()
+                        .is_some_and(|w| u32::try_from(o).is_ok_and(|o| w.descs.contains_key(&o))))
                 || f.locals.iter().any(|l| {
                     crate::is_frame_object(l)
                         && i64::from(l.slot) <= o

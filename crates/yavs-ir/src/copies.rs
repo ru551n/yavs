@@ -99,6 +99,9 @@ pub struct CopyBlob {
     pub data: Vec<u8>,
     pub digest: u64,
     pub bytes: yavs_diag::Slice,
+    /// The calls of copies of subprograms: copy ids differ per run, so `bytes` calls the
+    /// subprogram itself and these (pc, subprogram, descriptors) are made again on load.
+    pub calls: Vec<(u32, FuncId, Vec<u8>)>,
 }
 
 /// Where a run finds the copies earlier runs of the same program stored: called at most once,
@@ -135,6 +138,12 @@ pub struct Copies {
     copy_ir: AtomicU64,
     capped: AtomicU64,
     full: AtomicU64,
+    /// Slots kept for copies of subprograms, those taken, per subprogram, and what they hold.
+    sub_max: usize,
+    subs: AtomicUsize,
+    sub_per: Mutex<HashMap<FuncId, usize>>,
+    sub_ir: AtomicU64,
+    sub_reads: Mutex<HashMap<FuncId, Arc<[u32]>>>,
     switched: AtomicU64,
     planned: AtomicU64,
 }
@@ -164,6 +173,9 @@ pub struct CopyStats {
     pub capped: u64,
     /// Copies refused because every reserved slot was taken.
     pub full: u64,
+    /// Copies of subprograms (`sub_copy`), and their optimised IR instructions.
+    pub subs: usize,
+    pub sub_ir: u64,
     /// Slots reserved ([`Program::reserve_copies`]).
     pub reserved: usize,
     /// Processes that switched to a copy ([`Program::note_switch`]).
@@ -197,6 +209,11 @@ pub fn cap_percent() -> u64 {
             .unwrap_or(250)
     })
 }
+
+/// The digest of a copy of a subprogram: its `data` are descriptors (`opt/subcopy.rs`), no
+/// package data take part. A process's digest has `PROCESS_DIGEST` set, so they never meet.
+const SUB_DIGEST: u64 = 1;
+const PROCESS_DIGEST: u64 = 1 << 63;
 
 fn key_hash(base: FuncId, data: &[u8], digest: u64) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -245,7 +262,7 @@ impl Copies {
         base: FuncId,
         data: &[u8],
         digest: u64,
-    ) -> Option<yavs_diag::Slice> {
+    ) -> Option<(yavs_diag::Slice, Vec<(u32, FuncId, Vec<u8>)>)> {
         let st = self.stored.get_or_init(|| {
             let blobs = self
                 .loader
@@ -277,7 +294,7 @@ impl Copies {
             })?;
         st.blobs[i].1 = true;
         self.loaded.fetch_add(1, Ordering::Relaxed);
-        Some(st.blobs[i].0.bytes.clone())
+        Some((st.blobs[i].0.bytes.clone(), st.blobs[i].0.calls.clone()))
     }
 
     pub fn stats(&self) -> CopyStats {
@@ -287,6 +304,8 @@ impl Copies {
             copy_ir: self.copy_ir.load(Ordering::Relaxed),
             capped: self.capped.load(Ordering::Relaxed),
             full: self.full.load(Ordering::Relaxed),
+            subs: self.subs.load(Ordering::Relaxed),
+            sub_ir: self.sub_ir.load(Ordering::Relaxed),
             reserved: self.list.len(),
             switched: self.switched.load(Ordering::Relaxed),
             planned: self.planned.load(Ordering::Relaxed),
@@ -443,7 +462,7 @@ impl Program {
             for (p, d) in &*pkgs {
                 (p, d.digest).hash(&mut h);
             }
-            h.finish()
+            h.finish() | PROCESS_DIGEST
         };
         let h = key_hash(base, &data, digest);
         let mut by = c
@@ -460,7 +479,7 @@ impl Program {
             return Ok(id);
         }
         let n = c.count.load(Ordering::Relaxed);
-        if n >= c.list.len() {
+        if n - c.subs.load(Ordering::Relaxed) >= c.list.len() - c.sub_max {
             c.full.fetch_add(1, Ordering::Relaxed);
             return Err(NoCopy::Full);
         }
@@ -490,6 +509,104 @@ impl Program {
         c.count.store(n + 1, Ordering::Relaxed);
         by.entry(h).or_default().push(id);
         Ok(id)
+    }
+
+    /// The copy of subprogram `base` for the descriptors `data` (`opt/subcopy.rs`), made if none
+    /// was. Takes no lock an optimisation holds and optimises nothing: the optimiser calls it.
+    pub(crate) fn sub_copy(&self, base: FuncId, data: &[u8]) -> Option<FuncId> {
+        let c = &self.copies;
+        let h = key_hash(base, data, SUB_DIGEST);
+        let mut by = c
+            .by_hash
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(&id) = by.get(&h).and_then(|v| {
+            v.iter().find(|&&id| {
+                c.get(id)
+                    .is_some_and(|x| x.base == base && *x.data == *data && x.digest == SUB_DIGEST)
+            })
+        }) {
+            return Some(id);
+        }
+        let n = c.count.load(Ordering::Relaxed);
+        if n >= c.list.len() || c.subs.load(Ordering::Relaxed) >= c.sub_max {
+            c.full.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        {
+            // Lengths that change on every recursion stop here.
+            let mut per = c
+                .sub_per
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let k = per.entry(base).or_insert(0);
+            if *k >= crate::opt::subcopy::per_function() {
+                return None;
+            }
+            *k += 1;
+        }
+        let id = FuncId(c.first + n as u32);
+        let set = c.list[n].set(Copy {
+            base,
+            data: data.into(),
+            holes: Box::new([]),
+            pkgs: Box::new([]),
+            digest: SUB_DIGEST,
+            facts: InstFacts::default(),
+        });
+        assert!(
+            set.is_ok(),
+            "internal error: a copy slot was taken twice; this is a bug in yavs"
+        );
+        c.count.store(n + 1, Ordering::Relaxed);
+        c.subs.fetch_add(1, Ordering::Relaxed);
+        by.entry(h).or_default().push(id);
+        Some(id)
+    }
+
+    /// The `'dope` slots of subprogram `f` its code asks about (`opt/subcopy.rs`).
+    pub(crate) fn sub_reads(&self, f: FuncId, g: &Func) -> Arc<[u32]> {
+        self.copies
+            .sub_reads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(f)
+            .or_insert_with(|| crate::opt::subcopy::reads(g).into())
+            .clone()
+    }
+
+    /// `o` as a stored copy names its callees: copies of subprograms by what they are for.
+    fn portable_calls(&self, o: &Func) -> Option<(Vec<u8>, Vec<(u32, FuncId, Vec<u8>)>)> {
+        let of = |func: FuncId| self.copies.get(func).filter(|c| c.digest == SUB_DIGEST);
+        let is_sub = |i: &Inst| matches!(i, Inst::Call { func, .. } if of(*func).is_some());
+        if !o.code.iter().any(is_sub) {
+            return Some((postcard::to_stdvec(o).ok()?, Vec::new()));
+        }
+        let mut f = o.clone();
+        let mut calls = Vec::new();
+        for (pc, i) in f.code.iter_mut().enumerate() {
+            if let Inst::Call { func, .. } = i
+                && let Some(c) = of(*func)
+            {
+                calls.push((pc as u32, c.base, c.data.to_vec()));
+                *func = c.base;
+            }
+        }
+        Some((postcard::to_stdvec(&f).ok()?, calls))
+    }
+
+    /// The descriptor bytes copy `f` of a subprogram was made for: (slot, bytes) of each `'dope`
+    /// parameter it knows; empty for any other function. For a check of what a caller passes.
+    pub fn sub_copy_params(&self, f: FuncId) -> Vec<(u32, Vec<u8>)> {
+        self.copies
+            .get(f)
+            .filter(|c| c.digest == SUB_DIGEST)
+            .map_or_else(Vec::new, |c| {
+                crate::opt::subcopy::decode(&c.data)
+                    .into_iter()
+                    .map(|(s, b)| (s, b.to_vec()))
+                    .collect()
+            })
     }
 
     /// The process a function is a copy of, else the function itself.
@@ -549,12 +666,13 @@ impl Program {
                 if !seen.insert((e.base, &e.data, e.digest)) {
                     return None;
                 }
-                let bytes = postcard::to_stdvec(&**o).ok()?;
+                let (bytes, calls) = self.portable_calls(o)?;
                 Some(CopyBlob {
                     base: e.base,
                     data: e.data.to_vec(),
                     digest: e.digest,
                     bytes: bytes.into(),
+                    calls,
                 })
             })
             .collect();
@@ -600,6 +718,9 @@ impl Program {
         }
         let first = self.funcs.len();
         self.funcs.reserve_exact(n);
+        let subs = crate::opt::subcopy::slots(self);
+        let n = n + subs;
+        self.copies.sub_max = subs;
         for _ in 0..n {
             self.funcs.push(Func::spare());
         }
@@ -612,9 +733,24 @@ impl Program {
         let stored = crate::opt::copies_are_portable()
             .then(|| self.copies.take_stored(c.base, &c.data, c.digest))
             .flatten()
-            .and_then(|b| postcard::from_bytes::<Func>(b.get()).ok().map(Box::new));
+            .and_then(|(b, calls)| {
+                let mut f = postcard::from_bytes::<Func>(b.get()).ok()?;
+                // Made again by what they are for: an id means nothing in another run.
+                for (pc, base, data) in calls {
+                    if let (Some(id), Some(Inst::Call { func, .. })) =
+                        (self.sub_copy(base, &data), f.code.get_mut(pc as usize))
+                    {
+                        *func = id;
+                    }
+                }
+                Some(Box::new(f))
+            });
         let o = stored.or_else(|| {
             self.copies.fresh.fetch_add(1, Ordering::Relaxed);
+            if c.digest == SUB_DIGEST {
+                let params = crate::opt::subcopy::decode(&c.data);
+                return crate::opt::optimize_sub(self, c.base, &params);
+            }
             let pkgs: Vec<(u32, &[u8])> = c
                 .pkgs
                 .iter()
@@ -624,7 +760,13 @@ impl Program {
         });
         // A pass that left the process alone: the copy is the lowered code.
         let o = o.or_else(|| self.funcs.get(c.base).map(|f| Box::new(f.full().clone())))?;
-        self.copies.made(o.code.len());
+        if c.digest == SUB_DIGEST {
+            self.copies
+                .sub_ir
+                .fetch_add(o.code.len() as u64, Ordering::Relaxed);
+        } else {
+            self.copies.made(o.code.len());
+        }
         Some(o)
     }
 }

@@ -93,6 +93,8 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         rows.push(("spec_loaded", c.loaded as u64));
         rows.push(("spec_capped", c.capped));
         rows.push(("spec_full", c.full));
+        rows.push(("spec_subs", c.subs as u64));
+        rows.push(("spec_sub_ir", c.sub_ir));
         rows.push(("spec_shared_ir", c.shared_ir));
         rows.push(("spec_copy_ir", c.copy_ir));
         rows.push(("retiers", rt.native_flags().retiers()));

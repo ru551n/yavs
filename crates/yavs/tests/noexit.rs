@@ -71,6 +71,10 @@ architecture a of t is
   type ints is array (natural range <>) of integer;
   type acc_int is access integer;
   type acc_ints is access ints;
+  function first (a : ints) return integer is
+  begin
+    return a(a'left);
+  end;
 {inner}
 begin
   process
@@ -249,6 +253,20 @@ const CASES: &[Case] = &[
         decl: "variable p : acc_ints; variable w : integer;",
         stmt: "p := new ints(0 to y + 3); w := p(x + y); deallocate(p);",
         bad: ("9", "1"),
+    },
+    // The temporary area grows: a slow path that comes back, its size a deferred register.
+    Case {
+        name: "temp_grows",
+        decl: "variable n : integer;",
+        stmt: "n := first(ints'(1 to (x + y) * 3000 => x));",
+        bad: ("9", "1"),
+    },
+    // Null after holding values: a stale register in the frame would say deallocated.
+    Case {
+        name: "null_after_value",
+        decl: "variable p : acc_int; variable w : integer;",
+        stmt: "p := new integer'(x); if x > 50 then deallocate(p); p := null; end if; w := p.all; deallocate(p);",
+        bad: ("51", "0"),
     },
     Case {
         name: "power",

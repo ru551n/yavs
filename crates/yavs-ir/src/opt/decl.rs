@@ -942,6 +942,24 @@ impl Opt<'_> {
         }
     }
 
+    /// What a copy of a subprogram knows on entry: the descriptor a `'dope` slot points to.
+    pub(super) fn param_facts(&self) -> Option<Facts> {
+        let (_, _, _, params) = self.inst?;
+        if params.is_empty() {
+            return None;
+        }
+        let descs: FxMap<u32, (Rc<[u8]>, u32)> = params
+            .iter()
+            .map(|(s, b)| (*s, (Rc::from(*b), 0)))
+            .collect();
+        Some(Facts {
+            bytes: Vec::new(),
+            addrs: FxMap::default(),
+            descs,
+            objects: Vec::new(),
+        })
+    }
+
     /// The facts of a process copy's declarative part (see the module), or `None`.
     pub(super) fn decl_facts(&self) -> Option<Facts> {
         let f = self.f;

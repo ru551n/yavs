@@ -1752,7 +1752,11 @@ impl Machine {
             }
         }
         let facts = self.inst_facts(c);
+        let trace = std::env::var_os("YAVS_PE_TRACE").is_some();
         let Ok(id) = prog.copy_of_pkgs(base, &self.inst.data, &holes, &*rt, facts) else {
+            if trace {
+                eprintln!("pe: no copy of f{}", base.0);
+            }
             return;
         };
         let (Some(old), Some(new), Some(raw)) = (prog.func(base), prog.func(id), prog.raw(base))
@@ -1770,6 +1774,17 @@ impl Machine {
             return;
         };
         if !waits_at(old, pc) || !waits_at(new, at as usize) || new.frame < raw.frame {
+            if trace {
+                eprintln!(
+                    "pe: refused f{} {}: pc {pc} waits_old {} waits_new {} frame {} {}",
+                    base.0,
+                    old.name,
+                    waits_at(old, pc),
+                    waits_at(new, at as usize),
+                    new.frame,
+                    raw.frame
+                );
+            }
             return;
         }
         let Some(pre) = rt.pre(id, new) else {
@@ -1779,6 +1794,9 @@ impl Machine {
         // places, `opt/proc_objects.rs`.)
         let keep = old.objects_end().max(raw.frame) as usize;
         if old.objects_end() != new.objects_end() {
+            if trace {
+                eprintln!("pe: refused f{} {}: objects", base.0, old.name);
+            }
             return;
         }
         // Every object the copy takes from the heap has the size it was made for.

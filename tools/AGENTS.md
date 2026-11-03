@@ -2,7 +2,7 @@
 
 Read the root `AGENTS.md` first. This file is for an agent about to change or run a script under
 `tools/`. Subdirectories have their own guides: `tools/corpus/AGENTS.md` (analysis corpora) and
-`tools/difftest/AGENTS.md` (differential simulation corpus), `tools/conformance/AGENTS.md`, `tools/suites/AGENTS.md`, `tools/bench/AGENTS.md` and `tools/realbench/AGENTS.md`, `tools/stepcount/AGENTS.md`, `tools/waveq/AGENTS.md`, `tools/cocotb/AGENTS.md`.
+`tools/difftest/AGENTS.md` (differential simulation corpus), `tools/conformance/AGENTS.md`, `tools/suites/AGENTS.md`, `tools/bench/AGENTS.md` and `tools/realbench/AGENTS.md`, `tools/stepcount/AGENTS.md`, `tools/waveq/AGENTS.md`, `tools/cocotb/AGENTS.md` and `tools/pgo/AGENTS.md` (profile-guided release build).
 
 ## 1. Purpose and boundaries
 
@@ -34,6 +34,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change or ru
 | `vhpi-conformance/` | VHPI plugin traces on yavs and the reference simulator, diffed (`tools/vhpi-conformance/AGENTS.md`) |
 | `bench/` | Shared performance benchmarks: phase timings, A/B comparison, JSON results (`tools/bench/AGENTS.md`) |
 | `realbench/` | Real-world performance suite: about 30 testbenches of real projects, timed against the reference and between two binaries; plus the opt-in CoreMark workloads on two processors (NEORV32, Microwatt) measured in simulated cycles per second (`tools/realbench/AGENTS.md`, section 7), `window.py`, a short-window A/B on Cranelift against sim1 (section 8), and `perfguard.py`, the by-hand instruction guard of its nine windows (section 8a) |
+| `pgo/` | Profile-guided release build: `build.sh OUT` (instrumented build, training, `llvm-profdata merge`, final build) and `train.py`, which runs the original training testbenches in `train/` and the `tests/corpus` sweep (`tools/pgo/AGENTS.md`) |
 | `stepcount/` | Exact instruction counts per function and per source line for a window of a run (ptrace single-stepper in C plus a Python report; `tools/stepcount/AGENTS.md`) |
 | `waveq/` | Waveform equivalence: real designs on yavs and the reference simulators, compared signal by signal (`tools/waveq/AGENTS.md`) |
 | `discrepancies/` | Simulator discrepancy runner and verdict table (`tools/discrepancies/AGENTS.md`, catalogue `docs/design/simulator-discrepancies.md`) |

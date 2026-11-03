@@ -1,0 +1,1 @@
+A build from source can now be profile-guided: `tools/pgo/build.sh` builds yavs, trains it on bundled testbenches and builds it again with what the runs recorded; the result simulates the same designs with fewer instructions. The release archives are not built this way.

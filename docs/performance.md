@@ -76,6 +76,15 @@ Among the hand-written RTL designs, clocked designs with very many cheap process
 - Waves and coverage on, other tiers than `--tier=auto`, and more than one thread were not measured here.
 - The comparisons with B and C are of 2026-10-28.
 
+## Which build these numbers are for
+
+Every figure on this page is from a plain release build (the build of the release archives), not from a profile-guided one. A
+build from source can be profile-guided (`tools/pgo/build.sh`, see [Getting started](getting-started.rst)); it runs the same code
+with its branches and functions laid out for the paths a simulation takes. On 36 real testbenches (none of them in the training) it executed about 5.6 percent fewer instructions than the plain build (geometric mean;
+no testbench more than 0.1 percent above), and the run was about 10 percent shorter on a shared, loaded host, so read that figure as rough.
+Elaboration and analysis gain less (3 and 1 percent fewer instructions), and the instruction count of one testbench rose by 5 percent in elaboration.
+We have not repeated the head-to-head comparison above with a profile-guided build.
+
 ## Measure your own design
 
 `--time-report` and `--profile` show where a run spends its time, and the tiers and the cache
@@ -86,7 +95,7 @@ an otherwise idle machine, repeat, and compare medians; a short run varies by te
 
 The testbenches come from open-source VHDL projects (verification libraries, FPGA libraries, processor
 designs), each run as its project's own scripts would: analysing the libraries and the testbench's files,
-elaborating and running. yavs is a release build at its default `--tier=auto`. Every pair of timings ran on
+elaborating and running. yavs is a plain release build (not profile-guided) at its default `--tier=auto`. Every pair of timings ran on
 the same CPU core, in turn, on a shared Linux host (AMD Ryzen 9 7950X3D), repeated two to five times; the 2026-11-01 run took the best of two passes for each measurement,
 with a median host load of 10 to 14. The
 other simulators are not named; all of them run compiled or generated code. The per-testbench tables, the

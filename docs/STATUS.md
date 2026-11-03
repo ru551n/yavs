@@ -10804,3 +10804,18 @@ The optimiser reads an element of a logic row or slice, and copies a row or slic
 ## Drive compare in compiled code
 
 A zero-delay drive at a constant reference in a process copy compares with the signal's current value in Cranelift code and makes no call when equal (`YAVS_INLCMP=off` turns it off, `check` holds every skip against the kernel's full test, always in debug builds; `docs/decisions.md` "Drive compare in compiled code"). CI runs the corpus on process copies with skips checked (difftest candidate `yavs-clift-check`).
+
+## Profile-guided build (`tools/pgo`, perf/pgo, 2026-11-03)
+
+`tools/pgo/build.sh OUT` makes an instrumented build, trains it with `tools/pgo/train.py`, merges the profile with `llvm-profdata` from rustup's `llvm-tools` and builds again with `-C profile-use` (decision in `docs/decisions.md` "Profile-guided builds"). The training set is 20 original testbenches in `tools/pgo/train/` and a sweep over `tests/corpus`; about 400 instrumented runs, 10 CPU minutes. Local until the maintainer decides; not in `release.yml`. Done on Linux x86-64 only (AArch64 and Windows: see `tools/pgo/AGENTS.md` section 6).
+
+Measured with `tools/realbench` (`--compare`, 36 real testbenches, `--tiers auto`, 3 runs, instructions and cycles counted in every run), both sides `tools/build-bench.sh` builds of 176f5ec7, host shared and loaded (load 25 to 55), so cycles are indicative and instructions are the exact figure. B / A of the geometric mean over the testbenches, with the worst one in brackets:
+
+| profile trained on | run: instructions | run: cycles (indicative) | `elab`, warm and cold: instructions | analysis of the test's own files: instructions |
+|---|---:|---:|---:|---:|
+| real designs (13 of the 36 are in its training, so 23 are unseen) | 0.948 (0.997) | 0.894 | 0.960 (1.065) | 0.973 (1.004) |
+| the original set (all 36 unseen) | 0.944 (0.999) | 0.895 | 0.968 (1.054) | 0.988 (1.020) |
+
+On the 23 designs neither saw: run 0.949 for the real-design profile, 0.945 for the original set. With the original set no testbench has more instructions in `run` than the plain build (worst 0.999); in `elab` one has (`uvvm_axistream_vvc`, cold, 1.054; 1.065 with the real-design profile). A first set of 14 testbenches reached 0.965 and did less than the real-design profile on designs neither saw; adding eager compilation and the large-record, deep-hierarchy and library-style cases and the corpus sweep brought it to 0.945. Whole runs of the two long processor designs (instructions, plain release build against profile-guided, both `x86-64-v3`): 0.948 and 0.957, output and exit status equal. `x86-64-v3` alone: 0.989 instructions, no change in cycles; profile-guided on top of it: 0.947 instructions against 0.944 without it (cycles 0.878 and 0.895, indicative), so the gains add.
+
+Not done or not in the table: the cycle figures are not from a quiet host (a later agent runs the quiet check, recipe and binaries in `~/.cache/yavs-agents/plans/perf-cpu-soc/pgo.md`); the head-to-head against the reference simulator was not repeated with a profile-guided build; analysis of the library part of a test (cold) gains 6 percent with the original set against 11 with the real-design profile, which trained on the libraries it was then measured on.

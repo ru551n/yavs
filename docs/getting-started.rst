@@ -97,6 +97,24 @@ Without ``--features clift`` the build has no compiled tier: ``yavs --version`` 
 ``interpreter only, no compiled tier``, the default is ``--tier=interp``, and ``--tier=auto`` is
 error ``E0120``.
 
+Profile-guided build
+^^^^^^^^^^^^^^^^^^^^
+
+A build can be optimised with a profile of yavs's own run time. ``tools/pgo/build.sh`` builds
+yavs with instrumentation, runs a set of bundled testbenches with it, and builds again using what
+the runs recorded. It needs the ``llvm-tools`` component of the Rust toolchain:
+
+.. code-block:: bash
+
+    rustup component add llvm-tools
+    tools/pgo/build.sh target/yavs-pgo     # the profile-guided yavs
+
+It takes about three times the processor time of a plain release build (two builds and the training runs, about
+ten processor minutes of them) and the result gives the same output as a plain build. On the real testbenches we
+measured it executes about 5 percent fewer instructions and finishes in roughly 10 percent less time; see :doc:`performance`.
+Set ``RUSTFLAGS`` (for example ``-C target-cpu=x86-64-v3``) to give both builds the same flags. The release
+archives are not built this way, and the build is tested on Linux x86-64 only.
+
 Problems with the installation are covered in :doc:`troubleshooting`.
 
 .. _quickstart:

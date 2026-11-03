@@ -20,6 +20,7 @@ mod env;
 mod exec;
 mod foreign;
 mod gather;
+pub use gather::scatter_census;
 mod pmemo;
 mod pre;
 mod scan;

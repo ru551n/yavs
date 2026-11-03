@@ -25,6 +25,41 @@ use crate::exec::{CONST, Machine, R, cell, cold, ice, rt_err, split, to_time};
 #[derive(Default)]
 pub(crate) struct Plans(RwLock<HashMap<u32, Known>>);
 
+#[derive(Default)]
+struct CensusRow {
+    name: String,
+    size: u64,
+    items: u64,
+    runs: u64,
+    calls: u64,
+    now: u64,
+    same_cur_items: u64,
+    same_last_items: u64,
+    same_cur_runs: u64,
+    same_last_runs: u64,
+    same_cur_calls: u64,
+    same_last_calls: u64,
+    no_entries: u64,
+    image: bool,
+}
+static CENSUS: std::sync::LazyLock<std::sync::Mutex<HashMap<usize, CensusRow>>> =
+    std::sync::LazyLock::new(Default::default);
+static CENSUS_PART: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Measurement only: the whole-value scatters of the run, per plan.
+pub fn scatter_census() -> String {
+    use std::fmt::Write;
+    let m = CENSUS.lock().unwrap();
+    let mut v: Vec<&CensusRow> = m.values().collect();
+    v.sort_by_key(|r| std::cmp::Reverse(r.calls * r.items));
+    let mut o = format!("scatter part calls {}\n", CENSUS_PART.load(std::sync::atomic::Ordering::Relaxed));
+    let _ = writeln!(o, "signal size items runs calls now same_cur_calls same_last_calls same_cur_runs same_last_runs same_cur_items same_last_items no_entries image");
+    for r in v.iter() {
+        let _ = writeln!(o, "{} {} {} {} {} {} {} {} {} {} {} {} {} {}", r.name, r.size, r.items, r.runs, r.calls, r.now, r.same_cur_calls, r.same_last_calls, r.same_cur_runs, r.same_last_runs, r.same_cur_items, r.same_last_items, r.no_entries, r.image);
+    }
+    o
+}
+
 /// No constant-space descriptor address yet ([`MPlan::at`]): address 0 is frame space.
 const NO_ADDR: u64 = u64::MAX;
 
@@ -57,6 +92,7 @@ pub(crate) struct Bound {
     /// facts of its driver when it is a direct byte driver (`Ctx::direct_ref`): they do not
     /// change. A scatter from other driver slots looks them up each time.
     refs: std::cell::OnceCell<(u32, Box<[Option<yavs_kernel::DirectRef>]>)>,
+    last: std::cell::RefCell<Vec<u8>>,
     img: Img,
 }
 
@@ -607,6 +643,7 @@ impl Machine {
                 reads,
                 runs,
                 refs: std::cell::OnceCell::new(),
+                last: Default::default(),
                 img: Img::Count(0),
             })
         }))
@@ -823,6 +860,67 @@ impl Machine {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
+    fn scatter_census(&self, b: &Bound, data: &[u8], now: bool, c: &mut Ctx<'_>) -> R<()> {
+        let plan = &*b.plan;
+        let mut cur = vec![0u8; plan.size as usize];
+        for t in &*b.items {
+            let (l, s) = (&plan.leaves[t.leaf as usize], &b.sigs[t.leaf as usize]);
+            let at = t.voff as usize;
+            read_leaf(c, s, l, t.k, &mut cur[at..at + t.vsize as usize])?;
+        }
+        let eq = |a: &[u8], t: &Item| {
+            let (o, n) = (t.voff as usize, t.vsize as usize);
+            a.len() >= o + n && data[o..o + n] == a[o..o + n]
+        };
+        let mut last = b.last.borrow_mut();
+        let (mut sc, mut sl, mut rc, mut rl) = (0u64, 0u64, 0u64, 0u64);
+        for g in &*b.runs {
+            let ts = &b.items[g.first as usize..][..g.n as usize];
+            let (mut a, mut d) = (true, true);
+            for t in ts {
+                if eq(&cur, t) {
+                    sc += 1;
+                } else {
+                    a = false;
+                }
+                if eq(&last, t) {
+                    sl += 1;
+                } else {
+                    d = false;
+                }
+            }
+            rc += u64::from(a);
+            rl += u64::from(d);
+        }
+        let key = b as *const Bound as usize;
+        let mut m = CENSUS.lock().unwrap();
+        let e = m.entry(key).or_default();
+        if e.name.is_empty() {
+            e.name = c.sig_name(b.sigs[0].signal);
+            e.size = plan.size;
+            e.items = b.items.len() as u64;
+            e.runs = b.runs.len() as u64;
+        }
+        e.calls += 1;
+        e.now += u64::from(now);
+        e.same_cur_items += sc;
+        e.same_last_items += sl;
+        e.same_cur_runs += rc;
+        e.same_last_runs += rl;
+        e.same_cur_calls += u64::from(sc == e.items);
+        e.same_last_calls += u64::from(sl == e.items);
+        e.no_entries += u64::from(!c.run_has_entries());
+        if e.calls % 256 == 1 {
+            e.image = image_spec(b).is_some_and(|sp| c.image_id(&sp).is_some_and(|i| i != NO_IMAGE));
+        }
+        drop(m);
+        last.clear();
+        last.extend_from_slice(data);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn scatter_leaves(
         &mut self,
         b: &Bound,
@@ -855,7 +953,11 @@ impl Machine {
         // Another scatter through the same plan (other driver slots): no facts, the usual path.
         let refs: &[Option<yavs_kernel::DirectRef>] = if *base == driver { cached } else { &[] };
         let mut run = None;
+        if part.is_some() {
+            CENSUS_PART.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         if part.is_none() && !b.items.is_empty() {
+            self.scatter_census(b, data, now, c)?;
             for g in &*b.runs {
                 let ts = &b.items[g.first as usize..][..g.n as usize];
                 let id = ds[ts[0].leaf as usize].id;

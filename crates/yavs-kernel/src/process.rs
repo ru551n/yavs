@@ -1495,6 +1495,16 @@ impl Ctx<'_> {
         self.sh.signals.get(s.0 as usize)?.planes_view()
     }
 
+    /// Measurement only.
+    pub fn sig_name(&self, s: SignalId) -> String {
+        self.sh.signals[s.0 as usize].name.clone()
+    }
+
+    /// Measurement only: the run has direct entries.
+    pub fn run_has_entries(&self) -> bool {
+        !self.st.out.is_empty() || !self.st.outv.is_empty() || !self.st.outb.is_empty()
+    }
+
     /// The bytes of record image `id` (`image.rs`).
     #[inline(always)]
     pub fn image(&self, id: u32) -> Option<&[u8]> {

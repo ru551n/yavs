@@ -110,6 +110,7 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         eprintln!("counters: cb_{name}={v}");
     }
     // The calls into the host by instruction kind (`YAVS_COUNTERS=kinds|pc`, every build).
+    eprint!("{}", yavs_interp::scatter_census());
     for (name, v) in yavs_interp::tier_census() {
         eprintln!("counters: cb_{name}={v}");
     }

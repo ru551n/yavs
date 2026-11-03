@@ -1328,6 +1328,8 @@ struct Worker {
     /// for the rest. `rd_wait`: subprograms whose count ran out, no compiled caller yet.
     rd_hybrid: bool,
     rd_wait: Vec<FuncId>,
+    /// Prototype: the sampled microseconds of work before the count rule compiles anything.
+    rd_after: u64,
     trace: Option<Trace>,
 }
 
@@ -1565,6 +1567,10 @@ impl Worker {
             rd_notree: std::env::var_os("YAVS_RD_NOTREE").is_some(),
             rd_hybrid: std::env::var_os("YAVS_RD_HYBRID").is_some(),
             rd_wait: Vec::new(),
+            rd_after: std::env::var("YAVS_RD_AFTER")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
             trace: std::env::var_os("YAVS_AUTO_TRACE").map(|_| Trace {
                 t0: std::time::Instant::now(),
                 first: Default::default(),
@@ -1647,21 +1653,26 @@ impl Worker {
 
     /// Prototype: under the hybrid rule a subprogram waits for a compiled caller.
     fn rd_hold(&mut self, id: FuncId) -> bool {
-        let sub = self.prog.func(id).is_some_and(|f| f.kind != FuncKind::Process);
-        if self.rd_hybrid && sub && !self.entered_from_code(id) {
+        if self.rd_hybrid && !self.rd_go(id) {
             self.rd_wait.push(id);
             return true;
         }
         false
     }
 
-    /// Prototype: the waiting subprograms that have a compiled caller now.
+    /// Prototype: the run has lasted `rd_after`, and `id` is a process or has a compiled caller.
+    fn rd_go(&self, id: FuncId) -> bool {
+        let sub = self.prog.func(id).is_some_and(|f| f.kind != FuncKind::Process);
+        self.total >= self.rd_after && (!sub || self.entered_from_code(id))
+    }
+
+    /// Prototype: the waiting functions that may compile now.
     fn rd_freed(&mut self) -> Vec<FuncId> {
         if self.rd_wait.is_empty() {
             return Vec::new();
         }
         let wait = std::mem::take(&mut self.rd_wait);
-        let (go, stay): (Vec<_>, Vec<_>) = wait.into_iter().partition(|&i| self.entered_from_code(i));
+        let (go, stay): (Vec<_>, Vec<_>) = wait.into_iter().partition(|&i| self.rd_go(i));
         self.rd_wait = stay;
         go
     }
@@ -3570,6 +3581,8 @@ impl AutoTier {
                         for look in inbox.pop_front().unwrap_or_default() {
                             w.see(&look, upgrade, &mut pending);
                         }
+                        let free = w.rd_freed();
+                        pending.asked.extend(free);
                         loop {
                             publish(&w);
                             while let Ok(m) = rx.try_recv() {

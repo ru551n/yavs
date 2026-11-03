@@ -753,8 +753,8 @@ pub(crate) struct Signal {
     /// Elements whose driving value a direct transaction wrote for the next update
     /// (`commit_code`, `commit_planes`),
     /// one bit each (made at the first one), and the words with a bit set.
-    pend: Vec<u64>,
-    pend_words: Vec<u32>,
+    pend: SmallVec<[u64; 2]>,
+    pend_words: SmallVec<[u32; 4]>,
     /// Ranges whose driving value must be recomputed this cycle.
     pub dirty: Vec<Range>,
     /// Ranges whose driving value was written when the transaction was applied (a vector quick
@@ -939,7 +939,7 @@ const CODES_SOURCE_MAX: usize = 16;
 
 /// Elements `elem .. elem + len` (`len <= 64`) into the pending bit mask and its list of words.
 #[inline(always)]
-fn mark_bits(pend: &mut [u64], words: &mut Vec<u32>, elem: u32, len: u32) {
+fn mark_bits(pend: &mut [u64], words: &mut SmallVec<[u32; 4]>, elem: u32, len: u32) {
     let (w, s, m) = (elem as usize / 64, elem % 64, nmask(len as usize));
     if pend[w] == 0 {
         words.push(w as u32);
@@ -1092,8 +1092,8 @@ impl Signal {
             fine: false,
             cuts: Box::default(),
             nruns: 0,
-            pend: Vec::new(),
-            pend_words: Vec::new(),
+            pend: SmallVec::new(),
+            pend_words: SmallVec::new(),
             pend_one: false,
             lag: false,
             exact: false,
@@ -2006,7 +2006,7 @@ impl Signal {
         let first = !self.pend_one && self.pend_words.is_empty();
         self.spill_pend_one();
         if self.pend.is_empty() {
-            self.pend = vec![0; (self.ty.len as usize).div_ceil(64)];
+            self.pend = smallvec![0; (self.ty.len as usize).div_ceil(64)];
         }
         let exact = self.exact;
         self.lag |= !exact;
@@ -2104,7 +2104,7 @@ impl Signal {
     #[inline(always)]
     fn mark_pend(&mut self, elem: u32, len: u32) -> bool {
         if self.pend.is_empty() {
-            self.pend = vec![0; (self.ty.len as usize).div_ceil(64)];
+            self.pend = smallvec![0; (self.ty.len as usize).div_ceil(64)];
         }
         let first = self.pend_words.is_empty();
         mark_bits(&mut self.pend, &mut self.pend_words, elem, len);
@@ -2119,7 +2119,7 @@ impl Signal {
         self.spill_pend_one();
         self.last_commit.0 = u32::MAX;
         if self.pend.is_empty() {
-            self.pend = vec![0; (self.ty.len as usize).div_ceil(64)];
+            self.pend = smallvec![0; (self.ty.len as usize).div_ceil(64)];
         }
         let exact = self.exact;
         self.lag |= !exact;

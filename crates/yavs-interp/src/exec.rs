@@ -2024,6 +2024,9 @@ impl Machine {
             }
             Some(crate::TIER_UNWIND) | None => Direct::Continue,
             Some(p) => {
+                if let Some(f) = self.rt_run.as_ref().and_then(|rt| rt.prog.func(func)) {
+                    crate::tier_census::note_exit(f, p, p == pc);
+                }
                 self.top().pc = p;
                 Direct::Continue
             }
@@ -9337,6 +9340,7 @@ impl Machine {
             // the instruction after the one compiled code called it for).
             Some(p) if fault.is_some() => p as usize,
             Some(p) => {
+                crate::tier_census::note_exit(f, p, p as usize == pc);
                 self.top().pc = p;
                 p as usize
             }
@@ -11639,6 +11643,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
             }
             // Anything else (an error the interpreter reports) is the interpreter's.
             _ => {
+                crate::tier_census::note_exit(self.f, pc, false);
                 m.frames[top].pc = pc;
                 return false;
             }
@@ -12240,6 +12245,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
         pc: u32,
         frames: &[crate::NativeFrame],
     ) -> crate::Stepped {
+        crate::tier_census::note_deopt(self.prog, frames);
         let r = self.push_native(pc, frames);
         self.m.tier_view(tf);
         match r {

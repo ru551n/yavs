@@ -1,5 +1,6 @@
 //! `YAVS_COUNTERS=kinds` (or `=pc`): how often compiled code calls into the host, by entry point
-//! and instruction kind (with `pc`, by function and pc). `yavs run` prints them with the other
+//! and instruction kind (with `pc`, by function and pc); `=exits`: only the census of what leaves
+//! compiled code (`exit`, `ret`, `noentry`, `deopt`, `deopt_frames`, `unwind_*`). `yavs run` prints them with the other
 //! work counters as `counters: cb_<entry>.<Kind>[.<function>.pc<N>]=N` (`crates/yavs/src/counters.rs`),
 //! next to the totals per callback kind of `yavs-llvm` (`cb_<entry>`). A tuning aid and the check
 //! that an instruction takes its fast path: a counter that stays out is a fast path that always
@@ -15,6 +16,8 @@ fn mode() -> u8 {
     *MODE.get_or_init(|| match std::env::var("YAVS_COUNTERS").as_deref() {
         Ok("pc") => 2,
         Ok("kinds") => 1,
+        // Only what leaves compiled code: cheap enough for a whole run.
+        Ok("exits") => 3,
         _ => 0,
     })
 }
@@ -22,8 +25,44 @@ fn mode() -> u8 {
 /// Count one call of host entry `entry` for the instruction at `pc` of `func`.
 #[inline(always)]
 pub(crate) fn note(entry: &str, func: &str, pc: u32, inst: Option<&yavs_ir::Inst>) {
-    if mode() != 0 {
+    if matches!(mode(), 1 | 2) {
         note_slow(entry, func, pc, inst);
+    }
+}
+
+/// Compiled code of `f` returned `pc` to the interpreter (`same`: where it was entered, no entry
+/// there). A `Ret` is its normal end.
+#[inline(always)]
+pub(crate) fn note_exit(f: &yavs_ir::Func, pc: u32, same: bool) {
+    if mode() != 0 {
+        let inst = f.code.get(pc as usize);
+        let e = match inst {
+            Some(yavs_ir::Inst::Ret { .. }) => "ret",
+            _ if same => "noentry",
+            _ => "exit",
+        };
+        note_slow(e, &f.name, pc, inst);
+    }
+}
+
+/// Native frames are materialised: the top one names why, every one counts.
+#[inline(always)]
+pub(crate) fn note_deopt(prog: &yavs_ir::Program, frames: &[crate::NativeFrame]) {
+    if mode() != 0
+        && let Some(top) = frames.last()
+        && let Some(f) = prog.func(top.func)
+    {
+        note_slow("deopt", &f.name, top.pc, f.code.get(top.pc as usize));
+        for _ in frames {
+            note_slow("deopt_frames", "", 0, None);
+        }
+    }
+}
+
+/// An exit of compiled code the interpreter does not see as such (`rt::step_in`).
+pub fn note_unwind(why: &str, func: &str, pc: u32) {
+    if mode() != 0 {
+        note_slow(why, func, pc, None);
     }
 }
 

@@ -844,7 +844,11 @@ impl Jit {
             };
             let prot = matches!(i, Inst::CallProt { .. });
             let Some(g) = prog.func(func) else { continue };
-            if nats.contains_key(&func) || !nc.contains(&func) || !call_fits(f, id, g, args, prot) {
+            // (A copy's frame stands for its process's: what is nested in the process is nested in it.)
+            if nats.contains_key(&func)
+                || !nc.contains(&func)
+                || !call_fits(f, prog.base_of(id), g, args, prot)
+            {
                 continue;
             }
             if self.via_ntab {
@@ -3707,11 +3711,12 @@ fn gen_func(
                 let nr = g.imp.natives.get(&func).copied();
                 let callee = prog.func(func);
                 match (nr, callee) {
-                    (Some(nr), Some(callee)) if call_fits(f, id, callee, args, false) => {
+                    (Some(nr), Some(callee)) if call_fits(f, prog.base_of(id), callee, args, false) => {
                         let memo = prog.memo_sig(func).is_some_and(|m| {
                             m.cells as usize == f.regs(args).map_or(0, <[_]>::len)
                         });
-                        g.native_call(pc, &inst, id, f, nr, func, callee, args, dst, None, memo)
+                        let caller = prog.base_of(id);
+                        g.native_call(pc, &inst, caller, f, nr, func, callee, args, dst, None, memo)
                     }
                     _ => g.step(pc, &inst),
                 }
@@ -3726,13 +3731,13 @@ fn gen_func(
                 let callee = prog.func(func);
                 match (nr, callee) {
                     (Some(nr), Some(callee))
-                        if call_fits(f, id, callee, args, true)
+                        if call_fits(f, prog.base_of(id), callee, args, true)
                             && obj.0 < f.reg_ty.len() as u32 =>
                     {
                         g.native_call(
                             pc,
                             &inst,
-                            id,
+                            prog.base_of(id),
                             f,
                             nr,
                             func,

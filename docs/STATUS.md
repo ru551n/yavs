@@ -10808,3 +10808,7 @@ A zero-delay drive at a constant reference in a process copy compares with the s
 ## Record drive compare
 
 A whole zero-delay assignment of a record signal compares the value with the record image, as a whole and then per run of leaves, and makes no kernel call for what holds (`YAVS_NO_IMAGE` turns it off with the images, `YAVS_IMAGE_CHECK` holds every skip against the kernel's full test, always in debug builds; `docs/decisions.md` "Record drive compare"). Not served: a part of a record signal, drivers that are not direct. Its gain in cycles has not been measured on a quiet host.
+
+## Whole-record reads and drives in Cranelift frame-mode code
+
+`SigGather` and `SigScatter` run through the signal callback instead of the generic step, as in the LLVM tier (`yavs-clift`; `docs/decisions.md` "Whole-record reads and drives in Cranelift frame-mode code"). Forced compiled windows execute 0.5 to 0.9 percent fewer instructions.

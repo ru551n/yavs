@@ -1694,6 +1694,18 @@ mod clift {
             ("cb_deopt", Max(0))
         ]
     );
+    // Whole-record reads and drives (`SigGather`, `SigScatter`) go through the signal callback,
+    // not a step (#790).
+    clift_case!(
+        record_signals,
+        "sigrec_copy",
+        "errors=0",
+        [
+            ("cb_step", Max(4)),
+            ("cb_signal", Max(420)),
+            ("cb_signal", Min(390)),
+        ]
+    );
     clift_case!(
         reg_planes,
         "reg_planes",

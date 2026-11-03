@@ -3507,6 +3507,9 @@ fn gen_func(
             Inst::WaitOn { sig } if g.nat.is_none() => g.wait_on(pc, sig),
             Inst::WaitEdge { sig, kind } if g.nat.is_none() => g.wait_edge(pc, sig, kind.code()),
             Inst::SigRead { dst, sig } => g.sig_read(pc, dst, sig),
+            // Through the signal callback rather than a step (#790), as the LLVM tier does; a
+            // native frame keeps its own way.
+            Inst::SigGather { .. } | Inst::SigScatter { .. } if g.nat.is_none() => g.signal(pc, 0),
             Inst::WaitOn { .. }
             | Inst::WaitFor { .. }
             | Inst::DriveSlot { .. }

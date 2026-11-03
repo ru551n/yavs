@@ -1366,7 +1366,10 @@ impl Worker {
     /// were running, and note what became hot. Only the look and the state decide; nothing here
     /// reads a clock.
     fn see(&mut self, look: &Look, upgrade: bool, pending: &mut Pending) {
-        self.rd_seen += u64::from(self.heat.period) * u64::from(stretch(self.rd_seen));
+        if self.rd_seen == 0 {
+            // What elaboration took does not count for the run's length.
+            self.rd_seen = sim_cpu().map_or(1, |c| u64::try_from(c.as_micros()).unwrap_or(1)).max(1);
+        }
         if look.running.is_empty() {
             return;
         }
@@ -1668,7 +1671,9 @@ impl Worker {
         let sub = self.prog.func(id).is_some_and(|f| f.kind != FuncKind::Process);
         // ponytail: CPU time, so the moment is timing dependent; a count of work if this stays.
         let long = self.rd_after == 0
-            || sim_cpu().is_some_and(|c| c.as_micros() >= u128::from(self.rd_after));
+            || sim_cpu().is_some_and(|c| {
+                c.as_micros() >= u128::from(self.rd_after) + u128::from(self.rd_seen)
+            });
         long && (!sub || self.entered_from_code(id))
     }
 

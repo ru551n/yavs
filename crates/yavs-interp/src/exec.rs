@@ -295,6 +295,31 @@ fn watch_tick(rt: &Runtime, func: FuncId, pc: u32) -> bool {
         .func
         .get(func.0 as usize)
         .is_some_and(|n| n.load(Ordering::Acquire) & (NAT_CODE | NAT_ASK) != 0)
+        && !NESTED.get()
+}
+
+thread_local! {
+    /// This thread runs a call for a native frame of compiled code in the interpreter
+    /// (`native_stay`): no compiled code under it, native stack stays bounded and the frames
+    /// below are reached through the window only.
+    static NESTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether compiled code may not run on this thread (`NESTED`). Out of line: it is asked only
+/// where compiled code is about to run from the loop that has none.
+#[cold]
+#[inline(never)]
+fn nested() -> bool {
+    NESTED.get()
+}
+
+/// Ends a `NESTED` stretch when dropped.
+struct Nested;
+
+impl Drop for Nested {
+    fn drop(&mut self) {
+        NESTED.set(false);
+    }
 }
 
 /// Whether a call of `callee` hands the loop over to the one with the tier: a flag of it is set now
@@ -305,7 +330,7 @@ fn watch_tick(rt: &Runtime, func: FuncId, pc: u32) -> bool {
 #[cold]
 #[inline(never)]
 fn callee_retier(rt: &Runtime, callee: u32) -> bool {
-    rt.native.flagged(callee) && !rt.native.callable(callee)
+    rt.native.flagged(callee) && !rt.native.callable(callee) && !NESTED.get()
 }
 
 /// Zeroes the sampling slot when dropped (`Machine::exec_fast`).
@@ -5469,7 +5494,7 @@ impl Machine {
         let prog = &rt.prog;
         if !DEBUG {
             return match rt.tier.get() {
-                Some(tier) if self.tiered(rt) => {
+                Some(tier) if self.tiered(rt) && !nested() => {
                     let r = self.exec_fast::<true, false>(rt, Some(&**tier), None, ctx, base);
                     // Nothing interpreted on this thread until the next run.
                     crate::slot().store(0, Ordering::Relaxed);
@@ -5912,7 +5937,7 @@ impl Machine {
             ($cpre:expr) => {
                 if TIER {
                     tier
-                } else if watch && $cpre.native.load(Ordering::Relaxed) {
+                } else if watch && $cpre.native.load(Ordering::Relaxed) && !nested() {
                     rt.tier.get().map(|t| &**t)
                 } else {
                     None
@@ -12725,15 +12750,15 @@ impl crate::TierHost for Host<'_, '_, '_> {
         let mut r = m.step(prog, f, inst, self.ctx);
         let mut inner = Vec::new();
         if let Ok(Flow::Call) = r {
-            // To its end here, without compiled code (native stack stays bounded); the sampler
-            // sees the callee, so it gets compiled.
-            let callee = m.frames[m.frames.len() - 1].func;
+            // To its end here, without compiled code (native stack stays bounded), in the loop
+            // that names what it runs for the sampler, so what is hot here gets compiled.
             let slot = crate::slot();
-            let was = slot.swap(
-                u64::from(rt.id) << 32 | u64::from(callee.0),
-                Ordering::Relaxed,
-            );
-            let out = m.exec_fast::<false, false>(rt, None, None, self.ctx, own + 1);
+            let was = slot.load(Ordering::Relaxed);
+            NESTED.set(true);
+            let out = {
+                let _nested = Nested;
+                m.exec_fast::<false, true>(rt, None, Some(slot), self.ctx, own + 1)
+            };
             slot.store(was, Ordering::Relaxed);
             r = match out {
                 Ok(Outcome::Returned(v)) => {

@@ -105,8 +105,8 @@ pub struct Jit {
     host: ClifId,
     signal: ClifId,
     spin: ClifId,
-    /// `allocates` of each function asked.
-    allocs: HashMap<FuncId, bool>,
+    /// `heap_use` of each function asked.
+    allocs: HashMap<FuncId, (bool, bool)>,
     record: ClifId,
     steps: ClifId,
     xstay: ClifId,
@@ -782,7 +782,7 @@ impl Jit {
             return None;
         }
         // A native frame holds registers no collection can see, so a collection waits for it to
-        // end: not one that allocates without bound. Frame-mode code collects as it goes.
+        // end: not one that leaves garbage without bound. Frame-mode code collects as it goes.
         if no_exits() && allocates_in_loop(prog, f, &mut self.allocs) {
             if dump {
                 eprintln!("no native variant of {id} {}: allocates in a loop", f.name);
@@ -1579,46 +1579,54 @@ impl Jit {
     }
 }
 
-/// Whether a loop of `f` can allocate or free on the heap, itself or in what it calls.
-fn allocates_in_loop(prog: &Program, f: &Func, memo: &mut HashMap<FuncId, bool>) -> bool {
+/// Whether a loop of `f` can allocate on the heap with nothing in the loop that frees: what it
+/// allocates is garbage only a collection finds, and that waits for the native frames to end. A
+/// loop that frees gives the bytes back at once (a slot's number waits, 16 bytes or so).
+/// ponytail: a loop that frees less than it allocates still grows until the function returns;
+/// roots of native frames in a stack map if a design shows that.
+fn allocates_in_loop(prog: &Program, f: &Func, memo: &mut HashMap<FuncId, (bool, bool)>) -> bool {
     yavs_llvm::rt::back_edges(prog, f).into_iter().any(|r| {
-        f.code.get(r).is_some_and(|code| {
-            code.iter().any(|i| match *i {
-                Inst::New { .. } | Inst::NewFill { .. } | Inst::Free { .. } => true,
+        let (mut new, mut free) = (false, false);
+        for i in f.code.get(r).unwrap_or(&[]) {
+            match *i {
+                Inst::New { .. } | Inst::NewFill { .. } => new = true,
+                Inst::Free { .. } => free = true,
                 Inst::Call { func, .. } | Inst::CallProt { func, .. } => {
-                    allocates(prog, func, memo)
+                    let (n, d) = heap_use(prog, func, memo);
+                    new |= n;
+                    free |= d;
                 }
-                _ => false,
-            })
-        })
+                _ => {}
+            }
+        }
+        new && !free
     })
 }
 
-/// Whether function `id` can allocate or free on the heap, itself or in what it calls.
-fn allocates(prog: &Program, id: FuncId, memo: &mut HashMap<FuncId, bool>) -> bool {
+/// Whether function `id` can allocate and whether it can free on the heap, itself or in what it
+/// calls.
+fn heap_use(prog: &Program, id: FuncId, memo: &mut HashMap<FuncId, (bool, bool)>) -> (bool, bool) {
     if let Some(&r) = memo.get(&id) {
         return r;
     }
     let mut seen = HashSet::from([id]);
     let mut todo = vec![id];
-    let mut found = false;
+    let (mut new, mut free) = (false, false);
     while let Some(k) = todo.pop() {
         let Some(f) = prog.func(k) else { continue };
         for i in &f.code {
             match *i {
-                Inst::New { .. } | Inst::NewFill { .. } | Inst::Free { .. } => found = true,
+                Inst::New { .. } | Inst::NewFill { .. } => new = true,
+                Inst::Free { .. } => free = true,
                 Inst::Call { func, .. } | Inst::CallProt { func, .. } if seen.insert(func) => {
                     todo.push(func);
                 }
                 _ => {}
             }
         }
-        if found {
-            break;
-        }
     }
-    memo.insert(id, found);
-    found
+    memo.insert(id, (new, free));
+    (new, free)
 }
 
 /// `YAVS_CLIFT_EXITMAP`: a function of the native set has no variant.

@@ -417,7 +417,7 @@ pub fn keep_exits() {
 
 /// Compiled code never hands a running function to the interpreter (docs/decisions.md "No resume
 /// anywhere in Cranelift code"); `YAVS_CLIFT_EXITS=old` keeps today's exits.
-fn no_exits() -> bool {
+pub(crate) fn no_exits() -> bool {
     static OLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     !*OLD.get_or_init(|| flag("YAVS_CLIFT_EXITS", "new") == "old")
         && !OLD_EXITS.load(std::sync::atomic::Ordering::Relaxed)

@@ -166,10 +166,10 @@ fn copies_are_stored_between_runs() {
     for r in &runs {
         assert_eq!(r.code, 0, "{}", r.stderr);
         assert_eq!(r.stdout, last.stdout);
-        assert_eq!(r.counters["spec_copies"], 3);
+        assert_eq!(r.counters["spec_copies"], 5);
     }
     assert_eq!(last.counters["spec_fresh"], 0, "{:?}", last.counters);
-    assert_eq!(last.counters["spec_loaded"], 3, "{:?}", last.counters);
+    assert_eq!(last.counters["spec_loaded"], 5, "{:?}", last.counters);
     let kinds: Vec<String> = std::fs::read_dir(d.join("lib").join("yavs-cache"))
         .expect("cache")
         .flatten()

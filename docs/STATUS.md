@@ -10813,7 +10813,7 @@ Measured with `tools/realbench` (`--compare`, 36 real testbenches, `--tiers auto
 
 | profile trained on | run: instructions | run: cycles (indicative) | `elab`, warm and cold: instructions | analysis of the test's own files: instructions |
 |---|---:|---:|---:|---:|
-| real designs (13 of the 36 are in its training, so 23 are unseen) | 0.948 (0.997) | 0.894 | 0.960 (1.065) | 0.973 (1.004) |
+| real designs (13 of the 36 are in its training, so 23 are unseen; 35 `run` cells, one timed out) | 0.948 (0.997) | 0.894 | 0.960 (1.065) | 0.973 (1.004) |
 | the original set (all 36 unseen) | 0.944 (0.999) | 0.895 | 0.968 (1.054) | 0.988 (1.020) |
 
 On the 23 designs neither saw: run 0.949 for the real-design profile, 0.945 for the original set. With the original set no testbench has more instructions in `run` than the plain build (worst 0.999); in `elab` one has (`uvvm_axistream_vvc`, cold, 1.054; 1.065 with the real-design profile). A first set of 14 testbenches reached 0.965 and did less than the real-design profile on designs neither saw; adding eager compilation and the large-record, deep-hierarchy and library-style cases and the corpus sweep brought it to 0.945. Whole runs of the two long processor designs (instructions, plain release build against profile-guided, both `x86-64-v3`): 0.948 and 0.957, output and exit status equal. `x86-64-v3` alone: 0.989 instructions, no change in cycles; profile-guided on top of it: 0.947 instructions against 0.944 without it (cycles 0.878 and 0.895, indicative), so the gains add.

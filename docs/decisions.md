@@ -10041,6 +10041,8 @@ testbench (`rand_next`, 8.3 M calls of `math_real.uniform`) 11: `yavs_rt_native`
   view (a frame a native window holds) misses as before. Package and protected-object spaces stay #719's.
 - **Measured** (bench builds, core 12, `perf stat` user cycles and instructions, medians of 5 interleaved runs, base c7f56056): see docs/STATUS.md.
 
+- **Cranelift too (2026-11-03):** `Gen::uniform_fast` in `yavs-clift` computes it in place the same way. `native::leaves` already counted the call as inline for every generator, so the policy priced Cranelift's `rand_next` as if it stayed in compiled code while each call went through `yavs_rt_native`.
+
 ## A copy splits the position of an index into a check and a subtraction (yavs-ir `opt.rs` `pos_to_check`, `tidy`, #519, 2026-10-25)
 
 - **Finding:** in the specialised copies of `sc5_fifo_repack` the descriptors of the signal arrays are instance data and fold (`DopeLen` is a constant, the

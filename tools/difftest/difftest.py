@@ -63,7 +63,11 @@ YAVS_MIXED = "export YAVS_MIXED=1 YAVS_CLIFT_NTAB=1; " + YAVS_AUTO3_EAGER
 # a drive in generated code held against the kernel's full test: what `gate_checked` counts. The
 # other templates reach that compare on hardly any test of the corpus, whose runs are short.
 YAVS_CLIFT_CHECK = "export YAVS_SPEC_ALL=1 YAVS_SPEC_AFTER=2 YAVS_INLCMP=check YAVS_IMAGE_AFTER=1 YAVS_IMAGE_CHECK=1; " + YAVS.replace("--threads=", "--tier=clift-auto --tier-heat=1,0,0 --threads=")
-TEMPLATES = {"yavs-clift-check": YAVS_CLIFT_CHECK, "yavs-mixed": YAVS_MIXED, "yavs": YAVS, "yavs-interp": YAVS_INTERP, "yavs-llvm": YAVS_LLVM, "yavs-auto": YAVS_AUTO, "yavs-auto-warm": YAVS_AUTO_WARM, "yavs-clift": YAVS_CLIFT, "yavs-clift-auto": YAVS_CLIFT_AUTO, "yavs-auto3": YAVS_AUTO3, "yavs-auto3-eager": YAVS_AUTO3_EAGER}
+# The count rule of `--tier=auto` at its tightest: every function asked for at its first call, a copy of
+# every process that can have one from its second activation, the run waiting for what it asks
+# (`YAVS_AUTO_SYNC`), so the rule's paths run on every test however short.
+YAVS_CLIFT_COUNT1 = "export YAVS_AUTO_COUNT=1 YAVS_AUTO_GATE=0 YAVS_AUTO_SYNC=1 YAVS_SPEC_ALL=1; " + YAVS_CLIFT_AUTO
+TEMPLATES = {"yavs-clift-count1": YAVS_CLIFT_COUNT1, "yavs-clift-check": YAVS_CLIFT_CHECK, "yavs-mixed": YAVS_MIXED, "yavs": YAVS, "yavs-interp": YAVS_INTERP, "yavs-llvm": YAVS_LLVM, "yavs-auto": YAVS_AUTO, "yavs-auto-warm": YAVS_AUTO_WARM, "yavs-clift": YAVS_CLIFT, "yavs-clift-auto": YAVS_CLIFT_AUTO, "yavs-auto3": YAVS_AUTO3, "yavs-auto3-eager": YAVS_AUTO3_EAGER}
 # yavs repeats analysis warnings when it loads the units: W1904 (a shared variable of a
 # non-protected type) is the warning `relaxed` tests are about.
 _RX = "--relaxed -Wno-W1904 -Wno-W1325 -Wno-W1501"

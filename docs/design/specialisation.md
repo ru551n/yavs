@@ -352,7 +352,7 @@ section 9 as proposed there. What exists, and where it differs from the prototyp
 - **Shared code is kept** under `--dap` and anything that keeps variables (`keep_variables`), with
   `--vhpi` and `--wave-variables` (`external_variables`), under `--tier=llvm` (the whole program is compiled before a copy exists),
   with `YAVS_NO_IROPT`, and for serial processes (shared variables, protected objects).
-- **Tiers.** Under `--tier=auto` a copy is a function with its own id: the sampler sees it and the
+- **Tiers.** Under `--tier=auto` on Cranelift the count rule asks for a copy after half of its count, the process having switched after the other half (`docs/decisions.md` "`--tier=auto`: the count rule"). Under `--tier=auto` a copy is a function with its own id: the sampler sees it and the
   policy compiles it like any function, but every decision about it is the process's (#661, 2026-10-24):
   the sampled time of a process and all its copies is one number (`Worker::group`, by `Program::base_of`),
   and the threshold, the payback rule, the band wait of clocked processes, the share and instance rules

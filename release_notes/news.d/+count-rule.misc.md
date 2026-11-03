@@ -1,0 +1,1 @@
+`--tier=auto` on Cranelift decides what to compile by how often code is entered as well as by where time goes: a process that keeps waking up and what compiled code calls are compiled once a run has lasted about half a second of simulation work. Longer runs keep more code compiled; ``YAVS_AUTO_POLICY=sampled`` gives the earlier behaviour.

@@ -146,6 +146,13 @@ fn a_warm_run_with_other_generics_is_a_cold_run_with_them() {
     let base = run(&d, &work, &[], &["--tier=interp"], &["--no-cache"], &[]);
     let again = run(&d, &work, &[SPEC], &EAGER, &[], &[]);
     assert_eq!((&base.0, &base.1, &base.2), (&again.0, &again.1, &again.2));
+    // The store did serve that run: the comparison above is of stored copies.
+    let (_, _, e) = run(&d, &work, &[SPEC, ("YAVS_COUNTERS", "1")], &EAGER, &[], &[]);
+    let loaded = e
+        .lines()
+        .find_map(|l| l.strip_prefix("counters: spec_loaded="))
+        .expect("the counter");
+    assert_ne!(loaded, "0", "no copy came from the store");
 }
 
 /// Every tier gives what the interpreter gives, and a length that does not match fails at its

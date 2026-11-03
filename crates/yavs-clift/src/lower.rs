@@ -1646,6 +1646,13 @@ fn canon(b: &mut FunctionBuilder<'_>, w: Width, v: Value) -> Value {
     }
 }
 
+/// Prototype (perf/rd-interp, `YAVS_RD_XSTEP`): the two instructions that refuse native variants
+/// today are stepped on a frame of the host's own.
+fn rd_xstep() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("YAVS_RD_XSTEP").is_some())
+}
+
 /// The instructions a native frame has the interpreter execute on a frame of its own: those of the
 /// LLVM tier (`xstep_ok`) and the ones it lowers inline that this tier does not (`TierHost::native_step`
 /// steps any instruction that needs only registers and memory the host reaches).
@@ -2452,6 +2459,10 @@ fn gen_func(
                         g.range_exit(v, l, h, pc);
                         g.st(dst, v);
                     }
+                    // Prototype (perf/rd-interp): `**` on a native frame, as the other generator.
+                    None if g.nat.is_some() && rd_xstep() && xstep_wide(f, &inst) => {
+                        g.native_step(pc, &inst, f)
+                    }
                     None => g.step(pc, &inst),
                 }
             }
@@ -2776,6 +2787,11 @@ fn gen_func(
                     }
                     g.st(dst, a);
                     g.join(join);
+                }
+                // Prototype (perf/rd-interp): a layout from a run-time descriptor on a native
+                // frame, as the other generator.
+                None if g.nat.is_some() && rd_xstep() && xstep_wide(f, &inst) => {
+                    g.native_step(pc, &inst, f)
                 }
                 None => g.step(pc, &inst),
             },

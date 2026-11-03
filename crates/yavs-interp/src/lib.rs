@@ -433,6 +433,9 @@ pub trait Tier: Send + Sync {
     /// that a run cannot end before its compile).
     fn hot(&self, _func: FuncId) {}
 
+    /// Prototype (perf/rd-interp): the call-count rule asks for `func`; returns at once.
+    fn asked(&self, _func: FuncId) {}
+
     /// Call `func` from the interpreter's top frame, which waits at its `Call` (or `CallProt`
     /// on the protected object `obj`) at `pc`, on a frame of the compiled code's own (native
     /// frame), with argument `cells` (one per parameter, two for a signal; the object first):
@@ -1373,9 +1376,38 @@ pub struct NativeFlags {
     fresh: Mutex<Vec<u32>>,
     /// `fresh` is not empty.
     dirty: std::sync::atomic::AtomicBool,
+    /// Prototype (perf/rd-interp, `YAVS_RD_COUNT`): per function, entries left before it is compiled.
+    rd: Box<[std::sync::atomic::AtomicU32]>,
 }
 
 impl NativeFlags {
+    /// Prototype: one more entry of `func` (or `by`); true when its count just ran out.
+    #[inline(always)]
+    pub(crate) fn rd_tick(&self, func: u32, by: u32) -> bool {
+        let Some(c) = self.rd.get(func as usize) else {
+            return false;
+        };
+        let v = c.load(Ordering::Relaxed);
+        if v == 0 {
+            return false;
+        }
+        let n = v.saturating_sub(by);
+        c.store(n, Ordering::Relaxed);
+        n == 0
+    }
+
+    /// Prototype: the entries `func` has left.
+    pub(crate) fn rd_set(&self, func: u32, n: u32) {
+        if let Some(c) = self.rd.get(func as usize) {
+            c.store(n, Ordering::Relaxed);
+        }
+    }
+
+    /// Prototype: whether the call-count rule is on.
+    pub fn rd_on(&self) -> bool {
+        !self.rd.is_empty()
+    }
+
     /// `func` got a flag: `Runtime::sync_native` tells its `Pre`.
     fn note(&self, func: u32) {
         self.fresh
@@ -1735,6 +1767,10 @@ impl Runtime {
                 retiers: Default::default(),
                 fresh: Default::default(),
                 dirty: Default::default(),
+                rd: match std::env::var("YAVS_RD_COUNT").ok().and_then(|v| v.parse().ok()) {
+                    Some(n) => (0..prog.funcs.len()).map(|_| std::sync::atomic::AtomicU32::new(n)).collect(),
+                    None => Default::default(),
+                },
             }),
             live: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
             plans: Default::default(),
@@ -1835,6 +1871,26 @@ impl Runtime {
     /// Set `Pre::native` of the functions flagged since the last call. The fast loops call it where
     /// they look for compiled code anyway (an activation starts, every `WATCH` events), so a
     /// call of a function the tier just flagged is seen within that many events.
+    /// Prototype: a process that cannot have its copy: its shared code compiles.
+    pub(crate) fn rd_fire_shared(&self, func: FuncId) {
+        if let Some(t) = self.tier.get() {
+            t.asked(func);
+        }
+    }
+
+    /// Prototype (perf/rd-interp): the count of `func` ran out: ask the tier, unless the process
+    /// switches to a copy, which has a count of its own.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn rd_fire(&self, func: FuncId) {
+        let copyable = self.prog.base_of(func) == func
+            && self.prog.func(func).is_some_and(|f| f.kind == yavs_ir::FuncKind::Process)
+            && self.prog.specialisable(func);
+        if !copyable && let Some(t) = self.tier.get() {
+            t.asked(func);
+        }
+    }
+
     #[inline(always)]
     pub(crate) fn sync_native(&self) {
         if self.native.dirty.load(Ordering::Acquire) {
@@ -2471,7 +2527,12 @@ impl Process for InterpProcess {
             // Started, running, no shared state, no debugger: the activation of a process.
             self.m.execs += 1;
             if self.m.execs == u64::from(self.m.spec_at) {
+                let b = self.m.entry;
                 self.m.specialise(Some(&*ctx));
+                // Prototype: a switch that failed leaves the shared code to the count rule.
+                if self.m.rd_no_copy(b) {
+                    self.m.rt.clone().rd_fire_shared(b);
+                }
             }
             if let Err(e) = self.m.borrow_scratch() {
                 return Err(self.m.error(e, Some(ctx)));

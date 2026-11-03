@@ -285,6 +285,9 @@ const WATCH_CHUNK: u32 = 128;
 #[cold]
 #[inline(never)]
 fn watch_tick(rt: &Runtime, func: FuncId, pc: u32) -> bool {
+    if rt.native.rd_tick(func.0, 1) {
+        rt.rd_fire(func);
+    }
     rt.sync_native();
     crate::slot().store(
         u64::from(rt.id) << 32 | u64::from(func.0),
@@ -1767,9 +1770,20 @@ impl Machine {
                 .is_some_and(|i| matches!(i, Inst::Suspend { .. }))
         };
         let Some(&at) = new.resume.first() else {
+            rd_spec(&new.name, "no resume");
             return;
         };
         if !waits_at(old, pc) || !waits_at(new, at as usize) || new.frame < raw.frame {
+            rd_spec(
+                &new.name,
+                &format!(
+                    "waits old {} new {} frame {} raw {} pc {pc} at {at}",
+                    waits_at(old, pc),
+                    waits_at(new, at as usize),
+                    new.frame,
+                    raw.frame
+                ),
+            );
             return;
         }
         let Some(pre) = rt.pre(id, new) else {
@@ -1779,6 +1793,7 @@ impl Machine {
         // places, `opt/proc_objects.rs`.)
         let keep = old.objects_end().max(raw.frame) as usize;
         if old.objects_end() != new.objects_end() {
+            rd_spec(&new.name, "objects_end");
             return;
         }
         // Every object the copy takes from the heap has the size it was made for.
@@ -1793,6 +1808,7 @@ impl Machine {
                 .is_some_and(|d| d.len() == bytes as usize)
         };
         if !new.moved.iter().all(holds) {
+            rd_spec(&new.name, "moved");
             return;
         }
         if self.root.len() > keep {
@@ -1806,6 +1822,14 @@ impl Machine {
         (fr.func, fr.pc, fr.slen) = (id, at, pre.slots);
         self.entry = id;
         prog.note_switch();
+        // Prototype: the copy's own count of the call-count rule.
+        if rt.native.rd_on() {
+            static COPY: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+            let n = *COPY.get_or_init(|| {
+                std::env::var("YAVS_RD_COPY").ok().and_then(|v| v.parse().ok()).unwrap_or(1)
+            });
+            rt.native.rd_set(id.0, n);
+        }
         self.tier_state = crate::TierState::default();
         // A resident process holds registers filled for the shared code: fill the copy's, and
         // stay resident if they fit. A released one gets the copy's from `borrow_fill`, its
@@ -1836,6 +1860,11 @@ impl Machine {
                 }
             }
         }
+    }
+
+    /// Prototype: the count rule is on, the switch to a copy was tried and `b` is still the entry.
+    pub(crate) fn rd_no_copy(&self, b: FuncId) -> bool {
+        self.rt.native.rd_on() && self.spec.is_none() && self.entry == b
     }
 
     /// The facts of this instance for a tier that compiles copies (`YAVS_NO_FACTS=1`: none): the
@@ -1894,6 +1923,12 @@ impl Machine {
             // `any` is read once: counting an activation (`count_on`) sets it too.
             Some(tier) => {
                 let any = rt.native.any.load(Ordering::Acquire);
+                if !cont && let Some(fr) = self.frames.first() {
+                    let id = fr.func;
+                    if rt.native.rd_tick(id.0, 1) {
+                        rt.rd_fire(id);
+                    }
+                }
                 if cont || (any && self.root_flagged(&rt)) {
                     let slot = crate::slot();
                     if !cont && let Some(fr) = self.frames.first() {
@@ -5983,6 +6018,9 @@ impl Machine {
                     .func(cid)
                     .ok_or_else(|| ice_f!("call of missing function {cid}"))?;
                 let cpre = rt.pre(cid, cf).ok_or_else(|| ice_f!("no function {cid}"))?;
+                if rt.native.rd_tick(callee, 1) {
+                    rt.rd_fire(cid);
+                }
                 callee_look!(callee, cpre);
                 // The memo of pure calls answers a repeated call before the call is made, by the
                 // compiled tier or not (out of line: it keeps this loop's frame as it was).
@@ -6029,6 +6067,7 @@ impl Machine {
                 // The callee's ops go on in this loop.
                 top += 1;
                 func = cid;
+                rd_fn(func.0);
                 f = cf;
                 code = &cpre.code;
                 ops = &code.ops;
@@ -6937,6 +6976,7 @@ impl Machine {
                     save_caller!();
                     top += 1;
                     func = cid;
+                    rd_fn(func.0);
                     f = cf;
                     code = &cpre.code;
                     ops = &code.ops;
@@ -6971,6 +7011,7 @@ impl Machine {
                         depth -= 1;
                         if let Some(&Some((sf, sff, sc))) = saved.get(depth) {
                             (func, f, code) = (sf, sff, sc);
+                            rd_fn(func.0);
                             ops = &code.ops;
                             k = entry!(pc)? as usize;
                             if TIER {
@@ -6980,6 +7021,7 @@ impl Machine {
                         }
                     }
                     func = caller.func;
+                    rd_fn(func.0);
                     f = prog
                         .func(func)
                         .ok_or_else(|| ice_f!("no function {func}"))?;
@@ -9842,6 +9884,9 @@ impl Machine {
         dst: Option<Reg>,
         rt: &Runtime,
     ) -> R<Flow> {
+        if rt.native.rd_tick(func.0, 1) {
+            rt.rd_fire(func);
+        }
         let callee = prog
             .func(func)
             .ok_or_else(|| ice_f!("call of missing function {func}"))?;
@@ -12845,5 +12890,19 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+/// Measurement only (perf/rd-interp): the stepper's mark of the function the op loop now runs.
+#[inline(never)]
+pub fn rd_fn(id: u32) {
+    std::hint::black_box(id);
+}
+
+/// Measurement only (perf/rd-interp): why a process did not switch to its copy.
+#[cold]
+fn rd_spec(name: &str, why: &str) {
+    if std::env::var_os("YAVS_RD_SPEC").is_some() {
+        eprintln!("rd-spec: {name}: {why}");
     }
 }

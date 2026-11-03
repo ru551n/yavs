@@ -1322,6 +1322,8 @@ struct Worker {
     lost_bases: Vec<u32>,
     early_done: Vec<FuncId>,
     early_root: bool,
+    rd_frame: bool,
+    rd_notree: bool,
     trace: Option<Trace>,
 }
 
@@ -1358,6 +1360,17 @@ impl Worker {
     /// reads a clock.
     fn see(&mut self, look: &Look, upgrade: bool, pending: &mut Pending) {
         if look.running.is_empty() {
+            return;
+        }
+        // Prototype: under the call-count rule the looks only keep the time (the "why" table).
+        let rd_count = self.native.rd_on();
+        if rd_count {
+            for &(id, compiled, dt) in &look.running {
+                if let Some(t) = self.time.get_mut(id.0 as usize) {
+                    t[usize::from(compiled)] += dt;
+                    self.total += dt;
+                }
+            }
             return;
         }
         for &(id, compiled, dt) in &look.running {
@@ -1543,6 +1556,9 @@ impl Worker {
             lost_bases: Vec::new(),
             early_done: Vec::new(),
             early_root: false,
+            rd_frame: (heat.budget == 0 && std::env::var_os("YAVS_RD_FRAME").is_some())
+                || std::env::var_os("YAVS_RD_COUNT").is_some(),
+            rd_notree: std::env::var_os("YAVS_RD_NOTREE").is_some(),
             trace: std::env::var_os("YAVS_AUTO_TRACE").map(|_| Trace {
                 t0: std::time::Instant::now(),
                 first: Default::default(),
@@ -1620,6 +1636,138 @@ impl Worker {
                 }
             }
             _ => Part::Frame,
+        }
+    }
+
+    /// Prototype: what the call-count rule compiles of `id`: native-frame code where it can run
+    /// on one, with frame-mode code only for a loop; else frame-mode code.
+    fn rd_part(&self, id: FuncId) -> Part {
+        if !self.native.rd_on() {
+            return Part::Both;
+        }
+        match self.prog.func(id) {
+            Some(f) if f.parent.is_none() && self.native_ok(id) && !loops(&self.prog, f) => {
+                Part::Native
+            }
+            _ => Part::Both,
+        }
+    }
+
+    /// Prototype: why `id` has no code, for the table `YAVS_RD_FUNCS` writes.
+    fn rd_why(&self, id: FuncId) -> String {
+        let k = id.0 as usize;
+        let Some(f) = self.prog.func(id) else {
+            return String::new();
+        };
+        let rule = |why: String| why.chars().take(70).collect::<String>();
+        if self.lost[k] {
+            return "taken back by a trial".into();
+        }
+        if self.time[k] == [0, 0] {
+            return "never seen by the sampler".into();
+        }
+        if self.declined[k] {
+            return "no native variant, frame code waits for a compiled caller".into();
+        }
+        if self.no_native[k] != 0 {
+            return "no native variant, frame code not hot enough".into();
+        }
+        let wait_same = self.tune.wait_same;
+        if let Some(w) = crate::rt::too_short(&self.prog, f).filter(|_| !called_natively(&self.prog, f, id)) {
+            return format!("too_short: {}", rule(w));
+        }
+        if let Some(w) = fused_search(&self.prog, f) {
+            return format!("fused_search: {}", rule(w));
+        }
+        if let Some(w) = too_many_callbacks(&self.prog, f, id, wait_same) {
+            return format!("too_many_callbacks: {}", rule(w));
+        }
+        if self.is_rtl(id)
+            && let Some(w) = cold(self.group[self.prog.base_of(id).0 as usize], self.total, self.tune)
+        {
+            return format!("clocked share rule: {}", rule(w));
+        }
+        if self.kind(id) == Kind::Frame && self.need(id) == u64::MAX {
+            return "frame_calls off (Kind::Frame subprogram)".into();
+        }
+        if self.asked_for[k] {
+            return "candidate, budget or tree payback holds it".into();
+        }
+        format!("below payback ({:?})", self.kind(id))
+    }
+
+    /// Prototype: the first thing that keeps `f` from native frames (`native_local`).
+    fn rd_notnat(&self, f: &yavs_ir::Func) -> String {
+        if !matches!(f.kind, FuncKind::Function | FuncKind::Procedure) {
+            return "not a subprogram".into();
+        }
+        if f.reg_ty.len() > crate::native::NC_REGS {
+            return "regs".into();
+        }
+        if f.frame > crate::native::NC_SLOTS {
+            return "slots".into();
+        }
+        if f.code.len() > crate::native::NC_CODE {
+            return "code".into();
+        }
+        for i in &f.code {
+            let ok = match i {
+                yavs_ir::Inst::Ret { .. } | yavs_ir::Inst::Call { .. } => true,
+                yavs_ir::Inst::AddrOf {
+                    space: yavs_ir::AddrSpace::Up(d),
+                    ..
+                } => f.parent.is_some() && (1..=2).contains(d),
+                _ => crate::native::is_inline(&self.prog, f, i)
+                    || crate::native::nat_inline(&self.prog, f, i),
+            };
+            if !ok {
+                let d = format!("{i:?}");
+                return d.chars().take(40).collect::<String>().replace('\t', " ");
+            }
+        }
+        String::new()
+    }
+
+    /// Prototype: one line per function of the program that ran or has code.
+    fn rd_dump(&self, path: &std::ffi::OsStr) {
+        use std::io::Write;
+        let Ok(mut o) = std::fs::File::create(path) else {
+            return;
+        };
+        let _ = writeln!(
+            o,
+            "id\tbase\tname\tfkind\tkind\tir\tnested\tloops\tnset\trun\tnat\tpub\tno_native\tt_int\tt_comp\tgroup\tthreshold\twhy\tnotnat"
+        );
+        for k in 0..self.time.len() {
+            let id = FuncId(k as u32);
+            let Some(f) = self.prog.func(id) else { continue };
+            if f.code.is_empty() {
+                continue;
+            }
+            let run = self.table[k].run.load(Ordering::Relaxed) != 0;
+            let live = run || self.nat[k].0 != 0 || self.time[k] != [0, 0];
+            let _ = writeln!(
+                o,
+                "{k}\t{}\t{}\t{:?}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                self.prog.base_of(id).0,
+                f.name.replace('\t', " "),
+                f.kind,
+                self.kind(id),
+                f.code.len(),
+                u8::from(f.parent.is_some()),
+                u8::from(loops(&self.prog, f)),
+                u8::from(self.nset(id).contains(&id)),
+                u8::from(run),
+                u8::from(self.nat[k].0 != 0),
+                u8::from(self.nat[k].1),
+                self.no_native[k],
+                self.time[k][0],
+                self.time[k][1],
+                self.group[self.prog.base_of(id).0 as usize],
+                if live { self.threshold(id, false) } else { 0 },
+                if run || self.nat[k].0 != 0 { String::new() } else { self.rd_why(id) },
+                self.rd_notnat(f),
+            );
         }
     }
 
@@ -2680,7 +2828,7 @@ impl Worker {
     /// callers, ran 1.4 times the instructions of the interpreter. Left for later: `see` asks for
     /// it again once a caller is compiled.
     fn frame_instead(&mut self, id: FuncId, o2: bool, sampled: bool) -> bool {
-        if !self.entered_from_code(id) {
+        if !self.rd_frame && !self.entered_from_code(id) {
             if let Some(tr) = &self.trace
                 && !self.declined[id.0 as usize]
             {
@@ -3405,10 +3553,9 @@ impl AutoTier {
                             let Some((ids, o2, sampled)) = probe
                                 .map(|id| (vec![(id, Part::Both)], false, true))
                                 .or_else(|| {
-                                    pending
-                                        .asked
-                                        .pop_front()
-                                        .map(|id| (vec![(id, Part::Both)], false, false))
+                                    pending.asked.pop_front().map(|id| {
+                                        (vec![(id, w.rd_part(id))], false, false)
+                                    })
                                 })
                                 .or_else(|| {
                                     pending
@@ -3445,7 +3592,9 @@ impl AutoTier {
                                 continue;
                             }
                             let first = ids.first().map(|&(id, _)| id);
-                            w.announce(&ids);
+                            if !w.rd_notree {
+                                w.announce(&ids);
+                            }
                             let mut root_done = false;
                             w.early_root = early;
                             for (i, (id, part)) in ids.into_iter().enumerate() {
@@ -3485,6 +3634,9 @@ impl AutoTier {
                         if let Err(p) = s.join() {
                             resume_unwind(p);
                         }
+                    }
+                    if let Some(p) = std::env::var_os("YAVS_RD_FUNCS") {
+                        w.rd_dump(&p);
                     }
                     if let Some(tr) = &w.trace {
                         let mut v: Vec<usize> = (0..w.time.len()).collect();
@@ -3786,6 +3938,17 @@ impl Tier for AutoTier {
         let c = self.ctab.get(func.0 as usize)?.load(Ordering::Acquire);
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize)?.get();
         call(c, cells, obj, pc, host, &lookup, self.ntab.as_ptr().cast())
+    }
+
+    fn asked(&self, func: FuncId) {
+        let Some(q) = self.queued.get(func.0 as usize) else {
+            return;
+        };
+        if !q.swap(true, Ordering::Relaxed)
+            && let Some(q) = &*self.queue.lock().unwrap_or_else(PoisonError::into_inner)
+        {
+            let _ = q.send(Msg::Hot(func));
+        }
     }
 
     fn hot(&self, func: FuncId) {

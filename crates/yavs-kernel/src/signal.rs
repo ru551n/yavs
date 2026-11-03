@@ -680,18 +680,98 @@ impl Waiters {
     }
 }
 
+// The order is the point of `repr(C)`: the first line holds what a read and a drive check, then
+// one line each for the values, then what the finish looks at; the rest is cold (checked below).
+#[repr(C, align(64))]
 pub(crate) struct Signal {
-    pub name: String,
     pub ty: SignalType,
+    /// Quick transactions of this cycle finished at once (`apply_driver`), and whether one of
+    /// them made an event not yet reported to the kernel.
+    fuse_n: u32,
+    /// An assignment of the value a source already has may be skipped (`Builder::build`).
+    pub skip_ok: bool,
+    /// A deposit made the driving value differ from the drivers: direct commits write the driver
+    /// value too, as before.
+    pub exact: bool,
+    /// Direct commits wrote the driving value only: the values of the sole-source drivers
+    /// (`DriverSlot::shared` false) may be older than `driving`, which holds them
+    /// (`sync_drivers` copies them back). Never with `exact`.
+    pub lag: bool,
+    /// Nothing reads the activity of this signal (`Config::skip_unchanged`, and no implicit
+    /// signal has it as its prefix): `finish_pend` leaves the activity stamps alone.
+    pub inactive: bool,
+    /// One element is pending and it is not in `pend`: the one `last_commit` holds.
+    pend_one: bool,
+    /// A process waits on the signal, or an observer wants its value changes: `changed` lists
+    /// the runs of elements that changed in a cycle. Otherwise only `nruns` counts them.
+    pub watched: bool,
+    /// Something needs the exact runs in `changed`: a process waits for a part of the signal, or
+    /// an observer wants the value changes. Else `changed` holds the cover of the runs
+    /// (one range) and `nruns` counts them.
+    pub fine: bool,
+    /// The event history of the elements is not kept: only each block's last event
+    /// (`blk_last`). `'last_event` and `'last_value` of a range that is not whole blocks
+    /// cannot be answered (`history_exact`); `'event`, edge tests and the rest are exact.
+    lean: bool,
+    /// What `plain` asks that never changes after the build (`SimControl::new`).
+    pub static_plain: bool,
+    /// The simulation runs (not initialising): reports of its resolution function are
+    /// collected in `callouts` for the kernel to commit (#372).
+    pub live: bool,
+    /// The elaborator found no read of a single element of the signal (`Builder::no_codes`):
+    /// refreshing `codes` on every change would cost more than it saves.
+    no_codes: bool,
+    pub fused_event: bool,
+    /// The resolution function touches shared state: the signal is never updated in parallel.
+    pub serial_res: bool,
+    /// The formal of a port of mode out, inout or buffer (the default force mode is `out`).
+    pub out_port: bool,
+    /// `watched` only for its images: off again when the last one goes.
+    pub image_watched: bool,
+    pub guard: Option<GuardKind>,
+    /// The element and code of the last `commit_code`.
+    last_commit: (u32, u8),
+    pub force_eff: Option<Box<Layer>>,
+    pub force_drv: Option<Box<Layer>>,
+    pub nruns: u64,
     /// Effective (current) value.
     pub cur: Buf,
+    /// Cycle in which the signal was last put on the driving / effective worklist.
+    pub queued_up: u64,
     /// Driving value computed from the sources or a deposit, before forces.
     pub driving: Buf,
+    pub queued_down: u64,
     pub last_value: Buf,
+    /// The segment the last `compute_driving` started in: the next dirty range is usually there
+    /// or in the next one.
+    seg_hint: usize,
+    /// The `std_ulogic` code of every element of `cur`, one byte each (rounded up to whole
+    /// plane blocks), for logic signals of at most `CODES_MAX` elements unless `no_codes` or a bus
+    /// (`CODES_SOURCE_MAX`); empty otherwise. Kept in step with `cur` (`sync_codes`, `refresh_codes`): a read of one element
+    /// is one load.
+    codes: SmallVec<[u8; 64]>,
+    /// Elements whose driving value a direct transaction wrote for the next update
+    /// (`commit_code`, `commit_planes`),
+    /// one bit each (made at the first one), and the words with a bit set.
+    pend: Vec<u64>,
+    pend_words: Vec<u32>,
+    /// Ranges whose driving value must be recomputed this cycle.
+    pub dirty: Vec<Range>,
+    /// Ranges whose driving value was written when the transaction was applied (a vector quick
+    /// transaction on a sole source, `apply_driver`): only the effective value is left to update.
+    pub fast_dirty: Vec<Range>,
+    /// Ranges whose effective value must be recomputed this cycle.
+    pub eff_dirty: Vec<Range>,
+    /// Ranges where a force or release of this cycle changed the effective value, whatever
+    /// the cycle's last one left: an event even when the value ends up unchanged (#382).
+    pub force_ev: Vec<Range>,
+    /// Elements changed in the current cycle.
+    pub changed: Vec<Range>,
     /// Four per-element arrays in one buffer (`len` entries each): the cycle number of the
     /// last event, of the last activity, and the time (`stamp`, 0 if never) of
     /// the last event and of the last activity.
     stamps: SmallVec<[u64; 4]>,
+    pub name: String,
     /// A signal of more than 64 elements: per block of 64 elements, the cycle and time stamp of
     /// the last `mark_active` that covered the whole block. The activity of an element is the
     /// later of its own stamps and its block's, so marking a wide range costs a word per block
@@ -707,105 +787,35 @@ pub(crate) struct Signal {
     /// event of the block (its cycle and time, and the elements that changed in it), in place
     /// of `blk_event`. Empty unless `lean`.
     blk_last: Vec<EvRec>,
-    /// The event history of the elements is not kept: only each block's last event
-    /// (`blk_last`). `'last_event` and `'last_value` of a range that is not whole blocks
-    /// cannot be answered (`history_exact`); `'event`, edge tests and the rest are exact.
-    lean: bool,
     /// Sources: process drivers and out-ports, in creation order.
     pub drivers: Vec<DriverSlot>,
     pub segments: SmallVec<[Segment; 1]>,
     pub resolution: Option<Resolution>,
-    pub guard: Option<GuardKind>,
-    /// The resolution function touches shared state: the signal is never updated in parallel.
-    pub serial_res: bool,
-    /// The formal of a port of mode out, inout or buffer (the default force mode is `out`).
-    pub out_port: bool,
     /// Indices into the kernel's composite groups covering this signal: resolved together
     /// with parts of other leaves.
     pub groups: Vec<u32>,
     /// Disconnection time from a disconnection specification (default 0).
     pub disconnect: Time,
-    pub force_eff: Option<Box<Layer>>,
-    pub force_drv: Option<Box<Layer>>,
     /// Effective value taken from the actual of an `in`/`inout` port.
     pub port_in: Option<Box<Layer>>,
     /// Port depth: an actual has a lower level than its formals.
     pub level: u32,
-    /// Cycle in which the signal was last put on the driving / effective worklist.
-    pub queued_up: u64,
-    pub queued_down: u64,
-    /// Elements changed in the current cycle.
-    pub changed: Vec<Range>,
-    /// Ranges whose driving value must be recomputed this cycle.
-    pub dirty: Vec<Range>,
-    /// Ranges whose driving value was written when the transaction was applied (a vector quick
-    /// transaction on a sole source, `apply_driver`): only the effective value is left to update.
-    pub fast_dirty: Vec<Range>,
-    /// Ranges whose effective value must be recomputed this cycle.
-    pub eff_dirty: Vec<Range>,
-    /// The simulation runs (not initialising): reports of its resolution function are
-    /// collected in `callouts` for the kernel to commit (#372).
-    pub live: bool,
-    /// Ranges where a force or release of this cycle changed the effective value, whatever
-    /// the cycle's last one left: an event even when the value ends up unchanged (#382).
-    pub force_ev: Vec<Range>,
     pub callouts: Vec<(crate::process::Severity, String)>,
-    /// An assignment of the value a source already has may be skipped (`Builder::build`).
-    pub skip_ok: bool,
-    /// What `plain` asks that never changes after the build (`SimControl::new`).
-    pub static_plain: bool,
-    /// The segment the last `compute_driving` started in: the next dirty range is usually there
-    /// or in the next one.
-    seg_hint: usize,
-    /// The `std_ulogic` code of every element of `cur`, one byte each (rounded up to whole
-    /// plane blocks), for logic signals of at most `CODES_MAX` elements unless `no_codes` or a bus
-    /// (`CODES_SOURCE_MAX`); empty otherwise. Kept in step with `cur` (`sync_codes`, `refresh_codes`): a read of one element
-    /// is one load.
-    codes: Vec<u8>,
-    /// The elaborator found no read of a single element of the signal (`Builder::no_codes`):
-    /// refreshing `codes` on every change would cost more than it saves.
-    no_codes: bool,
-    /// Quick transactions of this cycle finished at once (`apply_driver`), and whether one of
-    /// them made an event not yet reported to the kernel.
-    fuse_n: u32,
-    pub fused_event: bool,
-    /// A process waits on the signal, or an observer wants its value changes: `changed` lists
-    /// the runs of elements that changed in a cycle. Otherwise only `nruns` counts them.
-    pub watched: bool,
-    /// Something needs the exact runs in `changed`: a process waits for a part of the signal, or
-    /// an observer wants the value changes. Else `changed` holds the cover of the runs
-    /// (one range) and `nruns` counts them.
-    pub fine: bool,
     /// Ascending element offsets, strictly inside the signal, where a waited range starts or
     /// ends (`watch_part`). Any: the signal is `fine` and `changed` lists per cell, not per run,
     /// for a signal of more than 64 elements whose waiters wait for unions of the cells between
     /// them: a change of a cell is any non-empty part of it.
     pub cuts: Box<[u32]>,
-    pub nruns: u64,
-    /// Elements whose driving value a direct transaction wrote for the next update
-    /// (`commit_code`, `commit_planes`),
-    /// one bit each (made at the first one), and the words with a bit set.
-    pend: Vec<u64>,
-    pend_words: Vec<u32>,
-    /// One element is pending and it is not in `pend`: the one `last_commit` holds.
-    pend_one: bool,
-    /// Direct commits wrote the driving value only: the values of the sole-source drivers
-    /// (`DriverSlot::shared` false) may be older than `driving`, which holds them
-    /// (`sync_drivers` copies them back). Never with `exact`.
-    pub lag: bool,
-    /// A deposit made the driving value differ from the drivers: direct commits write the driver
-    /// value too, as before.
-    pub exact: bool,
-    /// Nothing reads the activity of this signal (`Config::skip_unchanged`, and no implicit
-    /// signal has it as its prefix): `finish_pend` leaves the activity stamps alone.
-    pub inactive: bool,
-    /// The element and code of the last `commit_code`.
-    last_commit: (u32, u8),
     /// The record images with a leaf in this signal (`image.rs`).
     pub images: Vec<crate::image::SigImage>,
-    /// `watched` only for its images: off again when the last one goes.
-    pub image_watched: bool,
 }
+
+// A checked layout: a reorder that leaves the hot fields in other lines fails to build.
+const _: () = {
+    use std::mem::offset_of as at;
+    assert!(at!(Signal, nruns) < 64 && at!(Signal, cur) == 64 && at!(Signal, driving) == 128);
+    assert!(at!(Signal, last_value) == 192);
+};
 
 /// The elements of a block of 64 whose last event was one `update_word`, with its cycle and
 /// time stamp (`Signal::blk_event`).
@@ -1074,7 +1084,7 @@ impl Signal {
             skip_ok: false,
             static_plain: false,
             seg_hint: 0,
-            codes: Vec::new(),
+            codes: SmallVec::new(),
             no_codes: false,
             fuse_n: 0,
             fused_event: false,

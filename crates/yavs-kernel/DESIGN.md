@@ -27,8 +27,8 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   the events its plane-word update finds are records per block (cycle, time, elements whose last
   event it is) instead of element stamps (#519). Small collections
   (a `Buf` of up to 16 bytes or one logic block, one waiter, one segment, one pending
-  transaction, a signal's scratch range lists) are stored inline (`SmallVec`): a scalar signal
-  and its driver cost no allocation of their own (#421).
+  transaction, a signal's scratch range lists, up to 64 byte codes) are stored inline (`SmallVec`): a scalar signal and its driver cost no allocation
+  of their own (#421). `Signal` is laid out by hand, hot lines first (`repr(C, align(64))`).
 - **Sources**: a signal's source list holds process drivers (creation order) and then out-ports
   (`DriverSlot { range, value, off }`). A driver's current value lives in the signal, its
   projected output waveform in the owning process (`ProcState::waveforms`), so a running process

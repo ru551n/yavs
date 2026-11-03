@@ -1328,6 +1328,7 @@ struct Worker {
     /// for the rest. `rd_wait`: subprograms whose count ran out, no compiled caller yet.
     rd_hybrid: bool,
     rd_wait: Vec<FuncId>,
+    rd_seen: u64,
     /// Prototype: the sampled microseconds of work before the count rule compiles anything.
     rd_after: u64,
     trace: Option<Trace>,
@@ -1365,6 +1366,7 @@ impl Worker {
     /// were running, and note what became hot. Only the look and the state decide; nothing here
     /// reads a clock.
     fn see(&mut self, look: &Look, upgrade: bool, pending: &mut Pending) {
+        self.rd_seen += u64::from(self.heat.period) * u64::from(stretch(self.rd_seen));
         if look.running.is_empty() {
             return;
         }
@@ -1567,6 +1569,7 @@ impl Worker {
             rd_notree: std::env::var_os("YAVS_RD_NOTREE").is_some(),
             rd_hybrid: std::env::var_os("YAVS_RD_HYBRID").is_some(),
             rd_wait: Vec::new(),
+            rd_seen: 0,
             rd_after: std::env::var("YAVS_RD_AFTER")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -1663,7 +1666,7 @@ impl Worker {
     /// Prototype: the run has lasted `rd_after`, and `id` is a process or has a compiled caller.
     fn rd_go(&self, id: FuncId) -> bool {
         let sub = self.prog.func(id).is_some_and(|f| f.kind != FuncKind::Process);
-        self.total >= self.rd_after && (!sub || self.entered_from_code(id))
+        self.rd_seen >= self.rd_after && (!sub || self.entered_from_code(id))
     }
 
     /// Prototype: the waiting functions that may compile now.

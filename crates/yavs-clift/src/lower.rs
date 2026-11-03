@@ -1629,13 +1629,15 @@ fn via_signal(i: &Inst) -> bool {
     )
 }
 
-/// A signal reference made of constants (`Inst::SigVal`).
+/// A signal reference of constants (`Inst::SigVal`), or (`run`) of a constant signal and length at
+/// an element known only at run time, in `dst`'s low half and proved inside the signal there.
 #[derive(Clone, Copy)]
 struct SigConst {
     dst: Reg,
     sig: u32,
     off: i64,
     len: i64,
+    run: bool,
 }
 
 /// The out-of-line part of a fixed signal read: the table, the entry's offset in it, the element,
@@ -1745,6 +1747,10 @@ struct Gen<'a> {
     /// The `SigVal` of constants just before this instruction, and the one to hand to the next.
     sigval: Option<SigConst>,
     sigval_next: Option<SigConst>,
+    /// Frame mode, a copy: the references of this block at a run-time element (`SigConst::run`),
+    /// and the one the instruction being generated makes, entered after `track`.
+    sdyn: Vec<SigConst>,
+    sdyn_new: Option<SigConst>,
     /// What this body may assume about its instance's signals: frame-mode code of a process copy
     /// (`Program::facts`); instances with other facts have another copy.
     facts: Option<&'a yavs_ir::InstFacts>,
@@ -2344,6 +2350,8 @@ fn gen_func(
         sig_max: sig_hi.unwrap_or(0),
         sigval: None,
         sigval_next: None,
+        sdyn: Vec::new(),
+        sdyn_new: None,
         facts: prog
             .facts(id)
             .filter(|_| !native && f.kind == FuncKind::Process),
@@ -2482,6 +2490,11 @@ fn gen_func(
             if let Some((r, t)) = g.fnew.take() {
                 g.fguess[r.0 as usize] = Some(t);
             }
+            // So does what a register says about a signal.
+            let defs = yavs_interp::inst_regs(f, &p).1;
+            g.sdyn
+                .retain(|s| !defs.iter().any(|d| d.0 == s.dst.0 || d.0 == s.dst.0 + 1));
+            g.sdyn.extend(g.sdyn_new.take());
             if let Some((r, o)) = g.objnew.take()
                 && let Some(k) = g.known.get_mut(r.0 as usize)
             {
@@ -2578,6 +2591,7 @@ fn gen_func(
             g.b.switch_to_block(bb);
             g.drop_pend();
             g.clear();
+            g.sdyn.clear();
             for (r, v, dirty) in carried {
                 g.cache[r as usize] = Some(v);
                 if dirty {
@@ -2603,9 +2617,13 @@ fn gen_func(
                 .filter(|sv| sv.dst == sig && sv.len == 1 && sv.off <= i64::from(i32::MAX / 2)),
             _ => None,
         };
+        let run_read = match inst {
+            Inst::SigReadScalar { sig, .. } => g.sig_read_run(sig),
+            _ => false,
+        };
         g.defer = g.nat.is_none()
             && g.live.is_some()
-            && (quiet(&inst) || fixed.is_some())
+            && (quiet(&inst) || fixed.is_some() || run_read)
             && (g.batch.is_none() || batch_pure(prog, f, &inst));
         if g.nat.is_none() && !g.defer {
             // A branch only reads its condition: stored only if a block it leads to reads it too.
@@ -3529,6 +3547,33 @@ fn gen_func(
                         sig,
                         off: o,
                         len: l,
+                        run: false,
+                    });
+                    continue;
+                }
+                // A copy: the signal's form is a fact whatever the element, which is one compare
+                // (a failed index check came before; if not, the interpreter goes on from here).
+                if let (Some(fs), Some(l)) = (g.facts, g.kint(len))
+                    && let Some(fa) = fs.sig(sig)
+                    && (1..=i64::from(fa.len)).contains(&l)
+                {
+                    let o = g.ld(offset);
+                    let bad = g.b.ins().icmp_imm_s(
+                        IntCC::UnsignedGreaterThan,
+                        o,
+                        i64::from(fa.len) - l,
+                    );
+                    g.exit_if(bad, pc);
+                    let v = g.b.ins().bor_imm_s(o, i64::from(sig) << 32);
+                    g.st(dst, v);
+                    let lv = g.c64(l);
+                    g.st(Reg(dst.0 + 1), lv);
+                    g.sdyn_new = Some(SigConst {
+                        dst,
+                        sig,
+                        off: 0,
+                        len: l,
+                        run: true,
                     });
                     continue;
                 }
@@ -6897,6 +6942,9 @@ impl Gen<'_> {
     /// signal's facts: its table entry has the form they say, so nothing needs a test.
     fn sig_known(&self, sig: Reg) -> Option<(SigConst, yavs_ir::SigFact)> {
         let facts = self.facts?;
+        if let Some(&s) = self.sdyn.iter().find(|s| s.dst == sig) {
+            return Some((s, facts.sig(s.sig)?));
+        }
         let sv = self.sigval.filter(|sv| sv.dst == sig).or_else(|| {
             let (v, len) = (self.kint(sig)?, self.kint(Reg(sig.0 + 1))?);
             Some(SigConst {
@@ -6904,10 +6952,29 @@ impl Gen<'_> {
                 sig: (v as u64 >> 32) as u32,
                 off: v & 0xffff_ffff,
                 len,
+                run: false,
             })
         })?;
         let f = facts.sig(sv.sig)?;
         (sv.len >= 1 && sv.off + sv.len <= i64::from(f.len)).then_some((sv, f))
+    }
+
+    /// The element `sv` starts at.
+    fn sv_off(&mut self, sv: SigConst) -> Value {
+        if sv.run {
+            let v = self.ld(sv.dst);
+            self.lo32(v)
+        } else {
+            self.c64(sv.off)
+        }
+    }
+
+    /// `sig_read_known` will read reference `sig`, which is at a run-time element.
+    fn sig_read_run(&self, sig: Reg) -> bool {
+        self.sdyn.iter().any(|s| s.dst == sig)
+            && self
+                .sig_known(sig)
+                .is_some_and(|(_, f)| f.codes || f.planes || matches!(f.es, 1 | 4 | 8))
     }
 
     /// The `TierSig` entry of the instance signal that reference registers `sig`, `sig + 1` name,
@@ -6926,7 +6993,7 @@ impl Gen<'_> {
                 .ins()
                 .load(I64, self.mf.with_readonly(), self.mem, MEM_SIGTAB as i32);
             let ent = self.b.ins().iadd_imm_s(tab, i64::from(sv.sig) * SIG_ENT);
-            let off = self.c64(sv.off);
+            let off = self.sv_off(sv);
             return (ent, off);
         }
         let (v, l) = (self.ld(sig), self.ld(Reg(sig.0 + 1)));
@@ -7057,10 +7124,17 @@ impl Gen<'_> {
         let t = MemFlagsData::trusted();
         let v = if f.codes {
             let codes = field(self, SIG_CODES);
-            self.b.ins().uload8(I64, t, codes, sv.off as i32)
+            if sv.run {
+                let o = self.sv_off(sv);
+                let p = self.b.ins().iadd(codes, o);
+                self.b.ins().uload8(I64, t, p, 0)
+            } else {
+                self.b.ins().uload8(I64, t, codes, sv.off as i32)
+            }
         } else {
             let first = field(self, SIG_OFF);
-            let e = self.b.ins().iadd_imm_s(first, sv.off);
+            let o = self.sv_off(sv);
+            let e = self.b.ins().iadd(first, o);
             if f.planes {
                 let blocks = field(self, SIG_PLANES);
                 self.plane_code(blocks, e)
@@ -7517,12 +7591,19 @@ impl Gen<'_> {
         let field = |g: &mut Self, k: i64| g.b.ins().load(I64, ero, tab, (at + k) as i32);
         let cur = if f.codes {
             let codes = field(self, SIG_CODES);
-            self.b
-                .ins()
-                .uload8(I64, MemFlagsData::trusted(), codes, sv.off as i32)
+            if sv.run {
+                let o = self.sv_off(sv);
+                let p = self.b.ins().iadd(codes, o);
+                self.b.ins().uload8(I64, MemFlagsData::trusted(), p, 0)
+            } else {
+                self.b
+                    .ins()
+                    .uload8(I64, MemFlagsData::trusted(), codes, sv.off as i32)
+            }
         } else {
             let first = field(self, SIG_OFF);
-            let e = self.b.ins().iadd_imm_s(first, sv.off);
+            let o = self.sv_off(sv);
+            let e = self.b.ins().iadd(first, o);
             let blocks = field(self, SIG_PLANES);
             self.plane_code(blocks, e)
         };
@@ -7542,7 +7623,8 @@ impl Gen<'_> {
         let field = |g: &mut Self, k: i64| g.b.ins().load(I64, ero, tab, (at + k) as i32);
         let delay = self.b.ins().load(I64, t, w, 0);
         let first = field(self, SIG_OFF);
-        let e = self.b.ins().iadd_imm_s(first, sv.off);
+        let o = self.sv_off(sv);
+        let e = self.b.ins().iadd(first, o);
         if f.es != 0 {
             let data = field(self, SIG_BYTES);
             let off = self.b.ins().imul_imm_s(e, i64::from(f.es));

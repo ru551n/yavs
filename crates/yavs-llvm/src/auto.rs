@@ -2850,6 +2850,10 @@ impl Worker {
         let callers = self.callers.get_or_init(|| {
             let mut v = vec![Vec::new(); self.prog.funcs.len()];
             for k in 0..self.prog.funcs.len() {
+                // An empty copy slot asked for now would stay empty for good (`Program::optimized`).
+                if self.prog.funcs.get(FuncId(k as u32)).is_none_or(|f| f.spare) {
+                    continue;
+                }
                 let Some(f) = self.prog.func(FuncId(k as u32)) else {
                     continue;
                 };

@@ -89,6 +89,9 @@ pub(crate) struct Copy {
     pub facts: InstFacts,
 }
 
+/// A stored copy's calls of copies of subprograms: (pc, subprogram, descriptors).
+pub type CopyCalls = Vec<(u32, FuncId, Vec<u8>)>;
+
 /// An optimised copy as stored between runs (the stage cache, kind `spec`): the process, the
 /// data it is for (masked, as `Program::copy_of` keys it), the digest of the package data it was
 /// made with and the serialised function.
@@ -101,7 +104,7 @@ pub struct CopyBlob {
     pub bytes: yavs_diag::Slice,
     /// The calls of copies of subprograms: copy ids differ per run, so `bytes` calls the
     /// subprogram itself and these (pc, subprogram, descriptors) are made again on load.
-    pub calls: Vec<(u32, FuncId, Vec<u8>)>,
+    pub calls: CopyCalls,
 }
 
 /// Where a run finds the copies earlier runs of the same program stored: called at most once,
@@ -265,7 +268,7 @@ impl Copies {
         base: FuncId,
         data: &[u8],
         digest: u64,
-    ) -> Option<(yavs_diag::Slice, Vec<(u32, FuncId, Vec<u8>)>)> {
+    ) -> Option<(yavs_diag::Slice, CopyCalls)> {
         let st = self.stored.get_or_init(|| {
             let blobs = self
                 .loader
@@ -581,7 +584,7 @@ impl Program {
     }
 
     /// `o` as a stored copy names its callees: copies of subprograms by what they are for.
-    fn portable_calls(&self, o: &Func) -> Option<(Vec<u8>, Vec<(u32, FuncId, Vec<u8>)>)> {
+    fn portable_calls(&self, o: &Func) -> Option<(Vec<u8>, CopyCalls)> {
         let of = |func: FuncId| self.copies.get(func).filter(|c| c.digest == SUB_DIGEST);
         let is_sub = |i: &Inst| matches!(i, Inst::Call { func, .. } if of(*func).is_some());
         if !o.code.iter().any(is_sub) {

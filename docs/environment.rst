@@ -296,10 +296,45 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - not ``0``
      - unset
      - ``run``
+   * - ``YAVS_AUTO_POLICY``
+     - ``sampled``: ``--tier=auto`` on Cranelift decides by sampled time alone, as before the count rule, with no native-frame code of ``**`` and of a layout from a run-time descriptor. For comparing the two.
+     - ``sampled``
+     - the count rule
+     - ``run``
+   * - ``YAVS_AUTO_COUNT``
+     - Interpreted entries before the count rule asks for a function. A process switches to its copy after half of them, and the copy has the other half.
+     - a number, at least 1
+     - ``100``
+     - ``run``
+   * - ``YAVS_AUTO_GATE``
+     - Work of the simulation threads before the count rule compiles anything or makes a copy of a process, in the sampler's microseconds of work (16 000 instructions each, CPU microseconds where the counters are refused).
+     - a number
+     - ``160000``
+     - ``run``
+   * - ``YAVS_AUTO_WARM_GATE``
+     - Set: what the cache lists waits for ``YAVS_AUTO_GATE`` too, and so do the copies of a run that compiled before. For comparing.
+     - any value
+     - unset
+     - ``run``
+   * - ``YAVS_AUTO_GUARD_SHARE``
+     - Native-frame code is suspect when the frames it leaves to the interpreter cost one part in this many of the work seen. ``0``: no guard.
+     - a number
+     - ``32``
+     - ``run``
+   * - ``YAVS_AUTO_GUARD_CALLS``
+     - Calls per frame left that bring suspect native-frame code back.
+     - a number
+     - ``16``
+     - ``run``
+   * - ``YAVS_AUTO_SYNC``
+     - A run waits for what the count rule asks for, so a test does not depend on when the compile ends.
+     - any value
+     - unset
+     - ``run``
    * - ``YAVS_SPEC_AFTER``
      - Activations before a process switches to its copy. Setting it forces the switch whatever the tier compiled.
      - a number, at least 2
-     - ``1024``
+     - ``1024``, half of ``YAVS_AUTO_COUNT`` under the count rule
      - ``run``
    * - ``YAVS_SPEC_ALL``
      - Every process with one suspension point gets a copy, also one that reads no instance data.

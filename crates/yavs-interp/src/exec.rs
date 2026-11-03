@@ -285,6 +285,9 @@ const WATCH_CHUNK: u32 = 128;
 #[cold]
 #[inline(never)]
 fn watch_tick(rt: &Runtime, func: FuncId, pc: u32) -> bool {
+    if rt.native.tick(func.0) {
+        rt.counted_out(func, true);
+    }
     rt.sync_native();
     crate::slot().store(
         u64::from(rt.id) << 32 | u64::from(func.0),
@@ -682,7 +685,7 @@ pub(crate) struct Machine {
     quick_fault: Option<Fault>,
     /// The process may switch to a copy specialised to its instance data (`specialise`): the
     /// parameters of `for` generates in its data, which the copy does not fold.
-    spec: Option<Arc<[(u32, u32)]>>,
+    pub(crate) spec: Option<Arc<[(u32, u32)]>>,
     /// The memo of pure calls this process keeps (`pmemo.rs`), made at its first memoised call.
     pub(crate) pm: Option<Box<crate::pmemo::State>>,
     /// Jumps back of a process that never suspends, to bound the activation (#583).
@@ -1717,13 +1720,30 @@ impl Machine {
     #[cold]
     #[inline(never)]
     pub(crate) fn specialise(&mut self, c: Option<&Ctx<'_>>) {
-        if self.spec.is_some() && self.execs < crate::spec_after() {
+        let after = self.rt.copy_after();
+        if self.spec.is_some() && self.execs < after {
             if let Some(n) = self.rt.native.resumed.get(self.entry.0 as usize) {
                 n.store(true, Ordering::Relaxed);
             }
-            self.spec_at = u32::try_from(crate::spec_after()).unwrap_or(u32::MAX);
+            self.spec_at = u32::try_from(after).unwrap_or(u32::MAX);
             return;
         }
+        // Under the count rule a short run makes no copies, which cost more than it would get back;
+        // looked at again after as many activations, and never later than without the rule.
+        let usual = crate::spec_after();
+        if self.spec.is_some() && self.rt.native.copies_wait() && self.execs < usual {
+            self.spec_at = u32::try_from((self.execs + after).min(usual)).unwrap_or(u32::MAX);
+            return;
+        }
+        let base = self.entry;
+        self.switch_to_copy(c);
+        // No copy for good: the count that waited for it goes to the shared code.
+        if self.entry == base && self.spec.is_none() {
+            self.rt.counted_out_shared(base);
+        }
+    }
+
+    fn switch_to_copy(&mut self, c: Option<&Ctx<'_>>) {
         let Some(holes) = self.spec.take() else {
             return;
         };
@@ -1894,6 +1914,12 @@ impl Machine {
             // `any` is read once: counting an activation (`count_on`) sets it too.
             Some(tier) => {
                 let any = rt.native.any.load(Ordering::Acquire);
+                if !cont
+                    && let Some(fr) = self.frames.first()
+                    && rt.native.tick(fr.func.0)
+                {
+                    rt.counted_out(fr.func, self.spec.is_none());
+                }
                 if cont || (any && self.root_flagged(&rt)) {
                     let slot = crate::slot();
                     if !cont && let Some(fr) = self.frames.first() {
@@ -5812,6 +5838,14 @@ impl Machine {
                 }
             };
         }
+        // One more interpreted call of a function (`NativeFlags::tick`); no code without a tier.
+        macro_rules! count_call {
+            ($cid:expr) => {
+                if (TIER || watch) && rt.native.tick($cid.0) {
+                    rt.counted_out($cid, false);
+                }
+            };
+        }
         // The callee's parameters may go to registers only and its ops start past the prologue
         // (`Pre::lean`, `Code::skip`): always without the tier, with it for a callee it has not
         // touched. One it flags meanwhile is entered by `enter!` at that op, as the watching
@@ -5983,6 +6017,7 @@ impl Machine {
                     .func(cid)
                     .ok_or_else(|| ice_f!("call of missing function {cid}"))?;
                 let cpre = rt.pre(cid, cf).ok_or_else(|| ice_f!("no function {cid}"))?;
+                count_call!(cid);
                 callee_look!(callee, cpre);
                 // The memo of pure calls answers a repeated call before the call is made, by the
                 // compiled tier or not (out of line: it keeps this loop's frame as it was).
@@ -6911,6 +6946,7 @@ impl Machine {
                         .func(cid)
                         .ok_or_else(|| ice_f!("call of missing function {cid}"))?;
                     let cpre = rt.pre(cid, cf).ok_or_else(|| ice_f!("no function {cid}"))?;
+                    count_call!(cid);
                     callee_look!(callee, cpre);
                     // A function the compiled tier calls on a native frame (`Tier::call`).
                     if let Some(t) = native_tier!(cpre)
@@ -9804,6 +9840,9 @@ impl Machine {
     ) -> R<Flow> {
         self.shared()?;
         let h = self.r(obj);
+        if self.rt.native.tick(func.0) {
+            self.rt.counted_out(func, false);
+        }
         let flow = self.call_with(prog, f, func, Some(h), args, dst)?;
         if let Flow::Call = flow {
             self.top().shared_alloc |= heap::tag_of(h) == heap::SHARED;
@@ -9842,6 +9881,9 @@ impl Machine {
         dst: Option<Reg>,
         rt: &Runtime,
     ) -> R<Flow> {
+        if rt.native.tick(func.0) {
+            rt.counted_out(func, false);
+        }
         let callee = prog
             .func(func)
             .ok_or_else(|| ice_f!("call of missing function {func}"))?;
@@ -12240,6 +12282,9 @@ impl crate::TierHost for Host<'_, '_, '_> {
         pc: u32,
         frames: &[crate::NativeFrame],
     ) -> crate::Stepped {
+        for nf in frames {
+            self.rt.native.note_left(nf.func);
+        }
         let r = self.push_native(pc, frames);
         self.m.tier_view(tf);
         match r {

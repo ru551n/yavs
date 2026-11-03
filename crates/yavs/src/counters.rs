@@ -94,6 +94,13 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         rows.push(("spec_shared_ir", c.shared_ir));
         rows.push(("spec_copy_ir", c.copy_ir));
         rows.push(("retiers", rt.native_flags().retiers()));
+        rows.push(("materialised", rt.native_flags().materialised_all()));
+        let [asked, held, compiled, copies, withdrawn] = rt.native_flags().count_stats();
+        rows.push(("count_asked", asked));
+        rows.push(("count_held", held));
+        rows.push(("count_compiled", compiled));
+        rows.push(("count_copies", copies));
+        rows.push(("count_withdrawn", withdrawn));
     }
     #[cfg(feature = "llvm")]
     {

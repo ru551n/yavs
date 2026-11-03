@@ -294,6 +294,21 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - a number, at least 2
      - ``1024``
      - ``run``
+   * - ``YAVS_NO_SUBCOPY``
+     - Turns copies of subprograms by the descriptors of their arguments off.
+     - not ``0``
+     - unset
+     - ``run``
+   * - ``YAVS_SUB_PER``
+     - The most copies of one subprogram by the descriptors of its arguments.
+     - a number
+     - ``8``
+     - ``run``
+   * - ``YAVS_SUB_SLOTS``
+     - The most function slots kept for copies of subprograms.
+     - a number
+     - ``1024``
+     - ``run``
    * - ``YAVS_SPEC_CAP``
      - Limit on copies, in percent of the shared optimised process code. ``0``: no limit.
      - a number

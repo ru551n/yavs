@@ -1324,6 +1324,10 @@ struct Worker {
     early_root: bool,
     rd_frame: bool,
     rd_notree: bool,
+    /// Prototype: the count rule for processes and for what compiled code calls; the looks stay
+    /// for the rest. `rd_wait`: subprograms whose count ran out, no compiled caller yet.
+    rd_hybrid: bool,
+    rd_wait: Vec<FuncId>,
     trace: Option<Trace>,
 }
 
@@ -1363,7 +1367,7 @@ impl Worker {
             return;
         }
         // Prototype: under the call-count rule the looks only keep the time (the "why" table).
-        let rd_count = self.native.rd_on();
+        let rd_count = self.native.rd_on() && !self.rd_hybrid;
         if rd_count {
             for &(id, compiled, dt) in &look.running {
                 if let Some(t) = self.time.get_mut(id.0 as usize) {
@@ -1559,6 +1563,8 @@ impl Worker {
             rd_frame: (heat.budget == 0 && std::env::var_os("YAVS_RD_FRAME").is_some())
                 || std::env::var_os("YAVS_RD_COUNT").is_some(),
             rd_notree: std::env::var_os("YAVS_RD_NOTREE").is_some(),
+            rd_hybrid: std::env::var_os("YAVS_RD_HYBRID").is_some(),
+            rd_wait: Vec::new(),
             trace: std::env::var_os("YAVS_AUTO_TRACE").map(|_| Trace {
                 t0: std::time::Instant::now(),
                 first: Default::default(),
@@ -1637,6 +1643,27 @@ impl Worker {
             }
             _ => Part::Frame,
         }
+    }
+
+    /// Prototype: under the hybrid rule a subprogram waits for a compiled caller.
+    fn rd_hold(&mut self, id: FuncId) -> bool {
+        let sub = self.prog.func(id).is_some_and(|f| f.kind != FuncKind::Process);
+        if self.rd_hybrid && sub && !self.entered_from_code(id) {
+            self.rd_wait.push(id);
+            return true;
+        }
+        false
+    }
+
+    /// Prototype: the waiting subprograms that have a compiled caller now.
+    fn rd_freed(&mut self) -> Vec<FuncId> {
+        if self.rd_wait.is_empty() {
+            return Vec::new();
+        }
+        let wait = std::mem::take(&mut self.rd_wait);
+        let (go, stay): (Vec<_>, Vec<_>) = wait.into_iter().partition(|&i| self.entered_from_code(i));
+        self.rd_wait = stay;
+        go
     }
 
     /// Prototype: what the call-count rule compiles of `id`: native-frame code where it can run
@@ -3557,9 +3584,13 @@ impl AutoTier {
                             let Some((ids, o2, sampled)) = probe
                                 .map(|id| (vec![(id, Part::Both)], false, true))
                                 .or_else(|| {
-                                    pending.asked.pop_front().map(|id| {
-                                        (vec![(id, w.rd_part(id))], false, false)
-                                    })
+                                    while let Some(id) = pending.asked.pop_front() {
+                                        if w.rd_hold(id) {
+                                            continue;
+                                        }
+                                        return Some((vec![(id, w.rd_part(id))], false, false));
+                                    }
+                                    None
                                 })
                                 .or_else(|| {
                                     pending
@@ -3615,6 +3646,8 @@ impl AutoTier {
                                 }
                             }
                             w.early_root = false;
+                            let free = w.rd_freed();
+                            pending.asked.extend(free);
                             // (Not a root the profile asked for: its share of the run is not known
                             // yet, and the run as a whole is judged at its end.)
                             if let (Some(id), true) =

@@ -66,6 +66,13 @@ architecture a of unit is
 
   -- Disjoint parts of a vector, one process each.
   signal part : std_logic_vector(7 downto 0) := x"00";
+
+  -- Elements and slices at a run-time index, held and changed.
+  type ints is array (0 to 7) of integer;
+  signal at1 : std_logic_vector(15 downto 0) := x"0000";
+  signal at2 : std_logic_vector(31 downto 0) := x"00000000";
+  signal at3 : ints := (others => 0);
+  signal atx : std_logic := '0';
 begin
   clk <= not clk after 5 ns;
 
@@ -356,6 +363,28 @@ begin
     end if;
   end process;
 
+  at_run : process (clk)
+    variable k : natural := 0;
+  begin
+    if rising_edge(clk) then
+      if g > 1000 then report "g"; end if;
+      k := n mod 16;
+      at1(k) <= at1(k);
+      if n mod 5 = 1 then
+        at1(k) <= not at1((k + 3) mod 16);
+      end if;
+      at2(2 * k + 1 downto 2 * k) <= at2(2 * k + 1 downto 2 * k);
+      if n mod 7 = 2 then
+        at2(2 * k + 1 downto 2 * k) <= at2(2 * k + 1 downto 2 * k) xor "01";
+      end if;
+      at3(k mod 8) <= at3(k mod 8);
+      if n mod 11 = 3 then
+        at3(k mod 8) <= at3((k + 1) mod 8) + 1;
+      end if;
+      atx <= at1(k) xor at2(k);
+    end if;
+  end process;
+
   part_lo : process (clk)
   begin
     if rising_edge(clk) then
@@ -391,7 +420,9 @@ begin
         & std_logic'image(rc.b) & to_hstring(rc.c) & to_hstring(hv) & integer'image(hi) & to_hstring(kq) & to_hstring(kr) & to_hstring(ks) & to_hstring(kt) & std_logic'image(rw.a) & std_logic'image(rw.b)
         & to_hstring(rw.c)
         & " " & std_logic'image(f1) & to_hstring(fv) & integer'image(fi)
-        & " " & std_logic'image(rs) & to_hstring(rv) & " " & to_hstring(part);
+        & " " & std_logic'image(rs) & to_hstring(rv) & " " & to_hstring(part)
+        & " " & to_hstring(at1) & to_hstring(at2) & " " & integer'image(at3(0) + 3 * at3(5))
+        & std_logic'image(atx);
       if n = 150 then
         std.env.finish;
       end if;

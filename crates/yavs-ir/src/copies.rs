@@ -147,6 +147,8 @@ pub struct Copies {
     sub_per: Mutex<HashMap<FuncId, usize>>,
     sub_ir: AtomicU64,
     sub_capped: AtomicU64,
+    sub_gave_up: AtomicU64,
+    sub_big: AtomicU64,
     sub_reads: Mutex<HashMap<FuncId, Arc<[u32]>>>,
     switched: AtomicU64,
     planned: AtomicU64,
@@ -182,6 +184,10 @@ pub struct CopyStats {
     pub subs: usize,
     pub sub_ir: u64,
     pub sub_capped: u64,
+    /// Copies whose calls were left as they are by the limit on the analysis, and descriptors too
+    /// big to key on.
+    pub sub_gave_up: u64,
+    pub sub_big: u64,
     /// Slots reserved ([`Program::reserve_copies`]).
     pub reserved: usize,
     /// Processes that switched to a copy ([`Program::note_switch`]).
@@ -313,6 +319,8 @@ impl Copies {
             subs: self.subs.load(Ordering::Relaxed),
             sub_ir: self.sub_ir.load(Ordering::Relaxed),
             sub_capped: self.sub_capped.load(Ordering::Relaxed),
+            sub_gave_up: self.sub_gave_up.load(Ordering::Relaxed),
+            sub_big: self.sub_big.load(Ordering::Relaxed),
             reserved: self.list.len(),
             switched: self.switched.load(Ordering::Relaxed),
             planned: self.planned.load(Ordering::Relaxed),
@@ -570,6 +578,16 @@ impl Program {
         c.subs.fetch_add(1, Ordering::Relaxed);
         by.entry(h).or_default().push(id);
         Some(id)
+    }
+
+    /// `opt/subcopy.rs` left a copy's calls as they are (for [`CopyStats::sub_gave_up`]).
+    pub(crate) fn note_sub_gave_up(&self) {
+        self.copies.sub_gave_up.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A descriptor too big to key on (for [`CopyStats::sub_big`]).
+    pub(crate) fn note_sub_big(&self) {
+        self.copies.sub_big.fetch_add(1, Ordering::Relaxed);
     }
 
     /// The `'dope` slots of subprogram `f` its code asks about (`opt/subcopy.rs`).

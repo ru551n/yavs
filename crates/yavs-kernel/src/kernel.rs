@@ -678,6 +678,7 @@ impl Interrupt {
     }
 }
 
+#[repr(C)]
 pub(crate) struct Slot {
     pub process: Box<dyn Process>,
     pub st: ProcState,

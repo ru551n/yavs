@@ -906,64 +906,41 @@ pub(crate) struct Marks {
 }
 
 /// Per-process state the process mutates while it runs.
+// The order is the point of `repr(C)`: every run writes the first fields and tests the lists up
+// to `gate_bits`; the rest is cold, so a run touches a line or two less of the slot.
 #[derive(Default)]
+#[repr(C)]
 pub(crate) struct ProcState {
-    pub waveforms: Vec<Waveform>,
-    pub effects: Vec<Effect>,
-    pub sens: Vec<(SignalId, Range)>,
-    /// The sensitivity the last commit registered, when that wait had no timeout.
-    pub sens_prev: Vec<(SignalId, Range)>,
+    /// What this run did, `ACT_*` bits; cleared at every resumption (`kernel::resumption`). The
+    /// commit looks at the lists only when a bit says they may hold something.
+    pub act: u8,
     /// The coming wait is exactly the one `sens_prev` holds (`Ctx::wait_on_again`): `sens`
     /// stays empty and the commit takes it from `sens_prev`.
     pub again: bool,
+    pub timed_out: bool,
+    /// `gate_set` was asked.
+    pub gate_set: bool,
+    /// For good: a direct driver of this process was given a waveform (a delay, a preemption, a
+    /// skipped general assignment), or some signal was forced, released or deposited.
+    pub gate_shut: bool,
     /// The leading ranges of `sens_prev` this wait named again so far with `sens` empty
     /// (`Ctx::wait_on_again`); all of them when `again`. The commit takes a part from
     /// `sens_prev` ahead of the ranges named after it.
     pub matched: u32,
-    pub deadline: Option<Time>,
-    pub timed_out: bool,
-    /// Times of transactions scheduled during this run.
-    pub scheduled: Vec<(Time, DriverId)>,
-    /// Drivers (locals) that hold skipped unchanged assignments (`Waveform::phantom`) from
-    /// this run.
-    pub phantoms: Vec<u32>,
-    /// The edge of the process's trigger the kernel resumes it for (`Builder::edge_trigger`:
-    /// signal, element, kind; set once by `SimControl::new`) and its `edge_key` (`NO_EDGE`
-    /// without one). `known` is that key for an activation a signal resumed (not a timeout or
-    /// the initial run), else `NO_EDGE`: the edge then holds for the whole activation, so
-    /// `Ctx::edge` of it need not look.
-    pub known_edge: Option<(SignalId, u32, u8)>,
-    pub known_key: u64,
-    pub known: u64,
-    /// The edge (`edge_key`) the coming wait resumes the process for (`Ctx::wait_edge`),
-    /// `NO_EDGE` for none; the commit takes it and puts `NO_EDGE` back.
-    pub wait_key: u64,
-    /// The run's number (from 1, bumped at every resumption), and per driver (local index) which
-    /// kind of direct entry it has in this run: `epoch << 2 | kind`, kind 1 `out`, 2 `outv`,
-    /// 3 `outb`. A mark of an older run means none, so the entries need no scan and no clearing.
-    /// Only for a process of more than `MARKED_DRIVERS` drivers (empty otherwise: the lists of a
-    /// small process are short, scanning them is cheaper than keeping marks).
-    pub marks: Option<Box<Marks>>,
-    /// A one-element logic value kept for `Ctx::assign_code`.
-    pub one: Option<LogicVec>,
-    /// Direct transactions of this run: one element, and up to 64.
-    pub out: Vec<Out>,
-    pub outv: Vec<OutV>,
-    pub outb: Vec<OutB>,
-    /// What this run did, `ACT_*` bits; cleared at every resumption (`kernel::resumption`). The
-    /// commit looks at the lists only when a bit says they may hold something.
-    pub act: u8,
     /// Per driver (local index, the first `SAME_DRIVERS`): misses in a row of the skip test of
     /// its direct assignments, then the count of those made without it (`same_wanted`). Kept here,
     /// which every run writes, not in the driver's `Waveform`, which a direct assignment only
     /// reads (a store there per activation cost rtl_ff 3% of its cycles).
     pub same: [u8; SAME_DRIVERS],
-    /// Assignments that took the general path of `assign` (`Stats::general_assigns`).
-    pub general: u64,
     /// The waveforms that were ever given a transaction or a skipped assignment (`mark_waved`),
     /// bit `local` modulo 64; never cleared. Under a clear bit they are idle with no phantom, and
     /// `calm` does not load them (3 of a waveform's lines per drive).
     pub waved: u64,
+    /// The edge (`edge_key`) the coming wait resumes the process for (`Ctx::wait_edge`),
+    /// `NO_EDGE` for none; the commit takes it and puts `NO_EDGE` back.
+    pub wait_key: u64,
+    pub known: u64,
+    pub known_key: u64,
     /// The skip gate of compiled code (`Ctx::gate_init`), bit `k` for the `k`th driver of the
     /// machine: compiled code may compare a drive of that driver with the signal's current value
     /// and, when equal, make no call. A bit goes with the driver's first direct entry of a run;
@@ -971,13 +948,39 @@ pub(crate) struct ProcState {
     pub gate: AtomicU64,
     /// The drivers that can be skipped this way: direct, on a signal that allows skipping.
     pub gate_base: u64,
+    /// The run's number (from 1, bumped at every resumption), and per driver (local index) which
+    /// kind of direct entry it has in this run: `epoch << 2 | kind`, kind 1 `out`, 2 `outv`,
+    /// 3 `outb`. A mark of an older run means none, so the entries need no scan and no clearing.
+    /// Only for a process of more than `MARKED_DRIVERS` drivers (empty otherwise: the lists of a
+    /// small process are short, scanning them is cheaper than keeping marks).
+    pub marks: Option<Box<Marks>>,
+    pub deadline: Option<Time>,
+    pub sens: Vec<(SignalId, Range)>,
+    /// The sensitivity the last commit registered, when that wait had no timeout.
+    pub sens_prev: Vec<(SignalId, Range)>,
+    /// Times of transactions scheduled during this run.
+    pub scheduled: Vec<(Time, DriverId)>,
+    /// Drivers (locals) that hold skipped unchanged assignments (`Waveform::phantom`) from
+    /// this run.
+    pub phantoms: Vec<u32>,
+    /// Direct transactions of this run: one element, and up to 64.
+    pub out: Vec<Out>,
+    pub outv: Vec<OutV>,
+    pub outb: Vec<OutB>,
+    pub waveforms: Vec<Waveform>,
     /// The bits of each waveform (index into `waveforms`), 0 for none.
     pub gate_bits: Vec<u64>,
-    /// `gate_set` was asked.
-    pub gate_set: bool,
-    /// For good: a direct driver of this process was given a waveform (a delay, a preemption, a
-    /// skipped general assignment), or some signal was forced, released or deposited.
-    pub gate_shut: bool,
+    pub effects: Vec<Effect>,
+    /// The edge of the process's trigger the kernel resumes it for (`Builder::edge_trigger`:
+    /// signal, element, kind; set once by `SimControl::new`) and its `edge_key` (`NO_EDGE`
+    /// without one). `known` is that key for an activation a signal resumed (not a timeout or
+    /// the initial run), else `NO_EDGE`: the edge then holds for the whole activation, so
+    /// `Ctx::edge` of it need not look.
+    pub known_edge: Option<(SignalId, u32, u8)>,
+    /// A one-element logic value kept for `Ctx::assign_code`.
+    pub one: Option<LogicVec>,
+    /// Assignments that took the general path of `assign` (`Stats::general_assigns`).
+    pub general: u64,
     /// `Stats::gathers_copied`, `Stats::gathers_read`, `Stats::scatter_spared`.
     pub gathers_copied: u64,
     pub gathers_read: u64,

@@ -3766,8 +3766,21 @@ impl SimControl {
                 let first = if f.len <= 64 {
                     let o = block(0);
                     self.signals[f.dst as usize].commit_planes(o.slot, o.elem, o.len, o.planes)
+                } else if f.src != f.dst && !self.signals[f.dst as usize].exact {
+                    // A bus from another signal: straight from its words.
+                    let Ok([src, dst]) = self
+                        .signals
+                        .get_disjoint_mut([f.src as usize, f.dst as usize])
+                    else {
+                        unreachable!("copy part checked at build: two signals");
+                    };
+                    let Buf::Planes { b, .. } = &src.cur else {
+                        unreachable!("copy part checked at build: logic source");
+                    };
+                    dst.commit_copy(b, f.src_off, f.dst_off, f.len)
                 } else {
-                    // A bus: its blocks as one run, the signal's storage looked up once.
+                    // A bus onto itself, or with a driver value of its own: its blocks as one run,
+                    // the signal's storage looked up once.
                     let mut run = std::mem::take(&mut self.fwd_run);
                     run.clear();
                     run.extend((0..f.len).step_by(64).map(block));

@@ -2159,6 +2159,35 @@ impl Signal {
         first
     }
 
+    /// `commit_planes_run` of the `len` (over 64) elements of `src` from `src_off` to element
+    /// `elem` of this signal, a bus copy of another signal's plane words with no entries in
+    /// between. Only on a signal whose driver value lags (not `exact`). True when the signal had
+    /// nothing pending.
+    pub(crate) fn commit_copy(&mut self, src: &[Block], src_off: u32, elem: u32, len: u32) -> bool {
+        let first = !self.pend_one && self.pend_words.is_empty();
+        self.spill_pend_one();
+        self.last_commit.0 = u32::MAX;
+        if self.pend.is_empty() {
+            self.pend = vec![0; (self.ty.len as usize).div_ceil(64)];
+        }
+        self.lag = true;
+        let Signal {
+            driving,
+            pend,
+            pend_words,
+            ..
+        } = self;
+        let Buf::Planes { b: drv, .. } = driving else {
+            return false;
+        };
+        let drv: &mut [Block] = drv;
+        yavs_logic::wide::copy_range(drv, elem as usize, src, src_off as usize, len as usize);
+        for k in (0..len).step_by(64) {
+            mark_bits(pend, pend_words, elem + k, (len - k).min(64));
+        }
+        first
+    }
+
     /// The elements committed directly (`commit_code`, `commit_planes`) matured: active, and
     /// their effective values a word at a time in element order, on a signal with no layer;
     /// otherwise (`slow`, or a force layer) they become dirty ranges for the general paths.

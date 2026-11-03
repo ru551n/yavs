@@ -2836,7 +2836,7 @@ fn gen_func(
             } => {
                 let x = g.ld(v);
                 match kind {
-                    CheckKind::Range | CheckKind::Index => {
+                    CheckKind::Range | CheckKind::Index | CheckKind::IndexDown => {
                         let (l, h) = (g.ld(lo), g.ld(hi));
                         g.range_exit(x, l, h, pc)
                     }

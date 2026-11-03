@@ -5223,7 +5223,7 @@ impl Code {
                     hi,
                     what,
                 } => match (kind, int(lo).map(i32::try_from), int(hi).map(i32::try_from)) {
-                    (CheckKind::Range | CheckKind::Index, Some(Ok(lo)), Some(Ok(hi))) => {
+                    (CheckKind::Range | CheckKind::Index | CheckKind::IndexDown, Some(Ok(lo)), Some(Ok(hi))) => {
                         Op::CheckK {
                             kind,
                             v: v.0,

@@ -10275,7 +10275,7 @@ impl Machine {
         what: yavs_ir::CheckMsgId,
     ) -> R<()> {
         let bad = match kind {
-            CheckKind::Range | CheckKind::Index => x < l || x > h,
+            CheckKind::Range | CheckKind::Index | CheckKind::IndexDown => x < l || x > h,
             CheckKind::Length => x != l,
             CheckKind::Null => x == 0,
         };
@@ -10297,11 +10297,16 @@ impl Machine {
     ) -> R<()> {
         let (w, dir) = self.check_msg(what);
         match kind {
-            CheckKind::Range | CheckKind::Index => {
-                let k = if kind == CheckKind::Index {
-                    "index"
-                } else {
+            CheckKind::Range | CheckKind::Index | CheckKind::IndexDown => {
+                let k = if kind == CheckKind::Range {
                     "value"
+                } else {
+                    "index"
+                };
+                let dir = if kind == CheckKind::IndexDown {
+                    Dir::Downto
+                } else {
+                    dir
                 };
                 let m = self.msg(what);
                 rt_err(outside(k, &x.to_string(), &bounds(l, h, dir), &m))

@@ -783,7 +783,7 @@ fn renumber(prog: &Program, f: &mut crate::Func) {
                 if *kind == CheckKind::Null {
                     *lo = *v;
                 }
-                if !matches!(kind, CheckKind::Range | CheckKind::Index) {
+                if !matches!(kind, CheckKind::Range | CheckKind::Index | CheckKind::IndexDown) {
                     *hi = *v;
                 }
             }
@@ -4334,14 +4334,12 @@ impl<'a> Opt<'a> {
             .then(|| vec![l.size, l.align, l.stride, l.count])
     }
 
-    /// A `Pos` in a copy, in an ascending descriptor of instance data with known bounds, of an index
-    /// that is no constant and whose result goes into arithmetic: the index check and the
-    /// subtraction apart (`Check` of the bounds, `idx - left`), so that the checks of one value
-    /// are made once and a range proof can drop one (`Pos` reads the descriptor at every
-    /// execution). The failure is the one of `Pos`: the check message of the same name. (A
-    /// descending range stays a `Pos`: the message of an index check says `to`.)
-    // ponytail: ascending ranges only; descending ones need a message with the other direction,
-    // and the optimiser cannot add messages to the program.
+    /// A `Pos` in a copy, in a descriptor of instance data with known bounds, of an index that is no
+    /// constant and whose result goes into arithmetic: the index check and the subtraction apart
+    /// (`Check` of the bounds, `idx - left` or `left - idx`), so that the checks of one value are
+    /// made once and a range proof can drop one (`Pos` reads the descriptor at every execution).
+    /// The failure is the one of `Pos`: the check message of the same name, the bounds in the
+    /// direction of the range (`CheckKind::IndexDown`).
     fn pos_to_check(&mut self, pc: usize, dst: Reg, dope: Reg, dim: u8, idx: Reg) -> bool {
         let Inst::Pos { what, .. } = self.code[pc] else {
             return false;
@@ -4349,35 +4347,49 @@ impl<'a> Opt<'a> {
         let Opn::A(AddrSpace::Inst, _) = self.opn(dope) else {
             return false;
         };
-        let Some((l, r, 0)) = self.const_dim(self.opn(dope), dim) else {
+        let Some((l, r, d)) = self.const_dim(self.opn(dope), dim) else {
             return false;
         };
+        let (kind, lo_b, hi_b) = match d {
+            0 => (CheckKind::Index, l, r),
+            1 => (CheckKind::IndexDown, r, l),
+            _ => return false,
+        };
         // The distance of an index inside the bounds is an `i64` (`Pos` allows a `u64`).
-        if self.prog.checks.get(what).map(|c| c.dir) != Some(crate::Dir::To)
-            || i128::from(r) - i128::from(l) > i128::from(i64::MAX)
+        if (d == 0 && self.prog.checks.get(what).map(|c| c.dir) != Some(crate::Dir::To))
+            || i128::from(hi_b) - i128::from(lo_b) > i128::from(i64::MAX)
             || !self.feeds_arith(pc, dst)
         {
             return false;
         }
         let (lo, hi) = (
-            self.const_reg(self.cur, pc, l),
-            self.const_reg(self.cur, pc, r),
+            self.const_reg(self.cur, pc, lo_b),
+            self.const_reg(self.cur, pc, hi_b),
         );
         self.inserts.push((
             pc,
             Inst::Check {
-                kind: CheckKind::Index,
+                kind,
                 v: idx,
                 lo,
                 hi,
                 what,
             },
         ));
-        self.code[pc] = Inst::Bin {
-            op: crate::IntOp::Sub,
-            dst,
-            a: idx,
-            b: lo,
+        self.code[pc] = if d == 0 {
+            Inst::Bin {
+                op: crate::IntOp::Sub,
+                dst,
+                a: idx,
+                b: lo,
+            }
+        } else {
+            Inst::Bin {
+                op: crate::IntOp::Sub,
+                dst,
+                a: hi,
+                b: idx,
+            }
         };
         self.changed = true;
         self.split = true;

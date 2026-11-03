@@ -3712,7 +3712,7 @@ impl Gen {
                     } => {
                         let x = self.ld(&c, v);
                         match kind {
-                            CheckKind::Range | CheckKind::Index => {
+                            CheckKind::Range | CheckKind::Index | CheckKind::IndexDown => {
                                 self.range_exit(&c, x, self.ld(&c, lo), self.ld(&c, hi), pc)
                             }
                             CheckKind::Length => {

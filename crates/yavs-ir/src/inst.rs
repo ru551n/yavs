@@ -191,6 +191,8 @@ pub enum CheckKind {
     Range,
     /// Like `Range`, reported as an index error.
     Index,
+    /// `Index` of a descending range: the error names the bounds `hi downto lo`.
+    IndexDown,
     /// `v == lo` (array lengths).
     Length,
     /// `v != 0` (null access).
@@ -1170,7 +1172,7 @@ impl Inst {
                 if *kind != CheckKind::Null {
                     f(lo, Use, i);
                 }
-                if matches!(kind, CheckKind::Range | CheckKind::Index) {
+                if matches!(kind, CheckKind::Range | CheckKind::Index | CheckKind::IndexDown) {
                     f(hi, Use, i);
                 }
             }

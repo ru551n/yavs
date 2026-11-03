@@ -411,9 +411,9 @@ fn a_warm_run_links_by_the_pre_key_and_the_check_agrees() {
 }
 
 /// A copy knows the bounds of a signal array in the instance data and splits the position of an
-/// index of an ascending range into a check and a subtraction (`pos_to_check`): an index outside
-/// the bounds fails with the shared code's text, for ascending and descending ranges, and in
-/// range it addresses the same elements.
+/// index into a check and a subtraction (`pos_to_check`): an index outside the bounds fails with
+/// the shared code's text, for ascending and descending ranges, and in range it addresses the same
+/// elements.
 #[test]
 fn index_failures_in_a_copy_are_those_of_the_shared_code() {
     for (tag, rng) in [("to", "0 to W - 1"), ("downto", "W - 1 downto 0")] {
@@ -459,8 +459,28 @@ end;
         assert_eq!(shared.stdout, copy.stdout, "{design}: stdout");
         assert_eq!(shared.stderr, copy.stderr, "{design}: stderr");
         assert!(copy.counters["spec_switched"] > 0, "{design}: no copy");
-        // The copy has the split checks the shared code lacks (an ascending range only: the check
-        // message of an index says `to`).
+        // The same failure from compiled code of the copy.
+        #[cfg(feature = "clift")]
+        {
+            let c = yavs(
+                &d,
+                &[("YAVS_SPEC_AFTER", "2")],
+                &[
+                    "run",
+                    "--work",
+                    &work,
+                    "--tier=auto",
+                    "--tier-heat=1,0,0",
+                    "--no-cache",
+                    "--threads=1",
+                    &design,
+                ],
+            );
+            assert_eq!(shared.code, c.code, "{design}: compiled exit status");
+            assert_eq!(shared.stdout, c.stdout, "{design}: compiled stdout");
+            assert_eq!(shared.stderr, c.stderr, "{design}: compiled stderr");
+        }
+        // The copy has the split checks the shared code lacks.
         let checks = |env: &[(&str, &str)]| {
             let mut e = env.to_vec();
             e.push(("YAVS_DUMPIR", "1"));
@@ -469,9 +489,8 @@ end;
                 .matches("kind: Index")
                 .count()
         };
-        assert_eq!(
+        assert!(
             checks(&[("YAVS_SPEC_AFTER", "2")]) > checks(&[("YAVS_NO_SPEC", "1")]),
-            tag == "to",
             "{design}: checks in the copy"
         );
     }

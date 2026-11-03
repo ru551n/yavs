@@ -42,6 +42,7 @@ textual dump.
 
 ## Changes
 
+- `CheckKind::IndexDown` (made only by the optimiser, `Opt::pos_to_check`): `Index` of a descending range, the error names the bounds `hi downto lo`.
 - Result tables for pure functions of one small discrete argument (#722, `src/casetab.rs`): `Program::tabs` (function id to `CaseTab`), made by `FuncBuilder::finish`, read by the inliner; producers do nothing (a stored program carries the field).
 - `Inst::Zero { addr, bytes }` (#668): zero `bytes` bytes (a multiple of 8) at `addr`, the zeroing
   of an `Alloc` for memory that is not allocated there. Made only by the optimiser (`opt/slots.rs`:

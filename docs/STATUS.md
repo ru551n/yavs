@@ -10808,3 +10808,8 @@ A zero-delay drive at a constant reference in a process copy compares with the s
 ## Record drive compare
 
 A whole zero-delay assignment of a record signal compares the value with the record image, as a whole and then per run of leaves, and makes no kernel call for what holds (`YAVS_NO_IMAGE` turns it off with the images, `YAVS_IMAGE_CHECK` holds every skip against the kernel's full test, always in debug builds; `docs/decisions.md` "Record drive compare"). Not served: a part of a record signal, drivers that are not direct. Its gain in cycles has not been measured on a quiet host.
+
+## clift: no resume anywhere (branch `perf/land-noexit`, 2026-11-03)
+
+Cranelift code hands no running function to the interpreter (user, 2026-11-03; `docs/decisions.md` "No resume anywhere in Cranelift code"). `YAVS_CLIFT_EXITS=old` keeps the old form while this is on its branch; the LLVM tier keeps its exits, and `--tier=auto3` uses the old form in both generators. Instructions, code bytes and what could be deleted are in the hand-back of the branch, not here: the branch is not merged. Tests: `crates/yavs/tests/noexit.rs` (every way an instruction can fail against the interpreter, in a process body and in a chain of native frames, recursion past the native stack and the depth limit, the census of what leaves running code). Tools: `YAVS_CLIFT_EXITMAP`, `tools/exitmap.py`, `YAVS_COUNTERS=exits`.
+

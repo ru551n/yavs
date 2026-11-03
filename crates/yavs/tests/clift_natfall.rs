@@ -53,6 +53,8 @@ end;
 fn command(dir: &Path, args: &[&str]) -> std::process::Command {
     let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_yavs"));
     c.args(args).env("YAVS_AUTO_TRACE", "1").current_dir(dir);
+    // (The count rule has native-frame code of `**`, and no such wait: `auto_count.rs`.)
+    c.env("YAVS_AUTO_POLICY", "sampled");
     c
 }
 

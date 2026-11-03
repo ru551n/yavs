@@ -10831,3 +10831,6 @@ GRLIB, all compiled: the compile thread 34.7 to 1.09 G, for 355 listed functions
 ## Record drive compare
 
 A whole zero-delay assignment of a record signal compares the value with the record image, as a whole and then per run of leaves, and makes no kernel call for what holds (`YAVS_NO_IMAGE` turns it off with the images, `YAVS_IMAGE_CHECK` holds every skip against the kernel's full test, always in debug builds; `docs/decisions.md` "Record drive compare"). Not served: a part of a record signal, drivers that are not direct. Its gain in cycles has not been measured on a quiet host.
+## The count rule of `--tier=auto` (branch `perf/land-policy`, 2026-11-03)
+
+`--tier=auto` on Cranelift compiles what the interpreter entered 100 times, a process's copy after 50 and 50, a subprogram once a caller has compiled code, nothing by the count before a run has done 2.56 G instructions of work; the sampler stays for the rest; native-frame code that leaves to the interpreter at most calls is taken back after a trial. `YAVS_AUTO_POLICY=sampled` is the rule before. Not decided: a quiet comparison in cycles is due, and no cycle gain is claimed (`docs/decisions.md` "`--tier=auto`: the count rule"). Tests: `crates/yavs/tests/auto_count.rs`, the unit tests of `auto.rs` that need no LLVM, difftest candidate `yavs-clift-count1` in the `clift` job of CI.

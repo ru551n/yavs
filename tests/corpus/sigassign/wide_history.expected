@@ -16,7 +16,7 @@ diag	note	5000000	1	:wide_history:_p7	whole last value 0000 stable false
 diag	note	5000000	1	:wide_history:_p8	param event at 5000000 fs
 diag	note	5000000	1	:wide_history:u:_p0	port element event, last value '0'
 diag	note	5000000	1	:wide_history:_p9	alias event true
-diag	note	5000000	1	:wide_history:_p11	rising edge of element 70
+diag	note	5000000	1	:wide_history:_p10	rising edge of element 70
 diag	note	5000000	2	:wide_history:_p3	copy 111111
 diag	note	25000000	1	:wide_history:_p1	bare whole 0000
 diag	note	25000000	1	:wide_history:_p2	bare part 100000
@@ -26,7 +26,7 @@ diag	note	25000000	1	:wide_history:_p6	le(70) 20000000 fs whole 0 fs
 diag	note	25000000	1	:wide_history:_p7	whole last value 1111 stable false
 diag	note	25000000	1	:wide_history:_p8	param event at 25000000 fs
 diag	note	25000000	1	:wide_history:_p9	alias event true
-diag	note	25000000	1	:wide_history:_p11	falling edge of element 3
+diag	note	25000000	1	:wide_history:_p10	falling edge of element 3
 diag	note	25000000	2	:wide_history:_p3	copy 000000
 diag	note	35000000	1	:wide_history:_p1	bare whole 1000
 diag	note	35000000	1	:wide_history:_p4	ev(3) true ev(70) false slice false
@@ -45,7 +45,7 @@ diag	note	55000000	1	:wide_history:_p7	whole last value 1000 stable false
 diag	note	55000000	1	:wide_history:_p8	param event at 55000000 fs
 diag	note	55000000	1	:wide_history:u:_p0	port element event, last value '1'
 diag	note	55000000	1	:wide_history:_p9	alias event true
-diag	note	55000000	1	:wide_history:_p11	falling edge of element 3
+diag	note	55000000	1	:wide_history:_p10	falling edge of element 3
 diag	note	55000000	2	:wide_history:_p3	copy 111111
 diag	note	65000000	1	:wide_history:_p1	bare whole 0111
 diag	note	65000000	1	:wide_history:_p2	bare part ZZZZZZ

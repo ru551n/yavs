@@ -96,8 +96,15 @@ enum DriveImg {
     Off,
 }
 
-/// Scatters between two looks at whether the drive compare pays.
-const DRIVE_REVIEW: u32 = 1024;
+/// Scatters between two looks at whether the drive compare pays (`YAVS_DRIVE_REVIEW`), and whole
+/// scatters of a plan before it asks for its image (`YAVS_DRIVE_AFTER`).
+fn drive_env() -> (u32, u32) {
+    static E: std::sync::OnceLock<(u32, u32)> = std::sync::OnceLock::new();
+    *E.get_or_init(|| {
+        let n = |k: &str, d| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+        (n("YAVS_DRIVE_REVIEW", 1024), n("YAVS_DRIVE_AFTER", 16))
+    })
+}
 
 /// What one leaf written into the image costs in leaves a compare spares (`YAVS_DRIVE_WRITE`):
 /// about 120 instructions against about 60. More than the leaves spared pay for: the image goes.
@@ -118,7 +125,7 @@ fn drive_write() -> u64 {
 fn drive_review(b: &Bound, c: &mut Ctx<'_>, id: u32, same: u32) {
     let (n, s, w0) = b.dseen.get();
     let (n, s) = (n + 1, s + u64::from(same));
-    if n < DRIVE_REVIEW {
+    if n < drive_env().0 {
         b.dseen.set((n, s, w0));
         return;
     }
@@ -953,7 +960,7 @@ impl Machine {
                 }
                 DriveImg::Off | DriveImg::Ready(_) => None,
                 DriveImg::Count(n) => {
-                    if n + 1 < 16 {
+                    if n + 1 < drive_env().1 {
                         b.dimg.set(DriveImg::Count(n + 1));
                     } else {
                         b.dimg.set(match image_spec(b) {

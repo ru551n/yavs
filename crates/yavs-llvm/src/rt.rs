@@ -2720,8 +2720,9 @@ pub static GATE_CHECKED: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 /// The check of a drive compiled code just skipped (`YAVS_INLCMP=check`, debug builds): the kernel's
 /// full test must agree, a stale gate would silently give wrong results. `form` 0: `value` is the
 /// logic code of one element; 1: the address of a waveform element of a logic signal; 2: of one
-/// byte signal element. `kept`: the drives waiting in the compiled code's batch, which the kernel
-/// cannot see: keeping one closes the gate, so there are none at a skip.
+/// byte signal element. `entries`, `kept`: the drives waiting in the compiled code's batch, which
+/// the kernel cannot see: keeping one closes the bits of its kernel driver, so none of them names
+/// the kernel driver of a skip. Drives of other kernel drivers do not touch what it skips.
 pub unsafe extern "C" fn yavs_rt_gate_check(
     mem: *mut Mem,
     pc: u32,
@@ -2730,11 +2731,22 @@ pub unsafe extern "C" fn yavs_rt_gate_check(
     len: u64,
     value: u64,
     form: u64,
+    entries: *const [u64; 2],
     kept: u32,
 ) {
     // SAFETY: `mem` is what compiled code was given; `value` is an address when the form says so,
-    // with the bytes the skip just read behind it.
+    // with the bytes the skip just read behind it; compiled code wrote `kept` entries.
     let (c, ds, ss) = unsafe { direct(&(*mem).fr) }.expect("a skipped drive without a kernel");
+    let kept = if kept == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(entries, kept as usize) }
+    };
+    let of = |k: usize| ds.get(k).map(|d| d.id);
+    let kept = kept
+        .iter()
+        .filter(|e| of(e[1] as usize & 0xffff) == of(driver as usize))
+        .count();
     let word = |k: usize| unsafe { std::ptr::read_unaligned((value as *const u64).add(k)) };
     let block = match form {
         0 => [value & 1, value >> 1 & 1, value >> 2 & 1, value >> 3 & 1],
@@ -2747,7 +2759,7 @@ pub unsafe extern "C" fn yavs_rt_gate_check(
         if kept == 0 {
             Ok(())
         } else {
-            Err(format!("{kept} drives are kept in the batch"))
+            Err(format!("{kept} drives of its kernel driver are kept in the batch"))
         }
     }) {
         eprintln!(

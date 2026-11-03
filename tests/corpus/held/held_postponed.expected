@@ -1,0 +1,11 @@
+exit	1
+diag	note	5000000	1	:held_postponed:u0:_p2	pp 1'0'
+diag	note	5000000	1	:held_postponed:u1:_p2	pp 1'0'
+diag	note	15000000	1	:held_postponed:u0:_p2	pp 2'0'
+diag	note	15000000	1	:held_postponed:u1:_p2	pp 2'0'
+diag	note	25000000	1	:held_postponed:u0:_p2	pp 3'0'
+diag	note	25000000	1	:held_postponed:u1:_p2	pp 3'0'
+diag	note	35000000	1	:held_postponed:u0:_p2	pp 4'0'
+diag	note	35000000	1	:held_postponed:u1:_p2	pp 4'0'
+diag	note	45000000	1	:held_postponed:u0:_p2	pp 5'0'
+diag	fatal	45000000	1	:held_postponed:u0:_p2	postponed process :held_postponed:u0:_p2 cannot cause a delta cycle

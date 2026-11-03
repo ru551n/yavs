@@ -459,6 +459,285 @@ begin
 end architecture;
 "#;
 
+/// A run-time slice through the driver of the whole signal, then the held value of a constant part
+/// through its own driver of the process: where they overlap the second wins. Both orders of the
+/// two drivers in the machine, and a part of a byte array.
+const SHARED: &str = r#"
+library ieee;
+use ieee.std_logic_1164.all;
+entity unit is
+  generic (g : natural);
+end entity;
+architecture a of unit is
+  type ints is array (0 to 3) of integer;
+  type pair is record
+    a : std_logic;
+    c : std_logic_vector(7 downto 0);
+  end record;
+  signal clk : std_logic := '0';
+  signal n : natural := 0;
+  signal kv, kw : std_logic_vector(7 downto 0) := x"00";
+  signal ka, kb : ints := (others => 0);
+  signal kr : pair := ('0', x"00");
+begin
+  clk <= not clk after 5 ns;
+  process (clk) begin if rising_edge(clk) then n <= n + 1; end if; end process;
+  const_first : process (clk)
+    variable k : natural;
+  begin
+    if rising_edge(clk) then
+      if g > 1000 then
+        kv(3 downto 2) <= "00";
+        ka(2) <= 0;
+        kr.c(3 downto 2) <= "00";
+      end if;
+      k := n mod 7;
+      if n mod 3 = 0 then
+        kv(k + 1 downto k) <= not kv(k + 1 downto k);
+        ka(k mod 4) <= ka(k mod 4) + 1;
+        kr.c(k + 1 downto k) <= not kr.c(k + 1 downto k);
+      end if;
+      kv(3 downto 2) <= kv(3 downto 2);
+      ka(2) <= ka(2);
+      kr.c(3 downto 2) <= kr.c(3 downto 2);
+    end if;
+  end process;
+  whole_first : process (clk)
+    variable k : natural;
+  begin
+    if rising_edge(clk) then
+      if g > 1000 then report "g"; end if;
+      k := n mod 7;
+      if n mod 3 = 1 then
+        kw(k + 1 downto k) <= not kw(k + 1 downto k);
+        kb(k mod 4) <= kb(k mod 4) + 1;
+      end if;
+      kw(3 downto 2) <= kw(3 downto 2);
+      kb(2) <= kb(2);
+    end if;
+  end process;
+  process (clk) begin
+    if falling_edge(clk) then
+      report integer'image(n) & " " & to_hstring(kv) & to_hstring(kw) & to_hstring(kr.c)
+        & integer'image(ka(0)) & " " & integer'image(ka(1)) & " " & integer'image(ka(2)) & " " & integer'image(ka(3))
+        & " " & integer'image(kb(0)) & " " & integer'image(kb(2));
+      if n = 60 then std.env.finish; end if;
+    end if;
+  end process;
+end architecture;
+entity top is
+end entity;
+architecture a of top is
+begin
+  u0 : entity work.unit generic map (0);
+  u1 : entity work.unit generic map (1);
+end architecture;
+"#;
+
+/// Assignments of byte arrays as a whole take the general path of `Ctx::assign`: a change leaves a
+/// transaction pending and a held value a phantom, and neither may be passed by a skip of a part.
+const GENERAL: &str = r#"
+library ieee;
+use ieee.std_logic_1164.all;
+entity unit is
+  generic (g : natural);
+end entity;
+architecture a of unit is
+  type ints is array (0 to 3) of integer;
+  type reals is array (0 to 2) of real;
+  type color is (red, green, blue);
+  type colors is array (0 to 2) of color;
+  signal clk : std_logic := '0';
+  signal n : natural := 0;
+  signal pa, ph : ints := (others => 0);
+  signal pr : reals := (others => 0.0);
+  signal pc : colors := (others => red);
+  signal after_many : std_logic := '0';
+  signal many_v : std_logic_vector(3 downto 0) := x"0";
+  signal many_i : integer := 0;
+begin
+  clk <= not clk after 5 ns;
+  process (clk) begin if rising_edge(clk) then n <= n + 1; end if; end process;
+  -- A change, then what a part holds: the second wins for that part. Fresh at each n of a process.
+  pending : process (clk) begin
+    if rising_edge(clk) then
+      if g > 1000 then report "g"; end if;
+      pa(1) <= pa(1);
+      if n mod 5 = 2 then
+        pa <= (pa(0) + 1, pa(1) + 1, pa(2) + 1, pa(3) + 1);
+        pa(2) <= pa(2);
+      end if;
+    end if;
+  end process;
+  pending_real : process (clk) begin
+    if rising_edge(clk) then
+      if g > 1000 then report "g"; end if;
+      pr(0) <= pr(0);
+      if n mod 7 = 3 then
+        pr <= (pr(0) + 1.0, pr(1) + 1.0, pr(2) + 1.0);
+        pr(1) <= pr(1);
+      end if;
+    end if;
+  end process;
+  pending_enum : process (clk) begin
+    if rising_edge(clk) then
+      if g > 1000 then report "g"; end if;
+      pc(0) <= pc(0);
+      if n mod 3 = 1 then
+        pc <= (blue, blue, blue);
+        pc(1) <= pc(1);
+        pc(2) <= green;
+      end if;
+    end if;
+  end process;
+  -- The whole held, a part held, a part changed.
+  phantom : process (clk) begin
+    if rising_edge(clk) then
+      if g > 1000 then report "g"; end if;
+      ph(1) <= ph(1);
+      if n mod 5 = 1 then
+        ph <= ph;
+        ph(2) <= ph(2);
+        ph(3) <= ph(3) + 1;
+      end if;
+    end if;
+  end process;
+  -- A waveform of several elements on a direct driver, then what is held, in a later run and in
+  -- the same run: the held value takes the pending ones away.
+  several : process (clk) begin
+    if rising_edge(clk) then
+      if g > 1000 then report "g"; end if;
+      after_many <= after_many;
+      many_v <= many_v;
+      many_i <= many_i;
+      if n mod 11 = 3 then
+        after_many <= '1' after 12 ns, '0' after 27 ns;
+        many_v <= x"5" after 3 ns, x"a" after 17 ns;
+        many_i <= many_i + 1 after 13 ns, many_i + 2 after 25 ns;
+      elsif n mod 11 = 8 then
+        after_many <= '1' after 2 ns, '0' after 3 ns;
+        many_v <= x"3" after 2 ns, x"c" after 4 ns;
+        many_v(1) <= many_v(1);
+        many_i <= many_i + 4 after 2 ns, many_i + 8 after 4 ns;
+        many_i <= many_i;
+        after_many <= after_many;
+      end if;
+    end if;
+  end process;
+  process (clk) begin
+    if falling_edge(clk) then
+      report integer'image(n) & " " & integer'image(pa(0)) & " " & integer'image(pa(1)) & " " & integer'image(pa(2)) & " " & integer'image(pa(3))
+        & " " & integer'image(integer(pr(0))) & " " & integer'image(integer(pr(1))) & " " & integer'image(integer(pr(2)))
+        & " " & color'image(pc(0)) & " " & color'image(pc(1)) & " " & color'image(pc(2))
+        & " " & integer'image(ph(0)) & " " & integer'image(ph(2)) & " " & integer'image(ph(3))
+        & " " & std_logic'image(after_many) & to_hstring(many_v) & integer'image(many_i);
+      if n = 60 then std.env.finish; end if;
+    end if;
+  end process;
+end architecture;
+entity top is
+end entity;
+architecture a of top is
+begin
+  u0 : entity work.unit generic map (0);
+  u1 : entity work.unit generic map (1);
+end architecture;
+"#;
+
+/// Drives kept for drivers with no bit (a signal of two sources, a resolution function of the
+/// design), then a skip of a direct driver: the kept ones are of other kernel drivers, so the skip
+/// is right and the check must not object.
+const KEPT_OTHER: &str = r#"
+library ieee;
+use ieee.std_logic_1164.all;
+entity unit is
+  generic (g : natural);
+end entity;
+architecture a of unit is
+  function res(v : std_ulogic_vector) return std_ulogic is
+    variable r : std_ulogic := 'Z';
+  begin
+    for k in v'range loop
+      if v(k) /= 'Z' then r := v(k); end if;
+    end loop;
+    return r;
+  end function;
+  subtype rl is res std_ulogic;
+  signal clk : std_logic := '0';
+  signal n : natural := 0;
+  signal two : std_logic := 'Z';
+  signal ur : rl := 'Z';
+  signal one, more : std_logic := '0';
+begin
+  clk <= not clk after 5 ns;
+  process (clk) begin if rising_edge(clk) then n <= n + 1; end if; end process;
+  process (clk) begin
+    if rising_edge(clk) then
+      if g > 1000 then report "g"; end if;
+      two <= two;
+      ur <= ur;
+      one <= one;
+      two <= '1' when n mod 3 = 0 else 'Z';
+      more <= more;
+      if n mod 5 = 0 then more <= not more; end if;
+    end if;
+  end process;
+  process (clk) begin
+    if rising_edge(clk) then
+      if g > 1000 then report "g"; end if;
+      two <= 'Z';
+    end if;
+  end process;
+  process (clk) begin
+    if falling_edge(clk) then
+      report integer'image(n) & std_logic'image(two) & std_ulogic'image(ur) & std_logic'image(one) & std_logic'image(more);
+      if n = 40 then std.env.finish; end if;
+    end if;
+  end process;
+end architecture;
+entity top is
+end entity;
+architecture a of top is
+begin
+  u0 : entity work.unit generic map (0);
+  u1 : entity work.unit generic map (1);
+end architecture;
+"#;
+
+/// A part of a slice whose place comes from a generic: another generic is another body, also when
+/// the code of the first is in the cache.
+const SLICE_OF_GENERIC: &str = r#"
+library ieee;
+use ieee.std_logic_1164.all;
+entity top is
+  generic (g : natural := 0);
+end entity;
+architecture a of top is
+  signal clk : std_logic := '0';
+  signal n : natural := 0;
+  signal v : std_logic_vector(11 downto 0) := x"5a5";
+begin
+  clk <= not clk after 5 ns;
+  process (clk) begin
+    if rising_edge(clk) then
+      if n < 0 then report "n"; end if;
+      n <= n + 1;
+      v(g + 3 downto g) <= v(g + 3 downto g);
+      v(g + 5) <= v(g + 5);
+      if n mod 4 = 1 then
+        v(g) <= not v(g);
+      end if;
+    end if;
+  end process;
+  process (clk) begin
+    if falling_edge(clk) then
+      report integer'image(n) & " " & to_string(v);
+      if n = 30 then std.env.finish; end if;
+    end if;
+  end process;
+end architecture;
+"#;
+
 /// A process of 70 drivers: those past the gate's 64 bits take the host's way, and a kept drive of
 /// one stops a skip of none of the others wrongly.
 fn many_drivers() -> String {
@@ -481,6 +760,24 @@ fn many_drivers() -> String {
         s += &format!(" & std_logic'image(x{k})");
     }
     s += ";\n      if t = 80 then\n        std.env.finish;\n      end if;\n    end if;\n  end process;\nend architecture;\nentity top is\nend entity;\narchitecture a of top is\nbegin\n  u0 : entity work.unit generic map (0);\n  u1 : entity work.unit generic map (1);\nend architecture;\n";
+    s
+}
+
+/// A kept drive of a driver past the gate's 64 bits, then the held value of another driver of the
+/// same kernel driver: the kept one has no bit to close, so it closes the whole gate.
+fn kept_past_the_bits() -> String {
+    let n = 70;
+    let mut s = String::from(
+        "library ieee;\nuse ieee.std_logic_1164.all;\nentity unit is\n  generic (g : natural);\nend entity;\narchitecture a of unit is\n  signal clk : std_logic := '0';\n  signal t : natural := 0;\n  signal v : std_logic_vector(7 downto 0) := x\"00\";\n",
+    );
+    for k in 0..n {
+        s += &format!("  signal x{k} : std_logic := '0';\n");
+    }
+    s += "begin\n  clk <= not clk after 5 ns;\n  process (clk)\n  begin\n    if rising_edge(clk) then\n      if g > 1000 then v(2) <= '0'; end if;\n";
+    for k in 0..n {
+        s += &format!("      x{k} <= x{k};\n");
+    }
+    s += "      v(3) <= not v(3);\n      v(2) <= v(2);\n      v(4) <= v(4);\n      t <= t + 1;\n    end if;\n  end process;\n  process (clk)\n  begin\n    if falling_edge(clk) then\n      report integer'image(t) & \" \" & to_hstring(v);\n      if t = 40 then\n        std.env.finish;\n      end if;\n    end if;\n  end process;\nend architecture;\nentity top is\nend entity;\narchitecture a of top is\nbegin\n  u0 : entity work.unit generic map (0);\n  u1 : entity work.unit generic map (1);\nend architecture;\n";
     s
 }
 
@@ -568,4 +865,61 @@ fn a_run_of_skips_keeps_its_delta() {
 fn a_process_of_more_drivers_than_the_gate_has_bits() {
     let hits = against_interp("compiled_gate_many", &many_drivers());
     assert!(hits > 100, "the compare took only {hits} skips");
+}
+
+#[test]
+fn a_skip_through_one_driver_after_an_entry_through_another_of_its_kernel_driver() {
+    let hits = against_interp("compiled_gate_shared", SHARED);
+    assert!(hits > 50, "the compare took only {hits} skips");
+}
+
+#[test]
+fn the_general_assignment_of_a_direct_driver_stops_the_skips() {
+    let hits = against_interp("compiled_gate_general", GENERAL);
+    assert!(hits > 20, "the compare took only {hits} skips");
+}
+
+#[test]
+fn drives_kept_for_other_kernel_drivers_do_not_stop_a_skip() {
+    let hits = against_interp("compiled_gate_kept_other", KEPT_OTHER);
+    assert!(hits > 20, "the compare took only {hits} skips");
+}
+
+#[test]
+fn a_kept_drive_past_the_bits_stops_the_skips_of_its_kernel_driver() {
+    let hits = against_interp("compiled_gate_kept_past", &kept_past_the_bits());
+    assert!(hits > 50, "the compare took only {hits} skips");
+}
+
+/// The body of each generic in turn, the second run with the first's code in the cache.
+#[test]
+fn another_generic_in_a_warm_cache() {
+    let d = tempdir("compiled_gate_generic");
+    std::fs::write(d.join("t.vhd"), SLICE_OF_GENERIC).expect("write");
+    let work = format!("work:{}", d.join("lib").display());
+    let a = yavs(
+        &d,
+        &[],
+        &["analyze", "--std=2008", "--work", &work, "t.vhd"],
+    );
+    assert_eq!(a.0, 0, "{}", a.2);
+    let run = |env: &[(&str, &str)], tier: &[&str], g: &str| {
+        let mut args = vec!["run", "--std=2008", "--work", &work];
+        args.extend(tier);
+        args.extend([g, "top"]);
+        yavs(&d, env, &args)
+    };
+    let env = [
+        ("YAVS_SPEC_AFTER", "2"),
+        ("YAVS_INLCMP", "check"),
+        ("YAVS_COUNTERS", "1"),
+    ];
+    let heat = ["--tier=clift-auto", "--tier-heat=1,0,0"];
+    for g in ["-gG=0", "-gG=2", "-gG=6", "-gG=0"] {
+        let interp = run(&[], &["--tier=interp", "--no-cache"], g);
+        assert_eq!(interp.0, 0, "{}", interp.2);
+        let got = run(&env, &heat, g);
+        assert_eq!((interp.0, &interp.1), (got.0, &got.1), "{g}");
+        assert!(got.2.contains("counters: gate_checked="), "{g}: {}", got.2);
+    }
 }

@@ -474,7 +474,11 @@ impl Jit {
             imp(WAIT_EDGE, &[I64, I64, I64, I64, I32], Some(I32))?,
             imp(SCAN, &[I64; 11], Some(I32))?,
             imp(DRIVE_F, &[I64, I32, I32, I64, I64, I64], Some(I32))?,
-            imp(GATE_CHECK, &[I64, I32, I32, I64, I64, I64, I64, I32], None)?,
+            imp(
+                GATE_CHECK,
+                &[I64, I32, I32, I64, I64, I64, I64, I64, I32],
+                None,
+            )?,
         ];
         let mut sig = module.make_signature();
         sig.params.extend([AbiParam::new(I64); 3]);
@@ -1249,8 +1253,8 @@ struct Imports {
     /// `yavs_rt_drive_f(mem, pc, driver, lo, wave, len_inertial) -> u32`: a `Drive` of a frame
     /// waveform at a constant reference, the target's form found by the callee.
     drive_f: FuncRef,
-    /// `yavs_rt_gate_check(mem, pc, driver, lo, len, value, form, kept)`: a skip against the full
-    /// test, with the number of drives kept in the batch, which the kernel cannot see.
+    /// `yavs_rt_gate_check(mem, pc, driver, lo, len, value, form, entries, kept)`: a skip against
+    /// the full test, with the drives kept in the batch, which the kernel cannot see.
     gate_check: FuncRef,
     tables: HashMap<Vec<u8>, GlobalValue>,
     /// Copies of the constants (up to 4 KiB of bytes) the function takes the address of, which
@@ -7179,11 +7183,14 @@ impl Gen<'_> {
             let (pcv, drv) = (self.c32(pc), self.c32(driver));
             let (lo, len) = (self.ld(target), self.ld(Reg(target.0 + 1)));
             let f = self.c64(form);
-            let kept = match self.batch {
-                Some(bt) => self.b.use_var(bt.count),
-                None => self.c32(0),
+            let (entries, kept) = match self.batch {
+                Some(bt) => (
+                    self.b.ins().stack_addr(I64, bt.entries, 0),
+                    self.b.use_var(bt.count),
+                ),
+                None => (self.c64(0), self.c32(0)),
             };
-            let args = [self.mem, pcv, drv, lo, len, value, f, kept];
+            let args = [self.mem, pcv, drv, lo, len, value, f, entries, kept];
             self.b.ins().call(self.imp.gate_check, &args);
         }
         let one = self.c64(1);
@@ -7550,8 +7557,9 @@ impl Gen<'_> {
         let sure = known.is_some();
         let join = self.b.create_block();
         // The value the signal holds already: nothing to keep (`TierFrame::gate`). A drive kept
-        // for later closes the gate first: the kernel does not see it yet, and another of the
-        // machine's drivers may name the same kernel driver.
+        // for later closes the gate first when its bit is open: the kernel does not see it yet,
+        // and another of the machine's drivers may name the same kernel driver. A closed bit needs
+        // nothing: all the bits of its kernel driver are closed (`Ctx::gate_init`).
         let gate = self.gate_word();
         let tested = if let (Some((sv, f)), Some(g), true) = (known, gate, s.driver < 64) {
             let rest = self.b.create_block();

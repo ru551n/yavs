@@ -1059,7 +1059,9 @@ fn calls_between_compiled_functions() {
     let (a, b, n) = p.both(depth, &[5000]);
     assert_eq!(a, Ok(5000));
     assert_eq!(a, b);
-    assert!(n > 1, "{n} entries: no recursion left to the interpreter");
+    // Past the native stack allowance the callee runs in the interpreter and the callers stay
+    // compiled: nothing comes back to the interpreter's loop.
+    assert_eq!(n, 1, "{n} entries");
 }
 
 /// `up(l, r, dir, k, x, start, e)` and `down(..)`: a descriptor `l, r, dir` over a 16-byte array of

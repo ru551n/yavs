@@ -104,6 +104,14 @@ pub struct Jit {
     step: ClifId,
     host: ClifId,
     signal: ClifId,
+    spin: ClifId,
+    /// `allocates` of each function asked.
+    allocs: HashMap<FuncId, bool>,
+    record: ClifId,
+    steps: ClifId,
+    xstay: ClifId,
+    xstay_at: ClifId,
+    xstay_up: ClifId,
     lcopy: ClifId,
     zero: ClifId,
     mov: ClifId,
@@ -399,6 +407,22 @@ const WHY_NAMES: [&str; 9] = [
 ];
 const WHY_SHIFT: u32 = 26;
 
+static OLD_EXITS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The rest of this process keeps the exits of the LLVM tier's contract: a callee that LLVM made
+/// can leave a running function to the interpreter, so a Cranelift caller must be able to.
+pub fn keep_exits() {
+    OLD_EXITS.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Compiled code never hands a running function to the interpreter (docs/decisions.md "No resume
+/// anywhere in Cranelift code"); `YAVS_CLIFT_EXITS=old` keeps today's exits.
+fn no_exits() -> bool {
+    static OLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !*OLD.get_or_init(|| flag("YAVS_CLIFT_EXITS", "new") == "old")
+        && !OLD_EXITS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 fn flag(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
 }
@@ -432,6 +456,12 @@ impl Jit {
             (STEP, yavs_rt_step as *const u8),
             (HOST, yavs_rt_host as *const u8),
             (SIGNAL, yavs_rt_signal as *const u8),
+            (SPIN, yavs_rt_spin as *const u8),
+            (RECORD, yavs_rt_record as *const u8),
+            (STEPS, yavs_rt_steps as *const u8),
+            (XSTAY, yavs_rt_xstay as *const u8),
+            (XSTAY_AT, yavs_rt_xstay_at as *const u8),
+            (XSTAY_UP, yavs_rt_xstay_up as *const u8),
             (LCOPY, yavs_rt_lcopy as *const u8),
             (DEOPT, clift_deopt as *const u8),
             (DEOPT_SLOTS, yavs_rt_deopt_slots as *const u8),
@@ -482,6 +512,22 @@ impl Jit {
         let step = imp(STEP, &[I64, I64, I64, I32], Some(I32))?;
         let host = imp(HOST, &[I64, I64, I64, I64, I64, I32], Some(I64))?;
         let signal = imp(SIGNAL, &[I64, I64, I64, I32, I32], Some(I32))?;
+        let spin = imp(SPIN, &[I64, I64, I64, I32], Some(I32))?;
+        let steps = imp(STEPS, &[I64, I64, I64, I32, I32], Some(I32))?;
+        let record = imp(
+            RECORD,
+            &[I64, I64, I32, I32, I64, I64, I64, I64, I64],
+            Some(I64),
+        )?;
+        let xstay = imp(
+            XSTAY,
+            &[
+                I64, I64, I32, I32, I64, I64, I64, I32, I64, I64, I32, I64, I64, I64,
+            ],
+            Some(I32),
+        )?;
+        let xstay_at = imp(XSTAY_AT, &[I64; 6], Some(I32))?;
+        let xstay_up = imp(XSTAY_UP, &[I64; 8], Some(I32))?;
         let lcopy = imp(LCOPY, &[I64; 7], None)?;
         let zero = imp("clift_zero", &[I64, I64], None)?;
         let mov = imp("clift_move", &[I64, I64, I64], None)?;
@@ -544,6 +590,13 @@ impl Jit {
         Ok(Jit {
             module,
             step,
+            spin,
+            allocs: HashMap::new(),
+            record,
+            steps,
+            xstay,
+            xstay_at,
+            xstay_up,
             host,
             signal,
             lcopy,
@@ -719,6 +772,14 @@ impl Jit {
             return None;
         }
         if self.natives.values().flatten().count() >= self.native_limit {
+            return None;
+        }
+        // A native frame holds registers no collection can see, so a collection waits for it to
+        // end: not one that allocates without bound. Frame-mode code collects as it goes.
+        if no_exits() && allocates_in_loop(prog, f, &mut self.allocs) {
+            if dump {
+                eprintln!("no native variant of {id} {}: allocates in a loop", f.name);
+            }
             return None;
         }
         let built = match self.build(prog, id, f, true) {
@@ -1332,6 +1393,16 @@ impl Jit {
             step: self.module.declare_func_in_func(self.step, &mut ctx.func),
             host: self.module.declare_func_in_func(self.host, &mut ctx.func),
             signal: self.module.declare_func_in_func(self.signal, &mut ctx.func),
+            spin: self.module.declare_func_in_func(self.spin, &mut ctx.func),
+            record: self.module.declare_func_in_func(self.record, &mut ctx.func),
+            steps: self.module.declare_func_in_func(self.steps, &mut ctx.func),
+            xstay: self.module.declare_func_in_func(self.xstay, &mut ctx.func),
+            xstay_at: self
+                .module
+                .declare_func_in_func(self.xstay_at, &mut ctx.func),
+            xstay_up: self
+                .module
+                .declare_func_in_func(self.xstay_up, &mut ctx.func),
             lcopy: self.module.declare_func_in_func(self.lcopy, &mut ctx.func),
             zero: self.module.declare_func_in_func(self.zero, &mut ctx.func),
             mov: self.module.declare_func_in_func(self.mov, &mut ctx.func),
@@ -1499,6 +1570,48 @@ impl Jit {
     }
 }
 
+/// Whether a loop of `f` can allocate or free on the heap, itself or in what it calls.
+fn allocates_in_loop(prog: &Program, f: &Func, memo: &mut HashMap<FuncId, bool>) -> bool {
+    yavs_llvm::rt::back_edges(prog, f).into_iter().any(|r| {
+        f.code.get(r).is_some_and(|code| {
+            code.iter().any(|i| match *i {
+                Inst::New { .. } | Inst::NewFill { .. } | Inst::Free { .. } => true,
+                Inst::Call { func, .. } | Inst::CallProt { func, .. } => {
+                    allocates(prog, func, memo)
+                }
+                _ => false,
+            })
+        })
+    })
+}
+
+/// Whether function `id` can allocate or free on the heap, itself or in what it calls.
+fn allocates(prog: &Program, id: FuncId, memo: &mut HashMap<FuncId, bool>) -> bool {
+    if let Some(&r) = memo.get(&id) {
+        return r;
+    }
+    let mut seen = HashSet::from([id]);
+    let mut todo = vec![id];
+    let mut found = false;
+    while let Some(k) = todo.pop() {
+        let Some(f) = prog.func(k) else { continue };
+        for i in &f.code {
+            match *i {
+                Inst::New { .. } | Inst::NewFill { .. } | Inst::Free { .. } => found = true,
+                Inst::Call { func, .. } | Inst::CallProt { func, .. } if seen.insert(func) => {
+                    todo.push(func);
+                }
+                _ => {}
+            }
+        }
+        if found {
+            break;
+        }
+    }
+    memo.insert(id, found);
+    found
+}
+
 /// `YAVS_CLIFT_EXITMAP=<file>`: per function the bytes of machine code by `Why` and IR kind, as
 /// lines appended to the file (`tools/exitmap.py` sums them). Needs `--no-cache`: a body from the
 /// store has no source locations.
@@ -1557,6 +1670,12 @@ struct Imports {
     step: FuncRef,
     host: FuncRef,
     signal: FuncRef,
+    spin: FuncRef,
+    record: FuncRef,
+    steps: FuncRef,
+    xstay: FuncRef,
+    xstay_at: FuncRef,
+    xstay_up: FuncRef,
     lcopy: FuncRef,
     zero: FuncRef,
     mov: FuncRef,
@@ -1761,6 +1880,12 @@ struct Gen<'a> {
     b: FunctionBuilder<'a>,
     /// The program (the constant pool: descriptors `const_dim` reads at compile time).
     prog: &'a Program,
+    /// The function being generated.
+    func: &'a Func,
+    /// `no_exits`: a guard's exit stores only what the failing instruction reads.
+    noexit: bool,
+    /// The instruction being generated lets deferred stores pass (`passes`).
+    pass: bool,
     imp: Imports,
     env: Value,
     regs: Value,
@@ -1856,6 +1981,11 @@ struct Gen<'a> {
 /// The instructions a deferred register may be live over and still be deferred (`Gen::keep`).
 const MAX_SPAN: u32 = 4;
 
+fn max_span() -> u32 {
+    static N: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *N.get_or_init(|| flag("YAVS_CLIFT_SPAN", "").parse().unwrap_or(MAX_SPAN))
+}
+
 /// Frame-mode instructions that leave the frame to the interpreter only through `leave_at` at
 /// their own pc or a slow path, and call out to nothing that reads the registers: deferred
 /// stores of earlier instructions pass them, and their own definitions are deferred.
@@ -1891,6 +2021,36 @@ fn quiet(i: &Inst) -> bool {
                 | Inst::MakeDope { .. }
         ),
     }
+}
+
+/// Frame-mode instructions that deferred stores of earlier instructions may pass, with no exit
+/// that needs the frame whole: their fast paths look at no register in it, their slow paths step
+/// the instruction, which reads its operands (`Gen::slow_snap`), and nothing here can collect.
+fn passes(i: &Inst) -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| flag("YAVS_CLIFT_PASS", "1") != "0")
+        && matches!(
+            i,
+            Inst::LGet { .. }
+                | Inst::LSet { .. }
+                | Inst::LCopy { .. }
+                | Inst::LFill { .. }
+                | Inst::LEq { .. }
+                | Inst::LKey { .. }
+                | Inst::MemEq { .. }
+                | Inst::Pos { .. }
+                | Inst::SlicePos { .. }
+                | Inst::Field { .. }
+                | Inst::Alloc { .. }
+                | Inst::Stmt
+                | Inst::Deref { .. }
+                | Inst::SigReadScalar { .. }
+                | Inst::SigRead { .. }
+                | Inst::Edge { .. }
+                | Inst::SigAttr { .. }
+                | Inst::LayoutOf { .. }
+                | Inst::TempRoot { .. }
+        )
 }
 
 /// Zero-delay scalar logic drives (`yavs_interp::ScalarDrive`, `batched_drives`) are not handed to
@@ -2387,6 +2547,9 @@ fn gen_func(
     }
     let mut g = Gen {
         prog,
+        func: f,
+        noexit: no_exits(),
+        pass: false,
         known: base_known.clone(),
         objnew: None,
         pres: Vec::new(),
@@ -2447,7 +2610,7 @@ fn gen_func(
         if let Some(l) = &g.live {
             let spans = l.spans();
             for (r, k) in g.keep.iter_mut().enumerate() {
-                *k = spans.get(r).is_none_or(|&s| s > MAX_SPAN);
+                *k = spans.get(r).is_none_or(|&s| s > max_span());
             }
         }
     }
@@ -2692,7 +2855,8 @@ fn gen_func(
             && g.live.is_some()
             && (quiet(&inst) || fixed.is_some())
             && (g.batch.is_none() || batch_pure(prog, f, &inst));
-        if g.nat.is_none() && !g.defer {
+        g.pass = g.noexit && passes(&inst);
+        if g.nat.is_none() && !g.defer && !g.pass {
             g.spill(pc);
         }
         if let Some(l) = eloops.get(&pc) {
@@ -2730,7 +2894,11 @@ fn gen_func(
         if g.nat.is_some() && matches!(inst, Inst::Unreachable { .. }) {
             // The interpreter reports it, with the frame materialised.
             g.tag(Why::Other, pc);
-            g.leave_at(pc);
+            if g.noexit {
+                g.fail_at(pc, 1);
+            } else {
+                g.leave_at(pc);
+            }
             open = false;
             continue;
         }
@@ -2778,7 +2946,8 @@ fn gen_func(
                 let bad =
                     g.b.ins()
                         .icmp_imm_s(IntCC::UnsignedGreaterThan, x, (0xffff_ffff / m) as i64);
-                g.exit_if(bad, pc);
+                // (Over 4 GiB the `Index` after it fails, if the multiplication did not.)
+                g.exit_if_n(bad, pc, 2);
                 let v = g.b.ins().imul_imm_s(x, m as i64);
                 g.st(dst, v);
                 fused_mul = Some(i + 1);
@@ -2980,7 +3149,11 @@ fn gen_func(
                         }
                         // Always the interpreter's error.
                         _ => {
-                            g.leave_at(pc);
+                            if g.noexit {
+                                g.fail_at(pc, 1);
+                            } else {
+                                g.leave_at(pc);
+                            }
                             let dead = g.b.create_block();
                             g.start(dead);
                             a
@@ -3910,7 +4083,13 @@ fn gen_func(
                             .get(native)
                             .is_some_and(|n| yavs_interp::cold_native(&n.symbol)) =>
                     {
-                        g.deopt_here(pc)
+                        if g.noexit {
+                            g.tag(Why::Slow, pc);
+                            g.native_stay_at(pc);
+                            g.tag(Why::Body, pc);
+                        } else {
+                            g.deopt_here(pc)
+                        }
                     }
                     None => g.step(pc, &inst),
                 }
@@ -3962,6 +4141,8 @@ fn gen_func(
             g.b.ins().jump(bb, &args);
         }
     }
+    // What is known about a register at the last instruction says nothing at a slow path's pc.
+    g.known.clone_from(&base_known);
     let mut next_slow = 0;
     while next_slow < g.slows.len() {
         let s = g.slows[next_slow];
@@ -3995,6 +4176,12 @@ fn gen_func(
             }
             g.b.ins().store(g.rf, v, g.regs, r.dst.0 as i32 * 8);
             g.b.ins().jump(s.join, &[BlockArg::Value(v)]);
+            continue;
+        }
+        if g.noexit && g.nat.is_some() && !s.endstmt {
+            g.tag(Why::Slow, s.pc);
+            g.native_stay_at(s.pc);
+            g.b.ins().jump(s.join, &[]);
             continue;
         }
         if s.xstep && g.nat.is_some() {
@@ -4128,6 +4315,20 @@ impl Gen<'_> {
             .collect();
         rs.sort_unstable_by_key(|x| x.0);
         rs.dedup_by_key(|x| x.0);
+        rs
+    }
+
+    /// What a slow path's block stores before the step: the deferred registers it may look at. A
+    /// quiet instruction (the only kind with something deferred past it) reads its operands.
+    fn slow_snap(&self, pc: u32) -> Vec<(u32, Value)> {
+        let mut rs = self.pend_live(pc);
+        if self.noexit
+            && (self.defer || self.pass)
+            && let Some(i) = self.func.code.get(pc as usize)
+        {
+            let (uses, _) = yavs_interp::inst_regs(self.func, i);
+            rs.retain(|x| uses.iter().any(|u| u.0 == x.0));
+        }
         rs
     }
 
@@ -4442,6 +4643,28 @@ impl Gen<'_> {
     fn record_frame(&mut self, f: &Func, pc: Value) {
         let Some(n) = &self.nat else { return };
         let (func, nregs, slots, link) = (n.func, n.nregs, n.slots, n.up[0]);
+        if self.noexit {
+            // What the failing instruction reads went to the array at its exit; a preloaded
+            // register is the interpreter's. Only an address can reach these slots: a closed
+            // frame's cannot be read by a failing instruction.
+            let tb = self.nat_temp_base();
+            let fu = self.c32(func);
+            let nr = self.c64(nregs as i64);
+            let sl = self.c64(i64::from(f.frame));
+            let regs = self.regs;
+            self.b.ins().call(
+                self.imp.record,
+                &[self.env, self.mem, fu, pc, tb, nr, sl, link, regs],
+            );
+            let closed = self.nat.as_ref().is_some_and(|n| n.closed.is_some());
+            if f.frame > 0 && !closed {
+                let c = self.b.ins().call(self.imp.deopt_slots, &[self.env]);
+                let sb = self.b.inst_results(c)[0];
+                let fb = self.c64(i64::from(f.frame));
+                self.b.ins().call(self.imp.mov, &[sb, slots, fb]);
+            }
+            return;
+        }
         // The registers the interpreter preloads: constants and frame addresses, the same at
         // every exit (`leave_at` stores the others).
         for r in 0..self.vars.len() {
@@ -4522,6 +4745,7 @@ impl Gen<'_> {
         // error), and the callee allocates in the shared heap when the object is there
         // (`Machine::call_prot`).
         let flags = self.mem_ld(MEM_FLAGS);
+        let mut inner = None;
         if let Some(o) = obj {
             let serial = self
                 .b
@@ -4536,8 +4760,7 @@ impl Gen<'_> {
                     .ins()
                     .icmp_imm_s(IntCC::Equal, tag, i64::from(yavs_interp::SHARED_TAG));
             let shared = self.b.ins().uextend(I64, shared);
-            let inner = self.b.ins().bor(flags, shared);
-            self.mem_st(MEM_FLAGS, inner);
+            inner = Some(self.b.ins().bor(flags, shared));
         }
         let depth = match &self.nat {
             Some(n) => n.depth,
@@ -4654,6 +4877,10 @@ impl Gen<'_> {
             self.b.switch_to_block(go);
             (st, buf, out, dep, n, merge)
         });
+        // (After every test: a slow path comes back to the code below with the view's flags.)
+        if let Some(v) = inner {
+            self.mem_st(MEM_FLAGS, v);
+        }
         let call = match (nr.fr, target) {
             (Some(fr), _) => self.b.ins().call(fr, &cargs),
             (None, Some(at)) => {
@@ -4673,7 +4900,11 @@ impl Gen<'_> {
         self.brif_split(nd, out, cont);
         self.b.switch_to_block(out);
         self.tag(Why::Unwind, pc);
-        if self.nat.is_some() {
+        if self.nat.is_some() && self.noexit {
+            // This frame is recorded too, at its call: only its place in the error's trace.
+            let v = self.c32(pc);
+            self.leave(v);
+        } else if self.nat.is_some() {
             // This frame is recorded too, at its call.
             self.leave_at(pc);
         } else {
@@ -4779,10 +5010,41 @@ impl Gen<'_> {
         self.clear();
         let declined = self.b.ins().icmp_imm_s(IntCC::Equal, w, -1);
         let go = self.b.create_block();
+        let done = self.b.create_block();
+        self.b.append_block_param(done, I64);
         self.brif_split(declined, out, go);
         self.b.switch_to_block(out);
         self.tag(Why::Other, pc);
-        self.leave_at(pc);
+        if self.noexit && self.nat.is_some() {
+            self.native_stay_run(pc, fu.last as u32 - pc);
+            let v = self.var_ld(fu.out);
+            self.b.ins().jump(done, &[BlockArg::Value(v)]);
+        } else if self.noexit {
+            // The memo declined: the interpreter runs the instructions.
+            self.store_uses(pc, fu.last as u32 + 1 - pc);
+            let (zero, pv, lv) = (self.c64(0), self.c32(pc), self.c32(fu.last as u32));
+            let call = self
+                .b
+                .ins()
+                .call(self.imp.steps, &[zero, zero, self.mem, pv, lv]);
+            let r = self.b.inst_results(call)[0];
+            let on = self.b.create_block();
+            let goes = self
+                .b
+                .ins()
+                .icmp_imm_s(IntCC::Equal, r, i64::from(GO as i32));
+            self.b
+                .ins()
+                .brif(goes, on, &[], self.exit, &[BlockArg::Value(r)]);
+            self.b.switch_to_block(on);
+            let v = self
+                .b
+                .ins()
+                .load(I64, self.rf, self.regs, fu.out.0 as i32 * 8);
+            self.b.ins().jump(done, &[BlockArg::Value(v)]);
+        } else {
+            self.leave_at(pc);
+        }
         self.tag(Why::Body, pc);
         self.b.switch_to_block(go);
         let v = match fu.base {
@@ -4796,11 +5058,15 @@ impl Gen<'_> {
                     .ins()
                     .icmp_imm_u(IntCC::UnsignedGreaterThan, sum, 0xffff_ffff);
                 let bad = self.b.ins().bor(o, big);
-                self.exit_if(bad, pc);
+                self.exit_if_n(bad, pc, fu.last as u32 + 1 - pc);
                 let hi = self.b.ins().band_imm_u(a, !0xffff_ffff);
                 self.b.ins().bor(hi, sum)
             }
         };
+        self.b.ins().jump(done, &[BlockArg::Value(v)]);
+        self.b.switch_to_block(done);
+        let v = self.b.block_params(done)[0];
+        self.clear();
         self.st(fu.out, v);
     }
 
@@ -4928,8 +5194,54 @@ impl Gen<'_> {
             .band_imm_s(n, yavs_interp::SPIN_CHECK as i64 - 1);
         let check = self.b.ins().icmp_imm_s(IntCC::Equal, low, 0);
         let bad = self.b.ins().bor(stop, check);
-        self.exit_if(bad, pc);
+        if !self.noexit {
+            self.exit_if(bad, pc);
+            self.b.def_var(v, n);
+            return;
+        }
+        // The host polls and counts this jump, and code goes on. A stop leaves the frame as it
+        // would be between two activations: the registers live here are in it.
+        let (out, go, cont) = (
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+        );
+        self.b.set_cold_block(out);
+        self.brif_split(bad, out, go);
+        self.b.switch_to_block(go);
         self.b.def_var(v, n);
+        self.b.ins().jump(cont, &[]);
+        self.b.switch_to_block(out);
+        self.tag(Why::Other, pc);
+        if self.batch.is_some() {
+            self.batch_flush();
+        }
+        let rs = self.pend_live(pc);
+        self.store_regs(&rs);
+        let now = self.b.use_var(v);
+        let at = self.mem_ld(MEM_SPIN);
+        self.b.ins().store(MemFlagsData::trusted(), now, at, 0);
+        let (zero, pv) = (self.c64(0), self.c32(pc));
+        let call = self
+            .b
+            .ins()
+            .call(self.imp.spin, &[zero, zero, self.mem, pv]);
+        let r = self.b.inst_results(call)[0];
+        let polled = self.b.create_block();
+        let goes = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::Equal, r, i64::from(GO as i32));
+        self.b
+            .ins()
+            .brif(goes, polled, &[], self.exit, &[BlockArg::Value(r)]);
+        self.b.switch_to_block(polled);
+        let at = self.mem_ld(MEM_SPIN);
+        let again = self.b.ins().load(I64, MemFlagsData::trusted(), at, 0);
+        self.b.def_var(v, again);
+        self.b.ins().jump(cont, &[]);
+        self.tag(Why::Body, pc);
+        self.b.switch_to_block(cont);
     }
 
     /// Whether register `r` is a constant the interpreter preloads (`fixed_consts`).
@@ -4939,15 +5251,64 @@ impl Gen<'_> {
 
     /// Leave to the interpreter at `pc` when `bad` holds; code goes on after it.
     fn exit_if(&mut self, bad: Value, pc: u32) {
+        self.exit_if_n(bad, pc, 1);
+    }
+
+    /// `exit_if` for a test that stands for the `n` instructions from `pc`, the last of which
+    /// fails at the latest.
+    fn exit_if_n(&mut self, bad: Value, pc: u32, n: u32) {
         let out = self.b.create_block();
         let cont = self.b.create_block();
         self.b.set_cold_block(out);
         self.brif_split(bad, out, cont);
         self.b.switch_to_block(out);
         self.tag(Why::Guard, pc);
-        self.leave_at(pc);
+        if self.noexit {
+            self.fail_at(pc, n);
+        } else {
+            self.leave_at(pc);
+        }
         self.tag(Why::Body, pc);
         self.b.switch_to_block(cont);
+    }
+
+    /// The instructions from `pc` failed: the registers they read go where the interpreter
+    /// reads them (`Machine::fail_step`), the others stay out, and the function returns
+    /// `TIER_FAIL`: nothing goes on after this. A native frame's are the register array the frame
+    /// is recorded from.
+    fn fail_at(&mut self, pc: u32, n: u32) {
+        self.store_uses(pc, n);
+        let v = self.c32(pc | yavs_interp::TIER_FAIL);
+        self.leave(v);
+    }
+
+    /// The registers the `n` instructions from `pc` read go where the interpreter reads them.
+    fn store_uses(&mut self, pc: u32, n: u32) {
+        let mut stored: Vec<u32> = Vec::new();
+        let mut defined: Vec<u32> = Vec::new();
+        for k in pc..pc + n {
+            let Some(i) = self.func.code.get(k as usize) else {
+                break;
+            };
+            let (uses, defs) = yavs_interp::inst_regs(self.func, i);
+            for r in uses {
+                if !defined.contains(&r.0) && !stored.contains(&r.0) {
+                    stored.push(r.0);
+                }
+            }
+            defined.extend(defs.iter().map(|d| d.0));
+        }
+        for r in stored {
+            let u = r as usize;
+            if self.nat.is_some() {
+                if u < self.vars.len() && self.pre[u].is_none() && !self.fk_int(u) {
+                    let v = self.b.use_var(self.vars[u]);
+                    self.b.ins().store(self.rf, v, self.regs, r as i32 * 8);
+                }
+            } else if let Some(v) = self.pend.get(u).copied().flatten() {
+                self.b.ins().store(self.rf, v, self.regs, r as i32 * 8);
+            }
+        }
     }
 
     fn range_exit(&mut self, x: Value, lo: Value, hi: Value, pc: u32) {
@@ -5113,6 +5474,13 @@ impl Gen<'_> {
     /// Execute the instruction `i` at `pc` in the interpreter.
     fn step(&mut self, pc: u32, i: &Inst) {
         if self.nat.is_some() {
+            // A call of a function without a variant makes the caller frame-mode only.
+            if self.noexit && !matches!(i, Inst::Call { .. } | Inst::CallProt { .. }) {
+                self.tag(Why::Slow, pc);
+                self.native_stay_at(pc);
+                self.tag(Why::Body, pc);
+                return;
+            }
             self.bad = Some(format!("{i:?}"));
             return;
         }
@@ -5132,6 +5500,12 @@ impl Gen<'_> {
     /// The signal instruction at `pc` through `yavs_rt_signal`.
     fn signal(&mut self, pc: u32, edge: u32) {
         if self.nat.is_some() {
+            if self.noexit {
+                self.tag(Why::Slow, pc);
+                self.native_stay_at(pc);
+                self.tag(Why::Body, pc);
+                return;
+            }
             self.bad = Some("signal operation".into());
             return;
         }
@@ -5144,7 +5518,7 @@ impl Gen<'_> {
     fn slow_path(&mut self, pc: u32, i: &Inst) -> (Block, Block) {
         let (block, join) = (self.b.create_block(), self.b.create_block());
         if self.nat.is_none() {
-            let rs = self.pend_live(pc);
+            let rs = self.slow_snap(pc);
             if !rs.is_empty() {
                 self.snaps.insert(block, rs);
             }
@@ -6925,7 +7299,7 @@ impl Gen<'_> {
     fn slow_signal(&mut self, pc: u32, edge: u32) -> (Block, Block) {
         let (block, join) = (self.b.create_block(), self.b.create_block());
         if self.nat.is_none() {
-            let rs = self.pend_live(pc);
+            let rs = self.slow_snap(pc);
             if !rs.is_empty() {
                 self.snaps.insert(block, rs);
             }
@@ -7454,7 +7828,9 @@ impl Gen<'_> {
             && !(1..=i64::from(u32::MAX)).contains(&l)
         {
             // (A native frame is materialised: the interpreter reads it, as `slow` does.)
-            if self.nat.is_some() {
+            if self.nat.is_some() && self.noexit {
+                self.native_stay_at(pc);
+            } else if self.nat.is_some() {
                 self.deopt_here(pc);
             } else {
                 self.signal(pc, 0);
@@ -8170,10 +8546,15 @@ impl Gen<'_> {
     /// back.
     fn native_step(&mut self, pc: u32, i: &Inst, f: &Func) {
         let Some(n) = &self.nat else { return };
-        let (func, depth) = (n.func, n.depth);
+        let (func, depth, up) = (n.func, n.depth, n.up);
         let temp_base = self.nat_temp_base();
         let (uses, defs) = yavs_interp::inst_regs(f, i);
-        let (slow, join) = self.slow_path(pc, i);
+        let stay = self.noexit;
+        let (slow, join) = if stay {
+            (self.b.create_block(), self.b.create_block())
+        } else {
+            self.slow_path(pc, i)
+        };
         let slot = |b: &mut FunctionBuilder<'_>, n: usize| {
             let ss = b.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
@@ -8210,16 +8591,37 @@ impl Gen<'_> {
             self.c32(uses.len() as u32),
             self.c32(defs.len() as u32),
         );
-        let call = self.b.ins().call(
-            self.imp.xstep,
-            &[
-                self.env, self.mem, fv, pv, depth, iu, ins, nin, od, outs, nout, temp_base,
-            ],
-        );
+        let call = if stay {
+            self.b.ins().call(
+                self.imp.xstay,
+                &[
+                    self.env, self.mem, fv, pv, depth, iu, ins, nin, od, outs, nout, temp_base,
+                    up[0], up[1],
+                ],
+            )
+        } else {
+            self.b.ins().call(
+                self.imp.xstep,
+                &[
+                    self.env, self.mem, fv, pv, depth, iu, ins, nin, od, outs, nout, temp_base,
+                ],
+            )
+        };
         let st = self.b.inst_results(call)[0];
         self.clear();
         let okv = self.b.ins().icmp_imm_s(IntCC::NotEqual, st, 0);
         self.guard(okv, slow);
+        if stay {
+            // A fault the host keeps for the frames that word it.
+            let go = self.b.current_block().expect("in a block");
+            self.b.set_cold_block(slow);
+            self.b.switch_to_block(slow);
+            self.tag(Why::Guard, pc);
+            let v = self.c32(pc | yavs_interp::TIER_FAIL);
+            self.leave(v);
+            self.tag(Why::Body, pc);
+            self.b.switch_to_block(go);
+        }
         for (k, &r) in defs.iter().enumerate() {
             let v = self
                 .b
@@ -8241,10 +8643,103 @@ impl Gen<'_> {
         self.branch(stop, out, cont);
         self.start(out);
         self.tag(Why::Other, pc);
-        self.leave_at(pc + 1);
+        if stay {
+            let v = self.c32(pc + 1);
+            self.leave(v);
+        } else {
+            self.leave_at(pc + 1);
+        }
         self.tag(Why::Body, pc);
         self.start(cont);
-        self.join(join);
+        if stay {
+            self.b.ins().jump(join, &[]);
+            self.b.switch_to_block(join);
+            self.clear();
+        } else {
+            self.join(join);
+        }
+    }
+
+    /// The instruction at `pc` of a native frame in the interpreter, on a frame of the host's own
+    /// (`TierHost::native_stay_at`), and code goes on with what it wrote: its operands go to the
+    /// frame's register array and its results come back from it. A failure unwinds to word the
+    /// error; a process that ended unwinds too.
+    fn native_stay_at(&mut self, pc: u32) {
+        self.native_stay_run(pc, 0);
+    }
+
+    /// `native_stay_at` of the instruction at `pc` and the `more` after it, which go on one after
+    /// the other.
+    fn native_stay_run(&mut self, pc: u32, more: u32) {
+        let Some(n) = &self.nat else { return };
+        let (func, depth, up, regs) = (n.func, n.depth, n.up, self.regs);
+        let Some(&inst) = self.func.code.get(pc as usize) else {
+            let v = self.c32(pc | yavs_interp::TIER_FAIL);
+            self.leave(v);
+            let dead = self.b.create_block();
+            self.start(dead);
+            return;
+        };
+        let (mut uses, mut defs) = yavs_interp::inst_regs(self.func, &inst);
+        for k in pc + 1..=pc + more {
+            let Some(i) = self.func.code.get(k as usize) else {
+                break;
+            };
+            let (u, d) = yavs_interp::inst_regs(self.func, i);
+            uses.extend(u.into_iter().filter(|r| !defs.contains(r)));
+            defs.extend(d);
+        }
+        uses.sort_unstable_by_key(|r| r.0);
+        uses.dedup();
+        defs.sort_unstable_by_key(|r| r.0);
+        defs.dedup();
+        // (Not `ld`: `known` may be of another pc here, a slow path being made after the body.)
+        for r in uses {
+            let v = self.var_ld(r);
+            self.b.ins().store(self.rf, v, regs, r.0 as i32 * 8);
+        }
+        let temp_base = self.nat_temp_base();
+        let run = u64::from(pc) | u64::from(more.min(15)) << XSTAY_RUN;
+        let at = self.c64((u64::from(func) << 32 | run) as i64);
+        let call = if self.func.parent.is_some() {
+            self.b.ins().call(
+                self.imp.xstay_up,
+                &[self.env, self.mem, at, depth, regs, temp_base, up[0], up[1]],
+            )
+        } else {
+            self.b.ins().call(
+                self.imp.xstay_at,
+                &[self.env, self.mem, at, depth, regs, temp_base],
+            )
+        };
+        let st = self.b.inst_results(call)[0];
+        let (failed, go) = (self.b.create_block(), self.b.create_block());
+        let okv = self.b.ins().icmp_imm_s(IntCC::NotEqual, st, 0);
+        self.b.set_cold_block(failed);
+        self.brif_split(okv, go, failed);
+        self.b.switch_to_block(failed);
+        let v = self.c32(pc | yavs_interp::TIER_FAIL);
+        self.leave(v);
+        self.b.switch_to_block(go);
+        let (stopped, on) = (self.b.create_block(), self.b.create_block());
+        let stop = self.b.ins().icmp_imm_s(IntCC::Equal, st, 2);
+        self.b.set_cold_block(stopped);
+        self.brif_split(stop, stopped, on);
+        self.b.switch_to_block(stopped);
+        let v = self.c32(pc + 1);
+        self.leave(v);
+        self.start(on);
+        for d in defs {
+            let v = self.b.ins().load(I64, self.rf, regs, d.0 as i32 * 8);
+            self.st(d, v);
+        }
+        // The frame's own statements must not free what a `NewFrame` made.
+        if matches!(inst, Inst::NewFrame { .. }) {
+            let len = self.mem_ld(MEM_TEMP_LEN);
+            if let Some(TempBase::Cell(cell)) = self.nat.as_ref().map(|n| n.temp_base) {
+                self.b.ins().store(MemFlagsData::trusted(), len, cell, 0);
+            }
+        }
     }
 
     /// `Inst::CallNative` of a native `yavs_interp::direct_native` allows, in a frame-mode
@@ -8317,7 +8812,12 @@ impl Gen<'_> {
         self.start(out);
         if self.nat.is_some() {
             self.tag(Why::Other, pc);
-            self.leave_at(pc + 1);
+            if self.noexit {
+                let v = self.c32(pc + 1);
+                self.leave(v);
+            } else {
+                self.leave_at(pc + 1);
+            }
             self.tag(Why::Body, pc);
         } else {
             let v = self.c32(yavs_interp::TIER_SUSPEND);
@@ -8622,7 +9122,8 @@ impl Gen<'_> {
         self.st(dst, v);
         // Frame mode: the object goes on in hand through `cont` (pointer, length, value); a way
         // that cannot vouch for the entry passes length 0, so every access takes its slow path.
-        let cont = self.nat.is_none().then(|| {
+        // So does a native frame whose slow path comes back.
+        let cont = (self.nat.is_none() || self.noexit).then(|| {
             let c = self.b.create_block();
             for _ in 0..3 {
                 self.b.append_block_param(c, I64);
@@ -8668,8 +9169,34 @@ impl Gen<'_> {
             let at = self.b.ins().bor(at, tk);
             let found = self.b.ins().load(I64, self.mf, ent, MEM_OBJS as i32);
             let same = self.b.ins().icmp(IntCC::Equal, found, at);
-            self.guard(same, slow);
             self.st(dst, v);
+            if let Some(c) = cont {
+                let (ptr, len) = self.ent_obj(ent);
+                let z = self.c64(0);
+                let len = self.b.ins().select(same, len, z);
+                let args = [ptr, len, v].map(BlockArg::Value);
+                self.b.ins().jump(c, &args);
+                self.start(join);
+                let v = self.ld(dst);
+                let z = self.c64(0);
+                let args = [self.mem, z, v].map(BlockArg::Value);
+                self.b.ins().jump(c, &args);
+                self.start(c);
+                let ps = self.b.block_params(c).to_vec();
+                self.st(dst, ps[2]);
+                let off = self.c64(0);
+                self.objnew = Some((
+                    dst,
+                    ObjRef {
+                        ptr: ps[0],
+                        len: ps[1],
+                        hi: ps[2],
+                        off,
+                    },
+                ));
+                return;
+            }
+            self.guard(same, slow);
             self.b.ins().jump(join, &[]);
         } else if let Some(c) = cont {
             let ok = self.b.create_block();

@@ -4982,6 +4982,10 @@ The reader's instruction count did not change in the kernel round; its rows show
 1.5 s of library analysis with run times that moved by 40%. Only the writer's rows are an effect of the change (instructions 0.92).
 Totals under 1 or near 1 for the reader come from the library analysis of yavs (0.2 s warm) against the reference's 1.5 s.
 
+### Data layout items (perf/try-dataitems, 2026-11-03)
+
+(`docs/decisions.md` "Data layout items".) A busy bit per waveform, `Signal` hot lines first with small codes and pending lists in the record, `ProcState` and `Waiters` hot fields first, one table of signal views per instance. Not landed on a release: measured on a shared host, cycles still to be checked on a quiet one.
+
 ### Kernel round 25: repeated skipped drives (#720, #667, 2026-10-27)
 
 (`docs/decisions.md` "Kernel round 25".) A zero-delay drive of a port or shared driver that already holds a skipped (unchanged)

@@ -244,28 +244,30 @@ pub(crate) fn runs_hit(runs: &[Range], r: Range) -> bool {
 /// every event scans. Each list keeps its count right after the last compaction, so lists of
 /// signals that rarely change do not grow without bound. The lists are made when the first
 /// process waits: most signals never have one.
+// The order is the point of `repr(C)`: a wake reads the first line only.
 #[derive(Default)]
+#[repr(C, align(64))]
 pub(crate) struct Waiters {
     /// Per chunk, then the wide list last; empty until the first `add`.
     lists: Vec<(SmallVec<[Waiter; 1]>, usize)>,
-    next: u64,
+    /// The edge trigger every waiter ever added shares (see `uniform_trigger`).
+    trig: Trig,
     /// Elements of the signal, and log2 of the chunk size.
     len: u32,
     shift: u32,
-    /// The edge trigger every waiter ever added shares (see `uniform_trigger`).
-    trig: Trig,
-    /// The wake list of a signal whose waiters all are resident, alive and wait for the whole
-    /// signal (a clock and its processes): what a scan would produce, kept until a waiter is
-    /// added or a process stops waiting this way.
-    cache: Option<Cache>,
     /// A waiter was ever added to a list other than the wide one: an event must look at the
     /// lists of the elements it hit. Without, only the wide list is scanned, whatever the
     /// number of runs (a wide bus whose processes all wait for all of it, #519).
     chunked: bool,
+    chunk_over: bool,
+    /// The wake list of a signal whose waiters all are resident, alive and wait for the whole
+    /// signal (a clock and its processes): what a scan would produce, kept until a waiter is
+    /// added or a process stops waiting this way.
+    cache: Option<Box<Cache>>,
+    next: u64,
     /// The chunk lists that may hold a waiter (at most `CHUNK_IX`; `chunk_over` when more were
     /// used): an event on a wide signal looks only at these, not at every chunk it spans.
     chunk_ix: SmallVec<[u32; 4]>,
-    chunk_over: bool,
 }
 
 /// `Cache::batch`: the plain processes (one suspension point, not postponed) in list order,
@@ -536,11 +538,11 @@ impl Waiters {
             }
         }
         let list = l.iter().map(|w| (w.seq, w.proc, w.tid)).collect();
-        self.cache = Some(Cache {
+        self.cache = Some(Box::new(Cache {
             list,
             tids,
             batch: None,
-        });
+        }));
     }
 
     /// Remove the live waiters overlapping `runs` (sorted, disjoint) and put their
@@ -813,6 +815,7 @@ pub(crate) struct Signal {
 // A checked layout: a reorder that leaves the hot fields in other lines fails to build.
 const _: () = {
     use std::mem::offset_of as at;
+    assert!(at!(Waiters, chunk_over) < 64);
     assert!(at!(Signal, nruns) < 64 && at!(Signal, cur) == 64 && at!(Signal, driving) == 128);
     assert!(at!(Signal, last_value) == 192);
 };

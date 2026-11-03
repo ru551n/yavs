@@ -1500,6 +1500,13 @@ struct Gen<'a> {
     fnew: Option<(Reg, u64)>,
 }
 
+/// Prototype, memory model without bounds on addresses of a known space (`perf/rd-values`).
+fn rd_noguard() -> bool {
+    static ON: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var_os("YAVS_RD_NOGUARD").is_some());
+    *ON
+}
+
 /// The instructions a deferred register may be live over and still be deferred (`Gen::keep`).
 const MAX_SPAN: u32 = 4;
 
@@ -3500,6 +3507,12 @@ fn gen_func(
             Inst::WaitOn { sig } if g.nat.is_none() => g.wait_on(pc, sig),
             Inst::WaitEdge { sig, kind } if g.nat.is_none() => g.wait_edge(pc, sig, kind.code()),
             Inst::SigRead { dst, sig } => g.sig_read(pc, dst, sig),
+            // Prototype: through the signal callback rather than a step, as the other tier.
+            Inst::SigGather { .. } | Inst::SigScatter { .. }
+                if g.nat.is_none() && std::env::var_os("YAVS_RD_SIGRT").is_some() =>
+            {
+                g.signal(pc, 0)
+            }
             Inst::WaitOn { .. }
             | Inst::WaitFor { .. }
             | Inst::DriveSlot { .. }
@@ -4039,6 +4052,8 @@ impl Gen<'_> {
         }
         // Where the address parameters point (`yavs_rt_region`), held for the activation.
         let stable = stable_activation(f);
+        // Prototype: `fixed_activation` holds all but the temporary area; `YAVS_RD_TEMP=1` that too.
+        let fixed = std::env::var_os("YAVS_RD_FIXED").is_some() && yavs_llvm::rt::fixed_activation(f);
         for pa in param_addrs(f) {
             let Some(&a) = cells.get(pa.cell) else {
                 return Err("missing argument cell".into());
@@ -4049,7 +4064,7 @@ impl Gen<'_> {
                 3,
             ));
             let out = self.b.ins().stack_addr(I64, ss, 0);
-            let fl = self.c32(u32::from(pa.write) | u32::from(stable) << 1);
+            let fl = self.c32(u32::from(pa.write) | u32::from(stable) << 1 | u32::from(fixed) << 2);
             self.b
                 .ins()
                 .call(self.imp.region, &[self.env, self.mem, a, depth, fl, out]);
@@ -5034,9 +5049,11 @@ impl Gen<'_> {
             let lo = self.lo32(a);
             let off = self.b.ins().iadd(lo, ev);
             // (The offset of the address counts from the object's start.)
+            if !rd_noguard() {
             let len = self.c64(i64::from(e - s));
             let okc = self.in_range(off, nv, len);
             self.guard(okc, slow);
+            }
             let slots = self.slots();
             let base = self.b.ins().iadd_imm_s(slots, i64::from(s));
             return self.b.ins().iadd(base, off);
@@ -5054,11 +5071,13 @@ impl Gen<'_> {
             self.tag(6);
             let (ev, nv) = (self.op(extra), self.op(n));
             let off = self.b.ins().iadd(o.off, ev);
+            if !rd_noguard() {
             let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, nv, o.len);
             let rest = self.b.ins().isub(o.len, nv);
             let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, rest);
             let okc = self.b.ins().band(fits, inside);
             self.guard(okc, slow);
+            }
             return self.b.ins().iadd(o.ptr, off);
         }
         if heap.is_some() && frame.is_none() {
@@ -5086,12 +5105,14 @@ impl Gen<'_> {
             self.tag(4);
             let (ev, nv) = (self.op(extra), self.op(n));
             let off = self.b.ins().iadd_imm_s(ev, o as i64);
+            if !rd_noguard() {
             let lenv = self.c64(len as i64);
             let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, nv, lenv);
             let rest = self.b.ins().isub(lenv, nv);
             let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, rest);
             let okc = self.b.ins().band(fits, inside);
             self.guard(okc, slow);
+            }
             let base = self.b.ins().symbol_value(I64, gv);
             return self.b.ins().iadd(base, off);
         }
@@ -5111,12 +5132,14 @@ impl Gen<'_> {
             let (ev, nv) = (self.op(extra), self.op(n));
             let lo = self.lo32(a);
             let off = self.b.ins().iadd(lo, ev);
+            if !rd_noguard() {
             let len = self.mem_ld(len_f);
             let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, nv, len);
             let rest = self.b.ins().isub(len, nv);
             let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, rest);
             let okc = self.b.ins().band(fits, inside);
             self.guard(okc, slow);
+            }
             let base = self.mem_ld(base_f);
             return self.b.ins().iadd(base, off);
         }
@@ -5141,6 +5164,7 @@ impl Gen<'_> {
             let (ev, nv) = (self.op(extra), self.op(n));
             // `extra` is below 2^63, the sum cannot wrap.
             let off = self.b.ins().iadd_imm_s(ev, o as i64);
+            if !rd_noguard() {
             let len = if let Some(e) = obj_end {
                 self.c64(e as i64)
             } else if self.nat.is_some() {
@@ -5153,6 +5177,7 @@ impl Gen<'_> {
             let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, rest);
             let okc = self.b.ins().band(fits, inside);
             self.guard(okc, slow);
+            }
             let slots = self.slots();
             return self.b.ins().iadd(slots, off);
         }

@@ -2103,7 +2103,9 @@ pub unsafe extern "C" fn yavs_rt_region(
 ) {
     cb(Cb::Region);
     // Flag 4: everything but the temporary area stays where it is (`fixed_activation`).
-    let fixed = flags & 4 != 0 && a >> 32 != u64::from(space::TEMP) << 29;
+    // Prototype: `YAVS_RD_TEMP=1` reserves the area once (`reserve_temp`), so it never moves either.
+    let fixed = flags & 4 != 0
+        && (a >> 32 != u64::from(space::TEMP) << 29 || std::env::var_os("YAVS_RD_TEMP").is_some());
     let (write, stable) = (flags & 1 != 0, flags & 2 != 0 || fixed);
     // SAFETY: as in `yavs_rt_step`.
     let mut r = unsafe { &*mem }.region(a, depth, write, stable);

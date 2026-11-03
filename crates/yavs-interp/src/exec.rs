@@ -9466,8 +9466,12 @@ impl Machine {
     #[inline(always)]
     fn reserve_temp(&mut self) {
         const TIER_TEMP: usize = 512;
-        if self.temp.capacity() < TIER_TEMP {
-            self.temp.reserve(TIER_TEMP - self.temp.len());
+        // Prototype: a temporary area that never moves within an activation, virtual memory only.
+        static RD_TEMP: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+            if std::env::var_os("YAVS_RD_TEMP").is_some() { 1 << 28 } else { TIER_TEMP }
+        });
+        if self.temp.capacity() < *RD_TEMP {
+            self.temp.reserve(*RD_TEMP - self.temp.len());
         }
     }
 

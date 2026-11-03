@@ -693,9 +693,8 @@ pub(crate) struct Machine {
 /// `Machine::vc`).
 #[repr(C, align(64))]
 struct ViewCache {
-    /// The instance signals as compiled code reads them (`TierFrame::sigtab`), made at the first
-    /// entry of compiled code from the kernel's signals (this machine belongs to one kernel).
-    tier_sigs: Vec<crate::TierSig>,
+    /// `InstData::tier_sigs` once the machine entered compiled code.
+    tier_sigs: Arc<[crate::TierSig]>,
     /// This machine for compiled code (`TierFrame::owner`): unique in the process.
     owner: u64,
     /// The instance data (`TierFrame::inst`, `inst_len`) and the number of its signals, as
@@ -1259,7 +1258,7 @@ impl Machine {
         static OWNERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Machine {
             vc: ViewCache {
-                tier_sigs: Vec::new(),
+                tier_sigs: Arc::new([]),
                 owner: u64::from(rt.id) << crate::OWNER_RT_SHIFT
                     | OWNERS.fetch_add(1, Ordering::Relaxed) & u64::from(u32::MAX),
                 inst_data: inst.data.as_ptr() as usize,
@@ -11528,14 +11527,18 @@ impl crate::TierHost for Host<'_, '_, '_> {
         tf.stop = c.interrupt_flags();
         tf.spin = &raw mut m.spin;
         if m.vc.tier_sigs.len() != m.vc.nsigs {
-            m.vc.tier_sigs = m.inst.sigs.iter().map(|s| tier_sig(c, s)).collect();
+            let inst = &m.inst;
+            m.vc.tier_sigs = inst
+                .tier_sigs
+                .get_or_init(|| inst.sigs.iter().map(|s| tier_sig(c, s)).collect())
+                .clone();
         }
         // A signal's form and addresses are fixed once the simulation is built.
         debug_assert!(
             m.inst
                 .sigs
                 .iter()
-                .zip(&m.vc.tier_sigs)
+                .zip(m.vc.tier_sigs.iter())
                 .all(|(s, t)| tier_sig(c, s) == *t),
             "a signal's view changed during the run"
         );

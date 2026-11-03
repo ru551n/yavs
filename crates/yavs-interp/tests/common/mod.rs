@@ -378,6 +378,7 @@ impl Design {
             data: Vec::new(),
             sigs: sigs.clone(),
             cov_base: 0,
+            tier_sigs: Default::default(),
         });
         for p in &self.procs {
             let mut ids = Vec::new();

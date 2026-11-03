@@ -87,6 +87,9 @@ pub struct InstData {
     pub sigs: Vec<InstSig>,
     /// This instance's first counter in the runtime's coverage array.
     pub cov_base: u32,
+    /// The signals as compiled code reads them (`TierFrame::sigtab`), made at the first entry of
+    /// compiled code: one table per instance, not per process (an instance belongs to one kernel).
+    pub tier_sigs: std::sync::OnceLock<std::sync::Arc<[TierSig]>>,
 }
 
 impl AsRef<[u8]> for InstData {

@@ -478,3 +478,59 @@ fn a_process_that_never_suspends_is_polled_and_bounded() {
     let c = yavs(&dir, &args("--tier=clift"), &[]);
     assert_eq!(show(&c), show(&i));
 }
+
+/// A collection waits for native frames to end, so a function that allocates in a loop keeps
+/// frame-mode code, which collects as it goes: its garbage does not wait for the function's end.
+#[test]
+fn a_loop_that_allocates_is_collected() {
+    let dir = tempdir("noexit_gc");
+    let src = "entity t is end;
+architecture a of t is
+  type big is array (0 to 4095) of integer;
+  type acc_big is access big;
+  function churn (n : integer) return integer is
+    variable p : acc_big;
+    variable sum : integer := 0;
+  begin
+    for i in 1 to n loop
+      p := new big'(others => i);
+      sum := (sum + p(i mod 4096)) mod 1000;
+    end loop;
+    return sum;
+  end;
+begin
+  process
+  begin
+    report integer'image(churn(30000));
+    wait;
+  end process;
+end;
+";
+    std::fs::write(dir.join("t.vhd"), src).expect("write");
+    let a = yavs(
+        &dir,
+        &["analyze", "--std=2008", "--work=work:work", "t.vhd"],
+        &[],
+    );
+    assert!(a.status.success(), "{a:?}");
+    let args = |tier: &'static str| {
+        vec![
+            "run",
+            "--std=2008",
+            "--work=work:work",
+            "--no-cache",
+            tier,
+            "t",
+        ]
+    };
+    let i = yavs(&dir, &args("--tier=interp"), &[]);
+    let c = yavs(&dir, &args("--tier=clift"), &[("YAVS_COUNTERS", "1")]);
+    assert_eq!(c.stdout, i.stdout);
+    let err = String::from_utf8_lossy(&c.stderr);
+    let n = err
+        .lines()
+        .find_map(|l| l.strip_prefix("counters: gc_collections="))
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or_else(|| panic!("no counter:\n{err}"));
+    assert!(n > 0, "no collection in the loop:\n{err}");
+}

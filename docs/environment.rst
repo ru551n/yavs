@@ -180,8 +180,8 @@ Diagnostics of a run
      - unset
      - every command
    * - ``YAVS_COUNTERS``
-     - Prints the work counters of a run as ``counters: NAME=VALUE`` lines on standard error. ``kinds`` and ``pc`` add the calls compiled code makes into the host.
-     - ``1``, ``kinds``, ``pc``
+     - Prints the work counters of a run as ``counters: NAME=VALUE`` lines on standard error. ``kinds`` and ``pc`` add the calls compiled code makes into the host, ``exits`` only what leaves compiled code.
+     - ``1``, ``kinds``, ``pc``, ``exits``
      - unset
      - ``run``
    * - ``YAVS_DUMPIR``
@@ -397,6 +397,11 @@ Compiled tiers: Cranelift
    * - ``YAVS_CLIFT_CODEDIR``
      - Writes the machine code of each function into that directory.
      - a directory
+     - unset
+     - ``run``
+   * - ``YAVS_CLIFT_EXITMAP``
+     - Appends the bytes of machine code of each function to that file, by what they are (body, exit stores, slow paths, entries) and IR kind. Needs ``--no-cache``. ``tools/exitmap.py`` sums them.
+     - a file
      - unset
      - ``run``
    * - ``YAVS_CLIFT_DUMP``

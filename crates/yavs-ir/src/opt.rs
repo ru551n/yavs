@@ -870,7 +870,7 @@ fn dead() -> Inst {
     Inst::Unreachable { what: DEAD_MSG }
 }
 
-fn is_dead(i: &Inst) -> bool {
+pub(crate) fn is_dead(i: &Inst) -> bool {
     matches!(i, Inst::Unreachable { what } if *what == DEAD_MSG)
 }
 
@@ -5930,7 +5930,7 @@ pub(crate) fn leaves_temps(
 
 /// A wait or a suspension: `static_wait` in the predecoder starts a wait at its `Stmt`, in both
 /// tiers, so that marker stays.
-fn is_wait(i: &Inst) -> bool {
+pub(crate) fn is_wait(i: &Inst) -> bool {
     matches!(
         i,
         Inst::WaitOn { .. }

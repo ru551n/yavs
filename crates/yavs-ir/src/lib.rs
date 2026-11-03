@@ -18,6 +18,7 @@ mod inst;
 mod memo_fn;
 pub mod opt;
 mod program;
+mod temps;
 mod ty;
 mod verify;
 
@@ -43,6 +44,7 @@ pub use program::{
     COV_INPUTS, FRAME_OBJECT, frame_object_addr, frame_object_range, is_frame_object, native_shown,
 };
 pub use program::{bytes, lazy_bodies, note_restart, optimised_functions, restarted_calls};
+pub use temps::{StmtTrim, stmt_trims};
 pub use ty::{DOPE_DIM_BYTES, Field, Layout, LayoutError, LogicKind, Refl, ReflKind, Ty, dim_len};
 pub use verify::VerifyError;
 pub use yavs_kernel::StmtId;

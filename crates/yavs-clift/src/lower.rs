@@ -24,7 +24,7 @@ use cranelift_module::{DataDescription, DataId, FuncId as ClifId, Linkage, Modul
 use yavs_interp::space;
 use yavs_ir::{
     AddrSpace, BoolOp, CheckKind, CmpOp, FOp, FUnOp, Func, FuncId, FuncKind, Inst, IntOp, IntUnOp,
-    Program, Reg, Width,
+    Program, Reg, StmtTrim, Width,
 };
 use yavs_llvm::native::{Arg, call_fits, closed_frame, ieee_fast, ieee_layout, native_set};
 use yavs_llvm::regs::Live;
@@ -2100,6 +2100,12 @@ fn gen_func(
     } else {
         Vec::new()
     };
+    // The markers' work, and whether the base they trim to is known to be zero: a process's root
+    // frame starts with an empty temporary area and only `NewFrame` raises the base.
+    let trims = yavs_ir::stmt_trims(prog, f);
+    let base_zero = !native
+        && f.kind == FuncKind::Process
+        && !f.code.iter().any(|i| matches!(i, Inst::NewFrame { .. }));
     let skipped: HashSet<u32> = scalar_drives
         .iter()
         .flat_map(|d| {
@@ -2660,24 +2666,37 @@ fn gen_func(
                 },
             },
             Inst::Stmt => {
-                let (slow, join) = g.slow_path(pc, &inst);
-                // In a native frame the host's own function drops the recorded temporaries.
-                if g.nat.is_some()
-                    && let Some(sl) = g.slows.last_mut()
-                {
-                    sl.endstmt = true;
+                // What the marker must do, from the instructions before it (`stmt_trims`).
+                if let StmtTrim::Trim { roots_free } = trims[i] {
+                    let slow = (!roots_free).then(|| {
+                        let (slow, join) = g.slow_path(pc, &inst);
+                        // In a native frame the host's own function drops the recorded temporaries.
+                        if g.nat.is_some()
+                            && let Some(sl) = g.slows.last_mut()
+                        {
+                            sl.endstmt = true;
+                        }
+                        let roots = g.mem_ld(MEM_TEMP_ROOTS);
+                        let z = g.b.ins().icmp_imm_s(IntCC::Equal, roots, 0);
+                        g.guard(z, slow);
+                        join
+                    });
+                    if base_zero {
+                        let zero = g.b.ins().iconst(I64, 0);
+                        g.mem_st(MEM_TEMP_LEN, zero);
+                    } else {
+                        let len = g.mem_ld(MEM_TEMP_LEN);
+                        let base = match &g.nat {
+                            Some(_) => g.nat_temp_base(),
+                            None => g.mem_ld(MEM_TEMP_BASE),
+                        };
+                        let v = g.b.ins().umin(base, len);
+                        g.mem_st(MEM_TEMP_LEN, v);
+                    }
+                    if let Some(join) = slow {
+                        g.join(join);
+                    }
                 }
-                let roots = g.mem_ld(MEM_TEMP_ROOTS);
-                let z = g.b.ins().icmp_imm_s(IntCC::Equal, roots, 0);
-                g.guard(z, slow);
-                let len = g.mem_ld(MEM_TEMP_LEN);
-                let base = match &g.nat {
-                    Some(_) => g.nat_temp_base(),
-                    None => g.mem_ld(MEM_TEMP_BASE),
-                };
-                let v = g.b.ins().umin(base, len);
-                g.mem_st(MEM_TEMP_LEN, v);
-                g.join(join);
                 // A `wait until <edge>` short-cuts only where the edge trigger resumed the
                 // activation (`WAIT_SAME_EDGE`, #772).
                 if let Some(&(_, at, edge)) = static_wait.iter().find(|w| w.0 == i) {

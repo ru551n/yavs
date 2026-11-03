@@ -346,6 +346,8 @@ macro_rules! push_frame_body {
         ) else {
             return stack_fail($f);
         };
+        // Compiled code trims a process's temporaries to zero (`yavs_ir::stmt_trims`).
+        debug_assert!(idx != 0 || $f.kind != FuncKind::Process || tb == 0);
         $self.regs.base = rbase;
         if idx < 1 << 29 {
             $pre.fill_below(&mut $self.regs.v, idx as u32);
@@ -718,7 +720,8 @@ const RESIDENT_REGS: usize = 4096;
 const RESIDENT_BUDGET: usize = 96 << 20;
 static RESIDENT_USED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 /// Capacity of the temporary area above which a resident process gives its vectors to the
-/// scratch.
+/// scratch. Compiled processes carry up to 256 bytes of small temporaries to their
+/// suspension (`yavs_ir::stmt_trims`); the limit there keeps them under this.
 const RESIDENT_TEMP: usize = 1024;
 
 /// The working vectors of the processes running on this thread: registers and temporaries. A

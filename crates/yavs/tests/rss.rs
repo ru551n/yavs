@@ -135,3 +135,103 @@ end;
         assert!(peak < 220_000, "{tier}: peak resident size {peak} kB");
     }
 }
+
+/// Peak resident size (kB) of running `top` from `src` on `tier`.
+fn peak_of(src: &str, top: &str, tier: &str) -> u64 {
+    let d = tmp(top);
+    std::fs::write(d.join(format!("{top}.vhd")), src).expect("write");
+    let work = format!("work:{}", d.join("lib").display());
+    let yavs = env!("CARGO_BIN_EXE_yavs");
+    let a = Command::new(yavs)
+        .current_dir(&*d)
+        .args(["analyze", "--work", &work, &format!("{top}.vhd")])
+        .output()
+        .expect("analyze");
+    assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
+    let mut c = Command::new(yavs)
+        .current_dir(&*d)
+        .args([
+            "--color",
+            "never",
+            "run",
+            "--no-cache",
+            tier,
+            "--work",
+            &work,
+            top,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("run");
+    let mut peak = 0;
+    while c.try_wait().expect("wait").is_none() {
+        peak = peak.max(rss_kb(c.id()).unwrap_or(0));
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(c.wait().expect("wait").success(), "{tier}: run failed");
+    assert!(peak > 0, "{tier}: peak resident size never read");
+    peak
+}
+
+/// Compiled code frees a statement's temporaries at the next marker, except where a bounded few
+/// wait for the suspension (`stmt_trims`): a loop with a 1 kB temporary per round runs 500 000
+/// rounds, and a process whose generic-sized vectors make wave objects wakes a million times
+/// (a few hundred bytes per activation wait for its suspension, which frees them).
+#[cfg(feature = "clift")]
+#[test]
+fn compiled_temporaries_are_freed_in_loops_and_at_suspensions() {
+    let looped = "
+entity tloop is end;
+architecture a of tloop is
+  function mk(n : natural) return bit_vector is
+    variable r : bit_vector(1 to 1000) := (others => '0');
+  begin
+    r(1) := bit'val(n mod 2);
+    return r;
+  end;
+begin
+  process
+    variable n : natural := 0;
+  begin
+    for i in 1 to 500000 loop
+      if mk(i)(1) = '1' then
+        n := n + 1;
+      end if;
+    end loop;
+    assert n = 250000 report \"count\" severity failure;
+    wait;
+  end process;
+end;
+";
+    let waking = "
+entity twake is generic (w : natural := 9); end;
+architecture a of twake is
+  signal c1, c2, c3, c4 : bit_vector(w - 1 downto 0) := (others => '0');
+begin
+  process
+    variable col : bit_vector(w - 1 downto 0) := (others => '0');
+    variable n : natural := 0;
+  begin
+    col(0) := not col(0);
+    c1 <= col;
+    c2 <= col;
+    c3 <= col;
+    c4 <= col;
+    n := n + 1;
+    if n >= 1000000 then
+      wait;
+    end if;
+    wait for 1 ns;
+  end process;
+end;
+";
+    for (src, top) in [(looped, "tloop"), (waking, "twake")] {
+        for tier in ["--tier=clift", "--tier=interp"] {
+            let peak = peak_of(src, top, tier);
+            eprintln!("{top} {tier}: peak {peak} kB");
+            // Untrimmed, either would hold 300 MB or more.
+            assert!(peak < 200_000, "{top} {tier}: peak resident size {peak} kB");
+        }
+    }
+}

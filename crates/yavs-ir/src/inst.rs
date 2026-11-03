@@ -288,7 +288,8 @@ pub enum Inst {
         dst: Reg,
         c: ConstId,
     },
-    /// `size` bytes of zeroed temporary memory, live until the end of the statement.
+    /// `size` bytes of zeroed temporary memory, live until the end of the statement (compiled
+    /// code may keep a small one of a process until its next suspension: `stmt_trims`).
     Alloc {
         dst: Reg,
         size: Reg,

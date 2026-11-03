@@ -936,7 +936,8 @@ pub struct TierFrame {
     /// The high half of the frame's addresses: `space::FRAME << 29 | frame`.
     pub frame_hi: u64,
     /// The temporary area, `[space::TEMP, 0, offset]`; `Inst::Stmt` truncates it to
-    /// `temp_base`.
+    /// `temp_base`. Compiled code skips that where `yavs_ir::stmt_trims` proves a bounded few
+    /// bytes wait for the process's suspension, which empties the area.
     pub temp: *mut u8,
     pub temp_len: u64,
     /// The capacity, at most `u32::MAX`: an offset in the area is 32 bits, so one bound does for

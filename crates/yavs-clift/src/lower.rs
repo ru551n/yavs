@@ -4070,6 +4070,9 @@ fn gen_func(
             Inst::WaitOn { sig } if g.nat.is_none() => g.wait_on(pc, sig),
             Inst::WaitEdge { sig, kind } if g.nat.is_none() => g.wait_edge(pc, sig, kind.code()),
             Inst::SigRead { dst, sig } => g.sig_read(pc, dst, sig),
+            // Through the signal callback rather than a step (#790), as the LLVM tier does; a
+            // native frame keeps its own way.
+            Inst::SigGather { .. } | Inst::SigScatter { .. } if g.nat.is_none() => g.signal(pc, 0),
             Inst::WaitOn { .. }
             | Inst::WaitFor { .. }
             | Inst::DriveSlot { .. }
@@ -6412,23 +6415,34 @@ impl Gen<'_> {
         let len = self.mem_ld(MEM_TEMP_LEN);
         let off = self.b.ins().iadd_imm_s(len, 7);
         let off = self.b.ins().band_imm_s(off, !7_i64);
-        let (end, o) = self.b.ins().uadd_overflow(off, n);
+        let end = self.b.ins().iadd(off, n);
+        // The capacity is below 4 GiB (`TierFrame::temp_cap`), so `end` fits in it only when it does
+        // not wrap, and a size within the capacity cannot wrap it.
         let cap = self.mem_ld(MEM_TEMP_CAP);
-        let b1 = self
-            .b
-            .ins()
-            .icmp_imm_s(IntCC::UnsignedGreaterThan, end, 0xffff_ffff);
-        let b2 = self.b.ins().icmp(IntCC::UnsignedGreaterThan, end, cap);
-        let bad = self.b.ins().bor(b1, b2);
-        let bad = self.b.ins().bor(bad, o);
-        let good = self.b.ins().bxor_imm_s(bad, 1);
+        let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, end, cap);
+        let good = if self
+            .const_of(n)
+            .is_some_and(|k| (0..=0xffff_ffff).contains(&k))
+        {
+            fits
+        } else {
+            let small = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, n, cap);
+            self.b.ins().band(fits, small)
+        };
         self.guard(good, slow);
         let temp = self.mem_ld(MEM_TEMP);
         let at = self.b.ins().iadd(temp, len);
-        let fill = self.b.ins().isub(end, len);
+        let ptr = self.b.ins().iadd(temp, off);
+        // Bytes of the pad up to the aligned start are zeroed too: one word at `len` does it when the
+        // object has a word of its own to cover the rest of it.
         match self.const_of(n) {
-            // A known size at an aligned end is zeroed by stores, not a call.
-            Some(k) if (1..=128).contains(&k) => {
+            // A known size is zeroed by stores, not a call.
+            Some(k) if (8..=128).contains(&k) => {
+                let z = self.c64(0);
+                self.b.ins().store(self.gf, z, at, 0);
+                self.zero_range(ptr, 0, k as u64);
+            }
+            Some(k) if (1..8).contains(&k) => {
                 let (even, odd, merge) = (
                     self.b.create_block(),
                     self.b.create_block(),
@@ -6440,14 +6454,14 @@ impl Gen<'_> {
                 self.zero_range(at, 0, k as u64);
                 self.b.ins().jump(merge, &[]);
                 self.b.switch_to_block(odd);
+                let fill = self.b.ins().isub(end, len);
                 self.b.ins().call(self.imp.zero, &[at, fill]);
                 self.b.ins().jump(merge, &[]);
                 self.b.switch_to_block(merge);
             }
             // A size known at run time: one plane block (32 bytes, a logic array of up to 64
-            // elements) at an aligned end by stores too. A `memset` there made the reads that
-            // follow wait for its stores (no forwarding): a fifth of the cycles of an adder
-            // process.
+            // elements) by stores too. A `memset` there made the reads that follow wait for its
+            // stores (no forwarding): a fifth of the cycles of an adder process.
             // ponytail: one size only; a jump table over the small sizes if others show up.
             _ => {
                 let (blk, other, merge) = (
@@ -6455,14 +6469,15 @@ impl Gen<'_> {
                     self.b.create_block(),
                     self.b.create_block(),
                 );
-                let aligned = self.b.ins().icmp(IntCC::Equal, off, len);
                 let is32 = self.b.ins().icmp_imm_s(IntCC::Equal, n, 32);
-                let fast = self.b.ins().band(aligned, is32);
-                self.brif_split(fast, blk, other);
+                self.b.ins().brif(is32, blk, &[], other, &[]);
                 self.b.switch_to_block(blk);
-                self.zero_range(at, 0, 32);
+                let z = self.c64(0);
+                self.b.ins().store(self.gf, z, at, 0);
+                self.zero_range(ptr, 0, 32);
                 self.b.ins().jump(merge, &[]);
                 self.b.switch_to_block(other);
+                let fill = self.b.ins().isub(end, len);
                 self.b.ins().call(self.imp.zero, &[at, fill]);
                 self.b.ins().jump(merge, &[]);
                 self.b.switch_to_block(merge);
@@ -6471,7 +6486,6 @@ impl Gen<'_> {
         self.mem_st(MEM_TEMP_LEN, end);
         let tag = (u64::from(space::TEMP) << 61) as i64;
         let addr = self.b.ins().bor_imm_s(off, tag);
-        let ptr = self.b.ins().iadd(temp, off);
         (addr, ptr)
     }
 

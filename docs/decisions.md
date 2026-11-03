@@ -13754,3 +13754,17 @@ Decided by the user, 2026-11-03: "go ahead with the implementation of it. Skip t
 - **Frame-mode code:** a callee without code still leaves its frame-mode caller waiting at its call (`TIER_UNWIND`): a function boundary, and the caller re-enters its code at the entry after the call. The entries at block starts stay, for mid-activation swap-in and that re-entry: they and the stores at block ends are what stops registers living in Cranelift variables across blocks. `spin_poll` calls the host (`yavs_rt_spin`) and goes on. Deferred stores pass more instructions (`passes`).
 - **The earlier reason to keep it (decisions "Registers of process code as Cranelift variables: killed at its bars"):** variables across blocks in frame-mode code gave bytes 1.06 to 1.09, and terminal exits were the part of that prototype that moved bytes on `dctrl`. Frame-mode variables across blocks were not built again here.
 
+## Whole-record reads and drives in Cranelift frame-mode code (yavs-clift, perf/land-lowitems, 2026-11-03)
+
+Written by Claude. `SigGather` and `SigScatter` were stepped through the generic step callback in frame-mode code; the LLVM lowering has sent them through the signal callback since #790. The Cranelift lowering does the same (one arm in `gen_func`); native-frame variants keep their way (an instruction they cannot step makes the function frame-mode only). Forced compiled window, instructions of the simulation thread: Microwatt 0.991, GRLIB 0.995; code bytes of everything compiled +0.01 percent. `perf.rs` `clift::record_signals` holds the steps at 1 and the signal callbacks at about 407 on a design with record signals.
+
+
+## Inline temporary allocation in Cranelift (yavs-clift `temp_alloc`, perf/land-lowitems, 2026-11-03)
+
+Written by Claude. The inline `Alloc` tested its end against 4 GiB, against the capacity and for a wrapped sum, inverted the result, and branched on the alignment of the area's end to choose between stores and a call. `TierFrame::temp_cap` never exceeds `u32::MAX`, so one compare of the end against it is the test for a size known when the code is made, and a size from a register adds one compare of the size against it (a size within the capacity cannot wrap the sum). The pad up to the aligned start is cleared by one 8-byte store at the old end, which the object always covers (sizes of 8 bytes and more, and a run time size of 32); the object itself is cleared by stores at the aligned start. Sizes below 8 keep the branch. The slow path and the interpreter are unchanged. Forced compiled window: Microwatt 0.990, GRLIB 0.995 (instructions); code bytes of everything compiled: 3.5 percent fewer on Microwatt, 2.0 percent on GRLIB.
+
+
+## One-element signal reads taken by a concatenation (yavs-ir `opt/place.rs`, perf/land-lowitems, 2026-11-03)
+
+Written by Claude. `"0" & s(i downto i)` read the one-element slice into a 32-byte plane block through the vector read and the `Cat` copied its element out. When that block is read by nothing but one logic `Cat` of one unit per element and no bias (`std_ulogic` arrays; a `bit` piece is a position, not a code), and the reference has constant length 1, the optimiser reads the element as `SigReadScalar` and makes that piece a scalar piece (`Opt::cat_reads`, after `forward_logic_copies`, no switch). The block, its `Alloc` and the vector read are gone; the element is the same code the vector read stored. Pieces of two or more elements, `bit` pieces and blocks with a second reader keep the vector read.
+

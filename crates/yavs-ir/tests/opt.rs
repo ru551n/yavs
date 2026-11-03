@@ -2893,3 +2893,63 @@ fn bounds_read_from_a_native_result_give_the_length_of_the_next_native() {
     assert_eq!(chained_native_checks(9, 3, true), 1);
     assert_eq!(chained_native_checks(8, 3, false), 1);
 }
+
+/// `"0" & s(i downto i)` of a logic signal: the one-element read only the `Cat` takes is a scalar
+/// read and a scalar piece (a block nothing else reads, no bias).
+#[test]
+fn a_one_element_read_that_only_a_cat_takes_is_scalar() {
+    if !on() {
+        return;
+    }
+    for (bias, units, scalar) in [(0u8, 1, true), (2, 1, false), (0, 2, false)] {
+        let code = build(FuncKind::Function, |fb| {
+            fb.stmt(StmtKind::VarAssign, sp());
+            let (off, len) = (fb.int(3), fb.int(1));
+            let s = fb.reg(RegTy::Sig);
+            fb.emit(Inst::SigVal {
+                dst: s,
+                sig: 0,
+                offset: off,
+                len,
+            });
+            let (size, t, d) = (fb.int(32), fb.reg(RegTy::Ptr), fb.reg(RegTy::Ptr));
+            fb.emit(Inst::Alloc { dst: t, size });
+            fb.emit(Inst::SigRead { dst: t, sig: s });
+            fb.emit(Inst::Alloc { dst: d, size });
+            let (zero, one, two, m) = (fb.int(2), fb.int(1), fb.int(2), fb.int(units));
+            let parts = fb.regs(&[zero, one, t, one]);
+            fb.emit(Inst::Cat {
+                dst: d,
+                n: two,
+                m,
+                parts,
+                scalars: 1,
+                bias,
+                logic: true,
+                w: Width::B1,
+            });
+            let (i0, x) = (fb.int(1), fb.reg(RegTy::I64));
+            fb.emit(Inst::LGet {
+                dst: x,
+                base: d,
+                idx: i0,
+            });
+            fb.stmt(StmtKind::Return, sp());
+            fb.emit(Inst::Ret { v: Some(x) });
+        });
+        let reads = count(&code, |i| matches!(i, Inst::SigReadScalar { .. }));
+        let vecs = count(&code, |i| matches!(i, Inst::SigRead { .. }));
+        assert_eq!(
+            (reads, vecs),
+            (usize::from(scalar), usize::from(!scalar)),
+            "{code:?}"
+        );
+        if scalar {
+            assert!(
+                code.iter()
+                    .any(|i| matches!(i, Inst::Cat { scalars: 3, .. })),
+                "{code:?}"
+            );
+        }
+    }
+}

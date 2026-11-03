@@ -423,6 +423,13 @@ fn no_exits() -> bool {
         && !OLD_EXITS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Whether an instruction a native frame neither inlines nor had `xstep` for runs through the
+/// helper, so the function gets a variant. `YAVS_CLIFT_WIDE=0`: a measurement.
+fn wide() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| flag("YAVS_CLIFT_WIDE", "1") != "0")
+}
+
 fn flag(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
 }
@@ -780,6 +787,7 @@ impl Jit {
             if dump {
                 eprintln!("no native variant of {id} {}: allocates in a loop", f.name);
             }
+            map_refused(id, f, "allocates");
             return None;
         }
         let built = match self.build(prog, id, f, true) {
@@ -788,6 +796,7 @@ impl Jit {
                 if dump {
                     eprintln!("no native variant of {id} {}: {why}", f.name);
                 }
+                map_refused(id, f, "refused");
                 return None;
             }
         };
@@ -1612,6 +1621,20 @@ fn allocates(prog: &Program, id: FuncId, memo: &mut HashMap<FuncId, bool>) -> bo
     found
 }
 
+/// `YAVS_CLIFT_EXITMAP`: a function of the native set has no variant.
+fn map_refused(id: FuncId, f: &Func, why: &str) {
+    use std::io::Write;
+    if let Some(out) = std::env::var_os("YAVS_CLIFT_EXITMAP")
+        && let Ok(mut o) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(out)
+    {
+        let name = f.name.replace(' ', "_");
+        let _ = writeln!(o, "x {} {why} {name} {}", id.0, f.code.len());
+    }
+}
+
 /// `YAVS_CLIFT_EXITMAP=<file>`: per function the bytes of machine code by `Why` and IR kind, as
 /// lines appended to the file (`tools/exitmap.py` sums them). Needs `--no-cache`: a body from the
 /// store has no source locations.
@@ -2336,9 +2359,11 @@ fn gen_func(
     }
     // Address spaces that hold at the start of an IR block whatever path reached it.
     let space_facts = yavs_llvm::regs::spaces(prog, f, &leader);
+    let mut after = vec![false; n + 1];
     for (i, inst) in f.code.iter().enumerate() {
         if resumes(prog, f, inst) {
             leader[i + 1] = true;
+            after[i + 1] = true;
         }
     }
     // How many ways lead to each block start; a variant's block with a single way in takes what
@@ -2425,11 +2450,33 @@ fn gen_func(
     // A process's blocks no loop reaches run at most once (the declarations' initial values, what
     // comes before the first wait): no entry, so the interpreter runs them and enters this code
     // at the first jump into a loop. `YAVS_CLIFT_ONCE=0` keeps them.
-    let once = if !native && f.kind == FuncKind::Process && flag("YAVS_CLIFT_ONCE", "1") != "0" {
+    let mut once = if !native && f.kind == FuncKind::Process && flag("YAVS_CLIFT_ONCE", "1") != "0"
+    {
         once_blocks(f, &leader, &targets, &is_jump)
     } else {
         vec![false; n]
     };
+    // `YAVS_CLIFT_ENTRIES=few` (a measurement): with nothing coming back at a block start after an
+    // exit, entries are needed only where a frame waits (after a call or a suspension), at the
+    // start and at loop heads, for code compiled while an activation runs; elsewhere the
+    // interpreter goes on to one of those.
+    if !native
+        && no_exits()
+        && flag("YAVS_CLIFT_ENTRIES", "all") == "few"
+        && let Some(r) = yavs_llvm::regs::reach(prog, f, &[])
+    {
+        let mut kept = false;
+        for i in 0..n {
+            let preloaded = i > 0
+                && match f.code[i - 1] {
+                    Inst::Const { .. } | Inst::ConstF { .. } => true,
+                    Inst::AddrOf { space, .. } => !matches!(space, yavs_ir::AddrSpace::Up(_)),
+                    _ => false,
+                };
+            kept = i == 0 || after[i] || r.head[i] || kept && preloaded;
+            once[i] |= !kept;
+        }
+    }
     // The registers each block start takes as parameters (`dispatch`).
     let mut lparams: Vec<Vec<u32>> = vec![Vec::new(); n];
     // The jumps back that poll the stop request (#737) and count the activation (#583), see
@@ -5475,7 +5522,7 @@ impl Gen<'_> {
     fn step(&mut self, pc: u32, i: &Inst) {
         if self.nat.is_some() {
             // A call of a function without a variant makes the caller frame-mode only.
-            if self.noexit && !matches!(i, Inst::Call { .. } | Inst::CallProt { .. }) {
+            if self.noexit && wide() && !matches!(i, Inst::Call { .. } | Inst::CallProt { .. }) {
                 self.tag(Why::Slow, pc);
                 self.native_stay_at(pc);
                 self.tag(Why::Body, pc);
@@ -5500,7 +5547,7 @@ impl Gen<'_> {
     /// The signal instruction at `pc` through `yavs_rt_signal`.
     fn signal(&mut self, pc: u32, edge: u32) {
         if self.nat.is_some() {
-            if self.noexit {
+            if self.noexit && wide() {
                 self.tag(Why::Slow, pc);
                 self.native_stay_at(pc);
                 self.tag(Why::Body, pc);

@@ -644,6 +644,9 @@ pub(crate) struct Machine {
     pub ieee_stop: bool,
     /// A native `ieee` subprogram gives its call back to the VHDL body (`ieee::fallback`).
     pub ieee_fallback: bool,
+    /// A fault `TierHost::native_stay` kept for `materialise`, with the trace of the frames it ran
+    /// above the native ones and the pc it failed at.
+    kept: Option<Box<(Fault, Vec<StmtId>, u32)>>,
     /// The slots of the native frames of compiled code, for the frame indices `nwin_from` to
     /// `nwin_to`, while a call from a native frame runs (`TierHost::native_direct`).
     nwin: Option<Box<dyn crate::NativeSlots>>,
@@ -1295,6 +1298,7 @@ impl Machine {
             pause: None,
             ieee_stop: false,
             ieee_fallback: false,
+            kept: None,
             layouts: Vec::new(),
             plans: Vec::new(),
             cells: Vec::new(),
@@ -2018,7 +2022,6 @@ impl Machine {
             ctx,
             fault: None,
             stop: false,
-            kept: None,
         };
         let ran = tier.run_cached(func, pc, &mut host, &mut state);
         // Tested in place: a move of the `Option<Fault>` copies it on every activation.
@@ -9358,7 +9361,6 @@ impl Machine {
             ctx,
             fault: None,
             stop: false,
-            kept: None,
         };
         // A profile names the callee while its native frame runs (`Runtime::profile_sampler`).
         let marked = crate::PROFILE_NATIVE.load(Ordering::Relaxed).then(|| {
@@ -9411,7 +9413,6 @@ impl Machine {
             ctx,
             fault: None,
             stop: false,
-            kept: None,
         };
         let ran = tier.run(func, pc as u32, &mut host);
         let fault = host.fault;
@@ -11328,9 +11329,6 @@ pub struct Host<'a, 'c, 'x> {
     /// A native a native frame ran ended the process (`NativeCall::Stop`): the materialisation
     /// that follows suspends it.
     stop: bool,
-    /// A fault `native_stay` kept for `materialise`, with the trace of the frames it ran above
-    /// the native ones and the pc it failed at.
-    kept: Option<(Fault, Vec<StmtId>, u32)>,
 }
 
 impl Host<'_, '_, '_> {
@@ -12365,7 +12363,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
             && let Some(top) = frames.last()
             && top.pc & crate::TIER_FAIL != 0
         {
-            match self.kept.take() {
+            match self.m.kept.take().map(|k| *k) {
                 // `native_stay` ran it: raised here, on the frames.
                 Some((e, inner, at)) => {
                     let m = &mut *self.m;
@@ -12654,7 +12652,11 @@ impl crate::TierHost for Host<'_, '_, '_> {
         {
             Some(x) => x,
             None => {
-                self.kept = Some((ice_f!("no pc {pc} of function {func}"), Vec::new(), pc));
+                self.m.kept = Some(Box::new((
+                    ice_f!("no pc {pc} of function {func}"),
+                    Vec::new(),
+                    pc,
+                )));
                 return Slow;
             }
         };
@@ -12778,18 +12780,18 @@ impl crate::TierHost for Host<'_, '_, '_> {
                 Stop(None)
             }
             Ok(_) => {
-                self.kept = Some((
+                self.m.kept = Some(Box::new((
                     ice_f!(
                         "a native frame stepped a control instruction at pc {pc} of `{}`",
                         f.name
                     ),
                     Vec::new(),
                     pc,
-                ));
+                )));
                 Slow
             }
             Err(e) => {
-                self.kept = Some((e, inner, pc));
+                self.m.kept = Some(Box::new((e, inner, pc)));
                 Slow
             }
         }
@@ -12815,7 +12817,11 @@ impl crate::TierHost for Host<'_, '_, '_> {
             .func(FuncId(func))
             .and_then(|f| Some((f, f.code.get(pc as usize)?)))
         else {
-            self.kept = Some((ice_f!("no pc {pc} of function {func}"), Vec::new(), pc));
+            self.m.kept = Some(Box::new((
+                ice_f!("no pc {pc} of function {func}"),
+                Vec::new(),
+                pc,
+            )));
             return crate::NativeCall::Slow;
         };
         let (uses, defs) = crate::inst_regs(f, inst);

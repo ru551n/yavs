@@ -321,9 +321,8 @@ end;
 /// and at the limit it words the error.
 const NO_WAIT: &str = "entity t is end;
 architecture a of t is
-  signal s : integer := 0;
 begin
-  process (s)
+  process
     variable n, m : integer := 0;
   begin
     loop
@@ -339,7 +338,7 @@ end;
 fn yavs(dir: &std::path::Path, args: &[&str], env: &[(&str, &str)]) -> Output {
     let mut c = Command::new(env!("CARGO_BIN_EXE_yavs"));
     c.args(args).current_dir(dir);
-    c.env("YAVS_SPIN_LIMIT", "2000000");
+    c.env("YAVS_SPIN_LIMIT", "500");
     for (k, v) in env {
         c.env(k, v);
     }
@@ -456,5 +455,26 @@ fn nothing_leaves_a_running_function() {
 
 #[test]
 fn a_process_that_never_suspends_is_polled_and_bounded() {
-    same("no wait", NO_WAIT, &[]);
+    let dir = tempdir("noexit_spin");
+    std::fs::write(dir.join("t.vhd"), NO_WAIT).expect("write");
+    let a = yavs(
+        &dir,
+        &["analyze", "--std=2008", "--work=work:work", "t.vhd"],
+        &[],
+    );
+    assert!(a.status.success(), "{a:?}");
+    let args = |tier: &'static str| {
+        vec![
+            "run",
+            "--std=2008",
+            "--work=work:work",
+            "--no-cache",
+            tier,
+            "t",
+        ]
+    };
+    let i = yavs(&dir, &args("--tier=interp"), &[]);
+    assert!(show(&i).contains("E3009"), "{}", show(&i));
+    let c = yavs(&dir, &args("--tier=clift"), &[]);
+    assert_eq!(show(&c), show(&i));
 }

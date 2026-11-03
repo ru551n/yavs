@@ -399,9 +399,29 @@ Compiled tiers: Cranelift
      - a directory
      - unset
      - ``run``
+   * - ``YAVS_CLIFT_PASS``
+     - ``0``: deferred register stores of Cranelift code stop at more instructions. A measurement.
+     - ``0``
+     - unset
+     - ``run``
+   * - ``YAVS_CLIFT_WIDE``
+     - ``0``: a function with an instruction Cranelift's native frames do not lower gets no native variant. A measurement.
+     - ``0``
+     - unset
+     - ``run``
+   * - ``YAVS_CLIFT_SPAN``
+     - The most instructions a deferred register of Cranelift code may be live over. A measurement.
+     - a number
+     - ``4``
+     - ``run``
    * - ``YAVS_CLIFT_EXITS``
      - ``old`` keeps the exits of Cranelift code: an instruction it cannot finish leaves the running function to the interpreter. Otherwise it never does. For comparing the two while the new code is on its branch.
      - ``old``
+     - unset
+     - ``run``
+   * - ``YAVS_CLIFT_ENTRIES``
+     - ``few`` leaves out the entries of Cranelift code at block starts that are no loop head and no place a frame waits. A measurement.
+     - ``few``
      - unset
      - ``run``
    * - ``YAVS_CLIFT_EXITMAP``

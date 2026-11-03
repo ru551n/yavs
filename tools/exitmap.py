@@ -4,11 +4,16 @@ are (`Why` in crates/yavs-clift/src/lower.rs) and, for each way out, by IR kind.
 import sys
 from collections import Counter
 
-by, kinds, mode = Counter(), Counter(), Counter()
+by, kinds, mode, refused = Counter(), Counter(), Counter(), Counter()
+names = []
 for path in sys.argv[1:]:
     for line in open(path):
         m, _fid, why, kind, n = line.split()
         n = int(n)
+        if m == "x":
+            refused[why] += 1
+            names.append(f"{why} {kind} ({n} IR instructions)")
+            continue
         by[why] += n
         mode[m, why] += n
         if why != "body":
@@ -21,3 +26,8 @@ print(f"{'all':>10} {total:>12}")
 print()
 for (why, kind), n in kinds.most_common(40):
     print(f"{why:>10} {kind:<16} {n:>12} {100 * n / total:6.2f}%")
+if refused:
+    print()
+    print("no native variant:", dict(refused))
+    for n in names[:40]:
+        print(" ", n)

@@ -10792,3 +10792,7 @@ Composite variables of processes of a fixed size, without handles, live in the f
 ## Facts of a process copy
 
 A process copy is made per instance data and per the forms of the signals its body names (`yavs_ir::InstFacts`); Cranelift's code of a copy reads and drives those signals without testing their form. Only for a tier that compiles copies, so not under `--tier=clift`. `docs/decisions.md` "Facts of a process copy".
+
+## Shape in process copies
+
+Constant-size temporaries are frame bytes in processes with nested subprograms too; the declarations of a process's signal copies count as the declarative part wherever their blocks are (`Opt::reached_from`), so the copies' descriptors are facts and the copies move into the frame; a formal of a locally static subtype reads its bounds from the constant pool. Shape work on the descriptors of parameters that are not static stays at run time: layout words through the callback, lengths and positions from the descriptor (`docs/decisions.md` "Shape facts in process copies").

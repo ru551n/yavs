@@ -2129,9 +2129,18 @@ impl Signal {
                 let d = &mut drivers[o.slot as usize];
                 d.put_planes((o.elem - d.range.offset) as usize, o.len as usize, o.planes);
             }
-            // Within one plane word (a whole word of a bus, a register of an array of them):
-            // one mask for the blend and the pending bits. The planes are masked to the length.
             let (w, sh) = (o.elem as usize / 64, o.elem % 64);
+            // A whole plane word of a bus: stored and marked whole.
+            if sh == 0 && o.len == 64 {
+                drv[w] = o.planes;
+                if pend[w] == 0 {
+                    pend_words.push(w as u32);
+                }
+                pend[w] = !0;
+                continue;
+            }
+            // Within one plane word (a register of an array of them): one mask for the blend and
+            // the pending bits. The planes are masked to the length.
             if sh + o.len <= 64 {
                 let m = nmask(o.len as usize) << sh;
                 let b = &mut drv[w];

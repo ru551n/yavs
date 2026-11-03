@@ -1666,7 +1666,10 @@ impl Worker {
     /// Prototype: the run has lasted `rd_after`, and `id` is a process or has a compiled caller.
     fn rd_go(&self, id: FuncId) -> bool {
         let sub = self.prog.func(id).is_some_and(|f| f.kind != FuncKind::Process);
-        self.rd_seen >= self.rd_after && (!sub || self.entered_from_code(id))
+        // ponytail: CPU time, so the moment is timing dependent; a count of work if this stays.
+        let long = self.rd_after == 0
+            || sim_cpu().is_some_and(|c| c.as_micros() >= u128::from(self.rd_after));
+        long && (!sub || self.entered_from_code(id))
     }
 
     /// Prototype: the waiting functions that may compile now.

@@ -1601,6 +1601,13 @@ mod clift {
         };
     }
 
+    // `uniform` is computed in place by this tier too: no native call for it.
+    clift_case!(
+        uniform,
+        "llvm_uniform",
+        "acc=",
+        [("cb_native", Max(4)), ("cb_host", Max(2))]
+    );
     clift_case!(
         clocked,
         "llvm_clocked",

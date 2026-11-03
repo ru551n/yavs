@@ -85,6 +85,7 @@ fn a_function_without_a_native_variant_gets_frame_mode_code() {
             ],
         )
     };
+    let ti = std::time::Instant::now();
     let interp = yavs(
         &dir,
         &[
@@ -95,7 +96,12 @@ fn a_function_without_a_native_variant_gets_frame_mode_code() {
             "natfall",
         ],
     );
+    let interp_took = ti.elapsed();
+    let t0 = std::time::Instant::now();
     let cold = run();
+    let took = t0.elapsed();
+    panic!("DIAG interp took {interp_took:?} cold took {took:?}\n{}", String::from_utf8_lossy(&cold.stderr));
+    #[allow(unreachable_code)]
     assert_eq!(cold.stdout, interp.stdout);
     assert_eq!(lines(&cold, "no native-frame variant").len(), 1, "{cold:?}");
     let compiled = lines(&cold, " compiled `");

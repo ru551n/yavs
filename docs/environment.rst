@@ -399,6 +399,11 @@ Compiled tiers: Cranelift
      - a directory
      - unset
      - ``run``
+   * - ``YAVS_CLIFT_EXITS``
+     - ``old`` keeps the exits of Cranelift code: an instruction it cannot finish leaves the running function to the interpreter. Otherwise it never does. For comparing the two while the new code is on its branch.
+     - ``old``
+     - unset
+     - ``run``
    * - ``YAVS_CLIFT_EXITMAP``
      - Appends the bytes of machine code of each function to that file, by what they are (body, exit stores, slow paths, entries) and IR kind. Needs ``--no-cache``. ``tools/exitmap.py`` sums them.
      - a file

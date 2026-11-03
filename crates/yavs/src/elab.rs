@@ -1254,6 +1254,8 @@ fn use_auto3(
     a: &RunArgs,
 ) -> Result<Option<StopTierUp>, Box<Diagnostic>> {
     clift_cache(a);
+    // LLVM's callees may still leave a running function to the interpreter.
+    yavs_clift::keep_exits();
     // (The O2 compiles of LLVM link from its own store, as under `--tier=auto`.)
     let work = a.common.work.split_once(':').map_or("", |(_, d)| d);
     if !a.common.no_cache && !work.is_empty() {

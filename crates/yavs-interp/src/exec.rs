@@ -1015,6 +1015,9 @@ fn aff_ok(x: i64) -> bool {
 }
 
 /// `base + pos * stride`.
+/// The instructions `Machine::fail_step` goes through at most: what compiled code tests at once.
+const FAIL_STEPS: u32 = 8;
+
 #[inline(always)]
 fn index_addr(base: u64, pos: u64, stride: u32) -> R<u64> {
     let off = pos
@@ -1665,6 +1668,28 @@ impl Machine {
             .collect()
     }
 
+    /// `trace` of the frames from index `from` up.
+    fn trace_from(&self, from: usize) -> Vec<StmtId> {
+        self.frames
+            .get(from..)
+            .unwrap_or(&[])
+            .iter()
+            .rev()
+            .flat_map(|fr| {
+                let f = self.rt.prog.func(fr.func)?;
+                let pc = fr.pc as usize;
+                Some(
+                    f.loc
+                        .get(pc)
+                        .copied()
+                        .into_iter()
+                        .chain(f.inlined_chain(pc).map(|n| n.site)),
+                )
+            })
+            .flatten()
+            .collect()
+    }
+
     pub(crate) fn error(&self, f: Fault, ctx: Option<&Ctx<'_>>) -> SimError {
         let mk = |k: ErrorKind| match ctx {
             Some(c) => c.error(k),
@@ -1993,6 +2018,7 @@ impl Machine {
             ctx,
             fault: None,
             stop: false,
+            kept: None,
         };
         let ran = tier.run_cached(func, pc, &mut host, &mut state);
         // Tested in place: a move of the `Option<Fault>` copies it on every activation.
@@ -2023,6 +2049,11 @@ impl Machine {
                 Direct::Done(Quick::Suspended)
             }
             Some(crate::TIER_UNWIND) | None => Direct::Continue,
+            Some(p) if p & crate::TIER_FAIL != 0 => {
+                self.fail_direct(func, p & !crate::TIER_FAIL, ctx);
+                slot.store(0, Ordering::Relaxed);
+                Direct::Done(Quick::Fault)
+            }
             Some(p) => {
                 if let Some(f) = self.rt_run.as_ref().and_then(|rt| rt.prog.func(func)) {
                     crate::tier_census::note_exit(f, p, p == pc);
@@ -2031,6 +2062,50 @@ impl Machine {
                 Direct::Continue
             }
         }
+    }
+
+    /// `run_direct`'s way to `fail_step`: the activation ends with its fault.
+    #[cold]
+    #[inline(never)]
+    fn fail_direct(&mut self, func: FuncId, pc: u32, ctx: &mut Option<&mut Ctx<'_>>) {
+        let rt = self.rt.clone();
+        let e = match rt.prog.func(func) {
+            Some(f) => self.fail_step(&rt.prog, f, pc, ctx),
+            None => ice_f!("no function {func}"),
+        };
+        self.quick_fault = Some(e);
+    }
+
+    /// An instruction of the top frame failed in compiled code at `pc`, which stored only what it
+    /// reads: the interpreter executes it for the fault, so the text and the trace are its own.
+    /// It may take the next few instructions when compiled code tested them all at once (a
+    /// multiplication and the index it feeds). Anything but a fault is a bug of the guard.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn fail_step(
+        &mut self,
+        prog: &Program,
+        f: &Func,
+        pc: u32,
+        ctx: &mut Option<&mut Ctx<'_>>,
+    ) -> Fault {
+        crate::tier_census::note_unwind("fail", &f.name, pc);
+        let mut at = pc;
+        for _ in 0..FAIL_STEPS {
+            let Some(&inst) = f.code.get(at as usize) else {
+                break;
+            };
+            self.top().pc = at;
+            match self.step_out(prog, f, inst, ctx) {
+                Err(e) => return e,
+                Ok(Flow::Next) => at += 1,
+                Ok(_) => break,
+            }
+        }
+        ice_f!(
+            "compiled code failed at pc {pc} of `{}`, the interpreter did not",
+            f.name
+        )
     }
 
     pub(crate) fn take_quick_fault(&mut self) -> Fault {
@@ -2229,7 +2304,7 @@ impl Machine {
             .as_ref()
             .and_then(|sh| sh.heap.as_deref())
             .is_some_and(Heap::reclaim_due);
-        if !(self.heap.reclaim_due() || shared_due) {
+        if !(self.heap.reclaim_due() || shared_due) || self.nwin.is_some() {
             return;
         }
         let Some(r) = self.refs(true) else {
@@ -2269,6 +2344,10 @@ impl Machine {
             .and_then(|sh| sh.heap.as_ref())
             .is_some_and(|h| h.gc_due(t));
         if !(private || shared) {
+            return;
+        }
+        // Native frames of compiled code hold registers no scan can see: it waits for them to end.
+        if self.nwin.is_some() {
             return;
         }
         let Some(mut r) = self.refs(true) else {
@@ -9279,6 +9358,7 @@ impl Machine {
             ctx,
             fault: None,
             stop: false,
+            kept: None,
         };
         // A profile names the callee while its native frame runs (`Runtime::profile_sampler`).
         let marked = crate::PROFILE_NATIVE.load(Ordering::Relaxed).then(|| {
@@ -9331,6 +9411,7 @@ impl Machine {
             ctx,
             fault: None,
             stop: false,
+            kept: None,
         };
         let ran = tier.run(func, pc as u32, &mut host);
         let fault = host.fault;
@@ -9339,6 +9420,9 @@ impl Machine {
             // A fault leaves the pc where it was recorded (`TierHost::signal` may record it at
             // the instruction after the one compiled code called it for).
             Some(p) if fault.is_some() => p as usize,
+            Some(p) if p & crate::TIER_FAIL != 0 => {
+                return Err(self.fail_step(&rt.prog, f, p & !crate::TIER_FAIL, ctx));
+            }
             Some(p) => {
                 crate::tier_census::note_exit(f, p, p as usize == pc);
                 self.top().pc = p;
@@ -11244,6 +11328,9 @@ pub struct Host<'a, 'c, 'x> {
     /// A native a native frame ran ended the process (`NativeCall::Stop`): the materialisation
     /// that follows suspends it.
     stop: bool,
+    /// A fault `native_stay` kept for `materialise`, with the trace of the frames it ran above
+    /// the native ones and the pc it failed at.
+    kept: Option<(Fault, Vec<StmtId>, u32)>,
 }
 
 impl Host<'_, '_, '_> {
@@ -11310,7 +11397,7 @@ impl Host<'_, '_, '_> {
                 }
             }
             let fr = &mut m.frames[idx];
-            fr.pc = nf.pc;
+            fr.pc = nf.pc & !crate::TIER_FAIL;
             fr.temp_base =
                 u32::try_from(nf.temp_base).map_err(|_| ice_s!("temporary base beyond 4 GiB"))?;
             self.up.push(std::mem::replace(&mut self.f, g));
@@ -11559,6 +11646,31 @@ impl crate::TierHost for Host<'_, '_, '_> {
 
     fn view_again(&mut self, tf: &mut crate::TierFrame) -> bool {
         self.view_root_again(tf)
+    }
+
+    fn fail(&mut self, tf: &mut crate::TierFrame, pc: u32) {
+        let e = self.m.fail_step(self.prog, self.f, pc, self.ctx);
+        self.m.tier_view(tf);
+        self.fault = Some(e);
+    }
+
+    fn spin(&mut self, tf: &mut crate::TierFrame, at: u32) -> crate::Stepped {
+        use crate::Stepped;
+        let (m, f) = (&mut *self.m, self.f);
+        m.top().pc = at;
+        let r = match f.code.get(at as usize) {
+            Some(&inst @ Inst::Br { .. }) => m.step_out(self.prog, f, inst, self.ctx),
+            _ => Err(ice_f!("compiled code polled at pc {at} of `{}`", f.name)),
+        };
+        m.tier_temp(tf);
+        match r {
+            Ok(Flow::Suspend) => Stepped::Suspend,
+            Ok(_) => Stepped::Next,
+            Err(e) => {
+                self.fault = Some(e);
+                Stepped::Fault
+            }
+        }
     }
 
     fn step(&mut self, tf: &mut crate::TierFrame, at: u32) -> crate::Stepped {
@@ -12248,6 +12360,29 @@ impl crate::TierHost for Host<'_, '_, '_> {
         crate::tier_census::note_deopt(self.prog, frames);
         let r = self.push_native(pc, frames);
         self.m.tier_view(tf);
+        // The top frame failed (`TIER_FAIL`): the frames are there to word the error.
+        if r.is_ok()
+            && let Some(top) = frames.last()
+            && top.pc & crate::TIER_FAIL != 0
+        {
+            match self.kept.take() {
+                // `native_stay` ran it: raised here, on the frames.
+                Some((e, inner, at)) => {
+                    let m = &mut *self.m;
+                    m.top().pc = at;
+                    let e = if inner.is_empty() {
+                        e
+                    } else {
+                        let mut err = m.error(e, self.ctx.as_deref());
+                        err.trace = inner.iter().copied().chain(m.trace()).collect();
+                        Fault::Kernel(err)
+                    };
+                    self.fault = Some(e);
+                }
+                None => self.fail(tf, top.pc & !crate::TIER_FAIL),
+            }
+            return crate::Stepped::Fault;
+        }
         match r {
             Ok(()) if std::mem::take(&mut self.stop) => crate::Stepped::Suspend,
             Ok(()) => crate::Stepped::Next,
@@ -12496,6 +12631,216 @@ impl crate::TierHost for Host<'_, '_, '_> {
         if depth.is_some() {
             *slots = m.nwin.take();
         }
+    }
+
+    fn native_stay(
+        &mut self,
+        tf: &mut crate::TierFrame,
+        func: u32,
+        pc: u32,
+        depth: u64,
+        regs: (&[u32], &[u32]),
+        ins: &[u64],
+        outs: &mut [u64],
+        slots: &mut Option<Box<dyn crate::NativeSlots>>,
+        temp_base: u64,
+        up: [u64; 2],
+    ) -> crate::NativeCall {
+        use crate::NativeCall::{Done, Slow, Stop};
+        let (m, prog, rt) = (&mut *self.m, self.prog, self.rt);
+        let (f, inst) = match prog
+            .func(FuncId(func))
+            .and_then(|f| Some((f, *f.code.get(pc as usize)?)))
+        {
+            Some(x) => x,
+            None => {
+                self.kept = Some((ice_f!("no pc {pc} of function {func}"), Vec::new(), pc));
+                return Slow;
+            }
+        };
+        crate::tier_census::note("xstay", &f.name, pc, Some(&inst));
+        let top = m.frames.len();
+        let (uses, defs) = regs;
+        let nregs = uses
+            .iter()
+            .chain(defs)
+            .map(|&r| r as usize + 1)
+            .max()
+            .unwrap_or(0);
+        let calls = matches!(
+            inst,
+            Inst::Call { .. } | Inst::CallProt { .. } | Inst::CallNative { .. }
+        );
+        // Compiled callers hold pointers into the register stack: an instruction that may push
+        // frames or does not fit runs on a stack of its own.
+        let moved = (calls || m.regs.v.capacity() - m.regs.v.len() < nregs)
+            .then(|| std::mem::take(&mut m.regs.v));
+        let rbase = m.regs.v.len();
+        m.regs.v.resize(rbase + nregs, 0);
+        let caller = m.regs.base;
+        m.regs.base = rbase;
+        let sbase = m.sstack.len();
+        let shared_alloc = tf.flags & crate::TIER_SHARED_ALLOC != 0;
+        let frame = |func, link| Frame {
+            func,
+            pc,
+            rbase: rbase as u32,
+            sbase: sbase as u32,
+            slen: 0,
+            link,
+            ret: None,
+            temp_base: temp_base as u32,
+            shared_alloc,
+        };
+        // A callee's frame index is above every native frame's: those between stand empty (their
+        // slots are the window's, their function none, so no trace shows them).
+        if calls {
+            while m.frames.len() < depth as usize {
+                m.frames.push(frame(FuncId(u32::MAX), None));
+            }
+        }
+        let link = |u: u64| (u != u64::MAX).then_some((u & 0x1fff_ffff) as u32);
+        m.frames.push(frame(FuncId(func), link(up[0])));
+        // The enclosing frames of a nested function, as far as a native frame knows them.
+        if let Some(l) = link(up[0]).filter(|&l| l as usize >= top)
+            && let Some(fr) = m.frames.get_mut(l as usize)
+        {
+            fr.link = link(up[1]);
+            fr.func = f.parent.unwrap_or(fr.func);
+            let grand = f.parent.and_then(|p| prog.func(p)).and_then(|p| p.parent);
+            if let Some(g) = link(up[1]).filter(|&g| g as usize >= top)
+                && let Some(fr) = m.frames.get_mut(g as usize)
+            {
+                fr.func = grand.unwrap_or(fr.func);
+            }
+        }
+        let own = m.frames.len() - 1;
+        for (&r, &v) in uses.iter().zip(ins) {
+            m.regs.v[rbase + r as usize] = v;
+        }
+        m.nwin = slots.take();
+        (m.nwin_from, m.nwin_to) = (top, depth as usize);
+        let mut r = m.step(prog, f, inst, self.ctx);
+        let mut inner = Vec::new();
+        if let Ok(Flow::Call) = r {
+            // To its end here, without compiled code (native stack stays bounded); the sampler
+            // sees the callee, so it gets compiled.
+            let callee = m.frames[m.frames.len() - 1].func;
+            let slot = crate::slot();
+            let was = slot.swap(
+                u64::from(rt.id) << 32 | u64::from(callee.0),
+                Ordering::Relaxed,
+            );
+            let out = m.exec_fast::<false, false>(rt, None, None, self.ctx, own + 1);
+            slot.store(was, Ordering::Relaxed);
+            r = match out {
+                Ok(Outcome::Returned(v)) => {
+                    let dst = match inst {
+                        Inst::Call { dst, .. }
+                        | Inst::CallProt { dst, .. }
+                        | Inst::CallNative { dst, .. } => dst,
+                        _ => None,
+                    };
+                    m.regs.base = rbase;
+                    if let (Some(d), Some(v)) = (dst, v) {
+                        m.regs.v[rbase + d.0 as usize] = v;
+                    }
+                    Ok(Flow::Next)
+                }
+                Ok(Outcome::Suspended) => Ok(Flow::Suspend),
+                Err(e) => {
+                    // The frames above this one, for the trace of the error.
+                    inner = m.trace_from(own + 1);
+                    Err(e)
+                }
+            };
+        }
+        *slots = m.nwin.take();
+        for (o, &r) in outs.iter_mut().zip(defs) {
+            *o = m.regs.v[rbase + r as usize];
+        }
+        m.frames.truncate(top);
+        m.sstack.truncate(sbase);
+        match moved {
+            Some(v) => m.regs.v = v,
+            None => m.regs.v.truncate(rbase),
+        }
+        m.regs.base = caller;
+        if m.regs.v.as_ptr() == tf.stack && m.slots_ptr() == tf.slots {
+            m.tier_temp(tf);
+        } else {
+            m.tier_view(tf);
+        }
+        match r {
+            Ok(Flow::Next) => Done(None),
+            Ok(Flow::Suspend) => {
+                self.stop = true;
+                Stop(None)
+            }
+            Ok(_) => {
+                self.kept = Some((
+                    ice_f!(
+                        "a native frame stepped a control instruction at pc {pc} of `{}`",
+                        f.name
+                    ),
+                    Vec::new(),
+                    pc,
+                ));
+                Slow
+            }
+            Err(e) => {
+                self.kept = Some((e, inner, pc));
+                Slow
+            }
+        }
+    }
+
+    fn nregs_of(&self, func: u32) -> usize {
+        self.prog.func(FuncId(func)).map_or(0, |f| f.reg_ty.len())
+    }
+
+    fn native_stay_at(
+        &mut self,
+        tf: &mut crate::TierFrame,
+        func: u32,
+        pc: u32,
+        depth: u64,
+        regs: &mut [u64],
+        slots: &mut Option<Box<dyn crate::NativeSlots>>,
+        temp_base: u64,
+        up: [u64; 2],
+    ) -> crate::NativeCall {
+        let Some((f, inst)) = self
+            .prog
+            .func(FuncId(func))
+            .and_then(|f| Some((f, f.code.get(pc as usize)?)))
+        else {
+            self.kept = Some((ice_f!("no pc {pc} of function {func}"), Vec::new(), pc));
+            return crate::NativeCall::Slow;
+        };
+        let (uses, defs) = crate::inst_regs(f, inst);
+        let (uses, defs): (Vec<u32>, Vec<u32>) = (
+            uses.iter().map(|r| r.0).collect(),
+            defs.iter().map(|r| r.0).collect(),
+        );
+        let ins: Vec<u64> = uses.iter().map(|&r| regs[r as usize]).collect();
+        let mut outs = vec![0; defs.len()];
+        let r = self.native_stay(
+            tf,
+            func,
+            pc,
+            depth,
+            (&uses, &defs),
+            &ins,
+            &mut outs,
+            slots,
+            temp_base,
+            up,
+        );
+        for (&d, &v) in defs.iter().zip(&outs) {
+            regs[d as usize] = v;
+        }
+        r
     }
 
     fn native_step(

@@ -65,48 +65,53 @@ fn lines(o: &Output, what: &str) -> Vec<String> {
         .collect()
 }
 
-#[test]
-fn a_function_without_a_native_variant_gets_frame_mode_code() {
-    let dir = tempdir("clift_natfall");
-    std::fs::write(dir.join("n.vhd"), SRC).expect("write");
+/// A run of `natfall` with `n` iterations on `tier`, in a library of its own.
+fn run(dir: &Path, tier: &str, n: u32) -> Output {
+    let (tier, n) = (format!("--tier={tier}"), format!("-gN={n}"));
     yavs(
-        &dir,
-        &["analyze", "--std=2008", "--work=work:work", "n.vhd"],
-    );
-    let run = || {
-        yavs(
-            &dir,
-            &[
-                "run",
-                "--std=2008",
-                "--work=work:work",
-                "--tier=clift-auto",
-                "natfall",
-            ],
-        )
-    };
-    let ti = std::time::Instant::now();
-    let interp = yavs(
-        &dir,
+        dir,
         &[
             "run",
             "--std=2008",
             "--work=work:work",
-            "--tier=interp",
+            &tier,
+            &n,
             "natfall",
         ],
-    );
-    let interp_took = ti.elapsed();
-    let t0 = std::time::Instant::now();
-    let cold = run();
-    let took = t0.elapsed();
-    if std::env::var_os("PATH").is_some() {
-        panic!(
-            "DIAG interp took {interp_took:?} cold took {took:?}\n{}",
-            String::from_utf8_lossy(&cold.stderr)
+    )
+}
+
+/// The iterations of the runs, shortest first. The frame-mode code of `step` comes in two steps
+/// of the sampler: it sees `step` run, finds it has no native-frame variant and waits for a
+/// compiled caller, then sees it run again after `_p0` is compiled; a compile in flight when the
+/// run ends is abandoned by design. The sampler's wall time is not the program's, so on a runner
+/// that gets to it late (no instruction counter, a loaded host) the shortest run ends first: the
+/// next one is five times longer, and a behaviour that never happens fails the last.
+const RUNS: [u32; 3] = [400_000, 2_000_000, 10_000_000];
+
+#[test]
+fn a_function_without_a_native_variant_gets_frame_mode_code() {
+    let mut got = None;
+    let mut seen = Vec::new();
+    for n in RUNS {
+        let dir = tempdir("clift_natfall");
+        std::fs::write(dir.join("n.vhd"), SRC).expect("write");
+        yavs(
+            &dir,
+            &["analyze", "--std=2008", "--work=work:work", "n.vhd"],
         );
+        let interp = run(&dir, "interp", n);
+        let cold = run(&dir, "clift-auto", n);
+        assert_eq!(cold.stdout, interp.stdout, "{n} iterations");
+        if !lines(&cold, " compiled `").is_empty() {
+            got = Some((dir, n, interp, cold));
+            break;
+        }
+        seen.push((n, String::from_utf8_lossy(&cold.stderr).into_owned()));
     }
-    assert_eq!(cold.stdout, interp.stdout);
+    let Some((dir, n, interp, cold)) = got else {
+        panic!("`step` got no frame-mode code in any run; the traces: {seen:#?}");
+    };
     assert_eq!(lines(&cold, "no native-frame variant").len(), 1, "{cold:?}");
     let compiled = lines(&cold, " compiled `");
     assert_eq!(compiled.len(), 1, "{compiled:?}");
@@ -117,7 +122,14 @@ fn a_function_without_a_native_variant_gets_frame_mode_code() {
     let (p, f) = (at(" compiled `_p0`"), at(" compiled `step`"));
     assert!(p.is_some() && f.is_some() && p < f, "{err}");
     // The code is stored, so the next run links it, with the refusal found again at no cost.
-    let warm = run();
+    // (It waits for the same two looks, so a run that ends first is repeated, the cache untouched.)
+    let mut warm = run(&dir, "clift-auto", n);
+    for _ in 1..3 {
+        if !lines(&warm, " compiled `").is_empty() {
+            break;
+        }
+        warm = run(&dir, "clift-auto", n);
+    }
     assert_eq!(warm.stdout, interp.stdout);
     let compiled = lines(&warm, " compiled `");
     assert_eq!(compiled.len(), 1, "{compiled:?}");

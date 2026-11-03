@@ -52,9 +52,11 @@ end;
 
 fn command(dir: &Path, args: &[&str]) -> std::process::Command {
     let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_yavs"));
-    c.args(args).env("YAVS_AUTO_TRACE", "1")
+    c.args(args)
+        .env("YAVS_AUTO_TRACE", "1")
         // (New code has a variant for every function: this is the rule for what the old has not.)
-        .env("YAVS_CLIFT_EXITS", "old").current_dir(dir);
+        .env("YAVS_CLIFT_EXITS", "old")
+        .current_dir(dir);
     c
 }
 

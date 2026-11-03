@@ -2004,11 +2004,6 @@ struct Gen<'a> {
 /// The instructions a deferred register may be live over and still be deferred (`Gen::keep`).
 const MAX_SPAN: u32 = 4;
 
-fn max_span() -> u32 {
-    static N: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *N.get_or_init(|| flag("YAVS_CLIFT_SPAN", "").parse().unwrap_or(MAX_SPAN))
-}
-
 /// Frame-mode instructions that leave the frame to the interpreter only through `leave_at` at
 /// their own pc or a slow path, and call out to nothing that reads the registers: deferred
 /// stores of earlier instructions pass them, and their own definitions are deferred.
@@ -2657,7 +2652,7 @@ fn gen_func(
         if let Some(l) = &g.live {
             let spans = l.spans();
             for (r, k) in g.keep.iter_mut().enumerate() {
-                *k = spans.get(r).is_none_or(|&s| s > max_span());
+                *k = spans.get(r).is_none_or(|&s| s > MAX_SPAN);
             }
         }
     }

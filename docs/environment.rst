@@ -409,11 +409,6 @@ Compiled tiers: Cranelift
      - ``0``
      - unset
      - ``run``
-   * - ``YAVS_CLIFT_SPAN``
-     - The most instructions a deferred register of Cranelift code may be live over. A measurement.
-     - a number
-     - ``4``
-     - ``run``
    * - ``YAVS_CLIFT_EXITS``
      - ``old`` keeps the exits of Cranelift code: an instruction it cannot finish leaves the running function to the interpreter. Otherwise it never does. For comparing the two while the new code is on its branch.
      - ``old``

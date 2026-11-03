@@ -542,11 +542,17 @@ impl Opt<'_> {
                     ok(v, &mut rel);
                     if matches!(
                         kind,
-                        CheckKind::Range | CheckKind::Index | CheckKind::IndexDown | CheckKind::Length
+                        CheckKind::Range
+                            | CheckKind::Index
+                            | CheckKind::IndexDown
+                            | CheckKind::Length
                     ) {
                         ok(lo, &mut rel);
                     }
-                    if matches!(kind, CheckKind::Range | CheckKind::Index | CheckKind::IndexDown) {
+                    if matches!(
+                        kind,
+                        CheckKind::Range | CheckKind::Index | CheckKind::IndexDown
+                    ) {
                         ok(hi, &mut rel);
                     }
                 }
@@ -838,7 +844,9 @@ impl Opt<'_> {
             } => {
                 let x = get(st, v);
                 let r = match kind {
-                    CheckKind::Range | CheckKind::Index | CheckKind::IndexDown => meet(x, (get(st, lo).0, get(st, hi).1)),
+                    CheckKind::Range | CheckKind::Index | CheckKind::IndexDown => {
+                        meet(x, (get(st, lo).0, get(st, hi).1))
+                    }
                     CheckKind::Length => meet(x, get(st, lo)),
                     CheckKind::Null => {
                         if x.0 == 0 && x.1 > 0 {
@@ -876,7 +884,9 @@ impl Opt<'_> {
                     } => {
                         let (x, l, h) = (get(v), get(lo), get(hi));
                         let ok = match kind {
-                            CheckKind::Range | CheckKind::Index | CheckKind::IndexDown => x.0 >= l.1 && x.1 <= h.0,
+                            CheckKind::Range | CheckKind::Index | CheckKind::IndexDown => {
+                                x.0 >= l.1 && x.1 <= h.0
+                            }
                             CheckKind::Length => x.0 == x.1 && l.0 == l.1 && x.0 == l.0,
                             CheckKind::Null => truth(x) == Some(true),
                         };

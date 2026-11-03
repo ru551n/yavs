@@ -1389,7 +1389,7 @@ impl Machine {
             return;
         }
         // A resident process has no debugger (`set_resident`) and keeps its vectors.
-        if self.resident && self.temp.capacity() <= RESIDENT_TEMP {
+        if self.resident && (self.temp.capacity() <= RESIDENT_TEMP || std::env::var_os("YAVS_RD_TEMP").is_some()) {
             self.temp.clear();
             if !self.troots.is_empty() {
                 self.troots.clear();

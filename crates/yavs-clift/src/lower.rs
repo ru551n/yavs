@@ -4053,7 +4053,11 @@ impl Gen<'_> {
         // Where the address parameters point (`yavs_rt_region`), held for the activation.
         let stable = stable_activation(f);
         // Prototype: `fixed_activation` holds all but the temporary area; `YAVS_RD_TEMP=1` that too.
-        let fixed = std::env::var_os("YAVS_RD_FIXED").is_some() && yavs_llvm::rt::fixed_activation(f);
+        let fixed = match std::env::var("YAVS_RD_FIXED").as_deref() {
+            Ok("any") => true,
+            Ok(_) => yavs_llvm::rt::fixed_activation(f),
+            Err(_) => false,
+        };
         for pa in param_addrs(f) {
             let Some(&a) = cells.get(pa.cell) else {
                 return Err("missing argument cell".into());

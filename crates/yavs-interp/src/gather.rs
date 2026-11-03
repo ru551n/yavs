@@ -60,8 +60,9 @@ pub(crate) struct Bound {
     img: Img,
     /// Prototype (drive compare): the image a whole zero-delay scatter compares with.
     dimg: std::cell::Cell<DriveImg>,
-    /// Since the last review of the drive compare: scatters, runs, runs that held their value.
-    dseen: std::cell::Cell<(u32, u32, u32)>,
+    /// Since the last review of the drive compare: scatters, leaves that held their value, and the
+    /// leaf writes of the image at the last review.
+    dseen: std::cell::Cell<(u32, u64, u64)>,
     /// The distinct drivers of the first scatter (no drive compare from other slots).
     dids: std::cell::OnceCell<Box<[yavs_kernel::DriverId]>>,
     /// Per run the byte ranges of its leaves, adjacent ones joined (`drive_ranges`).
@@ -98,30 +99,32 @@ enum DriveImg {
 /// Scatters between two looks at whether the drive compare pays.
 const DRIVE_REVIEW: u32 = 1024;
 
-/// The percentage of runs that must hold their value for the drive compare to stay on
-/// (`YAVS_DRIVE_KEEP`).
-fn drive_keep() -> u64 {
+/// What one leaf written into the image costs in leaves a compare spares (`YAVS_DRIVE_WRITE`):
+/// about 120 instructions against about 60. More than the leaves spared pay for: the image goes.
+fn drive_write() -> u64 {
     static E: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *E.get_or_init(|| {
-        std::env::var("YAVS_DRIVE_KEEP")
+        std::env::var("YAVS_DRIVE_WRITE")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(25)
+            .unwrap_or(2)
     })
 }
 
-/// One scatter compared: `same` of `runs` runs held their value. The image is let go when
-/// too few do: writing it for nothing is the cost of a value that changes everywhere.
+/// One scatter compared: `same` leaves held their value. Every `DRIVE_REVIEW` scatters the image
+/// is let go when its writes cost more than the leaves spared (the cost of a value that changes in
+/// many leaves).
 #[inline]
-fn drive_review(b: &Bound, c: &mut Ctx<'_>, id: u32, runs: u32, same: u32) {
-    let (n, r, s) = b.dseen.get();
-    let (n, r, s) = (n + 1, r + runs, s + same);
+fn drive_review(b: &Bound, c: &mut Ctx<'_>, id: u32, same: u32) {
+    let (n, s, w0) = b.dseen.get();
+    let (n, s) = (n + 1, s + u64::from(same));
     if n < DRIVE_REVIEW {
-        b.dseen.set((n, r, s));
+        b.dseen.set((n, s, w0));
         return;
     }
-    b.dseen.set((0, 0, 0));
-    if u64::from(s) * 100 < u64::from(r) * drive_keep() {
+    let w = c.image_writes(id);
+    b.dseen.set((0, 0, w));
+    if (w - w0).min(u64::MAX / 8) * drive_write() > s {
         c.image_release(id);
         b.dimg.set(DriveImg::Off);
     }
@@ -968,18 +971,27 @@ impl Machine {
                         match c.image_id(&sp) {
                             None => {}
                             Some(NO_IMAGE) => b.dimg.set(DriveImg::Off),
-                            Some(id) => b.dimg.set(DriveImg::Ready(id)),
+                            Some(id) => {
+                                b.dseen.set((0, 0, c.image_writes(id)));
+                                b.dimg.set(DriveImg::Ready(id));
+                            }
                         }
                     }
                     None
                 }
             };
+            // A scatter that cannot compare spares nothing, and the image is written all the same.
+            if im.is_none()
+                && let DriveImg::Ready(id) = b.dimg.get()
+            {
+                drive_review(b, c, id, 0);
+            }
             if let Some(im) = im
                 && *data == *im
             {
                 c.note_skip();
                 if let DriveImg::Ready(id) = b.dimg.get() {
-                    drive_review(b, c, id, b.runs.len() as u32, b.runs.len() as u32);
+                    drive_review(b, c, id, b.items.len() as u32);
                 }
                 return Ok(());
             }
@@ -994,7 +1006,7 @@ impl Machine {
                         })
                     {
                         c.note_skip();
-                        same += 1;
+                        same += g.n;
                         continue;
                     }
                 }
@@ -1027,6 +1039,11 @@ impl Machine {
                     let dref = refs.get(t.leaf as usize).and_then(Option::as_ref);
                     write_leaf(c, d, l, Range::new(t.k, l.len), v, &mut run, when, dref)?;
                 }
+            }
+            if im.is_some()
+                && let DriveImg::Ready(id) = b.dimg.get()
+            {
+                drive_review(b, c, id, same);
             }
             return flush_run(c, &mut run, when);
         }

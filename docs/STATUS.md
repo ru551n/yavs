@@ -10816,3 +10816,7 @@ A whole zero-delay assignment of a record signal compares the value with the rec
 ## Inline temporary allocation in Cranelift
 
 The inline `Alloc` checks its limit once and clears the pad and the object by stores without a branch on alignment (`docs/decisions.md` "Inline temporary allocation in Cranelift"). Code bytes of everything compiled: 3.5 percent fewer on Microwatt, 2.0 percent on GRLIB; forced compiled windows execute 0.5 to 1.0 percent fewer instructions.
+
+## One-element signal reads taken by a concatenation
+
+`"0" & s(i downto i)` reads the element as a scalar and the `Cat` takes it as a scalar piece (`yavs-ir` `opt/place.rs` `cat_reads`; `docs/decisions.md` "One-element signal reads taken by a concatenation"). 0.1 to 0.2 percent fewer instructions on Microwatt, none elsewhere.

@@ -1793,6 +1793,15 @@ impl<'a> Opt<'a> {
                 self.dce();
             }
         }
+        if self.code.iter().any(|i| matches!(i, Inst::SigRead { .. })) {
+            self.reanalyse();
+            if let Some(inited) = &promoted {
+                self.hide_inits(inited);
+            }
+            if self.cat_reads() {
+                self.dce();
+            }
+        }
         if self.has_gate_native() {
             self.reanalyse();
             if self.gate_results() {

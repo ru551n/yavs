@@ -9,6 +9,7 @@
 //! moves or goes. Rules and what still copies: `docs/decisions.md` "Logic rows read in place".
 
 use super::*;
+use crate::Regs;
 
 impl Opt<'_> {
     /// The constant a register defined once holds.
@@ -340,5 +341,124 @@ impl Opt<'_> {
             }
             _ => {}
         }
+    }
+}
+
+// A one-element signal read that only a concatenation takes is a scalar read: `Alloc t; SigRead t, s; ...;
+// Cat d, [.., t, 1, ..]` is `SigReadScalar x, s; ...; Cat d, [.., x, ..]` with that piece a scalar. The block and
+// the vector read go. Only a logic `Cat` of one unit per element and no bias (`std_ulogic` arrays; `bit` pieces
+// are positions, not codes), and only a block nothing else reads.
+impl Opt<'_> {
+    /// Replace such reads; whether any went.
+    pub(super) fn cat_reads(&mut self) -> bool {
+        // The reads into a block defined once by an `Alloc`.
+        let mut reads: Vec<(usize, Reg)> = Vec::new();
+        for (pc, i) in self.code.iter().enumerate() {
+            if let Inst::SigRead { dst, .. } = *i
+                && matches!(self.place_def(dst), Some(Inst::Alloc { .. }))
+            {
+                reads.push((pc, dst));
+            }
+        }
+        if reads.is_empty() {
+            return false;
+        }
+        let mut users: FxMap<u32, Vec<usize>> = FxMap::default();
+        for &(_, t) in &reads {
+            users.insert(t.0, Vec::new());
+        }
+        for (pc, i) in self.code.iter().enumerate() {
+            if !is_dead(i) {
+                self.place_uses(i, |r| {
+                    if let Some(u) = users.get_mut(&r.0) {
+                        u.push(pc);
+                    }
+                });
+            }
+        }
+        for (_, i) in &self.inserts {
+            self.place_uses(i, |r| {
+                users.remove(&r.0);
+            });
+        }
+        let mut done = false;
+        for (pc, t) in reads {
+            let Some(us) = users.get(&t.0) else { continue };
+            let Inst::SigRead { sig, .. } = self.code[pc] else {
+                continue;
+            };
+            // Its uses: this read and one `Cat`, with the `Alloc` all in one block.
+            let z = self.def_pc[t.0 as usize] as usize;
+            let Some(q) = us
+                .iter()
+                .copied()
+                .find(|&u| matches!(self.code[u], Inst::Cat { .. }))
+            else {
+                continue;
+            };
+            if us.len() != 2 || !(z < pc && pc < q) || !self.same_block(z, q) {
+                continue;
+            }
+            let Inst::Cat {
+                dst,
+                n,
+                m,
+                parts,
+                scalars,
+                bias: 0,
+                logic: true,
+                w,
+            } = self.code[q]
+            else {
+                continue;
+            };
+            let list = self
+                .operands
+                .get(parts.start as usize..(parts.start + parts.len) as usize)
+                .map(<[Reg]>::to_vec)
+                .unwrap_or_default();
+            let Some(k) = list.iter().step_by(2).position(|&r| r == t) else {
+                continue;
+            };
+            let one = |s: &Self, r: Reg| s.place_k(r) == Some(1);
+            // (A signal reference is no plain value: `place_def` does not take it.)
+            let sig_one = self.defs.get(sig.0 as usize) == Some(&1)
+                && matches!(self.code.get(self.def_pc[sig.0 as usize] as usize),
+                    Some(Inst::SigVal { dst, len, .. }) if *dst == sig && one(self, *len));
+            if scalars >> k & 1 != 0 || !one(self, m) || !one(self, list[2 * k + 1]) || !sig_one {
+                continue;
+            }
+            let raw = self.fresh(RegTy::I64, 1);
+            let mut list = list;
+            list[2 * k] = raw;
+            let start = self.operands.len() as u32;
+            self.operands.extend_from_slice(&list);
+            self.code[z] = dead();
+            self.code[pc] = Inst::SigReadScalar { dst: raw, sig };
+            self.code[q] = Inst::Cat {
+                dst,
+                n,
+                m,
+                parts: Regs {
+                    start,
+                    len: parts.len,
+                },
+                scalars: scalars | 1 << k,
+                bias: 0,
+                logic: true,
+                w,
+            };
+            self.changed = true;
+            done = true;
+        }
+        done
+    }
+
+    /// Are the instructions at `a` and `b` in one basic block?
+    fn same_block(&self, a: usize, b: usize) -> bool {
+        (0..self.blocks.len()).any(|k| {
+            let r = self.range(k);
+            r.contains(&a) && r.contains(&b)
+        })
     }
 }

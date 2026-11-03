@@ -1172,7 +1172,10 @@ impl Inst {
                 if *kind != CheckKind::Null {
                     f(lo, Use, i);
                 }
-                if matches!(kind, CheckKind::Range | CheckKind::Index | CheckKind::IndexDown) {
+                if matches!(
+                    kind,
+                    CheckKind::Range | CheckKind::Index | CheckKind::IndexDown
+                ) {
                     f(hi, Use, i);
                 }
             }

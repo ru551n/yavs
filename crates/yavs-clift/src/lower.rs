@@ -2632,7 +2632,9 @@ fn gen_func(
         if g.nat.is_none() && !g.defer {
             // A branch only reads its condition: stored only if a block it leads to reads it too.
             if let Inst::CondBr { c: r, .. } | Inst::Case { v: r, .. } = inst
-                && !targets(&inst).iter().any(|&t| g.live_at(t as u32, r.0 as usize))
+                && !targets(&inst)
+                    .iter()
+                    .any(|&t| g.live_at(t as u32, r.0 as usize))
             {
                 g.pend[r.0 as usize] = None;
             }
@@ -3562,11 +3564,9 @@ fn gen_func(
                     && (1..=i64::from(fa.len)).contains(&l)
                 {
                     let o = g.ld(offset);
-                    let bad = g.b.ins().icmp_imm_s(
-                        IntCC::UnsignedGreaterThan,
-                        o,
-                        i64::from(fa.len) - l,
-                    );
+                    let bad =
+                        g.b.ins()
+                            .icmp_imm_s(IntCC::UnsignedGreaterThan, o, i64::from(fa.len) - l);
                     g.exit_if(bad, pc);
                     let v = g.b.ins().bor_imm_s(o, i64::from(sig) << 32);
                     g.st(dst, v);
@@ -3711,12 +3711,16 @@ fn gen_func(
                 let nr = g.imp.natives.get(&func).copied();
                 let callee = prog.func(func);
                 match (nr, callee) {
-                    (Some(nr), Some(callee)) if call_fits(f, prog.base_of(id), callee, args, false) => {
+                    (Some(nr), Some(callee))
+                        if call_fits(f, prog.base_of(id), callee, args, false) =>
+                    {
                         let memo = prog.memo_sig(func).is_some_and(|m| {
                             m.cells as usize == f.regs(args).map_or(0, <[_]>::len)
                         });
                         let caller = prog.base_of(id);
-                        g.native_call(pc, &inst, caller, f, nr, func, callee, args, dst, None, memo)
+                        g.native_call(
+                            pc, &inst, caller, f, nr, func, callee, args, dst, None, memo,
+                        )
                     }
                     _ => g.step(pc, &inst),
                 }

@@ -783,7 +783,10 @@ fn renumber(prog: &Program, f: &mut crate::Func) {
                 if *kind == CheckKind::Null {
                     *lo = *v;
                 }
-                if !matches!(kind, CheckKind::Range | CheckKind::Index | CheckKind::IndexDown) {
+                if !matches!(
+                    kind,
+                    CheckKind::Range | CheckKind::Index | CheckKind::IndexDown
+                ) {
                     *hi = *v;
                 }
             }

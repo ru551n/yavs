@@ -11435,7 +11435,11 @@ impl Host<'_, '_, '_> {
         let Some(c) = self.ctx.as_deref_mut() else {
             return false;
         };
+        if c.gate_unset() {
+            c.gate_init(self.m.drivers.iter().map(|d| d.id));
+        }
         tf.kctx = (c as *mut Ctx<'_>).cast();
+        tf.gate = c.gate_addr();
         self.m.view_root(tf, c)
     }
 }
@@ -11515,10 +11519,12 @@ impl crate::TierHost for Host<'_, '_, '_> {
             tf.stop = crate::NO_STOP.as_ptr();
             tf.spin = &raw mut m.spin;
             tf.kctx = std::ptr::null_mut();
+            tf.gate = crate::NO_GATE.as_ptr();
             return;
         };
         tf.kctx = (c as *mut Ctx<'_>).cast();
         let c = &*c;
+        tf.gate = c.gate_addr();
         tf.stop = c.interrupt_flags();
         tf.spin = &raw mut m.spin;
         if m.vc.tier_sigs.len() != m.vc.nsigs {

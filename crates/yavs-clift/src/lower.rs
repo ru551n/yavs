@@ -107,7 +107,7 @@ pub struct Jit {
     deopt_slots: ClifId,
     deopt_end: ClifId,
     /// The kernel-facing callbacks of `rt.rs`, in the order of `KERNEL`.
-    kernel: [ClifId; 22],
+    kernel: [ClifId; 23],
     tables: HashMap<Vec<u8>, DataId>,
     sig: Signature,
     /// Calls between compiled functions without a frame in the interpreter (`NatInfo`) and
@@ -390,6 +390,7 @@ impl Jit {
             (DRIVE, yavs_rt_drive as *const u8),
             (DRIVE_BIT, yavs_rt_drive_bit as *const u8),
             (DRIVE_F, yavs_rt_drive_f as *const u8),
+            (GATE_CHECK, yavs_rt_gate_check as *const u8),
             (CODES, yavs_rt_codes as *const u8),
             (PLANES, yavs_rt_planes as *const u8),
             (NATIVE, yavs_rt_native as *const u8),
@@ -473,6 +474,7 @@ impl Jit {
             imp(WAIT_EDGE, &[I64, I64, I64, I64, I32], Some(I32))?,
             imp(SCAN, &[I64; 11], Some(I32))?,
             imp(DRIVE_F, &[I64, I32, I32, I64, I64, I64], Some(I32))?,
+            imp(GATE_CHECK, &[I64, I32, I32, I64, I64, I64, I64], None)?,
         ];
         let mut sig = module.make_signature();
         sig.params.extend([AbiParam::new(I64); 3]);
@@ -1000,6 +1002,9 @@ impl Jit {
             drive_f: self
                 .module
                 .declare_func_in_func(self.kernel[21], &mut ctx.func),
+            gate_check: self
+                .module
+                .declare_func_in_func(self.kernel[22], &mut ctx.func),
             tables: tabs,
             consts: cons,
             natives,
@@ -1244,6 +1249,8 @@ struct Imports {
     /// `yavs_rt_drive_f(mem, pc, driver, lo, wave, len_inertial) -> u32`: a `Drive` of a frame
     /// waveform at a constant reference, the target's form found by the callee.
     drive_f: FuncRef,
+    /// `yavs_rt_gate_check(mem, pc, driver, lo, len, value, form)`: a skip against the full test.
+    gate_check: FuncRef,
     tables: HashMap<Vec<u8>, GlobalValue>,
     /// Copies of the constants (up to 4 KiB of bytes) the function takes the address of, which
     /// never change: reads of them need no lookup.
@@ -1255,6 +1262,25 @@ struct Imports {
 
 /// A call to a native-frame variant from a function being built: direct (`fr`) when the variant
 /// is in this module, else through `Mem::ntab`.
+/// The compare of a drive with the signal's current value in the generated code
+/// (`YAVS_INLCMP`: `off`; `check` asks the kernel's full test at every skip, always in debug builds).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InlCmp {
+    Off,
+    On,
+    Check,
+}
+
+fn inlcmp_mode() -> InlCmp {
+    static MODE: std::sync::OnceLock<InlCmp> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| match std::env::var("YAVS_INLCMP").as_deref() {
+        Ok("off") => InlCmp::Off,
+        Ok("check") => InlCmp::Check,
+        _ if cfg!(debug_assertions) => InlCmp::Check,
+        _ => InlCmp::On,
+    })
+}
+
 #[derive(Clone, Copy)]
 struct NatRef {
     fr: Option<FuncRef>,
@@ -7122,6 +7148,135 @@ impl Gen<'_> {
         self.start(join);
     }
 
+    /// The word of the skip gate (`TierFrame::gate`), when a drive through `driver` can have a
+    /// bit there and the compare is switched on.
+    fn gate_for(&mut self, driver: u32) -> Option<Value> {
+        (driver < 64).then(|| self.gate_word()).flatten()
+    }
+
+    /// The address of the skip gate, when the compare is switched on.
+    fn gate_word(&mut self) -> Option<Value> {
+        (self.nat.is_none() && inlcmp_mode() != InlCmp::Off).then(|| {
+            self.b
+                .ins()
+                .load(I64, self.mf.with_readonly(), self.mem, MEM_GATE as i32)
+        })
+    }
+
+    /// Goes on in a new block when bit `driver` of the gate word at `gate` is set, else to `other`.
+    fn gate_test(&mut self, gate: Value, driver: u32, other: Block) {
+        let w = self.b.ins().load(I64, MemFlagsData::trusted(), gate, 0);
+        let t = self.b.ins().band_imm_s(w, 1i64 << driver);
+        let cmp = self.b.create_block();
+        self.b.ins().brif(t, cmp, &[], other, &[]);
+        self.b.switch_to_block(cmp);
+    }
+
+    /// The compiled skip itself: the kernel hears of it when the code is left.
+    fn gate_hit(&mut self, pc: u32, driver: u32, target: Reg, value: Value, form: i64) {
+        if inlcmp_mode() == InlCmp::Check {
+            let (pcv, drv) = (self.c32(pc), self.c32(driver));
+            let (lo, len) = (self.ld(target), self.ld(Reg(target.0 + 1)));
+            let f = self.c64(form);
+            let args = [self.mem, pcv, drv, lo, len, value, f];
+            self.b.ins().call(self.imp.gate_check, &args);
+        }
+        let one = self.c64(1);
+        self.b
+            .ins()
+            .store(MemFlagsData::trusted(), one, self.mem, MEM_SKIPPED as i32);
+    }
+
+    /// Whether the logic code `code` is what element `sv.off` of the signal holds, by the facts
+    /// `f` (one element: its codes, else its planes).
+    fn cur_is_code(&mut self, sv: SigConst, f: yavs_ir::SigFact, code: Value) -> Value {
+        let tab = self
+            .b
+            .ins()
+            .load(I64, self.mf.with_readonly(), self.mem, MEM_SIGTAB as i32);
+        let at = i64::from(sv.sig) * SIG_ENT;
+        let ero = MemFlagsData::trusted().with_readonly();
+        let field = |g: &mut Self, k: i64| g.b.ins().load(I64, ero, tab, (at + k) as i32);
+        let cur = if f.codes {
+            let codes = field(self, SIG_CODES);
+            self.b
+                .ins()
+                .uload8(I64, MemFlagsData::trusted(), codes, sv.off as i32)
+        } else {
+            let first = field(self, SIG_OFF);
+            let e = self.b.ins().iadd_imm_s(first, sv.off);
+            let blocks = field(self, SIG_PLANES);
+            self.plane_code(blocks, e)
+        };
+        self.b.ins().icmp(IntCC::Equal, cur, code)
+    }
+
+    /// Whether the waveform element at `w` has delay zero and is what the elements of `sv` hold:
+    /// nonzero when not. A run of elements across two plane words goes to `other`.
+    fn cur_differs(&mut self, sv: SigConst, f: yavs_ir::SigFact, w: Value, other: Block) -> Value {
+        let tab = self
+            .b
+            .ins()
+            .load(I64, self.mf.with_readonly(), self.mem, MEM_SIGTAB as i32);
+        let at = i64::from(sv.sig) * SIG_ENT;
+        let ero = MemFlagsData::trusted().with_readonly();
+        let t = MemFlagsData::trusted();
+        let field = |g: &mut Self, k: i64| g.b.ins().load(I64, ero, tab, (at + k) as i32);
+        let delay = self.b.ins().load(I64, t, w, 0);
+        let first = field(self, SIG_OFF);
+        let e = self.b.ins().iadd_imm_s(first, sv.off);
+        if f.es != 0 {
+            let data = field(self, SIG_BYTES);
+            let off = self.b.ins().imul_imm_s(e, i64::from(f.es));
+            let p = self.b.ins().iadd(data, off);
+            let (a, b) = match f.es {
+                1 => (
+                    self.b.ins().uload8(I64, t, p, 0),
+                    self.b.ins().uload8(I64, t, w, 8),
+                ),
+                2 => (
+                    self.b.ins().uload16(I64, t, p, 0),
+                    self.b.ins().uload16(I64, t, w, 8),
+                ),
+                4 => (self.b.ins().uload32(t, p, 0), self.b.ins().uload32(t, w, 8)),
+                _ => (
+                    self.b.ins().load(I64, t, p, 0),
+                    self.b.ins().load(I64, t, w, 8),
+                ),
+            };
+            let x = self.b.ins().bxor(a, b);
+            return self.b.ins().bor(x, delay);
+        }
+        let sh = self.b.ins().band_imm_s(e, 63);
+        let fits = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, sh, 64 - sv.len);
+        let next = self.b.create_block();
+        self.b.ins().brif(fits, next, &[], other, &[]);
+        self.b.switch_to_block(next);
+        let blocks = field(self, SIG_PLANES);
+        let blk = self.b.ins().ushr_imm_s(e, 6);
+        let off = self.b.ins().ishl_imm_s(blk, 5);
+        let pb = self.b.ins().iadd(blocks, off);
+        let mut acc = self.c64(0);
+        for k in 0..4 {
+            let c = self.b.ins().load(I64, t, pb, 8 * k);
+            let v = self.b.ins().load(I64, t, w, 8 + 8 * k);
+            let v = self.b.ins().ishl(v, sh);
+            let x = self.b.ins().bxor(c, v);
+            acc = self.b.ins().bor(acc, x);
+        }
+        let mask = if sv.len == 64 {
+            self.c64(-1)
+        } else {
+            self.c64((1i64 << sv.len) - 1)
+        };
+        let mask = self.b.ins().ishl(mask, sh);
+        let d = self.b.ins().band(acc, mask);
+        self.b.ins().bor(d, delay)
+    }
+
     /// A `Drive` of one waveform element to a single-range target through `yavs_rt_drive`
     /// (`TierHost::drive_block`: at most 64 logic elements assigned from the element's first
     /// plane block, a wider one a block of planes per 64, or one cell of an integer, enumeration
@@ -7181,7 +7336,37 @@ impl Gen<'_> {
             let flags = self.c32(kind | u32::from(mode == yavs_ir::DriveMode::Inertial));
             let (lo, len) = (self.ld(target), self.ld(Reg(target.0 + 1)));
             let pcv = self.c32(pc);
+            // The value the signal holds already: no call at all (`TierFrame::gate`).
+            let es = f.es;
+            let test = driver.ok().filter(|_| {
+                !wide
+                    && (if es != 0 {
+                        sv.len == 1 && matches!(es, 1 | 2 | 4 | 8)
+                    } else {
+                        f.planes
+                    })
+            });
+            let gate = test.and_then(|d| self.gate_for(d).map(|g| (d, g)));
+            let Some((d, gate)) = gate else {
+                self.call_go(self.imp.drive, &[pcv, drv, lo, len, w, flags], false);
+                self.join(join);
+                return;
+            };
+            // (What `call_go` stores: the way past the call must have it stored too.)
+            self.spill(self.pc);
+            let (call, after) = (self.b.create_block(), self.b.create_block());
+            self.gate_test(gate, d, call);
+            let x = self.cur_differs(sv, f, w, call);
+            let hit = self.b.create_block();
+            self.b.ins().brif(x, call, &[], hit, &[]);
+            self.b.switch_to_block(hit);
+            self.gate_hit(pc, d, target, w, if es != 0 { 2 } else { 1 });
+            self.b.ins().jump(after, &[]);
+            self.b.switch_to_block(call);
             self.call_go(self.imp.drive, &[pcv, drv, lo, len, w, flags], false);
+            self.b.ins().jump(after, &[]);
+            self.b.switch_to_block(after);
+            self.clear();
             self.join(join);
             return;
         }
@@ -7354,9 +7539,33 @@ impl Gen<'_> {
             self.ld(s.value),
         );
         // The facts say it is one element of a signal the kernel offers: only the code to test.
-        let sure = self
+        let known = self
             .sig_known(s.target)
-            .is_some_and(|(sv, f)| sv.len == 1 && (f.codes || f.planes));
+            .filter(|(sv, f)| sv.len == 1 && (f.codes || f.planes));
+        let sure = known.is_some();
+        let join = self.b.create_block();
+        // The value the signal holds already: nothing to keep (`TierFrame::gate`). A drive kept
+        // for later closes the gate first: the kernel does not see it yet, and another of the
+        // machine's drivers may name the same kernel driver.
+        let gate = self.gate_word();
+        let tested = if let (Some((sv, f)), Some(g), true) = (known, gate, s.driver < 64) {
+            let rest = self.b.create_block();
+            self.gate_test(g, s.driver, rest);
+            let same = self.cur_is_code(sv, f, code);
+            let (hit, miss) = (self.b.create_block(), self.b.create_block());
+            self.b.ins().brif(same, hit, &[], miss, &[]);
+            self.b.switch_to_block(hit);
+            self.gate_hit(pc, s.driver, s.target, code, 0);
+            self.b.ins().jump(join, &[]);
+            self.b.switch_to_block(miss);
+            let zero = self.c64(0);
+            self.b.ins().store(MemFlagsData::trusted(), zero, g, 0);
+            self.b.ins().jump(rest, &[]);
+            self.b.switch_to_block(rest);
+            true
+        } else {
+            false
+        };
         let small = self
             .b
             .ins()
@@ -7371,8 +7580,7 @@ impl Gen<'_> {
             let ok = self.b.ins().band(has, one);
             self.b.ins().band(ok, small)
         };
-        let (chk, slow, fast, join) = (
-            self.b.create_block(),
+        let (chk, slow, fast) = (
             self.b.create_block(),
             self.b.create_block(),
             self.b.create_block(),
@@ -7405,6 +7613,10 @@ impl Gen<'_> {
         self.drive_bit(pc, s);
         self.b.ins().jump(join, &[]);
         self.b.switch_to_block(fast);
+        if !tested && let Some(g) = gate {
+            let zero = self.c64(0);
+            self.b.ins().store(MemFlagsData::trusted(), zero, g, 0);
+        }
         let e = self.b.ins().stack_addr(I64, bt.entries, 0);
         let kx = self.b.ins().uextend(I64, k);
         let off = self.b.ins().imul_imm_s(kx, 16);
@@ -7440,7 +7652,33 @@ impl Gen<'_> {
             self.ld(Reg(s.target.0 + 1)),
             self.ld(s.time),
         );
+        // At zero delay, the value the signal holds already: no call at all (`TierFrame::gate`).
+        let known = self
+            .sig_known(s.target)
+            .filter(|(sv, f)| sv.len == 1 && (f.codes || f.planes));
+        let gate = self.gate_for(s.driver);
+        let (Some((sv, f)), Some(g), Some(0)) = (known, gate, self.const_of(time)) else {
+            self.call_go(self.imp.drive_bit, &[pcv, drv, lo, len, time, code], true);
+            return;
+        };
+        // (What `call_go` stores: the way past the call must have it stored too.)
+        self.spill(self.pc);
+        let (call, after, hit) = (
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+        );
+        self.gate_test(g, s.driver, call);
+        let same = self.cur_is_code(sv, f, v);
+        self.b.ins().brif(same, hit, &[], call, &[]);
+        self.b.switch_to_block(hit);
+        self.gate_hit(pc, s.driver, s.target, v, 0);
+        self.b.ins().jump(after, &[]);
+        self.b.switch_to_block(call);
         self.call_go(self.imp.drive_bit, &[pcv, drv, lo, len, time, code], true);
+        self.b.ins().jump(after, &[]);
+        self.b.switch_to_block(after);
+        self.clear();
     }
 
     /// The temporary area's length the native frame's statements trim to.

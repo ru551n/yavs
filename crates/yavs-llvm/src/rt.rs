@@ -50,6 +50,7 @@ pub const FAST_FAT_ROOT: u32 = 3;
 pub const FAST_DEREF: u32 = 4;
 pub const DRIVE_BIT: &str = "yavs_rt_drive_bit";
 pub const DRIVE_F: &str = "yavs_rt_drive_f";
+pub const GATE_CHECK: &str = "yavs_rt_gate_check";
 
 pub const LAYOUT_WORD: &str = "yavs_rt_layout_word";
 pub const SCAN: &str = "yavs_rt_scan";
@@ -144,6 +145,9 @@ pub struct Mem {
     /// The `Suspend` a wait ended on the kernel itself stopped at (`TIER_ROOT_WAIT`), for the
     /// process's record (`TierState::at`); `NO_PC` otherwise.
     wait_at: u32,
+    /// Compiled code skipped drives by itself since it was entered (`TierFrame::gate`); the entry's
+    /// way out tells the kernel (`gate_skipped`). Zero otherwise.
+    pub skipped: u64,
     /// The check mode of `lean` activations (debug builds, feature `table-check`): set while one
     /// runs, with the machine and heap tags it replaced by `POISON` (`begin_lean`, `end_lean`).
     lean: bool,
@@ -328,6 +332,8 @@ pub const MEM_INST_LEN: u64 = std::mem::offset_of!(Mem, fr.inst_len) as u64;
 pub const MEM_NSIGS: u64 = std::mem::offset_of!(Mem, fr.nsigs) as u64;
 pub const MEM_TEMP_ROOTS: u64 = std::mem::offset_of!(Mem, fr.temp_roots) as u64;
 pub const MEM_SIGTAB: u64 = std::mem::offset_of!(Mem, fr.sigtab) as u64;
+pub const MEM_GATE: u64 = std::mem::offset_of!(Mem, fr.gate) as u64;
+pub const MEM_SKIPPED: u64 = std::mem::offset_of!(Mem, skipped) as u64;
 pub const MEM_SIGTAB_LEN: u64 = std::mem::offset_of!(Mem, fr.sigtab_len) as u64;
 pub const MEM_KNOWN: u64 = std::mem::offset_of!(Mem, fr.known) as u64;
 pub const MEM_CYCLE: u64 = std::mem::offset_of!(Mem, fr.cycle) as u64;
@@ -2678,6 +2684,7 @@ pub fn enter_on<H: View + ?Sized, const LEAN: bool>(
     // within the bounds in `mem`; `env` and `mem` outlive the call.
     mem.env = &mut env as *mut Env<'_> as *mut c_void;
     let next = unsafe { f(mem.env, mem.fr.regs, mem, pc) };
+    gate_skipped(mem);
     mem.fr.kctx = std::ptr::null_mut();
     mem.sync(env.host);
     mem.forget_end();
@@ -2692,6 +2699,52 @@ pub fn enter_on<H: View + ?Sized, const LEAN: bool>(
     match env.panic {
         Some(p) => Err(p),
         None => Ok(Some(next)),
+    }
+}
+
+/// Compiled code skipped drives by itself (`Mem::skipped`): tell the kernel of the activation.
+#[inline(always)]
+fn gate_skipped(mem: &mut Mem) {
+    if mem.skipped != 0 {
+        mem.skipped = 0;
+        // SAFETY: as in `direct`, the activation is still running.
+        if let Some((c, _, _)) = unsafe { direct(&mem.fr) } {
+            c.gate_skipped();
+        }
+    }
+}
+
+/// Skips of a compiled drive checked against the full test (`yavs_rt_gate_check`).
+pub static GATE_CHECKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The check of a drive compiled code just skipped (`YAVS_INLCMP=check`, debug builds): the kernel's
+/// full test must agree, a stale gate would silently give wrong results. `form` 0: `value` is the
+/// logic code of one element; 1: the address of a waveform element of a logic signal; 2: of one
+/// byte signal element.
+pub unsafe extern "C" fn yavs_rt_gate_check(
+    mem: *mut Mem,
+    pc: u32,
+    driver: u32,
+    lo: u64,
+    len: u64,
+    value: u64,
+    form: u64,
+) {
+    // SAFETY: `mem` is what compiled code was given; `value` is an address when the form says so,
+    // with the bytes the skip just read behind it.
+    let (c, ds, ss) = unsafe { direct(&(*mem).fr) }.expect("a skipped drive without a kernel");
+    let word = |k: usize| unsafe { std::ptr::read_unaligned((value as *const u64).add(k)) };
+    let block = match form {
+        0 => [value & 1, value >> 1 & 1, value >> 2 & 1, value >> 3 & 1],
+        1 => [word(1), word(2), word(3), word(4)],
+        _ => [word(1), 0, 0, 0],
+    };
+    GATE_CHECKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if let Err(why) = yavs_interp::gate_check(c, ds, ss, driver, [lo, len], block) {
+        eprintln!(
+            "internal error: compiled code skipped the drive at pc {pc} through driver {driver} of [{lo:#x}, {len}], value {block:x?}: {why}"
+        );
+        std::process::abort();
     }
 }
 
@@ -2802,6 +2855,7 @@ pub fn call_on(
     } else {
         Called::Done(v as u64)
     };
+    gate_skipped(mem);
     mem.fr.kctx = std::ptr::null_mut();
     mem.forget_end();
     // (`at` is the activation's, not the call's.)

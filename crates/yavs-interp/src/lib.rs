@@ -1019,6 +1019,10 @@ pub struct TierFrame {
     pub kctx: *mut std::ffi::c_void,
     pub drivers: *const ProcDriver,
     pub ndrivers: u64,
+    /// The process's skip gate (`Ctx::gate_addr`; [`NO_GATE`] without a kernel): compiled code
+    /// that finds bit `k` set may compare a drive through driver `k` with the current value and
+    /// make no call when they are equal; it clears the bit when it keeps a drive for later.
+    pub gate: *const u64,
 }
 
 /// [`TierHost::drive_bit_now`] on the kernel context itself (`TierFrame::kctx`), with the
@@ -1143,6 +1147,29 @@ pub fn direct_wait_edge(c: &mut Ctx<'_>, sigs: &[TierSig], sig: [u64; 2], kind: 
     true
 }
 
+/// The drive through `driver` of the elements `target`, with the value `block`, that compiled code
+/// skipped: what the kernel's full test says of it (`Ctx::gate_check`).
+pub fn gate_check(
+    c: &Ctx<'_>,
+    drivers: &[ProcDriver],
+    sigs: &[TierSig],
+    driver: u32,
+    target: [u64; 2],
+    block: [u64; 4],
+) -> Result<(), String> {
+    let (Some(d), Some(s)) = (
+        drivers.get(driver as usize),
+        sigs.get((target[0] >> 32) as usize),
+    ) else {
+        return Err("no such driver or signal".into());
+    };
+    if s.signal != u64::from(c.driver_signal(d.id).0) {
+        return Err("the driver is of another signal".into());
+    }
+    let elem = s.off as u32 + target[0] as u32;
+    c.gate_check(d.id, elem, target[1] as u32, block)
+}
+
 /// The leading entries of [`TierHost::drive_bits`] the kernel's fastest path takes, as
 /// [`direct_drive_bit`] does: how many were done (the host runs the rest).
 pub fn direct_drive_bits(
@@ -1194,6 +1221,10 @@ pub const STOP_BIT: u8 = yavs_kernel::Interrupt::STOP;
 
 /// `TierFrame::stop` of a view without a kernel: never set.
 pub static NO_STOP: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// `TierFrame::gate` of a view without a kernel: nothing can be skipped. Compiled code only stores
+/// zero through it.
+pub static NO_GATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// `TierFrame::spin` of a view without a machine: scratch, never read.
 pub static NO_SPIN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1288,6 +1319,7 @@ impl Default for TierFrame {
             kctx: std::ptr::null_mut(),
             drivers: std::ptr::null(),
             ndrivers: 0,
+            gate: NO_GATE.as_ptr(),
         }
     }
 }

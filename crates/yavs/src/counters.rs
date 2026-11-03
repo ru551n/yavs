@@ -109,6 +109,14 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
     for (name, v) in yavs_llvm::callback_counts().into_iter().flatten() {
         eprintln!("counters: cb_{name}={v}");
     }
+    // Skips of compiled drives held against the kernel's full test (`YAVS_INLCMP=check`).
+    #[cfg(any(feature = "llvm", feature = "clift"))]
+    {
+        let n = yavs_llvm::rt::GATE_CHECKED.load(std::sync::atomic::Ordering::Relaxed);
+        if n != 0 {
+            eprintln!("counters: gate_checked={n}");
+        }
+    }
     // The calls into the host by instruction kind (`YAVS_COUNTERS=kinds|pc`, every build).
     for (name, v) in yavs_interp::tier_census() {
         eprintln!("counters: cb_{name}={v}");

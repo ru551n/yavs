@@ -1128,6 +1128,9 @@ pub struct SimControl {
     callouts: Vec<(Severity, String, String)>,
     /// A skipped unchanged assignment (`Config::skip_unchanged`) left a delta that would have
     /// been there: the next cycle runs although it has no transaction.
+    /// A force, release or deposit was applied: `cur` of a direct element need not be its driving
+    /// value any more, so every process's skip gate is shut (`ProcState::gate_shut`).
+    gates_shut: bool,
     empty_delta: bool,
     /// Last epoch given to resident waiters (`ProcMeta::perm`).
     perm_epoch: u64,
@@ -1542,6 +1545,7 @@ impl SimControl {
             },
             live: false,
             callouts: Vec::new(),
+            gates_shut: false,
             empty_delta: false,
             perm_epoch: 0,
             woken_buf: Vec::new(),
@@ -2732,6 +2736,11 @@ impl SimControl {
         let mut work = self.work.take().unwrap_or_default();
         let UpdateWork { up, down, due, ops } = &mut *work;
         if !self.ops.is_empty() {
+            if !std::mem::replace(&mut self.gates_shut, true) {
+                for slot in &mut self.slots {
+                    slot_mut(slot).st.shut_gate();
+                }
+            }
             for op in std::mem::take(&mut self.ops) {
                 let s = op.signal.0;
                 let sig = &mut self.signals[s as usize];
@@ -5179,6 +5188,7 @@ fn process_panic(sh: &Shared, p: u32, panic: &(dyn std::any::Any + Send)) -> Sim
 /// process with an edge trigger, the edge that holds (`Ctx::edge`). Not for the first run.
 #[inline(always)]
 fn resumption(procs: &[ProcMeta], p: u32, st: &mut ProcState) {
+    *st.gate.get_mut() = st.gate_base;
     if let Some(m) = &mut st.marks {
         m.epoch += 1;
     }

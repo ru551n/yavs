@@ -279,6 +279,13 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - not ``0``
      - unset
      - ``run``
+   * - ``YAVS_INLCMP``
+     - ``off``: Cranelift code makes no compare of a drive with the current value; ``check``
+       (always in a debug build): every skip made that way asks the kernel's full test and the run
+       aborts on a difference.
+     - ``off`` or ``check``
+     - unset
+     - ``run``
    * - ``YAVS_NO_FACTS``
      - Specialised copies are made without facts about the instance's signals (a measuring aid).
      - any value

@@ -8,6 +8,7 @@ use crate::signal::{
 use crate::time::{Time, Unit};
 use crate::value::{Buf, LogicVec, Value, ValueRef};
 use smallvec::SmallVec;
+use std::sync::atomic::AtomicU64;
 use yavs_logic::StdULogic;
 
 /// Stable id of a process: its index in elaboration order.
@@ -963,6 +964,20 @@ pub(crate) struct ProcState {
     /// (`schedule`, `phantom_of`, the kernel's clock skip); never cleared. While false every
     /// waveform is idle with no phantom, and the direct paths leave out that test.
     pub waved: bool,
+    /// The skip gate of compiled code (`Ctx::gate_init`), bit `k` for the `k`th driver of the
+    /// machine: compiled code may compare a drive of that driver with the signal's current value
+    /// and, when equal, make no call. A bit goes with the driver's first direct entry of a run;
+    /// `gate_base` again at each resumption.
+    pub gate: AtomicU64,
+    /// The drivers that can be skipped this way: direct, on a signal that allows skipping.
+    pub gate_base: u64,
+    /// The bits of each waveform (index into `waveforms`), 0 for none.
+    pub gate_bits: Vec<u64>,
+    /// `gate_set` was asked.
+    pub gate_set: bool,
+    /// For good: a direct driver of this process was given a waveform (a delay, a preemption, a
+    /// skipped general assignment), or some signal was forced, released or deposited.
+    pub gate_shut: bool,
     /// `Stats::gathers_copied`, `Stats::gathers_read`.
     pub gathers_copied: u64,
     pub gathers_read: u64,
@@ -1087,6 +1102,21 @@ impl ProcState {
     fn phantom_of(&mut self, local: u32) {
         self.waved = true;
         self.phantoms.push(local);
+    }
+
+    /// Driver `local` makes a direct entry: no compiled skip of it for the rest of the run (`gate`).
+    #[inline(always)]
+    fn gate_off(&mut self, local: u32) {
+        if let Some(&b) = self.gate_bits.get(local as usize) {
+            *self.gate.get_mut() &= !b;
+        }
+    }
+
+    /// No compiled skip for good (`gate_shut`).
+    pub(crate) fn shut_gate(&mut self) {
+        self.gate_shut = true;
+        self.gate_base = 0;
+        *self.gate.get_mut() = 0;
     }
 
     /// Whether waveform `local` is idle with no phantom; `waved` false says so with no load.
@@ -1717,6 +1747,7 @@ impl Ctx<'_> {
                     value: Some(value),
                 });
                 self.st.waved = true;
+                self.st.shut_gate();
                 self.st.waveforms[local].schedule(r, None, &mut t);
                 self.st.act |= ACT_ASSIGNED;
                 self.st.schedule(now, d);
@@ -1754,6 +1785,7 @@ impl Ctx<'_> {
             });
             // Transport: a transaction at `now` replaces the earlier ones at `now`.
             self.st.waved = true;
+            self.st.shut_gate();
             self.st.waveforms[local].schedule(r, None, &mut t);
             self.st.act |= ACT_ASSIGNED;
             self.st.schedule(now, d);
@@ -1857,6 +1889,7 @@ impl Ctx<'_> {
             }
             && self.unchanged(sig, d, r, (*v).into())
         {
+            self.shut_direct(d);
             if self.st.waveforms[local].phantom.is_empty() {
                 self.st.act |= ACT_ASSIGNED;
                 self.st.phantom_of(local as u32);
@@ -1884,6 +1917,7 @@ impl Ctx<'_> {
             .map_err(|m| self.error(ErrorKind::InvalidAssign(m)))?;
             let now = self.sh.now;
             self.st.waved = true;
+            self.shut_direct(d);
             self.st.waveforms[local].pending.push(Txn {
                 time: now,
                 range: r,
@@ -1986,6 +2020,9 @@ impl Ctx<'_> {
             {
                 return false;
             }
+            if info.direct {
+                self.st.shut_gate();
+            }
             let w = &mut self.st.waveforms[info.local as usize];
             w.quick = Some(Quick {
                 time: at,
@@ -2006,6 +2043,7 @@ impl Ctx<'_> {
                 let planes = code_planes(code);
                 if !self.extend_outv(sig, slot, r.offset, 1, planes) {
                     self.st.act |= ACT_ASSIGNED;
+                    self.st.gate_off(info.local);
                     self.st.outv.push(OutV {
                         sig,
                         slot,
@@ -2030,6 +2068,7 @@ impl Ctx<'_> {
             }
             self.mark_entries(info, 1);
             self.st.act |= ACT_ASSIGNED;
+            self.st.gate_off(info.local);
             self.st.out.push(Out {
                 sig,
                 slot,
@@ -2104,6 +2143,7 @@ impl Ctx<'_> {
         }
         self.mark_entries(info, 1);
         self.st.act |= ACT_ASSIGNED;
+        self.st.gate_off(info.local);
         self.st.out.push(Out {
             sig: info.signal.0,
             slot: info.slot,
@@ -2202,6 +2242,126 @@ impl Ctx<'_> {
         self.st.act |= ACT_ASSIGNED;
     }
 
+    /// Driver `d` gets a waveform or a skipped general assignment: if it is direct, compiled code
+    /// skips nothing of this process any more (`ProcState::gate_shut`).
+    #[inline]
+    fn shut_direct(&mut self, d: DriverId) {
+        if self
+            .sh
+            .drivers
+            .get(d.0 as usize)
+            .is_some_and(|i| i.direct || i.bdirect)
+        {
+            self.st.shut_gate();
+        }
+    }
+
+    /// The word compiled code tests for the skip of a drive (`ProcState::gate`) and clears when it
+    /// keeps a drive for later.
+    #[inline]
+    pub fn gate_addr(&self) -> *const u64 {
+        self.st.gate.as_ptr()
+    }
+
+    /// The signal driver `d` drives.
+    pub fn driver_signal(&self, d: DriverId) -> SignalId {
+        self.sh.drivers[d.0 as usize].signal
+    }
+
+    /// Whether `gate_set` is still to be asked for this process.
+    #[inline(always)]
+    pub fn gate_unset(&self) -> bool {
+        !self.st.gate_set
+    }
+
+    /// Names the process's drivers for `ProcState::gate`: the `k`th of `ds` (below 64) is bit `k`.
+    /// A run in progress keeps its gate closed if it has made entries already.
+    #[cold]
+    pub fn gate_init(&mut self, ds: impl Iterator<Item = DriverId>) {
+        self.st.gate_set = true;
+        if self.st.gate_shut {
+            return;
+        }
+        let mut bits = vec![0u64; self.st.waveforms.len()];
+        let mut base = 0u64;
+        for (k, d) in ds.enumerate().take(64) {
+            let Some(i) = self
+                .sh
+                .drivers
+                .get(d.0 as usize)
+                .filter(|i| i.owner == self.pid)
+            else {
+                continue;
+            };
+            if (i.direct || i.bdirect) && self.sh.signals[i.signal.0 as usize].skip_ok {
+                // Several of the machine's drivers can name one kernel driver (the fields of a
+                // record pack): an entry through any closes them all.
+                bits[i.local as usize] |= 1 << k;
+                base |= 1 << k;
+            }
+        }
+        self.st.gate_base = base;
+        self.st.gate_bits = bits;
+        // Entries of this run made before the code was entered: only the next run may skip.
+        if self.st.out.is_empty() && self.st.outv.is_empty() && self.st.outb.is_empty() {
+            *self.st.gate.get_mut() = base;
+        }
+    }
+
+    /// Compiled code skipped assignments of this run by itself (`ProcState::gate`): the same effect
+    /// as the kernel's own skip, the run's delta stays.
+    #[inline]
+    pub fn gate_skipped(&mut self) {
+        self.note_skipped();
+    }
+
+    /// Checks a skip compiled code made against the full test of the direct paths: the driver is
+    /// this process's, direct and covers the elements, its waveform is calm, it has no entry of
+    /// this run, and the signal and the driving value hold the value. `Err` says what failed.
+    pub fn gate_check(
+        &self,
+        d: DriverId,
+        elem: u32,
+        len: u32,
+        block: [u64; 4],
+    ) -> Result<(), String> {
+        let info = self.sh.drivers.get(d.0 as usize).ok_or("no such driver")?;
+        if info.owner != self.pid {
+            return Err("driver of another process".into());
+        }
+        if !(info.direct || info.bdirect) {
+            return Err("driver not direct".into());
+        }
+        if !info.range.contains(Range::new(elem, len)) {
+            return Err(format!("{elem}+{len} outside the driver's range"));
+        }
+        let w = &self.st.waveforms[info.local as usize];
+        if !w.idle() || !w.phantom.is_empty() {
+            return Err("driver not calm".into());
+        }
+        if self.direct_entries(info) {
+            return Err("driver has entries in this run".into());
+        }
+        let s = &self.sh.signals[info.signal.0 as usize];
+        let same = match s.ty.elem {
+            crate::value::Elem::Bytes(es) => {
+                let b = block[0].to_le_bytes();
+                len == 1
+                    && es as usize <= 8
+                    && s.direct_same_bytes(info.slot, elem, &b[..es as usize])
+            }
+            _ => {
+                let p = block.map(|x| x & yavs_logic::wide::nmask(len as usize));
+                s.direct_same_planes(info.slot, elem, len, p)
+            }
+        };
+        if same {
+            Ok(())
+        } else {
+            Err("the signal or the driving value does not hold the value".into())
+        }
+    }
+
     /// An assignment to a direct driver was skipped: the run's delta stays (the kernel's
     /// `empty_delta`), the driver's waveform does not change, so later assignments of the run
     /// still take the fast path (a skipped assignment of a direct driver leaves nothing to
@@ -2278,6 +2438,7 @@ impl Ctx<'_> {
                 continue;
             }
             self.st.act |= ACT_ASSIGNED;
+            self.st.gate_off(info.local);
             self.st.out.push(Out {
                 sig,
                 slot,
@@ -2343,6 +2504,7 @@ impl Ctx<'_> {
             *x = m.epoch << 2 | 3;
         }
         self.st.act |= ACT_ASSIGNED;
+        self.st.gate_off(r.local);
         self.st.outb.push(OutB {
             sig: r.sig,
             slot: r.slot,
@@ -2372,6 +2534,7 @@ impl Ctx<'_> {
         }
         self.mark_entries(info, 3);
         self.st.act |= ACT_ASSIGNED;
+        self.st.gate_off(info.local);
         self.st.outb.push(OutB {
             sig,
             slot: info.slot,
@@ -2547,6 +2710,7 @@ impl Ctx<'_> {
             if self.direct_entries(info) {
                 return false;
             }
+            self.st.shut_gate();
         }
         if at == now && self.unchanged(sig, d, r, ValueRef::Bytes(bytes)) {
             let w = &mut self.st.waveforms[local];
@@ -2612,6 +2776,9 @@ impl Ctx<'_> {
             {
                 return false;
             }
+            if info.direct {
+                self.st.shut_gate();
+            }
             let planes = planes.map(|p| p & yavs_logic::wide::nmask(len as usize));
             self.st.waveforms[info.local as usize].vquick = Some(VQuick {
                 time: at,
@@ -2647,6 +2814,7 @@ impl Ctx<'_> {
             }
             self.mark_entries(info, 2);
             self.st.act |= ACT_ASSIGNED;
+            self.st.gate_off(info.local);
             self.st.outv.push(OutV {
                 sig,
                 slot,
@@ -2718,6 +2886,7 @@ impl Ctx<'_> {
             return false;
         }
         self.mark_entries(info, 2);
+        self.st.gate_off(info.local);
         let (sig, slot) = (info.signal.0, info.slot);
         for (i, b) in blocks.as_chunks::<32>().0.iter().enumerate() {
             let len = (n - 64 * i).min(64);
@@ -2912,6 +3081,7 @@ impl Ctx<'_> {
                 value,
             });
             self.st.waved = true;
+            self.shut_direct(d);
             self.st.waveforms[local].schedule(r, Some(time), &mut t);
             self.st.act |= ACT_ASSIGNED;
             self.st.schedule(time, d);
@@ -3015,6 +3185,7 @@ impl Ctx<'_> {
             return Ok(()); // a null slice: nothing to drive
         }
         let local = self.own(d)?.local as usize;
+        self.shut_direct(d);
         self.st.act |= ACT_ASSIGNED;
         self.st.scheduled.extend(new.iter().map(|t| (t.time, d)));
         self.st.waved = true;

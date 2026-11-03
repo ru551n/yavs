@@ -3593,6 +3593,12 @@ A whole record signal read by a process 16 times gets an image in the value's la
 
 A wait's abutting ranges of one signal are one waiter, and a signal's sole resident whole-signal waiter is woken where the update finishes. `rec_pair` at `--tier=auto`: instructions 0.754, cycles 0.721; small RTL designs level, `rtl_chain` +0.27 percent instructions at interp. Numbers in `docs/decisions.md`.
 
+### Wide buses with no history (2026-11-03, branch `perf/try-widevec`)
+
+A bus of more than 64 elements nothing asks any history of keeps no event records and no `'last_value`, and is compared and copied
+whole when all of it is pending; a bus copy writes straight from the source words (`docs/decisions.md` "A wide bus nothing asks the
+history of"). Corpus `sigassign/wide_history`, `wide_history_ext`; work counter `bare_signals`.
+
 ### Frame objects: full fact table and whole copies (2026-11-02, #1059, branch `perf/iterative`)
 
 A block of many slices between process variables lost its folding after eight statements, 2x the instructions at auto; a full table of memory facts now forgets temporaries. A whole copy between two variables has a direct path. Nine windows at auto within the noise; details in `docs/decisions.md`.

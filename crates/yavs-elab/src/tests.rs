@@ -3019,6 +3019,19 @@ fn lean_leaves(src: &str) -> Vec<String> {
     v
 }
 
+fn bare_leaves(src: &str) -> Vec<String> {
+    let (_, e) = elab("bare", src, "t", &[]);
+    let mut v: Vec<String> = e
+        .bare
+        .iter()
+        .enumerate()
+        .filter(|&(_, &l)| l)
+        .map(|(i, _)| e.leaf_name(crate::LeafId(i as u32)))
+        .collect();
+    v.sort();
+    v
+}
+
 /// A design of wide signals `a`, `b` and `r` (100 elements); `decls` are architecture
 /// declarations, `stmts` the statements of a process with variables `t1`, `e`, `s` and `v`.
 fn wide_design(decls: &str, stmts: &str) -> String {
@@ -3058,6 +3071,36 @@ fn wide_signals_nothing_asks_the_history_of_are_lean() {
     assert_eq!(ok, ABR);
     // The last value of a whole signal.
     assert_eq!(lean_leaves(&wide_design("", "w := a'last_value;")), ABR);
+}
+
+#[test]
+fn a_bus_with_no_history_attribute_keeps_no_history() {
+    assert_eq!(bare_leaves(&wide_design("", "null;")), ABR);
+    assert_eq!(bare_leaves(&wide_design("", "v := a(7 downto 0);")), ABR);
+    for stmts in [
+        "t1 := a'last_event;",
+        "e := a(5)'event;",
+        "s := a(5)'last_value;",
+        "e := a'stable;",
+    ] {
+        assert_eq!(
+            bare_leaves(&wide_design("", stmts)),
+            ["t.b", "t.r"],
+            "{stmts}"
+        );
+    }
+    // Through a signal parameter, also of the edge functions.
+    let p = "procedure p (signal s : in std_logic) is begin null; end;";
+    assert_eq!(bare_leaves(&wide_design(p, "p(b(3));")), ["t.a", "t.r"]);
+    assert_eq!(
+        bare_leaves(&wide_design("", "e := rising_edge(b(70));")),
+        ["t.a", "t.r"]
+    );
+    // A field of a record: a report asks it by part.
+    let rec = "type rt is record w : std_logic_vector(99 downto 0); end record; signal q : rt;";
+    assert_eq!(bare_leaves(&wide_design(rec, "null;")), ABR);
+    // A force anywhere: none.
+    assert!(bare_leaves(&wide_design("", "a <= force (others => '0');")).is_empty());
 }
 
 #[test]
@@ -3143,7 +3186,9 @@ fn a_whole_array_of_composites_is_asked_part_by_part() {
 #[test]
 fn a_signal_parameter_marks_every_signal_unless_scalar_last_value() {
     let decls = "procedure p (signal s : in std_logic_vector) is variable t1 : time; begin t1 := s'last_event; end;";
-    assert!(lean_leaves(&wide_design(decls, "p(a);")).is_empty());
+    // A signal with no attribute and no such call keeps no history at all (`bare_leaves`).
+    assert_eq!(lean_leaves(&wide_design(decls, "p(a);")), ["t.b", "t.r"]);
+    assert_eq!(bare_leaves(&wide_design(decls, "p(a);")), ["t.b", "t.r"]);
     // The last value of a scalar parameter needs no history (the edge functions of the standard
     // packages are that).
     let decls = "procedure p (signal s : in std_logic) is variable c : std_logic; begin c := s'last_value; end;";

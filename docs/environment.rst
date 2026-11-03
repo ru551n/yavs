@@ -361,6 +361,11 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - ``off``
      - on
      - ``run``
+   * - ``YAVS_NO_HISTORY``
+     - ``off`` keeps the event records and ``'last_value`` of a wide signal nothing asks them of.
+     - ``off``
+     - on
+     - ``run``
    * - ``YAVS_IDLE_SKIP``
      - ``off`` runs every activation of a clocked process; ``check`` also runs the ones the kernel would skip and fails when one does something else.
      - ``on``, ``off``, ``check``

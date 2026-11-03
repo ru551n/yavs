@@ -1698,6 +1698,11 @@ fn prepare(
     // something observes the run; hidden test aid: `YAVS_LEAN_EVENTS=off` keeps all histories.
     if !observed_free || std::env::var("YAVS_LEAN_EVENTS").is_ok_and(|v| v == "off") {
         e.lean.clear();
+        e.bare.clear();
+    }
+    // Hidden test aid: `YAVS_NO_HISTORY=off` keeps the history of every wide signal that is lean.
+    if std::env::var("YAVS_NO_HISTORY").is_ok_and(|v| v == "off") {
+        e.bare.clear();
     }
     // Hidden test aid: `YAVS_CODES=all` keeps the byte codes of every logic signal.
     if std::env::var("YAVS_CODES").is_ok_and(|v| v == "all") {
@@ -1723,6 +1728,7 @@ fn prepare(
         // queues no transaction under every kind, but the idle skip leaves activations out and
         // so is off when statement, branch, condition or expression counters count them.
         skip_unchanged: others_free && !db.facts().reads_activity,
+        count_runs: std::env::var_os("YAVS_COUNTERS").is_some(),
         // Hidden switches for comparing runs: `YAVS_IDLE_SKIP=off` runs every activation,
         // `check` runs the ones the kernel would skip and fails when one does something else.
         idle_skip: idle_mode != "off" && !cov_counters,

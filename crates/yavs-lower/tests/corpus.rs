@@ -18,6 +18,8 @@ use yavs_sem::{Db, LangRev, Options};
 
 /// Corpus files whose output matches sim1's exactly.
 const PASS: &[&str] = &[
+    "sigassign/wide_history",
+    "sigassign/wide_history_ext",
     "composite/record_length_var",
     "composite/record_length_var_short",
     "composite/record_length_second_field",

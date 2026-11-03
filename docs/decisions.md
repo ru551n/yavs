@@ -148,6 +148,36 @@ milestone users care about works.
 - First release: `v0.1.0` (the workspace version), marked pre-release, notes listing what works
   and the known gaps. Once the trigger is met, the user's request counts as approval to publish it.
 
+## A wide bus nothing asks the history of (2026-11-03, branch `perf/try-widevec`)
+
+On a bus with random data most words change (79 percent of the pending words of `fletcher_bufferwriter_512`, 7.8 runs per
+changed word), so a compare in front of the word loop rarely spares it: its nets hold in 8 percent of the updates. What costs is
+the work per changed word that only attributes read: the event record of the block and the blend of `'last_value`. Those attributes
+are rare on a bus.
+
+- **Decision.** A leaf of more than 64 elements, no field of a record, with no history attribute on an object that holds it, passed
+  to no signal parameter (the edge functions count), in a design with no force and no prefix that cannot be traced (`Facts::history_reads`,
+  `history_reads_all`, `lean::bare`), keeps no event records and no `'last_value` when finished by `Signal::finish_words_lean`. It
+  is lean even where `history_all` turns the others off, since any parameter that can reach it is in the list. Coverage, a debugger
+  and VHPI clear it with `lean` (`observed_free`); `YAVS_NO_HISTORY=off` is the hidden test aid.
+- **Whole.** Such a bus with every element pending is compared and copied whole: the first and the last differing word give the
+  cover for the waiters, `changed` is the same range as the word loop gives. Runs are not counted then, one event per update is, so
+  `Stats::events` is exact only with `Config::count_runs`, which `yavs run` sets from `YAVS_COUNTERS` (the default is on; nothing
+  else reads it). Waiters of a part and part updates take the word loop, without the history.
+- **What stays observable.** `Signal::last_event` and `event_since` also answer from `bare_last`, for `stuck_report` and the other
+  reports of `kernel/hang.rs`, which ask whole signals. A field of a record is never bare, since those reports ask it by part.
+- **Bus copies.** A copy process of a bus onto another signal writes the driving value from the source words without building one
+  entry per word (`Signal::commit_copy`, `wide::copy_range`); a bus onto itself, or a driver with a value of its own, keeps the run
+  of entries.
+- **Tried and left out**, in instructions on `fletcher_bufferwriter_512`, whole run, forced compiled, on the default target: a loop
+  over the slices with no lookups per word when every word is pending, 0.9996; a whole-signal compare in front of the word loop of
+  a bus that keeps its history, 1.0038; a held word left out at commit, 1.0028; one pass over a whole bus of entries at commit, about
+  -0.1 G of 60 G.
+- **Measured** at this point (forced compiled, whole run, 13.5 G of which is compile), against the commit before: default target
+  64.95 G to 60.44 G, `x86-64-v3` 60.59 G to 58.20 G, output equal. Cycles have not been measured on a quiet host, so none
+  are claimed. Reference simulator idea used: one compare per net (sim1); ours differs in keeping per-element history wherever anything
+  can read it.
+
 ## Waveform writer: wavefst (yavs-wave)
 
 - **Choice:** the `wavefst` crate (0.4.0, MIT) for FST output, with `default-features = false`,

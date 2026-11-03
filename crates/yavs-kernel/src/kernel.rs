@@ -96,6 +96,10 @@ pub struct Config {
     /// With `threads` above 1, start the worker threads when a token first lets a batch use them
     /// (`set_tokens`), not at the start: a run that never holds a token creates none (#879).
     pub lazy_pool: bool,
+    /// `Stats::events` counts the changed runs of a bus exactly. Off, a bus nothing asks the
+    /// history of (`Builder::no_history`) is compared and copied whole and counts one event per
+    /// update; nothing else depends on it.
+    pub count_runs: bool,
 }
 
 impl Default for Config {
@@ -113,6 +117,7 @@ impl Default for Config {
             cells: true,
             pool_all: false,
             lazy_pool: false,
+            count_runs: true,
         }
     }
 }
@@ -218,6 +223,8 @@ pub struct Stats {
     /// Signals of more than 64 elements that keep only each block's last event
     /// (`Builder::lean_events`); fixed when the model is built.
     pub lean_signals: u64,
+    /// Lean signals that keep no history at all (`Builder::no_history`).
+    pub bare_signals: u64,
     /// Signals that keep no byte codes (`Builder::no_codes`); fixed when the model is built.
     pub no_code_signals: u64,
     /// Signals that allow skipping an assignment of the value they hold (`Signal::skip_ok`).
@@ -1436,6 +1443,12 @@ impl SimControl {
             }
         }
         let lean_signals = signals.iter().filter(|s| s.is_lean()).count() as u64;
+        let bare_signals = signals.iter().filter(|s| s.keeps_no_history()).count() as u64;
+        if !cfg.count_runs {
+            for s in &mut signals {
+                s.finish_whole();
+            }
+        }
         let no_code_signals = signals.iter().filter(|s| s.keeps_no_codes()).count() as u64;
         let skip_signals = signals.iter().filter(|s| s.skip_ok).count() as u64;
         let nsignals = signals.len() as u64;
@@ -1538,6 +1551,7 @@ impl SimControl {
             interrupt: Interrupt::default(),
             stats: Stats {
                 lean_signals,
+                bare_signals,
                 no_code_signals,
                 skip_signals,
                 signals: nsignals,

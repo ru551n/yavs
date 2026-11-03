@@ -286,6 +286,13 @@ case!(
         ("ops", Max(3588)),
     ]
 );
+// A wide bus with no history attribute: compared and copied whole (`bare_signals`, a floor).
+case!(
+    bare_bus,
+    "parts=",
+    &[],
+    [("bare_signals", Min(2)), ("lean_signals", Min(2))]
+);
 case!(
     lean_events,
     "events=",
@@ -1035,6 +1042,34 @@ fn idle_skip_changes_nothing() {
             "{design}"
         );
     }
+}
+
+/// A wide bus that keeps no history gives the report of one that keeps it.
+#[test]
+fn no_history_changes_nothing() {
+    let d = tempdir("bare_equal");
+    let src = include_str!("perf/bare_bus.vhd");
+    let run = |mode: &str| {
+        run_design_env(
+            &d,
+            "bare_bus",
+            src,
+            "interp",
+            &[],
+            &[("YAVS_NO_HISTORY", mode)],
+        )
+    };
+    let (off, on) = (run("off"), run("on"));
+    assert_eq!((off.code, on.code), (0, 0), "{}", on.all());
+    assert!(on.stdout.contains("parts="), "{}", on.all());
+    assert_eq!(off.stdout, on.stdout);
+    assert_eq!(off.counters["bare_signals"], 0);
+    assert_eq!(on.counters["bare_signals"], 2, "{:?}", on.counters);
+    assert_eq!(off.counters["events"], on.counters["events"]);
+    // Coverage observes the run: every signal keeps its history.
+    let cov = run_design_env(&d, "bare_bus", src, "interp", &["--cov=sbt"], &[]);
+    assert_eq!(cov.code, 0, "{}", cov.all());
+    assert_eq!(cov.counters["bare_signals"], 0);
 }
 
 /// Wide signals that keep only each block's last event give the report of the full history.

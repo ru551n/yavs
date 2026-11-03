@@ -246,6 +246,16 @@ impl Builder {
         }
     }
 
+    /// Keep no event records and no `'last_value` for the lean signal `s`, when it can be finished
+    /// on the short lean path: nothing in the design asks them. `'event`, `'last_value` and
+    /// `'last_event` of it then read stale values, so call it only for a signal that no process
+    /// and no observer asks those of; the whole signal's last event stays (`hang.rs`).
+    pub fn no_history(&mut self, s: SignalId) {
+        if let Some((s, _)) = self.chk(s.into()) {
+            self.signals[s.0 as usize].set_no_history();
+        }
+    }
+
     /// Keep no byte codes for `s`: no process reads a single element of it, so refreshing a code
     /// per changed element costs more than it saves (#734). Reads still work, from the planes.
     pub fn no_codes(&mut self, s: SignalId) {

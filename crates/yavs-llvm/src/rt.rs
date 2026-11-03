@@ -2720,7 +2720,8 @@ pub static GATE_CHECKED: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 /// The check of a drive compiled code just skipped (`YAVS_INLCMP=check`, debug builds): the kernel's
 /// full test must agree, a stale gate would silently give wrong results. `form` 0: `value` is the
 /// logic code of one element; 1: the address of a waveform element of a logic signal; 2: of one
-/// byte signal element.
+/// byte signal element. `kept`: the drives waiting in the compiled code's batch, which the kernel
+/// cannot see: keeping one closes the gate, so there are none at a skip.
 pub unsafe extern "C" fn yavs_rt_gate_check(
     mem: *mut Mem,
     pc: u32,
@@ -2729,6 +2730,7 @@ pub unsafe extern "C" fn yavs_rt_gate_check(
     len: u64,
     value: u64,
     form: u64,
+    kept: u32,
 ) {
     // SAFETY: `mem` is what compiled code was given; `value` is an address when the form says so,
     // with the bytes the skip just read behind it.
@@ -2740,7 +2742,14 @@ pub unsafe extern "C" fn yavs_rt_gate_check(
         _ => [word(1), 0, 0, 0],
     };
     GATE_CHECKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if let Err(why) = yavs_interp::gate_check(c, ds, ss, driver, [lo, len], block) {
+    let full = yavs_interp::gate_check(c, ds, ss, driver, [lo, len], block);
+    if let Err(why) = full.and_then(|()| {
+        if kept == 0 {
+            Ok(())
+        } else {
+            Err(format!("{kept} drives are kept in the batch"))
+        }
+    }) {
         eprintln!(
             "internal error: compiled code skipped the drive at pc {pc} through driver {driver} of [{lo:#x}, {len}], value {block:x?}: {why}"
         );

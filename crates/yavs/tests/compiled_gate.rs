@@ -49,6 +49,7 @@ architecture a of unit is
     c : std_logic_vector(3 downto 0);
   end record;
   signal rc : pair := ('0', '0', x"0");
+  signal rw : pair := ('0', '0', x"0");
   signal hv : std_logic_vector(7 downto 0) := x"00";
   signal hi : integer := 0;
   signal kq, kr, ks, kt : std_logic_vector(7 downto 0) := x"00";
@@ -218,6 +219,19 @@ begin
     end if;
   end process;
 
+  -- The whole record, then a field held, in one run.
+  whole_record : process (clk)
+  begin
+    if rising_edge(clk) then
+      if g > 1000 then report "g"; end if;
+      if n mod 4 = 1 then
+        rw <= (not rw.a, rw.b, not rw.c);
+      end if;
+      rw.b <= rw.b;
+      rw.a <= rw.a;
+    end if;
+  end process;
+
   -- Two drivers of the process on one kernel driver: an entry through one closes the other.
   one_kernel_driver : process (clk)
     variable k : natural := 0;
@@ -374,7 +388,8 @@ begin
         & to_hstring(e8) & " " & std_logic'image(o1) & std_logic'image(o2) & std_logic'image(o3)
         & to_hstring(ov) & " " & std_logic'image(d1) & std_logic'image(d2)
         & std_logic'image(d3) & std_logic'image(d4) & to_hstring(dv) & integer'image(di) & to_hstring(kp) & std_logic'image(rc.a)
-        & std_logic'image(rc.b) & to_hstring(rc.c) & to_hstring(hv) & integer'image(hi) & to_hstring(kq) & to_hstring(kr) & to_hstring(ks) & to_hstring(kt)
+        & std_logic'image(rc.b) & to_hstring(rc.c) & to_hstring(hv) & integer'image(hi) & to_hstring(kq) & to_hstring(kr) & to_hstring(ks) & to_hstring(kt) & std_logic'image(rw.a) & std_logic'image(rw.b)
+        & to_hstring(rw.c)
         & " " & std_logic'image(f1) & to_hstring(fv) & integer'image(fi)
         & " " & std_logic'image(rs) & to_hstring(rv) & " " & to_hstring(part);
       if n = 150 then

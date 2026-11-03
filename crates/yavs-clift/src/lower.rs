@@ -1787,7 +1787,7 @@ fn quiet(i: &Inst) -> bool {
 
 /// Frame-mode instructions that deferred stores of earlier instructions may pass, with no exit
 /// that needs the frame whole: their fast paths look at no register in it, their slow paths step
-/// the instruction, which reads its operands (`Gen::slow_snap`), and nothing here can collect.
+/// the instruction with the deferred registers stored, and nothing here can collect.
 fn passes(i: &Inst) -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| flag("YAVS_CLIFT_PASS", "1") != "0")
@@ -4104,20 +4104,6 @@ impl Gen<'_> {
         rs
     }
 
-    /// What a slow path's block stores before the step: the deferred registers it may look at. A
-    /// quiet instruction (the only kind with something deferred past it) reads its operands.
-    fn slow_snap(&self, pc: u32) -> Vec<(u32, Value)> {
-        let mut rs = self.pend_live(pc);
-        if self.noexit
-            && (self.defer || self.pass)
-            && let Some(i) = self.func.code.get(pc as usize)
-        {
-            let (uses, _) = yavs_interp::inst_regs(self.func, i);
-            rs.retain(|x| uses.iter().any(|u| u.0 == x.0));
-        }
-        rs
-    }
-
     fn store_regs(&mut self, rs: &[(u32, Value)]) {
         for &(r, v) in rs {
             self.b.ins().store(self.rf, v, self.regs, r as i32 * 8);
@@ -5304,7 +5290,7 @@ impl Gen<'_> {
     fn slow_path(&mut self, pc: u32, i: &Inst) -> (Block, Block) {
         let (block, join) = (self.b.create_block(), self.b.create_block());
         if self.nat.is_none() {
-            let rs = self.slow_snap(pc);
+            let rs = self.pend_live(pc);
             if !rs.is_empty() {
                 self.snaps.insert(block, rs);
             }
@@ -7085,7 +7071,7 @@ impl Gen<'_> {
     fn slow_signal(&mut self, pc: u32, edge: u32) -> (Block, Block) {
         let (block, join) = (self.b.create_block(), self.b.create_block());
         if self.nat.is_none() {
-            let rs = self.slow_snap(pc);
+            let rs = self.pend_live(pc);
             if !rs.is_empty() {
                 self.snaps.insert(block, rs);
             }

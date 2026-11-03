@@ -13671,3 +13671,17 @@ Written by Claude. Two commits, each revertible alone; whether they reach `main`
 **Why.** A generic-sized vector drive in GRLIB's SDRAM model kept a wave object in temporary memory only because the model's process has nested procedures; the length checks of `iu3`'s signal copies stayed run-time checks only because of the block number of their declaration.
 
 A formal array or record parameter of a locally static subtype reads its descriptor from the constant pool in the body, as an array variable does: every call passes the formal's own bounds (`param_dope`, LRM 4.2.2.3), so the pointer in the slot adds nothing. `ahb_slv_dec_cache` of GRLIB spent 11 percent of compiled code's instructions on a descriptor it could have known.
+
+## Copies of subprograms by the descriptors of their arguments (`opt/subcopy.rs`, `copies.rs`, prototype on a side branch, 2026-11-03)
+
+**Decision.** The last step of a specialised copy's optimisation asks, per `Call`, which `'dope` arguments have bytes it knows (the constant pool, instance data outside the parameters of `for` generates, package data the copy has, what the declarative part left in the frame, a descriptor the copy itself was made for) and calls the copy of the callee for those bytes, in a reserved slot (`Program::sub_copy`). The copy has them as `Opt::wf` facts, so its layouts, lengths, positions and checks fold, and it asks the same of its own calls.
+
+**Why.** A record or an array of composites passed to a subprogram costs a layout at each field, through a callback or a step, and keeps the subprogram off native frames, though the descriptor never changes in a run.
+
+**Which descriptors.** Only those of a record or of an array of composites or several dimensions (`worth_keying`): compiled code makes the layout of a plain vector inline from its length, so such a copy would save little and split the code. Only those the lowered code of the callee reads and whose slot nothing writes or lets a pointer to (`reads`). Both are properties of the type and the code, no threshold.
+
+**Stored form.** Copy ids differ per run, so a stored copy calls the subprogram itself and lists its calls of copies with what they are for (`CopyBlob::calls`); they are made again on load. A refused copy (no slot, `YAVS_SUB_PER`) leaves the call as a call of the subprogram, which handles any descriptor.
+
+**Rewritten last.** Every pass before it reads a callee by id, and a copy's slot is empty, so inlining, the memo and the flags see the subprogram. `Program::memo_sig` goes by `base_of`. A debug build compares every descriptor an interpreted or stepped call passes with what its copy was made for (`Machine::check_sub_args`); compiled-to-compiled calls are not covered.
+
+**Off.** `YAVS_NO_SUBCOPY=1` (fingerprint `subcopy`), `YAVS_SUB_ALL=1` keys on plain vectors too.

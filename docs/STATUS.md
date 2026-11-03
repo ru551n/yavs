@@ -10796,3 +10796,6 @@ A process copy is made per instance data and per the forms of the signals its bo
 ## Shape in process copies
 
 Constant-size temporaries are frame bytes in processes with nested subprograms too; the declarations of a process's signal copies count as the declarative part wherever their blocks are (`Opt::reached_from`), so the copies' descriptors are facts and the copies move into the frame; a formal of a locally static subtype reads its bounds from the constant pool. Shape work on the descriptors of parameters that are not static stays at run time: layout words through the callback, lengths and positions from the descriptor (`docs/decisions.md` "Shape facts in process copies").
+
+## Copies of subprograms by descriptors
+On a side branch, a prototype: a specialised copy calls a copy of a subprogram made for the descriptors of records and arrays of composites it knows at the call (`yavs-ir` `opt/subcopy.rs`, `docs/decisions.md` "Copies of subprograms by the descriptors of their arguments"). Stored copies name those calls by what they are for. Not on the eager `--tier=clift`, which has no copies; a descriptor a caller builds per call (a formal of a subtype with a non-static bound) is not known, and compiled-to-compiled calls are outside the debug check.

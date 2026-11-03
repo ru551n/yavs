@@ -299,6 +299,11 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - not ``0``
      - unset
      - ``run``
+   * - ``YAVS_SUB_ALL``
+     - Copies of subprograms are keyed on the descriptors of plain vectors too (a measuring aid).
+     - any value
+     - unset
+     - ``run``
    * - ``YAVS_SUB_PER``
      - The most copies of one subprogram by the descriptors of its arguments.
      - a number

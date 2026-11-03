@@ -143,6 +143,7 @@ pub struct Copies {
     subs: AtomicUsize,
     sub_per: Mutex<HashMap<FuncId, usize>>,
     sub_ir: AtomicU64,
+    sub_capped: AtomicU64,
     sub_reads: Mutex<HashMap<FuncId, Arc<[u32]>>>,
     switched: AtomicU64,
     planned: AtomicU64,
@@ -173,9 +174,11 @@ pub struct CopyStats {
     pub capped: u64,
     /// Copies refused because every reserved slot was taken.
     pub full: u64,
-    /// Copies of subprograms (`sub_copy`), and their optimised IR instructions.
+    /// Copies of subprograms (`sub_copy`), their optimised IR instructions, and those refused by
+    /// the limit of one subprogram.
     pub subs: usize,
     pub sub_ir: u64,
+    pub sub_capped: u64,
     /// Slots reserved ([`Program::reserve_copies`]).
     pub reserved: usize,
     /// Processes that switched to a copy ([`Program::note_switch`]).
@@ -306,6 +309,7 @@ impl Copies {
             full: self.full.load(Ordering::Relaxed),
             subs: self.subs.load(Ordering::Relaxed),
             sub_ir: self.sub_ir.load(Ordering::Relaxed),
+            sub_capped: self.sub_capped.load(Ordering::Relaxed),
             reserved: self.list.len(),
             switched: self.switched.load(Ordering::Relaxed),
             planned: self.planned.load(Ordering::Relaxed),
@@ -538,6 +542,7 @@ impl Program {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let k = per.entry(base).or_insert(0);
             if *k >= crate::opt::subcopy::per_function() {
+                c.sub_capped.fetch_add(1, Ordering::Relaxed);
                 return None;
             }
             *k += 1;

@@ -215,7 +215,7 @@ end;
 #[test]
 fn a_process_switches_to_a_copy_and_the_copy_compiles() {
     let dir = setup("auto_count_copies", COPIES);
-    let o = counted(&dir, "copies", "40", &[]);
+    let o = counted(&dir, "copies", "40", &[("YAVS_SHARE_KEY", "off")]);
     assert_eq!(counter(&o, "spec_switched"), 3, "{}", err(&o));
     assert_eq!(counter(&o, "count_copies"), 3, "{}", err(&o));
 }
@@ -252,10 +252,11 @@ fn every_instance_has_its_copy_compiled() {
 fn the_switch_comes_at_half_the_count() {
     let dir = setup("auto_count_half", COPIES);
     // Five us are 1000 rising and falling edges of the clock, so 1000 activations of a process.
-    let late = counted(&dir, "copies", "1500", &[]);
+    let off = [("YAVS_SHARE_KEY", "off")];
+    let late = counted(&dir, "copies", "1500", &off);
     assert_eq!(counter(&late, "spec_switched"), 3, "{}", err(&late));
     assert_eq!(counter(&late, "count_copies"), 0, "{}", err(&late));
-    let never = counted(&dir, "copies", "3000", &[]);
+    let never = counted(&dir, "copies", "3000", &off);
     assert_eq!(counter(&never, "spec_switched"), 0, "{}", err(&never));
 }
 

@@ -176,6 +176,8 @@ macro_rules! case {
 }
 
 // The record variable is in the frame: the count is what its statements do without an object lookup.
+// Instances of one process that differ in values and a width: the shared code in the interpreter.
+case!(share_values, "sum=", &[], [("ops", Max(150000))]);
 case!(frame_vars, "n=200", &[], [("ops", Max(11200))]);
 // Slices between variables in the frame, one block: more facts than the optimiser's table keeps
 // (#1059), so a table that stopped learning shows here as ops per statement.

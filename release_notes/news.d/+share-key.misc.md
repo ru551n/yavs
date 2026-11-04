@@ -1,0 +1,1 @@
+Instances of a process that differ only in values it computes with share one specialised body, so a large generate array compiles less and more of it runs on specialised code. ``YAVS_SHARE_KEY=off`` gives the earlier behaviour.

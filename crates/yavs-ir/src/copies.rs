@@ -83,7 +83,11 @@ impl InstFacts {
 pub(crate) struct Copy {
     pub base: FuncId,
     pub data: Box<[u8]>,
-    pub holes: Box<[(u32, u32)]>,
+    pub holes: Arc<[(u32, u32)]>,
+    /// The byte ranges of the data the optimiser folded, once the body is made (`check_copy`).
+    pub folded: OnceLock<Box<[(u32, u32)]>>,
+    /// Against the cap: `.0` bodies for `.1` instances.
+    pub share: (u64, u64),
     pub pkgs: Box<[(u32, PkgData)]>,
     pub digest: u64,
     pub facts: InstFacts,
@@ -97,6 +101,9 @@ pub struct CopyBlob {
     pub base: FuncId,
     #[serde(with = "crate::bytes")]
     pub data: Vec<u8>,
+    /// What the data leave unfolded: part of the key, a zero there may be a value it did fold.
+    pub holes: Vec<(u32, u32)>,
+    pub folded: Vec<(u32, u32)>,
     pub digest: u64,
     pub bytes: yavs_diag::Slice,
 }
@@ -131,8 +138,11 @@ pub struct Copies {
     deps: Mutex<HashMap<FuncId, Arc<[u32]>>>,
     /// The instance signals each process names (`Program::sig_uses`).
     sig_uses: Mutex<HashMap<FuncId, Arc<[u32]>>>,
+    /// What elaboration knows of the instances of each process (`Program::note_instance`).
+    kin: Mutex<HashMap<FuncId, Kin>>,
     shared_ir: AtomicU64,
     copy_ir: AtomicU64,
+    charged: AtomicU64,
     capped: AtomicU64,
     full: AtomicU64,
     switched: AtomicU64,
@@ -160,6 +170,8 @@ pub struct CopyStats {
     pub shared_ir: u64,
     /// Optimised IR instructions of the copies.
     pub copy_ir: u64,
+    /// What they count against the cap: a copy's share per instance it serves.
+    pub charged: u64,
     /// Copies refused because they would exceed [`cap_percent`] of `shared_ir`.
     pub capped: u64,
     /// Copies refused because every reserved slot was taken.
@@ -198,12 +210,29 @@ pub fn cap_percent() -> u64 {
     })
 }
 
-fn key_hash(base: FuncId, data: &[u8], digest: u64) -> u64 {
+fn key_hash(base: FuncId, data: &[u8], holes: &[(u32, u32)], digest: u64) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     base.hash(&mut h);
     data.hash(&mut h);
+    holes.hash(&mut h);
     digest.hash(&mut h);
     h.finish()
+}
+
+/// The instances of one process, and the holes all its copies get once worked out.
+struct Kin {
+    scalars: Arc<[(u32, u32)]>,
+    insts: Vec<Arc<dyn AsRef<[u8]> + Send + Sync>>,
+    plan: Option<Plan>,
+}
+
+/// What a process's copies leave out of their key, and how many instances one copy serves on
+/// average: `bodies` for `instances`.
+#[derive(Clone)]
+struct Plan {
+    holes: Arc<[(u32, u32)]>,
+    bodies: u64,
+    instances: u64,
 }
 
 fn masked(data: &[u8], holes: &[(u32, u32)]) -> Box<[u8]> {
@@ -233,9 +262,11 @@ impl Copies {
         self.shared_ir.fetch_add(ir as u64, Ordering::Relaxed);
     }
 
-    /// Account an optimised copy.
-    pub(crate) fn made(&self, ir: usize) {
+    /// Account an optimised copy, which serves `instances` for each of `bodies`.
+    pub(crate) fn made(&self, ir: usize, (bodies, instances): (u64, u64)) {
         self.copy_ir.fetch_add(ir as u64, Ordering::Relaxed);
+        self.charged
+            .fetch_add(ir as u64 * bodies / instances, Ordering::Relaxed);
     }
 
     /// The stored function of the copy (`base`, masked `data`, package `digest`) if an earlier
@@ -244,8 +275,9 @@ impl Copies {
         &self,
         base: FuncId,
         data: &[u8],
+        holes: &[(u32, u32)],
         digest: u64,
-    ) -> Option<yavs_diag::Slice> {
+    ) -> Option<(yavs_diag::Slice, Vec<(u32, u32)>)> {
         let st = self.stored.get_or_init(|| {
             let blobs = self
                 .loader
@@ -256,7 +288,12 @@ impl Copies {
             let mut by_hash: HashMap<u64, Vec<usize>> = HashMap::new();
             for (i, b) in blobs.iter().enumerate() {
                 by_hash
-                    .entry(key_hash(b.base, &b.data, b.digest))
+                    .entry(key_hash(
+                        b.base,
+                        &b.data,
+                        if dropped("blob") { &[] } else { &b.holes },
+                        b.digest,
+                    ))
                     .or_default()
                     .push(i);
             }
@@ -268,16 +305,24 @@ impl Copies {
         let mut st = st.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let i = st
             .by_hash
-            .get(&key_hash(base, data, digest))?
+            .get(&key_hash(
+                base,
+                data,
+                if dropped("blob") { &[] } else { holes },
+                digest,
+            ))?
             .iter()
             .copied()
             .find(|&i| {
                 let b = &st.blobs[i].0;
-                b.base == base && b.data == data && b.digest == digest
+                b.base == base
+                    && b.data == data
+                    && (b.holes == holes || dropped("blob"))
+                    && b.digest == digest
             })?;
         st.blobs[i].1 = true;
         self.loaded.fetch_add(1, Ordering::Relaxed);
-        Some(st.blobs[i].0.bytes.clone())
+        Some((st.blobs[i].0.bytes.clone(), st.blobs[i].0.folded.clone()))
     }
 
     pub fn stats(&self) -> CopyStats {
@@ -285,6 +330,7 @@ impl Copies {
             copies: self.count.load(Ordering::Relaxed),
             shared_ir: self.shared_ir.load(Ordering::Relaxed),
             copy_ir: self.copy_ir.load(Ordering::Relaxed),
+            charged: self.charged.load(Ordering::Relaxed),
             capped: self.capped.load(Ordering::Relaxed),
             full: self.full.load(Ordering::Relaxed),
             reserved: self.list.len(),
@@ -432,7 +478,11 @@ impl Program {
             return Err(NoCopy::Unsuitable);
         }
         let c = &self.copies;
-        let data = masked(data, holes);
+        let raw = data;
+        let gen_holes = holes;
+        let plan = self.holes_of(base, holes);
+        let (holes, share) = (plan.holes, (plan.bodies, plan.instances));
+        let data = masked(raw, &holes);
         let pkgs: Box<[(u32, PkgData)]> = self
             .pkg_deps(base)
             .iter()
@@ -445,7 +495,7 @@ impl Program {
             }
             h.finish()
         };
-        let h = key_hash(base, &data, digest);
+        let h = key_hash(base, &data, &holes, digest);
         let mut by = c
             .by_hash
             .lock()
@@ -453,7 +503,10 @@ impl Program {
         if let Some(&id) = by.get(&h).and_then(|v| {
             v.iter().find(|&&id| {
                 c.get(id).is_some_and(|x| {
-                    x.base == base && x.data == data && x.digest == digest && x.facts == facts
+                    x.base == base
+                        && ((x.data == data && x.holes == holes) || dropped("key"))
+                        && x.digest == digest
+                        && x.facts == facts
                 })
             })
         }) {
@@ -466,19 +519,27 @@ impl Program {
         }
         let cap = cap_percent();
         if cap != 0 {
-            // A new copy is about as big as the shared body it replaces.
-            let est = self.func(base).map_or(0, |f| f.code.len()) as u64;
+            // A new copy is about as big as the shared body it replaces, and what it costs is
+            // shared by the instances it serves (a design of 1000 instances and 16 widths).
+            let est = self.func(base).map_or(0, |f| f.code.len()) as u64 * share.0 / share.1;
             let st = c.stats();
-            if (st.copy_ir + est) * 100 > st.shared_ir * cap {
+            if (st.charged + est) * 100 > st.shared_ir * cap {
                 c.capped.fetch_add(1, Ordering::Relaxed);
                 return Err(NoCopy::Cap);
             }
         }
         let id = FuncId(c.first + n as u32);
+        let (data, holes) = if dropped("key") {
+            (masked(raw, gen_holes), gen_holes.into())
+        } else {
+            (data, holes)
+        };
         let set = c.list[n].set(Copy {
             base,
             data,
-            holes: holes.into(),
+            holes,
+            folded: OnceLock::new(),
+            share,
             pkgs,
             digest,
             facts,
@@ -503,7 +564,7 @@ impl Program {
     pub fn copy_tag(&self, f: FuncId) -> Option<u64> {
         self.copies.get(f).map(|c| {
             let mut h = std::collections::hash_map::DefaultHasher::new();
-            key_hash(c.base, &c.data, c.digest).hash(&mut h);
+            key_hash(c.base, &c.data, &c.holes, c.digest).hash(&mut h);
             c.facts.hash(&mut h);
             h.finish()
         })
@@ -546,13 +607,15 @@ impl Program {
                 let Some(Some(o)) = self.funcs.get(FuncId(c.first + n as u32))?.opt.get() else {
                     return None;
                 };
-                if !seen.insert((e.base, &e.data, e.digest)) {
+                if !seen.insert((e.base, &e.data, &e.holes, e.digest)) {
                     return None;
                 }
                 let bytes = postcard::to_stdvec(&**o).ok()?;
                 Some(CopyBlob {
                     base: e.base,
                     data: e.data.to_vec(),
+                    holes: e.holes.to_vec(),
+                    folded: e.folded.get().map_or_else(Vec::new, |f| f.to_vec()),
                     digest: e.digest,
                     bytes: bytes.into(),
                 })
@@ -560,14 +623,17 @@ impl Program {
             .collect();
         if let Some(st) = c.stored.get() {
             let st = st.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let have: std::collections::HashSet<(FuncId, Vec<u8>, u64)> = out
+            type Key = (FuncId, Vec<u8>, Vec<(u32, u32)>, u64);
+            let have: std::collections::HashSet<Key> = out
                 .iter()
-                .map(|b| (b.base, b.data.clone(), b.digest))
+                .map(|b| (b.base, b.data.clone(), b.holes.clone(), b.digest))
                 .collect();
             out.extend(
                 st.blobs
                     .iter()
-                    .filter(|(b, _)| !have.contains(&(b.base, b.data.clone(), b.digest)))
+                    .filter(|(b, _)| {
+                        !have.contains(&(b.base, b.data.clone(), b.holes.clone(), b.digest))
+                    })
                     .map(|(b, _)| b.clone()),
             );
         }
@@ -610,21 +676,137 @@ impl Program {
     /// The optimised body of copy `c`: an earlier run's if the stage cache had it, else made now.
     pub(crate) fn optimize_copy_of(&self, c: &Copy) -> Option<Box<Func>> {
         let stored = crate::opt::copies_are_portable()
-            .then(|| self.copies.take_stored(c.base, &c.data, c.digest))
+            .then(|| self.copies.take_stored(c.base, &c.data, &c.holes, c.digest))
             .flatten()
-            .and_then(|b| postcard::from_bytes::<Func>(b.get()).ok().map(Box::new));
-        let o = stored.or_else(|| {
-            self.copies.fresh.fetch_add(1, Ordering::Relaxed);
-            let pkgs: Vec<(u32, &[u8])> = c
-                .pkgs
-                .iter()
-                .map(|(p, d)| (*p, (*d.bytes).as_ref()))
-                .collect();
-            crate::opt::optimize_copy(self, c.base, &c.data, &c.holes, &pkgs)
-        });
+            .and_then(|(b, folded)| {
+                let f = postcard::from_bytes::<Func>(b.get()).ok()?;
+                Some((Box::new(f), folded))
+            });
+        let (o, folded) = match stored {
+            Some((f, folded)) => (Some(f), folded),
+            None => {
+                self.copies.fresh.fetch_add(1, Ordering::Relaxed);
+                let pkgs: Vec<(u32, &[u8])> = c
+                    .pkgs
+                    .iter()
+                    .map(|(p, d)| (*p, (*d.bytes).as_ref()))
+                    .collect();
+                crate::opt::optimize_copy(self, c.base, &c.data, &c.holes, &pkgs)
+            }
+        };
+        let _ = c.folded.set(folded.into());
         // A pass that left the process alone: the copy is the lowered code.
         let o = o.or_else(|| self.funcs.get(c.base).map(|f| Box::new(f.full().clone())))?;
-        self.copies.made(o.code.len());
+        self.copies.made(o.code.len(), c.share);
         Some(o)
     }
+}
+
+impl Program {
+    /// Elaboration tells which instance data process `base` runs on, and which byte ranges of them
+    /// are scalar values (generics, constants): the instances decide what the key of the copies
+    /// leaves out, so that is the same for every instance whichever switches first.
+    pub fn note_instance(
+        &self,
+        base: FuncId,
+        scalars: &Arc<[(u32, u32)]>,
+        data: Arc<dyn AsRef<[u8]> + Send + Sync>,
+    ) {
+        let mut m = self
+            .copies
+            .kin
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let k = m.entry(base).or_insert_with(|| Kin {
+            scalars: scalars.clone(),
+            insts: Vec::new(),
+            plan: None,
+        });
+        // (The processes of one region come in a row and share its data.)
+        if !k.insts.last().is_some_and(|l| Arc::ptr_eq(l, &data)) {
+            k.insts.push(data);
+        }
+    }
+
+    /// The holes of every copy of process `base`: `gen`, the parameters of `for` generates, and
+    /// what [`crate::shape::classify`] says the key need not hold.
+    fn holes_of(&self, base: FuncId, gen_holes: &[(u32, u32)]) -> Plan {
+        let mode = crate::shape::mode();
+        let mut m = self
+            .copies
+            .kin
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(k) = m.get_mut(&base).filter(|_| mode != crate::shape::Mode::Off) else {
+            return Plan {
+                holes: gen_holes.into(),
+                bodies: 1,
+                instances: 1,
+            };
+        };
+        if let Some(p) = &k.plan {
+            return p.clone();
+        }
+        let raw = self.funcs.get(base).map(Func::full);
+        let (holes, bodies) = raw.map_or_else(
+            || (gen_holes.to_vec(), 1),
+            |raw| crate::shape::plan(self, raw, gen_holes, &k.scalars, &k.insts, mode),
+        );
+        let p = Plan {
+            holes: holes.into(),
+            bodies: bodies as u64,
+            instances: k.insts.len().max(bodies).max(1) as u64,
+        };
+        k.plan = Some(p.clone());
+        k.insts = Vec::new();
+        p
+    }
+
+    /// The internal error of a copy made of bytes that are not those of the instance switching to
+    /// it: a folded byte the key left out (`YAVS_SPEC_CHECK`), or a folded byte in a hole.
+    pub fn check_copy(&self, id: FuncId, data: &[u8]) -> Result<(), String> {
+        let Some(c) = self.copies.get(id) else {
+            return Ok(());
+        };
+        let Some(folded) = c.folded.get() else {
+            return Err(format!("the copy f{} is not made yet", id.0));
+        };
+        for &(o, n) in &**folded {
+            let (b, e) = (o as usize, o as usize + n as usize);
+            if c.holes.iter().any(|&(h, z)| h < o + n && o < h + z) {
+                return Err(format!(
+                    "a copy of process f{} folded bytes {b}..{e} of the instance data, which its \
+                     key leaves out",
+                    c.base.0
+                ));
+            }
+            if data.get(b..e) != c.data.get(b..e) {
+                return Err(format!(
+                    "a copy of process f{} folded bytes {b}..{e} of the instance data as {:?}, \
+                     and this instance holds {:?}",
+                    c.base.0,
+                    c.data.get(b..e),
+                    data.get(b..e)
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `YAVS_SHARE_KEY_DROP` (debug builds, the test of `check_copy`): `fold`, `key` or `blob`, the
+/// input a copy is made from as if the key had forgotten it.
+pub(crate) fn dropped(what: &str) -> bool {
+    static DROP: OnceLock<String> = OnceLock::new();
+    cfg!(debug_assertions)
+        && DROP.get_or_init(|| std::env::var("YAVS_SHARE_KEY_DROP").unwrap_or_default()) == what
+}
+
+/// `check_copy` at each switch: on in debug builds, else with `YAVS_SPEC_CHECK=1`.
+pub fn copy_check_on() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| match std::env::var("YAVS_SPEC_CHECK") {
+        Ok(v) => !v.is_empty() && v != "0",
+        Err(_) => cfg!(debug_assertions),
+    })
 }

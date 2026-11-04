@@ -13,7 +13,7 @@ Python 3 stdlib only.
     tools/difftest/difftest.py --candidate yavs-auto  # yavs with `--tier=auto` (the same build)
     tools/difftest/difftest.py --candidate yavs-clift       # `--tier=clift` (a yavs built with `--features clift`)
     tools/difftest/difftest.py --candidate yavs-clift-auto  # `--tier=clift-auto` (the same build)
-    tools/difftest/difftest.py --candidate yavs-clift-check # every process a copy, every skip of a drive in generated code or against a record image checked (the same build)
+    tools/difftest/difftest.py --candidate yavs-clift-check # every process a copy reading every value it only computes with from the instance (checked against what it folded), every skip of a drive in generated code or against a record image checked (the same build)
     tools/difftest/difftest.py --candidate yavs-clift-count1 # the count rule of --tier=auto at a count of 1: every function asked for at its first call, the run waiting for the compile (the same build)
     tools/difftest/difftest.py --candidate yavs-auto3        # `--tier=auto3` (a yavs built with `--features llvm,clift`)
     tools/difftest/difftest.py --candidate yavs-auto3-eager  # the same with `--tier-heat=0,0,0`

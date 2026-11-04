@@ -62,7 +62,7 @@ YAVS_MIXED = "export YAVS_MIXED=1 YAVS_CLIFT_NTAB=1; " + YAVS_AUTO3_EAGER
 # Cranelift with a copy of every process that can have one from its third activation, every skip of
 # a drive in generated code held against the kernel's full test: what `gate_checked` counts. The
 # other templates reach that compare on hardly any test of the corpus, whose runs are short.
-YAVS_CLIFT_CHECK = "export YAVS_SPEC_ALL=1 YAVS_SPEC_AFTER=2 YAVS_INLCMP=check YAVS_IMAGE_AFTER=1 YAVS_IMAGE_CHECK=1; " + YAVS.replace("--threads=", "--tier=clift-auto --tier-heat=1,0,0 --threads=")
+YAVS_CLIFT_CHECK = "export YAVS_SHARE_KEY=all YAVS_SPEC_CHECK=1 YAVS_SPEC_ALL=1 YAVS_SPEC_AFTER=2 YAVS_INLCMP=check YAVS_IMAGE_AFTER=1 YAVS_IMAGE_CHECK=1; " + YAVS.replace("--threads=", "--tier=clift-auto --tier-heat=1,0,0 --threads=")
 # The count rule of `--tier=auto` at its tightest: every function asked for at its first call, a copy of
 # every process that can have one from its second activation, the run waiting for what it asks
 # (`YAVS_AUTO_SYNC`), so the rule's paths run on every test however short.

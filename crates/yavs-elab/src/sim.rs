@@ -1310,7 +1310,8 @@ impl Elaborated {
                 _ => None,
             })
             .collect();
-        let mut holes_of: HashMap<_, Arc<[(u32, u32)]>> = HashMap::new();
+        type Ranges = Arc<[(u32, u32)]>;
+        let mut holes_of: HashMap<_, (Ranges, Ranges)> = HashMap::new();
         let mut s = self.build_res(
             cfg,
             |p, ds| {
@@ -1381,21 +1382,28 @@ impl Elaborated {
                         .uses_shared_state(pir.func)
                         .then(|| shared.clone()),
                 )?;
-                let holes = match holes_of.get(&arch) {
+                let (holes, scalars) = match holes_of.get(&arch) {
                     Some(h) => h.clone(),
                     None => {
-                        let mut holes = Vec::new();
-                        for v in u.values.iter().filter(|v| gen_params.contains(&v.decl)) {
+                        let (mut holes, mut scalars) = (Vec::new(), Vec::new());
+                        for v in u.values.iter() {
                             let n = rt.prog.types.get(v.ty).and_then(|t| t.scalar_size());
-                            let n = n.ok_or_else(|| {
-                                sim_err("a generate parameter is not a scalar".into())
-                            })?;
-                            holes.push((v.off, n as u32));
+                            if gen_params.contains(&v.decl) {
+                                let n = n.ok_or_else(|| {
+                                    sim_err("a generate parameter is not a scalar".into())
+                                })?;
+                                holes.push((v.off, n as u32));
+                            } else if let Some(n) = n {
+                                scalars.push((v.off, n as u32));
+                            }
                         }
-                        holes_of.entry(arch).or_insert(holes.into()).clone()
+                        holes_of
+                            .entry(arch)
+                            .or_insert((holes.into(), scalars.into()))
+                            .clone()
                     }
                 };
-                proc.specialise_later(holes);
+                proc.specialise_later(holes, &scalars);
                 Ok(Box::new(attach(proc, p)))
             },
             res,

@@ -336,13 +336,38 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - a number, at least 2
      - ``1024``, half of ``YAVS_AUTO_COUNT`` under the count rule
      - ``run``
+   * - ``YAVS_SHARE_KEY``
+     - What the key of a process's copies leaves out, so that instances share one body: ``off`` every byte but the parameters of ``for`` generates, ``unread`` also the scalars the process does not read, ``value`` also those it only computes with, where instances differ in them and that merges bodies, ``all`` every such scalar in every process (a test aid).
+     - ``off``, ``unread``, ``value``, ``all``
+     - ``value``
+     - ``run``
+   * - ``YAVS_SHARE_MERGE``
+     - Values are held out of the key of a process's copies when that leaves at most one body per this many.
+     - a number
+     - ``2``
+     - ``run``
+   * - ``YAVS_SHARE_CENSUS``
+     - Prints per process with several instances how many bodies its instances need under each key.
+     - any value
+     - unset
+     - ``run``
+   * - ``YAVS_SPEC_CHECK``
+     - At each switch to a copy, fails when a byte of instance data the copy folded is not this instance's. On by default in a debug build.
+     - not ``0``
+     - unset
+     - ``run``
+   * - ``YAVS_SHARE_KEY_DROP``
+     - Debug builds, the test of the check: ``fold``, ``key`` or ``blob``, an input a copy is made from as if the key had forgotten it.
+     - a name
+     - unset
+     - ``run``
    * - ``YAVS_SPEC_ALL``
      - Every process with one suspension point gets a copy, also one that reads no instance data.
      - any value
      - unset
      - ``run``
    * - ``YAVS_SPEC_CAP``
-     - Limit on copies, in percent of the shared optimised process code. ``0``: no limit.
+     - Limit on copies, in percent of the shared optimised process code, a copy counting its share per instance it serves. ``0``: no limit.
      - a number
      - ``250``
      - ``run``

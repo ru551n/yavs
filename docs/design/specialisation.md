@@ -320,7 +320,7 @@ section 9 as proposed there. What exists, and where it differs from the prototyp
   instance data, holes)`. The key is the process and the instance data bytes with the parameters of
   `for` generates (`holes`) zeroed, compared byte for byte (a 64-bit hash only finds candidates).
   Equal data share one copy; the iterations of a generate share a copy unless something else
-  derived from the parameter (a constant `i * W`) differs. The optimiser folds the reads of the
+  derived from the parameter (a constant `i * W`) differs. Section 14 leaves out more. The optimiser folds the reads of the
   data into integer registers (`Opt::inst`, `const_read`) and everything the existing rules fold
   from a constant follows: lengths, slice positions, `Alloc` sizes, checks, dead arms of
   `if generic then`. A pointer or handle register keeps its load.
@@ -544,3 +544,93 @@ them with a callback or a compare of the descriptor bytes, is where the IR count
 The same machine is the natural place for the evaluation of pure calls with constant arguments at specialisation time that the reference
 simulator does (its elaboration folds calls of pure functions with constant arguments by running them), which `resize(INIT, q'length)` of
 PoC's `ffdre` (#701) needs; it has no model of a call yet (an unknown result, the arguments' memory unknown for good).
+
+## 14. Shared bodies: what the key leaves out (trial, 2026-11-04)
+
+The key of section 11 holds every byte of the region's data. A generate array whose elements differ in
+a coefficient or a position splits as badly as one whose widths differ: 3 075 copies of three bodies, and
+the growth cap or `MAX_COPIES` keeps most instances on the shared code. Equal data gave 6 copies.
+Comparing the bodies after copying finds nothing (within 2 percent), so sharing has to come from the key.
+
+**A hole is always correct.** A byte left out of the key is not folded: the copy reads it from the running
+instance, as it does the parameter of a `for` generate. So what is left out decides cost, never the result,
+provided two things hold: `Opt::const_read` is the one path by which the optimiser reads instance data
+(`opt.rs`, `opt/decl.rs`, `proc_objects::for_copy` and `tidy` all go through it), and the holes are part of the
+key. A masked zero may be a value another copy really folded, so `key_hash`, the lookup, `CopyBlob` and
+`copy_tag` hold them.
+
+**What is left out** (`shape.rs`), per process function, from the scalars of the unit (`UnitIr::values`):
+- A scalar whose address the lowered body never takes: unread. Nothing is lost, the optimised code is the same.
+- A scalar it only computes with: arithmetic, compares and branches, an index, the argument of a call, a
+  place in a signal, a variable, a waveform. The result of a call counts as known no less than before, since
+  nothing folds a call from its arguments but what the size arguments of `ieee` natives give (`native_len`).
+- A scalar that reaches a size, a length, a bound or a descriptor stays in the key. Composite values and the
+  bytes of descriptors stay too.
+
+The analysis is flow-insensitive, per scalar, to a fixed point. A mistake in it costs sharing or facts, not
+correctness.
+
+**When a value is left out.** It costs its folds in every instance (both arms of a branch, a load, a memoised
+constant), so never by the design and never alone: a run-time property, fixed once elaboration has seen every
+instance, the same for all instances of a process whichever switches first. A value is held only where the
+process's instances differ in it, and only when that leaves at most one body per `YAVS_SHARE_MERGE` (2) keys.
+Holding every value regardless cost GRLIB 13 percent of its copy IR and 9 percent of its code (24.5 MB against
+22.6) for six copies. The process with one instance, the common case in a CPU, folds as before.
+
+**The growth cap** counts a copy's share per instance it serves (`bodies / instances` of the process): 66 copies
+serving 4 129 processes in an array of 16 widths. Unshared, this is the old cap; with `I / B` instances per body it admits that many times the IR, up to the
+slots reserved. `sc5_fifo_repack` cold (4 copies no longer capped) reads 0.95 from it. It stays a measure of copies against shared code, not a bound on the code.
+
+**The check.** `const_read` records what it folded, `Copy::folded` and `CopyBlob::folded` keep it, and
+`Program::check_copy` at the switch fails with an internal error when a folded byte lies in a hole or is not
+this instance's byte. It is on in debug builds and under `YAVS_SPEC_CHECK=1`, which the difftest tier
+`yavs-clift-check` sets together with `YAVS_SHARE_KEY=all` (every value held in every process, also of a single
+instance, so the corpus runs the held reads). `tests/share_key.rs` has the mutants (`YAVS_SHARE_KEY_DROP`): the
+optimiser folds a hole; the key leaves a value out and the optimiser folds that of the first instance; a stored
+copy is found without its holes. Each makes the check fail, and without the check gives another output. It sees
+what the interpreter's switch sees, so it covers every tier: compiled code gets the same optimised body, and
+`yavs-clift` cannot read the data of a copy.
+
+### Measured
+Exact instructions, G, `--tier=auto` on Cranelift (Cranelift-only bench builds, one thread). Whole runs in fresh
+worlds, all threads (compile thread included) unless it says main. Base d9d2248b9. sim1 on the same array (measured 2026-11-03, elaboration and run):
+widths 19.87, values 19.17, equal 18.81 at N=32, 74.85, 72.18, 70.82 at N=64. Of the gain on widths, the key alone gives 38.3, 35.0 at N=32 (cold, warm), the cap below the rest;
+without a cap and without the key the base reads 129.4, 32.9.
+
+| array | N | auto cold | warm | eager cold | eager warm | copies, eager | copies, auto |
+|---|---:|---|---|---|---|---|---|
+| widths differ | 8 | 3.6 to 3.3 | 3.1 to 3.1 | 9.1 to 5.5 | 3.6 to 2.7 | 209 to 62 | 29 to 62 |
+| widths differ | 32 | 40.8 to 34.5 | 38.3 to 30.0 | 124.0 to 33.1 | 49.4 to 30.2 | 3090 to 66 | 29 to 66 |
+| widths differ | 64 | 161.5 to 123.3 | 153.5 to 120.1 | 313.5 to 121.1 | 172.6 to 118.3 | 4096 to 66 | 29 to 66 |
+| values differ | 8 | 3.7 to 3.2 | 3.4 to 2.9 | 7.8 to 2.7 | 3.3 to 2.1 | 195 to 6 | 29 to 6 |
+| values differ | 32 | 39.8 to 32.0 | 38.1 to 29.6 | 121.7 to 29.9 | 48.5 to 29.3 | 3075 to 6 | 28 to 6 |
+| values differ | 64 | 156.5 to 120.4 | 152.6 to 119.9 | 311.2 to 117.0 | 171.1 to 116.4 | 4096 to 6 | 29 to 6 |
+| equal | 8 | 3.2 to 3.1 | 2.9 to 3.1 | 2.7 to 2.7 | 2.2 to 2.2 | 6 to 6 | 6 to 6 |
+| equal | 32 | 32.4 to 32.3 | 31.5 to 31.5 | 31.1 to 31.1 | 30.5 to 30.5 | 6 to 6 | 6 to 6 |
+| equal | 64 | 124.2 to 124.1 | 126.1 to 126.2 | 122.0 to 122.0 | 121.4 to 121.5 | 6 to 6 | 6 to 6 |
+
+Equal elements: within noise. RSS falls by up to a third under eager.
+
+Real designs:
+
+| design | all threads, cold | warm 1 | warm 2 | main, warm 2 | code MB | copies | copy IR |
+|---|---:|---:|---:|---:|---|---|---|
+| grlib_leon3mp | 1.003 | 0.997 | 0.999 | 0.999 | 22.59 to 22.38 | 72 to 66 | 89661 to 85759 |
+| microwatt_coremark | 1.001 | 1.001 | 1.002 | 1.002 | 13.12 to 13.12 | 71 to 71 | 43055 to 43055 |
+| poc_arith_addw | 0.981 | 0.994 | 0.998 | 0.998 | 0.65 to 0.47 | 151 to 40 | 17025 to 4037 |
+| neorv32_dual_full | 1.000 | 0.993 | 1.029 | 1.030 | 5.31 to 5.28 | 64 to 60 | 39065 to 36130 |
+| neorv32_single_cache | 1.006 | 0.992 | 1.004 | 1.004 | 4.33 to 4.30 | 56 to 54 | 31150 to 30490 |
+| sc5_fifo_repack | 0.952 | 0.988 | 0.998 | 1.001 | 0.84 to 0.84 | 36 to 36 | 8477 to 8477 |
+| sc5_timestamp | 1.014 | 1.002 | 1.099 | 1.101 | 0.07 to 0.04 | 6 to 2 | 576 to 223 |
+| fletcher_bufferwriter_512 | 0.996 | 1.000 | 1.000 | 1.000 | 2.45 to 2.30 | 57 to 57 | 11295 to 11295 |
+| vai_window_gen_interlock | 1.005 | 1.002 | 0.997 | 0.997 | 6.68 to 6.67 | 16 to 16 | 8049 to 8049 |
+| poc_cache_cpu | 1.030 | 0.975 | 0.996 | 0.996 | 1.34 to 1.34 | 41 to 41 | 4981 to 4981 |
+| uvvm_axistream_vvc | 0.986 | 1.035 | 1.038 | 1.070 | 11.84 to 11.74 | 1 to 1 | 482 to 482 |
+
+Ratios of the same binary with `YAVS_SHARE_KEY=value` to `off`, medians of 2 runs in fresh worlds, 1 for Microwatt. Over the 23 designs the
+geometric means of all threads are 0.998 cold, 1.001 and 1.019 warm, the last from runs of under a gigainstruction and from two-valued ones. `sc5_timestamp` warm 2 is two-valued, 5.5 or 6.5 G, with the key off as well: the run lasts about 400 ms by the wall clock, which is where a warm run
+links its compiled code before the gate (`Profile::base`), so the load of the host decides; 28 runs, compiled code linked when the run before lasted at least
+400 ms, not when it lasted less (two partial). With its code linked it reads 5.72 against 5.69 G: holding three values of `p_count` costs 0.5 percent there, for 2 copies instead of 6.
+Holding every value in every process (`YAVS_SHARE_KEY=all`, not the rule) is the upper bound of the price: GRLIB 1.029 cold and 1.017 warm, code 22.4 to 24.6 MB, Microwatt 1.001.
+The held values on real designs are few: GRLIB merges one process (`p0`, 9 726 instructions, two instances) and Microwatt none. Most splits there
+are in sizes or in the data of composites, which stay in the key. So this removes a cliff of generate arrays; it does not speed up the CPU designs.

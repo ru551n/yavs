@@ -390,8 +390,18 @@ pub(crate) fn optimize_copy(
     data: &[u8],
     holes: &[(u32, u32)],
     pkgs: &[(u32, &[u8])],
-) -> Option<Box<crate::Func>> {
-    optimize_func_with(prog, id, Some((data, holes, pkgs)))
+) -> (Option<Box<crate::Func>>, Vec<(u32, u32)>) {
+    let before = FOLDED.take();
+    let f = optimize_func_with(prog, id, Some((data, holes, pkgs)));
+    let mut folded = FOLDED.replace(before);
+    folded.sort_unstable();
+    folded.dedup();
+    (f, folded)
+}
+
+thread_local! {
+    /// The byte ranges of instance data read for folding by the copy being made.
+    static FOLDED: std::cell::RefCell<Vec<(u32, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Is a debugger keeping the variables of subprograms in their slots?
@@ -4013,11 +4023,13 @@ impl<'a> Opt<'a> {
             if holes
                 .iter()
                 .any(|&(h, z)| (h as usize) < o + n && o < (h + z) as usize)
+                && !crate::copies::dropped("fold")
             {
                 return false;
             }
             return data.get(o..o + n).is_some_and(|b| {
                 out.copy_from_slice(b);
+                FOLDED.with_borrow_mut(|f| f.push((o as u32, n as u32)));
                 true
             });
         }

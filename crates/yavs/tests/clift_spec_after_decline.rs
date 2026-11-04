@@ -197,6 +197,8 @@ fn copies_are_not_lost_at_scale() {
             .env("YAVS_COUNTERS", "1")
             // (The count rule has native-frame code of `**`, and declines nothing here.)
             .env("YAVS_AUTO_POLICY", "sampled")
+            // (One body per generic: the count of compiled copies below.)
+            .env("YAVS_SHARE_KEY", "off")
             .envs(env.iter().copied())
             .current_dir(&dir)
             .output()

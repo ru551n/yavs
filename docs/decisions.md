@@ -7400,6 +7400,18 @@ core 11, `perf stat --no-inherit` main-thread cycles and instructions, medians o
   point of #596 was none); a trial of every swap (a function below an eighth of the run moves the progress less than the
   measure resolves, and a trial of each costs the compile thread its time); weighting the static count by which path runs.
 
+## A key for process copies that leaves out values (yavs-ir `shape.rs`, `copies.rs`, trial on a side branch, 2026-11-04)
+
+- **Decision (agent, for the maintainer to land or drop):** a copy's key leaves out the scalars the process does not read, and the
+  scalars it only computes with where its instances differ in them and that leaves at most one body per `YAVS_SHARE_MERGE` (2) keys;
+  the copy reads those from the running instance like the parameter of a `for` generate. Sizes, bounds and descriptors stay in the key.
+- **Why it is safe:** a hole is always correct; the holes are part of the key in the run, in `CopyBlob` and in `copy_tag`, and
+  `check_copy` holds what `const_read` folded against the instance at each switch (debug builds, `YAVS_SPEC_CHECK`, difftest
+  `yavs-clift-check`, mutants in `tests/share_key.rs`).
+- **Fixed by the instances, not the design:** one hole set per process function, from all its instances at elaboration, the same whichever
+  switches first. A process with one instance or equal instances keeps every fold. The growth cap counts a copy's share per instance it serves.
+- **Rationale and numbers:** `docs/design/specialisation.md` section 14. Generate arrays gain much, the two CPU designs nothing, and they lose nothing.
+
 ## Specialised copies of processes (yavs-ir `copies.rs`, yavs-interp, yavs-elab, #651, user, 2026-10-23)
 
 - **Decision (user, 2026-10-23: start per-instance specialisation now; reason 3 of the compiled-versus-interpreted gap):**

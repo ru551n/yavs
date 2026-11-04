@@ -2323,10 +2323,11 @@ impl InterpProcess {
     /// Let the process switch to a copy of its function specialised to its instance data
     /// (`Program::copy_of`) once it has run [`spec_after`] activations; `holes` are the byte
     /// ranges of the data (offset, length) that hold the parameters of `for` generates, which
-    /// the copy does not fold (iterations of a generate share a copy). A process the copy
-    /// cannot stand in for stays as it is.
-    pub fn specialise_later(&mut self, holes: Arc<[(u32, u32)]>) {
-        self.m.specialise_at(spec_after(), holes);
+    /// the copy does not fold (iterations of a generate share a copy), `scalars` those of all
+    /// the scalar values of the unit (`Program::note_instance`). A process the copy cannot stand
+    /// in for stays as it is.
+    pub fn specialise_later(&mut self, holes: Arc<[(u32, u32)]>, scalars: &Arc<[(u32, u32)]>) {
+        self.m.specialise_at(spec_after(), holes, scalars);
     }
 
     /// Attach a debug session (ir.md 3.4); `name` appears in the session's process table.

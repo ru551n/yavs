@@ -1702,9 +1702,17 @@ impl Machine {
     /// data (`Program::copy_of`) at activation `at` (`holes`: the parameters of `for` generates
     /// in the data, which the copy reads like the shared code). The process must be one a copy
     /// can stand in for (`Program::specialisable`) and run without a debugger.
-    pub(crate) fn specialise_at(&mut self, at: u64, holes: Arc<[(u32, u32)]>) {
+    pub(crate) fn specialise_at(
+        &mut self,
+        at: u64,
+        holes: Arc<[(u32, u32)]>,
+        scalars: &Arc<[(u32, u32)]>,
+    ) {
         if self.dbg.is_none() && self.rt.prog.specialisable(self.entry) {
             self.rt.prog.note_planned();
+            self.rt
+                .prog
+                .note_instance(self.entry, scalars, self.inst.clone());
             self.spec = Some(holes);
             // First stop at the second activation (`specialise`): it tells the tier the process runs again.
             self.spec_at = u32::try_from(at.min(2)).unwrap_or(u32::MAX);
@@ -1779,6 +1787,11 @@ impl Machine {
         else {
             return;
         };
+        if yavs_ir::copy_check_on()
+            && let Err(e) = prog.check_copy(id, &self.inst.data)
+        {
+            panic!("internal error: {e}; this is a bug in yavs");
+        }
         // The wait the process stands after, and the copy's: one wait statement each.
         let pc = self.frames[0].pc as usize;
         let waits_at = |f: &Func, pc: usize| {

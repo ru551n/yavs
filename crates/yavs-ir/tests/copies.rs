@@ -96,15 +96,20 @@ fn a_copy_folds_the_instance_data_it_is_for() {
         return;
     }
     let (mut p, f) = process();
-    p.reserve_copies(2);
+    p.reserve_copies(3);
     assert!(p.specialisable(f));
     let c3 = p.copy_of(f, &data(3, 0), &[]).expect("a copy");
     assert_eq!(p.base_of(c3), f);
     assert_eq!(p.base_of(f), f);
-    // Equal data share a copy (and the bytes of a hole do not count); other data do not.
+    // Equal data share a copy, and the bytes of a hole do not count; other data do not. The holes
+    // are part of the key: a masked zero may be a value the other copy folded.
     assert_eq!(p.copy_of(f, &data(3, 0), &[]), Ok(c3));
-    assert_eq!(p.copy_of(f, &data(3, 7), &[(8, 8)]), Ok(c3));
-    let c4 = p.copy_of(f, &data(4, 0), &[]).expect("a second copy");
+    let held = p
+        .copy_of(f, &data(3, 0), &[(8, 8)])
+        .expect("a copy with a hole");
+    assert_ne!(held, c3);
+    assert_eq!(p.copy_of(f, &data(3, 7), &[(8, 8)]), Ok(held));
+    let c4 = p.copy_of(f, &data(4, 0), &[]).expect("a third copy");
     assert_ne!(c3, c4);
     assert_eq!(p.copy_of(f, &data(5, 0), &[]), Err(NoCopy::Full));
     // The shared code tests `G == 3`; each copy knows the answer.
@@ -117,7 +122,7 @@ fn a_copy_folds_the_instance_data_it_is_for() {
     let h = q.copy_of(f, &data(3, 0), &[(0, 8)]).expect("a copy");
     assert_eq!(branches(&q, h), 1);
     let st = p.copy_stats();
-    assert_eq!((st.copies, st.reserved, st.full), (2, 2, 1));
+    assert_eq!((st.copies, st.reserved, st.full), (3, 3, 1));
 }
 
 /// Asking for a reserved slot before a copy is made in it (a tier listing every function) must
@@ -200,7 +205,7 @@ fn a_copy_tag_does_not_depend_on_the_order_of_the_copies() {
     let (mut p, f) = process();
     p.reserve_copies(3);
     let (a3, a4) = (
-        p.copy_of(f, &data(3, 0), &[]).expect("copy"),
+        p.copy_of(f, &data(3, 0), &[(8, 8)]).expect("copy"),
         p.copy_of(f, &data(4, 0), &[]).expect("copy"),
     );
     let (mut q, g) = process();

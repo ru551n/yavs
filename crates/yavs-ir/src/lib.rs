@@ -10,7 +10,7 @@
 
 mod build;
 mod casetab;
-mod copies;
+pub(crate) mod copies;
 mod dump;
 pub mod gather;
 pub mod ieee;
@@ -18,6 +18,7 @@ mod inst;
 mod memo_fn;
 pub mod opt;
 mod program;
+mod shape;
 mod ty;
 mod verify;
 
@@ -25,7 +26,7 @@ pub use build::{FuncBuilder, ProgramBuilder};
 pub use casetab::CaseTab;
 pub use copies::{
     Copies, CopyBlob, CopyLoader, CopyStats, InstFacts, NoCopy, PkgData, PkgSource, SigFact,
-    cap_percent,
+    cap_percent, copy_check_on,
 };
 pub use inst::{
     AddrSpace, AttrKind, BoolOp, CheckKind, CmpOp, DriveMode, EdgeKind, FOp, FUnOp, ForceKind,

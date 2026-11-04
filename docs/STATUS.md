@@ -8552,6 +8552,12 @@ Not done: a flat heap-slot view in `TierFrame` (the remaining four `Deref`s of a
 a flat view would take about 10 of the 22 each and the miss callbacks), inlining accessors across modules (a call and a
 return cost about 50 instructions of 337).
 
+## Shared bodies for process copies (trial branch, 2026-11-04)
+
+`yavs-ir` `shape.rs`: the key of a copy leaves out what the process does not read, and values it only computes with where its instances differ
+in them and that merges bodies (`YAVS_SHARE_KEY`, `YAVS_SHARE_MERGE`, `docs/design/specialisation.md` section 14). The check at the switch is
+`YAVS_SPEC_CHECK`, on in debug builds and in difftest `yavs-clift-check`.
+
 ## Specialised copies of processes (#651, 2026-10-23)
 
 Six commits (`docs/decisions.md` "Specialised copies of processes", `docs/design/specialisation.md` sections 11 and 12): a process of

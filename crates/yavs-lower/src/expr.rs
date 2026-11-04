@@ -2269,6 +2269,10 @@ impl<'a> Fx<'a, '_> {
             return self.const_addr(c);
         }
         let dp = self.offset(slot, 8);
+        // A parameter's slots hold the descriptor itself.
+        if self.cx.flat_params.contains(&d) {
+            return dp;
+        }
         self.load(dp, Width::B8, RegTy::Ptr)
     }
 
@@ -3332,6 +3336,9 @@ impl<'a> Fx<'a, '_> {
                     dst: Some(dst),
                 });
                 if rt == RegTy::Ptr {
+                    if self.flat_result(sp, span)? {
+                        return Ok(Some(self.taken_bounds(dst)));
+                    }
                     return Ok(Some(self.fat_value(dst)));
                 }
                 Ok(Some(V::S(dst)))
@@ -3401,6 +3408,21 @@ impl<'a> Fx<'a, '_> {
         V::A(data, dope)
     }
 
+    /// The array a function with `Func::ret_flat` just returned at `data`: its bounds taken, a
+    /// descriptor made of them (which the optimiser drops if the readers can use the registers).
+    pub(crate) fn taken_bounds(&mut self, data: Reg) -> V {
+        let (left, right, dir) = (
+            self.reg(RegTy::I64),
+            self.reg(RegTy::I64),
+            self.reg(RegTy::I64),
+        );
+        self.emit(Inst::TakeBounds { left, right, dir });
+        let at = self.alloc_n(yavs_ir::DOPE_DIM_BYTES as u32);
+        let parts = self.fb.regs(&[left, right, dir]);
+        self.emit(Inst::MakeDope { at, parts });
+        V::A(data, at)
+    }
+
     pub(crate) fn make_fat(&mut self, data: Reg, dope: Reg) -> Reg {
         let fat = self.alloc_n(16);
         self.store(fat, data, Width::B8);
@@ -3410,21 +3432,33 @@ impl<'a> Fx<'a, '_> {
         fat
     }
 
-    /// An array argument as the cells of `conv`.
-    pub(crate) fn array_cells(&mut self, conv: Conv, data: Reg, dope: Reg, cells: &mut Vec<Reg>) {
+    /// An array argument of formal `p` as the cells of `conv`.
+    pub(crate) fn array_cells(
+        &mut self,
+        conv: Conv,
+        p: &Param,
+        data: Reg,
+        dope: Reg,
+        cells: &mut Vec<Reg>,
+        span: Span,
+    ) -> R<()> {
+        let flat = self
+            .ty(self.db.base(p.subtype), span)
+            .map(|t| Ty::flat_array(self.fb.program().types(), t))?;
         match conv {
-            Conv::Body => cells.extend([data, dope]),
+            Conv::Body if !flat => cells.extend([data, dope]),
             Conv::Fat => cells.push(self.make_fat(data, dope)),
-            Conv::Flat => {
+            Conv::Flat | Conv::Body => {
                 let (l, r, d) = self.dope_bounds(dope);
                 cells.extend([data, l, r, d]);
             }
         }
+        Ok(())
     }
 
     /// Left, right and direction of the one-dimensional descriptor `dope`: the registers it was
     /// made from in this block, else loaded from it.
-    fn dope_bounds(&mut self, dope: Reg) -> (Reg, Reg, Reg) {
+    pub(crate) fn dope_bounds(&mut self, dope: Reg) -> (Reg, Reg, Reg) {
         let here = self.fb.current();
         match (self.made_dopes.iter().rev()).find(|(b, at, _)| *b == here && *at == dope) {
             Some(&(_, _, bounds)) => bounds,
@@ -3590,7 +3624,7 @@ impl<'a> Fx<'a, '_> {
                         },
                     };
                     dope = self.param_dope(p.subtype, dope, &p.name.text.to_string(), es)?;
-                    self.array_cells(conv, data, dope, &mut cells);
+                    self.array_cells(conv, p, data, dope, &mut cells, es)?;
                 }
             }
         }

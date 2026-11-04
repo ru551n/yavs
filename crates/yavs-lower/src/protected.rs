@@ -238,6 +238,9 @@ impl Fx<'_, '_> {
             dst: Some(dst),
         });
         if comp {
+            if self.flat_result(sp, span)? {
+                return Ok(Some(self.taken_bounds(dst)));
+            }
             return Ok(Some(self.fat_value(dst)));
         }
         Ok(Some(V::S(dst)))

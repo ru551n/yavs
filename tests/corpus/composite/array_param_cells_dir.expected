@@ -1,0 +1,5 @@
+exit	1
+diag	note	0	0	:array_param_cells_dir:_p0	3
+diag	note	0	0	:array_param_cells_dir:_p0	0
+diag	note	0	0	:array_param_cells_dir:_p0	0
+diag	fatal	0	0	:array_param_cells_dir:_p0	range direction of slice TO does not match prefix DOWNTO

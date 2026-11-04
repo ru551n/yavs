@@ -162,6 +162,10 @@ fn make(prog: &crate::Program, callee: FuncId, level: u8, wide: bool) -> Option<
         return None;
     }
     let mut c = super::optimize_body(prog, callee)?;
+    // The bounds of an array parameter come from the caller's registers, whatever the body does.
+    if super::dopes::enabled() {
+        super::dopes::run_regs(prog, &mut c);
+    }
     // (A body without calls has nothing to inline: the common leaf costs no second walk.)
     if level > 0
         && c.code
@@ -247,6 +251,7 @@ fn make(prog: &crate::Program, callee: FuncId, level: u8, wide: bool) -> Option<
         blocks.push(out);
     }
     blocks.extend(extra);
+    return_selects(&mut blocks, &mut reg_ty);
     // Blocks nothing reaches (the arms of a `Case` that only fail) are not copied.
     let mut seen = vec![false; blocks.len()];
     let mut work = vec![0usize];
@@ -321,6 +326,55 @@ fn make(prog: &crate::Program, callee: FuncId, level: u8, wide: bool) -> Option<
         params,
         defs,
     })
+}
+
+/// A branch that returns one of two integers, each a constant or in a register already (`if a
+/// then return '1'; else return '0'; end if;`), as a `Select`: a body of one path is spliced in
+/// where the call was, so the statement around the call stays one block.
+fn return_selects(blocks: &mut [Vec<Ent>], reg_ty: &mut Vec<RegTy>) {
+    // What an arm returns: a constant, or a register.
+    enum Arm {
+        K(i64),
+        R(Reg),
+    }
+    let arm = |b: &[Ent], reg_ty: &[RegTy]| match *b {
+        [(Inst::Ret { v: Some(r) }, ..)] if reg_ty[r.0 as usize] == RegTy::I64 => Some(Arm::R(r)),
+        [(Inst::Const { dst, v }, ..), (Inst::Ret { v: Some(r) }, ..)]
+            if dst == r && reg_ty[r.0 as usize] == RegTy::I64 =>
+        {
+            Some(Arm::K(v))
+        }
+        _ => None,
+    };
+    for b in 0..blocks.len() {
+        let Some(&(Inst::CondBr { c, t, f }, loc, via)) = blocks[b].last() else {
+            continue;
+        };
+        let (Some(at), Some(af)) = (
+            blocks.get(t.0 as usize).and_then(|x| arm(x, reg_ty)),
+            blocks.get(f.0 as usize).and_then(|x| arm(x, reg_ty)),
+        ) else {
+            continue;
+        };
+        let mut new_reg = |ty: RegTy| {
+            reg_ty.push(ty);
+            Reg(reg_ty.len() as u32 - 1)
+        };
+        let out = &mut blocks[b];
+        out.pop();
+        let mut value = |a: Arm| match a {
+            Arm::R(r) => r,
+            Arm::K(v) => {
+                let dst = new_reg(RegTy::I64);
+                out.push((Inst::Const { dst, v }, loc, via));
+                dst
+            }
+        };
+        let (x, y) = (value(at), value(af));
+        let dst = new_reg(RegTy::I64);
+        out.push((Inst::Select { dst, c, a: x, b: y }, loc, via));
+        out.push((Inst::Ret { v: Some(dst) }, loc, via));
+    }
 }
 
 /// The forwarder of a function with a result table (`casetab.rs`): when the argument is a
@@ -436,7 +490,33 @@ fn tab_forwarder(prog: &crate::Program, callee: FuncId, t: &crate::CaseTab) -> O
         },
     ];
     let res;
-    if let Some(d) = t.desc {
+    // A function with `Func::ret_flat`: the data, the bounds the pool's descriptor holds.
+    let flat_desc = t
+        .desc
+        .filter(|_| prog.funcs.get(callee).is_some_and(|f| f.ret_flat));
+    if let Some(d) = flat_desc {
+        let crate::ConstData::Bytes(bytes) = prog.consts.get(d)? else {
+            return None;
+        };
+        let word = |k: usize| -> Option<i64> {
+            Some(i64::from_le_bytes(
+                bytes.get(k * 8..k * 8 + 8)?.try_into().ok()?,
+            ))
+        };
+        let (l, r, w) = (word(0)?, word(1)?, word(2)?);
+        let (lr, rr, wr) = (fresh(RegTy::I64), fresh(RegTy::I64), fresh(RegTy::I64));
+        b2.extend([
+            Inst::Const { dst: lr, v: l },
+            Inst::Const { dst: rr, v: r },
+            Inst::Const { dst: wr, v: w },
+            Inst::RetBounds {
+                left: lr,
+                right: rr,
+                dir: wr,
+            },
+        ]);
+        res = tp;
+    } else if let Some(d) = t.desc {
         let (dd, c16, pr, c8, q) = (
             fresh(RegTy::Ptr),
             fresh(RegTy::I64),
@@ -659,9 +739,15 @@ fn allowed(prog: &crate::Program, i: &Inst) -> bool {
         | Inst::Pos { .. }
         | Inst::SlicePos { .. }
         | Inst::DopeLen { .. }
+        | Inst::BoundsLen { .. }
+        | Inst::BoundsPos { .. }
+        | Inst::BoundsSlice { .. }
+        | Inst::RetBounds { .. }
+        | Inst::TakeBounds { .. }
         | Inst::Deref { .. }
         | Inst::LGet { .. }
         | Inst::LEq { .. }
+        | Inst::LKey { .. }
         | Inst::MemEq { .. }
         | Inst::SubtypeCheck { .. }
         | Inst::FBin { .. }
@@ -813,6 +899,7 @@ pub(super) fn tab_calls(
     }
     f.via.clear();
     f.via_nodes.clear();
+    super::dopes::fold_takes(&mut f);
     Some(f)
 }
 
@@ -946,7 +1033,8 @@ impl<'a> Expand<'a> {
         match &mut inst {
             Inst::Call { args, .. }
             | Inst::CallProt { args, .. }
-            | Inst::CallNative { args, .. } => {
+            | Inst::CallNative { args, .. }
+            | Inst::BoundsSlice { regs: args, .. } => {
                 let start = operands.len() as u32;
                 let from = args.start as usize..(args.start + args.len) as usize;
                 operands.extend(self.site.fw.operands[from].iter().map(|&r| self.map(r)));

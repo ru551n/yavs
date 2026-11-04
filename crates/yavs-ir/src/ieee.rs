@@ -181,6 +181,8 @@ pub enum Op {
 
 /// Reduced key to operation. Every operation listed here is implemented by `yavs-interp`.
 pub fn parse(key: &str) -> Option<Op> {
+    // (A native symbol may carry `@n` after the key.)
+    let key = key.split_once('@').map_or(key, |k| k.0);
     let (pkg, rest) = key.split_once('.')?;
     let open = rest.find('(')?;
     let close = rest.rfind(')')?;

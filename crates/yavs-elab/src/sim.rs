@@ -93,6 +93,29 @@ struct Rest {
     var_slots: Vec<yavs_lower::VarSlot>,
     resolvers: Vec<(yavs_sem::DeclId, yavs_ir::FuncId)>,
     res_types: Vec<(yavs_sem::DeclId, (yavs_ir::TyId, yavs_ir::TyId))>,
+    /// The signals the lowered code may ask more than the value of; `None`: one has no name.
+    history: Option<Vec<yavs_sem::DeclId>>,
+}
+
+/// The declarations of the signals `Func::sig_history_uses` finds in the lowered code; `None` when
+/// an index names no signal. A function lowered for an architecture indexes its signals, the
+/// others (packages, whatever the elaborator calls) the package signals only.
+fn history_of(
+    lowered: &yavs_lower::Lowered,
+    of_arch: &[(std::ops::Range<usize>, usize)],
+    pkg_sigs: &[yavs_lower::SignalIr],
+) -> Option<Vec<yavs_sem::DeclId>> {
+    let mut decls = Vec::new();
+    for (id, f) in lowered.program.funcs.iter() {
+        let arch = of_arch.iter().find(|(r, _)| r.contains(&(id.0 as usize)));
+        let table = arch.map_or(pkg_sigs, |&(_, u)| &lowered.units[u].signals);
+        for n in f.sig_history_uses() {
+            decls.push(table.get(n as usize)?.decl);
+        }
+    }
+    decls.sort_unstable_by_key(|d| yavs_sem::Id::index(*d));
+    decls.dedup();
+    Some(decls)
 }
 
 /// A lowered design as stored in the stage cache (#479): the program, the rest and the optimised
@@ -448,7 +471,12 @@ impl Elaborated {
             var_slots,
             resolvers,
             res_types,
+            history,
         } = rest;
+        self.bare = crate::lean::bare(db, &self.nets, &self.sigs, history.as_deref());
+        for (l, b) in self.lean.iter_mut().zip(&self.bare) {
+            *l |= b;
+        }
         let res_index: HashMap<_, _> = res_types
             .iter()
             .filter_map(|&(d, _)| {
@@ -647,8 +675,13 @@ impl Elaborated {
             l.forget_free_objects();
         }
         let mut idx = Vec::new();
+        // The functions lowered for each architecture: their `SigVal`s index its signals.
+        let mut of_arch = Vec::new();
         for &a in archs {
-            idx.push(l.architecture(a)?);
+            let first = l.funcs();
+            let u = l.architecture(a)?;
+            idx.push(u);
+            of_arch.push((first..l.funcs(), u));
         }
         let var_slots = l.var_slots()?;
         let mut resolvers = Vec::new();
@@ -667,7 +700,9 @@ impl Elaborated {
                 res_types.push((d, (l.ty(db.base(p.subtype))?, l.ty(db.base(r))?)));
             }
         }
+        let pkg_sigs = l.package_signals().to_vec();
         let lowered = l.finish()?;
+        let history = history_of(&lowered, &of_arch, &pkg_sigs);
         let rest = Rest {
             units: idx.iter().map(|&i| lowered.units[i].clone()).collect(),
             packages: lowered.packages,
@@ -677,6 +712,7 @@ impl Elaborated {
             var_slots,
             resolvers,
             res_types,
+            history,
         };
         Ok((lowered.program, rest, lib))
     }

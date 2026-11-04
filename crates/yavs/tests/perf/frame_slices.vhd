@@ -1,0 +1,85 @@
+-- Thirty-two slices between variables of a process (#1059): every statement folds as the first.
+library ieee;
+use ieee.std_logic_1164.all;
+entity frame_slices is end;
+architecture t of frame_slices is
+  signal clk : std_ulogic := '0';
+begin
+  clk <= not clk after 5 ns when now < 2 us;
+  process (clk)
+    variable x0 : std_ulogic_vector(15 downto 0) := x"0000";
+    variable x1 : std_ulogic_vector(15 downto 0) := x"0001";
+    variable x2 : std_ulogic_vector(15 downto 0) := x"0002";
+    variable x3 : std_ulogic_vector(15 downto 0) := x"0003";
+    variable x4 : std_ulogic_vector(15 downto 0) := x"0004";
+    variable x5 : std_ulogic_vector(15 downto 0) := x"0005";
+    variable x6 : std_ulogic_vector(15 downto 0) := x"0006";
+    variable x7 : std_ulogic_vector(15 downto 0) := x"0007";
+    variable x8 : std_ulogic_vector(15 downto 0) := x"0008";
+    variable x9 : std_ulogic_vector(15 downto 0) := x"0009";
+    variable x10 : std_ulogic_vector(15 downto 0) := x"000a";
+    variable x11 : std_ulogic_vector(15 downto 0) := x"000b";
+    variable x12 : std_ulogic_vector(15 downto 0) := x"000c";
+    variable x13 : std_ulogic_vector(15 downto 0) := x"000d";
+    variable x14 : std_ulogic_vector(15 downto 0) := x"000e";
+    variable x15 : std_ulogic_vector(15 downto 0) := x"000f";
+    variable x16 : std_ulogic_vector(15 downto 0) := x"0010";
+    variable x17 : std_ulogic_vector(15 downto 0) := x"0011";
+    variable x18 : std_ulogic_vector(15 downto 0) := x"0012";
+    variable x19 : std_ulogic_vector(15 downto 0) := x"0013";
+    variable x20 : std_ulogic_vector(15 downto 0) := x"0014";
+    variable x21 : std_ulogic_vector(15 downto 0) := x"0015";
+    variable x22 : std_ulogic_vector(15 downto 0) := x"0016";
+    variable x23 : std_ulogic_vector(15 downto 0) := x"0017";
+    variable x24 : std_ulogic_vector(15 downto 0) := x"0018";
+    variable x25 : std_ulogic_vector(15 downto 0) := x"0019";
+    variable x26 : std_ulogic_vector(15 downto 0) := x"001a";
+    variable x27 : std_ulogic_vector(15 downto 0) := x"001b";
+    variable x28 : std_ulogic_vector(15 downto 0) := x"001c";
+    variable x29 : std_ulogic_vector(15 downto 0) := x"001d";
+    variable x30 : std_ulogic_vector(15 downto 0) := x"001e";
+    variable x31 : std_ulogic_vector(15 downto 0) := x"001f";
+    variable x32 : std_ulogic_vector(15 downto 0) := x"0020";
+    variable n : natural := 0;
+  begin
+    if rising_edge(clk) then
+      x1(7 downto 0) := x0(11 downto 4);
+      x2(7 downto 0) := x1(11 downto 4);
+      x3(7 downto 0) := x2(11 downto 4);
+      x4(7 downto 0) := x3(11 downto 4);
+      x5(7 downto 0) := x4(11 downto 4);
+      x6(7 downto 0) := x5(11 downto 4);
+      x7(7 downto 0) := x6(11 downto 4);
+      x8(7 downto 0) := x7(11 downto 4);
+      x9(7 downto 0) := x8(11 downto 4);
+      x10(7 downto 0) := x9(11 downto 4);
+      x11(7 downto 0) := x10(11 downto 4);
+      x12(7 downto 0) := x11(11 downto 4);
+      x13(7 downto 0) := x12(11 downto 4);
+      x14(7 downto 0) := x13(11 downto 4);
+      x15(7 downto 0) := x14(11 downto 4);
+      x16(7 downto 0) := x15(11 downto 4);
+      x17(7 downto 0) := x16(11 downto 4);
+      x18(7 downto 0) := x17(11 downto 4);
+      x19(7 downto 0) := x18(11 downto 4);
+      x20(7 downto 0) := x19(11 downto 4);
+      x21(7 downto 0) := x20(11 downto 4);
+      x22(7 downto 0) := x21(11 downto 4);
+      x23(7 downto 0) := x22(11 downto 4);
+      x24(7 downto 0) := x23(11 downto 4);
+      x25(7 downto 0) := x24(11 downto 4);
+      x26(7 downto 0) := x25(11 downto 4);
+      x27(7 downto 0) := x26(11 downto 4);
+      x28(7 downto 0) := x27(11 downto 4);
+      x29(7 downto 0) := x28(11 downto 4);
+      x30(7 downto 0) := x29(11 downto 4);
+      x31(7 downto 0) := x30(11 downto 4);
+      x32(7 downto 0) := x31(11 downto 4);
+      x0(3 downto 0) := x32(3 downto 0);
+      n := n + 1;
+      if n = 200 then
+        report "x=" & to_hstring(x32);
+      end if;
+    end if;
+  end process;
+end;

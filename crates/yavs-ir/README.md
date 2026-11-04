@@ -18,8 +18,12 @@ textual dump.
   dir]` i64 per dimension), bit-plane logic arrays, `ConstData` compact constants.
 - Calling convention: arguments are register cells stored into the callee's parameter slots
   (a signal parameter is two cells; one with records in its type is one such parameter per
-  leaf, see yavs-lower DESIGN.md); composites are passed by address; a function result is
-  one cell, a string/unconstrained array result is the address of a fat pair `[data, dope]`.
+  leaf, see yavs-lower DESIGN.md); composites are passed by address: an array of one dimension
+  with nothing below it needing a descriptor (`Ty::flat_array`) as four cells `data, left, right,
+  dir` (`Param::flat`: the slots after the data cell are the descriptor), any other as two cells
+  `data, dope`; a function result is one cell, an array result the address of a fat pair
+  `[data, dope]`, except with `Func::ret_flat`, the data address with the bounds through
+  `RetBounds` and `TakeBounds`.
 - Native argument convention (ir.md 9): `in` scalars by value; `out`/`inout` scalars and
   access variables (`line`) by the address of the cell; an unconstrained array (`string`,
   `bit_vector`) as the address of a fat pair `[data, dope]` (the natives of `ieee`, `yavs.ieee.*`, take
@@ -42,6 +46,7 @@ textual dump.
 
 ## Changes
 
+- `CheckKind::IndexDown` (made only by the optimiser, `Opt::pos_to_check`): `Index` of a descending range, the error names the bounds `hi downto lo`.
 - Result tables for pure functions of one small discrete argument (#722, `src/casetab.rs`): `Program::tabs` (function id to `CaseTab`), made by `FuncBuilder::finish`, read by the inliner; producers do nothing (a stored program carries the field).
 - `Inst::Zero { addr, bytes }` (#668): zero `bytes` bytes (a multiple of 8) at `addr`, the zeroing
   of an `Alloc` for memory that is not allocated there. Made only by the optimiser (`opt/slots.rs`:
@@ -53,6 +58,7 @@ textual dump.
   `/=` of one-dimensional arrays of integer or enumeration elements (not logic arrays) after the
   length test, instead of an element loop. The LLVM tier leaves it to the interpreter.
 - Optimiser (#444): interval analysis, branch threading and dead-definition removal (`opt/range.rs`, `opt/live.rs`); unreachable blocks now end in a jump to the next block, which the predecoder of yavs-interp runs as no operation. No instruction changes.
+- `Func::moved`, `Local`s of no name and no type (#1048, `opt/proc_objects.rs`): composite variables of a process in its frame. Consumers that list locals skip them with `is_frame_object`; a debugger never sees one (the pass is off).
 - `Inst::NewFrame` (#444): made only by the optimiser. An object `[descriptor][value]` (the
   operands of `NewFill`) in the frame's temporary memory, whose address is the result; the
   frame's temporary base moves over it, so its `Stmt` markers keep it and the caller's next

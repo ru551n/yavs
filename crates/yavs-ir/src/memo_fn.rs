@@ -33,6 +33,9 @@ pub enum MemoArg {
     /// An array of plain scalars: the data address and the descriptor address (two cells for a
     /// parameter, a fat pair `[data, dope]` for a result).
     Array(MemoArr),
+    /// A parameter of such an array whose descriptor's words are cells: four cells. A result:
+    /// the data address, the words through `RetBounds`.
+    Flat(MemoArr),
 }
 
 /// The shape of an array of plain scalars: what the bytes of a value are.
@@ -147,6 +150,7 @@ fn inst_ok(prog: &Program, i: &Inst, calls: &mut Vec<FuncId>) -> bool {
         | Inst::LogicOp { .. }
         | Inst::LNum { .. }
         | Inst::LEq { .. }
+        | Inst::LKey { .. }
         | Inst::MemEq { .. }
         | Inst::LGet { .. }
         | Inst::LSet { .. }
@@ -158,6 +162,11 @@ fn inst_ok(prog: &Program, i: &Inst, calls: &mut Vec<FuncId>) -> bool {
         | Inst::BinRange { .. }
         | Inst::MakeDope { .. }
         | Inst::DopeLen { .. }
+        | Inst::BoundsLen { .. }
+        | Inst::BoundsPos { .. }
+        | Inst::BoundsSlice { .. }
+        | Inst::RetBounds { .. }
+        | Inst::TakeBounds { .. }
         | Inst::LayoutOf { .. }
         | Inst::SubtypeCheck { .. }
         | Inst::Br { .. }
@@ -247,6 +256,7 @@ impl Program {
         }
         let ret = match f.ret_ty? {
             t if plain_scalar(self, t) => MemoArg::Scalar,
+            t if f.ret_flat => MemoArg::Flat(plain_array(self, t)?),
             t => MemoArg::Array(plain_array(self, t)?),
         };
         let mut args = Vec::new();
@@ -256,7 +266,17 @@ impl Program {
             if p.mode != Mode::In || p.width != Width::B8 {
                 return None;
             }
-            if let Some(t) = p.arr {
+            if let Some(t) = p.arr.filter(|_| p.flat) {
+                // The three words of the descriptor follow the data cell.
+                for k in 1..=3 {
+                    let d = ps.next()?;
+                    if d.slot != p.slot + 8 * k || d.mode != Mode::In || d.width != Width::B8 {
+                        return None;
+                    }
+                }
+                args.push(MemoArg::Flat(plain_array(self, t)?));
+                cells += 4;
+            } else if let Some(t) = p.arr {
                 // The descriptor cell follows the data cell.
                 let d = ps.next()?;
                 if d.slot != p.slot + 8 || d.mode != Mode::In || d.width != Width::B8 {

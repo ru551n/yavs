@@ -1,0 +1,38 @@
+exit	0
+diag	note	0	0	:array_result_cells:main	elab 40708 9 512
+diag	note	0	0	:array_result_cells:main	signal 1 3
+diag	note	0	0	:array_result_cells:main	make 60309 30608
+diag	note	0	0	:array_result_cells:main	null 30601 60300
+diag	note	0	0	:array_result_cells:main	cut 110000 100101
+diag	note	0	0	:array_result_cells:main	cut of cut 011100 010111
+diag	note	0	0	:array_result_cells:main	result slice 1111
+diag	note	0	0	:array_result_cells:main	result elem '0'
+diag	note	0	0	:array_result_cells:main	concat 00111010
+diag	note	0	0	:array_result_cells:main	in if true
+diag	note	0	0	:array_result_cells:main	assign 0011
+diag	note	0	0	:array_result_cells:main	two 151517
+diag	note	0	0	:array_result_cells:main	xxxxxx20yyy
+diag	note	0	0	:array_result_cells:main	xxxxxxx20yyy
+diag	note	0	0	:array_result_cells:main	xxxxxxxx20yyy
+diag	note	0	0	:array_result_cells:main	xxxxxxxxx20yyy
+diag	note	0	0	:array_result_cells:main	rev 11000011 70017
+diag	note	0	0	:array_result_cells:main	rev2 40011
+diag	note	0	0	:array_result_cells:main	nested 010010 20712
+diag	note	0	0	:array_result_cells:main	method 0000111111111010 1532 1110
+diag	note	0	0	:array_result_cells:main	memo 44385200 LL11
+diag	note	0	0	:array_result_cells:main	red 001 30506
+diag	note	0	0	:array_result_cells:main	green 010 30506
+diag	note	0	0	:array_result_cells:main	blue 011 30506
+diag	note	0	0	:array_result_cells:main	cyan 100 30506
+diag	note	0	0	:array_result_cells:main	pink 101 30506
+diag	note	0	0	:array_result_cells:main	gold 110 30506
+diag	note	0	0	:array_result_cells:main	gray 111 30506
+diag	note	0	0	:array_result_cells:main	teal 000 30506
+diag	note	0	0	:array_result_cells:main	numeric 10 00F 512
+diag	note	0	0	:array_result_cells:main	metavalue XXX
+diag	note	0	0	:array_result_cells:main	logic 1010
+diag	note	0	0	:array_result_cells:main	shift 3C 1E
+diag	note	0	0	:array_result_cells:main	rec 3ab
+diag	note	0	0	:array_result_cells:main	bytes C3 2
+diag	note	0	0	:array_result_cells:main	ints -2 -2
+diag	note	0	0	:array_result_cells:main	ints null 0

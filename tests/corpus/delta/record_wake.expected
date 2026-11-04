@@ -1,0 +1,14 @@
+exit	0
+diag	note	0	0	:record_wake:whole	whole '0' 0000 '0' 0 ev=falsefalsefalsefalse
+diag	note	1000000	1	:record_wake:whole	whole '1' 0000 '0' 0 ev=truefalsefalsefalse
+diag	note	2000000	1	:record_wake:whole	whole '1' 1010 '0' 0 ev=falsetruefalsefalse
+diag	note	2000000	1	:record_wake:pair	pair '1' 1010 '0' 0 ev=falsetruefalsefalse
+diag	note	3000000	1	:record_wake:whole	whole '1' 1010 '1' 5 ev=falsefalsetruetrue
+diag	note	3000000	1	:record_wake:pair	pair '1' 1010 '1' 5 ev=falsefalsetruetrue
+diag	note	3000000	1	:record_wake:one	one n=5
+diag	note	4000000	1	:record_wake:whole	whole '0' 0101 '0' 6 ev=truetruetruetrue
+diag	note	4000000	1	:record_wake:pair	pair '0' 0101 '0' 6 ev=truetruetruetrue
+diag	note	4000000	1	:record_wake:one	one n=6
+diag	note	5000000	1	:record_wake:whole	whole '0' 0100 '0' 6 ev=falsetruefalsefalse
+diag	note	5000000	1	:record_wake:pair	pair '0' 0100 '0' 6 ev=falsetruefalsefalse
+diag	note	19000000	0	:record_wake:stim	q 6 6 4 6

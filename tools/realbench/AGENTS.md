@@ -217,6 +217,8 @@ With no variant it builds this checkout. A checkout's build stays in `~/.cache/y
 
 Total for two variants plus sim1, all nine tests, one round: **541 s** (setup 14 s, next to another timed job on CCD1, 2026-11-01). GRLIB and Microwatt are most of it (193 and 225 s); the other seven take 108 s. Each yavs variant runs two warm-ups to T1, then T1 and T0.
 
+**Whole-run guard, not a window:** `uvvm_axistream_vvc` (2.5 s, 27 G instructions) is the test that stopped compiling `Kind::Frame` subprograms (#1046: a Frame callee sends every calling process through the interpreter's loop for compiled code, +4 to 5 percent instructions and cycles). It has no window and is not in `WINDOWS` (that would make the `perfguard.py` reference stale and needs the validation below); every change to what `auto` compiles is checked on it with `--tests uvvm_axistream_vvc --full --inherit --rounds 9` (warm; its cold cell is `run.py --compare A B --tiers auto-cold`). Bar of #1046 steps: instructions within 0.5 percent and cycles inside their band. Its compile outcome varies from run to run (#673), so read rounds, not one run.
+
 ### Validation, 2026-11-01, e8289fd1, Cranelift cells only
 
 Tolerances fixed before looking: instructions 3 percent, cycles 5, misses per 1000 instructions 25. Each cell: window, then whole run of the same binary. Baseline is `--tier=auto` of a95d9ad1 (whole-run instructions to sim1 within 5.4 percent of it on all nine; L1i per 1000 up to 45 percent off it on the small tests, where it moves between runs, GRLIB and Microwatt within 3). Whole-run L1i, iTLB and branch columns are auto.

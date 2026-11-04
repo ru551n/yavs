@@ -175,6 +175,15 @@ macro_rules! case {
     };
 }
 
+// The record variable is in the frame: the count is what its statements do without an object lookup.
+case!(frame_vars, "n=200", &[], [("ops", Max(11200))]);
+// Slices between variables in the frame, one block: more facts than the optimiser's table keeps
+// (#1059), so a table that stopped learning shows here as ops per statement.
+case!(frame_slices, "x=", &[], [("ops", Max(11400))]);
+// A function of 120 vectors with run-time bounds: the pass that reads descriptors in registers
+// looks at each instruction a few times, not once per vector (a scan per vector made the
+// optimiser cost grow with the square of the function).
+case!(dopes_scan, "t=", &[], [("dopes_scans", Max(19000))]);
 case!(
     pkg_table,
     "sum=212",
@@ -281,6 +290,13 @@ case!(
         ("ops", Max(3588)),
     ]
 );
+// A wide bus with no history attribute: compared and copied whole (`bare_signals`, a floor).
+case!(
+    bare_bus,
+    "parts=",
+    &[],
+    [("bare_signals", Min(2)), ("lean_signals", Min(2))]
+);
 case!(
     lean_events,
     "events=",
@@ -354,6 +370,41 @@ case!(
         ("events", Max(1141)),
         ("update_general", Max(0)),
         ("ops", Max(870)),
+    ]
+);
+// A whole record drive against the record's image: what holds its value makes no kernel call.
+case!(
+    rec_cmp,
+    "n=44 i=7",
+    &[],
+    [
+        ("scatter_spared", Min(6900)),
+        ("image_writes", Max(305)),
+        ("images", Min(1)),
+    ]
+);
+// A record that changes in every leaf gives its image up at the first review.
+case!(
+    rec_cmp_drop,
+    "i=1400 n=120",
+    &[],
+    [
+        ("scatter_spared", Max(0)),
+        ("image_writes", Max(5280)),
+        ("images", Max(0)),
+    ]
+);
+// The fields of a record sensitivity are one waiter, woken where the update finishes (#1069):
+// 202 waiter-list scans before.
+case!(
+    rec_wake,
+    "n=200 b=D001 d=7CD778B1",
+    &[],
+    [
+        ("cycles", Max(1236)),
+        ("wakes", Max(824)),
+        ("events", Max(6481)),
+        ("wake_scans", Max(4)),
     ]
 );
 case!(
@@ -446,17 +497,17 @@ case!(
     reduce_idiom,
     "n1=",
     &[],
-    [("process_runs", Max(2)), ("ops", Max(1481)),]
+    [("process_runs", Max(2)), ("ops", Max(1374)),]
 );
 case!(ieee_operands, "acc=", &[], [("ops", Max(2716))]);
 case!(ieee_share, "n=", &[], [("ops", Max(3626))]);
 case!(elem_loops, "acc=", &[], [("ops", Max(27715))]);
-case!(wide_vec, "wide=0", &[], [("ops", Max(2143000))]);
+case!(wide_vec, "wide=0", &[], [("ops", Max(1997254))]);
 case!(
     licm_loop,
     "acc=",
     &[],
-    [("process_runs", Max(2)), ("ops", Max(19800)),]
+    [("process_runs", Max(2)), ("ops", Max(18376)),]
 );
 case!(
     slice_memo,
@@ -492,7 +543,7 @@ case!(
     [
         ("pmemo_hits", Max(0)),
         ("pmemo_runs", Max(0)),
-        ("ops", Max(11920))
+        ("ops", Max(10324))
     ]
 );
 // Two processes whose calls of a pure function never repeat: both give its memo up, which turns it
@@ -512,10 +563,10 @@ case!(
 case!(hread_loop, "sum=", &[], [("ops", Max(4233))]);
 // The same loop with an argument of an integer type, whose table read tests the range and a mask
 // of valid digits (#769): the pair of the array result is not made on the table path.
-case!(tab_tail, "sum=", &[], [("ops", Max(14590))]);
+case!(tab_tail, "sum=", &[], [("ops", Max(13549))]);
 // Rows of bit vectors behind access values filled in nested loops by a procedure of the process
 // (#768): the loads, the dereference and the descriptors leave the inner loop, which runs as one op.
-case!(row_fill, "ones=", &[], [("ops", Max(5290))]);
+case!(row_fill, "ones=", &[], [("ops", Max(4860))]);
 case!(
     edge_forms,
     "edges=",
@@ -527,6 +578,9 @@ case!(
         ("ops", Max(19143)),
     ]
 );
+
+// A `case` of 16 choices on a logic vector: one key and one dispatch, no compare per choice (#1051).
+case!(case_vector, "n=8468", &[], [("ops", Max(37800))]);
 
 // The forms of `edge_forms` through object aliases (#1001): the edge trigger of the signal itself,
 // so each process runs on its edge only (2532 runs without it).
@@ -702,7 +756,7 @@ case!(
         ("cycles", Max(242)),
         ("cycles", Min(242)),
         ("direct_planes", Max(140)),
-        ("ops", Max(19173)),
+        ("ops", Max(18317)),
     ]
 );
 // Bits and slices of one register assigned in turn in one activation (the fields of a record) stay
@@ -750,7 +804,7 @@ case!(
     [
         ("cycles", Max(418)),
         ("process_runs", Max(525)),
-        ("ops", Max(26932)),
+        ("ops", Max(25669)),
         // The records `r` and `rin` are packs of leaves (#686), not one signal per leaf.
         ("signals", Max(20)),
     ]
@@ -937,6 +991,31 @@ fn spec_nested() {
     );
 }
 
+/// A memory-model process: a nested procedure indexes an array variable of the process and writes
+/// a variable the body drives a signal from. Its constant-offset addresses into the frame are
+/// followed, not taken as escapes, so the copy still has the facts of its declarative part
+/// (#1063): the same report, fewer ops.
+#[test]
+fn spec_nested_mem() {
+    let d = tempdir("spec_nested_mem");
+    let src = include_str!("perf/spec_nested_mem.vhd");
+    let run = |env: &[(&str, &str)]| run_design_env(&d, "spec_nested_mem", src, "interp", &[], env);
+    let (shared, copies) = (
+        run(&[("YAVS_NO_SPEC", "1")]),
+        run(&[("YAVS_SPEC_AFTER", "2")]),
+    );
+    assert_eq!((shared.code, copies.code), (0, 0), "{}", copies.all());
+    assert!(copies.all().contains("sum="), "{}", copies.all());
+    assert_eq!(shared.stdout, copies.stdout);
+    check_bounds(
+        "spec_nested_mem",
+        &copies,
+        // Without the facts: 52 425 ops (shared code 56 077); the margin is tighter than 3 percent so
+        // that a lost fact shows.
+        &[("spec_switched", Min(2)), ("ops", Max(51_800))],
+    );
+}
+
 /// The idle skip changes nothing a run shows: the same output (values, times and deltas of the
 /// reports) with it off, on and checked (a skipped activation run and compared), and it skips.
 /// `idle_regs`: clocked processes, `idle_comb`: combinational ones, clocked concurrent
@@ -989,6 +1068,34 @@ fn idle_skip_changes_nothing() {
             "{design}"
         );
     }
+}
+
+/// A wide bus that keeps no history gives the report of one that keeps it.
+#[test]
+fn no_history_changes_nothing() {
+    let d = tempdir("bare_equal");
+    let src = include_str!("perf/bare_bus.vhd");
+    let run = |mode: &str| {
+        run_design_env(
+            &d,
+            "bare_bus",
+            src,
+            "interp",
+            &[],
+            &[("YAVS_NO_HISTORY", mode)],
+        )
+    };
+    let (off, on) = (run("off"), run("on"));
+    assert_eq!((off.code, on.code), (0, 0), "{}", on.all());
+    assert!(on.stdout.contains("parts="), "{}", on.all());
+    assert_eq!(off.stdout, on.stdout);
+    assert_eq!(off.counters["bare_signals"], 0);
+    assert_eq!(on.counters["bare_signals"], 2, "{:?}", on.counters);
+    assert_eq!(off.counters["events"], on.counters["events"]);
+    // Coverage observes the run: every signal keeps its history.
+    let cov = run_design_env(&d, "bare_bus", src, "interp", &["--cov=sbt"], &[]);
+    assert_eq!(cov.code, 0, "{}", cov.all());
+    assert_eq!(cov.counters["bare_signals"], 0);
 }
 
 /// Wide signals that keep only each block's last event give the report of the full history.
@@ -1533,6 +1640,20 @@ mod clift {
         };
     }
 
+    // A by-reference address of the enclosing frame in frame-mode code: no callback per access.
+    clift_case!(
+        nested_byref,
+        "clift_nested_byref",
+        "c=400",
+        [("cb_host", Max(20))]
+    );
+    // `uniform` is computed in place by this tier too: no native call for it.
+    clift_case!(
+        uniform,
+        "llvm_uniform",
+        "acc=",
+        [("cb_native", Max(4)), ("cb_host", Max(2))]
+    );
     clift_case!(
         clocked,
         "llvm_clocked",
@@ -1615,15 +1736,30 @@ mod clift {
         "q=",
         [("cb_drive", Max(158)), ("direct_codes", Max(107))]
     );
-    // Element loops of native frames through `yavs_rt_eloop` (#757).
+    // Element loops of native frames planned in the code (#757). The fills call out; the row
+    // copies (one plane block each side) are inline: a copy that calls out again raises it.
     clift_case!(
         eloop,
         "llvm_eloop",
         "acc=",
         [
-            ("cb_eloop", Min(175)),
+            ("cb_eloop", Min(20)),
+            ("cb_eloop", Max(20)),
             ("cb_step", Max(6)),
             ("cb_deopt", Max(0))
+        ]
+    );
+    // Whole-record reads and drives (`SigGather`, `SigScatter`) go through the signal callback,
+    // not a step (#790).
+    clift_case!(
+        record_signals,
+        "sigrec_copy",
+        "errors=0",
+        [
+            ("cb_step", Max(4)),
+            // A gather copied or a held scatter compared in compiled code needs no callback.
+            ("cb_signal", Max(245)),
+            ("cb_signal", Min(230)),
         ]
     );
     clift_case!(

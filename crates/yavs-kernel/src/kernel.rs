@@ -96,6 +96,10 @@ pub struct Config {
     /// With `threads` above 1, start the worker threads when a token first lets a batch use them
     /// (`set_tokens`), not at the start: a run that never holds a token creates none (#879).
     pub lazy_pool: bool,
+    /// `Stats::events` counts the changed runs of a bus exactly. Off, a bus nothing asks the
+    /// history of (`Builder::no_history`) is compared and copied whole and counts one event per
+    /// update; nothing else depends on it.
+    pub count_runs: bool,
 }
 
 impl Default for Config {
@@ -113,6 +117,7 @@ impl Default for Config {
             cells: true,
             pool_all: false,
             lazy_pool: false,
+            count_runs: true,
         }
     }
 }
@@ -218,6 +223,8 @@ pub struct Stats {
     /// Signals of more than 64 elements that keep only each block's last event
     /// (`Builder::lean_events`); fixed when the model is built.
     pub lean_signals: u64,
+    /// Lean signals that keep no history at all (`Builder::no_history`).
+    pub bare_signals: u64,
     /// Signals that keep no byte codes (`Builder::no_codes`); fixed when the model is built.
     pub no_code_signals: u64,
     /// Signals that allow skipping an assignment of the value they hold (`Signal::skip_ok`).
@@ -227,9 +234,22 @@ pub struct Stats {
     /// Assignments that took the general path of `Ctx::assign` (waveform lists, preemption);
     /// summed over the processes when asked.
     pub general_assigns: u64,
+    /// Whole record gathers answered by a copy of an image, and read leaf by leaf; summed over
+    /// the processes when asked (`image.rs`).
+    pub gathers_copied: u64,
+    pub gathers_read: u64,
+    /// Leaves of whole record scatters that compared equal with their image (`gather.rs`).
+    pub scatter_spared: u64,
+    /// Leaves written into record images, the images and the bytes they hold.
+    pub image_writes: u64,
+    pub images: u64,
+    pub image_bytes: u64,
     /// Runs of concurrent copies the kernel made itself (`SimControl::forward_copies`), also
     /// counted in `process_runs`.
     pub copy_forwards: u64,
+    /// Scans of a signal's waiter lists (`Waiters::take_woken`): the wake path that no short
+    /// path in `cycle` or `finish_direct` took.
+    pub wake_scans: u64,
 }
 
 /// A pending observer wake-up (`Hook::wake_at`). Ordered by time, then registration.
@@ -500,6 +520,7 @@ impl Hook<'_> {
             resolution: self.cfg.resolution,
             stop_severity: self.cfg.stop_severity,
             signals: self.signals,
+            images: None,
             drivers: self.drivers,
             names: self.names,
             live: None,
@@ -999,6 +1020,10 @@ pub struct SimControl {
     ops: Vec<SignalOp>,
     /// Signals with events in the current cycle.
     changed_sigs: Vec<u32>,
+    /// Per signal: it is on `changed_sigs`.
+    in_changed: Vec<bool>,
+    /// Images of record signals (`image.rs`).
+    images: crate::image::Images,
     ready: Vec<u32>,
     /// `ready` is ascending and holds no process whose place in the batch order is special
     /// (`order` has nothing to do for it).
@@ -1112,6 +1137,9 @@ pub struct SimControl {
     callouts: Vec<(Severity, String, String)>,
     /// A skipped unchanged assignment (`Config::skip_unchanged`) left a delta that would have
     /// been there: the next cycle runs although it has no transaction.
+    /// A force, release or deposit was applied: `cur` of a direct element need not be its driving
+    /// value any more, so every process's skip gate is shut (`ProcState::gate_shut`).
+    gates_shut: bool,
     empty_delta: bool,
     /// Last epoch given to resident waiters (`ProcMeta::perm`).
     perm_epoch: u64,
@@ -1192,6 +1220,18 @@ fn convert(
 pub(crate) struct Group {
     pub(crate) parts: Vec<(u32, Range)>,
     pub(crate) f: crate::Resolver,
+}
+
+/// Signal `$s` had an event: onto `changed_sigs` once per cycle (the flag, not a sort and dedup).
+macro_rules! mark_changed {
+    ($self:ident, $s:expr) => {{
+        let s: u32 = $s;
+        let f = &mut $self.in_changed[s as usize];
+        if !*f {
+            *f = true;
+            $self.changed_sigs.push(s);
+        }
+    }};
 }
 
 impl SimControl {
@@ -1404,7 +1444,21 @@ impl SimControl {
                 }
             }
         }
+        // What the kernel itself asks of a signal: the event and old value of an edge trigger,
+        // the events of an implicit signal's source. The lowered code cannot tell.
+        for t in procs.iter().filter_map(|m| m.trigger) {
+            signals[t.signal.0 as usize].keep_history();
+        }
+        for &(s, _) in &implicit_srcs {
+            signals[s as usize].keep_history();
+        }
         let lean_signals = signals.iter().filter(|s| s.is_lean()).count() as u64;
+        let bare_signals = signals.iter().filter(|s| s.keeps_no_history()).count() as u64;
+        if !cfg.count_runs {
+            for s in &mut signals {
+                s.finish_whole();
+            }
+        }
         let no_code_signals = signals.iter().filter(|s| s.keeps_no_codes()).count() as u64;
         let skip_signals = signals.iter().filter(|s| s.skip_ok).count() as u64;
         let nsignals = signals.len() as u64;
@@ -1455,6 +1509,8 @@ impl SimControl {
             direct_sigs: Vec::new(),
             ops: Vec::new(),
             changed_sigs: Vec::new(),
+            in_changed: vec![false; nsignals as usize],
+            images: Default::default(),
             ready: Vec::new(),
             ready_mono: true,
             ready_several: Vec::new(),
@@ -1505,6 +1561,7 @@ impl SimControl {
             interrupt: Interrupt::default(),
             stats: Stats {
                 lean_signals,
+                bare_signals,
                 no_code_signals,
                 skip_signals,
                 signals: nsignals,
@@ -1512,6 +1569,7 @@ impl SimControl {
             },
             live: false,
             callouts: Vec::new(),
+            gates_shut: false,
             empty_delta: false,
             perm_epoch: 0,
             woken_buf: Vec::new(),
@@ -1767,8 +1825,27 @@ impl SimControl {
     }
 
     pub fn stats(&self) -> Stats {
+        let tail = |f: fn((u64, u64)) -> u64| -> u64 {
+            let of = |s| f(lock(s).process.images_tail());
+            self.slots.iter().map(of).sum()
+        };
         Stats {
             general_assigns: self.slots.iter().map(|s| lock(s).st.general).sum(),
+            gathers_copied: self
+                .slots
+                .iter()
+                .map(|s| lock(s).st.gathers_copied)
+                .sum::<u64>()
+                + tail(|t| t.0),
+            gathers_read: self.slots.iter().map(|s| lock(s).st.gathers_read).sum(),
+            scatter_spared: self
+                .slots
+                .iter()
+                .map(|s| lock(s).st.scatter_spared)
+                .sum::<u64>()
+                + tail(|t| t.1),
+            images: self.images.memory().0,
+            image_bytes: self.images.memory().1,
             ..self.stats
         }
     }
@@ -1863,6 +1940,7 @@ impl SimControl {
         if self.watch_changes {
             self.signals.iter_mut().for_each(|s| {
                 s.watched = true;
+                s.image_watched = false;
                 s.fine = true;
                 s.cuts = Box::default();
             });
@@ -2212,7 +2290,7 @@ impl SimControl {
         for i in 0..pids.len() {
             let p = pids[i];
             let m = &mut self.procs[p as usize];
-            if m.idle_ok && !self.armed[p as usize] && m.idle_state != 0 && m.perm != 0 {
+            if !self.armed[p as usize] && m.idle_ok && m.idle_state != 0 && m.perm != 0 {
                 self.stats.idle_skips += 1;
                 m.idle_hits = m.idle_hits.saturating_add(1);
                 m.idle_win = m.idle_win.saturating_add(1);
@@ -2314,14 +2392,24 @@ impl SimControl {
         if !self.wakes.pending.is_empty() {
             self.fire_wakes();
         }
+        if self.images.asked() {
+            self.images.install(&mut self.signals);
+        }
         self.update().map_err(|k| self.err(k))?;
         self.commit_callouts();
+        if !self.images.list.is_empty() {
+            self.stats.image_writes += self.images.push(&self.signals, &self.changed_sigs);
+        }
         if !self.guard_procs.is_empty() {
             self.run_guards()?;
+            if !self.images.list.is_empty() {
+                self.images.push(&self.signals, &self.changed_sigs);
+            }
         }
-        if self.changed_sigs.len() > 1 {
+        // Wake order does not depend on the signal order (`order` sorts the batch), except for a
+        // shuffled run and the observers of value changes, which see the signals in id order.
+        if self.changed_sigs.len() > 1 && (self.rng.is_some() || self.watch_changes) {
             self.changed_sigs.sort_unstable();
-            self.changed_sigs.dedup();
         }
 
         // Value-change bus, then 14.7.5.3 d: resume sensitive processes.
@@ -2332,6 +2420,7 @@ impl SimControl {
         // Nothing below adds to `changed_sigs`: walked in place, cleared after.
         for i in 0..self.changed_sigs.len() {
             let s = self.changed_sigs[i];
+            self.in_changed[s as usize] = false;
             if self.idle_active {
                 self.arm_readers(s);
             }
@@ -2514,6 +2603,7 @@ impl SimControl {
                 continue;
             }
             let mut woken = std::mem::take(&mut self.woken_buf);
+            self.stats.wake_scans += 1;
             // A shuffled run takes the order the processes are woken in.
             let ordered = self.rng.is_some();
             match uniform {
@@ -2665,7 +2755,7 @@ impl SimControl {
                     }
                     self.queue.next_delta.clear();
                     if finish_signal(sig, now, cycle)? {
-                        self.changed_sigs.push(s0);
+                        mark_changed!(self, s0);
                     }
                 }
                 self.finish_direct()?;
@@ -2685,6 +2775,11 @@ impl SimControl {
         let mut work = self.work.take().unwrap_or_default();
         let UpdateWork { up, down, due, ops } = &mut *work;
         if !self.ops.is_empty() {
+            if !std::mem::replace(&mut self.gates_shut, true) {
+                for slot in &mut self.slots {
+                    slot_mut(slot).st.shut_gate();
+                }
+            }
             for op in std::mem::take(&mut self.ops) {
                 let s = op.signal.0;
                 let sig = &mut self.signals[s as usize];
@@ -2760,7 +2855,7 @@ impl SimControl {
                     }
                 }
                 if finish_signal(sig, now, cycle)? {
-                    self.changed_sigs.push(s0);
+                    mark_changed!(self, s0);
                 }
                 entries.clear();
             }
@@ -2872,7 +2967,7 @@ impl SimControl {
             }
             sig.eff_dirty = eff;
             if changed {
-                self.changed_sigs.push(s);
+                mark_changed!(self, s);
             }
             for f in self.push_down(s, true)? {
                 let sig = &mut self.signals[f as usize];
@@ -2958,7 +3053,7 @@ impl SimControl {
             fused
         };
         if changed {
-            self.changed_sigs.push(s0);
+            mark_changed!(self, s0);
         }
         if fused
             && let Some(q) = quick
@@ -3056,9 +3151,9 @@ impl SimControl {
             return;
         }
         let info = &self.drivers[d as usize];
-        let w = &mut slot_mut(&mut self.slots[info.owner.0 as usize])
-            .st
-            .waveforms[info.local as usize];
+        let st = &mut slot_mut(&mut self.slots[info.owner.0 as usize]).st;
+        st.waved = true;
+        let w = &mut st.waveforms[info.local as usize];
         if !w.idle() || !w.phantom.is_empty() {
             return;
         }
@@ -3124,7 +3219,7 @@ impl SimControl {
         {
             self.direct_sigs.clear();
             if changed && !(!self.watch_changes && self.wake_sole(s)) {
-                self.changed_sigs.push(s);
+                mark_changed!(self, s);
             }
             return Ok(());
         }
@@ -3144,7 +3239,7 @@ impl SimControl {
                 if !self.watch_changes && self.wake_sole(s) {
                     continue;
                 }
-                self.changed_sigs.push(s);
+                mark_changed!(self, s);
             }
         }
         self.direct_sigs.clear();
@@ -3166,13 +3261,16 @@ impl SimControl {
             self.arm_readers(s);
         }
         let sig = &self.signals[s as usize];
-        let [r] = sig.changed[..] else {
-            return false;
+        let waiters = &self.waiters[s as usize];
+        let one = match sig.changed[..] {
+            [r] if r.len == 1 => waiters.sole_resident(r.offset),
+            [] => return false,
+            _ => None,
         };
-        let Some(w) = (r.len == 1)
-            .then(|| self.waiters[s as usize].sole_resident(r.offset))
-            .flatten()
-        else {
+        let Some(w) = (match one {
+            Some(w) => Some(w),
+            None => waiters.sole_whole(),
+        }) else {
             return false;
         };
         // An edge trigger reads signals this update may not have finished yet.
@@ -3180,8 +3278,12 @@ impl SimControl {
             return false;
         }
         let p = w.proc;
+        // The signal leaves `changed_sigs`: its images are written here.
+        if !self.signals[s as usize].images.is_empty() {
+            self.stats.image_writes += self.images.push_sig(&self.signals[s as usize]);
+        }
         let sig = &mut self.signals[s as usize];
-        self.stats.events += 1 + std::mem::take(&mut sig.nruns);
+        self.stats.events += sig.changed.len() as u64 + std::mem::take(&mut sig.nruns);
         sig.changed.clear();
         self.wake(p, false);
         true
@@ -3217,7 +3319,7 @@ impl SimControl {
                 );
             }
             if finish_signal(sig, now, cycle)? {
-                self.changed_sigs.push(s as u32);
+                mark_changed!(self, s as u32);
             }
             return Ok(());
         }
@@ -3249,7 +3351,7 @@ impl SimControl {
                     );
                 }
                 match finish_signal(sig, now, cycle) {
-                    Ok(true) => self.changed_sigs.push(s as u32),
+                    Ok(true) => mark_changed!(self, s as u32),
                     Ok(false) => {}
                     Err(e) => _ = failed.get_or_insert(e),
                 }
@@ -3314,7 +3416,7 @@ impl SimControl {
         };
         for (run, changed) in due.chunk_by(|a, b| a.0 == b.0).zip(results) {
             if changed? {
-                self.changed_sigs.push(run[0].0);
+                mark_changed!(self, run[0].0);
             }
         }
         Ok(())
@@ -3530,7 +3632,7 @@ impl SimControl {
                 sig.driving.copy(0, &v, 0, full.len as usize);
                 sig.mark_active(full, now, cycle);
                 if sig.update_effective(full, now, cycle) {
-                    self.changed_sigs.push(self.implicits[i].sig.0);
+                    mark_changed!(self, self.implicits[i].sig.0);
                 }
             }
         }
@@ -3700,8 +3802,21 @@ impl SimControl {
                 let first = if f.len <= 64 {
                     let o = block(0);
                     self.signals[f.dst as usize].commit_planes(o.slot, o.elem, o.len, o.planes)
+                } else if f.src != f.dst && !self.signals[f.dst as usize].exact {
+                    // A bus from another signal: straight from its words.
+                    let Ok([src, dst]) = self
+                        .signals
+                        .get_disjoint_mut([f.src as usize, f.dst as usize])
+                    else {
+                        unreachable!("copy part checked at build: two signals");
+                    };
+                    let Buf::Planes { b, .. } = &src.cur else {
+                        unreachable!("copy part checked at build: logic source");
+                    };
+                    dst.commit_copy(b, f.src_off, f.dst_off, f.len)
                 } else {
-                    // A bus: its blocks as one run, the signal's storage looked up once.
+                    // A bus onto itself, or with a driver value of its own: its blocks as one run,
+                    // the signal's storage looked up once.
                     let mut run = std::mem::take(&mut self.fwd_run);
                     run.clear();
                     run.extend((0..f.len).step_by(64).map(block));
@@ -3788,6 +3903,7 @@ impl SimControl {
                 resolution: self.cfg.resolution,
                 stop_severity: self.cfg.stop_severity,
                 signals: &self.signals,
+                images: Some(&self.images),
                 drivers: &self.drivers,
                 names: &self.names,
                 live: self.live_sink.as_deref(),
@@ -3998,11 +4114,7 @@ impl SimControl {
                     let (mut i, mut at) = (0, 0);
                     // A big batch misses the cache on every process: ask for the hot lines of
                     // a process a few steps ahead (#766).
-                    let ahead = if pids.len() >= PREFETCH_BATCH {
-                        PREFETCH_AHEAD
-                    } else {
-                        usize::MAX
-                    };
+                    let prefetch = pids.len() >= PREFETCH_BATCH;
                     // With a pool: one activation in `COST_EVERY` of each process is timed for
                     // `pool_batch`, at a position that moves from batch to batch.
                     // The offset is scrambled so batches that come every 2^k batches still see
@@ -4019,7 +4131,7 @@ impl SimControl {
                             catch_unwind(AssertUnwindSafe(|| {
                                 while let Some(&p) = pids.get(i) {
                                     at = i;
-                                    if let Some(&n) = pids.get(i.saturating_add(ahead)) {
+                                    if prefetch && let Some(&n) = pids.get(i + PREFETCH_AHEAD) {
                                         let next = &mut self.slots[n as usize];
                                         // The slot (the process's kernel state), then the process.
                                         yavs_prefetch::lines(&*next, SLOT_LINES);
@@ -4218,6 +4330,7 @@ impl SimControl {
             resolution: self.cfg.resolution,
             stop_severity: self.cfg.stop_severity,
             signals: &self.signals,
+            images: Some(&self.images),
             drivers: &self.drivers,
             names: &self.names,
             live: self.live_sink.as_deref(),
@@ -4502,9 +4615,21 @@ impl SimControl {
                 from_prev = true;
             }
             let list = if from_prev { &st.sens_prev } else { &st.sens };
-            for &(s, range) in list {
+            let mut i = 0;
+            while let Some(&(s, mut range)) = list.get(i) {
+                i += 1;
+                // Abutting ranges of one signal (the fields of a record pack in a sensitivity
+                // list) are one waiter: the same elements, one list entry instead of one per field.
+                while let Some(&(t, r)) = list.get(i)
+                    && t == s
+                    && r.offset == range.end()
+                {
+                    range.len += r.len;
+                    i += 1;
+                }
                 let sig = &mut self.signals[s.0 as usize];
                 sig.watched = true;
+                sig.image_watched = false;
                 if range != Range::new(0, sig.ty.len) {
                     sig.watch_part(range, self.cfg.cells && !self.watch_changes);
                 }
@@ -4966,11 +5091,13 @@ fn note_idle(
             }
         }
     }
-    let assigned = !(st.out.is_empty()
-        && st.outv.is_empty()
-        && st.outb.is_empty()
-        && st.scheduled.is_empty()
-        && st.phantoms.is_empty());
+    // The flag is set whenever a list is not empty: a quiet activation skips the five loads.
+    let assigned = st.act & ACT_ASSIGNED != 0
+        && !(st.out.is_empty()
+            && st.outv.is_empty()
+            && st.outb.is_empty()
+            && st.scheduled.is_empty()
+            && st.phantoms.is_empty());
     if std::mem::take(&mut meta.shadow) {
         let forced = |s: u32| {
             let s = &signals[s as usize];
@@ -5113,6 +5240,8 @@ fn process_panic(sh: &Shared, p: u32, panic: &(dyn std::any::Any + Send)) -> Sim
 /// process with an edge trigger, the edge that holds (`Ctx::edge`). Not for the first run.
 #[inline(always)]
 fn resumption(procs: &[ProcMeta], p: u32, st: &mut ProcState) {
+    *st.gate[0].get_mut() = st.gate_base[0];
+    *st.gate[1].get_mut() = st.gate_base[1];
     if let Some(m) = &mut st.marks {
         m.epoch += 1;
     }

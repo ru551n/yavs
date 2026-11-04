@@ -143,9 +143,15 @@ impl Pre {
                     let off = u64::from(off);
                     let a = match space {
                         AddrSpace::Frame => {
-                            frame.push((dst.0, off));
                             known[dst.0 as usize] = Known::Frame(off as u32);
-                            Some(0)
+                            // (A variable in the frame is at the same address in any activation.)
+                            match yavs_ir::frame_object_addr(f, off as u32) {
+                                Some((i, o)) => mk_addr(FRAME, i, o.into()).ok(),
+                                None => {
+                                    frame.push((dst.0, off));
+                                    Some(0)
+                                }
+                            }
                         }
                         AddrSpace::Up(_) => None,
                         AddrSpace::Inst => {
@@ -486,6 +492,20 @@ pub(crate) enum Op {
     },
     /// `Inst::SlicePos` at this pc.
     SlicePos(u32),
+    RetBounds {
+        left: u32,
+        right: u32,
+        dir: u32,
+    },
+    TakeBounds {
+        left: u32,
+        right: u32,
+        dir: u32,
+    },
+    /// `Inst::BoundsSlice` at this pc.
+    BoundsSlice(u32),
+    /// `Inst::BoundsPos` at this pc.
+    BoundsPos(u32),
     Bin {
         op: IntOp,
         dst: u32,
@@ -662,6 +682,12 @@ pub(crate) enum Op {
         dst: u32,
         a: u32,
         b: u32,
+        n: u32,
+    },
+    /// `Inst::LKey`, out of line.
+    LKey {
+        dst: u32,
+        a: u32,
         n: u32,
     },
     /// `Inst::LCopy`.
@@ -932,6 +958,12 @@ pub(crate) enum Op {
         dope: u32,
         dim: u8,
     },
+    BoundsLen {
+        dst: u32,
+        left: u32,
+        right: u32,
+        dir: u32,
+    },
     Alloc {
         dst: u32,
         size: u32,
@@ -986,6 +1018,12 @@ pub(crate) enum Op {
         dims: u8,
     },
     Copy {
+        dst: u32,
+        src: u32,
+        bytes: u32,
+    },
+    /// `Inst::Copy` of two known frame addresses, usually two composite variables of a process.
+    CopyFrames {
         dst: u32,
         src: u32,
         bytes: u32,
@@ -1122,6 +1160,14 @@ pub(crate) enum Op {
         x: u32,
         native: u32,
         start: u32,
+    },
+    /// `Inst::LogicOp` of a gate or `not` (`Machine::logic_blocks`).
+    LogicGate {
+        op: yavs_ir::LOp,
+        dst: u32,
+        a: u32,
+        b: u32,
+        n: u32,
     },
     /// Scalar `not` of a `std_ulogic`.
     NotL {
@@ -1283,6 +1329,23 @@ pub(crate) enum Op {
         soff: u32,
         n: u32,
         res: u32,
+    },
+    /// A waveform in the frame that is not run (its `Zero` unless the stores cover it, the `Store`
+    /// of the time unless it is 0), the `Store` of the value `v` (of width `wd`) at 8 bytes in
+    /// and the one-element `Drive` of it, which nothing else reads, without delay limit: a
+    /// scalar byte signal (integer, enumeration, real) assigned straight to the kernel. `size`
+    /// (`FRAME_WAVE` and the bytes), `time` and `w` are the registers and size of the waveform,
+    /// for the cases the fast path does not take (a reference of several parts, another kind of
+    /// signal).
+    ByteDrive {
+        v: u32,
+        driver: u16,
+        target: u16,
+        time: u16,
+        size: u16,
+        w: u16,
+        wd: Width,
+        inertial: bool,
     },
 }
 
@@ -2216,6 +2279,8 @@ fn peephole(
         LSet(u32),
         /// `LCopy` into element 0: the source, its first element, the count.
         LCopy(u32, u32, u32),
+        /// `Store` of a scalar byte value at 8 bytes in (frame waveforms only).
+        Byte(u32, Width),
     }
     let int = |r: u32| match known.get(r as usize) {
         Some(&Known::Int(v)) => Some(v),
@@ -2239,6 +2304,18 @@ fn peephole(
         .and_then(|r| u16::try_from(r).ok());
     // The reads of each register in the function, found when a waveform needs them.
     let total = std::cell::OnceCell::new();
+    // The `Drive`s of a waveform in the frame, by op index, with the frame offset of the waveform.
+    let frame_drives: Vec<(usize, u32)> = old
+        .iter()
+        .enumerate()
+        .filter_map(|(k, o)| match *o {
+            Op::Drive { wave, .. } => match known.get(wave as usize) {
+                Some(&Known::Frame(off)) => Some((k, off)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
     let mut i = 0;
     while i < old.len() {
         let here = ops.len() as u32;
@@ -2352,6 +2429,7 @@ fn peephole(
                                     n,
                                     inertial,
                                 },
+                                Val::Byte(..) => return None,
                             },
                         )),
                         _ => None,
@@ -2419,6 +2497,9 @@ fn peephole(
                             soff,
                             n: cnt,
                         } if at_e(dst) && int(doff) == Some(0) => (Val::LCopy(src, soff, cnt), dst),
+                        Op::StoreSlot { src, off: o, w: wd } if Some(o) == off.checked_add(8) => {
+                            (Val::Byte(src, wd), 0)
+                        }
                         _ => return None,
                     };
                     let from = from as usize;
@@ -2501,6 +2582,16 @@ fn peephole(
                                 n,
                                 inertial,
                             },
+                            Val::Byte(v, wd) => Op::ByteDrive {
+                                v,
+                                driver,
+                                target,
+                                time,
+                                size,
+                                w: w16,
+                                wd,
+                                inertial,
+                            },
                         },
                     ))
                 });
@@ -2518,6 +2609,75 @@ fn peephole(
                 let (_, op, first) = dropped.swap_remove(p);
                 no_tier.push((first, here));
                 (Some(op), 2)
+            }
+            // A scalar byte waveform in the frame with no `Zero` (the two `Store`s cover it): the
+            // `Store` of the time starts it and the first `Drive` after it must be its own.
+            (
+                Op::StoreSlot {
+                    src: time,
+                    off,
+                    w: Width::B8,
+                },
+                ..,
+            ) if let Some(&from) = old_at.get(i)
+                && let Some(&(dj, o)) =
+                    frame_drives.get(frame_drives.partition_point(|d| d.0 <= i))
+                && o == off
+                && let Some(j) = dj.checked_sub(1)
+                && let Some(&Op::StoreSlot {
+                    src: v,
+                    off: voff,
+                    w: wd @ Width::B8,
+                }) = old.get(j)
+                && j > i
+                && voff == off + 8
+                && let Some(&Op::Drive {
+                    driver,
+                    target,
+                    wave,
+                    n,
+                    reject: NONE,
+                    inertial,
+                }) = old.get(dj)
+                && int(n) == Some(1)
+                && let Some(&to) = old_at.get(dj)
+                && free(dj)
+                && frame_wave_is_private(
+                    f,
+                    known,
+                    block_start,
+                    &total,
+                    (from as usize, to as usize),
+                    (off, 16),
+                    3,
+                )
+                && !(from as usize + 1..to as usize).any(|p| {
+                    let mut def = false;
+                    f.code[p].visit(&mut |r, role, _| def |= role == Role::Def && r.0 == time);
+                    def
+                })
+                && let Ok(driver) = u16::try_from(driver)
+                && let Ok(target) = u16::try_from(target)
+                && let Ok(time) = u16::try_from(time)
+                && let Ok(w) = u16::try_from(wave) =>
+            {
+                dropped.push((
+                    j,
+                    Op::ByteDrive {
+                        v,
+                        driver,
+                        target,
+                        time,
+                        size: FRAME_WAVE | 16,
+                        w,
+                        wd,
+                        inertial,
+                    },
+                    ops.len() as u32,
+                ));
+                remap[i] = ops.len() as u32;
+                i += 1;
+                continue;
             }
             (
                 Op::AffPL {
@@ -2688,6 +2848,9 @@ pub fn static_wait_edge(
                         | Inst::ConstF { .. }
                         | Inst::AddrOf { .. }
                         | Inst::DopeLen { .. }
+                        | Inst::BoundsLen { .. }
+                        | Inst::BoundsPos { .. }
+                        | Inst::BoundsSlice { .. }
                         | Inst::Pos { .. }
                         | Inst::SlicePos { .. }
                         | Inst::Index { .. }
@@ -3229,6 +3392,7 @@ fn loop_body(body: &[Op], ind: u32, bound: u32, delta: Delta) -> Result<Vec<LSte
             | Op::Move { dst, .. }
             | Op::Const { dst, .. }
             | Op::DopeLen { dst, .. }
+            | Op::BoundsLen { dst, .. }
             | Op::Load { dst, .. }
             | Op::LoadOff { dst, .. }
             | Op::LoadSlot { dst, .. }
@@ -5032,6 +5196,15 @@ impl Code {
                     a: a.0,
                     b: b.0,
                 },
+                Inst::LogicOp { op, dst, a, b, n } if crate::exec::is_block_gate(op) => {
+                    Op::LogicGate {
+                        op,
+                        dst: dst.0,
+                        a: a.0,
+                        b: b.0,
+                        n: n.0,
+                    }
+                }
                 Inst::LCopy {
                     dst,
                     dst_off,
@@ -5043,6 +5216,11 @@ impl Code {
                     doff: dst_off.0,
                     src: src.0,
                     soff: src_off.0,
+                    n: n.0,
+                },
+                Inst::LKey { dst, a, n } => Op::LKey {
+                    dst: dst.0,
+                    a: a.0,
                     n: n.0,
                 },
                 Inst::LEq { dst, a, b, n } => Op::LEq {
@@ -5069,15 +5247,17 @@ impl Code {
                     hi,
                     what,
                 } => match (kind, int(lo).map(i32::try_from), int(hi).map(i32::try_from)) {
-                    (CheckKind::Range | CheckKind::Index, Some(Ok(lo)), Some(Ok(hi))) => {
-                        Op::CheckK {
-                            kind,
-                            v: v.0,
-                            lo,
-                            hi,
-                            what,
-                        }
-                    }
+                    (
+                        CheckKind::Range | CheckKind::Index | CheckKind::IndexDown,
+                        Some(Ok(lo)),
+                        Some(Ok(hi)),
+                    ) => Op::CheckK {
+                        kind,
+                        v: v.0,
+                        lo,
+                        hi,
+                        what,
+                    },
                     _ => Op::Check {
                         kind,
                         v: v.0,
@@ -5213,10 +5393,33 @@ impl Code {
                     }
                 }
                 Inst::SlicePos { .. } => Op::SlicePos(pc as u32),
+                Inst::RetBounds { left, right, dir } => Op::RetBounds {
+                    left: left.0,
+                    right: right.0,
+                    dir: dir.0,
+                },
+                Inst::TakeBounds { left, right, dir } => Op::TakeBounds {
+                    left: left.0,
+                    right: right.0,
+                    dir: dir.0,
+                },
+                Inst::BoundsSlice { .. } => Op::BoundsSlice(pc as u32),
+                Inst::BoundsPos { .. } => Op::BoundsPos(pc as u32),
                 Inst::DopeLen { dst, dope, dim } => Op::DopeLen {
                     dst: dst.0,
                     dope: dope.0,
                     dim,
+                },
+                Inst::BoundsLen {
+                    dst,
+                    left,
+                    right,
+                    dir,
+                } => Op::BoundsLen {
+                    dst: dst.0,
+                    left: left.0,
+                    right: right.0,
+                    dir: dir.0,
                 },
                 Inst::Call { func, args, dst } => {
                     let (func, start, len, dst) =
@@ -5339,7 +5542,10 @@ impl Code {
                 // The other spaces are numbers (an address the machine cannot make stays a
                 // step, which reports it).
                 Inst::AddrOf { dst, space, off } => match space {
-                    AddrSpace::Frame => Op::AddrFrame { dst: dst.0, off },
+                    AddrSpace::Frame => match yavs_ir::frame_object_addr(f, off) {
+                        Some((i, o)) => const_addr(dst, FRAME, i, o, pc),
+                        None => Op::AddrFrame { dst: dst.0, off },
+                    },
                     AddrSpace::Up(depth) => Op::AddrUp {
                         dst: dst.0,
                         depth,
@@ -5546,6 +5752,16 @@ impl Code {
         }
         if budget {
             count_back_edges(prog, f, &entry, &mut ops, &mut at);
+        }
+        // After the fusions, which know `Op::Copy` (a copy and its drive stay one op).
+        let frame = |r: u32| matches!(known.get(r as usize), Some(Known::Frame(_)));
+        for o in &mut ops {
+            if let Op::Copy { dst, src, bytes } = *o
+                && frame(dst)
+                && frame(src)
+            {
+                *o = Op::CopyFrames { dst, src, bytes };
+            }
         }
         let first = entry.first().copied().unwrap_or(NONE);
         // Debug aid next to the IR dump of `YAVS_DUMPIR`.

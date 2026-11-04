@@ -107,7 +107,7 @@ fn run(dir: &Path, tier: &str, var: &str, jit_lists: bool, gens: &[&str]) -> Map
 }
 
 /// Every line has a size and a readable name (kind, function id, process by instance path or
-/// subprogram), no address twice, no two functions overlap.
+/// subprogram, or one of the module's stubs, `cold_*`), no address twice, no two functions overlap.
 fn well_formed(m: &Map) {
     assert!(!m.lines.is_empty(), "empty map: {}", m.err);
     let mut sorted: Vec<_> = m.lines.iter().collect();
@@ -119,7 +119,10 @@ fn well_formed(m: &Map) {
             .is_some_and(|(id, label)| {
                 !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()) && !label.is_empty()
             });
-        assert!(named && *s > 0, "{a:x} {s:x} {n}");
+        assert!(
+            (named || n.starts_with("cold_")) && *s > 0,
+            "{a:x} {s:x} {n}"
+        );
     }
     for w in sorted.windows(2) {
         assert!(

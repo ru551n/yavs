@@ -672,68 +672,96 @@ fn logic_elements_match_the_interpreter() {
 /// words) or the same error text.
 #[test]
 fn logic_copies_match_the_interpreter() {
+    for n in [0, 1, 7, 63, 64, 65, 128, 190, 300, 449, 500] {
+        for from_const in [false, true] {
+            logic_copy(n, from_const, None);
+        }
+    }
+}
+
+/// The same with the offsets constants of the code, so the shape is settled when it is made:
+/// over 8 blocks, past the memory, a negative or huge count, and the run across a block edge.
+#[test]
+fn logic_copies_of_a_known_shape_match_the_interpreter() {
+    for n in [0, 1, 7, 64, 65, 128, 300, 449, 500, 3000, -1, 1 << 40] {
+        for (a, b) in [
+            (0, 0),
+            (1, 1),
+            (63, 60),
+            (64, 0),
+            (0, 127),
+            (191, 2),
+            (639, 639),
+            (640, 0),
+            (-1, 0),
+        ] {
+            logic_copy(n, false, Some((a, b)));
+        }
+    }
+    logic_copy(64, true, Some((60, 70)));
+}
+
+fn logic_copy(n: i64, from_const: bool, shape: Option<(i64, i64)>) {
     const LEN: usize = 320;
     let pattern: Vec<u8> = (0..LEN)
         .map(|i| (i as u32).wrapping_mul(2_654_435_761).to_le_bytes()[3])
         .collect();
-    for n in [0, 1, 7, 63, 64, 65, 128, 190, 300, 449, 500] {
-        for from_const in [false, true] {
-            let mut pb = ProgramBuilder::new();
-            let k = pb.konst(ConstData::Bytes(pattern.clone()));
-            let f = pb.declare("f", FuncKind::Function, None);
-            let mut fb = pb.define(f);
-            let sa = fb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
-            let sb = fb.param("b", Width::B8, ParamClass::Value, Mode::In, None);
-            stmt(&mut fb);
-            let (pa, pbr) = (fb.addr(AddrSpace::Frame, sa), fb.addr(AddrSpace::Frame, sb));
-            let (a, b) = (load(&mut fb, pa, Width::B8), load(&mut fb, pbr, Width::B8));
-            let c = fb.addr(AddrSpace::Const(k), 0);
-            let size = fb.int(LEN as i64);
-            let t = alloc(&mut fb, size);
-            fb.emit(Inst::Copy {
-                dst: t,
-                src: c,
-                bytes: size,
-            });
-            let n = fb.int(n);
-            fb.emit(Inst::LCopy {
-                dst: t,
-                dst_off: a,
-                src: if from_const { c } else { t },
-                src_off: b,
-                n,
-            });
-            let mut acc = fb.int(0);
-            for w in 0..LEN / 4 {
-                let at = fb.int(w as i64 * 4);
-                let p = index(&mut fb, t, at);
-                let v = load(&mut fb, p, Width::B4);
-                let m = fb.int(w as i64 + 1);
-                let (x, sum) = (fb.reg(RegTy::I64), fb.reg(RegTy::I64));
-                fb.emit(Inst::Bin {
-                    op: IntOp::Mul,
-                    dst: x,
-                    a: v,
-                    b: m,
-                });
-                fb.emit(Inst::Bin {
-                    op: IntOp::Add,
-                    dst: sum,
-                    a: acc,
-                    b: x,
-                });
-                acc = sum;
-            }
-            fb.emit(Inst::Ret { v: Some(acc) });
-            fb.finish();
-            check(
-                pb.finish().unwrap(),
-                f,
-                &["LCopy"],
-                &[0, 1, 5, 63, 64, 65, 127, 128, 200, 639, -1, 1 << 40],
-            );
-        }
+    let mut pb = ProgramBuilder::new();
+    let k = pb.konst(ConstData::Bytes(pattern.clone()));
+    let f = pb.declare("f", FuncKind::Function, None);
+    let mut fb = pb.define(f);
+    let sa = fb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+    let sb = fb.param("b", Width::B8, ParamClass::Value, Mode::In, None);
+    stmt(&mut fb);
+    let (pa, pbr) = (fb.addr(AddrSpace::Frame, sa), fb.addr(AddrSpace::Frame, sb));
+    let (a, b) = match shape {
+        Some((a, b)) => (fb.int(a), fb.int(b)),
+        None => (load(&mut fb, pa, Width::B8), load(&mut fb, pbr, Width::B8)),
+    };
+    let c = fb.addr(AddrSpace::Const(k), 0);
+    let size = fb.int(LEN as i64);
+    let t = alloc(&mut fb, size);
+    fb.emit(Inst::Copy {
+        dst: t,
+        src: c,
+        bytes: size,
+    });
+    let n = fb.int(n);
+    fb.emit(Inst::LCopy {
+        dst: t,
+        dst_off: a,
+        src: if from_const { c } else { t },
+        src_off: b,
+        n,
+    });
+    let mut acc = fb.int(0);
+    for w in 0..LEN / 4 {
+        let at = fb.int(w as i64 * 4);
+        let p = index(&mut fb, t, at);
+        let v = load(&mut fb, p, Width::B4);
+        let m = fb.int(w as i64 + 1);
+        let (x, sum) = (fb.reg(RegTy::I64), fb.reg(RegTy::I64));
+        fb.emit(Inst::Bin {
+            op: IntOp::Mul,
+            dst: x,
+            a: v,
+            b: m,
+        });
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: sum,
+            a: acc,
+            b: x,
+        });
+        acc = sum;
     }
+    fb.emit(Inst::Ret { v: Some(acc) });
+    fb.finish();
+    let args: &[i64] = match shape {
+        Some(_) => &[0],
+        None => &[0, 1, 5, 63, 64, 65, 127, 128, 200, 639, -1, 1 << 40],
+    };
+    check(pb.finish().unwrap(), f, &["LCopy"], args);
 }
 
 /// The scalar `std_ulogic` natives compiled code looks up in a table give what the natives

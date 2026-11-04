@@ -191,6 +191,8 @@ pub enum CheckKind {
     Range,
     /// Like `Range`, reported as an index error.
     Index,
+    /// `Index` of a descending range: the error names the bounds `hi downto lo`.
+    IndexDown,
     /// `v == lo` (array lengths).
     Length,
     /// `v != 0` (null access).
@@ -463,6 +465,13 @@ pub enum Inst {
         b: Reg,
         n: Reg,
     },
+    /// The `n` (1 to 63) elements of the logic array at `a` as a number when all are '0' or '1',
+    /// element 0 in bit 0, else -1: what a `Case` on the array's value dispatches on.
+    LKey {
+        dst: Reg,
+        a: Reg,
+        n: Reg,
+    },
     /// `dst` is 1 when the `n` bytes at `a` and at `b` are equal, else 0: equality of two
     /// arrays of integer or enumeration elements of the same length.
     MemEq {
@@ -548,6 +557,42 @@ pub enum Inst {
         dst: Reg,
         dope: Reg,
         dim: u8,
+    },
+    /// The length of a range held in registers: `DopeLen` of a descriptor that holds them.
+    BoundsLen {
+        dst: Reg,
+        left: Reg,
+        right: Reg,
+        dir: Reg,
+    },
+    /// `Pos` in a dimension whose bounds are in registers.
+    BoundsPos {
+        dst: Reg,
+        left: Reg,
+        right: Reg,
+        dir: Reg,
+        idx: Reg,
+        what: CheckMsgId,
+    },
+    /// `SlicePos` of an array whose bounds are in registers. `regs`: the array's left, right and
+    /// direction, then the slice's.
+    BoundsSlice {
+        dst: Reg,
+        regs: Regs,
+        what: CheckMsgId,
+        dir_what: CheckMsgId,
+    },
+    /// Before the `Ret` of a function with `Func::ret_flat`: the bounds of the array it returns.
+    RetBounds {
+        left: Reg,
+        right: Reg,
+        dir: Reg,
+    },
+    /// Right after the `Call` of such a function: the bounds of the array it returned.
+    TakeBounds {
+        left: Reg,
+        right: Reg,
+        dir: Reg,
     },
     /// Layout of `ty` constrained by the descriptor at `desc`, written to temporary memory as
     /// `[size, align, offsets...]` (records) or `[size, align, stride, count]` (arrays). With
@@ -904,6 +949,7 @@ impl Inst {
     pub fn list(&self) -> Option<Regs> {
         match *self {
             Inst::MakeDope { parts, .. } | Inst::Cat { parts, .. } => Some(parts),
+            Inst::BoundsSlice { regs, .. } => Some(regs),
             Inst::SigScatter { ops, .. } => Some(ops),
             Inst::Call { args, .. }
             | Inst::CallNative { args, .. }
@@ -918,6 +964,7 @@ impl Inst {
     pub fn list_mut(&mut self) -> Option<&mut Regs> {
         match self {
             Inst::MakeDope { parts, .. } | Inst::Cat { parts, .. } => Some(parts),
+            Inst::BoundsSlice { regs, .. } => Some(regs),
             Inst::SigScatter { ops, .. } => Some(ops),
             Inst::Call { args, .. }
             | Inst::CallNative { args, .. }
@@ -1111,6 +1158,11 @@ impl Inst {
                 f(b, Use, p);
                 f(n, Use, i);
             }
+            Inst::LKey { dst, a, n } => {
+                d(dst, i);
+                f(a, Use, p);
+                f(n, Use, i);
+            }
             Inst::MemEq { dst, a, b, n } => {
                 d(dst, i);
                 f(a, Use, p);
@@ -1158,7 +1210,10 @@ impl Inst {
                 if *kind != CheckKind::Null {
                     f(lo, Use, i);
                 }
-                if matches!(kind, CheckKind::Range | CheckKind::Index) {
+                if matches!(
+                    kind,
+                    CheckKind::Range | CheckKind::Index | CheckKind::IndexDown
+                ) {
                     f(hi, Use, i);
                 }
             }
@@ -1166,6 +1221,42 @@ impl Inst {
             Inst::DopeLen { dst, dope, .. } => {
                 d(dst, i);
                 f(dope, Use, p);
+            }
+            Inst::BoundsLen {
+                dst,
+                left,
+                right,
+                dir,
+            } => {
+                d(dst, i);
+                f(left, Use, i);
+                f(right, Use, i);
+                f(dir, Use, i);
+            }
+            Inst::BoundsPos {
+                dst,
+                left,
+                right,
+                dir,
+                idx,
+                ..
+            } => {
+                d(dst, i);
+                f(left, Use, i);
+                f(right, Use, i);
+                f(dir, Use, i);
+                f(idx, Use, i);
+            }
+            Inst::BoundsSlice { dst, .. } => d(dst, i),
+            Inst::RetBounds { left, right, dir } => {
+                f(left, Use, i);
+                f(right, Use, i);
+                f(dir, Use, i);
+            }
+            Inst::TakeBounds { left, right, dir } => {
+                d(left, i);
+                d(right, i);
+                d(dir, i);
             }
             Inst::LayoutOf { dst, desc, .. } => {
                 d(dst, p);

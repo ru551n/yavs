@@ -680,6 +680,7 @@ pub(crate) fn elaborate(
     e.m.calls.flush();
     Ok(Elaborated {
         lean,
+        bare: Vec::new(),
         no_codes,
         top,
         hier: e.m.hier,

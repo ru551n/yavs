@@ -36,7 +36,7 @@ pub(crate) fn leaves(db: &Db, nets: &NetGraph) -> Vec<bool> {
 
 /// A scalar or an array of those (of any depth): no record, so no leaf is read element by element
 /// for a whole value.
-fn elements_only(s: &Shape) -> bool {
+pub(crate) fn elements_only(s: &Shape) -> bool {
     match s {
         Shape::Scalar { .. } => true,
         Shape::Array { elem, .. } => elements_only(elem),

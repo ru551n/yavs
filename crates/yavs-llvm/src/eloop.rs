@@ -74,7 +74,6 @@ pub fn run(
 /// loop itself (`Gen::eloop_plan`): every base and code is such a step, a product has one
 /// factor that is, and the single `SET` ends the program. `None` leaves the loop to [`run`].
 /// `ninputs` is how many input registers there are.
-#[cfg(any(feature = "llvm", test))]
 pub fn invariant_steps(prog: &[i64], ninputs: usize) -> Option<Vec<bool>> {
     if !prog.len().is_multiple_of(4) || prog.len() > MAX_STEPS * 4 {
         return None;

@@ -8,13 +8,14 @@
 //! come later, so a record with bounds from generics costs one comparison of its descriptor.
 
 use std::collections::HashMap;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, RwLock};
 
 use yavs_ir::gather::{self, Leaf, LeafKind, Plan, PlanError};
 use yavs_ir::{
     ConstData, ConstId, DriveMode, Func, Part, Program, Reg, Regs, SCATTER_PART, SCATTER_REJECT, Ty,
 };
-use yavs_kernel::{Ctx, Elem, Range};
+use yavs_kernel::{Ctx, Elem, ImageItem, ImageKind, ImageSpec, NO_IMAGE, Range};
 
 use crate::InstSig;
 use crate::exec::{CONST, Machine, R, cell, cold, ice, rt_err, split, to_time};
@@ -53,6 +54,361 @@ pub(crate) struct Bound {
     items: Box<[Item]>,
     reads: Box<[Grp]>,
     runs: Box<[Grp]>,
+    /// The first driver slot of the first scatter through the plan and, per leaf, the kernel's
+    /// facts of its driver when it is a direct byte driver (`Ctx::direct_ref`): they do not
+    /// change. A scatter from other driver slots looks them up each time.
+    refs: std::cell::OnceCell<(u32, Box<[Option<yavs_kernel::DirectRef>]>)>,
+    img: Img,
+    cmp: Cmp,
+}
+
+/// Where a bound plan stands with its record image (kernel `image.rs`).
+enum Img {
+    /// Whole gathers so far.
+    Count(u32),
+    /// Asked for: there from a later run phase.
+    Asked(Box<ImageSpec>),
+    /// Copied from image `id`; with `check`, also read leaf by leaf and compared. `copies` since
+    /// the last review, when the image had `writes` leaves written; `given`: the copies compiled
+    /// code may make (`crate::ImageCell::left`) when last told.
+    Ready {
+        id: u32,
+        check: bool,
+        copies: u32,
+        writes: u64,
+        given: u32,
+    },
+    Off,
+}
+
+/// Where a bound plan stands with comparing its whole zero-delay scatters with the record image
+/// (`docs/decisions.md` "Record drive compare").
+enum Cmp {
+    /// Scatters that could compare so far.
+    Count(u32),
+    /// Asked for: there from a later run phase.
+    Asked(Box<ImageSpec>),
+    Ready(Box<CmpReady>),
+    Off,
+}
+
+/// What a plan's scatters compare with.
+struct CmpReady {
+    id: u32,
+    /// Every skip is held against the kernel's full test (`cmp_check`).
+    check: bool,
+    /// Scatters since the last review, the leaves they spared, the image's writes at that review.
+    seen: u32,
+    spared: u64,
+    writes: u64,
+    /// The plan's distinct kernel drivers.
+    drivers: Box<[yavs_kernel::DriverId]>,
+    /// Run `r` of `Bound::runs` lies at `ranges[at[r]..at[r + 1]]` of the value, adjacent leaves
+    /// joined; a null leaf has no range, and its run is never taken for unchanged.
+    ranges: Box<[(u32, u32)]>,
+    at: Box<[u32]>,
+    /// Its bit of the plan gate: compiled code compares too (`crate::ImageCell`).
+    inline: Inline,
+}
+
+/// Where a compare stands with compiled code.
+#[derive(Clone, Copy, PartialEq)]
+enum Inline {
+    /// No compiled code looked yet: the kernel has not named the process's drivers.
+    Unasked,
+    /// No bit to give.
+    No,
+    /// The bit, and the skips the cell was last given.
+    Bit(u64, u32),
+}
+
+impl CmpReady {
+    /// Whether run `r` of `data` holds what image `im` holds.
+    #[inline(always)]
+    fn run_same(&self, r: usize, data: &[u8], im: &[u8]) -> bool {
+        let rs = &self.ranges[self.at[r] as usize..self.at[r + 1] as usize];
+        !rs.is_empty()
+            && rs.iter().all(|&(o, n)| {
+                let (o, n) = (o as usize, n as usize);
+                data[o..o + n] == im[o..o + n]
+            })
+    }
+}
+
+/// Whole gathers of a plan, or whole zero-delay scatters, before it asks for an image: a process
+/// that runs a few times does not pay one.
+const IMAGE_AFTER: u32 = 16;
+
+/// Copies or scatters between two looks at whether an image pays (`image_review`, `cmp_review`).
+const IMAGE_REVIEW: u32 = 1024;
+
+/// A leaf written into an image costs about this many leaves read by a gather (#1065): an image
+/// written more than that per copy is given up.
+const WRITE_COST: u64 = 4;
+
+/// A leaf written into an image costs about this many leaves a scatter's compare spares: an image
+/// written more than that per spared leaf is given up by the scatter.
+const CMP_WRITE_COST: u64 = 2;
+
+/// The largest value with an image.
+const IMAGE_MAX: u64 = 1 << 16;
+
+/// What the environment says about images: `YAVS_NO_IMAGE=1` none, `YAVS_IMAGE_CHECK=1` every
+/// copy checked against the leaves and every skip against the kernel's full test,
+/// `YAVS_IMAGE_AFTER=n` asked for after `n` gathers or scatters (off, on, after).
+fn image_env() -> (bool, bool, u32) {
+    static E: std::sync::OnceLock<(bool, bool, u32)> = std::sync::OnceLock::new();
+    *E.get_or_init(|| {
+        let on = |k: &str| std::env::var_os(k).is_some_and(|v| v != "0");
+        let after = std::env::var("YAVS_IMAGE_AFTER")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(IMAGE_AFTER);
+        (on("YAVS_NO_IMAGE"), on("YAVS_IMAGE_CHECK"), after)
+    })
+}
+
+/// The spec of the image of a whole value.
+fn image_spec(b: &Bound) -> Option<ImageSpec> {
+    if b.plan.size > IMAGE_MAX {
+        return None;
+    }
+    let items = b
+        .items
+        .iter()
+        .filter(|t| t.vsize > 0 && t.len > 0)
+        .map(|t| ImageItem {
+            sig: b.sigs[t.leaf as usize].signal,
+            k: t.k,
+            len: t.len,
+            voff: t.voff,
+            vsize: t.vsize,
+            kind: match t.kind {
+                LeafKind::LogicScalar => ImageKind::Code(t.bias),
+                LeafKind::LogicVec => ImageKind::Planes,
+                LeafKind::Scalar => ImageKind::Scalar,
+                LeafKind::Bytes => ImageKind::Raw,
+            },
+        });
+    Some(ImageSpec {
+        size: b.plan.size as u32,
+        items: items.collect(),
+    })
+}
+
+/// Whether the image of `b` paid for its last `IMAGE_REVIEW` copies: fewer leaves written than a
+/// `WRITE_COST`th of those the copies stood for. If not, this process lets it go.
+#[cold]
+#[inline(never)]
+fn image_review(b: &mut Bound, c: &mut Ctx<'_>) {
+    let leaves = b.items.len() as u64;
+    let Img::Ready {
+        id, copies, writes, ..
+    } = &mut b.img
+    else {
+        return;
+    };
+    let now = c.image_writes(*id);
+    let wrote = now.saturating_sub(*writes);
+    if wrote * WRITE_COST > u64::from(*copies) * leaves {
+        c.image_release(*id);
+        b.img = Img::Off;
+        return;
+    }
+    (*copies, *writes) = (0, now);
+}
+
+/// `YAVS_IMAGE_CHECK`: the leaves of a value just read leaf by leaf against its image.
+#[cold]
+#[inline(never)]
+fn image_check(b: &Bound, im: Option<&[u8]>, out: &[u8]) -> R<()> {
+    let Some(im) = im else {
+        return Err(ice("a record image that is gone"));
+    };
+    for t in &*b.items {
+        let (a, e) = (t.voff as usize, (t.voff + t.vsize) as usize);
+        if out[a..e] != im[a..e] {
+            return Err(ice(format!(
+                "record image out of step: signal {:?} element {} length {}: value {:?}, image {:?}",
+                b.sigs[t.leaf as usize].signal,
+                t.k,
+                t.len,
+                &out[a..e],
+                &im[a..e]
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// A whole gather read leaf by leaf: the plan's next step towards its image.
+#[cold]
+#[inline(never)]
+fn image_step(b: &mut Bound, c: &mut Ctx<'_>) {
+    match &mut b.img {
+        Img::Count(n) => {
+            *n += 1;
+            if *n < image_env().2 {
+                return;
+            }
+            b.img = match image_spec(b) {
+                Some(s) if !image_env().0 => {
+                    c.image_ask(s.clone());
+                    Img::Asked(s.into())
+                }
+                _ => Img::Off,
+            };
+        }
+        Img::Asked(s) => {
+            b.img = match c.image_id(s) {
+                None => return,
+                Some(NO_IMAGE) => Img::Off,
+                Some(id) => Img::Ready {
+                    id,
+                    check: image_env().1,
+                    copies: 0,
+                    writes: c.image_writes(id),
+                    given: 0,
+                },
+            };
+        }
+        Img::Ready { .. } | Img::Off => {}
+    }
+}
+
+/// Per run its byte ranges in the value (`CmpReady::ranges`, `at`).
+fn cmp_ranges(items: &[Item], runs: &[Grp]) -> (Vec<(u32, u32)>, Vec<u32>) {
+    let (mut ranges, mut at) = (Vec::new(), vec![0u32]);
+    for g in runs {
+        let ts = &items[g.first as usize..][..g.n as usize];
+        if ts.iter().all(|t| t.vsize > 0 && t.len > 0) {
+            let mut v: Vec<(u32, u32)> = ts.iter().map(|t| (t.voff, t.vsize)).collect();
+            v.sort_unstable();
+            let first = ranges.len();
+            for (o, n) in v {
+                match ranges[first..].last_mut() {
+                    Some((po, pn)) if *po + *pn == o => *pn += n,
+                    _ => ranges.push((o, n)),
+                }
+            }
+        }
+        at.push(ranges.len() as u32);
+    }
+    (ranges, at)
+}
+
+/// A whole zero-delay scatter that does not compare yet: the plan's next step towards its image.
+/// Every leaf must go through a driver of this process that a skip is right for.
+#[cold]
+#[inline(never)]
+fn cmp_step(cmp: Cmp, b: &Bound, c: &mut Ctx<'_>, ds: &[crate::ProcDriver]) -> Cmp {
+    match cmp {
+        Cmp::Count(n) if n + 1 < image_env().2 => Cmp::Count(n + 1),
+        Cmp::Count(_) => {
+            let leaves = |t: &&Item| t.vsize > 0 && t.len > 0;
+            let ok = !image_env().0
+                && b.items.iter().filter(leaves).all(|t| {
+                    let (id, s) = (ds[t.leaf as usize].id, b.sigs[t.leaf as usize].signal);
+                    c.drive_skip_ok(id, s, Range::new(t.k, t.len))
+                });
+            match image_spec(b) {
+                Some(s) if ok => {
+                    c.image_ask(s.clone());
+                    Cmp::Asked(s.into())
+                }
+                _ => Cmp::Off,
+            }
+        }
+        Cmp::Asked(s) => match c.image_id(&s) {
+            None => Cmp::Asked(s),
+            Some(NO_IMAGE) => Cmp::Off,
+            Some(id) => {
+                let mut drivers: Vec<_> = ds.iter().map(|d| d.id).collect();
+                drivers.sort_unstable_by_key(|d| d.0);
+                drivers.dedup();
+                let (ranges, at) = cmp_ranges(&b.items, &b.runs);
+                Cmp::Ready(Box::new(CmpReady {
+                    id,
+                    check: cfg!(debug_assertions) || image_env().1,
+                    seen: 0,
+                    spared: 0,
+                    writes: c.image_writes(id),
+                    drivers: drivers.into(),
+                    ranges: ranges.into(),
+                    at: at.into(),
+                    inline: Inline::Unasked,
+                }))
+            }
+        },
+        other => other,
+    }
+}
+
+/// Whether the image of a plan paid for its last `IMAGE_REVIEW` scatters: its writes cost no more
+/// than the leaves spared. If not, this scatter lets it go.
+#[cold]
+#[inline(never)]
+fn cmp_review(cmp: &mut Cmp, c: &mut Ctx<'_>) {
+    let Cmp::Ready(r) = cmp else {
+        return;
+    };
+    let now = c.image_writes(r.id);
+    if now.saturating_sub(r.writes) * CMP_WRITE_COST > r.spared {
+        c.image_release(r.id);
+        *cmp = Cmp::Off;
+        return;
+    }
+    (r.seen, r.spared, r.writes) = (0, 0, now);
+}
+
+/// Debug builds and `YAVS_IMAGE_CHECK`: the runs a compare would skip against the kernel's full
+/// test, before the scatter makes its first entry, since the test refuses a driver with one.
+#[cold]
+#[inline(never)]
+fn cmp_check(
+    b: &Bound,
+    r: &CmpReady,
+    c: &Ctx<'_>,
+    ds: &[crate::ProcDriver],
+    data: &[u8],
+    im: &[u8],
+) -> R<()> {
+    for (ri, g) in b.runs.iter().enumerate() {
+        if !r.run_same(ri, data, im) {
+            continue;
+        }
+        for t in &b.items[g.first as usize..][..g.n as usize] {
+            let v = &data[t.voff as usize..(t.voff + t.vsize) as usize];
+            let l = &b.plan.leaves[t.leaf as usize];
+            let d = ds[t.leaf as usize].id;
+            let res = match t.kind {
+                LeafKind::LogicVec if t.len > 64 => (v.as_chunks::<32>().0.iter().enumerate())
+                    .try_for_each(|(i, w)| {
+                        let p = [0, 1, 2, 3].map(|k| {
+                            u64::from_le_bytes(w[k * 8..k * 8 + 8].try_into().unwrap_or_default())
+                        });
+                        let at = 64 * i as u32;
+                        c.gate_check(d, t.k + at, (t.len - at).min(64), p)
+                    }),
+                LeafKind::LogicScalar | LeafKind::LogicVec => {
+                    c.gate_check(d, t.k, t.len, leaf_planes(t.kind, t.len, t.bias, v))
+                }
+                LeafKind::Scalar | LeafKind::Bytes => (0..t.len).try_for_each(|e| {
+                    let mut w = [0u8; 8];
+                    let es = l.ew as usize;
+                    w[..es].copy_from_slice(&v[e as usize * es..][..es]);
+                    c.gate_check(d, t.k + e, 1, [u64::from_le_bytes(w), 0, 0, 0])
+                }),
+            };
+            res.map_err(|e| {
+                ice(format!(
+                    "a record drive skipped by its image: signal {:?} element {} length {}: {e}",
+                    b.sigs[t.leaf as usize].signal, t.k, t.len
+                ))
+            })?;
+        }
+    }
+    Ok(())
 }
 
 /// One instance of a leaf in a whole value: the leaf, its byte offset in the value and its first
@@ -313,6 +669,7 @@ fn flush_planes(
 /// `d` after `when`; a logic leaf joins the run of the leaves before it when it follows them in
 /// the same driver.
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 fn write_leaf(
     c: &mut Ctx<'_>,
     d: yavs_kernel::DriverId,
@@ -321,6 +678,7 @@ fn write_leaf(
     v: &[u8],
     run: &mut Option<Run>,
     when: When,
+    dref: Option<&yavs_kernel::DirectRef>,
 ) -> R<()> {
     let (t, now, mode) = when;
     if matches!(l.kind, LeafKind::LogicScalar | LeafKind::LogicVec) && (1..=64).contains(&l.len) {
@@ -353,7 +711,11 @@ fn write_leaf(
         }
         LeafKind::Scalar | LeafKind::Bytes => {
             let v = v.get(..l.len as usize * l.ew as usize).unwrap_or(v);
-            if !(now && l.len == 1 && c.assign_bytes_now(d, r, v)) {
+            if !(now
+                && l.len == 1
+                && (dref.is_some_and(|x| c.assign_ref_bytes(x, r.offset, v))
+                    || c.assign_bytes_now(d, r, v)))
+            {
                 c.assign_bytes(d, Some(r), t, v, mode)?;
             }
         }
@@ -361,7 +723,359 @@ fn write_leaf(
     Ok(())
 }
 
+/// Run `g` of a whole value `data`, driven through driver slots `ds`.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn scatter_run(
+    c: &mut Ctx<'_>,
+    plan: &Plan,
+    items: &[Item],
+    g: &Grp,
+    ds: &[crate::ProcDriver],
+    data: &[u8],
+    refs: &[Option<yavs_kernel::DirectRef>],
+    run: &mut Option<Run>,
+    when: When,
+) -> R<()> {
+    let ts = &items[g.first as usize..][..g.n as usize];
+    let id = ds[ts[0].leaf as usize].id;
+    // One run of one driver: its planes built in registers, one assignment.
+    if g.word != NO_WORD && ts.iter().all(|t| ds[t.leaf as usize].id == id) {
+        flush_run(c, run, when)?;
+        let (mut p, mut at) = ([0u64; 4], 0);
+        for t in ts {
+            let o = t.voff as usize;
+            let v = data
+                .get(o..o + t.vsize as usize)
+                .ok_or_else(|| cold(|| ice("a leaf outside its value")))?;
+            for (p, b) in p.iter_mut().zip(leaf_planes(t.kind, t.len, t.bias, v)) {
+                *p |= b << at;
+            }
+            at += t.len;
+        }
+        return flush_planes(c, id, Range::new(ts[0].k, at), p, when);
+    }
+    for t in ts {
+        let l = &plan.leaves[t.leaf as usize];
+        let at = t.voff as usize;
+        let v = data
+            .get(at..at + l.vsize as usize)
+            .ok_or_else(|| cold(|| ice("a leaf outside its value")))?;
+        let d = ds[t.leaf as usize].id;
+        let dref = refs.get(t.leaf as usize).and_then(Option::as_ref);
+        write_leaf(c, d, l, Range::new(t.k, l.len), v, run, when, dref)?;
+    }
+    Ok(())
+}
+
+/// A whole zero-delay scatter against its image `im`: the leaves spared. Out of line, so that a
+/// scatter that does not compare keeps its shape: inlined, this cost `rec_pair` about 1 percent.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn scatter_compared(
+    b: &Bound,
+    r: &CmpReady,
+    im: &[u8],
+    c: &mut Ctx<'_>,
+    ds: &[crate::ProcDriver],
+    data: &[u8],
+    refs: &[Option<yavs_kernel::DirectRef>],
+    when: When,
+) -> R<u32> {
+    if r.check {
+        cmp_check(b, r, c, ds, data, im)?;
+    }
+    if *data == *im {
+        c.gate_skipped();
+        return Ok(b.items.len() as u32);
+    }
+    let (mut spared, mut run) = (0, None);
+    for (ri, g) in b.runs.iter().enumerate() {
+        if r.run_same(ri, data, im) {
+            c.gate_skipped();
+            spared += g.n;
+        } else {
+            scatter_run(c, &b.plan, &b.items, g, ds, data, refs, &mut run, when)?;
+        }
+    }
+    flush_run(c, &mut run, when)?;
+    Ok(spared)
+}
+
 impl Machine {
+    /// The cell at `k`, once compiled code looked at this process (the kernel knows of it then).
+    fn cell(&mut self, k: usize, c: &Ctx<'_>) -> Option<&mut crate::ImageCell> {
+        if self.icells.is_empty() && !c.gate_unset() {
+            let n = crate::GATHER_CELLS + self.drivers.len();
+            self.icells = (0..n).map(|_| crate::ImageCell::empty()).collect();
+            self.icells_at = self.icells.as_ptr() as usize;
+        }
+        self.icells.get_mut(k)
+    }
+
+    /// What compiled code skipped through the cell of a scatter since the host last looked, in
+    /// the counts of the review.
+    #[cold]
+    #[inline(never)]
+    fn scat_take(&mut self, b: &mut Bound, tab: ConstId, driver: u32, c: &mut Ctx<'_>) {
+        let Cmp::Ready(r) = &mut b.cmp else {
+            return;
+        };
+        let Inline::Bit(_, ref mut given) = r.inline else {
+            return;
+        };
+        let k = crate::GATHER_CELLS + driver as usize;
+        let Some(cell) = self.icells.get_mut(k).filter(|x| x.tab == tab.0) else {
+            return;
+        };
+        let n = u64::from(given.saturating_sub(*cell.left.get_mut()));
+        *given = *cell.left.get_mut();
+        let leaves = n * b.items.len() as u64;
+        r.seen += n as u32;
+        r.spared += leaves;
+        c.note_spared(leaves as u32);
+    }
+
+    /// The cell of a scatter through driver slot `driver` for what plan `b` stands at now: no
+    /// image while the plan does not compare, so an image let go is not read again.
+    #[cold]
+    #[inline(never)]
+    fn scat_put(
+        &mut self,
+        b: &mut Bound,
+        at: usize,
+        tab: ConstId,
+        desc: u64,
+        driver: u32,
+        c: &mut Ctx<'_>,
+    ) {
+        let k = crate::GATHER_CELLS + driver as usize;
+        let keep = self.plans[at].ds == 0 || self.plans[at].at == desc;
+        let Cmp::Ready(r) = &mut b.cmp else {
+            if let Some(cell) = self.icells.get_mut(k).filter(|x| x.tab == tab.0) {
+                cell.image = 0;
+            }
+            return;
+        };
+        // (The host compares only through the slots of its first scatter: `Bound::refs`.)
+        if !keep {
+            r.inline = Inline::No;
+            return;
+        }
+        if c.gate_unset() || b.refs.get().is_none_or(|(base, _)| *base != driver) {
+            return;
+        }
+        if r.inline == Inline::Unasked {
+            r.inline = match c.plan_gate(&r.drivers) {
+                0 => Inline::No,
+                bit => Inline::Bit(bit, 0),
+            };
+        }
+        let Inline::Bit(bit, ref mut given) = r.inline else {
+            return;
+        };
+        let left = IMAGE_REVIEW.saturating_sub(r.seen);
+        *given = left;
+        let (id, size) = (r.id, b.plan.size as u32);
+        let image = c.image(id).map_or(0, |i| i.as_ptr() as u64);
+        let Some(cell) = self.cell(k, c) else {
+            return;
+        };
+        *cell.left.get_mut() = left;
+        cell.mask = bit;
+        cell.tab = tab.0;
+        cell.desc = desc;
+        cell.size = size;
+        cell.image = image;
+    }
+
+    /// What compiled code copied through the cell of a gather since the host last looked, in the
+    /// counts of the review.
+    #[cold]
+    #[inline(never)]
+    fn gath_take(&mut self, b: &mut Bound, tab: ConstId, c: &mut Ctx<'_>) {
+        let Img::Ready { copies, given, .. } = &mut b.img else {
+            return;
+        };
+        let k = tab.0 as usize % crate::GATHER_CELLS;
+        let Some(cell) = self.icells.get_mut(k).filter(|x| x.tab == tab.0) else {
+            return;
+        };
+        let n = given.saturating_sub(*cell.left.get_mut());
+        *given = *cell.left.get_mut();
+        *copies += n;
+        c.note_gathers(u64::from(n));
+        if *copies >= IMAGE_REVIEW {
+            image_review(b, c);
+        }
+    }
+
+    /// The cell of a gather for what plan `b` stands at now (`scat_put`).
+    #[cold]
+    #[inline(never)]
+    fn gath_put(&mut self, b: &mut Bound, at: usize, tab: ConstId, desc: u64, c: &mut Ctx<'_>) {
+        let k = tab.0 as usize % crate::GATHER_CELLS;
+        let keep = self.plans[at].ds == 0 || self.plans[at].at == desc;
+        let size = b.plan.size as u32;
+        // Another table's while it lasts: only this one's gathers go through the host.
+        if self
+            .icells
+            .get(k)
+            .is_some_and(|x| x.image != 0 && x.tab != tab.0)
+        {
+            return;
+        }
+        let Img::Ready {
+            id,
+            copies,
+            ref mut given,
+            ..
+        } = b.img
+        else {
+            if let Some(cell) = self.icells.get_mut(k).filter(|x| x.tab == tab.0) {
+                cell.image = 0;
+            }
+            return;
+        };
+        if !keep || c.gate_unset() {
+            return;
+        }
+        let left = IMAGE_REVIEW.saturating_sub(copies);
+        *given = left;
+        let image = c.image(id).map_or(0, |i| i.as_ptr() as u64);
+        let Some(cell) = self.cell(k, c) else {
+            return;
+        };
+        *cell.left.get_mut() = left;
+        cell.tab = tab.0;
+        cell.desc = desc;
+        cell.size = size;
+        cell.image = image;
+    }
+
+    /// `Process::images_tail`.
+    pub(crate) fn images_tail(&self) -> (u64, u64) {
+        let (mut copied, mut spared) = (0, 0);
+        let left = |k: usize, tab: u32| {
+            let c = self.icells.get(k).filter(|c| c.tab == tab)?;
+            Some(c.left.load(Relaxed))
+        };
+        for m in &self.plans {
+            let Some(b) = &m.bound else {
+                continue;
+            };
+            if let Img::Ready { given, .. } = b.img
+                && let Some(l) = left(m.tab as usize % crate::GATHER_CELLS, m.tab)
+            {
+                copied += u64::from(given.saturating_sub(l));
+            }
+            if let Cmp::Ready(r) = &b.cmp
+                && let Inline::Bit(_, given) = r.inline
+                && let Some((base, _)) = b.refs.get()
+                && let Some(l) = left(crate::GATHER_CELLS + *base as usize, m.tab)
+            {
+                spared += u64::from(given.saturating_sub(l)) * b.items.len() as u64;
+            }
+        }
+        (copied, spared)
+    }
+
+    /// `YAVS_IMAGE_CHECK`, debug builds: compiled code found the value of the scatter through
+    /// `driver` equal to its image and the plan gate open: the kernel's full test, and what the
+    /// slow path would have said.
+    pub(crate) fn scatter_check(
+        &mut self,
+        prog: &Program,
+        driver: u32,
+        src: Reg,
+        desc: Reg,
+        tab: ConstId,
+        ctx: &mut Option<&mut Ctx<'_>>,
+    ) -> R<()> {
+        let (at, b) = self.take_plan(prog, tab, self.r(desc))?;
+        let r = self.scatter_check_bound(&b, driver, src, ctx);
+        self.put_plan(at, b);
+        r
+    }
+
+    fn scatter_check_bound(
+        &self,
+        b: &Bound,
+        driver: u32,
+        src: Reg,
+        ctx: &mut Option<&mut Ctx<'_>>,
+    ) -> R<()> {
+        let Some(c) = ctx.as_deref_mut() else {
+            return Err(ice("a compiled record skip without a kernel"));
+        };
+        let Cmp::Ready(r) = &b.cmp else {
+            return Err(ice(
+                "a compiled record skip of a plan that does not compare",
+            ));
+        };
+        let data = self.rd(self.r(src), b.plan.size)?;
+        let ds = self
+            .drivers
+            .get(driver as usize..driver as usize + b.plan.leaves.len())
+            .ok_or_else(|| ice(format!("no driver slots from {driver}")))?;
+        let Some(im) = c.image(r.id) else {
+            return Err(ice("a compiled record skip with no image"));
+        };
+        if data != im {
+            return Err(ice(
+                "a compiled record skip of a value its image does not hold",
+            ));
+        }
+        if !c.drive_clean(&r.drivers) {
+            return Err(ice(
+                "a compiled record skip with drivers that are not clean",
+            ));
+        }
+        let k = crate::GATHER_CELLS + driver as usize;
+        if self.icells.get(k).map(|x| x.image) != Some(im.as_ptr() as u64) {
+            return Err(ice(
+                "a compiled record skip through a cell that names no image",
+            ));
+        }
+        cmp_check(b, r, c, ds, data, im)
+    }
+
+    /// `YAVS_IMAGE_CHECK`, debug builds: compiled code copied the image into the value at `dst`:
+    /// the leaves as the kernel has them against it.
+    pub(crate) fn gather_check(
+        &mut self,
+        prog: &Program,
+        dst: Reg,
+        desc: Reg,
+        tab: ConstId,
+        ctx: &mut Option<&mut Ctx<'_>>,
+    ) -> R<()> {
+        let (at, b) = self.take_plan(prog, tab, self.r(desc))?;
+        let r = self.gather_check_bound(&b, dst, ctx);
+        self.put_plan(at, b);
+        r
+    }
+
+    fn gather_check_bound(&self, b: &Bound, dst: Reg, ctx: &mut Option<&mut Ctx<'_>>) -> R<()> {
+        let Some(c) = ctx.as_deref_mut() else {
+            return Err(ice("a compiled record copy without a kernel"));
+        };
+        let Img::Ready { id, .. } = b.img else {
+            return Err(ice("a compiled record copy of a plan with no image"));
+        };
+        let got = self.rd(self.r(dst), b.plan.size)?;
+        if c.image(id) != Some(got) {
+            return Err(ice("a compiled record copy that is not its image"));
+        }
+        let mut leaves = vec![0u8; got.len()];
+        for t in &*b.items {
+            let (l, s) = (&b.plan.leaves[t.leaf as usize], &b.sigs[t.leaf as usize]);
+            let o = &mut leaves[t.voff as usize..(t.voff + t.vsize) as usize];
+            read_leaf(c, s, l, t.k, o)?;
+        }
+        image_check(b, Some(got), &leaves)
+    }
+
     /// The plan of table `tab` for the value whose descriptor is at `desc`, out of this machine's
     /// list; give it back with [`Machine::put_plan`].
     #[inline(always)]
@@ -373,7 +1087,7 @@ impl Machine {
             }
             let hit = m.ds == 0 || m.at == desc || {
                 let same = *self.rd(desc, m.ds)? == *m.desc;
-                if same && split(desc).0 == CONST {
+                if same && matches!(split(desc).0, CONST | crate::exec::INST) {
                     self.plans[i].at = desc;
                 }
                 same
@@ -442,6 +1156,9 @@ impl Machine {
                 items,
                 reads,
                 runs,
+                refs: std::cell::OnceCell::new(),
+                img: Img::Count(0),
+                cmp: Cmp::Count(0),
             })
         }))
     }
@@ -500,11 +1217,34 @@ impl Machine {
         part: Option<Part>,
         ctx: &mut Option<&mut Ctx<'_>>,
     ) -> R<()> {
-        let (at, b) = self.take_plan(prog, tab, self.r(desc))?;
+        let (at, mut b) = self.take_plan(prog, tab, self.r(desc))?;
+        // The cell: what compiled code copied goes into the counts before the review, and it sees
+        // what this gather made of the plan.
+        let was = matches!(b.img, Img::Ready { .. });
+        if let Img::Ready { given, .. } = b.img
+            && given != 0
+            && part.is_none()
+            && (self.icells.get(tab.0 as usize % crate::GATHER_CELLS))
+                .is_some_and(|x| x.tab == tab.0 && x.left.load(Relaxed) != given)
+            && let Some(c) = ctx.as_deref_mut()
+        {
+            self.gath_take(&mut b, tab, c);
+        }
         // The plan goes back on both arms: an `R` kept across `put_plan` is reloaded through
         // memory, a stall of its own.
-        match self.gather_leaves(&b, dst, part, ctx) {
+        match self.gather_leaves(&mut b, dst, part, ctx) {
             Ok(()) => {
+                let put = match b.img {
+                    Img::Ready { given, .. } => given == 0,
+                    _ => was,
+                };
+                if put
+                    && part.is_none()
+                    && let Some(c) = ctx.as_deref_mut()
+                    && (was && !matches!(b.img, Img::Ready { .. }) || !c.gate_unset())
+                {
+                    self.gath_put(&mut b, at, tab, self.r(desc), c);
+                }
                 self.put_plan(at, b);
                 Ok(())
             }
@@ -517,7 +1257,7 @@ impl Machine {
 
     fn gather_leaves(
         &mut self,
-        b: &Bound,
+        b: &mut Bound,
         dst: Reg,
         part: Option<Part>,
         ctx: &mut Option<&mut Ctx<'_>>,
@@ -530,6 +1270,23 @@ impl Machine {
         let base = self.r(dst);
         let out = self.wr(base, plan.size)?;
         if part.is_none() && !b.items.is_empty() {
+            if let Img::Ready {
+                id,
+                check: false,
+                ref mut copies,
+                ..
+            } = b.img
+                && let Some(im) = c.image(id)
+            {
+                out.copy_from_slice(im);
+                c.note_gather(true);
+                *copies += 1;
+                if *copies >= IMAGE_REVIEW {
+                    image_review(b, c);
+                }
+                return Ok(());
+            }
+            c.note_gather(false);
             for g in &*b.reads {
                 let ts = &b.items[g.first as usize..][..g.n as usize];
                 // One plane word of the signal for all items of the group.
@@ -564,6 +1321,15 @@ impl Machine {
                         }
                     }
                 }
+            }
+            if let Img::Ready {
+                id, check: true, ..
+            } = b.img
+            {
+                image_check(b, c.image(id), out)?;
+            }
+            if !matches!(b.img, Img::Ready { .. } | Img::Off) {
+                image_step(b, c);
             }
             return Ok(());
         }
@@ -617,9 +1383,39 @@ impl Machine {
             ),
             _ => return Err(cold(|| ice("a scatter with the wrong operands"))),
         };
-        let (at, b) = self.take_plan(prog, tab, self.r(desc))?;
-        match self.scatter_leaves(&b, driver, src, part, after, mode, reject, ctx) {
+        let (at, mut b) = self.take_plan(prog, tab, self.r(desc))?;
+        let was = matches!(b.cmp, Cmp::Ready(_));
+        // The cell: what compiled code skipped goes into the counts before the review.
+        if let Cmp::Ready(r) = &b.cmp
+            && let Inline::Bit(_, given) = r.inline
+            && has == 0
+            && self
+                .icells
+                .get(crate::GATHER_CELLS + driver as usize)
+                .is_some_and(|x| x.left.load(Relaxed) != given)
+            && let Some(c) = ctx.as_deref_mut()
+        {
+            self.scat_take(&mut b, tab, driver, c);
+        }
+        match self.scatter_leaves(&mut b, driver, src, part, after, mode, reject, ctx) {
             Ok(()) => {
+                // Compiled code sees what this scatter made of the plan: it may start, it has
+                // used up what it was given, or the image is gone.
+                let put = match &b.cmp {
+                    Cmp::Ready(r) => match r.inline {
+                        Inline::Unasked => true,
+                        Inline::Bit(_, given) => given == 0,
+                        Inline::No => false,
+                    },
+                    _ => was,
+                };
+                if put
+                    && has == 0
+                    && let Some(c) = ctx.as_deref_mut()
+                    && (was && !matches!(b.cmp, Cmp::Ready(_)) || !c.gate_unset())
+                {
+                    self.scat_put(&mut b, at, tab, self.r(desc), driver, c);
+                }
                 self.put_plan(at, b);
                 Ok(())
             }
@@ -633,7 +1429,7 @@ impl Machine {
     #[allow(clippy::too_many_arguments)]
     fn scatter_leaves(
         &mut self,
-        b: &Bound,
+        b: &mut Bound,
         driver: u32,
         src: Reg,
         part: Option<Part>,
@@ -656,41 +1452,46 @@ impl Machine {
             .get(driver as usize..driver as usize + plan.leaves.len())
             .ok_or_else(|| cold(|| ice(format!("no driver slots from {driver}"))))?;
         let when = (t, now, mode);
+        let (base, cached) = b.refs.get_or_init(|| {
+            let refs = ds.iter().map(|d| c.direct_ref(d.id)).collect();
+            (driver, refs)
+        });
+        // Another scatter through the same plan (other driver slots): no facts, the usual path.
+        let refs: &[Option<yavs_kernel::DirectRef>] = if *base == driver { cached } else { &[] };
         let mut run = None;
         if part.is_none() && !b.items.is_empty() {
-            for g in &*b.runs {
-                let ts = &b.items[g.first as usize..][..g.n as usize];
-                let id = ds[ts[0].leaf as usize].id;
-                // One run of one driver: its planes built in registers, one assignment.
-                if g.word != NO_WORD && ts.iter().all(|t| ds[t.leaf as usize].id == id) {
-                    flush_run(c, &mut run, when)?;
-                    let (mut p, mut at) = ([0u64; 4], 0);
-                    for t in ts {
-                        let o = t.voff as usize;
-                        let v = data
-                            .get(o..o + t.vsize as usize)
-                            .ok_or_else(|| cold(|| ice("a leaf outside its value")))?;
-                        for (p, b) in p.iter_mut().zip(leaf_planes(t.kind, t.len, t.bias, v)) {
-                            *p |= b << at;
-                        }
-                        at += t.len;
-                    }
-                    flush_planes(c, id, Range::new(ts[0].k, at), p, when)?;
-                    continue;
+            // The value against the image of the signal: what holds its value needs no planes
+            // built and no kernel call.
+            let mut cmp = None;
+            if now && *base == driver {
+                if matches!(b.cmp, Cmp::Count(_) | Cmp::Asked(_)) {
+                    b.cmp = cmp_step(std::mem::replace(&mut b.cmp, Cmp::Off), b, c, ds);
+                } else if let Cmp::Ready(r) = &b.cmp
+                    && c.drive_clean(&r.drivers)
+                {
+                    cmp = c.image(r.id).map(|i| (&**r, i));
                 }
-                for t in ts {
-                    let l = &plan.leaves[t.leaf as usize];
-                    let at = t.voff as usize;
-                    let v = data
-                        .get(at..at + l.vsize as usize)
-                        .ok_or_else(|| cold(|| ice("a leaf outside its value")))?;
-                    let d = ds[t.leaf as usize].id;
-                    write_leaf(c, d, l, Range::new(t.k, l.len), v, &mut run, when)?;
+            }
+            let mut spared = 0;
+            if let Some((r, im)) = cmp {
+                spared = scatter_compared(b, r, im, c, ds, data, refs, when)?;
+            } else {
+                for g in &*b.runs {
+                    scatter_run(c, plan, &b.items, g, ds, data, refs, &mut run, when)?;
+                }
+            }
+            if let Cmp::Ready(r) = &mut b.cmp {
+                c.note_spared(spared);
+                r.seen += 1;
+                r.spared += u64::from(spared);
+                if r.seen >= IMAGE_REVIEW {
+                    cmp_review(&mut b.cmp, c);
                 }
             }
             return flush_run(c, &mut run, when);
         }
-        for ((l, s), d) in plan.leaves.iter().zip(&*b.sigs).zip(ds) {
+        for (li, ((l, s), d)) in plan.leaves.iter().zip(&*b.sigs).zip(ds).enumerate() {
+            let dref = refs.get(li).and_then(Option::as_ref);
             let n = l.insts as usize;
             for i in 0..n {
                 // A logic leaf's instances are mirrored in the kernel (`Leaf::kstart`): taken
@@ -701,7 +1502,7 @@ impl Machine {
                     .get(at..at + l.vsize as usize)
                     .ok_or_else(|| cold(|| ice("a leaf outside its value")))?;
                 let r = Range::new(s.off + l.kstart(j, first, outer) as u32, l.len);
-                write_leaf(c, d.id, l, r, v, &mut run, when)?;
+                write_leaf(c, d.id, l, r, v, &mut run, when, dref)?;
             }
         }
         flush_run(c, &mut run, when)

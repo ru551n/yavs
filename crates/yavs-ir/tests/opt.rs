@@ -22,6 +22,21 @@ fn count(code: &[Inst], pred: impl Fn(&Inst) -> bool) -> usize {
     code.iter().filter(|i| pred(i)).count()
 }
 
+/// The checks of a value's length against a descriptor's: a `SubtypeCheck`, or a `Check` of two
+/// lengths where the bounds are in registers.
+fn length_checks(code: &[Inst]) -> usize {
+    count(code, |i| {
+        matches!(
+            i,
+            Inst::SubtypeCheck { .. }
+                | Inst::Check {
+                    kind: CheckKind::Length,
+                    ..
+                }
+        )
+    })
+}
+
 fn on() -> bool {
     opt::enabled()
 }
@@ -1163,11 +1178,7 @@ fn a_descriptor_of_constants_has_known_lengths() {
         0,
         "{code:?}"
     );
-    assert_eq!(
-        count(&code, |i| matches!(i, Inst::SubtypeCheck { .. })),
-        1,
-        "{code:?}"
-    );
+    assert_eq!(length_checks(&code), 1, "{code:?}");
     assert!(
         code.iter().any(|i| matches!(i, Inst::Const { v: 15, .. })),
         "{code:?}"
@@ -1322,7 +1333,7 @@ fn a_descriptor_from_zero_to_a_length_minus_one_has_that_length() {
             });
             fb.emit(Inst::Ret { v: None });
         });
-        count(&code, |i| matches!(i, Inst::SubtypeCheck { .. }))
+        length_checks(&code)
     };
     assert_eq!(checks(0), 0);
     assert_eq!(checks(1), 1);
@@ -1748,6 +1759,22 @@ fn thin_call(variant: &str) -> (Vec<Inst>, Vec<Via>, FuncId) {
         let (t, e) = (fb.block(), fb.block());
         fb.emit(Inst::CondBr { c, t, f: e });
         fb.at(t);
+        let neg = bin(&mut fb, IntOp::Sub, zero, sum);
+        fb.emit(Inst::Ret { v: Some(neg) });
+        fb.at(e);
+    }
+    if variant == "choice" {
+        let c = fb.reg(RegTy::I64);
+        let zero = fb.int(0);
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Lt,
+            dst: c,
+            a: sum,
+            b: zero,
+        });
+        let (t, e) = (fb.block(), fb.block());
+        fb.emit(Inst::CondBr { c, t, f: e });
+        fb.at(t);
         fb.emit(Inst::Ret { v: Some(zero) });
         fb.at(e);
     }
@@ -1825,6 +1852,22 @@ fn a_call_of_a_thin_function_becomes_its_code() {
         .iter()
         .position(|i| matches!(i, Inst::CondBr { .. }))
         .expect("the branch");
+    assert!(matches!(via[at], Some((_, c)) if c == f), "{via:?}");
+    // A branch that only returns one of two values is a choice of one path, spliced in place.
+    let (code, via, f) = thin_call("choice");
+    assert_eq!(count(&code, is_call), 0, "choice: {code:?}");
+    assert_eq!(
+        count(&code, |i| matches!(
+            i,
+            Inst::CondBr { .. } | Inst::Br { .. }
+        )),
+        0,
+        "{code:?}"
+    );
+    let at = code
+        .iter()
+        .position(|i| matches!(i, Inst::Select { .. }))
+        .expect("the choice");
     assert!(matches!(via[at], Some((_, c)) if c == f), "{via:?}");
 }
 
@@ -2349,9 +2392,15 @@ fn a_case_of_the_callee_becomes_compares() {
         0,
         "{code:?}"
     );
+    // The test of the first arm; the second arm against the default returns a choice.
     assert_eq!(
         count(code, |i| matches!(i, Inst::CondBr { .. })),
-        2,
+        1,
+        "{code:?}"
+    );
+    assert_eq!(
+        count(code, |i| matches!(i, Inst::Select { .. })),
+        1,
         "{code:?}"
     );
 }
@@ -2667,7 +2716,7 @@ fn scaled_slice_checks(mul_r: i64) -> usize {
         });
         fb.emit(Inst::Ret { v: None });
     });
-    count(&code, |i| matches!(i, Inst::SubtypeCheck { .. }))
+    length_checks(&code)
 }
 
 #[test]
@@ -2729,7 +2778,7 @@ fn native_checks(symbol: &str, args: &[Option<i64>]) -> usize {
         });
         fb.emit(Inst::Ret { v: None });
     });
-    count(&code, |i| matches!(i, Inst::SubtypeCheck { .. }))
+    length_checks(&code)
 }
 
 #[test]
@@ -2879,7 +2928,7 @@ fn chained_native_checks(size: i64, other: i64, same: bool) -> usize {
         });
         fb.emit(Inst::Ret { v: None });
     });
-    count(&code, |i| matches!(i, Inst::SubtypeCheck { .. }))
+    length_checks(&code)
 }
 
 #[test]
@@ -2892,4 +2941,263 @@ fn bounds_read_from_a_native_result_give_the_length_of_the_next_native() {
     assert_eq!(chained_native_checks(5, 8, true), 0);
     assert_eq!(chained_native_checks(9, 3, true), 1);
     assert_eq!(chained_native_checks(8, 3, false), 1);
+}
+
+/// `"0" & s(i downto i)` of a logic signal: the one-element read only the `Cat` takes is a scalar
+/// read and a scalar piece (a block nothing else reads, no bias).
+#[test]
+fn a_one_element_read_that_only_a_cat_takes_is_scalar() {
+    if !on() {
+        return;
+    }
+    for (bias, units, scalar) in [(0u8, 1, true), (2, 1, false), (0, 2, false)] {
+        let code = build(FuncKind::Function, |fb| {
+            fb.stmt(StmtKind::VarAssign, sp());
+            let (off, len) = (fb.int(3), fb.int(1));
+            let s = fb.reg(RegTy::Sig);
+            fb.emit(Inst::SigVal {
+                dst: s,
+                sig: 0,
+                offset: off,
+                len,
+            });
+            let (size, t, d) = (fb.int(32), fb.reg(RegTy::Ptr), fb.reg(RegTy::Ptr));
+            fb.emit(Inst::Alloc { dst: t, size });
+            fb.emit(Inst::SigRead { dst: t, sig: s });
+            fb.emit(Inst::Alloc { dst: d, size });
+            let (zero, one, two, m) = (fb.int(2), fb.int(1), fb.int(2), fb.int(units));
+            let parts = fb.regs(&[zero, one, t, one]);
+            fb.emit(Inst::Cat {
+                dst: d,
+                n: two,
+                m,
+                parts,
+                scalars: 1,
+                bias,
+                logic: true,
+                w: Width::B1,
+            });
+            let (i0, x) = (fb.int(1), fb.reg(RegTy::I64));
+            fb.emit(Inst::LGet {
+                dst: x,
+                base: d,
+                idx: i0,
+            });
+            fb.stmt(StmtKind::Return, sp());
+            fb.emit(Inst::Ret { v: Some(x) });
+        });
+        let reads = count(&code, |i| matches!(i, Inst::SigReadScalar { .. }));
+        let vecs = count(&code, |i| matches!(i, Inst::SigRead { .. }));
+        assert_eq!(
+            (reads, vecs),
+            (usize::from(scalar), usize::from(!scalar)),
+            "{code:?}"
+        );
+        if scalar {
+            assert!(
+                code.iter()
+                    .any(|i| matches!(i, Inst::Cat { scalars: 3, .. })),
+                "{code:?}"
+            );
+        }
+    }
+}
+
+/// A descriptor of run-time bounds read by `read`, with bounds from the first three slots.
+fn made_of_slots(
+    kind: FuncKind,
+    read: impl FnOnce(&mut FuncBuilder<'_>, Reg, CheckMsgId),
+) -> Vec<Inst> {
+    build(kind, |fb| {
+        for k in 0..3 {
+            let n = format!("b{k}");
+            fb.param(&n, Width::B8, ParamClass::Value, Mode::In, None);
+        }
+        fb.stmt(StmtKind::Return, sp());
+        let (l, r) = (load(fb, 0), load(fb, 8));
+        let d = load(fb, 16);
+        let at = fb.reg(RegTy::Ptr);
+        let n = fb.int(24);
+        fb.emit(Inst::Alloc { dst: at, size: n });
+        let parts = fb.regs(&[l, r, d]);
+        fb.emit(Inst::MakeDope { at, parts });
+        let what = fb.program().check_msg("value", Dir::To);
+        read(fb, at, what);
+    })
+}
+
+#[test]
+fn a_descriptor_of_registers_is_read_in_registers() {
+    if !on() {
+        return;
+    }
+    let code = made_of_slots(FuncKind::Function, |fb, at, what| {
+        let n = fb.reg(RegTy::I64);
+        fb.emit(Inst::DopeLen {
+            dst: n,
+            dope: at,
+            dim: 0,
+        });
+        let i = fb.int(3);
+        let p = fb.reg(RegTy::I64);
+        fb.emit(Inst::Pos {
+            dst: p,
+            dope: at,
+            dim: 0,
+            idx: i,
+            what,
+        });
+        let want = made(fb, 7, 0, 1);
+        fb.emit(Inst::SubtypeCheck {
+            dope: at,
+            want,
+            dims: 1,
+            what,
+        });
+        let s = bin(fb, IntOp::Add, n, p);
+        fb.emit(Inst::Ret { v: Some(s) });
+    });
+    for gone in [
+        count(&code, |i| matches!(i, Inst::Alloc { .. })),
+        count(&code, |i| matches!(i, Inst::MakeDope { .. })),
+        count(&code, |i| matches!(i, Inst::DopeLen { .. })),
+        count(&code, |i| matches!(i, Inst::Pos { .. })),
+        count(&code, |i| matches!(i, Inst::SubtypeCheck { .. })),
+    ] {
+        assert_eq!(gone, 0, "{code:?}");
+    }
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::BoundsPos { .. })),
+        1,
+        "{code:?}"
+    );
+    assert_eq!(length_checks(&code), 1, "{code:?}");
+}
+
+/// A descriptor that may be written after it is made keeps its reads: the bounds in memory can
+/// differ from the registers it was made from.
+#[test]
+fn a_descriptor_something_may_write_stays_in_memory() {
+    if !on() {
+        return;
+    }
+    let code = made_of_slots(FuncKind::Function, |fb, at, _| {
+        let k = fb.int(5);
+        fb.emit(Inst::Store {
+            addr: at,
+            src: k,
+            w: Width::B8,
+        });
+        let n = fb.reg(RegTy::I64);
+        fb.emit(Inst::DopeLen {
+            dst: n,
+            dope: at,
+            dim: 0,
+        });
+        fb.emit(Inst::Ret { v: Some(n) });
+    });
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::BoundsLen { .. })),
+        0,
+        "{code:?}"
+    );
+}
+
+/// A parameter's bounds in its own slots, read as registers; no address of the frame is left
+/// but those of the loads, so nothing keeps the frame from being closed.
+#[test]
+fn the_bounds_in_a_parameters_slots_are_read_in_registers() {
+    if !on() {
+        return;
+    }
+    let param = |fb: &mut FuncBuilder<'_>| {
+        let data = fb.param("x", Width::B8, ParamClass::Value, Mode::In, None);
+        for w in ["x'left", "x'right", "x'dir"] {
+            fb.param(w, Width::B8, ParamClass::Value, Mode::In, None);
+        }
+        data
+    };
+    let (mut pb, f) = {
+        let mut pb = ProgramBuilder::new();
+        let ty = pb.ty(Ty::Int { lo: 0, hi: 9 });
+        let elem = pb.ty(Ty::Array {
+            elem: ty,
+            elem_desc: None,
+            dims: 1,
+        });
+        let f = pb.declare("f", FuncKind::Function, None);
+        let mut fb = pb.define(f);
+        let data = param(&mut fb);
+        fb.param_flat(data, elem);
+        fb.stmt(StmtKind::Return, sp());
+        let dope = fb.addr(AddrSpace::Frame, data + 8);
+        let what = fb.program().check_msg("index", Dir::To);
+        let n = fb.reg(RegTy::I64);
+        fb.emit(Inst::DopeLen {
+            dst: n,
+            dope,
+            dim: 0,
+        });
+        let p = fb.reg(RegTy::I64);
+        fb.emit(Inst::Pos {
+            dst: p,
+            dope,
+            dim: 0,
+            idx: n,
+            what,
+        });
+        let (a, b, d) = (fb.int(1), fb.int(0), fb.int(1));
+        let s = fb.reg(RegTy::I64);
+        fb.emit(Inst::SlicePos {
+            dst: s,
+            dope,
+            left: a,
+            right: b,
+            dir: d,
+            what,
+            dir_what: what,
+        });
+        let t = bin(&mut fb, IntOp::Add, p, s);
+        fb.emit(Inst::Ret { v: Some(t) });
+        fb.finish();
+        (pb, f)
+    };
+    let _ = &mut pb;
+    let p = pb.finish().expect("optimised code verifies");
+    let code = &p.func(f).expect("f").code;
+    for gone in [
+        count(code, |i| matches!(i, Inst::DopeLen { .. })),
+        count(code, |i| matches!(i, Inst::Pos { .. })),
+        count(code, |i| matches!(i, Inst::SlicePos { .. })),
+    ] {
+        assert_eq!(gone, 0, "{code:?}");
+    }
+    assert_eq!(
+        count(code, |i| matches!(i, Inst::BoundsSlice { .. })),
+        1,
+        "{code:?}"
+    );
+    // The frame's addresses are read only: every one is the address of a load.
+    let frame: Vec<Reg> = code
+        .iter()
+        .filter_map(|i| match *i {
+            Inst::AddrOf {
+                dst,
+                space: AddrSpace::Frame,
+                ..
+            } => Some(dst),
+            _ => None,
+        })
+        .collect();
+    for i in code {
+        if matches!(i, Inst::Load { .. } | Inst::AddrOf { .. }) {
+            continue;
+        }
+        i.visit(&mut |r, role, _| {
+            assert!(
+                role != Role::Use || !frame.contains(&r),
+                "{i:?} reads a frame address: {code:?}"
+            );
+        });
+    }
 }

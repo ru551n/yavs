@@ -1,0 +1,2 @@
+exit	1
+diag	fatal	1995000000	0	:stack_nested_index:i0:_p0	index 7 outside of NATURAL range 6 downto 2

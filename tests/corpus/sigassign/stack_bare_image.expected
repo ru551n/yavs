@@ -1,0 +1,17 @@
+exit	0
+diag	note	35000000	3	:stack_bare_image:level	ch2(17) high with bus 6543210C
+diag	note	235000000	1	:stack_bare_image:level	bus_out(70) low F79B94C4
+diag	note	255000000	3	:stack_bare_image:level	ch2(17) high with bus 432359DC
+diag	note	315000000	1	:stack_bare_image:level	bus_out(70) low 9B94C46A
+diag	note	345000000	3	:stack_bare_image:level	ch2(17) high with bus 46B3B959
+diag	note	395000000	0	:stack_bare_image:stim	31161 78889 41272 FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF A
+diag	note	445000000	1	:stack_bare_image:level	bus_out(70) low 988D4D0D
+diag	note	795000000	0	:stack_bare_image:stim	92540 62240 86291 FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF A
+diag	note	1195000000	0	:stack_bare_image:stim	87446 14096 64554 FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF A
+diag	note	1595000000	0	:stack_bare_image:stim	84391 84073 26775 FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF A
+diag	note	1995000000	0	:stack_bare_image:stim	83364 54712 87043 FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF A
+diag	note	2395000000	0	:stack_bare_image:stim	22524 28731 43779 FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF A
+diag	note	2795000000	0	:stack_bare_image:stim	57755 20327 84441 FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF A
+diag	note	3195000000	0	:stack_bare_image:stim	95262 4196 30175 FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF A
+diag	note	3595000000	0	:stack_bare_image:stim	25757 91661 73431 FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF A
+diag	note	3995000000	0	:stack_bare_image:stim	45506 69266 26528 FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF A

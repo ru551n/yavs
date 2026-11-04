@@ -15,10 +15,15 @@
 
 use super::*;
 
-/// The most bytes of one temporary.
-const MAX_TEMP: u32 = 256;
-/// The most bytes of slots one process takes.
-const MAX_BYTES: u32 = 4 * 1024;
+/// The most bytes of one temporary, and of slots one process takes (signal copies go past the
+/// small sizes with the variables they are copied to, `opt/proc_objects.rs`).
+fn limits() -> (u32, u32) {
+    if super::proc_objects::enabled() {
+        (4 * 1024, 16 * 1024)
+    } else {
+        (256, 4 * 1024)
+    }
+}
 /// The temporaries of one block tracked at a time (a bit each).
 const MAX_PER_BLOCK: usize = 64;
 
@@ -92,6 +97,7 @@ fn classify(f: &crate::Func, i: &Inst) -> Option<Use> {
         }
         Inst::LogicOp { dst, a, b, .. } | Inst::LNum { dst, a, b, .. } => u.ok.extend([dst, a, b]),
         Inst::LEq { a, b, .. } | Inst::MemEq { a, b, .. } => u.ok.extend([a, b]),
+        Inst::LKey { a, .. } => u.ok.push(a),
         Inst::LGet { base, .. } | Inst::LSet { base, .. } | Inst::LFill { base, .. } => {
             u.ok.push(base)
         }
@@ -101,6 +107,8 @@ fn classify(f: &crate::Func, i: &Inst) -> Option<Use> {
             u.ok.extend_from_slice(f.regs(parts)?);
         }
         Inst::SigRead { dst, .. } | Inst::SigLastValue { dst, .. } => u.ok.push(dst),
+        Inst::SigGather { dst, desc, .. } => u.ok.extend([dst, desc]),
+        Inst::SigScatter { src, desc, .. } => u.ok.extend([src, desc]),
         Inst::DrivingValue { dst, .. } | Inst::SigDrivingValue { dst, .. } => u.ok.push(dst),
         Inst::Drive { wave, .. } | Inst::DriveSlot { wave, .. } => u.ok.push(wave),
         Inst::Force { value, .. } => u.ok.push(value),
@@ -141,7 +149,7 @@ fn operands(f: &crate::Func, i: &Inst, out: &mut Vec<Reg>, defs: &mut Vec<Reg>) 
 /// Take the temporaries of process `f` that can live in its frame. Returns whether the code
 /// changed (the caller then drops the `Stmt` markers left with nothing to free).
 pub(super) fn run(prog: &Program, f: &mut crate::Func) -> bool {
-    if f.kind != FuncKind::Process || f.nested {
+    if f.kind != FuncKind::Process {
         return false;
     }
     let nreg = f.reg_ty.len();
@@ -217,7 +225,7 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) -> bool {
             }
             break;
         }
-        if at + size > MAX_BYTES {
+        if at + size > limits().1 {
             cands[c].ok = false;
             continue;
         }
@@ -528,6 +536,21 @@ fn scan_block(
                                 }
                                 end_fresh(c);
                             }
+                            // Every block of planes written (the bits past the length zero).
+                            Inst::LogicOp { op, dst, a, b, n }
+                                if own(owner.get(&dst))
+                                    && !owner.contains_key(&a)
+                                    && (unary_lop(op) || !owner.contains_key(&b))
+                                    && off.get(&dst) == Some(&0)
+                                    && konst_of(&cv, n).is_some_and(|n| {
+                                        n > 0 && (n as u64).div_ceil(64) * 32 >= u64::from(c.size)
+                                    }) =>
+                            {
+                                if c.fresh {
+                                    c.covered = full(c.size);
+                                }
+                                end_fresh(c);
+                            }
                             _ if u.pure_derive => {}
                             _ => end_fresh(c),
                         }
@@ -573,7 +596,7 @@ fn scan_block(
             && let Some(n) = konst_of(&cv, size)
             && let Ok(n) = u32::try_from(n)
             && n > 0
-            && n <= MAX_TEMP
+            && n <= limits().0
             && local.len() < MAX_PER_BLOCK
             && !(n == 32 && !frame_blocks_on() && fused_in_loop(f, pc, blk.end as usize, dst))
         {
@@ -671,6 +694,12 @@ fn live_out(prog: &Program, f: &crate::Func, tracked: &[Reg]) -> Option<Vec<Vec<
         }
     }
     Some(live)
+}
+
+/// A `LogicOp` that reads `a` only (`b` names any register).
+fn unary_lop(op: crate::LOp) -> bool {
+    use crate::LOp::*;
+    matches!(op, Not | ToX01 | ToX01Z | ToUx01)
 }
 
 fn local_bit(local: &[usize], g: usize) -> usize {

@@ -358,6 +358,16 @@ impl Waiters {
         }
     }
 
+    /// The one waiter of the signal, when it is resident and waits for all of it: every event
+    /// of the signal wakes it (a combinational process on a record pack).
+    #[inline]
+    pub fn sole_whole(&self) -> Option<&Waiter> {
+        match self.only()? {
+            [w] if w.perm != 0 && w.range == Range::new(0, self.len) => Some(w),
+            _ => None,
+        }
+    }
+
     /// The signal has one waiter, a resident one of process `p`.
     #[inline]
     pub fn only_resident(&self, p: u32) -> bool {
@@ -791,6 +801,19 @@ pub(crate) struct Signal {
     pub inactive: bool,
     /// The element and code of the last `commit_code`.
     last_commit: (u32, u8),
+    /// The record images with a leaf in this signal (`image.rs`).
+    pub images: Vec<crate::image::SigImage>,
+    /// `watched` only for its images: off again when the last one goes.
+    pub image_watched: bool,
+    /// Lean with no history: nothing asks `'event`, `'last_value` or `'last_event`, so
+    /// `finish_words_lean` keeps no event record and no `'last_value` (`set_no_history`).
+    bare: bool,
+    /// `bare`, and a word's runs are not counted: `finish_words_lean` compares and copies the
+    /// signal whole when all of it is pending.
+    bare_whole: bool,
+    /// The cycle and stamp of the last event `bare` kept no record of (0: none), for the reports
+    /// of `hang.rs`.
+    bare_last: (u64, u64),
 }
 
 /// The elements of a block of 64 whose last event was one `update_word`, with its cycle and
@@ -844,6 +867,20 @@ fn cover(changed: &mut Vec<Range>, nruns: &mut u64, e: usize, len: u32, runs: u6
             *nruns -= 1;
         }
     }
+}
+
+/// The elements of block `x` that differ from `y`.
+#[inline(always)]
+fn block_diff(x: &Block, y: &Block) -> u64 {
+    (x[0] ^ y[0]) | (x[1] ^ y[1]) | (x[2] ^ y[2]) | (x[3] ^ y[3])
+}
+
+/// Whether `pend` of a signal of `len` elements holds every element.
+#[inline(always)]
+fn all_pending(pend: &[u64], len: usize) -> bool {
+    pend.split_last().is_some_and(|(&tail, whole)| {
+        tail == nmask(len - 64 * whole.len()) && whole.iter().all(|&p| p == !0)
+    })
 }
 
 /// Elements `m` (bit `i` is element `base + i`) of a block changed, on a signal that lists
@@ -1075,6 +1112,11 @@ impl Signal {
             exact: false,
             inactive: false,
             last_commit: (u32::MAX, 0),
+            images: Vec::new(),
+            image_watched: false,
+            bare: false,
+            bare_whole: false,
+            bare_last: (0, 0),
         };
         sig.sync_codes();
         sig
@@ -1095,6 +1137,40 @@ impl Signal {
             self.codes.resize(b.len() * 64, 0);
             refresh_codes(&mut self.codes, &self.cur, 0, *len);
         }
+    }
+
+    /// Keep no event records and no `'last_value` on the lean path (`Builder::no_history`).
+    pub fn set_no_history(&mut self) {
+        self.bare = self.lean;
+    }
+
+    /// Keep the history after all: something asks it (`SimControl::new`).
+    pub(crate) fn keep_history(&mut self) {
+        self.bare = false;
+    }
+
+    /// Debug builds and the `history-check` feature fail here when anything reads the event
+    /// records or `'last_value` of a signal that keeps none: a reader `Elaborated::bare` missed.
+    #[inline(always)]
+    pub(crate) fn check_history(&self, what: &str) {
+        #[cfg(any(debug_assertions, feature = "history-check"))]
+        assert!(
+            !self.bare,
+            "internal error: {what} of `{}`, which keeps no history; this is a bug in yavs",
+            self.name
+        );
+        #[cfg(not(any(debug_assertions, feature = "history-check")))]
+        let _ = what;
+    }
+
+    /// Whether the signal keeps no history (`set_no_history`).
+    pub fn keeps_no_history(&self) -> bool {
+        self.bare
+    }
+
+    /// A bus with no history may be compared and copied whole (`Config::count_runs` off).
+    pub(crate) fn finish_whole(&mut self) {
+        self.bare_whole = self.bare;
     }
 
     /// Keep no byte codes: nothing reads a single element of the signal (before the first event).
@@ -1825,7 +1901,7 @@ impl Signal {
 
     /// [`Signal::direct_same`] for `len` elements from `elem` (at most 64): `planes`, masked to
     /// `len`, is what `cur` and the driving value (the driver's, after a deposit) hold there.
-    #[inline]
+    #[inline(always)]
     pub(crate) fn direct_same_planes(
         &self,
         slot: u32,
@@ -1840,6 +1916,18 @@ impl Signal {
         let Buf::Planes { b: cur, .. } = &self.cur else {
             return false;
         };
+        let (w, sh) = (e / 64, e % 64);
+        // Inside one word, the usual case: the shifted value and the mask made once for both.
+        if sh + n <= 64
+            && !self.exact
+            && let (Some(x), Buf::Planes { b: drv, .. }) = (cur.get(w), &self.driving)
+            && let Some(y) = drv.get(w)
+        {
+            let v = planes.map(|p| p << sh);
+            let m = yavs_logic::wide::nmask(n) << sh;
+            let diff = |x: &Block| (x[0] ^ v[0]) | (x[1] ^ v[1]) | (x[2] ^ v[2]) | (x[3] ^ v[3]);
+            return diff(x) & m == 0 && diff(y) & m == 0;
+        }
         if yavs_logic::wide::get_block(cur, e, n) != planes {
             return false;
         }
@@ -1890,6 +1978,29 @@ impl Signal {
         self.spill_pend_one();
         self.last_commit = (elem, code);
         Some(self.mark_pend(elem, 1))
+    }
+
+    /// Whether `commit_bytes` of `v` to element `elem` through the direct driver in `slot` would
+    /// find the driver and the signal holding it already, on a signal that allows skipping.
+    #[inline(always)]
+    pub(crate) fn direct_same_bytes(&self, slot: u32, elem: u32, v: &[u8]) -> bool {
+        let (es, at) = (v.len(), elem as usize * v.len());
+        let (Buf::Bytes { data: drv, .. }, Buf::Bytes { data: cur, .. }) =
+            (&self.driving, &self.cur)
+        else {
+            return false;
+        };
+        if !self.skip_ok || !cur.get(at..at + es).is_some_and(|c| bytes_eq(c, v)) {
+            return false;
+        }
+        if self.exact {
+            let d = &self.drivers[slot as usize];
+            let rel = (elem - d.range.offset) as usize * es;
+            matches!(&d.value, Buf::Bytes { data, .. }
+                if data.get(rel..rel + es).is_some_and(|x| bytes_eq(x, v)))
+        } else {
+            drv.get(at..at + es).is_some_and(|x| bytes_eq(x, v))
+        }
     }
 
     /// A zero-delay transaction of one element of a byte signal's direct driver
@@ -2078,9 +2189,18 @@ impl Signal {
                 let d = &mut drivers[o.slot as usize];
                 d.put_planes((o.elem - d.range.offset) as usize, o.len as usize, o.planes);
             }
-            // Within one plane word (a whole word of a bus, a register of an array of them):
-            // one mask for the blend and the pending bits. The planes are masked to the length.
             let (w, sh) = (o.elem as usize / 64, o.elem % 64);
+            // A whole plane word of a bus: stored and marked whole.
+            if sh == 0 && o.len == 64 {
+                drv[w] = o.planes;
+                if pend[w] == 0 {
+                    pend_words.push(w as u32);
+                }
+                pend[w] = !0;
+                continue;
+            }
+            // Within one plane word (a register of an array of them): one mask for the blend and
+            // the pending bits. The planes are masked to the length.
             if sh + o.len <= 64 {
                 let m = nmask(o.len as usize) << sh;
                 let b = &mut drv[w];
@@ -2095,6 +2215,35 @@ impl Signal {
             }
             put_block(drv, o.elem as usize, o.len as usize, o.planes, !0);
             mark_bits(pend, pend_words, o.elem, o.len);
+        }
+        first
+    }
+
+    /// `commit_planes_run` of the `len` (over 64) elements of `src` from `src_off` to element
+    /// `elem` of this signal, a bus copy of another signal's plane words with no entries in
+    /// between. Only on a signal whose driver value lags (not `exact`). True when the signal had
+    /// nothing pending.
+    pub(crate) fn commit_copy(&mut self, src: &[Block], src_off: u32, elem: u32, len: u32) -> bool {
+        let first = !self.pend_one && self.pend_words.is_empty();
+        self.spill_pend_one();
+        self.last_commit.0 = u32::MAX;
+        if self.pend.is_empty() {
+            self.pend = vec![0; (self.ty.len as usize).div_ceil(64)];
+        }
+        self.lag = true;
+        let Signal {
+            driving,
+            pend,
+            pend_words,
+            ..
+        } = self;
+        let Buf::Planes { b: drv, .. } = driving else {
+            return false;
+        };
+        let drv: &mut [Block] = drv;
+        yavs_logic::wide::copy_range(drv, elem as usize, src, src_off as usize, len as usize);
+        for k in (0..len).step_by(64) {
+            mark_bits(pend, pend_words, elem + k, (len - k).min(64));
         }
         first
     }
@@ -2303,6 +2452,10 @@ impl Signal {
             watched,
             fine,
             cuts,
+            bare,
+            bare_whole,
+            bare_last,
+            ty,
             ..
         } = self;
         let (Buf::Planes { b: cur, .. }, Buf::Planes { b: drv, .. }, Buf::Planes { b: last, .. }) =
@@ -2312,31 +2465,58 @@ impl Signal {
         };
         let (cur, drv, last): (&mut [Block], &[Block], &mut [Block]) = (cur, drv, last);
         let t = stamp(now);
+        // All of a bus nothing asks the history of: one compare and one copy, as for a byte.
+        if *bare_whole
+            && !(*watched && *fine)
+            && words.len() == cur.len()
+            && all_pending(pend, ty.len as usize)
+        {
+            pend.fill(0);
+            let Some(a) = cur.iter().zip(drv).position(|(x, y)| x != y) else {
+                return false;
+            };
+            *bare_last = (cycle, t);
+            if *watched {
+                let b = cur.iter().zip(drv).rposition(|(x, y)| x != y);
+                let diff = |w: usize| block_diff(&cur[w], &drv[w]);
+                let lo = a * 64 + diff(a).trailing_zeros() as usize;
+                let b = b.unwrap_or(a);
+                let hi = b * 64 + 64 - diff(b).leading_zeros() as usize;
+                debug_assert!(hi <= ty.len as usize, "planes past the end of the signal");
+                cover(changed, nruns, lo, (hi - lo) as u32, 1);
+            } else {
+                *nruns += 1;
+            }
+            cur.copy_from_slice(drv);
+            return true;
+        }
         let (mut any, mut lo, mut hi, mut runs) = (false, usize::MAX, 0, 0);
         for &w in words {
             let w = w as usize;
             let pm = std::mem::take(&mut pend[w]);
-            let (Some(cw), Some(&y), Some(lw)) = (cur.get_mut(w), drv.get(w), last.get_mut(w))
+            let (Some(cw), Some(y), Some(lw)) = (cur.get_mut(w), drv.get(w), last.get_mut(w))
             else {
                 continue;
             };
             let x = *cw;
-            let m = ((x[0] ^ y[0]) | (x[1] ^ y[1]) | (x[2] ^ y[2]) | (x[3] ^ y[3])) & pm;
+            let m = block_diff(&x, y) & pm;
             if m == 0 {
                 continue;
             }
-            let l = *lw;
-            *lw = std::array::from_fn(|p| l[p] & !m | x[p] & m);
             *cw = std::array::from_fn(|p| x[p] & !m | y[p] & m);
-            if let Some(r) = blk_last.get_mut(w) {
-                if r.cycle == cycle {
-                    r.mask |= m;
-                } else {
-                    *r = EvRec {
-                        cycle,
-                        time: t,
-                        mask: m,
-                    };
+            if !*bare {
+                let l = *lw;
+                *lw = std::array::from_fn(|p| l[p] & !m | x[p] & m);
+                if let Some(r) = blk_last.get_mut(w) {
+                    if r.cycle == cycle {
+                        r.mask |= m;
+                    } else {
+                        *r = EvRec {
+                            cycle,
+                            time: t,
+                            mask: m,
+                        };
+                    }
                 }
             }
             any = true;
@@ -2356,6 +2536,9 @@ impl Signal {
                 lo = lo.min(base + m.trailing_zeros() as usize);
                 hi = hi.max(base + 64 - m.leading_zeros() as usize);
             }
+        }
+        if any && *bare {
+            *bare_last = (cycle, t);
         }
         if any && !(*watched && *fine) {
             // Whole-signal waiters: the cover of the changed elements tells them all they need.
@@ -2656,6 +2839,7 @@ impl Signal {
     /// `'last_value` of `r`: the value before the last change of the whole of `r` (LRM 16.2.4),
     /// so an element that did not change in that cycle keeps its current value.
     pub fn last_value_of(&self, r: Range) -> Buf {
+        self.check_history("'last_value");
         let mut b = self.last_value.extract(r.offset as usize, r.len as usize);
         let ev: Vec<u64> = r.elems().map(|e| self.event_cycle(e)).collect();
         if let Some(&latest) = ev.iter().max() {
@@ -2679,7 +2863,8 @@ impl Signal {
 
     /// Whether an element of `r` had an event after cycle `since` (cold: reports).
     pub(crate) fn event_since(&self, r: Range, since: u64) -> bool {
-        (r.offset as usize..(r.offset + r.len) as usize).any(|e| self.event_cycle(e) > since)
+        (self.bare && self.bare_last.0 > since)
+            || (r.offset as usize..(r.offset + r.len) as usize).any(|e| self.event_cycle(e) > since)
     }
 
     /// The event records of block `k` (at most one when lean), `None` for a signal of up to 64
@@ -2765,6 +2950,7 @@ impl Signal {
 
     #[inline]
     pub fn event_in(&self, r: Range, cycle: u64) -> bool {
+        self.check_history("an event test");
         // One element (an edge test): a load and a compare, not a scan.
         (if r.len == 1 {
             self.stamps[r.offset as usize] == cycle
@@ -2777,7 +2963,11 @@ impl Signal {
     pub fn last_event(&self, r: Range, now: Time) -> Time {
         let n = self.ty.len as usize;
         let own = elapsed(now, &self.stamps[2 * n..3 * n][r.elems()]);
-        let blk: SmallVec<[u64; 8]> = self.block_events(r).map(|x| x.time).collect();
+        let mut blk: SmallVec<[u64; 8]> = self.block_events(r).map(|x| x.time).collect();
+        // No history: the signal's last event (reports only; such a signal has one part).
+        if self.bare {
+            blk.push(self.bare_last.1);
+        }
         own.min(elapsed(now, &blk))
     }
 
@@ -3599,6 +3789,172 @@ mod tests {
         );
         small.set_lean_events();
         assert!(!small.is_lean());
+    }
+
+    /// `commit_copy` against `commit_planes_run` of the same elements in blocks: the same driving
+    /// value and pending bits, at every alignment of source and target.
+    #[test]
+    fn a_bus_copy_is_its_run_of_entries() {
+        let ty = SignalType::logic(300);
+        let mut x = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let src: Vec<Block> = (0..5).map(|_| [next(), next(), next(), next()]).collect();
+        for (so, dst, len) in [
+            (0, 0, 300),
+            (0, 0, 128),
+            (64, 64, 192),
+            (1, 0, 299),
+            (0, 1, 299),
+            (5, 3, 290),
+            (3, 5, 290),
+            (63, 1, 65),
+            (1, 63, 65),
+            (0, 235, 65),
+            (235, 0, 65),
+            (64, 7, 129),
+        ] {
+            let mk = || {
+                let mut s = Signal::new("s".into(), ty, Buf::zeroed(ty.elem, 300), None);
+                s.pend_words.clear();
+                s
+            };
+            let (mut a, mut b) = (mk(), mk());
+            let first = a.commit_copy(&src, so, dst, len);
+            let outs: Vec<_> = (0..len)
+                .step_by(64)
+                .map(|k| {
+                    let n = (len - k).min(64);
+                    let planes = yavs_logic::wide::get_block(&src, (so + k) as usize, n as usize)
+                        .map(|w| w & nmask(n as usize));
+                    crate::process::OutV {
+                        sig: 0,
+                        slot: 0,
+                        elem: dst + k,
+                        len: n,
+                        planes,
+                    }
+                })
+                .collect();
+            assert_eq!(first, b.commit_planes_run(&outs), "{so} {dst} {len}");
+            assert_eq!(
+                a.driving.to_value(),
+                b.driving.to_value(),
+                "{so} {dst} {len}"
+            );
+            assert_eq!(a.pend, b.pend, "{so} {dst} {len}");
+            assert_eq!(a.lag, b.lag, "{so} {dst} {len}");
+            let sorted = |s: &Signal| {
+                let mut w = s.pend_words.clone();
+                w.sort_unstable();
+                w
+            };
+            assert_eq!(sorted(&a), sorted(&b), "{so} {dst} {len}");
+        }
+    }
+
+    /// A bus with no history, whole and per word, against one that keeps it: the same value and
+    /// the same changed cover, cycle by cycle, for whole updates, parts and held values; what
+    /// the reports read of the whole signal stays.
+    #[test]
+    fn a_bus_with_no_history_updates_as_one_that_keeps_it() {
+        let mk = |bare: bool, whole: bool| {
+            let ty = SignalType::logic(200);
+            let mut s = Signal::new("s".into(), ty, Buf::zeroed(ty.elem, 200), None);
+            s.set_lean_events();
+            s.set_no_codes();
+            s.inactive = true;
+            s.watched = true;
+            if bare {
+                s.set_no_history();
+            }
+            if whole {
+                s.finish_whole();
+            }
+            s
+        };
+        let mut sigs = [mk(false, false), mk(true, false), mk(true, true)];
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let mut last_change = [0u64; 3];
+        for c in 1..200u64 {
+            let now = Time::from_raw(c);
+            let kind = next() % 4;
+            let mut outs = Vec::new();
+            for k in (0..200u32).step_by(64) {
+                let len = (200 - k).min(64);
+                // Whole updates, one word only, or nothing that changes.
+                let v = next() & next() & nmask(len as usize);
+                if kind == 3 || (kind == 2 && k != 64) {
+                    continue;
+                }
+                let mut planes = [0u64; 4];
+                planes[2] = v;
+                planes[3] = !v & nmask(len as usize);
+                if kind == 1 {
+                    planes = yavs_logic::wide::get_block(
+                        sigs[0].cur.planes_mut().expect("planes"),
+                        k as usize,
+                        len as usize,
+                    );
+                }
+                outs.push(crate::process::OutV {
+                    sig: 0,
+                    slot: 0,
+                    elem: k,
+                    len,
+                    planes,
+                });
+            }
+            let mut res = Vec::new();
+            for (i, s) in sigs.iter_mut().enumerate() {
+                if !outs.is_empty() {
+                    s.commit_planes_run(&outs);
+                }
+                let any = s.finish_pend(now, c, false) == Some(true);
+                let ch: Vec<Range> = std::mem::take(&mut s.changed);
+                if any {
+                    last_change[i] = c;
+                }
+                res.push((any, ch));
+            }
+            assert_eq!(res[0], res[1], "cycle {c}");
+            assert_eq!(res[0], res[2], "cycle {c}");
+            let (a, b) = (sigs[0].cur.to_value(), sigs[2].cur.to_value());
+            assert_eq!(a, b, "cycle {c}");
+            let (a, b) = (sigs[0].cur.to_value(), sigs[1].cur.to_value());
+            assert_eq!(a, b, "cycle {c}");
+            let all = Range::new(0, 200);
+            assert_eq!(
+                sigs[0].last_event(all, now),
+                sigs[2].last_event(all, now),
+                "cycle {c}"
+            );
+            assert_eq!(
+                sigs[0].last_event(all, now),
+                sigs[1].last_event(all, now),
+                "cycle {c}"
+            );
+            for s in &sigs[1..] {
+                for since in [c.saturating_sub(5), c - 1] {
+                    assert_eq!(
+                        sigs[0].event_since(all, since),
+                        s.event_since(all, since),
+                        "cycle {c} since {since}"
+                    );
+                }
+            }
+        }
+        assert!(last_change[2] != 0 && last_change == [last_change[0]; 3]);
     }
 
     #[test]

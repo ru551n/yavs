@@ -1,0 +1,7 @@
+exit	0
+diag	note	485000000	1	:stack_cells_nested:done	60380 85799 139337
+diag	note	985000000	1	:stack_cells_nested:done	21981 73264 121049
+diag	note	1485000000	1	:stack_cells_nested:done	83585 60734 85217
+diag	note	1985000000	1	:stack_cells_nested:done	45182 48355 156191
+diag	note	2485000000	1	:stack_cells_nested:done	106802 135968 136461
+diag	note	2985000000	1	:stack_cells_nested:done	68427 123429 98531

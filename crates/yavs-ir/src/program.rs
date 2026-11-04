@@ -189,6 +189,10 @@ impl Program {
                 return raw.full();
             }
         }
+        // A reserved slot no copy has been made for: asking for it must not fix it empty for good.
+        if raw.spare && self.copies.get(f).is_none() {
+            return raw.full();
+        }
         let o = raw
             .opt
             .get_or_init(|| {
@@ -488,6 +492,10 @@ pub struct Param {
     /// The data cell of an array parameter passed by value: the array type (the next parameter
     /// is its descriptor). `ty` stays `None` so the debugger shows no local for the cell.
     pub arr: Option<TyId>,
+    /// With `arr`: the next three parameters are the descriptor itself (left, right, direction),
+    /// so the bounds are in the frame ([`Ty::flat_array`]); otherwise the next parameter holds
+    /// its address.
+    pub flat: bool,
 }
 
 /// A named object in a frame slot.
@@ -500,6 +508,38 @@ pub struct Local {
 }
 
 /// What a frame slot holds for the GC (precise roots, rule 6).
+/// The frame index of an address in a composite variable in a process's root frame, with the
+/// flag below: `[FRAME_OBJECT | start / 8 << 12 | length / 8]`, the offset counting from the
+/// object's start. Such an address is bounded by its object wherever it goes: a callee, a native,
+/// any path of the interpreter (`opt/proc_objects.rs`).
+pub const FRAME_OBJECT: u32 = 1 << 28;
+
+/// The frame index and offset of the address of byte `off` of a frame object of `f`, if any.
+pub fn frame_object_addr(f: &Func, off: u32) -> Option<(u32, u32)> {
+    let l = f
+        .locals
+        .iter()
+        .find(|l| is_frame_object(l) && l.slot <= off && off < l.slot + l.size)?;
+    Some((
+        FRAME_OBJECT | (l.slot / 8) << 12 | l.size.div_ceil(8),
+        off - l.slot,
+    ))
+}
+
+/// The start and length in bytes of the frame object a frame index names.
+#[inline]
+pub fn frame_object_range(idx: u32) -> Option<(usize, usize)> {
+    (idx & FRAME_OBJECT != 0).then(|| {
+        let i = (idx & !FRAME_OBJECT) as usize;
+        ((i >> 12) * 8, (i & 0xfff) * 8)
+    })
+}
+
+/// Is this local a composite variable the optimiser put in a process's frame, not a named one?
+pub fn is_frame_object(l: &Local) -> bool {
+    l.name.is_empty() && l.ty.0 >= u32::MAX - 1
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RootKind {
     /// An 8-byte access handle.
@@ -571,8 +611,14 @@ pub struct Func {
     /// the last functions of a program, never stored.
     #[serde(skip)]
     pub spare: bool,
+    /// A specialised copy: the heap objects of the shared code that move into its frame at the
+    /// switch, as (slot `[data, desc, handle]`, frame offset, bytes) (`opt/proc_objects.rs`).
+    pub moved: Vec<(u32, u32, u32)>,
     /// A function: the base type of its result (`None` for a procedure, a process).
     pub ret_ty: Option<TyId>,
+    /// A function that returns an array as its data address, the bounds through `RetBounds`
+    /// (the caller's next instruction is `TakeBounds`), not as a fat pair.
+    pub ret_flat: bool,
     /// The optimised copy, made when [`Program::func`] first asks (`None`: the code is as
     /// lowered).
     #[serde(skip)]
@@ -834,12 +880,25 @@ impl Func {
             defined: self.defined,
             nested: self.nested,
             spare: false,
+            moved: self.moved.clone(),
             ret_ty: self.ret_ty,
+            ret_flat: self.ret_flat,
             opt: Default::default(),
             memo: Default::default(),
             lazy: None,
             fetches: Default::default(),
         }
+    }
+
+    /// The end of the composite variables the optimiser put in the frame of a process
+    /// (`opt/proc_objects.rs`), 0 for none.
+    pub fn objects_end(&self) -> u32 {
+        self.locals
+            .iter()
+            .filter(|l| l.ty == crate::opt::OBJECT_TY)
+            .map(|l| l.slot + l.size)
+            .max()
+            .unwrap_or(0)
     }
 
     /// An empty function that copies of processes will take the place of.
@@ -867,12 +926,50 @@ impl Func {
             defined: false,
             nested: false,
             spare: true,
+            moved: Vec::new(),
             ret_ty: None,
+            ret_flat: false,
             opt: Default::default(),
             memo: Default::default(),
             lazy: None,
             fetches: Default::default(),
         }
+    }
+
+    /// The instance signals (`SigVal::sig`) of which this function may ask more than the current
+    /// value: a reference reaches anything but a read, a wait or a drive (an attribute, an edge
+    /// test, a call, a store). An instruction nobody listed here counts as asking.
+    pub fn sig_history_uses(&self) -> Vec<u32> {
+        let f = self.full();
+        let mut origin = std::collections::HashMap::<Reg, u32>::new();
+        let mut out = Vec::new();
+        for i in &f.code {
+            match *i {
+                Inst::SigVal { dst, sig, .. } => {
+                    origin.insert(dst, sig);
+                }
+                Inst::SigSlice { dst, sig, .. } => {
+                    if let Some(&n) = origin.get(&sig) {
+                        origin.insert(dst, n);
+                    }
+                }
+                Inst::SigRead { .. }
+                | Inst::SigReadScalar { .. }
+                | Inst::WaitOn { .. }
+                | Inst::Drive { .. }
+                | Inst::DriveSlot { .. }
+                | Inst::Disconnect { .. }
+                | Inst::DisconnectSlot { .. } => {}
+                _ => {
+                    i.visit(&mut |r, _, _| out.extend(origin.get(&r).copied()));
+                    let list = i.list().and_then(|l| f.regs(l)).unwrap_or_default();
+                    out.extend(list.iter().filter_map(|r| origin.get(r).copied()));
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 
     /// The function with its body in place: `self`, or for a function whose body is still

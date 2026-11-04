@@ -125,6 +125,48 @@ fn process_of(
     (func.code.to_vec(), func.frame)
 }
 
+/// A process with a nested subprogram: a subprogram reaches the frame only below the lowered
+/// frame, so the bytes of a temporary past it are as private as in any other process.
+#[test]
+fn a_process_with_a_nested_subprogram_keeps_its_temporary_in_the_frame() {
+    if !yavs_ir::opt::enabled() {
+        return;
+    }
+    let mut pb = ProgramBuilder::new();
+    let f = pb.declare("p", FuncKind::Process, None);
+    let n = pb.declare("n", FuncKind::Procedure, Some(f));
+    let span = Span::new(FileId(0), 0, 1);
+    let mut nb = pb.define(n);
+    nb.stmt(StmtKind::Wait, span);
+    nb.emit(Inst::Ret { v: None });
+    nb.finish();
+    let mut fb = pb.define(f);
+    let var = fb.slot(8, 8);
+    fb.stmt(StmtKind::Wait, span);
+    let head = fb.block();
+    fb.body(head);
+    fb.emit(Inst::Br { to: head });
+    fb.at(head);
+    fb.stmt(StmtKind::Wait, span);
+    let size = fb.int(16);
+    let t = fb.reg(RegTy::Ptr);
+    fb.emit(Inst::Alloc { dst: t, size });
+    store_word(&mut fb, t, 0, 3);
+    store_word(&mut fb, t, 8, 4);
+    barrier(&mut fb);
+    sum_words(&mut fb, t, var);
+    fb.emit(Inst::Suspend { resume: 0 });
+    fb.emit(Inst::Br { to: head });
+    fb.finish();
+    let p = pb.finish().expect("verifies");
+    let code = p.func(f).expect("p").code.to_vec();
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Alloc { .. })),
+        0,
+        "{code:?}"
+    );
+}
+
 fn count(code: &[Inst], hit: impl Fn(&Inst) -> bool) -> usize {
     code.iter().filter(|i| hit(i)).count()
 }

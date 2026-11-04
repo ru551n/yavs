@@ -1,0 +1,3 @@
+exit	1
+diag	note	0	0	:array_param_cells_formal:_p0	4
+diag	fatal	0	0	-	actual length 3 does not match parameter X length 4

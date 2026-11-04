@@ -258,6 +258,14 @@ impl Ty {
         None
     }
 
+    /// Is a parameter of array type `ty` passed as its data and the words of its descriptor
+    /// (one dimension, nothing below it needs one)? The type decides, not the formal's subtype: a
+    /// subprogram generic's profile and its actual only agree on the type.
+    pub fn flat_array(types: &Types, ty: TyId) -> bool {
+        matches!(types.get(ty), Some(Ty::Array { dims: 1, .. }))
+            && Ty::desc_size(types, ty) == Some(DOPE_DIM_BYTES)
+    }
+
     /// Bytes of a descriptor of `ty` (static per type); `None` for a missing or cyclic type.
     pub fn desc_size(types: &Types, ty: TyId) -> Option<u64> {
         fn go(types: &Types, ty: TyId, depth: u32) -> Option<u64> {

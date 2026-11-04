@@ -3687,7 +3687,7 @@ impl Gen {
                     } => {
                         let x = self.ld(&c, v);
                         match kind {
-                            CheckKind::Range | CheckKind::Index => {
+                            CheckKind::Range | CheckKind::Index | CheckKind::IndexDown => {
                                 self.range_exit(&c, x, self.ld(&c, lo), self.ld(&c, hi), pc)
                             }
                             CheckKind::Length => {
@@ -4212,6 +4212,98 @@ impl Gen {
                         );
                         let (l, r, dir) = self.dope_words(p);
                         let (n, fits) = self.len_of(l, r, dir);
+                        // A length over i64::MAX is the interpreter's error.
+                        let small = self.icmp(IP::LLVMIntSGE, n, self.c64(0));
+                        self.guard(&c, LLVMBuildAnd(self.b, fits, small, c"".as_ptr()), slow);
+                        self.st(&c, dst, n);
+                        self.join(&c, join);
+                    }
+                    Inst::RetBounds { left, right, dir } => {
+                        let at = self.load(self.ptr, self.mem_ptr(&c, MEM_RET_BOUNDS));
+                        for (k, r) in [left, right, dir].into_iter().enumerate() {
+                            let p = self.gep(at, self.c64(k as i64 * 8));
+                            self.store(self.ld(&c, r), p);
+                        }
+                    }
+                    Inst::TakeBounds { left, right, dir } => {
+                        let at = self.load(self.ptr, self.mem_ptr(&c, MEM_RET_BOUNDS));
+                        for (k, r) in [left, right, dir].into_iter().enumerate() {
+                            let p = self.gep(at, self.c64(k as i64 * 8));
+                            self.st(&c, r, self.load(self.i64, p));
+                        }
+                    }
+                    Inst::BoundsPos {
+                        dst,
+                        left,
+                        right,
+                        dir,
+                        idx,
+                        ..
+                    } => {
+                        let (slow, join) = self.slow_path(&c, pc, &inst);
+                        let (l, r, d) = (self.ld(&c, left), self.ld(&c, right), self.ld(&c, dir));
+                        let i = self.ld(&c, idx);
+                        let and = |x, y| LLVMBuildAnd(self.b, x, y, c"".as_ptr());
+                        let le = |x, y| self.icmp(IP::LLVMIntSLE, x, y);
+                        let up = self.icmp(IP::LLVMIntEQ, d, self.c64(0));
+                        let u = and(up, and(le(l, i), le(i, r)));
+                        let n = and(
+                            self.icmp(IP::LLVMIntEQ, d, self.c64(1)),
+                            and(le(r, i), le(i, l)),
+                        );
+                        self.guard(&c, self.or(u, n), slow);
+                        let from_l = LLVMBuildSub(self.b, i, l, c"".as_ptr());
+                        let from_i = LLVMBuildSub(self.b, l, i, c"".as_ptr());
+                        let pos = LLVMBuildSelect(self.b, up, from_l, from_i, c"".as_ptr());
+                        self.st(&c, dst, pos);
+                        self.join(&c, join);
+                    }
+                    Inst::BoundsSlice { dst, regs, .. } => {
+                        let Some(&[al, ar, ad, left, right, dir]) = f.regs(regs) else {
+                            return Err("slice position without its operands".into());
+                        };
+                        let (slow, join) = self.slow_path(&c, pc, &inst);
+                        let (l, r, d) = (self.ld(&c, al), self.ld(&c, ar), self.ld(&c, ad));
+                        let (a, b, w) = (self.ld(&c, left), self.ld(&c, right), self.ld(&c, dir));
+                        let and = |x, y| LLVMBuildAnd(self.b, x, y, c"".as_ptr());
+                        let le = |x, y| self.icmp(IP::LLVMIntSLE, x, y);
+                        let down = self.icmp(IP::LLVMIntEQ, w, self.c64(1));
+                        // A null slice names no element and checks nothing.
+                        let null = LLVMBuildSelect(
+                            self.b,
+                            down,
+                            self.icmp(IP::LLVMIntSLT, a, b),
+                            self.icmp(IP::LLVMIntSGT, a, b),
+                            c"".as_ptr(),
+                        );
+                        let up = self.icmp(IP::LLVMIntEQ, d, self.c64(0));
+                        let inside = |i| {
+                            let u = and(up, and(le(l, i), le(i, r)));
+                            let n = and(
+                                self.icmp(IP::LLVMIntEQ, d, self.c64(1)),
+                                and(le(r, i), le(i, l)),
+                            );
+                            self.or(u, n)
+                        };
+                        let valid = and(self.icmp(IP::LLVMIntEQ, w, d), and(inside(a), inside(b)));
+                        self.guard(&c, self.or(null, valid), slow);
+                        let from_l = LLVMBuildSub(self.b, a, l, c"".as_ptr());
+                        let from_a = LLVMBuildSub(self.b, l, a, c"".as_ptr());
+                        let pos = LLVMBuildSelect(self.b, up, from_l, from_a, c"".as_ptr());
+                        let zero = self.c64(0);
+                        let v = LLVMBuildSelect(self.b, null, zero, pos, c"".as_ptr());
+                        self.st(&c, dst, v);
+                        self.join(&c, join);
+                    }
+                    Inst::BoundsLen {
+                        dst,
+                        left,
+                        right,
+                        dir,
+                    } => {
+                        let (slow, join) = self.slow_path(&c, pc, &inst);
+                        let (l, r, d) = (self.ld(&c, left), self.ld(&c, right), self.ld(&c, dir));
+                        let (n, fits) = self.len_of(l, r, d);
                         // A length over i64::MAX is the interpreter's error.
                         let small = self.icmp(IP::LLVMIntSGE, n, self.c64(0));
                         self.guard(&c, LLVMBuildAnd(self.b, fits, small, c"".as_ptr()), slow);

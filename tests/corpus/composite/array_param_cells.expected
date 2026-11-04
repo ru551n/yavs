@@ -1,0 +1,59 @@
+exit	0
+diag	note	0	0	:array_param_cells:main	null 40300 30401
+diag	note	0	0	:array_param_cells:main	null slice 40300 30401
+diag	note	0	0	:array_param_cells:main	null of null 30200 20701
+diag	note	0	0	:array_param_cells:main	null local 40301 30402
+diag	note	0	0	:array_param_cells:main	null rev 30401 40300
+diag	note	0	0	:array_param_cells:main	null depth 0 0
+diag	note	0	0	:array_param_cells:main	null after 30407
+diag	note	0	0	:array_param_cells:main	shape 1532 150033 100317 31016
+diag	note	0	0	:array_param_cells:main	local 164085 312586 181594 112293
+diag	note	0	0	:array_param_cells:main	after 13084 290211 190758 71991
+diag	note	0	0	:array_param_cells:main	depth 16 8
+diag	note	0	0	:array_param_cells:main	shape 1532 150033 100317 31016
+diag	note	0	0	:array_param_cells:main	local 164085 312586 181594 112293
+diag	note	0	0	:array_param_cells:main	after 13084 290211 190758 71991
+diag	note	0	0	:array_param_cells:main	depth 16 8
+diag	note	0	0	:array_param_cells:main	shape 1532 150033 100317 31016
+diag	note	0	0	:array_param_cells:main	local 164085 312586 181594 112293
+diag	note	0	0	:array_param_cells:main	after 13084 290211 190758 71991
+diag	note	0	0	:array_param_cells:main	depth 16 8
+diag	note	0	0	:array_param_cells:main	neg 399217 -293784
+diag	note	0	0	:array_param_cells:main	neg slice 98509 -198492
+diag	note	0	0	:array_param_cells:main	neg null -198999 98000
+diag	note	0	0	:array_param_cells:main	neg slice of slice -495
+diag	note	0	0	:array_param_cells:main	get_row 0B8
+diag	note	0	0	:array_param_cells:main	get_row same 0B8
+diag	note	0	0	:array_param_cells:main	slice 100101 110000
+diag	note	0	0	:array_param_cells:main	slice shape 70213 20712
+diag	note	0	0	:array_param_cells:main	slice of slice 40708
+diag	note	0	0	:array_param_cells:main	slice of slice 1100
+diag	note	0	0	:array_param_cells:main	slice of slice2 40810
+diag	note	0	0	:array_param_cells:main	same 100317 10010110
+diag	note	0	0	:array_param_cells:main	same slice 50808 1010
+diag	note	0	0	:array_param_cells:main	rev 150033 1100001110100101 1110100
+diag	note	0	0	:array_param_cells:main	literal 30009 10005
+diag	note	0	0	:array_param_cells:main	concat 50013
+diag	note	0	0	:array_param_cells:main	concat result 001110
+diag	note	0	0	:array_param_cells:main	int 30 22 3
+diag	note	0	0	:array_param_cells:main	int mid 21 12
+diag	note	0	0	:array_param_cells:main	rec 1007 1007
+diag	note	0	0	:array_param_cells:main	bytes 57 37
+diag	note	0	0	:array_param_cells:main	byte elem 716 10612
+diag	note	0	0	:array_param_cells:main	str 662 331
+diag	note	0	0	:array_param_cells:main	fixed 311 311
+diag	note	0	0	:array_param_cells:main	sized 311 311
+diag	note	0	0	:array_param_cells:main	out 1010010111000000
+diag	note	0	0	:array_param_cells:main	out 1111010111000011
+diag	note	0	0	:array_param_cells:main	inout 1010010111000000
+diag	note	0	0	:array_param_cells:main	inout 00010111
+diag	note	0	0	:array_param_cells:main	inout 1010010111000000
+diag	note	0	0	:array_param_cells:main	bump FF 7
+diag	note	0	0	:array_param_cells:main	bump 00 15
+diag	note	0	0	:array_param_cells:main	memo 43400
+diag	note	0	1	:array_param_cells:main	sig 1642435 600048
+diag	note	0	1	:array_param_cells:main	res 400012 200002
+diag	note	0	1	:array_param_cells:main	rint 113 16
+diag	note	0	1	:array_param_cells:main	sig param 46 34
+diag	note	2000000	0	:array_param_cells:main	wait 21339
+diag	note	4000000	0	:array_param_cells:main	wait 91108

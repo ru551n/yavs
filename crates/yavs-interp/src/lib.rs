@@ -433,6 +433,10 @@ pub trait Tier: Send + Sync {
     /// that a run cannot end before its compile).
     fn hot(&self, _func: FuncId) {}
 
+    /// The entries of `func` were counted out (`NativeFlags::arm_count`): the tier decides. Called
+    /// from simulation threads, it returns at once.
+    fn asked(&self, _func: FuncId) {}
+
     /// Call `func` from the interpreter's top frame, which waits at its `Call` (or `CallProt`
     /// on the protected object `obj`) at `pc`, on a frame of the compiled code's own (native
     /// frame), with argument `cells` (one per parameter, two for a signal; the object first):
@@ -616,6 +620,11 @@ pub trait TierHost {
     /// These run no VHDL code, move no stack and free no memory: the [`TierFrame`] stays
     /// valid.
     fn signal(&mut self, fr: &mut TierFrame, pc: u32, edge: u32) -> Stepped;
+
+    /// The whole record scatter at `pc` is about to be skipped by compiled code, or the whole
+    /// gather at `pc` was copied from its image by it (`YAVS_IMAGE_CHECK`, debug builds): what the
+    /// kernel's full test or the leaves say. `true`: a scatter.
+    fn image_check(&mut self, pc: u32) -> Result<bool, String>;
 
     /// Turn native frames of compiled code into interpreter frames (`docs/decisions.md`
     /// "Compiled frames"): the top frame waits at its call at `pc`, and `frames` (outermost
@@ -972,8 +981,8 @@ pub struct TierFrame {
     pub known: u64,
     /// The number of the current simulation cycle (`TierSig::stamps` equal to it: an event).
     pub cycle: u64,
-    /// The call depth limit (`Limits::max_depth`): frame indices compiled code may give its
-    /// native frames stay below it.
+    /// The call depth limit (`Limits::max_depth`, at most `TIER_MAX_DEPTH`): frame indices compiled
+    /// code may give its native frames stay below it.
     pub max_depth: u64,
     /// The process heap's `epoch` and the shared heap's (0 for a machine without the shared
     /// state): the host addresses of heap objects compiled code found stay valid while they are
@@ -981,6 +990,9 @@ pub struct TierFrame {
     /// temporary area after every host call).
     pub heap_epoch: u64,
     pub shared_epoch: u64,
+    /// The two epochs' sum: unchanged while neither changed (they only grow), one word for code
+    /// that holds a host pointer to a heap object over a call (`Gen::hold_recheck` in Cranelift).
+    pub heap_gen: u64,
     /// The change logs of the process heap and the shared heap (`Heap::log`, `HEAP_LOG` entries
     /// each), null for none.
     pub heap_log: [*const u32; 2],
@@ -996,6 +1008,10 @@ pub struct TierFrame {
     /// code reads a variable of an enclosing subprogram in place.
     pub up_slots: [*mut u8; 2],
     pub up_len: [u64; 2],
+    /// The slots of the root frame in a view of a deeper frame (0: not offered): a procedure
+    /// reaches a process's variable in the frame in place (`opt/proc_objects.rs`).
+    pub root_slots: *mut u8,
+    pub root_len: u64,
     /// The coverage counters of this instance (`Inst::Cover`; `cov_len` of them, 8 bytes each),
     /// null and 0 without coverage.
     pub cov: *const u8,
@@ -1008,6 +1024,8 @@ pub struct TierFrame {
     /// which reports the activation, once it reaches the limit. Kept in the machine so it
     /// survives every re-entry; `NO_SPIN` without a machine.
     pub spin: *mut u64,
+    /// Where `Inst::RetBounds` leaves the bounds of a returned array (`Machine::ret_bounds`).
+    pub ret_bounds: *mut [u64; 3],
     /// The kernel context of this activation (`yavs_kernel::Ctx`), null without one, and the
     /// machine's drivers (`ndrivers`): the zero-delay drives of compiled code go to the kernel
     /// straight ([`direct_drive_bit`], [`direct_drive_now`], [`direct_drive_bits`]). Valid only
@@ -1015,6 +1033,49 @@ pub struct TierFrame {
     pub kctx: *mut std::ffi::c_void,
     pub drivers: *const ProcDriver,
     pub ndrivers: u64,
+    /// The process's skip gate (`Ctx::gate_addr`; [`NO_GATE`] without a kernel): compiled code
+    /// that finds bit `k` set may compare a drive through driver `k` with the current value and
+    /// make no call when they are equal; it clears the bit when it keeps a drive for later.
+    pub gate: *const u64,
+    /// The machine's [`ImageCell`]s, null while it has none.
+    pub cells: *const ImageCell,
+}
+
+/// [`ImageCell`]s of whole gathers, by the low bits of the leaf table: one other table with the
+/// same bits only sends its gathers through the host.
+pub const GATHER_CELLS: usize = 64;
+
+/// What compiled code needs to copy a whole gather from its record image, or to skip a whole
+/// zero-delay scatter that holds what the image holds, with no call (`gather.rs`,
+/// `docs/decisions.md` "Record images in compiled code"): `TierFrame::cells`, a gather at
+/// `tab % GATHER_CELLS`, a scatter through driver slot `k` at `GATHER_CELLS + k`. No image: the host
+/// does it. Written by the host, but for `left`.
+#[repr(C)]
+pub struct ImageCell {
+    /// The address of the record image.
+    pub image: u64,
+    /// A scatter: the plan's bit of the plan gate, the word after `TierFrame::gate`.
+    pub mask: u64,
+    /// The descriptor's address, for a value type that has one.
+    pub desc: u64,
+    /// The leaf table the plan is for and the value's size.
+    pub tab: u32,
+    pub size: u32,
+    /// Skips left before the host must look: it counts them and reviews the image.
+    pub left: std::sync::atomic::AtomicU32,
+}
+
+impl ImageCell {
+    pub(crate) fn empty() -> ImageCell {
+        ImageCell {
+            image: 0,
+            mask: 0,
+            desc: 0,
+            tab: 0,
+            size: 0,
+            left: 0.into(),
+        }
+    }
 }
 
 /// [`TierHost::drive_bit_now`] on the kernel context itself (`TierFrame::kctx`), with the
@@ -1071,9 +1132,11 @@ pub fn direct_drive_now(
     let r = Range::new(s.off as u32 + target[0] as u32, target[1] as u32);
     if s.bytes != 0 {
         let es = s.es as usize;
+        let b = block[0].to_le_bytes();
         return target[1] == 1
             && es <= 8
-            && c.assign_bytes_now(d.id, r, &block[0].to_le_bytes()[..es]);
+            && (c.assign_direct_bytes(d.id, r.offset, &b[..es])
+                || c.assign_bytes_now(d.id, r, &b[..es]));
     }
     if s.codes | s.planes == 0 {
         return false;
@@ -1083,6 +1146,24 @@ pub fn direct_drive_now(
         return c.assign_code_now(d.id, r, code as u8);
     }
     c.assign_planes_now(d.id, Some(r), block)
+}
+
+/// [`direct_drive_now`] where the waveform element is read once the target signal's kind is
+/// known: `read(bytes)` gives its delay and its first block (the cell of a byte signal in word 0).
+#[inline(always)]
+pub fn direct_drive_wave(
+    c: &mut Ctx<'_>,
+    drivers: &[ProcDriver],
+    sigs: &[TierSig],
+    driver: u32,
+    target: [u64; 2],
+    read: impl FnOnce(bool) -> (i64, [u64; 4]),
+) -> bool {
+    let Some(s) = sigs.get((target[0] >> 32) as usize) else {
+        return false;
+    };
+    let (delay, block) = read(s.bytes != 0);
+    direct_drive_now(c, drivers, sigs, driver, target, delay, block)
 }
 
 /// [`TierHost::wait_same`] on the kernel context (`TierFrame::kctx`): whether the kernel took the
@@ -1119,6 +1200,29 @@ pub fn direct_wait_edge(c: &mut Ctx<'_>, sigs: &[TierSig], sig: [u64; 2], kind: 
     true
 }
 
+/// The drive through `driver` of the elements `target`, with the value `block`, that compiled code
+/// skipped: what the kernel's full test says of it (`Ctx::gate_check`).
+pub fn gate_check(
+    c: &Ctx<'_>,
+    drivers: &[ProcDriver],
+    sigs: &[TierSig],
+    driver: u32,
+    target: [u64; 2],
+    block: [u64; 4],
+) -> Result<(), String> {
+    let (Some(d), Some(s)) = (
+        drivers.get(driver as usize),
+        sigs.get((target[0] >> 32) as usize),
+    ) else {
+        return Err("no such driver or signal".into());
+    };
+    if s.signal != u64::from(c.driver_signal(d.id).0) {
+        return Err("the driver is of another signal".into());
+    }
+    let elem = s.off as u32 + target[0] as u32;
+    c.gate_check(d.id, elem, target[1] as u32, block)
+}
+
 /// The leading entries of [`TierHost::drive_bits`] the kernel's fastest path takes, as
 /// [`direct_drive_bit`] does: how many were done (the host runs the rest).
 pub fn direct_drive_bits(
@@ -1138,6 +1242,15 @@ pub fn direct_drive_bits(
             break;
         }
         let rest = &entries[at..];
+        // Alone in the batch on its driver: no run to look for.
+        if rest
+            .get(1)
+            .is_none_or(|e| e[0] >> 32 != t >> 32 || e[1] & 0xffff != u64::from(driver))
+            && c.assign_direct_code(d.id, s.off as u32 + t as u32, (w >> 16 & 0xff) as u8)
+        {
+            at += 1;
+            continue;
+        }
         let n = rest
             .iter()
             .take_while(|e| e[0] >> 32 == t >> 32 && e[1] & 0xffff == u64::from(driver))
@@ -1162,6 +1275,11 @@ pub const STOP_BIT: u8 = yavs_kernel::Interrupt::STOP;
 /// `TierFrame::stop` of a view without a kernel: never set.
 pub static NO_STOP: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
+/// `TierFrame::gate` of a view without a kernel: nothing can be skipped. Compiled code only stores
+/// zero through it.
+pub static NO_GATE: [std::sync::atomic::AtomicU64; 2] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 2];
+
 /// `TierFrame::spin` of a view without a machine: scratch, never read.
 pub static NO_SPIN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -1171,6 +1289,10 @@ pub const OWNER_RT_SHIFT: u32 = 32;
 pub const TIER_SHARED_ALLOC: u64 = 1;
 /// `TierFrame::flags`: the process may use the shared state, as a protected call needs.
 pub const TIER_SERIAL: u64 = 2;
+/// The largest `TierFrame::max_depth`: compiled callers test a frame index against it alone, so it
+/// stays below the frame field of an address and the table of native frames (`Mem::nslots`).
+/// Deeper calls are the interpreter's.
+pub const TIER_MAX_DEPTH: u64 = 1 << 20;
 /// `TierFrame::flags`: someone compares heap objects by their write counts (`Stamp`, the
 /// waveform recorder): compiled code keeps no heap object across activations, so every write
 /// goes through `TierHost::object` and is counted.
@@ -1187,7 +1309,7 @@ pub const SHARED_TAG: u8 = heap::SHARED;
 /// element, `len` of them (0: read through [`TierHost::signal`]); the kernel signal and the
 /// first element's offset in it. The bytes change only while no process runs.
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TierSig {
     /// The address of the first code (an integer so a machine stays `Send`).
     pub codes: u64,
@@ -1236,6 +1358,8 @@ impl Default for TierFrame {
             up: [u64::MAX; 2],
             up_slots: [std::ptr::null_mut(); 2],
             up_len: [0; 2],
+            root_slots: std::ptr::null_mut(),
+            root_len: 0,
             sigtab: std::ptr::null(),
             sigtab_len: 0,
             known: u64::MAX,
@@ -1243,6 +1367,7 @@ impl Default for TierFrame {
             max_depth: 0,
             heap_epoch: 0,
             shared_epoch: 0,
+            heap_gen: 0,
             heap_log: [std::ptr::null(); 2],
             owner: 0,
             flags: 0,
@@ -1250,9 +1375,12 @@ impl Default for TierFrame {
             cov_len: 0,
             stop: NO_STOP.as_ptr(),
             spin: NO_SPIN.as_ptr(),
+            ret_bounds: std::ptr::null_mut(),
             kctx: std::ptr::null_mut(),
             drivers: std::ptr::null(),
             ndrivers: 0,
+            gate: NO_GATE[0].as_ptr(),
+            cells: std::ptr::null(),
         }
     }
 }
@@ -1338,9 +1466,116 @@ pub struct NativeFlags {
     fresh: Mutex<Vec<u32>>,
     /// `fresh` is not empty.
     dirty: std::sync::atomic::AtomicBool,
+    /// Per function, the entries left before the tier is asked for it (`arm_count`; 0: not counted).
+    left: Box<[std::sync::atomic::AtomicU32]>,
+    /// The activation a process switches to its copy under the count (`arm_count`; 0: `spec_after`).
+    spec_count: std::sync::atomic::AtomicU64,
+    /// The run is still too short for the copies the count switches to (`open_copies`).
+    copies_wait: std::sync::atomic::AtomicBool,
+    /// Per function, the native frames of it that left to the interpreter (`materialised`).
+    left_native: Box<[std::sync::atomic::AtomicU64]>,
+    /// What the count rule did, for `YAVS_COUNTERS` (`CountStat`).
+    count_stat: [std::sync::atomic::AtomicU64; CountStat::Withdrawn as usize + 1],
+}
+
+/// What the count rule of `--tier=auto` did in a run (`YAVS_COUNTERS`), so a test sees it stop.
+#[derive(Clone, Copy, Debug)]
+pub enum CountStat {
+    /// Functions whose count ran out and reached the tier.
+    Asked,
+    /// Of them, the ones that had to wait (`Worker::waits`) at least once.
+    Held,
+    /// Compiles the count asked for, and the copies of processes among them.
+    Compiled,
+    Copies,
+    /// Native-frame code taken back because it leaves to the interpreter too often.
+    Withdrawn,
 }
 
 impl NativeFlags {
+    /// Count the entries of every function: the tier is asked for one after `count` of them
+    /// (`Tier::asked`), for a process that can have a copy it is the copy after `copy`, which it
+    /// switches to at activation `switch` (`Machine::specialise`), once `open_copies` was called.
+    /// Before the run.
+    pub fn arm_count(&self, prog: &Program, count: u32, switch: u64, copy: u32) {
+        for (k, c) in self.left.iter().enumerate() {
+            // (A slot still empty will hold a copy; asking for it now would fix it empty.)
+            let spare = prog.funcs.get(FuncId(k as u32)).is_none_or(|f| f.spare);
+            c.store(if spare { copy } else { count }, Ordering::Relaxed);
+        }
+        self.spec_count.store(switch, Ordering::Relaxed);
+        self.copies_wait.store(!spec_forced(), Ordering::Relaxed);
+    }
+
+    /// The run is long enough for copies.
+    pub fn open_copies(&self) {
+        self.copies_wait.store(false, Ordering::Relaxed);
+    }
+
+    pub(crate) fn copies_wait(&self) -> bool {
+        self.copies_wait.load(Ordering::Relaxed)
+    }
+
+    /// One more of `what`.
+    pub fn count_stat(&self, what: CountStat) {
+        self.count_stat[what as usize].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// What the count rule did so far, by `CountStat`.
+    pub fn count_stats(&self) -> [u64; CountStat::Withdrawn as usize + 1] {
+        std::array::from_fn(|i| self.count_stat[i].load(Ordering::Relaxed))
+    }
+
+    /// How often native frames of `func` were left to the interpreter.
+    pub fn materialised(&self, func: FuncId) -> u64 {
+        self.left_native
+            .get(func.0 as usize)
+            .map_or(0, |n| n.load(Ordering::Relaxed))
+    }
+
+    /// The native frames left to the interpreter so far.
+    pub fn materialised_all(&self) -> u64 {
+        self.left_native
+            .iter()
+            .map(|n| n.load(Ordering::Relaxed))
+            .sum()
+    }
+
+    /// A native frame of `func` was left to the interpreter.
+    pub fn note_left(&self, func: FuncId) {
+        if let Some(n) = self.left_native.get(func.0 as usize) {
+            n.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Count the entries of `func` from `n` on, or stop (0): `Tier::asked` will not be called.
+    pub fn set_count(&self, func: FuncId, n: u32) {
+        if let Some(c) = self.left.get(func.0 as usize) {
+            c.store(n, Ordering::Relaxed);
+        }
+    }
+
+    /// The entries `func` has left of its count.
+    pub fn count_left(&self, func: FuncId) -> u32 {
+        self.left
+            .get(func.0 as usize)
+            .map_or(0, |c| c.load(Ordering::Relaxed))
+    }
+
+    /// One more entry of `func`; true when its count just ran out.
+    #[inline(always)]
+    pub fn tick(&self, func: u32) -> bool {
+        let Some(c) = self.left.get(func as usize) else {
+            return false;
+        };
+        let v = c.load(Ordering::Relaxed);
+        if v == 0 {
+            return false;
+        }
+        c.store(v - 1, Ordering::Relaxed);
+        v == 1
+    }
+
     /// `func` got a flag: `Runtime::sync_native` tells its `Pre`.
     fn note(&self, func: u32) {
         self.fresh
@@ -1700,6 +1935,11 @@ impl Runtime {
                 retiers: Default::default(),
                 fresh: Default::default(),
                 dirty: Default::default(),
+                left: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
+                spec_count: Default::default(),
+                copies_wait: Default::default(),
+                left_native: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
+                count_stat: Default::default(),
             }),
             live: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
             plans: Default::default(),
@@ -1795,6 +2035,40 @@ impl Runtime {
             p.native = self.native.flagged(id.0).into();
             p
         }))
+    }
+
+    /// The entries of `func` ran out (`NativeFlags::tick`): ask the tier, unless it is a process that
+    /// switches to a copy, which has a count of its own. `no_copy`: no copy is coming, as far as is
+    /// known: the entries were counted in a running loop, and such a process may not come back for its
+    /// next activation in a long time, or the process has no switch planned.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn counted_out(&self, func: FuncId, no_copy: bool) {
+        let copies = self.prog.base_of(func) == func && self.prog.specialisable(func);
+        if (no_copy || !copies)
+            && let Some(t) = self.tier.get()
+        {
+            self.native.count_stat(CountStat::Asked);
+            t.asked(func);
+        }
+    }
+
+    /// A process that will have no copy after all: its shared code is what the count asks for.
+    pub(crate) fn counted_out_shared(&self, func: FuncId) {
+        if self.native.spec_count.load(Ordering::Relaxed) != 0
+            && let Some(t) = self.tier.get()
+        {
+            self.native.count_stat(CountStat::Asked);
+            t.asked(func);
+        }
+    }
+
+    /// The activation at which a process switches to its copy.
+    pub(crate) fn copy_after(&self) -> u64 {
+        match self.native.spec_count.load(Ordering::Relaxed) {
+            n if n != 0 && !spec_forced() => n,
+            _ => spec_after(),
+        }
     }
 
     /// Set `Pre::native` of the functions flagged since the last call. The fast loops call it where
@@ -2422,6 +2696,10 @@ impl Process for InterpProcess {
         Some(self.m.rt.prog.base_of(self.m.entry).0)
     }
 
+    fn images_tail(&self) -> (u64, u64) {
+        self.m.images_tail()
+    }
+
     fn wait_stmt(&self) -> Option<u32> {
         self.m.suspended_at().map(|s| s.0)
     }
@@ -2436,7 +2714,7 @@ impl Process for InterpProcess {
             // Started, running, no shared state, no debugger: the activation of a process.
             self.m.execs += 1;
             if self.m.execs == u64::from(self.m.spec_at) {
-                self.specialise(Some(ctx.process_name()));
+                self.specialise(Some(&*ctx));
             }
             if let Err(e) = self.m.borrow_scratch() {
                 return Err(self.m.error(e, Some(ctx)));
@@ -2528,11 +2806,11 @@ impl InterpProcess {
     /// The switch to a copy of the process function (`Machine::specialise`); the copy is named
     /// after the process (`Program::label`).
     #[cold]
-    fn specialise(&mut self, name: Option<&str>) {
+    fn specialise(&mut self, ctx: Option<&Ctx<'_>>) {
         let was = self.m.entry;
-        self.m.specialise();
-        if let (Some(name), true) = (name, self.m.entry != was) {
-            self.m.rt.prog.note_label(self.m.entry, name);
+        self.m.specialise(ctx);
+        if let (Some(c), true) = (ctx, self.m.entry != was) {
+            self.m.rt.prog.note_label(self.m.entry, c.process_name());
         }
     }
 
@@ -2540,7 +2818,10 @@ impl InterpProcess {
     fn exec(&mut self, ctx: Option<&mut Ctx<'_>>) -> Result<Outcome, Fault> {
         self.m.execs += 1;
         if self.m.execs == u64::from(self.m.spec_at) {
-            self.specialise(ctx.as_deref().map(|c| c.process_name()));
+            self.specialise(ctx.as_deref());
+        }
+        if self.m.rt.native.tick(self.m.entry.0) {
+            self.m.rt.counted_out(self.m.entry, self.m.spec.is_none());
         }
         let shared = self.shared.clone();
         let mut guard = match &shared {
@@ -2803,6 +3084,20 @@ fn call_values_inner(
         for a in args {
             match a {
                 CallVal::Cell(c) => cells.push(*c),
+                // The words of the descriptor, for a parameter that takes them.
+                CallVal::Composite { data, desc }
+                    if prog
+                        .funcs
+                        .get(func)
+                        .and_then(|g| g.params.get(cells.len()))
+                        .is_some_and(|p| p.flat) =>
+                {
+                    let at = m.temp_alloc(data.len() as u64)?;
+                    m.put(at, data)?;
+                    cells.push(at);
+                    let (w, _) = desc.as_chunks::<8>();
+                    cells.extend(w.iter().map(|b| u64::from_le_bytes(*b)));
+                }
                 CallVal::Composite { data, desc } => {
                     for b in [data, desc] {
                         let at = m.temp_alloc(b.len() as u64)?;
@@ -2821,7 +3116,8 @@ fn call_values_inner(
                 ));
             }
         };
-        result(&mut m, &prog, ret, v)
+        let flat = prog.funcs.get(func).is_some_and(|g| g.ret_flat);
+        result(&mut m, &prog, ret, flat, v)
     })();
     if let (Some(g), Some(st)) = (guard.as_mut(), m.sh.take()) {
         **g = st;
@@ -2839,16 +3135,23 @@ fn result(
     m: &mut Machine,
     prog: &Program,
     ret: Option<yavs_ir::TyId>,
+    flat: bool,
     v: Option<u64>,
 ) -> exec::R<Option<CallVal>> {
     let (Some(ty), Some(fat)) = (ret, v) else {
         return Ok(v.map(CallVal::Cell));
     };
-    let data = m.load(fat, yavs_ir::Width::B8)?;
-    let d = m.load(exec::add_addr(fat, 8)?, yavs_ir::Width::B8)?;
-    let n = yavs_ir::Ty::desc_size(&prog.types, ty)
-        .ok_or_else(|| exec::ice("result type without a descriptor size"))?;
-    let desc = m.rd(d, n)?.to_vec();
+    // (`flat`: `v` is the data, the bounds as `RetBounds` left them.)
+    let (data, desc) = if flat {
+        let w = m.ret_bounds();
+        (fat, w.iter().flat_map(|x| x.to_le_bytes()).collect())
+    } else {
+        let data = m.load(fat, yavs_ir::Width::B8)?;
+        let d = m.load(exec::add_addr(fat, 8)?, yavs_ir::Width::B8)?;
+        let n = yavs_ir::Ty::desc_size(&prog.types, ty)
+            .ok_or_else(|| exec::ice("result type without a descriptor size"))?;
+        (data, m.rd(d, n)?.to_vec())
+    };
     let (l, _) = yavs_ir::Ty::layout(&prog.types, &prog.consts, ty, &desc)
         .map_err(|e| exec::ice(format!("result layout: {e:?}")))?;
     let data = m.rd(data, l.size)?.to_vec();
@@ -2893,7 +3196,7 @@ pub fn call_native(
             }
         }
         let v = fun(&mut m, &mut None, n.ty, &cells)?;
-        result(&mut m, &prog, ret, v)
+        result(&mut m, &prog, ret, false, v)
     })();
     r.map_err(|e| m.error(e, None))
 }
@@ -2985,7 +3288,17 @@ pub fn resolve(
             Fault::Runtime("too many drivers for the resolution function's index subtype".into())
         })?;
         m.put(dope, &d)?;
-        m.enter(func, &[data, dope])?;
+        if m.rt
+            .prog
+            .funcs
+            .get(func)
+            .is_some_and(|g| g.params.first().is_some_and(|p| p.flat))
+        {
+            let w = |k: usize| u64::from_le_bytes(d[k * 8..k * 8 + 8].try_into().unwrap_or([0; 8]));
+            m.enter(func, &[data, w(0), w(1), w(2)])?;
+        } else {
+            m.enter(func, &[data, dope])?;
+        }
         m.run(None, 0)
     })();
     if let (Some(g), Some(st)) = (guard.as_mut(), m.sh.take()) {

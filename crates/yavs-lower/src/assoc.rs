@@ -93,7 +93,7 @@ impl Fx<'_, '_> {
                 if p.mode != Mode::In {
                     self.writeback_parts.push((obj, f, parts.into()));
                 }
-                self.array_cells(conv, tmp, dope, cells);
+                self.array_cells(conv, p, tmp, dope, cells, span)?;
             }
             _ => {
                 return Err(self
@@ -187,7 +187,7 @@ impl Fx<'_, '_> {
                         self.default_into(st, &c, tmp, dope, span)?;
                     }
                 }
-                self.array_cells(conv, tmp, dope, cells);
+                self.array_cells(conv, p, tmp, dope, cells, span)?;
                 Obj::Array {
                     space: Space::Frame(self.depth),
                     off: slot,

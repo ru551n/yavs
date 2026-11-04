@@ -5,10 +5,12 @@
 //! failing inline instruction returns its pc and the interpreter re-executes it.
 
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
+use std::mem::{offset_of, size_of};
 use std::rc::Rc;
 
-use cranelift_codegen::Context;
 use cranelift_codegen::inline::{Inline, InlineCommand};
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{
@@ -17,24 +19,30 @@ use cranelift_codegen::ir::{
     types,
 };
 use cranelift_codegen::isa::CallConv;
+use cranelift_codegen::{CompiledCode, Context};
 
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{DataDescription, DataId, FuncId as ClifId, Linkage, Module, ModuleReloc};
+use cranelift_module::{
+    DataDescription, DataId, FuncId as ClifId, FuncOrDataId, Linkage, Module, ModuleReloc,
+};
 use yavs_interp::space;
 use yavs_ir::{
     AddrSpace, BoolOp, CheckKind, CmpOp, FOp, FUnOp, Func, FuncId, FuncKind, Inst, IntOp, IntUnOp,
     Program, Reg, Width,
 };
-use yavs_llvm::native::{Arg, call_fits, closed_frame, ieee_fast, ieee_layout, native_set};
+use yavs_llvm::native::{
+    Arg, call_fits, closed_frame, ieee_fast, ieee_layout, native_set, uniform_regs,
+};
 use yavs_llvm::regs::Live;
 use yavs_llvm::rt::*;
+
+use crate::cache::{HashBytes, Name, Pre, PreInputs, body_key};
 
 const I64: Type = types::I64;
 const I32: Type = types::I32;
 const I8: Type = types::I8;
 const F64: Type = types::F64;
-const I128: Type = types::I128;
 
 /// Zero `n` bytes (`Inst::Alloc`).
 extern "C" fn clift_zero(p: *mut u8, n: u64) {
@@ -108,8 +116,18 @@ pub struct Jit {
     deopt_slots: ClifId,
     deopt_end: ClifId,
     /// The kernel-facing callbacks of `rt.rs`, in the order of `KERNEL`.
-    kernel: [ClifId; 21],
-    tables: HashMap<Vec<u8>, DataId>,
+    kernel: [ClifId; 25],
+    /// `yavs_rt_host` and the `Deref` of `yavs_rt_fast` through stubs that keep every register
+    /// (`cold_stub`).
+    cold_host: ClifId,
+    cold_deref: ClifId,
+    /// `yavs_rt_region` of a held region asked again (`Gen::hold_recheck`), same stub.
+    cold_region: ClifId,
+    hold_check: ClifId,
+    /// Module data by its bytes and whether it is 8-byte aligned.
+    tables: HashMap<(Vec<u8>, bool), DataId>,
+    /// What a body's reference to module data names in another run (`Name::Data`), by data id.
+    table_names: HashMap<u32, Name>,
     sig: Signature,
     /// Calls between compiled functions without a frame in the interpreter (`NatInfo`) and
     /// whether Cranelift inlines them (`YAVS_CLIFT_NATIVE`, `YAVS_CLIFT_INLINE`).
@@ -117,6 +135,8 @@ pub struct Jit {
     /// Debugging: the most native variants to make (`YAVS_CLIFT_NATIVE_MAX`).
     native_limit: usize,
     inline_max: usize,
+    /// The `Mem` view lives in Cranelift's pinned register (`pin_mem`, `YAVS_CLIFT_PIN`).
+    pin: bool,
     /// Per function: its native-frame variant, or `None` when it has none.
     natives: HashMap<FuncId, Option<Rc<NatInfo>>>,
     building: HashSet<FuncId>,
@@ -144,6 +164,8 @@ pub struct Jit {
     /// Frame-mode code by its body and the functions and data it refers to: the copies of a process
     /// that are the same code share one definition.
     bodies: HashMap<String, ClifId>,
+    /// The target and the switches in a pre-key (`cache::pre_key`); none: this run has no pre-keys.
+    pre_target: Option<(String, String)>,
 }
 
 /// The native-frame variant `n<id>` of a function, in the calling convention of the LLVM tier
@@ -155,8 +177,22 @@ struct NatInfo {
     /// The `CallFn` adapter `c<id>` for the interpreter's calls (`Tier::call`); none for a nested
     /// function.
     call: Option<ClifId>,
-    /// The Cranelift body, for the inliner.
-    body: ir::Function,
+    /// The Cranelift body, for the inliner; made on demand when the variant came from the cache
+    /// (`Jit::body_of`).
+    body: RefCell<Option<Rc<ir::Function>>>,
+    /// The route it was made with: per native callee, direct or not.
+    nats: Vec<(FuncId, bool)>,
+    /// Its pre-key, part of its direct callers'.
+    pre: Option<yavs_cache::Key>,
+}
+
+/// What `Jit::build` made or linked.
+struct Built {
+    fid: ClifId,
+    stepped: Vec<String>,
+    body: Option<Rc<ir::Function>>,
+    nats: Vec<(FuncId, bool)>,
+    pre: Option<yavs_cache::Key>,
 }
 
 /// What `Jit::native_of` found for a callee.
@@ -180,6 +216,189 @@ unsafe impl Send for Jit {}
 #[doc(hidden)]
 pub static BREAK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// The `Mem` view (parameter `at` of the entry block) in the pinned register: set at the entry,
+/// read where it is used, the caller's value back before each return. Without it the view is one
+/// value live through the whole function, spilled and reloaded from the stack at most uses (8 bytes
+/// each, 8 to 14 percent of the code of big processes). One read serves the uses that follow it in
+/// the block (and in blocks that only it reaches) up to the next call, which would spill it;
+/// `get_pinned_reg` is a real `mov`, never merged or used as an address by Cranelift.
+fn pin_mem(func: &mut ir::Function, at: usize, adopt: bool) {
+    use cranelift_codegen::cursor::{Cursor, FuncCursor};
+    use cranelift_codegen::flowgraph::ControlFlowGraph;
+    let Some(entry) = func.layout.entry_block() else {
+        return;
+    };
+    let mem = func.dfg.block_params(entry)[at];
+    let cfg = ControlFlowGraph::with_function(func);
+    let blocks: Vec<(ir::Block, Vec<ir::Inst>)> = func
+        .layout
+        .blocks()
+        .map(|b| (b, func.layout.block_insts(b).collect()))
+        .collect();
+    // The pinned-register read live at the end of each block, once the block is done.
+    let mut out: HashMap<ir::Block, Option<ir::Value>> = HashMap::new();
+    let mut pos = FuncCursor::new(func);
+    pos.goto_first_insertion_point(entry);
+    let saved = (!adopt).then(|| {
+        let v = pos.ins().get_pinned_reg(I64);
+        pos.ins().set_pinned_reg(mem);
+        v
+    });
+    for (b, insts) in blocks {
+        // A block with one predecessor, already done, continues its read (it dominates the block).
+        let mut preds = cfg.pred_iter(b);
+        let mut cur = match (preds.next(), preds.next()) {
+            (Some(p), None) if p.block != b => out.get(&p.block).copied().flatten(),
+            _ => None,
+        };
+        for inst in insts {
+            let loc = pos.func.srcloc(inst);
+            pos.goto_inst(inst);
+            pos.set_srcloc(loc);
+            let op = pos.func.dfg.insts[inst].opcode();
+            if op == ir::Opcode::Return
+                && let Some(saved) = saved
+            {
+                pos.ins().set_pinned_reg(saved);
+            }
+            let uses = pos.func.dfg.inst_args(inst).contains(&mem);
+            if uses {
+                let m = *cur.get_or_insert_with(|| pos.ins().get_pinned_reg(I64));
+                for v in pos.func.dfg.inst_args_mut(inst) {
+                    if *v == mem {
+                        *v = m;
+                    }
+                }
+            }
+            if op.is_call() {
+                cur = None;
+            }
+        }
+        out.insert(b, cur);
+    }
+}
+
+/// Per pc, whether it starts a block no cycle of the block graph reaches (`leader`: the block
+/// starts; `targets`: the block starts an instruction jumps to; `jumps`: it does not fall through).
+fn once_blocks(
+    f: &Func,
+    leader: &[bool],
+    targets: &dyn Fn(&Inst) -> Vec<usize>,
+    jumps: &dyn Fn(&Inst) -> bool,
+) -> Vec<bool> {
+    let n = f.code.len();
+    let starts: Vec<usize> = (0..n).filter(|&i| leader[i]).collect();
+    let mut node = vec![usize::MAX; n + 1];
+    for (k, &s) in starts.iter().enumerate() {
+        node[s] = k;
+    }
+    let m = starts.len();
+    let succ: Vec<Vec<usize>> = (0..m)
+        .map(|k| {
+            let end = starts.get(k + 1).copied().unwrap_or(n);
+            let last = &f.code[end - 1];
+            let mut to = targets(last);
+            if !jumps(last) && end < n {
+                to.push(end);
+            }
+            to.into_iter()
+                .filter_map(|t| node.get(t).copied())
+                .filter(|&t| t < m)
+                .collect()
+        })
+        .collect();
+    // The strongly connected parts (two passes of depth-first search), then what a cyclic one reaches.
+    let mut pred: Vec<Vec<usize>> = vec![Vec::new(); m];
+    for (k, ss) in succ.iter().enumerate() {
+        for &t in ss {
+            pred[t].push(k);
+        }
+    }
+    let mut order = Vec::with_capacity(m);
+    let mut seen = vec![false; m];
+    for r in 0..m {
+        if seen[r] {
+            continue;
+        }
+        seen[r] = true;
+        let mut stack = vec![(r, 0usize)];
+        while let Some(&mut (v, ref mut i)) = stack.last_mut() {
+            if let Some(&w) = succ[v].get(*i) {
+                *i += 1;
+                if !seen[w] {
+                    seen[w] = true;
+                    stack.push((w, 0));
+                }
+            } else {
+                order.push(v);
+                stack.pop();
+            }
+        }
+    }
+    let mut comp = vec![usize::MAX; m];
+    let mut size = Vec::new();
+    for &r in order.iter().rev() {
+        if comp[r] != usize::MAX {
+            continue;
+        }
+        let c = size.len();
+        size.push(0usize);
+        let mut stack = vec![r];
+        comp[r] = c;
+        while let Some(v) = stack.pop() {
+            size[c] += 1;
+            for &w in &pred[v] {
+                if comp[w] == usize::MAX {
+                    comp[w] = c;
+                    stack.push(w);
+                }
+            }
+        }
+    }
+    let mut kept = vec![false; m];
+    let mut stack: Vec<usize> = (0..m)
+        .filter(|&k| size[comp[k]] > 1 || succ[k].contains(&k))
+        .collect();
+    for &k in &stack {
+        kept[k] = true;
+    }
+    while let Some(v) = stack.pop() {
+        for &w in &succ[v] {
+            if !kept[w] {
+                kept[w] = true;
+                stack.push(w);
+            }
+        }
+    }
+    let mut once = vec![false; n];
+    for (k, &s) in starts.iter().enumerate() {
+        once[s] = !kept[k];
+    }
+    once
+}
+
+/// `YAVS_CLIFT_HOLD_CHECK` (always in debug builds): every access through a held region is checked
+/// against the lookup (`yavs_rt_hold_check`).
+fn hold_check() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        cfg!(debug_assertions) || std::env::var_os("YAVS_CLIFT_HOLD_CHECK").is_some()
+    })
+}
+
+/// `YAVS_CLIFT_HOLD_DROP` (debug builds, the mutation test of `crates/yavs/tests/clift_hold.rs`):
+/// regions are not asked again after a call.
+fn hold_mutant() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| cfg!(debug_assertions) && std::env::var_os("YAVS_CLIFT_HOLD_DROP").is_some())
+}
+
+/// `YAVS_CLIFT_NO_PROOFS=1`: arithmetic keeps its overflow tests where intervals prove them away.
+fn no_proofs() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("YAVS_CLIFT_NO_PROOFS").is_some())
+}
+
 /// Whether the machine code carries the IR pc of each stretch (`YAVS_CLIFT_CODEDIR` set).
 fn srcmap() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -188,6 +407,68 @@ fn srcmap() -> bool {
 
 fn flag(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
+}
+
+/// A stub `name` of the convention that keeps every register, around a callback of a cold path that
+/// comes back to the hot path: without a call that clobbers, the hot path does not spill what it
+/// holds over that block. The callback gets the stub's parameters, with the constants `fixed`
+/// (position, value, type) in between; its result goes to `Mem::cold_ret`, the parameter at `mem`
+/// being the `Mem`.
+fn cold_stub(
+    module: &mut JITModule,
+    name: &str,
+    callback: ClifId,
+    params: &[Type],
+    mem: usize,
+    fixed: &[(usize, i64, Type)],
+    listed: &mut Vec<PerfEntry>,
+) -> Result<ClifId, Error> {
+    let mut ctx = module.make_context();
+    let mut fctx = FunctionBuilderContext::new();
+    ctx.func.signature.call_conv = CallConv::PreserveAll;
+    ctx.func
+        .signature
+        .params
+        .extend(params.iter().map(|&t| AbiParam::new(t)));
+    let fr = module.declare_func_in_func(callback, &mut ctx.func);
+    {
+        let mut b = FunctionBuilder::new(&mut ctx.func, &mut fctx);
+        let e = b.create_block();
+        b.append_block_params_for_function_params(e);
+        b.switch_to_block(e);
+        let mut args = b.block_params(e).to_vec();
+        let m = args[mem];
+        for &(at, v, t) in fixed {
+            let c = b.ins().iconst(t, v);
+            args.insert(at, c);
+        }
+        let call = b.ins().call(fr, &args);
+        if let Some(&r) = b.inst_results(call).first() {
+            let r = if b.func.dfg.value_type(r) == I32 {
+                b.ins().uextend(I64, r)
+            } else {
+                r
+            };
+            b.ins()
+                .store(MemFlagsData::trusted(), r, m, MEM_COLD_RET as i32);
+        }
+        b.ins().return_(&[]);
+        b.seal_all_blocks();
+        b.finalize(module.target_config());
+    }
+    let id = module
+        .declare_function(name, Linkage::Local, &ctx.func.signature)
+        .map_err(|e| e.to_string())?;
+    module
+        .define_function(id, &mut ctx)
+        .map_err(|e| e.to_string())?;
+    let size = ctx
+        .compiled_code()
+        .ok_or("no compiled code")?
+        .code_info()
+        .total_size;
+    listed.push((name.to_string(), id, size as usize, Vec::new()));
+    Ok(id)
 }
 
 impl Jit {
@@ -203,6 +484,7 @@ impl Jit {
             .parse()
             .unwrap_or(usize::MAX);
         let inline_max = flag("YAVS_CLIFT_INLINE", "150").parse().unwrap_or(0);
+        let pin = flag("YAVS_CLIFT_PIN", "1") != "0";
         let flags = [
             ("opt_level", opt.as_str()),
             (
@@ -210,6 +492,7 @@ impl Jit {
                 if verify == "1" { "true" } else { "false" },
             ),
             ("regalloc_algorithm", ra.as_str()),
+            ("enable_pinned_reg", if pin { "true" } else { "false" }),
         ];
         let mut b = JITBuilder::with_flags(&flags, cranelift_module::default_libcall_names())
             .map_err(|e| e.to_string())?;
@@ -230,6 +513,10 @@ impl Jit {
             (WAIT_SAME, yavs_rt_wait_same as *const u8),
             (DRIVE, yavs_rt_drive as *const u8),
             (DRIVE_BIT, yavs_rt_drive_bit as *const u8),
+            (DRIVE_F, yavs_rt_drive_f as *const u8),
+            (GATE_CHECK, yavs_rt_gate_check as *const u8),
+            (IMAGE_CHECK, yavs_rt_image_check as *const u8),
+            (ELOOP_EXEC, yavs_rt_eloop_exec as *const u8),
             (CODES, yavs_rt_codes as *const u8),
             (PLANES, yavs_rt_planes as *const u8),
             (NATIVE, yavs_rt_native as *const u8),
@@ -244,10 +531,15 @@ impl Jit {
             (LAYOUT_WORD, yavs_rt_layout_word as *const u8),
             (DRIVE_FLUSH, yavs_rt_drive_flush as *const u8),
             (REGION, yavs_rt_region as *const u8),
+            (HOLD_CHECK, yavs_rt_hold_check as *const u8),
             (WAIT_EDGE, yavs_rt_wait_edge as *const u8),
             (SCAN, yavs_rt_scan as *const u8),
         ] {
             b.symbol(n, p);
+        }
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        if let Some(p) = crate::hugearena::provider() {
+            b.memory_provider(p);
         }
         let mut module = JITModule::new(b);
         let mut imp = |name: &str, params: &[Type], ret: Option<Type>| {
@@ -308,11 +600,58 @@ impl Jit {
             imp(REGION, &[I64, I64, I64, I64, I32, I64], None)?,
             imp(WAIT_EDGE, &[I64, I64, I64, I64, I32], Some(I32))?,
             imp(SCAN, &[I64; 11], Some(I32))?,
+            imp(DRIVE_F, &[I64, I32, I32, I64, I64, I64], Some(I32))?,
+            imp(
+                GATE_CHECK,
+                &[I64, I32, I32, I64, I64, I64, I64, I64, I32],
+                None,
+            )?,
+            imp(IMAGE_CHECK, &[I64, I32, I32], None)?,
+            imp(ELOOP_EXEC, &[I64; 8], Some(I64))?,
         ];
+        let hold_check = imp(HOLD_CHECK, &[I64, I64, I64, I64, I64, I32, I64, I64], None)?;
+        let mut stubs = Vec::new();
+        let cold_host = cold_stub(
+            &mut module,
+            "cold_host",
+            host,
+            &[I64, I64, I64, I64, I64, I32],
+            1,
+            &[],
+            &mut stubs,
+        )?;
+        // `(env, regs, mem, dst, h)`, as `yavs_rt_fast(env, regs, mem, FAST_DEREF, dst, h, 0)`.
+        let cold_deref = cold_stub(
+            &mut module,
+            "cold_deref",
+            kernel[8],
+            &[I64, I64, I64, I32, I64],
+            2,
+            &[(3, FAST_DEREF as i64, I32), (6, 0, I64)],
+            &mut stubs,
+        )?;
+        let cold_region = cold_stub(
+            &mut module,
+            "cold_region",
+            kernel[18],
+            &[I64, I64, I64, I64, I32, I64],
+            1,
+            &[],
+            &mut stubs,
+        )?;
         let mut sig = module.make_signature();
         sig.params.extend([AbiParam::new(I64); 3]);
         sig.params.push(AbiParam::new(I32));
         sig.returns.push(AbiParam::new(I32));
+        let pre_target = crate::cache::pre_target(
+            module.isa(),
+            &format!(
+                "{:?} {:?} {:?}",
+                inlcmp_mode(),
+                image_mode(),
+                image_inline()
+            ),
+        );
         Ok(Jit {
             module,
             step,
@@ -327,22 +666,29 @@ impl Jit {
             deopt_slots,
             deopt_end,
             kernel,
+            cold_host,
+            cold_deref,
+            cold_region,
+            hold_check,
             tables: HashMap::new(),
+            table_names: HashMap::new(),
             sig,
             native_on,
             native_limit,
             inline_max,
+            pin,
             natives: HashMap::new(),
             building: HashSet::new(),
             nsets: HashMap::new(),
             via_ntab: flag("YAVS_CLIFT_NTAB", "0") == "1",
-            perfmap: (flag("YAVS_CLIFT_PERFMAP", "0") == "1").then(Vec::new),
+            perfmap: (flag("YAVS_CLIFT_PERFMAP", "0") == "1").then_some(stubs),
             allowed: None,
             routes: Default::default(),
             frames: HashMap::new(),
             cached_only: false,
             missed: false,
             bodies: HashMap::new(),
+            pre_target,
         })
     }
 
@@ -362,9 +708,9 @@ impl Jit {
         if std::env::var_os("YAVS_CLIFT_DUMP").is_some() {
             eprintln!("{}", prog.dump_func(id));
         }
-        let (c, s, _) = self.build(prog, id, f, false)?;
-        self.frames.insert(id, c);
-        Ok((c, s))
+        let b = self.build(prog, id, f, false)?;
+        self.frames.insert(id, b.fid);
+        Ok((b.fid, b.stepped))
     }
 
     /// `Generator::cached_only`: from now on compile nothing the compilation cache does not have.
@@ -440,11 +786,21 @@ impl Jit {
             crate::cache::note_hit();
         }
         let code = ctx.compiled_code().ok_or("no compiled code")?;
+        self.define_compiled(fid, &ctx.func, code)
+    }
+
+    /// Define `fid` as `code`, whose references are named by `func`'s parameters.
+    fn define_compiled(
+        &mut self,
+        fid: ClifId,
+        func: &ir::Function,
+        code: &CompiledCode,
+    ) -> Result<(), String> {
         let relocs: Vec<ModuleReloc> = code
             .buffer
             .relocs()
             .iter()
-            .map(|r| ModuleReloc::from_mach_reloc(r, &ctx.func, fid))
+            .map(|r| ModuleReloc::from_mach_reloc(r, func, fid))
             .collect();
         let align = u64::from(code.buffer.min_alignment);
         self.module
@@ -519,7 +875,7 @@ impl Jit {
         if self.natives.values().flatten().count() >= self.native_limit {
             return None;
         }
-        let (cid, _, body) = match self.build(prog, id, f, true) {
+        let built = match self.build(prog, id, f, true) {
             Ok(r) => r,
             Err(why) => {
                 if dump {
@@ -528,6 +884,7 @@ impl Jit {
                 return None;
             }
         };
+        let cid = built.fid;
         let call = if f.parent.is_none() {
             match self.define_adapter(f, cid) {
                 Ok(c) => Some(c),
@@ -552,7 +909,9 @@ impl Jit {
         Some(Rc::new(NatInfo {
             id: cid,
             call,
-            body: body?,
+            body: RefCell::new(built.body),
+            nats: built.nats,
+            pre: built.pre,
         }))
     }
 
@@ -597,6 +956,10 @@ impl Jit {
                 &ctx.func.signature,
             )
             .map_err(|e| e.to_string())?;
+        if self.pin {
+            pin_mem(&mut ctx.func, 1, false);
+        }
+        crate::cold::propagate(&mut ctx.func);
         if let Err(e) = self.define_code(fid, &mut ctx) {
             if e == NOT_CACHED {
                 return Err(e);
@@ -631,14 +994,15 @@ impl Jit {
     }
 
     /// Translate `f` into a function defined in the module: the frame-mode `f<id>`, or (`native`)
-    /// the native-frame variant `n<id>`, whose Cranelift body is returned too.
+    /// the native-frame variant `n<id>`, whose Cranelift body is returned when it was made. The
+    /// compilation cache is asked by the pre-key before anything is lowered (`cache::pre_key`).
     fn build(
         &mut self,
         prog: &Program,
         id: FuncId,
         f: &Func,
         native: bool,
-    ) -> Result<(ClifId, Vec<String>, Option<ir::Function>), Error> {
+    ) -> Result<Built, Error> {
         // The callees that run on native frames (the LLVM tier's rule): called directly when
         // they have a variant in this module, else through `Mem::ntab`. A native variant is made
         // only when every such callee can be called.
@@ -666,7 +1030,11 @@ impl Jit {
             };
             let prot = matches!(i, Inst::CallProt { .. });
             let Some(g) = prog.func(func) else { continue };
-            if nats.contains_key(&func) || !nc.contains(&func) || !call_fits(f, id, g, args, prot) {
+            // (A copy's frame stands for its process's: what is nested in the process is nested in it.)
+            if nats.contains_key(&func)
+                || !nc.contains(&func)
+                || !call_fits(f, prog.base_of(id), g, args, prot)
+            {
                 continue;
             }
             if self.via_ntab {
@@ -685,6 +1053,343 @@ impl Jit {
                 NatVar::No => None,
             };
         }
+        let route_now: Vec<(u32, bool)> = nats.iter().map(|(g, n)| (g.0, n.is_some())).collect();
+        let fresh_route = self.allowed.is_some() && route.is_none();
+        let mut route_of: Vec<(FuncId, bool)> =
+            nats.iter().map(|(&g, n)| (g, n.is_some())).collect();
+        route_of.sort_unstable_by_key(|r| r.0.0);
+        let pre = self.pre_key(prog, id, f, native, &nats);
+        let stored = pre.as_ref().and_then(crate::cache::pre_get);
+        let check = crate::cache::check();
+        let linked = |jit: &mut Jit, stored: &Option<Pre>| -> Result<Option<Built>, Error> {
+            let Some(Pre::Code {
+                clif,
+                names,
+                stepped,
+            }) = stored
+            else {
+                return Ok(None);
+            };
+            let Some(fid) = jit.link(prog, id, f, native, clif, names)? else {
+                return Ok(None);
+            };
+            if fresh_route {
+                jit.routes.add(tag, native, route_now.iter().copied());
+            }
+            Ok(Some(Built {
+                fid,
+                stepped: crate::cache::stepped_list(stepped),
+                body: None,
+                nats: route_of.clone(),
+                pre,
+            }))
+        };
+        if !check {
+            if let Some(Pre::Refused(why)) = &stored {
+                return Err(why.clone());
+            }
+            if let Some(b) = linked(self, &stored)? {
+                return Ok(b);
+            }
+        }
+        crate::cache::note_lowered(id.0, native);
+        let (mut ctx, stepped) = match self.lower(prog, id, f, native, &nats) {
+            Ok(r) => r,
+            Err(why) => {
+                if let Some(k) = &pre {
+                    let now = Pre::Refused(why.clone());
+                    crate::cache::pre_note(k, stored.as_ref(), &now, &f.name, id.0, native);
+                }
+                return Err(why);
+            }
+        };
+        let body = native.then(|| Rc::new(ctx.func.clone()));
+        crate::cold::propagate(&mut ctx.func);
+        // The instances of a process with equal code (`Program::copy_of` of data the code does not
+        // read) are one function, as the LLVM tier's twins.
+        let copy = !native && prog.base_of(id) != id;
+        let clif =
+            (copy || pre.is_some()).then(|| crate::cache::clif_key(self.module.isa(), &ctx.func));
+        let now = pre.as_ref().zip(clif).map(|(k, clif)| {
+            let now = Pre::Code {
+                clif,
+                names: self.names_of(&ctx.func),
+                stepped: crate::cache::stepped_counts(&stepped),
+            };
+            crate::cache::pre_check(k, stored.as_ref(), &now, &f.name, id.0, native);
+            (k, now)
+        });
+        // (The check made sure the entry is this code: go on as a run without the check does.)
+        if check && let Some(b) = linked(self, &stored)? {
+            return Ok(Built { body, ..b });
+        }
+        let shared = clif.filter(|_| copy).map(|c| body_key(&c, &ctx.func));
+        if let Some(&c) = shared.as_ref().and_then(|k| self.bodies.get(k)) {
+            // Counts as linked from the cache, so `--tier=auto` charges a link (the LLVM tier's
+            // twins do the same).
+            crate::cache::note_hit();
+            self.module.clear_context(&mut ctx);
+            if let Some((k, now)) = &now {
+                crate::cache::pre_note(k, stored.as_ref(), now, &f.name, id.0, native);
+            }
+            if fresh_route {
+                self.routes.add(tag, native, route_now.iter().copied());
+            }
+            return Ok(Built {
+                fid: c,
+                stepped,
+                body: None,
+                nats: route_of,
+                pre,
+            });
+        }
+        let fid = self
+            .module
+            .declare_function(
+                &yavs_llvm::perfmap::symbol(if native { "n" } else { "f" }, id.0, &prog.label(id)),
+                Linkage::Export,
+                &ctx.func.signature,
+            )
+            .map_err(|e| e.to_string())?;
+        // `YAVS_CLIFT_ASM=<function id>`: the machine code of that function (variant) on stderr.
+        let asm = std::env::var("YAVS_CLIFT_ASM")
+            .is_ok_and(|v| v.parse::<u32>().is_ok_and(|n| n == id.0));
+        ctx.set_disasm(asm);
+        if let Err(e) = self.define_code(fid, &mut ctx) {
+            if e == NOT_CACHED {
+                return Err(e);
+            }
+            // A Cranelift error (the verifier is on in debug builds) is a bug of the lowering:
+            // debug builds stop with the function, release builds leave it interpreted.
+            if cfg!(debug_assertions) {
+                panic!(
+                    "Cranelift rejected f{}{}: {e:?}\n{}",
+                    id.0,
+                    if native {
+                        " (native-frame variant)"
+                    } else {
+                        ""
+                    },
+                    ctx.func.display()
+                );
+            }
+            return Err(format!("Cranelift: {e} (a bug in yavs)"));
+        }
+        if let Some((k, now)) = &now {
+            crate::cache::pre_note(k, stored.as_ref(), now, &f.name, id.0, native);
+        }
+        if fresh_route {
+            self.routes.add(tag, native, route_now.iter().copied());
+        }
+        if let Some(v) = ctx
+            .compiled_code()
+            .and_then(|c| c.vcode.as_ref())
+            .filter(|_| asm)
+        {
+            eprintln!(
+                "asm of {} f{}:\n{v}",
+                if native { "variant" } else { "frame code" },
+                id.0
+            );
+        }
+        self.module.clear_context(&mut ctx);
+        if let Some(k) = shared {
+            self.bodies.insert(k, fid);
+        }
+        Ok(Built {
+            fid,
+            stepped,
+            body,
+            nats: route_of,
+            pre,
+        })
+    }
+
+    /// The pre-key of a function about to be made with the callees `nats`; none in a run without
+    /// pre-keys, for a program not cached and when a direct callee has none.
+    fn pre_key(
+        &self,
+        prog: &Program,
+        id: FuncId,
+        f: &Func,
+        native: bool,
+        nats: &HashMap<FuncId, Option<Rc<NatInfo>>>,
+    ) -> Option<yavs_cache::Key> {
+        let (target, switches) = self.pre_target.as_ref()?;
+        let identity = prog.identity.as_deref()?;
+        crate::cache::store()?;
+        if f.code.is_empty() || BREAK.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        let mut callees = Vec::with_capacity(nats.len());
+        for (g, n) in nats {
+            callees.push((
+                g.0,
+                match n {
+                    Some(n) => Some(n.pre?),
+                    None => None,
+                },
+            ));
+        }
+        callees.sort_unstable_by_key(|c| c.0);
+        let func = postcard::to_stdvec(f).ok()?;
+        let mut facts = HashBytes(Vec::new());
+        prog.facts(id).hash(&mut facts);
+        Some(crate::cache::pre_key(&PreInputs {
+            fingerprint: &yavs_ir::opt::fingerprint(),
+            target,
+            switches,
+            identity,
+            base: prog.base_of(id).0,
+            native,
+            func: &func,
+            facts: &facts.0,
+            callees: &callees,
+        }))
+    }
+
+    /// The symbols `func` refers to, as any run names them, in the order of its references.
+    fn names_of(&self, func: &ir::Function) -> Vec<Name> {
+        let decls = self.module.declarations();
+        func.params
+            .user_named_funcs()
+            .values()
+            .map(|n| {
+                if n.namespace == 0 {
+                    let c = ClifId::from_u32(n.index);
+                    Name::Func(decls.get_function_decl(c).linkage_name(c).into_owned())
+                } else {
+                    self.table_names[&n.index].clone()
+                }
+            })
+            .collect()
+    }
+
+    /// Define the code the entry of a pre-key names, with its symbols resolved in this module and
+    /// nothing lowered; none when the code or a symbol is not there.
+    fn link(
+        &mut self,
+        prog: &Program,
+        id: FuncId,
+        f: &Func,
+        native: bool,
+        clif: &[u8; 32],
+        names: &[Name],
+    ) -> Result<Option<ClifId>, Error> {
+        let mut func = ir::Function::new();
+        for (at, n) in names.iter().enumerate() {
+            let (namespace, index) = match n {
+                Name::Func(s) => match self.module.get_name(s) {
+                    Some(FuncOrDataId::Func(c)) => (0, c.as_u32()),
+                    _ => return Ok(None),
+                },
+                Name::Data { bytes, align8 } => (1, self.table(bytes, *align8)?.as_u32()),
+            };
+            let r = func.declare_imported_user_function(ir::UserExternalName { namespace, index });
+            // (The code names its symbols by this position.)
+            if r.as_u32() as usize != at {
+                return Ok(None);
+            }
+        }
+        let shared = (!native && prog.base_of(id) != id).then(|| body_key(clif, &func));
+        if let Some(&c) = shared.as_ref().and_then(|k| self.bodies.get(k)) {
+            crate::cache::note_hit();
+            return Ok(Some(c));
+        }
+        let Some(code) = crate::cache::stored_code(clif, &func) else {
+            return Ok(None);
+        };
+        let signature = if native {
+            native_sig(self.sig.call_conv, f)
+        } else {
+            self.sig.clone()
+        };
+        let name =
+            yavs_llvm::perfmap::symbol(if native { "n" } else { "f" }, id.0, &prog.label(id));
+        let fid = self
+            .module
+            .declare_function(&name, Linkage::Export, &signature)
+            .map_err(|e| e.to_string())?;
+        self.define_compiled(fid, &func, &code)?;
+        crate::cache::note_hit();
+        crate::cache::note_prehit(clif);
+        if let Some(list) = self.perfmap.as_mut() {
+            let size = code.code_info().total_size as usize;
+            list.push((name, fid, size, Vec::new()));
+        }
+        if let Some(k) = shared {
+            self.bodies.insert(k, fid);
+        }
+        Ok(Some(fid))
+    }
+
+    /// The data `bytes` of the module (`align8`: 8-byte aligned), defined at the first use.
+    fn table(&mut self, bytes: &[u8], align8: bool) -> Result<DataId, Error> {
+        let key = (bytes.to_vec(), align8);
+        if let Some(&d) = self.tables.get(&key) {
+            return Ok(d);
+        }
+        let name = format!("t{}", self.tables.len());
+        let d = self
+            .module
+            .declare_data(&name, Linkage::Local, false, false)
+            .map_err(|e| e.to_string())?;
+        let mut dd = DataDescription::new();
+        dd.define(bytes.to_vec().into_boxed_slice());
+        if align8 {
+            dd.set_align(8);
+        }
+        self.module.define_data(d, &dd).map_err(|e| e.to_string())?;
+        self.tables.insert(key, d);
+        let name = Name::Data {
+            bytes: bytes.to_vec(),
+            align8,
+        };
+        self.table_names.insert(d.as_u32(), name);
+        Ok(d)
+    }
+
+    /// The Cranelift body of a variant, for a caller that inlines: lowered now when the variant
+    /// was linked from the cache, with the callees it was made with.
+    fn body_of(
+        &mut self,
+        prog: &Program,
+        g: FuncId,
+        n: &NatInfo,
+    ) -> Result<Rc<ir::Function>, Error> {
+        if let Some(b) = n.body.borrow().as_ref() {
+            return Ok(b.clone());
+        }
+        let f = prog.func(g).ok_or("no such function")?;
+        let nats = n
+            .nats
+            .iter()
+            .map(|&(h, direct)| {
+                let v = if direct {
+                    self.natives.get(&h).cloned().flatten()
+                } else {
+                    None
+                };
+                (h, v)
+            })
+            .collect();
+        crate::cache::note_lowered(g.0, true);
+        let (ctx, _) = self.lower(prog, g, f, true, &nats)?;
+        let b = Rc::new(ctx.func.clone());
+        *n.body.borrow_mut() = Some(b.clone());
+        Ok(b)
+    }
+
+    /// The Cranelift function of `f` (the frame-mode code or, `native`, the variant) with the
+    /// callees `nats`, the small ones inlined, and the kinds of instruction it steps.
+    fn lower(
+        &mut self,
+        prog: &Program,
+        id: FuncId,
+        f: &Func,
+        native: bool,
+        nats: &HashMap<FuncId, Option<Rc<NatInfo>>>,
+    ) -> Result<(Context, Vec<String>), Error> {
         let mut ctx = self.module.make_context();
         let mut fctx = FunctionBuilderContext::new();
         // Data for the table natives this function uses.
@@ -694,21 +1399,7 @@ impl Jit {
                 && let Some(NativeKind::Table(t, ..)) = native_kind(prog, f, native, args, dst)
                 && !tabs.contains_key(&t)
             {
-                let did = match self.tables.get(&t) {
-                    Some(&d) => d,
-                    None => {
-                        let name = format!("t{}", self.tables.len());
-                        let d = self
-                            .module
-                            .declare_data(&name, Linkage::Local, false, false)
-                            .map_err(|e| e.to_string())?;
-                        let mut dd = DataDescription::new();
-                        dd.define(t.clone().into_boxed_slice());
-                        self.module.define_data(d, &dd).map_err(|e| e.to_string())?;
-                        self.tables.insert(t.clone(), d);
-                        d
-                    }
-                };
+                let did = self.table(&t, false)?;
                 let gv = self.module.declare_data_in_func(did, &mut ctx.func);
                 tabs.insert(t, gv);
             }
@@ -720,22 +1411,7 @@ impl Jit {
                 if tabs.contains_key(&t) {
                     continue;
                 }
-                let did = match self.tables.get(&t) {
-                    Some(&d) => d,
-                    None => {
-                        let name = format!("t{}", self.tables.len());
-                        let d = self
-                            .module
-                            .declare_data(&name, Linkage::Local, false, false)
-                            .map_err(|e| e.to_string())?;
-                        let mut dd = DataDescription::new();
-                        dd.define(t.clone().into_boxed_slice());
-                        dd.set_align(8);
-                        self.module.define_data(d, &dd).map_err(|e| e.to_string())?;
-                        self.tables.insert(t.clone(), d);
-                        d
-                    }
-                };
+                let did = self.table(&t, true)?;
                 let gv = self.module.declare_data_in_func(did, &mut ctx.func);
                 tabs.insert(t, gv);
             }
@@ -751,21 +1427,7 @@ impl Jit {
                 && let Some(yavs_ir::ConstData::Bytes(bytes)) = prog.consts.get(k)
                 && bytes.len() <= 4096
             {
-                let did = match self.tables.get(bytes) {
-                    Some(&d) => d,
-                    None => {
-                        let name = format!("t{}", self.tables.len());
-                        let d = self
-                            .module
-                            .declare_data(&name, Linkage::Local, false, false)
-                            .map_err(|e| e.to_string())?;
-                        let mut dd = DataDescription::new();
-                        dd.define(bytes.clone().into_boxed_slice());
-                        self.module.define_data(d, &dd).map_err(|e| e.to_string())?;
-                        self.tables.insert(bytes.clone(), d);
-                        d
-                    }
-                };
+                let did = self.table(bytes, false)?;
                 let gv = self.module.declare_data_in_func(did, &mut ctx.func);
                 cons.insert(k, (gv, bytes.len() as u64));
             }
@@ -777,7 +1439,7 @@ impl Jit {
         };
         ctx.func.name = UserFuncName::user(u32::from(native), id.0);
         let mut natives = HashMap::new();
-        let mut bodies: HashMap<FuncRef, Rc<NatInfo>> = HashMap::new();
+        let mut bodies: HashMap<FuncRef, Rc<ir::Function>> = HashMap::new();
         // (In id order: the body, and so its key in the compilation cache, is the same every run.)
         let mut order: Vec<_> = nats.iter().collect();
         order.sort_by_key(|(g, _)| g.0);
@@ -786,13 +1448,27 @@ impl Jit {
                 .as_ref()
                 .map(|n| self.module.declare_func_in_func(n.id, &mut ctx.func));
             natives.insert(g, NatRef { fr });
-            if let (Some(fr), Some(n)) = (fr, n) {
-                bodies.insert(fr, n.clone());
+            if let (Some(fr), Some(n)) = (fr, n)
+                && self.inline_max > 0
+            {
+                bodies.insert(fr, self.body_of(prog, g, n)?);
             }
         }
         let imports = Imports {
             step: self.module.declare_func_in_func(self.step, &mut ctx.func),
             host: self.module.declare_func_in_func(self.host, &mut ctx.func),
+            cold_host: self
+                .module
+                .declare_func_in_func(self.cold_host, &mut ctx.func),
+            cold_deref: self
+                .module
+                .declare_func_in_func(self.cold_deref, &mut ctx.func),
+            cold_region: self
+                .module
+                .declare_func_in_func(self.cold_region, &mut ctx.func),
+            hold_check: self
+                .module
+                .declare_func_in_func(self.hold_check, &mut ctx.func),
             signal: self.module.declare_func_in_func(self.signal, &mut ctx.func),
             lcopy: self.module.declare_func_in_func(self.lcopy, &mut ctx.func),
             zero: self.module.declare_func_in_func(self.zero, &mut ctx.func),
@@ -860,15 +1536,24 @@ impl Jit {
             drive_flush: self
                 .module
                 .declare_func_in_func(self.kernel[17], &mut ctx.func),
-            region: self
-                .module
-                .declare_func_in_func(self.kernel[18], &mut ctx.func),
             wait_edge: self
                 .module
                 .declare_func_in_func(self.kernel[19], &mut ctx.func),
             scan: self
                 .module
                 .declare_func_in_func(self.kernel[20], &mut ctx.func),
+            drive_f: self
+                .module
+                .declare_func_in_func(self.kernel[21], &mut ctx.func),
+            gate_check: self
+                .module
+                .declare_func_in_func(self.kernel[22], &mut ctx.func),
+            image_check: self
+                .module
+                .declare_func_in_func(self.kernel[23], &mut ctx.func),
+            eloop_exec: self
+                .module
+                .declare_func_in_func(self.kernel[24], &mut ctx.func),
             tables: tabs,
             consts: cons,
             natives,
@@ -876,6 +1561,15 @@ impl Jit {
         };
         let cfg = self.module.target_config();
         let stepped = gen_func(&mut ctx, &mut fctx, cfg, prog, f, imports, id, native)?;
+        if self.pin {
+            // Every caller of a native variant has the view in the register already, except an
+            // LLVM-compiled one (`--tier=auto3`).
+            pin_mem(
+                &mut ctx.func,
+                if native { 1 } else { 2 },
+                native && !yavs_llvm::WITH_LLVM,
+            );
+        }
         // `YAVS_CLIFT_CLIF=<function id>`: the Cranelift IR of that function (variant) on stderr.
         if std::env::var("YAVS_CLIFT_CLIF")
             .is_ok_and(|v| v == "all" || v.parse::<u32>().is_ok_and(|n| n == id.0))
@@ -896,92 +1590,7 @@ impl Jit {
             ctx.inline(inl)
                 .map_err(|e| format!("Cranelift inline: {e:?}"))?;
         }
-        // The instances of a process with equal code (`Program::copy_of` of data the code does not
-        // read) are one function, as the LLVM tier's twins.
-        let fresh_route = (self.allowed.is_some() && route.is_none()).then(|| {
-            nats.iter()
-                .map(|(g, n)| (g.0, n.is_some()))
-                .collect::<Vec<_>>()
-        });
-        let body = (!native && prog.base_of(id) != id).then(|| {
-            let names: Vec<(u32, u32)> = ctx
-                .func
-                .params
-                .user_named_funcs()
-                .values()
-                .map(|n| (n.namespace, n.index))
-                .collect();
-            format!(
-                "{} {names:?}",
-                cranelift_codegen::incremental_cache::compute_cache_key(
-                    self.module.isa(),
-                    &ctx.func
-                )
-            )
-        });
-        if let Some(&c) = body.as_ref().and_then(|k| self.bodies.get(k)) {
-            // Counts as linked from the cache, so `--tier=auto` charges a link (the LLVM tier's
-            // twins do the same).
-            crate::cache::note_hit();
-            self.module.clear_context(&mut ctx);
-            if let Some(r) = fresh_route {
-                self.routes.add(tag, native, r.into_iter());
-            }
-            return Ok((c, stepped, None));
-        }
-        let fid = self
-            .module
-            .declare_function(
-                &yavs_llvm::perfmap::symbol(if native { "n" } else { "f" }, id.0, &prog.label(id)),
-                Linkage::Export,
-                &ctx.func.signature,
-            )
-            .map_err(|e| e.to_string())?;
-        let shared = body;
-        let body = native.then(|| ctx.func.clone());
-        // `YAVS_CLIFT_ASM=<function id>`: the machine code of that function (variant) on stderr.
-        let asm = std::env::var("YAVS_CLIFT_ASM")
-            .is_ok_and(|v| v.parse::<u32>().is_ok_and(|n| n == id.0));
-        ctx.set_disasm(asm);
-        if let Err(e) = self.define_code(fid, &mut ctx) {
-            if e == NOT_CACHED {
-                return Err(e);
-            }
-            // A Cranelift error (the verifier is on in debug builds) is a bug of the lowering:
-            // debug builds stop with the function, release builds leave it interpreted.
-            if cfg!(debug_assertions) {
-                panic!(
-                    "Cranelift rejected f{}{}: {e:?}\n{}",
-                    id.0,
-                    if native {
-                        " (native-frame variant)"
-                    } else {
-                        ""
-                    },
-                    ctx.func.display()
-                );
-            }
-            return Err(format!("Cranelift: {e} (a bug in yavs)"));
-        }
-        if let Some(r) = fresh_route {
-            self.routes.add(tag, native, r.into_iter());
-        }
-        if let Some(v) = ctx
-            .compiled_code()
-            .and_then(|c| c.vcode.as_ref())
-            .filter(|_| asm)
-        {
-            eprintln!(
-                "asm of {} f{}:\n{v}",
-                if native { "variant" } else { "frame code" },
-                id.0
-            );
-        }
-        self.module.clear_context(&mut ctx);
-        if let Some(k) = shared {
-            self.bodies.insert(k, fid);
-        }
-        Ok((fid, stepped, body))
+        Ok((ctx, stepped))
     }
 
     pub fn finalize(&mut self) -> Result<(), Error> {
@@ -1049,6 +1658,10 @@ struct Imports {
     wait_on: FuncRef,
     wait_same: FuncRef,
     drive: FuncRef,
+    cold_host: FuncRef,
+    cold_deref: FuncRef,
+    cold_region: FuncRef,
+    hold_check: FuncRef,
     drive_bit: FuncRef,
     codes: FuncRef,
     planes: FuncRef,
@@ -1066,17 +1679,26 @@ struct Imports {
     /// `yavs_rt_eloop(env, mem, prog, nprog, inputs, ind, bound, step, depth, fhi, slots,
     /// slots_len) -> iterations`: the element loops of a native frame (#757).
     eloop: FuncRef,
+    /// `yavs_rt_eloop_exec(src, s_e0, s_step, dst, d_e0, d_step, code, m) -> iterations`: a loop
+    /// planned in the code itself (`Gen::eloop_plan`).
+    eloop_exec: FuncRef,
     /// `yavs_rt_layout_word(env, ty, desc, dsz, k) -> i64`: one word of a layout from the
     /// interpreter's layout memo, -1 when it declines.
     layout_word: FuncRef,
     /// `yavs_rt_drive_flush(env, mem, entries, n) -> u32`: the kept scalar drives (`Batch`).
     drive_flush: FuncRef,
-    /// `yavs_rt_region(env, mem, a, depth, flags, out)`: where an address parameter points.
-    region: FuncRef,
     /// `yavs_rt_wait_edge(env, mem, lo, len, kind) -> u32`: a `WaitEdge` on the kernel itself.
     wait_edge: FuncRef,
     /// `yavs_rt_scan(env, mem, ctl, dope, base, i0, x, e, delta, out, depth) -> iterations`.
     scan: FuncRef,
+    /// `yavs_rt_drive_f(mem, pc, driver, lo, wave, len_inertial) -> u32`: a `Drive` of a frame
+    /// waveform at a constant reference, the target's form found by the callee.
+    drive_f: FuncRef,
+    /// `yavs_rt_gate_check(mem, pc, driver, lo, len, value, form, entries, kept)`: a skip against
+    /// the full test, with the drives kept in the batch, which the kernel cannot see.
+    gate_check: FuncRef,
+    /// `yavs_rt_image_check(mem, pc, kept)`: a whole record skip or copy against the full test.
+    image_check: FuncRef,
     tables: HashMap<Vec<u8>, GlobalValue>,
     /// Copies of the constants (up to 4 KiB of bytes) the function takes the address of, which
     /// never change: reads of them need no lookup.
@@ -1088,6 +1710,51 @@ struct Imports {
 
 /// A call to a native-frame variant from a function being built: direct (`fr`) when the variant
 /// is in this module, else through `Mem::ntab`.
+/// The compare of a drive with the signal's current value in the generated code
+/// (`YAVS_INLCMP`: `off`; `check` asks the kernel's full test at every skip, always in debug builds).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InlCmp {
+    Off,
+    On,
+    Check,
+}
+
+fn inlcmp_mode() -> InlCmp {
+    static MODE: std::sync::OnceLock<InlCmp> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| match std::env::var("YAVS_INLCMP").as_deref() {
+        Ok("off") => InlCmp::Off,
+        Ok("check") => InlCmp::Check,
+        _ if cfg!(debug_assertions) => InlCmp::Check,
+        _ => InlCmp::On,
+    })
+}
+
+/// A whole record gather copied from its image and a whole record scatter compared with it in the
+/// generated code (`YAVS_IMAGE_INLINE=off`, `=noread`: scatters only, `=nodrive`: gathers only;
+/// `YAVS_IMAGE_CHECK` asks the full test at every one, always in debug builds).
+fn image_inline() -> Result<&'static str, ()> {
+    static WHICH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    WHICH
+        .get_or_init(|| std::env::var("YAVS_IMAGE_INLINE").ok())
+        .as_deref()
+        .ok_or(())
+}
+
+fn image_mode() -> InlCmp {
+    static MODE: std::sync::OnceLock<InlCmp> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| {
+        if image_inline() == Ok("off") {
+            InlCmp::Off
+        } else if cfg!(debug_assertions)
+            || std::env::var_os("YAVS_IMAGE_CHECK").is_some_and(|v| v != "0")
+        {
+            InlCmp::Check
+        } else {
+            InlCmp::On
+        }
+    })
+}
+
 #[derive(Clone, Copy)]
 struct NatRef {
     fr: Option<FuncRef>,
@@ -1116,7 +1783,7 @@ fn native_sig(cc: CallConv, f: &Func) -> Signature {
 /// Inlines the native-frame variants that are small, up to a budget of Cranelift instructions
 /// per caller (`YAVS_CLIFT_INLINE`: the largest callee, 0 for none).
 struct Inl<'a> {
-    bodies: &'a HashMap<FuncRef, Rc<NatInfo>>,
+    bodies: &'a HashMap<FuncRef, Rc<ir::Function>>,
     max: usize,
     budget: usize,
 }
@@ -1135,19 +1802,18 @@ impl Inline for Inl<'_> {
             // table) with the callee's name reference, which names another symbol in the caller
             // (#765): a body that has one stays a call.
             Some(n)
-                if n.body
-                    .global_values
+                if n.global_values
                     .values()
                     .any(|g| matches!(g, ir::GlobalValueData::Symbol { .. })) =>
             {
                 InlineCommand::KeepCall
             }
             Some(n) => {
-                let size = n.body.dfg.num_insts();
+                let size = n.dfg.num_insts();
                 if size <= self.max && size <= self.budget {
                     self.budget -= size;
                     InlineCommand::Inline {
-                        callee: Cow::Borrowed(&n.body),
+                        callee: Cow::Borrowed(n.as_ref()),
                         visit_callee: false,
                     }
                 } else {
@@ -1173,6 +1839,28 @@ fn via_signal(i: &Inst) -> bool {
     )
 }
 
+/// A signal reference of constants (`Inst::SigVal`), or (`run`) of a constant signal and length at
+/// an element known only at run time, in `dst`'s low half and proved inside the signal there.
+#[derive(Clone, Copy)]
+struct SigConst {
+    dst: Reg,
+    sig: u32,
+    off: i64,
+    len: i64,
+    run: bool,
+}
+
+/// The out-of-line part of a fixed signal read: the table, the entry's offset in it, the element,
+/// the register it defines and the block that steps the instruction.
+#[derive(Clone, Copy)]
+struct FixedRead {
+    tab: Value,
+    at: i64,
+    off: i64,
+    dst: Reg,
+    step: Block,
+}
+
 /// A slow path left to emit after the function body: step `inst` at `pc` and go on at `join`.
 #[derive(Clone, Copy)]
 struct Slow {
@@ -1182,12 +1870,27 @@ struct Slow {
     keep: bool,
     /// Through `yavs_rt_signal` with this edge argument instead of `yavs_rt_step`.
     edge: Option<u32>,
+    /// A fixed signal read of a signal without codes (`Gen::sig_read_fixed`): the other forms, out
+    /// of line, instead of a step.
+    read: Option<FixedRead>,
     /// In a native frame: `yavs_rt_endstmt` (the end of a statement that recorded temporaries)
     /// instead of leaving.
     endstmt: bool,
     /// In a native frame: the interpreter executes the instruction on a frame of its own
     /// (`native_step`) and the code goes on, instead of leaving.
     xstep: bool,
+}
+
+/// A region an address parameter of a native frame points into (`Gen::pres`), `[host pointer of
+/// its start, length]` in a stack slot, length 0 where it is not held.
+#[derive(Clone, Copy)]
+struct Held {
+    ss: StackSlot,
+    write: bool,
+    /// The parameter's address.
+    addr: Value,
+    /// The flags of `yavs_rt_region`.
+    flags: u32,
 }
 
 struct Gen<'a> {
@@ -1207,14 +1910,26 @@ struct Gen<'a> {
     stepped: Vec<String>,
     /// What is known about each register at the current instruction (`track`).
     known: Vec<Option<Known<Value>>>,
+    /// The interval of each integer register at the current instruction, as far as `known` goes
+    /// (`yavs_ir::opt::iv_after`; a register's checks and arithmetic that passed).
+    iv: Vec<Option<yavs_ir::opt::Iv>>,
     /// The object the instruction being generated found for its result register: entered in
     /// `known` once `track` has run for it (`ObjRef`).
     objnew: Option<(Reg, ObjRef<Value>)>,
-    /// The regions the address parameters of a native frame point into (`param_addrs`), resolved
-    /// at the entry: `Known::Param(k)` is `pres[k]` (host pointer of the start, length, written).
-    pres: Vec<(Value, Value, bool)>,
+    /// Registers holding the result of a `std_ulogic` table in this block, and the one the last
+    /// instruction wrote: a code of the nine, no test.
+    codes: Vec<Reg>,
+    code_new: Option<Reg>,
+    /// The regions the address parameters of a native frame point into (`hold_addrs`), resolved at
+    /// the entry and asked again where a heap may have changed (`hold_recheck`):
+    /// `Known::Param(k)` is `pres[k]`.
+    pres: Vec<Held>,
+    /// Where the heaps' generation the regions were resolved at is kept.
+    hold_gen: Option<StackSlot>,
     /// The frame's size in bytes (`Func::frame`): the slots of every frame of the function.
     frame_len: u64,
+    /// The composite variables in the frame of a process: their bytes (`opt/proc_objects.rs`).
+    objs: Vec<(u32, u32)>,
     /// The pointer to the frame's slots, loaded once per run of straight code.
     slots: Option<Value>,
     /// Memory flags per alias region: the register array, guest memory (slots, temporaries,
@@ -1256,6 +1971,21 @@ struct Gen<'a> {
     fresh: Vec<u32>,
     /// The instruction being generated defers its definitions (`quiet`).
     defer: bool,
+    /// Frame mode with the entry's test of the signal table (`sig_hi`): a constant signal
+    /// reference needs no test of its own.
+    sig_ok: bool,
+    /// The highest signal index of the body's `SigVal`s (the table test of the entry covers it).
+    sig_max: u32,
+    /// The `SigVal` of constants just before this instruction, and the one to hand to the next.
+    sigval: Option<SigConst>,
+    sigval_next: Option<SigConst>,
+    /// Frame mode, a copy: the references of this block at a run-time element (`SigConst::run`),
+    /// and the one the instruction being generated makes, entered after `track`.
+    sdyn: Vec<SigConst>,
+    sdyn_new: Option<SigConst>,
+    /// What this body may assume about its instance's signals: frame-mode code of a process copy
+    /// (`Program::facts`); instances with other facts have another copy.
+    facts: Option<&'a yavs_ir::InstFacts>,
     /// Its pc.
     pc: u32,
     /// Registers live over more than `MAX_SPAN` instructions: stored at the definition.
@@ -1264,8 +1994,15 @@ struct Gen<'a> {
     /// by slow block; and the registers its join takes as block parameters, by join block.
     snaps: HashMap<Block, Vec<(u32, Value)>>,
     jparams: HashMap<Block, Vec<u32>>,
+    /// A subprogram nested in another: addresses of unknown space try the enclosing frame first.
+    nested: bool,
     /// A broken invariant of the deferral (a deferred value lost at a block start).
     broken: Option<String>,
+    /// Frame mode: the frame offset a pointer loaded from a slot was stored as (`slot_targets`),
+    /// by register: a guess, tested at its use (`Gen::host`).
+    fguess: Vec<Option<u64>>,
+    /// The guess the instruction being generated makes for its result, entered after `track`.
+    fnew: Option<(Reg, u64)>,
 }
 
 /// The instructions a deferred register may be live over and still be deferred (`Gen::keep`).
@@ -1301,6 +2038,9 @@ fn quiet(i: &Inst) -> bool {
                 | Inst::Copy { .. }
                 | Inst::Zero { .. }
                 | Inst::DopeLen { .. }
+                | Inst::BoundsLen { .. }
+                | Inst::BoundsPos { .. }
+                | Inst::BoundsSlice { .. }
                 | Inst::SubtypeCheck { .. }
                 | Inst::SigVal { .. }
                 | Inst::MakeDope { .. }
@@ -1318,6 +2058,28 @@ fn quiet(i: &Inst) -> bool {
 struct Batch {
     entries: StackSlot,
     count: Variable,
+}
+
+/// A value of an element loop's plan: at the first and the last iteration, its change per
+/// iteration, and a bound of that change's size when one is known (no overflow test on it).
+#[derive(Clone, Copy)]
+struct EloopVal {
+    first: Value,
+    change: Value,
+    last: Value,
+    most: Option<u64>,
+}
+
+impl EloopVal {
+    /// A value that does not change (`zero` holds 0).
+    fn fixed(v: Value, zero: Value) -> Self {
+        EloopVal {
+            first: v,
+            change: zero,
+            last: v,
+            most: Some(0),
+        }
+    }
 }
 
 /// What a native-frame variant has instead of the interpreter's frame.
@@ -1438,6 +2200,64 @@ fn xstep_wide(f: &Func, i: &Inst) -> bool {
 enum Op {
     C(u64),
     V(Value),
+}
+
+/// The element count and offsets of an `LCopy` whose run-time tests the constants settle: all
+/// three in the range of those tests, at most `LCOPY_BLOCKS` blocks on each side. Anything else
+/// stays with the general lowering, which sends it to the interpreter.
+fn lcopy_shape(n: Option<i64>, so: Option<i64>, d: Option<i64>) -> Option<(u64, u64, u64)> {
+    let small = |v: i64| u64::try_from(v).ok().filter(|&v| v < 1 << 32);
+    let (n, so, d) = (small(n?)?, small(so?)?, small(d?)?);
+    let fits = |off: u64| (off % 64 + n).div_ceil(64) <= LCOPY_BLOCKS;
+    (fits(so) && fits(d)).then_some((n, so, d))
+}
+
+/// The frame slots every `Store` of which (at 8 bytes) stores the plain address of one frame
+/// offset, by slot offset, as far as registers defined once show it: a pointer loaded from such a
+/// slot is probably that address (the descriptor of a variable sized at elaboration lives in the
+/// frame, its pointer in a slot). A guess, never a fact: a callee or the interpreter may store
+/// something else, so `Gen::host` compares the address first.
+fn slot_targets(f: &Func) -> HashMap<u64, u64> {
+    let mut defs = vec![0u8; f.reg_ty.len()];
+    for i in &f.code {
+        i.visit(&mut |r, role, _| {
+            if role == yavs_ir::Role::Def
+                && let Some(d) = defs.get_mut(r.0 as usize)
+            {
+                *d = d.saturating_add(1);
+            }
+        });
+    }
+    let mut addr: HashMap<u32, u64> = HashMap::new();
+    for i in &f.code {
+        if let Inst::AddrOf {
+            dst,
+            space: AddrSpace::Frame,
+            off,
+        } = *i
+            && defs.get(dst.0 as usize) == Some(&1)
+            && yavs_ir::frame_object_addr(f, off).is_none()
+        {
+            addr.insert(dst.0, u64::from(off));
+        }
+    }
+    let mut out: HashMap<u64, Option<u64>> = HashMap::new();
+    for i in &f.code {
+        if let Inst::Store {
+            addr: a,
+            src,
+            w: yavs_ir::Width::B8,
+        } = *i
+            && let Some(&o) = addr.get(&a.0)
+        {
+            let t = addr.get(&src.0).copied();
+            let e = out.entry(o).or_insert(t);
+            if *e != t {
+                *e = None;
+            }
+        }
+    }
+    out.into_iter().filter_map(|(o, t)| Some((o, t?))).collect()
 }
 
 fn ok<T>(r: Option<T>, what: &str) -> Result<T, String> {
@@ -1603,6 +2423,7 @@ fn gen_func(
         }
     }
     let mut inherit: Vec<Option<Vec<Option<Known<Value>>>>> = vec![None; n + 1];
+    let mut inherit_iv: Vec<Option<Vec<Option<yavs_ir::opt::Iv>>>> = vec![None; n + 1];
     // The interpreter enters a function after the constants and addresses it preloads into the
     // frame's registers (`Pre::next`): the pcs after such definitions at an entry are entries too.
     for i in 1..n {
@@ -1619,6 +2440,14 @@ fn gen_func(
     let bbs: Vec<Option<Block>> = (0..n)
         .map(|i| leader[i].then(|| b.create_block()))
         .collect();
+    // A process's blocks no loop reaches run at most once (the declarations' initial values, what
+    // comes before the first wait): no entry, so the interpreter runs them and enters this code
+    // at the first jump into a loop. `YAVS_CLIFT_ONCE=0` keeps them.
+    let once = if !native && f.kind == FuncKind::Process && flag("YAVS_CLIFT_ONCE", "1") != "0" {
+        once_blocks(f, &leader, &targets, &is_jump)
+    } else {
+        vec![false; n]
+    };
     // The registers each block start takes as parameters (`dispatch`).
     let mut lparams: Vec<Vec<u32>> = vec![Vec::new(); n];
     // The jumps back that poll the stop request (#737) and count the activation (#583), see
@@ -1664,9 +2493,34 @@ fn gen_func(
     });
     // Frame mode: the switch over the entries is made at the end (`dispatch`), when the registers
     // each block start takes as parameters are known.
+    // One test per activation of the table every constant signal reference of the body uses:
+    // no table (no kernel, elaboration) leaves at the entry, where the interpreter reports it.
+    let sig_hi = f
+        .code
+        .iter()
+        .filter_map(|i| match i {
+            Inst::SigVal { sig, .. } => Some(*sig),
+            _ => None,
+        })
+        .max()
+        .filter(|_| !native);
     let dispatch = (!native).then(|| {
         let d = b.create_block();
-        b.ins().jump(d, &[]);
+        if let Some(hi) = sig_hi {
+            let no = b.create_block();
+            b.set_cold_block(no);
+            let n = b
+                .ins()
+                .load(I64, MemFlagsData::trusted(), p[2], MEM_SIGTAB_LEN as i32);
+            let ok = b
+                .ins()
+                .icmp_imm_s(IntCC::UnsignedGreaterThan, n, i64::from(hi));
+            b.ins().brif(ok, d, &[], no, &[]);
+            b.switch_to_block(no);
+            b.ins().jump(exit, &[BlockArg::Value(p[3])]);
+        } else {
+            b.ins().jump(d, &[]);
+        }
         d
     });
     let region = |b: &mut FunctionBuilder<'_>, id: u32, name: &'static str| {
@@ -1712,9 +2566,19 @@ fn gen_func(
     let mut g = Gen {
         prog,
         known: base_known.clone(),
+        iv: vec![None; f.reg_ty.len()],
         objnew: None,
+        codes: Vec::new(),
+        code_new: None,
         pres: Vec::new(),
+        hold_gen: None,
         frame_len: u64::from(f.frame),
+        objs: f
+            .locals
+            .iter()
+            .filter(|l| yavs_ir::is_frame_object(l))
+            .map(|l| (l.slot, l.slot + l.size))
+            .collect(),
         slots: None,
         rf: MemFlagsData::trusted().with_alias_region(Some(rr)),
         gf: MemFlagsData::new()
@@ -1744,11 +2608,23 @@ fn gen_func(
         plist: Vec::new(),
         fresh: Vec::new(),
         defer: false,
+        sig_ok: sig_hi.is_some(),
+        sig_max: sig_hi.unwrap_or(0),
+        sigval: None,
+        sigval_next: None,
+        sdyn: Vec::new(),
+        sdyn_new: None,
+        facts: prog
+            .facts(id)
+            .filter(|_| !native && f.kind == FuncKind::Process),
         pc: 0,
         keep: vec![true; f.reg_ty.len()],
         snaps: HashMap::new(),
         jparams: HashMap::new(),
+        nested: f.parent.is_some(),
         broken: None,
+        fguess: vec![None; f.reg_ty.len()],
+        fnew: None,
     };
     // Processes only: they hold the hot frame-mode code, and the analysis costs every compile.
     if g.nat.is_none() && f.kind == FuncKind::Process {
@@ -1776,7 +2652,7 @@ fn gen_func(
     if g.nat.is_some() {
         g.native_entry(f, &p[if f.parent.is_some() { 5 } else { 3 }..])?;
         // The address parameters resolved at the entry hold for the whole activation.
-        for (k, pa) in param_addrs(f).iter().enumerate() {
+        for (k, pa) in hold_addrs(f).iter().enumerate() {
             let r = pa.reg.0 as usize;
             if r < base_known.len() && k < g.pres.len() {
                 base_known[r] = Some(Known::Param(k as u16));
@@ -1790,6 +2666,11 @@ fn gen_func(
             None => return Err("no code".into()),
         }
     }
+    let targets_of = if g.nat.is_none() {
+        slot_targets(f)
+    } else {
+        HashMap::new()
+    };
     let block_bb = |bl: yavs_ir::BlockId| -> Result<Block, String> {
         f.blocks
             .get(bl)
@@ -1842,7 +2723,14 @@ fn gen_func(
             g.b.set_srcloc(ir::SourceLoc::new(pc + 1));
         }
         if let Some(p) = prev.replace(inst) {
+            if open && !holds_over(&p) {
+                g.hold_recheck();
+            }
+            let defs = yavs_interp::inst_regs(f, &p).1;
+            g.codes.retain(|c| !defs.contains(c));
+            g.codes.extend(g.code_new.take());
             track(&mut g.known, &fixed, f, &p);
+            g.iv_track(f, &p);
             // `track` forgets the register after a definition too (a signal reference is two):
             // what holds everywhere stays known.
             for &r in &always {
@@ -1862,6 +2750,20 @@ fn gen_func(
                     }
                 }
             }
+            // A guess lapses where its register is defined again.
+            for d in yavs_interp::inst_regs(f, &p).1 {
+                if let Some(x) = g.fguess.get_mut(d.0 as usize) {
+                    *x = None;
+                }
+            }
+            if let Some((r, t)) = g.fnew.take() {
+                g.fguess[r.0 as usize] = Some(t);
+            }
+            // So does what a register says about a signal.
+            let defs = yavs_interp::inst_regs(f, &p).1;
+            g.sdyn
+                .retain(|s| !defs.iter().any(|d| d.0 == s.dst.0 || d.0 == s.dst.0 + 1));
+            g.sdyn.extend(g.sdyn_new.take());
             if let Some((r, o)) = g.objnew.take()
                 && let Some(k) = g.known.get_mut(r.0 as usize)
             {
@@ -1869,11 +2771,13 @@ fn gen_func(
             }
         }
         if leader[i] {
+            g.codes.clear();
             // The single way in: the fall-through keeps what is known, a jump brings it (one that
             // comes from further down the code, not yet seen, brings nothing).
             let single = native && ways[i] == 1;
             let fall = i > 0 && !is_jump(&f.code[i - 1]);
             let brought = inherit[i].take().filter(|_| single);
+            let iv_brought = inherit_iv[i].take().filter(|_| single);
             // Frame mode: a block start no jump leads to is reached from the instruction before it
             // only (compiled or interpreted), so what holds of the values there holds here.
             let kept = !native && fall && !jumped[i];
@@ -1899,6 +2803,10 @@ fn gen_func(
                 } else {
                     Vec::new()
                 };
+                match iv_brought {
+                    Some(k) => g.iv = k,
+                    None => g.iv.fill(None),
+                }
                 match brought {
                     Some(k) => g.known = k,
                     None => {
@@ -1928,6 +2836,7 @@ fn gen_func(
             for t in targets(&inst) {
                 if ways[t] == 1 {
                     inherit[t] = Some(g.known.clone());
+                    inherit_iv[t] = Some(g.iv.clone());
                 }
             }
         }
@@ -1958,6 +2867,7 @@ fn gen_func(
             g.b.switch_to_block(bb);
             g.drop_pend();
             g.clear();
+            g.sdyn.clear();
             for (r, v, dirty) in carried {
                 g.cache[r as usize] = Some(v);
                 if dirty {
@@ -1976,11 +2886,30 @@ fn gen_func(
         // Deferred stores pass the quiet instructions; the others find the frame as the
         // interpreter would.
         g.pc = pc;
+        g.sigval = g.sigval_next.take().filter(|_| bbs[i].is_none());
+        let fixed = match inst {
+            Inst::SigReadScalar { sig, .. } => g
+                .sigval
+                .filter(|sv| sv.dst == sig && sv.len == 1 && sv.off <= i64::from(i32::MAX / 2)),
+            _ => None,
+        };
+        let run_read = match inst {
+            Inst::SigReadScalar { sig, .. } => g.sig_read_run(sig),
+            _ => false,
+        };
         g.defer = g.nat.is_none()
             && g.live.is_some()
-            && quiet(&inst)
+            && (quiet(&inst) || fixed.is_some() || run_read)
             && (g.batch.is_none() || batch_pure(prog, f, &inst));
         if g.nat.is_none() && !g.defer {
+            // A branch only reads its condition: stored only if a block it leads to reads it too.
+            if let Inst::CondBr { c: r, .. } | Inst::Case { v: r, .. } = inst
+                && !targets(&inst)
+                    .iter()
+                    .any(|&t| g.live_at(t as u32, r.0 as usize))
+            {
+                g.pend[r.0 as usize] = None;
+            }
             g.spill(pc);
         }
         if let Some(l) = eloops.get(&pc) {
@@ -2019,6 +2948,15 @@ fn gen_func(
             g.leave_at(pc);
             open = false;
             continue;
+        }
+        if let Inst::Load {
+            dst,
+            addr,
+            w: yavs_ir::Width::B8,
+        } = inst
+            && let Some(t) = g.frame_of(addr).and_then(|o| targets_of.get(&o))
+        {
+            g.fnew = Some((dst, *t));
         }
         match inst {
             _ if skipped.contains(&pc) => {}
@@ -2062,7 +3000,12 @@ fn gen_func(
             }
             Inst::Bin { op, dst, a, b } => {
                 let (x, y) = (g.ld(a), g.ld(b));
-                match g.int_op(op, x, y, pc) {
+                let v = if g.no_overflow(op, a, b) {
+                    Some(g.int_op_exact(op, x, y))
+                } else {
+                    g.int_op(op, x, y, pc)
+                };
+                match v {
                     Some(v) => g.st(dst, v),
                     None => g.step(pc, &inst),
                 }
@@ -2079,10 +3022,22 @@ fn gen_func(
                 let (x, y) = (g.ld(a), g.ld(b));
                 let (l, h) = (g.ld(lo), g.ld(hi));
                 let bounds = g.const_of(l).zip(g.const_of(h));
-                match g.int_op_in(op, x, y, pc, bounds) {
+                let v = if g.no_overflow(op, a, b) {
+                    Some(g.int_op_exact(op, x, y))
+                } else {
+                    g.int_op_in(op, x, y, pc, bounds)
+                };
+                match v {
                     Some(v) => {
                         g.range_exit(v, l, h, pc);
                         g.st(dst, v);
+                    }
+                    // (`**` on a native frame, as the other generator.)
+                    None if g.nat.is_some()
+                        && yavs_llvm::count_rule_on()
+                        && xstep_wide(f, &inst) =>
+                    {
+                        g.native_step(pc, &inst, f)
                     }
                     None => g.step(pc, &inst),
                 }
@@ -2197,7 +3152,7 @@ fn gen_func(
             } => {
                 let x = g.ld(v);
                 match kind {
-                    CheckKind::Range | CheckKind::Index => {
+                    CheckKind::Range | CheckKind::Index | CheckKind::IndexDown => {
                         let (l, h) = (g.ld(lo), g.ld(hi));
                         g.range_exit(x, l, h, pc)
                     }
@@ -2296,6 +3251,15 @@ fn gen_func(
                 g.st(dst, v);
             }
             Inst::AddrOf { dst, space, off } => match addr_const(space, off) {
+                Some(_)
+                    if space == AddrSpace::Frame
+                        && yavs_ir::frame_object_addr(f, off).is_some() =>
+                {
+                    let (i, o) = yavs_ir::frame_object_addr(f, off).expect("tested");
+                    let hi = u64::from(space::FRAME) << 29 | u64::from(i);
+                    let v = g.c64((hi << 32 | u64::from(o)) as i64);
+                    g.st(dst, v);
+                }
                 Some(a) if space == AddrSpace::Frame => {
                     let hi = match &g.nat {
                         Some(n) => {
@@ -2345,8 +3309,13 @@ fn gen_func(
                     Some(_) => g.nat_temp_base(),
                     None => g.mem_ld(MEM_TEMP_BASE),
                 };
-                let v = g.b.ins().umin(base, len);
-                g.mem_st(MEM_TEMP_LEN, v);
+                let over = g.b.ins().icmp(IntCC::UnsignedGreaterThan, len, base);
+                let (cut, same) = (g.b.create_block(), g.b.create_block());
+                g.b.ins().brif(over, cut, &[], same, &[]);
+                g.b.switch_to_block(cut);
+                g.mem_st(MEM_TEMP_LEN, base);
+                g.b.ins().jump(same, &[]);
+                g.b.switch_to_block(same);
                 g.join(join);
                 // A `wait until <edge>` short-cuts only where the edge trigger resumed the
                 // activation (`WAIT_SAME_EDGE`, #772).
@@ -2399,6 +3368,10 @@ fn gen_func(
                     }
                     g.st(dst, a);
                     g.join(join);
+                }
+                // (A layout from a run-time descriptor on a native frame, as the other generator.)
+                None if g.nat.is_some() && yavs_llvm::count_rule_on() && xstep_wide(f, &inst) => {
+                    g.native_step(pc, &inst, f)
                 }
                 None => g.step(pc, &inst),
             },
@@ -2532,7 +3505,19 @@ fn gen_func(
             Inst::DopeLen { dst, dope, dim } => {
                 let (slow, join) = g.slow_path(pc, &inst);
                 let d = g.ld(dope);
-                let (n, fits) = g.dim_len(d, dope, u64::from(dim) * 24, slow);
+                let n = g.dope_len(d, dope, u64::from(dim) * 24, slow);
+                g.st(dst, n);
+                g.join(join);
+            }
+            Inst::BoundsLen {
+                dst,
+                left,
+                right,
+                dir,
+            } => {
+                let (slow, join) = g.slow_path(pc, &inst);
+                let (l, r, d) = (g.ld(left), g.ld(right), g.ld(dir));
+                let (n, fits) = g.len_of(l, r, d);
                 // Lengths above i64::MAX are the interpreter's error.
                 let nn = g.b.ins().icmp_imm_s(IntCC::SignedGreaterThanOrEqual, n, 0);
                 let okv = g.b.ins().band(fits, nn);
@@ -2568,33 +3553,50 @@ fn gen_func(
                 let p = g.host(a, Some(dope), Op::C(0), Op::C(24), false, slow);
                 let (l, r, d) = g.dope_words(p);
                 let (x, y, w) = (g.ld(left), g.ld(right), g.ld(dir));
-                // A null slice names no element and checks nothing.
-                let wd = g.b.ins().icmp_imm_s(IntCC::Equal, w, 1);
-                let lt = g.b.ins().icmp(IntCC::SignedLessThan, x, y);
-                let gt = g.b.ins().icmp(IntCC::SignedGreaterThan, x, y);
-                let null = g.b.ins().select(wd, lt, gt);
-                // Both ends inside the array's range, and the slice's direction its own.
-                let down = g.b.ins().icmp_imm_s(IntCC::Equal, d, 1);
-                let lo = g.b.ins().select(down, r, l);
-                let hi = g.b.ins().select(down, l, r);
-                let dir_ok = g.b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, d, 1);
-                let same = g.b.ins().icmp(IntCC::Equal, w, d);
-                let nonempty = g.b.ins().icmp(IntCC::SignedLessThanOrEqual, lo, hi);
-                let span = g.b.ins().isub(hi, lo);
-                let (rx, ry) = (g.b.ins().isub(x, lo), g.b.ins().isub(y, lo));
-                let ix = g.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, rx, span);
-                let iy = g.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, ry, span);
-                let okv = g.b.ins().band(dir_ok, same);
-                let okv = g.b.ins().band(okv, nonempty);
-                let okv = g.b.ins().band(okv, ix);
-                let okv = g.b.ins().band(okv, iy);
-                let okv = g.b.ins().bor(null, okv);
-                g.guard(okv, slow);
-                let up = g.b.ins().isub(x, l);
-                let dn = g.b.ins().isub(l, x);
-                let pos = g.b.ins().select(down, dn, up);
-                let zero = g.c64(0);
-                let v = g.b.ins().select(null, zero, pos);
+                let v = g.slice_in((l, r, d), (x, y, w), slow);
+                g.st(dst, v);
+                g.join(join);
+            }
+            Inst::RetBounds { left, right, dir } => {
+                let at = g.mem_ld(MEM_RET_BOUNDS);
+                for (k, r) in [left, right, dir].into_iter().enumerate() {
+                    let v = g.ld(r);
+                    g.b.ins()
+                        .store(MemFlagsData::trusted(), v, at, (k * 8) as i32);
+                }
+            }
+            Inst::TakeBounds { left, right, dir } => {
+                let at = g.mem_ld(MEM_RET_BOUNDS);
+                for (k, r) in [left, right, dir].into_iter().enumerate() {
+                    let v =
+                        g.b.ins()
+                            .load(I64, MemFlagsData::trusted(), at, (k * 8) as i32);
+                    g.st(r, v);
+                }
+            }
+            Inst::BoundsSlice { dst, regs, .. } => {
+                let Some(&[al, ar, ad, left, right, dir]) = f.regs(regs) else {
+                    return Err("slice position without its operands".into());
+                };
+                let (slow, join) = g.slow_path(pc, &inst);
+                let (l, r, d) = (g.ld(al), g.ld(ar), g.ld(ad));
+                let (x, y, w) = (g.ld(left), g.ld(right), g.ld(dir));
+                let v = g.slice_in((l, r, d), (x, y, w), slow);
+                g.st(dst, v);
+                g.join(join);
+            }
+            Inst::BoundsPos {
+                dst,
+                left,
+                right,
+                dir,
+                idx,
+                ..
+            } => {
+                let (slow, join) = g.slow_path(pc, &inst);
+                let (l, r, d) = (g.ld(left), g.ld(right), g.ld(dir));
+                let i = g.ld(idx);
+                let v = g.pos_in((l, r, d), i, slow);
                 g.st(dst, v);
                 g.join(join);
             }
@@ -2661,6 +3663,28 @@ fn gen_func(
                 let masked = g.b.ins().band(diff, mask);
                 let eq = g.b.ins().icmp_imm_s(IntCC::Equal, masked, 0);
                 let v = g.b.ins().uextend(I64, eq);
+                g.st(dst, v);
+                g.join(join);
+            }
+            // The elements as a number when all are '0' or '1' (plane 1 set, planes 2 and 3 clear).
+            Inst::LKey { dst, a, n } => {
+                let (slow, join) = g.slow_path_x(pc, &inst, f);
+                let av = g.ld(a);
+                let pa = g.host(av, Some(a), Op::C(0), Op::C(32), false, slow);
+                let cnt = g.ld(n);
+                let gf = g.gf;
+                let p0 = g.b.ins().load(I64, gf, pa, 0);
+                let p1 = g.b.ins().load(I64, gf, pa, 8);
+                let p2 = g.b.ins().load(I64, gf, pa, 16);
+                let p3 = g.b.ins().load(I64, gf, pa, 24);
+                let not1 = g.b.ins().bnot(p1);
+                let high = g.b.ins().bor(p2, p3);
+                let other = g.b.ins().bor(not1, high);
+                let mask = g.low_mask(cnt);
+                let bad = g.b.ins().band(other, mask);
+                let key = g.b.ins().band(p0, mask);
+                let none = g.c64(-1);
+                let v = g.b.ins().select(bad, none, key);
                 g.st(dst, v);
                 g.join(join);
             }
@@ -2734,37 +3758,7 @@ fn gen_func(
                 );
                 let (l, r, dir) = g.dope_words(p);
                 let i = g.ld(idx);
-                // One arm per direction: up (0), l <= i <= r, position i - l; down (1), r <= i <= l,
-                // position l - i; any other direction word, and an empty range, are the
-                // interpreter's error.
-                let (upb, other, dnb, cont) = (
-                    g.b.create_block(),
-                    g.b.create_block(),
-                    g.b.create_block(),
-                    g.b.create_block(),
-                );
-                let v = g.b.append_block_param(cont, I64);
-                let is_up = g.b.ins().icmp_imm_s(IntCC::Equal, dir, 0);
-                g.brif_split(is_up, upb, other);
-                for (bb, lo, hi) in [(upb, l, r), (dnb, r, l)] {
-                    g.b.switch_to_block(bb);
-                    let nonempty = g.b.ins().icmp(IntCC::SignedLessThanOrEqual, lo, hi);
-                    let (rel, span) = if bb == upb {
-                        (g.b.ins().isub(i, l), g.b.ins().isub(r, l))
-                    } else {
-                        (g.b.ins().isub(l, i), g.b.ins().isub(l, r))
-                    };
-                    let inside = g.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, rel, span);
-                    let okv = g.b.ins().band(nonempty, inside);
-                    g.guard(okv, slow);
-                    g.b.ins().jump(cont, &[BlockArg::Value(rel)]);
-                    if bb == upb {
-                        g.b.switch_to_block(other);
-                        let is_dn = g.b.ins().icmp_imm_s(IntCC::Equal, dir, 1);
-                        g.brif_split(is_dn, dnb, slow);
-                    }
-                }
-                g.start(cont);
+                let v = g.pos_in((l, r, dir), i, slow);
                 g.st(dst, v);
                 g.join(join);
             }
@@ -2815,10 +3809,12 @@ fn gen_func(
                 let (slow, join) = g.slow_path(pc, &inst);
                 let code = g.ld(v);
                 // A code beyond 'U' to '-' is the interpreter's error.
-                let okc =
-                    g.b.ins()
-                        .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, code, 8);
-                g.guard(okc, slow);
+                if !g.codes.contains(&v) {
+                    let okc =
+                        g.b.ins()
+                            .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, code, 8);
+                    g.guard(okc, slow);
+                }
                 let (p, sh) = g.logic_word(base, idx, true, slow);
                 let one = g.c64(1);
                 let one = g.b.ins().ishl(one, sh);
@@ -2840,10 +3836,59 @@ fn gen_func(
                 offset,
                 len,
             } => {
+                // A constant reference: the entry tested the table.
+                let max = i64::from(u32::MAX);
+                if g.sig_ok
+                    && let (Some(o), Some(l)) = (g.kint(offset), g.kint(len))
+                    && (0..=max).contains(&o)
+                    && (0..=max).contains(&l)
+                {
+                    let v = g.c64(i64::from(sig) << 32 | o);
+                    g.st(dst, v);
+                    let lv = g.c64(l);
+                    g.st(Reg(dst.0 + 1), lv);
+                    g.sigval_next = Some(SigConst {
+                        dst,
+                        sig,
+                        off: o,
+                        len: l,
+                        run: false,
+                    });
+                    continue;
+                }
+                // A copy: the signal's form is a fact whatever the element, which is one compare
+                // (a failed index check came before; if not, the interpreter goes on from here).
+                if let (Some(fs), Some(l)) = (g.facts, g.kint(len))
+                    && let Some(fa) = fs.sig(sig)
+                    && (1..=i64::from(fa.len)).contains(&l)
+                {
+                    let o = g.ld(offset);
+                    let bad =
+                        g.b.ins()
+                            .icmp_imm_s(IntCC::UnsignedGreaterThan, o, i64::from(fa.len) - l);
+                    // Not `exit_if`: no error of its own, the interpreter's `SigVal` passes.
+                    let (out, cont) = (g.b.create_block(), g.b.create_block());
+                    g.b.set_cold_block(out);
+                    g.brif_split(bad, out, cont);
+                    g.b.switch_to_block(out);
+                    g.leave_at(pc);
+                    g.b.switch_to_block(cont);
+                    let v = g.b.ins().bor_imm_s(o, i64::from(sig) << 32);
+                    g.st(dst, v);
+                    let lv = g.c64(l);
+                    g.st(Reg(dst.0 + 1), lv);
+                    g.sdyn_new = Some(SigConst {
+                        dst,
+                        sig,
+                        off: 0,
+                        len: l,
+                        run: true,
+                    });
+                    continue;
+                }
                 // `Machine::sig_val`: element range within u32, an instance signal.
                 let (slow, join) = g.slow_path(pc, &inst);
                 let (o, l) = (g.ld(offset), g.ld(len));
-                let max = i64::from(u32::MAX);
                 let n = g.mem_ld(MEM_NSIGS);
                 let a = g.b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, o, max);
                 let b = g.b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, l, max);
@@ -2874,6 +3919,36 @@ fn gen_func(
                     g.b.ins().store(g.gf, v, p, k as i32 * 8);
                 }
                 g.join(join);
+            }
+            // Length and offsets known: nothing about the shape is left to run time. The tests of
+            // the access stay (`host`), it folds only those the constants prove.
+            Inst::LCopy {
+                dst,
+                dst_off,
+                src,
+                src_off,
+                n,
+            } if lcopy_shape(g.kint(n), g.kint(src_off), g.kint(dst_off)).is_some() => {
+                let (k, so, d) =
+                    lcopy_shape(g.kint(n), g.kint(src_off), g.kint(dst_off)).expect("guard");
+                // Nothing to copy: no memory is touched, as in the interpreter.
+                if k != 0 {
+                    let (slow, join) = g.slow_path(pc, &inst);
+                    let (s0, d0) = (so % 64, d % 64);
+                    let (ns, nd) = ((s0 + k).div_ceil(64), (d0 + k).div_ceil(64));
+                    let (sa, da) = (g.ld(src), g.ld(dst));
+                    let (sb, db) = (so / 64 * 32, d / 64 * 32);
+                    let ps = g.host(sa, Some(src), Op::C(sb), Op::C(ns * 32), false, slow);
+                    let pd = g.host(da, Some(dst), Op::C(db), Op::C(nd * 32), true, slow);
+                    if f.kind == FuncKind::Process && k <= 64 {
+                        g.lcopy_const(pd, d0, ps, s0, k);
+                    } else {
+                        let [vnd, vd0, vns, vs0, vk] = [nd, d0, ns, s0, k].map(|v| g.c64(v as i64));
+                        g.b.ins()
+                            .call(g.imp.lcopy, &[pd, vnd, vd0, ps, vns, vs0, vk]);
+                    }
+                    g.join(join);
+                }
             }
             Inst::LCopy {
                 dst,
@@ -2922,9 +3997,9 @@ fn gen_func(
                 let ps = g.host(sa, Some(src), Op::V(sb), Op::V(sn), false, slow);
                 let pd = g.host(da, Some(dst), Op::V(db), Op::V(dn), true, slow);
                 // Up to 64 elements: at most two blocks each side, shifted in registers. In a
-                // process, whose copy count is a constant (a subprogram's body is not worth the
-                // code it saves a call for, nor is it for a count known at run time only: the
-                // 128-bit shifts cost more than the call).
+                // process, whose copy count is a constant and an offset is not (a subprogram's
+                // body is not worth the code it saves a call for, nor is it for a count known at
+                // run time only: the 128-bit shifts cost more than the call).
                 if f.kind == FuncKind::Process && g.kint(n).is_some_and(|v| v <= 64) {
                     let few = g.b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, k, 64);
                     let (inl, call) = (g.b.create_block(), g.b.create_block());
@@ -2941,11 +4016,16 @@ fn gen_func(
                 let nr = g.imp.natives.get(&func).copied();
                 let callee = prog.func(func);
                 match (nr, callee) {
-                    (Some(nr), Some(callee)) if call_fits(f, id, callee, args, false) => {
+                    (Some(nr), Some(callee))
+                        if call_fits(f, prog.base_of(id), callee, args, false) =>
+                    {
                         let memo = prog.memo_sig(func).is_some_and(|m| {
                             m.cells as usize == f.regs(args).map_or(0, <[_]>::len)
                         });
-                        g.native_call(pc, &inst, id, f, nr, func, callee, args, dst, None, memo)
+                        let caller = prog.base_of(id);
+                        g.native_call(
+                            pc, &inst, caller, f, nr, func, callee, args, dst, None, memo,
+                        )
                     }
                     _ => g.step(pc, &inst),
                 }
@@ -2960,13 +4040,13 @@ fn gen_func(
                 let callee = prog.func(func);
                 match (nr, callee) {
                     (Some(nr), Some(callee))
-                        if call_fits(f, id, callee, args, true)
+                        if call_fits(f, prog.base_of(id), callee, args, true)
                             && obj.0 < f.reg_ty.len() as u32 =>
                     {
                         g.native_call(
                             pc,
                             &inst,
-                            id,
+                            prog.base_of(id),
                             f,
                             nr,
                             func,
@@ -3007,9 +4087,13 @@ fn gen_func(
                 // ponytail: a compare chain per arm; a Switch for dense tables if case-heavy
                 // code ever shows in profiles.
                 for &(lo, hi, to) in &t.arms {
-                    let ge = g.b.ins().icmp_imm_s(IntCC::SignedGreaterThanOrEqual, x, lo);
-                    let le = g.b.ins().icmp_imm_s(IntCC::SignedLessThanOrEqual, x, hi);
-                    let hit = g.b.ins().band(ge, le);
+                    let hit = if lo == hi {
+                        g.b.ins().icmp_imm_s(IntCC::Equal, x, lo)
+                    } else {
+                        let ge = g.b.ins().icmp_imm_s(IntCC::SignedGreaterThanOrEqual, x, lo);
+                        let le = g.b.ins().icmp_imm_s(IntCC::SignedLessThanOrEqual, x, hi);
+                        g.b.ins().band(ge, le)
+                    };
                     let next = g.b.create_block();
                     let tb = block_bb(to)?;
                     g.brif_split(hit, tb, next);
@@ -3018,6 +4102,9 @@ fn gen_func(
                 let d = block_bb(t.default)?;
                 g.b.ins().jump(d, &[]);
                 open = false;
+            }
+            Inst::SigReadScalar { dst, .. } if let Some(sv) = fixed => {
+                g.sig_read_fixed(pc, dst, sv)
             }
             Inst::SigReadScalar { dst, sig } => g.sig_read_scalar(pc, dst, sig),
             Inst::Edge { dst, kind, sig } => g.edge(pc, kind, sig, dst, 0),
@@ -3050,6 +4137,27 @@ fn gen_func(
             Inst::WaitOn { sig } if g.nat.is_none() => g.wait_on(pc, sig),
             Inst::WaitEdge { sig, kind } if g.nat.is_none() => g.wait_edge(pc, sig, kind.code()),
             Inst::SigRead { dst, sig } => g.sig_read(pc, dst, sig),
+            // Through the signal callback rather than a step (#790), as the LLVM tier does; a
+            // native frame keeps its own way.
+            Inst::SigScatter {
+                src,
+                desc,
+                tab,
+                driver,
+                ops,
+                has: 0,
+                ..
+            } if g.nat.is_none() => {
+                let after = f.regs(ops).and_then(|o| o.first().copied());
+                g.scatter(pc, prog, driver, src, desc, tab, after);
+            }
+            Inst::SigGather {
+                dst,
+                desc,
+                tab,
+                part: None,
+            } if g.nat.is_none() => g.gather(pc, prog, dst, desc, tab),
+            Inst::SigGather { .. } | Inst::SigScatter { .. } if g.nat.is_none() => g.signal(pc, 0),
             Inst::WaitOn { .. }
             | Inst::WaitFor { .. }
             | Inst::DriveSlot { .. }
@@ -3061,10 +4169,14 @@ fn gen_func(
                         let (slow, join) = g.slow_path(pc, &inst);
                         let mut idx = g.c64(0);
                         for r in rs {
-                            // A code beyond the nine is the native's error.
+                            // A code beyond the nine is the native's error (a table's result in
+                            // this block is one of them).
                             let x = g.ld(r);
-                            let okc = g.b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, x, 8);
-                            g.guard(okc, slow);
+                            if !g.codes.contains(&r) {
+                                let okc =
+                                    g.b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, x, 8);
+                                g.guard(okc, slow);
+                            }
                             let i9 = g.b.ins().imul_imm_s(idx, 9);
                             idx = g.b.ins().iadd(i9, x);
                         }
@@ -3074,6 +4186,7 @@ fn gen_func(
                         let v = g.b.ins().uload8(I64, g.gf, p, 0);
                         g.st(d, v);
                         g.join(join);
+                        g.code_new = Some(d);
                     }
                     Some(NativeKind::Edge(rising)) => {
                         let e = if rising { 1 } else { 2 };
@@ -3088,6 +4201,9 @@ fn gen_func(
                             }
                             _ => g.signal(pc, e),
                         }
+                    }
+                    None if let Some(v) = uniform_regs(prog, f, native, args, dst) => {
+                        g.uniform_fast(pc, &inst, f, native, args, v)?
                     }
                     None if frame_direct(prog, f, &inst)
                         && yavs_interp::light_native(prog, f, native, args)
@@ -3134,7 +4250,9 @@ fn gen_func(
         let mut sw = Switch::new();
         let mut stubs = Vec::new();
         for (i, bb) in bbs.iter().enumerate() {
-            if let Some(bb) = *bb {
+            if let Some(bb) = *bb
+                && !once[i]
+            {
                 let to = if lparams[i].is_empty() {
                     bb
                 } else {
@@ -3180,15 +4298,29 @@ fn gen_func(
                     .collect()
             })
         };
+        if let Some(r) = s.read {
+            let ent = g.b.ins().iadd_imm_s(r.tab, r.at);
+            let off = g.c64(r.off);
+            let first = g.b.func.dfg.num_blocks();
+            let v = g.sig_read_other(ent, off, r.step);
+            for k in first..g.b.func.dfg.num_blocks() {
+                g.b.set_cold_block(Block::from_u32(k as u32));
+            }
+            g.b.ins().store(g.rf, v, g.regs, r.dst.0 as i32 * 8);
+            g.b.ins().jump(s.join, &[BlockArg::Value(v)]);
+            continue;
+        }
         if s.xstep && g.nat.is_some() {
             let inst = f.code[s.pc as usize];
             g.native_step(s.pc, &inst, f);
+            g.hold_recheck();
             g.b.ins().jump(s.join, &[]);
             continue;
         }
         if s.endstmt && g.nat.is_some() {
             let base = g.nat_temp_base();
             g.b.ins().call(g.imp.endstmt, &[g.env, g.mem, base]);
+            g.hold_recheck();
             g.b.ins().jump(s.join, &[]);
             continue;
         }
@@ -3558,7 +4690,7 @@ impl Gen<'_> {
         }
         // Where the address parameters point (`yavs_rt_region`), held for the activation.
         let stable = stable_activation(f);
-        for pa in param_addrs(f) {
+        for pa in hold_addrs(f) {
             let Some(&a) = cells.get(pa.cell) else {
                 return Err("missing argument cell".into());
             };
@@ -3567,16 +4699,175 @@ impl Gen<'_> {
                 16,
                 3,
             ));
-            let out = self.b.ins().stack_addr(I64, ss, 0);
-            let fl = self.c32(u32::from(pa.write) | u32::from(stable) << 1);
-            self.b
-                .ins()
-                .call(self.imp.region, &[self.env, self.mem, a, depth, fl, out]);
-            let ptr = self.b.ins().load(I64, MemFlagsData::trusted(), out, 0);
-            let len = self.b.ins().load(I64, MemFlagsData::trusted(), out, 8);
-            self.pres.push((ptr, len, pa.write));
+            let held = Held {
+                ss,
+                write: pa.write,
+                addr: a,
+                flags: u32::from(pa.write) | u32::from(stable) << 1 | 8,
+            };
+            self.hold_resolve(held, stable, depth);
+            self.pres.push(held);
+        }
+        if !self.pres.is_empty() && !stable {
+            let ss = self.b.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                8,
+                3,
+            ));
+            let g = self.mem_ld(MEM_HEAP_GEN);
+            self.b.ins().stack_store(I64, g, ss, 0);
+            self.hold_gen = Some(ss);
         }
         Ok(())
+    }
+
+    /// Fill a held region at a native frame's entry: inline for what needs no callback (a composite
+    /// variable of the root frame, a native caller's slots, an object of the table), nothing for
+    /// what is not held (`Mem::region`), else `yavs_rt_region`.
+    fn hold_resolve(&mut self, h: Held, stable: bool, depth: Value) {
+        let a = h.addr;
+        let done = self.b.create_block();
+        let call = self.b.create_block();
+        self.b.set_cold_block(call);
+        let (fobj, other) = (self.b.create_block(), self.b.create_block());
+        let hi = self.b.ins().ushr_imm_s(a, 32);
+        let top = self.b.ins().ushr_imm_s(hi, 28);
+        let is = self.b.ins().icmp_imm_s(IntCC::Equal, top, 1);
+        self.brif_split(is, fobj, other);
+        self.b.switch_to_block(fobj);
+        let start = self.b.ins().ushr_imm_s(hi, 12);
+        let start = self.b.ins().band_imm_s(start, 0xffff);
+        let start = self.b.ins().ishl_imm_s(start, 3);
+        let len = self.b.ins().band_imm_s(hi, 0xfff);
+        let len = self.b.ins().ishl_imm_s(len, 3);
+        let root = self.mem_ld(MEM_ROOT_SLOTS);
+        let ptr = self.b.ins().iadd(root, start);
+        self.hold_store(h, ptr, len, done);
+        self.b.switch_to_block(other);
+        let is_fr = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::UnsignedLessThan, a, 1 << (32 + 29));
+        let (fr, nf) = (self.b.create_block(), self.b.create_block());
+        self.brif_split(is_fr, fr, nf);
+        self.b.switch_to_block(fr);
+        let (up, rest) = (self.b.create_block(), self.b.create_block());
+        let tp = self.mem_ld(MEM_FRAME_IDX);
+        let above = self.b.ins().icmp(IntCC::UnsignedGreaterThan, hi, tp);
+        let below = self.b.ins().icmp(IntCC::UnsignedLessThan, hi, depth);
+        let between = self.b.ins().band(above, below);
+        self.brif_split(between, up, rest);
+        self.b.switch_to_block(up);
+        let tab = self.mem_ld(MEM_NSLOTS);
+        let eo = self.b.ins().imul_imm_s(hi, 16);
+        let ent = self.b.ins().iadd(tab, eo);
+        let ptr = self.b.ins().load(I64, MemFlagsData::trusted(), ent, 0);
+        let len = self.b.ins().load(I64, MemFlagsData::trusted(), ent, 8);
+        self.hold_store(h, ptr, len, done);
+        self.b.switch_to_block(rest);
+        // The root frame by its own address is the callback's, and whatever a stable activation
+        // holds besides.
+        let root_hi = self.b.ins().icmp_imm_s(IntCC::Equal, hi, 0);
+        let (none, nb) = (self.b.create_block(), self.b.create_block());
+        if stable {
+            self.b.ins().jump(call, &[]);
+        } else {
+            self.brif_split(root_hi, call, none);
+        }
+        self.b.switch_to_block(none);
+        let z = self.c64(0);
+        self.hold_store(h, z, z, done);
+        self.b.switch_to_block(nf);
+        let is_t = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::Equal, hi, i64::from(space::TEMP) << 29);
+        self.brif_split(is_t, if stable { call } else { none }, nb);
+        self.b.switch_to_block(nb);
+        // Instance data (for reading) is the view's.
+        let inst_view = (!h.write).then(|| {
+            let (view, tab) = (self.b.create_block(), self.b.create_block());
+            let is_i = self
+                .b
+                .ins()
+                .icmp_imm_s(IntCC::Equal, hi, i64::from(space::INST) << 29);
+            self.brif_split(is_i, view, tab);
+            self.b.switch_to_block(tab);
+            view
+        });
+        let flag = self.b.ins().ushr_imm_s(a, 32 + i64::from(KEY_SHIFT_ADDR));
+        let flag = self.b.ins().band_imm_s(flag, KEY_FLAG as i64);
+        let key = self.b.ins().bxor(hi, flag);
+        let key = self.b.ins().band_imm_s(key, OBJS as i64 - 1);
+        let eo = self.b.ins().ishl_imm_s(key, i64::from(OBJ_SHIFT));
+        let (tk, mx) = self.obj_tag(Some(hi));
+        let eo = self.b.ins().bxor(eo, mx);
+        let ent = self.b.ins().iadd(self.mem, eo);
+        let ehi = self.b.ins().load(I64, self.mf, ent, MEM_OBJS as i32);
+        let want = self.b.ins().bor(hi, tk);
+        let mut hit = self.b.ins().icmp(IntCC::Equal, ehi, want);
+        if h.write {
+            let w = self
+                .b
+                .ins()
+                .load(I64, self.mf, ent, (MEM_OBJS + OBJ_W) as i32);
+            let w = self.b.ins().icmp_imm_s(IntCC::NotEqual, w, 0);
+            hit = self.b.ins().band(hit, w);
+        }
+        let obj = self.b.create_block();
+        self.brif_split(hit, obj, call);
+        self.b.switch_to_block(obj);
+        let (ptr, len) = self.ent_obj(ent);
+        self.hold_store(h, ptr, len, done);
+        if let Some(view) = inst_view {
+            self.b.switch_to_block(view);
+            let (ptr, len) = (self.mem_ld(MEM_INST), self.mem_ld(MEM_INST_LEN));
+            self.hold_store(h, ptr, len, done);
+        }
+        self.b.switch_to_block(call);
+        self.hold_call(h, depth);
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(done);
+    }
+
+    fn hold_store(&mut self, h: Held, ptr: Value, len: Value, done: Block) {
+        self.b.ins().stack_store(I64, ptr, h.ss, 0);
+        self.b.ins().stack_store(I64, len, h.ss, 8);
+        self.b.ins().jump(done, &[]);
+    }
+
+    fn hold_call(&mut self, h: Held, depth: Value) {
+        let out = self.b.ins().stack_addr(I64, h.ss, 0);
+        let fl = self.c32(h.flags);
+        self.b.ins().call(
+            self.imp.cold_region,
+            &[self.env, self.mem, h.addr, depth, fl, out],
+        );
+    }
+
+    /// After an instruction that may have freed or changed a heap object (`holds_over`): ask again
+    /// for the regions when a heap changed. Everything else a region holds stays where it is for
+    /// as long as this frame lives: a native caller's slots, the root frame, instance data,
+    /// packages, constants. Those that move are never held over a call (`Mem::region`).
+    fn hold_recheck(&mut self) {
+        let Some(ss) = self.hold_gen else { return };
+        if hold_mutant() {
+            return;
+        }
+        let g = self.mem_ld(MEM_HEAP_GEN);
+        let old = self.b.ins().stack_load(I64, I64, ss, 0);
+        let same = self.b.ins().icmp(IntCC::Equal, g, old);
+        let (again, go) = (self.b.create_block(), self.b.create_block());
+        self.b.set_cold_block(again);
+        self.brif_split(same, go, again);
+        self.b.switch_to_block(again);
+        self.b.ins().stack_store(I64, g, ss, 0);
+        let depth = self.nat.as_ref().map(|n| n.depth).expect("nat");
+        for h in self.pres.clone() {
+            self.hold_call(h, depth);
+        }
+        self.b.ins().jump(go, &[]);
+        self.b.switch_to_block(go);
     }
 
     /// Zero the bytes `lo..hi` of the slots.
@@ -3716,12 +5007,8 @@ impl Gen<'_> {
         };
         let d1 = self.b.ins().iadd_imm_s(depth, 1);
         let max = self.mem_ld(MEM_MAX_DEPTH);
-        let a = self.b.ins().icmp(IntCC::UnsignedLessThan, d1, max);
-        let b2 = self
-            .b
-            .ins()
-            .icmp_imm_s(IntCC::UnsignedLessThan, d1, 1 << 29);
-        let mut okc = self.b.ins().band(a, b2);
+        // `TierFrame::max_depth` is below what the address format and `Mem::nslots` allow.
+        let mut okc = self.b.ins().icmp(IntCC::UnsignedLessThan, d1, max);
         // Native stack is left (`NEST_STACK`).
         let sp = self.b.ins().get_stack_pointer(I64);
         let lo = self.mem_ld(MEM_STACK_LO);
@@ -3975,6 +5262,12 @@ impl Gen<'_> {
     /// what it leaves (a fault, an overlap, memory it does not reach, nothing to gain) is the
     /// generic code after this, which also runs the last iteration.
     fn eloop(&mut self, l: &yavs_interp::ElemLoop) -> Result<(), String> {
+        if let Some(inv) = yavs_llvm::eloop::invariant_steps(&l.prog, l.inputs.len())
+            && std::env::var_os("YAVS_LLVM_ELOOP_HELPER").is_none()
+        {
+            self.eloop_plan(l, &inv);
+            return Ok(());
+        }
         let (ind, bound, step) = (self.ld(l.ind), self.ld(l.bound), self.ld(l.step));
         let (call, set, generic) = (
             self.b.create_block(),
@@ -4024,6 +5317,402 @@ impl Gen<'_> {
         self.b.switch_to_block(generic);
         self.clear();
         Ok(())
+    }
+
+    /// The iterations of an element loop but the last, planned and done in the code itself
+    /// (#757): the steps of `yavs_interp::elem_loops` as straight-line code at the loop's head,
+    /// each value at the first and the last iteration and its change per iteration, with the
+    /// checks of `yavs_llvm::eloop::run`. A failed check or memory the objects do not hold goes to the
+    /// generic code, nothing written.
+    fn eloop_plan(&mut self, l: &yavs_interp::ElemLoop, inv: &[bool]) {
+        use yavs_interp::eloop::{ADD, ADDR, GET, IND, KONST, LD, LEN, MOV, MUL, POS, SET, SUB};
+        let generic = self.b.create_block();
+        let (ind, bound, step) = (self.ld(l.ind), self.ld(l.bound), self.ld(l.step));
+        let (d0, o1) = self.b.ins().ssub_overflow(bound, ind);
+        let (dist, o2) = self.b.ins().smul_overflow(d0, step);
+        let lim = self.c64(ELOOP_LIMIT);
+        let less = self.b.ins().icmp(IntCC::SignedLessThan, dist, lim);
+        let m = self.b.ins().select(less, dist, lim);
+        let up = self.b.ins().icmp_imm_s(IntCC::Equal, step, 1);
+        let down = self.b.ins().icmp_imm_s(IntCC::Equal, step, -1);
+        let unit = self.b.ins().bor(up, down);
+        let two = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::SignedGreaterThanOrEqual, m, 2);
+        let noof = self.b.ins().bor(o1, o2);
+        let noof = self.b.ins().icmp_imm_s(IntCC::Equal, noof, 0);
+        let okc = self.b.ins().band(unit, two);
+        let okc = self.b.ins().band(okc, noof);
+        self.guard(okc, generic);
+        let last = self.b.ins().iadd_imm_s(m, -1);
+        // `step` is 1 or -1 and `m` at most `ELOOP_LIMIT`: no overflow, the distance was checked.
+        let moved = self.b.ins().imul(step, last);
+        let ind_last = self.b.ins().iadd(ind, moved);
+        let c0 = self.c64(0);
+        let mut val: Vec<EloopVal> = Vec::new();
+        // Host address and bytes of what the plan read besides the vectors.
+        let mut reads: Vec<(Value, u64)> = Vec::new();
+        let mut gets: Option<(Option<Reg>, Value, EloopVal)> = None;
+        let input = |v: i64| (v <= -2).then(|| l.inputs[(-2 - v) as usize]);
+        let val_inv = |v: i64, inv: &[bool]| if v >= 0 { inv[v as usize] } else { v != IND };
+        for (j, st) in l.prog.as_chunks::<4>().0.iter().enumerate() {
+            let (a, bb, cc) = (st[1], st[2], st[3]);
+            let get = |g: &mut Self, v: i64, val: &[EloopVal]| {
+                if v >= 0 {
+                    val[v as usize]
+                } else if v == IND {
+                    EloopVal {
+                        first: ind,
+                        change: step,
+                        last: ind_last,
+                        most: Some(1),
+                    }
+                } else {
+                    let x = g.ld(l.inputs[(-2 - v) as usize]);
+                    EloopVal::fixed(x, c0)
+                }
+            };
+            let r = match st[0] {
+                MOV => get(self, a, &val),
+                KONST => EloopVal::fixed(self.c64(a), c0),
+                ADD | SUB => {
+                    let (x, y) = (get(self, a, &val), get(self, bb, &val));
+                    let add = st[0] == ADD;
+                    let (first, o) = self.ovf2(add, x.first, y.first);
+                    if inv[j] {
+                        self.ok_if(o, generic);
+                        EloopVal::fixed(first, c0)
+                    } else {
+                        let (last, o2) = self.ovf2(add, x.last, y.last);
+                        let mut bad = self.b.ins().bor(o, o2);
+                        let most = x.most.zip(y.most).map(|(p, q)| p + q);
+                        let change = if most.is_some() {
+                            if add {
+                                self.b.ins().iadd(x.change, y.change)
+                            } else {
+                                self.b.ins().isub(x.change, y.change)
+                            }
+                        } else {
+                            let (c, o) = self.ovf2(add, x.change, y.change);
+                            bad = self.b.ins().bor(bad, o);
+                            c
+                        };
+                        self.ok_if(bad, generic);
+                        EloopVal {
+                            first,
+                            change,
+                            last,
+                            most,
+                        }
+                    }
+                }
+                MUL => {
+                    // One of them does not change (`invariant_steps`).
+                    let (x, y) = (get(self, a, &val), get(self, bb, &val));
+                    let (k, v) = if val_inv(a, inv) {
+                        (x.first, y)
+                    } else {
+                        (y.first, x)
+                    };
+                    let (first, o) = self.b.ins().smul_overflow(k, v.first);
+                    if inv[j] {
+                        self.ok_if(o, generic);
+                        EloopVal::fixed(first, c0)
+                    } else {
+                        let (last, o2) = self.b.ins().smul_overflow(k, v.last);
+                        let (change, o3) = self.b.ins().smul_overflow(k, v.change);
+                        let bad = self.b.ins().bor(o, o2);
+                        let bad = self.b.ins().bor(bad, o3);
+                        self.ok_if(bad, generic);
+                        EloopVal {
+                            first,
+                            change,
+                            last,
+                            most: None,
+                        }
+                    }
+                }
+                POS | LEN => {
+                    let d = get(self, a, &val).first;
+                    let p = self.host(
+                        d,
+                        input(a),
+                        Op::C(bb as u64 * 24),
+                        Op::C(24),
+                        false,
+                        generic,
+                    );
+                    reads.push((p, 24));
+                    let (dl, dr, dir) = self.dope_words(p);
+                    if st[0] == LEN {
+                        let (n, fits) = self.len_of(dl, dr, dir);
+                        let big = self
+                            .b
+                            .ins()
+                            .icmp_imm_s(IntCC::SignedGreaterThanOrEqual, n, 0);
+                        let okc = self.b.ins().band(fits, big);
+                        self.guard(okc, generic);
+                        EloopVal::fixed(n, c0)
+                    } else {
+                        let x = get(self, cc, &val);
+                        let dn = self.b.ins().icmp_imm_s(IntCC::Equal, dir, 1);
+                        let u = self.b.ins().icmp_imm_s(IntCC::Equal, dir, 0);
+                        let known = self.b.ins().bor(u, dn);
+                        self.guard(known, generic);
+                        let lo = self.b.ins().select(dn, dr, dl);
+                        let hi = self.b.ins().select(dn, dl, dr);
+                        let ge = self.b.ins().icmp(IntCC::SignedLessThanOrEqual, lo, x.first);
+                        let le = self.b.ins().icmp(IntCC::SignedLessThanOrEqual, x.first, hi);
+                        let ge1 = self.b.ins().icmp(IntCC::SignedLessThanOrEqual, lo, x.last);
+                        let le1 = self.b.ins().icmp(IntCC::SignedLessThanOrEqual, x.last, hi);
+                        let inside = self.b.ins().band(ge, le);
+                        let inside1 = self.b.ins().band(ge1, le1);
+                        let inside = self.b.ins().band(inside, inside1);
+                        self.guard(inside, generic);
+                        // Both ends lie between the bounds: the positions lie between 0 and
+                        // their distance, which the first one tests.
+                        let from = self.b.ins().select(dn, dl, x.first);
+                        let to = self.b.ins().select(dn, x.first, dl);
+                        let (p0, o) = self.b.ins().ssub_overflow(from, to);
+                        let froml = self.b.ins().select(dn, dl, x.last);
+                        let tol = self.b.ins().select(dn, x.last, dl);
+                        let (p1, o2) = self.b.ins().ssub_overflow(froml, tol);
+                        let mut bad = self.b.ins().bor(o, o2);
+                        let change = if x.most.is_some() {
+                            let neg = self.b.ins().ineg(x.change);
+                            self.b.ins().select(dn, neg, x.change)
+                        } else {
+                            let (neg, o) = self.b.ins().ssub_overflow(c0, x.change);
+                            let o = self.b.ins().band(o, dn);
+                            bad = self.b.ins().bor(bad, o);
+                            self.b.ins().select(dn, neg, x.change)
+                        };
+                        self.ok_if(bad, generic);
+                        EloopVal {
+                            first: p0,
+                            change,
+                            last: p1,
+                            most: x.most,
+                        }
+                    }
+                }
+                LD => {
+                    let base = get(self, a, &val).first;
+                    let p = self.host(
+                        base,
+                        input(a),
+                        Op::C(bb as u64),
+                        Op::C(cc as u64),
+                        false,
+                        generic,
+                    );
+                    reads.push((p, cc as u64));
+                    let nf = self.gf;
+                    let w = match cc {
+                        1 => self.b.ins().uload8(I64, nf, p, 0),
+                        4 => self.b.ins().uload32(nf, p, 0),
+                        _ => self.b.ins().load(I64, nf, p, 0),
+                    };
+                    EloopVal::fixed(w, c0)
+                }
+                ADDR => {
+                    let base = get(self, a, &val).first;
+                    let lo = self.lo32(base);
+                    let lo = self.b.ins().iadd_imm_s(lo, bb);
+                    let fits =
+                        self.b
+                            .ins()
+                            .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, lo, 0xffff_ffff);
+                    self.guard(fits, generic);
+                    let hi = self.b.ins().ushr_imm_s(base, 32);
+                    let hi = self.b.ins().ishl_imm_s(hi, 32);
+                    EloopVal::fixed(self.b.ins().bor(hi, lo), c0)
+                }
+                GET => {
+                    let base = get(self, a, &val).first;
+                    let x = get(self, bb, &val);
+                    gets = Some((input(a), base, x));
+                    EloopVal::fixed(c0, c0)
+                }
+                SET => {
+                    let base = get(self, a, &val).first;
+                    let x = get(self, bb, &val);
+                    let (dp, dlo, dhi) = self.eloop_stream(input(a), base, x, true, generic);
+                    // Nothing it read is among the elements it writes.
+                    for &(rs, n) in &reads {
+                        let re = self.b.ins().iadd_imm_s(rs, n as i64);
+                        let below = self.b.ins().icmp(IntCC::UnsignedLessThan, rs, dhi);
+                        let above = self.b.ins().icmp(IntCC::UnsignedLessThan, dlo, re);
+                        let hit = self.b.ins().band(below, above);
+                        let apart = self.b.ins().icmp_imm_s(IntCC::Equal, hit, 0);
+                        self.guard(apart, generic);
+                    }
+                    let (sp, s_e0, s_step, code) = if cc >= 0 {
+                        let (sr, sb, sx) = gets.expect("`invariant_steps` has a GET");
+                        let (sp, _, _) = self.eloop_stream(sr, sb, sx, false, generic);
+                        (sp, sx.first, sx.change, c0)
+                    } else {
+                        let code = get(self, cc, &val).first;
+                        let okc = self
+                            .b
+                            .ins()
+                            .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, code, 8);
+                        self.guard(okc, generic);
+                        (c0, c0, c0, code)
+                    };
+                    let next = self.b.create_block();
+                    let done = self.b.append_block_param(next, I64);
+                    if cc >= 0 {
+                        let sx = gets.expect("`invariant_steps` has a GET").2;
+                        self.eloop_short(sp, sx, dp, x, m, last, next);
+                    }
+                    let c = self.b.ins().call(
+                        self.imp.eloop_exec,
+                        &[sp, s_e0, s_step, dp, x.first, x.change, code, m],
+                    );
+                    let r = self.b.inst_results(c)[0];
+                    self.b.ins().jump(next, &[BlockArg::Value(r)]);
+                    self.b.switch_to_block(next);
+                    let moved = self.b.ins().imul(done, step);
+                    let v = self.b.ins().iadd(ind, moved);
+                    self.st(l.ind, v);
+                    self.b.ins().jump(generic, &[]);
+                    self.b.switch_to_block(generic);
+                    self.clear();
+                    return;
+                }
+                _ => unreachable!("`invariant_steps` knows the operations"),
+            };
+            val.push(r);
+        }
+        unreachable!("`invariant_steps`: the program ends with a SET");
+    }
+
+    /// `x + y` or `x - y` and its overflow flag.
+    fn ovf2(&mut self, add: bool, x: Value, y: Value) -> (Value, Value) {
+        if add {
+            self.b.ins().sadd_overflow(x, y)
+        } else {
+            self.b.ins().ssub_overflow(x, y)
+        }
+    }
+
+    /// On to `slow` when the flag `bad` is set.
+    fn ok_if(&mut self, bad: Value, slow: Block) {
+        let okc = self.b.ins().icmp_imm_s(IntCC::Equal, bad, 0);
+        self.guard(okc, slow);
+    }
+
+    /// The elements `x` of the vector at `base`, all in its object: the host pointer to its first
+    /// byte and the byte range of the blocks they touch.
+    fn eloop_stream(
+        &mut self,
+        reg: Option<Reg>,
+        base: Value,
+        x: EloopVal,
+        write: bool,
+        slow: Block,
+    ) -> (Value, Value, Value) {
+        let a = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::UnsignedLessThan, x.first, 1 << 32);
+        let b = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::UnsignedLessThan, x.last, 1 << 32);
+        let inside = self.b.ins().band(a, b);
+        self.guard(inside, slow);
+        let lower = self.b.ins().icmp(IntCC::UnsignedLessThan, x.first, x.last);
+        let lo = self.b.ins().select(lower, x.first, x.last);
+        let hi = self.b.ins().select(lower, x.last, x.first);
+        let blo = self.b.ins().ushr_imm_s(lo, 6);
+        let blo = self.b.ins().ishl_imm_s(blo, 5);
+        let bhi = self.b.ins().ushr_imm_s(hi, 6);
+        let bhi = self.b.ins().ishl_imm_s(bhi, 5);
+        let end = self.b.ins().iadd_imm_s(bhi, 32);
+        let p = self.host(base, reg, Op::C(0), Op::V(end), write, slow);
+        let from = self.b.ins().iadd(p, blo);
+        let to = self.b.ins().iadd(p, end);
+        (p, from, to)
+    }
+
+    /// A copy within one plane block each side, the same direction, the blocks apart: the plane
+    /// copy of `yavs_llvm::eloop::exec` inline, on to `done` with `m`; anything else goes on in
+    /// a new block.
+    #[allow(clippy::too_many_arguments)]
+    fn eloop_short(
+        &mut self,
+        sp: Value,
+        s: EloopVal,
+        dp: Value,
+        d: EloopVal,
+        m: Value,
+        last: Value,
+        done: Block,
+    ) {
+        let low = |g: &mut Self, x: EloopVal| {
+            let less = g.b.ins().icmp(IntCC::UnsignedLessThan, x.last, x.first);
+            g.b.ins().select(less, x.last, x.first)
+        };
+        let (ls, ld) = (low(self, s), low(self, d));
+        let (os, od) = (
+            self.b.ins().band_imm_s(ls, 63),
+            self.b.ins().band_imm_s(ld, 63),
+        );
+        let blk = |g: &mut Self, p: Value, e: Value| {
+            let k = g.b.ins().ushr_imm_s(e, 6);
+            let k = g.b.ins().ishl_imm_s(k, 5);
+            g.b.ins().iadd(p, k)
+        };
+        let (ps, pd) = (blk(self, sp, ls), blk(self, dp, ld));
+        let same = self.b.ins().icmp(IntCC::Equal, s.change, d.change);
+        let up = self.b.ins().icmp_imm_s(IntCC::Equal, s.change, 1);
+        let down = self.b.ins().icmp_imm_s(IntCC::Equal, s.change, -1);
+        let unit = self.b.ins().bor(up, down);
+        let se = self.b.ins().iadd(os, m);
+        let de = self.b.ins().iadd(od, m);
+        let fs = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, se, 64);
+        let fd = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, de, 64);
+        // The blocks' bytes apart, as `exec` compares them.
+        let es = self.b.ins().iadd_imm_s(ps, 32);
+        let ed = self.b.ins().iadd_imm_s(pd, 32);
+        let sb = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, es, pd);
+        let db = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, ed, ps);
+        let apart = self.b.ins().bor(sb, db);
+        let okc = self.b.ins().band(same, unit);
+        let okc = self.b.ins().band(okc, fs);
+        let okc = self.b.ins().band(okc, fd);
+        let okc = self.b.ins().band(okc, apart);
+        let (inl, call) = (self.b.create_block(), self.b.create_block());
+        self.brif_split(okc, inl, call);
+        self.b.switch_to_block(inl);
+        // `m` is 2 to 64: `(2 << (m - 1)) - 1` is its mask.
+        let two = self.c64(2);
+        let mask = self.b.ins().ishl(two, last);
+        let mask = self.b.ins().iadd_imm_s(mask, -1);
+        let hole = self.b.ins().ishl(mask, od);
+        let hole = self.b.ins().bnot(hole);
+        let nf = self.gf;
+        for k in 0..4 {
+            let w = self.b.ins().load(I64, nf, ps, k * 8);
+            let w = self.b.ins().ushr(w, os);
+            let w = self.b.ins().band(w, mask);
+            let w = self.b.ins().ishl(w, od);
+            let keep = self.b.ins().load(I64, nf, pd, k * 8);
+            let keep = self.b.ins().band(keep, hole);
+            let v = self.b.ins().bor(keep, w);
+            self.b.ins().store(nf, v, pd, k * 8);
+        }
+        self.b.ins().jump(done, &[BlockArg::Value(m)]);
+        self.b.switch_to_block(call);
     }
 
     /// A search loop at its head: the iterations that need nothing special run in
@@ -4135,6 +5824,59 @@ impl Gen<'_> {
         self.exit_if(bad, pc);
     }
 
+    /// Update `iv` for what `i` proves and defines.
+    fn iv_track(&mut self, f: &Func, i: &Inst) {
+        // As the optimiser's analysis: an interval says nothing beyond a suspension.
+        let suspends = match *i {
+            Inst::Suspend { .. } => true,
+            Inst::Call { func, .. } | Inst::CallProt { func, .. } => self
+                .prog
+                .func(func)
+                .is_none_or(|g| g.flags.contains(yavs_ir::FuncFlags::MAY_SUSPEND)),
+            _ => false,
+        };
+        if suspends {
+            self.iv.fill(None);
+        }
+        let out = yavs_ir::opt::iv_after(i, |r| self.iv_of(r));
+        for d in yavs_interp::inst_regs(f, i).1 {
+            if let Some(x) = self.iv.get_mut(d.0 as usize) {
+                *x = None;
+            }
+        }
+        if let Some((r, v)) = out
+            && let Some(x) = self.iv.get_mut(r.0 as usize)
+        {
+            *x = Some(v);
+        }
+    }
+
+    /// The interval of register `r` at the current instruction.
+    fn iv_of(&self, r: Reg) -> yavs_ir::opt::Iv {
+        if let Some(Some(c)) = self.fixed.get(r.0 as usize) {
+            return (*c, *c);
+        }
+        self.iv
+            .get(r.0 as usize)
+            .copied()
+            .flatten()
+            .unwrap_or(yavs_ir::opt::IV_FULL)
+    }
+
+    /// Whether `a op b` is proved to stay within `i64`.
+    fn no_overflow(&self, op: IntOp, a: Reg, b: Reg) -> bool {
+        !no_proofs() && yavs_ir::opt::no_overflow(op, self.iv_of(a), self.iv_of(b))
+    }
+
+    /// `x op y` for an operation `no_overflow` proved (`Add`, `Sub`, `Mul`): no test.
+    fn int_op_exact(&mut self, op: IntOp, x: Value, y: Value) -> Value {
+        match op {
+            IntOp::Add => self.b.ins().iadd(x, y),
+            IntOp::Sub => self.b.ins().isub(x, y),
+            _ => self.b.ins().imul(x, y),
+        }
+    }
+
     /// `x op y` as `yavs_std::arith`, leaving at `pc` wherever it reports an error. `None` for
     /// `**`, which goes through the interpreter.
     fn int_op(&mut self, op: IntOp, x: Value, y: Value, pc: u32) -> Option<Value> {
@@ -4234,7 +5976,31 @@ impl Gen<'_> {
         if self.nat.is_none() {
             self.spill(self.pc);
         }
-        let mut args = vec![self.env, self.regs, self.mem];
+        // The step, signal and wait callbacks never read the register array (LLVM's code passes
+        // it for its alias analysis): a zero, not a reload of `regs` from the stack.
+        let unused = [
+            self.imp.step,
+            self.imp.signal,
+            self.imp.wait,
+            self.imp.wait_same,
+        ];
+        let regs = if unused.contains(&f) {
+            self.c64(0)
+        } else {
+            self.regs
+        };
+        // Every callback here takes the activation's `env` from the view when given none
+        // (`rt::env_or`): frame-mode code is entered only through `rt::enter`, which sets it.
+        let env = if self.nat.is_none() {
+            self.c64(0)
+        } else {
+            self.env
+        };
+        let mut args = if f == self.imp.drive_f {
+            vec![self.mem]
+        } else {
+            vec![env, regs, self.mem]
+        };
         args.extend_from_slice(rest);
         let call = self.b.ins().call(f, &args);
         let r = self.b.inst_results(call)[0];
@@ -4296,6 +6062,7 @@ impl Gen<'_> {
             pc,
             keep: keeps_objects(i),
             edge: via_signal(i).then_some(0),
+            read: None,
             endstmt: false,
             xstep: false,
         });
@@ -4420,16 +6187,50 @@ impl Gen<'_> {
         write: bool,
         slow: Block,
     ) -> Value {
+        // A pointer loaded from a slot that holds a frame address (`slot_targets`): one compare of
+        // the whole address, then the frame's own bytes; anything else takes the lookup below.
+        if self.nat.is_none()
+            && let Some(r) = reg
+            && let Some(t) = self.fguess.get(r.0 as usize).copied().flatten()
+        {
+            let fh = self.mem_ld(MEM_FRAME);
+            let hi = self.b.ins().ishl_imm_s(fh, 32);
+            let want = self.b.ins().bor_imm_s(hi, t as i64);
+            let is = self.b.ins().icmp(IntCC::Equal, a, want);
+            let (hit, miss, done) = (
+                self.b.create_block(),
+                self.b.create_block(),
+                self.b.create_block(),
+            );
+            let p = self.b.append_block_param(done, I64);
+            self.brif_split(is, hit, miss);
+            let (known, slots) = (self.known[r.0 as usize], self.slots);
+            self.b.switch_to_block(hit);
+            self.known[r.0 as usize] = Some(Known::Frame(t));
+            self.fguess[r.0 as usize] = None;
+            let ph = self.host(a, reg, extra, n, write, slow);
+            self.b.ins().jump(done, &[BlockArg::Value(ph)]);
+            // Neither branch's values dominate the join.
+            (self.known[r.0 as usize], self.slots) = (known, slots);
+            self.b.switch_to_block(miss);
+            let pm = self.host(a, reg, extra, n, write, slow);
+            self.b.ins().jump(done, &[BlockArg::Value(pm)]);
+            (self.known[r.0 as usize], self.slots) = (known, slots);
+            self.fguess[r.0 as usize] = Some(t);
+            self.b.switch_to_block(done);
+            return p;
+        }
         // An address parameter of a native frame (or an `Index` of one): a test against the region
         // resolved at the entry, the ordinary lookup when it fails.
         if self.nat.is_some()
             && let Some(Some(Known::Param(k))) = reg.and_then(|r| self.known.get(r.0 as usize))
-            && let Some(&(ptr, len, w)) = self.pres.get(usize::from(*k))
-            && (w || !write)
+            && let Some(&h) = self.pres.get(usize::from(*k))
+            && (h.write || !write)
         {
             let (ev, nv) = (self.op(extra), self.op(n));
             let lo = self.lo32(a);
             let off = self.b.ins().iadd(lo, ev);
+            let len = self.b.ins().stack_load(I64, I64, h.ss, 8);
             let okc = self.in_range(off, nv, len);
             let (fast, miss, done) = (
                 self.b.create_block(),
@@ -4440,13 +6241,37 @@ impl Gen<'_> {
             self.b.set_cold_block(miss);
             self.brif_split(okc, fast, miss);
             self.b.switch_to_block(fast);
+            let ptr = self.b.ins().stack_load(I64, I64, h.ss, 0);
             let pf = self.b.ins().iadd(ptr, off);
+            if hold_check() {
+                let (w, depth) = (
+                    self.c32(u32::from(write)),
+                    self.nat.as_ref().map(|n| n.depth).expect("nat"),
+                );
+                self.b.ins().call(
+                    self.imp.hold_check,
+                    &[self.env, self.mem, a, ev, nv, w, depth, pf],
+                );
+            }
             self.b.ins().jump(done, &[BlockArg::Value(pf)]);
             self.b.switch_to_block(miss);
             let pm = self.host(a, None, Op::V(ev), Op::V(nv), write, slow);
             self.b.ins().jump(done, &[BlockArg::Value(pm)]);
             self.b.switch_to_block(done);
             return p;
+        }
+        if let Some(Some(Known::FrameObj(s, e))) = reg.and_then(|r| self.known.get(r.0 as usize)) {
+            let (s, e) = (*s, *e);
+            let (ev, nv) = (self.op(extra), self.op(n));
+            let lo = self.lo32(a);
+            let off = self.b.ins().iadd(lo, ev);
+            // (The offset of the address counts from the object's start.)
+            let len = self.c64(i64::from(e - s));
+            let okc = self.in_range(off, nv, len);
+            self.guard(okc, slow);
+            let slots = self.slots();
+            let base = self.b.ins().iadd_imm_s(slots, i64::from(s));
+            return self.b.ins().iadd(base, off);
         }
         let frame = reg.and_then(|r| self.frame_of(r));
         let heap = reg.and_then(|r| match self.known.get(r.0 as usize) {
@@ -4460,10 +6285,7 @@ impl Gen<'_> {
             // An object in hand: only the bounds of the access.
             let (ev, nv) = (self.op(extra), self.op(n));
             let off = self.b.ins().iadd(o.off, ev);
-            let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, nv, o.len);
-            let rest = self.b.ins().isub(o.len, nv);
-            let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, rest);
-            let okc = self.b.ins().band(fits, inside);
+            let okc = self.in_range(off, nv, o.len);
             self.guard(okc, slow);
             return self.b.ins().iadd(o.ptr, off);
         }
@@ -4475,10 +6297,14 @@ impl Gen<'_> {
             let off = self.b.ins().iadd(lo, ev);
             let done = self.b.create_block();
             let p = self.b.append_block_param(done, I64);
-            self.obj_lookup(a, hi, off, ev, nv, write, true, done);
+            self.frame_object_try(hi, off, nv, done, slow);
+            let miss = self.b.create_block();
+            self.b.set_cold_block(miss);
+            self.obj_try(a, hi, off, nv, write, true, done, miss);
+            self.b.switch_to_block(miss);
+            self.host_call(a, ev, nv, write, done, slow);
             self.b.switch_to_block(done);
-            let nn = self.b.ins().icmp_imm_s(IntCC::NotEqual, p, 0);
-            self.guard(nn, slow);
+            self.nonnull(p, nv, slow);
             return p;
         }
         // A constant never changes: a read is from a copy of its own.
@@ -4490,10 +6316,7 @@ impl Gen<'_> {
             let (ev, nv) = (self.op(extra), self.op(n));
             let off = self.b.ins().iadd_imm_s(ev, o as i64);
             let lenv = self.c64(len as i64);
-            let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, nv, lenv);
-            let rest = self.b.ins().isub(lenv, nv);
-            let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, rest);
-            let okc = self.b.ins().band(fits, inside);
+            let okc = self.in_range(off, nv, lenv);
             self.guard(okc, slow);
             let base = self.b.ins().symbol_value(I64, gv);
             return self.b.ins().iadd(base, off);
@@ -4514,20 +6337,23 @@ impl Gen<'_> {
             let lo = self.lo32(a);
             let off = self.b.ins().iadd(lo, ev);
             let len = self.mem_ld(len_f);
-            let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, nv, len);
-            let rest = self.b.ins().isub(len, nv);
-            let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, rest);
-            let okc = self.b.ins().band(fits, inside);
+            let okc = self.in_range(off, nv, len);
             self.guard(okc, slow);
             let base = self.mem_ld(base_f);
             return self.b.ins().iadd(base, off);
         }
         if let Some(o) = frame {
+            // A composite variable in the frame is tested against itself, not the frame.
+            let obj_end = self
+                .objs
+                .iter()
+                .find(|&&(s, e)| u64::from(s) <= o && o < u64::from(e))
+                .map(|&(_, e)| u64::from(e));
             // Within the frame whatever the frame: no check.
             if let (Op::C(e), Op::C(k)) = (extra, n)
                 && o.checked_add(e)
                     .and_then(|x| x.checked_add(k))
-                    .is_some_and(|end| end <= self.frame_len)
+                    .is_some_and(|end| end <= obj_end.unwrap_or(self.frame_len))
             {
                 let slots = self.slots();
                 return self.b.ins().iadd_imm_s(slots, (o + e) as i64);
@@ -4535,15 +6361,14 @@ impl Gen<'_> {
             let (ev, nv) = (self.op(extra), self.op(n));
             // `extra` is below 2^63, the sum cannot wrap.
             let off = self.b.ins().iadd_imm_s(ev, o as i64);
-            let len = if self.nat.is_some() {
+            let len = if let Some(e) = obj_end {
+                self.c64(e as i64)
+            } else if self.nat.is_some() {
                 self.c64(self.frame_len as i64)
             } else {
                 self.mem_ld(MEM_SLOTS_LEN)
             };
-            let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, nv, len);
-            let rest = self.b.ins().isub(len, nv);
-            let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, rest);
-            let okc = self.b.ins().band(fits, inside);
+            let okc = self.in_range(off, nv, len);
             self.guard(okc, slow);
             let slots = self.slots();
             return self.b.ins().iadd(slots, off);
@@ -4559,7 +6384,31 @@ impl Gen<'_> {
             });
             let done = self.b.create_block();
             let p = self.b.append_block_param(done, I64);
-            let w = self.c32(u32::from(write));
+            {
+                let hi = self.b.ins().ushr_imm_s(a, 32);
+                let lo = self.lo32(a);
+                let off = self.b.ins().iadd(lo, extra);
+                self.frame_object_try(hi, off, n, done, slow);
+            }
+            // In a nested subprogram: a variable of the enclosing frame passed by reference, as
+            // `Mem::find` asks for it, before the object table misses and the runtime is called.
+            if self.nested {
+                let hi = self.b.ins().ushr_imm_s(a, 32);
+                let lo = self.lo32(a);
+                let off = self.b.ins().iadd(lo, extra);
+                let up = self.mem_ld(MEM_UP);
+                let is = self.b.ins().icmp(IntCC::Equal, hi, up);
+                let len = self.mem_ld(MEM_UP_LEN);
+                let okc = self.in_range(off, n, len);
+                let okc = self.b.ins().band(okc, is);
+                let (fast, miss) = (self.b.create_block(), self.b.create_block());
+                self.brif_split(okc, fast, miss);
+                self.b.switch_to_block(fast);
+                let base = self.mem_ld(MEM_UP_SLOTS);
+                let pf = self.b.ins().iadd(base, off);
+                self.b.ins().jump(done, &[BlockArg::Value(pf)]);
+                self.b.switch_to_block(miss);
+            }
             if likely {
                 let hi = self.b.ins().ushr_imm_s(a, 32);
                 let lo = self.lo32(a);
@@ -4569,13 +6418,9 @@ impl Gen<'_> {
                     .ins()
                     .icmp_imm_s(IntCC::Equal, hi, i64::from(space::TEMP) << 29);
                 let len = self.mem_ld(MEM_TEMP_LEN);
-                let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, n, len);
-                let rest = self.b.ins().isub(len, n);
-                let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, rest);
-                let okc = self.b.ins().band(fits, inside);
+                let okc = self.in_range(off, n, len);
                 let okc = self.b.ins().band(okc, is_t);
                 let (fast, miss) = (self.b.create_block(), self.b.create_block());
-                self.b.set_cold_block(miss);
                 self.brif_split(okc, fast, miss);
                 self.b.switch_to_block(fast);
                 let base = self.mem_ld(MEM_TEMP);
@@ -4583,15 +6428,20 @@ impl Gen<'_> {
                 self.b.ins().jump(done, &[BlockArg::Value(pf)]);
                 self.b.switch_to_block(miss);
             }
-            let c = self
-                .b
-                .ins()
-                .call(self.imp.host, &[self.env, self.mem, a, extra, n, w]);
-            let ph = self.b.inst_results(c)[0];
-            self.b.ins().jump(done, &[BlockArg::Value(ph)]);
+            // The object table (heap objects and constants found before: most of what the runtime
+            // finds), then the runtime.
+            {
+                let hi = self.b.ins().ushr_imm_s(a, 32);
+                let lo = self.lo32(a);
+                let off = self.b.ins().iadd(lo, extra);
+                let miss = self.b.create_block();
+                self.b.set_cold_block(miss);
+                self.obj_try(a, hi, off, n, write, false, done, miss);
+                self.b.switch_to_block(miss);
+            }
+            self.host_call(a, extra, n, write, done, slow);
             self.b.switch_to_block(done);
-            let nn = self.b.ins().icmp_imm_s(IntCC::NotEqual, p, 0);
-            self.guard(nn, slow);
+            self.nonnull(p, n, slow);
             return p;
         }
         // A native frame, by the address's space: a frame address is its own slots, the slots of
@@ -4630,6 +6480,7 @@ impl Gen<'_> {
             self.b.ins().jump(done, &[BlockArg::Value(pown)]);
             self.b.switch_to_block(other);
         }
+        self.frame_object_try(hi, off, n, done, slow);
         let (up, rest) = (self.b.create_block(), self.b.create_block());
         let top = self.mem_ld(MEM_FRAME_IDX);
         let above = self.b.ins().icmp(IntCC::UnsignedGreaterThan, hi, top);
@@ -4672,17 +6523,53 @@ impl Gen<'_> {
         self.obj_try(a, hi, off, n, write, false, done, miss);
         self.b.switch_to_block(miss);
         self.b.set_cold_block(miss);
-        let w = self.c32(u32::from(write));
-        let c = self
-            .b
-            .ins()
-            .call(self.imp.host, &[self.env, self.mem, a, extra, n, w]);
-        let ph = self.b.inst_results(c)[0];
-        self.b.ins().jump(done, &[BlockArg::Value(ph)]);
+        self.host_call(a, extra, n, write, done, slow);
         self.b.switch_to_block(done);
-        let nn = self.b.ins().icmp_imm_s(IntCC::NotEqual, p, 0);
-        self.guard(nn, slow);
+        self.nonnull(p, n, slow);
         p
+    }
+
+    /// `yavs_rt_host` for an access, in the block a lookup missed in: jumps to `done` with the
+    /// host pointer; 0 (not available) takes the slow path, here or at `nonnull`.
+    fn host_call(
+        &mut self,
+        a: Value,
+        extra: Value,
+        n: Value,
+        write: bool,
+        done: Block,
+        slow: Block,
+    ) {
+        let w = self.c32(u32::from(write));
+        // A native frame rarely gets here; frame-mode code often, where the stub's saves would cost
+        // more than the spills they spare (Microwatt).
+        let ph = if self.nat.is_some() {
+            self.b
+                .ins()
+                .call(self.imp.cold_host, &[self.env, self.mem, a, extra, n, w]);
+            self.mem_ld(MEM_COLD_RET)
+        } else {
+            let c = self
+                .b
+                .ins()
+                .call(self.imp.host, &[self.env, self.mem, a, extra, n, w]);
+            self.b.inst_results(c)[0]
+        };
+        if self.const_of(n).is_some_and(|k| k > 0) {
+            let nn = self.b.ins().icmp_imm_s(IntCC::NotEqual, ph, 0);
+            self.guard(nn, slow);
+        }
+        self.b.ins().jump(done, &[BlockArg::Value(ph)]);
+    }
+
+    /// The test of a lookup's result `p` at its join. An access of a constant size above 0 needs
+    /// none: every region's test passed with that many bytes, so the region has a pointer, and
+    /// `host_call` tested its own result.
+    fn nonnull(&mut self, p: Value, n: Value, slow: Block) {
+        if !self.const_of(n).is_some_and(|k| k > 0) {
+            let nn = self.b.ins().icmp_imm_s(IntCC::NotEqual, p, 0);
+            self.guard(nn, slow);
+        }
     }
 
     /// The view at `base_f`, `len_f` of `Mem` when `is` and the access lies within it: jumps to
@@ -4709,8 +6596,37 @@ impl Gen<'_> {
         self.b.ins().jump(done, &[BlockArg::Value(pf)]);
     }
 
-    /// Whether `n` bytes at offset `off` lie within `len` bytes.
+    /// A composite variable of the root frame by its address (`yavs_ir::FRAME_OBJECT`, high half
+    /// `hi`): its start and length are in the address. Goes on in a new block for any other.
+    fn frame_object_try(&mut self, hi: Value, off: Value, n: Value, done: Block, slow: Block) {
+        let top = self.b.ins().ushr_imm_s(hi, 28);
+        let is = self.b.ins().icmp_imm_s(IntCC::Equal, top, 1);
+        let (obj, other) = (self.b.create_block(), self.b.create_block());
+        self.brif_split(is, obj, other);
+        self.b.switch_to_block(obj);
+        let start = self.b.ins().ushr_imm_s(hi, 12);
+        let start = self.b.ins().band_imm_s(start, 0xffff);
+        let start = self.b.ins().ishl_imm_s(start, 3);
+        let len = self.b.ins().band_imm_s(hi, 0xfff);
+        let len = self.b.ins().ishl_imm_s(len, 3);
+        let okc = self.in_range(off, n, len);
+        self.guard(okc, slow);
+        let root = self.mem_ld(MEM_ROOT_SLOTS);
+        let base = self.b.ins().iadd(root, start);
+        let p = self.b.ins().iadd(base, off);
+        self.b.ins().jump(done, &[BlockArg::Value(p)]);
+        self.b.switch_to_block(other);
+    }
+
+    /// Whether `n` bytes at offset `off` lie within `len` bytes. A constant `n`: one compare of the
+    /// end (`off` is below 2^63 + 2^32, `host`'s `extra` below 2^63, so the sum does not wrap).
     fn in_range(&mut self, off: Value, n: Value, len: Value) -> Value {
+        if let Some(k) = self.const_of(n)
+            && (0..1 << 31).contains(&k)
+        {
+            let end = self.b.ins().iadd_imm_s(off, k);
+            return self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, end, len);
+        }
         let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, n, len);
         let rest = self.b.ins().isub(len, n);
         let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, rest);
@@ -4718,37 +6634,9 @@ impl Gen<'_> {
     }
 
     /// The object table's entry for the access (the objects found before: heap objects a `Deref`
-    /// found, a process's heap variables): one load and compare, as the LLVM generator does;
-    /// else `yavs_rt_host` (`Mem::find`, then the interpreter is asked for the object). Jumps
-    /// to `done` with the host pointer (0: not available). `heap`: the address is a heap
+    /// found, a process's heap variables): one load and compare, as the LLVM generator does. Jumps
+    /// to `done` with the host pointer on a hit, to `miss` otherwise. `heap`: the address is a heap
     /// object's (or guessed to be), whose key has the heap tag.
-    #[allow(clippy::too_many_arguments)]
-    fn obj_lookup(
-        &mut self,
-        a: Value,
-        hi: Value,
-        off: Value,
-        extra: Value,
-        n: Value,
-        write: bool,
-        heap: bool,
-        done: Block,
-    ) {
-        let miss = self.b.create_block();
-        self.b.set_cold_block(miss);
-        self.obj_try(a, hi, off, n, write, heap, done, miss);
-        self.b.switch_to_block(miss);
-        let w = self.c32(u32::from(write));
-        let c = self
-            .b
-            .ins()
-            .call(self.imp.host, &[self.env, self.mem, a, extra, n, w]);
-        let p2 = self.b.inst_results(c)[0];
-        self.b.ins().jump(done, &[BlockArg::Value(p2)]);
-    }
-
-    /// The object table's test of `obj_lookup`: jumps to `done` with the host pointer on a hit,
-    /// to `miss` otherwise.
     #[allow(clippy::too_many_arguments)]
     fn obj_try(
         &mut self,
@@ -4788,13 +6676,7 @@ impl Gen<'_> {
             .b
             .ins()
             .load(I64, self.mf, ent, (MEM_OBJS + OBJ_LEN) as i32);
-        let ofits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, n, olen);
-        let orest = self.b.ins().isub(olen, n);
-        let oinside = self
-            .b
-            .ins()
-            .icmp(IntCC::UnsignedLessThanOrEqual, off, orest);
-        let ok = self.b.ins().band(ofits, oinside);
+        let ok = self.in_range(off, n, olen);
         let ok = self.b.ins().band(hit, ok);
         let obj = self.b.create_block();
         self.brif_split(ok, obj, miss);
@@ -4856,6 +6738,80 @@ impl Gen<'_> {
         ok.then_some((l, r, dir))
     }
 
+    /// The position of `i` in a dimension. One arm per direction: up (0), l <= i <= r, position
+    /// i - l; down (1), r <= i <= l, position l - i; any other direction word, and an empty range,
+    /// are the interpreter's error.
+    fn pos_in(&mut self, (l, r, dir): (Value, Value, Value), i: Value, slow: Block) -> Value {
+        let (upb, other, dnb, cont) = (
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+        );
+        let v = self.b.append_block_param(cont, I64);
+        let is_up = self.b.ins().icmp_imm_s(IntCC::Equal, dir, 0);
+        self.brif_split(is_up, upb, other);
+        for (bb, lo, hi) in [(upb, l, r), (dnb, r, l)] {
+            self.b.switch_to_block(bb);
+            // As the interpreter: `lo <= i <= hi` leaves out an empty range too.
+            let above = self.b.ins().icmp(IntCC::SignedGreaterThanOrEqual, i, lo);
+            let below = self.b.ins().icmp(IntCC::SignedLessThanOrEqual, i, hi);
+            let okv = self.b.ins().band(above, below);
+            self.guard(okv, slow);
+            let rel = if bb == upb {
+                self.b.ins().isub(i, l)
+            } else {
+                self.b.ins().isub(l, i)
+            };
+            self.b.ins().jump(cont, &[BlockArg::Value(rel)]);
+            if bb == upb {
+                self.b.switch_to_block(other);
+                let is_dn = self.b.ins().icmp_imm_s(IntCC::Equal, dir, 1);
+                self.brif_split(is_dn, dnb, slow);
+            }
+        }
+        self.start(cont);
+        v
+    }
+
+    /// The start position of the slice `x, y, w` of a dimension `l, r, d`: 0 for a null slice,
+    /// which checks nothing; else both ends inside the range and the slice's direction its own.
+    fn slice_in(
+        &mut self,
+        (l, r, d): (Value, Value, Value),
+        (x, y, w): (Value, Value, Value),
+        slow: Block,
+    ) -> Value {
+        let wd = self.b.ins().icmp_imm_s(IntCC::Equal, w, 1);
+        let lt = self.b.ins().icmp(IntCC::SignedLessThan, x, y);
+        let gt = self.b.ins().icmp(IntCC::SignedGreaterThan, x, y);
+        let null = self.b.ins().select(wd, lt, gt);
+        let down = self.b.ins().icmp_imm_s(IntCC::Equal, d, 1);
+        let lo = self.b.ins().select(down, r, l);
+        let hi = self.b.ins().select(down, l, r);
+        let dir_ok = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, d, 1);
+        let same = self.b.ins().icmp(IntCC::Equal, w, d);
+        let nonempty = self.b.ins().icmp(IntCC::SignedLessThanOrEqual, lo, hi);
+        let span = self.b.ins().isub(hi, lo);
+        let (rx, ry) = (self.b.ins().isub(x, lo), self.b.ins().isub(y, lo));
+        let ix = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, rx, span);
+        let iy = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, ry, span);
+        let okv = self.b.ins().band(dir_ok, same);
+        let okv = self.b.ins().band(okv, nonempty);
+        let okv = self.b.ins().band(okv, ix);
+        let okv = self.b.ins().band(okv, iy);
+        let okv = self.b.ins().bor(null, okv);
+        self.guard(okv, slow);
+        let up = self.b.ins().isub(x, l);
+        let dn = self.b.ins().isub(l, x);
+        let pos = self.b.ins().select(down, dn, up);
+        let zero = self.c64(0);
+        self.b.ins().select(null, zero, pos)
+    }
+
     /// `left, right, dir` of the descriptor dimension at `p`.
     fn dope_words(&mut self, p: Value) -> (Value, Value, Value) {
         let nf = self.gf;
@@ -4889,6 +6845,39 @@ impl Gen<'_> {
         (self.b.ins().select(empty, zero, n), fits)
     }
 
+    /// `Inst::DopeLen`: one arm per direction as `Inst::Pos`, the other values of the direction word
+    /// counted as up, as `len_of`. A length above `i64::MAX` (`hi - lo + 1` not above 0 with
+    /// `hi >= lo`: as a u64 it is exact except for the full i64 range) is the interpreter's error.
+    fn dope_len(&mut self, dope: Value, reg: Reg, off: u64, slow: Block) -> Value {
+        let p = self.host(dope, Some(reg), Op::C(off), Op::C(24), false, slow);
+        let (l, r, dir) = self.dope_words(p);
+        let (dn, up, cont) = (
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+        );
+        let v = self.b.append_block_param(cont, I64);
+        let z = self.c64(0);
+        let is_dn = self.b.ins().icmp_imm_s(IntCC::Equal, dir, 1);
+        self.b.ins().brif(is_dn, dn, &[], up, &[]);
+        for (bb, lo, hi) in [(up, l, r), (dn, r, l)] {
+            self.b.switch_to_block(bb);
+            let go = self.b.create_block();
+            let empty = self.b.ins().icmp(IntCC::SignedLessThan, hi, lo);
+            self.b
+                .ins()
+                .brif(empty, cont, &[BlockArg::Value(z)], go, &[]);
+            self.b.switch_to_block(go);
+            let d = self.b.ins().isub(hi, lo);
+            let n = self.b.ins().iadd_imm_s(d, 1);
+            let okn = self.b.ins().icmp_imm_s(IntCC::SignedGreaterThan, n, 0);
+            self.guard(okn, slow);
+            self.b.ins().jump(cont, &[BlockArg::Value(n)]);
+        }
+        self.start(cont);
+        v
+    }
+
     /// The 32-byte bit-plane block holding element `idx` of the logic array at `base`, and the
     /// element's bit position in each plane word.
     fn logic_word(&mut self, base: Reg, idx: Reg, write: bool, slow: Block) -> (Value, Value) {
@@ -4898,6 +6887,74 @@ impl Gen<'_> {
         let a = self.ld(base);
         let p = self.host(a, Some(base), Op::V(off), Op::C(32), write, slow);
         (p, self.b.ins().band_imm_s(i, 63))
+    }
+
+    /// `lcopy_inline` with `k` (1 to 64), `s0` and `d0` (under 64) known: constant shifts and
+    /// masks, the second block only where the run has one. The source planes are read first
+    /// (the ranges may overlap), the destination bits outside the run stay.
+    fn lcopy_const(&mut self, pd: Value, d0: u64, ps: Value, s0: u64, k: u64) {
+        let gf = self.gf;
+        let low = u64::MAX >> (64 - k);
+        let (two_s, two_d) = (s0 + k > 64, d0 + k > 64);
+        // In the same place in one block: no shift on either side, the mask is the hole.
+        let same = s0 == d0 && !two_s;
+        let mut vals = [None; 4];
+        for (plane, v) in vals.iter_mut().enumerate() {
+            let at = plane as i32 * 8;
+            let mut x = self.b.ins().load(I64, gf, ps, at);
+            if same {
+                if k != 64 {
+                    x = self.b.ins().band_imm_s(x, (low << s0) as i64);
+                }
+            } else {
+                if s0 != 0 {
+                    x = self.b.ins().ushr_imm_s(x, s0 as i64);
+                }
+                if two_s {
+                    let h = self.b.ins().load(I64, gf, ps, 32 + at);
+                    let h = self.b.ins().ishl_imm_s(h, (64 - s0) as i64);
+                    x = self.b.ins().bor(x, h);
+                }
+                // A run that ends at the top of its word has nothing above it.
+                if k != 64 && s0 + k != 64 {
+                    x = self.b.ins().band_imm_s(x, low as i64);
+                }
+            }
+            *v = Some(x);
+        }
+        for (plane, v) in vals.into_iter().enumerate() {
+            let (at, x) = (plane as i32 * 8, v.expect("set above"));
+            if same || !two_d {
+                let put = if same || d0 == 0 {
+                    x
+                } else {
+                    self.b.ins().ishl_imm_s(x, d0 as i64)
+                };
+                let out = if k == 64 {
+                    put
+                } else {
+                    let old = self.b.ins().load(I64, gf, pd, at);
+                    let kept = self.b.ins().band_imm_s(old, !(low << d0) as i64);
+                    self.b.ins().bor(kept, put)
+                };
+                self.b.ins().store(gf, out, pd, at);
+            } else {
+                let cut = 64 - d0;
+                let old = self.b.ins().load(I64, gf, pd, at);
+                let kept = self.b.ins().band_imm_s(old, ((1u64 << d0) - 1) as i64);
+                let put = self.b.ins().ishl_imm_s(x, d0 as i64);
+                let lo = self.b.ins().bor(kept, put);
+                self.b.ins().store(gf, lo, pd, at);
+                let old = self.b.ins().load(I64, gf, pd, 32 + at);
+                let kept = self
+                    .b
+                    .ins()
+                    .band_imm_s(old, !((1u64 << (k - cut)) - 1) as i64);
+                let put = self.b.ins().ushr_imm_s(x, cut as i64);
+                let hi = self.b.ins().bor(kept, put);
+                self.b.ins().store(gf, hi, pd, 32 + at);
+            }
+        }
     }
 
     /// `Inst::LCopy` of `k` (1 to 64) elements from bit `s0` of the one or two plane blocks at
@@ -4928,44 +6985,55 @@ impl Gen<'_> {
         let two_s = self.b.ins().icmp_imm_s(IntCC::Equal, ns, 2);
         let two_d = self.b.ins().icmp_imm_s(IntCC::Equal, nd, 2);
         let zero = self.c64(0);
-        let wide = |g: &mut Self, p: Value, plane: i32, two: Value| -> Value {
-            let l = g.b.ins().load(I64, gf, p, plane * 8);
-            // Block 1 is only read when there is one.
+        // The word of the second block, or 0 without one (block 0 is read again in its place, so
+        // nothing past the run is touched).
+        let high = |g: &mut Self, p: Value, plane: i32, two: Value| -> Value {
             let b1 = g.b.ins().iadd_imm_s(p, 32);
             let hp = g.b.ins().select(two, b1, p);
             let h = g.b.ins().load(I64, gf, hp, plane * 8);
-            let h = g.b.ins().select(two, h, zero);
-            let (l, h) = (g.b.ins().uextend(I128, l), g.b.ins().uextend(I128, h));
-            let hs = g.b.ins().ishl_imm_s(h, 64);
-            g.b.ins().bor(l, hs)
+            g.b.ins().select(two, h, zero)
         };
-        let s128 = self.b.ins().uextend(I128, s0);
-        let d128 = self.b.ins().uextend(I128, d0);
+        // `x << (64 - s)` and `x >> (64 - s)` for `s` in 0..64 as two shifts (`63 - s` is
+        // `s ^ 63`): 0 at `s = 0`, never a shift by 64, which Cranelift takes modulo 64.
+        let up = |g: &mut Self, x: Value, s: Value| {
+            let c = g.b.ins().bxor_imm_s(s, 63);
+            let x = g.b.ins().ishl_imm_s(x, 1);
+            g.b.ins().ishl(x, c)
+        };
+        let down = |g: &mut Self, x: Value, s: Value| {
+            let c = g.b.ins().bxor_imm_s(s, 63);
+            let x = g.b.ins().ushr_imm_s(x, 1);
+            g.b.ins().ushr(x, c)
+        };
         let mut vals = [zero; 4];
         for (plane, v) in vals.iter_mut().enumerate() {
-            let w = wide(self, ps, plane as i32, two_s);
-            let sh = self.b.ins().ushr(w, s128);
-            let low = self.b.ins().ireduce(I64, sh);
-            *v = self.b.ins().band(low, mask);
+            let lo = self.b.ins().load(I64, gf, ps, plane as i32 * 8);
+            let hi = high(self, ps, plane as i32, two_s);
+            let lo = self.b.ins().ushr(lo, s0);
+            let hi = up(self, hi, s0);
+            let w = self.b.ins().bor(lo, hi);
+            *v = self.b.ins().band(w, mask);
         }
-        let m128 = self.b.ins().uextend(I128, mask);
-        let hole = self.b.ins().ishl(m128, d128);
+        let hole = self.b.ins().ishl(mask, d0);
         let keep = self.b.ins().bnot(hole);
+        let hole1 = down(self, mask, d0);
+        let keep1 = self.b.ins().bnot(hole1);
         for (plane, v) in vals.iter().enumerate() {
-            let w = wide(self, pd, plane as i32, two_d);
-            let v128 = self.b.ins().uextend(I128, *v);
-            let put = self.b.ins().ishl(v128, d128);
-            let kept = self.b.ins().band(w, keep);
-            let out = self.b.ins().bor(kept, put);
-            let lo = self.b.ins().ireduce(I64, out);
-            self.b.ins().store(gf, lo, pd, plane as i32 * 8);
-            // The second block: the high half, when the destination has one.
+            let at = plane as i32 * 8;
+            let old = self.b.ins().load(I64, gf, pd, at);
+            let kept = self.b.ins().band(old, keep);
+            let put = self.b.ins().ishl(*v, d0);
+            let lo = self.b.ins().bor(kept, put);
+            self.b.ins().store(gf, lo, pd, at);
+            // The second block, when the destination has one.
             let (hi_bb, done) = (self.b.create_block(), self.b.create_block());
             self.brif_split(two_d, hi_bb, done);
             self.b.switch_to_block(hi_bb);
-            let top = self.b.ins().ushr_imm_s(out, 64);
-            let hi = self.b.ins().ireduce(I64, top);
-            self.b.ins().store(gf, hi, pd, 32 + plane as i32 * 8);
+            let old = self.b.ins().load(I64, gf, pd, 32 + at);
+            let kept = self.b.ins().band(old, keep1);
+            let put = down(self, *v, d0);
+            let hi = self.b.ins().bor(kept, put);
+            self.b.ins().store(gf, hi, pd, 32 + at);
             self.b.ins().jump(done, &[]);
             self.b.switch_to_block(done);
         }
@@ -4977,23 +7045,34 @@ impl Gen<'_> {
         let len = self.mem_ld(MEM_TEMP_LEN);
         let off = self.b.ins().iadd_imm_s(len, 7);
         let off = self.b.ins().band_imm_s(off, !7_i64);
-        let (end, o) = self.b.ins().uadd_overflow(off, n);
+        let end = self.b.ins().iadd(off, n);
+        // The capacity is below 4 GiB (`TierFrame::temp_cap`), so `end` fits in it only when it does
+        // not wrap, and a size within the capacity cannot wrap it.
         let cap = self.mem_ld(MEM_TEMP_CAP);
-        let b1 = self
-            .b
-            .ins()
-            .icmp_imm_s(IntCC::UnsignedGreaterThan, end, 0xffff_ffff);
-        let b2 = self.b.ins().icmp(IntCC::UnsignedGreaterThan, end, cap);
-        let bad = self.b.ins().bor(b1, b2);
-        let bad = self.b.ins().bor(bad, o);
-        let good = self.b.ins().bxor_imm_s(bad, 1);
+        let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, end, cap);
+        let good = if self
+            .const_of(n)
+            .is_some_and(|k| (0..=0xffff_ffff).contains(&k))
+        {
+            fits
+        } else {
+            let small = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, n, cap);
+            self.b.ins().band(fits, small)
+        };
         self.guard(good, slow);
         let temp = self.mem_ld(MEM_TEMP);
         let at = self.b.ins().iadd(temp, len);
-        let fill = self.b.ins().isub(end, len);
+        let ptr = self.b.ins().iadd(temp, off);
+        // Bytes of the pad up to the aligned start are zeroed too: one word at `len` does it when the
+        // object has a word of its own to cover the rest of it.
         match self.const_of(n) {
-            // A known size at an aligned end is zeroed by stores, not a call.
-            Some(k) if (1..=128).contains(&k) => {
+            // A known size is zeroed by stores, not a call.
+            Some(k) if (8..=128).contains(&k) => {
+                let z = self.c64(0);
+                self.b.ins().store(self.gf, z, at, 0);
+                self.zero_range(ptr, 0, k as u64);
+            }
+            Some(k) if (1..8).contains(&k) => {
                 let (even, odd, merge) = (
                     self.b.create_block(),
                     self.b.create_block(),
@@ -5005,14 +7084,14 @@ impl Gen<'_> {
                 self.zero_range(at, 0, k as u64);
                 self.b.ins().jump(merge, &[]);
                 self.b.switch_to_block(odd);
+                let fill = self.b.ins().isub(end, len);
                 self.b.ins().call(self.imp.zero, &[at, fill]);
                 self.b.ins().jump(merge, &[]);
                 self.b.switch_to_block(merge);
             }
             // A size known at run time: one plane block (32 bytes, a logic array of up to 64
-            // elements) at an aligned end by stores too. A `memset` there made the reads that
-            // follow wait for its stores (no forwarding): a fifth of the cycles of an adder
-            // process.
+            // elements) by stores too. A `memset` there made the reads that follow wait for its
+            // stores (no forwarding): a fifth of the cycles of an adder process.
             // ponytail: one size only; a jump table over the small sizes if others show up.
             _ => {
                 let (blk, other, merge) = (
@@ -5020,14 +7099,15 @@ impl Gen<'_> {
                     self.b.create_block(),
                     self.b.create_block(),
                 );
-                let aligned = self.b.ins().icmp(IntCC::Equal, off, len);
                 let is32 = self.b.ins().icmp_imm_s(IntCC::Equal, n, 32);
-                let fast = self.b.ins().band(aligned, is32);
-                self.brif_split(fast, blk, other);
+                self.b.ins().brif(is32, blk, &[], other, &[]);
                 self.b.switch_to_block(blk);
-                self.zero_range(at, 0, 32);
+                let z = self.c64(0);
+                self.b.ins().store(self.gf, z, at, 0);
+                self.zero_range(ptr, 0, 32);
                 self.b.ins().jump(merge, &[]);
                 self.b.switch_to_block(other);
+                let fill = self.b.ins().isub(end, len);
                 self.b.ins().call(self.imp.zero, &[at, fill]);
                 self.b.ins().jump(merge, &[]);
                 self.b.switch_to_block(merge);
@@ -5036,7 +7116,6 @@ impl Gen<'_> {
         self.mem_st(MEM_TEMP_LEN, end);
         let tag = (u64::from(space::TEMP) << 61) as i64;
         let addr = self.b.ins().bor_imm_s(off, tag);
-        let ptr = self.b.ins().iadd(temp, off);
         (addr, ptr)
     }
 
@@ -5643,6 +7722,44 @@ impl Gen<'_> {
             op,
             yavs_ir::LOp::Not | yavs_ir::LOp::ToX01 | yavs_ir::LOp::ToUx01
         );
+        // One block of a known count: straight code, the mask a constant.
+        if let Some(k) = self.kint(n).filter(|k| (1..=64).contains(k)) {
+            let av = self.ld(a);
+            let pa = self.host(av, Some(a), Op::C(0), Op::C(32), false, slow);
+            let pb = if unary {
+                pa
+            } else {
+                let bv = self.ld(b);
+                self.host(bv, Some(b), Op::C(0), Op::C(32), false, slow)
+            };
+            let dv = self.ld(dst);
+            let pd = self.host(dv, Some(dst), Op::C(0), Op::C(32), true, slow);
+            let gf = self.gf;
+            let zero = self.c64(0);
+            let (mut x, mut y) = ([zero; 4], [zero; 4]);
+            for j in 0..4 {
+                x[j] = self.b.ins().load(I64, gf, pa, j as i32 * 8);
+                y[j] = if unary {
+                    x[j]
+                } else {
+                    self.b.ins().load(I64, gf, pb, j as i32 * 8)
+                };
+            }
+            let r = self.logic_block(op, x, y);
+            let mask = (u64::MAX >> (64 - k)) as i64;
+            for (j, w) in r.into_iter().take(2).enumerate() {
+                let w = if k == 64 {
+                    w
+                } else {
+                    self.b.ins().band_imm_s(w, mask)
+                };
+                self.b.ins().store(gf, w, pd, j as i32 * 8);
+            }
+            self.b.ins().store(gf, zero, pd, 16);
+            self.b.ins().store(gf, zero, pd, 24);
+            self.join(join);
+            return;
+        }
         let cnt = self.ld(n);
         let small = self
             .b
@@ -5853,12 +7970,19 @@ impl Gen<'_> {
     /// `slow_path` for a signal operation: the slow block calls `yavs_rt_signal` (`edge`).
     fn slow_signal(&mut self, pc: u32, edge: u32) -> (Block, Block) {
         let (block, join) = (self.b.create_block(), self.b.create_block());
+        if self.nat.is_none() {
+            let rs = self.pend_live(pc);
+            if !rs.is_empty() {
+                self.snaps.insert(block, rs);
+            }
+        }
         self.slows.push(Slow {
             block,
             join,
             pc,
             keep: false,
             edge: Some(edge),
+            read: None,
             endstmt: false,
             xstep: false,
         });
@@ -5876,11 +8000,81 @@ impl Gen<'_> {
         self.brif_split(cond, t, f);
     }
 
+    /// The constant reference in registers `sig`, `sig + 1`, inside its instance signal, and that
+    /// signal's facts: its table entry has the form they say, so nothing needs a test.
+    fn sig_known(&self, sig: Reg) -> Option<(SigConst, yavs_ir::SigFact)> {
+        let facts = self.facts?;
+        if let Some(&s) = self.sdyn.iter().find(|s| s.dst == sig) {
+            return Some((s, facts.sig(s.sig)?));
+        }
+        let sv = self.sigval.filter(|sv| sv.dst == sig).or_else(|| {
+            let (v, len) = (self.kint(sig)?, self.kint(Reg(sig.0 + 1))?);
+            Some(SigConst {
+                dst: sig,
+                sig: (v as u64 >> 32) as u32,
+                off: v & 0xffff_ffff,
+                len,
+                run: false,
+            })
+        })?;
+        let f = facts.sig(sv.sig)?;
+        (sv.len >= 1 && sv.off + sv.len <= i64::from(f.len)).then_some((sv, f))
+    }
+
+    /// The element `sv` starts at.
+    fn sv_off(&mut self, sv: SigConst) -> Value {
+        if sv.run {
+            let v = self.ld(sv.dst);
+            self.lo32(v)
+        } else {
+            self.c64(sv.off)
+        }
+    }
+
+    /// `sig_read_known` will read reference `sig`, which is at a run-time element.
+    fn sig_read_run(&self, sig: Reg) -> bool {
+        self.sdyn.iter().any(|s| s.dst == sig)
+            && self
+                .sig_known(sig)
+                .is_some_and(|(_, f)| f.codes || f.planes || matches!(f.es, 1 | 4 | 8))
+    }
+
     /// The `TierSig` entry of the instance signal that reference registers `sig`, `sig + 1` name,
     /// and the element offset in it; takes `slow` unless the reference is a plain one of `len`
     /// elements (any number but 0 for `None`) to an instance signal the table has.
     fn sig_entry(&mut self, sig: Reg, len: Option<i64>, slow: Block) -> (Value, Value) {
+        // The `SigVal` of constants before it: the function's entry tested the table.
+        if let Some(sv) = self
+            .sigval
+            .filter(|sv| sv.dst == sig)
+            .or_else(|| self.sig_known(sig).map(|k| k.0))
+            && len.map_or(sv.len != 0, |k| k == sv.len)
+        {
+            let tab = self
+                .b
+                .ins()
+                .load(I64, self.mf.with_readonly(), self.mem, MEM_SIGTAB as i32);
+            let ent = self.b.ins().iadd_imm_s(tab, i64::from(sv.sig) * SIG_ENT);
+            let off = self.sv_off(sv);
+            return (ent, off);
+        }
         let (v, l) = (self.ld(sig), self.ld(Reg(sig.0 + 1)));
+        // A constant reference to a signal the entry's table test covers needs no test of its own.
+        if self.sig_ok
+            && let (Some(cv), Some(cl)) = (self.const_of(v), self.const_of(l))
+            && (cv as u64 >> 32) <= u64::from(self.sig_max)
+            && len.map_or(cl != 0, |k| k == cl)
+        {
+            let tab = self
+                .b
+                .ins()
+                .load(I64, self.mf.with_readonly(), self.mem, MEM_SIGTAB as i32);
+            let ent = self
+                .b
+                .ins()
+                .iadd_imm_s(tab, (cv as u64 >> 32) as i64 * SIG_ENT);
+            return (ent, self.c64(cv & 0xffff_ffff));
+        }
         let base = self.b.ins().ushr_imm_s(v, 32);
         let off = self.lo32(v);
         let n = self.mem_ld(MEM_SIGTAB_LEN);
@@ -5901,6 +8095,9 @@ impl Gen<'_> {
     /// the kernel's blocks; the bytes of an enumeration, integer, boolean or real signal; anything
     /// else through `TierHost::signal`.
     fn sig_read_scalar(&mut self, pc: u32, dst: Reg, sig: Reg) {
+        if self.sig_read_known(dst, sig) {
+            return;
+        }
         // (A native frame is materialised where the table has no answer: `slow_signal`.)
         let (slow, join) = self.slow_signal(pc, 0);
         let (ent, off) = self.sig_entry(sig, None, slow);
@@ -5915,6 +8112,131 @@ impl Gen<'_> {
         self.st(dst, byte);
         self.b.ins().jump(join, &[]);
         self.start(planes);
+        let v = self.sig_read_other(ent, off, slow);
+        self.st(dst, v);
+        self.join(join);
+    }
+
+    /// `Inst::SigReadScalar` of the `SigVal` before it (`fixed_read`): the entry's table was tested
+    /// at the function's entry and neither the table nor its entries change during a simulation
+    /// (`TierHost::view`), so they load read-only. A signal with no code for the element goes
+    /// to the other forms, out of line: the form depends on the instance, a body does not fix it.
+    fn sig_read_fixed(&mut self, pc: u32, dst: Reg, sv: SigConst) {
+        if self.sig_read_known(dst, sv.dst) {
+            return;
+        }
+        let (sig, off) = (sv.sig, sv.off);
+        let (step, join) = self.slow_signal(pc, 0);
+        let other = self.b.create_block();
+        let ro = self.mf.with_readonly();
+        let tab = self.b.ins().load(I64, ro, self.mem, MEM_SIGTAB as i32);
+        let at = i64::from(sig) * SIG_ENT;
+        let ero = MemFlagsData::trusted().with_readonly();
+        let field = |g: &mut Self, f: i64| g.b.ins().load(I64, ero, tab, (at + f) as i32);
+        let codes = field(self, SIG_CODES);
+        // No codes is length 0 and a null pointer; element 0 needs only the second.
+        let has = if off == 0 {
+            self.b.ins().icmp_imm_s(IntCC::NotEqual, codes, 0)
+        } else {
+            let len = field(self, SIG_LEN);
+            self.b
+                .ins()
+                .icmp_imm_s(IntCC::UnsignedGreaterThan, len, off)
+        };
+        self.guard(has, other);
+        let byte = self
+            .b
+            .ins()
+            .uload8(I64, MemFlagsData::trusted(), codes, off as i32);
+        self.st(dst, byte);
+        self.slows.push(Slow {
+            block: other,
+            join,
+            pc,
+            keep: false,
+            edge: None,
+            read: Some(FixedRead {
+                tab,
+                at,
+                off,
+                dst,
+                step,
+            }),
+            endstmt: false,
+            xstep: false,
+        });
+        // The value stays in hand after the join, a register stored here too.
+        self.join_with(join, &[dst.0]);
+    }
+
+    /// `Inst::SigReadScalar` of a reference and form the generator knows (`sig_known`): the load
+    /// of that form, no test and no other block; false when it knows neither.
+    fn sig_read_known(&mut self, dst: Reg, sig: Reg) -> bool {
+        let Some((sv, f)) = self.sig_known(sig) else {
+            return false;
+        };
+        if sv.off > i64::from(i32::MAX / 2) || !(f.codes || f.planes || matches!(f.es, 1 | 4 | 8)) {
+            return false;
+        }
+        let ro = self.mf.with_readonly();
+        let tab = self.b.ins().load(I64, ro, self.mem, MEM_SIGTAB as i32);
+        let at = i64::from(sv.sig) * SIG_ENT;
+        let ero = MemFlagsData::trusted().with_readonly();
+        let field = |g: &mut Self, k: i64| g.b.ins().load(I64, ero, tab, (at + k) as i32);
+        let t = MemFlagsData::trusted();
+        let v = if f.codes {
+            let codes = field(self, SIG_CODES);
+            if sv.run {
+                let o = self.sv_off(sv);
+                let p = self.b.ins().iadd(codes, o);
+                self.b.ins().uload8(I64, t, p, 0)
+            } else {
+                self.b.ins().uload8(I64, t, codes, sv.off as i32)
+            }
+        } else {
+            let first = field(self, SIG_OFF);
+            let o = self.sv_off(sv);
+            let e = self.b.ins().iadd(first, o);
+            if f.planes {
+                let blocks = field(self, SIG_PLANES);
+                self.plane_code(blocks, e)
+            } else {
+                let data = field(self, SIG_BYTES);
+                let at = self.b.ins().imul_imm_s(e, i64::from(f.es));
+                let p = self.b.ins().iadd(data, at);
+                match f.es {
+                    1 => self.b.ins().uload8(I64, t, p, 0),
+                    4 => self.b.ins().sload32(t, p, 0),
+                    _ => self.b.ins().load(I64, t, p, 0),
+                }
+            }
+        };
+        self.st(dst, v);
+        true
+    }
+
+    /// The code of kernel element `e` from the four planes of its plane block.
+    fn plane_code(&mut self, blocks: Value, e: Value) -> Value {
+        let blk = self.b.ins().ushr_imm_s(e, 6);
+        let at = self.b.ins().ishl_imm_s(blk, 5);
+        let pb = self.b.ins().iadd(blocks, at);
+        let sh = self.b.ins().band_imm_s(e, 63);
+        let mut code = self.c64(0);
+        for k in 0..4 {
+            let w = self.b.ins().load(I64, MemFlagsData::trusted(), pb, 8 * k);
+            let bit = self.b.ins().ushr(w, sh);
+            let bit = self.b.ins().band_imm_s(bit, 1);
+            let bit = self.b.ins().ishl_imm_s(bit, i64::from(k));
+            code = self.b.ins().bor(code, bit);
+        }
+        code
+    }
+
+    /// A read of the element at `off` of the signal at `ent` that is not in its codes: the four
+    /// plane bits of a logic signal, or the bytes of an enumeration, integer, boolean or real one.
+    fn sig_read_other(&mut self, ent: Value, off: Value, slow: Block) -> Value {
+        let out = self.b.create_block();
+        let res = self.b.append_block_param(out, I64);
         let plen = self.ent_ld(ent, SIG_PLEN);
         let inside = self.b.ins().icmp(IntCC::UnsignedLessThan, off, plen);
         self.guard(inside, slow);
@@ -5957,26 +8279,15 @@ impl Gen<'_> {
         let v4 = self.b.ins().sload32(MemFlagsData::trusted(), p, 0);
         self.b.ins().jump(done, &[BlockArg::Value(v4)]);
         self.start(done);
-        self.st(dst, v);
-        self.b.ins().jump(join, &[]);
+        self.b.ins().jump(out, &[BlockArg::Value(v)]);
         // A logic signal wider than its codes: the four plane bits.
         self.start(logic);
         let first = self.ent_ld(ent, SIG_OFF);
         let e = self.b.ins().iadd(first, off);
-        let blk = self.b.ins().ushr_imm_s(e, 6);
-        let at = self.b.ins().ishl_imm_s(blk, 5);
-        let pb = self.b.ins().iadd(blocks, at);
-        let sh = self.b.ins().band_imm_s(e, 63);
-        let mut code = self.c64(0);
-        for k in 0..4 {
-            let w = self.b.ins().load(I64, MemFlagsData::trusted(), pb, 8 * k);
-            let bit = self.b.ins().ushr(w, sh);
-            let bit = self.b.ins().band_imm_s(bit, 1);
-            let bit = self.b.ins().ishl_imm_s(bit, i64::from(k));
-            code = self.b.ins().bor(code, bit);
-        }
-        self.st(dst, code);
-        self.join(join);
+        let code = self.plane_code(blocks, e);
+        self.b.ins().jump(out, &[BlockArg::Value(code)]);
+        self.start(out);
+        res
     }
 
     /// The clock-edge test `kind` of one element (`Inst::Edge`, or the `rising_edge` /
@@ -5989,6 +8300,10 @@ impl Gen<'_> {
             return;
         }
         let (slow, join) = self.slow_signal(pc, edge);
+        // The form has the stamps, the codes and, for the IEEE function, the `'last_value`.
+        let sure = self.sig_known(sig).is_some_and(|(sv, f)| {
+            sv.len == 1 && f.stamps && f.codes && (f.last || kind.to_level())
+        });
         let (ent, off) = self.sig_entry(sig, Some(1), slow);
         let signal = self.ent_ld(ent, SIG_SIGNAL);
         let first = self.ent_ld(ent, SIG_OFF);
@@ -6008,16 +8323,20 @@ impl Gen<'_> {
         self.b.ins().jump(join, &[]);
         self.start(rest);
         let stamps = self.ent_ld(ent, SIG_STAMPS);
-        let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, stamps, 0);
-        self.guard(has, slow);
-        let last = self.ent_ld(ent, SIG_LAST);
-        if !kind.to_level() {
-            let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, last, 0);
+        if !sure {
+            let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, stamps, 0);
             self.guard(has, slow);
         }
-        let len = self.ent_ld(ent, SIG_LEN);
-        let inside = self.b.ins().icmp(IntCC::UnsignedLessThan, off, len);
-        self.guard(inside, slow);
+        let last = self.ent_ld(ent, SIG_LAST);
+        if !sure {
+            if !kind.to_level() {
+                let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, last, 0);
+                self.guard(has, slow);
+            }
+            let len = self.ent_ld(ent, SIG_LEN);
+            let inside = self.b.ins().icmp(IntCC::UnsignedLessThan, off, len);
+            self.guard(inside, slow);
+        }
         let at = self.b.ins().ishl_imm_s(elem, 3);
         let sp = self.b.ins().iadd(stamps, at);
         let stamp = self.b.ins().load(I64, MemFlagsData::trusted(), sp, 0);
@@ -6076,10 +8395,15 @@ impl Gen<'_> {
             return;
         }
         let (slow, join) = self.slow_signal(pc, 0);
+        let sure = self
+            .sig_known(sig)
+            .is_some_and(|(sv, f)| sv.len == 1 && f.stamps);
         let (ent, off) = self.sig_entry(sig, Some(1), slow);
         let stamps = self.ent_ld(ent, SIG_STAMPS);
-        let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, stamps, 0);
-        self.guard(has, slow);
+        if !sure {
+            let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, stamps, 0);
+            self.guard(has, slow);
+        }
         let first = self.ent_ld(ent, SIG_OFF);
         let elem = self.b.ins().iadd(first, off);
         let at = self.b.ins().ishl_imm_s(elem, 3);
@@ -6094,7 +8418,9 @@ impl Gen<'_> {
 
     /// `Inst::SigRead` of `l` elements from the kernel's plane blocks of the signal whose entry is
     /// `ent` (`off` the first element in it), through `yavs_rt_planes`; `slow` when it offers
-    /// none or has fewer elements. The builder ends in a block that jumps to `join`.
+    /// none or has fewer elements (`sure`: the facts say it offers them). The builder ends in a
+    /// block that jumps to `join`.
+    #[allow(clippy::too_many_arguments)]
     fn sig_read_planes(
         &mut self,
         ent: Value,
@@ -6103,24 +8429,29 @@ impl Gen<'_> {
         dst: Reg,
         slow: Block,
         join: Block,
+        sure: bool,
     ) {
         let blocks = self.ent_ld(ent, SIG_PLANES);
-        let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, blocks, 0);
-        self.guard(has, slow);
-        // A count and an offset are below 2^32 where the reference was made; checked, so the sum
-        // below cannot wrap.
-        let small = self
-            .b
-            .ins()
-            .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, l, i64::from(u32::MAX));
-        self.guard(small, slow);
+        if !sure {
+            let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, blocks, 0);
+            self.guard(has, slow);
+            // A count and an offset are below 2^32 where the reference was made; checked, so the
+            // sum below cannot wrap.
+            let small =
+                self.b
+                    .ins()
+                    .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, l, i64::from(u32::MAX));
+            self.guard(small, slow);
+        }
         let plen = self.ent_ld(ent, SIG_PLEN);
-        let used = self.b.ins().iadd(off, l);
-        let fits = self
-            .b
-            .ins()
-            .icmp(IntCC::UnsignedLessThanOrEqual, used, plen);
-        self.guard(fits, slow);
+        if !sure {
+            let used = self.b.ins().iadd(off, l);
+            let fits = self
+                .b
+                .ins()
+                .icmp(IntCC::UnsignedLessThanOrEqual, used, plen);
+            self.guard(fits, slow);
+        }
         let first = self.ent_ld(ent, SIG_OFF);
         let bit0 = self.b.ins().iadd(first, off);
         let nelem = self.b.ins().iadd(first, plen);
@@ -6138,7 +8469,9 @@ impl Gen<'_> {
     }
 
     /// A `SigRead` of `l` (1 to 64, known) elements that lie in one word of each of the kernel's
-    /// planes: four loads, no call (#766); else on to the codes in a new current block.
+    /// planes: four loads, no call (#766); else on to the codes in a new current block. `sure`:
+    /// the facts say the signal offers its planes and has the elements.
+    #[allow(clippy::too_many_arguments)]
     fn sig_read_word(
         &mut self,
         ent: Value,
@@ -6147,18 +8480,21 @@ impl Gen<'_> {
         dst: Reg,
         slow: Block,
         join: Block,
+        sure: bool,
     ) {
         let codes_at = self.b.create_block();
         let blocks = self.ent_ld(ent, SIG_PLANES);
-        let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, blocks, 0);
-        self.guard(has, codes_at);
-        let plen = self.ent_ld(ent, SIG_PLEN);
-        let used = self.b.ins().iadd_imm_s(off, l);
-        let fits = self
-            .b
-            .ins()
-            .icmp(IntCC::UnsignedLessThanOrEqual, used, plen);
-        self.guard(fits, codes_at);
+        if !sure {
+            let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, blocks, 0);
+            self.guard(has, codes_at);
+            let plen = self.ent_ld(ent, SIG_PLEN);
+            let used = self.b.ins().iadd_imm_s(off, l);
+            let fits = self
+                .b
+                .ins()
+                .icmp(IntCC::UnsignedLessThanOrEqual, used, plen);
+            self.guard(fits, codes_at);
+        }
         let first = self.ent_ld(ent, SIG_OFF);
         let bit0 = self.b.ins().iadd(first, off);
         let sh = self.b.ins().band_imm_s(bit0, 63);
@@ -6201,25 +8537,41 @@ impl Gen<'_> {
             return;
         }
         let (slow, join) = self.slow_signal(pc, 0);
+        // The form of a reference of this length, when the facts say (`known` is constant then).
+        let form = self
+            .sig_known(sig)
+            .filter(|(sv, _)| known == Some(sv.len))
+            .map(|k| k.1);
+        let sure = form.is_some_and(|f| f.planes);
         let (ent, off) = self.sig_entry(sig, known, slow);
         let lv = self.ld(Reg(sig.0 + 1));
         if known.is_some_and(|l| l > 64) {
-            self.sig_read_planes(ent, off, lv, dst, slow, join);
+            self.sig_read_planes(ent, off, lv, dst, slow, join, sure);
             self.start(join);
             return;
         }
-        if let Some(l) = known {
-            self.sig_read_word(ent, off, l, dst, slow, join);
+        if let Some(l) = known
+            && form.is_none_or(|f| f.planes)
+        {
+            self.sig_read_word(ent, off, l, dst, slow, join, sure);
+        }
+        // No codes: the planes, no test.
+        if form.is_some_and(|f| !f.codes) {
+            self.sig_read_planes(ent, off, lv, dst, slow, join, sure);
+            self.start(join);
+            return;
         }
         // Up to 64 elements from the codes, else (or without the codes) from the planes.
         let alt = self.b.create_block();
-        let l1 = self.b.ins().iadd_imm_s(lv, -1);
-        let small = self.b.ins().icmp_imm_s(IntCC::UnsignedLessThan, l1, 64);
-        self.guard(small, alt);
-        let tl = self.ent_ld(ent, SIG_LEN);
-        let used = self.b.ins().iadd(off, lv);
-        let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, used, tl);
-        self.guard(fits, alt);
+        if form.is_none() {
+            let l1 = self.b.ins().iadd_imm_s(lv, -1);
+            let small = self.b.ins().icmp_imm_s(IntCC::UnsignedLessThan, l1, 64);
+            self.guard(small, alt);
+            let tl = self.ent_ld(ent, SIG_LEN);
+            let used = self.b.ins().iadd(off, lv);
+            let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, used, tl);
+            self.guard(fits, alt);
+        }
         let groups = self.b.ins().iadd_imm_s(lv, 7);
         let groups = self.b.ins().ushr_imm_s(groups, 3);
         let gb = self.b.ins().ishl_imm_s(groups, 3);
@@ -6239,8 +8591,296 @@ impl Gen<'_> {
         self.b.ins().call(self.imp.codes, &[base, groups, mask, pd]);
         self.b.ins().jump(join, &[]);
         self.start(alt);
-        self.sig_read_planes(ent, off, lv, dst, slow, join);
+        self.sig_read_planes(ent, off, lv, dst, slow, join, sure);
         self.start(join);
+    }
+
+    /// The word of the skip gate (`TierFrame::gate`), when a drive through `driver` can have a
+    /// bit there and the compare is switched on.
+    fn gate_for(&mut self, driver: u32) -> Option<Value> {
+        (driver < 64).then(|| self.gate_word()).flatten()
+    }
+
+    /// The address of the skip gate, when the compare is switched on.
+    fn gate_word(&mut self) -> Option<Value> {
+        (self.nat.is_none() && inlcmp_mode() != InlCmp::Off).then(|| {
+            self.b
+                .ins()
+                .load(I64, self.mf.with_readonly(), self.mem, MEM_GATE as i32)
+        })
+    }
+
+    /// Goes on in a new block when bit `driver` of the gate word at `gate` is set, else to `other`.
+    fn gate_test(&mut self, gate: Value, driver: u32, other: Block) {
+        let w = self.b.ins().load(I64, MemFlagsData::trusted(), gate, 0);
+        let t = self.b.ins().band_imm_s(w, 1i64 << driver);
+        let cmp = self.b.create_block();
+        self.b.ins().brif(t, cmp, &[], other, &[]);
+        self.b.switch_to_block(cmp);
+    }
+
+    /// The tests of an [`yavs_interp::ImageCell`], the `k`th, for table `tab`: on to `slow` unless it
+    /// names an image and may be used now. The cell, the image, `left` and the value's size.
+    fn image_cell(
+        &mut self,
+        k: usize,
+        tab: yavs_ir::ConstId,
+        desc: Option<Reg>,
+        slow: Block,
+    ) -> (Value, Value, Value, Value) {
+        type C = yavs_interp::ImageCell;
+        let t = MemFlagsData::trusted();
+        let cells = self.mem_ld(MEM_CELLS);
+        let some = self.b.ins().icmp_imm_s(IntCC::NotEqual, cells, 0);
+        self.guard(some, slow);
+        let cell = self.b.ins().iadd_imm_s(cells, (k * size_of::<C>()) as i64);
+        let image = self.b.ins().load(I64, t, cell, offset_of!(C, image) as i32);
+        let there = self.b.ins().icmp_imm_s(IntCC::NotEqual, image, 0);
+        self.guard(there, slow);
+        let at = self.b.ins().uload32(t, cell, offset_of!(C, tab) as i32);
+        let is = self.b.ins().icmp_imm_s(IntCC::Equal, at, i64::from(tab.0));
+        self.guard(is, slow);
+        if let Some(desc) = desc {
+            let want = self.b.ins().load(I64, t, cell, offset_of!(C, desc) as i32);
+            let d = self.ld(desc);
+            let is = self.b.ins().icmp(IntCC::Equal, want, d);
+            self.guard(is, slow);
+        }
+        let left = self.b.ins().uload32(t, cell, offset_of!(C, left) as i32);
+        let some = self.b.ins().icmp_imm_s(IntCC::NotEqual, left, 0);
+        self.guard(some, slow);
+        let size = self.b.ins().uload32(t, cell, offset_of!(C, size) as i32);
+        (cell, image, left, size)
+    }
+
+    /// One use of the cell made.
+    fn image_used(&mut self, cell: Value, left: Value) {
+        let left = self.b.ins().iadd_imm_s(left, -1);
+        self.b.ins().istore32(
+            MemFlagsData::trusted(),
+            left,
+            cell,
+            offset_of!(yavs_interp::ImageCell, left) as i32,
+        );
+    }
+
+    /// Whether the value type of leaf table `tab` has a descriptor, `None` for no table.
+    fn tab_desc(prog: &Program, tab: yavs_ir::ConstId) -> Option<bool> {
+        match prog.consts.get(tab) {
+            Some(yavs_ir::ConstData::Bytes(t)) => yavs_ir::gather::entries(t)
+                .and_then(|(ty, _)| yavs_ir::Ty::desc_size(&prog.types, ty))
+                .map(|d| d != 0),
+            _ => None,
+        }
+    }
+
+    /// A whole `SigGather`: a copy of the record image of the machine's cell, and no call
+    /// (`docs/decisions.md` "Record images in compiled code"). Anything else goes through
+    /// `yavs_rt_signal`, which looks after the cell.
+    fn gather(&mut self, pc: u32, prog: &Program, dst: Reg, desc: Reg, tab: yavs_ir::ConstId) {
+        let has = Self::tab_desc(prog, tab);
+        let on = image_mode() != InlCmp::Off && image_inline() != Ok("noread");
+        let (Some(has), true) = (has, on) else {
+            self.signal(pc, 0);
+            return;
+        };
+        let (slow, join) = self.slow_signal(pc, 0);
+        let k = tab.0 as usize % yavs_interp::GATHER_CELLS;
+        let (cell, image, left, size) = self.image_cell(k, tab, has.then_some(desc), slow);
+        let a = self.ld(dst);
+        let p = self.host(a, Some(dst), Op::C(0), Op::V(size), true, slow);
+        self.b.ins().call(self.imp.mov, &[p, image, size]);
+        if image_mode() == InlCmp::Check {
+            let (pcv, kept) = (self.c32(pc), self.c32(0));
+            self.b
+                .ins()
+                .call(self.imp.image_check, &[self.mem, pcv, kept]);
+        }
+        self.image_used(cell, left);
+        self.clear();
+        self.join(join);
+    }
+
+    /// A whole zero-delay `SigScatter` through driver slot `driver`: the value against the record
+    /// image of the machine's cell, and on a hit no call (`docs/decisions.md` "Record images in
+    /// compiled code"). Anything else goes through `yavs_rt_signal`, which compares again and
+    /// looks after the cell.
+    #[allow(clippy::too_many_arguments)]
+    fn scatter(
+        &mut self,
+        pc: u32,
+        prog: &Program,
+        driver: u32,
+        src: Reg,
+        desc: Reg,
+        tab: yavs_ir::ConstId,
+        after: Option<Reg>,
+    ) {
+        let now = after.is_some_and(|a| {
+            let v = self.ld(a);
+            self.const_of(v) == Some(0)
+        });
+        let has = Self::tab_desc(prog, tab);
+        let on = now && image_mode() != InlCmp::Off && image_inline() != Ok("nodrive");
+        let (Some(has), true) = (has, on) else {
+            self.signal(pc, 0);
+            return;
+        };
+        let (slow, join) = self.slow_signal(pc, 0);
+        let t = MemFlagsData::trusted();
+        let k = yavs_interp::GATHER_CELLS + driver as usize;
+        let (cell, image, left, size) = self.image_cell(k, tab, has.then_some(desc), slow);
+        let g = self.mem_ld(MEM_GATE);
+        let word = self.b.ins().load(I64, t, g, 8);
+        let mask = self.b.ins().load(
+            I64,
+            t,
+            cell,
+            offset_of!(yavs_interp::ImageCell, mask) as i32,
+        );
+        let open = self.b.ins().band(word, mask);
+        let open = self.b.ins().icmp_imm_s(IntCC::NotEqual, open, 0);
+        self.guard(open, slow);
+        let a = self.ld(src);
+        let p = self.host(a, Some(src), Op::C(0), Op::V(size), false, slow);
+        let call = self.b.ins().call(self.imp.memeq, &[p, image, size]);
+        let same = self.b.inst_results(call)[0];
+        self.guard(same, slow);
+        if image_mode() == InlCmp::Check {
+            let pcv = self.c32(pc);
+            let kept = match self.batch {
+                Some(bt) => self.b.use_var(bt.count),
+                None => self.c32(0),
+            };
+            self.b
+                .ins()
+                .call(self.imp.image_check, &[self.mem, pcv, kept]);
+        }
+        self.image_used(cell, left);
+        let one = self.c64(1);
+        self.b.ins().store(t, one, self.mem, MEM_SKIPPED as i32);
+        self.clear();
+        self.join(join);
+    }
+
+    /// The compiled skip itself: the kernel hears of it when the code is left.
+    fn gate_hit(&mut self, pc: u32, driver: u32, target: Reg, value: Value, form: i64) {
+        if inlcmp_mode() == InlCmp::Check {
+            let (pcv, drv) = (self.c32(pc), self.c32(driver));
+            let (lo, len) = (self.ld(target), self.ld(Reg(target.0 + 1)));
+            let f = self.c64(form);
+            let (entries, kept) = match self.batch {
+                Some(bt) => (
+                    self.b.ins().stack_addr(I64, bt.entries, 0),
+                    self.b.use_var(bt.count),
+                ),
+                None => (self.c64(0), self.c32(0)),
+            };
+            let args = [self.mem, pcv, drv, lo, len, value, f, entries, kept];
+            self.b.ins().call(self.imp.gate_check, &args);
+        }
+        let one = self.c64(1);
+        self.b
+            .ins()
+            .store(MemFlagsData::trusted(), one, self.mem, MEM_SKIPPED as i32);
+    }
+
+    /// Whether the logic code `code` is what element `sv.off` of the signal holds, by the facts
+    /// `f` (one element: its codes, else its planes).
+    fn cur_is_code(&mut self, sv: SigConst, f: yavs_ir::SigFact, code: Value) -> Value {
+        let tab = self
+            .b
+            .ins()
+            .load(I64, self.mf.with_readonly(), self.mem, MEM_SIGTAB as i32);
+        let at = i64::from(sv.sig) * SIG_ENT;
+        let ero = MemFlagsData::trusted().with_readonly();
+        let field = |g: &mut Self, k: i64| g.b.ins().load(I64, ero, tab, (at + k) as i32);
+        let cur = if f.codes {
+            let codes = field(self, SIG_CODES);
+            if sv.run {
+                let o = self.sv_off(sv);
+                let p = self.b.ins().iadd(codes, o);
+                self.b.ins().uload8(I64, MemFlagsData::trusted(), p, 0)
+            } else {
+                self.b
+                    .ins()
+                    .uload8(I64, MemFlagsData::trusted(), codes, sv.off as i32)
+            }
+        } else {
+            let first = field(self, SIG_OFF);
+            let o = self.sv_off(sv);
+            let e = self.b.ins().iadd(first, o);
+            let blocks = field(self, SIG_PLANES);
+            self.plane_code(blocks, e)
+        };
+        self.b.ins().icmp(IntCC::Equal, cur, code)
+    }
+
+    /// Whether the waveform element at `w` has delay zero and is what the elements of `sv` hold:
+    /// nonzero when not. A run of elements across two plane words goes to `other`.
+    fn cur_differs(&mut self, sv: SigConst, f: yavs_ir::SigFact, w: Value, other: Block) -> Value {
+        let tab = self
+            .b
+            .ins()
+            .load(I64, self.mf.with_readonly(), self.mem, MEM_SIGTAB as i32);
+        let at = i64::from(sv.sig) * SIG_ENT;
+        let ero = MemFlagsData::trusted().with_readonly();
+        let t = MemFlagsData::trusted();
+        let field = |g: &mut Self, k: i64| g.b.ins().load(I64, ero, tab, (at + k) as i32);
+        let delay = self.b.ins().load(I64, t, w, 0);
+        let first = field(self, SIG_OFF);
+        let o = self.sv_off(sv);
+        let e = self.b.ins().iadd(first, o);
+        if f.es != 0 {
+            let data = field(self, SIG_BYTES);
+            let off = self.b.ins().imul_imm_s(e, i64::from(f.es));
+            let p = self.b.ins().iadd(data, off);
+            let (a, b) = match f.es {
+                1 => (
+                    self.b.ins().uload8(I64, t, p, 0),
+                    self.b.ins().uload8(I64, t, w, 8),
+                ),
+                2 => (
+                    self.b.ins().uload16(I64, t, p, 0),
+                    self.b.ins().uload16(I64, t, w, 8),
+                ),
+                4 => (self.b.ins().uload32(t, p, 0), self.b.ins().uload32(t, w, 8)),
+                _ => (
+                    self.b.ins().load(I64, t, p, 0),
+                    self.b.ins().load(I64, t, w, 8),
+                ),
+            };
+            let x = self.b.ins().bxor(a, b);
+            return self.b.ins().bor(x, delay);
+        }
+        let sh = self.b.ins().band_imm_s(e, 63);
+        let fits = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, sh, 64 - sv.len);
+        let next = self.b.create_block();
+        self.b.ins().brif(fits, next, &[], other, &[]);
+        self.b.switch_to_block(next);
+        let blocks = field(self, SIG_PLANES);
+        let blk = self.b.ins().ushr_imm_s(e, 6);
+        let off = self.b.ins().ishl_imm_s(blk, 5);
+        let pb = self.b.ins().iadd(blocks, off);
+        let mut acc = self.c64(0);
+        for k in 0..4 {
+            let c = self.b.ins().load(I64, t, pb, 8 * k);
+            let v = self.b.ins().load(I64, t, w, 8 + 8 * k);
+            let v = self.b.ins().ishl(v, sh);
+            let x = self.b.ins().bxor(c, v);
+            acc = self.b.ins().bor(acc, x);
+        }
+        let mask = if sv.len == 64 {
+            self.c64(-1)
+        } else {
+            self.c64((1i64 << sv.len) - 1)
+        };
+        let mask = self.b.ins().ishl(mask, sh);
+        let d = self.b.ins().band(acc, mask);
+        self.b.ins().bor(d, delay)
     }
 
     /// A `Drive` of one waveform element to a single-range target through `yavs_rt_drive`
@@ -6257,6 +8897,10 @@ impl Gen<'_> {
         n: Reg,
         mode: yavs_ir::DriveMode,
     ) {
+        // (A copy whose facts say the target's form has its own, constant, call below.)
+        if self.sig_known(target).is_none() && self.drive_thin(pc, driver, target, wave, n, mode) {
+            return;
+        }
         let (slow, join) = self.slow_signal(pc, 0);
         let nv = self.ld(n);
         let one = self.b.ins().icmp_imm_s(IntCC::Equal, nv, 1);
@@ -6277,6 +8921,61 @@ impl Gen<'_> {
         // A waveform element of 16 bytes (time and cell) for a signal of integer, enumeration or
         // real elements, 40 (time and the first plane block) for a logic one, 8 and a block of
         // planes per 64 elements beyond 64.
+        if let Some((sv, f)) = self.sig_known(target) {
+            let (bytes, wide) = (f.es != 0, sv.len > 64);
+            let want = if bytes {
+                16
+            } else if wide {
+                (sv.len + 63) / 64 * 32 + 8
+            } else {
+                40
+            };
+            let a = self.ld(wave);
+            let w = self.host(a, Some(wave), Op::C(0), Op::C(want as u64), false, slow);
+            let kind = if bytes {
+                2
+            } else if wide {
+                4
+            } else {
+                0
+            };
+            let flags = self.c32(kind | u32::from(mode == yavs_ir::DriveMode::Inertial));
+            let (lo, len) = (self.ld(target), self.ld(Reg(target.0 + 1)));
+            let pcv = self.c32(pc);
+            // The value the signal holds already: no call at all (`TierFrame::gate`).
+            let es = f.es;
+            let test = driver.ok().filter(|_| {
+                !wide
+                    && (if es != 0 {
+                        sv.len == 1 && matches!(es, 1 | 2 | 4 | 8)
+                    } else {
+                        f.planes
+                    })
+            });
+            let gate = test.and_then(|d| self.gate_for(d).map(|g| (d, g)));
+            let Some((d, gate)) = gate else {
+                self.call_go(self.imp.drive, &[pcv, drv, lo, len, w, flags], false);
+                self.join(join);
+                return;
+            };
+            // (What `call_go` stores: the way past the call must have it stored too.)
+            self.spill(self.pc);
+            let (call, after) = (self.b.create_block(), self.b.create_block());
+            self.gate_test(gate, d, call);
+            let x = self.cur_differs(sv, f, w, call);
+            let hit = self.b.create_block();
+            self.b.ins().brif(x, call, &[], hit, &[]);
+            self.b.switch_to_block(hit);
+            self.gate_hit(pc, d, target, w, if es != 0 { 2 } else { 1 });
+            self.b.ins().jump(after, &[]);
+            self.b.switch_to_block(call);
+            self.call_go(self.imp.drive, &[pcv, drv, lo, len, w, flags], false);
+            self.b.ins().jump(after, &[]);
+            self.b.switch_to_block(after);
+            self.clear();
+            self.join(join);
+            return;
+        }
         let (ent, _) = self.sig_entry(target, None, slow);
         let es = self.ent_ld(ent, SIG_ES);
         let bytes = self.b.ins().icmp_imm_s(IntCC::NotEqual, es, 0);
@@ -6328,6 +9027,79 @@ impl Gen<'_> {
         self.join(join);
     }
 
+    /// A `Drive` of one waveform element at a constant reference of 1 to 64 elements of a
+    /// signal the entry's table test covers, the waveform in the frame (16 bytes at least inside
+    /// it) or in the temporary area: `yavs_rt_drive_f` gets the handle, the count and the
+    /// waveform's address with the bytes it may read, and finds the target's form itself, so the
+    /// call site checks and computes nothing of it. False, nothing generated, for any other
+    /// `Drive`.
+    fn drive_thin(
+        &mut self,
+        pc: u32,
+        driver: Result<u32, Reg>,
+        target: Reg,
+        wave: Reg,
+        n: Reg,
+        mode: yavs_ir::DriveMode,
+    ) -> bool {
+        let temp = matches!(self.known.get(wave.0 as usize), Some(Some(Known::Temp)));
+        let (Ok(driver), Some(1)) = (driver, self.kint(n)) else {
+            return false;
+        };
+        let frame = self.frame_of(wave);
+        if self.nat.is_some() || !self.sig_ok || (frame.is_none() && !temp) {
+            return false;
+        }
+        // The bytes from a frame waveform to the end of its composite variable or of the frame.
+        let fixed = frame.map(|o| {
+            let end = self
+                .objs
+                .iter()
+                .find(|&&(s, e)| u64::from(s) <= o && o < u64::from(e))
+                .map_or(self.frame_len, |&(_, e)| u64::from(e));
+            (o, end.saturating_sub(o))
+        });
+        let (lo, len) = (self.ld(target), self.ld(Reg(target.0 + 1)));
+        let (Some(l), Some(k)) = (self.const_of(lo), self.const_of(len)) else {
+            return false;
+        };
+        if fixed.is_some_and(|f| f.1 < 16)
+            || !(1..=64).contains(&k)
+            || (l as u64 >> 32) > u64::from(self.sig_max)
+        {
+            return false;
+        }
+        let inertial = i64::from(mode == yavs_ir::DriveMode::Inertial);
+        let (pcv, drv) = (self.c32(pc), self.c32(driver));
+        let (w, lf, join) = match fixed {
+            Some((o, avail)) => {
+                let slots = self.slots();
+                let w = self.b.ins().iadd_imm_s(slots, o as i64);
+                let lf = self.c64(k | inertial << 32 | (avail.min(40) as i64) << 33);
+                (w, lf, None)
+            }
+            None => {
+                // The temporary area: the waveform starts inside it, the callee gets the rest.
+                let (slow, join) = self.slow_signal(pc, 0);
+                let a = self.ld(wave);
+                let off = self.lo32(a);
+                let tl = self.mem_ld(MEM_TEMP_LEN);
+                let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, tl);
+                self.guard(inside, slow);
+                let avail = self.b.ins().isub(tl, off);
+                let avail = self.b.ins().ishl_imm_s(avail, 33);
+                let lf = self.b.ins().bor_imm_s(avail, k | inertial << 32);
+                let base = self.mem_ld(MEM_TEMP);
+                (self.b.ins().iadd(base, off), lf, Some(join))
+            }
+        };
+        self.call_go(self.imp.drive_f, &[pcv, drv, lo, w, lf], false);
+        if let Some(join) = join {
+            self.join(join);
+        }
+        true
+    }
+
     /// `yavs_rt_drive_flush` of the `n` kept entries.
     fn flush_call(&mut self, n: Value) -> Value {
         let bt = self.batch.expect("batch");
@@ -6372,18 +9144,50 @@ impl Gen<'_> {
             self.ld(Reg(s.target.0 + 1)),
             self.ld(s.value),
         );
-        let base = self.b.ins().ushr_imm_s(v, 32);
-        let n = self.mem_ld(MEM_SIGTAB_LEN);
-        let has = self.b.ins().icmp(IntCC::UnsignedLessThan, base, n);
-        let one = self.b.ins().icmp_imm_s(IntCC::Equal, l, 1);
+        // The facts say it is one element of a signal the kernel offers: only the code to test.
+        let known = self
+            .sig_known(s.target)
+            .filter(|(sv, f)| sv.len == 1 && (f.codes || f.planes));
+        let sure = known.is_some();
+        let join = self.b.create_block();
+        // The value the signal holds already: nothing to keep (`TierFrame::gate`). A drive kept
+        // for later closes the gate first when its bit is open: the kernel does not see it yet,
+        // and another of the machine's drivers may name the same kernel driver. A closed bit needs
+        // nothing: all the bits of its kernel driver are closed (`Ctx::gate_init`).
+        let gate = self.gate_word();
+        let tested = if let (Some((sv, f)), Some(g), true) = (known, gate, s.driver < 64) {
+            let rest = self.b.create_block();
+            self.gate_test(g, s.driver, rest);
+            let same = self.cur_is_code(sv, f, code);
+            let (hit, miss) = (self.b.create_block(), self.b.create_block());
+            self.b.ins().brif(same, hit, &[], miss, &[]);
+            self.b.switch_to_block(hit);
+            self.gate_hit(pc, s.driver, s.target, code, 0);
+            self.b.ins().jump(join, &[]);
+            self.b.switch_to_block(miss);
+            let zero = self.c64(0);
+            self.b.ins().store(MemFlagsData::trusted(), zero, g, 0);
+            self.b.ins().jump(rest, &[]);
+            self.b.switch_to_block(rest);
+            true
+        } else {
+            false
+        };
         let small = self
             .b
             .ins()
             .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, code, 8);
-        let ok = self.b.ins().band(has, one);
-        let ok = self.b.ins().band(ok, small);
-        let (chk, slow, fast, join) = (
-            self.b.create_block(),
+        let ok = if sure {
+            small
+        } else {
+            let base = self.b.ins().ushr_imm_s(v, 32);
+            let n = self.mem_ld(MEM_SIGTAB_LEN);
+            let has = self.b.ins().icmp(IntCC::UnsignedLessThan, base, n);
+            let one = self.b.ins().icmp_imm_s(IntCC::Equal, l, 1);
+            let ok = self.b.ins().band(has, one);
+            self.b.ins().band(ok, small)
+        };
+        let (chk, slow, fast) = (
             self.b.create_block(),
             self.b.create_block(),
             self.b.create_block(),
@@ -6391,19 +9195,24 @@ impl Gen<'_> {
         self.b.set_cold_block(slow);
         self.brif_split(ok, chk, slow);
         self.b.switch_to_block(chk);
-        let tab = self.mem_ld(MEM_SIGTAB);
-        let at = self.b.ins().imul_imm_s(base, SIG_ENT);
-        let ent = self.b.ins().iadd(tab, at);
-        let codes = self.ent_ld(ent, SIG_CODES);
-        let planes = self.ent_ld(ent, SIG_PLANES);
-        let logic = self.b.ins().bor(codes, planes);
         let k = self.b.use_var(bt.count);
         let room =
             self.b
                 .ins()
                 .icmp_imm_s(IntCC::UnsignedLessThan, k, yavs_interp::DRIVE_BATCH as i64);
-        let isl = self.b.ins().icmp_imm_s(IntCC::NotEqual, logic, 0);
-        let fits = self.b.ins().band(isl, room);
+        let fits = if sure {
+            room
+        } else {
+            let base = self.b.ins().ushr_imm_s(v, 32);
+            let tab = self.mem_ld(MEM_SIGTAB);
+            let at = self.b.ins().imul_imm_s(base, SIG_ENT);
+            let ent = self.b.ins().iadd(tab, at);
+            let codes = self.ent_ld(ent, SIG_CODES);
+            let planes = self.ent_ld(ent, SIG_PLANES);
+            let logic = self.b.ins().bor(codes, planes);
+            let isl = self.b.ins().icmp_imm_s(IntCC::NotEqual, logic, 0);
+            self.b.ins().band(isl, room)
+        };
         self.brif_split(fits, fast, slow);
         // Slow: what was kept, then this one alone.
         self.b.switch_to_block(slow);
@@ -6411,6 +9220,10 @@ impl Gen<'_> {
         self.drive_bit(pc, s);
         self.b.ins().jump(join, &[]);
         self.b.switch_to_block(fast);
+        if !tested && let Some(g) = gate {
+            let zero = self.c64(0);
+            self.b.ins().store(MemFlagsData::trusted(), zero, g, 0);
+        }
         let e = self.b.ins().stack_addr(I64, bt.entries, 0);
         let kx = self.b.ins().uextend(I64, k);
         let off = self.b.ins().imul_imm_s(kx, 16);
@@ -6446,7 +9259,33 @@ impl Gen<'_> {
             self.ld(Reg(s.target.0 + 1)),
             self.ld(s.time),
         );
+        // At zero delay, the value the signal holds already: no call at all (`TierFrame::gate`).
+        let known = self
+            .sig_known(s.target)
+            .filter(|(sv, f)| sv.len == 1 && (f.codes || f.planes));
+        let gate = self.gate_for(s.driver);
+        let (Some((sv, f)), Some(g), Some(0)) = (known, gate, self.const_of(time)) else {
+            self.call_go(self.imp.drive_bit, &[pcv, drv, lo, len, time, code], true);
+            return;
+        };
+        // (What `call_go` stores: the way past the call must have it stored too.)
+        self.spill(self.pc);
+        let (call, after, hit) = (
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+        );
+        self.gate_test(g, s.driver, call);
+        let same = self.cur_is_code(sv, f, v);
+        self.b.ins().brif(same, hit, &[], call, &[]);
+        self.b.switch_to_block(hit);
+        self.gate_hit(pc, s.driver, s.target, v, 0);
+        self.b.ins().jump(after, &[]);
+        self.b.switch_to_block(call);
         self.call_go(self.imp.drive_bit, &[pcv, drv, lo, len, time, code], true);
+        self.b.ins().jump(after, &[]);
+        self.b.switch_to_block(after);
+        self.clear();
     }
 
     /// The temporary area's length the native frame's statements trim to.
@@ -6634,6 +9473,75 @@ impl Gen<'_> {
     /// `Inst::CallNative` of a native `yavs_interp::direct_native` allows, in a frame-mode
     /// function: the argument cells go to `TierHost::native_frame` (`yavs_rt_native`), the
     /// interpreter steps the call where that does not run it.
+    /// `math_real.uniform` computed in place: both seeds read and the generator's step made in
+    /// integers (`yavs_interp::ieee::uniform_step`), the new seeds and the real written back. A
+    /// seed out of range (the native reports it) or an address `host` does not find runs the
+    /// native, which has changed nothing by then.
+    fn uniform_fast(
+        &mut self,
+        pc: u32,
+        i: &Inst,
+        f: &Func,
+        native: yavs_ir::NativeId,
+        args: yavs_ir::Regs,
+        v: [Reg; 3],
+    ) -> Result<(), String> {
+        let (fb, done) = (self.b.create_block(), self.b.create_block());
+        self.b.set_cold_block(fb);
+        let gf = self.gf;
+        let mut p = Vec::new();
+        for r in v {
+            let a = self.ld(r);
+            p.push(self.host(a, Some(r), Op::C(0), Op::C(8), true, fb));
+        }
+        let s1 = self.b.ins().load(I64, gf, p[0], 0);
+        let s2 = self.b.ins().load(I64, gf, p[1], 0);
+        let ok1 = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::SignedLessThanOrEqual, s1, 2147483562);
+        let ok2 = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::SignedLessThanOrEqual, s2, 2147483398);
+        let okv = self.b.ins().band(ok1, ok2);
+        self.guard(okv, fb);
+        // One generator: k = s / q; t = a * (s - k * q) - k * r; t + m when negative.
+        let lane = |g: &mut Self, s: Value, q: i64, a: i64, r: i64, m: i64| {
+            let qv = g.c64(q);
+            let k = g.b.ins().sdiv(s, qv);
+            let kq = g.b.ins().imul_imm_s(k, q);
+            let rem = g.b.ins().isub(s, kq);
+            let ra = g.b.ins().imul_imm_s(rem, a);
+            let kr = g.b.ins().imul_imm_s(k, r);
+            let t = g.b.ins().isub(ra, kr);
+            let neg = g.b.ins().icmp_imm_s(IntCC::SignedLessThan, t, 0);
+            let wrapped = g.b.ins().iadd_imm_s(t, m);
+            g.b.ins().select(neg, wrapped, t)
+        };
+        let t1 = lane(self, s1, 53668, 40014, 12211, 2147483563);
+        let t2 = lane(self, s2, 52774, 40692, 3791, 2147483399);
+        let z = self.b.ins().isub(t1, t2);
+        let small = self.b.ins().icmp_imm_s(IntCC::SignedLessThan, z, 1);
+        let zw = self.b.ins().iadd_imm_s(z, 2147483562);
+        let z = self.b.ins().select(small, zw, z);
+        let zf = self.b.ins().fcvt_from_sint(F64, z);
+        let scale = self.b.ins().f64const(4.656613e-10);
+        let x = self.b.ins().fmul(zf, scale);
+        let bits = self.b.ins().bitcast(I64, MemFlagsData::new(), x);
+        // The native's order: the seeds, then the real.
+        self.b.ins().store(gf, t1, p[0], 0);
+        self.b.ins().store(gf, t2, p[1], 0);
+        self.b.ins().store(gf, bits, p[2], 0);
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(fb);
+        self.clear();
+        self.native_direct(pc, i, f, native, args, None)?;
+        self.b.ins().jump(done, &[]);
+        self.start(done);
+        Ok(())
+    }
+
     fn native_direct(
         &mut self,
         pc: u32,
@@ -6975,23 +9883,35 @@ impl Gen<'_> {
     fn deref(&mut self, pc: u32, i: &Inst, dst: Reg, handle: Reg) {
         let (slow, join) = self.slow_path(pc, i);
         let h = self.ld(handle);
-        let hi = self.b.ins().ushr_imm_s(h, 32);
-        let flag = self.b.ins().ushr_imm_s(hi, i64::from(KEY_SHIFT_HANDLE));
-        let flag = self.b.ins().band_imm_s(flag, KEY_FLAG as i64);
-        let key = self.b.ins().bxor(hi, flag);
-        let key = self.b.ins().band_imm_s(key, OBJS as i64 - 1);
-        let eo = self.b.ins().ishl_imm_s(key, i64::from(OBJ_SHIFT));
-        let (tk, mx) = self.obj_tag(None);
+        // `obj_at` of `h >> 32`, scaled: the index and the shared flag each in one shift and mask.
+        let scale = 32 - i64::from(OBJ_SHIFT);
+        let at = self.b.ins().ushr_imm_s(h, scale);
+        let at = self.b.ins().band_imm_s(at, (OBJS as i64 - 1) << OBJ_SHIFT);
+        let flag = self
+            .b
+            .ins()
+            .ushr_imm_s(h, scale + i64::from(KEY_SHIFT_HANDLE));
+        let flag = self
+            .b
+            .ins()
+            .band_imm_s(flag, (KEY_FLAG as i64) << OBJ_SHIFT);
+        let eo = self.b.ins().bxor(at, flag);
+        let k = 8 * u64::from(space::HEAP);
+        let mx = self.mem_ld(MEM_MIXES + k);
         let eo = self.b.ins().bxor(eo, mx);
         let ent = self.b.ins().iadd(self.mem, eo);
         // An entry with an access value is writable, and a null handle is no entry's value; the
-        // key's tag says the entry is this machine's (another instance holds the same values).
+        // key's tag says the entry is this machine's (another instance holds the same values). The
+        // tag is the key's high half, compared as 32 bits (no mask).
         let eh = self
             .b
             .ins()
             .load(I64, self.mf, ent, (MEM_OBJS + OBJ_H) as i32);
-        let ek = self.b.ins().load(I64, self.mf, ent, MEM_OBJS as i32);
-        let ek = self.b.ins().band_imm_s(ek, !0xffff_ffff);
+        let tk = self
+            .b
+            .ins()
+            .load(I32, self.mf, self.mem, (MEM_TAGS + k + 4) as i32);
+        let ek = self.b.ins().load(I32, self.mf, ent, (MEM_OBJS + 4) as i32);
         let same_h = self.b.ins().icmp(IntCC::Equal, eh, h);
         let same_t = self.b.ins().icmp(IntCC::Equal, ek, tk);
         let hit = self.b.ins().band(same_h, same_t);
@@ -7027,16 +9947,25 @@ impl Gen<'_> {
             ));
             self.b.ins().stack_addr(I64, ss, 0)
         });
-        let (op, z) = (self.c32(FAST_DEREF), self.c64(0));
         let (regs, d) = match scratch {
             Some(sc) => (sc, self.c32(0)),
             None => (self.regs, self.c32(dst.0)),
         };
-        let call = self
-            .b
-            .ins()
-            .call(self.imp.fast, &[self.env, regs, self.mem, op, d, h, z]);
-        let st = self.b.inst_results(call)[0];
+        let st = if self.nat.is_some() {
+            self.b
+                .ins()
+                .call(self.imp.cold_deref, &[self.env, regs, self.mem, d, h]);
+            self.b
+                .ins()
+                .load(I32, self.mf, self.mem, MEM_COLD_RET as i32)
+        } else {
+            let (op, z) = (self.c32(FAST_DEREF), self.c64(0));
+            let c = self
+                .b
+                .ins()
+                .call(self.imp.fast, &[self.env, regs, self.mem, op, d, h, z]);
+            self.b.inst_results(c)[0]
+        };
         let failed = self.b.ins().icmp_imm_s(IntCC::Equal, st, 0);
         if let Some(sc) = scratch {
             let ok = self.b.create_block();

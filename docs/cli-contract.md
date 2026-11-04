@@ -259,6 +259,8 @@ identical to a run without it, at any `--threads`.
   body, the target and the yavs build; #481), under the same rules and limits; `--tier=auto3` keeps
   its LLVM modules there too. `route-<key>.img`, one per design, holds how each compiled function
   first called the others, so that an unchanged design makes the same bodies in every run (#1035).
+  `clifpre-<key>.img`, one per function, names the `clif-<key>.img` of its code and the symbols it
+  refers to, under a key of everything the code depends on, so a warm run links without translating.
 - **Analysed units** (#537, #539, user decision 2026-10-22, `docs/decisions.md` "Analysed-unit
   cache"): `yavs analyze` keeps the analysis of every design unit it analyses from source in
   `<dir>/yavs-cache/units/unit-<key>.img` of the unit's library (the built-in `std` and `ieee` units in the

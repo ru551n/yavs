@@ -1,0 +1,7 @@
+exit	0
+diag	note	1000000	0	:return_select:_p0	10 0000 0 11 7 2 yes
+diag	note	2000000	0	:return_select:_p0	00 1000 -1 13 7 1 no
+diag	note	3000000	0	:return_select:_p0	10 0100 -2 11 11 2 no
+diag	note	4000000	0	:return_select:_p0	01 0010 -3 13 7 3 no
+diag	note	5000000	0	:return_select:_p0	11 0001 4 11 7 4 no
+diag	note	6000000	0	:return_select:_p0	01 0000 5 13 7 3 no

@@ -70,7 +70,7 @@ a call into your module in a small commit.
 
 - Calls: one cell per scalar `in` parameter (8-byte slot); the address of the actual for a scalar
   `out`/`inout` variable (a frame temporary written back after the call for logic elements and
-  slices); two cells (data, dope) per array parameter. Signal parameters: the signal reference
+  slices); four cells (data, left, right, dir) per array parameter of a type `Ty::flat_array` allows, the frame's slots after the data cell being the descriptor (`Cx::flat_params`), else two cells (data, dope). Signal parameters: the signal reference
   (two cells), then the caller's driver slot for `out`/`inout`, then the actual's descriptor for
   arrays; assignments to an `out` signal parameter use `DriveSlot`. A signal parameter with
   records in its type (`RecParam`) is one reference per leaf of the formal, then the driver

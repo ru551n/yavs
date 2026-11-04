@@ -1,0 +1,41 @@
+exit	0
+diag	note	5000000	2	:held_active:u0:_p3	active s false v false v3 false v2 false i false la s 0 fs v3 0 fs v2 0 fs i 0 fs ev false le 9223372036854775807 fs
+diag	note	5000000	2	:held_active:u1:_p3	active s false v false v3 false v2 false i false la s 0 fs v3 0 fs v2 0 fs i 0 fs ev false le 9223372036854775807 fs
+diag	note	6000000	0	:held_active:u0:_p3	later s false la 1000000 fs v 1000000 fs
+diag	note	6000000	0	:held_active:u1:_p3	later s false la 1000000 fs v 1000000 fs
+diag	note	15000000	2	:held_active:u0:_p3	active s false v false v3 false v2 false i false la s 0 fs v3 0 fs v2 0 fs i 0 fs ev false le 9223372036854775807 fs
+diag	note	15000000	2	:held_active:u1:_p3	active s false v false v3 false v2 false i false la s 0 fs v3 0 fs v2 0 fs i 0 fs ev false le 9223372036854775807 fs
+diag	note	16000000	0	:held_active:u0:_p3	later s false la 1000000 fs v 1000000 fs
+diag	note	16000000	0	:held_active:u1:_p3	later s false la 1000000 fs v 1000000 fs
+diag	note	25000000	2	:held_active:u0:_p3	active s false v false v3 false v2 false i false la s 0 fs v3 0 fs v2 0 fs i 0 fs ev false le 0 fs
+diag	note	25000000	2	:held_active:u1:_p3	active s false v false v3 false v2 false i false la s 0 fs v3 0 fs v2 0 fs i 0 fs ev false le 0 fs
+diag	note	26000000	0	:held_active:u0:_p3	later s false la 1000000 fs v 1000000 fs
+diag	note	26000000	0	:held_active:u1:_p3	later s false la 1000000 fs v 1000000 fs
+diag	note	35000000	2	:held_active:u0:_p3	active s false v false v3 false v2 false i false la s 0 fs v3 0 fs v2 0 fs i 0 fs ev false le 10000000 fs
+diag	note	35000000	2	:held_active:u1:_p3	active s false v false v3 false v2 false i false la s 0 fs v3 0 fs v2 0 fs i 0 fs ev false le 10000000 fs
+diag	note	36000000	0	:held_active:u0:_p3	later s false la 1000000 fs v 1000000 fs
+diag	note	36000000	0	:held_active:u1:_p3	later s false la 1000000 fs v 1000000 fs
+diag	note	45000000	2	:held_active:u0:_p3	active s false v false v3 false v2 false i false la s 0 fs v3 0 fs v2 0 fs i 0 fs ev false le 20000000 fs
+diag	note	45000000	2	:held_active:u1:_p3	active s false v false v3 false v2 false i false la s 0 fs v3 0 fs v2 0 fs i 0 fs ev false le 20000000 fs
+diag	note	46000000	0	:held_active:u0:_p3	later s false la 1000000 fs v 1000000 fs
+diag	note	46000000	0	:held_active:u1:_p3	later s false la 1000000 fs v 1000000 fs
+diag	note	55000000	2	:held_active:u0:_p3	active s false v false v3 false v2 false i false la s 0 fs v3 0 fs v2 0 fs i 0 fs ev false le 30000000 fs
+diag	note	55000000	2	:held_active:u1:_p3	active s false v false v3 false v2 false i false la s 0 fs v3 0 fs v2 0 fs i 0 fs ev false le 30000000 fs
+diag	note	56000000	0	:held_active:u0:_p3	later s false la 1000000 fs v 1000000 fs
+diag	note	56000000	0	:held_active:u1:_p3	later s false la 1000000 fs v 1000000 fs
+diag	note	65000000	2	:held_active:u0:_p3	active s false v false v3 false v2 false i false la s 0 fs v3 0 fs v2 0 fs i 0 fs ev false le 0 fs
+diag	note	65000000	2	:held_active:u1:_p3	active s false v false v3 false v2 false i false la s 0 fs v3 0 fs v2 0 fs i 0 fs ev false le 0 fs
+diag	note	66000000	0	:held_active:u0:_p3	later s false la 1000000 fs v 1000000 fs
+diag	note	66000000	0	:held_active:u1:_p3	later s false la 1000000 fs v 1000000 fs
+diag	note	75000000	2	:held_active:u0:_p3	active s false v false v3 false v2 false i false la s 0 fs v3 0 fs v2 0 fs i 0 fs ev false le 10000000 fs
+diag	note	75000000	2	:held_active:u1:_p3	active s false v false v3 false v2 false i false la s 0 fs v3 0 fs v2 0 fs i 0 fs ev false le 10000000 fs
+diag	note	76000000	0	:held_active:u0:_p3	later s false la 1000000 fs v 1000000 fs
+diag	note	76000000	0	:held_active:u1:_p3	later s false la 1000000 fs v 1000000 fs
+diag	note	85000000	2	:held_active:u0:_p3	active s false v false v3 false v2 false i false la s 0 fs v3 0 fs v2 0 fs i 0 fs ev false le 20000000 fs
+diag	note	85000000	2	:held_active:u1:_p3	active s false v false v3 false v2 false i false la s 0 fs v3 0 fs v2 0 fs i 0 fs ev false le 20000000 fs
+diag	note	86000000	0	:held_active:u0:_p3	later s false la 1000000 fs v 1000000 fs
+diag	note	86000000	0	:held_active:u1:_p3	later s false la 1000000 fs v 1000000 fs
+diag	note	95000000	2	:held_active:u0:_p3	active s false v false v3 false v2 false i false la s 0 fs v3 0 fs v2 0 fs i 0 fs ev false le 30000000 fs
+diag	note	95000000	2	:held_active:u1:_p3	active s false v false v3 false v2 false i false la s 0 fs v3 0 fs v2 0 fs i 0 fs ev false le 30000000 fs
+diag	note	96000000	0	:held_active:u0:_p3	later s false la 1000000 fs v 1000000 fs
+diag	note	96000000	0	:held_active:u1:_p3	later s false la 1000000 fs v 1000000 fs

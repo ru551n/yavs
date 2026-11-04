@@ -322,6 +322,7 @@ impl Machine {
                     Some(Val::Word(v)) => Ok(*v),
                     Some(Val::Array(b)) => match sig.ret {
                         MemoArg::Array(a) => self.memo_array(a, b),
+                        MemoArg::Flat(a) => self.memo_flat(a, b),
                         MemoArg::Scalar => Err(cold(|| ice("memo: an array for a scalar result"))),
                     },
                     None => Err(cold(|| ice("memo: a hit on an empty slot"))),
@@ -554,6 +555,27 @@ impl Machine {
                     };
                     key.extend_from_slice(&v.to_le_bytes());
                 }
+                MemoArg::Flat(a) => {
+                    let (Some(data), Some(l), Some(r), Some(w)) = (next(), next(), next(), next())
+                    else {
+                        return false;
+                    };
+                    let mut d = [0u8; 24];
+                    d[..8].copy_from_slice(&l.to_le_bytes());
+                    d[8..16].copy_from_slice(&r.to_le_bytes());
+                    d[16..].copy_from_slice(&w.to_le_bytes());
+                    let Some(n) = a.data_bytes(&d) else {
+                        return false;
+                    };
+                    if key.len() as u64 + n + 24 > MAX_BYTES as u64 {
+                        return false;
+                    }
+                    key.extend_from_slice(&d);
+                    let Ok(b) = self.rd(data, n) else {
+                        return false;
+                    };
+                    key.extend_from_slice(b);
+                }
                 MemoArg::Array(a) => {
                     let (Some(data), Some(dope)) = (next(), next()) else {
                         return false;
@@ -584,6 +606,18 @@ impl Machine {
     /// The result `v` of a call, as the memo keeps it; `None` when it cannot be read or is
     /// over `MAX_BYTES`.
     fn memo_result(&self, ret: MemoArg, v: u64) -> Option<Val> {
+        if let MemoArg::Flat(a) = ret {
+            let d: Vec<u8> = (self.ret_bounds().iter())
+                .flat_map(|x| x.to_le_bytes())
+                .collect();
+            let n = a.data_bytes(&d)?;
+            if n + d.len() as u64 > MAX_BYTES as u64 {
+                return None;
+            }
+            let mut out = d;
+            out.extend_from_slice(self.rd(v, n).ok()?);
+            return Some(Val::Array(out.into()));
+        }
         let MemoArg::Array(a) = ret else {
             return Some(Val::Word(v));
         };
@@ -601,6 +635,18 @@ impl Machine {
         out.extend_from_slice(d);
         out.extend_from_slice(self.rd(data, n).ok()?);
         Some(Val::Array(out.into()))
+    }
+
+    /// An array result `bytes` (descriptor, then elements) as a function with `Func::ret_flat`
+    /// returns it: its data address.
+    fn memo_flat(&mut self, a: MemoArr, bytes: &[u8]) -> R<u64> {
+        let n = a.desc_bytes();
+        let (d, e) = bytes.split_at(n);
+        let w = |k: usize| u64::from_le_bytes(d[k * 8..k * 8 + 8].try_into().unwrap_or([0; 8]));
+        self.set_ret_bounds([w(0), w(1), w(2)]);
+        let at = self.temp_alloc(e.len() as u64)?;
+        self.wr(at, e.len() as u64)?.copy_from_slice(e);
+        Ok(at)
     }
 
     /// An array result `bytes` (descriptor, then elements) as a fat pair in temporary memory,

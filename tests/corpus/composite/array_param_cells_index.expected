@@ -1,0 +1,8 @@
+exit	1
+diag	note	0	0	:array_param_cells_index:_p0	'1'
+diag	note	0	0	:array_param_cells_index:_p0	'0'
+diag	note	0	0	:array_param_cells_index:_p0	'1'
+diag	note	0	0	:array_param_cells_index:_p0	'0'
+diag	note	0	0	:array_param_cells_index:_p0	'1'
+diag	note	0	0	:array_param_cells_index:_p0	'0'
+diag	fatal	0	0	:array_param_cells_index:_p0	index 1 outside of INTEGER range 7 downto 2

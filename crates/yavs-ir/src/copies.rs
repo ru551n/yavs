@@ -39,17 +39,54 @@ impl PkgSource for NoPkgs {
     }
 }
 
+/// The form the kernel keeps an instance signal in, fixed from the build of the simulation on
+/// (`yavs-kernel` `tests/signal_forms.rs`): what the code of a copy may assume without looking.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SigFact {
+    /// `TierSig::codes`, `planes`, `stamps` and `last` are offered.
+    pub codes: bool,
+    pub planes: bool,
+    pub stamps: bool,
+    pub last: bool,
+    /// The bytes of an element of a signal kept as bytes (`TierSig::es`), else 0.
+    pub es: u8,
+    /// The elements of the instance signal, which the table's `len` and `plen` cover.
+    pub len: u32,
+}
+
+/// What holds for a process instance for the whole run and is not in its data: the facts of the
+/// instance signals its body names, by `SigVal::sig`, in order. A signal with none has no
+/// assumption made about it. Part of a copy's key: instances with equal facts share a body.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct InstFacts {
+    sigs: Box<[(u32, SigFact)]>,
+}
+
+impl InstFacts {
+    pub fn new(mut sigs: Vec<(u32, SigFact)>) -> InstFacts {
+        sigs.sort_unstable_by_key(|s| s.0);
+        InstFacts { sigs: sigs.into() }
+    }
+
+    pub fn sig(&self, i: u32) -> Option<SigFact> {
+        let at = self.sigs.binary_search_by_key(&i, |s| s.0).ok()?;
+        Some(self.sigs[at].1)
+    }
+}
+
 /// One copy: the process it is a copy of and the data it was made for (the parameters of `for`
 /// generates, the `holes`, zeroed: they are not folded). Its function is the reserved slot of
 /// the same index, whose `opt` holds the optimised body once made. `pkgs` is the data of the
 /// packages the process's declarative part reads when the copy was asked for, and `digest`
-/// names them (it is part of the key: a package made another way is another copy).
+/// names them (it is part of the key: a package made another way is another copy), as are
+/// `facts`, which the IR does not depend on: they are for the code generators.
 pub(crate) struct Copy {
     pub base: FuncId,
     pub data: Box<[u8]>,
     pub holes: Box<[(u32, u32)]>,
     pub pkgs: Box<[(u32, PkgData)]>,
     pub digest: u64,
+    pub facts: InstFacts,
 }
 
 /// An optimised copy as stored between runs (the stage cache, kind `spec`): the process, the
@@ -92,6 +129,8 @@ pub struct Copies {
     suitable: Mutex<HashMap<FuncId, bool>>,
     /// The packages the declarative part of each process reads (`Program::pkg_deps`).
     deps: Mutex<HashMap<FuncId, Arc<[u32]>>>,
+    /// The instance signals each process names (`Program::sig_uses`).
+    sig_uses: Mutex<HashMap<FuncId, Arc<[u32]>>>,
     shared_ir: AtomicU64,
     copy_ir: AtomicU64,
     capped: AtomicU64,
@@ -279,15 +318,18 @@ impl Program {
             };
             raw.kind == FuncKind::Process
                 && self.single_suspend(base)
-                && raw.code.iter().any(|i| {
-                    matches!(
-                        i,
-                        Inst::AddrOf {
-                            space: AddrSpace::Inst,
-                            ..
-                        }
-                    )
-                })
+                // (Test aid: a process that reads no instance data gains facts only, which the
+                // checks of compiled code want to see on any design.)
+                && (std::env::var_os("YAVS_SPEC_ALL").is_some()
+                    || raw.code.iter().any(|i| {
+                        matches!(
+                            i,
+                            Inst::AddrOf {
+                                space: AddrSpace::Inst,
+                                ..
+                            }
+                        )
+                    }))
         })
     }
 
@@ -302,7 +344,40 @@ impl Program {
         data: &[u8],
         holes: &[(u32, u32)],
     ) -> Result<FuncId, NoCopy> {
-        self.copy_of_pkgs(base, data, holes, &NoPkgs)
+        self.copy_of_pkgs(base, data, holes, &NoPkgs, InstFacts::default())
+    }
+
+    /// The instance signals (`SigVal::sig`) the lowered code of process `base` names: the ones
+    /// whose facts can matter to its copies, so others do not split them.
+    pub fn sig_uses(&self, base: FuncId) -> Arc<[u32]> {
+        let mut m = self
+            .copies
+            .sig_uses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        m.entry(base)
+            .or_insert_with(|| {
+                let Some(raw) = self.funcs.get(base).map(Func::full) else {
+                    return Arc::new([]);
+                };
+                let mut v: Vec<u32> = raw
+                    .code
+                    .iter()
+                    .filter_map(|i| match *i {
+                        Inst::SigVal { sig, .. } => Some(sig),
+                        _ => None,
+                    })
+                    .collect();
+                v.sort_unstable();
+                v.dedup();
+                v.into()
+            })
+            .clone()
+    }
+
+    /// The facts the code of function `f` may assume: those of a copy, none for anything else.
+    pub fn facts(&self, f: FuncId) -> Option<&InstFacts> {
+        self.copies.get(f).map(|c| &c.facts)
     }
 
     /// The packages (`AddrSpace::Pkg` numbers) whose data the declarative part of process
@@ -343,13 +418,15 @@ impl Program {
     /// reads (`pkg_deps`) taken from `pkgs`: the copy folds what that part makes of their
     /// constants, and a digest of them is part of its key, so a run whose packages came out
     /// otherwise (an initialiser that read the environment) makes, and reads from the stage
-    /// cache, another copy. Call it once package initialisation is over.
+    /// cache, another copy. Call it once package initialisation is over. `facts` are the
+    /// instance's: other facts are another copy of the same optimised IR.
     pub fn copy_of_pkgs(
         &self,
         base: FuncId,
         data: &[u8],
         holes: &[(u32, u32)],
         pkgs: &dyn PkgSource,
+        facts: InstFacts,
     ) -> Result<FuncId, NoCopy> {
         if !self.specialisable(base) {
             return Err(NoCopy::Unsuitable);
@@ -375,8 +452,9 @@ impl Program {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(&id) = by.get(&h).and_then(|v| {
             v.iter().find(|&&id| {
-                c.get(id)
-                    .is_some_and(|x| x.base == base && x.data == data && x.digest == digest)
+                c.get(id).is_some_and(|x| {
+                    x.base == base && x.data == data && x.digest == digest && x.facts == facts
+                })
             })
         }) {
             return Ok(id);
@@ -403,6 +481,7 @@ impl Program {
             holes: holes.into(),
             pkgs,
             digest,
+            facts,
         });
         assert!(
             set.is_ok(),
@@ -422,9 +501,12 @@ impl Program {
     /// process and masked instance data (`None` for any other function). Copy ids depend on
     /// which process switched first, so compiled code is named and keyed by this.
     pub fn copy_tag(&self, f: FuncId) -> Option<u64> {
-        self.copies
-            .get(f)
-            .map(|c| key_hash(c.base, &c.data, c.digest))
+        self.copies.get(f).map(|c| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            key_hash(c.base, &c.data, c.digest).hash(&mut h);
+            c.facts.hash(&mut h);
+            h.finish()
+        })
     }
 
     /// The function's lowered code and header: that of the process for a copy.
@@ -456,12 +538,17 @@ impl Program {
             return Vec::new();
         }
         let c = &self.copies;
+        // (Copies that differ in their facts alone are one stored function.)
+        let mut seen = std::collections::HashSet::new();
         let mut out: Vec<CopyBlob> = (0..c.count.load(Ordering::Relaxed))
             .filter_map(|n| {
                 let e = c.list.get(n)?.get()?;
                 let Some(Some(o)) = self.funcs.get(FuncId(c.first + n as u32))?.opt.get() else {
                     return None;
                 };
+                if !seen.insert((e.base, &e.data, e.digest)) {
+                    return None;
+                }
                 let bytes = postcard::to_stdvec(&**o).ok()?;
                 Some(CopyBlob {
                     base: e.base,

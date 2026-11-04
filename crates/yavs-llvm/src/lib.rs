@@ -17,8 +17,10 @@
 mod arena;
 pub mod auto;
 mod census;
-mod eloop;
+pub mod eloop;
 pub mod generator;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub mod hugezone;
 #[cfg(feature = "llvm")]
 mod jit;
 #[cfg(feature = "llvm")]
@@ -32,6 +34,8 @@ pub mod perfmap;
 mod profile;
 pub mod regs;
 pub mod rt;
+/// Whether this build can also make code with LLVM (`--tier=auto3`).
+pub const WITH_LLVM: bool = cfg!(feature = "llvm");
 #[cfg(feature = "llvm")]
 pub mod spike;
 mod work;
@@ -42,7 +46,7 @@ mod work;
 pub fn code_arena_stats() -> Option<[usize; 4]> {
     arena::stats()
 }
-pub use auto::{AutoTier, Gens, Heat, Note, START_AFTER, exit_now};
+pub use auto::{AutoTier, Gens, Heat, Note, START_AFTER, count_rule_on, exit_now};
 pub use census::callback_counts;
 pub use generator::{Generator, OptLevel, StartError};
 #[cfg(feature = "llvm")]

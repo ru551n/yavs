@@ -1,0 +1,13 @@
+exit	0
+diag	note	0	0	:frame_objects_keep:main	fill 870 BEEF
+diag	note	5000000	0	:frame_objects_keep:main	kept 870
+diag	note	3005000000	0	:frame_objects_keep:main	sum 32500 look 41412 total 318750
+diag	note	3005000000	0	:frame_objects_keep:main	sm 2110 11 false
+diag	note	3405000000	0	:frame_objects_keep:main	after wait 2230 39
+diag	note	3435000000	0	:frame_objects_keep:main	many 11489 7E
+diag	note	3435000000	0	:frame_objects_keep:main	gathered 1615 1234
+diag	note	3455000000	0	:frame_objects_keep:main	gathered later 1623
+diag	note	3455000000	0	:frame_objects_keep:main	uc 11111 5
+diag	note	3455000000	0	:frame_objects_keep:main	copy apart 2230 -1
+diag	note	3455000000	0	:frame_objects_keep:main	array copy 11555 0
+diag	note	3455000000	0	:frame_objects_keep:main	done

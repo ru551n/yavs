@@ -3007,9 +3007,24 @@ fn stored_run_time_packages_are_not_used_with_external_names() {
 
 /// The names of the wide leaves that keep only each block's last event (`lean.rs`).
 fn lean_leaves(src: &str) -> Vec<String> {
-    let (_, e) = elab("lean", src, "t", &[]);
+    let (mut db, mut e) = elab("lean", src, "t", &[]);
+    e.lower(&mut db).expect("lower");
     let mut v: Vec<String> = e
         .lean
+        .iter()
+        .enumerate()
+        .filter(|&(_, &l)| l)
+        .map(|(i, _)| e.leaf_name(crate::LeafId(i as u32)))
+        .collect();
+    v.sort();
+    v
+}
+
+fn bare_leaves(src: &str) -> Vec<String> {
+    let (mut db, mut e) = elab("bare", src, "t", &[]);
+    e.lower(&mut db).expect("lower");
+    let mut v: Vec<String> = e
+        .bare
         .iter()
         .enumerate()
         .filter(|&(_, &l)| l)
@@ -3058,6 +3073,55 @@ fn wide_signals_nothing_asks_the_history_of_are_lean() {
     assert_eq!(ok, ABR);
     // The last value of a whole signal.
     assert_eq!(lean_leaves(&wide_design("", "w := a'last_value;")), ABR);
+}
+
+#[test]
+fn a_bus_with_no_history_attribute_keeps_no_history() {
+    assert_eq!(bare_leaves(&wide_design("", "null;")), ABR);
+    assert_eq!(bare_leaves(&wide_design("", "v := a(7 downto 0);")), ABR);
+    for stmts in [
+        "t1 := a'last_event;",
+        "e := a(5)'event;",
+        "s := a(5)'last_value;",
+    ] {
+        assert_eq!(
+            bare_leaves(&wide_design("", stmts)),
+            ["t.b", "t.r"],
+            "{stmts}"
+        );
+    }
+    // Through a signal parameter, also of the edge functions.
+    let p = "procedure p (signal s : in std_logic) is begin null; end;";
+    assert_eq!(bare_leaves(&wide_design(p, "p(b(3));")), ["t.a", "t.r"]);
+    assert_eq!(
+        bare_leaves(&wide_design("", "e := rising_edge(b(70));")),
+        ["t.a", "t.r"]
+    );
+    // A signal parameter of parts: the references go through memory.
+    let parts = "procedure q (signal x : in std_logic_vector(1 downto 0)) is begin null; end;";
+    assert_eq!(
+        bare_leaves(&wide_design(parts, "q(x(1) => a(3), x(0) => b(4));")),
+        ["t.r"]
+    );
+    // An external alias is the object it names; the others stay.
+    let ext = "alias ex is <<signal .t.b : std_logic_vector(99 downto 0)>>;";
+    assert_eq!(
+        bare_leaves(&wide_design(ext, "e := ex'event;")),
+        ["t.a", "t.r"]
+    );
+    // Reading the value, waiting on it and driving it ask nothing.
+    assert_eq!(
+        bare_leaves(&wide_design(
+            "",
+            "w := a; s := b(5); r <= w; wait on a; wait on b(70 downto 3);"
+        )),
+        ABR
+    );
+    // A field of a record: a report asks it by part.
+    let rec = "type rt is record w : std_logic_vector(99 downto 0); end record; signal q : rt;";
+    assert_eq!(bare_leaves(&wide_design(rec, "null;")), ABR);
+    // A force anywhere: none.
+    assert!(bare_leaves(&wide_design("", "a <= force (others => '0');")).is_empty());
 }
 
 #[test]
@@ -3143,7 +3207,9 @@ fn a_whole_array_of_composites_is_asked_part_by_part() {
 #[test]
 fn a_signal_parameter_marks_every_signal_unless_scalar_last_value() {
     let decls = "procedure p (signal s : in std_logic_vector) is variable t1 : time; begin t1 := s'last_event; end;";
-    assert!(lean_leaves(&wide_design(decls, "p(a);")).is_empty());
+    // A signal with no attribute and no such call keeps no history at all (`bare_leaves`).
+    assert_eq!(lean_leaves(&wide_design(decls, "p(a);")), ["t.b", "t.r"]);
+    assert_eq!(bare_leaves(&wide_design(decls, "p(a);")), ["t.b", "t.r"]);
     // The last value of a scalar parameter needs no history (the edge functions of the standard
     // packages are that).
     let decls = "procedure p (signal s : in std_logic) is variable c : std_logic; begin c := s'last_value; end;";

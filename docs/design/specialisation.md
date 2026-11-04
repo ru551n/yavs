@@ -352,7 +352,7 @@ section 9 as proposed there. What exists, and where it differs from the prototyp
 - **Shared code is kept** under `--dap` and anything that keeps variables (`keep_variables`), with
   `--vhpi` and `--wave-variables` (`external_variables`), under `--tier=llvm` (the whole program is compiled before a copy exists),
   with `YAVS_NO_IROPT`, and for serial processes (shared variables, protected objects).
-- **Tiers.** Under `--tier=auto` a copy is a function with its own id: the sampler sees it and the
+- **Tiers.** Under `--tier=auto` on Cranelift the count rule asks for a copy after half of its count, the process having switched after the other half (`docs/decisions.md` "`--tier=auto`: the count rule"). Under `--tier=auto` a copy is a function with its own id: the sampler sees it and the
   policy compiles it like any function, but every decision about it is the process's (#661, 2026-10-24):
   the sampled time of a process and all its copies is one number (`Worker::group`, by `Program::base_of`),
   and the threshold, the payback rule, the band wait of clocked processes, the share and instance rules
@@ -384,7 +384,15 @@ section 9 as proposed there. What exists, and where it differs from the prototyp
   least 2, and whatever the tier has compiled), `YAVS_SPEC_CAP=p`. `crates/yavs/tests/spec.rs`
   runs every design of `crates/yavs/tests/perf/` with copies off and with every process
   switching at its second activation, on one and four threads, and requires the same output
-  byte for byte (the shadow check), plus the stage cache and the auto tier.
+  byte for byte (the shadow check), plus the stage cache and the auto tier (under the heat mode
+  `--tier-heat=1,0,0`, which waits for every compile, with Cranelift and, where built, LLVM).
+  The copies a run loses silently are caught at a design's size by
+  `crates/yavs/tests/clift_spec_after_decline.rs` `copies_are_not_lost_at_scale`: 24 clocked
+  instances and a declined function, no `YAVS_SPEC_AFTER`, every function compiled on entry
+  (no sampler look, no wall clock in the count), `spec_switched` at least 24 on one and four
+  threads and the copies compiled. The standard difftest tiers start copies at activation 1024
+  and reach them in 1 of 624 corpus tests (`tier=clift`: none); the difftest tier
+  `yavs-clift-check` forces copies and reaches them in 170 (2026-11-03, 176f5ec7).
 
 ## 12. Measurements of the implementation (2026-10-23)
 

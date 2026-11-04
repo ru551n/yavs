@@ -3,11 +3,11 @@
 //! it need not); only `'last_event` and `'last_value` of something other than whole signals
 //! ask for that, and the analysis facts (`yavs_sem::Facts`) say where they occur.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use yavs_sem::Db;
+use yavs_sem::{Db, DeclId};
 
-use crate::hier::{NetGraph, Shape};
+use crate::hier::{NetGraph, ObjId, ObjKind, ScopeId, Shape};
 
 /// Per leaf: whether it is wide (more than 64 elements) and no `'last_event` or `'last_value`
 /// in the design can ask for the history of a part of it. All false when one is applied to
@@ -32,6 +32,40 @@ pub(crate) fn leaves(db: &Db, nets: &NetGraph) -> Vec<bool> {
         }
     }
     lean
+}
+
+/// Per leaf: whether it is wide and nothing in the design can ask any event history or
+/// `'last_value` of it. `history` is what the lowered code says (`Func::sig_history_uses`, as
+/// declarations; `None`: one could not be named), so a reader the lowerer adds is seen by
+/// construction; the kernel takes its own readers back (`SimControl::new`). A field of a record
+/// never qualifies (a report asks those by part, see `kernel/hang.rs`), nor does anything in a
+/// design with a force. The kernel then keeps no event records and no `'last_value` for such a bus
+/// (`yavs_kernel::Builder::no_history`). Such a leaf is lean too, whatever `history_all` says.
+pub(crate) fn bare(
+    db: &Db,
+    nets: &NetGraph,
+    sigs: &HashMap<(ScopeId, DeclId), ObjId>,
+    history: Option<&[DeclId]>,
+) -> Vec<bool> {
+    let Some(history) = history.filter(|_| db.facts().forces.is_empty()) else {
+        return vec![false; nets.leaves.len()];
+    };
+    let mut bare: Vec<bool> = nets.leaves.iter().map(|l| l.ty.len > 64).collect();
+    let asked: HashSet<_> = history.iter().copied().collect();
+    // By the objects the lowered code's names denote in a region: an external alias is the object
+    // it names, not a declaration of its own.
+    for ((_, d), &o) in sigs {
+        if asked.contains(d) {
+            let (a, z) = nets.obj(o).leaves;
+            bare[a.index()..z.index()].fill(false);
+        }
+    }
+    for o in &nets.objs {
+        if o.kind == ObjKind::Implicit || !crate::keep_codes::elements_only(&o.shape) {
+            bare[o.leaves.0.index()..o.leaves.1.index()].fill(false);
+        }
+    }
+    bare
 }
 
 /// A scalar, an array of scalars, or a record of those: a whole object is one range of each leaf.

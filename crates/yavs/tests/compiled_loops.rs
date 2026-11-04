@@ -71,9 +71,10 @@ fn element_loops_in_compiled_code_match_the_interpreter() {
         tiers.push((vec!["--tier=auto", "--tier-heat=1,0,0"], 1, true));
     }
     if cfg!(feature = "clift") {
-        // The Cranelift lowering calls the helper for every element loop.
         tiers.push((vec!["--tier=clift"], 5, false));
         tiers.push((vec!["--tier=clift-auto", "--tier-heat=1,0,0"], 1, false));
+        tiers.push((vec!["--tier=clift"], 5, true));
+        tiers.push((vec!["--tier=clift-auto", "--tier-heat=1,0,0"], 1, true));
     }
     for (tier, least, helper) in tiers {
         let got = run(&d, &tier, true, helper);

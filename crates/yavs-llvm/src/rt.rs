@@ -24,6 +24,7 @@ pub const STEP: &str = "yavs_rt_step";
 pub const HOST: &str = "yavs_rt_host";
 
 pub const REGION: &str = "yavs_rt_region";
+pub const HOLD_CHECK: &str = "yavs_rt_hold_check";
 
 pub const SIGNAL: &str = "yavs_rt_signal";
 pub const DRIVE: &str = "yavs_rt_drive";
@@ -49,6 +50,9 @@ pub const FAST_SUBTYPE: u32 = 2;
 pub const FAST_FAT_ROOT: u32 = 3;
 pub const FAST_DEREF: u32 = 4;
 pub const DRIVE_BIT: &str = "yavs_rt_drive_bit";
+pub const DRIVE_F: &str = "yavs_rt_drive_f";
+pub const GATE_CHECK: &str = "yavs_rt_gate_check";
+pub const IMAGE_CHECK: &str = "yavs_rt_image_check";
 
 pub const LAYOUT_WORD: &str = "yavs_rt_layout_word";
 pub const SCAN: &str = "yavs_rt_scan";
@@ -128,8 +132,14 @@ pub struct Mem {
     pub temp_seen: u64,
     /// Nonzero while native frames unwind to be materialised (`yavs_rt_deopt`).
     pub ndeopt: u64,
+    /// The result of a callback called through a stub that keeps every register (Cranelift's
+    /// `cold_stub`: that convention has no return value).
+    pub cold_ret: u64,
     /// Per function, the address of its native-frame code (`Gen::native_call`), 0 for none.
     pub ntab: *const usize,
+    /// The `Env` of the activation running on this view (`enter_on`): a callback given a null
+    /// `env` (Cranelift's frame-mode code, `env_or`) takes this one.
+    pub env: *mut c_void,
     /// Below this native stack address no native callee is entered (`NEST_STACK`).
     pub stack_lo: u64,
     /// Per frame index, the slots of the native frame living there (`NSlot`): a native callee
@@ -140,6 +150,9 @@ pub struct Mem {
     /// The `Suspend` a wait ended on the kernel itself stopped at (`TIER_ROOT_WAIT`), for the
     /// process's record (`TierState::at`); `NO_PC` otherwise.
     wait_at: u32,
+    /// Compiled code skipped drives by itself since it was entered (`TierFrame::gate`); the entry's
+    /// way out tells the kernel (`gate_skipped`). Zero otherwise.
+    pub skipped: u64,
     /// The check mode of `lean` activations (debug builds, feature `table-check`): set while one
     /// runs, with the machine and heap tags it replaced by `POISON` (`begin_lean`, `end_lean`).
     lean: bool,
@@ -317,18 +330,24 @@ pub const MEM_TEMP_CAP: u64 = std::mem::offset_of!(Mem, fr.temp_cap) as u64;
 pub const MEM_TEMP_BASE: u64 = std::mem::offset_of!(Mem, fr.temp_base) as u64;
 pub const MEM_UP: u64 = std::mem::offset_of!(Mem, fr.up) as u64;
 pub const MEM_UP_SLOTS: u64 = std::mem::offset_of!(Mem, fr.up_slots) as u64;
+pub const MEM_ROOT_SLOTS: u64 = std::mem::offset_of!(Mem, fr.root_slots) as u64;
 pub const MEM_UP_LEN: u64 = std::mem::offset_of!(Mem, fr.up_len) as u64;
 pub const MEM_INST: u64 = std::mem::offset_of!(Mem, fr.inst) as u64;
 pub const MEM_INST_LEN: u64 = std::mem::offset_of!(Mem, fr.inst_len) as u64;
 pub const MEM_NSIGS: u64 = std::mem::offset_of!(Mem, fr.nsigs) as u64;
 pub const MEM_TEMP_ROOTS: u64 = std::mem::offset_of!(Mem, fr.temp_roots) as u64;
 pub const MEM_SIGTAB: u64 = std::mem::offset_of!(Mem, fr.sigtab) as u64;
+pub const MEM_GATE: u64 = std::mem::offset_of!(Mem, fr.gate) as u64;
+pub const MEM_CELLS: u64 = std::mem::offset_of!(Mem, fr.cells) as u64;
+pub const MEM_SKIPPED: u64 = std::mem::offset_of!(Mem, skipped) as u64;
 pub const MEM_SIGTAB_LEN: u64 = std::mem::offset_of!(Mem, fr.sigtab_len) as u64;
 pub const MEM_KNOWN: u64 = std::mem::offset_of!(Mem, fr.known) as u64;
 pub const MEM_CYCLE: u64 = std::mem::offset_of!(Mem, fr.cycle) as u64;
 pub const MEM_FRAME_IDX: u64 = std::mem::offset_of!(Mem, fr.frame) as u64;
 pub const MEM_MAX_DEPTH: u64 = std::mem::offset_of!(Mem, fr.max_depth) as u64;
 pub const MEM_NDEOPT: u64 = std::mem::offset_of!(Mem, ndeopt) as u64;
+pub const MEM_COLD_RET: u64 = std::mem::offset_of!(Mem, cold_ret) as u64;
+pub const MEM_HEAP_GEN: u64 = std::mem::offset_of!(Mem, fr.heap_gen) as u64;
 pub const MEM_NTAB: u64 = std::mem::offset_of!(Mem, ntab) as u64;
 pub const MEM_STACK_LO: u64 = std::mem::offset_of!(Mem, stack_lo) as u64;
 pub const MEM_NSLOTS: u64 = std::mem::offset_of!(Mem, nslots) as u64;
@@ -337,6 +356,7 @@ pub const MEM_COV: u64 = std::mem::offset_of!(Mem, fr.cov) as u64;
 
 pub const MEM_STOP: u64 = std::mem::offset_of!(Mem, fr.stop) as u64;
 pub const MEM_SPIN: u64 = std::mem::offset_of!(Mem, fr.spin) as u64;
+pub const MEM_RET_BOUNDS: u64 = std::mem::offset_of!(Mem, fr.ret_bounds) as u64;
 
 pub const MEM_COV_LEN: u64 = std::mem::offset_of!(Mem, fr.cov_len) as u64;
 pub const MEM_OBJS: u64 = std::mem::offset_of!(Mem, objs) as u64;
@@ -718,6 +738,19 @@ pub fn stack_here() -> usize {
     std::hint::black_box(&x) as *const u8 as usize
 }
 
+/// The `env` a callback was given, or the activation's when it is null (`Mem::env`).
+///
+/// # Safety
+/// `mem` is the view compiled code was given.
+#[inline(always)]
+unsafe fn env_or(env: *mut c_void, mem: *mut Mem) -> *mut c_void {
+    if env.is_null() {
+        unsafe { (*mem).env }
+    } else {
+        env
+    }
+}
+
 /// Executes one instruction in the interpreter (`TierHost::step`) and returns `GO`, or what
 /// the compiled code returns: the pc after a fault, `TIER_SUSPEND`, `TIER_UNWIND`. A frame the
 /// instruction pushed runs here when its function has compiled code, and the call continues
@@ -730,6 +763,8 @@ pub unsafe extern "C" fn yavs_rt_step(
     pc: u32,
 ) -> u32 {
     cb(Cb::Step);
+    // SAFETY: `mem` is what compiled code was given.
+    let env = unsafe { env_or(env, mem) };
     // SAFETY: `env` and `mem` are what `enter` (or this function, for a callee) passed to the
     // compiled function, which is blocked in this call; `regs` points into the register
     // stack, which the compiled code does not touch until we return (it passes it only so
@@ -767,6 +802,8 @@ pub unsafe extern "C" fn yavs_rt_signal(
     edge: u32,
 ) -> u32 {
     cb(Cb::Signal);
+    // SAFETY: `mem` is what compiled code was given.
+    let env = unsafe { env_or(env, mem) };
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
     unsafe { (*mem).sync(&mut *(*envp).host) };
@@ -883,6 +920,8 @@ pub unsafe extern "C" fn yavs_rt_drive(
     flags: u32,
 ) -> u32 {
     cb(Cb::Drive);
+    // SAFETY: `mem` is what compiled code was given.
+    let env = unsafe { env_or(env, mem) };
     // SAFETY: as in `yavs_rt_step`; the caller checked 40 readable bytes at `wave`, 16 where
     // the target keeps bytes (bit 1 of `flags`: one scalar, whose cell is the first word).
     let envp = env as *mut Env<'_>;
@@ -905,6 +944,72 @@ pub unsafe extern "C" fn yavs_rt_drive(
         }
     }
     yavs_rt_drive_slow(env, regs, mem, pc, driver, lo, len, wave, flags)
+}
+
+/// `yavs_rt_drive` for a `Drive` of one waveform element at a constant reference of 1 to 64
+/// elements whose waveform is in the frame (the call site knows nothing of the target's form):
+/// the form comes from the signal table, the element is read after it. `lf` is the element
+/// count, bit 32 for an inertial assignment and from bit 33 the bytes readable at `wave`.
+pub unsafe extern "C" fn yavs_rt_drive_f(
+    mem: *mut Mem,
+    pc: u32,
+    driver: u32,
+    lo: u64,
+    wave: *const u8,
+    lf: u64,
+) -> u32 {
+    cb(Cb::Drive);
+    // SAFETY: as in `yavs_rt_drive`; `avail` bytes are readable at `wave`, and 16 (a byte
+    // signal's time and cell) or 40 (a logic signal's time and first block) are read, no more.
+    let word = |k: usize| unsafe { std::ptr::read_unaligned(wave.add(k * 8).cast::<u64>()) };
+    if let Some((c, ds, ss)) = unsafe { direct(&(*mem).fr) }
+        && yavs_interp::direct_drive_wave(c, ds, ss, driver, [lo, lf & 0xffff_ffff], |bytes| {
+            if drive_f_short(lf, bytes) {
+                // A delay: the kernel takes nothing, `drive_f_rest` sends it to the interpreter.
+                (1, [0; 4])
+            } else if bytes {
+                (word(0) as i64, [word(1), 0, 0, 0])
+            } else {
+                (word(0) as i64, unsafe { plane_block(wave) })
+            }
+        })
+    {
+        return GO;
+    }
+    drive_f_rest(mem, pc, driver, lo, wave, lf)
+}
+
+/// Whether the `avail` bytes of `yavs_rt_drive_f` (bits 33 and up of `lf`) do not hold the
+/// waveform element of a byte (16 bytes) or logic (40) signal.
+#[inline(always)]
+fn drive_f_short(lf: u64, bytes: bool) -> bool {
+    lf >> 33 < if bytes { 16 } else { 40 }
+}
+
+/// `yavs_rt_drive_f` where the kernel's fastest path did not take the assignment.
+#[cold]
+#[inline(never)]
+fn drive_f_rest(mem: *mut Mem, pc: u32, driver: u32, lo: u64, wave: *const u8, lf: u64) -> u32 {
+    // SAFETY: as in `yavs_rt_drive_f`.
+    let fr = unsafe { &(*mem).fr };
+    let env = unsafe { env_or(std::ptr::null_mut(), mem) };
+    let (len, inertial) = (lf & 0xffff_ffff, (lf >> 32) as u32 & 1);
+    let kernel = !fr.kctx.is_null();
+    // SAFETY: the table `view` wrote.
+    let ss = unsafe { std::slice::from_raw_parts(fr.sigtab, fr.sigtab_len as usize) };
+    let bytes = ss.get((lo >> 32) as usize).is_some_and(|s| s.es != 0);
+    // The waveform of the form is not all in reach: the interpreter runs the `Drive`.
+    if drive_f_short(lf, bytes) {
+        return unsafe { yavs_rt_signal(env, std::ptr::null_mut(), mem, pc, 0) };
+    }
+    let flags = inertial | (2 * u32::from(bytes));
+    let regs = std::ptr::null_mut();
+    if kernel {
+        yavs_rt_drive_slow(env, regs, mem, pc, driver, lo, len, wave, flags)
+    } else {
+        // (The kernel's fastest path is not there: `TierHost::drive_now` first.)
+        unsafe { yavs_rt_drive(env, regs, mem, pc, driver, lo, len, wave, flags) }
+    }
 }
 
 /// `yavs_rt_drive` for a native frame (`TierHost::drive_try`): no frame view and no pc, any delay.
@@ -1045,6 +1150,8 @@ pub unsafe extern "C" fn yavs_rt_drive_bit(
     code: u64,
 ) -> u32 {
     cb(Cb::Drive);
+    // SAFETY: `mem` is what compiled code was given.
+    let env = unsafe { env_or(env, mem) };
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
     if delay == 0 {
@@ -1145,6 +1252,8 @@ pub unsafe extern "C" fn yavs_rt_wait(
     len: u64,
 ) -> u32 {
     cb(Cb::Wait);
+    // SAFETY: `mem` is what compiled code was given.
+    let env = unsafe { env_or(env, mem) };
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
     // On the kernel itself (#766), else through the host.
@@ -1184,6 +1293,8 @@ pub extern "C" fn yavs_rt_wait_on(
     len: u64,
 ) -> u32 {
     cb(Cb::WaitOn);
+    // SAFETY: `mem` is what compiled code was given.
+    let env = unsafe { env_or(env, mem) };
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
     if unsafe { (*envp).host.wait_on_again([lo, len]) } {
@@ -1216,6 +1327,8 @@ pub extern "C" fn yavs_rt_wait_same(
     _len: u64,
 ) -> u32 {
     cb(Cb::WaitSame);
+    // SAFETY: `mem` is what compiled code was given.
+    let env = unsafe { env_or(env, mem) };
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
     // On the kernel itself (#766), else through the host. Neither reads the temporary area.
@@ -1871,8 +1984,17 @@ impl Mem {
     /// the interpreter's top frame and frame `depth` live as long as the callee: always. The top
     /// frame, the temporary area, the instance data (not for writing) and a heap object of the
     /// table only when `stable` (`stable_activation`: nothing the function does moves them).
+    /// With `held` (Cranelift) everything but the interpreter's frames other than the root and the
+    /// temporary area, which move: the caller asks again when a heap changed (`Gen::hold_recheck`).
     #[inline]
-    fn region(&self, a: u64, depth: u64, write: bool, stable: bool) -> Option<(*mut u8, u64)> {
+    fn region(
+        &self,
+        a: u64,
+        depth: u64,
+        write: bool,
+        stable: bool,
+        held: bool,
+    ) -> Option<(*mut u8, u64)> {
         let hi = a >> 32;
         let fr = &self.fr;
         if hi >> 29 == u64::from(space::FRAME) && hi != fr.frame_hi {
@@ -1883,20 +2005,41 @@ impl Mem {
                 return (e.len != 0).then_some((e.ptr, e.len));
             }
         }
-        if !stable {
+        if held && !stable {
+            let frame = hi >> 29 == u64::from(space::FRAME);
+            let root = hi == u64::from(space::FRAME) << 29 || self.frame_object(hi).is_some();
+            if frame && !root || hi == u64::from(space::TEMP) << 29 {
+                return None;
+            }
+        } else if !stable {
             return None;
         }
-        if hi == fr.frame_hi {
+        if hi == fr.frame_hi && stable {
             Some((fr.slots, fr.slots_len))
         } else if hi == u64::from(space::TEMP) << 29 {
             Some((fr.temp, fr.temp_len))
         } else if hi == u64::from(space::INST) << 29 {
             (!write).then(|| (fr.inst.cast_mut(), fr.inst_len))
+        } else if hi == u64::from(space::FRAME) << 29 && fr.root_len != 0 {
+            Some((fr.root_slots, fr.root_len))
+        } else if let Some(o) = self.frame_object(hi) {
+            Some(o)
         } else {
             self.get(hi)
                 .filter(|o| !write || o.w != 0)
                 .map(|o| (o.ptr, o.len))
         }
+    }
+
+    /// The bytes of a composite variable in the root frame whose address has this high half.
+    #[inline]
+    fn frame_object(&self, hi: u64) -> Option<(*mut u8, u64)> {
+        if hi >> 29 != u64::from(space::FRAME) || self.fr.root_len == 0 {
+            return None;
+        }
+        let (s, n) = yavs_ir::frame_object_range(hi as u32 & ((1 << 29) - 1))?;
+        (s as u64 + n as u64 <= self.fr.root_len)
+            .then(|| (self.fr.root_slots.wrapping_add(s), n as u64))
     }
 
     /// The host pointer to `n` bytes at address `a` plus `extra` where they lie in the frame's
@@ -1906,7 +2049,10 @@ impl Mem {
         // `extra` is below 2^63: no wrap.
         let off = (a & 0xffff_ffff) + extra;
         let fr = &self.fr;
-        let (base, len) = if hi == fr.frame_hi {
+        let (base, len) = if hi >> 28 == 1 {
+            // (`space::FRAME` is 0: the flag `yavs_ir::FRAME_OBJECT` alone.)
+            self.frame_object(hi)?
+        } else if hi == fr.frame_hi {
             (fr.slots, fr.slots_len)
         } else if hi == u64::from(space::TEMP) << 29 {
             (fr.temp, fr.temp_len)
@@ -1917,6 +2063,9 @@ impl Mem {
             (fr.up_slots[0], fr.up_len[0])
         } else if hi == fr.up[1] {
             (fr.up_slots[1], fr.up_len[1])
+        } else if hi == u64::from(space::FRAME) << 29 {
+            // The root frame, seen from a procedure.
+            (fr.root_slots, fr.root_len)
         } else {
             let o = self.get(hi)?;
             if write && o.w == 0 {
@@ -1983,18 +2132,73 @@ pub unsafe extern "C" fn yavs_rt_region(
     out: *mut [u64; 2],
 ) {
     cb(Cb::Region);
-    // Flag 4: everything but the temporary area stays where it is (`fixed_activation`).
+    // Flag 4: everything but the temporary area stays where it is (`fixed_activation`). Flag 8: the
+    // caller asks again when a heap changed (`Gen::hold_recheck`).
     let fixed = flags & 4 != 0 && a >> 32 != u64::from(space::TEMP) << 29;
-    let (write, stable) = (flags & 1 != 0, flags & 2 != 0 || fixed);
+    let (write, stable, held) = (flags & 1 != 0, flags & 2 != 0 || fixed, flags & 8 != 0);
     // SAFETY: as in `yavs_rt_step`.
-    let mut r = unsafe { &*mem }.region(a, depth, write, stable);
-    if r.is_none() && stable && unsafe { yavs_rt_obj(env, mem, a, u32::from(write)) } != 0 {
+    let mut r = unsafe { &*mem }.region(a, depth, write, stable, held);
+    let sp = (a >> 61) as u8;
+    let table = sp != space::FRAME && sp != space::TEMP;
+    if r.is_none()
+        && (stable || held && table)
+        && unsafe { yavs_rt_obj(env, mem, a, u32::from(write)) } != 0
+    {
         // SAFETY: as above; the object is in the table now.
-        r = unsafe { &*mem }.region(a, depth, write, stable);
+        r = unsafe { &*mem }.region(a, depth, write, stable, held);
     }
     let (p, len) = r.map_or((0, 0), |(p, len)| (p as u64, len));
     // SAFETY: compiled code gave the address of its two-word buffer.
     unsafe { *out = [p, len] };
+}
+
+/// Accesses through a held region checked against the lookup (`yavs_rt_hold_check`).
+pub static HOLD_CHECKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The check of an access through a held region (`Gen::host`, debug builds and
+/// `YAVS_CLIFT_HOLD_CHECK`): `p`, what compiled code is about to use for `n` bytes at `a + extra`,
+/// must be what the ordinary lookup finds now. A stale hold would silently give wrong data.
+pub unsafe extern "C" fn yavs_rt_hold_check(
+    env: *mut c_void,
+    mem: *mut Mem,
+    a: u64,
+    extra: u64,
+    n: u64,
+    write: u32,
+    depth: u64,
+    p: *mut u8,
+) {
+    HOLD_CHECKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let hi = a >> 32;
+    let off = (a & 0xffff_ffff) + extra;
+    let look = |m: &Mem| {
+        m.frame_object(hi)
+            .or_else(|| {
+                (hi == u64::from(space::FRAME) << 29 && m.fr.root_len != 0)
+                    .then_some((m.fr.root_slots, m.fr.root_len))
+            })
+            .or_else(|| m.span(a, depth).map(|(b, l)| (b.cast_mut(), l)))
+            .filter(|&(_, l)| off + n <= l)
+            .map(|(b, _)| b.wrapping_add(off as usize))
+    };
+    // SAFETY: as in `yavs_rt_step`.
+    let mut found = look(unsafe { &*mem });
+    if found.is_none_or(|f| f != p) && unsafe { yavs_rt_obj(env, mem, a, write) } != 0 {
+        // SAFETY: as above; the object is in the table now, also an interpreter frame below the
+        // top one, which `span` does not know and a stable activation holds (`Mem::region`).
+        let m = unsafe { &*mem };
+        found = look(m).or_else(|| {
+            m.get(hi)
+                .filter(|o| off + n <= o.len)
+                .map(|o| o.ptr.wrapping_add(off as usize))
+        });
+    }
+    if found != Some(p) {
+        eprintln!(
+            "internal error: a held region at address {a:#x} + {extra} is stale: {p:?}, the lookup finds {found:?}: this is a bug in yavs"
+        );
+        std::process::abort();
+    }
 }
 
 /// `yavs_rt_scan(env, mem, ctl, dope, base, i0, x, e, delta, out)`: the iterations of a search loop
@@ -2093,7 +2297,7 @@ impl crate::eloop::LoopMem for LoopObjects {
         }
         // SAFETY: the pointers are the ones compiled code was given.
         let m = unsafe { &*self.mem };
-        if let Some(r) = m.region(a, self.depth, write, true) {
+        if let Some(r) = m.region(a, self.depth, write, true, false) {
             return Some(r);
         }
         // SAFETY: as above; the object is in the table afterwards.
@@ -2101,7 +2305,7 @@ impl crate::eloop::LoopMem for LoopObjects {
             return None;
         }
         // SAFETY: as above.
-        unsafe { &*self.mem }.region(a, self.depth, write, true)
+        unsafe { &*self.mem }.region(a, self.depth, write, true, false)
     }
 }
 
@@ -2557,14 +2761,9 @@ pub fn enter_on<H: View + ?Sized, const LEAN: bool>(
     // SAFETY: `f` was generated for this function with `nregs` registers and only
     // indexes `regs` below that (checked at compile time); it accesses memory only
     // within the bounds in `mem`; `env` and `mem` outlive the call.
-    let next = unsafe {
-        f(
-            &mut env as *mut Env<'_> as *mut c_void,
-            mem.fr.regs,
-            mem,
-            pc,
-        )
-    };
+    mem.env = &mut env as *mut Env<'_> as *mut c_void;
+    let next = unsafe { f(mem.env, mem.fr.regs, mem, pc) };
+    gate_skipped(mem);
     mem.fr.kctx = std::ptr::null_mut();
     mem.sync(env.host);
     mem.forget_end();
@@ -2579,6 +2778,110 @@ pub fn enter_on<H: View + ?Sized, const LEAN: bool>(
     match env.panic {
         Some(p) => Err(p),
         None => Ok(Some(next)),
+    }
+}
+
+/// Compiled code skipped drives by itself (`Mem::skipped`): tell the kernel of the activation.
+#[inline(always)]
+fn gate_skipped(mem: &mut Mem) {
+    if mem.skipped != 0 {
+        mem.skipped = 0;
+        // SAFETY: as in `direct`, the activation is still running.
+        if let Some((c, _, _)) = unsafe { direct(&mem.fr) } {
+            c.gate_skipped();
+        }
+    }
+}
+
+/// Skips of a compiled drive checked against the full test (`yavs_rt_gate_check`).
+pub static GATE_CHECKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The check of a drive compiled code just skipped (`YAVS_INLCMP=check`, debug builds): the kernel's
+/// full test must agree, a stale gate would silently give wrong results. `form` 0: `value` is the
+/// logic code of one element; 1: the address of a waveform element of a logic signal; 2: of one
+/// byte signal element. `entries`, `kept`: the drives waiting in the compiled code's batch, which
+/// the kernel cannot see: keeping one closes the bits of its kernel driver, so none of them names
+/// the kernel driver of a skip. Drives of other kernel drivers do not touch what it skips.
+pub unsafe extern "C" fn yavs_rt_gate_check(
+    mem: *mut Mem,
+    pc: u32,
+    driver: u32,
+    lo: u64,
+    len: u64,
+    value: u64,
+    form: u64,
+    entries: *const [u64; 2],
+    kept: u32,
+) {
+    // SAFETY: `mem` is what compiled code was given; `value` is an address when the form says so,
+    // with the bytes the skip just read behind it; compiled code wrote `kept` entries.
+    let (c, ds, ss) = unsafe { direct(&(*mem).fr) }.expect("a skipped drive without a kernel");
+    let kept = if kept == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(entries, kept as usize) }
+    };
+    let of = |k: usize| ds.get(k).map(|d| d.id);
+    let kept = kept
+        .iter()
+        .filter(|e| of(e[1] as usize & 0xffff) == of(driver as usize))
+        .count();
+    let word = |k: usize| unsafe { std::ptr::read_unaligned((value as *const u64).add(k)) };
+    let block = match form {
+        0 => [value & 1, value >> 1 & 1, value >> 2 & 1, value >> 3 & 1],
+        1 => [word(1), word(2), word(3), word(4)],
+        _ => [word(1), 0, 0, 0],
+    };
+    GATE_CHECKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let full = yavs_interp::gate_check(c, ds, ss, driver, [lo, len], block);
+    if let Err(why) = full.and_then(|()| {
+        if kept == 0 {
+            Ok(())
+        } else {
+            Err(format!(
+                "{kept} drives of its kernel driver are kept in the batch"
+            ))
+        }
+    }) {
+        eprintln!(
+            "internal error: compiled code skipped the drive at pc {pc} through driver {driver} of [{lo:#x}, {len}], value {block:x?}: {why}"
+        );
+        std::process::abort();
+    }
+}
+
+/// Whole record skips and copies of compiled code checked (`yavs_rt_image_check`).
+pub static SCATTER_CHECKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static GATHER_CHECKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The check of a whole record scatter compiled code is about to skip or a whole gather it just
+/// copied from the image (`YAVS_IMAGE_CHECK`, debug builds). `kept`: drives waiting in compiled
+/// code's batch, handed over before any scatter, so none there. A wrong skip or copy would silently
+/// give wrong results: the run stops.
+pub unsafe extern "C" fn yavs_rt_image_check(mem: *mut Mem, pc: u32, kept: u32) {
+    use std::sync::atomic::Ordering::Relaxed;
+    // SAFETY: `mem` is what compiled code was given, in an activation with its `env`.
+    let env = unsafe { env_or(std::ptr::null_mut(), mem) };
+    let envp = env as *mut Env<'_>;
+    unsafe {
+        (*mem).sync(&mut *(*envp).host);
+        (*mem).temp_seen = (*mem).fr.temp_len;
+    }
+    let full = match unsafe { (*envp).host.image_check(pc) } {
+        Ok(true) if kept != 0 => Err(format!("{kept} drives are kept in the batch")),
+        Ok(true) => {
+            SCATTER_CHECKED.fetch_add(1, Relaxed);
+            Ok(())
+        }
+        Ok(false) => {
+            GATHER_CHECKED.fetch_add(1, Relaxed);
+            Ok(())
+        }
+        Err(e) => Err(e),
+    };
+    if let Err(why) = full {
+        eprintln!("internal error: compiled code at pc {pc} and the record image: {why}");
+        std::process::abort();
     }
 }
 
@@ -2689,6 +2992,7 @@ pub fn call_on(
     } else {
         Called::Done(v as u64)
     };
+    gate_skipped(mem);
     mem.fr.kctx = std::ptr::null_mut();
     mem.forget_end();
     // (`at` is the activation's, not the call's.)
@@ -2742,6 +3046,28 @@ pub fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
             dst, base, layout, ..
         } => vec![dst, base, layout],
         Inst::DopeLen { dst, dope, .. } => vec![dst, dope],
+        Inst::BoundsLen {
+            dst,
+            left,
+            right,
+            dir,
+        } => vec![dst, left, right, dir],
+        Inst::RetBounds { left, right, dir } | Inst::TakeBounds { left, right, dir } => {
+            vec![left, right, dir]
+        }
+        Inst::BoundsPos {
+            dst,
+            left,
+            right,
+            dir,
+            idx,
+            ..
+        } => vec![dst, left, right, dir, idx],
+        Inst::BoundsSlice { dst, regs, .. } => {
+            let mut v = vec![dst];
+            v.extend_from_slice(f.regs(regs).unwrap_or(&[]));
+            v
+        }
         Inst::Deref { dst, handle, .. } => vec![dst, handle],
         Inst::MemEq { dst, a, b, n } => vec![dst, a, b, n],
         Inst::LGet { dst, base, idx } => vec![dst, base, idx],
@@ -2754,6 +3080,7 @@ pub fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
         } => vec![dst, dst_off, src, src_off, n],
         Inst::LSet { base, idx, v } => vec![base, idx, v],
         Inst::LEq { dst, a, b, n } => vec![dst, a, b, n],
+        Inst::LKey { dst, a, n } => vec![dst, a, n],
         Inst::LFill { base, idx, n, v } => vec![base, idx, n, v],
         Inst::SigVal {
             dst, offset, len, ..
@@ -2879,6 +3206,7 @@ pub fn keeps_objects(i: &Inst) -> bool {
             | Inst::LogicOp { .. }
             | Inst::LNum { .. }
             | Inst::LEq { .. }
+            | Inst::LKey { .. }
             | Inst::MemEq { .. }
             | Inst::LGet { .. }
             | Inst::LSet { .. }
@@ -2889,6 +3217,11 @@ pub fn keeps_objects(i: &Inst) -> bool {
             | Inst::BinRange { .. }
             | Inst::MakeDope { .. }
             | Inst::DopeLen { .. }
+            | Inst::BoundsLen { .. }
+            | Inst::BoundsPos { .. }
+            | Inst::BoundsSlice { .. }
+            | Inst::RetBounds { .. }
+            | Inst::TakeBounds { .. }
             | Inst::LayoutOf { .. }
             | Inst::SubtypeCheck { .. }
             | Inst::Deref { .. }
@@ -3237,6 +3570,9 @@ pub enum Known<V = ()> {
     /// An address in the slots of the frame `.0` static links up (1 or 2), at an offset the
     /// generator does not track: frame-mode code reads them from the view (`TierFrame::up_slots`).
     Up(u8),
+    /// An address in the frame's composite variable at bytes `.0..end .1` (`opt/proc_objects.rs`),
+    /// at an offset the generator does not know: tested against the object, not the frame.
+    FrameObj(u32, u32),
     /// An address in the temporary area (`Alloc`, or an index into one).
     Temp,
     /// A guess, not a fact: probably an address in the temporary area (the fat pair a call
@@ -3455,6 +3791,7 @@ fn steady(i: &Inst) -> bool {
             | Inst::Bool { .. }
             | Inst::LogicOp { .. }
             | Inst::LEq { .. }
+            | Inst::LKey { .. }
             | Inst::MemEq { .. }
             | Inst::LGet { .. }
             | Inst::LSet { .. }
@@ -3464,6 +3801,11 @@ fn steady(i: &Inst) -> bool {
             | Inst::FCheck { .. }
             | Inst::BinRange { .. }
             | Inst::DopeLen { .. }
+            | Inst::BoundsLen { .. }
+            | Inst::BoundsPos { .. }
+            | Inst::BoundsSlice { .. }
+            | Inst::RetBounds { .. }
+            | Inst::TakeBounds { .. }
             | Inst::SubtypeCheck { .. }
             | Inst::Br { .. }
             | Inst::CondBr { .. }
@@ -3480,6 +3822,31 @@ fn steady(i: &Inst) -> bool {
 /// registers derived from it) inside a loop. A value that is no address, or one used rarely is
 /// left alone: the resolution is a callback.
 pub fn param_addrs(f: &Func) -> Vec<ParamAddr> {
+    addr_params(f, false)
+}
+
+/// `param_addrs` for code that holds a region over calls (`Gen::hold_recheck`): also a parameter
+/// used three times outside a loop.
+pub fn hold_addrs(f: &Func) -> Vec<ParamAddr> {
+    addr_params(f, true)
+}
+
+/// The instructions after which a held region is still good without asking (`Gen::hold_recheck`):
+/// on their hot path nothing is freed or moved; a slow path that comes back asks itself.
+pub fn holds_over(i: &Inst) -> bool {
+    steady(i)
+        || matches!(
+            i,
+            Inst::Alloc { .. }
+                | Inst::Stmt
+                | Inst::TempRoot { .. }
+                | Inst::MakeDope { .. }
+                | Inst::LayoutOf { .. }
+                | Inst::Deref { .. }
+        )
+}
+
+fn addr_params(f: &Func, any: bool) -> Vec<ParamAddr> {
     let n = f.reg_ty.len();
     let (mut defs, mut first_use) = (vec![0u32; n + 1], vec![usize::MAX; n + 1]);
     for (pc, i) in f.code.iter().enumerate() {
@@ -3622,6 +3989,7 @@ pub fn param_addrs(f: &Func) -> Vec<ParamAddr> {
             Inst::LSet { base, .. } | Inst::LFill { base, .. } => (&[], &[*base]),
             Inst::LCopy { dst, src, .. } => (&[*src], &[*dst]),
             Inst::LEq { a, b, .. } | Inst::MemEq { a, b, .. } => (&[*a, *b], &[]),
+            Inst::LKey { a, .. } => (&[*a], &[]),
             _ => (&[], &[]),
         };
         let looped = loops.iter().any(|&(s, e)| s <= pc && pc <= e);
@@ -3638,7 +4006,7 @@ pub fn param_addrs(f: &Func) -> Vec<ParamAddr> {
     cands
         .iter()
         .enumerate()
-        .filter(|&(k, _)| in_loop[k] > 0 && uses[k] >= 3)
+        .filter(|&(k, _)| (any || in_loop[k] > 0) && uses[k] >= 3)
         .map(|(k, &(reg, cell, _))| ParamAddr {
             reg,
             cell,
@@ -3713,6 +4081,12 @@ pub fn track<V: Copy>(known: &mut [Option<Known<V>>], fixed: &[Option<i64>], f: 
         },
         Inst::Deref { dst, .. } => Some((dst, Known::Heap(None))),
         Inst::Move { dst, src } => get(src).map(|k| (dst, k)),
+        // A record's field is in the record's space, at an offset its layout decides. A guess of
+        // a heap object stays a runtime lookup: the inline lookup is more code than the call.
+        Inst::Field { dst, base, .. } => get(base)
+            .filter(|k| !matches!(k, Known::LikelyHeap))
+            .and_then(|k| unknown_offset(f, k))
+            .map(|k| (dst, k)),
         // As the interpreter computes it when it is no error.
         Inst::Index {
             dst,
@@ -3737,13 +4111,7 @@ pub fn track<V: Copy>(known: &mut [Option<Known<V>>], fixed: &[Option<i64>], f: 
                     at(o, p).map(|a| (dst, Known::Inst(a)))
                 }
                 // An offset past 4 GiB leaves the block through the instruction's own exit.
-                (Some(Known::Inst(_) | Known::InstAny), _) => Some((dst, Known::InstAny)),
-                (Some(Known::Up(d)), _) => Some((dst, Known::Up(d))),
-                (Some(Known::Temp), _) => Some((dst, Known::Temp)),
-                (Some(Known::LikelyTemp), _) => Some((dst, Known::LikelyTemp)),
-                (Some(Known::LikelyHeap), _) => Some((dst, Known::LikelyHeap)),
-                (Some(Known::Heap(_)), _) => Some((dst, Known::Heap(None))),
-                (Some(Known::Param(k)), _) => Some((dst, Known::Param(k))),
+                (Some(k), _) => unknown_offset(f, k).map(|k| (dst, k)),
                 _ => None,
             }
         }
@@ -3778,6 +4146,31 @@ pub fn track<V: Copy>(known: &mut [Option<Known<V>>], fixed: &[Option<i64>], f: 
         {
             *x = Some(Known::Int(i64::from(sig) << 32 | o));
         }
+    }
+}
+
+/// What is known of an address at a run-time offset into the object `k` names (an `Index` by a
+/// run-time position, a record's `Field`): its space, not its offset.
+fn unknown_offset<V: Copy>(f: &Func, k: Known<V>) -> Option<Known<V>> {
+    match k {
+        Known::Frame(o) => f
+            .locals
+            .iter()
+            .find(|l| {
+                yavs_ir::is_frame_object(l)
+                    && u64::from(l.slot) <= o
+                    && o < u64::from(l.slot) + u64::from(l.size)
+            })
+            .map(|l| Known::FrameObj(l.slot, l.slot + l.size)),
+        Known::FrameObj(s, e) => Some(Known::FrameObj(s, e)),
+        Known::Inst(_) | Known::InstAny => Some(Known::InstAny),
+        Known::Up(d) => Some(Known::Up(d)),
+        Known::Temp => Some(Known::Temp),
+        Known::LikelyTemp => Some(Known::LikelyTemp),
+        Known::LikelyHeap => Some(Known::LikelyHeap),
+        Known::Heap(_) => Some(Known::Heap(None)),
+        Known::Param(k) => Some(Known::Param(k)),
+        Known::Int(_) | Known::Const(..) => None,
     }
 }
 
@@ -3984,6 +4377,7 @@ pub fn xstep_ok(f: &Func, i: &Inst) -> bool {
             | Inst::LayoutOf { .. }
             | Inst::LFill { .. }
             | Inst::LEq { .. }
+            | Inst::LKey { .. }
             | Inst::Report { .. }
             | Inst::FToI { .. }
             | Inst::FToIRange { .. }

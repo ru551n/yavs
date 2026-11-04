@@ -1,0 +1,7 @@
+exit	1
+diag	note	0	0	:array_param_cells_slice:_p0	2
+diag	note	0	0	:array_param_cells_slice:_p0	3
+diag	note	0	0	:array_param_cells_slice:_p0	4
+diag	note	0	0	:array_param_cells_slice:_p0	5
+diag	note	0	0	:array_param_cells_slice:_p0	6
+diag	fatal	0	0	:array_param_cells_slice:_p0	index 8 outside of INTEGER range 7 downto 2

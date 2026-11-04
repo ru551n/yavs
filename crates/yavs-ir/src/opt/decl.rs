@@ -38,6 +38,9 @@ pub(super) struct Facts {
     /// 8-byte words that point to a heap object's descriptor: its bytes and the offset the
     /// pointer has in them.
     pub descs: FxMap<u32, (Rc<[u8]>, u32)>,
+    /// Slots `[data, desc, handle]` over a private heap object of a known size: the slot's
+    /// offset, the object's bytes (descriptor included), its type, where the value starts in it.
+    pub objects: Vec<(u32, u32, TyId, u32)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -744,7 +747,7 @@ impl Opt<'_> {
     /// Is `o` inside the descriptor of an array variable, `[data, dope, handle, descriptor]`'s
     /// last `24 * dims` bytes? Nothing writes it after the declaration. (An array of composites
     /// has a `[data, desc, handle]` slot of 24 bytes and no descriptor in it.)
-    fn in_descriptor(&self, o: i64) -> bool {
+    pub(super) fn in_descriptor(&self, o: i64) -> bool {
         self.f.locals.iter().any(|l| {
             matches!(self.prog.types.get(l.ty), Some(Ty::Array { dims, .. })
                 if o >= i64::from(l.slot) + 24
@@ -756,7 +759,9 @@ impl Opt<'_> {
     /// Frame ranges the body writes, and those whose address is used other than directly by a
     /// load or store anywhere (a pointer may reach them), by the walk's view of the addresses.
     fn frame_writes(&self) -> (Ranges, Ranges) {
-        let body = self.f.body.map_or(0, |b| b.0 as usize);
+        // A block the body cannot reach runs before it, whatever its number (the lowering splices
+        // the declarations of a process's signal copies in behind the first blocks of the body).
+        let after = self.reached_from(vec![self.f.body.map_or(0, |b| b.0 as usize)]);
         let (mut wr, mut esc) = (Vec::new(), Vec::new());
         let fa = |r: Reg| match self.opn(r) {
             Opn::A(AddrSpace::Frame, o) => Some(i64::from(o)),
@@ -766,17 +771,9 @@ impl Opt<'_> {
             Opn::K(n) => Some(n),
             _ => None,
         };
-        for b in 0..self.blocks.len() {
+        for (b, &after) in after.iter().enumerate() {
             for pc in self.range(b) {
-                self.classify(
-                    self.f,
-                    &self.code[pc],
-                    &fa,
-                    &k,
-                    b >= body,
-                    &mut wr,
-                    &mut esc,
-                );
+                self.classify(self.f, &self.code[pc], &fa, &k, after, &mut wr, &mut esc);
             }
         }
         (wr, esc)
@@ -804,6 +801,8 @@ impl Opt<'_> {
         };
         match *i {
             Inst::Load { .. } => {}
+            // A derived address whose own uses are classified.
+            Inst::Index { dst, .. } if fa(dst).is_some() => {}
             Inst::Store { addr, src, w } => {
                 if let Some(o) = fa(addr)
                     && writes
@@ -895,6 +894,41 @@ impl Opt<'_> {
                 esc.push((0, i64::MAX));
                 continue;
             }
+            // An address a constant away from one of those (a word of a variable's slot) is
+            // followed like them: its uses are classified, it is no escape of the object.
+            let consts: FxMap<u32, i64> = g
+                .code
+                .iter()
+                .filter_map(|i| match *i {
+                    Inst::Const { dst, v } if defs.get(dst.0 as usize) == Some(&1) => {
+                        Some((dst.0, v))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let mut grew = true;
+            while grew {
+                grew = false;
+                for i in &g.code {
+                    if let Inst::Index {
+                        dst,
+                        base,
+                        pos,
+                        stride,
+                    } = *i
+                        && defs.get(dst.0 as usize) == Some(&1)
+                        && !up.contains_key(&dst.0)
+                        && let Some(&o) = up.get(&base.0)
+                        && let Some(at) = consts
+                            .get(&pos.0)
+                            .and_then(|p| p.checked_mul(i64::from(stride)))
+                            .and_then(|d| o.checked_add(d))
+                    {
+                        up.insert(dst.0, at);
+                        grew = true;
+                    }
+                }
+            }
             let fa = |r: Reg| up.get(&r.0).copied();
             let kc = |r: Reg| {
                 g.code.iter().find_map(|i| match *i {
@@ -984,6 +1018,20 @@ impl Opt<'_> {
                 _ => {}
             }
         }
+        for (&w, &v) in &ev.fw {
+            if let Av::B(b, off) = v
+                && w % 8 == 0
+                && let Ok(off) = u32::try_from(off)
+                && ev.fw.get(&(w + 16)) == Some(&Av::H(b))
+                && !gone(i64::from(w), 24)
+                && let Some(k) = ev.blks.get(b as usize)
+                && let Some(ty) = k.heap
+                && let Ok(n) = u32::try_from(k.m.v.len())
+            {
+                facts.objects.push((w, n, ty, off));
+            }
+        }
+        facts.objects.sort_unstable_by_key(|o| o.0);
         Some(facts)
     }
 }

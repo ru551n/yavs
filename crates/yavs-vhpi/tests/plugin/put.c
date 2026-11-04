@@ -172,6 +172,23 @@ PLUGIN_EXPORT void clocked(void) {
   reg(vhpiCbStartOfSimulation, 0, start, NULL, NULL, "start");
 }
 
+/* ---- held: a deposit on a signal whose process goes on assigning what it holds ------ */
+
+static void held_at(const vhpiCbDataT *cb) {
+  (void)cb;
+  vhpi_printf("vhpi: deposit hv=%d\n", put_int(h("hv"), 5, vhpiDepositPropagate));
+  vhpi_printf("vhpi: deposit hs=%d\n", put_str(h("hs"), vhpiBinStrVal, "1", vhpiDepositPropagate));
+}
+
+static void held_start(const vhpiCbDataT *cb) {
+  (void)cb;
+  reg(vhpiCbAfterDelay, 37, held_at, NULL, NULL, "held");
+}
+
+PLUGIN_EXPORT void held(void) {
+  reg(vhpiCbStartOfSimulation, 0, held_start, NULL, NULL, "start");
+}
+
 /* ---- errors: what cannot be written, and when ------------------------------------- */
 
 static void read_only(const vhpiCbDataT *cb) {

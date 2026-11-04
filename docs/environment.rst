@@ -269,9 +269,32 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - not ``0``
      - unset
      - ``run``
+   * - ``YAVS_NO_PROC_OBJECTS``
+     - Keeps the composite variables of processes on the heap instead of in their frames.
+     - not ``0``
+     - unset
+     - ``run``
    * - ``YAVS_NO_SLOTS``
      - Turns the slot pass off.
      - not ``0``
+     - unset
+     - ``run``
+   * - ``YAVS_NO_DOPES``
+     - Keeps descriptors in memory: lengths, positions and slices read them there instead of
+       from registers.
+     - not ``0``
+     - unset
+     - ``run``
+   * - ``YAVS_INLCMP``
+     - ``off``: Cranelift code makes no compare of a drive with the current value; ``check``
+       (always in a debug build): every skip made that way asks the kernel's full test and the run
+       aborts on a difference.
+     - ``off`` or ``check``
+     - unset
+     - ``run``
+   * - ``YAVS_NO_FACTS``
+     - Specialised copies are made without facts about the instance's signals (a measuring aid).
+     - any value
      - unset
      - ``run``
    * - ``YAVS_NO_SPEC``
@@ -279,10 +302,50 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - not ``0``
      - unset
      - ``run``
+   * - ``YAVS_AUTO_POLICY``
+     - ``sampled``: ``--tier=auto`` on Cranelift decides by sampled time alone, as before the count rule; on every Cranelift tier, no native-frame code of ``**`` and of a layout from a run-time descriptor. For comparing the two.
+     - ``sampled``
+     - the count rule
+     - ``run``
+   * - ``YAVS_AUTO_COUNT``
+     - Interpreted entries before the count rule asks for a function. A process switches to its copy after half of them, and the copy has the other half.
+     - a number, at least 1
+     - ``100``
+     - ``run``
+   * - ``YAVS_AUTO_GATE``
+     - Work of the simulation threads before the count rule compiles anything or makes a copy of a process, in the sampler's microseconds of work (16 000 instructions each, CPU microseconds where the counters are refused).
+     - a number
+     - ``160000``
+     - ``run``
+   * - ``YAVS_AUTO_WARM_GATE``
+     - Simulation CPU of the last run of a program, in microseconds, from which a warm run links what the cache lists and makes copies before ``YAVS_AUTO_GATE``. A large number keeps the gate.
+     - a number
+     - ``400000``
+     - ``run``
+   * - ``YAVS_AUTO_GUARD_SHARE``
+     - Native-frame code is suspect when the frames it leaves to the interpreter cost one part in this many of the work seen. ``0``: no guard.
+     - a number
+     - ``32``
+     - ``run``
+   * - ``YAVS_AUTO_GUARD_CALLS``
+     - Calls per frame left that bring suspect native-frame code back.
+     - a number
+     - ``16``
+     - ``run``
+   * - ``YAVS_AUTO_SYNC``
+     - A run waits for what the count rule asks for, so a test does not depend on when the compile ends.
+     - any value
+     - unset
+     - ``run``
    * - ``YAVS_SPEC_AFTER``
      - Activations before a process switches to its copy. Setting it forces the switch whatever the tier compiled.
      - a number, at least 2
-     - ``1024``
+     - ``1024``, half of ``YAVS_AUTO_COUNT`` under the count rule
+     - ``run``
+   * - ``YAVS_SPEC_ALL``
+     - Every process with one suspension point gets a copy, also one that reads no instance data.
+     - any value
+     - unset
      - ``run``
    * - ``YAVS_SPEC_CAP``
      - Limit on copies, in percent of the shared optimised process code. ``0``: no limit.
@@ -293,6 +356,31 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - Turns the memo of pure function calls in the interpreter off.
      - any value
      - unset
+     - ``run``
+   * - ``YAVS_NO_GATHER_INTO``
+     - Keeps the temporary of ``v := r`` for a record signal ``r``: the signal is read into it and copied, not read into ``v``.
+     - any value
+     - unset
+     - ``run``
+   * - ``YAVS_NO_IMAGE``
+     - Turns record images off: every read of a whole record signal reads it field by field, and every assignment of a whole record signal goes to the simulation kernel field by field.
+     - any value
+     - unset
+     - ``run``
+   * - ``YAVS_IMAGE_CHECK``
+     - Reads a whole record signal field by field as well as from its image, holds every assignment of a whole record signal that its image makes unnecessary against the kernel's full test, in Cranelift code too, and stops with an internal error on a difference. Always on in a debug build.
+     - any value
+     - unset
+     - ``run``
+   * - ``YAVS_IMAGE_INLINE``
+     - ``off``: Cranelift code leaves whole record signal reads and whole zero-delay assignments to the host, which uses the images as before; ``noread``, ``nodrive``: only the reads or only the assignments do.
+     - ``off``, ``noread`` or ``nodrive``
+     - unset
+     - ``run``
+   * - ``YAVS_IMAGE_AFTER``
+     - Reads, or zero-delay assignments, of a whole record signal by one process before it asks for an image of it.
+     - a number
+     - ``16``
      - ``run``
    * - ``YAVS_NO_NATIVE_IEEE``
      - Runs the ``ieee`` packages from their VHDL bodies only, without native fast paths.
@@ -316,6 +404,11 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - ``run``
    * - ``YAVS_LEAN_EVENTS``
      - ``off`` keeps the event history of every wide signal.
+     - ``off``
+     - on
+     - ``run``
+   * - ``YAVS_NO_HISTORY``
+     - ``off`` keeps the event records and ``'last_value`` of a wide signal nothing asks them of.
      - ``off``
      - on
      - ``run``
@@ -362,6 +455,11 @@ Compiled tiers: Cranelift
      - any value
      - unset
      - ``run``
+   * - ``YAVS_CLIFT_HUGE``
+     - ``0``: compiled code stays out of the huge-page arena.
+     - ``0``, ``1``
+     - ``1``
+     - ``run``
    * - ``YAVS_CLIFT_INLINE``
      - Largest body that is inlined. ``0``: none.
      - a number
@@ -382,6 +480,21 @@ Compiled tiers: Cranelift
      - a number
      - no limit
      - ``run``
+   * - ``YAVS_CLIFT_HOLD_CHECK``
+     - Every access through a held parameter region is checked against the lookup, a stale one aborts. Always on in debug builds.
+     - any value
+     - unset
+     - ``run``
+   * - ``YAVS_CLIFT_HOLD_DROP``
+     - Debug builds: held regions are not asked again after a call. For the mutation test.
+     - any value
+     - unset
+     - ``run``
+   * - ``YAVS_CLIFT_NO_PROOFS``
+     - Arithmetic keeps its overflow tests where intervals prove them away.
+     - any value
+     - unset
+     - ``run``
    * - ``YAVS_CLIFT_NO_SCAN``
      - Search loops run without the scan helper.
      - any value
@@ -392,15 +505,35 @@ Compiled tiers: Cranelift
      - ``1``
      - ``0``
      - ``run``
+   * - ``YAVS_CLIFT_ONCE``
+     - ``0``: compiled processes keep the blocks that run at most once.
+     - ``0``, ``1``
+     - ``1``
+     - ``run``
    * - ``YAVS_CLIFT_OPT``
      - The Cranelift optimisation level.
      - ``speed``, ``none``
      - ``speed``
      - ``run``
+   * - ``YAVS_CLIFT_PREKEY_CHECK``
+     - Lowers the function even on a cache hit and fails when the body is not the one the cache names. On by default in a debug build.
+     - not ``0``
+     - unset
+     - ``run``
+   * - ``YAVS_CLIFT_PREKEY_DROP``
+     - Debug builds, the test of the check: leaves these inputs out of the key that finds compiled code.
+     - names, comma separated
+     - unset
+     - ``run``
    * - ``YAVS_CLIFT_PERFMAP``
      - Writes ``/tmp/perf-<pid>.map`` for ``perf report``: one line per function of generated code, compiled or linked from the compilation cache, named ``f<id>_<process instance path>`` (``n`` native-frame code, ``c`` its adapter; ``+N`` when N more processes run the same code) or by subprogram.
      - ``1``
      - ``0``
+     - ``run``
+   * - ``YAVS_CLIFT_PIN``
+     - ``0``: the frame view is not kept in the pinned register.
+     - ``0``, ``1``
+     - ``1``
      - ``run``
    * - ``YAVS_CLIFT_RA``
      - The register allocator.

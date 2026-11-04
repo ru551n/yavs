@@ -24,7 +24,8 @@ mod verify;
 pub use build::{FuncBuilder, ProgramBuilder};
 pub use casetab::CaseTab;
 pub use copies::{
-    Copies, CopyBlob, CopyLoader, CopyStats, NoCopy, PkgData, PkgSource, cap_percent,
+    Copies, CopyBlob, CopyLoader, CopyStats, InstFacts, NoCopy, PkgData, PkgSource, SigFact,
+    cap_percent,
 };
 pub use inst::{
     AddrSpace, AttrKind, BoolOp, CheckKind, CmpOp, DriveMode, EdgeKind, FOp, FUnOp, ForceKind,
@@ -38,7 +39,9 @@ pub use program::{
     FuncFlags, FuncKind, Labels, Local, Mode, NativeRef, OptCopy, Param, ParamClass, Program,
     RootKind, StmtInfo, StmtKind, VhpiIndex, VhpiModel, VhpiParam, ViaNode,
 };
-pub use program::{COV_INPUTS, native_shown};
+pub use program::{
+    COV_INPUTS, FRAME_OBJECT, frame_object_addr, frame_object_range, is_frame_object, native_shown,
+};
 pub use program::{bytes, lazy_bodies, note_restart, optimised_functions, restarted_calls};
 pub use ty::{DOPE_DIM_BYTES, Field, Layout, LayoutError, LogicKind, Refl, ReflKind, Ty, dim_len};
 pub use verify::VerifyError;
@@ -154,6 +157,10 @@ impl<I: Id, T> IdVec<I, T> {
 
     pub fn values(&self) -> &[T] {
         &self.items
+    }
+
+    pub fn values_mut(&mut self) -> &mut [T] {
+        &mut self.items
     }
 }
 

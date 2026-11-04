@@ -36,16 +36,23 @@
 
 mod cfg;
 mod decl;
+mod dopes;
+pub use dopes::scans as dopes_scans;
 mod drives;
 mod inline;
 mod layout_cache;
 mod licm;
 mod live;
 mod memo;
+mod place;
+mod proc_objects;
 mod range;
+pub use range::{FULL as IV_FULL, Iv, iv_after, no_overflow};
 mod share;
 mod sink;
 mod slots;
+
+pub(crate) use proc_objects::OBJECT_TY;
 
 pub use inline::FwdCache;
 
@@ -216,13 +223,15 @@ pub fn fingerprint() -> String {
         drives_enabled(),
         slots_enabled(),
         frame_blocks_on(),
+        proc_objects::enabled(),
+        dopes::enabled(),
     ])
 }
 
-fn fingerprint_of(f: [bool; 11]) -> String {
+fn fingerprint_of(f: [bool; 13]) -> String {
     let names = [
         "iropt", "memo", "cfg", "inline", "keep", "compiled", "external", "layouts", "drives",
-        "slots", "blocks",
+        "slots", "blocks", "objects", "dopes",
     ];
     let parts: Vec<String> = names
         .iter()
@@ -239,9 +248,9 @@ mod fingerprint_tests {
     /// Every switch is part of the fingerprint (#491).
     #[test]
     fn each_switch_changes_the_fingerprint() {
-        let base = fingerprint_of([false; 11]);
-        for i in 0..11 {
-            let mut f = [false; 11];
+        let base = fingerprint_of([false; 13]);
+        for i in 0..13 {
+            let mut f = [false; 13];
             f[i] = true;
             assert_ne!(fingerprint_of(f), base, "switch {i}");
         }
@@ -413,11 +422,15 @@ fn optimize_body_with(
     }
     let tabbed = inline::tab_calls(prog, id, raw);
     let raw = tabbed.as_deref().unwrap_or(raw);
+    let framed = proc_objects::run(prog, raw);
+    let raw = framed.as_deref().unwrap_or(raw);
     let mut layouts = prog
         .layouts
         .0
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let moved = inst.and_then(|_| proc_objects::for_copy(prog, id, raw, inst, &mut layouts));
+    let raw = moved.as_deref().unwrap_or(raw);
     let mut o = Opt::new(
         prog,
         raw,
@@ -447,6 +460,12 @@ fn optimize_body_with(
     f.operands = o.operands;
     f.reg_ty.extend(o.new_regs);
     if split {
+        tidy(prog, &mut f, &mut layouts, inst);
+    }
+    if dopes::enabled() && dopes::run(prog, &mut f) {
+        if cfg_enabled() {
+            cfg::dead_defs(prog, &mut f);
+        }
         tidy(prog, &mut f, &mut layouts, inst);
     }
     if cfg_enabled()
@@ -685,6 +704,7 @@ fn drop_markers(prog: &Program, f: &mut crate::Func, layouts: &mut FxMap<TyId, O
         layouts,
     );
     o.drop_statements();
+    o.gather_into();
     if !o.changed {
         return;
     }
@@ -773,7 +793,10 @@ fn renumber(prog: &Program, f: &mut crate::Func) {
                 if *kind == CheckKind::Null {
                     *lo = *v;
                 }
-                if !matches!(kind, CheckKind::Range | CheckKind::Index) {
+                if !matches!(
+                    kind,
+                    CheckKind::Range | CheckKind::Index | CheckKind::IndexDown
+                ) {
                     *hi = *v;
                 }
             }
@@ -832,6 +855,9 @@ fn for_defs_fast(i: &Inst, mut f: impl FnMut(Reg)) {
         | Inst::Pos { dst, .. }
         | Inst::SlicePos { dst, .. }
         | Inst::DopeLen { dst, .. }
+        | Inst::BoundsLen { dst, .. }
+        | Inst::BoundsPos { dst, .. }
+        | Inst::BoundsSlice { dst, .. }
         | Inst::Field { dst, .. }
         | Inst::Un { dst, .. } => f(dst),
         Inst::Store { .. }
@@ -882,8 +908,11 @@ enum Cls {
     Space(AddrSpace),
     Heap,
     Temp,
-    /// The block one `Alloc` made (the register), disjoint from every other.
+    /// The block one `Alloc` or `NewFrame` made (the register), disjoint from every other.
     Block(u32),
+    /// What an `in` parameter's cell points to: older than any block of this activation, and
+    /// otherwise anywhere.
+    Param,
 }
 
 /// Is the address in memory nothing writes while the function runs: the constant pool and
@@ -934,9 +963,13 @@ enum Key {
     Pos(Opn, u8, Opn),
     /// `SlicePos` of the bounds `left`, `right` and direction in a descriptor.
     Slice(Opn, [Opn; 3]),
+    /// `BoundsLen` of left, right and direction.
+    Bounds([Opn; 3]),
     Field(Opn, Opn, u32),
     /// The temporary layout of a type under a descriptor: gone at the next `Stmt`.
     Layout(TyId, Opn),
+    /// An element of a logic vector: gone with a write of the vector.
+    LGet(Opn, Opn),
 }
 
 impl Key {
@@ -949,8 +982,16 @@ impl Key {
             Key::Slice(a, _) => Some((a, 0, 24)),
             Key::Field(_, l, n) => Some((l, 16 + 8 * i64::from(n), 8)),
             Key::Layout(_, d) => Some((d, 0, 24 * 8)),
+            Key::LGet(b, _) => Some((b, 0, i64::MAX / 4)),
             _ => None,
         }
+    }
+
+    /// Is this fact about memory a register points to, usually what one statement built? A fact
+    /// about a known address, a variable, may be used all through a block.
+    fn is_temporary(&self) -> bool {
+        self.region()
+            .is_some_and(|(a, ..)| !matches!(a, Opn::A(..)))
     }
 }
 
@@ -972,22 +1013,49 @@ const MEM_CAP: usize = 64;
 struct Table {
     pure: FxMap<Key, Val>,
     mem: FxMap<Key, Val>,
+    /// The memory facts about temporaries in the order they were learned (with some gone from
+    /// `mem` by now).
+    age: std::collections::VecDeque<Key>,
     log: Vec<(Key, Option<Val>)>,
 }
 
 impl Table {
     fn put(&mut self, k: Key, v: Val) {
         let old = if k.region().is_some() {
-            // ponytail: a full table stops learning memory facts; every store and statement
-            // scans it, so it stays small. An index by address if this loses much.
-            if self.mem.len() >= MEM_CAP {
-                return;
+            // Every store and statement scans the table, so it stays small. A full one makes room
+            // from `age` (#1059); with only variables left it stops learning.
+            if !self.mem.contains_key(&k) {
+                if !self.make_room() {
+                    return;
+                }
+                if k.is_temporary() {
+                    self.age.push_back(k.clone());
+                }
             }
             self.mem.insert(k.clone(), v)
         } else {
             self.pure.insert(k.clone(), v)
         };
         self.log.push((k, old));
+    }
+
+    fn make_room(&mut self) -> bool {
+        while self.mem.len() >= MEM_CAP {
+            let Some(k) = self.age.pop_front() else {
+                // What a rollback brought back has no place in the order.
+                let mem = &self.mem;
+                self.age
+                    .extend(mem.keys().filter(|k| k.is_temporary()).cloned());
+                if self.age.is_empty() {
+                    return false;
+                }
+                continue;
+            };
+            if let Some(v) = self.mem.remove(&k) {
+                self.log.push((k, Some(v)));
+            }
+        }
+        true
     }
 
     fn get(&self, k: &Key) -> Option<Val> {
@@ -1040,6 +1108,61 @@ impl Table {
     }
 }
 
+#[cfg(test)]
+mod table_tests {
+    use super::*;
+
+    fn key(i: i64) -> Key {
+        Key::Load(Opn::K(i), Width::B8)
+    }
+
+    fn var(i: u32) -> Key {
+        Key::Load(Opn::A(AddrSpace::Frame, i * 8), Width::B8)
+    }
+
+    /// A table full of facts about variables keeps them, as a later statement may read them.
+    #[test]
+    fn a_table_of_variables_stops_learning() {
+        let mut t = Table::default();
+        let cap = MEM_CAP as u32;
+        for i in 0..=cap {
+            t.put(var(i), Val::K(1));
+        }
+        assert!(t.get(&var(0)).is_some() && t.get(&var(cap)).is_none());
+        // A fact about a variable pushes out one about a temporary.
+        let mut t = Table::default();
+        t.put(key(0), Val::K(1));
+        for i in 0..cap {
+            t.put(var(i), Val::K(1));
+        }
+        assert!(t.get(&key(0)).is_none() && t.get(&var(cap - 1)).is_some());
+    }
+
+    /// A full table forgets its oldest fact about a temporary, and leaving a block gives back what
+    /// it forgot.
+    #[test]
+    fn a_full_table_keeps_learning() {
+        let mut t = Table::default();
+        let cap = MEM_CAP as i64;
+        for i in 0..cap {
+            t.put(key(i), Val::K(i));
+        }
+        assert!(key(0).is_temporary() && !var(0).is_temporary());
+        let mark = t.log.len();
+        t.put(key(cap), Val::K(cap));
+        assert!(t.get(&key(0)).is_none() && t.get(&key(cap)).is_some());
+        assert_eq!(t.mem.len(), MEM_CAP);
+        t.rollback(mark);
+        assert!(t.get(&key(0)).is_some() && t.get(&key(cap)).is_none());
+        // What came back has no place in the order, and the table still takes new facts.
+        for i in cap..cap * 3 {
+            t.put(key(i), Val::K(i));
+            assert!(t.get(&key(i)).is_some());
+            assert!(t.mem.len() <= MEM_CAP);
+        }
+    }
+}
+
 /// What a simplified arithmetic instruction becomes.
 enum Simp {
     Fold(i64),
@@ -1087,6 +1210,8 @@ struct Opt<'a> {
     kc: Vec<Option<i64>>,
     /// Registers defined once, by an `AddrOf`.
     ka: Vec<Option<(AddrSpace, u32)>>,
+    /// The registers that took over the cell of an `in` parameter (`promote`).
+    in_regs: Vec<Reg>,
     /// Where single-definition address registers point.
     cls: Vec<Option<Cls>>,
     /// Registers replaced by another (both defined once): `rep[r] == r` if not.
@@ -1204,6 +1329,7 @@ impl<'a> Opt<'a> {
             defs: vec![0; n],
             kc: vec![None; n],
             ka: vec![None; n],
+            in_regs: Vec::new(),
             cls: vec![None; n],
             rep: (0..n as u32).collect(),
             nrep: 0,
@@ -1413,6 +1539,14 @@ impl<'a> Opt<'a> {
         }
     }
 
+    /// Does the register hold the address of the cell of an `in` parameter?
+    fn in_cell(&self, r: Reg) -> bool {
+        matches!(self.ka.get(r.0 as usize), Some(Some((AddrSpace::Frame, o)))
+        if self.f.params.iter().any(|p| {
+            p.slot == *o && p.mode == crate::Mode::In && p.class == crate::ParamClass::Value
+        }))
+    }
+
     fn set_cls(&mut self, r: Reg, c: Cls) {
         if let Some(x) = self.cls.get_mut(r.0 as usize) {
             *x = Some(c);
@@ -1479,8 +1613,15 @@ impl<'a> Opt<'a> {
                             self.lwords.insert(dst, w);
                         }
                     }
-                    Inst::Alloc { dst, .. } if self.single(dst) => {
+                    Inst::Alloc { dst, .. } | Inst::NewFrame { dst, .. } if self.single(dst) => {
                         self.set_cls(dst, Cls::Block(dst.0));
+                    }
+                    Inst::Load {
+                        dst,
+                        addr,
+                        w: Width::B8,
+                    } if self.single(dst) && self.in_cell(addr) => {
+                        self.set_cls(dst, Cls::Param);
                     }
                     Inst::LayoutOf { dst, ty, .. } if self.single(dst) => {
                         self.set_cls(dst, Cls::Temp);
@@ -1506,17 +1647,26 @@ impl<'a> Opt<'a> {
                 }
             }
         }
+        for r in self.in_regs.clone() {
+            self.set_cls(r, Cls::Param);
+        }
     }
 
     /// The blocks some path from the entry reaches. Code that suspends resumes right after
     /// the instruction: in the same block, unless that ends the block, and then the next
     /// block is entered by no branch.
     fn reachable(&self) -> Vec<bool> {
-        let mut seen = vec![false; self.blocks.len()];
         // (The block a process pauses at is entered by the interpreter, not by a branch.)
-        let mut work: Vec<usize> = std::iter::once(0)
-            .chain(self.f.body.map(|b| b.0 as usize))
-            .collect();
+        self.reached_from(
+            std::iter::once(0)
+                .chain(self.f.body.map(|b| b.0 as usize))
+                .collect(),
+        )
+    }
+
+    /// The blocks the blocks `work` can reach, a suspension's continuation included.
+    fn reached_from(&self, mut work: Vec<usize>) -> Vec<bool> {
+        let mut seen = vec![false; self.blocks.len()];
         while let Some(b) = work.pop() {
             if seen.get(b) != Some(&false) {
                 continue;
@@ -1679,6 +1829,30 @@ impl<'a> Opt<'a> {
         self.drop_clean_roots();
         // (Temporaries nothing reads are gone before the markers that free them are judged.)
         self.dce();
+        if self.code.iter().any(|i| matches!(i, Inst::LCopy { .. })) {
+            self.reanalyse();
+            if let Some(inited) = &promoted {
+                self.hide_inits(inited);
+            }
+            if self.forward_logic_copies() {
+                self.dce();
+            }
+        }
+        if self.code.iter().any(|i| matches!(i, Inst::SigRead { .. })) {
+            self.reanalyse();
+            if let Some(inited) = &promoted {
+                self.hide_inits(inited);
+            }
+            if self.cat_reads() {
+                self.dce();
+            }
+        }
+        if self.has_gate_native() {
+            self.reanalyse();
+            if self.gate_results() {
+                self.dce();
+            }
+        }
         self.drop_statements();
         self.merge_consts();
         self.dce();
@@ -1688,6 +1862,129 @@ impl<'a> Opt<'a> {
             self.defaults_first();
             self.dce();
         }
+    }
+
+    /// The `LogicOp` of a gate native (`std_logic_1164` or `numeric_std` gates, `not`, the `to_x01`
+    /// family on vectors), or `None`.
+    fn gate_op(&self, native: crate::NativeId) -> Option<LOp> {
+        use crate::ieee::{Gate, Op};
+        let key = crate::ieee::symbol_key(&self.prog.natives.get(native)?.symbol)?;
+        let gate = |g| match g {
+            Gate::And => LOp::And,
+            Gate::Nand => LOp::Nand,
+            Gate::Or => LOp::Or,
+            Gate::Nor => LOp::Nor,
+            Gate::Xor => LOp::Xor,
+            Gate::Xnor => LOp::Xnor,
+        };
+        Some(match crate::ieee::parse(key)? {
+            Op::VecGate(g) | Op::NumGate(g) => gate(g),
+            Op::VecNot | Op::NumNot => LOp::Not,
+            Op::Conv(0, true) => LOp::ToX01,
+            Op::Conv(1, true) => LOp::ToX01Z,
+            Op::Conv(_, true) => LOp::ToUx01,
+            _ => return None,
+        })
+    }
+
+    /// A scan: is there a call of a gate native at all (`gate_results` needs fresh tables)?
+    fn has_gate_native(&self) -> bool {
+        self.code.iter().any(|i| {
+            matches!(*i, Inst::CallNative { native, dst: Some(_), .. }
+                if self.gate_op(native).is_some())
+        })
+    }
+
+    /// A gate native of operands of known, equal lengths whose result only the read of its data
+    /// takes (its bounds are read nowhere: the checks of them folded) is a `LogicOp` into a block
+    /// of its own (#1063): no fat pair, no descriptor, the same elements, and nothing the native
+    /// could report (lengths that differ keep the call).
+    fn gate_results(&mut self) -> bool {
+        let reads = |s: &Self, i: &Inst, r: Reg| {
+            let mut hit = false;
+            i.visit(&mut |x, role, _| hit |= role == Role::Use && x == r);
+            if let Some(l) = i.list() {
+                hit |= s
+                    .operands
+                    .get(l.start as usize..(l.start + l.len) as usize)
+                    .is_some_and(|rs| rs.contains(&r));
+            }
+            hit
+        };
+        let mut done = false;
+        for b in 0..self.blocks.len() {
+            for pc in self.range(b) {
+                let Inst::CallNative {
+                    native,
+                    args,
+                    dst: Some(p),
+                } = self.code[pc]
+                else {
+                    continue;
+                };
+                let Some(op) = self.gate_op(native) else {
+                    continue;
+                };
+                let Some(rs) = self
+                    .operands
+                    .get(args.start as usize..(args.start + args.len) as usize)
+                    .map(<[Reg]>::to_vec)
+                else {
+                    continue;
+                };
+                let alen = |s: &Self, a: &[Reg]| match (s.opn(a[1]), s.opn(a[2]), s.opn(a[3])) {
+                    (Opn::K(l), Opn::K(r), Opn::K(d)) => {
+                        dim_len(l, r, d == 1).filter(|&n| (1..1 << 31).contains(&n))
+                    }
+                    _ => None,
+                };
+                let unary = matches!(op, LOp::Not | LOp::ToX01 | LOp::ToX01Z | LOp::ToUx01);
+                let want = if unary { 4 } else { 8 };
+                if rs.len() != want {
+                    continue;
+                }
+                let Some(n) = alen(self, &rs[..4]) else {
+                    continue;
+                };
+                if !unary && alen(self, &rs[4..]) != Some(n) {
+                    continue;
+                }
+                if !self.single(p) {
+                    continue;
+                }
+                // One reader, in this block: the load of the data pointer.
+                let mut readers = (0..self.code.len()).filter(|&q| reads(self, &self.code[q], p));
+                let (Some(lpc), None) = (readers.next(), readers.next()) else {
+                    continue;
+                };
+                let Inst::Load {
+                    dst: x,
+                    w: Width::B8,
+                    ..
+                } = self.code[lpc]
+                else {
+                    continue;
+                };
+                if !self.range(b).contains(&lpc) || lpc < pc || !self.single(x) {
+                    continue;
+                }
+                let size = self.const_reg(b, pc, (n.div_ceil(64) * 32) as i64);
+                let q = self.fresh(RegTy::Ptr, 1);
+                self.inserts.push((pc, Inst::Alloc { dst: q, size }));
+                let cnt = self.const_reg(b, pc, n as i64);
+                self.code[pc] = Inst::LogicOp {
+                    op,
+                    dst: q,
+                    a: rs[0],
+                    b: if unary { rs[0] } else { rs[4] },
+                    n: cnt,
+                };
+                self.code[lpc] = Inst::Move { dst: x, src: q };
+                self.changed = true;
+                done = true;
+            }
+        }
+        done
     }
 
     /// Does the code make an object of a constant size of 4 KiB or more from a copy (`New`,
@@ -1790,8 +2087,14 @@ impl<'a> Opt<'a> {
                 let off_heap = |s: &Self, r: Reg| match s.opn(r) {
                     Opn::A(..) => true,
                     Opn::K(v) => !matches!((v as u64) >> 61, 4 | 7),
-                    o @ Opn::R(_) => {
+                    // (A local composite variable's storage is temporary memory, #444.)
+                    o @ Opn::R(x) => {
                         matches!(s.cls_of(o), Some(Cls::Space(_) | Cls::Temp | Cls::Block(_)))
+                            || (s.single(x)
+                                && matches!(
+                                    s.code.get(s.def_pc[x.0 as usize] as usize),
+                                    Some(Inst::NewFrame { dst, .. }) if *dst == x
+                                ))
                     }
                     Opn::V(..) => false,
                 };
@@ -1955,6 +2258,9 @@ impl<'a> Opt<'a> {
                             | Inst::Pos { .. }
                             | Inst::SlicePos { .. }
                             | Inst::DopeLen { .. }
+                            | Inst::BoundsLen { .. }
+                            | Inst::BoundsPos { .. }
+                            | Inst::BoundsSlice { .. }
                             | Inst::Deref { .. }
                             | Inst::Br { .. }
                             | Inst::CondBr { .. }
@@ -2689,6 +2995,117 @@ impl<'a> Opt<'a> {
     /// marker that finds the frame clean changes no other marker's answer. A process starts
     /// clean again after a suspension (the machine empties its temporaries then). Only in
     /// subprograms while no debugger runs (it stops at markers).
+    /// A whole `SigGather` into a temporary of the frame that only its zeroing and a `Copy` of all
+    /// of it read, with nothing but address and constant definitions between the gather and the
+    /// copy, becomes the gather into the copy's destination (#1065): `v := r` reads the signal
+    /// once and moves nothing.
+    fn gather_into(&mut self) {
+        if std::env::var_os("YAVS_NO_GATHER_INTO").is_some() {
+            return;
+        }
+        let n = self.f.reg_ty.len();
+        let (mut uses, mut defs) = (vec![0u32; n], vec![0u32; n]);
+        let mut addr: FxMap<Reg, (AddrSpace, u32)> = FxMap::default();
+        let mut konst: FxMap<Reg, i64> = FxMap::default();
+        for i in &self.code {
+            i.visit(&mut |r, role, _| {
+                let c = match role {
+                    Role::Def => &mut defs,
+                    Role::Use => &mut uses,
+                };
+                if let Some(x) = c.get_mut(r.0 as usize) {
+                    *x += 1;
+                }
+            });
+            if let Some(l) = i.list()
+                && let Some(rs) = self.f.regs(l)
+            {
+                for r in rs {
+                    if let Some(x) = uses.get_mut(r.0 as usize) {
+                        *x += 1;
+                    }
+                }
+            }
+            match *i {
+                Inst::AddrOf { dst, space, off } => {
+                    addr.insert(dst, (space, off));
+                }
+                Inst::Const { dst, v } => {
+                    konst.insert(dst, v);
+                }
+                _ => {}
+            }
+        }
+        let once = |r: Reg| defs.get(r.0 as usize) == Some(&1);
+        for b in 0..self.blocks.len() {
+            let pcs: Vec<usize> = self.range(b).collect();
+            for (x, &pc) in pcs.iter().enumerate() {
+                let Inst::SigGather {
+                    dst: t,
+                    desc,
+                    tab,
+                    part: None,
+                } = self.code[pc]
+                else {
+                    continue;
+                };
+                let Some(&(AddrSpace::Frame, toff)) = addr.get(&t).filter(|_| once(t)) else {
+                    continue;
+                };
+                // The zeroing right before it, of the temporary's size.
+                let Some(&z) = x.checked_sub(1).and_then(|y| pcs.get(y)) else {
+                    continue;
+                };
+                let Inst::Zero { addr: za, bytes } = self.code[z] else {
+                    continue;
+                };
+                let mut copy = None;
+                for &q in &pcs[x + 1..] {
+                    match self.code[q] {
+                        Inst::Copy {
+                            dst,
+                            src,
+                            bytes: nb,
+                        } if src == t => {
+                            copy = Some((q, dst, nb));
+                            break;
+                        }
+                        Inst::AddrOf { dst, .. } | Inst::Const { dst, .. } if dst != desc => {}
+                        _ => break,
+                    }
+                }
+                let Some((q, v, nb)) = copy else {
+                    continue;
+                };
+                let fits = za == t
+                    && uses.get(t.0 as usize) == Some(&3)
+                    && once(nb)
+                    && konst.get(&nb) == Some(&i64::from(bytes))
+                    && once(v)
+                    && match addr.get(&v) {
+                        // Another object, or bytes of the frame apart from the temporary's.
+                        Some(&(AddrSpace::Frame, voff)) => {
+                            voff >= toff + bytes || voff + bytes <= toff
+                        }
+                        Some(_) => true,
+                        None => false,
+                    };
+                if !fits {
+                    continue;
+                }
+                self.code[z] = dead();
+                self.code[pc] = dead();
+                self.code[q] = Inst::SigGather {
+                    dst: v,
+                    desc,
+                    tab,
+                    part: None,
+                };
+                self.changed = true;
+            }
+        }
+    }
+
     fn drop_statements(&mut self) {
         if KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed)
             || !(self.nosusp && self.f.body.is_none() || self.f.kind == FuncKind::Process)
@@ -2836,7 +3253,9 @@ impl<'a> Opt<'a> {
             return;
         }
         self.changed = true;
-        for i in &mut self.code {
+        // (Instructions still to be inserted read the merged constants too.)
+        let pending = self.inserts.iter_mut().map(|(_, i)| i);
+        for i in self.code.iter_mut().chain(pending) {
             if !is_dead(i) {
                 i.visit_mut(&mut |r, role, _| {
                     if role == Role::Use {
@@ -3191,6 +3610,9 @@ impl<'a> Opt<'a> {
                 | Inst::Zero { .. }
                 | Inst::MakeDope { .. }
                 | Inst::DopeLen { .. }
+                | Inst::BoundsLen { .. }
+                | Inst::BoundsPos { .. }
+                | Inst::BoundsSlice { .. }
                 | Inst::SlicePos { .. }
                 | Inst::Pos { .. }
                 | Inst::SubtypeCheck { .. }
@@ -3316,7 +3738,12 @@ impl<'a> Opt<'a> {
                     Some((Opn::A(AddrSpace::Frame, o), lo, n)) => {
                         !clear_of(named, i64::from(o) + lo, n)
                     }
-                    Some((a, ..)) => !matches!(this.cls_of(a), Some(Cls::Temp | Cls::Block(_))),
+                    // (A debugger writes a composite local through its pointer.)
+                    Some((a, ..)) => match this.cls_of(a) {
+                        Some(Cls::Temp) => false,
+                        Some(Cls::Block(_) | Cls::Param) => keep_variables_on(),
+                        _ => true,
+                    },
                 };
                 let gone: Vec<Key> = self
                     .tbl
@@ -3331,6 +3758,8 @@ impl<'a> Opt<'a> {
                     }
                 }
             }
+            // A `std_ulogic` table: no memory.
+            Inst::CallNative { native, .. } if self.logic_table(native) => {}
             Inst::Const { .. }
             | Inst::ConstF { .. }
             | Inst::Move { .. }
@@ -3355,6 +3784,7 @@ impl<'a> Opt<'a> {
             | Inst::FCmp { .. }
             | Inst::Bool { .. }
             | Inst::LEq { .. }
+            | Inst::LKey { .. }
             | Inst::MemEq { .. }
             | Inst::LGet { .. }
             | Inst::Check { .. }
@@ -3363,6 +3793,9 @@ impl<'a> Opt<'a> {
             | Inst::Pos { .. }
             | Inst::SlicePos { .. }
             | Inst::DopeLen { .. }
+            | Inst::BoundsLen { .. }
+            | Inst::BoundsPos { .. }
+            | Inst::BoundsSlice { .. }
             | Inst::SubtypeCheck { .. }
             | Inst::Br { .. }
             | Inst::CondBr { .. }
@@ -3403,6 +3836,17 @@ impl<'a> Opt<'a> {
         }
     }
 
+    /// A native of one result computed from its scalar operands alone.
+    fn logic_table(&self, native: crate::NativeId) -> bool {
+        use crate::ieee::Op;
+        self.prog
+            .natives
+            .get(native)
+            .and_then(|n| crate::ieee::symbol_key(&n.symbol))
+            .and_then(crate::ieee::parse)
+            .is_some_and(|op| matches!(op, Op::Gate(_) | Op::Not | Op::Conv(_, false) | Op::Truthy))
+    }
+
     /// A call or an unknown write: nothing survives but constants and frame slots that
     /// neither a debugger shows nor any pointer reaches.
     fn kill_all(&mut self) {
@@ -3441,7 +3885,13 @@ impl<'a> Opt<'a> {
                 return true;
             }
             let ce = this.cls_of(a2);
-            let apart = matches!((cs, ce), (Some(x), Some(y)) if x != y);
+            let apart = match (cs, ce) {
+                (Some(Cls::Param), Some(o)) | (Some(o), Some(Cls::Param)) => {
+                    matches!(o, Cls::Block(_))
+                }
+                (Some(x), Some(y)) => x != y,
+                _ => false,
+            };
             match (at, a2) {
                 (Opn::A(s1, o1), Opn::A(s2, o2)) => {
                     s1 != s2 || {
@@ -3827,6 +4277,13 @@ impl<'a> Opt<'a> {
                     a.checked_add(b)?
                 })
             }
+            // Only proven equal operands: unequal ones keep the native's report and the check
+            // of the result (#1063).
+            Op::VecGate(_) | Op::NumGate(_) => {
+                let (a, b) = (alen(0)?, alen(1)?);
+                (a == b).then_some(a)
+            }
+            Op::VecNot | Op::NumNot | Op::Conv(_, true) => alen(0),
             _ => None,
         }
     }
@@ -3961,14 +4418,12 @@ impl<'a> Opt<'a> {
             .then(|| vec![l.size, l.align, l.stride, l.count])
     }
 
-    /// A `Pos` in a copy, in an ascending descriptor of instance data with known bounds, of an index
-    /// that is no constant and whose result goes into arithmetic: the index check and the
-    /// subtraction apart (`Check` of the bounds, `idx - left`), so that the checks of one value
-    /// are made once and a range proof can drop one (`Pos` reads the descriptor at every
-    /// execution). The failure is the one of `Pos`: the check message of the same name. (A
-    /// descending range stays a `Pos`: the message of an index check says `to`.)
-    // ponytail: ascending ranges only; descending ones need a message with the other direction,
-    // and the optimiser cannot add messages to the program.
+    /// A `Pos` in a copy, in a descriptor of instance data with known bounds, of an index that is no
+    /// constant and whose result goes into arithmetic: the index check and the subtraction apart
+    /// (`Check` of the bounds, `idx - left` or `left - idx`), so that the checks of one value are
+    /// made once and a range proof can drop one (`Pos` reads the descriptor at every execution).
+    /// The failure is the one of `Pos`: the check message of the same name, the bounds in the
+    /// direction of the range (`CheckKind::IndexDown`).
     fn pos_to_check(&mut self, pc: usize, dst: Reg, dope: Reg, dim: u8, idx: Reg) -> bool {
         let Inst::Pos { what, .. } = self.code[pc] else {
             return false;
@@ -3976,35 +4431,49 @@ impl<'a> Opt<'a> {
         let Opn::A(AddrSpace::Inst, _) = self.opn(dope) else {
             return false;
         };
-        let Some((l, r, 0)) = self.const_dim(self.opn(dope), dim) else {
+        let Some((l, r, d)) = self.const_dim(self.opn(dope), dim) else {
             return false;
         };
+        let (kind, lo_b, hi_b) = match d {
+            0 => (CheckKind::Index, l, r),
+            1 => (CheckKind::IndexDown, r, l),
+            _ => return false,
+        };
         // The distance of an index inside the bounds is an `i64` (`Pos` allows a `u64`).
-        if self.prog.checks.get(what).map(|c| c.dir) != Some(crate::Dir::To)
-            || i128::from(r) - i128::from(l) > i128::from(i64::MAX)
+        if (d == 0 && self.prog.checks.get(what).map(|c| c.dir) != Some(crate::Dir::To))
+            || i128::from(hi_b) - i128::from(lo_b) > i128::from(i64::MAX)
             || !self.feeds_arith(pc, dst)
         {
             return false;
         }
         let (lo, hi) = (
-            self.const_reg(self.cur, pc, l),
-            self.const_reg(self.cur, pc, r),
+            self.const_reg(self.cur, pc, lo_b),
+            self.const_reg(self.cur, pc, hi_b),
         );
         self.inserts.push((
             pc,
             Inst::Check {
-                kind: CheckKind::Index,
+                kind,
                 v: idx,
                 lo,
                 hi,
                 what,
             },
         ));
-        self.code[pc] = Inst::Bin {
-            op: crate::IntOp::Sub,
-            dst,
-            a: idx,
-            b: lo,
+        self.code[pc] = if d == 0 {
+            Inst::Bin {
+                op: crate::IntOp::Sub,
+                dst,
+                a: idx,
+                b: lo,
+            }
+        } else {
+            Inst::Bin {
+                op: crate::IntOp::Sub,
+                dst,
+                a: hi,
+                b: idx,
+            }
         };
         self.changed = true;
         self.split = true;
@@ -4351,6 +4820,12 @@ impl<'a> Opt<'a> {
                     self.cse(pc, Some(dst), Key::Load(a, w));
                 }
             }
+            // The same element read again (a table of exclusive ors over the bits of a word).
+            Inst::LGet { dst, base, idx } => {
+                if let (Some(b), Some(i)) = (self.kopn(base), self.kopn(idx)) {
+                    self.cse(pc, Some(dst), Key::LGet(b, i));
+                }
+            }
             Inst::DopeLen { dst, dope, dim } => {
                 if let Some((l, r, dir)) = self.const_dim(self.opn(dope), dim)
                     && let Some(n) = dim_len(l, r, dir == 1).filter(|&n| n <= i64::MAX as u64)
@@ -4370,6 +4845,24 @@ impl<'a> Opt<'a> {
                         Key::Dope(d, dim)
                     };
                     self.cse(pc, Some(dst), key);
+                }
+            }
+            Inst::BoundsLen {
+                dst,
+                left,
+                right,
+                dir,
+            } => {
+                if let (Opn::K(l), Opn::K(r), Opn::K(w)) =
+                    (self.opn(left), self.opn(right), self.opn(dir))
+                    && let Some(n) = dim_len(l, r, w == 1).filter(|&n| n <= i64::MAX as u64)
+                {
+                    return self.make_const(pc, dst, n as i64);
+                }
+                if let (Some(a), Some(b), Some(w)) =
+                    (self.kopn(left), self.kopn(right), self.kopn(dir))
+                {
+                    self.cse(pc, Some(dst), Key::Bounds([a, b, w]));
                 }
             }
             Inst::CallNative {
@@ -4669,7 +5162,14 @@ impl<'a> Opt<'a> {
             // (A byte holds a boolean, a bit, a character or another enumeration value: the
             // register keeps the same number.)
             let bytes = i64::from(a.w.bytes());
-            if overlap
+            // (A variable in the frame and a descriptor are also written whole, by a `Copy`.)
+            if self.in_descriptor(o)
+                || f.locals.iter().any(|l| {
+                    crate::is_frame_object(l)
+                        && i64::from(l.slot) <= o
+                        && o < i64::from(l.slot) + i64::from(l.size)
+                })
+                || overlap
                 || !a.ok
                 || !matches!(a.w, Width::B8 | Width::B1)
                 || ty == RegTy::Sig
@@ -4754,6 +5254,13 @@ impl<'a> Opt<'a> {
                 inited.push(p);
             }
             if is_param {
+                if f.params.iter().any(|q| {
+                    q.slot == off
+                        && q.mode == crate::Mode::In
+                        && q.class == crate::ParamClass::Value
+                }) {
+                    self.in_regs.push(p);
+                }
                 let a = self.fresh(RegTy::Ptr, 1);
                 self.defs[a.0 as usize] = 1;
                 self.inserts.push((
@@ -5602,6 +6109,9 @@ fn retargetable(i: &Inst) -> bool {
         | Inst::Pos { .. }
         | Inst::SlicePos { .. }
         | Inst::DopeLen { .. }
+        | Inst::BoundsLen { .. }
+        | Inst::BoundsPos { .. }
+        | Inst::BoundsSlice { .. }
         | Inst::Field { .. }
         | Inst::FBin { .. }
         | Inst::FUn { .. }

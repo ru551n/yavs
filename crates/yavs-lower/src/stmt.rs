@@ -10,6 +10,7 @@ use yavs_sem::hir::{
     AttrPrefix, Choice, ChoiceSet, Delay, ExprKind, LoopScheme, Lsp, LspStep, ObjRoot, Rhs,
     StmtKind as H, Target, Waveform,
 };
+use yavs_sem::stat::{ConstValue, Elems};
 use yavs_sem::types::{Direction, RangeC, TypeKind};
 use yavs_sem::{ExprId, StmtId, TypeId};
 
@@ -337,12 +338,44 @@ impl Fx<'_, '_> {
             self.case_length_check(v, sets, span)?;
         }
         let blocks: Vec<BlockId> = sets.iter().map(|_| self.block()).collect();
+        let keys = if array && !matching {
+            self.case_keys(t, sets, span)?
+        } else {
+            None
+        };
+        if let Some((n, keys)) = &keys {
+            let mut arms: Vec<_> = keys
+                .iter()
+                .flat_map(|(_, k, s)| k.map(|k| (k, k, blocks[*s])))
+                .collect();
+            arms.sort_by_key(|a| a.0);
+            let (d, _) = self.arr(v, span)?;
+            let cnt = self.int(*n);
+            let key = self.reg(RegTy::I64);
+            self.emit(Inst::LKey {
+                dst: key,
+                a: d,
+                n: cnt,
+            });
+            let default = self.block();
+            let table = self.fb.program().case_table(CaseTable { arms, default });
+            self.term(Inst::Case { v: key, table });
+            self.at(default);
+        }
         let mut default = None;
         for (set, &b) in sets.iter().zip(&blocks) {
             for c in set.choices.iter() {
                 let hit = match c {
                     Choice::Others => {
                         default = Some(b);
+                        continue;
+                    }
+                    // Dispatched by its key above.
+                    Choice::Expr(e)
+                        if keys.as_ref().is_some_and(|(_, ks)| {
+                            ks.iter().any(|(x, k, _)| x == e && k.is_some())
+                        }) =>
+                    {
                         continue;
                     }
                     Choice::Expr(e) => {
@@ -391,6 +424,71 @@ impl Fx<'_, '_> {
             }
         }
         Ok(blocks)
+    }
+
+    /// An array `case` that can dispatch on `Inst::LKey`: logic elements, at most 63 of them, every
+    /// choice a known constant of one length. The length and per choice its key (`None`: holds
+    /// other values than '0' and '1', which stays a compare) and set. `None` otherwise, also
+    /// for a repeated key, which only the compares in order define.
+    #[allow(clippy::type_complexity)]
+    fn case_keys(
+        &mut self,
+        t: TypeId,
+        sets: &[&ChoiceSet],
+        span: Span,
+    ) -> R<Option<(i64, Vec<(ExprId, Option<i64>, usize)>)>> {
+        let db = self.db;
+        let tid = self.ty(t, span)?;
+        if !self.is_logic(tid) {
+            return Ok(None);
+        }
+        let bias = self.code_bias(tid) as u8;
+        let mut len = None;
+        let mut out = Vec::new();
+        for (s, set) in sets.iter().enumerate() {
+            for c in set.choices.iter() {
+                let Choice::Expr(e) = c else {
+                    if matches!(c, Choice::Others) {
+                        continue;
+                    }
+                    return Ok(None);
+                };
+                let Some(ConstValue::Array(a)) = db.value(*e) else {
+                    return Ok(None);
+                };
+                // Element 0 of the planes is the last element of the constant, as in `konst`.
+                let mut codes: Vec<u8> = Vec::new();
+                match &a.elems {
+                    Elems::Bytes(b) => codes.extend(b.iter().rev().map(|&x| x + bias)),
+                    Elems::Runs(runs) => {
+                        for (n, c) in runs.iter().rev() {
+                            let Some(x) = ty::cell(c) else {
+                                return Ok(None);
+                            };
+                            if *n > 63 {
+                                return Ok(None);
+                            }
+                            codes.extend(std::iter::repeat_n(x as u8 + bias, *n as usize));
+                        }
+                    }
+                }
+                let n = codes.len() as i64;
+                if !(1..=63).contains(&n) || len.is_some_and(|l| l != n) {
+                    return Ok(None);
+                }
+                len = Some(n);
+                let key = codes.iter().enumerate().try_fold(0i64, |k, (i, &c)| {
+                    matches!(c, 2 | 3).then(|| k | i64::from(c & 1) << i)
+                });
+                out.push((*e, key, s));
+            }
+        }
+        let mut seen: Vec<i64> = out.iter().filter_map(|x| x.1).collect();
+        seen.sort_unstable();
+        if seen.windows(2).any(|w| w[0] == w[1]) {
+            return Ok(None);
+        }
+        Ok(len.map(|n| (n, out)))
     }
 
     /// The expression of an array `case` has the choices' length (LRM 10.9, all choices have
@@ -3022,6 +3120,21 @@ impl Fx<'_, '_> {
                         what: m,
                     });
                     dope = want;
+                }
+                if self.ret_flat {
+                    // The pair keeps a heap object the data is in to the caller's statement end,
+                    // as the pair of an array result does; the optimiser drops one it can prove
+                    // off the heap.
+                    let keep = self.alloc_n(16);
+                    self.store(keep, data, Width::B8);
+                    let z = self.int(0);
+                    let d = self.offset(keep, 8);
+                    self.store(d, z, Width::B8);
+                    self.fat_root(keep);
+                    let (left, right, dir) = self.dope_bounds(dope);
+                    self.emit(Inst::RetBounds { left, right, dir });
+                    self.ret_term(Some(data));
+                    return Ok(());
                 }
                 // The descriptor may live in this frame: copy it out with the result.
                 let bytes = 24 * u32::from(dims);

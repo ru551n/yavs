@@ -44,6 +44,7 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         ("wakes", s.wakes),
         ("idle_skips", s.idle_skips),
         ("lean_signals", s.lean_signals),
+        ("bare_signals", s.bare_signals),
         ("no_code_signals", s.no_code_signals),
         ("skip_signals", s.skip_signals),
         ("signals", s.signals),
@@ -56,10 +57,18 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         ("direct_planes", s.direct_planes),
         ("direct_bytes", s.direct_bytes),
         ("general_assigns", s.general_assigns),
+        ("gathers_copied", s.gathers_copied),
+        ("gathers_read", s.gathers_read),
+        ("scatter_spared", s.scatter_spared),
+        ("image_writes", s.image_writes),
+        ("images", s.images),
+        ("image_bytes", s.image_bytes),
         ("copy_forwards", s.copy_forwards),
+        ("wake_scans", s.wake_scans),
         ("ecall_hits", hits),
         ("ecall_runs", runs),
         ("opt_funcs", yavs_ir::optimised_functions()),
+        ("dopes_scans", yavs_ir::opt::dopes_scans()),
         ("elab_restarts", yavs_ir::restarted_calls()),
         ("gc_collections", yavs_interp::gc_collections()),
         ("pmemo_hits", memo_hits),
@@ -87,6 +96,13 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         rows.push(("spec_shared_ir", c.shared_ir));
         rows.push(("spec_copy_ir", c.copy_ir));
         rows.push(("retiers", rt.native_flags().retiers()));
+        rows.push(("materialised", rt.native_flags().materialised_all()));
+        let [asked, held, compiled, copies, withdrawn] = rt.native_flags().count_stats();
+        rows.push(("count_asked", asked));
+        rows.push(("count_held", held));
+        rows.push(("count_compiled", compiled));
+        rows.push(("count_copies", copies));
+        rows.push(("count_withdrawn", withdrawn));
     }
     #[cfg(feature = "llvm")]
     {
@@ -102,6 +118,26 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
     #[cfg(any(feature = "llvm", feature = "clift"))]
     for (name, v) in yavs_llvm::callback_counts().into_iter().flatten() {
         eprintln!("counters: cb_{name}={v}");
+    }
+    // Skips of compiled drives held against the kernel's full test (`YAVS_INLCMP=check`).
+    #[cfg(any(feature = "llvm", feature = "clift"))]
+    {
+        let n = yavs_llvm::rt::GATE_CHECKED.load(std::sync::atomic::Ordering::Relaxed);
+        if n != 0 {
+            eprintln!("counters: gate_checked={n}");
+        }
+        let n = yavs_llvm::rt::SCATTER_CHECKED.load(std::sync::atomic::Ordering::Relaxed);
+        if n != 0 {
+            eprintln!("counters: scatter_checked={n}");
+        }
+        let n = yavs_llvm::rt::GATHER_CHECKED.load(std::sync::atomic::Ordering::Relaxed);
+        if n != 0 {
+            eprintln!("counters: gather_checked={n}");
+        }
+        let n = yavs_llvm::rt::HOLD_CHECKED.load(std::sync::atomic::Ordering::Relaxed);
+        if n != 0 {
+            eprintln!("counters: hold_checked={n}");
+        }
     }
     // The calls into the host by instruction kind (`YAVS_COUNTERS=kinds|pc`, every build).
     for (name, v) in yavs_interp::tier_census() {

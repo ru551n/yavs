@@ -768,9 +768,11 @@ pub fn spaces(prog: &Program, f: &Func, starts: &[bool]) -> Option<Vec<Vec<(u32,
                 } => Some((dst, [false, false, false, false, from(&st, addr)[3]])),
                 _ => None,
             };
-            i.visit(&mut |r, role, _| {
+            i.visit(&mut |r, role, ty| {
                 if role == Role::Def {
-                    for k in [r.0, r.0.saturating_add(1)] {
+                    // (A signal reference takes two cells, any other value one.)
+                    let w = 1 + u32::from(ty == Some(RegTy::Sig));
+                    for k in r.0..r.0.saturating_add(w) {
                         if let Some(&c) = cand.get(k as usize)
                             && c != u32::MAX
                         {
@@ -952,6 +954,40 @@ mod tests {
                 return bits;
             }
         }
+    }
+
+    /// The space of a register holds across a block start when the next register is defined after
+    /// it: only a signal reference takes two cells.
+    #[test]
+    fn a_space_survives_the_definition_of_the_neighbour() {
+        let mut pb = ProgramBuilder::new();
+        let f = pb.declare("f", FuncKind::Procedure, None);
+        let mut fb = pb.define(f);
+        let next = fb.block();
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let size = fb.int(32);
+        let low = fb.reg(RegTy::I64);
+        let t = fb.reg(RegTy::Ptr);
+        assert_eq!(t.0, low.0 + 1);
+        fb.emit(Inst::Alloc { dst: t, size });
+        fb.emit(Inst::Const { dst: low, v: 1 });
+        fb.emit(Inst::Br { to: next });
+        fb.at(next);
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+        let prog = pb.finish().expect("verifies");
+        let func = prog.funcs.get(f).expect("the function").full();
+        let mut starts = vec![false; func.code.len() + 1];
+        for b in func.blocks.iter() {
+            starts[b.1.start as usize] = true;
+        }
+        let at = func.blocks.get(next).expect("the block").start as usize;
+        let facts = spaces(&prog, func, &starts).expect("facts");
+        assert!(
+            facts[at].iter().any(|&(r, sp)| r == t.0 && sp == Sp::Temp),
+            "{:?}",
+            facts[at]
+        );
     }
 
     /// A function of `len` straight-line instructions that each define a register, then a loop

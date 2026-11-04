@@ -226,6 +226,8 @@ struct Machine<'a> {
     regs: Vec<u64>,
     mem: Vec<Obj>,
     consts: HashMap<ConstId, usize>,
+    /// What `RetBounds` left: the result is the data address alone.
+    ret_bounds: Option<[u64; 3]>,
 }
 
 type W<T> = Option<T>;
@@ -286,6 +288,7 @@ impl<'a> Machine<'a> {
             regs: vec![0; f.reg_ty.len()],
             mem: Vec::new(),
             consts: HashMap::new(),
+            ret_bounds: None,
         }
     }
 
@@ -540,6 +543,18 @@ impl<'a> Machine<'a> {
                     |k: usize| i64::from_le_bytes(d[k * 8..k * 8 + 8].try_into().unwrap_or([0; 8]));
                 self.set(dst, crate::dim_len(w(0), w(1), w(2) == 1)?)?;
             }
+            Inst::RetBounds { left, right, dir } => {
+                self.ret_bounds = Some([self.r(left)?, self.r(right)?, self.r(dir)?]);
+            }
+            Inst::BoundsLen {
+                dst,
+                left,
+                right,
+                dir,
+            } => {
+                let (l, r, d) = (self.r(left)?, self.r(right)?, self.r(dir)?);
+                self.set(dst, crate::dim_len(l as i64, r as i64, d == 1)?)?;
+            }
             Inst::Cmp { op, dst, a, b } => {
                 let o = (self.r(a)? as i64).cmp(&(self.r(b)? as i64));
                 let v = match op {
@@ -612,6 +627,11 @@ impl<'a> Machine<'a> {
         let Some(a) = arr else {
             return Some((r.to_le_bytes().to_vec(), None));
         };
+        if let Some(w) = self.ret_bounds {
+            let desc: Vec<u8> = w.iter().flat_map(|x| x.to_le_bytes()).collect();
+            let n = a.data_bytes(&desc)?;
+            return Some((self.rd(r, n)?.to_vec(), Some(desc)));
+        }
         let data = u64::from_le_bytes(self.rd(r, 8)?.try_into().ok()?);
         let dope = u64::from_le_bytes(self.rd(r + 8, 8)?.try_into().ok()?);
         let desc = self.rd(dope, a.desc_bytes() as u64)?;

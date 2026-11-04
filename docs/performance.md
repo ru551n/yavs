@@ -75,7 +75,7 @@ Among the hand-written RTL designs, clocked designs with very many cheap process
   ([issue 1034](https://github.com/ru551n/yavs/issues/1034)).
 - Waves and coverage on, other tiers than `--tier=auto`, and more than one thread were not measured here.
 - The comparisons with B and C are of 2026-10-28.
-- Transparent huge pages. The numbers were taken on Linux with transparent huge pages in `madvise` mode, the usual default, where yavs puts its heap and compiled code on huge pages (see [Running faster](running-faster.rst)). With the setting at `never`, or on another system, it runs on ordinary pages; a separate study on one CPU design found that costs up to about 4 percent of the cycles on a quiet host and more on a loaded one.
+- Transparent huge pages. The numbers were taken on Linux with transparent huge pages in `madvise` mode, the usual default, where yavs puts its heap and compiled code on huge pages (see [Running faster](running-faster.rst)). With the setting at `never`, or on another system, it runs on ordinary pages, which costs a few percent of the cycles on a long run of a large design on a quiet host (we measured about 2 to 4 percent) and more on a loaded one.
 
 ## Measure your own design
 

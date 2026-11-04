@@ -3378,11 +3378,7 @@ fn gen_func(
             Inst::DopeLen { dst, dope, dim } => {
                 let (slow, join) = g.slow_path(pc, &inst);
                 let d = g.ld(dope);
-                let (n, fits) = g.dim_len(d, dope, u64::from(dim) * 24, slow);
-                // Lengths above i64::MAX are the interpreter's error.
-                let nn = g.b.ins().icmp_imm_s(IntCC::SignedGreaterThanOrEqual, n, 0);
-                let okv = g.b.ins().band(fits, nn);
-                g.guard(okv, slow);
+                let n = g.dope_len(d, dope, u64::from(dim) * 24, slow);
                 g.st(dst, n);
                 g.join(join);
             }
@@ -6178,6 +6174,39 @@ impl Gen<'_> {
         let fits = self.b.ins().bor(empty, nz);
         let zero = self.c64(0);
         (self.b.ins().select(empty, zero, n), fits)
+    }
+
+    /// `Inst::DopeLen`: one arm per direction as `Inst::Pos`, the other values of the direction word
+    /// counted as up, as `len_of`. A length above `i64::MAX` (`hi - lo + 1` not above 0 with
+    /// `hi >= lo`: as a u64 it is exact except for the full i64 range) is the interpreter's error.
+    fn dope_len(&mut self, dope: Value, reg: Reg, off: u64, slow: Block) -> Value {
+        let p = self.host(dope, Some(reg), Op::C(off), Op::C(24), false, slow);
+        let (l, r, dir) = self.dope_words(p);
+        let (dn, up, cont) = (
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+        );
+        let v = self.b.append_block_param(cont, I64);
+        let z = self.c64(0);
+        let is_dn = self.b.ins().icmp_imm_s(IntCC::Equal, dir, 1);
+        self.b.ins().brif(is_dn, dn, &[], up, &[]);
+        for (bb, lo, hi) in [(up, l, r), (dn, r, l)] {
+            self.b.switch_to_block(bb);
+            let go = self.b.create_block();
+            let empty = self.b.ins().icmp(IntCC::SignedLessThan, hi, lo);
+            self.b
+                .ins()
+                .brif(empty, cont, &[BlockArg::Value(z)], go, &[]);
+            self.b.switch_to_block(go);
+            let d = self.b.ins().isub(hi, lo);
+            let n = self.b.ins().iadd_imm_s(d, 1);
+            let okn = self.b.ins().icmp_imm_s(IntCC::SignedGreaterThan, n, 0);
+            self.guard(okn, slow);
+            self.b.ins().jump(cont, &[BlockArg::Value(n)]);
+        }
+        self.start(cont);
+        v
     }
 
     /// The 32-byte bit-plane block holding element `idx` of the logic array at `base`, and the

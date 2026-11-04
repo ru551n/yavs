@@ -8662,23 +8662,35 @@ impl Gen<'_> {
     fn deref(&mut self, pc: u32, i: &Inst, dst: Reg, handle: Reg) {
         let (slow, join) = self.slow_path(pc, i);
         let h = self.ld(handle);
-        let hi = self.b.ins().ushr_imm_s(h, 32);
-        let flag = self.b.ins().ushr_imm_s(hi, i64::from(KEY_SHIFT_HANDLE));
-        let flag = self.b.ins().band_imm_s(flag, KEY_FLAG as i64);
-        let key = self.b.ins().bxor(hi, flag);
-        let key = self.b.ins().band_imm_s(key, OBJS as i64 - 1);
-        let eo = self.b.ins().ishl_imm_s(key, i64::from(OBJ_SHIFT));
-        let (tk, mx) = self.obj_tag(None);
+        // `obj_at` of `h >> 32`, scaled: the index and the shared flag each in one shift and mask.
+        let scale = 32 - i64::from(OBJ_SHIFT);
+        let at = self.b.ins().ushr_imm_s(h, scale);
+        let at = self
+            .b
+            .ins()
+            .band_imm_s(at, (OBJS as i64 - 1) << OBJ_SHIFT);
+        let flag = self
+            .b
+            .ins()
+            .ushr_imm_s(h, scale + i64::from(KEY_SHIFT_HANDLE));
+        let flag = self
+            .b
+            .ins()
+            .band_imm_s(flag, (KEY_FLAG as i64) << OBJ_SHIFT);
+        let eo = self.b.ins().bxor(at, flag);
+        let k = 8 * u64::from(space::HEAP);
+        let mx = self.mem_ld(MEM_MIXES + k);
         let eo = self.b.ins().bxor(eo, mx);
         let ent = self.b.ins().iadd(self.mem, eo);
         // An entry with an access value is writable, and a null handle is no entry's value; the
-        // key's tag says the entry is this machine's (another instance holds the same values).
+        // key's tag says the entry is this machine's (another instance holds the same values). The
+        // tag is the key's high half, compared as 32 bits (no mask).
         let eh = self
             .b
             .ins()
             .load(I64, self.mf, ent, (MEM_OBJS + OBJ_H) as i32);
-        let ek = self.b.ins().load(I64, self.mf, ent, MEM_OBJS as i32);
-        let ek = self.b.ins().band_imm_s(ek, !0xffff_ffff);
+        let tk = self.b.ins().load(I32, self.mf, self.mem, (MEM_TAGS + k + 4) as i32);
+        let ek = self.b.ins().load(I32, self.mf, ent, (MEM_OBJS + 4) as i32);
         let same_h = self.b.ins().icmp(IntCC::Equal, eh, h);
         let same_t = self.b.ins().icmp(IntCC::Equal, ek, tk);
         let hit = self.b.ins().band(same_h, same_t);

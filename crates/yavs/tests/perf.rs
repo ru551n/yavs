@@ -1697,13 +1697,15 @@ mod clift {
         "q=",
         [("cb_drive", Max(158)), ("direct_codes", Max(107))]
     );
-    // Element loops of native frames through `yavs_rt_eloop` (#757).
+    // Element loops of native frames planned in the code (#757). The fills call out; the row
+    // copies (one plane block each side) are inline: a copy that calls out again raises it.
     clift_case!(
         eloop,
         "llvm_eloop",
         "acc=",
         [
-            ("cb_eloop", Min(175)),
+            ("cb_eloop", Min(20)),
+            ("cb_eloop", Max(20)),
             ("cb_step", Max(6)),
             ("cb_deopt", Max(0))
         ]

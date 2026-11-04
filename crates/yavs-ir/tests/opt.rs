@@ -1748,6 +1748,22 @@ fn thin_call(variant: &str) -> (Vec<Inst>, Vec<Via>, FuncId) {
         let (t, e) = (fb.block(), fb.block());
         fb.emit(Inst::CondBr { c, t, f: e });
         fb.at(t);
+        let neg = bin(&mut fb, IntOp::Sub, zero, sum);
+        fb.emit(Inst::Ret { v: Some(neg) });
+        fb.at(e);
+    }
+    if variant == "choice" {
+        let c = fb.reg(RegTy::I64);
+        let zero = fb.int(0);
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Lt,
+            dst: c,
+            a: sum,
+            b: zero,
+        });
+        let (t, e) = (fb.block(), fb.block());
+        fb.emit(Inst::CondBr { c, t, f: e });
+        fb.at(t);
         fb.emit(Inst::Ret { v: Some(zero) });
         fb.at(e);
     }
@@ -1825,6 +1841,22 @@ fn a_call_of_a_thin_function_becomes_its_code() {
         .iter()
         .position(|i| matches!(i, Inst::CondBr { .. }))
         .expect("the branch");
+    assert!(matches!(via[at], Some((_, c)) if c == f), "{via:?}");
+    // A branch that only returns one of two values is a choice of one path, spliced in place.
+    let (code, via, f) = thin_call("choice");
+    assert_eq!(count(&code, is_call), 0, "choice: {code:?}");
+    assert_eq!(
+        count(&code, |i| matches!(
+            i,
+            Inst::CondBr { .. } | Inst::Br { .. }
+        )),
+        0,
+        "{code:?}"
+    );
+    let at = code
+        .iter()
+        .position(|i| matches!(i, Inst::Select { .. }))
+        .expect("the choice");
     assert!(matches!(via[at], Some((_, c)) if c == f), "{via:?}");
 }
 
@@ -2349,9 +2381,15 @@ fn a_case_of_the_callee_becomes_compares() {
         0,
         "{code:?}"
     );
+    // The test of the first arm; the second arm against the default returns a choice.
     assert_eq!(
         count(code, |i| matches!(i, Inst::CondBr { .. })),
-        2,
+        1,
+        "{code:?}"
+    );
+    assert_eq!(
+        count(code, |i| matches!(i, Inst::Select { .. })),
+        1,
         "{code:?}"
     );
 }

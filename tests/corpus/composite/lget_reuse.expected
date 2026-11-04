@@ -1,0 +1,10 @@
+exit	0
+diag	note	0	0	:lget_reuse:_p0	01101100
+diag	note	0	0	:lget_reuse:_p0	00010101
+diag	note	0	0	:lget_reuse:_p0	00010111
+diag	note	0	0	:lget_reuse:_p0	10010011
+diag	note	0	0	:lget_reuse:_p0	10011111
+diag	note	0	0	:lget_reuse:_p0	10010101
+diag	note	0	0	:lget_reuse:_p0	00101100 1
+diag	note	1000000	0	:lget_reuse:_p0	110
+diag	note	2000000	0	:lget_reuse:_p0	10

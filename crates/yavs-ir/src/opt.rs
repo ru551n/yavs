@@ -895,8 +895,11 @@ enum Cls {
     Space(AddrSpace),
     Heap,
     Temp,
-    /// The block one `Alloc` made (the register), disjoint from every other.
+    /// The block one `Alloc` or `NewFrame` made (the register), disjoint from every other.
     Block(u32),
+    /// What an `in` parameter's cell points to: older than any block of this activation, and
+    /// otherwise anywhere.
+    Param,
 }
 
 /// Is the address in memory nothing writes while the function runs: the constant pool and
@@ -950,6 +953,8 @@ enum Key {
     Field(Opn, Opn, u32),
     /// The temporary layout of a type under a descriptor: gone at the next `Stmt`.
     Layout(TyId, Opn),
+    /// An element of a logic vector: gone with a write of the vector.
+    LGet(Opn, Opn),
 }
 
 impl Key {
@@ -962,6 +967,7 @@ impl Key {
             Key::Slice(a, _) => Some((a, 0, 24)),
             Key::Field(_, l, n) => Some((l, 16 + 8 * i64::from(n), 8)),
             Key::Layout(_, d) => Some((d, 0, 24 * 8)),
+            Key::LGet(b, _) => Some((b, 0, i64::MAX / 4)),
             _ => None,
         }
     }
@@ -1189,6 +1195,8 @@ struct Opt<'a> {
     kc: Vec<Option<i64>>,
     /// Registers defined once, by an `AddrOf`.
     ka: Vec<Option<(AddrSpace, u32)>>,
+    /// The registers that took over the cell of an `in` parameter (`promote`).
+    in_regs: Vec<Reg>,
     /// Where single-definition address registers point.
     cls: Vec<Option<Cls>>,
     /// Registers replaced by another (both defined once): `rep[r] == r` if not.
@@ -1306,6 +1314,7 @@ impl<'a> Opt<'a> {
             defs: vec![0; n],
             kc: vec![None; n],
             ka: vec![None; n],
+            in_regs: Vec::new(),
             cls: vec![None; n],
             rep: (0..n as u32).collect(),
             nrep: 0,
@@ -1515,6 +1524,14 @@ impl<'a> Opt<'a> {
         }
     }
 
+    /// Does the register hold the address of the cell of an `in` parameter?
+    fn in_cell(&self, r: Reg) -> bool {
+        matches!(self.ka.get(r.0 as usize), Some(Some((AddrSpace::Frame, o)))
+        if self.f.params.iter().any(|p| {
+            p.slot == *o && p.mode == crate::Mode::In && p.class == crate::ParamClass::Value
+        }))
+    }
+
     fn set_cls(&mut self, r: Reg, c: Cls) {
         if let Some(x) = self.cls.get_mut(r.0 as usize) {
             *x = Some(c);
@@ -1581,8 +1598,15 @@ impl<'a> Opt<'a> {
                             self.lwords.insert(dst, w);
                         }
                     }
-                    Inst::Alloc { dst, .. } if self.single(dst) => {
+                    Inst::Alloc { dst, .. } | Inst::NewFrame { dst, .. } if self.single(dst) => {
                         self.set_cls(dst, Cls::Block(dst.0));
+                    }
+                    Inst::Load {
+                        dst,
+                        addr,
+                        w: Width::B8,
+                    } if self.single(dst) && self.in_cell(addr) => {
+                        self.set_cls(dst, Cls::Param);
                     }
                     Inst::LayoutOf { dst, ty, .. } if self.single(dst) => {
                         self.set_cls(dst, Cls::Temp);
@@ -1607,6 +1631,9 @@ impl<'a> Opt<'a> {
                     _ => {}
                 }
             }
+        }
+        for r in self.in_regs.clone() {
+            self.set_cls(r, Cls::Param);
         }
     }
 
@@ -3684,7 +3711,11 @@ impl<'a> Opt<'a> {
                     Some((Opn::A(AddrSpace::Frame, o), lo, n)) => {
                         !clear_of(named, i64::from(o) + lo, n)
                     }
-                    Some((a, ..)) => !matches!(this.cls_of(a), Some(Cls::Temp | Cls::Block(_))),
+                    Some((a, ..)) => match this.cls_of(a) {
+                        Some(Cls::Temp | Cls::Block(_)) => false,
+                        Some(Cls::Param) => keep_variables_on(),
+                        _ => true,
+                    },
                 };
                 let gone: Vec<Key> = self
                     .tbl
@@ -3699,6 +3730,8 @@ impl<'a> Opt<'a> {
                     }
                 }
             }
+            // A `std_ulogic` table: no memory.
+            Inst::CallNative { native, .. } if self.logic_table(native) => {}
             Inst::Const { .. }
             | Inst::ConstF { .. }
             | Inst::Move { .. }
@@ -3772,6 +3805,17 @@ impl<'a> Opt<'a> {
         }
     }
 
+    /// A native of one result computed from its scalar operands alone.
+    fn logic_table(&self, native: crate::NativeId) -> bool {
+        use crate::ieee::Op;
+        self.prog
+            .natives
+            .get(native)
+            .and_then(|n| crate::ieee::symbol_key(&n.symbol))
+            .and_then(crate::ieee::parse)
+            .is_some_and(|op| matches!(op, Op::Gate(_) | Op::Not | Op::Conv(_, false) | Op::Truthy))
+    }
+
     /// A call or an unknown write: nothing survives but constants and frame slots that
     /// neither a debugger shows nor any pointer reaches.
     fn kill_all(&mut self) {
@@ -3810,7 +3854,13 @@ impl<'a> Opt<'a> {
                 return true;
             }
             let ce = this.cls_of(a2);
-            let apart = matches!((cs, ce), (Some(x), Some(y)) if x != y);
+            let apart = match (cs, ce) {
+                (Some(Cls::Param), Some(o)) | (Some(o), Some(Cls::Param)) => {
+                    matches!(o, Cls::Block(_))
+                }
+                (Some(x), Some(y)) => x != y,
+                _ => false,
+            };
             match (at, a2) {
                 (Opn::A(s1, o1), Opn::A(s2, o2)) => {
                     s1 != s2 || {
@@ -4739,6 +4789,12 @@ impl<'a> Opt<'a> {
                     self.cse(pc, Some(dst), Key::Load(a, w));
                 }
             }
+            // The same element read again (a table of exclusive ors over the bits of a word).
+            Inst::LGet { dst, base, idx } => {
+                if let (Some(b), Some(i)) = (self.kopn(base), self.kopn(idx)) {
+                    self.cse(pc, Some(dst), Key::LGet(b, i));
+                }
+            }
             Inst::DopeLen { dst, dope, dim } => {
                 if let Some((l, r, dir)) = self.const_dim(self.opn(dope), dim)
                     && let Some(n) = dim_len(l, r, dir == 1).filter(|&n| n <= i64::MAX as u64)
@@ -5149,6 +5205,13 @@ impl<'a> Opt<'a> {
                 inited.push(p);
             }
             if is_param {
+                if f.params.iter().any(|q| {
+                    q.slot == off
+                        && q.mode == crate::Mode::In
+                        && q.class == crate::ParamClass::Value
+                }) {
+                    self.in_regs.push(p);
+                }
                 let a = self.fresh(RegTy::Ptr, 1);
                 self.defs[a.0 as usize] = 1;
                 self.inserts.push((

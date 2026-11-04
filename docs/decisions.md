@@ -13772,3 +13772,7 @@ A copy knows the form of each signal it names, so a read or a drive with a const
 ## Cranelift tier: element loops planned in the code itself (yavs-clift, 2026-11-04)
 
 - **The Cranelift lowering plans element loops as LLVM does** ("Element loops planned in the compiled code itself"; `Gen::eloop_plan`, `yavs_rt_eloop_exec`, `eloop::invariant_steps`): the helper `eloop::run` interprets the steps and finds every object through a trait object, about 2 300 instructions for a loop of eight elements, more than the eight iterations it replaces. No tunable constant. The helper stays for a shape `invariant_steps` refuses and for `YAVS_LLVM_ELOOP_HELPER`, which now keys Cranelift's code too.
+
+## Optimiser: an element of a logic vector read again (yavs-ir `opt.rs`, 2026-11-04)
+
+- **`LGet` is in the value numbering** (`Key::LGet`), as a memory fact of its vector: the second read of an element is a move while nothing can have written the vector. Tables of exclusive ors over the bits of a word (a CRC update) read each input element many times. A `NewFrame` is a block (`Cls::Block`) as an `Alloc` is; what the cell of an `in` parameter points to (`Cls::Param`) is apart from those blocks, not from anything else; a `std_ulogic` table native writes no memory.

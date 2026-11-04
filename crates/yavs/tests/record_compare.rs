@@ -39,7 +39,10 @@ struct Design {
 
 impl Design {
     fn new(tag: &str, file: &Path, top: &str) -> Design {
-        let dir = tempdir(tag);
+        Design::new_in(tempdir(tag), file, top)
+    }
+
+    fn new_in(dir: common::Tmp, file: &Path, top: &str) -> Design {
         let work = format!("work:{}", dir.join("lib").display());
         let a = yavs(
             &dir,
@@ -52,7 +55,7 @@ impl Design {
                 file.to_str().unwrap(),
             ],
         );
-        assert!(a.status.success(), "analyze {tag}: {a:?}");
+        assert!(a.status.success(), "analyze: {a:?}");
         Design {
             dir,
             work,
@@ -165,4 +168,593 @@ fn the_compare_and_the_compare_in_compiled_code_work_together() {
         "forced compiled"
     );
     assert!(forced.2 > 10_000, "forced: only {} leaves spared", forced.2);
+}
+
+/// A counter of the run in `err`, 0 when it is not printed.
+#[cfg(feature = "clift")]
+fn counter(err: &str, name: &str) -> u64 {
+    let key = format!("counters: {name}=");
+    err.lines()
+        .find_map(|l| l.strip_prefix(key.as_str())?.parse().ok())
+        .unwrap_or(0)
+}
+
+/// A design run with the counters on: status, output, the error stream.
+#[cfg(feature = "clift")]
+fn counted(d: &Design, env: &[(&str, &str)], extra: &[&str]) -> (Option<i32>, String, String) {
+    let mut args = vec!["run", "--std=2008", "--work", &d.work];
+    args.extend(extra);
+    args.push(&d.top);
+    let mut e = vec![("YAVS_COUNTERS", "1")];
+    e.extend(env);
+    let r = yavs(&d.dir, &e, &args);
+    (
+        r.status.code(),
+        String::from_utf8_lossy(&r.stdout).into_owned(),
+        String::from_utf8_lossy(&r.stderr).into_owned(),
+    )
+}
+
+/// `--tier=clift` compiles everything before the run, so what compiled code takes is the same on
+/// every host: no sampler decides. `scatter_checked` and `gather_checked` count each use of the
+/// cells, each held against the kernel's full test.
+#[cfg(feature = "clift")]
+const FORCED: &[&str] = &["--tier=clift", "--no-cache"];
+
+/// A design in a file of its own: the interpreter's output against compiled code with the cells,
+/// without and checked; the floors of what the cells took, all leaves counted alike.
+#[cfg(feature = "clift")]
+fn compiled_cells_change_nothing(d: &Design, skips: u64, copies: u64) {
+    let interp = d.run(OFF, &["--tier=interp", "--no-cache"]);
+    assert_eq!(interp.0, Some(0), "{}", interp.1);
+    let off = counted(d, &[("YAVS_IMAGE_INLINE", "off")], FORCED);
+    assert_eq!((&interp.0, &interp.1), (&off.0, &off.1), "cells off");
+    let on = counted(d, &[], FORCED);
+    assert_eq!((&interp.0, &interp.1), (&on.0, &on.1), "cells on");
+    for name in [
+        "scatter_spared",
+        "gathers_copied",
+        "gathers_read",
+        "images",
+        "cycles",
+    ] {
+        assert_eq!(
+            counter(&off.2, name),
+            counter(&on.2, name),
+            "{name}: cells off against cells on"
+        );
+    }
+    // A review comes at the next look of the host, a few scatters after its count.
+    let (w0, w1) = (
+        counter(&off.2, "image_writes"),
+        counter(&on.2, "image_writes"),
+    );
+    assert!(
+        w1.abs_diff(w0) * 50 <= w0 + 50,
+        "image writes {w0} off, {w1} on"
+    );
+    let check = counted(d, &[("YAVS_IMAGE_CHECK", "1")], FORCED);
+    assert_eq!(
+        (&interp.0, &interp.1),
+        (&check.0, &check.1),
+        "checked: {}",
+        check.2
+    );
+    let first = counted(d, CHECK, FORCED);
+    assert_eq!(
+        (&interp.0, &interp.1),
+        (&first.0, &first.1),
+        "from the first: {}",
+        first.2
+    );
+    let (s, c) = (
+        counter(&first.2, "scatter_checked"),
+        counter(&first.2, "gather_checked"),
+    );
+    assert!(s >= skips, "only {s} skips in compiled code");
+    assert!(c >= copies, "only {c} copies in compiled code");
+    let mut args = FORCED.to_vec();
+    args.extend(["--threads=4", "--shuffle=11"]);
+    let par = counted(d, CHECK, &args);
+    let sorted = |s: &str| {
+        let mut v: Vec<_> = s.lines().map(str::to_owned).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(interp.0, par.0, "4 threads: {}", par.2);
+    assert_eq!(sorted(&interp.1), sorted(&par.1), "4 threads");
+}
+
+/// Force, entries, waveforms, delays, parts, resolved records around what compiled code skips.
+#[cfg(feature = "clift")]
+#[test]
+fn the_cells_of_compiled_code_change_nothing_around_what_must_see_a_drive() {
+    let d = Design::new("record_cells", &corpus("held_record"), "held_record");
+    compiled_cells_change_nothing(&d, 100, 100);
+}
+
+#[cfg(feature = "clift")]
+fn inline_design(tag: &str, text: &str, top: &str) -> Design {
+    let dir = tempdir(tag);
+    let file = dir.join("d.vhd");
+    std::fs::write(&file, text).unwrap();
+    Design::new_in(dir, &file, top)
+}
+
+/// Two instances of one entity share their leaf table and driver slot numbers but not their
+/// images and gates: one holds its record, the other changes it, and both read it.
+#[cfg(feature = "clift")]
+#[test]
+fn the_cells_are_the_machine_s() {
+    let text = r#"
+library ieee; use ieee.std_logic_1164.all;
+package p is
+  type rec is record a : std_ulogic; b : std_ulogic_vector(7 downto 0); end record;
+end package;
+library ieee; use ieee.std_logic_1164.all; use work.p.all;
+entity inst is
+  generic (step : natural);
+  port (clk : in std_ulogic; n : in natural; o : out natural);
+end;
+architecture a of inst is
+  signal r : rec := ('0', x"00");
+begin
+  process (clk)
+    variable v : rec := ('0', x"00");
+    variable c : natural := 0;
+    variable x : rec;
+  begin
+    if rising_edge(clk) then
+      if step /= 0 and n mod step = 0 then v.b := not v.b; v.a := not v.a; end if;
+      r <= v;
+      x := r;
+      if x.b(0) = '1' then c := c + 1; end if;
+      if x.a = '1' then c := c + 1000; end if;
+      o <= c;
+    end if;
+  end process;
+end;
+library ieee; use ieee.std_logic_1164.all;
+entity top is end;
+architecture a of top is
+  signal clk : std_ulogic := '0';
+  signal n, o0, o1, o2 : natural := 0;
+begin
+  clk <= not clk after 5 ns when n < 300 else '0';
+  process (clk) begin if rising_edge(clk) then n <= n + 1; end if; end process;
+  i0 : entity work.inst generic map (0) port map (clk, n, o0);
+  i1 : entity work.inst generic map (2) port map (clk, n, o1);
+  i2 : entity work.inst generic map (7) port map (clk, n, o2);
+  process (n) begin
+    if n = 299 then
+      report integer'image(o0) & " " & integer'image(o1) & " " & integer'image(o2);
+    end if;
+  end process;
+end;
+"#;
+    let d = inline_design("record_cells_two", text, "top");
+    compiled_cells_change_nothing(&d, 200, 200);
+}
+
+/// More plans in one process than the plan gate has bits, and a record whose field is sized by a
+/// generic, so its value type has a descriptor.
+#[cfg(feature = "clift")]
+#[test]
+fn the_cells_past_the_plan_gate_and_with_a_descriptor() {
+    let n = 70;
+    let mut sigs = String::new();
+    let mut drives = String::new();
+    let mut sum = String::new();
+    for i in 0..n {
+        sigs += &format!("  signal s{i} : rec := ('0', x\"00\");\n");
+        drives += &format!(
+            "      s{i} <= (v.a, v.b xor x\"{i:02x}\"); x := s{i}; if x.b(6) = '1' then c := c + {}; end if;\n",
+            i + 1
+        );
+        sum += &format!(
+            "      if n = {} then v.a := not v.a; v.b := not v.b; end if;\n",
+            i * 3 + 10
+        );
+    }
+    let text = format!(
+        r#"
+library ieee; use ieee.std_logic_1164.all;
+package p is
+  type rec is record a : std_ulogic; b : std_ulogic_vector(7 downto 0); end record;
+  type dyn is record a : std_ulogic; b : std_ulogic_vector; end record;
+end package;
+library ieee; use ieee.std_logic_1164.all; use work.p.all;
+entity sized is
+  generic (w : natural);
+  port (clk : in std_ulogic; n : in natural; o : out natural);
+end;
+architecture a of sized is
+  subtype t is dyn(b(w - 1 downto 0));
+  signal r : t := ('0', (others => '0'));
+begin
+  process (clk)
+    variable v : t := ('0', (others => '0'));
+    variable x : t;
+    variable c : natural := 0;
+  begin
+    if rising_edge(clk) then
+      if n mod 5 = 0 then v.b(0) := not v.b(0); end if;
+      r <= v;
+      x := r;
+      if x.b(0) = '1' then c := c + w; end if;
+      o <= c;
+    end if;
+  end process;
+end;
+library ieee; use ieee.std_logic_1164.all; use work.p.all;
+entity top is end;
+architecture a of top is
+  signal clk : std_ulogic := '0';
+  signal n, o0, o1 : natural := 0;
+  signal total : natural := 0;
+{sigs}begin
+  clk <= not clk after 5 ns when n < 400 else '0';
+  process (clk) begin if rising_edge(clk) then n <= n + 1; end if; end process;
+  i0 : entity work.sized generic map (9) port map (clk, n, o0);
+  i1 : entity work.sized generic map (70) port map (clk, n, o1);
+  process (clk)
+    variable v : rec := ('0', x"00");
+    variable x : rec;
+    variable c : natural := 0;
+  begin
+    if rising_edge(clk) then
+{sum}{drives}      total <= c;
+    end if;
+  end process;
+  process (n) begin
+    if n = 399 then
+      report integer'image(total) & " " & integer'image(o0) & " " & integer'image(o1);
+    end if;
+  end process;
+end;
+"#
+    );
+    let d = inline_design("record_cells_many", &text, "top");
+    compiled_cells_change_nothing(&d, 1000, 1000);
+}
+
+/// What must see a record drive, in a design with no force anywhere, so the plan gate is not shut
+/// for good and only its bits stand between the compiled compare and a wrong skip: entries of the
+/// run made through a procedure (the optimiser drops a drive a later one overwrites, and a call
+/// stops it), a whole drive of another value before the one that holds, entries before the first
+/// compare of a plan, waveforms the zero-delay drive must take away, delays, parts, a sub-record
+/// on the same driver slot, two sources, a last leaf that alone changes, a run that only holds.
+/// Every event of every signal reports, with its delta.
+#[cfg(feature = "clift")]
+#[test]
+fn the_cells_stand_aside_for_what_must_see_a_drive() {
+    let text = r#"
+library ieee; use ieee.std_logic_1164.all;
+package p is
+  type inner is record x : std_ulogic; y : std_ulogic_vector(3 downto 0); end record;
+  type rec is record s : inner; b : std_ulogic_vector(7 downto 0); i : integer; c : std_ulogic; end record;
+  constant init : rec := (('0', x"0"), x"00", 0, '0');
+  type recs is array (0 to 3) of rec;
+  function image (r : rec) return string;
+  type two is record a : std_logic; b : std_logic_vector(3 downto 0); end record;
+end package;
+package body p is
+  function image (r : rec) return string is
+  begin
+    return std_ulogic'image(r.s.x) & to_hstring(r.s.y) & " " & to_hstring(r.b) & " " & integer'image(r.i)
+      & " " & std_ulogic'image(r.c);
+  end function;
+end package body;
+library ieee; use ieee.std_logic_1164.all; use work.p.all;
+entity top is end;
+architecture a of top is
+  signal clk : std_ulogic := '0';
+  signal n : natural := 0;
+  signal entries, whole, first, firsts, waved, delayed, parted, last, only, sub : rec := init;
+  signal parts : recs := (others => init);
+  signal res : two := ('Z', "ZZZZ");
+  signal got : integer := 0;
+begin
+  clk <= not clk after 5 ns when n < 200 else '0';
+  process (clk) begin if rising_edge(clk) then n <= n + 1; end if; end process;
+
+  entries_p : process (clk)
+    procedure set_b is begin entries.b <= x"aa"; end procedure;
+    procedure set_c is begin entries.c <= '1'; end procedure;
+    variable v : rec := init;
+  begin
+    if rising_edge(clk) then
+      if n mod 7 = 3 then set_b; end if;
+      if n mod 7 = 5 then set_c; end if;
+      entries <= v;
+      if n mod 11 = 4 then set_b; end if;
+    end if;
+  end process;
+
+  whole_p : process (clk)
+    procedure other is
+      variable w : rec := (('1', x"f"), x"55", 3, '1');
+    begin
+      whole <= w;
+    end procedure;
+    variable v : rec := init;
+  begin
+    if rising_edge(clk) then
+      if n mod 5 = 2 then other; end if;
+      whole <= v;
+    end if;
+  end process;
+
+  first_p : process (clk)
+    procedure other is
+      variable w : rec := (('1', x"3"), x"11", 1, '0');
+    begin
+      first <= w;
+    end procedure;
+    variable v : rec := init;
+  begin
+    if rising_edge(clk) then
+      -- A plan of its own first: the machine has its cells when this plan first asks, with entries
+      -- of the run on its driver.
+      firsts <= v;
+      if n >= 30 then
+        if n < 70 then other; end if;
+        first <= v;
+      end if;
+    end if;
+  end process;
+
+  waved_p : process (clk)
+    variable v : rec := init;
+    variable w : rec := (('1', x"9"), x"77", 2, '1');
+  begin
+    if rising_edge(clk) then
+      case n mod 41 is
+        when 30 => waved <= w after 25 ns;
+        when 35 => waved.b <= x"66" after 25 ns;
+        when others => waved <= v;
+      end case;
+    end if;
+  end process;
+
+  delayed_p : process (clk)
+    variable v : rec := init;
+    variable w : rec := (('1', x"9"), x"77", 2, '1');
+  begin
+    if rising_edge(clk) then
+      case n mod 43 is
+        when 30 => delayed <= transport w after 22 ns;
+        when 31 => delayed <= transport v after 3 ns;
+        when 36 => delayed <= w after 22 ns;
+        when 37 => delayed <= reject 1 ns inertial v after 3 ns;
+        when others => delayed <= v after 2 ns;
+      end case;
+    end if;
+  end process;
+
+  parts_p : process (clk)
+    variable v : recs := (others => init);
+    variable x : recs := (others => init);
+    variable y : rec;
+  begin
+    if rising_edge(clk) then
+      if n mod 13 = 6 then v(2).b := not v(2).b; end if;
+      if n mod 9 = 1 then
+        parts <= v;
+      elsif n mod 9 = 4 then
+        parts(1) <= v(2);
+      elsif n mod 9 = 7 then
+        parts(2 to 3) <= v(0 to 1);
+      else
+        parts(2) <= v(2);
+      end if;
+      x := parts;
+      y := parts(n mod 4);
+      x(1 to 2) := parts(2 to 3);
+      x(0 to 1) := parts(2 to 3);
+      got <= x(1).i + y.i + x(2).i;
+    end if;
+  end process;
+
+  last_p : process (clk)
+    variable v : rec := init;
+    variable x : rec;
+  begin
+    if rising_edge(clk) then
+      if n mod 17 = 9 then v.c := not v.c; end if;
+      if n mod 23 = 9 then v.i := v.i + 1; end if;
+      last <= v;
+      x := last;
+      assert x.c = last.c severity failure;
+    end if;
+  end process;
+
+  sub_p : process (clk)
+    variable v : rec := init;
+    variable w : inner := ('1', x"c");
+  begin
+    if rising_edge(clk) then
+      if n mod 3 = 0 then sub.s <= w; elsif n mod 3 = 1 then sub <= v; else sub.s <= v.s; end if;
+    end if;
+  end process;
+
+  res_a : process (clk)
+    variable v : two := ('1', "1010");
+  begin
+    if rising_edge(clk) then
+      if n < 100 then res <= v; else res <= ('Z', "ZZZZ"); end if;
+    end if;
+  end process;
+  res_b : process (clk)
+    variable v : two := ('1', "1010");
+  begin
+    if rising_edge(clk) then
+      if n >= 90 then res <= v; else res <= ('Z', "ZZZZ"); end if;
+    end if;
+  end process;
+
+  only_p : process (clk)
+    variable v : rec := init;
+  begin
+    if falling_edge(clk) then
+      only <= v;
+    end if;
+  end process;
+  postponed process (clk)
+  begin
+    report "clock " & std_ulogic'image(clk);
+  end postponed process;
+
+  watch : process (entries, whole, first, waved, delayed, parted, last, only, sub, parts, res, got)
+  begin
+    report image(entries) & " | " & image(whole) & " | " & image(first) & " | " & image(waved)
+      & " | " & image(delayed) & " | " & image(last) & " | " & image(sub) & " | " & image(parts(1))
+      & " | " & image(parts(2)) & " | " & std_logic'image(res.a) & to_hstring(res.b) & " | "
+      & integer'image(got);
+  end process;
+end;
+"#;
+    let d = inline_design("record_cells_see", text, "top");
+    compiled_cells_change_nothing(&d, 500, 300);
+}
+
+/// Force and release of a record compiled code skips: a force shuts every plan gate for good, so
+/// the value driven is the one forced and only the driving value tells a skip. Every event and
+/// the driving value report.
+#[cfg(feature = "clift")]
+#[test]
+fn the_cells_shut_at_a_force() {
+    let text = r#"
+library ieee; use ieee.std_logic_1164.all;
+entity top is end;
+architecture a of top is
+  type rec is record a : std_ulogic; b : std_ulogic_vector(7 downto 0); end record;
+  signal clk : std_ulogic := '0';
+  signal n : natural := 0;
+  signal s : rec := ('0', x"00");
+begin
+  clk <= not clk after 5 ns when n < 80 else '0';
+  process (clk) begin if rising_edge(clk) then n <= n + 1; end if; end process;
+  process (clk)
+    variable v : rec := ('0', x"00");
+  begin
+    if rising_edge(clk) then
+      if n = 34 then v := ('1', x"5a"); end if;
+      s <= v;
+      report "driving " & std_ulogic'image(s.a'driving_value) & to_hstring(s.b'driving_value);
+    end if;
+  end process;
+  process begin
+    wait until n = 30;
+    s.a <= force '1';
+    s.b <= force x"5a";
+    wait until n = 38;
+    s.a <= release;
+    s.b <= release;
+    wait until n = 50;
+    s.b <= force x"11";
+    wait until n = 55;
+    s.b <= release;
+    wait;
+  end process;
+  process (s) begin
+    report std_ulogic'image(s.a) & to_hstring(s.b);
+  end process;
+end;
+"#;
+    let d = inline_design("record_cells_force", text, "top");
+    compiled_cells_change_nothing(&d, 20, 0);
+}
+
+/// Long enough for reviews: a plan that holds through its cell keeps its image and the counts of
+/// the review are the host's; a value that changes in every leaf at every clock has its image let
+/// go, for the compare and for a reader, and what compiled code reads after that is not the image.
+#[cfg(feature = "clift")]
+#[test]
+fn the_cells_go_with_the_review() {
+    let text = r#"
+library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
+entity top is end;
+architecture a of top is
+  type rec is record
+    a, b, c, d, e, f, g, h : std_ulogic;
+    u : unsigned(15 downto 0);
+    i : integer;
+  end record;
+  constant init : rec := ('0', '0', '0', '0', '0', '0', '0', '0', x"0000", 0);
+  signal clk : std_ulogic := '0';
+  signal n : natural := 0;
+  signal held, often, gone, read : rec := init;
+  type pack is record a, c, d, e, f : std_ulogic; u : unsigned(15 downto 0); b : std_ulogic; end record;
+  signal kept : pack := ('0', '0', '0', '0', '0', x"0000", '0');
+  signal count : natural := 0;
+begin
+  clk <= not clk after 5 ns when n < 3200 else '0';
+  -- One run of leaves with a bit that changes at every clock: the compare spares nothing and lets
+  -- go, the reader keeps the image, and then the value holds.
+  kept_p : process (clk)
+    variable v : pack := ('0', '0', '0', '0', '0', x"0000", '0');
+  begin
+    if rising_edge(clk) then
+      if n < 1500 then v.b := not v.b; end if;
+      kept <= v;
+    end if;
+  end process;
+  kept_r : process (clk)
+    variable x : pack;
+    variable c : natural := 0;
+  begin
+    if rising_edge(clk) then
+      x := kept;
+      if x.b = '1' then c := c + 1; end if;
+      count <= c;
+    end if;
+  end process;
+  process (clk) begin if rising_edge(clk) then n <= n + 1; end if; end process;
+  held_p : process (clk)
+    variable v : rec := init;
+  begin
+    if rising_edge(clk) then
+      if n mod 40 = 1 then v.u := v.u + 1; end if;
+      held <= v;
+    end if;
+  end process;
+  often_p : process (clk)
+    variable v : rec := init;
+  begin
+    if rising_edge(clk) then
+      if n mod 2 = 1 then v.a := not v.a; v.b := not v.b; v.i := v.i + 1; v.h := not v.h; end if;
+      often <= v;
+    end if;
+  end process;
+  gone_p : process (clk)
+    variable v : rec := init;
+  begin
+    if rising_edge(clk) then
+      if n < 2200 then
+        v := (not v.a, not v.b, not v.c, not v.d, not v.e, not v.f, not v.g, not v.h, v.u + 1, v.i + 1);
+      end if;
+      gone <= v;
+    end if;
+  end process;
+  read_p : process (clk)
+    variable x : rec;
+    variable c : natural := 0;
+  begin
+    if rising_edge(clk) then
+      x := gone;
+      c := (c + x.i + to_integer(x.u)) mod 65536;
+      read <= (x.a, x.b, x.c, x.d, x.e, x.f, x.g, x.h, x.u, c);
+    end if;
+  end process;
+  process (n) begin
+    if n mod 100 = 0 then
+      report integer'image(read.i) & " " & integer'image(held.i) & " " & to_hstring(held.u)
+        & " " & integer'image(often.i) & " " & integer'image(count);
+    end if;
+  end process;
+end;
+"#;
+    let d = inline_design("record_cells_review", text, "top");
+    compiled_cells_change_nothing(&d, 3000, 1000);
 }

@@ -109,6 +109,10 @@ impl Process for Profiled {
         self.inner.concurrent_call()
     }
 
+    fn images_tail(&self) -> (u64, u64) {
+        self.inner.images_tail()
+    }
+
     fn entry_func(&self) -> Option<u32> {
         self.inner.entry_func()
     }
@@ -223,6 +227,10 @@ impl Process for Counted {
 
     fn concurrent_call(&self) -> bool {
         self.inner.concurrent_call()
+    }
+
+    fn images_tail(&self) -> (u64, u64) {
+        self.inner.images_tail()
     }
 
     fn entry_func(&self) -> Option<u32> {

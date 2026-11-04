@@ -78,6 +78,12 @@ pub trait Process: Send {
 
     /// The process as `Any`, so an observer that knows its implementation can reach its
     /// state while it is suspended (`Hook::with_process`: VHPI reads and writes variables).
+    /// For the work counters: the whole gathers compiled code copied from a record image and the
+    /// leaves of whole scatters it spared, that the kernel has not heard of yet.
+    fn images_tail(&self) -> (u64, u64) {
+        (0, 0)
+    }
+
     fn as_any(&mut self) -> Option<&mut dyn std::any::Any> {
         None
     }
@@ -968,16 +974,23 @@ pub(crate) struct ProcState {
     /// machine: compiled code may compare a drive of that driver with the signal's current value
     /// and, when equal, make no call. A bit goes with the driver's first direct entry of a run;
     /// `gate_base` again at each resumption.
-    pub gate: AtomicU64,
+    ///
+    /// The second word is the plan gate of compiled code: bit `n` says the kernel drivers of the
+    /// `n`th record plan to ask (`Ctx::plan_gate`) have no entry in this run, and a skip of a whole
+    /// record is right. Closed like the first, but not by keeping a drive in compiled code's batch:
+    /// a scatter hands the batch over first.
+    pub gate: [AtomicU64; 2],
     /// The drivers that can be skipped this way: direct, on a signal that allows skipping.
-    pub gate_base: u64,
+    pub gate_base: [u64; 2],
     /// The bits of each waveform (index into `waveforms`), 0 for none.
-    pub gate_bits: Vec<u64>,
+    pub gate_bits: Vec<[u64; 2]>,
     /// `gate_set` was asked.
     pub gate_set: bool,
     /// For good: a direct driver of this process was given a waveform (a delay, a preemption, a
     /// skipped general assignment), or some signal was forced, released or deposited.
     pub gate_shut: bool,
+    /// The plans named so far (`Ctx::plan_gate`).
+    pub plans: u32,
     /// `Stats::gathers_copied`, `Stats::gathers_read`, `Stats::scatter_spared`.
     pub gathers_copied: u64,
     pub gathers_read: u64,
@@ -1108,16 +1121,18 @@ impl ProcState {
     /// Driver `local` makes a direct entry: no compiled skip of it for the rest of the run (`gate`).
     #[inline(always)]
     fn gate_off(&mut self, local: u32) {
-        if let Some(&b) = self.gate_bits.get(local as usize) {
-            *self.gate.get_mut() &= !b;
+        if let Some(&[a, b]) = self.gate_bits.get(local as usize) {
+            *self.gate[0].get_mut() &= !a;
+            *self.gate[1].get_mut() &= !b;
         }
     }
 
     /// No compiled skip for good (`gate_shut`).
     pub(crate) fn shut_gate(&mut self) {
         self.gate_shut = true;
-        self.gate_base = 0;
-        *self.gate.get_mut() = 0;
+        self.gate_base = [0; 2];
+        *self.gate[0].get_mut() = 0;
+        *self.gate[1].get_mut() = 0;
     }
 
     /// Whether waveform `local` is idle with no phantom; `waved` false says so with no load.
@@ -1604,6 +1619,11 @@ impl Ctx<'_> {
         } else {
             self.st.gathers_read += 1;
         }
+    }
+
+    /// Count whole record gathers compiled code copied from an image by itself.
+    pub fn note_gathers(&mut self, copied: u64) {
+        self.st.gathers_copied += copied;
     }
 
     /// The plane blocks of the current value of logic signal `s` and its element count: whole
@@ -2298,7 +2318,30 @@ impl Ctx<'_> {
     /// keeps a drive for later.
     #[inline]
     pub fn gate_addr(&self) -> *const u64 {
-        self.st.gate.as_ptr()
+        self.st.gate[0].as_ptr()
+    }
+
+    /// A bit of the plan gate (`ProcState::gate`) for the kernel drivers `ds` (each `drive_skip_ok`): set
+    /// while `drive_clean` holds for them, since force, release, deposit and a waveform shut it
+    /// and an entry takes it. 0: none to give.
+    #[cold]
+    pub fn plan_gate(&mut self, ds: &[DriverId]) -> u64 {
+        let n = self.st.plans;
+        if self.st.gate_shut || n >= 64 {
+            return 0;
+        }
+        self.st.plans = n + 1;
+        let bit = 1u64 << n;
+        for d in ds {
+            let local = self.sh.drivers[d.0 as usize].local as usize;
+            self.st.gate_bits[local][1] |= bit;
+        }
+        self.st.gate_base[1] |= bit;
+        // Entries of this run made already: only the next run may skip.
+        if self.drive_clean(ds) {
+            *self.st.gate[1].get_mut() |= bit;
+        }
+        bit
     }
 
     /// The signal driver `d` drives.
@@ -2320,7 +2363,7 @@ impl Ctx<'_> {
         if self.st.gate_shut {
             return;
         }
-        let mut bits = vec![0u64; self.st.waveforms.len()];
+        let mut bits = vec![[0u64; 2]; self.st.waveforms.len()];
         let mut base = 0u64;
         for (k, d) in ds.enumerate().take(64) {
             let Some(i) = self
@@ -2334,15 +2377,15 @@ impl Ctx<'_> {
             if (i.direct || i.bdirect) && self.sh.signals[i.signal.0 as usize].skip_ok {
                 // Several of the machine's drivers can name one kernel driver (the fields of a
                 // record pack): an entry through any closes them all.
-                bits[i.local as usize] |= 1 << k;
+                bits[i.local as usize][0] |= 1 << k;
                 base |= 1 << k;
             }
         }
-        self.st.gate_base = base;
+        self.st.gate_base = [base, 0];
         self.st.gate_bits = bits;
         // Entries of this run made before the code was entered: only the next run may skip.
         if self.st.out.is_empty() && self.st.outv.is_empty() && self.st.outb.is_empty() {
-            *self.st.gate.get_mut() = base;
+            *self.st.gate[0].get_mut() = base;
         }
     }
 

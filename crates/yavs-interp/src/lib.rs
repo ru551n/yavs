@@ -617,6 +617,11 @@ pub trait TierHost {
     /// valid.
     fn signal(&mut self, fr: &mut TierFrame, pc: u32, edge: u32) -> Stepped;
 
+    /// The whole record scatter at `pc` is about to be skipped by compiled code, or the whole
+    /// gather at `pc` was copied from its image by it (`YAVS_IMAGE_CHECK`, debug builds): what the
+    /// kernel's full test or the leaves say. `true`: a scatter.
+    fn image_check(&mut self, pc: u32) -> Result<bool, String>;
+
     /// Turn native frames of compiled code into interpreter frames (`docs/decisions.md`
     /// "Compiled frames"): the top frame waits at its call at `pc`, and `frames` (outermost
     /// first) are pushed on it as that call and the calls they wait in would have pushed them,
@@ -1023,6 +1028,45 @@ pub struct TierFrame {
     /// that finds bit `k` set may compare a drive through driver `k` with the current value and
     /// make no call when they are equal; it clears the bit when it keeps a drive for later.
     pub gate: *const u64,
+    /// The machine's [`ImageCell`]s, null while it has none.
+    pub cells: *const ImageCell,
+}
+
+/// [`ImageCell`]s of whole gathers, by the low bits of the leaf table: one other table with the
+/// same bits only sends its gathers through the host.
+pub const GATHER_CELLS: usize = 64;
+
+/// What compiled code needs to copy a whole gather from its record image, or to skip a whole
+/// zero-delay scatter that holds what the image holds, with no call (`gather.rs`,
+/// `docs/decisions.md` "Record images in compiled code"): `TierFrame::cells`, a gather at
+/// `tab % GATHER_CELLS`, a scatter through driver slot `k` at `GATHER_CELLS + k`. No image: the host
+/// does it. Written by the host, but for `left`.
+#[repr(C)]
+pub struct ImageCell {
+    /// The address of the record image.
+    pub image: u64,
+    /// A scatter: the plan's bit of the plan gate, the word after `TierFrame::gate`.
+    pub mask: u64,
+    /// The descriptor's address, for a value type that has one.
+    pub desc: u64,
+    /// The leaf table the plan is for and the value's size.
+    pub tab: u32,
+    pub size: u32,
+    /// Skips left before the host must look: it counts them and reviews the image.
+    pub left: std::sync::atomic::AtomicU32,
+}
+
+impl ImageCell {
+    pub(crate) fn empty() -> ImageCell {
+        ImageCell {
+            image: 0,
+            mask: 0,
+            desc: 0,
+            tab: 0,
+            size: 0,
+            left: 0.into(),
+        }
+    }
 }
 
 /// [`TierHost::drive_bit_now`] on the kernel context itself (`TierFrame::kctx`), with the
@@ -1224,7 +1268,8 @@ pub static NO_STOP: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::n
 
 /// `TierFrame::gate` of a view without a kernel: nothing can be skipped. Compiled code only stores
 /// zero through it.
-pub static NO_GATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static NO_GATE: [std::sync::atomic::AtomicU64; 2] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 2];
 
 /// `TierFrame::spin` of a view without a machine: scratch, never read.
 pub static NO_SPIN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1319,7 +1364,8 @@ impl Default for TierFrame {
             kctx: std::ptr::null_mut(),
             drivers: std::ptr::null(),
             ndrivers: 0,
-            gate: NO_GATE.as_ptr(),
+            gate: NO_GATE[0].as_ptr(),
+            cells: std::ptr::null(),
         }
     }
 }
@@ -2487,6 +2533,10 @@ impl Process for InterpProcess {
 
     fn entry_func(&self) -> Option<u32> {
         Some(self.m.rt.prog.base_of(self.m.entry).0)
+    }
+
+    fn images_tail(&self) -> (u64, u64) {
+        self.m.images_tail()
     }
 
     fn wait_stmt(&self) -> Option<u32> {

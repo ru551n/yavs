@@ -622,6 +622,8 @@ mod tests {
         // The mode of the compare goes into the key by value (`pre_target`).
         let others = [
             "YAVS_INLCMP",
+            "YAVS_IMAGE_INLINE",
+            "YAVS_IMAGE_CHECK",
             "YAVS_CLIFT_TRACE",
             "YAVS_CLIFT_PERFMAP",
             "YAVS_CLIFT_HUGE",

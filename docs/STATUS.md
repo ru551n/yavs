@@ -10836,6 +10836,10 @@ GRLIB, all compiled: the compile thread 34.7 to 1.09 G, for 355 listed functions
 
 A whole zero-delay assignment of a record signal compares the value with the record image, as a whole and then per run of leaves, and makes no kernel call for what holds (`YAVS_NO_IMAGE` turns it off with the images, `YAVS_IMAGE_CHECK` holds every skip against the kernel's full test, always in debug builds; `docs/decisions.md` "Record drive compare"). Not served: a part of a record signal, drivers that are not direct. Its gain in cycles has not been measured on a quiet host.
 
+## Record images in compiled code
+
+On perf/try-recinline: Cranelift frame-mode code compares a whole zero-delay record scatter with the record image, and copies a whole record gather from it, with no call when it can (`YAVS_IMAGE_INLINE` turns either off, `YAVS_IMAGE_CHECK` holds every use against the full test, always in debug builds; `docs/decisions.md` "Record images in compiled code"). No cycle measurement on a quiet host yet.
+
 ## Whole-record reads and drives in Cranelift frame-mode code
 
 `SigGather` and `SigScatter` run through the signal callback instead of the generic step, as in the LLVM tier (`yavs-clift`; `docs/decisions.md` "Whole-record reads and drives in Cranelift frame-mode code"). Forced compiled windows execute 0.5 to 0.9 percent fewer instructions.

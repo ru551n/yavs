@@ -1702,8 +1702,9 @@ mod clift {
         "errors=0",
         [
             ("cb_step", Max(4)),
-            ("cb_signal", Max(420)),
-            ("cb_signal", Min(390)),
+            // A gather copied or a held scatter compared in compiled code needs no callback.
+            ("cb_signal", Max(245)),
+            ("cb_signal", Min(230)),
         ]
     );
     clift_case!(

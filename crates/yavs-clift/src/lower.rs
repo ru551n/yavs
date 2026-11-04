@@ -8,6 +8,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
+use std::mem::{offset_of, size_of};
 use std::rc::Rc;
 
 use cranelift_codegen::inline::{Inline, InlineCommand};
@@ -113,7 +114,7 @@ pub struct Jit {
     deopt_slots: ClifId,
     deopt_end: ClifId,
     /// The kernel-facing callbacks of `rt.rs`, in the order of `KERNEL`.
-    kernel: [ClifId; 23],
+    kernel: [ClifId; 24],
     /// Module data by its bytes and whether it is 8-byte aligned.
     tables: HashMap<(Vec<u8>, bool), DataId>,
     /// What a body's reference to module data names in another run (`Name::Data`), by data id.
@@ -416,6 +417,7 @@ impl Jit {
             (DRIVE_BIT, yavs_rt_drive_bit as *const u8),
             (DRIVE_F, yavs_rt_drive_f as *const u8),
             (GATE_CHECK, yavs_rt_gate_check as *const u8),
+            (IMAGE_CHECK, yavs_rt_image_check as *const u8),
             (CODES, yavs_rt_codes as *const u8),
             (PLANES, yavs_rt_planes as *const u8),
             (NATIVE, yavs_rt_native as *const u8),
@@ -504,12 +506,21 @@ impl Jit {
                 &[I64, I32, I32, I64, I64, I64, I64, I64, I32],
                 None,
             )?,
+            imp(IMAGE_CHECK, &[I64, I32, I32], None)?,
         ];
         let mut sig = module.make_signature();
         sig.params.extend([AbiParam::new(I64); 3]);
         sig.params.push(AbiParam::new(I32));
         sig.returns.push(AbiParam::new(I32));
-        let pre_target = crate::cache::pre_target(module.isa(), &format!("{:?}", inlcmp_mode()));
+        let pre_target = crate::cache::pre_target(
+            module.isa(),
+            &format!(
+                "{:?} {:?} {:?}",
+                inlcmp_mode(),
+                image_mode(),
+                image_inline()
+            ),
+        );
         Ok(Jit {
             module,
             step,
@@ -1377,6 +1388,9 @@ impl Jit {
             gate_check: self
                 .module
                 .declare_func_in_func(self.kernel[22], &mut ctx.func),
+            image_check: self
+                .module
+                .declare_func_in_func(self.kernel[23], &mut ctx.func),
             tables: tabs,
             consts: cons,
             natives,
@@ -1513,6 +1527,8 @@ struct Imports {
     /// `yavs_rt_gate_check(mem, pc, driver, lo, len, value, form, entries, kept)`: a skip against
     /// the full test, with the drives kept in the batch, which the kernel cannot see.
     gate_check: FuncRef,
+    /// `yavs_rt_image_check(mem, pc, kept)`: a whole record skip or copy against the full test.
+    image_check: FuncRef,
     tables: HashMap<Vec<u8>, GlobalValue>,
     /// Copies of the constants (up to 4 KiB of bytes) the function takes the address of, which
     /// never change: reads of them need no lookup.
@@ -1540,6 +1556,32 @@ fn inlcmp_mode() -> InlCmp {
         Ok("check") => InlCmp::Check,
         _ if cfg!(debug_assertions) => InlCmp::Check,
         _ => InlCmp::On,
+    })
+}
+
+/// A whole record gather copied from its image and a whole record scatter compared with it in the
+/// generated code (`YAVS_IMAGE_INLINE=off`, `=noread`: scatters only, `=nodrive`: gathers only;
+/// `YAVS_IMAGE_CHECK` asks the full test at every one, always in debug builds).
+fn image_inline() -> Result<&'static str, ()> {
+    static WHICH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    WHICH
+        .get_or_init(|| std::env::var("YAVS_IMAGE_INLINE").ok())
+        .as_deref()
+        .ok_or(())
+}
+
+fn image_mode() -> InlCmp {
+    static MODE: std::sync::OnceLock<InlCmp> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| {
+        if image_inline() == Ok("off") {
+            InlCmp::Off
+        } else if cfg!(debug_assertions)
+            || std::env::var_os("YAVS_IMAGE_CHECK").is_some_and(|v| v != "0")
+        {
+            InlCmp::Check
+        } else {
+            InlCmp::On
+        }
     })
 }
 
@@ -3765,6 +3807,24 @@ fn gen_func(
             Inst::SigRead { dst, sig } => g.sig_read(pc, dst, sig),
             // Through the signal callback rather than a step (#790), as the LLVM tier does; a
             // native frame keeps its own way.
+            Inst::SigScatter {
+                src,
+                desc,
+                tab,
+                driver,
+                ops,
+                has: 0,
+                ..
+            } if g.nat.is_none() => {
+                let after = f.regs(ops).and_then(|o| o.first().copied());
+                g.scatter(pc, prog, driver, src, desc, tab, after);
+            }
+            Inst::SigGather {
+                dst,
+                desc,
+                tab,
+                part: None,
+            } if g.nat.is_none() => g.gather(pc, prog, dst, desc, tab),
             Inst::SigGather { .. } | Inst::SigScatter { .. } if g.nat.is_none() => g.signal(pc, 0),
             Inst::WaitOn { .. }
             | Inst::WaitFor { .. }
@@ -7448,6 +7508,150 @@ impl Gen<'_> {
         let cmp = self.b.create_block();
         self.b.ins().brif(t, cmp, &[], other, &[]);
         self.b.switch_to_block(cmp);
+    }
+
+    /// The tests of an [`yavs_interp::ImageCell`], the `k`th, for table `tab`: on to `slow` unless it
+    /// names an image and may be used now. The cell, the image, `left` and the value's size.
+    fn image_cell(
+        &mut self,
+        k: usize,
+        tab: yavs_ir::ConstId,
+        desc: Option<Reg>,
+        slow: Block,
+    ) -> (Value, Value, Value, Value) {
+        type C = yavs_interp::ImageCell;
+        let t = MemFlagsData::trusted();
+        let cells = self.mem_ld(MEM_CELLS);
+        let some = self.b.ins().icmp_imm_s(IntCC::NotEqual, cells, 0);
+        self.guard(some, slow);
+        let cell = self.b.ins().iadd_imm_s(cells, (k * size_of::<C>()) as i64);
+        let image = self.b.ins().load(I64, t, cell, offset_of!(C, image) as i32);
+        let there = self.b.ins().icmp_imm_s(IntCC::NotEqual, image, 0);
+        self.guard(there, slow);
+        let at = self.b.ins().uload32(t, cell, offset_of!(C, tab) as i32);
+        let is = self.b.ins().icmp_imm_s(IntCC::Equal, at, i64::from(tab.0));
+        self.guard(is, slow);
+        if let Some(desc) = desc {
+            let want = self.b.ins().load(I64, t, cell, offset_of!(C, desc) as i32);
+            let d = self.ld(desc);
+            let is = self.b.ins().icmp(IntCC::Equal, want, d);
+            self.guard(is, slow);
+        }
+        let left = self.b.ins().uload32(t, cell, offset_of!(C, left) as i32);
+        let some = self.b.ins().icmp_imm_s(IntCC::NotEqual, left, 0);
+        self.guard(some, slow);
+        let size = self.b.ins().uload32(t, cell, offset_of!(C, size) as i32);
+        (cell, image, left, size)
+    }
+
+    /// One use of the cell made.
+    fn image_used(&mut self, cell: Value, left: Value) {
+        let left = self.b.ins().iadd_imm_s(left, -1);
+        self.b.ins().istore32(
+            MemFlagsData::trusted(),
+            left,
+            cell,
+            offset_of!(yavs_interp::ImageCell, left) as i32,
+        );
+    }
+
+    /// Whether the value type of leaf table `tab` has a descriptor, `None` for no table.
+    fn tab_desc(prog: &Program, tab: yavs_ir::ConstId) -> Option<bool> {
+        match prog.consts.get(tab) {
+            Some(yavs_ir::ConstData::Bytes(t)) => yavs_ir::gather::entries(t)
+                .and_then(|(ty, _)| yavs_ir::Ty::desc_size(&prog.types, ty))
+                .map(|d| d != 0),
+            _ => None,
+        }
+    }
+
+    /// A whole `SigGather`: a copy of the record image of the machine's cell, and no call
+    /// (`docs/decisions.md` "Record images in compiled code"). Anything else goes through
+    /// `yavs_rt_signal`, which looks after the cell.
+    fn gather(&mut self, pc: u32, prog: &Program, dst: Reg, desc: Reg, tab: yavs_ir::ConstId) {
+        let has = Self::tab_desc(prog, tab);
+        let on = image_mode() != InlCmp::Off && image_inline() != Ok("noread");
+        let (Some(has), true) = (has, on) else {
+            self.signal(pc, 0);
+            return;
+        };
+        let (slow, join) = self.slow_signal(pc, 0);
+        let k = tab.0 as usize % yavs_interp::GATHER_CELLS;
+        let (cell, image, left, size) = self.image_cell(k, tab, has.then_some(desc), slow);
+        let a = self.ld(dst);
+        let p = self.host(a, Some(dst), Op::C(0), Op::V(size), true, slow);
+        self.b.ins().call(self.imp.mov, &[p, image, size]);
+        if image_mode() == InlCmp::Check {
+            let (pcv, kept) = (self.c32(pc), self.c32(0));
+            self.b
+                .ins()
+                .call(self.imp.image_check, &[self.mem, pcv, kept]);
+        }
+        self.image_used(cell, left);
+        self.clear();
+        self.join(join);
+    }
+
+    /// A whole zero-delay `SigScatter` through driver slot `driver`: the value against the record
+    /// image of the machine's cell, and on a hit no call (`docs/decisions.md` "Record images in
+    /// compiled code"). Anything else goes through `yavs_rt_signal`, which compares again and
+    /// looks after the cell.
+    #[allow(clippy::too_many_arguments)]
+    fn scatter(
+        &mut self,
+        pc: u32,
+        prog: &Program,
+        driver: u32,
+        src: Reg,
+        desc: Reg,
+        tab: yavs_ir::ConstId,
+        after: Option<Reg>,
+    ) {
+        let now = after.is_some_and(|a| {
+            let v = self.ld(a);
+            self.const_of(v) == Some(0)
+        });
+        let has = Self::tab_desc(prog, tab);
+        let on = now && image_mode() != InlCmp::Off && image_inline() != Ok("nodrive");
+        let (Some(has), true) = (has, on) else {
+            self.signal(pc, 0);
+            return;
+        };
+        let (slow, join) = self.slow_signal(pc, 0);
+        let t = MemFlagsData::trusted();
+        let k = yavs_interp::GATHER_CELLS + driver as usize;
+        let (cell, image, left, size) = self.image_cell(k, tab, has.then_some(desc), slow);
+        let g = self.mem_ld(MEM_GATE);
+        let word = self.b.ins().load(I64, t, g, 8);
+        let mask = self.b.ins().load(
+            I64,
+            t,
+            cell,
+            offset_of!(yavs_interp::ImageCell, mask) as i32,
+        );
+        let open = self.b.ins().band(word, mask);
+        let open = self.b.ins().icmp_imm_s(IntCC::NotEqual, open, 0);
+        self.guard(open, slow);
+        let a = self.ld(src);
+        let p = self.host(a, Some(src), Op::C(0), Op::V(size), false, slow);
+        let call = self.b.ins().call(self.imp.memeq, &[p, image, size]);
+        let same = self.b.inst_results(call)[0];
+        self.guard(same, slow);
+        if image_mode() == InlCmp::Check {
+            let pcv = self.c32(pc);
+            let kept = match self.batch {
+                Some(bt) => self.b.use_var(bt.count),
+                None => self.c32(0),
+            };
+            self.b
+                .ins()
+                .call(self.imp.image_check, &[self.mem, pcv, kept]);
+        }
+        self.image_used(cell, left);
+        let one = self.c64(1);
+        self.b.ins().store(t, one, self.mem, MEM_SKIPPED as i32);
+        self.clear();
+        self.join(join);
     }
 
     /// The compiled skip itself: the kernel hears of it when the code is left.

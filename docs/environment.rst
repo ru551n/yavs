@@ -327,8 +327,13 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - unset
      - ``run``
    * - ``YAVS_IMAGE_CHECK``
-     - Reads a whole record signal field by field as well as from its image, holds every assignment of a whole record signal that its image makes unnecessary against the kernel's full test, and stops with an internal error on a difference.
+     - Reads a whole record signal field by field as well as from its image, holds every assignment of a whole record signal that its image makes unnecessary against the kernel's full test, in Cranelift code too, and stops with an internal error on a difference. Always on in a debug build.
      - any value
+     - unset
+     - ``run``
+   * - ``YAVS_IMAGE_INLINE``
+     - ``off``: Cranelift code leaves whole record signal reads and whole zero-delay assignments to the host, which uses the images as before; ``noread``, ``nodrive``: only the reads or only the assignments do.
+     - ``off``, ``noread`` or ``nodrive``
      - unset
      - ``run``
    * - ``YAVS_IMAGE_AFTER``

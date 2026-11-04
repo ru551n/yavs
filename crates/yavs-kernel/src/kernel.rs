@@ -1803,11 +1803,25 @@ impl SimControl {
     }
 
     pub fn stats(&self) -> Stats {
+        let tail = |f: fn((u64, u64)) -> u64| -> u64 {
+            let of = |s| f(lock(s).process.images_tail());
+            self.slots.iter().map(of).sum()
+        };
         Stats {
             general_assigns: self.slots.iter().map(|s| lock(s).st.general).sum(),
-            gathers_copied: self.slots.iter().map(|s| lock(s).st.gathers_copied).sum(),
+            gathers_copied: self
+                .slots
+                .iter()
+                .map(|s| lock(s).st.gathers_copied)
+                .sum::<u64>()
+                + tail(|t| t.0),
             gathers_read: self.slots.iter().map(|s| lock(s).st.gathers_read).sum(),
-            scatter_spared: self.slots.iter().map(|s| lock(s).st.scatter_spared).sum(),
+            scatter_spared: self
+                .slots
+                .iter()
+                .map(|s| lock(s).st.scatter_spared)
+                .sum::<u64>()
+                + tail(|t| t.1),
             images: self.images.memory().0,
             image_bytes: self.images.memory().1,
             ..self.stats
@@ -5191,7 +5205,8 @@ fn process_panic(sh: &Shared, p: u32, panic: &(dyn std::any::Any + Send)) -> Sim
 /// process with an edge trigger, the edge that holds (`Ctx::edge`). Not for the first run.
 #[inline(always)]
 fn resumption(procs: &[ProcMeta], p: u32, st: &mut ProcState) {
-    *st.gate.get_mut() = st.gate_base;
+    *st.gate[0].get_mut() = st.gate_base[0];
+    *st.gate[1].get_mut() = st.gate_base[1];
     if let Some(m) = &mut st.marks {
         m.epoch += 1;
     }

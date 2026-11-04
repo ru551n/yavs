@@ -51,6 +51,7 @@ pub const FAST_DEREF: u32 = 4;
 pub const DRIVE_BIT: &str = "yavs_rt_drive_bit";
 pub const DRIVE_F: &str = "yavs_rt_drive_f";
 pub const GATE_CHECK: &str = "yavs_rt_gate_check";
+pub const IMAGE_CHECK: &str = "yavs_rt_image_check";
 
 pub const LAYOUT_WORD: &str = "yavs_rt_layout_word";
 pub const SCAN: &str = "yavs_rt_scan";
@@ -333,6 +334,7 @@ pub const MEM_NSIGS: u64 = std::mem::offset_of!(Mem, fr.nsigs) as u64;
 pub const MEM_TEMP_ROOTS: u64 = std::mem::offset_of!(Mem, fr.temp_roots) as u64;
 pub const MEM_SIGTAB: u64 = std::mem::offset_of!(Mem, fr.sigtab) as u64;
 pub const MEM_GATE: u64 = std::mem::offset_of!(Mem, fr.gate) as u64;
+pub const MEM_CELLS: u64 = std::mem::offset_of!(Mem, fr.cells) as u64;
 pub const MEM_SKIPPED: u64 = std::mem::offset_of!(Mem, skipped) as u64;
 pub const MEM_SIGTAB_LEN: u64 = std::mem::offset_of!(Mem, fr.sigtab_len) as u64;
 pub const MEM_KNOWN: u64 = std::mem::offset_of!(Mem, fr.known) as u64;
@@ -2767,6 +2769,41 @@ pub unsafe extern "C" fn yavs_rt_gate_check(
         eprintln!(
             "internal error: compiled code skipped the drive at pc {pc} through driver {driver} of [{lo:#x}, {len}], value {block:x?}: {why}"
         );
+        std::process::abort();
+    }
+}
+
+/// Whole record skips and copies of compiled code checked (`yavs_rt_image_check`).
+pub static SCATTER_CHECKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static GATHER_CHECKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The check of a whole record scatter compiled code is about to skip or a whole gather it just
+/// copied from the image (`YAVS_IMAGE_CHECK`, debug builds). `kept`: drives waiting in compiled
+/// code's batch, handed over before any scatter, so none there. A wrong skip or copy would silently
+/// give wrong results: the run stops.
+pub unsafe extern "C" fn yavs_rt_image_check(mem: *mut Mem, pc: u32, kept: u32) {
+    use std::sync::atomic::Ordering::Relaxed;
+    // SAFETY: `mem` is what compiled code was given, in an activation with its `env`.
+    let env = unsafe { env_or(std::ptr::null_mut(), mem) };
+    let envp = env as *mut Env<'_>;
+    unsafe {
+        (*mem).sync(&mut *(*envp).host);
+        (*mem).temp_seen = (*mem).fr.temp_len;
+    }
+    let full = match unsafe { (*envp).host.image_check(pc) } {
+        Ok(true) if kept != 0 => Err(format!("{kept} drives are kept in the batch")),
+        Ok(true) => {
+            SCATTER_CHECKED.fetch_add(1, Relaxed);
+            Ok(())
+        }
+        Ok(false) => {
+            GATHER_CHECKED.fetch_add(1, Relaxed);
+            Ok(())
+        }
+        Err(e) => Err(e),
+    };
+    if let Err(why) = full {
+        eprintln!("internal error: compiled code at pc {pc} and the record image: {why}");
         std::process::abort();
     }
 }

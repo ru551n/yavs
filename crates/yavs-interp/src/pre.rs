@@ -187,9 +187,12 @@ impl Pre {
         }
         // An unconditional jump costs nothing: execution goes on at its target (through
         // other jumps and definitions the frame started with). Not to the block a machine
-        // pauses at.
+        // pauses at, and not a jump back that is counted: every way to it ends in its step (#1087).
+        let counted = counted_brs(prog, f);
         let jump = |pc: usize| match f.code.get(pc) {
-            Some(&Inst::Br { to }) if f.body != Some(to) => f.blocks.get(to).map(|b| b.start),
+            Some(&Inst::Br { to }) if f.body != Some(to) && !counted[pc] => {
+                f.blocks.get(to).map(|b| b.start)
+            }
             _ => None,
         };
         let thread: Vec<Option<u32>> = (0..f.code.len())
@@ -210,7 +213,7 @@ impl Pre {
                 *n = *t;
             }
         }
-        let mut code = Code::new(f, prog, &skip, &known, &next, budget);
+        let mut code = Code::new(f, prog, &skip, &known, &next, &counted, budget);
         let params: Box<[(u32, Width)]> = f.params.iter().map(|p| (p.slot, p.width)).collect();
         let pro = prologue(&mut code, &params);
         // The debug loop enters at the prologue, which reads the parameters' slots (#863).
@@ -3151,6 +3154,20 @@ pub fn retreating_brs(prog: &Program, f: &Func) -> Vec<(u32, u32)> {
     back
 }
 
+/// The jumps back that `Machine::step_out` counts (#583): the retreating `Br`s of a process that
+/// never suspends to a block laid out before them, as compiled code polls them. The predecoder
+/// keeps each one as an op of its own, so threading a jump through it or fusing it into the
+/// op before it would lose the count, and a run that compiled code left at it would skip it.
+fn counted_brs(prog: &Program, f: &Func) -> Vec<bool> {
+    let mut counted = vec![false; f.code.len()];
+    if f.kind == yavs_ir::FuncKind::Process && !f.flags.contains(FuncFlags::MAY_SUSPEND) {
+        for (br, head) in retreating_brs(prog, f) {
+            counted[br as usize] = head <= br;
+        }
+    }
+    counted
+}
+
 /// A function that runs as lowered under elaboration-time evaluation counts its jumps back
 /// (`Program::back_edge`, #695): the jump back to the head of a loop goes to a new `Op::Step` of
 /// that `Br` of the IR, placed after the end of the code, where `Machine::step_out` counts it.
@@ -4577,6 +4594,7 @@ impl Code {
         skip: &[bool],
         known: &[Known],
         next: &[u32],
+        counted: &[bool],
         budget: bool,
     ) -> Code {
         let n = f.code.len();
@@ -4743,7 +4761,7 @@ impl Code {
                     state: state.0,
                 },
                 Inst::Move { dst, src } => match fusable {
-                    Some(Inst::Br { to }) if target(to).is_some() => {
+                    Some(Inst::Br { to }) if target(to).is_some() && !counted[nx] => {
                         last = nx;
                         Op::MoveBr {
                             dst: dst.0,
@@ -4867,7 +4885,7 @@ impl Code {
                             last = nx;
                             Op::StoreSlotStmt { src: src.0, off, w }
                         }
-                        Some(&Known::Frame(off)) if matches!(fusable, Some(Inst::Br { to }) if target(to).is_some()) =>
+                        Some(&Known::Frame(off)) if matches!(fusable, Some(Inst::Br { to }) if target(to).is_some() && !counted[nx]) =>
                         {
                             last = nx;
                             let to = match fusable {
@@ -5804,6 +5822,54 @@ mod tests {
         fb.emit(Inst::Ret { v: Some(d) });
         fb.finish();
         (pb.finish().unwrap(), depth)
+    }
+
+    /// The jumps back of a process that never suspends are ops of their own that every way to
+    /// them ends in (#1087): one reached from a branch through a block that only jumps, and one
+    /// after a move, are neither threaded through nor fused into the move.
+    #[test]
+    fn counted_jumps_back_are_ops_of_their_own() {
+        let mut pb = ProgramBuilder::new();
+        let p = pb.declare("p", FuncKind::Process, None);
+        let mut fb = pb.define(p);
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let (head, mv, only) = (fb.block(), fb.block(), fb.block());
+        let (x, y, c) = (fb.reg(RegTy::I64), fb.reg(RegTy::I64), fb.reg(RegTy::I64));
+        let (zero, one) = (fb.int(0), fb.int(1));
+        fb.emit(Inst::Move { dst: x, src: zero });
+        fb.emit(Inst::Move { dst: y, src: one });
+        fb.emit(Inst::Br { to: head });
+        fb.at(head);
+        // (A head this long is not copied into its jumps back by the optimiser.)
+        for _ in 0..24 {
+            fb.emit(Inst::Bin {
+                op: yavs_ir::IntOp::Add,
+                dst: c,
+                a: x,
+                b: y,
+            });
+        }
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Eq,
+            dst: c,
+            a: x,
+            b: y,
+        });
+        fb.emit(Inst::CondBr { c, t: mv, f: only });
+        fb.at(mv);
+        fb.emit(Inst::Move { dst: x, src: y });
+        fb.emit(Inst::Br { to: head });
+        fb.at(only);
+        fb.emit(Inst::Br { to: head });
+        fb.finish();
+        let prog = pb.finish().unwrap();
+        let f = prog.func(p).unwrap();
+        let ops = &Pre::new(f, &prog, false).code.ops;
+        let count = |m: fn(&Op) -> bool| ops.iter().filter(|o| m(o)).count();
+        assert_eq!(count(|o| matches!(o, Op::MoveBr { .. })), 0, "{ops:?}");
+        // Both jumps back (after the move and alone) are stepped, and the branch reaches the
+        // second one: no op jumps to the head from outside the two steps.
+        assert_eq!(count(|o| matches!(o, Op::Step(_))), 3, "{ops:?}");
     }
 
     /// A lean call allocates the slots the code addresses besides the parameters: none for a

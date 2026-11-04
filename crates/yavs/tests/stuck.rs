@@ -153,6 +153,32 @@ fn a_process_that_never_suspends_ends_with_an_error() {
     }
 }
 
+/// A loop without a wait whose jump back is reached from an `if` without an else is bounded in
+/// every tier, at the same count (#1087): the predecoder threaded the false edge past the jump,
+/// so nothing counted it, and compiled code that left at it was entered again at once.
+#[test]
+fn a_loop_whose_jump_back_is_threaded_ends_with_an_error() {
+    let env = [("YAVS_SPIN_LIMIT", "2000000")];
+    for tier in tiers() {
+        // The count is never reached: the loop runs until it is diagnosed.
+        let o = run_env("stuck_loop", &[tier], &env);
+        let e = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(1), "{tier}: {e}");
+        assert!(e.contains("E3009"), "{tier}: {e}");
+        for (last, ok) in [("1999900", true), ("2000100", false)] {
+            let o = run_env("stuck_loop", &[tier, &format!("-glast={last}")], &env);
+            let all = String::from_utf8_lossy(&o.stdout).to_string() + &clean(&o);
+            assert_eq!(
+                o.status.code(),
+                Some(i32::from(!ok)),
+                "{tier} {last}: {all}"
+            );
+            assert_eq!(all.contains("reached 1"), ok, "{tier} {last}: {all}");
+            assert_eq!(all.contains("E3009"), !ok, "{tier} {last}: {all}");
+        }
+    }
+}
+
 /// A long loop without a wait that ends with `finish` runs to its end in every tier, past
 /// several trims and checks of the compiled code (#583).
 #[test]

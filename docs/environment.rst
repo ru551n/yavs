@@ -312,9 +312,9 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - ``160000``
      - ``run``
    * - ``YAVS_AUTO_WARM_GATE``
-     - Set: what the cache lists waits for ``YAVS_AUTO_GATE`` too, and so do the copies of a run that compiled before. For comparing.
-     - any value
-     - unset
+     - Simulation CPU of the last run of a program, in microseconds, from which a warm run links what the cache lists and makes copies before ``YAVS_AUTO_GATE``. A large number keeps the gate.
+     - a number
+     - ``400000``
      - ``run``
    * - ``YAVS_AUTO_GUARD_SHARE``
      - Native-frame code is suspect when the frames it leaves to the interpreter cost one part in this many of the work seen. ``0``: no guard.

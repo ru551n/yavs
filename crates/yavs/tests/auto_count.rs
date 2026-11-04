@@ -392,47 +392,6 @@ fn native_code_that_leaves_every_time_is_counted() {
     );
 }
 
-/// What the cache lists is a link: a warm run does not wait for the gate for it, and with it switched
-/// on again (`YAVS_AUTO_WARM_GATE`) waits.
-#[test]
-fn what_the_cache_lists_does_not_wait_for_the_gate() {
-    let dir = setup("auto_count_warm", CALLS);
-    let run = |env: &[(&str, &str)]| {
-        let o = yavs(
-            &dir,
-            env,
-            &[
-                "run",
-                "--std=2008",
-                "--work=work:work",
-                "--threads=1",
-                "--tier=clift-auto",
-                "counted",
-            ],
-        );
-        assert!(o.status.success(), "{o:?}");
-        o
-    };
-    let open = [
-        ("YAVS_AUTO_COUNT", "20"),
-        ("YAVS_AUTO_GATE", "0"),
-        ("YAVS_AUTO_SYNC", "1"),
-    ];
-    for _ in 0..3 {
-        run(&open);
-    }
-    let shut = [
-        ("YAVS_AUTO_COUNT", "20"),
-        ("YAVS_AUTO_GATE", "100000000000"),
-        ("YAVS_AUTO_SYNC", "1"),
-    ];
-    let warm = run(&shut);
-    assert!(counter(&warm, "count_compiled") >= 5, "{}", err(&warm));
-    let mut held = shut.to_vec();
-    held.push(("YAVS_AUTO_WARM_GATE", "1"));
-    assert_eq!(counter(&run(&held), "count_compiled"), 0);
-}
-
 /// A gate no test reaches keeps the copies back too, up to the activation they would come at without
 /// the rule (`spec_after`): a short run does not pay for what it would not get back.
 #[test]

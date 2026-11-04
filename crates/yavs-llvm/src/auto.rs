@@ -1219,6 +1219,10 @@ const COUNT: u32 = 100;
 /// The work the simulation threads did, in the looks' microseconds (`work::per_us`), before the count
 /// rule compiles anything: a test of a few hundred milliseconds does not get a compile back.
 const COUNT_GATE: u64 = 160_000;
+/// The CPU time of its last run from which a program does not wait for that gate (microseconds, as the
+/// run-to-run profile has it): the gate's work is about half of this, and half of this lets more short
+/// suite tests link what they do not get back (OSVVM warm 1.14 against 1.09 in sum).
+const COUNT_GATE_CPU: u64 = 400_000;
 
 /// Work between two looks at the native frames left to the interpreter (`Worker::guard`), in the looks'
 /// microseconds, and instructions a frame left costs: pushing it, and running the rest of its
@@ -1394,9 +1398,11 @@ struct Worker {
     /// they were.
     want: Vec<FuncId>,
     wanted: Vec<bool>,
-    /// The sampled work before anything is compiled by the count (`COUNT_GATE`), and the count.
+    /// The sampled work before anything is compiled by the count (`COUNT_GATE`), the count, and the
+    /// CPU time of the last run from which a warm run does not wait (`COUNT_GATE_CPU`).
     gate: u64,
     count: u32,
+    gate_cpu: u64,
     /// `Worker::guard`: the work at its last look, per function the frames it left by then and whether
     /// it was published then, the functions under trial, the ones found to gain, and its numbers
     /// (0: no guard).
@@ -1645,6 +1651,7 @@ impl Worker {
             wanted: vec![false; nfuncs],
             gate: 0,
             count: 0,
+            gate_cpu: COUNT_GATE_CPU,
             guard_at: 0,
             left_seen: vec![0; nfuncs],
             live: vec![false; nfuncs],
@@ -1726,10 +1733,16 @@ impl Worker {
         (self.total < self.gate && !self.link_early(id)) || (sub && !self.entered_from_code(id))
     }
 
-    /// What the cache lists is a link, about a thousandth of a compile: it does not wait for the gate.
+    /// What the cache lists is a link, and the last run of this program was long enough: it does not
+    /// wait for the gate. The list alone says too little: all the tests of a library share it, and a
+    /// short one lost four times over linking what longer ones had compiled.
     fn link_early(&self, id: FuncId) -> bool {
-        static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        !*OFF.get_or_init(|| std::env::var_os("YAVS_AUTO_WARM_GATE").is_some()) && self.cached(id)
+        self.long_before() && self.cached(id)
+    }
+
+    /// The last run of this program (`Profile::base`, CPU microseconds) passed the gate.
+    fn long_before(&self) -> bool {
+        self.earlier.base.is_some_and(|b| b >= self.gate_cpu)
     }
 
     /// The functions that wait no more, and the callees `publish` wants.
@@ -3576,6 +3589,12 @@ impl AutoTier {
             note,
         );
         (w.counted, w.gate, w.count) = (counted, gate, count);
+        if let Some(n) = std::env::var("YAVS_AUTO_WARM_GATE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+        {
+            w.gate_cpu = n;
+        }
         (w.guard_share, w.guard_calls) = guard_knobs();
         let spawn = move |wait: bool| {
             std::thread::Builder::new()
@@ -3616,14 +3635,10 @@ impl AutoTier {
                     // (The end of the run wakes this thread: nothing to list then.)
                     if !sh.halt.load(Ordering::SeqCst) {
                         w.listed = w.lead().map(|g| g.cache_list()).unwrap_or_default();
-                        // (A run that compiled before was long enough for copies.)
-                        if w.counted
-                            && !w.listed.is_empty()
-                            && std::env::var_os("YAVS_AUTO_WARM_GATE").is_none()
-                        {
+                        w.load_profile();
+                        if w.counted && w.long_before() {
                             w.native.open_copies();
                         }
-                        w.load_profile();
                     }
                     if let (Some(key), Some(store)) = (w.profile_key, w.store.clone()) {
                         let cpu0 = sim_cpu().map_or(0, |c| u64::try_from(c.as_micros()).unwrap_or(0));
@@ -4252,6 +4267,23 @@ mod tests {
         assert!(!w.waits(callee));
         assert_eq!(w.freed(), [callee]);
         assert!(w.waiting.is_empty());
+    }
+
+    /// A warm run links what the cache lists before the gate only if its own last run was long: the
+    /// list is shared by all the tests of a library.
+    #[test]
+    fn only_a_long_last_run_links_before_the_gate() {
+        let (prog, caller, _) = caller_callee();
+        let mut w = counted(prog, u64::MAX);
+        w.in_cache[caller.0 as usize].set(true).unwrap();
+        assert!(w.waits(caller), "no last run");
+        w.earlier.base = Some(super::COUNT_GATE_CPU - 1);
+        assert!(w.waits(caller), "a short last run");
+        w.earlier.base = Some(super::COUNT_GATE_CPU);
+        assert!(!w.waits(caller));
+        w.in_cache = vec![Default::default(); w.in_cache.len()];
+        w.in_cache[caller.0 as usize].set(false).unwrap();
+        assert!(w.waits(caller), "not in the cache");
     }
 
     /// A function that ran keeps its compiled native callers unpublished until it has code: it is

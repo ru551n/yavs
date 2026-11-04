@@ -5332,10 +5332,7 @@ impl Gen<'_> {
             // An object in hand: only the bounds of the access.
             let (ev, nv) = (self.op(extra), self.op(n));
             let off = self.b.ins().iadd(o.off, ev);
-            let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, nv, o.len);
-            let rest = self.b.ins().isub(o.len, nv);
-            let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, rest);
-            let okc = self.b.ins().band(fits, inside);
+            let okc = self.in_range(off, nv, o.len);
             self.guard(okc, slow);
             return self.b.ins().iadd(o.ptr, off);
         }
@@ -5363,10 +5360,7 @@ impl Gen<'_> {
             let (ev, nv) = (self.op(extra), self.op(n));
             let off = self.b.ins().iadd_imm_s(ev, o as i64);
             let lenv = self.c64(len as i64);
-            let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, nv, lenv);
-            let rest = self.b.ins().isub(lenv, nv);
-            let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, rest);
-            let okc = self.b.ins().band(fits, inside);
+            let okc = self.in_range(off, nv, lenv);
             self.guard(okc, slow);
             let base = self.b.ins().symbol_value(I64, gv);
             return self.b.ins().iadd(base, off);
@@ -5387,10 +5381,7 @@ impl Gen<'_> {
             let lo = self.lo32(a);
             let off = self.b.ins().iadd(lo, ev);
             let len = self.mem_ld(len_f);
-            let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, nv, len);
-            let rest = self.b.ins().isub(len, nv);
-            let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, rest);
-            let okc = self.b.ins().band(fits, inside);
+            let okc = self.in_range(off, nv, len);
             self.guard(okc, slow);
             let base = self.mem_ld(base_f);
             return self.b.ins().iadd(base, off);
@@ -5421,10 +5412,7 @@ impl Gen<'_> {
             } else {
                 self.mem_ld(MEM_SLOTS_LEN)
             };
-            let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, nv, len);
-            let rest = self.b.ins().isub(len, nv);
-            let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, rest);
-            let okc = self.b.ins().band(fits, inside);
+            let okc = self.in_range(off, nv, len);
             self.guard(okc, slow);
             let slots = self.slots();
             return self.b.ins().iadd(slots, off);
@@ -5456,10 +5444,7 @@ impl Gen<'_> {
                 let up = self.mem_ld(MEM_UP);
                 let is = self.b.ins().icmp(IntCC::Equal, hi, up);
                 let len = self.mem_ld(MEM_UP_LEN);
-                let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, n, len);
-                let rest = self.b.ins().isub(len, n);
-                let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, rest);
-                let okc = self.b.ins().band(fits, inside);
+                let okc = self.in_range(off, n, len);
                 let okc = self.b.ins().band(okc, is);
                 let (fast, miss) = (self.b.create_block(), self.b.create_block());
                 self.brif_split(okc, fast, miss);
@@ -5478,10 +5463,7 @@ impl Gen<'_> {
                     .ins()
                     .icmp_imm_s(IntCC::Equal, hi, i64::from(space::TEMP) << 29);
                 let len = self.mem_ld(MEM_TEMP_LEN);
-                let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, n, len);
-                let rest = self.b.ins().isub(len, n);
-                let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, rest);
-                let okc = self.b.ins().band(fits, inside);
+                let okc = self.in_range(off, n, len);
                 let okc = self.b.ins().band(okc, is_t);
                 let (fast, miss) = (self.b.create_block(), self.b.create_block());
                 self.brif_split(okc, fast, miss);
@@ -5629,7 +5611,6 @@ impl Gen<'_> {
         self.b.ins().jump(done, &[BlockArg::Value(pf)]);
     }
 
-    /// Whether `n` bytes at offset `off` lie within `len` bytes.
     /// A composite variable of the root frame by its address (`yavs_ir::FRAME_OBJECT`, high half
     /// `hi`): its start and length are in the address. Goes on in a new block for any other.
     fn frame_object_try(&mut self, hi: Value, off: Value, n: Value, done: Block, slow: Block) {
@@ -5652,7 +5633,15 @@ impl Gen<'_> {
         self.b.switch_to_block(other);
     }
 
+    /// Whether `n` bytes at offset `off` lie within `len` bytes. A constant `n`: one compare of the
+    /// end (`off` is below 2^63 + 2^32, `host`'s `extra` below 2^63, so the sum does not wrap).
     fn in_range(&mut self, off: Value, n: Value, len: Value) -> Value {
+        if let Some(k) = self.const_of(n)
+            && (0..1 << 31).contains(&k)
+        {
+            let end = self.b.ins().iadd_imm_s(off, k);
+            return self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, end, len);
+        }
         let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, n, len);
         let rest = self.b.ins().isub(len, n);
         let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, rest);
@@ -5730,13 +5719,7 @@ impl Gen<'_> {
             .b
             .ins()
             .load(I64, self.mf, ent, (MEM_OBJS + OBJ_LEN) as i32);
-        let ofits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, n, olen);
-        let orest = self.b.ins().isub(olen, n);
-        let oinside = self
-            .b
-            .ins()
-            .icmp(IntCC::UnsignedLessThanOrEqual, off, orest);
-        let ok = self.b.ins().band(ofits, oinside);
+        let ok = self.in_range(off, n, olen);
         let ok = self.b.ins().band(hit, ok);
         let obj = self.b.create_block();
         self.brif_split(ok, obj, miss);

@@ -1837,6 +1837,28 @@ struct Batch {
     count: Variable,
 }
 
+/// A value of an element loop's plan: at the first and the last iteration, its change per
+/// iteration, and a bound of that change's size when one is known (no overflow test on it).
+#[derive(Clone, Copy)]
+struct EloopVal {
+    first: Value,
+    change: Value,
+    last: Value,
+    most: Option<u64>,
+}
+
+impl EloopVal {
+    /// A value that does not change (`zero` holds 0).
+    fn fixed(v: Value, zero: Value) -> Self {
+        EloopVal {
+            first: v,
+            change: zero,
+            last: v,
+            most: Some(0),
+        }
+    }
+}
+
 /// What a native-frame variant has instead of the interpreter's frame.
 struct Nat {
     func: u32,
@@ -4842,10 +4864,10 @@ impl Gen<'_> {
     }
 
     /// The iterations of an element loop but the last, planned and done in the code itself
-    /// (#757): the steps of `yavs_interp::elem_loops` as straight-line code, each value a pair
-    /// (at the first iteration, change per iteration; `inv` says which have none), with the
-    /// checks of `yavs_llvm::eloop::run` at the first and the last iteration. A failed check or
-    /// memory the objects do not hold goes to the generic code, nothing written.
+    /// (#757): the steps of `yavs_interp::elem_loops` as straight-line code at the loop's head,
+    /// each value at the first and the last iteration and its change per iteration, with the
+    /// checks of `yavs_llvm::eloop::run`. A failed check or memory the objects do not hold goes to the
+    /// generic code, nothing written.
     fn eloop_plan(&mut self, l: &yavs_interp::ElemLoop, inv: &[bool]) {
         use yavs_interp::eloop::{ADD, ADDR, GET, IND, KONST, LD, LEN, MOV, MUL, POS, SET, SUB};
         let generic = self.b.create_block();
@@ -4868,66 +4890,95 @@ impl Gen<'_> {
         let okc = self.b.ins().band(okc, noof);
         self.guard(okc, generic);
         let last = self.b.ins().iadd_imm_s(m, -1);
+        // `step` is 1 or -1 and `m` at most `ELOOP_LIMIT`: no overflow, the distance was checked.
+        let moved = self.b.ins().imul(step, last);
+        let ind_last = self.b.ins().iadd(ind, moved);
         let c0 = self.c64(0);
-        let mut val: Vec<(Value, Value)> = Vec::new();
+        let mut val: Vec<EloopVal> = Vec::new();
         // Host address and bytes of what the plan read besides the vectors.
         let mut reads: Vec<(Value, u64)> = Vec::new();
-        let mut gets: Option<(Option<Reg>, Value, (Value, Value), bool)> = None;
+        let mut gets: Option<(Option<Reg>, Value, EloopVal)> = None;
         let input = |v: i64| (v <= -2).then(|| l.inputs[(-2 - v) as usize]);
         let val_inv = |v: i64, inv: &[bool]| if v >= 0 { inv[v as usize] } else { v != IND };
         for (j, st) in l.prog.as_chunks::<4>().0.iter().enumerate() {
             let (a, bb, cc) = (st[1], st[2], st[3]);
-            let get = |g: &mut Self, v: i64, val: &[(Value, Value)]| {
+            let get = |g: &mut Self, v: i64, val: &[EloopVal]| {
                 if v >= 0 {
                     val[v as usize]
                 } else if v == IND {
-                    (ind, step)
+                    EloopVal {
+                        first: ind,
+                        change: step,
+                        last: ind_last,
+                        most: Some(1),
+                    }
                 } else {
-                    (g.ld(l.inputs[(-2 - v) as usize]), c0)
+                    let x = g.ld(l.inputs[(-2 - v) as usize]);
+                    EloopVal::fixed(x, c0)
                 }
             };
             let r = match st[0] {
                 MOV => get(self, a, &val),
-                KONST => (self.c64(a), c0),
+                KONST => EloopVal::fixed(self.c64(a), c0),
                 ADD | SUB => {
                     let (x, y) = (get(self, a, &val), get(self, bb, &val));
                     let add = st[0] == ADD;
-                    let (r0, o) = self.ovf2(add, x.0, y.0);
-                    let mut bad = o;
-                    let r1 = if inv[j] {
-                        c0
+                    let (first, o) = self.ovf2(add, x.first, y.first);
+                    if inv[j] {
+                        self.ok_if(o, generic);
+                        EloopVal::fixed(first, c0)
                     } else {
-                        let (r1, o) = self.ovf2(add, x.1, y.1);
-                        bad = self.b.ins().bor(bad, o);
-                        r1
-                    };
-                    bad = self.at_last((r0, r1), inv[j], last, bad).1;
-                    self.ok_if(bad, generic);
-                    (r0, r1)
+                        let (last, o2) = self.ovf2(add, x.last, y.last);
+                        let mut bad = self.b.ins().bor(o, o2);
+                        let most = x.most.zip(y.most).map(|(p, q)| p + q);
+                        let change = if most.is_some() {
+                            if add {
+                                self.b.ins().iadd(x.change, y.change)
+                            } else {
+                                self.b.ins().isub(x.change, y.change)
+                            }
+                        } else {
+                            let (c, o) = self.ovf2(add, x.change, y.change);
+                            bad = self.b.ins().bor(bad, o);
+                            c
+                        };
+                        self.ok_if(bad, generic);
+                        EloopVal {
+                            first,
+                            change,
+                            last,
+                            most,
+                        }
+                    }
                 }
                 MUL => {
                     // One of them does not change (`invariant_steps`).
                     let (x, y) = (get(self, a, &val), get(self, bb, &val));
-                    let (k, v, vinv) = if val_inv(a, inv) {
-                        (x.0, y, val_inv(bb, inv))
+                    let (k, v) = if val_inv(a, inv) {
+                        (x.first, y)
                     } else {
-                        (y.0, x, false)
+                        (y.first, x)
                     };
-                    let (r0, o) = self.b.ins().smul_overflow(k, v.0);
-                    let mut bad = o;
-                    let r1 = if vinv {
-                        c0
+                    let (first, o) = self.b.ins().smul_overflow(k, v.first);
+                    if inv[j] {
+                        self.ok_if(o, generic);
+                        EloopVal::fixed(first, c0)
                     } else {
-                        let (r1, o) = self.b.ins().smul_overflow(k, v.1);
-                        bad = self.b.ins().bor(bad, o);
-                        r1
-                    };
-                    bad = self.at_last((r0, r1), inv[j], last, bad).1;
-                    self.ok_if(bad, generic);
-                    (r0, r1)
+                        let (last, o2) = self.b.ins().smul_overflow(k, v.last);
+                        let (change, o3) = self.b.ins().smul_overflow(k, v.change);
+                        let bad = self.b.ins().bor(o, o2);
+                        let bad = self.b.ins().bor(bad, o3);
+                        self.ok_if(bad, generic);
+                        EloopVal {
+                            first,
+                            change,
+                            last,
+                            most: None,
+                        }
+                    }
                 }
                 POS | LEN => {
-                    let d = get(self, a, &val).0;
+                    let d = get(self, a, &val).first;
                     let p = self.host(
                         d,
                         input(a),
@@ -4946,44 +4997,52 @@ impl Gen<'_> {
                             .icmp_imm_s(IntCC::SignedGreaterThanOrEqual, n, 0);
                         let okc = self.b.ins().band(fits, big);
                         self.guard(okc, generic);
-                        (n, c0)
+                        EloopVal::fixed(n, c0)
                     } else {
                         let x = get(self, cc, &val);
-                        let xinv = val_inv(cc, inv);
                         let dn = self.b.ins().icmp_imm_s(IntCC::Equal, dir, 1);
                         let u = self.b.ins().icmp_imm_s(IntCC::Equal, dir, 0);
                         let known = self.b.ins().bor(u, dn);
                         self.guard(known, generic);
-                        let no = self.b.ins().iconst(types::I8, 0);
-                        let (e1, bad) = self.at_last(x, xinv, last, no);
                         let lo = self.b.ins().select(dn, dr, dl);
                         let hi = self.b.ins().select(dn, dl, dr);
-                        let from = self.b.ins().select(dn, dl, x.0);
-                        let to = self.b.ins().select(dn, x.0, dl);
-                        let (p0, o) = self.b.ins().ssub_overflow(from, to);
-                        let mut bad = self.b.ins().bor(bad, o);
-                        let p1 = if xinv {
-                            c0
-                        } else {
-                            let (neg, o) = self.b.ins().ssub_overflow(c0, x.1);
-                            let o = self.b.ins().band(o, dn);
-                            bad = self.b.ins().bor(bad, o);
-                            self.b.ins().select(dn, neg, x.1)
-                        };
-                        self.ok_if(bad, generic);
-                        let ge = self.b.ins().icmp(IntCC::SignedLessThanOrEqual, lo, x.0);
-                        let le = self.b.ins().icmp(IntCC::SignedLessThanOrEqual, x.0, hi);
-                        let ge1 = self.b.ins().icmp(IntCC::SignedLessThanOrEqual, lo, e1);
-                        let le1 = self.b.ins().icmp(IntCC::SignedLessThanOrEqual, e1, hi);
+                        let ge = self.b.ins().icmp(IntCC::SignedLessThanOrEqual, lo, x.first);
+                        let le = self.b.ins().icmp(IntCC::SignedLessThanOrEqual, x.first, hi);
+                        let ge1 = self.b.ins().icmp(IntCC::SignedLessThanOrEqual, lo, x.last);
+                        let le1 = self.b.ins().icmp(IntCC::SignedLessThanOrEqual, x.last, hi);
                         let inside = self.b.ins().band(ge, le);
                         let inside1 = self.b.ins().band(ge1, le1);
                         let inside = self.b.ins().band(inside, inside1);
                         self.guard(inside, generic);
-                        (p0, p1)
+                        // Both ends lie between the bounds: the positions lie between 0 and
+                        // their distance, which the first one tests.
+                        let from = self.b.ins().select(dn, dl, x.first);
+                        let to = self.b.ins().select(dn, x.first, dl);
+                        let (p0, o) = self.b.ins().ssub_overflow(from, to);
+                        let froml = self.b.ins().select(dn, dl, x.last);
+                        let tol = self.b.ins().select(dn, x.last, dl);
+                        let (p1, o2) = self.b.ins().ssub_overflow(froml, tol);
+                        let mut bad = self.b.ins().bor(o, o2);
+                        let change = if x.most.is_some() {
+                            let neg = self.b.ins().ineg(x.change);
+                            self.b.ins().select(dn, neg, x.change)
+                        } else {
+                            let (neg, o) = self.b.ins().ssub_overflow(c0, x.change);
+                            let o = self.b.ins().band(o, dn);
+                            bad = self.b.ins().bor(bad, o);
+                            self.b.ins().select(dn, neg, x.change)
+                        };
+                        self.ok_if(bad, generic);
+                        EloopVal {
+                            first: p0,
+                            change,
+                            last: p1,
+                            most: x.most,
+                        }
                     }
                 }
                 LD => {
-                    let base = get(self, a, &val).0;
+                    let base = get(self, a, &val).first;
                     let p = self.host(
                         base,
                         input(a),
@@ -4999,10 +5058,10 @@ impl Gen<'_> {
                         4 => self.b.ins().uload32(nf, p, 0),
                         _ => self.b.ins().load(I64, nf, p, 0),
                     };
-                    (w, c0)
+                    EloopVal::fixed(w, c0)
                 }
                 ADDR => {
-                    let base = get(self, a, &val).0;
+                    let base = get(self, a, &val).first;
                     let lo = self.lo32(base);
                     let lo = self.b.ins().iadd_imm_s(lo, bb);
                     let fits =
@@ -5012,20 +5071,18 @@ impl Gen<'_> {
                     self.guard(fits, generic);
                     let hi = self.b.ins().ushr_imm_s(base, 32);
                     let hi = self.b.ins().ishl_imm_s(hi, 32);
-                    (self.b.ins().bor(hi, lo), c0)
+                    EloopVal::fixed(self.b.ins().bor(hi, lo), c0)
                 }
                 GET => {
-                    let base = get(self, a, &val).0;
+                    let base = get(self, a, &val).first;
                     let x = get(self, bb, &val);
-                    gets = Some((input(a), base, x, val_inv(bb, inv)));
-                    (c0, c0)
+                    gets = Some((input(a), base, x));
+                    EloopVal::fixed(c0, c0)
                 }
                 SET => {
-                    let base = get(self, a, &val).0;
+                    let base = get(self, a, &val).first;
                     let x = get(self, bb, &val);
-                    let xinv = val_inv(bb, inv);
-                    let (dp, dlo, dhi) =
-                        self.eloop_stream(input(a), base, x, xinv, last, true, generic);
+                    let (dp, dlo, dhi) = self.eloop_stream(input(a), base, x, true, generic);
                     // Nothing it read is among the elements it writes.
                     for &(rs, n) in &reads {
                         let re = self.b.ins().iadd_imm_s(rs, n as i64);
@@ -5036,11 +5093,11 @@ impl Gen<'_> {
                         self.guard(apart, generic);
                     }
                     let (sp, s_e0, s_step, code) = if cc >= 0 {
-                        let (sr, sb, sx, sinv) = gets.expect("`invariant_steps` has a GET");
-                        let (sp, _, _) = self.eloop_stream(sr, sb, sx, sinv, last, false, generic);
-                        (sp, sx.0, sx.1, c0)
+                        let (sr, sb, sx) = gets.expect("`invariant_steps` has a GET");
+                        let (sp, _, _) = self.eloop_stream(sr, sb, sx, false, generic);
+                        (sp, sx.first, sx.change, c0)
                     } else {
-                        let code = get(self, cc, &val).0;
+                        let code = get(self, cc, &val).first;
                         let okc = self
                             .b
                             .ins()
@@ -5051,11 +5108,12 @@ impl Gen<'_> {
                     let next = self.b.create_block();
                     let done = self.b.append_block_param(next, I64);
                     if cc >= 0 {
-                        self.eloop_short(sp, (s_e0, s_step), dp, x, m, last, next);
+                        let sx = gets.expect("`invariant_steps` has a GET").2;
+                        self.eloop_short(sp, sx, dp, x, m, last, next);
                     }
                     let c = self.b.ins().call(
                         self.imp.eloop_exec,
-                        &[sp, s_e0, s_step, dp, x.0, x.1, code, m],
+                        &[sp, s_e0, s_step, dp, x.first, x.change, code, m],
                     );
                     let r = self.b.inst_results(c)[0];
                     self.b.ins().jump(next, &[BlockArg::Value(r)]);
@@ -5084,58 +5142,35 @@ impl Gen<'_> {
         }
     }
 
-    /// `x.0 + x.1 * last` (when `x` changes), and `bad` with its overflow flags.
-    fn at_last(
-        &mut self,
-        x: (Value, Value),
-        still: bool,
-        last: Value,
-        bad: Value,
-    ) -> (Value, Value) {
-        if still {
-            return (x.0, bad);
-        }
-        let (p, o) = self.b.ins().smul_overflow(x.1, last);
-        let (e, o2) = self.b.ins().sadd_overflow(x.0, p);
-        let bad = self.b.ins().bor(bad, o);
-        (e, self.b.ins().bor(bad, o2))
-    }
-
     /// On to `slow` when the flag `bad` is set.
     fn ok_if(&mut self, bad: Value, slow: Block) {
         let okc = self.b.ins().icmp_imm_s(IntCC::Equal, bad, 0);
         self.guard(okc, slow);
     }
 
-    /// The elements `x.0 + x.1 * n`, `n` up to `last`, of the vector at `base`, all in its object:
-    /// the host pointer to its first byte and the byte range of the blocks they touch.
-    #[allow(clippy::too_many_arguments)]
+    /// The elements `x` of the vector at `base`, all in its object: the host pointer to its first
+    /// byte and the byte range of the blocks they touch.
     fn eloop_stream(
         &mut self,
         reg: Option<Reg>,
         base: Value,
-        x: (Value, Value),
-        xinv: bool,
-        last: Value,
+        x: EloopVal,
         write: bool,
         slow: Block,
     ) -> (Value, Value, Value) {
-        let no = self.b.ins().iconst(types::I8, 0);
-        let (e1, bad) = self.at_last(x, xinv, last, no);
-        self.ok_if(bad, slow);
         let a = self
             .b
             .ins()
-            .icmp_imm_s(IntCC::UnsignedLessThan, x.0, 1 << 32);
+            .icmp_imm_s(IntCC::UnsignedLessThan, x.first, 1 << 32);
         let b = self
             .b
             .ins()
-            .icmp_imm_s(IntCC::UnsignedLessThan, e1, 1 << 32);
+            .icmp_imm_s(IntCC::UnsignedLessThan, x.last, 1 << 32);
         let inside = self.b.ins().band(a, b);
         self.guard(inside, slow);
-        let lower = self.b.ins().icmp(IntCC::UnsignedLessThan, x.0, e1);
-        let lo = self.b.ins().select(lower, x.0, e1);
-        let hi = self.b.ins().select(lower, e1, x.0);
+        let lower = self.b.ins().icmp(IntCC::UnsignedLessThan, x.first, x.last);
+        let lo = self.b.ins().select(lower, x.first, x.last);
+        let hi = self.b.ins().select(lower, x.last, x.first);
         let blo = self.b.ins().ushr_imm_s(lo, 6);
         let blo = self.b.ins().ishl_imm_s(blo, 5);
         let bhi = self.b.ins().ushr_imm_s(hi, 6);
@@ -5154,18 +5189,16 @@ impl Gen<'_> {
     fn eloop_short(
         &mut self,
         sp: Value,
-        s: (Value, Value),
+        s: EloopVal,
         dp: Value,
-        d: (Value, Value),
+        d: EloopVal,
         m: Value,
         last: Value,
         done: Block,
     ) {
-        let low = |g: &mut Self, x: (Value, Value)| {
-            let moved = g.b.ins().imul(x.1, last);
-            let e = g.b.ins().iadd(x.0, moved);
-            let less = g.b.ins().icmp(IntCC::UnsignedLessThan, e, x.0);
-            g.b.ins().select(less, e, x.0)
+        let low = |g: &mut Self, x: EloopVal| {
+            let less = g.b.ins().icmp(IntCC::UnsignedLessThan, x.last, x.first);
+            g.b.ins().select(less, x.last, x.first)
         };
         let (ls, ld) = (low(self, s), low(self, d));
         let (os, od) = (
@@ -5178,9 +5211,9 @@ impl Gen<'_> {
             g.b.ins().iadd(p, k)
         };
         let (ps, pd) = (blk(self, sp, ls), blk(self, dp, ld));
-        let same = self.b.ins().icmp(IntCC::Equal, s.1, d.1);
-        let up = self.b.ins().icmp_imm_s(IntCC::Equal, s.1, 1);
-        let down = self.b.ins().icmp_imm_s(IntCC::Equal, s.1, -1);
+        let same = self.b.ins().icmp(IntCC::Equal, s.change, d.change);
+        let up = self.b.ins().icmp_imm_s(IntCC::Equal, s.change, 1);
+        let down = self.b.ins().icmp_imm_s(IntCC::Equal, s.change, -1);
         let unit = self.b.ins().bor(up, down);
         let se = self.b.ins().iadd(os, m);
         let de = self.b.ins().iadd(od, m);

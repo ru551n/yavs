@@ -182,17 +182,28 @@ pub(crate) fn resolver(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, d: DeclId)
     let data = fx
         .fb
         .param("values", Width::B8, ParamClass::Value, Mode::In, None);
-    let dope = fx
-        .fb
-        .param("values'dope", Width::B8, ParamClass::Value, Mode::In, None);
     let param_ty = fx.ty(db.base(param.subtype), decl.span)?;
-    fx.fb.param_array(data, param_ty);
+    let flat = Ty::flat_array(fx.fb.program().types(), param_ty);
     fx.fb.root(data, RootKind::Addr);
-    fx.fb.root(dope, RootKind::Addr);
+    let dope = if flat {
+        for word in ["left", "right", "dir"] {
+            let n = format!("values'{word}");
+            fx.fb
+                .param(&n, Width::B8, ParamClass::Value, Mode::In, None);
+        }
+        fx.fb.param_flat(data, param_ty);
+        fx.addr(Space::Frame(0), data + 8)
+    } else {
+        let d = fx
+            .fb
+            .param("values'dope", Width::B8, ParamClass::Value, Mode::In, None);
+        fx.fb.param_array(data, param_ty);
+        fx.fb.root(d, RootKind::Addr);
+        let dope_addr = fx.addr(Space::Frame(0), d);
+        fx.load(dope_addr, Width::B8, RegTy::Ptr)
+    };
     let data_addr = fx.addr(Space::Frame(0), data);
     let data = fx.load(data_addr, Width::B8, RegTy::Ptr);
-    let dope_addr = fx.addr(Space::Frame(0), dope);
-    let dope = fx.load(dope_addr, Width::B8, RegTy::Ptr);
     let fat = fx.make_fat(data, dope);
     let native_ty = native_ty.map(|t| fx.ty(t, decl.span)).transpose()?;
     let result = fx.native(&symbol, native_ty, &[fat], Some(ret), decl.span)?;
@@ -1349,20 +1360,35 @@ pub(crate) fn subprogram(
             }
             Shape::Arr => {
                 let off = fx.fb.param(&name, Width::B8, ParamClass::Value, mode, None);
-                let dope = fx.fb.param(
-                    &format!("{name}'dope"),
-                    Width::B8,
-                    ParamClass::Value,
-                    mode,
-                    None,
-                );
-                if dope != off + 8 {
-                    return Err(fx.cx.ice(decl.span, "array parameter slots not adjacent"));
-                }
                 let t = fx.ty(db.base(p.subtype), decl.span)?;
-                fx.fb.param_array(off, t);
-                fx.fb.root(off, RootKind::Addr);
-                fx.fb.root(dope, RootKind::Addr);
+                if Ty::flat_array(fx.fb.program().types(), t) {
+                    for (k, word) in ["left", "right", "dir"].iter().enumerate() {
+                        let n = format!("{name}'{word}");
+                        let at = fx
+                            .fb
+                            .param(&n, Width::B8, ParamClass::Value, Mode::In, None);
+                        if at != off + 8 * (k as u32 + 1) {
+                            return Err(fx.cx.ice(decl.span, "array parameter slots not adjacent"));
+                        }
+                    }
+                    fx.fb.param_flat(off, t);
+                    fx.fb.root(off, RootKind::Addr);
+                    fx.cx.flat_params.insert(pd);
+                } else {
+                    let dope = fx.fb.param(
+                        &format!("{name}'dope"),
+                        Width::B8,
+                        ParamClass::Value,
+                        mode,
+                        None,
+                    );
+                    if dope != off + 8 {
+                        return Err(fx.cx.ice(decl.span, "array parameter slots not adjacent"));
+                    }
+                    fx.fb.param_array(off, t);
+                    fx.fb.root(off, RootKind::Addr);
+                    fx.fb.root(dope, RootKind::Addr);
+                }
                 // A formal of a static subtype has its own bounds in every call (`param_dope`):
                 // the body reads them from the pool, as an array variable does.
                 let c = &db.subtypes[p.subtype].constraint;

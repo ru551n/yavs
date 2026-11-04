@@ -10843,3 +10843,7 @@ The inline `Alloc` checks its limit once and clears the pad and the object by st
 ## One-element signal reads taken by a concatenation
 
 `"0" & s(i downto i)` reads the element as a scalar and the `Cat` takes it as a scalar piece (`yavs-ir` `opt/place.rs` `cat_reads`; `docs/decisions.md` "One-element signal reads taken by a concatenation"). 0.1 to 0.2 percent fewer instructions on Microwatt, none elsewhere.
+
+## Array parameters as cells
+
+An array parameter of one dimension (`Ty::flat_array`) is `data, left, right, dir`, the bounds in the callee's parameter slots; descriptors a function makes or gets are read in registers where it can see them (`yavs-ir` `opt/dopes.rs`, `Inst::BoundsLen`, `BoundsPos`, `BoundsSlice`; `docs/decisions.md` "Array parameters as cells"). The result of a function is still a fat pair in temporary memory.

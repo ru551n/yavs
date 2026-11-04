@@ -631,6 +631,7 @@ impl FuncBuilder<'_> {
             mode,
             ty,
             arr: None,
+            flat: false,
         });
         if let Some(ty) = ty {
             self.locals.push(Local {
@@ -657,6 +658,14 @@ impl FuncBuilder<'_> {
     pub fn param_array(&mut self, slot: u32, ty: TyId) {
         if let Some(p) = self.params.iter_mut().find(|p| p.slot == slot) {
             p.arr = Some(ty);
+        }
+    }
+
+    /// `param_array` of a parameter whose descriptor's words are the next three parameters.
+    pub fn param_flat(&mut self, slot: u32, ty: TyId) {
+        if let Some(p) = self.params.iter_mut().find(|p| p.slot == slot) {
+            p.arr = Some(ty);
+            p.flat = true;
         }
     }
 

@@ -279,6 +279,12 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - not ``0``
      - unset
      - ``run``
+   * - ``YAVS_NO_DOPES``
+     - Keeps descriptors in memory: lengths, positions and slices read them there instead of
+       from registers.
+     - not ``0``
+     - unset
+     - ``run``
    * - ``YAVS_INLCMP``
      - ``off``: Cranelift code makes no compare of a drive with the current value; ``check``
        (always in a debug build): every skip made that way asks the kernel's full test and the run

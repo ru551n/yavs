@@ -322,7 +322,9 @@ impl Machine {
                     Some(Val::Word(v)) => Ok(*v),
                     Some(Val::Array(b)) => match sig.ret {
                         MemoArg::Array(a) => self.memo_array(a, b),
-                        MemoArg::Scalar => Err(cold(|| ice("memo: an array for a scalar result"))),
+                        MemoArg::Scalar | MemoArg::Flat(_) => {
+                            Err(cold(|| ice("memo: an array for a scalar result")))
+                        }
                     },
                     None => Err(cold(|| ice("memo: a hit on an empty slot"))),
                 };
@@ -553,6 +555,27 @@ impl Machine {
                         return false;
                     };
                     key.extend_from_slice(&v.to_le_bytes());
+                }
+                MemoArg::Flat(a) => {
+                    let (Some(data), Some(l), Some(r), Some(w)) = (next(), next(), next(), next())
+                    else {
+                        return false;
+                    };
+                    let mut d = [0u8; 24];
+                    d[..8].copy_from_slice(&l.to_le_bytes());
+                    d[8..16].copy_from_slice(&r.to_le_bytes());
+                    d[16..].copy_from_slice(&w.to_le_bytes());
+                    let Some(n) = a.data_bytes(&d) else {
+                        return false;
+                    };
+                    if key.len() as u64 + n + 24 > MAX_BYTES as u64 {
+                        return false;
+                    }
+                    key.extend_from_slice(&d);
+                    let Ok(b) = self.rd(data, n) else {
+                        return false;
+                    };
+                    key.extend_from_slice(b);
                 }
                 MemoArg::Array(a) => {
                     let (Some(data), Some(dope)) = (next(), next()) else {

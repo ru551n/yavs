@@ -310,6 +310,7 @@ fn check_inst(
             }
         }
         Inst::Pos { what, .. }
+        | Inst::BoundsPos { what, .. }
         | Inst::Check { what, .. }
         | Inst::FCheck { what, .. }
         | Inst::BinRange { what, .. }
@@ -321,7 +322,9 @@ fn check_inst(
         {
             err(format!("missing check message {what}"))
         }
-        Inst::SlicePos { what, dir_what, .. } if !msg_ok(what) || !msg_ok(dir_what) => {
+        Inst::SlicePos { what, dir_what, .. } | Inst::BoundsSlice { what, dir_what, .. }
+            if !msg_ok(what) || !msg_ok(dir_what) =>
+        {
             err(format!("missing check message {what} or {dir_what}"))
         }
         Inst::LayoutOf { ty, .. } | Inst::New { ty, .. } | Inst::NewFill { ty, .. }

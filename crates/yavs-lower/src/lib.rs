@@ -443,6 +443,8 @@ pub(crate) struct Cx {
     /// Array variables (`Obj::Array`) whose descriptor is a constant: reads use it instead of
     /// loading the descriptor pointer from the slot (the optimiser then folds bounds).
     pub const_dope: HashMap<DeclId, yavs_ir::ConstId>,
+    /// Array parameters whose frame slots after the data cell are the descriptor's words.
+    pub flat_params: FxHashSet<DeclId>,
     /// The leaf table of a record signal read and driven as a whole (`gather.rs`), `None` when
     /// the record has none.
     pub rec_tables: HashMap<(DeclId, Vec<u32>, yavs_ir::TyId), Option<yavs_ir::ConstId>>,
@@ -771,6 +773,7 @@ impl<'a> Lowerer<'a> {
                 method_self: HashMap::default(),
                 objs: HashMap::default(),
                 const_dope: HashMap::default(),
+                flat_params: FxHashSet::default(),
                 rec_tables: HashMap::default(),
                 refl: HashMap::default(),
                 inst_size: 0,

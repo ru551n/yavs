@@ -461,6 +461,9 @@ fn optimize_body_with(
         tidy(prog, &mut f, &mut layouts, inst);
     }
     if dopes::enabled() && dopes::run(prog, &mut f) {
+        if cfg_enabled() {
+            cfg::dead_defs(prog, &mut f);
+        }
         tidy(prog, &mut f, &mut layouts, inst);
     }
     if cfg_enabled()
@@ -848,6 +851,8 @@ fn for_defs_fast(i: &Inst, mut f: impl FnMut(Reg)) {
         | Inst::SlicePos { dst, .. }
         | Inst::DopeLen { dst, .. }
         | Inst::BoundsLen { dst, .. }
+        | Inst::BoundsPos { dst, .. }
+        | Inst::BoundsSlice { dst, .. }
         | Inst::Field { dst, .. }
         | Inst::Un { dst, .. } => f(dst),
         Inst::Store { .. }
@@ -2050,8 +2055,14 @@ impl<'a> Opt<'a> {
                 let off_heap = |s: &Self, r: Reg| match s.opn(r) {
                     Opn::A(..) => true,
                     Opn::K(v) => !matches!((v as u64) >> 61, 4 | 7),
-                    o @ Opn::R(_) => {
+                    // (A local composite variable's storage is temporary memory, #444.)
+                    o @ Opn::R(x) => {
                         matches!(s.cls_of(o), Some(Cls::Space(_) | Cls::Temp | Cls::Block(_)))
+                            || (s.single(x)
+                                && matches!(
+                                    s.code.get(s.def_pc[x.0 as usize] as usize),
+                                    Some(Inst::NewFrame { dst, .. }) if *dst == x
+                                ))
                     }
                     Opn::V(..) => false,
                 };
@@ -2216,6 +2227,8 @@ impl<'a> Opt<'a> {
                             | Inst::SlicePos { .. }
                             | Inst::DopeLen { .. }
                             | Inst::BoundsLen { .. }
+                            | Inst::BoundsPos { .. }
+                            | Inst::BoundsSlice { .. }
                             | Inst::Deref { .. }
                             | Inst::Br { .. }
                             | Inst::CondBr { .. }
@@ -3566,6 +3579,8 @@ impl<'a> Opt<'a> {
                 | Inst::MakeDope { .. }
                 | Inst::DopeLen { .. }
                 | Inst::BoundsLen { .. }
+                | Inst::BoundsPos { .. }
+                | Inst::BoundsSlice { .. }
                 | Inst::SlicePos { .. }
                 | Inst::Pos { .. }
                 | Inst::SubtypeCheck { .. }
@@ -3740,6 +3755,8 @@ impl<'a> Opt<'a> {
             | Inst::SlicePos { .. }
             | Inst::DopeLen { .. }
             | Inst::BoundsLen { .. }
+            | Inst::BoundsPos { .. }
+            | Inst::BoundsSlice { .. }
             | Inst::SubtypeCheck { .. }
             | Inst::Br { .. }
             | Inst::CondBr { .. }
@@ -6012,6 +6029,8 @@ fn retargetable(i: &Inst) -> bool {
         | Inst::SlicePos { .. }
         | Inst::DopeLen { .. }
         | Inst::BoundsLen { .. }
+        | Inst::BoundsPos { .. }
+        | Inst::BoundsSlice { .. }
         | Inst::Field { .. }
         | Inst::FBin { .. }
         | Inst::FUn { .. }

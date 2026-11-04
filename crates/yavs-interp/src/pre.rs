@@ -492,6 +492,10 @@ pub(crate) enum Op {
     },
     /// `Inst::SlicePos` at this pc.
     SlicePos(u32),
+    /// `Inst::BoundsSlice` at this pc.
+    BoundsSlice(u32),
+    /// `Inst::BoundsPos` at this pc.
+    BoundsPos(u32),
     Bin {
         op: IntOp,
         dst: u32,
@@ -2835,6 +2839,8 @@ pub fn static_wait_edge(
                         | Inst::AddrOf { .. }
                         | Inst::DopeLen { .. }
                         | Inst::BoundsLen { .. }
+                        | Inst::BoundsPos { .. }
+                        | Inst::BoundsSlice { .. }
                         | Inst::Pos { .. }
                         | Inst::SlicePos { .. }
                         | Inst::Index { .. }
@@ -5375,6 +5381,8 @@ impl Code {
                     }
                 }
                 Inst::SlicePos { .. } => Op::SlicePos(pc as u32),
+                Inst::BoundsSlice { .. } => Op::BoundsSlice(pc as u32),
+                Inst::BoundsPos { .. } => Op::BoundsPos(pc as u32),
                 Inst::DopeLen { dst, dope, dim } => Op::DopeLen {
                     dst: dst.0,
                     dope: dope.0,

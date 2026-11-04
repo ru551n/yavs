@@ -4243,6 +4243,69 @@ impl Gen {
                         self.st(&c, dst, n);
                         self.join(&c, join);
                     }
+                    Inst::BoundsPos {
+                        dst,
+                        left,
+                        right,
+                        dir,
+                        idx,
+                        ..
+                    } => {
+                        let (slow, join) = self.slow_path(&c, pc, &inst);
+                        let (l, r, d) = (self.ld(&c, left), self.ld(&c, right), self.ld(&c, dir));
+                        let i = self.ld(&c, idx);
+                        let and = |x, y| LLVMBuildAnd(self.b, x, y, c"".as_ptr());
+                        let le = |x, y| self.icmp(IP::LLVMIntSLE, x, y);
+                        let up = self.icmp(IP::LLVMIntEQ, d, self.c64(0));
+                        let u = and(up, and(le(l, i), le(i, r)));
+                        let n = and(
+                            self.icmp(IP::LLVMIntEQ, d, self.c64(1)),
+                            and(le(r, i), le(i, l)),
+                        );
+                        self.guard(&c, self.or(u, n), slow);
+                        let from_l = LLVMBuildSub(self.b, i, l, c"".as_ptr());
+                        let from_i = LLVMBuildSub(self.b, l, i, c"".as_ptr());
+                        let pos = LLVMBuildSelect(self.b, up, from_l, from_i, c"".as_ptr());
+                        self.st(&c, dst, pos);
+                        self.join(&c, join);
+                    }
+                    Inst::BoundsSlice { dst, regs, .. } => {
+                        let Some(&[al, ar, ad, left, right, dir]) = f.regs(regs) else {
+                            return Err("slice position without its operands".into());
+                        };
+                        let (slow, join) = self.slow_path(&c, pc, &inst);
+                        let (l, r, d) = (self.ld(&c, al), self.ld(&c, ar), self.ld(&c, ad));
+                        let (a, b, w) = (self.ld(&c, left), self.ld(&c, right), self.ld(&c, dir));
+                        let and = |x, y| LLVMBuildAnd(self.b, x, y, c"".as_ptr());
+                        let le = |x, y| self.icmp(IP::LLVMIntSLE, x, y);
+                        let down = self.icmp(IP::LLVMIntEQ, w, self.c64(1));
+                        // A null slice names no element and checks nothing.
+                        let null = LLVMBuildSelect(
+                            self.b,
+                            down,
+                            self.icmp(IP::LLVMIntSLT, a, b),
+                            self.icmp(IP::LLVMIntSGT, a, b),
+                            c"".as_ptr(),
+                        );
+                        let up = self.icmp(IP::LLVMIntEQ, d, self.c64(0));
+                        let inside = |i| {
+                            let u = and(up, and(le(l, i), le(i, r)));
+                            let n = and(
+                                self.icmp(IP::LLVMIntEQ, d, self.c64(1)),
+                                and(le(r, i), le(i, l)),
+                            );
+                            self.or(u, n)
+                        };
+                        let valid = and(self.icmp(IP::LLVMIntEQ, w, d), and(inside(a), inside(b)));
+                        self.guard(&c, self.or(null, valid), slow);
+                        let from_l = LLVMBuildSub(self.b, a, l, c"".as_ptr());
+                        let from_a = LLVMBuildSub(self.b, l, a, c"".as_ptr());
+                        let pos = LLVMBuildSelect(self.b, up, from_l, from_a, c"".as_ptr());
+                        let zero = self.c64(0);
+                        let v = LLVMBuildSelect(self.b, null, zero, pos, c"".as_ptr());
+                        self.st(&c, dst, v);
+                        self.join(&c, join);
+                    }
                     Inst::BoundsLen {
                         dst,
                         left,

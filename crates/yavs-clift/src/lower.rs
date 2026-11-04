@@ -1797,6 +1797,8 @@ fn quiet(i: &Inst) -> bool {
                 | Inst::Zero { .. }
                 | Inst::DopeLen { .. }
                 | Inst::BoundsLen { .. }
+                | Inst::BoundsPos { .. }
+                | Inst::BoundsSlice { .. }
                 | Inst::SubtypeCheck { .. }
                 | Inst::SigVal { .. }
                 | Inst::MakeDope { .. }
@@ -3225,33 +3227,33 @@ fn gen_func(
                 let p = g.host(a, Some(dope), Op::C(0), Op::C(24), false, slow);
                 let (l, r, d) = g.dope_words(p);
                 let (x, y, w) = (g.ld(left), g.ld(right), g.ld(dir));
-                // A null slice names no element and checks nothing.
-                let wd = g.b.ins().icmp_imm_s(IntCC::Equal, w, 1);
-                let lt = g.b.ins().icmp(IntCC::SignedLessThan, x, y);
-                let gt = g.b.ins().icmp(IntCC::SignedGreaterThan, x, y);
-                let null = g.b.ins().select(wd, lt, gt);
-                // Both ends inside the array's range, and the slice's direction its own.
-                let down = g.b.ins().icmp_imm_s(IntCC::Equal, d, 1);
-                let lo = g.b.ins().select(down, r, l);
-                let hi = g.b.ins().select(down, l, r);
-                let dir_ok = g.b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, d, 1);
-                let same = g.b.ins().icmp(IntCC::Equal, w, d);
-                let nonempty = g.b.ins().icmp(IntCC::SignedLessThanOrEqual, lo, hi);
-                let span = g.b.ins().isub(hi, lo);
-                let (rx, ry) = (g.b.ins().isub(x, lo), g.b.ins().isub(y, lo));
-                let ix = g.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, rx, span);
-                let iy = g.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, ry, span);
-                let okv = g.b.ins().band(dir_ok, same);
-                let okv = g.b.ins().band(okv, nonempty);
-                let okv = g.b.ins().band(okv, ix);
-                let okv = g.b.ins().band(okv, iy);
-                let okv = g.b.ins().bor(null, okv);
-                g.guard(okv, slow);
-                let up = g.b.ins().isub(x, l);
-                let dn = g.b.ins().isub(l, x);
-                let pos = g.b.ins().select(down, dn, up);
-                let zero = g.c64(0);
-                let v = g.b.ins().select(null, zero, pos);
+                let v = g.slice_in((l, r, d), (x, y, w), slow);
+                g.st(dst, v);
+                g.join(join);
+            }
+            Inst::BoundsSlice { dst, regs, .. } => {
+                let Some(&[al, ar, ad, left, right, dir]) = f.regs(regs) else {
+                    return Err("slice position without its operands".into());
+                };
+                let (slow, join) = g.slow_path(pc, &inst);
+                let (l, r, d) = (g.ld(al), g.ld(ar), g.ld(ad));
+                let (x, y, w) = (g.ld(left), g.ld(right), g.ld(dir));
+                let v = g.slice_in((l, r, d), (x, y, w), slow);
+                g.st(dst, v);
+                g.join(join);
+            }
+            Inst::BoundsPos {
+                dst,
+                left,
+                right,
+                dir,
+                idx,
+                ..
+            } => {
+                let (slow, join) = g.slow_path(pc, &inst);
+                let (l, r, d) = (g.ld(left), g.ld(right), g.ld(dir));
+                let i = g.ld(idx);
+                let v = g.pos_in((l, r, d), i, slow);
                 g.st(dst, v);
                 g.join(join);
             }
@@ -3413,37 +3415,7 @@ fn gen_func(
                 );
                 let (l, r, dir) = g.dope_words(p);
                 let i = g.ld(idx);
-                // One arm per direction: up (0), l <= i <= r, position i - l; down (1), r <= i <= l,
-                // position l - i; any other direction word, and an empty range, are the
-                // interpreter's error.
-                let (upb, other, dnb, cont) = (
-                    g.b.create_block(),
-                    g.b.create_block(),
-                    g.b.create_block(),
-                    g.b.create_block(),
-                );
-                let v = g.b.append_block_param(cont, I64);
-                let is_up = g.b.ins().icmp_imm_s(IntCC::Equal, dir, 0);
-                g.brif_split(is_up, upb, other);
-                for (bb, lo, hi) in [(upb, l, r), (dnb, r, l)] {
-                    g.b.switch_to_block(bb);
-                    let nonempty = g.b.ins().icmp(IntCC::SignedLessThanOrEqual, lo, hi);
-                    let (rel, span) = if bb == upb {
-                        (g.b.ins().isub(i, l), g.b.ins().isub(r, l))
-                    } else {
-                        (g.b.ins().isub(l, i), g.b.ins().isub(l, r))
-                    };
-                    let inside = g.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, rel, span);
-                    let okv = g.b.ins().band(nonempty, inside);
-                    g.guard(okv, slow);
-                    g.b.ins().jump(cont, &[BlockArg::Value(rel)]);
-                    if bb == upb {
-                        g.b.switch_to_block(other);
-                        let is_dn = g.b.ins().icmp_imm_s(IntCC::Equal, dir, 1);
-                        g.brif_split(is_dn, dnb, slow);
-                    }
-                }
-                g.start(cont);
+                let v = g.pos_in((l, r, dir), i, slow);
                 g.st(dst, v);
                 g.join(join);
             }
@@ -5717,6 +5689,79 @@ impl Gen<'_> {
             _ => false,
         };
         ok.then_some((l, r, dir))
+    }
+
+    /// The position of `i` in a dimension. One arm per direction: up (0), l <= i <= r, position
+    /// i - l; down (1), r <= i <= l, position l - i; any other direction word, and an empty range,
+    /// are the interpreter's error.
+    fn pos_in(&mut self, (l, r, dir): (Value, Value, Value), i: Value, slow: Block) -> Value {
+        let (upb, other, dnb, cont) = (
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+        );
+        let v = self.b.append_block_param(cont, I64);
+        let is_up = self.b.ins().icmp_imm_s(IntCC::Equal, dir, 0);
+        self.brif_split(is_up, upb, other);
+        for (bb, lo, hi) in [(upb, l, r), (dnb, r, l)] {
+            self.b.switch_to_block(bb);
+            let nonempty = self.b.ins().icmp(IntCC::SignedLessThanOrEqual, lo, hi);
+            let (rel, span) = if bb == upb {
+                (self.b.ins().isub(i, l), self.b.ins().isub(r, l))
+            } else {
+                (self.b.ins().isub(l, i), self.b.ins().isub(l, r))
+            };
+            let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, rel, span);
+            let okv = self.b.ins().band(nonempty, inside);
+            self.guard(okv, slow);
+            self.b.ins().jump(cont, &[BlockArg::Value(rel)]);
+            if bb == upb {
+                self.b.switch_to_block(other);
+                let is_dn = self.b.ins().icmp_imm_s(IntCC::Equal, dir, 1);
+                self.brif_split(is_dn, dnb, slow);
+            }
+        }
+        self.start(cont);
+        v
+    }
+
+    /// The start position of the slice `x, y, w` of a dimension `l, r, d`: 0 for a null slice,
+    /// which checks nothing; else both ends inside the range and the slice's direction its own.
+    fn slice_in(
+        &mut self,
+        (l, r, d): (Value, Value, Value),
+        (x, y, w): (Value, Value, Value),
+        slow: Block,
+    ) -> Value {
+        let wd = self.b.ins().icmp_imm_s(IntCC::Equal, w, 1);
+        let lt = self.b.ins().icmp(IntCC::SignedLessThan, x, y);
+        let gt = self.b.ins().icmp(IntCC::SignedGreaterThan, x, y);
+        let null = self.b.ins().select(wd, lt, gt);
+        let down = self.b.ins().icmp_imm_s(IntCC::Equal, d, 1);
+        let lo = self.b.ins().select(down, r, l);
+        let hi = self.b.ins().select(down, l, r);
+        let dir_ok = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, d, 1);
+        let same = self.b.ins().icmp(IntCC::Equal, w, d);
+        let nonempty = self.b.ins().icmp(IntCC::SignedLessThanOrEqual, lo, hi);
+        let span = self.b.ins().isub(hi, lo);
+        let (rx, ry) = (self.b.ins().isub(x, lo), self.b.ins().isub(y, lo));
+        let ix = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, rx, span);
+        let iy = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, ry, span);
+        let okv = self.b.ins().band(dir_ok, same);
+        let okv = self.b.ins().band(okv, nonempty);
+        let okv = self.b.ins().band(okv, ix);
+        let okv = self.b.ins().band(okv, iy);
+        let okv = self.b.ins().bor(null, okv);
+        self.guard(okv, slow);
+        let up = self.b.ins().isub(x, l);
+        let dn = self.b.ins().isub(l, x);
+        let pos = self.b.ins().select(down, dn, up);
+        let zero = self.c64(0);
+        self.b.ins().select(null, zero, pos)
     }
 
     /// `left, right, dir` of the descriptor dimension at `p`.

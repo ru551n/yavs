@@ -2174,6 +2174,10 @@ impl<'a> Fx<'a, '_> {
             return self.const_addr(c);
         }
         let dp = self.offset(slot, 8);
+        // A parameter's slots hold the descriptor itself.
+        if self.cx.flat_params.contains(&d) {
+            return dp;
+        }
         self.load(dp, Width::B8, RegTy::Ptr)
     }
 
@@ -3312,16 +3316,28 @@ impl<'a> Fx<'a, '_> {
         fat
     }
 
-    /// An array argument as the cells of `conv`.
-    pub(crate) fn array_cells(&mut self, conv: Conv, data: Reg, dope: Reg, cells: &mut Vec<Reg>) {
+    /// An array argument of formal `p` as the cells of `conv`.
+    pub(crate) fn array_cells(
+        &mut self,
+        conv: Conv,
+        p: &Param,
+        data: Reg,
+        dope: Reg,
+        cells: &mut Vec<Reg>,
+        span: Span,
+    ) -> R<()> {
+        let flat = self
+            .ty(self.db.base(p.subtype), span)
+            .map(|t| Ty::flat_array(self.fb.program().types(), t))?;
         match conv {
-            Conv::Body => cells.extend([data, dope]),
+            Conv::Body if !flat => cells.extend([data, dope]),
             Conv::Fat => cells.push(self.make_fat(data, dope)),
-            Conv::Flat => {
+            Conv::Flat | Conv::Body => {
                 let (l, r, d) = self.dope_bounds(dope);
                 cells.extend([data, l, r, d]);
             }
         }
+        Ok(())
     }
 
     /// Left, right and direction of the one-dimensional descriptor `dope`: the registers it was
@@ -3492,7 +3508,7 @@ impl<'a> Fx<'a, '_> {
                         },
                     };
                     dope = self.param_dope(p.subtype, dope, &p.name.text.to_string(), es)?;
-                    self.array_cells(conv, data, dope, &mut cells);
+                    self.array_cells(conv, p, data, dope, &mut cells, es)?;
                 }
             }
         }

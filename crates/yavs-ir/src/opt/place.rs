@@ -261,6 +261,8 @@ impl Opt<'_> {
                 | Inst::SlicePos { .. }
                 | Inst::DopeLen { .. }
                 | Inst::BoundsLen { .. }
+                | Inst::BoundsPos { .. }
+                | Inst::BoundsSlice { .. }
                 | Inst::SubtypeCheck { .. }
                 | Inst::Deref { .. } => true,
                 Inst::Alloc { dst, .. } => {

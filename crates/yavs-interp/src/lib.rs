@@ -2859,6 +2859,20 @@ fn call_values_inner(
         for a in args {
             match a {
                 CallVal::Cell(c) => cells.push(*c),
+                // The words of the descriptor, for a parameter that takes them.
+                CallVal::Composite { data, desc }
+                    if prog
+                        .funcs
+                        .get(func)
+                        .and_then(|g| g.params.get(cells.len()))
+                        .is_some_and(|p| p.flat) =>
+                {
+                    let at = m.temp_alloc(data.len() as u64)?;
+                    m.put(at, data)?;
+                    cells.push(at);
+                    let (w, _) = desc.as_chunks::<8>();
+                    cells.extend(w.iter().map(|b| u64::from_le_bytes(*b)));
+                }
                 CallVal::Composite { data, desc } => {
                     for b in [data, desc] {
                         let at = m.temp_alloc(b.len() as u64)?;
@@ -3041,7 +3055,17 @@ pub fn resolve(
             Fault::Runtime("too many drivers for the resolution function's index subtype".into())
         })?;
         m.put(dope, &d)?;
-        m.enter(func, &[data, dope])?;
+        if m.rt
+            .prog
+            .funcs
+            .get(func)
+            .is_some_and(|g| g.params.first().is_some_and(|p| p.flat))
+        {
+            let w = |k: usize| u64::from_le_bytes(d[k * 8..k * 8 + 8].try_into().unwrap_or([0; 8]));
+            m.enter(func, &[data, w(0), w(1), w(2)])?;
+        } else {
+            m.enter(func, &[data, dope])?;
+        }
         m.run(None, 0)
     })();
     if let (Some(g), Some(st)) = (guard.as_mut(), m.sh.take()) {

@@ -2938,6 +2938,19 @@ pub fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
             right,
             dir,
         } => vec![dst, left, right, dir],
+        Inst::BoundsPos {
+            dst,
+            left,
+            right,
+            dir,
+            idx,
+            ..
+        } => vec![dst, left, right, dir, idx],
+        Inst::BoundsSlice { dst, regs, .. } => {
+            let mut v = vec![dst];
+            v.extend_from_slice(f.regs(regs).unwrap_or(&[]));
+            v
+        }
         Inst::Deref { dst, handle, .. } => vec![dst, handle],
         Inst::MemEq { dst, a, b, n } => vec![dst, a, b, n],
         Inst::LGet { dst, base, idx } => vec![dst, base, idx],
@@ -3088,6 +3101,8 @@ pub fn keeps_objects(i: &Inst) -> bool {
             | Inst::MakeDope { .. }
             | Inst::DopeLen { .. }
             | Inst::BoundsLen { .. }
+            | Inst::BoundsPos { .. }
+            | Inst::BoundsSlice { .. }
             | Inst::LayoutOf { .. }
             | Inst::SubtypeCheck { .. }
             | Inst::Deref { .. }
@@ -3668,6 +3683,8 @@ fn steady(i: &Inst) -> bool {
             | Inst::BinRange { .. }
             | Inst::DopeLen { .. }
             | Inst::BoundsLen { .. }
+            | Inst::BoundsPos { .. }
+            | Inst::BoundsSlice { .. }
             | Inst::SubtypeCheck { .. }
             | Inst::Br { .. }
             | Inst::CondBr { .. }

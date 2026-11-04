@@ -587,7 +587,9 @@ fn note(
 /// descriptor written into it.
 fn droppable(i: &Inst) -> Option<Reg> {
     match *i {
-        Inst::DopeLen { dst, .. } | Inst::Alloc { dst, .. } => Some(dst),
+        Inst::DopeLen { dst, .. } | Inst::BoundsLen { dst, .. } | Inst::Alloc { dst, .. } => {
+            Some(dst)
+        }
         // (Only a register defined on several paths is dropped from: the frame starts with
         // the value of one defined once.)
         Inst::Const { dst, .. } | Inst::ConstF { dst, .. } | Inst::AddrOf { dst, .. } => Some(dst),
@@ -597,7 +599,7 @@ fn droppable(i: &Inst) -> Option<Reg> {
 
 /// Pure definitions no path reads (the moves and flags `thread` leaves behind, the length
 /// and descriptor of a slice whose test `slice_tests` took apart).
-fn dead_defs(prog: &Program, f: &mut crate::Func) -> bool {
+pub(super) fn dead_defs(prog: &Program, f: &mut crate::Func) -> bool {
     let n = f.reg_ty.len();
     let nb = f.blocks.len();
     let mut idx = vec![u32::MAX; n];
@@ -657,7 +659,11 @@ fn dead_defs(prog: &Program, f: &mut crate::Func) -> bool {
         let d = match i {
             Inst::MakeDope { at, .. } => Some(*at),
             _ => droppable(i).filter(|d| {
-                defs[d.0 as usize] > 1 || matches!(i, Inst::DopeLen { .. } | Inst::Alloc { .. })
+                defs[d.0 as usize] > 1
+                    || matches!(
+                        i,
+                        Inst::DopeLen { .. } | Inst::BoundsLen { .. } | Inst::Alloc { .. }
+                    )
             }),
         };
         if let Some(d) = d
@@ -792,11 +798,14 @@ fn slice_tests(f: &mut crate::Func, defs: &[u8]) -> bool {
         // block register -> (left, right, descending); length register -> block register
         let mut mk: FxMap<u32, (Reg, Reg, bool)> = FxMap::default();
         let mut len_of: FxMap<u32, u32> = FxMap::default();
+        // length register of a `BoundsLen` -> (left, right, descending)
+        let mut bounds: FxMap<u32, (Reg, Reg, bool)> = FxMap::default();
         for pc in blk.start as usize..blk.end as usize {
             let i = f.code[pc];
             if let Inst::Cmp { op, dst, a, b: z } = i
-                && let Some(&at) = len_of.get(&a.0)
-                && let Some(&(l, r, desc)) = mk.get(&at)
+                && let Some(&(l, r, desc)) = bounds
+                    .get(&a.0)
+                    .or_else(|| len_of.get(&a.0).and_then(|at| mk.get(at)))
                 && kc[z.0 as usize] == Some(0)
                 && matches!(op, CmpOp::Eq | CmpOp::Ne | CmpOp::Gt | CmpOp::Le)
             {
@@ -819,8 +828,19 @@ fn slice_tests(f: &mut crate::Func, defs: &[u8]) -> bool {
             for_defs(&i, |d| {
                 mk.retain(|at, (l, r, _)| *at != d.0 && *l != d && *r != d);
                 len_of.retain(|ln, at| *ln != d.0 && *at != d.0);
+                bounds.retain(|ln, (l, r, _)| *ln != d.0 && *l != d && *r != d);
             });
             match i {
+                Inst::BoundsLen {
+                    dst,
+                    left,
+                    right,
+                    dir,
+                } if dst != left && dst != right => {
+                    if let Some(dv @ (0 | 1)) = kc[dir.0 as usize] {
+                        bounds.insert(dst.0, (left, right, dv == 1));
+                    }
+                }
                 Inst::MakeDope { at, parts } if parts.len == 3 => {
                     if let Some(&[l, r, dir]) = f.regs(parts)
                         && let Some(dv) = kc[dir.0 as usize]
@@ -938,8 +958,10 @@ fn may_coalesce(f: &crate::Func) -> bool {
 /// Does some branch go back to a block at or before its own (a loop)?
 pub(super) fn has_back_edge(f: &crate::Func) -> bool {
     f.blocks.values().iter().enumerate().any(|(b, r)| {
-        f.code[r.end as usize - 1]
-            .targets()
+        f.code[..r.end as usize]
+            .last()
+            .filter(|_| r.end > r.start)
+            .map_or_else(Vec::new, Inst::targets)
             .iter()
             .any(|t| t.0 as usize <= b)
     })
@@ -961,8 +983,12 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) -> bool {
         moved |= thread(prog, f, &c.0, &c.1);
     }
     if looped
-        && f.code.iter().any(|i| matches!(i, Inst::MakeDope { .. }))
-        && f.code.iter().any(|i| matches!(i, Inst::DopeLen { .. }))
+        && f.code
+            .iter()
+            .any(|i| matches!(i, Inst::MakeDope { .. } | Inst::BoundsLen { .. }))
+        && f.code
+            .iter()
+            .any(|i| matches!(i, Inst::DopeLen { .. } | Inst::BoundsLen { .. }))
     {
         let c = counts(f);
         moved |= slice_tests(f, &c.0);

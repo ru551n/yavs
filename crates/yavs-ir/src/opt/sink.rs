@@ -376,6 +376,18 @@ impl Sink<'_> {
                     eff.reads.push(orgof(0));
                     my_len = true;
                 }
+                // (A range too long for a length does not exist in a run, as for `Check` below.)
+                Inst::BoundsLen { .. } => {
+                    class = Class::Movable;
+                    my_len = true;
+                }
+                // The size of a block of planes: a length over a constant.
+                Inst::Bin { op: IntOp::Div, .. }
+                    if lenof(0) && self.konst[reads[1].0 as usize].is_some_and(|v| v > 0) =>
+                {
+                    class = Class::Movable;
+                    my_len = true;
+                }
                 Inst::Load { w, .. } if w != Width::Sig => {
                     class = Class::Movable;
                     let o = orgof(0);
@@ -532,6 +544,8 @@ fn writes_nothing(i: &Inst) -> bool {
             | Inst::BinRange { .. }
             | Inst::DopeLen { .. }
             | Inst::BoundsLen { .. }
+            | Inst::BoundsPos { .. }
+            | Inst::BoundsSlice { .. }
             | Inst::SubtypeCheck { .. }
             | Inst::Deref { .. }
             | Inst::SigVal { .. }

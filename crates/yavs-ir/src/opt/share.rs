@@ -283,6 +283,8 @@ pub(super) fn plan(
                 | Inst::SlicePos { .. }
                 | Inst::DopeLen { .. }
                 | Inst::BoundsLen { .. }
+                | Inst::BoundsPos { .. }
+                | Inst::BoundsSlice { .. }
                 | Inst::Field { .. }
         )
     };

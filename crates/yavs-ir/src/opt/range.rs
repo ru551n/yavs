@@ -815,9 +815,7 @@ impl Opt<'_> {
                 let v = t.map_or((0, 1), |t| (i64::from(t), i64::from(t)));
                 set(st, dst, v);
             }
-            Inst::DopeLen { dst, .. } | Inst::BoundsLen { dst, .. } => {
-                set(st, dst, (0, i64::MAX))
-            }
+            Inst::DopeLen { dst, .. } | Inst::BoundsLen { dst, .. } => set(st, dst, (0, i64::MAX)),
             Inst::Load { dst, addr, .. } if self.slot_at(tracked, addr).is_some() => {
                 let si = self.slot_at(tracked, addr).unwrap_or(0);
                 let v = st[si];

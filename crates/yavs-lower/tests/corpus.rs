@@ -18,6 +18,12 @@ use yavs_sem::{Db, LangRev, Options};
 
 /// Corpus files whose output matches sim1's exactly.
 const PASS: &[&str] = &[
+    "composite/array_param_cells",
+    "composite/array_param_cells_dir",
+    "composite/array_param_cells_formal",
+    "composite/array_param_cells_index",
+    "composite/array_param_cells_result",
+    "composite/array_param_cells_slice",
     "composite/record_length_var",
     "composite/record_length_var_short",
     "composite/record_length_second_field",

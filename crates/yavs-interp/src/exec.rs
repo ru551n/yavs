@@ -909,6 +909,14 @@ fn desc_words(b: &[u8; 24]) -> (i64, i64, u64) {
 /// The length of a dimension (bounds and direction word, `dim_of`) in `u64` arithmetic, `None`
 /// where it would overflow (the general code then decides).
 #[inline(always)]
+/// Does function `func` take the array at argument cell `cell` with the words of its descriptor?
+fn callee_flat(prog: &Program, func: FuncId, cell: usize) -> bool {
+    prog.funcs
+        .get(func)
+        .and_then(|g| g.params.get(cell))
+        .is_some_and(|p| p.flat)
+}
+
 fn dim_len63((l, r, dir): (i64, i64, u64)) -> Option<u64> {
     let (lo, hi) = if dir == 1 { (r, l) } else { (l, r) };
     if hi < lo {
@@ -4713,6 +4721,48 @@ impl Machine {
         }
     }
 
+    /// `Inst::BoundsPos`: `pos_of` in a dimension whose bounds are in registers.
+    #[inline(always)]
+    fn bounds_pos(
+        &self,
+        (l, rr, dir): (i64, i64, u64),
+        i: i64,
+        what: yavs_ir::CheckMsgId,
+    ) -> R<u64> {
+        let pos = match dir {
+            // The distance fits a u64 even when it does not fit an i64.
+            0 if l <= i && i <= rr => i.wrapping_sub(l),
+            1 if rr <= i && i <= l => l.wrapping_sub(i),
+            _ => return self.pos_fail(l, rr, dir, i, what).map(|()| 0),
+        };
+        Ok(pos as u64)
+    }
+
+    /// `Inst::BoundsSlice`: `slice_pos` of an array whose bounds are in registers.
+    fn bounds_slice(&self, f: &Func, inst: &Inst) -> R<u64> {
+        let &Inst::BoundsSlice {
+            regs,
+            what,
+            dir_what,
+            ..
+        } = inst
+        else {
+            return Err(ice_s!("slice position of another instruction"));
+        };
+        let Some(&[al, ar, ad, left, right, dir]) = f.regs(regs) else {
+            return Err(ice_s!("slice position without its operands"));
+        };
+        let (l, r, w) = (self.ri(left), self.ri(right), self.ri(dir));
+        if if w == 1 { l < r } else { l > r } {
+            return Ok(0);
+        }
+        let b = (self.ri(al), self.ri(ar), self.r(ad));
+        let p = self.bounds_pos(b, l, what)?;
+        self.bounds_pos(b, r, what)?;
+        self.check_val(CheckKind::Range, w, b.2 as i64, b.2 as i64, dir_what)?;
+        Ok(p)
+    }
+
     /// `Inst::SigVal`: the two registers of a reference to elements `o .. o + l` of instance
     /// signal `sig`.
     #[inline(always)]
@@ -6395,6 +6445,34 @@ impl Machine {
                     let p = t!(self.slice_pos(&inst));
                     if let Inst::SlicePos { dst, .. } = inst {
                         self.regs[dst.0 as usize] = p;
+                    }
+                    k += 1;
+                }
+                Op::BoundsSlice(pc) => {
+                    let inst = f.code[pc as usize];
+                    let p = t!(self.bounds_slice(f, &inst));
+                    if let Inst::BoundsSlice { dst, .. } = inst {
+                        self.regs[dst.0 as usize] = p;
+                    }
+                    k += 1;
+                }
+                Op::BoundsPos(pc) => {
+                    if let Inst::BoundsPos {
+                        dst,
+                        left,
+                        right,
+                        dir,
+                        idx,
+                        what,
+                    } = f.code[pc as usize]
+                    {
+                        let b = (
+                            self.regs[left.0 as usize] as i64,
+                            self.regs[right.0 as usize] as i64,
+                            self.regs[dir.0 as usize],
+                        );
+                        let i = self.regs[idx.0 as usize] as i64;
+                        self.regs[dst.0 as usize] = t!(self.bounds_pos(b, i, what));
                     }
                     k += 1;
                 }
@@ -9782,6 +9860,12 @@ impl Machine {
                 else {
                     return Err(ice_s!("ieee fallback array argument"));
                 };
+                if callee_flat(prog, func, out.len()) {
+                    out.extend([data, left, right, dir]);
+                    pos += yavs_ir::ieee::ARRAY_REGS;
+                    i += 1;
+                    continue;
+                }
                 // The body takes the descriptor in memory.
                 let dope = self.temp_alloc(yavs_ir::DOPE_DIM_BYTES)?;
                 let w = self.wr(dope, yavs_ir::DOPE_DIM_BYTES)?;
@@ -10442,6 +10526,22 @@ impl Machine {
             } => self.do_pos(dst, dope, dim, idx, what)?,
             Inst::SlicePos { dst, .. } => {
                 let p = self.slice_pos(&inst)?;
+                self.set(dst, p);
+            }
+            Inst::BoundsSlice { dst, .. } => {
+                let p = self.bounds_slice(f, &inst)?;
+                self.set(dst, p);
+            }
+            Inst::BoundsPos {
+                dst,
+                left,
+                right,
+                dir,
+                idx,
+                what,
+            } => {
+                let b = (self.ri(left), self.ri(right), self.r(dir));
+                let p = self.bounds_pos(b, self.ri(idx), what)?;
                 self.set(dst, p);
             }
             Inst::Index {

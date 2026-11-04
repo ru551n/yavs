@@ -439,6 +439,10 @@ pub struct Param {
     /// The data cell of an array parameter passed by value: the array type (the next parameter
     /// is its descriptor). `ty` stays `None` so the debugger shows no local for the cell.
     pub arr: Option<TyId>,
+    /// With `arr`: the next three parameters are the descriptor itself (left, right, direction),
+    /// so the bounds are in the frame ([`Ty::flat_array`]); otherwise the next parameter holds
+    /// its address.
+    pub flat: bool,
 }
 
 /// A named object in a frame slot.

@@ -563,6 +563,23 @@ pub enum Inst {
         right: Reg,
         dir: Reg,
     },
+    /// `Pos` in a dimension whose bounds are in registers.
+    BoundsPos {
+        dst: Reg,
+        left: Reg,
+        right: Reg,
+        dir: Reg,
+        idx: Reg,
+        what: CheckMsgId,
+    },
+    /// `SlicePos` of an array whose bounds are in registers. `regs`: the array's left, right and
+    /// direction, then the slice's.
+    BoundsSlice {
+        dst: Reg,
+        regs: Regs,
+        what: CheckMsgId,
+        dir_what: CheckMsgId,
+    },
     /// Layout of `ty` constrained by the descriptor at `desc`, written to temporary memory as
     /// `[size, align, offsets...]` (records) or `[size, align, stride, count]` (arrays). With
     /// `cache`, a process's frame bytes at that offset keep the last layout of `ty` (the
@@ -918,6 +935,7 @@ impl Inst {
     pub fn list(&self) -> Option<Regs> {
         match *self {
             Inst::MakeDope { parts, .. } | Inst::Cat { parts, .. } => Some(parts),
+            Inst::BoundsSlice { regs, .. } => Some(regs),
             Inst::SigScatter { ops, .. } => Some(ops),
             Inst::Call { args, .. }
             | Inst::CallNative { args, .. }
@@ -932,6 +950,7 @@ impl Inst {
     pub fn list_mut(&mut self) -> Option<&mut Regs> {
         match self {
             Inst::MakeDope { parts, .. } | Inst::Cat { parts, .. } => Some(parts),
+            Inst::BoundsSlice { regs, .. } => Some(regs),
             Inst::SigScatter { ops, .. } => Some(ops),
             Inst::Call { args, .. }
             | Inst::CallNative { args, .. }
@@ -1197,6 +1216,21 @@ impl Inst {
                 f(right, Use, i);
                 f(dir, Use, i);
             }
+            Inst::BoundsPos {
+                dst,
+                left,
+                right,
+                dir,
+                idx,
+                ..
+            } => {
+                d(dst, i);
+                f(left, Use, i);
+                f(right, Use, i);
+                f(dir, Use, i);
+                f(idx, Use, i);
+            }
+            Inst::BoundsSlice { dst, .. } => d(dst, i),
             Inst::LayoutOf { dst, desc, .. } => {
                 d(dst, p);
                 f(desc, Use, p);

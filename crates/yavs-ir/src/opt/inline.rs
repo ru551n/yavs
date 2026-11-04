@@ -162,6 +162,10 @@ fn make(prog: &crate::Program, callee: FuncId, level: u8, wide: bool) -> Option<
         return None;
     }
     let mut c = super::optimize_body(prog, callee)?;
+    // The bounds of an array parameter come from the caller's registers, whatever the body does.
+    if super::dopes::enabled() {
+        super::dopes::run_regs(prog, &mut c);
+    }
     // (A body without calls has nothing to inline: the common leaf costs no second walk.)
     if level > 0
         && c.code
@@ -660,6 +664,8 @@ fn allowed(prog: &crate::Program, i: &Inst) -> bool {
         | Inst::SlicePos { .. }
         | Inst::DopeLen { .. }
         | Inst::BoundsLen { .. }
+        | Inst::BoundsPos { .. }
+        | Inst::BoundsSlice { .. }
         | Inst::Deref { .. }
         | Inst::LGet { .. }
         | Inst::LEq { .. }
@@ -948,7 +954,8 @@ impl<'a> Expand<'a> {
         match &mut inst {
             Inst::Call { args, .. }
             | Inst::CallProt { args, .. }
-            | Inst::CallNative { args, .. } => {
+            | Inst::CallNative { args, .. }
+            | Inst::BoundsSlice { regs: args, .. } => {
                 let start = operands.len() as u32;
                 let from = args.start as usize..(args.start + args.len) as usize;
                 operands.extend(self.site.fw.operands[from].iter().map(|&r| self.map(r)));

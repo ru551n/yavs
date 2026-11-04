@@ -3852,6 +3852,9 @@ fn gen_func(
     g.settle();
     g.drop_pend();
     g.defer = false;
+    // The code from here on has no pc of the body: what holds everywhere is all that is known
+    // (#1089). A slow path's `native_step` reads its operands through `ld`.
+    g.known.clone_from(&base_known);
     if let Some(d) = dispatch {
         g.b.switch_to_block(d);
         let other = g.b.create_block();

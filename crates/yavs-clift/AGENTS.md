@@ -89,6 +89,10 @@ tier of the release archives (user, 2026-10-28: one archive per platform); tunin
   `cache::pre_key` or its `KEYED` or `NO_PRE`. `every_switch_of_the_lowering_is_accounted_for` fails on a
   new variable; the check (debug builds, `yavs-auto-warm`) fails on the rest. A body may refer to a new kind of symbol
   only with a `Name` for it (`Jit::names_of`).
+- Slow paths, entry stubs and the exit block are generated after the body, so they have no pc of
+  their own in `known`: `gen_func` resets it to `base_known` first (#1089). State that depends on
+  the pc is taken when the slow path is made (`snaps`, `jparams`, the fields of `Slow`), or read
+  through the Cranelift variables.
 
 ## 5. How to work here
 

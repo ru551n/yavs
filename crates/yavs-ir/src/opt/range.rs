@@ -19,8 +19,8 @@
 
 use super::*;
 
-type Iv = (i64, i64);
-const FULL: Iv = (i64::MIN, i64::MAX);
+pub type Iv = (i64, i64);
+pub const FULL: Iv = (i64::MIN, i64::MAX);
 
 /// Visits of a block after which a bound that still moves jumps to infinity.
 const WIDEN: u32 = 2;
@@ -80,6 +80,114 @@ fn bin_iv(op: IntOp, x: Iv, y: Iv) -> (Iv, bool) {
         }
         _ => (FULL, false),
     }
+}
+
+/// The interval an instruction gives its result, or the operand a `Check` narrows, from the
+/// intervals `get` of what it reads; `None` when it says nothing (`FULL` for what it defines).
+/// A `Bin` that passes holds a result within `i64` (checked arithmetic, as the module says).
+pub fn iv_after(i: &Inst, get: impl Fn(Reg) -> Iv) -> Option<(Reg, Iv)> {
+    Some(match *i {
+        Inst::Const { dst, v } => (dst, (v, v)),
+        Inst::Move { dst, src } => (dst, get(src)),
+        Inst::Select { dst, a, b, .. } => {
+            let (x, y) = (get(a), get(b));
+            (dst, (x.0.min(y.0), x.1.max(y.1)))
+        }
+        Inst::Bin { op, dst, a, b } => (dst, bin_iv(op, get(a), get(b)).0),
+        Inst::BinRange {
+            op,
+            dst,
+            a,
+            b,
+            lo,
+            hi,
+            ..
+        } => {
+            let r = bin_iv(op, get(a), get(b)).0;
+            (dst, meet(r, (get(lo).0, get(hi).1)))
+        }
+        Inst::Un { op, dst, a } => {
+            let x = get(a);
+            let v = match op {
+                IntUnOp::Neg if x.0 > i64::MIN => (-x.1, -x.0),
+                IntUnOp::Abs if x.0 > i64::MIN => {
+                    if x.0 >= 0 {
+                        x
+                    } else if x.1 <= 0 {
+                        (-x.1, -x.0)
+                    } else {
+                        (0, x.1.max(-x.0))
+                    }
+                }
+                _ => FULL,
+            };
+            (dst, v)
+        }
+        Inst::Cmp { op, dst, a, b } => {
+            let v = match cmp_iv(op, get(a), get(b)) {
+                Some(t) => (i64::from(t), i64::from(t)),
+                None => (0, 1),
+            };
+            (dst, v)
+        }
+        Inst::Bool { op, dst, a, b } => {
+            let (x, y) = (truth(get(a)), truth(get(b)));
+            let t = match op {
+                BoolOp::Not => x.map(|x| !x),
+                BoolOp::And => match (x, y) {
+                    (Some(false), _) | (_, Some(false)) => Some(false),
+                    (Some(true), Some(true)) => Some(true),
+                    _ => None,
+                },
+                BoolOp::Or => match (x, y) {
+                    (Some(true), _) | (_, Some(true)) => Some(true),
+                    (Some(false), Some(false)) => Some(false),
+                    _ => None,
+                },
+                BoolOp::Xor => match (x, y) {
+                    (Some(x), Some(y)) => Some(x != y),
+                    _ => None,
+                },
+            };
+            (dst, t.map_or((0, 1), |t| (i64::from(t), i64::from(t))))
+        }
+        Inst::DopeLen { dst, .. } => (dst, (0, i64::MAX)),
+        Inst::Load { dst, w, .. } => {
+            let v = match w {
+                Width::B1 => (0, 255),
+                Width::B4 => (i64::from(i32::MIN), i64::from(i32::MAX)),
+                _ => FULL,
+            };
+            (dst, v)
+        }
+        Inst::Check {
+            kind, v, lo, hi, ..
+        } => {
+            let x = get(v);
+            let r = match kind {
+                CheckKind::Range | CheckKind::Index | CheckKind::IndexDown => {
+                    meet(x, (get(lo).0, get(hi).1))
+                }
+                CheckKind::Length => meet(x, get(lo)),
+                CheckKind::Null => {
+                    if x.0 == 0 && x.1 > 0 {
+                        (1, x.1)
+                    } else if x.1 == 0 && x.0 < 0 {
+                        (x.0, -1)
+                    } else {
+                        x
+                    }
+                }
+            };
+            (v, r)
+        }
+        _ => return None,
+    })
+}
+
+/// Whether `x op y` over the intervals cannot overflow `i64` (`Add`, `Sub`, `Mul`).
+pub fn no_overflow(op: IntOp, x: Iv, y: Iv) -> bool {
+    matches!(op, IntOp::Add | IntOp::Sub | IntOp::Mul) && bin_iv(op, x, y).1
 }
 
 /// `0` or `1` when the intervals decide `x op y`.
@@ -749,79 +857,6 @@ impl Opt<'_> {
             st.clone_from(&tracked.reset);
         }
         match *i {
-            Inst::Const { dst, v } => set(st, dst, (v, v)),
-            Inst::Move { dst, src } => {
-                let v = get(st, src);
-                set(st, dst, v);
-            }
-            Inst::Select { dst, a, b, .. } => {
-                let (x, y) = (get(st, a), get(st, b));
-                set(st, dst, (x.0.min(y.0), x.1.max(y.1)));
-            }
-            Inst::Bin { op, dst, a, b } => {
-                let v = bin_iv(op, get(st, a), get(st, b)).0;
-                set(st, dst, v);
-            }
-            Inst::BinRange {
-                op,
-                dst,
-                a,
-                b,
-                lo,
-                hi,
-                ..
-            } => {
-                let r = bin_iv(op, get(st, a), get(st, b)).0;
-                let v = meet(r, (get(st, lo).0, get(st, hi).1));
-                set(st, dst, v);
-            }
-            Inst::Un { op, dst, a } => {
-                let x = get(st, a);
-                let v = match op {
-                    IntUnOp::Neg if x.0 > i64::MIN => (-x.1, -x.0),
-                    IntUnOp::Abs if x.0 > i64::MIN => {
-                        if x.0 >= 0 {
-                            x
-                        } else if x.1 <= 0 {
-                            (-x.1, -x.0)
-                        } else {
-                            (0, x.1.max(-x.0))
-                        }
-                    }
-                    _ => FULL,
-                };
-                set(st, dst, v);
-            }
-            Inst::Cmp { op, dst, a, b } => {
-                let v = match cmp_iv(op, get(st, a), get(st, b)) {
-                    Some(t) => (i64::from(t), i64::from(t)),
-                    None => (0, 1),
-                };
-                set(st, dst, v);
-            }
-            Inst::Bool { op, dst, a, b } => {
-                let (x, y) = (truth(get(st, a)), truth(get(st, b)));
-                let t = match op {
-                    BoolOp::Not => x.map(|x| !x),
-                    BoolOp::And => match (x, y) {
-                        (Some(false), _) | (_, Some(false)) => Some(false),
-                        (Some(true), Some(true)) => Some(true),
-                        _ => None,
-                    },
-                    BoolOp::Or => match (x, y) {
-                        (Some(true), _) | (_, Some(true)) => Some(true),
-                        (Some(false), Some(false)) => Some(false),
-                        _ => None,
-                    },
-                    BoolOp::Xor => match (x, y) {
-                        (Some(x), Some(y)) => Some(x != y),
-                        _ => None,
-                    },
-                };
-                let v = t.map_or((0, 1), |t| (i64::from(t), i64::from(t)));
-                set(st, dst, v);
-            }
-            Inst::DopeLen { dst, .. } => set(st, dst, (0, i64::MAX)),
             Inst::Load { dst, addr, .. } if self.slot_at(tracked, addr).is_some() => {
                 let si = self.slot_at(tracked, addr).unwrap_or(0);
                 let v = st[si];
@@ -831,36 +866,10 @@ impl Opt<'_> {
                 let si = self.slot_at(tracked, addr).unwrap_or(0);
                 st[si] = get(st, src);
             }
-            Inst::Load { dst, w, .. } => {
-                let v = match w {
-                    Width::B1 => (0, 255),
-                    Width::B4 => (i64::from(i32::MIN), i64::from(i32::MAX)),
-                    _ => FULL,
-                };
-                set(st, dst, v);
-            }
-            Inst::Check {
-                kind, v, lo, hi, ..
-            } => {
-                let x = get(st, v);
-                let r = match kind {
-                    CheckKind::Range | CheckKind::Index | CheckKind::IndexDown => {
-                        meet(x, (get(st, lo).0, get(st, hi).1))
-                    }
-                    CheckKind::Length => meet(x, get(st, lo)),
-                    CheckKind::Null => {
-                        if x.0 == 0 && x.1 > 0 {
-                            (1, x.1)
-                        } else if x.1 == 0 && x.0 < 0 {
-                            (x.0, -1)
-                        } else {
-                            x
-                        }
-                    }
-                };
-                set(st, v, r);
-            }
-            _ => for_defs(i, |r| set(st, r, FULL)),
+            _ => match iv_after(i, |r| get(st, r)) {
+                Some((r, v)) => set(st, r, v),
+                None => for_defs(i, |r| set(st, r, FULL)),
+            },
         }
     }
 

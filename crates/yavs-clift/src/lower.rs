@@ -370,6 +370,12 @@ fn once_blocks(
     once
 }
 
+/// `YAVS_CLIFT_NO_PROOFS=1`: arithmetic keeps its overflow tests where intervals prove them away.
+fn no_proofs() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("YAVS_CLIFT_NO_PROOFS").is_some())
+}
+
 /// Whether the machine code carries the IR pc of each stretch (`YAVS_CLIFT_CODEDIR` set).
 fn srcmap() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -1774,6 +1780,9 @@ struct Gen<'a> {
     stepped: Vec<String>,
     /// What is known about each register at the current instruction (`track`).
     known: Vec<Option<Known<Value>>>,
+    /// The interval of each integer register at the current instruction, as far as `known` goes
+    /// (`yavs_ir::opt::iv_after`; a register's checks and arithmetic that passed).
+    iv: Vec<Option<yavs_ir::opt::Iv>>,
     /// The object the instruction being generated found for its result register: entered in
     /// `known` once `track` has run for it (`ObjRef`).
     objnew: Option<(Reg, ObjRef<Value>)>,
@@ -2252,6 +2261,7 @@ fn gen_func(
         }
     }
     let mut inherit: Vec<Option<Vec<Option<Known<Value>>>>> = vec![None; n + 1];
+    let mut inherit_iv: Vec<Option<Vec<Option<yavs_ir::opt::Iv>>>> = vec![None; n + 1];
     // The interpreter enters a function after the constants and addresses it preloads into the
     // frame's registers (`Pre::next`): the pcs after such definitions at an entry are entries too.
     for i in 1..n {
@@ -2394,6 +2404,7 @@ fn gen_func(
     let mut g = Gen {
         prog,
         known: base_known.clone(),
+        iv: vec![None; f.reg_ty.len()],
         objnew: None,
         pres: Vec::new(),
         frame_len: u64::from(f.frame),
@@ -2548,6 +2559,7 @@ fn gen_func(
         }
         if let Some(p) = prev.replace(inst) {
             track(&mut g.known, &fixed, f, &p);
+            g.iv_track(f, &p);
             // `track` forgets the register after a definition too (a signal reference is two):
             // what holds everywhere stays known.
             for &r in &always {
@@ -2593,6 +2605,7 @@ fn gen_func(
             let single = native && ways[i] == 1;
             let fall = i > 0 && !is_jump(&f.code[i - 1]);
             let brought = inherit[i].take().filter(|_| single);
+            let iv_brought = inherit_iv[i].take().filter(|_| single);
             // Frame mode: a block start no jump leads to is reached from the instruction before it
             // only (compiled or interpreted), so what holds of the values there holds here.
             let kept = !native && fall && !jumped[i];
@@ -2618,6 +2631,10 @@ fn gen_func(
                 } else {
                     Vec::new()
                 };
+                match iv_brought {
+                    Some(k) => g.iv = k,
+                    None => g.iv.fill(None),
+                }
                 match brought {
                     Some(k) => g.known = k,
                     None => {
@@ -2647,6 +2664,7 @@ fn gen_func(
             for t in targets(&inst) {
                 if ways[t] == 1 {
                     inherit[t] = Some(g.known.clone());
+                    inherit_iv[t] = Some(g.iv.clone());
                 }
             }
         }
@@ -2810,7 +2828,12 @@ fn gen_func(
             }
             Inst::Bin { op, dst, a, b } => {
                 let (x, y) = (g.ld(a), g.ld(b));
-                match g.int_op(op, x, y, pc) {
+                let v = if g.no_overflow(op, a, b) {
+                    Some(g.int_op_exact(op, x, y))
+                } else {
+                    g.int_op(op, x, y, pc)
+                };
+                match v {
                     Some(v) => g.st(dst, v),
                     None => g.step(pc, &inst),
                 }
@@ -2827,7 +2850,12 @@ fn gen_func(
                 let (x, y) = (g.ld(a), g.ld(b));
                 let (l, h) = (g.ld(lo), g.ld(hi));
                 let bounds = g.const_of(l).zip(g.const_of(h));
-                match g.int_op_in(op, x, y, pc, bounds) {
+                let v = if g.no_overflow(op, a, b) {
+                    Some(g.int_op_exact(op, x, y))
+                } else {
+                    g.int_op_in(op, x, y, pc, bounds)
+                };
+                match v {
                     Some(v) => {
                         g.range_exit(v, l, h, pc);
                         g.st(dst, v);
@@ -5022,6 +5050,47 @@ impl Gen<'_> {
         let b = self.b.ins().icmp(IntCC::SignedGreaterThan, x, hi);
         let bad = self.b.ins().bor(a, b);
         self.exit_if(bad, pc);
+    }
+
+    /// Update `iv` for what `i` proves and defines.
+    fn iv_track(&mut self, f: &Func, i: &Inst) {
+        let out = yavs_ir::opt::iv_after(i, |r| self.iv_of(r));
+        for d in yavs_interp::inst_regs(f, i).1 {
+            if let Some(x) = self.iv.get_mut(d.0 as usize) {
+                *x = None;
+            }
+        }
+        if let Some((r, v)) = out
+            && let Some(x) = self.iv.get_mut(r.0 as usize)
+        {
+            *x = Some(v);
+        }
+    }
+
+    /// The interval of register `r` at the current instruction.
+    fn iv_of(&self, r: Reg) -> yavs_ir::opt::Iv {
+        if let Some(Some(c)) = self.fixed.get(r.0 as usize) {
+            return (*c, *c);
+        }
+        self.iv
+            .get(r.0 as usize)
+            .copied()
+            .flatten()
+            .unwrap_or(yavs_ir::opt::IV_FULL)
+    }
+
+    /// Whether `a op b` is proved to stay within `i64`.
+    fn no_overflow(&self, op: IntOp, a: Reg, b: Reg) -> bool {
+        !no_proofs() && yavs_ir::opt::no_overflow(op, self.iv_of(a), self.iv_of(b))
+    }
+
+    /// `x op y` for an operation `no_overflow` proved (`Add`, `Sub`, `Mul`): no test.
+    fn int_op_exact(&mut self, op: IntOp, x: Value, y: Value) -> Value {
+        match op {
+            IntOp::Add => self.b.ins().iadd(x, y),
+            IntOp::Sub => self.b.ins().isub(x, y),
+            _ => self.b.ins().imul(x, y),
+        }
     }
 
     /// `x op y` as `yavs_std::arith`, leaving at `pc` wherever it reports an error. `None` for

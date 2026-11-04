@@ -45,6 +45,7 @@ mod memo;
 mod place;
 mod proc_objects;
 mod range;
+pub use range::{FULL as IV_FULL, Iv, iv_after, no_overflow};
 mod share;
 mod sink;
 mod slots;

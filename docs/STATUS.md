@@ -7500,12 +7500,13 @@ the whole run (#556).
 
 ## Huge pages for the rest of the heap (perf/try-hugeheap, 2026-11-04)
 
-`huge_heap()` also starts `yavs-hugepoll`, a detached thread that marks each later `brk` step for huge pages (see `docs/decisions.md` "The rest of
-the heap" for the options, numbers and what each kind of system gets): GRLIB resident 290 MiB, huge pages at 5 s 66 MiB before, 240 MiB after
-(the tunable: 262); L1 dTLB misses 0.575 +-28 % and page walks 0.698 +-15 % of base (A/A 1.164 and 1.069), peak RSS 1.003, instructions 1.001.
-Cycles are not resolved on a loaded host (1.010 +-13 %, A/A 1.051 +-10 %). A user's `GLIBC_TUNABLES` naming `glibc.malloc` now turns the
-whole feature off. Whole GRLIB and Microwatt output, stderr and exit status equal to the base. Test: `crates/yavs-cache/tests/huge_heap.rs`
-(later steps marked; the user's tunables respected). Docs: `docs/running-faster.rst` "Huge pages", `docs/environment.rst`.
+`huge_heap()` also starts `yavs-hugepoll`, a detached thread that marks the whole heap for huge pages again as it grows (see `docs/decisions.md` "The rest of
+the heap" for the options, the numbers and what each kind of system gets): GRLIB resident 290 MiB, huge pages at 5 s 66 MiB before, 240 MiB after
+(the tunable: 262); warm cycles 0.979 +-6.5 % (A/A 1.016 +-4.0 %), L1 dTLB misses 0.448, page walks 0.715, peak RSS 1.020; Microwatt cycles
+0.984 +-2.8 % (A/A 0.994 +-5.1 %); cold GRLIB page faults 63 190 to 19 742, task clock unchanged. A user who tunes `top_pad`, `trim_threshold`,
+`mmap_threshold` or `hugetlb` (`GLIBC_TUNABLES` or the `MALLOC_*_` variables) turns the whole feature off. Whole GRLIB and Microwatt output,
+standard error and exit status equal to the base. Test: `crates/yavs-cache/tests/huge_heap.rs` (later steps marked, also after the heap shrank and
+grew; the user's tunables respected). Docs: `docs/running-faster.rst` "Huge pages", `docs/environment.rst`.
 
 ## Huge pages for the heap (#556, 2026-10-23)
 

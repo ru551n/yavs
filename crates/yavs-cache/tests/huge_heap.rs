@@ -33,6 +33,19 @@ fn heap_unmarked() -> usize {
     total
 }
 
+/// Wait up to 3 s for all but a few MiB of the break heap to carry the flag.
+fn all_marked(when: &str) {
+    let mut small = heap_unmarked();
+    for _ in 0..60 {
+        if small <= 4 << 20 {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        small = heap_unmarked();
+    }
+    panic!("{small} bytes of the heap without huge pages {when}");
+}
+
 /// Whether a mapping of the break heap carries the huge page flag (`hg`).
 fn heap_marked() -> bool {
     let smaps = std::fs::read_to_string("/proc/self/smaps").unwrap();
@@ -59,13 +72,13 @@ fn main() {
             // Well past the first step: each later step is a new mapping, marked by the thread
             // that watches the heap, which is given time to come round.
             let more: Vec<Vec<u8>> = (0..200).map(|_| vec![1u8; 1 << 20]).collect();
-            std::thread::sleep(std::time::Duration::from_millis(300));
-            let small = heap_unmarked();
-            assert!(
-                small <= 4 << 20,
-                "{small} bytes of the heap without huge pages"
-            );
+            all_marked("past the first step");
+            // The heap given back and grown again is another new mapping.
             drop(more);
+            yavs_cache::trim_heap();
+            let again: Vec<Vec<u8>> = (0..200).map(|_| vec![1u8; 1 << 20]).collect();
+            all_marked("after the heap shrank");
+            drop(again);
         }
         return;
     }
@@ -77,7 +90,14 @@ fn main() {
     let cases = [
         ("on", "YAVS_HUGE_HEAP", "1"),
         ("off", "YAVS_HUGE_HEAP", "0"),
-        ("off", "GLIBC_TUNABLES", "glibc.malloc.arena_max=4"),
+        ("off", "GLIBC_TUNABLES", "glibc.malloc.top_pad=1048576"),
+        (
+            "off",
+            "GLIBC_TUNABLES",
+            "glibc.malloc.hugetlb=1:glibc.malloc.arena_max=4",
+        ),
+        ("off", "MALLOC_TRIM_THRESHOLD_", "1048576"),
+        ("on", "GLIBC_TUNABLES", "glibc.malloc.arena_max=4"),
         ("on", "GLIBC_TUNABLES", "glibc.pthread.rseq=0"),
     ];
     for (want, var, value) in cases {

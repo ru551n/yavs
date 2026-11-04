@@ -57,8 +57,9 @@ system does not allow it, and nothing has to be set.
   administrator's choice; yavs does not work around it.
 * ``YAVS_HUGE_HEAP=0`` stops yavs from asking for them on the heap (:doc:`environment`); ``YAVS_CLIFT_HUGE=0`` and
   ``YAVS_LLVM_HUGE=0`` do the same for compiled code.
-* ``GLIBC_TUNABLES`` is never written by yavs. If you set a tunable that names ``glibc.malloc``, yavs leaves the allocator to you and asks for nothing on the heap;
-  ``glibc.malloc.hugetlb=1`` (glibc 2.35 and later) then gives the effect for the whole heap, and is not needed otherwise.
+* ``GLIBC_TUNABLES`` is never written by yavs. If you set ``glibc.malloc.top_pad``, ``trim_threshold``, ``mmap_threshold`` or ``hugetlb``
+  (or the older ``MALLOC_TOP_PAD_``, ``MALLOC_TRIM_THRESHOLD_``, ``MALLOC_MMAP_THRESHOLD_``), yavs leaves the allocator to you and asks for nothing on the heap;
+  ``glibc.malloc.hugetlb=1`` (glibc 2.35 and later) gives the effect for the whole heap, and is not needed otherwise. Other tunables change nothing here.
 * Other systems (musl, macOS, Windows) run as before, on ordinary pages.
 
 Threads

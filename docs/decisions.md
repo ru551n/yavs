@@ -13780,3 +13780,7 @@ A copy knows the form of each signal it names, so a read or a drive with a const
 ## Inlining: a branch that returns one of two integers is a `Select` (yavs-ir `opt/inline.rs`, 2026-11-04)
 
 - **`return_selects`, when the forwarder of a small function is made.** `if b then return '1'; else return '0'; end if;` has two paths, so inlining it cut the caller's statement in three blocks: the waveform head and the `LSet` of the drive around it no longer fused, and the drive took the general route (about 365 instructions against the batch). As a `Select` the body is one path and is spliced in place. Both values are constants or already in registers, so nothing runs that did not run on the way; integers only.
+
+## Interpreter: a second layout memo per type (yavs-interp `exec.rs`, 2026-11-04)
+
+- **`Machine::layouts2`, the memo before the last, taken back when its descriptor returns** (`memo_next`). A slice of an array of arrays assigned to the whole array asks for two layouts of one type in turn, so one memo missed each time and walked the type. A plain array of scalars has its words from the bounds and never reaches this. Two, not a table: the case seen is two descriptors in turn; more would be a search on a path that strings of changing length take.

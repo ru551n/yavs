@@ -10843,3 +10843,7 @@ The inline `Alloc` checks its limit once and clears the pad and the object by st
 ## One-element signal reads taken by a concatenation
 
 `"0" & s(i downto i)` reads the element as a scalar and the `Cat` takes it as a scalar piece (`yavs-ir` `opt/place.rs` `cat_reads`; `docs/decisions.md` "One-element signal reads taken by a concatenation"). 0.1 to 0.2 percent fewer instructions on Microwatt, none elsewhere.
+
+## Weak designs, second round: element loops, repeated element reads, returned choices
+
+Element loops of native frames in Cranelift are planned in the code itself (`Gen::eloop_plan`), an element of a logic vector read again is a move (`Key::LGet`), a branch that returns one of two integers is a `Select` when a function is inlined, and the interpreter keeps a second layout memo per type (`docs/decisions.md` of the same names). Numbers stay out of this file: a design of a matrix read row by row, a CRC table, a clocked `bool2bit` and an array shift register were the ones that showed each.

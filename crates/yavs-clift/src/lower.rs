@@ -3567,7 +3567,13 @@ fn gen_func(
                     let bad =
                         g.b.ins()
                             .icmp_imm_s(IntCC::UnsignedGreaterThan, o, i64::from(fa.len) - l);
-                    g.exit_if(bad, pc);
+                    // Not `exit_if`: no error of its own, the interpreter's `SigVal` passes.
+                    let (out, cont) = (g.b.create_block(), g.b.create_block());
+                    g.b.set_cold_block(out);
+                    g.brif_split(bad, out, cont);
+                    g.b.switch_to_block(out);
+                    g.leave_at(pc);
+                    g.b.switch_to_block(cont);
                     let v = g.b.ins().bor_imm_s(o, i64::from(sig) << 32);
                     g.st(dst, v);
                     let lv = g.c64(l);

@@ -6,8 +6,19 @@
 //! nothing reads any more. Works on the code before registers are shared, where nearly every
 //! register is defined once. `YAVS_NO_DOPES=1` turns it off (fingerprint `dopes`).
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use super::cfg::counts;
 use super::*;
+
+/// Instructions the pass looked at to find what writes or lets escape the blocks of descriptors.
+static SCANS: AtomicU64 = AtomicU64::new(0);
+
+/// How many instructions the pass looked at in this process: a function's code once or twice per
+/// round, never once per candidate (a work counter: `YAVS_COUNTERS`).
+pub fn scans() -> u64 {
+    SCANS.load(Ordering::Relaxed)
+}
 
 /// Is the pass on?
 pub(super) fn enabled() -> bool {
@@ -29,40 +40,70 @@ struct Made {
     bounds: (Reg, Reg, Reg),
 }
 
-/// Does `i` only read the block `r` points to, if it names `r` at all?
-fn reads_only(f: &crate::Func, i: &Inst, r: Reg) -> bool {
-    let list = |l: crate::Regs| f.regs(l).unwrap_or(&[]).contains(&r);
+/// Calls `out` with each register whose block `i` may write or let escape: those `i` does not
+/// only read. (One pass over the code with this finds, for all registers at once, the ones
+/// something besides a read names.)
+fn not_read_only(f: &crate::Func, i: &Inst, mut out: impl FnMut(Reg)) {
+    let list = |l: crate::Regs, out: &mut dyn FnMut(Reg)| {
+        f.regs(l).unwrap_or(&[]).iter().for_each(|&r| out(r))
+    };
     match *i {
-        Inst::Alloc { dst, size } => dst == r || size != r,
-        Inst::MakeDope { parts, .. } => !list(parts),
-        Inst::DopeLen { .. } | Inst::SubtypeCheck { .. } | Inst::LayoutOf { .. } => true,
-        Inst::Pos { dst, idx, .. } => dst != r && idx != r,
+        Inst::Alloc { dst, size } => {
+            if size != dst {
+                out(size)
+            }
+        }
+        Inst::MakeDope { parts, .. } => list(parts, &mut out),
+        Inst::DopeLen { .. } | Inst::SubtypeCheck { .. } | Inst::LayoutOf { .. } => {}
+        Inst::Pos { dst, idx, .. } => {
+            out(dst);
+            out(idx);
+        }
         Inst::SlicePos {
             dst,
             left,
             right,
             dir,
             ..
-        } => dst != r && left != r && right != r && dir != r,
-        Inst::Load { dst, .. } => dst != r,
+        } => [dst, left, right, dir].into_iter().for_each(out),
+        Inst::Load { dst, .. } | Inst::Copy { dst, .. } => out(dst),
         Inst::NewFrame {
             dst, data, size, ..
         }
         | Inst::NewFill {
             dst, data, size, ..
-        } => dst != r && data != r && size != r,
-        Inst::Copy { dst, .. } => dst != r,
-        Inst::Store { addr, .. } => addr != r,
+        } => [dst, data, size].into_iter().for_each(out),
+        Inst::Store { addr, .. } => out(addr),
         Inst::Call { .. }
         | Inst::CallProt { .. }
         | Inst::CallIndirect { .. }
-        | Inst::Ret { .. } => true,
+        | Inst::Ret { .. } => {}
         _ => {
-            let mut used = false;
-            i.visit(&mut |x, role, _| used |= role == Role::Use && x == r);
-            !used && i.list().is_none_or(|l| !list(l))
+            i.visit(&mut |x, role, _| {
+                if role == Role::Use {
+                    out(x)
+                }
+            });
+            if let Some(l) = i.list() {
+                list(l, &mut out);
+            }
         }
     }
+}
+
+/// Drops from `keep` every register some instruction of `f` does not only read.
+fn keep_read_only(f: &crate::Func, keep: &mut FxMap<Reg, impl Sized>) {
+    let mut scans = 0;
+    for i in &f.code {
+        if keep.is_empty() {
+            break;
+        }
+        scans += 1;
+        not_read_only(f, i, |r| {
+            keep.remove(&r);
+        });
+    }
+    SCANS.fetch_add(scans, Ordering::Relaxed);
 }
 
 /// `dom[b]`: the blocks that dominate `b`, as bits; `None` for a function too big for the sets.
@@ -112,29 +153,52 @@ fn closed(f: &crate::Func) -> bool {
         && !f.code.iter().any(|i| matches!(i, Inst::Suspend { .. }))
 }
 
-/// The registers that hold an address of the frame's slot of a descriptor: `at` is the one name
-/// of those 24 bytes. (A local array's own descriptor, made once in its slot.)
-fn frame_home(f: &crate::Func, at: Reg) -> bool {
-    let off = f.code.iter().find_map(|i| match *i {
-        Inst::AddrOf {
-            dst,
-            space: AddrSpace::Frame,
-            off,
-        } if dst == at => Some(off),
-        _ => None,
-    });
-    let Some(off) = off else {
-        return false;
-    };
-    closed(f)
-        && f.code.iter().all(|i| match *i {
-            Inst::AddrOf {
+/// What `frame_home` asks of the code, found in one pass: whether nothing can reach the frame's
+/// slots from outside, the first `AddrOf` of each register and every `AddrOf` by offset.
+struct Homes {
+    closed: bool,
+    first: FxMap<Reg, u32>,
+    by_off: Vec<(u32, Reg)>,
+}
+
+impl Homes {
+    fn new(f: &crate::Func) -> Self {
+        let mut first = FxMap::default();
+        let mut by_off = Vec::new();
+        for i in &f.code {
+            if let Inst::AddrOf {
                 dst,
                 space: AddrSpace::Frame,
-                off: o,
-            } => dst == at || o + 8 <= off || o >= off + 24,
-            _ => true,
-        })
+                off,
+            } = *i
+            {
+                first.entry(dst).or_insert(off);
+                by_off.push((off, dst));
+            }
+        }
+        by_off.sort_unstable();
+        Homes {
+            closed: closed(f),
+            first,
+            by_off,
+        }
+    }
+
+    /// Is `at` the one name of the 24 bytes of the frame's slot it addresses? (A local array's own
+    /// descriptor, made once in its slot.)
+    fn frame_home(&self, at: Reg) -> bool {
+        let Some(&off) = self.first.get(&at) else {
+            return false;
+        };
+        // Every other address `o` of the frame has `o + 8 <= off || o >= off + 24`.
+        let (lo, hi) = (off.saturating_sub(7), off.saturating_add(24));
+        let from = self.by_off.partition_point(|&(o, _)| o < lo);
+        self.closed
+            && self.by_off[from..]
+                .iter()
+                .take_while(|&&(o, _)| o < hi)
+                .all(|&(_, d)| d == at)
+    }
 }
 
 /// The descriptors of `f` whose bounds a reader can take from registers.
@@ -142,57 +206,57 @@ fn made(f: &crate::Func, defs: &[u8], frame: bool) -> FxMap<Reg, Made> {
     let once = |r: Reg| defs.get(r.0 as usize) == Some(&1);
     let mut out: FxMap<Reg, Made> = FxMap::default();
     let mut bad: Vec<Reg> = Vec::new();
+    let mut homes: Option<Homes> = None;
+    // The registers an `Alloc` of this block filled and nothing since has written or let escape.
+    let mut fresh: FxMap<Reg, ()> = FxMap::default();
+    let mut scans = 0;
     for (b, blk) in f.blocks.values().iter().enumerate() {
         let (s, e) = (blk.start as usize, blk.end as usize);
+        fresh.clear();
         for pc in s..e {
-            let Inst::MakeDope { at, parts } = f.code[pc] else {
-                continue;
-            };
-            let Some(&[l, r, d]) = f.regs(parts) else {
-                continue;
-            };
-            let mut alloc = false;
-            for q in (s..pc).rev() {
-                match f.code[q] {
-                    Inst::Alloc { dst, .. } if dst == at => {
-                        alloc = true;
-                        break;
-                    }
-                    ref i if !reads_only(f, i, at) => break,
-                    _ => {}
+            let i = &f.code[pc];
+            if let Inst::MakeDope { at, parts } = *i
+                && let Some(&[l, r, d]) = f.regs(parts)
+            {
+                let alloc = fresh.contains_key(&at);
+                if (alloc || (frame && homes.get_or_insert_with(|| Homes::new(f)).frame_home(at)))
+                    && once(at)
+                    && once(l)
+                    && once(r)
+                    && once(d)
+                    && at != l
+                    && at != r
+                    && at != d
+                    && out
+                        .insert(
+                            at,
+                            Made {
+                                block: b,
+                                from: pc + 1,
+                                bounds: (l, r, d),
+                            },
+                        )
+                        .is_some()
+                {
+                    bad.push(at);
                 }
             }
-            if (alloc || (frame && frame_home(f, at)))
-                && once(at)
-                && once(l)
-                && once(r)
-                && once(d)
-                && at != l
-                && at != r
-                && at != d
-                && out
-                    .insert(
-                        at,
-                        Made {
-                            block: b,
-                            from: pc + 1,
-                            bounds: (l, r, d),
-                        },
-                    )
-                    .is_some()
-            {
-                bad.push(at);
+            scans += 1;
+            not_read_only(f, i, |r| {
+                fresh.remove(&r);
+            });
+            if let Inst::Alloc { dst, .. } = *i {
+                fresh.insert(dst, ());
             }
         }
     }
+    SCANS.fetch_add(scans, Ordering::Relaxed);
     for r in bad {
         out.remove(&r);
     }
     // Anything that may write the block: leave it alone. (A reader before the `MakeDope` of the
     // block is no reader of it, and a register defined once has no earlier value.)
-    for i in &f.code {
-        out.retain(|&r, _| reads_only(f, i, r));
-    }
+    keep_read_only(f, &mut out);
     out
 }
 
@@ -241,7 +305,7 @@ fn flat_slots(f: &crate::Func, defs: &[u8]) -> FxMap<Reg, u32> {
             out.insert(dst, off);
         }
     }
-    out.retain(|&r, _| f.code.iter().all(|i| reads_only(f, i, r)));
+    keep_read_only(f, &mut out);
     out
 }
 
@@ -366,8 +430,18 @@ fn round(prog: &Program, f: &mut crate::Func, regs: bool, params: bool) -> bool 
         Reg(reg_ty.len() as u32 - 1)
     };
     let blocks: Vec<(u32, u32)> = f.blocks.values().iter().map(|b| (b.start, b.end)).collect();
-    // The lengths made so far: the bounds, the register, its block.
-    let mut lens: Vec<((Reg, Reg, Reg), Reg, usize)> = Vec::new();
+    // The lengths made so far by bounds: the register and its block, in the order made.
+    let mut lens: FxMap<(Reg, Reg, Reg), Vec<(Reg, usize)>> = FxMap::default();
+    let mut out: Vec<Inst> = Vec::new();
+    // The constants of registers defined once.
+    let consts: FxMap<Reg, i64> = f
+        .code
+        .iter()
+        .filter_map(|i| match *i {
+            Inst::Const { dst, v } if defs.get(dst.0 as usize) == Some(&1) => Some((dst, v)),
+            _ => None,
+        })
+        .collect();
     for (bk, (start, end)) in blocks.into_iter().enumerate() {
         let first = code.len() as u32;
         if bk == 0 {
@@ -379,7 +453,7 @@ fn round(prog: &Program, f: &mut crate::Func, regs: bool, params: bool) -> bool 
         }
         for pc in start as usize..end as usize {
             let i = f.code[pc];
-            let mut out: Vec<Inst> = Vec::new();
+            out.clear();
             match i {
                 Inst::DopeLen { dst, dope, dim: 0 } if at(dope, pc).is_some() => {
                     let (left, right, dir) = at(dope, pc).unwrap_or((dope, dope, dope));
@@ -390,7 +464,7 @@ fn round(prog: &Program, f: &mut crate::Func, regs: bool, params: bool) -> bool 
                         dir,
                     });
                     if defs.get(dst.0 as usize) == Some(&1) {
-                        lens.push(((left, right, dir), dst, bk));
+                        lens.entry((left, right, dir)).or_default().push((dst, bk));
                     }
                 }
                 Inst::Pos {
@@ -442,8 +516,9 @@ fn round(prog: &Program, f: &mut crate::Func, regs: bool, params: bool) -> bool 
                         let doms = |b: usize| dom[bk][b / 64] >> (b % 64) & 1 == 1;
                         let mut len = |d: Reg, b: Option<(Reg, Reg, Reg)>, out: &mut Vec<Inst>| {
                             if let Some(b) = b
-                                && let Some(&(_, r, _)) =
-                                    lens.iter().find(|l| l.0 == b && (l.2 == bk || doms(l.2)))
+                                && let Some(&(r, _)) = lens
+                                    .get(&b)
+                                    .and_then(|v| v.iter().find(|l| l.1 == bk || doms(l.1)))
                             {
                                 return r;
                             }
@@ -484,9 +559,9 @@ fn round(prog: &Program, f: &mut crate::Func, regs: bool, params: bool) -> bool 
                     let (planes, stride) = size_form(prog, ty).unwrap_or((false, 1));
                     let doms = |b: usize| dom[bk][b / 64] >> (b % 64) & 1 == 1;
                     let had = lens
-                        .iter()
-                        .find(|l| l.0 == (left, right, dir) && (l.2 == bk || doms(l.2)))
-                        .map(|l| l.1);
+                        .get(&(left, right, dir))
+                        .and_then(|v| v.iter().find(|l| l.1 == bk || doms(l.1)))
+                        .map(|l| l.0);
                     let len = had.unwrap_or_else(|| {
                         let len = fresh(RegTy::I64);
                         out.push(Inst::BoundsLen {
@@ -495,7 +570,7 @@ fn round(prog: &Program, f: &mut crate::Func, regs: bool, params: bool) -> bool 
                             right,
                             dir,
                         });
-                        lens.push(((left, right, dir), len, bk));
+                        lens.entry((left, right, dir)).or_default().push((len, bk));
                         len
                     });
                     sized.insert(dst, (len, planes, stride));
@@ -539,7 +614,7 @@ fn round(prog: &Program, f: &mut crate::Func, regs: bool, params: bool) -> bool 
                     }
                 }
                 Inst::Copy { dst, src, bytes }
-                    if at(src, pc).is_some() && const_of(f, &defs, bytes) == Some(24) =>
+                    if at(src, pc).is_some() && consts.get(&bytes) == Some(&24) =>
                 {
                     let (l, r, d) = at(src, pc).unwrap_or((src, src, src));
                     let start = f.operands.len() as u32;
@@ -552,7 +627,7 @@ fn round(prog: &Program, f: &mut crate::Func, regs: bool, params: bool) -> bool 
                 _ => out.push(i),
             }
             any |= out.len() != 1 || out[0] != i;
-            for x in out {
+            for &x in &out {
                 code.push(x);
                 loc.push(f.loc[pc]);
                 if let Some(&v) = f.via.get(pc) {
@@ -637,15 +712,4 @@ pub(super) fn fold_takes(f: &mut crate::Func) {
     f.code = code;
     f.loc = loc;
     f.via = via;
-}
-
-/// The constant in `r` when one instruction defines it.
-fn const_of(f: &crate::Func, defs: &[u8], r: Reg) -> Option<i64> {
-    if defs.get(r.0 as usize) != Some(&1) {
-        return None;
-    }
-    f.code.iter().find_map(|i| match *i {
-        Inst::Const { dst, v } if dst == r => Some(v),
-        _ => None,
-    })
 }

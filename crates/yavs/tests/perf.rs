@@ -180,6 +180,10 @@ case!(frame_vars, "n=200", &[], [("ops", Max(11200))]);
 // Slices between variables in the frame, one block: more facts than the optimiser's table keeps
 // (#1059), so a table that stopped learning shows here as ops per statement.
 case!(frame_slices, "x=", &[], [("ops", Max(11400))]);
+// A function of 120 vectors with run-time bounds: the pass that reads descriptors in registers
+// looks at each instruction a few times, not once per vector (a scan per vector made the
+// optimiser cost grow with the square of the function).
+case!(dopes_scan, "t=", &[], [("dopes_scans", Max(19000))]);
 case!(
     pkg_table,
     "sum=212",

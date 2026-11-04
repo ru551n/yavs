@@ -3711,9 +3711,10 @@ impl<'a> Opt<'a> {
                     Some((Opn::A(AddrSpace::Frame, o), lo, n)) => {
                         !clear_of(named, i64::from(o) + lo, n)
                     }
+                    // (A debugger writes a composite local through its pointer.)
                     Some((a, ..)) => match this.cls_of(a) {
-                        Some(Cls::Temp | Cls::Block(_)) => false,
-                        Some(Cls::Param) => keep_variables_on(),
+                        Some(Cls::Temp) => false,
+                        Some(Cls::Block(_) | Cls::Param) => keep_variables_on(),
                         _ => true,
                     },
                 };

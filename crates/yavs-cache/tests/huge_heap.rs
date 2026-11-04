@@ -86,16 +86,12 @@ fn main() {
         println!("skipped: needs Linux, glibc and transparent huge pages in madvise mode");
         return;
     }
-    // The environment of each child: yavs's own switch, and the user's allocator tuning.
+    // The environment of each child: yavs's own switch, and the user's allocator tuning. (Not
+    // `hugetlb`: glibc then marks the heap itself, so the flag says nothing about yavs.)
     let cases = [
         ("on", "YAVS_HUGE_HEAP", "1"),
         ("off", "YAVS_HUGE_HEAP", "0"),
         ("off", "GLIBC_TUNABLES", "glibc.malloc.top_pad=1048576"),
-        (
-            "off",
-            "GLIBC_TUNABLES",
-            "glibc.malloc.hugetlb=1:glibc.malloc.arena_max=4",
-        ),
         ("off", "MALLOC_TRIM_THRESHOLD_", "1048576"),
         ("on", "GLIBC_TUNABLES", "glibc.malloc.arena_max=4"),
         ("on", "GLIBC_TUNABLES", "glibc.pthread.rseq=0"),

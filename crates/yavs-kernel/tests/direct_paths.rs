@@ -949,6 +949,48 @@ fn a_batched_element_assigned_twice_keeps_the_last_code() {
     assert_eq!(*seen.lock().unwrap(), vec![ZERO]);
 }
 
+/// `Config::count_events`: a changed word of two runs is two events for the work counters and
+/// one without them; the updates themselves are the same.
+#[test]
+fn a_word_with_two_changed_runs_counts_them_only_when_asked() {
+    let events = |count_events: bool| {
+        let mut b = Builder::new();
+        let s = b.signal(
+            "s",
+            SignalType::logic(8),
+            &LogicVec::new(8, StdULogic::Zero),
+        );
+        let d = b.driver(s);
+        let mut on = false;
+        b.process(
+            "p",
+            NONE,
+            &[d],
+            p(move |c| {
+                on = !on;
+                // Plane words of '0' with '1' at elements 1 and 6, or all '0'.
+                assert!(c.assign_planes_now(d, None, [if on { 0x42 } else { 0 }, 0xff, 0, 0]));
+                c.wait_for(ns(1))
+            }),
+        );
+        // No observer: one that wants value changes has the runs listed, whatever this says.
+        let mut sim = b
+            .build(Config {
+                skip_unchanged: true,
+                count_events,
+                ..Config::default()
+            })
+            .unwrap();
+        sim.run_until(ns(4)).unwrap();
+        let st = sim.stats();
+        (st.events, st.cycles, st.process_runs)
+    };
+    let (exact, rough) = (events(true), events(false));
+    assert!(rough.0 > 0, "{rough:?}");
+    assert_eq!(exact.0, 2 * rough.0, "{exact:?} {rough:?}");
+    assert_eq!((exact.1, exact.2), (rough.1, rough.2));
+}
+
 /// A batch of single elements that covers a run (`assign_codes_now` makes one vector entry of
 /// it), in any order and with an element twice, then one more element of the run on its own:
 /// the last assignment of each element wins, as one at a time.

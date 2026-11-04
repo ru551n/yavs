@@ -196,7 +196,8 @@ pub struct Report {
 pub struct Stats {
     pub cycles: u64,
     pub process_runs: u64,
-    /// Signal events, counted per contiguous run of changed elements.
+    /// Signal events, counted per contiguous run of changed elements (`Config::count_events`:
+    /// without it, a changed word of a signal nothing lists the runs of counts as one).
     pub events: u64,
     /// Processes made ready (a wake of a process that was not ready already).
     pub wakes: u64,

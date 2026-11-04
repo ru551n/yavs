@@ -1,0 +1,20 @@
+exit	0
+diag	note	0	0	:inline_shared_return:_p0	0 0 2 -5 31 -2147483648 2 false '0' blue
+diag	note	1000000	0	:inline_shared_return:_p0	drive '0'
+diag	note	1000000	0	:inline_shared_return:_p0	1 1 7 31 0 2147483647 1 true '1' green
+diag	note	2000000	0	:inline_shared_return:_p0	drive '1'
+diag	note	2000000	0	:inline_shared_return:_p0	2 0 2 -5 31 -2147483648 2 false '0' blue
+diag	note	3000000	0	:inline_shared_return:_p0	drive '0'
+diag	note	3000000	0	:inline_shared_return:_p0	3 1 7 31 0 2147483647 1 true '1' green
+diag	note	4000000	0	:inline_shared_return:_p0	drive '1'
+diag	note	4000000	0	:inline_shared_return:_p0	4 0 7 -5 31 -2147483648 3 false '0' blue
+diag	note	5000000	0	:inline_shared_return:_p0	drive '0'
+diag	note	5000000	0	:inline_shared_return:_p0	5 0 2 -5 31 -2147483648 3 false '0' blue
+diag	note	6000000	0	:inline_shared_return:_p0	drive '0'
+diag	note	6000000	0	:inline_shared_return:_p0	sum 2
+diag	note	6000000	0	:inline_shared_return:_p0	false false 31 5
+diag	note	6000000	0	:inline_shared_return:_p0	false true 31 2
+diag	note	6000000	0	:inline_shared_return:_p0	true false 31 2
+diag	note	6000000	0	:inline_shared_return:_p0	true true 9 2
+diag	note	6000000	0	:inline_shared_return:_p0	010100
+diag	note	6000000	0	:inline_shared_return:_p0	1

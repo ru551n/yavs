@@ -1804,6 +1804,123 @@ fn thin_call(variant: &str) -> (Vec<Inst>, Vec<Via>, FuncId) {
     (g.code.clone(), via, f)
 }
 
+/// The caller of `if x = 3 or x = 7 then return yes; end if; return no;`, block by block as
+/// lowering leaves it: the flag of the `or` in a register, the rest of the function first.
+fn shared_return_call(yes: i64, no: i64) -> Vec<Inst> {
+    let mut pb = ProgramBuilder::new();
+    let f = pb.declare("f", FuncKind::Function, None);
+    let mut fb = pb.define(f);
+    let sa = fb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+    fb.stmt(StmtKind::Return, sp());
+    let eq = |fb: &mut FuncBuilder<'_>, k: i64| {
+        let x = load(fb, sa);
+        let (b, dst) = (fb.reg(RegTy::I64), fb.reg(RegTy::I64));
+        fb.emit(Inst::Const { dst: b, v: k });
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Eq,
+            dst,
+            a: x,
+            b,
+        });
+        dst
+    };
+    let (rest, second, first, join, t, e) = (
+        fb.block(),
+        fb.block(),
+        fb.block(),
+        fb.block(),
+        fb.block(),
+        fb.block(),
+    );
+    let flag = fb.reg(RegTy::I64);
+    let c0 = eq(&mut fb, 3);
+    fb.emit(Inst::CondBr {
+        c: c0,
+        t: first,
+        f: second,
+    });
+    fb.at(rest);
+    let r = fb.reg(RegTy::I64);
+    fb.emit(Inst::Const { dst: r, v: no });
+    fb.emit(Inst::Ret { v: Some(r) });
+    fb.at(second);
+    let c1 = eq(&mut fb, 7);
+    fb.emit(Inst::Move { dst: flag, src: c1 });
+    fb.emit(Inst::Br { to: join });
+    fb.at(first);
+    fb.emit(Inst::Const { dst: flag, v: 1 });
+    fb.emit(Inst::Br { to: join });
+    fb.at(join);
+    fb.emit(Inst::CondBr { c: flag, t, f: e });
+    fb.at(t);
+    let r = fb.reg(RegTy::I64);
+    fb.emit(Inst::Const { dst: r, v: yes });
+    fb.emit(Inst::Ret { v: Some(r) });
+    fb.at(e);
+    fb.emit(Inst::Br { to: rest });
+    fb.finish();
+    let g = pb.declare("g", FuncKind::Function, None);
+    let mut gb = pb.define(g);
+    gb.slot(8, 8);
+    gb.stmt(StmtKind::Return, sp());
+    let u = unknown(&mut gb, 0);
+    let dst = gb.reg(RegTy::I64);
+    let args = gb.regs(&[u]);
+    gb.emit(Inst::Call {
+        func: f,
+        args,
+        dst: Some(dst),
+    });
+    gb.emit(Inst::Ret { v: Some(dst) });
+    gb.finish();
+    let p = pb.finish().expect("optimised code verifies");
+    p.func(g).expect("g").code.clone()
+}
+
+// One branch to the shared return is a `Select` after `return_selects`, and the block that defined
+// the constant the other branch reads is gone (#1094).
+#[test]
+fn a_constant_of_a_shared_return_is_defined_after_its_block_goes() {
+    if !on() {
+        return;
+    }
+    for (yes, no) in [
+        (1, 0),
+        (0, 31),
+        (31, -5),
+        (i64::from(i32::MAX), i64::from(i32::MIN)),
+    ] {
+        let code = shared_return_call(yes, no);
+        assert_eq!(
+            count(&code, |i| matches!(i, Inst::Call { .. })),
+            0,
+            "{code:?}"
+        );
+        assert_eq!(
+            count(&code, |i| matches!(i, Inst::Select { .. })),
+            1,
+            "{code:?}"
+        );
+        let (mut read, mut defined) = (Vec::new(), Vec::new());
+        for i in &code {
+            i.visit(&mut |r, role, _| {
+                if role == Role::Def {
+                    defined.push(r);
+                } else {
+                    read.push(r);
+                }
+            });
+        }
+        for r in &read {
+            assert!(defined.contains(r), "r{} has no definition: {code:?}", r.0);
+        }
+        for v in [yes, no] {
+            let has = |i: &Inst| matches!(i, Inst::Const { v: k, .. } if *k == v);
+            assert!(count(&code, has) > 0, "the constant {v}: {code:?}");
+        }
+    }
+}
+
 #[test]
 fn a_call_of_a_thin_function_becomes_its_code() {
     if !on() {

@@ -24,7 +24,7 @@
 //! of the cut block, and a `Case` of the callee a chain of compares (a table cannot be added to
 //! the program here). The protected object of a `CallProt` is the callee's first argument.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::{
@@ -271,6 +271,7 @@ fn make(prog: &crate::Program, callee: FuncId, level: u8, wide: bool) -> Option<
             return None;
         }
     }
+    keep_definitions(&mut blocks, &seen, &c.operands);
     let mut renum = vec![u32::MAX; blocks.len()];
     let mut kept: Vec<Vec<Ent>> = Vec::new();
     for (b, blk) in blocks.into_iter().enumerate() {
@@ -326,6 +327,44 @@ fn make(prog: &crate::Program, callee: FuncId, level: u8, wide: bool) -> Option<
         params,
         defs,
     })
+}
+
+/// A constant defined once is read with no definition on the path, since a frame starts with it
+/// (`merge_consts` leaves such code, `kill_unreachable` keeps the definition for it): the one
+/// definition in a block that is no longer reached moves to the entry.
+fn keep_definitions(blocks: &mut [Vec<Ent>], seen: &[bool], operands: &[Reg]) {
+    let (mut read, mut defined) = (HashSet::new(), HashSet::new());
+    for (i, ..) in blocks
+        .iter()
+        .zip(seen)
+        .filter(|(_, s)| **s)
+        .flat_map(|(b, _)| b)
+    {
+        i.visit(&mut |r, role, _| {
+            if role == Role::Def {
+                defined.insert(r);
+            } else {
+                read.insert(r);
+            }
+        });
+        if let Some(l) = i.list() {
+            read.extend(&operands[l.start as usize..(l.start + l.len) as usize]);
+        }
+    }
+    let lost: Vec<Ent> = blocks
+        .iter()
+        .zip(seen)
+        .filter(|(_, s)| !**s)
+        .flat_map(|(b, _)| b)
+        .filter(|(i, ..)| match *i {
+            Inst::Const { dst, .. } | Inst::ConstF { dst, .. } | Inst::AddrOf { dst, .. } => {
+                read.contains(&dst) && !defined.contains(&dst)
+            }
+            _ => false,
+        })
+        .copied()
+        .collect();
+    blocks[0].splice(0..0, lost);
 }
 
 /// A branch that returns one of two integers, each a constant or in a register already (`if a

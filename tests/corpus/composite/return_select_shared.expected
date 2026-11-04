@@ -1,0 +1,3 @@
+exit	0
+diag	note	0	0	:return_select_shared:_p0	1100
+diag	note	0	0	:return_select_shared:_p0	1

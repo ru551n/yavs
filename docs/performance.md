@@ -8,6 +8,8 @@ testbenches, and clearly slower on long runs of whole processors (below). These 
 (0.206 warm and 0.571 cold on 2026-10-28), and we have not found out why. The comparisons with the other two simulators are from that earlier run
 and were not repeated. Every figure is a recorded run with its conditions in "How we measured" at the end, not a promise for your design.
 
+**All the comparisons with other simulators on this page are older than the performance work merged on 2026-11-04.** They were not repeated on the merged code, so they say nothing about it, in either direction, until a new measurement is on this page.
+
 ```{contents} On this page
 :local:
 ```
@@ -43,15 +45,15 @@ the other half of the cores. Re-checking at `cb1a1295` (a later commit) changed 
 
 ## Long runs of whole processors
 
-Two processors running a fixed CoreMark program for a long time, yavs warm (`--tier=auto`) divided by the same open-source simulator A, run including elaboration:
+Two processors running a fixed CoreMark program for a long time, yavs warm (`--tier=auto`) divided by the same open-source simulator A, run including elaboration, as measured before the merge of 2026-11-04:
 
 | Testbench | Ratio (warm) | Note |
 | --- | ---: | --- |
 | NEORV32 CoreMark | 1.45 | measured while other jobs ran on the neighbouring cores: it may read a few percent high |
 | Microwatt CoreMark | 3.76 | measured on a quiet half of the CPU; on a busy one the same run gave up to 4.93, and its time varied between 271 s and 413 s |
 
-Both are slower in yavs than in A, and they are the clearest place where yavs loses: Microwatt and `grlib_leon3mp` (3.4 times) run about twice the instructions A does, at lower
-instructions per cycle. On Microwatt and `grlib_leon3mp` the default tier is currently slower than yavs's own interpreter (by 14 and 26 percent in wall time); on NEORV32 it is level.
+Both were slower in yavs than in A, and they were the clearest place where yavs lost: Microwatt and `grlib_leon3mp` (3.4 times) ran about twice the instructions A did, at lower
+instructions per cycle. On Microwatt and `grlib_leon3mp` the default tier was slower than yavs's own interpreter (by 14 and 26 percent in wall time); on NEORV32 it was level.
 Elaboration of NEORV32 is faster than A's, that of Microwatt slower.
 
 ## Where yavs is slower

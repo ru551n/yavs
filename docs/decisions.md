@@ -13768,3 +13768,7 @@ A copy knows the form of each signal it names, so a read or a drive with a const
 ## A process copy calls what is nested in its process on a native frame (yavs-clift `lower.rs`, 2026-11-03)
 
 `call_fits` takes a nested callee only from its parent or a sibling, and asked with the copy's id: every call from a copy of a process to its own nested procedure was a `yavs_rt_step`, pushing an interpreter frame (about 600 host instructions a call of `rand_next` in `sc5_fifo_repack`), while the native variant sat compiled and unused. The copy's frame stands for the process's: same static link, same slots but for what `Func::moved` moves at the switch, which a nested body reaches through the slot's words as before. Not changed in the LLVM generator, which no CI job runs.
+
+## Cranelift tier: element loops planned in the code itself (yavs-clift, 2026-11-04)
+
+- **The Cranelift lowering plans element loops as LLVM does** ("Element loops planned in the compiled code itself"; `Gen::eloop_plan`, `yavs_rt_eloop_exec`, `eloop::invariant_steps`): the helper `eloop::run` interprets the steps and finds every object through a trait object, about 2 300 instructions for a loop of eight elements, more than the eight iterations it replaces. No tunable constant. The helper stays for a shape `invariant_steps` refuses and for `YAVS_LLVM_ELOOP_HELPER`, which now keys Cranelift's code too.

@@ -17,7 +17,7 @@
 mod arena;
 pub mod auto;
 mod census;
-mod eloop;
+pub mod eloop;
 pub mod generator;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub mod hugezone;

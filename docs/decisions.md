@@ -13776,3 +13776,7 @@ A copy knows the form of each signal it names, so a read or a drive with a const
 ## Optimiser: an element of a logic vector read again (yavs-ir `opt.rs`, 2026-11-04)
 
 - **`LGet` is in the value numbering** (`Key::LGet`), as a memory fact of its vector: the second read of an element is a move while nothing can have written the vector. Tables of exclusive ors over the bits of a word (a CRC update) read each input element many times. A `NewFrame` is a block (`Cls::Block`) as an `Alloc` is; what the cell of an `in` parameter points to (`Cls::Param`) is apart from those blocks, not from anything else; a `std_ulogic` table native writes no memory.
+
+## Inlining: a branch that returns one of two integers is a `Select` (yavs-ir `opt/inline.rs`, 2026-11-04)
+
+- **`return_selects`, when the forwarder of a small function is made.** `if b then return '1'; else return '0'; end if;` has two paths, so inlining it cut the caller's statement in three blocks: the waveform head and the `LSet` of the drive around it no longer fused, and the drive took the general route (about 365 instructions against the batch). As a `Select` the body is one path and is spliced in place. Both values are constants or already in registers, so nothing runs that did not run on the way; integers only.

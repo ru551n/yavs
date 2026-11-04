@@ -247,6 +247,7 @@ fn make(prog: &crate::Program, callee: FuncId, level: u8, wide: bool) -> Option<
         blocks.push(out);
     }
     blocks.extend(extra);
+    return_selects(&mut blocks, &mut reg_ty);
     // Blocks nothing reaches (the arms of a `Case` that only fail) are not copied.
     let mut seen = vec![false; blocks.len()];
     let mut work = vec![0usize];
@@ -321,6 +322,55 @@ fn make(prog: &crate::Program, callee: FuncId, level: u8, wide: bool) -> Option<
         params,
         defs,
     })
+}
+
+/// A branch that returns one of two integers, each a constant or in a register already (`if a
+/// then return '1'; else return '0'; end if;`), as a `Select`: a body of one path is spliced in
+/// where the call was, so the statement around the call stays one block.
+fn return_selects(blocks: &mut [Vec<Ent>], reg_ty: &mut Vec<RegTy>) {
+    // What an arm returns: a constant, or a register.
+    enum Arm {
+        K(i64),
+        R(Reg),
+    }
+    let arm = |b: &[Ent], reg_ty: &[RegTy]| match *b {
+        [(Inst::Ret { v: Some(r) }, ..)] if reg_ty[r.0 as usize] == RegTy::I64 => Some(Arm::R(r)),
+        [(Inst::Const { dst, v }, ..), (Inst::Ret { v: Some(r) }, ..)]
+            if dst == r && reg_ty[r.0 as usize] == RegTy::I64 =>
+        {
+            Some(Arm::K(v))
+        }
+        _ => None,
+    };
+    for b in 0..blocks.len() {
+        let Some(&(Inst::CondBr { c, t, f }, loc, via)) = blocks[b].last() else {
+            continue;
+        };
+        let (Some(at), Some(af)) = (
+            blocks.get(t.0 as usize).and_then(|x| arm(x, reg_ty)),
+            blocks.get(f.0 as usize).and_then(|x| arm(x, reg_ty)),
+        ) else {
+            continue;
+        };
+        let mut new_reg = |ty: RegTy| {
+            reg_ty.push(ty);
+            Reg(reg_ty.len() as u32 - 1)
+        };
+        let out = &mut blocks[b];
+        out.pop();
+        let mut value = |a: Arm| match a {
+            Arm::R(r) => r,
+            Arm::K(v) => {
+                let dst = new_reg(RegTy::I64);
+                out.push((Inst::Const { dst, v }, loc, via));
+                dst
+            }
+        };
+        let (x, y) = (value(at), value(af));
+        let dst = new_reg(RegTy::I64);
+        out.push((Inst::Select { dst, c, a: x, b: y }, loc, via));
+        out.push((Inst::Ret { v: Some(dst) }, loc, via));
+    }
 }
 
 /// The forwarder of a function with a result table (`casetab.rs`): when the argument is a

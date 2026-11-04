@@ -2180,9 +2180,7 @@ pub unsafe extern "C" fn yavs_rt_hold_check(
     };
     // SAFETY: as in `yavs_rt_step`.
     let mut found = look(unsafe { &*mem });
-    if found.is_none_or(|f| f != p)
-        && unsafe { yavs_rt_obj(env, mem, a, write) } != 0
-    {
+    if found.is_none_or(|f| f != p) && unsafe { yavs_rt_obj(env, mem, a, write) } != 0 {
         // SAFETY: as above; the object is in the table now.
         found = look(unsafe { &*mem });
     }

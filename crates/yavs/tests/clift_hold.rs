@@ -213,7 +213,12 @@ fn yavs(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
     c.output().expect("run yavs")
 }
 
-fn run(dir: &Path, flags: &[&str], bad: u32, env: &[(&str, &str)]) -> (String, String, Option<i32>) {
+fn run(
+    dir: &Path,
+    flags: &[&str],
+    bad: u32,
+    env: &[(&str, &str)],
+) -> (String, String, Option<i32>) {
     let g = format!("-gbad={bad}");
     let mut args = vec!["run", "--std=2008", "--work=work:work"];
     args.extend_from_slice(flags);
@@ -268,7 +273,13 @@ fn accesses_through_held_regions_are_checked_in_debug_builds() {
     let dir = analyzed("clift_hold_count");
     let o = yavs(
         &dir,
-        &["run", "--std=2008", "--work=work:work", "--tier=clift", "hold"],
+        &[
+            "run",
+            "--std=2008",
+            "--work=work:work",
+            "--tier=clift",
+            "hold",
+        ],
         &[("YAVS_COUNTERS", "1")],
     );
     let err = String::from_utf8_lossy(&o.stderr);
@@ -289,7 +300,12 @@ fn a_hold_not_asked_again_is_caught() {
     }
     let dir = analyzed("clift_hold_mutant");
     for bad in [1, 2] {
-        let got = run(&dir, &["--tier=clift"], bad, &[("YAVS_CLIFT_HOLD_DROP", "1")]);
+        let got = run(
+            &dir,
+            &["--tier=clift"],
+            bad,
+            &[("YAVS_CLIFT_HOLD_DROP", "1")],
+        );
         assert!(got.1.contains("is stale"), "bad {bad}: {got:?}");
     }
 }

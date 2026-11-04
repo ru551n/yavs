@@ -598,7 +598,14 @@ impl Jit {
             )?,
         ];
         let hold_check = imp(HOLD_CHECK, &[I64, I64, I64, I64, I64, I32, I64, I64], None)?;
-        let cold_host = cold_stub(&mut module, "cold_host", host, &[I64, I64, I64, I64, I64, I32], 1, &[])?;
+        let cold_host = cold_stub(
+            &mut module,
+            "cold_host",
+            host,
+            &[I64, I64, I64, I64, I64, I32],
+            1,
+            &[],
+        )?;
         // `(env, regs, mem, dst, h)`, as `yavs_rt_fast(env, regs, mem, FAST_DEREF, dst, h, 0)`.
         let cold_deref = cold_stub(
             &mut module,
@@ -1417,10 +1424,18 @@ impl Jit {
         let imports = Imports {
             step: self.module.declare_func_in_func(self.step, &mut ctx.func),
             host: self.module.declare_func_in_func(self.host, &mut ctx.func),
-            cold_host: self.module.declare_func_in_func(self.cold_host, &mut ctx.func),
-            cold_deref: self.module.declare_func_in_func(self.cold_deref, &mut ctx.func),
-            cold_region: self.module.declare_func_in_func(self.cold_region, &mut ctx.func),
-            hold_check: self.module.declare_func_in_func(self.hold_check, &mut ctx.func),
+            cold_host: self
+                .module
+                .declare_func_in_func(self.cold_host, &mut ctx.func),
+            cold_deref: self
+                .module
+                .declare_func_in_func(self.cold_deref, &mut ctx.func),
+            cold_region: self
+                .module
+                .declare_func_in_func(self.cold_region, &mut ctx.func),
+            hold_check: self
+                .module
+                .declare_func_in_func(self.hold_check, &mut ctx.func),
             signal: self.module.declare_func_in_func(self.signal, &mut ctx.func),
             lcopy: self.module.declare_func_in_func(self.lcopy, &mut ctx.func),
             zero: self.module.declare_func_in_func(self.zero, &mut ctx.func),
@@ -5944,7 +5959,15 @@ impl Gen<'_> {
 
     /// `yavs_rt_host` for an access, in the block a lookup missed in: jumps to `done` with the
     /// host pointer; 0 (not available) takes the slow path, here or at `nonnull`.
-    fn host_call(&mut self, a: Value, extra: Value, n: Value, write: bool, done: Block, slow: Block) {
+    fn host_call(
+        &mut self,
+        a: Value,
+        extra: Value,
+        n: Value,
+        write: bool,
+        done: Block,
+        slow: Block,
+    ) {
         let w = self.c32(u32::from(write));
         // A native frame rarely gets here; frame-mode code often, where the stub's saves would cost
         // more than the spills they spare (Microwatt).
@@ -9073,10 +9096,7 @@ impl Gen<'_> {
         // `obj_at` of `h >> 32`, scaled: the index and the shared flag each in one shift and mask.
         let scale = 32 - i64::from(OBJ_SHIFT);
         let at = self.b.ins().ushr_imm_s(h, scale);
-        let at = self
-            .b
-            .ins()
-            .band_imm_s(at, (OBJS as i64 - 1) << OBJ_SHIFT);
+        let at = self.b.ins().band_imm_s(at, (OBJS as i64 - 1) << OBJ_SHIFT);
         let flag = self
             .b
             .ins()
@@ -9097,7 +9117,10 @@ impl Gen<'_> {
             .b
             .ins()
             .load(I64, self.mf, ent, (MEM_OBJS + OBJ_H) as i32);
-        let tk = self.b.ins().load(I32, self.mf, self.mem, (MEM_TAGS + k + 4) as i32);
+        let tk = self
+            .b
+            .ins()
+            .load(I32, self.mf, self.mem, (MEM_TAGS + k + 4) as i32);
         let ek = self.b.ins().load(I32, self.mf, ent, (MEM_OBJS + 4) as i32);
         let same_h = self.b.ins().icmp(IntCC::Equal, eh, h);
         let same_t = self.b.ins().icmp(IntCC::Equal, ek, tk);
@@ -9142,7 +9165,9 @@ impl Gen<'_> {
             self.b
                 .ins()
                 .call(self.imp.cold_deref, &[self.env, regs, self.mem, d, h]);
-            self.b.ins().load(I32, self.mf, self.mem, MEM_COLD_RET as i32)
+            self.b
+                .ins()
+                .load(I32, self.mf, self.mem, MEM_COLD_RET as i32)
         } else {
             let (op, z) = (self.c32(FAST_DEREF), self.c64(0));
             let c = self

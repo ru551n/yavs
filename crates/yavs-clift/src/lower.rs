@@ -1703,6 +1703,10 @@ struct Gen<'a> {
     /// The object the instruction being generated found for its result register: entered in
     /// `known` once `track` has run for it (`ObjRef`).
     objnew: Option<(Reg, ObjRef<Value>)>,
+    /// Registers holding the result of a `std_ulogic` table in this block, and the one the last
+    /// instruction wrote: a code of the nine, no test.
+    codes: Vec<Reg>,
+    code_new: Option<Reg>,
     /// The regions the address parameters of a native frame point into (`param_addrs`), resolved
     /// at the entry: `Known::Param(k)` is `pres[k]` (host pointer of the start, length, written).
     pres: Vec<(Value, Value, bool)>,
@@ -2343,6 +2347,8 @@ fn gen_func(
         prog,
         known: base_known.clone(),
         objnew: None,
+        codes: Vec::new(),
+        code_new: None,
         pres: Vec::new(),
         frame_len: u64::from(f.frame),
         objs: f
@@ -2495,6 +2501,9 @@ fn gen_func(
             g.b.set_srcloc(ir::SourceLoc::new(pc + 1));
         }
         if let Some(p) = prev.replace(inst) {
+            let defs = yavs_interp::inst_regs(f, &p).1;
+            g.codes.retain(|c| !defs.contains(c));
+            g.codes.extend(g.code_new.take());
             track(&mut g.known, &fixed, f, &p);
             // `track` forgets the register after a definition too (a signal reference is two):
             // what holds everywhere stays known.
@@ -2536,6 +2545,7 @@ fn gen_func(
             }
         }
         if leader[i] {
+            g.codes.clear();
             // The single way in: the fall-through keeps what is known, a jump brings it (one that
             // comes from further down the code, not yet seen, brings nothing).
             let single = native && ways[i] == 1;
@@ -3542,10 +3552,12 @@ fn gen_func(
                 let (slow, join) = g.slow_path(pc, &inst);
                 let code = g.ld(v);
                 // A code beyond 'U' to '-' is the interpreter's error.
-                let okc =
-                    g.b.ins()
-                        .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, code, 8);
-                g.guard(okc, slow);
+                if !g.codes.contains(&v) {
+                    let okc =
+                        g.b.ins()
+                            .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, code, 8);
+                    g.guard(okc, slow);
+                }
                 let (p, sh) = g.logic_word(base, idx, true, slow);
                 let one = g.c64(1);
                 let one = g.b.ins().ishl(one, sh);
@@ -3878,10 +3890,14 @@ fn gen_func(
                         let (slow, join) = g.slow_path(pc, &inst);
                         let mut idx = g.c64(0);
                         for r in rs {
-                            // A code beyond the nine is the native's error.
+                            // A code beyond the nine is the native's error (a table's result in
+                            // this block is one of them).
                             let x = g.ld(r);
-                            let okc = g.b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, x, 8);
-                            g.guard(okc, slow);
+                            if !g.codes.contains(&r) {
+                                let okc =
+                                    g.b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, x, 8);
+                                g.guard(okc, slow);
+                            }
                             let i9 = g.b.ins().imul_imm_s(idx, 9);
                             idx = g.b.ins().iadd(i9, x);
                         }
@@ -3891,6 +3907,7 @@ fn gen_func(
                         let v = g.b.ins().uload8(I64, g.gf, p, 0);
                         g.st(d, v);
                         g.join(join);
+                        g.code_new = Some(d);
                     }
                     Some(NativeKind::Edge(rising)) => {
                         let e = if rising { 1 } else { 2 };

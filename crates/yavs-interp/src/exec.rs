@@ -9605,6 +9605,7 @@ impl Machine {
 
     /// Make `tf` the top frame's view (`TierFrame`).
     fn tier_view(&mut self, tf: &mut crate::TierFrame) {
+        tf.ret_bounds = &raw mut self.ret_bounds;
         let top = self.frames.len() - 1;
         let fr = &self.frames[top];
         let (rbase, slen, temp_base) = (fr.rbase as usize, fr.slen, fr.temp_base);

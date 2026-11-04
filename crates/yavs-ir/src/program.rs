@@ -874,6 +874,42 @@ impl Func {
         }
     }
 
+    /// The instance signals (`SigVal::sig`) of which this function may ask more than the current
+    /// value: a reference reaches anything but a read, a wait or a drive (an attribute, an edge
+    /// test, a call, a store). An instruction nobody listed here counts as asking.
+    pub fn sig_history_uses(&self) -> Vec<u32> {
+        let f = self.full();
+        let mut origin = std::collections::HashMap::<Reg, u32>::new();
+        let mut out = Vec::new();
+        for i in &f.code {
+            match *i {
+                Inst::SigVal { dst, sig, .. } => {
+                    origin.insert(dst, sig);
+                }
+                Inst::SigSlice { dst, sig, .. } => {
+                    if let Some(&n) = origin.get(&sig) {
+                        origin.insert(dst, n);
+                    }
+                }
+                Inst::SigRead { .. }
+                | Inst::SigReadScalar { .. }
+                | Inst::WaitOn { .. }
+                | Inst::Drive { .. }
+                | Inst::DriveSlot { .. }
+                | Inst::Disconnect { .. }
+                | Inst::DisconnectSlot { .. } => {}
+                _ => {
+                    i.visit(&mut |r, _, _| out.extend(origin.get(&r).copied()));
+                    let list = i.list().and_then(|l| f.regs(l)).unwrap_or_default();
+                    out.extend(list.iter().filter_map(|r| origin.get(r).copied()));
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
     /// The function with its body in place: `self`, or for a function whose body is still
     /// bytes ([`lazy_bodies`]) a copy with the body decoded, made once. Everything that reads
     /// `code`, `loc`, `operands` or `resume` of a function out of [`Program::funcs`] asks this.

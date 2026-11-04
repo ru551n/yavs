@@ -3597,7 +3597,8 @@ A wait's abutting ranges of one signal are one waiter, and a signal's sole resid
 
 A bus of more than 64 elements nothing asks any history of keeps no event records and no `'last_value`, and is compared and copied
 whole when all of it is pending; a bus copy writes straight from the source words (`docs/decisions.md` "A wide bus nothing asks the
-history of"). Corpus `sigassign/wide_history`, `wide_history_ext`; work counter `bare_signals`.
+history of"). Corpus `sigassign/wide_history`, `wide_history_ext`, `wide_level`; work counter `bare_signals`. The decision comes from the
+lowered code; the `history-check` feature fails at any read of a history that was not kept.
 
 ### Frame objects: full fact table and whole copies (2026-11-02, #1059, branch `perf/iterative`)
 

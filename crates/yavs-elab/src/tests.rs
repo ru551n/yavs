@@ -3007,7 +3007,8 @@ fn stored_run_time_packages_are_not_used_with_external_names() {
 
 /// The names of the wide leaves that keep only each block's last event (`lean.rs`).
 fn lean_leaves(src: &str) -> Vec<String> {
-    let (_, e) = elab("lean", src, "t", &[]);
+    let (mut db, mut e) = elab("lean", src, "t", &[]);
+    e.lower(&mut db).expect("lower");
     let mut v: Vec<String> = e
         .lean
         .iter()
@@ -3020,7 +3021,8 @@ fn lean_leaves(src: &str) -> Vec<String> {
 }
 
 fn bare_leaves(src: &str) -> Vec<String> {
-    let (_, e) = elab("bare", src, "t", &[]);
+    let (mut db, mut e) = elab("bare", src, "t", &[]);
+    e.lower(&mut db).expect("lower");
     let mut v: Vec<String> = e
         .bare
         .iter()
@@ -3081,7 +3083,6 @@ fn a_bus_with_no_history_attribute_keeps_no_history() {
         "t1 := a'last_event;",
         "e := a(5)'event;",
         "s := a(5)'last_value;",
-        "e := a'stable;",
     ] {
         assert_eq!(
             bare_leaves(&wide_design("", stmts)),
@@ -3095,6 +3096,26 @@ fn a_bus_with_no_history_attribute_keeps_no_history() {
     assert_eq!(
         bare_leaves(&wide_design("", "e := rising_edge(b(70));")),
         ["t.a", "t.r"]
+    );
+    // A signal parameter of parts: the references go through memory.
+    let parts = "procedure q (signal x : in std_logic_vector(1 downto 0)) is begin null; end;";
+    assert_eq!(
+        bare_leaves(&wide_design(parts, "q(x(1) => a(3), x(0) => b(4));")),
+        ["t.r"]
+    );
+    // An external alias is the object it names; the others stay.
+    let ext = "alias ex is <<signal .t.b : std_logic_vector(99 downto 0)>>;";
+    assert_eq!(
+        bare_leaves(&wide_design(ext, "e := ex'event;")),
+        ["t.a", "t.r"]
+    );
+    // Reading the value, waiting on it and driving it ask nothing.
+    assert_eq!(
+        bare_leaves(&wide_design(
+            "",
+            "w := a; s := b(5); r <= w; wait on a; wait on b(70 downto 3);"
+        )),
+        ABR
     );
     // A field of a record: a report asks it by part.
     let rec = "type rt is record w : std_logic_vector(99 downto 0); end record; signal q : rt;";

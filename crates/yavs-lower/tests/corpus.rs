@@ -20,6 +20,7 @@ use yavs_sem::{Db, LangRev, Options};
 const PASS: &[&str] = &[
     "sigassign/wide_history",
     "sigassign/wide_history_ext",
+    "sigassign/wide_level",
     "composite/record_length_var",
     "composite/record_length_var_short",
     "composite/record_length_second_field",

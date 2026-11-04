@@ -423,7 +423,8 @@ pub struct Elaborated {
     /// of every signal; empty means the same.
     pub lean: Vec<bool>,
     /// Per signal leaf (as `lean`), one of those whose history nothing can ask at all: the kernel
-    /// keeps no event records or `'last_value` for it (`lean::bare`). Clear it with `lean`.
+    /// keeps no event records or `'last_value` for it (`lean::bare`, from the lowered code: empty
+    /// until `lower`). Clear it with `lean`.
     pub bare: Vec<bool>,
     /// Per leaf: no process reads a single element of this signal, so the kernel keeps no byte
     /// codes for it (`keep_codes.rs`). Clear it to keep them for every signal; empty means the same.

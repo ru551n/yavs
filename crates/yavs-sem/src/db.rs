@@ -97,15 +97,6 @@ pub struct Facts {
     /// The signal objects that are whole such a prefix (the elaborator checks they are whole
     /// kernel signals).
     pub history_wholes: Vec<DeclId>,
-    /// Some attribute that asks the history or activity of a signal (`Self::history_reads`) has a
-    /// prefix the elaborator cannot trace to a signal object, or a signal is passed to a
-    /// subprogram through an external name: any signal may be it.
-    pub history_reads_all: bool,
-    /// The signal objects with such an attribute on them or on a part of them, or passed whole or
-    /// in part to a signal parameter: what the kernel must keep the history of, even of a wide
-    /// bus (`'event`, `'active`, `'last_event`, `'last_active`, `'last_value`, `'stable`,
-    /// `'quiet`, `'delayed`, `'transaction`, `'driving`, `'driving_value`).
-    pub history_reads: Vec<DeclId>,
     /// The signal objects of which one element is read (a scalar index, selection or alias of a
     /// part, or a scalar port read whole, which is an element of its actual when the port is
     /// collapsed into it; in any expression that is not an assignment target, a port-map actual
@@ -635,8 +626,6 @@ impl Db {
             f.history_all |= u.history_all;
             f.history_parts.extend_from_slice(&u.history_parts);
             f.history_wholes.extend_from_slice(&u.history_wholes);
-            f.history_reads_all |= u.history_reads_all;
-            f.history_reads.extend_from_slice(&u.history_reads);
             f.elem_direct.extend_from_slice(&u.elem_direct);
             f.param_reads.extend_from_slice(&u.param_reads);
             f.pass_edges.extend_from_slice(&u.pass_edges);
@@ -651,7 +640,6 @@ impl Db {
         for v in [
             &mut f.history_parts,
             &mut f.history_wholes,
-            &mut f.history_reads,
             &mut f.elem_direct,
             &mut f.param_reads,
         ] {
@@ -688,25 +676,6 @@ impl Db {
     /// Add what expression `id` contributes to `f`.
     pub(crate) fn note_expr(&self, id: ExprId, f: &mut Facts) {
         use crate::hir::{AttrPrefix, ExprKind, PredefAttr};
-        if let ExprKind::Attr {
-            attr:
-                PredefAttr::Event
-                | PredefAttr::Active
-                | PredefAttr::LastEvent
-                | PredefAttr::LastActive
-                | PredefAttr::LastValue
-                | PredefAttr::Driving
-                | PredefAttr::DrivingValue
-                | PredefAttr::Delayed
-                | PredefAttr::Stable
-                | PredefAttr::Quiet
-                | PredefAttr::Transaction,
-            prefix: AttrPrefix::Expr(p),
-            ..
-        } = self.exprs[id].kind
-        {
-            self.note_history_read(p, f);
-        }
         match self.exprs[id].kind {
             ExprKind::Attr {
                 attr: PredefAttr::Active | PredefAttr::LastActive,
@@ -796,18 +765,13 @@ impl Db {
             };
             for e in actuals {
                 match self.lsp_parts(e) {
-                    Some((ObjRoot::Decl(d), ..)) if matches!(&self.decls[d].kind, DeclKind::Object(o) if o.class == ObjClass::Signal) =>
-                    {
-                        f.pass_edges.push((callee, a.formal, Some(d)));
-                        if !self.is_param(ObjRoot::Decl(d)) {
-                            f.history_reads.push(d);
-                        }
+                    Some((ObjRoot::Decl(d), ..)) if matches!(&self.decls[d].kind, DeclKind::Object(o) if o.class == ObjClass::Signal) => {
+                        f.pass_edges.push((callee, a.formal, Some(d)))
                     }
                     Some((ObjRoot::External(x), ..))
                         if self.externals[x].class == yavs_syntax::ast::ExternalClass::Signal =>
                     {
-                        f.pass_edges.push((callee, a.formal, None));
-                        f.history_reads_all = true;
+                        f.pass_edges.push((callee, a.formal, None))
                     }
                     _ => {}
                 }
@@ -894,22 +858,6 @@ impl Db {
     fn is_param_decl(&self, d: DeclId) -> bool {
         use crate::decl::ObjRole;
         matches!(&self.decls[d].kind, DeclKind::Object(o) if o.role == ObjRole::Param)
-    }
-
-    /// Add what a history attribute of the signal `p` names contributes to `Facts::history_reads`.
-    /// A signal parameter's actual is noted where the call is (`note_call`); a prefix that cannot be
-    /// traced to an object asks everything.
-    fn note_history_read(&self, p: ExprId, f: &mut Facts) {
-        use crate::hir::ObjRoot;
-        match self.lsp_parts(p) {
-            Some((ObjRoot::ImplicitSignal(_), ..)) => {}
-            Some((ObjRoot::Decl(d), ..)) => {
-                if !self.is_param(ObjRoot::Decl(d)) {
-                    f.history_reads.push(d);
-                }
-            }
-            _ => f.history_reads_all = true,
-        }
     }
 
     /// Add what `p'last_event` (or `p'last_value`) contributes to `f`: what the kernel must keep

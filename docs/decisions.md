@@ -155,11 +155,18 @@ changed word), so a compare in front of the word loop rarely spares it: its nets
 the work per changed word that only attributes read: the event record of the block and the blend of `'last_value`. Those attributes
 are rare on a bus.
 
-- **Decision.** A leaf of more than 64 elements, no field of a record, with no history attribute on an object that holds it, passed
-  to no signal parameter (the edge functions count), in a design with no force and no prefix that cannot be traced (`Facts::history_reads`,
-  `history_reads_all`, `lean::bare`), keeps no event records and no `'last_value` when finished by `Signal::finish_words_lean`. It
-  is lean even where `history_all` turns the others off, since any parameter that can reach it is in the list. Coverage, a debugger
-  and VHPI clear it with `lean` (`observed_free`); `YAVS_NO_HISTORY=off` is the hidden test aid.
+- **Decision.** A leaf of more than 64 elements, no field of a record, in a design with no force, of which the lowered code asks no
+  more than the value (`Func::sig_history_uses`, `lean::bare`), keeps no event records and no `'last_value` when finished by
+  `Signal::finish_words_lean`. It is lean even where `history_all` turns the others off. Coverage, a debugger and VHPI clear it with
+  `lean` (`observed_free`); `YAVS_NO_HISTORY=off` is the hidden test aid.
+- **Who asks is decided from the code, not the source.** A reference of the signal (`Inst::SigVal`) may reach a read of the value, a
+  wait and a drive; every other instruction counts as asking, today's attributes, edge tests and calls and anything added later, so a
+  new reader cannot be forgotten. A first version asked the source for attributes and signal parameters and gave wrong results:
+  `wait until s(70) = '1'` names neither, and never resumed, since the kernel answers it from the element's event record. What the
+  kernel reads without an instruction (edge triggers, sources of implicit signals) it takes back in `SimControl::new`. Debug builds and
+  the `history-check` feature fail loudly at any read of the history of a signal that keeps none (`Signal::check_history`); the
+  differential corpus and whole design runs pass with it on.
+- **Counts.** `Stats::events` is exact only under `YAVS_COUNTERS`, since only that output reads it (accepted by the maintainer, 2026-11-04).
 - **Whole.** Such a bus with every element pending is compared and copied whole: the first and the last differing word give the
   cover for the waiters, `changed` is the same range as the word loop gives. Runs are not counted then, one event per update is, so
   `Stats::events` is exact only with `Config::count_runs`, which `yavs run` sets from `YAVS_COUNTERS` (the default is on; nothing

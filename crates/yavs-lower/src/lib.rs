@@ -922,6 +922,11 @@ impl<'a> Lowerer<'a> {
         self.pb.func_count()
     }
 
+    /// The package signals so far: the first entries of every `UnitIr::signals`.
+    pub fn package_signals(&self) -> &[SignalIr] {
+        &self.cx.pkg_sigs
+    }
+
     /// The packages lowered so far ([`Lowerer::package`]).
     pub fn package_irs(&self) -> &[PackageIr] {
         &self.packages

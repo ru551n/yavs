@@ -1444,6 +1444,14 @@ impl SimControl {
                 }
             }
         }
+        // What the kernel itself asks of a signal: the event and old value of an edge trigger,
+        // the events of an implicit signal's source. The lowered code cannot tell.
+        for t in procs.iter().filter_map(|m| m.trigger) {
+            signals[t.signal.0 as usize].keep_history();
+        }
+        for &(s, _) in &implicit_srcs {
+            signals[s as usize].keep_history();
+        }
         let lean_signals = signals.iter().filter(|s| s.is_lean()).count() as u64;
         let bare_signals = signals.iter().filter(|s| s.keeps_no_history()).count() as u64;
         if !cfg.count_runs {

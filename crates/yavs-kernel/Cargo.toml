@@ -14,5 +14,10 @@ yavs-diag.workspace = true
 yavs-logic.workspace = true
 yavs-prefetch.workspace = true
 
+[features]
+# Fail when anything reads the history of a signal that keeps none (`Signal::check_history`), also
+# in a release build; debug builds always do.
+history-check = []
+
 [lints]
 workspace = true

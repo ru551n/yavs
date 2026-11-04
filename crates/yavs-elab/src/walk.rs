@@ -675,16 +675,12 @@ pub(crate) fn elaborate(
     }
     let forced = crate::collapse::forced(e.db, &e.m.sigs);
     e.m.nets.place(e.cfg.packs, forced.as_ref());
-    let mut lean = crate::lean::leaves(e.db, &e.m.nets);
-    let bare = crate::lean::bare(e.db, &e.m.nets);
-    for (l, b) in lean.iter_mut().zip(&bare) {
-        *l |= b;
-    }
+    let lean = crate::lean::leaves(e.db, &e.m.nets);
     let no_codes = crate::keep_codes::leaves(e.db, &e.m.nets);
     e.m.calls.flush();
     Ok(Elaborated {
         lean,
-        bare,
+        bare: Vec::new(),
         no_codes,
         top,
         hier: e.m.hier,

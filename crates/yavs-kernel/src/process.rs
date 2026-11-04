@@ -1418,6 +1418,7 @@ impl Ctx<'_> {
     /// A lean signal (`Builder::lean_events`) cannot answer `'last_event` or `'last_value` of a
     /// range that is not whole blocks: the elaborator found no such use, so this is a bug.
     fn history(&self, s: &Signal, r: Range, last_value: bool) -> Result<(), SimError> {
+        s.check_history("a history attribute");
         if s.history_exact(r, last_value) {
             return Ok(());
         }
@@ -1472,6 +1473,9 @@ impl Ctx<'_> {
         }
         if !last && let Some(c) = s.mirrored_code(r.offset as usize) {
             return Ok(Some(c));
+        }
+        if last {
+            s.check_history("'last_value");
         }
         let b = if last { &s.last_value } else { &s.cur };
         match b.planes_code(r.offset as usize) {

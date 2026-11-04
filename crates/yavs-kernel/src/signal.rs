@@ -1144,6 +1144,25 @@ impl Signal {
         self.bare = self.lean;
     }
 
+    /// Keep the history after all: something asks it (`SimControl::new`).
+    pub(crate) fn keep_history(&mut self) {
+        self.bare = false;
+    }
+
+    /// Debug builds and the `history-check` feature fail here when anything reads the event
+    /// records or `'last_value` of a signal that keeps none: a reader `Elaborated::bare` missed.
+    #[inline(always)]
+    pub(crate) fn check_history(&self, what: &str) {
+        #[cfg(any(debug_assertions, feature = "history-check"))]
+        assert!(
+            !self.bare,
+            "internal error: {what} of `{}`, which keeps no history; this is a bug in yavs",
+            self.name
+        );
+        #[cfg(not(any(debug_assertions, feature = "history-check")))]
+        let _ = what;
+    }
+
     /// Whether the signal keeps no history (`set_no_history`).
     pub fn keeps_no_history(&self) -> bool {
         self.bare
@@ -2820,6 +2839,7 @@ impl Signal {
     /// `'last_value` of `r`: the value before the last change of the whole of `r` (LRM 16.2.4),
     /// so an element that did not change in that cycle keeps its current value.
     pub fn last_value_of(&self, r: Range) -> Buf {
+        self.check_history("'last_value");
         let mut b = self.last_value.extract(r.offset as usize, r.len as usize);
         let ev: Vec<u64> = r.elems().map(|e| self.event_cycle(e)).collect();
         if let Some(&latest) = ev.iter().max() {
@@ -2930,6 +2950,7 @@ impl Signal {
 
     #[inline]
     pub fn event_in(&self, r: Range, cycle: u64) -> bool {
+        self.check_history("an event test");
         // One element (an edge test): a load and a compare, not a scan.
         (if r.len == 1 {
             self.stamps[r.offset as usize] == cycle
@@ -3768,6 +3789,72 @@ mod tests {
         );
         small.set_lean_events();
         assert!(!small.is_lean());
+    }
+
+    /// `commit_copy` against `commit_planes_run` of the same elements in blocks: the same driving
+    /// value and pending bits, at every alignment of source and target.
+    #[test]
+    fn a_bus_copy_is_its_run_of_entries() {
+        let ty = SignalType::logic(300);
+        let mut x = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let src: Vec<Block> = (0..5).map(|_| [next(), next(), next(), next()]).collect();
+        for (so, dst, len) in [
+            (0, 0, 300),
+            (0, 0, 128),
+            (64, 64, 192),
+            (1, 0, 299),
+            (0, 1, 299),
+            (5, 3, 290),
+            (3, 5, 290),
+            (63, 1, 65),
+            (1, 63, 65),
+            (0, 235, 65),
+            (235, 0, 65),
+            (64, 7, 129),
+        ] {
+            let mk = || {
+                let mut s = Signal::new("s".into(), ty, Buf::zeroed(ty.elem, 300), None);
+                s.pend_words.clear();
+                s
+            };
+            let (mut a, mut b) = (mk(), mk());
+            let first = a.commit_copy(&src, so, dst, len);
+            let outs: Vec<_> = (0..len)
+                .step_by(64)
+                .map(|k| {
+                    let n = (len - k).min(64);
+                    let planes = yavs_logic::wide::get_block(&src, (so + k) as usize, n as usize)
+                        .map(|w| w & nmask(n as usize));
+                    crate::process::OutV {
+                        sig: 0,
+                        slot: 0,
+                        elem: dst + k,
+                        len: n,
+                        planes,
+                    }
+                })
+                .collect();
+            assert_eq!(first, b.commit_planes_run(&outs), "{so} {dst} {len}");
+            assert_eq!(
+                a.driving.to_value(),
+                b.driving.to_value(),
+                "{so} {dst} {len}"
+            );
+            assert_eq!(a.pend, b.pend, "{so} {dst} {len}");
+            assert_eq!(a.lag, b.lag, "{so} {dst} {len}");
+            let sorted = |s: &Signal| {
+                let mut w = s.pend_words.clone();
+                w.sort_unstable();
+                w
+            };
+            assert_eq!(sorted(&a), sorted(&b), "{so} {dst} {len}");
+        }
     }
 
     /// A bus with no history, whole and per word, against one that keeps it: the same value and

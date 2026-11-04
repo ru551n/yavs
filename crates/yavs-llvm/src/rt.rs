@@ -130,6 +130,9 @@ pub struct Mem {
     pub temp_seen: u64,
     /// Nonzero while native frames unwind to be materialised (`yavs_rt_deopt`).
     pub ndeopt: u64,
+    /// The result of a callback called through a stub that keeps every register (Cranelift's
+    /// `cold_stub`: that convention has no return value).
+    pub cold_ret: u64,
     /// Per function, the address of its native-frame code (`Gen::native_call`), 0 for none.
     pub ntab: *const usize,
     /// The `Env` of the activation running on this view (`enter_on`): a callback given a null
@@ -340,6 +343,7 @@ pub const MEM_CYCLE: u64 = std::mem::offset_of!(Mem, fr.cycle) as u64;
 pub const MEM_FRAME_IDX: u64 = std::mem::offset_of!(Mem, fr.frame) as u64;
 pub const MEM_MAX_DEPTH: u64 = std::mem::offset_of!(Mem, fr.max_depth) as u64;
 pub const MEM_NDEOPT: u64 = std::mem::offset_of!(Mem, ndeopt) as u64;
+pub const MEM_COLD_RET: u64 = std::mem::offset_of!(Mem, cold_ret) as u64;
 pub const MEM_NTAB: u64 = std::mem::offset_of!(Mem, ntab) as u64;
 pub const MEM_STACK_LO: u64 = std::mem::offset_of!(Mem, stack_lo) as u64;
 pub const MEM_NSLOTS: u64 = std::mem::offset_of!(Mem, nslots) as u64;

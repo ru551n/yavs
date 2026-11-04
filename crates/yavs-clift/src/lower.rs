@@ -104,7 +104,6 @@ type PerfEntry = (String, ClifId, usize, Vec<(u32, u32, u32)>);
 pub struct Jit {
     module: JITModule,
     step: ClifId,
-    host: ClifId,
     signal: ClifId,
     lcopy: ClifId,
     zero: ClifId,
@@ -116,6 +115,10 @@ pub struct Jit {
     deopt_end: ClifId,
     /// The kernel-facing callbacks of `rt.rs`, in the order of `KERNEL`.
     kernel: [ClifId; 23],
+    /// `yavs_rt_host` and the `Deref` of `yavs_rt_fast` through stubs that keep every register
+    /// (`cold_stub`).
+    cold_host: ClifId,
+    cold_deref: ClifId,
     /// Module data by its bytes and whether it is 8-byte aligned.
     tables: HashMap<(Vec<u8>, bool), DataId>,
     /// What a body's reference to module data names in another run (`Name::Data`), by data id.
@@ -374,6 +377,60 @@ fn flag(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
 }
 
+/// A stub `name` of the convention that keeps every register, around a callback of a cold path that
+/// comes back to the hot path: without a call that clobbers, the hot path does not spill what it
+/// holds over that block. The callback gets the stub's parameters, with the constants `fixed`
+/// (position, value, type) in between; its result goes to `Mem::cold_ret`, the parameter at `mem`
+/// being the `Mem`.
+fn cold_stub(
+    module: &mut JITModule,
+    name: &str,
+    callback: ClifId,
+    params: &[Type],
+    mem: usize,
+    fixed: &[(usize, i64, Type)],
+) -> Result<ClifId, Error> {
+    let mut ctx = module.make_context();
+    let mut fctx = FunctionBuilderContext::new();
+    ctx.func.signature.call_conv = CallConv::PreserveAll;
+    ctx.func
+        .signature
+        .params
+        .extend(params.iter().map(|&t| AbiParam::new(t)));
+    let fr = module.declare_func_in_func(callback, &mut ctx.func);
+    {
+        let mut b = FunctionBuilder::new(&mut ctx.func, &mut fctx);
+        let e = b.create_block();
+        b.append_block_params_for_function_params(e);
+        b.switch_to_block(e);
+        let mut args = b.block_params(e).to_vec();
+        let m = args[mem];
+        for &(at, v, t) in fixed {
+            let c = b.ins().iconst(t, v);
+            args.insert(at, c);
+        }
+        let call = b.ins().call(fr, &args);
+        let r = b.inst_results(call)[0];
+        let r = if b.func.dfg.value_type(r) == I32 {
+            b.ins().uextend(I64, r)
+        } else {
+            r
+        };
+        b.ins()
+            .store(MemFlagsData::trusted(), r, m, MEM_COLD_RET as i32);
+        b.ins().return_(&[]);
+        b.seal_all_blocks();
+        b.finalize(module.target_config());
+    }
+    let id = module
+        .declare_function(name, Linkage::Local, &ctx.func.signature)
+        .map_err(|e| e.to_string())?;
+    module
+        .define_function(id, &mut ctx)
+        .map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
 impl Jit {
     pub fn new() -> Result<Jit, Error> {
         let opt = flag("YAVS_CLIFT_OPT", "speed");
@@ -507,6 +564,16 @@ impl Jit {
                 None,
             )?,
         ];
+        let cold_host = cold_stub(&mut module, "cold_host", host, &[I64, I64, I64, I64, I64, I32], 1, &[])?;
+        // `(env, regs, mem, dst, h)`, as `yavs_rt_fast(env, regs, mem, FAST_DEREF, dst, h, 0)`.
+        let cold_deref = cold_stub(
+            &mut module,
+            "cold_deref",
+            kernel[8],
+            &[I64, I64, I64, I32, I64],
+            2,
+            &[(3, FAST_DEREF as i64, I32), (6, 0, I64)],
+        )?;
         let mut sig = module.make_signature();
         sig.params.extend([AbiParam::new(I64); 3]);
         sig.params.push(AbiParam::new(I32));
@@ -515,7 +582,6 @@ impl Jit {
         Ok(Jit {
             module,
             step,
-            host,
             signal,
             lcopy,
             zero,
@@ -526,6 +592,8 @@ impl Jit {
             deopt_slots,
             deopt_end,
             kernel,
+            cold_host,
+            cold_deref,
             tables: HashMap::new(),
             table_names: HashMap::new(),
             sig,
@@ -1300,7 +1368,7 @@ impl Jit {
         }
         let imports = Imports {
             step: self.module.declare_func_in_func(self.step, &mut ctx.func),
-            host: self.module.declare_func_in_func(self.host, &mut ctx.func),
+            host: self.module.declare_func_in_func(self.cold_host, &mut ctx.func),
             signal: self.module.declare_func_in_func(self.signal, &mut ctx.func),
             lcopy: self.module.declare_func_in_func(self.lcopy, &mut ctx.func),
             zero: self.module.declare_func_in_func(self.zero, &mut ctx.func),
@@ -1340,7 +1408,7 @@ impl Jit {
                 .declare_func_in_func(self.kernel[7], &mut ctx.func),
             fast: self
                 .module
-                .declare_func_in_func(self.kernel[8], &mut ctx.func),
+                .declare_func_in_func(self.cold_deref, &mut ctx.func),
             troot: self
                 .module
                 .declare_func_in_func(self.kernel[9], &mut ctx.func),
@@ -5581,11 +5649,10 @@ impl Gen<'_> {
     /// host pointer; 0 (not available) takes the slow path, here or at `nonnull`.
     fn host_call(&mut self, a: Value, extra: Value, n: Value, write: bool, done: Block, slow: Block) {
         let w = self.c32(u32::from(write));
-        let c = self
-            .b
+        self.b
             .ins()
             .call(self.imp.host, &[self.env, self.mem, a, extra, n, w]);
-        let ph = self.b.inst_results(c)[0];
+        let ph = self.mem_ld(MEM_COLD_RET);
         if self.const_of(n).is_some_and(|k| k > 0) {
             let nn = self.b.ins().icmp_imm_s(IntCC::NotEqual, ph, 0);
             self.guard(nn, slow);
@@ -8727,16 +8794,14 @@ impl Gen<'_> {
             ));
             self.b.ins().stack_addr(I64, ss, 0)
         });
-        let (op, z) = (self.c32(FAST_DEREF), self.c64(0));
         let (regs, d) = match scratch {
             Some(sc) => (sc, self.c32(0)),
             None => (self.regs, self.c32(dst.0)),
         };
-        let call = self
-            .b
+        self.b
             .ins()
-            .call(self.imp.fast, &[self.env, regs, self.mem, op, d, h, z]);
-        let st = self.b.inst_results(call)[0];
+            .call(self.imp.fast, &[self.env, regs, self.mem, d, h]);
+        let st = self.mem_ld(MEM_COLD_RET);
         let failed = self.b.ins().icmp_imm_s(IntCC::Equal, st, 0);
         if let Some(sc) = scratch {
             let ok = self.b.create_block();

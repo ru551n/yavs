@@ -1723,6 +1723,7 @@ fn prepare(
         // queues no transaction under every kind, but the idle skip leaves activations out and
         // so is off when statement, branch, condition or expression counters count them.
         skip_unchanged: others_free && !db.facts().reads_activity,
+        count_events: std::env::var_os("YAVS_COUNTERS").is_some(),
         // Hidden switches for comparing runs: `YAVS_IDLE_SKIP=off` runs every activation,
         // `check` runs the ones the kernel would skip and fails when one does something else.
         idle_skip: idle_mode != "off" && !cov_counters,

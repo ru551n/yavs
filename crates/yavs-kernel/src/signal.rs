@@ -782,6 +782,9 @@ pub(crate) struct Signal {
     /// them: a change of a cell is any non-empty part of it.
     pub cuts: Box<[u32]>,
     pub nruns: u64,
+    /// Count the runs of a changed word exactly for `nruns` (`Config::count_events`): without
+    /// it a word counts as one run, and no software population count runs per update.
+    pub count_runs: bool,
     /// Elements whose driving value a direct transaction wrote for the next update
     /// (`commit_code`, `commit_planes`),
     /// one bit each (made at the first one), and the words with a bit set.
@@ -860,12 +863,41 @@ fn cover(changed: &mut Vec<Range>, nruns: &mut u64, e: usize, len: u32, runs: u6
     }
 }
 
+/// The runs of changed elements in `m`, or one when nothing reads the exact count. The target
+/// has no population count instruction, and only `Stats::events` asks for this one.
+#[inline(always)]
+fn runs_of(count: bool, m: u64) -> u64 {
+    if count {
+        u64::from((m & !(m << 1)).count_ones())
+    } else {
+        1
+    }
+}
+
+/// Elements `m` of a block changed: they leave the older records of block `b`, which go once
+/// empty; records stay in cycle order, so this cycle's, if any, is the last.
+#[inline(never)]
+fn note_block_event(b: &mut SmallVec<[EvRec; 4]>, m: u64, cycle: u64, time: u64) {
+    b.retain(|r| {
+        r.mask &= !m;
+        r.mask != 0
+    });
+    match b.last_mut() {
+        Some(x) if x.cycle == cycle => x.mask |= m,
+        _ => b.push(EvRec {
+            cycle,
+            time,
+            mask: m,
+        }),
+    }
+}
+
 /// Elements `m` (bit `i` is element `base + i`) of a block changed, on a signal that lists
 /// cells (`Signal::cells`): one note in each cell with a change. A waiter of a part waits for
 /// whole cells, so a note anywhere in a changed cell wakes it exactly when the exact runs
 /// would. A few runs are noted as they are; more are noted as the hull of the changes cut at
 /// the cuts, which are rare in a block.
-#[inline(always)]
+#[inline(never)]
 fn note_cells(changed: &mut Vec<Range>, nruns: &mut u64, cuts: &[u32], base: usize, m: u64) {
     let runs = u64::from((m & !(m << 1)).count_ones());
     if runs <= 2 {
@@ -1082,6 +1114,7 @@ impl Signal {
             fine: false,
             cuts: Box::default(),
             nruns: 0,
+            count_runs: true,
             pend: Vec::new(),
             pend_words: Vec::new(),
             pend_one: false,
@@ -1651,7 +1684,7 @@ impl Signal {
                     cycles[e] = cycle;
                     rest[e] = stamp(now);
                 }
-                self.nruns += u64::from((m & !(m << 1)).count_ones());
+                self.nruns += runs_of(self.count_runs, m);
             }
             while w != 0 {
                 let s = w.trailing_zeros();
@@ -1755,20 +1788,7 @@ impl Signal {
                 }
             }
         } else if let Some(b) = self.blk_event.get_mut(w) {
-            // The changed elements leave the older records, which go once empty; records
-            // stay in cycle order, so this cycle's, if any, is the last.
-            b.retain(|r| {
-                r.mask &= !m;
-                r.mask != 0
-            });
-            match b.last_mut() {
-                Some(x) if x.cycle == cycle => x.mask |= m,
-                _ => b.push(EvRec {
-                    cycle,
-                    time: t,
-                    mask: m,
-                }),
-            }
+            note_block_event(b, m, cycle, t);
         } else {
             let mut v = m;
             while v != 0 {
@@ -1799,7 +1819,7 @@ impl Signal {
             // Only whole-signal waiters: the cover of the changed elements tells them all
             // they need; the runs are counted.
             let (lo, hi) = (m.trailing_zeros() as usize, 64 - m.leading_zeros() as usize);
-            let runs = u64::from((m & !(m << 1)).count_ones());
+            let runs = runs_of(self.count_runs, m);
             cover(
                 &mut self.changed,
                 &mut self.nruns,
@@ -1808,7 +1828,7 @@ impl Signal {
                 runs,
             );
         } else {
-            self.nruns += u64::from((m & !(m << 1)).count_ones());
+            self.nruns += runs_of(self.count_runs, m);
         }
         if m.is_power_of_two() {
             let i = m.trailing_zeros() as usize;
@@ -2156,6 +2176,26 @@ impl Signal {
     /// Whether any changed, `None` with nothing pending.
     #[inline(always)]
     pub(crate) fn finish_pend(&mut self, now: Time, cycle: u64, slow: bool) -> Option<bool> {
+        // The usual one: one word of a plain logic signal (a register), no list to sort or walk.
+        if !slow
+            && !self.pend_one
+            && !self.lean
+            && let [w] = self.pend_words[..]
+            && matches!(self.ty.elem, Elem::Logic)
+            && self.force_eff.is_none()
+            && self.force_drv.is_none()
+            && self.force_ev.is_empty()
+        {
+            self.pend_words.clear();
+            let m = std::mem::take(&mut self.pend[w as usize]);
+            return Some(self.finish_word_plain(w as usize, m, now, cycle));
+        }
+        self.finish_pend_rest(now, cycle, slow)
+    }
+
+    /// `finish_pend` of everything but one word of a plain logic signal.
+    #[inline(never)]
+    fn finish_pend_rest(&mut self, now: Time, cycle: u64, slow: bool) -> Option<bool> {
         let plain = !slow
             && self.force_eff.is_none()
             && self.force_drv.is_none()
@@ -2200,7 +2240,7 @@ impl Signal {
             self.pend_words = words;
             return Some(any);
         }
-        // One word (a register, or one stage of a chain): no list to sort or walk.
+        // One word, a signal with a force layer or a lean bus with codes or activity stamps.
         if let [w] = self.pend_words[..] {
             self.pend_words.clear();
             let m = std::mem::take(&mut self.pend[w as usize]);
@@ -2354,6 +2394,7 @@ impl Signal {
             watched,
             fine,
             cuts,
+            count_runs,
             ..
         } = self;
         let (Buf::Planes { b: cur, .. }, Buf::Planes { b: drv, .. }, Buf::Planes { b: last, .. }) =
@@ -2403,7 +2444,7 @@ impl Signal {
                     v &= !(nmask(run as usize) << s);
                 }
             } else {
-                runs += u64::from((m & !(m << 1)).count_ones());
+                runs += runs_of(*count_runs, m);
                 lo = lo.min(base + m.trailing_zeros() as usize);
                 hi = hi.max(base + 64 - m.leading_zeros() as usize);
             }
@@ -2422,35 +2463,10 @@ impl Signal {
     /// `finish_pend` of the elements `m` of word `w`.
     #[inline(always)]
     fn finish_word(&mut self, w: usize, m: u64, now: Time, cycle: u64, plain: bool) -> bool {
-        let base = w * 64;
-        // One element: its codes, as a quick transaction finished at once.
-        if plain && m.is_power_of_two() {
-            let e = base + m.trailing_zeros() as usize;
-            if let (Some(&old), Buf::Planes { b: drv, .. }) = (self.codes.get(e), &self.driving) {
-                // The code the last one-element commit wrote, if it was this element.
-                let code = match self.last_commit {
-                    (le, c) if le as usize == e => c,
-                    _ => plane_code(drv, e),
-                };
-                return self.finish_code(e, code, old, now, cycle);
-            }
-        }
         if plain {
-            if !self.inactive {
-                let (n, t) = (self.ty.len as usize, stamp(now));
-                let st = self.stamps.as_mut_slice();
-                let mut v = m;
-                while v != 0 {
-                    let s = v.trailing_zeros() as usize;
-                    let run = (v >> s).trailing_ones() as usize;
-                    let e = base + s;
-                    st[n + e..n + e + run].fill(cycle);
-                    st[3 * n + e..3 * n + e + run].fill(t);
-                    v &= !(nmask(run) << s);
-                }
-            }
-            return self.update_word(w, m, now, cycle);
+            return self.finish_word_plain(w, m, now, cycle);
         }
+        let base = w * 64;
         let mut v = m;
         while v != 0 {
             let s = v.trailing_zeros();
@@ -2461,6 +2477,39 @@ impl Signal {
             v &= !(nmask(run as usize) << s);
         }
         false
+    }
+
+    /// `finish_word` on a signal with no force layer: its effective value follows. One function
+    /// for the update's two callers, a signal with direct entries and one with drivers due too.
+    #[inline(never)]
+    fn finish_word_plain(&mut self, w: usize, m: u64, now: Time, cycle: u64) -> bool {
+        let base = w * 64;
+        // One element: its codes, as a quick transaction finished at once.
+        if m.is_power_of_two() {
+            let e = base + m.trailing_zeros() as usize;
+            if let (Some(&old), Buf::Planes { b: drv, .. }) = (self.codes.get(e), &self.driving) {
+                // The code the last one-element commit wrote, if it was this element.
+                let code = match self.last_commit {
+                    (le, c) if le as usize == e => c,
+                    _ => plane_code(drv, e),
+                };
+                return self.finish_code(e, code, old, now, cycle);
+            }
+        }
+        if !self.inactive {
+            let (n, t) = (self.ty.len as usize, stamp(now));
+            let st = self.stamps.as_mut_slice();
+            let mut v = m;
+            while v != 0 {
+                let s = v.trailing_zeros() as usize;
+                let run = (v >> s).trailing_ones() as usize;
+                let e = base + s;
+                st[n + e..n + e + run].fill(cycle);
+                st[3 * n + e..3 * n + e + run].fill(t);
+                v &= !(nmask(run) << s);
+            }
+        }
+        self.update_word(w, m, now, cycle)
     }
 
     /// Events for the elements of `r` an earlier force of this cycle changed, if the cycle's

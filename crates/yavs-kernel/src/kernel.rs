@@ -65,6 +65,9 @@ pub struct Config {
     pub max_deltas: u32,
     /// Time resolution limit; delays are truncated to it.
     pub resolution: Unit,
+    /// `Stats::events` counts every run of changed elements. Without it a changed word of a
+    /// signal counts as one: the work counters want the exact number, a plain run nothing.
+    pub count_events: bool,
     /// A report of this severity or higher ends the simulation.
     pub stop_severity: Severity,
     /// Leave a process with an edge trigger suspended on an event that does not make its
@@ -106,6 +109,7 @@ impl Default for Config {
             max_deltas: 10_000,
             resolution: Unit::Fs,
             stop_severity: Severity::Failure,
+            count_events: true,
             edge_triggers: true,
             skip_unchanged: false,
             idle_skip: true,
@@ -1319,6 +1323,7 @@ impl SimControl {
         }
         for s in &mut signals {
             s.set_static_plain();
+            s.count_runs = cfg.count_events;
         }
         let mut drivers = drivers;
         for d in &mut drivers {
@@ -2204,7 +2209,7 @@ impl SimControl {
         }
     }
 
-    #[inline(always)]
+    #[inline(never)]
     fn arm_readers_of(&mut self, s: u32) {
         let (a, b) = (
             self.readers_start[s as usize] as usize,
@@ -2316,6 +2321,136 @@ impl SimControl {
         }
     }
 
+    /// The error of a delta cycle over the limit: E3002 with the processes of the last batch and
+    /// what keeps them running.
+    #[cold]
+    #[inline(never)]
+    fn delta_limit(&mut self) -> SimError {
+        let mut ran = self.last_ran.clone();
+        ran.sort_unstable();
+        ran.dedup();
+        let processes = ran
+            .iter()
+            .map(|&p| self.names[p as usize].clone())
+            .collect();
+        let cause = self.loop_cause();
+        let changing = self.still_changing();
+        self.err(ErrorKind::DeltaLimit {
+            limit: self.cfg.max_deltas,
+            processes,
+            cause,
+            ran: ran.into_iter().map(ProcId).collect(),
+            changing,
+        })
+    }
+
+    /// The wake of the changed signal `s` whose waiters are all resident for the whole signal
+    /// (`Waiters::cache_tids`), from its kept list. Out of `cycle`: a clock's edge, not a
+    /// register's change.
+    #[inline(never)]
+    fn wake_cached(&mut self, s: u32, tids: SmallVec<[u32; 8]>) {
+        let signals = &self.signals;
+        let held: SmallVec<[(u32, bool); 8]> = tids
+            .iter()
+            .map(|&t| {
+                let h = t != 0
+                    && self.cfg.edge_triggers
+                    && !fires(signals, self.triggers[t as usize - 1], self.cycle);
+                (t, h)
+            })
+            .collect();
+        self.signals[s as usize].changed.clear();
+        // Falling edge of a clock: every waiter is held back, nothing to scan.
+        if held.iter().all(|&(t, h)| t != 0 && h) {
+            return;
+        }
+        let list = self.waiters[s as usize].take_cache();
+        let is_held = |t: u32| held.iter().any(|&(u, h)| u == t && h);
+        let batch = self.batch_of(s as usize, &list);
+        let waiters = std::mem::take(&mut self.waiters[s as usize]);
+        match waiters.cache_batch() {
+            // The clock's plain processes, all resident, run as one batch in list
+            // order, those of the triggers that hold: no wake per process (a resident
+            // waiter needs no new generation, and nothing else wakes a process in this
+            // cycle). The others wake as usual and run after them.
+            Some(Some(b))
+                if batch
+                    && self.changed_sigs.len() == 1
+                    && self.ready.is_empty()
+                    && self.ready_several.is_empty()
+                    && self.rng.is_none() =>
+            {
+                let mut pids = std::mem::take(&mut self.ready);
+                if b.by_tid.iter().all(|&(t, _)| !is_held(t)) {
+                    pids.extend_from_slice(&b.plain);
+                } else {
+                    let mut runs = 0;
+                    for (t, l) in &b.by_tid {
+                        if !is_held(*t) && !l.is_empty() {
+                            pids.extend_from_slice(l);
+                            runs += 1;
+                        }
+                    }
+                    if runs > 1 {
+                        pids.sort();
+                    }
+                }
+                for &(p, tid) in &b.others {
+                    if tid == 0 || !is_held(tid) {
+                        self.wake(p, false);
+                    }
+                }
+                for &p in &self.skip_wake[..self.skip_n] {
+                    // `pids` is in process order: find it, or fall back to a scan.
+                    match pids.binary_search(&p) {
+                        Ok(i) => _ = pids.remove(i),
+                        Err(_) => pids.retain(|&q| q != p),
+                    }
+                }
+                if !pids.is_empty() {
+                    self.clock_batch = Some(pids);
+                } else {
+                    self.ready = pids;
+                }
+            }
+            _ => {
+                for &(_, p, tid) in &list {
+                    if tid == 0 || !is_held(tid) {
+                        self.wake(p, false);
+                    }
+                }
+            }
+        }
+        self.waiters[s as usize] = waiters;
+        self.waiters[s as usize].restore_cache(list);
+    }
+
+    /// The wake of the changed signal `s` by a scan of its waiter lists, the path no short one
+    /// took. `uniform`: all waiters share an edge trigger that holds, so none is held back.
+    #[inline(never)]
+    fn wake_scan(&mut self, s: u32, uniform: bool, memo: &std::cell::Cell<(u32, bool)>) {
+        let mut woken = std::mem::take(&mut self.woken_buf);
+        self.stats.wake_scans += 1;
+        // A shuffled run takes the order the processes are woken in.
+        let ordered = self.rng.is_some();
+        let waiters = &mut self.waiters[s as usize];
+        let signals = &self.signals;
+        let runs = &signals[s as usize].changed;
+        let live = |w: &Waiter| alive(&self.procs, w);
+        if uniform {
+            waiters.take_woken(runs, live, |_| false, &mut woken, ordered);
+        } else {
+            let (edges, triggers, cycle) = (self.cfg.edge_triggers, &self.triggers, self.cycle);
+            let hold = |w: &Waiter| held_back(edges, triggers, signals, cycle, memo, w);
+            waiters.take_woken(runs, live, hold, &mut woken, ordered);
+        }
+        self.signals[s as usize].changed.clear();
+        for &(_, p) in &woken {
+            self.wake(p, false);
+        }
+        self.woken_buf = woken;
+    }
+
     /// One cycle at `next`, the time `next_time` just returned.
     fn cycle(&mut self, next: Time) -> Result<(), SimError> {
         if next > self.now {
@@ -2324,22 +2459,7 @@ impl SimControl {
             self.phase(Phase::NextTimeStep);
         } else {
             if self.delta >= self.cfg.max_deltas {
-                let mut ran = self.last_ran.clone();
-                ran.sort_unstable();
-                ran.dedup();
-                let processes = ran
-                    .iter()
-                    .map(|&p| self.names[p as usize].clone())
-                    .collect();
-                let cause = self.loop_cause();
-                let changing = self.still_changing();
-                return Err(self.err(ErrorKind::DeltaLimit {
-                    limit: self.cfg.max_deltas,
-                    processes,
-                    cause,
-                    ran: ran.into_iter().map(ProcId).collect(),
-                    changing,
-                }));
+                return Err(self.delta_limit());
             }
             self.delta += 1;
         }
@@ -2421,17 +2541,14 @@ impl SimControl {
             };
             // Otherwise the processes of one clock share a trigger: its answer is computed once.
             let hold = |w: &Waiter| {
-                self.cfg.edge_triggers
-                    && w.tid != 0
-                    && match memo.get() {
-                        (m, held) if m == w.tid => held,
-                        _ => {
-                            let t = self.triggers[w.tid as usize - 1];
-                            let held = !fires(signals, t, self.cycle);
-                            memo.set((w.tid, held));
-                            held
-                        }
-                    }
+                held_back(
+                    self.cfg.edge_triggers,
+                    &self.triggers,
+                    signals,
+                    self.cycle,
+                    &memo,
+                    w,
+                )
             };
             if uniform == Some(false) {
                 self.signals[s as usize].changed.clear();
@@ -2488,102 +2605,10 @@ impl SimControl {
             }
             // Every waiter resident for the whole signal: the wake list is known.
             if let Some(tids) = waiters.cache_tids() {
-                let held: smallvec::SmallVec<[(u32, bool); 8]> = tids
-                    .iter()
-                    .map(|&t| {
-                        let h = t != 0
-                            && self.cfg.edge_triggers
-                            && !fires(signals, self.triggers[t as usize - 1], self.cycle);
-                        (t, h)
-                    })
-                    .collect();
-                self.signals[s as usize].changed.clear();
-                // Falling edge of a clock: every waiter is held back, nothing to scan.
-                if held.iter().all(|&(t, h)| t != 0 && h) {
-                    continue;
-                }
-                let list = waiters.take_cache();
-                let is_held = |t: u32| held.iter().any(|&(u, h)| u == t && h);
-                let batch = self.batch_of(s as usize, &list);
-                let waiters = std::mem::take(&mut self.waiters[s as usize]);
-                match waiters.cache_batch() {
-                    // The clock's plain processes, all resident, run as one batch in list
-                    // order, those of the triggers that hold: no wake per process (a resident
-                    // waiter needs no new generation, and nothing else wakes a process in this
-                    // cycle). The others wake as usual and run after them.
-                    Some(Some(b))
-                        if batch
-                            && self.changed_sigs.len() == 1
-                            && self.ready.is_empty()
-                            && self.ready_several.is_empty()
-                            && self.rng.is_none() =>
-                    {
-                        let mut pids = std::mem::take(&mut self.ready);
-                        if b.by_tid.iter().all(|&(t, _)| !is_held(t)) {
-                            pids.extend_from_slice(&b.plain);
-                        } else {
-                            let mut runs = 0;
-                            for (t, l) in &b.by_tid {
-                                if !is_held(*t) && !l.is_empty() {
-                                    pids.extend_from_slice(l);
-                                    runs += 1;
-                                }
-                            }
-                            if runs > 1 {
-                                pids.sort();
-                            }
-                        }
-                        for &(p, tid) in &b.others {
-                            if tid == 0 || !is_held(tid) {
-                                self.wake(p, false);
-                            }
-                        }
-                        for &p in &self.skip_wake[..self.skip_n] {
-                            // `pids` is in process order: find it, or fall back to a scan.
-                            match pids.binary_search(&p) {
-                                Ok(i) => _ = pids.remove(i),
-                                Err(_) => pids.retain(|&q| q != p),
-                            }
-                        }
-                        if !pids.is_empty() {
-                            self.clock_batch = Some(pids);
-                        } else {
-                            self.ready = pids;
-                        }
-                    }
-                    _ => {
-                        for &(_, p, tid) in &list {
-                            if tid == 0 || !is_held(tid) {
-                                self.wake(p, false);
-                            }
-                        }
-                    }
-                }
-                self.waiters[s as usize] = waiters;
-                self.waiters[s as usize].restore_cache(list);
+                self.wake_cached(s, tids);
                 continue;
             }
-            let mut woken = std::mem::take(&mut self.woken_buf);
-            self.stats.wake_scans += 1;
-            // A shuffled run takes the order the processes are woken in.
-            let ordered = self.rng.is_some();
-            match uniform {
-                Some(_) => waiters.take_woken(
-                    runs,
-                    |w| alive(&self.procs, w),
-                    |_| false,
-                    &mut woken,
-                    ordered,
-                ),
-                None => {
-                    waiters.take_woken(runs, |w| alive(&self.procs, w), hold, &mut woken, ordered)
-                }
-            }
-            self.signals[s as usize].changed.clear();
-            for &(_, p) in &woken {
-                self.wake(p, false);
-            }
-            self.woken_buf = woken;
+            self.wake_scan(s, uniform.is_some(), &memo);
         }
 
         self.changed_sigs.clear();
@@ -3212,7 +3237,7 @@ impl SimControl {
     /// chain), as the reference simulator wakes the waiters of a value when it changes. False
     /// (nothing done) otherwise: `cycle` looks at the signal. Only with no observer of value
     /// changes, which must see the change before any process is resumed.
-    #[inline(always)]
+    #[inline(never)]
     fn wake_sole(&mut self, s: u32) -> bool {
         // A GUARD that other guards read stays in `changed_sigs` (`run_guards`).
         if !self.guard_readers.is_empty() && self.guard_readers.contains_key(&s) {
@@ -5087,6 +5112,29 @@ fn note_idle(
     meta.idle_state = 1 + u8::from(assigned);
     *armed = false;
     false
+}
+
+/// Whether the edge trigger of waiter `w` keeps it from waking in this cycle. The processes of
+/// one clock share a trigger: its answer is computed once (`memo`).
+#[inline(always)]
+fn held_back(
+    edge_triggers: bool,
+    triggers: &[crate::EdgeTrigger],
+    signals: &[Signal],
+    cycle: u64,
+    memo: &std::cell::Cell<(u32, bool)>,
+    w: &Waiter,
+) -> bool {
+    edge_triggers
+        && w.tid != 0
+        && match memo.get() {
+            (m, held) if m == w.tid => held,
+            _ => {
+                let held = !fires(signals, triggers[w.tid as usize - 1], cycle);
+                memo.set((w.tid, held));
+                held
+            }
+        }
 }
 
 /// `SimControl::wake` on the fields it touches, for a caller that holds borrows of others.

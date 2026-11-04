@@ -10804,3 +10804,7 @@ The optimiser reads an element of a logic row or slice, and copies a row or slic
 ## Drive compare in compiled code
 
 A zero-delay drive at a constant reference in a process copy compares with the signal's current value in Cranelift code and makes no call when equal (`YAVS_INLCMP=off` turns it off, `check` holds every skip against the kernel's full test, always in debug builds; `docs/decisions.md` "Drive compare in compiled code"). CI runs the corpus on process copies with skips checked (difftest candidate `yavs-clift-check`).
+
+## Runtime code per kernel cycle
+
+The rare paths of `cycle` and `finish_pend` are out of line (`docs/decisions.md` "Runtime code per kernel cycle"; the older tables above describe the inlined form). A profile-guided build takes far more of the bytes than this does; heap huge pages beyond the first step are undecided.

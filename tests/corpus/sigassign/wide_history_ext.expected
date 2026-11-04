@@ -1,0 +1,8 @@
+exit	0
+diag	note	0	0	:wide_history_ext:_p0	external event false last event 9223372036854775807 fs
+diag	note	0	0	:wide_history_ext:_p1	other '0'
+diag	note	5000000	1	:wide_history_ext:_p0	external event true last event 0 fs
+diag	note	5000000	1	:wide_history_ext:_p1	other '1'
+diag	note	15000000	1	:wide_history_ext:_p0	external event true last event 0 fs
+diag	note	15000000	1	:wide_history_ext:_p1	other '1'
+diag	note	25000000	0	:wide_history_ext:_p2	done

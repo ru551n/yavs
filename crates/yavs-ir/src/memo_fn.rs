@@ -159,6 +159,7 @@ fn inst_ok(prog: &Program, i: &Inst, calls: &mut Vec<FuncId>) -> bool {
         | Inst::BinRange { .. }
         | Inst::MakeDope { .. }
         | Inst::DopeLen { .. }
+        | Inst::BoundsLen { .. }
         | Inst::LayoutOf { .. }
         | Inst::SubtypeCheck { .. }
         | Inst::Br { .. }

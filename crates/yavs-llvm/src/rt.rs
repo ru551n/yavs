@@ -2932,6 +2932,12 @@ pub fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
             dst, base, layout, ..
         } => vec![dst, base, layout],
         Inst::DopeLen { dst, dope, .. } => vec![dst, dope],
+        Inst::BoundsLen {
+            dst,
+            left,
+            right,
+            dir,
+        } => vec![dst, left, right, dir],
         Inst::Deref { dst, handle, .. } => vec![dst, handle],
         Inst::MemEq { dst, a, b, n } => vec![dst, a, b, n],
         Inst::LGet { dst, base, idx } => vec![dst, base, idx],
@@ -3081,6 +3087,7 @@ pub fn keeps_objects(i: &Inst) -> bool {
             | Inst::BinRange { .. }
             | Inst::MakeDope { .. }
             | Inst::DopeLen { .. }
+            | Inst::BoundsLen { .. }
             | Inst::LayoutOf { .. }
             | Inst::SubtypeCheck { .. }
             | Inst::Deref { .. }
@@ -3660,6 +3667,7 @@ fn steady(i: &Inst) -> bool {
             | Inst::FCheck { .. }
             | Inst::BinRange { .. }
             | Inst::DopeLen { .. }
+            | Inst::BoundsLen { .. }
             | Inst::SubtypeCheck { .. }
             | Inst::Br { .. }
             | Inst::CondBr { .. }

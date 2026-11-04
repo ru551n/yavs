@@ -556,6 +556,13 @@ pub enum Inst {
         dope: Reg,
         dim: u8,
     },
+    /// The length of a range held in registers: `DopeLen` of a descriptor that holds them.
+    BoundsLen {
+        dst: Reg,
+        left: Reg,
+        right: Reg,
+        dir: Reg,
+    },
     /// Layout of `ty` constrained by the descriptor at `desc`, written to temporary memory as
     /// `[size, align, offsets...]` (records) or `[size, align, stride, count]` (arrays). With
     /// `cache`, a process's frame bytes at that offset keep the last layout of `ty` (the
@@ -1178,6 +1185,17 @@ impl Inst {
             Inst::DopeLen { dst, dope, .. } => {
                 d(dst, i);
                 f(dope, Use, p);
+            }
+            Inst::BoundsLen {
+                dst,
+                left,
+                right,
+                dir,
+            } => {
+                d(dst, i);
+                f(left, Use, i);
+                f(right, Use, i);
+                f(dir, Use, i);
             }
             Inst::LayoutOf { dst, desc, .. } => {
                 d(dst, p);

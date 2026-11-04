@@ -36,6 +36,7 @@
 
 mod cfg;
 mod decl;
+mod dopes;
 mod drives;
 mod inline;
 mod layout_cache;
@@ -221,13 +222,14 @@ pub fn fingerprint() -> String {
         slots_enabled(),
         frame_blocks_on(),
         proc_objects::enabled(),
+        dopes::enabled(),
     ])
 }
 
-fn fingerprint_of(f: [bool; 12]) -> String {
+fn fingerprint_of(f: [bool; 13]) -> String {
     let names = [
         "iropt", "memo", "cfg", "inline", "keep", "compiled", "external", "layouts", "drives",
-        "slots", "blocks", "objects",
+        "slots", "blocks", "objects", "dopes",
     ];
     let parts: Vec<String> = names
         .iter()
@@ -244,9 +246,9 @@ mod fingerprint_tests {
     /// Every switch is part of the fingerprint (#491).
     #[test]
     fn each_switch_changes_the_fingerprint() {
-        let base = fingerprint_of([false; 12]);
-        for i in 0..12 {
-            let mut f = [false; 12];
+        let base = fingerprint_of([false; 13]);
+        for i in 0..13 {
+            let mut f = [false; 13];
             f[i] = true;
             assert_ne!(fingerprint_of(f), base, "switch {i}");
         }
@@ -456,6 +458,9 @@ fn optimize_body_with(
     f.operands = o.operands;
     f.reg_ty.extend(o.new_regs);
     if split {
+        tidy(prog, &mut f, &mut layouts, inst);
+    }
+    if dopes::enabled() && dopes::run(prog, &mut f) {
         tidy(prog, &mut f, &mut layouts, inst);
     }
     if cfg_enabled()
@@ -842,6 +847,7 @@ fn for_defs_fast(i: &Inst, mut f: impl FnMut(Reg)) {
         | Inst::Pos { dst, .. }
         | Inst::SlicePos { dst, .. }
         | Inst::DopeLen { dst, .. }
+        | Inst::BoundsLen { dst, .. }
         | Inst::Field { dst, .. }
         | Inst::Un { dst, .. } => f(dst),
         Inst::Store { .. }
@@ -944,6 +950,8 @@ enum Key {
     Pos(Opn, u8, Opn),
     /// `SlicePos` of the bounds `left`, `right` and direction in a descriptor.
     Slice(Opn, [Opn; 3]),
+    /// `BoundsLen` of left, right and direction.
+    Bounds([Opn; 3]),
     Field(Opn, Opn, u32),
     /// The temporary layout of a type under a descriptor: gone at the next `Stmt`.
     Layout(TyId, Opn),
@@ -2207,6 +2215,7 @@ impl<'a> Opt<'a> {
                             | Inst::Pos { .. }
                             | Inst::SlicePos { .. }
                             | Inst::DopeLen { .. }
+                            | Inst::BoundsLen { .. }
                             | Inst::Deref { .. }
                             | Inst::Br { .. }
                             | Inst::CondBr { .. }
@@ -3556,6 +3565,7 @@ impl<'a> Opt<'a> {
                 | Inst::Zero { .. }
                 | Inst::MakeDope { .. }
                 | Inst::DopeLen { .. }
+                | Inst::BoundsLen { .. }
                 | Inst::SlicePos { .. }
                 | Inst::Pos { .. }
                 | Inst::SubtypeCheck { .. }
@@ -3729,6 +3739,7 @@ impl<'a> Opt<'a> {
             | Inst::Pos { .. }
             | Inst::SlicePos { .. }
             | Inst::DopeLen { .. }
+            | Inst::BoundsLen { .. }
             | Inst::SubtypeCheck { .. }
             | Inst::Br { .. }
             | Inst::CondBr { .. }
@@ -4743,6 +4754,24 @@ impl<'a> Opt<'a> {
                         Key::Dope(d, dim)
                     };
                     self.cse(pc, Some(dst), key);
+                }
+            }
+            Inst::BoundsLen {
+                dst,
+                left,
+                right,
+                dir,
+            } => {
+                if let (Opn::K(l), Opn::K(r), Opn::K(w)) =
+                    (self.opn(left), self.opn(right), self.opn(dir))
+                    && let Some(n) = dim_len(l, r, w == 1).filter(|&n| n <= i64::MAX as u64)
+                {
+                    return self.make_const(pc, dst, n as i64);
+                }
+                if let (Some(a), Some(b), Some(w)) =
+                    (self.kopn(left), self.kopn(right), self.kopn(dir))
+                {
+                    self.cse(pc, Some(dst), Key::Bounds([a, b, w]));
                 }
             }
             Inst::CallNative {
@@ -5982,6 +6011,7 @@ fn retargetable(i: &Inst) -> bool {
         | Inst::Pos { .. }
         | Inst::SlicePos { .. }
         | Inst::DopeLen { .. }
+        | Inst::BoundsLen { .. }
         | Inst::Field { .. }
         | Inst::FBin { .. }
         | Inst::FUn { .. }

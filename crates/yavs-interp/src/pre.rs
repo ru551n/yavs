@@ -944,6 +944,12 @@ pub(crate) enum Op {
         dope: u32,
         dim: u8,
     },
+    BoundsLen {
+        dst: u32,
+        left: u32,
+        right: u32,
+        dir: u32,
+    },
     Alloc {
         dst: u32,
         size: u32,
@@ -2828,6 +2834,7 @@ pub fn static_wait_edge(
                         | Inst::ConstF { .. }
                         | Inst::AddrOf { .. }
                         | Inst::DopeLen { .. }
+                        | Inst::BoundsLen { .. }
                         | Inst::Pos { .. }
                         | Inst::SlicePos { .. }
                         | Inst::Index { .. }
@@ -3369,6 +3376,7 @@ fn loop_body(body: &[Op], ind: u32, bound: u32, delta: Delta) -> Result<Vec<LSte
             | Op::Move { dst, .. }
             | Op::Const { dst, .. }
             | Op::DopeLen { dst, .. }
+            | Op::BoundsLen { dst, .. }
             | Op::Load { dst, .. }
             | Op::LoadOff { dst, .. }
             | Op::LoadSlot { dst, .. }
@@ -5371,6 +5379,17 @@ impl Code {
                     dst: dst.0,
                     dope: dope.0,
                     dim,
+                },
+                Inst::BoundsLen {
+                    dst,
+                    left,
+                    right,
+                    dir,
+                } => Op::BoundsLen {
+                    dst: dst.0,
+                    left: left.0,
+                    right: right.0,
+                    dir: dir.0,
                 },
                 Inst::Call { func, args, dst } => {
                     let (func, start, len, dst) =

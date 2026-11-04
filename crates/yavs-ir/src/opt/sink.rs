@@ -531,6 +531,7 @@ fn writes_nothing(i: &Inst) -> bool {
             | Inst::FCheck { .. }
             | Inst::BinRange { .. }
             | Inst::DopeLen { .. }
+            | Inst::BoundsLen { .. }
             | Inst::SubtypeCheck { .. }
             | Inst::Deref { .. }
             | Inst::SigVal { .. }

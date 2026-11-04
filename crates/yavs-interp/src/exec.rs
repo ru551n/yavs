@@ -4702,6 +4702,17 @@ impl Machine {
         }
     }
 
+    /// `Inst::BoundsLen`: `dope_len` of a descriptor that holds these bounds.
+    #[inline(always)]
+    fn bounds_len(&self, l: i64, rr: i64, dir: u64) -> R<u64> {
+        match dim_len63((l, rr, dir)) {
+            Some(n) if n <= i64::MAX as u64 => Ok(n),
+            _ => yavs_ir::dim_len(l, rr, dir == 1)
+                .filter(|&n| n <= i64::MAX as u64)
+                .ok_or_else(|| runtime_f!("range {l} .. {rr} too long")),
+        }
+    }
+
     /// `Inst::SigVal`: the two registers of a reference to elements `o .. o + l` of instance
     /// signal `sig`.
     #[inline(always)]
@@ -6880,6 +6891,20 @@ impl Machine {
                 }
                 Op::DopeLen { dst, dope, dim } => {
                     self.regs[dst as usize] = t!(self.dope_len(self.regs[dope as usize], dim));
+                    k += 1;
+                }
+                Op::BoundsLen {
+                    dst,
+                    left,
+                    right,
+                    dir,
+                } => {
+                    let (l, r, d) = (
+                        self.regs[left as usize] as i64,
+                        self.regs[right as usize] as i64,
+                        self.regs[dir as usize],
+                    );
+                    self.regs[dst as usize] = t!(self.bounds_len(l, r, d));
                     k += 1;
                 }
                 Op::Call {
@@ -10669,6 +10694,15 @@ impl Machine {
             }
             Inst::DopeLen { dst, dope, dim } => {
                 let n = self.dope_len(self.r(dope), dim)?;
+                self.set(dst, n);
+            }
+            Inst::BoundsLen {
+                dst,
+                left,
+                right,
+                dir,
+            } => {
+                let n = self.bounds_len(self.ri(left), self.ri(right), self.r(dir))?;
                 self.set(dst, n);
             }
             Inst::LayoutOf { dst, ty, desc, .. } => {

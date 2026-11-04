@@ -12,7 +12,7 @@
 use super::*;
 
 /// Counts of definitions and readers per register.
-fn counts(f: &crate::Func) -> (Vec<u8>, Vec<u32>) {
+pub(super) fn counts(f: &crate::Func) -> (Vec<u8>, Vec<u32>) {
     let n = f.reg_ty.len();
     let (mut defs, mut uses) = (vec![0u8; n], vec![0u32; n]);
     for i in &f.code {

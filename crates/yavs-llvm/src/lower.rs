@@ -4243,6 +4243,21 @@ impl Gen {
                         self.st(&c, dst, n);
                         self.join(&c, join);
                     }
+                    Inst::BoundsLen {
+                        dst,
+                        left,
+                        right,
+                        dir,
+                    } => {
+                        let (slow, join) = self.slow_path(&c, pc, &inst);
+                        let (l, r, d) = (self.ld(&c, left), self.ld(&c, right), self.ld(&c, dir));
+                        let (n, fits) = self.len_of(l, r, d);
+                        // A length over i64::MAX is the interpreter's error.
+                        let small = self.icmp(IP::LLVMIntSGE, n, self.c64(0));
+                        self.guard(&c, LLVMBuildAnd(self.b, fits, small, c"".as_ptr()), slow);
+                        self.st(&c, dst, n);
+                        self.join(&c, join);
+                    }
                     Inst::SubtypeCheck {
                         dope, want, dims, ..
                     } => {

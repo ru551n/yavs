@@ -1796,6 +1796,7 @@ fn quiet(i: &Inst) -> bool {
                 | Inst::Copy { .. }
                 | Inst::Zero { .. }
                 | Inst::DopeLen { .. }
+                | Inst::BoundsLen { .. }
                 | Inst::SubtypeCheck { .. }
                 | Inst::SigVal { .. }
                 | Inst::MakeDope { .. }
@@ -3173,6 +3174,22 @@ fn gen_func(
                 let (slow, join) = g.slow_path(pc, &inst);
                 let d = g.ld(dope);
                 let (n, fits) = g.dim_len(d, dope, u64::from(dim) * 24, slow);
+                // Lengths above i64::MAX are the interpreter's error.
+                let nn = g.b.ins().icmp_imm_s(IntCC::SignedGreaterThanOrEqual, n, 0);
+                let okv = g.b.ins().band(fits, nn);
+                g.guard(okv, slow);
+                g.st(dst, n);
+                g.join(join);
+            }
+            Inst::BoundsLen {
+                dst,
+                left,
+                right,
+                dir,
+            } => {
+                let (slow, join) = g.slow_path(pc, &inst);
+                let (l, r, d) = (g.ld(left), g.ld(right), g.ld(dir));
+                let (n, fits) = g.len_of(l, r, d);
                 // Lengths above i64::MAX are the interpreter's error.
                 let nn = g.b.ins().icmp_imm_s(IntCC::SignedGreaterThanOrEqual, n, 0);
                 let okv = g.b.ins().band(fits, nn);

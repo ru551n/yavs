@@ -540,6 +540,15 @@ impl<'a> Machine<'a> {
                     |k: usize| i64::from_le_bytes(d[k * 8..k * 8 + 8].try_into().unwrap_or([0; 8]));
                 self.set(dst, crate::dim_len(w(0), w(1), w(2) == 1)?)?;
             }
+            Inst::BoundsLen {
+                dst,
+                left,
+                right,
+                dir,
+            } => {
+                let (l, r, d) = (self.r(left)?, self.r(right)?, self.r(dir)?);
+                self.set(dst, crate::dim_len(l as i64, r as i64, d == 1)?)?;
+            }
             Inst::Cmp { op, dst, a, b } => {
                 let o = (self.r(a)? as i64).cmp(&(self.r(b)? as i64));
                 let v = match op {

@@ -3445,15 +3445,16 @@ fn gen_func(
                 g.brif_split(is_up, upb, other);
                 for (bb, lo, hi) in [(upb, l, r), (dnb, r, l)] {
                     g.b.switch_to_block(bb);
-                    let nonempty = g.b.ins().icmp(IntCC::SignedLessThanOrEqual, lo, hi);
-                    let (rel, span) = if bb == upb {
-                        (g.b.ins().isub(i, l), g.b.ins().isub(r, l))
-                    } else {
-                        (g.b.ins().isub(l, i), g.b.ins().isub(l, r))
-                    };
-                    let inside = g.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, rel, span);
-                    let okv = g.b.ins().band(nonempty, inside);
+                    // As the interpreter: `lo <= i <= hi` leaves out an empty range too.
+                    let above = g.b.ins().icmp(IntCC::SignedGreaterThanOrEqual, i, lo);
+                    let below = g.b.ins().icmp(IntCC::SignedLessThanOrEqual, i, hi);
+                    let okv = g.b.ins().band(above, below);
                     g.guard(okv, slow);
+                    let rel = if bb == upb {
+                        g.b.ins().isub(i, l)
+                    } else {
+                        g.b.ins().isub(l, i)
+                    };
                     g.b.ins().jump(cont, &[BlockArg::Value(rel)]);
                     if bb == upb {
                         g.b.switch_to_block(other);

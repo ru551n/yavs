@@ -4642,6 +4642,17 @@ impl Gen<'_> {
             .icmp_imm_s(IntCC::Equal, hi, i64::from(space::TEMP) << 29);
         self.brif_split(is_t, if stable { call } else { none }, nb);
         self.b.switch_to_block(nb);
+        // Instance data (for reading) is the view's.
+        let inst_view = (!h.write).then(|| {
+            let (view, tab) = (self.b.create_block(), self.b.create_block());
+            let is_i = self
+                .b
+                .ins()
+                .icmp_imm_s(IntCC::Equal, hi, i64::from(space::INST) << 29);
+            self.brif_split(is_i, view, tab);
+            self.b.switch_to_block(tab);
+            view
+        });
         let flag = self.b.ins().ushr_imm_s(a, 32 + i64::from(KEY_SHIFT_ADDR));
         let flag = self.b.ins().band_imm_s(flag, KEY_FLAG as i64);
         let key = self.b.ins().bxor(hi, flag);
@@ -4666,6 +4677,11 @@ impl Gen<'_> {
         self.b.switch_to_block(obj);
         let (ptr, len) = self.ent_obj(ent);
         self.hold_store(h, ptr, len, done);
+        if let Some(view) = inst_view {
+            self.b.switch_to_block(view);
+            let (ptr, len) = (self.mem_ld(MEM_INST), self.mem_ld(MEM_INST_LEN));
+            self.hold_store(h, ptr, len, done);
+        }
         self.b.switch_to_block(call);
         self.hold_call(h, depth);
         self.b.ins().jump(done, &[]);
@@ -5266,6 +5282,18 @@ impl Gen<'_> {
 
     /// Update `iv` for what `i` proves and defines.
     fn iv_track(&mut self, f: &Func, i: &Inst) {
+        // As the optimiser's analysis: an interval says nothing beyond a suspension.
+        let suspends = match *i {
+            Inst::Suspend { .. } => true,
+            Inst::Call { func, .. } | Inst::CallProt { func, .. } => self
+                .prog
+                .func(func)
+                .is_none_or(|g| g.flags.contains(yavs_ir::FuncFlags::MAY_SUSPEND)),
+            _ => false,
+        };
+        if suspends {
+            self.iv.fill(None);
+        }
         let out = yavs_ir::opt::iv_after(i, |r| self.iv_of(r));
         for d in yavs_interp::inst_regs(f, i).1 {
             if let Some(x) = self.iv.get_mut(d.0 as usize) {

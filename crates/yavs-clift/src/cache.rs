@@ -110,9 +110,12 @@ impl CacheKvStore for Kv {
 const PRE: &str = "clifpre";
 
 /// The switches whose value changes the code the lowering or Cranelift makes: in every pre-key.
-pub(crate) const KEYED: [&str; 13] = [
+pub(crate) const KEYED: [&str; 16] = [
     // (Read through `yavs_llvm::count_rule_on`: `**` and a layout on a native frame, or a refusal.)
     "YAVS_AUTO_POLICY",
+    "YAVS_CLIFT_EXITS",
+    "YAVS_CLIFT_PASS",
+    "YAVS_CLIFT_WIDE",
     "YAVS_CLIFT_OPT",
     "YAVS_CLIFT_VERIFY",
     "YAVS_CLIFT_RA",
@@ -129,7 +132,9 @@ pub(crate) const KEYED: [&str; 13] = [
 
 /// With one of these set a run has no pre-keys: they want the code made (dumps, source locations)
 /// or make it depend on what was compiled before (`YAVS_CLIFT_NATIVE_MAX`).
-pub(crate) const NO_PRE: [&str; 5] = [
+pub(crate) const NO_PRE: [&str; 7] = [
+    "YAVS_CLIFT_ENTRIES",
+    "YAVS_CLIFT_EXITMAP",
     "YAVS_CLIFT_DUMP",
     "YAVS_CLIFT_CLIF",
     "YAVS_CLIFT_ASM",
@@ -254,7 +259,11 @@ pub(crate) fn pre_target(isa: &dyn TargetIsa, inlcmp: &str) -> Option<(String, S
         cranelift_codegen::VERSION,
         compute_cache_key(isa, &Function::new())
     );
-    let mut switches = format!("debug={} inlcmp={inlcmp}", cfg!(debug_assertions));
+    let mut switches = format!(
+        "debug={} inlcmp={inlcmp} noexit={}",
+        cfg!(debug_assertions),
+        crate::lower::no_exits()
+    );
     for v in KEYED {
         switches += &format!(" {v}={:?}", std::env::var_os(v));
     }

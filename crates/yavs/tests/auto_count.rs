@@ -377,19 +377,30 @@ begin
 end;
 ";
 
-/// A native frame that leaves at every call: the frames are counted, and whether the guard takes it
-/// back at any moment (a share that any frame reaches; when depends on the looks) the output stays.
+/// A native frame that leaves at every call (the old exits; the new ones come back from the helper
+/// and leave no frame): the frames are counted, and whether the guard takes it back at any moment
+/// (a share that any frame reaches; when depends on the looks) the output stays.
 #[test]
 fn native_code_that_leaves_every_time_is_counted() {
     let dir = setup("auto_count_leaves", LEAVES);
-    let o = counted(&dir, "leaves", "20", &[("YAVS_AUTO_GUARD_SHARE", "0")]);
+    let o = counted(
+        &dir,
+        "leaves",
+        "20",
+        &[("YAVS_AUTO_GUARD_SHARE", "0"), ("YAVS_CLIFT_EXITS", "old")],
+    );
     assert!(counter(&o, "materialised") >= 200, "{}", err(&o));
     counted(
         &dir,
         "leaves",
         "20",
-        &[("YAVS_AUTO_GUARD_SHARE", "1000000000")],
+        &[
+            ("YAVS_AUTO_GUARD_SHARE", "1000000000"),
+            ("YAVS_CLIFT_EXITS", "old"),
+        ],
     );
+    let o = counted(&dir, "leaves", "20", &[("YAVS_AUTO_GUARD_SHARE", "0")]);
+    assert_eq!(counter(&o, "materialised"), 0, "{}", err(&o));
 }
 
 /// A gate no test reaches keeps the copies back too, up to the activation they would come at without
@@ -445,7 +456,7 @@ end;
 ";
 
 /// `**` and a layout from a run-time descriptor have native-frame code under the rule (nothing to
-/// leave for at every call), and the old policy keeps the old refusal.
+/// leave for at every call), and the old policy with the old exits keeps the old refusal.
 #[test]
 fn the_two_instructions_run_on_native_frames() {
     let dir = setup("auto_count_arms", POW);
@@ -465,7 +476,11 @@ fn the_two_instructions_run_on_native_frames() {
     );
     let eager = yavs(
         &dir,
-        &[("YAVS_CLIFT_DUMP", "1"), ("YAVS_AUTO_POLICY", "sampled")],
+        &[
+            ("YAVS_CLIFT_DUMP", "1"),
+            ("YAVS_AUTO_POLICY", "sampled"),
+            ("YAVS_CLIFT_EXITS", "old"),
+        ],
         &[
             "run",
             "--std=2008",

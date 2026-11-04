@@ -10846,6 +10846,9 @@ A whole zero-delay assignment of a record signal compares the value with the rec
 ## Record images in compiled code
 
 On perf/try-recinline: Cranelift frame-mode code compares a whole zero-delay record scatter with the record image, and copies a whole record gather from it, with no call when it can (`YAVS_IMAGE_INLINE` turns either off, `YAVS_IMAGE_CHECK` holds every use against the full test, always in debug builds; `docs/decisions.md` "Record images in compiled code"). No cycle measurement on a quiet host yet.
+## clift: no resume anywhere (branch `perf/land-noexit`, 2026-11-03)
+
+Cranelift code hands no running function to the interpreter (user, 2026-11-03; `docs/decisions.md` "No resume anywhere in Cranelift code"). `YAVS_CLIFT_EXITS=old` keeps the old form while this is on its branch; the LLVM tier keeps its exits, and `--tier=auto3` uses the old form in both generators. Instructions, code bytes and what could be deleted are in the hand-back of the branch, not here: the branch is not merged. Tests: `crates/yavs/tests/noexit.rs` (every way an instruction can fail against the interpreter, in a process body and in a chain of native frames, recursion past the native stack and the depth limit, the census of what leaves running code). Tools: `YAVS_CLIFT_EXITMAP`, `tools/exitmap.py`, `YAVS_COUNTERS=exits`.
 
 ## Whole-record reads and drives in Cranelift frame-mode code
 

@@ -748,6 +748,8 @@ return or (every 256) jumps rather than only at entries and resumptions (safe be
 share the frame and compiled code enters at any pc). Registers a frame starts with: the preloaded `Const`/`ConstF`/`AddrOf` values, zero elsewhere, except that the registers holding the address of a lean function's parameter slot are zero too (`Pre::next` skips their `AddrOf`): compiled code entering at any pc must not read them (#566). The size cap is 50k yavs IR instructions by default, `--tier-max-size=N`
 (user, 2026-10-19, #126).
 
+*Update 2026-11-03 (on branch `perf/land-noexit`):* Cranelift code no longer leaves a running function to the interpreter (`docs/decisions.md` "No resume anywhere in Cranelift code"). A failing instruction stores what it reads and the interpreter's step of it words the error; nothing goes on. Instructions without inline code run through helpers and code goes on. The LLVM tier keeps the exits described above.
+
 *Update 2026-10-28:* a second generator, Cranelift (`yavs-clift`, feature `clift`), implements the same
 compiled-code contract and the same `--tier=auto` policy (`yavs-llvm` `AutoTier` with a different
 `Generator`); the release archives use it. The hot-function size cap and the `--tier-max-size`

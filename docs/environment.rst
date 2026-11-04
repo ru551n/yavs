@@ -450,6 +450,26 @@ Compiled tiers: Cranelift
      - a directory
      - unset
      - ``run``
+   * - ``YAVS_CLIFT_PASS``
+     - ``0``: deferred register stores of Cranelift code stop at more instructions. A measurement.
+     - ``0``
+     - unset
+     - ``run``
+   * - ``YAVS_CLIFT_WIDE``
+     - ``0``: a function with an instruction Cranelift's native frames do not lower gets no native variant. A measurement.
+     - ``0``
+     - unset
+     - ``run``
+   * - ``YAVS_CLIFT_EXITS``
+     - ``old`` keeps the exits of Cranelift code: an instruction it cannot finish leaves the running function to the interpreter. Otherwise it never does. For comparing the two while the new code is on its branch.
+     - ``old``
+     - unset
+     - ``run``
+   * - ``YAVS_CLIFT_ENTRIES``
+     - ``few`` leaves out the entries of Cranelift code at block starts that are no loop head and no place a frame waits. A measurement.
+     - ``few``
+     - unset
+     - ``run``
    * - ``YAVS_CLIFT_EXITMAP``
      - Appends the bytes of machine code of each function to that file, by what they are (body, exit stores, slow paths, entries) and IR kind. Needs ``--no-cache``. ``tools/exitmap.py`` sums them.
      - a file

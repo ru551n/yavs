@@ -27,6 +27,12 @@ pub const REGION: &str = "yavs_rt_region";
 pub const HOLD_CHECK: &str = "yavs_rt_hold_check";
 
 pub const SIGNAL: &str = "yavs_rt_signal";
+pub const SPIN: &str = "yavs_rt_spin";
+pub const RECORD: &str = "yavs_rt_record";
+pub const STEPS: &str = "yavs_rt_steps";
+pub const XSTAY: &str = "yavs_rt_xstay";
+pub const XSTAY_AT: &str = "yavs_rt_xstay_at";
+pub const XSTAY_UP: &str = "yavs_rt_xstay_up";
 pub const DRIVE: &str = "yavs_rt_drive";
 
 pub const DRIVE_NAT: &str = "yavs_rt_drive_nat";
@@ -814,6 +820,43 @@ pub unsafe extern "C" fn yavs_rt_signal(
     unsafe { stepped(envp, mem, pc, r) }
 }
 
+/// `yavs_rt_step` of the instructions from `pc` to `last`, which go on one after the other.
+pub unsafe extern "C" fn yavs_rt_steps(
+    env: *mut c_void,
+    regs: *mut u64,
+    mem: *mut Mem,
+    pc: u32,
+    last: u32,
+) -> u32 {
+    for at in pc..=last {
+        // SAFETY: as in `yavs_rt_step`.
+        let r = unsafe { yavs_rt_step(env, regs, mem, at) };
+        if r != GO {
+            return r;
+        }
+    }
+    GO
+}
+
+/// The stop request and the count of a jump back of a process that never suspends
+/// (`TierHost::spin`): `GO`, or `TIER_SUSPEND`, or the pc after a fault.
+pub unsafe extern "C" fn yavs_rt_spin(
+    env: *mut c_void,
+    _regs: *mut u64,
+    mem: *mut Mem,
+    pc: u32,
+) -> u32 {
+    // SAFETY: as in `yavs_rt_signal`.
+    let env = unsafe { env_or(env, mem) };
+    let envp = env as *mut Env<'_>;
+    unsafe { (*mem).sync(&mut *(*envp).host) };
+    let r = catch_unwind(AssertUnwindSafe(|| unsafe {
+        (*envp).host.spin(&mut (*mem).fr, pc)
+    }));
+    // SAFETY: as in `yavs_rt_signal`.
+    unsafe { stepped(envp, mem, pc, r) }
+}
+
 /// What a `TierHost::signal`-like call returns to compiled code: `GO`, or the pc after a
 /// fault, `TIER_SUSPEND`, `TIER_UNWIND`.
 pub unsafe fn stepped(
@@ -863,6 +906,43 @@ pub unsafe extern "C" fn yavs_rt_deopt(
         func: FuncId(func),
         pc,
         regs: unsafe { std::slice::from_raw_parts(regs, nregs as usize) }.to_vec(),
+        slots: vec![0; slen as usize],
+        temp_base,
+        link,
+    });
+    let last = env.pending.len() - 1;
+    env.pending[last].regs.as_mut_ptr()
+}
+
+/// `yavs_rt_deopt` for code that never leaves a running function: only a failing frame
+/// (`TIER_FAIL`) has registers, and those it stored are what the failing instruction reads. The
+/// frames below it, and a process that ended, keep none.
+pub unsafe extern "C" fn yavs_rt_record(
+    env: *mut c_void,
+    mem: *mut Mem,
+    func: u32,
+    pc: u32,
+    temp_base: u64,
+    nregs: u64,
+    slen: u64,
+    link: u64,
+    regs: *const u64,
+) -> *mut u64 {
+    cb(Cb::Deopt);
+    // SAFETY: as in `yavs_rt_deopt`.
+    let (env, mem) = unsafe { (&mut *(env as *mut Env<'_>), &mut *mem) };
+    mem.ndeopt = 1;
+    let regs = if pc & yavs_interp::TIER_FAIL != 0 {
+        // SAFETY: `regs` holds `nregs` words; those not stored are never read by the step, whose
+        // operands were.
+        unsafe { std::slice::from_raw_parts(regs, nregs as usize) }.to_vec()
+    } else {
+        vec![0; nregs as usize]
+    };
+    env.pending.push(NativeFrame {
+        func: FuncId(func),
+        pc,
+        regs,
         slots: vec![0; slen as usize],
         temp_base,
         link,
@@ -1697,6 +1777,140 @@ pub extern "C" fn yavs_rt_xstep(
     }
 }
 
+/// `yavs_rt_xstep` for code that stays compiled (`TierHost::native_stay`): 1 done, 2 the process
+/// ended, 0 a fault, kept for the materialisation.
+pub extern "C" fn yavs_rt_xstay(
+    env: *mut c_void,
+    mem: *mut Mem,
+    func: u32,
+    pc: u32,
+    depth: u64,
+    use_idx: *const u32,
+    ins: *const u64,
+    nin: u32,
+    def_idx: *const u32,
+    outs: *mut u64,
+    nout: u32,
+    temp_base: u64,
+    up0: u64,
+    up1: u64,
+) -> u32 {
+    cb(Cb::Xstep);
+    // SAFETY: as in `yavs_rt_xstep`.
+    let envp = env as *mut Env<'_>;
+    unsafe { (*mem).sync(&mut *(*envp).host) };
+    let r = catch_unwind(AssertUnwindSafe(|| unsafe {
+        let ins = std::slice::from_raw_parts(ins, nin as usize);
+        let outs = std::slice::from_raw_parts_mut(outs, nout as usize);
+        let uses = std::slice::from_raw_parts(use_idx, nin as usize);
+        let defs = std::slice::from_raw_parts(def_idx, nout as usize);
+        let env = &mut *envp;
+        env.windows
+            .get_or_insert_with(|| Box::new(TabSlots((*mem).nslots)));
+        env.host.native_stay(
+            &mut (*mem).fr,
+            func,
+            pc,
+            depth,
+            (uses, defs),
+            ins,
+            outs,
+            &mut env.windows,
+            temp_base,
+            [up0, up1],
+        )
+    }));
+    // SAFETY: as above.
+    unsafe { xstay_done(envp, mem, r) }
+}
+
+/// Where `yavs_rt_xstay_at` finds, in the pc, how many more instructions after it to run.
+pub const XSTAY_RUN: u32 = 28;
+
+/// `yavs_rt_xstay` of any instructions, one after the other (`at`: function id in the high half,
+/// pc in the low, `XSTAY_RUN`): the registers they read and write in `regs`, the register array of
+/// the calling frame.
+pub extern "C" fn yavs_rt_xstay_at(
+    env: *mut c_void,
+    mem: *mut Mem,
+    at: u64,
+    depth: u64,
+    regs: *mut u64,
+    temp_base: u64,
+) -> u32 {
+    yavs_rt_xstay_up(env, mem, at, depth, regs, temp_base, u64::MAX, u64::MAX)
+}
+
+/// `yavs_rt_xstay_at` of a nested function, with the two static links it has.
+pub extern "C" fn yavs_rt_xstay_up(
+    env: *mut c_void,
+    mem: *mut Mem,
+    at: u64,
+    depth: u64,
+    regs: *mut u64,
+    temp_base: u64,
+    up0: u64,
+    up1: u64,
+) -> u32 {
+    cb(Cb::Xstep);
+    let (func, pc, n) = (
+        (at >> 32) as u32,
+        at as u32 & !(0xf << XSTAY_RUN),
+        at as u32 >> XSTAY_RUN & 0xf,
+    );
+    // SAFETY: as in `yavs_rt_xstep`; `regs` is the frame's array, one word per register of `func`.
+    let envp = env as *mut Env<'_>;
+    unsafe { (*mem).sync(&mut *(*envp).host) };
+    let r = catch_unwind(AssertUnwindSafe(|| unsafe {
+        let env = &mut *envp;
+        let nregs = env.host.nregs_of(func);
+        let regs = std::slice::from_raw_parts_mut(regs, nregs);
+        env.windows
+            .get_or_insert_with(|| Box::new(TabSlots((*mem).nslots)));
+        let mut r = NativeCall::Done(None);
+        for k in pc..=pc + n {
+            r = env.host.native_stay_at(
+                &mut (*mem).fr,
+                func,
+                k,
+                depth,
+                regs,
+                &mut env.windows,
+                temp_base,
+                [up0, up1],
+            );
+            if !matches!(r, NativeCall::Done(_)) {
+                break;
+            }
+        }
+        r
+    }));
+    // SAFETY: as above.
+    unsafe { xstay_done(envp, mem, r) }
+}
+
+/// What `yavs_rt_xstay` returns.
+unsafe fn xstay_done(
+    envp: *mut Env<'_>,
+    mem: *mut Mem,
+    r: Result<NativeCall, Box<dyn Any + Send>>,
+) -> u32 {
+    // SAFETY: the pointers are the ones compiled code was given.
+    let m = unsafe { &mut *mem };
+    m.temp_seen = m.fr.temp_len;
+    m.forget();
+    match r {
+        Ok(NativeCall::Done(_)) => 1,
+        Ok(NativeCall::Stop(_)) => 2,
+        Ok(NativeCall::Slow) => 0,
+        Err(p) => {
+            // SAFETY: as above.
+            unsafe { (*envp).panic = Some(p) };
+            0
+        }
+    }
+}
+
 /// `Inst::LCopy` on the `ns` source and `nd` destination plane blocks compiled code found
 /// (`Gen::host`): `yavs_interp::copy_bits`, the interpreter's own copy, on stack copies of both
 /// (they may be one vector).
@@ -1949,6 +2163,12 @@ pub unsafe fn step_in(env: *mut Env<'_>, mem: *mut Mem, pc: u32) -> u32 {
         (*mem).sync(&mut *(*env).host);
         if (*env).panic.is_some() || next == TIER_UNWIND || next == TIER_SUSPEND {
             return next;
+        }
+        if next & yavs_interp::TIER_FAIL != 0 {
+            (*env)
+                .host
+                .fail(&mut (*mem).fr, next & !yavs_interp::TIER_FAIL);
+            return pc;
         }
         let ok = (*env).host.ret(&mut (*mem).fr, next);
         (*mem).temp_seen = (*mem).fr.temp_len;

@@ -22,7 +22,7 @@ mod lower;
 pub use cache::{cache_stats, set_cache};
 
 #[cfg(feature = "clift")]
-pub use lower::{BREAK, Error, Jit, compile};
+pub use lower::{BREAK, Error, Jit, compile, keep_exits};
 
 #[cfg(feature = "clift")]
 use std::sync::Mutex;

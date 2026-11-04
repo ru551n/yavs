@@ -501,6 +501,11 @@ impl Default for TierState {
 /// on with the top frame.
 pub const TIER_UNWIND: u32 = u32::MAX - 1;
 
+/// With a pc from [`Tier::run`] (not one of the constants above and below): an instruction failed
+/// there. Only the registers it reads are in the frame; nothing goes on after it. The caller has
+/// the interpreter execute it to word the error (`Machine::fail_step`).
+pub const TIER_FAIL: u32 = 1 << 31;
+
 /// The most scalar drives compiled code keeps before it hands them to [`TierHost::drive_bits`].
 pub const DRIVE_BATCH: usize = 32;
 
@@ -625,6 +630,14 @@ pub trait TierHost {
     /// gather at `pc` was copied from its image by it (`YAVS_IMAGE_CHECK`, debug builds): what the
     /// kernel's full test or the leaves say. `true`: a scatter.
     fn image_check(&mut self, pc: u32) -> Result<bool, String>;
+
+    /// An instruction of the top frame failed in compiled code at `pc` ([`TIER_FAIL`]): the fault
+    /// the interpreter's step of it makes is recorded. It runs nothing else.
+    fn fail(&mut self, fr: &mut TierFrame, pc: u32);
+
+    /// The stop request and the count of a jump back of a process that never suspends, at the
+    /// `Br` at `pc` (`Machine::step_out`): [`Stepped::Next`] goes on with the jump.
+    fn spin(&mut self, fr: &mut TierFrame, pc: u32) -> Stepped;
 
     /// Turn native frames of compiled code into interpreter frames (`docs/decisions.md`
     /// "Compiled frames"): the top frame waits at its call at `pc`, and `frames` (outermost
@@ -845,6 +858,43 @@ pub trait TierHost {
         outs: &mut [u64],
         slots: &mut Option<Box<dyn NativeSlots>>,
         temp_base: u64,
+    ) -> NativeCall;
+
+    /// [`TierHost::native_step`] for code that stays compiled: nothing is left to a materialised
+    /// frame. A collection due waits for the native frames to end; a call runs to its end here, in
+    /// the interpreter, on frames above `depth`. [`NativeCall::Slow`] is a fault, kept for
+    /// [`TierHost::materialise`], which raises it on the frames it pushes.
+    #[allow(clippy::too_many_arguments)]
+    fn native_stay(
+        &mut self,
+        fr: &mut TierFrame,
+        func: u32,
+        pc: u32,
+        depth: u64,
+        regs: (&[u32], &[u32]),
+        ins: &[u64],
+        outs: &mut [u64],
+        slots: &mut Option<Box<dyn NativeSlots>>,
+        temp_base: u64,
+        up: [u64; 2],
+    ) -> NativeCall;
+
+    /// The registers of function `func`.
+    fn nregs_of(&self, func: u32) -> usize;
+
+    /// [`TierHost::native_stay`] of any instruction, the registers it reads and writes in `regs`,
+    /// the register array of the calling frame.
+    #[allow(clippy::too_many_arguments)]
+    fn native_stay_at(
+        &mut self,
+        fr: &mut TierFrame,
+        func: u32,
+        pc: u32,
+        depth: u64,
+        regs: &mut [u64],
+        slots: &mut Option<Box<dyn NativeSlots>>,
+        temp_base: u64,
+        up: [u64; 2],
     ) -> NativeCall;
 
     /// Word `k` of the layout of type `ty` constrained by the descriptor bytes `desc`, from the

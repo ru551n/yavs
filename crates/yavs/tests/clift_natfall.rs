@@ -55,6 +55,8 @@ fn command(dir: &Path, args: &[&str]) -> std::process::Command {
     c.args(args).env("YAVS_AUTO_TRACE", "1").current_dir(dir);
     // (The count rule has native-frame code of `**`, and no such wait: `auto_count.rs`.)
     c.env("YAVS_AUTO_POLICY", "sampled");
+    // (New code has a variant for every function: this is the rule for what the old has not.)
+    c.env("YAVS_CLIFT_EXITS", "old");
     c
 }
 

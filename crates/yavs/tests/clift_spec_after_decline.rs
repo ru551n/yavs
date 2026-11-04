@@ -72,6 +72,8 @@ fn yavs(dir: &Path, args: &[&str]) -> Output {
     let o = std::process::Command::new(env!("CARGO_BIN_EXE_yavs"))
         .args(args)
         .env("YAVS_AUTO_TRACE", "1")
+        // (New code has a variant for every function: this is the rule for what the old has not.)
+        .env("YAVS_CLIFT_EXITS", "old")
         .env("YAVS_AUTO_FORCE", "step,_p0")
         .env("YAVS_COUNTERS", "1")
         .env("YAVS_SPEC_AFTER", "2")
@@ -214,7 +216,11 @@ fn copies_are_not_lost_at_scale() {
     let interp = run(&[], &["--tier=interp"]);
     for threads in ["--threads=1", "--threads=4"] {
         let tier = ["--tier=clift-auto", "--tier-heat=0,0,0", threads];
-        let o = run(&[("YAVS_AUTO_TRACE", "1")], &tier);
+        // (New code has a variant for every function: the old has none of `step`.)
+        let o = run(
+            &[("YAVS_AUTO_TRACE", "1"), ("YAVS_CLIFT_EXITS", "old")],
+            &tier,
+        );
         let err = String::from_utf8_lossy(&o.stderr);
         assert_eq!(o.stdout, interp.stdout, "{threads}");
         assert!(

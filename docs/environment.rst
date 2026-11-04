@@ -429,6 +429,21 @@ Compiled tiers: Cranelift
      - a number
      - no limit
      - ``run``
+   * - ``YAVS_CLIFT_HOLD_CHECK``
+     - Every access through a held parameter region is checked against the lookup, a stale one aborts. Always on in debug builds.
+     - any value
+     - unset
+     - ``run``
+   * - ``YAVS_CLIFT_HOLD_DROP``
+     - Debug builds: held regions are not asked again after a call. For the mutation test.
+     - any value
+     - unset
+     - ``run``
+   * - ``YAVS_CLIFT_NO_PROOFS``
+     - Arithmetic keeps its overflow tests where intervals prove them away.
+     - any value
+     - unset
+     - ``run``
    * - ``YAVS_CLIFT_NO_SCAN``
      - Search loops run without the scan helper.
      - any value

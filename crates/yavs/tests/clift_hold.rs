@@ -295,7 +295,8 @@ fn accesses_through_held_regions_are_checked_in_debug_builds() {
 /// stale pointer, and the check says so.
 #[test]
 fn a_hold_not_asked_again_is_caught() {
-    if !cfg!(debug_assertions) {
+    // (Under `gc-stress` the frame materialises at the free: no hold to catch.)
+    if !cfg!(debug_assertions) || cfg!(feature = "gc-stress") {
         return;
     }
     let dir = analyzed("clift_hold_mutant");

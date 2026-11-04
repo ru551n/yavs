@@ -37,6 +37,7 @@
 mod cfg;
 mod decl;
 mod dopes;
+pub use dopes::scans as dopes_scans;
 mod drives;
 mod inline;
 mod layout_cache;

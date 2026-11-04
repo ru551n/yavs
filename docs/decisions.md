@@ -13832,6 +13832,7 @@ A result of such a type with scalar elements and no `ieee` native (`Func::ret_fl
 
 Reads the same IR in every tier: interpreter first, and the failures are the interpreter's by construction (`Bounds*` share its checks). `TempRoot` of a pair whose data is a `NewFrame`'s goes: that memory is temporary, no heap object to keep. Inlining bodies that allocate was tried on Microwatt forced and dropped: no gain over the call (0.996 against 0.995 at the first stage, 1.003 at the second), since the inliner runs on code whose registers are already shared. Measurements: plans notes, local.
 
+The pass costs time proportional to the size of the function: the first form tested every instruction against every candidate descriptor (a function of some thousand instructions and a few hundred descriptors was 13 percent of a cold run of a large testbench), the second finds the registers something besides a read names, the frame facts and the constants in one pass each. The output is the same instruction for instruction (checked against the first form on every function of the whole-design runs and the difftest sets). `dopes_scans` counts the instructions looked at; design `dopes_scan` (120 descriptors in one function) bounds it, 18 408 against 1.74 million for the first form.
 
 ## `--tier=auto`: the count rule (yavs-llvm, yavs-interp, yavs-clift, perf/land-policy, 2026-11-03)
 

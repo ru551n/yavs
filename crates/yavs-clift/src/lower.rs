@@ -3102,8 +3102,13 @@ fn gen_func(
                     Some(_) => g.nat_temp_base(),
                     None => g.mem_ld(MEM_TEMP_BASE),
                 };
-                let v = g.b.ins().umin(base, len);
-                g.mem_st(MEM_TEMP_LEN, v);
+                let over = g.b.ins().icmp(IntCC::UnsignedGreaterThan, len, base);
+                let (cut, same) = (g.b.create_block(), g.b.create_block());
+                g.b.ins().brif(over, cut, &[], same, &[]);
+                g.b.switch_to_block(cut);
+                g.mem_st(MEM_TEMP_LEN, base);
+                g.b.ins().jump(same, &[]);
+                g.b.switch_to_block(same);
                 g.join(join);
                 // A `wait until <edge>` short-cuts only where the edge trigger resumed the
                 // activation (`WAIT_SAME_EDGE`, #772).

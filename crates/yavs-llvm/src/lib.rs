@@ -33,6 +33,8 @@ mod objcache;
 mod profile;
 pub mod regs;
 pub mod rt;
+/// Whether this build can also make code with LLVM (`--tier=auto3`).
+pub const WITH_LLVM: bool = cfg!(feature = "llvm");
 #[cfg(feature = "llvm")]
 pub mod spike;
 mod work;

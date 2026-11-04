@@ -221,7 +221,7 @@ pub static BREAK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 /// each, 8 to 14 percent of the code of big processes). One read serves the uses that follow it in
 /// the block (and in blocks that only it reaches) up to the next call, which would spill it;
 /// `get_pinned_reg` is a real `mov`, never merged or used as an address by Cranelift.
-fn pin_mem(func: &mut ir::Function, at: usize) {
+fn pin_mem(func: &mut ir::Function, at: usize, adopt: bool) {
     use cranelift_codegen::cursor::{Cursor, FuncCursor};
     use cranelift_codegen::flowgraph::ControlFlowGraph;
     let Some(entry) = func.layout.entry_block() else {
@@ -238,8 +238,11 @@ fn pin_mem(func: &mut ir::Function, at: usize) {
     let mut out: HashMap<ir::Block, Option<ir::Value>> = HashMap::new();
     let mut pos = FuncCursor::new(func);
     pos.goto_first_insertion_point(entry);
-    let saved = pos.ins().get_pinned_reg(I64);
-    pos.ins().set_pinned_reg(mem);
+    let saved = (!adopt).then(|| {
+        let v = pos.ins().get_pinned_reg(I64);
+        pos.ins().set_pinned_reg(mem);
+        v
+    });
     for (b, insts) in blocks {
         // A block with one predecessor, already done, continues its read (it dominates the block).
         let mut preds = cfg.pred_iter(b);
@@ -252,7 +255,9 @@ fn pin_mem(func: &mut ir::Function, at: usize) {
             pos.goto_inst(inst);
             pos.set_srcloc(loc);
             let op = pos.func.dfg.insts[inst].opcode();
-            if op == ir::Opcode::Return {
+            if op == ir::Opcode::Return
+                && let Some(saved) = saved
+            {
                 pos.ins().set_pinned_reg(saved);
             }
             let uses = pos.func.dfg.inst_args(inst).contains(&mem);
@@ -881,6 +886,9 @@ impl Jit {
                 &ctx.func.signature,
             )
             .map_err(|e| e.to_string())?;
+        if self.pin {
+            pin_mem(&mut ctx.func, 1, false);
+        }
         crate::cold::propagate(&mut ctx.func);
         if let Err(e) = self.define_code(fid, &mut ctx) {
             if e == NOT_CACHED {
@@ -1500,7 +1508,13 @@ impl Jit {
         let cfg = self.module.target_config();
         let stepped = gen_func(&mut ctx, &mut fctx, cfg, prog, f, imports, id, native)?;
         if self.pin {
-            pin_mem(&mut ctx.func, if native { 1 } else { 2 });
+            // Every caller of a native variant has the view in the register already, except an
+            // LLVM-compiled one (`--tier=auto3`).
+            pin_mem(
+                &mut ctx.func,
+                if native { 1 } else { 2 },
+                native && !yavs_llvm::WITH_LLVM,
+            );
         }
         // `YAVS_CLIFT_CLIF=<function id>`: the Cranelift IR of that function (variant) on stderr.
         if std::env::var("YAVS_CLIFT_CLIF")

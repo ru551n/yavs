@@ -3871,9 +3871,13 @@ fn gen_func(
                 // ponytail: a compare chain per arm; a Switch for dense tables if case-heavy
                 // code ever shows in profiles.
                 for &(lo, hi, to) in &t.arms {
-                    let ge = g.b.ins().icmp_imm_s(IntCC::SignedGreaterThanOrEqual, x, lo);
-                    let le = g.b.ins().icmp_imm_s(IntCC::SignedLessThanOrEqual, x, hi);
-                    let hit = g.b.ins().band(ge, le);
+                    let hit = if lo == hi {
+                        g.b.ins().icmp_imm_s(IntCC::Equal, x, lo)
+                    } else {
+                        let ge = g.b.ins().icmp_imm_s(IntCC::SignedGreaterThanOrEqual, x, lo);
+                        let le = g.b.ins().icmp_imm_s(IntCC::SignedLessThanOrEqual, x, hi);
+                        g.b.ins().band(ge, le)
+                    };
                     let next = g.b.create_block();
                     let tb = block_bb(to)?;
                     g.brif_split(hit, tb, next);

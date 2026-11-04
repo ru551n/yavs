@@ -10843,3 +10843,7 @@ The inline `Alloc` checks its limit once and clears the pad and the object by st
 ## One-element signal reads taken by a concatenation
 
 `"0" & s(i downto i)` reads the element as a scalar and the `Cat` takes it as a scalar piece (`yavs-ir` `opt/place.rs` `cat_reads`; `docs/decisions.md` "One-element signal reads taken by a concatenation"). 0.1 to 0.2 percent fewer instructions on Microwatt, none elsewhere.
+
+### Compiled activations: one function per tier (2026-11-04)
+
+`InterpProcess::run` jumps to the tier's entry (`Tier::direct`, `rt::direct_entry`) with no frame of its own, and the entry holds the view, the object table's start and end and the call of the compiled code. 62 to 93 fewer instructions per compiled activation (510 and 398 on GRLIB and Microwatt forced, was 567 and 477), results unchanged. Numbers and what was left out: `docs/decisions.md` "Compiled clocked RTL processes, round 12". Cycles need a quiet sitting (not measured).

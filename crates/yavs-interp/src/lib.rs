@@ -377,6 +377,30 @@ impl Default for Bindings {
     }
 }
 
+/// How a process that compiled code is ready for enters it: `(process, context, the runtime taken
+/// out of the machine, data, function, pc)`, `data` being what [`Runtime::set_tier`] kept.
+pub type DirectFn =
+    fn(&mut InterpProcess, &mut Ctx<'_>, Arc<Runtime>, usize, FuncId, u32) -> Result<(), SimError>;
+
+/// [`DirectFn`] of a tier without an entry of its own.
+fn direct_dyn(
+    p: &mut InterpProcess,
+    ctx: &mut Ctx<'_>,
+    rt: Arc<Runtime>,
+    _data: usize,
+    func: FuncId,
+    pc: u32,
+) -> Result<(), SimError> {
+    let tier = rt.tier.get().cloned();
+    match tier {
+        Some(t) => p.activate(&*t, ctx, rt, func, pc),
+        None => Err(p.m.error(
+            exec::Fault::Internal("a compiled activation without a tier".into()),
+            Some(ctx),
+        )),
+    }
+}
+
 /// A compiled tier for some functions of a program (the LLVM tier in `yavs-llvm`).
 ///
 /// Compiled code runs a function on the registers of its interpreter frame and leaves
@@ -395,18 +419,18 @@ pub trait Tier: Send + Sync {
     /// [`TIER_UNWIND`] or [`TIER_SUSPEND`]; `None` when `func` is not compiled.
     fn run(&self, func: FuncId, pc: u32, host: &mut dyn TierHost) -> Option<u32>;
 
-    /// [`Tier::run`] for a process that suspends compiled over and over: `state` is the tier's
-    /// own record of this process, kept inline in the machine between activations (a box was a
-    /// cache line of its own per process, #766). `host` is the interpreter's own, so the tier
-    /// can make the view without a virtual call ([`Host::view_root_again`]).
-    fn run_cached(
-        &self,
-        func: FuncId,
-        pc: u32,
-        host: &mut Host<'_, '_, '_>,
-        _state: &mut TierState,
-    ) -> Option<u32> {
+    /// [`Tier::run`] for a process that suspends compiled over and over: [`Host::record`] is the
+    /// tier's own record of this process, kept inline in the machine between activations (a box
+    /// was a cache line of its own per process, #766). `host` is the interpreter's own, so the
+    /// tier can make the view without a virtual call ([`Host::view_root_again`]).
+    fn run_cached(&self, func: FuncId, pc: u32, host: &mut Host<'_, '_, '_>) -> Option<u32> {
         self.run(func, pc, host)
+    }
+
+    /// The entry of a compiled activation monomorphised for this tier (`Runtime::set_tier` keeps
+    /// it, with the tier's address as `data`). `None`: through this trait's `run_cached`.
+    fn direct(&self) -> Option<DirectFn> {
+        None
     }
 
     /// Whether `func` has compiled code now: the interpreter calls `run` only then.
@@ -1365,6 +1389,8 @@ pub struct Runtime {
     pub(crate) files: Mutex<Vec<textio::FileSlot>>,
     /// Compiled code, set once before the simulation starts (`set_tier`).
     pub(crate) tier: std::sync::OnceLock<Arc<dyn Tier>>,
+    /// The tier's entry of a compiled activation and its address ([`Tier::direct`]).
+    pub(crate) direct: std::sync::OnceLock<(DirectFn, usize)>,
     /// Calls run again for their side effects (`set_replay`): their reports without a
     /// kernel were printed and counted the first time.
     pub(crate) replay: std::sync::atomic::AtomicBool,
@@ -1752,6 +1778,7 @@ impl Runtime {
             prot_names: b.prot_names,
             files: Mutex::new(textio::FileSlot::preopened()),
             tier: Default::default(),
+            direct: Default::default(),
             replay: Default::default(),
             id: {
                 static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
@@ -1987,7 +2014,13 @@ impl Runtime {
                 self.native.set_call(FuncId(i as u32));
             }
         }
-        self.tier.set(tier).is_ok()
+        let entry = tier.direct().unwrap_or(direct_dyn);
+        let data = Arc::as_ptr(&tier).cast::<()>() as usize;
+        let first = self.tier.set(tier).is_ok();
+        if first {
+            let _ = self.direct.set((entry, data));
+        }
+        first
     }
 
     /// The flags `set_tier` fills: a tier that compiles later calls `NativeFlags::set` once
@@ -2502,25 +2535,69 @@ impl Process for InterpProcess {
         if self.m.hot {
             // Started, running, no shared state, no debugger: the activation of a process.
             self.m.execs += 1;
-            if self.m.execs == u64::from(self.m.spec_at) {
-                self.m.specialise(Some(&*ctx));
+            if self.m.execs == u64::from(self.m.spec_at) || self.m.is_released() {
+                return self.run_prepared(ctx);
             }
-            if let Err(e) = self.m.borrow_scratch() {
-                return Err(self.m.error(e, Some(ctx)));
-            }
-            let mut c = Some(&mut *ctx);
-            let q = match self.m.run_direct(&mut c) {
-                exec::Direct::Done(q) => q,
-                exec::Direct::Continue => self.m.run_quick(&mut c, true),
-                exec::Direct::No => self.m.run_quick(&mut c, false),
-            };
-            return self.finish_quick(q, ctx);
+            return self.run_ready(ctx);
         }
         self.run_cold(ctx)
     }
 }
 
 impl InterpProcess {
+    /// The rare work before an activation: the switch to a specialised copy, the scratch vectors.
+    #[inline(never)]
+    fn run_prepared(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+        if self.m.execs == u64::from(self.m.spec_at) {
+            self.m.specialise(Some(&*ctx));
+        }
+        if let Err(e) = self.m.borrow_scratch() {
+            return Err(self.m.error(e, Some(ctx)));
+        }
+        self.run_ready(ctx)
+    }
+
+    /// To the tier's entry when compiled code is ready, with no frame of this function in between.
+    #[inline(always)]
+    fn run_ready(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+        if let Some((entry, data, func, pc, flags)) = self.m.direct_ready()
+            && let Some(rt) = self.m.take_rt()
+        {
+            if flags & NAT_COUNT != 0 {
+                rt.native.activated(func);
+            }
+            return entry(self, ctx, rt, data, func, pc);
+        }
+        self.run_interpreted(ctx)
+    }
+
+    /// An activation for the interpreter.
+    #[inline(never)]
+    fn run_interpreted(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+        let q = self.m.run_quick(&mut Some(&mut *ctx), false);
+        self.finish_quick(q, ctx)
+    }
+
+    /// A compiled activation ([`DirectFn`]), monomorphised for the tier so nothing on the way is a
+    /// call: `rt` is what the entry was given, `tier` its tier, and `func` and `pc` the
+    /// process's root frame.
+    #[inline(always)]
+    pub fn activate<T: Tier + ?Sized>(
+        &mut self,
+        tier: &T,
+        ctx: &mut Ctx<'_>,
+        rt: Arc<Runtime>,
+        func: FuncId,
+        pc: u32,
+    ) -> Result<(), SimError> {
+        let mut c = Some(&mut *ctx);
+        let q = match self.m.run_direct(tier, &mut c, rt, func, pc) {
+            exec::Direct::Done(q) => q,
+            exec::Direct::Continue => self.m.run_quick(&mut c, true),
+        };
+        self.finish_quick(q, ctx)
+    }
+
     /// The outcome of `Machine::run_quick`.
     #[inline(always)]
     fn run_quick(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {

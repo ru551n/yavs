@@ -405,12 +405,18 @@ impl Mem {
     }
 
     /// Give the temporary area the length compiled code left it.
+    #[inline(always)]
     pub fn sync(&mut self, host: &mut dyn TierHost) {
         if self.fr.temp_len != self.temp_seen {
-            // SAFETY: compiled code only shrinks the length or grows it within the capacity
-            // after zeroing the new bytes (`Inst::Alloc`), so they are initialised.
-            unsafe { host.temp().set_len(self.fr.temp_len as usize) }
+            self.sync_len(host);
         }
+    }
+
+    #[inline(never)]
+    fn sync_len(&mut self, host: &mut dyn TierHost) {
+        // SAFETY: compiled code only shrinks the length or grows it within the capacity
+        // after zeroing the new bytes (`Inst::Alloc`), so they are initialised.
+        unsafe { host.temp().set_len(self.fr.temp_len as usize) }
     }
 
     /// The entry of `objs` for the object of high half `hi` and its key there.
@@ -687,7 +693,7 @@ pub struct Env<'a> {
     pub stack_lo: usize,
     pub panic: Option<Box<dyn Any + Send>>,
     /// Native frames recorded on their way to `TierHost::materialise`, innermost first.
-    pub pending: Vec<NativeFrame>,
+    pub pending: Option<Box<Vec<NativeFrame>>>,
     /// The slots of the native frames for calls into the interpreter (`TabSlots`), made when
     /// first needed in the activation.
     pub windows: Option<Box<dyn yavs_interp::NativeSlots>>,
@@ -850,7 +856,8 @@ pub unsafe extern "C" fn yavs_rt_deopt(
     // SAFETY: as in `yavs_rt_step`; `regs` holds `nregs` words.
     let (env, mem) = unsafe { (&mut *(env as *mut Env<'_>), &mut *mem) };
     mem.ndeopt = 1;
-    env.pending.push(NativeFrame {
+    let pending = env.pending.get_or_insert_default();
+    pending.push(NativeFrame {
         func: FuncId(func),
         pc,
         regs: unsafe { std::slice::from_raw_parts(regs, nregs as usize) }.to_vec(),
@@ -858,16 +865,20 @@ pub unsafe extern "C" fn yavs_rt_deopt(
         temp_base,
         link,
     });
-    let last = env.pending.len() - 1;
-    env.pending[last].regs.as_mut_ptr()
+    let last = pending.len() - 1;
+    pending[last].regs.as_mut_ptr()
 }
 
 /// The slot buffer of the frame `yavs_rt_deopt` recorded last.
 pub unsafe extern "C" fn yavs_rt_deopt_slots(env: *mut c_void) -> *mut u8 {
     // SAFETY: as in `yavs_rt_step`; called right after `yavs_rt_deopt`.
     let env = unsafe { &mut *(env as *mut Env<'_>) };
-    let last = env.pending.len() - 1;
-    env.pending[last].slots.as_mut_ptr()
+    let pending = env
+        .pending
+        .as_mut()
+        .expect("a frame recorded by yavs_rt_deopt");
+    let last = pending.len() - 1;
+    pending[last].slots.as_mut_ptr()
 }
 
 /// A frame-mode function's native callee unwound for materialisation: push the recorded
@@ -877,7 +888,7 @@ pub unsafe extern "C" fn yavs_rt_deopt_end(env: *mut c_void, mem: *mut Mem, pc: 
     // SAFETY: as in `yavs_rt_step`.
     let (env, mem) = unsafe { (&mut *(env as *mut Env<'_>), &mut *mem) };
     mem.sync(&mut *env.host);
-    let mut frames = std::mem::take(&mut env.pending);
+    let mut frames = env.pending.take().map_or_else(Vec::new, |b| *b);
     frames.reverse();
     let r = catch_unwind(AssertUnwindSafe(|| {
         env.host.materialise(&mut mem.fr, pc, &frames)
@@ -2546,6 +2557,8 @@ pub unsafe fn yavs_rt_obj(env: *mut c_void, mem: *mut Mem, addr: u64, write: u32
 pub trait View {
     fn make_view(&mut self, fr: &mut TierFrame);
     fn as_host(&mut self) -> &mut dyn TierHost;
+    /// The tier's record of this process, which only an activation (`Tier::run_cached`) has.
+    fn record(&mut self) -> Option<*mut yavs_interp::TierState>;
 }
 
 impl View for dyn TierHost + '_ {
@@ -2559,12 +2572,16 @@ impl View for dyn TierHost + '_ {
     fn as_host(&mut self) -> &mut dyn TierHost {
         self
     }
+    #[inline(always)]
+    fn record(&mut self) -> Option<*mut yavs_interp::TierState> {
+        None
+    }
 }
 
 impl View for yavs_interp::Host<'_, '_, '_> {
     #[inline(always)]
     fn make_view(&mut self, fr: &mut TierFrame) {
-        if !self.view_root_again(fr) {
+        if !self.view_activation(fr) {
             TierHost::view(self, fr);
         }
     }
@@ -2572,6 +2589,25 @@ impl View for yavs_interp::Host<'_, '_, '_> {
     fn as_host(&mut self) -> &mut dyn TierHost {
         self
     }
+    #[inline(always)]
+    fn record(&mut self) -> Option<*mut yavs_interp::TierState> {
+        Some(yavs_interp::Host::record(self))
+    }
+}
+
+/// `Tier::direct` of tier `T`: the whole of a compiled activation in one function.
+pub fn direct_entry<T: yavs_interp::Tier + 'static>(
+    p: &mut yavs_interp::InterpProcess,
+    ctx: &mut yavs_kernel::Ctx<'_>,
+    rt: std::sync::Arc<yavs_interp::Runtime>,
+    data: usize,
+    func: FuncId,
+    pc: u32,
+) -> Result<(), yavs_kernel::SimError> {
+    // SAFETY: `Runtime::set_tier` keeps the address of the `T` this entry came from next to the
+    // tier itself, and `rt` is that runtime, so the `T` lives as long as `rt`.
+    let tier = unsafe { &*(data as *const T) };
+    p.activate(tier, ctx, rt, func, pc)
 }
 
 /// Run compiled `f` (generated for `nregs` registers) from `pc` (`Tier::run`); `lookup`
@@ -2587,7 +2623,6 @@ pub fn enter<H: View + ?Sized>(
     host: &mut H,
     lookup: Lookup<'_>,
     ntab: *const usize,
-    state: Option<&mut yavs_interp::TierState>,
     lean: bool,
 ) -> Option<u32> {
     // This thread's `Mem`, or a new one inside an activation that holds it.
@@ -2602,9 +2637,9 @@ pub fn enter<H: View + ?Sized>(
     // Two copies of the rest, so that neither tests `lean` again (the view is made once: two
     // copies of it were a call).
     let r = if lean {
-        enter_on::<H, true>(&mut mem, f, nregs, pc, host, lookup, ntab, state)
+        enter_on::<H, true>(&mut mem, f, nregs, pc, host, lookup, ntab)
     } else {
-        enter_on::<H, false>(&mut mem, f, nregs, pc, host, lookup, ntab, state)
+        enter_on::<H, false>(&mut mem, f, nregs, pc, host, lookup, ntab)
     };
     if MEM.get().is_null() {
         MEM.set(Box::into_raw(mem));
@@ -2640,8 +2675,8 @@ pub fn enter_on<H: View + ?Sized, const LEAN: bool>(
     host: &mut H,
     lookup: Lookup<'_>,
     ntab: *const usize,
-    state: Option<&mut yavs_interp::TierState>,
 ) -> Result<Option<u32>, Box<dyn Any + Send>> {
+    let state = host.record();
     // Only an activation with a record can leave the pc of its wait there.
     if state.is_none() {
         mem.fr.flags &= !yavs_interp::TIER_ROOT_WAIT;
@@ -2652,7 +2687,8 @@ pub fn enter_on<H: View + ?Sized, const LEAN: bool>(
     if !lean {
         mem.ndeopt = 0;
         // The objects this machine found before, on this thread, at this heap epoch.
-        mem.begin(state.as_deref());
+        // SAFETY: the record lives in the machine `host` borrows; nothing holds it now.
+        mem.begin(state.map(|p| unsafe { &*p }));
     }
     // A frame index beyond the address format is the interpreter's error.
     if mem.fr.nregs != nregs as u64 || mem.fr.frame >= 1 << 29 {
@@ -2666,7 +2702,7 @@ pub fn enter_on<H: View + ?Sized, const LEAN: bool>(
         lookup,
         stack_lo: 0,
         panic: None,
-        pending: Vec::new(),
+        pending: None,
         windows: None,
     };
     // A lean function calls nothing: no native callee, no deoptimisation, no compiled callee.
@@ -2688,7 +2724,9 @@ pub fn enter_on<H: View + ?Sized, const LEAN: bool>(
     mem.fr.kctx = std::ptr::null_mut();
     mem.sync(env.host);
     mem.forget_end();
-    if let Some(slot) = state {
+    if let Some(p) = state {
+        // SAFETY: as at `begin`; compiled code has returned.
+        let slot = unsafe { &mut *p };
         if lean {
             mem.end_lean();
             slot.at = mem.wait_at;
@@ -2696,9 +2734,22 @@ pub fn enter_on<H: View + ?Sized, const LEAN: bool>(
             mem.save_tag(slot);
         }
     }
-    match env.panic {
-        Some(p) => Err(p),
-        None => Ok(Some(next)),
+    // Tested in place: a drop of the whole `Env` is a call on every activation.
+    if env.pending.is_some() {
+        env.pending = None;
+    }
+    if env.windows.is_some() {
+        env.windows = None;
+    }
+    let r = if env.panic.is_some() {
+        Err(env.panic.take())
+    } else {
+        Ok(next)
+    };
+    std::mem::forget(env);
+    match r {
+        Ok(next) => Ok(Some(next)),
+        Err(p) => Err(p.expect("tested above")),
     }
 }
 
@@ -2841,7 +2892,7 @@ pub fn call_on(
         lookup,
         stack_lo: stack_here().saturating_sub(NEST_STACK),
         panic: None,
-        pending: Vec::new(),
+        pending: None,
         windows: None,
     };
     mem.ntab = ntab;
@@ -2861,7 +2912,7 @@ pub fn call_on(
     mem.sync(env.host);
     let out = if mem.ndeopt != 0 {
         // Frames left to the interpreter: on top of the caller, as `yavs_rt_deopt_end` does.
-        let mut frames = std::mem::take(&mut env.pending);
+        let mut frames = env.pending.take().map_or_else(Vec::new, |b| *b);
         frames.reverse();
         mem.ndeopt = 0;
         match catch_unwind(AssertUnwindSafe(|| {

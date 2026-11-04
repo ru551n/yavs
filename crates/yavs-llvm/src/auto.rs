@@ -3743,30 +3743,24 @@ impl Tier for AutoTier {
             host,
             &lookup,
             self.ntab.as_ptr().cast(),
-            None,
             false,
         )
     }
 
+    fn direct(&self) -> Option<yavs_interp::DirectFn> {
+        Some(crate::rt::direct_entry::<Self>)
+    }
+
+    #[inline(always)]
     fn run_cached(
         &self,
         func: FuncId,
         pc: u32,
         host: &mut yavs_interp::Host<'_, '_, '_>,
-        state: &mut yavs_interp::TierState,
     ) -> Option<u32> {
         let (f, nregs, lean) = self.funcs.get(func.0 as usize)?.get_lean()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize)?.get();
-        enter(
-            f,
-            nregs,
-            pc,
-            host,
-            &lookup,
-            self.ntab.as_ptr().cast(),
-            Some(state),
-            lean,
-        )
+        enter(f, nregs, pc, host, &lookup, self.ntab.as_ptr().cast(), lean)
     }
 
     fn ready(&self, func: FuncId) -> bool {

@@ -152,8 +152,6 @@ pub(crate) enum Quick {
 
 /// What [`Machine::run_direct`] did with an activation.
 pub(crate) enum Direct {
-    /// Not an activation of compiled code: nothing was done, `run_quick` runs it.
-    No,
     /// Compiled code ran and left the process for the interpreter (`run_quick` with `cont`).
     Continue,
     /// Compiled code ended the activation.
@@ -1247,7 +1245,7 @@ impl Drop for Machine {
 
 /// A write count was asked for (`Machine::stamp`): from then on compiled code reports the
 /// writes of the heap objects it keeps (`TIER_STAMPS`).
-static STAMPS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static STAMPS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 impl Machine {
     pub(crate) fn new(
@@ -1322,11 +1320,28 @@ impl Machine {
     }
 
     /// Before a process runs again: take this thread's scratch vectors back.
+    /// Whether the scratch holds this process's vectors.
+    #[inline(always)]
+    pub(crate) fn is_released(&self) -> bool {
+        self.released
+    }
+
+    /// The runtime out of the machine for an activation, which puts it back.
+    #[inline(always)]
+    pub(crate) fn take_rt(&mut self) -> Option<Arc<Runtime>> {
+        self.rt_run.take()
+    }
+
     #[inline(always)]
     pub(crate) fn borrow_scratch(&mut self) -> R<()> {
         if !self.released {
             return Ok(());
         }
+        self.borrow_scratch_slow()
+    }
+
+    #[inline(never)]
+    fn borrow_scratch_slow(&mut self) -> R<()> {
         self.released = false;
         let key = self.scratch_key();
         let pristine = SCRATCH.with(|s| {
@@ -1399,6 +1414,11 @@ impl Machine {
         if self.released {
             return;
         }
+        self.release_scratch_slow();
+    }
+
+    #[inline(never)]
+    fn release_scratch_slow(&mut self) {
         self.resident = false;
         self.released = true;
         if !self.troots.is_empty() {
@@ -1943,79 +1963,77 @@ impl Machine {
         })
     }
 
-    /// The activation of a process whose root function has compiled code, entered where it
-    /// suspended without `exec_fast`'s and `run_ops`' set-up (nothing returned by value
-    /// but the outcome: a copy of a result the callee stored in pieces stalls). The first thing
-    /// `InterpProcess::run` does for a process that is `hot`, so a compiled activation passes
-    /// through one function frame of the interpreter's.
+    /// The tier's entry when compiled code is ready for the root function of a process that
+    /// waits in its root frame: one look at its flags, which the tier changes when it swaps code;
+    /// the activation is `run_quick`'s otherwise. Nothing here needs a frame of its own, so
+    /// `InterpProcess::run` jumps to the entry ([`crate::DirectFn`]).
     #[inline(always)]
-    pub(crate) fn run_direct(&mut self, ctx: &mut Option<&mut Ctx<'_>>) -> Direct {
-        // Compiled code ready for the root function (one look at its flags, which the tier
-        // changes when it swaps code); the activation is `run_quick`'s otherwise.
-        if !self.rt.native.any.load(Ordering::Acquire) {
-            return Direct::No;
-        }
+    pub(crate) fn direct_ready(&self) -> Option<(crate::DirectFn, usize, FuncId, u32, u8)> {
         let [fr] = &self.frames[..] else {
-            return Direct::No;
+            return None;
         };
-        let (func, pc) = (fr.func, fr.pc);
-        let Some(flags) = self.rt.native.func.get(func.0 as usize) else {
-            return Direct::No;
-        };
-        if flags.load(Ordering::Acquire) & (NAT_CODE | NAT_ASK) != NAT_CODE || self.pause.is_some()
-        {
-            return Direct::No;
+        let rt = &self.rt;
+        let flags = rt
+            .native
+            .func
+            .get(fr.func.0 as usize)?
+            .load(Ordering::Acquire);
+        if flags & (NAT_CODE | NAT_ASK) != NAT_CODE || self.pause.is_some() {
+            return None;
         }
-        let Some(rt) = self.rt_run.take() else {
-            return Direct::No;
-        };
-        let Some(tier) = rt.tier.get() else {
-            self.rt_run = Some(rt);
-            return Direct::No;
-        };
-        let slot = crate::slot();
-        rt.native.activated(func);
+        let &(entry, data) = rt.direct.get()?;
+        Some((entry, data, fr.func, fr.pc, flags))
+    }
+
+    /// The activation of a process whose root function has compiled code (`direct_ready`), entered
+    /// where it suspended without `exec_fast`'s and `run_quick`'s set-up (nothing returned by value
+    /// but the outcome: a copy of a result the callee stored in pieces stalls). `rt` is the machine's
+    /// `rt_run`, taken out.
+    #[inline(always)]
+    pub(crate) fn run_direct<T: crate::Tier + ?Sized>(
+        &mut self,
+        tier: &T,
+        ctx: &mut Option<&mut Ctx<'_>>,
+        rt: Arc<Runtime>,
+        func: FuncId,
+        pc: u32,
+    ) -> Direct {
         let Some(f) = rt.prog.func_inline(func) else {
             self.rt_run = Some(rt);
-            return Direct::No;
+            self.quick_fault = Some(ice_f!("no function {func}"));
+            return Direct::Done(Quick::Fault);
         };
+        let slot = crate::slot();
         slot.store(
             u64::from(rt.id) << 32 | u64::from(func.0),
             Ordering::Relaxed,
         );
-        let mut state = self.tier_state;
         let mut host = Host {
             m: self,
             rt: &rt,
             prog: &rt.prog,
             f,
-            up: Vec::new(),
             ctx,
             fault: None,
             stop: false,
         };
-        let ran = tier.run_cached(func, pc, &mut host, &mut state);
+        let ran = tier.run_cached(func, pc, &mut host);
         // Tested in place: a move of the `Option<Fault>` copies it on every activation.
         if host.fault.is_some() {
             let e = host.fault.take();
-            self.tier_state = state;
             self.rt_run = Some(rt);
             slot.store(0, Ordering::Relaxed);
             self.quick_fault = e;
             return Direct::Done(Quick::Fault);
         }
         // The rest of the host is references and the `None` fault: no drop call for them.
-        if host.up.capacity() != 0 {
-            drop(std::mem::take(&mut host.up));
-        }
         std::mem::forget(host);
-        self.tier_state = state;
-        self.rt_run = Some(rt);
+        std::mem::forget(self.rt_run.replace(rt));
         match ran {
             Some(crate::TIER_SUSPEND) => {
                 // A wait compiled code ended on the kernel itself left its pc in the record
                 // (the tier writes `at` at every activation).
-                match state.at {
+                match self.tier_state.at {
                     crate::NO_PC => self.top().pc += 1,
                     at => self.top().pc = at + 1,
                 }
@@ -2518,7 +2536,7 @@ impl Machine {
 
     /// The [`crate::Stamp`] of the heap object at address `a`; `None` for other memory.
     pub(crate) fn stamp(&self, a: u64) -> Option<crate::Stamp> {
-        STAMPS.store(true, Ordering::Relaxed);
+        STAMPS.store(1, Ordering::Relaxed);
         let (sp, idx, _) = split(a);
         let (generation, writes) = match sp {
             HEAP => self.heap.stamp(idx)?,
@@ -9272,7 +9290,6 @@ impl Machine {
             rt,
             prog: &rt.prog,
             f,
-            up: Vec::new(),
             ctx,
             fault: None,
             stop: false,
@@ -9324,7 +9341,6 @@ impl Machine {
             rt,
             prog: &rt.prog,
             f,
-            up: Vec::new(),
             ctx,
             fault: None,
             stop: false,
@@ -9368,10 +9384,24 @@ impl Machine {
         if m.frames.len() != 1 || m.vc.tier_sigs.len() != m.vc.nsigs {
             return false;
         }
+        m.view_hot(tf, c);
+        // The call paths of a serial process: its shared state, perhaps a debugger.
+        if !m.hot {
+            m.tier_heaps(tf);
+            let root_wait = m.root_process && m.dbg.is_none();
+            tf.flags = m.tier_flags() | (u64::from(root_wait) * crate::TIER_ROOT_WAIT);
+        }
+        true
+    }
+
+    /// `view_root` of an activation `run_direct` entered: one frame, the root frame (its registers
+    /// and slots start at 0), no shared state, no debugger.
+    #[inline(always)]
+    fn view_hot(&mut self, tf: &mut crate::TierFrame, c: &Ctx<'_>) {
+        let m = self;
         let fr = &m.frames[0];
-        let (rbase, slen, temp_base) = (fr.rbase as usize, fr.slen, fr.temp_base);
-        let shared_alloc = fr.shared_alloc;
-        tf.slots = m.root.as_mut_ptr().wrapping_add(fr.sbase as usize);
+        let (slen, temp_base, shared_alloc) = (fr.slen, fr.temp_base, fr.shared_alloc);
+        tf.slots = m.root.as_mut_ptr();
         tf.slots_len = u64::from(slen);
         tf.root_slots = tf.slots;
         tf.root_len = u64::from(slen);
@@ -9394,9 +9424,9 @@ impl Machine {
         tf.temp_cap = m.temp.capacity().min(u32::MAX as usize) as u64;
         tf.temp_base = u64::from(temp_base);
         tf.temp_roots = m.troots.len() as u64;
-        tf.regs = m.regs.v.as_mut_ptr().wrapping_add(rbase);
-        tf.nregs = (m.regs.v.len() - rbase) as u64;
-        tf.stack = m.regs.v.as_ptr();
+        tf.regs = m.regs.v.as_mut_ptr();
+        tf.nregs = m.regs.v.len() as u64;
+        tf.stack = tf.regs;
         tf.max_depth = m.vc.max_depth;
         tf.owner = m.vc.owner;
         m.tier_cov(tf);
@@ -9404,21 +9434,15 @@ impl Machine {
         tf.spin = &raw mut m.spin;
         tf.drivers = m.drivers.as_ptr();
         tf.ndrivers = m.drivers.len() as u64;
-        // A process that is `hot` has no shared state (`sh`), which the call paths of a serial
-        // process do not promise: its epoch and flags come from the heap and the frame alone.
-        m.tier_heaps(tf);
-        let flags = if m.hot {
-            u64::from(shared_alloc) * crate::TIER_SHARED_ALLOC
-                + u64::from(STAMPS.load(Ordering::Relaxed)) * crate::TIER_STAMPS
-        } else {
-            m.tier_flags()
-        };
-        // `frames.len() == 1` above; `tier_flags` (deeper views) never sets it.
-        let root_wait = m.root_process && m.dbg.is_none();
-        tf.flags = flags | (u64::from(root_wait) * crate::TIER_ROOT_WAIT);
+        tf.heap_epoch = m.heap.epoch();
+        tf.heap_log = [m.heap.log().as_ptr(), std::ptr::null()];
+        tf.shared_epoch = 0;
+        // No debugger, so a wait in the root frame of a process can end on the kernel itself.
+        tf.flags = u64::from(shared_alloc) * crate::TIER_SHARED_ALLOC
+            + u64::from(STAMPS.load(Ordering::Relaxed)) * crate::TIER_STAMPS
+            + u64::from(m.root_process) * crate::TIER_ROOT_WAIT;
         tf.cycle = c.cycle();
         tf.known = c.resumed_edge_key();
-        true
     }
 
     /// `TierFrame::flags` of the top frame.
@@ -11231,15 +11255,22 @@ pub struct Host<'a, 'c, 'x> {
     m: &'a mut Machine,
     rt: &'a Runtime,
     prog: &'a Program,
-    /// The top frame's function; `up` those of the frames below it that compiled code
-    /// pushed through `step`.
+    /// The top frame's function.
     f: &'a Func,
-    up: Vec<&'a Func>,
     ctx: &'a mut Option<&'c mut Ctx<'x>>,
     fault: Option<Fault>,
     /// A native a native frame ran ended the process (`NativeCall::Stop`): the materialisation
     /// that follows suspends it.
     stop: bool,
+}
+
+impl Host<'_, '_, '_> {
+    /// The tier's record of this process ([`crate::Tier::run_cached`]), reached through the
+    /// machine: a copy in and out was 12 instructions of every activation.
+    #[inline(always)]
+    pub fn record(&mut self) -> *mut crate::TierState {
+        &raw mut self.m.tier_state
+    }
 }
 
 impl Host<'_, '_, '_> {
@@ -11309,7 +11340,7 @@ impl Host<'_, '_, '_> {
             fr.pc = nf.pc;
             fr.temp_base =
                 u32::try_from(nf.temp_base).map_err(|_| ice_s!("temporary base beyond 4 GiB"))?;
-            self.up.push(std::mem::replace(&mut self.f, g));
+            self.f = g;
         }
         Ok(())
     }
@@ -11441,6 +11472,25 @@ impl Host<'_, '_, '_> {
         tf.kctx = (c as *mut Ctx<'_>).cast();
         tf.gate = c.gate_addr();
         self.m.view_root(tf, c)
+    }
+
+    /// `view_root_again` of an activation `Machine::run_direct` entered; false (nothing written)
+    /// before the first view of the process, which `TierHost::view` makes.
+    #[inline(always)]
+    pub fn view_activation(&mut self, tf: &mut crate::TierFrame) -> bool {
+        let Some(c) = self.ctx.as_deref_mut() else {
+            return false;
+        };
+        if c.gate_unset() {
+            c.gate_init(self.m.drivers.iter().map(|d| d.id));
+        }
+        if self.m.vc.tier_sigs.len() != self.m.vc.nsigs {
+            return false;
+        }
+        tf.kctx = (c as *mut Ctx<'_>).cast();
+        tf.gate = c.gate_addr();
+        self.m.view_hot(tf, c);
+        true
     }
 }
 
@@ -11602,7 +11652,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
                 let func = m.frames[m.frames.len() - 1].func;
                 match self.prog.func(func) {
                     Some(g) => {
-                        self.up.push(std::mem::replace(&mut self.f, g));
+                        self.f = g;
                         Stepped::Call(func)
                     }
                     None => {
@@ -11649,9 +11699,11 @@ impl crate::TierHost for Host<'_, '_, '_> {
             m.regs[d.0 as usize] = v;
         }
         m.tier_view(tf);
-        if let Some(g) = self.up.pop() {
-            self.f = g;
-        }
+        // The function below it.
+        let Some(g) = self.prog.func(m.frames[m.frames.len() - 1].func) else {
+            return false;
+        };
+        self.f = g;
         true
     }
 

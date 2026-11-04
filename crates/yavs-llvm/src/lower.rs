@@ -342,24 +342,19 @@ impl Tier for LlvmTier {
     fn run(&self, func: FuncId, pc: u32, host: &mut dyn TierHost) -> Option<u32> {
         let &(f, nregs) = self.funcs.get(func.0 as usize)?.as_ref()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize).copied().flatten();
-        enter(
-            f,
-            nregs,
-            pc,
-            host,
-            &lookup,
-            self.natives.as_ptr(),
-            None,
-            false,
-        )
+        enter(f, nregs, pc, host, &lookup, self.natives.as_ptr(), false)
     }
 
+    fn direct(&self) -> Option<yavs_interp::DirectFn> {
+        Some(crate::rt::direct_entry::<Self>)
+    }
+
+    #[inline(always)]
     fn run_cached(
         &self,
         func: FuncId,
         pc: u32,
         host: &mut yavs_interp::Host<'_, '_, '_>,
-        state: &mut yavs_interp::TierState,
     ) -> Option<u32> {
         let &(f, nregs) = self.funcs.get(func.0 as usize)?.as_ref()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize).copied().flatten();
@@ -370,7 +365,6 @@ impl Tier for LlvmTier {
             host,
             &lookup,
             self.natives.as_ptr(),
-            Some(state),
             self.lean.get(func.0 as usize) == Some(&true),
         )
     }

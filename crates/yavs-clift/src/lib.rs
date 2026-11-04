@@ -38,9 +38,8 @@ use yavs_llvm::rt::{RunFn, call, enter};
 pub struct ClifTier {
     /// Keeps the code alive; never used after construction.
     pub(crate) _jit: Mutex<Jit>,
-    pub(crate) funcs: Vec<Option<(RunFn, usize)>>,
-    /// Per function, `yavs_llvm::regs::no_table` (`enter`'s `lean`).
-    pub(crate) lean: Vec<bool>,
+    /// Per function, its code, its registers and `yavs_llvm::regs::no_table` (`enter`'s `lean`).
+    pub(crate) funcs: Vec<Option<(RunFn, usize, bool)>>,
     /// Per function, the address of its native-frame code (`Mem::ntab`) and of its `CallFn`
     /// (`Tier::call`), 0 for none.
     pub(crate) natives: Vec<usize>,
@@ -69,26 +68,21 @@ impl ClifTier {
 
 #[cfg(feature = "clift")]
 impl ClifTier {
+    fn lookup(&self, id: FuncId) -> Option<(RunFn, usize)> {
+        let &(f, nregs, _) = self.funcs.get(id.0 as usize)?.as_ref()?;
+        Some((f, nregs))
+    }
+
+    #[inline(always)]
     fn go<H: yavs_llvm::rt::View + ?Sized>(
         &self,
         func: FuncId,
         pc: u32,
         host: &mut H,
-        state: Option<&mut yavs_interp::TierState>,
     ) -> Option<u32> {
-        let &(f, nregs) = self.funcs.get(func.0 as usize)?.as_ref()?;
-        let lookup = |id: FuncId| self.funcs.get(id.0 as usize).copied().flatten();
-        let lean = self.lean.get(func.0 as usize) == Some(&true);
-        enter(
-            f,
-            nregs,
-            pc,
-            host,
-            &lookup,
-            self.natives.as_ptr(),
-            state,
-            lean,
-        )
+        let &(f, nregs, lean) = self.funcs.get(func.0 as usize)?.as_ref()?;
+        let lookup = |id: FuncId| self.lookup(id);
+        enter(f, nregs, pc, host, &lookup, self.natives.as_ptr(), lean)
     }
 }
 
@@ -182,17 +176,21 @@ impl yavs_llvm::Generator for First {
 #[cfg(feature = "clift")]
 impl Tier for ClifTier {
     fn run(&self, func: FuncId, pc: u32, host: &mut dyn TierHost) -> Option<u32> {
-        self.go(func, pc, host, None)
+        self.go(func, pc, host)
     }
 
+    fn direct(&self) -> Option<yavs_interp::DirectFn> {
+        Some(yavs_llvm::rt::direct_entry::<Self>)
+    }
+
+    #[inline(always)]
     fn run_cached(
         &self,
         func: FuncId,
         pc: u32,
         host: &mut yavs_interp::Host<'_, '_, '_>,
-        state: &mut yavs_interp::TierState,
     ) -> Option<u32> {
-        self.go(func, pc, host, Some(state))
+        self.go(func, pc, host)
     }
 
     fn ready(&self, func: FuncId) -> bool {
@@ -212,7 +210,7 @@ impl Tier for ClifTier {
         host: &mut dyn TierHost,
     ) -> Option<Called> {
         let c = *self.calls.get(func.0 as usize)?;
-        let lookup = |id: FuncId| self.funcs.get(id.0 as usize).copied().flatten();
+        let lookup = |id: FuncId| self.lookup(id);
         call(c, cells, obj, pc, host, &lookup, self.natives.as_ptr())
     }
 }

@@ -1,5 +1,5 @@
-//! A native frame's slow path that hands its instruction to the interpreter (`Gen::native_step`,
-//! generated after the body) passes the registers as they are at its own pc, not the constants the
+//! A native frame's slow path that hands its instruction to the interpreter (`Gen::native_stay_at`,
+//! with the old exits `Gen::native_step`, generated after the body) passes the registers as they are at its own pc, not the constants the
 //! last instruction of the function knew (#1089). Needs the `clift` feature.
 #![cfg(feature = "clift")]
 
@@ -58,8 +58,9 @@ fn a_slow_path_reads_the_registers_of_its_own_pc() {
         .output()
         .expect("analyze");
     assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
-    let run = |flags: &[&str], counters: bool| {
+    let run_in = |exits: &str, flags: &[&str], counters: bool| {
         let mut c = Command::new(yavs);
+        c.env("YAVS_CLIFT_EXITS", exits);
         c.current_dir(&d)
             .args(["--color", "never", "run", "--no-cache", "--threads", "1"])
             .args(["--work", &work])
@@ -74,12 +75,14 @@ fn a_slow_path_reads_the_registers_of_its_own_pc() {
             o.status.code(),
         )
     };
+    let run = |flags: &[&str], counters: bool| run_in("new", flags, counters);
     let want = run(&["--tier=interp"], false);
     assert_eq!(want.1, Some(0), "{want:?}");
     for s in ["sum 164", "sum 204", "sum 250", "sum 302"] {
         assert!(want.0.contains(s), "{s}: {want:?}");
     }
     assert_eq!(run(&["--tier=clift"], false), want);
+    assert_eq!(run_in("old", &["--tier=clift"], false), want);
     assert_eq!(
         run(&["--tier=clift-auto", "--tier-heat=1,0,0"], false),
         want
@@ -87,6 +90,8 @@ fn a_slow_path_reads_the_registers_of_its_own_pc() {
     // The test means nothing unless the fill runs through that slow path (counted in debug builds).
     if cfg!(debug_assertions) {
         let (out, _) = run(&["--tier=clift"], true);
+        assert!(out.contains("cb_xstay.LFill.f."), "{out}");
+        let (out, _) = run_in("old", &["--tier=clift"], true);
         assert!(out.contains("cb_xstep.LFill.f."), "{out}");
     }
 }

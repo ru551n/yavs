@@ -1238,8 +1238,9 @@ const GUARD_CALLS: u64 = 16;
 /// Where the count of a function under trial starts: it never runs out.
 const GUARD_ARM: u32 = 1 << 31;
 
-/// Whether `--tier=auto` asks by the count rule (`YAVS_AUTO_POLICY=sampled`: as before it, with no
-/// native variant of the two instructions, for comparing the two; read once).
+/// Whether `--tier=auto` asks by the count rule (`YAVS_AUTO_POLICY=sampled`: as before it, for
+/// comparing the two; with `YAVS_CLIFT_EXITS=old` also no native variant of the two instructions;
+/// read once).
 pub fn count_rule_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("YAVS_AUTO_POLICY").map_or(true, |v| v != "sampled"))

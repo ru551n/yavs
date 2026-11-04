@@ -303,7 +303,7 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - unset
      - ``run``
    * - ``YAVS_AUTO_POLICY``
-     - ``sampled``: ``--tier=auto`` on Cranelift decides by sampled time alone, as before the count rule; on every Cranelift tier, no native-frame code of ``**`` and of a layout from a run-time descriptor. For comparing the two.
+     - ``sampled``: ``--tier=auto`` on Cranelift decides by sampled time alone, as before the count rule. For comparing the two. With ``YAVS_CLIFT_EXITS=old`` also, on every Cranelift tier, no native-frame code of ``**`` and of a layout from a run-time descriptor.
      - ``sampled``
      - the count rule
      - ``run``

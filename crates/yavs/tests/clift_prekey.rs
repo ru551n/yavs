@@ -383,6 +383,42 @@ mod mutations {
         );
     }
 
+    /// The form of exits changes every body with a guard.
+    #[test]
+    fn the_form_of_exits() {
+        by_env(
+            "pk_m_exits",
+            "clift-auto",
+            "switches",
+            ("YAVS_CLIFT_EXITS", "old"),
+        );
+    }
+
+    /// What passes deferred stores.
+    #[test]
+    fn the_stores_that_pass() {
+        by_env(
+            "pk_m_pass",
+            "clift-auto",
+            "switches",
+            ("YAVS_CLIFT_PASS", "0"),
+        );
+    }
+
+    /// Which instructions have a helper: `**` under the old policy, which has no step of its own.
+    #[test]
+    fn the_helpers() {
+        let (old, narrow) = (("YAVS_AUTO_POLICY", "sampled"), ("YAVS_CLIFT_WIDE", "0"));
+        let w = World::new("pk_m_wide", "clift-auto");
+        let d = ("YAVS_CLIFT_PREKEY_DROP", "switches");
+        w.warmed(&[d, NO_CHECK, old]);
+        caught(&w.run("1", &[d, CHECK, old, narrow]), "switches");
+        let whole = World::new("pk_m_wide_whole", "clift-auto");
+        whole.warmed(&[old]);
+        let r = whole.run("1", &[CHECK, old, narrow]);
+        assert!(r.ok, "the whole key: {}", r.stderr);
+    }
+
     /// The other way: a refusal stored by a run of the old policy does not hold for the rule.
     #[test]
     fn a_refusal_of_the_old_policy() {

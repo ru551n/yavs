@@ -500,6 +500,69 @@ fn the_two_instructions_run_on_native_frames() {
     }
 }
 
+const ALLOCS: &str = "entity allocs is end;
+architecture a of allocs is
+  type node;
+  type node_ptr is access node;
+  type node is record v : integer; next_n : node_ptr; end record;
+  function chain(n : integer) return integer is
+    variable h, k : node_ptr := null;
+    variable s : integer := 0;
+  begin
+    for i in 1 to n loop
+      h := new node'(i, h);
+    end loop;
+    k := h;
+    while k /= null loop
+      s := s + k.v;
+      k := k.next_n;
+    end loop;
+    return s;
+  end;
+  -- (Calls itself so that it stays a function.)
+  function caller(n : integer) return integer is
+  begin
+    if n > 3 then
+      return caller(n - 1) + 1;
+    end if;
+    return chain(n) + 1;
+  end;
+  signal clk : bit := '0';
+begin
+  clk <= not clk after 5 ns;
+  process
+    variable x : integer := 0;
+  begin
+    for i in 1 to 200 loop
+      wait until clk = '1';
+      x := (x + caller(i mod 7)) mod 1009;
+    end loop;
+    report integer'image(x);
+    std.env.finish;
+  end process;
+end;
+";
+
+/// A function with a loop that allocates and does not free has no native-frame code, nor has what
+/// calls it. The rule does not wait for it for ever: both get frame-mode code, and the output stays.
+#[test]
+fn a_function_refused_for_its_allocating_loop_holds_nothing_up() {
+    let dir = setup("auto_count_allocs", ALLOCS);
+    let o = counted(&dir, "allocs", "1", &[("YAVS_CLIFT_DUMP", "1")]);
+    let e = err(&o);
+    assert!(
+        e.lines()
+            .any(|l| l.starts_with("no native variant of") && l.contains(" chain: allocates")),
+        "{e}"
+    );
+    assert!(compiled(&o, "chain"), "{e}");
+    assert!(compiled(&o, "caller"), "{e}");
+    assert_eq!(counter(&o, "count_held"), 0, "{e}");
+    // The old policy on the same code, and at the rule's own numbers.
+    counted(&dir, "allocs", "1", &[("YAVS_AUTO_POLICY", "sampled")]);
+    counted(&dir, "allocs", "20", &[]);
+}
+
 /// The old policy is one switch away: no count, the switch to a copy at activation 1024.
 #[test]
 fn the_old_policy_counts_nothing() {

@@ -141,6 +141,24 @@ architecture a of hold is
     sum := sum + x(x'left + 3);
   end procedure;
 
+  -- A bad index and a bad slice of array parameters (bounds in registers), after a call whose flat
+  -- result comes back through a helper when the callee has no code yet.
+  procedure reader_index (x : ints_t; n : natural; variable sum : inout integer) is
+  begin
+    sum := sum + x(x'left);
+    sum := sum + twice("ab")'length;
+    sum := sum + ints2(x)(x'left + 1);
+    sum := sum + x(x'right + n);
+  end procedure;
+
+  procedure reader_slice (x : ints_t; n : natural; variable sum : inout integer) is
+    constant y : ints_t := ints2(x);
+  begin
+    sum := sum + x(x'left);
+    sum := sum + y(y'left to y'right + n)'length;
+    sum := sum + x(x'left + 1);
+  end procedure;
+
   -- The arguments are this subprogram's own locals: a native caller's frame.
   procedure from_frame (variable total : inout integer) is
     variable res : ints_t(0 to 6) := (1, 2, 3, 4, 5, 6, 7);
@@ -188,6 +206,8 @@ begin
       r.b := r.b mod 1000;
       r.c := r.c mod 1000;
       r.d := r.d mod 1000;
+      -- (An activation per round: what the count rule counts.)
+      wait for 1 ns;
     end loop;
     report "total " & integer'image(total) & " sum " & integer'image(sum);
     if bad = 1 then
@@ -197,6 +217,12 @@ begin
     if bad = 2 then
       reader_free(heap.all, heap, sum);
       report "sum " & integer'image(sum);
+    end if;
+    if bad = 3 then
+      reader_index(heap.all, 1, sum);
+    end if;
+    if bad = 4 then
+      reader_slice(v, 1, sum);
     end if;
     report "end";
     wait;
@@ -289,6 +315,93 @@ fn accesses_through_held_regions_are_checked_in_debug_builds() {
         .and_then(|n| n.trim().parse().ok())
         .unwrap_or(0);
     assert!(n > 1000, "held accesses checked: {n}");
+}
+
+/// The ways a native frame runs an instruction or a call through a helper and comes back (no resume
+/// anywhere): a caller compiled before its callees (`--tier-heat=1,0,0`), calls through the table,
+/// and the count rule at its tightest. The bad cases free an object under a parameter in the nested
+/// interpreter's loop and fail through a parameter's bounds, with the trace of the native frames.
+type Way = (
+    &'static [&'static str],
+    &'static [(&'static str, &'static str)],
+);
+const HELPER_WAYS: &[Way] = &[
+    (&["--tier=clift-auto", "--tier-heat=1,0,0"], &[]),
+    (
+        &["--tier=clift-auto", "--tier-heat=1,0,0", "--threads=4"],
+        &[],
+    ),
+    (&["--tier=clift"], &[("YAVS_CLIFT_NTAB", "1")]),
+    (
+        &["--tier=auto"],
+        &[
+            ("YAVS_AUTO_COUNT", "1"),
+            ("YAVS_AUTO_GATE", "0"),
+            ("YAVS_AUTO_SYNC", "1"),
+            ("YAVS_SPEC_ALL", "1"),
+        ],
+    ),
+    (
+        &["--tier=auto", "--tier-heat=1,0,0"],
+        &[("YAVS_AUTO_POLICY", "sampled")],
+    ),
+];
+
+#[test]
+fn held_regions_and_bounds_over_helpers_match_the_interpreter() {
+    let dir = analyzed("clift_hold_helpers");
+    for bad in 0..=4 {
+        let want = run(&dir, &["--tier=interp"], bad, &[]);
+        assert!(want.0.contains("total "), "{want:?}");
+        assert_eq!(want.2 == Some(0), bad == 0, "bad {bad}: {want:?}");
+        for (flags, env) in HELPER_WAYS {
+            let mut env = env.to_vec();
+            env.push(("YAVS_CLIFT_HOLD_CHECK", "1"));
+            let got = run(&dir, flags, bad, &env);
+            assert_eq!(got, want, "bad {bad} {flags:?} {env:?}");
+        }
+    }
+    // Each way ran compiled code with held regions, through the helpers.
+    for (flags, env) in HELPER_WAYS {
+        let mut env = env.to_vec();
+        env.push(("YAVS_CLIFT_HOLD_CHECK", "1"));
+        env.push(("YAVS_COUNTERS", "1"));
+        let mut args = vec!["run", "--std=2008", "--work=work:work", "--no-cache"];
+        args.extend_from_slice(flags);
+        args.push("hold");
+        let o = yavs(&dir, &args, &env);
+        let e = String::from_utf8_lossy(&o.stderr);
+        let at = |name: &str| -> u64 {
+            e.lines()
+                .find_map(|l| l.strip_prefix(&format!("counters: {name}=")))
+                .and_then(|n| n.trim().parse().ok())
+                .unwrap_or(0)
+        };
+        assert!(at("hold_checked") > 1000, "{flags:?} {env:?}: {e}");
+        if cfg!(debug_assertions) {
+            assert!(at("cb_xstep") > 100, "{flags:?} {env:?}: {e}");
+        }
+        if env.iter().any(|(k, _)| *k == "YAVS_AUTO_COUNT") {
+            assert!(at("count_compiled") >= 1, "{env:?}: {e}");
+        }
+    }
+}
+
+/// The nested loop frees under a held parameter and the frame goes on: only `heap_gen`, refreshed
+/// by the helper, says so. Without the recheck the check catches it.
+#[test]
+fn a_hold_over_a_helper_not_asked_again_is_caught() {
+    if !cfg!(debug_assertions) || cfg!(feature = "gc-stress") {
+        return;
+    }
+    let dir = analyzed("clift_hold_helper_mutant");
+    let got = run(
+        &dir,
+        &["--tier=clift-auto", "--tier-heat=1,0,0"],
+        1,
+        &[("YAVS_CLIFT_HOLD_DROP", "1")],
+    );
+    assert!(got.1.contains("is stale"), "{got:?}");
 }
 
 /// The mutation test: without the recheck the object freed under a parameter is read through the

@@ -4609,12 +4609,8 @@ impl Gen<'_> {
         };
         let d1 = self.b.ins().iadd_imm_s(depth, 1);
         let max = self.mem_ld(MEM_MAX_DEPTH);
-        let a = self.b.ins().icmp(IntCC::UnsignedLessThan, d1, max);
-        let b2 = self
-            .b
-            .ins()
-            .icmp_imm_s(IntCC::UnsignedLessThan, d1, 1 << 29);
-        let mut okc = self.b.ins().band(a, b2);
+        // `TierFrame::max_depth` is below what the address format and `Mem::nslots` allow.
+        let mut okc = self.b.ins().icmp(IntCC::UnsignedLessThan, d1, max);
         // Native stack is left (`NEST_STACK`).
         let sp = self.b.ins().get_stack_pointer(I64);
         let lo = self.mem_ld(MEM_STACK_LO);

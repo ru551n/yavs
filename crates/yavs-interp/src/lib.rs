@@ -972,8 +972,8 @@ pub struct TierFrame {
     pub known: u64,
     /// The number of the current simulation cycle (`TierSig::stamps` equal to it: an event).
     pub cycle: u64,
-    /// The call depth limit (`Limits::max_depth`): frame indices compiled code may give its
-    /// native frames stay below it.
+    /// The call depth limit (`Limits::max_depth`, at most `TIER_MAX_DEPTH`): frame indices compiled
+    /// code may give its native frames stay below it.
     pub max_depth: u64,
     /// The process heap's `epoch` and the shared heap's (0 for a machine without the shared
     /// state): the host addresses of heap objects compiled code found stay valid while they are
@@ -1235,6 +1235,10 @@ pub const OWNER_RT_SHIFT: u32 = 32;
 pub const TIER_SHARED_ALLOC: u64 = 1;
 /// `TierFrame::flags`: the process may use the shared state, as a protected call needs.
 pub const TIER_SERIAL: u64 = 2;
+/// The largest `TierFrame::max_depth`: compiled callers test a frame index against it alone, so it
+/// stays below the frame field of an address and the table of native frames (`Mem::nslots`).
+/// Deeper calls are the interpreter's.
+pub const TIER_MAX_DEPTH: u64 = 1 << 20;
 /// `TierFrame::flags`: someone compares heap objects by their write counts (`Stamp`, the
 /// waveform recorder): compiled code keeps no heap object across activations, so every write
 /// goes through `TierHost::object` and is counted.

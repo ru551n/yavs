@@ -1265,7 +1265,7 @@ impl Machine {
                 inst_data: inst.data.as_ptr() as usize,
                 inst_len: inst.data.len(),
                 nsigs: inst.sigs.len(),
-                max_depth: u64::from(rt.limits.max_depth),
+                max_depth: u64::from(rt.limits.max_depth).min(crate::TIER_MAX_DEPTH),
             },
             nwin: None,
             nwin_from: 0,
@@ -9492,7 +9492,7 @@ impl Machine {
         tf.regs = self.regs.v.as_mut_ptr().wrapping_add(rbase);
         tf.nregs = (self.regs.v.len() - rbase) as u64;
         tf.stack = self.regs.v.as_ptr();
-        tf.max_depth = u64::from(self.rt.limits.max_depth);
+        tf.max_depth = u64::from(self.rt.limits.max_depth).min(crate::TIER_MAX_DEPTH);
         self.tier_heaps(tf);
         tf.flags = self.tier_flags();
         tf.owner = self.vc.owner;

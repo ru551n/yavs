@@ -5345,10 +5345,13 @@ impl Gen<'_> {
             let done = self.b.create_block();
             let p = self.b.append_block_param(done, I64);
             self.frame_object_try(hi, off, nv, done, slow);
-            self.obj_lookup(a, hi, off, ev, nv, write, true, done);
+            let miss = self.b.create_block();
+            self.b.set_cold_block(miss);
+            self.obj_try(a, hi, off, nv, write, true, done, miss);
+            self.b.switch_to_block(miss);
+            self.host_call(a, ev, nv, write, done, slow);
             self.b.switch_to_block(done);
-            let nn = self.b.ins().icmp_imm_s(IntCC::NotEqual, p, 0);
-            self.guard(nn, slow);
+            self.nonnull(p, nv, slow);
             return p;
         }
         // A constant never changes: a read is from a copy of its own.
@@ -5428,7 +5431,6 @@ impl Gen<'_> {
             });
             let done = self.b.create_block();
             let p = self.b.append_block_param(done, I64);
-            let w = self.c32(u32::from(write));
             {
                 let hi = self.b.ins().ushr_imm_s(a, 32);
                 let lo = self.lo32(a);
@@ -5484,15 +5486,9 @@ impl Gen<'_> {
                 self.obj_try(a, hi, off, n, write, false, done, miss);
                 self.b.switch_to_block(miss);
             }
-            let c = self
-                .b
-                .ins()
-                .call(self.imp.host, &[self.env, self.mem, a, extra, n, w]);
-            let ph = self.b.inst_results(c)[0];
-            self.b.ins().jump(done, &[BlockArg::Value(ph)]);
+            self.host_call(a, extra, n, write, done, slow);
             self.b.switch_to_block(done);
-            let nn = self.b.ins().icmp_imm_s(IntCC::NotEqual, p, 0);
-            self.guard(nn, slow);
+            self.nonnull(p, n, slow);
             return p;
         }
         // A native frame, by the address's space: a frame address is its own slots, the slots of
@@ -5574,17 +5570,36 @@ impl Gen<'_> {
         self.obj_try(a, hi, off, n, write, false, done, miss);
         self.b.switch_to_block(miss);
         self.b.set_cold_block(miss);
+        self.host_call(a, extra, n, write, done, slow);
+        self.b.switch_to_block(done);
+        self.nonnull(p, n, slow);
+        p
+    }
+
+    /// `yavs_rt_host` for an access, in the block a lookup missed in: jumps to `done` with the
+    /// host pointer; 0 (not available) takes the slow path, here or at `nonnull`.
+    fn host_call(&mut self, a: Value, extra: Value, n: Value, write: bool, done: Block, slow: Block) {
         let w = self.c32(u32::from(write));
         let c = self
             .b
             .ins()
             .call(self.imp.host, &[self.env, self.mem, a, extra, n, w]);
         let ph = self.b.inst_results(c)[0];
+        if self.const_of(n).is_some_and(|k| k > 0) {
+            let nn = self.b.ins().icmp_imm_s(IntCC::NotEqual, ph, 0);
+            self.guard(nn, slow);
+        }
         self.b.ins().jump(done, &[BlockArg::Value(ph)]);
-        self.b.switch_to_block(done);
-        let nn = self.b.ins().icmp_imm_s(IntCC::NotEqual, p, 0);
-        self.guard(nn, slow);
-        p
+    }
+
+    /// The test of a lookup's result `p` at its join. An access of a constant size above 0 needs
+    /// none: every region's test passed with that many bytes, so the region has a pointer, and
+    /// `host_call` tested its own result.
+    fn nonnull(&mut self, p: Value, n: Value, slow: Block) {
+        if !self.const_of(n).is_some_and(|k| k > 0) {
+            let nn = self.b.ins().icmp_imm_s(IntCC::NotEqual, p, 0);
+            self.guard(nn, slow);
+        }
     }
 
     /// The view at `base_f`, `len_f` of `Mem` when `is` and the access lies within it: jumps to
@@ -5649,37 +5664,9 @@ impl Gen<'_> {
     }
 
     /// The object table's entry for the access (the objects found before: heap objects a `Deref`
-    /// found, a process's heap variables): one load and compare, as the LLVM generator does;
-    /// else `yavs_rt_host` (`Mem::find`, then the interpreter is asked for the object). Jumps
-    /// to `done` with the host pointer (0: not available). `heap`: the address is a heap
+    /// found, a process's heap variables): one load and compare, as the LLVM generator does. Jumps
+    /// to `done` with the host pointer on a hit, to `miss` otherwise. `heap`: the address is a heap
     /// object's (or guessed to be), whose key has the heap tag.
-    #[allow(clippy::too_many_arguments)]
-    fn obj_lookup(
-        &mut self,
-        a: Value,
-        hi: Value,
-        off: Value,
-        extra: Value,
-        n: Value,
-        write: bool,
-        heap: bool,
-        done: Block,
-    ) {
-        let miss = self.b.create_block();
-        self.b.set_cold_block(miss);
-        self.obj_try(a, hi, off, n, write, heap, done, miss);
-        self.b.switch_to_block(miss);
-        let w = self.c32(u32::from(write));
-        let c = self
-            .b
-            .ins()
-            .call(self.imp.host, &[self.env, self.mem, a, extra, n, w]);
-        let p2 = self.b.inst_results(c)[0];
-        self.b.ins().jump(done, &[BlockArg::Value(p2)]);
-    }
-
-    /// The object table's test of `obj_lookup`: jumps to `done` with the host pointer on a hit,
-    /// to `miss` otherwise.
     #[allow(clippy::too_many_arguments)]
     fn obj_try(
         &mut self,

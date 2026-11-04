@@ -104,6 +104,7 @@ type PerfEntry = (String, ClifId, usize, Vec<(u32, u32, u32)>);
 pub struct Jit {
     module: JITModule,
     step: ClifId,
+    host: ClifId,
     signal: ClifId,
     lcopy: ClifId,
     zero: ClifId,
@@ -594,6 +595,7 @@ impl Jit {
         Ok(Jit {
             module,
             step,
+            host,
             signal,
             lcopy,
             zero,
@@ -1382,7 +1384,9 @@ impl Jit {
         }
         let imports = Imports {
             step: self.module.declare_func_in_func(self.step, &mut ctx.func),
-            host: self.module.declare_func_in_func(self.cold_host, &mut ctx.func),
+            host: self.module.declare_func_in_func(self.host, &mut ctx.func),
+            cold_host: self.module.declare_func_in_func(self.cold_host, &mut ctx.func),
+            cold_deref: self.module.declare_func_in_func(self.cold_deref, &mut ctx.func),
             cold_step: self.module.declare_func_in_func(self.cold_step, &mut ctx.func),
             cold_signal: self
                 .module
@@ -1426,7 +1430,7 @@ impl Jit {
                 .declare_func_in_func(self.kernel[7], &mut ctx.func),
             fast: self
                 .module
-                .declare_func_in_func(self.cold_deref, &mut ctx.func),
+                .declare_func_in_func(self.kernel[8], &mut ctx.func),
             troot: self
                 .module
                 .declare_func_in_func(self.kernel[9], &mut ctx.func),
@@ -1571,6 +1575,8 @@ struct Imports {
     wait_on: FuncRef,
     wait_same: FuncRef,
     drive: FuncRef,
+    cold_host: FuncRef,
+    cold_deref: FuncRef,
     cold_step: FuncRef,
     cold_signal: FuncRef,
     drive_bit: FuncRef,
@@ -5757,10 +5763,20 @@ impl Gen<'_> {
     /// host pointer; 0 (not available) takes the slow path, here or at `nonnull`.
     fn host_call(&mut self, a: Value, extra: Value, n: Value, write: bool, done: Block, slow: Block) {
         let w = self.c32(u32::from(write));
-        self.b
-            .ins()
-            .call(self.imp.host, &[self.env, self.mem, a, extra, n, w]);
-        let ph = self.mem_ld(MEM_COLD_RET);
+        // A native frame rarely gets here; frame-mode code often, where the stub's saves would cost
+        // more than the spills they spare (Microwatt).
+        let ph = if self.nat.is_some() {
+            self.b
+                .ins()
+                .call(self.imp.cold_host, &[self.env, self.mem, a, extra, n, w]);
+            self.mem_ld(MEM_COLD_RET)
+        } else {
+            let c = self
+                .b
+                .ins()
+                .call(self.imp.host, &[self.env, self.mem, a, extra, n, w]);
+            self.b.inst_results(c)[0]
+        };
         if self.const_of(n).is_some_and(|k| k > 0) {
             let nn = self.b.ins().icmp_imm_s(IntCC::NotEqual, ph, 0);
             self.guard(nn, slow);
@@ -8906,10 +8922,19 @@ impl Gen<'_> {
             Some(sc) => (sc, self.c32(0)),
             None => (self.regs, self.c32(dst.0)),
         };
-        self.b
-            .ins()
-            .call(self.imp.fast, &[self.env, regs, self.mem, d, h]);
-        let st = self.mem_ld(MEM_COLD_RET);
+        let st = if self.nat.is_some() {
+            self.b
+                .ins()
+                .call(self.imp.cold_deref, &[self.env, regs, self.mem, d, h]);
+            self.b.ins().load(I32, self.mf, self.mem, MEM_COLD_RET as i32)
+        } else {
+            let (op, z) = (self.c32(FAST_DEREF), self.c64(0));
+            let c = self
+                .b
+                .ins()
+                .call(self.imp.fast, &[self.env, regs, self.mem, op, d, h, z]);
+            self.b.inst_results(c)[0]
+        };
         let failed = self.b.ins().icmp_imm_s(IntCC::Equal, st, 0);
         if let Some(sc) = scratch {
             let ok = self.b.create_block();

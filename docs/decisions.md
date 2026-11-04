@@ -6889,7 +6889,8 @@ at process start only, so the binary would have had to re-exec itself. Decisions
   was tried on the heaviest interpreted run (`neorv32_dual_full`): 83% fewer page faults again, cycles unchanged, RSS up.
   Memory beyond the first step is ordinary 4 KiB pages as before (the kernel does not merge a later `brk` extension into the
   advised range), and so are the arenas of other threads (`--threads N`; a spot check of `--threads 4` shows no change in
-  cycles). An allocator that asked for huge pages on every growth step (the tunable) would cover them; not worth a re-exec.
+  cycles). An allocator that asked for huge pages on every growth step (the tunable) would cover them; not worth a re-exec
+  (the steps after the first are covered since 2026-11-04 by a polling thread: "The rest of the heap" below).
 - **Cost**: peak RSS rises by the huge page granularity: median +2 to 4 MiB (+8% geometric mean, 46 to 49 MiB for a cold
   elab), at most +12 MiB on cells that run the interpreter and +39 MiB (4%) on runs that compile with LLVM (about 900 MiB). Zeroing a huge
   page is part of the first touch, so a very small run (`--version`) pays one 2 MiB clear: not measurable in its cycles.
@@ -6900,6 +6901,45 @@ at process start only, so the binary would have had to re-exec itself. Decisions
 Measured with `tools/realbench` `--compare` (41 tests, all phases, cold and warm, interleaved, cores 6 and 7, `perf stat`
 instructions, cycles and page faults as medians of every timed run, 2 to 5 runs) and the `tools/bench` h2h designs (9 runs):
 see docs/STATUS.md "Huge pages for the heap". No test or phase gets slower beyond noise.
+
+### The rest of the heap: a thread marks each later step (perf/try-hugeheap, 2026-11-04)
+
+The first step covers 64 MiB. glibc takes every later step as a new `brk` mapping, and a new mapping does not inherit the advice, so a
+large design ran on small pages from the 65th MiB: GRLIB (about 290 MiB resident) had 66 MiB on huge pages at 5 s, and the L1 data-TLB
+misses and page walks were 2 to 3 times those with all of the heap on huge pages. The cycle check measured
+`GLIBC_TUNABLES=glibc.malloc.hugetlb=1` at 0.951 (GRLIB warm) and 0.969 (Microwatt warm), instructions unchanged. What the tunable does
+is `madvise` on every extension of the heap, on mapped blocks and on thread heaps. Decisions:
+
+- **Kept: `yavs-hugepoll`, a detached thread that marks each later step.** It reads the end of the heap (`sbrk(0)`), looks again after
+  1 ms while the heap grows, doubling up to 16 ms while it does not, and calls `madvise(MADV_HUGEPAGE)` on the new range. Started by
+  `huge_heap()` only when that function advised the first step, so a system without THP in `madvise` mode, `YAVS_HUGE_HEAP=0` and
+  other platforms never have it. A few microseconds of work per look, none while the process sleeps. Pages the program touched before the
+  thread came round stay small (the lag is a few MiB of a 64 MiB step).
+- **Result, GRLIB to 300 us, same binary, 14 paired rounds on one core of CCD0, host load 23 to 30:** huge-page coverage at 5 s
+  base 66 MiB of 289, polling 240 of 287, tunable 262 of 294. L1 dTLB misses against base: polling 0.575 +-28 %, tunable 0.460 +-35 %, A/A
+  1.164 +-14 %; page walks (L2 dTLB misses) 0.698 +-15 %, 0.601 +-18 %, A/A 1.069 +-12 %; instructions 1.001 for all. Peak RSS: polling
+  1.003 +-0.6 %, tunable 1.029 +-0.8 %. Cycles 1.010 +-13 % (polling), 1.051 +-9 % (tunable), A/A 1.051 +-10 %: not resolved on this
+  loaded host, so the cycle gain of this change is not measured here; the quiet check below decides it. Microwatt to 1300 us: its hot
+  data is inside the first step already (heap 107 of 114 MiB resident), polling marks 6 of the 9 MiB beyond it.
+- **Rejected: a re-exec with the tunable.** The tunable is read when the process starts. A re-exec costs 1.5 ms of a 2.9 ms `--version`
+  (+50 %) and about 4 ms of a 10 ms run of a tiny design (+35 %), and the short tests of a suite are what a user runs most. glibc older
+  than 2.35 ignores the tunable, so on those systems (the Linux archives are built for glibc 2.17) the re-exec would cost and gain
+  nothing; the polling works on every glibc. The variable would also reach every child process.
+- **Rejected: a bigger first step (256 or 512 MiB).** L1 dTLB misses fall to 0.3 to 0.4 of base, but glibc serves any request that fits in
+  the top chunk from it, also those over the mapping threshold, and `calloc` clears a block taken from old top memory. A zeroed 96 MiB
+  signal array of Microwatt was mapped (lazily touched) with the 64 MiB step and became resident with 256 MiB or more: peak RSS 117
+  to 217 MiB. Only a step that stays under the largest zeroed block avoids it, and that size is a property of the design.
+- **Rejected: `M_ARENA_MAX=1`** (no effect on dTLB misses: the thread heaps hold little of the hot data), **`MADV_COLLAPSE` at
+  simulation start** (the heap is at 126 of its 290 MiB then; it marks later growth only, as the polling does, without the 2 MiB clears),
+  **a global allocator wrapper** (`unsafe` in a hot path, #437).
+- **Not covered:** thread heaps (mapped, 64 MiB aligned) and blocks over the mapping threshold, which the tunable also advises.
+- **Start-up:** `yavs --version` 5.92 ms against 6.11 ms with the thread (300 runs each, loaded host); a run of a tiny design 10.0
+  and 10.2 ms (100 runs each).
+- **A user's `GLIBC_TUNABLES`** that names `glibc.malloc` turns `huge_heap()` off entirely (the user's tuning stands, including their own
+  `hugetlb`); other tunables are left alone. yavs never writes the variable.
+- **What users get:** glibc 2.35 or newer with THP in `madvise` mode: the first step, the polling, and the tunable if they set it;
+  glibc 2.17 to 2.34 with `madvise`: the same, without the tunable's extra reach; THP `always`: the kernel does it, yavs asks for nothing;
+  THP `never` or no THP: nothing asked, no thread; other libc or other OS: nothing.
 
 ## Work-counter perf tests, op census (yavs, yavs-interp, yavs-kernel, #579, 2026-10-23)
 

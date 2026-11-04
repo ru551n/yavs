@@ -47,7 +47,7 @@ Read by yavs
      - ``run``
      - 0.9.0
    * - ``YAVS_HUGE_HEAP``
-     - Set to ``0`` to not ask for transparent huge pages on the heap at start. Linux only.
+     - Set to ``0`` to not ask for transparent huge pages on the heap, at start and as it grows (:ref:`huge-pages`). Linux with glibc only; nothing is asked for unless the system's transparent huge pages are in ``madvise`` mode.
      - ``0``
      - unset: asks for them
      - every command

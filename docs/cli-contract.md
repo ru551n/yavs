@@ -931,8 +931,8 @@ The test runner sets no yavs environment variables (only `YAVS_TOKENS` under `--
 tree (section 3); `YAVS_STD_CACHE` names the directory of the shared std/ieee units, or `off`; `--std-cache` overrides it (section 3). Simulator hooks from the test runner packages
 can add `elab_flags`, `run_flags` and run environment; the test runner applies
 `elab_flags` to both `run` and `elab`, and `run_flags` only to `run`. `YAVS_HUGE_HEAP=0` stops yavs
-from asking for transparent huge pages on its heap at start (Linux with glibc and the system's
-transparent huge pages in `madvise` mode only; on any other system it does nothing). `--wave` ends a waveform block by size only, so the
+from asking for transparent huge pages on its heap, at start and as the heap grows (Linux with glibc
+and the system's transparent huge pages in `madvise` mode only; on any other system it does nothing). `--wave` ends a waveform block by size only, so the
 file's bytes depend on the recorded changes alone; `YAVS_WAVE_FLUSH=5s` (or `500ms`) also ends a
 block after that much run time, so a killed run leaves more of the file (the bytes then depend on
 the run's speed); `never` is the default; any other value is error E0801.

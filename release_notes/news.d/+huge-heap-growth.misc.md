@@ -1,0 +1,1 @@
+A large design keeps the whole of its heap on transparent huge pages (Linux with glibc, THP in `madvise` mode), not only the first 64 MiB, which cuts its data-TLB misses; nothing has to be set. A `GLIBC_TUNABLES` that tunes `glibc.malloc` now leaves the allocator alone, and `YAVS_HUGE_HEAP=0` still switches it off.

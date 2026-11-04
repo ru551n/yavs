@@ -7498,6 +7498,15 @@ satcat5, vhdl-extras, en_cl_fix, fletcher, json-for-vhdl: all as expected.
 Not done: cloning only the bodies a run reaches (needs the stage and prefix rules to change, see the decision), the page faults of
 the whole run (#556).
 
+## Huge pages for the rest of the heap (perf/try-hugeheap, 2026-11-04)
+
+`huge_heap()` also starts `yavs-hugepoll`, a detached thread that marks each later `brk` step for huge pages (see `docs/decisions.md` "The rest of
+the heap" for the options, numbers and what each kind of system gets): GRLIB resident 290 MiB, huge pages at 5 s 66 MiB before, 240 MiB after
+(the tunable: 262); L1 dTLB misses 0.575 +-28 % and page walks 0.698 +-15 % of base (A/A 1.164 and 1.069), peak RSS 1.003, instructions 1.001.
+Cycles are not resolved on a loaded host (1.010 +-13 %, A/A 1.051 +-10 %). A user's `GLIBC_TUNABLES` naming `glibc.malloc` now turns the
+whole feature off. Whole GRLIB and Microwatt output, stderr and exit status equal to the base. Test: `crates/yavs-cache/tests/huge_heap.rs`
+(later steps marked; the user's tunables respected). Docs: `docs/running-faster.rst` "Huge pages", `docs/environment.rst`.
+
 ## Huge pages for the heap (#556, 2026-10-23)
 
 `yavs_cache::huge_heap()` at the start of `main`: top pad 64 MiB, one growth step of the `brk` heap, `madvise(MADV_HUGEPAGE)` on it (Linux

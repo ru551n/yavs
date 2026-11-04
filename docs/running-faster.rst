@@ -40,6 +40,27 @@ test cases of the same testbench, reuse it. Short tests then mostly skip analysi
   way. A name that goes through ``..`` or a symlink counts as another name until it is analyzed: the units
   of that file, and those that depend on them, are analyzed once more under it. Only the time differs.
 
+.. _huge-pages:
+
+Huge pages
+----------
+
+A long run of a large design spends part of its time on address translation. On Linux with glibc, yavs asks the
+kernel for transparent huge pages (2 MiB) for its heap and for compiled code, and keeps asking as the heap grows. On
+a design with a heap of a few hundred MiB this roughly halves the data-TLB misses; the effect on run time is a few percent
+at most, and on a short run there is none. The memory in use differs by a few MiB. Nothing is asked for when the
+system does not allow it, and nothing has to be set.
+
+* The kernel must have transparent huge pages in ``madvise`` mode, which most distributions use by default. Check
+  with ``cat /sys/kernel/mm/transparent_hugepage/enabled``: ``always`` and ``madvise`` give the pages (``always`` without
+  yavs asking), ``never`` gives none and yavs leaves the heap as it is. Changing that setting is the
+  administrator's choice; yavs does not work around it.
+* ``YAVS_HUGE_HEAP=0`` stops yavs from asking for them on the heap (:doc:`environment`); ``YAVS_CLIFT_HUGE=0`` and
+  ``YAVS_LLVM_HUGE=0`` do the same for compiled code.
+* ``GLIBC_TUNABLES`` is never written by yavs. If you set a tunable that names ``glibc.malloc``, yavs leaves the allocator to you and asks for nothing on the heap;
+  ``glibc.malloc.hugetlb=1`` (glibc 2.35 and later) then gives the effect for the whole heap, and is not needed otherwise.
+* Other systems (musl, macOS, Windows) run as before, on ordinary pages.
+
 Threads
 -------
 

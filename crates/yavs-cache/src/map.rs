@@ -80,12 +80,15 @@ pub(crate) fn trim_heap() {
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 pub(crate) fn trim_heap() {}
 
-/// Ask for transparent huge pages on the heap, in this process, once at start (#556). The
+/// Ask for transparent huge pages on the heap, in this process, from start (#556). The
 /// allocator takes memory from the system in small steps, so a run that builds a few tens of MiB
 /// takes thousands of page faults (a fifth of a cold elaboration). The heap grows in one big step
 /// instead, and that step is marked `MADV_HUGEPAGE`, which needs a system with transparent huge
-/// pages in `madvise` mode; anything else leaves the allocator as it was. `YAVS_HUGE_HEAP=0`
-/// switches it off.
+/// pages in `madvise` mode; anything else leaves the allocator as it was. Every later step the
+/// allocator takes is a new mapping without the advice, so a small thread looks for it and marks
+/// it (a design with a heap of hundreds of MiB would otherwise run on small pages from the 65th
+/// MiB, with 3 to 4 times the data-TLB misses). `YAVS_HUGE_HEAP=0` switches both off, and so does a
+/// `GLIBC_TUNABLES` that names `glibc.malloc` (the user's tuning stands).
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub(crate) fn huge_heap() {
     use std::ffi::{c_int, c_void};
@@ -104,6 +107,14 @@ pub(crate) fn huge_heap() {
     if std::env::var_os("YAVS_HUGE_HEAP").is_some_and(|v| v == "0") {
         return;
     }
+    // A user who tunes the allocator through the environment keeps it as tuned.
+    if std::env::var_os("GLIBC_TUNABLES").is_some_and(|v| {
+        v.as_encoded_bytes()
+            .windows(12)
+            .any(|w| w == b"glibc.malloc")
+    }) {
+        return;
+    }
     // One read into a small buffer ("always [madvise] never" is 23 bytes): `read_to_string`
     // also asks for the size and reads again to find the end.
     let mut mode = [0u8; 64];
@@ -115,7 +126,7 @@ pub(crate) fn huge_heap() {
     }
     // SAFETY: `mallopt`, `sbrk(0)` and `madvise` on the heap's own range take no pointers
     // the program owns; a failed call changes nothing.
-    unsafe {
+    let end = unsafe {
         // Setting any of these turns off the allocator's own tuning of the mapping threshold,
         // so it is set to its upper limit (the value the tuning grows to anyway).
         mallopt(M_MMAP_THRESHOLD, 32 << 20);
@@ -127,12 +138,34 @@ pub(crate) fn huge_heap() {
         std::hint::black_box(&grow);
         drop(grow);
         let to = sbrk(0) as usize;
-        if let Some(start) = from.checked_next_multiple_of(HUGE)
-            && to > start
-        {
-            madvise(start as *mut c_void, to - start, MADV_HUGEPAGE);
+        match from.checked_next_multiple_of(HUGE) {
+            Some(start) if to > start => {
+                madvise(start as *mut c_void, to - start, MADV_HUGEPAGE);
+                to
+            }
+            _ => return,
         }
-    }
+    };
+    // Detached, for the life of the process. It looks every 1 ms while the heap grows and backs
+    // off to every 16 ms: a few microseconds of work each time.
+    let _ = std::thread::Builder::new()
+        .name("yavs-hugepoll".into())
+        .spawn(move || {
+            let (mut seen, mut wait) = (end, 1);
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(wait));
+                // SAFETY: `sbrk(0)` reads the end of the heap (the allocator's own variable, a
+                // plain pointer load) and changes nothing; `madvise` on the heap's own pages
+                // changes only how they are backed.
+                let now = unsafe { sbrk(0) } as usize;
+                if now > seen {
+                    unsafe { madvise(seen as *mut c_void, now - seen, MADV_HUGEPAGE) };
+                    (seen, wait) = (now, 1);
+                } else {
+                    wait = (wait * 2).min(16);
+                }
+            }
+        });
 }
 
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]

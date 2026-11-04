@@ -3121,6 +3121,21 @@ impl Fx<'_, '_> {
                     });
                     dope = want;
                 }
+                if self.ret_flat {
+                    // The pair keeps a heap object the data is in to the caller's statement end,
+                    // as the pair of an array result does; the optimiser drops one it can prove
+                    // off the heap.
+                    let keep = self.alloc_n(16);
+                    self.store(keep, data, Width::B8);
+                    let z = self.int(0);
+                    let d = self.offset(keep, 8);
+                    self.store(d, z, Width::B8);
+                    self.fat_root(keep);
+                    let (left, right, dir) = self.dope_bounds(dope);
+                    self.emit(Inst::RetBounds { left, right, dir });
+                    self.ret_term(Some(data));
+                    return Ok(());
+                }
                 // The descriptor may live in this frame: copy it out with the result.
                 let bytes = 24 * u32::from(dims);
                 let nd = self.alloc_n(bytes);

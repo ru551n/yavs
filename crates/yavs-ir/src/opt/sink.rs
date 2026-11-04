@@ -519,6 +519,8 @@ fn writes_nothing(i: &Inst) -> bool {
             | Inst::Select { .. }
             | Inst::Alloc { .. }
             | Inst::LayoutOf { .. }
+            | Inst::RetBounds { .. }
+            | Inst::TakeBounds { .. }
             | Inst::Load { .. }
             | Inst::Pos { .. }
             | Inst::SlicePos { .. }

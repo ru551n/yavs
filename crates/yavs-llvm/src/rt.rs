@@ -348,6 +348,7 @@ pub const MEM_COV: u64 = std::mem::offset_of!(Mem, fr.cov) as u64;
 
 pub const MEM_STOP: u64 = std::mem::offset_of!(Mem, fr.stop) as u64;
 pub const MEM_SPIN: u64 = std::mem::offset_of!(Mem, fr.spin) as u64;
+pub const MEM_RET_BOUNDS: u64 = std::mem::offset_of!(Mem, fr.ret_bounds) as u64;
 
 pub const MEM_COV_LEN: u64 = std::mem::offset_of!(Mem, fr.cov_len) as u64;
 pub const MEM_OBJS: u64 = std::mem::offset_of!(Mem, objs) as u64;
@@ -2938,6 +2939,9 @@ pub fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
             right,
             dir,
         } => vec![dst, left, right, dir],
+        Inst::RetBounds { left, right, dir } | Inst::TakeBounds { left, right, dir } => {
+            vec![left, right, dir]
+        }
         Inst::BoundsPos {
             dst,
             left,
@@ -3103,6 +3107,8 @@ pub fn keeps_objects(i: &Inst) -> bool {
             | Inst::BoundsLen { .. }
             | Inst::BoundsPos { .. }
             | Inst::BoundsSlice { .. }
+            | Inst::RetBounds { .. }
+            | Inst::TakeBounds { .. }
             | Inst::LayoutOf { .. }
             | Inst::SubtypeCheck { .. }
             | Inst::Deref { .. }
@@ -3685,6 +3691,8 @@ fn steady(i: &Inst) -> bool {
             | Inst::BoundsLen { .. }
             | Inst::BoundsPos { .. }
             | Inst::BoundsSlice { .. }
+            | Inst::RetBounds { .. }
+            | Inst::TakeBounds { .. }
             | Inst::SubtypeCheck { .. }
             | Inst::Br { .. }
             | Inst::CondBr { .. }

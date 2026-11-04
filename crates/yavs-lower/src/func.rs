@@ -237,6 +237,8 @@ pub(crate) struct Fx<'a, 'b> {
     pub loops: Vec<(StmtId, BlockId, BlockId)>,
     /// The result subtype of a function.
     pub ret: Option<SubtypeId>,
+    /// This function returns an array as its data and `RetBounds` (`Fx::flat_result`).
+    pub ret_flat: bool,
     pub name: String,
     /// First driver slot of each `drivers` entry (a record LSP covers several).
     pub driver_base: Vec<u32>,
@@ -315,6 +317,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             live: true,
             loops: Vec::new(),
             ret: None,
+            ret_flat: false,
             name,
             drivers: Vec::new(),
             driver_base: Vec::new(),
@@ -1156,6 +1159,17 @@ impl<'a, 'b> Fx<'a, 'b> {
     }
 
     /// Return `v`, closing the files this subprogram declared first.
+    /// Does function `sp` return an array as its data address and `RetBounds`? By its type, as
+    /// an array parameter; not a function with an `ieee` native, whose result the caller gets as
+    /// the native's fat pair whichever of them ran (`ieee_body`).
+    pub(crate) fn flat_result(&mut self, sp: &yavs_sem::decl::Subprogram, span: Span) -> R<bool> {
+        let Some(r) = sp.ret else { return Ok(false) };
+        let t = self.ty(self.db.base(r), span)?;
+        Ok(Ty::flat_array(self.fb.program().types(), t)
+            && !self.is_general(self.db.base(r), span)?
+            && yavs_ir::ieee::native_symbol(sp.mangled.as_str()).is_none())
+    }
+
     pub fn ret_term(&mut self, v: Option<Reg>) {
         for (off, sym, tid) in std::mem::take(&mut self.local_files) {
             let a = self.addr(crate::Space::Frame(self.depth), off);
@@ -1225,6 +1239,10 @@ pub(crate) fn subprogram(
     if let (SubprogramKind::Function { .. }, Some(r)) = (&sp.kind, sp.ret) {
         let t = fx.ty(db.base(r), decl.span)?;
         fx.fb.ret_ty(t);
+        if fx.flat_result(sp, decl.span)? {
+            fx.fb.ret_flat();
+            fx.ret_flat = true;
+        }
     }
     fx.stmt_start(StmtKind::Subprogram, decl.span);
     fx.method_prologue(d, *scope, depth, decl.span)?;

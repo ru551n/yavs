@@ -3238,6 +3238,9 @@ impl<'a> Fx<'a, '_> {
                     dst: Some(dst),
                 });
                 if rt == RegTy::Ptr {
+                    if self.flat_result(sp, span)? {
+                        return Ok(Some(self.taken_bounds(dst)));
+                    }
                     return Ok(Some(self.fat_value(dst)));
                 }
                 Ok(Some(V::S(dst)))
@@ -3307,6 +3310,21 @@ impl<'a> Fx<'a, '_> {
         V::A(data, dope)
     }
 
+    /// The array a function with `Func::ret_flat` just returned at `data`: its bounds taken, a
+    /// descriptor made of them (which the optimiser drops if the readers can use the registers).
+    pub(crate) fn taken_bounds(&mut self, data: Reg) -> V {
+        let (left, right, dir) = (
+            self.reg(RegTy::I64),
+            self.reg(RegTy::I64),
+            self.reg(RegTy::I64),
+        );
+        self.emit(Inst::TakeBounds { left, right, dir });
+        let at = self.alloc_n(yavs_ir::DOPE_DIM_BYTES as u32);
+        let parts = self.fb.regs(&[left, right, dir]);
+        self.emit(Inst::MakeDope { at, parts });
+        V::A(data, at)
+    }
+
     pub(crate) fn make_fat(&mut self, data: Reg, dope: Reg) -> Reg {
         let fat = self.alloc_n(16);
         self.store(fat, data, Width::B8);
@@ -3342,7 +3360,7 @@ impl<'a> Fx<'a, '_> {
 
     /// Left, right and direction of the one-dimensional descriptor `dope`: the registers it was
     /// made from in this block, else loaded from it.
-    fn dope_bounds(&mut self, dope: Reg) -> (Reg, Reg, Reg) {
+    pub(crate) fn dope_bounds(&mut self, dope: Reg) -> (Reg, Reg, Reg) {
         let here = self.fb.current();
         match (self.made_dopes.iter().rev()).find(|(b, at, _)| *b == here && *at == dope) {
             Some(&(_, _, bounds)) => bounds,

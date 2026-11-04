@@ -3231,6 +3231,23 @@ fn gen_func(
                 g.st(dst, v);
                 g.join(join);
             }
+            Inst::RetBounds { left, right, dir } => {
+                let at = g.mem_ld(MEM_RET_BOUNDS);
+                for (k, r) in [left, right, dir].into_iter().enumerate() {
+                    let v = g.ld(r);
+                    g.b.ins()
+                        .store(MemFlagsData::trusted(), v, at, (k * 8) as i32);
+                }
+            }
+            Inst::TakeBounds { left, right, dir } => {
+                let at = g.mem_ld(MEM_RET_BOUNDS);
+                for (k, r) in [left, right, dir].into_iter().enumerate() {
+                    let v =
+                        g.b.ins()
+                            .load(I64, MemFlagsData::trusted(), at, (k * 8) as i32);
+                    g.st(r, v);
+                }
+            }
             Inst::BoundsSlice { dst, regs, .. } => {
                 let Some(&[al, ar, ad, left, right, dir]) = f.regs(regs) else {
                     return Err("slice position without its operands".into());

@@ -4243,6 +4243,20 @@ impl Gen {
                         self.st(&c, dst, n);
                         self.join(&c, join);
                     }
+                    Inst::RetBounds { left, right, dir } => {
+                        let at = self.load(self.ptr, self.mem_ptr(&c, MEM_RET_BOUNDS));
+                        for (k, r) in [left, right, dir].into_iter().enumerate() {
+                            let p = self.gep(at, self.c64(k as i64 * 8));
+                            self.store(self.ld(&c, r), p);
+                        }
+                    }
+                    Inst::TakeBounds { left, right, dir } => {
+                        let at = self.load(self.ptr, self.mem_ptr(&c, MEM_RET_BOUNDS));
+                        for (k, r) in [left, right, dir].into_iter().enumerate() {
+                            let p = self.gep(at, self.c64(k as i64 * 8));
+                            self.st(&c, r, self.load(self.i64, p));
+                        }
+                    }
                     Inst::BoundsPos {
                         dst,
                         left,

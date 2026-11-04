@@ -563,6 +563,9 @@ pub struct Func {
     pub moved: Vec<(u32, u32, u32)>,
     /// A function: the base type of its result (`None` for a procedure, a process).
     pub ret_ty: Option<TyId>,
+    /// A function that returns an array as its data address, the bounds through `RetBounds`
+    /// (the caller's next instruction is `TakeBounds`), not as a fat pair.
+    pub ret_flat: bool,
     /// The optimised copy, made when [`Program::func`] first asks (`None`: the code is as
     /// lowered).
     #[serde(skip)]
@@ -826,6 +829,7 @@ impl Func {
             spare: false,
             moved: self.moved.clone(),
             ret_ty: self.ret_ty,
+            ret_flat: self.ret_flat,
             opt: Default::default(),
             memo: Default::default(),
             lazy: None,
@@ -871,6 +875,7 @@ impl Func {
             spare: true,
             moved: Vec::new(),
             ret_ty: None,
+            ret_flat: false,
             opt: Default::default(),
             memo: Default::default(),
             lazy: None,

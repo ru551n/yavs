@@ -24,6 +24,8 @@ const PASS: &[&str] = &[
     "composite/array_param_cells_index",
     "composite/array_param_cells_result",
     "composite/array_param_cells_slice",
+    "composite/array_result_cells",
+    "composite/array_result_cells_res",
     "composite/record_length_var",
     "composite/record_length_var_short",
     "composite/record_length_second_field",

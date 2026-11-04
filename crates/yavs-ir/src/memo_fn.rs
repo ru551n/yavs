@@ -33,7 +33,8 @@ pub enum MemoArg {
     /// An array of plain scalars: the data address and the descriptor address (two cells for a
     /// parameter, a fat pair `[data, dope]` for a result).
     Array(MemoArr),
-    /// A parameter of such an array whose descriptor's words are cells: four cells.
+    /// A parameter of such an array whose descriptor's words are cells: four cells. A result:
+    /// the data address, the words through `RetBounds`.
     Flat(MemoArr),
 }
 
@@ -164,6 +165,8 @@ fn inst_ok(prog: &Program, i: &Inst, calls: &mut Vec<FuncId>) -> bool {
         | Inst::BoundsLen { .. }
         | Inst::BoundsPos { .. }
         | Inst::BoundsSlice { .. }
+        | Inst::RetBounds { .. }
+        | Inst::TakeBounds { .. }
         | Inst::LayoutOf { .. }
         | Inst::SubtypeCheck { .. }
         | Inst::Br { .. }
@@ -253,6 +256,7 @@ impl Program {
         }
         let ret = match f.ret_ty? {
             t if plain_scalar(self, t) => MemoArg::Scalar,
+            t if f.ret_flat => MemoArg::Flat(plain_array(self, t)?),
             t => MemoArg::Array(plain_array(self, t)?),
         };
         let mut args = Vec::new();

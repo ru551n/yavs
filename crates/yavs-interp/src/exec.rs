@@ -687,6 +687,8 @@ pub(crate) struct Machine {
     pub(crate) pm: Option<Box<crate::pmemo::State>>,
     /// Jumps back of a process that never suspends, to bound the activation (#583).
     spin: u64,
+    /// The bounds of the array the last function with `Func::ret_flat` returned.
+    ret_bounds: [u64; 3],
 }
 
 /// The fields of a machine that `view_root` reads and the interpreter does not (see
@@ -1318,6 +1320,7 @@ impl Machine {
             rscratch: heap::Refs::default(),
             execs: 0,
             spin: spin_range().0,
+            ret_bounds: [0; 3],
         }
     }
 
@@ -4721,6 +4724,16 @@ impl Machine {
         }
     }
 
+    /// The bounds `Inst::RetBounds` left.
+    pub(crate) fn ret_bounds(&self) -> [u64; 3] {
+        self.ret_bounds
+    }
+
+    /// `Machine::ret_bounds`: what a memo answers a call with.
+    pub(crate) fn set_ret_bounds(&mut self, w: [u64; 3]) {
+        self.ret_bounds = w;
+    }
+
     /// `Inst::BoundsPos`: `pos_of` in a dimension whose bounds are in registers.
     #[inline(always)]
     fn bounds_pos(
@@ -6446,6 +6459,21 @@ impl Machine {
                     if let Inst::SlicePos { dst, .. } = inst {
                         self.regs[dst.0 as usize] = p;
                     }
+                    k += 1;
+                }
+                Op::RetBounds { left, right, dir } => {
+                    self.ret_bounds = [
+                        self.regs[left as usize],
+                        self.regs[right as usize],
+                        self.regs[dir as usize],
+                    ];
+                    k += 1;
+                }
+                Op::TakeBounds { left, right, dir } => {
+                    let [l, r, d] = self.ret_bounds;
+                    self.regs[left as usize] = l;
+                    self.regs[right as usize] = r;
+                    self.regs[dir as usize] = d;
                     k += 1;
                 }
                 Op::BoundsSlice(pc) => {
@@ -9505,6 +9533,7 @@ impl Machine {
         m.tier_cov(tf);
         tf.stop = c.interrupt_flags();
         tf.spin = &raw mut m.spin;
+        tf.ret_bounds = &raw mut m.ret_bounds;
         tf.drivers = m.drivers.as_ptr();
         tf.ndrivers = m.drivers.len() as u64;
         // A process that is `hot` has no shared state (`sh`), which the call paths of a serial
@@ -10527,6 +10556,15 @@ impl Machine {
             Inst::SlicePos { dst, .. } => {
                 let p = self.slice_pos(&inst)?;
                 self.set(dst, p);
+            }
+            Inst::RetBounds { left, right, dir } => {
+                self.ret_bounds = [self.r(left), self.r(right), self.r(dir)];
+            }
+            Inst::TakeBounds { left, right, dir } => {
+                let [l, r, d] = self.ret_bounds;
+                self.set(left, l);
+                self.set(right, r);
+                self.set(dir, d);
             }
             Inst::BoundsSlice { dst, .. } => {
                 let p = self.bounds_slice(f, &inst)?;
@@ -11652,6 +11690,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
             tf.known = u64::MAX;
             tf.stop = crate::NO_STOP.as_ptr();
             tf.spin = &raw mut m.spin;
+            tf.ret_bounds = &raw mut m.ret_bounds;
             tf.kctx = std::ptr::null_mut();
             tf.gate = crate::NO_GATE.as_ptr();
             return;
@@ -11661,6 +11700,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
         tf.gate = c.gate_addr();
         tf.stop = c.interrupt_flags();
         tf.spin = &raw mut m.spin;
+        tf.ret_bounds = &raw mut m.ret_bounds;
         if m.vc.tier_sigs.len() != m.vc.nsigs {
             m.vc.tier_sigs = m.inst.sigs.iter().map(|s| tier_sig(c, s)).collect();
         }

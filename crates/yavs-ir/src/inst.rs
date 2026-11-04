@@ -580,6 +580,18 @@ pub enum Inst {
         what: CheckMsgId,
         dir_what: CheckMsgId,
     },
+    /// Before the `Ret` of a function with `Func::ret_flat`: the bounds of the array it returns.
+    RetBounds {
+        left: Reg,
+        right: Reg,
+        dir: Reg,
+    },
+    /// Right after the `Call` of such a function: the bounds of the array it returned.
+    TakeBounds {
+        left: Reg,
+        right: Reg,
+        dir: Reg,
+    },
     /// Layout of `ty` constrained by the descriptor at `desc`, written to temporary memory as
     /// `[size, align, offsets...]` (records) or `[size, align, stride, count]` (arrays). With
     /// `cache`, a process's frame bytes at that offset keep the last layout of `ty` (the
@@ -1231,6 +1243,16 @@ impl Inst {
                 f(idx, Use, i);
             }
             Inst::BoundsSlice { dst, .. } => d(dst, i),
+            Inst::RetBounds { left, right, dir } => {
+                f(left, Use, i);
+                f(right, Use, i);
+                f(dir, Use, i);
+            }
+            Inst::TakeBounds { left, right, dir } => {
+                d(left, i);
+                d(right, i);
+                d(dir, i);
+            }
             Inst::LayoutOf { dst, desc, .. } => {
                 d(dst, p);
                 f(desc, Use, p);

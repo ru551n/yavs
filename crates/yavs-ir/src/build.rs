@@ -245,6 +245,7 @@ impl ProgramBuilder {
             spare: false,
             moved: Vec::new(),
             ret_ty: None,
+            ret_flat: false,
             opt: Default::default(),
             memo: Default::default(),
             lazy: None,
@@ -273,6 +274,7 @@ impl ProgramBuilder {
             flags: FuncFlags::default(),
             body: None,
             ret_ty: None,
+            ret_flat: false,
         }
     }
 
@@ -570,6 +572,7 @@ pub struct FuncBuilder<'a> {
     flags: FuncFlags,
     body: Option<BlockId>,
     ret_ty: Option<TyId>,
+    ret_flat: bool,
 }
 
 impl FuncBuilder<'_> {
@@ -672,6 +675,11 @@ impl FuncBuilder<'_> {
     /// The function's result type (`Func::ret_ty`).
     pub fn ret_ty(&mut self, ty: TyId) {
         self.ret_ty = Some(ty);
+    }
+
+    /// The function returns an array as its data address and `RetBounds` (`Func::ret_flat`).
+    pub fn ret_flat(&mut self) {
+        self.ret_flat = true;
     }
 
     /// The entry block is `BlockId(0)`.
@@ -812,6 +820,7 @@ impl FuncBuilder<'_> {
         f.flags = self.flags;
         f.body = self.body;
         f.ret_ty = self.ret_ty;
+        f.ret_flat = self.ret_flat;
         f.defined = true;
         crate::casetab::tabulate(self.pb, self.id);
     }

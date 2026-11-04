@@ -21,8 +21,9 @@ textual dump.
   leaf, see yavs-lower DESIGN.md); composites are passed by address: an array of one dimension
   with nothing below it needing a descriptor (`Ty::flat_array`) as four cells `data, left, right,
   dir` (`Param::flat`: the slots after the data cell are the descriptor), any other as two cells
-  `data, dope`; a function result is one cell, a string/unconstrained array result is the address
-  of a fat pair `[data, dope]`.
+  `data, dope`; a function result is one cell, an array result the address of a fat pair
+  `[data, dope]`, except with `Func::ret_flat`, the data address with the bounds through
+  `RetBounds` and `TakeBounds`.
 - Native argument convention (ir.md 9): `in` scalars by value; `out`/`inout` scalars and
   access variables (`line`) by the address of the cell; an unconstrained array (`string`,
   `bit_vector`) as the address of a fat pair `[data, dope]` (the natives of `ieee`, `yavs.ieee.*`, take

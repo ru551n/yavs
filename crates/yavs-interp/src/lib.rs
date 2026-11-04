@@ -1012,6 +1012,8 @@ pub struct TierFrame {
     /// which reports the activation, once it reaches the limit. Kept in the machine so it
     /// survives every re-entry; `NO_SPIN` without a machine.
     pub spin: *mut u64,
+    /// Where `Inst::RetBounds` leaves the bounds of a returned array (`Machine::ret_bounds`).
+    pub ret_bounds: *mut [u64; 3],
     /// The kernel context of this activation (`yavs_kernel::Ctx`), null without one, and the
     /// machine's drivers (`ndrivers`): the zero-delay drives of compiled code go to the kernel
     /// straight ([`direct_drive_bit`], [`direct_drive_now`], [`direct_drive_bits`]). Valid only
@@ -1316,6 +1318,7 @@ impl Default for TierFrame {
             cov_len: 0,
             stop: NO_STOP.as_ptr(),
             spin: NO_SPIN.as_ptr(),
+            ret_bounds: std::ptr::null_mut(),
             kctx: std::ptr::null_mut(),
             drivers: std::ptr::null(),
             ndrivers: 0,
@@ -2891,7 +2894,8 @@ fn call_values_inner(
                 ));
             }
         };
-        result(&mut m, &prog, ret, v)
+        let flat = prog.funcs.get(func).is_some_and(|g| g.ret_flat);
+        result(&mut m, &prog, ret, flat, v)
     })();
     if let (Some(g), Some(st)) = (guard.as_mut(), m.sh.take()) {
         **g = st;
@@ -2909,16 +2913,23 @@ fn result(
     m: &mut Machine,
     prog: &Program,
     ret: Option<yavs_ir::TyId>,
+    flat: bool,
     v: Option<u64>,
 ) -> exec::R<Option<CallVal>> {
     let (Some(ty), Some(fat)) = (ret, v) else {
         return Ok(v.map(CallVal::Cell));
     };
-    let data = m.load(fat, yavs_ir::Width::B8)?;
-    let d = m.load(exec::add_addr(fat, 8)?, yavs_ir::Width::B8)?;
-    let n = yavs_ir::Ty::desc_size(&prog.types, ty)
-        .ok_or_else(|| exec::ice("result type without a descriptor size"))?;
-    let desc = m.rd(d, n)?.to_vec();
+    // (`flat`: `v` is the data, the bounds as `RetBounds` left them.)
+    let (data, desc) = if flat {
+        let w = m.ret_bounds();
+        (fat, w.iter().flat_map(|x| x.to_le_bytes()).collect())
+    } else {
+        let data = m.load(fat, yavs_ir::Width::B8)?;
+        let d = m.load(exec::add_addr(fat, 8)?, yavs_ir::Width::B8)?;
+        let n = yavs_ir::Ty::desc_size(&prog.types, ty)
+            .ok_or_else(|| exec::ice("result type without a descriptor size"))?;
+        (data, m.rd(d, n)?.to_vec())
+    };
     let (l, _) = yavs_ir::Ty::layout(&prog.types, &prog.consts, ty, &desc)
         .map_err(|e| exec::ice(format!("result layout: {e:?}")))?;
     let data = m.rd(data, l.size)?.to_vec();
@@ -2963,7 +2974,7 @@ pub fn call_native(
             }
         }
         let v = fun(&mut m, &mut None, n.ty, &cells)?;
-        result(&mut m, &prog, ret, v)
+        result(&mut m, &prog, ret, false, v)
     })();
     r.map_err(|e| m.error(e, None))
 }

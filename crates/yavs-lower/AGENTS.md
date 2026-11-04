@@ -133,7 +133,7 @@ rule 24).
 - Lowering a unit with errors is an ICE: callers must stop after sem errors.
 - Every function goes through the yavs-ir verifier; a verifier error is an ICE of this crate,
   never "fixed" by relaxing the verifier.
-- The calling and native conventions (`data, left, right, dir` for an array parameter of a type `Ty::flat_array` allows, whatever the formal's subtype: a subprogram generic's profile and its actual only agree on the type; fat pair `[data, dope]`, `ieee` natives' array values
+- The calling and native conventions (`data, left, right, dir` for an array parameter of a type `Ty::flat_array` allows, whatever the formal's subtype: a subprogram generic's profile and its actual only agree on the type; an array result of such a type with scalar elements and no `ieee` native as its data address and `RetBounds`/`TakeBounds`, `Fx::flat_result`; fat pair `[data, dope]` otherwise, `ieee` natives' array values
   `data, left, right, dir` (`expr.rs` `Conv`; also the string target of the textio READ natives, #771), cells per parameter, signal
   parameter = two cells) are shared with `yavs-interp`: change both, note it in DESIGN.md and
   `crates/yavs-ir/README.md`.

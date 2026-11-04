@@ -578,6 +578,67 @@ fn round(prog: &Program, f: &mut crate::Func, regs: bool, params: bool) -> bool 
     true
 }
 
+/// The offset in `rest` of the `TakeBounds` a `RetBounds` of the registers `from` before it answers:
+/// nothing between but constants, addresses and moves that leave those registers alone.
+fn taken_by(rest: &[Inst], from: [Reg; 3]) -> Option<usize> {
+    for (q, i) in rest.iter().enumerate() {
+        match *i {
+            Inst::TakeBounds { .. } => return Some(q),
+            Inst::Const { dst, .. } | Inst::AddrOf { dst, .. } | Inst::Move { dst, .. }
+                if !from.contains(&dst) => {}
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// A result spliced into its caller (the read of a result table, before the first pass): the bounds
+/// go to the registers of the `TakeBounds`, so the walk sees what is known of them.
+pub(super) fn fold_takes(f: &mut crate::Func) {
+    let n = f.code.len();
+    let mut code = Vec::with_capacity(n);
+    let mut loc = Vec::with_capacity(n);
+    let mut via = Vec::with_capacity(if f.via.is_empty() { 0 } else { n });
+    let mut taken: FxMap<usize, (Reg, Reg, Reg)> = FxMap::default();
+    let ranges: Vec<(u32, u32)> = f.blocks.values().iter().map(|b| (b.start, b.end)).collect();
+    for (b, (start, end)) in ranges.into_iter().enumerate() {
+        let first = code.len() as u32;
+        for pc in start as usize..end as usize {
+            let i = f.code[pc];
+            let out: Vec<Inst> = match i {
+                Inst::RetBounds { left, right, dir }
+                    if let Some(q) =
+                        taken_by(&f.code[pc + 1..end as usize], [left, right, dir]) =>
+                {
+                    taken.insert(pc + 1 + q, (left, right, dir));
+                    Vec::new()
+                }
+                Inst::TakeBounds { left, right, dir } if taken.contains_key(&pc) => {
+                    let (l, r, d) = taken[&pc];
+                    vec![
+                        Inst::Move { dst: left, src: l },
+                        Inst::Move { dst: right, src: r },
+                        Inst::Move { dst: dir, src: d },
+                    ]
+                }
+                _ => vec![i],
+            };
+            for x in out {
+                code.push(x);
+                loc.push(f.loc[pc]);
+                via.extend(f.via.get(pc).copied());
+            }
+        }
+        if let Some(blk) = f.blocks.get_mut(crate::BlockId(b as u32)) {
+            blk.start = first;
+            blk.end = code.len() as u32;
+        }
+    }
+    f.code = code;
+    f.loc = loc;
+    f.via = via;
+}
+
 /// The constant in `r` when one instruction defines it.
 fn const_of(f: &crate::Func, defs: &[u8], r: Reg) -> Option<i64> {
     if defs.get(r.0 as usize) != Some(&1) {

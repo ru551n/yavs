@@ -440,7 +440,33 @@ fn tab_forwarder(prog: &crate::Program, callee: FuncId, t: &crate::CaseTab) -> O
         },
     ];
     let res;
-    if let Some(d) = t.desc {
+    // A function with `Func::ret_flat`: the data, the bounds the pool's descriptor holds.
+    let flat_desc = t
+        .desc
+        .filter(|_| prog.funcs.get(callee).is_some_and(|f| f.ret_flat));
+    if let Some(d) = flat_desc {
+        let crate::ConstData::Bytes(bytes) = prog.consts.get(d)? else {
+            return None;
+        };
+        let word = |k: usize| -> Option<i64> {
+            Some(i64::from_le_bytes(
+                bytes.get(k * 8..k * 8 + 8)?.try_into().ok()?,
+            ))
+        };
+        let (l, r, w) = (word(0)?, word(1)?, word(2)?);
+        let (lr, rr, wr) = (fresh(RegTy::I64), fresh(RegTy::I64), fresh(RegTy::I64));
+        b2.extend([
+            Inst::Const { dst: lr, v: l },
+            Inst::Const { dst: rr, v: r },
+            Inst::Const { dst: wr, v: w },
+            Inst::RetBounds {
+                left: lr,
+                right: rr,
+                dir: wr,
+            },
+        ]);
+        res = tp;
+    } else if let Some(d) = t.desc {
         let (dd, c16, pr, c8, q) = (
             fresh(RegTy::Ptr),
             fresh(RegTy::I64),
@@ -666,6 +692,8 @@ fn allowed(prog: &crate::Program, i: &Inst) -> bool {
         | Inst::BoundsLen { .. }
         | Inst::BoundsPos { .. }
         | Inst::BoundsSlice { .. }
+        | Inst::RetBounds { .. }
+        | Inst::TakeBounds { .. }
         | Inst::Deref { .. }
         | Inst::LGet { .. }
         | Inst::LEq { .. }
@@ -821,6 +849,7 @@ pub(super) fn tab_calls(
     }
     f.via.clear();
     f.via_nodes.clear();
+    super::dopes::fold_takes(&mut f);
     Some(f)
 }
 

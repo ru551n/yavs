@@ -5206,6 +5206,7 @@ impl Machine {
             Some(h) => (h.epoch(), h.log().as_ptr()),
             None => (0, std::ptr::null()),
         };
+        tf.heap_gen = tf.heap_epoch.wrapping_add(tf.shared_epoch);
     }
 
     /// `Inst::CallNative`: `Flow::Next`, or the flow a native ends with (a VHDL body it hands

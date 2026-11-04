@@ -110,7 +110,7 @@ impl CacheKvStore for Kv {
 const PRE: &str = "clifpre";
 
 /// The switches whose value changes the code the lowering or Cranelift makes: in every pre-key.
-pub(crate) const KEYED: [&str; 10] = [
+pub(crate) const KEYED: [&str; 12] = [
     "YAVS_CLIFT_OPT",
     "YAVS_CLIFT_VERIFY",
     "YAVS_CLIFT_RA",
@@ -121,6 +121,8 @@ pub(crate) const KEYED: [&str; 10] = [
     "YAVS_CLIFT_NO_SCAN",
     "YAVS_CLIFT_ONCE",
     "YAVS_CLIFT_NO_PROOFS",
+    "YAVS_CLIFT_HOLD_CHECK",
+    "YAVS_CLIFT_HOLD_DROP",
 ];
 
 /// With one of these set a run has no pre-keys: they want the code made (dumps, source locations)

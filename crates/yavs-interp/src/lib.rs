@@ -981,6 +981,9 @@ pub struct TierFrame {
     /// temporary area after every host call).
     pub heap_epoch: u64,
     pub shared_epoch: u64,
+    /// The two epochs' sum: unchanged while neither changed (they only grow), one word for code
+    /// that holds a host pointer to a heap object over a call (`Gen::hold_recheck` in Cranelift).
+    pub heap_gen: u64,
     /// The change logs of the process heap and the shared heap (`Heap::log`, `HEAP_LOG` entries
     /// each), null for none.
     pub heap_log: [*const u32; 2],
@@ -1313,6 +1316,7 @@ impl Default for TierFrame {
             max_depth: 0,
             heap_epoch: 0,
             shared_epoch: 0,
+            heap_gen: 0,
             heap_log: [std::ptr::null(); 2],
             owner: 0,
             flags: 0,

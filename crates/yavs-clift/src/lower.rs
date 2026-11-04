@@ -120,6 +120,9 @@ pub struct Jit {
     /// (`cold_stub`).
     cold_host: ClifId,
     cold_deref: ClifId,
+    /// `yavs_rt_region` of a held region asked again (`Gen::hold_recheck`), same stub.
+    cold_region: ClifId,
+    hold_check: ClifId,
     /// Module data by its bytes and whether it is 8-byte aligned.
     tables: HashMap<(Vec<u8>, bool), DataId>,
     /// What a body's reference to module data names in another run (`Name::Data`), by data id.
@@ -368,6 +371,22 @@ fn once_blocks(
     once
 }
 
+/// `YAVS_CLIFT_HOLD_CHECK` (always in debug builds): every access through a held region is checked
+/// against the lookup (`yavs_rt_hold_check`).
+fn hold_check() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        cfg!(debug_assertions) || std::env::var_os("YAVS_CLIFT_HOLD_CHECK").is_some()
+    })
+}
+
+/// `YAVS_CLIFT_HOLD_DROP` (debug builds, the mutation test of `crates/yavs/tests/clift_hold.rs`):
+/// regions are not asked again after a call.
+fn hold_mutant() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| cfg!(debug_assertions) && std::env::var_os("YAVS_CLIFT_HOLD_DROP").is_some())
+}
+
 /// `YAVS_CLIFT_NO_PROOFS=1`: arithmetic keeps its overflow tests where intervals prove them away.
 fn no_proofs() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -417,14 +436,15 @@ fn cold_stub(
             args.insert(at, c);
         }
         let call = b.ins().call(fr, &args);
-        let r = b.inst_results(call)[0];
-        let r = if b.func.dfg.value_type(r) == I32 {
-            b.ins().uextend(I64, r)
-        } else {
-            r
-        };
-        b.ins()
-            .store(MemFlagsData::trusted(), r, m, MEM_COLD_RET as i32);
+        if let Some(&r) = b.inst_results(call).first() {
+            let r = if b.func.dfg.value_type(r) == I32 {
+                b.ins().uextend(I64, r)
+            } else {
+                r
+            };
+            b.ins()
+                .store(MemFlagsData::trusted(), r, m, MEM_COLD_RET as i32);
+        }
         b.ins().return_(&[]);
         b.seal_all_blocks();
         b.finalize(module.target_config());
@@ -496,6 +516,7 @@ impl Jit {
             (LAYOUT_WORD, yavs_rt_layout_word as *const u8),
             (DRIVE_FLUSH, yavs_rt_drive_flush as *const u8),
             (REGION, yavs_rt_region as *const u8),
+            (HOLD_CHECK, yavs_rt_hold_check as *const u8),
             (WAIT_EDGE, yavs_rt_wait_edge as *const u8),
             (SCAN, yavs_rt_scan as *const u8),
         ] {
@@ -571,6 +592,7 @@ impl Jit {
                 None,
             )?,
         ];
+        let hold_check = imp(HOLD_CHECK, &[I64, I64, I64, I64, I64, I32, I64, I64], None)?;
         let cold_host = cold_stub(&mut module, "cold_host", host, &[I64, I64, I64, I64, I64, I32], 1, &[])?;
         // `(env, regs, mem, dst, h)`, as `yavs_rt_fast(env, regs, mem, FAST_DEREF, dst, h, 0)`.
         let cold_deref = cold_stub(
@@ -580,6 +602,14 @@ impl Jit {
             &[I64, I64, I64, I32, I64],
             2,
             &[(3, FAST_DEREF as i64, I32), (6, 0, I64)],
+        )?;
+        let cold_region = cold_stub(
+            &mut module,
+            "cold_region",
+            kernel[18],
+            &[I64, I64, I64, I64, I32, I64],
+            1,
+            &[],
         )?;
         let mut sig = module.make_signature();
         sig.params.extend([AbiParam::new(I64); 3]);
@@ -602,6 +632,8 @@ impl Jit {
             kernel,
             cold_host,
             cold_deref,
+            cold_region,
+            hold_check,
             tables: HashMap::new(),
             table_names: HashMap::new(),
             sig,
@@ -1379,6 +1411,8 @@ impl Jit {
             host: self.module.declare_func_in_func(self.host, &mut ctx.func),
             cold_host: self.module.declare_func_in_func(self.cold_host, &mut ctx.func),
             cold_deref: self.module.declare_func_in_func(self.cold_deref, &mut ctx.func),
+            cold_region: self.module.declare_func_in_func(self.cold_region, &mut ctx.func),
+            hold_check: self.module.declare_func_in_func(self.hold_check, &mut ctx.func),
             signal: self.module.declare_func_in_func(self.signal, &mut ctx.func),
             lcopy: self.module.declare_func_in_func(self.lcopy, &mut ctx.func),
             zero: self.module.declare_func_in_func(self.zero, &mut ctx.func),
@@ -1446,9 +1480,6 @@ impl Jit {
             drive_flush: self
                 .module
                 .declare_func_in_func(self.kernel[17], &mut ctx.func),
-            region: self
-                .module
-                .declare_func_in_func(self.kernel[18], &mut ctx.func),
             wait_edge: self
                 .module
                 .declare_func_in_func(self.kernel[19], &mut ctx.func),
@@ -1565,6 +1596,8 @@ struct Imports {
     drive: FuncRef,
     cold_host: FuncRef,
     cold_deref: FuncRef,
+    cold_region: FuncRef,
+    hold_check: FuncRef,
     drive_bit: FuncRef,
     codes: FuncRef,
     planes: FuncRef,
@@ -1587,8 +1620,6 @@ struct Imports {
     layout_word: FuncRef,
     /// `yavs_rt_drive_flush(env, mem, entries, n) -> u32`: the kept scalar drives (`Batch`).
     drive_flush: FuncRef,
-    /// `yavs_rt_region(env, mem, a, depth, flags, out)`: where an address parameter points.
-    region: FuncRef,
     /// `yavs_rt_wait_edge(env, mem, lo, len, kind) -> u32`: a `WaitEdge` on the kernel itself.
     wait_edge: FuncRef,
     /// `yavs_rt_scan(env, mem, ctl, dope, base, i0, x, e, delta, out, depth) -> iterations`.
@@ -1755,6 +1786,18 @@ struct Slow {
     xstep: bool,
 }
 
+/// A region an address parameter of a native frame points into (`Gen::pres`), `[host pointer of
+/// its start, length]` in a stack slot, length 0 where it is not held.
+#[derive(Clone, Copy)]
+struct Held {
+    ss: StackSlot,
+    write: bool,
+    /// The parameter's address.
+    addr: Value,
+    /// The flags of `yavs_rt_region`.
+    flags: u32,
+}
+
 struct Gen<'a> {
     b: FunctionBuilder<'a>,
     /// The program (the constant pool: descriptors `const_dim` reads at compile time).
@@ -1778,9 +1821,12 @@ struct Gen<'a> {
     /// The object the instruction being generated found for its result register: entered in
     /// `known` once `track` has run for it (`ObjRef`).
     objnew: Option<(Reg, ObjRef<Value>)>,
-    /// The regions the address parameters of a native frame point into (`param_addrs`), resolved
-    /// at the entry: `Known::Param(k)` is `pres[k]` (host pointer of the start, length, written).
-    pres: Vec<(Value, Value, bool)>,
+    /// The regions the address parameters of a native frame point into (`hold_addrs`), resolved at
+    /// the entry and asked again where a heap may have changed (`hold_recheck`):
+    /// `Known::Param(k)` is `pres[k]`.
+    pres: Vec<Held>,
+    /// Where the heaps' generation the regions were resolved at is kept.
+    hold_gen: Option<StackSlot>,
     /// The frame's size in bytes (`Func::frame`): the slots of every frame of the function.
     frame_len: u64,
     /// The composite variables in the frame of a process: their bytes (`opt/proc_objects.rs`).
@@ -2399,6 +2445,7 @@ fn gen_func(
         iv: vec![None; f.reg_ty.len()],
         objnew: None,
         pres: Vec::new(),
+        hold_gen: None,
         frame_len: u64::from(f.frame),
         objs: f
             .locals
@@ -2479,7 +2526,7 @@ fn gen_func(
     if g.nat.is_some() {
         g.native_entry(f, &p[if f.parent.is_some() { 5 } else { 3 }..])?;
         // The address parameters resolved at the entry hold for the whole activation.
-        for (k, pa) in param_addrs(f).iter().enumerate() {
+        for (k, pa) in hold_addrs(f).iter().enumerate() {
             let r = pa.reg.0 as usize;
             if r < base_known.len() && k < g.pres.len() {
                 base_known[r] = Some(Known::Param(k as u16));
@@ -2550,6 +2597,9 @@ fn gen_func(
             g.b.set_srcloc(ir::SourceLoc::new(pc + 1));
         }
         if let Some(p) = prev.replace(inst) {
+            if open && !holds_over(&p) {
+                g.hold_recheck();
+            }
             track(&mut g.known, &fixed, f, &p);
             g.iv_track(f, &p);
             // `track` forgets the register after a definition too (a signal reference is two):
@@ -4096,12 +4146,14 @@ fn gen_func(
         if s.xstep && g.nat.is_some() {
             let inst = f.code[s.pc as usize];
             g.native_step(s.pc, &inst, f);
+            g.hold_recheck();
             g.b.ins().jump(s.join, &[]);
             continue;
         }
         if s.endstmt && g.nat.is_some() {
             let base = g.nat_temp_base();
             g.b.ins().call(g.imp.endstmt, &[g.env, g.mem, base]);
+            g.hold_recheck();
             g.b.ins().jump(s.join, &[]);
             continue;
         }
@@ -4471,7 +4523,7 @@ impl Gen<'_> {
         }
         // Where the address parameters point (`yavs_rt_region`), held for the activation.
         let stable = stable_activation(f);
-        for pa in param_addrs(f) {
+        for pa in hold_addrs(f) {
             let Some(&a) = cells.get(pa.cell) else {
                 return Err("missing argument cell".into());
             };
@@ -4480,16 +4532,159 @@ impl Gen<'_> {
                 16,
                 3,
             ));
-            let out = self.b.ins().stack_addr(I64, ss, 0);
-            let fl = self.c32(u32::from(pa.write) | u32::from(stable) << 1);
-            self.b
-                .ins()
-                .call(self.imp.region, &[self.env, self.mem, a, depth, fl, out]);
-            let ptr = self.b.ins().load(I64, MemFlagsData::trusted(), out, 0);
-            let len = self.b.ins().load(I64, MemFlagsData::trusted(), out, 8);
-            self.pres.push((ptr, len, pa.write));
+            let held = Held {
+                ss,
+                write: pa.write,
+                addr: a,
+                flags: u32::from(pa.write) | u32::from(stable) << 1 | 8,
+            };
+            self.hold_resolve(held, stable, depth);
+            self.pres.push(held);
+        }
+        if !self.pres.is_empty() && !stable {
+            let ss = self.b.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                8,
+                3,
+            ));
+            let g = self.mem_ld(MEM_HEAP_GEN);
+            self.b.ins().stack_store(I64, g, ss, 0);
+            self.hold_gen = Some(ss);
         }
         Ok(())
+    }
+
+    /// Fill a held region at a native frame's entry: inline for what needs no callback (a composite
+    /// variable of the root frame, a native caller's slots, an object of the table), nothing for
+    /// what is not held (`Mem::region`), else `yavs_rt_region`.
+    fn hold_resolve(&mut self, h: Held, stable: bool, depth: Value) {
+        let a = h.addr;
+        let done = self.b.create_block();
+        let call = self.b.create_block();
+        self.b.set_cold_block(call);
+        let (fobj, other) = (self.b.create_block(), self.b.create_block());
+        let hi = self.b.ins().ushr_imm_s(a, 32);
+        let top = self.b.ins().ushr_imm_s(hi, 28);
+        let is = self.b.ins().icmp_imm_s(IntCC::Equal, top, 1);
+        self.brif_split(is, fobj, other);
+        self.b.switch_to_block(fobj);
+        let start = self.b.ins().ushr_imm_s(hi, 12);
+        let start = self.b.ins().band_imm_s(start, 0xffff);
+        let start = self.b.ins().ishl_imm_s(start, 3);
+        let len = self.b.ins().band_imm_s(hi, 0xfff);
+        let len = self.b.ins().ishl_imm_s(len, 3);
+        let root = self.mem_ld(MEM_ROOT_SLOTS);
+        let ptr = self.b.ins().iadd(root, start);
+        self.hold_store(h, ptr, len, done);
+        self.b.switch_to_block(other);
+        let is_fr = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::UnsignedLessThan, a, 1 << (32 + 29));
+        let (fr, nf) = (self.b.create_block(), self.b.create_block());
+        self.brif_split(is_fr, fr, nf);
+        self.b.switch_to_block(fr);
+        let (up, rest) = (self.b.create_block(), self.b.create_block());
+        let tp = self.mem_ld(MEM_FRAME_IDX);
+        let above = self.b.ins().icmp(IntCC::UnsignedGreaterThan, hi, tp);
+        let below = self.b.ins().icmp(IntCC::UnsignedLessThan, hi, depth);
+        let between = self.b.ins().band(above, below);
+        self.brif_split(between, up, rest);
+        self.b.switch_to_block(up);
+        let tab = self.mem_ld(MEM_NSLOTS);
+        let eo = self.b.ins().imul_imm_s(hi, 16);
+        let ent = self.b.ins().iadd(tab, eo);
+        let ptr = self.b.ins().load(I64, MemFlagsData::trusted(), ent, 0);
+        let len = self.b.ins().load(I64, MemFlagsData::trusted(), ent, 8);
+        self.hold_store(h, ptr, len, done);
+        self.b.switch_to_block(rest);
+        // The root frame by its own address is the callback's, and whatever a stable activation
+        // holds besides.
+        let root_hi = self.b.ins().icmp_imm_s(IntCC::Equal, hi, 0);
+        let (none, nb) = (self.b.create_block(), self.b.create_block());
+        if stable {
+            self.b.ins().jump(call, &[]);
+        } else {
+            self.brif_split(root_hi, call, none);
+        }
+        self.b.switch_to_block(none);
+        let z = self.c64(0);
+        self.hold_store(h, z, z, done);
+        self.b.switch_to_block(nf);
+        let is_t = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::Equal, hi, i64::from(space::TEMP) << 29);
+        self.brif_split(is_t, if stable { call } else { none }, nb);
+        self.b.switch_to_block(nb);
+        let flag = self.b.ins().ushr_imm_s(a, 32 + i64::from(KEY_SHIFT_ADDR));
+        let flag = self.b.ins().band_imm_s(flag, KEY_FLAG as i64);
+        let key = self.b.ins().bxor(hi, flag);
+        let key = self.b.ins().band_imm_s(key, OBJS as i64 - 1);
+        let eo = self.b.ins().ishl_imm_s(key, i64::from(OBJ_SHIFT));
+        let (tk, mx) = self.obj_tag(Some(hi));
+        let eo = self.b.ins().bxor(eo, mx);
+        let ent = self.b.ins().iadd(self.mem, eo);
+        let ehi = self.b.ins().load(I64, self.mf, ent, MEM_OBJS as i32);
+        let want = self.b.ins().bor(hi, tk);
+        let mut hit = self.b.ins().icmp(IntCC::Equal, ehi, want);
+        if h.write {
+            let w = self
+                .b
+                .ins()
+                .load(I64, self.mf, ent, (MEM_OBJS + OBJ_W) as i32);
+            let w = self.b.ins().icmp_imm_s(IntCC::NotEqual, w, 0);
+            hit = self.b.ins().band(hit, w);
+        }
+        let obj = self.b.create_block();
+        self.brif_split(hit, obj, call);
+        self.b.switch_to_block(obj);
+        let (ptr, len) = self.ent_obj(ent);
+        self.hold_store(h, ptr, len, done);
+        self.b.switch_to_block(call);
+        self.hold_call(h, depth);
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(done);
+    }
+
+    fn hold_store(&mut self, h: Held, ptr: Value, len: Value, done: Block) {
+        self.b.ins().stack_store(I64, ptr, h.ss, 0);
+        self.b.ins().stack_store(I64, len, h.ss, 8);
+        self.b.ins().jump(done, &[]);
+    }
+
+    fn hold_call(&mut self, h: Held, depth: Value) {
+        let out = self.b.ins().stack_addr(I64, h.ss, 0);
+        let fl = self.c32(h.flags);
+        self.b.ins().call(
+            self.imp.cold_region,
+            &[self.env, self.mem, h.addr, depth, fl, out],
+        );
+    }
+
+    /// After an instruction that may have freed or changed a heap object (`holds_over`): ask again
+    /// for the regions when a heap changed. Everything else a region holds stays where it is for
+    /// as long as this frame lives: a native caller's slots, the root frame, instance data,
+    /// packages, constants. Those that move are never held over a call (`Mem::region`).
+    fn hold_recheck(&mut self) {
+        let Some(ss) = self.hold_gen else { return };
+        if hold_mutant() {
+            return;
+        }
+        let g = self.mem_ld(MEM_HEAP_GEN);
+        let old = self.b.ins().stack_load(I64, I64, ss, 0);
+        let same = self.b.ins().icmp(IntCC::Equal, g, old);
+        let (again, go) = (self.b.create_block(), self.b.create_block());
+        self.b.set_cold_block(again);
+        self.brif_split(same, go, again);
+        self.b.switch_to_block(again);
+        self.b.ins().stack_store(I64, g, ss, 0);
+        let depth = self.nat.as_ref().map(|n| n.depth).expect("nat");
+        for h in self.pres.clone() {
+            self.hold_call(h, depth);
+        }
+        self.b.ins().jump(go, &[]);
+        self.b.switch_to_block(go);
     }
 
     /// Zero the bytes `lo..hi` of the slots.
@@ -5432,12 +5627,13 @@ impl Gen<'_> {
         // resolved at the entry, the ordinary lookup when it fails.
         if self.nat.is_some()
             && let Some(Some(Known::Param(k))) = reg.and_then(|r| self.known.get(r.0 as usize))
-            && let Some(&(ptr, len, w)) = self.pres.get(usize::from(*k))
-            && (w || !write)
+            && let Some(&h) = self.pres.get(usize::from(*k))
+            && (h.write || !write)
         {
             let (ev, nv) = (self.op(extra), self.op(n));
             let lo = self.lo32(a);
             let off = self.b.ins().iadd(lo, ev);
+            let len = self.b.ins().stack_load(I64, I64, h.ss, 8);
             let okc = self.in_range(off, nv, len);
             let (fast, miss, done) = (
                 self.b.create_block(),
@@ -5448,7 +5644,18 @@ impl Gen<'_> {
             self.b.set_cold_block(miss);
             self.brif_split(okc, fast, miss);
             self.b.switch_to_block(fast);
+            let ptr = self.b.ins().stack_load(I64, I64, h.ss, 0);
             let pf = self.b.ins().iadd(ptr, off);
+            if hold_check() {
+                let (w, depth) = (
+                    self.c32(u32::from(write)),
+                    self.nat.as_ref().map(|n| n.depth).expect("nat"),
+                );
+                self.b.ins().call(
+                    self.imp.hold_check,
+                    &[self.env, self.mem, a, ev, nv, w, depth, pf],
+                );
+            }
             self.b.ins().jump(done, &[BlockArg::Value(pf)]);
             self.b.switch_to_block(miss);
             let pm = self.host(a, None, Op::V(ev), Op::V(nv), write, slow);

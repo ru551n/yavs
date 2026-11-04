@@ -24,6 +24,7 @@ pub const STEP: &str = "yavs_rt_step";
 pub const HOST: &str = "yavs_rt_host";
 
 pub const REGION: &str = "yavs_rt_region";
+pub const HOLD_CHECK: &str = "yavs_rt_hold_check";
 
 pub const SIGNAL: &str = "yavs_rt_signal";
 pub const DRIVE: &str = "yavs_rt_drive";
@@ -344,6 +345,7 @@ pub const MEM_FRAME_IDX: u64 = std::mem::offset_of!(Mem, fr.frame) as u64;
 pub const MEM_MAX_DEPTH: u64 = std::mem::offset_of!(Mem, fr.max_depth) as u64;
 pub const MEM_NDEOPT: u64 = std::mem::offset_of!(Mem, ndeopt) as u64;
 pub const MEM_COLD_RET: u64 = std::mem::offset_of!(Mem, cold_ret) as u64;
+pub const MEM_HEAP_GEN: u64 = std::mem::offset_of!(Mem, fr.heap_gen) as u64;
 pub const MEM_NTAB: u64 = std::mem::offset_of!(Mem, ntab) as u64;
 pub const MEM_STACK_LO: u64 = std::mem::offset_of!(Mem, stack_lo) as u64;
 pub const MEM_NSLOTS: u64 = std::mem::offset_of!(Mem, nslots) as u64;
@@ -1979,8 +1981,17 @@ impl Mem {
     /// the interpreter's top frame and frame `depth` live as long as the callee: always. The top
     /// frame, the temporary area, the instance data (not for writing) and a heap object of the
     /// table only when `stable` (`stable_activation`: nothing the function does moves them).
+    /// With `held` (Cranelift) everything but the interpreter's frames other than the root and the
+    /// temporary area, which move: the caller asks again when a heap changed (`Gen::hold_recheck`).
     #[inline]
-    fn region(&self, a: u64, depth: u64, write: bool, stable: bool) -> Option<(*mut u8, u64)> {
+    fn region(
+        &self,
+        a: u64,
+        depth: u64,
+        write: bool,
+        stable: bool,
+        held: bool,
+    ) -> Option<(*mut u8, u64)> {
         let hi = a >> 32;
         let fr = &self.fr;
         if hi >> 29 == u64::from(space::FRAME) && hi != fr.frame_hi {
@@ -1991,10 +2002,16 @@ impl Mem {
                 return (e.len != 0).then_some((e.ptr, e.len));
             }
         }
-        if !stable {
+        if held && !stable {
+            let frame = hi >> 29 == u64::from(space::FRAME);
+            let root = hi == u64::from(space::FRAME) << 29 || self.frame_object(hi).is_some();
+            if frame && !root || hi == u64::from(space::TEMP) << 29 {
+                return None;
+            }
+        } else if !stable {
             return None;
         }
-        if hi == fr.frame_hi {
+        if hi == fr.frame_hi && stable {
             Some((fr.slots, fr.slots_len))
         } else if hi == u64::from(space::TEMP) << 29 {
             Some((fr.temp, fr.temp_len))
@@ -2112,18 +2129,69 @@ pub unsafe extern "C" fn yavs_rt_region(
     out: *mut [u64; 2],
 ) {
     cb(Cb::Region);
-    // Flag 4: everything but the temporary area stays where it is (`fixed_activation`).
+    // Flag 4: everything but the temporary area stays where it is (`fixed_activation`). Flag 8: the
+    // caller asks again when a heap changed (`Gen::hold_recheck`).
     let fixed = flags & 4 != 0 && a >> 32 != u64::from(space::TEMP) << 29;
-    let (write, stable) = (flags & 1 != 0, flags & 2 != 0 || fixed);
+    let (write, stable, held) = (flags & 1 != 0, flags & 2 != 0 || fixed, flags & 8 != 0);
     // SAFETY: as in `yavs_rt_step`.
-    let mut r = unsafe { &*mem }.region(a, depth, write, stable);
-    if r.is_none() && stable && unsafe { yavs_rt_obj(env, mem, a, u32::from(write)) } != 0 {
+    let mut r = unsafe { &*mem }.region(a, depth, write, stable, held);
+    let sp = (a >> 61) as u8;
+    let table = sp != space::FRAME && sp != space::TEMP;
+    if r.is_none()
+        && (stable || held && table)
+        && unsafe { yavs_rt_obj(env, mem, a, u32::from(write)) } != 0
+    {
         // SAFETY: as above; the object is in the table now.
-        r = unsafe { &*mem }.region(a, depth, write, stable);
+        r = unsafe { &*mem }.region(a, depth, write, stable, held);
     }
     let (p, len) = r.map_or((0, 0), |(p, len)| (p as u64, len));
     // SAFETY: compiled code gave the address of its two-word buffer.
     unsafe { *out = [p, len] };
+}
+
+/// Accesses through a held region checked against the lookup (`yavs_rt_hold_check`).
+pub static HOLD_CHECKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The check of an access through a held region (`Gen::host`, debug builds and
+/// `YAVS_CLIFT_HOLD_CHECK`): `p`, what compiled code is about to use for `n` bytes at `a + extra`,
+/// must be what the ordinary lookup finds now. A stale hold would silently give wrong data.
+pub unsafe extern "C" fn yavs_rt_hold_check(
+    env: *mut c_void,
+    mem: *mut Mem,
+    a: u64,
+    extra: u64,
+    n: u64,
+    write: u32,
+    depth: u64,
+    p: *mut u8,
+) {
+    HOLD_CHECKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let hi = a >> 32;
+    let off = (a & 0xffff_ffff) + extra;
+    let look = |m: &Mem| {
+        m.frame_object(hi)
+            .or_else(|| {
+                (hi == u64::from(space::FRAME) << 29 && m.fr.root_len != 0)
+                    .then_some((m.fr.root_slots, m.fr.root_len))
+            })
+            .or_else(|| m.span(a, depth).map(|(b, l)| (b.cast_mut(), l)))
+            .filter(|&(_, l)| off + n <= l)
+            .map(|(b, _)| b.wrapping_add(off as usize))
+    };
+    // SAFETY: as in `yavs_rt_step`.
+    let mut found = look(unsafe { &*mem });
+    if found.is_none_or(|f| f != p)
+        && unsafe { yavs_rt_obj(env, mem, a, write) } != 0
+    {
+        // SAFETY: as above; the object is in the table now.
+        found = look(unsafe { &*mem });
+    }
+    if found != Some(p) {
+        eprintln!(
+            "internal error: a held region at address {a:#x} + {extra} is stale: {p:?}, the lookup finds {found:?}: this is a bug in yavs"
+        );
+        std::process::abort();
+    }
 }
 
 /// `yavs_rt_scan(env, mem, ctl, dope, base, i0, x, e, delta, out)`: the iterations of a search loop
@@ -2222,7 +2290,7 @@ impl crate::eloop::LoopMem for LoopObjects {
         }
         // SAFETY: the pointers are the ones compiled code was given.
         let m = unsafe { &*self.mem };
-        if let Some(r) = m.region(a, self.depth, write, true) {
+        if let Some(r) = m.region(a, self.depth, write, true, false) {
             return Some(r);
         }
         // SAFETY: as above; the object is in the table afterwards.
@@ -2230,7 +2298,7 @@ impl crate::eloop::LoopMem for LoopObjects {
             return None;
         }
         // SAFETY: as above.
-        unsafe { &*self.mem }.region(a, self.depth, write, true)
+        unsafe { &*self.mem }.region(a, self.depth, write, true, false)
     }
 }
 
@@ -3680,6 +3748,31 @@ fn steady(i: &Inst) -> bool {
 /// registers derived from it) inside a loop. A value that is no address, or one used rarely is
 /// left alone: the resolution is a callback.
 pub fn param_addrs(f: &Func) -> Vec<ParamAddr> {
+    addr_params(f, false)
+}
+
+/// `param_addrs` for code that holds a region over calls (`Gen::hold_recheck`): also a parameter
+/// used three times outside a loop.
+pub fn hold_addrs(f: &Func) -> Vec<ParamAddr> {
+    addr_params(f, true)
+}
+
+/// The instructions after which a held region is still good without asking (`Gen::hold_recheck`):
+/// on their hot path nothing is freed or moved; a slow path that comes back asks itself.
+pub fn holds_over(i: &Inst) -> bool {
+    steady(i)
+        || matches!(
+            i,
+            Inst::Alloc { .. }
+                | Inst::Stmt
+                | Inst::TempRoot { .. }
+                | Inst::MakeDope { .. }
+                | Inst::LayoutOf { .. }
+                | Inst::Deref { .. }
+        )
+}
+
+fn addr_params(f: &Func, any: bool) -> Vec<ParamAddr> {
     let n = f.reg_ty.len();
     let (mut defs, mut first_use) = (vec![0u32; n + 1], vec![usize::MAX; n + 1]);
     for (pc, i) in f.code.iter().enumerate() {
@@ -3839,7 +3932,7 @@ pub fn param_addrs(f: &Func) -> Vec<ParamAddr> {
     cands
         .iter()
         .enumerate()
-        .filter(|&(k, _)| in_loop[k] > 0 && uses[k] >= 3)
+        .filter(|&(k, _)| (any || in_loop[k] > 0) && uses[k] >= 3)
         .map(|(k, &(reg, cell, _))| ParamAddr {
             reg,
             cell,

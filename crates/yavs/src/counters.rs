@@ -117,6 +117,10 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         if n != 0 {
             eprintln!("counters: gate_checked={n}");
         }
+        let n = yavs_llvm::rt::HOLD_CHECKED.load(std::sync::atomic::Ordering::Relaxed);
+        if n != 0 {
+            eprintln!("counters: hold_checked={n}");
+        }
     }
     // The calls into the host by instruction kind (`YAVS_COUNTERS=kinds|pc`, every build).
     for (name, v) in yavs_interp::tier_census() {

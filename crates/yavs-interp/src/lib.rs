@@ -428,7 +428,8 @@ pub trait Tier: Send + Sync {
     }
 
     /// The entry of a compiled activation monomorphised for this tier (`Runtime::set_tier` keeps
-    /// it, with the tier's address as `data`). `None`: through this trait's `run_cached`.
+    /// it, with the tier's address as `data`). `None`: through this trait's `run_cached`. The entry
+    /// must be for the concrete type of `self`: a wrapper tier never forwards its inner tier's.
     fn direct(&self) -> Option<DirectFn> {
         None
     }

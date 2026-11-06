@@ -30,6 +30,9 @@ pub fn llvm_compiled(inline: usize, interpreted: usize, native_frames: usize) {
 
 /// Print the counters when `YAVS_COUNTERS` is set; `s` is the kernel's.
 pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
+    // (A measurement switch of the Cranelift tier, `YAVS_CLIFT_BLOCKCOV`: writes the blocks that ran.)
+    #[cfg(feature = "clift")]
+    yavs_clift::blockcov_write();
     if std::env::var_os("YAVS_COUNTERS").is_none() {
         return;
     }

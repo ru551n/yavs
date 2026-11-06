@@ -440,6 +440,11 @@ Compiled tiers: Cranelift
      - a function id
      - unset
      - ``run``
+   * - ``YAVS_CLIFT_BLOCKCOV``
+     - Measurement: generated code marks every block it enters; the run writes ``cov-<pid>.tsv`` (body, IR pc, IR block, ran) into that directory. The code differs from the normal code, and inlining stops.
+     - a directory
+     - unset
+     - ``run``
    * - ``YAVS_CLIFT_CLIF``
      - Prints the Cranelift IR of that function on standard error.
      - a function id, ``all``

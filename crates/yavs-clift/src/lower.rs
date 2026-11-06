@@ -166,6 +166,11 @@ pub struct Jit {
     bodies: HashMap<String, ClifId>,
     /// The target and the switches in a pre-key (`cache::pre_key`); none: this run has no pre-keys.
     pre_target: Option<(String, String)>,
+    /// `YAVS_CLIFT_BLOCKCOV`: the table of the body `lower` made last, and the tables of the
+    /// bodies defined and not yet listed at `finalize`.
+    last_cov: Option<(DataId, Vec<crate::blockcov::BlockInfo>)>,
+    cov_n: u32,
+    covs: Vec<(String, DataId, Vec<crate::blockcov::BlockInfo>)>,
 }
 
 /// The native-frame variant `n<id>` of a function, in the calling convention of the LLVM tier
@@ -403,6 +408,13 @@ fn no_proofs() -> bool {
 fn srcmap() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("YAVS_CLIFT_CODEDIR").is_some())
+}
+
+/// `YAVS_CLIFT_BLOCKCOV=<dir>` (a measurement switch, `blockcov.rs`): every block entry of the
+/// generated code stores a byte into a table of its body.
+fn blockcov() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("YAVS_CLIFT_BLOCKCOV").is_some())
 }
 
 fn flag(name: &str, default: &str) -> String {
@@ -693,6 +705,9 @@ impl Jit {
             missed: false,
             bodies: HashMap::new(),
             pre_target,
+            last_cov: None,
+            cov_n: 0,
+            covs: Vec::new(),
         })
     }
 
@@ -1097,6 +1112,7 @@ impl Jit {
             }
         }
         crate::cache::note_lowered(id.0, native);
+        self.last_cov = None;
         let (mut ctx, stepped) = match self.lower(prog, id, f, native, &nats) {
             Ok(r) => r,
             Err(why) => {
@@ -1107,6 +1123,7 @@ impl Jit {
                 return Err(why);
             }
         };
+        let cov = self.last_cov.take();
         let body = native.then(|| Rc::new(ctx.func.clone()));
         crate::cold::propagate(&mut ctx.func);
         // The instances of a process with equal code (`Program::copy_of` of data the code does not
@@ -1127,7 +1144,10 @@ impl Jit {
         if check && let Some(b) = linked(self, &stored)? {
             return Ok(Built { body, ..b });
         }
-        let shared = clif.filter(|_| copy).map(|c| body_key(&c, &ctx.func));
+        // (With `YAVS_CLIFT_BLOCKCOV` the copies' own tables are not part of the key.)
+        let shared = clif
+            .filter(|_| copy)
+            .map(|c| body_key(&c, &ctx.func, cov.as_ref().map(|c| c.0.as_u32())));
         if let Some(&c) = shared.as_ref().and_then(|k| self.bodies.get(k)) {
             // Counts as linked from the cache, so `--tier=auto` charges a link (the LLVM tier's
             // twins do the same).
@@ -1155,6 +1175,10 @@ impl Jit {
                 &ctx.func.signature,
             )
             .map_err(|e| e.to_string())?;
+        if let Some((did, blocks)) = cov {
+            let name = self.symbol_of(fid);
+            self.covs.push((name, did, blocks));
+        }
         // `YAVS_CLIFT_ASM=<function id>`: the machine code of that function (variant) on stderr.
         let asm = std::env::var("YAVS_CLIFT_ASM")
             .is_ok_and(|v| v.parse::<u32>().is_ok_and(|n| n == id.0));
@@ -1295,7 +1319,7 @@ impl Jit {
                 return Ok(None);
             }
         }
-        let shared = (!native && prog.base_of(id) != id).then(|| body_key(clif, &func));
+        let shared = (!native && prog.base_of(id) != id).then(|| body_key(clif, &func, None));
         if let Some(&c) = shared.as_ref().and_then(|k| self.bodies.get(k)) {
             crate::cache::note_hit();
             return Ok(Some(c));
@@ -1570,7 +1594,37 @@ impl Jit {
             cc: self.sig.call_conv,
         };
         let cfg = self.module.target_config();
-        let stepped = gen_func(&mut ctx, &mut fctx, cfg, prog, f, imports, id, native)?;
+        // `YAVS_CLIFT_BLOCKCOV`: the table of this body, sized once the blocks are known.
+        let cov = if blockcov() {
+            self.cov_n += 1;
+            let did = self
+                .module
+                .declare_data(&format!("cov{}", self.cov_n), Linkage::Local, true, false)
+                .map_err(|e| e.to_string())?;
+            Some((did, self.module.declare_data_in_func(did, &mut ctx.func)))
+        } else {
+            None
+        };
+        let mut blocks = Vec::new();
+        let stepped = gen_func(
+            &mut ctx,
+            &mut fctx,
+            cfg,
+            prog,
+            f,
+            imports,
+            id,
+            native,
+            cov.map(|c| c.1).zip(Some(&mut blocks)),
+        )?;
+        if let Some((did, _)) = cov {
+            let mut dd = DataDescription::new();
+            dd.define_zeroinit(blocks.len().max(1));
+            self.module
+                .define_data(did, &dd)
+                .map_err(|e| e.to_string())?;
+            self.last_cov = Some((did, blocks));
+        }
         if self.pin {
             // Every caller of a native variant has the view in the register already, except an
             // LLVM-compiled one (`--tier=auto3`).
@@ -1607,6 +1661,10 @@ impl Jit {
         self.module
             .finalize_definitions()
             .map_err(|e| e.to_string())?;
+        for (name, did, blocks) in std::mem::take(&mut self.covs) {
+            let (at, _) = self.module.get_finalized_data(did);
+            crate::blockcov::register(name, at as usize, blocks);
+        }
         if let Some(list) = self.perfmap.take() {
             // With `PERF_BUILDID_DIR` set (`perf record` sets it) the JIT module lists every
             // function it finalizes under its symbol, the readable one: not twice.
@@ -2295,7 +2353,9 @@ fn gen_func(
     imp: Imports,
     id: FuncId,
     native: bool,
+    cov: Option<(GlobalValue, &mut Vec<crate::blockcov::BlockInfo>)>,
 ) -> Result<Vec<String>, String> {
+    let mut cov = cov;
     let mut b = FunctionBuilder::new(&mut ctx.func, fctx);
     let entry = b.create_block();
     b.append_block_params_for_function_params(entry);
@@ -2738,6 +2798,12 @@ fn gen_func(
     let always: Vec<usize> = (0..base_known.len())
         .filter(|&r| base_known[r].is_some())
         .collect();
+    let cov_region = cov.as_ref().map(|_| {
+        g.b.func.dfg.alias_regions.insert(AliasRegionData {
+            user_id: 5,
+            description: "cov".into(),
+        })
+    });
     let mut open = false;
     let mut prev = None;
     for (i, &inst) in f.code.iter().enumerate() {
@@ -2891,6 +2957,21 @@ fn gen_func(
                 }
             }
             g.b.switch_to_block(bb);
+            if let Some((gv, blocks)) = cov.as_mut() {
+                // One byte store per lowered block entry (`blockcov.rs`).
+                let flags = MemFlagsData::new()
+                    .with_notrap()
+                    .with_alias_region(cov_region);
+                let ir = f
+                    .blocks
+                    .iter()
+                    .find(|(_, bl)| bl.start == pc)
+                    .map(|(b, _)| b.0);
+                let at = g.b.ins().symbol_value(I64, *gv);
+                let one = g.b.ins().iconst(I8, 1);
+                g.b.ins().store(flags, one, at, blocks.len() as i32);
+                blocks.push((pc, ir));
+            }
             g.drop_pend();
             g.clear();
             g.sdyn.clear();

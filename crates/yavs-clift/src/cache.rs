@@ -130,7 +130,8 @@ pub(crate) const KEYED: [&str; 14] = [
 
 /// With one of these set a run has no pre-keys: they want the code made (dumps, source locations)
 /// or make it depend on what was compiled before (`YAVS_CLIFT_NATIVE_MAX`).
-pub(crate) const NO_PRE: [&str; 5] = [
+pub(crate) const NO_PRE: [&str; 6] = [
+    "YAVS_CLIFT_BLOCKCOV",
     "YAVS_CLIFT_DUMP",
     "YAVS_CLIFT_CLIF",
     "YAVS_CLIFT_ASM",
@@ -263,12 +264,13 @@ pub(crate) fn pre_target(isa: &dyn TargetIsa, inlcmp: &str) -> Option<(String, S
 }
 
 /// The key of `Jit::bodies`: a body and the module's functions and data it refers to.
-pub(crate) fn body_key(clif: &[u8; 32], func: &Function) -> String {
+pub(crate) fn body_key(clif: &[u8; 32], func: &Function, skip_data: Option<u32>) -> String {
     let names: Vec<(u32, u32)> = func
         .params
         .user_named_funcs()
         .values()
         .map(|n| (n.namespace, n.index))
+        .filter(|&n| Some(n) != skip_data.map(|d| (1, d)))
         .collect();
     format!("{clif:?} {names:?}")
 }

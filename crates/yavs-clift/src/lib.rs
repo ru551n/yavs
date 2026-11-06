@@ -10,6 +10,8 @@
 #![allow(unsafe_code)]
 
 #[cfg(feature = "clift")]
+mod blockcov;
+#[cfg(feature = "clift")]
 mod cache;
 #[cfg(feature = "clift")]
 mod cold;
@@ -18,6 +20,8 @@ mod hugearena;
 #[cfg(feature = "clift")]
 mod lower;
 
+#[cfg(feature = "clift")]
+pub use blockcov::{BodyCov, snapshot as blockcov_snapshot, write as blockcov_write};
 #[cfg(feature = "clift")]
 pub use cache::{cache_stats, set_cache};
 

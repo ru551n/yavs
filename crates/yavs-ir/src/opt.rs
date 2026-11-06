@@ -251,7 +251,7 @@ mod fingerprint_tests {
     #[test]
     fn each_switch_changes_the_fingerprint() {
         let base = fingerprint_of([false; 14]);
-        for i in 0..13 {
+        for i in 0..14 {
             let mut f = [false; 14];
             f[i] = true;
             assert_ne!(fingerprint_of(f), base, "switch {i}");

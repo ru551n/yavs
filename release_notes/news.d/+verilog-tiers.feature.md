@@ -1,1 +1,1 @@
-Verilog processes now run on the compiled tiers too: `--tier=clift`, `--tier=llvm` and `--tier=auto` compile them like VHDL processes, and every tier computes values of up to 64 bits on machine words, so Verilog simulates about twice as fast as before.
+Verilog processes now run on the compiled tiers too: `--tier=clift`, `--tier=llvm` and `--tier=auto` compile them like VHDL processes, and every tier computes Verilog values of up to 64 bits on machine words.

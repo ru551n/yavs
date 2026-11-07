@@ -218,5 +218,96 @@ fn compiled_tiers_match_the_interpreter() {
             assert_eq!(got.1, want.1, "seed {seed} {tier:?}:\n{src}\n{}", got.2);
             assert_eq!(got.0, want.0, "seed {seed} {tier:?}: {}", got.2);
         }
+        // With the work library's compilation cache: cold, then warm (code linked from it).
+        if seed <= 3 {
+            for tier in &tiers {
+                for run in ["cold", "warm"] {
+                    let got = yavs(&[&["run", "--work=work:lib"][..], tier, &["tb"]].concat());
+                    assert_eq!(got.1, want.1, "seed {seed} {tier:?} {run}:\n{}", got.2);
+                }
+            }
+        }
     }
+}
+
+/// The run-time LRM checks (`tests/verilog/lrm/*_eval_*.v` with `// output:` lines) under a VHDL
+/// testbench on every tier of the build: the output their headers give.
+#[test]
+fn run_time_lrm_checks_on_every_tier() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/verilog/lrm");
+    let t = tempdir("v-lrm-tiers");
+    let mut tiers: Vec<&[&str]> = vec![&["--tier=interp"][..]];
+    #[cfg(feature = "clift")]
+    tiers.extend([
+        &["--tier=clift"][..],
+        &["--tier=auto", "--tier-heat=1,0,0"][..],
+    ]);
+    #[cfg(feature = "llvm")]
+    tiers.push(&["--tier=llvm"][..]);
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "v"))
+        .collect();
+    files.sort();
+    let mut n = 0;
+    for f in files {
+        let text = std::fs::read_to_string(&f).unwrap();
+        let head: Vec<&str> = text.lines().take_while(|l| l.starts_with("//")).collect();
+        let want: Vec<&str> = head
+            .iter()
+            .filter_map(|l| l.strip_prefix("// output:"))
+            .map(|l| l.strip_prefix(' ').unwrap_or(l))
+            .collect();
+        if want.is_empty() || head.iter().any(|l| l.starts_with("// elab:")) {
+            continue;
+        }
+        n += 1;
+        let name = text
+            .lines()
+            .filter_map(|l| l.trim_start().strip_prefix("module "))
+            .next_back()
+            .and_then(|l| l.split(|c: char| !c.is_alphanumeric() && c != '_').next())
+            .unwrap();
+        std::fs::copy(&f, t.join("m.v")).unwrap();
+        let tb = format!(
+            "entity tb is end entity;\narchitecture sim of tb is\n  component {name} is end component;\nbegin\n  u : {name};\nend architecture;\n"
+        );
+        std::fs::write(t.join("tb.vhd"), tb).unwrap();
+        let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .current_dir(&*t)
+            .args(["analyze", "--work=work:lib", "m.v", "tb.vhd"])
+            .output()
+            .unwrap();
+        assert!(
+            o.status.success(),
+            "{}: {}",
+            f.display(),
+            String::from_utf8_lossy(&o.stderr)
+        );
+        for tier in &tiers {
+            let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+                .current_dir(&*t)
+                .args(
+                    [
+                        &["run", "--work=work:lib", "--no-cache", "--stop-time=1ms"][..],
+                        tier,
+                        &["tb"],
+                    ]
+                    .concat(),
+                )
+                .output()
+                .unwrap();
+            let got = String::from_utf8_lossy(&o.stdout);
+            let got: Vec<&str> = got.lines().collect();
+            assert_eq!(
+                got,
+                want,
+                "{} {tier:?}: {}",
+                f.display(),
+                String::from_utf8_lossy(&o.stderr)
+            );
+        }
+    }
+    assert!(n >= 10, "only {n} run checks");
 }

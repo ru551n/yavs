@@ -160,6 +160,9 @@ pub fn leaves(prog: &Program, f: &Func, pc: usize, nc: &std::collections::HashSe
                 Some(NativeKind::Edge(_))
             ) || !matches!((f.regs(*args), dst), (Some(&[_]), Some(_)))
         }
+        // The interpreter's own function for a Verilog instruction (`yavs_rt_verilog`): no frame
+        // view, no generic step, as cheap as the signal reads above (#776).
+        _ if i.is_verilog() => false,
         // The wait that ends the activation is its way out, not a callback in the middle of it.
         Inst::WaitOn { .. } => !matches!(f.code.get(pc + 1), Some(Inst::Suspend { .. })),
         Inst::Suspend { .. } => false,

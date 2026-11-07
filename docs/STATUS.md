@@ -2982,11 +2982,19 @@ Not done (each `E4501` when reached): module instances inside Verilog, generate,
 memories, real variables, `inout` (step D), several drivers per net and other net types, strengths, delays on continuous
 assignments and nets, `defparam`, events, `fork`/`join`, `disable`, procedural `assign`/`force`, hierarchical names, `glbl`,
 other system tasks, the elaboration tasks; `entity lib.module` direct instantiation of a Verilog module (needs analysis support,
-left out). Specify blocks are not evaluated (path delays are D9, M3). Verilog runs only in the interpreter-like process code of
-the domain (no IR, no compiled tier, decision "Verilog execution engine"); internal Verilog nets are not in waves, DAP and VHPI do
-not see Verilog. Ceilings (`ponytail:` in the code): nets are kept as `LogicVec` and converted per read and write, bit by bit
-part writes, `%s` leaves out leading NUL bytes, spans of expression diagnostics point at the first name of the expression.
-Tests: `crates/yavs-verilog/tests/ops.rs` (every operator against a reference model of the clause 5 tables, widths 1 to 130),
+left out). Specify blocks are not evaluated (path delays are D9, M3). Verilog processes are IR functions (step E, 2026-11-07,
+decision "Verilog processes on the IR"): `lower.rs` lowers the process code to `Inst::VUn` to `Inst::VBack`, one function per
+distinct body shared by the instances of a module with one parameter set, run by `InterpProcess`es inside the domain through
+`yavs_interp::VerilogHost`; values of up to 64 bits on machine words in the interpreter and in place in both compiled tiers
+(the rest through `yavs_rt_verilog`); `--tier` applies to them as to VHDL (`--tier=auto` runs a second `AutoTier` on their
+runtime). `verilog_cells` (benchmark, 64 cells, 4000 cycles): 1.92 s in step C, 0.90 s interpreted, 0.83 s `--tier=clift`,
+0.84 s `--tier=auto`. Internal Verilog nets are not in waves, DAP and VHPI do not see Verilog. Ceilings (`ponytail:` in the
+code): nets are kept as `LogicVec` and converted per read and write (plane words), part writes element by element, the
+function key is the `Debug` text of the body, `%s` leaves out leading NUL bytes, spans of expression diagnostics point at the first name of the expression.
+Tests: `crates/yavs-verilog/tests/ops.rs` (every operator against a reference model of the clause 5 tables, widths 1 to 130;
+every word form against the operator, widths 1 to 64, with one x or z bit), `src/lower.rs` (random trees against their
+evaluation, sharing), `crates/yavs/tests/verilog_tiers.rs` (random modules on every compiled tier of the build against the
+interpreter),
 `tests/run.rs` (22 run-time LRM checks `tests/verilog/lrm/*_eval_*.v` with their expected output or error), the CLI end-to-end
 tests `crates/yavs/tests/verilog_run.rs` (15 tests: counter, shifter and adder with x, FSM, generic widths with string and vector
 parameters, generics of every type with a 256-bit vector, `%m` and `$finish`, bit ports and an ascending VHDL range, a Verilog

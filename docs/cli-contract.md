@@ -371,7 +371,8 @@ yavs analyze --std=FILE_STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=alwa
   parameters and its ports connect to the module's ports by name; a generic or port that does not fit is
   `E4701`/`E4700`, a Verilog construct elaboration does not implement `E4501` naming it (all exit 2). Values
   the Verilog side changes reach VHDL one delta after its active region, non-blocking assignment results one
-  delta later (D4). The Verilog runs in the interpreter at every `--tier`.
+  delta later (D4). `--tier` applies to the Verilog processes as to VHDL ones: `clift` and `llvm` compile them
+  before time 0, `auto` compiles the hot ones; output is the same on every tier.
 - An encrypted source (IEEE 1735 `` `protect begin_protected `` envelope, #775) is one error
   `E0012` naming the file and the line that opens the envelope, with the fix; yavs never decrypts.
 - `yavs --explain CODE` prints the long text of a diagnostic code on stdout

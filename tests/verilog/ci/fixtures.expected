@@ -1,0 +1,31 @@
+# Expected `yavs analyze` outcomes of the CI fixtures; format in README.md.
+# status  file  [args="..."] [diag=CODE[@L:C][,...]] [units=a,b] [later=reason]
+OK  ansi_header.v           units=ansi_header,ansi_header_empty,ansi_header_old
+OK  attributes.v            units=attributes,attributes_leaf
+OK  gates.v                 units=gates
+OK  generate.v              units=generate_blocks
+OK  encrypted_envelope.v     diag=W4007@6:1 units=before_envelope
+OK  encrypted_legacy.v       diag=W4007@6:1 units=legacy_pre
+ERR neg_include_missing.v   args="-I inc" diag=E4005@3:1
+ERR neg_stray_endif.v       diag=E4004@4:1
+ERR neg_sv_extension.sv     diag=E4002@1:1
+ERR neg_sv_keyword.v        diag=E4003@4:5
+ERR neg_unbalanced_ifdef.v  diag=E4004@3:1
+OK  parameters.v            units=parameters_leaf,parameters
+OK  pragma_plaintext_ok.v   diag=W*@3:1,W*@7:1 units=pragma_plain
+OK  preproc_cmdline_defs.v  args="-D USE_FAST -D DEPTH=16" units=preproc_cmdline_defs
+OK  preproc_include.v       args="-I inc" units=preproc_include
+OK  preproc_macros.v        units=preproc_macros
+OK  procedural_assign.v     units=procedural_assign
+OK  specify.v               units=specify_block
+OK  specify_timing_checks.v units=specify_timing_checks
+OK  specify_timing_checks.v args="-D XIL_TIMING" diag=W* units=specify_timing_checks
+OK  strengths_nets.v        units=strengths_nets
+OK  sv_words_ok.v           units=sv_words_ok
+OK  system_tasks.v          units=system_tasks
+OK  tasks_functions.v       units=tasks_functions
+OK  timescale_missing.v     diag=W4006 units=timescale_missing
+OK  udp_comb.v              units=udp_mux2,udp_comb_user
+OK  udp_seq.v               units=udp_latch,udp_dff,udp_seq_user
+OK  unsupported_nettypes.v  later=elab_unsupported_trireg_wand_wor units=unsupported_nettypes
+OK  unsupported_switch.v    later=elab_unsupported_switch_primitive units=unsupported_switch

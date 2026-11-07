@@ -11,7 +11,7 @@ of `run.py`, `gen_manifests.py` and `gen_external.py`.
   libraries and cores, named as in the `<name>-<std>.toml` files, plus `yavs-lib` = our own `lib/`), each with expected
   PASS/FAIL lists for yavs and for the reference simulator.
 - Not here: parse-only corpora (`tests/parse-corpus/`, run by `cargo test -p yavs --features
-  corpus`) and simulation (`tools/difftest`). Sources come from the corpus cache, never copied.
+  corpus`), Verilog corpora (`tools/verilog/`, kept out of the `*.toml` glob of the CI `corpus` job) and simulation (`tools/difftest`). Sources come from the corpus cache, never copied.
 
 ## 2. Map
 

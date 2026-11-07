@@ -48,7 +48,7 @@
 - **Binding (D6):** a component instance that no configuration declaration or specification and no default binding binds
   searches the work library, then the `-L` libraries of `elab`/`run` in order, for a module of the component's name (exact,
   then the one case-insensitive match, D5); `binding()` tells an explicit `use open` (stays unbound) from a failed default
-  binding. `entity lib.module` direct instantiation is not supported (it needs analysis to accept a module as an entity).
+  binding. `entity lib.module` direct instantiation was left out here (it needs analysis to accept a module as an entity); it came with "`entity lib.module` of a Verilog module" below.
 - **Instance data:** `Elaborated::verilog` (`VerilogInst`: component scope, library, module, file, generics converted to
   `VerilogValue`, ports as `ObjId`), a collection of its own as the proposal says, no `Vhdl | Verilog` object reference
   refactor; the CLI turns the ports into kernel references after placement (`NetGraph::kref`) and sets

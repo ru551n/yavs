@@ -1,6 +1,7 @@
 //! The Verilog domain: nets and regs, the Active, Inactive and NBA regions of IEEE 1364-2005 5.4,
 //! and future events that keep their region. The whole domain is one serial kernel process
-//! (`bridge.rs`); processes are Rust closures until lowering produces them.
+//! (`bridge.rs`); each process is a body closure, which for elaborated Verilog runs the process's IR
+//! function (`host.rs`).
 //!
 //! Net model. A net holds one value. A net with one driver, or drivers on disjoint bits, is
 //! written to directly. A net that needs resolution (drivers on the same bit, a driver that is

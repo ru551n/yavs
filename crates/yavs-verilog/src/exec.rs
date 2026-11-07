@@ -1,6 +1,6 @@
 //! The run-time form of elaborated Verilog: fixed-width expression trees (`E`, built by `sem.rs`),
-//! assignment targets (`Lhs`), the linear code of a process (`Op`) and its interpreter (`Run`),
-//! which a domain process body drives from one wait to the next.
+//! assignment targets (`Lhs`) and the linear code of a process (`Op`), which `lower.rs` lowers to
+//! IR; `eval` is the reference its tests hold the lowered code against.
 
 use std::sync::Arc;
 

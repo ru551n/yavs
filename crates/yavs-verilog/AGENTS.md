@@ -16,7 +16,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
   register), touch the library manifest or the cache (the caller does, from `Unit`), or decide the
   language of a file for the CLI (`is_verilog_path`, `is_systemverilog_path` are helpers).
 - Depends on `yavs-diag` for `suggest` only (did-you-mean), on `yavs-kernel` and `yavs-logic` for the
-  domain (`Process`, `Ctx`, `LogicVec`, `v4`), on `yavs-ir` and `yavs-interp` for process code (`Inst::VUn` to
+  domain (`Process`, `Ctx`, `LogicVec`, `v4`), on `yavs-lib` for the text of a module's VHDL view (`Interface`), on `yavs-ir` and `yavs-interp` for process code (`Inst::VUn` to
   `Inst::VBack`, `InterpProcess`, `VerilogHost`). Called by `crates/yavs` (`analyze`, and `elab`/`run` through
   `read_unit` and `Design`).
 
@@ -30,7 +30,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `src/exec.rs` | The process code elaboration makes: `E` (fixed-width trees), `Lhs`, `Op` (one process's code), `eval` (constants, and the oracle of the lowering's tests), `$display` formatting (`format` on values, `ArgV`) |
 | `src/lower.rs` | `Op` and `E` to IR (`Lowerer`): one process function per distinct body (the ops with the process's own net numbers and the time units as key), `ProcInfo` (function, the domain's net of each of its nets, instance), `Task` (`$display`, `$write`, `$finish` of `Inst::VTask`), `MAX_WIDTH`; values in runs of registers, what lives past a wait in frame slots; tests: random trees against `eval`, sharing |
 | `src/host.rs` | `Tables` (runtime, tasks, processes, `%t` unit), `Host` (`yavs_interp::VerilogHost`: net reads and writes as planes, the waits a process registers, the tasks), `body` (a domain process that runs its `InterpProcess` with the domain's `Core` swapped into its host and gives back the `Wait`) |
-| `src/elab.rs` | `Design` (every instance of a run; `domain` per build, `prepare` and `runtime`: the program of its processes, `functions`), `Instance`, `Generic`, `ParamValue`, `PortSpec`; `Elab`: parameters, declarations, net aliases, port binding, continuous assignments, `always`/`initial` compiled to `Op`s and lowered as they are made (`push`), the driver check |
+| `src/elab.rs` | `Design` (every instance of a run; `domain` per build, `prepare` and `runtime`: the program of its processes, `functions`), `Instance`, `Generic`, `ParamValue`, `PortSpec`; `Elab`: parameters, declarations, net aliases, port binding, continuous assignments, `always`/`initial` compiled to `Op`s and lowered as they are made (`push`), the drivers (`drivers`: the checks, and each leaf of a resolved net retargeted onto a private driver net before it is lowered) |
 | `src/pre.rs` | Preprocessor on bytes: macros, conditionals, `include`, `timescale`, `default_nettype`, `celldefine`, `begin_keywords` (`KwSet`, the lexer reads the set per token), `line`, protected envelopes; output-to-source map (`Pre::span`); `State` persists across files; context digest |
 | `src/lex.rs` | Lexer: tokens with offsets into the preprocessed text; keywords, `(*)` and `*)` rules; UDP table body is skipped |
 | `src/ast.rs` | The syntax tree (public, in memory only; M1 lowers it) |
@@ -113,6 +113,7 @@ holds the compiled tiers against the interpreter). "Interpreter" is `Machine::v6
 | net read | plane words of the kernel vector (`logic_planes`), no allocation | `yavs_rt_verilog` | never |
 | blocking write | a write of a whole net of up to 64 elements that changes nothing does nothing; else plane words, `Core::write` compares and copies a whole net at once | `yavs_rt_verilog` | a part of a net: element by element in `Core::write` |
 | non-blocking write | plane words into the NBA queue | `yavs_rt_verilog` | never |
+| write of a driver of a resolved net | the write of the driver net above; the changed elements of the target resolved in `Core::write` (a table lookup per driver and element, the kernel's plane-wise resolution for a change of more than 64 elements of strong drivers) | `yavs_rt_verilog`, then the same | never: a net with one driver or an alias has no driver net |
 | `@(...)`, `@*`, `#d` | one registration per item, edges by Table 9-9 on element 0 at each write (`edge`) | `yavs_rt_verilog`, then `Suspend` | never |
 | `$display`, `$write`, `$finish` | values from registers, formatted by `exec::format` | `yavs_rt_verilog` | never |
 

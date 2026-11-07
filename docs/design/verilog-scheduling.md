@@ -3,8 +3,8 @@
 Step A of #776 (plan section 3.5, the "minimally invasive" proposal sections 1 to 3): the Verilog regions of
 IEEE 1364-2005 5.4 run inside one kernel process, so the VHDL cycle (`SimControl::cycle`, `update`, `run_batch`)
 stays as it is. Code: `crates/yavs-verilog/src/runtime.rs` (regions) and `src/bridge.rs` (the boundary); tests:
-`crates/yavs-verilog/tests/sched.rs`. Processes are closures; elaborated modules (step C, `elab.rs`) make them run the process code of
-`exec.rs`.
+`crates/yavs-verilog/tests/sched.rs`. Processes are closures; for elaborated modules (step C, `elab.rs`) each runs the IR function its process code
+(`exec.rs`) was lowered to (step E, `lower.rs`, `host.rs`).
 
 ## 1. The domain
 
@@ -79,7 +79,10 @@ delta (the plan's 3.5 rule that a continuous assignment costs no delta), with th
 (`LogicVec::resolve`) over the driver values. A driver's 4-state value is mapped to a `std_ulogic` level by its
 strengths (plan 3.3, D13): strong gives `0 1 X`, weak `L H W`, highz `Z`; a pull is one more driver of `L` or `H`.
 The resolved value keeps those levels for VHDL (an output port shows `H` for a pulled net), and Verilog reads it as
-`TO_X01Z`. A `supply0` or `supply1` net is a constant: its drivers run nothing.
+`TO_X01Z`. A `supply0` or `supply1` net is a constant: its drivers run nothing. Elaboration retargets each leaf of a
+continuous assignment onto its driver net before the process is lowered to IR, so the lowered code on every tier
+(interpreter, Cranelift, LLVM) writes the driver net through the host like any net and resolution stays in
+`Core::write`; a net with one driver, or an alias, never reaches it.
 
 Step D (`inout`, risk R9) plugs in here: a net that VHDL also drives gets the VHDL signal as one more entry of the
 same list, with the domain's own contribution taken out of it (the kernel signal already resolves it), and the
@@ -98,7 +101,7 @@ activations the loop polls `Ctx::stop_requested` and returns with its queues int
 |---|---|
 | One serial domain for all Verilog | Independent islands as separate domains, if a profile shows it |
 | Every input read and compared per activation | `Ctx::event` first, or per-input wake-ups, when inputs are many |
-| Writes element by element | Plane-word copies when lowering makes writes hot |
+| Part writes and driver-net writes element by element (a whole write of a plain net compares and copies whole) | Plane-word copies if part writes show in a profile |
 | Stale waiters pruned when a list doubles | Per-process wait lists if the scan shows in a profile |
 | Linear scan of the publication queue per output change | An index per port if batches grow long |
 | The event limit is `E3009` (runtime error) | A dedicated code with the diagnostics range of step C |

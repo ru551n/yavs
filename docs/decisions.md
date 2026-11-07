@@ -14730,11 +14730,12 @@ the IR optimiser and lowering. Decisions:
   under the core locks, a loaded host: an A/A pair of the base read 0.89 to 1.03 on the small ones and up to 1.37 on
   GRLIB): with a second free core, against `wait` before it, `neorv32_dual_full` 0.79 to 0.86 (spread 0.75 to
   0.94), `osvvm_axi4_random` 0.70 to 0.73, `hdlm_lfsr`, `uvvm_func_cov`, `vunit_logging` 0.94 to 1.01, GRLIB 1.01 on one
-  core (0.95 to 1.07, 4 pairs). Warm (two caches made by three runs of each binary): `neorv32_dual_full` 1.18 (1.08 to
+  core (0.95 to 1.07, 8 pairs). Warm (two caches made by three runs of each binary): `neorv32_dual_full` 1.18 (1.08 to
   1.22), `osvvm_axi4_random` 0.71: a function that never repays within one run is never cached either, and
   neorv32's compiled code gains once cached (warm 1.65 s against 2.4 s interpreted). **Not on main for that reason**
   (branch only); the maintainer decides whether a first cold run may cost later warm runs, or whether the gate should
-  apply only to a run with no last run of its program.
+  apply only to a run with no last run of its program (then the second run compiles what the first skipped, and the
+  cache fills one run later; not built or measured).
 
 ## `--tier=auto` under `--threads`: the simulation CPU is the kernel thread's (yavs-llvm `auto.rs`, #884, 2026-11-07)
 

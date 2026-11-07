@@ -60,6 +60,6 @@ a Verilog file is ``E4003``.
 Diagnostics
 -----------
 
-Verilog diagnostics have codes ``E4xxx`` and ``W4xxx``, listed in :doc:`error-codes`. A library
-that was analyzed after a Verilog file's included files changed is refused with ``L0034``, like a
-changed source: analyze the Verilog files again.
+Verilog diagnostics have codes ``E4xxx`` and ``W4xxx``, listed in :doc:`error-codes`. ``elab`` and
+``run`` refuse a library whose Verilog file, or a file it includes, changed since it was analyzed
+(``L0034``, like a changed VHDL source): analyze the Verilog files again.

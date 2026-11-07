@@ -580,13 +580,22 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
 ];
 
-/// The long text for `code`, from this table or from `yavs-sem`.
+/// The codes `yavs-verilog` registers that this table does not already describe.
+fn verilog_extra() -> impl Iterator<Item = (&'static str, &'static str)> {
+    yavs_verilog::CODES
+        .iter()
+        .map(|c| (c.code, c.explain))
+        .filter(|(c, _)| !EXPLAIN.iter().any(|(t, _)| t == c))
+}
+
+/// The long text for `code`, from this table, from `yavs-sem` or from `yavs-verilog`.
 pub fn explain(code: &str) -> Option<&'static str> {
     EXPLAIN
         .iter()
         .find(|(c, _)| *c == code)
         .map(|(_, e)| *e)
         .or_else(|| yavs_sem::diag::explain(code))
+        .or_else(|| verilog_extra().find(|(c, _)| *c == code).map(|(_, e)| e))
 }
 
 /// Which diagnostic codes a name may be (`suggest_code`).
@@ -615,7 +624,9 @@ pub fn suggest_code(input: &str, codes: Codes, lint: bool) -> Option<String> {
     let names = EXPLAIN
         .iter()
         .chain(yavs_sem::diag::EXPLAIN)
-        .map(|(c, _)| *c)
+        .copied()
+        .chain(verilog_extra())
+        .map(|(c, _)| c)
         .filter(|c| codes == Codes::All || (codes == Codes::Warnings && c.starts_with('W')))
         .map(|c| (c, "diagnostic code"))
         .chain((codes == Codes::Warnings).then_some(("error", "warning option")));
@@ -636,6 +647,7 @@ pub(crate) fn all() -> Vec<(&'static str, &'static str)> {
         .iter()
         .chain(yavs_sem::diag::EXPLAIN)
         .copied()
+        .chain(verilog_extra())
         .collect()
 }
 

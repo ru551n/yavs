@@ -198,7 +198,8 @@ fn sources(a: &Args, cfg: &Config, libs: &Libraries, work: &str) -> yavs_lib::Re
         if recorded.iter().any(|s| s.library == l.name) {
             continue;
         }
-        for f in l.read()?.files() {
+        // A recorded Verilog file is not VHDL to lint.
+        for f in l.read()?.files().filter(|f| f.std != yavs_lib::VERILOG_STD) {
             recorded.push(Source {
                 library: l.name.clone(),
                 path: f.path.to_path_buf(),

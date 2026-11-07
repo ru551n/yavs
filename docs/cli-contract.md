@@ -349,6 +349,19 @@ yavs analyze --std=FILE_STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=alwa
     printed. `-WCODE`: that warning stays a warning even under `-Werror`.
   - For one code the last option wins; `CODE` must be a registered warning code
     (`W0001`, `W1008`, ...), else `E0103` and exit 2.
+- Verilog (IEEE 1364-2005, #776): `analyze` reads `.v`, `.vh` and `.vp` files with the Verilog front end
+  and every other file (`.sv` and `.svh` excepted) as VHDL; `--lang=verilog` or `--lang=vhdl` sets the language
+  of every file of the call whatever its extension, and a `.sv` or `.svh` file is `E4002` (exit 1, at its place
+  in the batch). The Verilog files of a call are analyzed together, so macros, `` `timescale `` and
+  `` `default_nettype `` persist from one to the next; give them in dependency order. Options (analyze only
+  for now): `-I DIR` (repeatable; searched after the directory of the including file), `-D NAME[=VALUE]`
+  (a macro before the first file; `NAME=VALUE` is also the VHDL conditional analysis identifier of the VHDL
+  files of the call, `NAME` alone is Verilog only), `--timescale UNIT/PRECISION` (default `1ns/1ps`). `-I`,
+  `--timescale` and a bare `-D NAME` in a call with no Verilog file are `E0141` (exit 2). `elab` and `run`
+  accept `-D NAME=VALUE` only and have no Verilog options yet: a runner that passes its `-D` flags to all three
+  commands must not pass a bare `-D NAME`. A top level that is a Verilog module is `E4500` (exit 2): elaborating
+  Verilog is not implemented. Each Verilog file is recorded with its units, the preprocessor state it was
+  analyzed under and the hashes of its included files (section 3).
 - An encrypted source (IEEE 1735 `` `protect begin_protected `` envelope, #775) is one error
   `E0012` naming the file and the line that opens the envelope, with the fix; yavs never decrypts.
 - `yavs --explain CODE` prints the long text of a diagnostic code on stdout

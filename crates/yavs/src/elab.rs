@@ -647,6 +647,12 @@ fn elaborate(
         None => vec![
             UnitRef::new(&work, UnitKind::Entity, &c.top),
             UnitRef::new(&work, UnitKind::Configuration, &c.top),
+            // A Verilog module keeps the case it was written in.
+            UnitRef {
+                library: work.clone(),
+                kind: UnitKind::Module,
+                key: c.top.clone(),
+            },
         ],
     };
     let mut files = Err(None);

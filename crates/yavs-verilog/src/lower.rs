@@ -81,6 +81,11 @@ impl Lowerer {
                 })
             });
         }
+        for op in &mut ops {
+            op_exprs(op, &mut |e| {
+                fold(e);
+            });
+        }
         let local: Vec<u32> = nets.iter().map(|&n| widths[n as usize]).collect();
         if let Some(&w) = local.iter().find(|&&w| w > MAX_WIDTH) {
             return Err(LowerError::Wide(w));
@@ -174,6 +179,65 @@ fn e_nets(e: &mut E, f: &mut dyn FnMut(&mut u32)) {
         E::Cat(v) => v.iter_mut().for_each(|p| e_nets(p, f)),
         E::K(_) | E::R(_) | E::Time(..) | E::RTime(_) => {}
     }
+}
+
+/// The trees of an op, writable.
+fn op_exprs(op: &mut Op, f: &mut dyn FnMut(&mut E)) {
+    match op {
+        Op::Set(l, e) | Op::Nba(l, e, None) => {
+            lhs_exprs(l, f);
+            f(e);
+        }
+        Op::Nba(l, e, Some(d)) => {
+            lhs_exprs(l, f);
+            f(e);
+            f(d);
+        }
+        Op::Hold(_, e) | Op::JmpIfNot(e, _) | Op::RepeatInit(_, e, _) | Op::Delay(e, _) => f(e),
+        Op::SetHeld(l, _) => lhs_exprs(l, f),
+        Op::Case { sel, items, .. } => {
+            f(sel);
+            items.iter_mut().for_each(|(e, _)| f(e));
+        }
+        Op::Display(args, _) => args.iter_mut().for_each(|a| match a {
+            Arg::Val(e, _) | Arg::Real(e) => f(e),
+            Arg::Fmt(_) => {}
+        }),
+        Op::Wait(_) | Op::Jmp(_) | Op::RepeatTest(..) | Op::Finish | Op::Done => {}
+    }
+}
+
+fn lhs_exprs(l: &mut Lhs, f: &mut dyn FnMut(&mut E)) {
+    match l {
+        Lhs::Part {
+            start: Start::Dyn { idx, .. },
+            ..
+        } => f(idx),
+        Lhs::Part { .. } => {}
+        Lhs::Cat(v) => v.iter_mut().for_each(|p| lhs_exprs(p, f)),
+    }
+}
+
+/// Folds the subtrees of `e` that read no net and no time into constants (a parameter's
+/// arithmetic, a constant concatenation): what it gives at run time, `exec::eval_const`'s.
+/// Whether `e` is constant.
+fn fold(e: &mut E) -> bool {
+    let k = match e {
+        E::K(_) | E::R(_) => return true,
+        E::Var(_) | E::Time(..) | E::RTime(_) => return false,
+        E::Sel { src, idx, .. } => fold(src) & fold(idx),
+        E::Un(_, a) | E::Ext(a, ..) | E::ToReal(a, _) | E::ToVec(a, _) | E::RUn(a) => fold(a),
+        E::Bin(_, a, b, _) | E::RBin(_, a, b) | E::RCmp(_, a, b) => fold(a) & fold(b),
+        E::Cond(a, b, c) | E::RCond(a, b, c) => fold(a) & fold(b) & fold(c),
+        E::Cat(v) => v.iter_mut().fold(true, |k, p| fold(p) & k),
+    };
+    if k {
+        *e = match crate::exec::eval_const(e) {
+            crate::sem::Const::V(v, _) => E::K(v),
+            crate::sem::Const::R(r) => E::R(r),
+        };
+    }
+    k
 }
 
 /// `10^k` femtoseconds as `k` (time units and precisions are powers of ten, 19.8).

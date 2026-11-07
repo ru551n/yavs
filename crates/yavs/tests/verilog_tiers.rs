@@ -2,6 +2,7 @@
 //! expressions of every operator over registers of widths 1 to 100 with x and z bits, shown with
 //! `%b` at every clock (a process's first activation is interpreted, the next ones run compiled
 //! code), and a clocked process of non-blocking assignments, `if` and `case` over them. The
+//! `@*`, `@(a or b)` and `posedge`/`negedge` of registers whose bit 0 goes through x and z. The
 //! output of `--tier=clift`, of `--tier=auto` compiling every function at its first run, and of
 //! `--tier=llvm` where it is built must be the interpreter's, byte for byte, also where a value
 //! just falls off the two-state path (one x bit).
@@ -140,13 +141,21 @@ fn module(seed: u64) -> String {
             _ => format!("    {} <= {e};\n", g.name),
         };
     }
-    let names: Vec<&str> = regs.iter().map(|g| g.name.as_str()).collect();
+    // `@*`, `@(a or b)` and edges of bits that go through x and z (Table 9-9).
+    let star = expr(&mut r, &regs, 2);
+    let mut names: Vec<&str> = regs.iter().map(|g| g.name.as_str()).collect();
+    names.extend(["w1", "c0", "c1"]);
     format!(
         "`timescale 1ns/1ps
 module vt;
   reg clk = 0;
   integer i = {i};
-{decl}  always #5 clk = ~clk;
+{decl}  reg [15:0] w1;
+  reg [7:0] c0 = 0, c1 = 0;
+  always #5 clk = ~clk;
+  always @* w1 = {star};
+  always @(r0 or r1) c0 = c0 + 1;
+  always @(posedge r2 or negedge r3) c1 <= c1 + 1;
   always @(posedge clk) begin
 {clocked}    i <= i + 1;
   end
@@ -157,6 +166,7 @@ module vt;
 endmodule
 ",
         i = r.below(10),
+        star = star,
         fmt = vec!["%b"; names.len()].join(" "),
         list = names.join(", "),
     )

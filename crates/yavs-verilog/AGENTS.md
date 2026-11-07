@@ -85,6 +85,33 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 
 Ceilings of the domain (each a `ponytail:` note in the code): `docs/design/verilog-scheduling.md` section 5.
 
+### Fast paths and their fallbacks (#776)
+
+Every Verilog instruction has a two-state path on machine words; the 4-state `V4` operator is the
+fallback and the reference (`tests/ops.rs` holds each word form against it, also on inputs with one x or
+z bit; `lower.rs` tests hold the lowered code against `exec::eval`; `crates/yavs/tests/verilog_tiers.rs`
+holds the compiled tiers against the interpreter). "Interpreter" is `Machine::v64` (`yavs-interp`
+`exec/verilog.rs`, the word forms of `yavs_logic::v4::w64`), "compiled" the arms of both code generators
+(`lower/verilog.rs` of `yavs-clift` and `yavs-llvm`, the set `yavs_llvm::rt::verilog_inline`).
+
+| Operation | Interpreter, values of up to 64 bits | Compiled code, up to 64 bits | Falls back when |
+|---|---|---|---|
+| `~ & \| ^ ~^`, `?:` merge, extension, concatenation, `===`, `!==`, `case`/`casez`/`casex` item, truth of a condition | words, x and z bit for bit | in place, no guard | never (wider than 64 bits: `V4`) |
+| `+ - *`, unary `-`, `< <= > >=`, `== !=`, `&& \|\| !`, reductions | words; any x or z operand bit gives x at once | in place on operands whose `b` planes are 0 | an operand with an x or z bit (compiled: slow path, the interpreter's word form) |
+| `<< >> <<< >>>` | words, x and z of the value shifted with it | in place on known value and amount (amount clamped, 64 or more fills) | x or z in value or amount (compiled) |
+| `/ % **`, `$clog2` | words | the interpreter's function (`yavs_rt_verilog`) | never in the interpreter |
+| select with a run-time index, index start | words; an unknown or out-of-range start reads x | in place when the select lies inside the value / the index is known | outside the value, unknown index |
+| `repeat` count, delays, `$time`, `$realtime`, real conversions | words (a real conversion of a value of 2^53 or more: `V4`) | `yavs_rt_verilog` (real `+ - * /` in place) | value of 2^53 or more |
+| net read | plane words of the kernel vector (`logic_planes`), no allocation | `yavs_rt_verilog` | never |
+| blocking write | a write of a whole net of up to 64 elements that changes nothing does nothing; else plane words, `Core::write` compares and copies a whole net at once | `yavs_rt_verilog` | a part of a net: element by element in `Core::write` |
+| non-blocking write | plane words into the NBA queue | `yavs_rt_verilog` | never |
+| `@(...)`, `@*`, `#d` | one registration per item, edges by Table 9-9 on element 0 at each write (`edge`) | `yavs_rt_verilog`, then `Suspend` | never |
+| `$display`, `$write`, `$finish` | values from registers, formatted by `exec::format` | `yavs_rt_verilog` | never |
+
+Constants: subtrees that read no net and no time are folded when a process is lowered (`lower::fold`).
+Pure copies onto an internal net with one driver are aliases (no process). A process's first activation runs
+in the interpreter on every tier, as VHDL's does.
+
 ## 4. Commands
 
 ```sh

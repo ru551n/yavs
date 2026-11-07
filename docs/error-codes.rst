@@ -646,6 +646,10 @@ Verilog (E4 and W4)
      - A character, string, comment, number or identifier is malformed: an unterminated string or block comment, an illegal character, or a bad numeric literal.
    * - _`W4015`
      - The design defines XIL_TIMING and contains timing checks ($setup, $hold, $setuphold, ...).
+   * - _`W4016`
+     - A compiler directive of fault simulation or netlist size (``suppress_faults``, ``enable_portfaults``, ``accelerate``, ``expand_vectornets``, ``remove_netnames`` and their negations) is not part of IEEE 1364-2005 and does not change a functional simulation.
+   * - _`W4017`
+     - An input or inout port, or an output without a variable type, is given a value in the port list (``input a = 1'b0``).
    * - _`E4100`
      - The source does not match the grammar of IEEE 1364-2005 at this point.
    * - _`E4101`
@@ -655,9 +659,9 @@ Verilog (E4 and W4)
    * - _`E4201`
      - An identifier is used in an expression but declared nowhere in the module, and ```default_nettype none`` is in force, so no implicit net is created (clause 4.5).
    * - _`E4202`
-     - A port of a module header with a non-ANSI port list has no direction declaration in the body, or a body declaration names a port the header does not list, a port is declared twice or defined twice by name, an input or inout port is declared ``reg`` (clause 12.3), or a module that declares its ports in the header declares one in the body (clause 12.3.4).
+     - A port of a module header with a non-ANSI port list has no direction declaration in the body, or a body declaration names a port the header does not list, a port is declared twice or defined twice by name, an input or inout port is declared ``reg``, in its own declaration or by a later ``reg`` or ``integer`` declaration of its name (clause 12.3), or a module that declares its ports in the header declares one in the body (clause 12.3.4).
    * - _`E4203`
-     - A name is declared twice in the same scope: a module, task, function, named block, generate block or specify block (clause 4.11), or a port of the module header is declared again in the body (clause 12.3.4).
+     - A name is declared twice in the same scope: a module, task, function, named block, generate block or specify block (clause 4.11), or two ports of one module header have the same name (clause 12.3.4).
    * - _`E4204`
      - The variable of a generate ``for`` loop is declared with ``genvar`` (clause 12.4.1).
    * - _`W4205`
@@ -666,6 +670,10 @@ Verilog (E4 and W4)
      - A ``begin`` or ``fork`` block without a name declares variables, parameters or events.
    * - _`W4207`
      - A variable is given a value where it is declared inside a task, function or block.
+   * - _`W4208`
+     - The operand of a unary operator is another unary operator (``~ |a``, ``- -a``).
+   * - _`W4209`
+     - A port declared in the list of port declarations of the module header is declared again in the body as a net or variable.
    * - _`E4500`
      - The top level named on the command line is a Verilog module.
    * - _`E4501`

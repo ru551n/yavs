@@ -804,8 +804,15 @@ fn analysis_errors() {
     // implicit nets are fine by default
     ok("module a (input x);\n assign y = x;\nendmodule\n");
     bad("module a;\n wire w;\n wire w;\nendmodule\n", "E4203", 3);
-    // clause 12.3.4: a port of the header is not declared again in the body
-    bad("module a (output o);\n wire o;\nendmodule\n", "E4203", 2);
+    // clause 12.3.4: a port of the header is not declared again in the body; accepted with W4209
+    let r = run("module a (output o);\n wire o;\nendmodule\n");
+    assert!(
+        r.diagnostics
+            .iter()
+            .all(|d| d.severity == Severity::Warning)
+    );
+    assert!(r.diagnostics.iter().any(|d| d.code == "W4209"));
+    bad("module a (input o, output o);\nendmodule\n", "E4203", 1);
     ok("module a (output o);\n reg r;\nendmodule\n");
 }
 
@@ -884,6 +891,30 @@ fn bombs_and_deep_nesting_end_with_an_error() {
         r.diagnostics
             .iter()
             .any(|d| d.code == "E4100" && d.message.contains("too deep"))
+    );
+}
+
+#[test]
+fn a_macro_named_like_an_ignored_directive_is_a_macro() {
+    // `accelerate is ignored with W4016 only while no macro of that name is defined.
+    ok("`define accelerate 8\nmodule m; wire [`accelerate-1:0] w; endmodule\n");
+    let r = run("`accelerate\nmodule m; endmodule\n");
+    assert!(r.diagnostics.iter().any(|d| d.code == "W4016"));
+}
+
+#[test]
+fn a_long_chain_of_conditionals_is_not_nesting() {
+    // Clause 5.1.13: `c1 ? a1 : c2 ? a2 : ... : e` groups to the right; a table of 1000 rows is legal.
+    let mut e = String::new();
+    for i in 0..1000 {
+        e += &format!("s == {i} ? {i} : ");
+    }
+    ok(&format!(
+        "module m; wire [31:0] s; wire [31:0] w = {e}0; endmodule\n"
+    ));
+    assert_eq!(
+        shape(&expr_of("a ? b : c ? d : e")),
+        "(a ? b : (c ? d : e))"
     );
 }
 

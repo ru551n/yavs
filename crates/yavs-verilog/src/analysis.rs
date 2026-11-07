@@ -552,6 +552,30 @@ fn ports(cx: &mut Ctx, m: &Module) -> Vec<Port> {
                     }
                 }
             }
+            // Clause 12.3: an input or inout port is a net; a `reg` or `integer` declaration of its name is an error.
+            for it in &m.items {
+                if let Item::Var(v) = it {
+                    for n in &v.names {
+                        if let Some((d, _)) = decl.get(n.name.name.as_str())
+                            && d.dir != Dir::Output
+                        {
+                            let what = if d.dir == Dir::Input {
+                                "input"
+                            } else {
+                                "inout"
+                            };
+                            cx.diags.push(
+                                Diag::error(
+                                    "E4202",
+                                    format!("the {what} port `{}` is a net, it cannot be declared as a variable (clause 12.3)", n.name.name),
+                                    cx.span(&n.name),
+                                )
+                                .help("declare it as a net, or remove the declaration"),
+                            );
+                        }
+                    }
+                }
+            }
             let list: &[NonAnsiPort] = match &m.ports {
                 Ports::NonAnsi(l) => l,
                 _ => &[],
@@ -838,12 +862,12 @@ fn declare_all(
     for d in ds {
         if sc.module && header.contains(&d.name.name) {
             cx.diags.push(
-                Diag::error(
-                    "E4203",
-                    format!("`{}` is a port declared in the module header, it is not declared again in the body", d.name.name),
+                Diag::warning(
+                    "W4209",
+                    format!("`{}` is a port declared in the module header, it is declared again in the body", d.name.name),
                     cx.span(&d.name),
                 )
-                .note("ports declared in the header are not redeclared in the body of the module (clauses 12.1 and 12.3.4)"),
+                .note("IEEE 1364-2005 does not redeclare header ports in the body (clauses 12.1 and 12.3.4); the other tools accept it"),
             );
         } else {
             sc.declare(cx, &d.name, what);

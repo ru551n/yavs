@@ -1,0 +1,8 @@
+# tools/verilog/corpus.py ultraembedded-usb-host: expected outcome per file, `OUTCOME LIB VIEW PATH [-I DIR | -D NAME]...`; paths only, no vendor content.
+PASS work default src_v/usbh_crc16.v -I src_v
+PASS work default src_v/usbh_crc5.v -I src_v
+PASS work default src_v/usbh_fifo.v -I src_v
+PASS work default src_v/usbh_host.v -I src_v
+PASS work default src_v/usbh_host_defs.v -I src_v
+PASS work default src_v/usbh_sie.v -I src_v
+PASS work project 'src_v/*.v' -I src_v

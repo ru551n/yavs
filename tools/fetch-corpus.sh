@@ -62,6 +62,33 @@ fetch hdl-modules https://github.com/hdl-modules/hdl-modules c4f01c4bb69aab66c87
 # qlf_k6n10f cells_sim.v, brams_sim.v and dsp_sim.v carry an Apache-2.0 header (F4PGA). bram_types_sim.v is generated at build time and not in the checkout.
 fetch yosys https://github.com/YosysHQ/yosys c30457480f8a905e252fb09ea688713a86e9da49 '/techlibs/' '/COPYING'
 
+# Verilog test and design corpora (tools/verilog/corpus.py, one manifest each; inputs only, never committed). Licences: ivtest GPL-2.0 (an
+# open-source Verilog simulator's regression suite), picorv32 ISC, verilog-ethernet/-axi/-uart/-axis/-pcie MIT, wb2axip Apache-2.0, zipcpu GPL-3.0 (the repository's
+# rtl/ only), darkriscv BSD-3-Clause, serv ISC, ultraembedded riscv BSD-3-Clause and core_usb_host GPL (version 3 text, "License: GPL" in the headers), openMSP430 BSD-3-Clause, the OpenCores ethmac (LGPL) and
+# wb_dma (free-use notice), dawsonjon/fpu MIT; cell models: XilinxUnisimLibrary Apache-2.0, sky130_fd_sc_hd Apache-2.0, f4pga-arch-defs ISC (the sim models only).
+fetch ivtest https://github.com/steveicarus/ivtest a19e629a1879801ffcc6f2e6256ca435c20570f3
+fetch picorv32 https://github.com/YosysHQ/picorv32 ef203c2b0a3fb793280f5114941416c425c5b461
+fetch verilog-ethernet https://github.com/alexforencich/verilog-ethernet 77320a9471d19c7dd383914bc049e02d9f4f1ffb '/rtl/' '/COPYING'
+fetch verilog-axi https://github.com/alexforencich/verilog-axi 516bd5dadc3365b7f9e225d2af8fe0b8d804fe53 '/rtl/' '/COPYING'
+fetch verilog-uart https://github.com/alexforencich/verilog-uart 1b867e53af738e4a8bc7c839ca2f1c07f40382dc '/rtl/' '/COPYING'
+fetch verilog-axis https://github.com/alexforencich/verilog-axis 48ff7a7e2ef782cf778d47910cf85835c64b1bce '/rtl/' '/COPYING'
+fetch verilog-pcie https://github.com/alexforencich/verilog-pcie 25156a9a162c41c60f11f41590c7d006d015ae5a '/rtl/' '/COPYING'
+fetch wb2axip https://github.com/ZipCPU/wb2axip 2e8d3bc2d26ddc33d1881022a2a2b9d3f0c16b9b '/rtl/' '/LICENSE*' '/COPYING*'
+fetch zipcpu https://github.com/ZipCPU/zipcpu 42606d2d6ef55df313772232977621b2d72f0159 '/rtl/' '/COPYING*'
+fetch darkriscv https://github.com/darklife/darkriscv 955511961f139c54d3385063cd9bf40f4dddadd8 '/rtl/' '/LICENSE*'
+fetch serv https://github.com/olofk/serv f200eb2ed7b69ac1c6b8eddd47654522aeee5ce8 '/rtl/' '/LICENSE*'
+fetch ultraembedded-riscv https://github.com/ultraembedded/riscv 7ae6f803e30f78c6ea3121e73c3adf50ff912730 '/core/' '/top_cache_axi/' '/top_tcm_axi/' '/top_tcm_wrapper/' '/LICENSE*'
+fetch ultraembedded-usb-host https://github.com/ultraembedded/core_usb_host 81eb9f131dbb434a9047ae074fea5c31ef46ce5d '/src_v/' '/LICENSE*'
+fetch openmsp430 https://github.com/olgirard/openmsp430 92c883abb4518dbc35b027e6cad5ffef5b2fbb81 '/core/rtl/' '/core/doc/' '/LICENSE*'
+fetch opencores-ethmac https://github.com/freecores/ethmac dd26899086edf3b797d2775ef9502d204a9a8149 '/rtl/' '/README*'
+fetch opencores-wb-dma https://github.com/freecores/wb_dma 56126339e2cef66c8769c3f8516ba7222063e851 '/rtl/'
+fetch dawsonjon-fpu https://github.com/dawsonjon/fpu c45d5e0a9f1b7e945e2be6770dbc1203825a05c4 '/*/' '/COPYING*' '/README*'
+fetch xilinx-unisim-lib https://github.com/Xilinx/XilinxUnisimLibrary 1c8e05fd1e9a79ceb8b996a0996674122eed086f '/verilog/' '/LICENSE'
+fetch sky130-fd-sc-hd https://github.com/google/skywater-pdk-libs-sky130_fd_sc_hd ac7fb61f06e6470b94e8afdf7c25268f62fbd7b1 '/cells/**/*.v' '/models/**/*.v' '/LICENSE'
+# The yosys regression designs (ISC): classic and corner-case Verilog, partly SystemVerilog (tests/errors is invalid on purpose and not fetched).
+fetch yosys-tests https://github.com/YosysHQ/yosys c30457480f8a905e252fb09ea688713a86e9da49 '/tests/simple/' '/tests/asicworld/' '/tests/hana/' '/tests/various/' '/tests/verilog/' '/tests/memories/' '/tests/opt/' '/COPYING'
+fetch f4pga-arch-defs https://github.com/f4pga/f4pga-arch-defs 3d4df2ea79dca19b8c5c155e0396e84f52e50451 '/xilinx/*.sim.v' '/xilinx/**/*.sim.v' '/quicklogic/**/*.sim.v' '/**/techmap/cells_sim.v' '/COPYING' '/LICENSE*'
+
 # External library corpora (tools/corpus/gen_external.py): shallow, one pinned commit each.
 fetch open-logic https://github.com/open-logic/open-logic d9f123aae1c6022288782668067311f9794da0a2
 fetch en_cl_fix https://github.com/open-logic/en_cl_fix ecd7dd026837997f2cd8bc4861769abc6cbbc73c

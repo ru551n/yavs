@@ -135,6 +135,16 @@ pub(crate) const TABLE: &[CodeInfo] = &[
         "The design defines XIL_TIMING and contains timing checks ($setup, $hold, $setuphold, ...). They are parsed and ignored: functional simulation never evaluates them."
     ),
     code!(
+        "W4016",
+        "compiler directive ignored",
+        "A compiler directive of fault simulation or netlist size (`suppress_faults`, `enable_portfaults`, `accelerate`, `expand_vectornets`, `remove_netnames` and their negations) is not part of IEEE 1364-2005 and does not change a functional simulation. yavs ignores it, as the other tools do."
+    ),
+    code!(
+        "W4017",
+        "default value of a port",
+        "An input or inout port, or an output without a variable type, is given a value in the port list (`input a = 1'b0`). IEEE 1364-2005 (12.3.4) allows a value only for an output variable; the construct is SystemVerilog. yavs accepts it, as the other tools do, and warns once per file."
+    ),
+    code!(
         "W4205",
         "task enabled with empty parentheses",
         "A task enable such as `t();` has parentheses and no argument. IEEE 1364-2005 (10.2.2) says a task without arguments is enabled without a list; yavs accepts it, as the other tools do, and warns."
@@ -148,6 +158,16 @@ pub(crate) const TABLE: &[CodeInfo] = &[
         "W4207",
         "variable declaration assignment in a block or task",
         "A variable is given a value where it is declared inside a task, function or block. IEEE 1364-2005 (6.2.1) allows that at module level only; yavs accepts it, as the other tools do, and warns. On an array it is still an error."
+    ),
+    code!(
+        "W4208",
+        "unary operator on a unary operator",
+        "The operand of a unary operator is another unary operator (`~ |a`, `- -a`). The grammar of IEEE 1364-2005 (A.8.3) gives a unary operator a primary as operand, so the inner operator needs parentheses; yavs accepts the form, as the other tools do, and warns."
+    ),
+    code!(
+        "W4209",
+        "port declared again in the body",
+        "A port declared in the list of port declarations of the module header is declared again in the body as a net or variable. IEEE 1364-2005 (12.1, 12.3.4) says it shall not be redeclared; yavs accepts it, as the other tools do, and warns."
     ),
     code!(
         "E4100",
@@ -173,12 +193,12 @@ pub(crate) const TABLE: &[CodeInfo] = &[
         "E4202",
         "port declaration mismatch",
         "A port of a module header with a non-ANSI port list has no direction declaration in the body, or a body declaration names a port the header does not list, \
-         a port is declared twice or defined twice by name, an input or inout port is declared `reg` (clause 12.3), or a module that declares its ports in the header declares one in the body (clause 12.3.4)."
+         a port is declared twice or defined twice by name, an input or inout port is declared `reg`, in its own declaration or by a later `reg` or `integer` declaration of its name (clause 12.3), or a module that declares its ports in the header declares one in the body (clause 12.3.4)."
     ),
     code!(
         "E4203",
         "duplicate declaration",
-        "A name is declared twice in the same scope: a module, task, function, named block, generate block or specify block (clause 4.11), or a port of the module header is declared again in the body (clause 12.3.4)."
+        "A name is declared twice in the same scope: a module, task, function, named block, generate block or specify block (clause 4.11), or two ports of one module header have the same name (clause 12.3.4)."
     ),
     code!(
         "E4204",

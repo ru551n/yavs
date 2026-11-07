@@ -1,0 +1,193 @@
+# tools/verilog/ivtest.py: why yavs and the expectation of a test differ. `TYPE:FIRSTFILE CLASS note`; classes sem, ext, ctx, src, gap, bug (see ivtest.py)
+CE:ivltests/always3.1.10A.v ext a check of that tool, not of the standard
+CE:ivltests/always3.1.1A.v ext a check of that tool, not of the standard
+CE:ivltests/always3.1.1B.v ext a check of that tool, not of the standard
+CE:ivltests/always3.1.2A.v ext a check of that tool, not of the standard
+CE:ivltests/always3.1.2B.v ext a check of that tool, not of the standard
+CE:ivltests/always3.1.2C.v ext a check of that tool, not of the standard
+CE:ivltests/always3.1.2D.v ext a check of that tool, not of the standard
+CE:ivltests/always3.1.2E.v ext a check of that tool, not of the standard
+CE:ivltests/always3.1.2F.v ext a check of that tool, not of the standard
+CE:ivltests/always3.1.2G.v ext a check of that tool, not of the standard
+CE:ivltests/always3.1.2H.v ext a check of that tool, not of the standard
+CE:ivltests/always3.1.2I.v ext a check of that tool, not of the standard
+CE:ivltests/always3.1.3A.v ext a check of that tool, not of the standard
+CE:ivltests/always3.1.3B.v ext a check of that tool, not of the standard
+CE:ivltests/always3.1.3C.v ext a check of that tool, not of the standard
+CE:ivltests/always3.1.3D.v ext a check of that tool, not of the standard
+CE:ivltests/always3.1.3E.v ext a check of that tool, not of the standard
+CE:ivltests/always3.1.3F.v ext a check of that tool, not of the standard
+CE:ivltests/always3.1.3G.v ext a check of that tool, not of the standard
+CE:ivltests/always3.1.3H.v ext a check of that tool, not of the standard
+CE:ivltests/always3.1.3J.v ext a check of that tool, not of the standard
+CE:ivltests/always3.1.9A.v ext a check of that tool, not of the standard
+CE:ivltests/always3.1.9B.v ext a check of that tool, not of the standard
+CE:ivltests/array5.v sem needs types, binding, constants or elaboration
+CE:ivltests/array_lval_select4b.v sem needs types, binding, constants or elaboration
+CE:ivltests/automatic_error1.v gap restrictions on the items of an automatic task (assignments, event control, hierarchical reference)
+CE:ivltests/automatic_error10.v gap restrictions on the items of an automatic task (assignments, event control, hierarchical reference)
+CE:ivltests/automatic_error2.v gap restrictions on the items of an automatic task (assignments, event control, hierarchical reference)
+CE:ivltests/automatic_error3.v gap restrictions on the items of an automatic task (assignments, event control, hierarchical reference)
+CE:ivltests/automatic_error4.v gap restrictions on the items of an automatic task (assignments, event control, hierarchical reference)
+CE:ivltests/automatic_error5.v gap restrictions on the items of an automatic task (assignments, event control, hierarchical reference)
+CE:ivltests/automatic_error6.v gap restrictions on the items of an automatic task (assignments, event control, hierarchical reference)
+CE:ivltests/automatic_error7.v gap restrictions on the items of an automatic task (assignments, event control, hierarchical reference)
+CE:ivltests/automatic_error8.v gap restrictions on the items of an automatic task (assignments, event control, hierarchical reference)
+CE:ivltests/automatic_error9.v gap restrictions on the items of an automatic task (assignments, event control, hierarchical reference)
+CE:ivltests/br1029c.v sem needs types, binding, constants or elaboration
+CE:ivltests/br924.v sem needs types, binding, constants or elaboration
+CE:ivltests/br961a.v sem needs types, binding, constants or elaboration
+CE:ivltests/br982.v sem needs types, binding, constants or elaboration
+CE:ivltests/br982a.v sem needs types, binding, constants or elaboration
+CE:ivltests/br982b.v sem needs types, binding, constants or elaboration
+CE:ivltests/br993a.v opt needs the synthesis switch
+CE:ivltests/br993b.v opt needs the synthesis switch
+CE:ivltests/br995.v opt needs the synthesis switch
+CE:ivltests/br_gh115.v opt needs the synthesis switch
+CE:ivltests/br_gh142.v sem needs types, binding, constants or elaboration
+CE:ivltests/br_gh306a.v opt needs the synthesis switch
+CE:ivltests/br_gh306b.v opt needs the synthesis switch
+CE:ivltests/br_gh62.v sem needs types, binding, constants or elaboration
+CE:ivltests/br_ml20150321.v sem needs types, binding, constants or elaboration
+CE:ivltests/case5-syn-fail.v opt needs the synthesis switch
+CE:ivltests/casesynth8.v opt needs the synthesis switch
+CE:ivltests/check_constant_1.v sem needs types, binding, constants or elaboration
+CE:ivltests/check_constant_10.v sem needs types, binding, constants or elaboration
+CE:ivltests/check_constant_11.v sem needs types, binding, constants or elaboration
+CE:ivltests/check_constant_12.v sem needs types, binding, constants or elaboration
+CE:ivltests/check_constant_13.v sem needs types, binding, constants or elaboration
+CE:ivltests/check_constant_14.v sem needs types, binding, constants or elaboration
+CE:ivltests/check_constant_15.v sem needs types, binding, constants or elaboration
+CE:ivltests/check_constant_16.v sem needs types, binding, constants or elaboration
+CE:ivltests/check_constant_17.v sem needs types, binding, constants or elaboration
+CE:ivltests/check_constant_18.v sem needs types, binding, constants or elaboration
+CE:ivltests/check_constant_19.v sem needs types, binding, constants or elaboration
+CE:ivltests/check_constant_2.v sem needs types, binding, constants or elaboration
+CE:ivltests/check_constant_20.v sem needs types, binding, constants or elaboration
+CE:ivltests/check_constant_3.v sem needs types, binding, constants or elaboration
+CE:ivltests/check_constant_4.v sem needs types, binding, constants or elaboration
+CE:ivltests/check_constant_5.v sem needs types, binding, constants or elaboration
+CE:ivltests/check_constant_6.v sem needs types, binding, constants or elaboration
+CE:ivltests/check_constant_7.v sem needs types, binding, constants or elaboration
+CE:ivltests/check_constant_8.v sem needs types, binding, constants or elaboration
+CE:ivltests/check_constant_9.v sem needs types, binding, constants or elaboration
+CE:ivltests/comment1.v ext a check of that tool, not of the standard
+CE:ivltests/concat_zero_wid_fail.v sem needs types, binding, constants or elaboration
+CE:ivltests/contrib8.3.v sem needs types, binding, constants or elaboration
+CE:ivltests/dffsynth.v opt needs the synthesis switch
+CE:ivltests/dffsynth8.v opt needs the synthesis switch
+CE:ivltests/event_array.v ext a check of that tool, not of the standard
+CE:ivltests/gate_connect2.v sem needs types, binding, constants or elaboration
+CE:ivltests/hier_ref_error.v sem needs types, binding, constants or elaboration
+CE:ivltests/memsynth1.v opt needs the synthesis switch
+CE:ivltests/memsynth2.v opt needs the synthesis switch
+CE:ivltests/memsynth3.v opt needs the synthesis switch
+CE:ivltests/memsynth5.v opt needs the synthesis switch
+CE:ivltests/memsynth6.v opt needs the synthesis switch
+CE:ivltests/memsynth7.v opt needs the synthesis switch
+CE:ivltests/memsynth9.v opt needs the synthesis switch
+CE:ivltests/mix_reset.v opt needs the synthesis switch
+CE:ivltests/named_event_no_edges.v sem needs types, binding, constants or elaboration
+CE:ivltests/no_if_statement.v ext a check of that tool, not of the standard
+CE:ivltests/no_timescale_in_module.v gap G8: a directive inside a module
+CE:ivltests/par_mismatch.v sem needs types, binding, constants or elaboration
+CE:ivltests/pr1704013.v sem needs types, binding, constants or elaboration
+CE:ivltests/pr1735724.v sem needs types, binding, constants or elaboration
+CE:ivltests/pr1833024.v sem needs types, binding, constants or elaboration
+CE:ivltests/pr1862744b.v ext a check of that tool, not of the standard
+CE:ivltests/pr1916261a.v sem needs types, binding, constants or elaboration
+CE:ivltests/pr1925363a.v sem needs types, binding, constants or elaboration
+CE:ivltests/pr1925363b.v sem needs types, binding, constants or elaboration
+CE:ivltests/pr1971662a.v sem needs types, binding, constants or elaboration
+CE:ivltests/pr1971662b.v sem needs types, binding, constants or elaboration
+CE:ivltests/pr1988302b.v sem needs types, binding, constants or elaboration
+CE:ivltests/pr2051694.v sem needs types, binding, constants or elaboration
+CE:ivltests/pr2528915.v sem needs types, binding, constants or elaboration
+CE:ivltests/pr2597278b.v sem needs types, binding, constants or elaboration
+CE:ivltests/pr2728812b.v sem needs types, binding, constants or elaboration
+CE:ivltests/pr2728812c.v sem needs types, binding, constants or elaboration
+CE:ivltests/pr2792883.v sem needs types, binding, constants or elaboration
+CE:ivltests/pr2823414.v sem needs types, binding, constants or elaboration
+CE:ivltests/pr2848986.v sem needs types, binding, constants or elaboration
+CE:ivltests/pr2877564.v sem needs types, binding, constants or elaboration
+CE:ivltests/pr3061015a.v sem needs types, binding, constants or elaboration
+CE:ivltests/pr3061015b.v sem needs types, binding, constants or elaboration
+CE:ivltests/pr3061015c.v sem needs types, binding, constants or elaboration
+CE:ivltests/pr3190941.v sem needs types, binding, constants or elaboration
+CE:ivltests/pr3270320.v sem needs types, binding, constants or elaboration
+CE:ivltests/pr3270320_ams.v sem needs types, binding, constants or elaboration
+CE:ivltests/pr3549328.v sem needs types, binding, constants or elaboration
+CE:ivltests/readmemh5.v sem needs types, binding, constants or elaboration
+CE:ivltests/real_concat_invalid2.v sem needs types, binding, constants or elaboration
+CE:ivltests/repl_zero_wid_fail.v sem needs types, binding, constants or elaboration
+CE:ivltests/scope2b.v sem needs types, binding, constants or elaboration
+CE:ivltests/sv_default_port_value1.v ext a default value on an input port is accepted with W4017
+CE:ivltests/sv_default_port_value2.v ext a default value on an input port is accepted with W4017
+CE:ivltests/udp_delay_fail.v sem needs types, binding, constants or elaboration
+CE:ivltests/undef_lval_select4b.v sem needs types, binding, constants or elaboration
+CE:ivltests/undef_lval_select4c.v sem needs types, binding, constants or elaboration
+CE:ivltests/uwire_fail.v sem needs types, binding, constants or elaboration
+CE:ivltests/zero_repl_fail.v sem needs types, binding, constants or elaboration
+CO:ivltests/pr1467825.v ext `delay_mode_path is unsupported (E4010)
+normal:ivltests/array_packed_2d.v ext several packed dimensions
+normal:ivltests/assign3.2E.v ext procedural assign to a part of a variable (9.3)
+normal:ivltests/assign_deassign_pv.v ext procedural assign to a part of a variable (9.3)
+normal:ivltests/binary_nand.v ext binary ~& and ~|
+normal:ivltests/binary_nor.v ext binary ~& and ~|
+normal:ivltests/bool1.v ext the type bool
+normal:ivltests/br_gh315.v ext SystemVerilog construct
+normal:ivltests/br_gh484.v ext `` token pasting is SystemVerilog
+normal:ivltests/br_gh497a.v ext several packed dimensions
+normal:ivltests/br_gh497c.v ext several packed dimensions
+normal:ivltests/br_gh497e.v ext several packed dimensions
+normal:ivltests/br_gh531.v ext SystemVerilog construct
+normal:ivltests/ca_64delay.v ext a real net or variable declaration
+normal:ivltests/ca_time_real.v ext a real net or variable declaration
+normal:ivltests/ca_var_delay.v ext a real net or variable declaration
+normal:ivltests/cast_real_signed.v ext a real net or variable declaration
+normal:ivltests/cast_real_unsigned.v ext a real net or variable declaration
+normal:ivltests/clog2.v ext a real net or variable declaration
+normal:ivltests/compare_bool_reg.v ext the type bool
+normal:ivltests/constfunc8.v ext the type bool
+normal:ivltests/delayed_sfunc.v ext a real net or variable declaration
+normal:ivltests/for_loop_synth2.v ext += is SystemVerilog
+normal:ivltests/macro_str_esc.v ext `` token pasting is SystemVerilog
+normal:ivltests/macro_with_args.v ext `` token pasting is SystemVerilog
+normal:ivltests/pr1741212.v ext `` token pasting is SystemVerilog
+normal:ivltests/pr1787423.v ext pull gate with several terminals in one instance (7.1)
+normal:ivltests/pr1787423b.v ext pull gate with several terminals in one instance (7.1)
+normal:ivltests/pr1861212c.v ext a real net or variable declaration
+normal:ivltests/pr1864110a.v ext a real net or variable declaration
+normal:ivltests/pr1864110b.v ext a real net or variable declaration
+normal:ivltests/pr1864110c.v ext a real net or variable declaration
+normal:ivltests/pr1864115.v ext a real net or variable declaration
+normal:ivltests/pr1873372.v ext a real net or variable declaration
+normal:ivltests/pr1877743.v ext path with an input list on =>
+normal:ivltests/pr1880003.v ext a real net or variable declaration
+normal:ivltests/pr1898293.v ext a real net or variable declaration
+normal:ivltests/pr1912112.v ext `` token pasting is SystemVerilog
+normal:ivltests/pr1925360.v ext `` token pasting is SystemVerilog
+normal:ivltests/pr2123158.v ext a real net or variable declaration
+normal:ivltests/pr2453002b.v ext a real net or variable declaration
+normal:ivltests/pr2456943.v ext a real net or variable declaration
+normal:ivltests/pr2715748.v ext a real net or variable declaration
+normal:ivltests/pr2806474.v ext a real net or variable declaration
+normal:ivltests/pr2834340.v ext pull gate with several terminals in one instance (7.1)
+normal:ivltests/pr2834340b.v ext pull gate with several terminals in one instance (7.1)
+normal:ivltests/pr2976242.v ext a real net or variable declaration
+normal:ivltests/pr2976242b.v ext a real net or variable declaration
+normal:ivltests/pr622.v ext `` token pasting is SystemVerilog
+normal:ivltests/pr639.v ext `` token pasting is SystemVerilog
+normal:ivltests/real8.v ext a real net or variable declaration
+normal:ivltests/real_array.v ext a real net or variable declaration
+normal:ivltests/real_mod_in_ca.v ext a real net or variable declaration
+normal:ivltests/real_pulse_clean.v ext a real net or variable declaration
+normal:ivltests/real_pwr_in_ca.v ext a real net or variable declaration
+normal:ivltests/real_wire_array.v ext a real net or variable declaration
+normal:ivltests/real_wire_force_rel.v ext a real net or variable declaration
+normal:ivltests/specify_01.v ext path with an input list on =>
+normal:ivltests/tern8.v ext a real net or variable declaration
+normal:ivltests/test_va_math.v ctx needs constants.vams of the AMS library
+normal:ivltests/undef.v ext a macro used after `undef
+normal:ivltests/v2005_math.v ext a real net or variable declaration
+CE:ivltests/pr2794144.v ext a unary operator on a unary operator is accepted with W4208

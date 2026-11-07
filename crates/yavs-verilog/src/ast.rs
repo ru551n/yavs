@@ -377,7 +377,7 @@ pub enum Item {
 
 #[derive(Clone, Debug)]
 pub struct NonAnsiPort {
-    /// `None` for a concatenation port `{a, b}`.
+    /// `None` for a concatenation port `{a, b}` and for an empty port (`name` and `expr` both `None`: `module m(a, , b)`).
     pub name: Option<Ident>,
     /// Present for `.name(expr)` and concatenations.
     pub expr: Option<Expr>,

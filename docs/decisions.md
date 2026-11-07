@@ -129,6 +129,24 @@
   the process and the time; a dedicated code comes with the diagnostics of lowering
   (agent's choice, 2026-11-07, open for the maintainer).
 
+## Verilog front end on public corpora (M0 of #776, 2026-11-07)
+
+- **Corpora:** `tools/verilog/corpus.py open` runs the yosys cell models and 20 further fetched sources (open-source cores and
+  cell-model libraries, `DESIGNS` in `corpus.py`, manifests in `tools/verilog/designs/`), and `tools/verilog/ivtest.py` the regress
+  lists of the ivtest suite (GPL-2.0, fetched, never committed) with the flags of each list line. Both are CI-visible (the `corpus`
+  job). Files that are not `PASS` carry a class in `designs/notes` or `ivtest.triage`; a `bug` or `gap` class is an issue.
+- **Compile-error tests are not a conformance measure for M0:** most "must fail to compile" tests of the suite need types, binding,
+  widths or constant evaluation (M1), or are checks of one tool (zero-delay loops, synthesis switches), so `ivtest.triage` classes a
+  test where analysis passes `sem`, `ext` or `opt`, and the table counts them apart from the agreeing ones.
+- **Accepted although the standard says no (policy rule 2, `docs/design/lrm-checks.md` V15 to V17; maintainer to confirm):** comments and
+  line ends in the formal arguments of a macro, a line comment ending in a backslash inside a macro text, a value on an input port
+  (`W4017`, the ice40 cell models need it), the fault-simulation directives (`W4016`; maintainer confirmed 2026-11-07, as `W4017` and the `E4010` delay modes). Not accepted: `` `delay_mode_* `` and the default decay and
+  trireg strength directives (`E4010`, they change results).
+- **Relaxed to warnings (maintainer, 2026-11-07, policy rule 2; the text is clear but the other tools accept them):** an ANSI port declared
+  again in the body (`W4209`, V6) and a unary operator on a unary operator, `~ |a` (`W4208`, V18, A.8.3). Two ports of one header with the same name stay `E4203`.
+- **Still rejected although some corpus sources or the ivtest list expect no error:** `endif WORD` (one sky130 file), `input reg` and a non-ANSI input redeclared `reg`
+  (`E4202`), a function with an output argument (SystemVerilog), `assign` to a bit of a variable (clause 9.3).
+
 ## Verilog test material and corpus gate (M0 of #776, 2026-11-07)
 
 - **Fixtures:** hand-written Verilog files under `tests/verilog/ci` with one manifest `fixtures.expected` (status, arguments, exact

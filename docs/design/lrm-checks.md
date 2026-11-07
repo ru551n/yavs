@@ -805,9 +805,9 @@ changed test. The table of each clause below is generated from the file headers.
   `19.5_include_macro_name.v`, `19.5_include_trailing_text.v`.
 - **V6: the body does not repeat a port of an ANSI header (12.1, 12.3.4).** `module m (output o); reg o; endmodule` is an error: 12.1
   says ports declared in the list of port declarations "shall not be redeclared within the body", and 12.3.4 repeats it in its
-  example. The first version of the checks accepted it as unclear; the text is clear, so `E4203` (a net or variable of the same
-  name) or `E4202` (a port declaration in the body of such a module). Two ports of one header with the same name are `E4203` too
-  (`12.3.4_ports_ansi_duplicate.v`). A non-ANSI port may be declared again as `reg` or `wire` (12.3.3), unchanged.
+  example. The text is clear, but the other tools accept the redeclaration (maintainer, 2026-11-07, policy rule 2): a net or variable of
+  the same name in the body is `W4209` (`12.3.4_ports_ansi_body_redeclared.v`). A port declaration (direction) in the body of such a module
+  is still `E4202`, and two ports of one header with the same name are `E4203` (`12.3.4_ports_ansi_duplicate.v`). A non-ANSI port may be declared again as `reg` or `wire` (12.3.3), unchanged.
 - **V7: `` `resetall `` clears the timescale as well as `` `default_nettype `` (19.6, 19.8).** 19.6 puts every directive back to its
   default and 19.8 says a timescale that "has been reset by a `resetall`" is simulator-specific: the next module has no `` `timescale ``
   in force, `W4006`. Text macros and `` `line `` are untouched (19.3, 19.7).
@@ -846,6 +846,24 @@ changed test. The table of each clause below is generated from the file headers.
   accepted with `W4205`, `W4206` and `W4207`. A null argument, `t(,1)`, and a declaration assignment on an array stay `E4100`. Files
   `10.2.2_task_enable_empty_parentheses.v`, `9.8.1_block_declaration_needs_name.v`, `9.8.2_fork_declaration_needs_name.v`,
   `6.2.1_var_init_in_block.v`, `6.2.1_var_init_in_task.v`.
+
+- **V15: macro definitions in the shapes the other tools read (19.3.1).** 19.3.1 puts the text of a macro on the line of its `` `define `` and
+  continues it with a backslash; it says nothing about the list of formal arguments or about a comment before the continuation. A comment is
+  white space (3.2), so `` `define SUM( a /* x */ , b ) `` is clear. A list that spans lines (`` `define SUM( a, b `` newline `` ) ``) and a line comment that ends in
+  a backslash (`` `define M a // c \ `` newline `` b ``: the text after it is part of the macro) are unclear and accepted, policy rule 2.
+  Files `19.3.1_define_formals_with_comments.v`, `19.3.1_define_comment_backslash.v`.
+- **V16: a value on an input port is accepted with a warning (12.3.4).** The ANSI port declaration of 1364-2005 gives a value to an output variable
+  only (`output reg q = 0`). `input a = 1'b0` is SystemVerilog; cell models of other tools use it, so it is `W4017`, once per file (policy rule 2).
+  File `12.3.4_ports_ansi_default_value.v`.
+- **V17: directives that are not in the standard (3.7.4, Annex D).** `` `suppress_faults ``, `` `nosuppress_faults ``, `` `enable_portfaults ``,
+  `` `disable_portfaults ``, `` `accelerate ``, `` `noaccelerate ``, `` `expand_vectornets ``, `` `noexpand_vectornets ``, `` `remove_gatenames ``,
+  `` `noremove_gatenames ``, `` `remove_netnames `` and `` `noremove_netnames `` do not change a functional simulation: `W4016`. `` `delay_mode_distributed ``,
+  `` `delay_mode_path ``, `` `delay_mode_unit ``, `` `delay_mode_zero ``, `` `default_decay_time ``, `` `default_trireg_strength ``
+  (Annex D, optional) and `` `uselib `` change what a simulation computes, so they are `E4010`, not an undefined macro. Files `3.7.4_directive_suppress_faults.v`,
+  `3.7.4_directive_delay_mode_path.v`.
+- **V18: a unary operator on a unary operator is a warning (5.1, A.8.3).** The grammar gives a unary operator a primary as operand, so
+  `~ |a` and `- -a` need parentheses. The other tools read them (maintainer, 2026-11-07, policy rule 2): `W4208`. File
+  `5.1_unary_operand_is_primary.v`; `5.1_unary_operand_parenthesized.v` is the clean form.
 
 #### Known gaps
 
@@ -892,8 +910,7 @@ unsized constants in a concatenation, a replication of x or z or on the left of 
 `assign` and `deassign` of a bit-select; a case with no item; a task enabled with a null argument; a system task or an unknown
 `$` check or a timing check with the wrong number of arguments in a specify block; an `ifnone` edge path, a parallel path with lists, a pulse style
 after a path of the same output; duplicate names inside a task, function, named block, generate block or specify block, a block or generate block
-name that is also another declaration, a function name declared again inside it, two instances of one name, a port of an ANSI header declared again in
-the body; a directive redefined as a macro, `` `elsif `` without a name, a `` `line `` with a missing or bad operand, `` `unconnected_drive `` with
+name that is also another declaration, a function name declared again inside it, two instances of one name, two ports of one ANSI header with a name; a directive redefined as a macro, `` `elsif `` without a name, a `` `line `` with a missing or bad operand, `` `unconnected_drive `` with
 another operand, `` `pragma `` without a name, text after `` `include ``, an unknown version in `` `begin_keywords ``, unpaired `` `begin_keywords `` and
 `` `end_keywords ``. Cascades removed: a digit the base does not allow (`4'b0102`)
 was a lexical error at the constant and a syntax error at the digit; a nested module declaration gave a second error at the
@@ -993,6 +1010,7 @@ parameter list; the words of V9.
 | `3.7_id_long.v` | 3.7 | aaaaaaaaaaaaaaaaaaaa is a simple identifier | clean |
 | `3.7_id_uppercase.v` | 3.7 | ABC is a simple identifier | clean |
 | `3.7.1_id_escaped.v` | 3.7.1 | an escaped identifier runs to white space and may hold any printable character | clean |
+| `3.7.1_id_escaped_backtick.v` | 3.7.1 | an escaped identifier may hold a backtick, a quote and a slash: the preprocessor does not read them | clean |
 | `3.7.1_id_escaped_empty.v` | 3.7.1 | an escaped identifier has at least one character (the BNF of A.9.3 lets the braces be empty; an identifier with no characters cannot be told from another, so it is refused) | `E4014` |
 | `3.7.1_id_escaped_is_exact.v` | 3.7.1 | the backslash is not part of the name: \cpu3 and cpu3 are the same identifier | `E4203` |
 | `3.7.1_id_escaped_keyword.v` | 3.7.1 | an escaped keyword is an identifier, not the keyword | clean |
@@ -1008,6 +1026,7 @@ parameter list; the words of V9.
 | `3.7.2_sv_string_type.v` | 3.7.2 | string as a variable type is SystemVerilog | `E4003` |
 | `3.7.2_sv_typedef.v` | 3.7.2 | typedef is SystemVerilog | `E4003` |
 | `3.7.2_sv_words_as_identifiers.v` | 3.7.2 | SystemVerilog keywords are ordinary identifiers in 1364-2005 | clean |
+| `3.7.2_sv_words_as_port_and_parameter_names.v` | 3.7.2 | logic, bit, int and string name ports, task arguments and parameters | clean |
 | `3.7.3_systask_as_item.v` | 3.7.3 | a system task enable is a statement and does not stand at module level (other than the elaboration tasks of V4) | `E4100` |
 | `3.7.3_systask_bare_dollar.v` | 3.7.3 | a $ must be followed by a name | `E4100` |
 | `3.7.3_systask_digit_first.v` | 3.7.3 | a system name may start with a digit: the characters after the $ are letters, digits, $ and underscores | clean |
@@ -1015,6 +1034,8 @@ parameter list; the words of V9.
 | `3.7.3_systask_name_digits_underscore.v` | 3.7.3 | a system name is $ followed by letters, digits, $ and underscores | clean |
 | `3.7.3_systask_user_defined_name.v` | 3.7.3 | a name beginning with $ that the language does not define is a legal system task name (user PLI tasks); it is resolved after analysis | clean |
 | `3.7.4_directive_unknown.v` | 3.7.4 | a name after a backtick that is neither a directive nor a defined macro is an undefined macro | `E4007` |
+| `3.7.4_directive_delay_mode_path.v` | 3.7.4 | `` `delay_mode_path `` changes the delays a simulation uses, so it is not ignored (V17) | `E4010` |
+| `3.7.4_directive_suppress_faults.v` | 3.7.4 | a directive of fault simulation is ignored with a warning (V17) | `W4016` |
 | `3.7.4_directive_uselib.v` | 3.7.4 | `` `uselib `` is not supported | `E4010` |
 | `3.8_attr_block_items.v` | 3.8 | an attribute instance may precede block item declarations and the port declarations of a task | clean |
 | `3.8_attr_dangling.v` | 3.8 | an attribute instance precedes an item or statement (known gap G2: a dangling one before endmodule is accepted) | clean (gap G2) |
@@ -1099,6 +1120,8 @@ parameter list; the words of V9.
 | `5.1_operator_sv_increment.v` | 5.1 | ++ is not a 1364 operator | `E4003` |
 | `5.1_operator_sv_wildcard_eq.v` | 5.1 | ==? is not a 1364 operator | `E4003` |
 | `5.1_operators_all.v` | 5.1 | every 1364-2005 operator is a token | clean |
+| `5.1_unary_operand_is_primary.v` | 5.1 | the operand of a unary operator is a primary (A.8.3): a second unary operator needs parentheses; accepted with a warning (V18) | `W4208` |
+| `5.1_unary_operand_parenthesized.v` | 5.1 | a parenthesized operand of a unary operator is a primary | clean |
 | `5.1.1_real_operand_modulo.v` | 5.1.1 | the modulus operator is illegal on real operands (known gap G10: operand types are not checked) | clean (gap G10) |
 | `5.1.14_concat_sized.v` | 5.1.14 | sized constants, strings and replications stand in a concatenation | clean |
 | `5.1.14_concat_unsized.v` | 5.1.14 | an unsized constant has no place in a concatenation | `E4100` |
@@ -1265,6 +1288,7 @@ parameter list; the words of V9.
 | `12.2.2_param_override_named.v` | 12.2.2 | instance parameters are overridden by name | clean |
 | `12.2.2_param_override_positional.v` | 12.2.2 | instance parameters are overridden by position | clean |
 | `12.3.2_ports_explicit_twice.v` | 12.3.2 | there is one port definition per port name | `E4202` |
+| `12.3.2_ports_empty.v` | 12.3.2 | a port of the list may be empty | clean |
 | `12.3.2_ports_named_expressions.v` | 12.3.2 | a port may be a named port expression such as .p(a) | clean |
 | `12.3.3_port_range_mismatch.v` | 12.3.3 | the two declarations of a port give it the same range (known gap G11: not checked) | clean (gap G11) |
 | `12.3.3_ports_non_ansi.v` | 12.3.3 | a non-ANSI header lists names and the body declares direction and type | clean |
@@ -1275,7 +1299,8 @@ parameter list; the words of V9.
 | `12.3.3_ports_same_implicit_twice.v` | 12.3.3 | the same implicit port listed twice is legal: the two ports are tied together | clean |
 | `12.3.4_ports_ansi.v` | 12.3.4 | ports are declared in the header with a direction and an optional type and range | clean |
 | `12.3.4_ports_ansi_body_direction.v` | 12.3.4 | a module declares its ports in the header or in the body, not in both | `E4202` |
-| `12.3.4_ports_ansi_body_redeclared.v` | 12.3.4 | a port declared in the header is not declared again in the body | `E4203` |
+| `12.3.4_ports_ansi_body_redeclared.v` | 12.3.4 | a port declared in the header is not declared again in the body; accepted with a warning (V6) | `W4209` |
+| `12.3.4_ports_ansi_default_value.v` | 12.3.4 | only an output variable is given a value in the port list; a value on an input is SystemVerilog and accepted with a warning (V16) | `W4017` |
 | `12.3.4_ports_ansi_duplicate.v` | 12.3.4 | two ports of one ANSI header have different names | `E4203` |
 | `12.3.4_ports_ansi_missing_comma.v` | 12.3.4 | ports in a list are separated by commas | `E4100` |
 | `12.3.4_ports_ansi_shared_direction.v` | 12.3.4 | a direction applies to the following names until the next direction | clean |
@@ -1288,6 +1313,7 @@ parameter list; the words of V9.
 | `12.3.6_ports_sv_dot_star.v` | 12.3.6 | the .* port connection is SystemVerilog | `E4003` |
 | `12.3.9.1_ports_inout_reg.v` | 12.3.9.1 | an inout port is a net: it cannot be declared reg | `E4202` |
 | `12.3.9.1_ports_input_reg.v` | 12.3.9.1 | an input port is a net: it cannot be declared reg | `E4202` |
+| `12.3.9.1_ports_input_reg_redeclared.v` | 12.3.9.1 | a later reg declaration of an input port's name is an error too | `E4202` |
 | `12.3.9.1_ports_input_reg_non_ansi.v` | 12.3.9.1 | a non-ANSI input declaration cannot say reg either | `E4202` |
 | `12.4_generate_block_end_label_sv.v` | 12.4 | an end label after a block is SystemVerilog | `E4003` |
 | `12.4_generate_instances.v` | 12.4 | a generate block may hold instances and procedural blocks | clean |
@@ -1399,10 +1425,12 @@ parameter list; the words of V9.
 | `19.3_resetall_keeps_macros.v` | 19.3 | `` `resetall `` does not affect the text macros | clean |
 | `19.3.1_define_args_nested_parens.v` | 19.3.1 | a comma inside parentheses does not separate actual arguments | clean |
 | `19.3.1_define_args_string_comma.v` | 19.3.1 | a comma inside a string does not separate actual arguments | clean |
+| `19.3.1_define_comment_backslash.v` | 19.3.1 | a backslash at the end of a line comment inside a macro text still continues the macro (V15) | clean |
 | `19.3.1_define_bad_formal_list.v` | 19.3.1 | the formal arguments of a macro are simple identifiers separated by commas | `E4008` |
 | `19.3.1_define_continued_line.v` | 19.3.1 | a macro text continues on the next line after a backslash at the end of a line | clean |
 | `19.3.1_define_directive_name.v` | 19.3.1 | a compiler directive cannot be redefined as a macro name | `E4008` |
 | `19.3.1_define_empty_text.v` | 19.3.1 | a macro may have an empty text | clean |
+| `19.3.1_define_formals_with_comments.v` | 19.3.1 | a comment is white space, also between the formal arguments of a macro; the list may span lines (V15) | clean |
 | `19.3.1_define_macro_in_macro.v` | 19.3.1 | the text of a macro may use other macros, expanded when it is used | clean |
 | `19.3.1_define_no_name.v` | 19.3.1 | `` `define `` is followed by a macro name | `E4008` |
 | `19.3.1_define_redefine.v` | 19.3.1 | a later `` `define `` of the same name replaces the earlier text | clean |
@@ -1492,6 +1520,7 @@ parameter list; the words of V9.
 | File | Clause | Rule | Outcome |
 |---|---|---|---|
 | `28_envelope_legacy_protect.v` | 28 | not in 1364-2005, a vendor form: the older `` `protect `` and `` `endprotect `` pair hides a body like a begin_protected envelope | `W4007` |
+| `28_envelope_legacy_protect_in_header.v` | 28 | not in 1364-2005; an envelope in the module header hides the header and the plaintext after it is part of the module | `W4007` |
 | `28_envelope_legacy_protected.v` | 28 | not in 1364-2005, a vendor form: `` `protected `` and `` `endprotected `` also open an envelope | `W4007` |
 | `28_envelope_outside_module.v` | 28.2 | yavs records the module of an envelope that stands outside any module as no module, with one W4007 (tool behaviour, D8; 28.2.2 wants it decrypted) | `W4007` |
 | `28_envelope_two_in_one_file.v` | 28.2 | one W4007 is given per file however many envelopes it has (tool behaviour, D8) | `W4007` |

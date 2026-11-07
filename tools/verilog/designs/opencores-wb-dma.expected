@@ -1,0 +1,15 @@
+# tools/verilog/corpus.py opencores-wb-dma: expected outcome per file, `OUTCOME LIB VIEW PATH [-I DIR | -D NAME]...`; paths only, no vendor content.
+PASS work default rtl/verilog/wb_dma_ch_arb.v -I rtl/verilog
+PASS work default rtl/verilog/wb_dma_ch_pri_enc.v -I rtl/verilog
+PASS work default rtl/verilog/wb_dma_ch_rf.v -I rtl/verilog
+PASS work default rtl/verilog/wb_dma_ch_sel.v -I rtl/verilog
+PASS work default rtl/verilog/wb_dma_de.v -I rtl/verilog
+PASS work default rtl/verilog/wb_dma_defines.v -I rtl/verilog
+PASS work default rtl/verilog/wb_dma_inc30r.v -I rtl/verilog
+PASS work default rtl/verilog/wb_dma_pri_enc_sub.v -I rtl/verilog
+PASS work default rtl/verilog/wb_dma_rf.v -I rtl/verilog
+PASS work default rtl/verilog/wb_dma_top.v -I rtl/verilog
+PASS work default rtl/verilog/wb_dma_wb_if.v -I rtl/verilog
+PASS work default rtl/verilog/wb_dma_wb_mast.v -I rtl/verilog
+PASS work default rtl/verilog/wb_dma_wb_slv.v -I rtl/verilog
+PASS work project 'rtl/verilog/*.v' -I rtl/verilog

@@ -305,7 +305,8 @@ impl Sx<'_> {
         let t = sx.ty(e)?;
         let node = sx.build(e, t)?;
         match crate::exec::eval_const(&node) {
-            Const::V(v, s) => v.to_i64(s).ok_or_else(|| {
+            // The sign is the expression's (`eval_const` leaves it to the type): `-3` is -3.
+            Const::V(v, _) => v.to_i64(t.signed).ok_or_else(|| {
                 self.err(
                     "E4506",
                     format!(
@@ -327,7 +328,10 @@ impl Sx<'_> {
         };
         let t = sx.ty(e)?;
         let node = sx.build(e, t)?;
-        Ok(crate::exec::eval_const(&node))
+        Ok(match crate::exec::eval_const(&node) {
+            Const::V(v, _) => Const::V(v, t.signed),
+            r => r,
+        })
     }
 
     fn part_width(&self, k: RangeKind, a: &Expr, b: &Expr, e: &Expr) -> R<u32> {

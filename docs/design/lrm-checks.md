@@ -1568,6 +1568,7 @@ Readings of the elaboration (where 1364-2005 leaves a choice; policy rule 2):
 | File | Clause | Rule | Outcome |
 |---|---|---|---|
 | `3.5.1_eval_literal_extension.v` | 3.5.1 | a literal shorter than its size is extended with zeros, or with x or z when its leftmost digit is x or z | runs: `xxxxxxxx 00000001 zzzzzzz1 0000000x` |
+| `4.3.1_eval_negative_bounds.v` | 4.3.1 | the bounds of a range may be negative, also of a parameter's range; an untyped parameter keeps the sign of its value (12.2) | runs: `1000 0111 13 1 1` |
 | `4.4.2_eval_drive_strength.v` | 4.4.2 | the stronger of two drivers wins, two weak drivers of different values give x, a highz side drives z, a net declaration assignment carries a strength (three strength levels, S7) | runs: `0 1 x 1 z 0 0 1` |
 | `4.6.1_eval_wire_resolution.v` | 4.6.1 | two drivers of a wire or tri net resolve as the truth table of the clause, all sixteen pairs of 0, 1, x and z | runs: `0xx0 1x1x xxxx zx10` twice |
 | `4.6.1_eval_three_state_bus.v` | 4.6.1 | a driver that gives z yields to the other one; an undriven net is z; two enabled drivers of different values give x | runs: `z 1 0 x z` |

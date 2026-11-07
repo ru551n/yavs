@@ -30,7 +30,7 @@ ownership, commit identity, shared-host limits) do not apply to them.
 | diagnostics, logic, std natives | `crates/yavs-{diag,logic,std}/AGENTS.md` |
 | FFI, VHPI, waves, DAP, coverage, LLVM, lint | `crates/yavs-{ffi,vhpi,wave,dap,cov,llvm,lint}/AGENTS.md` |
 | `lib/` (std/ieee sources) | `lib/AGENTS.md`, `lib/README.md`, `lib/SOURCES.md`, `lib/NATIVE.md` |
-| tests and tools | `tests/AGENTS.md` (and `tests/{diag,corpus,parse-corpus,discrepancies}/AGENTS.md`), `tools/AGENTS.md` (and `tools/{corpus,difftest,discrepancies}/AGENTS.md`), `fuzz/AGENTS.md` |
+| tests and tools | `tests/AGENTS.md` (and `tests/{diag,corpus,parse-corpus,discrepancies,verilog}/AGENTS.md`), `tools/AGENTS.md` (and `tools/{corpus,difftest,discrepancies,verilog}/AGENTS.md`), `fuzz/AGENTS.md` |
 | releases, version numbers, `.github/workflows/release.yml` | `RELEASING.md` (one release with every artifact, one version, `tools/release/bump.py`) |
 
 ## 2. Repository map
@@ -60,6 +60,7 @@ ownership, commit identity, shared-host limits) do not apply to them.
 | `tests/diag/` | Rendered-diagnostic snapshots; `tests/diag/sem/` negative suite with `-- expect:` headers |
 | `tests/corpus/` | Differential testbenches with reference-simulator outputs (`tools/difftest`) |
 | `tests/parse-corpus/` | Expected parse results for external corpora |
+| `tests/verilog/` | Verilog fixtures and expected analysis outcomes (`tools/verilog/`) |
 | `tests/discrepancies/` | Reproducers of every known simulator discrepancy; catalogue `docs/design/simulator-discrepancies.md`, runner `tools/discrepancies/run.py` |
 | `tools/corpus/` | Analysis corpus manifests (external libraries, `lib`), `run.py`, `RESULTS.md` |
 | `fuzz/` | cargo-fuzz targets (own workspace) |

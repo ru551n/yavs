@@ -58,6 +58,10 @@ fetch uvvm-i2c-slave https://github.com/oetr/FPGA-I2C-Minion dde7b0fc71241a8821c
 # hdl-modules release v6.2.1 (src/ and rtl/ of each module are the analysis corpus).
 fetch hdl-modules https://github.com/hdl-modules/hdl-modules c4f01c4bb69aab66c879f545e80abb477f1ebf35
 
+# Verilog cell models for the Verilog analysis gate (tools/verilog/corpus.py cells): yosys techlibs/*/*sim*.v, ISC (COPYING); the quicklogic
+# qlf_k6n10f cells_sim.v, brams_sim.v and dsp_sim.v carry an Apache-2.0 header (F4PGA). bram_types_sim.v is generated at build time and not in the checkout.
+fetch yosys https://github.com/YosysHQ/yosys c30457480f8a905e252fb09ea688713a86e9da49 '/techlibs/' '/COPYING'
+
 # External library corpora (tools/corpus/gen_external.py): shallow, one pinned commit each.
 fetch open-logic https://github.com/open-logic/open-logic d9f123aae1c6022288782668067311f9794da0a2
 fetch en_cl_fix https://github.com/open-logic/en_cl_fix ecd7dd026837997f2cd8bc4861769abc6cbbc73c

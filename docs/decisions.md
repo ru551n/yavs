@@ -1,5 +1,22 @@
 # Decisions
 
+## Verilog test material and corpus gate (M0 of #776, 2026-11-07)
+
+- **Fixtures:** hand-written Verilog files under `tests/verilog/ci` with one manifest `fixtures.expected` (status, arguments, exact
+  diagnostics, units), run by `tools/verilog/fixtures.py`; `--static` checks manifest against files without an analyzer. One
+  manifest, not a header per file, because the same file runs under several argument sets. `tests/verilog/lrm/` stays reserved for
+  the plan's per-clause checks. Format: `tests/verilog/README.md`.
+- **Corpus gate:** `tools/verilog/corpus.py vendor` analyses the FPGA vendor's 2026.1 install in place (cell libraries in both views,
+  plaintext IP, encrypted files) against a manifest of paths and per-file outcomes; local only, skipped with a notice when the
+  install is absent (#776 D3). `corpus.py cells` does the same for the yosys techlibs models (ISC), fetched by
+  `tools/fetch-corpus.sh`, for CI. Vendor sources are never committed, only file lists (root rule 7). Why: the M0 claim (every
+  library file and plaintext IP file analyses, each encrypted file gives exactly one E4001) needs a per-file check, and the
+  expected outcome is not the same for every file of a category (SystemVerilog syntax in some `.v` IP files, plaintext files that
+  include an encrypted one).
+- **Stand-in analyzer:** `tools/verilog/fake_yavs.py` reports the preprocessor-stage diagnostics only, so the tools could be
+  tested, and made to fail on purpose, before `yavs analyze *.v` exists. It goes away with the stand-in half of
+  `tools/verilog/selftest.py` once the analyzer does.
+
 ## Copyright holder (maintainer, 2026-11-01, #1039)
 
 - `yavs --version` and `-V` print `Copyright (c) 2026 Sebastian Abrahamsson` on a line after the version line (the third since 2026-11-03, after the build line). The first line keeps the shape of

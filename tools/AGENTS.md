@@ -1,7 +1,8 @@
 # AGENTS.md: tools/
 
 Read the root `AGENTS.md` first. This file is for an agent about to change or run a script under
-`tools/`. Subdirectories have their own guides: `tools/corpus/AGENTS.md` (analysis corpora) and
+`tools/`. Subdirectories have their own guides: `tools/corpus/AGENTS.md` (analysis corpora),
+`tools/verilog/AGENTS.md` (Verilog fixtures and corpus gate) and
 `tools/difftest/AGENTS.md` (differential simulation corpus), `tools/conformance/AGENTS.md`, `tools/suites/AGENTS.md`, `tools/bench/AGENTS.md` and `tools/realbench/AGENTS.md`, `tools/stepcount/AGENTS.md`, `tools/waveq/AGENTS.md`, `tools/cocotb/AGENTS.md`, `tools/pgo/AGENTS.md`, `tools/install/AGENTS.md`.
 
 ## 1. Purpose and boundaries
@@ -30,6 +31,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change or ru
 | `install/` | Tests of the one-line installers `install.sh` and `install.ps1` at the repository root, against the real releases (`tools/install/AGENTS.md`) |
 | `suites/` | Drivers that simulate an external library's own testbenches on yavs (`tools/suites/AGENTS.md`) |
 | `corpus/` | Analysis corpus manifests, runner, report (`tools/corpus/AGENTS.md`) |
+| `verilog/` | Verilog test tools: the fixture runner for `tests/verilog`, the corpus gate over a vendor install and open-source cell models, a stand-in analyzer and the self-test (`tools/verilog/AGENTS.md`) |
 | `difftest/` | Differential simulation harness (`tools/difftest/AGENTS.md`) |
 | `cocotb/` | cocotb's own regression over VHPI: venv setup, the yavs makefile and Python runner for cocotb (`tools/cocotb/AGENTS.md`) |
 | `vhpi-conformance/` | VHPI plugin traces on yavs and the reference simulator, diffed (`tools/vhpi-conformance/AGENTS.md`) |

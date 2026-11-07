@@ -1531,6 +1531,7 @@ Readings of the elaboration (where 1364-2005 leaves a choice; policy rule 2):
 | `5.1.8_eval_equality_unknown.v` | 5.1.8 | == is x when unknown bits make it ambiguous and 0 when known bits differ; === compares x and z exactly | runs: `x 0 1 0` |
 | `5.1.12_eval_shifts.v` | 5.1.12 | >>> fills with the sign bit only when the expression is signed; an x shift amount makes the result x | runs: `11111100 01111100 01111100 xxxxxxxx` |
 | `5.1.13_eval_conditional_unknown.v` | 5.1.13 | an x condition of ?: combines both values bit by bit: equal bits stay, the others are x | runs: `1xx0` |
+| `5.2.1_eval_ascending_selects.v` | 5.2.1 | selects of a vector declared [0:7] count from its left (most significant) bit: a bit-select, a part-select, +: and -: with constant and variable bases, read and written | runs: `1 0010 1100 010 001` / `01110000` |
 | `5.2.1_eval_select_out_of_range.v` | 5.2.1 | a bit-select outside the vector reads as x, a part-select partly outside reads x there | runs: `x x1` |
 | `5.4.1_eval_assignment_width.v` | 5.4.1 | the right side of an assignment is evaluated at the width of the wider side, so a carry survives in a wider target | runs: `9 256` / `8 0` |
 | `5.5.1_eval_unsigned_operand.v` | 5.5.1 | an expression with an unsigned operand is unsigned: a signed -1 compares as 15 | runs: `0 1` |

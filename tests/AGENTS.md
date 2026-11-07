@@ -11,7 +11,7 @@ by several crates; the test code lives in the crates. Each subdirectory has its 
 | `corpus/<group>/*.vhd`, `*.expected` | Differential testbenches with reference simulator outputs, `RESULTS.md` | `tools/difftest`, `crates/yavs-lower/tests/corpus.rs` | `tests/corpus/AGENTS.md` |
 | `discrepancies/<id>/` | One reproducer per simulator discrepancy, with expected yavs output and recorded verdicts | `tools/discrepancies/run.py` | `tests/discrepancies/AGENTS.md` |
 | `parse-corpus/*.txt` | Expected parse results for external corpora | `crates/yavs/tests/corpus.rs` (`--features corpus`) | `tests/parse-corpus/AGENTS.md` |
-| `verilog/lrm/*.v` | Per-clause IEEE 1364-2005 checks, one rule per file with `// expect:` headers | `crates/yavs-verilog/tests/lrm.rs` | `tests/verilog/README.md` |
+| `verilog/lrm/*.v` | Per-clause IEEE 1364-2005 checks, one rule per file with `// expect:` headers; `*_eval_*.v` also with `// output:` or `// elab:` | `crates/yavs-verilog/tests/lrm.rs`, `tests/run.rs` | `tests/verilog/README.md` |
 | `verilog/ci/*.v`, `fixtures.expected` | Hand-written Verilog fixtures with the expected `yavs analyze` outcome (diagnostic codes, units) | `tools/verilog/fixtures.py` (`--static` needs no analyzer; run by the `corpus` CI job) | `tests/verilog/README.md`, `tests/verilog/AGENTS.md` |
 
 ## Rules that bind every test input here

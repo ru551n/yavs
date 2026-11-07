@@ -11,7 +11,8 @@
 //! ```
 //!
 //! The diagnostics must be exactly the `expect` lines (errors and warnings, order free, notes not compared). Every file is
-//! recorded in `docs/design/lrm-checks.md` and every row there names a file.
+//! recorded in `docs/design/lrm-checks.md` and every row there names a file. `// output:` and `// elab:` lines (the run-time
+//! checks) are `run.rs`'s and ignored here.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

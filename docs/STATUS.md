@@ -2987,10 +2987,12 @@ the domain (no IR, no compiled tier, decision "Verilog execution engine"); inter
 not see Verilog. Ceilings (`ponytail:` in the code): nets are kept as `LogicVec` and converted per read and write, bit by bit
 part writes, `%s` leaves out leading NUL bytes, spans of expression diagnostics point at the first name of the expression.
 Tests: `crates/yavs-verilog/tests/ops.rs` (every operator against a reference model of the clause 5 tables, widths 1 to 130),
-`tests/run.rs` (21 run-time LRM checks `tests/verilog/lrm/*_eval_*.v` with their expected output or error), the CLI end-to-end
-tests `crates/yavs/tests/verilog_run.rs` (10 tests: counter, shifter and adder with x, FSM, generic widths with string and vector
-parameters, Verilog clock into a VHDL flip-flop with D4 deltas at 1 and 4 threads, timescale scaling, waves, library search and
-`use open`, macros of an earlier file and `-D`, a changed file, eight mismatch and unsupported cases), and the user guide example
+`tests/run.rs` (22 run-time LRM checks `tests/verilog/lrm/*_eval_*.v` with their expected output or error), the CLI end-to-end
+tests `crates/yavs/tests/verilog_run.rs` (15 tests: counter, shifter and adder with x, FSM, generic widths with string and vector
+parameters, generics of every type with a 256-bit vector, `%m` and `$finish`, bit ports and an ascending VHDL range, a Verilog
+clock into a VHDL flip-flop with D4 deltas at 1 and 4 threads, timescale scaling, waves, library search and `use open`, macros of
+an earlier file and `-D`, a changed file, a zero-delay loop as `E3009`, an encrypted module, uncollapsed ports, seven mismatch and
+unsupported cases through `run` and `elab`; all also pass with `--features clift`, whose default tier compiles the VHDL), and the user guide example
 (`docs/examples/verilog`, `docs_examples.rs` `verilog_from_vhdl`).
 
 M0 done. Scheduling (step A of the execution work): `yavs_verilog::Domain` runs the

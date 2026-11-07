@@ -293,7 +293,16 @@ pub(crate) fn elaborate(
     let mut sigs: Vec<yavs_kernel::SigRef> = Vec::new();
     let mut errors = Vec::new();
     for vi in &e.verilog {
-        let path = e.hier.dotted_in(vi.scope, yavs_elab::Case::Lrm);
+        // The component scope is left out of hierarchical paths; here it is the instance.
+        let sc = e.hier.scope(vi.scope);
+        let path = match sc.parent {
+            Some(p) => format!(
+                "{}.{}",
+                e.hier.dotted_in(p, yavs_elab::Case::Lrm),
+                sc.name.text
+            ),
+            None => sc.name.text.to_string(),
+        };
         let at = |d: Diagnostic| d.with_primary(vi.span, "instantiated here");
         let Some(lib) = libs.get(&vi.library) else {
             return Err(fail(Diagnostic::error(

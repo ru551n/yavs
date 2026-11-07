@@ -8,7 +8,8 @@ Read the root `AGENTS.md` and `tests/AGENTS.md` first. `README.md` here holds th
   encrypted-envelope files (W4007, D8) and negative files for the diagnostics E4002 to E4005 and near misses. Checked by `tools/verilog/fixtures.py` (`--static` needs
   no analyzer; CI runs it against the release binary in the `corpus` job).
 - `lrm/`: the per-clause LRM checks (`<clause>_<topic>.v`, one rule per file, expected diagnostics in the file header, rules recorded in
-  `docs/design/lrm-checks.md`). Run by `crates/yavs-verilog/tests/lrm.rs`, not by `fixtures.py`.
+  `docs/design/lrm-checks.md`). Run by `crates/yavs-verilog/tests/lrm.rs`, not by `fixtures.py`. The `*_eval_*.v` files also carry
+  `// output:` or `// elab:` lines and are elaborated and run by `crates/yavs-verilog/tests/run.rs` (#776 step C).
 - Not here: the vendor and open-source cell-model corpus gate (`tools/verilog/corpus.py`, manifests in `tools/verilog/`); it
   reads installs in place and commits only file lists (root rule 7).
 

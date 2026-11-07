@@ -586,5 +586,202 @@ end architecture;
             "case {k}: expected {code}:\n{}",
             err(&o)
         );
+        // `elab` stops at the same place.
+        let o = t.yavs(&["elab", "--work=work:lib", "tb"]);
+        assert_eq!(o.status.code(), Some(2), "case {k}: {}", err(&o));
+        assert!(err(&o).contains(code), "case {k}: elab: {}", err(&o));
     }
+}
+
+/// Generics of every type a parameter takes, also a vector wider than 64 bits, and `%m`: the
+/// path of the instance; `$finish` ends the run with status 0 before the testbench's later report.
+#[test]
+fn generic_types_display_and_finish() {
+    let t = T::new("v-gtypes");
+    t.write(
+        "g.v",
+        "`timescale 1ns/1ps
+module g #(parameter I = 0, parameter R = 0.0, parameter S = \"\", parameter B = 0,
+           parameter BOOL = 0, parameter SL = 0, parameter BV = 0, parameter [255:0] INIT = 0) ();
+  initial begin
+    $display(\"%m: %0d %f %s %b %b %b %b\", I, R, S, B, BOOL, SL, BV);
+    $display(\"%h\", INIT);
+    #3 $finish;
+  end
+endmodule
+",
+    )
+    .write(
+        "tb.vhd",
+        "library ieee;
+use ieee.std_logic_1164.all;
+entity tb is end entity;
+architecture sim of tb is
+  component g is
+    generic (I : integer; R : real; S : string; B : bit; BOOL : boolean; SL : std_logic;
+             BV : bit_vector(3 downto 0); INIT : std_logic_vector(255 downto 0));
+  end component;
+begin
+  u : g generic map (I => -7, R => 2.5, S => \"abc\", B => '1', BOOL => true, SL => 'Z',
+                     BV => \"1010\", INIT => (255 => '1', 0 => '1', others => '0'));
+  process
+  begin
+    report \"before\";
+    wait for 10 ns;
+    report \"not reached\";
+    wait;
+  end process;
+end architecture;
+",
+    )
+    .analyze(&["g.v", "tb.vhd"]);
+    let o = t.run(&["tb"]);
+    assert!(o.status.success(), "{}", err(&o));
+    let text = out(&o);
+    assert!(
+        text.contains("tb.u: -7 2.500000 abc 1 1 z 1010\n"),
+        "{text}"
+    );
+    let hex = format!("8{}1", "0".repeat(62));
+    assert!(text.contains(&format!("{hex}\n")), "{text}");
+    assert!(
+        text.contains("before") && !text.contains("not reached"),
+        "{text}"
+    );
+    // `elab` elaborates the Verilog too, and stops at what does not fit.
+    let o = t.yavs(&["elab", "--work=work:lib", "tb"]);
+    assert!(o.status.success(), "{}", err(&o));
+}
+
+/// `bit` and `bit_vector` ports: x and z from Verilog arrive as '0'; a VHDL vector of
+/// ascending range maps left to left onto a descending Verilog vector.
+#[test]
+fn bit_ports_and_ascending_ranges() {
+    let t = T::new("v-bits");
+    t.write(
+        "bp.v",
+        "`timescale 1ns/1ps
+module bp(input [3:0] a, output [3:0] y, output z, output reg r,
+          input [7:0] w, output [0:7] v, output lsb);
+  assign y = a + 1;
+  assign v = w;
+  assign lsb = w[0];
+endmodule
+",
+    )
+    .write(
+        "tb.vhd",
+        "library ieee;
+use ieee.std_logic_1164.all;
+entity tb is end entity;
+architecture sim of tb is
+  component bp is
+    port (a : in bit_vector(3 downto 0); y : out bit_vector(3 downto 0); z, r : out bit;
+          w : in std_logic_vector(0 to 7); v : out std_logic_vector(7 downto 0); lsb : out std_logic);
+  end component;
+  signal a, y : bit_vector(3 downto 0);
+  signal z, r : bit;
+  signal w : std_logic_vector(0 to 7);
+  signal v : std_logic_vector(7 downto 0);
+  signal lsb : std_logic;
+begin
+  u : bp port map (a, y, z, r, w, v, lsb);
+  process
+  begin
+    a <= \"0110\";
+    w <= \"10000011\";
+    wait for 1 ns;
+    report to_string(y) & \" \" & to_string(z) & \" \" & to_string(r) & \" \" & to_string(v) & \" \" & to_string(lsb);
+    wait;
+  end process;
+end architecture;
+",
+    )
+    .analyze(&["bp.v", "tb.vhd"]);
+    assert_eq!(t.notes(&["tb"]), ["1000000fs+0: 0111 0 0 10000011 1"]);
+}
+
+/// A zero-delay loop between two Verilog processes ends the run with the domain's event limit,
+/// as a run-time error that names the process, not a crash.
+#[test]
+fn a_zero_delay_loop_is_a_runtime_error() {
+    let t = T::new("v-loop");
+    t.write(
+        "l.v",
+        "`timescale 1ns/1ps
+module l(output reg a);
+  reg b;
+  always @(a) b = ~b;
+  always @(b) a = ~a;
+  initial begin a = 0; b = 0; end
+endmodule
+",
+    )
+    .write(
+        "tb.vhd",
+        "library ieee;
+use ieee.std_logic_1164.all;
+entity tb is end entity;
+architecture sim of tb is
+  component l is port (a : out std_logic); end component;
+  signal a : std_logic;
+begin
+  u : l port map (a);
+end architecture;
+",
+    )
+    .analyze(&["l.v", "tb.vhd"]);
+    let o = t.run(&["tb"]);
+    let e = err(&o);
+    assert_eq!(o.status.code(), Some(1), "{e}");
+    assert!(e.contains("E3009") && e.contains("tb.u.always"), "{e}");
+    assert!(!e.contains("E9999") && !e.contains("panicked"), "{e}");
+}
+
+/// An encrypted module is recorded at analysis and refused when VHDL binds to it.
+#[test]
+fn an_encrypted_module_is_refused_when_bound() {
+    let t = T::new("v-enc");
+    t.write(
+        "enc.v",
+        "`timescale 1ns/1ps
+module enc (input a, output y);
+`pragma protect begin_protected
+`pragma protect version = 1
+`pragma protect data_block
+dGhpcyBpcyBub3QgdmVyaWxvZw==
+`pragma protect end_protected
+endmodule
+",
+    )
+    .write(
+        "tb.vhd",
+        "library ieee;
+use ieee.std_logic_1164.all;
+entity tb is end entity;
+architecture sim of tb is
+  component enc is port (a : in std_logic := '0'; y : out std_logic); end component;
+begin
+  u : enc;
+end architecture;
+",
+    )
+    .analyze(&["enc.v", "tb.vhd"]);
+    let o = t.run(&["tb"]);
+    assert_eq!(o.status.code(), Some(2), "{}", err(&o));
+    assert!(
+        err(&o).contains("E4001") && err(&o).contains("tb.u"),
+        "{}",
+        err(&o)
+    );
+}
+
+/// Ports kept apart (`--no-collapse-ports`, as with a debugger or a plugin) give the same run.
+#[test]
+fn uncollapsed_ports_give_the_same_run() {
+    let t = T::new("v-nocollapse");
+    t.write("counter.v", COUNTER)
+        .write("tb.vhd", COUNTER_TB)
+        .analyze(&["counter.v", "tb.vhd"]);
+    assert_eq!(t.notes(&["--no-collapse-ports", "tb"]), t.notes(&["tb"]));
 }

@@ -45,7 +45,13 @@ Every file starts with `//` lines, then the Verilog. The list of `expect` lines 
 // units: a,b                                        (optional: the units recorded, in order)
 // gap: G<n> <text>                                  (optional: the LRM says error, the front end accepts; behaviour pinned)
 // expect: <CODE> [<FILE>:]<LINE>:<COL> <why>        (start of the primary span; FILE only for a span in an include)
+// output: <text>                                    (optional, one per line: the exact output of a run of the last module)
+// elab: <CODE>                                      (optional: the one error elaboration of the last module gives)
 ```
+
+Files with `output` or `elab` lines (named `<clause>_eval_<topic>.v`) are also elaborated and run, the last module of the file
+with no ports as the test's own top level, by `crates/yavs-verilog/tests/run.rs`; their rows are in the section "Elaboration and
+run-time checks" of `docs/design/lrm-checks.md`.
 
 A new check is one file plus one row in the Verilog section of `docs/design/lrm-checks.md` (the test fails for a file without a row and a row without a file).
 Write the rule from the LRM, one illegal thing per negative file, and a legal near miss next to it. `docs/design/lrm-checks.md` also lists the readings

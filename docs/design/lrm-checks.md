@@ -805,9 +805,9 @@ changed test. The table of each clause below is generated from the file headers.
   `19.5_include_macro_name.v`, `19.5_include_trailing_text.v`.
 - **V6: the body does not repeat a port of an ANSI header (12.1, 12.3.4).** `module m (output o); reg o; endmodule` is an error: 12.1
   says ports declared in the list of port declarations "shall not be redeclared within the body", and 12.3.4 repeats it in its
-  example. The first version of the checks accepted it as unclear; the text is clear, so `E4203` (a net or variable of the same
-  name) or `E4202` (a port declaration in the body of such a module). Two ports of one header with the same name are `E4203` too
-  (`12.3.4_ports_ansi_duplicate.v`). A non-ANSI port may be declared again as `reg` or `wire` (12.3.3), unchanged.
+  example. The text is clear, but the other tools accept the redeclaration (maintainer, 2026-11-07, policy rule 2): a net or variable of
+  the same name in the body is `W4209` (`12.3.4_ports_ansi_body_redeclared.v`). A port declaration (direction) in the body of such a module
+  is still `E4202`, and two ports of one header with the same name are `E4203` (`12.3.4_ports_ansi_duplicate.v`). A non-ANSI port may be declared again as `reg` or `wire` (12.3.3), unchanged.
 - **V7: `` `resetall `` clears the timescale as well as `` `default_nettype `` (19.6, 19.8).** 19.6 puts every directive back to its
   default and 19.8 says a timescale that "has been reset by a `resetall`" is simulator-specific: the next module has no `` `timescale ``
   in force, `W4006`. Text macros and `` `line `` are untouched (19.3, 19.7).
@@ -861,6 +861,9 @@ changed test. The table of each clause below is generated from the file headers.
   `` `delay_mode_path ``, `` `delay_mode_unit ``, `` `delay_mode_zero ``, `` `default_decay_time ``, `` `default_trireg_strength ``
   (Annex D, optional) and `` `uselib `` change what a simulation computes, so they are `E4010`, not an undefined macro. Files `3.7.4_directive_suppress_faults.v`,
   `3.7.4_directive_delay_mode_path.v`.
+- **V18: a unary operator on a unary operator is a warning (5.1, A.8.3).** The grammar gives a unary operator a primary as operand, so
+  `~ |a` and `- -a` need parentheses. The other tools read them (maintainer, 2026-11-07, policy rule 2): `W4208`. File
+  `5.1_unary_operand_is_primary.v`; `5.1_unary_operand_parenthesized.v` is the clean form.
 
 #### Known gaps
 
@@ -907,8 +910,7 @@ unsized constants in a concatenation, a replication of x or z or on the left of 
 `assign` and `deassign` of a bit-select; a case with no item; a task enabled with a null argument; a system task or an unknown
 `$` check or a timing check with the wrong number of arguments in a specify block; an `ifnone` edge path, a parallel path with lists, a pulse style
 after a path of the same output; duplicate names inside a task, function, named block, generate block or specify block, a block or generate block
-name that is also another declaration, a function name declared again inside it, two instances of one name, a port of an ANSI header declared again in
-the body; a directive redefined as a macro, `` `elsif `` without a name, a `` `line `` with a missing or bad operand, `` `unconnected_drive `` with
+name that is also another declaration, a function name declared again inside it, two instances of one name, two ports of one ANSI header with a name; a directive redefined as a macro, `` `elsif `` without a name, a `` `line `` with a missing or bad operand, `` `unconnected_drive `` with
 another operand, `` `pragma `` without a name, text after `` `include ``, an unknown version in `` `begin_keywords ``, unpaired `` `begin_keywords `` and
 `` `end_keywords ``. Cascades removed: a digit the base does not allow (`4'b0102`)
 was a lexical error at the constant and a syntax error at the digit; a nested module declaration gave a second error at the
@@ -1118,7 +1120,7 @@ parameter list; the words of V9.
 | `5.1_operator_sv_increment.v` | 5.1 | ++ is not a 1364 operator | `E4003` |
 | `5.1_operator_sv_wildcard_eq.v` | 5.1 | ==? is not a 1364 operator | `E4003` |
 | `5.1_operators_all.v` | 5.1 | every 1364-2005 operator is a token | clean |
-| `5.1_unary_operand_is_primary.v` | 5.1 | the operand of a unary operator is a primary (A.8.3): a second unary operator needs parentheses | `E4100` |
+| `5.1_unary_operand_is_primary.v` | 5.1 | the operand of a unary operator is a primary (A.8.3): a second unary operator needs parentheses; accepted with a warning (V18) | `W4208` |
 | `5.1_unary_operand_parenthesized.v` | 5.1 | a parenthesized operand of a unary operator is a primary | clean |
 | `5.1.1_real_operand_modulo.v` | 5.1.1 | the modulus operator is illegal on real operands (known gap G10: operand types are not checked) | clean (gap G10) |
 | `5.1.14_concat_sized.v` | 5.1.14 | sized constants, strings and replications stand in a concatenation | clean |
@@ -1297,7 +1299,7 @@ parameter list; the words of V9.
 | `12.3.3_ports_same_implicit_twice.v` | 12.3.3 | the same implicit port listed twice is legal: the two ports are tied together | clean |
 | `12.3.4_ports_ansi.v` | 12.3.4 | ports are declared in the header with a direction and an optional type and range | clean |
 | `12.3.4_ports_ansi_body_direction.v` | 12.3.4 | a module declares its ports in the header or in the body, not in both | `E4202` |
-| `12.3.4_ports_ansi_body_redeclared.v` | 12.3.4 | a port declared in the header is not declared again in the body | `E4203` |
+| `12.3.4_ports_ansi_body_redeclared.v` | 12.3.4 | a port declared in the header is not declared again in the body; accepted with a warning (V6) | `W4209` |
 | `12.3.4_ports_ansi_default_value.v` | 12.3.4 | only an output variable is given a value in the port list; a value on an input is SystemVerilog and accepted with a warning (V16) | `W4017` |
 | `12.3.4_ports_ansi_duplicate.v` | 12.3.4 | two ports of one ANSI header have different names | `E4203` |
 | `12.3.4_ports_ansi_missing_comma.v` | 12.3.4 | ports in a list are separated by commas | `E4100` |

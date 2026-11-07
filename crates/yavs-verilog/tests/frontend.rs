@@ -796,8 +796,15 @@ fn analysis_errors() {
     // implicit nets are fine by default
     ok("module a (input x);\n assign y = x;\nendmodule\n");
     bad("module a;\n wire w;\n wire w;\nendmodule\n", "E4203", 3);
-    // clause 12.3.4: a port of the header is not declared again in the body
-    bad("module a (output o);\n wire o;\nendmodule\n", "E4203", 2);
+    // clause 12.3.4: a port of the header is not declared again in the body; accepted with W4209
+    let r = run("module a (output o);\n wire o;\nendmodule\n");
+    assert!(
+        r.diagnostics
+            .iter()
+            .all(|d| d.severity == Severity::Warning)
+    );
+    assert!(r.diagnostics.iter().any(|d| d.code == "W4209"));
+    bad("module a (input o, output o);\nendmodule\n", "E4203", 1);
     ok("module a (output o);\n reg r;\nendmodule\n");
 }
 

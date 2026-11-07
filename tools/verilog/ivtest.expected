@@ -275,7 +275,7 @@ E4100 vlg CE v ivltests/br_gh533.v
 PASS vlg normal v ivltests/br_gh567.v
 PASS vlg normal v ivltests/br_ml20150315.v
 PASS vlg CE v ivltests/br_ml20150321.v
-E4203 vlg normal v ivltests/br_ml20150606.v
+PASS vlg normal v ivltests/br_ml20150606.v
 PASS vlg normal v ivltests/br_mw20171108.v
 PASS vlg normal v ivltests/br_ml20190806a.v
 PASS vlg normal v ivltests/br_ml20190806b.v
@@ -1176,7 +1176,7 @@ PASS vlg normal v ivltests/pr2790236.v
 PASS vlg CE v ivltests/pr2792883.v
 PASS vlg normal v ivltests/pr2792897.v
 PASS vlg normal v ivltests/pr2792897.v
-E4100 vlg CE v ivltests/pr2794144.v
+PASS vlg CE v ivltests/pr2794144.v
 PASS vlg normal v ivltests/pr2800985a.v
 PASS vlg RE v ivltests/pr2800985b.v
 PASS vlg normal v ivltests/pr2801134.v

@@ -160,6 +160,16 @@ pub(crate) const TABLE: &[CodeInfo] = &[
         "A variable is given a value where it is declared inside a task, function or block. IEEE 1364-2005 (6.2.1) allows that at module level only; yavs accepts it, as the other tools do, and warns. On an array it is still an error."
     ),
     code!(
+        "W4208",
+        "unary operator on a unary operator",
+        "The operand of a unary operator is another unary operator (`~ |a`, `- -a`). The grammar of IEEE 1364-2005 (A.8.3) gives a unary operator a primary as operand, so the inner operator needs parentheses; yavs accepts the form, as the other tools do, and warns."
+    ),
+    code!(
+        "W4209",
+        "port declared again in the body",
+        "A port declared in the list of port declarations of the module header is declared again in the body as a net or variable. IEEE 1364-2005 (12.1, 12.3.4) says it shall not be redeclared; yavs accepts it, as the other tools do, and warns."
+    ),
+    code!(
         "E4100",
         "syntax error",
         "The source does not match the grammar of IEEE 1364-2005 at this point. The message says what was expected. After the first error in a module the rest of that module is skipped."
@@ -188,7 +198,7 @@ pub(crate) const TABLE: &[CodeInfo] = &[
     code!(
         "E4203",
         "duplicate declaration",
-        "A name is declared twice in the same scope: a module, task, function, named block, generate block or specify block (clause 4.11), or a port of the module header is declared again in the body (clause 12.3.4)."
+        "A name is declared twice in the same scope: a module, task, function, named block, generate block or specify block (clause 4.11), or two ports of one module header have the same name (clause 12.3.4)."
     ),
     code!(
         "E4204",

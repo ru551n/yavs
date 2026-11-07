@@ -23,7 +23,7 @@ PASS work default quicklogic/qlf_k4n8/techmap/cells_sim.v -I quicklogic/qlf_k4n8
 E4100 work default xilinx/common/primitives/common_slice/Nlut/ntemplate.Nlut.sim.v -I xilinx/common/primitives/common_slice/Nlut
 PASS work default xilinx/common/primitives/common_slice/carry/carry0.sim.v -I xilinx/common/primitives/common_slice/carry
 PASS work default xilinx/common/primitives/common_slice/carry/carry4_vpr.sim.v -I xilinx/common/primitives/common_slice/carry
-E4203 work default xilinx/common/primitives/common_slice/carry/carry_cout_plug.sim.v -I xilinx/common/primitives/common_slice/carry
+PASS work default xilinx/common/primitives/common_slice/carry/carry_cout_plug.sim.v -I xilinx/common/primitives/common_slice/carry
 E4005 work default xilinx/common/primitives/common_slice/common_slice.sim.v -I xilinx/common/primitives/common_slice -I xilinx/common/primitives/common_slice/routing/coutused -I xilinx/common/primitives/common_slice/routing/srusedmux -I xilinx/common/primitives/common_slice/routing/ceusedmux -I xilinx/common/primitives/common_slice/carry -I xilinx/common/primitives/common_slice/routing/clkinv
 E4005 work default xilinx/common/primitives/common_slice/routing/Nused/ntemplate.Nused.sim.v -I xilinx/common/primitives/common_slice/routing/Nused
 E4005 work default xilinx/common/primitives/common_slice/routing/ceusedmux/ceusedmux.sim.v -I xilinx/common/primitives/common_slice/routing/ceusedmux
@@ -40,9 +40,9 @@ E4005 work default xilinx/common/primitives/dsp48e1/nmux2/nmux2.sim.v -I xilinx/
 E4003 work default xilinx/common/primitives/dsp48e1/nreg/nreg.sim.v -I xilinx/common/primitives/dsp48e1/nreg
 PASS work default xilinx/common/primitives/dsp48e1/nreg/reg.sim.v -I xilinx/common/primitives/dsp48e1/nreg
 E4005 work default xilinx/common/primitives/slicel/slicel.sim.v -I xilinx/common/primitives/slicel -I xilinx/common/primitives/common_slice/routing/coutused -I xilinx/common/primitives/common_slice/routing/srusedmux -I xilinx/common/primitives/common_slice/routing/ceusedmux -I xilinx/common/primitives/common_slice/carry -I xilinx/common/primitives/common_slice/routing/clkinv
-E4203 work default xilinx/common/primitives/slicem/di64_stub.sim.v -I xilinx/common/primitives/slicem
-E4203 work default xilinx/common/primitives/slicem/dram_2_output_stub.sim.v -I xilinx/common/primitives/slicem
-E4203 work default xilinx/common/primitives/slicem/dram_4_output_stub.sim.v -I xilinx/common/primitives/slicem
-E4203 work default xilinx/common/primitives/slicem/dram_8_output_stub.sim.v -I xilinx/common/primitives/slicem
+PASS work default xilinx/common/primitives/slicem/di64_stub.sim.v -I xilinx/common/primitives/slicem
+PASS work default xilinx/common/primitives/slicem/dram_2_output_stub.sim.v -I xilinx/common/primitives/slicem
+PASS work default xilinx/common/primitives/slicem/dram_4_output_stub.sim.v -I xilinx/common/primitives/slicem
+PASS work default xilinx/common/primitives/slicem/dram_8_output_stub.sim.v -I xilinx/common/primitives/slicem
 PASS work default xilinx/common/primitives/tieoff/tieoff.sim.v -I xilinx/common/primitives/tieoff
 E4003 work default xilinx/xc7/techmap/cells_sim.v -I xilinx/xc7/techmap

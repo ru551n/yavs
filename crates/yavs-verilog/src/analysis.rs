@@ -862,12 +862,12 @@ fn declare_all(
     for d in ds {
         if sc.module && header.contains(&d.name.name) {
             cx.diags.push(
-                Diag::error(
-                    "E4203",
-                    format!("`{}` is a port declared in the module header, it is not declared again in the body", d.name.name),
+                Diag::warning(
+                    "W4209",
+                    format!("`{}` is a port declared in the module header, it is declared again in the body", d.name.name),
                     cx.span(&d.name),
                 )
-                .note("ports declared in the header are not redeclared in the body of the module (clauses 12.1 and 12.3.4)"),
+                .note("IEEE 1364-2005 does not redeclare header ports in the body (clauses 12.1 and 12.3.4); the other tools accept it"),
             );
         } else {
             sc.declare(cx, &d.name, what);

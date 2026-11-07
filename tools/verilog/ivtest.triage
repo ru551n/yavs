@@ -141,7 +141,6 @@ normal:ivltests/br_gh497a.v ext several packed dimensions
 normal:ivltests/br_gh497c.v ext several packed dimensions
 normal:ivltests/br_gh497e.v ext several packed dimensions
 normal:ivltests/br_gh531.v ext SystemVerilog construct
-normal:ivltests/br_ml20150606.v src an ANSI port declared again in the body (12.3.4)
 normal:ivltests/ca_64delay.v ext a real net or variable declaration
 normal:ivltests/ca_time_real.v ext a real net or variable declaration
 normal:ivltests/ca_var_delay.v ext a real net or variable declaration
@@ -191,3 +190,4 @@ normal:ivltests/tern8.v ext a real net or variable declaration
 normal:ivltests/test_va_math.v ctx needs constants.vams of the AMS library
 normal:ivltests/undef.v ext a macro used after `undef
 normal:ivltests/v2005_math.v ext a real net or variable declaration
+CE:ivltests/pr2794144.v ext a unary operator on a unary operator is accepted with W4208

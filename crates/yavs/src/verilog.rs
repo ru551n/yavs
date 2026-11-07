@@ -101,8 +101,6 @@ pub(crate) struct Batch {
     ids: Vec<FileId>,
     /// Digest part that is not the front end's: the `-I` list and the default time scale.
     options: String,
-    /// The first Verilog file of the call: what no file owns is reported there.
-    first: usize,
 }
 
 impl Batch {
@@ -149,7 +147,6 @@ impl Batch {
                 opts.default_timescale.unit_fs,
                 opts.default_timescale.precision_fs
             ),
-            first: verilog.first().copied().unwrap_or(0),
             result,
             at,
             sources,
@@ -179,20 +176,18 @@ impl Batch {
         }
     }
 
-    /// The diagnostics of file `i` of the call: those with a place in it, and, for the first
-    /// Verilog file, those with no place or a place in an included file.
-    // ponytail: a problem in an included file is reported at the first Verilog file of the call;
-    // the front end names no including file. Upgrade when `Diag` carries one.
+    /// The diagnostics of file `i` of the call: those its analysis produced, including a problem
+    /// in a file it includes (the span names that file).
     pub(crate) fn diagnostics(&self, i: usize) -> Vec<Diagnostic> {
-        let nargs = self.at.iter().flatten().count();
+        let Some(j) = self.at[i] else {
+            return Vec::new();
+        };
         self.result
             .diagnostics
             .iter()
-            .filter(|d| match (d.span, self.at[i]) {
-                (Some(s), Some(j)) if s.file < nargs => s.file == j,
-                _ => i == self.first,
-            })
-            .map(|d| self.render(d))
+            .zip(&self.result.diag_file)
+            .filter(|&(_, &f)| f == j)
+            .map(|(d, _)| self.render(d))
             .collect()
     }
 
@@ -316,10 +311,11 @@ mod tests {
             files: vec![a.clone(), b.clone(), inc.clone()],
             units: vec![unit("A", 0, false), unit("b", 1, true)],
             diagnostics: vec![
-                diag("E4003", Some(1)),
                 diag("E4005", Some(2)),
                 diag("E4004", None),
+                diag("E4003", Some(1)),
             ],
+            diag_file: vec![0, 0, 1],
             ..Default::default()
         };
         // The call: a VHDL file between the two Verilog files.
@@ -334,7 +330,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(codes(2), ["E4003"]);
-        // No place, or a place in an included file: the first Verilog file.
+        // No place, or a place in an included file: the file whose analysis found it.
         assert_eq!(codes(0), ["E4005", "E4004"]);
         let r = batch.records(0).unwrap();
         assert_eq!(

@@ -384,15 +384,22 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
             match kinds[i] {
                 FileKind::Vhdl => {}
                 FileKind::SystemVerilog => {
+                    // Placed at the start of the file, as the front end places its own findings.
+                    let mut sources = yavs_diag::SourceMap::default();
+                    let text = bytes
+                        .as_ref()
+                        .map(|b| String::from_utf8_lossy(b).into_owned());
+                    let id = sources.add(file.display().to_string(), text.unwrap_or_default());
                     let d = Diagnostic::error(
                         "E4002",
                         format!("`{}` is a SystemVerilog file", file.display()),
                     )
+                    .with_primary(yavs_diag::Span::new(id, 0, 0), "")
                     .with_note("yavs reads Verilog (IEEE 1364-2005) only")
                     .with_help(
                         "write the file as Verilog, or pass `--lang=verilog` if it is plain Verilog under another extension",
                     );
-                    out.emit(&none, &d);
+                    out.emit(&sources, &d);
                     return Some(i);
                 }
                 FileKind::Verilog => {

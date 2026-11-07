@@ -544,19 +544,7 @@ const EXPLAIN: &[(&str, &str)] = &[
         "W3102",
         "A process has no wait statement, no sensitivity list and calls no procedure that waits. It never gives control back to the simulator, so time cannot advance and the run does not end by itself; it can only end through `stop` or `finish`, a failed assertion or an error. A process that should run once ends with `wait;`.",
     ),
-    // yavs-verilog: its other codes are registered by the crate itself (`yavs_verilog::CODES`)
-    (
-        "E4001",
-        "A design instantiates a Verilog module whose body is encrypted (an IEEE 1735 protected envelope, `` `pragma protect begin_protected `` or the older `` `protect `` forms), so it cannot be simulated. yavs never decrypts protected IP. Analysis records such a module by its name (warning `W4007`), so a library of vendor files analyses; the error comes when something instantiates it, and names the instance. Simulate the vendor's unencrypted model instead, or the block with a tool that holds the vendor's key.",
-    ),
-    (
-        "W4007",
-        "A Verilog file holds an encrypted (IEEE 1735 protected) module body, `` `pragma protect begin_protected `` or the older `` `protect `` forms. yavs never decrypts protected IP, so it does not read the encoded block. The module is recorded by its name and ports, so a library of vendor files analyses; a design that instantiates it fails with `E4001`. One warning is given per file. Use `-Wno-W4007` to silence it.",
-    ),
-    (
-        "W4009",
-        "A `` `pragma protect begin `` / `` `pragma protect end `` pair marks plaintext that a tool was to encrypt. The file is not encrypted: yavs ignores the markers and compiles the plaintext between them. One warning is given per file.",
-    ),
+    // yavs-verilog: its codes are registered by the crate itself (`yavs_verilog::CODES`); E4500 is the CLI's
     (
         "E4500",
         "The design reaches Verilog: elaborating and simulating Verilog is not implemented. A Verilog file can be analyzed into a library, but a design whose top level or instances lead to a Verilog module stops here.",

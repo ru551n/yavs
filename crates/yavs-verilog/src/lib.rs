@@ -148,6 +148,8 @@ pub struct AnalysisResult {
     pub files: Vec<PathBuf>,
     pub units: Vec<Unit>,
     pub diagnostics: Vec<Diag>,
+    /// For each diagnostic, the argument file whose analysis produced it (its span may be in an include).
+    pub diag_file: Vec<usize>,
     /// Index into the argument files of the first file with an error: the files after it were not read.
     pub stopped_at: Option<usize>,
 }
@@ -169,6 +171,7 @@ pub fn analyze(files: &[PathBuf], opts: &Options) -> AnalysisResult {
             .filter(|d| d.severity == Severity::Error)
             .count();
         one_file(&mut res, &mut st, &mut names, opts, fi, path);
+        res.diag_file.resize(res.diagnostics.len(), fi);
         if res
             .diagnostics
             .iter()

@@ -53,8 +53,7 @@ pub(crate) const TABLE: &[CodeInfo] = &[
     code!(
         "E4001",
         "instantiated module is encrypted",
-        "Reserved for elaboration: a design instantiates a module whose body is a protected envelope (IEEE 1735). yavs never decrypts protected IP, so the module cannot be simulated. \
-         Use the vendor's unencrypted simulation model, or simulate this block with a tool that holds the vendor's key. Analysis only records the module and warns (W4007)."
+        "A design instantiates a Verilog module whose body is encrypted (an IEEE 1735 protected envelope, `` `pragma protect begin_protected `` or the older `` `protect `` forms), so it cannot be simulated. yavs never decrypts protected IP. Analysis records such a module by its name (warning `W4007`), so a library of vendor files analyses; the error comes when something instantiates it, and names the instance. Simulate the vendor's unencrypted model instead, or the block with a tool that holds the vendor's key."
     ),
     code!(
         "E4002",
@@ -92,9 +91,7 @@ pub(crate) const TABLE: &[CodeInfo] = &[
     code!(
         "W4007",
         "encrypted module body recorded",
-        "The source contains a protected envelope (`` `pragma protect begin_protected `` ... `` `pragma protect end_protected ``, or `` `protect `` ... `` `endprotect ``, or `` `protected `` ... `` `endprotected ``). \
-         The module is recorded as an encrypted unit with the ports of its readable header, and analysis succeeds; an envelope before any module header records nothing. \
-         Instantiating the module is an error at elaboration (E4001). yavs never decrypts protected IP."
+        "A Verilog file holds an encrypted (IEEE 1735 protected) module body, `` `pragma protect begin_protected `` or the older `` `protect `` forms. yavs never decrypts protected IP, so it does not read the encoded block. The module is recorded by its name and ports, so a library of vendor files analyses; a design that instantiates it fails with `E4001`. One warning is given per file. Use `-Wno-W4007` to silence it."
     ),
     code!(
         "E4008",
@@ -125,7 +122,7 @@ pub(crate) const TABLE: &[CodeInfo] = &[
     code!(
         "W4009",
         "protection marker ignored",
-        "`` `pragma protect begin `` or `` `pragma protect end `` marks plaintext that a tool would encrypt. The marker is ignored and the plaintext is compiled."
+        "A `` `pragma protect begin `` / `` `pragma protect end `` pair marks plaintext that a tool was to encrypt. The file is not encrypted: yavs ignores the markers and compiles the plaintext between them. One warning is given per file."
     ),
     code!(
         "E4014",

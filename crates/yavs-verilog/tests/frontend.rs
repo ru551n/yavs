@@ -1089,3 +1089,24 @@ fn unreadable_files_have_no_span() {
     let d = run("`define A\n## x\n");
     assert_eq!(d.diagnostics[0].code, "E4100");
 }
+
+#[test]
+fn diagnostics_are_owned_by_the_argument_file_that_found_them() {
+    let d = scratch();
+    let inc = write(&d, "bad.vh", "`ifdef X\n");
+    let a = write(&d, "a.v", "module a; endmodule\n");
+    let b = write(
+        &d,
+        "b.v",
+        &format!("`include \"{}\"\nmodule b; endmodule\n", inc.display()),
+    );
+    let r = analyze(&[a, b], &Options::default());
+    assert_eq!(r.diag_file.len(), r.diagnostics.len());
+    let in_include = r
+        .diagnostics
+        .iter()
+        .position(|d| d.code == "E4004")
+        .unwrap();
+    assert_eq!(r.diag_file[in_include], 1);
+    assert!(r.diag_file.windows(2).all(|w| w[0] <= w[1]));
+}

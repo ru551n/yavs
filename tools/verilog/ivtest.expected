@@ -1176,7 +1176,7 @@ PASS vlg normal v ivltests/pr2790236.v
 PASS vlg CE v ivltests/pr2792883.v
 PASS vlg normal v ivltests/pr2792897.v
 PASS vlg normal v ivltests/pr2792897.v
-PASS vlg CE v ivltests/pr2794144.v
+E4100 vlg CE v ivltests/pr2794144.v
 PASS vlg normal v ivltests/pr2800985a.v
 PASS vlg RE v ivltests/pr2800985b.v
 PASS vlg normal v ivltests/pr2801134.v

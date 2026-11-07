@@ -24,16 +24,16 @@ CE:ivltests/always3.1.9A.v ext a check of that tool, not of the standard
 CE:ivltests/always3.1.9B.v ext a check of that tool, not of the standard
 CE:ivltests/array5.v sem needs types, binding, constants or elaboration
 CE:ivltests/array_lval_select4b.v sem needs types, binding, constants or elaboration
-CE:ivltests/automatic_error1.v sem needs types, binding, constants or elaboration
-CE:ivltests/automatic_error10.v sem needs types, binding, constants or elaboration
-CE:ivltests/automatic_error2.v sem needs types, binding, constants or elaboration
-CE:ivltests/automatic_error3.v sem needs types, binding, constants or elaboration
-CE:ivltests/automatic_error4.v sem needs types, binding, constants or elaboration
-CE:ivltests/automatic_error5.v sem needs types, binding, constants or elaboration
-CE:ivltests/automatic_error6.v sem needs types, binding, constants or elaboration
-CE:ivltests/automatic_error7.v sem needs types, binding, constants or elaboration
-CE:ivltests/automatic_error8.v sem needs types, binding, constants or elaboration
-CE:ivltests/automatic_error9.v sem needs types, binding, constants or elaboration
+CE:ivltests/automatic_error1.v gap restrictions on the items of an automatic task (assignments, event control, hierarchical reference)
+CE:ivltests/automatic_error10.v gap restrictions on the items of an automatic task (assignments, event control, hierarchical reference)
+CE:ivltests/automatic_error2.v gap restrictions on the items of an automatic task (assignments, event control, hierarchical reference)
+CE:ivltests/automatic_error3.v gap restrictions on the items of an automatic task (assignments, event control, hierarchical reference)
+CE:ivltests/automatic_error4.v gap restrictions on the items of an automatic task (assignments, event control, hierarchical reference)
+CE:ivltests/automatic_error5.v gap restrictions on the items of an automatic task (assignments, event control, hierarchical reference)
+CE:ivltests/automatic_error6.v gap restrictions on the items of an automatic task (assignments, event control, hierarchical reference)
+CE:ivltests/automatic_error7.v gap restrictions on the items of an automatic task (assignments, event control, hierarchical reference)
+CE:ivltests/automatic_error8.v gap restrictions on the items of an automatic task (assignments, event control, hierarchical reference)
+CE:ivltests/automatic_error9.v gap restrictions on the items of an automatic task (assignments, event control, hierarchical reference)
 CE:ivltests/br1029c.v sem needs types, binding, constants or elaboration
 CE:ivltests/br924.v sem needs types, binding, constants or elaboration
 CE:ivltests/br961a.v sem needs types, binding, constants or elaboration
@@ -107,7 +107,6 @@ CE:ivltests/pr2597278b.v sem needs types, binding, constants or elaboration
 CE:ivltests/pr2728812b.v sem needs types, binding, constants or elaboration
 CE:ivltests/pr2728812c.v sem needs types, binding, constants or elaboration
 CE:ivltests/pr2792883.v sem needs types, binding, constants or elaboration
-CE:ivltests/pr2794144.v ext a check of that tool, not of the standard
 CE:ivltests/pr2823414.v sem needs types, binding, constants or elaboration
 CE:ivltests/pr2848986.v sem needs types, binding, constants or elaboration
 CE:ivltests/pr2877564.v sem needs types, binding, constants or elaboration

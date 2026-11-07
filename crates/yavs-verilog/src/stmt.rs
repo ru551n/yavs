@@ -125,9 +125,16 @@ impl Parser<'_> {
         if t.k == K::P && UNARY.contains(&t.s) {
             self.bump();
             self.attrs()?;
-            self.enter()?;
-            let e = self.unary();
-            self.leave();
+            // Annex A.8.3: the operand of a unary operator is a primary, so `~ |a` and `- -a` need parentheses.
+            let n = self.peek();
+            if n.k == K::P && UNARY.contains(&n.s) {
+                self.push(
+                    Diag::error("E4100", format!("the operand of the unary operator `{}` is a primary, found `{}` (clause 5.1, A.8.3)", t.s, n.s), self.span(n))
+                        .help("put the operand in parentheses"),
+                );
+                return Err(());
+            }
+            let e = self.primary();
             let op = UNARY.iter().find(|u| **u == t.s).unwrap();
             return Ok(Expr::Unary(op, Box::new(e?)));
         }

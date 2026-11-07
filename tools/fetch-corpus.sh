@@ -64,7 +64,7 @@ fetch yosys https://github.com/YosysHQ/yosys c30457480f8a905e252fb09ea688713a86e
 
 # Verilog test and design corpora (tools/verilog/corpus.py, one manifest each; inputs only, never committed). Licences: ivtest GPL-2.0 (an
 # open-source Verilog simulator's regression suite), picorv32 ISC, verilog-ethernet/-axi/-uart/-axis/-pcie MIT, wb2axip Apache-2.0, zipcpu GPL-3.0 (the repository's
-# rtl/ only), darkriscv BSD-3-Clause, serv ISC, ultraembedded riscv BSD-3-Clause and core_usb_host GPL-3.0, openMSP430 BSD-3-Clause, the OpenCores ethmac (LGPL) and
+# rtl/ only), darkriscv BSD-3-Clause, serv ISC, ultraembedded riscv BSD-3-Clause and core_usb_host GPL (version 3 text, "License: GPL" in the headers), openMSP430 BSD-3-Clause, the OpenCores ethmac (LGPL) and
 # wb_dma (free-use notice), dawsonjon/fpu MIT; cell models: XilinxUnisimLibrary Apache-2.0, sky130_fd_sc_hd Apache-2.0, f4pga-arch-defs ISC (the sim models only).
 fetch ivtest https://github.com/steveicarus/ivtest a19e629a1879801ffcc6f2e6256ca435c20570f3
 fetch picorv32 https://github.com/YosysHQ/picorv32 ef203c2b0a3fb793280f5114941416c425c5b461
@@ -84,7 +84,7 @@ fetch opencores-ethmac https://github.com/freecores/ethmac dd26899086edf3b797d27
 fetch opencores-wb-dma https://github.com/freecores/wb_dma 56126339e2cef66c8769c3f8516ba7222063e851 '/rtl/'
 fetch dawsonjon-fpu https://github.com/dawsonjon/fpu c45d5e0a9f1b7e945e2be6770dbc1203825a05c4 '/*/' '/COPYING*' '/README*'
 fetch xilinx-unisim-lib https://github.com/Xilinx/XilinxUnisimLibrary 1c8e05fd1e9a79ceb8b996a0996674122eed086f '/verilog/' '/LICENSE'
-fetch sky130-fd-sc-hd https://github.com/google/skywater-pdk-libs-sky130_fd_sc_hd ac7fb61f06e6470b94e8afdf7c25268f62fbd7b1 '/cells/' '/models/' '/LICENSE'
+fetch sky130-fd-sc-hd https://github.com/google/skywater-pdk-libs-sky130_fd_sc_hd ac7fb61f06e6470b94e8afdf7c25268f62fbd7b1 '/cells/**/*.v' '/models/**/*.v' '/LICENSE'
 # The yosys regression designs (ISC): classic and corner-case Verilog, partly SystemVerilog (tests/errors is invalid on purpose and not fetched).
 fetch yosys-tests https://github.com/YosysHQ/yosys c30457480f8a905e252fb09ea688713a86e9da49 '/tests/simple/' '/tests/asicworld/' '/tests/hana/' '/tests/various/' '/tests/verilog/' '/tests/memories/' '/tests/opt/' '/COPYING'
 fetch f4pga-arch-defs https://github.com/f4pga/f4pga-arch-defs 3d4df2ea79dca19b8c5c155e0396e84f52e50451 '/xilinx/*.sim.v' '/xilinx/**/*.sim.v' '/quicklogic/**/*.sim.v' '/**/techmap/cells_sim.v' '/COPYING' '/LICENSE*'

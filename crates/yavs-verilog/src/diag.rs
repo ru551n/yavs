@@ -183,7 +183,7 @@ pub(crate) const TABLE: &[CodeInfo] = &[
         "E4202",
         "port declaration mismatch",
         "A port of a module header with a non-ANSI port list has no direction declaration in the body, or a body declaration names a port the header does not list, \
-         a port is declared twice or defined twice by name, an input or inout port is declared `reg` (clause 12.3), or a module that declares its ports in the header declares one in the body (clause 12.3.4)."
+         a port is declared twice or defined twice by name, an input or inout port is declared `reg`, in its own declaration or by a later `reg` or `integer` declaration of its name (clause 12.3), or a module that declares its ports in the header declares one in the body (clause 12.3.4)."
     ),
     code!(
         "E4203",

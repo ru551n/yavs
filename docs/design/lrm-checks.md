@@ -1118,6 +1118,8 @@ parameter list; the words of V9.
 | `5.1_operator_sv_increment.v` | 5.1 | ++ is not a 1364 operator | `E4003` |
 | `5.1_operator_sv_wildcard_eq.v` | 5.1 | ==? is not a 1364 operator | `E4003` |
 | `5.1_operators_all.v` | 5.1 | every 1364-2005 operator is a token | clean |
+| `5.1_unary_operand_is_primary.v` | 5.1 | the operand of a unary operator is a primary (A.8.3): a second unary operator needs parentheses | `E4100` |
+| `5.1_unary_operand_parenthesized.v` | 5.1 | a parenthesized operand of a unary operator is a primary | clean |
 | `5.1.1_real_operand_modulo.v` | 5.1.1 | the modulus operator is illegal on real operands (known gap G10: operand types are not checked) | clean (gap G10) |
 | `5.1.14_concat_sized.v` | 5.1.14 | sized constants, strings and replications stand in a concatenation | clean |
 | `5.1.14_concat_unsized.v` | 5.1.14 | an unsized constant has no place in a concatenation | `E4100` |

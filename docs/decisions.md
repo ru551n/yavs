@@ -13,8 +13,10 @@
   line ends in the formal arguments of a macro, a line comment ending in a backslash inside a macro text, a value on an input port
   (`W4017`, the ice40 cell models need it), the fault-simulation directives (`W4016`). Not accepted: `` `delay_mode_* `` and the default decay and
   trireg strength directives (`E4010`, they change results).
-- **Still rejected, others accept:** an ANSI port declared again in the body (`E4203`, V6: the text is clear), `endif WORD`, `input reg`
-  in a non-ANSI redeclaration (`E4202`), a function with an output argument (SystemVerilog), `assign` to a bit of a variable (clause 9.3).
+- **Still rejected although some corpus sources or the ivtest list expect no error:** an ANSI port declared again in the body (`E4203`, V6: the
+  text is clear; the f4pga and ivtest sources do it), `endif WORD` (one sky130 file), `input reg` and a non-ANSI input redeclared `reg`
+  (`E4202`), a function with an output argument (SystemVerilog), `assign` to a bit of a variable (clause 9.3), the operand of a unary operator that
+  is another unary operator (`~ |a`, A.8.3: no corpus file needed it).
 
 ## Verilog test material and corpus gate (M0 of #776, 2026-11-07)
 

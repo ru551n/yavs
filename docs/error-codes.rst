@@ -645,9 +645,9 @@ Verilog (E4 and W4)
    * - _`W4015`
      - The design defines XIL_TIMING and contains timing checks ($setup, $hold, $setuphold, ...).
    * - _`W4016`
-     - A compiler directive of fault simulation or netlist size (``suppress_faults``, ``enable_portfaults``, ``accelerate``, ``expand_vectornets``, ``remove_netnames`` and their negations) is ignored: it is not part of IEEE 1364-2005 and does not change a functional simulation.
+     - A compiler directive of fault simulation or netlist size (``suppress_faults``, ``enable_portfaults``, ``accelerate``, ``expand_vectornets``, ``remove_netnames`` and their negations) is not part of IEEE 1364-2005 and does not change a functional simulation.
    * - _`W4017`
-     - An input or inout port, or an output that is not a variable, is given a value in the port list (``input a = 1'b0``). The construct is SystemVerilog and is accepted; one warning per file.
+     - An input or inout port, or an output without a variable type, is given a value in the port list (``input a = 1'b0``).
    * - _`E4100`
      - The source does not match the grammar of IEEE 1364-2005 at this point.
    * - _`E4101`

@@ -1,5 +1,28 @@
 # Decisions
 
+## Verilog processes on the IR (step E of #776, 2026-11-07)
+
+- **Ruling:** Verilog processes are IR functions run by the interpreter's `Machine` (maintainer, 2026-11-07: "lower to IR
+  now", replacing the first path's own process interpreter below). `yavs-verilog` lowers the process code of `exec.rs`
+  (`lower.rs`) into one `Program` of the design's Verilog with its own `Runtime`, not into the VHDL program: the VHDL
+  program, its stage cache and its fingerprint are untouched, and a `Design` without the command line (`tests/run.rs`)
+  runs the same way.
+- **Instructions:** `Inst::VUn` to `Inst::VBack` (yavs-ir README "Changes"), on values in runs of `vregs(w)` registers;
+  the nets, waits and system tasks go through `yavs_interp::VerilogHost`, defined in the interpreter and implemented by
+  `yavs-verilog` (`host.rs`), which the domain moves into the process's machine for one activation and takes back with
+  the wait it registered: the domain stays the single serial scheduler, `runtime.rs` and `bridge.rs` behave as before,
+  `SimControl` is untouched. A wait is the registering instruction and the ordinary `Suspend`.
+- **Sharing:** one process function per distinct body (the ops with the process's own net numbers and the time units):
+  the instances of one module with one parameter set share their functions, each process has its own net table and
+  frame. `ponytail:` the key is the `Debug` text of the body; a structural hash if elaboration of large netlists shows it.
+- **Optimiser:** a function with a Verilog instruction runs as lowered (`opt::optimize_func`): no pass knows the
+  instructions' effects, and register renaming would split a run. Not specialised (`specialise_later` is never called).
+  Upgrade path: teach the passes the instructions one by one, with the differential tests below.
+- **Fast paths:** values of 1 to 64 bits on two words (`yavs_logic::v4::w64`), wider ones with `V4`; each word form is
+  held against `V4` (`tests/ops.rs`). Net reads and writes as plane words.
+- **Errors:** a runtime error of a Verilog process keeps the step C texts and has no trace (the interpreter's trace
+  would name statements of the Verilog program).
+
 ## Verilog execution, first path (step C of #776, 2026-11-07)
 
 - **Verilog execution engine:** a module instance is elaborated in `yavs-verilog` into process code of its own (`exec.rs`:
@@ -9,7 +32,7 @@
   classes of the compiled tiers and the work counters, all for tiers step C leaves out, and the VHDL path stays byte for byte
   as it was. The 4-state operators (`value.rs`) are the semantics any later IR op calls. Upgrade path: step E lowers the same
   trees to IR ops with a runtime interface in the interpreter crate (proposal on #776, section 6). Agent's choice, open for the
-  maintainer.
+  maintainer. Superseded by "Verilog processes on the IR" above.
 - **Sizing and sign in the front end:** `sem.rs` decides the width and sign of every operand (IEEE 1364-2005 5.4, 5.5) and inserts
   explicit extensions; the run-time operators take operands of one width (shifts and `**`: a self-determined right operand).
 - **Binding (D6):** a component instance that no configuration declaration or specification and no default binding binds

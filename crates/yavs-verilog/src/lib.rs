@@ -11,13 +11,15 @@ mod bridge;
 mod diag;
 mod elab;
 mod exec;
+mod host;
 mod lex;
+mod lower;
 mod parse;
 mod pre;
 mod runtime;
 mod sem;
 mod stmt;
-pub mod value;
+pub use yavs_logic::v4 as value;
 
 use std::path::{Path, PathBuf};
 

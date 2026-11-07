@@ -2352,6 +2352,8 @@ dependencies = [
  "num-bigint",
  "proptest",
  "yavs-diag",
+ "yavs-interp",
+ "yavs-ir",
  "yavs-kernel",
  "yavs-logic",
 ]

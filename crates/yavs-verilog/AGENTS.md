@@ -9,12 +9,15 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 - The scheduling domain (#776 step A, `docs/design/verilog-scheduling.md`): the Verilog regions inside one
   serial kernel process.
 - Elaboration of the modules VHDL instantiates (#776 step C): parameters, nets and variables, processes compiled to
-  the process code of `exec.rs` and run by the domain; the 4-state operators (`value.rs`). No IR, no compiled tier.
+  the process code of `exec.rs`, lowered to `yavs-ir` process functions (`lower.rs`, step E) that the interpreter's
+  `Machine` runs inside the domain through the Verilog runtime of `host.rs`; the 4-state operators are `yavs_logic::v4`
+  (`value`).
 - Does not: render diagnostics (they are plain data, `Diag`, with codes in `CODES` for the caller to
   register), touch the library manifest or the cache (the caller does, from `Unit`), or decide the
   language of a file for the CLI (`is_verilog_path`, `is_systemverilog_path` are helpers).
-- Depends on `yavs-diag` for `suggest` only (did-you-mean), and on `yavs-kernel` and `yavs-logic` for the
-  domain (`Process`, `Ctx`, `LogicVec`). Called by `crates/yavs` (`analyze`, and `elab`/`run` through
+- Depends on `yavs-diag` for `suggest` only (did-you-mean), on `yavs-kernel` and `yavs-logic` for the
+  domain (`Process`, `Ctx`, `LogicVec`, `v4`), on `yavs-ir` and `yavs-interp` for process code (`Inst::VUn` to
+  `Inst::VBack`, `InterpProcess`, `VerilogHost`). Called by `crates/yavs` (`analyze`, and `elab`/`run` through
   `read_unit` and `Design`).
 
 ## 2. Map
@@ -22,10 +25,12 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | File | Responsibility |
 |---|---|
 | `src/lib.rs` | The API: `analyze`, `Options`, `Unit` (with `setup`), `Diag`, `Span`, `CODES`; per-file driver and E4001; `read_unit` (a file read again under a recorded setup: `Source`), `setup` |
-| `src/value.rs` | `V4`: a 4-state vector of any width in two planes, and the operators of clause 5 on it (bitwise, arithmetic with the x rules, `**` of Table 5-6, shifts, relations, `==`/`===`, logical, reductions, the `?:` merge, extension, selects) |
+| `value` | `yavs_logic::v4` re-exported: `V4`, the operators of clause 5, `w64` (the same operators on two words, 1 to 64 bits), `logic_planes`/`logic_of_planes` (kernel vectors as planes, word by word) |
 | `src/sem.rs` | Expressions of an instance: self-determined types (`Ty`, Table 5-22) and the context-determined build (`build`, 5.4 and 5.5) into `exec::E`; numbers (3.5.1), strings, constants (`konst`), selects |
-| `src/exec.rs` | The run-time form: `E` (fixed-width trees), `Lhs`, `Op` (one process's code), `Run` (the interpreter of one process from one wait to the next), `$display` formatting |
-| `src/elab.rs` | `Design` (every instance of a run; `domain` per build), `Instance`, `Generic`, `ParamValue`, `PortSpec`; `Elab`: parameters, declarations, net aliases, port binding, continuous assignments, `always`/`initial` compiled to `Op`s, the driver check |
+| `src/exec.rs` | The process code elaboration makes: `E` (fixed-width trees), `Lhs`, `Op` (one process's code), `eval` (constants, and the oracle of the lowering's tests), `$display` formatting (`format` on values, `ArgV`) |
+| `src/lower.rs` | `Op` and `E` to IR (`Lowerer`): one process function per distinct body (the ops with the process's own net numbers and the time units as key), `ProcInfo` (function, the domain's net of each of its nets, instance), `Task` (`$display`, `$write`, `$finish` of `Inst::VTask`), `MAX_WIDTH`; values in runs of registers, what lives past a wait in frame slots; tests: random trees against `eval`, sharing |
+| `src/host.rs` | `Tables` (runtime, tasks, processes, `%t` unit), `Host` (`yavs_interp::VerilogHost`: net reads and writes as planes, the waits a process registers, the tasks), `body` (a domain process that runs its `InterpProcess` with the domain's `Core` swapped into its host and gives back the `Wait`) |
+| `src/elab.rs` | `Design` (every instance of a run; `domain` per build, `prepare` and `runtime`: the program of its processes, `functions`), `Instance`, `Generic`, `ParamValue`, `PortSpec`; `Elab`: parameters, declarations, net aliases, port binding, continuous assignments, `always`/`initial` compiled to `Op`s and lowered as they are made (`push`), the driver check |
 | `src/pre.rs` | Preprocessor on bytes: macros, conditionals, `include`, `timescale`, `default_nettype`, `celldefine`, `begin_keywords` (`KwSet`, the lexer reads the set per token), `line`, protected envelopes; output-to-source map (`Pre::span`); `State` persists across files; context digest |
 | `src/lex.rs` | Lexer: tokens with offsets into the preprocessed text; keywords, `(*)` and `*)` rules; UDP table body is skipped |
 | `src/ast.rs` | The syntax tree (public, in memory only; M1 lowers it) |
@@ -39,7 +44,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `tests/lrm.rs` | Runs every `tests/verilog/lrm/*.v` check (one LRM rule per file, header with the exact expected diagnostics) and checks that each is a row of `docs/design/lrm-checks.md` |
 | `tests/sched.rs` | Scheduling: the kernel behaviour the bridge rests on, the regions, D4 at the boundary, edges, initialisation, the event limit, stop requests, 1 against 4 threads |
 | `tests/props.rs` | `proptest` properties: number literals of every base and width, macro chains and argument counts, nested conditionals, damaged real sources (no panic, spans inside the file) |
-| `tests/ops.rs` | Every operator of `value.rs` against a reference model of the clause 5 tables (strings of 0 1 x z, big integers), widths 1 to 130 |
+| `tests/ops.rs` | Every operator of `value` against a reference model of the clause 5 tables (strings of 0 1 x z, big integers), widths 1 to 130; every word form (`w64`) against the `V4` operator, widths 1 to 64, with inputs that hold one x or z bit; kernel vectors of every code as planes |
 | `tests/run.rs` | The run-time LRM checks: files of `tests/verilog/lrm` with `// output:` or `// elab:` header lines, elaborated and run with no ports in a kernel of their own |
 
 ## 3. Design decisions that bind this module
@@ -71,7 +76,8 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | Future NBAs and `#d` resumptions are in the domain's own time map, never kernel transactions | `Waveform::schedule` drops later transactions even for transport | same, 3 |
 | `posedge`/`negedge` by Table 9-9 on element 0 (`edge`), inputs read as `TO_X01Z`; a VHDL initial value is no event | 9.7.2; `Ctx::edge` has the VHDL rules | same, 1 and 2 |
 | A process that runs more than `EVENT_LIMIT` (10000) times at one time is `E3009`; the loop polls `Ctx::stop_requested` every 1024 activations | The kernel's delta limit cannot see a loop inside one activation; a per-process count does not grow with the design | same, 4; `ponytail:` a dedicated code later |
-| Elaboration builds process code of its own (`exec.rs`), not IR: the VHDL interpreter, optimiser and compiled tiers are untouched; step E lowers the same trees | Simplest design that keeps the VHDL path unchanged | `docs/decisions.md` "Verilog execution, first path" |
+| Elaboration builds process code of its own (`exec.rs`) and lowers it to IR (`lower.rs`, step E): one program for the design's Verilog, its own `Runtime`; a process is an `InterpProcess` of a function shared by every process of the same body; the domain stays the one scheduler (each process is one of its bodies, `host::body`) | Verilog runs on the interpreter and the compiled tiers like VHDL (maintainer's ruling); the VHDL program, its cache and its optimiser are untouched | `docs/decisions.md` "Verilog processes on the IR" |
+| Fast paths: every value of 1 to 64 bits is computed on two words (`value::w64`, `Machine::v64` in the interpreter; no allocation), a wider one with `V4`; a word form that cannot give the `V4` result (a real conversion of a value of 2^53 or more) returns `None` and the instruction takes the `V4` path. Arithmetic, relations and shifts by an amount with an x or z bit give x at once; bitwise operators, `?:` merge, extension, selects and `case` matches compute x and z bit for bit in the same words. Net reads and writes are plane words (`logic_planes`, `logic_of_planes`), never element by element; a blocking write that leaves a net of up to 64 elements as it is does nothing (`host.rs`), and a write of a whole net compares and copies it whole (`Core::write`). Edges stay Table 9-9 per write (`edge`, element 0) | Plan 9: no slow path for Verilog; the step C interpreter allocated a `V4` per operator | `tests/ops.rs` `word_forms_match_the_vectors`, `lower.rs` tests |
 | Widths and signs are decided in `sem.rs`; the operators of `value.rs` take operands of one width (shifts and `**`: a self-determined right operand) | 5.4, 5.5: the long tail (R1) stays in one place | same |
 | A unit's `setup` (options and incoming preprocessor state, `State::encode`) is recorded at analysis; `read_unit` reads the file again under it | Elaboration must read a file as its analysis did, macros of earlier files included | same |
 | Processes start in the order continuous assignments, `always`, `initial`; a net bit with two continuous drivers is `E4502`; a pure copy onto an internal net with one driver is an alias | `lrm-checks.md` S2; no resolution in the domain yet | same |

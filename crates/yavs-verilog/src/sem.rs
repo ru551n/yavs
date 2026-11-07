@@ -878,7 +878,4 @@ pub(crate) fn string_value(bytes: &[u8]) -> V4 {
     v
 }
 
-/// Real to integer: rounded to the nearest, halves away from zero (4.8.2).
-pub(crate) fn real_to_i64(r: f64) -> i64 {
-    r.round() as i64
-}
+pub(crate) use crate::value::real_to_i64;

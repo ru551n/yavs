@@ -5,7 +5,7 @@
 //! run (`domain`, once per build).
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use yavs_kernel::{DriverId, LogicVec, SigRef};
 
@@ -13,7 +13,9 @@ use crate::ast::{
     Ctrl, Decl, Declarator, Delay, EventCtrl, Expr, Ident, Item, Module, NetKind, ParamDecl, Ports,
     Range, RangeKind, Stmt, VarKind,
 };
-use crate::exec::{Arg, CaseKind, Code, E, Inst, Lhs, Op, Run, Start, reads};
+use crate::exec::{Arg, CaseKind, Code, E, Inst, Lhs, Op, Start, reads};
+use crate::host::Tables;
+use crate::lower::{LowerError, Lowerer, MAX_WIDTH};
 use crate::runtime::{Domain, Edge, NetId};
 use crate::sem::{Const, R, Sx, Sym, Ty, Var, real_to_i64, string_value, unsupported};
 use crate::value::V4;
@@ -63,7 +65,10 @@ pub struct Instance<'a> {
 #[derive(Default)]
 pub struct Design {
     nets: Vec<LogicVec>,
-    procs: Vec<Arc<Code>>,
+    /// The processes, lowered to IR as they are elaborated (`lower.rs`).
+    low: Lowerer,
+    /// The program, its runtime and the tables of the processes, made by the first `domain`.
+    tabs: OnceLock<Result<Arc<Tables>, String>>,
     inputs: Vec<(u32, u32)>,
     outputs: Vec<(u32, u32, bool)>,
     /// The smallest precision of the instances, for `%t` (17.3.2).
@@ -72,7 +77,7 @@ pub struct Design {
 
 impl Design {
     pub fn is_empty(&self) -> bool {
-        self.procs.is_empty() && self.inputs.is_empty() && self.outputs.is_empty()
+        self.low.procs.is_empty() && self.inputs.is_empty() && self.outputs.is_empty()
     }
 
     /// The keys of the VHDL ports the design drives, in the order `domain` takes their drivers.
@@ -101,11 +106,75 @@ impl Design {
                 false => d.output(NetId(n), drv),
             }
         }
-        for code in &self.procs {
-            let mut run = Run::new(code.clone(), self.tf_fs.max(1));
-            d.process(&code.name, move |x| run.step(x));
+        match self.tables() {
+            Ok(t) => {
+                for (p, info) in t.procs.iter().enumerate() {
+                    d.process(&info.name, crate::host::body(t.clone(), p));
+                }
+            }
+            // `prepare` reports it; a caller that did not call it gets the error at the start.
+            Err(m) => {
+                let m = m.clone();
+                d.process("verilog", move |x| Err(x.error(m.clone())));
+            }
         }
         d
+    }
+
+    /// Makes the program of the design's processes and its runtime: an error is a bug in yavs.
+    /// `domain` calls it if the caller did not.
+    pub fn prepare(&self) -> Result<(), String> {
+        self.tables().map(|_| ())
+    }
+
+    /// The runtime the design's processes run on (a compiled tier is set on it, #776).
+    pub fn runtime(&self) -> Result<Arc<yavs_interp::Runtime>, String> {
+        Ok(self.tables()?.rt.clone())
+    }
+
+    /// The number of process functions: processes with the same body share one (tests).
+    pub fn functions(&self) -> usize {
+        self.low.functions()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn nets_mut(&mut self) -> &mut Vec<LogicVec> {
+        &mut self.nets
+    }
+
+    /// A process made by hand (tests).
+    #[cfg(test)]
+    pub(crate) fn add_code(&mut self, code: &Code) -> Result<(), String> {
+        let widths: Vec<u32> = self.nets.iter().map(|n| n.len() as u32).collect();
+        self.low.add(code, &widths).map_err(|e| match e {
+            LowerError::Wide(w) => format!("{w} bits"),
+            LowerError::Bug(m) => m,
+        })
+    }
+
+    fn tables(&self) -> Result<&Arc<Tables>, String> {
+        let t = self.tabs.get_or_init(|| {
+            let prog = self.low.pb.clone().finish().map_err(|es| {
+                let e: Vec<String> = es
+                    .iter()
+                    .map(|e| format!("{}: {}", e.name, e.msg))
+                    .collect();
+                format!(
+                    "the IR of the Verilog processes does not verify: {}",
+                    e.join("; ")
+                )
+            })?;
+            let rt = yavs_interp::Runtime::new(Arc::new(prog), yavs_interp::Bindings::default())
+                .map_err(|e| e.to_string())?;
+            Ok(Arc::new(Tables {
+                rt,
+                tasks: self.low.tasks.clone(),
+                procs: self.low.procs.clone(),
+                tf_fs: self.tf_fs.max(1),
+            }))
+        });
+        t.as_ref()
+            .map_err(|m| format!("{m} (this is a bug in yavs)"))
     }
 
     /// Elaborates one instance into the design.
@@ -864,16 +933,32 @@ impl<'d, 'a> Elab<'d, 'a> {
             Op::Wait(deps.into_iter().map(|n| (n, Edge::Any)).collect()),
             Op::Jmp(0),
         ];
-        self.push(name, ops);
+        self.push(name, ops)?;
         Ok(())
     }
 
-    fn push(&mut self, name: String, ops: Vec<Op>) {
-        self.d.procs.push(Arc::new(Code {
+    fn push(&mut self, name: String, ops: Vec<Op>) -> R<()> {
+        let code = Code {
             name,
             ops,
             inst: self.info.clone(),
-        }));
+        };
+        let widths: Vec<u32> = self.d.nets.iter().map(|n| n.len() as u32).collect();
+        match self.d.low.add(&code, &widths) {
+            Ok(()) => Ok(()),
+            Err(LowerError::Wide(w)) => Err(unsupported(
+                &format!("a vector of {w} bits (more than {MAX_WIDTH}) in a process"),
+                self.at,
+            )),
+            Err(LowerError::Bug(m)) => Err(Box::new(Diag::error(
+                "E9999",
+                format!(
+                    "the process `{}` cannot be lowered: {m} (this is a bug in yavs)",
+                    code.name
+                ),
+                self.at,
+            ))),
+        }
     }
 
     /// An assignment target: nets for a continuous assignment, variables in a process.
@@ -1002,7 +1087,6 @@ impl<'d, 'a> Elab<'d, 'a> {
         }
         Ok(Lhs::Part {
             net: v.net,
-            w: v.w(),
             start,
             n,
         })
@@ -1051,7 +1135,7 @@ impl<'d, 'a> Elab<'d, 'a> {
         } else {
             c.ops.push(Op::Done);
         }
-        self.push(name, c.ops);
+        self.push(name, c.ops)?;
         Ok(())
     }
 

@@ -371,3 +371,155 @@ fn integers_round_trip() {
         }
     }
 }
+
+// The word forms (`value::w64`, 1 to 64 bits) against the operators above: the interpreter and
+// the compiled tiers take them for narrow values, so they must give what `V4` gives, also for a
+// value that just falls off the two-state path (one x or z bit).
+
+use yavs_verilog::value::w64;
+
+/// A narrow value: known, known with one x or z bit, or as `value`.
+fn narrow(w: usize) -> impl Strategy<Value = M> {
+    let one_off = (
+        prop::collection::vec(prop::sample::select(vec![b'0', b'1']), w),
+        0..w,
+        prop::sample::select(vec![b'x', b'z']),
+    )
+        .prop_map(|(mut m, i, c)| {
+            m[i] = c;
+            m
+        });
+    prop_oneof![2 => value(w), 1 => one_off]
+}
+
+fn p(v: &V4) -> w64::P {
+    let (a, b) = v.planes();
+    (a[0], b[0])
+}
+
+fn of_p(w: u32, x: w64::P) -> V4 {
+    V4::from_planes(w, &[x.0], &[x.1])
+}
+
+/// `VBinOp` in its order, as `w64::bin` numbers it.
+fn v4_bin(op: u8, s: bool, es: bool, a: &V4, b: &V4) -> V4 {
+    match op {
+        0 => a.add(b),
+        1 => a.sub(b),
+        2 => a.mul(b),
+        3 => a.div(b, s),
+        4 => a.rem(b, s),
+        5 => a.pow(b, s, es),
+        6 => a.and(b),
+        7 => a.or(b),
+        8 => a.xor(b),
+        9 => a.xnor(b),
+        10 => a.shl(b),
+        11 => a.shr(b, false),
+        12 => a.shr(b, s),
+        13 => a.lt(b, s),
+        14 => a.le(b, s),
+        15 => a.gt(b, s),
+        16 => a.ge(b, s),
+        17 => a.eq(b),
+        18 => a.ne(b),
+        19 => a.case_eq(b),
+        20 => a.case_eq(b).not(),
+        21 => a.land(b),
+        _ => a.lor(b),
+    }
+}
+
+fn v4_un(op: u8, a: &V4) -> V4 {
+    match op {
+        0 => a.not(),
+        1 => a.neg(),
+        2 => a.lnot(),
+        3 => a.red_and(),
+        4 => a.red_and().not(),
+        5 => a.red_or(),
+        6 => a.red_or().not(),
+        7 => a.red_xor(),
+        8 => a.red_xor().not(),
+        _ => a.clog2(),
+    }
+}
+
+fn narrow_pair() -> impl Strategy<Value = (M, M, M, bool, bool)> {
+    (1usize..=64, 1usize..=64).prop_flat_map(|(w, v)| {
+        (
+            narrow(w),
+            narrow(w),
+            narrow(v),
+            any::<bool>(),
+            any::<bool>(),
+        )
+    })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(1500))]
+
+    #[test]
+    fn word_forms_match_the_vectors((l, r, s, signed, es) in narrow_pair(), lo in -70i64..70, n in 1u32..=64, to in 1u32..=64) {
+        let (vl, vr, vs) = (to_v4(&l), to_v4(&r), to_v4(&s));
+        let (w, ws) = (vl.width(), vs.width());
+        for op in 0..23u8 {
+            // Shifts and `**` take the self-determined operand.
+            let (y, wy, vy) = if (10..=12).contains(&op) || op == 5 { (p(&vs), ws, &vs) } else { (p(&vr), w, &vr) };
+            let want = v4_bin(op, signed, es, &vl, vy);
+            let got = w64::bin(op, signed, es, w, wy, p(&vl), y).map(|x| of_p(want.width(), x));
+            prop_assert_eq!(got, Some(want), "op {}", op);
+        }
+        for op in 0..10u8 {
+            let want = v4_un(op, &vl);
+            prop_assert_eq!(w64::un(op, w, p(&vl)).map(|x| of_p(want.width(), x)), Some(want), "un {}", op);
+        }
+        prop_assert_eq!(of_p(w, w64::merge(p(&vl), p(&vr))), vl.merge(&vr));
+        prop_assert_eq!(of_p(to, w64::ext(to, w, signed, p(&vl))), vl.ext(to, signed));
+        prop_assert_eq!(of_p(n, w64::sel(w, n, p(&vl), lo)), vl.slice(lo, n));
+        prop_assert_eq!(of_p(n, w64::sel(w, n, p(&vl), i64::MIN)), V4::xs(n));
+        if w + ws <= 64 {
+            prop_assert_eq!(of_p(w + ws, w64::cat(ws, p(&vl), p(&vs))), V4::concat(&vl, &vs));
+        }
+        let t = match vl.truth() { Bit::One => 1, Bit::Zero => 0, _ => 2 };
+        prop_assert_eq!(w64::truth(p(&vl)), t);
+        for (wild, x) in [(false, false), (true, false), (true, true)] {
+            prop_assert_eq!(w64::case_match(wild, x, p(&vl), p(&vr)), vl.case_match(&vr, wild, x));
+        }
+        prop_assert_eq!(w64::count(w, signed, p(&vl)), vl.to_i64(signed).unwrap_or(0).max(0));
+        if let Some(f) = w64::to_f64(w, signed, p(&vl)) {
+            prop_assert_eq!(f, vl.to_f64(signed));
+        }
+        // Through a kernel vector and back, word by word.
+        let mut buf = [0u64; 2];
+        yavs_verilog::value::logic_planes(&vl.to_logic(), &mut buf);
+        prop_assert_eq!(of_p(w, (buf[0], buf[1])), vl.clone());
+    }
+}
+
+/// Kernel vectors with the codes VHDL adds (U, W, L, H, -) read as `TO_X01Z`, at block edges.
+#[test]
+fn logic_planes_read_every_code() {
+    use yavs_logic::{LogicVec, StdULogic};
+    for len in [1usize, 63, 64, 65, 130] {
+        let l = LogicVec::from_fn(len, |i| yavs_logic::ALL[i % 9]);
+        let n = len.div_ceil(64);
+        let mut buf = vec![0u64; 2 * n];
+        yavs_verilog::value::logic_planes(&l, &mut buf);
+        let v = V4::from_planes(len as u32, &buf[..n], &buf[n..]);
+        for i in 0..len {
+            let want = yavs_verilog::value::of_ulogic(l.get(i));
+            assert_eq!(v.get(i as u32), want, "len {len} element {i}");
+        }
+        let back = yavs_verilog::value::logic_of_planes(len, &buf[..n], &buf[n..]);
+        for i in 0..len {
+            let c = back.get(i);
+            assert!(matches!(
+                c,
+                StdULogic::Zero | StdULogic::One | StdULogic::X | StdULogic::Z
+            ));
+            assert_eq!(yavs_verilog::value::of_ulogic(c), v.get(i as u32));
+        }
+    }
+}

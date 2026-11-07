@@ -7,6 +7,8 @@
 
 use crate::{LogicVec, StdULogic};
 
+pub mod w64;
+
 /// One bit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Bit {
@@ -667,21 +669,77 @@ impl V4 {
 
     /// From a VHDL value read as `TO_X01Z`: L and H are 0 and 1, U, W and `-` are x.
     pub fn from_logic(l: &LogicVec) -> V4 {
-        let mut r = V4::zeros(l.len().max(1) as u32);
-        for i in 0..l.len() {
-            r.set(i as u32, of_ulogic(l.get(i)));
-        }
+        let w = l.len().max(1) as u32;
+        let mut r = V4::zeros(w);
+        let n = r.a.len();
+        let mut buf = vec![0u64; 2 * n];
+        logic_planes(l, &mut buf);
+        r.a.copy_from_slice(&buf[..n]);
+        r.b.copy_from_slice(&buf[n..]);
         r
     }
 
     pub fn to_logic(&self) -> LogicVec {
-        LogicVec::from_fn(self.w as usize, |i| match self.get(i as u32) {
-            Bit::Zero => StdULogic::Zero,
-            Bit::One => StdULogic::One,
-            Bit::X => StdULogic::X,
-            Bit::Z => StdULogic::Z,
-        })
+        logic_of_planes(self.w as usize, &self.a, &self.b)
     }
+}
+
+/// The planes of `l` read as `TO_X01Z` into `out`: the `a` words, then the `b` words, as many of
+/// each as half of `out` (bits past the length 0; a shorter `l` leaves the rest 0).
+pub fn logic_planes(l: &LogicVec, out: &mut [u64]) {
+    let n = out.len() / 2;
+    out.fill(0);
+    #[cfg(not(feature = "nibbles"))]
+    for (i, blk) in l.repr().blocks().iter().enumerate().take(n) {
+        // Codes U X 0 1 Z W L H - are 0 to 8, bit k of the code in plane k: 0 1 L H are known
+        // (plane 1 set, plane 3 clear), the value plane 0; Z is the code 4; the rest is x.
+        let [p0, p1, p2, p3] = *blk;
+        let known = !p3 & p1;
+        let z = !p3 & p2 & !p1 & !p0;
+        let m = match l.len() - 64 * i {
+            k if k >= 64 => !0,
+            k => (1u64 << k) - 1,
+        };
+        out[i] = ((known & p0) | (!known & !z)) & m;
+        out[n + i] = !known & m;
+    }
+    #[cfg(feature = "nibbles")]
+    for i in 0..l.len().min(64 * n) {
+        let (a, b) = of_ulogic(l.get(i)).planes();
+        out[i / 64] |= a << (i % 64);
+        out[n + i / 64] |= b << (i % 64);
+    }
+}
+
+/// A logic vector of `len` elements from planes (`V4` codes as 0 1 Z X).
+pub fn logic_of_planes(len: usize, a: &[u64], b: &[u64]) -> LogicVec {
+    #[cfg(not(feature = "nibbles"))]
+    {
+        let blocks = (0..len.div_ceil(64))
+            .map(|i| {
+                let m = match len - 64 * i {
+                    k if k >= 64 => !0,
+                    k => (1u64 << k) - 1,
+                };
+                let (x, y) = (
+                    a.get(i).copied().unwrap_or(0),
+                    b.get(i).copied().unwrap_or(0),
+                );
+                [x & m, !y & m, y & !x & m, 0]
+            })
+            .collect();
+        LogicVec::from_repr(crate::Planes::from_blocks(len, blocks))
+    }
+    #[cfg(feature = "nibbles")]
+    LogicVec::from_fn(len, |i| {
+        let (x, y) = (a[i / 64] >> (i % 64) & 1, b[i / 64] >> (i % 64) & 1);
+        match (x, y) {
+            (0, 0) => StdULogic::Zero,
+            (1, 0) => StdULogic::One,
+            (0, _) => StdULogic::Z,
+            _ => StdULogic::X,
+        }
+    })
 }
 
 pub fn of_ulogic(c: StdULogic) -> Bit {

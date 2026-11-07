@@ -6,23 +6,27 @@
 
 use yavs_ir::{FOp, Inst, Reg, VBinOp, VCaseKind, VEdge, VUnOp, vregs};
 use yavs_kernel::{Ctx, SimError, Time};
-use yavs_logic::v4::{Bit, V4};
+use yavs_logic::v4::w64::{self, P};
+use yavs_logic::v4::{Bit, V4, real_to_i64};
 
 use super::{Fault, Machine, R, cold, ice, rt_err};
 
 /// What a Verilog process reaches outside its registers. Net numbers are the running process's
 /// own; the host maps them to its instance's nets.
 pub trait VerilogHost: Send {
-    /// The value of net `net`.
-    fn read(&mut self, net: u32) -> V4;
-    /// Elements `at ..` of net `net` take `v`: at once (`nba` `None`), or in the NBA region
-    /// `nba` femtoseconds from now. Elements outside the net are not written.
+    /// The value of net `net` into `out` (the `a` plane words, then the `b` words, as many of
+    /// each as half of `out`); its width.
+    fn read(&mut self, net: u32, out: &mut [u64]) -> u32;
+    /// Elements `at ..` of net `net` take the `n` bits of `planes` (`a` words, then `b`): at
+    /// once (`nba` `None`), or in the NBA region `nba` femtoseconds from now. Elements outside
+    /// the net are not written.
     fn write(
         &mut self,
         ctx: &mut Ctx<'_>,
         net: u32,
         at: i64,
-        v: &V4,
+        n: u32,
+        planes: &[u64],
         nba: Option<u64>,
     ) -> Result<(), SimError>;
     /// The suspension that follows waits for `edge` of `net` too.
@@ -67,6 +71,9 @@ impl Machine {
     /// One Verilog instruction.
     #[inline(never)]
     pub(super) fn verilog(&mut self, inst: Inst, ctx: &mut Option<&mut Ctx<'_>>) -> R<()> {
+        if self.v64(inst, ctx)? {
+            return Ok(());
+        }
         match inst {
             Inst::VUn { op, w, dst, a } => {
                 let a = self.vget(a, w);
@@ -244,21 +251,18 @@ impl Machine {
             }
             Inst::VRead { net, w, dst } => {
                 let mut h = self.host()?;
-                let v = h.read(net);
+                let at = self.regs.base + dst.0 as usize;
+                let n = vregs(w) as usize;
+                let got = h.read(net, &mut self.regs.v[at..at + n]);
                 self.vhost = Some(h);
-                if v.width() != w {
+                if got != w {
                     return Err(cold(|| {
-                        ice(format!(
-                            "Verilog net {net} has {} bits, read as {w}",
-                            v.width()
-                        ))
+                        ice(format!("Verilog net {net} has {got} bits, read as {w}"))
                     }));
                 }
-                self.vput(dst, &v);
             }
             Inst::VWrite { net, n, src, at } => {
-                let v = self.vget(src, n);
-                self.vwrite(ctx, net, self.ri(at), &v, None)?;
+                self.vwrite(ctx, net, self.ri(at), n, src, None)?;
             }
             Inst::VNba {
                 net,
@@ -267,8 +271,8 @@ impl Machine {
                 at,
                 delay,
             } => {
-                let v = self.vget(src, n);
-                self.vwrite(ctx, net, self.ri(at), &v, Some(self.r(delay)))?;
+                let d = self.r(delay);
+                self.vwrite(ctx, net, self.ri(at), n, src, Some(d))?;
             }
             Inst::VWaitOn { net, edge } => {
                 let mut h = self.host()?;
@@ -307,17 +311,177 @@ impl Machine {
         Ok(())
     }
 
+    fn vp(&self, r: Reg) -> P {
+        (self.r(r), self.r(Reg(r.0 + 1)))
+    }
+
+    fn vput64(&mut self, r: Reg, x: P) {
+        self.set(r, x.0);
+        self.set(Reg(r.0 + 1), x.1);
+    }
+
+    /// The word forms of values of up to 64 bits (`w64`): `true` when done, `false` when the
+    /// instruction takes the general path (a wider value, a case the word form leaves).
+    #[inline(always)]
+    fn v64(&mut self, inst: Inst, ctx: &mut Option<&mut Ctx<'_>>) -> R<bool> {
+        let done = match inst {
+            Inst::VUn { op, w, dst, a } if w <= 64 => match w64::un(un_code(op), w, self.vp(a)) {
+                Some(v) => {
+                    self.vput64(dst, v);
+                    true
+                }
+                None => false,
+            },
+            Inst::VBin {
+                op,
+                signed,
+                w,
+                wb,
+                dst,
+                a,
+                b,
+            } if w <= 64 && wb <= 64 => {
+                let (c, es) = bin_code(op);
+                match w64::bin(c, signed, es, w, wb, self.vp(a), self.vp(b)) {
+                    Some(v) => {
+                        self.vput64(dst, v);
+                        true
+                    }
+                    None => false,
+                }
+            }
+            Inst::VExt {
+                signed,
+                w,
+                wa,
+                dst,
+                a,
+            } if w <= 64 && wa <= 64 => {
+                let v = w64::ext(w, wa, signed, self.vp(a));
+                self.vput64(dst, v);
+                true
+            }
+            Inst::VCat {
+                whi,
+                wlo,
+                dst,
+                hi,
+                lo,
+            } if whi + wlo <= 64 => {
+                let v = w64::cat(wlo, self.vp(hi), self.vp(lo));
+                self.vput64(dst, v);
+                true
+            }
+            Inst::VMerge { w, dst, a, b } if w <= 64 => {
+                let v = w64::merge(self.vp(a), self.vp(b));
+                self.vput64(dst, v);
+                true
+            }
+            Inst::VIndex {
+                signed,
+                desc,
+                w,
+                adj,
+                dst,
+                idx,
+            } if w <= 64 => {
+                let x = self.vp(idx);
+                let k = match (x.1, signed) {
+                    (0, true) => Some(((x.0 << (64 - w)) as i64) >> (64 - w)),
+                    (0, false) => i64::try_from(x.0).ok(),
+                    _ => None,
+                };
+                let at = k.and_then(|k| {
+                    if desc {
+                        k.checked_sub(adj)
+                    } else {
+                        adj.checked_sub(k)
+                    }
+                });
+                self.set(dst, at.unwrap_or(i64::MIN) as u64);
+                true
+            }
+            Inst::VSel { w, n, dst, src, at } if w <= 64 && n <= 64 => {
+                let v = w64::sel(w, n, self.vp(src), self.ri(at));
+                self.vput64(dst, v);
+                true
+            }
+            Inst::VTruth { w, dst, a } if w <= 64 => {
+                let t = w64::truth(self.vp(a));
+                self.set(dst, t);
+                true
+            }
+            Inst::VCase { kind, w, dst, a, b } if w <= 64 => {
+                let m = w64::case_match(
+                    kind != VCaseKind::Case,
+                    kind == VCaseKind::Casex,
+                    self.vp(a),
+                    self.vp(b),
+                );
+                self.set(dst, m as u64);
+                true
+            }
+            Inst::VCount { signed, w, dst, a } if w <= 64 => {
+                let n = w64::count(w, signed, self.vp(a));
+                self.set(dst, n as u64);
+                true
+            }
+            Inst::VDelay { unit, w, dst, a } if w <= 64 => {
+                let x = self.vp(a);
+                // An x or z delay is zero (9.7.1).
+                let fs = match x.1 {
+                    0 => u128::from(x.0) * u128::from(10u64.pow(unit.into())),
+                    _ => 0,
+                };
+                let fs = self.fs(fs)?;
+                self.set(dst, fs);
+                true
+            }
+            Inst::VToReal { signed, w, dst, a } if w <= 64 => {
+                match w64::to_f64(w, signed, self.vp(a)) {
+                    Some(r) => {
+                        self.set(dst, r.to_bits());
+                        true
+                    }
+                    None => false,
+                }
+            }
+            Inst::VFromReal { w, dst, a } if w <= 64 => {
+                let v = real_to_i64(self.rf(a)) as u64 & w64::mask(w);
+                self.vput64(dst, (v, 0));
+                true
+            }
+            Inst::VTime { unit, w, dst } if w <= 64 => {
+                let t = now(ctx)?;
+                let u = 10u64.pow(unit.into());
+                self.vput64(dst, (((t + u / 2) / u) & w64::mask(w), 0));
+                true
+            }
+            _ => false,
+        };
+        Ok(done)
+    }
+
     fn vwrite(
         &mut self,
         ctx: &mut Option<&mut Ctx<'_>>,
         net: u32,
         at: i64,
-        v: &V4,
+        n: u32,
+        src: Reg,
         nba: Option<u64>,
     ) -> R<()> {
         let c = kernel(ctx)?;
         let mut h = self.host()?;
-        let r = h.write(c, net, at, v, nba);
+        let base = self.regs.base + src.0 as usize;
+        let r = h.write(
+            c,
+            net,
+            at,
+            n,
+            &self.regs.v[base..base + vregs(n) as usize],
+            nba,
+        );
         self.vhost = Some(h);
         r.map_err(Fault::Kernel)
     }
@@ -351,4 +515,50 @@ fn kernel<'a, 'c>(ctx: &'a mut Option<&mut Ctx<'c>>) -> R<&'a mut Ctx<'c>> {
 
 fn now(ctx: &mut Option<&mut Ctx<'_>>) -> R<u64> {
     Ok(kernel(ctx)?.now().as_fs())
+}
+
+/// `VUnOp` as `w64::un` numbers it.
+fn un_code(op: VUnOp) -> u8 {
+    match op {
+        VUnOp::Not => 0,
+        VUnOp::Neg => 1,
+        VUnOp::LNot => 2,
+        VUnOp::RedAnd => 3,
+        VUnOp::RedNand => 4,
+        VUnOp::RedOr => 5,
+        VUnOp::RedNor => 6,
+        VUnOp::RedXor => 7,
+        VUnOp::RedXnor => 8,
+        VUnOp::Clog2 => 9,
+    }
+}
+
+/// `VBinOp` as `w64::bin` numbers it, and the sign of a `**` exponent.
+fn bin_code(op: VBinOp) -> (u8, bool) {
+    use VBinOp::*;
+    match op {
+        Add => (0, false),
+        Sub => (1, false),
+        Mul => (2, false),
+        Div => (3, false),
+        Rem => (4, false),
+        Pow(es) => (5, es),
+        And => (6, false),
+        Or => (7, false),
+        Xor => (8, false),
+        Xnor => (9, false),
+        Shl => (10, false),
+        Shr => (11, false),
+        Ashr => (12, false),
+        Lt => (13, false),
+        Le => (14, false),
+        Gt => (15, false),
+        Ge => (16, false),
+        Eq => (17, false),
+        Ne => (18, false),
+        CaseEq => (19, false),
+        CaseNe => (20, false),
+        LAnd => (21, false),
+        LOr => (22, false),
+    }
 }

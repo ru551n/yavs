@@ -104,6 +104,7 @@ enum Item {
     Nba(Update),
 }
 
+#[derive(Default)]
 pub(crate) struct Core {
     pub(crate) nets: Vec<Net>,
     procs: Vec<Proc>,
@@ -307,12 +308,20 @@ impl Core {
         let net = &mut self.nets[net.0 as usize];
         let old = net.value.get(0);
         let mut changed = false;
-        // ponytail: element by element; plane-word copies when lowering makes writes hot.
-        for i in 0..v.len() {
-            let (e, c) = (at as usize + i, v.get(i));
-            if net.value.get(e) != c {
-                net.value.set(e, c);
+        if at == 0 && v.len() == net.value.len() {
+            // The whole net, the usual write: compared and copied as planes.
+            if net.value != *v {
+                net.value.clone_from(v);
                 changed = true;
+            }
+        } else {
+            // ponytail: a part element by element; plane-word copies if part writes show.
+            for i in 0..v.len() {
+                let (e, c) = (at as usize + i, v.get(i));
+                if net.value.get(e) != c {
+                    net.value.set(e, c);
+                    changed = true;
+                }
             }
         }
         if !changed {
@@ -354,6 +363,17 @@ impl Core {
 pub struct Exec<'a, 'c> {
     core: &'a mut Core,
     ctx: &'a mut Ctx<'c>,
+}
+
+impl<'a, 'c> Exec<'a, 'c> {
+    pub(crate) fn new(core: &'a mut Core, ctx: &'a mut Ctx<'c>) -> Exec<'a, 'c> {
+        Exec { core, ctx }
+    }
+
+    /// The domain's state and the kernel context (a process lowered to IR, `host.rs`).
+    pub(crate) fn parts(&mut self) -> (&mut Core, &mut Ctx<'c>) {
+        (self.core, self.ctx)
+    }
 }
 
 impl Exec<'_, '_> {

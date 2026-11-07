@@ -4,10 +4,8 @@
 
 use std::sync::Arc;
 
-use yavs_kernel::{SimError, Time};
-
-use crate::runtime::{Edge, Exec, NetId, Wait};
-use crate::sem::{Const, real_to_i64};
+use crate::runtime::Edge;
+use crate::sem::Const;
 use crate::value::{Bit, V4};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -169,7 +167,7 @@ pub(crate) fn eval(e: &E, env: &dyn Env) -> V4 {
                 UOp::RedNor => a.red_or().not(),
                 UOp::RedXor => a.red_xor(),
                 UOp::RedXnor => a.red_xor().not(),
-                UOp::Clog2 => clog2(&a),
+                UOp::Clog2 => a.clog2(),
             }
         }
         E::Bin(op, a, b, s) => {
@@ -219,7 +217,7 @@ pub(crate) fn eval(e: &E, env: &dyn Env) -> V4 {
         }
         E::ToVec(r, w) => {
             let r = real(r, env);
-            V4::from_i64(64, real_to_i64(r)).ext(*w, true)
+            V4::from_f64(*w, r)
         }
         E::RCmp(op, a, b) => {
             let (a, b) = (real(a, env), real(b, env));
@@ -270,42 +268,15 @@ pub(crate) fn real(e: &E, env: &dyn Env) -> f64 {
 
 /// A vector as a real; an x or z bit reads as 0 (4.8.2).
 pub(crate) fn to_f64(v: &V4, signed: bool) -> f64 {
-    let neg = signed && v.msb() == Bit::One && v.is_known();
-    let m = if neg { v.neg() } else { v.clone() };
-    let mut r = 0.0f64;
-    for i in (0..m.width()).rev() {
-        r = r * 2.0 + if m.get(i) == Bit::One { 1.0 } else { 0.0 };
-    }
-    if neg { -r } else { r }
-}
-
-/// `$clog2`: the ceiling of log2 of the operand as unsigned, 0 for 0 and 1 (17.11.1).
-fn clog2(v: &V4) -> V4 {
-    if !v.is_known() {
-        return V4::xs(32);
-    }
-    let top = (0..v.width()).rev().find(|&i| v.get(i) == Bit::One);
-    let r = match top {
-        None => 0,
-        Some(t) => {
-            let pow2 = (0..t).all(|i| v.get(i) == Bit::Zero);
-            if pow2 { t } else { t + 1 }
-        }
-    };
-    V4::from_u64(32, r as u64)
+    v.to_f64(signed)
 }
 
 /// Where an assignment writes.
 #[derive(Clone, Debug)]
 pub(crate) enum Lhs {
-    /// `n` elements of net `net` (`w` elements) from a fixed element, or from the index
-    /// value of `idx` as in `E::Sel`.
-    Part {
-        net: u32,
-        w: u32,
-        start: Start,
-        n: u32,
-    },
+    /// `n` elements of net `net` from a fixed element, or from the index value of `idx` as in
+    /// `E::Sel`; elements outside the net are not written (9.2, 5.2.1).
+    Part { net: u32, start: Start, n: u32 },
     /// Most significant part first.
     Cat(Vec<Lhs>),
 }
@@ -326,39 +297,6 @@ impl Lhs {
         match self {
             Lhs::Part { n, .. } => *n,
             Lhs::Cat(v) => v.iter().map(Lhs::width).sum(),
-        }
-    }
-
-    /// The writes of a value of this target's width: (net, first element, bits `lo .. lo + n` of
-    /// the value). Elements outside the net, and all of a select with an unknown index, are not
-    /// written (9.2 and 5.2.1).
-    fn targets(&self, env: &dyn Env, lo: u32, out: &mut Vec<(u32, u32, u32, u32)>) {
-        match self {
-            Lhs::Part { net, w, start, n } => {
-                let at = match start {
-                    Start::Fixed(k) => *k as i64,
-                    Start::Dyn {
-                        idx,
-                        signed,
-                        desc,
-                        adj,
-                    } => match sel_start(&eval(idx, env), *signed, *desc, *adj) {
-                        Some(k) => k,
-                        None => return,
-                    },
-                };
-                let (a, b) = (at.max(0), (at + *n as i64).min(*w as i64));
-                if a < b {
-                    out.push((*net, a as u32, lo + (a - at) as u32, (b - a) as u32));
-                }
-            }
-            Lhs::Cat(parts) => {
-                let mut lo = lo + self.width();
-                for p in parts {
-                    lo -= p.width();
-                    p.targets(env, lo, out);
-                }
-            }
         }
     }
 
@@ -477,223 +415,6 @@ pub(crate) struct Code {
     pub inst: Arc<Inst>,
 }
 
-/// Backward jumps one activation may take before the run stops with an error.
-const LOOP_LIMIT: u64 = 1 << 26;
-
-/// A process at its next instruction.
-pub(crate) struct Run {
-    code: Arc<Code>,
-    pc: usize,
-    slots: Vec<Option<V4>>,
-    /// `%t` prints in these femtoseconds (the smallest precision of the design, 17.3.2).
-    tf_fs: u64,
-}
-
-struct X<'e, 'a, 'c>(&'e Exec<'a, 'c>);
-
-impl Env for X<'_, '_, '_> {
-    fn net(&self, n: u32) -> V4 {
-        V4::from_logic(self.0.get(NetId(n)))
-    }
-    fn now_fs(&self) -> u64 {
-        self.0.now().as_fs()
-    }
-}
-
-impl Run {
-    pub(crate) fn new(code: Arc<Code>, tf_fs: u64) -> Run {
-        Run {
-            code,
-            pc: 0,
-            slots: Vec::new(),
-            tf_fs,
-        }
-    }
-
-    fn write(
-        &self,
-        x: &mut Exec<'_, '_>,
-        lhs: &Lhs,
-        v: &V4,
-        nba: Option<Time>,
-    ) -> Result<(), SimError> {
-        let mut t = Vec::new();
-        lhs.targets(&X(x), 0, &mut t);
-        for (net, at, lo, n) in t {
-            let part = v.slice(lo as i64, n).to_logic();
-            match nba {
-                None => x.set_at(NetId(net), at, &part)?,
-                Some(d) => x.nba(NetId(net), at, part, d)?,
-            }
-        }
-        Ok(())
-    }
-
-    fn delay(&self, x: &Exec<'_, '_>, e: &E, is_real: bool) -> Result<Time, SimError> {
-        let inst = &self.code.inst;
-        let fs = if is_real {
-            let r = real(e, &X(x));
-            if r.is_nan() || r < 0.0 {
-                return Err(x.error(format!(
-                    "the delay {r} in `{}` is negative (IEEE 1364-2005 9.7.1)",
-                    self.code.name
-                )));
-            }
-            // Rounded to the precision of the module (19.8).
-            let p = inst.precision_fs as f64;
-            ((r * inst.unit_fs as f64 / p).round() * p) as u128
-        } else {
-            let v = eval(e, &X(x));
-            // An x or z delay is zero (9.7.1).
-            match v.is_known() {
-                false => 0,
-                true => match v.to_u64() {
-                    Some(u) => u as u128 * inst.unit_fs as u128,
-                    None => u128::MAX,
-                },
-            }
-        };
-        u64::try_from(fs).ok().and_then(Time::fs).ok_or_else(|| {
-            x.error(format!(
-                "the delay in `{}` is beyond the largest time",
-                self.code.name
-            ))
-        })
-    }
-
-    /// Runs from where the process suspended to its next wait.
-    pub(crate) fn step(&mut self, x: &mut Exec<'_, '_>) -> Result<Wait, SimError> {
-        let code = self.code.clone();
-        let mut back = 0u64;
-        loop {
-            let pc = self.pc;
-            self.pc += 1;
-            match &code.ops[pc] {
-                Op::Set(lhs, e) => {
-                    let v = eval(e, &X(x));
-                    self.write(x, lhs, &v, None)?;
-                }
-                Op::Nba(lhs, e, d) => {
-                    let v = eval(e, &X(x));
-                    let d = match d {
-                        Some(d) => self.delay(x, d, is_real(d))?,
-                        None => Time::ZERO,
-                    };
-                    self.write(x, lhs, &v, Some(d))?;
-                }
-                Op::Hold(k, e) => {
-                    let v = eval(e, &X(x));
-                    let k = *k as usize;
-                    if self.slots.len() <= k {
-                        self.slots.resize(k + 1, None);
-                    }
-                    self.slots[k] = Some(v);
-                }
-                Op::SetHeld(lhs, k) => {
-                    let v = self.slots[*k as usize].take().expect("a held value");
-                    self.write(x, lhs, &v, None)?;
-                }
-                Op::Jmp(t) => {
-                    if (*t as usize) < pc {
-                        back += 1;
-                        if back > LOOP_LIMIT {
-                            return Err(x.error(format!(
-                                "the Verilog process `{}` looped {LOOP_LIMIT} times without waiting",
-                                code.name
-                            )));
-                        }
-                    }
-                    self.pc = *t as usize;
-                }
-                Op::JmpIfNot(c, t) => {
-                    if eval(c, &X(x)).truth() != Bit::One {
-                        self.pc = *t as usize;
-                    }
-                }
-                Op::Case {
-                    sel,
-                    kind,
-                    items,
-                    default,
-                } => {
-                    let s = eval(sel, &X(x));
-                    self.pc = *default as usize;
-                    for (e, t) in items {
-                        if case_match(&s, &eval(e, &X(x)), *kind) {
-                            self.pc = *t as usize;
-                            break;
-                        }
-                    }
-                }
-                Op::RepeatInit(k, e, signed) => {
-                    let v = eval(e, &X(x));
-                    // An unknown count runs no iteration (9.6).
-                    let n = v.to_i64(*signed).unwrap_or(0).max(0);
-                    let k = *k as usize;
-                    if self.slots.len() <= k {
-                        self.slots.resize(k + 1, None);
-                    }
-                    self.slots[k] = Some(V4::from_i64(64, n));
-                }
-                Op::RepeatTest(k, end) => {
-                    let s = self.slots[*k as usize].as_mut().expect("a repeat count");
-                    let n = s.to_i64(true).expect("a known count");
-                    if n <= 0 {
-                        self.pc = *end as usize;
-                    } else {
-                        *s = V4::from_i64(64, n - 1);
-                    }
-                }
-                Op::Wait(items) => {
-                    return Ok(Wait::On(
-                        items.iter().map(|&(n, e)| (NetId(n), e)).collect(),
-                    ));
-                }
-                Op::Delay(e, r) => {
-                    let d = self.delay(x, e, *r)?;
-                    return Ok(if d == Time::ZERO {
-                        Wait::Zero
-                    } else {
-                        Wait::Delay(d)
-                    });
-                }
-                Op::Display(args, newline) => {
-                    let mut out = format(args, &X(x), &code.inst, self.tf_fs)
-                        .map_err(|m| x.error(format!("{m} in `{}`", code.name)))?;
-                    if *newline {
-                        out.push(b'\n');
-                    }
-                    x.output(&out);
-                }
-                Op::Finish => {
-                    x.finish();
-                    return Ok(Wait::Done);
-                }
-                Op::Done => {
-                    self.pc = pc;
-                    return Ok(Wait::Done);
-                }
-            }
-        }
-    }
-}
-
-/// `case` compares with `===`; `casez` ignores bits that are z (or `?`) on either side,
-/// `casex` bits that are x or z (9.5.1).
-fn case_match(s: &V4, e: &V4, kind: CaseKind) -> bool {
-    if kind == CaseKind::Case {
-        return s == e;
-    }
-    (0..s.width()).all(|i| {
-        let (a, b) = (s.get(i), e.get(i));
-        let care = |c: Bit| match kind {
-            CaseKind::Casez => c == Bit::Z,
-            _ => matches!(c, Bit::X | Bit::Z),
-        };
-        care(a) || care(b) || a == b
-    })
-}
-
 /// Decimal digits of a known vector.
 fn decimal(v: &V4, signed: bool) -> String {
     let neg = signed && v.msb() == Bit::One;
@@ -787,21 +508,34 @@ fn radix(v: &V4, k: u32, strip: bool) -> String {
     }
 }
 
+/// An argument of `$display` and `$write` with its value.
+pub(crate) enum ArgV<'a> {
+    Fmt(&'a [u8]),
+    /// The flag: signed.
+    Val(V4, bool),
+    Real(f64),
+}
+
 /// The text of `$display` and `$write` arguments (17.1).
-fn format(args: &[Arg], env: &dyn Env, inst: &Inst, tf_fs: u64) -> Result<Vec<u8>, String> {
+pub(crate) fn format(
+    args: &[ArgV<'_>],
+    path: &str,
+    unit_fs: u64,
+    tf_fs: u64,
+) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match &args[i] {
-            Arg::Val(e, s) => {
-                out.extend(dec(&eval(e, env), *s, None).bytes());
+            ArgV::Val(v, s) => {
+                out.extend(dec(v, *s, None).bytes());
                 i += 1;
             }
-            Arg::Real(e) => {
-                out.extend(format!("{}", real(e, env)).bytes());
+            ArgV::Real(r) => {
+                out.extend(format!("{r}").bytes());
                 i += 1;
             }
-            Arg::Fmt(f) => {
+            ArgV::Fmt(f) => {
                 i += 1;
                 let mut j = 0;
                 while j < f.len() {
@@ -828,7 +562,7 @@ fn format(args: &[Arg], env: &dyn Env, inst: &Inst, tf_fs: u64) -> Result<Vec<u8
                         continue;
                     }
                     if c == b'm' {
-                        out.extend(inst.path.bytes());
+                        out.extend(path.bytes());
                         continue;
                     }
                     let Some(a) = args.get(i) else {
@@ -841,27 +575,26 @@ fn format(args: &[Arg], env: &dyn Env, inst: &Inst, tf_fs: u64) -> Result<Vec<u8
                         _ => s,
                     };
                     let text = match (c, a) {
-                        (b'e' | b'f' | b'g', Arg::Real(e)) => {
-                            let r = real(e, env);
+                        (b'e' | b'f' | b'g', ArgV::Real(r)) => {
+                            let r = *r;
                             fit(match c {
                                 b'f' => format!("{r:.6}"),
                                 b'e' => c_exp(r),
                                 _ => format!("{r}"),
                             })
                         }
-                        (_, Arg::Real(e)) => fit(format!("{}", real(e, env))),
-                        (_, Arg::Fmt(s)) if c == b's' => fit(String::from_utf8_lossy(s).into()),
-                        (_, Arg::Fmt(s)) => {
+                        (_, ArgV::Real(r)) => fit(format!("{r}")),
+                        (_, ArgV::Fmt(s)) if c == b's' => fit(String::from_utf8_lossy(s).into()),
+                        (_, ArgV::Fmt(s)) => {
                             let v = crate::sem::string_value(s);
                             fit(dec(&v, false, if pad0 { Some(0) } else { None }))
                         }
-                        (_, Arg::Val(e, s)) => {
-                            let v = eval(e, env);
+                        (_, ArgV::Val(v, s)) => {
                             match c {
-                                b'd' => dec(&v, *s, pad.or(if pad0 { Some(0) } else { None })),
-                                b'b' => fit(radix(&v, 1, pad0)),
-                                b'o' => fit(radix(&v, 3, pad0)),
-                                b'h' | b'x' => fit(radix(&v, 4, pad0)),
+                                b'd' => dec(v, *s, pad.or(if pad0 { Some(0) } else { None })),
+                                b'b' => fit(radix(v, 1, pad0)),
+                                b'o' => fit(radix(v, 3, pad0)),
+                                b'h' | b'x' => fit(radix(v, 4, pad0)),
                                 b'c' => {
                                     (v.slice(0, 8).to_u64().unwrap_or(0) as u8 as char).to_string()
                                 }
@@ -883,10 +616,10 @@ fn format(args: &[Arg], env: &dyn Env, inst: &Inst, tf_fs: u64) -> Result<Vec<u8
                                     // In the units of the smallest precision (17.3.2).
                                     let t = match v.to_u64() {
                                         Some(u) => {
-                                            let [lo, hi] = mul_div(u, inst.unit_fs, tf_fs);
+                                            let [lo, hi] = mul_div(u, unit_fs, tf_fs);
                                             decimal(&V4::from_words(128, &[lo, hi]), false)
                                         }
-                                        None => dec(&v, false, Some(0)),
+                                        None => dec(v, false, Some(0)),
                                     };
                                     let width = pad.unwrap_or(20);
                                     format!("{t:>width$}")

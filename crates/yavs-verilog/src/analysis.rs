@@ -618,6 +618,8 @@ fn duplicates(cx: &mut Ctx, m: &Module) {
 }
 
 fn undeclared(cx: &mut Ctx, m: &Module) {
+    // ponytail: one flat set of every name declared anywhere in the module, so a name declared in
+    // another scope is accepted; real scoping comes with elaboration.
     let mut declared: HashSet<String> = HashSet::new();
     declared.insert(m.name.name.clone());
     for p in &m.params {

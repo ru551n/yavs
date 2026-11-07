@@ -146,7 +146,8 @@ fn every_code_in_the_sources_is_in_the_table() {
         include_str!("../src/lib.rs"),
     ]
     .concat();
-    for c in CODES {
+    // E4001 is raised at elaboration, not here.
+    for c in CODES.iter().filter(|c| c.code != "E4001") {
         assert!(
             all.contains(&format!("\"{}\"", c.code)),
             "{} is never emitted",
@@ -548,30 +549,92 @@ fn missing_timescale_warns_once_and_uses_the_default() {
 }
 
 #[test]
-fn encrypted_header_is_recorded_and_whole_file_is_an_error() {
+fn encrypted_modules_are_recorded_with_one_warning_per_file() {
     let enc = "`timescale 1ps/1ps\nmodule SIP_X (\n input A,\n output [3:0] B\n);\n`pragma protect begin_protected\n`pragma protect key_keyowner = \"A\", key_method = \"rsa\"\n`pragma protect key_keyowner = \"B\"\nAAAA\nBBBB\n`pragma protect end_protected\n";
     let r = run(enc);
-    let e: Vec<_> = r.diagnostics.iter().filter(|d| d.code == "E4001").collect();
-    assert_eq!(e.len(), 1);
-    assert_eq!(e[0].severity, Severity::Warning);
-    assert_eq!(line(&r, e[0].span.unwrap()), 6);
-    assert!(e[0].label.as_ref().unwrap().contains('2'));
+    assert!(errors(&r).is_empty());
+    let w: Vec<_> = r.diagnostics.iter().filter(|d| d.code == "W4007").collect();
+    assert_eq!(w.len(), 1);
+    assert_eq!(w[0].severity, Severity::Warning);
+    assert_eq!(line(&r, w[0].span.unwrap()), 6);
+    assert!(w[0].label.as_ref().unwrap().contains('2'));
     assert!(r.units[0].encrypted);
     assert_eq!(r.units[0].ports.len(), 2);
     assert_eq!(r.stopped_at, None);
-    // an envelope before any module: nothing to record
+    // an envelope before any module: a warning, nothing to record
     let r = run(
         "`pragma protect begin_protected\n`pragma protect key_block\nxxxx\n`pragma protect end_protected\n",
     );
-    assert_eq!(errors(&r), [("E4001", 1)]);
+    assert!(errors(&r).is_empty());
+    assert_eq!(
+        r.diagnostics.iter().filter(|d| d.code == "W4007").count(),
+        1
+    );
     assert!(r.units.is_empty());
-    // markers around plaintext only warn
+    // an envelope inside the header: the module is recorded without ports
+    let r = run(
+        "`timescale 1ns/1ps\nmodule h #(\n`pragma protect begin_protected\nzz\n`pragma protect end_protected\n",
+    );
+    assert!(errors(&r).is_empty());
+    assert_eq!(
+        (
+            r.units[0].name.as_str(),
+            r.units[0].encrypted,
+            r.units[0].ports.len()
+        ),
+        ("h", true, 0)
+    );
+    // two envelopes in one file: still one warning; the plain module before and after are units
+    let r = run(
+        "`timescale 1ns/1ps\nmodule a; endmodule\nmodule b (input x);\n`pragma protect begin_protected\nzz\n`pragma protect end_protected\nmodule c; endmodule\n",
+    );
+    assert_eq!(
+        r.diagnostics.iter().filter(|d| d.code == "W4007").count(),
+        1
+    );
+    assert_eq!(
+        r.units
+            .iter()
+            .map(|u| (u.name.as_str(), u.encrypted))
+            .collect::<Vec<_>>(),
+        [("a", false), ("b", true), ("c", false)]
+    );
+    // the legacy forms hide everything up to the end marker
+    let r = run(
+        "`timescale 1ns/1ps\nmodule a; endmodule\n`protect\nmodule hidden; \"unterminated /*\nendmodule\n`endprotect\nmodule z; endmodule\n",
+    );
+    assert_eq!(
+        r.units.iter().map(|u| u.name.as_str()).collect::<Vec<_>>(),
+        ["a", "z"]
+    );
+    assert_eq!(
+        r.diagnostics.iter().filter(|d| d.code == "W4007").count(),
+        1
+    );
+    // an include that is encrypted: the module that includes it is recorded as encrypted
+    let d = scratch();
+    write(
+        &d,
+        "e.vh",
+        "`pragma protect begin_protected\nzz\n`pragma protect end_protected\n",
+    );
+    let f = write(
+        &d,
+        "t.v",
+        "`timescale 1ns/1ps\nmodule m (input a);\n`include \"e.vh\"\nendmodule\n",
+    );
+    let r = analyze(&[f], &Options::default());
+    assert!(errors(&r).is_empty());
+    assert!(r.units[0].encrypted);
+    let w = r.diagnostics.iter().find(|d| d.code == "W4007").unwrap();
+    assert!(r.files[w.span.unwrap().file].ends_with("e.vh"));
+    // markers around plaintext warn once each
     let r = run(
         "`timescale 1ns/1ps\n`pragma protect begin\nmodule p; endmodule\n`pragma protect end\n",
     );
     assert_eq!(
         r.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
-        ["W4013"]
+        ["W4009", "W4009"]
     );
     assert_eq!(r.units.len(), 1);
 }
@@ -953,4 +1016,76 @@ fn udp_rows_are_decoded() {
     )
     .unwrap_err();
     assert_eq!(e[0].code, "E4100");
+}
+
+#[test]
+fn context_digest_follows_everything_that_changes_a_unit() {
+    let d = scratch();
+    let f = write(&d, "t.v", "module m; endmodule\n");
+    let base = analyze(std::slice::from_ref(&f), &Options::default()).units[0]
+        .context_digest
+        .clone();
+    let again = analyze(std::slice::from_ref(&f), &Options::default()).units[0]
+        .context_digest
+        .clone();
+    assert_eq!(base, again);
+    let ts = Options {
+        default_timescale: Timescale {
+            unit_fs: 1_000,
+            precision_fs: 1_000,
+        },
+        ..Options::default()
+    };
+    assert_ne!(
+        base,
+        analyze(std::slice::from_ref(&f), &ts).units[0].context_digest
+    );
+    let inc = Options {
+        include_dirs: vec![d.clone()],
+        ..Options::default()
+    };
+    assert_ne!(base, analyze(&[f], &inc).units[0].context_digest);
+}
+
+#[test]
+fn timing_check_warning_is_once_per_call() {
+    let d = scratch();
+    let src = "module m (input c, d);\nspecify\n $setup(d, posedge c, 1);\nendspecify\nendmodule\n";
+    let a = write(&d, "a.v", src);
+    let b = write(&d, "b.v", &src.replace("module m", "module n"));
+    let o = Options {
+        defines: vec![("XIL_TIMING".into(), None)],
+        ..Options::default()
+    };
+    let r = analyze(&[a, b], &o);
+    assert_eq!(
+        r.diagnostics.iter().filter(|d| d.code == "W4015").count(),
+        1
+    );
+}
+
+#[test]
+fn plaintext_after_an_envelope_belongs_to_the_module() {
+    let r = run(
+        "`timescale 1ns/1ps\nmodule a (input x);\n`pragma protect begin_protected\nzz\n`pragma protect end_protected\n  wire w;\n  assign w = x;\nendmodule\nmodule b; endmodule\n",
+    );
+    assert!(errors(&r).is_empty(), "{:?}", r.diagnostics);
+    assert_eq!(
+        r.units
+            .iter()
+            .map(|u| (u.name.as_str(), u.encrypted))
+            .collect::<Vec<_>>(),
+        [("a", true), ("b", false)]
+    );
+}
+
+#[test]
+fn unreadable_files_have_no_span() {
+    let r = analyze(&[PathBuf::from("/nonexistent/x.v")], &Options::default());
+    assert_eq!(
+        (r.diagnostics[0].code, r.diagnostics[0].span.is_none()),
+        ("E4012", true)
+    );
+    let d = run("`define A\n## x\n");
+    assert_eq!(d.diagnostics[0].code, "E4100");
 }

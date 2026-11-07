@@ -313,13 +313,71 @@ impl<'a> Parser<'a> {
                             self.span(t),
                         ));
                     } else {
-                        self.unexpected("`module` or `primitive`");
+                        self.top_level_error();
                     }
                     self.skip_to(&["endmodule", "endprimitive"]);
                 }
             }
         }
         out
+    }
+
+    /// Something other than a module at the top level. A file that goes on with SystemVerilog
+    /// declarations (a fragment of a SystemVerilog design) is reported as that.
+    fn top_level_error(&mut self) {
+        let mut k = 0;
+        loop {
+            let t = self.peek_at(k);
+            if t.k == K::Eof || (t.k == K::Kw && matches!(t.s, "module" | "primitive")) {
+                break;
+            }
+            if self.sv_word(t)
+                && matches!(
+                    self.text(t).as_str(),
+                    "typedef"
+                        | "enum"
+                        | "struct"
+                        | "union"
+                        | "package"
+                        | "import"
+                        | "class"
+                        | "interface"
+                        | "program"
+                        | "always_comb"
+                        | "always_ff"
+                        | "always_latch"
+                )
+            {
+                self.push(
+                    Diag::error(
+                        "E4003",
+                        format!(
+                            "SystemVerilog construct `{}` in a Verilog file",
+                            self.text(t)
+                        ),
+                        self.span(t),
+                    )
+                    .label("not part of IEEE 1364-2005")
+                    .help("yavs reads Verilog (IEEE 1364-2005) only"),
+                );
+                return;
+            }
+            k += 1;
+        }
+        let t = self.peek();
+        let found = if t.k == K::Eof {
+            "end of file".to_string()
+        } else {
+            format!("`{}`", self.text(t))
+        };
+        self.push(
+            Diag::error(
+                "E4100",
+                format!("expected `module` or `primitive`, found {found}"),
+                self.span(t),
+            )
+            .label("expected `module` or `primitive`"),
+        );
     }
 
     /// After an error: skip past the next of `stops`, or to the end of the file.
@@ -342,6 +400,31 @@ impl<'a> Parser<'a> {
         self.bump();
         self.attrs()?;
         let name = self.ident()?;
+        // An envelope inside the header: only the name is readable.
+        let mut k = 0;
+        loop {
+            let t = self.peek_at(k);
+            match (t.k, t.s) {
+                (K::Env, _) => {
+                    for _ in 0..=k {
+                        self.bump();
+                    }
+                    self.eat_kw("endmodule");
+                    return Ok(Module {
+                        name,
+                        params: Vec::new(),
+                        ports: Ports::None,
+                        items: Vec::new(),
+                        timescale: ts,
+                        nettype: nt,
+                        celldefine: cd,
+                        encrypted: Some(t.n),
+                    });
+                }
+                (K::Eof, _) | (K::P, ";") => break,
+                _ => k += 1,
+            }
+        }
         let mut params = Vec::new();
         if self.eat_p("#") {
             self.expect_p("(")?;
@@ -395,8 +478,21 @@ impl<'a> Parser<'a> {
                 (K::Env, _) => {
                     self.bump();
                     encrypted = Some(t.n);
-                    // The envelope holds the body and usually the `endmodule`.
-                    self.eat_kw("endmodule");
+                    // The envelope holds the body and usually the `endmodule`; plaintext after it
+                    // belongs to the module, up to its `endmodule` (the next module is not swallowed).
+                    loop {
+                        let n = self.peek();
+                        match (n.k, n.s) {
+                            (K::Kw, "endmodule") => {
+                                self.bump();
+                                break;
+                            }
+                            (K::Eof, _) | (K::Kw, "module" | "primitive") => break,
+                            _ => {
+                                self.bump();
+                            }
+                        }
+                    }
                     break;
                 }
                 (K::Eof, _) => {

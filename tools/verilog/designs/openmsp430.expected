@@ -1,0 +1,31 @@
+# tools/verilog/corpus.py openmsp430: expected outcome per file, `OUTCOME LIB VIEW PATH [-I DIR | -D NAME]...`; paths only, no vendor content.
+PASS work default core/rtl/verilog/omsp_alu.v -I core/rtl/verilog
+PASS work default core/rtl/verilog/omsp_and_gate.v -I core/rtl/verilog
+PASS work default core/rtl/verilog/omsp_clock_gate.v -I core/rtl/verilog
+PASS work default core/rtl/verilog/omsp_clock_module.v -I core/rtl/verilog
+PASS work default core/rtl/verilog/omsp_clock_mux.v -I core/rtl/verilog
+PASS work default core/rtl/verilog/omsp_dbg.v -I core/rtl/verilog
+PASS work default core/rtl/verilog/omsp_dbg_hwbrk.v -I core/rtl/verilog
+PASS work default core/rtl/verilog/omsp_dbg_i2c.v -I core/rtl/verilog
+PASS work default core/rtl/verilog/omsp_dbg_uart.v -I core/rtl/verilog
+PASS work default core/rtl/verilog/omsp_execution_unit.v -I core/rtl/verilog
+PASS work default core/rtl/verilog/omsp_frontend.v -I core/rtl/verilog
+PASS work default core/rtl/verilog/omsp_mem_backbone.v -I core/rtl/verilog
+PASS work default core/rtl/verilog/omsp_multiplier.v -I core/rtl/verilog
+PASS work default core/rtl/verilog/omsp_register_file.v -I core/rtl/verilog
+PASS work default core/rtl/verilog/omsp_scan_mux.v -I core/rtl/verilog
+PASS work default core/rtl/verilog/omsp_sfr.v -I core/rtl/verilog
+PASS work default core/rtl/verilog/omsp_sync_cell.v -I core/rtl/verilog
+PASS work default core/rtl/verilog/omsp_sync_reset.v -I core/rtl/verilog
+PASS work default core/rtl/verilog/omsp_wakeup_cell.v -I core/rtl/verilog
+PASS work default core/rtl/verilog/omsp_watchdog.v -I core/rtl/verilog
+PASS work default core/rtl/verilog/openMSP430.v -I core/rtl/verilog
+PASS work default core/rtl/verilog/openMSP430_defines.v -I core/rtl/verilog
+PASS work default core/rtl/verilog/openMSP430_undefines.v -I core/rtl/verilog
+PASS work default core/rtl/verilog/periph/omsp_gpio.v -I core/rtl/verilog/periph
+PASS work default core/rtl/verilog/periph/omsp_timerA.v -I core/rtl/verilog/periph
+PASS work default core/rtl/verilog/periph/omsp_timerA_defines.v -I core/rtl/verilog/periph
+PASS work default core/rtl/verilog/periph/omsp_timerA_undefines.v -I core/rtl/verilog/periph
+PASS work default core/rtl/verilog/periph/template_periph_16b.v -I core/rtl/verilog/periph
+PASS work default core/rtl/verilog/periph/template_periph_8b.v -I core/rtl/verilog/periph
+PASS work project 'core/rtl/verilog/*.v,core/rtl/verilog/periph/*.v' -I core/rtl/verilog -I core/rtl/verilog/periph

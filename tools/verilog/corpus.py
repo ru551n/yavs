@@ -9,20 +9,25 @@
           (the directory that holds verilog/src/glbl.v). Categories: unisims, retarget, unimacro, unifast, glbl in both views
           (default and -D XIL_TIMING), unisims-sv, ip-plain, ip-includes-encrypted and ip-encrypted (ip/**/*.v), protected (*.vp).
   cells   the yosys techlibs simulation models (ISC, fetched by tools/fetch-corpus.sh into the corpus cache; CI-visible).
+  NAME    one of DESIGNS below: cell-model libraries and open-source designs fetched into the corpus cache, every .v file alone and
+          each project (a set of files and include directories) in one call, also CI-visible.
+  open    cells and every DESIGNS source, one after the other (what CI runs).
 
   list    enumerate and classify, print counts and findings; write nothing
   gen     write the manifest from the classification (what the Verilog plan expects), without running yavs
   check   run yavs and compare every file with the manifest (default); exit 0 as expected, 1 differences, 2 usage error
   bless   write the manifest from this run (then review the diff)
 
-The manifest tools/verilog/<source>.expected has one line per file: `OUTCOME LIB VIEW PATH [-I DIR | -D NAME]...`, paths relative to the
+The manifest tools/verilog/<source>.expected (tools/verilog/designs/<source>.expected for a DESIGNS source) has one line per file: `OUTCOME LIB VIEW PATH [-I DIR | -D NAME]...`, paths relative to the
 root, in a fixed order. OUTCOME is PASS (no error) or the sorted error codes (EXIT<n> is a nonzero exit without an error
 diagnostic). An encrypted file is recorded at analysis (decision D8 of #776): exit 0 and one notice W4007 located in the file
 itself, written `PASS+W4007` (`PASS+W4007xN` for N notices); a W4007 for an encrypted file it includes does not count. E4001 is
 the error on instantiating such a module, so it never appears at analysis. Other warnings are counted, not compared. The unisims, retarget,
 unimacro, unifast and glbl files of one library and view go in one call (as an integration analyses a library); if that call
 fails, the files are repeated one by one and a failure of the session alone is a DIFF. IP and protected files are one call each,
-with the include directories the manifest lists.
+with the include directories the manifest lists. A DESIGNS manifest has `project` lines: PATH is a comma separated list of globs (a leading
+`!` excludes), all files in one call. Every row of a DESIGNS manifest that is not PASS needs a line `NAME PATH CLASS note` in designs/notes
+(ctx: needs a define, a generated file or is an include fragment; sv: SystemVerilog; ext: an extension of another tool; src: the source is invalid; tpl: a template; gap, bug).
 """
 import argparse, collections, concurrent.futures as cf, os, re, shlex, sys, tempfile
 from pathlib import Path
@@ -198,8 +203,72 @@ def enum_cells(root):
     return ents, findings
 
 
+# Open-source designs and cell models (all fetched by tools/fetch-corpus.sh). Each source: cache directory, globs of the files analysed
+# alone, projects (label, globs, include directories, defines) analysed in one call, and defines for every call of the source.
+DESIGNS = {
+    "picorv32": ("picorv32", ["**/*.v"], [("core", ["picorv32.v"], [], [])]),
+    "verilog-ethernet": ("verilog-ethernet", ["rtl/*.v"], [("rtl", ["rtl/*.v", "!rtl/ssio_sdr_in_diff.v"], ["rtl"], [])]),
+    "verilog-axi": ("verilog-axi", ["rtl/*.v"], [("rtl", ["rtl/*.v"], ["rtl"], [])]),
+    "verilog-axis": ("verilog-axis", ["rtl/*.v"], [("rtl", ["rtl/*.v"], ["rtl"], [])]),
+    "verilog-pcie": ("verilog-pcie", ["rtl/*.v"], [("rtl", ["rtl/*.v"], ["rtl"], [])]),
+    "verilog-uart": ("verilog-uart", ["rtl/*.v"], [("rtl", ["rtl/*.v"], ["rtl"], [])]),
+    "wb2axip": ("wb2axip", ["rtl/*.v"], [("rtl", ["rtl/*.v", "!rtl/axi2axi3.v"], ["rtl"], [])]),
+    "zipcpu": ("zipcpu", ["rtl/**/*.v"], []),
+    "darkriscv": ("darkriscv", ["rtl/**/*.v"], [("rtl", ["rtl/*.v"], ["rtl"], [])]),
+    "serv": ("serv", ["rtl/*.v"], [("rtl", ["rtl/*.v"], ["rtl"], [])]),
+    "ultraembedded-riscv": ("ultraembedded-riscv", ["**/*.v"], [("core", ["core/**/*.v"], ["core/riscv"], [])]),
+    "ultraembedded-usb-host": ("ultraembedded-usb-host", ["src_v/*.v"], [("src", ["src_v/*.v"], ["src_v"], [])]),
+    "openmsp430": ("openmsp430", ["core/rtl/verilog/**/*.v"], [("rtl", ["core/rtl/verilog/*.v", "core/rtl/verilog/periph/*.v"], ["core/rtl/verilog", "core/rtl/verilog/periph"], [])]),
+    "opencores-ethmac": ("opencores-ethmac", ["rtl/verilog/*.v"], [("rtl", ["rtl/verilog/*.v"], ["rtl/verilog"], [])]),
+    "opencores-wb-dma": ("opencores-wb-dma", ["rtl/verilog/*.v"], [("rtl", ["rtl/verilog/*.v"], ["rtl/verilog"], [])]),
+    "dawsonjon-fpu": ("dawsonjon-fpu", ["*/*.v"], []),
+    "xilinx-unisim-lib": ("xilinx-unisim-lib", ["verilog/**/*.v"], [("unisims", ["verilog/src/unisims/*.v"], ["verilog/src/unisims"], [])]),
+    "sky130-fd-sc-hd": ("sky130-fd-sc-hd", ["cells/**/*.v", "models/**/*.v"], [], ["UNIT_DELAY=#1"]),  # the delay of the functional models is the user's
+    "f4pga-arch-defs": ("f4pga-arch-defs", ["**/*.v"], []),
+    "yosys-tests": ("yosys-tests", ["tests/**/*.v"], []),
+}
+
+
+def design_root(sub, arg):
+    cands = [arg, os.environ.get("YAVS_CORPUS"), "~/.cache/rsim-corpus", "~/.cache/rsim-corpora"]
+    return next((Path(c).expanduser() / sub for c in cands if c and (Path(c).expanduser() / sub).is_dir()), None)
+
+
+def enum_design(name):
+    def enum(root):
+        _, globs, projects, *dd = DESIGNS[name]
+        dd = dd[0] if dd else []
+        ents, findings = [], collections.defaultdict(list)
+        index = collections.defaultdict(list)
+        for p in root.rglob("*"):
+            if p.suffix in (".vh", ".h", ".v", ".inc") and ".git" not in p.parts:
+                index[p.name].append(p.parent)
+        files = sorted({p for g in globs for p in root.glob(g) if p.is_file() and ".git" not in p.parts})
+        for p in files:
+            t = rd(p)
+            want = classify(t)
+            ents.append(dict(cat="files", lib="work", view="default", path=str(p.relative_to(root)), want="PASS" if want == ENC else want,
+                             inc=[str(d.relative_to(root)) for d in include_dirs(root, p, index, t, {p}, findings)], defs=dd, batch=False))
+        for label, pg, inc, defs in projects:
+            ents.append(dict(cat="project", lib="work", view="project", path=",".join(pg), want="PASS", inc=inc, defs=defs + dd, batch=False))
+        return ents, findings
+    return enum
+
+
+def expand(root, e):
+    """The files of an entry: its path, or for a project the sorted union of its globs less the `!` ones."""
+    if e["view"] != "project":
+        return [root / e["path"]]
+    gs = e["path"].split(",")
+    got = {p for g in gs if not g.startswith("!") for p in root.glob(g) if p.is_file()}
+    got -= {p for g in gs if g.startswith("!") for p in root.glob(g[1:])}
+    return sorted(got)
+
+
 SOURCES = {"vendor": (vendor_root, enum_vendor, "the AMD/Xilinx 2026.1 install was not found (this gate is local only); set $YAVS_VENDOR_DATA to <install>/2026.1/data or pass --root"),
            "cells": (cells_root, enum_cells, "the yosys cell models were not found; run tools/fetch-corpus.sh (or pass --root with the corpus cache)")}
+for _n, (_sub, _g, _p, *_) in DESIGNS.items():
+    SOURCES[_n] = (lambda arg, _sub=_sub: design_root(_sub, arg), enum_design(_n), f"{_sub} was not found; run tools/fetch-corpus.sh (or pass --root with the corpus cache)")
 
 
 # ---- manifest
@@ -237,8 +306,8 @@ def outcome(errs, rc, notices=0):
 def run_group(a, yavs, root, tmp, tag, ents):
     """Analyze the entries of one call; returns ({entry index: outcome}, warnings, text of a failed session or '')."""
     e0 = ents[0][1]
-    args = VIEWS[e0["view"]] + [x for d in e0["inc"] for x in ("-I", str(root / d))] + [x for d in e0.get("defs", []) for x in ("-D", d)]
-    files = [root / e["path"] for _, e in ents]
+    args = VIEWS.get(e0["view"], []) + [x for d in e0["inc"] for x in ("-I", str(root / d))] + [x for d in e0.get("defs", []) for x in ("-D", d)]
+    files = [f for _, e in ents for f in expand(root, e)]
     rc, diags, text = vcommon.analyze(yavs, os.path.join(tmp, tag), e0["lib"], args, files, root, not a.no_wrap)
     by = collections.defaultdict(list)
     for lvl, code, f, *_ in diags:  # a one-file call owns every diagnostic, also those in files it includes
@@ -255,7 +324,7 @@ def run_group(a, yavs, root, tmp, tag, ents):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("source", choices=SOURCES)
+    ap.add_argument("source", choices=list(SOURCES) + ["open"])
     ap.add_argument("action", nargs="?", default="check", choices=["list", "gen", "check", "bless"])
     ap.add_argument("--root")
     ap.add_argument("--yavs")
@@ -264,12 +333,32 @@ def main():
     ap.add_argument("-j", type=int, default=4)
     ap.add_argument("--no-wrap", action="store_true")
     a = ap.parse_args()
+    if a.source == "open":
+        if a.action not in ("list", "check") or a.manifest or a.root or a.only:
+            vcommon.die("corpus.py", "open takes only `list` or `check`, -j, --yavs and --no-wrap")
+        names = ["cells"] + list(DESIGNS)
+        return max(run(argparse.Namespace(**{**vars(a), "source": n})) for n in names)
+    return run(a)
+
+
+def notes_of():
+    """designs/notes: {(source, path): class}."""
+    p = HERE / "designs/notes"
+    out = {}
+    for ln in p.read_text().splitlines() if p.exists() else []:
+        if ln.strip() and not ln.startswith("#"):
+            src, path, cls, *_ = ln.split(None, 3)
+            out[(src, path)] = cls
+    return out
+
+
+def run(a):
     locate, enum, hint = SOURCES[a.source]
     root = locate(a.root)
     if root is None:
         print(f"{a.source}: skipped, {hint}")
         return 0
-    manifest = a.manifest or HERE / f"{a.source}.expected"
+    manifest = a.manifest or (HERE / "designs" if a.source in DESIGNS else HERE) / f"{a.source}.expected"
     ents, findings = enum(root)
     cats = collections.Counter(e["cat"] + ("/" + e["view"] if e["cat"] in ("unisims", "retarget", "unimacro", "unifast", "glbl") else "") for e in ents)
     print(f"{a.source}: root {root}")
@@ -336,6 +425,9 @@ def main():
         write_manifest(manifest, a.source, ents, [got[i] for i in range(len(ents))])
         print(f"wrote {manifest}")
         bad = [b for b in bad if b.startswith("unattributed")]
+    if a.source in DESIGNS and a.action == "check":  # every file that is not clean says why (designs/notes)
+        notes = notes_of()
+        bad += [f"{e['path']}: {got[i]} and no line in designs/notes" for i, e in sel if got[i] not in ("PASS", ENC) and (a.source, e["path"]) not in notes]
     out = collections.Counter(got.values())
     print(f"{len(sel)} files, {warns} warnings; outcomes: " + ", ".join(f"{k} {v}" for k, v in sorted(out.items())))
     for b in bad[:60]:

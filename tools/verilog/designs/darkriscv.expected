@@ -1,0 +1,16 @@
+# tools/verilog/corpus.py darkriscv: expected outcome per file, `OUTCOME LIB VIEW PATH [-I DIR | -D NAME]...`; paths only, no vendor content.
+PASS work default rtl/darkbridge.v -I rtl
+PASS work default rtl/darkcache.v -I rtl
+PASS work default rtl/darkio.v -I rtl
+PASS work default rtl/darkmac.v -I rtl
+PASS work default rtl/darkpll.v -I rtl
+PASS work default rtl/darkram.v -I rtl
+PASS work default rtl/darkriscv.v -I rtl
+PASS work default rtl/darksocv.v -I rtl
+PASS work default rtl/darkspi.v -I rtl
+PASS work default rtl/darkuart.v -I rtl
+PASS work default rtl/lib/sdram/mt48lc16m16a2_ctrl.v -I rtl/lib/sdram
+PASS work default rtl/lib/spi/lis3dh_stub.v -I rtl/lib/spi
+PASS work default rtl/lib/spi/spi_master.v -I rtl/lib/spi
+PASS work default rtl/lib/spi/spi_master_bb.v -I rtl/lib/spi
+PASS work project 'rtl/*.v' -I rtl

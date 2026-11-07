@@ -1,0 +1,20 @@
+# tools/verilog/corpus.py serv: expected outcome per file, `OUTCOME LIB VIEW PATH [-I DIR | -D NAME]...`; paths only, no vendor content.
+PASS work default rtl/serv_aligner.v -I rtl
+PASS work default rtl/serv_alu.v -I rtl
+PASS work default rtl/serv_bufreg.v -I rtl
+PASS work default rtl/serv_bufreg2.v -I rtl
+PASS work default rtl/serv_compdec.v -I rtl
+PASS work default rtl/serv_csr.v -I rtl
+PASS work default rtl/serv_ctrl.v -I rtl
+PASS work default rtl/serv_debug.v -I rtl
+PASS work default rtl/serv_decode.v -I rtl
+PASS work default rtl/serv_immdec.v -I rtl
+PASS work default rtl/serv_mem_if.v -I rtl
+PASS work default rtl/serv_rf_if.v -I rtl
+PASS work default rtl/serv_rf_ram.v -I rtl
+PASS work default rtl/serv_rf_ram_if.v -I rtl
+PASS work default rtl/serv_rf_top.v -I rtl
+PASS work default rtl/serv_state.v -I rtl
+PASS work default rtl/serv_synth_wrapper.v -I rtl
+PASS work default rtl/serv_top.v -I rtl
+PASS work project 'rtl/*.v' -I rtl

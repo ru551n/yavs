@@ -1,0 +1,5 @@
+# tools/verilog/corpus.py verilog-uart: expected outcome per file, `OUTCOME LIB VIEW PATH [-I DIR | -D NAME]...`; paths only, no vendor content.
+PASS work default rtl/uart.v -I rtl
+PASS work default rtl/uart_rx.v -I rtl
+PASS work default rtl/uart_tx.v -I rtl
+PASS work project 'rtl/*.v' -I rtl

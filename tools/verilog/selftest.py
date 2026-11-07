@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Self-test of the Verilog test tools' own paths: the static check, a failing analyzer, and the skip notices.
+"""Self-test of the Verilog test tools' own paths: the static check, a failing analyzer, the skip notices and the ivtest table.
 
   python3 -I tools/verilog/selftest.py
 
@@ -29,6 +29,10 @@ def main():
     with tempfile.TemporaryDirectory(prefix="yavs-verilog-selftest-") as tmp:
         ok &= run(co + ["vendor", "--root", str(Path(tmp) / "none")], env={"HOME": tmp, "YAVS_VENDOR_DATA": ""}, want_text=["skipped"])
         ok &= run(co + ["cells", "--root", str(Path(tmp) / "none")], env={"HOME": tmp, "YAVS_CORPUS": ""}, want_text=["skipped"])
+        ok &= run(co + ["open"], env={"HOME": tmp, "YAVS_CORPUS": ""}, want_text=["skipped"])
+        ok &= run(py + [str(HERE / "ivtest.py")], env={"HOME": tmp, "YAVS_CORPUS": ""}, want_text=["skipped"])
+    # the ivtest manifest and its triage agree without a checkout
+    ok &= run(py + [str(HERE / "ivtest.py"), "table"], want_text=["all"])
     print("selftest", "passed" if ok else "FAILED")
     return 0 if ok else 1
 

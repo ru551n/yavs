@@ -1,5 +1,21 @@
 # Decisions
 
+## Verilog front end on public corpora (M0 of #776, 2026-11-07)
+
+- **Corpora:** `tools/verilog/corpus.py open` runs the yosys cell models and 20 further fetched sources (open-source cores and
+  cell-model libraries, `DESIGNS` in `corpus.py`, manifests in `tools/verilog/designs/`), and `tools/verilog/ivtest.py` the regress
+  lists of the ivtest suite (GPL-2.0, fetched, never committed) with the flags of each list line. Both are CI-visible (the `corpus`
+  job). Files that are not `PASS` carry a class in `designs/notes` or `ivtest.triage`; a `bug` or `gap` class is an issue.
+- **Compile-error tests are not a conformance measure for M0:** most "must fail to compile" tests of the suite need types, binding,
+  widths or constant evaluation (M1), or are checks of one tool (zero-delay loops, synthesis switches), so `ivtest.triage` classes a
+  test where analysis passes `sem`, `ext` or `opt`, and the table counts them apart from the agreeing ones.
+- **Accepted although the standard says no (policy rule 2, `docs/design/lrm-checks.md` V15 to V17; maintainer to confirm):** comments and
+  line ends in the formal arguments of a macro, a line comment ending in a backslash inside a macro text, a value on an input port
+  (`W4017`, the ice40 cell models need it), the fault-simulation directives (`W4016`). Not accepted: `` `delay_mode_* `` and the default decay and
+  trireg strength directives (`E4010`, they change results).
+- **Still rejected, others accept:** an ANSI port declared again in the body (`E4203`, V6: the text is clear), `endif WORD`, `input reg`
+  in a non-ANSI redeclaration (`E4202`), a function with an output argument (SystemVerilog), `assign` to a bit of a variable (clause 9.3).
+
 ## Verilog test material and corpus gate (M0 of #776, 2026-11-07)
 
 - **Fixtures:** hand-written Verilog files under `tests/verilog/ci` with one manifest `fixtures.expected` (status, arguments, exact

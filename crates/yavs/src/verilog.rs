@@ -295,6 +295,9 @@ mod tests {
             encrypted,
             context_digest: "ctx".into(),
             included_files: vec![inc.clone()],
+            timescale: yavs_verilog::Timescale::DEFAULT,
+            celldefine: false,
+            default_nettype: yavs_verilog::Nettype::Wire,
         };
         let diag = |code: &'static str, file: Option<usize>| Diag {
             code,
@@ -317,6 +320,7 @@ mod tests {
                 diag("E4005", Some(2)),
                 diag("E4004", None),
             ],
+            ..Default::default()
         };
         // The call: a VHDL file between the two Verilog files.
         let files = vec![a, "x.vhd".into(), b];
@@ -354,6 +358,7 @@ mod tests {
                 files: vec![files[0].clone(), files[2].clone(), inc.clone()],
                 units: vec![unit("A", 0, false)],
                 diagnostics: vec![],
+                ..Default::default()
             },
             &other,
         );

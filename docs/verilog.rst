@@ -25,6 +25,9 @@ together with VHDL files, in one call and one library. The language follows the 
 
     yavs analyze --work=cells:build/cells -I include -D SIM defs.vh lut.v ff.v
 
+The call above prints ``W4006`` for each module of files that have no ``timescale`` directive, and
+records ``LUT2`` and ``ff`` in the library ``cells``.
+
 * Macros, ``timescale`` and ``default_nettype`` persist from one file of the call to the next, as
   the standard describes for files compiled together. Give the files in the order they depend on
   each other.
@@ -50,6 +53,8 @@ Protected IP
 yavs never decrypts protected (IEEE 1735) Verilog. A file with a protected module body is analyzed
 with warning ``W4007`` (one per file), and the module is recorded under its name, so a whole directory
 of vendor files analyzes. Using the module in a design is error ``E4001``, which names the instance.
+Plain text between ``pragma protect begin`` and ``end`` (marked for encryption but not encrypted) is
+compiled, with warning ``W4009`` and the markers ignored.
 
 SystemVerilog
 -------------

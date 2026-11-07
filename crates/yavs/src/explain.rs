@@ -544,34 +544,18 @@ const EXPLAIN: &[(&str, &str)] = &[
         "W3102",
         "A process has no wait statement, no sensitivity list and calls no procedure that waits. It never gives control back to the simulator, so time cannot advance and the run does not end by itself; it can only end through `stop` or `finish`, a failed assertion or an error. A process that should run once ends with `wait;`.",
     ),
-    // yavs-verilog: preprocessor and lexer (E4001-E4099)
+    // yavs-verilog: its other codes are registered by the crate itself (`yavs_verilog::CODES`)
     (
         "E4001",
         "A design instantiates a Verilog module whose body is encrypted (an IEEE 1735 protected envelope, `` `pragma protect begin_protected `` or the older `` `protect `` forms), so it cannot be simulated. yavs never decrypts protected IP. Analysis records such a module by its name (warning `W4007`), so a library of vendor files analyses; the error comes when something instantiates it, and names the instance. Simulate the vendor's unencrypted model instead, or the block with a tool that holds the vendor's key.",
     ),
     (
-        "E4002",
-        "A file with the extension `.sv` or `.svh` was given. yavs reads Verilog (IEEE 1364-2005) only, so SystemVerilog files are not analyzed. Rewrite the file as Verilog, or pass `--lang=verilog` if it holds plain Verilog under another extension.",
-    ),
-    (
-        "E4003",
-        "A SystemVerilog keyword was used in a Verilog file, as `logic`, `always_comb` or `interface` would be. The message names the keyword. yavs reads Verilog (IEEE 1364-2005) only; use the Verilog form (`reg`, `wire`, `always @*`).",
-    ),
-    (
-        "E4004",
-        "A `` `ifdef ``, `` `ifndef ``, `` `elsif ``, `` `else `` or `` `endif `` directive has no partner: an `` `endif `` without an opening directive, an `` `else `` after an `` `else ``, or a conditional still open at the end of the file.",
-    ),
-    (
-        "E4005",
-        "An `` `include `` names a file that was not found. The message lists the directories searched: the directory of the including file, then those given with `-I`.",
-    ),
-    (
-        "W4006",
-        "A Verilog file has modules before any `` `timescale `` directive. yavs uses 1ns/1ps for them (set it with `--timescale UNIT/PRECISION`), because IEEE 1364-2005 leaves the choice to the tool and delays depend on it.",
-    ),
-    (
         "W4007",
         "A Verilog file holds an encrypted (IEEE 1735 protected) module body, `` `pragma protect begin_protected `` or the older `` `protect `` forms. yavs never decrypts protected IP, so it does not read the encoded block. The module is recorded by its name and ports, so a library of vendor files analyses; a design that instantiates it fails with `E4001`. One warning is given per file. Use `-Wno-W4007` to silence it.",
+    ),
+    (
+        "W4009",
+        "A `` `pragma protect begin `` / `` `pragma protect end `` pair marks plaintext that a tool was to encrypt. The file is not encrypted: yavs ignores the markers and compiles the plaintext between them. One warning is given per file.",
     ),
     (
         "E4500",

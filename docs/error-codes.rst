@@ -615,17 +615,49 @@ Verilog (E4 and W4)
    * - _`E4001`
      - A design instantiates a Verilog module whose body is encrypted (an IEEE 1735 protected envelope, ```pragma protect begin_protected`` or the older ```protect`` forms), so it cannot be simulated.
    * - _`E4002`
-     - A file with the extension ``.sv`` or ``.svh`` was given.
+     - yavs reads Verilog (IEEE 1364-2005) only.
    * - _`E4003`
-     - A SystemVerilog keyword was used in a Verilog file, as ``logic``, ``always_comb`` or ``interface`` would be.
+     - The file uses a construct that exists only in SystemVerilog (IEEE 1800), named in the message.
    * - _`E4004`
-     - A ```ifdef``, ```ifndef``, ```elsif``, ```else`` or ```endif`` directive has no partner: an ```endif`` without an opening directive, an ```else`` after an ```else``, or a conditional still open at the end of the file.
+     - A ``ifdef,``ifndef, ``elsif,``else or ``endif does not match: a missing``endif at the end of the file, an ``else or``endif without an opening ``ifdef, or an``elsif/``else after an``else.
    * - _`E4005`
-     - An ```include`` names a file that was not found.
+     - The file named by ``include was not found in the directory of the including file or in any -I directory. The message lists the directories searched.``
    * - _`W4006`
-     - A Verilog file has modules before any ```timescale`` directive.
+     - The module has no ``timescale directive before it and none came from an earlier file, so the default (1ns/1ps, or --timescale) applies. IEEE 1364-2005 leaves this to the tool, and delays in the module scale with the default.``
+   * - _`E4007`
+     - A text macro is used with ``NAME but no``define NAME is in force at that point.
    * - _`W4007`
      - A Verilog file holds an encrypted (IEEE 1735 protected) module body, ```pragma protect begin_protected`` or the older ```protect`` forms.
+   * - _`E4008`
+     - A ``define has no name or a bad formal argument list, or a macro call has the wrong number of arguments or an unterminated argument list.``
+   * - _`E4009`
+     - A compiler directive has an operand that is missing or not valid, for example ``timescale 3ns/1ps (the magnitude must be 1, 10 or 100) or a``default_nettype that is not a net type.
+   * - _`W4009`
+     - A ```pragma protect begin`` / ```pragma protect end`` pair marks plaintext that a tool was to encrypt.
+   * - _`E4010`
+     - The directive is outside IEEE 1364-2005 as yavs supports it (for example ``uselib, or``config library maps).
+   * - _`E4011`
+     - Macro expansion or ``include nesting exceeded its limit; a macro that expands to itself, or files that include each other, are the usual cause.``
+   * - _`E4012`
+     - The source file could not be opened or read, or its extension is not a Verilog one and --lang=verilog was not given.
+   * - _`W4013`
+     - ``pragma protect begin/end or``protect/``endprotect mark plaintext that a tool would encrypt. The markers are ignored and the plaintext is compiled.``
+   * - _`E4014`
+     - A character, string, comment, number or identifier is malformed: an unterminated string or block comment, an illegal character, or a bad numeric literal.
+   * - _`W4015`
+     - The design defines XIL_TIMING and contains timing checks ($setup, $hold, $setuphold, ...).
+   * - _`E4100`
+     - The source does not match the grammar of IEEE 1364-2005 at this point.
+   * - _`E4101`
+     - The construct is legal 1364-2005 but outside what yavs reads, named in the message (for example config blocks and macromodule).
+   * - _`E4200`
+     - Two modules or primitives with the same name are declared in the files of one analysis.
+   * - _`E4201`
+     - An identifier is used in an expression but declared nowhere in the module, and ``default_nettype none is in force, so no implicit net is created (clause 4.5).``
+   * - _`E4202`
+     - A port of a module header with a non-ANSI port list has no direction declaration in the body, or a body declaration names a port the header does not list, or a port is declared twice (clause 12.3).
+   * - _`E4203`
+     - A name is declared twice in the same module scope (clause 12.1.2).
    * - _`E4500`
      - The design reaches Verilog: elaborating and simulating Verilog is not implemented.
 

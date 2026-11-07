@@ -318,7 +318,12 @@ impl Db {
         let DeclKind::Component(c) = &self.decls[comp].kind else {
             return Err(self.ice(at, "instantiate_component of a non-component"));
         };
-        let (cscope, generics, ports) = (c.scope, c.generics.clone(), c.ports.clone());
+        let (cscope, generics, ports, verilog) = (
+            c.scope,
+            c.generics.clone(),
+            c.ports.clone(),
+            c.verilog.clone(),
+        );
         if generics.len() != actuals.len() {
             return Err(self.ice(at, "generic actuals do not match the component's generics"));
         }
@@ -353,6 +358,7 @@ impl Db {
             scope: ncs,
             generics,
             ports,
+            verilog,
         });
         self.generic.components.insert(key, nd);
         Ok(nd)

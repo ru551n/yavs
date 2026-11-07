@@ -202,6 +202,9 @@ impl Db {
         match u {
             ast::InstantiatedUnit::Component(n) => self.component_target(scope, n),
             ast::InstantiatedUnit::Entity { name, arch } => {
+                if let Some(t) = self.verilog_target(scope, name, *arch) {
+                    return t;
+                }
                 let unit = self.entity_unit(scope, name)?;
                 if let Some(a) = arch {
                     self.note_arch(unit, *a);
@@ -413,7 +416,7 @@ impl Db {
     }
 
     /// Whether `lib` has an entity named `key`, without analyzing it.
-    fn has_entity(&self, lib: LibId, key: Symbol) -> bool {
+    pub(super) fn has_entity(&self, lib: LibId, key: Symbol) -> bool {
         let a = self.has_entity_now(lib, key);
         self.note_query(
             crate::units::Query::Entity(self.libs[lib].name.key, key),

@@ -671,7 +671,7 @@ Verilog (E4 and W4)
    * - _`E4501`
      - Elaboration reached a legal IEEE 1364-2005 construct that yavs does not simulate yet; the message names it.
    * - _`E4502`
-     - A ``uwire`` has more than one driver on the same bit (clause 4.6.5); other net types resolve their drivers (clause 4.6.1).
+     - A ``uwire`` net has more than one driver on the same bit (clause 4.6.5).
    * - _`E4503`
      - An ``always`` block has no delay or event control, so it runs again at the same simulation time for ever and time never advances (clause 9.9.2).
    * - _`E4504`
@@ -690,6 +690,10 @@ Verilog (E4 and W4)
      - A port of the VHDL component that binds to a Verilog module has no port of that name in the module (matched exactly, then case-insensitively), or the directions differ, or the widths differ (a VHDL vector maps onto the Verilog vector left to left), or its type is not one Verilog can take (``std_logic``, ``std_ulogic``, ``bit`` and vectors of them, modes ``in`` and ``out``).
    * - _`E4701`
      - A generic of the VHDL component that binds to a Verilog module names no parameter of the module, names a local parameter (which cannot be overridden, clause 12.2), or has a type Verilog cannot take (``integer``, ``real``, ``string``, ``boolean``, ``std_logic``, ``bit`` and their vectors).
+   * - _`E4702`
+     - An ``entity lib.module`` instantiation names a Verilog module and an architecture.
+   * - _`E4703`
+     - ``entity lib.module`` takes the generics and ports of a Verilog module from its declaration, recorded when the file is analyzed.
 
 Internal errors (E9)
 --------------------

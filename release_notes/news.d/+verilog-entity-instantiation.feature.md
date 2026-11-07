@@ -1,0 +1,1 @@
+A Verilog module can be instantiated from VHDL as `entity lib.module`, without a component declaration: its parameters are the generics, its ports `std_logic` and `std_logic_vector` (sized by the generic map where the module's range names a parameter), and the maps are checked against the module.

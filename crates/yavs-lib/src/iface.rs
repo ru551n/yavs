@@ -1,13 +1,12 @@
-//! The VHDL view of a module: what `entity lib.module` in VHDL takes its generics and ports
+//! The VHDL view of a Verilog module: what `entity lib.module` in VHDL takes its generics and ports
 //! from. Analysis records it (parameters at their default values, so ports sized by a parameter
 //! have the width the defaults give) as text in the module's library record, and VHDL analysis
 //! reads that text without the Verilog front end.
 //!
 //! One line per item: `param NAME int 8`, `param NAME real 1.5`, `param NAME str HEX`,
 //! `param NAME vec 4 01xz` (most significant bit first), `port NAME in|out|inout scalar`,
-//! `port NAME in|out|inout MSB LSB`, or the single line `error MESSAGE`.
-
-use crate::Dir;
+//! `port NAME in|out|inout MSB LSB` (with ` ~ EXPR ~ EXPR` after it when the bounds are
+//! expressions of integer parameters, see [`IfExpr`]), or the single line `error MESSAGE`.
 
 /// The default value of a parameter, which also gives the type of its VHDL generic.
 #[derive(Clone, Debug, PartialEq)]
@@ -27,12 +26,102 @@ pub struct IfParam {
     pub value: IfValue,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IfDir {
+    In,
+    Out,
+    Inout,
+}
+
+/// A bound of a port range as an expression of integer parameters, in the subset VHDL has too.
+#[derive(Clone, Debug, PartialEq)]
+pub enum IfExpr {
+    Num(i64),
+    Param(String),
+    Neg(Box<IfExpr>),
+    /// `+ - * / % **` (`%` is VHDL `rem`).
+    Bin(char, Box<IfExpr>, Box<IfExpr>),
+}
+
+impl IfExpr {
+    /// Whether a parameter occurs in it.
+    pub fn has_param(&self) -> bool {
+        match self {
+            IfExpr::Num(_) => false,
+            IfExpr::Param(_) => true,
+            IfExpr::Neg(a) => a.has_param(),
+            IfExpr::Bin(_, a, b) => a.has_param() || b.has_param(),
+        }
+    }
+
+    fn encode(&self, o: &mut String) {
+        match self {
+            IfExpr::Num(n) => o.push_str(&n.to_string()),
+            IfExpr::Param(p) => o.push_str(p),
+            IfExpr::Neg(a) => {
+                o.push_str("(neg ");
+                a.encode(o);
+                o.push(')');
+            }
+            IfExpr::Bin(op, a, b) => {
+                o.push('(');
+                // `**` is written `^`.
+                o.push(if *op == 'p' { '^' } else { *op });
+                o.push(' ');
+                a.encode(o);
+                o.push(' ');
+                b.encode(o);
+                o.push(')');
+            }
+        }
+    }
+
+    /// The expression at the start of `t` and the rest of `t`.
+    fn decode(t: &str) -> Option<(IfExpr, &str)> {
+        let Some(inner) = t.strip_prefix('(') else {
+            let end = t.find([' ', ')']).unwrap_or(t.len());
+            let (w, rest) = t.split_at(end);
+            return match w.parse() {
+                Ok(n) => Some((IfExpr::Num(n), rest)),
+                Err(_) if !w.is_empty() => Some((IfExpr::Param(w.to_string()), rest)),
+                Err(_) => None,
+            };
+        };
+        if let Some(a) = inner.strip_prefix("neg ") {
+            let (a, rest) = IfExpr::decode(a)?;
+            return Some((IfExpr::Neg(Box::new(a)), rest.strip_prefix(')')?));
+        }
+        let op = inner.chars().next()?;
+        let op = match op {
+            '+' | '-' | '*' | '/' | '%' => op,
+            '^' => 'p',
+            _ => return None,
+        };
+        let (a, rest) = IfExpr::decode(inner.get(2..)?)?;
+        let (b, rest) = IfExpr::decode(rest.strip_prefix(' ')?)?;
+        Some((
+            IfExpr::Bin(op, Box::new(a), Box::new(b)),
+            rest.strip_prefix(')')?,
+        ))
+    }
+}
+
+/// The range of a vector port.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IfRange {
+    /// The bounds with the parameters at their defaults.
+    pub msb: i64,
+    pub lsb: i64,
+    /// The bounds as expressions, when they can be.
+    pub exprs: Option<(IfExpr, IfExpr)>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct IfPort {
     pub name: String,
-    pub dir: Dir,
-    /// `(msb, lsb)` as declared; `None` for a scalar.
-    pub range: Option<(i64, i64)>,
+    pub dir: IfDir,
+    /// `None` for a scalar.
+    pub range: Option<IfRange>,
 }
 
 /// A module's parameters and ports in declaration order, or why it has no VHDL view.
@@ -72,13 +161,22 @@ impl Interface {
         }
         for p in &self.ports {
             let dir = match p.dir {
-                Dir::Input => "in",
-                Dir::Output => "out",
-                Dir::Inout => "inout",
+                IfDir::In => "in",
+                IfDir::Out => "out",
+                IfDir::Inout => "inout",
             };
-            match p.range {
+            match &p.range {
                 None => o.push_str(&format!("port {} {dir} scalar\n", p.name)),
-                Some((m, l)) => o.push_str(&format!("port {} {dir} {m} {l}\n", p.name)),
+                Some(r) => {
+                    o.push_str(&format!("port {} {dir} {} {}", p.name, r.msb, r.lsb));
+                    if let Some((m, l)) = &r.exprs {
+                        o.push_str(" ~ ");
+                        m.encode(&mut o);
+                        o.push_str(" ~ ");
+                        l.encode(&mut o);
+                    }
+                    o.push('\n');
+                }
             }
         }
         o
@@ -91,6 +189,10 @@ impl Interface {
         }
         let mut out = Interface::default();
         for line in text.lines() {
+            let (line, exprs) = match line.split_once(" ~ ") {
+                Some((l, e)) => (l, Some(e)),
+                None => (line, None),
+            };
             let w: Vec<&str> = line.split(' ').collect();
             match w.as_slice() {
                 ["param", name, "int", v] => out.params.push(IfParam {
@@ -116,14 +218,25 @@ impl Interface {
                 }),
                 ["port", name, dir, range @ ..] => {
                     let dir = match *dir {
-                        "in" => Dir::Input,
-                        "out" => Dir::Output,
-                        "inout" => Dir::Inout,
+                        "in" => IfDir::In,
+                        "out" => IfDir::Out,
+                        "inout" => IfDir::Inout,
                         _ => return None,
                     };
                     let range = match range {
                         ["scalar"] => None,
-                        [m, l] => Some((m.parse().ok()?, l.parse().ok()?)),
+                        [m, l] => Some(IfRange {
+                            msb: m.parse().ok()?,
+                            lsb: l.parse().ok()?,
+                            exprs: match exprs {
+                                None => None,
+                                Some(e) => {
+                                    let (m, rest) = IfExpr::decode(e)?;
+                                    let (l, rest) = IfExpr::decode(rest.strip_prefix(" ~ ")?)?;
+                                    rest.is_empty().then_some((m, l))
+                                }
+                            },
+                        }),
                         _ => return None,
                     };
                     out.ports.push(IfPort {
@@ -167,18 +280,37 @@ mod tests {
             ports: vec![
                 IfPort {
                     name: "a".into(),
-                    dir: Dir::Input,
+                    dir: IfDir::In,
                     range: None,
                 },
                 IfPort {
                     name: "q".into(),
-                    dir: Dir::Output,
-                    range: Some((0, 7)),
+                    dir: IfDir::Out,
+                    range: Some(IfRange {
+                        msb: 0,
+                        lsb: 7,
+                        exprs: None,
+                    }),
                 },
                 IfPort {
                     name: "io".into(),
-                    dir: Dir::Inout,
-                    range: Some((7, 0)),
+                    dir: IfDir::Inout,
+                    range: Some(IfRange {
+                        msb: 7,
+                        lsb: 0,
+                        exprs: Some((
+                            IfExpr::Bin(
+                                '-',
+                                Box::new(IfExpr::Bin(
+                                    'p',
+                                    Box::new(IfExpr::Param("W".into())),
+                                    Box::new(IfExpr::Num(2)),
+                                )),
+                                Box::new(IfExpr::Neg(Box::new(IfExpr::Num(1)))),
+                            ),
+                            IfExpr::Num(0),
+                        )),
+                    }),
                 },
             ],
             error: None,

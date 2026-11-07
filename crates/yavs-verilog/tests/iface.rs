@@ -1,7 +1,8 @@
 //! The VHDL view of a module (`yavs_verilog::interface`): parameters at their defaults, ports with
 //! the widths those give, and the reasons a module has no view.
 
-use yavs_verilog::{Interface, Options, ast, interface, parse_str};
+use yavs_lib::Interface;
+use yavs_verilog::{Options, ast, interface, parse_str};
 
 fn view(src: &str) -> Interface {
     let decls = parse_str(src, &Options::default()).expect("parses");
@@ -27,7 +28,7 @@ fn parameters_and_ports_at_their_defaults() {
     assert_eq!(
         i.encode(),
         "param W int 8\nparam V vec 4 10x1\nparam S str 54525545\nparam R real 1.5\nparam N int -3\n\
-         port clk in scalar\nport a in 7 0\nport q out 0 2\nport io inout 1 0\n"
+         port clk in scalar\nport a in 7 0 ~ (- W 1) ~ 0\nport q out 0 2\nport io inout 1 0\n"
     );
     assert_eq!(Interface::decode(&i.encode()), Some(i));
 }
@@ -36,7 +37,10 @@ fn parameters_and_ports_at_their_defaults() {
 fn non_ansi_ports_take_their_range_from_the_body() {
     let i =
         view("module m (a, q); parameter W = 4; input [W-1:0] a; output q; reg [1:0] q; endmodule");
-    assert_eq!(i.encode(), "param W int 4\nport a in 3 0\nport q out 1 0\n");
+    assert_eq!(
+        i.encode(),
+        "param W int 4\nport a in 3 0 ~ (- W 1) ~ 0\nport q out 1 0\n"
+    );
 }
 
 #[test]

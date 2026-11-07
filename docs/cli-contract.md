@@ -149,7 +149,9 @@ directly (`docs/design/vhdl-93.md`).
   Verilog file, the state of the preprocessor it was analyzed under and the files it included with their
   hashes, and per unit its setup (the options and the preprocessor state its file was read under), which
   `elab` and `run` use to read the file again when a component binds to the module; a Verilog file or an
-  included file that changed since is `E4508` (exit 2).
+  included file that changed since is `E4508` (exit 2). The record also holds the module's VHDL view
+  (`iface`), which VHDL analysis reads for `entity lib.module`; the library named in such an instantiation is used
+  as it is mapped, `-L` is not needed for it.
 - A missing or empty directory is a valid empty library. `analyze` creates the
   directory (and its parents) on first use. The test runner does not run an init command;
   it only creates the parent of the library directory. This holds for every library, the `--work`

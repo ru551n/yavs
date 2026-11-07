@@ -2353,6 +2353,7 @@ dependencies = [
  "proptest",
  "yavs-diag",
  "yavs-kernel",
+ "yavs-lib",
  "yavs-logic",
 ]
 

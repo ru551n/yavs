@@ -368,6 +368,10 @@ pub struct Db {
     /// The entries read from the store in this session (`units.rs` `EntryCache`).
     #[serde(skip)]
     pub(crate) entry_cache: crate::units::EntryCache,
+    /// Verilog modules analysed in this session, by library key: (name as written, interface
+    /// text). `entity lib.module` finds them before the library's index (`unit/module.rs`).
+    #[serde(skip)]
+    pub(crate) verilog_modules: std::collections::HashMap<Symbol, Vec<(String, Option<String>)>>,
 }
 
 fn session_owner() -> u32 {
@@ -1057,6 +1061,7 @@ impl Db {
             errors: 0,
             loads: Vec::new(),
             entry_cache: Default::default(),
+            verilog_modules: Default::default(),
             file_owner: Vec::new(),
             frames: Vec::new(),
             query_log: Default::default(),

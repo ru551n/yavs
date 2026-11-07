@@ -240,4 +240,14 @@ pub(crate) const TABLE: &[CodeInfo] = &[
         "VHDL generic does not match a Verilog parameter",
         "A generic of the VHDL component that binds to a Verilog module names no parameter of the module, names a local parameter (which cannot be overridden, clause 12.2), or has a type Verilog cannot take (`integer`, `real`, `string`, `boolean`, `std_logic`, `bit` and their vectors)."
     ),
+    code!(
+        "E4702",
+        "architecture named for a Verilog module",
+        "An `entity lib.module` instantiation names a Verilog module and an architecture. A module has none; write `entity lib.module`."
+    ),
+    code!(
+        "E4703",
+        "Verilog module has no VHDL view",
+        "`entity lib.module` takes the generics and ports of a Verilog module from its declaration, recorded when the file is analyzed. The module has none: its header has a construct VHDL cannot take (a real port, a port expression, an encrypted body), or its library was written without it. The message says which; instantiate the module through a component declaration of your own, or analyze the Verilog file again."
+    ),
 ];

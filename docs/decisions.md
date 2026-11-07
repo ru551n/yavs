@@ -35,6 +35,26 @@
 - **Codes:** `E4501` (construct not implemented, naming it), `E4502` to `E4509`, `E4700`, `E4701` in `yavs_verilog::CODES`;
   `E0142` (`-L` library not mapped) in the CLI's table.
 
+## `entity lib.module` of a Verilog module (maintainer ruling, step C of #776, 2026-11-07)
+
+- **A component made from the module's recorded view.** Analysis of a Verilog file evaluates each module's parameters at their
+  defaults and its ports once (`yavs_verilog::interface`) and keeps the text in the unit record (`iface`, library format 7).
+  VHDL analysis (`yavs-sem` `unit/module.rs`) declares from it a component in a region of its own below the instance and
+  types the instance as that component, so generic and port maps get every check and every form of actual a component
+  has (expressions, slices, `open`, conversions). No VHDL declaration exists for the module outside that instance.
+- **Types.** Generics: `integer` (a plain integer default), `real`, `string` (a string default), else `std_logic_vector`
+  of the default's width (the rules of component binding read them back the same way). Ports: `std_logic`, or
+  `std_logic_vector` with the module's bounds and direction. A bound that is an expression of integer parameters in the
+  subset VHDL has too (`+ - * / % **`, a `localparam` of them) is written as that expression of the generics, so
+  `generic map (WIDTH => 8)` sizes `q`; any other bound has its value for the defaults. Ceiling: a generic map that changes
+  such a bound is the VHDL element-count mismatch, not a Verilog message.
+- **Names.** The library in the name is that library (`work` or mapped), `-L` is not used for it; the module is looked up
+  exactly, then by the unique module differing in case (D5), several are `E4509`; a VHDL entity of that name wins. An
+  architecture is `E4702`; a module without a view is `E4703`. Query `Module` and `Db::note_verilog_modules` keep the
+  analysed-unit cache and a call that analyses module and testbench together right.
+- **A generic left out keeps the module's default** (not the component's copy of it), so a parameter that depends on another
+  follows an override. Components written by the user pass all their generics, as before.
+
 ## Several drivers per net (maintainer ruling, step C of #776, 2026-11-07)
 
 - **Resolution in the Verilog domain.** `wire` and `tri` nets resolve drivers on the same bit as the truth table of 1364

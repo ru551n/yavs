@@ -11,7 +11,6 @@ mod bridge;
 mod diag;
 mod elab;
 mod exec;
-mod iface;
 mod lex;
 mod parse;
 mod pre;
@@ -23,7 +22,6 @@ pub mod value;
 use std::path::{Path, PathBuf};
 
 pub use elab::{Design, Generic, Instance, ParamValue, PortSpec, interface};
-pub use iface::{IfParam, IfPort, IfValue, Interface};
 pub use pre::Nettype;
 pub use runtime::{Domain, Drive, EVENT_LIMIT, Edge, Exec, NetId, Wait, edge};
 

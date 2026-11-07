@@ -2978,6 +2978,13 @@ than one driver, `E4503` an `always` without timing control, `E4504` to `E4507` 
 `E4700`/`E4701` port and generic mismatches, `E4509` an ambiguous module name, `E0142` an unmapped `-L` library, `E4001` an
 encrypted module, `E4500` a Verilog top level (D11).
 
+`entity lib.module` (2026-11-07): analysis records each module's VHDL view (`yavs_lib::Interface`, `iface` in the unit
+record, from `yavs_verilog::interface`: parameters at their defaults, port ranges, as expressions of integer
+parameters when they are); `yavs-sem` `unit/module.rs` types `entity lib.module` as a component made from it
+(`Component::verilog`), in the same call as the module's analysis (`Db::note_verilog_modules`) or later (the index);
+elaboration binds it to that library and module. Tests: `entity_instantiation_*` in `verilog_run.rs`,
+`crates/yavs-verilog/tests/iface.rs`.
+
 Several drivers per net (2026-11-07): `wire`/`tri` nets resolve drivers on one bit with the kernel's `std_logic`
 resolution (the truth table of 1364 4.6.1), a driver's value is mapped to `0 1 X` (strong), `L H W` (weak, pull) or `Z`
 (highz) by its strength (D13), `tri0`/`tri1` add a pull, `supply0`/`supply1` are constants, `uwire` with two drivers on a
@@ -2989,8 +2996,7 @@ supply, strengths, uwire) and `net_with_several_drivers` in `verilog_run.rs`. An
 Not done (each `E4501` when reached): module instances inside Verilog, generate, gates and UDPs, functions and tasks,
 memories, real variables, `inout` (step D), wired nets and `trireg`, delays on continuous
 assignments and nets, `defparam`, events, `fork`/`join`, `disable`, procedural `assign`/`force`, hierarchical names, `glbl`,
-other system tasks, the elaboration tasks; `entity lib.module` direct instantiation of a Verilog module (needs analysis support,
-left out). Specify blocks are not evaluated (path delays are D9, M3). Verilog runs only in the interpreter-like process code of
+other system tasks, the elaboration tasks. Specify blocks are not evaluated (path delays are D9, M3). Verilog runs only in the interpreter-like process code of
 the domain (no IR, no compiled tier, decision "Verilog execution engine"); internal Verilog nets are not in waves, DAP and VHPI do
 not see Verilog. Ceilings (`ponytail:` in the code): nets are kept as `LogicVec` and converted per read and write, bit by bit
 part writes, `%s` leaves out leading NUL bytes, spans of expression diagnostics point at the first name of the expression.

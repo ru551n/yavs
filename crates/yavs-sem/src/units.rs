@@ -57,7 +57,7 @@ use crate::{LangRev, UnitStore};
 pub type Hash = [u8; 32];
 
 /// The layout of entries; part of every identity.
-const FORMAT: u32 = 16;
+const FORMAT: u32 = 17;
 
 /// Entries of `Db::new` (index 0 of these arenas): the same in every session.
 const BASE: [u32; KINDS] = [0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0];
@@ -130,6 +130,8 @@ pub(crate) enum Query {
     /// The session's `--relaxed`, asked only where it changes the analysis (`Db::relaxed`): an
     /// entry of a unit that never asked serves both settings.
     Relaxed,
+    /// The Verilog module of a library by name: its recorded name and interface.
+    Module(Symbol, Symbol),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2067,7 +2069,10 @@ impl Db {
     /// The answer to `q` in the session as `p` will leave it.
     fn answer(&self, q: &Query, p: &mut Plan) -> Answer {
         let l = match q {
-            Query::Known(l, _) | Query::Entity(l, _) | Query::LastArch(l, _) => *l,
+            Query::Known(l, _)
+            | Query::Entity(l, _)
+            | Query::LastArch(l, _)
+            | Query::Module(l, _) => *l,
             Query::Relaxed => return Answer::Bool(self.opts.relaxed),
         };
         let lid = self.lib_named(l);
@@ -2112,6 +2117,18 @@ impl Db {
                     _ => None,
                 },
             }),
+            Query::Module(_, name) => {
+                let extra = self.verilog_modules.get(&l).map_or(&[][..], Vec::as_slice);
+                let src = match lid {
+                    Some(lid) => Some(&self.libs[lid].source),
+                    None => src,
+                };
+                Answer::Name(crate::unit::module_digest(&crate::unit::find_module_in(
+                    src,
+                    extra,
+                    name.as_str(),
+                )))
+            }
             Query::Relaxed => Answer::Bool(self.opts.relaxed),
         }
     }

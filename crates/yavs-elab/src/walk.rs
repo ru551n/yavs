@@ -2712,11 +2712,20 @@ impl Elab<'_> {
                 self.m.sigs.insert((c, o), x);
             }
         }
+        // `entity lib.module` of a Verilog module: bound to that module, nothing else is looked
+        // for. A generic the instance leaves out keeps the module's own default.
+        if let DeclKind::Component(k) = &self.db.decls[comp].kind
+            && let Some(v) = k.verilog.clone()
+        {
+            let defaulted: Vec<bool> = g.iter().map(|a| matches!(a, A::Default)).collect();
+            let found = (v.0.clone(), v.1.clone(), std::path::PathBuf::new());
+            return self.verilog_inst(c, &cgens, &cports, found, &defaulted, span);
+        }
         let bind = match self.binding(region, st, comp, cfg, span)? {
             // No VHDL entity: a Verilog module of the component's name (#776, D6). An explicit
             // `use open` stays unbound.
             Bind::Unbound => match self.verilog_module(comp, span)? {
-                Some(found) => return self.verilog_inst(c, &cgens, &cports, found, span),
+                Some(found) => return self.verilog_inst(c, &cgens, &cports, found, &[], span),
                 None => None,
             },
             Bind::Open => None,
@@ -2812,6 +2821,7 @@ impl Elab<'_> {
         cgens: &[DeclId],
         cports: &[DeclId],
         (library, module, file): (String, String, std::path::PathBuf),
+        defaulted: &[bool],
         span: Span,
     ) -> R<()> {
         use crate::{VerilogPort, VerilogValue};
@@ -2834,7 +2844,10 @@ impl Elab<'_> {
             }
         };
         let mut generics = Vec::new();
-        for &g in cgens {
+        for (i, &g) in cgens.iter().enumerate() {
+            if defaulted.get(i) == Some(&true) {
+                continue;
+            }
             let decl = &db.decls[g];
             let name = decl.name.to_string();
             let DeclKind::Object(o) = &decl.kind else {

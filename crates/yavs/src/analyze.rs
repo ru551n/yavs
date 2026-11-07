@@ -414,6 +414,14 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
                     }
                     let recorded = match (&hash, batch.records(i)) {
                         (Ok(h), Ok(r)) => {
+                            // VHDL files later in the call find these modules by `entity lib.module`.
+                            db.note_verilog_modules(
+                                work,
+                                r.iter()
+                                    .filter(|u| u.kind == yavs_lib::UnitKind::Module)
+                                    .map(|u| (u.key.clone(), u.iface.clone()))
+                                    .collect(),
+                            );
                             session.record_deferred(VERILOG_STD, Path::new(file), h, stamp, r)
                         }
                         (Err(e), _) => Err(Box::new(Diagnostic::error(

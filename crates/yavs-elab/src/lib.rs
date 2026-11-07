@@ -428,7 +428,8 @@ pub struct VerilogInst {
     pub library: String,
     /// The module's name as written in the library.
     pub module: String,
-    /// The file that defines it.
+    /// The file that defines it, when the library search found it; empty for `entity
+    /// lib.module`, which the library record gives at elaboration.
     pub file: std::path::PathBuf,
     /// The instantiation statement.
     pub span: yavs_diag::Span,

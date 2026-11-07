@@ -353,18 +353,18 @@ pub(crate) fn elaborate(
             )
             .with_help("analyze the Verilog files again"))
         };
-        match std::fs::read(&vi.file) {
+        match std::fs::read(&rec.file) {
             Ok(b) if hash_content(&b) == hash => {}
             Ok(_) => {
                 return Err(fail(stale(format!(
                     "`{}` changed since it was analyzed",
-                    vi.file.display()
+                    rec.file.display()
                 ))));
             }
             Err(err) => {
                 return Err(fail(stale(format!(
                     "`{}` cannot be read: {err}",
-                    vi.file.display()
+                    rec.file.display()
                 ))));
             }
         }
@@ -381,10 +381,10 @@ pub(crate) fn elaborate(
                 vi.library
             ))));
         };
-        let Some(src) = yavs_verilog::read_unit(&vi.file, setup) else {
+        let Some(src) = yavs_verilog::read_unit(&rec.file, setup) else {
             return Err(fail(stale(format!(
                 "the analysis record of `{}` cannot be read",
-                vi.file.display()
+                rec.file.display()
             ))));
         };
         let ids = add_files(sources, &src.files);
@@ -401,7 +401,7 @@ pub(crate) fn elaborate(
         let Some(module) = src.module(&vi.module) else {
             return Err(fail(stale(format!(
                 "`{}` no longer declares `{}`",
-                vi.file.display(),
+                rec.file.display(),
                 vi.module
             ))));
         };

@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use yavs_kernel::{DriverId, LogicVec, SigRef};
+use yavs_lib::{IfDir, IfExpr, IfParam, IfPort, IfRange, IfValue, Interface};
 use yavs_logic::StdULogic;
 
 use crate::ast::{
@@ -320,8 +321,7 @@ impl<'d, 'a> Elab<'d, 'a> {
 
     // ---- the interface ----
 
-    fn interface(&mut self) -> R<crate::Interface> {
-        use crate::{IfParam, IfPort, IfValue, Interface};
+    fn interface(&mut self) -> R<Interface> {
         let m = self.inst.module;
         self.params()?;
         let mut out = Interface::default();
@@ -362,6 +362,54 @@ impl<'d, 'a> Elab<'d, 'a> {
                 });
             }
         }
+        // The declared range of each name, the first declaration that has one, as `declarations`
+        // merges them; parameters an expression may name.
+        let mut ranges: HashMap<&str, &Range> = HashMap::new();
+        let ansi = match &m.ports {
+            Ports::Ansi(v) => v.as_slice(),
+            _ => &[],
+        };
+        let body_ports = m.items.iter().filter_map(|i| match i {
+            Item::Port(p) => Some(p),
+            _ => None,
+        });
+        for p in ansi.iter().chain(body_ports) {
+            if let Some(r) = &p.range {
+                for d in &p.names {
+                    ranges.entry(&d.name.name).or_insert(r);
+                }
+            }
+        }
+        for it in &m.items {
+            let (r, names) = match it {
+                Item::Net(n) => (&n.range, &n.names),
+                Item::Var(v) => (&v.range, &v.names),
+                _ => continue,
+            };
+            if let Some(r) = r {
+                for d in names {
+                    ranges.entry(&d.name.name).or_insert(r);
+                }
+            }
+        }
+        let ints: Vec<&str> = out
+            .params
+            .iter()
+            .filter(|p| matches!(p.value, IfValue::Int(_)))
+            .map(|p| p.name.as_str())
+            .collect();
+        let mut locals: HashMap<&str, &Expr> = HashMap::new();
+        for it in &m.items {
+            if let Item::Param(p) = it
+                && p.local
+                && p.range.is_none()
+                && p.kind.is_none()
+            {
+                for (n, e) in &p.assigns {
+                    locals.insert(&n.name, e);
+                }
+            }
+        }
         let decls = self.declarations()?;
         for n in self.port_names()? {
             let Some(d) = decls.iter().find(|d| d.name.name == n.name) else {
@@ -381,10 +429,27 @@ impl<'d, 'a> Elab<'d, 'a> {
                     )));
                 }
             };
+            let range = d.range.map(|(msb, lsb)| IfRange {
+                msb,
+                lsb,
+                exprs: ranges
+                    .get(n.name.as_str())
+                    .and_then(|r| {
+                        Some((
+                            iexpr(&r.msb, &ints, &locals, 0)?,
+                            iexpr(&r.lsb, &ints, &locals, 0)?,
+                        ))
+                    })
+                    .filter(|(m, l)| m.has_param() || l.has_param()),
+            });
             out.ports.push(IfPort {
                 name: n.name.clone(),
-                dir,
-                range: d.range,
+                dir: match dir {
+                    Dir::Input => IfDir::In,
+                    Dir::Output => IfDir::Out,
+                    Dir::Inout => IfDir::Inout,
+                },
+                range,
             });
         }
         Ok(out)
@@ -1697,8 +1762,7 @@ fn lhs_names<'e>(e: &'e Expr, out: &mut Vec<&'e str>) {
 
 /// The VHDL view of `module`: its parameters at their defaults and its ports ([`Interface`]).
 /// What the interface cannot say is in `Interface::error`; the rest of the module is not looked at.
-pub fn interface(module: &Module, default_timescale: crate::Timescale) -> crate::Interface {
-    use crate::Interface;
+pub fn interface(module: &Module, default_timescale: crate::Timescale) -> Interface {
     if module.encrypted.is_some() {
         return Interface::failed("the module is encrypted (IEEE 1735)");
     }
@@ -1723,6 +1787,37 @@ pub fn interface(module: &Module, default_timescale: crate::Timescale) -> crate:
         Ok(i) if el.errors.is_empty() => i,
         Ok(_) => Interface::failed(el.errors.remove(0).message),
         Err(e) => Interface::failed(e.message),
+    }
+}
+
+/// A port bound as an expression of integer parameters in the subset VHDL has too, so that a
+/// generic map can size the port; `None` for anything else (the bound is then its default value).
+/// A `localparam` stands for its own expression.
+fn iexpr(e: &Expr, ints: &[&str], locals: &HashMap<&str, &Expr>, depth: u8) -> Option<IfExpr> {
+    if depth > 8 {
+        return None;
+    }
+    let sub = |e: &Expr| iexpr(e, ints, locals, depth + 1).map(Box::new);
+    match e {
+        Expr::Num(s) if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) => {
+            s.parse().ok().map(IfExpr::Num)
+        }
+        Expr::Ident(i) if ints.contains(&i.name.as_str()) => Some(IfExpr::Param(i.name.clone())),
+        Expr::Ident(i) => iexpr(locals.get(i.name.as_str())?, ints, locals, depth + 1),
+        Expr::Unary("-", a) => Some(IfExpr::Neg(sub(a)?)),
+        Expr::Binary(op, a, b) => {
+            let op = match *op {
+                "+" => '+',
+                "-" => '-',
+                "*" => '*',
+                "/" => '/',
+                "%" => '%',
+                "**" => 'p',
+                _ => return None,
+            };
+            Some(IfExpr::Bin(op, sub(a)?, sub(b)?))
+        }
+        _ => None,
     }
 }
 

@@ -62,6 +62,15 @@ SystemVerilog
 SystemVerilog is not read. A ``.sv`` or ``.svh`` file is ``E4002``, and a SystemVerilog keyword in
 a Verilog file is ``E4003``.
 
+Elaboration tasks
+-----------------
+
+``$error``, ``$warning``, ``$info`` and ``$fatal`` are read where a module item or a generate-block
+item may stand, for example in a ``generate`` ``if`` that rejects a bad parameter. This goes beyond
+IEEE 1364-2005, which has no elaboration tasks; vendor and cell models use them. They are recorded
+and not executed yet: elaboration of Verilog is not implemented. Any other system task outside a
+procedural block is still a syntax error (``E4100``).
+
 Diagnostics
 -----------
 

@@ -4,6 +4,7 @@ OK  ansi_header.v           units=ansi_header,ansi_header_empty,ansi_header_old
 OK  attributes.v            units=attributes,attributes_leaf
 OK  gates.v                 units=gates
 OK  generate.v              units=generate_blocks
+OK  elaboration_tasks.v     units=elaboration_tasks
 OK  encrypted_envelope.v     diag=W4007@6:1 units=before_envelope
 OK  encrypted_legacy.v       diag=W4007@6:1 units=legacy_pre
 ERR neg_include_missing.v   args="-I inc" diag=E4005@3:1

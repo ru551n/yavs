@@ -79,4 +79,4 @@ CI runs `selftest.py`, `fixtures.py` and `corpus.py cells` in the `corpus` job, 
 full Linux scope in `tools/ci-plan.py`: the Rust tests of `yavs-verilog` and the `corpus` job read these files.
 
 Gate state at the merge of the M0 branches (debug build): 4132 vendor rows, 3498 `PASS`, 561 `PASS+W4007`, 73 expected errors
-(`docs/decisions.md` "Verilog test material and corpus gate"); `cells` 36 files, 29 `PASS`, 7 expected errors; 29 fixtures.
+(`docs/decisions.md` "Verilog test material and corpus gate"); `cells` 36 files, 30 `PASS`, 2 `E4003` and 4 `E4200` (lattice models that include `cells_ff.vh` twice); 30 fixtures.

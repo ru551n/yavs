@@ -1,0 +1,1 @@
+`yavs analyze` reads the elaboration tasks `$error`, `$warning`, `$info` and `$fatal` as items of a Verilog module or generate block, as vendor and cell models write them. They are recorded and not run yet.

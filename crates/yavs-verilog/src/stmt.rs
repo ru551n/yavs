@@ -194,7 +194,7 @@ impl Parser<'_> {
     }
 
     /// Call arguments up to (not including) `)`: an empty slot is `Expr::Empty`.
-    fn args(&mut self) -> R<Vec<Expr>> {
+    pub(crate) fn args(&mut self) -> R<Vec<Expr>> {
         let mut v = Vec::new();
         if self.p(")") {
             return Ok(v);

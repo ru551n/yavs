@@ -1110,3 +1110,17 @@ fn diagnostics_are_owned_by_the_argument_file_that_found_them() {
     assert_eq!(r.diag_file[in_include], 1);
     assert!(r.diag_file.windows(2).all(|w| w[0] <= w[1]));
 }
+
+#[test]
+fn elaboration_tasks_are_items_at_module_level_and_in_generate_blocks() {
+    let r = ok(
+        "module m #(parameter W = 8);\n genvar i;\n $info(\"w=%0d\", W);\n $fatal;\n generate\n  if (W < 2) begin : a\n   $error(\"too small\");\n  end else $warning();\n  for (i = 0; i < 2; i = i + 1) begin : g\n   $info(\"i=%0d\", i);\n  end\n endgenerate\nendmodule\n",
+    );
+    assert_eq!(r.units.len(), 1);
+}
+
+#[test]
+fn other_system_tasks_are_not_module_items() {
+    bad("module m;\n $display(\"x\");\nendmodule\n", "E4100", 2);
+    bad("module m;\n $error(;\nendmodule\n", "E4100", 2);
+}

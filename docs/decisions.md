@@ -20,8 +20,9 @@
   `selftest.py` keeps the static check, a failing analyzer and the skip notices. CI (the `corpus` job) runs `selftest.py`,
   `fixtures.py` and `corpus.py cells` against the release binary; `corpus.py vendor` stays local (D3). A change under
   `tests/verilog` or `tools/verilog` gets the full Linux scope: the Rust tests and the `corpus` job read them.
-- **Deviation from the M0 acceptance line (maintainer to confirm):** "all 800 plaintext IP `.v` analyse with 0 errors" is not
-  literally achievable at M0, and the measured state replaces it. The install has 796 plaintext IP `.v` rows in the gate (788
+- **M0 acceptance, as measured (replaces "all 800 plaintext IP `.v` analyse with 0 errors"; maintainer to confirm):** every library
+  file (unisims, unimacro, unifast, retarget, `glbl`) in both views analyses with 0 errors, every encrypted file is recorded with
+  one `W4007`, and the errors in plaintext IP are limited to the classified rows of `tools/verilog/vendor.expected`. The install has 796 plaintext IP `.v` rows in the gate (788
   plain, 8 that include an encrypted file). 728 analyse with no error. The other 68 are expected, each for a reason that is
   not a front-end gap: 22 use SystemVerilog syntax in a `.v` file (`E4003`, plan 1.2); 25 are not Verilog (template files of the
   memory interface generator with `#`/`%` placeholders: 24 `E4100`, 1 `E4005`); 8 are include-only fragments of one IP (`E4100`);
@@ -29,8 +30,13 @@
   `-D` density flag (`E4007`); 1 is a memory model that fails on purpose without `-D den1024Mb` (`E4100`). Every library file
   (unisims, retarget, unimacro, unifast, `glbl`, both views) analyses; the 5 unisim `.sv` files are `E4002`; every encrypted
   file is recorded with one `W4007`. Total: 4132 rows, 3498 `PASS`, 561 `PASS+W4007`, 73 errors, all in the manifest.
-  `cells` (36 yosys cell model files): 29 `PASS`, 7 errors that are the model's own SystemVerilog (`i++` is `E4003`; the
-  elaboration task `$error` is `E4100`, since it is not 1364-2005).
+  `cells` (36 yosys cell model files): 30 `PASS`, 2 `E4003` (the model's own SystemVerilog, `i++`) and 4 `E4200` (the four
+  lattice models include `cells_ff.vh` twice, once through `common_sim.vh` and once directly, so its modules are declared twice;
+  they were hidden behind the `$error` item error until elaboration tasks were accepted).
+- **Elaboration tasks as items (maintainer, 2026-11-07):** `$error`, `$warning`, `$info` and `$fatal` are accepted as module items and
+  generate-block items and kept in the tree (`Item::ElabTask`), not executed at M0 (elaboration is M1). A deliberate extension beyond
+  1364-2005, because vendor and cell models use them (`docs/design/lrm-checks.md` V4). Effect on the gates: `cells` went from
+  7 errors to 6 (see above); the vendor gate is unchanged.
 - **One source for the Verilog codes:** every code the front end emits, with its `--explain` text, is in `yavs_verilog::CODES`
   (`crates/yavs-verilog/src/diag.rs`); `src/explain.rs` of the CLI holds only `E4500`, which the CLI reports. The index page
   `docs/error-codes.rst` is generated from both.

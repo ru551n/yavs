@@ -286,6 +286,7 @@ fn item_exprs(it: &Item, f: &mut dyn FnMut(&Expr)) {
             t.decls.iter().for_each(|d| item_exprs(d, f));
             t.body.iter().for_each(|s| stmt_exprs(s, f));
         }
+        Item::ElabTask { args, .. } => args.iter().for_each(f),
         Item::Generate(v) => v.iter().for_each(|i| item_exprs(i, f)),
         Item::GenIf { cond, then, els } => {
             f(cond);
@@ -405,7 +406,7 @@ fn collect_declared(items: &[Item], out: &mut HashSet<String>) {
                     }
                 }
             }
-            Item::Assign(_) | Item::Defparam(_) => {}
+            Item::Assign(_) | Item::Defparam(_) | Item::ElabTask { .. } => {}
         }
     }
 }

@@ -363,6 +363,12 @@ pub enum Item {
         items: Vec<(Vec<Expr>, GenBody)>,
     },
     Specify(Vec<SpecItem>),
+    /// `$error`, `$warning`, `$info` or `$fatal` as an item (an extension to 1364-2005, which has no
+    /// elaboration tasks): kept in the tree, not executed before M1.
+    ElabTask {
+        name: String,
+        args: Vec<Expr>,
+    },
 }
 
 #[derive(Clone, Debug)]

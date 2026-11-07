@@ -762,5 +762,15 @@ Most SystemVerilog keywords (`logic`, `bit`, `int`, `ref`, `string`, ...) are no
 them as identifiers. Reading: a word is an identifier wherever 1364 allows one, and `E4003` names it only where it appears as
 a SystemVerilog construct: at the start of a module item or statement, as the type of a port or parameter, and for the
 operators and forms that do not exist in 1364 (`++`, `+=`, `.*`, `end : label`, a time literal such as `1ns`). Anything else that does not parse is `E4100`. This keeps `E4003` a statement that the file is
-SystemVerilog, never a guess from one word. A system task of SystemVerilog, such as the elaboration task `$error`, is not a
-construct this rule covers and reports `E4100`.
+SystemVerilog, never a guess from one word. A SystemVerilog system task is not a
+construct this rule covers; the elaboration tasks are read as items (V4), any other system task outside a procedural block is `E4100`.
+
+### V4: `$error`, `$warning`, `$info` and `$fatal` as module and generate-block items (12.1, 12.4; IEEE 1800-2017 20.11)
+
+1364-2005 has no elaboration system tasks: a system task enable is a procedural statement (9.x), and a module item is one of the
+forms of 12.1. **Deliberate extension beyond 1364-2005**, because vendor and cell models use these tasks as module items and in
+generate blocks (5 of the 36 yosys cell model files, vendor IP), and rejecting them rejected real models. Reading: the four
+names, with or without an argument list, followed by `;`, are accepted wherever a module item or generate-block item may stand
+(module level, `generate` regions, the bodies of generate `if`, `case` and `for`) and are kept in the tree as `Item::ElabTask`.
+They are not executed at M0; their run at elaboration is M1. Any other system task at item level stays `E4100`. Fixture
+`tests/verilog/ci/elaboration_tasks.v`, tests in `crates/yavs-verilog/tests/frontend.rs`.

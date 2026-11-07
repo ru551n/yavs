@@ -1055,6 +1055,22 @@ impl<'a> Parser<'a> {
                 out.push(Item::Generate(b.items));
             }
             (K::Kw, "specify") => out.push(self.specify()?),
+            (K::Sys, _)
+                if matches!(
+                    self.text(t).as_str(),
+                    "$error" | "$warning" | "$info" | "$fatal"
+                ) =>
+            {
+                self.bump();
+                let name = self.text(t);
+                let mut args = Vec::new();
+                if self.eat_p("(") {
+                    args = self.args()?;
+                    self.expect_p(")")?;
+                }
+                self.expect_p(";")?;
+                out.push(Item::ElabTask { name, args });
+            }
             (
                 K::Kw,
                 "and" | "nand" | "or" | "nor" | "xor" | "xnor" | "buf" | "not" | "bufif0"

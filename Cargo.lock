@@ -2328,6 +2328,9 @@ dependencies = [
 [[package]]
 name = "yavs-verilog"
 version = "0.16.1"
+dependencies = [
+ "yavs-diag",
+]
 
 [[package]]
 name = "yavs-vhpi"

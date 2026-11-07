@@ -111,7 +111,7 @@ def main():
                     print("   ", x)
                 if b:
                     bad.append(r["file"])
-                    print("    output:", " | ".join(text.strip().splitlines()[:3]))
+                    print("    output:", " | ".join(x[:160] for x in text.strip().splitlines()[:3]))
     print(f"{len(rows)} fixtures, {len(bad)} differences")
     return 1 if bad else 0
 

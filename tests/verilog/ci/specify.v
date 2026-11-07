@@ -19,6 +19,6 @@ module specify_block (
         (sel[0] => v[0]) = 50;
         (sel *> v) = 50;
         showcancelled y;
-        PATHPULSE$d$y = (30, 40);
+        specparam PATHPULSE$d$y = (30, 40);
     endspecify
 endmodule

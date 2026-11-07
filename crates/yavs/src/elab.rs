@@ -682,6 +682,20 @@ fn elaborate(
             return Err((out, 2));
         }
     };
+    if let Some(f) = files.iter().find(|f| f.std == yavs_lib::VERILOG_STD) {
+        let d = Diagnostic::error(
+            "E4500",
+            format!(
+                "elaborating Verilog is not implemented: the design reaches the Verilog file `{}`",
+                f.path.display()
+            ),
+        )
+        .with_help(
+            "a Verilog file can be analyzed into a library, but not yet elaborated or simulated",
+        );
+        out.emit(&none, &d);
+        return Err((out, 2));
+    }
     let rev = match c.std {
         Some(StdArg::V1993) => LangRev::Vhdl1993,
         Some(StdArg::V2008) => LangRev::Vhdl2008,

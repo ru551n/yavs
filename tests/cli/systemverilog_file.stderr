@@ -1,0 +1,10 @@
+error[E4002]: `top.sv` is a SystemVerilog file
+ |
+ = note: yavs reads Verilog (IEEE 1364-2005) only
+ = help: write the file as Verilog, or pass `--lang=verilog` if it is plain Verilog under another extension
+
+analysis stopped at `top.sv` (file 2 of 2)
+analyzed successfully and recorded before it (1):
+  ok.vhd
+error: aborting due to 1 previous error
+

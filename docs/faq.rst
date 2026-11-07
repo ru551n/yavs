@@ -65,8 +65,8 @@ Known limitations
 Languages
 ~~~~~~~~~
 
-* VHDL only: no Verilog and no SystemVerilog, so no mixed-language designs. Plain Verilog is
-  `planned <https://github.com/ru551n/yavs/issues/776>`__.
+* VHDL, with Verilog in progress: ``yavs analyze`` reads Verilog (IEEE 1364-2005) files, but a design
+  cannot instantiate Verilog yet (:doc:`verilog`). No SystemVerilog.
 * VHDL-2019 is mostly there, and VHDL-2008 is the best checked. :ref:`known-gaps` lists what stops with an error.
 * PSL is a subset: :doc:`psl`.
 * Some invalid code is accepted instead of rejected. Do not use yavs as your only check that code is legal.

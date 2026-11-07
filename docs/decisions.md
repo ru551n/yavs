@@ -14442,3 +14442,32 @@ whole-signal read, the call, the result's check and copy, the wide drive).
   with its zeroing call, the descriptor copy and pair of the result, the whole-signal read of the operand, the copy
   of the result into the waveform and the wide drive. Per element the function runs about 550 instructions of
   compiled code against about 325 in the loop, which drives each element on its own (about 220 more in the host).
+
+## Verilog: library, cache, CLI and diagnostics (yavs-lib, yavs-cache, yavs, yavs-diag, #776, 2026-11-07)
+
+Decisions D1 to D14 of the maintainer (2026-10-26) are in #776; these are the ones made while wiring Verilog
+into the existing layers (milestone M0).
+
+- **Range `E4000`-`E4999` / `W4000`-`W4999` belongs to Verilog.** `E4001`-`E4099` preprocessor and lexer,
+  `E4100`-`E4199` parser, `E4200`-`E4499` module analysis, `E4500`-`E4699` Verilog elaboration (`E4500`: a
+  design reaches Verilog, not implemented yet), `E4700`-`E4799` the VHDL/Verilog boundary. `E4002` (a `.sv`
+  file) is reported by the CLI, the rest by the front end. Rationale: one range per stage (rule 5).
+- **A Verilog unit's key keeps the case of its name** (`UnitKind::Module`, `UnitKind::Primitive`, manifest
+  format 6); `Manifest::find_module` looks up exactly first, then by the one case-insensitive match, and two
+  such units are ambiguous, never guessed (D5). A module and a VHDL primary unit may not share a name,
+  case ignored: `L0035`. Rationale: Verilog is case sensitive, and a VHDL component that names a module must
+  find one unit.
+- **A unit record holds `encrypted`, the digest of the preprocessor state its file was analysed under, and the
+  included files with hashes**, copied into each unit of the file (a file with no unit records none: nothing
+  would read it). `closure` verifies the included files like the source (`L0034`), and `ClosureFile::context`
+  enters the key of the compilation cache, so an edited include, another `-D`, `-I` or time scale never
+  reuses an entry. The `std` of a Verilog file is `1364-2005`.
+- **`-D NAME[=VALUE]` serves both languages.** `NAME=VALUE` defines the VHDL conditional analysis identifier of
+  the VHDL files and the macro of the Verilog files; `NAME` alone is a Verilog macro. `-I`, `--timescale` and
+  `-D NAME` in a call with no Verilog file are `E0141` (no option that does nothing, rule 1).
+  `--lang=verilog|vhdl` overrides the extension of every file of a call. Rationale: one set of flags for the test
+  runner's global options. Not done yet: `elab` and `run` take none of these options, which they need once
+  Verilog is elaborated (M1).
+- **Files of one `analyze` call are analysed together by the front end**, so macros persist from file to
+  file (clause 19), and each file is recorded in the given order. A problem in an included file, or one with
+  no place, is reported at the first Verilog file of the call (the front end names no including file).

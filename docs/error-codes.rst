@@ -146,6 +146,8 @@ Syntax, command line, waveforms, coverage, debugger, plugins (E0 and W0)
      - The file of ``yavs cov report --config`` or ``yavs cov rank --config`` cannot be read or is not a coverage configuration file.
    * - _`E0140`
      - The coverage options of ``yavs run`` do not name a coverage kind to count, or contradict each other.
+   * - _`E0141`
+     - An option of Verilog files was given and no file of the call is Verilog, or a value of one is malformed: ``-I``, ``--timescale`` and ``-D NAME`` (a definition without a value) apply to Verilog files only, and ``--timescale`` takes ``UNIT/PRECISION``, each 1, 10 or 100 of s, ms, us, ns, ps or fs with the precision no coarser than the unit.
    * - _`E0199`
      - A command option or combination is not implemented yet.
    * - _`E0701`
@@ -622,6 +624,8 @@ Verilog (E4 and W4)
      - An ```include`` names a file that was not found.
    * - _`W4006`
      - A Verilog file has modules before any ```timescale`` directive.
+   * - _`E4500`
+     - The design reaches Verilog: elaborating and simulating Verilog is not implemented.
 
 Internal errors (E9)
 --------------------

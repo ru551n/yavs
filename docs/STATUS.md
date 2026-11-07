@@ -2956,6 +2956,16 @@ The GitHub Action that installs a release lives in its own repository, `ru551n/y
   range and index constraints outside their type mark or index subtype (`E1215`, #465) and
   array conversions whose bounds leave the target's index subtype (`W1403`, run-time error kept).
 
+## verilog (`crates/yavs-verilog`, `crates/yavs/src/verilog.rs`, #776 M0)
+
+In progress. Done around the front end: diagnostic range `E4xxx`/`W4xxx` with `--explain` texts and an `E4`
+section in the error index; library format 6 with `Module` and `Primitive` units (case kept, exact then
+case-insensitive lookup, `L0035` for a module and a VHDL unit of one name), the `encrypted` flag, the preprocessor
+context and the included files with hashes in the unit record, verified by `closure`; the context in the cache key;
+`yavs analyze` dispatches by extension (`.v`, `.vh`, `.vp` to the front end, `.sv`, `.svh` are `E4002`), with `-I`,
+`-D NAME[=VALUE]`, `--timescale` and `--lang`; `elab` and `run` stop with `E4500` at a Verilog file. Not done: the
+front end's own analysis (other branch), elaboration and simulation (M1), Verilog options on `elab`/`run`.
+
 ## syntax (`crates/yavs-syntax`, M0)
 
 Hand-written lexer, conditional analysis on the token stream and recursive-descent parser for

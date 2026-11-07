@@ -146,6 +146,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "`--threads` is above 1 and the token server named in `YAVS_TOKENS` cannot be reached (nothing listens on that port of 127.0.0.1, it does not answer, or the connection broke during the run; the note says which). Tokens only speed a run up, so the run goes on with one thread and its output is the same. A value that is not `<port>:<secret>` or a secret the server does not accept is error `E0128`.",
     ),
     (
+        "E0141",
+        "An option of Verilog files was given and no file of the call is Verilog, or a value of one is malformed: `-I`, `--timescale` and `-D NAME` (a definition without a value) apply to Verilog files only, and `--timescale` takes `UNIT/PRECISION`, each 1, 10 or 100 of s, ms, us, ns, ps or fs with the precision no coarser than the unit. Verilog files end in `.v` or `.vh`; `--lang=verilog` takes any file as Verilog.",
+    ),
+    (
         "E0199",
         "A command option or combination is not implemented yet. The message names the option or combination; the help line says what to run instead. This is a limitation of yavs, not an internal compiler error. Exit status 2.",
     ),
@@ -564,6 +568,10 @@ const EXPLAIN: &[(&str, &str)] = &[
     (
         "W4006",
         "A Verilog file has modules before any `` `timescale `` directive. yavs uses 1ns/1ps for them (set it with `--timescale UNIT/PRECISION`), because IEEE 1364-2005 leaves the choice to the tool and delays depend on it.",
+    ),
+    (
+        "E4500",
+        "The design reaches Verilog: elaborating and simulating Verilog is not implemented. A Verilog file can be analyzed into a library, but a design whose top level or instances lead to a Verilog module stops here.",
     ),
     // every stage
     (

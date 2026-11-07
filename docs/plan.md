@@ -159,4 +159,6 @@ Other open source simulators kept running into these bug classes.
 - **Both tiers on every suite** (from M6). JIT-only and interpreter-only runs must give identical output.
 
 ## Out of scope (add when needed)
-Verilog and mixed-language designs, PSL (skipped with a warning, user 2026-10-18), SystemC, VHDL-93-only semantic quirks, distributed simulation, a full LSP (existing language servers already cover that), SDF and VITAL timing, macOS (avoid gratuitously Unix-only code), and a speed target.
+(Verilog IEEE 1364-2005 is no longer out of scope: epic #776, maintainer decision D12, 2026-10-26, Verilog under VHDL only; SDF and VITAL timing stay out. The plan and the decisions D1 to D14 are in #776.)
+
+PSL (skipped with a warning, user 2026-10-18), SystemC, VHDL-93-only semantic quirks, distributed simulation, a full LSP (existing language servers already cover that), SDF and VITAL timing, macOS (avoid gratuitously Unix-only code), and a speed target.

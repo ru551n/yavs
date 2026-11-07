@@ -92,6 +92,7 @@ the :doc:`release_notes`.
    vunit
    libraries
    mixing-standards
+   verilog
    vhpi
    ci
 

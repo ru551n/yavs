@@ -2080,6 +2080,7 @@ dependencies = [
  "yavs-sem",
  "yavs-std",
  "yavs-syntax",
+ "yavs-verilog",
  "yavs-vhpi",
  "yavs-wave",
 ]

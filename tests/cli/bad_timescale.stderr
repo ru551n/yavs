@@ -1,0 +1,4 @@
+error[E0141]: bad `--timescale`: the precision `1ns` is coarser than the unit `1ps` (IEEE 1364-2005 19.8)
+
+error: aborting due to 1 previous error
+

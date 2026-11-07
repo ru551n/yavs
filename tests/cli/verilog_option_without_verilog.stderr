@@ -1,0 +1,6 @@
+error[E0141]: `-I` is for Verilog files, and no file of this call is one
+ |
+ = help: Verilog files end in `.v` or `.vh`; `--lang=verilog` takes the others as Verilog
+
+error: aborting due to 1 previous error
+

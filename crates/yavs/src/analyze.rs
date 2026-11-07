@@ -11,6 +11,8 @@ use yavs_sem::{Db, LangRev, Options};
 use yavs_syntax::Encoding;
 
 use crate::StdArg;
+use crate::verilog::FileKind;
+use yavs_lib::VERILOG_STD;
 
 #[cfg_attr(test, derive(Debug))]
 #[derive(ClapArgs)]
@@ -33,9 +35,24 @@ pub struct Args {
     /// Read `-- psl` comments as PSL pragmas (native PSL statements are always read).
     #[arg(long)]
     psl: bool,
-    /// Define a conditional analysis identifier, `NAME=VALUE`.
-    #[arg(long = "define", short = 'D', value_name = "NAME=VALUE", value_parser = crate::parse_define)]
-    defines: Vec<(String, String)>,
+    /// Define a conditional analysis identifier of VHDL files, `NAME=VALUE`, or a preprocessor macro
+    /// of Verilog files, `NAME` or `NAME=VALUE`. A definition without a value is for Verilog files
+    /// only (`E0141` when no file of the call is Verilog).
+    #[arg(long = "define", short = 'D', value_name = "NAME[=VALUE]", value_parser = crate::verilog::parse_define)]
+    defines: Vec<(String, Option<String>)>,
+    /// A directory searched for the files a Verilog file includes, after the directory of the
+    /// file that includes them (repeatable; `E0141` when no file of the call is Verilog).
+    #[arg(short = 'I', long = "include-dir", value_name = "DIR")]
+    include_dirs: Vec<PathBuf>,
+    /// The time unit and precision of Verilog files before their first time scale directive, as
+    /// `UNIT/PRECISION`: 1, 10 or 100 of s, ms, us, ns, ps or fs (default `1ns/1ps`; a bad value
+    /// is `E0141`).
+    #[arg(long, value_name = "UNIT/PRECISION")]
+    timescale: Option<String>,
+    /// The language of every file of this call, whatever its extension (default: `.v`, `.vh` and
+    /// `.vp` are Verilog, everything else VHDL; `.sv` and `.svh` are refused with `E4002`).
+    #[arg(long, value_enum, value_name = "LANG")]
+    lang: Option<crate::verilog::LangArg>,
     /// Warning control: `-Werror` (every warning is an error), `-Werror=CODE`, `-Wno-CODE` (do not
     /// print it), `-WCODE` (stays a warning under `-Werror`).
     #[arg(short = 'W', value_name = "FLAG")]
@@ -54,7 +71,7 @@ pub struct Args {
     /// else `yavs/std` in the user's cache directory).
     #[arg(long, value_name = "DIR|off")]
     std_cache: Option<std::ffi::OsString>,
-    /// The files, analyzed in this order; the first failing file stops the batch.
+    /// The VHDL and Verilog files, analyzed in this order; the first failing file stops the batch.
     #[arg(required = true, value_name = "FILE")]
     files: Vec<PathBuf>,
 }
@@ -244,6 +261,38 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
         out.emit(&none, &d);
         return out.finish(2);
     }
+    let kinds: Vec<FileKind> = a.files.iter().map(|f| FileKind::of(f, a.lang)).collect();
+    let timescale = match a.timescale.as_deref().map(crate::verilog::parse_timescale) {
+        Some(Err(why)) => {
+            out.emit(
+                &none,
+                &Diagnostic::error("E0141", format!("bad `--timescale`: {why}")),
+            );
+            return out.finish(2);
+        }
+        t => t.map(Result::unwrap),
+    };
+    if !kinds.contains(&FileKind::Verilog) {
+        let given = [
+            (!a.include_dirs.is_empty(), "`-I`"),
+            (a.timescale.is_some(), "`--timescale`"),
+            (
+                a.defines.iter().any(|d| d.1.is_none()),
+                "`-D NAME` without a value",
+            ),
+        ];
+        if let Some((_, what)) = given.iter().find(|g| g.0) {
+            let d = Diagnostic::error(
+                "E0141",
+                format!("{what} is for Verilog files, and no file of this call is one"),
+            )
+            .with_help(
+                "Verilog files end in `.v` or `.vh`; `--lang=verilog` takes the others as Verilog",
+            );
+            out.emit(&none, &d);
+            return out.finish(2);
+        }
+    }
     let (work, _) = a.work.split_once(':').expect("checked by add_spec");
     let work_lib: Library = libs.get(work).expect("just added").clone();
 
@@ -261,7 +310,11 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
     opts.relaxed = a.relaxed;
     opts.psl = a.psl;
     opts.unit_audit |= check;
-    opts.defines = a.defines;
+    opts.defines = a
+        .defines
+        .iter()
+        .filter_map(|(k, v)| Some((k.clone(), v.clone()?)))
+        .collect();
     opts.encoding = encoding;
     if !a.no_cache {
         let shared = crate::cache::shared_std_dir(a.std_cache.as_deref()).and_then(|d| {
@@ -317,6 +370,8 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
             _ => true,
         };
         let bodies_opts = opts.clone();
+        let vopts = crate::verilog::options(&a.include_dirs, &a.defines, timescale, a.lang);
+        let mut verilog: Option<crate::verilog::Batch> = None;
         let mut db = std::mem::ManuallyDrop::new(Db::new(opts));
         let mut shown = 0;
         for (i, file) in a.files.iter().enumerate() {
@@ -326,6 +381,48 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
             let bytes = std::fs::read(file);
             let hash = bytes.as_ref().map(|b| yavs_lib::hash_content(b));
             let before = out.errors;
+            match kinds[i] {
+                FileKind::Vhdl => {}
+                FileKind::SystemVerilog => {
+                    let d = Diagnostic::error(
+                        "E4002",
+                        format!("`{}` is a SystemVerilog file", file.display()),
+                    )
+                    .with_note("yavs reads Verilog (IEEE 1364-2005) only")
+                    .with_help(
+                        "write the file as Verilog, or pass `--lang=verilog` if it is plain Verilog under another extension",
+                    );
+                    out.emit(&none, &d);
+                    return Some(i);
+                }
+                FileKind::Verilog => {
+                    let batch = verilog.get_or_insert_with(|| {
+                        crate::verilog::Batch::run(&a.files, &kinds, &vopts)
+                    });
+                    for d in batch.diagnostics(i) {
+                        out.emit(&batch.sources, &d);
+                    }
+                    if out.errors > before {
+                        return Some(i);
+                    }
+                    let recorded = match (&hash, batch.records(i)) {
+                        (Ok(h), Ok(r)) => {
+                            session.record_deferred(VERILOG_STD, Path::new(file), h, stamp, r)
+                        }
+                        (Err(e), _) => Err(Box::new(Diagnostic::error(
+                            "E0100",
+                            format!("cannot read `{}`: {e}", file.display()),
+                        ))),
+                        (_, Err(d)) => Err(d),
+                    };
+                    if let Err(d) = recorded {
+                        out.emit(&none, &d);
+                        return Some(i);
+                    }
+                    done.borrow_mut().push(file.display().to_string());
+                    continue;
+                }
+            }
             let h = hash.as_deref().ok();
             // A file with coverage directives is loaded whole, to check them.
             let directives = a.coverage_directives == crate::elab::DirectivesArg::Apply

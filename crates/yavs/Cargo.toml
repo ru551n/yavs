@@ -23,6 +23,7 @@ yavs-lint = { path = "../yavs-lint" }
 yavs-sem = { path = "../yavs-sem" }
 yavs-std = { path = "../yavs-std" }
 yavs-syntax.workspace = true
+yavs-verilog = { path = "../yavs-verilog" }
 yavs-wave = { path = "../yavs-wave" }
 yavs-llvm = { path = "../yavs-llvm", optional = true }
 yavs-clift = { path = "../yavs-clift", optional = true }

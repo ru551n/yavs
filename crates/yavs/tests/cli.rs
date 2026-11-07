@@ -39,6 +39,31 @@ const CASES: &[Case] = &[
         code: 1,
     },
     Case {
+        name: "verilog_ok",
+        args: &["analyze", "--work=work:$TMP/lib", "ok.v"],
+        code: 0,
+    },
+    Case {
+        name: "systemverilog_file",
+        args: &["analyze", "--work=work:$TMP/lib", "ok.vhd", "top.sv"],
+        code: 1,
+    },
+    Case {
+        name: "verilog_option_without_verilog",
+        args: &["analyze", "--work=work:$TMP/lib", "-I", "inc", "ok.vhd"],
+        code: 2,
+    },
+    Case {
+        name: "bad_timescale",
+        args: &[
+            "analyze",
+            "--work=work:$TMP/lib",
+            "--timescale=1ps/1ns",
+            "ok.v",
+        ],
+        code: 2,
+    },
+    Case {
         name: "missing_library",
         args: &["analyze", "--work=work:$TMP/lib", "nolib.vhd"],
         code: 1,

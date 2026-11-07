@@ -25,7 +25,7 @@ Commands
    * - ``yavs parse [OPTIONS] FILES...``
      - Check that VHDL files parse
    * - ``yavs analyze [OPTIONS] --work=NAME:PATH FILE...``
-     - Analyze VHDL files into a library
+     - Analyze VHDL and Verilog files into a library
    * - ``yavs elab [OPTIONS] --work=NAME:PATH TOP``
      - Elaborate a design (no simulation)
    * - ``yavs run [OPTIONS] --work=NAME:PATH TOP [+NAME[=VALUE]...]``
@@ -118,7 +118,7 @@ Arguments:
 
 .. program:: yavs analyze
 
-Analyze VHDL files into a library.
+Analyze VHDL and Verilog files into a library.
 
 .. code-block:: text
 
@@ -126,7 +126,7 @@ Analyze VHDL files into a library.
 
 Arguments:
 
-* ``FILE`` (one or more): The files, analyzed in this order; the first failing file stops the batch.
+* ``FILE`` (one or more): The VHDL and Verilog files, analyzed in this order; the first failing file stops the batch.
 
 .. option:: --std=93|2008|2019
 
@@ -154,11 +154,25 @@ Arguments:
 
    Read ``-- psl`` comments as PSL pragmas (native PSL statements are always read).
 
-.. option:: -D NAME=VALUE, --define=NAME=VALUE
+.. option:: -D NAME[=VALUE], --define=NAME[=VALUE]
 
-   Define a conditional analysis identifier, ``NAME=VALUE``.
+   Define a conditional analysis identifier of VHDL files, ``NAME=VALUE``, or a preprocessor macro of Verilog files, ``NAME`` or ``NAME=VALUE``. A definition without a value is for Verilog files only (``E0141`` when no file of the call is Verilog).
 
    May be repeated.
+
+.. option:: -I DIR, --include-dir=DIR
+
+   A directory searched for the files a Verilog file includes, after the directory of the file that includes them (repeatable; ``E0141`` when no file of the call is Verilog).
+
+   May be repeated.
+
+.. option:: --timescale=UNIT/PRECISION
+
+   The time unit and precision of Verilog files before their first time scale directive, as ``UNIT/PRECISION``: 1, 10 or 100 of s, ms, us, ns, ps or fs (default ``1ns/1ps``; a bad value is ``E0141``).
+
+.. option:: --lang=vhdl|verilog
+
+   The language of every file of this call, whatever its extension (default: ``.v``, ``.vh`` and ``.vp`` are Verilog, everything else VHDL; ``.sv`` and ``.svh`` are refused with ``E4002``).
 
 .. option:: -W FLAG
 
@@ -188,6 +202,8 @@ Arguments:
 .. option:: --std-cache=DIR|off
 
    Directory of the std/ieee units shared by all libraries, or ``off`` (default: ``$YAVS_STD_CACHE``, else ``yavs/std`` in the user's cache directory).
+
+Diagnostics named above: ``E0141``, ``E4002``; ``yavs --explain CODE`` explains each.
 
 ``yavs elab``
 -------------

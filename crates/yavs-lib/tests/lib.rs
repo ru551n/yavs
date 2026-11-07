@@ -484,7 +484,7 @@ fn old_format_manifest() {
     std::fs::write(work.dir.join("yavs-lib.toml"), old).unwrap();
     assert_eq!(
         snap(&work.read().unwrap_err(), t.path()),
-        "error[L0004]: library manifest `<tmp>/work/yavs-lib.toml` has format version 2, this yavs reads version 6\n |\n = help: delete the library directory `<tmp>/work` and analyze its files again (a library of another format version is not converted)\n"
+        "error[L0004]: library manifest `<tmp>/work/yavs-lib.toml` has format version 2, this yavs reads version 7\n |\n = help: delete the library directory `<tmp>/work` and analyze its files again (a library of another format version is not converted)\n"
     );
     // Closures fail the same way, and analyzing into it fails early rather than overwriting.
     let mut libs = Libraries::new();

@@ -551,11 +551,29 @@ fn mismatches_and_unsupported_constructs_fail_early() {
             "port (i : in std_logic; o : out std_logic);",
             "E4501",
         ),
-        // A net driven twice.
+        // A uwire driven twice.
         (
-            "module m (input i, output o); assign o = i; assign o = ~i; endmodule",
+            "module m (input i, output o); uwire w; assign w = i; assign w = ~i; assign o = w; endmodule",
             "port (i : in std_logic; o : out std_logic);",
             "E4502",
+        ),
+        // An input that the module drives too, and a pulled input: the resolution with VHDL is
+        // the inout of a later step.
+        (
+            "module m (input i, output o); assign i = 1'b0; assign o = i; endmodule",
+            "port (i : in std_logic; o : out std_logic);",
+            "E4501",
+        ),
+        (
+            "module m (input tri1 i, output o); assign o = i; endmodule",
+            "port (i : in std_logic; o : out std_logic);",
+            "E4501",
+        ),
+        // A wired net.
+        (
+            "module m (input i, output o); wand w; assign w = i; assign o = w; endmodule",
+            "port (i : in std_logic; o : out std_logic);",
+            "E4501",
         ),
     ];
     for (k, (v, comp, code)) in cases.iter().enumerate() {
@@ -784,4 +802,393 @@ fn uncollapsed_ports_give_the_same_run() {
         .write("tb.vhd", COUNTER_TB)
         .analyze(&["counter.v", "tb.vhd"]);
     assert_eq!(t.notes(&["--no-collapse-ports", "tb"]), t.notes(&["tb"]));
+}
+
+/// Several drivers on one net (IEEE 1364-2005 4.6): a three-state bus with two enables, a tri0
+/// and a tri1 net, a weak driver and a pull on a `bit` port. VHDL sees the resolved `std_ulogic`:
+/// `L` and `H` for weak levels, and a `bit` port takes them as '0' and '1'.
+#[test]
+fn net_with_several_drivers() {
+    let t = T::new("v-drivers");
+    t.write(
+        "tsbus.v",
+        "`timescale 1ns/1ps
+module tsbus (input ea, input da, input eb, input db,
+              output y, output tri0 p, output tri1 q, output w, output tri1 qb);
+  assign y = ea ? da : 1'bz;
+  assign y = eb ? db : 1'bz;
+  assign p = ea ? da : 1'bz;
+  assign q = ea ? da : 1'bz;
+  assign (weak1, weak0) w = da;
+endmodule
+",
+    )
+    .write(
+        "tb.vhd",
+        "library ieee;
+use ieee.std_logic_1164.all;
+entity tb is end entity;
+architecture sim of tb is
+  component tsbus is
+    port (ea, da, eb, db : in std_logic; y, p, q, w : out std_logic; qb : out bit);
+  end component;
+  signal ea, da, eb, db : std_logic := '0';
+  signal y, p, q, w : std_logic;
+  signal qb : bit;
+begin
+  u : tsbus port map (ea, da, eb, db, y, p, q, w, qb);
+  process
+    procedure step(a, d, b, e : std_logic; vy, vp, vq, vw : std_logic) is
+    begin
+      ea <= a; da <= d; eb <= b; db <= e;
+      wait for 1 ns;
+      report std_logic'image(y) & std_logic'image(p) & std_logic'image(q) & std_logic'image(w);
+      assert y = vy and p = vp and q = vq and w = vw severity failure;
+    end procedure;
+  begin
+    step('0', '0', '0', '0', 'Z', 'L', 'H', 'L');
+    step('1', '1', '0', '0', '1', '1', '1', 'H');
+    step('0', '0', '1', '0', '0', 'L', 'H', 'L');
+    step('1', '1', '1', '0', 'X', '1', '1', 'H');
+    assert qb = '1' severity failure;
+    wait;
+  end process;
+end architecture;
+",
+    )
+    .analyze(&["tsbus.v", "tb.vhd"]);
+    let n = t.notes(&["tb"]);
+    assert_eq!(
+        n.iter()
+            .map(|l| l.split_once(": ").unwrap().1)
+            .collect::<Vec<_>>(),
+        [
+            "'Z''L''H''L'",
+            "'1''1''1''H'",
+            "'0''L''H''L'",
+            "'X''1''1''H'"
+        ]
+    );
+    let one = out(&t.run(&["tb"]));
+    assert_eq!(out(&t.run(&["--threads", "4", "tb"])), one);
+}
+
+const DIRECT_TB: &str = "library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+entity tb is end entity;
+architecture sim of tb is
+  signal clk, rst : std_logic := '0';
+  signal q : std_logic_vector(7 downto 0);
+  signal lo : std_logic_vector(3 downto 0);
+begin
+  dut : entity work.counter generic map (WIDTH => 8) port map (clk => clk, rst => rst, q => q);
+  -- A slice, an expression and a constant as actuals, a generic left at the module's default.
+  small : entity work.counter port map (clk => clk, rst => not rst, q => lo);
+  process
+  begin
+    rst <= '1'; wait for 5 ns; rst <= '0';
+    for i in 1 to 3 loop
+      clk <= '1'; wait for 5 ns; clk <= '0'; wait for 5 ns;
+      report \"q \" & integer'image(to_integer(unsigned(q))) & \" lo \" & to_string(lo);
+    end loop;
+    assert unsigned(q) = 3 severity failure;
+    wait;
+  end process;
+end architecture;
+";
+
+/// `entity work.counter` instantiates the Verilog module directly: generics and ports come from
+/// the module, with the widths its default parameters give; actuals are expressions as for any
+/// component, a generic left out keeps the module's default, in the same call as the module's
+/// analysis and in a later one, with `-L` or without.
+#[test]
+fn entity_instantiation_of_a_module() {
+    let want = [
+        "15000000fs+0: q 1 lo 0000",
+        "25000000fs+0: q 2 lo 0000",
+        "35000000fs+0: q 3 lo 0000",
+    ];
+    // One call.
+    let t = T::new("v-direct");
+    t.write("counter.v", COUNTER)
+        .write("tb.vhd", DIRECT_TB)
+        .analyze(&["counter.v", "tb.vhd"]);
+    assert_eq!(t.notes(&["tb"]), want);
+    // Two calls, the module in another library: `entity cells.counter`, no `-L` needed.
+    let t = T::new("v-direct-lib");
+    t.write("counter.v", COUNTER).write(
+        "tb.vhd",
+        &DIRECT_TB
+            .replace("work.counter", "cells.counter")
+            .replace("library ieee;", "library ieee, cells;"),
+    );
+    let o = t.yavs(&["analyze", "--work=cells:cells", "counter.v"]);
+    assert!(o.status.success(), "{}", err(&o));
+    let o = t.yavs(&["analyze", "--work=work:lib", "--map=cells:cells", "tb.vhd"]);
+    assert!(o.status.success(), "{}", err(&o));
+    assert_eq!(t.notes(&["--map=cells:cells", "tb"]), want);
+}
+
+/// What `entity lib.module` checks, against the module's declaration: the names of generics and
+/// ports, an architecture, a module several names match, a header VHDL cannot take, a library
+/// that does not have the module, and the case of the name.
+#[test]
+fn entity_instantiation_is_checked_against_the_module() {
+    let tb = |inst: &str| {
+        format!(
+            "library ieee; use ieee.std_logic_1164.all;
+entity tb is end entity;
+architecture sim of tb is
+  signal clk, rst : std_logic := '0';
+  signal q : std_logic_vector(3 downto 0);
+begin
+  {inst}
+end architecture;
+"
+        )
+    };
+    let bad = [
+        // No such generic or port, a port the module has as an input given an output.
+        (
+            "u : entity work.counter generic map (DEPTH => 8) port map (clk => clk, rst => rst, q => q);",
+            "DEPTH",
+        ),
+        (
+            "u : entity work.counter port map (clk => clk, rst => rst, qq => q);",
+            "qq",
+        ),
+        // A port the module does not have.
+        (
+            "u : entity work.counter port map (clk => clk, rst => rst, q => open, x => q);",
+            "x",
+        ),
+        // An architecture of a module.
+        (
+            "u : entity work.counter(rtl) port map (clk => clk, rst => rst, q => q);",
+            "E4702",
+        ),
+        // A module that is not there.
+        ("u : entity work.nosuch port map (clk => clk);", "nosuch"),
+        // Two modules that differ only in case.
+        ("u : entity work.Twin port map (clk => clk);", "E4509"),
+        // A header VHDL cannot take.
+        ("u : entity work.realport port map (clk => clk);", "E4703"),
+    ];
+    for (k, (inst, want)) in bad.iter().enumerate() {
+        let t = T::new("v-direct-bad");
+        t.write("counter.v", COUNTER)
+            .write(
+                "more.v",
+                "`timescale 1ns/1ps
+module twin (input clk); endmodule
+module TWIN (input clk); endmodule
+module realport (input clk, output real r); endmodule
+",
+            )
+            .write("tb.vhd", &tb(inst));
+        let o = t.yavs(&[
+            "analyze",
+            "--work=work:lib",
+            "counter.v",
+            "more.v",
+            "tb.vhd",
+        ]);
+        assert!(!o.status.success(), "case {k}: analyzed");
+        assert!(
+            err(&o).contains(want),
+            "case {k}: expected {want}:\n{}",
+            err(&o)
+        );
+    }
+    // The case of the name: a unique module that differs only in case is the one.
+    let t = T::new("v-direct-case");
+    t.write("counter.v", COUNTER).write(
+        "tb.vhd",
+        &tb("u : entity work.COUNTER port map (clk => clk, rst => rst, q => q);"),
+    );
+    t.analyze(&["counter.v", "tb.vhd"]);
+    assert!(t.run(&["tb"]).status.success());
+    // A width the generic map changes where the module's range names the parameter, and one
+    // where it does not (the range is a number): VHDL reports the mismatch.
+    let t = T::new("v-direct-width");
+    t.write(
+        "m.v",
+        "`timescale 1ns/1ps
+module fixed (input clk, output [3:0] q); assign q = 4'd5; endmodule
+",
+    )
+    .write(
+        "tb.vhd",
+        &tb("u : entity work.fixed port map (clk => clk, q => q(2 downto 0));"),
+    );
+    let o = t.yavs(&["analyze", "--work=work:lib", "m.v", "tb.vhd"]);
+    assert!(o.status.success(), "{}", err(&o));
+    let o = t.run(&["tb"]);
+    assert_eq!(o.status.code(), Some(2), "{}", err(&o));
+    assert!(
+        err(&o).contains("E2110") || err(&o).contains("E4700"),
+        "{}",
+        err(&o)
+    );
+}
+
+/// Port bounds that are constant expressions of the parameters follow the generic map: `$clog2`,
+/// shifts, `?:`, a local parameter and a parameter that depends on another one, which keeps
+/// following it while the instance leaves it out.
+#[test]
+fn port_bounds_follow_the_generic_map() {
+    let t = T::new("v-bounds");
+    t.write(
+        "m.v",
+        "`timescale 1ns/1ps
+module wide #(parameter D = 16, parameter W = 8, parameter B = W * 2)
+              (input [$clog2(D)-1:0] a, input [W<<1:0] s, input [(W > 4 ? W : 4)-1:0] c,
+               input [B-1:0] d, output [localw-1:0] o);
+  localparam localw = W + 1;
+  assign o = {1'b0, c};
+endmodule
+module masked #(parameter W = 8) (input [W & 15:0] a, output y);
+  assign y = a[0];
+endmodule
+",
+    )
+    .write(
+        "tb.vhd",
+        "library ieee; use ieee.std_logic_1164.all;
+entity tb is end entity;
+architecture sim of tb is
+  signal a : std_logic_vector(5 downto 0) := (others => '0');
+  signal s : std_logic_vector(12 downto 0) := (others => '0');
+  signal c : std_logic_vector(5 downto 0) := \"101010\";
+  signal d : std_logic_vector(11 downto 0) := (others => '0');
+  signal o : std_logic_vector(6 downto 0);
+  signal d2 : std_logic_vector(15 downto 0) := (others => '0');
+  signal o2 : std_logic_vector(8 downto 0);
+  signal s2 : std_logic_vector(16 downto 0) := (others => '0');
+  signal a2 : std_logic_vector(3 downto 0) := (others => '0');
+  signal c2 : std_logic_vector(7 downto 0) := x\"2A\";
+begin
+  -- D = 64: a has 6 bits; W = 6: s has 13 bits, c 6, B follows W (12), o has 7.
+  u1 : entity work.wide generic map (\\D\\ => 64, W => 6) port map (a => a, s => s, c => c, \\d\\ => d, o => o);
+  -- Only B left out of a map that changes W: the default D keeps a at 4 bits, B = W * 2.
+  u2 : entity work.wide generic map (W => 8) port map (a => a2, s => s2, c => c2, \\d\\ => d2, o => o2);
+  process begin
+    wait for 1 ns;
+    report to_string(o) & \" \" & to_string(o2);
+    wait;
+  end process;
+end architecture;
+",
+    )
+    .analyze(&["m.v", "tb.vhd"]);
+    let n = t.notes(&["tb"]);
+    assert_eq!(n.len(), 1, "{n:?}");
+    assert!(n[0].ends_with("0101010 000101010"), "{n:?}");
+    // A bound VHDL cannot follow: the defaults when the map is empty, an error when it is not.
+    let tb = |map: &str| {
+        format!(
+            "library ieee; use ieee.std_logic_1164.all;
+entity tb is end entity;
+architecture sim of tb is
+  signal a : std_logic_vector(8 downto 0) := (others => '0');
+  signal y : std_logic;
+begin
+  u : entity work.masked {map} port map (a => a, y => y);
+end architecture;
+"
+        )
+    };
+    t.write("tb2.vhd", &tb(""));
+    t.analyze(&["tb2.vhd"]);
+    assert!(t.run(&["tb"]).status.success());
+    t.write("tb3.vhd", &tb("generic map (W => 4)"));
+    let o = t.yavs(&["analyze", "--work=work:lib", "tb3.vhd"]);
+    assert!(!o.status.success());
+    assert!(
+        err(&o).contains("E4706") && err(&o).contains("`a`") && err(&o).contains("&"),
+        "{}",
+        err(&o)
+    );
+}
+
+/// `-L`: after the library an `entity lib.module` names, the `-L` libraries are searched; the
+/// named library wins, and a miss says where it looked.
+#[test]
+fn entity_instantiation_searches_the_l_libraries() {
+    let tb = "library ieee; use ieee.std_logic_1164.all;
+entity tb is end entity;
+architecture sim of tb is
+  signal clk, rst : std_logic := '0';
+  signal q : std_logic_vector(3 downto 0);
+begin
+  u : entity work.counter port map (clk => clk, rst => rst, q => q);
+end architecture;
+";
+    let t = T::new("v-l");
+    t.write("counter.v", COUNTER).write("tb.vhd", tb);
+    let o = t.yavs(&["analyze", "--work=cells:cells", "counter.v"]);
+    assert!(o.status.success(), "{}", err(&o));
+    // Not in `work` and no `-L`: not found.
+    let ana = |extra: &[&str]| {
+        t.yavs(
+            &[
+                &["analyze", "--work=work:lib", "--map=cells:cells"],
+                extra,
+                &["tb.vhd"],
+            ]
+            .concat(),
+        )
+    };
+    let o = ana(&[]);
+    assert!(
+        !o.status.success() && err(&o).contains("counter"),
+        "{}",
+        err(&o)
+    );
+    // An unmapped -L library, and one that lacks the module, say so.
+    let o = ana(&["-L", "nosuch"]);
+    assert!(err(&o).contains("E0142"), "{}", err(&o));
+    t.write("other.v", "`timescale 1ns/1ps\nmodule other; endmodule\n");
+    let o = t.yavs(&["analyze", "--work=empty:empty", "other.v"]);
+    assert!(o.status.success(), "{}", err(&o));
+    let o = t.yavs(&[
+        "analyze",
+        "--work=work:lib",
+        "--map=cells:cells",
+        "--map=empty:empty",
+        "-L",
+        "empty",
+        "tb.vhd",
+    ]);
+    assert!(!o.status.success());
+    assert!(
+        err(&o).contains("libraries searched: work, empty"),
+        "{}",
+        err(&o)
+    );
+    // With -L cells the module is found there; run and elab take the same option.
+    let o = ana(&["-L", "cells"]);
+    assert!(o.status.success(), "{}", err(&o));
+    let o = t.yavs(&[
+        "run",
+        "--work=work:lib",
+        "--map=cells:cells",
+        "-L",
+        "cells",
+        "tb",
+    ]);
+    assert!(o.status.success(), "{}", err(&o));
+    // A module of the named library wins over the same name in an -L library.
+    t.write("work_counter.v", &COUNTER.replace("q + 1", "q + 2"));
+    let o = t.yavs(&[
+        "analyze",
+        "--work=work:lib",
+        "--map=cells:cells",
+        "-L",
+        "cells",
+        "work_counter.v",
+        "tb.vhd",
+    ]);
+    assert!(o.status.success(), "{}", err(&o));
 }

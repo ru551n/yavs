@@ -192,8 +192,8 @@ pub(crate) const TABLE: &[CodeInfo] = &[
     ),
     code!(
         "E4502",
-        "net with several drivers",
-        "Two continuous drivers (continuous assignments, a net declaration assignment, the VHDL port of an input) drive the same bits of one Verilog net. Such a net needs resolution of its drivers, which Verilog elaboration does not implement yet."
+        "uwire with several drivers",
+        "A `uwire` net has more than one driver on the same bit (clause 4.6.5). Other nets resolve their drivers (clause 4.6.1); a `uwire` is the net type that forbids it."
     ),
     code!(
         "E4503",
@@ -223,7 +223,7 @@ pub(crate) const TABLE: &[CodeInfo] = &[
     code!(
         "E4508",
         "Verilog file cannot be read again",
-        "Elaboration reads a Verilog file again with the options and preprocessor state recorded when it was analyzed, and that record is missing (the library was written by an older yavs) or no longer matches the file. Analyze the Verilog files again."
+        "Elaboration reads a Verilog file again with the options and preprocessor state recorded when it was analyzed, and that record is missing or no longer matches the file. Analyze the Verilog files again."
     ),
     code!(
         "E4509",
@@ -239,5 +239,30 @@ pub(crate) const TABLE: &[CodeInfo] = &[
         "E4701",
         "VHDL generic does not match a Verilog parameter",
         "A generic of the VHDL component that binds to a Verilog module names no parameter of the module, names a local parameter (which cannot be overridden, clause 12.2), or has a type Verilog cannot take (`integer`, `real`, `string`, `boolean`, `std_logic`, `bit` and their vectors)."
+    ),
+    code!(
+        "E4702",
+        "architecture named for a Verilog module",
+        "An `entity lib.module` instantiation names a Verilog module and an architecture. A module has none; write `entity lib.module`."
+    ),
+    code!(
+        "E4703",
+        "Verilog module has no VHDL view",
+        "`entity lib.module` takes the generics and ports of a Verilog module from its declaration, recorded when the file is analyzed. The module has none: its header has a construct VHDL cannot take (a real port, a port expression, an encrypted body), or its library was written without it. The message says which; instantiate the module through a component declaration of your own, or analyze the Verilog file again."
+    ),
+    code!(
+        "E4704",
+        "generic map does not match the Verilog module",
+        "A generic map of an `entity lib.module` instantiation of a Verilog module has an error in the association of a parameter: no parameter of that name, a missing actual, a type that does not fit. The message names the module and the parameter and shows the Verilog declaration beside the VHDL generic made from it."
+    ),
+    code!(
+        "E4705",
+        "port map does not match the Verilog module",
+        "A port map of an `entity lib.module` instantiation of a Verilog module has an error in the association of a port: no port of that name, a missing actual, a mode or type that does not fit, or an actual of another width. The message names the module and the port and shows the Verilog declaration beside the VHDL port made from it."
+    ),
+    code!(
+        "E4706",
+        "port range cannot follow the generic map",
+        "The range of a port of a Verilog module depends on its parameters in a way VHDL cannot follow (an operator such as `&` or `^`, a function call), and the generic map gives parameters values. The ranges that follow are expressions of integer parameters with the arithmetic, comparison and logical operators, shifts, `?:` and `$clog2`; leave the generic map out, or instantiate the module through a component declaration of your own."
     ),
 ];

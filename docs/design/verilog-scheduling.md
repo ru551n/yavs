@@ -69,6 +69,22 @@ own NBA rounds of the earlier delta. Neither LRM defines this cross-language ord
 `q <= #10 1; q <= #5 0;` would lose the update at 10. Future NBAs live in the domain's own map
 (`future_nbas_are_not_replaced` shows both behaviours).
 
+## 3a. Nets with several drivers
+
+A net with one driver, or drivers on disjoint bits, is a plain domain net that its drivers write. A net that needs
+resolution (drivers on the same bit, a driver that is not strong, `tri0` or `tri1`) is a *resolved net*: each of its
+continuous drivers is a private net of the net's width (`z` where it drives nothing) that the driver's process writes
+like any other net. The write that changes a driver net resolves the target at once, in the same region and without a
+delta (the plan's 3.5 rule that a continuous assignment costs no delta), with the kernel's `std_logic` resolution
+(`LogicVec::resolve`) over the driver values. A driver's 4-state value is mapped to a `std_ulogic` level by its
+strengths (plan 3.3, D13): strong gives `0 1 X`, weak `L H W`, highz `Z`; a pull is one more driver of `L` or `H`.
+The resolved value keeps those levels for VHDL (an output port shows `H` for a pulled net), and Verilog reads it as
+`TO_X01Z`. A `supply0` or `supply1` net is a constant: its drivers run nothing.
+
+Step D (`inout`, risk R9) plugs in here: a net that VHDL also drives gets the VHDL signal as one more entry of the
+same list, with the domain's own contribution taken out of it (the kernel signal already resolves it), and the
+Verilog drivers on it are published like outputs. Until then an input port that the module also drives is `E4501`.
+
 ## 4. Loops and interrupts
 
 The kernel's delta limit cannot see a loop inside one activation. The domain counts the activations of each process at
@@ -86,5 +102,7 @@ activations the loop polls `Ctx::stop_requested` and returns with its queues int
 | Stale waiters pruned when a list doubles | Per-process wait lists if the scan shows in a profile |
 | Linear scan of the publication queue per output change | An index per port if batches grow long |
 | The event limit is `E3009` (runtime error) | A dedicated code with the diagnostics range of step C |
-| Nets do not resolve several drivers; no strengths | Resolution of drivers inside the domain (plan 3.3), then `inout` (R9) |
+| Three strength levels (D13): supply against strong, pull against weak resolve to x | An 8-level resolver as a `Resolution::Func` for nets that mix those levels |
+| Resolution is a `std_logic` table lookup per driver and changed element on the stack (no allocation), 8 bits and two drivers about 125 ns per driver write against 45 ns for a plain net (`bench_net_writes`, release); a change wider than 64 elements of strong drivers uses the kernel's plane-wise resolution and allocates a slice per driver | Plane-wise strength mapping and a plane-wise store |
+| `inout` and nets driven from both languages are `E4501` | Step D (R9), see 3a |
 | The domain decides nothing from VHDL activity (`'active`, transactions without an event) | Not needed by 1364 |

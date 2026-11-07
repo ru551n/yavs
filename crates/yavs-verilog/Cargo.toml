@@ -10,6 +10,7 @@ publish.workspace = true
 yavs-diag.workspace = true
 yavs-interp = { path = "../yavs-interp" }
 yavs-ir = { path = "../yavs-ir" }
+yavs-lib = { path = "../yavs-lib" }
 yavs-kernel = { path = "../yavs-kernel" }
 yavs-logic.workspace = true
 

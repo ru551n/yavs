@@ -186,6 +186,7 @@ impl Batch {
             let mut r = UnitRecord::verilog(kind, &u.name, VERILOG_STD);
             r.encrypted = u.encrypted;
             r.setup = Some(u.setup.clone());
+            r.iface = Some(u.iface.clone()).filter(|i| !i.is_empty());
             r.context = Some(hash_content(
                 format!("{}\n{}", u.context_digest, self.options).as_bytes(),
             ));
@@ -250,23 +251,11 @@ pub(crate) fn search_libraries(
     work: &str,
     extra: &[String],
 ) -> Result<Vec<yavs_elab::VerilogLib>, Box<Diagnostic>> {
+    check_search_libraries(libs, extra)?;
     let mut out: Vec<yavs_elab::VerilogLib> = Vec::new();
     for name in std::iter::once(work).chain(extra.iter().map(String::as_str)) {
         let Some(lib) = libs.get(name) else {
-            let mut d = Diagnostic::error(
-                "E0142",
-                format!("`-L {name}`: no library `{name}` is mapped"),
-            );
-            let names: Vec<&str> = libs.names().collect();
-            d = match yavs_sem::suggest::suggest(
-                &yavs_lib::fold(name),
-                "library",
-                names.iter().map(|n| (*n, *n)),
-            ) {
-                Some(h) => d.with_help(h),
-                None => d.with_help("map it with `--map NAME:PATH`"),
-            };
-            return Err(Box::new(d));
+            continue;
         };
         if out.iter().any(|l| l.name == lib.name) {
             continue;
@@ -277,6 +266,33 @@ pub(crate) fn search_libraries(
         });
     }
     Ok(out)
+}
+
+/// Every `-L` library is mapped, else `E0142`.
+pub(crate) fn check_search_libraries(
+    libs: &Libraries,
+    extra: &[String],
+) -> Result<(), Box<Diagnostic>> {
+    for name in extra {
+        if libs.get(name).is_none() {
+            let names: Vec<&str> = libs.names().collect();
+            let d = Diagnostic::error(
+                "E0142",
+                format!("`-L {name}`: no library `{name}` is mapped"),
+            );
+            return Err(Box::new(
+                match yavs_sem::suggest::suggest(
+                    &yavs_lib::fold(name),
+                    "library",
+                    names.iter().map(|n| (*n, *n)),
+                ) {
+                    Some(h) => d.with_help(h),
+                    None => d.with_help("map it with `--map NAME:PATH`"),
+                },
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The Verilog side of an elaborated design (#776 step C): each module the component instances
@@ -352,18 +368,18 @@ pub(crate) fn elaborate(
             )
             .with_help("analyze the Verilog files again"))
         };
-        match std::fs::read(&vi.file) {
+        match std::fs::read(&rec.file) {
             Ok(b) if hash_content(&b) == hash => {}
             Ok(_) => {
                 return Err(fail(stale(format!(
                     "`{}` changed since it was analyzed",
-                    vi.file.display()
+                    rec.file.display()
                 ))));
             }
             Err(err) => {
                 return Err(fail(stale(format!(
                     "`{}` cannot be read: {err}",
-                    vi.file.display()
+                    rec.file.display()
                 ))));
             }
         }
@@ -376,14 +392,14 @@ pub(crate) fn elaborate(
         }
         let Some(setup) = &rec.setup else {
             return Err(fail(stale(format!(
-                "library `{}` was written by an older yavs",
+                "the record of library `{}` has no setup for it",
                 vi.library
             ))));
         };
-        let Some(src) = yavs_verilog::read_unit(&vi.file, setup) else {
+        let Some(src) = yavs_verilog::read_unit(&rec.file, setup) else {
             return Err(fail(stale(format!(
                 "the analysis record of `{}` cannot be read",
-                vi.file.display()
+                rec.file.display()
             ))));
         };
         let ids = add_files(sources, &src.files);
@@ -400,7 +416,7 @@ pub(crate) fn elaborate(
         let Some(module) = src.module(&vi.module) else {
             return Err(fail(stale(format!(
                 "`{}` no longer declares `{}`",
-                vi.file.display(),
+                rec.file.display(),
                 vi.module
             ))));
         };
@@ -544,6 +560,7 @@ mod tests {
             celldefine: false,
             default_nettype: yavs_verilog::Nettype::Wire,
             setup: String::new(),
+            iface: String::new(),
         };
         let diag = |code: &'static str, file: Option<usize>| Diag {
             code,

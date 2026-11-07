@@ -8,15 +8,17 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use yavs_kernel::{DriverId, LogicVec, SigRef};
+use yavs_lib::{IF_OPS, IfBounds, IfDir, IfExpr, IfParam, IfPort, IfRange, IfValue, Interface};
+use yavs_logic::StdULogic;
 
 use crate::ast::{
     Ctrl, Decl, Declarator, Delay, EventCtrl, Expr, Ident, Item, Module, NetKind, ParamDecl, Ports,
-    Range, RangeKind, Stmt, VarKind,
+    Range, RangeKind, Stmt, Strength, VarKind,
 };
 use crate::exec::{Arg, CaseKind, Code, E, Inst, Lhs, Op, Start, reads};
 use crate::host::Tables;
 use crate::lower::{LowerError, Lowerer, MAX_WIDTH};
-use crate::runtime::{Domain, Edge, NetId};
+use crate::runtime::{Domain, Drive, Edge, NetId};
 use crate::sem::{Const, R, Sx, Sym, Ty, Var, real_to_i64, string_value, unsupported};
 use crate::value::V4;
 use crate::{Diag, Dir, Source, Span};
@@ -71,6 +73,10 @@ pub struct Design {
     tabs: OnceLock<Result<Arc<Tables>, String>>,
     inputs: Vec<(u32, u32)>,
     outputs: Vec<(u32, u32, bool)>,
+    /// Driver nets: (driver, resolved net, strength of a 0, strength of a 1).
+    drivers: Vec<(u32, u32, Drive, Drive)>,
+    /// Resolved nets with a pull: `tri0` (`L`) and `tri1` (`H`).
+    pulls: Vec<(u32, StdULogic)>,
     /// The smallest precision of the instances, for `%t` (17.3.2).
     tf_fs: u64,
 }
@@ -105,6 +111,12 @@ impl Design {
                 true => d.output_bit(NetId(n), drv),
                 false => d.output(NetId(n), drv),
             }
+        }
+        for &(drv, target, z, o) in &self.drivers {
+            d.driver(NetId(drv), NetId(target), z, o);
+        }
+        for &(n, l) in &self.pulls {
+            d.pull(NetId(n), l);
         }
         match self.tables() {
             Ok(t) => {
@@ -191,8 +203,53 @@ impl Design {
     }
 }
 
-/// Elements `.0 .. .0 + .1` of a net and what drives them.
-type Driver = (u32, u32, &'static str);
+/// Elements `at .. at + n` of a net and what drives them.
+struct Driver {
+    at: u32,
+    n: u32,
+    what: &'static str,
+    /// The strengths of a 0 and of a 1; `None`: strong both.
+    drive: Option<(Drive, Drive)>,
+    /// The VHDL port of an input.
+    port: bool,
+}
+
+impl Driver {
+    fn overlaps(&self, o: &Driver) -> bool {
+        self.at < o.at + o.n && o.at < self.at + self.n
+    }
+}
+
+/// A continuous assignment elaborated, waiting for the drivers of its targets to be known.
+struct Pending {
+    name: String,
+    lhs: Lhs,
+    rhs: E,
+    deps: Vec<u32>,
+    /// Per leaf of `lhs`, in order: the variable it drives and the strengths.
+    leaves: Vec<(usize, Option<(Drive, Drive)>)>,
+}
+
+/// The strengths of a 0 and of a 1 of a drive strength `(strong0, weak1)` (clause 4.4.2):
+/// supply and strong are `Strong`; pull, weak, large, medium and small `Weak` (D13).
+fn drive_of(s: &Strength) -> Option<(Drive, Drive)> {
+    let Strength::Drive(a, b) = s else {
+        return None;
+    };
+    let (mut z, mut o) = (Drive::Strong, Drive::Strong);
+    for n in [a, b] {
+        let d = match n.trim_end_matches(['0', '1']) {
+            "highz" => Drive::HighZ,
+            "supply" | "strong" => Drive::Strong,
+            _ => Drive::Weak,
+        };
+        match n.ends_with('0') {
+            true => z = d,
+            false => o = d,
+        }
+    }
+    Some((z, o))
+}
 
 /// How a name is declared before it gets its net.
 struct Decl0 {
@@ -202,6 +259,7 @@ struct Decl0 {
     signed: bool,
     reg: bool,
     init: Option<Expr>,
+    kind: NetKind,
 }
 
 struct Elab<'d, 'a> {
@@ -215,6 +273,14 @@ struct Elab<'d, 'a> {
     at: Span,
     /// Per variable: the elements continuous drivers cover, and whether a process writes it.
     driven: Vec<(Vec<Driver>, bool)>,
+    /// Per variable: its net type.
+    kinds: Vec<NetKind>,
+    /// Only the interface is wanted ([`interface`]).
+    iface: bool,
+    /// The strengths of the continuous assignment being read.
+    strength: Option<(Drive, Drive)>,
+    /// The variables the continuous assignment being read drives, per leaf.
+    leaves: Vec<(usize, Option<(Drive, Drive)>)>,
     counts: HashMap<&'static str, u32>,
 }
 
@@ -240,12 +306,22 @@ fn find<'n>(
 
 impl<'d, 'a> Elab<'d, 'a> {
     fn new(d: &'d mut Design, inst: &'a Instance<'a>) -> Elab<'d, 'a> {
+        let src = inst.source;
+        Elab::with_span(d, inst, Box::new(move |a, b| src.span(a, b - a)), false)
+    }
+
+    /// An elaboration whose spans come from `spanf`; `iface` reads only the declarations of the
+    /// module's interface ([`interface`]) and tolerates what the rest of the module has.
+    fn with_span(
+        d: &'d mut Design,
+        inst: &'a Instance<'a>,
+        spanf: Box<dyn Fn(u32, u32) -> Span + 'a>,
+        iface: bool,
+    ) -> Elab<'d, 'a> {
         let ts = inst
             .module
             .timescale
             .unwrap_or(inst.source.default_timescale);
-        let src = inst.source;
-        let spanf: Box<dyn Fn(u32, u32) -> Span + 'a> = Box::new(move |a, b| src.span(a, b - a));
         let m = &inst.module.name;
         let at = spanf(m.pos, m.pos + m.name.len() as u32);
         d.tf_fs = match d.tf_fs {
@@ -266,6 +342,10 @@ impl<'d, 'a> Elab<'d, 'a> {
             spanf,
             at,
             driven: Vec::new(),
+            kinds: Vec::new(),
+            iface,
+            strength: None,
+            leaves: Vec::new(),
             counts: HashMap::new(),
         }
     }
@@ -305,8 +385,173 @@ impl<'d, 'a> Elab<'d, 'a> {
         self.nets(decls)?;
         self.bind_ports()?;
         self.items()?;
-        self.check_drivers();
         Ok(())
+    }
+
+    // ---- the interface ----
+
+    fn interface(&mut self) -> R<Interface> {
+        let m = self.inst.module;
+        self.params()?;
+        let mut out = Interface::default();
+        let header = !m.params.is_empty();
+        let mut list: Vec<(&ParamDecl, bool)> = m.params.iter().map(|p| (p, p.local)).collect();
+        for it in &m.items {
+            if let Item::Param(p) = it {
+                list.push((p, p.local || header || p.spec));
+            }
+        }
+        for &(p, local) in &list {
+            if local {
+                continue;
+            }
+            for (name, e) in &p.assigns {
+                let Some(Sym::Param(c)) = self.syms.get(&name.name) else {
+                    continue;
+                };
+                let typed = p.kind.is_some() || p.range.is_some();
+                // The sign of an untyped parameter is its value's (12.2): an expression of plain
+                // decimal numbers and integer parameters is a signed integer.
+                let signed = !typed
+                    && (self.sx().ty(e)?.signed
+                        || plain_int(
+                            e,
+                            &out.params
+                                .iter()
+                                .map(|p| p.name.as_str())
+                                .collect::<Vec<_>>(),
+                        ));
+                let value = match c {
+                    Const::R(r) => IfValue::Real(*r),
+                    Const::V(v, _) => match e {
+                        Expr::Str(s) if !typed => IfValue::Str(crate::sem::string_bytes(s)),
+                        _ if (p.kind == Some(VarKind::Integer) || signed)
+                            && v.width() == 32
+                            && v.is_known() =>
+                        {
+                            IfValue::Int(v.to_i64(true).unwrap_or_default())
+                        }
+                        _ => IfValue::Vec((0..v.width()).rev().map(|i| v.get(i).char()).collect()),
+                    },
+                };
+                out.params.push(IfParam {
+                    name: name.name.clone(),
+                    value,
+                    derived: None,
+                });
+            }
+        }
+        // The declared range of each name, the first declaration that has one, as `declarations`
+        // merges them; parameters an expression may name.
+        let mut ranges: HashMap<&str, &Range> = HashMap::new();
+        let ansi = match &m.ports {
+            Ports::Ansi(v) => v.as_slice(),
+            _ => &[],
+        };
+        let body_ports = m.items.iter().filter_map(|i| match i {
+            Item::Port(p) => Some(p),
+            _ => None,
+        });
+        for p in ansi.iter().chain(body_ports) {
+            if let Some(r) = &p.range {
+                for d in &p.names {
+                    ranges.entry(&d.name.name).or_insert(r);
+                }
+            }
+        }
+        for it in &m.items {
+            let (r, names) = match it {
+                Item::Net(n) => (&n.range, &n.names),
+                Item::Var(v) => (&v.range, &v.names),
+                _ => continue,
+            };
+            if let Some(r) = r {
+                for d in names {
+                    ranges.entry(&d.name.name).or_insert(r);
+                }
+            }
+        }
+        let mut names = Names {
+            ints: out
+                .params
+                .iter()
+                .filter(|p| matches!(p.value, IfValue::Int(_)))
+                .map(|p| p.name.clone())
+                .collect(),
+            locals: HashMap::new(),
+            params: Vec::new(),
+        };
+        for (p, local) in &list {
+            for (n, e) in &p.assigns {
+                if !*local {
+                    names.params.push(&n.name);
+                }
+                if *local
+                    && (p.kind.is_none() || p.kind == Some(VarKind::Integer))
+                    && p.range.is_none()
+                {
+                    names.locals.insert(&n.name, e);
+                }
+            }
+        }
+        // A parameter whose default names other parameters is what the instance sees while it
+        // leaves it out.
+        for (p, local) in &list {
+            if *local {
+                continue;
+            }
+            for (n, e) in &p.assigns {
+                if let Some(ip) = out.params.iter_mut().find(|q| q.name == n.name)
+                    && matches!(ip.value, IfValue::Int(_))
+                    && names_param(e, &names, 0)
+                {
+                    ip.derived = iexpr(e, &names, 0).ok().filter(IfExpr::has_param);
+                }
+            }
+        }
+        let decls = self.declarations()?;
+        for n in self.port_names()? {
+            let Some(d) = decls.iter().find(|d| d.name.name == n.name) else {
+                return Err(Box::new(Diag::error(
+                    "E4202",
+                    format!("the port `{}` has no declaration", n.name),
+                    self.span_id(&n),
+                )));
+            };
+            let dir = match d.dir {
+                Some(dir) => dir,
+                None => {
+                    return Err(Box::new(Diag::error(
+                        "E4202",
+                        format!("the port `{}` has no direction", n.name),
+                        self.span_id(&n),
+                    )));
+                }
+            };
+            let range = d.range.map(|(msb, lsb)| IfRange {
+                msb,
+                lsb,
+                bounds: match ranges.get(n.name.as_str()) {
+                    Some(r) if names_param(&r.msb, &names, 0) || names_param(&r.lsb, &names, 0) => {
+                        match (iexpr(&r.msb, &names, 0), iexpr(&r.lsb, &names, 0)) {
+                            (Ok(m), Ok(l)) => IfBounds::Exprs(m, l),
+                            (Err(why), _) | (_, Err(why)) => IfBounds::Opaque(why),
+                        }
+                    }
+                    _ => IfBounds::Fixed,
+                },
+            });
+            out.ports.push(IfPort {
+                name: n.name.clone(),
+                dir: match dir {
+                    Dir::Input => IfDir::In,
+                    Dir::Output => IfDir::Out,
+                    Dir::Inout => IfDir::Inout,
+                },
+                range,
+            });
+        }
+        Ok(out)
     }
 
     // ---- parameters ----
@@ -420,9 +665,13 @@ impl<'d, 'a> Elab<'d, 'a> {
                    dir: Option<Dir>,
                    range: Option<(i64, i64)>,
                    signed: bool,
-                   reg: bool|
+                   reg: bool,
+                   kind: NetKind|
          -> R<()> {
             if !d.dims.is_empty() {
+                if el.iface {
+                    return Ok(());
+                }
                 return Err(unsupported(
                     "a memory (an array of variables)",
                     el.span_id(&d.name),
@@ -435,6 +684,9 @@ impl<'d, 'a> Elab<'d, 'a> {
                     x.range = x.range.or(range);
                     x.signed |= signed;
                     x.reg |= reg;
+                    if kind != NetKind::Wire {
+                        x.kind = kind;
+                    }
                     x.init = x.init.clone().or(d.init.clone());
                 }
                 None => out.push(Decl0 {
@@ -444,6 +696,7 @@ impl<'d, 'a> Elab<'d, 'a> {
                     signed,
                     reg,
                     init: d.init.clone(),
+                    kind,
                 }),
             }
             Ok(())
@@ -457,7 +710,7 @@ impl<'d, 'a> Elab<'d, 'a> {
             _ => None,
         });
         for p in port_items.into_iter().chain(body_ports) {
-            if p.dir == Dir::Inout {
+            if p.dir == Dir::Inout && !self.iface {
                 let n = p.names.first().map(|d| &d.name);
                 return Err(unsupported(
                     "an inout port",
@@ -476,23 +729,23 @@ impl<'d, 'a> Elab<'d, 'a> {
                     (self.opt_range(&p.range)?, p.signed, false)
                 }
             };
+            let kind = p.net.unwrap_or(NetKind::Wire);
             for d in &p.names {
-                add(self, &mut out, d, Some(p.dir), range, signed, reg)?;
+                add(self, &mut out, d, Some(p.dir), range, signed, reg, kind)?;
             }
         }
         for it in &m.items {
             match it {
                 Item::Net(n) => {
-                    self.net_kind(n.kind, &n.names)?;
-                    if n.strength.is_some() {
-                        return Err(unsupported("a drive strength", self.decl_at(&n.names)));
+                    if !self.iface {
+                        self.net_kind(n.kind, &n.names)?;
                     }
-                    if n.delay.is_some() {
+                    if n.delay.is_some() && !self.iface {
                         return Err(unsupported("a net delay", self.decl_at(&n.names)));
                     }
                     let r = self.opt_range(&n.range)?;
                     for d in &n.names {
-                        add(self, &mut out, d, None, r, n.signed, false)?;
+                        add(self, &mut out, d, None, r, n.signed, false, n.kind)?;
                     }
                 }
                 Item::Var(v) => {
@@ -500,15 +753,16 @@ impl<'d, 'a> Elab<'d, 'a> {
                         VarKind::Reg => (self.opt_range(&v.range)?, v.signed),
                         VarKind::Integer => (Some((31, 0)), true),
                         VarKind::Time => (Some((63, 0)), false),
+                        VarKind::Real | VarKind::Realtime if self.iface => continue,
                         VarKind::Real | VarKind::Realtime => {
                             return Err(unsupported("a real variable", self.decl_at(&v.names)));
                         }
                     };
                     for d in &v.names {
-                        add(self, &mut out, d, None, r, s, true)?;
+                        add(self, &mut out, d, None, r, s, true, NetKind::Wire)?;
                     }
                 }
-                Item::Event(names) => {
+                Item::Event(names) if !self.iface => {
                     return Err(unsupported("a named event", self.decl_at(names)));
                 }
                 _ => {}
@@ -531,6 +785,7 @@ impl<'d, 'a> Elab<'d, 'a> {
                             signed: false,
                             reg: false,
                             init: None,
+                            kind: NetKind::Wire,
                         });
                     }
                 }
@@ -545,7 +800,13 @@ impl<'d, 'a> Elab<'d, 'a> {
 
     fn net_kind(&self, k: NetKind, names: &[Declarator]) -> R<()> {
         match k {
-            NetKind::Wire | NetKind::Tri => Ok(()),
+            NetKind::Wire
+            | NetKind::Tri
+            | NetKind::Uwire
+            | NetKind::Tri0
+            | NetKind::Tri1
+            | NetKind::Supply0
+            | NetKind::Supply1 => Ok(()),
             k => Err(unsupported(
                 &format!("the net type `{}`", format!("{k:?}").to_lowercase()),
                 self.decl_at(names),
@@ -572,6 +833,9 @@ impl<'d, 'a> Elab<'d, 'a> {
         };
         // How many continuous assignments name each declaration on their left.
         let mut targets: HashMap<&str, u32> = HashMap::new();
+        // The names a drive strength applies to: a copy of them is not their alias, which would
+        // show a weak value where the copy drives a strong one.
+        let mut strengths: Vec<&str> = Vec::new();
         let mut copies = Vec::new();
         for it in &m.items {
             match it {
@@ -579,6 +843,9 @@ impl<'d, 'a> Elab<'d, 'a> {
                     for (l, r) in &a.assigns {
                         let mut names = Vec::new();
                         lhs_names(l, &mut names);
+                        if a.strength.is_some() {
+                            strengths.extend(&names);
+                        }
                         for n in names {
                             *targets.entry(n).or_default() += 1;
                         }
@@ -591,6 +858,9 @@ impl<'d, 'a> Elab<'d, 'a> {
                     for d in &n.names {
                         if let Some(r) = &d.init {
                             *targets.entry(d.name.name.as_str()).or_default() += 1;
+                            if n.strength.is_some() {
+                                strengths.push(d.name.name.as_str());
+                            }
                             if let Expr::Ident(b) = r {
                                 copies.push((d.name.name.as_str(), b.name.as_str()));
                             }
@@ -612,12 +882,19 @@ impl<'d, 'a> Elab<'d, 'a> {
             let (Some(&ia), Some(&ib)) = (index.get(a), index.get(b)) else {
                 continue;
             };
-            let da = &decls[ia];
-            // Only an internal net whose one driver is this copy, of the copy's width.
+            let (da, db) = (&decls[ia], &decls[ib]);
+            // Only an internal net whose one driver is this copy, of the copy's width, and
+            // neither of them resolved, pulled or driven with a strength.
+            let plain = |d: &Decl0| {
+                matches!(d.kind, NetKind::Wire | NetKind::Tri)
+                    && !strengths.contains(&d.name.name.as_str())
+            };
             if da.dir.is_some()
                 || da.reg
                 || targets.get(a) != Some(&1)
-                || width(da) != width(&decls[ib])
+                || width(da) != width(db)
+                || !plain(da)
+                || !(db.reg || plain(db) && targets.get(b).is_none_or(|&n| n <= 1))
             {
                 continue;
             }
@@ -633,6 +910,8 @@ impl<'d, 'a> Elab<'d, 'a> {
                 let d = &decls[r];
                 let w = width(d);
                 let init = match &d.init {
+                    _ if d.kind == NetKind::Supply0 => V4::from_u64(w, 0).to_logic(),
+                    _ if d.kind == NetKind::Supply1 => V4::from_i64(w, -1).to_logic(),
                     // `reg r = v;` starts at `v` (6.2.1, read as the initial value).
                     Some(e) if d.reg => match self.sx().konst(e)? {
                         Const::V(v, s) => v.ext(w, s).to_logic(),
@@ -670,6 +949,7 @@ impl<'d, 'a> Elab<'d, 'a> {
                 pos: d.name.pos,
             });
             self.driven.push((Vec::new(), false));
+            self.kinds.push(d.kind);
         }
         Ok(())
     }
@@ -816,7 +1096,14 @@ impl<'d, 'a> Elab<'d, 'a> {
             }
             if p.input {
                 self.d.inputs.push((p.key, v.net));
-                self.driven[k].0.push((0, v.w(), "the VHDL port"));
+                let w = v.w();
+                self.driven[k].0.push(Driver {
+                    at: 0,
+                    n: w,
+                    what: "the VHDL port",
+                    drive: None,
+                    port: true,
+                });
             } else {
                 self.d.outputs.push((p.key, v.net, p.bit));
             }
@@ -840,7 +1127,8 @@ impl<'d, 'a> Elab<'d, 'a> {
                 Item::Net(n) => {
                     for d in &n.names {
                         if let Some(init) = &d.init {
-                            assigns.push((Expr::Ident(d.name.clone()), init.clone()));
+                            let st = n.strength.as_ref().and_then(drive_of);
+                            assigns.push((Expr::Ident(d.name.clone()), init.clone(), st));
                         }
                     }
                 }
@@ -849,16 +1137,11 @@ impl<'d, 'a> Elab<'d, 'a> {
                         .assigns
                         .first()
                         .map_or(self.at, |(l, _)| self.sx().span_of(l));
-                    if a.strength.is_some() {
-                        return Err(unsupported(
-                            "a drive strength on a continuous assignment",
-                            at,
-                        ));
-                    }
                     if a.delay.is_some() {
                         return Err(unsupported("a delay on a continuous assignment", at));
                     }
-                    assigns.extend(a.assigns.iter().cloned());
+                    let st = a.strength.as_ref().and_then(drive_of);
+                    assigns.extend(a.assigns.iter().map(|(l, r)| (l.clone(), r.clone(), st)));
                 }
                 Item::Always(s) => always.push(s),
                 Item::Initial(s) => initial.push(s),
@@ -891,9 +1174,12 @@ impl<'d, 'a> Elab<'d, 'a> {
         // Continuous assignments first, then `always`, then `initial`: all of them start in
         // the Active region at time 0 in this order, so an `initial` write at time 0 is seen by
         // the `always` blocks waiting for it (the LRM leaves the order open, 9.9).
-        for (l, r) in &assigns {
-            self.assign(l, r)?;
+        let mut pending = Vec::new();
+        for (l, r, st) in &assigns {
+            self.strength = *st;
+            pending.extend(self.assign(l, r)?);
         }
+        self.drivers(pending)?;
         for s in always {
             self.process(s, true)?;
         }
@@ -909,16 +1195,15 @@ impl<'d, 'a> Elab<'d, 'a> {
         format!("{}.{kind}{}", self.inst.path, *c)
     }
 
-    fn assign(&mut self, l: &Expr, r: &Expr) -> R<()> {
+    fn assign(&mut self, l: &Expr, r: &Expr) -> R<Option<Pending>> {
+        self.leaves.clear();
         let lhs = self.lhs(l, false)?;
-        let mut parts = Vec::new();
-        lhs.nets(&mut parts);
         // An alias made in `nets` needs no process.
         if let (Lhs::Part { net, .. }, Expr::Ident(b)) = (&lhs, r)
             && let Some(Sym::Var(k)) = self.syms.get(&b.name)
             && self.vars[*k].net == *net
         {
-            return Ok(());
+            return Ok(None);
         }
         let sx = self.sx();
         let rt = sx.ty(r)?;
@@ -928,12 +1213,116 @@ impl<'d, 'a> Elab<'d, 'a> {
         reads(&rhs, &mut deps);
         lhs.reads(&mut deps);
         let name = self.name("assign");
-        let ops = vec![
-            Op::Set(lhs, rhs),
-            Op::Wait(deps.into_iter().map(|n| (n, Edge::Any)).collect()),
-            Op::Jmp(0),
-        ];
-        self.push(name, ops)?;
+        Ok(Some(Pending {
+            name,
+            lhs,
+            rhs,
+            deps,
+            leaves: std::mem::take(&mut self.leaves),
+        }))
+    }
+
+    /// The drivers of the module are known: checks them (4.6.5, and VHDL ports that the module
+    /// also drives), gives the nets that need resolution a private net per driver, and pushes the
+    /// processes of the continuous assignments.
+    fn drivers(&mut self, mut pending: Vec<Pending>) -> R<()> {
+        // A supply net has its value whatever drives it (supply strength, 4.6.6): an assignment
+        // to supply nets only needs no process.
+        let supply: Vec<bool> = (self.kinds.iter())
+            .map(|k| matches!(k, NetKind::Supply0 | NetKind::Supply1))
+            .collect();
+        pending.retain(|p| !p.leaves.iter().all(|&(k, _)| supply[k]));
+        let mut resolved = vec![false; self.vars.len()];
+        for (k, res) in resolved.iter_mut().enumerate() {
+            let (cont, kind) = (&self.driven[k].0, self.kinds[k]);
+            let v = &self.vars[k];
+            let span = (self.spanf)(v.pos, v.pos + v.name.len() as u32);
+            if let Some(p) = cont.iter().find(|d| d.port)
+                && let Some(o) = cont.iter().find(|d| !d.port)
+            {
+                return Err(Box::new(
+                    Diag::error(
+                        "E4501",
+                        format!(
+                            "the input port `{}` is also driven inside the module by {}",
+                            v.name, o.what
+                        ),
+                        span,
+                    )
+                    .note("a net driven from VHDL and from Verilog needs the resolution of an inout port, which Verilog elaboration does not implement")
+                    .note(format!("driven from VHDL by {}", p.what)),
+                ));
+            }
+            if matches!(kind, NetKind::Tri0 | NetKind::Tri1) && cont.iter().any(|d| d.port) {
+                return Err(Box::new(
+                    Diag::error(
+                        "E4501",
+                        format!("the input port `{}` has the net type `{}`", v.name, if kind == NetKind::Tri0 { "tri0" } else { "tri1" }),
+                        span,
+                    )
+                    .note("the pull would resolve with the VHDL driver, which Verilog elaboration does not implement"),
+                ));
+            }
+            let overlap = cont
+                .iter()
+                .enumerate()
+                .find_map(|(i, a)| cont[i + 1..].iter().find(|b| a.overlaps(b)).map(|b| (a, b)));
+            if kind == NetKind::Uwire
+                && let Some((a, b)) = overlap
+            {
+                return Err(Box::new(
+                    Diag::error(
+                        "E4502",
+                        format!("the uwire `{}` has more than one driver: {} and {}", v.name, a.what, b.what),
+                        span,
+                    )
+                    .note("IEEE 1364-2005 4.6.5: it is an error for a uwire to have more than one driver"),
+                ));
+            }
+            *res = kind != NetKind::Uwire
+                && (overlap.is_some()
+                    || matches!(kind, NetKind::Tri0 | NetKind::Tri1)
+                    || cont.iter().any(|d| d.drive.is_some()))
+                && !matches!(kind, NetKind::Supply0 | NetKind::Supply1);
+            if *res {
+                let w = v.w();
+                let net = v.net as usize;
+                let pull = match kind {
+                    NetKind::Tri0 => Some(StdULogic::L),
+                    NetKind::Tri1 => Some(StdULogic::H),
+                    _ => None,
+                };
+                // Undriven, a resolved net is its pull, or `z`.
+                self.d.nets[net] = LogicVec::new(w as usize, pull.unwrap_or(StdULogic::Z));
+                if let Some(l) = pull {
+                    self.d.pulls.push((v.net, l));
+                }
+            }
+        }
+        for mut p in pending {
+            let mut leaves = std::mem::take(&mut p.leaves).into_iter();
+            retarget(&mut p.lhs, &mut |net| {
+                let (k, st) = leaves.next().expect("a variable per leaf");
+                if !resolved[k] && !supply[k] {
+                    return net;
+                }
+                // The leaf drives a private net, which a supply net never reads.
+                let w = self.d.nets[net as usize].len();
+                self.d.nets.push(LogicVec::new(w, StdULogic::Z));
+                let id = self.d.nets.len() as u32 - 1;
+                if !supply[k] {
+                    let (z, o) = st.unwrap_or((Drive::Strong, Drive::Strong));
+                    self.d.drivers.push((id, net, z, o));
+                }
+                id
+            });
+            let ops = vec![
+                Op::Set(p.lhs, p.rhs),
+                Op::Wait(p.deps.into_iter().map(|n| (n, Edge::Any)).collect()),
+                Op::Jmp(0),
+            ];
+            self.push(p.name, ops)?;
+        }
         Ok(())
     }
 
@@ -1075,7 +1464,16 @@ impl<'d, 'a> Elab<'d, 'a> {
             self.driven[k].1 = true;
         } else {
             match &start {
-                Start::Fixed(s) => self.driven[k].0.push((*s, n, "a continuous assignment")),
+                Start::Fixed(s) => {
+                    self.driven[k].0.push(Driver {
+                        at: *s,
+                        n,
+                        what: "a continuous assignment",
+                        drive: self.strength,
+                        port: false,
+                    });
+                    self.leaves.push((k, self.strength));
+                }
                 Start::Dyn { .. } => {
                     return Err(Box::new(Diag::error(
                         "E4506",
@@ -1090,29 +1488,6 @@ impl<'d, 'a> Elab<'d, 'a> {
             start,
             n,
         })
-    }
-
-    /// Bits of a net driven twice: the domain does not resolve drivers yet.
-    fn check_drivers(&mut self) {
-        for (k, (cont, _)) in self.driven.iter().enumerate() {
-            for (i, a) in cont.iter().enumerate() {
-                if let Some(b) = cont[i + 1..]
-                    .iter()
-                    .find(|b| a.0 < b.0 + b.1 && b.0 < a.0 + a.1)
-                {
-                    let v = &self.vars[k];
-                    self.errors.push(
-                        Diag::error(
-                            "E4502",
-                            format!("the net `{}` has more than one driver: {} and {}", v.name, a.2, b.2),
-                            (self.spanf)(v.pos, v.pos + v.name.len() as u32),
-                        )
-                        .note("a net with several drivers needs resolution, which Verilog elaboration does not implement"),
-                    );
-                    break;
-                }
-            }
-        }
     }
 
     fn process(&mut self, s: &Stmt, always: bool) -> R<()> {
@@ -1497,6 +1872,129 @@ fn lhs_names<'e>(e: &'e Expr, out: &mut Vec<&'e str>) {
         }
         Expr::Concat(v) => v.iter().for_each(|p| lhs_names(p, out)),
         _ => {}
+    }
+}
+
+/// The VHDL view of `module`: its parameters at their defaults and its ports ([`Interface`]).
+/// What the interface cannot say is in `Interface::error`; the rest of the module is not looked at.
+pub fn interface(module: &Module, default_timescale: crate::Timescale) -> Interface {
+    if module.encrypted.is_some() {
+        return Interface::failed("the module is encrypted (IEEE 1735)");
+    }
+    let source = Source {
+        files: Vec::new(),
+        decls: Vec::new(),
+        diagnostics: Vec::new(),
+        digest: String::new(),
+        default_timescale,
+        pre: Default::default(),
+    };
+    let inst = Instance {
+        path: &module.name.name,
+        source: &source,
+        module,
+        generics: &[],
+        ports: &[],
+    };
+    let mut d = Design::default();
+    let mut el = Elab::with_span(&mut d, &inst, Box::new(|_, _| Span::default()), true);
+    match el.interface() {
+        Ok(i) if el.errors.is_empty() => i,
+        Ok(_) => Interface::failed(el.errors.remove(0).message),
+        Err(e) => Interface::failed(e.message),
+    }
+}
+
+/// What a port bound or a parameter may name: the integer parameters, and the local
+/// parameters it can replace by their own expressions.
+struct Names<'e> {
+    ints: Vec<String>,
+    locals: HashMap<&'e str, &'e Expr>,
+    /// Every parameter name, for telling a bound that depends on parameters from one that does not.
+    params: Vec<&'e str>,
+}
+
+/// An expression of integer parameters in the subset the VHDL view follows (`IfExpr`); the
+/// reason when it is not.
+fn iexpr(e: &Expr, n: &Names<'_>, depth: u8) -> Result<IfExpr, String> {
+    if depth > 8 {
+        return Err("a chain of local parameters that is too deep".into());
+    }
+    let sub = |e: &Expr| iexpr(e, n, depth + 1).map(Box::new);
+    match e {
+        Expr::Num(s) => match crate::sem::number(s) {
+            Ok(v) if v.value.is_known() => v
+                .value
+                .to_i64(v.signed)
+                .map(IfExpr::Num)
+                .ok_or_else(|| format!("the number `{s}`")),
+            _ => Err(format!("the number `{s}`")),
+        },
+        Expr::Ident(i) if n.ints.contains(&i.name) => Ok(IfExpr::Param(i.name.clone())),
+        Expr::Ident(i) => match n.locals.get(i.name.as_str()) {
+            Some(l) => iexpr(l, n, depth + 1),
+            None => Err(format!("the name `{}`", i.name)),
+        },
+        Expr::Unary("-", a) => Ok(IfExpr::Neg(sub(a)?)),
+        Expr::Unary("+", a) => iexpr(a, n, depth + 1),
+        Expr::Unary("!", a) => Ok(IfExpr::Not(sub(a)?)),
+        Expr::Unary(op, _) => Err(format!("the operator `{op}`")),
+        Expr::Binary(op, a, b) => match IF_OPS.iter().find(|o| **o == *op) {
+            Some(op) => Ok(IfExpr::Bin(op, sub(a)?, sub(b)?)),
+            None => Err(format!("the operator `{op}`")),
+        },
+        Expr::Cond(c, a, b) => Ok(IfExpr::Cond(sub(c)?, sub(a)?, sub(b)?)),
+        Expr::SysCall(f, args) if f == "$clog2" && args.len() == 1 => {
+            Ok(IfExpr::Clog2(sub(&args[0])?))
+        }
+        Expr::SysCall(f, _) => Err(format!("`{f}`")),
+        _ => Err("this kind of expression".into()),
+    }
+}
+
+/// An expression of plain decimal numbers and the integer parameters `ints` (a signed integer, 12.2).
+fn plain_int(e: &Expr, ints: &[&str]) -> bool {
+    match e {
+        Expr::Num(s) => s.bytes().all(|b| b.is_ascii_digit()),
+        Expr::Ident(i) => ints.contains(&i.name.as_str()),
+        Expr::Unary(_, a) => plain_int(a, ints),
+        Expr::Binary(_, a, b) => plain_int(a, ints) && plain_int(b, ints),
+        Expr::Cond(c, a, b) => plain_int(c, ints) && plain_int(a, ints) && plain_int(b, ints),
+        Expr::SysCall(f, v) => f == "$clog2" && v.iter().all(|e| plain_int(e, ints)),
+        _ => false,
+    }
+}
+
+/// Whether `e` names a parameter, directly or through a local parameter.
+fn names_param(e: &Expr, n: &Names<'_>, depth: u8) -> bool {
+    let any = |es: &[&Expr]| es.iter().any(|e| names_param(e, n, depth + 1));
+    match e {
+        Expr::Ident(i) => {
+            n.params.contains(&i.name.as_str())
+                || (depth < 8
+                    && n.locals
+                        .get(i.name.as_str())
+                        .is_some_and(|l| names_param(l, n, depth + 1)))
+        }
+        Expr::Unary(_, a) => any(&[a]),
+        Expr::Binary(_, a, b) | Expr::Index(a, b) => any(&[a, b]),
+        Expr::Cond(a, b, c) | Expr::MinTypMax(a, b, c) | Expr::Range(a, _, b, c) => any(&[a, b, c]),
+        Expr::Concat(v) | Expr::SysCall(_, v) => v.iter().any(|e| names_param(e, n, depth + 1)),
+        Expr::Repl(a, v) => {
+            names_param(a, n, depth + 1) || v.iter().any(|e| names_param(e, n, depth + 1))
+        }
+        Expr::Call(a, v) => {
+            names_param(a, n, depth + 1) || v.iter().any(|e| names_param(e, n, depth + 1))
+        }
+        _ => false,
+    }
+}
+
+/// Each leaf of an assignment target takes the net `f(net)` returns.
+fn retarget(l: &mut Lhs, f: &mut impl FnMut(u32) -> u32) {
+    match l {
+        Lhs::Part { net, .. } => *net = f(*net),
+        Lhs::Cat(v) => v.iter_mut().for_each(|p| retarget(p, f)),
     }
 }
 

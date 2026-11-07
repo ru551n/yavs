@@ -55,18 +55,62 @@
   `Elaborated::verilog_domain`, a factory the build calls, so every build (restart, VHPI reset, debugger) gets a fresh domain.
 - **The file is read again as analysed:** each Verilog unit's library record holds `setup`, the options (`-I`, default
   timescale) and the preprocessor state entering its file (macros, `timescale`, `default_nettype`, `celldefine`,
-  `begin_keywords`), so elaboration reads it like the analysis did, macros of earlier files of the call included. A record
-  without it (an older yavs), or a file or include whose hash changed, is `E4508`. No `FORMAT` bump: the field is optional and
-  its absence is an error only where it is needed.
+  `begin_keywords`), so elaboration reads it like the analysis did, macros of earlier files of the call included. A file or include whose hash changed
+  is `E4508`. The field came with library `FORMAT` 7, so a library of an older yavs is `L0004` before any of this is read.
 - **Generics and ports:** generics of type integer (32-bit signed), real, string (8 bits per character), boolean, std_logic,
   bit and their vectors; ports of std_logic, std_ulogic, bit and their vectors, modes in and out (inout is step D), widths equal,
   left to left. A `bit` port takes x and z from Verilog as '0' (`lrm-checks.md` S5).
-- **One driver per net bit:** two continuous drivers of a net bit are `E4502` until the domain resolves drivers; a pure copy
-  `assign a = b;` onto an internal net with no other driver makes `a` the net of `b` (plan 3.6), no process.
+- **One driver per net bit (step C only):** two continuous drivers of a net bit were `E4502` until the domain resolved
+  drivers (see "Several drivers per net"); a pure copy `assign a = b;` onto a plain internal net with no other driver makes
+  `a` the net of `b` (plan 3.6), no process.
 - **Order at time 0:** continuous assignments, then `always`, then `initial`, each in source order (`lrm-checks.md` S2).
 - **`E4500`** now means a Verilog top level, which is not supported (D11), instead of "Verilog is not implemented".
 - **Codes:** `E4501` (construct not implemented, naming it), `E4502` to `E4509`, `E4700`, `E4701` in `yavs_verilog::CODES`;
   `E0142` (`-L` library not mapped) in the CLI's table.
+
+## `entity lib.module` of a Verilog module (maintainer ruling, step C of #776, 2026-11-07)
+
+- **A component made from the module's recorded view.** Analysis of a Verilog file evaluates each module's parameters at their
+  defaults and its ports once (`yavs_verilog::interface`) and keeps the text in the unit record (`iface`, library format 7).
+  VHDL analysis (`yavs-sem` `unit/module.rs`) declares from it a component in a region of its own below the instance and
+  types the instance as that component, so generic and port maps get every check and every form of actual a component
+  has (expressions, slices, `open`, conversions). No VHDL declaration exists for the module outside that instance.
+- **Types.** Generics: `integer` (a plain integer default), `real`, `string` (a string default), else `std_logic_vector`
+  of the default's width (the rules of component binding read them back the same way). Ports: `std_logic`, or
+  `std_logic_vector` with the module's bounds and direction. A bound that is an expression of integer parameters in the
+  subset VHDL has too is written as that expression of the generics, so `generic map (WIDTH => 8)` sizes `q`. The subset
+  (maintainer, 2026-11-07): `+ - * / % ** << >>`, comparisons, `&& || !`, `?:`, `$clog2`, local parameters of these, and
+  parameters whose default names others (a left-out `B = W * 2` follows `W` in the bounds). The operators VHDL lacks are
+  arithmetic on `boolean'pos` (a comparison is 0 or 1, `c ? a : b` is `b + (a - b) * [c]`, `$clog2(x)` counts the powers of
+  two below `x`, 31 terms), so the component needs no function and non-static generics work. A bound that names a
+  parameter and is outside the subset is recorded `Opaque`: the defaults while the generic map is empty, `E4706` naming the
+  port when it is not (no silent default). Names differing only in case are extended identifiers (`\D\`, `\d\`).
+- **Names.** The library in the name is searched first (`work` or mapped), a hit there always wins; when it lacks the module the
+  `-L` libraries are searched in order (maintainer, 2026-11-07; `-L` on `analyze`, since the instance is typed there, and on
+  `elab`/`run`; the analysed-unit cache records the list); the module is looked up exactly, then by the unique module
+  differing in case (D5), several are `E4509`; a VHDL entity of that name wins. A miss lists the libraries searched.
+  Errors in the generic and port maps are rewritten as `E4704`/`E4705` naming the module and the parameter or port, with the
+  Verilog declaration and the VHDL one in notes (plan section 6). An
+  architecture is `E4702`; a module without a view is `E4703`. Query `Module` and `Db::note_verilog_modules` keep the
+  analysed-unit cache and a call that analyses module and testbench together right.
+- **A generic left out keeps the module's default** (not the component's copy of it), so a parameter that depends on another
+  follows an override. Components written by the user pass all their generics, as before.
+
+## Several drivers per net (maintainer ruling, step C of #776, 2026-11-07)
+
+- **Resolution in the Verilog domain.** `wire` and `tri` nets resolve drivers on the same bit as the truth table of 1364
+  4.6.1, which the kernel's `std_logic` resolution gives for 4-state values; `E4502` is now only a `uwire` with two drivers
+  on one bit (4.6.5). `tri0`/`tri1` add a pull of `L`/`H`; `supply0`/`supply1` are constants that their drivers do not
+  change (S8). `wand`, `wor`, `triand`, `trior` and `trireg` stay `E4501`. Z-driving assignments
+  (`assign y = en ? a : 1'bz;`), partial-bit drivers and drive strengths on `assign` and on net declaration
+  assignments work. Net model and the place of `inout`: `docs/design/verilog-scheduling.md` 3a.
+- **Strengths: three levels (plan 3.3, D13).** supply and strong drive `0 1 x`, pull, weak, large, medium and small `L H W`,
+  highz `z`. Ceiling: supply against strong and pull against weak or medium resolve to x where 1364 picks the stronger
+  value; the upgrade path is an 8-level resolver for nets that mix those strengths.
+- **VHDL sees the resolved `std_ulogic`.** An output port driven weakly or pulled shows `L`, `H` or `W` to VHDL; a `bit`
+  port takes `L` as '0' and `H` as '1' (the earlier rule mapped every value but '1' to '0', which made `H` '0').
+- **No VHDL and Verilog drivers on one net yet.** An input port that the module also drives, and a `tri0`/`tri1` input,
+  are `E4501`; the `inout` step makes the VHDL signal one more driver of the same list (R9).
 
 ## Verilog scheduling inside one kernel process (step A of #776, 2026-11-07)
 

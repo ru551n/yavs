@@ -871,6 +871,7 @@ fn instance_out_ports_are_sources() {
             scope: cscope,
             generics: Box::new([]),
             ports: Box::new([port, inport]),
+            verilog: None,
         }),
         scope: fx.scope,
         span: Span::default(),

@@ -97,6 +97,9 @@ pub struct Options {
     /// Check the `-- yavs coverage exclude` directives of the files analysed (`--coverage-directives`,
     /// done by the CLI after analysis; part of the key of the compilation cache).
     pub cov_directives: bool,
+    /// `-L LIB`: libraries searched, in order, for a Verilog module that `entity lib.module` does
+    /// not find in the library it names.
+    pub verilog_libs: Vec<String>,
 }
 
 /// The store of the analysed-unit cache (`docs/decisions.md` "Analysed-unit cache"): entries by
@@ -205,6 +208,7 @@ impl Options {
             stages: None,
             units: None,
             cov_directives: true,
+            verilog_libs: Vec::new(),
         }
     }
 }

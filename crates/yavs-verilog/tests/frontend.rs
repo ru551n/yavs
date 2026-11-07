@@ -151,6 +151,7 @@ fn every_code_in_the_sources_is_in_the_table() {
         // The codes the callers report at the boundary (the record of a file, the module search).
         include_str!("../../yavs/src/verilog.rs"),
         include_str!("../../yavs-elab/src/walk.rs"),
+        include_str!("../../yavs-sem/src/unit/module.rs"),
     ]
     .concat();
     // E4001 is raised at elaboration, not here.

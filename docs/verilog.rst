@@ -116,6 +116,31 @@ only in case). A configuration that says ``use open`` leaves the instance unboun
     ** Note: 35000000fs+0: q = 3
         Process counter_tb.process (counter_tb.vhd:19)
 
+A module can also be instantiated directly, as ``entity lib.module``, with no component declaration:
+
+.. code-block:: vhdl
+
+    dut : entity work.counter generic map (WIDTH => 8) port map (clk => clk, rst => rst, q => q);
+
+The generics and ports come from the module. The library is the one named, as in VHDL (``work`` or a mapped
+library); when it does not have the module, the libraries of ``-L LIB`` (on ``analyze``, and on ``elab`` and ``run``
+for the instance to be found again) are searched in order, and a module of the named library always wins. The name
+is the module's as written first, then the one module that differs only in case, and the message of a miss lists the
+libraries searched. Each parameter that is not local is a generic: ``integer`` when its default is a plain integer,
+``real``, ``string`` for a string, and ``std_logic_vector`` of its width otherwise (also for one bit). A generic left
+out of the generic map keeps the module's default, and so does what depends on it. A scalar port is ``std_logic``
+and a vector ``std_logic_vector`` with the module's bounds, so a descending Verilog range is ``downto`` and an
+ascending one ``to``. A bound that is a constant expression of integer parameters follows the generic map: ``+``,
+``-``, ``*``, ``/``, ``%``, ``**``, ``<<``, ``>>``, comparisons, ``&&``, ``||``, ``!``, ``?:``, ``$clog2``, local
+parameters of these and parameters that depend on others (``parameter B = W * 2``). Any other bound that names a
+parameter (a bitwise operator, a function call) is recorded as such: with no generic map the defaults give it, and
+with one the instantiation is ``E4706``, naming the port. Names that differ only in case (``D`` and ``d``) are
+extended identifiers in the map: ``\\D\\ => 64``. Generic and port maps are checked as for a component, with every
+form of actual; an error in them is ``E4704`` (generics) or ``E4705`` (ports), naming the module and the parameter or
+port, with the Verilog declaration and the VHDL one under it. A module with a ``real`` port, a port expression or an
+encrypted body has no such view (``E4703``; use a component of your own), and naming an architecture is ``E4702``.
+A user-defined primitive cannot be instantiated from VHDL.
+
 A module in another library is found with ``-L``, the library mapped as usual:
 
 .. code-block:: bash
@@ -146,8 +171,8 @@ both a Verilog register and a VHDL flip-flop therefore gives the VHDL flip-flop 
 before the edge. Outputs show the module's initial values (``x`` for a ``reg``, ``z`` for an undriven
 net) one delta into the run. Delays are in each module's ``timescale`` unit, rounded to its precision.
 
-**What runs.** Parameters and ``localparam`` (also wide and string values); ``wire``, ``tri``, ``reg``,
-``integer`` and ``time`` declarations; continuous assignments and net declaration assignments;
+**What runs.** Parameters and ``localparam`` (also wide and string values); ``wire``, ``tri``, ``tri0``, ``tri1``,
+``supply0``, ``supply1``, ``uwire``, ``reg``, ``integer`` and ``time`` declarations; continuous assignments and net declaration assignments;
 ``always`` and ``initial`` blocks with ``@(...)``, ``@*``, ``#`` and ``wait``; blocking and non-blocking
 assignments, also with an intra-assignment delay; ``if``, ``case``, ``casez``, ``casex``, ``for``,
 ``while``, ``repeat`` and ``forever``; every operator of the standard on 4-state values of any width,
@@ -155,9 +180,20 @@ with the standard's sizing and sign rules; ``$display``, ``$write``, ``$finish``
 ``$stime``, ``$realtime``, ``$clog2``, ``$signed`` and ``$unsigned``. The ports of a Verilog instance are
 in the wave file under the instance.
 
+**Nets with several drivers.** ``wire`` and ``tri`` nets with more than one driver resolve them as clause
+4.6.1 describes: equal values stay, ``0`` and ``1`` give ``x``, ``z`` yields to the other driver. This includes
+assignments that drive ``z`` (``assign y = en ? a : 1'bz;``) and drivers of different bits of one net.
+``tri0`` and ``tri1`` nets are pulled to ``0`` and ``1`` when nothing drives them, ``supply0`` and
+``supply1`` nets are constant, and a ``uwire`` with two drivers on one bit is ``E4502``. A drive strength on a
+continuous assignment or a net declaration assignment is read on three levels: supply and strong, pull and
+weak (large, medium and small too), and ``highz``. A stronger driver wins; supply against strong, and pull
+against weak, resolve to ``x`` where the standard picks the stronger value. VHDL sees the resolved
+``std_ulogic``: a weak or pulled output shows ``L``, ``H`` or ``W``, and a ``bit`` port takes them as ``0``
+and ``1``. An input port that the module also drives is ``E4501``.
+
 **Not yet.** Module instances inside a Verilog module, generate constructs, gate primitives and
-user-defined primitives, functions and tasks, memories, ``real`` variables, ``inout`` ports, nets with
-more than one driver, other net types (``tri0``, ``supply1``, ``wand``, ...), drive strengths, delays on
+user-defined primitives, functions and tasks, memories, ``real`` variables, ``inout`` ports, wired nets
+(``wand``, ``wor``, ``triand``, ``trior``), ``trireg``, ``pullup`` and ``pulldown``, delays on
 continuous assignments and nets, ``defparam``, named events, ``fork``/``join``, ``disable``, procedural
 ``assign`` and ``force``, hierarchical names, the other system tasks, and the ``glbl`` module of vendor
 libraries. Each stops elaboration with ``E4501``, naming the construct. Specify blocks are read and not

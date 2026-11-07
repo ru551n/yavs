@@ -3291,6 +3291,7 @@ impl Db {
                 scope: self.r_scope(r, c.scope),
                 generics: c.generics.iter().map(|&d| self.r_decl(r, d)).collect(),
                 ports: c.ports.iter().map(|&d| self.r_decl(r, d)).collect(),
+                verilog: c.verilog.clone(),
             }),
             DeclKind::GenericType(t) => DeclKind::GenericType(self.r_ty(r, *t)),
             DeclKind::GenericPackage(i) => DeclKind::GenericPackage(*i),

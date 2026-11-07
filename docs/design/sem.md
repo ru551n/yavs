@@ -205,7 +205,7 @@ pub enum DeclKind {
     PhysUnit { ty: TypeId, index: u32 },
     Alias(Alias),
     Attribute { ty: SubtypeId },     // attribute declaration
-    Component(Component),
+    Component(Component),            // Component.verilog: (library, module) when `entity lib.module` names a Verilog module (#776)
     View(ViewId),
     PackageInst(InstId),
     GenericType(TypeId), GenericSubprogram(Subprogram), GenericPackage(InstId),

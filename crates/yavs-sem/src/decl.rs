@@ -325,6 +325,9 @@ pub struct Component {
     pub scope: ScopeId,
     pub generics: Box<[DeclId]>,
     pub ports: Box<[DeclId]>,
+    /// The (library key, module) of the Verilog module this component stands for, when `entity
+    /// lib.module` named one (`unit/module.rs`); the instance is bound to it, not searched.
+    pub verilog: Option<Box<(String, String)>>,
 }
 
 impl DeclKind {
@@ -1759,7 +1762,7 @@ impl Db {
 
     /// `component c is generic (...); port (...); end component;` (6.8): generics
     /// and ports in the component's own region.
-    fn component_decl(
+    pub(crate) fn component_decl(
         &mut self,
         scope: ScopeId,
         c: &ast::ComponentDecl,
@@ -1790,6 +1793,7 @@ impl Db {
             scope: cscope,
             generics: all.into(),
             ports: ports.clone().unwrap_or_default(),
+            verilog: None,
         });
         self.declare(scope, decl);
         generics?;

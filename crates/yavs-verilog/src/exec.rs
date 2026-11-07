@@ -311,19 +311,6 @@ impl Lhs {
             Lhs::Cat(v) => v.iter().for_each(|p| p.reads(out)),
         }
     }
-
-    pub(crate) fn nets(&self, out: &mut Vec<(u32, Option<(u32, u32)>)>) {
-        match self {
-            Lhs::Part {
-                net,
-                start: Start::Fixed(k),
-                n,
-                ..
-            } => out.push((*net, Some((*k, *n)))),
-            Lhs::Part { net, .. } => out.push((*net, None)),
-            Lhs::Cat(v) => v.iter().for_each(|p| p.nets(out)),
-        }
-    }
 }
 
 /// The nets an expression reads.

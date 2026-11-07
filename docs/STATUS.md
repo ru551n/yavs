@@ -2963,8 +2963,8 @@ combinational logic and simulates them through `yavs analyze`, `yavs elab` and `
 configuration and no entity binds (an explicit `use open` stays open) is bound to the Verilog module of its name, searched in
 the work library, then the libraries of `-L LIB` (D6). `yavs-elab` records such instances in `Elaborated::verilog` (generics
 converted, ports as object ids); the CLI reads each module's file again under the setup its analysis recorded (options and
-incoming preprocessor state, the new `setup` field of the library record; a changed file or a record of an older yavs is
-`E4508`), elaborates all instances into one `yavs_verilog::Design` and gives the build a factory of the one serial domain
+incoming preprocessor state, the new `setup` field of the library record; a changed file is
+`E4508`; library format 7), elaborates all instances into one `yavs_verilog::Design` and gives the build a factory of the one serial domain
 process. Done: parameters and `localparam` from integer, real, string, boolean, std_logic, bit and vector generics (untyped
 parameters take the value's type, wide and string values), `wire`/`tri`/`reg`/`integer`/`time`, continuous and net declaration
 assignments (pure copies onto internal nets aliased, no process), `always`/`initial` with `@(...)` on names, `@*`, `#`, `wait`,
@@ -2973,16 +2973,32 @@ blocking, non-blocking and intra-assignment delays, `if`, `case`/`casez`/`casex`
 `$write` (formats `%b %o %h %d %s %c %t %m %e %f %g`), `$finish`, `$time`, `$stime`, `$realtime`, `$clog2`, `$signed`,
 `$unsigned`, timescale units and precision rounding, in/out ports of std_logic, bit and their vectors (bit ports take x and z
 as '0'), the D4 deltas at the boundary, the ports of Verilog instances in the wave file (`yavs-wave` shows the component scope of
-such an instance as an instance). Fail early: `E4501` names every other construct elaboration reaches; `E4502` a net with more
+such an instance as an instance). Fail early: `E4501` names every other construct elaboration reaches; `E4502` a uwire with more
 than one driver, `E4503` an `always` without timing control, `E4504` to `E4507` name, constant, expression and target errors,
 `E4700`/`E4701` port and generic mismatches, `E4509` an ambiguous module name, `E0142` an unmapped `-L` library, `E4001` an
 encrypted module, `E4500` a Verilog top level (D11).
 
+`entity lib.module` (2026-11-07): analysis records each module's VHDL view (`yavs_lib::Interface`, `iface` in the unit
+record, from `yavs_verilog::interface`: parameters at their defaults, port ranges, as expressions of integer
+parameters when they are); `yavs-sem` `unit/module.rs` types `entity lib.module` as a component made from it
+(`Component::verilog`), in the same call as the module's analysis (`Db::note_verilog_modules`) or later (the index);
+elaboration binds it to that library and module. Port bounds that are constant expressions of integer parameters
+(also `$clog2`, shifts, `?:`) follow the generic map; maps errors are `E4704`/`E4705`, an unfollowable bound with a map `E4706`;
+`-L` libraries are searched after the named one. Tests: `entity_instantiation_*` in `verilog_run.rs`,
+`crates/yavs-verilog/tests/iface.rs`.
+
+Several drivers per net (2026-11-07): `wire`/`tri` nets resolve drivers on one bit with the kernel's `std_logic`
+resolution (the truth table of 1364 4.6.1), a driver's value is mapped to `0 1 X` (strong), `L H W` (weak, pull) or `Z`
+(highz) by its strength (D13), `tri0`/`tri1` add a pull, `supply0`/`supply1` are constants, `uwire` with two drivers on a
+bit is `E4502`; resolved in the region of the write, no delta; VHDL sees the resolved `std_ulogic`. Tests:
+`tests/verilog/lrm/4.*_eval_*.v` (all sixteen pairs of the wire table, a three-state bus, partial drivers, tri0/tri1,
+supply, strengths, uwire) and `net_with_several_drivers` in `verilog_run.rs`. An input port the module also drives is
+`E4501` (step D).
+
 Not done (each `E4501` when reached): module instances inside Verilog, generate, gates and UDPs, functions and tasks,
-memories, real variables, `inout` (step D), several drivers per net and other net types, strengths, delays on continuous
+memories, real variables, `inout` (step D), wired nets and `trireg`, delays on continuous
 assignments and nets, `defparam`, events, `fork`/`join`, `disable`, procedural `assign`/`force`, hierarchical names, `glbl`,
-other system tasks, the elaboration tasks; `entity lib.module` direct instantiation of a Verilog module (needs analysis support,
-left out). Specify blocks are not evaluated (path delays are D9, M3). Verilog processes are IR functions (step E, 2026-11-07,
+other system tasks, the elaboration tasks. Specify blocks are not evaluated (path delays are D9, M3). Verilog processes are IR functions (step E, 2026-11-07,
 decision "Verilog processes on the IR"): `lower.rs` lowers the process code to `Inst::VUn` to `Inst::VBack`, one function per
 distinct body shared by the instances of a module with one parameter set, run by `InterpProcess`es inside the domain through
 `yavs_interp::VerilogHost`; values of up to 64 bits on machine words in the interpreter and in place in both compiled tiers
@@ -3016,7 +3032,7 @@ and ignored, attributes), module analysis (ports, duplicate declarations, undecl
 encrypted envelopes recorded by module name with one `W4007` per file (`E4001` is the error on instantiating such a module,
 reserved for elaboration), SystemVerilog detection (`E4002`, `E4003`), and macro and include nesting caps.
 Around it: diagnostic range `E4xxx`/`W4xxx` with `--explain` texts (one table, `yavs_verilog::CODES`) and an `E4` section in the
-error index; library format 6 with `Module` and `Primitive` units (case kept, exact then case-insensitive lookup, `L0035` for a
+error index; library format 6 (7 with `setup`) with `Module` and `Primitive` units (case kept, exact then case-insensitive lookup, `L0035` for a
 module and a VHDL unit of one name), the `encrypted` flag, the preprocessor context and the included files with hashes in the unit
 record, verified by `closure`; the context in the cache key; `yavs analyze` dispatches by extension (`.v`, `.vh`, `.vp` to the front
 end, `.sv`, `.svh` are `E4002`), with `-I`, `-D NAME[=VALUE]`, `--timescale` and `--lang`; diagnostics are reported under the file

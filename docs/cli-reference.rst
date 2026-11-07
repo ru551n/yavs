@@ -174,6 +174,12 @@ Arguments:
 
    The language of every file of this call, whatever its extension (default: ``.v``, ``.vh`` and ``.vp`` are Verilog, everything else VHDL; ``.sv`` and ``.svh`` are refused with ``E4002``).
 
+.. option:: -L LIB
+
+   A library searched, after the one a VHDL ``entity lib.module`` names, for the Verilog module of that name (repeatable, in order; ``E0142`` when no library of that name is mapped). ``elab`` and ``run`` take the same option.
+
+   May be repeated.
+
 .. option:: -W FLAG
 
    Warning control: ``-Werror`` (every warning is an error), ``-Werror=CODE``, ``-Wno-CODE`` (do not print it), ``-WCODE`` (stays a warning under ``-Werror``).
@@ -203,7 +209,7 @@ Arguments:
 
    Directory of the std/ieee units shared by all libraries, or ``off`` (default: ``$YAVS_STD_CACHE``, else ``yavs/std`` in the user's cache directory).
 
-Diagnostics named above: ``E0141``, ``E4002``; ``yavs --explain CODE`` explains each.
+Diagnostics named above: ``E0141``, ``E0142``, ``E4002``; ``yavs --explain CODE`` explains each.
 
 ``yavs elab``
 -------------
@@ -238,7 +244,7 @@ Arguments:
 
 .. option:: -L LIB
 
-   A library searched for the Verilog module of a component instance that no VHDL entity binds, after the work library (repeatable, searched in order; E0142 when no library of that name is mapped).
+   A library searched for the Verilog module of a component instance that no VHDL entity binds, after the work library, and for the module of an ``entity lib.module`` that the named library lacks (repeatable, searched in order; E0142 when no library of that name is mapped).
 
    May be repeated.
 
@@ -333,7 +339,7 @@ Arguments:
 
 .. option:: -L LIB
 
-   A library searched for the Verilog module of a component instance that no VHDL entity binds, after the work library (repeatable, searched in order; E0142 when no library of that name is mapped).
+   A library searched for the Verilog module of a component instance that no VHDL entity binds, after the work library, and for the module of an ``entity lib.module`` that the named library lacks (repeatable, searched in order; E0142 when no library of that name is mapped).
 
    May be repeated.
 

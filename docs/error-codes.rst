@@ -671,7 +671,7 @@ Verilog (E4 and W4)
    * - _`E4501`
      - Elaboration reached a legal IEEE 1364-2005 construct that yavs does not simulate yet; the message names it.
    * - _`E4502`
-     - Two continuous drivers (continuous assignments, a net declaration assignment, the VHDL port of an input) drive the same bits of one Verilog net.
+     - A ``uwire`` net has more than one driver on the same bit (clause 4.6.5).
    * - _`E4503`
      - An ``always`` block has no delay or event control, so it runs again at the same simulation time for ever and time never advances (clause 9.9.2).
    * - _`E4504`
@@ -683,13 +683,23 @@ Verilog (E4 and W4)
    * - _`E4507`
      - A procedural assignment writes a net, or a continuous assignment drives a variable (``reg``, ``integer``, ``time``), or something assigns a parameter.
    * - _`E4508`
-     - Elaboration reads a Verilog file again with the options and preprocessor state recorded when it was analyzed, and that record is missing (the library was written by an older yavs) or no longer matches the file.
+     - Elaboration reads a Verilog file again with the options and preprocessor state recorded when it was analyzed, and that record is missing or no longer matches the file.
    * - _`E4509`
      - A VHDL component names a Verilog module, and the library holds several modules whose names differ from it only in case, so none is chosen.
    * - _`E4700`
      - A port of the VHDL component that binds to a Verilog module has no port of that name in the module (matched exactly, then case-insensitively), or the directions differ, or the widths differ (a VHDL vector maps onto the Verilog vector left to left), or its type is not one Verilog can take (``std_logic``, ``std_ulogic``, ``bit`` and vectors of them, modes ``in`` and ``out``).
    * - _`E4701`
      - A generic of the VHDL component that binds to a Verilog module names no parameter of the module, names a local parameter (which cannot be overridden, clause 12.2), or has a type Verilog cannot take (``integer``, ``real``, ``string``, ``boolean``, ``std_logic``, ``bit`` and their vectors).
+   * - _`E4702`
+     - An ``entity lib.module`` instantiation names a Verilog module and an architecture.
+   * - _`E4703`
+     - ``entity lib.module`` takes the generics and ports of a Verilog module from its declaration, recorded when the file is analyzed.
+   * - _`E4704`
+     - A generic map of an ``entity lib.module`` instantiation of a Verilog module has an error in the association of a parameter: no parameter of that name, a missing actual, a type that does not fit.
+   * - _`E4705`
+     - A port map of an ``entity lib.module`` instantiation of a Verilog module has an error in the association of a port: no port of that name, a missing actual, a mode or type that does not fit, or an actual of another width.
+   * - _`E4706`
+     - The range of a port of a Verilog module depends on its parameters in a way VHDL cannot follow (an operator such as ``&`` or ``^``, a function call), and the generic map gives parameters values.
 
 Internal errors (E9)
 --------------------

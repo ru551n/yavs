@@ -53,6 +53,11 @@ pub struct Args {
     /// `.vp` are Verilog, everything else VHDL; `.sv` and `.svh` are refused with `E4002`).
     #[arg(long, value_enum, value_name = "LANG")]
     lang: Option<crate::verilog::LangArg>,
+    /// A library searched, after the one a VHDL `entity lib.module` names, for the Verilog module
+    /// of that name (repeatable, in order; `E0142` when no library of that name is mapped).
+    /// `elab` and `run` take the same option.
+    #[arg(short = 'L', value_name = "LIB")]
+    verilog_libs: Vec<String>,
     /// Warning control: `-Werror` (every warning is an error), `-Werror=CODE`, `-Wno-CODE` (do not
     /// print it), `-WCODE` (stays a warning under `-Werror`).
     #[arg(short = 'W', value_name = "FLAG")]
@@ -295,6 +300,10 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
     }
     let (work, _) = a.work.split_once(':').expect("checked by add_spec");
     let work_lib: Library = libs.get(work).expect("just added").clone();
+    if let Err(d) = crate::verilog::check_search_libraries(&libs, &a.verilog_libs) {
+        out.emit(&none, &d);
+        return out.finish(2);
+    }
 
     let rev = match a.std {
         StdArg::V1993 => LangRev::Vhdl1993,
@@ -307,6 +316,7 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
     // it, and the two analyses must be the same (`docs/decisions.md` "Analysed-unit cache").
     let check = std::env::var_os("YAVS_UNIT_CHECK").is_some();
     opts.libraries = libs;
+    opts.verilog_libs = a.verilog_libs.clone();
     opts.relaxed = a.relaxed;
     opts.psl = a.psl;
     opts.unit_audit |= check;

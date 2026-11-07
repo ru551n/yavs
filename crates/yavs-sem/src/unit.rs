@@ -17,7 +17,7 @@ use crate::scope::{ScopeKind, UseItem, Visible};
 mod binding;
 mod module;
 pub(crate) use binding::PendingSpec;
-pub(crate) use module::{digest as module_digest, find as find_module_in};
+pub(crate) use module::{digest as module_digest, find as find_module_in, map_names};
 
 #[cfg(test)]
 mod tests;

@@ -79,6 +79,15 @@ fn pairs(args: &[Arg]) -> Pairs {
         .collect()
 }
 
+/// An extended identifier `\\Name\\` (a Verilog name that VHDL could not tell from another by
+/// case) without its backslashes.
+fn plain_name(n: String) -> String {
+    match n.strip_prefix('\\').and_then(|s| s.strip_suffix('\\')) {
+        Some(p) => p.to_string(),
+        None => n,
+    }
+}
+
 fn assocs(args: &[Arg], n: usize) -> Vec<A> {
     let mut v: Vec<A> = (0..n).map(|_| A::Default).collect();
     for a in args {
@@ -2849,7 +2858,7 @@ impl Elab<'_> {
                 continue;
             }
             let decl = &db.decls[g];
-            let name = decl.name.to_string();
+            let name = plain_name(decl.name.to_string());
             let DeclKind::Object(o) = &decl.kind else {
                 return Err(Box::new(
                     Diagnostic::error("E4701", format!("the generic `{name}` is not a constant; a Verilog module takes constant parameters only"))
@@ -2929,7 +2938,7 @@ impl Elab<'_> {
         let mut ports = Vec::new();
         for &p in cports {
             let decl = &db.decls[p];
-            let name = decl.name.to_string();
+            let name = plain_name(decl.name.to_string());
             let DeclKind::Object(o) = &decl.kind else {
                 return Err(Box::new(ice(decl.span, "port is not an object")));
             };

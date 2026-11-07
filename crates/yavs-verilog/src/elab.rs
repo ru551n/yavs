@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use yavs_kernel::{DriverId, LogicVec, SigRef};
-use yavs_lib::{IfDir, IfExpr, IfParam, IfPort, IfRange, IfValue, Interface};
+use yavs_lib::{IF_OPS, IfBounds, IfDir, IfExpr, IfParam, IfPort, IfRange, IfValue, Interface};
 use yavs_logic::StdULogic;
 
 use crate::ast::{
@@ -332,7 +332,7 @@ impl<'d, 'a> Elab<'d, 'a> {
                 list.push((p, p.local || header || p.spec));
             }
         }
-        for (p, local) in list {
+        for &(p, local) in &list {
             if local {
                 continue;
             }
@@ -341,8 +341,17 @@ impl<'d, 'a> Elab<'d, 'a> {
                     continue;
                 };
                 let typed = p.kind.is_some() || p.range.is_some();
-                // The sign of an untyped parameter is its value's (12.2).
-                let signed = !typed && self.sx().ty(e)?.signed;
+                // The sign of an untyped parameter is its value's (12.2): an expression of plain
+                // decimal numbers and integer parameters is a signed integer.
+                let signed = !typed
+                    && (self.sx().ty(e)?.signed
+                        || plain_int(
+                            e,
+                            &out.params
+                                .iter()
+                                .map(|p| p.name.as_str())
+                                .collect::<Vec<_>>(),
+                        ));
                 let value = match c {
                     Const::R(r) => IfValue::Real(*r),
                     Const::V(v, _) => match e {
@@ -359,6 +368,7 @@ impl<'d, 'a> Elab<'d, 'a> {
                 out.params.push(IfParam {
                     name: name.name.clone(),
                     value,
+                    derived: None,
                 });
             }
         }
@@ -392,21 +402,41 @@ impl<'d, 'a> Elab<'d, 'a> {
                 }
             }
         }
-        let ints: Vec<&str> = out
-            .params
-            .iter()
-            .filter(|p| matches!(p.value, IfValue::Int(_)))
-            .map(|p| p.name.as_str())
-            .collect();
-        let mut locals: HashMap<&str, &Expr> = HashMap::new();
-        for it in &m.items {
-            if let Item::Param(p) = it
-                && p.local
-                && p.range.is_none()
-                && p.kind.is_none()
-            {
-                for (n, e) in &p.assigns {
-                    locals.insert(&n.name, e);
+        let mut names = Names {
+            ints: out
+                .params
+                .iter()
+                .filter(|p| matches!(p.value, IfValue::Int(_)))
+                .map(|p| p.name.clone())
+                .collect(),
+            locals: HashMap::new(),
+            params: Vec::new(),
+        };
+        for (p, local) in &list {
+            for (n, e) in &p.assigns {
+                if !*local {
+                    names.params.push(&n.name);
+                }
+                if *local
+                    && (p.kind.is_none() || p.kind == Some(VarKind::Integer))
+                    && p.range.is_none()
+                {
+                    names.locals.insert(&n.name, e);
+                }
+            }
+        }
+        // A parameter whose default names other parameters is what the instance sees while it
+        // leaves it out.
+        for (p, local) in &list {
+            if *local {
+                continue;
+            }
+            for (n, e) in &p.assigns {
+                if let Some(ip) = out.params.iter_mut().find(|q| q.name == n.name)
+                    && matches!(ip.value, IfValue::Int(_))
+                    && names_param(e, &names, 0)
+                {
+                    ip.derived = iexpr(e, &names, 0).ok().filter(IfExpr::has_param);
                 }
             }
         }
@@ -432,15 +462,15 @@ impl<'d, 'a> Elab<'d, 'a> {
             let range = d.range.map(|(msb, lsb)| IfRange {
                 msb,
                 lsb,
-                exprs: ranges
-                    .get(n.name.as_str())
-                    .and_then(|r| {
-                        Some((
-                            iexpr(&r.msb, &ints, &locals, 0)?,
-                            iexpr(&r.lsb, &ints, &locals, 0)?,
-                        ))
-                    })
-                    .filter(|(m, l)| m.has_param() || l.has_param()),
+                bounds: match ranges.get(n.name.as_str()) {
+                    Some(r) if names_param(&r.msb, &names, 0) || names_param(&r.lsb, &names, 0) => {
+                        match (iexpr(&r.msb, &names, 0), iexpr(&r.lsb, &names, 0)) {
+                            (Ok(m), Ok(l)) => IfBounds::Exprs(m, l),
+                            (Err(why), _) | (_, Err(why)) => IfBounds::Opaque(why),
+                        }
+                    }
+                    _ => IfBounds::Fixed,
+                },
             });
             out.ports.push(IfPort {
                 name: n.name.clone(),
@@ -1790,34 +1820,88 @@ pub fn interface(module: &Module, default_timescale: crate::Timescale) -> Interf
     }
 }
 
-/// A port bound as an expression of integer parameters in the subset VHDL has too, so that a
-/// generic map can size the port; `None` for anything else (the bound is then its default value).
-/// A `localparam` stands for its own expression.
-fn iexpr(e: &Expr, ints: &[&str], locals: &HashMap<&str, &Expr>, depth: u8) -> Option<IfExpr> {
+/// What a port bound or a parameter may name: the integer parameters, and the local
+/// parameters it can replace by their own expressions.
+struct Names<'e> {
+    ints: Vec<String>,
+    locals: HashMap<&'e str, &'e Expr>,
+    /// Every parameter name, for telling a bound that depends on parameters from one that does not.
+    params: Vec<&'e str>,
+}
+
+/// An expression of integer parameters in the subset the VHDL view follows (`IfExpr`); the
+/// reason when it is not.
+fn iexpr(e: &Expr, n: &Names<'_>, depth: u8) -> Result<IfExpr, String> {
     if depth > 8 {
-        return None;
+        return Err("a chain of local parameters that is too deep".into());
     }
-    let sub = |e: &Expr| iexpr(e, ints, locals, depth + 1).map(Box::new);
+    let sub = |e: &Expr| iexpr(e, n, depth + 1).map(Box::new);
     match e {
-        Expr::Num(s) if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) => {
-            s.parse().ok().map(IfExpr::Num)
+        Expr::Num(s) => match crate::sem::number(s) {
+            Ok(v) if v.value.is_known() => v
+                .value
+                .to_i64(v.signed)
+                .map(IfExpr::Num)
+                .ok_or_else(|| format!("the number `{s}`")),
+            _ => Err(format!("the number `{s}`")),
+        },
+        Expr::Ident(i) if n.ints.contains(&i.name) => Ok(IfExpr::Param(i.name.clone())),
+        Expr::Ident(i) => match n.locals.get(i.name.as_str()) {
+            Some(l) => iexpr(l, n, depth + 1),
+            None => Err(format!("the name `{}`", i.name)),
+        },
+        Expr::Unary("-", a) => Ok(IfExpr::Neg(sub(a)?)),
+        Expr::Unary("+", a) => iexpr(a, n, depth + 1),
+        Expr::Unary("!", a) => Ok(IfExpr::Not(sub(a)?)),
+        Expr::Unary(op, _) => Err(format!("the operator `{op}`")),
+        Expr::Binary(op, a, b) => match IF_OPS.iter().find(|o| **o == *op) {
+            Some(op) => Ok(IfExpr::Bin(op, sub(a)?, sub(b)?)),
+            None => Err(format!("the operator `{op}`")),
+        },
+        Expr::Cond(c, a, b) => Ok(IfExpr::Cond(sub(c)?, sub(a)?, sub(b)?)),
+        Expr::SysCall(f, args) if f == "$clog2" && args.len() == 1 => {
+            Ok(IfExpr::Clog2(sub(&args[0])?))
         }
-        Expr::Ident(i) if ints.contains(&i.name.as_str()) => Some(IfExpr::Param(i.name.clone())),
-        Expr::Ident(i) => iexpr(locals.get(i.name.as_str())?, ints, locals, depth + 1),
-        Expr::Unary("-", a) => Some(IfExpr::Neg(sub(a)?)),
-        Expr::Binary(op, a, b) => {
-            let op = match *op {
-                "+" => '+',
-                "-" => '-',
-                "*" => '*',
-                "/" => '/',
-                "%" => '%',
-                "**" => 'p',
-                _ => return None,
-            };
-            Some(IfExpr::Bin(op, sub(a)?, sub(b)?))
+        Expr::SysCall(f, _) => Err(format!("`{f}`")),
+        _ => Err("this kind of expression".into()),
+    }
+}
+
+/// An expression of plain decimal numbers and the integer parameters `ints` (a signed integer, 12.2).
+fn plain_int(e: &Expr, ints: &[&str]) -> bool {
+    match e {
+        Expr::Num(s) => s.bytes().all(|b| b.is_ascii_digit()),
+        Expr::Ident(i) => ints.contains(&i.name.as_str()),
+        Expr::Unary(_, a) => plain_int(a, ints),
+        Expr::Binary(_, a, b) => plain_int(a, ints) && plain_int(b, ints),
+        Expr::Cond(c, a, b) => plain_int(c, ints) && plain_int(a, ints) && plain_int(b, ints),
+        Expr::SysCall(f, v) => f == "$clog2" && v.iter().all(|e| plain_int(e, ints)),
+        _ => false,
+    }
+}
+
+/// Whether `e` names a parameter, directly or through a local parameter.
+fn names_param(e: &Expr, n: &Names<'_>, depth: u8) -> bool {
+    let any = |es: &[&Expr]| es.iter().any(|e| names_param(e, n, depth + 1));
+    match e {
+        Expr::Ident(i) => {
+            n.params.contains(&i.name.as_str())
+                || (depth < 8
+                    && n.locals
+                        .get(i.name.as_str())
+                        .is_some_and(|l| names_param(l, n, depth + 1)))
         }
-        _ => None,
+        Expr::Unary(_, a) => any(&[a]),
+        Expr::Binary(_, a, b) | Expr::Index(a, b) => any(&[a, b]),
+        Expr::Cond(a, b, c) | Expr::MinTypMax(a, b, c) | Expr::Range(a, _, b, c) => any(&[a, b, c]),
+        Expr::Concat(v) | Expr::SysCall(_, v) => v.iter().any(|e| names_param(e, n, depth + 1)),
+        Expr::Repl(a, v) => {
+            names_param(a, n, depth + 1) || v.iter().any(|e| names_param(e, n, depth + 1))
+        }
+        Expr::Call(a, v) => {
+            names_param(a, n, depth + 1) || v.iter().any(|e| names_param(e, n, depth + 1))
+        }
+        _ => false,
     }
 }
 

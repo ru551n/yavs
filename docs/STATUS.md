@@ -2982,7 +2982,9 @@ encrypted module, `E4500` a Verilog top level (D11).
 record, from `yavs_verilog::interface`: parameters at their defaults, port ranges, as expressions of integer
 parameters when they are); `yavs-sem` `unit/module.rs` types `entity lib.module` as a component made from it
 (`Component::verilog`), in the same call as the module's analysis (`Db::note_verilog_modules`) or later (the index);
-elaboration binds it to that library and module. Tests: `entity_instantiation_*` in `verilog_run.rs`,
+elaboration binds it to that library and module. Port bounds that are constant expressions of integer parameters
+(also `$clog2`, shifts, `?:`) follow the generic map; maps errors are `E4704`/`E4705`, an unfollowable bound with a map `E4706`;
+`-L` libraries are searched after the named one. Tests: `entity_instantiation_*` in `verilog_run.rs`,
 `crates/yavs-verilog/tests/iface.rs`.
 
 Several drivers per net (2026-11-07): `wire`/`tri` nets resolve drivers on one bit with the kernel's `std_logic`

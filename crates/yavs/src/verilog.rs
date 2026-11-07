@@ -251,23 +251,11 @@ pub(crate) fn search_libraries(
     work: &str,
     extra: &[String],
 ) -> Result<Vec<yavs_elab::VerilogLib>, Box<Diagnostic>> {
+    check_search_libraries(libs, extra)?;
     let mut out: Vec<yavs_elab::VerilogLib> = Vec::new();
     for name in std::iter::once(work).chain(extra.iter().map(String::as_str)) {
         let Some(lib) = libs.get(name) else {
-            let mut d = Diagnostic::error(
-                "E0142",
-                format!("`-L {name}`: no library `{name}` is mapped"),
-            );
-            let names: Vec<&str> = libs.names().collect();
-            d = match yavs_sem::suggest::suggest(
-                &yavs_lib::fold(name),
-                "library",
-                names.iter().map(|n| (*n, *n)),
-            ) {
-                Some(h) => d.with_help(h),
-                None => d.with_help("map it with `--map NAME:PATH`"),
-            };
-            return Err(Box::new(d));
+            continue;
         };
         if out.iter().any(|l| l.name == lib.name) {
             continue;
@@ -278,6 +266,33 @@ pub(crate) fn search_libraries(
         });
     }
     Ok(out)
+}
+
+/// Every `-L` library is mapped, else `E0142`.
+pub(crate) fn check_search_libraries(
+    libs: &Libraries,
+    extra: &[String],
+) -> Result<(), Box<Diagnostic>> {
+    for name in extra {
+        if libs.get(name).is_none() {
+            let names: Vec<&str> = libs.names().collect();
+            let d = Diagnostic::error(
+                "E0142",
+                format!("`-L {name}`: no library `{name}` is mapped"),
+            );
+            return Err(Box::new(
+                match yavs_sem::suggest::suggest(
+                    &yavs_lib::fold(name),
+                    "library",
+                    names.iter().map(|n| (*n, *n)),
+                ) {
+                    Some(h) => d.with_help(h),
+                    None => d.with_help("map it with `--map NAME:PATH`"),
+                },
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The Verilog side of an elaborated design (#776 step C): each module the component instances

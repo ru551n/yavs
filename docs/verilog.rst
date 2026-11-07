@@ -124,17 +124,23 @@ A module can also be instantiated directly, as ``entity lib.module``, with no co
     dut : entity work.counter generic map (WIDTH => 8) port map (clk => clk, rst => rst, q => q);
 
 The generics and ports come from the module. The library is the one named, as in VHDL (``work`` or a mapped
-library), and ``-L`` is neither needed nor searched; the name is the module's as written first, then the one
-module that differs only in case. Each parameter that is not local is a generic: ``integer`` when its default is a
-plain integer, ``real``, ``string`` for a string, and ``std_logic_vector`` of its width otherwise (also for one
-bit). A generic left out of the generic map keeps the module's default, and so does what depends on it. A scalar
-port is ``std_logic`` and a vector ``std_logic_vector`` with the module's bounds, so a descending Verilog range
-is ``downto`` and an ascending one ``to``. A bound that is an expression of integer parameters (``W - 1``,
-``2 * W``, a ``localparam`` of them) follows the generic map; any other bound (``$clog2``, a shift) has the value
-the defaults give, and a map that changes it is an element-count mismatch of the port association. Generic and
-port maps are checked as for a component: names, modes, types, ``open`` and expressions as actuals. A module
-with a ``real`` port, a port expression or an encrypted body has no such view (``E4703``; use a component of your
-own), and naming an architecture is ``E4702``. A user-defined primitive cannot be instantiated from VHDL.
+library); when it does not have the module, the libraries of ``-L LIB`` (on ``analyze``, and on ``elab`` and ``run``
+for the instance to be found again) are searched in order, and a module of the named library always wins. The name
+is the module's as written first, then the one module that differs only in case, and the message of a miss lists the
+libraries searched. Each parameter that is not local is a generic: ``integer`` when its default is a plain integer,
+``real``, ``string`` for a string, and ``std_logic_vector`` of its width otherwise (also for one bit). A generic left
+out of the generic map keeps the module's default, and so does what depends on it. A scalar port is ``std_logic``
+and a vector ``std_logic_vector`` with the module's bounds, so a descending Verilog range is ``downto`` and an
+ascending one ``to``. A bound that is a constant expression of integer parameters follows the generic map: ``+``,
+``-``, ``*``, ``/``, ``%``, ``**``, ``<<``, ``>>``, comparisons, ``&&``, ``||``, ``!``, ``?:``, ``$clog2``, local
+parameters of these and parameters that depend on others (``parameter B = W * 2``). Any other bound that names a
+parameter (a bitwise operator, a function call) is recorded as such: with no generic map the defaults give it, and
+with one the instantiation is ``E4706``, naming the port. Names that differ only in case (``D`` and ``d``) are
+extended identifiers in the map: ``\\D\\ => 64``. Generic and port maps are checked as for a component, with every
+form of actual; an error in them is ``E4704`` (generics) or ``E4705`` (ports), naming the module and the parameter or
+port, with the Verilog declaration and the VHDL one under it. A module with a ``real`` port, a port expression or an
+encrypted body has no such view (``E4703``; use a component of your own), and naming an architecture is ``E4702``.
+A user-defined primitive cannot be instantiated from VHDL.
 
 A module in another library is found with ``-L``, the library mapped as usual:
 

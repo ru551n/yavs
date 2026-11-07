@@ -13,7 +13,7 @@ mod record;
 mod text;
 
 pub use closure::{ClosureFile, Libraries, VERILOG_STD, closure};
-pub use iface::{IfDir, IfExpr, IfParam, IfPort, IfRange, IfValue, Interface};
+pub use iface::{IF_OPS, IfBounds, IfDir, IfExpr, IfParam, IfPort, IfRange, IfValue, Interface};
 pub use library::{Library, Session};
 pub use manifest::{
     FileRef, LOCK_FILE, MANIFEST_FILE, Manifest, ModuleLookup, RECORD_DIR, Stamp, UnitKind,

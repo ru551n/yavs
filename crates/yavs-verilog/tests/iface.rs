@@ -50,3 +50,40 @@ fn what_the_view_cannot_say_is_an_error() {
         .expect("an error");
     assert!(e.contains("real"), "{e}");
 }
+
+#[test]
+fn bounds_follow_constant_expressions_of_parameters() {
+    let i = view(
+        "module m #(parameter D = 16, parameter W = 8, parameter B = W * 2)
+                   (input [$clog2(D)-1:0] a, input [W<<1:0] s, output [(W > 4 ? W : 4)-1:0] c,
+                    input [B-1:0] d, output [W-1:0] e);
+           localparam AW = $clog2(D);
+           wire [AW:0] x;
+         endmodule",
+    );
+    let text = i.encode();
+    assert!(text.contains("param B int 16 = (* W 2)\n"), "{text}");
+    assert!(
+        text.contains("port a in 3 0 ~ (- (clog2 D) 1) ~ 0\n"),
+        "{text}"
+    );
+    assert!(text.contains("port s in 16 0 ~ (<< W 1) ~ 0\n"), "{text}");
+    assert!(
+        text.contains("port c out 7 0 ~ (- (? (> W 4) W 4) 1) ~ 0\n"),
+        "{text}"
+    );
+    assert!(text.contains("port d in 15 0 ~ (- B 1) ~ 0\n"), "{text}");
+}
+
+#[test]
+fn a_bound_that_cannot_follow_is_recorded_as_such() {
+    let i = view("module m #(parameter W = 8) (input [W & 15:0] a, input [7:0] b); endmodule");
+    assert!(i.error.is_none());
+    let text = i.encode();
+    assert!(
+        text.contains("port a in 8 0 ~ ! the operator `&`\n"),
+        "{text}"
+    );
+    // A bound that names no parameter is just its numbers.
+    assert!(text.contains("port b in 7 0\n"), "{text}");
+}

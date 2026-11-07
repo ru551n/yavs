@@ -132,6 +132,8 @@ pub(crate) enum Query {
     Relaxed,
     /// The Verilog module of a library by name: its recorded name and interface.
     Module(Symbol, Symbol),
+    /// The `-L` libraries searched for a Verilog module the named library lacks.
+    Search,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2074,6 +2076,9 @@ impl Db {
             | Query::LastArch(l, _)
             | Query::Module(l, _) => *l,
             Query::Relaxed => return Answer::Bool(self.opts.relaxed),
+            Query::Search => {
+                return Answer::Name(Some(Symbol::intern(&self.opts.verilog_libs.join(" "))));
+            }
         };
         let lid = self.lib_named(l);
         // A library the replay makes: what its source says.
@@ -2129,7 +2134,7 @@ impl Db {
                     name.as_str(),
                 )))
             }
-            Query::Relaxed => Answer::Bool(self.opts.relaxed),
+            Query::Relaxed | Query::Search => unreachable!("answered above"),
         }
     }
 

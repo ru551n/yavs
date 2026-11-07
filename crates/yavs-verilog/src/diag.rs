@@ -250,4 +250,19 @@ pub(crate) const TABLE: &[CodeInfo] = &[
         "Verilog module has no VHDL view",
         "`entity lib.module` takes the generics and ports of a Verilog module from its declaration, recorded when the file is analyzed. The module has none: its header has a construct VHDL cannot take (a real port, a port expression, an encrypted body), or its library was written without it. The message says which; instantiate the module through a component declaration of your own, or analyze the Verilog file again."
     ),
+    code!(
+        "E4704",
+        "generic map does not match the Verilog module",
+        "A generic map of an `entity lib.module` instantiation of a Verilog module has an error in the association of a parameter: no parameter of that name, a missing actual, a type that does not fit. The message names the module and the parameter and shows the Verilog declaration beside the VHDL generic made from it."
+    ),
+    code!(
+        "E4705",
+        "port map does not match the Verilog module",
+        "A port map of an `entity lib.module` instantiation of a Verilog module has an error in the association of a port: no port of that name, a missing actual, a mode or type that does not fit, or an actual of another width. The message names the module and the port and shows the Verilog declaration beside the VHDL port made from it."
+    ),
+    code!(
+        "E4706",
+        "port range cannot follow the generic map",
+        "The range of a port of a Verilog module depends on its parameters in a way VHDL cannot follow (an operator such as `&` or `^`, a function call), and the generic map gives parameters values. The ranges that follow are expressions of integer parameters with the arithmetic, comparison and logical operators, shifts, `?:` and `$clog2`; leave the generic map out, or instantiate the module through a component declaration of your own."
+    ),
 ];

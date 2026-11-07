@@ -45,11 +45,19 @@
 - **Types.** Generics: `integer` (a plain integer default), `real`, `string` (a string default), else `std_logic_vector`
   of the default's width (the rules of component binding read them back the same way). Ports: `std_logic`, or
   `std_logic_vector` with the module's bounds and direction. A bound that is an expression of integer parameters in the
-  subset VHDL has too (`+ - * / % **`, a `localparam` of them) is written as that expression of the generics, so
-  `generic map (WIDTH => 8)` sizes `q`; any other bound has its value for the defaults. Ceiling: a generic map that changes
-  such a bound is the VHDL element-count mismatch, not a Verilog message.
-- **Names.** The library in the name is that library (`work` or mapped), `-L` is not used for it; the module is looked up
-  exactly, then by the unique module differing in case (D5), several are `E4509`; a VHDL entity of that name wins. An
+  subset VHDL has too is written as that expression of the generics, so `generic map (WIDTH => 8)` sizes `q`. The subset
+  (maintainer, 2026-11-07): `+ - * / % ** << >>`, comparisons, `&& || !`, `?:`, `$clog2`, local parameters of these, and
+  parameters whose default names others (a left-out `B = W * 2` follows `W` in the bounds). The operators VHDL lacks are
+  arithmetic on `boolean'pos` (a comparison is 0 or 1, `c ? a : b` is `b + (a - b) * [c]`, `$clog2(x)` counts the powers of
+  two below `x`, 31 terms), so the component needs no function and non-static generics work. A bound that names a
+  parameter and is outside the subset is recorded `Opaque`: the defaults while the generic map is empty, `E4706` naming the
+  port when it is not (no silent default). Names differing only in case are extended identifiers (`\D\`, `\d\`).
+- **Names.** The library in the name is searched first (`work` or mapped), a hit there always wins; when it lacks the module the
+  `-L` libraries are searched in order (maintainer, 2026-11-07; `-L` on `analyze`, since the instance is typed there, and on
+  `elab`/`run`; the analysed-unit cache records the list); the module is looked up exactly, then by the unique module
+  differing in case (D5), several are `E4509`; a VHDL entity of that name wins. A miss lists the libraries searched.
+  Errors in the generic and port maps are rewritten as `E4704`/`E4705` naming the module and the parameter or port, with the
+  Verilog declaration and the VHDL one in notes (plan section 6). An
   architecture is `E4702`; a module without a view is `E4703`. Query `Module` and `Db::note_verilog_modules` keep the
   analysed-unit cache and a call that analyses module and testbench together right.
 - **A generic left out keeps the module's default** (not the component's copy of it), so a parameter that depends on another

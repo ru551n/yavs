@@ -1878,14 +1878,18 @@ impl Db {
             K::Process(p) => self.process(scope, s, p, id, postponed, passive)?,
             K::Block(b) => self.block(scope, s, b, id)?,
             K::Instance(i) => {
-                let target = self.st_inst_target(scope, &i.unit)?;
-                self.instance_kind(
-                    scope,
-                    s.span,
-                    target,
+                let (gmap, pmap) = (
                     i.generic_map.as_deref().unwrap_or(&[]),
                     i.port_map.as_deref().unwrap_or(&[]),
-                )?
+                );
+                // `entity lib.module` of a Verilog module follows the generic map in its ports.
+                self.inst_map = crate::unit::map_names(gmap);
+                self.module_view = None;
+                let target = self.st_inst_target(scope, &i.unit)?;
+                let first = self.diags.len();
+                let r = self.instance_kind(scope, s.span, target, gmap, pmap);
+                self.wrap_module_errors(first, gmap, pmap);
+                r?
             }
             // `l : c;` is parsed as a procedure call; it instantiates when `c`
             // is not a subprogram (11.7).

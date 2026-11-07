@@ -34,8 +34,9 @@ pub struct Common {
     #[arg(long = "map", value_name = "NAME:PATH")]
     maps: Vec<String>,
     /// A library searched for the Verilog module of a component instance that no VHDL entity
-    /// binds, after the work library (repeatable, searched in order; E0142 when no library of
-    /// that name is mapped).
+    /// binds, after the work library, and for the module of an `entity lib.module` that the named
+    /// library lacks (repeatable, searched in order; E0142 when no library of that name is
+    /// mapped).
     #[arg(short = 'L', value_name = "LIB")]
     verilog_libs: Vec<String>,
     /// Turn some errors into warnings: a shared variable of a non-protected type, a pure function
@@ -728,6 +729,7 @@ fn elaborate(
     };
     let mut opts = Options::new(rev, yavs_sem::default_stdlib());
     opts.libraries = libs;
+    opts.verilog_libs = c.verilog_libs.clone();
     opts.relaxed = c.relaxed;
     opts.cov_directives = lowering.cov_directives;
     opts.psl = c.psl;

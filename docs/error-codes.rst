@@ -694,6 +694,12 @@ Verilog (E4 and W4)
      - An ``entity lib.module`` instantiation names a Verilog module and an architecture.
    * - _`E4703`
      - ``entity lib.module`` takes the generics and ports of a Verilog module from its declaration, recorded when the file is analyzed.
+   * - _`E4704`
+     - A generic map of an ``entity lib.module`` instantiation of a Verilog module has an error in the association of a parameter: no parameter of that name, a missing actual, a type that does not fit.
+   * - _`E4705`
+     - A port map of an ``entity lib.module`` instantiation of a Verilog module has an error in the association of a port: no port of that name, a missing actual, a mode or type that does not fit, or an actual of another width.
+   * - _`E4706`
+     - The range of a port of a Verilog module depends on its parameters in a way VHDL cannot follow (an operator such as ``&`` or ``^``, a function call), and the generic map gives parameters values.
 
 Internal errors (E9)
 --------------------

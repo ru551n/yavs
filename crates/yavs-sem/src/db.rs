@@ -371,6 +371,11 @@ pub struct Db {
     /// Verilog modules analysed in this session, by library key: (name as written, interface
     /// text). `entity lib.module` finds them before the library's index (`unit/module.rs`).
     #[serde(skip)]
+    pub(crate) inst_map: (Vec<Symbol>, bool),
+    /// The module and its view of the instance being analysed, for its map errors.
+    #[serde(skip)]
+    pub(crate) module_view: Option<(String, yavs_lib::Interface)>,
+    #[serde(skip)]
     pub(crate) verilog_modules: std::collections::HashMap<Symbol, Vec<(String, Option<String>)>>,
 }
 
@@ -1062,6 +1067,8 @@ impl Db {
             loads: Vec::new(),
             entry_cache: Default::default(),
             verilog_modules: Default::default(),
+            inst_map: Default::default(),
+            module_view: None,
             file_owner: Vec::new(),
             frames: Vec::new(),
             query_log: Default::default(),

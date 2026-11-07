@@ -151,7 +151,7 @@ directly (`docs/design/vhdl-93.md`).
   `elab` and `run` use to read the file again when a component binds to the module; a Verilog file or an
   included file that changed since is `E4508` (exit 2). The record also holds the module's VHDL view
   (`iface`), which VHDL analysis reads for `entity lib.module`; the library named in such an instantiation is used
-  as it is mapped, `-L` is not needed for it.
+  as it is mapped; when it lacks the module the `-L` libraries are searched in order (`analyze`, `elab`, `run`).
 - A missing or empty directory is a valid empty library. `analyze` creates the
   directory (and its parents) on first use. The test runner does not run an init command;
   it only creates the parent of the library directory. This holds for every library, the `--work`

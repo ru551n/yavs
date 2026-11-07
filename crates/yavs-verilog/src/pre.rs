@@ -346,6 +346,24 @@ fn skip_ws(b: &[u8], mut i: usize) -> usize {
     i
 }
 
+/// White space, newlines and comments (a comment is white space, clause 3.2).
+fn skip_gap(b: &[u8], mut i: usize) -> usize {
+    loop {
+        match b.get(i) {
+            Some(b' ' | b'\t' | b'\r' | b'\n') => i += 1,
+            Some(b'/') if b.get(i + 1) == Some(&b'/') => i = line_end(b, i),
+            Some(b'/') if b.get(i + 1) == Some(&b'*') => {
+                let mut j = i + 2;
+                while j + 1 < b.len() && !(b[j] == b'*' && b[j + 1] == b'/') {
+                    j += 1;
+                }
+                i = (j + 2).min(b.len());
+            }
+            _ => return i,
+        }
+    }
+}
+
 fn skip_string(b: &[u8], mut i: usize) -> usize {
     i += 1;
     while i < b.len() && b[i] != b'"' && b[i] != b'\n' {
@@ -477,6 +495,13 @@ impl Pp<'_> {
                     run = i;
                 }
                 b'"' => i = skip_string(b, i),
+                // Clause 3.7.1: an escaped identifier runs to white space and may hold a backtick or a quote.
+                b'\\' => {
+                    i += 1;
+                    while i < n && !b[i].is_ascii_whitespace() {
+                        i += 1;
+                    }
+                }
                 b'`' => {
                     if cond.active() {
                         self.emit(b, run, i, origin);
@@ -751,7 +776,41 @@ impl Pp<'_> {
             b"protect" => self.envelope(b, at, ne, origin, b"`endprotect"),
             b"protected" => self.envelope(b, at, ne, origin, b"`endprotected"),
             b"endprotect" | b"endprotected" => ne,
-            b"uselib" | b"config" => {
+            // Fault-simulation and netlist-size switches of other tools: no effect on a functional simulation.
+            b"suppress_faults"
+            | b"nosuppress_faults"
+            | b"enable_portfaults"
+            | b"disable_portfaults"
+            | b"accelerate"
+            | b"noaccelerate"
+            | b"expand_vectornets"
+            | b"noexpand_vectornets"
+            | b"remove_gatenames"
+            | b"noremove_gatenames"
+            | b"remove_netnames"
+            | b"noremove_netnames"
+                if !self.st.macros.contains_key(&name_s) =>
+            {
+                self.out.diags.push(
+                    Diag::warning(
+                        "W4016",
+                        format!("compiler directive `{name_s} is ignored"),
+                        span,
+                    )
+                    .note("it has no effect on a functional simulation"),
+                );
+                ne
+            }
+            b"uselib"
+            | b"config"
+            | b"delay_mode_distributed"
+            | b"delay_mode_path"
+            | b"delay_mode_unit"
+            | b"delay_mode_zero"
+            | b"default_decay_time"
+            | b"default_trireg_strength"
+                if !self.st.macros.contains_key(&name_s) =>
+            {
                 self.err(
                     "E4010",
                     format!("unsupported compiler directive `{name_s}"),
@@ -834,7 +893,8 @@ impl Pp<'_> {
             let mut list = Vec::new();
             i += 1;
             loop {
-                i = skip_ws(b, i);
+                // Comments and line ends between formals are white space.
+                i = skip_gap(b, i);
                 let pe = ident_at(b, i);
                 if pe == i {
                     self.err(
@@ -845,7 +905,7 @@ impl Pp<'_> {
                     return self.define_body_end(b, i);
                 }
                 list.push(text(&b[i..pe]));
-                i = skip_ws(b, pe);
+                i = skip_gap(b, pe);
                 match b.get(i) {
                     Some(b',') => i += 1,
                     Some(b')') => {
@@ -884,7 +944,14 @@ impl Pp<'_> {
                     body.push(b'\n');
                     i += if b[i + 1] == b'\r' { 3 } else { 2 };
                 }
-                b'/' if i + 1 < n && b[i + 1] == b'/' => i = line_end(b, i),
+                b'/' if i + 1 < n && b[i + 1] == b'/' => {
+                    // A comment that ends in a backslash still continues the macro: the text after it is on the next line.
+                    i = line_end(b, i);
+                    if i > 0 && b[i - 1] == b'\\' && i < n {
+                        body.push(b'\n');
+                        i += 1;
+                    }
+                }
                 b'/' if i + 1 < n && b[i + 1] == b'*' => {
                     let mut j = i + 2;
                     while j + 1 < n && !(b[j] == b'*' && b[j + 1] == b'/') {

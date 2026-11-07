@@ -48,16 +48,23 @@ impl Parser<'_> {
         r
     }
 
+    /// `c ? a : b`; a chain `c1 ? a1 : c2 ? a2 : e` is read in a loop, so its length is not limited by the nesting depth.
     fn cond_expr(&mut self) -> R<Expr> {
-        let c = self.binary(1)?;
-        if self.eat_p("?") {
+        let mut chain = Vec::new();
+        let mut last = loop {
+            let c = self.binary(1)?;
+            if !self.eat_p("?") {
+                break c;
+            }
             self.attrs()?;
             let a = self.expr()?;
             self.expect_p(":")?;
-            let b = self.expr()?;
-            return Ok(Expr::Cond(Box::new(c), Box::new(a), Box::new(b)));
+            chain.push((c, a));
+        };
+        while let Some((c, a)) = chain.pop() {
+            last = Expr::Cond(Box::new(c), Box::new(a), Box::new(last));
         }
-        Ok(c)
+        Ok(last)
     }
 
     /// `expr` or `min:typ:max`.

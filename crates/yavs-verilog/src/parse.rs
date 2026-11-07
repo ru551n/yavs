@@ -444,6 +444,24 @@ impl<'a> Parser<'a> {
 
     // ----- module -----
 
+    /// After an envelope: it holds the body and usually the `endmodule`; plaintext after it belongs to the module, up to
+    /// its `endmodule` (the next module is not swallowed).
+    fn skip_envelope_rest(&mut self) {
+        loop {
+            let n = self.peek();
+            match (n.k, n.s) {
+                (K::Kw, "endmodule") => {
+                    self.bump();
+                    return;
+                }
+                (K::Eof, _) | (K::Kw, "module" | "primitive") => return,
+                _ => {
+                    self.bump();
+                }
+            }
+        }
+    }
+
     fn module(&mut self, ts: Option<Timescale>, nt: Nettype, cd: bool) -> R<Module> {
         self.bump();
         (self.in_func, self.local, self.in_gen) = (false, 0, 0);
@@ -459,7 +477,7 @@ impl<'a> Parser<'a> {
                     for _ in 0..=k {
                         self.bump();
                     }
-                    self.eat_kw("endmodule");
+                    self.skip_envelope_rest();
                     return Ok(Module {
                         name,
                         params: Vec::new(),
@@ -528,21 +546,7 @@ impl<'a> Parser<'a> {
                 (K::Env, _) => {
                     self.bump();
                     encrypted = Some(t.n);
-                    // The envelope holds the body and usually the `endmodule`; plaintext after it
-                    // belongs to the module, up to its `endmodule` (the next module is not swallowed).
-                    loop {
-                        let n = self.peek();
-                        match (n.k, n.s) {
-                            (K::Kw, "endmodule") => {
-                                self.bump();
-                                break;
-                            }
-                            (K::Eof, _) | (K::Kw, "module" | "primitive") => break,
-                            _ => {
-                                self.bump();
-                            }
-                        }
-                    }
+                    self.skip_envelope_rest();
                     break;
                 }
                 (K::Eof, _) => {
@@ -627,7 +631,8 @@ impl<'a> Parser<'a> {
                 let t = self.peek();
                 if t.k == K::Kw && matches!(t.s, "input" | "output" | "inout") {
                     let mut d = self.port_head()?;
-                    d.names.push(self.declarator(false)?);
+                    let n = self.ansi_port_name(&d)?;
+                    d.names.push(n);
                     v.push(d);
                 } else {
                     // Same type and direction as the port before.
@@ -638,7 +643,8 @@ impl<'a> Parser<'a> {
                         names: Vec::new(),
                         ..prev
                     };
-                    d.names.push(self.declarator(false)?);
+                    let n = self.ansi_port_name(&d)?;
+                    d.names.push(n);
                     v.push(d);
                 }
                 if !self.eat_p(",") {
@@ -650,7 +656,14 @@ impl<'a> Parser<'a> {
         let mut v = Vec::new();
         loop {
             self.attrs()?;
-            if self.eat_p(".") {
+            if self.p(",") || self.p(")") {
+                // Clause 12.3.2: a port may be empty, `module m(a, , b)`.
+                v.push(NonAnsiPort {
+                    name: None,
+                    expr: None,
+                    explicit: false,
+                });
+            } else if self.eat_p(".") {
                 let name = self.ident()?;
                 self.expect_p("(")?;
                 let e = if self.p(")") {
@@ -697,6 +710,23 @@ impl<'a> Parser<'a> {
         Ok(Ports::NonAnsi(v))
     }
 
+    /// A name of an ANSI port declaration. Only `output reg|integer|... name = value` has a value in 1364-2005 (12.3.4); a value on
+    /// another port is SystemVerilog, which cell models of other tools use: accepted, one warning per file.
+    fn ansi_port_name(&mut self, d: &PortDecl) -> R<Declarator> {
+        let t = self.peek_at(1);
+        if (d.dir != Dir::Output || d.var.is_none())
+            && t.k == K::P
+            && t.s == "="
+            && !self.diags.iter().any(|x| x.code == "W4017")
+        {
+            self.push(
+                Diag::warning("W4017", "default value of a port is SystemVerilog", self.span(t))
+                    .note("IEEE 1364-2005 gives a value to an output variable only; the value is accepted"),
+            );
+        }
+        self.declarator(false)
+    }
+
     /// `input|output|inout [net|reg|...] [signed] [range]` with no names yet.
     fn port_head(&mut self) -> R<PortDecl> {
         let d = self.bump();
@@ -714,7 +744,12 @@ impl<'a> Parser<'a> {
         } else if self.peek().k == K::Ident {
             // `input logic a`, `input my_type a`
             let t = self.peek();
-            if self.peek_at(1).k == K::Ident || self.peek_at(1).s == "[" || self.sv_word(t) {
+            // `output int;` and `input bit, b;` name a port `int` or `bit`, a legal identifier.
+            let name_follows = matches!(self.peek_at(1).s, "," | ";" | ")" | "=");
+            if self.peek_at(1).k == K::Ident
+                || self.peek_at(1).s == "["
+                || (self.sv_word(t) && !name_follows)
+            {
                 self.push(
                     Diag::error(
                         "E4003",
@@ -827,7 +862,10 @@ impl<'a> Parser<'a> {
     /// After `parameter`/`localparam`/`specparam`: type, sign and range (no names).
     fn param_head(&mut self, local: bool, spec: bool) -> R<ParamDecl> {
         let t = self.peek();
-        if t.k == K::Ident && (self.peek_at(1).k == K::Ident || self.sv_word(t)) {
+        // `localparam string = "ab";` names a parameter `string`.
+        if t.k == K::Ident
+            && (self.peek_at(1).k == K::Ident || (self.sv_word(t) && self.peek_at(1).s != "="))
+        {
             self.push(
                 Diag::error("E4003", format!("parameter type `{}` is SystemVerilog", self.text(t)), self.span(t))
                     .help("IEEE 1364-2005 parameters take `integer`, `real`, `realtime`, `time`, `signed` and a range"),

@@ -87,7 +87,10 @@ of arguments, an input or inout port is not a ``reg`` (``E4202``), a ``case`` ha
 arguments only and no timing control, nonblocking or procedural continuous assignment, event trigger or task enable, a task enable
 has an expression for every argument, a generate block has no ports, parameters or specify block,
 and the variable of a generate ``for`` loop is a ``genvar`` (``E4204``); these are syntax errors (``E4100``) unless a code is given.
-Three rules are warnings, because other tools accept the code: ``t();`` for a task without arguments (``W4205``), declarations in a block without a name (``W4206``) and a variable given a value where it is declared inside a task or block (``W4207``). Rules that need the type of an operand or the elaborated design are left out, for example the name of an instance of a module (only
+Three rules are warnings, because other tools accept the code: ``t();`` for a task without arguments (``W4205``), declarations in a block without a name (``W4206``) and a variable given a value where it is declared inside a task or block (``W4207``). Two more things are accepted with a warning: a value on an input port (``input a = 1'b0``, SystemVerilog, ``W4017``, once per file) and the
+fault-simulation and netlist-size directives (``suppress_faults``, ``enable_portfaults``, ``accelerate``, ``expand_vectornets``,
+``remove_netnames`` and their negations), which are ignored (``W4016``). The directives that change what a simulation computes,
+``delay_mode_path`` and its siblings, ``default_decay_time``, ``default_trireg_strength`` and ``uselib``, are ``E4010``. Rules that need the type of an operand or the elaborated design are left out, for example the name of an instance of a module (only
 gates and primitives may omit it), the operands of a real expression and more than one driver of a ``uwire``; ``docs/design/lrm-checks.md``
 lists each of them.
 

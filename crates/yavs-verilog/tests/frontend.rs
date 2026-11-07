@@ -879,6 +879,30 @@ fn bombs_and_deep_nesting_end_with_an_error() {
     );
 }
 
+#[test]
+fn a_macro_named_like_an_ignored_directive_is_a_macro() {
+    // `accelerate is ignored with W4016 only while no macro of that name is defined.
+    ok("`define accelerate 8\nmodule m; wire [`accelerate-1:0] w; endmodule\n");
+    let r = run("`accelerate\nmodule m; endmodule\n");
+    assert!(r.diagnostics.iter().any(|d| d.code == "W4016"));
+}
+
+#[test]
+fn a_long_chain_of_conditionals_is_not_nesting() {
+    // Clause 5.1.13: `c1 ? a1 : c2 ? a2 : ... : e` groups to the right; a table of 1000 rows is legal.
+    let mut e = String::new();
+    for i in 0..1000 {
+        e += &format!("s == {i} ? {i} : ");
+    }
+    ok(&format!(
+        "module m; wire [31:0] s; wire [31:0] w = {e}0; endmodule\n"
+    ));
+    assert_eq!(
+        shape(&expr_of("a ? b : c ? d : e")),
+        "(a ? b : (c ? d : e))"
+    );
+}
+
 fn expr_of(text: &str) -> yavs_verilog::ast::Expr {
     use yavs_verilog::ast::{Decl, Item};
     let src = format!("module m; wire w = {text}; endmodule");

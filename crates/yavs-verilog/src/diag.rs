@@ -135,6 +135,16 @@ pub(crate) const TABLE: &[CodeInfo] = &[
         "The design defines XIL_TIMING and contains timing checks ($setup, $hold, $setuphold, ...). They are parsed and ignored: functional simulation never evaluates them."
     ),
     code!(
+        "W4016",
+        "compiler directive ignored",
+        "A compiler directive of fault simulation or netlist size (`suppress_faults`, `enable_portfaults`, `accelerate`, `expand_vectornets`, `remove_netnames` and their negations) is not part of IEEE 1364-2005 and does not change a functional simulation. yavs ignores it, as the other tools do."
+    ),
+    code!(
+        "W4017",
+        "default value of a port",
+        "An input or inout port, or an output without a variable type, is given a value in the port list (`input a = 1'b0`). IEEE 1364-2005 (12.3.4) allows a value only for an output variable; the construct is SystemVerilog. yavs accepts it, as the other tools do, and warns once per file."
+    ),
+    code!(
         "W4205",
         "task enabled with empty parentheses",
         "A task enable such as `t();` has parentheses and no argument. IEEE 1364-2005 (10.2.2) says a task without arguments is enabled without a list; yavs accepts it, as the other tools do, and warns."

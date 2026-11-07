@@ -552,6 +552,30 @@ fn ports(cx: &mut Ctx, m: &Module) -> Vec<Port> {
                     }
                 }
             }
+            // Clause 12.3: an input or inout port is a net; a `reg` or `integer` declaration of its name is an error.
+            for it in &m.items {
+                if let Item::Var(v) = it {
+                    for n in &v.names {
+                        if let Some((d, _)) = decl.get(n.name.name.as_str())
+                            && d.dir != Dir::Output
+                        {
+                            let what = if d.dir == Dir::Input {
+                                "input"
+                            } else {
+                                "inout"
+                            };
+                            cx.diags.push(
+                                Diag::error(
+                                    "E4202",
+                                    format!("the {what} port `{}` is a net, it cannot be declared as a variable (clause 12.3)", n.name.name),
+                                    cx.span(&n.name),
+                                )
+                                .help("declare it as a net, or remove the declaration"),
+                            );
+                        }
+                    }
+                }
+            }
             let list: &[NonAnsiPort] = match &m.ports {
                 Ports::NonAnsi(l) => l,
                 _ => &[],

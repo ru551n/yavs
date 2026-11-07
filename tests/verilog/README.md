@@ -7,7 +7,7 @@ Verilog plan (#776); no third-party text. Read `AGENTS.md` here first.
 |---|---|---|
 | `ci/*.v`, `ci/*.sv`, `ci/inc/` | Hand-written fixtures, one construct family per file, plus negative and near-miss files | `tools/verilog/fixtures.py` |
 | `ci/fixtures.expected` | The expected outcome of every fixture (format below) | same, and the Rust tests of `yavs-verilog` |
-| `lrm/` | Reserved for the per-clause LRM checks of the plan (not created yet) | |
+| `lrm/*.v`, `lrm/inc/` | The per-clause LRM checks of IEEE 1364-2005: one rule per file, `<clause>_<topic>.v`, the expected diagnostics in the file header (format below) | `crates/yavs-verilog/tests/lrm.rs` (`cargo test -p yavs-verilog`, part of CI) |
 
 ```sh
 python3 -I tools/verilog/fixtures.py --static          # manifest against files; needs no analyzer
@@ -34,6 +34,22 @@ STATUS  FILE  [args="..."] [diag=CODE[@LINE:COL][,...]] [units=a,b] [later=reaso
 | `later=` | Informational: the construct analyses fine and is refused later (for example at elaboration). Never compared |
 
 A diagnostic list is compared as a multiset: order does not matter, and a position is checked only when the line gives one.
+
+## `lrm/` headers
+
+Every file starts with `//` lines, then the Verilog. The list of `expect` lines is exact (errors and warnings, order free, notes not compared); a clean file says `// expect: none`.
+
+```
+// LRM <clause>: <the rule, one sentence>
+// yavs-test: args=-I inc -D NAME[=VALUE]            (optional; -I is relative to lrm/)
+// units: a,b                                        (optional: the units recorded, in order)
+// gap: G<n> <text>                                  (optional: the LRM says error, the front end accepts; behaviour pinned)
+// expect: <CODE> [<FILE>:]<LINE>:<COL> <why>        (start of the primary span; FILE only for a span in an include)
+```
+
+A new check is one file plus one row in the Verilog section of `docs/design/lrm-checks.md` (the test fails for a file without a row and a row without a file).
+Write the rule from the LRM, one illegal thing per negative file, and a legal near miss next to it. `docs/design/lrm-checks.md` also lists the readings
+(V1 to V8) and the known gaps (G1 to G4).
 
 ## Coverage of the plan
 

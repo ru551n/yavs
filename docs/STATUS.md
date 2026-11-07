@@ -2978,8 +2978,7 @@ with no error; the 68 others are SystemVerilog in a `.v` file, generator templat
 lacks and files that need macros from another IP or a `-D` flag (`docs/decisions.md` "Verilog test material and corpus gate"). The
 M0 acceptance as measured: every library file (unisims, unimacro, unifast, retarget, `glbl`) in both views analyses with 0 errors,
 every encrypted file is recorded with one `W4007`, and the errors in plaintext IP are limited to the classified rows of
-`tools/verilog/vendor.expected` (the plan's "800 plaintext IP with 0 errors" is not literally reachable). Not done: Verilog options on `elab`/`run`, the plan's
-per-clause `tests/verilog/lrm` checks (readings so far in `docs/design/lrm-checks.md` "Verilog"), property tests of the parser.
+`tools/verilog/vendor.expected` (the plan's "800 plaintext IP with 0 errors" is not literally reachable). Per-clause LRM checks: 369 files in `tests/verilog/lrm` (99 lexical, 85 directives, 44 hierarchy and ports, 38 data types, 19 gates, 18 UDPs, 17 behavioral, 14 specify, 11 system tasks, 8 envelopes, 16 others), run by `cargo test -p yavs-verilog`, with 4 known gaps and the bugs they found fixed (`docs/design/lrm-checks.md` "Per-clause checks"); `proptest` properties for literals, macros, conditionals and damaged input. Not done: Verilog options on `elab`/`run`, operator-table tests (M1).
 
 ## syntax (`crates/yavs-syntax`, M0)
 

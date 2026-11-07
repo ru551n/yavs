@@ -55,7 +55,7 @@ retarget), `unimacro_ver`, `unifast_ver` (separate: five module names are in bot
   anywhere in the file; a plaintext file that includes an encrypted one is `PASS`. The first real run replaced them (`bless`); do the same, reviewing the diff per category, when the install or the front end changes.
 - The vendor `.vp` files come in other tools' forms. Six use `//pragma protect begin_protected` inside a comment, which the
   plan's detector (directive forms only) does not catch. `classify` expects `PASS+W4007` for that form, but all six sit in the
-  skipped per-tool copies (`SKIP_DIRS`), so no gated file uses it today. The gap is real: add a fixture when the detector is written.
+  skipped per-tool copies (`SKIP_DIRS`), so no gated file uses it today. This is a reading, not a gap: 1364-2005 28.1 introduces an envelope with the `` `pragma protect `` directive, so the comment form is a comment (`docs/design/lrm-checks.md` V9). Add a fixture if the detector ever reads it.
 - A change of the install version changes the file lists: `check` reports a stale manifest (`gen`, review the diff, commit).
 - Scratch space is a `tempfile` directory; nothing is written into the install or the repository.
 - The gate runs each call under `timeout 300 systemd-run --user --scope -q -p MemoryMax=2G` (root rule 15); `--no-wrap` drops

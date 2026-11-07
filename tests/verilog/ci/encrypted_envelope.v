@@ -1,4 +1,4 @@
-// A synthetic protected envelope (not a real key or payload): the body is never lexed.
+// A synthetic protected envelope (not a real key or payload): recorded with a notice, the body is never lexed.
 `timescale 1ns / 1ps
 module before_envelope (input a, output y);
     assign y = a;

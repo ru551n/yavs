@@ -2,10 +2,10 @@
 """A stand-in for the Verilog side of `yavs analyze`, for testing the Verilog test tools before the analyzer exists.
 
 It reads the command line of the planned analyzer (`--work=LIB:DIR`, `-I DIR`, `-D NAME[=VAL]`, files), knows only the
-preprocessor-stage diagnostics E4001 to E4005 and W4006, and reports them as `--message-format json` lines in the shape of
+preprocessor-stage diagnostics E4002 to E4005, W4006 and the W4007 notice of a recorded encrypted module (E4001 is the error on instantiating one, which needs elaboration), and reports them as `--message-format json` lines in the shape of
 `yavs-diag`. It is not a Verilog parser. Delete it when `yavs analyze *.v` exists (tools/verilog/AGENTS.md).
 
-FAKE_YAVS_BUG=double-e4001|miss-e4001|plain-error makes it wrong on purpose, so the tools can be seen to fail.
+FAKE_YAVS_BUG=double-envelope|miss-envelope|envelope-error|plain-error makes it wrong on purpose, so the tools can be seen to fail.
 """
 import json, os, re, sys
 from pathlib import Path
@@ -82,13 +82,15 @@ class Run:
                     if self.errors > n:
                         return
                 elif d == "pragma" and re.match(r"protect\s+begin_protected\b", arg) or d in ("protect", "protected"):
-                    if BUG != "miss-e4001":
-                        self.report("error", "E4001", "encrypted (IEEE 1735 protected) module body", shown, ln, col)
-                    if BUG == "double-e4001":
-                        self.report("error", "E4001", "encrypted (IEEE 1735 protected) module body", shown, ln, col)
-                    return
+                    if BUG == "envelope-error":
+                        self.report("error", "E4001", "encrypted module body", shown, ln, col)
+                    elif BUG != "miss-envelope":
+                        self.report("warning", "W4007", "encrypted (IEEE 1735 protected) module body, recorded; cannot be simulated", shown, ln, col)
+                    if BUG == "double-envelope":
+                        self.report("warning", "W4007", "encrypted (IEEE 1735 protected) module body, recorded; cannot be simulated", shown, ln, col)
+                    return  # the body is never lexed
                 elif d == "pragma" and re.match(r"protect\s+(begin|end)\b", arg):
-                    self.report("warning", "W4007", "plaintext protect marker ignored", shown, ln, col)
+                    self.report("warning", "W4009", "plaintext protect marker ignored", shown, ln, col)
             if active:
                 if re.match(r"\s*(module|macromodule|primitive)\b", line):
                     if not seen_ts:

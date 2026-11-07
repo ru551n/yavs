@@ -10,9 +10,12 @@
   plaintext IP, encrypted files) against a manifest of paths and per-file outcomes; local only, skipped with a notice when the
   install is absent (#776 D3). `corpus.py cells` does the same for the yosys techlibs models (ISC), fetched by
   `tools/fetch-corpus.sh`, for CI. Vendor sources are never committed, only file lists (root rule 7). Why: the M0 claim (every
-  library file and plaintext IP file analyses, each encrypted file gives exactly one E4001) needs a per-file check, and the
-  expected outcome is not the same for every file of a category (SystemVerilog syntax in some `.v` IP files, plaintext files that
-  include an encrypted one).
+  library file and plaintext IP file analyses, each encrypted file is recorded with exactly one notice) needs a per-file check, and
+  the expected outcome is not the same for every file of a category (SystemVerilog syntax in some `.v` IP files, encrypted files).
+- **Encrypted files in the fixtures and the gate (maintainer ruling on #776 D8, 2026-11-07):** an encrypted file analyses with exit 0,
+  its plaintext-header module recorded, and one warning W4007 at the envelope; E4001 is the error on instantiating the module, at
+  elaboration. A plaintext file that includes an encrypted one passes. In the manifests this is `PASS+W4007`; the E4001 wording of
+  the M0 acceptance line is superseded.
 - **Stand-in analyzer:** `tools/verilog/fake_yavs.py` reports the preprocessor-stage diagnostics only, so the tools could be
   tested, and made to fail on purpose, before `yavs analyze *.v` exists. It goes away with the stand-in half of
   `tools/verilog/selftest.py` once the analyzer does.

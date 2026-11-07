@@ -1,4 +1,4 @@
-// The legacy `protect form: everything up to `endprotect is hidden.
+// The legacy `protect form: everything up to `endprotect is hidden; recorded with a notice.
 `timescale 1ns / 1ps
 module legacy_pre (input a, output y);
     assign y = a;

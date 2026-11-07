@@ -5,7 +5,7 @@ Read the root `AGENTS.md` and `tests/AGENTS.md` first. `README.md` here holds th
 ## 1. Purpose and boundaries
 
 - `ci/`: small hand-written Verilog files with the outcome `yavs analyze` must give, one construct family per file, plus
-  negative files for the diagnostics E4001 to E4005 and near misses. Checked by `tools/verilog/fixtures.py` (`--static` needs
+  encrypted-envelope files (W4007, D8) and negative files for the diagnostics E4002 to E4005 and near misses. Checked by `tools/verilog/fixtures.py` (`--static` needs
   no analyzer) and, once `yavs-verilog` exists, by the same manifest from its Rust tests.
 - `lrm/` is reserved for the plan's per-clause LRM checks (`<clause>_<topic>.v`, rules recorded in `docs/design/lrm-checks.md`).
 - Not here: the vendor and open-source cell-model corpus gate (`tools/verilog/corpus.py`, manifests in `tools/verilog/`); it

@@ -46,7 +46,7 @@ def main():
     fx, co = py + [str(HERE / "fixtures.py")], py + [str(HERE / "corpus.py")]
     ok = run(fx + ["--static"])
     ok &= run(fx + ["--yavs", FAKE, "--no-wrap"], want_text=["29 fixtures, 0 differences"])
-    bugs = ("double-e4001", "miss-e4001", "plain-error")
+    bugs = ("double-envelope", "miss-envelope", "envelope-error", "plain-error")
     with tempfile.TemporaryDirectory(prefix="yavs-verilog-selftest-") as tmp:
         root = Path(tmp) / "data"
         for rel, text in TREE.items():
@@ -56,7 +56,7 @@ def main():
         base = co + ["vendor", "--root", str(root), "--manifest", str(man)]
         ok &= run(base + ["gen"], want_text=["ip-includes-encrypted", "protected"])
         txt = man.read_text()
-        for want in ("E4001 ip ", "E4002 work", "E4003 ip", "PASS unisims_ver timing"):
+        for want in ("PASS+W4007 ip ", "E4002 work", "E4003 ip", "PASS unisims_ver timing"):
             if want not in txt:
                 print("FAIL manifest lacks", want)
                 ok = False

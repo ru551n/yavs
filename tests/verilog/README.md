@@ -44,12 +44,16 @@ Plan section 1.2 families, one file each: `preproc_*` (macros with arguments, ne
 `strengths_nets` (tri0, tri1, supply, strengths, `glbl.` reference), `procedural_assign` (assign/deassign), `tasks_functions`,
 `system_tasks`.
 
-Negative files (`neg_*`): `neg_encrypted` and `neg_encrypted_legacy` (E4001, one error each; the synthetic envelope body has an
-unterminated string and comment so a lexer that reads it fails), `neg_sv_extension.sv` (E4002), `neg_sv_keyword` (E4003),
-`neg_unbalanced_ifdef` and `neg_stray_endif` (E4004), `neg_include_missing` (E4005). Near misses that must stay clean:
-`sv_words_ok` (SystemVerilog words only in a string and comments), `pragma_plaintext_ok` (`` `pragma protect begin `` and `end``
-mark plaintext: warnings, not E4001). `timescale_missing` expects W4006 (default 1ns/1ps). `unsupported_switch` and
-`unsupported_nettypes` analyse cleanly; elaboration refuses them later.
+Encrypted files (decision D8 of #776): `encrypted_envelope` and `encrypted_legacy` analyse with exit 0 and exactly one notice W4007
+at the envelope; the module of the plaintext header is recorded (`units=`), the body is never lexed (it holds an unterminated
+string and comment, so a lexer that reads it fails). E4001 is the error on instantiating such a module and needs elaboration, so
+no fixture here has it yet. Not covered: the comment form `//pragma protect begin_protected` that other tools write; it is a
+comment to a directive-based detector (documented gap, `tools/verilog/AGENTS.md`).
+
+Negative files (`neg_*`): `neg_sv_extension.sv` (E4002), `neg_sv_keyword` (E4003), `neg_unbalanced_ifdef` and `neg_stray_endif`
+(E4004), `neg_include_missing` (E4005). Near misses that must stay clean: `sv_words_ok` (SystemVerilog words only in a string and
+comments), `pragma_plaintext_ok` (`` `pragma protect begin `` and `end`` mark plaintext: warnings, no envelope). `timescale_missing`
+expects W4006 (default 1ns/1ps). `unsupported_switch` and `unsupported_nettypes` analyse cleanly; elaboration refuses them later.
 
 Where the plan is silent the manifest proposes and the Verilog front-end agent decides: one `W*` per `pragma protect begin`/`end`
 marker, W4006 without a position, the E4003 trigger `always_ff` (unambiguous: `logic` and `bit` are legal 1364 identifiers).

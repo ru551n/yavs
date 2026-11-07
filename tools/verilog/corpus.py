@@ -7,7 +7,7 @@
   vendor  the AMD/Xilinx 2026.1 install, read in place and never copied or committed (local only; skipped with a notice when the
           install is absent). Root: --root, $YAVS_VENDOR_DATA, else <root>/2026.1/data under ~/Xilinx, /opt/Xilinx, /tools/Xilinx
           (the directory that holds verilog/src/glbl.v). Categories: unisims, retarget, unimacro, unifast, glbl in both views
-          (default and -D XIL_TIMING), unisims-sv, ip-plain and ip-encrypted (ip/**/*.v), protected (*.vp).
+          (default and -D XIL_TIMING), unisims-sv, ip-plain, ip-includes-encrypted and ip-encrypted (ip/**/*.v), protected (*.vp).
   cells   the yosys techlibs simulation models (ISC, fetched by tools/fetch-corpus.sh into the corpus cache; CI-visible).
 
   list    enumerate and classify, print counts and findings; write nothing
@@ -16,8 +16,10 @@
   bless   write the manifest from this run (then review the diff)
 
 The manifest tools/verilog/<source>.expected has one line per file: `OUTCOME LIB VIEW PATH [-I DIR]...`, paths relative to the
-root, in a fixed order. OUTCOME is PASS (no error) or the sorted error codes, with `xN` when E4001 occurs N times (so E4001 is
-exactly one E4001; EXIT<n> is a nonzero exit without an error diagnostic). Warnings are counted, not compared. The unisims, retarget,
+root, in a fixed order. OUTCOME is PASS (no error) or the sorted error codes (EXIT<n> is a nonzero exit without an error
+diagnostic). An encrypted file is recorded at analysis (decision D8 of #776): exit 0 and one notice W4007 located in the file
+itself, written `PASS+W4007` (`PASS+W4007xN` for N notices); a W4007 for an encrypted file it includes does not count. E4001 is
+the error on instantiating such a module, so it never appears at analysis. Other warnings are counted, not compared. The unisims, retarget,
 unimacro, unifast and glbl files of one library and view go in one call (as an integration analyses a library); if that call
 fails, the files are repeated one by one and a failure of the session alone is a DIFF. IP and protected files are one call each,
 with the include directories the manifest lists.
@@ -29,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vcommon  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
+ENC = "PASS+W4007"
 VIEWS = {"default": [], "timing": ["-D", "XIL_TIMING"]}
 SV_STRONG = re.compile(r"\b(?:always_ff|always_comb|always_latch|typedef|package|endpackage|endinterface|endclass|struct)\b|\benum\s*(?:\{|logic|bit|int)\b|\bimport\s+\w+\s*::|\b(?:int|longint|shortint|string)\s+[A-Za-z_]\w*\s*[;=,)\[]")
 ENVELOPE = re.compile(r"^[ \t]*`(?:pragma[ \t]+protect[ \t]+begin_protected|protect|protected)\b", re.M)
@@ -54,9 +57,9 @@ def rd(p):
 
 
 def classify(text):
-    """The outcome the Verilog plan expects of a .v file: E4001 (envelope), E4003 (SystemVerilog syntax) or PASS."""
+    """The outcome the Verilog plan expects of a .v file: ENC (envelope, recorded), E4003 (SystemVerilog syntax) or PASS."""
     t = strip(text)
-    return "E4001" if ENVELOPE.search(t) or COMMENT_ENVELOPE.search(text) else "E4003" if SV_STRONG.search(t) else "PASS"
+    return ENC if ENVELOPE.search(t) or COMMENT_ENVELOPE.search(text) else "E4003" if SV_STRONG.search(t) else "PASS"
 
 
 # ---- enumeration: entries are dicts {cat, lib, view, path (relative to root), inc: [relative dirs], want, batch}
@@ -156,12 +159,12 @@ def enum_vendor(root):
     for p in sorted(files):
         t = rd(p)
         want = classify(t)
-        cat = "ip-encrypted" if want == "E4001" else "ip-plain"
+        cat = "ip-encrypted" if want == ENC else "ip-plain"
         seen = {p}
-        inc = [] if want == "E4001" else include_dirs(root, p, index, t, seen, findings)
-        if want == "PASS" and any(classify(rd(q)) == "E4001" for q in seen - {p}):
-            want, cat = "E4001", "ip-includes-encrypted"  # ponytail: textual closure, so an include in inactive code predicts wrong; bless fixes it
-            findings["plaintext file that includes an encrypted file (E4001 predicted)"].append(str(p.relative_to(root)))
+        inc = [] if want == ENC else include_dirs(root, p, index, t, seen, findings)
+        if want == "PASS" and any(classify(rd(q)) == ENC for q in seen - {p}):
+            cat = "ip-includes-encrypted"  # recorded, so the file itself passes (D8)
+            findings["plaintext file that includes an encrypted file (passes; the include is recorded)"].append(str(p.relative_to(root)))
         add(cat, "ip", "default", p, want, inc)
         if cat != "ip-encrypted":
             if not re.search(r"^\s*(?:module|macromodule|primitive)\b", strip(t), re.M):
@@ -183,7 +186,7 @@ def enum_cells(root):
         index[p.name].append(p.parent)
     for p in sorted(root.glob("techlibs/**/*sim*.v")):
         t = rd(p)
-        ents.append(dict(cat="cells", lib="work", view="default", path=str(p.relative_to(root)), want=classify(t) if classify(t) != "E4001" else "PASS",
+        ents.append(dict(cat="cells", lib="work", view="default", path=str(p.relative_to(root)), want=classify(t) if classify(t) != ENC else "PASS",
                          inc=[str(d.relative_to(root)) for d in include_dirs(root, p, index, t, {p}, findings)], batch=False))
         if SV_STRONG.search(strip(t)):
             findings["SystemVerilog syntax (E4003 predicted)"].append(str(p.relative_to(root)))
@@ -216,11 +219,11 @@ def write_manifest(path, name, ents, wants):
     path.write_text(head + "".join(line(e, w) + "\n" for e, w in zip(ents, wants)))
 
 
-def outcome(errs, rc):
-    if not errs:
-        return "PASS" if rc == 0 else f"EXIT{rc}"
-    c = collections.Counter(errs)
-    return ",".join(k + (f"x{v}" if v > 1 and k == "E4001" else "") for k, v in sorted(c.items()))  # only the envelope count is exact
+def outcome(errs, rc, notices=0):
+    if errs:
+        return ",".join(sorted(set(errs)))
+    base = "PASS" if rc == 0 else f"EXIT{rc}"
+    return base + ("+W4007" if notices == 1 else f"+W4007x{notices}" if notices else "")
 
 
 # ---- running
@@ -233,13 +236,14 @@ def run_group(a, yavs, root, tmp, tag, ents):
     rc, diags, text = vcommon.analyze(yavs, os.path.join(tmp, tag), e0["lib"], args, files, root, not a.no_wrap)
     by = collections.defaultdict(list)
     for lvl, code, f, *_ in diags:  # a one-file call owns every diagnostic, also those in files it includes
-        by[str(root / e0["path"]) if len(ents) == 1 else os.path.realpath(root / f)].append((lvl, code))
+        own = os.path.realpath(root / f) == os.path.realpath(root / e0["path"])
+        by[str(root / e0["path"]) if len(ents) == 1 else os.path.realpath(root / f)].append((lvl, code, own))
     res, warn = {}, 0
     for i, e in ents:
         ds = by.pop(str(root / e["path"]) if len(ents) == 1 else os.path.realpath(root / e["path"]), [])
-        res[i] = outcome([c for l, c in ds if l == "error" or c == "E4001"], rc if len(ents) == 1 else 0)  # E4001 counts at any severity
-        warn += sum(l == "warning" for l, _ in ds)
-    stray = [f"{f}: {c}" for f, ds in by.items() for l, c in ds if l == "error"]
+        res[i] = outcome([c for l, c, _ in ds if l == "error"], rc if len(ents) == 1 else 0, sum(c == "W4007" and o for _, c, o in ds))
+        warn += sum(l == "warning" for l, _, _ in ds)
+    stray = [f"{f}: {c}" for f, ds in by.items() for l, c, _ in ds if l == "error"]
     return res, warn, text if rc and len(ents) > 1 else "", stray
 
 

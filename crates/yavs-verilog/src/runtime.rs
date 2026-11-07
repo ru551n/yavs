@@ -65,7 +65,8 @@ pub struct Domain {
     pub(crate) core: Core,
     pub(crate) bodies: Vec<Body>,
     pub(crate) inputs: Vec<(SigRef, NetId)>,
-    pub(crate) outputs: Vec<(NetId, DriverId)>,
+    /// The nets that drive VHDL; the flag: a `bit` port, which takes x and z as '0'.
+    pub(crate) outputs: Vec<(NetId, DriverId, bool)>,
     pub(crate) started: bool,
 }
 
@@ -366,9 +367,24 @@ impl Exec<'_, '_> {
 
     /// Blocking assignment `n = v`: the value now, waiters to Active now.
     pub fn set(&mut self, n: NetId, v: &LogicVec) -> Result<(), SimError> {
-        self.core.check(n, 0, v, self.ctx)?;
-        self.core.write(n, 0, v);
+        self.set_at(n, 0, v)
+    }
+
+    /// Blocking assignment to elements `at .. at + v.len()` of `n`.
+    pub fn set_at(&mut self, n: NetId, at: u32, v: &LogicVec) -> Result<(), SimError> {
+        self.core.check(n, at, v, self.ctx)?;
+        self.core.write(n, at, v);
         Ok(())
+    }
+
+    /// `$write`: text without a line end, in the kernel's output order.
+    pub fn output(&mut self, bytes: &[u8]) {
+        self.ctx.output(bytes);
+    }
+
+    /// A run-time error of the running process, at this time.
+    pub fn error(&self, msg: String) -> SimError {
+        self.ctx.error(ErrorKind::Runtime(msg))
     }
 
     /// Non-blocking assignment `n[at +: v.len()] <= #delay v`: target and value are taken now;

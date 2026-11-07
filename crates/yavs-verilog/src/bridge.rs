@@ -20,7 +20,13 @@ impl Domain {
     /// `net` drives VHDL through kernel driver `d` (a logic signal of the net's width).
     pub fn output(&mut self, net: NetId, d: DriverId) {
         self.core.nets[net.0 as usize].out = Some(self.outputs.len() as u32);
-        self.outputs.push((net, d));
+        self.outputs.push((net, d, false));
+    }
+
+    /// `output` to a `bit` or `bit_vector` signal: x and z are published as '0'.
+    pub fn output_bit(&mut self, net: NetId, d: DriverId) {
+        self.output(net, d);
+        self.outputs.last_mut().expect("just pushed").2 = true;
     }
 }
 
@@ -64,7 +70,7 @@ impl Process for Domain {
                 self.core.active.extend(0..self.bodies.len() as u32);
                 self.outputs
                     .iter()
-                    .map(|&(n, _)| self.core.nets[n.0 as usize].value.clone())
+                    .map(|&(n, _, _)| self.core.nets[n.0 as usize].value.clone())
                     .collect()
             }
             false => {
@@ -85,7 +91,15 @@ impl Process for Domain {
         }
         if let Some(batch) = self.core.publish.pop_front() {
             for (o, v) in batch {
-                let d = self.outputs[o as usize].1;
+                let (_, d, bit) = self.outputs[o as usize];
+                let v = match bit {
+                    // ponytail: element by element; a plane mask if bit ports get wide.
+                    true => yavs_kernel::LogicVec::from_fn(v.len(), |i| match v.get(i) {
+                        yavs_logic::StdULogic::One => yavs_logic::StdULogic::One,
+                        _ => yavs_logic::StdULogic::Zero,
+                    }),
+                    false => v,
+                };
                 ctx.assign(d, None, &[(Time::ZERO, &v)], DelayMode::INERTIAL)?;
             }
         }

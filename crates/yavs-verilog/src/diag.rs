@@ -185,4 +185,59 @@ pub(crate) const TABLE: &[CodeInfo] = &[
         "generate loop variable is not a genvar",
         "The variable of a generate `for` loop is declared with `genvar` (clause 12.4.1). A `reg` or `integer` cannot be the variable of a generate loop."
     ),
+    code!(
+        "E4501",
+        "Verilog construct not implemented",
+        "Elaboration reached a legal IEEE 1364-2005 construct that yavs does not simulate yet; the message names it. The design does not run rather than run without it. What Verilog elaboration covers is listed in the user guide's Verilog page."
+    ),
+    code!(
+        "E4502",
+        "net with several drivers",
+        "Two continuous drivers (continuous assignments, a net declaration assignment, the VHDL port of an input) drive the same bits of one Verilog net. Such a net needs resolution of its drivers, which Verilog elaboration does not implement yet."
+    ),
+    code!(
+        "E4503",
+        "always block without timing control",
+        "An `always` block has no delay or event control, so it runs again at the same simulation time for ever and time never advances (clause 9.9.2). Give it an event control such as `@(posedge clk)` or `@*`, or a delay."
+    ),
+    code!(
+        "E4504",
+        "name not declared",
+        "An expression or an assignment names something the module does not declare (clause 12.7). Hierarchical names, tasks and functions are reported as not implemented (`E4501`) instead."
+    ),
+    code!(
+        "E4505",
+        "not a constant expression",
+        "A parameter value, a range, a replication count or a part-select width names a net or variable; these must be constant expressions of literals and parameters (clause 5.2)."
+    ),
+    code!(
+        "E4506",
+        "invalid expression",
+        "An expression breaks a rule of clause 5: a malformed number, an operator applied to a real it does not take, an unsized constant in a concatenation, a replication count that is not positive, a part-select that runs the other way than its vector or lies outside it in an assignment target, or a select in a continuous assignment that is not constant."
+    ),
+    code!(
+        "E4507",
+        "wrong kind of assignment target",
+        "A procedural assignment writes a net, or a continuous assignment drives a variable (`reg`, `integer`, `time`), or something assigns a parameter. Procedural blocks write variables (clause 9.2), continuous assignments drive nets (clause 6.1)."
+    ),
+    code!(
+        "E4508",
+        "Verilog file cannot be read again",
+        "Elaboration reads a Verilog file again with the options and preprocessor state recorded when it was analyzed, and that record is missing (the library was written by an older yavs) or no longer matches the file. Analyze the Verilog files again."
+    ),
+    code!(
+        "E4509",
+        "ambiguous Verilog module name",
+        "A VHDL component names a Verilog module, and the library holds several modules whose names differ from it only in case, so none is chosen. Rename the component to the exact name of one module."
+    ),
+    code!(
+        "E4700",
+        "VHDL port does not match the Verilog module",
+        "A port of the VHDL component that binds to a Verilog module has no port of that name in the module (matched exactly, then case-insensitively), or the directions differ, or the widths differ (a VHDL vector maps onto the Verilog vector left to left), or its type is not one Verilog can take (`std_logic`, `std_ulogic`, `bit` and vectors of them, modes `in` and `out`)."
+    ),
+    code!(
+        "E4701",
+        "VHDL generic does not match a Verilog parameter",
+        "A generic of the VHDL component that binds to a Verilog module names no parameter of the module, names a local parameter (which cannot be overridden, clause 12.2), or has a type Verilog cannot take (`integer`, `real`, `string`, `boolean`, `std_logic`, `bit` and their vectors)."
+    ),
 ];

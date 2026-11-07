@@ -1499,3 +1499,51 @@ parameter list; the words of V9.
 | `28.4.1_envelope_plaintext_markers.v` | 28.4.1 | `` `pragma `` protect begin and end mark plaintext to be encrypted: the text is compiled, with a warning per marker | `W4009` |
 | `28.4.3_envelope_begin_protected.v` | 28.4.3 | an envelope opened by `` `pragma `` protect begin_protected hides its body: the module is recorded, one W4007 per file | `W4007` |
 | `28.4.4_envelope_unterminated.v` | 28.4.4 | an envelope that is never closed runs to the end of the file | `W4007` |
+
+### Elaboration and run-time checks (#776 step C)
+
+The files of `tests/verilog/lrm` named `<clause>_eval_<topic>.v` also carry `// output: TEXT` lines (the exact output of a
+run, in order) or one `// elab: CODE` line (the error elaboration gives). `crates/yavs-verilog/tests/run.rs` elaborates
+the last module of such a file with no ports, as the test's own top level, and runs it in a kernel of its own (the command
+line takes VHDL top levels only, D11); `lrm.rs` checks their analysis as for every other file. The expression rules
+(sizing, sign, the x rules of each operator) are also checked operator by operator against a reference model written from
+the tables of clause 5 (`crates/yavs-verilog/tests/ops.rs`, widths 1 to 130).
+
+Readings of the elaboration (where 1364-2005 leaves a choice; policy rule 2):
+
+- **S1: `==` with unknown bits (5.1.8).** The result is x when unknown bits make the relation ambiguous. Reading: when two
+  known bits differ the relation is not ambiguous and the result is 0 (`4'b1x00 == 4'b0x00` is 0); otherwise any x or z
+  bit gives x. `5.1.8_eval_equality_unknown.v`.
+- **S2: the order processes start in (9.9).** The LRM leaves the order of the processes at time 0 open. Reading:
+  continuous assignments first, then `always` blocks, then `initial` blocks, each in source order, so an `initial`
+  write at time 0 wakes an `always` block that waits for it.
+- **S3: a variable declaration assignment (`reg r = v;`, 6.2.1) is the variable's initial value**: no event at time 0.
+- **S4: `%s` of a vector leaves out leading NUL bytes (17.1.1.7)**; `%t` uses the default `$timeformat`: the smallest
+  precision of the design, width 20 (`%0t` without padding).
+- **S5: a `bit` or `bit_vector` VHDL port driven from Verilog takes x and z as '0'.** VHDL `bit` has no other values;
+  the initial x of a Verilog output reaches such a port as '0'.
+- **S6: a real `?:` with an x condition is 0.0 when the two values differ** (Table 5-21 has no real row).
+
+| File | Clause | Rule | Outcome |
+|---|---|---|---|
+| `3.5.1_eval_literal_extension.v` | 3.5.1 | a literal shorter than its size is extended with zeros, or with x or z when its leftmost digit is x or z | runs: `xxxxxxxx 00000001 zzzzzzz1 0000000x` |
+| `5.1.5_eval_arith_unknown.v` | 5.1.5 | an x or z bit in an operand of an arithmetic operator makes the whole result x, and so does division by zero | runs: `xxxx xxxx 0011` |
+| `5.1.8_eval_equality_unknown.v` | 5.1.8 | == is x when unknown bits make it ambiguous and 0 when known bits differ; === compares x and z exactly | runs: `x 0 1 0` |
+| `5.1.12_eval_shifts.v` | 5.1.12 | >>> fills with the sign bit only when the expression is signed; an x shift amount makes the result x | runs: `11111100 01111100 01111100 xxxxxxxx` |
+| `5.1.13_eval_conditional_unknown.v` | 5.1.13 | an x condition of ?: combines both values bit by bit: equal bits stay, the others are x | runs: `1xx0` |
+| `5.2.1_eval_select_out_of_range.v` | 5.2.1 | a bit-select outside the vector reads as x, a part-select partly outside reads x there | runs: `x x1` |
+| `5.4.1_eval_assignment_width.v` | 5.4.1 | the right side of an assignment is evaluated at the width of the wider side, so a carry survives in a wider target | runs: `9 256` / `8 0` |
+| `5.5.1_eval_unsigned_operand.v` | 5.5.1 | an expression with an unsigned operand is unsigned: a signed -1 compares as 15 | runs: `0 1` |
+| `5.5.2_eval_sign_extension.v` | 5.5.2 | an operand is sign-extended when the expression is signed and zero-extended when it is not | runs: `-2 254 14` |
+| `6.1_eval_continuous_assignment.v` | 6.1 | a continuous assignment follows its operands; a net declaration assignment is one | runs: `4 9` |
+| `6.1_eval_variable_continuous_target.v` | 6.1 | a continuous assignment drives a net, never a variable | `E4507` at elaboration |
+| `9.2_eval_net_procedural_target.v` | 9.2 | a procedural assignment writes a variable, never a net | `E4507` at elaboration |
+| `9.2.2_eval_nonblocking.v` | 9.2.2 | a non-blocking assignment takes its value when it runs and updates after the active events, so a swap works | runs: `1` / `2 1` |
+| `9.5.1_eval_casex.v` | 9.5.1 | casex treats x and z bits on either side as don't care; case compares with === | runs: `1 3` |
+| `9.5.1_eval_casez.v` | 9.5.1 | casez treats z and ? bits on either side as don't care; x still has to match | runs: `1 2 0` |
+| `9.6_eval_loops.v` | 9.6 | for, while and repeat loops | runs: `10 4 3` |
+| `9.7.1_eval_delay_rounding.v` | 9.7.1 | a delay is in the module's time unit and rounded to its precision; $time is rounded to the unit; %t shows the smallest precision | runs: `2 20 1600` |
+| `9.7.5_eval_implicit_event_list.v` | 9.7.5 | @* waits for every net and variable the statement reads | runs: `0 1 0` |
+| `9.9.2_eval_always_without_timing.v` | 9.9.2 | an always block without a timing control never lets time advance | `E4503` at elaboration |
+| `12.2_eval_parameter_types.v` | 12.2 | a parameter without a type or range takes the type of its value; one with a range keeps it | runs: `1010 11 44` |
+| `17.1.1_eval_display_formats.v` | 17.1.1 | %b, %h, %o and %d show x and z per digit (lower case when the whole digit is, upper case when part of it is); %0 drops the padding | runs: `1010x0z1\|aX\|2XZ\|  X` / `5\|  5\|0ab\|ab\|  -5` |

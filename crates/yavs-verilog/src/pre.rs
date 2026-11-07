@@ -137,6 +137,129 @@ impl State {
     }
 }
 
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|c| format!("{c:02x}")).collect()
+}
+
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
+        .collect()
+}
+
+const KWSETS: [KwSet; 4] = [
+    KwSet::V2005,
+    KwSet::V2001,
+    KwSet::V2001NoConfig,
+    KwSet::V1995,
+];
+
+const NETTYPES: [(&str, Nettype); 11] = [
+    ("wire", Nettype::Wire),
+    ("tri", Nettype::Tri),
+    ("tri0", Nettype::Tri0),
+    ("tri1", Nettype::Tri1),
+    ("wand", Nettype::Wand),
+    ("triand", Nettype::Triand),
+    ("wor", Nettype::Wor),
+    ("trior", Nettype::Trior),
+    ("trireg", Nettype::Trireg),
+    ("uwire", Nettype::Uwire),
+    ("none", Nettype::None),
+];
+
+impl State {
+    /// The state entering a file and the options that decide how it reads, as one line-based
+    /// text (strings in hex): what elaboration needs to read the file again as analysis did.
+    pub(crate) fn encode(&self, opts: &Options) -> String {
+        let mut o = format!(
+            "T {} {}\n",
+            opts.default_timescale.unit_fs, opts.default_timescale.precision_fs
+        );
+        for d in &opts.include_dirs {
+            o += &format!("I {}\n", hex(d.to_string_lossy().as_bytes()));
+        }
+        let mut names: Vec<&String> = self.macros.keys().collect();
+        names.sort();
+        for n in names {
+            let m = &self.macros[n];
+            let p = m
+                .params
+                .as_ref()
+                .map_or("-".into(), |p| hex(p.join(",").as_bytes()));
+            o += &format!("M {} {p} {}\n", hex(n.as_bytes()), hex(&m.body));
+        }
+        if let Some(t) = self.timescale {
+            o += &format!("S {} {}\n", t.unit_fs, t.precision_fs);
+        }
+        let nt = NETTYPES
+            .iter()
+            .find(|(_, n)| *n == self.nettype)
+            .map_or("wire", |(s, _)| s);
+        o += &format!("N {nt}\n");
+        if self.celldefine {
+            o += "C\n";
+        }
+        for (k, _) in &self.keywords {
+            o += &format!("K {}\n", KWSETS.iter().position(|x| x == k).expect("a set"));
+        }
+        o
+    }
+
+    /// The options and state of [`State::encode`]; `None` for a text it did not write.
+    pub(crate) fn decode(text: &str) -> Option<(Options, State)> {
+        let mut opts = Options::default();
+        let mut st = State::new(&opts);
+        for l in text.lines() {
+            let w: Vec<&str> = l.split(' ').collect();
+            match w.as_slice() {
+                ["T", u, p] => {
+                    opts.default_timescale = Timescale {
+                        unit_fs: u.parse().ok()?,
+                        precision_fs: p.parse().ok()?,
+                    }
+                }
+                ["I", d] => opts
+                    .include_dirs
+                    .push(String::from_utf8(unhex(d)?).ok()?.into()),
+                ["M", n, p, b] => {
+                    let params = match *p {
+                        "-" => None,
+                        p => Some(
+                            String::from_utf8(unhex(p)?)
+                                .ok()?
+                                .split(',')
+                                .map(String::from)
+                                .collect(),
+                        ),
+                    };
+                    st.macros.insert(
+                        String::from_utf8(unhex(n)?).ok()?,
+                        Macro {
+                            params,
+                            body: unhex(b)?,
+                        },
+                    );
+                }
+                ["S", u, p] => {
+                    st.timescale = Some(Timescale {
+                        unit_fs: u.parse().ok()?,
+                        precision_fs: p.parse().ok()?,
+                    })
+                }
+                ["N", n] => st.nettype = NETTYPES.iter().find(|(s, _)| s == n)?.1,
+                ["C"] => st.celldefine = true,
+                ["K", k] => st
+                    .keywords
+                    .push((*KWSETS.get(k.parse::<usize>().ok()?)?, Span::default())),
+                _ => return None,
+            }
+        }
+        Some((opts, st))
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Event {
     Timescale(Option<Timescale>),

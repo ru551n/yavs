@@ -9,15 +9,19 @@ mod analysis;
 pub mod ast;
 mod bridge;
 mod diag;
+mod elab;
+mod exec;
 mod lex;
 mod parse;
 mod pre;
 mod runtime;
+mod sem;
 mod stmt;
 pub mod value;
 
 use std::path::{Path, PathBuf};
 
+pub use elab::{Design, Generic, Instance, ParamValue, PortSpec};
 pub use pre::Nettype;
 pub use runtime::{Domain, EVENT_LIMIT, Edge, Exec, NetId, Wait, edge};
 
@@ -146,6 +150,8 @@ pub struct Unit {
     /// Inside `` `celldefine ``.
     pub celldefine: bool,
     pub default_nettype: Nettype,
+    /// The options and preprocessor state the file was read under ([`read_unit`] reads it again).
+    pub setup: String,
 }
 
 #[derive(Debug, Default)]
@@ -272,6 +278,7 @@ fn one_file(
     };
     let incoming = st.clone();
     let digest = st.digest(opts);
+    let setup = incoming.encode(opts);
     let pre = pre::preprocess(opts, &mut res.files, st, fi, &bytes);
     let mut diags: Vec<Diag> = pre.diags.clone();
     let (toks, lexd) = lex::lex(&pre);
@@ -391,6 +398,7 @@ fn one_file(
                 timescale: ts.unwrap_or(opts.default_timescale),
                 celldefine: cd,
                 default_nettype: nt,
+                setup: setup.clone(),
             });
         }
         if checks
@@ -410,6 +418,87 @@ fn one_file(
         }
     }
     res.diagnostics.extend(diags);
+}
+
+/// A Verilog file read again for elaboration: its syntax tree and what maps its positions back.
+pub struct Source {
+    /// The file, then the files it included.
+    pub files: Vec<PathBuf>,
+    pub decls: Vec<ast::Decl>,
+    /// Errors and warnings of the read; a source with an error has no declarations.
+    pub diagnostics: Vec<Diag>,
+    /// The digest of the state entering the file, as [`Unit::context_digest`] at analysis.
+    pub digest: String,
+    /// The time scale of a module with no `` `timescale `` in force.
+    pub default_timescale: Timescale,
+    pre: pre::Pre,
+}
+
+impl Source {
+    /// The original span of the preprocessed text `pos .. pos + len`.
+    pub fn span(&self, pos: ast::Pos, len: u32) -> Span {
+        self.pre.span(pos, pos + len.max(1))
+    }
+
+    /// The module of this name.
+    pub fn module(&self, name: &str) -> Option<&ast::Module> {
+        self.decls.iter().find_map(|d| match d {
+            ast::Decl::Module(m) if m.name.name == name => Some(m),
+            _ => None,
+        })
+    }
+}
+
+/// The setup of a file read with `opts` and nothing before it, for [`read_unit`].
+pub fn setup(opts: &Options) -> String {
+    pre::State::new(opts).encode(opts)
+}
+
+/// Read `path` again under the `setup` analysis recorded for it ([`Unit::setup`]): the same
+/// options and the macros, `` `timescale `` and `` `default_nettype `` the earlier files of its
+/// call left. `None` when `setup` is not such a text.
+pub fn read_unit(path: &Path, setup: &str) -> Option<Source> {
+    let (opts, mut st) = pre::State::decode(setup)?;
+    let digest = st.digest(&opts);
+    let mut src = Source {
+        files: vec![path.to_path_buf()],
+        decls: Vec::new(),
+        diagnostics: Vec::new(),
+        digest,
+        default_timescale: opts.default_timescale,
+        pre: pre::Pre::default(),
+    };
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            src.diagnostics.push(
+                Diag::new(
+                    "E4012",
+                    Severity::Error,
+                    format!("cannot read `{}`", path.display()),
+                    None,
+                )
+                .note(e.to_string()),
+            );
+            return Some(src);
+        }
+    };
+    let incoming = st.clone();
+    let pre = pre::preprocess(&opts, &mut src.files, &mut st, 0, &bytes);
+    let mut diags = pre.diags.clone();
+    let (toks, lexd) = lex::lex(&pre);
+    diags.extend(lexd);
+    if diags.iter().all(|d| d.severity != Severity::Error) {
+        let mut p = parse::Parser::new(&pre, &toks);
+        src.decls = p.file(&|off| pre.state_at(off, &incoming));
+        diags.append(&mut p.diags);
+    }
+    if diags.iter().any(|d| d.severity == Severity::Error) {
+        src.decls.clear();
+    }
+    src.diagnostics = diags;
+    src.pre = pre;
+    Some(src)
 }
 
 /// Parse one source text (no file on disk) to its syntax tree, with the options' macros and include

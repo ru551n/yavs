@@ -3130,8 +3130,6 @@ pub fn bad_reg(f: &Func) -> Option<Reg> {
         .find(|r| r.0 >= n)
 }
 
-/// The registers an inline instruction touches (the compiled code indexes `regs` with them);
-/// `Reg(u32::MAX)` for an operand list outside the function.
 /// Whether the code generators compute the Verilog instruction `i` in place (#776): values of
 /// 1 to 64 bits; bitwise operators, merge, extension, concatenation, `===` and `case` matches
 /// with x and z, the rest on known operands only, leaving for the interpreter otherwise. Not
@@ -3156,6 +3154,8 @@ pub fn verilog_inline(i: &Inst) -> bool {
     }
 }
 
+/// The registers an inline instruction touches (the compiled code indexes `regs` with them);
+/// `Reg(u32::MAX)` for an operand list outside the function.
 pub fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
     let pair = |r: Reg, w: Width| {
         if w == Width::Sig {

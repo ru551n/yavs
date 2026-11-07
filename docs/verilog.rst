@@ -71,6 +71,18 @@ IEEE 1364-2005, which has no elaboration tasks; vendor and cell models use them.
 and not executed yet: elaboration of Verilog is not implemented. Any other system task outside a
 procedural block is still a syntax error (``E4100``).
 
+What is checked
+---------------
+
+The analyzer checks the rules of IEEE 1364-2005 that need no elaboration, and the repository keeps one test per rule, with
+its clause. Numbers must be well formed (``E4014``): a based constant has a non-zero size, at least one digit, no leading
+underscore, and only digits of its base. Compiler directives must be complete and balanced (``E4004`` to ``E4011``). Gates have
+the terminals their kind takes, user-defined primitives have one output, first, and at most one edge per table row, a path
+delay has 1, 2, 3, 6 or 12 values, an input or inout port is not a ``reg`` (``E4202``), a ``case`` has one ``default``, a function has input
+arguments only, and the variable of a generate ``for`` loop is a ``genvar`` (``E4204``); these are syntax errors
+(``E4100``) unless a code is given. Some rules are left to elaboration, for example the name of an instance of a module
+(only gates and primitives may omit it) and duplicate names inside a task or function.
+
 Diagnostics
 -----------
 

@@ -158,11 +158,16 @@ pub(crate) const TABLE: &[CodeInfo] = &[
         "E4202",
         "port declaration mismatch",
         "A port of a module header with a non-ANSI port list has no direction declaration in the body, or a body declaration names a port the header does not list, \
-         or a port is declared twice (clause 12.3)."
+         a port is declared or listed twice, or an input or inout port is declared `reg` (clause 12.3)."
     ),
     code!(
         "E4203",
         "duplicate declaration",
         "A name is declared twice in the same module scope (clause 12.1.2)."
+    ),
+    code!(
+        "E4204",
+        "generate loop variable is not a genvar",
+        "The variable of a generate `for` loop is declared with `genvar` (clause 12.4.1). A `reg` or `integer` cannot be the variable of a generate loop."
     ),
 ];

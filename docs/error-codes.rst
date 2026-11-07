@@ -653,9 +653,11 @@ Verilog (E4 and W4)
    * - _`E4201`
      - An identifier is used in an expression but declared nowhere in the module, and ```default_nettype none`` is in force, so no implicit net is created (clause 4.5).
    * - _`E4202`
-     - A port of a module header with a non-ANSI port list has no direction declaration in the body, or a body declaration names a port the header does not list, or a port is declared twice (clause 12.3).
+     - A port of a module header with a non-ANSI port list has no direction declaration in the body, or a body declaration names a port the header does not list, a port is declared or listed twice, or an input or inout port is declared ``reg`` (clause 12.3).
    * - _`E4203`
      - A name is declared twice in the same module scope (clause 12.1.2).
+   * - _`E4204`
+     - The variable of a generate ``for`` loop is declared with ``genvar`` (clause 12.4.1).
    * - _`E4500`
      - The design reaches Verilog: elaborating and simulating Verilog is not implemented.
 

@@ -184,6 +184,15 @@ pub fn analyze(files: &[PathBuf], opts: &Options) -> AnalysisResult {
         }
     }
     let _ = &names;
+    // A diagnostic at the end of a file (an unexpected end) points at the empty range there, never past it.
+    for d in &mut res.diagnostics {
+        if let Some(s) = d.span.as_mut()
+            && let Ok(m) = std::fs::metadata(&res.files[s.file])
+        {
+            s.start = s.start.min(m.len() as u32);
+            s.end = s.end.min(m.len() as u32).max(s.start);
+        }
+    }
     res
 }
 

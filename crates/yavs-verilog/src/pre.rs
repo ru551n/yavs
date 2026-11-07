@@ -462,6 +462,16 @@ impl Pp<'_> {
             let c = b.get(ns).copied().unwrap_or(b' ');
             if cond.active() {
                 if matches!(c, b'`' | b'"' | b'\\') {
+                    // Both ends of a stringification map to the call: say it once.
+                    let sp = origin.span(at, (ns + 1).min(n));
+                    if self
+                        .out
+                        .diags
+                        .last()
+                        .is_some_and(|d| d.code == "E4003" && d.span == Some(sp))
+                    {
+                        return (ns + 1).min(n).max(ns);
+                    }
                     self.out.diags.push(
                         Diag::error(
                             "E4003",
@@ -777,11 +787,24 @@ impl Pp<'_> {
     }
 
     fn include(&mut self, b: &[u8], at: usize, ne: usize, origin: Origin, depth: u32) -> usize {
-        let n = b.len();
         let s = skip_ws(b, ne);
-        let (close, quote) = match b.get(s) {
-            Some(b'"') => (b'"', true),
-            Some(b'<') => (b'>', false),
+        // The name is a quoted string, or a macro without arguments whose text is one.
+        let from_macro = if b.get(s) == Some(&b'`') {
+            let me = ident_at(b, s + 1);
+            let m = self.st.macros.get(&text(&b[s + 1..me]));
+            m.filter(|m| m.params.is_none())
+                .map(|m| (m.body.clone(), me))
+        } else {
+            None
+        };
+        let (name_text, after) = match from_macro {
+            Some((body, me)) => (body, me),
+            None => (b[s..line_end(b, s)].to_vec(), 0),
+        };
+        let nb = name_text.trim_ascii();
+        let close = match nb.first() {
+            Some(b'"') => b'"',
+            Some(b'<') => b'>',
             _ => {
                 let e = line_end(b, s);
                 self.err(
@@ -792,21 +815,18 @@ impl Pp<'_> {
                 return e;
             }
         };
-        let _ = quote;
-        let mut e = s + 1;
-        while e < n && b[e] != close && b[e] != b'\n' {
-            e += 1;
-        }
-        if e >= n || b[e] != close {
+        let Some(len) = nb[1..].iter().position(|&c| c == close) else {
+            let e = line_end(b, s);
             self.err(
                 "E4009",
                 "unterminated file name after `include".into(),
                 origin.span(at, e),
             );
             return e;
-        }
-        let rel = text(&b[s + 1..e]);
-        let after = e + 1;
+        };
+        let rel = text(&nb[1..=len]);
+        // Written in the source itself: the directive ends at the closing quote.
+        let after = if after == 0 { s + len + 2 } else { after };
         let span = origin.span(at, after);
         if depth >= MAX_DEPTH {
             self.err("E4011", "`include nested too deeply".into(), span);

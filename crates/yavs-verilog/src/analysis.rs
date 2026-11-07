@@ -476,13 +476,47 @@ pub(crate) fn module(cx: &mut Ctx, m: &Module) -> Vec<Port> {
         return ports;
     }
     duplicates(cx, m);
+    genvars(cx, m);
     if m.nettype == Nettype::None {
         undeclared(cx, m);
     }
     ports
 }
 
+/// Clause 12.3: an input or inout port is a net, so it cannot be declared `reg`.
+fn port_is_net(cx: &mut Ctx, d: &PortDecl) {
+    if d.dir != Dir::Output
+        && d.var.is_some()
+        && let Some(n) = d.names.first()
+    {
+        let what = if d.dir == Dir::Input {
+            "input"
+        } else {
+            "inout"
+        };
+        cx.diags.push(
+            Diag::error(
+                "E4202",
+                format!(
+                    "the {what} port `{}` is a net, it cannot be a variable (clause 12.3)",
+                    n.name.name
+                ),
+                cx.span(&n.name),
+            )
+            .help("remove `reg`"),
+        );
+    }
+}
+
 fn ports(cx: &mut Ctx, m: &Module) -> Vec<Port> {
+    match &m.ports {
+        Ports::Ansi(v) => v.iter().for_each(|d| port_is_net(cx, d)),
+        _ => m.items.iter().for_each(|it| {
+            if let Item::Port(d) = it {
+                port_is_net(cx, d)
+            }
+        }),
+    }
     match &m.ports {
         Ports::Ansi(v) => v
             .iter()
@@ -526,7 +560,9 @@ fn ports(cx: &mut Ctx, m: &Module) -> Vec<Port> {
                 let key: Option<Ident> = match (&p.name, &p.expr) {
                     (Some(n), None) => Some(n.clone()),
                     (_, Some(e)) => {
+                        // Every name in a port expression (`.q({b, c})`) is a listed port name.
                         visit_names(e, &mut |i| {
+                            listed.insert(i.name.clone());
                             first_ident.get_or_insert_with(|| i.clone());
                         });
                         first_ident
@@ -534,7 +570,13 @@ fn ports(cx: &mut Ctx, m: &Module) -> Vec<Port> {
                     (None, None) => None,
                 };
                 let Some(key) = key else { continue };
-                listed.insert(key.name.clone());
+                if !listed.insert(key.name.clone()) && p.expr.is_none() {
+                    cx.diags.push(Diag::error(
+                        "E4202",
+                        format!("port `{}` is listed twice (clause 12.3)", key.name),
+                        cx.span(&key),
+                    ));
+                }
                 let ext = p.name.as_ref().unwrap_or(&key);
                 match decl.get(key.name.as_str()) {
                     Some((d, _)) => out.push(Port {
@@ -573,27 +615,79 @@ fn ports(cx: &mut Ctx, m: &Module) -> Vec<Port> {
     }
 }
 
+/// Clause 12.4.1: the variable of a generate loop is a genvar.
+fn genvars(cx: &mut Ctx, m: &Module) {
+    fn walk(items: &[Item], decl: &mut HashSet<String>, loops: &mut Vec<Ident>) {
+        for it in items {
+            match it {
+                Item::Genvar(v) => v.iter().for_each(|i| {
+                    decl.insert(i.name.clone());
+                }),
+                Item::Generate(v) => walk(v, decl, loops),
+                Item::GenIf { then, els, .. } => {
+                    walk(&then.items, decl, loops);
+                    if let Some(e) = els {
+                        walk(&e.items, decl, loops);
+                    }
+                }
+                Item::GenFor { init, body, .. } => {
+                    loops.push(init.0.clone());
+                    walk(&body.items, decl, loops);
+                }
+                Item::GenCase { items, .. } => {
+                    items.iter().for_each(|(_, b)| walk(&b.items, decl, loops))
+                }
+                _ => {}
+            }
+        }
+    }
+    let (mut decl, mut loops) = (HashSet::new(), Vec::new());
+    walk(&m.items, &mut decl, &mut loops);
+    for v in loops.iter().filter(|v| !decl.contains(&v.name)) {
+        cx.diags.push(
+            Diag::error(
+                "E4204",
+                format!("the variable `{}` of a generate loop is not declared as a genvar (clause 12.4.1)", v.name),
+                cx.span(v),
+            )
+            .help(format!("declare it with `genvar {};`", v.name)),
+        );
+    }
+}
+
+fn dup_diag(cx: &Ctx, m: &Module, id: &Ident, what: &str) -> Diag {
+    Diag::error(
+        "E4203",
+        format!(
+            "`{}` is already declared in module `{}`",
+            id.name, m.name.name
+        ),
+        cx.span(id),
+    )
+    .label(format!("{what} declared again here"))
+    .note("a name is declared once per scope (clause 12.1.2)")
+}
+
 fn duplicates(cx: &mut Ctx, m: &Module) {
     let mut seen: HashMap<String, ()> = HashMap::new();
     let mut check = |cx: &mut Ctx, id: &Ident, what: &str| {
         if seen.insert(id.name.clone(), ()).is_some() {
-            cx.diags.push(
-                Diag::error(
-                    "E4203",
-                    format!(
-                        "`{}` is already declared in module `{}`",
-                        id.name, m.name.name
-                    ),
-                    cx.span(id),
-                )
-                .label(format!("{what} declared again here"))
-                .note("a name is declared once per scope (clause 12.1.2)"),
-            );
+            cx.diags.push(dup_diag(cx, m, id, what));
         }
     };
     for p in &m.params {
         for (i, _) in &p.assigns {
             check(cx, i, "parameter");
+        }
+    }
+    // Two ports of an ANSI header have different names. The body may repeat a port name to give it a
+    // type (`output o; reg o;`): the other tools accept it, so it is no duplicate here.
+    if let Ports::Ansi(v) = &m.ports {
+        let mut ports: HashSet<&str> = HashSet::new();
+        for n in v.iter().flat_map(|d| &d.names) {
+            if !ports.insert(n.name.name.as_str()) {
+                cx.diags.push(dup_diag(cx, m, &n.name, "port"));
+            }
         }
     }
     for it in &m.items {

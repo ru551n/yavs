@@ -950,7 +950,7 @@ fn operator_precedence_and_associativity() {
 fn statements_and_instances_have_the_expected_shape() {
     use yavs_verilog::ast::*;
     let d = yavs_verilog::parse_str(
-        "module m (a, b); input a; output b; reg b;\n always @(posedge a or negedge b) b <= #2 a ? 1 : 0;\n always @* if (a) b = 1; else b = 0;\n Sub #(3) u (a, , .x(b)); endmodule",
+        "module m (a, b); input a; output b; reg b;\n always @(posedge a or negedge b) b <= #2 a ? 1 : 0;\n always @* if (a) b = 1; else b = 0;\n Sub #(3) u (a, , b); endmodule",
         &Options::default(),
     )
     .unwrap();

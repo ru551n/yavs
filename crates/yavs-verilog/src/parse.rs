@@ -242,6 +242,14 @@ impl<'a> Parser<'a> {
         while self.p("(*") {
             // `@(* )` style star lists are handled by the event control parser, never reach here
             let open = self.bump();
+            if self.p("*)") {
+                self.push(Diag::error(
+                    "E4100",
+                    "an attribute instance names at least one attribute (clause 3.8)",
+                    self.span(open),
+                ));
+                return Err(());
+            }
             loop {
                 let t = self.peek();
                 if t.k == K::P && t.s == "*)" {
@@ -516,6 +524,12 @@ impl<'a> Parser<'a> {
                         )
                         .help("declare the module outside; IEEE 1364-2005 has no nested modules"),
                     );
+                    // Skip the inner declaration, so the outer `endmodule` is the one the caller skips to.
+                    self.skip_to(&[if t.s == "primitive" {
+                        "endprimitive"
+                    } else {
+                        "endmodule"
+                    }]);
                     return Err(());
                 }
                 _ => self.item(&mut items)?,
@@ -928,7 +942,16 @@ impl<'a> Parser<'a> {
             (K::Kw, "reg" | "integer" | "time" | "real" | "realtime") => {
                 let kind = self.var_kind().unwrap();
                 let signed = self.signed();
+                let at = self.peek();
                 let range = self.opt_range()?;
+                if range.is_some() && kind != VarKind::Reg {
+                    self.push(Diag::error(
+                        "E4100",
+                        format!("`{}` has no range, only `reg` does (clause 4.8)", t.s),
+                        self.span(at),
+                    ));
+                    return Err(());
+                }
                 let names = self.declarators(true)?;
                 self.expect_p(";")?;
                 out.push(Item::Var(VarDecl {
@@ -1089,6 +1112,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 self.expect_p(";")?;
+                self.gate_terminals(t, &insts)?;
                 out.push(Item::Gate(GateInst {
                     gate: t.s,
                     strength,
@@ -1194,9 +1218,22 @@ impl<'a> Parser<'a> {
 
     /// Ordered or named connections up to the closing `)`.
     fn conns(&mut self) -> R<Vec<Conn>> {
-        let mut v = Vec::new();
+        let mut v: Vec<Conn> = Vec::new();
         loop {
             self.attrs()?;
+            let named_next = self.p(".");
+            if let Some(first) = v.first() {
+                // Clause 12.3.5 (recalled): a list is all by position or all by name.
+                if matches!(first, Conn::Named(..)) != named_next && !(self.p(",") || self.p(")")) {
+                    let t = self.peek();
+                    self.push(Diag::error(
+                        "E4100",
+                        "port connections are all by position or all by name (clause 12.3)",
+                        self.span(t),
+                    ));
+                    return Err(());
+                }
+            }
             if self.p(".") {
                 let dot = self.bump();
                 if self.p("*") {
@@ -1301,6 +1338,20 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// A case statement or generate case has at most one `default` (clauses 9.5 and 12.4).
+    pub(crate) fn second_default(&mut self, seen: u32) -> R<()> {
+        if seen > 1 {
+            let t = self.peek();
+            self.push(Diag::error(
+                "E4100",
+                "a case has at most one `default` item (clause 9.5)",
+                self.span(t),
+            ));
+            return Err(());
+        }
+        Ok(())
+    }
+
     fn task(&mut self) -> R<Task> {
         self.bump();
         let automatic = self.eat_kw("automatic");
@@ -1361,6 +1412,29 @@ impl<'a> Parser<'a> {
         self.bump();
         if self.p(":") {
             return self.sv_end_label();
+        }
+        // Clause 10.3.1: at least one input argument and no output or inout.
+        let ports = decls.iter().filter_map(|d| match d {
+            Item::Port(p) => Some(p.dir),
+            _ => None,
+        });
+        let (mut inputs, mut others) = (0, 0);
+        ports.for_each(|d| {
+            if d == Dir::Input {
+                inputs += 1
+            } else {
+                others += 1
+            }
+        });
+        if inputs == 0 || others > 0 {
+            let at = self.pre.span(name.pos, name.pos + name.name.len() as u32);
+            let why = if others > 0 {
+                "a function has input arguments only, no output or inout"
+            } else {
+                "a function has at least one input argument"
+            };
+            self.push(Diag::error("E4100", format!("{why} (clause 10.3.1)"), at));
+            return Err(());
         }
         Ok(Function {
             automatic,
@@ -1448,12 +1522,16 @@ impl<'a> Parser<'a> {
                 let expr = self.expr()?;
                 self.expect_p(")")?;
                 let mut items = Vec::new();
+                let mut defaults = 0;
                 while !self.kw("endcase") {
                     if self.peek().k == K::Eof {
                         return self.fail("`endcase`");
                     }
                     let mut labels = Vec::new();
-                    if self.eat_kw("default") {
+                    if self.kw("default") {
+                        defaults += 1;
+                        self.second_default(defaults)?;
+                        self.bump();
                         self.eat_p(":");
                     } else {
                         loop {
@@ -1637,12 +1715,24 @@ impl<'a> Parser<'a> {
         self.expect_p(")")?;
         self.expect_p("=")?;
         let mut delays = Vec::new();
+        let open = self.peek();
         if self.eat_p("(") {
             delays.push(self.mintypmax()?);
             while self.eat_p(",") {
                 delays.push(self.mintypmax()?);
             }
             self.expect_p(")")?;
+            if !matches!(delays.len(), 1 | 2 | 3 | 6 | 12) {
+                self.push(Diag::error(
+                    "E4100",
+                    format!(
+                        "a path delay has 1, 2, 3, 6 or 12 values, found {} (clause 14.3)",
+                        delays.len()
+                    ),
+                    self.span(open),
+                ));
+                return Err(());
+            }
         } else {
             delays.push(self.mintypmax()?);
         }
@@ -1698,6 +1788,79 @@ impl<'a> Parser<'a> {
 
     // ----- UDP -----
 
+    /// Clause 7.1: the terminals of a gate are positional and their number is fixed by the gate.
+    fn gate_terminals(&mut self, t: Tok, insts: &[Instance]) -> R<()> {
+        let (lo, hi) = match t.s {
+            "and" | "nand" | "or" | "nor" | "xor" | "xnor" | "buf" | "not" => (2, usize::MAX),
+            "bufif0" | "bufif1" | "notif0" | "notif1" | "nmos" | "pmos" | "rnmos" | "rpmos"
+            | "tranif0" | "tranif1" | "rtranif0" | "rtranif1" => (3, 3),
+            "cmos" | "rcmos" => (4, 4),
+            "tran" | "rtran" => (2, 2),
+            _ => (1, 1), // pullup, pulldown
+        };
+        for i in insts {
+            let ordered = i
+                .conns
+                .iter()
+                .all(|c| matches!(c, Conn::Ordered(e) if !matches!(e, Expr::Empty)));
+            let msg = if !ordered {
+                format!(
+                    "the terminals of a `{}` gate are given by position, none left empty (clause 7.1)",
+                    t.s
+                )
+            } else if !(lo..=hi).contains(&i.conns.len()) {
+                let want = if hi == usize::MAX {
+                    format!("at least {lo}")
+                } else {
+                    lo.to_string()
+                };
+                format!(
+                    "a `{}` gate has {want} terminals, found {} (clause 7.1)",
+                    t.s,
+                    i.conns.len()
+                )
+            } else {
+                continue;
+            };
+            self.push(Diag::error("E4100", msg, self.span(t)));
+            return Err(());
+        }
+        Ok(())
+    }
+
+    fn udp_port_error(&mut self, t: Tok) {
+        self.push(Diag::error(
+            "E4100",
+            "a UDP has one output and it is the first port (clause 8.1)",
+            self.span(t),
+        ));
+    }
+
+    /// The value of a UDP `initial` is 0, 1, 1'b0, 1'b1, 1'bx or 1'bX (clause 8.5).
+    fn udp_init(&mut self) -> R<Expr> {
+        let t = self.peek();
+        let e = self.expr()?;
+        let ok = match &e {
+            Expr::Num(n) => {
+                let n: String = n.chars().filter(|c| !c.is_whitespace()).collect();
+                matches!(
+                    n.to_ascii_lowercase().as_str(),
+                    "0" | "1" | "1'b0" | "1'b1" | "1'bx"
+                )
+            }
+            _ => false,
+        };
+        if !ok {
+            self.push(Diag::error(
+                "E4100",
+                "the initial value of a UDP is 0, 1, 1'b0, 1'b1 or 1'bx (clause 8.5)",
+                self.span(t),
+            ));
+            return Err(());
+        }
+        Ok(e)
+    }
+
     fn udp(&mut self) -> R<Udp> {
         self.bump();
         let name = self.ident()?;
@@ -1708,8 +1871,14 @@ impl<'a> Parser<'a> {
         let mut init = None;
         if self.kw("output") || self.kw("input") {
             // ANSI style header
+            let mut first = true;
             loop {
                 let t = self.peek();
+                if (t.k == K::Kw && t.s == "output") != first && (output.is_some() || first) {
+                    self.udp_port_error(t);
+                    return Err(());
+                }
+                first = false;
                 if t.k == K::Kw && t.s == "output" {
                     self.bump();
                     if self.eat_kw("reg") {
@@ -1717,7 +1886,7 @@ impl<'a> Parser<'a> {
                     }
                     let o = self.ident()?;
                     if self.eat_p("=") {
-                        init = Some(self.expr()?);
+                        init = Some(self.udp_init()?);
                     }
                     output = Some(o);
                 } else if t.k == K::Kw && t.s == "input" {
@@ -1747,6 +1916,10 @@ impl<'a> Parser<'a> {
                 let t = self.peek();
                 match (t.k, t.s) {
                     (K::Kw, "output") => {
+                        if output.is_some() {
+                            self.udp_port_error(t);
+                            return Err(());
+                        }
                         self.bump();
                         if self.eat_kw("reg") {
                             sequential = true;
@@ -1776,14 +1949,18 @@ impl<'a> Parser<'a> {
             if output.is_none() {
                 return self.fail("`output`");
             }
-            // header order: output first
-            let _ = names;
+            // The output is the first name of the header.
+            if names[0].name != output.as_ref().map_or("", |o| o.name.as_str()) {
+                let t = self.peek();
+                self.udp_port_error(t);
+                return Err(());
+            }
         }
         if self.kw("initial") {
             self.bump();
             self.ident()?;
             self.expect_p("=")?;
-            init = Some(self.expr()?);
+            init = Some(self.udp_init()?);
             self.expect_p(";")?;
             sequential = true;
         }
@@ -1911,6 +2088,20 @@ impl<'a> Parser<'a> {
             } else {
                 None
             };
+            let edges = inputs
+                .iter()
+                .filter(|s| {
+                    matches!(s, UdpSym::Edge(..))
+                        || matches!(s, UdpSym::Level(c) if "rRfFpPnN*".contains(*c))
+                })
+                .count();
+            if edges > 1 {
+                bad(
+                    self,
+                    "a UDP table row has at most one edge (clause 8.4)".into(),
+                );
+                return Err(());
+            }
             if inputs.len() != n_in || out.len() != 1 || !inputs.iter().all(valid) {
                 bad(
                     self,

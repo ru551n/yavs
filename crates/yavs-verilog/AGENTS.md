@@ -24,6 +24,8 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `src/diag.rs` | `Diag` builders and the code table with `--explain` text |
 | `examples/vcheck.rs` | Developer tool: analyze files, print diagnostics, `--each` for corpus runs |
 | `tests/frontend.rs` | Tests through the public API with sources written to a scratch directory |
+| `tests/lrm.rs` | Runs every `tests/verilog/lrm/*.v` check (one LRM rule per file, header with the exact expected diagnostics) and checks that each is a row of `docs/design/lrm-checks.md` |
+| `tests/props.rs` | `proptest` properties: number literals of every base and width, macro chains and argument counts, nested conditionals, damaged real sources (no panic, spans inside the file) |
 
 ## 3. Design decisions that bind this module
 
@@ -43,6 +45,9 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | UDP tables are read as text between `table` and `endtable` (symbols like `(1x)` are not tokens) | Lexing them as Verilog fails | |
 | E4201 (undeclared) uses one flat set of every name declared anywhere in the module and is only on under `default_nettype none` | Loose by design: no false errors on vendor code; scoping is M1's job | `ponytail:` ceiling: a name declared in another scope is accepted |
 | Specify blocks and timing checks are parsed into the tree and not evaluated; with `XIL_TIMING` defined one W4015 per file says so | D14 | plan 6 |
+| A front-end rule of the LRM gets a file in `tests/verilog/lrm` and a row in `docs/design/lrm-checks.md` in the same commit; where the LRM is clear and the front end accepts, the file is pinned with a `// gap:` header and listed as a known gap | Rule 14 and the LRM policy; the VHDL side does the same with `tests/diag/sem` | `lrm-checks.md` "Per-clause checks" |
+| `` `include `` takes a quoted name, `<name>` or an argument-less macro that expands to one; a gate has its terminals by position, a fixed number per gate; the variable of a generate loop must be a genvar (`E4204`) | LRM 7.1, 12.4.1; the include forms are the other tools' | `lrm-checks.md` V5, V8 |
+| Spans of diagnostics are clamped to the file: an unexpected end points at the empty range at the end | A span past the end of the file breaks renderers | `tests/props.rs` |
 | `Unit::timescale` is the directive in force or `Options::default_timescale` (W4006 once per file) | D10 | |
 
 ## 4. Commands

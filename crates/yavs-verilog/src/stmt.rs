@@ -304,13 +304,17 @@ impl Parser<'_> {
                 let expr = self.expr()?;
                 self.expect_p(")")?;
                 let mut items = Vec::new();
+                let mut defaults = 0;
                 while !self.kw("endcase") {
                     if self.peek().k == K::Eof {
                         return self.fail("`endcase`");
                     }
                     self.attrs()?;
                     let mut exprs = Vec::new();
-                    if self.eat_kw("default") {
+                    if self.kw("default") {
+                        defaults += 1;
+                        self.second_default(defaults)?;
+                        self.bump();
                         self.eat_p(":");
                     } else {
                         loop {

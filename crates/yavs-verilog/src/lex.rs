@@ -268,8 +268,12 @@ pub(crate) fn lex(pre: &Pre) -> (Vec<Tok>, Vec<Diag>) {
             let after_hash = toks.last().is_some_and(|t| t.k == K::P && t.s == "#");
             let (end, real) = number(b, i, after_hash);
             tok!(if real { K::Real } else { K::Num }, "", end, 0);
-            // A letter right after the literal is a suffix, not a new token.
-            if end < n && (b[end].is_ascii_alphabetic() || b[end] == b'_') {
+            let bad = based_problem(&b[i..end]);
+            if let Some(why) = bad {
+                err!("E4014", i, end, "{why}");
+            }
+            // A letter or digit right after the literal is a suffix or a digit the base does not allow, not a new token.
+            if end < n && (b[end].is_ascii_alphanumeric() || b[end] == b'_') {
                 let mut j = end;
                 while j < n && is_id(b[j]) {
                     j += 1;
@@ -283,7 +287,7 @@ pub(crate) fn lex(pre: &Pre) -> (Vec<Tok>, Vec<Diag>) {
                         "time literal `{}` (SystemVerilog)",
                         String::from_utf8_lossy(&b[i..j])
                     );
-                } else {
+                } else if bad.is_none() {
                     err!(
                         "E4014",
                         i,
@@ -363,6 +367,36 @@ pub(crate) fn lex(pre: &Pre) -> (Vec<Tok>, Vec<Diag>) {
         n: 0,
     });
     (toks, diags)
+}
+
+/// What is wrong with a based literal (clause 3.5.1), `None` for a good one and for a literal that is not based.
+fn based_problem(lit: &[u8]) -> Option<&'static str> {
+    let q = lit.iter().position(|&c| c == b'\'')?;
+    let size = &lit[..q];
+    if !size.is_empty() && size.iter().all(|&c| c == b'0' || c == b'_') {
+        return Some("the size of a constant is not zero (clause 3.5.1)");
+    }
+    let mut r = &lit[q + 1..];
+    if matches!(r.first(), Some(b's' | b'S')) {
+        r = &r[1..];
+    }
+    let base = r.first()?.to_ascii_lowercase();
+    let digits: Vec<u8> = r[1..]
+        .iter()
+        .copied()
+        .skip_while(|c| c.is_ascii_whitespace())
+        .collect();
+    if digits.is_empty() {
+        return Some("a based constant has at least one digit (clause 3.5.1)");
+    }
+    if digits[0] == b'_' {
+        return Some("the digits of a constant do not start with an underscore (clause 3.5.1)");
+    }
+    let xz = |c: &u8| matches!(c, b'x' | b'X' | b'z' | b'Z' | b'?');
+    if base == b'd' && digits.iter().any(xz) && digits.iter().filter(|&&c| c != b'_').count() > 1 {
+        return Some("x or z in a decimal constant is the only digit (clause 3.5.1)");
+    }
+    None
 }
 
 /// After `'`: `[sS]? [bBoOdDhH]`.

@@ -1,0 +1,1 @@
+`yavs analyze` now rejects Verilog the standard forbids and it used to accept: bad numeric constants, gate and primitive (UDP) terminals, port and generate-loop rules, and a function with no input; it also reads a port expression with a concatenation and `` `include `` of a macro.

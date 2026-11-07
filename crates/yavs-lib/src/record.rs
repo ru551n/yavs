@@ -30,6 +30,26 @@ pub(crate) fn render(path: &str, units: &[UnitRecord]) -> String {
         if !u.weak.is_empty() {
             put_refs(&mut o, "weak", &u.weak);
         }
+        if u.encrypted {
+            o.push_str("encrypted = true\n");
+        }
+        if let Some(c) = &u.context {
+            put_line(&mut o, "context", c);
+        }
+        if !u.includes.is_empty() {
+            o.push_str("includes = [");
+            for (i, (p, h)) in u.includes.iter().enumerate() {
+                if i > 0 {
+                    o.push_str(", ");
+                }
+                o.push('[');
+                put_str(&mut o, p);
+                o.push_str(", ");
+                put_str(&mut o, h);
+                o.push(']');
+            }
+            o.push_str("]\n");
+        }
     }
     o
 }
@@ -90,6 +110,7 @@ fn parse(text: &str, path: &Path) -> std::result::Result<Vec<UnitRecord>, String
         None::<Vec<UnitRef>>,
         None::<Vec<UnitRef>>,
     );
+    let (mut encrypted, mut context, mut includes) = (false, None, Vec::new());
     let mut in_unit = false;
     macro_rules! end_unit {
         ($n:expr) => {
@@ -104,6 +125,9 @@ fn parse(text: &str, path: &Path) -> std::result::Result<Vec<UnitRecord>, String
                         .take()
                         .ok_or_else(|| bad($n, "a unit lacks `depends_on`"))?,
                     weak: weak.take().unwrap_or_default(),
+                    encrypted: std::mem::take(&mut encrypted),
+                    context: context.take(),
+                    includes: std::mem::take(&mut includes),
                     file: path.to_path_buf(),
                 });
             }
@@ -147,6 +171,28 @@ fn parse(text: &str, path: &Path) -> std::result::Result<Vec<UnitRecord>, String
             "key" => key = Some(string(&mut c)?),
             "primary" => primary = Some(string(&mut c)?),
             "std" => std = Some(string(&mut c)?),
+            "encrypted" if val == "true" => encrypted = true,
+            "context" => context = Some(string(&mut c)?),
+            "includes" => {
+                let sep = |c: &mut Cur| c.eat(b',').and_then(|()| c.eat(b' '));
+                c.eat(b'[').ok_or_else(|| bad(n, "expected ["))?;
+                while c.peek() != Some(b']') {
+                    let (mut p, mut h) = (String::new(), String::new());
+                    let ok = c.eat(b'[').is_some()
+                        && c.string(&mut p).is_some()
+                        && sep(&mut c).is_some()
+                        && c.string(&mut h).is_some()
+                        && c.eat(b']').is_some()
+                        && (c.peek() == Some(b']') || sep(&mut c).is_some());
+                    if !ok {
+                        return Err(bad(n, "bad includes"));
+                    }
+                    includes.push((p, h));
+                }
+                c.eat(b']')
+                    .filter(|()| c.done())
+                    .ok_or_else(|| bad(n, "bad includes"))?;
+            }
             k @ ("depends_on" | "weak") => {
                 let mut v = Vec::new();
                 let sep = |c: &mut Cur| c.eat(b',').and_then(|()| c.eat(b' '));
@@ -220,6 +266,16 @@ mod tests {
                 .depends("ieee", UnitKind::Package, "std_logic_1164")
                 .depends("lib", UnitKind::Entity, "\\x \"y\"\\"),
             UnitRecord::new(UnitKind::Context, "ctx", "2019"),
+            UnitRecord {
+                encrypted: true,
+                context: Some("sha256:ab".into()),
+                includes: vec![
+                    ("/x/inc \"a\".vh".into(), "sha256:c".into()),
+                    ("/y/b.vh".into(), "sha256:d".into()),
+                ],
+                ..UnitRecord::verilog(UnitKind::Module, "Sip_GT", "1364-2005")
+            },
+            UnitRecord::verilog(UnitKind::Primitive, "udp_Mux", "1364-2005"),
         ]
     }
 

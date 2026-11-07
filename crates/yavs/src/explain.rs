@@ -386,7 +386,11 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "L0034",
-        "A source file changed on disk since it was analyzed into the library. Analyze it again.",
+        "A source file, or a file a Verilog source includes, changed on disk since it was analyzed into the library. Analyze it again.",
+    ),
+    (
+        "L0035",
+        "A Verilog module or primitive and a VHDL design unit have the same name (case ignored) in one library. Verilog names keep their case, but a VHDL component that names a module must find exactly one unit, so the two languages may not share a name in a library. Rename one of them, or analyze them into different libraries.",
     ),
     // yavs-lower
     (

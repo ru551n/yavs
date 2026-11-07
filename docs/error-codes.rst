@@ -205,7 +205,9 @@ Libraries (L0)
    * - _`L0033`
      - A source file recorded in a library manifest cannot be read.
    * - _`L0034`
-     - A source file changed on disk since it was analyzed into the library.
+     - A source file, or a file a Verilog source includes, changed on disk since it was analyzed into the library.
+   * - _`L0035`
+     - A Verilog module or primitive and a VHDL design unit have the same name (case ignored) in one library.
 
 Semantic analysis (E1 and W1)
 -----------------------------

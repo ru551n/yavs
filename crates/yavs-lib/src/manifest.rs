@@ -8,7 +8,7 @@ pub const MANIFEST_FILE: &str = "yavs-lib.toml";
 pub const LOCK_FILE: &str = "_YAVS_LIB";
 /// The directory of the per-file records, next to the index.
 pub const RECORD_DIR: &str = "yavs-lib.d";
-pub(crate) const FORMAT: u32 = 5;
+pub(crate) const FORMAT: u32 = 6;
 
 /// Case-fold an identifier: basic identifiers are case-insensitive,
 /// extended identifiers (`\Foo\`) are not.
@@ -71,9 +71,18 @@ pub enum UnitKind {
     PackageInstance,
     Configuration,
     Context,
+    /// A Verilog module (IEEE 1364-2005). Its key is the name as written: Verilog is case sensitive.
+    Module,
+    /// A Verilog user-defined primitive. Shares the name space of modules (1364-2005 12.1).
+    Primitive,
 }
 
 impl UnitKind {
+    /// A Verilog unit: its key keeps the case of the name ([`Manifest::find_module`]).
+    pub fn verilog(self) -> bool {
+        matches!(self, Self::Module | Self::Primitive)
+    }
+
     /// A primary unit: all of them share one name space in a library (13.5).
     pub(crate) fn primary(self) -> bool {
         !matches!(self, Self::Architecture | Self::PackageBody)
@@ -88,6 +97,8 @@ impl UnitKind {
             UnitKind::PackageInstance => "package instance",
             UnitKind::Configuration => "configuration",
             UnitKind::Context => "context",
+            UnitKind::Module => "module",
+            UnitKind::Primitive => "primitive",
         }
     }
 }
@@ -129,6 +140,17 @@ pub struct UnitRecord {
     /// elaboration reports one that is missing (#819).
     #[serde(default)]
     pub weak: Vec<UnitRef>,
+    /// An encrypted (IEEE 1735 protected) Verilog module: known by name, never simulated (D8).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub encrypted: bool,
+    /// Verilog: the digest of the preprocessor state the unit's file was analysed under (macros,
+    /// `` `timescale ``, `` `default_nettype ``, the `-I` list). Every unit of a file holds the same.
+    // ponytail: copied into each unit of the file; a file-level field if files hold many modules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    /// Verilog: the files the unit's file included, as (path, content hash).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub includes: Vec<(String, String)>,
     /// Filled in by the library on load and update; not stored per unit.
     #[serde(skip)]
     pub file: PathBuf,
@@ -144,7 +166,18 @@ impl UnitRecord {
             std: std.into(),
             depends_on: vec![],
             weak: vec![],
+            encrypted: false,
+            context: None,
+            includes: vec![],
             file: PathBuf::new(),
+        }
+    }
+    /// A Verilog module or primitive: the key is `name` as written (no folding).
+    pub fn verilog(kind: UnitKind, name: &str, std: &str) -> Self {
+        debug_assert!(kind.verilog());
+        UnitRecord {
+            key: name.into(),
+            ..Self::new(kind, name, std)
         }
     }
     /// Architecture `arch` of entity `entity`.
@@ -187,6 +220,8 @@ impl UnitKind {
             UnitKind::PackageInstance => "package_instance",
             UnitKind::Configuration => "configuration",
             UnitKind::Context => "context",
+            UnitKind::Module => "module",
+            UnitKind::Primitive => "primitive",
         }
     }
 
@@ -199,6 +234,8 @@ impl UnitKind {
             "package_instance" => UnitKind::PackageInstance,
             "configuration" => UnitKind::Configuration,
             "context" => UnitKind::Context,
+            "module" => UnitKind::Module,
+            "primitive" => UnitKind::Primitive,
             _ => return None,
         })
     }
@@ -302,6 +339,15 @@ impl FileRef<'_> {
             .filter(move |u| u.file == i)
             .map(|u| self.m.loc(u))
     }
+}
+
+/// The answer of [`Manifest::find_module`].
+#[derive(Clone, Debug)]
+pub enum ModuleLookup<'a> {
+    Found(UnitLoc<'a>),
+    /// Several units differ from the name only in case: their names.
+    Ambiguous(Vec<&'a str>),
+    Missing,
 }
 
 /// A unit and the file that defines it.
@@ -414,6 +460,45 @@ impl Manifest {
             .iter()
             .find(|u| u.kind == kind && self.s(u.key) == key)
             .map(|u| self.loc(u))
+    }
+
+    /// A Verilog module or primitive by name (D5): the name as written first, else the one unit
+    /// whose name differs only in case. Two such units are ambiguous, and never guessed between.
+    pub fn find_module(&self, name: &str) -> ModuleLookup<'_> {
+        let mut near = Vec::new();
+        for u in self.units.iter().filter(|u| u.kind.verilog()) {
+            let key = self.s(u.key);
+            if key == name {
+                return ModuleLookup::Found(self.loc(u));
+            }
+            if key.eq_ignore_ascii_case(name) {
+                near.push(u);
+            }
+        }
+        match near.as_slice() {
+            [] => ModuleLookup::Missing,
+            [u] => ModuleLookup::Found(self.loc(u)),
+            many => ModuleLookup::Ambiguous(many.iter().map(|u| self.s(u.key)).collect()),
+        }
+    }
+
+    /// A unit of `new` that has the name of a unit of the other language in a file other than
+    /// `path` (case ignored): a Verilog module and a VHDL design unit may not share a name in one
+    /// library (D5). The new unit and the existing one.
+    pub(crate) fn name_clash(
+        &self,
+        path: &str,
+        new: &[UnitRecord],
+    ) -> Option<(String, UnitLoc<'_>)> {
+        new.iter().filter(|n| n.kind.primary()).find_map(|n| {
+            self.units
+                .iter()
+                .filter(|u| u.kind.primary() && u.kind.verilog() != n.kind.verilog())
+                .filter(|u| self.s(u.key).eq_ignore_ascii_case(&n.key))
+                .map(|u| self.loc(u))
+                .find(|l| l.file != Path::new(path))
+                .map(|l| (n.name.clone(), l))
+        })
     }
 
     /// Read the index text `render` wrote. A library of another format version is `L0004`.
@@ -990,7 +1075,7 @@ mod tests {
         ] {
             let m = sample(path);
             let text = m.to_text();
-            assert!(text.starts_with("format = 5\nname = \"lib\"\n"));
+            assert!(text.starts_with("format = 6\nname = \"lib\"\n"));
             let back = Manifest::parse(&text, Path::new("/l/yavs-lib.toml")).unwrap();
             same(&m, &back);
             // Written again, the same text.
@@ -1007,7 +1092,7 @@ mod tests {
         // The text stays valid TOML, for anyone who looks at it.
         let text = sample("/x/it's \"q\" \\ \u{e9}.vhd").to_text();
         let v: toml::Value = toml::from_str(&text).unwrap();
-        assert_eq!(v["format"].as_integer(), Some(5));
+        assert_eq!(v["format"].as_integer(), Some(6));
         assert_eq!(
             v["file"][0]["path"].as_str(),
             Some("/x/it's \"q\" \\ \u{e9}.vhd")
@@ -1174,7 +1259,7 @@ mod tests {
                 .contains("bad string")
         );
         // Another format version is not corrupt.
-        let e = Manifest::parse(&good.replacen("format = 5", "format = 6", 1), p).unwrap_err();
+        let e = Manifest::parse(&good.replacen("format = 6", "format = 7", 1), p).unwrap_err();
         assert!(crate::render(&e, false).contains("L0004"));
     }
 }

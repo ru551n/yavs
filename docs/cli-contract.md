@@ -136,11 +136,18 @@ directly (`docs/design/vhdl-93.md`).
   content hash, size and modification time, and the units each defines), `yavs-lib.d/` (one record per source
   file with the unit names and dependencies, named by a digest of their text), `_YAVS_LIB` (the lock) and
   `yavs-cache/` (below). Only yavs reads and writes them: the test runner never parses them, and the layout
-  has a `format` number in the index (4). A library written by a yavs with another number is refused with
+  has a `format` number in the index (6). A library written by a yavs with another number is refused with
   `L0004` naming the directory; delete it and analyze its files again (libraries are not converted). The
   index holds the absolute form of the name a file was last analyzed by (symlinks and `..` as written), and
   one entry per file: analyzing it by another name replaces the entry. A symlink of another name to a file
   that was edited since is not recognized and stays a second entry.
+- A library may also hold Verilog modules and primitives (`yavs analyze` of `.v` files, section 4). Their
+  names keep their case; a unit is looked up by the exact name first, then by the one unit that differs
+  only in case, and two such units are an error that lists them. A Verilog module and a VHDL design unit
+  may not share a name (case ignored) in one library: analyzing the second is `L0035`. An encrypted
+  module is recorded by name and fails only when something instantiates it. The index records, per
+  Verilog file, the state of the preprocessor it was analyzed under and the files it included with their
+  hashes; `run`/`elab` treat an included file that changed like a changed source (`L0034`).
 - A missing or empty directory is a valid empty library. `analyze` creates the
   directory (and its parents) on first use. The test runner does not run an init command;
   it only creates the parent of the library directory. This holds for every library, the `--work`

@@ -11,11 +11,11 @@ mod manifest;
 mod record;
 mod text;
 
-pub use closure::{ClosureFile, Libraries, closure};
+pub use closure::{ClosureFile, Libraries, VERILOG_STD, closure};
 pub use library::{Library, Session};
 pub use manifest::{
-    FileRef, LOCK_FILE, MANIFEST_FILE, Manifest, RECORD_DIR, Stamp, UnitKind, UnitLoc, UnitRecord,
-    UnitRef, fold, hash_content, same_file,
+    FileRef, LOCK_FILE, MANIFEST_FILE, Manifest, ModuleLookup, RECORD_DIR, Stamp, UnitKind,
+    UnitLoc, UnitRecord, UnitRef, fold, hash_content, same_file,
 };
 
 /// Every error is a ready-to-render diagnostic (no source spans).

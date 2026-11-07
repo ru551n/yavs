@@ -59,6 +59,9 @@ pub struct ClosureFile {
     /// that holds all of its units): which of two copies of a unit runs depends on it, so the
     /// key of the compilation cache holds it.
     pub kept: String,
+    /// A Verilog file: the preprocessor state it was analysed under and the files it included
+    /// with their hashes, as text for the compilation cache's key (empty for a VHDL file).
+    pub context: String,
 }
 
 type Node = (String, UnitKind, String); // library, kind, key
@@ -435,6 +438,7 @@ pub fn closure(libs: &Libraries, top: &UnitRef) -> Result<Vec<ClosureFile>> {
             let dir = cx.libs.get(&lib).map(|l| l.dir.as_path());
             check_hash(&lib, dir, fe.std, &path, fe.hash)?;
         }
+        let context = verilog_context(&cx.manifests[&lib], &fe, &lib)?;
         out.push(ClosureFile {
             library: lib,
             path,
@@ -447,10 +451,32 @@ pub fn closure(libs: &Libraries, top: &UnitRef) -> Result<Vec<ClosureFile>> {
             } else {
                 String::new()
             },
+            context,
         });
     }
     Ok(out)
 }
+
+/// The context of a Verilog file for the key of the compilation cache; the files it included are
+/// verified like the file itself. Empty for a VHDL file.
+fn verilog_context(m: &Manifest, fe: &crate::manifest::FileRef<'_>, lib: &str) -> Result<String> {
+    if !fe.units().any(|u| u.kind.verilog()) {
+        return Ok(String::new());
+    }
+    let mut out = String::new();
+    for u in m.records(fe)?.iter().filter(|u| u.kind.verilog()).take(1) {
+        out.push_str(u.context.as_deref().unwrap_or_default());
+        out.push('\n');
+        for (path, hash) in &u.includes {
+            check_hash(lib, None, VERILOG_STD, Path::new(path), hash)?;
+            out.push_str(&format!("{path} {hash}\n"));
+        }
+    }
+    Ok(out)
+}
+
+/// The `std` recorded for a Verilog file.
+pub const VERILOG_STD: &str = "1364-2005";
 
 fn check_hash(lib: &str, dir: Option<&Path>, std: &str, path: &Path, recorded: &str) -> Result<()> {
     let bytes = std::fs::read(path).map_err(|e| {
@@ -475,11 +501,18 @@ fn check_hash(lib: &str, dir: Option<&Path>, std: &str, path: &Path, recorded: &
                     path.display()
                 ),
             )
-            .with_help(format!(
-                "re-analyze it: `yavs analyze --std={std} --work={lib}:{} {}`",
-                dir.unwrap_or(Path::new("DIR")).display(),
-                path.display()
-            )),
+            .with_help(if std == VERILOG_STD {
+                format!(
+                    "re-analyze the Verilog files that read it: `yavs analyze --work={lib}:{} FILE...`",
+                    dir.unwrap_or(Path::new("DIR")).display()
+                )
+            } else {
+                format!(
+                    "re-analyze it: `yavs analyze --std={std} --work={lib}:{} {}`",
+                    dir.unwrap_or(Path::new("DIR")).display(),
+                    path.display()
+                )
+            }),
         ));
     }
     Ok(())

@@ -484,7 +484,7 @@ fn old_format_manifest() {
     std::fs::write(work.dir.join("yavs-lib.toml"), old).unwrap();
     assert_eq!(
         snap(&work.read().unwrap_err(), t.path()),
-        "error[L0004]: library manifest `<tmp>/work/yavs-lib.toml` has format version 2, this yavs reads version 5\n |\n = help: delete the library directory `<tmp>/work` and analyze its files again (a library of another format version is not converted)\n"
+        "error[L0004]: library manifest `<tmp>/work/yavs-lib.toml` has format version 2, this yavs reads version 6\n |\n = help: delete the library directory `<tmp>/work` and analyze its files again (a library of another format version is not converted)\n"
     );
     // Closures fail the same way, and analyzing into it fails early rather than overwriting.
     let mut libs = Libraries::new();
@@ -1091,4 +1091,121 @@ fn a_symlinked_spelling_of_a_held_library_does_not_wait() {
         );
     }
     drop(session);
+}
+
+const V: &str = yavs_lib::VERILOG_STD;
+
+fn module(name: &str) -> UnitRecord {
+    UnitRecord::verilog(UnitKind::Module, name, V)
+}
+
+#[test]
+fn verilog_names_keep_their_case_and_are_looked_up_by_d5() {
+    use yavs_lib::ModuleLookup::{Ambiguous, Found, Missing};
+    let (t, _, work, _) = setup();
+    let enc = UnitRecord {
+        encrypted: true,
+        ..module("SIP_GTHE4")
+    };
+    let p = t.path().join("a.v");
+    std::fs::write(&p, "a").unwrap();
+    work.update_file(
+        V,
+        &p,
+        &hash_content(b"a"),
+        vec![module("Foo"), module("foo"), enc],
+    )
+    .unwrap();
+    let m = work.read().unwrap();
+    let key = |l: yavs_lib::ModuleLookup<'_>| match l {
+        Found(u) => format!("found {}", u.key),
+        Ambiguous(v) => format!("ambiguous {}", v.join(",")),
+        Missing => "missing".into(),
+    };
+    // Exact match first, even when another name differs only in case.
+    assert_eq!(key(m.find_module("foo")), "found foo");
+    assert_eq!(key(m.find_module("Foo")), "found Foo");
+    // A unique case-insensitive match is found; two are ambiguous, never guessed.
+    assert_eq!(key(m.find_module("sip_gthe4")), "found SIP_GTHE4");
+    assert_eq!(key(m.find_module("FOO")), "ambiguous Foo,foo");
+    assert_eq!(key(m.find_module("bar")), "missing");
+    // The record keeps the flag and the spelling.
+    let recs = m.records(&m.file(&p).unwrap()).unwrap();
+    assert!(recs.iter().any(|u| u.name == "SIP_GTHE4" && u.encrypted));
+    assert!(!recs[0].encrypted);
+}
+
+#[test]
+fn a_module_and_a_vhdl_unit_may_not_share_a_name() {
+    let (t, _, work, _) = setup();
+    analyze(
+        &work,
+        t.path(),
+        "e.vhd",
+        "e",
+        vec![UnitRecord::new(UnitKind::Entity, "Counter", STD)],
+    );
+    let p = t.path().join("m.v");
+    std::fs::write(&p, "m").unwrap();
+    let e = work
+        .update_file(V, &p, &hash_content(b"m"), vec![module("COUNTER")])
+        .unwrap_err();
+    assert_eq!(e.code, "L0035");
+    // The library is unchanged by the refusal, and the other direction is refused too.
+    assert!(work.read().unwrap().file(&p).is_none());
+    work.update_file(V, &p, &hash_content(b"m"), vec![module("Other")])
+        .unwrap();
+    let q = t.path().join("o.vhd");
+    std::fs::write(&q, "o").unwrap();
+    let e = work
+        .update_file(
+            STD,
+            &q,
+            &hash_content(b"o"),
+            vec![UnitRecord::new(UnitKind::Entity, "other", STD)],
+        )
+        .unwrap_err();
+    assert_eq!(e.code, "L0035");
+    // Re-analysing the file that defines the module as a VHDL entity of that name replaces it.
+    work.update_file(
+        STD,
+        &p,
+        &hash_content(b"m"),
+        vec![UnitRecord::new(UnitKind::Entity, "OTHER", STD)],
+    )
+    .unwrap();
+}
+
+#[test]
+fn verilog_closure_carries_the_context_and_checks_includes() {
+    let (t, libs, work, _) = setup();
+    let inc = t.path().join("defs.vh");
+    std::fs::write(&inc, "`define W 8\n").unwrap();
+    let p = t.path().join("m.v");
+    let text = "`include \"defs.vh\"\nmodule Top; endmodule\n";
+    std::fs::write(&p, text).unwrap();
+    let top = UnitRecord {
+        context: Some("sha256:ctx".into()),
+        includes: vec![(inc.to_str().unwrap().into(), hash_content(b"`define W 8\n"))],
+        ..module("Top")
+    };
+    work.update_file(V, &p, &hash_content(text.as_bytes()), vec![top])
+        .unwrap();
+    let r = UnitRef::new("work", UnitKind::Module, "Top");
+    // The key is the name as written: `fold` would turn it into `top`.
+    assert_eq!(r.key, "top");
+    let r = UnitRef {
+        key: "Top".into(),
+        ..r
+    };
+    let files = closure(&libs, &r).unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].std, V);
+    assert!(files[0].context.starts_with("sha256:ctx\n"));
+    assert!(files[0].context.contains("defs.vh sha256:"));
+    // An edited include is stale, like an edited source.
+    std::fs::write(&inc, "`define W 16\n").unwrap();
+    let e = closure(&libs, &r).unwrap_err();
+    assert_eq!(e.code, "L0034");
+    assert!(e.message.contains("defs.vh"), "{}", e.message);
 }

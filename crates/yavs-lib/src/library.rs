@@ -352,6 +352,29 @@ impl Session {
         // index names it (`write_record`), so the index never names one that is not there, and a
         // power loss may lose the last analyze, which the next analyze redoes.
         let m = st.manifest.as_ref().unwrap();
+        if let Some((name, other)) = m.name_clash(path_s, &units) {
+            return Err(Box::new(
+                err(
+                    "L0035",
+                    format!(
+                        "{} `{name}` has the name of {} `{}` in library `{}`",
+                        if other.kind.verilog() {
+                            "VHDL unit"
+                        } else {
+                            "Verilog module"
+                        },
+                        other.kind.describe(),
+                        other.key,
+                        self.lib.name
+                    ),
+                )
+                .with_note(format!("`{}` defines the other one", other.file.display()))
+                .with_help(
+                    "a Verilog module and a VHDL design unit cannot share a name in one library \
+                     (case ignored): rename one, or analyze them into different libraries",
+                ),
+            ));
+        }
         let rdir = m.record_dir();
         let text = record::render(path_s, &units);
         let digest = record::digest(&text);

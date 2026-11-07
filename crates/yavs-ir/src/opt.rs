@@ -323,6 +323,11 @@ fn optimize_func_with(
     id: FuncId,
     inst: Option<InstView<'_>>,
 ) -> Option<Box<crate::Func>> {
+    // A Verilog function (#776) runs as lowered: no pass knows its instructions, and a value is
+    // a run of registers that renaming must keep together (`Inst::VUn`).
+    if prog.funcs.get(id)?.full().code.iter().any(Inst::is_verilog) {
+        return None;
+    }
     let mut f = optimize_body_with(prog, id, inst)?;
     if inline::run(prog, id, &mut f, 1) | inline::run_wide(prog, id, &mut f) {
         // The inlined bodies are code of this function now: what is known at the call decides

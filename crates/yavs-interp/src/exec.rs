@@ -27,6 +27,8 @@ use crate::pre::{self, Op};
 use crate::scan::{Scan, ScanFrom, ScanShape};
 use crate::{InstData, NAT_ASK, NAT_CODE, ProcDriver, ProcRoots, Runtime, SharedState};
 
+pub(crate) mod verilog;
+
 /// An execution failure before it becomes a `SimError` with a trace.
 #[derive(Debug)]
 pub(crate) enum Fault {
@@ -701,6 +703,8 @@ pub(crate) struct Machine {
     spin: u64,
     /// The bounds of the array the last function with `Func::ret_flat` returned.
     ret_bounds: [u64; 3],
+    /// The Verilog runtime while the domain runs this process (`verilog.rs`).
+    pub(crate) vhost: Option<Box<dyn verilog::VerilogHost>>,
 }
 
 /// The fields of a machine that `view_root` reads and the interpreter does not (see
@@ -1360,6 +1364,7 @@ impl Machine {
             execs: 0,
             spin: spin_range().0,
             ret_bounds: [0; 3],
+            vhost: None,
         }
     }
 
@@ -11400,6 +11405,30 @@ impl Machine {
                 self.suspend(prog, f, ctx)?;
                 return Ok(Flow::Suspend);
             }
+            Inst::VUn { .. }
+            | Inst::VBin { .. }
+            | Inst::VExt { .. }
+            | Inst::VCat { .. }
+            | Inst::VMerge { .. }
+            | Inst::VIndex { .. }
+            | Inst::VSel { .. }
+            | Inst::VTruth { .. }
+            | Inst::VCase { .. }
+            | Inst::VCount { .. }
+            | Inst::VDelay { .. }
+            | Inst::VDelayR { .. }
+            | Inst::VToReal { .. }
+            | Inst::VFromReal { .. }
+            | Inst::VRBin { .. }
+            | Inst::VTime { .. }
+            | Inst::VRTime { .. }
+            | Inst::VRead { .. }
+            | Inst::VWrite { .. }
+            | Inst::VNba { .. }
+            | Inst::VWaitOn { .. }
+            | Inst::VWaitDelay { .. }
+            | Inst::VTask { .. }
+            | Inst::VBack { .. } => self.verilog(inst, ctx)?,
             Inst::TimedOut { dst } => {
                 let v = kc!().timed_out();
                 self.set(dst, v.into());

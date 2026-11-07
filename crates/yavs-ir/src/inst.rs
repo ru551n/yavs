@@ -241,6 +241,105 @@ impl EdgeKind {
     }
 }
 
+/// The registers of a Verilog value of `w` bits (`Inst::VUn` and the other `V` instructions):
+/// a run of consecutive `I64` registers, the words of the `a` plane, then those of the `b` plane
+/// (`yavs_logic::v4`: 0 is `(0, 0)`, 1 `(1, 0)`, z `(0, 1)`, x `(1, 1)`; bits above `w` are 0).
+pub fn vregs(w: u32) -> u32 {
+    2 * w.div_ceil(64).max(1)
+}
+
+/// Unary Verilog operators (IEEE 1364-2005 5.1): `Not` and `Neg` keep the width, the reductions
+/// and `LNot` give one bit, `Clog2` (`$clog2`, 17.11.1) 32.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum VUnOp {
+    Not,
+    Neg,
+    LNot,
+    RedAnd,
+    RedNand,
+    RedOr,
+    RedNor,
+    RedXor,
+    RedXnor,
+    Clog2,
+}
+
+/// Binary Verilog operators (5.1): arithmetic, bitwise and shifts keep the width, relations,
+/// equalities and the logical operators give one bit. `Pow`'s flag: the exponent is signed.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum VBinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    Pow(bool),
+    And,
+    Or,
+    Xor,
+    Xnor,
+    Shl,
+    Shr,
+    Ashr,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Eq,
+    Ne,
+    CaseEq,
+    CaseNe,
+    LAnd,
+    LOr,
+}
+
+impl VBinOp {
+    /// Whether the result is one bit.
+    pub fn is_bit(self) -> bool {
+        use VBinOp::*;
+        matches!(
+            self,
+            Lt | Le | Gt | Ge | Eq | Ne | CaseEq | CaseNe | LAnd | LOr
+        )
+    }
+
+    /// Whether the right operand is self-determined (its own width `wb`).
+    pub fn self_right(self) -> bool {
+        matches!(
+            self,
+            VBinOp::Shl | VBinOp::Shr | VBinOp::Ashr | VBinOp::Pow(_)
+        )
+    }
+}
+
+impl VUnOp {
+    /// The width of the result of an operand of `w` bits.
+    pub fn width(self, w: u32) -> u32 {
+        match self {
+            VUnOp::Not | VUnOp::Neg => w,
+            VUnOp::Clog2 => 32,
+            _ => 1,
+        }
+    }
+}
+
+/// The comparison of a `case` item (9.5): `===`, or with z (`casez`) or x and z (`casex`) bits
+/// on either side matching anything.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum VCaseKind {
+    Case,
+    Casez,
+    Casex,
+}
+
+/// The event of an `@` item (9.7.2): any change, or the edge of element 0 (Table 9-9).
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum VEdge {
+    Any,
+    Pos,
+    Neg,
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DriveMode {
     Transport,
@@ -924,6 +1023,182 @@ pub enum Inst {
     /// Statement boundary: the debugger hook, and the end of the previous statement's
     /// temporaries.
     Stmt,
+    // Verilog (IEEE 1364-2005, #776). A value of `w` bits is the run of [`vregs`]`(w)` registers
+    // from its first; the operands have the widths the front end decided (5.4, 5.5). Nets are
+    // the running process's own numbers, which the Verilog runtime (`yavs_interp::VerilogHost`)
+    // maps to its instance's nets.
+    /// `dst = op a` of `a` of `w` bits ([`VUnOp::width`] bits).
+    VUn {
+        op: VUnOp,
+        w: u32,
+        dst: Reg,
+        a: Reg,
+    },
+    /// `dst = a op b`, `a` of `w` bits, `b` of `wb` bits (`w` unless [`VBinOp::self_right`]);
+    /// `signed`: the operation is signed.
+    VBin {
+        op: VBinOp,
+        signed: bool,
+        w: u32,
+        wb: u32,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    /// `a` of `wa` bits truncated or extended to `w`, sign-extended when `signed`.
+    VExt {
+        signed: bool,
+        w: u32,
+        wa: u32,
+        dst: Reg,
+        a: Reg,
+    },
+    /// `{hi, lo}`.
+    VCat {
+        whi: u32,
+        wlo: u32,
+        dst: Reg,
+        hi: Reg,
+        lo: Reg,
+    },
+    /// The bitwise merge of the two arms of a `?:` with an unknown condition (5.1.13).
+    VMerge {
+        w: u32,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    /// The first element of a select from the index value `idx` (`w` bits, `signed`): `idx -
+    /// adj` when `desc`, else `adj - idx`; `i64::MIN` (out of every vector) when the index is
+    /// unknown or the start overflows.
+    VIndex {
+        signed: bool,
+        desc: bool,
+        w: u32,
+        adj: i64,
+        dst: Reg,
+        idx: Reg,
+    },
+    /// `n` bits of `src` (`w` bits) from bit `at` (an integer register); bits outside `src`
+    /// read as x (5.2.1).
+    VSel {
+        w: u32,
+        n: u32,
+        dst: Reg,
+        src: Reg,
+        at: Reg,
+    },
+    /// The truth of `a` (5.1.9): 1 when some bit is 1, 0 when every bit is 0, else 2.
+    VTruth {
+        w: u32,
+        dst: Reg,
+        a: Reg,
+    },
+    /// Whether the `case` expression `a` matches the item `b` (9.5): 1 or 0.
+    VCase {
+        kind: VCaseKind,
+        w: u32,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    /// The iterations of a `repeat` (9.6): the value of `a`, 0 when unknown or negative.
+    VCount {
+        signed: bool,
+        w: u32,
+        dst: Reg,
+        a: Reg,
+    },
+    /// A delay of `a` time units of `10^unit` fs (9.7.1) in femtoseconds; x or z is 0.
+    VDelay {
+        unit: u8,
+        w: u32,
+        dst: Reg,
+        a: Reg,
+    },
+    /// A real delay `a` (`F64`) of units of `10^unit` fs rounded to the precision `10^prec` fs
+    /// (19.8); a negative delay is a runtime error.
+    VDelayR {
+        unit: u8,
+        prec: u8,
+        dst: Reg,
+        a: Reg,
+    },
+    /// `a` (`w` bits) as a real (4.8.2): x and z bits are 0.
+    VToReal {
+        signed: bool,
+        w: u32,
+        dst: Reg,
+        a: Reg,
+    },
+    /// The real `a` rounded to a two's complement integer of `w` bits (4.8.2).
+    VFromReal {
+        w: u32,
+        dst: Reg,
+        a: Reg,
+    },
+    /// Real arithmetic without checks (IEEE 754: a division by zero is an infinity): `Add`,
+    /// `Sub`, `Mul`, `Div`, `Pow`.
+    VRBin {
+        op: FOp,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    /// `$time` (`w` 64) or `$stime` (32) in units of `10^unit` fs, rounded (17.7.1).
+    VTime {
+        unit: u8,
+        w: u32,
+        dst: Reg,
+    },
+    /// `$realtime` in units of `10^unit` fs (`F64`).
+    VRTime {
+        unit: u8,
+        dst: Reg,
+    },
+    /// The value of net `net` (`w` bits).
+    VRead {
+        net: u32,
+        w: u32,
+        dst: Reg,
+    },
+    /// Blocking assignment of `src` (`n` bits) to the elements of net `net` from `at` (an
+    /// integer register); elements outside the net are not written (9.2.1, 5.2.1).
+    VWrite {
+        net: u32,
+        n: u32,
+        src: Reg,
+        at: Reg,
+    },
+    /// Non-blocking assignment of the same: the update enters the NBA region `delay` (an
+    /// integer register, femtoseconds) from now (9.2.2).
+    VNba {
+        net: u32,
+        n: u32,
+        src: Reg,
+        at: Reg,
+        delay: Reg,
+    },
+    /// The next `Suspend` waits for `edge` of net `net` too (9.7.2).
+    VWaitOn {
+        net: u32,
+        edge: VEdge,
+    },
+    /// The next `Suspend` waits `fs` femtoseconds (9.7.1), `#0` the Inactive region.
+    VWaitDelay {
+        fs: Reg,
+    },
+    /// System task `id` of the Verilog runtime with the argument registers `args` (`$display`,
+    /// `$write`, `$finish`).
+    VTask {
+        id: u32,
+        args: Regs,
+    },
+    /// A jump back of a Verilog process: `cnt` counts them, and past the limit of one activation
+    /// the process stops with a runtime error.
+    VBack {
+        cnt: Reg,
+    },
 }
 
 /// How an instruction uses a register.
@@ -945,12 +1220,44 @@ impl Inst {
         )
     }
 
+    /// Whether it is one of the Verilog instructions (`VUn` to `VBack`).
+    pub fn is_verilog(&self) -> bool {
+        matches!(
+            self,
+            Inst::VUn { .. }
+                | Inst::VBin { .. }
+                | Inst::VExt { .. }
+                | Inst::VCat { .. }
+                | Inst::VMerge { .. }
+                | Inst::VIndex { .. }
+                | Inst::VSel { .. }
+                | Inst::VTruth { .. }
+                | Inst::VCase { .. }
+                | Inst::VCount { .. }
+                | Inst::VDelay { .. }
+                | Inst::VDelayR { .. }
+                | Inst::VToReal { .. }
+                | Inst::VFromReal { .. }
+                | Inst::VRBin { .. }
+                | Inst::VTime { .. }
+                | Inst::VRTime { .. }
+                | Inst::VRead { .. }
+                | Inst::VWrite { .. }
+                | Inst::VNba { .. }
+                | Inst::VWaitOn { .. }
+                | Inst::VWaitDelay { .. }
+                | Inst::VTask { .. }
+                | Inst::VBack { .. }
+        )
+    }
+
     /// The operand list, if any.
     pub fn list(&self) -> Option<Regs> {
         match *self {
             Inst::MakeDope { parts, .. } | Inst::Cat { parts, .. } => Some(parts),
             Inst::BoundsSlice { regs, .. } => Some(regs),
             Inst::SigScatter { ops, .. } => Some(ops),
+            Inst::VTask { args, .. } => Some(args),
             Inst::Call { args, .. }
             | Inst::CallNative { args, .. }
             | Inst::CallForeign { args, .. }
@@ -966,6 +1273,7 @@ impl Inst {
             Inst::MakeDope { parts, .. } | Inst::Cat { parts, .. } => Some(parts),
             Inst::BoundsSlice { regs, .. } => Some(regs),
             Inst::SigScatter { ops, .. } => Some(ops),
+            Inst::VTask { args, .. } => Some(args),
             Inst::Call { args, .. }
             | Inst::CallNative { args, .. }
             | Inst::CallForeign { args, .. }
@@ -1273,6 +1581,99 @@ impl Inst {
                 f(src, Use, i);
             }
             Inst::CoverCond { state, .. } => f(state, Use, i),
+            Inst::VUn { op, w, dst, a } => {
+                vrun(dst, op.width(*w), Def, f);
+                vrun(a, *w, Use, f);
+            }
+            Inst::VBin {
+                op,
+                w,
+                wb,
+                dst,
+                a,
+                b,
+                ..
+            } => {
+                vrun(dst, if op.is_bit() { 1 } else { *w }, Def, f);
+                vrun(a, *w, Use, f);
+                vrun(b, *wb, Use, f);
+            }
+            Inst::VExt { w, wa, dst, a, .. } => {
+                vrun(dst, *w, Def, f);
+                vrun(a, *wa, Use, f);
+            }
+            Inst::VCat {
+                whi,
+                wlo,
+                dst,
+                hi,
+                lo,
+            } => {
+                vrun(dst, *whi + *wlo, Def, f);
+                vrun(hi, *whi, Use, f);
+                vrun(lo, *wlo, Use, f);
+            }
+            Inst::VMerge { w, dst, a, b } => {
+                vrun(dst, *w, Def, f);
+                vrun(a, *w, Use, f);
+                vrun(b, *w, Use, f);
+            }
+            Inst::VIndex { w, dst, idx, .. } => {
+                d(dst, i);
+                vrun(idx, *w, Use, f);
+            }
+            Inst::VSel { w, n, dst, src, at } => {
+                vrun(dst, *n, Def, f);
+                vrun(src, *w, Use, f);
+                f(at, Use, i);
+            }
+            Inst::VTruth { w, dst, a }
+            | Inst::VCount { w, dst, a, .. }
+            | Inst::VDelay { w, dst, a, .. } => {
+                d(dst, i);
+                vrun(a, *w, Use, f);
+            }
+            Inst::VCase { w, dst, a, b, .. } => {
+                d(dst, i);
+                vrun(a, *w, Use, f);
+                vrun(b, *w, Use, f);
+            }
+            Inst::VDelayR { dst, a, .. } => {
+                d(dst, i);
+                f(a, Use, fl);
+            }
+            Inst::VToReal { w, dst, a, .. } => {
+                d(dst, fl);
+                vrun(a, *w, Use, f);
+            }
+            Inst::VFromReal { w, dst, a } => {
+                vrun(dst, *w, Def, f);
+                f(a, Use, fl);
+            }
+            Inst::VRBin { op, dst, a, b } => {
+                d(dst, fl);
+                f(a, Use, fl);
+                f(b, Use, if *op == FOp::PowI { i } else { fl });
+            }
+            Inst::VTime { w, dst, .. } | Inst::VRead { w, dst, .. } => vrun(dst, *w, Def, f),
+            Inst::VRTime { dst, .. } => d(dst, fl),
+            Inst::VWrite { n, src, at, .. } => {
+                vrun(src, *n, Use, f);
+                f(at, Use, i);
+            }
+            Inst::VNba {
+                n, src, at, delay, ..
+            } => {
+                vrun(src, *n, Use, f);
+                f(at, Use, i);
+                f(delay, Use, i);
+            }
+            Inst::VWaitDelay { fs } => f(fs, Use, i),
+            Inst::VWaitOn { .. } | Inst::VTask { .. } => {}
+            Inst::VBack { cnt } => {
+                f(cnt, Use, i);
+                f(cnt, Def, i);
+            }
             Inst::CondBr { c, .. } => f(c, Use, i),
             Inst::Case { v, .. } => f(v, Use, i),
             Inst::Ret { v } => {
@@ -1473,5 +1874,21 @@ impl Inst {
             Inst::CondBr { t, f, .. } => vec![t, f],
             _ => Vec::new(),
         }
+    }
+}
+
+/// The registers of a Verilog value of `w` bits from `r` ([`vregs`]), each visited; a renaming
+/// of the first moves the run (the optimiser leaves functions with Verilog instructions alone,
+/// so no pass renames inside a run).
+fn vrun<F: FnMut(&mut Reg, Role, Option<RegTy>) + ?Sized>(
+    r: &mut Reg,
+    w: u32,
+    role: Role,
+    f: &mut F,
+) {
+    f(r, role, Some(RegTy::I64));
+    for k in 1..vregs(w) {
+        let mut x = Reg(r.0 + k);
+        f(&mut x, role, Some(RegTy::I64));
     }
 }

@@ -10,6 +10,7 @@ mod nibbles;
 mod planes;
 mod repr;
 mod scalar;
+pub mod v4;
 mod vec;
 pub mod wide;
 

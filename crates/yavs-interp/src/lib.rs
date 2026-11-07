@@ -58,6 +58,7 @@ pub use debug::{
     DebugSession, Debugger, FrameView, HitCond, Hits, LineBp, LocalView, ProcState, ProcStatus,
     Resume, SignalBreak, Stop, StopReason, Watches, format_scalar,
 };
+pub use exec::verilog::{LOOP_LIMIT as VERILOG_LOOP_LIMIT, VerilogHost};
 pub use exec::{Host, SPIN_CHECK, SPIN_LIMIT, copy_bits};
 pub use heap::{HEAP_LOG, Heap, collections as gc_collections};
 pub use ieee::{code_table, edge_native};
@@ -2418,6 +2419,16 @@ impl InterpProcess {
     /// cannot stand in for stays as it is.
     pub fn specialise_later(&mut self, holes: Arc<[(u32, u32)]>) {
         self.m.specialise_at(spec_after(), holes);
+    }
+
+    /// Give the process the Verilog runtime for its next activations (a Verilog process, #776).
+    pub fn set_verilog_host(&mut self, h: Box<dyn VerilogHost>) {
+        self.m.vhost = Some(h);
+    }
+
+    /// Take the Verilog runtime back.
+    pub fn take_verilog_host(&mut self) -> Option<Box<dyn VerilogHost>> {
+        self.m.take_vhost()
     }
 
     /// Attach a debug session (ir.md 3.4); `name` appears in the session's process table.

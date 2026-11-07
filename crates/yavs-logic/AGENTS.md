@@ -4,6 +4,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 
 ## 1. Purpose and boundaries
 
+- Verilog 4-state vectors (`v4`, #776), which share no table with 1164.
 - IEEE 1164 logic: the scalar `StdULogic` with the 1164 truth tables, and packed vectors
   `Logic<R>` over two layouts (`Planes`, the default, and `Nibbles`), plus a `BitVec` fast path
   for 0/1 vectors with numeric_std-style add, subtract, compare, extend and integer conversion.
@@ -22,6 +23,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `src/nibbles.rs` | `Nibbles`: 4-bit codes, table lookups (behind `--features nibbles` as the default alias) |
 | `src/vec.rs` | `Logic<R>`: the vector API used by the rest of yavs; `LogicVec = Logic<DefaultRepr>` in `lib.rs` |
 | `src/wide.rs` | Block-slice kernels over `[Block]` plus an element offset (copy, equality, `is_x`, `?=`, many-source resolution, `Lane`/`L4` four-blocks-at-a-time arithmetic); used by `Planes`, the kernel's `Buf` and the ieee natives |
+| `src/v4.rs` | `V4`: Verilog (IEEE 1364-2005) 4-state vectors of any width in two planes and the operators of clause 5 (arithmetic with the x rules, `**`, shifts, relations, `==`/`===`, logical, reductions, `?:` merge, extension, selects, `$clog2`, `case` matching, real conversions); shared by `yavs-verilog` (constant folding, tests) and the interpreter's Verilog instructions; tested against a reference model in `crates/yavs-verilog/tests/ops.rs` |
 | `src/bitvec.rs` | `BitVec`: plain `u64` words for 0/1 vectors, arithmetic and conversions |
 | `tests/ieee_tables.rs` | Tables checked against the vendored `lib/ieee` std_logic_1164 body |
 | `tests/layouts.rs` | Both layouts vs a `Vec<StdULogic>` reference: exhaustive pairs/triples at every bit position, proptest |

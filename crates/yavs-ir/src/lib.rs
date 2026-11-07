@@ -30,7 +30,7 @@ pub use copies::{
 pub use inst::{
     AddrSpace, AttrKind, BoolOp, CheckKind, CmpOp, DriveMode, EdgeKind, FOp, FUnOp, ForceKind,
     Inst, IntOp, IntUnOp, LNumOp, LOp, Part, PhysOp, Reg, RegTy, Regs, Role, SCATTER_PART,
-    SCATTER_REJECT, SIG_PART_BYTES, Width,
+    SCATTER_REJECT, SIG_PART_BYTES, VBinOp, VCaseKind, VEdge, VUnOp, Width, vregs,
 };
 pub use memo_fn::{MemoArg, MemoArr, MemoSig, native_is_pure};
 pub use program::{

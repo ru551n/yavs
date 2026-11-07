@@ -46,6 +46,14 @@ textual dump.
 
 ## Changes
 
+- Verilog instructions (#776): `VUn`, `VBin`, `VExt`, `VCat`, `VMerge`, `VIndex`, `VSel`, `VTruth`,
+  `VCase`, `VCount`, `VDelay`, `VDelayR`, `VToReal`, `VFromReal`, `VRBin`, `VTime`, `VRTime` compute on
+  4-state values of `yavs_logic::v4`, a value of `w` bits being the run of `vregs(w)` consecutive `I64`
+  registers from its first (`a` plane words, then `b`; `visit` reports every register of a run);
+  `VRead`, `VWrite`, `VNba`, `VWaitOn`, `VWaitDelay` (before a `Suspend`), `VTask` (`$display`,
+  `$write`, `$finish`) and `VBack` (the jump-back count of an activation) reach the Verilog runtime
+  (`yavs_interp::VerilogHost`). Only `yavs-verilog` emits them, into a program of its own; a function
+  with one of them is never optimised (`opt::optimize_func`: a run must keep its registers together).
 - `CheckKind::IndexDown` (made only by the optimiser, `Opt::pos_to_check`): `Index` of a descending range, the error names the bounds `hi downto lo`.
 - Result tables for pure functions of one small discrete argument (#722, `src/casetab.rs`): `Program::tabs` (function id to `CaseTab`), made by `FuncBuilder::finish`, read by the inliner; producers do nothing (a stored program carries the field).
 - `Inst::Zero { addr, bytes }` (#668): zero `bytes` bytes (a multiple of 8) at `addr`, the zeroing

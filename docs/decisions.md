@@ -16,9 +16,28 @@
   its plaintext-header module recorded, and one warning W4007 at the envelope; E4001 is the error on instantiating the module, at
   elaboration. A plaintext file that includes an encrypted one passes. In the manifests this is `PASS+W4007`; the E4001 wording of
   the M0 acceptance line is superseded.
-- **Stand-in analyzer:** `tools/verilog/fake_yavs.py` reports the preprocessor-stage diagnostics only, so the tools could be
-  tested, and made to fail on purpose, before `yavs analyze *.v` exists. It goes away with the stand-in half of
-  `tools/verilog/selftest.py` once the analyzer does.
+- **No stand-in analyzer:** `fake_yavs.py` and the stand-in half of `selftest.py` were removed once `yavs analyze *.v` existed;
+  `selftest.py` keeps the static check, a failing analyzer and the skip notices. CI (the `corpus` job) runs `selftest.py`,
+  `fixtures.py` and `corpus.py cells` against the release binary; `corpus.py vendor` stays local (D3). A change under
+  `tests/verilog` or `tools/verilog` gets the full Linux scope: the Rust tests and the `corpus` job read them.
+- **Deviation from the M0 acceptance line (maintainer to confirm):** "all 800 plaintext IP `.v` analyse with 0 errors" is not
+  literally achievable at M0, and the measured state replaces it. The install has 796 plaintext IP `.v` rows in the gate (788
+  plain, 8 that include an encrypted file). 728 analyse with no error. The other 68 are expected, each for a reason that is
+  not a front-end gap: 22 use SystemVerilog syntax in a `.v` file (`E4003`, plan 1.2); 25 are not Verilog (template files of the
+  memory interface generator with `#`/`%` placeholders: 24 `E4100`, 1 `E4005`); 8 are include-only fragments of one IP (`E4100`);
+  3 include a header the generator writes and the install lacks (`E4005`); 9 need macros defined in another IP's files or a
+  `-D` density flag (`E4007`); 1 is a memory model that fails on purpose without `-D den1024Mb` (`E4100`). Every library file
+  (unisims, retarget, unimacro, unifast, `glbl`, both views) analyses; the 5 unisim `.sv` files are `E4002`; every encrypted
+  file is recorded with one `W4007`. Total: 4132 rows, 3498 `PASS`, 561 `PASS+W4007`, 73 errors, all in the manifest.
+  `cells` (36 yosys cell model files): 29 `PASS`, 7 errors that are the model's own SystemVerilog (`i++` is `E4003`; the
+  elaboration task `$error` is `E4100`, since it is not 1364-2005).
+- **One source for the Verilog codes:** every code the front end emits, with its `--explain` text, is in `yavs_verilog::CODES`
+  (`crates/yavs-verilog/src/diag.rs`); `src/explain.rs` of the CLI holds only `E4500`, which the CLI reports. The index page
+  `docs/error-codes.rst` is generated from both.
+- **Diagnostics belong to the file whose analysis found them:** `AnalysisResult::diag_file` gives, for each diagnostic, the
+  argument file being analysed (its span may be in an included file); the CLI reports each diagnostic under that file, so the
+  per-file stop, `-Werror` and the "analysed before it" list are right when files include each other. `E4002` (a `.sv` file) is
+  placed at the start of the file, like the front end's own findings.
 
 ## Copyright holder (maintainer, 2026-11-01, #1039)
 

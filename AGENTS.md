@@ -23,6 +23,7 @@ ownership, commit identity, shared-host limits) do not apply to them.
 | When you touch | Also read |
 |---|---|
 | parser (`yavs-syntax`) | `crates/yavs-syntax/AGENTS.md`, `docs/decisions.md` "Parser", `docs/design/lrm-checks.md` P1/P2 |
+| Verilog (`yavs-verilog`, `crates/yavs/src/verilog.rs`) | `crates/yavs-verilog/AGENTS.md`, `docs/verilog.rst`, `docs/design/lrm-checks.md` "Verilog", `tests/verilog/AGENTS.md`, `tools/verilog/AGENTS.md` |
 | semantic analysis (`yavs-sem`) | `crates/yavs-sem/AGENTS.md`, `docs/design/sem.md`, `docs/design/lrm-checks.md`, `crates/yavs-sem/CONTRIBUTING.md` |
 | IR, interpreter, lowering, elaboration | `crates/yavs-{ir,interp,lower,elab}/AGENTS.md`, `docs/design/ir.md`, `crates/yavs-ir/README.md`, `crates/yavs-lower/DESIGN.md`, `crates/yavs-kernel/DESIGN.md` |
 | kernel (`yavs-kernel`) | `crates/yavs-kernel/AGENTS.md`, `crates/yavs-kernel/DESIGN.md` |
@@ -39,6 +40,7 @@ ownership, commit identity, shared-host limits) do not apply to them.
 |---|---|
 | `crates/yavs-diag` | Diagnostics model and renderer (codes, snippets, labels, notes, help); code registry in its crate docs |
 | `crates/yavs-syntax` | Lexer, conditional analysis, parser, owned AST (2008 and 2019) |
+| `crates/yavs-verilog` | Verilog (IEEE 1364-2005) front end: preprocessor, lexer, parser, module analysis, encrypted-envelope and SystemVerilog detection; codes `E4xxx`/`W4xxx` (#776, M0: no elaboration yet) |
 | `crates/yavs-sem` | Semantic analysis to typed HIR (`hir.rs`); module owners in its `CONTRIBUTING.md` |
 | `crates/yavs-lib` | Library manifests, `_YAVS_LIB` locking, unit closure |
 | `crates/yavs-cache` | The on-disk store of the compilation cache (keys, atomic writes, validation, pruning); VHDL-agnostic |

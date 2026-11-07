@@ -2958,13 +2958,26 @@ The GitHub Action that installs a release lives in its own repository, `ru551n/y
 
 ## verilog (`crates/yavs-verilog`, `crates/yavs/src/verilog.rs`, #776 M0)
 
-In progress. Done around the front end: diagnostic range `E4xxx`/`W4xxx` with `--explain` texts and an `E4`
-section in the error index; library format 6 with `Module` and `Primitive` units (case kept, exact then
-case-insensitive lookup, `L0035` for a module and a VHDL unit of one name), the `encrypted` flag, the preprocessor
-context and the included files with hashes in the unit record, verified by `closure`; the context in the cache key;
-`yavs analyze` dispatches by extension (`.v`, `.vh`, `.vp` to the front end, `.sv`, `.svh` are `E4002`), with `-I`,
-`-D NAME[=VALUE]`, `--timescale` and `--lang`; `elab` and `run` stop with `E4500` at a Verilog file. Not done: the
-front end's own analysis (other branch), elaboration and simulation (M1), Verilog options on `elab`/`run`.
+M0 done; elaboration and simulation (M1) are not started. The front end (`crates/yavs-verilog`): preprocessor (macros with
+arguments, conditionals, `include`, `timescale`, `default_nettype`, `celldefine`, command-line `-D`), lexer, parser for the
+1364-2005 constructs of the plan (modules, UDPs, gates, generate, tasks and functions, specify blocks and timing checks parsed
+and ignored, attributes), module analysis (ports, duplicate declarations, undeclared names under `default_nettype none`),
+encrypted envelopes recorded by module name with one `W4007` per file (`E4001` is the error on instantiating such a module,
+reserved for elaboration), SystemVerilog detection (`E4002`, `E4003`), and macro and include nesting caps.
+Around it: diagnostic range `E4xxx`/`W4xxx` with `--explain` texts (one table, `yavs_verilog::CODES`) and an `E4` section in the
+error index; library format 6 with `Module` and `Primitive` units (case kept, exact then case-insensitive lookup, `L0035` for a
+module and a VHDL unit of one name), the `encrypted` flag, the preprocessor context and the included files with hashes in the unit
+record, verified by `closure`; the context in the cache key; `yavs analyze` dispatches by extension (`.v`, `.vh`, `.vp` to the front
+end, `.sv`, `.svh` are `E4002`), with `-I`, `-D NAME[=VALUE]`, `--timescale` and `--lang`; diagnostics are reported under the file
+whose analysis found them; `elab` and `run` stop with `E4500` at a Verilog file.
+
+Measured (debug build, `tools/verilog`): 29 of 29 hand-written fixtures as expected; the 36 yosys cell model files (CI): 29
+analyse, 7 are rejected for their own SystemVerilog (`i++` is `E4003`, the elaboration task `$error` is `E4100`); the vendor
+install gate (local): 4132 files, 3498 `PASS`, 561 `PASS+W4007`, 73 expected errors. Of the 796 plaintext IP `.v` rows 728 analyse
+with no error; the 68 others are SystemVerilog in a `.v` file, generator templates, include-only fragments, headers the install
+lacks and files that need macros from another IP or a `-D` flag (`docs/decisions.md` "Verilog test material and corpus gate"). The
+plan's "800 plaintext IP with 0 errors" is not literally reachable. Not done: Verilog options on `elab`/`run`, the plan's
+per-clause `tests/verilog/lrm` checks (readings so far in `docs/design/lrm-checks.md` "Verilog"), property tests of the parser.
 
 ## syntax (`crates/yavs-syntax`, M0)
 

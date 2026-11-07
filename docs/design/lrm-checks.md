@@ -734,3 +734,33 @@ Taken under the policy at the top. The options and evidence are in the items abo
   (the LRM says "predefined"), with warning `W1506` at the instantiation when a different user
   `"="` for the actual type is visible there, since the reference simulator would use that one.
 - **L8 aggregate element tie:** the element type (the reference simulator); no `E1323` for that case.
+
+## Verilog (IEEE 1364-2005, `yavs-verilog`, #776 M0)
+
+Clause numbers are IEEE 1364-2005. Policy as at the top of this file: where the LRM is clear, follow it; where it is silent or
+unclear, be permissive and accept what the reference simulators accept. These are the readings the front end took where the text
+leaves a choice or the vendor sources need one; the fixtures under `tests/verilog/ci` pin each.
+
+### V1: a bare `begin ... end` in a module (12.4)
+
+1364-2005 allows a generate block only as the body of a generate `if`, `case` or `for`. Vendor IP (memory interface and
+block memory models) contains a `begin ... end` standing alone in a module, inside or outside `generate`/`endgenerate`.
+Reading: accepted as an unnamed generate block. Permissive, because the reference
+simulators accept it and rejecting it would reject real IP. No diagnostic.
+
+### V2: a size of 0 and a number after `#` do not glue to a base (3.5.1)
+
+A sized literal is `<size> '<base> <digits>` and white space may separate the three parts (3.5.1). The size is a non-zero
+unsigned decimal number, so a `0` followed by `'b` or `'d` cannot be a size, and the number of a delay is a delay value, not a
+size. Reading: a decimal `0` and a number that directly follows `#` are not glued to the following base literal, so `#1 'd0` is
+the delay `#1` and the unsized literal `'d0` (vendor IP writes a delay macro, `` `define DLY #1 ``, directly before a literal).
+Any other decimal number followed by a base literal is a sized literal as the LRM says.
+
+### V3: when a SystemVerilog word is `E4003` and when it is an identifier (3.7)
+
+Most SystemVerilog keywords (`logic`, `bit`, `int`, `ref`, `string`, ...) are not reserved in 1364-2005, so a design may use
+them as identifiers. Reading: a word is an identifier wherever 1364 allows one, and `E4003` names it only where it appears as
+a SystemVerilog construct: at the start of a module item or statement, as the type of a port or parameter, and for the
+operators and forms that do not exist in 1364 (`++`, `+=`, `.*`, `end : label`, a time literal such as `1ns`). Anything else that does not parse is `E4100`. This keeps `E4003` a statement that the file is
+SystemVerilog, never a guess from one word. A system task of SystemVerilog, such as the elaboration task `$error`, is not a
+construct this rule covers and reports `E4100`.

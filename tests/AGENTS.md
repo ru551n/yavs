@@ -11,7 +11,7 @@ by several crates; the test code lives in the crates. Each subdirectory has its 
 | `corpus/<group>/*.vhd`, `*.expected` | Differential testbenches with reference simulator outputs, `RESULTS.md` | `tools/difftest`, `crates/yavs-lower/tests/corpus.rs` | `tests/corpus/AGENTS.md` |
 | `discrepancies/<id>/` | One reproducer per simulator discrepancy, with expected yavs output and recorded verdicts | `tools/discrepancies/run.py` | `tests/discrepancies/AGENTS.md` |
 | `parse-corpus/*.txt` | Expected parse results for external corpora | `crates/yavs/tests/corpus.rs` (`--features corpus`) | `tests/parse-corpus/AGENTS.md` |
-| `verilog/ci/*.v`, `fixtures.expected` | Hand-written Verilog fixtures with the expected `yavs analyze` outcome (diagnostic codes, units) | `tools/verilog/fixtures.py` (`--static` in CI), later the `yavs-verilog` tests | `tests/verilog/README.md`, `tests/verilog/AGENTS.md` |
+| `verilog/ci/*.v`, `fixtures.expected` | Hand-written Verilog fixtures with the expected `yavs analyze` outcome (diagnostic codes, units) | `tools/verilog/fixtures.py` (`--static` needs no analyzer; not wired into CI yet), later the `yavs-verilog` tests | `tests/verilog/README.md`, `tests/verilog/AGENTS.md` |
 
 ## Rules that bind every test input here
 

@@ -10,7 +10,7 @@ Verilog plan (#776); no third-party text. Read `AGENTS.md` here first.
 | `lrm/` | Reserved for the per-clause LRM checks of the plan (not created yet) | |
 
 ```sh
-python3 -I tools/verilog/fixtures.py --static          # manifest against files; needs no analyzer (runs in CI today)
+python3 -I tools/verilog/fixtures.py --static          # manifest against files; needs no analyzer (not run by CI yet)
 python3 -I tools/verilog/fixtures.py --yavs target/release/yavs
 python3 -I tools/verilog/selftest.py                    # the tools against a stand-in analyzer, with deliberately wrong ones
 ```
@@ -30,7 +30,7 @@ STATUS  FILE  [args="..."] [diag=CODE[@LINE:COL][,...]] [units=a,b] [later=reaso
 | `FILE` | Fixture in `ci/`; the call runs in `ci/`, so `-I inc` and the file name are relative |
 | `args="..."` | Extra arguments of the call: `-I DIR`, `-D NAME[=VALUE]` (the call adds `--work=LIB:DIR` and the file) |
 | `diag=` | Every error and warning the call prints, nothing else (notes are not compared). `CODE` is `E4001` and so on, or `W*` for any warning whose code is not registered yet. `@LINE:COL` is the start of the primary span; leave it out where the plan does not fix a position |
-| `units=` | Modules and UDPs the file declares, case as written, in file order. `fixtures.py` checks them against the text; the analyzer's own list is checked by the Rust tests of `yavs-verilog` |
+| `units=` | The exact list of units analysis records (active code only: a module under a false `` `ifdef `` is not one), case as written, in file order. `fixtures.py --static` checks only that each is declared in the text; the analyzer's own list is checked by the Rust tests of `yavs-verilog` |
 | `later=` | Informational: the construct analyses fine and is refused later (for example at elaboration). Never compared |
 
 A diagnostic list is compared as a multiset: order does not matter, and a position is checked only when the line gives one.

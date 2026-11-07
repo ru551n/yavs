@@ -31,7 +31,7 @@ Read the root `AGENTS.md` and `tools/AGENTS.md` first. This file is for an agent
 
 Categories of `vendor`: `unisims`, `retarget`, `unimacro`, `unifast`, `glbl` (each file in both views: no define, and `-D XIL_TIMING`;
 one `yavs analyze` call per library and view), `unisims-sv` (E4002), `ip-plain`, `ip-includes-encrypted` and `ip-encrypted`
-(one call per `ip/**/*.v`), `protected` (`*.vp` in `verilog/src`, `secureip` and `ip`). Libraries: `unisims_ver` (unisims and
+(one call per `ip/**/*.v`, 1264 of 1269), `protected` (`*.vp` in `verilog/src` and `secureip`; the 27 in `ip` are all in skipped directories). Libraries: `unisims_ver` (unisims and
 retarget), `unimacro_ver`, `unifast_ver` (separate: five module names are in both unisims and unifast), `work` (glbl).
 
 ## 3. Design decisions that bind this module
@@ -56,7 +56,10 @@ retarget), `unimacro_ver`, `unifast_ver` (separate: five module names are in bot
   unambiguous SystemVerilog syntax (`typedef`, `enum`, `struct`, `package`, `always_ff`, `int x`, ...), `E4001` an envelope
   anywhere in the file or in a file it includes. `bless` after the first real run replaces them; review the diff per category.
 - The vendor `.vp` files come in other tools' forms. Six use `//pragma protect begin_protected` inside a comment, which the
-  plan's detector (directive forms only) does not catch; they are expected to give E4001 here, and the gate shows the gap.
+  plan's detector (directive forms only) does not catch. `classify` expects E4001 for that form, but all six sit in the
+  skipped per-tool copies (`SKIP_DIRS`), so no gated file uses it today. The gap is real: add a fixture when the detector is written.
+- E4001 is counted at any severity, so the "exactly one E4001" claim survives decision D8 if the envelope becomes a warning
+  and the error moves to instantiation; `check` then needs `bless`, since the exit status changes.
 - A change of the install version changes the file lists: `check` reports a stale manifest (`gen`, review the diff, commit).
 - Scratch space is a `tempfile` directory; nothing is written into the install or the repository.
 - The gate runs each call under `timeout 300 systemd-run --user --scope -q -p MemoryMax=2G` (root rule 15); `--no-wrap` drops
@@ -75,5 +78,6 @@ tools/fetch-corpus.sh && python3 -I tools/verilog/corpus.py cells --yavs target/
 
 ## 6. Coordination
 
-Not wired into CI yet: the analyzer does not exist. When it does, add `selftest.py` and `fixtures.py` to the `plan`/`check`
-scope of `tools/ci-plan.py`, and run `corpus.py cells` in the `corpus` job (after `fetch-corpus.sh`) beside the VHDL manifests.
+Nothing here runs in CI yet. `selftest.py` and `fixtures.py --static` need no analyzer and can run now; `fixtures.py` and
+`corpus.py cells` (in the `corpus` job, after `fetch-corpus.sh`, outside its `tools/corpus/*.toml` loop) once `yavs analyze *.v`
+exists. Until `tools/ci-plan.py` lists `tools/verilog` and `tests/verilog`, a change there gets the full Linux scope.

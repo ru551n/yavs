@@ -115,7 +115,7 @@ def macro_suspects(f, text, index):
 # One copy of a memory model per simulator product, named after it; the product names stay out of tracked files (root AGENTS.md
 # section 2a), so these directories are counted and not gated.
 SKIP_DIRS = ("ip/xilinx/ddr4_v2_2/data/dlib/ultrascale/ddr4_sdram/tb/ddr4_model/samsung", "ip/xilinx/hbm_v1_0/verif/model",
-             "ip/xilinx/noc_hbm_responder_v1_0/hdl/memory_model", "ip/xilinx/mig_7series_v4_2/data/dlib/7series/qdriiplus_sram/sim_vcs")
+             "ip/xilinx/noc_hbm_responder_v1_0/hdl/memory_model", "ip/xilinx/mig_7series_v4_2/data/dlib/7series/qdriiplus_sram/sim_")  # a prefix: the sibling directories of the tool variants
 
 
 def enum_vendor(root):
@@ -237,7 +237,7 @@ def run_group(a, yavs, root, tmp, tag, ents):
     res, warn = {}, 0
     for i, e in ents:
         ds = by.pop(str(root / e["path"]) if len(ents) == 1 else os.path.realpath(root / e["path"]), [])
-        res[i] = outcome([c for l, c in ds if l == "error"], rc if len(ents) == 1 else 0)
+        res[i] = outcome([c for l, c in ds if l == "error" or c == "E4001"], rc if len(ents) == 1 else 0)  # E4001 counts at any severity
         warn += sum(l == "warning" for l, _ in ds)
     stray = [f"{f}: {c}" for f, ds in by.items() for l, c in ds if l == "error"]
     return res, warn, text if rc and len(ents) > 1 else "", stray

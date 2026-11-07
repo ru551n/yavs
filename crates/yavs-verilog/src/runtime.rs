@@ -120,10 +120,32 @@ pub(crate) struct Net {
 }
 
 struct Res {
-    drivers: Vec<u32>,
+    drivers: Vec<Dr>,
     /// `L` or `H` on every element: `tri0`, `tri1`.
-    pull: Option<LogicVec>,
+    pull: Option<StdULogic>,
+    /// Every driver is strong (`Dr::weak` false) and there is no pull.
+    plain: bool,
 }
+
+/// A driver net of a resolved net and how it maps values to levels.
+struct Dr {
+    net: u32,
+    weak: bool,
+    zero: Drive,
+    one: Drive,
+}
+
+/// Work done by resolution, for tests of the fast paths: single-driver nets add nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Stats {
+    /// Writes to driver nets that changed a value and so resolved their net.
+    pub resolutions: u64,
+    /// Elements resolved by them.
+    pub elements: u64,
+}
+
+/// Elements resolved on the stack at a time.
+const CHUNK: usize = 64;
 
 struct Waiter {
     proc: u32,
@@ -162,6 +184,7 @@ pub(crate) struct Core {
     future: BTreeMap<Time, Vec<Item>>,
     /// Boundary changes in order, one batch per kernel delta (`bridge.rs`).
     pub(crate) publish: VecDeque<Vec<(u32, LogicVec)>>,
+    pub(crate) stats: Stats,
     /// The batch boundary changes go to now, counted from the one this activation assigns.
     pub(crate) cursor: usize,
     limit: u32,
@@ -178,6 +201,7 @@ impl Default for Domain {
                 nba: Vec::new(),
                 future: BTreeMap::new(),
                 publish: VecDeque::new(),
+                stats: Stats::default(),
                 cursor: 0,
                 limit: EVENT_LIMIT,
             },
@@ -211,30 +235,43 @@ impl Domain {
     /// all its drivers whenever one of them changes.
     pub fn driver(&mut self, drv: NetId, target: NetId, zero: Drive, one: Drive) {
         self.core.nets[drv.0 as usize].drives = Some((target.0, zero, one));
-        self.core.nets[target.0 as usize]
+        let res = self.core.nets[target.0 as usize]
             .res
             .get_or_insert_with(|| {
                 Box::new(Res {
                     drivers: Vec::new(),
                     pull: None,
+                    plain: true,
                 })
-            })
-            .drivers
-            .push(drv.0);
+            });
+        let weak = (zero, one) != (Drive::Strong, Drive::Strong);
+        res.plain &= !weak;
+        res.drivers.push(Dr {
+            net: drv.0,
+            weak,
+            zero,
+            one,
+        });
+    }
+
+    /// What resolution has done so far.
+    pub fn stats(&self) -> Stats {
+        self.core.stats
     }
 
     /// `target` has a pull of `l` (`L` or `H`) on every element, as a `tri0` or `tri1` net.
     pub fn pull(&mut self, target: NetId, l: StdULogic) {
-        let n = &mut self.core.nets[target.0 as usize];
-        let len = n.value.len();
-        n.res
+        let res = self.core.nets[target.0 as usize]
+            .res
             .get_or_insert_with(|| {
                 Box::new(Res {
                     drivers: Vec::new(),
                     pull: None,
+                    plain: true,
                 })
-            })
-            .pull = Some(LogicVec::new(len, l));
+            });
+        res.pull = Some(l);
+        res.plain = false;
     }
 
     /// A process, started in the Active region at initialisation, in declaration order.
@@ -384,70 +421,82 @@ impl Core {
     }
 
     /// Elements `at..` of `net` take `v` at once; waiters whose item holds move to Active. A
-    /// write to a driver net resolves the net it drives.
+    /// write to a driver net resolves, in the net it drives, the elements it changed.
     pub(crate) fn write(&mut self, net: NetId, at: u32, v: &LogicVec) {
         match self.nets[net.0 as usize].drives {
-            None => self.put(net, at, v),
+            None => self.put_with(net, at, v.len(), |i| v.get(i)),
             Some((target, ..)) => {
                 let n = &mut self.nets[net.0 as usize];
-                let mut changed = false;
+                let (mut lo, mut hi) = (usize::MAX, 0);
                 for i in 0..v.len() {
                     let (e, c) = (at as usize + i, v.get(i));
                     if n.value.get(e) != c {
                         n.value.set(e, c);
-                        changed = true;
+                        lo = lo.min(e);
+                        hi = e;
                     }
                 }
-                if changed {
-                    self.resolve(target);
+                if lo <= hi {
+                    self.resolve(target, lo, hi + 1 - lo);
                 }
             }
         }
     }
 
-    /// The value of resolved net `target` from its drivers and pull.
-    fn resolve(&mut self, target: u32) {
+    /// Elements `at .. at + n` of resolved net `target` from its drivers and pull: a table
+    /// lookup per driver and element on the stack, and for a wide change of strong drivers the
+    /// kernel's plane-wise resolution.
+    fn resolve(&mut self, target: u32, at: usize, n: usize) {
         let Some(res) = self.nets[target as usize].res.take() else {
             return;
         };
-        // ponytail: a strong driver is read in place and a weak one mapped per element on every
-        // resolution; a plane-wise mapping if a design has many weak drivers.
-        let mapped: Vec<Option<LogicVec>> = res
-            .drivers
-            .iter()
-            .map(|&d| {
-                let n = &self.nets[d as usize];
-                match n.drives {
-                    Some((_, Drive::Strong, Drive::Strong)) | None => None,
-                    Some((_, z, o)) => Some(LogicVec::from_fn(n.value.len(), |i| {
-                        level(n.value.get(i), z, o)
-                    })),
+        self.stats.resolutions += 1;
+        self.stats.elements += n as u64;
+        let t = NetId(target);
+        if n > CHUNK && res.plain && !res.drivers.is_empty() {
+            // ponytail: allocates a slice per driver; wide changes are rare, and this is
+            // the kernel's fast resolution.
+            let parts: Vec<LogicVec> = res
+                .drivers
+                .iter()
+                .map(|d| self.nets[d.net as usize].value.slice(at, n))
+                .collect();
+            let r = LogicVec::resolve(&parts.iter().collect::<Vec<_>>());
+            self.put_with(t, at as u32, n, |i| r.get(i));
+        } else {
+            let mut buf = [StdULogic::Z; CHUNK];
+            let mut done = 0;
+            while done < n {
+                let k = (n - done).min(CHUNK);
+                for (j, slot) in buf[..k].iter_mut().enumerate() {
+                    let e = at + done + j;
+                    // The first driver (or the pull) starts the fold; a single `resolve` lookup
+                    // per further driver is the common (driver, z) pair.
+                    let mut r = res.pull.unwrap_or(StdULogic::Z);
+                    for d in &res.drivers {
+                        let c = self.nets[d.net as usize].value.get(e);
+                        r = r.resolve(match d.weak {
+                            false => c,
+                            true => level(c, d.zero, d.one),
+                        });
+                    }
+                    *slot = r;
                 }
-            })
-            .collect();
-        let mut refs: Vec<&LogicVec> = res
-            .drivers
-            .iter()
-            .zip(&mapped)
-            .map(|(&d, m)| m.as_ref().unwrap_or(&self.nets[d as usize].value))
-            .collect();
-        refs.extend(res.pull.as_ref());
-        let r = match refs.is_empty() {
-            true => LogicVec::new(self.nets[target as usize].value.len(), StdULogic::Z),
-            false => LogicVec::resolve(&refs),
-        };
-        drop(refs);
+                let base = at + done;
+                self.put_with(t, base as u32, k, |i| buf[i]);
+                done += k;
+            }
+        }
         self.nets[target as usize].res = Some(res);
-        self.put(NetId(target), 0, &r);
     }
 
-    fn put(&mut self, net: NetId, at: u32, v: &LogicVec) {
+    fn put_with(&mut self, net: NetId, at: u32, len: usize, get: impl Fn(usize) -> StdULogic) {
         let net = &mut self.nets[net.0 as usize];
         let old = net.value.get(0);
         let mut changed = false;
         // ponytail: element by element; plane-word copies when lowering makes writes hot.
-        for i in 0..v.len() {
-            let (e, c) = (at as usize + i, v.get(i));
+        for i in 0..len {
+            let (e, c) = (at as usize + i, get(i));
             if net.value.get(e) != c {
                 net.value.set(e, c);
                 changed = true;
@@ -549,5 +598,95 @@ impl Exec<'_, '_> {
     /// `$finish`.
     pub fn finish(&mut self) {
         self.ctx.finish(0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Work counters and allocations of the net paths: a net with one driver costs no
+    //! resolution, and resolving a narrow net allocates nothing.
+
+    use super::*;
+    use std::time::Instant;
+
+    fn bits(s: &str) -> LogicVec {
+        s.parse().expect("a logic string")
+    }
+
+    /// A target of `w` bits with two drivers (one weak when `weak`).
+    fn bus(w: usize, weak: bool) -> (Domain, NetId, NetId, NetId) {
+        let mut d = Domain::new();
+        let t = d.net(LogicVec::new(w, StdULogic::Z));
+        let (a, b) = (
+            d.net(LogicVec::new(w, StdULogic::Z)),
+            d.net(LogicVec::new(w, StdULogic::Z)),
+        );
+        d.driver(a, t, Drive::Strong, Drive::Strong);
+        let b_drive = if weak { Drive::Weak } else { Drive::Strong };
+        d.driver(b, t, b_drive, b_drive);
+        (d, t, a, b)
+    }
+
+    #[test]
+    fn a_net_without_resolution_does_no_resolution_work() {
+        let mut d = Domain::new();
+        let n = d.net(LogicVec::new(8, StdULogic::Z));
+        for v in ["10101010", "01010101", "ZZZZZZZZ"] {
+            d.core.write(n, 0, &bits(v));
+        }
+        assert_eq!(d.stats(), Stats::default());
+    }
+
+    #[test]
+    fn resolution_covers_only_the_changed_elements_and_resolves_correctly() {
+        let (mut d, t, a, b) = bus(16, false);
+        d.core.write(a, 4, &bits("101"));
+        assert_eq!(
+            d.stats(),
+            Stats {
+                resolutions: 1,
+                elements: 3
+            }
+        );
+        // The same value again changes nothing.
+        d.core.write(a, 4, &bits("101"));
+        assert_eq!(d.stats().resolutions, 1);
+        d.core.write(b, 5, &bits("1"));
+        d.core.write(b, 6, &bits("1"));
+        // Elements 6 to 0: a gives 1 0 1 at 6 to 4, b gives 1 at 5 and 6.
+        let v = d.core.nets[t.0 as usize].value.slice(0, 7);
+        assert_eq!(v, bits("1X1ZZZZ"));
+        assert_eq!(d.stats().elements, 3 + 1 + 1);
+    }
+
+    /// Nanoseconds per write of a plain net, of a driver of a two-driver net (strong and
+    /// weak) and of a driver of a 256-bit net: `cargo test -p yavs-verilog --lib bench_net_writes
+    /// -- --ignored --nocapture`. Resolution costs a table lookup per driver and element.
+    #[test]
+    #[ignore]
+    fn bench_net_writes() {
+        const N: u32 = 200_000;
+        let vals = [bits("10101010"), bits("ZZZZZZZZ"), bits("0101ZZ01")];
+        let time = |label: &str, d: &mut Domain, net: NetId, vals: &[LogicVec]| {
+            let t = Instant::now();
+            for i in 0..N {
+                d.core.write(net, 0, &vals[i as usize % vals.len()]);
+            }
+            let ns = t.elapsed().as_nanos() as f64 / f64::from(N);
+            println!("{label}: {ns:.1} ns/write, {:?}", d.stats());
+        };
+        let mut d = Domain::new();
+        let plain = d.net(LogicVec::new(8, StdULogic::Z));
+        time("plain 8 bit", &mut d, plain, &vals);
+        for weak in [false, true] {
+            let (mut d, _, a, _) = bus(8, weak);
+            time(&format!("two drivers, weak {weak}"), &mut d, a, &vals);
+        }
+        let wide: Vec<LogicVec> = ["1", "Z", "0"]
+            .iter()
+            .map(|c| bits(&c.repeat(256)))
+            .collect();
+        let (mut d, _, a, _) = bus(256, false);
+        time("two drivers, 256 bit", &mut d, a, &wide);
     }
 }

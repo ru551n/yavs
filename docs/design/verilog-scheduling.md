@@ -103,6 +103,6 @@ activations the loop polls `Ctx::stop_requested` and returns with its queues int
 | Linear scan of the publication queue per output change | An index per port if batches grow long |
 | The event limit is `E3009` (runtime error) | A dedicated code with the diagnostics range of step C |
 | Three strength levels (D13): supply against strong, pull against weak resolve to x | An 8-level resolver as a `Resolution::Func` for nets that mix those levels |
-| A resolved net resolves all its drivers whole-vector on every driver write; a weak driver is mapped element by element | Resolve only the changed bits; plane-wise strength mapping |
+| Resolution is a `std_logic` table lookup per driver and changed element on the stack (no allocation), 8 bits and two drivers about 125 ns per driver write against 45 ns for a plain net (`bench_net_writes`, release); a change wider than 64 elements of strong drivers uses the kernel's plane-wise resolution and allocates a slice per driver | Plane-wise strength mapping and a plane-wise store |
 | `inout` and nets driven from both languages are `E4501` | Step D (R9), see 3a |
 | The domain decides nothing from VHDL activity (`'active`, transactions without an event) | Not needed by 1364 |

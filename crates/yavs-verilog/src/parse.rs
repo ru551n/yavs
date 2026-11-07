@@ -77,7 +77,31 @@ pub(crate) struct Parser<'a> {
     i: usize,
     pub diags: Vec<Diag>,
     depth: u32,
+    /// Inside a function body (clause 10.4.4 limits the statements).
+    pub(crate) in_func: bool,
+    /// Inside a task, function or named block: declarations are local.
+    local: u32,
+    /// Inside a generate region or block (clause 12.4 limits the items).
+    in_gen: u32,
+    /// The genvars of the loop generate constructs being parsed.
+    genvars: Vec<String>,
 }
+
+/// The timing checks of clause 15.1: name, fewest and most arguments, first argument needs an edge.
+const TIMING_CHECKS: &[(&str, usize, usize, bool)] = &[
+    ("$setup", 3, 4, false),
+    ("$hold", 3, 4, false),
+    ("$recovery", 3, 4, false),
+    ("$removal", 3, 4, false),
+    ("$skew", 3, 4, false),
+    ("$setuphold", 4, 9, false),
+    ("$recrem", 4, 9, false),
+    ("$timeskew", 3, 6, false),
+    ("$fullskew", 4, 7, false),
+    ("$period", 2, 3, true),
+    ("$width", 2, 4, true),
+    ("$nochange", 4, 5, false),
+];
 
 impl<'a> Parser<'a> {
     pub(crate) fn new(pre: &'a Pre, toks: &'a [Tok]) -> Parser<'a> {
@@ -87,6 +111,10 @@ impl<'a> Parser<'a> {
             i: 0,
             diags: Vec::new(),
             depth: 0,
+            in_func: false,
+            local: 0,
+            in_gen: 0,
+            genvars: Vec::new(),
         }
     }
 
@@ -238,6 +266,22 @@ impl<'a> Parser<'a> {
     }
 
     /// Skip attribute instances `(* ... *)`.
+    /// How many tokens the attribute instances at the cursor take (0 when there are none).
+    pub(crate) fn attrs_len(&self) -> usize {
+        let mut k = 0;
+        while self.p_at(k, "(*") && !self.p_at(k + 1, ")") {
+            k += 1;
+            while !self.p_at(k, "*)") {
+                if self.peek_at(k).k == K::Eof {
+                    return k;
+                }
+                k += 1;
+            }
+            k += 1;
+        }
+        k
+    }
+
     pub(crate) fn attrs(&mut self) -> R<()> {
         while self.p("(*") {
             // `@(* )` style star lists are handled by the event control parser, never reach here
@@ -288,7 +332,7 @@ impl<'a> Parser<'a> {
                     self.bump();
                     out.push(Decl::Envelope(t.n));
                 }
-                (K::Kw, "module") => {
+                (K::Kw, "module" | "macromodule") => {
                     let (ts, nt, cd) = state_at(t.start);
                     match self.module(ts, nt, cd) {
                         Ok(m) => out.push(Decl::Module(m)),
@@ -299,14 +343,10 @@ impl<'a> Parser<'a> {
                     Ok(u) => out.push(Decl::Udp(u)),
                     Err(()) => self.skip_to(&["endprimitive"]),
                 },
-                (K::Kw, "macromodule" | "config") => {
+                (K::Kw, "config") => {
                     self.push(
                         Diag::error("E4101", format!("`{}` is not supported", t.s), self.span(t))
-                            .help(if t.s == "config" {
-                                "configurations and library maps are outside what yavs reads"
-                            } else {
-                                "write `module`"
-                            }),
+                            .help("configurations and library maps are outside what yavs reads"),
                     );
                     self.skip_to(&["endmodule", "endconfig"]);
                 }
@@ -406,6 +446,8 @@ impl<'a> Parser<'a> {
 
     fn module(&mut self, ts: Option<Timescale>, nt: Nettype, cd: bool) -> R<Module> {
         self.bump();
+        (self.in_func, self.local, self.in_gen) = (false, 0, 0);
+        self.genvars.clear();
         self.attrs()?;
         let name = self.ident()?;
         // An envelope inside the header: only the name is readable.
@@ -516,14 +558,21 @@ impl<'a> Parser<'a> {
                     return Err(());
                 }
                 (K::Kw, "module" | "macromodule" | "primitive") => {
-                    self.push(
+                    self.push(if t.s == "primitive" {
+                        Diag::error(
+                            "E4100",
+                            "a UDP is declared outside modules (clause 8.1)",
+                            self.span(t),
+                        )
+                        .help("move the primitive before or after the module")
+                    } else {
                         Diag::error(
                             "E4003",
                             "nested module declaration (SystemVerilog)",
                             self.span(t),
                         )
-                        .help("declare the module outside; IEEE 1364-2005 has no nested modules"),
-                    );
+                        .help("declare the module outside; IEEE 1364-2005 has no nested modules")
+                    });
                     // Skip the inner declaration, so the outer `endmodule` is the one the caller skips to.
                     self.skip_to(&[if t.s == "primitive" {
                         "endprimitive"
@@ -613,12 +662,14 @@ impl<'a> Parser<'a> {
                 v.push(NonAnsiPort {
                     name: Some(name),
                     expr: e,
+                    explicit: true,
                 });
             } else if self.p("{") {
                 let e = self.expr()?;
                 v.push(NonAnsiPort {
                     name: None,
                     expr: Some(e),
+                    explicit: false,
                 });
             } else {
                 let name = self.ident()?;
@@ -629,11 +680,13 @@ impl<'a> Parser<'a> {
                     v.push(NonAnsiPort {
                         name: Some(name),
                         expr: Some(e),
+                        explicit: false,
                     });
                 } else {
                     v.push(NonAnsiPort {
                         name: Some(name),
                         expr: None,
+                        explicit: false,
                     });
                 }
             }
@@ -783,7 +836,17 @@ impl<'a> Parser<'a> {
         }
         let kind = self.var_kind();
         let signed = self.signed();
+        let at = self.peek();
         let range = self.opt_range()?;
+        // Clause 4.10.1: a parameter has a type or a sign and a range, not both.
+        if matches!(kind, Some(k) if k != VarKind::Reg) && (signed || range.is_some()) {
+            self.push(Diag::error(
+                "E4100",
+                "a parameter with a type (integer, real, realtime, time) has no sign or range (clause 4.10.1)",
+                self.span(at),
+            ));
+            return Err(());
+        }
         Ok(ParamDecl {
             local,
             spec,
@@ -886,6 +949,19 @@ impl<'a> Parser<'a> {
         }
         self.bump();
         self.expect_p(")")?;
+        // Clauses 6.1.4 and 7.1.2: one strength0 and one strength1, never both highz.
+        let zero = |s: &str| s.ends_with('0');
+        if zero(a.s) == zero(b.s) || (a.s.starts_with("highz") && b.s.starts_with("highz")) {
+            self.push(Diag::error(
+                "E4100",
+                format!(
+                    "`({}, {})` is not a drive strength: it is one strength0 and one strength1, and not both highz (clause 6.1.4)",
+                    a.s, b.s
+                ),
+                self.span(a),
+            ));
+            return Err(());
+        }
         Ok(Some(Strength::Drive(a.s, b.s)))
     }
 
@@ -929,6 +1005,25 @@ impl<'a> Parser<'a> {
     pub(crate) fn item(&mut self, out: &mut Vec<Item>) -> R<()> {
         self.attrs()?;
         let t = self.peek();
+        // Clause 12.4: a generate block has no port or parameter declarations, specify blocks or specparams.
+        if self.in_gen > 0
+            && self.local == 0
+            && t.k == K::Kw
+            && matches!(
+                t.s,
+                "input" | "output" | "inout" | "parameter" | "specparam" | "specify"
+            )
+        {
+            self.push(Diag::error(
+                "E4100",
+                format!(
+                    "a generate block has no `{}` declaration (clause 12.4)",
+                    t.s
+                ),
+                self.span(t),
+            ));
+            return Err(());
+        }
         match (t.k, t.s) {
             (K::P, ";") => {
                 self.bump();
@@ -954,6 +1049,28 @@ impl<'a> Parser<'a> {
                 }
                 let names = self.declarators(true)?;
                 self.expect_p(";")?;
+                // Clause 6.2.1: a variable declaration assignment is for a scalar or vector at module level.
+                for d in names.iter().filter(|d| d.init.is_some()) {
+                    let at = self
+                        .pre
+                        .span(d.name.pos, d.name.pos + d.name.name.len() as u32);
+                    if !d.dims.is_empty() {
+                        self.push(Diag::error(
+                            "E4100",
+                            "a variable declaration assignment is not allowed on an array (clause 6.2.1)",
+                            at,
+                        ));
+                        return Err(());
+                    }
+                    if self.local > 0 {
+                        // other tools accept it (V14)
+                        self.push(Diag::warning(
+                            "W4207",
+                            "a variable declaration assignment is only allowed at module level (clause 6.2.1)",
+                            at,
+                        ));
+                    }
+                }
                 out.push(Item::Var(VarDecl {
                     kind,
                     signed,
@@ -967,7 +1084,9 @@ impl<'a> Parser<'a> {
                 | "uwire" | "supply0" | "supply1",
             ) => {
                 let kind = self.net_kind().unwrap();
+                let st_tok = self.peek();
                 let strength = self.strength()?;
+                let vs_tok = self.peek();
                 let vectored = if self.eat_kw("vectored") {
                     Some(true)
                 } else if self.eat_kw("scalared") {
@@ -980,6 +1099,15 @@ impl<'a> Parser<'a> {
                 let delay = self.delay()?;
                 let names = self.declarators(true)?;
                 self.expect_p(";")?;
+                self.net_strength(kind, st_tok, &strength, &names)?;
+                if vectored.is_some() && range.is_none() {
+                    self.push(Diag::error(
+                        "E4100",
+                        format!("`{}` goes with a range (clause 4.3.2)", vs_tok.s),
+                        self.span(vs_tok),
+                    ));
+                    return Err(());
+                }
                 out.push(Item::Net(NetDecl {
                     kind,
                     strength,
@@ -1017,7 +1145,19 @@ impl<'a> Parser<'a> {
             }
             (K::Kw, "assign") => {
                 self.bump();
+                let st_tok = self.peek();
                 let strength = self.strength()?;
+                if matches!(
+                    strength,
+                    Some(Strength::Charge(_)) | Some(Strength::Drive(_, ""))
+                ) {
+                    self.push(Diag::error(
+                        "E4100",
+                        "a continuous assignment has a drive strength of two strengths (clause 6.1.4)",
+                        self.span(st_tok),
+                    ));
+                    return Err(());
+                }
                 let delay = self.delay()?;
                 let mut assigns = Vec::new();
                 loop {
@@ -1060,14 +1200,24 @@ impl<'a> Parser<'a> {
             (K::Kw, "task") => out.push(Item::Task(self.task()?)),
             (K::Kw, "function") => out.push(Item::Function(self.function()?)),
             (K::Kw, "generate") => {
+                if self.in_gen > 0 {
+                    self.push(Diag::error(
+                        "E4100",
+                        "generate regions do not nest and stand directly in a module (clause 12.4)",
+                        self.span(t),
+                    ));
+                    return Err(());
+                }
                 self.bump();
                 let mut v = Vec::new();
+                self.in_gen += 1;
                 while !self.kw("endgenerate") {
                     if self.peek().k == K::Eof {
                         return self.fail("`endgenerate`");
                     }
                     self.item(&mut v)?;
                 }
+                self.in_gen -= 1;
                 self.bump();
                 out.push(Item::Generate(v));
             }
@@ -1075,7 +1225,7 @@ impl<'a> Parser<'a> {
             // Accepted by the other tools: a generate block that stands alone.
             (K::Kw, "begin") => {
                 let b = self.gen_body()?;
-                out.push(Item::Generate(b.items));
+                out.push(Item::GenBlock(b));
             }
             (K::Kw, "specify") => out.push(self.specify()?),
             (K::Sys, _)
@@ -1102,8 +1252,11 @@ impl<'a> Parser<'a> {
                 | "rtranif0" | "rtranif1",
             ) => {
                 self.bump();
+                let st_tok = self.peek();
                 let strength = self.strength()?;
+                let d_tok = self.peek();
                 let delay = self.delay()?;
+                self.gate_spec(t, st_tok, &strength, d_tok, &delay)?;
                 let mut insts = Vec::new();
                 loop {
                     insts.push(self.instance(false)?);
@@ -1149,11 +1302,25 @@ impl<'a> Parser<'a> {
                     }
                 }
                 let module = self.ident()?;
+                // `udp (strong0, weak1) #2 u (o, a);`: a drive strength can only belong to a UDP instance.
+                let st_tok = self.peek();
+                let strength = self.strength()?;
+                if matches!(
+                    strength,
+                    Some(Strength::Charge(_)) | Some(Strength::Drive(_, ""))
+                ) {
+                    self.push(Diag::error(
+                        "E4100",
+                        "an instance has a drive strength of two strengths (clause 8.6)",
+                        self.span(st_tok),
+                    ));
+                    return Err(());
+                }
                 let mut params = Vec::new();
                 if self.eat_p("#") {
                     if self.eat_p("(") {
                         if !self.p(")") {
-                            params = self.conns()?;
+                            params = self.conns(true)?;
                         }
                         self.expect_p(")")?;
                     } else {
@@ -1171,6 +1338,7 @@ impl<'a> Parser<'a> {
                 self.expect_p(";")?;
                 out.push(Item::Inst(ModInst {
                     module,
+                    strength,
                     params,
                     insts,
                 }));
@@ -1210,27 +1378,28 @@ impl<'a> Parser<'a> {
         let conns = if self.p(")") {
             Vec::new()
         } else {
-            self.conns()?
+            self.conns(false)?
         };
         self.expect_p(")")?;
         Ok(Instance { name, range, conns })
     }
 
     /// Ordered or named connections up to the closing `)`.
-    fn conns(&mut self) -> R<Vec<Conn>> {
+    fn conns(&mut self, params: bool) -> R<Vec<Conn>> {
         let mut v: Vec<Conn> = Vec::new();
         loop {
             self.attrs()?;
             let named_next = self.p(".");
             if let Some(first) = v.first() {
-                // Clause 12.3.5 (recalled): a list is all by position or all by name.
+                // Clauses 12.3.6 and 12.2.2: a list is all by position or all by name.
                 if matches!(first, Conn::Named(..)) != named_next && !(self.p(",") || self.p(")")) {
                     let t = self.peek();
-                    self.push(Diag::error(
-                        "E4100",
-                        "port connections are all by position or all by name (clause 12.3)",
-                        self.span(t),
-                    ));
+                    let msg = if params {
+                        "parameter assignments are all by position or all by name (clause 12.2.2)"
+                    } else {
+                        "port connections are all by position or all by name (clause 12.3.6)"
+                    };
+                    self.push(Diag::error("E4100", msg, self.span(t)));
                     return Err(());
                 }
             }
@@ -1263,6 +1432,24 @@ impl<'a> Parser<'a> {
                     Some(self.mintypmax()?)
                 };
                 self.expect_p(")")?;
+                if v.iter()
+                    .any(|c| matches!(c, Conn::Named(n, _) if n.name == name.name))
+                {
+                    let msg = if params {
+                        format!(
+                            "parameter `{}` is assigned twice (clause 12.2.2)",
+                            name.name
+                        )
+                    } else {
+                        format!("port `{}` is connected twice (clause 12.3.6)", name.name)
+                    };
+                    self.push(Diag::error(
+                        "E4100",
+                        msg,
+                        self.pre.span(name.pos, name.pos + name.name.len() as u32),
+                    ));
+                    return Err(());
+                }
                 v.push(Conn::Named(name, e));
             } else if self.p(",") || self.p(")") {
                 v.push(Conn::Ordered(Expr::Empty));
@@ -1283,9 +1470,10 @@ impl<'a> Parser<'a> {
     // ----- tasks and functions -----
 
     /// Declarations in a task, function or block: returns whether one was parsed.
-    pub(crate) fn block_decl(&mut self, out: &mut Vec<Item>) -> R<bool> {
-        let t = self.peek();
+    pub(crate) fn block_decl(&mut self, out: &mut Vec<Item>, ports_ok: bool) -> R<bool> {
+        let t = self.peek_at(self.attrs_len());
         if t.k == K::Kw
+            && (ports_ok || !matches!(t.s, "input" | "output" | "inout"))
             && matches!(
                 t.s,
                 "input"
@@ -1301,7 +1489,10 @@ impl<'a> Parser<'a> {
                     | "localparam"
             )
         {
-            self.item(out)?;
+            self.local += 1;
+            let r = self.item(out);
+            self.local -= 1;
+            r?;
             return Ok(true);
         }
         Ok(false)
@@ -1357,11 +1548,12 @@ impl<'a> Parser<'a> {
         let automatic = self.eat_kw("automatic");
         let name = self.ident()?;
         let mut decls = Vec::new();
-        if self.p("(") {
+        let ansi = self.p("(");
+        if ansi {
             self.tf_ports(&mut decls)?;
         }
         self.expect_p(";")?;
-        while self.block_decl(&mut decls)? {}
+        while self.block_decl(&mut decls, !ansi)? {}
         let mut body = Vec::new();
         while !self.kw("endtask") {
             if self.peek().k == K::Eof {
@@ -1397,23 +1589,27 @@ impl<'a> Parser<'a> {
         let ret = self.var_kind();
         let name = self.ident()?;
         let mut decls = Vec::new();
-        if self.p("(") {
+        let ansi = self.p("(");
+        if ansi {
             self.tf_ports(&mut decls)?;
         }
         self.expect_p(";")?;
-        while self.block_decl(&mut decls)? {}
+        while self.block_decl(&mut decls, !ansi)? {}
         let mut body = Vec::new();
+        self.in_func = true;
         while !self.kw("endfunction") {
             if self.peek().k == K::Eof {
+                self.in_func = false;
                 return self.fail("`endfunction`");
             }
             body.push(self.stmt()?);
         }
+        self.in_func = false;
         self.bump();
         if self.p(":") {
             return self.sv_end_label();
         }
-        // Clause 10.3.1: at least one input argument and no output or inout.
+        // Clauses 10.4.1 and 10.4.4: at least one input argument and no output or inout.
         let ports = decls.iter().filter_map(|d| match d {
             Item::Port(p) => Some(p.dir),
             _ => None,
@@ -1433,7 +1629,7 @@ impl<'a> Parser<'a> {
             } else {
                 "a function has at least one input argument"
             };
-            self.push(Diag::error("E4100", format!("{why} (clause 10.3.1)"), at));
+            self.push(Diag::error("E4100", format!("{why} (clause 10.4.4)"), at));
             return Err(());
         }
         Ok(Function {
@@ -1450,6 +1646,13 @@ impl<'a> Parser<'a> {
     // ----- generate -----
 
     fn gen_body(&mut self) -> R<GenBody> {
+        self.in_gen += 1;
+        let r = self.gen_body_inner();
+        self.in_gen -= 1;
+        r
+    }
+
+    fn gen_body_inner(&mut self) -> R<GenBody> {
         self.attrs()?;
         if self.eat_kw("begin") {
             let mut label = None;
@@ -1505,11 +1708,32 @@ impl<'a> Parser<'a> {
                 self.expect_p(";")?;
                 let cond = self.expr()?;
                 self.expect_p(";")?;
+                let s_tok = self.peek();
                 let s = self.ident()?;
                 self.expect_p("=")?;
                 let step = self.expr()?;
                 self.expect_p(")")?;
-                let body = self.gen_body()?;
+                let why = if s.name != i.name {
+                    Some(
+                        "the initialization and the iteration of a generate loop assign the same genvar",
+                    )
+                } else if self.genvars.contains(&i.name) {
+                    Some("nested generate loops do not use the same genvar")
+                } else {
+                    None
+                };
+                if let Some(w) = why {
+                    self.push(Diag::error(
+                        "E4100",
+                        format!("{w} (clause 12.4.1)"),
+                        self.span(s_tok),
+                    ));
+                    return Err(());
+                }
+                self.genvars.push(i.name.clone());
+                let body = self.gen_body();
+                self.genvars.pop();
+                let body = body?;
                 Ok(Item::GenFor {
                     init: (i, init),
                     cond,
@@ -1555,6 +1779,8 @@ impl<'a> Parser<'a> {
     fn specify(&mut self) -> R<Item> {
         self.bump();
         let mut v = Vec::new();
+        // The outputs of the paths so far (clause 14.6.4: a pulse style comes before the paths).
+        let mut path_outputs: Vec<String> = Vec::new();
         while !self.kw("endspecify") {
             self.attrs()?;
             let t = self.peek();
@@ -1573,16 +1799,38 @@ impl<'a> Parser<'a> {
                     | "noshowcancelled",
                 ) => {
                     self.bump();
+                    let at = self.peek();
                     let mut outputs = vec![self.terminal()?];
                     while self.eat_p(",") {
                         outputs.push(self.terminal()?);
                     }
                     self.expect_p(";")?;
+                    if outputs
+                        .iter()
+                        .any(|o| path_outputs.contains(&crate::analysis::show(o)))
+                    {
+                        self.push(Diag::error(
+                            "E4100",
+                            format!("`{}` names an output that a path declaration already used (clause 14.6.4)", t.s),
+                            self.span(at),
+                        ));
+                        return Err(());
+                    }
                     v.push(SpecItem::Pulse { kind: t.s, outputs });
                 }
                 (K::Sys, _) => {
                     self.bump();
                     let name = self.text(t);
+                    // Clause 15.1: a specify block holds timing checks, no system task.
+                    let Some(&(_, lo, hi, controlled)) = TIMING_CHECKS.iter().find(|c| c.0 == name)
+                    else {
+                        self.push(Diag::error(
+                            "E4100",
+                            format!("`{name}` is not a timing check, and no system task can appear in a specify block (clause 15.1)"),
+                            self.span(t),
+                        ));
+                        return Err(());
+                    };
                     self.expect_p("(")?;
                     let mut args = Vec::new();
                     loop {
@@ -1590,6 +1838,21 @@ impl<'a> Parser<'a> {
                         if !self.eat_p(",") {
                             break;
                         }
+                    }
+                    if !(lo..=hi).contains(&args.len()) || (controlled && args[0].edge.is_none()) {
+                        let why = if (lo..=hi).contains(&args.len()) {
+                            "starts with a controlled event: posedge, negedge or edge".to_string()
+                        } else if lo == hi {
+                            format!("takes {lo} arguments, found {}", args.len())
+                        } else {
+                            format!("takes {lo} to {hi} arguments, found {}", args.len())
+                        };
+                        self.push(Diag::error(
+                            "E4100",
+                            format!("`{name}` {why} (clause 15.1)"),
+                            self.span(t),
+                        ));
+                        return Err(());
                     }
                     self.expect_p(")")?;
                     self.expect_p(";")?;
@@ -1607,11 +1870,22 @@ impl<'a> Parser<'a> {
                 (K::Kw, "ifnone") => {
                     self.bump();
                     let mut p = self.path_decl()?;
+                    if p.edge.is_some() || p.data.is_some() {
+                        self.push(Diag::error(
+                            "E4100",
+                            "`ifnone` goes with a simple path, not an edge-sensitive one (clause 14.2.4.4)",
+                            self.span(t),
+                        ));
+                        return Err(());
+                    }
                     p.ifnone = true;
                     v.push(SpecItem::Path(p));
                 }
                 (K::P, "(") => v.push(SpecItem::Path(self.path_decl()?)),
                 _ => return self.fail("a specify item"),
+            }
+            if let Some(SpecItem::Path(p)) = v.last() {
+                path_outputs.extend(p.dst.iter().map(crate::analysis::show));
             }
         }
         self.bump();
@@ -1713,6 +1987,15 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect_p(")")?;
+        if !full && (src.len() > 1 || dst.len() > 1) {
+            let at = self.peek();
+            self.push(Diag::error(
+                "E4100",
+                "a parallel path (`=>`) has one input and one output, use `*>` for lists (clause 14.2.2)",
+                self.span(at),
+            ));
+            return Err(());
+        }
         self.expect_p("=")?;
         let mut delays = Vec::new();
         let open = self.peek();
@@ -1766,11 +2049,30 @@ impl<'a> Parser<'a> {
         } else if t.k == K::Kw && t.s == "edge" {
             self.bump();
             self.expect_p("[")?;
-            while !self.p("]") {
-                if self.peek().k == K::Eof {
-                    return self.fail("`]`");
+            loop {
+                let d = self.peek();
+                let ok = d.k == K::Num && {
+                    let x = self.text(d).to_ascii_lowercase();
+                    matches!(
+                        x.as_str(),
+                        "01" | "10" | "0x" | "1x" | "x0" | "x1" | "0z" | "1z" | "z0" | "z1"
+                    )
+                };
+                if !ok {
+                    self.push(Diag::error(
+                        "E4100",
+                        "an edge descriptor is 01, 10, 0x, 1x, x0, x1 (or z for x) (clause 15.4)",
+                        self.span(d),
+                    ));
+                    return Err(());
                 }
                 self.bump();
+                if !self.eat_p(",") {
+                    break;
+                }
+            }
+            if !self.p("]") {
+                return self.fail("`]`");
             }
             let close = self.bump();
             let raw = String::from_utf8_lossy(&self.pre.text[t.start as usize..close.end as usize])
@@ -1787,6 +2089,103 @@ impl<'a> Parser<'a> {
     }
 
     // ----- UDP -----
+
+    /// Clauses 4.2.1 and 4.4: charge strength belongs to a trireg without assignment, drive strength to a net with one.
+    fn net_strength(
+        &mut self,
+        kind: NetKind,
+        at: Tok,
+        strength: &Option<Strength>,
+        names: &[Declarator],
+    ) -> R<()> {
+        let assigned = names.iter().any(|d| d.init.is_some());
+        let why = match strength {
+            Some(Strength::Charge(_)) if kind != NetKind::Trireg => {
+                "a charge strength goes with a trireg net (clause 4.4.1)"
+            }
+            Some(Strength::Charge(_)) if assigned => {
+                "a trireg with a charge strength has no assignment (clause 4.2.1)"
+            }
+            Some(Strength::Drive(_, "")) => {
+                "a net has a drive strength of two strengths (clause 4.4.2)"
+            }
+            Some(Strength::Drive(..)) if !assigned => {
+                "a drive strength goes with a net declaration assignment (clause 4.4.2)"
+            }
+            _ => return Ok(()),
+        };
+        self.push(Diag::error("E4100", why, self.span(at)));
+        Err(())
+    }
+
+    /// Clauses 7.1.2 to 7.8: which gates take a drive strength and how many delays.
+    fn gate_spec(
+        &mut self,
+        t: Tok,
+        st: Tok,
+        strength: &Option<Strength>,
+        dt: Tok,
+        delay: &Option<Delay>,
+    ) -> R<()> {
+        let (clause, drive, max) = match t.s {
+            "and" | "nand" | "or" | "nor" | "xor" | "xnor" => ("7.2", true, 2),
+            "buf" | "not" => ("7.3", true, 2),
+            "bufif0" | "bufif1" | "notif0" | "notif1" => ("7.4", true, 3),
+            "cmos" | "rcmos" => ("7.7", false, 3),
+            "tranif0" | "tranif1" | "rtranif0" | "rtranif1" => ("7.6", false, 2),
+            "tran" | "rtran" => ("7.6", false, 0),
+            "pullup" | "pulldown" => ("7.8", true, 0),
+            _ => ("7.5", false, 3),
+        };
+        let pull = matches!(t.s, "pullup" | "pulldown");
+        let why = match strength {
+            Some(_) if !drive => Some(format!(
+                "`{}` takes no drive strength (clause {clause})",
+                t.s
+            )),
+            Some(Strength::Charge(_)) => Some(format!(
+                "`{}` takes a drive strength (clause {clause})",
+                t.s
+            )),
+            Some(Strength::Drive(a, "")) if !pull => Some(format!(
+                "`{}` takes a drive strength of two strengths, found `({a})` (clause {clause})",
+                t.s
+            )),
+            Some(Strength::Drive(a, ""))
+                if !a.ends_with(if t.s == "pullup" { '1' } else { '0' }) =>
+            {
+                Some(format!(
+                    "`{}` takes only a {} strength, found `({a})` (clause {clause})",
+                    t.s,
+                    if t.s == "pullup" {
+                        "strength1"
+                    } else {
+                        "strength0"
+                    }
+                ))
+            }
+            _ => None,
+        };
+        if let Some(w) = why {
+            self.push(Diag::error("E4100", w, self.span(st)));
+            return Err(());
+        }
+        if let Some(d) = delay
+            && d.0.len() > max
+        {
+            let w = match max {
+                0 => format!("`{}` takes no delay (clause {clause})", t.s),
+                _ => format!(
+                    "`{}` takes at most {max} delays, found {} (clause {clause})",
+                    t.s,
+                    d.0.len()
+                ),
+            };
+            self.push(Diag::error("E4100", w, self.span(dt)));
+            return Err(());
+        }
+        Ok(())
+    }
 
     /// Clause 7.1: the terminals of a gate are positional and their number is fixed by the gate.
     fn gate_terminals(&mut self, t: Tok, insts: &[Instance]) -> R<()> {
@@ -1869,10 +2268,12 @@ impl<'a> Parser<'a> {
         let mut inputs: Vec<Ident> = Vec::new();
         let mut sequential = false;
         let mut init = None;
-        if self.kw("output") || self.kw("input") {
+        let head = self.peek_at(self.attrs_len());
+        if head.k == K::Kw && matches!(head.s, "output" | "input") {
             // ANSI style header
             let mut first = true;
             loop {
+                self.attrs()?;
                 let t = self.peek();
                 if (t.k == K::Kw && t.s == "output") != first && (output.is_some() || first) {
                     self.udp_port_error(t);
@@ -1958,7 +2359,16 @@ impl<'a> Parser<'a> {
         }
         if self.kw("initial") {
             self.bump();
-            self.ident()?;
+            let target = self.ident()?;
+            if output.as_ref().is_some_and(|o| o.name != target.name) {
+                self.push(Diag::error(
+                    "E4100",
+                    "the initial statement of a UDP assigns its output (clause 8.5)",
+                    self.pre
+                        .span(target.pos, target.pos + target.name.len() as u32),
+                ));
+                return Err(());
+            }
             self.expect_p("=")?;
             init = Some(self.udp_init()?);
             self.expect_p(";")?;
@@ -1967,6 +2377,14 @@ impl<'a> Parser<'a> {
         let Some(output) = output else {
             return self.fail("`output`");
         };
+        if inputs.is_empty() {
+            self.push(Diag::error(
+                "E4100",
+                "a UDP has at least one input (clause 8.1.1)",
+                self.pre.span(name.pos, name.pos + name.name.len() as u32),
+            ));
+            return Err(());
+        }
         let table = self.expect_kw("table")?;
         // The table body is read as text: its symbols are not Verilog tokens.
         let mut end = None;
@@ -2062,9 +2480,14 @@ impl<'a> Parser<'a> {
                 }
                 Some(v)
             };
+            // Table 8-1: edges and `-` only where the table allows them.
             let valid = |s: &UdpSym| match s {
-                UdpSym::Level(c) => "01xXbB?-rRfFpPnN*".contains(*c),
-                UdpSym::Edge(a, b) => "01xX?bB".contains(*a) && "01xX?bB".contains(*b),
+                UdpSym::Level(c) => {
+                    "01xXbB?".contains(*c) || (sequential && "rRfFpPnN*".contains(*c))
+                }
+                UdpSym::Edge(a, b) => {
+                    sequential && "01xX?bB".contains(*a) && "01xX?bB".contains(*b)
+                }
             };
             let Some(inputs) = syms(fields[0]) else {
                 bad(self, "malformed edge `(ab)` in a UDP table row".into());
@@ -2102,10 +2525,21 @@ impl<'a> Parser<'a> {
                 );
                 return Err(());
             }
-            if inputs.len() != n_in || out.len() != 1 || !inputs.iter().all(valid) {
+            if inputs.len() != n_in || out.len() != 1 {
                 bad(
                     self,
-                    format!("a UDP table row needs {n_in} input symbol(s) and one valid output"),
+                    format!("a UDP table row needs {n_in} input symbol(s) and one output"),
+                );
+                return Err(());
+            }
+            let out_ok = matches!(&out[0], UdpSym::Level(c) if "01xX".contains(*c) || (sequential && *c == '-'));
+            let state_ok = state
+                .as_ref()
+                .is_none_or(|s| matches!(s, UdpSym::Level(c) if "01xXbB?".contains(*c)));
+            if !inputs.iter().all(valid) || !out_ok || !state_ok {
+                bad(
+                    self,
+                    "a symbol of a UDP table row is not allowed in its field: inputs take 0 1 x ? b (and edges in a sequential UDP), the current state 0 1 x ? b, the output 0 1 x (and - in a sequential UDP) (clause 8.1.6)".into(),
                 );
                 return Err(());
             }

@@ -12,13 +12,13 @@ module specify_block (
     always @(posedge clk) if (ce) q <= d;
     specify
         specparam tpd = 100, tsu = 10:20:30;
+        showcancelled y;
         (d => y) = 100;
         (en *> y) = (tpd, tpd + 1);
         if (ce) (posedge clk => (q +: d)) = (100, 120);
         ifnone (clk => q) = 100;
         (sel[0] => v[0]) = 50;
         (sel *> v) = 50;
-        showcancelled y;
         specparam PATHPULSE$d$y = (30, 40);
     endspecify
 endmodule

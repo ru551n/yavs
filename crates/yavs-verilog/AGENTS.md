@@ -19,11 +19,11 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | File | Responsibility |
 |---|---|
 | `src/lib.rs` | The API: `analyze`, `Options`, `Unit`, `Diag`, `Span`, `CODES`; per-file driver and E4001 |
-| `src/pre.rs` | Preprocessor on bytes: macros, conditionals, `include`, `timescale`, `default_nettype`, `celldefine`, protected envelopes; output-to-source map (`Pre::span`); `State` persists across files; context digest |
+| `src/pre.rs` | Preprocessor on bytes: macros, conditionals, `include`, `timescale`, `default_nettype`, `celldefine`, `begin_keywords` (`KwSet`, the lexer reads the set per token), `line`, protected envelopes; output-to-source map (`Pre::span`); `State` persists across files; context digest |
 | `src/lex.rs` | Lexer: tokens with offsets into the preprocessed text; keywords, `(*)` and `*)` rules; UDP table body is skipped |
 | `src/ast.rs` | The syntax tree (public, in memory only; M1 lowers it) |
 | `src/parse.rs`, `src/stmt.rs` | Recursive-descent parser: modules, UDPs, declarations, instances, generate, specify; statements and expressions |
-| `src/analysis.rs` | Ports (ANSI and non-ANSI), duplicate declarations (E4203), undeclared names under `default_nettype none` (E4201) |
+| `src/analysis.rs` | Ports (ANSI and non-ANSI), duplicate declarations per scope (E4203: module, task, function, named block, generate block, specify block), undeclared names under `default_nettype none` (E4201) |
 | `src/diag.rs` | `Diag` builders and the code table with `--explain` text |
 | `src/runtime.rs` | `Domain` (nets and regs, processes, `always`, `assign`), `Exec` (what a process body reads and writes: `get`, blocking `set`, `nba`, `display`, `finish`), `Wait`, `Edge` and `edge` (Table 9-9), the region loop (`settle`), future work, the event limit |
 | `src/bridge.rs` | `Domain::input`/`output` and `impl Process for Domain`: inputs as `TO_X01Z`, the publication queue (`Core::record`), one batch per delta, the waits |
@@ -53,8 +53,9 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | Specify blocks and timing checks are parsed into the tree and not evaluated; with `XIL_TIMING` defined one W4015 per file says so | D14 | plan 6 |
 | A front-end rule of the LRM gets a file in `tests/verilog/lrm` and a row in `docs/design/lrm-checks.md` in the same commit; where the LRM is clear and the front end accepts, the file is pinned with a `// gap:` header and listed as a known gap | Rule 14 and the LRM policy; the VHDL side does the same with `tests/diag/sem` | `lrm-checks.md` "Per-clause checks" |
 | `` `include `` takes a quoted name, `<name>` or an argument-less macro that expands to one; a gate has its terminals by position, a fixed number per gate; the variable of a generate loop must be a genvar (`E4204`) | LRM 7.1, 12.4.1; the include forms are the other tools' | `lrm-checks.md` V5, V8 |
-| Spans of diagnostics are clamped to the file: an unexpected end points at the empty range at the end | A span past the end of the file breaks renderers | `tests/sched.rs` | Scheduling: the kernel behaviour the bridge rests on, the regions, D4 at the boundary, edges, initialisation, the event limit, stop requests, 1 against 4 threads |
-| `tests/props.rs` |
+| The checks of `tests/verilog/lrm` were audited against the text of IEEE 1364-2005 on 2026-11-07: clause numbers are the standard's, the table in `lrm-checks.md` is generated from the file headers, and the choices where yavs differs from the text are the readings V5 to V14 and the gaps G1 to G11 there. Parser state that limits what is legal (`in_func`, `local`, `in_gen`, `genvars`) is reset in `module()` | 164 of the first checks had a wrong clause number; one error and one position per file | `lrm-checks.md` "Per-clause checks" |
+| `macromodule` is `module`; the ports of an ANSI header are not declared again in the body (E4203); the same implicit port twice in a non-ANSI header is legal; a block with declarations is named (W4206 when not, V14); `begin_keywords` sets are read per token | LRM 12.1, 12.3.3, 12.3.4, 9.8.1, 19.11 | `lrm-checks.md` V6, V10, V12, V14 |
+| Spans of diagnostics are clamped to the file: an unexpected end points at the empty range at the end | A span past the end of the file breaks renderers | `tests/props.rs` |
 | `Unit::timescale` is the directive in force or `Options::default_timescale` (W4006 once per file) | D10 | |
 | All Verilog is one `Domain`, one serial kernel process; its regions run inside one activation and `SimControl` is untouched | Blocking writes and continuous assignments cost no delta (a clock buffer must not skew); the VHDL cycle stays as it is | `docs/design/verilog-scheduling.md` 1 |
 | Output changes go out as ordered batches, one per kernel delta: Active results at `d+1`, each NBA region one batch later (an empty batch 0 still costs its delta); a port written again goes to the batch after its last entry and the cursor follows | D4; no change of a port is lost and the order across ports holds | same, 2; open question: skip empty batches |

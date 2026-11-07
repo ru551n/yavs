@@ -1,4 +1,4 @@
-// LRM 28: one W4007 is given per file however many envelopes it has
+// LRM 28.2: one W4007 is given per file however many envelopes it has (tool behaviour, D8)
 // units: m,n
 // expect: W4007 6:1 encrypted module body
 `timescale 1ns/1ps

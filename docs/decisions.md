@@ -52,9 +52,9 @@
   gate analyses them with `-D NO_INCLUDES`, a per-file argument in `cells.expected` (maintainer, 2026-11-07).
 - **Verilog LRM checks (maintainer, 2026-11-07):** the Verilog front end has per-clause checks like the VHDL side: `tests/verilog/lrm/<clause>_<topic>.v`,
   one rule per file with the expected diagnostics in a header, run by `crates/yavs-verilog/tests/lrm.rs` in the workspace tests, each file a row of
-  `docs/design/lrm-checks.md` (readings V5 to V8, known gaps G1 to G4, the bugs the checks found). Property tests (`tests/props.rs`) cover number
+  `docs/design/lrm-checks.md` (readings V5 to V14, known gaps G1 to G11, the bugs the checks found). Property tests (`tests/props.rs`) cover number
   literals, macros, conditionals and damaged input. New code `E4204` (generate loop variable that is not a genvar). Permissive choices:
-  `include <file>` and `include` of a macro, a body that repeats the name of an ANSI port.
+  `include <file>` and `include` of a macro, the words only `config` uses as identifiers, `macromodule` as `module`. The checks were audited against the text of the standard on 2026-11-07: clause numbers corrected, a body that repeats the name of an ANSI port is now an error (12.3.4), the same implicit port twice is accepted (12.3.3).
 - **Elaboration tasks as items (maintainer, 2026-11-07):** `$error`, `$warning`, `$info` and `$fatal` are accepted as module items and
   generate-block items and kept in the tree (`Item::ElabTask`), not executed at M0 (elaboration is M1). A deliberate extension beyond
   1364-2005, because vendor and cell models use them (`docs/design/lrm-checks.md` V4). Effect on the gates: `cells` went from

@@ -76,12 +76,20 @@ What is checked
 
 The analyzer checks the rules of IEEE 1364-2005 that need no elaboration, and the repository keeps one test per rule, with
 its clause. Numbers must be well formed (``E4014``): a based constant has a non-zero size, at least one digit, no leading
-underscore, and only digits of its base. Compiler directives must be complete and balanced (``E4004`` to ``E4011``). Gates have
-the terminals their kind takes, user-defined primitives have one output, first, and at most one edge per table row, a path
-delay has 1, 2, 3, 6 or 12 values, an input or inout port is not a ``reg`` (``E4202``), a ``case`` has one ``default``, a function has input
-arguments only, and the variable of a generate ``for`` loop is a ``genvar`` (``E4204``); these are syntax errors
-(``E4100``) unless a code is given. Some rules are left to elaboration, for example the name of an instance of a module
-(only gates and primitives may omit it) and duplicate names inside a task or function.
+underscore, and only digits of its base. Compiler directives must be complete and balanced (``E4004`` to ``E4011``): ``line``,
+``unconnected_drive``, ``pragma``, ``elsif`` and ``begin_keywords`` have their operands, ``begin_keywords`` also selects the reserved
+words of the version it names, and a directive cannot be redefined as a macro. Declarations are checked per scope (``E4203``): a
+module, task, function, named block, generate block or specify block declares a name once, and the ports of a module header are
+not declared again in its body. A drive or charge strength goes where the standard puts it, gates take the terminals, strengths
+and delays their kind takes, user-defined primitives have one output, first, at least one input, only the table symbols each field
+allows and at most one edge per row, a path delay has 1, 2, 3, 6 or 12 values, specify blocks hold timing checks with the right number
+of arguments, an input or inout port is not a ``reg`` (``E4202``), a ``case`` has one ``default`` and an item, a function has input
+arguments only and no timing control, nonblocking or procedural continuous assignment, event trigger or task enable, a task enable
+has an expression for every argument, a generate block has no ports, parameters or specify block,
+and the variable of a generate ``for`` loop is a ``genvar`` (``E4204``); these are syntax errors (``E4100``) unless a code is given.
+Three rules are warnings, because other tools accept the code: ``t();`` for a task without arguments (``W4205``), declarations in a block without a name (``W4206``) and a variable given a value where it is declared inside a task or block (``W4207``). Rules that need the type of an operand or the elaborated design are left out, for example the name of an instance of a module (only
+gates and primitives may omit it), the operands of a real expression and more than one driver of a ``uwire``; ``docs/design/lrm-checks.md``
+lists each of them.
 
 Diagnostics
 -----------

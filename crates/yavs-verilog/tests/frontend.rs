@@ -266,17 +266,17 @@ module Top #(parameter [7:0] INIT = 8'h00, parameter integer N = 4, parameter S 
   specify
     specparam PATHPULSE$ = 0, tD = 1:2:3;
     specparam PATHPULSE$CLK$Q = (0, 0);
+    pulsestyle_onevent o;
+    showcancelled o;
+    noshowcancelled o;
     (clk => q[0]) = (1, 2);
     (clk *> q) = 100;
     (a +=> o) = 1;
     (a -*> o) = (1:2:3, 4:5:6);
     (posedge clk => (q[0] +: a[0])) = (1, 1);
     (negedge clk => (q[1] : b[0])) = 1;
-    if (rst) (a, b => o) = 2;
+    if (rst) (a, b *> o) = 2;
     ifnone (a => o) = 3;
-    pulsestyle_onevent o;
-    showcancelled o;
-    noshowcancelled o;
     $setuphold (posedge clk, a, 0:0:0, 0:0:0, , , , dclk, da);
     $setup (a &&& rst, posedge clk, 1);
     $hold (edge [01, 10] clk, a, 1);
@@ -748,8 +748,10 @@ fn systemverilog_is_named() {
 fn unsupported_constructs_are_named() {
     let r = bad("config c;\n design m;\nendconfig\n", "E4101", 1);
     assert!(r.diagnostics[0].message.contains("config"));
-    let r = bad("macromodule m; endmodule\n", "E4101", 1);
-    assert!(r.diagnostics[0].message.contains("macromodule"));
+    // macromodule is another spelling of module (clause 12.1)
+    let r = run("`timescale 1ns/1ps\nmacromodule m; endmodule\n");
+    assert_eq!(errors(&r), []);
+    assert_eq!(r.units.len(), 1);
 }
 
 #[test]
@@ -794,7 +796,9 @@ fn analysis_errors() {
     // implicit nets are fine by default
     ok("module a (input x);\n assign y = x;\nendmodule\n");
     bad("module a;\n wire w;\n wire w;\nendmodule\n", "E4203", 3);
-    ok("module a (output o);\n wire o;\n reg r;\nendmodule\n");
+    // clause 12.3.4: a port of the header is not declared again in the body
+    bad("module a (output o);\n wire o;\nendmodule\n", "E4203", 2);
+    ok("module a (output o);\n reg r;\nendmodule\n");
 }
 
 #[test]

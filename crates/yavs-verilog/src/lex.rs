@@ -1,7 +1,7 @@
 //! The lexer: preprocessed bytes to tokens (IEEE 1364-2005 clause 3).
 
 use crate::Diag;
-use crate::pre::{ENVELOPE, Pre};
+use crate::pre::{ENVELOPE, Event, KwSet, Pre};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum K {
@@ -166,6 +166,32 @@ pub(crate) fn keyword(w: &[u8]) -> Option<&'static str> {
     KEYWORDS.binary_search(&s).ok().map(|i| KEYWORDS[i])
 }
 
+/// Words of the 1364-2005 set that a `begin_keywords set leaves out (clause 19.11, Tables 19-2 and 19-3).
+fn left_out(set: KwSet, w: &[u8]) -> bool {
+    match set {
+        KwSet::V2005 => false,
+        KwSet::V2001 => w == b"uwire",
+        KwSet::V2001NoConfig => matches!(w, b"uwire" | b"config" | b"endconfig"),
+        KwSet::V1995 => matches!(
+            w,
+            b"automatic"
+                | b"config"
+                | b"endconfig"
+                | b"endgenerate"
+                | b"generate"
+                | b"genvar"
+                | b"localparam"
+                | b"noshowcancelled"
+                | b"pulsestyle_ondetect"
+                | b"pulsestyle_onevent"
+                | b"showcancelled"
+                | b"signed"
+                | b"unsigned"
+                | b"uwire"
+        ),
+    }
+}
+
 fn is_id(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'_' || c == b'$'
 }
@@ -182,6 +208,8 @@ pub(crate) fn lex(pre: &Pre) -> (Vec<Tok>, Vec<Diag>) {
     let mut i = 0;
     let mut envs = 0;
     let mut in_attr = false;
+    let mut in_edge = false;
+    let (mut set, mut ev) = (pre.kw_in, 0);
     macro_rules! err {
         ($code:literal, $a:expr, $z:expr, $($m:tt)*) => {
             diags.push(Diag::error($code, format!($($m)*), pre.span($a as u32, $z as u32)))
@@ -205,7 +233,15 @@ pub(crate) fn lex(pre: &Pre) -> (Vec<Tok>, Vec<Diag>) {
                 })
             };
         }
-        if c == ENVELOPE {
+        if in_edge && is_id(c) {
+            // Clause 15.4: `edge [01, 0x, x1]`: the descriptors are two characters, not numbers.
+            let mut j = i;
+            while j < n && is_id(b[j]) {
+                j += 1;
+            }
+            tok!(K::Num, "", j, 0);
+            i = j;
+        } else if c == ENVELOPE {
             tok!(K::Env, "", i + 1, envs);
             envs += 1;
             i += 1;
@@ -214,7 +250,13 @@ pub(crate) fn lex(pre: &Pre) -> (Vec<Tok>, Vec<Diag>) {
             while j < n && is_id(b[j]) {
                 j += 1;
             }
-            match keyword(&b[i..j]) {
+            while ev < pre.events.len() && pre.events[ev].0 as usize <= i {
+                if let Event::Keywords(k) = pre.events[ev].1 {
+                    set = k;
+                }
+                ev += 1;
+            }
+            match keyword(&b[i..j]).filter(|_| !left_out(set, &b[i..j])) {
                 Some(k) => tok!(K::Kw, k, j, 0),
                 None => tok!(K::Ident, "", j, 0),
             }
@@ -237,7 +279,7 @@ pub(crate) fn lex(pre: &Pre) -> (Vec<Tok>, Vec<Diag>) {
             }
             tok!(K::Ident, "", j, 1);
             i = j;
-        } else if c == b'$' && i + 1 < n && (b[i + 1].is_ascii_alphabetic() || b[i + 1] == b'_') {
+        } else if c == b'$' && i + 1 < n && is_id(b[i + 1]) {
             let mut j = i + 1;
             while j < n && is_id(b[j]) {
                 j += 1;
@@ -339,6 +381,11 @@ pub(crate) fn lex(pre: &Pre) -> (Vec<Tok>, Vec<Diag>) {
                         "(*" => in_attr = b[i + 2..].iter().find(|c| !is_ws(**c)) != Some(&b')'),
                         "*)" => in_attr = false,
                         _ => {}
+                    }
+                    if p == "[" && toks.last().is_some_and(|t| t.k == K::Kw && t.s == "edge") {
+                        in_edge = true;
+                    } else if p == "]" {
+                        in_edge = false;
                     }
                     tok!(K::P, p, i + p.len(), 0);
                     i += p.len();

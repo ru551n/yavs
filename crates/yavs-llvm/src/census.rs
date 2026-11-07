@@ -33,9 +33,11 @@ pub(crate) enum Cb {
     Planes,
     /// Not a callback: an activation that skipped the table's tags (`rt::enter`, `lean`).
     Lean,
+    /// `yavs_rt_verilog`: a Verilog instruction run by the interpreter's own function for it.
+    Verilog,
 }
 
-const NAMES: [&str; 22] = [
+const NAMES: [&str; 23] = [
     "step",
     "signal",
     "deopt",
@@ -58,10 +60,11 @@ const NAMES: [&str; 22] = [
     "record",
     "planes",
     "lean",
+    "verilog",
 ];
 
 #[cfg(any(debug_assertions, feature = "op-census"))]
-static COUNTS: [AtomicU64; 22] = [const { AtomicU64::new(0) }; 22];
+static COUNTS: [AtomicU64; 23] = [const { AtomicU64::new(0) }; 23];
 
 #[inline(always)]
 pub(crate) fn cb(c: Cb) {

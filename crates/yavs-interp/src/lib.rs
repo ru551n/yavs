@@ -598,6 +598,13 @@ pub trait TierHost {
     /// Execute the instruction at `pc` of the top frame; `fr` is the top frame's view after.
     fn step(&mut self, fr: &mut TierFrame, pc: u32) -> Stepped;
 
+    /// Run the Verilog instruction at `pc` of the top frame (#776), without the generic step:
+    /// it changes registers and the Verilog domain only. `false` (nothing done) when it fails
+    /// or is not one: the interpreter then runs it.
+    fn verilog(&mut self, _pc: u32) -> bool {
+        false
+    }
+
     /// Compiled code of a frame `step` pushed stopped at `pc`: if that is its return (and
     /// no fault is pending), pop the frame, give the caller the result and make `fr` the
     /// caller's again (`true`); else leave the frame at `pc` for the interpreter (`false`).
@@ -2230,6 +2237,11 @@ impl Runtime {
             }
         }
         self.tier.set(tier).is_ok()
+    }
+
+    /// Whether a tier is set ([`Runtime::set_tier`]).
+    pub fn has_tier(&self) -> bool {
+        self.tier.get().is_some()
     }
 
     /// The flags `set_tier` fills: a tier that compiles later calls `NativeFlags::set` once

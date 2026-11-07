@@ -464,6 +464,8 @@ pub struct VerilogDomain {
     pub name: String,
     pub drivers: Vec<yavs_kernel::SigRef>,
     pub make: VerilogMake,
+    /// The runtime of the Verilog processes, for a compiled tier (#776).
+    pub runtime: Option<std::sync::Arc<yavs_interp::Runtime>>,
 }
 
 /// Makes the Verilog domain process of one build from its driver ids.

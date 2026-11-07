@@ -1100,8 +1100,9 @@ pub fn elab(
 /// Ends tier-up when the run is over (`AutoTier::stop`): `end` at the normal end, without
 /// waiting for a function still compiling; on any other return the drop waits for it.
 enum StopTierUp {
+    /// One per runtime: the design's, and the Verilog processes' (#776).
     #[cfg(any(feature = "llvm", feature = "clift"))]
-    Llvm(std::sync::Arc<yavs_llvm::AutoTier>),
+    Llvm(Vec<std::sync::Arc<yavs_llvm::AutoTier>>),
 }
 
 impl StopTierUp {
@@ -1112,8 +1113,10 @@ impl StopTierUp {
     fn end(self, code: u8, keep_exit: bool) {
         match &self {
             #[cfg(any(feature = "llvm", feature = "clift"))]
-            StopTierUp::Llvm(t) => {
-                if !t.stop(keep_exit) {
+            StopTierUp::Llvm(ts) => {
+                // Every one is stopped before the process may end.
+                let busy = ts.iter().fold(false, |b, t| !t.stop(keep_exit) | b);
+                if busy {
                     yavs_llvm::exit_now(code);
                 }
             }
@@ -1133,12 +1136,12 @@ impl StopTierUp {
     ) -> (std::time::Duration, Arc<dyn Fn() + Send + Sync>) {
         match self {
             #[cfg(any(feature = "llvm", feature = "clift"))]
-            StopTierUp::Llvm(t) => {
-                let tier = t.clone();
+            StopTierUp::Llvm(ts) => {
+                let tiers = ts.clone();
                 (
                     yavs_llvm::START_AFTER,
                     Arc::new(move || {
-                        if let Err(e) = tier.launch() {
+                        if let Some(e) = tiers.iter().find_map(|t| t.launch().err()) {
                             crate::stdout::flush();
                             let d = Diagnostic::warning(
                                 "W0117",
@@ -1163,13 +1166,47 @@ impl Drop for StopTierUp {
     fn drop(&mut self) {
         match self {
             #[cfg(any(feature = "llvm", feature = "clift"))]
-            StopTierUp::Llvm(t) => {
-                t.stop(true);
+            StopTierUp::Llvm(ts) => {
+                for t in ts {
+                    t.stop(true);
+                }
             }
             #[cfg(not(any(feature = "llvm", feature = "clift")))]
             _ => {}
         }
     }
+}
+
+impl StopTierUp {
+    /// The tier-up of both runtimes in one.
+    #[allow(unused_mut)]
+    fn join(a: Option<StopTierUp>, b: Option<StopTierUp>) -> Option<StopTierUp> {
+        match (a, b) {
+            #[cfg(any(feature = "llvm", feature = "clift"))]
+            (Some(mut x), Some(mut y)) => {
+                let (StopTierUp::Llvm(xs), StopTierUp::Llvm(ys)) = (&mut x, &mut y);
+                xs.append(ys);
+                Some(x)
+            }
+            (a, b) => a.or(b),
+        }
+    }
+}
+
+/// The tier of the design's runtime and of the runtime of its Verilog processes (#776): the same
+/// tier, so `--tier=auto` promotes a Verilog process as it does a VHDL one.
+fn use_tiers(
+    rt: Option<&yavs_interp::Runtime>,
+    e: &yavs_elab::Elaborated,
+    a: &RunArgs,
+) -> Result<Option<StopTierUp>, Box<Diagnostic>> {
+    let t = use_tier(rt, a)?;
+    let v = match e.verilog_domain.as_ref().and_then(|v| v.runtime.as_deref()) {
+        // A restart builds the domain again on the same runtime, whose tier is set.
+        Some(v) if !v.has_tier() => use_tier(Some(v), a)?,
+        _ => None,
+    };
+    Ok(StopTierUp::join(t, v))
 }
 
 /// The work library's compilation cache keeps the code Cranelift compiles (#481), as the LLVM tier's
@@ -1286,7 +1323,7 @@ fn use_clift(
         },
     )
     .map_err(|e| bug(e.to_string()))?;
-    Ok(Some(StopTierUp::Llvm(t)))
+    Ok(Some(StopTierUp::Llvm(vec![t])))
 }
 
 /// `--tier=auto3`: `yavs_llvm::AutoTier` with Cranelift as its first level (functions are
@@ -1359,7 +1396,7 @@ fn use_auto3(
             },
         )
         .map_err(|e| bug(e.to_string()))?;
-        return Ok(Some(StopTierUp::Llvm(t)));
+        return Ok(Some(StopTierUp::Llvm(vec![t])));
     }
     let t = yavs_llvm::AutoTier::start_deferred(
         rt,
@@ -1370,7 +1407,7 @@ fn use_auto3(
         Some(Box::new(first)),
     )
     .map_err(|e| bug(e.to_string()))?;
-    Ok(Some(StopTierUp::Llvm(t)))
+    Ok(Some(StopTierUp::Llvm(vec![t])))
 }
 
 /// The generator of `YAVS_MIXED=1` (`use_auto3`): LLVM for the functions of even id, Cranelift for
@@ -1538,7 +1575,7 @@ fn use_llvm_tier(
                 None,
             )
             .map_err(|e| bug(yavs_llvm::Error(e.0)))?;
-            Ok(Some(StopTierUp::Llvm(t)))
+            Ok(Some(StopTierUp::Llvm(vec![t])))
         }
     }
 }
@@ -2149,7 +2186,7 @@ fn run_design(
         out.emit(&db.sources, &w);
     }
     // Held to the end of the run: `end` or a drop ends tier-up.
-    let mut tier_up = match use_tier(built.as_ref().map(|b| &*b.rt), &a) {
+    let mut tier_up = match use_tiers(built.as_ref().map(|b| &*b.rt), &e, &a) {
         Ok(g) => g,
         Err(d) => {
             let code = if matches!(d.code, "E0120" | "E0127") {
@@ -2378,7 +2415,7 @@ fn run_design(
             built = b;
             rt = built.as_ref().map(|b| b.rt.clone());
             tier_up_current.store(false, Ordering::SeqCst);
-            tier_up = match use_tier(rt.as_deref(), &a) {
+            tier_up = match use_tiers(rt.as_deref(), &e, &a) {
                 Ok(g) => g,
                 Err(d) => {
                     out.emit(&none, &d);

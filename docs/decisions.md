@@ -22,6 +22,16 @@
   held against `V4` (`tests/ops.rs`). Net reads and writes as plane words.
 - **Errors:** a runtime error of a Verilog process keeps the step C texts and has no trace (the interpreter's trace
   would name statements of the Verilog program).
+- **Tiers:** the runtime of the Verilog processes gets the tier of the run (`use_tiers`): `--tier=clift` and
+  `--tier=llvm` compile its program before time 0, `--tier=auto` (and `clift-auto`, `auto3`) runs a second `AutoTier`
+  on it, so a hot Verilog process is promoted as a VHDL one. Both generators compute the instructions of values up to
+  64 bits in place (`rt::verilog_inline`), the bitwise ones bit for bit with x and z, the rest on known operands
+  with a slow path that steps; the others call `yavs_rt_verilog`, the interpreter's own function for them. A
+  process's first activation is interpreted, as for VHDL. Measured on `verilog_cells` (64 cells, 4000 cycles,
+  release bench build, one run each, this host): step C 1.92 s on every tier; now 0.90 s interpreted, 0.83 s
+  `--tier=clift`, 0.84 s `--tier=auto`; with an x bit on every input (`-gXBIT=true`: the additions on the 4-state
+  path) 1.78 s before, 0.80, 0.71 and 0.73 s now. What is left is the domain's own work per activation (the state
+  moved into the process's machine, nets kept as kernel vectors and converted at each read and write).
 
 ## Verilog execution, first path (step C of #776, 2026-11-07)
 

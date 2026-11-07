@@ -451,6 +451,13 @@ pub(crate) fn elaborate(
         return Err(errors);
     }
     let drivers: Vec<_> = design.outputs().iter().map(|&k| sigs[k as usize]).collect();
+    // The program of the Verilog processes: an error is a bug in yavs.
+    let runtime = design.runtime().map_err(|m| {
+        vec![Diagnostic::error(
+            "E9999",
+            format!("internal compiler error: {m}"),
+        )]
+    })?;
     let design = std::sync::Arc::new(design);
     let inputs = std::sync::Arc::new(sigs);
     e.verilog_domain = Some(yavs_elab::VerilogDomain {
@@ -460,6 +467,7 @@ pub(crate) fn elaborate(
             let inputs = inputs.clone();
             Box::new(design.domain(&move |k| inputs[k as usize], ds))
         }),
+        runtime: Some(runtime),
     });
     Ok(())
 }

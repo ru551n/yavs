@@ -109,6 +109,7 @@ pub fn is_inline(prog: &Program, f: &Func, i: &Inst) -> bool {
         }
         Inst::Bin { op, .. } | Inst::BinRange { op, .. } => *op != IntOp::Pow,
         Inst::FBin { op, .. } => !matches!(op, FOp::Pow | FOp::PowI),
+        i if i.is_verilog() => crate::rt::verilog_inline(i),
         Inst::AddrOf { space, .. } => {
             addr_const(*space, 0).is_some() || matches!(space, AddrSpace::Up(1..=2))
         }

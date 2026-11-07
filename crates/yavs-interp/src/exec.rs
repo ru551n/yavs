@@ -11861,6 +11861,17 @@ impl crate::TierHost for Host<'_, '_, '_> {
         self.view_root_again(tf)
     }
 
+    fn verilog(&mut self, at: u32) -> bool {
+        crate::tier_census::note("verilog", &self.f.name, at, self.f.code.get(at as usize));
+        match self.f.code.get(at as usize) {
+            Some(&inst) if inst.is_verilog() => {
+                self.m.top().pc = at;
+                self.m.verilog(inst, self.ctx).is_ok()
+            }
+            _ => false,
+        }
+    }
+
     fn step(&mut self, tf: &mut crate::TierFrame, at: u32) -> crate::Stepped {
         use crate::Stepped;
         let (m, f) = (&mut *self.m, self.f);

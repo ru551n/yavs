@@ -21,6 +21,7 @@ use crate::census::{Cb, cb};
 /// with its argument cells in an array.
 pub type CallFn = unsafe extern "C" fn(*mut c_void, *mut Mem, u64, *const u64) -> i64;
 pub const STEP: &str = "yavs_rt_step";
+pub const VERILOG: &str = "yavs_rt_verilog";
 pub const HOST: &str = "yavs_rt_host";
 
 pub const REGION: &str = "yavs_rt_region";
@@ -792,6 +793,30 @@ pub unsafe extern "C" fn yavs_rt_step(
         mem.forget();
     }
     r
+}
+
+/// The Verilog instruction at `pc` through the interpreter's own function for it
+/// (`TierHost::verilog`, #776): `GO`, or `pc` when the interpreter must run it (a failure, which
+/// it then reports). Such an instruction changes registers and the Verilog domain only: the
+/// view, the temporary area and the objects found stay.
+pub unsafe extern "C" fn yavs_rt_verilog(
+    env: *mut c_void,
+    _regs: *mut u64,
+    mem: *mut Mem,
+    pc: u32,
+) -> u32 {
+    cb(Cb::Verilog);
+    // SAFETY: as in `yavs_rt_step`.
+    let env = unsafe { env_or(env, mem) };
+    let envp = env as *mut Env<'_>;
+    match catch_unwind(AssertUnwindSafe(|| unsafe { (*envp).host.verilog(pc) })) {
+        Ok(true) => GO,
+        Ok(false) => pc,
+        Err(p) => {
+            unsafe { (*envp).panic = Some(p) };
+            pc
+        }
+    }
 }
 
 /// Executes the signal instruction at `pc` in the interpreter (`TierHost::signal`; `edge` 1 or 2
@@ -3107,6 +3132,30 @@ pub fn bad_reg(f: &Func) -> Option<Reg> {
 
 /// The registers an inline instruction touches (the compiled code indexes `regs` with them);
 /// `Reg(u32::MAX)` for an operand list outside the function.
+/// Whether the code generators compute the Verilog instruction `i` in place (#776): values of
+/// 1 to 64 bits; bitwise operators, merge, extension, concatenation, `===` and `case` matches
+/// with x and z, the rest on known operands only, leaving for the interpreter otherwise. Not
+/// `/`, `%`, `**`, `$clog2`, real and time conversions, nets, waits, tasks (stepped).
+pub fn verilog_inline(i: &Inst) -> bool {
+    use yavs_ir::{VBinOp, VUnOp};
+    match *i {
+        Inst::VUn { op, w, .. } => w <= 64 && op != VUnOp::Clog2,
+        Inst::VBin { op, w, wb, .. } => {
+            w <= 64 && wb <= 64 && !matches!(op, VBinOp::Div | VBinOp::Rem | VBinOp::Pow(_))
+        }
+        Inst::VExt { w, wa, .. } => w <= 64 && wa <= 64,
+        Inst::VCat { whi, wlo, .. } => whi + wlo <= 64,
+        Inst::VMerge { w, .. } | Inst::VTruth { w, .. } | Inst::VCase { w, .. } => w <= 64,
+        Inst::VSel { w, n, .. } => w <= 64 && n <= w,
+        // No overflow of the start (`checked_sub` in the interpreter).
+        Inst::VIndex { w, adj, .. } => w <= 62 && adj.unsigned_abs() < 1 << 61,
+        Inst::VCount { signed, w, .. } => w < 64 || signed && w == 64,
+        Inst::VRBin { op, .. } => matches!(op, FOp::Add | FOp::Sub | FOp::Mul | FOp::Div),
+        Inst::VBack { .. } => true,
+        _ => false,
+    }
+}
+
 pub fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
     let pair = |r: Reg, w: Width| {
         if w == Width::Sig {

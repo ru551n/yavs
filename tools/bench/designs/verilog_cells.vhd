@@ -1,13 +1,15 @@
 -- Verilog cells under a VHDL testbench: CELLS instances of the module `vcell`
 -- (`verilog_cells.v`) in a ring, each fed the LFSR output of the one before it, for CYCLES
 -- clock cycles. Stresses Verilog process code (vector logic, adds, shifts, concatenation,
--- non-blocking assignments) and the boundary between the two languages.
+-- non-blocking assignments) and the boundary between the two languages. With XBIT true the input
+-- of every cell has an x bit: its additions and the accumulator take the 4-state slow paths
+-- (`-gXBIT=true`), the LFSRs stay two-state.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 
 entity bench_verilog_cells is
-  generic (CELLS : positive := 64; CYCLES : positive := 4000);
+  generic (CELLS : positive := 64; CYCLES : positive := 4000; XBIT : boolean := false);
 end entity;
 
 architecture sim of bench_verilog_cells is
@@ -17,7 +19,7 @@ architecture sim of bench_verilog_cells is
           q, sum : out std_logic_vector(15 downto 0));
   end component;
   type words is array (0 to CELLS - 1) of std_logic_vector(15 downto 0);
-  signal q, sum : words;
+  signal q, sum, din : words;
   signal clk : std_logic := '0';
   signal done : boolean := false;
 begin
@@ -26,7 +28,9 @@ begin
   cells_g : for i in 0 to CELLS - 1 generate
     cell : vcell
       generic map (SEED => std_logic_vector(to_unsigned(i * 977 + 1, 16)))
-      port map (clk => clk, din => q((i + CELLS - 1) mod CELLS), q => q(i), sum => sum(i));
+      port map (clk => clk, din => din(i), q => q(i), sum => sum(i));
+    din(i) <= q((i + CELLS - 1) mod CELLS)(15 downto 1) & 'X' when XBIT
+              else q((i + CELLS - 1) mod CELLS);
   end generate;
 
   process
@@ -41,7 +45,7 @@ begin
     for i in 0 to CELLS - 1 loop
       x := x xor unsigned(sum(i)) xor unsigned(q(i));
     end loop;
-    report "verilog_cells checksum=" & integer'image(to_integer(x));
+    report "verilog_cells checksum=" & to_hstring(x);
     wait;
   end process;
 end architecture;

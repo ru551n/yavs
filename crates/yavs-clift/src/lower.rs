@@ -37,6 +37,8 @@ use yavs_llvm::native::{
 use yavs_llvm::regs::Live;
 use yavs_llvm::rt::*;
 
+mod verilog;
+
 use crate::cache::{HashBytes, Name, Pre, PreInputs, body_key};
 
 const I64: Type = types::I64;
@@ -105,6 +107,7 @@ type PerfEntry = (String, ClifId, usize, Vec<(u32, u32, u32)>);
 pub struct Jit {
     module: JITModule,
     step: ClifId,
+    verilog: ClifId,
     host: ClifId,
     signal: ClifId,
     lcopy: ClifId,
@@ -498,6 +501,7 @@ impl Jit {
             .map_err(|e| e.to_string())?;
         for (n, p) in [
             (STEP, yavs_rt_step as *const u8),
+            (VERILOG, yavs_rt_verilog as *const u8),
             (HOST, yavs_rt_host as *const u8),
             (SIGNAL, yavs_rt_signal as *const u8),
             (LCOPY, yavs_rt_lcopy as *const u8),
@@ -553,6 +557,7 @@ impl Jit {
                 .map_err(|e| e.to_string())
         };
         let step = imp(STEP, &[I64, I64, I64, I32], Some(I32))?;
+        let verilog = imp(VERILOG, &[I64, I64, I64, I32], Some(I32))?;
         let host = imp(HOST, &[I64, I64, I64, I64, I64, I32], Some(I64))?;
         let signal = imp(SIGNAL, &[I64, I64, I64, I32, I32], Some(I32))?;
         let lcopy = imp(LCOPY, &[I64; 7], None)?;
@@ -659,6 +664,7 @@ impl Jit {
         Ok(Jit {
             module,
             step,
+            verilog,
             host,
             signal,
             lcopy,
@@ -1460,6 +1466,9 @@ impl Jit {
         }
         let imports = Imports {
             step: self.module.declare_func_in_func(self.step, &mut ctx.func),
+            verilog: self
+                .module
+                .declare_func_in_func(self.verilog, &mut ctx.func),
             host: self.module.declare_func_in_func(self.host, &mut ctx.func),
             cold_host: self
                 .module
@@ -1654,6 +1663,7 @@ impl Jit {
 
 struct Imports {
     step: FuncRef,
+    verilog: FuncRef,
     host: FuncRef,
     signal: FuncRef,
     lcopy: FuncRef,
@@ -2024,6 +2034,8 @@ struct Gen<'a> {
     fguess: Vec<Option<u64>>,
     /// The guess the instruction being generated makes for its result, entered after `track`.
     fnew: Option<(Reg, u64)>,
+    /// The join of the slow path of the Verilog instruction being generated (`verilog.rs`).
+    vjoin: Option<Block>,
 }
 
 /// The instructions a deferred register may be live over and still be deferred (`Gen::keep`).
@@ -2689,6 +2701,7 @@ fn gen_func(
         broken: None,
         fguess: vec![None; f.reg_ty.len()],
         fnew: None,
+        vjoin: None,
     };
     // Processes only: they hold the hot frame-mode code, and the analysis costs every compile.
     if g.nat.is_none() && f.kind == FuncKind::Process {
@@ -4357,6 +4370,11 @@ fn gen_func(
                 }
             }
             _ if g.nat.is_some() && xstep_wide(f, &inst) => g.native_step(pc, &inst, f),
+            i if i.is_verilog() => {
+                if !g.verilog(pc, &inst) {
+                    g.verilog_call(pc);
+                }
+            }
             _ => g.step(pc, &inst),
         }
     }
@@ -6119,6 +6137,7 @@ impl Gen<'_> {
         // it for its alias analysis): a zero, not a reload of `regs` from the stack.
         let unused = [
             self.imp.step,
+            self.imp.verilog,
             self.imp.signal,
             self.imp.wait,
             self.imp.wait_same,

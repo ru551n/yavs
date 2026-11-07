@@ -9,8 +9,7 @@ such as primitive libraries and IP models, from a VHDL testbench.
    This is under construction. ``yavs analyze`` reads Verilog files and records their modules in a
    library, and a VHDL testbench can instantiate a Verilog module and simulate it, with the subset of
    Verilog listed under `Simulating Verilog from VHDL`_. A construct outside that subset stops
-   elaboration with ``E4501``, which names it. Only the interpreter runs Verilog for now; VHDL keeps
-   its compiled tiers. SystemVerilog is not read.
+   elaboration with ``E4501``, which names it. SystemVerilog is not read.
 
 .. contents:: On this page
    :local:
@@ -162,8 +161,14 @@ more than one driver, other net types (``tri0``, ``supply1``, ``wand``, ...), dr
 continuous assignments and nets, ``defparam``, named events, ``fork``/``join``, ``disable``, procedural
 ``assign`` and ``force``, hierarchical names, the other system tasks, and the ``glbl`` module of vendor
 libraries. Each stops elaboration with ``E4501``, naming the construct. Specify blocks are read and not
-evaluated. Verilog runs in the interpreter only, and Verilog nets and variables other than the ports are
-not in the wave file.
+evaluated. Verilog nets and variables other than the ports are not in the wave file.
+
+**Tiers.** Verilog runs on every ``--tier`` as VHDL does: ``--tier=clift`` and ``--tier=llvm`` compile the
+Verilog processes before the run, ``--tier=auto`` compiles the ones that turn out hot. Values of up to 64
+bits are computed on machine words; an operand with an ``x`` or ``z`` bit takes the slower 4-state path of
+that operator, and wider values always do. A Verilog process is compiled once for all instances of a module
+with the same parameters. The domain that schedules Verilog is the same on every tier and is still where most
+of a Verilog run's time goes, so a compiled tier gains less on Verilog than on VHDL for now.
 
 Diagnostics
 -----------

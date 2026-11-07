@@ -33,6 +33,8 @@ use yavs_ir::{
     IntUnOp, Program, Reg, Width,
 };
 
+mod verilog;
+
 use crate::generator::Generator;
 
 use crate::native::*;
@@ -483,6 +485,7 @@ pub(crate) fn new_jit(opt: OptLevel) -> Result<Jit, Error> {
         opt,
         &[
             (STEP, yavs_rt_step as *const () as usize),
+            (VERILOG, yavs_rt_verilog as *const () as usize),
             (HOST, yavs_rt_host as *const () as usize),
             (REGION, yavs_rt_region as *const () as usize),
             (SIGNAL, yavs_rt_signal as *const () as usize),
@@ -1097,6 +1100,8 @@ struct Gen {
     ptr: LLVMTypeRef,
     fn_ty: LLVMTypeRef,
     step: LLVMValueRef,
+    /// `yavs_rt_verilog`, of `fn_ty`.
+    vstep: LLVMValueRef,
     /// `yavs_rt_host(env, mem, addr, extra, n, write) -> ptr`, null for the slow path.
     host_ty: LLVMTypeRef,
     host: LLVMValueRef,
@@ -1468,6 +1473,7 @@ impl Gen {
             let mut params = [ptr, ptr, ptr, i32];
             let fn_ty = LLVMFunctionType(i32, params.as_mut_ptr(), 4, 0);
             let step_name = CString::new(STEP).expect("no NUL");
+            let verilog_name = CString::new(VERILOG).expect("no NUL");
             let host_name = CString::new(HOST).expect("no NUL");
             let mut hparams = [ptr, ptr, i64, i64, i64, i32];
             let host_ty = LLVMFunctionType(ptr, hparams.as_mut_ptr(), 6, 0);
@@ -1564,6 +1570,7 @@ impl Gen {
                 ptr,
                 fn_ty,
                 step: LLVMAddFunction(module, step_name.as_ptr(), fn_ty),
+                vstep: LLVMAddFunction(module, verilog_name.as_ptr(), fn_ty),
                 host_ty,
                 host: LLVMAddFunction(module, host_name.as_ptr(), host_ty),
                 region_ty,
@@ -5159,6 +5166,11 @@ impl Gen {
                     Inst::Unreachable { .. } if c.nat.is_some() => self.step(&c, pc, &inst),
                     _ if c.nat.is_some() && xstep_ok(f, &inst) => {
                         self.native_step(&c, pc, &inst, f)?;
+                    }
+                    i if i.is_verilog() => {
+                        if !self.verilog(&c, pc, &inst) {
+                            self.verilog_call(&c, pc, &inst);
+                        }
                     }
                     _ => self.step(&c, pc, &inst),
                 }

@@ -2963,8 +2963,8 @@ combinational logic and simulates them through `yavs analyze`, `yavs elab` and `
 configuration and no entity binds (an explicit `use open` stays open) is bound to the Verilog module of its name, searched in
 the work library, then the libraries of `-L LIB` (D6). `yavs-elab` records such instances in `Elaborated::verilog` (generics
 converted, ports as object ids); the CLI reads each module's file again under the setup its analysis recorded (options and
-incoming preprocessor state, the new `setup` field of the library record; a changed file or a record of an older yavs is
-`E4508`), elaborates all instances into one `yavs_verilog::Design` and gives the build a factory of the one serial domain
+incoming preprocessor state, the new `setup` field of the library record; a changed file is
+`E4508`; library format 7), elaborates all instances into one `yavs_verilog::Design` and gives the build a factory of the one serial domain
 process. Done: parameters and `localparam` from integer, real, string, boolean, std_logic, bit and vector generics (untyped
 parameters take the value's type, wide and string values), `wire`/`tri`/`reg`/`integer`/`time`, continuous and net declaration
 assignments (pure copies onto internal nets aliased, no process), `always`/`initial` with `@(...)` on names, `@*`, `#`, `wait`,
@@ -3008,7 +3008,7 @@ and ignored, attributes), module analysis (ports, duplicate declarations, undecl
 encrypted envelopes recorded by module name with one `W4007` per file (`E4001` is the error on instantiating such a module,
 reserved for elaboration), SystemVerilog detection (`E4002`, `E4003`), and macro and include nesting caps.
 Around it: diagnostic range `E4xxx`/`W4xxx` with `--explain` texts (one table, `yavs_verilog::CODES`) and an `E4` section in the
-error index; library format 6 with `Module` and `Primitive` units (case kept, exact then case-insensitive lookup, `L0035` for a
+error index; library format 6 (7 with `setup`) with `Module` and `Primitive` units (case kept, exact then case-insensitive lookup, `L0035` for a
 module and a VHDL unit of one name), the `encrypted` flag, the preprocessor context and the included files with hashes in the unit
 record, verified by `closure`; the context in the cache key; `yavs analyze` dispatches by extension (`.v`, `.vh`, `.vp` to the front
 end, `.sv`, `.svh` are `E4002`), with `-I`, `-D NAME[=VALUE]`, `--timescale` and `--lang`; diagnostics are reported under the file

@@ -8,7 +8,7 @@ pub const MANIFEST_FILE: &str = "yavs-lib.toml";
 pub const LOCK_FILE: &str = "_YAVS_LIB";
 /// The directory of the per-file records, next to the index.
 pub const RECORD_DIR: &str = "yavs-lib.d";
-pub(crate) const FORMAT: u32 = 6;
+pub(crate) const FORMAT: u32 = 7;
 
 /// Case-fold an identifier: basic identifiers are case-insensitive,
 /// extended identifiers (`\Foo\`) are not.
@@ -1081,7 +1081,7 @@ mod tests {
         ] {
             let m = sample(path);
             let text = m.to_text();
-            assert!(text.starts_with("format = 6\nname = \"lib\"\n"));
+            assert!(text.starts_with("format = 7\nname = \"lib\"\n"));
             let back = Manifest::parse(&text, Path::new("/l/yavs-lib.toml")).unwrap();
             same(&m, &back);
             // Written again, the same text.
@@ -1098,7 +1098,7 @@ mod tests {
         // The text stays valid TOML, for anyone who looks at it.
         let text = sample("/x/it's \"q\" \\ \u{e9}.vhd").to_text();
         let v: toml::Value = toml::from_str(&text).unwrap();
-        assert_eq!(v["format"].as_integer(), Some(6));
+        assert_eq!(v["format"].as_integer(), Some(7));
         assert_eq!(
             v["file"][0]["path"].as_str(),
             Some("/x/it's \"q\" \\ \u{e9}.vhd")
@@ -1265,7 +1265,7 @@ mod tests {
                 .contains("bad string")
         );
         // Another format version is not corrupt.
-        let e = Manifest::parse(&good.replacen("format = 6", "format = 7", 1), p).unwrap_err();
+        let e = Manifest::parse(&good.replacen("format = 7", "format = 8", 1), p).unwrap_err();
         assert!(crate::render(&e, false).contains("L0004"));
     }
 }

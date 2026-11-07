@@ -376,7 +376,7 @@ pub(crate) fn elaborate(
         }
         let Some(setup) = &rec.setup else {
             return Err(fail(stale(format!(
-                "library `{}` was written by an older yavs",
+                "the record of library `{}` has no setup for it",
                 vi.library
             ))));
         };

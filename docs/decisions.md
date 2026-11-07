@@ -22,9 +22,8 @@
   `Elaborated::verilog_domain`, a factory the build calls, so every build (restart, VHPI reset, debugger) gets a fresh domain.
 - **The file is read again as analysed:** each Verilog unit's library record holds `setup`, the options (`-I`, default
   timescale) and the preprocessor state entering its file (macros, `timescale`, `default_nettype`, `celldefine`,
-  `begin_keywords`), so elaboration reads it like the analysis did, macros of earlier files of the call included. A record
-  without it (an older yavs), or a file or include whose hash changed, is `E4508`. No `FORMAT` bump: the field is optional and
-  its absence is an error only where it is needed.
+  `begin_keywords`), so elaboration reads it like the analysis did, macros of earlier files of the call included. A file or include whose hash changed
+  is `E4508`. The field came with library `FORMAT` 7, so a library of an older yavs is `L0004` before any of this is read.
 - **Generics and ports:** generics of type integer (32-bit signed), real, string (8 bits per character), boolean, std_logic,
   bit and their vectors; ports of std_logic, std_ulogic, bit and their vectors, modes in and out (inout is step D), widths equal,
   left to left. A `bit` port takes x and z from Verilog as '0' (`lrm-checks.md` S5).

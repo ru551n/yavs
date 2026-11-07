@@ -683,7 +683,7 @@ Verilog (E4 and W4)
    * - _`E4507`
      - A procedural assignment writes a net, or a continuous assignment drives a variable (``reg``, ``integer``, ``time``), or something assigns a parameter.
    * - _`E4508`
-     - Elaboration reads a Verilog file again with the options and preprocessor state recorded when it was analyzed, and that record is missing (the library was written by an older yavs) or no longer matches the file.
+     - Elaboration reads a Verilog file again with the options and preprocessor state recorded when it was analyzed, and that record is missing or no longer matches the file.
    * - _`E4509`
      - A VHDL component names a Verilog module, and the library holds several modules whose names differ from it only in case, so none is chosen.
    * - _`E4700`

@@ -223,7 +223,7 @@ pub(crate) const TABLE: &[CodeInfo] = &[
     code!(
         "E4508",
         "Verilog file cannot be read again",
-        "Elaboration reads a Verilog file again with the options and preprocessor state recorded when it was analyzed, and that record is missing (the library was written by an older yavs) or no longer matches the file. Analyze the Verilog files again."
+        "Elaboration reads a Verilog file again with the options and preprocessor state recorded when it was analyzed, and that record is missing or no longer matches the file. Analyze the Verilog files again."
     ),
     code!(
         "E4509",

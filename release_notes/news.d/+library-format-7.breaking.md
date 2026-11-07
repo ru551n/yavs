@@ -1,0 +1,1 @@
+The library format is now 7: the record of a Verilog module keeps how its file was read. A library written by an earlier yavs is refused with `L0004`; delete the library directory and analyze its files again.

@@ -150,6 +150,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "An option of Verilog files was given and no file of the call is Verilog, or a value of one is malformed: `-I`, `--timescale` and `-D NAME` (a definition without a value) apply to Verilog files only, and `--timescale` takes `UNIT/PRECISION`, each 1, 10 or 100 of s, ms, us, ns, ps or fs with the precision no coarser than the unit. Verilog files end in `.v` or `.vh`; `--lang=verilog` takes any file as Verilog.",
     ),
     (
+        "E0142",
+        "`-L LIB` of `elab` or `run` names a library that is not mapped. `-L` adds a library to the search for the Verilog module of a component instance that no VHDL entity binds (after the work library, in the order given); map the library with `--map NAME:PATH` as well.",
+    ),
+    (
         "E0199",
         "A command option or combination is not implemented yet. The message names the option or combination; the help line says what to run instead. This is a limitation of yavs, not an internal compiler error. Exit status 2.",
     ),
@@ -547,7 +551,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     // yavs-verilog: its codes are registered by the crate itself (`yavs_verilog::CODES`); E4500 is the CLI's
     (
         "E4500",
-        "The design reaches Verilog: elaborating and simulating Verilog is not implemented. A Verilog file can be analyzed into a library, but a design whose top level or instances lead to a Verilog module stops here.",
+        "The top level named on the command line is a Verilog module. The top level of a design is VHDL: a VHDL testbench instantiates Verilog modules through component declarations of the same name (searched in the work library and the `-L` libraries), and Verilog does not instantiate VHDL.",
     ),
     // every stage
     (

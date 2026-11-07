@@ -1101,6 +1101,7 @@ impl Elaborated {
             procs,
             foreign_archs,
             ext_procs,
+            verilog,
             model_vals,
             sigs,
             regions,

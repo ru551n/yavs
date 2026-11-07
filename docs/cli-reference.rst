@@ -236,6 +236,12 @@ Arguments:
 
    May be repeated.
 
+.. option:: -L LIB
+
+   A library searched for the Verilog module of a component instance that no VHDL entity binds, after the work library (repeatable, searched in order; E0142 when no library of that name is mapped).
+
+   May be repeated.
+
 .. option:: --relaxed
 
    Turn some errors into warnings: a shared variable of a non-protected type, a pure function that calls an impure one, an ``others`` aggregate for an unconstrained target, a non-static actual of a signal parameter, an operation a VHDL-1993 file sees declared both implicitly and explicitly, a PSL declaration after ``begin``.
@@ -291,7 +297,7 @@ Arguments:
 
    May be repeated.
 
-Diagnostics named above: ``E0106``, ``E0107``, ``E0136``; ``yavs --explain CODE`` explains each.
+Diagnostics named above: ``E0106``, ``E0107``, ``E0136``, ``E0142``; ``yavs --explain CODE`` explains each.
 
 ``yavs run``
 ------------
@@ -322,6 +328,12 @@ Arguments:
 .. option:: --map=NAME:PATH
 
    Another library, ``NAME:PATH`` (repeatable).
+
+   May be repeated.
+
+.. option:: -L LIB
+
+   A library searched for the Verilog module of a component instance that no VHDL entity binds, after the work library (repeatable, searched in order; E0142 when no library of that name is mapped).
 
    May be repeated.
 
@@ -572,7 +584,7 @@ Arguments:
 
    May be repeated.
 
-Diagnostics named above: ``E0105``, ``E0106``, ``E0107``, ``E0120``, ``E0136``, ``E0701``, ``E0801``, ``E0901``, ``E0902``, ``E3002``; ``yavs --explain CODE`` explains each.
+Diagnostics named above: ``E0105``, ``E0106``, ``E0107``, ``E0120``, ``E0136``, ``E0142``, ``E0701``, ``E0801``, ``E0901``, ``E0902``, ``E3002``; ``yavs --explain CODE`` explains each.
 
 ``yavs cov merge``
 ------------------

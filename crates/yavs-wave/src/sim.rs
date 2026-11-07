@@ -1015,9 +1015,16 @@ impl Design<'_> {
     fn scope(&mut self, id: ScopeId) {
         let sc = self.e.hier.scope(id);
         // A component scope holds the component ports; its bound instance carries the label.
-        let transparent = matches!(sc.kind, yavs_elab::ScopeKind::Component { .. });
+        // One bound to a Verilog module is the instance: its ports are the module's (#776).
+        let verilog = self.e.verilog.iter().find(|v| v.scope == id);
+        let transparent =
+            matches!(sc.kind, yavs_elab::ScopeKind::Component { .. }) && verilog.is_none();
         if !transparent {
             let (kind, comp) = match &sc.kind {
+                yavs_elab::ScopeKind::Component { .. } => (
+                    ScopeKind::Instance,
+                    verilog.map_or(String::new(), |v| v.module.clone()),
+                ),
                 yavs_elab::ScopeKind::Instance { entity, arch } => (
                     ScopeKind::Instance,
                     format!(
@@ -1035,7 +1042,6 @@ impl Design<'_> {
                     ScopeKind::Package,
                     self.db.units[*unit].name.text.to_string(),
                 ),
-                yavs_elab::ScopeKind::Component { .. } => unreachable!(),
             };
             let mut name = sc.name.text.to_string();
             if let Some(i) = &sc.index {
@@ -1047,7 +1053,7 @@ impl Design<'_> {
             }
             self.b.scope(&name, kind, &comp);
             for &o in &sc.objs {
-                self.object(o);
+                self.object(o, verilog.is_some());
             }
             match &sc.kind {
                 yavs_elab::ScopeKind::Process { stmt } => self.variables(id, *stmt),
@@ -1140,10 +1146,18 @@ impl Design<'_> {
         }
     }
 
-    fn object(&mut self, o: yavs_elab::ObjId) {
+    /// `verilog`: the object is in the component scope of a Verilog instance, whose ports it
+    /// shows.
+    fn object(&mut self, o: yavs_elab::ObjId, verilog: bool) {
         let obj = self.e.nets.obj(o);
         let port = match obj.kind {
             ObjKind::Signal => PortDir::None,
+            ObjKind::Port(m) | ObjKind::ComponentPort(m) if verilog => match m {
+                PortMode::In => PortDir::In,
+                PortMode::Out => PortDir::Out,
+                PortMode::Inout => PortDir::InOut,
+                PortMode::Buffer => PortDir::Buffer,
+            },
             ObjKind::Port(m) => match m {
                 PortMode::In => PortDir::In,
                 PortMode::Out => PortDir::Out,

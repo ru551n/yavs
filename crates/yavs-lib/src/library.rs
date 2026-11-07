@@ -151,6 +151,28 @@ impl Library {
         Ok((self.parse_index(held)?, guard))
     }
 
+    /// The record of unit `key` of `kind` and the content hash its file was analysed with, read
+    /// under the shared lock; `None` when the library holds no such unit.
+    pub fn record_of(
+        &self,
+        kind: crate::UnitKind,
+        key: &str,
+    ) -> Result<Option<(crate::UnitRecord, String)>> {
+        let (m, _guard) = self.read_locked()?;
+        let Some(u) = m.find(kind, key) else {
+            return Ok(None);
+        };
+        let Some(f) = m.file(u.file) else {
+            return Ok(None);
+        };
+        let hash = f.hash.to_string();
+        let r = m
+            .records(&f)?
+            .into_iter()
+            .find(|r| r.kind == kind && r.key == key);
+        Ok(r.map(|r| (r, hash)))
+    }
+
     fn parse_index(&self, held: bool) -> Result<Arc<Manifest>> {
         let p = self.manifest_path();
         // A manifest unmodified for two seconds that still has the size and time of the parsed one

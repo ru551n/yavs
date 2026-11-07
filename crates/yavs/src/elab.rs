@@ -33,6 +33,11 @@ pub struct Common {
     /// Another library, `NAME:PATH` (repeatable).
     #[arg(long = "map", value_name = "NAME:PATH")]
     maps: Vec<String>,
+    /// A library searched for the Verilog module of a component instance that no VHDL entity
+    /// binds, after the work library (repeatable, searched in order; E0142 when no library of
+    /// that name is mapped).
+    #[arg(short = 'L', value_name = "LIB")]
+    verilog_libs: Vec<String>,
     /// Turn some errors into warnings: a shared variable of a non-protected type, a pure function
     /// that calls an impure one, an `others` aggregate for an unconstrained target, a non-static
     /// actual of a signal parameter, an operation a VHDL-1993 file sees declared both implicitly
@@ -692,16 +697,25 @@ fn elaborate(
         let d = Diagnostic::error(
             "E4500",
             format!(
-                "elaborating Verilog is not implemented: the design reaches the Verilog file `{}`",
+                "the top level `{}` is a Verilog module (in `{}`): the top level of a design is VHDL",
+                c.top,
                 f.path.display()
             ),
         )
         .with_help(
-            "a Verilog file can be analyzed into a library, but not yet elaborated or simulated",
+            "instantiate the module from a VHDL testbench through a component declaration of the same name",
         );
         out.emit(&none, &d);
         return Err((out, 2));
     }
+    let verilog_libs = match crate::verilog::search_libraries(&libs, &work, &c.verilog_libs) {
+        Ok(v) => v,
+        Err(d) => {
+            out.emit(&none, &d);
+            return Err((out, 2));
+        }
+    };
+    let vlib_map = libs.clone();
     let rev = match c.std {
         Some(StdArg::V1993) => LangRev::Vhdl1993,
         Some(StdArg::V2008) => LangRev::Vhdl2008,
@@ -753,6 +767,7 @@ fn elaborate(
             collapse_ports: collapse_ports && !c.no_collapse_ports,
             // Hidden test aid: `YAVS_PACKS=off` gives every leaf a kernel signal of its own.
             packs: std::env::var("YAVS_PACKS").map_or(true, |v| v != "off"),
+            verilog_libs,
             ..yavs_elab::ElabConfig::default()
         };
         yavs_elab::elaborate(&mut db, t, &c.generics, &cfg)
@@ -763,6 +778,14 @@ fn elaborate(
                 out.emit(&db.sources, d);
             }
             if let Err(ds) = e.lower_with(&mut db, lowering) {
+                for d in &ds {
+                    out.emit(&db.sources, d);
+                }
+                return Err((out, 2));
+            }
+            if !e.verilog.is_empty()
+                && let Err(ds) = crate::verilog::elaborate(&mut e, &vlib_map, &mut db.sources)
+            {
                 for d in &ds {
                     out.emit(&db.sources, d);
                 }

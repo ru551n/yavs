@@ -31,6 +31,7 @@ const UNCOLLAPSED: ElabConfig = ElabConfig {
     max_depth: 1000,
     collapse_ports: false,
     packs: true,
+    verilog_libs: Vec::new(),
 };
 
 fn try_elab(

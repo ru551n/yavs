@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use clap::ValueEnum;
 use yavs_diag::{Diagnostic, FileId, Severity, SourceMap, Span};
-use yavs_lib::{UnitKind, UnitRecord, VERILOG_STD, hash_content};
+use yavs_lib::{Libraries, UnitKind, UnitRecord, VERILOG_STD, hash_content};
 use yavs_verilog::{AnalysisResult, Lang, Options, Timescale};
 
 /// `--lang`.
@@ -155,25 +155,7 @@ impl Batch {
     }
 
     fn render(&self, d: &yavs_verilog::Diag) -> Diagnostic {
-        let severity = match d.severity {
-            yavs_verilog::Severity::Error => Severity::Error,
-            yavs_verilog::Severity::Warning => Severity::Warning,
-            yavs_verilog::Severity::Note => Severity::Note,
-        };
-        let mut out = Diagnostic::new(severity, d.code, d.message.clone());
-        if let Some(s) = d.span {
-            out = out.with_primary(
-                Span::new(self.ids[s.file], s.start, s.end),
-                d.label.clone().unwrap_or_default(),
-            );
-        }
-        for n in &d.notes {
-            out = out.with_note(n.clone());
-        }
-        match &d.help {
-            Some(h) => out.with_help(h.clone()),
-            None => out,
-        }
+        render(d, &self.ids)
     }
 
     /// The diagnostics of file `i` of the call: those its analysis produced, including a problem
@@ -203,6 +185,7 @@ impl Batch {
             };
             let mut r = UnitRecord::verilog(kind, &u.name, VERILOG_STD);
             r.encrypted = u.encrypted;
+            r.setup = Some(u.setup.clone());
             r.context = Some(hash_content(
                 format!("{}\n{}", u.context_digest, self.options).as_bytes(),
             ));
@@ -220,6 +203,256 @@ impl Batch {
         }
         Ok(out)
     }
+}
+
+/// A front-end diagnostic with its spans in the files `ids` (the front end's file numbers).
+fn render(d: &yavs_verilog::Diag, ids: &[FileId]) -> Diagnostic {
+    let severity = match d.severity {
+        yavs_verilog::Severity::Error => Severity::Error,
+        yavs_verilog::Severity::Warning => Severity::Warning,
+        yavs_verilog::Severity::Note => Severity::Note,
+    };
+    let mut out = Diagnostic::new(severity, d.code, d.message.clone());
+    if let Some(s) = d.span {
+        out = out.with_primary(
+            Span::new(ids[s.file], s.start, s.end),
+            d.label.clone().unwrap_or_default(),
+        );
+    }
+    for n in &d.notes {
+        out = out.with_note(n.clone());
+    }
+    match &d.help {
+        Some(h) => out.with_help(h.clone()),
+        None => out,
+    }
+}
+
+/// The files of `paths` added to `sources`, as `Batch::of` adds them.
+fn add_files(sources: &mut SourceMap, paths: &[PathBuf]) -> Vec<FileId> {
+    paths
+        .iter()
+        .map(|p| {
+            let name = p.display().to_string();
+            match std::fs::read(p).map(String::from_utf8) {
+                Ok(Ok(text)) => sources.add(name, text),
+                Ok(Err(e)) => sources.add_latin1(name, e.into_bytes()),
+                Err(_) => sources.add(name, String::new()),
+            }
+        })
+        .collect()
+}
+
+/// The libraries searched for the Verilog module of a component with no VHDL binding (D6): the
+/// work library, then each `-L` library in order. A `-L` library that is not mapped is `E0142`.
+pub(crate) fn search_libraries(
+    libs: &Libraries,
+    work: &str,
+    extra: &[String],
+) -> Result<Vec<yavs_elab::VerilogLib>, Box<Diagnostic>> {
+    let mut out: Vec<yavs_elab::VerilogLib> = Vec::new();
+    for name in std::iter::once(work).chain(extra.iter().map(String::as_str)) {
+        let Some(lib) = libs.get(name) else {
+            let mut d = Diagnostic::error(
+                "E0142",
+                format!("`-L {name}`: no library `{name}` is mapped"),
+            );
+            let names: Vec<&str> = libs.names().collect();
+            d = match yavs_sem::suggest::suggest(
+                &yavs_lib::fold(name),
+                "library",
+                names.iter().map(|n| (*n, *n)),
+            ) {
+                Some(h) => d.with_help(h),
+                None => d.with_help("map it with `--map NAME:PATH`"),
+            };
+            return Err(Box::new(d));
+        };
+        if out.iter().any(|l| l.name == lib.name) {
+            continue;
+        }
+        out.push(yavs_elab::VerilogLib {
+            name: lib.name.clone(),
+            manifest: lib.read()?,
+        });
+    }
+    Ok(out)
+}
+
+/// The Verilog side of an elaborated design (#776 step C): each module the component instances
+/// bound to is read again as it was analysed, elaborated with the instance's generics and ports,
+/// and the one domain of the design is handed to `e` for the build. Diagnostics name files that
+/// are added to `sources`.
+pub(crate) fn elaborate(
+    e: &mut yavs_elab::Elaborated,
+    libs: &Libraries,
+    sources: &mut SourceMap,
+) -> Result<(), Vec<Diagnostic>> {
+    let fail = |d: Diagnostic| vec![d];
+    let mut design = yavs_verilog::Design::default();
+    let mut sigs: Vec<yavs_kernel::SigRef> = Vec::new();
+    let mut errors = Vec::new();
+    for vi in &e.verilog {
+        let path = e.hier.dotted_in(vi.scope, yavs_elab::Case::Lrm);
+        let at = |d: Diagnostic| d.with_primary(vi.span, "instantiated here");
+        let Some(lib) = libs.get(&vi.library) else {
+            return Err(fail(Diagnostic::error(
+                "E9999",
+                "a Verilog library vanished; this is a bug in yavs",
+            )));
+        };
+        let (rec, hash) = match lib.record_of(UnitKind::Module, &vi.module) {
+            Ok(Some(r)) => r,
+            Ok(None) => match lib.record_of(UnitKind::Primitive, &vi.module) {
+                Ok(Some(_)) => {
+                    return Err(fail(at(Diagnostic::error(
+                        "E4501",
+                        format!(
+                            "instantiating the user-defined primitive `{}` from VHDL is not implemented in Verilog elaboration",
+                            vi.module
+                        ),
+                    ))));
+                }
+                Ok(None) => {
+                    return Err(fail(Diagnostic::error(
+                        "E9999",
+                        format!(
+                            "the Verilog module `{}` has no record; this is a bug in yavs",
+                            vi.module
+                        ),
+                    )));
+                }
+                Err(d) => return Err(fail(*d)),
+            },
+            Err(d) => return Err(fail(*d)),
+        };
+        if rec.encrypted {
+            return Err(fail(at(Diagnostic::error(
+                "E4001",
+                format!("the Verilog module `{}` bound to instance {} is encrypted (IEEE 1735) and cannot be simulated", vi.module, yavs_diag::dotted(&path)),
+            )
+            .with_help("yavs never decrypts protected IP; use the vendor's unencrypted simulation model, or simulate this block with a tool that holds the vendor's key"))));
+        }
+        let stale = |what: String| {
+            at(Diagnostic::error(
+                "E4508",
+                format!(
+                    "{what}, so the Verilog module `{}` cannot be read as it was analyzed",
+                    vi.module
+                ),
+            )
+            .with_help("analyze the Verilog files again"))
+        };
+        match std::fs::read(&vi.file) {
+            Ok(b) if hash_content(&b) == hash => {}
+            Ok(_) => {
+                return Err(fail(stale(format!(
+                    "`{}` changed since it was analyzed",
+                    vi.file.display()
+                ))));
+            }
+            Err(err) => {
+                return Err(fail(stale(format!(
+                    "`{}` cannot be read: {err}",
+                    vi.file.display()
+                ))));
+            }
+        }
+        for (p, h) in &rec.includes {
+            if std::fs::read(p).map(|b| hash_content(&b)).ok().as_ref() != Some(h) {
+                return Err(fail(stale(format!(
+                    "the included file `{p}` changed since the analysis"
+                ))));
+            }
+        }
+        let Some(setup) = &rec.setup else {
+            return Err(fail(stale(format!(
+                "library `{}` was written by an older yavs",
+                vi.library
+            ))));
+        };
+        let Some(src) = yavs_verilog::read_unit(&vi.file, setup) else {
+            return Err(fail(stale(format!(
+                "the analysis record of `{}` cannot be read",
+                vi.file.display()
+            ))));
+        };
+        let ids = add_files(sources, &src.files);
+        let mut bad = false;
+        for d in &src.diagnostics {
+            if d.severity == yavs_verilog::Severity::Error {
+                bad = true;
+                errors.push(render(d, &ids));
+            }
+        }
+        if bad {
+            continue;
+        }
+        let Some(module) = src.module(&vi.module) else {
+            return Err(fail(stale(format!(
+                "`{}` no longer declares `{}`",
+                vi.file.display(),
+                vi.module
+            ))));
+        };
+        let generics: Vec<yavs_verilog::Generic> = vi
+            .generics
+            .iter()
+            .map(|(n, v)| yavs_verilog::Generic {
+                name: n.clone(),
+                value: match v {
+                    yavs_elab::VerilogValue::Int(i) => yavs_verilog::ParamValue::Int(*i),
+                    yavs_elab::VerilogValue::Real(r) => yavs_verilog::ParamValue::Real(*r),
+                    yavs_elab::VerilogValue::Str(s) => yavs_verilog::ParamValue::Str(s.clone()),
+                    yavs_elab::VerilogValue::Logic(l) => yavs_verilog::ParamValue::Logic(l.clone()),
+                },
+            })
+            .collect();
+        let mut ports = Vec::new();
+        for p in &vi.ports {
+            let o = e.nets.obj(p.obj);
+            let leaf = o.leaves.0;
+            let len = e.nets.leaf(leaf).ty.len;
+            let r = o.part.unwrap_or(yavs_kernel::Range::new(0, len));
+            ports.push(yavs_verilog::PortSpec {
+                name: p.name.clone(),
+                input: p.input,
+                width: p.width,
+                bit: p.bit,
+                key: sigs.len() as u32,
+            });
+            sigs.push(e.nets.kref(leaf, r));
+        }
+        let inst = yavs_verilog::Instance {
+            path: &path,
+            source: &src,
+            module,
+            generics: &generics,
+            ports: &ports,
+        };
+        if let Err(ds) = design.add(&inst) {
+            for d in &ds {
+                let d =
+                    render(d, &ids).with_note(format!("in instance {}", yavs_diag::dotted(&path)));
+                errors.push(d);
+            }
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let drivers: Vec<_> = design.outputs().iter().map(|&k| sigs[k as usize]).collect();
+    let design = std::sync::Arc::new(design);
+    let inputs = std::sync::Arc::new(sigs);
+    e.verilog_domain = Some(yavs_elab::VerilogDomain {
+        name: "verilog".into(),
+        drivers,
+        make: std::sync::Arc::new(move |ds| {
+            let inputs = inputs.clone();
+            Box::new(design.domain(&move |k| inputs[k as usize], ds))
+        }),
+    });
+    Ok(())
 }
 
 /// The front end's options from the command line.
@@ -293,6 +526,7 @@ mod tests {
             timescale: yavs_verilog::Timescale::DEFAULT,
             celldefine: false,
             default_nettype: yavs_verilog::Nettype::Wire,
+            setup: String::new(),
         };
         let diag = |code: &'static str, file: Option<usize>| Diag {
             code,

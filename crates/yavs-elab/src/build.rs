@@ -465,6 +465,15 @@ impl Elaborated {
             let idle = |_: &mut yavs_kernel::Ctx<'_>| Ok(());
             b.process(&p.name, ProcFlags::default(), &ds, idle);
         }
+        // All Verilog of the design: one serial process (#776, docs/design/verilog-scheduling.md).
+        if let Some(v) = &self.verilog_domain {
+            let ds: Vec<DriverId> = v.drivers.iter().map(|&d| b.driver(d)).collect();
+            let flags = ProcFlags {
+                serial: true,
+                ..ProcFlags::default()
+            };
+            b.process_boxed(&v.name, flags, &ds, (v.make)(&ds));
+        }
         let mut sim = b.build(cfg)?;
         // Hang and loop reports name the fields of a pack, not the pack.
         for (k, &(a, z)) in nets.packs.iter().enumerate() {

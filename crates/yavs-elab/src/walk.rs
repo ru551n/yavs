@@ -138,6 +138,13 @@ fn block_cfg<'a>(db: &'a Db, p: &CfgPath) -> Option<&'a BlockConfig> {
     Some(b)
 }
 
+/// The binding of a component instance: an entity, `use open`, or no binding found.
+enum Bind {
+    To(Bound),
+    Open,
+    Unbound,
+}
+
 struct Bound {
     entity: UnitId,
     arch: Option<Symbol>,
@@ -151,6 +158,7 @@ pub(crate) struct Elab<'d> {
     m: Model,
     procs: Vec<ProcInst>,
     foreign_archs: Vec<crate::ForeignArch>,
+    verilog: Vec<crate::VerilogInst>,
     errors: Vec<Diagnostic>,
     warnings: Vec<Diagnostic>,
     cfg: ElabConfig,
@@ -535,6 +543,7 @@ pub(crate) fn elaborate(
         m: Model::default(),
         procs: Vec::new(),
         foreign_archs: Vec::new(),
+        verilog: Vec::new(),
         errors: Vec::new(),
         warnings: Vec::new(),
         cfg: cfg.clone(),
@@ -703,6 +712,8 @@ pub(crate) fn elaborate(
         procs: e.procs,
         foreign_archs: e.foreign_archs,
         ext_procs: Vec::new(),
+        verilog: e.verilog,
+        verilog_domain: None,
         convs: std::mem::take(&mut e.m.convs),
         model_vals: e.m.vals,
         sigs: e.m.sigs,
@@ -2442,7 +2453,7 @@ impl Elab<'_> {
         comp: DeclId,
         cfg: Option<&CfgPath>,
         span: Span,
-    ) -> R<Option<Bound>> {
+    ) -> R<Bind> {
         let db: &Db = self.db;
         let pick = |items: &mut dyn Iterator<Item = (usize, &yavs_sem::hir::ComponentConfig)>| {
             let items: Vec<_> = items.filter(|(_, c)| c.component == comp).collect();
@@ -2539,7 +2550,8 @@ impl Elab<'_> {
                         Ok((e, a)) => (e, Some(db.units[a].name.key), Some(*cu)),
                         Err(()) => return Err(Box::new(ice(span, "configuration target"))),
                     },
-                    _ => return Ok(None),
+                    // `use open` (LRM 7.3.2.2): left unbound on purpose.
+                    _ => return Ok(Bind::Open),
                 };
                 let (ng, np) = counts(db, entity);
                 let cfgp = match cfgu {
@@ -2564,7 +2576,7 @@ impl Elab<'_> {
                         b.cfg = block;
                         b
                     }
-                    None => return Ok(None),
+                    None => return Ok(Bind::Unbound),
                 }
             }
         };
@@ -2581,7 +2593,7 @@ impl Elab<'_> {
                 }
             }
         }
-        Ok(Some(bound))
+        Ok(Bind::To(bound))
     }
 
     /// Default binding (LRM 7.3.3): an entity of the component's name, maps by name.
@@ -2700,7 +2712,17 @@ impl Elab<'_> {
                 self.m.sigs.insert((c, o), x);
             }
         }
-        match self.binding(region, st, comp, cfg, span)? {
+        let bind = match self.binding(region, st, comp, cfg, span)? {
+            // No VHDL entity: a Verilog module of the component's name (#776, D6). An explicit
+            // `use open` stays unbound.
+            Bind::Unbound => match self.verilog_module(comp, span)? {
+                Some(found) => return self.verilog_inst(c, &cgens, &cports, found, span),
+                None => None,
+            },
+            Bind::Open => None,
+            Bind::To(b) => Some(b),
+        };
+        match bind {
             Some(mut b) => {
                 if !formals.is_empty() {
                     for a in &mut b.gmap {
@@ -2738,6 +2760,228 @@ impl Elab<'_> {
                 )),
             ),
         }
+        Ok(())
+    }
+
+    /// The Verilog module of component `comp`'s name in the libraries of
+    /// `ElabConfig::verilog_libs`, searched in order: the name as written first, then the one
+    /// module whose name differs only in case (D5). Several such modules in a library are
+    /// `E4509`.
+    fn verilog_module(
+        &self,
+        comp: DeclId,
+        span: Span,
+    ) -> R<Option<(String, String, std::path::PathBuf)>> {
+        let name = self.db.decls[comp].name.to_string();
+        for lib in &self.cfg.verilog_libs {
+            match lib.manifest.find_module(&name) {
+                yavs_lib::ModuleLookup::Found(u) => {
+                    return Ok(Some((
+                        lib.name.clone(),
+                        u.key.to_string(),
+                        u.file.to_path_buf(),
+                    )));
+                }
+                yavs_lib::ModuleLookup::Ambiguous(v) => {
+                    return Err(Box::new(
+                        Diagnostic::error(
+                            "E4509",
+                            format!(
+                                "the component `{name}` matches several Verilog modules of library `{}` that differ only in case: {}",
+                                lib.name,
+                                v.join(", ")
+                            ),
+                        )
+                        .with_primary(span, "instantiated here")
+                        .with_help("name the component exactly as one of the modules"),
+                    ));
+                }
+                yavs_lib::ModuleLookup::Missing => {}
+            }
+        }
+        Ok(None)
+    }
+
+    /// Records the instance of component scope `c` bound to a Verilog module: the component's
+    /// elaborated generics and ports (generic types: `integer`, `real`, `string`, `boolean`,
+    /// `std_logic`, `bit` and their vectors; ports: `std_logic`, `bit` and their vectors, modes
+    /// `in` and `out`).
+    fn verilog_inst(
+        &mut self,
+        c: ScopeId,
+        cgens: &[DeclId],
+        cports: &[DeclId],
+        (library, module, file): (String, String, std::path::PathBuf),
+        span: Span,
+    ) -> R<()> {
+        use crate::{VerilogPort, VerilogValue};
+        let db: &Db = self.db;
+        let wk = &db.well_known;
+        let logic = |t: yavs_sem::TypeId| {
+            if Some(t) == wk.bit || Some(t) == wk.boolean {
+                Some(true)
+            } else if crate::eval::is_std_ulogic(db, t) {
+                Some(false)
+            } else {
+                None
+            }
+        };
+        let code = |t: yavs_sem::TypeId, pos: u32| -> yavs_logic::StdULogic {
+            match logic(t) {
+                // BIT and BOOLEAN: position 0 is '0', 1 is '1'.
+                Some(true) => yavs_logic::StdULogic::from_bool(pos == 1),
+                _ => yavs_logic::StdULogic::from_code_pub(pos as u8),
+            }
+        };
+        let mut generics = Vec::new();
+        for &g in cgens {
+            let decl = &db.decls[g];
+            let name = decl.name.to_string();
+            let DeclKind::Object(o) = &decl.kind else {
+                return Err(Box::new(
+                    Diagnostic::error("E4701", format!("the generic `{name}` is not a constant; a Verilog module takes constant parameters only"))
+                        .with_primary(decl.span, "declared here"),
+                ));
+            };
+            let t = db.base(o.subtype);
+            let bad = || {
+                Box::new(
+                    Diagnostic::error(
+                        "E4701",
+                        format!("the generic `{name}` has a type a Verilog parameter cannot take"),
+                    )
+                    .with_primary(decl.span, "declared here")
+                    .with_note("the types are integer, real, string, boolean, std_logic, bit and their vectors"),
+                )
+            };
+            let Some(v) = self.m.vals.get(c.index()).and_then(|m| m.get(&g)).cloned() else {
+                return Err(Box::new(ice(
+                    decl.span,
+                    "a component generic without a value",
+                )));
+            };
+            let value = match (&db.types[t].kind, &v) {
+                (TypeKind::Integer | TypeKind::UniversalInteger, Val::Int(i)) => {
+                    if i32::try_from(*i).is_err() {
+                        return Err(Box::new(
+                            Diagnostic::error(
+                                "E4701",
+                                format!("the generic `{name}` is {i}, beyond the 32 bits of a Verilog integer parameter"),
+                            )
+                            .with_primary(decl.span, "declared here"),
+                        ));
+                    }
+                    VerilogValue::Int(*i)
+                }
+                (TypeKind::Floating | TypeKind::UniversalReal, Val::Real(r)) => {
+                    VerilogValue::Real(*r)
+                }
+                (TypeKind::Enum { .. }, Val::Enum(p)) if logic(t).is_some() => {
+                    VerilogValue::Logic(yavs_logic::LogicVec::new(1, code(t, *p)))
+                }
+                (TypeKind::Array { .. }, Val::Array(a)) => {
+                    let el = match &db.types[t].kind {
+                        TypeKind::Array { elem, .. } => db.base(*elem),
+                        _ => unreachable!(),
+                    };
+                    let bytes: Vec<u8> = match &a.elems {
+                        yavs_sem::stat::Elems::Bytes(b) => b.to_vec(),
+                        yavs_sem::stat::Elems::Runs(runs) => {
+                            let mut out = Vec::new();
+                            for (n, v) in runs.iter() {
+                                let Some(p) = v.as_int() else {
+                                    return Err(bad());
+                                };
+                                out.extend(std::iter::repeat_n(p as u8, *n as usize));
+                            }
+                            out
+                        }
+                    };
+                    if Some(t) == wk.string || Some(el) == wk.character {
+                        VerilogValue::Str(bytes)
+                    } else if logic(el).is_some() {
+                        // The left element is the most significant (element n - 1).
+                        let n = bytes.len();
+                        VerilogValue::Logic(yavs_logic::LogicVec::from_fn(n, |i| {
+                            code(el, bytes[n - 1 - i] as u32)
+                        }))
+                    } else {
+                        return Err(bad());
+                    }
+                }
+                _ => return Err(bad()),
+            };
+            generics.push((name, value));
+        }
+        let mut ports = Vec::new();
+        for &p in cports {
+            let decl = &db.decls[p];
+            let name = decl.name.to_string();
+            let DeclKind::Object(o) = &decl.kind else {
+                return Err(Box::new(ice(decl.span, "port is not an object")));
+            };
+            let input = match o.mode {
+                Some(Mode::In) => true,
+                Some(Mode::Out) => false,
+                Some(Mode::Inout) => {
+                    return Err(Box::new(
+                        Diagnostic::error("E4501", format!("the inout port `{name}` of a component bound to a Verilog module is not implemented in Verilog elaboration"))
+                            .with_primary(decl.span, "declared here"),
+                    ));
+                }
+                _ => {
+                    return Err(Box::new(
+                        Diagnostic::error(
+                            "E4700",
+                            format!("the port `{name}` has a mode a Verilog port cannot take"),
+                        )
+                        .with_primary(decl.span, "declared here")
+                        .with_note("a VHDL port bound to a Verilog module is in or out"),
+                    ));
+                }
+            };
+            let Some(obj) = self.m.signal(c, p) else {
+                return Err(Box::new(ice(
+                    decl.span,
+                    "a component port without a signal",
+                )));
+            };
+            let (width, bit) = match &self.m.nets.obj(obj).shape {
+                Shape::Scalar { ty, .. } if logic(*ty).is_some() && Some(*ty) != wk.boolean => {
+                    (1, logic(*ty) == Some(true))
+                }
+                Shape::Array { dims, elem, .. } if dims.len() == 1 => match &**elem {
+                    Shape::Scalar { ty, .. } if logic(*ty).is_some() && Some(*ty) != wk.boolean => {
+                        (dims[0].len() as u32, logic(*ty) == Some(true))
+                    }
+                    _ => (0, false),
+                },
+                _ => (0, false),
+            };
+            if width == 0 {
+                return Err(Box::new(
+                    Diagnostic::error("E4700", format!("the port `{name}` has a type a Verilog port cannot take"))
+                        .with_primary(decl.span, "declared here")
+                        .with_note("the types are std_logic, std_ulogic, bit and one-dimensional vectors of them"),
+                ));
+            }
+            ports.push(VerilogPort {
+                name,
+                obj,
+                input,
+                width,
+                bit,
+            });
+        }
+        self.verilog.push(crate::VerilogInst {
+            scope: c,
+            library,
+            module,
+            file,
+            span,
+            generics,
+            ports,
+        });
         Ok(())
     }
 

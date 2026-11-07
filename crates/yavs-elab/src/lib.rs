@@ -149,6 +149,16 @@ pub struct ElabConfig {
     /// Store runs of record leaves in one kernel signal (`NetGraph::place`, #686): on by
     /// default; off (one signal per leaf) with the hidden test aid `YAVS_PACKS=off`.
     pub packs: bool,
+    /// The libraries a component instance with no VHDL binding searches for a Verilog module of
+    /// its name, in order (D6: the work library, then the `-L` list). Empty: no search.
+    pub verilog_libs: Vec<VerilogLib>,
+}
+
+/// A library searched for Verilog modules ([`ElabConfig::verilog_libs`]).
+#[derive(Clone, Debug)]
+pub struct VerilogLib {
+    pub name: String,
+    pub manifest: std::sync::Arc<yavs_lib::Manifest>,
 }
 
 impl Default for ElabConfig {
@@ -157,6 +167,7 @@ impl Default for ElabConfig {
             max_depth: 1000,
             collapse_ports: true,
             packs: true,
+            verilog_libs: Vec::new(),
         }
     }
 }
@@ -408,6 +419,57 @@ pub struct ExtProc {
     pub built: DriversBuilt,
 }
 
+/// A component instance bound to a Verilog module (#776 step C): no VHDL binding was found, and
+/// the library search of [`ElabConfig::verilog_libs`] found the module. Its generics and ports
+/// are the component's, elaborated in `scope` (a `Component` scope).
+#[derive(Clone, Debug)]
+pub struct VerilogInst {
+    pub scope: ScopeId,
+    pub library: String,
+    /// The module's name as written in the library.
+    pub module: String,
+    /// The file that defines it.
+    pub file: std::path::PathBuf,
+    /// The instantiation statement.
+    pub span: yavs_diag::Span,
+    pub generics: Vec<(String, VerilogValue)>,
+    pub ports: Vec<VerilogPort>,
+}
+
+/// The value of a component generic for a Verilog parameter.
+#[derive(Clone, Debug)]
+pub enum VerilogValue {
+    Int(i64),
+    Real(f64),
+    /// A `string`: one byte per character.
+    Str(Vec<u8>),
+    /// `std_logic_vector`, `bit_vector`, `std_logic`, `bit`, `boolean`: element 0 the rightmost.
+    Logic(yavs_logic::LogicVec),
+}
+
+/// A component port for a Verilog port: its signal, mode and width.
+#[derive(Clone, Debug)]
+pub struct VerilogPort {
+    pub name: String,
+    pub obj: ObjId,
+    pub input: bool,
+    pub width: u32,
+    /// `bit` or `bit_vector`.
+    pub bit: bool,
+}
+
+/// The Verilog domain of a build ([`Elaborated::verilog_domain`]): one serial kernel process that
+/// owns `drivers`; `make` gives the process of each build its driver ids.
+pub struct VerilogDomain {
+    pub name: String,
+    pub drivers: Vec<yavs_kernel::SigRef>,
+    pub make: VerilogMake,
+}
+
+/// Makes the Verilog domain process of one build from its driver ids.
+pub type VerilogMake =
+    std::sync::Arc<dyn Fn(&[yavs_kernel::DriverId]) -> Box<dyn yavs_kernel::Process> + Send + Sync>;
+
 /// Called with the driver ids of an [`ExtProc`] when the simulation is built.
 pub type DriversBuilt = std::sync::Arc<dyn Fn(&[yavs_kernel::DriverId]) + Send + Sync>;
 
@@ -422,6 +484,10 @@ pub struct Elaborated {
     /// Processes a VHPI plugin created for foreign architectures (`vhpi_create`), set by the
     /// caller before building: each owns drivers and runs no code.
     pub ext_procs: Vec<ExtProc>,
+    /// Component instances bound to Verilog modules, in elaboration order (#776).
+    pub verilog: Vec<VerilogInst>,
+    /// The Verilog domain, set by the caller from `verilog` before building.
+    pub verilog_domain: Option<VerilogDomain>,
     /// Values of generics, generate parameters and constants per scope (for lowering).
     pub model_vals: Vec<ScopeVals>,
     /// Per leaf: nothing asks for the event history of single elements of this signal, so

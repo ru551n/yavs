@@ -148,6 +148,8 @@ Syntax, command line, waveforms, coverage, debugger, plugins (E0 and W0)
      - The coverage options of ``yavs run`` do not name a coverage kind to count, or contradict each other.
    * - _`E0141`
      - An option of Verilog files was given and no file of the call is Verilog, or a value of one is malformed: ``-I``, ``--timescale`` and ``-D NAME`` (a definition without a value) apply to Verilog files only, and ``--timescale`` takes ``UNIT/PRECISION``, each 1, 10 or 100 of s, ms, us, ns, ps or fs with the precision no coarser than the unit.
+   * - _`E0142`
+     - ``-L LIB`` of ``elab`` or ``run`` names a library that is not mapped.
    * - _`E0199`
      - A command option or combination is not implemented yet.
    * - _`E0701`
@@ -665,7 +667,29 @@ Verilog (E4 and W4)
    * - _`W4207`
      - A variable is given a value where it is declared inside a task, function or block.
    * - _`E4500`
-     - The design reaches Verilog: elaborating and simulating Verilog is not implemented.
+     - The top level named on the command line is a Verilog module.
+   * - _`E4501`
+     - Elaboration reached a legal IEEE 1364-2005 construct that yavs does not simulate yet; the message names it.
+   * - _`E4502`
+     - Two continuous drivers (continuous assignments, a net declaration assignment, the VHDL port of an input) drive the same bits of one Verilog net.
+   * - _`E4503`
+     - An ``always`` block has no delay or event control, so it runs again at the same simulation time for ever and time never advances (clause 9.9.2).
+   * - _`E4504`
+     - An expression or an assignment names something the module does not declare (clause 12.7).
+   * - _`E4505`
+     - A parameter value, a range, a replication count or a part-select width names a net or variable; these must be constant expressions of literals and parameters (clause 5.2).
+   * - _`E4506`
+     - An expression breaks a rule of clause 5: a malformed number, an operator applied to a real it does not take, an unsized constant in a concatenation, a replication count that is not positive, a part-select that runs the other way than its vector or lies outside it in an assignment target, or a select in a continuous assignment that is not constant.
+   * - _`E4507`
+     - A procedural assignment writes a net, or a continuous assignment drives a variable (``reg``, ``integer``, ``time``), or something assigns a parameter.
+   * - _`E4508`
+     - Elaboration reads a Verilog file again with the options and preprocessor state recorded when it was analyzed, and that record is missing (the library was written by an older yavs) or no longer matches the file.
+   * - _`E4509`
+     - A VHDL component names a Verilog module, and the library holds several modules whose names differ from it only in case, so none is chosen.
+   * - _`E4700`
+     - A port of the VHDL component that binds to a Verilog module has no port of that name in the module (matched exactly, then case-insensitively), or the directions differ, or the widths differ (a VHDL vector maps onto the Verilog vector left to left), or its type is not one Verilog can take (``std_logic``, ``std_ulogic``, ``bit`` and vectors of them, modes ``in`` and ``out``).
+   * - _`E4701`
+     - A generic of the VHDL component that binds to a Verilog module names no parameter of the module, names a local parameter (which cannot be overridden, clause 12.2), or has a type Verilog cannot take (``integer``, ``real``, ``string``, ``boolean``, ``std_logic``, ``bit`` and their vectors).
 
 Internal errors (E9)
 --------------------

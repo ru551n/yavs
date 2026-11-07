@@ -151,6 +151,11 @@ pub struct UnitRecord {
     /// Verilog: the files the unit's file included, as (path, content hash).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub includes: Vec<(String, String)>,
+    /// Verilog: the options and preprocessor state the file was analysed under, as the front end
+    /// writes them; elaboration reads the file again with it. A record without it was written by
+    /// an older yavs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<String>,
     /// Filled in by the library on load and update; not stored per unit.
     #[serde(skip)]
     pub file: PathBuf,
@@ -169,6 +174,7 @@ impl UnitRecord {
             encrypted: false,
             context: None,
             includes: vec![],
+            setup: None,
             file: PathBuf::new(),
         }
     }

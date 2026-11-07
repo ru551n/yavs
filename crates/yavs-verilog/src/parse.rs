@@ -364,7 +364,20 @@ impl<'a> Parser<'a> {
             }
             k += 1;
         }
-        self.unexpected("`module` or `primitive`");
+        let t = self.peek();
+        let found = if t.k == K::Eof {
+            "end of file".to_string()
+        } else {
+            format!("`{}`", self.text(t))
+        };
+        self.push(
+            Diag::error(
+                "E4100",
+                format!("expected `module` or `primitive`, found {found}"),
+                self.span(t),
+            )
+            .label("expected `module` or `primitive`"),
+        );
     }
 
     /// After an error: skip past the next of `stops`, or to the end of the file.
@@ -465,8 +478,21 @@ impl<'a> Parser<'a> {
                 (K::Env, _) => {
                     self.bump();
                     encrypted = Some(t.n);
-                    // The envelope holds the body and usually the `endmodule`.
-                    self.eat_kw("endmodule");
+                    // The envelope holds the body and usually the `endmodule`; plaintext after it
+                    // belongs to the module, up to its `endmodule` (the next module is not swallowed).
+                    loop {
+                        let n = self.peek();
+                        match (n.k, n.s) {
+                            (K::Kw, "endmodule") => {
+                                self.bump();
+                                break;
+                            }
+                            (K::Eof, _) | (K::Kw, "module" | "primitive") => break,
+                            _ => {
+                                self.bump();
+                            }
+                        }
+                    }
                     break;
                 }
                 (K::Eof, _) => {

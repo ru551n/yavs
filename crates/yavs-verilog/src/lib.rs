@@ -216,10 +216,11 @@ fn one_file(
     }
     if opts.lang_override.is_none() && !is_verilog_path(path) {
         res.diagnostics.push(
-            Diag::error(
+            Diag::new(
                 "E4012",
+                Severity::Error,
                 format!("`{}` has no Verilog extension", path.display()),
-                here,
+                None,
             )
             .help("name it .v or .vh, or pass --lang=verilog"),
         );
@@ -229,14 +230,19 @@ fn one_file(
         Ok(b) => b,
         Err(e) => {
             res.diagnostics.push(
-                Diag::error("E4012", format!("cannot read `{}`", path.display()), here)
-                    .note(e.to_string()),
+                Diag::new(
+                    "E4012",
+                    Severity::Error,
+                    format!("cannot read `{}`", path.display()),
+                    None,
+                )
+                .note(e.to_string()),
             );
             return;
         }
     };
     let incoming = st.clone();
-    let digest = st.digest();
+    let digest = st.digest(opts);
     let pre = pre::preprocess(opts, &mut res.files, st, fi, &bytes);
     let mut diags: Vec<Diag> = pre.diags.clone();
     let (toks, lexd) = lex::lex(&pre);
@@ -358,7 +364,10 @@ fn one_file(
                 default_nettype: nt,
             });
         }
-        if checks && st.macros.contains_key("XIL_TIMING") {
+        if checks
+            && st.macros.contains_key("XIL_TIMING")
+            && !res.diagnostics.iter().any(|d| d.code == "W4015")
+        {
             diags.push(Diag::new(
                 "W4015",
                 Severity::Warning,

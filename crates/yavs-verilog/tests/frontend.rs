@@ -1017,3 +1017,75 @@ fn udp_rows_are_decoded() {
     .unwrap_err();
     assert_eq!(e[0].code, "E4100");
 }
+
+#[test]
+fn context_digest_follows_everything_that_changes_a_unit() {
+    let d = scratch();
+    let f = write(&d, "t.v", "module m; endmodule\n");
+    let base = analyze(std::slice::from_ref(&f), &Options::default()).units[0]
+        .context_digest
+        .clone();
+    let again = analyze(std::slice::from_ref(&f), &Options::default()).units[0]
+        .context_digest
+        .clone();
+    assert_eq!(base, again);
+    let ts = Options {
+        default_timescale: Timescale {
+            unit_fs: 1_000,
+            precision_fs: 1_000,
+        },
+        ..Options::default()
+    };
+    assert_ne!(
+        base,
+        analyze(std::slice::from_ref(&f), &ts).units[0].context_digest
+    );
+    let inc = Options {
+        include_dirs: vec![d.clone()],
+        ..Options::default()
+    };
+    assert_ne!(base, analyze(&[f], &inc).units[0].context_digest);
+}
+
+#[test]
+fn timing_check_warning_is_once_per_call() {
+    let d = scratch();
+    let src = "module m (input c, d);\nspecify\n $setup(d, posedge c, 1);\nendspecify\nendmodule\n";
+    let a = write(&d, "a.v", src);
+    let b = write(&d, "b.v", &src.replace("module m", "module n"));
+    let o = Options {
+        defines: vec![("XIL_TIMING".into(), None)],
+        ..Options::default()
+    };
+    let r = analyze(&[a, b], &o);
+    assert_eq!(
+        r.diagnostics.iter().filter(|d| d.code == "W4015").count(),
+        1
+    );
+}
+
+#[test]
+fn plaintext_after_an_envelope_belongs_to_the_module() {
+    let r = run(
+        "`timescale 1ns/1ps\nmodule a (input x);\n`pragma protect begin_protected\nzz\n`pragma protect end_protected\n  wire w;\n  assign w = x;\nendmodule\nmodule b; endmodule\n",
+    );
+    assert!(errors(&r).is_empty(), "{:?}", r.diagnostics);
+    assert_eq!(
+        r.units
+            .iter()
+            .map(|u| (u.name.as_str(), u.encrypted))
+            .collect::<Vec<_>>(),
+        [("a", true), ("b", false)]
+    );
+}
+
+#[test]
+fn unreadable_files_have_no_span() {
+    let r = analyze(&[PathBuf::from("/nonexistent/x.v")], &Options::default());
+    assert_eq!(
+        (r.diagnostics[0].code, r.diagnostics[0].span.is_none()),
+        ("E4012", true)
+    );
+    let d = run("`define A\n## x\n");
+    assert_eq!(d.diagnostics[0].code, "E4100");
+}

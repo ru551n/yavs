@@ -84,7 +84,7 @@ impl State {
     }
 
     /// A stable digest of the state, for the cache key of a file analysed in this context.
-    pub(crate) fn digest(&self) -> String {
+    pub(crate) fn digest(&self, opts: &Options) -> String {
         let mut h: u128 = 0x6c62272e07bb014262b821756295c58d;
         let mut feed = |bytes: &[u8]| {
             for &b in bytes {
@@ -108,6 +108,11 @@ impl State {
         feed(format!("{:?}", self.timescale).as_bytes());
         feed(format!("{:?}", self.nettype).as_bytes());
         feed(&[self.celldefine as u8]);
+        // What else decides how a file reads: the default timescale and where includes are searched.
+        feed(format!("{:?}", opts.default_timescale).as_bytes());
+        for d in &opts.include_dirs {
+            feed(d.to_string_lossy().as_bytes());
+        }
         format!("{h:032x}")
     }
 }

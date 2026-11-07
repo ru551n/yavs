@@ -70,52 +70,52 @@ pub(crate) const TABLE: &[CodeInfo] = &[
     code!(
         "E4004",
         "unbalanced conditional compilation",
-        "A `ifdef, `ifndef, `elsif, `else or `endif does not match: a missing `endif at the end of the file, an `else or `endif without an opening `ifdef, \
-         or an `elsif/`else after an `else. The conditional must start and end in the same file."
+        "A `` `ifdef ``, `` `ifndef ``, `` `elsif ``, `` `else `` or `` `endif `` does not match: a missing `` `endif `` at the end of the file, an `` `else `` or `` `endif `` without an opening `` `ifdef ``, \
+         or an `` `elsif ``/`` `else `` after an `` `else ``. The conditional must start and end in the same file."
     ),
     code!(
         "E4005",
         "include file not found",
-        "The file named by `include was not found in the directory of the including file or in any -I directory. The message lists the directories searched."
+        "The file named by `` `include `` was not found in the directory of the including file or in any -I directory. The message lists the directories searched."
     ),
     code!(
         "W4006",
-        "no `timescale in force",
-        "The module has no `timescale directive before it and none came from an earlier file, so the default (1ns/1ps, or --timescale) applies. \
+        "no timescale in force",
+        "The module has no `` `timescale `` directive before it and none came from an earlier file, so the default (1ns/1ps, or --timescale) applies. \
          IEEE 1364-2005 leaves this to the tool, and delays in the module scale with the default."
     ),
     code!(
         "E4007",
         "undefined macro",
-        "A text macro is used with `NAME but no `define NAME is in force at that point. Define it in the source, or with -D NAME[=VALUE]."
+        "A text macro is used with `` `NAME `` but no `` `define NAME `` is in force at that point. Define it in the source, or with -D NAME[=VALUE]."
     ),
     code!(
         "W4007",
         "encrypted module body recorded",
-        "The source contains a protected envelope (`pragma protect begin_protected ... end_protected, or `protect ... `endprotect, or `protected ... `endprotected). \
+        "The source contains a protected envelope (`` `pragma protect begin_protected `` ... `` `pragma protect end_protected ``, or `` `protect `` ... `` `endprotect ``, or `` `protected `` ... `` `endprotected ``). \
          The module is recorded as an encrypted unit with the ports of its readable header, and analysis succeeds; an envelope before any module header records nothing. \
          Instantiating the module is an error at elaboration (E4001). yavs never decrypts protected IP."
     ),
     code!(
         "E4008",
         "macro definition or call is malformed",
-        "A `define has no name or a bad formal argument list, or a macro call has the wrong number of arguments or an unterminated argument list."
+        "A `` `define `` has no name or a bad formal argument list, or a macro call has the wrong number of arguments or an unterminated argument list."
     ),
     code!(
         "E4009",
         "malformed compiler directive",
-        "A compiler directive has an operand that is missing or not valid, for example `timescale 3ns/1ps (the magnitude must be 1, 10 or 100) \
-         or a `default_nettype that is not a net type."
+        "A compiler directive has an operand that is missing or not valid, for example `` `timescale 3ns/1ps `` (the magnitude must be 1, 10 or 100) \
+         or a `` `default_nettype `` that is not a net type."
     ),
     code!(
         "E4010",
         "unsupported compiler directive",
-        "The directive is outside IEEE 1364-2005 as yavs supports it (for example `uselib, or `config library maps). It is not skipped silently."
+        "The directive is outside IEEE 1364-2005 as yavs supports it (for example `` `uselib ``, or `` `config `` library maps). It is not skipped silently."
     ),
     code!(
         "E4011",
         "nesting too deep",
-        "Macro expansion or `include nesting exceeded its limit; a macro that expands to itself, or files that include each other, are the usual cause."
+        "Macro expansion or `` `include `` nesting exceeded its limit; a macro that expands to itself, or files that include each other, are the usual cause."
     ),
     code!(
         "E4012",
@@ -125,7 +125,7 @@ pub(crate) const TABLE: &[CodeInfo] = &[
     code!(
         "W4009",
         "protection marker ignored",
-        "`pragma protect begin or `pragma protect end marks plaintext that a tool would encrypt. The marker is ignored and the plaintext is compiled."
+        "`` `pragma protect begin `` or `` `pragma protect end `` marks plaintext that a tool would encrypt. The marker is ignored and the plaintext is compiled."
     ),
     code!(
         "E4014",
@@ -155,7 +155,7 @@ pub(crate) const TABLE: &[CodeInfo] = &[
     code!(
         "E4201",
         "undeclared identifier",
-        "An identifier is used in an expression but declared nowhere in the module, and `default_nettype none is in force, so no implicit net is created (clause 4.5)."
+        "An identifier is used in an expression but declared nowhere in the module, and `` `default_nettype none `` is in force, so no implicit net is created (clause 4.5)."
     ),
     code!(
         "E4202",

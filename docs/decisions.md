@@ -30,9 +30,10 @@
   `-D` density flag (`E4007`); 1 is a memory model that fails on purpose without `-D den1024Mb` (`E4100`). Every library file
   (unisims, retarget, unimacro, unifast, `glbl`, both views) analyses; the 5 unisim `.sv` files are `E4002`; every encrypted
   file is recorded with one `W4007`. Total: 4132 rows, 3498 `PASS`, 561 `PASS+W4007`, 73 errors, all in the manifest.
-  `cells` (36 yosys cell model files): 30 `PASS`, 2 `E4003` (the model's own SystemVerilog, `i++`) and 4 `E4200` (the four
-  lattice models include `cells_ff.vh` twice, once through `common_sim.vh` and once directly, so its modules are declared twice;
-  they were hidden behind the `$error` item error until elaboration tasks were accepted).
+  `cells` (36 yosys cell model files): 34 `PASS` and 2 `E4003` (the model's own SystemVerilog, `i++`). The four lattice models
+  (`cells_sim_ecp5/xo2/xo3/xo3d.v`) include `cells_ff.vh` twice, once through `common_sim.vh` and once directly, so without a define
+  its modules are declared twice (`E4200`, which stays strict). The models guard that include with `` `ifndef NO_INCLUDES ``, so the
+  gate analyses them with `-D NO_INCLUDES`, a per-file argument in `cells.expected` (maintainer, 2026-11-07).
 - **Elaboration tasks as items (maintainer, 2026-11-07):** `$error`, `$warning`, `$info` and `$fatal` are accepted as module items and
   generate-block items and kept in the tree (`Item::ElabTask`), not executed at M0 (elaboration is M1). A deliberate extension beyond
   1364-2005, because vendor and cell models use them (`docs/design/lrm-checks.md` V4). Effect on the gates: `cells` went from

@@ -2971,8 +2971,8 @@ record, verified by `closure`; the context in the cache key; `yavs analyze` disp
 end, `.sv`, `.svh` are `E4002`), with `-I`, `-D NAME[=VALUE]`, `--timescale` and `--lang`; diagnostics are reported under the file
 whose analysis found them; `elab` and `run` stop with `E4500` at a Verilog file.
 
-Measured (debug build, `tools/verilog`): 30 of 30 hand-written fixtures as expected (`$error`, `$warning`, `$info` and `$fatal` are accepted as module and generate-block items, not executed: `lrm-checks.md` V4); the 36 yosys cell model files (CI): 30
-analyse, 2 are rejected for their own SystemVerilog (`i++` is `E4003`), 4 declare modules twice by including one header twice (`E4200`); the vendor
+Measured (debug build, `tools/verilog`): 30 of 30 hand-written fixtures as expected (`$error`, `$warning`, `$info` and `$fatal` are accepted as module and generate-block items, not executed: `lrm-checks.md` V4); the 36 yosys cell model files (CI): 34
+analyse (the four lattice models with `-D NO_INCLUDES`, which their own guard expects; without it they declare modules twice, `E4200`), 2 are rejected for their own SystemVerilog (`i++` is `E4003`); the vendor
 install gate (local): 4132 files, 3498 `PASS`, 561 `PASS+W4007`, 73 expected errors. Of the 796 plaintext IP `.v` rows 728 analyse
 with no error; the 68 others are SystemVerilog in a `.v` file, generator templates, include-only fragments, headers the install
 lacks and files that need macros from another IP or a `-D` flag (`docs/decisions.md` "Verilog test material and corpus gate"). The

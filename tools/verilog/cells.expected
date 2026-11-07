@@ -1,4 +1,4 @@
-# tools/verilog/corpus.py cells: expected outcome per file, `OUTCOME LIB VIEW PATH [-I DIR]...`; paths only, no vendor content.
+# tools/verilog/corpus.py cells: expected outcome per file, `OUTCOME LIB VIEW PATH [-I DIR | -D NAME]...`; paths only, no vendor content.
 PASS work default techlibs/achronix/speedster22i/cells_sim.v -I techlibs/achronix/speedster22i
 PASS work default techlibs/analogdevices/cells_sim.v -I techlibs/analogdevices
 PASS work default techlibs/anlogic/cells_sim.v -I techlibs/anlogic
@@ -18,11 +18,11 @@ PASS work default techlibs/intel_alm/common/dsp_sim.v -I techlibs/intel_alm/comm
 PASS work default techlibs/intel_alm/common/mem_sim.v -I techlibs/intel_alm/common
 PASS work default techlibs/intel_alm/common/misc_sim.v -I techlibs/intel_alm/common
 PASS work default techlibs/intel_alm/cyclonev/cells_sim.v -I techlibs/intel_alm/cyclonev
-E4200 work default techlibs/lattice/cells_sim_ecp5.v -I techlibs/lattice
+PASS work default techlibs/lattice/cells_sim_ecp5.v -I techlibs/lattice -D NO_INCLUDES
 E4003 work default techlibs/lattice/cells_sim_nexus.v -I techlibs/lattice
-E4200 work default techlibs/lattice/cells_sim_xo2.v -I techlibs/lattice
-E4200 work default techlibs/lattice/cells_sim_xo3.v -I techlibs/lattice
-E4200 work default techlibs/lattice/cells_sim_xo3d.v -I techlibs/lattice
+PASS work default techlibs/lattice/cells_sim_xo2.v -I techlibs/lattice -D NO_INCLUDES
+PASS work default techlibs/lattice/cells_sim_xo3.v -I techlibs/lattice -D NO_INCLUDES
+PASS work default techlibs/lattice/cells_sim_xo3d.v -I techlibs/lattice -D NO_INCLUDES
 PASS work default techlibs/microchip/cells_sim.v -I techlibs/microchip
 PASS work default techlibs/nanoxplore/cells_sim.v -I techlibs/nanoxplore
 PASS work default techlibs/nanoxplore/cells_sim_l.v -I techlibs/nanoxplore

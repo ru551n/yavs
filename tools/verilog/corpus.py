@@ -15,7 +15,7 @@
   check   run yavs and compare every file with the manifest (default); exit 0 as expected, 1 differences, 2 usage error
   bless   write the manifest from this run (then review the diff)
 
-The manifest tools/verilog/<source>.expected has one line per file: `OUTCOME LIB VIEW PATH [-I DIR]...`, paths relative to the
+The manifest tools/verilog/<source>.expected has one line per file: `OUTCOME LIB VIEW PATH [-I DIR | -D NAME]...`, paths relative to the
 root, in a fixed order. OUTCOME is PASS (no error) or the sorted error codes (EXIT<n> is a nonzero exit without an error
 diagnostic). An encrypted file is recorded at analysis (decision D8 of #776): exit 0 and one notice W4007 located in the file
 itself, written `PASS+W4007` (`PASS+W4007xN` for N notices); a W4007 for an encrypted file it includes does not count. E4001 is
@@ -179,6 +179,11 @@ def enum_vendor(root):
     return ents, findings
 
 
+# The four lattice models include cells_ff.vh twice (through common_sim.vh and directly); the models guard that with NO_INCLUDES
+# (maintainer, 2026-11-07), so the gate defines it for them. E4200 itself stays strict.
+CELLS_DEFS = {f"techlibs/lattice/cells_sim_{n}.v": ["NO_INCLUDES"] for n in ("ecp5", "xo2", "xo3", "xo3d")}
+
+
 def enum_cells(root):
     ents, findings = [], collections.defaultdict(list)
     index = collections.defaultdict(list)
@@ -187,7 +192,7 @@ def enum_cells(root):
     for p in sorted(root.glob("techlibs/**/*sim*.v")):
         t = rd(p)
         ents.append(dict(cat="cells", lib="work", view="default", path=str(p.relative_to(root)), want=classify(t) if classify(t) != ENC else "PASS",
-                         inc=[str(d.relative_to(root)) for d in include_dirs(root, p, index, t, {p}, findings)], batch=False))
+                         inc=[str(d.relative_to(root)) for d in include_dirs(root, p, index, t, {p}, findings)], defs=CELLS_DEFS.get(str(p.relative_to(root)), []), batch=False))
         if SV_STRONG.search(strip(t)):
             findings["SystemVerilog syntax (E4003 predicted)"].append(str(p.relative_to(root)))
     return ents, findings
@@ -200,7 +205,7 @@ SOURCES = {"vendor": (vendor_root, enum_vendor, "the AMD/Xilinx 2026.1 install w
 # ---- manifest
 
 def line(e, want):
-    return shlex.join([want, e["lib"], e["view"], e["path"]] + [x for d in e["inc"] for x in ("-I", d)])
+    return shlex.join([want, e["lib"], e["view"], e["path"]] + [x for d in e["inc"] for x in ("-I", d)] + [x for d in e.get("defs", []) for x in ("-D", d)])
 
 
 def read_manifest(path):
@@ -209,13 +214,14 @@ def read_manifest(path):
         if not ln.strip() or ln.startswith("#"):
             continue
         t = shlex.split(ln)
-        inc = [t[i + 1] for i in range(4, len(t), 2)]
-        ents.append(dict(want=t[0], lib=t[1], view=t[2], path=t[3], inc=inc, cat=None, batch=False))
+        inc = [t[i + 1] for i in range(4, len(t), 2) if t[i] == "-I"]
+        defs = [t[i + 1] for i in range(4, len(t), 2) if t[i] == "-D"]
+        ents.append(dict(want=t[0], lib=t[1], view=t[2], path=t[3], inc=inc, defs=defs, cat=None, batch=False))
     return ents
 
 
 def write_manifest(path, name, ents, wants):
-    head = f"# tools/verilog/corpus.py {name}: expected outcome per file, `OUTCOME LIB VIEW PATH [-I DIR]...`; paths only, no vendor content.\n"
+    head = f"# tools/verilog/corpus.py {name}: expected outcome per file, `OUTCOME LIB VIEW PATH [-I DIR | -D NAME]...`; paths only, no vendor content.\n"
     path.write_text(head + "".join(line(e, w) + "\n" for e, w in zip(ents, wants)))
 
 
@@ -231,7 +237,7 @@ def outcome(errs, rc, notices=0):
 def run_group(a, yavs, root, tmp, tag, ents):
     """Analyze the entries of one call; returns ({entry index: outcome}, warnings, text of a failed session or '')."""
     e0 = ents[0][1]
-    args = VIEWS[e0["view"]] + [x for d in e0["inc"] for x in ("-I", str(root / d))]
+    args = VIEWS[e0["view"]] + [x for d in e0["inc"] for x in ("-I", str(root / d))] + [x for d in e0.get("defs", []) for x in ("-D", d)]
     files = [root / e["path"] for _, e in ents]
     rc, diags, text = vcommon.analyze(yavs, os.path.join(tmp, tag), e0["lib"], args, files, root, not a.no_wrap)
     by = collections.defaultdict(list)
@@ -287,7 +293,7 @@ def main():
         vcommon.die("corpus.py", f"{manifest} missing; create it with `gen` or `bless`")
     bad = []
     if exp is not None and a.action == "check":  # the manifest must list exactly what the install holds
-        if [(e["lib"], e["view"], e["path"], e["inc"]) for e in exp] != [(e["lib"], e["view"], e["path"], e["inc"]) for e in ents]:
+        if [(e["lib"], e["view"], e["path"], e["inc"], e["defs"]) for e in exp] != [(e["lib"], e["view"], e["path"], e["inc"], e.get("defs", [])) for e in ents]:
             bad.append(f"the manifest lists other files than the install holds ({len(exp)} against {len(ents)}); run `gen` and review the diff")
     only = set(a.only.split(",")) if a.only else None
     sel = [(i, e) for i, e in enumerate(ents) if not only or e["cat"] in only]

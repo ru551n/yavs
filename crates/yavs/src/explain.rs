@@ -547,7 +547,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     // yavs-verilog: preprocessor and lexer (E4001-E4099)
     (
         "E4001",
-        "A Verilog file holds an encrypted (IEEE 1735 protected) envelope, `` `pragma protect begin_protected `` or the older `` `protect ``/`` `protected `` forms. yavs never decrypts protected IP, so the encoded block is not read. The module header before the envelope, if there is one, is recorded as an encrypted unit: the library analyses, and instantiating that unit is an error that names the instance. Simulate the vendor's unencrypted model instead, or the block with a tool that holds the vendor's key.",
+        "A design instantiates a Verilog module whose body is encrypted (an IEEE 1735 protected envelope, `` `pragma protect begin_protected `` or the older `` `protect `` forms), so it cannot be simulated. yavs never decrypts protected IP. Analysis records such a module by its name (warning `W4007`), so a library of vendor files analyses; the error comes when something instantiates it, and names the instance. Simulate the vendor's unencrypted model instead, or the block with a tool that holds the vendor's key.",
     ),
     (
         "E4002",
@@ -568,6 +568,10 @@ const EXPLAIN: &[(&str, &str)] = &[
     (
         "W4006",
         "A Verilog file has modules before any `` `timescale `` directive. yavs uses 1ns/1ps for them (set it with `--timescale UNIT/PRECISION`), because IEEE 1364-2005 leaves the choice to the tool and delays depend on it.",
+    ),
+    (
+        "W4007",
+        "A Verilog file holds an encrypted (IEEE 1735 protected) module body, `` `pragma protect begin_protected `` or the older `` `protect `` forms. yavs never decrypts protected IP, so it does not read the encoded block. The module is recorded by its name and ports, so a library of vendor files analyses; a design that instantiates it fails with `E4001`. One warning is given per file. Use `-Wno-W4007` to silence it.",
     ),
     (
         "E4500",

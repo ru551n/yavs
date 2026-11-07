@@ -14451,7 +14451,8 @@ into the existing layers (milestone M0).
 - **Range `E4000`-`E4999` / `W4000`-`W4999` belongs to Verilog.** `E4001`-`E4099` preprocessor and lexer,
   `E4100`-`E4199` parser, `E4200`-`E4499` module analysis, `E4500`-`E4699` Verilog elaboration (`E4500`: a
   design reaches Verilog, not implemented yet), `E4700`-`E4799` the VHDL/Verilog boundary. `E4002` (a `.sv`
-  file) is reported by the CLI, the rest by the front end. Rationale: one range per stage (rule 5).
+  file) is reported by the CLI, the rest by the front end. A protected (IEEE 1735) module is recorded at analysis
+  with warning `W4007`, one per file; `E4001` is the error on instantiating it (D8, maintainer, 2026-11-07). Rationale: one range per stage (rule 5).
 - **A Verilog unit's key keeps the case of its name** (`UnitKind::Module`, `UnitKind::Primitive`, manifest
   format 6); `Manifest::find_module` looks up exactly first, then by the one case-insensitive match, and two
   such units are ambiguous, never guessed (D5). A module and a VHDL primary unit may not share a name,

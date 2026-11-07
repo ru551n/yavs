@@ -47,9 +47,9 @@ share a name in one library, whatever the case (``L0035``).
 Protected IP
 ------------
 
-yavs never decrypts protected (IEEE 1735) Verilog. Such a file is reported with ``E4001``, and a
-module whose body is protected is recorded under its name, so a whole directory of vendor files
-analyzes; using it in a design is an error that names the instance.
+yavs never decrypts protected (IEEE 1735) Verilog. A file with a protected module body is analyzed
+with warning ``W4007`` (one per file), and the module is recorded under its name, so a whole directory
+of vendor files analyzes. Using the module in a design is error ``E4001``, which names the instance.
 
 SystemVerilog
 -------------

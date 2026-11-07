@@ -613,7 +613,7 @@ Verilog (E4 and W4)
    * - Code
      - Meaning
    * - _`E4001`
-     - A Verilog file holds an encrypted (IEEE 1735 protected) envelope, ```pragma protect begin_protected`` or the older ```protect``/```protected`` forms.
+     - A design instantiates a Verilog module whose body is encrypted (an IEEE 1735 protected envelope, ```pragma protect begin_protected`` or the older ```protect`` forms), so it cannot be simulated.
    * - _`E4002`
      - A file with the extension ``.sv`` or ``.svh`` was given.
    * - _`E4003`
@@ -624,6 +624,8 @@ Verilog (E4 and W4)
      - An ```include`` names a file that was not found.
    * - _`W4006`
      - A Verilog file has modules before any ```timescale`` directive.
+   * - _`W4007`
+     - A Verilog file holds an encrypted (IEEE 1735 protected) module body, ```pragma protect begin_protected`` or the older ```protect`` forms.
    * - _`E4500`
      - The design reaches Verilog: elaborating and simulating Verilog is not implemented.
 

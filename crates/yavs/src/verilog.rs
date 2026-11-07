@@ -192,28 +192,8 @@ impl Batch {
                 (Some(s), Some(j)) if s.file < nargs => s.file == j,
                 _ => i == self.first,
             })
-            .map(|d| {
-                let mut out = self.render(d);
-                // A protected file whose modules are all recorded by name is not an error: the
-                // library analyses, and instantiating a protected module is.
-                if d.code == "E4001" && self.protected(i) {
-                    out.severity = Severity::Note;
-                }
-                out
-            })
+            .map(|d| self.render(d))
             .collect()
-    }
-
-    /// File `i` has units and every one is protected.
-    fn protected(&self, i: usize) -> bool {
-        let j = self.at[i];
-        let mut units = self
-            .result
-            .units
-            .iter()
-            .filter(|u| Some(u.file) == j)
-            .peekable();
-        units.peek().is_some() && units.all(|u| u.encrypted)
     }
 
     /// The library records of the units of file `i`, with the state it was analysed under and the
@@ -334,7 +314,6 @@ mod tests {
             units: vec![unit("A", 0, false), unit("b", 1, true)],
             diagnostics: vec![
                 diag("E4003", Some(1)),
-                diag("E4001", Some(1)),
                 diag("E4005", Some(2)),
                 diag("E4004", None),
             ],
@@ -350,14 +329,7 @@ mod tests {
                 .map(|d| d.code)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(codes(2), ["E4003", "E4001"]);
-        // Every module of file b is protected: its envelope is a note, not an error.
-        let sev = batch
-            .diagnostics(2)
-            .iter()
-            .map(|d| d.severity)
-            .collect::<Vec<_>>();
-        assert_eq!(sev, [Severity::Error, Severity::Note]);
+        assert_eq!(codes(2), ["E4003"]);
         // No place, or a place in an included file: the first Verilog file.
         assert_eq!(codes(0), ["E4005", "E4004"]);
         let r = batch.records(0).unwrap();

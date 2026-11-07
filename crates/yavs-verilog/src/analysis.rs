@@ -288,6 +288,7 @@ fn item_exprs(it: &Item, f: &mut dyn FnMut(&Expr)) {
         }
         Item::ElabTask { args, .. } => args.iter().for_each(f),
         Item::Generate(v) => v.iter().for_each(|i| item_exprs(i, f)),
+        Item::GenBlock(b) => gen_body_exprs(b, f),
         Item::GenIf { cond, then, els } => {
             f(cond);
             gen_body_exprs(then, f);
@@ -385,6 +386,7 @@ fn collect_declared(items: &[Item], out: &mut HashSet<String>) {
                 t.body.iter().for_each(|s| collect_stmt(s, out));
             }
             Item::Generate(v) => collect_declared(v, out),
+            Item::GenBlock(b) => collect_body(b, out),
             Item::GenIf { then, els, .. } => {
                 collect_body(then, out);
                 els.iter().for_each(|b| collect_body(b, out));
@@ -456,6 +458,7 @@ pub(crate) fn has_timing_check(m: &Module) -> bool {
         items.iter().any(|i| match i {
             Item::Specify(v) => v.iter().any(|s| matches!(s, SpecItem::Check { .. })),
             Item::Generate(v) => walk(v),
+            Item::GenBlock(b) => walk(&b.items),
             Item::GenIf { then, els, .. } => {
                 walk(&then.items) || els.as_ref().is_some_and(|e| walk(&e.items))
             }
@@ -555,6 +558,8 @@ fn ports(cx: &mut Ctx, m: &Module) -> Vec<Port> {
             };
             let mut out = Vec::new();
             let mut listed: HashSet<String> = HashSet::new();
+            let (mut explicit, mut implicit): (HashSet<String>, HashSet<String>) =
+                Default::default();
             for p in list {
                 let mut first_ident: Option<Ident> = None;
                 let key: Option<Ident> = match (&p.name, &p.expr) {
@@ -570,14 +575,25 @@ fn ports(cx: &mut Ctx, m: &Module) -> Vec<Port> {
                     (None, None) => None,
                 };
                 let Some(key) = key else { continue };
-                if !listed.insert(key.name.clone()) && p.expr.is_none() {
-                    cx.diags.push(Diag::error(
-                        "E4202",
-                        format!("port `{}` is listed twice (clause 12.3)", key.name),
-                        cx.span(&key),
-                    ));
-                }
                 let ext = p.name.as_ref().unwrap_or(&key);
+                // Clause 12.3.2: one port definition per name. The same implicit port twice, `(a, a)`, is
+                // the legal example of 12.3.3 (the two ports are tied together).
+                if p.name.is_some() {
+                    if explicit.contains(&ext.name) || (p.explicit && implicit.contains(&ext.name))
+                    {
+                        cx.diags.push(Diag::error(
+                            "E4202",
+                            format!("port `{}` is defined twice (clause 12.3.2)", ext.name),
+                            cx.span(ext),
+                        ));
+                    }
+                    if p.explicit {
+                        explicit.insert(ext.name.clone());
+                    } else {
+                        implicit.insert(ext.name.clone());
+                    }
+                }
+                listed.insert(key.name.clone());
                 match decl.get(key.name.as_str()) {
                     Some((d, _)) => out.push(Port {
                         name: ext.name.clone(),
@@ -624,6 +640,7 @@ fn genvars(cx: &mut Ctx, m: &Module) {
                     decl.insert(i.name.clone());
                 }),
                 Item::Generate(v) => walk(v, decl, loops),
+                Item::GenBlock(b) => walk(&b.items, decl, loops),
                 Item::GenIf { then, els, .. } => {
                     walk(&then.items, decl, loops);
                     if let Some(e) = els {
@@ -655,60 +672,245 @@ fn genvars(cx: &mut Ctx, m: &Module) {
     }
 }
 
-fn dup_diag(cx: &Ctx, m: &Module, id: &Ident, what: &str) -> Diag {
+fn dup_diag(cx: &Ctx, id: &Ident, what: &str, scope: &str) -> Diag {
     Diag::error(
         "E4203",
-        format!(
-            "`{}` is already declared in module `{}`",
-            id.name, m.name.name
-        ),
+        format!("`{}` is already declared in {scope}", id.name),
         cx.span(id),
     )
     .label(format!("{what} declared again here"))
-    .note("a name is declared once per scope (clause 12.1.2)")
+    .note("a name is declared once per scope (clause 4.11)")
+}
+
+/// The names of one scope (clause 4.11) while its items are walked.
+struct Scope {
+    seen: HashSet<String>,
+    /// Port names declared by direction only: a task or function may declare the same name as `reg`.
+    ports: HashSet<String>,
+    name: String,
+    module: bool,
+}
+
+impl Scope {
+    fn new(name: String, module: bool) -> Scope {
+        Scope {
+            seen: HashSet::new(),
+            ports: HashSet::new(),
+            name,
+            module,
+        }
+    }
+    fn declare(&mut self, cx: &mut Ctx, id: &Ident, what: &str) {
+        if !self.module && self.ports.remove(&id.name) {
+            return;
+        }
+        if !self.seen.insert(id.name.clone()) {
+            cx.diags.push(dup_diag(cx, id, what, &self.name));
+        }
+    }
 }
 
 fn duplicates(cx: &mut Ctx, m: &Module) {
-    let mut seen: HashMap<String, ()> = HashMap::new();
-    let mut check = |cx: &mut Ctx, id: &Ident, what: &str| {
-        if seen.insert(id.name.clone(), ()).is_some() {
-            cx.diags.push(dup_diag(cx, m, id, what));
-        }
-    };
+    let mut sc = Scope::new(format!("module `{}`", m.name.name), true);
     for p in &m.params {
         for (i, _) in &p.assigns {
-            check(cx, i, "parameter");
+            sc.declare(cx, i, "parameter");
         }
     }
-    // Two ports of an ANSI header have different names. The body may repeat a port name to give it a
-    // type (`output o; reg o;`): the other tools accept it, so it is no duplicate here.
+    // Clause 12.3.4: two ports of an ANSI header have different names, and the body does not declare them again.
+    let mut header: HashSet<String> = HashSet::new();
     if let Ports::Ansi(v) = &m.ports {
-        let mut ports: HashSet<&str> = HashSet::new();
         for n in v.iter().flat_map(|d| &d.names) {
-            if !ports.insert(n.name.name.as_str()) {
-                cx.diags.push(dup_diag(cx, m, &n.name, "port"));
+            if !header.insert(n.name.name.clone()) {
+                cx.diags.push(dup_diag(cx, &n.name, "port", &sc.name));
             }
         }
     }
-    for it in &m.items {
+    scope_items(cx, m, &m.items, &mut sc, &header);
+}
+
+fn scope_items(cx: &mut Ctx, m: &Module, items: &[Item], sc: &mut Scope, header: &HashSet<String>) {
+    for it in items {
         match it {
-            Item::Net(n) => n.names.iter().for_each(|d| check(cx, &d.name, "net")),
-            Item::Var(v) => v.names.iter().for_each(|d| check(cx, &d.name, "variable")),
-            Item::Event(ds) => ds.iter().for_each(|d| check(cx, &d.name, "event")),
-            Item::Genvar(v) => v.iter().for_each(|i| check(cx, i, "genvar")),
-            Item::Param(p) => p
+            Item::Port(p) if !header.is_empty() => {
+                if let Some(n) = p.names.first() {
+                    cx.diags.push(
+                        Diag::error(
+                            "E4202",
+                            format!("`{}` is declared in the body of a module whose ports are declared in its header", n.name.name),
+                            cx.span(&n.name),
+                        )
+                        .note("a module has its ports in the header or in the body, not both (clause 12.3.4)"),
+                    );
+                }
+            }
+            Item::Port(p) => p.names.iter().for_each(|d| {
+                if !sc.module {
+                    sc.ports.insert(d.name.name.clone());
+                    sc.seen.insert(d.name.name.clone());
+                }
+            }),
+            Item::Net(n) => declare_all(cx, &n.names, "net", sc, header),
+            Item::Var(v) => declare_all(cx, &v.names, "variable", sc, header),
+            Item::Event(ds) => declare_all(cx, ds, "event", sc, header),
+            Item::Genvar(v) => v.iter().for_each(|i| sc.declare(cx, i, "genvar")),
+            Item::Param(p) if !p.spec || sc.module => p
                 .assigns
                 .iter()
-                .for_each(|(i, _)| check(cx, i, "parameter")),
-            Item::Task(t) => check(cx, &t.name, "task"),
-            Item::Function(t) => check(cx, &t.name, "function"),
+                .for_each(|(i, _)| sc.declare(cx, i, "parameter")),
+            Item::Param(_) => {}
+            Item::Task(t) => {
+                sc.declare(cx, &t.name, "task");
+                let mut ts = Scope::new(format!("task `{}`", t.name.name), false);
+                scope_items(cx, m, &t.decls, &mut ts, &HashSet::new());
+                t.body.iter().for_each(|s| scope_stmt(cx, m, s, &mut ts));
+            }
+            Item::Function(f) => {
+                sc.declare(cx, &f.name, "function");
+                // The function's own name is declared inside it (clause 10.4.2).
+                let mut fs = Scope::new(format!("function `{}`", f.name.name), false);
+                fs.seen.insert(f.name.name.clone());
+                scope_items(cx, m, &f.decls, &mut fs, &HashSet::new());
+                f.body.iter().for_each(|s| scope_stmt(cx, m, s, &mut fs));
+            }
             Item::Inst(mi) => mi
                 .insts
                 .iter()
                 .filter_map(|i| i.name.as_ref())
-                .for_each(|i| check(cx, i, "instance")),
-            _ => {}
+                .for_each(|i| sc.declare(cx, i, "instance")),
+            Item::Gate(g) => g
+                .insts
+                .iter()
+                .filter_map(|i| i.name.as_ref())
+                .for_each(|i| sc.declare(cx, i, "instance")),
+            Item::Always(s) | Item::Initial(s) => scope_stmt(cx, m, s, sc),
+            Item::Generate(v) => scope_items(cx, m, v, sc, header),
+            Item::GenBlock(b) => {
+                if let Some(l) = &b.label {
+                    sc.declare(cx, l, "generate block");
+                }
+                let mut bs = Scope::new("this generate block".into(), false);
+                scope_items(cx, m, &b.items, &mut bs, &HashSet::new());
+            }
+            Item::GenIf { .. } | Item::GenCase { .. } => {
+                // Clause 12.4.2: the blocks of one conditional construct, nested ones included, may share a name.
+                let (mut labels, mut bodies): (Vec<&Ident>, Vec<&GenBody>) =
+                    (Vec::new(), Vec::new());
+                conditional_blocks(it, &mut labels, &mut bodies);
+                let mut once: HashSet<&str> = HashSet::new();
+                for l in labels.into_iter().filter(|l| once.insert(l.name.as_str())) {
+                    sc.declare(cx, l, "generate block");
+                }
+                for b in bodies {
+                    let mut bs = Scope::new("this generate block".into(), false);
+                    scope_items(cx, m, &b.items, &mut bs, &HashSet::new());
+                }
+            }
+            Item::GenFor { body, .. } => {
+                if let Some(l) = &body.label {
+                    sc.declare(cx, l, "generate block");
+                }
+                let mut bs = Scope::new("this generate block".into(), false);
+                scope_items(cx, m, &body.items, &mut bs, &HashSet::new());
+            }
+            Item::Specify(v) => {
+                let mut ss = Scope::new("this specify block".into(), false);
+                for s in v {
+                    if let SpecItem::Param(p) = s {
+                        p.assigns
+                            .iter()
+                            .for_each(|(i, _)| ss.declare(cx, i, "specparam"));
+                    }
+                }
+            }
+            Item::Assign(_) | Item::Defparam(_) | Item::ElabTask { .. } => {}
         }
+    }
+}
+
+fn declare_all(
+    cx: &mut Ctx,
+    ds: &[Declarator],
+    what: &str,
+    sc: &mut Scope,
+    header: &HashSet<String>,
+) {
+    for d in ds {
+        if sc.module && header.contains(&d.name.name) {
+            cx.diags.push(
+                Diag::error(
+                    "E4203",
+                    format!("`{}` is a port declared in the module header, it is not declared again in the body", d.name.name),
+                    cx.span(&d.name),
+                )
+                .note("ports declared in the header are not redeclared in the body of the module (clauses 12.1 and 12.3.4)"),
+            );
+        } else {
+            sc.declare(cx, &d.name, what);
+        }
+    }
+}
+
+/// The block labels and bodies of a conditional generate construct and the conditionals directly nested in it.
+fn conditional_blocks<'a>(
+    it: &'a Item,
+    labels: &mut Vec<&'a Ident>,
+    bodies: &mut Vec<&'a GenBody>,
+) {
+    let mut one = |b: &'a GenBody| {
+        if let Some(l) = &b.label {
+            labels.push(l);
+            bodies.push(b);
+        } else if let [nested @ (Item::GenIf { .. } | Item::GenCase { .. })] = &b.items[..] {
+            conditional_blocks(nested, labels, bodies);
+        } else {
+            bodies.push(b);
+        }
+    };
+    match it {
+        Item::GenIf { then, els, .. } => {
+            one(then);
+            if let Some(e) = els {
+                one(e);
+            }
+        }
+        Item::GenCase { items, .. } => items.iter().for_each(|(_, b)| one(b)),
+        _ => {}
+    }
+}
+
+fn scope_stmt(cx: &mut Ctx, m: &Module, s: &Stmt, sc: &mut Scope) {
+    match s {
+        Stmt::Block {
+            label,
+            decls,
+            stmts,
+            ..
+        } => {
+            if let Some(l) = label {
+                sc.declare(cx, l, "block");
+                let mut bs = Scope::new(format!("block `{}`", l.name), false);
+                scope_items(cx, m, decls, &mut bs, &HashSet::new());
+                stmts.iter().for_each(|s| scope_stmt(cx, m, s, &mut bs));
+            } else {
+                stmts.iter().for_each(|s| scope_stmt(cx, m, s, sc));
+            }
+        }
+        Stmt::If { then, els, .. } => {
+            scope_stmt(cx, m, then, sc);
+            if let Some(e) = els {
+                scope_stmt(cx, m, e, sc);
+            }
+        }
+        Stmt::Case { items, .. } => items.iter().for_each(|i| scope_stmt(cx, m, &i.stmt, sc)),
+        Stmt::For { body, .. }
+        | Stmt::While { body, .. }
+        | Stmt::Repeat { body, .. }
+        | Stmt::Wait { body, .. }
+        | Stmt::Delay { body, .. }
+        | Stmt::Event { body, .. } => scope_stmt(cx, m, body, sc),
+        Stmt::Forever(b) => scope_stmt(cx, m, b, sc),
+        _ => {}
     }
 }
 

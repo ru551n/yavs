@@ -1,4 +1,4 @@
-// LRM 28: an envelope opened by `pragma protect begin_protected hides its body: the module is recorded, one W4007 per file
+// LRM 28.4.3: an envelope opened by `pragma protect begin_protected hides its body: the module is recorded, one W4007 per file
 // units: m
 // expect: W4007 6:1 encrypted module body
 `timescale 1ns/1ps

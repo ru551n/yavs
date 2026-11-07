@@ -54,9 +54,21 @@ pub(crate) struct Macro {
     body: Vec<u8>,
 }
 
+/// The reserved-word set of `` `begin_keywords `` (clause 19.11).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum KwSet {
+    #[default]
+    V2005,
+    V2001,
+    V2001NoConfig,
+    V1995,
+}
+
 /// What persists from one file to the next of one analysis.
 #[derive(Clone, Debug)]
 pub(crate) struct State {
+    /// Open `` `begin_keywords `` regions, innermost last, with the directive's place.
+    pub keywords: Vec<(KwSet, Span)>,
     pub macros: HashMap<String, Macro>,
     pub timescale: Option<Timescale>,
     pub nettype: Nettype,
@@ -77,6 +89,7 @@ impl State {
         }
         State {
             macros,
+            keywords: Vec::new(),
             timescale: None,
             nettype: Nettype::Wire,
             celldefine: false,
@@ -107,6 +120,13 @@ impl State {
         }
         feed(format!("{:?}", self.timescale).as_bytes());
         feed(format!("{:?}", self.nettype).as_bytes());
+        feed(
+            format!(
+                "{:?}",
+                self.keywords.iter().map(|k| k.0).collect::<Vec<_>>()
+            )
+            .as_bytes(),
+        );
         feed(&[self.celldefine as u8]);
         // What else decides how a file reads: the default timescale and where includes are searched.
         feed(format!("{:?}", opts.default_timescale).as_bytes());
@@ -122,6 +142,7 @@ pub(crate) enum Event {
     Timescale(Option<Timescale>),
     Nettype(Nettype),
     CellDefine(bool),
+    Keywords(KwSet),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -151,6 +172,8 @@ pub(crate) struct Pre {
     pub includes: Vec<PathBuf>,
     pub diags: Vec<Diag>,
     pub envelopes: Vec<Envelope>,
+    /// The keyword set in force at the start of the text.
+    pub kw_in: KwSet,
 }
 
 impl Pre {
@@ -203,6 +226,7 @@ impl Pre {
                 Event::Timescale(x) => t = *x,
                 Event::Nettype(x) => n = *x,
                 Event::CellDefine(x) => c = *x,
+                Event::Keywords(_) => {}
             }
         }
         (t, n, c)
@@ -271,11 +295,35 @@ pub(crate) fn preprocess(
         out: Pre::default(),
         blown: false,
     };
+    pp.out.kw_in = pp.st.keywords.last().map_or(KwSet::V2005, |k| k.0);
     let mut cond = Cond::default();
     pp.process(src, Origin::File(file), &mut cond, 0);
     pp.end_cond(&mut cond);
     pp.out
 }
+
+/// The compiler directives of clause 19.
+const DIRECTIVES: &[&str] = &[
+    "begin_keywords",
+    "celldefine",
+    "default_nettype",
+    "define",
+    "else",
+    "elsif",
+    "end_keywords",
+    "endcelldefine",
+    "endif",
+    "ifdef",
+    "ifndef",
+    "include",
+    "line",
+    "nounconnected_drive",
+    "pragma",
+    "resetall",
+    "timescale",
+    "unconnected_drive",
+    "undef",
+];
 
 fn is_id_start(c: u8) -> bool {
     c.is_ascii_alphabetic() || c == b'_'
@@ -512,6 +560,9 @@ impl Pp<'_> {
             }
             b"elsif" => {
                 let (arg, end) = self.word_arg(b, ne);
+                if arg.is_none() && cond.frames.last().is_some_and(|f| f.parent_active) {
+                    self.err("E4009", "`elsif needs a macro name".into(), span);
+                }
                 let defined = arg.as_ref().is_some_and(|a| self.st.macros.contains_key(a));
                 match cond.frames.last_mut() {
                     Some(f) if !f.saw_else => {
@@ -608,23 +659,94 @@ impl Pp<'_> {
                 self.event(Event::CellDefine(false));
                 ne
             }
-            b"line" | b"unconnected_drive" | b"nounconnected_drive" => line_end(b, ne),
+            b"nounconnected_drive" => line_end(b, ne),
+            b"unconnected_drive" => {
+                let e = line_end(b, ne);
+                if !matches!(
+                    text(&b[ne..e]).split("//").next().map(str::trim),
+                    Some("pull0" | "pull1")
+                ) {
+                    self.err(
+                        "E4009",
+                        "`unconnected_drive needs `pull0` or `pull1`".into(),
+                        origin.span(at, e),
+                    );
+                }
+                e
+            }
+            b"line" => {
+                let e = line_end(b, ne);
+                let arg = text(&b[ne..e]);
+                // Clause 19.7: `line number "filename" level, all three, nothing else on the line.
+                let w: Vec<&str> = arg.split_whitespace().collect();
+                let ok = w.len() == 3
+                    && w[0].parse::<u64>().is_ok_and(|n| n > 0)
+                    && w[1].len() >= 2
+                    && w[1].starts_with('"')
+                    && w[1].ends_with('"')
+                    && matches!(w[2], "0" | "1" | "2");
+                if !ok {
+                    self.err(
+                        "E4009",
+                        "`line needs a positive number, a \"file name\" and a level 0, 1 or 2, and nothing else on the line".into(),
+                        origin.span(at, e),
+                    );
+                }
+                e
+            }
             b"begin_keywords" => {
                 let e = line_end(b, ne);
                 let arg = text(&b[ne..e]);
-                if arg.contains("1800") {
-                    self.out.diags.push(
+                let spec = arg
+                    .trim()
+                    .strip_prefix('"')
+                    .and_then(|r| r.split_once('"'))
+                    .map(|(v, _)| v);
+                let set = match spec {
+                    Some("1364-2005") => Some(KwSet::V2005),
+                    Some("1364-2001") => Some(KwSet::V2001),
+                    Some("1364-2001-noconfig") => Some(KwSet::V2001NoConfig),
+                    Some("1364-1995") => Some(KwSet::V1995),
+                    _ => None,
+                };
+                match set {
+                    Some(k) => {
+                        self.st.keywords.push((k, span));
+                        self.event(Event::Keywords(k));
+                    }
+                    None if arg.contains("1800") => self.out.diags.push(
                         Diag::error(
                             "E4003",
                             "SystemVerilog keyword set selected by `begin_keywords",
                             span,
                         )
                         .note(format!("selected: {}", arg.trim())),
+                    ),
+                    None => {
+                        // keep the pair balanced: the matching `end_keywords is not a second error
+                        let cur = self.st.keywords.last().map_or(KwSet::V2005, |k| k.0);
+                        self.st.keywords.push((cur, span));
+                        self.err(
+                        "E4009",
+                        "`begin_keywords needs \"1364-1995\", \"1364-2001\", \"1364-2001-noconfig\" or \"1364-2005\"".into(),
+                        span,
                     );
+                    }
                 }
                 e
             }
-            b"end_keywords" => ne,
+            b"end_keywords" => {
+                if self.st.keywords.pop().is_none() {
+                    self.err(
+                        "E4004",
+                        "`end_keywords without a `begin_keywords".into(),
+                        span,
+                    );
+                }
+                let k = self.st.keywords.last().map_or(KwSet::V2005, |k| k.0);
+                self.event(Event::Keywords(k));
+                ne
+            }
             b"pragma" => self.pragma(b, at, ne, origin),
             b"protect" => self.envelope(b, at, ne, origin, b"`endprotect"),
             b"protected" => self.envelope(b, at, ne, origin, b"`endprotected"),
@@ -698,6 +820,14 @@ impl Pp<'_> {
             return self.define_body_end(b, ne);
         }
         let name = text(&b[s..e]);
+        if DIRECTIVES.contains(&name.as_str()) {
+            self.err(
+                "E4008",
+                format!("`{name} is a compiler directive, it cannot be redefined as a macro (clause 19.3.1)"),
+                origin.span(s, e),
+            );
+            return self.define_body_end(b, e);
+        }
         let mut i = e;
         let mut params = None;
         if i < n && b[i] == b'(' {
@@ -828,6 +958,17 @@ impl Pp<'_> {
         // Written in the source itself: the directive ends at the closing quote.
         let after = if after == 0 { s + len + 2 } else { after };
         let span = origin.span(at, after);
+        // Clause 19.5: only white space or a comment may follow on the line.
+        let rest = text(&b[after.min(b.len())..line_end(b, after.min(b.len()))]);
+        let rest = rest.trim();
+        if !(rest.is_empty() || rest.starts_with("//") || rest.starts_with("/*")) {
+            self.err(
+                "E4009",
+                "only white space or a comment may follow `include on its line (clause 19.5)"
+                    .into(),
+                span,
+            );
+        }
         if depth >= MAX_DEPTH {
             self.err("E4011", "`include nested too deeply".into(), span);
             return after;
@@ -955,6 +1096,13 @@ impl Pp<'_> {
         let line = text(&b[ne..le]);
         let mut w = line.split(|c: char| c.is_whitespace() || c == '=' || c == '(');
         let first = w.find(|s| !s.is_empty());
+        if first.is_none_or(|f| f.starts_with("//")) {
+            self.err(
+                "E4009",
+                "`pragma needs a pragma name".into(),
+                origin.span(at, le),
+            );
+        }
         if first == Some("protect") {
             let second = w.find(|s| !s.is_empty());
             match second {

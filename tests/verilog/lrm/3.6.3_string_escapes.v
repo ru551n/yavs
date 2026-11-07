@@ -1,4 +1,4 @@
-// LRM 3.6.3: a string may hold the escapes \n \t \\ \" \ddd and %%
+// LRM 3.6.3: a string may hold the escapes \n \t \\ \" and \ddd (1 to 3 octal digits)
 // units: m
 // expect: none
 `timescale 1ns/1ps

@@ -1,4 +1,4 @@
-// LRM 17.11: math and conversion functions; $clog2 is new in 1364-2005
+// LRM 17.11: the integer and real math functions ($clog2, $sqrt, ...) and the conversion functions of 17.8 ($rtoi, $itor, $realtobits, $bitstoreal)
 // units: m
 // expect: none
 `timescale 1ns/1ps

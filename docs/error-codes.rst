@@ -629,9 +629,9 @@ Verilog (E4 and W4)
    * - _`W4007`
      - A Verilog file holds an encrypted (IEEE 1735 protected) module body, ```pragma protect begin_protected`` or the older ```protect`` forms.
    * - _`E4008`
-     - A ```define`` has no name or a bad formal argument list, or a macro call has the wrong number of arguments or an unterminated argument list.
+     - A ```define`` has no name, names a compiler directive (clause 19.3.1) or has a bad formal argument list, or a macro call has the wrong number of arguments or an unterminated argument list.
    * - _`E4009`
-     - A compiler directive has an operand that is missing or not valid, for example ```timescale 3ns/1ps`` (the magnitude must be 1, 10 or 100) or a ```default_nettype`` that is not a net type.
+     - A compiler directive has an operand that is missing or not valid, for example ```timescale 3ns/1ps`` (the magnitude must be 1, 10 or 100) a ```default_nettype`` that is not a net type, a ```line`` without its number, file name and level, a ```begin_keywords`` with an unknown version, or text after an ```include`` on its line.
    * - _`W4009`
      - A ```pragma protect begin`` / ```pragma protect end`` pair marks plaintext that a tool was to encrypt.
    * - _`E4010`
@@ -647,15 +647,15 @@ Verilog (E4 and W4)
    * - _`E4100`
      - The source does not match the grammar of IEEE 1364-2005 at this point.
    * - _`E4101`
-     - The construct is legal 1364-2005 but outside what yavs reads, named in the message (for example config blocks and macromodule).
+     - The construct is legal 1364-2005 but outside what yavs reads, named in the message (for example config blocks).
    * - _`E4200`
      - Two modules or primitives with the same name are declared in the files of one analysis.
    * - _`E4201`
      - An identifier is used in an expression but declared nowhere in the module, and ```default_nettype none`` is in force, so no implicit net is created (clause 4.5).
    * - _`E4202`
-     - A port of a module header with a non-ANSI port list has no direction declaration in the body, or a body declaration names a port the header does not list, a port is declared or listed twice, or an input or inout port is declared ``reg`` (clause 12.3).
+     - A port of a module header with a non-ANSI port list has no direction declaration in the body, or a body declaration names a port the header does not list, a port is declared twice or defined twice by name, an input or inout port is declared ``reg`` (clause 12.3), or a module that declares its ports in the header declares one in the body (clause 12.3.4).
    * - _`E4203`
-     - A name is declared twice in the same module scope (clause 12.1.2).
+     - A name is declared twice in the same scope: a module, task, function, named block, generate block or specify block (clause 4.11), or a port of the module header is declared again in the body (clause 12.3.4).
    * - _`E4204`
      - The variable of a generate ``for`` loop is declared with ``genvar`` (clause 12.4.1).
    * - _`E4500`

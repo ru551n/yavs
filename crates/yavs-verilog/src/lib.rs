@@ -184,6 +184,17 @@ pub fn analyze(files: &[PathBuf], opts: &Options) -> AnalysisResult {
         }
     }
     let _ = &names;
+    // Clause 19.11: each `begin_keywords has its `end_keywords, possibly in a later file.
+    if res.stopped_at.is_none() {
+        for (_, span) in &st.keywords {
+            res.diagnostics.push(Diag::error(
+                "E4004",
+                "`begin_keywords without a matching `end_keywords",
+                *span,
+            ));
+            res.diag_file.push(span.file);
+        }
+    }
     // A diagnostic at the end of a file (an unexpected end) points at the empty range there, never past it.
     for d in &mut res.diagnostics {
         if let Some(s) = d.span.as_mut()

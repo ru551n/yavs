@@ -2,7 +2,7 @@
 
 use crate::Diag;
 use crate::ast::*;
-use crate::lex::K;
+use crate::lex::{K, Tok};
 use crate::parse::{Parser, R};
 
 fn binop(s: &str) -> Option<(&'static str, u8)> {
@@ -169,19 +169,36 @@ impl Parser<'_> {
             }
             K::P if t.s == "{" => {
                 self.bump();
+                let at = self.peek();
                 let first = self.expr()?;
                 if self.eat_p("{") {
-                    let mut v = vec![self.expr()?];
-                    while self.eat_p(",") {
+                    if matches!(&first, Expr::Num(n) if has_xz(n)) {
+                        self.push(Diag::error(
+                            "E4100",
+                            "a replication constant is not x or z (clause 5.1.14)",
+                            self.span(at),
+                        ));
+                        return Err(());
+                    }
+                    let mut v = Vec::new();
+                    loop {
+                        let at = self.peek();
                         v.push(self.expr()?);
+                        self.sized(&v[v.len() - 1], at)?;
+                        if !self.eat_p(",") {
+                            break;
+                        }
                     }
                     self.expect_p("}")?;
                     self.expect_p("}")?;
                     return Ok(Expr::Repl(Box::new(first), v));
                 }
+                self.sized(&first, at)?;
                 let mut v = vec![first];
                 while self.eat_p(",") {
+                    let at = self.peek();
                     v.push(self.expr()?);
+                    self.sized(&v[v.len() - 1], at)?;
                 }
                 self.expect_p("}")?;
                 Ok(Expr::Concat(v))
@@ -191,6 +208,27 @@ impl Parser<'_> {
                 Err(())
             }
         }
+    }
+
+    /// Clause 5.1.14: an unsized constant has no place in a concatenation.
+    fn sized(&mut self, e: &Expr, at: Tok) -> R<()> {
+        let n = match e {
+            Expr::Num(n) => n,
+            Expr::Unary("-" | "+", x) => match &**x {
+                Expr::Num(n) => n,
+                _ => return Ok(()),
+            },
+            _ => return Ok(()),
+        };
+        if n.trim_start().starts_with('\'') || !n.contains('\'') {
+            self.push(Diag::error(
+                "E4100",
+                "an unsized constant has no place in a concatenation (clause 5.1.14)",
+                self.span(at),
+            ));
+            return Err(());
+        }
+        Ok(())
     }
 
     /// Call arguments up to (not including) `)`: an empty slot is `Expr::Empty`.
@@ -224,7 +262,12 @@ impl Parser<'_> {
                 e = Expr::Dot(Box::new(e), self.ident()?);
             } else if self.p("[") {
                 e = self.selects(e)?;
-            } else if call && self.p("(") && matches!(e, Expr::Ident(_) | Expr::Dot(..)) {
+            } else if call
+                && (self.p("(") || (self.p("(*") && self.p_at(self.attrs_len(), "(")))
+                && matches!(e, Expr::Ident(_) | Expr::Dot(..))
+            {
+                // Clause 3.8.1: an attribute instance may stand between a function name and its arguments.
+                self.attrs()?;
                 self.bump();
                 let a = self.args()?;
                 self.expect_p(")")?;
@@ -261,7 +304,17 @@ impl Parser<'_> {
     /// An assignment target or a task name: a name with selects, or a concatenation.
     pub(crate) fn lvalue(&mut self) -> R<Expr> {
         if self.p("{") {
-            return self.primary();
+            let at = self.peek();
+            let e = self.primary()?;
+            if has_repl(&e) {
+                self.push(Diag::error(
+                    "E4100",
+                    "a replication is not a target of an assignment (clause 5.1.14)",
+                    self.span(at),
+                ));
+                return Err(());
+            }
+            return Ok(e);
         }
         let id = self.ident()?;
         self.postfix(Expr::Ident(id), false)
@@ -276,9 +329,30 @@ impl Parser<'_> {
         r
     }
 
+    /// Clause 10.4.4: what a function body does not contain.
+    fn not_in_func(&mut self, at: Tok, what: &str) -> R<()> {
+        if self.in_func {
+            self.push(Diag::error(
+                "E4100",
+                format!("a function has no {what} (clause 10.4.4)"),
+                self.span(at),
+            ));
+            return Err(());
+        }
+        Ok(())
+    }
+
     fn stmt_inner(&mut self) -> R<Stmt> {
         self.attrs()?;
         let t = self.peek();
+        match (t.k, t.s) {
+            (K::Kw, "wait") | (K::P, "#" | "@") => self.not_in_func(t, "timing control")?,
+            (K::P, "->") => self.not_in_func(t, "event trigger")?,
+            (K::Kw, "assign" | "force" | "deassign" | "release") => {
+                self.not_in_func(t, "procedural continuous assignment")?
+            }
+            _ => {}
+        }
         match (t.k, t.s) {
             (K::P, ";") => {
                 self.bump();
@@ -329,6 +403,9 @@ impl Parser<'_> {
                         exprs,
                         stmt: self.stmt()?,
                     });
+                }
+                if items.is_empty() {
+                    return self.fail("a case item");
                 }
                 self.bump();
                 Ok(Stmt::Case {
@@ -421,6 +498,9 @@ impl Parser<'_> {
             (K::Kw, "assign" | "force") => {
                 self.bump();
                 let lhs = self.lvalue()?;
+                if t.s == "assign" && !plain_target(&lhs) {
+                    return self.proc_target(t);
+                }
                 self.expect_p("=")?;
                 let rhs = Some(self.expr()?);
                 self.expect_p(";")?;
@@ -433,6 +513,9 @@ impl Parser<'_> {
             (K::Kw, "deassign" | "release") => {
                 self.bump();
                 let lhs = self.lvalue()?;
+                if t.s == "deassign" && !plain_target(&lhs) {
+                    return self.proc_target(t);
+                }
                 self.expect_p(";")?;
                 Ok(Stmt::ProcAssign {
                     kind: t.s,
@@ -464,7 +547,14 @@ impl Parser<'_> {
                 let n = self.peek();
                 if n.k == K::P && (n.s == "=" || n.s == "<=") {
                     self.bump();
+                    if n.s == "<=" {
+                        self.not_in_func(n, "nonblocking assignment")?;
+                    }
+                    let ctrl_at = self.peek();
                     let ctrl = self.intra_ctrl()?;
+                    if ctrl.is_some() {
+                        self.not_in_func(ctrl_at, "timing control")?;
+                    }
                     let rhs = self.expr()?;
                     self.expect_p(";")?;
                     return Ok(Stmt::Assign {
@@ -476,11 +566,22 @@ impl Parser<'_> {
                 }
                 if matches!(lhs, Expr::Ident(_) | Expr::Dot(..)) {
                     let mut args = Vec::new();
+                    let open = self.peek();
                     if self.eat_p("(") {
                         args = self.args()?;
                         self.expect_p(")")?;
+                        // Clause 10.2.2: no empty list and no null argument in a task enable.
+                        if args.is_empty() || args.iter().any(|a| matches!(a, Expr::Empty)) {
+                            self.push(Diag::error(
+                                "E4100",
+                                "a task enable gives an expression for every argument and has no parentheses without arguments (clause 10.2.2)",
+                                self.span(open),
+                            ));
+                            return Err(());
+                        }
                     }
                     if self.p(";") {
+                        self.not_in_func(t, "task enable")?;
                         self.bump();
                         return Ok(Stmt::TaskCall { name: lhs, args });
                     }
@@ -492,6 +593,18 @@ impl Parser<'_> {
                 Err(())
             }
         }
+    }
+
+    fn proc_target<T>(&mut self, at: Tok) -> R<T> {
+        self.push(Diag::error(
+            "E4100",
+            format!(
+                "the target of `{}` is a variable or a concatenation of variables, not a bit-select, part-select or array element (clause 9.3)",
+                at.s
+            ),
+            self.span(at),
+        ));
+        Err(())
     }
 
     fn intra_ctrl(&mut self) -> R<Option<Ctrl>> {
@@ -563,7 +676,23 @@ impl Parser<'_> {
             label = Some(self.ident()?);
         }
         let mut decls = Vec::new();
-        while self.block_decl(&mut decls)? {}
+        let decl_at = self.peek_at(self.attrs_len());
+        while self.block_decl(&mut decls, false)? {}
+        // Clauses 9.8.1 and 9.8.2: only a named block has declarations.
+        if label.is_none() && !decls.is_empty() {
+            self.push(
+                Diag::error(
+                    "E4100",
+                    format!(
+                        "a `{}` block with declarations has a name (clause 9.8.1)",
+                        open.s
+                    ),
+                    self.span(decl_at),
+                )
+                .help(format!("write `{} : name`", open.s)),
+            );
+            return Err(());
+        }
         let mut stmts = Vec::new();
         loop {
             let t = self.peek();
@@ -606,5 +735,28 @@ impl Parser<'_> {
             decls,
             stmts,
         })
+    }
+}
+
+/// A constant has an x, z or ? digit (after its base).
+fn has_xz(n: &str) -> bool {
+    n.split_once('\'')
+        .is_some_and(|(_, d)| d.chars().any(|c| matches!(c, 'x' | 'X' | 'z' | 'Z' | '?')))
+}
+
+fn has_repl(e: &Expr) -> bool {
+    match e {
+        Expr::Repl(..) => true,
+        Expr::Concat(v) => v.iter().any(has_repl),
+        _ => false,
+    }
+}
+
+/// A name, or a concatenation of names.
+fn plain_target(e: &Expr) -> bool {
+    match e {
+        Expr::Ident(_) | Expr::Dot(..) => true,
+        Expr::Concat(v) => v.iter().all(plain_target),
+        _ => false,
     }
 }

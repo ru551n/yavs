@@ -1,11 +1,11 @@
-// LRM 4.11: a name is declared once in a task scope (known gap G2: duplicates inside task, function and block scopes are not checked)
-// units: m
-// gap: G2 duplicate declarations are checked at module level only
-// expect: none
+// LRM 4.11: a name is declared once in the name space of a task
+// expect: E4203 8:13 declared twice
 `timescale 1ns/1ps
 module m;
   task t;
     input a;
-    reg a;
+    reg r;
+    integer r;
+    begin end
   endtask
 endmodule

@@ -70,7 +70,7 @@ pub(crate) const TABLE: &[CodeInfo] = &[
         "E4004",
         "unbalanced conditional compilation",
         "A `` `ifdef ``, `` `ifndef ``, `` `elsif ``, `` `else `` or `` `endif `` does not match: a missing `` `endif `` at the end of the file, an `` `else `` or `` `endif `` without an opening `` `ifdef ``, \
-         or an `` `elsif ``/`` `else `` after an `` `else ``. The conditional must start and end in the same file."
+         or an `` `elsif ``/`` `else `` after an `` `else ``. The conditional must start and end in the same file. The same code covers a `` `begin_keywords `` that nothing closes and an `` `end_keywords `` that closes nothing (clause 19.11)."
     ),
     code!(
         "E4005",
@@ -81,7 +81,7 @@ pub(crate) const TABLE: &[CodeInfo] = &[
         "W4006",
         "no timescale in force",
         "The module has no `` `timescale `` directive before it and none came from an earlier file, so the default (1ns/1ps, or --timescale) applies. \
-         IEEE 1364-2005 leaves this to the tool, and delays in the module scale with the default."
+         IEEE 1364-2005 (19.8) leaves the time unit of such a module to the tool and calls a design in which only some modules have a timescale an error; yavs warns. Delays in the module scale with the default."
     ),
     code!(
         "E4007",
@@ -96,13 +96,13 @@ pub(crate) const TABLE: &[CodeInfo] = &[
     code!(
         "E4008",
         "macro definition or call is malformed",
-        "A `` `define `` has no name or a bad formal argument list, or a macro call has the wrong number of arguments or an unterminated argument list."
+        "A `` `define `` has no name, names a compiler directive (clause 19.3.1) or has a bad formal argument list, or a macro call has the wrong number of arguments or an unterminated argument list."
     ),
     code!(
         "E4009",
         "malformed compiler directive",
         "A compiler directive has an operand that is missing or not valid, for example `` `timescale 3ns/1ps `` (the magnitude must be 1, 10 or 100) \
-         or a `` `default_nettype `` that is not a net type."
+         a `` `default_nettype `` that is not a net type, a `` `line `` without its number, file name and level, a `` `begin_keywords `` with an unknown version, or text after an `` `include `` on its line."
     ),
     code!(
         "E4010",
@@ -142,7 +142,7 @@ pub(crate) const TABLE: &[CodeInfo] = &[
     code!(
         "E4101",
         "unsupported Verilog construct",
-        "The construct is legal 1364-2005 but outside what yavs reads, named in the message (for example config blocks and macromodule)."
+        "The construct is legal 1364-2005 but outside what yavs reads, named in the message (for example config blocks)."
     ),
     code!(
         "E4200",
@@ -158,12 +158,12 @@ pub(crate) const TABLE: &[CodeInfo] = &[
         "E4202",
         "port declaration mismatch",
         "A port of a module header with a non-ANSI port list has no direction declaration in the body, or a body declaration names a port the header does not list, \
-         a port is declared or listed twice, or an input or inout port is declared `reg` (clause 12.3)."
+         a port is declared twice or defined twice by name, an input or inout port is declared `reg` (clause 12.3), or a module that declares its ports in the header declares one in the body (clause 12.3.4)."
     ),
     code!(
         "E4203",
         "duplicate declaration",
-        "A name is declared twice in the same module scope (clause 12.1.2)."
+        "A name is declared twice in the same scope: a module, task, function, named block, generate block or specify block (clause 4.11), or a port of the module header is declared again in the body (clause 12.3.4)."
     ),
     code!(
         "E4204",

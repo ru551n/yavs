@@ -1,7 +1,8 @@
 `timescale 1ns / 1ps
 // trireg, wand and wor parse and analyse; they are refused when a design reaches them.
 module unsupported_nettypes (input a, b, output y);
-    trireg (medium) cap = a;
+    trireg (medium) cap;
+    assign cap = a;
     trireg (small) wire_cap;
     wand w_and;
     wor  w_or;

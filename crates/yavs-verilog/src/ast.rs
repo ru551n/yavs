@@ -165,6 +165,8 @@ pub enum Conn {
 #[derive(Clone, Debug)]
 pub struct ModInst {
     pub module: Ident,
+    /// A drive strength: only a UDP instance has one.
+    pub strength: Option<Strength>,
     pub params: Vec<Conn>,
     pub insts: Vec<Instance>,
 }
@@ -347,6 +349,8 @@ pub enum Item {
     Task(Task),
     Function(Function),
     Generate(Vec<Item>),
+    /// `begin ... end` standing alone in a module: a generate block (accepted, see `lrm-checks.md` V1).
+    GenBlock(GenBody),
     GenIf {
         cond: Expr,
         then: GenBody,
@@ -377,6 +381,8 @@ pub struct NonAnsiPort {
     pub name: Option<Ident>,
     /// Present for `.name(expr)` and concatenations.
     pub expr: Option<Expr>,
+    /// Written `.name(...)`: the name is the external one (clause 12.3.2).
+    pub explicit: bool,
 }
 
 #[derive(Clone, Debug)]

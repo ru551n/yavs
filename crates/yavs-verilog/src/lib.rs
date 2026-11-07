@@ -11,6 +11,7 @@ mod bridge;
 mod diag;
 mod elab;
 mod exec;
+mod iface;
 mod lex;
 mod parse;
 mod pre;
@@ -21,7 +22,8 @@ pub mod value;
 
 use std::path::{Path, PathBuf};
 
-pub use elab::{Design, Generic, Instance, ParamValue, PortSpec};
+pub use elab::{Design, Generic, Instance, ParamValue, PortSpec, interface};
+pub use iface::{IfParam, IfPort, IfValue, Interface};
 pub use pre::Nettype;
 pub use runtime::{Domain, Drive, EVENT_LIMIT, Edge, Exec, NetId, Wait, edge};
 
@@ -152,6 +154,8 @@ pub struct Unit {
     pub default_nettype: Nettype,
     /// The options and preprocessor state the file was read under ([`read_unit`] reads it again).
     pub setup: String,
+    /// The VHDL view of a module ([`Interface::encode`]); empty for a primitive.
+    pub iface: String,
 }
 
 #[derive(Debug, Default)]
@@ -327,7 +331,7 @@ fn one_file(
     if !failed {
         let mut checks = false;
         for decl in &decls {
-            let (kind, name, ports, encrypted, ts, cd, nt) = match decl {
+            let (kind, name, ports, encrypted, ts, cd, nt, iface) = match decl {
                 ast::Decl::Module(m) => {
                     let mut cx = analysis::Ctx {
                         pre: &pre,
@@ -345,6 +349,7 @@ fn one_file(
                         m.timescale,
                         m.celldefine,
                         m.nettype,
+                        elab::interface(m, m.timescale.unwrap_or(opts.default_timescale)).encode(),
                     )
                 }
                 ast::Decl::Udp(u) => (
@@ -355,6 +360,7 @@ fn one_file(
                     None,
                     false,
                     Nettype::Wire,
+                    String::new(),
                 ),
                 ast::Decl::Envelope(_) => continue,
             };
@@ -399,6 +405,7 @@ fn one_file(
                 celldefine: cd,
                 default_nettype: nt,
                 setup: setup.clone(),
+                iface,
             });
         }
         if checks

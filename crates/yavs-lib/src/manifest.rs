@@ -156,6 +156,10 @@ pub struct UnitRecord {
     /// an older yavs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup: Option<String>,
+    /// Verilog: the VHDL view of a module, as `yavs_verilog::Interface` writes it, for `entity
+    /// lib.module` in VHDL. A record without it was made before the interface was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iface: Option<String>,
     /// Filled in by the library on load and update; not stored per unit.
     #[serde(skip)]
     pub file: PathBuf,
@@ -175,6 +179,7 @@ impl UnitRecord {
             context: None,
             includes: vec![],
             setup: None,
+            iface: None,
             file: PathBuf::new(),
         }
     }
@@ -486,6 +491,27 @@ impl Manifest {
             [u] => ModuleLookup::Found(self.loc(u)),
             many => ModuleLookup::Ambiguous(many.iter().map(|u| self.s(u.key)).collect()),
         }
+    }
+
+    /// The recorded interface of Verilog module `key` (exactly as recorded): `None` for a library
+    /// without it, or a record made before the interface was recorded.
+    pub fn module_iface(&self, key: &str) -> Result<Option<String>> {
+        let Some(u) = self
+            .units
+            .iter()
+            .find(|u| u.kind == UnitKind::Module && self.s(u.key) == key)
+        else {
+            return Ok(None);
+        };
+        let loc = self.loc(u);
+        let Some(f) = self.file(loc.file) else {
+            return Ok(None);
+        };
+        Ok(self
+            .records(&f)?
+            .into_iter()
+            .find(|r| r.kind == UnitKind::Module && r.key == key)
+            .and_then(|r| r.iface))
     }
 
     /// A unit of `new` that has the name of a unit of the other language in a file other than

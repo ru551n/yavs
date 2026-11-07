@@ -186,6 +186,7 @@ impl Batch {
             let mut r = UnitRecord::verilog(kind, &u.name, VERILOG_STD);
             r.encrypted = u.encrypted;
             r.setup = Some(u.setup.clone());
+            r.iface = Some(u.iface.clone()).filter(|i| !i.is_empty());
             r.context = Some(hash_content(
                 format!("{}\n{}", u.context_digest, self.options).as_bytes(),
             ));
@@ -536,6 +537,7 @@ mod tests {
             celldefine: false,
             default_nettype: yavs_verilog::Nettype::Wire,
             setup: String::new(),
+            iface: String::new(),
         };
         let diag = |code: &'static str, file: Option<usize>| Diag {
             code,

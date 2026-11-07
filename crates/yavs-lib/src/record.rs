@@ -39,6 +39,9 @@ pub(crate) fn render(path: &str, units: &[UnitRecord]) -> String {
         if let Some(c) = &u.setup {
             put_line(&mut o, "setup", c);
         }
+        if let Some(c) = &u.iface {
+            put_line(&mut o, "iface", c);
+        }
         if !u.includes.is_empty() {
             o.push_str("includes = [");
             for (i, (p, h)) in u.includes.iter().enumerate() {
@@ -113,7 +116,8 @@ fn parse(text: &str, path: &Path) -> std::result::Result<Vec<UnitRecord>, String
         None::<Vec<UnitRef>>,
         None::<Vec<UnitRef>>,
     );
-    let (mut encrypted, mut context, mut includes, mut setup) = (false, None, Vec::new(), None);
+    let (mut encrypted, mut context, mut includes, mut setup, mut iface) =
+        (false, None, Vec::new(), None, None);
     let mut in_unit = false;
     macro_rules! end_unit {
         ($n:expr) => {
@@ -132,6 +136,7 @@ fn parse(text: &str, path: &Path) -> std::result::Result<Vec<UnitRecord>, String
                     context: context.take(),
                     includes: std::mem::take(&mut includes),
                     setup: setup.take(),
+                    iface: iface.take(),
                     file: path.to_path_buf(),
                 });
             }
@@ -178,6 +183,7 @@ fn parse(text: &str, path: &Path) -> std::result::Result<Vec<UnitRecord>, String
             "encrypted" if val == "true" => encrypted = true,
             "context" => context = Some(string(&mut c)?),
             "setup" => setup = Some(string(&mut c)?),
+            "iface" => iface = Some(string(&mut c)?),
             "includes" => {
                 let sep = |c: &mut Cur| c.eat(b',').and_then(|()| c.eat(b' '));
                 c.eat(b'[').ok_or_else(|| bad(n, "expected ["))?;
@@ -275,6 +281,7 @@ mod tests {
                 encrypted: true,
                 context: Some("sha256:ab".into()),
                 setup: Some("T 1000000 1000\nM 41 - 3d\n".into()),
+                iface: Some("param W int 8\nport a in 7 0\n".into()),
                 includes: vec![
                     ("/x/inc \"a\".vh".into(), "sha256:c".into()),
                     ("/y/b.vh".into(), "sha256:d".into()),

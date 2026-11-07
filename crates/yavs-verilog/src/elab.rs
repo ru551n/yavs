@@ -205,6 +205,8 @@ struct Elab<'d, 'a> {
     driven: Vec<(Vec<Driver>, bool)>,
     /// Per variable: its net type.
     kinds: Vec<NetKind>,
+    /// Only the interface is wanted ([`interface`]).
+    iface: bool,
     /// The strengths of the continuous assignment being read.
     strength: Option<(Drive, Drive)>,
     /// The variables the continuous assignment being read drives, per leaf.
@@ -234,12 +236,22 @@ fn find<'n>(
 
 impl<'d, 'a> Elab<'d, 'a> {
     fn new(d: &'d mut Design, inst: &'a Instance<'a>) -> Elab<'d, 'a> {
+        let src = inst.source;
+        Elab::with_span(d, inst, Box::new(move |a, b| src.span(a, b - a)), false)
+    }
+
+    /// An elaboration whose spans come from `spanf`; `iface` reads only the declarations of the
+    /// module's interface ([`interface`]) and tolerates what the rest of the module has.
+    fn with_span(
+        d: &'d mut Design,
+        inst: &'a Instance<'a>,
+        spanf: Box<dyn Fn(u32, u32) -> Span + 'a>,
+        iface: bool,
+    ) -> Elab<'d, 'a> {
         let ts = inst
             .module
             .timescale
             .unwrap_or(inst.source.default_timescale);
-        let src = inst.source;
-        let spanf: Box<dyn Fn(u32, u32) -> Span + 'a> = Box::new(move |a, b| src.span(a, b - a));
         let m = &inst.module.name;
         let at = spanf(m.pos, m.pos + m.name.len() as u32);
         d.tf_fs = match d.tf_fs {
@@ -261,6 +273,7 @@ impl<'d, 'a> Elab<'d, 'a> {
             at,
             driven: Vec::new(),
             kinds: Vec::new(),
+            iface,
             strength: None,
             leaves: Vec::new(),
             counts: HashMap::new(),
@@ -303,6 +316,78 @@ impl<'d, 'a> Elab<'d, 'a> {
         self.bind_ports()?;
         self.items()?;
         Ok(())
+    }
+
+    // ---- the interface ----
+
+    fn interface(&mut self) -> R<crate::Interface> {
+        use crate::{IfParam, IfPort, IfValue, Interface};
+        let m = self.inst.module;
+        self.params()?;
+        let mut out = Interface::default();
+        let header = !m.params.is_empty();
+        let mut list: Vec<(&ParamDecl, bool)> = m.params.iter().map(|p| (p, p.local)).collect();
+        for it in &m.items {
+            if let Item::Param(p) = it {
+                list.push((p, p.local || header || p.spec));
+            }
+        }
+        for (p, local) in list {
+            if local {
+                continue;
+            }
+            for (name, e) in &p.assigns {
+                let Some(Sym::Param(c)) = self.syms.get(&name.name) else {
+                    continue;
+                };
+                let typed = p.kind.is_some() || p.range.is_some();
+                // The sign of an untyped parameter is its value's (12.2).
+                let signed = !typed && self.sx().ty(e)?.signed;
+                let value = match c {
+                    Const::R(r) => IfValue::Real(*r),
+                    Const::V(v, _) => match e {
+                        Expr::Str(s) if !typed => IfValue::Str(crate::sem::string_bytes(s)),
+                        _ if (p.kind == Some(VarKind::Integer) || signed)
+                            && v.width() == 32
+                            && v.is_known() =>
+                        {
+                            IfValue::Int(v.to_i64(true).unwrap_or_default())
+                        }
+                        _ => IfValue::Vec((0..v.width()).rev().map(|i| v.get(i).char()).collect()),
+                    },
+                };
+                out.params.push(IfParam {
+                    name: name.name.clone(),
+                    value,
+                });
+            }
+        }
+        let decls = self.declarations()?;
+        for n in self.port_names()? {
+            let Some(d) = decls.iter().find(|d| d.name.name == n.name) else {
+                return Err(Box::new(Diag::error(
+                    "E4202",
+                    format!("the port `{}` has no declaration", n.name),
+                    self.span_id(&n),
+                )));
+            };
+            let dir = match d.dir {
+                Some(dir) => dir,
+                None => {
+                    return Err(Box::new(Diag::error(
+                        "E4202",
+                        format!("the port `{}` has no direction", n.name),
+                        self.span_id(&n),
+                    )));
+                }
+            };
+            out.ports.push(IfPort {
+                name: n.name.clone(),
+                dir,
+                range: d.range,
+            });
+        }
+        Ok(out)
     }
 
     // ---- parameters ----
@@ -420,6 +505,9 @@ impl<'d, 'a> Elab<'d, 'a> {
                    kind: NetKind|
          -> R<()> {
             if !d.dims.is_empty() {
+                if el.iface {
+                    return Ok(());
+                }
                 return Err(unsupported(
                     "a memory (an array of variables)",
                     el.span_id(&d.name),
@@ -458,7 +546,7 @@ impl<'d, 'a> Elab<'d, 'a> {
             _ => None,
         });
         for p in port_items.into_iter().chain(body_ports) {
-            if p.dir == Dir::Inout {
+            if p.dir == Dir::Inout && !self.iface {
                 let n = p.names.first().map(|d| &d.name);
                 return Err(unsupported(
                     "an inout port",
@@ -485,8 +573,10 @@ impl<'d, 'a> Elab<'d, 'a> {
         for it in &m.items {
             match it {
                 Item::Net(n) => {
-                    self.net_kind(n.kind, &n.names)?;
-                    if n.delay.is_some() {
+                    if !self.iface {
+                        self.net_kind(n.kind, &n.names)?;
+                    }
+                    if n.delay.is_some() && !self.iface {
                         return Err(unsupported("a net delay", self.decl_at(&n.names)));
                     }
                     let r = self.opt_range(&n.range)?;
@@ -499,6 +589,7 @@ impl<'d, 'a> Elab<'d, 'a> {
                         VarKind::Reg => (self.opt_range(&v.range)?, v.signed),
                         VarKind::Integer => (Some((31, 0)), true),
                         VarKind::Time => (Some((63, 0)), false),
+                        VarKind::Real | VarKind::Realtime if self.iface => continue,
                         VarKind::Real | VarKind::Realtime => {
                             return Err(unsupported("a real variable", self.decl_at(&v.names)));
                         }
@@ -507,7 +598,7 @@ impl<'d, 'a> Elab<'d, 'a> {
                         add(self, &mut out, d, None, r, s, true, NetKind::Wire)?;
                     }
                 }
-                Item::Event(names) => {
+                Item::Event(names) if !self.iface => {
                     return Err(unsupported("a named event", self.decl_at(names)));
                 }
                 _ => {}
@@ -1601,6 +1692,37 @@ fn lhs_names<'e>(e: &'e Expr, out: &mut Vec<&'e str>) {
         }
         Expr::Concat(v) => v.iter().for_each(|p| lhs_names(p, out)),
         _ => {}
+    }
+}
+
+/// The VHDL view of `module`: its parameters at their defaults and its ports ([`Interface`]).
+/// What the interface cannot say is in `Interface::error`; the rest of the module is not looked at.
+pub fn interface(module: &Module, default_timescale: crate::Timescale) -> crate::Interface {
+    use crate::Interface;
+    if module.encrypted.is_some() {
+        return Interface::failed("the module is encrypted (IEEE 1735)");
+    }
+    let source = Source {
+        files: Vec::new(),
+        decls: Vec::new(),
+        diagnostics: Vec::new(),
+        digest: String::new(),
+        default_timescale,
+        pre: Default::default(),
+    };
+    let inst = Instance {
+        path: &module.name.name,
+        source: &source,
+        module,
+        generics: &[],
+        ports: &[],
+    };
+    let mut d = Design::default();
+    let mut el = Elab::with_span(&mut d, &inst, Box::new(|_, _| Span::default()), true);
+    match el.interface() {
+        Ok(i) if el.errors.is_empty() => i,
+        Ok(_) => Interface::failed(el.errors.remove(0).message),
+        Err(e) => Interface::failed(e.message),
     }
 }
 

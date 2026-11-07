@@ -149,6 +149,12 @@ impl Design {
         self.low.functions()
     }
 
+    /// The number of private driver nets of resolved nets (tests): a net with one driver, drivers
+    /// on disjoint bits or an alias has none, so its writes never resolve.
+    pub fn driver_nets(&self) -> usize {
+        self.drivers.len()
+    }
+
     #[cfg(test)]
     pub(crate) fn nets_mut(&mut self) -> &mut Vec<LogicVec> {
         &mut self.nets

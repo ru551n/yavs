@@ -25,8 +25,8 @@ impl Observer for Out {
     }
 }
 
-/// Runs the last module of `path`: its output, or the codes of the elaboration errors.
-pub fn run(path: &Path) -> Result<String, Vec<String>> {
+/// The design of the last module of `path`, or the codes of the elaboration errors.
+fn design(path: &Path) -> Result<Design, Vec<String>> {
     let src = read_unit(path, &setup(&Options::default())).expect("a setup");
     assert!(
         src.diagnostics
@@ -55,6 +55,12 @@ pub fn run(path: &Path) -> Result<String, Vec<String>> {
             ports: &[],
         })
         .map_err(|ds| ds.iter().map(|d| d.code.to_string()).collect::<Vec<_>>())?;
+    Ok(design)
+}
+
+/// Runs the last module of `path`: its output, or the codes of the elaboration errors.
+pub fn run(path: &Path) -> Result<String, Vec<String>> {
+    let design = design(path)?;
     let mut b = Builder::new();
     let d = design.domain(&|_| unreachable!("no ports"), &[]);
     b.process("top.verilog", ProcFlags::default(), &[], d);
@@ -121,4 +127,39 @@ fn every_run_check_gives_its_output() {
         bad.len(),
         bad.join("\n")
     );
+}
+
+/// Nets with one driver, drivers on disjoint bits and aliases get no driver net, so their writes
+/// never reach resolution; a three-state bus gets one per driver.
+#[test]
+fn only_resolved_nets_get_driver_nets() {
+    let d = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("run-drv-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    let count = |name: &str, text: &str| {
+        let f = d.join(name);
+        std::fs::write(&f, text).unwrap();
+        design(&f).unwrap().driver_nets()
+    };
+    let plain = "module m;
+  reg a, b;
+  wire [1:0] w;
+  wire c, e;
+  assign w[0] = a;
+  assign w[1] = b;
+  assign c = a & b;
+  assign e = c;
+endmodule
+";
+    assert_eq!(count("plain.v", plain), 0);
+    let bus = "module m;
+  reg a, en;
+  wire y;
+  tri1 p;
+  assign y = en ? a : 1'bz;
+  assign y = en ? 1'bz : a;
+  assign p = en ? a : 1'bz;
+endmodule
+";
+    assert_eq!(count("bus.v", bus), 3);
+    std::fs::remove_dir_all(&d).unwrap();
 }

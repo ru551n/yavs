@@ -5,7 +5,9 @@
 //! `@*`, `@(a or b)` and `posedge`/`negedge` of registers whose bit 0 goes through x and z. The
 //! output of `--tier=clift`, of `--tier=auto` compiling every function at its first run, and of
 //! `--tier=llvm` where it is built must be the interpreter's, byte for byte, also where a value
-//! just falls off the two-state path (one x bit).
+//! just falls off the two-state path (one x bit). Random three-state buses (several drivers with
+//! strengths, `tri0`/`tri1` pulls, overlapping part drivers) the same way, with the resolved
+//! `std_ulogic` VHDL sees on output ports.
 #![cfg(any(feature = "clift", feature = "llvm"))]
 
 mod common;
@@ -180,6 +182,153 @@ begin
 end architecture;
 ";
 
+/// A module of resolved nets of one width: per net two to four continuous drivers that give `z`
+/// when their enable is not 1, each with a drive strength, on a `wire`, a `tri0`, a `tri1` (both
+/// output ports) and a `wire` driven by two overlapping parts; enables and values (with x and
+/// z) change at every clock. Shown with `%b` (Verilog reads `TO_X01Z`), counted per event, and
+/// reported by VHDL on the ports (`L`, `H`, `W` stay).
+fn bus_module(seed: u64) -> (String, String) {
+    let mut r = Rng(seed);
+    let w = [1, 3, 8, 33, 64, 65, 100][r.below(7) as usize];
+    let st = [
+        "",
+        "",
+        "(strong0, strong1) ",
+        "(weak0, weak1) ",
+        "(pull0, pull1) ",
+        "(supply0, supply1) ",
+        "(strong0, weak1) ",
+        "(weak0, strong1) ",
+        "(highz0, strong1) ",
+        "(strong0, highz1) ",
+    ];
+    let (mut decl, mut drv, mut step) = (String::new(), String::new(), Vec::new());
+    let mut k = 0;
+    for net in ["b0", "b1", "b2"] {
+        for _ in 0..2 + r.below(3) {
+            decl += &format!("  reg e{k} = 0;\n  reg [{}:0] a{k};\n", w - 1);
+            drv += &format!(
+                "  assign {}{net} = e{k} ? a{k} : {{{w}{{1'bz}}}};\n",
+                r.pick(&st)
+            );
+            k += 1;
+        }
+    }
+    // Two parts of b3 that share bit `m`.
+    let m = r.below(w as u64) as u32;
+    decl += &format!("  reg [{}:0] a{k}, a{};\n", w - 1, k + 1);
+    drv += &format!("  assign b3[{}:{m}] = a{k}[{}:{m}];\n", w - 1, w - 1);
+    drv += &format!("  assign b3[{m}:0] = a{}[{m}:0];\n", k + 1);
+    for _ in 0..16 {
+        let mut s = String::new();
+        for j in 0..k {
+            let e = [
+                "1'b0", "1'b0", "1'b0", "1'b1", "1'b1", "1'b1", "1'bx", "1'bz",
+            ][r.below(8) as usize];
+            s += &format!("e{j} <= {e}; a{j} <= {}; ", literal(&mut r, w));
+        }
+        for j in k..k + 2 {
+            s += &format!("a{j} <= {}; ", literal(&mut r, w));
+        }
+        step.push(s);
+    }
+    let cases: String = step
+        .iter()
+        .enumerate()
+        .map(|(i, s)| format!("      {i}: begin {s}end\n"))
+        .collect();
+    let v = format!(
+        "`timescale 1ns/1ps
+module vb (output [{h}:0] b0, output tri0 [{h}:0] b1, output tri1 [{h}:0] b2);
+  reg clk = 0;
+  integer i = 0, n0 = 0, n1 = 0, n2 = 0, n3 = 0;
+  wire [{h}:0] b3;
+{decl}{drv}  always #5 clk = ~clk;
+  always @(posedge clk) begin
+    case (i)
+{cases}    endcase
+    i <= i + 1;
+  end
+  always @(b0) n0 = n0 + 1;
+  always @(posedge b1) n1 = n1 + 1;
+  always @(negedge b2) n2 = n2 + 1;
+  always @(b3 or b1) n3 = n3 + 1;
+  always @(negedge clk) $display(\"%b %b %b %b %0d %0d %0d %0d\", b0, b1, b2, b3, n0, n1, n2, n3);
+  initial #180 $finish;
+endmodule
+",
+        h = w - 1
+    );
+    let tb = format!(
+        "library ieee;
+use ieee.std_logic_1164.all;
+entity tb is end entity;
+architecture sim of tb is
+  component vb is port (b0, b1, b2 : out std_logic_vector({h} downto 0)); end component;
+  signal b0, b1, b2 : std_logic_vector({h} downto 0);
+begin
+  u : vb port map (b0, b1, b2);
+  process
+  begin
+    wait on b0, b1, b2;
+    report to_string(b0) & \" \" & to_string(b1) & \" \" & to_string(b2);
+  end process;
+end architecture;
+",
+        h = w - 1
+    );
+    (v, tb)
+}
+
+fn tiers() -> Vec<&'static [&'static str]> {
+    let mut tiers: Vec<&[&str]> = Vec::new();
+    #[cfg(feature = "clift")]
+    tiers.extend([
+        &["--tier=clift"][..],
+        &["--tier=auto", "--tier-heat=1,0,0"][..],
+    ]);
+    #[cfg(feature = "llvm")]
+    tiers.push(&["--tier=llvm"][..]);
+    tiers
+}
+
+#[test]
+fn resolved_nets_match_the_interpreter() {
+    let t = tempdir("v-tiers-bus");
+    let yavs = |args: &[&str]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .current_dir(&*t)
+            .args(args)
+            .output()
+            .unwrap();
+        (
+            o.status.code(),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+        )
+    };
+    let mut weak = false;
+    for seed in 1..=12u64 {
+        let (src, tb) = bus_module(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+        std::fs::write(t.join("vb.v"), &src).unwrap();
+        std::fs::write(t.join("tb.vhd"), &tb).unwrap();
+        let (code, _, err) = yavs(&["analyze", "--work=work:lib", "vb.v", "tb.vhd"]);
+        assert_eq!(code, Some(0), "seed {seed}: {err}\n{src}");
+        let want = yavs(&["run", "--work=work:lib", "--tier=interp", "tb"]);
+        assert_eq!(want.0, Some(0), "seed {seed}: {}\n{src}", want.2);
+        assert!(want.1.lines().count() > 30, "seed {seed}: {}", want.1);
+        weak |= want.1.contains('H') || want.1.contains('L');
+        for tier in tiers() {
+            let got =
+                yavs(&[&["run", "--work=work:lib", "--no-cache"][..], tier, &["tb"]].concat());
+            assert_eq!(got.1, want.1, "seed {seed} {tier:?}:\n{src}\n{}", got.2);
+            assert_eq!(got.0, want.0, "seed {seed} {tier:?}: {}", got.2);
+        }
+    }
+    // The pulls and weak drivers reach VHDL as `L` and `H` in some seed.
+    assert!(weak);
+}
+
 #[test]
 fn compiled_tiers_match_the_interpreter() {
     let t = tempdir("v-tiers");
@@ -195,14 +344,7 @@ fn compiled_tiers_match_the_interpreter() {
             String::from_utf8_lossy(&o.stderr).into_owned(),
         )
     };
-    let mut tiers: Vec<&[&str]> = Vec::new();
-    #[cfg(feature = "clift")]
-    tiers.extend([
-        &["--tier=clift"][..],
-        &["--tier=auto", "--tier-heat=1,0,0"][..],
-    ]);
-    #[cfg(feature = "llvm")]
-    tiers.push(&["--tier=llvm"][..]);
+    let tiers = tiers();
     for seed in 1..=24u64 {
         let src = module(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15));
         std::fs::write(t.join("vt.v"), &src).unwrap();

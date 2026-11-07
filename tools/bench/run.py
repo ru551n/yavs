@@ -30,7 +30,7 @@ os.environ["YAVS_STD_CACHE"] = str(CACHE / "std")
 PHASES = ["analyze", "elaborate", "init", "simulate"]
 STD = "2008"
 TIMEOUT = 300  # seconds per timed run and reference run (--timeout)
-INTERNAL = ["compute_loop", "ff_rtl", "resolved_bus", "delta_chain", "textio_heavy", "protected_scoreboard", "protected_queue", "calls", "strings_heavy", "access_heavy", "report_heavy", "file_io", "ieee_heavy", "elab_heavy"]
+INTERNAL = ["compute_loop", "ff_rtl", "resolved_bus", "delta_chain", "textio_heavy", "protected_scoreboard", "protected_queue", "calls", "strings_heavy", "access_heavy", "report_heavy", "file_io", "ieee_heavy", "elab_heavy", "verilog_cells"]
 # head-to-head designs (group h2h; AGENTS.md maps them to the old names)
 H2H = ["rtl_ff", "rtl_lfsr", "rtl_chain", "rtl_fan", "rtl_bus", "rtl_ram", "lfsr64_xor", "lfsr64", "compute_h2h", "xor_sig", "xor_types", "rec_pair"]
 SHIM = """#!/usr/bin/env python3
@@ -99,7 +99,9 @@ def yavs_libs(Y, key, root):
 
 def prep_internal(name, Y, key):
     wd = mkdir(CACHE / "work" / key / name)
-    sh([Y, "analyze", f"--std={STD}", f"--work=work:{wd}/lib", str(HERE / "designs" / f"{name}.vhd")], wd)
+    # A design with a Verilog half (`<name>.v`) analyses it first, in the same call.
+    files = [HERE / "designs" / f"{name}{ext}" for ext in (".v", ".vhd")]
+    sh([Y, "analyze", f"--std={STD}", f"--work=work:{wd}/lib"] + [str(f) for f in files if f.exists()], wd)
     return [([ "{Y}", "run", f"--std={STD}", f"--work=work:{wd}/lib", f"bench_{name}"], str(wd))]
 
 

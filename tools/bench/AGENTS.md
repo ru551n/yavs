@@ -17,7 +17,7 @@ performance change. Everyone measures with this one harness, so numbers are comp
 |---|---|
 | `run.py` | The harness: `--list`, `BIN` (one binary), `--compare A B`, `--bench a,b`, `--group internal\|h2h\|external\|all`, `--runs N` (default 3), `--sims sim1,sim2`, `--threshold`, `--fail-on-regression`, `--label`, `--out`, `--timeout SECONDS` (default 300, #796); head-to-head mode `--ref sim1,sim2 [--cores L] [--tiers interp,auto] [--instructions] [--tiny]` (section 7) |
 | `tiny.py` | Head-to-head on the tiny-test corpus `tests/corpus`: per-test wall time of one run, yavs against the references (section 7) |
-| `designs/*.vhd` | Checked-in designs written for this harness; top level `bench_<name>`, default generics (the head-to-head designs carry the parameters their results are quoted at) |
+| `designs/*.vhd`, `designs/*.v` | Checked-in designs written for this harness (a `.v` file is the Verilog half of the design of its name); top level `bench_<name>`, default generics (the head-to-head designs carry the parameters their results are quoted at) |
 | `vc_tests.tsv` | The fixed 30 test cases (`testbench<TAB>test case`) of benchmark `vunit_vc30` |
 
 Benchmarks (`run.py --list`):
@@ -30,6 +30,7 @@ Benchmarks (`run.py --list`):
 | `strings_heavy`, `access_heavy`, `report_heavy`, `file_io` | internal | Message strings (`image`, `to_string`, concatenation, search), access types as queues and buffers use them, many `report`/`assert` lines, text and binary file I/O (#428) |
 | `ieee_heavy` | internal | `numeric_std` and `std_logic_1164` operations on vectors: conversions, arithmetic, comparison, resize, shifts, logical operators, slices (#428) |
 | `elab_heavy` | internal | 20000 small entity instances: elaboration and initialisation cost |
+| `verilog_cells` | internal | 64 instances of a Verilog cell (`designs/verilog_cells.v`: LFSR, counter, adds, shifts, concatenation, non-blocking assignments) in a ring under a VHDL testbench, 4000 cycles: Verilog process code and the language boundary (#776); a design with a `.v` half has it analysed in the same call |
 | `vunit_vc30` | external | 30 fixed test cases of the external test runner's verification components, one `yavs run` each (summed per iteration) |
 | `uvvm_axistream_vvc_tb` | external | The AXI-stream verification component testbench, first generic set, capped with `--stop-time=10us` (it runs far over 5 minutes in full) |
 | `uvvm_util_rand_tb` | external | The utility library's random testbench (`rand_basic`) |

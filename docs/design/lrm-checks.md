@@ -801,7 +801,7 @@ with a `// gap:` header so that fixing it shows up as a changed test.
   rule 2). Files `19.5_include_angle_brackets.v`, `19.5_include_macro_name.v`. Before, the macro form was `E4009` and a cascade of `E4007`.
 - **V6: the body may repeat an ANSI port name (12.3).** `module m (output o); reg o; endmodule` declares `o` in the header and
   again in the body. The text is unclear to me and the other tools accept it (policy rule 2), so it is no `E4203`; two ports of
-  one header with the same name are (`12.3_ports_ansi_duplicate.v`). `12.3_ports_ansi_type_redeclared_ok.v`.
+  one header with the same name are (`12.3.4_ports_ansi_duplicate.v`). `12.3.4_ports_ansi_type_redeclared_ok.v`.
 - **V7: `` `resetall `` clears the timescale as well as `` `default_nettype `` (19.6, recalled).** The next module has no `` `timescale `` in force: `W4006`.
 - **V8: a gate has its terminals by position and their number is fixed by the gate (7.1).** `and`, `or`, `xor`, `nand`, `nor`,
   `xnor`, `buf` and `not` at least two terminals (an output, then the inputs; for `buf` and `not` the outputs, then the input), the
@@ -812,9 +812,9 @@ with a `// gap:` header so that fixing it shows up as a changed test.
 The LRM says error, the front end accepts; each has a pinned file.
 
 - **G1: an unnamed module instance (12.1).** `c ();` is accepted because the parser cannot tell a module from a UDP or gate before the
-  kind of `c` is known (only gate and UDP instances may omit the name). Elaboration (M1) reports it. `12.1_instance_missing_name.v`.
+  kind of `c` is known (only gate and UDP instances may omit the name). Elaboration (M1) reports it. `12.1.2_instance_missing_name.v`.
 - **G2: duplicate declarations inside a task, function or block (4.x name spaces).** `E4203` is checked at module level only.
-  `10.2_task_duplicate_local.v`.
+  `4.11_task_duplicate_local.v`.
 - **G3: the comment form `//pragma protect begin_protected` (28).** Other tools write the envelope as a comment; it is a comment here,
   so the body is lexed. `28_envelope_comment_form_not_detected.v`; `tools/verilog/AGENTS.md` pitfalls.
 - **G4: an attribute instance that precedes nothing (3.8).** `(* orphan *)` before `endmodule` is skipped. `3.8_attr_dangling.v`.
@@ -833,7 +833,7 @@ was a lexical error at the constant and a syntax error at the digit; a nested mo
 outer `endmodule`; a stringified macro argument gave the same `E4003` twice.
 
 
-#### Clause 3: lexical conventions (99 checks)
+#### Clause 3: lexical conventions (98 checks)
 
 | File | Clause | Rule | Outcome |
 |---|---|---|---|
@@ -844,11 +844,6 @@ outer `endmodule`; a stringified macro argument gave the same `E4003` twice.
 | `3.3_comment_in_string.v` | 3.3 | comment markers inside a string are string text | clean |
 | `3.3_line_comment_at_eof.v` | 3.3 | a line comment may end at end of file without a newline | clean |
 | `3.3_line_comment_hides_block_start.v` | 3.3 | inside a line comment /* has no meaning | clean |
-| `3.4_operator_sv_compound.v` | 3.4 | += is not a 1364 operator | `E4003` |
-| `3.4_operator_sv_implication.v` | 3.4 | -> in an expression is not a 1364 operator, only the event trigger statement | `E4100` |
-| `3.4_operator_sv_increment.v` | 3.4 | ++ is not a 1364 operator | `E4003` |
-| `3.4_operator_sv_wildcard_eq.v` | 3.4 | ==? is not a 1364 operator | `E4003` |
-| `3.4_operators_all.v` | 3.4 | every 1364-2005 operator is a token | clean |
 | `3.5.1_bad_base_letter.v` | 3.5.1 | the base is one of b, o, d, h; a quote before anything else is read as SystemVerilog | `E4003` |
 | `3.5.1_bad_binary_digit.v` | 3.5.1 | a binary constant has only the digits 0, 1, x, z and ? | `E4014` |
 | `3.5.1_bad_decimal_digit.v` | 3.5.1 | a decimal constant has only the digits 0 to 9 | `E4014` |
@@ -897,10 +892,10 @@ outer `endmodule`; a stringified macro argument gave the same `E4003` twice.
 | `3.5.2_real_point_before_exponent.v` | 3.5.2 | a decimal point has a digit on each side | `E4100` |
 | `3.5.2_real_underscores.v` | 3.5.2 | the real constant 236.123_763_e-12 is legal | clean |
 | `3.6_string_empty.v` | 3.6 | the empty string is legal | clean |
-| `3.6_string_escaped_newline.v` | 3.6 | a backslash before the newline continues a string on the next line (recalled: tools differ) | clean |
-| `3.6_string_escapes.v` | 3.6 | a string may hold the escapes \n \t \\ \" \ddd and %% | clean |
 | `3.6_string_spans_line.v` | 3.6 | a string may not contain a raw newline | `E4014` |
 | `3.6_string_unterminated.v` | 3.6 | a string ends at its closing quote | `E4014` |
+| `3.6.3_string_escaped_newline.v` | 3.6.3 | a backslash before the newline continues a string on the next line (recalled: tools differ) | clean |
+| `3.6.3_string_escapes.v` | 3.6.3 | a string may hold the escapes \n \t \\ \" \ddd and %% | clean |
 | `3.7_id_case_sensitive.v` | 3.7 | identifiers are case sensitive: a and A are different names | clean |
 | `3.7_id_digit_first.v` | 3.7 | a simple identifier does not start with a digit | `E4014` |
 | `3.7_id_dollar_first.v` | 3.7 | a simple identifier does not start with $ | `E4100` |
@@ -908,7 +903,6 @@ outer `endmodule`; a stringified macro argument gave the same `E4003` twice.
 | `3.7_id_letters_digits_dollar_underscore.v` | 3.7 | a_1$b is a simple identifier | clean |
 | `3.7_id_long.v` | 3.7 | aaaaaaaaaaaaaaaaaaaa is a simple identifier | clean |
 | `3.7_id_uppercase.v` | 3.7 | ABC is a simple identifier | clean |
-| `3.7_sv_extension.sv` | 3.7 | a .sv file is SystemVerilog, which yavs does not read | `E4002` |
 | `3.7.1_id_escaped.v` | 3.7.1 | an escaped identifier runs to white space and may hold any printable character | clean |
 | `3.7.1_id_escaped_empty.v` | 3.7.1 | an escaped identifier has at least one character | `E4014` |
 | `3.7.1_id_escaped_is_exact.v` | 3.7.1 | the backslash is not part of the name: \cpu3 and cpu3 are the same identifier | `E4203` |
@@ -917,15 +911,20 @@ outer `endmodule`; a stringified macro argument gave the same `E4003` twice.
 | `3.7.2_id_keyword_is_reserved.v` | 3.7.2 | a keyword cannot be used as a simple identifier | `E4100` |
 | `3.7.2_id_keyword_reg_name.v` | 3.7.2 | a keyword of the language, here begin, cannot name a net | `E4100` |
 | `3.7.2_sv_enum.v` | 3.7.2 | enum is SystemVerilog | `E4003` |
+| `3.7.2_sv_extension.sv` | 3.7.2 | a .sv file is SystemVerilog, which yavs does not read | `E4002` |
 | `3.7.2_sv_interface.v` | 3.7.2 | interface is SystemVerilog | `E4003` |
 | `3.7.2_sv_logic_port_type.v` | 3.7.2 | logic as a port type is SystemVerilog | `E4003` |
 | `3.7.2_sv_package_import.v` | 3.7.2 | package and import are SystemVerilog | `E4003` |
 | `3.7.2_sv_string_type.v` | 3.7.2 | string as a variable type is SystemVerilog | `E4003` |
 | `3.7.2_sv_typedef.v` | 3.7.2 | typedef is SystemVerilog | `E4003` |
 | `3.7.2_sv_words_as_identifiers.v` | 3.7.2 | SystemVerilog keywords are ordinary identifiers in 1364-2005 | clean |
+| `3.7.3_systask_as_item.v` | 3.7.3 | a system task enable is a statement and does not stand at module level (other than the elaboration tasks of V4) | `E4100` |
 | `3.7.3_systask_bare_dollar.v` | 3.7.3 | a $ must be followed by a name | `E4100` |
+| `3.7.3_systask_missing_semicolon.v` | 3.7.3 | a system task enable ends with a semicolon | `E4100` |
 | `3.7.3_systask_name_digits_underscore.v` | 3.7.3 | a system name is $ followed by letters, digits, $ and underscores | clean |
 | `3.7.3_systask_user_defined_name.v` | 3.7.3 | a name beginning with $ that the language does not define is a legal system task name (user PLI tasks); it is resolved after analysis | clean |
+| `3.7.4_directive_unknown.v` | 3.7.4 | a name after a backtick that is neither a directive nor a defined macro is an undefined macro | `E4007` |
+| `3.7.4_directive_uselib.v` | 3.7.4 | `` `uselib `` is not supported | `E4010` |
 | `3.8_attr_dangling.v` | 3.8 | an attribute instance precedes an item or statement (known gap G4: a dangling one before endmodule is accepted) | clean (gap G4) |
 | `3.8_attr_empty.v` | 3.8 | an attribute instance holds at least one attribute name | `E4100` |
 | `3.8_attr_event_star.v` | 3.8 | (*) and @(*) are event-control star forms, not attributes | clean |
@@ -937,101 +936,107 @@ outer `endmodule`; a stringified macro argument gave the same `E4003` twice.
 | `3.8_attr_unterminated.v` | 3.8 | an attribute instance ends with *) | `E4100` |
 | `3.8_attr_value.v` | 3.8 | an attribute may have a constant value | clean |
 
-#### Clause 4: data types, nets, variables, parameters (38 checks)
+#### Clause 4: data types, nets, variables, parameters (36 checks)
 
 | File | Clause | Rule | Outcome |
 |---|---|---|---|
-| `4.2_declaration_missing_semicolon.v` | 4.2 | a declaration ends with a semicolon | `E4100` |
-| `4.2_net_declaration_assignment.v` | 4.2 | a net may be assigned where it is declared | clean |
-| `4.2_net_delay.v` | 4.2 | a net declaration may carry a delay of one, two or three values | clean |
-| `4.2_net_signed.v` | 4.2 | a net may be signed | clean |
-| `4.2_net_supply0.v` | 4.2 | supply0 is a net type | clean |
-| `4.2_net_supply1.v` | 4.2 | supply1 is a net type | clean |
-| `4.2_net_tri.v` | 4.2 | tri is a net type | clean |
-| `4.2_net_tri0.v` | 4.2 | tri0 is a net type | clean |
-| `4.2_net_tri1.v` | 4.2 | tri1 is a net type | clean |
-| `4.2_net_triand.v` | 4.2 | triand is a net type | clean |
-| `4.2_net_trior.v` | 4.2 | trior is a net type | clean |
-| `4.2_net_trireg.v` | 4.2 | trireg is a net type | clean |
-| `4.2_net_uwire.v` | 4.2 | uwire is a net type | clean |
-| `4.2_net_wand.v` | 4.2 | wand is a net type | clean |
-| `4.2_net_wire.v` | 4.2 | wire is a net type | clean |
-| `4.2_net_wor.v` | 4.2 | wor is a net type | clean |
-| `4.3_net_scalared_vectored.v` | 4.3 | a vector net may be scalared or vectored | clean |
-| `4.3_reg_no_range_expression.v` | 4.3 | the bounds of a range are constant expressions: a missing one is a syntax error | `E4100` |
-| `4.3_reg_range_descending_ascending.v` | 4.3 | a vector range may ascend or descend | clean |
-| `4.4_net_charge_strength.v` | 4.4 | a trireg may carry a charge strength | clean |
-| `4.4_net_drive_strength.v` | 4.4 | a net declaration with an assignment may carry a drive strength | clean |
+| `4.2.1_declaration_missing_semicolon.v` | 4.2.1 | a declaration ends with a semicolon | `E4100` |
+| `4.2.1_net_delay.v` | 4.2.1 | a net declaration may carry a delay of one, two or three values | clean |
+| `4.2.1_net_signed.v` | 4.2.1 | a net may be signed | clean |
+| `4.2.2_reg_types.v` | 4.2.2 | reg, integer, time, real and realtime declare variables | clean |
+| `4.3.1_reg_no_range_expression.v` | 4.3.1 | the bounds of a range are constant expressions: a missing one is a syntax error | `E4100` |
+| `4.3.1_reg_range_descending_ascending.v` | 4.3.1 | a vector range may ascend or descend | clean |
+| `4.3.2_net_scalared_vectored.v` | 4.3.2 | a vector net may be scalared or vectored | clean |
+| `4.4.1_net_charge_strength.v` | 4.4.1 | a trireg may carry a charge strength | clean |
+| `4.4.2_net_drive_strength.v` | 4.4.2 | a net declaration with an assignment may carry a drive strength | clean |
 | `4.5_default_nettype_wire_implicit.v` | 4.5 | by default an undeclared name in a continuous assignment is an implicit one-bit wire | clean |
+| `4.6.1_net_tri.v` | 4.6.1 | tri is a net type | clean |
+| `4.6.1_net_wire.v` | 4.6.1 | wire is a net type | clean |
+| `4.6.2_net_triand.v` | 4.6.2 | triand is a net type | clean |
+| `4.6.2_net_trior.v` | 4.6.2 | trior is a net type | clean |
+| `4.6.2_net_wand.v` | 4.6.2 | wand is a net type | clean |
+| `4.6.2_net_wor.v` | 4.6.2 | wor is a net type | clean |
+| `4.6.3_net_trireg.v` | 4.6.3 | trireg is a net type | clean |
+| `4.6.4_net_tri0.v` | 4.6.4 | tri0 is a net type | clean |
+| `4.6.4_net_tri1.v` | 4.6.4 | tri1 is a net type | clean |
+| `4.6.5_net_uwire.v` | 4.6.5 | uwire is a net type | clean |
+| `4.6.6_net_supply0.v` | 4.6.6 | supply0 is a net type | clean |
+| `4.6.6_net_supply1.v` | 4.6.6 | supply1 is a net type | clean |
 | `4.8_integer_has_no_range.v` | 4.8 | integer, time, real and realtime variables have no range | `E4100` |
 | `4.8_real_has_no_range.v` | 4.8 | integer, time, real and realtime variables have no range | `E4100` |
-| `4.8_reg_initial_value.v` | 4.8 | a variable may be given a value where it is declared | clean |
-| `4.8_reg_types.v` | 4.8 | reg, integer, time, real and realtime declare variables | clean |
-| `4.10_net_array.v` | 4.10 | a net may be an array | clean |
-| `4.10_reg_array_multi.v` | 4.10 | an array may have more than one dimension | clean |
-| `4.11_defparam.v` | 4.11 | defparam overrides a parameter by hierarchical name | clean |
-| `4.11_genvar_decl.v` | 4.11 | genvar declares generate loop variables | clean |
-| `4.11_localparam_without_value.v` | 4.11 | a localparam has a value | `E4100` |
-| `4.11_param_forms.v` | 4.11 | a parameter may be typed, signed, ranged, real or a string | clean |
-| `4.11_param_override_named.v` | 4.11 | instance parameters are overridden by name | clean |
-| `4.11_param_override_positional.v` | 4.11 | instance parameters are overridden by position | clean |
-| `4.11_param_port_list.v` | 4.11 | parameters may be declared in the header of a module | clean |
-| `4.11_param_sv_type.v` | 4.11 | a parameter type other than the 1364 ones (here int) is SystemVerilog | `E4003` |
-| `4.11_param_type_parameter.v` | 4.11 | type parameters are SystemVerilog | `E4003` |
-| `4.11_param_without_value.v` | 4.11 | a parameter has a default value | `E4100` |
+| `4.9_reg_array_multi.v` | 4.9 | an array may have more than one dimension | clean |
+| `4.9.1_net_array.v` | 4.9.1 | a net may be an array | clean |
+| `4.10.1_param_forms.v` | 4.10.1 | a parameter may be typed, signed, ranged, real or a string | clean |
+| `4.10.1_param_sv_type.v` | 4.10.1 | a parameter type other than the 1364 ones (here int) is SystemVerilog | `E4003` |
+| `4.10.1_param_type_parameter.v` | 4.10.1 | type parameters are SystemVerilog | `E4003` |
+| `4.10.1_param_without_value.v` | 4.10.1 | a parameter has a default value | `E4100` |
+| `4.10.2_localparam_without_value.v` | 4.10.2 | a localparam has a value | `E4100` |
+| `4.10.3_specify_specparam.v` | 4.10.3 | specparam declares constants for use in path delays | clean |
+| `4.10.3_specify_specparam_outside.v` | 4.10.3 | specparam may also be declared in the module body | clean |
+| `4.11_module_two_same_name.v` | 4.11 | module names are unique in a design | `E4200` |
+| `4.11_ports_inout_reg_name_dup.v` | 4.11 | a name is declared once in a module scope | `E4203` |
+| `4.11_task_duplicate_local.v` | 4.11 | a name is declared once in a task scope (known gap G2: duplicates inside task, function and block scopes are not checked) | clean (gap G2) |
 
-#### Clause 5: expressions (4 checks)
+#### Clause 5: expressions (9 checks)
 
 | File | Clause | Rule | Outcome |
 |---|---|---|---|
 | `5.1_expr_forms.v` | 5.1 | part selects, indexed part selects, concatenation, replication, conditional, function and system function calls | clean |
 | `5.1_expr_missing_operand.v` | 5.1 | a binary operator has two operands | `E4100` |
 | `5.1_expr_unbalanced_paren.v` | 5.1 | parentheses balance | `E4100` |
-| `5.4_expr_mintypmax.v` | 5.4 | a delay expression may be min:typ:max | clean |
+| `5.1_operator_sv_compound.v` | 5.1 | += is not a 1364 operator | `E4003` |
+| `5.1_operator_sv_implication.v` | 5.1 | -> in an expression is not a 1364 operator, only the event trigger statement | `E4100` |
+| `5.1_operator_sv_increment.v` | 5.1 | ++ is not a 1364 operator | `E4003` |
+| `5.1_operator_sv_wildcard_eq.v` | 5.1 | ==? is not a 1364 operator | `E4003` |
+| `5.1_operators_all.v` | 5.1 | every 1364-2005 operator is a token | clean |
+| `5.3_expr_mintypmax.v` | 5.3 | a delay expression may be min:typ:max | clean |
 
-#### Clause 6: assignments (1 checks)
+#### Clause 6: assignments (3 checks)
 
 | File | Clause | Rule | Outcome |
 |---|---|---|---|
-| `6.1_stmt_continuous_assign.v` | 6.1 | a continuous assignment with drive strength and delay | clean |
+| `6.1.1_net_declaration_assignment.v` | 6.1.1 | a net may be assigned where it is declared | clean |
+| `6.1.2_stmt_continuous_assign.v` | 6.1.2 | a continuous assignment with drive strength and delay | clean |
+| `6.2.1_reg_initial_value.v` | 6.2.1 | a variable may be given a value where it is declared | clean |
 
 #### Clause 7: gate and switch level modeling (19 checks)
 
 | File | Clause | Rule | Outcome |
 |---|---|---|---|
-| `7.1_gate_array_of_instances.v` | 7.1 | a gate instance may be an array with a range | clean |
-| `7.1_gate_basic.v` | 7.1 | a gate instance has an output followed by inputs; the instance name is optional | clean |
-| `7.1_gate_bidirectional.v` | 7.1 | tran, rtran take two inout terminals; tranif forms add a control | clean |
-| `7.1_gate_delay_two_for_n_input.v` | 7.1 | min:typ:max delays are legal in a gate delay | clean |
-| `7.1_gate_empty_terminals.v` | 7.1 | a gate instance has terminals | `E4100` |
 | `7.1_gate_missing_semicolon.v` | 7.1 | a gate instantiation ends with a semicolon | `E4100` |
-| `7.1_gate_mos_switches.v` | 7.1 | nmos, pmos and their r forms take an output, a data input and a control input; cmos takes four terminals | clean |
-| `7.1_gate_named_connection.v` | 7.1 | gate terminals are positional: a named connection is an error | `E4100` |
-| `7.1_gate_one_input_kinds.v` | 7.1 | buf and not take any number of outputs followed by one input | clean |
-| `7.1_gate_pull.v` | 7.1 | pullup and pulldown take one output terminal | clean |
-| `7.1_gate_strength_and_delay.v` | 7.1 | a gate may carry a drive strength and a delay, strength first | clean |
-| `7.1_gate_terminal_count_and.v` | 7.1 | an and gate has an output and at least one input | `E4100` |
-| `7.1_gate_terminal_count_bufif.v` | 7.1 | bufif1 has exactly three terminals | `E4100` |
-| `7.1_gate_terminal_count_cmos.v` | 7.1 | cmos has exactly four terminals | `E4100` |
-| `7.1_gate_terminal_count_not.v` | 7.1 | a not gate has at least an output and an input | `E4100` |
-| `7.1_gate_terminal_count_pullup.v` | 7.1 | pullup has exactly one terminal | `E4100` |
-| `7.1_gate_terminal_count_tran.v` | 7.1 | tran has exactly two terminals | `E4100` |
-| `7.1_gate_terminal_empty_position.v` | 7.1 | a gate terminal is not left empty | `E4100` |
-| `7.1_gate_tristate.v` | 7.1 | bufif and notif take an output, a data input and a control input | clean |
+| `7.1.2_gate_strength_and_delay.v` | 7.1.2 | a gate may carry a drive strength and a delay, strength first | clean |
+| `7.1.5_gate_array_of_instances.v` | 7.1.5 | a gate instance may be an array with a range | clean |
+| `7.1.6_gate_empty_terminals.v` | 7.1.6 | a gate instance has terminals | `E4100` |
+| `7.1.6_gate_named_connection.v` | 7.1.6 | gate terminals are positional: a named connection is an error | `E4100` |
+| `7.1.6_gate_terminal_empty_position.v` | 7.1.6 | a gate terminal is not left empty | `E4100` |
+| `7.2_gate_basic.v` | 7.2 | a gate instance has an output followed by inputs; the instance name is optional | clean |
+| `7.2_gate_delay_two_for_n_input.v` | 7.2 | min:typ:max delays are legal in a gate delay | clean |
+| `7.2_gate_terminal_count_and.v` | 7.2 | an and gate has an output and at least one input | `E4100` |
+| `7.3_gate_one_input_kinds.v` | 7.3 | buf and not take any number of outputs followed by one input | clean |
+| `7.3_gate_terminal_count_not.v` | 7.3 | a not gate has at least an output and an input | `E4100` |
+| `7.4_gate_terminal_count_bufif.v` | 7.4 | bufif1 has exactly three terminals | `E4100` |
+| `7.4_gate_tristate.v` | 7.4 | bufif and notif take an output, a data input and a control input | clean |
+| `7.5_gate_mos_switches.v` | 7.5 | nmos, pmos and their r forms take an output, a data input and a control input; cmos takes four terminals | clean |
+| `7.6_gate_bidirectional.v` | 7.6 | tran, rtran take two inout terminals; tranif forms add a control | clean |
+| `7.6_gate_terminal_count_tran.v` | 7.6 | tran has exactly two terminals | `E4100` |
+| `7.7_gate_terminal_count_cmos.v` | 7.7 | cmos has exactly four terminals | `E4100` |
+| `7.8_gate_pull.v` | 7.8 | pullup and pulldown take one output terminal | clean |
+| `7.8_gate_terminal_count_pullup.v` | 7.8 | pullup has exactly one terminal | `E4100` |
 
 #### Clause 8: user-defined primitives (18 checks)
 
 | File | Clause | Rule | Outcome |
 |---|---|---|---|
-| `8.1_udp_inout_port.v` | 8.1 | a UDP has no inout port | `E4100` |
-| `8.1_udp_no_table.v` | 8.1 | a UDP has a table | `E4100` |
-| `8.1_udp_old_style_ports.v` | 8.1 | a UDP header may list names with the directions declared in the body | clean |
-| `8.1_udp_output_not_first.v` | 8.1 | the output of a UDP is its first port | `E4100` |
-| `8.1_udp_two_outputs.v` | 8.1 | a UDP has exactly one output | `E4100` |
+| `8.1.1_udp_inout_port.v` | 8.1.1 | a UDP has no inout port | `E4100` |
+| `8.1.1_udp_old_style_ports.v` | 8.1.1 | a UDP header may list names with the directions declared in the body | clean |
+| `8.1.1_udp_output_not_first.v` | 8.1.1 | the output of a UDP is its first port | `E4100` |
+| `8.1.1_udp_two_outputs.v` | 8.1.1 | a UDP has exactly one output | `E4100` |
+| `8.1.4_udp_no_table.v` | 8.1.4 | a UDP has a table | `E4100` |
+| `8.1.4_udp_row_too_few_fields.v` | 8.1.4 | a combinational row has one value per input | `E4100` |
+| `8.1.4_udp_row_too_many_fields.v` | 8.1.4 | a combinational row has one value per input | `E4100` |
+| `8.1.6_udp_bad_symbol.v` | 8.1.6 | a table symbol is one of 0 1 x X ? b B - r R f F p P n N * | `E4100` |
 | `8.2_udp_combinational.v` | 8.2 | a combinational UDP has one output, then inputs, and a table of input values : output | clean |
 | `8.2_udp_combinational_with_state_field.v` | 8.2 | a combinational row has no current-state field | `E4100` |
-| `8.2_udp_row_too_few_fields.v` | 8.2 | a combinational row has one value per input | `E4100` |
-| `8.2_udp_row_too_many_fields.v` | 8.2 | a combinational row has one value per input | `E4100` |
 | `8.3_udp_level_sensitive.v` | 8.3 | a sequential UDP has an output reg and rows of inputs : state : next state | clean |
 | `8.3_udp_output_reg_without_initial_ok.v` | 8.3 | initial is optional for a sequential UDP | clean |
 | `8.3_udp_sequential_missing_state_field.v` | 8.3 | a sequential row has a current-state field | `E4100` |
@@ -1040,7 +1045,6 @@ outer `endmodule`; a stringified macro argument gave the same `E4003` twice.
 | `8.5_udp_initial.v` | 8.5 | a sequential UDP may initialise its output with initial | clean |
 | `8.5_udp_initial_bad_value.v` | 8.5 | the initial value of a UDP is 0, 1 or x | `E4100` |
 | `8.6_udp_instance.v` | 8.6 | a UDP is instantiated like a gate, with an optional name and delay | clean |
-| `8.7_udp_bad_symbol.v` | 8.7 | a table symbol is one of 0 1 x X ? b B - r R f F p P n N * | `E4100` |
 
 #### Clause 9: behavioral modeling (17 checks)
 
@@ -1050,99 +1054,100 @@ outer `endmodule`; a stringified macro argument gave the same `E4003` twice.
 | `9.2_stmt_missing_semicolon.v` | 9.2 | a statement ends with a semicolon | `E4100` |
 | `9.2_stmt_sv_compound_assign.v` | 9.2 | compound assignment operators are SystemVerilog | `E4003` |
 | `9.3_stmt_procedural_continuous.v` | 9.3 | assign, deassign, force and release are procedural continuous assignments | clean |
+| `9.4_stmt_assign_in_condition_missing_paren.v` | 9.4 | the condition of an if is in parentheses | `E4100` |
+| `9.4_stmt_else_without_if.v` | 9.4 | else follows an if | `E4100` |
+| `9.4_stmt_if_else_case.v` | 9.4 | if, else, case, casex and casez | clean |
 | `9.5_case_two_defaults.v` | 9.5 | a case statement has at most one default item | `E4100` |
-| `9.5_stmt_assign_in_condition_missing_paren.v` | 9.5 | the condition of an if is in parentheses | `E4100` |
-| `9.5_stmt_else_without_if.v` | 9.5 | else follows an if | `E4100` |
-| `9.5_stmt_if_else_case.v` | 9.5 | if, else, case, casex and casez | clean |
 | `9.6_stmt_loops.v` | 9.6 | forever, repeat, while and for loops | clean |
-| `9.7_stmt_event_star.v` | 9.7 | @* and @(*) are the implicit sensitivity list | clean |
 | `9.7_stmt_timing_controls.v` | 9.7 | delay, event and wait controls | clean |
-| `9.8_stmt_begin_without_end.v` | 9.8 | begin ends with end | `E4100` |
-| `9.8_stmt_fork_join.v` | 9.8 | fork and join run statements in parallel | clean |
-| `9.8_stmt_named_block_disable.v` | 9.8 | a named block has declarations and can be disabled | clean |
-| `9.8_stmt_sv_end_label.v` | 9.8 | a label after end is SystemVerilog | `E4003` |
+| `9.7.5_stmt_event_star.v` | 9.7.5 | @* and @(*) are the implicit sensitivity list | clean |
+| `9.8.1_stmt_begin_without_end.v` | 9.8.1 | begin ends with end | `E4100` |
+| `9.8.2_stmt_fork_join.v` | 9.8.2 | fork and join run statements in parallel | clean |
+| `9.8.3_stmt_named_block_disable.v` | 9.8.3 | a named block has declarations and can be disabled | clean |
+| `9.8.3_stmt_sv_end_label.v` | 9.8.3 | a label after end is SystemVerilog | `E4003` |
 | `9.9_stmt_procedural_blocks.v` | 9.9 | initial and always are the procedural blocks | clean |
 | `9.9_stmt_sv_always_ff.v` | 9.9 | always_ff is SystemVerilog | `E4003` |
 
-#### Clause 10: tasks and functions (7 checks)
+#### Clause 10: tasks and functions (6 checks)
 
 | File | Clause | Rule | Outcome |
 |---|---|---|---|
-| `10.2_task_declaration.v` | 10.2 | a task has ports, declarations and a statement; tasks may be automatic | clean |
-| `10.2_task_duplicate_local.v` | 10.2 | a name is declared once in a task scope (known gap G2: duplicates inside task, function and block scopes are not checked) | clean (gap G2) |
-| `10.3_function_declaration.v` | 10.3 | a function has a return type or range and at least one input | clean |
-| `10.3_function_missing_endfunction.v` | 10.3 | a function ends with endfunction | `E4100` |
-| `10.3_function_output_argument.v` | 10.3 | a function has input arguments only | `E4100` |
-| `10.3_function_without_input.v` | 10.3 | a function has at least one input argument | `E4100` |
-| `10.3_task_sv_void_function.v` | 10.3 | a void function is SystemVerilog | `E4003` |
+| `10.2.1_task_declaration.v` | 10.2.1 | a task has ports, declarations and a statement; tasks may be automatic | clean |
+| `10.4.1_function_declaration.v` | 10.4.1 | a function has a return type or range and at least one input | clean |
+| `10.4.1_function_missing_endfunction.v` | 10.4.1 | a function ends with endfunction | `E4100` |
+| `10.4.1_task_sv_void_function.v` | 10.4.1 | a void function is SystemVerilog | `E4003` |
+| `10.4.4_function_output_argument.v` | 10.4.4 | a function has input arguments only | `E4100` |
+| `10.4.4_function_without_input.v` | 10.4.4 | a function has at least one input argument | `E4100` |
 
-#### Clause 12: hierarchical structures (modules, ports, generate) (44 checks)
+#### Clause 12: hierarchical structures (modules, ports, generate) (48 checks)
 
 | File | Clause | Rule | Outcome |
 |---|---|---|---|
-| `12.1_instance_array.v` | 12.1 | an instance may be an array of instances with a range | clean |
-| `12.1_instance_missing_name.v` | 12.1 | an instance of a module has an instance name; only gate and UDP instances may omit it (known gap G1: the parser cannot tell a module from a UDP before elaboration) | clean (gap G1) |
 | `12.1_module_empty.v` | 12.1 | a module may have no ports and no items | clean |
 | `12.1_module_empty_port_list.v` | 12.1 | a module may have an empty port list | clean |
 | `12.1_module_macromodule.v` | 12.1 | macromodule is the same as module; not supported | `E4101` |
 | `12.1_module_missing_endmodule.v` | 12.1 | a module ends with endmodule | `E4100` |
 | `12.1_module_missing_name.v` | 12.1 | a module has a name | `E4100` |
-| `12.1_module_nested_declaration.v` | 12.1 | a module declaration does not nest in 1364-2005 | `E4003` |
-| `12.1_module_two_same_name.v` | 12.1 | module names are unique in a design | `E4200` |
-| `12.1_ports_inout_reg_name_dup.v` | 12.1 | a name is declared once in a module scope | `E4203` |
-| `12.3_instance_mixed_connections.v` | 12.3 | named and positional connections do not mix in one instance | `E4100` |
-| `12.3_instance_named_connections.v` | 12.3 | instance ports connect by name, with empty connections allowed | clean |
-| `12.3_instance_positional_connections.v` | 12.3 | instance ports connect by position, with an empty position allowed | clean |
-| `12.3_ports_ansi.v` | 12.3 | ports are declared in the header with a direction and an optional type and range | clean |
-| `12.3_ports_ansi_duplicate.v` | 12.3 | two ports of one ANSI header have different names | `E4203` |
-| `12.3_ports_ansi_missing_comma.v` | 12.3 | ports in a list are separated by commas | `E4100` |
-| `12.3_ports_ansi_shared_direction.v` | 12.3 | a direction applies to the following names until the next direction | clean |
-| `12.3_ports_ansi_trailing_comma.v` | 12.3 | the port list has no trailing comma | `E4100` |
-| `12.3_ports_ansi_type_redeclared_ok.v` | 12.3 | the body may repeat the name of an ANSI port to give it a type: accepted, as the other tools do (V6) | clean |
-| `12.3_ports_inout_reg.v` | 12.3 | an inout port is a net: it cannot be declared reg | `E4202` |
-| `12.3_ports_input_reg.v` | 12.3 | an input port is a net: it cannot be declared reg | `E4202` |
-| `12.3_ports_input_reg_non_ansi.v` | 12.3 | a non-ANSI input declaration cannot say reg either | `E4202` |
-| `12.3_ports_listed_twice.v` | 12.3 | a port name is listed once in the header | `E4202` |
-| `12.3_ports_non_ansi.v` | 12.3 | a non-ANSI header lists names and the body declares direction and type | clean |
-| `12.3_ports_non_ansi_declared_twice.v` | 12.3 | a port has one direction declaration | `E4202` |
-| `12.3_ports_non_ansi_extra_direction.v` | 12.3 | a direction declaration names a port of the list | `E4202` |
-| `12.3_ports_non_ansi_missing_direction.v` | 12.3 | every port of the list has a direction declaration in the body | `E4202` |
-| `12.3_ports_non_ansi_type_redeclared_ok.v` | 12.3 | a non-ANSI port may be declared again as reg or wire to give it a type | clean |
-| `12.3_ports_sv_dot_star.v` | 12.3 | the .* port connection is SystemVerilog | `E4003` |
-| `12.3_ports_sv_type.v` | 12.3 | a port type outside 1364 (here logic) is SystemVerilog | `E4003` |
+| `12.1_param_port_list.v` | 12.1 | parameters may be declared in the header of a module | clean |
+| `12.1_systask_elaboration_items.v` | 12.1 | the elaboration tasks $error, $warning, $info and $fatal are accepted as module items (extension V4) | clean |
+| `12.1.2_instance_array.v` | 12.1.2 | an instance may be an array of instances with a range | clean |
+| `12.1.2_instance_missing_name.v` | 12.1.2 | an instance of a module has an instance name; only gate and UDP instances may omit it (known gap G1: the parser cannot tell a module from a UDP before elaboration) | clean (gap G1) |
+| `12.1.2_module_nested_declaration.v` | 12.1.2 | a module declaration does not nest in 1364-2005 | `E4003` |
+| `12.2.1_defparam.v` | 12.2.1 | defparam overrides a parameter by hierarchical name | clean |
+| `12.2.2_param_override_named.v` | 12.2.2 | instance parameters are overridden by name | clean |
+| `12.2.2_param_override_positional.v` | 12.2.2 | instance parameters are overridden by position | clean |
+| `12.3.2_ports_listed_twice.v` | 12.3.2 | a port name is listed once in the header | `E4202` |
 | `12.3.2_ports_named_expressions.v` | 12.3.2 | a port may be a named port expression such as .p(a) | clean |
+| `12.3.3_ports_non_ansi.v` | 12.3.3 | a non-ANSI header lists names and the body declares direction and type | clean |
+| `12.3.3_ports_non_ansi_declared_twice.v` | 12.3.3 | a port has one direction declaration | `E4202` |
+| `12.3.3_ports_non_ansi_extra_direction.v` | 12.3.3 | a direction declaration names a port of the list | `E4202` |
+| `12.3.3_ports_non_ansi_missing_direction.v` | 12.3.3 | every port of the list has a direction declaration in the body | `E4202` |
+| `12.3.3_ports_non_ansi_type_redeclared_ok.v` | 12.3.3 | a non-ANSI port may be declared again as reg or wire to give it a type | clean |
+| `12.3.4_ports_ansi.v` | 12.3.4 | ports are declared in the header with a direction and an optional type and range | clean |
+| `12.3.4_ports_ansi_duplicate.v` | 12.3.4 | two ports of one ANSI header have different names | `E4203` |
+| `12.3.4_ports_ansi_missing_comma.v` | 12.3.4 | ports in a list are separated by commas | `E4100` |
+| `12.3.4_ports_ansi_shared_direction.v` | 12.3.4 | a direction applies to the following names until the next direction | clean |
+| `12.3.4_ports_ansi_trailing_comma.v` | 12.3.4 | the port list has no trailing comma | `E4100` |
+| `12.3.4_ports_ansi_type_redeclared_ok.v` | 12.3.4 | the body may repeat the name of an ANSI port to give it a type: accepted, as the other tools do (V6) | clean |
+| `12.3.4_ports_sv_type.v` | 12.3.4 | a port type outside 1364 (here logic) is SystemVerilog | `E4003` |
+| `12.3.5_instance_positional_connections.v` | 12.3.5 | instance ports connect by position, with an empty position allowed | clean |
+| `12.3.6_instance_mixed_connections.v` | 12.3.6 | named and positional connections do not mix in one instance | `E4100` |
+| `12.3.6_instance_named_connections.v` | 12.3.6 | instance ports connect by name, with empty connections allowed | clean |
+| `12.3.6_ports_sv_dot_star.v` | 12.3.6 | the .* port connection is SystemVerilog | `E4003` |
+| `12.3.9.1_ports_inout_reg.v` | 12.3.9.1 | an inout port is a net: it cannot be declared reg | `E4202` |
+| `12.3.9.1_ports_input_reg.v` | 12.3.9.1 | an input port is a net: it cannot be declared reg | `E4202` |
+| `12.3.9.1_ports_input_reg_non_ansi.v` | 12.3.9.1 | a non-ANSI input declaration cannot say reg either | `E4202` |
 | `12.4_generate_block_end_label_sv.v` | 12.4 | an end label after a block is SystemVerilog | `E4003` |
-| `12.4_generate_case.v` | 12.4 | a generate case selects a block by a constant expression | clean |
-| `12.4_generate_case_two_defaults.v` | 12.4 | a generate case has at most one default item | `E4100` |
-| `12.4_generate_for.v` | 12.4 | a generate for loop uses a genvar and a named or unnamed block | clean |
-| `12.4_generate_for_missing_part.v` | 12.4 | the loop header has an initialisation, a condition and a step | `E4100` |
-| `12.4_generate_if_else.v` | 12.4 | a generate if selects between blocks by a constant expression | clean |
 | `12.4_generate_instances.v` | 12.4 | a generate block may hold instances and procedural blocks | clean |
-| `12.4_generate_loop_not_genvar.v` | 12.4 | the variable of a generate for loop is a genvar | `E4204` |
 | `12.4_generate_missing_endgenerate.v` | 12.4 | generate ends with endgenerate | `E4100` |
-| `12.4_generate_nested.v` | 12.4 | generate constructs nest | clean |
-| `12.4_generate_single_item_no_begin.v` | 12.4 | a generate if with one item needs no begin and end | clean |
-| `12.4_generate_unnamed_block.v` | 12.4 | the block of a generate loop may be unnamed | clean |
-| `12.4_generate_without_keyword.v` | 12.4 | a generate loop or conditional may appear in a module without generate and endgenerate (1364-2005) | clean |
+| `12.4.1_generate_for.v` | 12.4.1 | a generate for loop uses a genvar and a named or unnamed block | clean |
+| `12.4.1_generate_for_missing_part.v` | 12.4.1 | the loop header has an initialisation, a condition and a step | `E4100` |
+| `12.4.1_generate_loop_not_genvar.v` | 12.4.1 | the variable of a generate for loop is a genvar | `E4204` |
+| `12.4.1_generate_nested.v` | 12.4.1 | generate constructs nest | clean |
+| `12.4.1_generate_unnamed_block.v` | 12.4.1 | the block of a generate loop may be unnamed | clean |
+| `12.4.1_generate_without_keyword.v` | 12.4.1 | a generate loop or conditional may appear in a module without generate and endgenerate (1364-2005) | clean |
+| `12.4.1_genvar_decl.v` | 12.4.1 | genvar declares generate loop variables | clean |
+| `12.4.2_generate_case.v` | 12.4.2 | a generate case selects a block by a constant expression | clean |
+| `12.4.2_generate_case_two_defaults.v` | 12.4.2 | a generate case has at most one default item | `E4100` |
+| `12.4.2_generate_if_else.v` | 12.4.2 | a generate if selects between blocks by a constant expression | clean |
+| `12.4.2_generate_single_item_no_begin.v` | 12.4.2 | a generate if with one item needs no begin and end | clean |
 
-#### Clause 14: specify blocks (14 checks)
+#### Clause 14: specify blocks (12 checks)
 
 | File | Clause | Rule | Outcome |
 |---|---|---|---|
 | `14.1_specify_missing_endspecify.v` | 14.1 | a specify block ends with endspecify | `E4100` |
-| `14.2_specify_bad_path_operator.v` | 14.2 | a path uses => or *> | `E4100` |
-| `14.2_specify_edge_sensitive_path.v` | 14.2 | an edge-sensitive path names an edge and a data source | clean |
-| `14.2_specify_full_path.v` | 14.2 | a full path connects lists of inputs to lists of outputs with *> | clean |
-| `14.2_specify_missing_delay.v` | 14.2 | a path declaration has a delay | `E4100` |
-| `14.2_specify_parallel_path.v` | 14.2 | a parallel path connects one input to one output: (in => out) = delay | clean |
-| `14.2_specify_specparam.v` | 14.2 | specparam declares constants for use in path delays | clean |
-| `14.2_specify_specparam_outside.v` | 14.2 | specparam may also be declared in the module body | clean |
-| `14.2_specify_state_dependent.v` | 14.2 | a path may be conditional with if, and ifnone is the default | clean |
+| `14.2.2_specify_bad_path_operator.v` | 14.2.2 | a path uses => or *> | `E4100` |
+| `14.2.2_specify_full_path.v` | 14.2.2 | a full path connects lists of inputs to lists of outputs with *> | clean |
+| `14.2.2_specify_missing_delay.v` | 14.2.2 | a path declaration has a delay | `E4100` |
+| `14.2.2_specify_parallel_path.v` | 14.2.2 | a parallel path connects one input to one output: (in => out) = delay | clean |
+| `14.2.3_specify_edge_sensitive_path.v` | 14.2.3 | an edge-sensitive path names an edge and a data source | clean |
+| `14.2.4_specify_state_dependent.v` | 14.2.4 | a path may be conditional with if, and ifnone is the default | clean |
 | `14.3_specify_delay_count_four.v` | 14.3 | a path delay with four values is not allowed | `E4100` |
 | `14.3_specify_delay_counts.v` | 14.3 | a path delay has 1, 2, 3, 6 or 12 values | clean |
 | `14.3_specify_delay_mintypmax.v` | 14.3 | a path delay value may be min:typ:max | clean |
-| `14.5_specify_pathpulse.v` | 14.5 | PATHPULSE$ specparams set the pulse limits of a path | clean |
-| `14.5_specify_pulsestyle.v` | 14.5 | pulsestyle and showcancelled declarations name outputs | clean |
+| `14.6.1_specify_pathpulse.v` | 14.6.1 | PATHPULSE$ specparams set the pulse limits of a path | clean |
+| `14.6.4_specify_pulsestyle.v` | 14.6.4 | pulsestyle and showcancelled declarations name outputs | clean |
 
 #### Clause 15: timing checks (3 checks)
 
@@ -1150,31 +1155,28 @@ outer `endmodule`; a stringified macro argument gave the same `E4003` twice.
 |---|---|---|---|
 | `15_specify_checks_ignored_default.v` | 15 | timing checks are parsed; without XIL_TIMING they are accepted silently | clean |
 | `15_specify_checks_warn_when_enabled.v` | 15 | with XIL_TIMING defined the checks are still not evaluated: one warning per call says so | `W4015` |
-| `15_timing_check_forms.v` | 15 | the timing check system tasks take a data event, a reference event and limits | clean |
+| `15.1_timing_check_forms.v` | 15.1 | the timing check system tasks take a data event, a reference event and limits | clean |
 
-#### Clause 17: system tasks and functions (11 checks)
+#### Clause 17: system tasks and functions (8 checks)
 
 | File | Clause | Rule | Outcome |
 |---|---|---|---|
-| `17_systask_as_item.v` | 17 | a system task enable is a statement and does not stand at module level (other than the elaboration tasks of V4) | `E4100` |
-| `17_systask_elaboration_items.v` | 17 | the elaboration tasks $error, $warning, $info and $fatal are accepted as module items (extension V4) | clean |
-| `17_systask_missing_semicolon.v` | 17 | a system task enable ends with a semicolon | `E4100` |
 | `17.1_systask_display_family.v` | 17.1 | the display, write, strobe and monitor tasks, with base suffixes | clean |
 | `17.2_systask_file_io.v` | 17.2 | file input and output tasks and functions | clean |
 | `17.3_systask_timescale_tasks.v` | 17.3 | $printtimescale and $timeformat | clean |
 | `17.4_systask_simulation_control.v` | 17.4 | $finish and $stop take an optional argument | clean |
-| `17.7_systask_math_conversion.v` | 17.7 | math and conversion functions; $clog2 is new in 1364-2005 | clean |
 | `17.7_systask_time_functions.v` | 17.7 | $time, $stime and $realtime return the simulation time | clean |
 | `17.9_systask_random.v` | 17.9 | $random with and without a seed | clean |
 | `17.10_systask_plusargs.v` | 17.10 | $test$plusargs and $value$plusargs | clean |
+| `17.11_systask_math_conversion.v` | 17.11 | math and conversion functions; $clog2 is new in 1364-2005 | clean |
 
-#### Clause 18: value change dump (1 checks)
+#### Clause 18: value change dump (1 check)
 
 | File | Clause | Rule | Outcome |
 |---|---|---|---|
-| `18_systask_vcd.v` | 18 | value change dump tasks | clean |
+| `18.1_systask_vcd.v` | 18.1 | value change dump tasks | clean |
 
-#### Clause 19: compiler directives (85 checks)
+#### Clause 19: compiler directives (83 checks)
 
 | File | Clause | Rule | Outcome |
 |---|---|---|---|
@@ -1196,28 +1198,26 @@ outer `endmodule`; a stringified macro argument gave the same `E4003` twice.
 | `19.2_default_nettype_wand.v` | 19.2 | `` `default_nettype `` wand is a legal setting | clean |
 | `19.2_default_nettype_wire.v` | 19.2 | `` `default_nettype `` wire is a legal setting | clean |
 | `19.2_default_nettype_wor.v` | 19.2 | `` `default_nettype `` wor is a legal setting | clean |
-| `19.3_define_args_nested_parens.v` | 19.3 | a comma inside parentheses does not separate actual arguments | clean |
-| `19.3_define_args_string_comma.v` | 19.3 | a comma inside a string does not separate actual arguments | clean |
-| `19.3_define_bad_formal_list.v` | 19.3 | the formal arguments of a macro are simple identifiers separated by commas | `E4008` |
-| `19.3_define_continued_line.v` | 19.3 | a macro text continues on the next line after a backslash at the end of a line | clean |
-| `19.3_define_empty_text.v` | 19.3 | a macro may have an empty text | clean |
-| `19.3_define_macro_in_macro.v` | 19.3 | the text of a macro may use other macros, expanded when it is used | clean |
-| `19.3_define_no_name.v` | 19.3 | `` `define `` is followed by a macro name | `E4008` |
-| `19.3_define_redefine.v` | 19.3 | a later `` `define `` of the same name replaces the earlier text | clean |
-| `19.3_define_self_recursive.v` | 19.3 | a macro whose text uses itself never finishes expanding | `E4011` |
-| `19.3_define_simple.v` | 19.3 | a text macro defined with `` `define `` is replaced where `NAME is used | clean |
-| `19.3_define_string_token.v` | 19.3 | a macro name inside a string is not expanded | clean |
-| `19.3_define_sv_default_argument.v` | 19.3 | default values of macro arguments are not in 1364-2005 | `E4003` |
-| `19.3_define_sv_stringify.v` | 19.3 | the `" construct is not in 1364-2005 | `E4003` |
-| `19.3_define_sv_token_paste.v` | 19.3 | the `` token paste is not in 1364-2005 | `E4003` |
-| `19.3_define_too_many_arguments.v` | 19.3 | a macro call gives exactly as many actual arguments as the definition has formals | `E4008` |
-| `19.3_define_undefined_use.v` | 19.3 | a macro is used only after its `` `define `` | `E4007` |
-| `19.3_define_unterminated_call.v` | 19.3 | the argument list of a macro call ends with a closing parenthesis | `E4008` |
-| `19.3_define_use_before_define.v` | 19.3 | a macro defined after its use is not defined at the use | `E4007` |
-| `19.3_define_with_args.v` | 19.3 | a macro may have formal arguments, replaced by the actual arguments of the call | clean |
-| `19.3_define_wrong_argument_count.v` | 19.3 | a macro call gives exactly as many actual arguments as the definition has formals | `E4008` |
-| `19.3_directive_unknown.v` | 19.3 | a name after a backtick that is neither a directive nor a defined macro is an undefined macro | `E4007` |
-| `19.3_directive_uselib.v` | 19.3 | `` `uselib `` is not supported | `E4010` |
+| `19.3.1_define_args_nested_parens.v` | 19.3.1 | a comma inside parentheses does not separate actual arguments | clean |
+| `19.3.1_define_args_string_comma.v` | 19.3.1 | a comma inside a string does not separate actual arguments | clean |
+| `19.3.1_define_bad_formal_list.v` | 19.3.1 | the formal arguments of a macro are simple identifiers separated by commas | `E4008` |
+| `19.3.1_define_continued_line.v` | 19.3.1 | a macro text continues on the next line after a backslash at the end of a line | clean |
+| `19.3.1_define_empty_text.v` | 19.3.1 | a macro may have an empty text | clean |
+| `19.3.1_define_macro_in_macro.v` | 19.3.1 | the text of a macro may use other macros, expanded when it is used | clean |
+| `19.3.1_define_no_name.v` | 19.3.1 | `` `define `` is followed by a macro name | `E4008` |
+| `19.3.1_define_redefine.v` | 19.3.1 | a later `` `define `` of the same name replaces the earlier text | clean |
+| `19.3.1_define_self_recursive.v` | 19.3.1 | a macro whose text uses itself never finishes expanding | `E4011` |
+| `19.3.1_define_simple.v` | 19.3.1 | a text macro defined with `` `define `` is replaced where `` `NAME `` is used | clean |
+| `19.3.1_define_string_token.v` | 19.3.1 | a macro name inside a string is not expanded | clean |
+| `19.3.1_define_sv_default_argument.v` | 19.3.1 | default values of macro arguments are not in 1364-2005 | `E4003` |
+| `19.3.1_define_sv_stringify.v` | 19.3.1 | the `" construct is not in 1364-2005 | `E4003` |
+| `19.3.1_define_sv_token_paste.v` | 19.3.1 | the `` token paste is not in 1364-2005 | `E4003` |
+| `19.3.1_define_too_many_arguments.v` | 19.3.1 | a macro call gives exactly as many actual arguments as the definition has formals | `E4008` |
+| `19.3.1_define_undefined_use.v` | 19.3.1 | a macro is used only after its `` `define `` | `E4007` |
+| `19.3.1_define_unterminated_call.v` | 19.3.1 | the argument list of a macro call ends with a closing parenthesis | `E4008` |
+| `19.3.1_define_use_before_define.v` | 19.3.1 | a macro defined after its use is not defined at the use | `E4007` |
+| `19.3.1_define_with_args.v` | 19.3.1 | a macro may have formal arguments, replaced by the actual arguments of the call | clean |
+| `19.3.1_define_wrong_argument_count.v` | 19.3.1 | a macro call gives exactly as many actual arguments as the definition has formals | `E4008` |
 | `19.3.2_undef_defined.v` | 19.3.2 | `` `undef `` removes a macro; its use afterwards is an error | `E4007` |
 | `19.3.2_undef_never_defined.v` | 19.3.2 | `` `undef `` of a name that is not defined is not an error | clean |
 | `19.3.2_undef_no_name.v` | 19.3.2 | `` `undef `` is followed by a macro name | `E4009` |

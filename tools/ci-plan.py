@@ -83,7 +83,8 @@ def selftest():
     t(["python/vunit-yavs/vunit_yavs/console.py"], "light", vwin=True)
     # Anything that can change results: the full Linux jobs. Unknown files too.
     for f in ["tests/corpus/x/a.vhd", "tests/cli/a.stderr", "tools/corpus/grlib-1993.expected",
-              "tools/difftest/difftest.py", "tools/fetch-corpus.sh", "tools/ci-plan.py", "new-file", ".rustfmt.toml",
+              "tools/difftest/difftest.py", "tools/fetch-corpus.sh", "tests/verilog/ci/udp_comb.v",
+              "tools/verilog/corpus.py", "tools/verilog/vendor.expected", "tools/ci-plan.py", "new-file", ".rustfmt.toml",
               "fuzz/Cargo.toml", ".github/workflows/new.yml", "tools/simconf.py"]:
         t([f], "full", stubs=0)
     for f in ["crates/yavs/src/main.rs", "crates/yavs-kernel/src/kernel.rs", "crates/yavs-vhpi/tests/plugin/plugin.c",

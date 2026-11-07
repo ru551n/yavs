@@ -191,6 +191,13 @@ jobs:
               || { failed="$failed $m"; echo "::group::$m differs"; grep -h '^DIFF\|differ from' "$RUNNER_TEMP/$m.log"; echo "::endgroup::"; }
           done
           test -z "$failed" || { echo "corpora differing from their expected lists:$failed"; exit 1; }
+      # Verilog front end (#776): the hand-written fixtures and the open-source cell models against their
+      # expected lists. The vendor install gate (tools/verilog/corpus.py vendor) is local only.
+      - name: Check the Verilog fixtures and cell models against their expected lists
+        run: |
+          python3 -I tools/verilog/selftest.py
+          python3 -I tools/verilog/fixtures.py --yavs target/release/yavs --no-wrap
+          python3 -I tools/verilog/corpus.py cells --yavs target/release/yavs --no-wrap
       # yavs lint on what those runs built: no internal error, and the definite findings are the
       # confirmed ones.
       - name: Run yavs lint over the corpus libraries

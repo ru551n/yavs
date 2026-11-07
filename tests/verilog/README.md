@@ -10,9 +10,9 @@ Verilog plan (#776); no third-party text. Read `AGENTS.md` here first.
 | `lrm/` | Reserved for the per-clause LRM checks of the plan (not created yet) | |
 
 ```sh
-python3 -I tools/verilog/fixtures.py --static          # manifest against files; needs no analyzer (not run by CI yet)
+python3 -I tools/verilog/fixtures.py --static          # manifest against files; needs no analyzer
 python3 -I tools/verilog/fixtures.py --yavs target/release/yavs
-python3 -I tools/verilog/selftest.py                    # the tools against a stand-in analyzer, with deliberately wrong ones
+python3 -I tools/verilog/selftest.py                    # the tools' own failure and skip paths
 ```
 
 ## `ci/fixtures.expected`

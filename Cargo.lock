@@ -2326,6 +2326,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "yavs-verilog"
+version = "0.16.1"
+
+[[package]]
 name = "yavs-vhpi"
 version = "0.16.1"
 dependencies = [

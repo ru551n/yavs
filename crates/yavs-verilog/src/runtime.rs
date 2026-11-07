@@ -290,11 +290,12 @@ impl Core {
                     });
                 }
             }
-            Wait::Delay(d) if d > Time::ZERO => {
-                let at = ctx.after(d)?;
-                self.future.entry(at).or_default().push(Item::Resume(p));
-            }
-            Wait::Delay(_) | Wait::Zero => self.inactive.push(p),
+            // A delay the resolution truncates to zero is `#0`.
+            Wait::Delay(d) => match ctx.after(d)? {
+                at if at > ctx.now() => self.future.entry(at).or_default().push(Item::Resume(p)),
+                _ => self.inactive.push(p),
+            },
+            Wait::Zero => self.inactive.push(p),
             Wait::Done => {}
         }
         Ok(())
@@ -379,11 +380,9 @@ impl Exec<'_, '_> {
             at,
             value: v,
         };
-        if delay == Time::ZERO {
-            self.core.nba.push(u);
-        } else {
-            let t = self.ctx.after(delay)?;
-            self.core.future.entry(t).or_default().push(Item::Nba(u));
+        match self.ctx.after(delay)? {
+            t if t > self.ctx.now() => self.core.future.entry(t).or_default().push(Item::Nba(u)),
+            _ => self.core.nba.push(u),
         }
         Ok(())
     }

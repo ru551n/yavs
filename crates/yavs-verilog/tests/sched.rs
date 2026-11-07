@@ -204,14 +204,24 @@ fn edge_table() {
 
 #[test]
 fn zero_delay_runs_before_nba() {
+    zero_delay_case(Time::ZERO, Config::default());
+    // A delay below the resolution is `#0` (and `<= #0`).
+    let ns_res = Config {
+        resolution: yavs_kernel::Unit::Ns,
+        ..Config::default()
+    };
+    zero_delay_case(Time::fs(1).unwrap(), ns_res);
+}
+
+fn zero_delay_case(delay: Time, cfg: Config) {
     let mut d = Domain::new();
     let x = d.net(v("0"));
     let mut step = 0;
     d.process("a", move |e| {
         step += 1;
         if step == 1 {
-            e.nba(x, 0, v("1"), Time::ZERO)?;
-            return Ok(Wait::Zero);
+            e.nba(x, 0, v("1"), delay)?;
+            return Ok(Wait::Delay(delay));
         }
         e.display(&format!("a after #0: x={}", e.get(x)));
         Ok(Wait::Done)
@@ -222,10 +232,36 @@ fn zero_delay_runs_before_nba() {
     });
     let mut b = Builder::new();
     add(&mut b, d, &[]);
+    let (mut sim, t) = build(b, cfg);
+    sim.run_until(ns(1)).unwrap();
     assert_eq!(
-        run(b, ns(1)).lines(),
+        t.lines(),
         ["0 fs +0 out: a after #0: x=0", "0 fs +0 out: b: x=1"]
     );
+}
+
+/// `#3 $display($time); $finish;`
+#[test]
+fn finish_ends_the_run() {
+    let mut d = Domain::new();
+    let mut step = 0;
+    d.process("p", move |e| {
+        step += 1;
+        if step == 1 {
+            return Ok(Wait::Delay(ns(3)));
+        }
+        e.display(&format!("t={}", e.now()));
+        e.finish();
+        Ok(Wait::Done)
+    });
+    let mut b = Builder::new();
+    add(&mut b, d, &[]);
+    let (mut sim, t) = build(b, Config::default());
+    assert_eq!(
+        sim.run_until(ns(10)).unwrap(),
+        RunStatus::Ended(EndReason::Finish(0))
+    );
+    assert_eq!(t.lines(), ["3 ns +0 out: t=3 ns"]);
 }
 
 #[test]
@@ -716,7 +752,7 @@ fn stop_request_inside_the_loop() {
 
 /// Verilog clock, counter and register chain; VHDL flip-flops in parallel sample them and feed
 /// one back into the domain. The full trace is the same on one thread and on a pool.
-fn mixed(cfg: Config) -> Vec<String> {
+fn mixed(cfg: Config) -> (Vec<String>, u64) {
     let mut b = Builder::new();
     let (vclk, vcnt, vback, vecho) = (
         sig(&mut b, "vclk", "U"),
@@ -756,18 +792,27 @@ fn mixed(cfg: Config) -> Vec<String> {
     }
     let (mut sim, t) = build(b, cfg);
     sim.run_until(ns(200)).unwrap();
-    t.lines()
+    (t.lines(), sim.stats().pooled_batches)
 }
 
 #[test]
 fn threads_give_the_same_trace() {
-    let one = mixed(Config::default());
-    let pooled = mixed(Config {
+    let (one, _) = mixed(Config::default());
+    let (pooled, n) = mixed(Config {
         threads: 4,
         pool_all: true,
         ..Config::default()
     });
+    assert!(n > 0, "the pool never ran");
     assert!(one.len() > 200, "{}", one.len());
     assert!(one.iter().any(|l| l.contains("vecho=")));
     assert_eq!(one, pooled);
+    // The kernel settings of a plain `yavs run` (unchanged assignments skipped) and a shuffled
+    // execution order change nothing either.
+    let (run_like, _) = mixed(Config {
+        skip_unchanged: true,
+        shuffle: Some(7),
+        ..Config::default()
+    });
+    assert_eq!(one, run_like);
 }

@@ -4,15 +4,17 @@
 
 - **One serial domain:** all Verilog runs in one `yavs_verilog::Domain`, a serial kernel `Process` with its own nets, regs and
   Active, Inactive and NBA regions; `SimControl::cycle`, `update` and `run_batch` are unchanged. Design, tests and ceilings:
-  `docs/design/verilog-scheduling.md`.
+  `docs/design/verilog-scheduling.md`. (Maintainer's plan, #776; built by the agent of step A, 2026-11-07.)
 - **D4 as implemented:** output changes go to VHDL as ordered batches, one per delta, with zero-delay `Ctx::assign`: Active
   results at the next delta, each NBA region one batch later, also when the Active region changed no output (so a Verilog
-  register on a VHDL clock is visible one delta after a VHDL register on it). Whether an empty Active batch should be skipped
-  is open for the maintainer.
+  register on a VHDL clock is visible one delta after a VHDL register on it). D4 itself: maintainer, 2026-10-26. The batch rules (an empty Active batch
+  still costs its delta, a port written twice in one region goes out as a one-delta pulse, every output published at
+  delta 1) are the agent's choices of 2026-11-07, open for the maintainer.
 - **Future NBAs are not kernel transactions:** `Waveform::schedule` drops later transactions even for transport, so `<= #d`
-  stays in the domain's time map.
+  stays in the domain's time map (proposal on #776, section 3).
 - **Zero-delay loops:** a process that runs more than 10000 times at one time ends the run with `E3009` (runtime error), naming
-  the process and the time; a dedicated code comes with the diagnostics of lowering.
+  the process and the time; a dedicated code comes with the diagnostics of lowering
+  (agent's choice, 2026-11-07, open for the maintainer).
 
 ## Verilog test material and corpus gate (M0 of #776, 2026-11-07)
 

@@ -16,7 +16,7 @@ another's update late). It is one kernel process, `serial`: the kernel thread ru
 | Active | FIFO of processes to run; a write that makes a waiter's item true moves it here |
 | Inactive | `#0` waiters; moved to Active when Active is empty |
 | NBA | Zero-delay non-blocking updates in issue order (target range and value taken when the assignment ran); applied when Active and Inactive are empty |
-| Future | `BTreeMap<Time, Vec<Item>>`: `#d` resumptions and `<= #d` updates in issue order; when their time comes a resumption enters Active and an update the NBA region (a future event keeps its region) |
+| Future | `BTreeMap<Time, Vec<Item>>`: `#d` resumptions and `<= #d` updates in issue order; when their time comes a resumption enters Active and an update the NBA region (a future event keeps its region). A delay that the time resolution truncates to zero (`Ctx::after`) is `#0`: Inactive or NBA of this time step |
 | Publication queue | Output-port changes as ordered batches, one batch per kernel delta (section 2) |
 
 Edges: `posedge`/`negedge` of element 0 by Table 9-9 (0 to 1, x or z is a posedge, x or z to 1 too; negedge the

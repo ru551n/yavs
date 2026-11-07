@@ -128,6 +128,11 @@ pub(crate) const TABLE: &[CodeInfo] = &[
         "A character, string, comment, number or identifier is malformed: an unterminated string or block comment, an illegal character, or a bad numeric literal."
     ),
     code!(
+        "W4015",
+        "timing checks are not evaluated",
+        "The design defines XIL_TIMING and contains timing checks ($setup, $hold, $setuphold, ...). They are parsed and ignored: functional simulation never evaluates them."
+    ),
+    code!(
         "E4100",
         "syntax error",
         "The source does not match the grammar of IEEE 1364-2005 at this point. The message says what was expected. After the first error in a module the rest of that module is skipped."

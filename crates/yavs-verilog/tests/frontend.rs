@@ -114,6 +114,47 @@ fn codes_are_unique_and_documented() {
     }
 }
 
+/// Every code written in the sources is registered.
+#[test]
+fn every_code_in_the_sources_is_in_the_table() {
+    let mut n = 0;
+    for src in [
+        include_str!("../src/pre.rs"),
+        include_str!("../src/lex.rs"),
+        include_str!("../src/parse.rs"),
+        include_str!("../src/stmt.rs"),
+        include_str!("../src/analysis.rs"),
+        include_str!("../src/lib.rs"),
+    ] {
+        for (i, _) in src.match_indices("\"E4").chain(src.match_indices("\"W4")) {
+            let code = &src[i + 1..i + 6];
+            assert!(
+                CODES.iter().any(|c| c.code == code),
+                "{code} is not in CODES"
+            );
+            n += 1;
+        }
+    }
+    assert!(n > 40);
+    // and every registered code is used somewhere
+    let all = [
+        include_str!("../src/pre.rs"),
+        include_str!("../src/lex.rs"),
+        include_str!("../src/parse.rs"),
+        include_str!("../src/stmt.rs"),
+        include_str!("../src/analysis.rs"),
+        include_str!("../src/lib.rs"),
+    ]
+    .concat();
+    for c in CODES {
+        assert!(
+            all.contains(&format!("\"{}\"", c.code)),
+            "{} is never emitted",
+            c.code
+        );
+    }
+}
+
 #[test]
 fn ansi_module_with_everything_in_one_place() {
     let r = ok(r#"
@@ -742,4 +783,174 @@ module m;
   initial @( *) begin end
 endmodule
 "#);
+}
+
+#[test]
+fn bombs_and_deep_nesting_end_with_an_error() {
+    // 40 levels of doubling: 2^40 copies without a cap
+    let mut src = String::from("`define L0 x\n");
+    for i in 1..40 {
+        src += &format!("`define L{i} `L{} `L{}\n", i - 1, i - 1);
+    }
+    src += "module m; wire w = `L39; endmodule\n";
+    let r = run(&src);
+    assert!(r.diagnostics.iter().any(|d| d.code == "E4011"));
+    // deep parentheses: fine up to the limit, an error beyond it
+    let nest = |n: usize| {
+        format!(
+            "module m; wire w = {}1{}; endmodule\n",
+            "(".repeat(n),
+            ")".repeat(n)
+        )
+    };
+    ok(&nest(60));
+    let r = run(&nest(3000));
+    assert!(
+        r.diagnostics
+            .iter()
+            .any(|d| d.code == "E4100" && d.message.contains("too deep"))
+    );
+}
+
+fn expr_of(text: &str) -> yavs_verilog::ast::Expr {
+    use yavs_verilog::ast::{Decl, Item};
+    let src = format!("module m; wire w = {text}; endmodule");
+    let Ok(d) = yavs_verilog::parse_str(&src, &Options::default()) else {
+        panic!("{text} does not parse")
+    };
+    let Decl::Module(m) = &d[0] else { panic!() };
+    let Item::Net(n) = &m.items[0] else { panic!() };
+    n.names[0].init.clone().unwrap()
+}
+
+/// The shape of an expression as a fully parenthesised string.
+fn shape(e: &yavs_verilog::ast::Expr) -> String {
+    use yavs_verilog::ast::Expr::*;
+    match e {
+        Num(s) | Real(s) => s.clone(),
+        Ident(i) => i.name.clone(),
+        Unary(o, x) => format!("({o} {})", shape(x)),
+        Binary(o, a, b) => format!("({} {o} {})", shape(a), shape(b)),
+        Cond(c, a, b) => format!("({} ? {} : {})", shape(c), shape(a), shape(b)),
+        Concat(v) => format!("{{{}}}", v.iter().map(shape).collect::<Vec<_>>().join(",")),
+        Repl(n, v) => format!(
+            "{{{}{{{}}}}}",
+            shape(n),
+            v.iter().map(shape).collect::<Vec<_>>().join(",")
+        ),
+        Index(a, i) => format!("{}[{}]", shape(a), shape(i)),
+        Range(a, k, x, y) => format!("{}[{} {k:?} {}]", shape(a), shape(x), shape(y)),
+        Dot(a, i) => format!("{}.{}", shape(a), i.name),
+        Call(n, a) => format!(
+            "{}({})",
+            shape(n),
+            a.iter().map(shape).collect::<Vec<_>>().join(",")
+        ),
+        SysCall(n, a) => format!("{n}({})", a.iter().map(shape).collect::<Vec<_>>().join(",")),
+        MinTypMax(a, b, c) => format!("{}:{}:{}", shape(a), shape(b), shape(c)),
+        Str(s) => format!("{s:?}"),
+        Empty => "_".into(),
+    }
+}
+
+#[test]
+fn operator_precedence_and_associativity() {
+    let s = |t: &str| shape(&expr_of(t));
+    assert_eq!(s("a + b * c"), "(a + (b * c))");
+    assert_eq!(s("a - b - c"), "((a - b) - c)");
+    assert_eq!(s("a ** b ** c"), "((a ** b) ** c)");
+    assert_eq!(s("a | b & c ^ d"), "(a | ((b & c) ^ d))");
+    assert_eq!(s("a || b && c"), "(a || (b && c))");
+    assert_eq!(s("a == b < c"), "(a == (b < c))");
+    assert_eq!(s("a << b + c"), "(a << (b + c))");
+    assert_eq!(s("a ? b : c ? d : e"), "(a ? b : (c ? d : e))");
+    assert_eq!(s("a ? b ? c : d : e"), "(a ? (b ? c : d) : e)");
+    assert_eq!(s("-a ** b"), "((- a) ** b)");
+    assert_eq!(s("~&a | ^b"), "((~& a) | (^ b))");
+    assert_eq!(s("!a && ~b"), "((! a) && (~ b))");
+    assert_eq!(s("{a, b[1], {2{c}}}"), "{a,b[1],{2{c}}}");
+    assert_eq!(
+        s("a[3:0] + b[i +: 2] - c[j -: 2]"),
+        "((a[3 Colon 0] + b[i PlusColon 2]) - c[j MinusColon 2])"
+    );
+    assert_eq!(
+        s("top.u0.x[2] & f(a, b) & $clog2(n)"),
+        "((top.u0.x[2] & f(a,b)) & $clog2(n))"
+    );
+    assert_eq!(s("a --b"), "(a - (- b))");
+    assert_eq!(s("a<= b"), "(a <= b)");
+    assert_eq!(s("(1:2:3)"), "1:2:3");
+    assert_eq!(s("a + (* keep *) b"), "(a + b)");
+}
+
+#[test]
+fn statements_and_instances_have_the_expected_shape() {
+    use yavs_verilog::ast::*;
+    let d = yavs_verilog::parse_str(
+        "module m (a, b); input a; output b; reg b;\n always @(posedge a or negedge b) b <= #2 a ? 1 : 0;\n always @* if (a) b = 1; else b = 0;\n Sub #(3) u (a, , .x(b)); endmodule",
+        &Options::default(),
+    )
+    .unwrap();
+    let Decl::Module(m) = &d[0] else { panic!() };
+    let Item::Always(Stmt::Event {
+        ctrl: EventCtrl::List(l),
+        body,
+    }) = &m.items[3]
+    else {
+        panic!("{:?}", m.items[3])
+    };
+    assert_eq!((l[0].edge, l[1].edge), (Some("posedge"), Some("negedge")));
+    let Stmt::Assign {
+        nonblocking,
+        ctrl: Some(Ctrl::Delay(_)),
+        ..
+    } = &**body
+    else {
+        panic!()
+    };
+    assert!(*nonblocking);
+    let Item::Always(Stmt::Event {
+        ctrl: EventCtrl::Star,
+        body,
+    }) = &m.items[4]
+    else {
+        panic!()
+    };
+    assert!(matches!(&**body, Stmt::If { els: Some(_), .. }));
+    let Item::Inst(i) = &m.items[5] else { panic!() };
+    assert_eq!(
+        (
+            i.module.name.as_str(),
+            i.params.len(),
+            i.insts[0].conns.len()
+        ),
+        ("Sub", 1, 3)
+    );
+    assert!(matches!(&i.insts[0].conns[1], Conn::Ordered(Expr::Empty)));
+}
+
+#[test]
+fn udp_rows_are_decoded() {
+    use yavs_verilog::ast::*;
+    let d = yavs_verilog::parse_str(
+        "primitive p (q, d, c); output q; reg q; input d, c; initial q = 0; table 0 (01) : ? : 0; 1 (x1) : 1 : -; endtable endprimitive",
+        &Options::default(),
+    )
+    .unwrap();
+    let Decl::Udp(u) = &d[0] else { panic!() };
+    assert!(u.sequential && u.init.is_some());
+    assert_eq!(u.rows.len(), 2);
+    assert_eq!(
+        u.rows[0].inputs,
+        [UdpSym::Level('0'), UdpSym::Edge('0', '1')]
+    );
+    assert_eq!(u.rows[0].state, Some(UdpSym::Level('?')));
+    assert_eq!(u.rows[1].inputs[1], UdpSym::Edge('x', '1'));
+    assert_eq!(u.rows[1].output, UdpSym::Level('-'));
+    let e = yavs_verilog::parse_str(
+        "primitive p (q, d); output q; input d; table 0 1 : 1; endtable endprimitive",
+        &Options::default(),
+    )
+    .unwrap_err();
+    assert_eq!(e[0].code, "E4100");
 }

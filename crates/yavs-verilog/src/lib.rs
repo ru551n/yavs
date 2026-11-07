@@ -376,6 +376,28 @@ fn one_file(
     res.diagnostics.extend(diags);
 }
 
+/// Parse one source text (no file on disk) to its syntax tree, with the options' macros and include
+/// directories. The error is the diagnostics, with spans into `<string>` (file 0).
+pub fn parse_str(src: &str, opts: &Options) -> Result<Vec<ast::Decl>, Vec<Diag>> {
+    let mut files = vec![PathBuf::from("<string>")];
+    let mut st = pre::State::new(opts);
+    let incoming = st.clone();
+    let pre = pre::preprocess(opts, &mut files, &mut st, 0, src.as_bytes());
+    let mut diags = pre.diags.clone();
+    let (toks, lexd) = lex::lex(&pre);
+    diags.extend(lexd);
+    let mut decls = Vec::new();
+    if diags.iter().all(|d| d.severity != Severity::Error) {
+        let mut p = parse::Parser::new(&pre, &toks);
+        decls = p.file(&|off| pre.state_at(off, &incoming));
+        diags.append(&mut p.diags);
+    }
+    if diags.iter().any(|d| d.severity == Severity::Error) {
+        return Err(diags);
+    }
+    Ok(decls)
+}
+
 /// Whether the extension of `path` is a Verilog (1364) source: `.v`, `.vh`, `.vp`.
 pub fn is_verilog_path(path: &Path) -> bool {
     matches!(

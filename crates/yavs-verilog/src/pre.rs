@@ -11,6 +11,8 @@ use crate::{Diag, Options, Span, Timescale};
 pub(crate) const ENVELOPE: u8 = 1;
 
 const MAX_DEPTH: u32 = 64;
+/// A macro bomb stops here (bytes of preprocessed text).
+const MAX_OUT: usize = 1 << 26;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Nettype {
@@ -247,6 +249,7 @@ struct Pp<'a> {
     st: &'a mut State,
     out: Pre,
     warned_markers: bool,
+    blown: bool,
 }
 
 /// Preprocess file number `file` (already in `files`) whose contents are `src`.
@@ -263,6 +266,7 @@ pub(crate) fn preprocess(
         st,
         out: Pre::default(),
         warned_markers: false,
+        blown: false,
     };
     let mut cond = Cond::default();
     pp.process(src, Origin::File(file), &mut cond, 0);
@@ -1010,6 +1014,16 @@ impl Pp<'_> {
         depth: u32,
     ) -> usize {
         let call_span = origin.span(at, ne);
+        if self.blown || self.out.text.len() > MAX_OUT {
+            if !self.blown {
+                self.blown = true;
+                self.out.diags.push(
+                    Diag::error("E4011", format!("the expansion of macro `{name} is too large"), call_span)
+                        .note("the preprocessed text passed 64 MiB; a macro that uses itself several times per level grows without end"),
+                );
+            }
+            return ne;
+        }
         let Some(m) = self.st.macros.get(name).cloned() else {
             self.out.diags.push(
                 Diag::error("E4007", format!("undefined macro `{name}"), call_span)

@@ -884,7 +884,7 @@ Errors and warnings go to standard error with a stable code: ``E`` for errors an
 warnings. ``--message-format`` picks the form and ``yavs --explain CODE`` prints a longer
 explanation. Codes by range: ``E0xxx`` syntax, command line, libraries, waveforms, coverage,
 debugger and plugins; ``E1xxx`` semantic analysis; ``E2xxx`` elaboration; ``E3xxx`` runtime
-errors; ``E9999`` an internal error. :doc:`error-codes` lists every code with its meaning, and
+errors; ``E4xxx`` Verilog; ``E9999`` an internal error. :doc:`error-codes` lists every code with its meaning, and
 :doc:`troubleshooting` the common problems.
 
 See also

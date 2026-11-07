@@ -536,6 +536,31 @@ const EXPLAIN: &[(&str, &str)] = &[
         "W3102",
         "A process has no wait statement, no sensitivity list and calls no procedure that waits. It never gives control back to the simulator, so time cannot advance and the run does not end by itself; it can only end through `stop` or `finish`, a failed assertion or an error. A process that should run once ends with `wait;`.",
     ),
+    // yavs-verilog: preprocessor and lexer (E4001-E4099)
+    (
+        "E4001",
+        "A Verilog file holds an encrypted (IEEE 1735 protected) envelope, `` `pragma protect begin_protected `` or the older `` `protect ``/`` `protected `` forms. yavs never decrypts protected IP, so the encoded block is not read. The module header before the envelope, if there is one, is recorded as an encrypted unit: the library analyses, and instantiating that unit is an error that names the instance. Simulate the vendor's unencrypted model instead, or the block with a tool that holds the vendor's key.",
+    ),
+    (
+        "E4002",
+        "A file with the extension `.sv` or `.svh` was given. yavs reads Verilog (IEEE 1364-2005) only, so SystemVerilog files are not analyzed. Rewrite the file as Verilog, or pass `--lang=verilog` if it holds plain Verilog under another extension.",
+    ),
+    (
+        "E4003",
+        "A SystemVerilog keyword was used in a Verilog file, as `logic`, `always_comb` or `interface` would be. The message names the keyword. yavs reads Verilog (IEEE 1364-2005) only; use the Verilog form (`reg`, `wire`, `always @*`).",
+    ),
+    (
+        "E4004",
+        "A `` `ifdef ``, `` `ifndef ``, `` `elsif ``, `` `else `` or `` `endif `` directive has no partner: an `` `endif `` without an opening directive, an `` `else `` after an `` `else ``, or a conditional still open at the end of the file.",
+    ),
+    (
+        "E4005",
+        "An `` `include `` names a file that was not found. The message lists the directories searched: the directory of the including file, then those given with `-I`.",
+    ),
+    (
+        "W4006",
+        "A Verilog file has modules before any `` `timescale `` directive. yavs uses 1ns/1ps for them (set it with `--timescale UNIT/PRECISION`), because IEEE 1364-2005 leaves the choice to the tool and delays depend on it.",
+    ),
     // every stage
     (
         "E9999",

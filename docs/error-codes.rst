@@ -599,6 +599,28 @@ Run time (E3 and W3)
    * - _`W3102`
      - A process has no wait statement, no sensitivity list and calls no procedure that waits.
 
+Verilog (E4 and W4)
+-------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 12 88
+
+   * - Code
+     - Meaning
+   * - _`E4001`
+     - A Verilog file holds an encrypted (IEEE 1735 protected) envelope, ```pragma protect begin_protected`` or the older ```protect``/```protected`` forms.
+   * - _`E4002`
+     - A file with the extension ``.sv`` or ``.svh`` was given.
+   * - _`E4003`
+     - A SystemVerilog keyword was used in a Verilog file, as ``logic``, ``always_comb`` or ``interface`` would be.
+   * - _`E4004`
+     - A ```ifdef``, ```ifndef``, ```elsif``, ```else`` or ```endif`` directive has no partner: an ```endif`` without an opening directive, an ```else`` after an ```else``, or a conditional still open at the end of the file.
+   * - _`E4005`
+     - An ```include`` names a file that was not found.
+   * - _`W4006`
+     - A Verilog file has modules before any ```timescale`` directive.
+
 Internal errors (E9)
 --------------------
 

@@ -128,7 +128,8 @@ pub struct Unit {
     /// The name in the declaration.
     pub span: Span,
     pub ports: Vec<Port>,
-    /// The body is an IEEE 1735 envelope (D8): ports are those of the plaintext header.
+    /// The body is an IEEE 1735 envelope (D8): ports are those of the plaintext header, none when the
+    /// envelope starts inside the header.
     pub encrypted: bool,
     /// Digest of the state entering the file: macros, `` `timescale ``, `` `default_nettype ``.
     pub context_digest: String,
@@ -247,18 +248,19 @@ fn one_file(
         decls = p.file(&|off| pre.state_at(off, &incoming));
         diags.append(&mut p.diags);
     }
-    // The envelope: one diagnostic per file.
+    // An encrypted file is recorded, not refused (D8): one warning per file; E4001 is raised at elaboration.
     if let Some(env) = pre.envelopes.first() {
-        let headerless = decls.iter().any(|d| matches!(d, ast::Decl::Envelope(_)));
-        let mut d = Diag::new(
-            "E4001",
-            if headerless {
-                Severity::Error
-            } else {
-                Severity::Warning
-            },
-            "encrypted (IEEE 1735 protected) source",
-            Some(env.span),
+        let recorded: Vec<&str> = decls
+            .iter()
+            .filter_map(|d| match d {
+                ast::Decl::Module(m) if m.encrypted.is_some() => Some(m.name.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        let mut d = Diag::warning(
+            "W4007",
+            "encrypted (IEEE 1735 protected) module body, recorded; cannot be simulated",
+            env.span,
         )
         .label(format!(
             "envelope starts here; key blocks for {} tool vendor(s)",
@@ -267,19 +269,15 @@ fn one_file(
         if !env.terminated {
             d = d.note("the envelope has no end_protected");
         }
-        for dec in &decls {
-            if let ast::Decl::Module(m) = dec
-                && m.encrypted.is_some()
-            {
-                d = d.note(format!(
-                    "module `{}` cannot be simulated; it is recorded as an encrypted unit",
-                    m.name.name
-                ));
-            }
-        }
-        d = d.help(
-            "yavs never decrypts protected IP; use the vendor's unencrypted simulation model, or simulate this block with a tool that holds the vendor's key",
-        );
+        d = if recorded.is_empty() {
+            d.note("no module header precedes the envelope, so no unit is recorded for it")
+        } else {
+            d.note(format!(
+                "recorded as an encrypted unit: {}; instantiating it is an error at elaboration",
+                recorded.join(", ")
+            ))
+        };
+        d = d.help("yavs never decrypts protected IP; use the vendor's unencrypted simulation model, or simulate this block with a tool that holds the vendor's key");
         diags.push(d);
     }
     let failed = has_error(&diags);
@@ -398,18 +396,19 @@ pub fn parse_str(src: &str, opts: &Options) -> Result<Vec<ast::Decl>, Vec<Diag>>
     Ok(decls)
 }
 
-/// Whether the extension of `path` is a Verilog (1364) source: `.v`, `.vh`, `.vp`.
+/// Whether the extension of `path` is a Verilog (1364) source: `.v`, `.vh`, `.vp`, and `.svp`, a protected
+/// file whose content decides (an envelope is W4007; its plaintext header is read as Verilog).
 pub fn is_verilog_path(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()),
-        Some("v" | "vh" | "vp")
+        Some("v" | "vh" | "vp" | "svp")
     )
 }
 
-/// Whether the extension of `path` is a SystemVerilog source: `.sv`, `.svh`, `.svp`.
+/// Whether the extension of `path` is a SystemVerilog source: `.sv`, `.svh`.
 pub fn is_systemverilog_path(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()),
-        Some("sv" | "svh" | "svp")
+        Some("sv" | "svh")
     )
 }

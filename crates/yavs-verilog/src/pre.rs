@@ -248,7 +248,6 @@ struct Pp<'a> {
     files: &'a mut Vec<PathBuf>,
     st: &'a mut State,
     out: Pre,
-    warned_markers: bool,
     blown: bool,
 }
 
@@ -265,7 +264,6 @@ pub(crate) fn preprocess(
         files,
         st,
         out: Pre::default(),
-        warned_markers: false,
         blown: false,
     };
     let mut cond = Cond::default();
@@ -613,12 +611,9 @@ impl Pp<'_> {
             }
             b"end_keywords" => ne,
             b"pragma" => self.pragma(b, at, ne, origin),
-            b"protect" | b"endprotect" => {
-                self.marker_warning(span);
-                ne
-            }
+            b"protect" => self.envelope(b, at, ne, origin, b"`endprotect"),
             b"protected" => self.envelope(b, at, ne, origin, b"`endprotected"),
-            b"endprotected" => ne,
+            b"endprotect" | b"endprotected" => ne,
             b"uselib" | b"config" => {
                 self.err(
                     "E4010",
@@ -646,13 +641,10 @@ impl Pp<'_> {
     }
 
     fn marker_warning(&mut self, span: Span) {
-        if !self.warned_markers {
-            self.warned_markers = true;
-            self.out.diags.push(
-                Diag::warning("W4013", "protection markers are ignored", span)
-                    .note("the plaintext between the markers is compiled"),
-            );
-        }
+        self.out.diags.push(
+            Diag::warning("W4009", "protection marker is ignored", span)
+                .note("the plaintext after the marker is compiled"),
+        );
     }
 
     /// The end of a `define starting after the directive name: the end of the logical line.
@@ -840,6 +832,7 @@ impl Pp<'_> {
             let dirs: Vec<String> = tried
                 .iter()
                 .filter_map(|t| t.parent().map(|p| p.display().to_string()))
+                .map(|p| if p.is_empty() { ".".to_string() } else { p })
                 .collect();
             d = d.note(format!("searched: {}", dirs.join(", ")));
             self.out.diags.push(d.help("add the directory with -I DIR"));
@@ -970,18 +963,21 @@ impl Pp<'_> {
             let le = line_end(b, ls.min(n));
             let line = &b[ls.min(n)..le];
             let t = line.trim_ascii();
-            if t.windows(11).any(|w| w == b"key_keyowne") {
+            // Only pragma lines matter; the base64 body is skipped at once.
+            let is_pragma = t.first() == Some(&b'`');
+            if is_pragma && t.windows(11).any(|w| w == b"key_keyowne") {
                 keys += 1;
             }
-            let hit = if end_marker == b"end_protected" {
-                let s = String::from_utf8_lossy(t);
-                let mut w = s.split_whitespace();
-                w.next() == Some("`pragma")
-                    && w.next() == Some("protect")
-                    && w.next().is_some_and(|x| x.starts_with("end_protected"))
-            } else {
-                t.starts_with(end_marker)
-            };
+            let hit = is_pragma
+                && if end_marker == b"end_protected" {
+                    let s = String::from_utf8_lossy(t);
+                    let mut w = s.split_whitespace();
+                    w.next() == Some("`pragma")
+                        && w.next() == Some("protect")
+                        && w.next().is_some_and(|x| x.starts_with("end_protected"))
+                } else {
+                    t.starts_with(end_marker)
+                };
             if hit {
                 terminated = true;
                 stop = le;

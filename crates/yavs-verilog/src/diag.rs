@@ -52,16 +52,14 @@ macro_rules! code {
 pub(crate) const TABLE: &[CodeInfo] = &[
     code!(
         "E4001",
-        "encrypted (IEEE 1735 protected) source",
-        "The source contains a protected envelope (`pragma protect begin_protected ... end_protected, or `protected ... `endprotected). \
-         yavs never decrypts protected IP. When the module header is readable, the module is recorded as an encrypted unit (a warning) and \
-         instantiating it is an error at elaboration; when the whole file is protected, nothing can be recorded and the code is an error. \
-         Use the vendor's unencrypted simulation model, or simulate this block with a tool that holds the vendor's key."
+        "instantiated module is encrypted",
+        "Reserved for elaboration: a design instantiates a module whose body is a protected envelope (IEEE 1735). yavs never decrypts protected IP, so the module cannot be simulated. \
+         Use the vendor's unencrypted simulation model, or simulate this block with a tool that holds the vendor's key. Analysis only records the module and warns (W4007)."
     ),
     code!(
         "E4002",
         "SystemVerilog source file",
-        "yavs reads Verilog (IEEE 1364-2005) only. A file with a SystemVerilog extension (.sv, .svh, .svp) is rejected. \
+        "yavs reads Verilog (IEEE 1364-2005) only. A file with a SystemVerilog extension (.sv, .svh) is rejected. \
          If the file is plain Verilog with an unusual extension, pass --lang=verilog."
     ),
     code!(
@@ -92,6 +90,13 @@ pub(crate) const TABLE: &[CodeInfo] = &[
         "A text macro is used with `NAME but no `define NAME is in force at that point. Define it in the source, or with -D NAME[=VALUE]."
     ),
     code!(
+        "W4007",
+        "encrypted module body recorded",
+        "The source contains a protected envelope (`pragma protect begin_protected ... end_protected, or `protect ... `endprotect, or `protected ... `endprotected). \
+         The module is recorded as an encrypted unit with the ports of its readable header, and analysis succeeds; an envelope before any module header records nothing. \
+         Instantiating the module is an error at elaboration (E4001). yavs never decrypts protected IP."
+    ),
+    code!(
         "E4008",
         "macro definition or call is malformed",
         "A `define has no name or a bad formal argument list, or a macro call has the wrong number of arguments or an unterminated argument list."
@@ -118,9 +123,9 @@ pub(crate) const TABLE: &[CodeInfo] = &[
         "The source file could not be opened or read, or its extension is not a Verilog one and --lang=verilog was not given."
     ),
     code!(
-        "W4013",
-        "protection markers ignored",
-        "`pragma protect begin/end or `protect/`endprotect mark plaintext that a tool would encrypt. The markers are ignored and the plaintext is compiled."
+        "W4009",
+        "protection marker ignored",
+        "`pragma protect begin or `pragma protect end marks plaintext that a tool would encrypt. The marker is ignored and the plaintext is compiled."
     ),
     code!(
         "E4014",

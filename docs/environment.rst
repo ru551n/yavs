@@ -319,6 +319,10 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - a number, at least 1
      - ``100``
      - ``run``
+   * - ``YAVS_AUTO_WAIT_PAYBACK``
+     - With ``--tier-compile=wait``: the part of its modelled compile time a function the count rule asks for must be seen interpreted before it compiles, while the run has less than a second of simulation work behind it (functions the compilation cache holds are linked as before). ``0`` compiles what is asked for at once.
+     - a number
+     - ``1``
    * - ``YAVS_AUTO_GATE``
      - Work of the simulation threads before the count rule compiles anything or makes a copy of a process, in the sampler's microseconds of work (16 000 instructions each, CPU microseconds where the counters are refused).
      - a number

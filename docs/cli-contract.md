@@ -652,7 +652,8 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   code hands the interpreter), so a run keeps at most `--threads` threads busy; compiled code in a loop that
   never leaves it reaches no pause point, and a compile waits until it does. The compiles are paced: their
   modelled compile time stays within the simulation time seen, as a thread of their own could not make
-  more. `background`: the tier-up thread compiles alongside
+  more. Until the looks hold a second of simulation work, a function the count rule asks for and the cache
+  does not hold compiles only once it was seen interpreted for its modelled compile time. `background`: the tier-up thread compiles alongside
   the run at the lowest OS priority (Linux nice 19, Windows `THREAD_PRIORITY_LOWEST`; nothing else
   elsewhere), one busy thread more than `--threads` while it compiles. What is hot is judged the same way
   in both (the policy's clocks count the simulation threads only), but `wait` paces its compiles (above), so

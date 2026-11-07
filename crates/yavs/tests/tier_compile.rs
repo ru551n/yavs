@@ -40,6 +40,8 @@ fn yavs(dir: &Path, args: &[&str]) -> Command {
         .env("YAVS_COUNTERS", "1")
         .env("YAVS_AUTO_COUNT", "1")
         .env("YAVS_AUTO_GATE", "0")
+        // (What the looks repaid is `auto.rs`'s test: here every asked function compiles.)
+        .env("YAVS_AUTO_WAIT_PAYBACK", "0")
         .env_remove("YAVS_AUTO_SYNC")
         .env_remove("YAVS_AUTO_POLICY")
         .current_dir(dir);

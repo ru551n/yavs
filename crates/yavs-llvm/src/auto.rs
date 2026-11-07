@@ -1209,6 +1209,14 @@ const COUNT_GATE: u64 = 160_000;
 /// suite tests link what they do not get back (OSVVM warm 1.14 against 1.09 in sum).
 const COUNT_GATE_CPU: u64 = 400_000;
 
+/// The part of its price a function must be seen interpreted before a run that stops for its
+/// compiles (`--tier-compile=wait`) compiles it for the count (`Worker::unpaid`);
+/// `YAVS_AUTO_WAIT_PAYBACK` overrides it (a tuning aid).
+const WAIT_PAYBACK: f64 = 1.0;
+/// The work in the looks (microseconds) after which a run that stops for its compiles compiles what
+/// the count asks for as one that does not: a run that long is likely to repay it.
+const WAIT_LONG: u64 = 1_000_000;
+
 /// Work between two looks at the native frames left to the interpreter (`Worker::guard`), in the looks'
 /// microseconds, and instructions a frame left costs: pushing it, and running the rest of its
 /// function interpreted (about 8 000 on the window generator).
@@ -1403,6 +1411,10 @@ struct Worker {
     proven: Vec<bool>,
     guard_share: u64,
     guard_calls: u64,
+    /// `--tier-compile=wait` (paced): the run stops for every compile, so a compile the count asks for
+    /// waits to be repaid by the time seen (`unpaid`), and `wait_payback` is the part of its price.
+    stops: bool,
+    wait_payback: f64,
     trace: Option<Trace>,
 }
 
@@ -1659,6 +1671,8 @@ impl Worker {
             proven: vec![false; nfuncs],
             guard_share: GUARD_SHARE,
             guard_calls: GUARD_CALLS,
+            stops: false,
+            wait_payback: WAIT_PAYBACK,
             trace: std::env::var_os("YAVS_AUTO_TRACE").map(|_| Trace {
                 t0: std::time::Instant::now(),
                 first: Default::default(),
@@ -1730,7 +1744,20 @@ impl Worker {
             .prog
             .func(id)
             .is_some_and(|f| f.kind != FuncKind::Process);
-        (self.total < self.gate && !self.link_early(id)) || (sub && !self.entered_from_code(id))
+        (self.total < self.gate && !self.link_early(id))
+            || (sub && !self.entered_from_code(id))
+            || self.unpaid(id)
+    }
+
+    /// A run that stops for its compiles (`stops`) pays each one in full: a function the cache does
+    /// not hold waits until the looks saw it interpreted for `wait_payback` of its price, until the
+    /// run has lasted `WAIT_LONG` (a long run repays what the count asks for). Read from the looks.
+    fn unpaid(&self, id: FuncId) -> bool {
+        self.stops
+            && self.total < WAIT_LONG
+            && !self.cached(id)
+            && (self.time[id.0 as usize][0] as f64)
+                < self.price_of(id, false) as f64 * self.wait_payback
     }
 
     /// What the cache lists is a link, and the last run of this program was long enough: it does not
@@ -3704,6 +3731,12 @@ impl AutoTier {
             w.gate_cpu = n;
         }
         (w.guard_share, w.guard_calls) = guard_knobs();
+        if let Some(p) = std::env::var("YAVS_AUTO_WAIT_PAYBACK")
+            .ok()
+            .and_then(|v| v.parse().ok())
+        {
+            w.wait_payback = p;
+        }
         let spawn = move |wait: bool| {
             std::thread::Builder::new()
                 .name("yavs-tier-up".into())
@@ -3803,6 +3836,9 @@ impl AutoTier {
                                 Err(RecvTimeoutError::Disconnected) => break,
                             }
                         }
+                        w.stops = sh.compile.load(Ordering::Relaxed) == COMPILE_WAIT
+                            && heat.budget != 0
+                            && !sync;
                         // One batch at a time, each followed by the decisions: what is decided depends
                         // on the looks in order and not on how long a compile took (#670).
                         for look in inbox.pop_front().unwrap_or_default() {
@@ -4465,6 +4501,36 @@ mod tests {
         h.heat.budget = 0;
         assert_eq!(h.ask(g), Part::Both);
         assert!(h.deferred.is_empty());
+    }
+
+    /// `--tier-compile=wait` (`stops`): what the count asks for and the cache does not hold waits
+    /// until the looks saw it for `WAIT_PAYBACK` of its price, or the run lasted `WAIT_LONG`; a
+    /// cached function and a run that does not stop are as before.
+    #[test]
+    fn a_run_that_stops_compiles_what_its_looks_repaid() {
+        let (prog, caller, _) = caller_callee();
+        let mut w = counted(prog, 0);
+        let k = caller.0 as usize;
+        let at = (w.price_of(caller, false) as f64 * super::WAIT_PAYBACK).ceil() as u64;
+        assert!(at > 0);
+        assert!(!w.waits(caller), "a run that does not stop");
+        w.stops = true;
+        w.time[k][0] = at - 1;
+        assert!(w.waits(caller));
+        w.total = super::WAIT_LONG;
+        assert!(!w.waits(caller), "a long run");
+        w.total = 0;
+        w.time[k][0] = at;
+        assert!(!w.waits(caller));
+        w.gate = u64::MAX;
+        assert!(w.waits(caller), "the gate");
+        // A link: not seen at all, it waits for the gate only.
+        w.time[k][0] = 0;
+        w.in_cache = vec![Default::default(); w.in_cache.len()];
+        w.in_cache[k].set(true).unwrap();
+        assert!(w.waits(caller));
+        w.gate = 0;
+        assert!(!w.waits(caller));
     }
 
     /// A warm run links what the cache lists before the gate only if its own last run was long: the

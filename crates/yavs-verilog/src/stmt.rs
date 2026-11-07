@@ -570,14 +570,24 @@ impl Parser<'_> {
                     if self.eat_p("(") {
                         args = self.args()?;
                         self.expect_p(")")?;
-                        // Clause 10.2.2: no empty list and no null argument in a task enable.
-                        if args.is_empty() || args.iter().any(|a| matches!(a, Expr::Empty)) {
+                        // Clause 10.2.2: no null argument in a task enable, and no parentheses without arguments.
+                        if args.iter().any(|a| matches!(a, Expr::Empty)) {
                             self.push(Diag::error(
                                 "E4100",
-                                "a task enable gives an expression for every argument and has no parentheses without arguments (clause 10.2.2)",
+                                "a task enable gives an expression for every argument (clause 10.2.2)",
                                 self.span(open),
                             ));
                             return Err(());
+                        }
+                        if args.is_empty() {
+                            self.push(
+                                Diag::warning(
+                                    "W4205",
+                                    "a task without arguments is enabled without parentheses (clause 10.2.2)",
+                                    self.span(open),
+                                )
+                                .help("write the task name alone"),
+                            );
                         }
                     }
                     if self.p(";") {
@@ -678,11 +688,11 @@ impl Parser<'_> {
         let mut decls = Vec::new();
         let decl_at = self.peek_at(self.attrs_len());
         while self.block_decl(&mut decls, false)? {}
-        // Clauses 9.8.1 and 9.8.2: only a named block has declarations.
+        // Clauses 9.8.1 and 9.8.2: only a named block has declarations; other tools accept them (V14).
         if label.is_none() && !decls.is_empty() {
             self.push(
-                Diag::error(
-                    "E4100",
+                Diag::warning(
+                    "W4206",
                     format!(
                         "a `{}` block with declarations has a name (clause 9.8.1)",
                         open.s
@@ -691,7 +701,6 @@ impl Parser<'_> {
                 )
                 .help(format!("write `{} : name`", open.s)),
             );
-            return Err(());
         }
         let mut stmts = Vec::new();
         loop {

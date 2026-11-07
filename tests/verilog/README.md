@@ -49,7 +49,7 @@ Every file starts with `//` lines, then the Verilog. The list of `expect` lines 
 
 A new check is one file plus one row in the Verilog section of `docs/design/lrm-checks.md` (the test fails for a file without a row and a row without a file).
 Write the rule from the LRM, one illegal thing per negative file, and a legal near miss next to it. `docs/design/lrm-checks.md` also lists the readings
-(V1 to V13) and the known gaps (G1 to G11).
+(V1 to V14) and the known gaps (G1 to G11).
 
 ## Coverage of the plan
 

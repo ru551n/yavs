@@ -135,6 +135,21 @@ pub(crate) const TABLE: &[CodeInfo] = &[
         "The design defines XIL_TIMING and contains timing checks ($setup, $hold, $setuphold, ...). They are parsed and ignored: functional simulation never evaluates them."
     ),
     code!(
+        "W4205",
+        "task enabled with empty parentheses",
+        "A task enable such as `t();` has parentheses and no argument. IEEE 1364-2005 (10.2.2) says a task without arguments is enabled without a list; yavs accepts it, as the other tools do, and warns."
+    ),
+    code!(
+        "W4206",
+        "declaration in an unnamed block",
+        "A `begin` or `fork` block without a name declares variables, parameters or events. In IEEE 1364-2005 (9.8.1, 9.8.2) only a named block has declarations; yavs accepts it, as the other tools do, and warns. Name the block."
+    ),
+    code!(
+        "W4207",
+        "variable declaration assignment in a block or task",
+        "A variable is given a value where it is declared inside a task, function or block. IEEE 1364-2005 (6.2.1) allows that at module level only; yavs accepts it, as the other tools do, and warns. On an array it is still an error."
+    ),
+    code!(
         "E4100",
         "syntax error",
         "The source does not match the grammar of IEEE 1364-2005 at this point. The message says what was expected. After the first error in a module the rest of that module is skipped."

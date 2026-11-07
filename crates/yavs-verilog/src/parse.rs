@@ -1051,18 +1051,25 @@ impl<'a> Parser<'a> {
                 self.expect_p(";")?;
                 // Clause 6.2.1: a variable declaration assignment is for a scalar or vector at module level.
                 for d in names.iter().filter(|d| d.init.is_some()) {
-                    let why = if !d.dims.is_empty() {
-                        "a variable declaration assignment is not allowed on an array"
-                    } else if self.local > 0 {
-                        "a variable declaration assignment is only allowed at module level"
-                    } else {
-                        continue;
-                    };
                     let at = self
                         .pre
                         .span(d.name.pos, d.name.pos + d.name.name.len() as u32);
-                    self.push(Diag::error("E4100", format!("{why} (clause 6.2.1)"), at));
-                    return Err(());
+                    if !d.dims.is_empty() {
+                        self.push(Diag::error(
+                            "E4100",
+                            "a variable declaration assignment is not allowed on an array (clause 6.2.1)",
+                            at,
+                        ));
+                        return Err(());
+                    }
+                    if self.local > 0 {
+                        // other tools accept it (V14)
+                        self.push(Diag::warning(
+                            "W4207",
+                            "a variable declaration assignment is only allowed at module level (clause 6.2.1)",
+                            at,
+                        ));
+                    }
                 }
                 out.push(Item::Var(VarDecl {
                     kind,

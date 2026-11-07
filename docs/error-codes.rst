@@ -658,6 +658,12 @@ Verilog (E4 and W4)
      - A name is declared twice in the same scope: a module, task, function, named block, generate block or specify block (clause 4.11), or a port of the module header is declared again in the body (clause 12.3.4).
    * - _`E4204`
      - The variable of a generate ``for`` loop is declared with ``genvar`` (clause 12.4.1).
+   * - _`W4205`
+     - A task enable such as ``t();`` has parentheses and no argument.
+   * - _`W4206`
+     - A ``begin`` or ``fork`` block without a name declares variables, parameters or events.
+   * - _`W4207`
+     - A variable is given a value where it is declared inside a task, function or block.
    * - _`E4500`
      - The design reaches Verilog: elaborating and simulating Verilog is not implemented.
 

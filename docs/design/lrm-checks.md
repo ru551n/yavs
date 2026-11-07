@@ -792,7 +792,7 @@ IEEE Std 1364-2005 (clauses 3 to 10, 12, 14, 15, 17, 19 and 28, Annex A and Anne
 rules are put in our own words, and nothing is marked "recalled" any more. 164 files moved to the subclause that holds their
 rule (the parameter checks were under 4.11, which is the name spaces, and arrays under 4.10; functions were under 10.3, which
 is disabling; if/else under 9.5; PATHPULSE under 14.5; and so on). Rules that 1364-2005 does not state, or states against the
-tool behaviour yavs has chosen, are readings (V5 to V13) and gaps (G1 to G11) below. The same policy applies as for VHDL: where
+tool behaviour yavs has chosen, are readings (V5 to V14) and gaps (G1 to G11) below. The same policy applies as for VHDL: where
 the LRM is clear the front end follows it and fails early; where it is silent or unclear it is permissive; a clear rule the
 front end does not check is a known gap, pinned as a clean file with a `// gap:` header so that fixing it shows up as a
 changed test. The table of each clause below is generated from the file headers.
@@ -840,6 +840,13 @@ changed test. The table of each clause below is generated from the file headers.
 - **V13: an empty escaped identifier is an error (3.7.1).** The BNF of A.9.3 lets the characters after the backslash be none, the prose
   speaks of "any of the printable ASCII characters"; an identifier with no characters cannot be referred to or told from another, so `\ ` is `E4014`.
 
+- **V14: three strict rules are warnings (maintainer, 2026-11-07, policy rule 2: the other tools accept them).** A task without arguments enabled
+  with empty parentheses, `t();` (10.2.2: the list is not given), a declaration in a block without a name (9.8.1 and 9.8.2: only `begin : name`
+  and `fork : name` have declarations) and a variable declaration assignment inside a task, function or block (6.2.1: module level only) are
+  accepted with `W4205`, `W4206` and `W4207`. A null argument, `t(,1)`, and a declaration assignment on an array stay `E4100`. Files
+  `10.2.2_task_enable_empty_parentheses.v`, `9.8.1_block_declaration_needs_name.v`, `9.8.2_fork_declaration_needs_name.v`,
+  `6.2.1_var_init_in_block.v`, `6.2.1_var_init_in_task.v`.
+
 #### Known gaps
 
 The LRM says error, the front end accepts; each has a pinned file with a `// gap:` header.
@@ -880,9 +887,9 @@ the wrong field; a path delay with 4, 5, 7 to 11 or more than 12 values; `input 
 non-ANSI header; two `default` items in a case or generate case; a range on `integer`, `real`, `time` and `realtime`, or on a parameter with a type; a function with no input
 or with an output argument, a delay, event control, `wait`, nonblocking or procedural continuous assignment, event trigger or task enable in a function;
 a generate loop whose variable is not a genvar (new code `E4204`), whose iteration assigns another genvar, or two nested loops with one genvar;
-a parameter, port, specify block or specparam in a generate block, nested generate regions; a variable declaration assignment on an array or
-inside a block or task; unsized constants in a concatenation, a replication of x or z or on the left of an assignment; a declaration in an
-unnamed block; `assign` and `deassign` of a bit-select; a case with no item; a task enabled with `t()` or a null argument; a system task or an unknown
+a parameter, port, specify block or specparam in a generate block, nested generate regions; a variable declaration assignment on an array;
+unsized constants in a concatenation, a replication of x or z or on the left of an assignment;
+`assign` and `deassign` of a bit-select; a case with no item; a task enabled with a null argument; a system task or an unknown
 `$` check or a timing check with the wrong number of arguments in a specify block; an `ifnone` edge path, a parallel path with lists, a pulse style
 after a path of the same output; duplicate names inside a task, function, named block, generate block or specify block, a block or generate block
 name that is also another declaration, a function name declared again inside it, two instances of one name, a port of an ANSI header declared again in
@@ -1111,8 +1118,8 @@ parameter list; the words of V9.
 | `6.1.4_drive_same_polarity.v` | 6.1.4 | a drive strength is one strength0 and one strength1 | `E4100` |
 | `6.2.1_reg_initial_value.v` | 6.2.1 | a variable may be given a value where it is declared | clean |
 | `6.2.1_var_init_array.v` | 6.2.1 | a variable declaration assignment is not allowed on an array | `E4100` |
-| `6.2.1_var_init_in_block.v` | 6.2.1 | a variable declaration assignment is only allowed at module level | `E4100` |
-| `6.2.1_var_init_in_task.v` | 6.2.1 | a variable declaration assignment is only allowed at module level | `E4100` |
+| `6.2.1_var_init_in_block.v` | 6.2.1 | a variable declaration assignment is only allowed at module level; in a block it is accepted with a warning, other tools accept it (V14) | `W4207` |
+| `6.2.1_var_init_in_task.v` | 6.2.1 | a variable declaration assignment is only allowed at module level; in a task it is accepted with a warning, other tools accept it (V14) | `W4207` |
 
 #### Clause 7: gate and switch level modeling (33 checks)
 
@@ -1206,9 +1213,9 @@ parameter list; the words of V9.
 | `9.6_stmt_loops.v` | 9.6 | forever, repeat, while and for loops | clean |
 | `9.7_stmt_timing_controls.v` | 9.7 | delay, event and wait controls | clean |
 | `9.7.5_stmt_event_star.v` | 9.7.5 | @* and @(*) are the implicit sensitivity list | clean |
-| `9.8.1_block_declaration_needs_name.v` | 9.8.1 | a sequential block has declarations only if it is named | `E4100` |
+| `9.8.1_block_declaration_needs_name.v` | 9.8.1 | a sequential block has declarations only if it is named; accepted with a warning, other tools accept it (V14) | `W4206` |
 | `9.8.1_stmt_begin_without_end.v` | 9.8.1 | begin ends with end | `E4100` |
-| `9.8.2_fork_declaration_needs_name.v` | 9.8.2 | a parallel block has declarations only if it is named | `E4100` |
+| `9.8.2_fork_declaration_needs_name.v` | 9.8.2 | a parallel block has declarations only if it is named; accepted with a warning, other tools accept it (V14) | `W4206` |
 | `9.8.2_stmt_fork_join.v` | 9.8.2 | fork and join run statements in parallel | clean |
 | `9.8.3_stmt_named_block_disable.v` | 9.8.3 | a named block has declarations and can be disabled | clean |
 | `9.8.3_stmt_sv_end_label.v` | 9.8.3 | a label after end is SystemVerilog | `E4003` |
@@ -1221,7 +1228,7 @@ parameter list; the words of V9.
 |---|---|---|---|
 | `10.2.1_task_declaration.v` | 10.2.1 | a task has ports, declarations and a statement; tasks may be automatic | clean |
 | `10.2.1_task_ports_after_header.v` | 10.2.1 | the ports of a task are in its header or in its body, not in both | `E4100` |
-| `10.2.2_task_enable_empty_parentheses.v` | 10.2.2 | a task without arguments is enabled without a list | `E4100` |
+| `10.2.2_task_enable_empty_parentheses.v` | 10.2.2 | a task without arguments is enabled without a list; accepted with a warning, other tools accept it (V14) | `W4205` |
 | `10.2.2_task_enable_null_argument.v` | 10.2.2 | a null expression is not an argument of a task enable | `E4100` |
 | `10.4.1_function_declaration.v` | 10.4.1 | a function has a return type or range and at least one input | clean |
 | `10.4.1_function_missing_endfunction.v` | 10.4.1 | a function ends with endfunction | `E4100` |

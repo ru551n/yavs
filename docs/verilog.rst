@@ -85,9 +85,9 @@ and delays their kind takes, user-defined primitives have one output, first, at 
 allows and at most one edge per row, a path delay has 1, 2, 3, 6 or 12 values, specify blocks hold timing checks with the right number
 of arguments, an input or inout port is not a ``reg`` (``E4202``), a ``case`` has one ``default`` and an item, a function has input
 arguments only and no timing control, nonblocking or procedural continuous assignment, event trigger or task enable, a task enable
-has an expression for every argument, a block with declarations is named, a generate block has no ports, parameters or specify block,
+has an expression for every argument, a generate block has no ports, parameters or specify block,
 and the variable of a generate ``for`` loop is a ``genvar`` (``E4204``); these are syntax errors (``E4100``) unless a code is given.
-Rules that need the type of an operand or the elaborated design are left out, for example the name of an instance of a module (only
+Three rules are warnings, because other tools accept the code: ``t();`` for a task without arguments (``W4205``), declarations in a block without a name (``W4206``) and a variable given a value where it is declared inside a task or block (``W4207``). Rules that need the type of an operand or the elaborated design are left out, for example the name of an instance of a module (only
 gates and primitives may omit it), the operands of a real expression and more than one driver of a ``uwire``; ``docs/design/lrm-checks.md``
 lists each of them.
 

@@ -6,10 +6,11 @@ such as primitive libraries and IP models, from a VHDL testbench.
 
 .. note::
 
-   This is under construction. Today ``yavs analyze`` reads Verilog files and records their modules
-   in a library. Elaborating and simulating a design that instantiates a Verilog module is not
-   implemented yet, and a closure that reaches a Verilog module stops with an error. SystemVerilog is
-   not read.
+   This is under construction. ``yavs analyze`` reads Verilog files and records their modules in a
+   library, and a VHDL testbench can instantiate a Verilog module and simulate it, with the subset of
+   Verilog listed under `Simulating Verilog from VHDL`_. A construct outside that subset stops
+   elaboration with ``E4501``, which names it. Only the interpreter runs Verilog for now; VHDL keeps
+   its compiled tiers. SystemVerilog is not read.
 
 .. contents:: On this page
    :local:
@@ -67,9 +68,9 @@ Elaboration tasks
 
 ``$error``, ``$warning``, ``$info`` and ``$fatal`` are read where a module item or a generate-block
 item may stand, for example in a ``generate`` ``if`` that rejects a bad parameter. This goes beyond
-IEEE 1364-2005, which has no elaboration tasks; vendor and cell models use them. They are recorded
-and not executed yet: elaboration of Verilog is not implemented. Any other system task outside a
-procedural block is still a syntax error (``E4100``).
+IEEE 1364-2005, which has no elaboration tasks; vendor and cell models use them. They are recorded,
+and a module that has one stops elaboration with ``E4501``: running them is not implemented yet. Any
+other system task outside a procedural block is still a syntax error (``E4100``).
 
 What is checked
 ---------------
@@ -91,9 +92,81 @@ Three rules are warnings, because other tools accept the code: ``t();`` for a ta
 gates and primitives may omit it), the operands of a real expression and more than one driver of a ``uwire``; ``docs/design/lrm-checks.md``
 lists each of them.
 
+Simulating Verilog from VHDL
+----------------------------
+
+The top level is VHDL. A VHDL component instance that no configuration and no entity of the
+component's name binds is bound to the Verilog module of that name, searched in the work library and
+then in each library named with ``-L LIB`` on ``elab`` or ``run``, in that order. The component gives
+the module's generics and ports, matched by name (the name as written first, then the one that differs
+only in case). A configuration that says ``use open`` leaves the instance unbound, as in VHDL.
+
+``docs/examples/verilog`` holds a counter written in Verilog and a VHDL testbench for it:
+
+.. code-block:: bash
+
+    yavs analyze --work=work:build/work counter.v counter_tb.vhd
+    yavs run --work=work:build/work counter_tb
+
+.. code-block:: text
+
+    ** Note: 15000000fs+0: q = 1
+        Process counter_tb.process (counter_tb.vhd:19)
+    ** Note: 25000000fs+0: q = 2
+        Process counter_tb.process (counter_tb.vhd:19)
+    ** Note: 35000000fs+0: q = 3
+        Process counter_tb.process (counter_tb.vhd:19)
+
+A module in another library is found with ``-L``, the library mapped as usual:
+
+.. code-block:: bash
+
+    yavs analyze --work=cells:build/cells counter.v
+    yavs analyze --work=work:build/work counter_tb.vhd
+    yavs run --work=work:build/work --map=cells:build/cells -L cells counter_tb
+
+Elaboration reads each Verilog file again with what its analysis used: the ``-D``, ``-I`` and
+``--timescale`` options and the macros that earlier files of the same ``analyze`` call defined. A file
+or an included file that changed since it was analyzed is ``E4508``: analyze it again.
+
+**Generics and ports.** A generic sets the parameter of its name (``E4701`` when there is none, or it is
+a ``localparam``). ``integer`` gives a 32-bit signed value, ``real`` a real, ``string`` 8 bits per
+character, ``std_logic_vector`` and ``bit_vector`` a vector of their length, ``std_logic``, ``bit`` and
+``boolean`` one bit. A parameter without a type or range takes the type of that value, one with a range
+keeps its range. Ports are ``std_logic``, ``std_ulogic``, ``bit`` and vectors of them, of mode ``in``
+or ``out``, with the width of the Verilog port (``E4700`` otherwise); the left element of a VHDL vector
+is the left (most significant) bit of the Verilog vector. A Verilog input with no VHDL port is ``z``.
+VHDL values reach Verilog as ``0``, ``1``, ``x`` and ``z`` (``L`` and ``H`` as ``0`` and ``1``, ``U``,
+``W`` and ``-`` as ``x``); a ``bit`` port takes ``x`` and ``z`` from Verilog as ``'0'``.
+
+**Timing.** Every Verilog process of the design runs in one scheduler with the active, inactive and
+non-blocking regions of the standard, inside one delta cycle of the VHDL simulation: blocking
+assignments and continuous assignments take no delta. What the active region changes reaches VHDL one
+delta later, what non-blocking assignments change one delta after that. A Verilog clock that clocks
+both a Verilog register and a VHDL flip-flop therefore gives the VHDL flip-flop the register's value from
+before the edge. Outputs show the module's initial values (``x`` for a ``reg``, ``z`` for an undriven
+net) one delta into the run. Delays are in each module's ``timescale`` unit, rounded to its precision.
+
+**What runs.** Parameters and ``localparam`` (also wide and string values); ``wire``, ``tri``, ``reg``,
+``integer`` and ``time`` declarations; continuous assignments and net declaration assignments;
+``always`` and ``initial`` blocks with ``@(...)``, ``@*``, ``#`` and ``wait``; blocking and non-blocking
+assignments, also with an intra-assignment delay; ``if``, ``case``, ``casez``, ``casex``, ``for``,
+``while``, ``repeat`` and ``forever``; every operator of the standard on 4-state values of any width,
+with the standard's sizing and sign rules; ``$display``, ``$write``, ``$finish``, ``$time``,
+``$stime``, ``$realtime``, ``$clog2``, ``$signed`` and ``$unsigned``. The ports of a Verilog instance are
+in the wave file under the instance.
+
+**Not yet.** Module instances inside a Verilog module, generate constructs, gate primitives and
+user-defined primitives, functions and tasks, memories, ``real`` variables, ``inout`` ports, nets with
+more than one driver, other net types (``tri0``, ``supply1``, ``wand``, ...), drive strengths, delays on
+continuous assignments and nets, ``defparam``, named events, ``fork``/``join``, ``disable``, procedural
+``assign`` and ``force``, hierarchical names, the other system tasks, and the ``glbl`` module of vendor
+libraries. Each stops elaboration with ``E4501``, naming the construct. Specify blocks are read and not
+evaluated. Verilog runs in the interpreter only, and Verilog nets and variables other than the ports are
+not in the wave file.
+
 Diagnostics
 -----------
 
-Verilog diagnostics have codes ``E4xxx`` and ``W4xxx``, listed in :doc:`error-codes`. ``elab`` and
-``run`` refuse a library whose Verilog file, or a file it includes, changed since it was analyzed
-(``L0034``, like a changed VHDL source): analyze the Verilog files again.
+Verilog diagnostics have codes ``E4xxx`` and ``W4xxx``, listed in :doc:`error-codes`. A Verilog module
+as the top level is ``E4500``.

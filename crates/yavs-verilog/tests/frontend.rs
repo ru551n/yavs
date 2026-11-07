@@ -125,6 +125,8 @@ fn every_code_in_the_sources_is_in_the_table() {
         include_str!("../src/stmt.rs"),
         include_str!("../src/analysis.rs"),
         include_str!("../src/lib.rs"),
+        include_str!("../src/sem.rs"),
+        include_str!("../src/elab.rs"),
     ] {
         for (i, _) in src.match_indices("\"E4").chain(src.match_indices("\"W4")) {
             let code = &src[i + 1..i + 6];
@@ -144,6 +146,11 @@ fn every_code_in_the_sources_is_in_the_table() {
         include_str!("../src/stmt.rs"),
         include_str!("../src/analysis.rs"),
         include_str!("../src/lib.rs"),
+        include_str!("../src/sem.rs"),
+        include_str!("../src/elab.rs"),
+        // The codes the callers report at the boundary (the record of a file, the module search).
+        include_str!("../../yavs/src/verilog.rs"),
+        include_str!("../../yavs-elab/src/walk.rs"),
     ]
     .concat();
     // E4001 is raised at elaboration, not here.

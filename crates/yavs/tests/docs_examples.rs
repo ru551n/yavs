@@ -464,3 +464,28 @@ fn time_and_exit_status() {
     assert_eq!(code, 1);
     assert!(!out.contains("more"), "{out}");
 }
+
+/// `docs/verilog.rst`: the Verilog counter of `docs/examples/verilog` and its VHDL testbench, from
+/// the work library and from another one through `-L`.
+#[test]
+fn verilog_from_vhdl() {
+    let files = ["counter.v", "counter_tb.vhd"];
+    let e = Env::new("doc-verilog");
+    e.copy("verilog", &files);
+    e.ok(&["analyze", WORK, "counter.v", "counter_tb.vhd"]);
+    let out = e.ok(&["run", WORK, "counter_tb"]);
+    on_page("verilog.rst", &out);
+    let e = Env::new("doc-verilog-l");
+    e.copy("verilog", &files);
+    e.ok(&["analyze", "--work=cells:build/cells", "counter.v"]);
+    e.ok(&["analyze", WORK, "counter_tb.vhd"]);
+    let l = e.ok(&[
+        "run",
+        WORK,
+        "--map=cells:build/cells",
+        "-L",
+        "cells",
+        "counter_tb",
+    ]);
+    assert_eq!(l, out);
+}

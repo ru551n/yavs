@@ -2956,14 +2956,49 @@ The GitHub Action that installs a release lives in its own repository, `ru551n/y
   range and index constraints outside their type mark or index subtype (`E1215`, #465) and
   array conversions whose bounds leave the target's index subtype (`W1403`, run-time error kept).
 
-## verilog (`crates/yavs-verilog`, `crates/yavs/src/verilog.rs`, #776 M0)
+## verilog (`crates/yavs-verilog`, `crates/yavs/src/verilog.rs`, #776 M0 and step C)
 
-M0 done; elaboration and lowering are not started. Scheduling (step A of the execution work): `yavs_verilog::Domain` runs the
+First executable path (step C of the execution work, 2026-11-07): a VHDL testbench instantiates Verilog registers and
+combinational logic and simulates them through `yavs analyze`, `yavs elab` and `yavs run`. A component instance that no
+configuration and no entity binds (an explicit `use open` stays open) is bound to the Verilog module of its name, searched in
+the work library, then the libraries of `-L LIB` (D6). `yavs-elab` records such instances in `Elaborated::verilog` (generics
+converted, ports as object ids); the CLI reads each module's file again under the setup its analysis recorded (options and
+incoming preprocessor state, the new `setup` field of the library record; a changed file or a record of an older yavs is
+`E4508`), elaborates all instances into one `yavs_verilog::Design` and gives the build a factory of the one serial domain
+process. Done: parameters and `localparam` from integer, real, string, boolean, std_logic, bit and vector generics (untyped
+parameters take the value's type, wide and string values), `wire`/`tri`/`reg`/`integer`/`time`, continuous and net declaration
+assignments (pure copies onto internal nets aliased, no process), `always`/`initial` with `@(...)` on names, `@*`, `#`, `wait`,
+blocking, non-blocking and intra-assignment delays, `if`, `case`/`casez`/`casex`, `for`, `while`, `repeat`, `forever`, every
+1364 operator on 4-state values of any width with the sizing and sign rules of 5.4 and 5.5 decided in `sem.rs`, `$display`,
+`$write` (formats `%b %o %h %d %s %c %t %m %e %f %g`), `$finish`, `$time`, `$stime`, `$realtime`, `$clog2`, `$signed`,
+`$unsigned`, timescale units and precision rounding, in/out ports of std_logic, bit and their vectors (bit ports take x and z
+as '0'), the D4 deltas at the boundary, the ports of Verilog instances in the wave file (`yavs-wave` shows the component scope of
+such an instance as an instance). Fail early: `E4501` names every other construct elaboration reaches; `E4502` a net with more
+than one driver, `E4503` an `always` without timing control, `E4504` to `E4507` name, constant, expression and target errors,
+`E4700`/`E4701` port and generic mismatches, `E4509` an ambiguous module name, `E0142` an unmapped `-L` library, `E4001` an
+encrypted module, `E4500` a Verilog top level (D11).
+
+Not done (each `E4501` when reached): module instances inside Verilog, generate, gates and UDPs, functions and tasks,
+memories, real variables, `inout` (step D), several drivers per net and other net types, strengths, delays on continuous
+assignments and nets, `defparam`, events, `fork`/`join`, `disable`, procedural `assign`/`force`, hierarchical names, `glbl`,
+other system tasks, the elaboration tasks; `entity lib.module` direct instantiation of a Verilog module (needs analysis support,
+left out). Specify blocks are not evaluated (path delays are D9, M3). Verilog runs only in the interpreter-like process code of
+the domain (no IR, no compiled tier, decision "Verilog execution engine"); internal Verilog nets are not in waves, DAP and VHPI do
+not see Verilog. Ceilings (`ponytail:` in the code): nets are kept as `LogicVec` and converted per read and write, bit by bit
+part writes, `%s` leaves out leading NUL bytes, spans of expression diagnostics point at the first name of the expression.
+Tests: `crates/yavs-verilog/tests/ops.rs` (every operator against a reference model of the clause 5 tables, widths 1 to 130),
+`tests/run.rs` (21 run-time LRM checks `tests/verilog/lrm/*_eval_*.v` with their expected output or error), the CLI end-to-end
+tests `crates/yavs/tests/verilog_run.rs` (10 tests: counter, shifter and adder with x, FSM, generic widths with string and vector
+parameters, Verilog clock into a VHDL flip-flop with D4 deltas at 1 and 4 threads, timescale scaling, waves, library search and
+`use open`, macros of an earlier file and `-D`, a changed file, eight mismatch and unsupported cases), and the user guide example
+(`docs/examples/verilog`, `docs_examples.rs` `verilog_from_vhdl`).
+
+M0 done. Scheduling (step A of the execution work): `yavs_verilog::Domain` runs the
 Active, Inactive and NBA regions of 1364-2005 5.4 inside one serial kernel process, with `SimControl` unchanged
 (`docs/design/verilog-scheduling.md`): blocking writes visible at once, `#0` before NBA, future NBAs and `#d` in the domain's
 own time map, inputs read as `TO_X01Z`, Table 9-9 edges, an ordered publication queue (Active results at the next delta, NBA
-results one delta later, decision D4), a per-process event limit (`E3009`) and stop polling in the loop. Processes are Rust
-closures; nothing in the CLI reaches it yet. Tests: `crates/yavs-verilog/tests/sched.rs`, 16 cases, identical traces at 1
+results one delta later, decision D4), a per-process event limit (`E3009`) and stop polling in the loop. Processes are the
+compiled process code of step C (`exec.rs`), driven from closures. Tests: `crates/yavs-verilog/tests/sched.rs`, 16 cases, identical traces at 1
 and 4 threads (pooled), with unchanged assignments skipped and with a shuffled order. The front end (`crates/yavs-verilog`): preprocessor (macros with
 arguments, conditionals, `include`, `timescale`, `default_nettype`, `celldefine`, command-line `-D`), lexer, parser for the
 1364-2005 constructs of the plan (modules, UDPs, gates, generate, tasks and functions, specify blocks and timing checks parsed
@@ -2975,7 +3010,7 @@ error index; library format 6 with `Module` and `Primitive` units (case kept, ex
 module and a VHDL unit of one name), the `encrypted` flag, the preprocessor context and the included files with hashes in the unit
 record, verified by `closure`; the context in the cache key; `yavs analyze` dispatches by extension (`.v`, `.vh`, `.vp` to the front
 end, `.sv`, `.svh` are `E4002`), with `-I`, `-D NAME[=VALUE]`, `--timescale` and `--lang`; diagnostics are reported under the file
-whose analysis found them; `elab` and `run` stop with `E4500` at a Verilog file.
+whose analysis found them; a Verilog top level is `E4500`.
 
 Measured (debug build, `tools/verilog`): 30 of 30 hand-written fixtures as expected (`$error`, `$warning`, `$info` and `$fatal` are accepted as module and generate-block items, not executed: `lrm-checks.md` V4); the 36 yosys cell model files (CI): 34
 analyse (the four lattice models with `-D NO_INCLUDES`, which their own guard expects; without it they declare modules twice, `E4200`), 2 are rejected for their own SystemVerilog (`i++` is `E4003`); the vendor
@@ -2984,7 +3019,7 @@ with no error; the 68 others are SystemVerilog in a `.v` file, generator templat
 lacks and files that need macros from another IP or a `-D` flag (`docs/decisions.md` "Verilog test material and corpus gate"). The
 M0 acceptance as measured: every library file (unisims, unimacro, unifast, retarget, `glbl`) in both views analyses with 0 errors,
 every encrypted file is recorded with one `W4007`, and the errors in plaintext IP are limited to the classified rows of
-`tools/verilog/vendor.expected` (the plan's "800 plaintext IP with 0 errors" is not literally reachable). Per-clause LRM checks: 369 files in `tests/verilog/lrm` (99 lexical, 85 directives, 44 hierarchy and ports, 38 data types, 19 gates, 18 UDPs, 17 behavioral, 14 specify, 11 system tasks, 8 envelopes, 16 others), run by `cargo test -p yavs-verilog`, with 4 known gaps and the bugs they found fixed (`docs/design/lrm-checks.md` "Per-clause checks"); `proptest` properties for literals, macros, conditionals and damaged input. Not done: Verilog options on `elab`/`run`, operator-table tests (M1).
+`tools/verilog/vendor.expected` (the plan's "800 plaintext IP with 0 errors" is not literally reachable). Per-clause LRM checks: 369 files in `tests/verilog/lrm` (99 lexical, 85 directives, 44 hierarchy and ports, 38 data types, 19 gates, 18 UDPs, 17 behavioral, 14 specify, 11 system tasks, 8 envelopes, 16 others), run by `cargo test -p yavs-verilog`, with 4 known gaps and the bugs they found fixed (`docs/design/lrm-checks.md` "Per-clause checks"); `proptest` properties for literals, macros, conditionals and damaged input. Operator-table tests: see step C above.
 
 ## syntax (`crates/yavs-syntax`, M0)
 

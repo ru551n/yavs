@@ -1,5 +1,40 @@
 # Decisions
 
+## Verilog execution, first path (step C of #776, 2026-11-07)
+
+- **Verilog execution engine:** a module instance is elaborated in `yavs-verilog` into process code of its own (`exec.rs`:
+  fixed-width expression trees over 4-state `V4` values, assignment targets, a linear instruction list per process with jumps,
+  waits and delays) that the domain's process closures run from one wait to the next. Not lowered to `yavs-ir` and not run by
+  the `yavs-interp` `Machine`: that would add Verilog instructions to the interpreter's hot loop, the optimiser, the effect
+  classes of the compiled tiers and the work counters, all for tiers step C leaves out, and the VHDL path stays byte for byte
+  as it was. The 4-state operators (`value.rs`) are the semantics any later IR op calls. Upgrade path: step E lowers the same
+  trees to IR ops with a runtime interface in the interpreter crate (proposal on #776, section 6). Agent's choice, open for the
+  maintainer.
+- **Sizing and sign in the front end:** `sem.rs` decides the width and sign of every operand (IEEE 1364-2005 5.4, 5.5) and inserts
+  explicit extensions; the run-time operators take operands of one width (shifts and `**`: a self-determined right operand).
+- **Binding (D6):** a component instance that no configuration declaration or specification and no default binding binds
+  searches the work library, then the `-L` libraries of `elab`/`run` in order, for a module of the component's name (exact,
+  then the one case-insensitive match, D5); `binding()` tells an explicit `use open` (stays unbound) from a failed default
+  binding. `entity lib.module` direct instantiation is not supported (it needs analysis to accept a module as an entity).
+- **Instance data:** `Elaborated::verilog` (`VerilogInst`: component scope, library, module, file, generics converted to
+  `VerilogValue`, ports as `ObjId`), a collection of its own as the proposal says, no `Vhdl | Verilog` object reference
+  refactor; the CLI turns the ports into kernel references after placement (`NetGraph::kref`) and sets
+  `Elaborated::verilog_domain`, a factory the build calls, so every build (restart, VHPI reset, debugger) gets a fresh domain.
+- **The file is read again as analysed:** each Verilog unit's library record holds `setup`, the options (`-I`, default
+  timescale) and the preprocessor state entering its file (macros, `timescale`, `default_nettype`, `celldefine`,
+  `begin_keywords`), so elaboration reads it like the analysis did, macros of earlier files of the call included. A record
+  without it (an older yavs), or a file or include whose hash changed, is `E4508`. No `FORMAT` bump: the field is optional and
+  its absence is an error only where it is needed.
+- **Generics and ports:** generics of type integer (32-bit signed), real, string (8 bits per character), boolean, std_logic,
+  bit and their vectors; ports of std_logic, std_ulogic, bit and their vectors, modes in and out (inout is step D), widths equal,
+  left to left. A `bit` port takes x and z from Verilog as '0' (`lrm-checks.md` S5).
+- **One driver per net bit:** two continuous drivers of a net bit are `E4502` until the domain resolves drivers; a pure copy
+  `assign a = b;` onto an internal net with no other driver makes `a` the net of `b` (plan 3.6), no process.
+- **Order at time 0:** continuous assignments, then `always`, then `initial`, each in source order (`lrm-checks.md` S2).
+- **`E4500`** now means a Verilog top level, which is not supported (D11), instead of "Verilog is not implemented".
+- **Codes:** `E4501` (construct not implemented, naming it), `E4502` to `E4509`, `E4700`, `E4701` in `yavs_verilog::CODES`;
+  `E0142` (`-L` library not mapped) in the CLI's table.
+
 ## Verilog scheduling inside one kernel process (step A of #776, 2026-11-07)
 
 - **One serial domain:** all Verilog runs in one `yavs_verilog::Domain`, a serial kernel `Process` with its own nets, regs and
@@ -8,8 +43,9 @@
 - **D4 as implemented:** output changes go to VHDL as ordered batches, one per delta, with zero-delay `Ctx::assign`: Active
   results at the next delta, each NBA region one batch later, also when the Active region changed no output (so a Verilog
   register on a VHDL clock is visible one delta after a VHDL register on it). D4 itself: maintainer, 2026-10-26. The batch rules (an empty Active batch
-  still costs its delta, a port written twice in one region goes out as a one-delta pulse, every output published at
-  delta 1) are the agent's choices of 2026-11-07, open for the maintainer.
+  still costs its delta, a port written twice in one region goes out as both changes in order, every output published at
+  delta 1 with Verilog's initial x or z) were the agent's choices of 2026-11-07 and are the maintainer's rulings since
+  (2026-11-07, relayed with step C).
 - **Future NBAs are not kernel transactions:** `Waveform::schedule` drops later transactions even for transport, so `<= #d`
   stays in the domain's time map (proposal on #776, section 3).
 - **Zero-delay loops:** a process that runs more than 10000 times at one time ends the run with `E3009` (runtime error), naming
@@ -14517,7 +14553,7 @@ into the existing layers (milestone M0).
 
 - **Range `E4000`-`E4999` / `W4000`-`W4999` belongs to Verilog.** `E4001`-`E4099` preprocessor and lexer,
   `E4100`-`E4199` parser, `E4200`-`E4499` module analysis, `E4500`-`E4699` Verilog elaboration (`E4500`: a
-  design reaches Verilog, not implemented yet), `E4700`-`E4799` the VHDL/Verilog boundary. `E4002` (a `.sv`
+  Verilog top level, since step C), `E4700`-`E4799` the VHDL/Verilog boundary. `E4002` (a `.sv`
   file) is reported by the CLI, the rest by the front end. A protected (IEEE 1735) module is recorded at analysis
   with warning `W4007`, one per file; `E4001` is the error on instantiating it (D8, maintainer, 2026-11-07). Rationale: one range per stage (rule 5).
 - **A Verilog unit's key keeps the case of its name** (`UnitKind::Module`, `UnitKind::Primitive`, manifest

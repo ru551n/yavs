@@ -147,7 +147,9 @@ directly (`docs/design/vhdl-93.md`).
   may not share a name (case ignored) in one library: analyzing the second is `L0035`. An encrypted
   module is recorded by name and fails only when something instantiates it. The index records, per
   Verilog file, the state of the preprocessor it was analyzed under and the files it included with their
-  hashes; `run`/`elab` treat an included file that changed like a changed source (`L0034`).
+  hashes, and per unit its setup (the options and the preprocessor state its file was read under), which
+  `elab` and `run` use to read the file again when a component binds to the module; a Verilog file or an
+  included file that changed since, or a record written before the setup existed, is `E4508` (exit 2).
 - A missing or empty directory is a valid empty library. `analyze` creates the
   directory (and its parents) on first use. The test runner does not run an init command;
   it only creates the parent of the library directory. This holds for every library, the `--work`
@@ -358,10 +360,18 @@ yavs analyze --std=FILE_STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=alwa
   (a macro before the first file; `NAME=VALUE` is also the VHDL conditional analysis identifier of the VHDL
   files of the call, `NAME` alone is Verilog only), `--timescale UNIT/PRECISION` (default `1ns/1ps`). `-I`,
   `--timescale` and a bare `-D NAME` in a call with no Verilog file are `E0141` (exit 2). `elab` and `run`
-  accept `-D NAME=VALUE` only and have no Verilog options yet: a runner that passes its `-D` flags to all three
-  commands must not pass a bare `-D NAME`. A top level that is a Verilog module is `E4500` (exit 2): elaborating
-  Verilog is not implemented. Each Verilog file is recorded with its units, the preprocessor state it was
-  analyzed under and the hashes of its included files (section 3).
+  accept `-D NAME=VALUE` only: a runner that passes its `-D` flags to all three commands must not pass a bare
+  `-D NAME`; the Verilog options of a file come from its analysis (section 3). A top level that is a Verilog
+  module is `E4500` (exit 2): the top level is VHDL (D11). Each Verilog file is recorded with its units, the
+  preprocessor state it was analyzed under and the hashes of its included files (section 3).
+- Verilog under VHDL (#776): in `elab` and `run`, a component instance that no configuration and no entity
+  binds is bound to the Verilog module of the component's name, found in the work library and then in the
+  libraries of `-L LIB` (repeatable, in order; a library must also be mapped, `E0142` otherwise, exit 2). A
+  configuration's `use open` leaves the instance unbound (`W2108`). The component's generics set the
+  parameters and its ports connect to the module's ports by name; a generic or port that does not fit is
+  `E4701`/`E4700`, a Verilog construct elaboration does not implement `E4501` naming it (all exit 2). Values
+  the Verilog side changes reach VHDL one delta after its active region, non-blocking assignment results one
+  delta later (D4). The Verilog runs in the interpreter at every `--tier`.
 - An encrypted source (IEEE 1735 `` `protect begin_protected `` envelope, #775) is one error
   `E0012` naming the file and the line that opens the envelope, with the fix; yavs never decrypts.
 - `yavs --explain CODE` prints the long text of a diagnostic code on stdout

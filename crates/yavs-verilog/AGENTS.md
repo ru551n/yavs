@@ -5,20 +5,27 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 ## 1. Purpose and boundaries
 
 - Verilog (IEEE 1364-2005) front end: preprocessor, lexer, parser, module analysis and detection of
-  encrypted envelopes and SystemVerilog (M0 of the plan in #776). No elaboration or lowering yet.
+  encrypted envelopes and SystemVerilog (M0 of the plan in #776).
 - The scheduling domain (#776 step A, `docs/design/verilog-scheduling.md`): the Verilog regions inside one
-  serial kernel process, with processes as Rust closures until lowering produces them.
+  serial kernel process.
+- Elaboration of the modules VHDL instantiates (#776 step C): parameters, nets and variables, processes compiled to
+  the process code of `exec.rs` and run by the domain; the 4-state operators (`value.rs`). No IR, no compiled tier.
 - Does not: render diagnostics (they are plain data, `Diag`, with codes in `CODES` for the caller to
   register), touch the library manifest or the cache (the caller does, from `Unit`), or decide the
   language of a file for the CLI (`is_verilog_path`, `is_systemverilog_path` are helpers).
 - Depends on `yavs-diag` for `suggest` only (did-you-mean), and on `yavs-kernel` and `yavs-logic` for the
-  domain (`Process`, `Ctx`, `LogicVec`). Called by `crates/yavs` (`analyze`).
+  domain (`Process`, `Ctx`, `LogicVec`). Called by `crates/yavs` (`analyze`, and `elab`/`run` through
+  `read_unit` and `Design`).
 
 ## 2. Map
 
 | File | Responsibility |
 |---|---|
-| `src/lib.rs` | The API: `analyze`, `Options`, `Unit`, `Diag`, `Span`, `CODES`; per-file driver and E4001 |
+| `src/lib.rs` | The API: `analyze`, `Options`, `Unit` (with `setup`), `Diag`, `Span`, `CODES`; per-file driver and E4001; `read_unit` (a file read again under a recorded setup: `Source`), `setup` |
+| `src/value.rs` | `V4`: a 4-state vector of any width in two planes, and the operators of clause 5 on it (bitwise, arithmetic with the x rules, `**` of Table 5-6, shifts, relations, `==`/`===`, logical, reductions, the `?:` merge, extension, selects) |
+| `src/sem.rs` | Expressions of an instance: self-determined types (`Ty`, Table 5-22) and the context-determined build (`build`, 5.4 and 5.5) into `exec::E`; numbers (3.5.1), strings, constants (`konst`), selects |
+| `src/exec.rs` | The run-time form: `E` (fixed-width trees), `Lhs`, `Op` (one process's code), `Run` (the interpreter of one process from one wait to the next), `$display` formatting |
+| `src/elab.rs` | `Design` (every instance of a run; `domain` per build), `Instance`, `Generic`, `ParamValue`, `PortSpec`; `Elab`: parameters, declarations, net aliases, port binding, continuous assignments, `always`/`initial` compiled to `Op`s, the driver check |
 | `src/pre.rs` | Preprocessor on bytes: macros, conditionals, `include`, `timescale`, `default_nettype`, `celldefine`, `begin_keywords` (`KwSet`, the lexer reads the set per token), `line`, protected envelopes; output-to-source map (`Pre::span`); `State` persists across files; context digest |
 | `src/lex.rs` | Lexer: tokens with offsets into the preprocessed text; keywords, `(*)` and `*)` rules; UDP table body is skipped |
 | `src/ast.rs` | The syntax tree (public, in memory only; M1 lowers it) |
@@ -32,6 +39,8 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `tests/lrm.rs` | Runs every `tests/verilog/lrm/*.v` check (one LRM rule per file, header with the exact expected diagnostics) and checks that each is a row of `docs/design/lrm-checks.md` |
 | `tests/sched.rs` | Scheduling: the kernel behaviour the bridge rests on, the regions, D4 at the boundary, edges, initialisation, the event limit, stop requests, 1 against 4 threads |
 | `tests/props.rs` | `proptest` properties: number literals of every base and width, macro chains and argument counts, nested conditionals, damaged real sources (no panic, spans inside the file) |
+| `tests/ops.rs` | Every operator of `value.rs` against a reference model of the clause 5 tables (strings of 0 1 x z, big integers), widths 1 to 130 |
+| `tests/run.rs` | The run-time LRM checks: files of `tests/verilog/lrm` with `// output:` or `// elab:` header lines, elaborated and run with no ports in a kernel of their own |
 
 ## 3. Design decisions that bind this module
 
@@ -62,6 +71,11 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | Future NBAs and `#d` resumptions are in the domain's own time map, never kernel transactions | `Waveform::schedule` drops later transactions even for transport | same, 3 |
 | `posedge`/`negedge` by Table 9-9 on element 0 (`edge`), inputs read as `TO_X01Z`; a VHDL initial value is no event | 9.7.2; `Ctx::edge` has the VHDL rules | same, 1 and 2 |
 | A process that runs more than `EVENT_LIMIT` (10000) times at one time is `E3009`; the loop polls `Ctx::stop_requested` every 1024 activations | The kernel's delta limit cannot see a loop inside one activation; a per-process count does not grow with the design | same, 4; `ponytail:` a dedicated code later |
+| Elaboration builds process code of its own (`exec.rs`), not IR: the VHDL interpreter, optimiser and compiled tiers are untouched; step E lowers the same trees | Simplest design that keeps the VHDL path unchanged | `docs/decisions.md` "Verilog execution, first path" |
+| Widths and signs are decided in `sem.rs`; the operators of `value.rs` take operands of one width (shifts and `**`: a self-determined right operand) | 5.4, 5.5: the long tail (R1) stays in one place | same |
+| A unit's `setup` (options and incoming preprocessor state, `State::encode`) is recorded at analysis; `read_unit` reads the file again under it | Elaboration must read a file as its analysis did, macros of earlier files included | same |
+| Processes start in the order continuous assignments, `always`, `initial`; a net bit with two continuous drivers is `E4502`; a pure copy onto an internal net with one driver is an alias | `lrm-checks.md` S2; no resolution in the domain yet | same |
+| Every construct elaboration does not implement is `E4501` naming it; an `always` with no timing control is `E4503`; a process that jumps back 2^26 times without waiting is a run-time error | Fail early, no silent subset | same |
 
 Ceilings of the domain (each a `ponytail:` note in the code): `docs/design/verilog-scheduling.md` section 5.
 

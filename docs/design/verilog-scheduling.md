@@ -3,7 +3,8 @@
 Step A of #776 (plan section 3.5, the "minimally invasive" proposal sections 1 to 3): the Verilog regions of
 IEEE 1364-2005 5.4 run inside one kernel process, so the VHDL cycle (`SimControl::cycle`, `update`, `run_batch`)
 stays as it is. Code: `crates/yavs-verilog/src/runtime.rs` (regions) and `src/bridge.rs` (the boundary); tests:
-`crates/yavs-verilog/tests/sched.rs`. Processes are Rust closures until lowering produces them (step C).
+`crates/yavs-verilog/tests/sched.rs`. Processes are closures; elaborated modules (step C, `elab.rs`) make them run the process code of
+`exec.rs`.
 
 ## 1. The domain
 

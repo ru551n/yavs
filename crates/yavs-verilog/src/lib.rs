@@ -14,6 +14,7 @@ mod parse;
 mod pre;
 mod runtime;
 mod stmt;
+pub mod value;
 
 use std::path::{Path, PathBuf};
 

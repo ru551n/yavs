@@ -15,4 +15,5 @@ yavs-logic.workspace = true
 workspace = true
 
 [dev-dependencies]
+num-bigint = "0.4"
 proptest = "1"

@@ -1,6 +1,6 @@
 [package]
 name = "yavs-verilog"
-description = "Verilog (IEEE 1364-2005) preprocessor, lexer and parser for yavs"
+description = "Verilog (IEEE 1364-2005) front end and scheduling domain for yavs"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,6 +8,8 @@ publish.workspace = true
 
 [dependencies]
 yavs-diag.workspace = true
+yavs-kernel = { path = "../yavs-kernel" }
+yavs-logic.workspace = true
 
 [lints]
 workspace = true

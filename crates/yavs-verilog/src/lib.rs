@@ -2,18 +2,23 @@
 //!
 //! The one entry point is [`analyze`]. Diagnostics are plain data ([`Diag`]); the caller renders them
 //! (`yavs-diag`) and registers the codes of [`CODES`].
+//!
+//! [`Domain`] is the scheduling side (#776 step A): Verilog regions inside one kernel process.
 
 mod analysis;
 pub mod ast;
+mod bridge;
 mod diag;
 mod lex;
 mod parse;
 mod pre;
+mod runtime;
 mod stmt;
 
 use std::path::{Path, PathBuf};
 
 pub use pre::Nettype;
+pub use runtime::{Domain, EVENT_LIMIT, Edge, Exec, NetId, Wait, edge};
 
 /// A byte range of an original source file (`AnalysisResult::files[file]`), never of preprocessed text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]

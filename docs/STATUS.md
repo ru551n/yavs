@@ -2958,7 +2958,13 @@ The GitHub Action that installs a release lives in its own repository, `ru551n/y
 
 ## verilog (`crates/yavs-verilog`, `crates/yavs/src/verilog.rs`, #776 M0)
 
-M0 done; elaboration and simulation (M1) are not started. The front end (`crates/yavs-verilog`): preprocessor (macros with
+M0 done; elaboration and lowering are not started. Scheduling (step A of the execution work): `yavs_verilog::Domain` runs the
+Active, Inactive and NBA regions of 1364-2005 5.4 inside one serial kernel process, with `SimControl` unchanged
+(`docs/design/verilog-scheduling.md`): blocking writes visible at once, `#0` before NBA, future NBAs and `#d` in the domain's
+own time map, inputs read as `TO_X01Z`, Table 9-9 edges, an ordered publication queue (Active results at the next delta, NBA
+results one delta later, decision D4), a per-process event limit (`E3009`) and stop polling in the loop. Processes are Rust
+closures; nothing in the CLI reaches it yet. Tests: `crates/yavs-verilog/tests/sched.rs`, 15 cases, identical traces at 1
+and 4 threads. The front end (`crates/yavs-verilog`): preprocessor (macros with
 arguments, conditionals, `include`, `timescale`, `default_nettype`, `celldefine`, command-line `-D`), lexer, parser for the
 1364-2005 constructs of the plan (modules, UDPs, gates, generate, tasks and functions, specify blocks and timing checks parsed
 and ignored, attributes), module analysis (ports, duplicate declarations, undeclared names under `default_nettype none`),

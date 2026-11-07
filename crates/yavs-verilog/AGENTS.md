@@ -5,11 +5,14 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 ## 1. Purpose and boundaries
 
 - Verilog (IEEE 1364-2005) front end: preprocessor, lexer, parser, module analysis and detection of
-  encrypted envelopes and SystemVerilog. M0 of the plan in #776: no elaboration, no simulation (M1).
+  encrypted envelopes and SystemVerilog (M0 of the plan in #776). No elaboration or lowering yet.
+- The scheduling domain (#776 step A, `docs/design/verilog-scheduling.md`): the Verilog regions inside one
+  serial kernel process, with processes as Rust closures until lowering produces them.
 - Does not: render diagnostics (they are plain data, `Diag`, with codes in `CODES` for the caller to
   register), touch the library manifest or the cache (the caller does, from `Unit`), or decide the
   language of a file for the CLI (`is_verilog_path`, `is_systemverilog_path` are helpers).
-- Depends on `yavs-diag` for `suggest` only (did-you-mean). Called by `crates/yavs` (`analyze`).
+- Depends on `yavs-diag` for `suggest` only (did-you-mean), and on `yavs-kernel` and `yavs-logic` for the
+  domain (`Process`, `Ctx`, `LogicVec`). Called by `crates/yavs` (`analyze`).
 
 ## 2. Map
 
@@ -22,9 +25,12 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `src/parse.rs`, `src/stmt.rs` | Recursive-descent parser: modules, UDPs, declarations, instances, generate, specify; statements and expressions |
 | `src/analysis.rs` | Ports (ANSI and non-ANSI), duplicate declarations (E4203), undeclared names under `default_nettype none` (E4201) |
 | `src/diag.rs` | `Diag` builders and the code table with `--explain` text |
+| `src/runtime.rs` | `Domain` (nets and regs, processes, `always`, `assign`), `Exec` (what a process body reads and writes: `get`, blocking `set`, `nba`, `display`, `finish`), `Wait`, `Edge` and `edge` (Table 9-9), the region loop (`settle`), future work, the event limit |
+| `src/bridge.rs` | `Domain::input`/`output` and `impl Process for Domain`: inputs as `TO_X01Z`, the publication queue (`Core::record`), one batch per delta, the waits |
 | `examples/vcheck.rs` | Developer tool: analyze files, print diagnostics, `--each` for corpus runs |
 | `tests/frontend.rs` | Tests through the public API with sources written to a scratch directory |
 | `tests/lrm.rs` | Runs every `tests/verilog/lrm/*.v` check (one LRM rule per file, header with the exact expected diagnostics) and checks that each is a row of `docs/design/lrm-checks.md` |
+| `tests/sched.rs` | Scheduling: the kernel behaviour the bridge rests on, the regions, D4 at the boundary, edges, initialisation, the event limit, stop requests, 1 against 4 threads |
 | `tests/props.rs` | `proptest` properties: number literals of every base and width, macro chains and argument counts, nested conditionals, damaged real sources (no panic, spans inside the file) |
 
 ## 3. Design decisions that bind this module
@@ -47,8 +53,16 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | Specify blocks and timing checks are parsed into the tree and not evaluated; with `XIL_TIMING` defined one W4015 per file says so | D14 | plan 6 |
 | A front-end rule of the LRM gets a file in `tests/verilog/lrm` and a row in `docs/design/lrm-checks.md` in the same commit; where the LRM is clear and the front end accepts, the file is pinned with a `// gap:` header and listed as a known gap | Rule 14 and the LRM policy; the VHDL side does the same with `tests/diag/sem` | `lrm-checks.md` "Per-clause checks" |
 | `` `include `` takes a quoted name, `<name>` or an argument-less macro that expands to one; a gate has its terminals by position, a fixed number per gate; the variable of a generate loop must be a genvar (`E4204`) | LRM 7.1, 12.4.1; the include forms are the other tools' | `lrm-checks.md` V5, V8 |
-| Spans of diagnostics are clamped to the file: an unexpected end points at the empty range at the end | A span past the end of the file breaks renderers | `tests/props.rs` |
+| Spans of diagnostics are clamped to the file: an unexpected end points at the empty range at the end | A span past the end of the file breaks renderers | `tests/sched.rs` | Scheduling: the kernel behaviour the bridge rests on, the regions, D4 at the boundary, edges, initialisation, the event limit, stop requests, 1 against 4 threads |
+| `tests/props.rs` |
 | `Unit::timescale` is the directive in force or `Options::default_timescale` (W4006 once per file) | D10 | |
+| All Verilog is one `Domain`, one serial kernel process; its regions run inside one activation and `SimControl` is untouched | Blocking writes and continuous assignments cost no delta (a clock buffer must not skew); the VHDL cycle stays as it is | `docs/design/verilog-scheduling.md` 1 |
+| Output changes go out as ordered batches, one per kernel delta: Active results at `d+1`, each NBA region one batch later (an empty batch 0 still costs its delta); a port written again goes to the batch after its last entry and the cursor follows | D4; no change of a port is lost and the order across ports holds | same, 2; open question: skip empty batches |
+| Future NBAs and `#d` resumptions are in the domain's own time map, never kernel transactions | `Waveform::schedule` drops later transactions even for transport | same, 3 |
+| `posedge`/`negedge` by Table 9-9 on element 0 (`edge`), inputs read as `TO_X01Z`; a VHDL initial value is no event | 9.7.2; `Ctx::edge` has the VHDL rules | same, 1 and 2 |
+| A process that runs more than `EVENT_LIMIT` (10000) times at one time is `E3009`; the loop polls `Ctx::stop_requested` every 1024 activations | The kernel's delta limit cannot see a loop inside one activation; a per-process count does not grow with the design | same, 4; `ponytail:` a dedicated code later |
+
+Ceilings of the domain (each a `ponytail:` note in the code): `docs/design/verilog-scheduling.md` section 5.
 
 ## 4. Commands
 
@@ -60,5 +74,8 @@ cargo run -p yavs-verilog --example vcheck -- --each --quiet FILE...   # corpus-
 
 ## 5. Pitfalls
 
+- The domain starts every process at initialisation in declaration order: a process that must see an
+  initial write has to be declared (and so waiting) before the writer.
+- Boundary signals are logic signals (`SignalType::logic`) of the net's width; `Ctx::logic` refuses byte signals.
 - Offsets in the AST are into the preprocessed text; map them with `Pre::span`, never use them on the original file.
 - `Parser::unexpected` decides between E4003 and E4100 from the token and the one before it; add words to `SV_WORDS` with care (a word that is a legal identifier in 1364 must only count at statement or item start).

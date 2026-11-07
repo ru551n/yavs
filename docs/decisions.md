@@ -1,5 +1,19 @@
 # Decisions
 
+## Verilog scheduling inside one kernel process (step A of #776, 2026-11-07)
+
+- **One serial domain:** all Verilog runs in one `yavs_verilog::Domain`, a serial kernel `Process` with its own nets, regs and
+  Active, Inactive and NBA regions; `SimControl::cycle`, `update` and `run_batch` are unchanged. Design, tests and ceilings:
+  `docs/design/verilog-scheduling.md`.
+- **D4 as implemented:** output changes go to VHDL as ordered batches, one per delta, with zero-delay `Ctx::assign`: Active
+  results at the next delta, each NBA region one batch later, also when the Active region changed no output (so a Verilog
+  register on a VHDL clock is visible one delta after a VHDL register on it). Whether an empty Active batch should be skipped
+  is open for the maintainer.
+- **Future NBAs are not kernel transactions:** `Waveform::schedule` drops later transactions even for transport, so `<= #d`
+  stays in the domain's time map.
+- **Zero-delay loops:** a process that runs more than 10000 times at one time ends the run with `E3009` (runtime error), naming
+  the process and the time; a dedicated code comes with the diagnostics of lowering.
+
 ## Verilog test material and corpus gate (M0 of #776, 2026-11-07)
 
 - **Fixtures:** hand-written Verilog files under `tests/verilog/ci` with one manifest `fixtures.expected` (status, arguments, exact

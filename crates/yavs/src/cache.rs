@@ -49,7 +49,11 @@ fn key(kind: &str, opts: &Options, files: &[ClosureFile]) -> Key {
     }
     let cwd = std::env::current_dir().unwrap_or_default();
     for f in files {
-        k.text(&f.library).text(&f.hash).text(&f.std).text(&f.kept);
+        k.text(&f.library)
+            .text(&f.hash)
+            .text(&f.std)
+            .text(&f.kept)
+            .text(&f.context);
         // A relative path means a different file from another directory.
         if f.path.is_relative() {
             k.text(&cwd.to_string_lossy());
@@ -711,4 +715,27 @@ fn clean(a: &CleanArgs, format: MessageFormat, color: bool) -> ExitCode {
         }
     }
     code
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A Verilog file's key changes with the state it was analysed under and its includes.
+    #[test]
+    fn key_holds_the_verilog_context() {
+        let opts = Options::new(yavs_sem::LangRev::Vhdl2008, yavs_sem::default_stdlib());
+        let file = |context: &str| ClosureFile {
+            library: "work".into(),
+            path: "/x/m.v".into(),
+            hash: "sha256:a".into(),
+            std: yavs_lib::VERILOG_STD.into(),
+            kept: String::new(),
+            context: context.into(),
+        };
+        let k = |c: &str| key(KIND, &opts, &[file(c)]).hex();
+        assert_eq!(k("sha256:1\n"), k("sha256:1\n"));
+        assert_ne!(k("sha256:1\n"), k("sha256:2\n"));
+        assert_ne!(k("sha256:1\n"), k("sha256:1\n/x/defs.vh sha256:b\n"));
+    }
 }

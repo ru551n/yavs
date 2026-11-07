@@ -25,6 +25,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 
 | Decision | Why | Source |
 |---|---|---|
+| The key of a closure holds, per file, `ClosureFile::context` (Verilog: the preprocessor state the file was analysed under and its included files with hashes; empty for VHDL); the cache itself stays language-agnostic | An edited include or another `-D`/`-I`/time scale must not reuse an entry (#776) | `docs/decisions.md` "Verilog: library, cache, CLI and diagnostics" |
 | Every key mixes in `FORMAT` and `build_id()` (version, hash of all sources made by `crates/yavs/build.rs`, executable size, `YAVS_CACHE_SALT`; mtime without the hash); stage keys also hold the optimiser switches (`crates/yavs/src/cache.rs` `stage_key`) | An entry never outlives the code or the switches that made it | `docs/decisions.md` "Build and switch fingerprint" (#491) |
 | Entry = header + payload, verified (magic, format, key echo, exact length, xxh3 checksum) before use | A truncated or damaged file is a miss, not a wrong result; xxh3 because sha256 of a 10 MB image cost as much as reading it (#426) | same |
 | Writes: temporary file in the same directory, then `rename`; no lock | Concurrent runs never see half an entry; readers need no lock | same |

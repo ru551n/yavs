@@ -671,7 +671,7 @@ Verilog (E4 and W4)
    * - _`E4501`
      - Elaboration reached a legal IEEE 1364-2005 construct that yavs does not simulate yet; the message names it.
    * - _`E4502`
-     - Two continuous drivers (continuous assignments, a net declaration assignment, the VHDL port of an input) drive the same bits of one Verilog net.
+     - A ``uwire`` has more than one driver on the same bit (clause 4.6.5); other net types resolve their drivers (clause 4.6.1).
    * - _`E4503`
      - An ``always`` block has no delay or event control, so it runs again at the same simulation time for ever and time never advances (clause 9.9.2).
    * - _`E4504`

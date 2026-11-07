@@ -1,6 +1,17 @@
 //! The Verilog domain: nets and regs, the Active, Inactive and NBA regions of IEEE 1364-2005 5.4,
 //! and future events that keep their region. The whole domain is one serial kernel process
 //! (`bridge.rs`); processes are Rust closures until lowering produces them.
+//!
+//! Net model. A net holds one value. A net with one driver, or drivers on disjoint bits, is
+//! written to directly. A net that needs resolution (drivers on the same bit, a driver that is
+//! not strong, a pull) is a *resolved net*: each of its drivers is a private net of the same width
+//! (`Domain::driver`) that the driver's process writes as it would any net, unwritten bits staying
+//! `z`; the write that changes a driver net resolves the target at once, in the same region, with
+//! the `std_logic` resolution of the kernel on the strength-mapped driver values (plan 3.3, D13).
+//! The resolved value is a `std_ulogic` (`L`, `H` and `W` stay), read by Verilog as `TO_X01Z`.
+//! A net that VHDL also drives (an `inout` port, step D) is meant to join the same list as one
+//! more driver, whose value is the VHDL signal minus this domain's own driver; until then such a
+//! net is refused at elaboration (risk R9 of the plan).
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -10,6 +21,33 @@ use yavs_logic::StdULogic;
 /// A net or reg of the domain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NetId(pub u32);
+
+/// How strongly a driver drives one value (plan 3.3): supply and strong collapse to `Strong`
+/// (`0`, `1`, `X`), pull, weak, large, medium and small to `Weak` (`L`, `H`, `W`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Drive {
+    Strong,
+    Weak,
+    HighZ,
+}
+
+/// The `std_ulogic` a driver puts on the net for the 4-state value `c`.
+fn level(c: StdULogic, zero: Drive, one: Drive) -> StdULogic {
+    use StdULogic::{H, L, One, W, X, Z, Zero};
+    match (c, zero, one) {
+        (Zero, Drive::Strong, _) => Zero,
+        (Zero, Drive::Weak, _) => L,
+        (One, _, Drive::Strong) => One,
+        (One, _, Drive::Weak) => H,
+        (Zero | One, ..) => Z,
+        (Z, ..) => Z,
+        // An unknown value has the strength of the stronger side of the pair.
+        _ => match (zero, one) {
+            (Drive::Strong, _) | (_, Drive::Strong) => X,
+            _ => W,
+        },
+    }
+}
 
 /// The event an `@(...)` item waits for. `Pos` and `Neg` look at element 0 (the LSB, 9.7.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +113,16 @@ pub(crate) struct Net {
     waiters: Vec<Waiter>,
     /// The output port this net drives (`Domain::outputs` index).
     pub(crate) out: Option<u32>,
+    /// A resolved net: the nets that drive it and its pull.
+    res: Option<Box<Res>>,
+    /// A driver net: the resolved net it drives and how strongly.
+    drives: Option<(u32, Drive, Drive)>,
+}
+
+struct Res {
+    drivers: Vec<u32>,
+    /// `L` or `H` on every element: `tri0`, `tri1`.
+    pull: Option<LogicVec>,
 }
 
 struct Waiter {
@@ -152,8 +200,41 @@ impl Domain {
             value: init,
             waiters: Vec::new(),
             out: None,
+            res: None,
+            drives: None,
         });
         NetId(self.core.nets.len() as u32 - 1)
+    }
+
+    /// `drv` (a net of the width of `target`, `z` where it drives nothing) is a driver of
+    /// `target`, driving `0` with strength `zero` and `1` with `one`. `target` is resolved from
+    /// all its drivers whenever one of them changes.
+    pub fn driver(&mut self, drv: NetId, target: NetId, zero: Drive, one: Drive) {
+        self.core.nets[drv.0 as usize].drives = Some((target.0, zero, one));
+        self.core.nets[target.0 as usize]
+            .res
+            .get_or_insert_with(|| {
+                Box::new(Res {
+                    drivers: Vec::new(),
+                    pull: None,
+                })
+            })
+            .drivers
+            .push(drv.0);
+    }
+
+    /// `target` has a pull of `l` (`L` or `H`) on every element, as a `tri0` or `tri1` net.
+    pub fn pull(&mut self, target: NetId, l: StdULogic) {
+        let n = &mut self.core.nets[target.0 as usize];
+        let len = n.value.len();
+        n.res
+            .get_or_insert_with(|| {
+                Box::new(Res {
+                    drivers: Vec::new(),
+                    pull: None,
+                })
+            })
+            .pull = Some(LogicVec::new(len, l));
     }
 
     /// A process, started in the Active region at initialisation, in declaration order.
@@ -302,8 +383,65 @@ impl Core {
         Ok(())
     }
 
-    /// Elements `at..` of `net` take `v` at once; waiters whose item holds move to Active.
+    /// Elements `at..` of `net` take `v` at once; waiters whose item holds move to Active. A
+    /// write to a driver net resolves the net it drives.
     pub(crate) fn write(&mut self, net: NetId, at: u32, v: &LogicVec) {
+        match self.nets[net.0 as usize].drives {
+            None => self.put(net, at, v),
+            Some((target, ..)) => {
+                let n = &mut self.nets[net.0 as usize];
+                let mut changed = false;
+                for i in 0..v.len() {
+                    let (e, c) = (at as usize + i, v.get(i));
+                    if n.value.get(e) != c {
+                        n.value.set(e, c);
+                        changed = true;
+                    }
+                }
+                if changed {
+                    self.resolve(target);
+                }
+            }
+        }
+    }
+
+    /// The value of resolved net `target` from its drivers and pull.
+    fn resolve(&mut self, target: u32) {
+        let Some(res) = self.nets[target as usize].res.take() else {
+            return;
+        };
+        // ponytail: a strong driver is read in place and a weak one mapped per element on every
+        // resolution; a plane-wise mapping if a design has many weak drivers.
+        let mapped: Vec<Option<LogicVec>> = res
+            .drivers
+            .iter()
+            .map(|&d| {
+                let n = &self.nets[d as usize];
+                match n.drives {
+                    Some((_, Drive::Strong, Drive::Strong)) | None => None,
+                    Some((_, z, o)) => Some(LogicVec::from_fn(n.value.len(), |i| {
+                        level(n.value.get(i), z, o)
+                    })),
+                }
+            })
+            .collect();
+        let mut refs: Vec<&LogicVec> = res
+            .drivers
+            .iter()
+            .zip(&mapped)
+            .map(|(&d, m)| m.as_ref().unwrap_or(&self.nets[d as usize].value))
+            .collect();
+        refs.extend(res.pull.as_ref());
+        let r = match refs.is_empty() {
+            true => LogicVec::new(self.nets[target as usize].value.len(), StdULogic::Z),
+            false => LogicVec::resolve(&refs),
+        };
+        drop(refs);
+        self.nets[target as usize].res = Some(res);
+        self.put(NetId(target), 0, &r);
+    }
+
+    fn put(&mut self, net: NetId, at: u32, v: &LogicVec) {
         let net = &mut self.nets[net.0 as usize];
         let old = net.value.get(0);
         let mut changed = false;

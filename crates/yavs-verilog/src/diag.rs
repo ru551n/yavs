@@ -192,8 +192,8 @@ pub(crate) const TABLE: &[CodeInfo] = &[
     ),
     code!(
         "E4502",
-        "net with several drivers",
-        "Two continuous drivers (continuous assignments, a net declaration assignment, the VHDL port of an input) drive the same bits of one Verilog net. Such a net needs resolution of its drivers, which Verilog elaboration does not implement yet."
+        "uwire with several drivers",
+        "A `uwire` net has more than one driver on the same bit (clause 4.6.5). Other nets resolve their drivers (clause 4.6.1); a `uwire` is the net type that forbids it."
     ),
     code!(
         "E4503",

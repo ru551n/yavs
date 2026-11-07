@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 
 pub use elab::{Design, Generic, Instance, ParamValue, PortSpec};
 pub use pre::Nettype;
-pub use runtime::{Domain, EVENT_LIMIT, Edge, Exec, NetId, Wait, edge};
+pub use runtime::{Domain, Drive, EVENT_LIMIT, Edge, Exec, NetId, Wait, edge};
 
 /// A byte range of an original source file (`AnalysisResult::files[file]`), never of preprocessed text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]

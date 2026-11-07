@@ -551,11 +551,29 @@ fn mismatches_and_unsupported_constructs_fail_early() {
             "port (i : in std_logic; o : out std_logic);",
             "E4501",
         ),
-        // A net driven twice.
+        // A uwire driven twice.
         (
-            "module m (input i, output o); assign o = i; assign o = ~i; endmodule",
+            "module m (input i, output o); uwire w; assign w = i; assign w = ~i; assign o = w; endmodule",
             "port (i : in std_logic; o : out std_logic);",
             "E4502",
+        ),
+        // An input that the module drives too, and a pulled input: the resolution with VHDL is
+        // the inout of a later step.
+        (
+            "module m (input i, output o); assign i = 1'b0; assign o = i; endmodule",
+            "port (i : in std_logic; o : out std_logic);",
+            "E4501",
+        ),
+        (
+            "module m (input tri1 i, output o); assign o = i; endmodule",
+            "port (i : in std_logic; o : out std_logic);",
+            "E4501",
+        ),
+        // A wired net.
+        (
+            "module m (input i, output o); wand w; assign w = i; assign o = w; endmodule",
+            "port (i : in std_logic; o : out std_logic);",
+            "E4501",
         ),
     ];
     for (k, (v, comp, code)) in cases.iter().enumerate() {
@@ -784,4 +802,73 @@ fn uncollapsed_ports_give_the_same_run() {
         .write("tb.vhd", COUNTER_TB)
         .analyze(&["counter.v", "tb.vhd"]);
     assert_eq!(t.notes(&["--no-collapse-ports", "tb"]), t.notes(&["tb"]));
+}
+
+/// Several drivers on one net (IEEE 1364-2005 4.6): a three-state bus with two enables, a tri0
+/// and a tri1 net, a weak driver and a pull on a `bit` port. VHDL sees the resolved `std_ulogic`:
+/// `L` and `H` for weak levels, and a `bit` port takes them as '0' and '1'.
+#[test]
+fn net_with_several_drivers() {
+    let t = T::new("v-drivers");
+    t.write(
+        "tsbus.v",
+        "`timescale 1ns/1ps
+module tsbus (input ea, input da, input eb, input db,
+              output y, output tri0 p, output tri1 q, output w, output tri1 qb);
+  assign y = ea ? da : 1'bz;
+  assign y = eb ? db : 1'bz;
+  assign p = ea ? da : 1'bz;
+  assign q = ea ? da : 1'bz;
+  assign (weak1, weak0) w = da;
+endmodule
+",
+    )
+    .write(
+        "tb.vhd",
+        "library ieee;
+use ieee.std_logic_1164.all;
+entity tb is end entity;
+architecture sim of tb is
+  component tsbus is
+    port (ea, da, eb, db : in std_logic; y, p, q, w : out std_logic; qb : out bit);
+  end component;
+  signal ea, da, eb, db : std_logic := '0';
+  signal y, p, q, w : std_logic;
+  signal qb : bit;
+begin
+  u : tsbus port map (ea, da, eb, db, y, p, q, w, qb);
+  process
+    procedure step(a, d, b, e : std_logic; vy, vp, vq, vw : std_logic) is
+    begin
+      ea <= a; da <= d; eb <= b; db <= e;
+      wait for 1 ns;
+      report std_logic'image(y) & std_logic'image(p) & std_logic'image(q) & std_logic'image(w);
+      assert y = vy and p = vp and q = vq and w = vw severity failure;
+    end procedure;
+  begin
+    step('0', '0', '0', '0', 'Z', 'L', 'H', 'L');
+    step('1', '1', '0', '0', '1', '1', '1', 'H');
+    step('0', '0', '1', '0', '0', 'L', 'H', 'L');
+    step('1', '1', '1', '0', 'X', '1', '1', 'H');
+    assert qb = '1' severity failure;
+    wait;
+  end process;
+end architecture;
+",
+    )
+    .analyze(&["tsbus.v", "tb.vhd"]);
+    let n = t.notes(&["tb"]);
+    assert_eq!(
+        n.iter()
+            .map(|l| l.split_once(": ").unwrap().1)
+            .collect::<Vec<_>>(),
+        [
+            "'Z''L''H''L'",
+            "'1''1''1''H'",
+            "'0''L''H''L'",
+            "'X''1''1''H'"
+        ]
+    );
+    let one = out(&t.run(&["tb"]));
+    assert_eq!(out(&t.run(&["--threads", "4", "tb"])), one);
 }

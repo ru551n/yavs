@@ -867,7 +867,7 @@ The LRM says error, the front end accepts; each has a pinned file with a `// gap
 - **G10: rules that need the types of operands (5.1.1, 5.2.1, 4.8.1, 6.2.1, 10.4.5 and others).** Real operands of `%`, shifts and bitwise
   operators, a bit-select of a scalar or of a real, `posedge` on a real, a non-constant variable initializer, constant function rules. The front
   end builds the tree and does not type it. `5.1.1_real_operand_modulo.v`, `5.2.1_bit_select_of_scalar.v`.
-- **G11: rules that need the elaborated design (4.6.5, 12.3.3, 12.3.9, 12.2 and others).** More than one driver of a `uwire`, the same range for the
+- **G11: rules that need the elaborated design (4.6.5, 12.3.3, 12.3.9, 12.2 and others).** More than one driver of a `uwire` (checked when a module is elaborated since #776 step C, `4.6.5_eval_uwire_multiple_drivers.v`; not at analysis), the same range for the
   two declarations of a port, overriding a `localparam`, the top-level modules, `defparam` targets. M1. `4.6.5_uwire_multiple_drivers.v`,
   `12.3.3_port_range_mismatch.v`.
 
@@ -1524,9 +1524,30 @@ Readings of the elaboration (where 1364-2005 leaves a choice; policy rule 2):
   the initial x of a Verilog output reaches such a port as '0'.
 - **S6: a real `?:` with an x condition is 0.0 when the two values differ** (Table 5-21 has no real row).
 
+- **S7: drive strengths collapse onto three levels (4.4.2, 4.6.1; D13).** supply and strong drive `0`, `1`, `x`; pull, weak, large,
+  medium and small drive `L`, `H`, `W`; highz drives `z`. Drivers of a net resolve with the `std_logic` table, so a stronger
+  driver wins and equal strengths follow the truth table of 4.6.1. Ceiling: supply against strong and pull against weak or medium resolve
+  to x where 1364 picks the stronger value. The resolved value keeps `L`, `H` and `W` for VHDL;
+  Verilog reads them as 0, 1 and x. A strength on a net declaration assignment (`wire (strong1, weak0) w = e;`) is the strength
+  of that driver. `4.4.2_eval_drive_strength.v`.
+- **S8: a driver of a supply0 or supply1 net has no effect (4.6.6).** Supply is the strongest strength, so the net keeps its
+  value; the assignment is accepted and runs nothing. `4.6.6_eval_supply.v`.
+- **S9: a net with several drivers is resolved when a driver changes, in the region of the change.** A write by a driver
+  updates the net at once (no delta), as a write to a single-driver net does. A net that VHDL also drives (an input port
+  that the module drives too) is `E4501`: that is the `inout` resolution (R9 of the plan), not implemented.
+
 | File | Clause | Rule | Outcome |
 |---|---|---|---|
 | `3.5.1_eval_literal_extension.v` | 3.5.1 | a literal shorter than its size is extended with zeros, or with x or z when its leftmost digit is x or z | runs: `xxxxxxxx 00000001 zzzzzzz1 0000000x` |
+| `4.4.2_eval_drive_strength.v` | 4.4.2 | the stronger of two drivers wins, two weak drivers of different values give x, a highz side drives z, a net declaration assignment carries a strength (three strength levels, S7) | runs: `0 1 x 1 z 0 0 1` |
+| `4.6.1_eval_wire_resolution.v` | 4.6.1 | two drivers of a wire or tri net resolve as the truth table of the clause, all sixteen pairs of 0, 1, x and z | runs: `0xx0 1x1x xxxx zx10` twice |
+| `4.6.1_eval_three_state_bus.v` | 4.6.1 | a driver that gives z yields to the other one; an undriven net is z; two enabled drivers of different values give x | runs: `z 1 0 x z` |
+| `4.6.1_eval_partial_drivers.v` | 4.6.1 | drivers of different bits do not meet; overlapping drivers resolve bit by bit | runs: `0110 01x0 z` |
+| `4.6.2_eval_wand_not_implemented.v` | 4.6.2 | wired nets are not implemented in elaboration | `E4501` at elaboration |
+| `4.6.4_eval_tri0_tri1.v` | 4.6.4 | an undriven tri0 net is 0 and a tri1 net 1; a z driver leaves the pull, any other value wins | runs: `0 1 \| 0 1 \| 1 1 \| x x \| 0 1` |
+| `4.6.5_eval_uwire_multiple_drivers.v` | 4.6.5 | a uwire with two drivers of one bit is an error at elaboration | `E4502` at elaboration |
+| `4.6.5_eval_uwire_disjoint_drivers.v` | 4.6.5 | a uwire may have one driver per bit | runs: `10` |
+| `4.6.6_eval_supply.v` | 4.6.6 | a supply0 net is 0 and a supply1 net 1 whatever drives them (S8) | runs: `0 1 00 11` |
 | `5.1.5_eval_arith_unknown.v` | 5.1.5 | an x or z bit in an operand of an arithmetic operator makes the whole result x, and so does division by zero | runs: `xxxx xxxx 0011` |
 | `5.1.8_eval_equality_unknown.v` | 5.1.8 | == is x when unknown bits make it ambiguous and 0 when known bits differ; === compares x and z exactly | runs: `x 0 1 0` |
 | `5.1.12_eval_shifts.v` | 5.1.12 | >>> fills with the sign bit only when the expression is signed; an x shift amount makes the result x | runs: `11111100 01111100 01111100 xxxxxxxx` |

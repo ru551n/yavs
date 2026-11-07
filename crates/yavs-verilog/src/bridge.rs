@@ -94,7 +94,7 @@ impl Process for Domain {
                 let (_, d, bit) = self.outputs[o as usize];
                 let v = match bit {
                     // ponytail: element by element; a plane mask if bit ports get wide.
-                    true => yavs_kernel::LogicVec::from_fn(v.len(), |i| match v.get(i) {
+                    true => yavs_kernel::LogicVec::from_fn(v.len(), |i| match v.get(i).to_x01() {
                         yavs_logic::StdULogic::One => yavs_logic::StdULogic::One,
                         _ => yavs_logic::StdULogic::Zero,
                     }),

@@ -147,8 +147,8 @@ both a Verilog register and a VHDL flip-flop therefore gives the VHDL flip-flop 
 before the edge. Outputs show the module's initial values (``x`` for a ``reg``, ``z`` for an undriven
 net) one delta into the run. Delays are in each module's ``timescale`` unit, rounded to its precision.
 
-**What runs.** Parameters and ``localparam`` (also wide and string values); ``wire``, ``tri``, ``reg``,
-``integer`` and ``time`` declarations; continuous assignments and net declaration assignments;
+**What runs.** Parameters and ``localparam`` (also wide and string values); ``wire``, ``tri``, ``tri0``, ``tri1``,
+``supply0``, ``supply1``, ``uwire``, ``reg``, ``integer`` and ``time`` declarations; continuous assignments and net declaration assignments;
 ``always`` and ``initial`` blocks with ``@(...)``, ``@*``, ``#`` and ``wait``; blocking and non-blocking
 assignments, also with an intra-assignment delay; ``if``, ``case``, ``casez``, ``casex``, ``for``,
 ``while``, ``repeat`` and ``forever``; every operator of the standard on 4-state values of any width,
@@ -156,9 +156,20 @@ with the standard's sizing and sign rules; ``$display``, ``$write``, ``$finish``
 ``$stime``, ``$realtime``, ``$clog2``, ``$signed`` and ``$unsigned``. The ports of a Verilog instance are
 in the wave file under the instance.
 
+**Nets with several drivers.** ``wire`` and ``tri`` nets with more than one driver resolve them as clause
+4.6.1 describes: equal values stay, ``0`` and ``1`` give ``x``, ``z`` yields to the other driver. This includes
+assignments that drive ``z`` (``assign y = en ? a : 1'bz;``) and drivers of different bits of one net.
+``tri0`` and ``tri1`` nets are pulled to ``0`` and ``1`` when nothing drives them, ``supply0`` and
+``supply1`` nets are constant, and a ``uwire`` with two drivers on one bit is ``E4502``. A drive strength on a
+continuous assignment or a net declaration assignment is read on three levels: supply and strong, pull and
+weak (large, medium and small too), and ``highz``. A stronger driver wins; supply against strong, and pull
+against weak, resolve to ``x`` where the standard picks the stronger value. VHDL sees the resolved
+``std_ulogic``: a weak or pulled output shows ``L``, ``H`` or ``W``, and a ``bit`` port takes them as ``0``
+and ``1``. An input port that the module also drives is ``E4501``.
+
 **Not yet.** Module instances inside a Verilog module, generate constructs, gate primitives and
-user-defined primitives, functions and tasks, memories, ``real`` variables, ``inout`` ports, nets with
-more than one driver, other net types (``tri0``, ``supply1``, ``wand``, ...), drive strengths, delays on
+user-defined primitives, functions and tasks, memories, ``real`` variables, ``inout`` ports, wired nets
+(``wand``, ``wor``, ``triand``, ``trior``), ``trireg``, ``pullup`` and ``pulldown``, delays on
 continuous assignments and nets, ``defparam``, named events, ``fork``/``join``, ``disable``, procedural
 ``assign`` and ``force``, hierarchical names, the other system tasks, and the ``glbl`` module of vendor
 libraries. Each stops elaboration with ``E4501``, naming the construct. Specify blocks are read and not

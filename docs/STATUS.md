@@ -2973,13 +2973,21 @@ blocking, non-blocking and intra-assignment delays, `if`, `case`/`casez`/`casex`
 `$write` (formats `%b %o %h %d %s %c %t %m %e %f %g`), `$finish`, `$time`, `$stime`, `$realtime`, `$clog2`, `$signed`,
 `$unsigned`, timescale units and precision rounding, in/out ports of std_logic, bit and their vectors (bit ports take x and z
 as '0'), the D4 deltas at the boundary, the ports of Verilog instances in the wave file (`yavs-wave` shows the component scope of
-such an instance as an instance). Fail early: `E4501` names every other construct elaboration reaches; `E4502` a net with more
+such an instance as an instance). Fail early: `E4501` names every other construct elaboration reaches; `E4502` a uwire with more
 than one driver, `E4503` an `always` without timing control, `E4504` to `E4507` name, constant, expression and target errors,
 `E4700`/`E4701` port and generic mismatches, `E4509` an ambiguous module name, `E0142` an unmapped `-L` library, `E4001` an
 encrypted module, `E4500` a Verilog top level (D11).
 
+Several drivers per net (2026-11-07): `wire`/`tri` nets resolve drivers on one bit with the kernel's `std_logic`
+resolution (the truth table of 1364 4.6.1), a driver's value is mapped to `0 1 X` (strong), `L H W` (weak, pull) or `Z`
+(highz) by its strength (D13), `tri0`/`tri1` add a pull, `supply0`/`supply1` are constants, `uwire` with two drivers on a
+bit is `E4502`; resolved in the region of the write, no delta; VHDL sees the resolved `std_ulogic`. Tests:
+`tests/verilog/lrm/4.*_eval_*.v` (all sixteen pairs of the wire table, a three-state bus, partial drivers, tri0/tri1,
+supply, strengths, uwire) and `net_with_several_drivers` in `verilog_run.rs`. An input port the module also drives is
+`E4501` (step D).
+
 Not done (each `E4501` when reached): module instances inside Verilog, generate, gates and UDPs, functions and tasks,
-memories, real variables, `inout` (step D), several drivers per net and other net types, strengths, delays on continuous
+memories, real variables, `inout` (step D), wired nets and `trireg`, delays on continuous
 assignments and nets, `defparam`, events, `fork`/`join`, `disable`, procedural `assign`/`force`, hierarchical names, `glbl`,
 other system tasks, the elaboration tasks; `entity lib.module` direct instantiation of a Verilog module (needs analysis support,
 left out). Specify blocks are not evaluated (path delays are D9, M3). Verilog runs only in the interpreter-like process code of

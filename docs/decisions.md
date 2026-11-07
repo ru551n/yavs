@@ -27,12 +27,29 @@
 - **Generics and ports:** generics of type integer (32-bit signed), real, string (8 bits per character), boolean, std_logic,
   bit and their vectors; ports of std_logic, std_ulogic, bit and their vectors, modes in and out (inout is step D), widths equal,
   left to left. A `bit` port takes x and z from Verilog as '0' (`lrm-checks.md` S5).
-- **One driver per net bit:** two continuous drivers of a net bit are `E4502` until the domain resolves drivers; a pure copy
-  `assign a = b;` onto an internal net with no other driver makes `a` the net of `b` (plan 3.6), no process.
+- **One driver per net bit (step C only):** two continuous drivers of a net bit were `E4502` until the domain resolved
+  drivers (see "Several drivers per net"); a pure copy `assign a = b;` onto a plain internal net with no other driver makes
+  `a` the net of `b` (plan 3.6), no process.
 - **Order at time 0:** continuous assignments, then `always`, then `initial`, each in source order (`lrm-checks.md` S2).
 - **`E4500`** now means a Verilog top level, which is not supported (D11), instead of "Verilog is not implemented".
 - **Codes:** `E4501` (construct not implemented, naming it), `E4502` to `E4509`, `E4700`, `E4701` in `yavs_verilog::CODES`;
   `E0142` (`-L` library not mapped) in the CLI's table.
+
+## Several drivers per net (maintainer ruling, step C of #776, 2026-11-07)
+
+- **Resolution in the Verilog domain.** `wire` and `tri` nets resolve drivers on the same bit as the truth table of 1364
+  4.6.1, which the kernel's `std_logic` resolution gives for 4-state values; `E4502` is now only a `uwire` with two drivers
+  on one bit (4.6.5). `tri0`/`tri1` add a pull of `L`/`H`; `supply0`/`supply1` are constants that their drivers do not
+  change (S8). `wand`, `wor`, `triand`, `trior` and `trireg` stay `E4501`. Z-driving assignments
+  (`assign y = en ? a : 1'bz;`), partial-bit drivers and drive strengths on `assign` and on net declaration
+  assignments work. Net model and the place of `inout`: `docs/design/verilog-scheduling.md` 3a.
+- **Strengths: three levels (plan 3.3, D13).** supply and strong drive `0 1 x`, pull, weak, large, medium and small `L H W`,
+  highz `z`. Ceiling: supply against strong and pull against weak or medium resolve to x where 1364 picks the stronger
+  value; the upgrade path is an 8-level resolver for nets that mix those strengths.
+- **VHDL sees the resolved `std_ulogic`.** An output port driven weakly or pulled shows `L`, `H` or `W` to VHDL; a `bit`
+  port takes `L` as '0' and `H` as '1' (the earlier rule mapped every value but '1' to '0', which made `H` '0').
+- **No VHDL and Verilog drivers on one net yet.** An input port that the module also drives, and a `tri0`/`tri1` input,
+  are `E4501`; the `inout` step makes the VHDL signal one more driver of the same list (R9).
 
 ## Verilog scheduling inside one kernel process (step A of #776, 2026-11-07)
 

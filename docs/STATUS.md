@@ -42,6 +42,10 @@ Every guard condition has its reads, also one that names an instance elaborated 
 
 A block guard that reads `'event`, `'active`, `'last_event`, `'last_value`, `'last_active`, an edge function or a function with a signal parameter elaborates (it was `E2106`), and one on `'stable` or `'quiet` starts TRUE (it started FALSE). The kernel runs the `_guard` processes first at initialisation and takes what they assign as GUARD's initial value (`Builder::guard_init`); guarded concurrent assignments test GUARD again (LRM 11.6), and a guard on an implicit signal changes in the cycle of that signal. Corpus `delta/guard_signal_attributes` (reference output) on every tier at 1 and 4 threads; three new catalogue cases (`guard-*`).
 
+### Code that never ran, lowered cheaply (branch `perf/w3-cg3a`, 2026-11-08, lab switch only)
+
+`YAVS_CLIFT_CHEAP=<coverage file>|all|alt` lowers the blocks a block coverage dump lists as never run as one interpreter call for their instructions (frame-mode code) or a leave at their start (native frames). With a list from a coverage run of the same design, cold runs compile less (`uvvm_axistream_vvc`: compile CPU about half, cycles about 0.8); nothing in an ordinary run uses it, since no run keeps a list yet. Difftest `yavs-clift-cheap` and `yavs-clift-cheapalt` (every block, every second block): 662/662. `docs/decisions.md` "Cranelift: code that never ran, lowered cheaply".
+
 ### Compiled activations: one function per tier (branch `perf/w3-k0`, 2026-11-07)
 
 `InterpProcess::run` jumps to the tier's entry (`Tier::direct`, `rt::direct_entry`) with no frame of its own, and the entry holds the view, the object table's start and end and the call of the compiled code. Natives called from compiled code hand their result back without a store-forwarding stall, and `wake_sole` arms the idle-skip readers of a signal once. Main-thread instructions: Microwatt 0.991, GRLIB 0.995, results unchanged. Cycles are undecided: a quiet sitting decides. Numbers: `docs/decisions.md` "Compiled clocked RTL processes, round 12".

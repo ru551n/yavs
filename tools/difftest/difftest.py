@@ -90,7 +90,12 @@ YAVS_CLIFT_CHECK = "export YAVS_SPEC_ALL=1 YAVS_SPEC_AFTER=2 YAVS_INLCMP=check Y
 # every process that can have one from its second activation, the run waiting for what it asks
 # (`YAVS_AUTO_SYNC`), so the rule's paths run on every test however short.
 YAVS_CLIFT_COUNT1 = "export YAVS_AUTO_COUNT=1 YAVS_AUTO_GATE=0 YAVS_AUTO_SYNC=1 YAVS_SPEC_ALL=1; " + YAVS_CLIFT_AUTO
-TEMPLATES = {"yavs-clift-count1": YAVS_CLIFT_COUNT1, "yavs-clift-check": YAVS_CLIFT_CHECK, "yavs-mixed": YAVS_MIXED, "yavs": YAVS, "yavs-interp": YAVS_INTERP, "yavs-llvm": YAVS_LLVM, "yavs-auto": YAVS_AUTO, "yavs-auto-warm": YAVS_AUTO_WARM, "yavs-clift": YAVS_CLIFT, "yavs-clift-auto": YAVS_CLIFT_AUTO, "yavs-auto3": YAVS_AUTO3, "yavs-auto3-eager": YAVS_AUTO3_EAGER}
+# Every block of compiled code lowered as if it never ran (`YAVS_CLIFT_CHEAP=all`: frame-mode code hands each
+# block to the interpreter, a native frame leaves at each block after its first), and every second block (`alt`), so
+# cheap and full blocks meet: correctness must not rest on a coverage list.
+YAVS_CLIFT_CHEAP = "export YAVS_CLIFT_CHEAP=all; " + YAVS_CLIFT
+YAVS_CLIFT_CHEAPALT = "export YAVS_CLIFT_CHEAP=alt; " + YAVS_CLIFT
+TEMPLATES = {"yavs-clift-cheap": YAVS_CLIFT_CHEAP, "yavs-clift-cheapalt": YAVS_CLIFT_CHEAPALT, "yavs-clift-count1": YAVS_CLIFT_COUNT1, "yavs-clift-check": YAVS_CLIFT_CHECK, "yavs-mixed": YAVS_MIXED, "yavs": YAVS, "yavs-interp": YAVS_INTERP, "yavs-llvm": YAVS_LLVM, "yavs-auto": YAVS_AUTO, "yavs-auto-warm": YAVS_AUTO_WARM, "yavs-clift": YAVS_CLIFT, "yavs-clift-auto": YAVS_CLIFT_AUTO, "yavs-auto3": YAVS_AUTO3, "yavs-auto3-eager": YAVS_AUTO3_EAGER}
 # yavs repeats analysis warnings when it loads the units: W1904 (a shared variable of a
 # non-protected type) and W1302 (a 1993 homograph pair) are the warnings `relaxed` tests are about.
 _RX = "--relaxed -Wno-W1904 -Wno-W1325 -Wno-W1501 -Wno-W1302"

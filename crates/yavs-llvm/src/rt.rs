@@ -28,6 +28,8 @@ pub const REGION: &str = "yavs_rt_region";
 pub const HOLD_CHECK: &str = "yavs_rt_hold_check";
 /// A cold way of generated code ran (`yavs_rt_rare`; only builds that count, `COUNTING`).
 pub const RARE: &str = "yavs_rt_rare";
+/// The instructions of a block that never ran, in the interpreter (`yavs_rt_steps`).
+pub const STEPS: &str = "yavs_rt_steps";
 
 pub const SIGNAL: &str = "yavs_rt_signal";
 pub const DRIVE: &str = "yavs_rt_drive";
@@ -800,6 +802,43 @@ pub unsafe extern "C" fn yavs_rt_step(
     if r != GO || !keep {
         mem.forget();
     }
+    r
+}
+
+/// Executes the instructions `pc .. pc + n` in the interpreter, none of them a jump or a return:
+/// each as `yavs_rt_signal` does (which steps what is not a signal instruction), a frame one
+/// pushed as `yavs_rt_step` does. `GO`, or the first other answer. Generated code calls it for a
+/// block it was told never runs, in place of the block's code.
+pub unsafe extern "C" fn yavs_rt_steps(
+    env: *mut c_void,
+    _regs: *mut u64,
+    mem: *mut Mem,
+    pc: u32,
+    n: u32,
+) -> u32 {
+    cb(Cb::Steps);
+    // SAFETY: as in `yavs_rt_step`.
+    let envp = unsafe { env_or(env, mem) } as *mut Env<'_>;
+    let mut r = GO;
+    for at in pc..pc + n {
+        r = match catch_unwind(AssertUnwindSafe(|| unsafe {
+            (*mem).sync(&mut *(*envp).host);
+            let stack = (*mem).fr.stack;
+            let s = (*envp).host.signal(&mut (*mem).fr, at, 0);
+            step_done(envp, mem, at, stack, s)
+        })) {
+            Ok(r) => r,
+            Err(p) => {
+                unsafe { (*envp).panic = Some(p) };
+                at
+            }
+        };
+        if r != GO {
+            break;
+        }
+    }
+    // SAFETY: `mem` is what compiled code was given.
+    unsafe { (*mem).forget() };
     r
 }
 
@@ -2015,6 +2054,24 @@ pub unsafe fn step_in(env: *mut Env<'_>, mem: *mut Mem, pc: u32) -> u32 {
     unsafe {
         let stack = (*mem).fr.stack;
         let stepped = (*env).host.step(&mut (*mem).fr, pc);
+        step_done(env, mem, pc, stack, stepped)
+    }
+}
+
+/// What `step_in` returns for the instruction at `pc` once the host stepped it (`stack`: the
+/// register stack before).
+///
+/// # Safety
+/// As `step_in`.
+unsafe fn step_done(
+    env: *mut Env<'_>,
+    mem: *mut Mem,
+    pc: u32,
+    stack: *const u64,
+    stepped: Stepped,
+) -> u32 {
+    // SAFETY: see `yavs_rt_step`.
+    unsafe {
         // The interpreter's view: the temporary area has the length it shows.
         (*mem).temp_seen = (*mem).fr.temp_len;
         let callee = match stepped {

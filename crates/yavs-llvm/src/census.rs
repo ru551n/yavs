@@ -39,9 +39,11 @@ pub(crate) enum Cb {
     /// call of an in-place `ieee` op.
     RareCodes,
     RareNative,
+    /// `yavs_rt_steps`: the instructions of a block compiled code was told never ran.
+    Steps,
 }
 
-const N: usize = 25;
+const N: usize = 26;
 
 /// Whether this build counts (the generators emit the calls of `yavs_rt_rare` only then).
 pub const COUNTING: bool = cfg!(any(debug_assertions, feature = "op-census"));
@@ -72,6 +74,7 @@ const NAMES: [&str; N] = [
     "direct",
     "rare_codes",
     "rare_native",
+    "steps",
 ];
 
 #[cfg(any(debug_assertions, feature = "op-census"))]

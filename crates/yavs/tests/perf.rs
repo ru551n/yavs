@@ -1820,6 +1820,8 @@ mod clift {
         [
             // A short read in one plane word: the codes' cold way never runs.
             ("cb_rare_codes", Max(0)),
+            // No block is lowered as never run without `YAVS_CLIFT_CHEAP`.
+            ("cb_steps", Max(0)),
             ("cb_signal", Max(60)),
             ("cb_step", Max(9)),
             ("cb_native", Max(56)),

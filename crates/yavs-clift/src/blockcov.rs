@@ -2,7 +2,8 @@
 //! per-body table at the entry of every block it lowers, and the run writes which blocks ran
 //! (`cov-<pid>.tsv`: body symbol, IR pc, IR block id or `-`, 0 or 1, `key`). The code differs from
 //! the normal code, so byte sizes come from a run without the switch (`YAVS_CLIFT_CODEDIR`).
-//! `YAVS_CLIFT_COLD=<cov tsv>` (a lab switch) marks the blocks that file lists as never run cold.
+//! `YAVS_CLIFT_COLD=<cov tsv>` (a lab switch) marks the blocks that file lists as never run cold;
+//! `YAVS_CLIFT_CHEAP=<cov tsv>|all|alt` (a lab switch) lowers them cheaply (`cheap`).
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -70,33 +71,77 @@ pub(crate) fn key(prog: &yavs_ir::Program, id: yavs_ir::FuncId, native: bool) ->
     }
 }
 
+/// The pcs of never-run blocks by body key.
+type Lists = HashMap<String, HashSet<u32>>;
+
+/// The never-run blocks of each body a coverage dump lists (`YAVS_CLIFT_COLD`, `YAVS_CLIFT_CHEAP`).
+fn never_run(var: &str, path: &std::ffi::OsStr) -> Lists {
+    let text = std::fs::read_to_string(path).unwrap_or_else(|e| {
+        eprintln!("error: {var}: cannot read {}: {e}", path.to_string_lossy());
+        std::process::exit(2)
+    });
+    let mut out: HashMap<String, HashSet<u32>> = HashMap::new();
+    for line in text.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        let (Some(pc), Some(&"0"), Some(key)) = (f.get(1), f.get(3), f.get(4)) else {
+            continue;
+        };
+        if let Ok(pc) = pc.parse() {
+            out.entry(key.to_string()).or_default().insert(pc);
+        }
+    }
+    out
+}
+
 /// `YAVS_CLIFT_COLD`: the pcs of the blocks of body `key` that file lists as never run.
 pub(crate) fn cold(key: &str) -> Option<&'static HashSet<u32>> {
     static LIST: OnceLock<HashMap<String, HashSet<u32>>> = OnceLock::new();
     LIST.get_or_init(|| {
-        let Some(path) = std::env::var_os("YAVS_CLIFT_COLD") else {
-            return HashMap::new();
-        };
-        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-            eprintln!(
-                "error: YAVS_CLIFT_COLD: cannot read {}: {e}",
-                path.to_string_lossy()
-            );
-            std::process::exit(2)
-        });
-        let mut out: HashMap<String, HashSet<u32>> = HashMap::new();
-        for line in text.lines() {
-            let f: Vec<&str> = line.split('\t').collect();
-            let (Some(pc), Some(&"0"), Some(key)) = (f.get(1), f.get(3), f.get(4)) else {
-                continue;
-            };
-            if let Ok(pc) = pc.parse() {
-                out.entry(key.to_string()).or_default().insert(pc);
-            }
-        }
-        out
+        std::env::var_os("YAVS_CLIFT_COLD")
+            .map_or_else(HashMap::new, |p| never_run("YAVS_CLIFT_COLD", &p))
     })
     .get(key)
+}
+
+/// The blocks of a body that get the cheap lowering (`YAVS_CLIFT_CHEAP`).
+#[derive(Clone, Copy)]
+pub(crate) enum Cheap {
+    /// `all`: every block (a test mode: correctness must not rest on the list).
+    All,
+    /// `alt`: every second block, so cheap and full blocks meet (a test mode).
+    Alt,
+    /// A coverage dump's never-run blocks of this body.
+    Set(&'static HashSet<u32>),
+}
+
+impl Cheap {
+    /// Whether the block that starts at `pc`, the `nth` the body makes, is cheap.
+    pub(crate) fn has(&self, pc: u32, nth: usize) -> bool {
+        match self {
+            Cheap::All => true,
+            Cheap::Alt => nth % 2 == 1,
+            Cheap::Set(s) => s.contains(&pc),
+        }
+    }
+}
+
+/// `YAVS_CLIFT_CHEAP=<cov tsv>|all|alt` (a lab switch, CG3(a)): the blocks of body `key` that are
+/// lowered as one call of the interpreter for their instructions (frame-mode code) or that leave
+/// at their start (a native frame), instead of the full code.
+pub(crate) fn cheap(key: &str) -> Option<Cheap> {
+    static LIST: OnceLock<Option<Result<Cheap, Lists>>> = OnceLock::new();
+    let l = LIST.get_or_init(|| {
+        let p = std::env::var_os("YAVS_CLIFT_CHEAP")?;
+        Some(match p.to_str() {
+            Some("all") => Ok(Cheap::All),
+            Some("alt") => Ok(Cheap::Alt),
+            _ => Err(never_run("YAVS_CLIFT_CHEAP", &p)),
+        })
+    });
+    match l.as_ref()? {
+        Ok(c) => Some(*c),
+        Err(m) => m.get(key).map(Cheap::Set),
+    }
 }
 
 /// Every body made so far with the blocks that ran until now.

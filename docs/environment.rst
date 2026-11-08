@@ -493,6 +493,16 @@ Compiled tiers: Cranelift
      - a ``cov-<pid>.tsv`` file
      - unset
      - ``run``
+   * - ``YAVS_CLIFT_CHEAP``
+     - Measurement: the blocks a ``YAVS_CLIFT_BLOCKCOV`` file lists as never run get the least code: frame-mode code hands the instructions of such a block to the interpreter in one call, a native-frame variant leaves at its start. ``all`` treats every block so (but a variant's first), ``alt`` every second block; those two are test modes. Compiled code is made again, not found by its key before it is made.
+     - a ``cov-<pid>.tsv`` file, ``all``, ``alt``
+     - unset
+     - ``run``
+   * - ``YAVS_CLIFT_CHEAP_NATIVE``
+     - Measurement: ``0`` keeps the full code of native-frame variants under ``YAVS_CLIFT_CHEAP`` (only frame-mode code is made cheaply).
+     - ``0``
+     - unset
+     - ``run``
    * - ``YAVS_CLIFT_CLIF``
      - Prints the Cranelift IR of that function on standard error.
      - a function id, ``all``

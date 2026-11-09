@@ -1271,6 +1271,11 @@ const WAIT_ORDER: bool = true;
 /// The work in the looks (microseconds) after which a run that stops for its compiles compiles what
 /// the count asks for as one that does not: a run that long is likely to repay it.
 const WAIT_LONG: u64 = 1_000_000;
+/// Past `WAIT_LONG`, the part of its price the first run must still have seen a process and its
+/// copies for (`Worker::unpaid`): a process whose time is in its callees (`uvvm_axistream_vvc`'s
+/// sequencer and command executor, 0.2 and 2 percent) repays nothing, and its compile frees its
+/// callees' (1.2 s). GRLIB's first run is level from 0.05 to 0.2 and 1.6 percent dearer at 0.5.
+const WAIT_LONG_FLOOR: f64 = 0.1;
 
 /// Work between two looks at the native frames left to the interpreter (`Worker::guard`), in the looks'
 /// microseconds, and instructions a frame left costs: pushing it, and running the rest of its
@@ -1453,6 +1458,8 @@ struct Worker {
     /// earlier runs' profile says of those it held: interpreted microseconds seen summed over them,
     /// and in how many runs in a row (`Profile::held`), by process (`Program::base_of`).
     unrepaid_seen: Vec<bool>,
+    /// Functions `unpaid` held past `WAIT_LONG` at some time (`CountStat::UnpaidLong`).
+    unpaid_long_seen: Vec<bool>,
     unrepaid_ids: Vec<FuncId>,
     carried: std::collections::HashMap<FuncId, (u64, u32)>,
     /// Callees that keep compiled native-frame code unpublished, to ask for (`publish`), and whether
@@ -1480,6 +1487,8 @@ struct Worker {
     /// waits to be repaid by the time seen (`unpaid`), and `wait_payback` is the part of its price.
     stops: bool,
     wait_payback: f64,
+    /// `wait_payback`'s part past `WAIT_LONG` (`YAVS_AUTO_WAIT_LONG_FLOOR`).
+    wait_long_floor: f64,
     /// The budget of the compiles of a run that stops for them: `paid` at most this part of the
     /// simulation CPU looked at (`YAVS_AUTO_WAIT_SHARE`); `unrepaid`'s factor
     /// (`YAVS_AUTO_WAIT_GAIN`); whether `next_asked` orders by heat per price
@@ -1744,6 +1753,7 @@ impl Worker {
             waiting: Vec::new(),
             held: vec![false; nfuncs],
             unrepaid_seen: vec![false; nfuncs],
+            unpaid_long_seen: vec![false; nfuncs],
             unrepaid_ids: Vec::new(),
             carried: Default::default(),
             want: Vec::new(),
@@ -1768,6 +1778,7 @@ impl Worker {
             wait_held_free: WAIT_HELD_FREE,
             wait_big: 0.0,
             wait_payback: WAIT_PAYBACK,
+            wait_long_floor: WAIT_LONG_FLOOR,
             trace: std::env::var_os("YAVS_AUTO_TRACE").map(|_| Trace {
                 t0: std::time::Instant::now(),
                 first: Default::default(),
@@ -1874,11 +1885,18 @@ impl Worker {
             < self.body_price(id) as f64
     }
 
-    /// Count `id` once as held by `unrepaid` (`CountStat::Unrepaid`).
+    /// Count `id` once as held by `unrepaid` (`CountStat::Unrepaid`), and by `unpaid` past `WAIT_LONG`
+    /// (`CountStat::UnpaidLong`).
     fn note_unrepaid(&mut self, id: FuncId) {
         if self.unrepaid(id) && !std::mem::replace(&mut self.unrepaid_seen[id.0 as usize], true) {
             self.native.count_stat(CountStat::Unrepaid);
             self.unrepaid_ids.push(id);
+        }
+        if self.total >= WAIT_LONG
+            && self.unpaid(id)
+            && !std::mem::replace(&mut self.unpaid_long_seen[id.0 as usize], true)
+        {
+            self.native.count_stat(CountStat::UnpaidLong);
         }
     }
 
@@ -1970,16 +1988,24 @@ impl Worker {
 
     /// The first run of a program (no profile of an earlier run) that stops for its compiles
     /// (`stops`) pays each one in full: a function the cache does not hold waits until the looks saw
-    /// it interpreted for `wait_payback` of its price, until the run has lasted `WAIT_LONG` (a long
-    /// run repays what the count asks for). The runs after it compile as before, so the cache gets
-    /// what pays over the runs (user, 2026-11-07). Read from the looks and the profile.
+    /// it interpreted for `wait_payback` of its price. Once the run has lasted `WAIT_LONG` (a long run
+    /// repays what the count asks for) only a process waits, while the looks saw it and its copies
+    /// for less than `wait_long_floor` of that (one whose time is in its callees repays nothing; a
+    /// subprogram waits as before until compiled code calls it). The runs after it compile as before,
+    /// so the cache gets what pays over the runs (user, 2026-11-07). Read from the looks and the
+    /// profile.
     fn unpaid(&self, id: FuncId) -> bool {
-        self.stops
-            && self.earlier.base.is_none()
-            && self.total < WAIT_LONG
-            && !self.cached(id)
-            && (self.time[id.0 as usize][0] as f64)
-                < self.price_of(id, false) as f64 * self.wait_payback
+        if !self.stops || self.earlier.base.is_some() || self.cached(id) {
+            return false;
+        }
+        let price = self.price_of(id, false) as f64 * self.wait_payback;
+        if self.total < WAIT_LONG {
+            return (self.time[id.0 as usize][0] as f64) < price;
+        }
+        self.prog
+            .func(id)
+            .is_some_and(|f| f.kind == FuncKind::Process)
+            && (self.bseen[self.prog.base_of(id).0 as usize] as f64) < price * self.wait_long_floor
     }
 
     /// What the cache lists is a link, and the last run of this program was long enough: it does not
@@ -4026,6 +4052,9 @@ impl AutoTier {
         if let Some(p) = knob("YAVS_AUTO_WAIT_PAYBACK") {
             w.wait_payback = p;
         }
+        if let Some(p) = knob("YAVS_AUTO_WAIT_LONG_FLOOR") {
+            w.wait_long_floor = p;
+        }
         if let Some(p) = knob("YAVS_AUTO_WAIT_SHARE") {
             w.wait_share = p;
         }
@@ -4830,11 +4859,12 @@ mod tests {
     }
 
     /// `--tier-compile=wait` (`stops`): what the count asks for and the cache does not hold waits
-    /// until the looks saw it for `WAIT_PAYBACK` of its price, or the run lasted `WAIT_LONG`, in the
-    /// first run of a program only; a cached function and a run that does not stop are as before.
+    /// until the looks saw it for `WAIT_PAYBACK` of its price (once the run lasted `WAIT_LONG`, only a
+    /// process seen under `WAIT_LONG_FLOOR` of that), in the first run of a program only; a cached
+    /// function and a run that does not stop are as before.
     #[test]
     fn a_run_that_stops_compiles_what_its_looks_repaid() {
-        let (prog, caller, _) = caller_callee();
+        let (prog, caller, callee) = caller_callee();
         let mut w = counted(prog, 0);
         let k = caller.0 as usize;
         let at = (w.price_of(caller, false) as f64 * super::WAIT_PAYBACK).ceil() as u64;
@@ -4844,7 +4874,13 @@ mod tests {
         w.time[k][0] = at - 1;
         assert!(w.waits(caller));
         w.total = super::WAIT_LONG;
+        // Past it a process waits only while it and its copies were seen under the floor.
+        w.bseen[k] = (at as f64 * super::WAIT_LONG_FLOOR).ceil() as u64;
         assert!(!w.waits(caller), "a long run");
+        w.bseen[k] -= 1;
+        assert!(w.waits(caller), "a long run, a process hardly seen");
+        assert!(!w.unpaid(callee), "a long run, a subprogram");
+        w.bseen[k] = 0;
         w.total = 0;
         w.earlier.base = Some(1);
         assert!(!w.waits(caller), "a run after an earlier one");

@@ -14984,3 +14984,32 @@ Written by Claude. Landed with wave 3 batch 2 (maintainer's ruling of 2026-11-09
   (target registers loaded inside the skip's compare, in blocks the call does not always follow) only showed as
   copies that never ran compiled. `compiled_gate.rs` `whole_values_at_run_time_elements_of_copies` fails with that
   lowering bug put back.
+
+## `--tier-compile=wait`: past a second, the first run still holds a process it hardly ran (yavs-llvm `auto.rs`, 2026-11-09, on a branch for the maintainer)
+
+- **Finding** (agent). `uvvm_axistream_vvc`'s first run under `wait` took 1.62 to 1.69 times the wall of the pinned
+  baseline with a second free core (the cold cap is 1.20); `background` 1.08, `--tier=interp` level with the
+  baseline. At `WAIT_LONG` (1 s of looks' work, 40 percent into the run) `unpaid` let everything the count had asked
+  for compile: the test sequencer `p_main` (12 856 IR, seen 1.4 ms of a 579 ms price, compiled in 0.52 s), then
+  the command executor (seen 2 percent of its price) and, now called from compiled code, the BFM procedures and
+  some 100 callees seen 0: 1.85 s of compiles in a 2.3 s run, paid on the critical path; compiled code saved almost
+  nothing in the rest of the run.
+- **Change** (agent; the maintainer decides, below). Past `WAIT_LONG` the first run holds a process (`unpaid`)
+  while the looks saw it and its copies (`bseen` of its base) for less than `WAIT_LONG_FLOOR` (0.1) of its price;
+  a subprogram is not held by it (it waits until compiled code calls it, as before). Holding by the function's own
+  time instead held GRLIB's copies (seen 0, their time is the base's) and native callees of compiled processes, and
+  its first run cost 3 percent more instructions; holding subprograms with the full payback past `WAIT_LONG` cost
+  GRLIB the same. Counter `tier_unpaid_long`, knob `YAVS_AUTO_WAIT_LONG_FLOOR`. The floor: GRLIB's first run is
+  level from 0.05 to 0.2 and 1.6 percent dearer at 0.5; at 0.05 the command executor passed in one run of eight
+  (88 bodies compiled, 1.6 times the baseline); 0.1 is the middle.
+- **Measured** (cold, one process at a time on two free timing cores, cells in ABAB order, 8 to 10 pairs, plain
+  bench builds; wall against the pinned baseline): `uvvm_axistream_vvc` 1.09 (main 1.62; 33.5 G instructions
+  against 48.1, every run), on one core 1.13 (main 1.68); the other five cap tests unchanged against main
+  (instructions 0.997 to 1.002). GRLIB runs 1 to 3 level (instructions 0.995 to 1.001), Microwatt cold level
+  (0.1 percent), `neorv32_dual_full` and `osvvm_axi4_random` level in runs 1 to 3, the OSVVM suite (314 tests,
+  cold then warm) 1.00 and 0.985.
+- **Cost: run 3 of `uvvm_axistream_vvc`** (series in one world from a pristine one, 4 reps, instructions against
+  main): run 1 0.70, run 2 1.08, run 3 2.06, runs 4 to 6 0.99 to 1.02. What the first run skips, run 2 holds
+  (`unrepaid`, about 80 bodies) and run 3 compiles at once (`overdue`); over six runs 1.06 times main's
+  instructions. Not landed for that reason; options for the maintainer: land as is, wait for the later-run work on
+  `overdue` and carried heat, or have the first run carry what the floor held into the profile so run 2 pays it.

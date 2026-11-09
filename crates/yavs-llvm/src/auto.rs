@@ -1940,11 +1940,56 @@ impl Worker {
         if let Some(k) = asked.iter().position(|&id| self.cached(id)) {
             return Some(k);
         }
-        let heat =
-            |id: FuncId| self.time[id.0 as usize][0] as f64 / self.body_price(id).max(1) as f64;
+        let heat = |id: FuncId| {
+            let carried = self.carried.get(&self.prog.base_of(id)).map_or(0, |c| c.0);
+            (self.time[id.0 as usize][0] + carried) as f64 / self.body_price(id).max(1) as f64
+        };
         (0..asked.len())
             .filter(|&k| fits(asked[k]))
             .max_by(|&a, &b| heat(asked[a]).total_cmp(&heat(asked[b])).then(b.cmp(&a)))
+    }
+
+    /// The interpreted time of `id` and of the subprograms it calls that wait only because no
+    /// compiled code calls them (`waits`), and so on down: the sampler books a call's time to the
+    /// callee, so a caller that holds hot small callees back looks cold by its own time alone.
+    fn unlocked(&self, id: FuncId) -> u64 {
+        let mut seen = vec![id];
+        let mut us = self.time[id.0 as usize][0];
+        let mut i = 0;
+        while i < seen.len() {
+            let Some(f) = self.prog.func(seen[i]) else {
+                break;
+            };
+            i += 1;
+            for inst in &f.code {
+                let (yavs_ir::Inst::Call { func, .. } | yavs_ir::Inst::CallProt { func, .. }) =
+                    inst
+                else {
+                    continue;
+                };
+                let k = func.0 as usize;
+                if seen.contains(func)
+                    || self.done[k][0]
+                    || self.nat[k].0 != 0
+                    || self.entered_from_code(*func)
+                    || self
+                        .prog
+                        .func(*func)
+                        .is_none_or(|g| g.kind == FuncKind::Process)
+                {
+                    continue;
+                }
+                seen.push(*func);
+                // (Shared by the callers that are not compiled either: each frees its own calls.)
+                let n = self
+                    .callers_of(*func)
+                    .iter()
+                    .filter(|&&c| !self.done[c as usize][0])
+                    .count();
+                us += self.time[k][0] / n.max(1) as u64;
+            }
+        }
+        us
     }
 
     /// The trace line of a function the count asked for that `waits`: which of its rules hold it.
@@ -3228,21 +3273,24 @@ impl Worker {
         }));
         ids.sort_unstable();
         ids.dedup();
-        let held = ids
-            .iter()
-            .filter(|&&f| {
-                let k = f.0 as usize;
-                !self.done[k][0] && self.nat[k].0 == 0
-            })
-            .fold(Vec::<(u32, u64)>::new(), |mut v, &f| {
-                // (By process: a copy's id is new in every run, the process's is not.)
-                let (b, us) = (self.prog.base_of(f).0, self.time[f.0 as usize][0]);
-                match v.iter_mut().find(|e| e.0 == b) {
-                    Some(e) => e.1 += us,
-                    None => v.push((b, us)),
-                }
-                v
-            });
+        // (By process: a copy's id is new in every run, the process's is not, so a held process is
+        // credited with the time of every copy of it that ran.)
+        let bases: std::collections::HashSet<FuncId> =
+            ids.iter().map(|&f| self.prog.base_of(f)).collect();
+        let mut held = Vec::<(u32, u64)>::new();
+        for k in 0..self.time.len() {
+            let f = FuncId(k as u32);
+            let b = self.prog.base_of(f);
+            if !bases.contains(&b) || self.done[k][0] || self.nat[k].0 != 0 {
+                continue;
+            }
+            let us = self.unlocked(f);
+            match held.iter_mut().find(|e| e.0 == b.0) {
+                Some(e) => e.1 += us,
+                None if ids.contains(&f) || us > 0 => held.push((b.0, us)),
+                None => {}
+            }
+        }
         Snapshot {
             total: self.total,
             seen,
@@ -3317,6 +3365,19 @@ impl Worker {
     /// Whether a function that calls `id` has compiled code that `id` is called from: frame-mode
     /// code, or native-frame code that is published.
     fn entered_from_code(&self, id: FuncId) -> bool {
+        self.callers_of(id).iter().any(|&c| {
+            c != id.0
+                && (self.table[c as usize].run.load(Ordering::Relaxed) != 0
+                    || self.nat[c as usize].1
+                    || self.copy_compiled[c as usize]
+                    // (Native-frame code waits to be published for what it calls, so under the count
+                    // rule made is enough, or each would wait for the other.)
+                    || (self.counted && self.nat[c as usize].0 != 0))
+        })
+    }
+
+    /// The functions whose code calls `id` (`callers`).
+    fn callers_of(&self, id: FuncId) -> &[u32] {
         let callers = self.callers.get_or_init(|| {
             let mut v = vec![Vec::new(); self.prog.funcs.len()];
             for k in 0..self.prog.funcs.len() {
@@ -3334,15 +3395,7 @@ impl Worker {
             }
             v
         });
-        callers[id.0 as usize].iter().any(|&c| {
-            c != id.0
-                && (self.table[c as usize].run.load(Ordering::Relaxed) != 0
-                    || self.nat[c as usize].1
-                    || self.copy_compiled[c as usize]
-                    // (Native-frame code waits to be published for what it calls, so under the count
-                    // rule made is enough, or each would wait for the other.)
-                    || (self.counted && self.nat[c as usize].0 != 0))
-        })
+        &callers[id.0 as usize]
     }
 
     /// Take over the native-frame code a compile made of other functions on the way.
@@ -4798,6 +4851,19 @@ mod tests {
         assert!(!w.waits(callee));
         assert_eq!(w.freed(), [callee]);
         assert!(w.waiting.is_empty());
+    }
+
+    /// A caller is credited with the time of the subprograms that wait for it (`unlocked`), as long
+    /// as no compiled code calls them.
+    #[test]
+    fn a_caller_carries_the_time_of_the_callees_it_holds_back() {
+        let (prog, caller, callee) = caller_callee();
+        let mut w = counted(prog, 0);
+        (w.time[caller.0 as usize][0], w.time[callee.0 as usize][0]) = (5, 70);
+        assert_eq!(w.unlocked(caller), 75);
+        assert_eq!(w.unlocked(callee), 70);
+        w.nat[caller.0 as usize].0 = 64;
+        assert_eq!(w.unlocked(caller), 5, "a compiled caller calls it");
     }
 
     /// The count gives a function with a loop native-frame code alone; its frame-mode code (for the

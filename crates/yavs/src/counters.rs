@@ -119,6 +119,7 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
             over_budget,
             unpaid_long,
             unlocked,
+            chained,
         ] = rt.native_flags().count_stats();
         rows.push(("count_asked", asked));
         rows.push(("count_held", held));
@@ -133,6 +134,7 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         rows.push(("tier_over_budget", over_budget));
         rows.push(("tier_unpaid_long", unpaid_long));
         rows.push(("tier_unlocked", unlocked));
+        rows.push(("tier_chained", chained));
     }
     // The calls of each native `ieee` subprogram that ran its general path (every build).
     let ieee: Vec<(String, u64)> = rt

@@ -1537,7 +1537,7 @@ pub struct NativeFlags {
     /// Per function, the native frames of it that left to the interpreter (`materialised`).
     left_native: Box<[std::sync::atomic::AtomicU64]>,
     /// What the count rule did, for `YAVS_COUNTERS` (`CountStat`).
-    count_stat: [std::sync::atomic::AtomicU64; CountStat::Unlocked as usize + 1],
+    count_stat: [std::sync::atomic::AtomicU64; CountStat::Chained as usize + 1],
 }
 
 /// What the count rule of `--tier=auto` did in a run (`YAVS_COUNTERS`), so a test sees it stop.
@@ -1570,6 +1570,9 @@ pub enum CountStat {
     /// Functions a later run compiled for the time of the callees that wait for them, which their
     /// own time would not repay (`Worker::unlocked`).
     Unlocked,
+    /// Functions a later run judged otherwise by the time the looks saw below them than it would
+    /// with their callees' time split among the callers (`Worker::chain`): compiled or held.
+    Chained,
 }
 
 impl NativeFlags {
@@ -1602,7 +1605,7 @@ impl NativeFlags {
     }
 
     /// What the count rule did so far, by `CountStat`.
-    pub fn count_stats(&self) -> [u64; CountStat::Unlocked as usize + 1] {
+    pub fn count_stats(&self) -> [u64; CountStat::Chained as usize + 1] {
         std::array::from_fn(|i| self.count_stat[i].load(Ordering::Relaxed))
     }
 
@@ -1816,13 +1819,45 @@ pub(crate) const NATIVE_PC: u32 = u32::MAX;
 
 /// What each simulation thread interprets, for the sampler of a compiled tier
 /// (`Runtime::sampler`): `runtime id << 32 | function`, 0 while it interprets nothing. One
-/// slot per thread that ever ran the fast loop with a tier set, never freed (8 bytes).
+/// slot per thread that ever ran the fast loop with a tier set, never freed (8 bytes). With it the
+/// thread's `pc_slot` and `chain_slot`.
 static SLOTS: Mutex<
     Vec<(
         &'static std::sync::atomic::AtomicU64,
         &'static std::sync::atomic::AtomicU64,
+        &'static std::sync::atomic::AtomicU64,
     )>,
 > = Mutex::new(Vec::new());
+
+/// A caller half of a `chain_slot` value that names no function.
+pub const NO_CALLER: u32 = u32::MAX;
+
+/// The callers of the interpreted function in a sampling slot (`Runtime::thread_sampler`): the
+/// immediate caller's function `<< 32 |` the root frame's, each `NO_CALLER` when the frame stack
+/// is too shallow. Written with the slot by the loops that interpret (frame `top` running).
+#[inline(always)]
+pub(crate) fn chain_of(frames: &[exec::Frame], top: usize) -> u64 {
+    let at = |i: Option<usize>| {
+        i.and_then(|i| frames.get(i))
+            .map_or(NO_CALLER, |fr| fr.func.0)
+    };
+    let caller = at(top.checked_sub(1));
+    let root = if top >= 2 { at(Some(0)) } else { NO_CALLER };
+    u64::from(caller) << 32 | u64::from(root)
+}
+
+/// What `Runtime::thread_sampler` reads of one simulation thread.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sample {
+    /// The index of the thread's slot (`on_simulation_thread`).
+    pub slot: usize,
+    pub func: FuncId,
+    /// `func` has compiled code.
+    pub compiled: bool,
+    /// The immediate caller and the root frame's function (`NO_CALLER`: none, a root not
+    /// repeated). Read apart from `func`, so now and then from a neighbouring moment.
+    pub callers: [u32; 2],
+}
 
 /// What runs on a thread when it gets its sampling slot (`on_simulation_thread`).
 static ON_NEW_SLOT: std::sync::OnceLock<fn(usize)> = std::sync::OnceLock::new();
@@ -1840,7 +1875,7 @@ pub fn on_simulation_thread(f: fn(usize)) {
         let slots = SLOTS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(i) = slots.iter().position(|(a, _)| std::ptr::eq(*a, s)) {
+        if let Some(i) = slots.iter().position(|(a, _, _)| std::ptr::eq(*a, s)) {
             f(i);
         }
     }
@@ -1851,6 +1886,9 @@ thread_local! {
     static TOLD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Where the watching loop was at its last look: `function << 32 | IR pc` (`pc_slot`).
     static PC_SLOT: std::cell::Cell<Option<&'static std::sync::atomic::AtomicU64>> =
+        const { std::cell::Cell::new(None) };
+    /// The callers of what the slot names (`chain_of`, `chain_slot`).
+    static CHAIN_SLOT: std::cell::Cell<Option<&'static std::sync::atomic::AtomicU64>> =
         const { std::cell::Cell::new(None) };
     // Const-initialised: an access is one thread-local load and a predictable null test (a lazy
     // `thread_local!` with an initialiser costs a call per access, on every activation, #480).
@@ -1876,20 +1914,31 @@ pub(crate) fn pc_slot() -> &'static std::sync::atomic::AtomicU64 {
     })
 }
 
+/// This thread's `chain` slot; `slot()` made it.
+#[inline(always)]
+pub(crate) fn chain_slot() -> &'static std::sync::atomic::AtomicU64 {
+    CHAIN_SLOT.get().unwrap_or_else(|| {
+        slot();
+        CHAIN_SLOT.get().expect("chain slot")
+    })
+}
+
 #[cold]
 #[inline(never)]
 fn new_slot() -> &'static std::sync::atomic::AtomicU64 {
     let s: &'static std::sync::atomic::AtomicU64 = Box::leak(Box::default());
     let pc: &'static std::sync::atomic::AtomicU64 = Box::leak(Box::default());
+    let chain: &'static std::sync::atomic::AtomicU64 = Box::leak(Box::default());
     let index = {
         let mut slots = SLOTS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        slots.push((s, pc));
+        slots.push((s, pc, chain));
         slots.len() - 1
     };
     SLOT.set(Some(s));
     PC_SLOT.set(Some(pc));
+    CHAIN_SLOT.set(Some(chain));
     if let Some(f) = ON_NEW_SLOT.get() {
         TOLD.set(true);
         f(index);
@@ -2298,16 +2347,17 @@ impl Runtime {
         move |out| {
             let mut v = Vec::new();
             sample(&mut v);
-            out.extend(v.into_iter().map(|(_, f, c)| (f, c)));
+            out.extend(v.into_iter().map(|s| (s.func, s.compiled)));
         }
     }
 
     /// `sampler` with the index of the sampled thread's slot (what `on_simulation_thread` told its
-    /// hook), to pair each thread with its own work counter.
-    pub fn thread_sampler(&self) -> impl Fn(&mut Vec<(usize, FuncId, bool)>) + Send + 'static {
+    /// hook), to pair each thread with its own work counter, and the callers of an interpreted
+    /// function (a compiled one's are not kept up to date).
+    pub fn thread_sampler(&self) -> impl Fn(&mut Vec<Sample>) + Send + 'static {
         let (id, native) = (u64::from(self.id), self.native.clone());
         move |out| {
-            for (i, (s, _)) in SLOTS
+            for (i, (s, _, chain)) in SLOTS
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .iter()
@@ -2320,7 +2370,13 @@ impl Runtime {
                         .func
                         .get(func as usize)
                         .is_some_and(|n| n.load(Ordering::Relaxed) & NAT_CODE != 0);
-                    out.push((i, FuncId(func), compiled));
+                    let c = chain.load(Ordering::Relaxed);
+                    out.push(Sample {
+                        slot: i,
+                        func: FuncId(func),
+                        compiled,
+                        callers: [(c >> 32) as u32, c as u32],
+                    });
                 }
             }
         }
@@ -2332,7 +2388,7 @@ impl Runtime {
     pub fn line_sampler(&self) -> impl Fn(&mut Vec<(FuncId, u32)>) + Send + 'static {
         let id = u64::from(self.id);
         move |out| {
-            for (s, pc) in SLOTS
+            for (s, pc, _) in SLOTS
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .iter()
@@ -2352,7 +2408,7 @@ impl Runtime {
         PROFILE_NATIVE.store(true, Ordering::Relaxed);
         let (id, native) = (u64::from(self.id), self.native.clone());
         move |out| {
-            for (s, pc) in SLOTS
+            for (s, pc, _) in SLOTS
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .iter()

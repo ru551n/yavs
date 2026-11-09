@@ -282,13 +282,14 @@ const WATCH_CHUNK: u32 = 128;
 /// its thread-local access cost `run_ops::<false, true>` 4 percent of cycles on neorv32 (#521).
 #[cold]
 #[inline(never)]
-fn watch_tick(rt: &Runtime, func: FuncId, pc: u32) -> bool {
+fn watch_tick(rt: &Runtime, func: FuncId, pc: u32, chain: u64) -> bool {
     // (A compile of `--tier-compile=wait` runs while the run waits here or between cycles.)
     yavs_kernel::pause_point();
     if rt.native.tick(func.0) {
         rt.counted_out(func, true);
     }
     rt.sync_native();
+    crate::chain_slot().store(chain, Ordering::Relaxed);
     crate::slot().store(
         u64::from(rt.id) << 32 | u64::from(func.0),
         Ordering::Relaxed,
@@ -5814,6 +5815,7 @@ impl Machine {
                 .ok_or_else(|| ice_s!("no frame to execute"))?;
             let func = self.frames[top].func;
             if W && let Some(s) = slot {
+                crate::chain_slot().store(crate::chain_of(&self.frames, top), Ordering::Relaxed);
                 s.store(tag | u64::from(func.0), Ordering::Relaxed);
             }
             let f = prog
@@ -5922,7 +5924,11 @@ impl Machine {
         // `TIER`: this thread's sampling slot names the function being run, and whether it runs
         // compiled (`Runtime::sampler`); compiled code entered from compiled code keeps the
         // slot naming its caller, which calls it in place.
-        let slot = if TIER { Some(crate::slot()) } else { None };
+        let slot = if TIER {
+            Some((crate::slot(), crate::chain_slot()))
+        } else {
+            None
+        };
         let tag = u64::from(rt.id) << 32;
         // Whether the function has compiled code to run (asked on entry, then every
         // `RECHECK` jumps while it has none: it may be compiled while its loop runs).
@@ -5933,7 +5939,11 @@ impl Machine {
             () => {
                 if TIER {
                     native = ready!();
-                    if let Some(s) = slot {
+                    if let Some((s, chain)) = slot {
+                        // (The callers of compiled code are not read: `Sample::callers`.)
+                        if !native {
+                            chain.store(crate::chain_of(&self.frames, top), Ordering::Relaxed);
+                        }
                         s.store(tag | u64::from(func.0), Ordering::Relaxed);
                     }
                 }
@@ -6017,7 +6027,8 @@ impl Machine {
                     recheck -= 1;
                     if recheck == 0 {
                         recheck = WATCH;
-                        if watch_tick(rt, func, code.at.get(k).copied().unwrap_or(0)) {
+                        let chain = crate::chain_of(&self.frames, top);
+                        if watch_tick(rt, func, code.at.get(k).copied().unwrap_or(0), chain) {
                             self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
                             return Ok(Flow::Retier);
                         }

@@ -965,6 +965,9 @@ enum Msg {
 /// on the sequence of looks and not on how long a compile or a trial took (#670).
 struct Look {
     running: Vec<(FuncId, bool, u64)>,
+    /// Per entry of `running` (or none), the callers of an interpreted function
+    /// (`yavs_interp::Sample::callers`).
+    callers: Vec<[u32; 2]>,
     /// The CPU time of the kernel thread since the look before (microseconds, `sim_cpu`; where
     /// there is no such clock, the busiest thread's work), whatever it was running.
     cpu: u64,
@@ -972,10 +975,14 @@ struct Look {
 
 /// The look of `total` microseconds shared equally by the running functions (the CPU time of the
 /// simulation threads is one number for all of them).
-fn shared_look(total: u64, running: &[(usize, FuncId, bool)]) -> Look {
+fn shared_look(total: u64, running: &[yavs_interp::Sample]) -> Look {
     let n = running.len().max(1) as u64;
     Look {
-        running: running.iter().map(|&(_, f, c)| (f, c, total / n)).collect(),
+        running: running
+            .iter()
+            .map(|s| (s.func, s.compiled, total / n))
+            .collect(),
+        callers: running.iter().map(|s| s.callers).collect(),
         cpu: total,
     }
 }
@@ -1309,6 +1316,16 @@ const WAIT_HELD_RUNS: u32 = u32::MAX;
 /// (`Worker::unlocked`): `uvvm_axistream_vvc`'s command executor seen 0.2 percent of its price by
 /// itself frees about a second of callees a run.
 const WAIT_SUBTREE: bool = true;
+/// `Worker::chain`: the subtree credit of `unrepaid` takes its callees' time as the looks saw it below
+/// the function (`Worker::under`) instead of split among their callers.
+const CHAIN_PRICE: u8 = 1;
+/// `Worker::chain`: in a later run, `next_asked` orders by the time seen in and below a function per
+/// price.
+const CHAIN_ORDER: u8 = 2;
+/// `Worker::chain`: a held function carries the time seen below it to the next run (`snapshot`).
+const CHAIN_CARRY: u8 = 4;
+/// `Worker::chain` by default (`YAVS_AUTO_CHAIN` overrides it, 0: none).
+const CHAIN: u8 = CHAIN_PRICE;
 const WAIT_HELD_FREE: bool = true;
 /// `Worker::next_asked` orders by heat per price: in oldest-first order a large one-shot sequencer held
 /// the budget (`uvvm_axistream_vvc` run 2 29.4 G against 25.0).
@@ -1551,6 +1568,13 @@ struct Worker {
     /// `unrepaid` judges a function with the callees it unlocks (`unlocked`,
     /// `YAVS_AUTO_WAIT_SUBTREE`; 0: by its own time and price).
     wait_subtree: bool,
+    /// Per function, the interpreted time the looks saw in what it called (`book_below`): the
+    /// samples whose frame stack had it as the immediate caller or the root.
+    below: Vec<u64>,
+    /// `below` by (caller, callee).
+    under: std::collections::HashMap<(u32, u32), u64>,
+    /// Where `below` counts (`CHAIN_*` bits, `YAVS_AUTO_CHAIN`).
+    chain: u8,
     /// The runs in a row `unrepaid` holds a function before it compiles it anyway
     /// (`YAVS_AUTO_WAIT_HELD_RUNS`): the count asked for it in each of them.
     wait_held_runs: u32,
@@ -1615,8 +1639,11 @@ impl Worker {
         if look.running.is_empty() {
             return;
         }
-        for &(id, compiled, dt) in &look.running {
+        for (i, &(id, compiled, dt)) in look.running.iter().enumerate() {
             let id = if compiled { id } else { self.charge(id) };
+            if !compiled && let Some(&callers) = look.callers.get(i) {
+                self.book_below(id, callers, dt);
+            }
             let Some(t) = self.time.get_mut(id.0 as usize) else {
                 continue;
             };
@@ -1830,6 +1857,9 @@ impl Worker {
             wait_long_share: WAIT_LONG_SHARE,
             wait_gain: WAIT_GAIN,
             wait_subtree: WAIT_SUBTREE,
+            below: vec![0; nfuncs],
+            under: Default::default(),
+            chain: CHAIN,
             wait_order: WAIT_ORDER,
             wait_held_runs: WAIT_HELD_RUNS,
             wait_held_free: WAIT_HELD_FREE,
@@ -1842,6 +1872,20 @@ impl Worker {
                 cand: Default::default(),
                 refused: Default::default(),
             }),
+        }
+    }
+
+    /// Book `dt` of interpreted time in `id` to the callers on its frame stack (`below`): the
+    /// immediate one and the root frame's, each once and never `id` itself.
+    fn book_below(&mut self, id: FuncId, callers: [u32; 2], dt: u64) {
+        let [a, b] = callers;
+        for c in [a, if b == a { yavs_interp::NO_CALLER } else { b }] {
+            if c != id.0
+                && let Some(t) = self.below.get_mut(c as usize)
+            {
+                *t += dt;
+                *self.under.entry((c, id.0)).or_default() += dt;
+            }
         }
     }
 
@@ -1923,9 +1967,15 @@ impl Worker {
         self.unrepaid_by(id, self.wait_subtree)
     }
 
-    /// `unrepaid`, and when `subtree` judged again with the callees `id` unlocks (`unlocked`): held
-    /// only if neither repays, so the credit never holds what its own time repays.
+    /// `unrepaid_with` by the time of `chain`.
     fn unrepaid_by(&self, id: FuncId, subtree: bool) -> bool {
+        self.unrepaid_with(id, subtree, self.chain & CHAIN_PRICE != 0)
+    }
+
+    /// `unrepaid`, and when `subtree` judged again with the callees `id` unlocks (`unlocked`, their
+    /// time as the looks saw it below `id` when `chained`): held only if neither repays, so the
+    /// credit never holds what its own time repays.
+    fn unrepaid_with(&self, id: FuncId, subtree: bool, chained: bool) -> bool {
         let Some(base) = self.earlier.base else {
             return false;
         };
@@ -1948,7 +1998,20 @@ impl Worker {
             (share * rest * (profile::EARLY_RUNS as f64) + before) * self.wait_gain < price as f64
         };
         held((self.time[id.0 as usize][0], self.body_price(id)))
-            && (!subtree || held(self.unlocked(id)))
+            && (!subtree || {
+                let (us, price, seen, seen_price) = self.unlocked_by(id);
+                held(if chained {
+                    (seen, seen_price)
+                } else {
+                    (us, price)
+                })
+            })
+    }
+
+    /// The interpreted time seen in `id` and below it (`below`).
+    fn with_below(&self, id: FuncId) -> u64 {
+        let k = id.0 as usize;
+        self.time[k][0] + self.below[k]
     }
 
     /// The interpreted time and `body_price` of `id` with those of the subprograms that wait only
@@ -1956,7 +2019,15 @@ impl Worker {
     /// callee's share split among its uncompiled callers that ran. The sampler books a call's time
     /// to the callee, so a dispatcher looks cold by its own time, and compiling it is what lets its
     /// callees compile. A callee never seen adds no price: it would not compile.
+    #[cfg(test)]
     fn unlocked(&self, id: FuncId) -> (u64, u64) {
+        let (us, price, _, _) = self.unlocked_by(id);
+        (us, price)
+    }
+
+    /// `unlocked`, then the same with each callee's time as the looks saw it below `id` (`under`)
+    /// where they name `id` (the root frame of a process, a callee's immediate caller), else split.
+    fn unlocked_by(&self, id: FuncId) -> (u64, u64, u64, u64) {
         let callees = self.callees.get_or_init(|| {
             let mut v = vec![Vec::new(); self.prog.funcs.len()];
             for (c, callers) in self.callers().iter().enumerate() {
@@ -1968,6 +2039,11 @@ impl Worker {
         });
         let mut walked = self.walked.borrow_mut();
         let (mut us, mut price) = (self.time[id.0 as usize][0], self.body_price(id));
+        let (mut seen, mut seen_price) = (us, price);
+        let root = self
+            .prog
+            .func(id)
+            .is_some_and(|f| f.kind == FuncKind::Process);
         let mut todo = vec![id.0];
         walked[id.0 as usize] = true;
         let mut i = 0;
@@ -2001,13 +2077,20 @@ impl Worker {
                     .count()
                     .max(1) as u64;
                 us += t / n;
-                price += self.body_price(FuncId(c)) / n;
+                let p = self.body_price(FuncId(c));
+                price += p / n;
+                // (A callee never seen below `id` is not unlocked by it.)
+                match (root || f == id.0).then(|| self.under.get(&(id.0, c)).copied()) {
+                    Some(Some(u)) => (seen, seen_price) = (seen + u, seen_price + p / n),
+                    Some(None) => {}
+                    None => (seen, seen_price) = (seen + t / n, seen_price + p / n),
+                }
             }
         }
         for &f in &todo {
             walked[f as usize] = false;
         }
-        (us, price)
+        (us, price, seen, seen_price)
     }
 
     /// Count `id` once as compiled because of the callees it unlocks (`CountStat::Unlocked`).
@@ -2019,6 +2102,9 @@ impl Worker {
         {
             self.unlocked_seen[id.0 as usize] = true;
             self.native.count_stat(CountStat::Unlocked);
+            if self.chain & CHAIN_PRICE != 0 && self.unrepaid_with(id, true, false) {
+                self.native.count_stat(CountStat::Chained);
+            }
         }
     }
 
@@ -2029,6 +2115,12 @@ impl Worker {
             self.unrepaid_seen[id.0 as usize] = true;
             self.native.count_stat(CountStat::Unrepaid);
             self.unrepaid_ids.push(id);
+            if self.wait_subtree
+                && self.chain & CHAIN_PRICE != 0
+                && !self.unrepaid_with(id, true, false)
+            {
+                self.native.count_stat(CountStat::Chained);
+            }
         }
         if self.total >= WAIT_LONG
             && self.unpaid(id)
@@ -2096,8 +2188,14 @@ impl Worker {
         if let Some(k) = asked.iter().position(|&id| self.cached(id)) {
             return Some(k);
         }
-        let heat =
-            |id: FuncId| self.time[id.0 as usize][0] as f64 / self.body_price(id).max(1) as f64;
+        let heat = |id: FuncId| {
+            let us = if self.chain & CHAIN_ORDER != 0 && self.earlier.base.is_some() {
+                self.with_below(id)
+            } else {
+                self.time[id.0 as usize][0]
+            };
+            us as f64 / self.body_price(id).max(1) as f64
+        };
         (0..asked.len())
             .filter(|&k| fits(asked[k]))
             .max_by(|&a, &b| heat(asked[a]).total_cmp(&heat(asked[b])).then(b.cmp(&a)))
@@ -2108,7 +2206,7 @@ impl Worker {
         let f = self.prog.func(id);
         let sub = f.is_some_and(|f| f.kind != FuncKind::Process);
         format!(
-            "held f{} `{}` ({} IR): gate {}, uncalled subprogram {}, unpaid {} (seen {} of price {} us, cached {}), unrepaid {} (body {} us, with what it unlocks {:?} us), seen total {} us",
+            "held f{} `{}` ({} IR): gate {}, uncalled subprogram {}, unpaid {} (seen {} of price {} us, cached {}), unrepaid {} (body {} us, with what it unlocks split and seen below it {:?} us, all seen below {} us), seen total {} us",
             id.0,
             f.map_or("?", |f| f.name.as_str()),
             f.map_or(0, |f| f.code.len()),
@@ -2120,7 +2218,8 @@ impl Worker {
             self.cached(id),
             self.unrepaid(id),
             self.body_price(id),
-            self.unlocked(id),
+            self.unlocked_by(id),
+            self.below[id.0 as usize],
             self.total
         )
     }
@@ -3401,7 +3500,12 @@ impl Worker {
             })
             .fold(Vec::<(u32, u64)>::new(), |mut v, &f| {
                 // (By process: a copy's id is new in every run, the process's is not.)
-                let (b, us) = (self.prog.base_of(f).0, self.time[f.0 as usize][0]);
+                let us = if self.chain & CHAIN_CARRY != 0 {
+                    self.with_below(f)
+                } else {
+                    self.time[f.0 as usize][0]
+                };
+                let b = self.prog.base_of(f).0;
                 match v.iter_mut().find(|e| e.0 == b) {
                     Some(e) => e.1 += us,
                     None => v.push((b, us)),
@@ -3883,7 +3987,7 @@ fn nap(sh: &Shared, d: Duration) {
 /// is the CPU time of the simulation threads, shared by the running functions, and the wall time
 /// between looks without that.
 fn sampler_loop(
-    sample: impl Fn(&mut Vec<(usize, FuncId, bool)>),
+    sample: impl Fn(&mut Vec<yavs_interp::Sample>),
     base_period: Duration,
     tx: Sender<Msg>,
     sh: &Shared,
@@ -3930,12 +4034,12 @@ fn sampler_loop(
                 running.clear();
                 sample(&mut running);
                 slots.clear();
-                slots.extend(running.iter().map(|r| r.0));
+                slots.extend(running.iter().map(|r| r.slot));
                 counts.clear();
                 crate::work::of_threads(&slots, &mut counts);
                 let busiest = running
                     .iter()
-                    .map(|r| since(&counts, &last, r.0))
+                    .map(|r| since(&counts, &last, r.slot))
                     .max()
                     .unwrap_or(0);
                 let waited = t0.elapsed();
@@ -3969,16 +4073,21 @@ fn sampler_loop(
             Ordering::Relaxed,
         );
         let mut look = if work {
+            let callers = running.iter().map(|s| s.callers).collect();
             let running: Vec<_> = running
                 .iter()
-                .map(|&(i, f, c)| {
+                .map(|s| {
                     // (A worker that spun before it got to run counts for at most two periods.)
-                    let d = since(&counts, &last, i).min(2 * target);
-                    (f, c, crate::work::work_us(d))
+                    let d = since(&counts, &last, s.slot).min(2 * target);
+                    (s.func, s.compiled, crate::work::work_us(d))
                 })
                 .collect();
             let cpu = running.iter().map(|r| r.2).max().unwrap_or(0);
-            Look { running, cpu }
+            Look {
+                running,
+                callers,
+                cpu,
+            }
         } else {
             let dt = match (cpu, last_cpu) {
                 (Some(c), Some(l)) => c.saturating_sub(l),
@@ -4211,6 +4320,9 @@ impl AutoTier {
         }
         if let Some(p) = knob("YAVS_AUTO_WAIT_SUBTREE") {
             w.wait_subtree = p != 0.0;
+        }
+        if let Some(p) = knob("YAVS_AUTO_CHAIN") {
+            w.chain = p as u8;
         }
         if let Some(p) = knob("YAVS_AUTO_WAIT_HELD_RUNS") {
             w.wait_held_runs = p as u32;
@@ -4557,7 +4669,7 @@ impl AutoTier {
                             if let Some(f) = w.prog.func(FuncId(k as u32)) {
                                 let id = FuncId(k as u32);
                                 tr.line(format!(
-                                    "seen f{k} `{}` ({} IR{}, loops {}%): interpreted {} us, compiled {} us, {:?}, candidate at {} us",
+                                    "seen f{k} `{}` ({} IR{}, loops {}%): interpreted {} us (below it {} us), compiled {} us, {:?}, candidate at {} us",
                                     f.name,
                                     f.code.len(),
                                     match w.prog.base_of(id) {
@@ -4566,11 +4678,25 @@ impl AutoTier {
                                     },
                                     loop_share(&w.prog, f),
                                     w.time[k][0],
+                                    w.below[k],
                                     w.time[k][1],
                                     w.kind(id),
                                     w.threshold(id, false),
                                 ));
                             }
+                        }
+                        v.sort_by_key(|&k| std::cmp::Reverse(w.below[k]));
+                        for &k in v.iter().take(20).filter(|&&k| w.below[k] > 0) {
+                            let id = FuncId(k as u32);
+                            tr.line(format!(
+                                "below f{k} `{}` ({} IR): {} us below, {} us in it, compiled {}, held {}",
+                                w.prog.func(id).map_or("?", |f| f.name.as_str()),
+                                w.prog.func(id).map_or(0, |f| f.code.len()),
+                                w.below[k],
+                                w.time[k][0],
+                                w.done[k][0] || w.nat[k].0 != 0,
+                                w.held[k],
+                            ));
                         }
                         let mut m: Vec<(u64, usize)> = (0..w.time.len())
                             .map(|k| (w.native.materialised(FuncId(k as u32)), k))
@@ -4972,6 +5098,7 @@ mod tests {
     fn look(us: u64) -> super::Look {
         super::Look {
             running: vec![(yavs_ir::FuncId(0), false, us)],
+            callers: Vec::new(),
             cpu: us,
         }
     }
@@ -5112,6 +5239,7 @@ mod tests {
     fn a_later_run_credits_a_caller_with_the_callees_it_unlocks() {
         let (prog, caller, callee) = caller_callee();
         let mut w = counted(prog, 0);
+        w.chain = 0;
         let (k, j) = (caller.0 as usize, callee.0 as usize);
         let price = w.body_price(caller) + w.body_price(callee);
         (w.stops, w.wait_gain, w.wait_payback) = (true, 0.5, 0.0);
@@ -5138,6 +5266,65 @@ mod tests {
         w.nat[j].0 = 64;
         assert_eq!(w.unlocked(caller).0, 1, "a compiled callee");
         assert!(w.waits(caller));
+    }
+
+    /// With the callers on the looks (`CHAIN_PRICE`), a callee's time counts for the caller it ran
+    /// below, not split among the callers that ran: of two processes calling one subprogram, the one
+    /// it ran below is credited with all of it, the other with none.
+    #[test]
+    fn a_later_run_credits_a_caller_with_the_time_seen_below_it() {
+        let mut pb = ProgramBuilder::new();
+        let g = pb.declare("g", yavs_ir::FuncKind::Procedure, None);
+        let mut fb = pb.define(g);
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let keep = fb.slot(8, 8);
+        let at = fb.addr(yavs_ir::AddrSpace::Frame, keep);
+        fb.emit(Inst::Store {
+            addr: at,
+            src: at,
+            w: yavs_ir::Width::B8,
+        });
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+        let mut procs = Vec::new();
+        for name in ["p", "q"] {
+            let p = pb.declare(name, yavs_ir::FuncKind::Process, None);
+            let mut fb = pb.define(p);
+            fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+            let args = fb.regs(&[]);
+            fb.emit(Inst::Call {
+                func: g,
+                args,
+                dst: None,
+            });
+            fb.emit(Inst::Ret { v: None });
+            fb.finish();
+            procs.push(p);
+        }
+        let (p, q) = (procs[0], procs[1]);
+        let mut w = counted(pb.finish().unwrap(), 0);
+        let price = w.body_price(p) + w.body_price(g) / 2;
+        (w.stops, w.wait_gain, w.wait_payback) = (true, 0.5, 0.0);
+        (w.total, w.sim_us) = (1000, 10);
+        (w.time[p.0 as usize][0], w.time[q.0 as usize][0]) = (1, 1);
+        w.earlier.base = Some(10 + (price as f64 / (0.5 * 0.5 * 4.0)).ceil() as u64 + 1);
+        // All of g's time was seen below p (its root frame), none below q.
+        w.book_below(g, [p.0, p.0], 600);
+        w.time[g.0 as usize][0] = 600;
+        assert_eq!(w.below[p.0 as usize], 600, "booked once");
+        w.chain = 0;
+        assert!(w.waits(p), "half of g's time does not repay p");
+        assert!(w.waits(q), "nor q");
+        w.chain = super::CHAIN_PRICE;
+        assert!(!w.waits(p), "all of g's time was seen below p");
+        assert!(w.waits(q), "none of it below q");
+        w.note_unlocked(p);
+        let stats = w.native.count_stats();
+        assert_eq!(stats[yavs_interp::CountStat::Unlocked as usize], 1);
+        assert_eq!(stats[yavs_interp::CountStat::Chained as usize], 1);
+        // A callee's own frame is never its caller.
+        w.book_below(g, [g.0, yavs_interp::NO_CALLER], 5);
+        assert_eq!(w.below[g.0 as usize], 0);
     }
 
     /// The next compile of a run that stops for them (`next_asked`): links first, then the most seen
@@ -5421,6 +5608,7 @@ mod tests {
         w.see(
             &super::Look {
                 running: vec![(f, false, 10_000_000)],
+                callers: Vec::new(),
                 cpu: 10_000_000,
             },
             false,

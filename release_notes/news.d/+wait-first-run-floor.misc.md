@@ -1,0 +1,1 @@
+Under the default `--tier-compile=wait`, the first run of a program no longer stops, once it has passed a second of simulation, to compile a process it has hardly run (such as a test sequencer whose time goes to the subprograms it calls), so such tests are not held up compiling code that does not pay back.

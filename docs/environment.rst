@@ -320,9 +320,14 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - ``100``
      - ``run``
    * - ``YAVS_AUTO_WAIT_PAYBACK``
-     - With ``--tier-compile=wait``: the part of its modelled compile time a function the count rule asks for must be seen interpreted before it compiles, in the first run of a program while it has less than a second of simulation work behind it (functions the compilation cache holds are linked as before). ``0`` compiles what is asked for at once.
+     - With ``--tier-compile=wait``: the part of its modelled compile time a function the count rule asks for must be seen interpreted before it compiles, in the first run of a program while it has less than a second of simulation work behind it (after that, see ``YAVS_AUTO_WAIT_LONG_FLOOR``; functions the compilation cache holds are linked as before). ``0`` compiles what is asked for at once.
      - a number
      - ``1``
+     - ``run``
+   * - ``YAVS_AUTO_WAIT_LONG_FLOOR``
+     - With ``--tier-compile=wait``, in the first run of a program once it has a second of simulation work behind it: the part of ``YAVS_AUTO_WAIT_PAYBACK`` a process (with its copies) must still have been seen for, so a process whose time goes to the subprograms it calls does not stop the run for its compile. ``0`` compiles what is asked for from then on.
+     - a number
+     - ``0.1``
      - ``run``
    * - ``YAVS_AUTO_WAIT_SHARE``
      - With ``--tier-compile=wait``: the part of the simulation CPU time the compiles may take (each one priced at what it is measured to cost); a function whose compile does not fit waits.

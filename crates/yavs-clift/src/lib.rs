@@ -21,7 +21,9 @@ mod hugearena;
 mod lower;
 
 #[cfg(feature = "clift")]
-pub use blockcov::{BodyCov, list_stats, snapshot as blockcov_snapshot, write as blockcov_write};
+pub use blockcov::{
+    BodyCov, list_records, list_stats, snapshot as blockcov_snapshot, write as blockcov_write,
+};
 #[cfg(feature = "clift")]
 pub use cache::{cache_stats, set_cache, sub_copy_stats};
 

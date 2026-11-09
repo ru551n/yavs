@@ -1203,6 +1203,9 @@ impl Jit {
         {
             yavs_llvm::rt::note_cheap_leaves(id, l.iter().copied(), f.code.len() as u32);
         }
+        if crate::blockcov::list_records() {
+            crate::blockcov::note_built(prog, id);
+        }
         self.lists.insert((id, native), list);
         let check = crate::cache::check();
         let linked = |jit: &mut Jit, stored: &Option<Pre>| -> Result<Option<Built>, Error> {

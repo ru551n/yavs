@@ -1263,6 +1263,10 @@ fn use_clift(
         }
     });
     let first = yavs_clift::First::new().map_err(bug)?;
+    // (`YAVS_CLIFT_LIST=rec`, a lab switch: the interpreter notes the blocks it enters.)
+    if yavs_clift::list_records() {
+        rt.record_blocks();
+    }
     let t = yavs_llvm::AutoTier::start_deferred_with(
         rt,
         yavs_llvm::OptLevel::O2,

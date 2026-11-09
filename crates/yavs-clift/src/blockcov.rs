@@ -6,7 +6,8 @@
 //! `YAVS_CLIFT_CHEAP=<cov tsv>|all|alt` (a lab switch) lowers them cheaply (`cheap`).
 //!
 //! `YAVS_CLIFT_LIST` (a lab switch, `--tier=auto`): the never-run blocks of each function kept in
-//! the store per program, as routes are (`list_mode`).
+//! the store per program, as routes are (`list_mode`). Written by a coverage run (`write`) or by
+//! ordinary runs from the blocks the interpreter entered (`rec`).
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -178,10 +179,10 @@ pub fn snapshot() -> Vec<BodyCov> {
         .collect()
 }
 
-/// At the end of a run: store the never-run list (`YAVS_CLIFT_LIST`), and write `cov-<pid>.tsv`
-/// into the directory of `YAVS_CLIFT_BLOCKCOV` when it is set.
-pub fn write() {
-    list_flush();
+/// At the end of a run of `rt`: store the never-run list (`YAVS_CLIFT_LIST`), and write
+/// `cov-<pid>.tsv` into the directory of `YAVS_CLIFT_BLOCKCOV` when it is set.
+pub fn write(rt: Option<&yavs_interp::Runtime>) {
+    list_flush(rt);
     let Some(dir) = std::env::var_os("YAVS_CLIFT_BLOCKCOV") else {
         return;
     };
@@ -225,6 +226,11 @@ pub(crate) enum ListMode {
     Read,
     /// `all`: as `on` with every block listed (a test mode: the counter and the recompile run).
     All,
+    /// `rec`: as `on`, and the interpreter notes the blocks it enters (`Runtime::record_blocks`):
+    /// a function that stayed interpreted all run gets a line of the blocks it never entered (or
+    /// its line keeps only blocks no run entered). One that got compiled code gets none: its code
+    /// in full is stored, and what the interpreter saw of it is not all that ran.
+    Rec,
 }
 
 /// `YAVS_CLIFT_LIST=on|write|all` (unset or `off`: none).
@@ -235,13 +241,19 @@ pub(crate) fn list_mode() -> ListMode {
         Ok("on") => ListMode::Read,
         Ok("write") => ListMode::Write,
         Ok("all") => ListMode::All,
+        Ok("rec") => ListMode::Rec,
         Ok(v) => {
             eprintln!(
-                "error: YAVS_CLIFT_LIST: unknown value `{v}`; expected on, write, all or off"
+                "error: YAVS_CLIFT_LIST: unknown value `{v}`; expected on, rec, write, all or off"
             );
             std::process::exit(2)
         }
     })
+}
+
+/// `YAVS_CLIFT_LIST=rec`: the runtime of `--tier=auto` notes the blocks the interpreter enters.
+pub fn list_records() -> bool {
+    list_mode() == ListMode::Rec
 }
 
 /// `YAVS_CLIFT_LIST_NATIVE=cheap`: native-frame variants leave at their listed blocks too, instead
@@ -254,14 +266,18 @@ pub(crate) fn list_native_cheap() -> bool {
 /// `clift_listed`, `clift_again`).
 pub(crate) static LISTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 pub(crate) static AGAIN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Lines `rec` wrote or narrowed from the interpreter's notes at the end of the run.
+static RECORDED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// `YAVS_COUNTERS`: bodies made with a never-run list, functions whose listed blocks ran too much,
-/// and of them the ones made again in full.
-pub fn list_stats() -> (usize, usize, usize) {
+/// of them the ones made again in full, and lines written from the interpreter's notes
+/// (`clift_recorded`, after `write`).
+pub fn list_stats() -> (usize, usize, usize, usize) {
     (
         LISTED.load(std::sync::atomic::Ordering::Relaxed),
         yavs_llvm::rt::tripped_all().len(),
         AGAIN.load(std::sync::atomic::Ordering::Relaxed),
+        RECORDED.load(std::sync::atomic::Ordering::Relaxed),
     )
 }
 
@@ -295,6 +311,8 @@ struct ListState {
     stored: Stored,
     /// Functions given a list in this run, by id: their key and their step limit (`list_flush`).
     used: HashMap<u32, (String, u64)>,
+    /// `rec`: functions given compiled code in this run, by id (no line from the interpreter).
+    built: HashSet<u32>,
 }
 
 static LIST_STATE: Mutex<Option<ListState>> = Mutex::new(None);
@@ -306,9 +324,14 @@ fn parse_list(text: &str) -> Stored {
             let f = w.next()?.to_string();
             let hash = u64::from_str_radix(w.next()?, 16).ok()?;
             let steps = w.next()?.strip_prefix('s')?.parse().ok()?;
-            let pcs = w
-                .map(|p| p.parse().ok())
-                .collect::<Option<HashSet<u32>>>()?;
+            // (A pc, or `a-b`: the pcs from a to b.)
+            let mut pcs = HashSet::new();
+            for p in w {
+                match p.split_once('-') {
+                    Some((a, b)) => pcs.extend(a.parse::<u32>().ok()?..=b.parse().ok()?),
+                    None => _ = pcs.insert(p.parse().ok()?),
+                }
+            }
             Some((f, (hash, steps, pcs)))
         })
         .collect()
@@ -323,7 +346,7 @@ fn with_list<R>(prog: &yavs_ir::Program, f: impl FnOnce(&mut ListState) -> R) ->
             .part(&yavs_llvm::program_digest(prog).to_le_bytes());
         let key = k.finish();
         let stored = match list_mode() {
-            ListMode::Read => crate::cache::store()
+            ListMode::Read | ListMode::Rec => crate::cache::store()
                 .and_then(|s| s.get(LIST, &key))
                 .map(|e| parse_list(&String::from_utf8_lossy(&e)))
                 .unwrap_or_default(),
@@ -333,6 +356,7 @@ fn with_list<R>(prog: &yavs_ir::Program, f: impl FnOnce(&mut ListState) -> R) ->
             key,
             stored,
             used: HashMap::new(),
+            built: HashSet::new(),
         }
     });
     f(st)
@@ -352,7 +376,8 @@ pub(crate) fn listed(
     f: &yavs_ir::Func,
 ) -> Option<std::rc::Rc<HashSet<u32>>> {
     let mode = list_mode();
-    if !matches!(mode, ListMode::Read | ListMode::All) || yavs_llvm::rt::tripped(id) {
+    if !matches!(mode, ListMode::Read | ListMode::Rec | ListMode::All) || yavs_llvm::rt::tripped(id)
+    {
         return None;
     }
     let pcs: HashSet<u32> = if mode == ListMode::All {
@@ -377,8 +402,14 @@ pub(crate) fn listed(
 /// read it adds what each function stepped to its line and drops the functions past their limit
 /// (made again in full, which the next run links, or compiles once): a block that runs a little in
 /// every run costs its compile at most once.
-fn list_flush() {
+fn list_flush(rt: Option<&yavs_interp::Runtime>) {
     let mode = list_mode();
+    // (`rec`: the program's list, also in a run that compiled nothing.)
+    if mode == ListMode::Rec
+        && let Some(rt) = rt
+    {
+        list_open(&rt.prog);
+    }
     let mut st = LIST_STATE.lock().unwrap_or_else(PoisonError::into_inner);
     let (Some(st), Some(store)) = (st.as_mut(), crate::cache::store()) else {
         return;
@@ -424,7 +455,7 @@ fn list_flush() {
             lines.sort();
             lines.join("\n") + "\n"
         }
-        ListMode::Read => {
+        ListMode::Read | ListMode::Rec => {
             // (Per function key: what this run stepped, and its limit.)
             let mut ran: HashMap<&str, (u64, u64)> = HashMap::new();
             for (&id, (key, limit)) in &st.used {
@@ -434,17 +465,108 @@ fn list_flush() {
                     e.0 = e.0.saturating_add(n);
                 }
             }
-            if ran.is_empty() {
+            let old = store.get(LIST, &st.key);
+            let old = old.as_deref().map(String::from_utf8_lossy);
+            let stepped = match (&old, ran.is_empty()) {
+                (Some(o), false) => add_steps(o, &ran),
+                (Some(o), true) => o.to_string(),
+                (None, _) => String::new(),
+            };
+            let text = match rt {
+                Some(rt) if mode == ListMode::Rec => {
+                    let (text, n) = recorded(&stepped, &rt.prog, rt.block_entries(), &st.built);
+                    RECORDED.store(n, std::sync::atomic::Ordering::Relaxed);
+                    text
+                }
+                _ => stepped,
+            };
+            if old.as_deref() == Some(text.as_str()) || (old.is_none() && text.is_empty()) {
                 return;
             }
-            let Some(e) = store.get(LIST, &st.key) else {
-                return;
-            };
-            add_steps(&String::from_utf8_lossy(&e), &ran)
+            text
         }
         ListMode::Off | ListMode::All => return,
     };
     store.put(LIST, &st.key, text.as_bytes());
+}
+
+/// `rec`: function `id` got compiled code in this run (no line from what the interpreter saw).
+pub(crate) fn note_built(prog: &yavs_ir::Program, id: yavs_ir::FuncId) {
+    with_list(prog, |st| st.built.insert(id.0));
+}
+
+/// The list `old` with the lines of the functions the interpreter ran all run (`entries`: per
+/// function, the pc of each op and whether it was entered; `built`: the functions with compiled
+/// code, left as they are): the pcs of the IR blocks none of whose ops was entered never ran, and
+/// a line already there keeps only the pcs both say never ran (none left: no line). Returns the
+/// list and how many lines it wrote, changed or dropped.
+fn recorded(
+    old: &str,
+    prog: &yavs_ir::Program,
+    entries: Vec<(yavs_ir::FuncId, Vec<(u32, bool)>)>,
+    built: &HashSet<u32>,
+) -> (String, usize) {
+    let mut lines: std::collections::BTreeMap<String, String> = old
+        .lines()
+        .filter_map(|l| Some((l.split(' ').next()?.to_string(), l.to_string())))
+        .collect();
+    let mut n = 0;
+    for (id, pcs) in entries {
+        let Some(f) = prog.func(id).filter(|_| !built.contains(&id.0)) else {
+            continue;
+        };
+        let (key, hash) = (func_key(prog, id), body_hash(prog, f));
+        // (A block with ops and none of them entered; one with no op of its own counts as run, and
+        // so does the first: a call may start past its ops, `Code::skip`.)
+        let mut never: Vec<u32> = f
+            .blocks
+            .iter()
+            .filter(|(_, b)| b.start > 0)
+            .filter(|(_, b)| {
+                let i = pcs.partition_point(|p| p.0 < b.start);
+                let ops = pcs[i..].iter().take_while(|p| p.0 < b.end);
+                ops.clone().next().is_some() && !ops.into_iter().any(|p| p.1)
+            })
+            .flat_map(|(_, b)| b.start..b.end)
+            .collect();
+        let mut steps = 0;
+        if let Some((_, (_, s, was))) = lines
+            .get(&key)
+            .and_then(|l| parse_list(l).into_iter().next())
+            .filter(|(_, (h, _, _))| *h == hash)
+        {
+            never.retain(|pc| was.contains(pc));
+            steps = s;
+        }
+        let line = (!never.is_empty()).then(|| list_line(&key, hash, steps, &never));
+        if lines.get(&key) != line.as_ref() {
+            n += 1;
+            match line {
+                Some(l) => lines.insert(key, l),
+                None => lines.remove(&key),
+            };
+        }
+    }
+    (lines.into_values().map(|l| l + "\n").collect(), n)
+}
+
+/// A line of the list: function key, hash, steps, then the pcs (sorted), runs of them as `a-b`.
+fn list_line(key: &str, hash: u64, steps: u64, pcs: &[u32]) -> String {
+    let mut l = format!("{key} {hash:x} s{steps}");
+    let mut i = 0;
+    while i < pcs.len() {
+        let mut j = i;
+        while j + 1 < pcs.len() && pcs[j + 1] == pcs[j] + 1 {
+            j += 1;
+        }
+        l += &if j > i {
+            format!(" {}-{}", pcs[i], pcs[j])
+        } else {
+            format!(" {}", pcs[i])
+        };
+        i = j + 1;
+    }
+    l
 }
 
 /// The list `old` with what this run stepped added to each line of `ran` (by function key: the
@@ -489,5 +611,16 @@ mod tests {
         let two = add_steps(&one, &ran);
         assert_eq!(two, "3 ab s80 4 9\nc1f 12 s7 2\n");
         assert_eq!(add_steps(&two, &ran), "c1f 12 s7 2\n");
+    }
+
+    /// `rec` writes runs of pcs as `a-b`; a line reads back as the pcs it names.
+    #[test]
+    fn runs_of_pcs_read_back_as_their_pcs() {
+        let l = list_line("7", 0xab, 3, &[2, 3, 4, 9, 11, 12]);
+        assert_eq!(l, "7 ab s3 2-4 9 11-12");
+        let want = HashSet::from([2, 3, 4, 9, 11, 12]);
+        assert_eq!(parse_list(&l)["7"], (0xab, 3, want));
+        let ran = HashMap::from([("7", (5, 100))]);
+        assert_eq!(add_steps(&(l + "\n"), &ran), "7 ab s8 2-4 9 11-12\n");
     }
 }

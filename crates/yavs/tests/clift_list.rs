@@ -115,6 +115,45 @@ fn a_wrong_list_is_made_again_in_full_and_leaves_the_list() {
     assert_eq!(leave.stdout, want);
 }
 
+/// `rec`: a run that compiles nothing writes the list from the blocks the interpreter entered, and
+/// a later run lowers them cheaply. From a whole run the list is right: nothing trips even at one
+/// stepped instruction per IR instruction (a block entry the interpreter does not note would). From
+/// a run stopped early it is wrong for `late`, as above: the later run makes it again in full and
+/// the run after trips nothing.
+#[test]
+fn an_interpreted_run_writes_the_list() {
+    for (stop, wrong) in [(None, false), (Some("--stop-time=4us"), true)] {
+        let d = tempdir(&format!("clift_list_rec_{wrong}"));
+        std::fs::write(d.join("t.vhd"), SRC).expect("write");
+        let a = Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["analyze", "--work=work:work", "t.vhd"])
+            .current_dir(&d)
+            .output()
+            .expect("analyze");
+        assert!(a.status.success(), "{a:?}");
+        let want = yavs(&d, "off", &["--tier=interp"]).stdout;
+        // (Nothing compiled: every function is over the size limit.)
+        let first: Vec<&str> = ["--tier=auto", "--tier-max-size=1"]
+            .into_iter()
+            .chain(stop)
+            .collect();
+        let r1 = yavs(&d, "rec", &first);
+        assert_eq!(counter(&r1, "clift_listed"), 0, "{r1:?}");
+        assert!(counter(&r1, "clift_recorded") > 0, "{r1:?}");
+        let r2 = yavs(&d, "rec", &["--tier=auto"]);
+        assert_eq!(r2.stdout, want);
+        assert!(counter(&r2, "clift_listed") > 0, "{r2:?}");
+        if wrong {
+            assert!(counter(&r2, "clift_again") > 0, "{r2:?}");
+        } else {
+            assert_eq!(counter(&r2, "clift_tripped"), 0, "{r2:?}");
+        }
+        let r3 = yavs(&d, "rec", &["--tier=auto", "--threads=4"]);
+        assert_eq!(r3.stdout, want);
+        assert_eq!(counter(&r3, "clift_tripped"), 0, "{r3:?}");
+    }
+}
+
 /// Copies of one process with every block listed: the cheap code names the copy's id (the step
 /// counter's), so two copies of one body must not share a pre-key. Debug builds check every
 /// pre-key hit against the lowering and abort on a difference.

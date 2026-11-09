@@ -1380,6 +1380,9 @@ pub(crate) struct Code {
     pub skip: u32,
     /// The runs of drives of the `Op::DriveRun`s.
     pub runs: Vec<DriveRun>,
+    /// Per op, set when the loop enters it while the runtime records block entries
+    /// (`Runtime::record_blocks`); made at the first such entry.
+    pub entered: std::sync::OnceLock<Box<[std::sync::atomic::AtomicU8]>>,
 }
 
 /// A run of scalar drives, each `[Stmt?, SigVal, LoadSlot, Aff1?, LSetDrive]`, in consecutive ops.
@@ -5819,6 +5822,7 @@ impl Code {
             trace: std::env::var_os("YAVS_DUMPIR").is_some(),
             skip: NONE,
             runs,
+            entered: Default::default(),
         }
     }
 }

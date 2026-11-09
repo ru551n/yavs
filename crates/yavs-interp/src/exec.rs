@@ -1994,7 +1994,11 @@ impl Machine {
                     if !cont && let Some(fr) = self.frames.first() {
                         rt.native.activated(fr.func);
                     }
-                    let r = self.exec_fast::<true, false>(&rt, Some(&**tier), None, ctx, 0);
+                    let r = if rt.blocks.load(Ordering::Relaxed) {
+                        self.exec_fast::<true, false, true>(&rt, Some(&**tier), None, ctx, 0)
+                    } else {
+                        self.exec_fast::<true, false, false>(&rt, Some(&**tier), None, ctx, 0)
+                    };
                     slot.store(0, Ordering::Relaxed);
                     r
                 } else {
@@ -2002,10 +2006,14 @@ impl Machine {
                     if any && let Some(fr) = self.frames.first() {
                         rt.native.activated(fr.func);
                     }
-                    self.exec_fast::<false, true>(&rt, None, Some(slot), ctx, 0)
+                    if rt.blocks.load(Ordering::Relaxed) {
+                        self.exec_fast::<false, true, true>(&rt, None, Some(slot), ctx, 0)
+                    } else {
+                        self.exec_fast::<false, true, false>(&rt, None, Some(slot), ctx, 0)
+                    }
                 }
             }
-            None => self.exec_fast::<false, false>(&rt, None, None, ctx, 0),
+            None => self.exec_fast::<false, false, false>(&rt, None, None, ctx, 0),
         };
         self.rt_run = Some(rt);
         match r {
@@ -5552,16 +5560,24 @@ impl Machine {
         if !DEBUG {
             return match rt.tier.get() {
                 Some(tier) if self.tiered(rt) => {
-                    let r = self.exec_fast::<true, false>(rt, Some(&**tier), None, ctx, base);
+                    let r = if rt.blocks.load(Ordering::Relaxed) {
+                        self.exec_fast::<true, false, true>(rt, Some(&**tier), None, ctx, base)
+                    } else {
+                        self.exec_fast::<true, false, false>(rt, Some(&**tier), None, ctx, base)
+                    };
                     // Nothing interpreted on this thread until the next run.
                     crate::slot().store(0, Ordering::Relaxed);
                     r
                 }
                 Some(_) => {
                     let slot = crate::slot();
-                    self.exec_fast::<false, true>(rt, None, Some(slot), ctx, base)
+                    if rt.blocks.load(Ordering::Relaxed) {
+                        self.exec_fast::<false, true, true>(rt, None, Some(slot), ctx, base)
+                    } else {
+                        self.exec_fast::<false, true, false>(rt, None, Some(slot), ctx, base)
+                    }
                 }
-                None => self.exec_fast::<false, false>(rt, None, None, ctx, base),
+                None => self.exec_fast::<false, false, false>(rt, None, None, ctx, base),
             };
         }
         loop {
@@ -5791,7 +5807,7 @@ impl Machine {
     /// compiled tier: the top frame's function runs from its ops until a call, a return or a
     /// suspension, which are handled here as in `exec_in`.
     #[inline(always)]
-    fn exec_fast<const TIER: bool, const W: bool>(
+    fn exec_fast<const TIER: bool, const W: bool, const B: bool>(
         &mut self,
         rt: &Runtime,
         tier: Option<&dyn crate::Tier>,
@@ -5822,7 +5838,7 @@ impl Machine {
             let pre = rt
                 .pre(func, f)
                 .ok_or_else(|| ice_f!("no function {func}"))?;
-            match self.run_ops::<TIER, W>(rt, tier, func, f, &pre.code, top, base, ctx)? {
+            match self.run_ops::<TIER, W, B>(rt, tier, func, f, &pre.code, top, base, ctx)? {
                 Flow::Call => {}
                 Flow::Ret(v) => {
                     let done = self
@@ -5844,7 +5860,7 @@ impl Machine {
                 Flow::Retier => {
                     if !TIER && let Some(t) = rt.tier.get() {
                         rt.native.retiers.fetch_add(1, Ordering::Relaxed);
-                        return self.exec_fast::<true, false>(rt, Some(&**t), None, ctx, base);
+                        return self.exec_fast::<true, false, B>(rt, Some(&**t), None, ctx, base);
                     }
                 }
                 // A jump to the block the machine pauses at.
@@ -5863,7 +5879,7 @@ impl Machine {
     /// interpreter goes on at the op of the IR pc it returns (stepping IR instructions inside
     /// a fused op).
     #[allow(clippy::too_many_arguments)]
-    fn run_ops<const TIER: bool, const W: bool>(
+    fn run_ops<const TIER: bool, const W: bool, const B: bool>(
         &mut self,
         rt: &Runtime,
         tier: Option<&dyn crate::Tier>,
@@ -5942,8 +5958,22 @@ impl Machine {
         bind!();
         // Run compiled code from op `k` when the function has some (`native`): at the start,
         // after a jump and after an op compiled code leaves to the interpreter.
+        // `B` (`Runtime::record_blocks`): note that op `k` was entered.
+        macro_rules! mark {
+            () => {
+                if B {
+                    let e = code
+                        .entered
+                        .get_or_init(|| (0..code.ops.len()).map(|_| Default::default()).collect());
+                    if let Some(e) = e.get(k) {
+                        e.store(1, Ordering::Relaxed);
+                    }
+                }
+            };
+        }
         macro_rules! enter {
             () => {
+                mark!();
                 // Not while the machine pauses at a block (`prestart`): compiled code would jump
                 // past it.
                 if TIER
@@ -7721,6 +7751,7 @@ impl Machine {
                     stmt,
                 } => {
                     k = at as usize;
+                    mark!();
                     if stmt {
                         self.end_stmt();
                         k += 1;
@@ -7748,6 +7779,7 @@ impl Machine {
                         return Ok(Flow::Next);
                     }
                     k = at as usize;
+                    mark!();
                     if stmt {
                         self.end_stmt();
                         k += 1;

@@ -544,8 +544,8 @@ Compiled tiers: Cranelift
      - unset
      - ``run``
    * - ``YAVS_CLIFT_LIST``
-     - Measurement, ``--tier=auto``: a list of the blocks of each function that never ran, kept in the work library's cache per design. ``write`` makes this run a coverage run: its compiled code records the blocks it runs (and is not kept), and at the end the blocks that never ran replace the list. ``on``: compiled code made from now on lowers the listed blocks cheaply (as ``YAVS_CLIFT_CHEAP`` does in frame-mode code; native-frame variants only lay them out as cold code), unless full code of the function is in the cache already; a function whose listed blocks step more than ``YAVS_CLIFT_AGAIN`` instructions per IR instruction, in one run or in several together, is compiled again in full and leaves the list. ``all`` lists every block (a test mode).
-     - ``write``, ``on``, ``all``, ``off``
+     - Measurement, ``--tier=auto``: a list of the blocks of each function that never ran, kept in the work library's cache per design. ``write`` makes this run a coverage run: its compiled code records the blocks it runs (and is not kept), and at the end the blocks that never ran replace the list. ``on``: compiled code made from now on lowers the listed blocks cheaply (as ``YAVS_CLIFT_CHEAP`` does in frame-mode code; native-frame variants only lay them out as cold code), unless full code of the function is in the cache already; a function whose listed blocks step more than ``YAVS_CLIFT_AGAIN`` instructions per IR instruction, in one run or in several together, is compiled again in full and leaves the list. ``rec``: as ``on``, and an ordinary run writes the list: the interpreter notes the blocks it enters, and a function that stayed interpreted the whole run gets the blocks it never entered (one already listed keeps only the blocks no run entered); a function compiled during the run gets no line, since its full code is in the cache. ``all`` lists every block (a test mode).
+     - ``write``, ``on``, ``rec``, ``all``, ``off``
      - unset (``off``)
      - ``run``
    * - ``YAVS_CLIFT_LIST_NATIVE``

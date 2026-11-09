@@ -167,7 +167,7 @@ fn the_dump_lists_every_block() {
     on();
     let (prog, _) = guarded("cov_dump");
     yavs_clift::compile(&prog, usize::MAX).unwrap();
-    yavs_clift::blockcov_write();
+    yavs_clift::blockcov_write(None);
     let file = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
         .join(format!("cov-{}.tsv", std::process::id()));
     let text = std::fs::read_to_string(file).unwrap();

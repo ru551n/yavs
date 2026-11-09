@@ -17,5 +17,5 @@ fn the_switch_off_lists_no_body() {
     let prog = pb.finish().unwrap();
     yavs_clift::compile(&prog, usize::MAX).unwrap();
     assert!(yavs_clift::blockcov_snapshot().is_empty());
-    yavs_clift::blockcov_write();
+    yavs_clift::blockcov_write(None);
 }

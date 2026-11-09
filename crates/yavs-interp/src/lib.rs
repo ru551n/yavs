@@ -1493,6 +1493,8 @@ pub struct Runtime {
     pub(crate) replay: std::sync::atomic::AtomicBool,
     /// This runtime's mark in the sampling slots (`sampler`).
     pub(crate) id: u32,
+    /// The fast loop notes the ops it enters (`record_blocks`).
+    pub(crate) blocks: std::sync::atomic::AtomicBool,
     /// Which functions have compiled code (`set_tier` and the tier keep it).
     native: Arc<NativeFlags>,
     /// Live registers at the safepoints of each function a collection met (`roots`).
@@ -1996,6 +1998,7 @@ impl Runtime {
             tier: Default::default(),
             direct: Default::default(),
             replay: Default::default(),
+            blocks: Default::default(),
             id: {
                 static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
                 NEXT.fetch_add(1, Ordering::Relaxed)
@@ -2110,6 +2113,41 @@ impl Runtime {
             p.native = self.native.flagged(id.0).into();
             p
         }))
+    }
+
+    /// From now on the fast loop notes which ops of each function it enters (a lab switch of
+    /// the compiled tier: `YAVS_CLIFT_LIST=rec`).
+    pub fn record_blocks(&self) {
+        self.blocks.store(true, Ordering::Relaxed);
+    }
+
+    /// With `record_blocks`: per function noted that the loop entered, the IR pc of each of its
+    /// ops (sorted) and whether the loop entered an op there, at a jump, a call, a return or a
+    /// resumption. An IR block with no op of its own (a jump the ops go past) is not seen.
+    pub fn block_entries(&self) -> Vec<(FuncId, Vec<(u32, bool)>)> {
+        self.pre
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| {
+                let c = &p.get()?.code;
+                let mut pcs: Vec<(u32, bool)> =
+                    c.at.iter()
+                        .zip(c.entered.get()?.iter())
+                        .map(|(&pc, e)| (pc, e.load(Ordering::Relaxed) != 0))
+                        .collect();
+                if !pcs.iter().any(|p| p.1) {
+                    return None;
+                }
+                pcs.sort_unstable();
+                // (Ops at one pc: entered if one is.)
+                pcs.dedup_by(|later, kept| {
+                    let same = later.0 == kept.0;
+                    kept.1 |= same && later.1;
+                    same
+                });
+                Some((FuncId(i as u32), pcs))
+            })
+            .collect()
     }
 
     /// The entries of `func` ran out (`NativeFlags::tick`): ask the tier, unless it is a process that

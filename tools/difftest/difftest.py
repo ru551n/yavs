@@ -89,7 +89,14 @@ YAVS_CLIFT_CHEAPALT = "export YAVS_CLIFT_CHEAP=alt; " + YAVS_CLIFT
 # compiles listed, a function made again in full once it steps one instruction per IR instruction), so the step
 # counter, the trip and the second compile run on every test.
 YAVS_CLIFT_LISTALL = "export YAVS_CLIFT_LIST=all YAVS_CLIFT_AGAIN=1; " + YAVS_CLIFT_COUNT1
-TEMPLATES = {"yavs-clift-cheap": YAVS_CLIFT_CHEAP, "yavs-clift-cheapalt": YAVS_CLIFT_CHEAPALT, "yavs-clift-listall": YAVS_CLIFT_LISTALL, "yavs-clift-count1": YAVS_CLIFT_COUNT1, "yavs-clift-check": YAVS_CLIFT_CHECK, "yavs": YAVS, "yavs-interp": YAVS_INTERP, "yavs-auto": YAVS_AUTO, "yavs-auto-warm": YAVS_AUTO_WARM, "yavs-clift": YAVS_CLIFT, "yavs-clift-auto": YAVS_CLIFT_AUTO}
+# The never-run list written by ordinary runs (`YAVS_CLIFT_LIST=rec`): a first pass at the default policy (in its own
+# directory, output dropped but its counters) notes the blocks the interpreter enters, a second compiles every function
+# at its first call with the list and makes one again in full once it steps one instruction per IR instruction: a
+# block entry the first pass missed trips.
+YAVS_CLIFT_LISTREC = ("export YAVS_CLIFT_LIST=rec; " + YAVS_AUTO[:_ELAB] + "mkdir w1; (cd w1 && " + YAVS_AUTO[_ELAB:]
+                      + ") 2>&1 | grep '^counters: ' >&2; export YAVS_AUTO_COUNT=1 YAVS_AUTO_GATE=0 YAVS_AUTO_SYNC=1 YAVS_CLIFT_AGAIN=1; "
+                      + YAVS_AUTO[_ELAB:])
+TEMPLATES = {"yavs-clift-listrec": YAVS_CLIFT_LISTREC, "yavs-clift-cheap": YAVS_CLIFT_CHEAP, "yavs-clift-cheapalt": YAVS_CLIFT_CHEAPALT, "yavs-clift-listall": YAVS_CLIFT_LISTALL, "yavs-clift-count1": YAVS_CLIFT_COUNT1, "yavs-clift-check": YAVS_CLIFT_CHECK, "yavs": YAVS, "yavs-interp": YAVS_INTERP, "yavs-auto": YAVS_AUTO, "yavs-auto-warm": YAVS_AUTO_WARM, "yavs-clift": YAVS_CLIFT, "yavs-clift-auto": YAVS_CLIFT_AUTO}
 # yavs repeats analysis warnings when it loads the units: W1904 (a shared variable of a
 # non-protected type) and W1302 (a 1993 homograph pair) are the warnings `relaxed` tests are about.
 _RX = "--relaxed -Wno-W1904 -Wno-W1325 -Wno-W1501 -Wno-W1302"

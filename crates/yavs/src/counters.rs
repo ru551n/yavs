@@ -19,7 +19,7 @@ pub fn start() {
 pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
     // (A measurement switch of the Cranelift tier, `YAVS_CLIFT_BLOCKCOV`: writes the blocks that ran.)
     #[cfg(feature = "clift")]
-    yavs_clift::blockcov_write();
+    yavs_clift::blockcov_write(rt);
     if std::env::var_os("YAVS_COUNTERS").is_none() {
         return;
     }
@@ -152,10 +152,11 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
     // much, and of them the ones made again in full.
     #[cfg(feature = "clift")]
     {
-        let (listed, tripped, again) = yavs_clift::list_stats();
+        let (listed, tripped, again, recorded) = yavs_clift::list_stats();
         rows.push(("clift_listed", listed as u64));
         rows.push(("clift_tripped", tripped as u64));
         rows.push(("clift_again", again as u64));
+        rows.push(("clift_recorded", recorded as u64));
     }
     for (name, v) in rows {
         eprintln!("counters: {name}={v}");

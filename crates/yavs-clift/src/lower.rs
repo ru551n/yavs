@@ -1,4 +1,4 @@
-//! `yavs-ir` to Cranelift: the same compiled-code contract as the LLVM tier (`yavs-llvm`
+//! `yavs-ir` to Cranelift: the same compiled-code contract as the LLVM tier (`yavs-rt`
 //! `rt.rs`): `fn(env, regs, mem, pc) -> u32` working on the registers of the interpreter frame,
 //! entering at `pc`, executing a subset of the instructions itself and every other instruction
 //! in place through the `yavs_rt_step` callback. Compiled code never reports an error itself: a
@@ -31,11 +31,11 @@ use yavs_ir::{
     AddrSpace, BoolOp, CheckKind, CmpOp, FOp, FUnOp, Func, FuncId, FuncKind, Inst, IntOp, IntUnOp,
     Program, Reg, Width,
 };
-use yavs_llvm::native::{
+use yavs_rt::native::{
     Arg, call_fits, closed_frame, ieee_fast, ieee_layout, native_set, uniform_regs,
 };
-use yavs_llvm::regs::Live;
-use yavs_llvm::rt::*;
+use yavs_rt::regs::Live;
+use yavs_rt::rt::*;
 
 use crate::cache::{HashBytes, Name, Pre, PreInputs, body_key};
 
@@ -107,9 +107,9 @@ fn symbol(prog: &Program, kind: &str, id: FuncId) -> String {
     let label = prog.label(id);
     match prog.copy_tag(id).filter(|_| prog.is_sub_copy(id)) {
         Some(t) => {
-            yavs_llvm::perfmap::symbol(kind, prog.base_of(id).0, &format!("c{t:016x}_{label}"))
+            yavs_rt::perfmap::symbol(kind, prog.base_of(id).0, &format!("c{t:016x}_{label}"))
         }
-        None => yavs_llvm::perfmap::symbol(kind, id.0, &label),
+        None => yavs_rt::perfmap::symbol(kind, id.0, &label),
     }
 }
 
@@ -786,7 +786,7 @@ impl Jit {
         }
         // Made with listed blocks that then ran too much: made again in full, once.
         let again = self.lists.get(&(id, false)).is_some_and(Option::is_some)
-            && yavs_llvm::rt::tripped(id)
+            && yavs_rt::rt::tripped(id)
             && !self.redone.contains(&id);
         if let Some(&c) = self.frames.get(&id).filter(|_| !again) {
             return Ok((c, Vec::new()));
@@ -825,7 +825,7 @@ impl Jit {
         self.missed
     }
 
-    /// The symbol `fid` was declared under (`yavs_llvm::perfmap::symbol`).
+    /// The symbol `fid` was declared under (`yavs_rt::perfmap::symbol`).
     fn symbol_of(&self, fid: ClifId) -> String {
         let d = self.module.declarations().get_function_decl(fid);
         d.linkage_name(fid).into_owned()
@@ -1201,7 +1201,7 @@ impl Jit {
             && crate::blockcov::list_native_cheap()
             && let Some(l) = &list
         {
-            yavs_llvm::rt::note_cheap_leaves(id, l.iter().copied(), f.code.len() as u32);
+            yavs_rt::rt::note_cheap_leaves(id, l.iter().copied(), f.code.len() as u32);
         }
         self.lists.insert((id, native), list);
         let check = crate::cache::check();
@@ -1889,7 +1889,7 @@ impl Jit {
             for (name, id, size, map) in &list {
                 let at = self.module.get_finalized_function(*id) as usize;
                 if !jit_writes {
-                    yavs_llvm::perfmap::append(at, *size, name);
+                    yavs_rt::perfmap::append(at, *size, name);
                 }
                 if let Some(d) = &dir {
                     // SAFETY: the finalized function owns `size` bytes of code at `at`.
@@ -2698,7 +2698,7 @@ fn gen_func(
         }
     }
     // Address spaces that hold at the start of an IR block whatever path reached it.
-    let space_facts = yavs_llvm::regs::spaces(prog, f, &leader);
+    let space_facts = yavs_rt::regs::spaces(prog, f, &leader);
     for (i, inst) in f.code.iter().enumerate() {
         if resumes(prog, f, inst) {
             leader[i + 1] = true;
@@ -3196,10 +3196,10 @@ fn gen_func(
                                 && x.is_none()
                             {
                                 *x = Some(match sp {
-                                    yavs_llvm::regs::Sp::Inst => Known::InstAny,
-                                    yavs_llvm::regs::Sp::Temp => Known::Temp,
-                                    yavs_llvm::regs::Sp::Heap => Known::Heap(None),
-                                    yavs_llvm::regs::Sp::Likely => Known::LikelyHeap,
+                                    yavs_rt::regs::Sp::Inst => Known::InstAny,
+                                    yavs_rt::regs::Sp::Temp => Known::Temp,
+                                    yavs_rt::regs::Sp::Heap => Known::Heap(None),
+                                    yavs_rt::regs::Sp::Likely => Known::LikelyHeap,
                                 });
                             }
                         }
@@ -3498,10 +3498,7 @@ fn gen_func(
                         g.st(dst, v);
                     }
                     // (`**` on a native frame, as the other generator.)
-                    None if g.nat.is_some()
-                        && yavs_llvm::count_rule_on()
-                        && xstep_wide(f, &inst) =>
-                    {
+                    None if g.nat.is_some() && yavs_rt::count_rule_on() && xstep_wide(f, &inst) => {
                         g.native_step(pc, &inst, f)
                     }
                     None => g.step(pc, &inst),
@@ -3826,7 +3823,7 @@ fn gen_func(
                     g.join(join);
                 }
                 // (A layout from a run-time descriptor on a native frame, as the other generator.)
-                None if g.nat.is_some() && yavs_llvm::count_rule_on() && xstep_wide(f, &inst) => {
+                None if g.nat.is_some() && yavs_rt::count_rule_on() && xstep_wide(f, &inst) => {
                     g.native_step(pc, &inst, f)
                 }
                 None => g.step(pc, &inst),
@@ -5794,7 +5791,7 @@ impl Gen<'_> {
     /// what it leaves (a fault, an overlap, memory it does not reach, nothing to gain) is the
     /// generic code after this, which also runs the last iteration.
     fn eloop(&mut self, l: &yavs_interp::ElemLoop) -> Result<(), String> {
-        if let Some(inv) = yavs_llvm::eloop::invariant_steps(&l.prog, l.inputs.len())
+        if let Some(inv) = yavs_rt::eloop::invariant_steps(&l.prog, l.inputs.len())
             && std::env::var_os("YAVS_LLVM_ELOOP_HELPER").is_none()
         {
             self.eloop_plan(l, &inv);
@@ -5854,7 +5851,7 @@ impl Gen<'_> {
     /// The iterations of an element loop but the last, planned and done in the code itself
     /// (#757): the steps of `yavs_interp::elem_loops` as straight-line code at the loop's head,
     /// each value at the first and the last iteration and its change per iteration, with the
-    /// checks of `yavs_llvm::eloop::run`. A failed check or memory the objects do not hold goes to the
+    /// checks of `yavs_rt::eloop::run`. A failed check or memory the objects do not hold goes to the
     /// generic code, nothing written.
     fn eloop_plan(&mut self, l: &yavs_interp::ElemLoop, inv: &[bool]) {
         use yavs_interp::eloop::{ADD, ADDR, GET, IND, KONST, LD, LEN, MOV, MUL, POS, SET, SUB};
@@ -6171,7 +6168,7 @@ impl Gen<'_> {
     }
 
     /// A copy within one plane block each side, the same direction, the blocks apart: the plane
-    /// copy of `yavs_llvm::eloop::exec` inline, on to `done` with `m`; anything else goes on in
+    /// copy of `yavs_rt::eloop::exec` inline, on to `done` with `m`; anything else goes on in
     /// a new block.
     #[allow(clippy::too_many_arguments)]
     fn eloop_short(
@@ -7726,7 +7723,7 @@ impl Gen<'_> {
     }
 }
 
-/// A light `numeric_std` native computed in place (`yavs_llvm::native::ieee_fast`): the
+/// A light `numeric_std` native computed in place (`yavs_rt::native::ieee_fast`): the
 /// native's own fast path (`ieee::small`) on operands of 1 to 64 elements without a metavalue,
 /// as the LLVM generator computes it (`Gen::ieee_fast`); any other operand, and every case that
 /// warns or fails, runs the native.
@@ -11616,7 +11613,7 @@ pub fn compile(prog: &Program, max_size: usize) -> Result<crate::ClifTier, Error
     }
     let mut funcs = vec![None; prog.funcs.len()];
     for (id, cid, nregs) in ids {
-        let lean = prog.func(id).is_some_and(yavs_llvm::regs::no_table);
+        let lean = prog.func(id).is_some_and(yavs_rt::regs::no_table);
         funcs[id.0 as usize] = Some((jit.entry(cid), nregs, lean));
     }
     let mut interpreted: Vec<(String, usize)> = kinds.into_iter().collect();

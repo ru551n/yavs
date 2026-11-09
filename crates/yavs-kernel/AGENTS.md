@@ -12,7 +12,7 @@ the IR plugs in, error handling, open questions); read it before editing.
   delta limit, **parallel process evaluation with a deterministic commit**, and `SimControl`
   (run/step/interrupt, observers on an event bus, phase callbacks).
 - Does not: know the IR, VHDL types or the heap. Processes are opaque `Process` trait objects
-  (`yavs-interp`; compiled code of `yavs-llvm` and `yavs-clift` runs inside `yavs-interp`'s process); values are bytes or bit-plane logic described by
+  (`yavs-interp`; compiled code of `yavs-rt` and `yavs-clift` runs inside `yavs-interp`'s process); values are bytes or bit-plane logic described by
   `SignalType`. It does not print anything (the CLI's `Observer` prints reports).
 - Depends on: `yavs-logic`, `yavs-prefetch` (the batch loop's prefetch hint, #766), `rayon`. Called by: `yavs-interp` (implements `Process`, uses `Ctx`),
   `yavs-ir` (types like `StmtId`), `yavs-lower`, `yavs-elab` (`Builder`), `yavs` (`Config`,

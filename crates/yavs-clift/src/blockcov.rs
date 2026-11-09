@@ -260,7 +260,7 @@ pub(crate) static AGAIN: std::sync::atomic::AtomicUsize = std::sync::atomic::Ato
 pub fn list_stats() -> (usize, usize, usize) {
     (
         LISTED.load(std::sync::atomic::Ordering::Relaxed),
-        yavs_llvm::rt::tripped_all().len(),
+        yavs_rt::rt::tripped_all().len(),
         AGAIN.load(std::sync::atomic::Ordering::Relaxed),
     )
 }
@@ -320,7 +320,7 @@ fn with_list<R>(prog: &yavs_ir::Program, f: impl FnOnce(&mut ListState) -> R) ->
     let st = st.get_or_insert_with(|| {
         let mut k = yavs_cache::KeyBuilder::new(LIST);
         k.text(&yavs_ir::opt::fingerprint())
-            .part(&yavs_llvm::program_digest(prog).to_le_bytes());
+            .part(&yavs_rt::program_digest(prog).to_le_bytes());
         let key = k.finish();
         let stored = match list_mode() {
             ListMode::Read => crate::cache::store()
@@ -352,7 +352,7 @@ pub(crate) fn listed(
     f: &yavs_ir::Func,
 ) -> Option<std::rc::Rc<HashSet<u32>>> {
     let mode = list_mode();
-    if !matches!(mode, ListMode::Read | ListMode::All) || yavs_llvm::rt::tripped(id) {
+    if !matches!(mode, ListMode::Read | ListMode::All) || yavs_rt::rt::tripped(id) {
         return None;
     }
     let pcs: HashSet<u32> = if mode == ListMode::All {
@@ -360,7 +360,7 @@ pub(crate) fn listed(
     } else {
         let key = func_key(prog, id);
         let hash = body_hash(prog, f);
-        let limit = yavs_llvm::rt::cheap_limit(f.code.len() as u32);
+        let limit = yavs_rt::rt::cheap_limit(f.code.len() as u32);
         let pcs = with_list(prog, |st| {
             st.stored
                 .get(&key)
@@ -428,7 +428,7 @@ fn list_flush() {
             // (Per function key: what this run stepped, and its limit.)
             let mut ran: HashMap<&str, (u64, u64)> = HashMap::new();
             for (&id, (key, limit)) in &st.used {
-                let n = yavs_llvm::rt::cheap_steps(yavs_ir::FuncId(id));
+                let n = yavs_rt::rt::cheap_steps(yavs_ir::FuncId(id));
                 if n > 0 {
                     let e = ran.entry(key.as_str()).or_insert((0, *limit));
                     e.0 = e.0.saturating_add(n);

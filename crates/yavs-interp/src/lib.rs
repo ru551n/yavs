@@ -404,7 +404,7 @@ fn direct_dyn(
     }
 }
 
-/// A compiled tier for some functions of a program (the LLVM tier in `yavs-llvm`).
+/// A compiled tier for some functions of a program (the LLVM tier in `yavs-rt`).
 ///
 /// Compiled code runs a function on the registers of its interpreter frame and leaves
 /// everything it does not lower itself to the interpreter: it calls `step` to execute one

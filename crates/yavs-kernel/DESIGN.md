@@ -330,7 +330,7 @@ process itself between instructions (#355). Protected-type locks are never held 
 
 ## How the IR plugs in
 
-The interpreter implements it; compiled code (`yavs-llvm`, `yavs-clift`) runs inside the interpreter's process object, not as separate `Process` implementations:
+The interpreter implements it; compiled code (`yavs-rt`, `yavs-clift`) runs inside the interpreter's process object, not as separate `Process` implementations:
 
 ```rust
 pub trait Process: Send {

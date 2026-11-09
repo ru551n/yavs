@@ -1,14 +1,13 @@
-# AGENTS.md: yavs-llvm
+# AGENTS.md: yavs-rt
 
-Read the root `AGENTS.md` first. This file is for an agent about to change `crates/yavs-llvm`.
+Read the root `AGENTS.md` first. This file is for an agent about to change `crates/yavs-rt`.
 
 ## 1. Purpose and boundaries
 
-- The **runtime of the compiled tier**. The LLVM tier this crate was written for (LLVM 21, ORC
-  LLJIT, `--tier=llvm` and `--tier=auto3`) was removed on 2026-11-08 (user decision,
-  `docs/decisions.md` "LLVM tier removed"); the Cranelift tier (`yavs-clift`, feature `clift`)
-  is the compiled tier and runs on what stayed here. The crate keeps its name and paths until a
-  rename is decided.
+- The **runtime of the compiled tier**. It was `yavs-llvm` until 2026-11-10: the LLVM tier it was
+  written for (LLVM 21, ORC LLJIT, `--tier=llvm` and `--tier=auto3`) was removed on 2026-11-08 (user
+  decision, `docs/decisions.md` "LLVM tier removed"). The Cranelift tier (`yavs-clift`, feature
+  `clift`) is the compiled tier and runs on this crate.
 - What stays: `rt.rs` (the frame view `Mem`, the `yavs_rt_*` host callbacks compiled code calls,
   `enter`/`call`, the per-function analyses the lowering uses), `native.rs` (which functions run on
   native frames), `regs.rs` (frame-mode analyses), `eloop.rs` (element loops), `generator.rs` (the
@@ -143,8 +142,8 @@ Module-local decisions go in this section in the same commit (root `AGENTS.md` r
 ## 5. How to work here
 
 ```sh
-CARGO_BUILD_JOBS=6 cargo test -p yavs-llvm                       # the policy and runtime unit tests
-CARGO_BUILD_JOBS=6 cargo test -p yavs-llvm --features gc-stress  # with a collection at every safepoint (#500)
+CARGO_BUILD_JOBS=6 cargo test -p yavs-rt                       # the policy and runtime unit tests
+CARGO_BUILD_JOBS=6 cargo test -p yavs-rt --features gc-stress  # with a collection at every safepoint (#500)
 cargo test -p yavs-clift -p yavs --features clift                # the compiled tier on this runtime
 cargo build --release -p yavs --features clift,table-check       # a release yavs that panics when a lean activation reaches the object table (#766)
 ```

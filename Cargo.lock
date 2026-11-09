@@ -2044,7 +2044,7 @@ dependencies = [
  "yavs-kernel",
  "yavs-lib",
  "yavs-lint",
- "yavs-llvm",
+ "yavs-rt",
  "yavs-sem",
  "yavs-std",
  "yavs-syntax",
@@ -2078,7 +2078,7 @@ dependencies = [
  "yavs-interp",
  "yavs-ir",
  "yavs-kernel",
- "yavs-llvm",
+ "yavs-rt",
 ]
 
 [[package]]
@@ -2211,18 +2211,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "yavs-llvm"
-version = "0.18.0"
-dependencies = [
- "tempfile",
- "yavs-cache",
- "yavs-diag",
- "yavs-interp",
- "yavs-ir",
- "yavs-kernel",
-]
-
-[[package]]
 name = "yavs-logic"
 version = "0.18.0"
 dependencies = [
@@ -2252,6 +2240,18 @@ dependencies = [
 [[package]]
 name = "yavs-prefetch"
 version = "0.18.0"
+
+[[package]]
+name = "yavs-rt"
+version = "0.18.0"
+dependencies = [
+ "tempfile",
+ "yavs-cache",
+ "yavs-diag",
+ "yavs-interp",
+ "yavs-ir",
+ "yavs-kernel",
+]
 
 [[package]]
 name = "yavs-sem"

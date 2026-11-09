@@ -53,8 +53,8 @@ ownership, commit identity, shared-host limits) do not apply to them.
 | `crates/yavs-dap` | Debug Adapter Protocol server (`yavs run --dap`) |
 | `crates/yavs-cov` | Code coverage: counters to a mergeable database, text, HTML and Cobertura reports |
 | `crates/yavs-lint` | `yavs lint`: rules over the analysed HIR, certainty classes, configuration, waivers, reports |
-| `crates/yavs-llvm` | The runtime of the compiled tier: tier-up policy (`auto`), host functions of compiled code (`rt`), native-frame loop, run-to-run profile, perf map. The LLVM tier it was named for was removed (user, 2026-11-08); the name stays until a rename is decided |
-| `crates/yavs-clift` | Cranelift tier (#481), behind the `clift` feature (off by default; the compiled tier of the release archives), on the runtime of `yavs-llvm` |
+| `crates/yavs-rt` | The runtime of the compiled tier: tier-up policy (`auto`), host functions of compiled code (`rt`), native-frame loop, run-to-run profile, perf map. Called `yavs-llvm` until 2026-11-10 (the LLVM tier it was named for was removed on 2026-11-08) |
+| `crates/yavs-clift` | Cranelift tier (#481), behind the `clift` feature (off by default; the compiled tier of the release archives), on the runtime of `yavs-rt` |
 | `crates/yavs` | The `yavs` binary |
 | `lib/` | Vendored IEEE std/ieee sources (2008, 2019), patched only via `tools/derive_libs.py` |
 | `tests/diag/` | Rendered-diagnostic snapshots; `tests/diag/sem/` negative suite with `-- expect:` headers |
@@ -289,7 +289,7 @@ cargo test -p yavs --features clift --test perf                  # plus the comp
   has three guards. (1) The decided path of every op of `yavs_ir::ieee::parse`:
   `crates/yavs-interp/tests/common/ieee_paths.rs` `row` (one-word path in the interpreter,
   computed in place by compiled code), checked against `lookup_fast` (`yavs-interp`), `ieee_layout`
-  (`yavs-llvm`) and the in-place arms of Cranelift (`yavs-clift` `tests/tier.rs`, `clift` CI job).
+  (`yavs-rt`) and the in-place arms of Cranelift (`yavs-clift` `tests/tier.rs`, `clift` CI job).
   (2) `ieee_general.<key>` (every build): the calls of each native that ran its general path or
   gave the call back to the body, bounded per key on `perf/ieee_paths.vhd` (`IEEE_GENERAL`, 0
   where every call has a path). (3) Under `--features clift` the same design compiled, with the

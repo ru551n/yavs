@@ -9,7 +9,7 @@ use yavs_clift::{ClifTier, First};
 use yavs_diag::{FileId, Span};
 use yavs_interp::{Bindings, InstData, Runtime, Tier, TierHost};
 use yavs_ir::*;
-use yavs_llvm::{AutoTier, Gens, Heat, Note, OptLevel};
+use yavs_rt::{AutoTier, Gens, Heat, Note, OptLevel};
 
 /// Counts the entries into compiled code.
 struct Counting(ClifTier, AtomicUsize);
@@ -1225,7 +1225,7 @@ fn search_loop(step: IntOp) -> (Program, FuncId) {
 #[test]
 fn search_loops_match_the_interpreter() {
     let scans = || {
-        yavs_llvm::callback_counts()
+        yavs_rt::callback_counts()
             .and_then(|c| c.into_iter().find(|c| c.0 == "scan").map(|c| c.1))
             .unwrap_or(0)
     };
@@ -1307,13 +1307,13 @@ fn in_place_ieee_ops_have_their_arms() {
         let prog = pb.finish().unwrap();
         // The call must reach the in-place lowering, or a missing arm would compile as a call.
         let func = prog.func(f).unwrap();
-        assert!(yavs_llvm::rt::frame_direct(&prog, func, &call), "{key}");
+        assert!(yavs_rt::rt::frame_direct(&prog, func, &call), "{key}");
         assert!(
             yavs_interp::light_native(&prog, func, native, args),
             "{key}"
         );
         assert_eq!(
-            yavs_llvm::native::ieee_fast(&prog, func, native, args, Some(dst)),
+            yavs_rt::native::ieee_fast(&prog, func, native, args, Some(dst)),
             Some(*op),
             "{key}"
         );

@@ -1196,7 +1196,7 @@ fn fill_blocks(bytes: &[u8], out: &mut [[u64; 4]]) {
 }
 
 /// `n` elements of the planes `sw` from element `s0` to those of `dw` from element `d0`
-/// (`Inst::LCopy`; compiled code calls it on the same memory, `yavs-llvm`).
+/// (`Inst::LCopy`; compiled code calls it on the same memory, `yavs-rt`).
 #[inline(never)]
 pub fn copy_bits(sw: &[[u64; 4]], dw: &mut [[u64; 4]], s0: u64, d0: u64, n: u64) {
     // One block on each side: shift and mask the four planes.

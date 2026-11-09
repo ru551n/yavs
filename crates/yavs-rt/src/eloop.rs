@@ -661,7 +661,7 @@ mod tests {
     }
 
     /// The `get_row` loop of a 256 x 8 matrix, many times: `perf stat -- cargo test --release
-    /// -p yavs-llvm eloop_cost -- --ignored` gives the instructions of a call.
+    /// -p yavs-rt eloop_cost -- --ignored` gives the instructions of a call.
     #[test]
     #[ignore]
     fn eloop_cost() {

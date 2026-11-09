@@ -1,4 +1,4 @@
-//! Machine code in one huge-page arena (`yavs_llvm::hugezone`) instead of the default provider's
+//! Machine code in one huge-page arena (`yavs_rt::hugezone`) instead of the default provider's
 //! 4 KiB pages, which cost a large process an instruction-TLB entry per page. Linux x86_64 only;
 //! everywhere else, where the host refuses the reservation, and with `YAVS_CLIFT_HUGE=0`, the
 //! default provider is used. A kernel without huge pages leaves the arena on small pages.
@@ -6,7 +6,7 @@
 use cranelift_jit::{BranchProtection, JITMemoryKind, JITMemoryProvider, SystemMemoryProvider};
 use cranelift_module::ModuleResult;
 use std::sync::{Mutex, OnceLock, PoisonError};
-use yavs_llvm::hugezone::{self, Zones};
+use yavs_rt::hugezone::{self, Zones};
 
 /// One reservation per process, whatever the number of JITs.
 static ZONES: OnceLock<Option<Mutex<Zones>>> = OnceLock::new();

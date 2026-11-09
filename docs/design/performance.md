@@ -480,7 +480,7 @@ hot, cheaply, off the critical thread.
 - keep the size cap of #126 as a second guard.
 
 With this, start-up with `--tier=llvm` returns to the interpreted level, and the compiled code
-only has to be faster than the interpreter on what is hot. Crates: `yavs-llvm`, with
+only has to be faster than the interpreter on what is hot. Crates: `yavs-rt`, with
 `yavs-interp` (counters, swap).
 
 **R9 (rank 4, with R8): widen what compiled code runs natively.** The tier compiles 53% to 68%
@@ -490,7 +490,7 @@ that calls back for every load is slower than the reference's whole run (section
 `Load`/`Store`/`AddrOf`/`Index` for the frame, instance and constant spaces inline with the
 bounds check as a compare and a side exit, hold the space base pointers in function-entry
 registers, then the descriptor kinds (#335) and calls (#336). The native fast paths of R1 are
-called directly. Crate: `yavs-llvm`. The interpreter stays the reference: every guard failure
+called directly. Crate: `yavs-rt`. The interpreter stays the reference: every guard failure
 re-executes in the interpreter for the identical error, as now.
 
 **R10: ahead-of-time compiled `std` and `ieee`.** Not recommended: neither reference simulator
@@ -531,7 +531,7 @@ register or slot. Integers are always 8 bytes in memory by rule 7. For big integ
 `LGet`/`LSet` compile to a few inline instructions in the LLVM tier (R9), that the
 interpreter's `Index` on a logic array is a fused index-and-extract, and that bulk paths
 (slices, concatenation, copies at any alignment, comparisons) stay word-wise (they are).
-Crates: `yavs-llvm`, `yavs-interp`.
+Crates: `yavs-rt`, `yavs-interp`.
 
 **R12 (rank 10; step 1 done, #415): narrow storage of integer arrays.** Done: integer types within
 32 bits are 4 bytes as array elements and in kernel signals (docs/STATUS.md "Narrow integer storage": a
@@ -542,7 +542,7 @@ elements of large arrays (above a size threshold, in memory only, widened on loa
 with the existing range check on store) in the smallest width that holds the subtype range.
 Rule 7 says integers are `i64` in memory; this is a deliberate exception for memory size and
 cache behaviour. Only if memory-model-heavy testbenches show a memory or cache problem after R1
-to R9. Crates: `yavs-lower` (layout), `yavs-interp`, `yavs-llvm`.
+to R9. Crates: `yavs-lower` (layout), `yavs-interp`, `yavs-rt`.
 
 ## 7. Deterministic parallel kernel: what to keep
 
@@ -578,16 +578,16 @@ effect before the item is called done.
 
 | Rank | Id | Recommendation | Crates | Expected effect | Gate |
 |---:|---|---|---|---|---|
-| 1 | R1 | Native fast paths for hot ieee subprograms, fallback to the VHDL body when any element is not 0/1 or a corner applies | yavs-lower, yavs-interp, yavs-logic, yavs-ir, yavs-llvm (same runtime call) | 100x on the operation; 30% to 60% fewer interpreted instructions in library testbenches | 16-bit `+` loop from 250 us to under 1 us; difftest identical including metavalue and warning texts |
+| 1 | R1 | Native fast paths for hot ieee subprograms, fallback to the VHDL body when any element is not 0/1 or a corner applies | yavs-lower, yavs-interp, yavs-logic, yavs-ir, yavs-rt (same runtime call) | 100x on the operation; 30% to 60% fewer interpreted instructions in library testbenches | 16-bit `+` loop from 250 us to under 1 us; difftest identical including metavalue and warning texts |
 | 2 | R6 | Interpreter constant factors: frame stack instead of two allocations per call, hoisted space bases, inline checked arithmetic, no mark phase per suspension | yavs-interp (yavs-ir if a bit is missing) | 3x to 5x on call-heavy code; possibly a large share of the 13 us per activation | design 1 under 400 ns per iteration; call and return under 100 ns; profile of design 2b before and after |
 | 3 | R2 | Kernel: allocation-free single-driver assignment (a), skip unchanged (b), static sensitivity (c), edge triggers (d) | yavs-kernel, yavs-elab, yavs-lower, yavs-ir, yavs-interp | 5x to 10x on RTL designs (half the activations, near-free assignment) | designs 2a and 2b under 2 s; identical output at 1, 4, 8 threads and shuffle |
-| 4 | R8, R9 | Tier-up of hot functions only, background, cheap optimisation, per function; inline memory kinds | yavs-llvm, yavs-interp | start-up with the tier back to the interpreted level; compiled loops faster than the interpreter | corpus total with `--tier=llvm` within 10% of interpreted; design 1 compiled under 100 ns per iteration |
+| 4 | R8, R9 | Tier-up of hot functions only, background, cheap optimisation, per function; inline memory kinds | yavs-rt, yavs-interp | start-up with the tier back to the interpreted level; compiled loops faster than the interpreter | corpus total with `--tier=llvm` within 10% of interpreted; design 1 compiled under 100 ns per iteration |
 | 5 | R7 | Start-up breakdown, package initialisation on first use, one runtime for static evaluation, on-demand unit loading | yavs-elab, yavs-lower, yavs-lib, yavs-sem, yavs | design 3 start-up from 8.8 s to under 2 s; 3.2 s median small test to under 1 s | `--verbose` breakdown recorded in docs/STATUS.md before and after |
 | 6 | R4 | Collapse `in` ports and component pass-through | yavs-elab, yavs-kernel | less update work per delta in hierarchical RTL; fewer signals | port-heavy design before and after; names unchanged in waves and VHPI |
 | 7 | R3 | Memoised resolution tables for small enumerations, identity detection | yavs-kernel, yavs-elab | buses of user resolved types from a call per element to a lookup | bus bench with a user resolution function |
 | 8 | R5 | Run small batches inline | yavs-kernel | removes pool hand-off from the per-activation cost | only after R2 and R6; bench at 1 and 8 threads |
-| 9 | R11 | Cheap logic element access in both tiers | yavs-llvm, yavs-interp | element loops on logic arrays | loop over a `std_logic_vector` by index |
-| 10 | R12 | Narrow storage for large integer arrays | yavs-lower, yavs-interp, yavs-llvm | memory and cache for memory models | peak RSS of design 3; user decision |
+| 9 | R11 | Cheap logic element access in both tiers | yavs-rt, yavs-interp | element loops on logic arrays | loop over a `std_logic_vector` by index |
+| 10 | R12 | Narrow storage for large integer arrays | yavs-lower, yavs-interp, yavs-rt | memory and cache for memory models | peak RSS of design 3; user decision |
 
 Not recommended: a persistent code cache, ahead-of-time compiled libraries (R10), a second
 interpreter, threaded-code dispatch (the reference interpreter is a plain switch too),

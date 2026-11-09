@@ -1,4 +1,4 @@
-//! Cranelift tier for yavs: the compiled-code contract of `yavs-llvm` (`rt.rs`) with
+//! Cranelift tier for yavs: the compiled-code contract of `yavs-rt` (`rt.rs`) with
 //! Cranelift as the code generator, so a release binary has a compiled tier without an LLVM
 //! install. Everything is behind the `clift` cargo feature (off by default).
 //!
@@ -35,14 +35,14 @@ use yavs_interp::{Called, Tier, TierHost};
 #[cfg(feature = "clift")]
 use yavs_ir::FuncId;
 #[cfg(feature = "clift")]
-use yavs_llvm::rt::{RunFn, call, enter};
+use yavs_rt::rt::{RunFn, call, enter};
 
 /// Compiled code for the functions of one program.
 #[cfg(feature = "clift")]
 pub struct ClifTier {
     /// Keeps the code alive; never used after construction.
     pub(crate) _jit: Mutex<Jit>,
-    /// Per function, its code, its registers and `yavs_llvm::regs::no_table` (`enter`'s `lean`).
+    /// Per function, its code, its registers and `yavs_rt::regs::no_table` (`enter`'s `lean`).
     pub(crate) funcs: Vec<Option<(RunFn, usize, bool)>>,
     /// Per function, the address of its native-frame code (`Mem::ntab`) and of its `CallFn`
     /// (`Tier::call`), 0 for none.
@@ -78,7 +78,7 @@ impl ClifTier {
     }
 
     #[inline(always)]
-    fn go<H: yavs_llvm::rt::View + ?Sized>(
+    fn go<H: yavs_rt::rt::View + ?Sized>(
         &self,
         func: FuncId,
         pc: u32,
@@ -90,7 +90,7 @@ impl ClifTier {
     }
 }
 
-/// The Cranelift code generator of `yavs-llvm`'s `AutoTier` (`Generator`), its only one
+/// The Cranelift code generator of `yavs-rt`'s `AutoTier` (`Generator`), its only one
 /// (`--tier=auto`). It compiles the callees of a native-frame function into the same module (direct
 /// calls, inlined when small), and reports them with the root (`Compiled::extra`).
 #[cfg(feature = "clift")]
@@ -111,7 +111,7 @@ impl First {
 }
 
 #[cfg(feature = "clift")]
-impl yavs_llvm::Generator for First {
+impl yavs_rt::Generator for First {
     fn tree(&mut self, ids: &[FuncId]) {
         self.jit.allow(ids);
     }
@@ -145,10 +145,10 @@ impl yavs_llvm::Generator for First {
         prog: &yavs_ir::Program,
         id: FuncId,
         f: &yavs_ir::Func,
-        _level: yavs_llvm::OptLevel,
-        part: yavs_llvm::native::Part,
-    ) -> Result<yavs_llvm::native::Compiled, String> {
-        use yavs_llvm::native::Part;
+        _level: yavs_rt::OptLevel,
+        part: yavs_rt::native::Part,
+    ) -> Result<yavs_rt::native::Compiled, String> {
+        use yavs_rt::native::Part;
         let frame = (part != Part::Native)
             .then(|| self.jit.define(prog, id, f))
             .transpose()?;
@@ -157,7 +157,7 @@ impl yavs_llvm::Generator for First {
         }
         self.jit.finalize()?;
         self.jit.flush_routes();
-        let mut out = yavs_llvm::native::Compiled {
+        let mut out = yavs_rt::native::Compiled {
             run: frame.map(|(cid, _)| self.jit.entry(cid)),
             nregs: f.reg_ty.len(),
             native: 0,
@@ -183,7 +183,7 @@ impl Tier for ClifTier {
     }
 
     fn direct(&self) -> Option<yavs_interp::DirectFn> {
-        Some(yavs_llvm::rt::direct_entry::<Self>)
+        Some(yavs_rt::rt::direct_entry::<Self>)
     }
 
     #[inline(always)]

@@ -12,7 +12,7 @@ Decisions are in `docs/decisions.md` "Code coverage"; the user view in `docs/cov
   keyed per plan rule 10, reads and writes its text form, merges databases, and renders the
   text summary and Cobertura XML.
 - Does not: emit counters (yavs-lower, `LowerOptions::coverage`), count them (yavs-interp
-  `Op::Cover*`, yavs-llvm compiled `Cover`, #692), lay out the counter rows (yavs-elab `Elaborated::cov_rows`), or parse options
+  `Op::Cover*`, yavs-rt compiled `Cover`, #692), lay out the counter rows (yavs-elab `Elaborated::cov_rows`), or parse options
   (the `yavs` CLI: `run --cov`, `cov merge`, `cov report`).
 - Counts the states and transitions of state machines as a second kernel observer
   (`fsm::Fsm`, subscribed only with `--cov-kind=fsm`); which signals are machines is `yavs_lint::machines`.

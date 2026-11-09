@@ -1,7 +1,6 @@
 //! The runtime of the compiled tier (Cranelift, `yavs-clift`): the tier-up policy (`auto`), the
 //! host functions compiled code calls (`rt`), the native-frame loop (`eloop`), the run-to-run
-//! profile and the perf map. The crate keeps its old name for now; the LLVM tier it was built
-//! for is gone (user, 2026-11-08).
+//! profile and the perf map.
 
 // Compiled code calls into this runtime through raw pointers: unsafe is allowed here.
 #![allow(unsafe_code)]

@@ -14857,6 +14857,17 @@ the IR optimiser and lowering. Decisions:
 - **Dependencies:** LLVM 21 is no longer an approved manual dependency (root `AGENTS.md` rule 9,
   `docs/plan.md`).
 
+## Crate `yavs-llvm` renamed `yavs-rt` (yavs-rt, yavs, yavs-clift, tools, user, 2026-11-10)
+
+- **Decision (user, batch 3 housekeeping, 2026-11-10).** `crates/yavs-llvm` is `crates/yavs-rt` (package
+  `yavs-rt`, library `yavs_rt`), the runtime of the compiled tier, with its history (`git mv`). The
+  name was left from the LLVM tier removed on 2026-11-08, and the entry above kept it only until this
+  step. Every reference in code, Cargo features (`yavs/clift`, `op-census`, `table-check`), tools and
+  current documentation follows; dated entries and results below keep the old name as written.
+- **No behaviour change.** The machine code of the difftest corpus (665 tests, 25 096 files from
+  `YAVS_CLIFT_CODEDIR`, `--tier=clift --no-cache`) is byte for byte that of the build before the rename.
+  The Rust symbols of the runtime change prefix (`yavs_rt::`), which `tools/realbench/replay.py` matches.
+
 ## `--threads=auto` round 4 (yavs-kernel, #884, 2026-11-08)
 
 - **Decision: the batch last estimated at or below the lowest pool threshold (`SimControl::stay`: its length, first

@@ -12,9 +12,9 @@ calling and native conventions, and the Requests log are in `crates/yavs-ir/READ
   foreign references, check messages, case tables, coverage items, reflection descriptions.
   Built once by `ProgramBuilder`/`FuncBuilder`, verified, then immutable and `Send + Sync`.
 - Does not: execute (`yavs-interp`), lower HIR (`yavs-lower`), elaborate (`yavs-elab`), or compile
-  (`yavs-clift` on the runtime of `yavs-llvm`, M6). It has no VHDL front-end knowledge.
+  (`yavs-clift` on the runtime of `yavs-rt`, M6). It has no VHDL front-end knowledge.
 - Depends on: `yavs-diag`, `yavs-kernel` (`StmtId`), `yavs-ffi` (foreign signatures). Called by:
-  `yavs-lower` and `yavs-elab` (producers), `yavs-interp` (consumer); `yavs-llvm` and `yavs-clift` (compiled tiers, behind their features).
+  `yavs-lower` and `yavs-elab` (producers), `yavs-interp` (consumer); `yavs-rt` and `yavs-clift` (compiled tiers, behind their features).
 
 ## 2. Map
 

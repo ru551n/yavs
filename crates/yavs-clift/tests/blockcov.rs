@@ -9,7 +9,7 @@ use yavs_clift::{First, blockcov_snapshot};
 use yavs_diag::{FileId, Span};
 use yavs_interp::{Bindings, InstData, Runtime};
 use yavs_ir::*;
-use yavs_llvm::{AutoTier, Gens, Heat, OptLevel};
+use yavs_rt::{AutoTier, Gens, Heat, OptLevel};
 
 fn on() {
     static ONCE: Once = Once::new();
@@ -148,7 +148,7 @@ fn auto_tier_marks_the_blocks_that_ran() {
         main: None,
         first: Some(Box::new(First::new().unwrap())),
     };
-    let note: yavs_llvm::Note = Box::new(|_, _, _| {});
+    let note: yavs_rt::Note = Box::new(|_, _, _| {});
     let tier = AutoTier::start_with(&rt, OptLevel::O2, usize::MAX, hot, note, gens).unwrap();
     let t0 = Instant::now();
     while tier.compiled() == 0 {

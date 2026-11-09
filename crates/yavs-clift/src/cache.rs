@@ -138,7 +138,7 @@ const PRE: &str = "clifpre";
 
 /// The switches whose value changes the code the lowering or Cranelift makes: in every pre-key.
 pub(crate) const KEYED: [&str; 15] = [
-    // (Read through `yavs_llvm::count_rule_on`: `**` and a layout on a native frame, or a refusal.)
+    // (Read through `yavs_rt::count_rule_on`: `**` and a layout on a native frame, or a refusal.)
     "YAVS_AUTO_POLICY",
     "YAVS_CLIFT_OPT",
     "YAVS_CLIFT_VERIFY",
@@ -503,7 +503,7 @@ impl Routes {
         let loaded = self.loaded.get_or_insert_with(|| {
             let mut k = KeyBuilder::new(ROUTES);
             k.text(&yavs_ir::opt::fingerprint())
-                .part(&yavs_llvm::program_digest(prog).to_le_bytes());
+                .part(&yavs_rt::program_digest(prog).to_le_bytes());
             let k = k.finish();
             let known = store()
                 .and_then(|s| s.get(ROUTES, &k))
@@ -714,9 +714,9 @@ mod tests {
             ("cold.rs", include_str!("cold.rs")),
             ("cache.rs", include_str!("cache.rs")),
             ("lib.rs", include_str!("lib.rs")),
-            ("rt.rs", include_str!("../../yavs-llvm/src/rt.rs")),
-            ("regs.rs", include_str!("../../yavs-llvm/src/regs.rs")),
-            ("native.rs", include_str!("../../yavs-llvm/src/native.rs")),
+            ("rt.rs", include_str!("../../yavs-rt/src/rt.rs")),
+            ("regs.rs", include_str!("../../yavs-rt/src/regs.rs")),
+            ("native.rs", include_str!("../../yavs-rt/src/native.rs")),
         ] {
             for (at, _) in text.match_indices("\"YAVS_") {
                 let rest = &text[at + 1..];

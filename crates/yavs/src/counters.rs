@@ -169,25 +169,25 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
     }
     // The callbacks of compiled code, by kind (debug builds and `op-census`; both generators).
     #[cfg(feature = "clift")]
-    for (name, v) in yavs_llvm::callback_counts().into_iter().flatten() {
+    for (name, v) in yavs_rt::callback_counts().into_iter().flatten() {
         eprintln!("counters: cb_{name}={v}");
     }
     // Skips of compiled drives held against the kernel's full test (`YAVS_INLCMP=check`).
     #[cfg(feature = "clift")]
     {
-        let n = yavs_llvm::rt::GATE_CHECKED.load(std::sync::atomic::Ordering::Relaxed);
+        let n = yavs_rt::rt::GATE_CHECKED.load(std::sync::atomic::Ordering::Relaxed);
         if n != 0 {
             eprintln!("counters: gate_checked={n}");
         }
-        let n = yavs_llvm::rt::SCATTER_CHECKED.load(std::sync::atomic::Ordering::Relaxed);
+        let n = yavs_rt::rt::SCATTER_CHECKED.load(std::sync::atomic::Ordering::Relaxed);
         if n != 0 {
             eprintln!("counters: scatter_checked={n}");
         }
-        let n = yavs_llvm::rt::GATHER_CHECKED.load(std::sync::atomic::Ordering::Relaxed);
+        let n = yavs_rt::rt::GATHER_CHECKED.load(std::sync::atomic::Ordering::Relaxed);
         if n != 0 {
             eprintln!("counters: gather_checked={n}");
         }
-        let n = yavs_llvm::rt::HOLD_CHECKED.load(std::sync::atomic::Ordering::Relaxed);
+        let n = yavs_rt::rt::HOLD_CHECKED.load(std::sync::atomic::Ordering::Relaxed);
         if n != 0 {
             eprintln!("counters: hold_checked={n}");
         }

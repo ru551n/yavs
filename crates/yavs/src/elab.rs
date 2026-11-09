@@ -1090,7 +1090,7 @@ pub fn elab(
 /// waiting for a function still compiling; on any other return the drop waits for it.
 enum StopTierUp {
     #[cfg(feature = "clift")]
-    Llvm(std::sync::Arc<yavs_llvm::AutoTier>),
+    Llvm(std::sync::Arc<yavs_rt::AutoTier>),
 }
 
 impl StopTierUp {
@@ -1103,7 +1103,7 @@ impl StopTierUp {
             #[cfg(feature = "clift")]
             StopTierUp::Llvm(t) => {
                 if !t.stop(keep_exit) {
-                    yavs_llvm::exit_now(code);
+                    yavs_rt::exit_now(code);
                 }
             }
             #[cfg(not(feature = "clift"))]
@@ -1125,7 +1125,7 @@ impl StopTierUp {
             StopTierUp::Llvm(t) => {
                 let tier = t.clone();
                 (
-                    yavs_llvm::START_AFTER,
+                    yavs_rt::START_AFTER,
                     Arc::new(move || {
                         if let Err(e) = tier.launch() {
                             crate::stdout::flush();
@@ -1169,7 +1169,7 @@ fn clift_cache(a: &RunArgs) {
     if !a.common.no_cache && !work.is_empty() {
         yavs_clift::set_cache(Some(std::path::Path::new(work)));
         // The run-to-run profile of the tier-up policy is of this command line (#754).
-        yavs_llvm::set_run_id(Some(&run_id(&a.common.generics)));
+        yavs_rt::set_run_id(Some(&run_id(&a.common.generics)));
     }
 }
 
@@ -1238,8 +1238,8 @@ fn use_clift(
     // The tier-up policy of `--tier=auto` with Cranelift as its only code generator.
     let heat = a
         .tier_heat
-        .map_or(yavs_llvm::Heat::DEFAULT, |[base, per_instr, period]| {
-            yavs_llvm::Heat {
+        .map_or(yavs_rt::Heat::DEFAULT, |[base, per_instr, period]| {
+            yavs_rt::Heat {
                 base,
                 per_instr,
                 period,
@@ -1248,7 +1248,7 @@ fn use_clift(
         });
     let prog = rt.prog.clone();
     let verbose = a.verbose;
-    let note: yavs_llvm::Note = Box::new(move |f, _level, why| {
+    let note: yavs_rt::Note = Box::new(move |f, _level, why| {
         if !verbose {
             return;
         }
@@ -1263,13 +1263,13 @@ fn use_clift(
         }
     });
     let first = yavs_clift::First::new().map_err(bug)?;
-    let t = yavs_llvm::AutoTier::start_deferred_with(
+    let t = yavs_rt::AutoTier::start_deferred_with(
         rt,
-        yavs_llvm::OptLevel::O2,
+        yavs_rt::OptLevel::O2,
         a.tier_max_size,
         heat,
         note,
-        yavs_llvm::Gens {
+        yavs_rt::Gens {
             main: None,
             first: Some(Box::new(first)),
         },
@@ -1378,8 +1378,8 @@ fn use_tier(
     #[cfg(feature = "clift")]
     if let Some(StopTierUp::Llvm(t)) = &t {
         t.set_compile(match a.tier_compile {
-            TierCompileArg::Wait => yavs_llvm::Compile::Wait,
-            TierCompileArg::Background => yavs_llvm::Compile::Background,
+            TierCompileArg::Wait => yavs_rt::Compile::Wait,
+            TierCompileArg::Background => yavs_rt::Compile::Background,
         });
     }
     Ok(t)

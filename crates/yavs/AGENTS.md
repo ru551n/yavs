@@ -11,7 +11,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
   CLI only wires them. External test runners depend on its behaviour through `docs/cli-contract.md`.
 - Depends on: `yavs-diag`, `yavs-syntax`, `yavs-lib`, `yavs-sem`, `yavs-std`, `yavs-elab`, `yavs-ir`,
   `yavs-interp`, `yavs-kernel`, `yavs-wave`, `yavs-cache`, `yavs-dap` (`--dap`), `yavs-cov` (`--cov`, `cov`), `yavs-vhpi` (`--load` and `--vhpi`; its exports are linked into this binary by `build.rs`, #266), `clap`;
-  optionally `yavs-clift` and `yavs-llvm` (its runtime and tier-up policy), both with the feature `clift`. There are no default features. Nothing depends on this crate.
+  optionally `yavs-clift` and `yavs-rt` (its runtime and tier-up policy), both with the feature `clift`. There are no default features. Nothing depends on this crate.
 
 ## 2. Map
 

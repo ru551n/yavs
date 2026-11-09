@@ -1,7 +1,7 @@
 //! `YAVS_COUNTERS=kinds` (or `=pc`): how often compiled code calls into the host, by entry point
 //! and instruction kind (with `pc`, by function and pc). `yavs run` prints them with the other
 //! work counters as `counters: cb_<entry>.<Kind>[.<function>.pc<N>]=N` (`crates/yavs/src/counters.rs`),
-//! next to the totals per callback kind of `yavs-llvm` (`cb_<entry>`). A tuning aid and the check
+//! next to the totals per callback kind of `yavs-rt` (`cb_<entry>`). A tuning aid and the check
 //! that an instruction takes its fast path: a counter that stays out is a fast path that always
 //! held. Off, a call costs one load.
 

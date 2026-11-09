@@ -1,4 +1,4 @@
-//! Lean activations (#766, `yavs_llvm::regs::no_table`): a compiled process that calls nothing and
+//! Lean activations (#766, `yavs_rt::regs::no_table`): a compiled process that calls nothing and
 //! reaches no heap, package or shared object skips the object table's tags at every activation,
 //! under each code generator and every clock-edge form; a process that calls a subprogram does
 //! not. A debug build checks that a lean activation never reaches the table (it panics). Needs

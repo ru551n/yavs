@@ -1,7 +1,7 @@
 # M2 middle end: yavs-ir, yavs-interp, yavs-elab
 
 Status (corrected 2026-10-28): all four crates are implemented and run every `yavs run`; the
-interpreter is the semantic reference and two optional code generators (`yavs-llvm`, `yavs-clift`)
+interpreter is the semantic reference and two optional code generators (`yavs-rt`, `yavs-clift`)
 sit behind it. The sections below are the M2 design as written, kept as history; where the
 implementation differs, section 9 and the dated notes in sections 4, 5 and 8 say how. The first
 section after this header is the architecture as built.
@@ -9,7 +9,7 @@ Binding inputs: `docs/plan.md` (architecture table, "Designed for
 the GUI", "Parallel kernel design", rules 1 to 12, the error-handling motto) and
 `docs/decisions.md`. Interfaces read from: the kernel worktree (`yavs-kernel`: `Process`, `Ctx`,
 `Builder`, `SimControl`, `Observer`, `SimError { trace: Vec<StmtId> }`), `yavs-logic`,
-`yavs-wave`, the LLVM spike (`yavs-llvm`, `docs/STATUS.md`), `yavs-std` (`arith`), `lib/NATIVE.md`,
+`yavs-wave`, the LLVM spike (now `yavs-rt`, `docs/STATUS.md`), `yavs-std` (`arith`), `lib/NATIVE.md`,
 the VHPI stub. The HIR is specified in `docs/design/sem.md`; section 0 lists what this design
 assumes of it.
 
@@ -59,7 +59,7 @@ kernel's event bus or read the elaborated hierarchy; `yavs-cache` stores cache e
 * `yavs-lower` depends on `yavs-sem`, `yavs-ir` and `yavs-kernel`; it does not depend on `yavs-elab`
   or `yavs-interp` (those are dev-dependencies for its tests). `yavs-elab` depends on `yavs-lower`
   and `yavs-interp`.
-* `yavs-clift` depends on `yavs-llvm` (the runtime crate, named for the LLVM tier it held until 2026-11-08) for the `rt` module, the policy of
+* `yavs-clift` depends on `yavs-rt` (the runtime crate, called `yavs-llvm` until 2026-11-10) for the `rt` module, the policy of
   `--tier=auto` (`AutoTier`) and the `Generator` trait; the Cranelift generator is `yavs_clift::First`.
 * `yavs` (the binary) is the only place that decides which tier a run uses.
 
@@ -68,7 +68,7 @@ kernel's event bus or read the elaborated hierarchy; `yavs-cache` stores cache e
 | Tier | Where | What it does |
 |---|---|---|
 | Interpreter | `yavs-interp` | Executes IR (a predecoded form of each function in the fast loop, the plain IR when a debugger or a compiled tier is attached). The semantic reference: every other tier must give identical output (root rule 3). |
-| Cranelift | `yavs-clift` on the runtime of `yavs-llvm`, feature `clift` | `--tier=clift` compiles every non-elaboration function before time 0; `--tier=auto` (also `clift-auto`) compiles functions the interpreter is seen to spend time in, one at a time (`--tier-compile`), and swaps them in at the next call, return or within 256 jumps. Compiled code runs on the interpreter frame's registers and returns to the interpreter for everything it does not compile. |
+| Cranelift | `yavs-clift` on the runtime of `yavs-rt`, feature `clift` | `--tier=clift` compiles every non-elaboration function before time 0; `--tier=auto` (also `clift-auto`) compiles functions the interpreter is seen to spend time in, one at a time (`--tier-compile`), and swaps them in at the next call, return or within 256 jumps. Compiled code runs on the interpreter frame's registers and returns to the interpreter for everything it does not compile. |
 
 The LLVM tier (`--tier=llvm`, `--tier=auto3`, feature `llvm`, LLVM 21) was removed on 2026-11-08 (user,
 `docs/decisions.md` "LLVM tier removed"); sections below that describe it are history.
@@ -708,7 +708,7 @@ and the DAP variable references.
 
 ## 5. JIT tier seam (M6)
 
-What the spike (`yavs-llvm`, docs/STATUS.md, decisions.md) fixes:
+What the spike (`yavs-rt`, docs/STATUS.md, decisions.md) fixes:
 
 | Spike result | Consequence for the IR |
 |---|---|
@@ -748,7 +748,7 @@ share the frame and compiled code enters at any pc). Registers a frame starts wi
 (user, 2026-10-19, #126).
 
 *Update 2026-10-28:* a second generator, Cranelift (`yavs-clift`, feature `clift`), implements the same
-compiled-code contract and the same `--tier=auto` policy (`yavs-llvm` `AutoTier` with a different
+compiled-code contract and the same `--tier=auto` policy (`yavs-rt` `AutoTier` with a different
 `Generator`); the release archives use it. The hot-function size cap and the `--tier-max-size`
 option apply to both.
 

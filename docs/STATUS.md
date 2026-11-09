@@ -31,7 +31,7 @@ The `--threads=auto` memory and the `--tier=auto` profile are keyed by a digest 
 
 ### LLVM tier removed (2026-11-08)
 
-The LLVM tier is gone (user decision): the `llvm` cargo feature, the LLVM generator, ORC JIT, object cache, code arena and `llvm-sys`. `--tier=llvm` and `--tier=auto3` stop with E0120 before any analysis, with a note and help naming the tiers to use (`crates/yavs/tests/cli.rs`, `dap.rs`); `--tier=auto` is the Cranelift policy in every build with `clift`; E0127 is retired. `yavs-llvm` keeps its name and its shared runtime for `yavs-clift`. Tests that ran only an LLVM tier were deleted; difftest lost its LLVM templates, realbench its `llvm` and `auto3` tiers (`codegen` now times `--tier=clift`), waveq and the conformance tool use `clift`. Not verified: a Windows or aarch64 build (CI does them).
+The LLVM tier is gone (user decision): the `llvm` cargo feature, the LLVM generator, ORC JIT, object cache, code arena and `llvm-sys`. `--tier=llvm` and `--tier=auto3` stop with E0120 before any analysis, with a note and help naming the tiers to use (`crates/yavs/tests/cli.rs`, `dap.rs`); `--tier=auto` is the Cranelift policy in every build with `clift`; E0127 is retired. Its shared runtime stayed for `yavs-clift` in the crate that was `yavs-llvm` and is `yavs-rt` since 2026-11-10. Tests that ran only an LLVM tier were deleted; difftest lost its LLVM templates, realbench its `llvm` and `auto3` tiers (`codegen` now times `--tier=clift`), waveq and the conformance tool use `clift`. Not verified: a Windows or aarch64 build (CI does them).
 
 ### Whole values driven from where they are (#1122, 2026-11-09)
 

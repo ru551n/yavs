@@ -24,7 +24,7 @@ yavs-sem = { path = "../yavs-sem" }
 yavs-std = { path = "../yavs-std" }
 yavs-syntax.workspace = true
 yavs-wave = { path = "../yavs-wave" }
-yavs-llvm = { path = "../yavs-llvm", optional = true }
+yavs-rt = { path = "../yavs-rt", optional = true }
 yavs-clift = { path = "../yavs-clift", optional = true }
 yavs-vhpi = { path = "../yavs-vhpi" }
 
@@ -38,15 +38,15 @@ workspace = true
 # Builds the external parse corpus test (needs YAVS_CORPUS, see tools/fetch-corpus.sh).
 corpus = []
 # The Cranelift tier (`yavs run --tier=clift`), the compiled tier (crates/yavs-clift/AGENTS.md).
-clift = ["dep:yavs-clift", "dep:yavs-llvm", "yavs-clift/clift"]
+clift = ["dep:yavs-clift", "dep:yavs-rt", "yavs-clift/clift"]
 # Fail when anything reads the history of a signal that keeps none (crates/yavs-kernel/AGENTS.md).
 history-check = ["yavs-kernel/history-check"]
 # Test builds only: the heap collection stress mode of yavs-interp (crates/yavs-interp/AGENTS.md).
 gc-stress = ["yavs-interp/gc-stress"]
 # Op and adjacent-pair census of the interpreter, printed at the end of `yavs run` (crates/yavs-interp/AGENTS.md).
-op-census = ["yavs-interp/op-census", "yavs-kernel/op-census", "yavs-llvm?/op-census"]
-# Panic when a compiled activation marked lean reaches the object table (crates/yavs-llvm/AGENTS.md).
-table-check = ["yavs-llvm?/table-check"]
+op-census = ["yavs-interp/op-census", "yavs-kernel/op-census", "yavs-rt?/op-census"]
+# Panic when a compiled activation marked lean reaches the object table (crates/yavs-rt/AGENTS.md).
+table-check = ["yavs-rt?/table-check"]
 
 [[test]]
 name = "corpus"

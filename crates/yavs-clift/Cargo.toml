@@ -33,9 +33,9 @@ serde = { workspace = true, optional = true }
 yavs-cache = { path = "../yavs-cache", optional = true }
 yavs-interp = { path = "../yavs-interp" }
 yavs-ir = { path = "../yavs-ir" }
-yavs-llvm = { path = "../yavs-llvm" }
+yavs-rt = { path = "../yavs-rt" }
 
-# Like yavs-llvm: machine code and raw function pointers need unsafe, confined to this crate.
+# Like yavs-rt: machine code and raw function pointers need unsafe, confined to this crate.
 [lints.rust]
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"

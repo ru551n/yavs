@@ -1,5 +1,5 @@
 [package]
-name = "yavs-llvm"
+name = "yavs-rt"
 description = "Runtime of the yavs compiled tier: tier-up policy, host functions, native-frame loop"
 version.workspace = true
 edition.workspace = true
@@ -8,7 +8,7 @@ publish.workspace = true
 
 [features]
 # The interpreter's collect-at-every-safepoint build for the unit tests:
-# cargo test -p yavs-llvm --features gc-stress
+# cargo test -p yavs-rt --features gc-stress
 gc-stress = ["yavs-interp/gc-stress"]
 # Count the callbacks of compiled code in release builds too (always counted in debug builds).
 op-census = ["yavs-interp/op-census"]

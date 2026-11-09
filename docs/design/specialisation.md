@@ -267,7 +267,7 @@ bytes to 0).
    the crossbar would then keep the largest ones shared or only specialise the hot ones in
    `--tier=auto`).
 2. Make the function table append-only (needs the runtime's per-function tables to grow) instead
-   of the spike's pre-sized spares; this touches `yavs-ir`, `yavs-interp` and `yavs-llvm` owners.
+   of the spike's pre-sized spares; this touches `yavs-ir`, `yavs-interp` and `yavs-rt` owners.
 3. Store copies content-addressed in the stage cache; compile copies through the existing object
    cache (already keyed by LLVM IR, so equal copies collapse).
 4. Do not do (d) now. The compiled code of today is not the bottleneck of the gap: forced

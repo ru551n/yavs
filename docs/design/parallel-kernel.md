@@ -24,7 +24,7 @@ Sources: the kernel (`crates/yavs-kernel/src/kernel.rs`: `cycle`, `update`, `upd
 `order`, `run_batch`, `commit`), the process interface (`process.rs`: `Ctx`, `ProcState`), the interpreter's
 process and shared state (`crates/yavs-interp/src/lib.rs`: `InterpProcess::run`, `exec`, `SharedState`,
 `SharedGc`), the serial classification (`crates/yavs-ir/src/build.rs` `propagate`, `touches_files`;
-`Program::is_serial`), the LLVM tier's compile thread (`crates/yavs-llvm/src/auto.rs`), the earlier
+`Program::is_serial`), the LLVM tier's compile thread (`crates/yavs-rt/src/auto.rs`), the earlier
 scaling measurement (`docs/STATUS.md` "Multi-threaded scaling, measurement", the #481 item 3 comment), the plan
 (`docs/plan.md` "Parallel kernel design") and `docs/decisions.md` (kernel rounds 2 to 9, "Process order
 within a cycle", "Resolution functions that touch shared state", "Shared heap collection").

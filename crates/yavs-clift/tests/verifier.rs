@@ -10,7 +10,7 @@ use yavs_clift::First;
 use yavs_diag::{FileId, Span};
 use yavs_interp::{Bindings, InstData, Runtime};
 use yavs_ir::*;
-use yavs_llvm::{AutoTier, Gens, Heat, Note, OptLevel};
+use yavs_rt::{AutoTier, Gens, Heat, Note, OptLevel};
 
 /// `function f return 7`.
 fn seven() -> (Program, FuncId) {

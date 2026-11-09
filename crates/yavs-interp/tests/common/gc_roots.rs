@@ -1,5 +1,5 @@
 //! Precise roots across collections inside an activation (#422), shared by the interpreter
-//! tests and the LLVM tier tests (`crates/yavs-llvm/tests/tier.rs` includes this file).
+//! tests and the LLVM tier tests (`crates/yavs-rt/tests/tier.rs` includes this file).
 //!
 //! A serial process allocates objects whose handles live only in a register of its frame,
 //! only in a temporary (a scalar and an array of handles), in a frame slot while it is the

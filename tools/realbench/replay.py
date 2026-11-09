@@ -433,7 +433,7 @@ LAYERS = (
     ("signal update", re.compile(r"yavs_kernel::signal::")),
     ("kernel cycle", re.compile(r"yavs_kernel::")),
     ("generated code", re.compile(r"^[fn]\d+_|^\[unknown\]$")),
-    ("rt callbacks", re.compile(r"yavs_llvm::|yavs_clift::|yavs_rt_")),
+    ("rt callbacks", re.compile(r"yavs_rt::|yavs_clift::|yavs_rt_")),
     ("interpreter", re.compile(r"yavs_interp::")),
 )
 FOCUS = ("scatter_leaves", "direct_same_planes", "sig_gather", "commit_bytes")

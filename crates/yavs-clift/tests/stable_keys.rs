@@ -7,8 +7,8 @@ use std::path::Path;
 use yavs_clift::First;
 use yavs_diag::{FileId, Span};
 use yavs_ir::*;
-use yavs_llvm::native::Part;
-use yavs_llvm::{Generator, OptLevel};
+use yavs_rt::native::Part;
+use yavs_rt::{Generator, OptLevel};
 
 /// `inc(a)`, a chain of additions ending in `step`, too long for the optimiser to inline, and
 /// `caller(a) = inc(a)`.

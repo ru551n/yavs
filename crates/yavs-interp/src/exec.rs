@@ -12155,6 +12155,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
             // As the loop's return (`Op::Ret`), into a caller of this run with compiled code.
             Some(&Inst::Ret { v })
                 if top > self.base
+                    && (top >= 2 || crate::lab_root())
                     && (v.is_some() || m.frames[top].ret.is_none())
                     && m.pause.is_none()
                     && has_code(m.frames[top - 1].func)

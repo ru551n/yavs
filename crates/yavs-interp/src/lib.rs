@@ -3486,3 +3486,7 @@ pub static LAB: [std::sync::atomic::AtomicU64; 13] = [const { std::sync::atomic:
 pub fn lab(i: usize) {
     LAB[i].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
+pub fn lab_root() -> bool {
+    static M: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *M.get_or_init(|| std::env::var("YAVS_LAB_ROOT").is_ok_and(|v| v == "1"))
+}

@@ -889,6 +889,9 @@ pub(crate) struct Signal {
     /// them: a change of a cell is any non-empty part of it.
     pub cuts: Box<[u32]>,
     pub nruns: u64,
+    /// Runs `commit_whole` took (debug and `op-census` builds; `Stats::whole_commits`).
+    #[cfg(any(debug_assertions, feature = "op-census"))]
+    pub(crate) whole_commits: u64,
     /// Elements whose driving value a direct transaction wrote for the next update
     /// (`commit_code`, `commit_planes`),
     /// one bit each (made at the first one), and the words with a bit set.
@@ -1031,6 +1034,10 @@ fn note_cells(changed: &mut Vec<Range>, nruns: &mut u64, cuts: &[u32], base: usi
     // The count of events stays the number of runs (the notes count themselves).
     *nruns += runs.saturating_sub((changed.len() - before) as u64);
 }
+
+/// The fewest plane words of a bus that `commit_whole` takes: its set-up (a fill and a list of
+/// every word) costs more than the entry loop on narrower ones.
+const WHOLE_MIN: usize = 4;
 
 /// The longest logic signal that keeps `Signal::codes`.
 const CODES_MAX: usize = 1 << 20;
@@ -1226,6 +1233,8 @@ impl Signal {
             fine: false,
             cuts: Box::default(),
             nruns: 0,
+            #[cfg(any(debug_assertions, feature = "op-census"))]
+            whole_commits: 0,
             pend: Vec::new(),
             pend_words: Vec::new(),
             pend_one: false,
@@ -2343,6 +2352,15 @@ impl Signal {
     /// nothing pending.
     pub(crate) fn commit_planes_run(&mut self, outs: &[crate::process::OutV]) -> bool {
         let first = !self.pend_one && self.pend_words.is_empty();
+        // A run as long as the signal has words (cheap to ask) may be the whole bus.
+        if outs.len() >= WHOLE_MIN
+            && outs.len() == (self.ty.len as usize).div_ceil(64)
+            && first
+            && !self.exact
+            && self.commit_whole(outs)
+        {
+            return true;
+        }
         self.spill_pend_one();
         self.last_commit.0 = u32::MAX;
         if self.pend.is_empty() {
@@ -2394,6 +2412,57 @@ impl Signal {
             mark_bits(pend, pend_words, o.elem, o.len);
         }
         first
+    }
+
+    /// `commit_planes_run` of entries that are the whole signal in order, a plane word each, on a
+    /// lagging signal with nothing pending (a bus assigned whole): the words stored and all marked
+    /// at once. False (nothing done) for any other run. Out of line: the entry loop of narrow
+    /// signals keeps its registers.
+    #[inline(never)]
+    fn commit_whole(&mut self, outs: &[crate::process::OutV]) -> bool {
+        let n = self.ty.len as usize;
+        let nw = outs.len();
+        if !outs
+            .iter()
+            .enumerate()
+            .all(|(k, o)| o.elem as usize == 64 * k && o.len as usize == (n - 64 * k).min(64))
+        {
+            return false;
+        }
+        if self.pend.is_empty() {
+            self.pend = vec![0; nw];
+        }
+        let Buf::Planes { b: drv, .. } = &mut self.driving else {
+            return false;
+        };
+        let (Some((x, words)), Some((o, whole)), Some((p, pend))) = (
+            drv.split_last_mut(),
+            outs.split_last(),
+            self.pend.split_last_mut(),
+        ) else {
+            return false;
+        };
+        if words.len() != whole.len() || pend.len() != whole.len() {
+            return false;
+        }
+        for ((x, o), p) in words.iter_mut().zip(whole).zip(pend) {
+            *x = o.planes;
+            *p = !0;
+        }
+        // The last word keeps what lies past the end, as a part of a word does.
+        let tail = nmask(n - 64 * (nw - 1));
+        for (x, o) in x.iter_mut().zip(o.planes) {
+            *x = *x & !tail | o;
+        }
+        *p = tail;
+        self.pend_words.extend(0..nw as u32);
+        self.last_commit.0 = u32::MAX;
+        self.lag = true;
+        #[cfg(any(debug_assertions, feature = "op-census"))]
+        {
+            self.whole_commits += 1;
+        }
+        true
     }
 
     /// `commit_planes_run` of the `len` (over 64) elements of `src` from `src_off` to element
@@ -4186,6 +4255,92 @@ mod tests {
                 w
             };
             assert_eq!(sorted(&a), sorted(&b), "{so} {dst} {len}");
+        }
+    }
+
+    /// A whole bus committed at once (`commit_whole`) against the same entries in two runs (the
+    /// entry loop): the same driving value, pending bits, word list and lag, with whatever lies
+    /// past the end of the last word kept.
+    #[test]
+    fn a_whole_bus_commit_is_its_entries() {
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        // From 4 words (`WHOLE_MIN`), at both sides of the gate; a last word whole and not.
+        for n in [65u32, 192, 193, 200, 256, 257, 512] {
+            let ty = SignalType::logic(n);
+            let mut init = Buf::zeroed(ty.elem, n as usize);
+            for p in init.planes_mut().expect("planes") {
+                *p = [next(), next(), next(), next()];
+            }
+            let mk = || {
+                let mut s = Signal::new("s".into(), ty, init.clone(), None);
+                s.driving = init.clone();
+                s.pend_words.clear();
+                s
+            };
+            let outs: Vec<_> = (0..n)
+                .step_by(64)
+                .map(|k| {
+                    let len = (n - k).min(64);
+                    crate::process::OutV {
+                        sig: 0,
+                        slot: 0,
+                        elem: k,
+                        len,
+                        planes: [next(), next(), next(), next()].map(|w| w & nmask(len as usize)),
+                    }
+                })
+                .collect();
+            let (mut a, mut b) = (mk(), mk());
+            assert!(a.commit_planes_run(&outs), "{n}");
+            assert!(a.pend_words.len() == outs.len());
+            assert!(b.commit_planes_run(&outs[..1]), "{n}");
+            assert!(!b.commit_planes_run(&outs[1..]), "{n}");
+            #[cfg(any(debug_assertions, feature = "op-census"))]
+            assert_eq!(
+                (a.whole_commits, b.whole_commits),
+                (u64::from(outs.len() >= 4), 0),
+                "{n}"
+            );
+            assert_eq!(a.driving.planes_mut(), b.driving.planes_mut(), "{n}");
+            assert_eq!(a.pend, b.pend, "{n}");
+            assert_eq!(a.pend_words, b.pend_words, "{n}");
+            assert_eq!((a.lag, a.last_commit.0), (b.lag, b.last_commit.0), "{n}");
+            // Entries out of order, or one a bit short, are no whole bus: the entry loop takes
+            // them, to the same value.
+            let mut swapped = outs.clone();
+            swapped.swap(0, 1);
+            let mut short = outs.clone();
+            short[1].len -= 1;
+            short[1].planes = short[1].planes.map(|w| w & nmask(63));
+            // Or the signal has an element pending already.
+            let one = crate::process::OutV {
+                sig: 0,
+                slot: 0,
+                elem: 5,
+                len: 1,
+                planes: [1, 0, 0, 0],
+            };
+            for (run, pending) in [(swapped, false), (short, false), (outs.clone(), true)] {
+                let (mut c, mut d) = (mk(), mk());
+                if pending {
+                    c.commit_planes_run(&[one]);
+                    d.commit_planes_run(&[one]);
+                }
+                assert_eq!(c.commit_planes_run(&run), !pending, "{n}");
+                for o in &run {
+                    d.commit_planes_run(std::slice::from_ref(o));
+                }
+                #[cfg(any(debug_assertions, feature = "op-census"))]
+                assert_eq!(c.whole_commits, 0, "{n}");
+                assert_eq!(c.driving.planes_mut(), d.driving.planes_mut(), "{n}");
+                assert_eq!(c.pend, d.pend, "{n}");
+            }
         }
     }
 

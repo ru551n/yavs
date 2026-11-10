@@ -287,6 +287,9 @@ pub struct Stats {
     /// Bus copies of `forward_copy` onto a block boundary (`mark_words`; debug and `op-census`
     /// builds only, else 0).
     pub block_copies: u64,
+    /// Runs of plane-word entries that were a whole bus with nothing pending, stored at once
+    /// (`Signal::commit_whole`; debug and `op-census` builds only, else 0).
+    pub whole_commits: u64,
 }
 
 /// A pending observer wake-up (`Hook::wake_at`). Ordered by time, then registration.
@@ -2044,6 +2047,8 @@ impl SimControl {
                 + tail(|t| t.1),
             images: self.images.memory().0,
             image_bytes: self.images.memory().1,
+            #[cfg(any(debug_assertions, feature = "op-census"))]
+            whole_commits: self.signals.iter().map(|s| s.whole_commits).sum(),
             ..self.stats
         }
     }

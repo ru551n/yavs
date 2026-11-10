@@ -1,0 +1,5 @@
+exit	0
+diag	note	300000000	1	:deep_wait:waiters(0):waiter	depth 0 woke 300
+diag	note	300000000	1	:deep_wait:waiters(1):waiter	depth 1 woke 300
+diag	note	300000000	1	:deep_wait:waiters(2):waiter	depth 3 woke 300
+diag	note	300000000	1	:deep_wait:waiters(3):waiter	depth 6 woke 300

@@ -389,6 +389,7 @@ const PASS: &[&str] = &[
     "process/subtype_bounds_once",
     "process/wait_in_sensitivity_proc",
     "process/conditional_expr_2019",
+    "process/deep_wait",
     "process/dispatch_subtree",
     "process/resume_booking",
     "process/edge_alias",

@@ -27,6 +27,7 @@ const PASS: &[&str] = &[
     "sigassign/wide_history",
     "sigassign/wide_history_ext",
     "sigassign/wide_level",
+    "sigassign/fused_copy_address",
     "composite/array_param_cells",
     "composite/array_param_cells_dir",
     "composite/array_param_cells_formal",

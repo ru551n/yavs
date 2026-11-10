@@ -1539,7 +1539,7 @@ pub struct NativeFlags {
     /// Per function, the native frames of it that left to the interpreter (`materialised`).
     left_native: Box<[std::sync::atomic::AtomicU64]>,
     /// What the count rule did, for `YAVS_COUNTERS` (`CountStat`).
-    count_stat: [std::sync::atomic::AtomicU64; CountStat::Unlocked as usize + 1],
+    count_stat: [std::sync::atomic::AtomicU64; CountStat::TreeHeld as usize + 1],
 }
 
 /// What the count rule of `--tier=auto` did in a run (`YAVS_COUNTERS`), so a test sees it stop.
@@ -1572,6 +1572,9 @@ pub enum CountStat {
     /// Functions a later run compiled for the time of the callees that wait for them, which their
     /// own time would not repay (`Worker::unlocked`).
     Unlocked,
+    /// Processes the first run held past `WAIT_LONG` while the callees their compile pulls in had
+    /// not repaid their price (`Worker::tree_unpaid`).
+    TreeHeld,
 }
 
 impl NativeFlags {
@@ -1604,7 +1607,7 @@ impl NativeFlags {
     }
 
     /// What the count rule did so far, by `CountStat`.
-    pub fn count_stats(&self) -> [u64; CountStat::Unlocked as usize + 1] {
+    pub fn count_stats(&self) -> [u64; CountStat::TreeHeld as usize + 1] {
         std::array::from_fn(|i| self.count_stat[i].load(Ordering::Relaxed))
     }
 

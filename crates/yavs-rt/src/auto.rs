@@ -1227,6 +1227,9 @@ const WAIT_HELD_RUNS: u32 = u32::MAX;
 /// (`Worker::unlocked`): `uvvm_axistream_vvc`'s command executor seen 0.2 percent of its price by
 /// itself frees about a second of callees a run.
 const WAIT_SUBTREE: bool = true;
+/// `Worker::unpaid` holds a process in the first run past `WAIT_LONG` until the tree of callees its
+/// compile pulls in repays this factor of its price (`Worker::tree_unpaid`).
+const WAIT_TREE: f64 = 2.0;
 const WAIT_HELD_FREE: bool = true;
 /// `Worker::next_asked` orders by heat per price: in oldest-first order a large one-shot sequencer held
 /// the budget (`uvvm_axistream_vvc` run 2 29.4 G against 25.0).
@@ -1420,6 +1423,8 @@ struct Worker {
     /// compiled because of the callees they unlock (`CountStat::Unlocked`).
     unpaid_long_seen: Vec<bool>,
     unlocked_seen: Vec<bool>,
+    /// Processes `tree_unpaid` held at some time (`CountStat::TreeHeld`).
+    tree_seen: Vec<bool>,
     unrepaid_ids: Vec<FuncId>,
     carried: std::collections::HashMap<FuncId, (u64, u32)>,
     /// Callees that keep compiled native-frame code unpublished, to ask for (`publish`), and whether
@@ -1461,6 +1466,9 @@ struct Worker {
     /// `unrepaid` judges a function with the callees it unlocks (`unlocked`,
     /// `YAVS_AUTO_WAIT_SUBTREE`; 0: by its own time and price).
     wait_subtree: bool,
+    /// `unpaid` holds a process past `WAIT_LONG` until the tree its compile pulls in repays this
+    /// factor of its price (`tree_unpaid`, `YAVS_AUTO_WAIT_TREE`; 0: off).
+    wait_tree: f64,
     /// The runs in a row `unrepaid` holds a function before it compiles it anyway
     /// (`YAVS_AUTO_WAIT_HELD_RUNS`): the count asked for it in each of them.
     wait_held_runs: u32,
@@ -1702,6 +1710,7 @@ impl Worker {
             held: vec![false; nfuncs],
             unrepaid_seen: vec![false; nfuncs],
             unpaid_long_seen: vec![false; nfuncs],
+            tree_seen: vec![false; nfuncs],
             unlocked_seen: vec![false; nfuncs],
             unrepaid_ids: Vec::new(),
             carried: Default::default(),
@@ -1723,6 +1732,7 @@ impl Worker {
             wait_long_share: WAIT_LONG_SHARE,
             wait_gain: WAIT_GAIN,
             wait_subtree: WAIT_SUBTREE,
+            wait_tree: WAIT_TREE,
             wait_order: WAIT_ORDER,
             wait_held_runs: WAIT_HELD_RUNS,
             wait_held_free: WAIT_HELD_FREE,
@@ -1926,6 +1936,16 @@ impl Worker {
         {
             self.native.count_stat(CountStat::UnpaidLong);
         }
+        if self.total >= WAIT_LONG
+            && !self.tree_seen[id.0 as usize]
+            && self.stops
+            && self.earlier.base.is_none()
+            && !self.cached(id)
+            && self.tree_unpaid(id)
+        {
+            self.tree_seen[id.0 as usize] = true;
+            self.native.count_stat(CountStat::TreeHeld);
+        }
     }
 
     /// The part of the simulation CPU the compiles of a run that stops for them may take: `wait_share`,
@@ -2034,7 +2054,21 @@ impl Worker {
         self.prog
             .func(id)
             .is_some_and(|f| f.kind == FuncKind::Process)
-            && (self.bseen[self.prog.base_of(id).0 as usize] as f64) < price * self.wait_long_floor
+            && ((self.bseen[self.prog.base_of(id).0 as usize] as f64)
+                < price * self.wait_long_floor
+                || self.tree_unpaid(id))
+    }
+
+    /// Past `WAIT_LONG`, a process whose compile pulls in the callees that wait only for it
+    /// (`unlocked`) waits until the looks saw that tree for `wait_tree` times its price (and
+    /// `wait_payback`): compiling it compiles them, all in this run.
+    fn tree_unpaid(&self, id: FuncId) -> bool {
+        if self.wait_tree <= 0.0 {
+            return false;
+        }
+        let (us, price) = self.unlocked(id);
+        price > self.body_price(id)
+            && (us as f64) < price as f64 * self.wait_tree * self.wait_payback
     }
 
     /// What the cache lists is a link, and the last run of this program was long enough: it does not
@@ -4002,6 +4036,9 @@ impl AutoTier {
         if let Some(p) = knob("YAVS_AUTO_WAIT_SUBTREE") {
             w.wait_subtree = p != 0.0;
         }
+        if let Some(p) = knob("YAVS_AUTO_WAIT_TREE") {
+            w.wait_tree = p;
+        }
         if let Some(p) = knob("YAVS_AUTO_WAIT_HELD_RUNS") {
             w.wait_held_runs = p as u32;
         }
@@ -4838,6 +4875,37 @@ mod tests {
         assert!(w.waits(caller));
         w.gate = 0;
         assert!(!w.waits(caller));
+    }
+
+    /// Past `WAIT_LONG` the first run also holds a process until the callees its compile pulls in
+    /// (`unlocked`) were seen with it for `WAIT_TREE` times their price (`tree_unpaid`); not with the
+    /// rule off, nor in a later run.
+    #[test]
+    fn a_first_run_holds_a_process_until_the_tree_it_pulls_in_repays() {
+        let (prog, caller, callee) = caller_callee();
+        let mut w = counted(prog, 0);
+        let (k, j) = (caller.0 as usize, callee.0 as usize);
+        (w.stops, w.total) = (true, super::WAIT_LONG);
+        // Past the floor by itself.
+        (w.bseen[k], w.time[k][0]) = (w.price_of(caller, false), 1);
+        assert!(!w.waits(caller), "no callee seen");
+        w.time[j][0] = 1;
+        let price = w.body_price(caller) + w.body_price(callee);
+        assert_eq!(w.unlocked(caller), (2, price));
+        assert!(w.waits(caller), "a tree seen for less than its price");
+        w.note_unrepaid(caller);
+        assert_eq!(
+            w.native.count_stats()[yavs_interp::CountStat::TreeHeld as usize],
+            1
+        );
+        w.time[j][0] = (price as f64 * super::WAIT_TREE * super::WAIT_PAYBACK).ceil() as u64;
+        assert!(!w.waits(caller), "the tree repaid");
+        w.time[j][0] = 1;
+        w.wait_tree = 0.0;
+        assert!(!w.waits(caller), "the rule off");
+        w.wait_tree = super::WAIT_TREE;
+        w.earlier.base = Some(1);
+        assert!(!w.unpaid(caller), "a later run");
     }
 
     /// A later run that stops for its compiles (`unrepaid`) holds a function the cache does not hold

@@ -721,11 +721,6 @@ Compiled tiers: when to compile
      - any value
      - unset
      - ``run``
-   * - ``YAVS_FIRST_ONLY``
-     - The first-level generator is the only one, with no later recompile.
-     - any value
-     - unset
-     - ``run``
    * - ``YAVS_FIRST_TUNE``
      - Overrides the first-level thresholds for a measurement.
      - ``KEY=N,...``

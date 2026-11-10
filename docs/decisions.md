@@ -14867,6 +14867,18 @@ the IR optimiser and lowering. Decisions:
 - **No behaviour change.** The machine code of the difftest corpus (665 tests, 25 096 files from
   `YAVS_CLIFT_CODEDIR`, `--tier=clift --no-cache`) is byte for byte that of the build before the rename.
   The Rust symbols of the runtime change prefix (`yavs_rt::`), which `tools/realbench/replay.py` matches.
+- **Pruned with it (no behaviour change).** With Cranelift the only generator these were dead:
+  `Gens` and its `main` generator (`AutoTier::start_with` takes the one `Generator`), `OptLevel` (all
+  levels, `Fast`/`FastRa` included, and `Generator::level_for` and the level argument of `compile` and
+  of `Note`), the recompile of a function that ran at `Fast` (`Worker::fast`, `PAYBACK_RA`, `ra_cost`),
+  the recompile at O2 of a function seen running compiled (`Heat::o2_threshold`, `Tune::o2_after`,
+  `O2_AFTER`, the `see` upgrade parameter), `Tune::MAIN` with the LLVM price tables `HIT` and `HIT_GEN`
+  and the clocked-process rule `rtl`, the generator ranks (`nat_by` and `no_native` are flags), and
+  `YAVS_FIRST_ONLY`. What stays of the second compile (`o2` in the code) is the whole function again
+  after code made with blocks listed as never run ran too much of them (`take_again`). The unit tests
+  that read `Tune::MAIN` were dropped with it. The count-rule worker of the unit tests, which had no
+  generator and so the old tuning and prices, now has the stub generator and the Cranelift tuning like
+  every worker of a run; one test's long-run share (`next_asked`) is derived from the two prices.
 
 ## `--threads=auto` round 4 (yavs-kernel, #884, 2026-11-08)
 

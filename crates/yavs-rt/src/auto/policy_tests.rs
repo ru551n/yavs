@@ -1,16 +1,14 @@
-//! The tier-up policy of `--tier=auto` in the Cranelift configuration (a first-level generator and
-//! no optimising one: `Tune::first`): what becomes hot and when, what a compile costs and repays,
+//! The tier-up policy of `--tier=auto` (`Tune::first`): what becomes hot and when, what a compile costs and repays,
 //! copies of processes, and the publication of native-frame code. The worker runs on programs
 //! built here and on `Look`s made up here; the generator is a stub, since none of these decisions
-//! compiles anything. Tests of the LLVM configuration of the policy (the optimising generator,
-//! its recompile at `FastRa`) were removed with that tier.
+//! compiles anything. Tests of the LLVM configuration of the policy were removed with that tier.
 
 use super::{Part, models};
 use yavs_diag::{FileId, Span};
 use yavs_ir::{Inst, ProgramBuilder, StmtKind};
 
 /// A generator that compiles nothing: the policy only asks it what it is.
-struct Stub;
+pub(super) struct Stub;
 
 impl crate::Generator for Stub {
     fn compile(
@@ -18,7 +16,6 @@ impl crate::Generator for Stub {
         _: &yavs_ir::Program,
         _: yavs_ir::FuncId,
         _: &yavs_ir::Func,
-        _: crate::OptLevel,
         _: Part,
     ) -> Result<crate::native::Compiled, String> {
         Err("stub".into())
@@ -129,11 +126,9 @@ fn worker_on((prog, f): (yavs_ir::Program, yavs_ir::FuncId)) -> (super::Worker, 
         tab(),
         rt.native_flags(),
         super::Heat::DEFAULT,
-        crate::OptLevel::O2,
         usize::MAX,
-        None,
-        Some(Box::new(Stub)),
-        Box::new(|_, _, _| {}),
+        Box::new(Stub),
+        Box::new(|_, _| {}),
     );
     (w, f)
 }
@@ -155,11 +150,9 @@ fn worker_of(prog: yavs_ir::Program) -> super::Worker {
         tab(),
         rt.native_flags(),
         super::Heat::DEFAULT,
-        crate::OptLevel::O2,
         usize::MAX,
-        None,
-        Some(Box::new(Stub)),
-        Box::new(|_, _, _| {}),
+        Box::new(Stub),
+        Box::new(|_, _| {}),
     )
 }
 
@@ -265,7 +258,7 @@ fn what_is_hot_depends_on_the_looks_only() {
             if pause && n % 7 == 0 {
                 std::thread::sleep(std::time::Duration::from_millis(3));
             }
-            w.see(&look(1), false, &mut pending);
+            w.see(&look(1), &mut pending);
             if !pending.cands.is_empty() {
                 assert_eq!(pending.cands, [f]);
                 assert_eq!(w.cost(f), price, "{n}");
@@ -330,8 +323,8 @@ fn a_cached_function_waits_for_its_cache_price_only() {
     assert_eq!(w.floor(f), floor, "not in the cache");
     w.in_cache[f.0 as usize] = std::cell::OnceCell::from(true);
     assert_eq!(w.floor(f), 0);
-    assert!(w.threshold(f, false) < floor, "{}", w.threshold(f, false));
-    assert_eq!(w.threshold(f, false), w.need(f));
+    assert!(w.threshold(f) < floor, "{}", w.threshold(f));
+    assert_eq!(w.threshold(f), w.need(f));
     w.heat.budget = 0;
     assert_eq!(w.floor(f), floor, "--tier-heat");
 }
@@ -347,17 +340,17 @@ fn the_profile_makes_a_function_a_candidate_at_its_first_look() {
         cpu: us,
     };
     let mut pending = super::Pending::default();
-    w.see(&look(10), false, &mut pending);
+    w.see(&look(10), &mut pending);
     assert!(
         pending.early.is_empty() && pending.cands.is_empty(),
         "no profile"
     );
     w.asked_for[f.0 as usize] = false;
     w.early.insert(f, 500_000);
-    w.see(&look(10), false, &mut pending);
+    w.see(&look(10), &mut pending);
     assert_eq!(pending.early, [(500_000, f)]);
     assert!(pending.cands.is_empty());
-    w.see(&look(10), false, &mut pending);
+    w.see(&look(10), &mut pending);
     assert_eq!(pending.early.len(), 1, "asked once");
     let ids = w.next_early(&mut pending).expect("a tree");
     assert_eq!(ids[0].0, f);
@@ -367,7 +360,7 @@ fn the_profile_makes_a_function_a_candidate_at_its_first_look() {
     w.early.insert(f, 500_000);
     w.lost[f.0 as usize] = true;
     let mut none = super::Pending::default();
-    w.see(&look(10), false, &mut none);
+    w.see(&look(10), &mut none);
     assert!(none.early.is_empty() && none.cands.is_empty());
     // Compiled in the meantime: skipped when its turn comes.
     let (mut w, f) = worker(100);
@@ -388,9 +381,9 @@ fn the_snapshot_names_the_processes_that_are_hot_and_would_gain() {
     };
     let mut pending = super::Pending::default();
     // 19 ms: not yet; 21 ms: hot.
-    w.see(&look(19_000), false, &mut pending);
+    w.see(&look(19_000), &mut pending);
     assert!(w.snapshot().seen.is_empty());
-    w.see(&look(2_000), false, &mut pending);
+    w.see(&look(2_000), &mut pending);
     // (A function, not a process: no early compile of it.)
     assert!(w.snapshot().seen.is_empty());
     assert_eq!(w.hotish, [f.0]);
@@ -412,17 +405,15 @@ fn the_snapshot_names_the_processes_that_are_hot_and_would_gain() {
         tab(),
         rt.native_flags(),
         super::Heat::DEFAULT,
-        crate::OptLevel::O2,
         usize::MAX,
-        None,
-        Some(Box::new(Stub)),
-        Box::new(|_, _, _| {}),
+        Box::new(Stub),
+        Box::new(|_, _| {}),
     );
     let look = |us: u64| super::Look {
         running: vec![(p, false, us)],
         cpu: us,
     };
-    w.see(&look(100_000), false, &mut pending);
+    w.see(&look(100_000), &mut pending);
     for (kind, named) in [
         (Kind::ComputeFrame, true),
         (Kind::Rtl, true),
@@ -454,7 +445,7 @@ fn a_look_shares_its_time_between_the_running_functions() {
     let (mut w, f) = worker(100);
     let mut pending = super::Pending::default();
     let look = super::shared_look(1000, &[(0, f, false), (1, f, true)]);
-    w.see(&look, false, &mut pending);
+    w.see(&look, &mut pending);
     assert_eq!(w.time[f.0 as usize], [500, 500]);
     assert_eq!(w.total, 1000);
 }
@@ -470,10 +461,10 @@ fn a_function_below_the_base_threshold_is_not_analysed() {
         cpu: us,
     };
     let mut pending = super::Pending::default();
-    w.see(&look(at - 1), false, &mut pending);
+    w.see(&look(at - 1), &mut pending);
     assert!(w.compute[f.0 as usize].get().is_none());
     assert!(pending.cands.is_empty());
-    w.see(&look(1), false, &mut pending);
+    w.see(&look(1), &mut pending);
     assert!(w.compute[f.0 as usize].get().is_some());
 }
 
@@ -492,15 +483,15 @@ fn a_copy_repays_its_own_compile() {
     };
     let mut pending = super::Pending::default();
     let need = w.need(c2);
-    w.see(&look(c1, 10 * need), false, &mut pending);
+    w.see(&look(c1, 10 * need), &mut pending);
     assert_eq!(pending.cands, [c1], "repaid by its own time");
-    w.see(&look(c2, need - 1), false, &mut pending);
+    w.see(&look(c2, need - 1), &mut pending);
     assert_eq!(
         pending.cands,
         [c1],
         "the process is hot, but this copy has not repaid yet"
     );
-    w.see(&look(c2, 1), false, &mut pending);
+    w.see(&look(c2, 1), &mut pending);
     assert_eq!(pending.cands, [c1, c2]);
     let k = |id| {
         let f = w.prog.func(id).unwrap();
@@ -523,7 +514,7 @@ fn the_profile_takes_a_process_with_a_big_loop_copy() {
         cpu: us,
     };
     let mut pending = super::Pending::default();
-    w.see(&look(c1, 100_000), false, &mut pending);
+    w.see(&look(c1, 100_000), &mut pending);
     let set = |w: &mut super::Worker, id: yavs_ir::FuncId, k: Kind| {
         w.kinds[id.0 as usize] = Default::default();
         w.kinds[id.0 as usize].set(k).unwrap();
@@ -535,13 +526,13 @@ fn the_profile_takes_a_process_with_a_big_loop_copy() {
     assert_eq!(w.snapshot().seen, [(f.0, 100_000)]);
     // The next run: the copy is compiled early only once the time seen pays for it.
     set(&mut w, c2, Kind::BigLoop);
-    let need = w.threshold(c2, false);
+    let need = w.threshold(c2);
     let mut pending = super::Pending::default();
     w.early.insert(f, need - 1);
-    w.see(&look(c2, 1), false, &mut pending);
+    w.see(&look(c2, 1), &mut pending);
     assert!(pending.early.is_empty());
     w.early.insert(f, need);
-    w.see(&look(c2, 1), false, &mut pending);
+    w.see(&look(c2, 1), &mut pending);
     assert_eq!(pending.early.len(), 1);
     assert_eq!(pending.early[0].1, c2);
 }

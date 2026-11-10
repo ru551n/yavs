@@ -145,7 +145,6 @@ impl yavs_rt::Generator for First {
         prog: &yavs_ir::Program,
         id: FuncId,
         f: &yavs_ir::Func,
-        _level: yavs_rt::OptLevel,
         part: yavs_rt::native::Part,
     ) -> Result<yavs_rt::native::Compiled, String> {
         use yavs_rt::native::Part;

@@ -10,7 +10,7 @@ use yavs_clift::First;
 use yavs_diag::{FileId, Span};
 use yavs_interp::{Bindings, InstData, Runtime};
 use yavs_ir::*;
-use yavs_rt::{AutoTier, Gens, Heat, Note, OptLevel};
+use yavs_rt::{AutoTier, Heat, Note};
 
 /// `function f return 7`.
 fn seven() -> (Program, FuncId) {
@@ -42,12 +42,9 @@ fn verifier_errors_are_not_swallowed() {
         period: 0,
         budget: 0,
     };
-    let note: Note = Box::new(|_, _, _| {});
-    let gens = Gens {
-        main: None,
-        first: Some(Box::new(First::new().unwrap())),
-    };
-    let tier = AutoTier::start_with(&rt, OptLevel::O2, usize::MAX, heat, note, gens).unwrap();
+    let note: Note = Box::new(|_, _| {});
+    let tier =
+        AutoTier::start_with(&rt, usize::MAX, heat, note, Box::new(First::new().unwrap())).unwrap();
     let _ = yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[]);
     std::thread::sleep(std::time::Duration::from_millis(1500));
     let stopped = catch_unwind(AssertUnwindSafe(|| tier.stop(true)));

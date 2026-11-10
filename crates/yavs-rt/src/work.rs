@@ -22,7 +22,7 @@ pub(crate) fn work_us(instr: u64) -> u64 {
     instr / per_us()
 }
 
-/// `INSTR_PER_US` (`YAVS_AUTO_IPUS` overrides it, a tuning aid like `YAVS_LLVM_FAST_MIN`).
+/// `INSTR_PER_US` (`YAVS_AUTO_IPUS` overrides it, a tuning aid).
 pub(crate) fn per_us() -> u64 {
     static PER: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *PER.get_or_init(|| {

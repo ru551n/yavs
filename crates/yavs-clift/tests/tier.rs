@@ -9,7 +9,7 @@ use yavs_clift::{ClifTier, First};
 use yavs_diag::{FileId, Span};
 use yavs_interp::{Bindings, InstData, Runtime, Tier, TierHost};
 use yavs_ir::*;
-use yavs_rt::{AutoTier, Gens, Heat, Note, OptLevel};
+use yavs_rt::{AutoTier, Heat, Note};
 
 /// Counts the entries into compiled code.
 struct Counting(ClifTier, AtomicUsize);
@@ -172,11 +172,7 @@ const HOT: Heat = Heat {
 
 /// The tier-up policy with Cranelift as its only generator.
 fn start(rt: &Runtime, max_size: usize, note: Note) -> Arc<AutoTier> {
-    let gens = Gens {
-        main: None,
-        first: Some(Box::new(First::new().unwrap())),
-    };
-    AutoTier::start_with(rt, OptLevel::O2, max_size, HOT, note, gens).unwrap()
+    AutoTier::start_with(rt, max_size, HOT, note, Box::new(First::new().unwrap())).unwrap()
 }
 
 /// `--tier=auto`: the loop becomes hot while it runs in the interpreter, is compiled on the
@@ -187,7 +183,7 @@ fn auto_tier_compiles_hot_functions() {
     let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
     let notes = Arc::new(Mutex::new(Vec::new()));
     let seen = notes.clone();
-    let note: Note = Box::new(move |f, _, why| seen.lock().unwrap().push((f, why)));
+    let note: Note = Box::new(move |f, why| seen.lock().unwrap().push((f, why)));
     let tier = start(&rt, usize::MAX, note);
     let call = || yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[100_000]);
     // The loop runs until the sampler has seen it and its code is compiled.
@@ -211,7 +207,7 @@ fn auto_tier_skips_functions_over_the_size_cap() {
     let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
     let notes = Arc::new(Mutex::new(Vec::new()));
     let seen = notes.clone();
-    let note: Note = Box::new(move |f, _, why| seen.lock().unwrap().push((f, why)));
+    let note: Note = Box::new(move |f, why| seen.lock().unwrap().push((f, why)));
     let tier = start(&rt, 3, note);
     let t0 = Instant::now();
     while notes.lock().unwrap().is_empty() {

@@ -1090,7 +1090,7 @@ pub fn elab(
 /// waiting for a function still compiling; on any other return the drop waits for it.
 enum StopTierUp {
     #[cfg(feature = "clift")]
-    Llvm(std::sync::Arc<yavs_rt::AutoTier>),
+    Clift(std::sync::Arc<yavs_rt::AutoTier>),
 }
 
 impl StopTierUp {
@@ -1101,7 +1101,7 @@ impl StopTierUp {
     fn end(self, code: u8, keep_exit: bool) {
         match &self {
             #[cfg(feature = "clift")]
-            StopTierUp::Llvm(t) => {
+            StopTierUp::Clift(t) => {
                 if !t.stop(keep_exit) {
                     yavs_rt::exit_now(code);
                 }
@@ -1122,7 +1122,7 @@ impl StopTierUp {
     ) -> (std::time::Duration, Arc<dyn Fn() + Send + Sync>) {
         match self {
             #[cfg(feature = "clift")]
-            StopTierUp::Llvm(t) => {
+            StopTierUp::Clift(t) => {
                 let tier = t.clone();
                 (
                     yavs_rt::START_AFTER,
@@ -1152,7 +1152,7 @@ impl Drop for StopTierUp {
     fn drop(&mut self) {
         match self {
             #[cfg(feature = "clift")]
-            StopTierUp::Llvm(t) => {
+            StopTierUp::Clift(t) => {
                 t.stop(true);
             }
             #[cfg(not(feature = "clift"))]
@@ -1248,7 +1248,7 @@ fn use_clift(
         });
     let prog = rt.prog.clone();
     let verbose = a.verbose;
-    let note: yavs_rt::Note = Box::new(move |f, _level, why| {
+    let note: yavs_rt::Note = Box::new(move |f, why| {
         if !verbose {
             return;
         }
@@ -1263,19 +1263,10 @@ fn use_clift(
         }
     });
     let first = yavs_clift::First::new().map_err(bug)?;
-    let t = yavs_rt::AutoTier::start_deferred_with(
-        rt,
-        yavs_rt::OptLevel::O2,
-        a.tier_max_size,
-        heat,
-        note,
-        yavs_rt::Gens {
-            main: None,
-            first: Some(Box::new(first)),
-        },
-    )
-    .map_err(|e| bug(e.to_string()))?;
-    Ok(Some(StopTierUp::Llvm(t)))
+    let t =
+        yavs_rt::AutoTier::start_deferred_with(rt, a.tier_max_size, heat, note, Box::new(first))
+            .map_err(|e| bug(e.to_string()))?;
+    Ok(Some(StopTierUp::Clift(t)))
 }
 
 /// A name for this run in the profiles of `--tier=auto` and `--threads=auto`: a digest of the
@@ -1376,7 +1367,7 @@ fn use_tier(
 ) -> Result<Option<StopTierUp>, Box<Diagnostic>> {
     let t = tier_of(rt, a)?;
     #[cfg(feature = "clift")]
-    if let Some(StopTierUp::Llvm(t)) = &t {
+    if let Some(StopTierUp::Clift(t)) = &t {
         t.set_compile(match a.tier_compile {
             TierCompileArg::Wait => yavs_rt::Compile::Wait,
             TierCompileArg::Background => yavs_rt::Compile::Background,

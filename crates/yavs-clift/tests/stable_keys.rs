@@ -7,8 +7,8 @@ use std::path::Path;
 use yavs_clift::First;
 use yavs_diag::{FileId, Span};
 use yavs_ir::*;
+use yavs_rt::Generator;
 use yavs_rt::native::Part;
-use yavs_rt::{Generator, OptLevel};
 
 /// `inc(a)`, a chain of additions ending in `step`, too long for the optimiser to inline, and
 /// `caller(a) = inc(a)`.
@@ -66,8 +66,7 @@ fn compile(prog: &Program, caller: FuncId, tree: &[FuncId]) {
     let mut g = First::new().expect("a code generator");
     g.tree(tree);
     let f = prog.func(caller).expect("the function");
-    g.compile(prog, caller, f, OptLevel::O2, Part::Native)
-        .expect("compiled");
+    g.compile(prog, caller, f, Part::Native).expect("compiled");
 }
 
 fn compiled(dir: &Path) -> usize {

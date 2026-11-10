@@ -5,8 +5,8 @@
 //! The thread samples what the simulation threads interpret (`Runtime::sampler`) every
 //! [`Heat::period`] microseconds and compiles a function once it was seen for about as long
 //! as compiling it takes ([`Heat`]); the function is compiled in a module of its own and
-//! published through an atomic entry. A function then seen running its compiled code 30
-//! times as long is compiled again at O2 ([`Heat::o2_threshold`]) and its entry replaced (#432); a Cranelift first level waits ten times longer ([`Tune`]).
+//! published through an atomic entry. Code made with blocks listed as never run that ran too much
+//! of them is replaced by the whole function, compiled again (`rt::take_again`).
 //! The interpreter asks the tier on entry and now and then at
 //! jumps, so the swap-in happens there in any frame of that function: compiled code runs on
 //! the interpreter frame's registers and enters at any pc (an instruction that is not an entry
@@ -34,7 +34,7 @@ use std::time::Duration;
 use yavs_interp::{CountStat, Runtime, Tier, TierHost};
 use yavs_ir::{FuncId, FuncKind};
 
-use crate::generator::{Generator, OptLevel, StartError};
+use crate::generator::{Generator, StartError};
 use crate::native::{Part, native_set, too_big};
 use crate::profile::{self, Profile, Snapshot};
 use crate::rt::{RunFn, back_edges, call, enter, loops};
@@ -69,13 +69,6 @@ impl Heat {
     pub fn threshold(self, f: &yavs_ir::Func) -> u64 {
         let n = f.code.len() as u64;
         u64::from(self.base).saturating_add(u64::from(self.per_instr).saturating_mul(n) / 1000)
-    }
-
-    /// The time `f` must be seen running its first-tier code before it is compiled again at
-    /// O2: `after` (`Tune::o2_after`) times `threshold`, about ten times its O2 compile time (O2
-    /// costs about seven times O0).
-    pub fn o2_threshold(self, f: &yavs_ir::Func, after: u64) -> u64 {
-        self.threshold(f).saturating_mul(after)
     }
 
     /// Whether every function is compiled when the interpreter enters it.
@@ -344,30 +337,6 @@ fn too_many_callbacks(
 /// faster compiled have one in eleven or fewer, the ones that ran slower one in nine or more.
 const CALLBACKS: usize = 10;
 
-/// Whether `f` is the body of a process that runs once per activation (a clocked or
-/// combinational process: no loop of its own, at least `SHORT` IR instructions). Its time goes
-/// to the signal and kernel operations compiled code reaches directly: it is compiled as soon as
-/// it has run for a few milliseconds, within the budget of a compute loop, at the final level
-/// (O0 code ran 15 to 25 percent slower than O2 on these bodies, so a trial of it said little), and
-/// measured after the swap (`Worker::trial`, #596).
-fn rtl(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
-    f.kind == FuncKind::Process && (RTL_MIN..=RTL_MAX).contains(&f.code.len()) && !loops(prog, f)
-}
-
-/// The smallest process `rtl` takes: below this the way into and out of compiled code costs
-/// more than interpreting the body (the 90-instruction one of `rtl_chain` loses; decisions.md
-/// "round 3").
-const RTL_MIN: usize = 120;
-
-/// A clocked process (`rtl`) of fewer instances than this is `Kind::RtlFew`: compiled, the
-/// processes of a CPU design (most made once) ran 6 to 8 percent slower in cycles at the same
-/// instructions, those of designs with many instances of one process 7 to 34 percent faster
-/// (#510). So it is expected to gain little (eleven times its price in samples before it is
-/// compiled, not the sampled time of `RTL_SHARE` alone as it was a refusal of any number of samples
-/// before) and the measure after the swap (`Worker::trial`) takes the code back when it does not
-/// pay. ponytail: the instance count stands for how much an activation's code is reused.
-const RTL_INSTANCES: u32 = 16;
-
 /// A clocked process (`rtl`) seen for less than this part of the sampled time stays interpreted
 /// (`cold`): between its activations so much other code runs that its compiled code starts cold
 /// every time. The processes of 16 to 63 instances compiled in the CPU designs, a wide-vector
@@ -388,26 +357,26 @@ fn cold(seen: u64, total: u64, t: Tune) -> Option<String> {
     })
 }
 
-/// The rules for clocked processes (`rtl`) that depend on the code generator. LLVM's are the values
-/// the rules were measured with. A first-level generator (Cranelift) makes its code in a fifth of
-/// the time and the trial takes back what does not gain, so it takes shorter processes at once and
-/// processes of fewer instances and of a smaller part of the run: on the CPU-like designs these
-/// compile when they are seen long enough to repay the translation, which the payback rule
-/// decides.
+/// The rules for clocked processes (`rtl`) of the code generator. Cranelift makes its code fast and
+/// the trial takes back what does not gain, so it takes short processes and processes of few
+/// instances and of a small part of the run: on the CPU-like designs these compile when they are
+/// seen long enough to repay the translation, which the payback rule decides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Tune {
-    /// The smallest process `rtl` takes (`RTL_MIN`): the way into compiled code costs the same
-    /// for both, and Cranelift's code ran `rtl_ff`'s 136-instruction process in fewer
-    /// instructions than the interpreter.
+    /// The smallest process `rtl` takes: below this the way into and out of compiled code costs
+    /// more than interpreting the body (decisions.md "round 3"); Cranelift's code ran `rtl_ff`'s
+    /// 136-instruction process in fewer instructions than the interpreter.
     rtl_min: usize,
     /// Whether a process outside `RTL_BAND` waits `BAND_WAIT` (`band_wait`).
     band: bool,
-    /// `RTL_INSTANCES` and `RTL_SHARE` (`cold`).
+    /// A clocked process of fewer instances than this is `Kind::RtlFew`: compiled, the processes
+    /// of a CPU design (most made once) ran 6 to 8 percent slower in cycles at the same
+    /// instructions, those of designs with many instances of one process 7 to 34 percent faster
+    /// (#510). So it is expected to gain little and the measure after the swap (`Worker::trial`)
+    /// takes the code back when it does not pay. ponytail: the instance count stands for how much
+    /// an activation's code is reused. With `share` (`RTL_SHARE`) in `cold`.
     instances: u32,
     share: u64,
-    /// `O2_AFTER`: how many times its first-level threshold a function runs compiled before the
-    /// optimising generator makes it again (`Heat::o2_threshold`).
-    o2_after: u64,
     /// How many times the price of the callees a compile makes with its root (`Worker::tree`) the
     /// root must have been seen interpreted (`repaid`), on top of the payback of its own price (not
     /// for a nested subprogram entered in frame mode, which has no native variant); 0:
@@ -417,8 +386,7 @@ struct Tune {
     /// How many times its price a clocked process (`rtl`) is seen interpreted before it compiles,
     /// on top of `band_wait`: its compiled code gained 5 percent in the trials that kept it.
     payback_rtl: u64,
-    /// Without a main generator: a large subprogram (`native::big`) is `Kind::Big` or `BigLoop`,
-    /// as the main generator's `OptLevel::Fast` makes it. Not a process: Cranelift's code of
+    /// A large subprogram (`native::big`) is `Kind::Big` or `BigLoop`. Not a process: Cranelift's code of
     /// large processes gains (`fletcher_bufferwriter_512`'s `input_proc`, 3.7 percent of the run).
     big: bool,
     /// Whether a `Kind::Frame` process is compiled at all (its callers are not affected: a process
@@ -435,25 +403,11 @@ struct Tune {
 }
 
 impl Tune {
-    const MAIN: Tune = Tune {
-        rtl_min: RTL_MIN,
-        band: true,
-        instances: RTL_INSTANCES,
-        share: RTL_SHARE,
-        o2_after: O2_AFTER,
-        tree_payback: 0,
-        payback_rtl: 0,
-        big: true,
-        frame: true,
-        frame_calls: true,
-        wait_same: false,
-    };
     const FIRST: Tune = Tune {
         rtl_min: 64,
         band: false,
         instances: 4,
         share: 32,
-        o2_after: 300,
         tree_payback: 8,
         payback_rtl: 16,
         big: true,
@@ -462,7 +416,7 @@ impl Tune {
         wait_same: true,
     };
 
-    /// `FIRST`, or what `YAVS_FIRST_TUNE=rtl_min=N,band=0|1,instances=N,share=N,o2_after=N,
+    /// `FIRST`, or what `YAVS_FIRST_TUNE=rtl_min=N,band=0|1,instances=N,share=N,
     /// tree_payback=N,payback_rtl=N,big=0|1,frame=0|1,frame_calls=0|1,wait_same=0|1` changes of it (a measuring aid; an entry that is not understood is ignored).
     fn first() -> Tune {
         static T: std::sync::OnceLock<Tune> = std::sync::OnceLock::new();
@@ -475,7 +429,6 @@ impl Tune {
                     ("band", Ok(n)) => t.band = n != 0,
                     ("instances", Ok(n)) => t.instances = n as u32,
                     ("share", Ok(n)) => t.share = n,
-                    ("o2_after", Ok(n)) => t.o2_after = n,
                     ("tree_payback", Ok(n)) => t.tree_payback = n,
                     ("payback_rtl", Ok(n)) => t.payback_rtl = n,
                     ("big", Ok(n)) => t.big = n != 0,
@@ -824,30 +777,12 @@ fn first_fit(
         .collect())
 }
 
-/// See `Heat::o2_threshold`.
-const O2_AFTER: u64 = 30;
-
-/// The microseconds of CPU time a compile at `OptLevel::FastRa` takes (the optimised register
-/// allocator over thousands of blocks is more than linear): 100 per IR instruction and 0.05 more
-/// for every instruction of the function. 400 instructions took 50 ms, 4 500 1.4 s, 17 500 17 s
-/// (`Fast`: 0.1 to 0.15 s per thousand; #715).
-fn ra_cost(ir: usize) -> u64 {
-    let n = ir as f64;
-    (n * (100.0 + 0.05 * n)) as u64
-}
-
-/// A function that ran at `OptLevel::Fast` is compiled again at `FastRa` once it was seen running
-/// compiled for this many times that compile: its code is 6 to 13 percent faster, and the rest of
-/// the run is expected to be as long as the past (`PAYBACK`), so the compile repays at about
-/// twelve times its cost. A run too short for that never pays for it.
-const PAYBACK_RA: u64 = 12;
-
 /// What happened to a hot function: compiled at that level (with the time it took), or why
 /// it stays interpreted (or at its first level).
-pub type Note = Box<dyn FnMut(FuncId, OptLevel, Result<std::time::Duration, String>) + Send>;
+pub type Note = Box<dyn FnMut(FuncId, Result<std::time::Duration, String>) + Send>;
 
 /// The compiled code of a function: its entry (0 while it has none) and register count, with
-/// `LEAN` set for a process `regs::no_table` passes. The O2 recompile replaces the entry; code
+/// `LEAN` set for a process `regs::no_table` passes. The compile again replaces the entry; code
 /// once published stays valid as long as the tier.
 #[derive(Default)]
 struct Entry {
@@ -987,7 +922,7 @@ struct Pending {
     asked: std::collections::VecDeque<FuncId>,
     /// Hot functions waiting for the budget (`Worker::pick`).
     cands: Vec<FuncId>,
-    /// Functions to compile again at O2.
+    /// Functions to compile again in full (`take_again`).
     later: Vec<FuncId>,
     /// Functions to look up in the compilation cache (`Worker::probe`).
     probes: Vec<FuncId>,
@@ -998,13 +933,6 @@ struct Pending {
 
 /// Looks sent together: the compile thread wakes once per this many.
 const BATCH: usize = 8;
-
-/// The code generators of a tier: `main` compiles hot functions (and again at O2 those that stay
-/// hot), a cheaper `first` takes the first level when there is one. A tier needs one of them.
-pub struct Gens {
-    pub main: Option<Box<dyn Generator>>,
-    pub first: Option<Box<dyn Generator>>,
-}
 
 /// What the tier and its compile thread share.
 #[derive(Default)]
@@ -1031,8 +959,8 @@ struct Shared {
     /// Eager mode: per function, its compile (or the decision to leave it interpreted) is over,
     /// `Tier::hot` returns then.
     finished: Vec<AtomicBool>,
-    /// The generators once the thread has ended: compiled code lives as long as the tier.
-    gens: Mutex<Vec<Box<dyn Generator>>>,
+    /// The generator once the thread has ended: compiled code lives as long as the tier.
+    generator: Mutex<Option<Box<dyn Generator>>>,
     /// The run-to-run profile of this run until `stop` writes it (`profile.rs`).
     profile: Mutex<Option<ProfileJob>>,
     /// Where functions compile (`COMPILE_*`, `AutoTier::set_compile`).
@@ -1082,15 +1010,14 @@ enum Kind {
     /// Any other function or process, frame-mode code (the nested subprograms, the processes that
     /// are no clocked process, whatever has a loop and is not called on native frames).
     Frame,
-    /// A clocked process (`rtl`) made of `RTL_INSTANCES` or more instances.
+    /// A clocked process (`rtl`) made of `Tune::instances` or more instances.
     Rtl,
     /// A clocked process made of fewer instances: its compiled code starts cold more often (few
     /// activations share it) and gains little, but a big part of the run (the carry chain of an
     /// adder made 8 times) still pays (docs/decisions.md).
     RtlFew,
-    /// A function compiled at `OptLevel::Fast` (`lower::level_for`), the large combinational
-    /// processes among them; with a first-level generator alone a subprogram of that size
-    /// (`native::big`, `Tune::big`).
+    /// A large function (`native::big`, `Tune::big`): the large combinational processes and the
+    /// subprograms of that size.
     Big,
     /// A compute loop in frame-mode code (a process with a loop, a nested subprogram): its compile
     /// costs a fraction of the native-frame code of the same size.
@@ -1202,21 +1129,12 @@ fn models() -> &'static [Model; 10] {
     })
 }
 
-/// A module linked from the compilation cache by its pre-key (key, look-up, link, no generation,
-/// #785): 0.1 to 0.7 ms for functions of up to 220 IR instructions, 0.3 to 1 us an IR instruction from
-/// 1 000 to 20 000 (`YAVS_LLVM_TIMES` `prehit total`, GRLIB warm). A function whose object is in the
-/// cache is priced so (`Worker::price`, user, 2026-10-25: a warm run uses cached code as soon as it is
-/// seen), not at what compiling it costs. ponytail: the first run after the program changed has no
-/// pre-keys yet and generates; the price ignores that one run.
-const HIT: Model = model(1000.0, 1.0, 1.0);
-
-/// `HIT` of a program without `Program::identity` (not cached: coverage, large constant pools), which
-/// has no pre-keys: the module is generated and keyed by its IR, 12 to 50 us an IR instruction (#785).
-const HIT_GEN: Model = model(1000.0, 20.0, 1.0);
-
-/// `HIT` for a first-level generator (Cranelift): the body is generated again and its code linked,
+/// A module linked from the compilation cache: the body is generated again and its code linked,
 /// about 4 us an IR instruction (neorv32 eager: 1 804 functions, 143 723 IR instructions in 536 ms
-/// warm against 4 079 ms compiled, #481).
+/// warm against 4 079 ms compiled, #481). A function whose code is in the cache is priced so
+/// (`Worker::price`, user, 2026-10-25: a warm run uses cached code as soon as it is seen), not at
+/// what compiling it costs. ponytail: the first run after the program changed has no pre-keys yet
+/// and generates; the price ignores that one run.
 const FIRST_HIT: Model = model(0.0, 4.0, 1.0);
 
 /// `FIRST_HIT` since a hit links without the body (a pre-key), under the count rule (the old policy
@@ -1375,30 +1293,22 @@ struct Worker {
     ctab: Arc<[AtomicUsize]>,
     native: Arc<yavs_interp::NativeFlags>,
     heat: Heat,
-    opt: OptLevel,
     max_size: usize,
-    /// The optimising generator (LLVM), which compiles at `opt` and again at O2 (none: the first
-    /// level is the only one). Opened by the first function it compiles: a run that never gets
-    /// hot pays nothing.
-    main: Option<Box<dyn Generator>>,
-    /// A cheaper generator at the first level (`--tier=auto3`), with the microseconds it takes
-    /// per IR instruction (learned).
-    first: Option<Box<dyn Generator>>,
-    /// Per function: compiled at the first level, at O2.
+    /// The code generator, opened by the first function it compiles: a run that never gets hot
+    /// pays nothing.
+    generator: Box<dyn Generator>,
+    /// Per function: compiled the first time, compiled again in full.
     done: Vec<[bool; 2]>,
-    /// Per function: its first-level code is `OptLevel::Fast`, so the second compile is `FastRa`.
-    fast: Vec<bool>,
     /// Per function: the address of its native-frame code once compiled (0: none), and whether
     /// `ntab` names it. Published once everything it calls natively is compiled too: a missing
     /// callee would materialise the frames at every call.
     nat: Vec<(usize, bool)>,
-    /// Per function: the rank of the generator that made its native-frame code (1: the first
-    /// level, 2: the optimising one).
-    nat_by: Vec<u8>,
-    /// Per function: the rank of the generator that found it has no native-frame variant (its
-    /// static `native_set` says it runs on one, the generator's lowering refuses it or a callee);
-    /// 0: none found. Such a function gets frame-mode code instead (`compile`).
-    no_native: Vec<u8>,
+    /// Per function: its native-frame code was made.
+    nat_by: Vec<bool>,
+    /// Per function: the generator found it has no native-frame variant (its static `native_set`
+    /// says it runs on one, the generator's lowering refuses it or a callee). Such a function gets
+    /// frame-mode code instead (`compile`).
+    no_native: Vec<bool>,
     /// Functions in `no_native`.
     refusals: usize,
     /// Per function: its frame-mode code was left for later because nothing compiled calls it
@@ -1470,8 +1380,8 @@ struct Worker {
     probing: bool,
     /// The warning that a generator cannot be opened was printed.
     warned: bool,
-    /// The generators (`main`, `first`) were opened (their time counts as compile time spent).
-    loaded: [bool; 2],
+    /// The generator was opened (its time counts as compile time spent).
+    loaded: bool,
     /// The functions the compilation cache has compiled code of (`objcache::compiled_list`):
     /// the others are not looked up.
     listed: std::collections::HashSet<(String, u32)>,
@@ -1610,7 +1520,7 @@ impl Worker {
     /// Take one look of the sampler: charge the CPU time it covers to what the simulation threads
     /// were running, and note what became hot. Only the look and the state decide; nothing here
     /// reads a clock.
-    fn see(&mut self, look: &Look, upgrade: bool, pending: &mut Pending) {
+    fn see(&mut self, look: &Look, pending: &mut Pending) {
         self.sim_us += look.cpu;
         if look.running.is_empty() {
             return;
@@ -1644,10 +1554,6 @@ impl Worker {
                 pending.asked.push_back(id);
             }
             if compiled {
-                let (now, at) = (*t, self.threshold(id, true));
-                if was < at && now >= at && (upgrade || self.fast[id.0 as usize]) {
-                    pending.later.push(id);
-                }
                 continue;
             }
             let k = id.0 as usize;
@@ -1673,11 +1579,7 @@ impl Worker {
             // function can call (`natively`): not for one still below the base (#544).
             let now = self.group[g];
             let base = self.floor(id);
-            let at = if now < base {
-                base
-            } else {
-                self.threshold(id, false)
-            };
+            let at = if now < base { base } else { self.threshold(id) };
             // What the last run found hot is compiled at once, whatever the payback rule and the
             // budget say (the profile decides, not the looks: `next_early`). Not the shared code of a
             // process that can have copies: its processes switch to them, which the tier compiles.
@@ -1685,7 +1587,7 @@ impl Worker {
             if let Some(&us) = self.early.get(&self.prog.base_of(id))
                 && !self.lost[id.0 as usize]
                 && !(self.prog.base_of(id) == id && self.prog.specialisable(id))
-                && (self.prog.base_of(id) == id || us >= self.threshold(id, false))
+                && (self.prog.base_of(id) == id || us >= self.threshold(id))
                 && !std::mem::replace(&mut self.asked_for[id.0 as usize], true)
             {
                 pending.early.push((us, id));
@@ -1731,29 +1633,22 @@ impl Worker {
         ctab: Arc<[AtomicUsize]>,
         native: Arc<yavs_interp::NativeFlags>,
         heat: Heat,
-        opt: OptLevel,
         max_size: usize,
-        main: Option<Box<dyn Generator>>,
-        first: Option<Box<dyn Generator>>,
+        generator: Box<dyn Generator>,
         note: Note,
     ) -> Worker {
         let nfuncs = prog.funcs.len();
         Worker {
-            tune: if first.is_some() {
-                Tune::first()
-            } else {
-                Tune::MAIN
-            },
+            tune: Tune::first(),
             time: vec![[0; 2]; nfuncs],
             group: vec![0; nfuncs],
             asked_for: vec![false; nfuncs],
             frame_at: vec![0; nfuncs],
             deferred: Vec::new(),
             done: vec![[false; 2]; nfuncs],
-            fast: vec![false; nfuncs],
             nat: vec![(0, false); nfuncs],
-            nat_by: vec![0; nfuncs],
-            no_native: vec![0; nfuncs],
+            nat_by: vec![false; nfuncs],
+            no_native: vec![false; nfuncs],
             refusals: 0,
             declined: vec![false; nfuncs],
             callers: Default::default(),
@@ -1767,10 +1662,8 @@ impl Worker {
             ctab,
             native,
             heat,
-            opt,
             max_size,
-            main,
-            first,
+            generator,
             total: 0,
             spent: 0,
             sim_us: 0,
@@ -1791,7 +1684,7 @@ impl Worker {
             musts: vec![Default::default(); nfuncs],
             probing: false,
             warned: false,
-            loaded: [false; 2],
+            loaded: false,
             listed: Default::default(),
             profile_key: None,
             store: None,
@@ -1883,19 +1776,16 @@ impl Worker {
             .unwrap_or(id)
     }
 
-    /// Whether `id` is a clocked process (`rtl`). A copy of a process (`Program::copy_of`) counts
-    /// as the process it is a copy of, so every copy gets the decisions the process would get.
-    /// A first-level generator takes shorter processes (`Tune::rtl_min`): its code costs a fifth
-    /// of LLVM's to make and the trial takes it back when it does not gain.
+    /// Whether `id` is a clocked process (`rtl`): a process that runs once per activation (no
+    /// loop of its own, `Tune::rtl_min` to `RTL_MAX` IR instructions), whose time goes to the
+    /// signal and kernel operations compiled code reaches directly; it is measured after the swap
+    /// (`Worker::trial`, #596). A copy of a process (`Program::copy_of`) counts as the process it
+    /// is a copy of, so every copy gets the decisions the process would get.
     fn is_rtl(&self, id: FuncId) -> bool {
         self.prog.func(self.prog.base_of(id)).is_some_and(|f| {
-            if self.first.is_some() {
-                f.kind == FuncKind::Process
-                    && (self.tune.rtl_min..=RTL_MAX).contains(&f.code.len())
-                    && !loops(&self.prog, f)
-            } else {
-                rtl(&self.prog, f)
-            }
+            f.kind == FuncKind::Process
+                && (self.tune.rtl_min..=RTL_MAX).contains(&f.code.len())
+                && !loops(&self.prog, f)
         })
     }
 
@@ -2361,12 +2251,8 @@ impl Worker {
             } else {
                 Kind::Rtl
             }
-        } else if match &self.main {
-            Some(m) => m.level_for(&self.prog, f, OptLevel::O2) == OptLevel::Fast,
-            None => {
-                self.tune.big && f.kind != FuncKind::Process && crate::native::big(&self.prog, f)
-            }
-        } {
+        } else if self.tune.big && f.kind != FuncKind::Process && crate::native::big(&self.prog, f)
+        {
             if loop_share(&self.prog, f) >= BIG_LOOP_SHARE {
                 Kind::BigLoop
             } else {
@@ -2391,11 +2277,6 @@ impl Worker {
         }
     }
 
-    /// The generator that makes the first code of a function: the first level, else the main one.
-    fn lead(&self) -> Option<&dyn Generator> {
-        self.first.as_deref().or(self.main.as_deref())
-    }
-
     /// The model of `id`'s kind.
     fn model(&self, id: FuncId) -> &'static Model {
         &models()[self.kind(id) as usize]
@@ -2414,14 +2295,14 @@ impl Worker {
     }
 
     /// Whether the compilation cache holds the object of `id`: an earlier run compiled a function
-    /// of its name and size (`listed`). A function of the cache costs `HIT`, whatever its kind.
+    /// of its name and size (`listed`). A function of the cache costs `FIRST_HIT`, whatever its kind.
     /// Never with `YAVS_AUTO_PRICE=model` (the model's price and `Heat::threshold` for every
     /// function, cold or warm: counts that do not depend on the cache, #728). Worked out once.
     fn cached(&self, id: FuncId) -> bool {
         static MODEL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *self.in_cache[id.0 as usize].get_or_init(|| {
             !*MODEL.get_or_init(|| std::env::var("YAVS_AUTO_PRICE").is_ok_and(|v| v == "model"))
-                && self.lead().is_some_and(|g| g.cache_enabled())
+                && self.generator.cache_enabled()
                 && self
                     .prog
                     .func(id)
@@ -2458,17 +2339,11 @@ impl Worker {
         let Some(f) = self.prog.func(id) else {
             return 0;
         };
-        if cached && self.first.is_some() {
+        if cached {
             let link = self.counted && self.prog.identity.is_some();
             if link { FIRST_LINK } else { FIRST_HIT }.price(f.code.len())
-        } else if cached && self.prog.identity.is_some() {
-            HIT.price(f.code.len())
-        } else if cached {
-            HIT_GEN.price(f.code.len())
-        } else if self.first.is_some() {
-            (FIRST_US_PER_INSTR * f.code.len() as f64) as u64
         } else {
-            self.model(id).price(f.code.len())
+            (FIRST_US_PER_INSTR * f.code.len() as f64) as u64
         }
     }
 
@@ -2479,7 +2354,7 @@ impl Worker {
         let Some(f) = self.prog.func(id) else {
             return 0;
         };
-        if hit || self.first.is_none() {
+        if hit {
             return self.price_of(id, hit);
         }
         let n = f.code.len() as u64;
@@ -2539,31 +2414,17 @@ impl Worker {
         })
     }
 
-    /// Whether the generator of `rank` found that `id`, or a function it reaches on native frames,
-    /// has no native-frame variant (`no_native`): `id` cannot have one either, since a native
-    /// variant is made only when every native callee can be called.
-    fn refused_at(&self, id: FuncId, rank: u8) -> bool {
-        self.refusals > 0
-            && self
-                .nset(id)
-                .iter()
-                .any(|c| self.no_native[c.0 as usize] == rank)
+    /// Whether the generator found that `id`, or a function it reaches on native frames, has no
+    /// native-frame variant (`no_native`): `id` cannot have one either, since a native variant is
+    /// made only when every native callee can be called.
+    fn refused(&self, id: FuncId) -> bool {
+        self.refusals > 0 && self.nset(id).iter().any(|c| self.no_native[c.0 as usize])
     }
 
-    /// `native_set` says `id` runs on native frames and no generator of the first level has
-    /// found otherwise: the part the policy chooses for it (`natural_part`, `tree`).
+    /// `native_set` says `id` runs on native frames and the generator has not found otherwise:
+    /// the part the policy chooses for it (`natural_part`, `tree`).
     fn native_ok(&self, id: FuncId) -> bool {
-        self.nset(id).contains(&id) && !self.refused_at(id, self.rank_of(false))
-    }
-
-    /// The rank of the generator a compile at `o2` goes to: native-frame code of the first level
-    /// is replaced by the optimising generator's when the function is compiled again.
-    fn rank_of(&self, o2: bool) -> u8 {
-        if self.first.is_some() && (!o2 || self.main.is_none()) {
-            1
-        } else {
-            2
-        }
+        self.nset(id).contains(&id) && !self.refused(id)
     }
 
     /// Whether `id` is a compute loop (`compute`), worked out once.
@@ -2581,17 +2442,7 @@ impl Worker {
     }
 
     /// The time `id` must be seen at its level before it is compiled (again).
-    fn threshold(&self, id: FuncId, compiled: bool) -> u64 {
-        let Some(f) = self.prog.func(id) else {
-            return u64::MAX;
-        };
-        if compiled {
-            // A function that ran at `Fast` is compiled again at `FastRa` once it repays (#715).
-            if self.fast[id.0 as usize] && self.heat.budget != 0 {
-                return PAYBACK_RA.saturating_mul(ra_cost(f.code.len()));
-            }
-            return self.heat.o2_threshold(f, self.tune.o2_after);
-        }
+    fn threshold(&self, id: FuncId) -> u64 {
         // (A copy's seen time is its process's, `Worker::group`: its threshold is the process's too.)
         let at = self.floor(id);
         if self.heat.budget == 0 {
@@ -2659,7 +2510,7 @@ impl Worker {
         let size = |i: FuncId| self.prog.func(i).map_or(0, |f| f.code.len());
         let hot = self.hot(root);
         let nc = self.nset(root);
-        let native = nc.contains(&root) && !self.refused_at(root, self.rank_of(false));
+        let native = nc.contains(&root) && !self.refused(root);
         // The frame-mode code `frame_at` asks for: the root alone, the callees its native-frame code
         // left out stay so (they were never seen running).
         if native
@@ -2762,27 +2613,21 @@ impl Worker {
     /// Tell the generators which functions are about to be compiled together (`Generator::tree`).
     fn announce(&mut self, ids: &[(FuncId, Part)]) {
         let ids: Vec<FuncId> = ids.iter().map(|&(i, _)| i).collect();
-        for g in self.main.iter_mut().chain(self.first.iter_mut()) {
-            g.tree(&ids);
-        }
+        self.generator.tree(&ids);
     }
 
-    /// `root` compiled again by the optimising generator, with the functions it calls on native
-    /// frames that the first level made the native-frame code of: compiled callers call them
-    /// directly and the sampler never sees them run (a native frame has no entry of its own), so
-    /// nothing else would ever replace them.
+    /// `root` compiled again, with the functions it calls on native frames that were made
+    /// native-frame code: compiled callers call them directly and the sampler never sees them
+    /// run (a native frame has no entry of its own), so nothing else would ever replace them.
     fn upgrade_tree(&self, root: FuncId) -> Vec<(FuncId, Part)> {
         let mut ids = vec![(root, Part::Both)];
-        if self.first.is_none() {
-            return ids;
-        }
         let size = |i: FuncId| self.prog.func(i).map_or(0, |f| f.code.len());
         let mut total = size(root);
         let mut callees: Vec<FuncId> = self.nset(root).iter().copied().collect();
         callees.sort_by_key(|c| c.0);
         for c in callees {
             let k = c.0 as usize;
-            if c != root && self.nat_by[k] == 1 && !self.lost[k] && total + size(c) <= NATIVE_MAX {
+            if c != root && self.nat_by[k] && !self.lost[k] && total + size(c) <= NATIVE_MAX {
                 total += size(c);
                 ids.push((c, Part::Native));
             }
@@ -2960,7 +2805,7 @@ impl Worker {
                              possible after {at} us of the run seen)",
                             prices[k].0
                         );
-                        (self.note)(id, self.opt, Err(why));
+                        (self.note)(id, Err(why));
                     }
                     if let Some(tr) = &self.trace {
                         let mut big: Vec<(usize, &str)> = trees[k]
@@ -3043,7 +2888,7 @@ impl Worker {
         // The look-up generates the function's code: within the budget, as a compile is, with at
         // least the factor of a function called natively (code compiled before for a function
         // hot before is likely to pay); asked again at the next sample while there is no room.
-        let go = self.lead().is_some_and(|g| g.cache_enabled())
+        let go = self.generator.cache_enabled()
             && self.listed.contains(&self.list_key(id, f))
             && within_budget(
                 self.heat.budget,
@@ -3067,21 +2912,18 @@ impl Worker {
         }
     }
 
-    /// What opening the generator of the first level costs until it is open (`LOAD_US` for LLVM).
+    /// What opening the generator costs until it is open.
     fn load_cost(&self) -> u64 {
-        let (g, k) = match (&self.first, &self.main) {
-            (Some(g), _) => (g, 1),
-            (None, Some(g)) => (g, 0),
-            (None, None) => return 0,
-        };
-        if self.loaded[k] { 0 } else { g.load_us() }
+        if self.loaded {
+            0
+        } else {
+            self.generator.load_us()
+        }
     }
 
-    /// Whether the generators only link from their compilation caches.
+    /// Whether the generator only links from its compilation cache.
     fn cached_only(&mut self, on: bool) {
-        for g in self.main.iter_mut().chain(self.first.iter_mut()) {
-            g.cached_only(on);
-        }
+        self.generator.cached_only(on);
     }
 
     /// Link `id` from the compilation cache if it is there, at once and outside the budget (a
@@ -3264,7 +3106,6 @@ impl Worker {
             }
             (self.note)(
                 id,
-                self.opt,
                 Err(format!(
                     "the run progressed {x:.2} times as fast with its compiled code as with the \
                      interpreter, so it was taken back"
@@ -3284,8 +3125,7 @@ impl Worker {
         if off || self.heat.budget == 0 || self.heat.eager() {
             return;
         }
-        // (In the store of the generator of the first level, `lead`.)
-        self.store = self.lead().and_then(|g| g.store());
+        self.store = self.generator.store();
         let Some(store) = &self.store else {
             return;
         };
@@ -3309,7 +3149,7 @@ impl Worker {
             let fine = self.prog.funcs.get(id).is_some_and(|f| !f.spare)
                 && self.prog.base_of(id) == id
                 && !p.lost.contains(&id.0)
-                && (self.prog.specialisable(id) || us >= self.threshold(id, false));
+                && (self.prog.specialisable(id) || us >= self.threshold(id));
             if fine {
                 self.early.insert(id, us);
             }
@@ -3417,7 +3257,7 @@ impl Worker {
         }
     }
 
-    /// Compile `id` at the first level, or at O2 when `o2`; whether it was compiled. Native-frame code
+    /// Compile `id`, or again in full when `o2`; whether it was compiled. Native-frame code
     /// of a function with a loop that the cache had brings its frame-mode code along when the cache has
     /// that too (a link costs a millisecond; `frame_at` decides only about compiling it).
     fn compile(&mut self, id: FuncId, o2: bool, sampled: bool, part: Part) -> bool {
@@ -3425,18 +3265,17 @@ impl Worker {
         // A function with no native-frame variant gets frame-mode code instead, as one the
         // static `native_set` did not allow: its callers reach it through the interpreter, which
         // runs that code (a compile of native-frame code that makes none is not a compile).
-        let rank = self.rank_of(o2);
-        if part == Part::Native && self.refused_at(id, rank) {
+        if part == Part::Native && self.refused(id) {
             return self.frame_instead(id, o2, sampled);
         }
-        let hits = self.hits_of(o2);
+        let hits = self.generator.cache_hits();
         let ok = self.compile_part(id, o2, sampled, part);
-        if part == Part::Native && !ok && self.refused_at(id, rank) {
+        if part == Part::Native && !ok && self.refused(id) {
             return self.frame_instead(id, o2, sampled);
         }
         if ok
             && part == Part::Native
-            && self.hits_of(o2) != hits
+            && self.generator.cache_hits() != hits
             && !self.done[k][0]
             && self.natural_part(id) == Part::Native
             && self.prog.func(id).is_some_and(|f| loops(&self.prog, f))
@@ -3515,7 +3354,7 @@ impl Worker {
     }
 
     /// Take over the native-frame code a compile made of other functions on the way.
-    fn keep_extra(&mut self, entry: &crate::native::Compiled, rank: u8) {
+    fn keep_extra(&mut self, entry: &crate::native::Compiled) {
         for &(g, native, call) in &entry.extra {
             let k = g.0 as usize;
             if native != 0 && self.nat.get(k).is_some_and(|n| n.0 == 0) {
@@ -3523,24 +3362,13 @@ impl Worker {
                 // charges nothing.
                 self.spent += self.price(g);
                 self.nat[k] = (native, false);
-                self.nat_by[k] = rank;
+                self.nat_by[k] = true;
                 self.calls[k] = call;
             }
         }
     }
 
-    /// The cache hits so far of the generator a compile at `o2` goes to.
-    fn hits_of(&self, o2: bool) -> usize {
-        let g = if self.first.is_some() && (!o2 || self.main.is_none()) {
-            &self.first
-        } else {
-            &self.main
-        };
-        g.as_ref().map_or(0, |g| g.cache_hits())
-    }
-
     fn compile_part(&mut self, id: FuncId, o2: bool, sampled: bool, part: Part) -> bool {
-        let rank = self.rank_of(o2);
         // Native-frame code and frame-mode code are modules of their own, so the compilation
         // cache holds each one whatever was compiled with it (#510). Native-frame code is made
         // once.
@@ -3548,12 +3376,12 @@ impl Worker {
             return false;
         }
         let native_done = self.nat.get(id.0 as usize).is_some_and(|n| n.0 != 0)
-            && self.nat_by.get(id.0 as usize).is_some_and(|&r| r >= rank);
+            && self.nat_by.get(id.0 as usize).is_some_and(|&made| made);
         if part == Part::Both {
             if !native_done && self.nset(id).contains(&id) {
                 let ok = self.compile(id, o2, sampled, Part::Native);
                 // No native-frame variant: `compile` made its frame-mode code.
-                if self.refused_at(id, rank) {
+                if self.refused(id) {
                     return ok;
                 }
                 // Refused (a sampled function too short, say): no frame-mode code either.
@@ -3579,26 +3407,13 @@ impl Worker {
         else {
             return false;
         };
-        // (Without an optimising generator the first level is the only one.)
-        let via_first = self.first.is_some() && (!o2 || self.main.is_none());
-        let level = if o2 { OptLevel::O2 } else { self.opt };
-        let level = match &self.main {
-            Some(m) if !via_first => m.level_for(&self.prog, f, level),
-            _ => level,
-        };
-        // The second compile of a function that ran at `Fast` (#715).
-        let level = if o2 && level == OptLevel::Fast {
-            OptLevel::FastRa
-        } else {
-            level
-        };
         let few = (self.is_rtl(id) && !self.early_root)
             .then(|| {
                 let seen = self.group[self.prog.base_of(id).0 as usize];
                 cold(seen, self.total, self.tune)
             })
             .flatten();
-        let waived = called_natively(&self.prog, f, id) && !self.refused_at(id, rank);
+        let waived = called_natively(&self.prog, f, id) && !self.refused(id);
         let short = (sampled && !o2)
             .then(|| {
                 // (A function with no native-frame variant is not called natively: no waiver.)
@@ -3640,20 +3455,11 @@ impl Worker {
             self.list_key(id, f),
             self.frame_need(id),
         );
-        let k = usize::from(via_first);
-        let lead = via_first || self.first.is_none();
-        let natively = self.natively(id);
-        let Some(gen_) = (if via_first {
-            &mut self.first
-        } else {
-            &mut self.main
-        }) else {
-            return false;
-        };
-        // A refused function does not open the generator (the LLVM library).
+        // A refused function does not open the generator.
+        let gen_ = &mut self.generator;
         let opened = if refused.is_none() {
             let opened = gen_.open();
-            if !std::mem::replace(&mut self.loaded[k], true) {
+            if !std::mem::replace(&mut self.loaded, true) {
                 self.spent += gen_.load_us();
             }
             opened
@@ -3665,7 +3471,7 @@ impl Worker {
             if !std::mem::replace(&mut self.warned, true) {
                 eprintln!("warning: --tier=auto: {e}; hot functions stay interpreted");
             }
-            (self.note)(id, level, Err(e));
+            (self.note)(id, Err(e));
             return false;
         }
         let t0 = std::time::Instant::now();
@@ -3673,14 +3479,14 @@ impl Worker {
         let hits = gen_.cache_hits();
         if self.trace.is_some() && refused.is_none() {
             in_flight(Some(format!(
-                "{id} `{}` ({} IR) {level:?} {part:?}",
+                "{id} `{}` ({} IR) {part:?}",
                 f.name,
                 f.code.len()
             )));
         }
         let r = match refused {
             Some(why) => Err(why),
-            None => gen_.compile(&self.prog, id, f, level, part),
+            None => gen_.compile(&self.prog, id, f, part),
         };
         if self.trace.is_some() {
             in_flight(None);
@@ -3691,8 +3497,8 @@ impl Worker {
             // listed; the callees it did make go on below, and `compile` makes frame-mode code.
             Ok(entry) if part == Part::Native && entry.native == 0 && entry.run.is_none() => {
                 let k = id.0 as usize;
-                if self.no_native[k] == 0 {
-                    self.no_native[k] = rank;
+                if !self.no_native[k] {
+                    self.no_native[k] = true;
                     self.refusals += 1;
                 }
                 if let Some(tr) = &self.trace {
@@ -3702,7 +3508,7 @@ impl Worker {
                         f.code.len()
                     ));
                 }
-                self.keep_extra(&entry, rank);
+                self.keep_extra(&entry);
                 if !entry.extra.is_empty() {
                     self.publish();
                 }
@@ -3741,7 +3547,7 @@ impl Worker {
                             )
                         });
                     tr.line(format!(
-                        "{id} compiled{} `{}` ({} IR{leave}{base}) {level:?} {part:?}{} {:?} in {} us, cpu {} us (model {}), first seen {} ms and candidate {} ms ago, \
+                        "{id} compiled{} `{}` ({} IR{leave}{base}) {part:?}{} {:?} in {} us, cpu {} us (model {}), first seen {} ms and candidate {} ms ago, \
                          seen {}/{} us, spent {} of {} us",
                         if self.early_root { " early" } else { "" },
                         f.name,
@@ -3759,15 +3565,9 @@ impl Worker {
                         self.total
                     ));
                 }
-                // Only frame-mode code is recompiled (#715): a function called natively runs its
-                // native-frame code.
-                if level == OptLevel::Fast && part != Part::Native && !natively {
-                    self.fast[id.0 as usize] = true;
-                }
-                // (A copy linked as the twin of another is listed under its own name too;
-                // `listed` is the list of the generator of the first level, `lead`.)
+                // (A copy linked as the twin of another is listed under its own name too.)
                 let key = list_key;
-                if lead && gen_.cache_enabled() && self.listed.insert(key.clone()) {
+                if gen_.cache_enabled() && self.listed.insert(key.clone()) {
                     gen_.cache_note(&key.0, key.1);
                     self.in_cache[id.0 as usize] = Default::default();
                 }
@@ -3778,16 +3578,14 @@ impl Worker {
                 {
                     self.frame_at[id.0 as usize] = self.time[id.0 as usize][0] + frame_need;
                 }
-                self.keep_extra(&entry, rank);
-                // (The first level reports the variants it has again with a frame-mode compile:
-                // not to replace the optimising generator's.)
-                if entry.native != 0 && self.nat_by[id.0 as usize] <= rank {
+                self.keep_extra(&entry);
+                if entry.native != 0 {
                     let k = id.0 as usize;
                     // Published when what it calls is compiled (`publish`); code already
                     // published is replaced at once.
                     let was = self.nat[k].1;
                     self.nat[k] = (entry.native, was);
-                    self.nat_by[k] = rank;
+                    self.nat_by[k] = true;
                     self.calls[k] = entry.call;
                     if was {
                         self.ntab[k].store(entry.native, Ordering::Release);
@@ -3811,7 +3609,7 @@ impl Worker {
                 if self.early_root && !self.early_done.contains(&id) {
                     self.early_done.push(id);
                 }
-                (self.note)(id, level, Ok(took));
+                (self.note)(id, Ok(took));
                 true
             }
             Err(_) if self.probing => {
@@ -3826,7 +3624,7 @@ impl Worker {
                 if short_only && part != Part::Native {
                     self.done[id.0 as usize][0] = false;
                 }
-                (self.note)(id, level, Err(why));
+                (self.note)(id, Err(why));
                 false
             }
         }
@@ -4090,19 +3888,17 @@ const COMPILE_BACKGROUND: u8 = 2;
 
 impl AutoTier {
     /// Start the compile thread and make the tier the runtime's (`Runtime::set_tier`),
-    /// compiling the functions `heat` finds hot at `opt`, and those that stay hot compiled
-    /// again at O2 (`Heat::o2_threshold`, `Tune::o2_after`; at once with an eager `heat`); functions over
+    /// compiling the functions `heat` finds hot with `generator`; functions over
     /// `max_size` IR instructions stay interpreted. `note` is called on the compile thread for
     /// every compile. The thread waits [`START_AFTER`] before it does anything.
     pub fn start_with(
         rt: &Runtime,
-        opt: OptLevel,
         max_size: usize,
         heat: Heat,
         note: Note,
-        gens: Gens,
+        generator: Box<dyn Generator>,
     ) -> Result<Arc<AutoTier>, StartError> {
-        let tier = Self::start_deferred_with(rt, opt, max_size, heat, note, gens)?;
+        let tier = Self::start_deferred_with(rt, max_size, heat, note, generator)?;
         tier.start_thread(true)?;
         Ok(tier)
     }
@@ -4113,16 +3909,13 @@ impl AutoTier {
     /// anyway); [`AutoTier::stop`] needs no launch. An eager `heat` (tests) starts it at once.
     pub fn start_deferred_with(
         rt: &Runtime,
-        opt: OptLevel,
         max_size: usize,
         heat: Heat,
         note: Note,
-        gens: Gens,
+        generator: Box<dyn Generator>,
     ) -> Result<Arc<AutoTier>, StartError> {
-        let Gens { main, first } = gens;
-        // A generator (the LLVM library) is opened by the compile thread at the first compile
-        // (`Worker::compile`): a run in which nothing gets hot never pays for loading it (about 40
-        // million cycles).
+        // The generator is opened by the compile thread at the first compile
+        // (`Worker::compile`): a run in which nothing gets hot never pays for opening it.
         let prog = rt.prog.clone();
         let funcs: Arc<[Entry]> = (0..prog.funcs.len()).map(|_| Entry::default()).collect();
         let (tx, rx) = channel::<Msg>();
@@ -4152,9 +3945,8 @@ impl AutoTier {
             Duration::from_millis(20)
         };
         let sample_every = Duration::from_micros(heat.period.into());
-        // The count rule: Cranelift alone (an LLVM compile costs about seven times as much, and the
-        // rule was measured on Cranelift only), and not in the test mode without a budget.
-        let counted = count_rule_on() && heat.budget != 0 && main.is_none() && first.is_some();
+        // The count rule is not on in the test mode without a budget.
+        let counted = count_rule_on() && heat.budget != 0;
         let (count, gate, sync) = count_knobs();
         *AGAIN_WAKE.lock().unwrap_or_else(PoisonError::into_inner) =
             Some((tx.clone(), shared.clone()));
@@ -4178,10 +3970,8 @@ impl AutoTier {
             ctab.clone(),
             native,
             heat,
-            opt,
             max_size,
-            main,
-            first,
+            generator,
             note,
         );
         (w.counted, w.gate, w.count) = (counted, gate, count);
@@ -4263,7 +4053,7 @@ impl AutoTier {
                     });
                     // (The end of the run wakes this thread: nothing to list then.)
                     if !sh.halt.load(Ordering::SeqCst) {
-                        w.listed = w.lead().map(|g| g.cache_list()).unwrap_or_default();
+                        w.listed = w.generator.cache_list();
                         w.load_profile();
                         if w.counted && (w.long_before() || w.named_hot()) {
                             w.native.open_copies();
@@ -4292,11 +4082,6 @@ impl AutoTier {
                             job.snap = w.snapshot();
                         }
                     };
-                    // `YAVS_FIRST_ONLY=1`: a first-level generator (Cranelift) is the only one, no
-                    // recompile at O2 (code of the two does not call each other's native code).
-                    let upgrade = opt != OptLevel::O2
-                        && w.main.is_some()
-                        && !(w.first.is_some() && std::env::var_os("YAVS_FIRST_ONLY").is_some());
                     // Batches of looks not worked through yet, oldest first.
                     let mut inbox: std::collections::VecDeque<Vec<Look>> = Default::default();
                     let route =
@@ -4342,7 +4127,7 @@ impl AutoTier {
                         // One batch at a time, each followed by the decisions: what is decided depends
                         // on the looks in order and not on how long a compile took (#670).
                         for look in inbox.pop_front().unwrap_or_default() {
-                            w.see(&look, upgrade, &mut pending);
+                            w.see(&look, &mut pending);
                         }
                         let free = w.freed();
                         pending.asked.extend(free);
@@ -4497,11 +4282,6 @@ impl AutoTier {
                                 if !done && i == 0 {
                                     break;
                                 }
-                                // Eager (tests): swap the O2 code in during the run too.
-                                if done && heat.eager() && (upgrade || w.fast[id.0 as usize]) && !o2
-                                {
-                                    pending.later.push(id);
-                                }
                             }
                             w.early_root = false;
                             drop(held);
@@ -4568,7 +4348,7 @@ impl AutoTier {
                                     w.time[k][0],
                                     w.time[k][1],
                                     w.kind(id),
-                                    w.threshold(id, false),
+                                    w.threshold(id),
                                 ));
                             }
                         }
@@ -4594,8 +4374,8 @@ impl AutoTier {
                             sh.read_cpu_us.load(Ordering::Relaxed),
                         ));
                     }
-                    *sh.gens.lock().unwrap_or_else(PoisonError::into_inner) =
-                        w.main.into_iter().chain(w.first).collect();
+                    *sh.generator.lock().unwrap_or_else(PoisonError::into_inner) =
+                        Some(w.generator);
                     sh.busy.store(false, Ordering::SeqCst);
                 })
                 .map_err(|e| StartError(format!("cannot start the compile thread: {e}")))
@@ -4928,11 +4708,9 @@ mod tests {
             tab(),
             rt.native_flags(),
             super::Heat::DEFAULT,
-            crate::OptLevel::O2,
             usize::MAX,
-            None,
-            None,
-            Box::new(|_, _, _| {}),
+            Box::new(super::policy_tests::Stub),
+            Box::new(|_, _| {}),
         );
         w.counted = true;
         w.gate = gate;
@@ -5164,7 +4942,9 @@ mod tests {
         w.wait_held_runs = super::WAIT_HELD_RUNS;
         (w.earlier.base, w.carried) = (None, Default::default());
         // A long run gets the long run's budget.
-        (w.wait_long_share, w.total) = (2.0, super::WAIT_LONG);
+        // (Share enough for both, whatever their prices.)
+        let both = 1.0 + a.max(b) as f64 / a.min(b) as f64;
+        (w.wait_long_share, w.total) = (both, super::WAIT_LONG);
         assert_eq!(w.next_asked(&q), Some(1));
         (w.wait_long_share, w.total) = (1.0, 0);
         w.sim_us = a.max(b);
@@ -5291,9 +5071,9 @@ mod tests {
         let mut w = counted(prog, 1000);
         let mut pending = super::Pending::default();
         assert!(w.waits(caller));
-        w.see(&look(999), false, &mut pending);
+        w.see(&look(999), &mut pending);
         assert!(w.waits(caller));
-        w.see(&look(1), false, &mut pending);
+        w.see(&look(1), &mut pending);
         assert!(!w.waits(caller));
     }
 
@@ -5311,7 +5091,7 @@ mod tests {
 
     fn work_on(w: &mut super::Worker, us: u64) {
         let mut pending = super::Pending::default();
-        w.see(&look(us), false, &mut pending);
+        w.see(&look(us), &mut pending);
     }
 
     fn published(w: &super::Worker, g: yavs_ir::FuncId) -> bool {
@@ -5423,7 +5203,6 @@ mod tests {
                 running: vec![(f, false, 10_000_000)],
                 cpu: 10_000_000,
             },
-            false,
             &mut pending,
         );
         assert_eq!(pending.cands, [f]);
@@ -5987,10 +5766,7 @@ mod tests {
     /// the run: the processes of a CPU design are a few percent of it each (#532).
     #[test]
     fn a_clocked_process_that_is_a_small_part_of_the_run_stays_interpreted() {
-        assert!(cold(44_000, 44_000, Tune::MAIN).is_none());
-        assert!(cold(23_000, 44_000, Tune::MAIN).is_none());
-        assert!(cold(11_700, 310_000, Tune::MAIN).is_some());
-        // A first-level generator takes a thirty-second of the run.
+        // A process takes a thirty-second of the run.
         assert!(cold(10_000, 310_000, Tune::FIRST).is_none());
         assert!(cold(9_000, 310_000, Tune::FIRST).is_some());
     }

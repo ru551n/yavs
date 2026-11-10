@@ -18,7 +18,7 @@ pub mod regs;
 pub mod rt;
 mod work;
 
-pub use auto::{AutoTier, Compile, Gens, Heat, Note, START_AFTER, count_rule_on, exit_now};
+pub use auto::{AutoTier, Compile, Heat, Note, START_AFTER, count_rule_on, exit_now};
 pub use census::callback_counts;
-pub use generator::{Generator, OptLevel, StartError};
+pub use generator::{Generator, StartError};
 pub use profile::{program_digest, set_run_id};

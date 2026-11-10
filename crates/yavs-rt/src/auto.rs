@@ -1262,9 +1262,12 @@ struct Worker {
     /// Per function: its frame-mode code was left for later because nothing compiled calls it
     /// yet (`frame_instead`).
     declined: Vec<bool>,
-    /// Who calls each function (any `Call` or `CallProt` in its code), worked out once, so without the
-    /// copies of processes made since: under the count rule `copy_compiled` stands for those, per process.
+    /// Who calls each function (any `Call` or `CallProt` in its code), worked out once, then the calls
+    /// of each copy made since (`see_copies`; `copies_scanned` of them): a copy of a subprogram is called
+    /// only by copies. Under the count rule `copy_compiled` also stands for a process's copies.
     callers: std::cell::OnceCell<Vec<Vec<u32>>>,
+    copies_scanned: usize,
+    copies_unseen: Vec<u32>,
     /// Whom each function calls, as `callers` the other way round, and the marks of `unlocked`'s walk.
     callees: std::cell::OnceCell<Vec<Vec<u32>>>,
     walked: std::cell::RefCell<Vec<bool>>,
@@ -1605,6 +1608,8 @@ impl Worker {
             refusals: 0,
             declined: vec![false; nfuncs],
             callers: Default::default(),
+            copies_scanned: 0,
+            copies_unseen: Vec::new(),
             callees: Default::default(),
             walked: std::cell::RefCell::new(vec![false; nfuncs]),
             copy_compiled: vec![false; nfuncs],
@@ -2034,8 +2039,53 @@ impl Worker {
         self.earlier.base.is_some_and(|b| b >= self.gate_cpu)
     }
 
+    /// Add the calls of the copies made since the last look to `callers` and `callees`: their slots
+    /// (the last of the program, filled in order) were empty when those were worked out. A slot whose
+    /// copy this thread does not see yet (or a hole `YAVS_COPY_SKIP` left) is looked at again later.
+    fn see_copies(&mut self) {
+        let made = self.prog.copy_stats().copies;
+        if (made == self.copies_scanned && self.copies_unseen.is_empty())
+            || self.callers.get().is_none()
+        {
+            return;
+        }
+        let first = self
+            .prog
+            .funcs
+            .iter()
+            .position(|(_, f)| f.spare)
+            .unwrap_or(0) as u32;
+        let mut todo = std::mem::take(&mut self.copies_unseen);
+        todo.extend(first + self.copies_scanned as u32..first + made as u32);
+        self.copies_scanned = made;
+        let (prog, callers) = (&self.prog, self.callers.get_mut());
+        let Some(callers) = callers else { return };
+        for k in todo {
+            if prog.base_of(FuncId(k)) == FuncId(k) {
+                self.copies_unseen.push(k);
+                continue;
+            }
+            let Some(f) = prog.func(FuncId(k)) else {
+                continue;
+            };
+            for i in &f.code {
+                if let yavs_ir::Inst::Call { func, .. } | yavs_ir::Inst::CallProt { func, .. } = i {
+                    let c = func.0 as usize;
+                    if !callers[c].contains(&k) {
+                        callers[c].push(k);
+                        self.native.count_stat(CountStat::CopyCalls);
+                        if let Some(callees) = self.callees.get_mut() {
+                            callees[k as usize].push(c as u32);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// The functions that wait no more, and the callees `publish` wants.
     fn freed(&mut self) -> Vec<FuncId> {
+        self.see_copies();
         if self.total >= self.gate {
             self.native.open_copies();
         }
@@ -4699,6 +4749,57 @@ mod tests {
         assert!(!w.waits(callee));
         assert_eq!(w.freed(), [callee]);
         assert!(w.waiting.is_empty());
+    }
+
+    /// A copy made after the callers were worked out still counts as a caller: a subprogram called
+    /// only from copies (copies of subprograms are) is freed once one of them has code.
+    #[test]
+    fn a_copy_made_later_frees_what_it_calls() {
+        use yavs_ir::{AddrSpace, RegTy, Width};
+        let mut pb = ProgramBuilder::new();
+        let g = pb.declare("g", yavs_ir::FuncKind::Procedure, None);
+        let p = pb.declare("p", yavs_ir::FuncKind::Process, None);
+        let mut fb = pb.define(g);
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let keep = fb.slot(8, 8);
+        let at = fb.addr(AddrSpace::Frame, keep);
+        fb.emit(Inst::Store {
+            addr: at,
+            src: at,
+            w: Width::B8,
+        });
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+        let mut fb = pb.define(p);
+        fb.stmt(StmtKind::Wait, Span::new(FileId(0), 0, 1));
+        let head = fb.block();
+        fb.body(head);
+        fb.emit(Inst::Br { to: head });
+        fb.at(head);
+        let a = fb.addr(AddrSpace::Inst, 0);
+        let v = fb.reg(RegTy::I64);
+        fb.emit(Inst::Load {
+            dst: v,
+            addr: a,
+            w: Width::B8,
+        });
+        let args = fb.regs(&[]);
+        fb.emit(Inst::Call {
+            func: g,
+            args,
+            dst: None,
+        });
+        fb.emit(Inst::Suspend { resume: 0 });
+        fb.emit(Inst::Br { to: head });
+        fb.finish();
+        let mut prog = pb.finish().unwrap();
+        prog.reserve_copies(1);
+        let mut w = counted(prog, 0);
+        assert!(w.waits(g));
+        let copy = w.prog.copy_of(p, &3i64.to_le_bytes(), &[]).expect("a copy");
+        w.nat[copy.0 as usize].0 = 64;
+        w.waiting.push(g);
+        assert_eq!(w.freed(), [g]);
     }
 
     /// The count gives a function with a loop native-frame code alone; its frame-mode code (for the

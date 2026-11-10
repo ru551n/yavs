@@ -15219,12 +15219,15 @@ over the corpus):
   instructions against main): 0.968, 0.963, 0.972, 0.975 (A/A 1.009, 1.007, 0.995, 0.994). Cycles and the cold cap
   are still to be timed on a quiet host. Trips into the
   interpreter from compiled code per run (lab counters, untimed): 2.68 M, 1.04 M, 0.58 M, 0.37 M before, 16 k, 2.7 k,
-  0.9 k, 1.0 k after; `alu_op` compiles in run 1 once `comb` has code. On the other measured designs the counter is 0
-  (no copy made after the map has a call, so every decision is the same): `osvvm_axi4_random`,
-  `uvvm_axistream_vvc`, `uvvm_sb_slv`, `uvvm_func_cov`, `neorv32_dual_full` and the small tests.
-- **Not built.** A price by the trips from compiled callers (the brief's run-1 rule) and a link of cached callees at
-  the caller's link: with the map right, the callees compile within half a second of `comb` in run 1 and link in
-  later runs, so neither has a gap left to close.
+  0.9 k, 1.0 k after; `alu_op` compiles in run 1 once `comb` has code. Under `--tier-compile=background` GRLIB
+  reads 0.964, 0.961, 0.971, 0.975 (A/A at most 1.005). Microwatt (40 to 70 calls added a run) is level: runs 1 and
+  2 at 1.001 and 0.997 (A/A about 1.001 and 0.995). `osvvm_axi4_random` reaches the path under `background` only
+  (2 calls added in most runs), six-run sum 0.976 (A/A 0.958). On `uvvm_axistream_vvc`, `uvvm_sb_slv`,
+  `uvvm_func_cov`, `neorv32_dual_full`, the small tests and `osvvm_axi4_random` under `wait` the counter is 0 (no copy
+  made after the map has a call), so every decision is the same.
+- **Not built.** Pricing a callee of a compiled caller by its trips from that caller, and linking cached callees at
+  the moment their caller links: with the map right, the callees compile 0.14 to 0.45 s after `comb` in run 1 and
+  link in later runs, so neither has a gap left to close.
 - **Reach.** `tier_copy_calls` 119 on 27 corpus tests under `yavs-clift-count1` (0 under `yavs` and
   `yavs-clift-check`: no default-tier corpus test makes a copy after the first asked function). Unit test
   `a_copy_made_later_frees_what_it_calls` (fails without the change).

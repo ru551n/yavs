@@ -29,6 +29,10 @@
 
 A concurrent copy of a bus that the kernel commits itself (`forward_copy`, `Signal::commit_copy`) sets the pending bits of a destination that starts on a block boundary a word at a time (`mark_words`) instead of one `mark_bits` per 64 elements. Forced compiled whole runs (`--tier=clift --no-cache --threads=1`, main-thread instructions): `fletcher_bufferwriter_512` 51.24 to 51.00 G (0.995), `fletcher_bufferreader` 0.9997, `sc5_fifo_repack`, `neorv32_single_cache`, GRLIB and Microwatt within 0.01 percent; outputs and exit statuses equal. Counter `block_copies` (debug and `op-census` builds). Not timed in cycles (busy host).
 
+### Copies made during a run are callers too (2026-11-10)
+
+Under `--tier=auto` the count rule's map of who calls whom now takes in the calls of the copies of processes and subprograms made after it was worked out (`auto.rs` `Worker::see_copies`, counter `tier_copy_calls`). A copy of a subprogram is called only from copies, so before this it never had a compiled caller and stayed interpreted for the whole run: on GRLIB the LEON3 integer unit's compiled `comb` left its code for 14 such procedures 0.4 to 2.7 M times a run. Now they compile in the first run once `comb` has code and link from the cache in later runs: GRLIB runs 1 to 4 take 2.0 to 3.6 percent fewer instructions (PGO builds, A/A within 0.5 percent). Designs that make no copy with a call after the first asked function decide exactly as before.
+
 ### The first run holds a process until the callee tree it pulls in repays (2026-11-10)
 
 Under `--tier-compile=wait`, past the first second of a first run, a process also waits while it and the subprograms that wait only for it were seen for less than `WAIT_TREE` (2) times what compiling them all costs (`auto.rs` `Worker::tree_unpaid`, counter `tier_tree_held`, knob `YAVS_AUTO_WAIT_TREE`). With correct samples `uvvm_axistream_vvc` compiled its command executor and the bus procedures under it in run 1 (cold cap 1.40 of the pinned baseline); with the rule it is 1.14, and run 2 pays the compiles (1.33 of the run before the rule; eight-run sum 1.03). No other design measured changes its compiles.

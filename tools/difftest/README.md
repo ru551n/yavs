@@ -15,7 +15,6 @@ Python 3 stdlib only.
     tools/difftest/difftest.py --candidate yavs-clift-check # every process a copy, every skip of a drive in generated code or against a record image checked (the same build)
     tools/difftest/difftest.py --candidate yavs-clift-count1 # the count rule of --tier=auto at a count of 1: every function asked for at its first call, the run waiting for the compile (the same build)
     tools/difftest/difftest.py --candidate yavs-clift-cheap   # `--tier=clift` with every block lowered as code that never ran (the interpreter runs it, a native frame leaves); `yavs-clift-cheapalt` every second block (the same build)
-    tools/difftest/difftest.py --candidate yavs-clift-listall # yavs-clift-count1 with every block on the never-run list: stepped, counted, made again in full (the same build)
     YAVS_CLIFT_PREKEY_CHECK=1 tools/difftest/difftest.py --candidate yavs-auto-warm  # a second `elab` and `--tier=auto` run, both compared, linking what the first compiled (the check generates it anyway and compares, #785; on by default in a debug `clift` build)
     tools/difftest/difftest.py --bless              # regenerate .expected from the reference simulator
     tools/difftest/difftest.py --filter 'report/|env/' --jobs 4 -v

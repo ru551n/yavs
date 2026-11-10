@@ -5,8 +5,7 @@
 //! The thread samples what the simulation threads interpret (`Runtime::sampler`) every
 //! [`Heat::period`] microseconds and compiles a function once it was seen for about as long
 //! as compiling it takes ([`Heat`]); the function is compiled in a module of its own and
-//! published through an atomic entry. Code made with blocks listed as never run that ran too much
-//! of them is replaced by the whole function, compiled again (`rt::take_again`).
+//! published through an atomic entry.
 //! The interpreter asks the tier on entry and now and then at
 //! jumps, so the swap-in happens there in any frame of that function: compiled code runs on
 //! the interpreter frame's registers and enters at any pc (an instruction that is not an entry
@@ -849,43 +848,6 @@ enum Thread {
     Ended,
 }
 
-/// The compile thread of this process's tier, woken when code made with a never-run list must be
-/// made again (`rt::cheap_ran`); one tier per run, as the store.
-static AGAIN_WAKE: Mutex<Option<(Sender<Msg>, Arc<Shared>)>> = Mutex::new(None);
-
-thread_local! {
-    /// Set on the compile thread, which must not wait for itself.
-    static ON_COMPILE_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Wake the compile thread: `rt::take_again` has news about `func`. With `YAVS_AUTO_SYNC` (tests)
-/// the run goes on once `func` was made again, so it cannot end before the compile.
-pub(crate) fn wake_again(func: u32) {
-    let Some((q, sh)) = AGAIN_WAKE
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone()
-    else {
-        return;
-    };
-    let _ = q.send(Msg::Looks(Vec::new()));
-    if !sh.sync.load(Ordering::Relaxed) || ON_COMPILE_THREAD.get() {
-        return;
-    }
-    while !sh.halt.load(Ordering::SeqCst)
-        && !sh.ended.load(Ordering::Acquire)
-        && !sh
-            .again_done
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .contains(&func)
-    {
-        // (`--tier-compile=wait`: the compile this waits for holds the simulation.)
-        yavs_interp::pause_point();
-        std::thread::sleep(Duration::from_micros(50));
-    }
-}
-
 /// What the compile thread is told.
 enum Msg {
     /// `Tier::hot`: compile this function (eager mode, tests).
@@ -922,8 +884,6 @@ struct Pending {
     asked: std::collections::VecDeque<FuncId>,
     /// Hot functions waiting for the budget (`Worker::pick`).
     cands: Vec<FuncId>,
-    /// Functions to compile again in full (`take_again`).
-    later: Vec<FuncId>,
     /// Functions to look up in the compilation cache (`Worker::probe`).
     probes: Vec<FuncId>,
     /// Functions the profile of the last run called hot, seen running now, with the microseconds
@@ -965,21 +925,6 @@ struct Shared {
     profile: Mutex<Option<ProfileJob>>,
     /// Where functions compile (`COMPILE_*`, `AutoTier::set_compile`).
     compile: std::sync::atomic::AtomicU8,
-    /// `YAVS_AUTO_SYNC`: the run waits for the compiles it asks for (`Tier::hot`, `wake_again`).
-    sync: AtomicBool,
-    /// The compile thread has ended (or died).
-    ended: AtomicBool,
-    /// Functions made again in full after they tripped (`wake_again` waits for them).
-    again_done: Mutex<Vec<u32>>,
-}
-
-/// Sets `Shared::ended` when the compile thread ends, by panic too.
-struct Ends(Arc<Shared>);
-
-impl Drop for Ends {
-    fn drop(&mut self) {
-        self.0.ended.store(true, Ordering::Release);
-    }
 }
 
 /// The profile of a run in the making: where it goes, what the runs before left, the simulation CPU
@@ -2616,25 +2561,6 @@ impl Worker {
         self.generator.tree(&ids);
     }
 
-    /// `root` compiled again, with the functions it calls on native frames that were made
-    /// native-frame code: compiled callers call them directly and the sampler never sees them
-    /// run (a native frame has no entry of its own), so nothing else would ever replace them.
-    fn upgrade_tree(&self, root: FuncId) -> Vec<(FuncId, Part)> {
-        let mut ids = vec![(root, Part::Both)];
-        let size = |i: FuncId| self.prog.func(i).map_or(0, |f| f.code.len());
-        let mut total = size(root);
-        let mut callees: Vec<FuncId> = self.nset(root).iter().copied().collect();
-        callees.sort_by_key(|c| c.0);
-        for c in callees {
-            let k = c.0 as usize;
-            if c != root && self.nat_by[k] && !self.lost[k] && total + size(c) <= NATIVE_MAX {
-                total += size(c);
-                ids.push((c, Part::Native));
-            }
-        }
-        ids
-    }
-
     /// The function that keeps the native-frame code of `id` unpublished: every one it calls natively
     /// must be compiled, and they in turn. A callee left out of its compile or never seen running ends
     /// the walk: nothing compiles it until it runs, so it kept `id` and every native caller of `id`
@@ -3948,10 +3874,7 @@ impl AutoTier {
         // The count rule is not on in the test mode without a budget.
         let counted = count_rule_on() && heat.budget != 0;
         let (count, gate, sync) = count_knobs();
-        *AGAIN_WAKE.lock().unwrap_or_else(PoisonError::into_inner) =
-            Some((tx.clone(), shared.clone()));
         let sync = counted && sync;
-        shared.sync.store(sync, Ordering::Relaxed);
         if counted {
             rt.native_flags().arm_count(
                 &rt.prog,
@@ -4021,8 +3944,6 @@ impl AutoTier {
                     // Nothing a run of a few milliseconds samples pays for a compile, and moving the
                     // thread, reading the cache's list and waking every millisecond cost a tenth of
                     // such a run: do none of it before `START_AFTER` (#426). `stop` ends the wait.
-                    let _ends = Ends(sh.clone());
-                    ON_COMPILE_THREAD.set(true);
                     let mut pending = Pending::default();
                     let mut looks: Vec<Look> = Vec::new();
                     let t0 = std::time::Instant::now();
@@ -4103,18 +4024,7 @@ impl AutoTier {
                         while let Ok(m) = rx.try_recv() {
                             route(m, &mut pending, &mut inbox);
                         }
-                        // Code made with blocks listed as never run that ran too much of them
-                        // (`rt::cheap_ran`): its frame-mode code again, in full, as a second compile.
-                        for id in crate::rt::take_again() {
-                            if let Some(tr) = &w.trace {
-                                tr.line(format!("{id} again in full: its blocks listed as never run ran"));
-                            }
-                            pending.later.push(id);
-                        }
-                        if inbox.is_empty()
-                            && pending.later.is_empty()
-                            && (pending.asked.is_empty() || paced)
-                        {
+                        if inbox.is_empty() && (pending.asked.is_empty() || paced) {
                             match rx.recv_timeout(period) {
                                 Ok(m) => route(m, &mut pending, &mut inbox),
                                 Err(RecvTimeoutError::Timeout) => {}
@@ -4161,7 +4071,6 @@ impl AutoTier {
                                 break;
                             }
                             let over = std::cell::Cell::new(false);
-                            let again = std::cell::Cell::new(None);
                             let probe = if pending.asked.is_empty() {
                                 pending.probes.pop()
                             } else {
@@ -4203,15 +4112,6 @@ impl AutoTier {
                                     let id = pending.asked.remove(k)?;
                                     w.note_unlocked(id);
                                     Some((vec![(id, w.ask(id))], false, false))
-                                })
-                                .or_else(|| {
-                                    pending
-                                        .later
-                                        .pop()
-                                        .map(|id| {
-                                            again.set(crate::rt::tripped(id).then_some(id));
-                                            (w.upgrade_tree(id), true, false)
-                                        })
                                 })
                                 .or_else(|| {
                                     w.next_early(&mut pending).map(|ids| {
@@ -4285,12 +4185,6 @@ impl AutoTier {
                             }
                             w.early_root = false;
                             drop(held);
-                            if let Some(id) = again.get() {
-                                sh.again_done
-                                    .lock()
-                                    .unwrap_or_else(PoisonError::into_inner)
-                                    .push(id.0);
-                            }
                             if let (Some(id), true) = (first, w.counted && root_done && !sampled && !o2) {
                                 w.native.count_stat(CountStat::Compiled);
                                 if w.prog.base_of(id) != id {
@@ -4425,7 +4319,6 @@ impl AutoTier {
         // (The simulation's CPU time first: the compile thread's clock is gone once it has ended.)
         let cpu = self.sim_cpu_now();
         self.shared.halt.store(true, Ordering::SeqCst);
-        *AGAIN_WAKE.lock().unwrap_or_else(PoisonError::into_inner) = None;
         // (An empty batch wakes the compile thread, which sees `halt`.)
         if let Some(q) = self
             .queue

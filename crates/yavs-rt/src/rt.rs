@@ -808,20 +808,16 @@ pub unsafe extern "C" fn yavs_rt_step(
 
 /// Executes the instructions `pc .. pc + n` in the interpreter, none of them a jump or a return:
 /// each as `yavs_rt_signal` does (which steps what is not a signal instruction), a frame one
-/// pushed as `yavs_rt_step` does. `GO`, or the first other answer. Generated code of function
-/// `func` (of `len` IR instructions) calls it for a block it was told never runs, in place of the
-/// block's code; the instructions it steps are counted against `func` (`cheap_ran`).
+/// pushed as `yavs_rt_step` does. `GO`, or the first other answer. Generated code calls it for a
+/// block it was told never runs, in place of the block's code.
 pub unsafe extern "C" fn yavs_rt_steps(
     env: *mut c_void,
     _regs: *mut u64,
     mem: *mut Mem,
     pc: u32,
     n: u32,
-    func: u32,
-    len: u32,
 ) -> u32 {
     cb(Cb::Steps);
-    cheap_ran(func, n, len);
     // SAFETY: as in `yavs_rt_step`.
     let envp = unsafe { env_or(env, mem) } as *mut Env<'_>;
     let mut r = GO;
@@ -912,7 +908,6 @@ pub unsafe extern "C" fn yavs_rt_deopt(
     regs: *const u64,
 ) -> *mut u64 {
     cb(Cb::Deopt);
-    cheap_left(func, pc);
     // SAFETY: as in `yavs_rt_step`; `regs` holds `nregs` words.
     let (env, mem) = unsafe { (&mut *(env as *mut Env<'_>), &mut *mem) };
     mem.ndeopt = 1;
@@ -3041,122 +3036,6 @@ fn gate_skipped(mem: &mut Mem) {
             c.gate_skipped();
         }
     }
-}
-
-/// Instructions stepped in blocks compiled code was told never run, per function, and the
-/// functions past their limit in order (the stored never-run list was wrong for them).
-// ponytail: one lock per stepped block; only a wrong list steps, and a tripped body is compiled
-// again. Per-function atomics if a list that is often wrong ever matters.
-static CHEAP: std::sync::Mutex<(Vec<u64>, Vec<u32>, usize)> =
-    std::sync::Mutex::new((Vec::new(), Vec::new(), 0));
-
-/// `YAVS_CLIFT_AGAIN`: the instructions a function may step in its cheap blocks, per IR instruction
-/// it has, before its code is made again in full. A stepped instruction costs about 45 ns, a compile
-/// of frame-mode code about 26 us per IR instruction: at the default 500 the stepping has cost
-/// about what the compile will.
-fn again_per_instr() -> u64 {
-    static N: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *N.get_or_init(|| {
-        std::env::var("YAVS_CLIFT_AGAIN")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(500)
-    })
-}
-
-/// The blocks native-frame variants leave at because they are listed as never run, with the IR
-/// length of their function (`YAVS_CLIFT_LIST_NATIVE=cheap`); `LEAVES_ON` once there is one.
-static LEAVES: std::sync::Mutex<Option<std::collections::HashMap<(u32, u32), u32>>> =
-    std::sync::Mutex::new(None);
-static LEAVES_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// What a leave of a native frame at a listed block counts as, in stepped instructions (a
-/// materialisation costs about as much as stepping that many).
-const LEAVE_STEPS: u32 = 64;
-
-/// The variant of `func` (of `len` IR instructions) leaves at the blocks at `pcs`.
-pub fn note_cheap_leaves(func: FuncId, pcs: impl Iterator<Item = u32>, len: u32) {
-    let mut l = LEAVES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let m = l.get_or_insert_with(Default::default);
-    m.extend(pcs.map(|pc| ((func.0, pc), len)));
-    LEAVES_ON.store(true, std::sync::atomic::Ordering::Release);
-}
-
-/// A native frame of `func` left at `pc`: counted against `func` when that is a listed block.
-fn cheap_left(func: u32, pc: u32) {
-    if !LEAVES_ON.load(std::sync::atomic::Ordering::Acquire) {
-        return;
-    }
-    let len = LEAVES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_ref()
-        .and_then(|m| m.get(&(func, pc)).copied());
-    if let Some(len) = len {
-        cheap_ran(func, LEAVE_STEPS, len);
-    }
-}
-
-/// The instructions a function of `len` IR instructions may step in its cheap blocks.
-pub fn cheap_limit(len: u32) -> u64 {
-    again_per_instr().saturating_mul(u64::from(len.max(1)))
-}
-
-/// The instructions `func` stepped in its cheap blocks in this run.
-pub fn cheap_steps(func: FuncId) -> u64 {
-    let c = CHEAP
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    c.0.get(func.0 as usize).copied().unwrap_or(0)
-}
-
-/// Function `func` (of `len` IR instructions) stepped `n` instructions of a cheap block
-/// (`yavs_rt_steps`).
-pub fn cheap_ran(func: u32, n: u32, len: u32) {
-    let limit = cheap_limit(len);
-    let mut c = CHEAP
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let k = func as usize;
-    if c.0.len() <= k {
-        c.0.resize(k + 1, 0);
-    }
-    let was = c.0[k];
-    c.0[k] = was.saturating_add(u64::from(n));
-    if was < limit && c.0[k] >= limit {
-        c.1.push(func);
-        drop(c);
-        crate::auto::wake_again(func);
-    }
-}
-
-/// The functions that went past the limit since the last call, for the tier to compile again in
-/// full (`--tier=auto`).
-pub fn take_again() -> Vec<FuncId> {
-    let mut c = CHEAP
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let at = c.2;
-    c.2 = c.1.len();
-    c.1[at..].iter().map(|&f| FuncId(f)).collect()
-}
-
-/// Whether `func` went past the limit in this run: its code is made in full from now on.
-pub fn tripped(func: FuncId) -> bool {
-    let c = CHEAP
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    c.1.contains(&func.0)
-}
-
-/// The functions that went past the limit in this run (`YAVS_COUNTERS`: `clift_again`).
-pub fn tripped_all() -> Vec<FuncId> {
-    let c = CHEAP
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    c.1.iter().map(|&f| FuncId(f)).collect()
 }
 
 /// Skips of a compiled drive checked against the full test (`yavs_rt_gate_check`).

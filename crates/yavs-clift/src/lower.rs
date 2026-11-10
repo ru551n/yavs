@@ -192,16 +192,9 @@ pub struct Jit {
     /// bodies defined and not yet listed at `finalize`.
     last_cov: Option<(DataId, Vec<crate::blockcov::BlockInfo>)>,
     cov_n: u32,
-    covs: Vec<(String, String, u64, DataId, Vec<crate::blockcov::BlockInfo>)>,
+    covs: Vec<(String, String, DataId, Vec<crate::blockcov::BlockInfo>)>,
     /// The addresses of the tables registered, frozen when the module goes (`Drop`).
     cov_at: Vec<usize>,
-    /// `YAVS_CLIFT_LIST`: per function and variant, the never-run pcs its body follows, as `build`
-    /// decided (`lower` and `body_of` make the same body).
-    lists: HashMap<(FuncId, bool), Option<Rc<HashSet<u32>>>>,
-    /// Frame-mode code made again in full after its cheap blocks ran too much (`rt::tripped`),
-    /// under a symbol of its own; `redo` while one is built.
-    redone: HashSet<FuncId>,
-    redo: bool,
 }
 
 /// The native-frame variant `n<id>` of a function, in the calling convention of the LLVM tier
@@ -445,10 +438,7 @@ fn srcmap() -> bool {
 /// generated code stores a byte into a table of its body.
 fn blockcov() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| {
-        std::env::var_os("YAVS_CLIFT_BLOCKCOV").is_some()
-            || crate::blockcov::list_mode() == crate::blockcov::ListMode::Write
-    })
+    *ON.get_or_init(|| std::env::var_os("YAVS_CLIFT_BLOCKCOV").is_some())
 }
 
 fn flag(name: &str, default: &str) -> String {
@@ -679,7 +669,7 @@ impl Jit {
         ];
         let hold_check = imp(HOLD_CHECK, &[I64, I64, I64, I64, I64, I32, I64, I64], None)?;
         let rare = imp(RARE, &[I32], None)?;
-        let steps = imp(STEPS, &[I64, I64, I64, I32, I32, I32, I32], Some(I32))?;
+        let steps = imp(STEPS, &[I64, I64, I64, I32, I32], Some(I32))?;
         let mut stubs = Vec::new();
         let cold_host = cold_stub(
             &mut module,
@@ -768,9 +758,6 @@ impl Jit {
             cov_n: 0,
             covs: Vec::new(),
             cov_at: Vec::new(),
-            lists: HashMap::new(),
-            redone: HashSet::new(),
-            redo: false,
         })
     }
 
@@ -784,34 +771,15 @@ impl Jit {
         if let Some(r) = bad_reg(f) {
             return Err(format!("register r{} beyond the frame", r.0));
         }
-        // Made with listed blocks that then ran too much: made again in full, once.
-        let again = self.lists.get(&(id, false)).is_some_and(Option::is_some)
-            && yavs_rt::rt::tripped(id)
-            && !self.redone.contains(&id);
-        if let Some(&c) = self.frames.get(&id).filter(|_| !again) {
+        if let Some(&c) = self.frames.get(&id) {
             return Ok((c, Vec::new()));
         }
         if std::env::var_os("YAVS_CLIFT_DUMP").is_some() {
             eprintln!("{}", prog.dump_func(id));
         }
-        if again {
-            self.redone.insert(id);
-            self.lists.remove(&(id, false));
-            crate::blockcov::AGAIN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-        self.redo = again;
-        let b = self.build(prog, id, f, false);
-        self.redo = false;
-        let b = b?;
+        let b = self.build(prog, id, f, false)?;
         self.frames.insert(id, b.fid);
         Ok((b.fid, b.stepped))
-    }
-
-    /// The symbol of the frame-mode code (or `native` variant) of `id`; frame-mode code made again
-    /// in full has one of its own (`define`).
-    fn symbol_for(&self, prog: &Program, native: bool, id: FuncId) -> String {
-        let s = symbol(prog, if native { "n" } else { "f" }, id);
-        if self.redo { s + "_full" } else { s }
     }
 
     /// `Generator::cached_only`: from now on compile nothing the compilation cache does not have.
@@ -867,9 +835,7 @@ impl Jit {
     /// Compile `ctx` into `fid`: linked from the compilation cache when it has the function
     /// (`cache.rs`), else compiled, and stored when there is a cache.
     fn define_code_in(&mut self, fid: ClifId, ctx: &mut Context) -> Result<(), String> {
-        // (A coverage run's code stores what ran: no other run links it.)
-        let write = crate::blockcov::list_mode() == crate::blockcov::ListMode::Write;
-        let Some(store) = crate::cache::store().filter(|_| !write) else {
+        let Some(store) = crate::cache::store() else {
             return self
                 .module
                 .define_function(fid, ctx)
@@ -926,12 +892,9 @@ impl Jit {
         self.allowed = Some(ids.iter().copied().collect());
     }
 
-    /// Store the routes of the functions made since the last call (not in a coverage run, whose
-    /// routes follow its own policy).
+    /// Store the routes of the functions made since the last call.
     pub fn flush_routes(&mut self) {
-        if crate::blockcov::list_mode() != crate::blockcov::ListMode::Write {
-            self.routes.flush();
-        }
+        self.routes.flush();
     }
 
     /// `native_set` of `id` alone.
@@ -1173,37 +1136,8 @@ impl Jit {
         let mut route_of: Vec<(FuncId, bool)> =
             nats.iter().map(|(&g, n)| (g, n.is_some())).collect();
         route_of.sort_unstable_by_key(|r| r.0.0);
-        // `YAVS_CLIFT_LIST`: the listed blocks are lowered cheaply, unless code of the function in
-        // full is stored already (a world that has it keeps it: no compile for the list's sake).
-        let mut list = self
-            .allowed
-            .is_some()
-            .then(|| crate::blockcov::listed(prog, id, f))
-            .flatten();
-        let mut pre = self.pre_key(prog, id, f, native, &nats, list.as_deref());
-        let mut stored = pre.as_ref().and_then(crate::cache::pre_get);
-        if list.is_some() && stored.is_none() {
-            let full = self.pre_key(prog, id, f, native, &nats, None);
-            if let Some(e @ Pre::Code { .. }) = full.as_ref().and_then(crate::cache::pre_get) {
-                (list, pre, stored) = (None, full, Some(e));
-            }
-        }
-        if self.allowed.is_some()
-            && crate::blockcov::list_mode() == crate::blockcov::ListMode::Write
-        {
-            crate::blockcov::list_open(prog);
-        }
-        if list.is_some() {
-            crate::blockcov::LISTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-        // (A variant that leaves at its listed blocks: its leaves there count as steps.)
-        if native
-            && crate::blockcov::list_native_cheap()
-            && let Some(l) = &list
-        {
-            yavs_rt::rt::note_cheap_leaves(id, l.iter().copied(), f.code.len() as u32);
-        }
-        self.lists.insert((id, native), list);
+        let pre = self.pre_key(prog, id, f, native, &nats);
+        let stored = pre.as_ref().and_then(crate::cache::pre_get);
         let check = crate::cache::check();
         let linked = |jit: &mut Jit, stored: &Option<Pre>| -> Result<Option<Built>, Error> {
             let Some(Pre::Code {
@@ -1302,7 +1236,7 @@ impl Jit {
         let fid = self
             .module
             .declare_function(
-                &self.symbol_for(prog, native, id),
+                &symbol(prog, if native { "n" } else { "f" }, id),
                 Linkage::Export,
                 &ctx.func.signature,
             )
@@ -1310,12 +1244,7 @@ impl Jit {
         if let Some((did, blocks)) = cov {
             let name = self.symbol_of(fid);
             let key = crate::blockcov::key(prog, id, native);
-            let hash = if crate::blockcov::list_mode() == crate::blockcov::ListMode::Write {
-                crate::blockcov::body_hash(prog, f)
-            } else {
-                0
-            };
-            self.covs.push((name, key, hash, did, blocks));
+            self.covs.push((name, key, did, blocks));
         }
         // `YAVS_CLIFT_ASM=<function id>`: the machine code of that function (variant) on stderr.
         let asm = std::env::var("YAVS_CLIFT_ASM")
@@ -1383,7 +1312,6 @@ impl Jit {
         f: &Func,
         native: bool,
         nats: &HashMap<FuncId, Option<Rc<NatInfo>>>,
-        list: Option<&HashSet<u32>>,
     ) -> Option<yavs_cache::Key> {
         let (target, switches) = self.pre_target.as_ref()?;
         let identity = prog.identity.as_deref()?;
@@ -1405,13 +1333,6 @@ impl Jit {
         let func = prog.code_key_bytes(f)?;
         let mut facts = HashBytes(Vec::new());
         prog.facts(id).hash(&mut facts);
-        let mut list: Vec<u32> = list.into_iter().flatten().copied().collect();
-        list.sort_unstable();
-        // Cheap blocks pass the function's id to the step counter as a constant (`Gen::fid`), so
-        // copies of one body with a list differ by id; a copy of a subprogram names its id slot.
-        if !list.is_empty() && !prog.is_sub_copy(id) {
-            list.insert(0, id.0);
-        }
         Some(crate::cache::pre_key(&PreInputs {
             fingerprint: &yavs_ir::opt::fingerprint(),
             target,
@@ -1422,7 +1343,6 @@ impl Jit {
             func: &func,
             facts: &facts.0,
             callees: &callees,
-            list: &list,
         }))
     }
 
@@ -1491,7 +1411,7 @@ impl Jit {
         } else {
             self.sig.clone()
         };
-        let name = self.symbol_for(prog, native, id);
+        let name = symbol(prog, if native { "n" } else { "f" }, id);
         let fid = self
             .module
             .declare_function(&name, Linkage::Export, &signature)
@@ -1600,21 +1520,9 @@ impl Jit {
     ) -> Result<(Context, Vec<String>), Error> {
         let mut ctx = self.module.make_context();
         let mut fctx = FunctionBuilderContext::new();
-        // `YAVS_CLIFT_LIST` (as `build` decided), else the lab switches.
-        let listed = self.lists.get(&(id, native)).cloned().flatten();
-        let (cheap, cold) = match &listed {
-            Some(l) if !native || crate::blockcov::list_native_cheap() => {
-                (Some(crate::blockcov::Cheap::Set(l.clone())), None)
-            }
-            Some(l) => (None, Some(l.clone())),
-            None => (
-                crate::blockcov::cheap(&crate::blockcov::key(prog, id, native)).filter(|_| {
-                    !native || std::env::var_os("YAVS_CLIFT_CHEAP_NATIVE").is_none_or(|v| v != "0")
-                }),
-                crate::blockcov::cold(&crate::blockcov::key(prog, id, native))
-                    .map(|c| Rc::new(c.clone())),
-            ),
-        };
+        let cheap = crate::blockcov::cheap(&crate::blockcov::key(prog, id, native)).filter(|_| {
+            !native || std::env::var_os("YAVS_CLIFT_CHEAP_NATIVE").is_none_or(|v| v != "0")
+        });
         // Data for the table natives this function uses.
         let mut tabs = HashMap::new();
         for i in &f.code {
@@ -1670,8 +1578,7 @@ impl Jit {
         // The id symbols of the copies of subprograms the code names: its own frames' and its
         // callees' (`Gen::fid`).
         let mut ids = HashMap::new();
-        // (Frame-mode code with cheap blocks names its own id too: `yavs_rt_steps` counts by it.)
-        let own = ((native || cheap.is_some()) && prog.is_sub_copy(id)).then_some(id);
+        let own = (native && prog.is_sub_copy(id)).then_some(id);
         for g in own.into_iter().chain(order.iter().map(|(g, _)| **g)) {
             if prog.is_sub_copy(g) && !ids.contains_key(&g) {
                 let c = self.slot(prog, g)?;
@@ -1832,7 +1739,7 @@ impl Jit {
             id,
             native,
             cov.map(|c| c.1).zip(Some(&mut blocks)),
-            cold.as_deref(),
+            crate::blockcov::cold(&crate::blockcov::key(prog, id, native)),
             cheap,
         )?;
         if let Some((did, _)) = cov {
@@ -1874,10 +1781,10 @@ impl Jit {
         self.module
             .finalize_definitions()
             .map_err(|e| e.to_string())?;
-        for (name, key, hash, did, blocks) in std::mem::take(&mut self.covs) {
+        for (name, key, did, blocks) in std::mem::take(&mut self.covs) {
             let (at, _) = self.module.get_finalized_data(did);
             self.cov_at.push(at as usize);
-            crate::blockcov::register(name, key, hash, at as usize, blocks);
+            crate::blockcov::register(name, key, at as usize, blocks);
         }
         if let Some(list) = self.perfmap.take() {
             // With `PERF_BUILDID_DIR` set (`perf record` sets it) the JIT module lists every
@@ -3336,13 +3243,8 @@ fn gen_func(
                 }
             }
             let steps = ok(g.imp.steps, "cheap block without yavs_rt_steps")?;
-            let (p, k, fv, len) = (
-                g.c32(pc),
-                g.c32((end - i) as u32),
-                g.fid(id),
-                g.c32(f.code.len() as u32),
-            );
-            g.call_go(steps, &[p, k, fv, len], true);
+            let (p, k) = (g.c32(pc), g.c32((end - i) as u32));
+            g.call_go(steps, &[p, k], true);
             g.known.clone_from(&base_known);
             g.iv.fill(None);
             g.objnew = None;

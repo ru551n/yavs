@@ -1,0 +1,1 @@
+With `--tier-compile=wait`, the first run of a test no longer compiles a process together with the procedures that wait for it before they have run long enough to repay the compile, so the first run of a testbench with large bus procedures stays short; `YAVS_AUTO_WAIT_TREE` tunes it.

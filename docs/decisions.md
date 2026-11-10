@@ -15141,7 +15141,7 @@ Written by Claude. Landed with wave 3 batch 2 (maintainer's ruling of 2026-11-09
   percent of its price, the first-run floor's hold of that executor, the gain of 0.95 for `WaitForToggle`, and the
   forced compile of the waiting callees on `osvvm_axi4_random` (their booked time was the caller's).
 
-## `--tier-compile=wait`: the first run holds a process until the callee tree it pulls in repays (yavs-rt `auto.rs`, 2026-11-10, not decided)
+## `--tier-compile=wait`: the first run holds a process until the callee tree it pulls in repays (yavs-rt `auto.rs`, 2026-11-10, user ruling: landed)
 
 - **Finding** (agent). With the sampler naming the caller after a resumed callee returns, the first run of
   `uvvm_axistream_vvc` sees its command executor's own time (44 ms, main saw 0), lets it past the first-run floor
@@ -15164,5 +15164,6 @@ Written by Claude. Landed with wave 3 batch 2 (maintainer's ruling of 2026-11-09
   it does not shrink it. With the booking fix run 2 is about 22.6 G instructions with an A/A band of 1 to 2 percent,
   while bringing run 1 under the cap takes about 5 G out of it, so no rule that only changes when the tree compiles
   can keep every run within the A/A.
-- **Not decided** (user): land the rule with the trade, keep the booking fix alone with the cap failing, or judge this
-  test by a sum over runs.
+- **Decided** (user, 2026-11-10, option (a)): land it, accepting `uvvm_axistream_vvc` run 2 at 1.33 for the cold cap.
+  Reach: no corpus test lasts the second the rule waits for, so `tier_tree_held` is 0 on the corpus; its evidence is
+  the realbench `uvvm_axistream_vvc` first run (`tier_tree_held` 55, the executor's copies), as for the floor above.

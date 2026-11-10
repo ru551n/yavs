@@ -15186,8 +15186,8 @@ over the corpus):
 - The two forward analyses of promotion (`undefined_promoted`, the copies of `promote_cleanup`) ran a stack of
   blocks: a chain of `if`s walked its tail once per joining arm, cubic in the chain. Now sweeps in reverse postorder
   until nothing changes. The fixed point is the same in any order.
-- The backward sweeps (liveness in `cfg::dead_defs`, `Opt::dead_defs`, `share`, `slots`, `memo`, `sink`, the
-  statement markers' and the suspension liveness) go from the last block to the first; a chain numbered against the
+- The backward sweeps (liveness in `cfg::dead_defs`, `Opt::dead_defs`, `share`, `slots`, `memo`, `sink` and of the
+  registers across suspensions, and the marker analysis `forward_hits`) go from the last block to the first; a chain numbered against the
   flow took 164 rounds. From the third round they go in postorder (`opt::postorder`, the unreached blocks last);
   most bodies are done in two rounds and never build it.
 - **Not changed:** `Opt::kill` and `kill_all` scan a table capped at 64 facts (#1059): their share of the optimiser

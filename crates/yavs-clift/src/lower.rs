@@ -3274,7 +3274,10 @@ fn gen_func(
             {
                 g.pend[r.0 as usize] = None;
             }
-            g.spill(pc);
+            // The `Drive` of a fused copy stands for its `Copy` too: the waveform made on its slow
+            // ways and the interpreter entered at the `Copy` read what the `Copy` reads.
+            let at = copies.iter().find(|c| c.drive == pc).map_or(pc, |c| c.copy);
+            g.spill(at);
         }
         if let Some(l) = eloops.get(&pc) {
             g.eloop(l)?;

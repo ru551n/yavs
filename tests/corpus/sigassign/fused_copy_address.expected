@@ -1,0 +1,29 @@
+exit	0
+diag	note	1000000	0	:tb_fused_copy_address:_p0	0 0 00010001 000A000A 000400045A 00010001
+diag	note	1000000	0	:tb_fused_copy_address:_p0	0 1 00020002 000B000B 000500055A 00020002
+diag	note	1000000	0	:tb_fused_copy_address:_p0	0 2 00030003 000C000C 000600065A 00030003
+diag	note	2000000	0	:tb_fused_copy_address:_p0	1 0 00010001 000A000A 000400045A 0000FFFF
+diag	note	2000000	0	:tb_fused_copy_address:_p0	1 1 00020002 000B000B 000500055A 0000FFFF
+diag	note	2000000	0	:tb_fused_copy_address:_p0	1 2 00030003 000C000C 000600065A 0000FFFF
+diag	note	3000000	0	:tb_fused_copy_address:_p0	2 0 00010001 000A000A 000400045A 0000FFFF
+diag	note	3000000	0	:tb_fused_copy_address:_p0	2 1 00020002 000B000B 000500055A 0000FFFF
+diag	note	3000000	0	:tb_fused_copy_address:_p0	2 2 00030003 000C000C 000600065A 0000FFFF
+diag	note	4000000	0	:tb_fused_copy_address:_p0	3 0 00010001 000A000A 000400045A 12345678
+diag	note	4000000	0	:tb_fused_copy_address:_p0	3 1 00020002 000B000B 000500055A 12345678
+diag	note	4000000	0	:tb_fused_copy_address:_p0	3 2 00030003 000C000C 000600065A 12345678
+diag	note	5000000	0	:tb_fused_copy_address:_p0	4 0 00010001 000A000A 000400045A 00010001
+diag	note	5000000	0	:tb_fused_copy_address:_p0	4 1 00020002 000B000B 000500055A 00020002
+diag	note	5000000	0	:tb_fused_copy_address:_p0	4 2 00030003 000C000C 000600065A 00030003
+diag	note	6000000	0	:tb_fused_copy_address:_p0	5 0 00010001 000A000A 000400045A 00010001
+diag	note	6000000	0	:tb_fused_copy_address:_p0	5 1 00020002 000B000B 000500055A 00020002
+diag	note	6000000	0	:tb_fused_copy_address:_p0	5 2 00030003 000C000C 000600065A 00030003
+diag	note	7000000	0	:tb_fused_copy_address:_p0	6 0 00010001 000A000A 000400045A 00050005
+diag	note	7000000	0	:tb_fused_copy_address:_p0	6 1 00020002 000B000B 000500055A 000A000A
+diag	note	7000000	0	:tb_fused_copy_address:_p0	6 2 00030003 000C000C 000600065A 000F000F
+diag	note	8000000	0	:tb_fused_copy_address:_p0	7 0 00010001 000A000A 000400045A 12345678
+diag	note	8000000	0	:tb_fused_copy_address:_p0	7 1 00020002 000B000B 000500055A 12345678
+diag	note	8000000	0	:tb_fused_copy_address:_p0	7 2 00030003 000C000C 000600065A 12345678
+diag	note	9000000	0	:tb_fused_copy_address:_p0	8 0 00010001 000A000A 000400045A 12345678
+diag	note	9000000	0	:tb_fused_copy_address:_p0	8 1 00020002 000B000B 000500055A 12345678
+diag	note	9000000	0	:tb_fused_copy_address:_p0	8 2 00030003 000C000C 000600065A 12345678
+diag	note	9000000	0	:tb_fused_copy_address:_p0	done

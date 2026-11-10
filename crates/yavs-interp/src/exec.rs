@@ -2105,6 +2105,7 @@ impl Machine {
             ctx,
             fault: None,
             stop: false,
+            base: usize::MAX,
         };
         let ran = tier.run_cached(func, pc, &mut host);
         // Tested in place: a move of the `Option<Fault>` copies it on every activation.
@@ -5966,7 +5967,7 @@ impl Machine {
                     && self.pause.is_none()
                     && let Some(tier) = tier
                 {
-                    match self.tier_go(tier, rt, func, f, code, top, k, ctx)? {
+                    match self.tier_go(tier, rt, func, f, code, top, k, base, ctx)? {
                         TIER_GO_CALL => return Ok(Flow::Call),
                         TIER_GO_SUSPEND => return Ok(Flow::Suspend),
                         go => {
@@ -7237,7 +7238,11 @@ impl Machine {
                             ops = &code.ops;
                             k = entry!(pc)? as usize;
                             if TIER {
-                                rebind!();
+                                bind!();
+                                if native {
+                                    crate::lab(6);
+                                }
+                                enter!();
                             }
                             continue;
                         }
@@ -7255,7 +7260,11 @@ impl Machine {
                     if watch {
                         book_return(rt, func, pc);
                     }
-                    rebind!();
+                    bind!();
+                    if TIER && native {
+                        crate::lab(6);
+                    }
+                    enter!();
                 }
                 Op::SigReadScalar { dst, sig } => {
                     self.regs[dst as usize] = t!(self.sig_read_scalar(Reg(sig), ctx));
@@ -9360,17 +9369,22 @@ impl Machine {
         code: &pre::Code,
         top: usize,
         k: usize,
+        base: usize,
         ctx: &mut Option<&mut Ctx<'_>>,
     ) -> R<u64> {
         // The registers of a waveform buffer that is not run are undefined until the op that
         // drives it: not an entry for compiled code (it is asked again after the next jump).
+        crate::lab(7);
+        if top > 0 {
+            crate::lab(8);
+        }
         let at = code.no_tier.partition_point(|r| r.1 < k as u32);
         if code.no_tier.get(at).is_some_and(|r| r.0 <= k as u32) {
             return Ok((k as u64) << 1);
         }
         let pc = code.at.get(k).copied().unwrap_or(0) as usize;
         let prog = &*rt.prog;
-        let (next, ran) = self.run_tier(tier, rt, f, pc, ctx)?;
+        let (next, ran) = self.run_tier(tier, rt, f, pc, base, ctx)?;
         // Frames compiled code pushed and did not finish: the interpreter goes on with the
         // top one.
         if next == crate::TIER_UNWIND as usize {
@@ -9543,6 +9557,7 @@ impl Machine {
             ctx,
             fault: None,
             stop: false,
+            base: usize::MAX,
         };
         // A profile names the callee while its native frame runs (`Runtime::profile_sampler`).
         let marked = crate::PROFILE_NATIVE.load(Ordering::Relaxed).then(|| {
@@ -9583,6 +9598,7 @@ impl Machine {
         rt: &Runtime,
         f: &Func,
         pc: usize,
+        base: usize,
         ctx: &mut Option<&mut Ctx<'_>>,
     ) -> R<(usize, bool)> {
         let func = self.top().func;
@@ -9594,6 +9610,7 @@ impl Machine {
             ctx,
             fault: None,
             stop: false,
+            base,
         };
         let ran = tier.run(func, pc as u32, &mut host);
         let fault = host.fault;
@@ -11670,6 +11687,9 @@ pub struct Host<'a, 'c, 'x> {
     /// A native a native frame ran ended the process (`NativeCall::Stop`): the materialisation
     /// that follows suspends it.
     stop: bool,
+    /// The lowest frame the loop that entered compiled code runs (`run_ops`'s `base`): returns
+    /// into the frames above it may go on in compiled code (`ret_up`); `usize::MAX` for none.
+    base: usize,
 }
 
 impl Host<'_, '_, '_> {
@@ -12118,6 +12138,65 @@ impl crate::TierHost for Host<'_, '_, '_> {
         };
         self.f = g;
         true
+    }
+
+    fn ret_up(
+        &mut self,
+        tf: &mut crate::TierFrame,
+        pc: u32,
+        has_code: &dyn Fn(FuncId) -> bool,
+    ) -> Option<(FuncId, u32)> {
+        let m = &mut *self.m;
+        let top = m.frames.len() - 1;
+        if self.fault.is_some() {
+            return None;
+        }
+        let up = match self.f.code.get(pc as usize) {
+            // As the loop's return (`Op::Ret`), into a caller of this run with compiled code.
+            Some(&Inst::Ret { v })
+                if top > self.base
+                    && (v.is_some() || m.frames[top].ret.is_none())
+                    && m.pause.is_none()
+                    && has_code(m.frames[top - 1].func)
+                    && !m.is_memo_frame(top)
+                    && !m.is_memo_frame(top - 1) =>
+            {
+                let caller = m.frames[top - 1].func;
+                let at = m.frames[top - 1].pc + 1;
+                self.prog.func(caller).and_then(|g| {
+                    let code = &self.rt.pre(caller, g)?.code;
+                    let k = code
+                        .entry
+                        .get(at as usize)
+                        .copied()
+                        .filter(|&k| k != pre::NONE)?;
+                    // Not an entry where `tier_go` would refuse one.
+                    let i = code.no_tier.partition_point(|r| r.1 < k);
+                    let no = code.no_tier.get(i).is_some_and(|r| r.0 <= k);
+                    (!no).then_some((caller, g, v, at))
+                })
+            }
+            _ => None,
+        };
+        let Some((caller, g, v, at)) = up else {
+            m.frames[top].pc = pc;
+            return None;
+        };
+        let v = v.map(|r| m.regs[r.0 as usize]);
+        let done = m.pop_frame_in_place();
+        if let (Some(d), Some(v)) = (done.and_then(|fr| fr.ret), v) {
+            m.regs[d.0 as usize] = v;
+        }
+        m.top().pc = at;
+        m.tier_view(tf);
+        self.f = g;
+        // The sampler books the caller's compiled code to the caller, as the loop's return does.
+        crate::slot().store(
+            u64::from(self.rt.id) << 32 | u64::from(caller.0),
+            Ordering::Relaxed,
+        );
+        crate::lab(11);
+        Some((caller, at))
     }
 
     fn temp(&mut self) -> &mut Vec<u8> {

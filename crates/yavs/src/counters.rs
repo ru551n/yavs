@@ -110,6 +110,9 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         rows.push(("spec_shared_ir", c.shared_ir));
         rows.push(("spec_copy_ir", c.copy_ir));
         rows.push(("retiers", rt.native_flags().retiers()));
+        for (i, n) in ["lab_sd_call", "lab_sd_ran", "lab_sd_susp", "lab_sd_unw", "lab_sd_nocode", "lab_sd_moved", "lab_ret_code", "lab_tg_all", "lab_tg_deep", "lab_sd_ok", "lab_sd_retfail", "lab_chain"].iter().enumerate() {
+            rows.push((n, yavs_interp::LAB[i].load(std::sync::atomic::Ordering::Relaxed)));
+        }
         rows.push(("materialised", rt.native_flags().materialised_all()));
         let [
             asked,

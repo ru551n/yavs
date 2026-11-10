@@ -630,6 +630,21 @@ pub trait TierHost {
     /// caller's again (`true`); else leave the frame at `pc` for the interpreter (`false`).
     fn ret(&mut self, fr: &mut TierFrame, pc: u32) -> bool;
 
+    /// Compiled code of the frame the interpreter entered stopped at `pc`: if that is its return
+    /// to a caller in the same run of the loop whose function `has_code`, pop the frame as the
+    /// loop's return does (the caller goes on after its call) and return the caller and the pc its
+    /// compiled code goes on at, `fr` the caller's view. Else `None`, the top frame at `pc` unless
+    /// a fault is pending.
+    fn ret_up(
+        &mut self,
+        fr: &mut TierFrame,
+        pc: u32,
+        has_code: &dyn Fn(FuncId) -> bool,
+    ) -> Option<(FuncId, u32)> {
+        let _ = (fr, pc, has_code);
+        None
+    }
+
     /// The memory object `addr` points into, as its start and length, writable when
     /// `write`: `None` for the memory in the [`TierFrame`] and wherever the interpreter's
     /// access would fail (compiled code then steps the instruction). Valid until the next
@@ -3463,4 +3478,11 @@ pub fn resolve(
         )),
         Err(e) => Err(m.error(e, None)),
     }
+}
+
+// LAB (not for landing): frame-call counters.
+pub static LAB: [std::sync::atomic::AtomicU64; 13] = [const { std::sync::atomic::AtomicU64::new(0) }; 13];
+#[inline(always)]
+pub fn lab(i: usize) {
+    LAB[i].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }

@@ -2113,9 +2113,11 @@ unsafe fn step_done(
             Stepped::Suspend => return TIER_SUSPEND,
             Stepped::Call(callee) => callee,
         };
+        yavs_interp::lab(0);
         // The callee runs here when it has compiled code, the register stack did not move
         // (the callers' compiled code holds pointers into it) and native stack is left.
         let Some((run, nregs)) = ((*env).lookup)(callee) else {
+            yavs_interp::lab(4);
             return TIER_UNWIND;
         };
         let fr = &(*mem).fr;
@@ -2124,17 +2126,26 @@ unsafe fn step_done(
             || fr.frame >= 1 << 29
             || stack_here() < (*env).stack_lo
         {
+            yavs_interp::lab(5);
             return TIER_UNWIND;
         }
+        yavs_interp::lab(1);
         // The callee runs on the same `Mem`: the interpreter keeps its view current. The push
         // may have moved the slot stack under the objects found before.
         (*mem).forget();
         let next = run(env as *mut c_void, fr.regs, mem, 0);
         (*mem).sync(&mut *(*env).host);
+        if next == TIER_SUSPEND {
+            yavs_interp::lab(2);
+        }
+        if next == TIER_UNWIND {
+            yavs_interp::lab(3);
+        }
         if (*env).panic.is_some() || next == TIER_UNWIND || next == TIER_SUSPEND {
             return next;
         }
         let ok = (*env).host.ret(&mut (*mem).fr, next);
+        yavs_interp::lab(if ok { 9 } else { 10 });
         (*mem).temp_seen = (*mem).fr.temp_len;
         if ok { GO } else { TIER_UNWIND }
     }
@@ -2992,7 +3003,10 @@ pub fn enter_on<H: View + ?Sized, const LEAN: bool>(
     // indexes `regs` below that (checked at compile time); it accesses memory only
     // within the bounds in `mem`; `env` and `mem` outlive the call.
     mem.env = &mut env as *mut Env<'_> as *mut c_void;
-    let next = unsafe { f(mem.env, mem.fr.regs, mem, pc) };
+    let mut next = unsafe { f(mem.env, mem.fr.regs, mem, pc) };
+    if !lean && lab_chain() {
+        next = unsafe { ret_chain(&mut env, mem, next) };
+    }
     gate_skipped(mem);
     mem.fr.kctx = std::ptr::null_mut();
     mem.sync(env.host);
@@ -3023,6 +3037,59 @@ pub fn enter_on<H: View + ?Sized, const LEAN: bool>(
     match r {
         Ok(next) => Ok(Some(next)),
         Err(p) => Err(p.expect("tested above")),
+    }
+}
+
+// LAB switch: `YAVS_LAB_CHAIN=0` turns the return chain off.
+fn lab_chain() -> bool {
+    static M: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *M.get_or_init(|| std::env::var("YAVS_LAB_CHAIN").map_or(true, |v| v != "0"))
+}
+
+/// The returns of the frame an activation entered compiled code in, and of the callers it then
+/// goes on in, run as the loop's return (`TierHost::ret_up`) straight into the callers' compiled
+/// code while they have some: a caller that resumed a wait deep in calls is entered from the
+/// interpreter once, not once per frame. What the last compiled code returned; `TIER_UNWIND`
+/// (the interpreter goes on with the top frame) when that is a pc of a frame below the one entered.
+///
+/// # Safety
+/// As `enter_on`: `env` and `mem` are the activation's, compiled code returned `next`.
+#[inline(never)]
+unsafe fn ret_chain(env: &mut Env<'_>, mem: &mut Mem, mut next: u32) -> u32 {
+    let mut chained = false;
+    while next != TIER_UNWIND && next != TIER_SUSPEND && env.panic.is_none() {
+        mem.sync(env.host);
+        let lookup = env.lookup;
+        let has = |id: FuncId| lookup(id).is_some();
+        let up = match catch_unwind(AssertUnwindSafe(|| env.host.ret_up(&mut mem.fr, next, &has))) {
+            Ok(up) => up,
+            Err(p) => {
+                env.panic = Some(p);
+                break;
+            }
+        };
+        mem.temp_seen = mem.fr.temp_len;
+        let Some((caller, at)) = up else { break };
+        chained = true;
+        let Some((run, nregs)) = lookup(caller) else {
+            next = TIER_UNWIND;
+            break;
+        };
+        if mem.fr.nregs != nregs as u64 || mem.fr.frame >= 1 << 29 {
+            next = TIER_UNWIND;
+            break;
+        }
+        // The popped frame's objects are gone.
+        mem.forget();
+        // SAFETY: as in `enter_on`, for the caller's code on the caller's view.
+        next = unsafe { run(mem.env, mem.fr.regs, mem, at) };
+    }
+    // The frame `tier_go` entered is gone: the interpreter goes on with the top frame, whose pc
+    // `ret_up` set (a fault keeps its own).
+    if chained && next != TIER_SUSPEND && env.panic.is_none() {
+        TIER_UNWIND
+    } else {
+        next
     }
 }
 

@@ -250,18 +250,20 @@ pub(crate) fn list_native_cheap() -> bool {
     std::env::var("YAVS_CLIFT_LIST_NATIVE").is_ok_and(|v| v == "cheap")
 }
 
-/// Bodies made with a list in this run, and frame-mode code made again in full (`YAVS_COUNTERS`:
-/// `clift_listed`, `clift_again`).
+/// Bodies made with a list in this run, frame-mode code made again in full, and process copies
+/// made without one (`YAVS_COUNTERS`: `clift_listed`, `clift_again`, `clift_copy_unlisted`).
 pub(crate) static LISTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 pub(crate) static AGAIN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static COPY_UNLISTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// `YAVS_COUNTERS`: bodies made with a never-run list, functions whose listed blocks ran too much,
-/// and of them the ones made again in full.
-pub fn list_stats() -> (usize, usize, usize) {
+/// of them the ones made again in full, and process copies left without a list.
+pub fn list_stats() -> (usize, usize, usize, usize) {
     (
         LISTED.load(std::sync::atomic::Ordering::Relaxed),
         yavs_rt::rt::tripped_all().len(),
         AGAIN.load(std::sync::atomic::Ordering::Relaxed),
+        COPY_UNLISTED.load(std::sync::atomic::Ordering::Relaxed),
     )
 }
 
@@ -346,6 +348,8 @@ pub(crate) fn list_open(prog: &yavs_ir::Program) {
 /// The never-run pcs of function `id` (`f`) that its code made now follows: `None` with the list
 /// off or in a coverage run, for a function with no line, a line of another body, or one that
 /// stepped too much of them already (`rt::tripped`, in this run or in earlier ones together).
+/// A process copy has none: it runs from its switch, which moves between runs, so its blocks the
+/// coverage run left to the shared code are not in its table.
 pub(crate) fn listed(
     prog: &yavs_ir::Program,
     id: yavs_ir::FuncId,
@@ -353,6 +357,10 @@ pub(crate) fn listed(
 ) -> Option<std::rc::Rc<HashSet<u32>>> {
     let mode = list_mode();
     if !matches!(mode, ListMode::Read | ListMode::All) || yavs_rt::rt::tripped(id) {
+        return None;
+    }
+    if prog.copy_tag(id).is_some() && !prog.is_sub_copy(id) {
+        COPY_UNLISTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return None;
     }
     let pcs: HashSet<u32> = if mode == ListMode::All {

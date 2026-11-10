@@ -153,13 +153,14 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         rows.push((name, v as u64));
     }
     // `YAVS_CLIFT_LIST`: bodies made with a never-run list, functions whose listed blocks ran too
-    // much, and of them the ones made again in full.
+    // much, of them the ones made again in full, and process copies made without a list.
     #[cfg(feature = "clift")]
     {
-        let (listed, tripped, again) = yavs_clift::list_stats();
+        let (listed, tripped, again, copy_unlisted) = yavs_clift::list_stats();
         rows.push(("clift_listed", listed as u64));
         rows.push(("clift_tripped", tripped as u64));
         rows.push(("clift_again", again as u64));
+        rows.push(("clift_copy_unlisted", copy_unlisted as u64));
     }
     for (name, v) in rows {
         eprintln!("counters: {name}={v}");

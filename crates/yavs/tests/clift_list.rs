@@ -115,9 +115,87 @@ fn a_wrong_list_is_made_again_in_full_and_leaves_the_list() {
     assert_eq!(leave.stdout, want);
 }
 
-/// Copies of one process with every block listed: the cheap code names the copy's id (the step
-/// counter's), so two copies of one body must not share a pre-key. Debug builds check every
-/// pre-key hit against the lowering and abort on a difference.
+const COPIES: &str = "entity cp_unit is
+  generic (k : integer);
+  port (clk : in bit);
+end;
+architecture a of cp_unit is
+begin
+  process (clk)
+    variable n : integer := 0;
+    variable acc : integer := 0;
+  begin
+    if clk = '1' then
+      n := n + 1;
+      if n < 5 then
+        for i in 0 to 199 loop
+          acc := (acc + i * k) mod 1009;
+        end loop;
+      else
+        acc := (acc + k) mod 1009;
+      end if;
+      if n = 3000 then
+        report \"acc \" & integer'image(acc);
+      end if;
+    end if;
+  end process;
+end;
+entity cp is end;
+architecture a of cp is
+  signal clk : bit := '0';
+begin
+  clk <= not clk after 5 ns when now < 31 us else clk;
+  u1 : entity work.cp_unit generic map (k => 3) port map (clk);
+  u2 : entity work.cp_unit generic map (k => 7) port map (clk);
+end;
+";
+
+/// A process copy runs from its switch, which moves between runs: here the coverage run switches
+/// after the first branch is done with, the next run before it. Copies get no list, so nothing
+/// trips; with a list the copies would step the first branch and be made again.
+#[test]
+fn process_copies_get_no_list() {
+    let d = tempdir("clift_list_process_copies");
+    std::fs::write(d.join("t.vhd"), COPIES).expect("write");
+    let a = Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .args(["analyze", "--work=work:work", "t.vhd"])
+        .current_dir(&d)
+        .output()
+        .expect("analyze");
+    assert!(a.status.success(), "{a:?}");
+    let run = |list: &str, tier: &str, after: &str| {
+        let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["--color", "never", "run", "--work=work:work", "--threads=1"])
+            .arg(tier)
+            .arg("cp")
+            .env("YAVS_COUNTERS", "1")
+            .env("YAVS_CLIFT_LIST", list)
+            .env("YAVS_CLIFT_AGAIN", "1")
+            .env("YAVS_AUTO_COUNT", "1")
+            .env("YAVS_AUTO_GATE", "0")
+            .env("YAVS_AUTO_SYNC", "1")
+            .env("YAVS_SPEC_ALL", "1")
+            .env("YAVS_SPEC_AFTER", after)
+            .env_remove("YAVS_AUTO_POLICY")
+            .current_dir(&d)
+            .output()
+            .expect("run yavs");
+        assert!(o.status.success(), "{o:?}");
+        o
+    };
+    let want = run("off", "--tier=interp", "2").stdout;
+    assert!(String::from_utf8_lossy(&want).contains("acc "));
+    let w = run("write", "--tier=auto", "40");
+    assert_eq!(w.stdout, want);
+    let on = run("on", "--tier=auto", "2");
+    assert_eq!(on.stdout, want);
+    assert!(counter(&on, "clift_copy_unlisted") >= 2, "{on:?}");
+    assert_eq!(counter(&on, "clift_tripped"), 0, "{on:?}");
+}
+
+/// Copies of one process with every block listed: process copies get no list
+/// (`process_copies_get_no_list`), copies of subprograms do and name their id slot, so no two
+/// copies share a pre-key. Debug builds check every pre-key hit against the lowering.
 #[test]
 fn copies_with_a_list_do_not_share_a_pre_key() {
     for t in ["held/held_active", "process/edge_alias"] {

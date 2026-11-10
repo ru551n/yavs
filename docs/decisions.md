@@ -15197,3 +15197,34 @@ over the corpus):
 - **Not changed:** `Opt::kill` and `kill_all` scan a table capped at 64 facts (#1059): their share of the optimiser
   stays flat from 300 to 1200 statements, with as many escaping variables. The dense bit sets of the liveness
   analyses stay (blocks times registers / 64 per round) with their caps.
+
+## `--tier=auto`: copies made during a run are callers too (yavs-rt `auto.rs` `Worker::see_copies`, perf/b4-natcallee, 2026-11-10; landing is the maintainer's call)
+
+- **Finding** (agent). The count rule holds a subprogram until a caller has compiled code (`Worker::waits`,
+  `entered_from_code`), and reads who calls whom from a map worked out once, at the first asked function. The
+  copies of processes and of subprograms are made later, in slots that were empty then, so their calls were not in
+  the map. A process copy was covered by `copy_compiled` (a compiled copy stands for its process), a copy of a
+  subprogram (called only from copies) by nothing: on GRLIB the compiled LEON3 `iu.comb` copy called about 14
+  subprogram copies (`op_mux`, `alu_op`, `rs1_gen`, ...) that stayed `uncalled subprogram` for the whole run, also when
+  the cache held them, and each call left the compiled code through `TIER_UNWIND` (0.4 to 2.7 M trips a run). The
+  ones that compiled came in through the sampler late, and `alu_op` (464 IR, `Kind::Big`, a sampled candidate only at
+  585 ms seen) never did.
+- **Change** (agent). Each batch of looks adds the calls of the copies made since to `callers` and `callees`
+  (`see_copies`; slots filled in order, a slot whose copy this thread does not see yet is looked at again). Counter
+  `tier_copy_calls` (the calls added). No new rule: the callees then compile under the rules a callee of a compiled
+  caller always had (after `WAIT_LONG` in a first run, cached ones as links in a later run), and the subtree credit
+  and the run-1 tree rule see the copies' callees.
+- **Measured** (agent; exact counts, by the user's ruling of 2026-11-10 that a busy host is judged by counts: PGO
+  bench builds, two builds of main as the A/A, 3 reps from pristine worlds, `wait`; GRLIB runs 1 to 4, all-thread
+  instructions against main): 0.968, 0.963, 0.972, 0.975 (A/A 1.009, 1.007, 0.995, 0.994). Cycles and the cold cap
+  are still to be timed on a quiet host. Trips into the
+  interpreter from compiled code per run (lab counters, untimed): 2.68 M, 1.04 M, 0.58 M, 0.37 M before, 16 k, 2.7 k,
+  0.9 k, 1.0 k after; `alu_op` compiles in run 1 once `comb` has code. On the other measured designs the counter is 0
+  (no copy made after the map has a call, so every decision is the same): `osvvm_axi4_random`,
+  `uvvm_axistream_vvc`, `uvvm_sb_slv`, `uvvm_func_cov`, `neorv32_dual_full` and the small tests.
+- **Not built.** A price by the trips from compiled callers (the brief's run-1 rule) and a link of cached callees at
+  the caller's link: with the map right, the callees compile within half a second of `comb` in run 1 and link in
+  later runs, so neither has a gap left to close.
+- **Reach.** `tier_copy_calls` 119 on 27 corpus tests under `yavs-clift-count1` (0 under `yavs` and
+  `yavs-clift-check`: no default-tier corpus test makes a copy after the first asked function). Unit test
+  `a_copy_made_later_frees_what_it_calls` (fails without the change).

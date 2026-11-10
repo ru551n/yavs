@@ -389,6 +389,7 @@ const PASS: &[&str] = &[
     "process/wait_in_sensitivity_proc",
     "process/conditional_expr_2019",
     "process/dispatch_subtree",
+    "process/resume_booking",
     "process/edge_alias",
     "process/edge_shapes",
     "process/individual_assoc",

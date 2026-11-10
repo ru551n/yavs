@@ -1,0 +1,1 @@
+A process that waits inside a procedure now has the work it does after that procedure returns counted for itself, not for the procedure: the busiest subprograms of `yavs run --profile` and the choice of what the default tier compiles see where the time really goes.

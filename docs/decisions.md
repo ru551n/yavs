@@ -15062,3 +15062,33 @@ Written by Claude. Landed with wave 3 batch 2 (maintainer's ruling of 2026-11-09
   measured 1.5 to 1.6 times main's run 2). `YAVS_AUTO_WAIT_SUBTREE` and `tier_unlocked` stay. Reach: the corpus test
   `process/dispatch_subtree` (a dispatcher over two waiting procedures, the inner one large) has the second run of
   `yavs-auto-warm` compile the dispatcher and the outer procedure for what they unlock (`tier_unlocked` 2).
+
+## `--tier=auto`: the sampler names the caller after a resumed callee returns (yavs-interp `exec.rs`, 2026-11-10)
+
+- **Finding** (agent). The watching loop names the top frame's function in the thread's sampling slot when an
+  activation starts and again only every `WATCH` (128) calls and jumps back. A process that resumes inside the
+  procedure it waits in had that procedure in the slot after it returned, so the samplers booked the caller's work
+  to the procedure. On `osvvm_axi4_random`, a later run booked about a third of its sampled time to four small
+  waiting procedures (`WaitForToggle`, `RequestTransaction` and two more); on `uvvm_axistream_vvc` the first run
+  booked 284 ms to a 130-instruction wait procedure and almost nothing to the command executor; `--profile` named
+  the wait procedure as the busiest subprogram of a design whose work was all in the process.
+- **Change** (agent). The branch of `Op::Ret` that looks its caller up, which runs for frames the loop did not push
+  (an activation that resumed inside a callee, more than eight levels, frames compiled code left), stores the caller
+  in the slot and the pc slot (`book_return`, out of line; counter `booked_returns`, debug and `op-census` builds).
+  The other returns and calls are unchanged. Filling the list of saved callers from the frame stack at the start of
+  such an activation was not done: it makes the same two lookups earlier, and those returns would then take the
+  branch that names nothing.
+- **Measured** (agent; PGO bench builds, two builds of main as the A/A, 5 reps per series from pristine worlds on
+  two free timing cores, `wait`; all-thread instructions / cycles against main). The interpreter loop is unchanged
+  (`--tier=interp` counts equal); the watching loop with nothing compiled moved by register allocation alone, at most
+  +0.1 percent of instructions (one instruction more in one op on a compute loop), with the new branch never taken
+  there. `uvvm_axistream_vvc`: run 1 1.16 / 1.25 (A/A 0.99 / 1.01), run 2 0.76, run 3 0.81, runs 4 to 8 0.96 to 1.01;
+  eight-run sum 0.95 / 0.97. With the executor's own time seen, the first run compiles it and the bus procedures
+  under it, which main paid in run 2: the cold cap against the pinned baseline reads 1.44 (main 1.13).
+  `osvvm_axi4_random` runs 1 to 14 0.95 to 1.11, sum 1.02 / 1.02 (A/A 1.00 / 0.98), runs 6, 9 and 11 above the A/A;
+  `neorv32_dual_full` level but run 8 (1.04, A/A 1.00); `neorv32_single_cache` level; `background` level on all
+  three. The other cold-cap tests, GRLIB's first run and Microwatt (untimed) level with main.
+- **Not decided** (user): whether to land it with the first-run loss on `uvvm_axistream_vvc` above.
+- **Earlier readings that rest on the misbooking**: the subtree credit's finding that the executor was seen 0 to 2
+  percent of its price, the first-run floor's hold of that executor, the gain of 0.95 for `WaitForToggle`, and the
+  forced compile of the waiting callees on `osvvm_axi4_random` (their booked time was the caller's).

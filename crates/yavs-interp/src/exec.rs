@@ -300,6 +300,20 @@ fn watch_tick(rt: &Runtime, func: FuncId, pc: u32) -> bool {
         .is_some_and(|n| n.load(Ordering::Acquire) & (NAT_CODE | NAT_ASK) != 0)
 }
 
+/// A return of the watching loop up frames it did not push (an activation that resumed inside a
+/// callee, which `exec_fast` named): name the caller for the samplers, or the caller's work is
+/// booked to the callee. Out of line, as `watch_tick`: only returns that look their caller up.
+#[cold]
+#[inline(never)]
+fn book_return(rt: &Runtime, func: FuncId, pc: u32) {
+    crate::census::booked_return();
+    crate::slot().store(
+        u64::from(rt.id) << 32 | u64::from(func.0),
+        Ordering::Relaxed,
+    );
+    crate::pc_slot().store(u64::from(func.0) << 32 | u64::from(pc), Ordering::Relaxed);
+}
+
 /// Whether a call of `callee` hands the loop over to the one with the tier: a flag of it is set now
 /// (`Pre::native` says it had one once) and the tier does not call it on a native frame, which the
 /// loop without the tier does itself (the loop with it costs more per op for the rest of the
@@ -5804,7 +5818,8 @@ impl Machine {
         // call and the match on the result, made it copy the result).
         let _idle = W.then(|| SlotIdle(slot));
         // `W`: this thread's sampling `slot` names the function the loop goes on in; `run_ops`
-        // names it again only every `WATCH` calls and jumps back (#525).
+        // names it again only every `WATCH` calls and jumps back (#525), and at a return up frames
+        // it did not push (`book_return`).
         let tag = u64::from(rt.id) << 32;
         loop {
             let top = self
@@ -7227,6 +7242,9 @@ impl Machine {
                         .code;
                     ops = &code.ops;
                     k = entry!(pc)? as usize;
+                    if watch {
+                        book_return(rt, func, pc);
+                    }
                     rebind!();
                 }
                 Op::SigReadScalar { dst, sig } => {

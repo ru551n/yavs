@@ -86,6 +86,9 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         rows.push(("ops", n - before));
         rows.push(("wake_sole_left", s.sole_left));
     }
+    if let Some(n) = yavs_interp::booked_returns() {
+        rows.push(("booked_returns", n));
+    }
     if let Some(rt) = rt {
         let c = rt.prog.copy_stats();
         rows.push(("spec_reserved", c.reserved as u64));

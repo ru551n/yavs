@@ -436,6 +436,85 @@ fn the_profile_names_a_native_frame_callee_not_its_caller() {
     assert!(seen.iter().all(|&s| s == (sq, true)), "{seen:?}");
 }
 
+/// A process that resumes inside the procedure it waits in names itself for the tier's sampler
+/// once the procedure returns, not the procedure: the sampler, asked from the call that follows,
+/// sees the process.
+#[test]
+fn the_sampler_names_the_caller_after_a_resumed_callee_returns() {
+    use std::sync::atomic::AtomicU32;
+    let mut pb = ProgramBuilder::new();
+    let int = integer(&mut pb);
+    let sq = pb.declare("square", FuncKind::Function, None);
+    let wft = pb.declare("wft", FuncKind::Procedure, None);
+    let proc_ = pb.declare("p", FuncKind::Process, None);
+    {
+        let mut fb = pb.define(sq);
+        let x = fb.param("x", Width::B8, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb, StmtKind::Return);
+        let v = load(&mut fb, AddrSpace::Frame, x, Width::B8);
+        // Large enough not to be inlined into the process.
+        let mut r = v;
+        for _ in 0..30 {
+            r = bin(&mut fb, IntOp::Add, r, v);
+        }
+        fb.emit(Inst::Ret { v: Some(r) });
+        fb.finish();
+    }
+    {
+        let mut fb = pb.define(wft);
+        wait_for(&mut fb, 10 * NS);
+        stmt(&mut fb, StmtKind::Return);
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+    }
+    {
+        let mut fb = pb.define(proc_);
+        let n = fb.local("n", int, 8, 8);
+        stmt(&mut fb, StmtKind::Call);
+        let none = fb.regs(&[]);
+        fb.emit(Inst::Call {
+            func: wft,
+            args: none,
+            dst: None,
+        });
+        stmt(&mut fb, StmtKind::Call);
+        let v = load(&mut fb, AddrSpace::Frame, n, Width::B8);
+        let one = fb.int(1);
+        let v1 = bin(&mut fb, IntOp::Add, v, one);
+        store(&mut fb, AddrSpace::Frame, n, v1, Width::B8);
+        let args = fb.regs(&[v1]);
+        let r = fb.reg(RegTy::I64);
+        fb.emit(Inst::Call {
+            func: sq,
+            args,
+            dst: Some(r),
+        });
+        fb.emit(Inst::Br { to: BlockId(0) });
+        fb.finish();
+    }
+    let mut d = Design::new(pb);
+    d.procs = vec![ProcSpec {
+        name: "p",
+        func: proc_,
+        drives: vec![],
+    }];
+    let rt = Runtime::new(d.prog.clone(), Default::default()).unwrap();
+    let tier = std::sync::Arc::new(Calls(
+        sq,
+        AtomicU32::new(0),
+        Default::default(),
+        Default::default(),
+    ));
+    *tier.2.lock().unwrap() = Some(Box::new(rt.sampler()));
+    assert!(rt.set_tier(tier.clone()));
+    rt.native_flags().set_call(sq);
+    let (mut sim, _, _) = d.build_rt(1, rt, |p, _| p);
+    sim.run_until(Time::ns(200)).unwrap();
+    let seen = tier.3.lock().unwrap().clone();
+    assert!(seen.len() >= 9, "{seen:?}");
+    assert!(seen.iter().all(|&s| s == (proc_, false)), "{seen:?}");
+}
+
 /// Counters of rising edges, one small (its registers stay with the process between
 /// activations) and one whose temporaries outgrow what a process keeps (it hands its vectors
 /// to the thread's scratch), both run for many activations with identical results.

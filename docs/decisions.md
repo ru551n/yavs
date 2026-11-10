@@ -15156,7 +15156,8 @@ Written by Claude. Landed with wave 3 batch 2 (maintainer's ruling of 2026-11-09
   run 1 0.86 / 0.85 (A/A 1.00 / 0.97), run 2 1.33 / 1.16, run 3 1.06 / 1.01, run 4 1.04, runs 5 to 8 level; eight-run
   sum 1.03 / 0.98. On that test the factor acts as a switch: at 1.5 nothing changes, at 2 the whole tree waits for
   run 2. On `osvvm_axi4_random`, `neorv32_dual_full`, `neorv32_single_cache` and GRLIB the rule never fires
-  (`tier_tree_held` 0 in every run), and `background` is level. Cold cap of `uvvm_axistream_vvc` (host loaded, wall
+  (`tier_tree_held` 0 in every run); on Microwatt's first run it holds five processes for a while and compiles the
+  same 227 bodies (instructions 1.002, untimed, one run); `background` is level. Cold cap of `uvvm_axistream_vvc` (host loaded, wall
   bands of 20 percent, so read in cycles): 1.06 of the pinned baseline with the rule, 1.34 without.
 - **Bound** (agent). The rule moves the compile bill of the executor's tree (about half a second) from run 1 to run 2;
   it does not shrink it. With the booking fix run 2 is about 22.6 G instructions with an A/A band of 1 to 2 percent,

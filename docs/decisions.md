@@ -15173,3 +15173,37 @@ Written by Claude. `YAVS_CLIFT_LIST` (with `write`, `on` and `all`), `YAVS_CLIFT
 - **Decided** (user, 2026-11-10, option (a)): land it, accepting `uvvm_axistream_vvc` run 2 at 1.33 for the cold cap.
   Reach: no corpus test lasts the second the rule waits for, so `tier_tree_held` is 0 on the corpus; its evidence is
   the realbench `uvvm_axistream_vvc` first run (`tier_tree_held` 55, the executor's copies), as for the floor above.
+
+## `--tier=auto`: a loop that waits is no compute loop (yavs-rt `auto.rs` `compute`, agent, 2026-11-10; landing is the maintainer's call)
+
+- **Finding** (agent). A process that waits inside a chain of procedures (a bus procedure of a verification component
+  waiting for a toggle) cost 17 to 29 percent more instructions per wake under `--tier=auto` than interpreted, at call
+  depths 1 to 6 (exact counts, a window of 100 wakes after the compile: depth 1 7 712 against 6 839, depth 6 11 647
+  against 10 255, toggler included). The innermost procedure (a `wait until` chosen by the value now, 76 IR) was the only
+  function compiled, as `ComputeFrame`: its loops are the `wait until` loops, and no instruction in them leaves compiled
+  code, so `compute` called them compute loops. Each wake then entered its compiled code twice (the resume and the next
+  call), through `tier_go`, `AutoTier::run` and the frame view, for a body of a few instructions, and the activation
+  resumed in compiled code ran its interpreted callers in the loop with the tier.
+- **Change** (agent). `compute` counts each `Suspend` in a loop as a leave (`loop_leaves`): a loop is compute only with
+  twenty instructions or more per suspension and leave, so a `wait until`, a clock generator or a handshake loop is
+  `Frame` (or `Big`/`BigLoop` from 300 IR) and is priced and repaid as such. Counter `wait_loops` (`YAVS_COUNTERS`):
+  functions classified so that would have been compute loops before.
+- **Rejected** (agent): giving the rest of such an activation back to the watching loop after the compiled callee
+  returns (one hand-over per wake). Measured on a lab build, exact counts per wake: depth 1 +365, depth 3 +243,
+  depth 6 +64 instructions against main: the drop and the hand-over at the next call of the compiled callee cost more
+  than the loop with the tier costs the callers.
+- **Measured** (agent). Micro (depths 1, 3, 6), exact counts per wake: 6 963 / 8 428 / 10 626 against main
+  7 712 / 9 286 / 11 647 (interpreter 6 839 / 8 205 / 10 255, unchanged). Census of untimed traced runs: the kind
+  changes only for wait-shaped functions (`clock_generator`, `fetch_command_and_prepare_executor`,
+  `send_command_to_vvc` on `uvvm_axistream_vvc`; `CreateClock`, `DoAxiReadyHandshake`, `WaitForTransaction` on
+  `osvvm_axi4_random`; none on `uvvm_sb_slv`, `vunit_logging`, `uvvm_func_cov`, the NEORV32 tests). PGO bench builds (two builds of main as the A/A, 5 reps
+  from pristine worlds, two free timing cores, `wait`), all-thread instruction sums against main: `uvvm_axistream_vvc`
+  8 runs 1.010 (A/A 1.026), `osvvm_axi4_random` 8 runs 1.007 (A/A 1.026), `uvvm_sb_slv` 4 runs 1.007 (A/A 1.007),
+  `vunit_logging` level; cycle sums within the A/A on three, `uvvm_sb_slv` 1.045 (A/A 0.996, runs 0.92 to 1.02:
+  no function of it changes kind, so the policy's choices are the same). Micro, whole runs (PGO, one timing core, 1 M wakes):
+  instructions 0.962 at depth 1 (A/A 0.996), 0.994 at depth 6 (A/A 1.003), cycles within the A/A. Cold cap (plain
+  bench builds, wall against the pinned baseline, 10 pairs): equal to main on all six tests (`uvvm_axistream_vvc`
+  1.38 against main 1.43, the rest 0.87 to 1.03). GRLIB and Microwatt: instructions and output equal to main.
+- **Left**: when the wrappers of such a chain are compiled too (a long run), each level costs about 800 instructions
+  more than interpreted (`Host::step`, `tier_view`, `AutoTier::run`, `tier_go` per call and return of frame-mode code
+  into frame-mode code); unchanged by this rule.

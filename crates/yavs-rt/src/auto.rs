@@ -24,7 +24,7 @@
 //! function and asks for it (`Tier::asked`); the looks keep deciding what the count does not reach.
 
 use std::panic::resume_unwind;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
@@ -138,25 +138,43 @@ fn loop_share(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> usize {
 
 /// Whether the loops of `f` are compute: at most one instruction in twenty in them is one the
 /// compiled code leaves to the interpreter (a call other than a native-frame one, a native, a
-/// report). Such a function runs
+/// report) or a suspension. Such a function runs
 /// about 1.3 times faster compiled (the interpreter spends its time dispatching them), so it
 /// is worth compiling earlier than testbench code, whose time goes to what the interpreter's
-/// own functions do (#432).
+/// own functions do (#432). A loop that suspends (a `wait until`) runs once per activation, and
+/// each activation enters its compiled code again.
 pub(crate) fn compute(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
+    loop_leaves(prog, f).is_some_and(|(left, waits, total)| (left + waits) * 20 <= total)
+}
+
+/// The instructions in `f`'s loops that compiled code leaves to the interpreter, the suspensions
+/// in them and all their instructions; `None` without a loop.
+fn loop_leaves(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> Option<(usize, usize, usize)> {
+    if !loops(prog, f) {
+        return None;
+    }
     let mut inside = vec![false; f.code.len()];
-    if loops(prog, f) {
-        for r in back_edges(prog, f) {
-            inside[r].fill(true);
-        }
-    } else {
-        return false;
+    for r in back_edges(prog, f) {
+        inside[r].fill(true);
     }
     let total = inside.iter().filter(|&&b| b).count();
     let nc = calls_native(prog, f);
-    let stepped = (0..f.code.len())
+    let left = (0..f.code.len())
         .filter(|&pc| inside[pc] && crate::native::leaves(prog, f, pc, &nc))
         .count();
-    stepped * 20 <= total
+    let waits = (0..f.code.len())
+        .filter(|&pc| inside[pc] && matches!(f.code[pc], yavs_ir::Inst::Suspend { .. }))
+        .count();
+    Some((left, waits, total))
+}
+
+/// Functions whose loops would be compute but for their suspensions (`compute`), as the policy
+/// classified them: `YAVS_COUNTERS` `wait_loops`.
+static WAIT_LOOPS: AtomicU64 = AtomicU64::new(0);
+
+/// `WAIT_LOOPS` so far.
+pub fn wait_loops() -> u64 {
+    WAIT_LOOPS.load(Ordering::Relaxed)
 }
 
 /// The functions `f` calls on every run of it: a call that every path from the entry to a `Ret` (in
@@ -2408,8 +2426,14 @@ impl Worker {
 
     /// Whether `id` is a compute loop (`compute`), worked out once.
     fn is_compute(&self, id: FuncId) -> bool {
-        *self.compute[id.0 as usize]
-            .get_or_init(|| self.prog.func(id).is_some_and(|f| compute(&self.prog, f)))
+        *self.compute[id.0 as usize].get_or_init(|| {
+            let v = self.prog.func(id).and_then(|f| loop_leaves(&self.prog, f));
+            let c = v.is_some_and(|(left, waits, total)| (left + waits) * 20 <= total);
+            if !c && v.is_some_and(|(left, _, total)| left * 20 <= total) {
+                WAIT_LOOPS.fetch_add(1, Ordering::Relaxed);
+            }
+            c
+        })
     }
 
     /// IR instructions of the process `id` is, or is a copy of: what the policy goes by, so the
@@ -5354,6 +5378,80 @@ mod tests {
         fb.finish();
         let prog = pb.finish().unwrap();
         assert!(compute(&prog, prog.func(f).unwrap()));
+    }
+
+    /// A loop of `adds` inline additions around a `wait for` (a suspension in the loop, as a
+    /// `wait until` or a clock generator has): with fewer than twenty instructions a wait it is
+    /// no compute loop, since each activation runs one iteration and enters the code again.
+    fn wait_loop(adds: usize) -> bool {
+        let mut pb = ProgramBuilder::new();
+        let f = pb.declare("f", yavs_ir::FuncKind::Procedure, None);
+        let mut fb = pb.define(f);
+        let head = fb.block();
+        let exit = fb.block();
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        fb.emit(Inst::Br { to: head });
+        fb.at(head);
+        // Nothing but the frame lives across the suspension.
+        let frame = |fb: &mut yavs_ir::FuncBuilder<'_>| {
+            let ptr = fb.reg(yavs_ir::RegTy::Ptr);
+            fb.emit(Inst::AddrOf {
+                dst: ptr,
+                space: yavs_ir::AddrSpace::Frame,
+                off: 0,
+            });
+            let x = fb.reg(yavs_ir::RegTy::I64);
+            fb.emit(Inst::Load {
+                dst: x,
+                addr: ptr,
+                w: yavs_ir::Width::B8,
+            });
+            (ptr, x)
+        };
+        let (ptr, x) = frame(&mut fb);
+        for _ in 0..adds {
+            fb.emit(Inst::Bin {
+                op: yavs_ir::IntOp::Add,
+                dst: x,
+                a: x,
+                b: x,
+            });
+        }
+        fb.emit(Inst::Store {
+            addr: ptr,
+            src: x,
+            w: yavs_ir::Width::B8,
+        });
+        let t = fb.int(10);
+        fb.emit(Inst::WaitFor { t });
+        fb.emit(Inst::Suspend { resume: 0 });
+        let (_, x) = frame(&mut fb);
+        let (y, c) = (fb.int(1000), fb.reg(yavs_ir::RegTy::I64));
+        fb.emit(Inst::Cmp {
+            op: yavs_ir::CmpOp::Lt,
+            dst: c,
+            a: x,
+            b: y,
+        });
+        fb.emit(Inst::CondBr {
+            c,
+            t: exit,
+            f: head,
+        });
+        fb.at(exit);
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+        let prog = pb.finish().unwrap();
+        let func = prog.func(f).unwrap();
+        assert!(loops(&prog, func));
+        compute(&prog, func)
+    }
+
+    #[test]
+    fn a_loop_that_waits_is_compute_only_with_twenty_instructions_a_wait() {
+        assert!(!wait_loop(4));
+        assert!(!wait_loop(12));
+        assert!(wait_loop(30));
     }
 
     /// A process whose activation (after its `Suspend`) runs `ops` inline additions, an address

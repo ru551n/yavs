@@ -148,6 +148,9 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         .unwrap_or_default();
     // Copies of subprograms in Cranelift code: linked by a pre-key, lowered, compiled, and the id
     // symbols lowered code named.
+    // Functions `--tier=auto` did not count as compute loops for the suspensions in their loops.
+    #[cfg(feature = "clift")]
+    rows.push(("wait_loops", yavs_rt::auto::wait_loops()));
     #[cfg(feature = "clift")]
     for (name, v) in [
         "clift_sub_linked",

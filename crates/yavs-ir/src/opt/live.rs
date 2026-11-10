@@ -88,9 +88,15 @@ impl Opt<'_> {
             let mut again = true;
             // (Buffers kept across blocks and rounds: no allocation per block.)
             let (mut out, mut inn) = (vec![0u64; w], vec![0u64; w]);
+            let (mut po, mut round) = (Vec::new(), 0);
             while again {
                 again = false;
-                for b in (0..nb).rev() {
+                round += 1;
+                if round == POSTORDER_ROUND {
+                    po = postorder(nb, |b, k| self.succ(b, k));
+                }
+                for j in 0..nb {
+                    let b = back_nth(&po, nb, j);
                     if !reach[b] {
                         continue;
                     }

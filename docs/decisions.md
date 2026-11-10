@@ -15173,3 +15173,23 @@ Written by Claude. `YAVS_CLIFT_LIST` (with `write`, `on` and `all`), `YAVS_CLIFT
 - **Decided** (user, 2026-11-10, option (a)): land it, accepting `uvvm_axistream_vvc` run 2 at 1.33 for the cold cap.
   Reach: no corpus test lasts the second the rule waits for, so `tier_tree_held` is 0 on the corpus; its evidence is
   the realbench `uvvm_axistream_vvc` first run (`tier_tree_held` 55, the executor's copies), as for the floor above.
+
+## IR optimiser: passes linear in the size of a function (yavs-ir `opt`, perf/b3-optpass, 2026-11-10)
+
+Written by Claude. Three passes cost a power of the function's size; each now computes exactly what it did (the same IR,
+checked by `YAVS_DUMPIR` over the corpus and the measured designs, and the same machine code by `YAVS_CLIFT_CODEDIR`
+over the corpus):
+
+- `cfg::dead_defs` tested each `Alloc` by a scan to the next definition of its register (twice), quadratic in a
+  block of many descriptors. Now one walk per block keeps the open allocation of each register; with none open it
+  looks only for the next `Alloc`.
+- The two forward analyses of promotion (`undefined_promoted`, the copies of `promote_cleanup`) ran a stack of
+  blocks: a chain of `if`s walked its tail once per joining arm, cubic in the chain. Now sweeps in reverse postorder
+  until nothing changes. The fixed point is the same in any order.
+- The backward sweeps (liveness in `cfg::dead_defs`, `Opt::dead_defs`, `share`, `slots`, `memo`, `sink`, the
+  statement markers' and the suspension liveness) go from the last block to the first; a chain numbered against the
+  flow took 164 rounds. From the third round they go in postorder (`opt::postorder`, the unreached blocks last);
+  most bodies are done in two rounds and never build it.
+- **Not changed:** `Opt::kill` and `kill_all` scan a table capped at 64 facts (#1059): their share of the optimiser
+  stays flat from 300 to 1200 statements, with as many escaping variables. The dense bit sets of the liveness
+  analyses stay (blocks times registers / 64 per round) with their caps.

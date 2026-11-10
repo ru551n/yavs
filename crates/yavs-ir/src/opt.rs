@@ -935,6 +935,42 @@ fn for_defs_fast(i: &Inst, mut f: impl FnMut(Reg)) {
 /// The smallest object `defaults_first` builds in place.
 const DEFAULTS_MIN: i64 = 4096;
 
+/// Every block for a backward analysis still changing after [`POSTORDER_ROUND`] sweeps: those
+/// `succ` (the `k`-th successor) reaches from the entry in postorder, then the rest, last
+/// first. A sweep from the last block takes a round per `if` of a chain numbered against the
+/// flow (164 rounds on an `elsif` chain).
+pub(super) fn postorder(nb: usize, succ: impl Fn(usize, usize) -> Option<usize>) -> Vec<usize> {
+    let mut seen = vec![false; nb];
+    let mut order = Vec::with_capacity(nb);
+    let mut stack: Vec<(usize, usize)> = Vec::new();
+    if nb > 0 {
+        seen[0] = true;
+        stack.push((0, 0));
+    }
+    while let Some((b, k)) = stack.last_mut() {
+        if let Some(s) = succ(*b, *k) {
+            *k += 1;
+            if s < nb && !seen[s] {
+                seen[s] = true;
+                stack.push((s, 0));
+            }
+        } else {
+            order.push(*b);
+            stack.pop();
+        }
+    }
+    order.extend((0..nb).rev().filter(|&b| !seen[b]));
+    order
+}
+
+/// The round of a backward sweep that starts in [`postorder`] (most bodies are done by then).
+pub(super) const POSTORDER_ROUND: u32 = 3;
+
+/// The block a backward sweep visits `j`-th: last first, or `po` once it is made.
+fn back_nth(po: &[usize], nb: usize, j: usize) -> usize {
+    po.get(j).copied().unwrap_or(nb - 1 - j)
+}
+
 /// Marker for a deleted instruction until the code is compacted: an `Unreachable` with this
 /// message never occurs otherwise.
 const DEAD_MSG: CheckMsgId = CheckMsgId(u32::MAX);
@@ -1161,6 +1197,24 @@ impl Table {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+
+    /// Successors before their block, and the blocks the entry does not reach last, last first.
+    #[test]
+    fn postorder_lists_every_block_successors_first() {
+        // 0 -> 1 -> 3, 0 -> 2 -> 3, 3 -> 1 (a loop), 4 and 5 unreachable
+        let succ: [&[usize]; 6] = [&[1, 2], &[3], &[3], &[1, 9], &[0], &[]];
+        let po = postorder(6, |b, k| succ[b].get(k).copied());
+        let at = |b: usize| po.iter().position(|&x| x == b).unwrap();
+        assert_eq!(po.len(), 6);
+        assert!(at(3) < at(1) && at(3) < at(2) && at(1) < at(0) && at(2) < at(0));
+        assert_eq!(&po[4..], &[5, 4]);
+        assert_eq!(back_nth(&[], 6, 0), 5);
     }
 }
 
@@ -1718,6 +1772,15 @@ impl<'a> Opt<'a> {
                 .chain(self.f.body.map(|b| b.0 as usize))
                 .collect(),
         )
+    }
+
+    /// The blocks in reverse [`postorder`] (those the entry does not reach first): a forward
+    /// analysis that visits them in this order sees most predecessors first (a stack of blocks
+    /// walked a chain of `if`s once per arm that joins it).
+    fn rpo(&self) -> Vec<usize> {
+        let mut order = postorder(self.blocks.len(), |b, k| self.succ(b, k));
+        order.reverse();
+        order
     }
 
     /// The first non-empty block at each start: how the block after a suspension that ends the
@@ -3012,10 +3075,16 @@ impl<'a> Opt<'a> {
         let local: Vec<Run> = (0..nb).map(|b| scan(self.range(b))).collect();
         // Does some path from the start of the block hit before the next marker?
         let mut hits: Vec<bool> = local.iter().map(|&r| r == Run::Hit).collect();
+        let (mut po, mut round) = (Vec::new(), 0);
         loop {
             let mut moved = false;
+            round += 1;
+            if round == POSTORDER_ROUND {
+                po = postorder(nb, |b, k| self.succ(b, k));
+            }
             // (Last block first: a hit reaches the blocks before it in one sweep.)
-            for b in (0..nb).rev() {
+            for j in 0..nb {
+                let b = back_nth(&po, nb, j);
                 if hits[b] || local[b] != Run::Falls {
                     continue;
                 }
@@ -5522,9 +5591,16 @@ impl<'a> Opt<'a> {
             }
             out
         };
+        let (mut po, mut round) = (Vec::new(), 0);
         loop {
             let mut changed = false;
-            for b in (0..nb).rev() {
+            round += 1;
+            if round == POSTORDER_ROUND {
+                // (Without the edges past a suspension: the order is only how fast it goes.)
+                po = postorder(nb, |b, k| self.succ(b, k));
+            }
+            for j in 0..nb {
+                let b = back_nth(&po, nb, j);
                 let mut live = live_out(&live_in, b);
                 for pc in self.range(b).rev() {
                     if !is_dead(&self.code[pc]) {
@@ -5609,16 +5685,31 @@ impl<'a> Opt<'a> {
         }
         let mut input: Vec<Vec<u64>> = vec![vec![!0; w]; nb];
         input[0] = entry;
-        let mut work: Vec<usize> = vec![0];
-        while let Some(b) = work.pop() {
-            let out: Vec<u64> = input[b].iter().zip(&gen_[b]).map(|(a, g)| a | g).collect();
-            let mut k = 0;
-            while let Some(s) = self.succ(b, k) {
-                k += 1;
-                let new: Vec<u64> = input[s].iter().zip(&out).map(|(a, o)| a & o).collect();
-                if new != input[s] {
-                    input[s] = new;
-                    work.push(s);
+        // (In reverse postorder until nothing changes: the same fixed point as any order.)
+        let order = self.rpo();
+        let mut dirty = vec![false; nb];
+        dirty[0] = true;
+        let mut out = vec![0u64; w];
+        let mut again = true;
+        while again {
+            again = false;
+            for &b in &order {
+                if !std::mem::take(&mut dirty[b]) {
+                    continue;
+                }
+                for ((o, a), g) in out.iter_mut().zip(&input[b]).zip(&gen_[b]) {
+                    *o = a | g;
+                }
+                let mut k = 0;
+                while let Some(s) = self.succ(b, k) {
+                    k += 1;
+                    if input[s].iter().zip(&out).any(|(a, o)| a & o != *a) {
+                        for (a, o) in input[s].iter_mut().zip(&out) {
+                            *a &= o;
+                        }
+                        dirty[s] = true;
+                        again = true;
+                    }
                 }
             }
         }
@@ -5713,21 +5804,34 @@ impl<'a> Opt<'a> {
         let mut input: Vec<Vec<u64>> = vec![vec![!0; w]; nb];
         input[0] = vec![0; w];
         if !copies.is_empty() {
-            let mut work: Vec<usize> = vec![0];
-            while let Some(b) = work.pop() {
-                let mut out = input[b].clone();
-                for pc in self.range(b) {
-                    if !is_dead(&self.code[pc]) {
-                        step(&mut out, &self.code[pc]);
+            // (Reverse postorder until nothing changes, as in `undefined_promoted`.)
+            let order = self.rpo();
+            let mut dirty = vec![false; nb];
+            dirty[0] = true;
+            let mut out = vec![0u64; w];
+            let mut again = true;
+            while again {
+                again = false;
+                for &b in &order {
+                    if !std::mem::take(&mut dirty[b]) {
+                        continue;
                     }
-                }
-                let mut k = 0;
-                while let Some(s) = self.succ(b, k) {
-                    k += 1;
-                    let new: Vec<u64> = input[s].iter().zip(&out).map(|(a, o)| a & o).collect();
-                    if new != input[s] {
-                        input[s] = new;
-                        work.push(s);
+                    out.copy_from_slice(&input[b]);
+                    for pc in self.range(b) {
+                        if !is_dead(&self.code[pc]) {
+                            step(&mut out, &self.code[pc]);
+                        }
+                    }
+                    let mut k = 0;
+                    while let Some(s) = self.succ(b, k) {
+                        k += 1;
+                        if input[s].iter().zip(&out).any(|(a, o)| a & o != *a) {
+                            for (a, o) in input[s].iter_mut().zip(&out) {
+                                *a &= o;
+                            }
+                            dirty[s] = true;
+                            again = true;
+                        }
                     }
                 }
             }

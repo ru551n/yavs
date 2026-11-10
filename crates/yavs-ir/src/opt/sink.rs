@@ -194,9 +194,16 @@ impl Sink<'_> {
         let mut again = true;
         // (Buffers kept across blocks and rounds: no allocation per block.)
         let (mut out, mut inn) = (vec![0u64; w], vec![0u64; w]);
+        let (mut po, mut round) = (Vec::new(), 0);
         while again {
             again = false;
-            for b in (0..nb).rev() {
+            round += 1;
+            if round == POSTORDER_ROUND {
+                let ss: Vec<Vec<u32>> = (0..nb).map(|b| self.succs(b)).collect();
+                po = postorder(nb, |b, k| ss[b].get(k).map(|&s| s as usize));
+            }
+            for j in 0..nb {
+                let b = back_nth(&po, nb, j);
                 out.fill(0);
                 for s in self.succs(b) {
                     for (o, i) in out.iter_mut().zip(&live[s as usize]) {

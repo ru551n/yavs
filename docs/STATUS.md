@@ -1040,6 +1040,14 @@ first run with hits reads the stored program instead of lowering and compiling t
 world, runs 1 to 5 at auto, all-thread instructions 52.9, 28.3, 19.8, 19.8, 19.7 G (before: run 3 at 50.1 G). Corpus test
 `generics/elab_call_table` reaches the path (`ecall_session_hits`).
 
+### Optimiser passes linear in the size of a function (perf/b3-optpass, 2026-11-10)
+
+`docs/decisions.md` "IR optimiser: passes linear in the size of a function". The same IR (`YAVS_DUMPIR` over the
+corpus and eight designs) and the same machine code (`YAVS_CLIFT_CODEDIR` over the corpus). Main-thread instructions
+of the optimiser on one generated function of 600 statements: slices 3.38 to 0.50 G, a chain of `if`s 13.9 to 0.40 G.
+Cold `--tier=interp --threads 1` main thread: GRLIB to 2 us 25.76 to 25.05 G, Microwatt to 2 us 5.85 to 5.62 G,
+`olo_axi_master_full` 1.870 to 1.861 G, `uvvm_func_cov` 3.972 to 3.965 G, the other small tests level.
+
 ### Cold optimiser and lowering cost (perf/w3-t3, 2026-11-07)
 
 `docs/decisions.md` "Cold optimiser cost". Cold runs at auto, main-thread instructions against the wave 3 baseline

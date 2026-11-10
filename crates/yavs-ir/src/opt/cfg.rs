@@ -610,42 +610,62 @@ pub(super) fn dead_defs(prog: &Program, f: &mut crate::Func) -> bool {
     // copy of its address can exist (a later reader makes the register live, which keeps it).
     let mut okdef = vec![false; f.code.len()];
     let has_dope = f.code.iter().any(|i| matches!(i, Inst::MakeDope { .. }));
-    for blk in f.blocks.values().iter().filter(|_| has_dope) {
-        let (s0, e0) = (blk.start as usize, blk.end as usize);
-        for pc in s0..e0 {
-            if let Inst::Alloc { dst, .. } = f.code[pc] {
-                let mut ok = true;
-                for q in pc + 1..e0 {
-                    let i = f.code[q];
-                    for_uses(f, &i, |r| {
-                        if r == dst
-                            && !matches!(i, Inst::MakeDope { at, .. } if at == dst)
-                            && !matches!(i, Inst::DopeLen { dope, .. } if dope == dst)
-                        {
-                            ok = false;
-                        }
-                    });
-                    let mut redef = false;
-                    for_defs(&i, |r| redef |= r == dst);
-                    if !ok || redef {
-                        break;
-                    }
+    if has_dope {
+        // One walk per block: the open allocation of each register, closed by its next
+        // definition or a reader that is not a descriptor write or length read (then not fine).
+        // With none open only an `Alloc` is looked at: no more work than a scan from each.
+        let mut open: Vec<u32> = Vec::new();
+        let mut live = 0usize;
+        // (pc, register, fine) of each allocation of the block; (allocation, pc) of the writes
+        let mut allocs: Vec<(usize, Reg, bool)> = Vec::new();
+        let mut writes: Vec<(u32, usize)> = Vec::new();
+        for blk in f.blocks.values() {
+            for pc in blk.start as usize..blk.end as usize {
+                let i = f.code[pc];
+                if live == 0 && !matches!(i, Inst::Alloc { .. }) {
+                    continue;
                 }
-                okdef[pc] = ok;
-                // The descriptor writes that follow, up to the next allocation.
-                for q in pc + 1..e0 {
-                    let mut redef = false;
-                    for_defs(&f.code[q], |r| redef |= r == dst);
-                    if redef {
-                        break;
-                    }
-                    if let Inst::MakeDope { at, .. } = f.code[q]
-                        && at == dst
+                if open.is_empty() {
+                    open = vec![u32::MAX; n];
+                }
+                for_uses(f, &i, |r| {
+                    let k = open[r.0 as usize];
+                    if k != u32::MAX
+                        && !matches!(i, Inst::MakeDope { at, .. } if at == r)
+                        && !matches!(i, Inst::DopeLen { dope, .. } if dope == r)
                     {
-                        okdef[q] = ok;
+                        allocs[k as usize].2 = false;
+                        open[r.0 as usize] = u32::MAX;
+                        live -= 1;
                     }
+                });
+                for_defs(&i, |r| {
+                    if std::mem::replace(&mut open[r.0 as usize], u32::MAX) != u32::MAX {
+                        live -= 1;
+                    }
+                });
+                match i {
+                    Inst::Alloc { dst, .. } => {
+                        open[dst.0 as usize] = allocs.len() as u32;
+                        live += 1;
+                        allocs.push((pc, dst, true));
+                    }
+                    Inst::MakeDope { at, .. } if open[at.0 as usize] != u32::MAX => {
+                        writes.push((open[at.0 as usize], pc));
+                    }
+                    _ => {}
                 }
             }
+            for &(pc, r, ok) in &allocs {
+                okdef[pc] = ok;
+                open[r.0 as usize] = u32::MAX;
+            }
+            for &(k, pc) in &writes {
+                okdef[pc] = allocs[k as usize].2;
+            }
+            allocs.clear();
+            writes.clear();
+            live = 0;
         }
     }
     // Registers defined on several paths (the flags `thread` leaves behind), and the
@@ -711,9 +731,15 @@ pub(super) fn dead_defs(prog: &Program, f: &mut crate::Func) -> bool {
     let mut out = vec![0u64; w];
     let mut inn = vec![0u64; w];
     let mut again = true;
+    let (mut po, mut round) = (Vec::new(), 0);
     while again {
         again = false;
-        for b in (0..nb).rev() {
+        round += 1;
+        if round == POSTORDER_ROUND {
+            po = postorder(nb, |b, k| succ[b].get(k).copied());
+        }
+        for j in 0..nb {
+            let b = back_nth(&po, nb, j);
             out.fill(0);
             for &s in &succ[b] {
                 if s < nb {

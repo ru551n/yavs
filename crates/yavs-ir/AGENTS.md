@@ -109,6 +109,10 @@ the same commit (root `AGENTS.md` rule 24).
   arms in `yavs-interp` and `yavs-lower`).
 - **The IR is serialised (`Program`, `ProgramBuilder`; the compilation cache stores lowered packages, #407).** A new type reachable from them derives `serde::Serialize`/`Deserialize`; derived caches (`Func::opt`, `Program::layouts`) are `#[serde(skip)]` and rebuilt on use. `ProgramBuilder::fingerprint` (the identity of the ids handed out), `callers_of` and `undefined_funcs` serve the library stages (`docs/decisions.md` "Library stages"). Big byte strings go through the `bytes` module of `program.rs` (a sequence of numbers decodes at a byte per call).
 - **A stored program may hold function bodies as bytes (`yavs_ir::lazy_bodies`, #481).** `Program::funcs` entries of a program read that way have their header only (`code`, `loc`, `operands`, `resume` empty): read a function through `Program::func`, or through `Func::full` when you need the lowered code of an entry of `funcs` (the optimiser and the verifier do). The serialised form of `funcs` is the one in `program.rs` `funcs`; a new field of `Func` that is part of the body goes into `Body`/`BodyRef` there.
+- **A fixed-point analysis over the blocks is linear in a long chain of `if`s.** A stack of blocks (forward) or a
+  sweep from the last block (backward) takes a walk per arm of the chain: library functions have hundreds. Forward
+  ones go in reverse postorder (`Opt::rpo`), backward ones switch to `opt::postorder` at `POSTORDER_ROUND`
+  (`docs/decisions.md` "IR optimiser: passes linear in the size of a function").
 - Verifier errors are ICEs of the producer: never relax the verifier to make lowering pass
   without an ir.md note.
 - The descriptor format, the four cells of a `Param::flat` array and the fat pair `[data, dope]` for unconstrained results are shared with

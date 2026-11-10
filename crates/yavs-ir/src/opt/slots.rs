@@ -676,9 +676,15 @@ fn live_out(prog: &Program, f: &crate::Func, tracked: &[Reg]) -> Option<Vec<Vec<
     let mut changed = true;
     // (Buffers kept across blocks and rounds: no allocation per block.)
     let (mut o, mut inn) = (vec![0u64; w], vec![0u64; w]);
+    let (mut po, mut round) = (Vec::new(), 0);
     while changed {
         changed = false;
-        for b in (0..nb).rev() {
+        round += 1;
+        if round == POSTORDER_ROUND {
+            po = postorder(nb, |b, k| succ[b].get(k).copied());
+        }
+        for j in 0..nb {
+            let b = back_nth(&po, nb, j);
             o.fill(0);
             for &s in &succ[b] {
                 match live_in.get(s) {

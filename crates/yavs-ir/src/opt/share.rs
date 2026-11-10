@@ -191,9 +191,15 @@ pub(super) fn plan(
         let mut out = vec![0u64; w];
         let succs = |b: usize| &succ[succ_at[b] as usize..succ_at[b + 1] as usize];
         let mut changed = true;
+        let (mut po, mut round) = (Vec::new(), 0);
         while changed {
             changed = false;
-            for b in (0..nb).rev() {
+            round += 1;
+            if round == POSTORDER_ROUND {
+                po = postorder(nb, |b, k| succs(b).get(k).map(|&s| s as usize));
+            }
+            for j in 0..nb {
+                let b = back_nth(&po, nb, j);
                 out.fill(0);
                 for &s in succs(b) {
                     let i = live_in.get(s as usize * w..(s as usize + 1) * w)?;

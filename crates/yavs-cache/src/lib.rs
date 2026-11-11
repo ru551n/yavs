@@ -860,14 +860,21 @@ mod tests {
         assert!(!s.noted("t", &key("b")));
         assert!(!s.noted("u", &key("a")));
         // Trimmed down to the limit once NOTES_SLACK past it, looked at for one note in
-        // NOTES_SLACK, so at least the newest MAX_NOTES stay.
+        // NOTES_SLACK, so at least the newest MAX_NOTES stay. The keys are made by hand, not
+        // hashed with the build id, so which notes look is the same in every build (#1132).
         let n = MAX_NOTES + 8 * NOTES_SLACK;
+        let note_key = |i: usize| {
+            let mut k = [0u8; 32];
+            k[0] = (i % NOTES_SLACK) as u8;
+            k[8..16].copy_from_slice(&(i as u64).to_le_bytes());
+            Key(k)
+        };
         for i in 0..n {
-            s.note("t", &key(&i.to_string()));
+            s.note("t", &note_key(i));
         }
         let kept = s.files_ending(".seen").len();
         assert!((MAX_NOTES..n).contains(&kept), "{kept}");
-        assert!(s.noted("t", &key(&(n - 1).to_string())));
+        assert!(s.noted("t", &note_key(n - 1)));
         assert_eq!(s.entries().len(), 0);
         s.clean().unwrap();
         assert!(!s.dir().exists());

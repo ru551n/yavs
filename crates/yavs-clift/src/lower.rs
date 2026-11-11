@@ -127,6 +127,7 @@ pub struct Jit {
     mov: ClifId,
     fill: ClifId,
     memeq: ClifId,
+    cat: ClifId,
     deopt: ClifId,
     deopt_slots: ClifId,
     deopt_end: ClifId,
@@ -558,6 +559,7 @@ impl Jit {
             ("clift_move", clift_move as *const u8),
             ("clift_fill", clift_fill as *const u8),
             (MEMEQ, yavs_rt_memeq as *const u8),
+            (CAT, yavs_rt_cat as *const u8),
             (WAIT, yavs_rt_wait as *const u8),
             (WAIT_ON, yavs_rt_wait_on as *const u8),
             (WAIT_SAME, yavs_rt_wait_same as *const u8),
@@ -613,6 +615,11 @@ impl Jit {
         let mov = imp("clift_move", &[I64, I64, I64], None)?;
         let fill = imp("clift_fill", &[I64, I64, I64, I64], None)?;
         let memeq = imp(MEMEQ, &[I64, I64, I64], Some(I64))?;
+        let cat = imp(
+            CAT,
+            &[I64, I64, I64, I64, I64, I64, I32, I32, I32],
+            Some(I32),
+        )?;
         let deopt = imp(
             DEOPT,
             &[I64, I64, I32, I32, I64, I64, I64, I64, I64],
@@ -722,6 +729,7 @@ impl Jit {
             mov,
             fill,
             memeq,
+            cat,
             deopt,
             deopt_slots,
             deopt_end,
@@ -1622,6 +1630,7 @@ impl Jit {
             mov: self.module.declare_func_in_func(self.mov, &mut ctx.func),
             fill: self.module.declare_func_in_func(self.fill, &mut ctx.func),
             memeq: self.module.declare_func_in_func(self.memeq, &mut ctx.func),
+            cat: self.module.declare_func_in_func(self.cat, &mut ctx.func),
             deopt: self.module.declare_func_in_func(self.deopt, &mut ctx.func),
             deopt_slots: self
                 .module
@@ -1840,6 +1849,7 @@ struct Imports {
     mov: FuncRef,
     fill: FuncRef,
     memeq: FuncRef,
+    cat: FuncRef,
     deopt: FuncRef,
     deopt_slots: FuncRef,
     deopt_end: FuncRef,
@@ -2452,12 +2462,12 @@ enum Op {
 }
 
 /// `YAVS_COUNTERS`: the sites lowered so far of an `is_x` or reduction of a vector computed in
-/// place (`Gen::ieee_native`).
-static SITES: [std::sync::atomic::AtomicUsize; 1] =
-    [const { std::sync::atomic::AtomicUsize::new(0) }; 1];
+/// place (`Gen::ieee_native`) and of a `Cat` of bytes (`Gen::cat_bytes`).
+static SITES: [std::sync::atomic::AtomicUsize; 2] =
+    [const { std::sync::atomic::AtomicUsize::new(0) }; 2];
 
-/// `[is_x or reduction of a vector]` sites lowered so far (`YAVS_COUNTERS`).
-pub fn inline_sites() -> [usize; 1] {
+/// `[is_x or reduction of a vector, Cat of bytes]` sites lowered so far (`YAVS_COUNTERS`).
+pub fn inline_sites() -> [usize; 2] {
     SITES
         .each_ref()
         .map(|a| a.load(std::sync::atomic::Ordering::Relaxed))
@@ -3697,6 +3707,27 @@ fn gen_func(
                 if !g.cat_block(pc, &inst, dst, n, m, rs, scalars, bias)
                     && !g.cat_dyn(pc, &inst, f, dst, n, m, rs, scalars, bias)
                 {
+                    if g.nat.is_some() && xstep_wide(f, &inst) {
+                        g.native_step(pc, &inst, f)
+                    } else {
+                        g.step(pc, &inst)
+                    }
+                }
+            }
+            Inst::Cat {
+                dst,
+                n,
+                m,
+                parts,
+                scalars,
+                logic: false,
+                w,
+                ..
+            } => {
+                let rs = ok(f.regs(parts), "operand list out of range")?;
+                // (Frame-mode code keeps its `yavs_rt_signal`: the call costs more code than it
+                // saves there.)
+                if !(g.nat.is_some() && g.cat_bytes(pc, &inst, f, dst, n, m, rs, scalars, w)) {
                     if g.nat.is_some() && xstep_wide(f, &inst) {
                         g.native_step(pc, &inst, f)
                     } else {
@@ -11069,6 +11100,55 @@ impl Gen<'_> {
             _ => self.join(join),
         }
         Ok(())
+    }
+
+    /// `Inst::Cat` of bytes (a string, an array of scalars) in a native frame: the pieces in a stack
+    /// buffer and one call of `yavs_rt_cat`, which writes them as `Machine::cat` does or, having
+    /// written nothing, sends the instruction to the slow path (a step on a frame of the host's).
+    /// `false` (nothing generated) where `native::cat_inline` refuses.
+    #[allow(clippy::too_many_arguments)]
+    fn cat_bytes(
+        &mut self,
+        pc: u32,
+        i: &Inst,
+        f: &Func,
+        dst: Reg,
+        n: Reg,
+        m: Reg,
+        parts: &[Reg],
+        scalars: u16,
+        w: Width,
+    ) -> bool {
+        if !yavs_rt::native::cat_inline(parts.len(), w) {
+            return false;
+        }
+        let (slow, join) = self.slow_path_x(pc, i, f);
+        let ss = self.b.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            (parts.len().max(1) * 8) as u32,
+            3,
+        ));
+        let buf = self.b.ins().stack_addr(I64, ss, 0);
+        for (k, &r) in parts.iter().enumerate() {
+            let v = self.ld(r);
+            self.b
+                .ins()
+                .store(MemFlagsData::trusted(), v, buf, (k * 8) as i32);
+        }
+        let (d, nv, mv) = (self.ld(dst), self.ld(n), self.ld(m));
+        let np = self.c32((parts.len() / 2) as u32);
+        let sc = self.c32(u32::from(scalars));
+        let wb = self.c32(w.bytes());
+        let call = self.b.ins().call(
+            self.imp.cat,
+            &[self.env, self.mem, d, nv, mv, buf, np, sc, wb],
+        );
+        let done = self.b.inst_results(call)[0];
+        let okd = self.b.ins().icmp_imm_s(IntCC::NotEqual, done, 0);
+        self.guard(okd, slow);
+        note_site(1);
+        self.join(join);
+        true
     }
 
     /// `Inst::Cat` of a logic array whose element size is known and whose lengths are known only at

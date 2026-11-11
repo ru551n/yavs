@@ -923,6 +923,83 @@ fn is_x_and_reductions_in_compiled_code_match_the_interpreter() {
     assert!(want.out.contains("is_x 'U' 1"), "{want:?}");
 }
 
+/// Concatenations of bytes computed in place by compiled code (`Gen::cat_bytes`): strings of
+/// characters and strings (null ones among them), arrays of integers, reals and booleans, the
+/// most pieces one `Cat` has (16; a longer chain is copies and stores), in a function (native
+/// frame) and in a process (frame mode), and one whose result does not fit its target (the
+/// interpreter's error).
+const CAT: &str = r#"entity c is end;
+architecture a of c is
+  function img(n : integer) return string is
+  begin
+    return integer'image(n);
+  end function;
+  function words(k : natural) return string is
+    constant e : string(1 to 0) := "";
+  begin
+    return "<" & img(k) & ":" & e & character'val(65 + k mod 26) & "," & img(k * 7) & e & ">";
+  end function;
+  function many(k : natural) return string is
+  begin
+    return img(k) & "a" & "b" & img(k + 1) & "c" & "d" & img(k + 2) & "e" & "f" & img(k + 3) &
+           "g" & "h" & img(k + 4) & "i" & "j" & img(k + 5);
+  end function;
+  function more(k : natural) return string is
+    variable c : character := character'val(97 + k mod 26);
+  begin
+    return img(k) & c & img(k + 1) & c & img(k + 2) & c & img(k + 3) & c & img(k + 4) & c &
+           img(k + 5) & c & img(k + 6) & c & img(k + 7) & c & img(k + 8);
+  end function;
+  function ints(k : integer) return integer_vector is
+    variable v : integer_vector(1 to 3) := (k, -k, k * k);
+  begin
+    return v & k & (k + 1, k + 2) & v(2 to 3);
+  end function;
+  function reals(x : real) return real_vector is
+  begin
+    return x & (x * 2.0, x / 3.0) & (-x);
+  end function;
+  function bools(k : natural) return boolean_vector is
+  begin
+    return (k mod 2 = 0) & (true, k mod 3 = 0) & false;
+  end function;
+  function sum(v : integer_vector) return integer is
+    variable r : integer := 0;
+  begin
+    for i in v'range loop r := (r * 31 + v(i)) mod 99991; end loop;
+    return r;
+  end function;
+begin
+  process
+    variable s : string(1 to 5);
+    variable n : integer := 0;
+    variable rv : real_vector(1 to 4);
+    variable bv : boolean_vector(1 to 4);
+  begin
+    for k in 0 to 40 loop
+      report words(k) & " " & many(k) & " " & more(k) & " " & img(sum(ints(k - 20)));
+      rv := reals(real(k) + 0.5);
+      bv := bools(k);
+      n := (n * 7 + integer(rv(3) * 100.0) + boolean'pos(bv(1)) + boolean'pos(bv(3))) mod 99991;
+      -- In the process itself.
+      s := "ab" & character'val(48 + k mod 10) & "de";
+      report s & img(n) & ("x" & s(2 to 3) & "y");
+    end loop;
+    s := "abc" & img(n mod 1000 + 1000);
+    report "unreachable " & s;
+    wait;
+  end process;
+end;
+"#;
+#[test]
+fn byte_concatenations_in_compiled_code_match_the_interpreter() {
+    let dir = design("clift_cat", CAT);
+    let (want, _) = parity(&dir, "c", &[]);
+    assert!(want.out.contains("<40:O,280>"), "{want:?}");
+    assert!(!want.out.contains("unreachable"), "{want:?}");
+    assert_ne!(want.code, Some(0), "{want:?}");
+}
+
 /// Vectors of every length class read from signals in a clocked process, among them the ones
 /// whose last group of eight codes is partly past the signal (1, 4, 9, 12 elements) and the
 /// ones that fill their plane block (64) or need two (65).

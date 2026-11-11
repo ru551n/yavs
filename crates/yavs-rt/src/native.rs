@@ -247,6 +247,13 @@ pub fn nat_inline(prog: &Program, f: &Func, i: &Inst) -> bool {
 /// The most pieces (operand pairs) of a `Cat` a native frame lowers.
 pub const CAT_PARTS: usize = 64;
 
+/// Whether a native frame writes a `Cat` of bytes of `regs` piece registers with one call
+/// (`Gen::cat_bytes`, `yavs_rt_cat`): at most 16 pieces of a width other than `Sig`; more are
+/// stepped.
+pub fn cat_inline(regs: usize, w: Width) -> bool {
+    regs <= 32 && regs.is_multiple_of(2) && w != Width::Sig
+}
+
 /// Whether `f` itself may run on a native frame (`docs/decisions.md` "Compiled frames"): a
 /// function or procedure without a static link, small, whose instructions are all lowered
 /// without a step on their fast path; its calls are checked by `native_set`.

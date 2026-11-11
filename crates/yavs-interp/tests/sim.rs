@@ -391,6 +391,117 @@ fn compiled_code_is_not_entered_at_a_return() {
     }
 }
 
+/// A callee flagged while an activation of the loop with the tier runs is called lean, past its
+/// prologue, where its compiled code has no entry: that entry sets the callee's `Pre::native`, so
+/// the later calls of the same activation are full and enter it at its first op.
+#[test]
+fn a_lean_entry_into_compiled_code_makes_the_later_calls_full() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    // `.0` the process, `.1` the callee, flagged (`.2` the flags) when the process is entered past
+    // its first call (`.3`, the pc of that call); neither runs anything. `.5` the callee's pcs asked.
+    struct Lag(
+        FuncId,
+        FuncId,
+        std::sync::OnceLock<std::sync::Arc<yavs_interp::NativeFlags>>,
+        u32,
+        AtomicBool,
+        std::sync::Mutex<Vec<u32>>,
+    );
+    impl yavs_interp::Tier for Lag {
+        fn run(&self, f: FuncId, pc: u32, _: &mut dyn yavs_interp::TierHost) -> Option<u32> {
+            if f == self.0 && pc > self.3 && !self.4.swap(true, Ordering::Relaxed) {
+                // (As a compile thread would: no entry of the process brings the mirror up.)
+                self.2.get().unwrap().set(self.1);
+                return None;
+            } else if f == self.1 {
+                self.5.lock().unwrap().push(pc);
+            }
+            Some(pc)
+        }
+        fn ready(&self, f: FuncId) -> bool {
+            f == self.0 || f == self.1 && self.4.load(Ordering::Relaxed)
+        }
+    }
+    let build = || {
+        let mut pb = ProgramBuilder::new();
+        let int = integer(&mut pb);
+        let sq = pb.declare("square", FuncKind::Function, None);
+        let proc_ = pb.declare("p", FuncKind::Process, None);
+        {
+            let mut fb = pb.define(sq);
+            let x = fb.param("x", Width::B8, ParamClass::Value, Mode::In, None);
+            stmt(&mut fb, StmtKind::Return);
+            let v = load(&mut fb, AddrSpace::Frame, x, Width::B8);
+            let mut r = v;
+            for _ in 0..30 {
+                r = bin(&mut fb, IntOp::Add, r, v);
+            }
+            fb.emit(Inst::Ret { v: Some(r) });
+            fb.finish();
+        }
+        {
+            // Four calls in one activation.
+            let mut fb = pb.define(proc_);
+            let n = fb.local("n", int, 8, 8);
+            wait_for(&mut fb, 10 * NS);
+            let mut r = None;
+            for _ in 0..4 {
+                stmt(&mut fb, StmtKind::Call);
+                let v = load(&mut fb, AddrSpace::Frame, n, Width::B8);
+                let one = fb.int(1);
+                let v1 = bin(&mut fb, IntOp::Add, v, one);
+                store(&mut fb, AddrSpace::Frame, n, v1, Width::B8);
+                let args = fb.regs(&[v1]);
+                let d = fb.reg(RegTy::I64);
+                fb.emit(Inst::Call {
+                    func: sq,
+                    args,
+                    dst: Some(d),
+                });
+                r = Some(d);
+            }
+            drive(&mut fb, 0, 0, r.unwrap(), Width::B8);
+            fb.emit(Inst::Br { to: BlockId(0) });
+            fb.finish();
+        }
+        let mut d = Design::new(pb);
+        d.signals = vec![byte_sig("s", 1, 8)];
+        d.procs = vec![ProcSpec {
+            name: "p",
+            func: proc_,
+            drives: vec![(0, 1)],
+        }];
+        (d, sq, proc_)
+    };
+    let (d, _, _) = build();
+    let (want, r) = d.run(Time::ns(15));
+    assert!(r.is_ok());
+    let (d, sq, proc_) = build();
+    let rt = Runtime::new(d.prog.clone(), Default::default()).unwrap();
+    let code = &d.prog.func(proc_).unwrap().code;
+    let call = code.iter().position(|i| matches!(i, Inst::Call { .. }));
+    let call = call.unwrap() as u32;
+    let tier = std::sync::Arc::new(Lag(
+        proc_,
+        sq,
+        Default::default(),
+        call,
+        Default::default(),
+        Default::default(),
+    ));
+    assert!(rt.set_tier(tier.clone()));
+    let flags = rt.native_flags();
+    tier.2.set(flags.clone()).ok().unwrap();
+    flags.set(proc_);
+    let (mut sim, t, _) = d.build_rt(1, rt, |p, _| p);
+    sim.run_until(Time::ns(15)).unwrap();
+    assert_eq!(*t.0.lock().unwrap(), want);
+    // The first call after the flag is lean (past the prologue); the two after it are full.
+    let asked = tier.5.lock().unwrap();
+    assert_eq!(asked.len(), 3, "{asked:?}");
+    assert!(asked[1] == asked[2] && asked[1] < asked[0], "{asked:?}");
+}
+
 type Sampler = Box<dyn Fn(&mut Vec<(FuncId, bool)>) + Send>;
 
 /// A tier whose only function is `.0`, called on a native frame once flagged (`.1` counts the

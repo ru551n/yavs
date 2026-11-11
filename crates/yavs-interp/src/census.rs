@@ -98,6 +98,25 @@ pub fn tier_skips() -> Option<u64> {
     None
 }
 
+#[cfg(any(debug_assertions, feature = "op-census"))]
+static RESYNCS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// An entry into compiled code past the prologue that made no progress and set the function's
+/// `Pre::native`, which lagged its flags (`Machine::tier_go`).
+#[inline(always)]
+pub(crate) fn tier_resync() {
+    #[cfg(any(debug_assertions, feature = "op-census"))]
+    RESYNCS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Those entries so far (the work counter `tier_resyncs`); `None` as `ops_executed`.
+pub fn tier_resyncs() -> Option<u64> {
+    #[cfg(any(debug_assertions, feature = "op-census"))]
+    return Some(RESYNCS.load(std::sync::atomic::Ordering::Relaxed));
+    #[cfg(not(any(debug_assertions, feature = "op-census")))]
+    None
+}
+
 static IEEE_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 static IEEE: std::sync::Mutex<Option<std::collections::HashMap<String, u64>>> =
     std::sync::Mutex::new(None);

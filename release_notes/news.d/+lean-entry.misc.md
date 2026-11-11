@@ -1,0 +1,1 @@
+Under `--tier=auto`, a subprogram that is compiled while a long process activation runs now runs its compiled code from its next call on, instead of being entered interpreted at every call until the process next waits.

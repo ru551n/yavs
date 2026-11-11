@@ -9376,6 +9376,17 @@ impl Machine {
         let pc = code.at.get(k).copied().unwrap_or(0) as usize;
         let prog = &*rt.prog;
         let (next, ran) = self.run_tier(tier, rt, f, pc, ctx)?;
+        // No progress at the op past the prologue: a call made while `Pre::native` lagged the
+        // flags entered it there, where frame-mode code has no entry. Later calls are full.
+        if ran
+            && next == pc
+            && k as u32 == code.skip
+            && code.skip != code.first
+            && let Some(p) = rt.pre(func, f)
+            && !p.native.swap(true, Ordering::Relaxed)
+        {
+            crate::census::tier_resync();
+        }
         // Frames compiled code pushed and did not finish: the interpreter goes on with the
         // top one.
         if next == crate::TIER_UNWIND as usize {

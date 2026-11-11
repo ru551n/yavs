@@ -15332,3 +15332,44 @@ lowering; the five largest functions take 29 percent.
   `Gen::clear`, the `Heap` sweep over `known`): forced GRLIB run 1 1.1 and 0.7 percent of the instructions, cold
   default tier about 0.4 percent, mostly in process copies. Sparse resets need every write to `known` tracked
   (`track` in `yavs-rt` included).
+
+## `--tier=auto`: a lean call made while `Pre::native` lagged sets it (yavs-interp `exec.rs` `Machine::tier_go`, perf/b4-sbheld, 2026-11-11)
+
+- **Finding** (agent). In the loop with the tier a call is lean (parameters in registers only, the callee entered
+  past its prologue at `Code::skip`) while the callee's `Pre::native` byte is not set. The byte mirrors the callee's
+  flags and is synced only when an activation starts and in the watching loop (`Runtime::sync_native`), so a
+  function compiled while a long activation runs (a sequencer that rarely waits) was called lean for the rest of
+  that activation. Frame-mode code has no entry past the prologue: each such call entered the tier for no progress
+  (about 475 instructions) and ran the callee interpreted up to its first call, return or `RECHECK` jumps.
+  `uvvm_sb_slv` made 3 to 22 k such entries a run, nearly all at `log` (`Code::skip` at IR pc 34), in the runs where
+  `log` compiled (lab counters, untimed).
+- **Finding: callees of compiled callers held** (agent). The trips from compiled code into `uvvm_sb_slv` callees with
+  no code (6 to 31 k a run in its slower modes) are not a stale caller map: the callee is freed from "uncalled
+  subprogram" within one batch of looks after its caller compiles, and then held by `unrepaid`, whose saving is the
+  callee's own share of the looks (often 0: a short callee's time is charged to its caller), or by the gate early in
+  the run. The holds are right by that rule's economics: the trips cost about 0.1 to 0.4 percent of the run.
+- **Change** (agent). An entry at `Code::skip` that makes no progress sets that function's own `Pre::native` (it has
+  compiled code, so the byte is what a sync would write), and the later calls of the activation are full and enter
+  the compiled code at its first op. Counter `tier_resyncs` (debug and `op-census` builds). A sync of every flag at
+  every entry without progress (the first version) also moved what the run compiled: `uvvm_axistream_vvc` run 1
+  took its compile-heavy mode in 7 of 8 reps against 3 of 8 for main; the narrow version touches only the function
+  entered.
+- **Measured** (agent; plain bench builds of 71f5e809 with and without the change, a second copy of main's binary
+  as the A/A, all-thread instructions, untimed cores, from pristine worlds, no `YAVS_COUNTERS`, default tier
+  `wait`): `uvvm_sb_slv` four-run sum medians 36.85 against 36.23 (A/A 36.48), 24 reps each, interquartile ranges
+  overlapping (the design is multimodal by what each run compiles); `osvvm_axi4_random` 1.001 (A/A 1.000, 12 reps);
+  `uvvm_axistream_vvc` run 1 in its compile-heavy mode in 7 of 22 reps (main 8 of 22, A/A 2 of 23), runs 1 and 2
+  65.71 against 65.94 (A/A 65.95), `background` six-run sum 0.999 (A/A 1.000); GRLIB r1 to r4 0.991, 0.999, 1.000,
+  1.000; Microwatt 1.002, 1.000; the small tests and `uvvm_func_cov` level; forced compiled whole runs
+  (`--tier=clift --no-cache --threads=1`, main-thread instructions) within 0.02 percent on seven designs. With `YAVS_AUTO_COUNT=1`,
+  `YAVS_AUTO_GATE=0` and `YAVS_AUTO_SYNC=1` (decisions fixed) every cell is within 0.01 percent. The change removes
+  work only in the runs and modes the lab counters showed; no cell resolves it.
+- **Not built.** (1) Pricing the round trips from compiled code into a callee that `unrepaid` holds (the
+  `uvvm_sb_slv` callees of compiled callers, f191 `match_expected_vs_entry` about 17 k trips in one run): built
+  and measured, not landed: at about 1 400 instructions a trip it frees a callee in 2 of 36 later runs, so it
+  changes nothing measurable; exempting such callees from `unrepaid` altogether compiled bodies the
+  rest of the run does not repay (`osvvm_axi4_random` run 2 1.27 of main). (2) Asking again at the next jump after
+  a declined entry instead of after `RECHECK` jumps: with this change the declined jumps fall to at most about 3 k a
+  run, far below any cell.
+- **Reach.** `tier_resyncs` 8 on 6 corpus tests under `yavs-clift-count1` (0 under `yavs` and `yavs-clift-check`).
+  Interpreter test `a_lean_entry_into_compiled_code_makes_the_later_calls_full` (fails without the change).

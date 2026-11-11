@@ -287,6 +287,9 @@ pub struct Stats {
     /// Bus copies of `forward_copy` onto a block boundary (`mark_words`; debug and `op-census`
     /// builds only, else 0).
     pub block_copies: u64,
+    /// Image leaves of at most 64 logic elements written in place (`Images::leaves_inline`;
+    /// debug and `op-census` builds only, else 0).
+    pub image_leaves_inline: u64,
 }
 
 /// A pending observer wake-up (`Hook::wake_at`). Ordered by time, then registration.
@@ -2044,6 +2047,7 @@ impl SimControl {
                 + tail(|t| t.1),
             images: self.images.memory().0,
             image_bytes: self.images.memory().1,
+            image_leaves_inline: self.images.leaves_inline,
             ..self.stats
         }
     }

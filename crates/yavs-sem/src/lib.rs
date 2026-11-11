@@ -158,6 +158,12 @@ pub trait StageCache: Send + Sync + std::fmt::Debug {
 
     fn prefix_put(&self, _level: usize, _kind: &str, _part: &[u8], _bytes: &[u8]) {}
 
+    /// A name of these arguments of prefix `level`, the same in every run of every closure that
+    /// starts with the prefix's files (`None`: no prefix entries are kept).
+    fn prefix_identity(&self, _level: usize, _kind: &str, _part: &[u8]) -> Option<String> {
+        None
+    }
+
     /// How many different closures (this one included) have asked for the entry of this prefix and
     /// not found it: the request is remembered. A stage that costs a fraction of a second to make
     /// is made once enough closures would have used it.

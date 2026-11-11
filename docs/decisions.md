@@ -15529,3 +15529,21 @@ Written by Claude. The drive side of Microwatt, measured first with lab counters
   fails with the product's carries, the sum's carry or borrow, the second block of a reduction or `is_x`, the
   straddling half of a concatenation, the sign extension or the clean-operand guard broken. `perf.rs` `wide_ieee`
   bounds the callbacks.
+
+## Compiled code: the logical operators of vectors holding metavalues in place (yavs-clift `Gen::gate_planes`, perf/b4-wideieee, 2026-11-11)
+
+- **Finding** (agent). The largest share of Microwatt's native callbacks after the entry above: twelve gates of
+  `mmu_1` (`(r.pde(55 downto 12) and not finalmask) or ...`, 4 to 44 elements), 0.55 M each a run, 6.6 M of
+  the 11.1 M. The in-place arm of the logical operators took operands of `0 1 L H` only, and the MMU's registers
+  hold `U` in a run that never uses it.
+- **Change** (agent). The logical operators of `std_logic_1164` and `numeric_std` of 1 to 64 elements read the
+  four planes of both operands: when every element is `0 1 L H` the gate of the bits as before, else (out of
+  line) the std_logic_1164 tables on the planes (`logic_block`, the `LogicOp` lowering's), which is what the
+  native returns for equal lengths. Unequal lengths still take the native call.
+- **Trade** (agent). The out-of-line tables are compiled at every gate site: forced `--tier=clift --no-cache`
+  runs, which compile every function, cost `neorv32_single_cache` 0.09 percent, `hdlm_fifo_sync` 0.03 percent and
+  GRLIB 0.02 percent more than the entry above alone (forced runs repeat within 0.01 percent); the default tier shows
+  none of it beyond its spread. Microwatt forced 0.9895 against the entry above. A small runtime helper for the
+  tables instead of the inline code would shrink the cost (not built).
+- **Test.** The same `clift_parity` and corpus tests (gates of 1 to 128 elements on every element value); it
+  fails with the out-of-line tables never taken. `perf.rs` `wide_ieee` holds gates of a vector of `U`.

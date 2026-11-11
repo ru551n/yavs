@@ -1575,8 +1575,8 @@ pub enum CountStat {
     /// Processes the first run held past `WAIT_LONG` while the callees their compile pulls in had
     /// not repaid their price (`Worker::tree_unpaid`).
     TreeHeld,
-    /// Calls in copies made after the policy worked out who calls whom, added to that map
-    /// (`Worker::see_copies`): a copy of a subprogram is called only from copies.
+    /// Calls in copies taken into the policy's map of who calls whom (`Worker::graph`): a copy of
+    /// a subprogram is called only from copies.
     CopyCalls,
 }
 

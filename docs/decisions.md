@@ -15402,3 +15402,38 @@ lowering; the five largest functions take 29 percent.
   array piece one byte short. The refusal path (0) is not reached by any test: the front end gives no `Cat` whose
   pieces exceed the result.
 
+
+## `--tier=auto`: who calls whom, without optimising the whole program (yavs-rt `auto.rs` `Worker::graph`, yavs-ir `Program::newly_optimised`, perf/b4-callersmap, 2026-11-11, agent; landing is the maintainer's)
+
+- **Finding** (agent). The count rule's map of callers (`entered_from_code`, `unlocked`) was built at its first ask by
+  reading `Program::func` of every function, and `func` optimises a function the first time it is asked for. So the
+  first subprogram asked past the gate optimised the whole program, run or not: 210 to 1 380 functions a run on the
+  measured designs, of which 5 to 160 ran later (`uvvm_func_cov`: 311 optimised, 87 ran; `neorv32_dual_full`: 1 334
+  and 6; GRLIB 661 and 22), 11 to 80 ms of compile-thread CPU, on the critical path under `--tier-compile=wait`.
+  The map cannot come from the lowered code instead: inlining adds the callees of an inlined body and removes the
+  inlined call, and copies of subprograms replace the callee, so the lowered and optimised calls differ on every
+  measured design (GRLIB: 71 edges only in the lowered code, 4 only in the optimised).
+- **Change** (agent). `Program` lists each function it optimises (`optimised`, a mutex-guarded list and its length),
+  before the optimised code can be handed out, so a thread that was given the code finds the function listed. The
+  policy's `graph` takes in the calls of the functions listed since its last ask, in both directions (callers and
+  callees), and replaces the build at the first ask and `see_copies`. Every caller the policy asks about has compiled
+  code (made from the optimised code), was asked for by the count (`held`) or was seen running (`time`): each was
+  optimised, so the answers are those of a map of the whole program. `unlocked` walks into a callee never seen running
+  and optimises that function alone, as it did before through the whole-program map. Counter `tier_copy_calls` now
+  counts every call of a copy taken in.
+- **Check** (agent). `YAVS_AUTO_CHECK_CALLS` (builds with debug assertions) compares every answer of `entered_from_code`
+  and of `unlocked`'s caller count, and the callees of each function `unlocked` walks, with a walk over the code of
+  every function, and stops at a caller the policy asks about that was never optimised. Clean over the difftest corpus
+  (default tier and `yavs-clift-count1`, 668 each) and 13 realbench designs (runs 1 to 3, `wait`, `background` and
+  fixed decisions, with and without the trace, 1 530 checked `held` lines with 602 callers found).
+- **Decisions** (agent). Under `YAVS_AUTO_COUNT=1 YAVS_AUTO_GATE=0 YAVS_AUTO_SYNC=1` the compile decisions are the same
+  on every design where that mode repeats itself (`hdlm_fifo_sync`, `vunit_logging`, `olo_axi_master_full`,
+  `neorv32_dual_full`, `uvvm_axistream_vvc`, runs 1 to 3); where the sampler still decides (`uvvm_func_cov`,
+  `uvvm_sb_slv`, `osvvm_axi4_random`, GRLIB) the sets differ between runs of one binary as they do between the two.
+  Fewer optimised functions also give copies of subprograms other slots, so function ids in traces differ on GRLIB.
+- **Cost** (agent, exact counts, plain bench builds, `wait` unless named). All threads: `uvvm_func_cov` run 2 0.885,
+  `neorv32_dual_full` 0.97, `osvvm_axi4_random` 0.97 to 0.98, GRLIB 0.988 and 0.995, small tests and Microwatt level.
+  The main thread alone pays more on some: the old build ran on the compile thread beside the simulation and optimised
+  ahead the functions the simulation would call later; now the simulation optimises them when it first calls them
+  (`uvvm_func_cov` run 2 1.055, `osvvm_axi4_random` 1.02 to 1.04, `uvvm_axistream_vvc` run 2 1.03 under `wait`).
+  On one core the change gains; on free cores some designs lose. Whether to land it is the maintainer's call.

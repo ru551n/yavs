@@ -25,7 +25,7 @@ It needs yavs 0.12.0 or later.
 
 ## Install
 
-yavs 0.19.0 or newer must be on `PATH` of the test run. The
+yavs 0.19.1 or newer must be on `PATH` of the test run. The
 extension needs VS Code 1.80 or newer.
 
 Download `yavs-debug-<version>.vsix` from the

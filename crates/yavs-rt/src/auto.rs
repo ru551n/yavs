@@ -1229,6 +1229,16 @@ fn count_knobs() -> (u32, u64, bool) {
     )
 }
 
+/// Who calls whom (any `Call` or `CallProt`), from the code of every function optimised so far
+/// (`Program::newly_optimised`, the first `seen` of its list): a function that runs or has code
+/// was optimised first, so every caller the policy asks about is in it, and the rest of the
+/// program is not optimised for it. A copy of a subprogram is called only by copies.
+struct Calls {
+    callers: Vec<Vec<u32>>,
+    callees: Vec<Vec<u32>>,
+    seen: usize,
+}
+
 /// The compile thread's state.
 struct Worker {
     /// The rules of the generator that makes the first code of a function (`Tune`).
@@ -1262,14 +1272,17 @@ struct Worker {
     /// Per function: its frame-mode code was left for later because nothing compiled calls it
     /// yet (`frame_instead`).
     declined: Vec<bool>,
-    /// Who calls each function (any `Call` or `CallProt` in its code), worked out once, then the calls
-    /// of each copy made since (`see_copies`; `copies_scanned` of them): a copy of a subprogram is called
-    /// only by copies. Under the count rule `copy_compiled` also stands for a process's copies.
-    callers: std::cell::OnceCell<Vec<Vec<u32>>>,
-    copies_scanned: usize,
-    copies_unseen: Vec<u32>,
-    /// Whom each function calls, as `callers` the other way round, and the marks of `unlocked`'s walk.
-    callees: std::cell::OnceCell<Vec<Vec<u32>>>,
+    /// Who calls whom (`Calls`), from the code of the functions optimised so far, and the marks of
+    /// `unlocked`'s walk. Under the count rule `copy_compiled` also stands for a process's copies.
+    graph: std::cell::RefCell<Calls>,
+    check_calls: bool,
+    /// Optimise every function at the first question about callers, as the whole-program map did:
+    /// a run without the last run's list of what it needed (`prefetch`). Done beside the
+    /// simulation, it optimises ahead what the simulation calls later.
+    force_all: std::cell::Cell<bool>,
+    /// Every function optimised so far, in that order (the first of `Program::newly_optimised`), for
+    /// the profile's `ran` (`snapshot`); apart from `graph`, which a short run never asks.
+    order: std::cell::RefCell<(usize, Vec<u32>)>,
     walked: std::cell::RefCell<Vec<bool>>,
     copy_compiled: Vec<bool>,
     /// Per function: the address of its `CallFn` (0: none), published with `nat`.
@@ -1607,10 +1620,14 @@ impl Worker {
             no_native: vec![false; nfuncs],
             refusals: 0,
             declined: vec![false; nfuncs],
-            callers: Default::default(),
-            copies_scanned: 0,
-            copies_unseen: Vec::new(),
-            callees: Default::default(),
+            check_calls: std::env::var_os("YAVS_AUTO_CHECK_CALLS").is_some(),
+            graph: std::cell::RefCell::new(Calls {
+                callers: vec![Vec::new(); nfuncs],
+                callees: vec![Vec::new(); nfuncs],
+                seen: 0,
+            }),
+            order: Default::default(),
+            force_all: std::cell::Cell::new(true),
             walked: std::cell::RefCell::new(vec![false; nfuncs]),
             copy_compiled: vec![false; nfuncs],
             calls: vec![0; nfuncs],
@@ -1807,15 +1824,7 @@ impl Worker {
     /// to the callee, so a dispatcher looks cold by its own time, and compiling it is what lets its
     /// callees compile. A callee never seen adds no price: it would not compile.
     fn unlocked(&self, id: FuncId) -> (u64, u64) {
-        let callees = self.callees.get_or_init(|| {
-            let mut v = vec![Vec::new(); self.prog.funcs.len()];
-            for (c, callers) in self.callers().iter().enumerate() {
-                for &k in callers {
-                    v[k as usize].push(c as u32);
-                }
-            }
-            v
-        });
+        self.force_once();
         let mut walked = self.walked.borrow_mut();
         let (mut us, mut price) = (self.time[id.0 as usize][0], self.body_price(id));
         let mut todo = vec![id.0];
@@ -1823,14 +1832,36 @@ impl Worker {
         let mut i = 0;
         while let Some(&f) = todo.get(i) {
             i += 1;
-            for &c in &callees[f as usize] {
+            // (Its calls are known once it is optimised: a callee never seen running is optimised
+            // here, the rest of the program is not.)
+            let code = self.prog.func(FuncId(f)).map_or(&[][..], |g| &g.code[..]);
+            if cfg!(debug_assertions) && self.check_calls {
+                let mut want: Vec<u32> =
+                    code.iter()
+                        .filter_map(|i| match i {
+                            yavs_ir::Inst::Call { func, .. }
+                            | yavs_ir::Inst::CallProt { func, .. } => Some(func.0),
+                            _ => None,
+                        })
+                        .collect();
+                let mut have = self.graph().callees[f as usize].clone();
+                want.sort_unstable();
+                want.dedup();
+                have.sort_unstable();
+                assert_eq!(have, want, "callees of f{f}");
+            }
+            for j in 0.. {
+                let Some(c) = self.graph().callees[f as usize].get(j).copied() else {
+                    break;
+                };
                 let k = c as usize;
                 if walked[k]
                     || self.done[k]
                     || self.nat[k].0 != 0
                     || self
                         .prog
-                        .func(FuncId(c))
+                        .funcs
+                        .get(FuncId(c))
                         .is_none_or(|g| g.kind == FuncKind::Process)
                     || self.entered_from_code(FuncId(c))
                 {
@@ -1842,14 +1873,15 @@ impl Worker {
                 if t == 0 {
                     continue;
                 }
-                let n = self.callers()[k]
-                    .iter()
-                    .filter(|&&g| {
-                        let g = g as usize;
-                        !self.done[g] && (self.held[g] || self.time[g][0] > 0)
-                    })
-                    .count()
-                    .max(1) as u64;
+                let ran = |g: u32| {
+                    let g = g as usize;
+                    !self.done[g] && (self.held[g] || self.time[g][0] > 0)
+                };
+                let n = self.graph().callers[k].iter().filter(|&&g| ran(g)).count();
+                if cfg!(debug_assertions) && self.check_calls {
+                    assert_eq!(n, self.callers_by_walk(FuncId(c), ran), "callers of {c}");
+                }
+                let n = n.max(1) as u64;
                 us += t / n;
                 price += self.body_price(FuncId(c)) / n;
             }
@@ -2039,53 +2071,8 @@ impl Worker {
         self.earlier.base.is_some_and(|b| b >= self.gate_cpu)
     }
 
-    /// Add the calls of the copies made since the last look to `callers` and `callees`: their slots
-    /// (the last of the program, filled in order) were empty when those were worked out. A slot whose
-    /// copy this thread does not see yet (or a hole `YAVS_COPY_SKIP` left) is looked at again later.
-    fn see_copies(&mut self) {
-        let made = self.prog.copy_stats().copies;
-        if (made == self.copies_scanned && self.copies_unseen.is_empty())
-            || self.callers.get().is_none()
-        {
-            return;
-        }
-        let first = self
-            .prog
-            .funcs
-            .iter()
-            .position(|(_, f)| f.spare)
-            .unwrap_or(0) as u32;
-        let mut todo = std::mem::take(&mut self.copies_unseen);
-        todo.extend(first + self.copies_scanned as u32..first + made as u32);
-        self.copies_scanned = made;
-        let (prog, callers) = (&self.prog, self.callers.get_mut());
-        let Some(callers) = callers else { return };
-        for k in todo {
-            if prog.base_of(FuncId(k)) == FuncId(k) {
-                self.copies_unseen.push(k);
-                continue;
-            }
-            let Some(f) = prog.func(FuncId(k)) else {
-                continue;
-            };
-            for i in &f.code {
-                if let yavs_ir::Inst::Call { func, .. } | yavs_ir::Inst::CallProt { func, .. } = i {
-                    let c = func.0 as usize;
-                    if !callers[c].contains(&k) {
-                        callers[c].push(k);
-                        self.native.count_stat(CountStat::CopyCalls);
-                        if let Some(callees) = self.callees.get_mut() {
-                            callees[k as usize].push(c as u32);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     /// The functions that wait no more, and the callees `publish` wants.
     fn freed(&mut self) -> Vec<FuncId> {
-        self.see_copies();
         if self.total >= self.gate {
             self.native.open_copies();
         }
@@ -3258,12 +3245,29 @@ impl Worker {
                 }
                 v
             });
+        // (Copies have new ids in every run.)
+        let mut order = self.order.borrow_mut();
+        let (at, list) = &mut *order;
+        list.extend(self.prog.newly_optimised(at).iter().map(|f| f.0));
+        let ran = list
+            .iter()
+            .copied()
+            .filter(|&f| {
+                let k = f as usize;
+                self.prog.funcs.get(FuncId(f)).is_some_and(|g| !g.spare)
+                    && (self.time[k] != [0, 0]
+                        || self.done[k]
+                        || self.nat[k].0 != 0
+                        || (self.counted && self.native.count_left(FuncId(f)) != self.count))
+            })
+            .collect();
         Snapshot {
             total: self.total,
             seen,
             lost: self.lost_bases.clone(),
             early,
             held,
+            ran,
         }
     }
 
@@ -3331,7 +3335,7 @@ impl Worker {
     /// Whether a function that calls `id` has compiled code that `id` is called from: frame-mode
     /// code, or native-frame code that is published.
     fn entered_from_code(&self, id: FuncId) -> bool {
-        self.callers()[id.0 as usize].iter().any(|&c| {
+        let from = |c: u32| {
             c != id.0
                 && (self.table[c as usize].run.load(Ordering::Relaxed) != 0
                     || self.nat[c as usize].1
@@ -3339,28 +3343,87 @@ impl Worker {
                     // (Native-frame code waits to be published for what it calls, so under the count
                     // rule made is enough, or each would wait for the other.)
                     || (self.counted && self.nat[c as usize].0 != 0))
-        })
+        };
+        self.force_once();
+        let yes = self.graph().callers[id.0 as usize].iter().any(|&c| from(c));
+        if cfg!(debug_assertions) && self.check_calls {
+            assert_eq!(
+                yes,
+                self.callers_by_walk(id, from) > 0,
+                "entered_from_code({id})"
+            );
+        }
+        yes
     }
 
-    /// Who calls each function (`callers`).
-    fn callers(&self) -> &[Vec<u32>] {
-        self.callers.get_or_init(|| {
-            let mut v = vec![Vec::new(); self.prog.funcs.len()];
+    /// `YAVS_AUTO_CHECK_CALLS` (debug builds): the callers of `id` that `keep` holds, by a walk over
+    /// the code of every function, each of them optimised already, as `graph` assumes.
+    fn callers_by_walk(&self, id: FuncId, keep: impl Fn(u32) -> bool) -> usize {
+        let mut n = 0;
+        for (k, raw) in self.prog.funcs.iter() {
+            if !keep(k.0) {
+                continue;
+            }
+            assert!(
+                raw.opt.get().is_some(),
+                "{k} is a caller the policy asks about but was not optimised"
+            );
+            n += usize::from(self.prog.func(k).is_some_and(|f| {
+                f.code.iter().any(|i| {
+                    matches!(i, yavs_ir::Inst::Call { func, .. } | yavs_ir::Inst::CallProt { func, .. } if *func == id)
+                })
+            }));
+        }
+        n
+    }
+
+    /// `force_all`, once.
+    fn force_once(&self) {
+        if self.force_all.replace(false) {
             for k in 0..self.prog.funcs.len() {
-                let Some(f) = self.prog.func(FuncId(k as u32)) else {
+                let _ = self.prog.func(FuncId(k as u32));
+            }
+        }
+    }
+
+    /// Optimise ahead, beside the simulation, the functions the last run needed (`Profile::ran`),
+    /// in the order it first optimised them, instead of the whole program (`force_all`).
+    fn prefetch(&mut self) {
+        if self.earlier.ran.is_empty() {
+            return;
+        }
+        self.force_all.set(false);
+        for &k in &self.earlier.ran {
+            let _ = self.prog.func(FuncId(k));
+        }
+    }
+
+    /// Who calls whom (`Calls`), with the functions optimised since the last ask taken in.
+    fn graph(&self) -> std::cell::Ref<'_, Calls> {
+        let new = self.prog.newly_optimised(&mut self.graph.borrow_mut().seen);
+        if !new.is_empty() {
+            let mut m = self.graph.borrow_mut();
+            for f in new {
+                let k = f.0;
+                let Some(code) = self.prog.func(f).map(|g| &g.code) else {
                     continue;
                 };
-                for i in &f.code {
+                let copy = self.prog.base_of(f) != f;
+                for i in code {
                     if let yavs_ir::Inst::Call { func, .. } | yavs_ir::Inst::CallProt { func, .. } =
                         i
-                        && v[func.0 as usize].last() != Some(&(k as u32))
+                        && !m.callees[k as usize].contains(&func.0)
                     {
-                        v[func.0 as usize].push(k as u32);
+                        m.callers[func.0 as usize].push(k);
+                        m.callees[k as usize].push(func.0);
+                        if copy {
+                            self.native.count_stat(CountStat::CopyCalls);
+                        }
                     }
                 }
             }
-            v
-        })
+        }
+        self.graph.borrow()
     }
 
     /// Take over the native-frame code a compile made of other functions on the way.
@@ -4063,6 +4126,7 @@ impl AutoTier {
                     if !sh.halt.load(Ordering::SeqCst) {
                         w.listed = w.generator.cache_list();
                         w.load_profile();
+                        w.prefetch();
                         if w.counted && (w.long_before() || w.named_hot()) {
                             w.native.open_copies();
                         }
@@ -4751,8 +4815,8 @@ mod tests {
         assert!(w.waiting.is_empty());
     }
 
-    /// A copy made after the callers were worked out still counts as a caller: a subprogram called
-    /// only from copies (copies of subprograms are) is freed once one of them has code.
+    /// A copy made after the first ask still counts as a caller: a subprogram called only from
+    /// copies (copies of subprograms are) is freed once one of them has code.
     #[test]
     fn a_copy_made_later_frees_what_it_calls() {
         use yavs_ir::{AddrSpace, RegTy, Width};
@@ -4797,9 +4861,64 @@ mod tests {
         let mut w = counted(prog, 0);
         assert!(w.waits(g));
         let copy = w.prog.copy_of(p, &3i64.to_le_bytes(), &[]).expect("a copy");
+        // (Compiled code is made from the optimised code, which lists the copy's calls.)
+        assert!(w.prog.func(copy).is_some());
         w.nat[copy.0 as usize].0 = 64;
         w.waiting.push(g);
         assert_eq!(w.freed(), [g]);
+    }
+
+    /// With the last run's list of what it needed, asking who calls a function optimises no other
+    /// function (`graph`, `prefetch`): a caller is known once it is optimised, which compiled code
+    /// always is. Without the list the first ask optimises the whole program (`force_all`).
+    #[test]
+    fn asking_for_callers_optimises_only_what_the_last_run_needed() {
+        let opt = |w: &super::Worker, f: yavs_ir::FuncId| {
+            w.prog.funcs.get(f).unwrap().opt.get().is_some()
+        };
+        let (prog, caller, callee) = caller_callee();
+        let mut w = counted(prog, 0);
+        w.check_calls = true;
+        w.earlier.ran = vec![callee.0];
+        w.prefetch();
+        assert!(opt(&w, callee), "listed");
+        assert!(w.waits(callee));
+        assert!(
+            !opt(&w, caller),
+            "the caller was optimised to find the callers"
+        );
+        assert!(w.prog.func(caller).is_some());
+        w.nat[caller.0 as usize].0 = 64;
+        assert!(!w.waits(callee));
+        let (prog, caller, callee) = caller_callee();
+        let w = counted(prog, 0);
+        assert!(w.waits(callee));
+        assert!(opt(&w, caller), "no list: the whole program");
+    }
+
+    /// The profile lists what a run needed, in the order it was optimised: what ran or compiled.
+    #[test]
+    fn the_profile_lists_what_ran() {
+        let (prog, caller, callee) = caller_callee();
+        let mut w = counted(prog, 0);
+        w.force_all.set(false);
+        assert!(w.prog.func(callee).is_some() && w.prog.func(caller).is_some());
+        assert!(w.snapshot().ran.is_empty(), "optimised, not run");
+        w.time[caller.0 as usize][0] = 1;
+        w.nat[callee.0 as usize].0 = 64;
+        assert_eq!(w.snapshot().ran, [callee.0, caller.0]);
+    }
+
+    /// `YAVS_AUTO_CHECK_CALLS` stops at a caller with code that was never optimised: the map would
+    /// not know it.
+    #[test]
+    #[should_panic(expected = "was not optimised")]
+    fn the_callers_check_stops_at_a_caller_the_map_cannot_know() {
+        let (prog, caller, callee) = caller_callee();
+        let mut w = counted(prog, 0);
+        (w.check_calls, w.force_all) = (true, false.into());
+        w.nat[caller.0 as usize].0 = 64;
+        let _ = w.entered_from_code(callee);
     }
 
     /// The count gives a function with a loop native-frame code alone; its frame-mode code (for the

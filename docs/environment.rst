@@ -429,6 +429,11 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - a number
      - ``0``
      - ``run``
+   * - ``YAVS_AUTO_CHECK_CALLS``
+     - In a build with debug assertions: ``--tier=auto`` checks each answer of its map of who calls whom against the code of every function, and stops the run at a difference (a test aid).
+     - set
+     - unset
+     - ``run``
    * - ``YAVS_SUB_SLOTS``
      - The most function slots kept for copies of subprograms.
      - a number

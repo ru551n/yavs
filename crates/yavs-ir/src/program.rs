@@ -59,6 +59,9 @@ pub struct Program {
     #[serde(skip)]
     #[doc(hidden)]
     pub hot: HotList,
+    /// The functions [`Program::func`] optimised, in that order ([`Program::newly_optimised`]).
+    #[serde(skip)]
+    pub optimised: OptLog,
     /// The key of the stage-cache entry this program was read from or stored to (the lowering
     /// key: the same key is the same program, ids and all); `None` for a program not cached.
     /// Compiled code is found by it before it is generated (the removed yavs-llvm `objcache`, #785).
@@ -201,6 +204,8 @@ impl Program {
         let o = raw
             .opt
             .get_or_init(|| {
+                // (Listed before any thread can see the code: whoever sees it finds it listed.)
+                let _listed = Listed(&self.optimised, f);
                 // A specialised copy (`copies.rs`) is made from a function already verified.
                 if let Some(c) = self.copies.get(f) {
                     return self.optimize_copy_of(c);
@@ -640,6 +645,55 @@ pub struct Func {
     /// many jumps back it took as lowered ([`ElabRaw`]).
     #[serde(skip)]
     pub(crate) fetches: Fetches,
+}
+
+/// [`Program::optimised`]: the functions in the order they were optimised, and how many.
+#[derive(Debug, Default)]
+pub struct OptLog(
+    std::sync::Mutex<Vec<FuncId>>,
+    std::sync::atomic::AtomicUsize,
+);
+
+impl Clone for OptLog {
+    fn clone(&self) -> Self {
+        let v = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        OptLog(std::sync::Mutex::new(v.clone()), v.len().into())
+    }
+}
+
+/// Lists its function in an [`OptLog`] when dropped: at the end of its optimisation.
+struct Listed<'a>(&'a OptLog, FuncId);
+
+impl Drop for Listed<'_> {
+    fn drop(&mut self) {
+        let mut v = (self.0.0)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        v.push(self.1);
+        self.0
+            .1
+            .store(v.len(), std::sync::atomic::Ordering::Release);
+    }
+}
+
+impl Program {
+    /// The functions optimised since the first `*seen` of them (and `*seen` moved past them): a
+    /// function is listed before its optimised code is handed out, so one whose code a thread
+    /// was given is listed by the time that thread looks.
+    pub fn newly_optimised(&self, seen: &mut usize) -> Vec<FuncId> {
+        if self.optimised.1.load(std::sync::atomic::Ordering::Acquire) == *seen {
+            return Vec::new();
+        }
+        let v = (self.optimised.0)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let new = v[*seen..].to_vec();
+        *seen = v.len();
+        new
+    }
 }
 
 /// A counter that a clone of its function starts again.

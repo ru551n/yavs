@@ -15470,3 +15470,47 @@ Written by Claude. The drive side of Microwatt, measured first with lab counters
 - **Test.** `clift_parity` `reals_to_integers_in_compiled_code_match_the_interpreter`: halves of both signs, the
   largest fraction under a half, both ends of `integer`, a subtype of a range, in a function and the process, and
   the four ways out of range; `perf.rs` `real_int` bounds `cb_xstep` at 0 and `cb_step` at 4.
+
+## `--tier=auto`: who calls whom, without optimising the whole program (yavs-rt `auto.rs` `Worker::graph`, `prefetch`, `profile.rs` format 5, yavs-ir `Program::newly_optimised`, perf/b4-callersmap-2, 2026-11-11, agent; landing is the maintainer's)
+
+- **Finding** (agent). The count rule's map of callers (`entered_from_code`, `unlocked`) was built at its first ask by
+  reading `Program::func` of every function, and `func` optimises a function the first time it is asked for. So the
+  first subprogram asked past the gate optimised the whole program, run or not: 210 to 1 380 functions a run on the
+  measured designs, of which 5 to 160 ran later (`uvvm_func_cov`: 311 optimised, 87 ran; `neorv32_dual_full`: 1 334
+  and 6; GRLIB 661 and 22). It ran on the compile thread beside the simulation, so it also optimised ahead the
+  functions the simulation called later: taking it away alone (perf/b4-callersmap, held) cut all-thread instructions
+  but added 2 to 5.5 percent on the simulation thread of `uvvm_func_cov`, `osvvm_axi4_random` and
+  `uvvm_axistream_vvc`, which then optimised those functions itself. The map cannot come from the lowered code
+  instead: inlining adds the callees of an inlined body and removes the inlined call, and copies of subprograms
+  replace the callee, so lowered and optimised calls differ on every measured design (GRLIB: 71 edges only in the
+  lowered code, 4 only in the optimised).
+- **Change** (agent). `Program` lists each function it optimises (`optimised`, a mutex-guarded list and its length),
+  before the optimised code can be handed out, so a thread that was given the code finds the function listed. The
+  policy's `graph` takes in the calls of the functions listed since its last ask, in both directions, and replaces
+  the build at the first ask and `see_copies`. Every caller the policy asks about has compiled code (made from the
+  optimised code), was asked for by the count (`held`) or was seen running (`time`): each was optimised, so the
+  answers are those of a map of the whole program. The run profile (format 5) lists the functions a run needed
+  (ran or compiled; not copies, whose ids change), in the order they were optimised; the compile thread of the next
+  run optimises them at its start, beside the simulation (`Worker::prefetch`), and nothing else. A run without that
+  list (the first, or after a profile of format 4) optimises the whole program at the first question about callers,
+  exactly as before (`force_all`). Counter `tier_copy_calls` now counts every call of a copy taken in.
+- **Check** (agent). `YAVS_AUTO_CHECK_CALLS` (builds with debug assertions) compares every answer of `entered_from_code`
+  and of `unlocked`'s caller count, and the callees of each function `unlocked` walks, with a walk over the code of
+  every function, and stops at a caller the policy asks about that was never optimised.
+- **Measured** (agent, exact counts, plain bench builds of fc7f12cf without and with the change, from pristine, runs 1
+  to 4; median of 4 to 12 reps, a second copy of the base binary for the A/A). Main thread under `--tier-compile=wait`:
+  `uvvm_func_cov` run 2 0.937, everything else level (`osvvm_axi4_random`, GRLIB 0.991 to 1.001; `neorv32_dual_full`
+  0.998 to 1.014 with the ranges of the two overlapping; `uvvm_axistream_vvc` and `uvvm_sb_slv` by their bimodal modes,
+  12 reps); under `background` 0.89 (`uvvm_func_cov`
+  run 2) to level. All threads: `uvvm_func_cov` run 2 0.889, `osvvm_axi4_random` runs 2 and 3 0.985 and 0.840,
+  `neorv32_dual_full` runs 2 to 4 0.97, GRLIB runs 1 and 2 0.994, the small tests +0.01 to +0.05 percent (the
+  profile's longer text), Microwatt level. The first run decides and optimises as before by construction.
+  Under `YAVS_AUTO_COUNT=1 YAVS_AUTO_GATE=0 YAVS_AUTO_SYNC=1` the compile decisions are identical on every design where
+  that mode repeats itself (`hdlm_fifo_sync`, `vunit_logging`, `olo_axi_master_full`, `neorv32_dual_full`,
+  `uvvm_axistream_vvc`, runs 1 to 3). The check above was clean over the difftest corpus and 13 realbench designs, runs
+  1 to 4, with the run-2 prefetch in use.
+- **Not changed here** (agent; for the maintainer). The stage cache stores a closure's lowering, and the optimised
+  copies with it, only from its second run ("The image of a closure is made on its second analysis"), so run 2 optimises everything run 1 did again and
+  run 3 is the first served: on `uvvm_func_cov` run 2 takes 5.13 G instructions, run 3 2.25 G (`osvvm_axi4_random`
+  8.59 and 7.38, `neorv32_dual_full` 19.0 and 14.9). Storing in run 1 would be the larger lever for run 2, at the cost
+  that decision avoids for a design that runs once.

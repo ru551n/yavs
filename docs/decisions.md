@@ -15108,6 +15108,12 @@ Written by Claude. Landed with wave 3 batch 2 (maintainer's ruling of 2026-11-09
   allocates and frees, a 2-D array, a protected method; arguments differ every round so the memo of pure calls does not
   answer them). Work counter `lean_late` (debug and `op-census` builds): the calls that took the new path; floor on the
   perf design `lean_late` (`crates/yavs/tests/perf.rs`).
+- **A register defined once by the `AddrOf` of a parameter slot holds the address in every block (#1133, agent,
+  2026-11-11).** The frame starts with it (`Pre::preloaded`), and the optimiser lets sibling blocks share one such
+  definition, so a block the definition does not reach may still read the slot through it. `lean_params` first followed
+  the address only from its definition, missed the descriptor read in the other branch and skipped those slots: the call
+  read the bounds an earlier call left there (a check's message lost its context after the 128th call of the helper). The
+  flow now starts at the entry with every such register. Corpus `process/lean_param_addr_join`.
 
 ## `--tier=auto`: the sampler names the caller after a resumed callee returns (yavs-interp `exec.rs`, 2026-11-10)
 

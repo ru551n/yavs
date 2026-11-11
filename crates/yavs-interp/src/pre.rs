@@ -1580,8 +1580,32 @@ fn lean_params(f: &Func, prog: &Program, code: &Code, pro: &[u32]) -> Option<Box
     // Where each block starts: the registers holding the address of a parameter's slot there,
     // as `ParamAddrs::step` leaves them (`None`: not reached yet).
     let blocks = f.blocks.values();
+    // A register defined once by the `AddrOf` of a slot holds it from the frame's start
+    // (`Pre::preloaded`), on paths that do not pass the definition too (#1133).
+    let mut defs = vec![0u8; f.reg_ty.len()];
+    for i in &f.code {
+        i.visit(&mut |r, role, _| {
+            if role == Role::Def
+                && let Some(d) = defs.get_mut(r.0 as usize)
+            {
+                *d = d.saturating_add(1);
+            }
+        });
+    }
+    let start: Vec<(u32, u32)> = (f.code.iter())
+        .filter_map(|i| match *i {
+            Inst::AddrOf {
+                dst,
+                space: AddrSpace::Frame,
+                off,
+            } if f.params.iter().any(|p| p.slot == off) && defs.get(dst.0 as usize) == Some(&1) => {
+                Some((dst.0, off))
+            }
+            _ => None,
+        })
+        .collect();
     let mut entry: Vec<Option<Vec<(u32, u32)>>> = vec![None; blocks.len()];
-    *entry.first_mut()? = Some(Vec::new());
+    *entry.first_mut()? = Some(start);
     let mut work = vec![0usize];
     while let Some(b) = work.pop() {
         let mut st = entry[b].clone()?;
@@ -6522,6 +6546,78 @@ mod tests {
                 DescUse::Copy => assert_eq!(keep, None),
             }
         }
+    }
+
+    /// A register defined once by the `AddrOf` of a descriptor holds it from the frame's start:
+    /// its `DopeLen` in the branch the definition is not in reads the slots too, which a lean
+    /// call by the wider rule must write (#1133: they kept an earlier call's bounds).
+    #[test]
+    fn lean_keeps_a_descriptor_read_where_its_address_is_not_defined() {
+        let mut pb = ProgramBuilder::new();
+        let chr = pb.ty(yavs_ir::Ty::Enum {
+            lits: vec!["'a'".into()],
+            logic: None,
+        });
+        let string = pb.ty(yavs_ir::Ty::Array {
+            elem: chr,
+            elem_desc: None,
+            dims: 1,
+        });
+        let id = pb.declare("pick", FuncKind::Function, None);
+        let mut fb = pb.define(id);
+        let s = fb.param("s", Width::B8, ParamClass::Value, Mode::In, None);
+        for w in ["left", "right", "dir"] {
+            fb.param(
+                &format!("s'{w}"),
+                Width::B8,
+                ParamClass::Value,
+                Mode::In,
+                None,
+            );
+        }
+        fb.param_flat(s, string);
+        let k = fb.param("k", Width::B8, ParamClass::Value, Mode::In, None);
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let at = fb.addr(AddrSpace::Frame, k);
+        let c = fb.reg(RegTy::I64);
+        fb.emit(Inst::Load {
+            dst: c,
+            addr: at,
+            w: Width::B8,
+        });
+        let (then, other) = (fb.block(), fb.block());
+        fb.emit(Inst::CondBr {
+            c,
+            t: then,
+            f: other,
+        });
+        // `s'left` in one branch, the length through the same address in the other.
+        fb.at(then);
+        let d = fb.addr(AddrSpace::Frame, s + 8);
+        let left = fb.reg(RegTy::I64);
+        fb.emit(Inst::Load {
+            dst: left,
+            addr: d,
+            w: Width::B8,
+        });
+        fb.emit(Inst::Ret { v: Some(left) });
+        fb.at(other);
+        let len = fb.reg(RegTy::I64);
+        fb.emit(Inst::DopeLen {
+            dst: len,
+            dope: d,
+            dim: 0,
+        });
+        fb.emit(Inst::Ret { v: Some(len) });
+        fb.finish();
+        let prog = pb.finish().unwrap();
+        let f = prog.func(id).unwrap();
+        let pre = Pre::new(f, &prog, false);
+        assert!(!pre.lean);
+        for _ in 1..LATE_AFTER {
+            assert_eq!(pre.late(f, &prog), None);
+        }
+        assert_eq!(pre.late(f, &prog), Some(&[1, 2, 3][..]));
     }
 
     /// The contract tiers rely on (#566): the register holding a lean parameter's slot address

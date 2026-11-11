@@ -386,6 +386,7 @@ const PASS: &[&str] = &[
     "process/call_conversions_unconstrained",
     "process/case_if",
     "process/lean_array_params",
+    "process/lean_param_addr_join",
     "process/no_wait_infinite",
     "process/subtype_bounds_once",
     "process/wait_in_sensitivity_proc",

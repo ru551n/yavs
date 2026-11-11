@@ -172,13 +172,15 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
     #[cfg(feature = "clift")]
     rows.push(("clift_key_reused", yavs_clift::key_reused() as u64));
     // Sites compiled code computes in place instead of calling the host: `is_x` or a reduction
-    // of a vector, a `Cat` of bytes, a `LayoutOf` from the layout memo, a real to an integer.
+    // of a vector, a `Cat` of bytes, a `LayoutOf` from the layout memo, a real to an integer, an
+    // `ieee` op of two blocks.
     #[cfg(feature = "clift")]
     for (name, v) in [
         "clift_scan_sites",
         "clift_cat_sites",
         "clift_layout_sites",
         "clift_real_int_sites",
+        "clift_wide_sites",
     ]
     .into_iter()
     .zip(yavs_clift::inline_sites())

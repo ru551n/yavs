@@ -1610,6 +1610,19 @@ mod clift {
         "s=",
         [("cb_xstep", Max(0)), ("cb_step", Max(4))]
     );
+    // A product of 65 by 65 elements, a sum of 128, reductions and concatenations of 65, all in
+    // place: no native call and no step of a `Cat` (the callbacks left are the waits and the
+    // report).
+    clift_case!(
+        wide_ieee,
+        "wide_ieee",
+        "n=",
+        [
+            ("cb_native", Max(2)),
+            ("cb_signal", Max(207)),
+            ("clift_wide_sites", Min(4))
+        ]
+    );
     // A by-reference address of the enclosing frame in frame-mode code: no callback per access.
     clift_case!(
         nested_byref,

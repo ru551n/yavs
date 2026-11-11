@@ -11054,7 +11054,7 @@ A zero-delay drive at a constant reference in a process copy compares with the s
 
 ## Cranelift: compiled code found before the body is made
 
-A warm `--tier=auto` run on Cranelift finds a function's code by a key made before the body is lowered (`yavs-clift` `cache.rs`, `Jit::link`; `docs/decisions.md` "Cranelift: compiled code found before the body is made"): the third run of a design is the first that links so, the second writes the entries. `YAVS_CLIFT_PREKEY_CHECK`, always on in debug builds, lowers anyway and aborts on a difference. A program with no identity (coverage, constant pools too large for the stage cache, such as `hdlm_lfsr`) keeps the key over the body and gains nothing. See `docs/decisions.md` for what the key holds and the mutation test.
+A warm `--tier=auto` run on Cranelift finds a function's code by a key made before the body is lowered (`yavs-clift` `cache.rs`, `Jit::link`; `docs/decisions.md` "Cranelift: compiled code found before the body is made"): the second run of a design is the first that links so, the first writes the entries (a closure's first run names its program as the second stores it). `YAVS_CLIFT_PREKEY_CHECK`, always on in debug builds, lowers anyway and aborts on a difference. A program with no identity (coverage, constant pools too large for the stage cache, such as `hdlm_lfsr`) keeps the key over the body and gains nothing. See `docs/decisions.md` for what the key holds and the mutation test.
 
 Instructions in G, new against 176f5ec7, bench builds, `--threads=1`, all threads / main thread, median of 3 rounds unless said. Host loaded: no cycle figures.
 

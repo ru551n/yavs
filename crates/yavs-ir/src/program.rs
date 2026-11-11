@@ -64,6 +64,11 @@ pub struct Program {
     /// Compiled code is found by it before it is generated (the removed yavs-llvm `objcache`, #785).
     #[serde(skip)]
     pub identity: Option<String>,
+    /// Whether the stage cache holds this program (this run read or stored it), so that an earlier
+    /// run wrote the pre-keys of what it compiled: a function of the cache is then priced as a
+    /// link, not a hit.
+    #[serde(skip)]
+    pub named_before: bool,
 }
 
 /// An optimised copy of a function, serialised (see [`Program::export_optimized`]).

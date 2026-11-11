@@ -168,6 +168,8 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
     {
         rows.push((name, v as u64));
     }
+    #[cfg(feature = "clift")]
+    rows.push(("clift_pre_unstored", yavs_clift::pre_unstored() as u64));
     for (name, v) in rows {
         eprintln!("counters: {name}={v}");
     }

@@ -127,7 +127,8 @@ pub trait StageCache: Send + Sync + std::fmt::Debug {
     fn note(&self, _msg: &str) {}
 
     /// A name of the entry `get` and `put` use for these arguments, the same in every run that
-    /// would read it (`None`: no such entry is kept).
+    /// would read it, also in a run before the closure keeps entries (`None`: no such entry is
+    /// kept).
     fn identity(&self, _extent: &[usize], _kind: &str, _part: &[u8]) -> Option<String> {
         None
     }

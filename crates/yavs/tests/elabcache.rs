@@ -239,7 +239,8 @@ fn the_first_hit_reads_the_program_the_storing_run_left() {
     }
 }
 
-/// The same with compiled code: the third run links every body the second compiled.
+/// The same with compiled code: later runs link every body the first compiled (it names its
+/// program as the second stores it).
 #[cfg(feature = "clift")]
 #[test]
 fn the_first_hit_compiles_nothing() {
@@ -277,7 +278,8 @@ fn the_first_hit_compiles_nothing() {
             .count()
     };
     assert!(runs[2].noted("hit ecall"), "{}", runs[2].stderr);
-    assert!(lowered(&runs[1]) > 0, "{}", runs[1].stderr);
+    assert!(lowered(&runs[0]) > 0, "{}", runs[0].stderr);
+    assert_eq!(lowered(&runs[1]), 0, "{}", runs[1].stderr);
     assert_eq!(lowered(&runs[2]), 0, "{}", runs[2].stderr);
     for o in &runs {
         assert_eq!(o.visible(), runs[0].visible(), "{}", o.stderr);

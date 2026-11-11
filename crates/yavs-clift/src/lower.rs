@@ -1333,6 +1333,9 @@ impl Jit {
         let func = prog.code_key_bytes(f)?;
         let mut facts = HashBytes(Vec::new());
         prog.facts(id).hash(&mut facts);
+        if !prog.named_before {
+            crate::cache::note_pre_unstored();
+        }
         Some(crate::cache::pre_key(&PreInputs {
             fingerprint: &yavs_ir::opt::fingerprint(),
             target,

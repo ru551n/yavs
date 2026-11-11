@@ -2369,7 +2369,7 @@ impl Worker {
             return 0;
         };
         if cached {
-            let link = self.counted && self.prog.identity.is_some();
+            let link = self.counted && self.prog.named_before;
             if link { FIRST_LINK } else { FIRST_HIT }.price(f.code.len())
         } else {
             (FIRST_US_PER_INSTR * f.code.len() as f64) as u64

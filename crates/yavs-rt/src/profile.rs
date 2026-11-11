@@ -36,8 +36,9 @@ pub(crate) const GAIN_PERCENT: u64 = 3;
 /// The functions `Worker::unrepaid` held kept (the most seen first).
 pub(crate) const HELD_MAX: usize = 1024;
 
-/// Version 4 adds the `held` lines; a profile of an earlier version is no profile (`parse`).
-const HEAD: &str = "yavs-auto-profile 4";
+/// Version 4 adds the `held` lines, 5 the `ran` lines; a profile of an earlier version is no
+/// profile (`parse`).
+const HEAD: &str = "yavs-auto-profile 5";
 
 /// What the earlier runs of a program left.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -55,6 +56,9 @@ pub(crate) struct Profile {
     /// them (`Worker::unrepaid`), and that stayed uncompiled: id, microseconds the runs saw them
     /// interpreted (summed over the runs they were held in), and in how many runs in a row.
     pub held: Vec<(u32, u64, u32)>,
+    /// The functions the last run needed (ran or compiled), in the order they were first
+    /// optimised: the next run optimises them ahead (`Worker::prefetch`).
+    pub ran: Vec<u32>,
 }
 
 impl Profile {
@@ -73,6 +77,10 @@ impl Profile {
         for (id, us, runs) in &self.held {
             s += &format!("held {id} {us} {runs}\n");
         }
+        for id in &self.ran {
+            use std::fmt::Write;
+            let _ = writeln!(s, "ran {id}");
+        }
         s
     }
 
@@ -89,6 +97,7 @@ impl Profile {
             .iter()
             .filter_map(|&(id, us, runs)| Some((f(id)?, us, runs)))
             .collect();
+        self.ran = self.ran.iter().filter_map(|&id| f(id)).collect();
     }
 
     /// The profile in `text`, `None` for anything this version did not write.
@@ -113,6 +122,7 @@ impl Profile {
                     p.hot.push((id, us, ok));
                 }
                 "lost" => p.lost.push(u32::try_from(num(&mut w)?).ok()?),
+                "ran" => p.ran.push(u32::try_from(num(&mut w)?).ok()?),
                 "held" => {
                     let (id, us) = (u32::try_from(num(&mut w)?).ok()?, num(&mut w)?);
                     p.held.push((id, us, u32::try_from(num(&mut w)?).ok()?));
@@ -143,6 +153,8 @@ pub(crate) struct Snapshot {
     /// The functions `Worker::unrepaid` held and that stay uncompiled, with the microseconds they
     /// were seen interpreted.
     pub held: Vec<(u32, u64)>,
+    /// The functions this run needed (`Profile::ran`).
+    pub ran: Vec<u32>,
 }
 
 /// The profile after a run that took `cpu` simulation CPU microseconds, from the one before it. The
@@ -208,6 +220,7 @@ pub(crate) fn next(earlier: &Profile, snap: &Snapshot, cpu: u64) -> Profile {
         .collect();
     p.held.sort_by_key(|h| (std::cmp::Reverse(h.1), h.0));
     p.held.truncate(HELD_MAX);
+    p.ran = snap.ran.clone();
     p.lost.drain(..p.lost.len().saturating_sub(LOST_MAX));
     p
 }
@@ -228,6 +241,7 @@ mod tests {
             hot: vec![(12, 900_000, true), (7, 40_000, false)],
             lost: vec![3, 9],
             held: vec![(4, 3_000, 2)],
+            ran: vec![8, 2, 5],
         };
         assert_eq!(Profile::parse(&p.render()), Some(p.clone()));
         assert_eq!(
@@ -240,6 +254,8 @@ mod tests {
             // A profile of version 3 (no `held` lines) is a miss, not read as this one.
             "yavs-auto-profile 3\nbase 5\n",
             "yavs-auto-profile 4\nheld 1 2\n",
+            // Version 4 (no `ran` lines) is a miss too.
+            "yavs-auto-profile 4\nbase 5\n",
             "yavs-auto-profile 4\nheld 1 2 3 4\n",
             "yavs-auto-profile 4\nhot 1 2\n",
             "yavs-auto-profile 4\nhot 1 2 x\n",
@@ -261,6 +277,7 @@ mod tests {
             lost: lost.to_vec(),
             early: early.to_vec(),
             held: Vec::new(),
+            ran: Vec::new(),
         }
     }
 

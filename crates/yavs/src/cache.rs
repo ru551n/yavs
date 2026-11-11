@@ -638,8 +638,10 @@ pub fn analyze_closure(
     if !store.noted(KIND, &k) {
         store.note(KIND, &k);
         debug(format!("note {}", k.hex()));
+        // Only a run whose note went in is a first run: a read-only library would be one forever.
+        let first = store.noted(KIND, &k);
         return (
-            with_stages(db, store, &k, (false, true), levels, &opts, &verified),
+            with_stages(db, store, &k, (false, first), levels, &opts, &verified),
             r,
         );
     }

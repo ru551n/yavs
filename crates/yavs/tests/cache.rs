@@ -315,6 +315,8 @@ fn read_only_library_is_not_cached_into() {
         return; // running as a user the mode does not bind
     }
     assert_eq!(visible(&plain), visible(&r));
+    // A run that cannot leave its note is no first run: it serialises no lowering to store.
+    assert!(!note(&r, "first run") && !note(&r, "store ir"), "{r:?}");
     assert_eq!(
         before,
         tree(&work),

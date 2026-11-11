@@ -1579,6 +1579,17 @@ mod clift {
         };
     }
 
+    // A string concatenation in a native frame is one call of `yavs_rt_cat`, not a step.
+    clift_case!(
+        cat_bytes,
+        "cat_bytes",
+        "s=",
+        [
+            ("cb_xstep", Max(0)),
+            ("cb_cat", Min(194)),
+            ("cb_cat", Max(206))
+        ]
+    );
     // A by-reference address of the enclosing frame in frame-mode code: no callback per access.
     clift_case!(
         nested_byref,

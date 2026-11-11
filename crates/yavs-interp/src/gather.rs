@@ -1678,7 +1678,8 @@ impl Machine {
                 if matches!(b.cmp, Cmp::Count(_) | Cmp::Asked(_)) {
                     b.cmp = cmp_step(std::mem::replace(&mut b.cmp, Cmp::Off), b, c, ds);
                 } else if let Cmp::Ready(r) = &b.cmp
-                    && c.drive_clean(&r.drivers)
+                    && (matches!(r.inline, Inline::Bit(bit, _) if c.plan_open(bit))
+                        || c.drive_clean(&r.drivers))
                 {
                     cmp = c.image(r.id).map(|i| (&**r, i));
                 }

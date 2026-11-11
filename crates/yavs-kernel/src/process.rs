@@ -1609,6 +1609,13 @@ impl Ctx<'_> {
         })
     }
 
+    /// Whether `bit` of the plan gate (`Ctx::plan_gate`) is open: then `drive_clean` holds for the
+    /// drivers of its plan, since everything that makes it false takes the bit.
+    #[inline(always)]
+    pub fn plan_open(&self, bit: u64) -> bool {
+        self.st.gate[1].load(std::sync::atomic::Ordering::Relaxed) & bit != 0
+    }
+
     /// Count the leaves a compare spared a whole record scatter (`Stats::scatter_spared`).
     #[inline(always)]
     pub fn note_spared(&mut self, leaves: u32) {

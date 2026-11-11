@@ -20,7 +20,7 @@ VUNIT_SIMULATOR=yavs python run.py
 
 The [guide](https://yavs.readthedocs.io/en/latest/vunit.html) goes from installing to running, debugging and
 coverage, and the [debugger tutorial](https://yavs.readthedocs.io/en/latest/debugger-tutorial.html) debugs a failing test with `--yavs-debug`, `--yavs-surfer` and `--yavs-interactive`. `yavs` is found on `PATH`, or in the directory named by `VUNIT_YAVS_PATH`. It needs VUnit 5.0.0.dev16
-or later (`pip install vunit-yavs` installs it, a pre-release) and yavs 0.19.0 or later.
+or later (`pip install vunit-yavs` installs it, a pre-release) and yavs 0.19.1 or later.
 
 ## Options
 

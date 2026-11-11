@@ -2023,7 +2023,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "yavs"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "cc",
  "clap",
@@ -2053,7 +2053,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-cache"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "memmap2",
  "sha2 0.11.1",
@@ -2063,7 +2063,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-clift"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -2082,7 +2082,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-cov"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "yavs-diag",
  "yavs-elab",
@@ -2094,7 +2094,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-dap"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "serde_json",
  "yavs-diag",
@@ -2111,7 +2111,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-diag"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "annotate-snippets",
  "postcard",
@@ -2124,7 +2124,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-elab"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "postcard",
  "serde",
@@ -2145,14 +2145,14 @@ dependencies = [
 
 [[package]]
 name = "yavs-ffi"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "yavs-interp"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "postcard",
  "serde",
@@ -2166,7 +2166,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-ir"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "postcard",
  "serde",
@@ -2177,7 +2177,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-kernel"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "rayon",
  "serde",
@@ -2189,7 +2189,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-lib"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "serde",
  "sha2 0.11.1",
@@ -2200,7 +2200,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-lint"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "regex",
  "serde_json",
@@ -2211,7 +2211,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-logic"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "criterion",
  "proptest",
@@ -2219,7 +2219,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-lower"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "postcard",
  "rustc-hash",
@@ -2238,11 +2238,11 @@ dependencies = [
 
 [[package]]
 name = "yavs-prefetch"
-version = "0.19.0"
+version = "0.19.1"
 
 [[package]]
 name = "yavs-rt"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "tempfile",
  "yavs-cache",
@@ -2254,7 +2254,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-sem"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "postcard",
  "rustc-hash",
@@ -2271,7 +2271,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-std"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "jiff",
  "proptest",
@@ -2280,7 +2280,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-syntax"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "postcard",
  "rustc-hash",
@@ -2291,7 +2291,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-vhpi"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "cc",
  "libloading",
@@ -2307,7 +2307,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-wave"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "ctrlc",
  "fst-reader",

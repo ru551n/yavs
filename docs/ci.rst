@@ -51,7 +51,7 @@ version you asked for and puts it on ``PATH``:
 
     - uses: ru551n/yavs-action@v1
       with:
-        version: 0.19.0
+        version: 0.19.1
 
 Pin the version: it gives the same simulator on every run and keeps your cache valid. Without ``version`` you
 get the newest stable release, which can change your results on the day a release comes out. An unknown
@@ -64,7 +64,7 @@ the fix. The action's page has the outputs and the rest. The x86_64 archives nee
 
     - uses: ru551n/yavs-action@v1
       with:
-        version: 0.19.0
+        version: 0.19.1
         variant: compat
 
 ``variant`` is ``default`` or ``compat``; any other value fails the step. ``compat`` needs yavs 0.14.0 or
@@ -75,7 +75,7 @@ On other CI systems, download the archive with plain commands:
 
 .. code-block:: bash
 
-    V=0.19.0
+    V=0.19.1
     A=yavs-$V-x86_64-unknown-linux-gnu
     curl -fsSLO https://github.com/ru551n/yavs/releases/download/v$V/$A.tar.gz
     curl -fsSLO https://github.com/ru551n/yavs/releases/download/v$V/SHA256SUMS
@@ -171,7 +171,7 @@ This is the walkthrough project (:doc:`project-walkthrough`) as a job. It needs 
       simulate:
         runs-on: ubuntu-latest
         env:
-          YAVS_VERSION: 0.19.0
+          YAVS_VERSION: 0.19.1
           YAVS_STD_CACHE: ${{ github.workspace }}/.yavs-std
         steps:
           - uses: actions/checkout@v4

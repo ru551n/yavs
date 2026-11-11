@@ -94,6 +94,9 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
     if let Some(n) = yavs_interp::booked_returns() {
         rows.push(("booked_returns", n));
     }
+    if let Some(n) = yavs_interp::tier_skips() {
+        rows.push(("tier_skips", n));
+    }
     if let Some(rt) = rt {
         let c = rt.prog.copy_stats();
         rows.push(("spec_reserved", c.reserved as u64));

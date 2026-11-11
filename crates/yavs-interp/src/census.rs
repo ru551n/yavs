@@ -80,6 +80,24 @@ pub fn booked_returns() -> Option<u64> {
     None
 }
 
+#[cfg(any(debug_assertions, feature = "op-census"))]
+static TIER_SKIPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// An entry into compiled code `Machine::tier_go` did not make: the op is no entry of it.
+#[inline(always)]
+pub(crate) fn tier_skip() {
+    #[cfg(any(debug_assertions, feature = "op-census"))]
+    TIER_SKIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Those entries so far (the work counter `tier_skips`); `None` as `ops_executed`.
+pub fn tier_skips() -> Option<u64> {
+    #[cfg(any(debug_assertions, feature = "op-census"))]
+    return Some(TIER_SKIPS.load(std::sync::atomic::Ordering::Relaxed));
+    #[cfg(not(any(debug_assertions, feature = "op-census")))]
+    None
+}
+
 static IEEE_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 static IEEE: std::sync::Mutex<Option<std::collections::HashMap<String, u64>>> =
     std::sync::Mutex::new(None);

@@ -1055,6 +1055,63 @@ fn layouts_from_run_time_descriptors_in_compiled_code_match_the_interpreter() {
     assert!(want.out.contains("s="), "{want:?}");
 }
 
+/// Reals rounded to integers by compiled code (`Gen::f_to_i`): halves away from zero, the largest
+/// fraction under a half, both ends of `integer`, a range-checked subtype, in a function (native
+/// frame) and in a process (frame mode); and each way out of range (the interpreter's error).
+const REAL_INT: &str = r#"entity r is generic (BAD : integer := 0); end;
+architecture a of r is
+  subtype small is integer range -50 to 50;
+  function r(x : real) return integer is
+  begin
+    return integer(x);
+  end function;
+  function rs(x : real) return small is
+    variable s : small;
+  begin
+    s := small(x);
+    return s;
+  end function;
+begin
+  process
+    constant xs : real_vector := (0.0, -0.0, 0.5, -0.5, 1.5, 2.5, -2.5, 0.49999999999999994,
+                                  -0.49999999999999994, 2147483647.4, -2147483648.4,
+                                  1048575.5, -1048576.5, 49.5, -49.5, 1.0e-300, 7.25, -7.75);
+    variable s, k : integer := 0;
+  begin
+    for i in xs'range loop
+      s := r(xs(i));
+      report integer'image(s);
+      if abs xs(i) < 50.0 then
+        k := k + rs(xs(i)) + integer(xs(i) * 3.0);
+      end if;
+      wait for 1 ns;
+    end loop;
+    report "k=" & integer'image(k);
+    if BAD = 1 then
+      report integer'image(r(1.0e300));
+    elsif BAD = 2 then
+      report integer'image(rs(50.5));
+    elsif BAD = 3 then
+      k := r(-2147483648.5);
+    elsif BAD = 4 then
+      k := r(2147483647.5);
+    end if;
+    wait;
+  end process;
+end;
+"#;
+#[test]
+fn reals_to_integers_in_compiled_code_match_the_interpreter() {
+    let dir = design("clift_real_int", REAL_INT);
+    let (want, _) = parity(&dir, "r", &[]);
+    assert!(want.out.contains("k=5"), "{want:?}");
+    for bad in 1..=4 {
+        let g = format!("-gBAD={bad}");
+        let (want, _) = parity(&dir, "r", &[&g]);
+        assert!(want.err.contains("outside of"), "{bad}: {want:?}");
+    }
+}
+
 /// Vectors of every length class read from signals in a clocked process, among them the ones
 /// whose last group of eight codes is partly past the signal (1, 4, 9, 12 elements) and the
 /// ones that fill their plane block (64) or need two (65).

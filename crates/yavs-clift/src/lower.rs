@@ -2299,6 +2299,8 @@ fn quiet(i: &Inst) -> bool {
                 | Inst::Un { .. }
                 | Inst::FUn { .. }
                 | Inst::IToF { .. }
+                | Inst::FToI { .. }
+                | Inst::FToIRange { .. }
                 | Inst::Cmp { .. }
                 | Inst::FCmp { .. }
                 | Inst::Bool { .. }
@@ -2516,14 +2518,14 @@ enum Op {
 }
 
 /// `YAVS_COUNTERS`: the sites lowered so far of an `is_x` or reduction of a vector computed in
-/// place (`Gen::ieee_native`), of a `Cat` of bytes (`Gen::cat_bytes`) and of a `LayoutOf` from the
-/// layout memo (`Gen::layout_into`).
-static SITES: [std::sync::atomic::AtomicUsize; 3] =
-    [const { std::sync::atomic::AtomicUsize::new(0) }; 3];
+/// place (`Gen::ieee_native`), of a `Cat` of bytes (`Gen::cat_bytes`), of a `LayoutOf` from the
+/// layout memo (`Gen::layout_into`) and of a real rounded to an integer (`Gen::f_to_i`).
+static SITES: [std::sync::atomic::AtomicUsize; 4] =
+    [const { std::sync::atomic::AtomicUsize::new(0) }; 4];
 
-/// `[is_x or reduction of a vector, Cat of bytes, LayoutOf from the memo]` sites lowered so far
-/// (`YAVS_COUNTERS`).
-pub fn inline_sites() -> [usize; 3] {
+/// `[is_x or reduction of a vector, Cat of bytes, LayoutOf from the memo, real to integer]` sites
+/// lowered so far (`YAVS_COUNTERS`).
+pub fn inline_sites() -> [usize; 4] {
     SITES
         .each_ref()
         .map(|a| a.load(std::sync::atomic::Ordering::Relaxed))
@@ -3549,6 +3551,18 @@ fn gen_func(
                 let x = g.ld(src);
                 let v = g.b.ins().fcvt_from_sint(F64, x);
                 g.stf(dst, v);
+            }
+            Inst::FToI { dst, src } => {
+                let v = g.f_to_i(src, pc);
+                g.st(dst, v);
+            }
+            Inst::FToIRange {
+                dst, src, lo, hi, ..
+            } => {
+                let v = g.f_to_i(src, pc);
+                let (l, h) = (g.ld(lo), g.ld(hi));
+                g.range_exit(v, l, h, pc);
+                g.st(dst, v);
             }
             Inst::Cmp { op, dst, a, b } => {
                 let cc = match op {
@@ -6384,6 +6398,35 @@ impl Gen<'_> {
         self.b.switch_to_block(out);
         self.leave_at(pc);
         self.b.switch_to_block(cont);
+    }
+
+    /// The real in `src` rounded to an integer as `arith::real_to_int` does (half away from
+    /// zero); one that does not fit an `i64` (or a NaN) leaves at `pc` for the interpreter's error.
+    fn f_to_i(&mut self, src: Reg, pc: u32) -> Value {
+        note_site(3);
+        let x = self.ldf(src);
+        // `x - trunc(x)` is exact, so a fraction of at least one half rounds away.
+        let t = self.b.ins().trunc(x);
+        let d = self.b.ins().fsub(x, t);
+        let d = self.b.ins().fabs(d);
+        let half = self.b.ins().f64const(0.5);
+        let away = self.b.ins().fcmp(FloatCC::GreaterThanOrEqual, d, half);
+        let one = self.b.ins().f64const(1.0);
+        let one = self.b.ins().fcopysign(one, x);
+        let up = self.b.ins().fadd(t, one);
+        let r = self.b.ins().select(away, up, t);
+        let (lo, hi) = (
+            self.b.ins().f64const(-9_223_372_036_854_775_808.0),
+            self.b.ins().f64const(9_223_372_036_854_775_808.0),
+        );
+        let a = self.b.ins().fcmp(FloatCC::UnorderedOrLessThan, r, lo);
+        let b = self
+            .b
+            .ins()
+            .fcmp(FloatCC::UnorderedOrGreaterThanOrEqual, r, hi);
+        let bad = self.b.ins().bor(a, b);
+        self.exit_if(bad, pc);
+        self.b.ins().fcvt_to_sint_sat(I64, r)
     }
 
     fn range_exit(&mut self, x: Value, lo: Value, hi: Value, pc: u32) {

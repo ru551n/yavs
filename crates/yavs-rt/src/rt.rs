@@ -3464,7 +3464,12 @@ pub fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
             None => vec![Reg(u32::MAX)],
         },
         Inst::Const { dst, .. } | Inst::ConstF { dst, .. } => vec![dst],
-        Inst::Move { dst, src } | Inst::IToF { dst, src } => vec![dst, src],
+        Inst::Move { dst, src } | Inst::IToF { dst, src } | Inst::FToI { dst, src } => {
+            vec![dst, src]
+        }
+        Inst::FToIRange {
+            dst, src, lo, hi, ..
+        } => vec![dst, src, lo, hi],
         Inst::Select { dst, c, a, b } => vec![dst, c, a, b],
         Inst::CoverIn { dst, acc, src, .. } => vec![dst, acc, src],
         Inst::Bin { dst, a, b, .. }

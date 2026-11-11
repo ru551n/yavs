@@ -1602,6 +1602,14 @@ mod clift {
             ("cb_layout_into", Max(410))
         ]
     );
+    // A real rounded to an integer is computed in compiled code, on a native frame and in frame
+    // mode, not stepped.
+    clift_case!(
+        real_int,
+        "real_int",
+        "s=",
+        [("cb_xstep", Max(0)), ("cb_step", Max(4))]
+    );
     // A by-reference address of the enclosing frame in frame-mode code: no callback per access.
     clift_case!(
         nested_byref,

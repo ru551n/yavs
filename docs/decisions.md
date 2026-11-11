@@ -15437,3 +15437,19 @@ lowering; the five largest functions take 29 percent.
   in the process, at two generic values; `perf.rs` `layout_into` bounds `cb_xstep` at 0 and `cb_layout_into` at 400
   calls. The decline (0) is not reached by any test: no VHDL gives a layout the memo fails on that analysis lets
   through.
+
+## Compiled code: reals rounded to integers in place (yavs-clift `Gen::f_to_i`, perf/b4-layoutof, 2026-11-11)
+
+- **Finding** (agent). `FToI` and `FToIRange` (a real converted to an integer type) had no compiled form: each was a
+  step, on a native frame a `TierHost::native_step` (78 k a run of `uvvm_axistream_vvc`, in `random`; 6.6 k on
+  `osvvm_axi4_random`).
+- **Change** (agent). Compiled code rounds as `arith::real_to_int` does: `trunc`, then away from zero when the
+  dropped fraction (exact, `x - trunc(x)`) is at least one half (not the round-half-to-even of the machine's
+  `nearest`); a result outside `-2^63 .. 2^63` or a NaN leaves at the instruction for the interpreter's error, and
+  `FToIRange` tests the bounds as `Check` does. `inline_regs` lists both, so the policy no longer counts them as ways
+  out. Counter `clift_real_int_sites`.
+- **Measured** (agent; exact counts, forced `--tier=clift --no-cache --threads=1`, against the layout change before
+  it): `uvvm_axistream_vvc` 0.9996, `vunit_logging` 0.9997, the others within 0.01 percent.
+- **Test.** `clift_parity` `reals_to_integers_in_compiled_code_match_the_interpreter`: halves of both signs, the
+  largest fraction under a half, both ends of `integer`, a subtype of a range, in a function and the process, and
+  the four ways out of range; `perf.rs` `real_int` bounds `cb_xstep` at 0 and `cb_step` at 4.

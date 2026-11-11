@@ -171,6 +171,8 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
     // Pre-key entries named by the Cranelift key the compile hashed (no second hash of the body).
     #[cfg(feature = "clift")]
     rows.push(("clift_key_reused", yavs_clift::key_reused() as u64));
+    #[cfg(feature = "clift")]
+    rows.push(("clift_pre_unstored", yavs_clift::pre_unstored() as u64));
     for (name, v) in rows {
         eprintln!("counters: {name}={v}");
     }

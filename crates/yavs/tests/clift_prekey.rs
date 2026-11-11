@@ -116,6 +116,13 @@ struct Run {
 }
 
 impl Run {
+    /// The name the run gave its program (`Program::identity`).
+    fn program(&self) -> Option<&str> {
+        self.stderr
+            .lines()
+            .find_map(|l| l.strip_prefix("debug: cache: program "))
+    }
+
     fn count(&self, what: &str) -> usize {
         let start = format!("debug: cache: clif {what}");
         self.stderr
@@ -129,22 +136,32 @@ struct World {
     dir: common::Tmp,
     work: String,
     tier: &'static str,
+    top: &'static str,
 }
 
 impl World {
     fn new(tag: &str, tier: &'static str) -> World {
         let dir = tempdir(tag);
         let work = format!("work:{}", dir.join("lib").display());
-        let w = World { dir, work, tier };
+        let w = World {
+            dir,
+            work,
+            tier,
+            top: "pk",
+        };
         w.analyze(SRC);
         w
     }
 
     fn analyze(&self, src: &str) {
-        std::fs::write(self.dir.join("pk.vhd"), src).expect("write");
+        self.analyze_as("pk.vhd", src);
+    }
+
+    fn analyze_as(&self, file: &str, src: &str) {
+        std::fs::write(self.dir.join(file), src).expect("write");
         let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
             .current_dir(&self.dir)
-            .args(["analyze", "--work", &self.work, "pk.vhd"])
+            .args(["analyze", "--work", &self.work, file])
             .output()
             .expect("run yavs");
         assert!(o.status.success(), "{o:?}");
@@ -156,7 +173,7 @@ impl World {
         if self.tier == "clift-auto" {
             args.push("--tier-heat=1,0,0");
         }
-        args.extend(["--threads", threads, "--shuffle", "pk"]);
+        args.extend(["--threads", threads, "--shuffle", self.top]);
         let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
             .current_dir(&self.dir)
             .envs([("YAVS_LOG", "debug"), ("YAVS_SPEC_AFTER", "2")])
@@ -171,8 +188,7 @@ impl World {
         }
     }
 
-    /// The first run has no stored program, so no pre-key (the closure's entry comes with its
-    /// second); the second writes the entries.
+    /// Two runs: the first names the program as the second stores it, so both write entries.
     fn warmed(&self, env: &[(&str, &str)]) {
         for _ in 0..2 {
             let r = self.run("1", env);
@@ -219,7 +235,7 @@ fn a_warm_run_lowers_nothing_and_the_check_agrees() {
         let w = World::new(tag, tier);
         let cold = w.run("1", &[NO_CHECK]);
         assert!(cold.ok, "{}", cold.stderr);
-        // (No program identity yet: every function is lowered and nothing is named.)
+        // (Nothing stored yet: every function is lowered.)
         assert!(cold.count("lowered") > 0, "{}", cold.stderr);
         assert_eq!(cold.count("prehit"), 0, "{}", cold.stderr);
         assert!(w.run("1", &[NO_CHECK]).ok);
@@ -236,6 +252,129 @@ fn a_warm_run_lowers_nothing_and_the_check_agrees() {
             assert_eq!(checked.stdout, cold.stdout);
         }
     }
+}
+
+/// A closure's first run stores no program, but names it as the second stores it: the second
+/// links what the first compiled, and the check holds it to what it would make.
+#[test]
+fn the_second_run_links_what_the_first_compiled() {
+    let w = World::new("pk_first", "clift-auto");
+    let first = w.run("1", &[NO_CHECK]);
+    assert!(first.ok, "{}", first.stderr);
+    assert!(first.count("lowered") > 0, "{}", first.stderr);
+    assert!(first.program().is_some(), "{}", first.stderr);
+    let second = w.run("1", &[CHECK]);
+    assert!(second.ok, "{}", second.stderr);
+    assert_eq!(second.program(), first.program());
+    assert!(second.count("prehit") > 0, "{}", second.stderr);
+    assert!(second.count("pre checked") > 0, "{}", second.stderr);
+    assert_eq!(second.stdout, first.stdout);
+}
+
+/// An edit after the first run: the next run names another program and prints what the edit
+/// says. A constant is in no body, so only the name tells the programs apart.
+#[test]
+fn an_edit_after_the_first_run_links_nothing_stale() {
+    let edits = [
+        ("pk_edit_const", &[("TTTT", "UUUU"), ("FFFF", "GGGG")][..]),
+        ("pk_edit_body", &[("(v * 75 + 74)", "(v * 76 + 74)")][..]),
+    ];
+    for (tag, pairs) in edits {
+        let edit = |s: &str| {
+            pairs
+                .iter()
+                .fold(s.to_string(), |s, (a, b)| s.replace(a, b))
+        };
+        let w = World::new(tag, "clift-auto");
+        let first = w.run("1", &[NO_CHECK]);
+        assert!(first.ok, "{tag}: {}", first.stderr);
+        let cold = World::new(&format!("{tag}_cold"), "clift-auto");
+        cold.analyze(&edit(SRC));
+        let want = cold.run("1", &[NO_CHECK]);
+        assert!(want.ok, "{tag}: {}", want.stderr);
+        assert_ne!(want.stdout, first.stdout, "{tag}: the edit shows");
+        w.analyze(&edit(SRC));
+        for _ in 0..2 {
+            let r = w.run("1", &[CHECK]);
+            assert!(r.ok, "{tag}: {}", r.stderr);
+            assert_ne!(r.program(), first.program(), "{tag}");
+            assert_eq!(r.stdout, want.stdout, "{tag}");
+        }
+    }
+}
+
+/// A unit whose entry is stale (its architecture was analysed before the entity its component
+/// binds) is analysed from source in the first run and replayed in the second: the analyses
+/// differ in how they were made, the program and its name do not.
+#[test]
+fn a_unit_analysed_again_in_the_first_run_keeps_the_name() {
+    let mut w = World::new("pk_stale", "clift-auto");
+    w.top = "t";
+    w.analyze_as(
+        "c.vhd",
+        "package c is
+  component inc is
+    port (clk : in bit; n : out integer);
+  end component;
+end;",
+    );
+    w.analyze_as(
+        "t.vhd",
+        "use work.c.all;
+entity t is end;
+architecture a of t is
+  signal clk : bit := '0';
+  signal n : integer := 0;
+begin
+  clk <= not clk after 5 ns when n < 40;
+  u : inc port map (clk, n);
+end;",
+    );
+    w.analyze_as(
+        "s.vhd",
+        "entity inc is
+  port (clk : in bit; n : out integer := 0);
+end;
+architecture a of inc is
+  function step(x : integer) return integer is
+    variable v : integer := x;
+  begin
+    for i in 1 to 3 loop
+      v := (v * 75 + 74) mod 65537;
+    end loop;
+    return v;
+  end;
+begin
+  process (clk)
+    variable acc : integer := 1;
+    variable k : integer := 0;
+  begin
+    if clk = '1' then
+      acc := step(acc);
+      k := k + 1;
+      n <= k;
+      if k = 30 then
+        report integer'image(acc);
+      end if;
+    end if;
+  end process;
+end;",
+    );
+    let first = w.run("1", &[NO_CHECK]);
+    assert!(first.ok, "{}", first.stderr);
+    assert!(
+        first.stderr.contains("units: miss work.t/a"),
+        "{}",
+        first.stderr
+    );
+    assert!(first.stdout.contains("15283"), "{}", first.stdout);
+    let second = w.run("1", &[CHECK]);
+    assert!(second.ok, "{}", second.stderr);
+    assert!(!second.stderr.contains("units: miss"), "{}", second.stderr);
+    assert_eq!(second.program(), first.program());
+    assert!(second.count("prehit") > 0, "{}", second.stderr);
+    assert!(second.count("pre checked") > 0, "{}", second.stderr);
+    assert_eq!(second.stdout, first.stdout);
 }
 
 /// A caller the cache does not have, over a variant it does: the callee's body is made for the
@@ -345,7 +484,8 @@ mod mutations {
         let d = ("YAVS_CLIFT_PREKEY_DROP", drop);
         w.warmed(&[d, NO_CHECK]);
         w.analyze(&SRC.replace(from, to));
-        // (The first run of the new closure has no stored program, so no pre-key.)
+        // (The new closure's program has a name of its own: only with `drop` left out does its
+        // first run find the old program's entries.)
         assert!(w.run("1", &[d, NO_CHECK]).ok);
         caught(&w.run("1", &[d, CHECK]), drop);
         let whole = World::new(&format!("{tag}_whole"), "clift-auto");
@@ -464,7 +604,7 @@ mod mutations {
     fn the_id_of_the_function() {
         let w = World::new("pk_m_id", "clift");
         let d = ("YAVS_CLIFT_PREKEY_DROP", "base,func");
-        assert!(w.run("1", &[d, NO_CHECK]).ok);
+        // (The first run writes entries as it compiles: the second function finds the first's.)
         caught(&w.run("1", &[d, CHECK]), "base");
     }
 
@@ -473,7 +613,7 @@ mod mutations {
     fn frame_mode_or_native() {
         let w = World::new("pk_m_nat", "clift");
         let d = ("YAVS_CLIFT_PREKEY_DROP", "native");
-        assert!(w.run("1", &[d, NO_CHECK]).ok);
+        // (The first run writes entries as it compiles: the second function finds the first's.)
         caught(&w.run("1", &[d, CHECK]), "native");
     }
 }

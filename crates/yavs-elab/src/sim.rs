@@ -171,7 +171,8 @@ impl LoweringKey {
         consts <= LOWERING_MAX_CONSTS
     }
 
-    /// The name of the stored program (`Program::identity`).
+    /// The name of the stored program (`Program::identity`), also in a closure's first run, which
+    /// keeps no entries: the second stores the same program under it.
     fn identity(&self) -> Option<String> {
         self.cache.identity(&self.extent, "ir", &self.part)
     }
@@ -509,7 +510,7 @@ impl Elaborated {
                         program.load_optimized(l.take_optimized());
                     }
                     let learn = match &key {
-                        Some(k) if LoweringKey::fits(&program) => {
+                        Some(k) if k.cache.closure() && LoweringKey::fits(&program) => {
                             yavs_lower::verify_stored(&mut program)?;
                             let stored = k.put(&program, &rest);
                             Some(Learn {
@@ -523,8 +524,18 @@ impl Elaborated {
                     (program, rest, start, learn, lib)
                 }
             };
-        // A program read from or stored to the stage cache is named by its entry (#785).
-        program.identity = learn.as_ref().and_then(|l| l.key.identity());
+        // Named by its stage entry (#785), also in a closure's first run, which stores none: the
+        // second stores the same program under that name and links what the first compiled. Not
+        // a program built on a library prefix's stages, which a cold lowering does not reproduce.
+        program.named_before = learn.is_some();
+        program.identity = match (&learn, &key) {
+            (Some(l), _) => l.key.identity(),
+            (None, Some(k)) if lib.is_none() && LoweringKey::fits(&program) => k.identity(),
+            _ => None,
+        };
+        if let (Some(k), Some(id)) = (&key, &program.identity) {
+            k.cache.note(&format!("program {id}"));
+        }
         let Rest {
             units: arch_units,
             packages: pkg_irs,
@@ -797,10 +808,7 @@ impl Elaborated {
         if session.is_some_and(|s| s.captured) || self.elab_calls.iter().any(|c| c.fill.is_some()) {
             return None;
         }
-        let cache = db
-            .stages()
-            .filter(|c| !opts.any_coverage() && c.closure())?
-            .clone();
+        let cache = db.stages().filter(|_| !opts.any_coverage())?.clone();
         // Everything `lower_cold` hands to the lowerer, in the order it does: the same requests
         // on the same analysis give the same program, ids and all.
         let mut p = vec![opts.no_native_ieee as u8];

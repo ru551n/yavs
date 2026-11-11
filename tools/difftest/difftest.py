@@ -62,11 +62,14 @@ YAVS_INTERP = YAVS.replace("--threads=", "--tier=interp --threads=")
 # yavs compiling hot functions (`--tier=auto`): compared with the same `.expected`, so it must match the
 # interpreter (rule 5) whenever compilation finishes.
 YAVS_AUTO = YAVS.replace("--threads=", "--tier=auto --threads=")
-# `--tier=auto` after a dropped first pass (in its own directory: file_append, #806), comparing a second `elab` and
-# `run`: `.expected` holds both stages (#1030). The run links what the first compiled by pre-keys of the compilation
-# cache (with YAVS_CLIFT_PREKEY_CHECK set it generates the code anyway and checks it, #785).
+# `--tier=auto` after a dropped first pass of two runs (in its own directory: file_append, #806), comparing an
+# `elab` and a `run`: `.expected` holds both stages (#1030). The run links by pre-keys of the compilation cache what
+# the first run of the closure compiled, before any run stored the program (with YAVS_CLIFT_PREKEY_CHECK set it
+# generates the code anyway and checks it, #785). The first pass's work counters stay on stderr (`reach.py`).
 _ELAB = YAVS_AUTO.index('"$R" elab')
-YAVS_AUTO_WARM = (YAVS_AUTO[:_ELAB] + "mkdir w1; (cd w1 && " + YAVS_AUTO[_ELAB:] + ") >/dev/null 2>&1; " + YAVS_AUTO[_ELAB:])
+_RUN = YAVS_AUTO.index('"$R" run')
+YAVS_AUTO_WARM = (YAVS_AUTO[:_ELAB] + "mkdir w1; (cd w1 && " + YAVS_AUTO[_RUN:] + "; " + YAVS_AUTO[_RUN:]
+                  + ") 2>&1 >/dev/null | grep '^counters: ' >&2; " + YAVS_AUTO[_ELAB:])
 # yavs with the Cranelift tier (needs a yavs built with `--features clift`): every function
 # compiled before time 0, and hot functions compiled in the background.
 YAVS_CLIFT = YAVS.replace("--threads=", "--tier=clift --threads=")

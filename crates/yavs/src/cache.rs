@@ -100,11 +100,14 @@ struct Stages {
 
 impl Stages {
     fn key(&self, extent: &[usize], kind: &str, part: &[u8]) -> Option<Key> {
-        self.closure.then(|| {
-            let mut k = stage_key(kind, &self.base);
-            k.text(&format!("{extent:?}")).part(part);
-            k.finish()
-        })
+        self.closure.then(|| self.entry_key(extent, kind, part))
+    }
+
+    /// The key of a stage entry, whether the closure keeps entries yet or not.
+    fn entry_key(&self, extent: &[usize], kind: &str, part: &[u8]) -> Key {
+        let mut k = stage_key(kind, &self.base);
+        k.text(&format!("{extent:?}")).part(part);
+        k.finish()
     }
 
     fn level_key(&self, level: usize, kind: &str, part: &[u8]) -> Option<(&Level, Key)> {
@@ -142,7 +145,8 @@ impl StageCache for Stages {
     }
 
     fn identity(&self, extent: &[usize], kind: &str, part: &[u8]) -> Option<String> {
-        self.key(extent, kind, part).map(|k| k.hex())
+        // Also on a closure's first run, which stores nothing: its second analyses the same files.
+        Some(self.entry_key(extent, kind, part).hex())
     }
 
     fn put(&self, extent: &[usize], kind: &str, part: &[u8], bytes: &[u8]) {

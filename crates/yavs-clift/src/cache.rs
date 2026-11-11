@@ -71,6 +71,18 @@ pub(crate) fn note_hit() {
     HITS.fetch_add(1, Ordering::Relaxed);
 }
 
+static PRE_UNSTORED: AtomicUsize = AtomicUsize::new(0);
+
+/// `YAVS_COUNTERS` `clift_pre_unstored`: pre-keys made for a program the stage cache does not
+/// hold yet (a closure's first run), whose entries its second run links.
+pub fn pre_unstored() -> usize {
+    PRE_UNSTORED.load(Ordering::Relaxed)
+}
+
+pub(crate) fn note_pre_unstored() {
+    PRE_UNSTORED.fetch_add(1, Ordering::Relaxed);
+}
+
 /// Copies of subprograms: linked by a pre-key, lowered, compiled by Cranelift (no stored body),
 /// and the id symbols the lowered functions named (`Jit::slot`).
 static SUBS: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];

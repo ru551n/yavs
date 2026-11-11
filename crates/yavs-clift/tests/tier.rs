@@ -780,7 +780,11 @@ fn std_ulogic_natives_match_the_interpreter() {
         "yavs.ieee.std_logic_1164.\"??\"(std_ulogic)boolean".to_string(),
         1,
     );
-    for (sym, n) in gates.into_iter().chain(ones).chain([truthy]) {
+    let is_x = (
+        "yavs.ieee.std_logic_1164.is_x(std_ulogic)boolean".to_string(),
+        1,
+    );
+    for (sym, n) in gates.into_iter().chain(ones).chain([truthy, is_x]) {
         assert!(yavs_interp::code_table(&sym).is_some(), "{sym}");
         let mut pb = ProgramBuilder::new();
         let native = pb.native(&sym, None);

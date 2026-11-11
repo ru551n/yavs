@@ -588,6 +588,7 @@ pub fn code_table(symbol: &str) -> Option<Vec<u8>> {
         Op::Not => all().map(|x| x.not() as u8).collect(),
         Op::Conv(k, false) => all().map(|x| conv_of(k, x) as u8).collect(),
         Op::Truthy => all().map(|x| u8::from(x.is_true())).collect(),
+        Op::IsX(false) => all().map(|x| u8::from(x.is_x())).collect(),
         Op::MatchEq { ne, vec: false } => all()
             .flat_map(|x| {
                 all().map(move |y| {

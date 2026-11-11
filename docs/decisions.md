@@ -15327,3 +15327,34 @@ change below computes what the code did before (the same IR by `YAVS_DUMPIR` ove
   table; it fails with the decided `0` of `or` wrong, the parity wrong, `is_x`'s plane test wrong, the `U`/`X` choice
   wrong, the negation of a metavalue wrong, or the scalar table wrong.
 
+## Compiled code: a byte concatenation of a native frame in one call (yavs-clift `Gen::cat_bytes`, yavs-rt `yavs_rt_cat`, perf/b4-stepops, 2026-11-11)
+
+- **Finding** (agent). In a native-frame variant every `Cat` of bytes (strings, arrays of scalars) was a step of
+  the host on a frame of its own (`TierHost::native_step`, `xstep_wide`): 1.4 M a run on `uvvm_axistream_vvc`
+  (`add_msg_delimiter`, `check_value`), 0.6 M on `uvvm_sb_slv`; `native_step` and `yavs_rt_xstep` were 6.2 percent
+  of `uvvm_axistream_vvc` run 3 (about 590 instructions a step of machinery).
+- **Change** (agent). A native frame's `Cat` of bytes of at most 16 pieces (`native::cat_inline`; the front end
+  writes a longer chain as copies and stores) stores its piece registers in a stack buffer and calls `yavs_rt_cat`:
+  it finds the `n * m` bytes of the result and every piece (`Mem::find`, else the object table, as `yavs_rt_host`),
+  tests each piece against the result before it writes any, then copies each array piece (`memmove`) and stores
+  each scalar's low `w` bytes at its offset, in the interpreter's order. 0 (nothing written) takes the slow path,
+  the step it had before. Frame-mode code keeps `yavs_rt_signal`. Counters `clift_cat_sites` (sites), `cb_cat`
+  (calls, debug builds).
+- **Tried, not kept** (agent, exact counts, forced `--tier=clift --no-cache --threads=1`): the pieces' lookups
+  lowered inline (every `host` test in the code) grew the compiles of `hdlm_fifo_sync`, `vunit_logging`,
+  `olo_axi_master_full`, `osvvm_axi4_random` and `uvvm_sb_slv` by 2.4 to 6.7 percent of their runs; the call in
+  frame-mode code too cost them 0.1 to 0.4 percent more than in native frames only.
+- **Measured** (agent; plain bench builds, all-thread instructions, untimed, against the `is_x` change before it):
+  forced `uvvm_axistream_vvc` 0.973, `uvvm_sb_slv` 0.985, `osvvm_axi4_random`, `hdlm_fifo_sync`, `vunit_logging`,
+  `olo_axi_master_full` 1.0007 to 1.0010 (the compile of the call and its slow path); Microwatt, GRLIB (default
+  tier), `neorv32_single_cache` and `sc5_fifo_repack` make no such concatenation and are level. Default tier, 4
+  runs from pristine worlds, 5 reps: `uvvm_axistream_vvc` runs 3 and 4 0.925 and 0.937 (4-run sum 0.960),
+  `osvvm_axi4_random` sum 0.999, `uvvm_sb_slv` sum 1.017 (its compile sets are bimodal: main against itself gives
+  sums of 36.9 to 38.2 G over three series), the small tests and GRLIB within 0.1 percent. Cycles are still to be
+  timed.
+- **Test.** `clift_parity` `byte_concatenations_in_compiled_code_match_the_interpreter`: strings with characters
+  and null pieces, 16 pieces, a longer chain, arrays of integers, reals and booleans, in functions and a process,
+  and a result that does not fit its target; it fails with a scalar stored short, a scalar's offset wrong, or an
+  array piece one byte short. The refusal path (0) is not reached by any test: the front end gives no `Cat` whose
+  pieces exceed the result.
+

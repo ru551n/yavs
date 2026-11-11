@@ -43,9 +43,11 @@ pub(crate) enum Cb {
     Steps,
     /// `yavs_rt_drive_src`: a whole value driven from where it is, with no waveform.
     DriveSrc,
+    /// `yavs_rt_cat`: a concatenation of bytes.
+    Cat,
 }
 
-const N: usize = 27;
+const N: usize = 28;
 
 /// Whether this build counts (the generators emit the calls of `yavs_rt_rare` only then).
 pub const COUNTING: bool = cfg!(any(debug_assertions, feature = "op-census"));
@@ -78,6 +80,7 @@ const NAMES: [&str; N] = [
     "rare_native",
     "steps",
     "drive_src",
+    "cat",
 ];
 
 #[cfg(any(debug_assertions, feature = "op-census"))]

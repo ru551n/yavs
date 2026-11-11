@@ -15350,15 +15350,16 @@ lowering; the five largest functions take 29 percent.
   the run. The holds are right by that rule's economics: the trips cost about 0.1 to 0.4 percent of the run.
 - **Change** (agent). An entry at `Code::skip` that makes no progress sets that function's own `Pre::native` (it has
   compiled code, so the byte is what a sync would write), and the later calls of the activation are full and enter
-  the compiled code at its first op. Counter `tier_resyncs` (debug and `op-census` builds). A sync of every flag at
-  every entry without progress (the first version) also moved what the run compiled: `uvvm_axistream_vvc` run 1
-  took its compile-heavy mode in 7 of 8 reps against 3 of 8 for main; the narrow version touches only the function
-  entered.
+  the compiled code at its first op. Counter `tier_resyncs` (debug and `op-census` builds). A first version synced
+  every flag at every entry without progress; the narrow one fixes only the function entered lean, does not rest on
+  the `Ret` entries `tier_skips` now avoids, and its counter counts only the bytes it set.
 - **Measured** (agent; plain bench builds of 71f5e809 with and without the change, a second copy of main's binary
   as the A/A, all-thread instructions, untimed cores, from pristine worlds, no `YAVS_COUNTERS`, default tier
-  `wait`): `uvvm_sb_slv` four-run sum medians 36.85 against 36.23 (A/A 36.48), 24 reps each, interquartile ranges
-  overlapping (the design is multimodal by what each run compiles); `osvvm_axi4_random` 1.001 (A/A 1.000, 12 reps);
-  `uvvm_axistream_vvc` run 1 in its compile-heavy mode in 7 of 22 reps (main 8 of 22, A/A 2 of 23), runs 1 and 2
+  `wait`): `uvvm_sb_slv` four-run sum medians 36.85 against 36.23, 1.017 (A/A 1.007 in the same series of 24 reps,
+  0.992 to 1.016 over three series); the design is multimodal by what each run compiles: sums above 37.5 G in 9 of
+  24 reps against 6 and 7 for the two copies of main (main 6 to 11 of 24 over three series), the fast mode's median
+  36.22 against 36.09 and 36.23; `osvvm_axi4_random` 1.001 (A/A 1.000, 12 reps);
+  `uvvm_axistream_vvc` run 1 in its compile-heavy mode in 7 of 22 reps (main 8 of 22, its copy 2 of 23), runs 1 and 2
   65.71 against 65.94 (A/A 65.95), `background` six-run sum 0.999 (A/A 1.000); GRLIB r1 to r4 0.991, 0.999, 1.000,
   1.000; Microwatt 1.002, 1.000; the small tests and `uvvm_func_cov` level; forced compiled whole runs
   (`--tier=clift --no-cache --threads=1`, main-thread instructions) within 0.02 percent on seven designs. With `YAVS_AUTO_COUNT=1`,

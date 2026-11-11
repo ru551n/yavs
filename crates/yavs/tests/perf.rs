@@ -1610,9 +1610,9 @@ mod clift {
         "s=",
         [("cb_xstep", Max(0)), ("cb_step", Max(4))]
     );
-    // A product of 65 by 65 elements, a sum of 128, reductions and concatenations of 65, all in
-    // place: no native call and no step of a `Cat` (the callbacks left are the waits and the
-    // report).
+    // A product of 65 by 65 elements, a sum of 128, reductions and concatenations of 65 and gates
+    // of vectors holding `U`, all in place: no native call and no step of a `Cat` (the callbacks
+    // left are the waits and the report).
     clift_case!(
         wide_ieee,
         "wide_ieee",

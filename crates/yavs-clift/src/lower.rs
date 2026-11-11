@@ -2519,14 +2519,16 @@ enum Op {
 
 /// `YAVS_COUNTERS`: the sites lowered so far of an `is_x` or reduction of a vector computed in
 /// place (`Gen::ieee_native`), of a `Cat` of bytes (`Gen::cat_bytes`), of a `LayoutOf` from the
-/// layout memo (`Gen::layout_into`), of a real rounded to an integer (`Gen::f_to_i`) and of an
-/// `ieee` op of two blocks (`Gen::ieee_wide`).
-static SITES: [std::sync::atomic::AtomicUsize; 5] =
-    [const { std::sync::atomic::AtomicUsize::new(0) }; 5];
+/// layout memo (`Gen::layout_into`), of a real rounded to an integer (`Gen::f_to_i`), of an
+/// `ieee` op of two blocks (`Gen::ieee_wide`) and of a gate that may meet a metavalue
+/// (`Gen::gate_planes`).
+static SITES: [std::sync::atomic::AtomicUsize; 6] =
+    [const { std::sync::atomic::AtomicUsize::new(0) }; 6];
 
 /// `[is_x or reduction of a vector, Cat of bytes, LayoutOf from the memo, real to integer, ieee
-/// op over 64 elements]` sites lowered so far (`YAVS_COUNTERS`).
-pub fn inline_sites() -> [usize; 5] {
+/// op over 64 elements, gate with the tables for metavalues]` sites lowered so far
+/// (`YAVS_COUNTERS`).
+pub fn inline_sites() -> [usize; 6] {
     SITES
         .each_ref()
         .map(|a| a.load(std::sync::atomic::Ordering::Relaxed))
@@ -8079,6 +8081,69 @@ impl Gen<'_> {
         self.b.ins().sshr(up, k)
     }
 
+    /// Planes 0 and 1 of gate `op` of two blocks (`y` unused for `Not`): the gate of the bits
+    /// where every element under `mask` is `0 1 L H`, else the std_logic_1164 tables
+    /// (`logic_block`) out of line.
+    fn gate_planes(
+        &mut self,
+        op: yavs_ir::LOp,
+        x: [Value; 4],
+        y: [Value; 4],
+        mask: Value,
+    ) -> [Value; 2] {
+        use yavs_ir::LOp;
+        note_site(5);
+        let lx = self.b.ins().band_not(x[1], x[3]);
+        let live = if op == LOp::Not {
+            lx
+        } else {
+            let ly = self.b.ins().band_not(y[1], y[3]);
+            self.b.ins().band(lx, ly)
+        };
+        let bad = self.b.ins().band_not(mask, live);
+        let clean = self.b.ins().icmp_imm_s(IntCC::Equal, bad, 0);
+        let (bits, meta, join) = (
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+        );
+        self.b.set_cold_block(meta);
+        let p0 = self.b.append_block_param(join, I64);
+        let p1 = self.b.append_block_param(join, I64);
+        self.brif_split(clean, bits, meta);
+        self.b.switch_to_block(bits);
+        let (a, b) = (x[0], y[0]);
+        let r = match op {
+            LOp::And => self.b.ins().band(a, b),
+            LOp::Nand => {
+                let t = self.b.ins().band(a, b);
+                self.b.ins().bnot(t)
+            }
+            LOp::Or => self.b.ins().bor(a, b),
+            LOp::Nor => {
+                let t = self.b.ins().bor(a, b);
+                self.b.ins().bnot(t)
+            }
+            LOp::Xor => self.b.ins().bxor(a, b),
+            LOp::Xnor => {
+                let t = self.b.ins().bxor(a, b);
+                self.b.ins().bnot(t)
+            }
+            _ => self.b.ins().bnot(a),
+        };
+        let ones = self.c64(-1);
+        self.b
+            .ins()
+            .jump(join, &[BlockArg::Value(r), BlockArg::Value(ones)]);
+        self.b.switch_to_block(meta);
+        let [m0, m1] = self.logic_block(op, x, y);
+        self.b
+            .ins()
+            .jump(join, &[BlockArg::Value(m0), BlockArg::Value(m1)]);
+        self.b.switch_to_block(join);
+        [p0, p1]
+    }
+
     /// The code of reduction `g` over blocks of planes, each with the mask of its elements, as
     /// the native: a deciding `0`/`L` (`and`) or `1`/`H` (`or`), else `U` if any is `U`, `X` if
     /// any other is not `0 1 L H`, else the gate of the bits.
@@ -8410,7 +8475,7 @@ impl Gen<'_> {
         args: yavs_ir::Regs,
         dst: Option<Reg>,
     ) -> Result<(), String> {
-        use yavs_ir::ieee::{ARRAY_REGS, Cmp, Form, Gate, Op, Opd, Shift, Syn, SynKind};
+        use yavs_ir::ieee::{ARRAY_REGS, Cmp, Form, Op, Opd, Shift, Syn, SynKind};
         let rs = ok(f.regs(args), "operand list out of range")?.to_vec();
         let d = ok(dst, "a native without a result")?;
         let layout = ok(ieee_layout(op), "not a native computed in place")?;
@@ -8430,13 +8495,17 @@ impl Gen<'_> {
                 | Op::Syn(Syn::Shift { .. })
                 | Op::Syn(Syn::Unary { neg: false, .. } | Syn::Unary { abs: true, .. })
         );
-        // `std_match`, `?=` / `?/=`, `is_x` and the reductions take every element value: all
-        // four planes.
+        // `std_match`, `?=` / `?/=`, `is_x`, the reductions and the gates take every element
+        // value: all four planes.
         let plane_op = matches!(
             op,
             Op::Match
                 | Op::IsX(true)
                 | Op::Reduce(_)
+                | Op::VecGate(_)
+                | Op::NumGate(_)
+                | Op::VecNot
+                | Op::NumNot
                 | Op::MatchEq { .. }
                 | Op::QCompare {
                     cmp: Cmp::Eq | Cmp::Ne,
@@ -9068,32 +9137,18 @@ impl Gen<'_> {
                 }
             }
             Op::NumGate(g) | Op::VecGate(g) => {
-                let ((n1, b1, _), (n2, b2, _)) = (arrs[0], arrs[1]);
+                let ((n1, _, mask), (n2, _, _)) = (arrs[0], arrs[1]);
                 let same = self.b.ins().icmp(IntCC::Equal, n1, n2);
                 self.guard(same, fb);
-                let res = match g {
-                    Gate::And => self.b.ins().band(b1, b2),
-                    Gate::Nand => {
-                        let a = self.b.ins().band(b1, b2);
-                        self.b.ins().bnot(a)
-                    }
-                    Gate::Or => self.b.ins().bor(b1, b2),
-                    Gate::Nor => {
-                        let a = self.b.ins().bor(b1, b2);
-                        self.b.ins().bnot(a)
-                    }
-                    Gate::Xor => self.b.ins().bxor(b1, b2),
-                    Gate::Xnor => {
-                        let a = self.b.ins().bxor(b1, b2);
-                        self.b.ins().bnot(a)
-                    }
-                };
-                Out::Vector(n1, res, matches!(op, Op::VecGate(_)))
+                let (x, y) = (four(&planes[0]), four(&planes[1]));
+                let r = self.gate_planes(gate_lop(g), x, y, mask);
+                Out::Planes(n1, vec![r], matches!(op, Op::VecGate(_)))
             }
             Op::NumNot | Op::VecNot => {
-                let (n, bits, _) = arrs[0];
-                let r = self.b.ins().bnot(bits);
-                Out::Vector(n, r, op == Op::VecNot)
+                let (n, _, mask) = arrs[0];
+                let x = four(&planes[0]);
+                let r = self.gate_planes(yavs_ir::LOp::Not, x, x, mask);
+                Out::Planes(n, vec![r], op == Op::VecNot)
             }
             // Two's complement in the low `n` bits (the most negative value wraps onto itself).
             Op::Neg => {

@@ -1172,9 +1172,10 @@ const WAIT_HELD_RUNS: u32 = u32::MAX;
 /// (`Worker::unlocked`): `uvvm_axistream_vvc`'s command executor seen 0.2 percent of its price by
 /// itself frees about a second of callees a run.
 const WAIT_SUBTREE: bool = true;
-/// `Worker::unpaid` holds a process in the first run past `WAIT_LONG` until the tree of callees its
-/// compile pulls in repays this factor of its price (`Worker::tree_unpaid`).
-const WAIT_TREE: f64 = 2.0;
+/// `Worker::unpaid` holds a process in the first run past `WAIT_LONG` until the tree its compile pulls
+/// in was seen for this factor of its price (`Worker::tree_unpaid`). At 2 sampling noise decided whether
+/// `uvvm_axistream_vvc`'s first run paid its tree at the very end; 2.5 is a margin over that edge.
+const WAIT_TREE: f64 = 2.5;
 const WAIT_HELD_FREE: bool = true;
 /// `Worker::next_asked` orders by heat per price: in oldest-first order a large one-shot sequencer held
 /// the budget (`uvvm_axistream_vvc` run 2 29.4 G against 25.0).

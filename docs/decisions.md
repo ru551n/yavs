@@ -15221,6 +15221,29 @@ Written by Claude. `YAVS_CLIFT_LIST` (with `write`, `on` and `all`), `YAVS_CLIFT
   Reach: no corpus test lasts the second the rule waits for, so `tier_tree_held` is 0 on the corpus; its evidence is
   the realbench `uvvm_axistream_vvc` first run (`tier_tree_held` 55, the executor's copies), as for the floor above.
 
+## `--tier-compile=wait`: the first run's tree rule leaves a margin over the end of the run (yavs-rt `auto.rs`, 2026-11-11, not decided)
+
+- **Finding** (agent). The first run of `uvvm_axistream_vvc` came in two modes, 32 or 40 G instructions of all threads
+  (on two free cores 1.09 or 1.36 of the pinned baseline's wall, cap 1.20). The kernel thread retires the same 27.5 G
+  in both: the dear mode is about 50 more compiles, 0.7 s of compile CPU, after the tree rule (`Worker::tree_unpaid`)
+  lets the command executor go at 94 to 97 percent of the run's looks, where nothing they compile can pay back.
+  Whether the executor's tree was seen for `WAIT_TREE` (2) times its price before the run ends was left to the
+  sampler's noise. Dear draws at 2: 25 and 30 of 50 in the night cap sitting of 2026-11-11 (cap 1.22 and 1.25), 2 of 8
+  and 1 of 12 in untimed day series. Factor sweep (untimed, by day): 1.25 and 1.5 dear 10 of 10, 1.75 9 of 10 and 8 of
+  8, 2 0 of 10 and 2 of 8, 2.5 0 of 10 and 0 of 8, 3.3 0 of 8: the edge lies near 2 and moves between sittings.
+- **Change** (agent). `WAIT_TREE` 2.5, a quarter above that edge. The alternative 1 / `WAIT_GAIN` (3.3: a rest of the
+  run as long as the part seen repays the tree at the later runs' gain) gives the same axistream series but makes
+  Microwatt's first run 0.35 percent dearer in exact counts (median 927.4 G against 924.2, 8 runs each; 2.5 924.9).
+- **Trade** (agent). Per mode nothing changes, only the draw. After a cheap first run the second pays the tree (31.9 G
+  against 20.9 after a dear one) and the runs after it settle later: 19 functions the dear first run compiled
+  (`check_value`, `matching_values`, `fetch`, ...) have about no sampled time and stay held by the later runs'
+  `unrepaid` through run 6 or later. Eight-run sums 178.5 G against 171.0 (+4.4 percent), run 8 18.70 against 18.38.
+  The ruling of 2026-11-10 (entry above) accepted run 2 at 1.33 on runs 5 to 8 being level; they are not quite.
+- **Elsewhere** (agent). `tier_tree_held` is 0 at 2 and at 3.3 on `osvvm_axi4_random`, `uvvm_sb_slv`,
+  `uvvm_func_cov`, `neorv32_dual_full`, GRLIB and the small cap tests, so their decisions do not change at 2.5;
+  `background` never applies the rule (`unpaid` needs `stops`). Microwatt's first run holds five processes at every
+  factor and is level at 2.5.
+
 ## Auto tier: the second-compile slot is removed (yavs-rt `auto.rs`, 2026-11-10)
 
 Written by Claude. `Worker::compile`, `compile_part` and `frame_instead` lose their `o2` parameter and `Worker::done` goes from `[bool; 2]` per function to one flag. The slot served the make-again path of the stored never-run list (`done[k][1]`, entry above), which is retired, so `o2` was always false. The entries above that name the slot stay as history. Generated code is byte-identical (the `YAVS_CLIFT_CODEDIR` corpus check).

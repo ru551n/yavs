@@ -51,7 +51,7 @@ A run of plane-word entries that is a whole bus (4 words or more, in order, noth
 
 ### The first run holds a process until the callee tree it pulls in repays (2026-11-10)
 
-Under `--tier-compile=wait`, past the first second of a first run, a process also waits while it and the subprograms that wait only for it were seen for less than `WAIT_TREE` (2) times what compiling them all costs (`auto.rs` `Worker::tree_unpaid`, counter `tier_tree_held`, knob `YAVS_AUTO_WAIT_TREE`). With correct samples `uvvm_axistream_vvc` compiled its command executor and the bus procedures under it in run 1 (cold cap 1.40 of the pinned baseline); with the rule it is 1.14, and run 2 pays the compiles (1.33 of the run before the rule; eight-run sum 1.03). No other design measured changes its compiles.
+Under `--tier-compile=wait`, past the first second of a first run, a process also waits while it and the subprograms that wait only for it were seen for less than `WAIT_TREE` (2.5; 2 until 2026-11-11) times what compiling them all costs (`auto.rs` `Worker::tree_unpaid`, counter `tier_tree_held`, knob `YAVS_AUTO_WAIT_TREE`). With correct samples `uvvm_axistream_vvc` compiled its command executor and the bus procedures under it in run 1 (cold cap 1.40 of the pinned baseline); with the rule it is 1.14, and run 2 pays the compiles (1.33 of the run before the rule; eight-run sum 1.03). No other design measured changes its compiles.
 
 ### The sampler after a resumed callee returns (2026-11-10)
 

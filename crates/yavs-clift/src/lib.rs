@@ -26,7 +26,7 @@ pub use blockcov::{BodyCov, snapshot as blockcov_snapshot, write as blockcov_wri
 pub use cache::{cache_stats, set_cache, sub_copy_stats};
 
 #[cfg(feature = "clift")]
-pub use lower::{BREAK, Error, Jit, compile};
+pub use lower::{BREAK, Error, Jit, compile, inline_sites};
 
 #[cfg(feature = "clift")]
 use std::sync::Mutex;

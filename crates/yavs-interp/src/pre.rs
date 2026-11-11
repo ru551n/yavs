@@ -6578,12 +6578,27 @@ mod tests {
         fb.param_flat(s, string);
         let k = fb.param("k", Width::B8, ParamClass::Value, Mode::In, None);
         fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        // An op between the marker and the load, which would be one op with it: no prologue,
+        // and `k` is read from its slot too.
+        let (one, z) = (fb.int(1), fb.reg(RegTy::I64));
+        fb.emit(Inst::Bin {
+            op: yavs_ir::IntOp::Add,
+            dst: z,
+            a: one,
+            b: one,
+        });
         let at = fb.addr(AddrSpace::Frame, k);
-        let c = fb.reg(RegTy::I64);
+        let (n, c) = (fb.reg(RegTy::I64), fb.reg(RegTy::I64));
         fb.emit(Inst::Load {
-            dst: c,
+            dst: n,
             addr: at,
             w: Width::B8,
+        });
+        fb.emit(Inst::Bin {
+            op: yavs_ir::IntOp::Add,
+            dst: c,
+            a: n,
+            b: z,
         });
         let (then, other) = (fb.block(), fb.block());
         fb.emit(Inst::CondBr {
@@ -6611,13 +6626,14 @@ mod tests {
         fb.emit(Inst::Ret { v: Some(len) });
         fb.finish();
         let prog = pb.finish().unwrap();
-        let f = prog.func(id).unwrap();
+        // The code as built: the optimiser folds these descriptor reads into registers.
+        let f = prog.funcs.get(id).unwrap();
         let pre = Pre::new(f, &prog, false);
         assert!(!pre.lean);
         for _ in 1..LATE_AFTER {
             assert_eq!(pre.late(f, &prog), None);
         }
-        assert_eq!(pre.late(f, &prog), Some(&[1, 2, 3][..]));
+        assert_eq!(pre.late(f, &prog), Some(&[1, 2, 3, 4][..]));
     }
 
     /// The contract tiers rely on (#566): the register holding a lean parameter's slot address

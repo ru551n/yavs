@@ -1112,8 +1112,8 @@ fn reals_to_integers_in_compiled_code_match_the_interpreter() {
     }
 }
 
-/// `ieee` ops of 65 to 192 elements computed in place (`Gen::ieee_wide`; its gates on any
-/// element value), and concatenations of two blocks (`Gen::cat_block`), with metavalues, `L` and
+/// `ieee` ops of 65 to 192 elements computed in place (`Gen::ieee_wide`), the gates on any
+/// element value, and concatenations of two blocks (`Gen::cat_block`), with metavalues, `L` and
 /// `H` now and then: in a function (native frame) and in a process (frame mode). The arithmetic
 /// with a metavalue goes to the native, as does a product over 192 elements.
 const WIDE: &str = r#"library ieee;

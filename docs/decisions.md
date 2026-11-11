@@ -15541,3 +15541,35 @@ Written by Claude. The drive side of Microwatt, measured first with lab counters
   run 3 is the first served: on `uvvm_func_cov` run 2 takes 5.13 G instructions, run 3 2.25 G (`osvvm_axi4_random`
   8.59 and 7.38, `neorv32_dual_full` 19.0 and 14.9). Storing in run 1 would be the larger lever for run 2, at the cost
   that decision avoids for a design that runs once.
+
+## Compiled code: `ieee` ops and concatenations of 65 to 128 elements in place (yavs-clift `Gen::ieee_wide`, `Gen::cat_block`, perf/b4-wideieee, 2026-11-11)
+
+- **Finding** (agent). After `is_x` and the reductions went in place, every native callback left on Microwatt
+  (11.1 M a run) and every logic `Cat` it stepped through `yavs_rt_signal` (5.2 M) were either over the 64
+  elements of the in-place arms or gates of vectors holding `U` (next entry): the 65 by 65 element products of
+  `multiply` (`(m.is_signed and m.data1(63)) & m.data1`, a 130-element product), its 128-element sums and the
+  `or`/`and` reductions of 65 elements, and `unsigned('0' & not inp) + 1` of `countbits` (65 elements).
+- **Change** (agent). Where the bounds of every array operand of a light `numeric_std` or `std_logic_1164`
+  native are constants of the code (registers a `Const` defines once), of at most 128 elements, and an operand
+  or the result is over 64 (`Gen::wide_lens`), `Gen::ieee_wide` reads two plane blocks per operand and computes:
+  `is_x` and the reductions (the native's fold over both blocks, `reduce_code`, `is_x_code`, shared with the
+  one-block arms), the logical operators of equal lengths (`logic_block` per block, any element value), `+` and
+  `-` of every form (two words with a carry; a negative `natural` takes the callback) and `*` of two vectors with
+  a product of at most 192 elements (the product modulo 2 to the 192 of the operands extended to three words,
+  from 64-bit products and `umulhi`), the arithmetic only without a metavalue, as the narrow arms; the result
+  takes one to three blocks in the temporary area (`ieee_put`). Lengths known only at run time keep the one-block
+  arms: making both forms at every site would grow every compile for designs that have none. `Gen::cat_block`
+  takes a result of up to 128 elements with pieces of up to 128, a piece's block split over the two result
+  blocks where it straddles them. Counter `clift_wide_sites` (sites).
+- **Measured** (agent; exact counts, plain bench builds, all-thread instructions, untimed, no `YAVS_COUNTERS`):
+  forced `--tier=clift --no-cache --threads=1` Microwatt 0.9928 against main 723863fa, every other design measured
+  within 0.01 percent (GRLIB 1.0001); default tier against fc7f12cf Microwatt's 4-run sum 0.995 (a second copy of
+  main's binary 1.002), GRLIB and the small designs within their spread. Output hashes and exit statuses equal to
+  the base in every run. `temp_alloc` now zeroes a known size of up to 192 bytes by stores (was 128), for the
+  three-block product.
+- **Test.** `clift_parity` `wide_ieee_ops_and_concatenations_in_compiled_code_match_the_interpreter` and the
+  corpus test `ieee/wide_ops` (sums, differences and products of 33 to 192 elements in every form, reductions,
+  `is_x`, gates and concatenations of 65 to 128, with metavalues, `L` and `H`; in a function and a process); it
+  fails with the product's carries, the sum's carry or borrow, the second block of a reduction or `is_x`, the
+  straddling half of a concatenation, the sign extension or the clean-operand guard broken. `perf.rs` `wide_ieee`
+  bounds the callbacks.

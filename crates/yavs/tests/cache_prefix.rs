@@ -25,7 +25,11 @@ fn visible(o: &Out) -> Out {
         stderr: o
             .stderr
             .lines()
-            .filter(|l| !l.starts_with("debug: cache:") && !l.starts_with("debug: units:"))
+            .filter(|l| {
+                !l.starts_with("debug: cache:")
+                    && !l.starts_with("debug: units:")
+                    && !l.starts_with("counters: ")
+            })
             .map(|l| format!("{l}\n"))
             .collect(),
     }
@@ -552,6 +556,15 @@ fn a_closure_on_the_library_links_what_its_last_run_compiled() {
     let heat = ["--tier=clift-auto", "--tier-heat=1,0,0"];
     let check = [("YAVS_CLIFT_PREKEY_CHECK", "1")];
     let no_check = [("YAVS_CLIFT_PREKEY_CHECK", "0")];
+    // The reach counter of this path: pre-keys of a program the stage cache does not hold.
+    let counted = [("YAVS_CLIFT_PREKEY_CHECK", "0"), ("YAVS_COUNTERS", "1")];
+    let unstored = |o: &Out| {
+        o.stderr
+            .lines()
+            .find_map(|l| l.strip_prefix("counters: clift_pre_unstored="))
+            .and_then(|n| n.trim().parse::<u64>().ok())
+            .unwrap_or(0)
+    };
     // The fourth closure makes the library. The first lowered without it, under another name.
     let cold = l.run_env(&tops[0], &heat, &no_check);
     assert!(count(&cold, "lowered") > 0, "{cold:?}");
@@ -562,9 +575,10 @@ fn a_closure_on_the_library_links_what_its_last_run_compiled() {
     // Two runs of a closure on it (the first lowers, the second links), checked against a cold run.
     let twice = |t: &str, name_before: Option<&str>| -> String {
         let plain = visible(&l.run(t, &["--no-cache"]));
-        let first = l.run_env(t, &heat, &no_check);
+        let first = l.run_env(t, &heat, &counted);
         assert!(note(&first, "hit prefix lib "), "{t}: {first:?}");
         assert!(count(&first, "lowered") > 0, "{t}: {first:?}");
+        assert!(unstored(&first) > 0, "{t}: {first:?}");
         let name = program(&first)
             .unwrap_or_else(|| panic!("{t}: no name: {first:?}"))
             .to_string();

@@ -2519,13 +2519,14 @@ enum Op {
 
 /// `YAVS_COUNTERS`: the sites lowered so far of an `is_x` or reduction of a vector computed in
 /// place (`Gen::ieee_native`), of a `Cat` of bytes (`Gen::cat_bytes`), of a `LayoutOf` from the
-/// layout memo (`Gen::layout_into`) and of a real rounded to an integer (`Gen::f_to_i`).
-static SITES: [std::sync::atomic::AtomicUsize; 4] =
-    [const { std::sync::atomic::AtomicUsize::new(0) }; 4];
+/// layout memo (`Gen::layout_into`), of a real rounded to an integer (`Gen::f_to_i`) and of an
+/// `ieee` op of two blocks (`Gen::ieee_wide`).
+static SITES: [std::sync::atomic::AtomicUsize; 5] =
+    [const { std::sync::atomic::AtomicUsize::new(0) }; 5];
 
-/// `[is_x or reduction of a vector, Cat of bytes, LayoutOf from the memo, real to integer]` sites
-/// lowered so far (`YAVS_COUNTERS`).
-pub fn inline_sites() -> [usize; 4] {
+/// `[is_x or reduction of a vector, Cat of bytes, LayoutOf from the memo, real to integer, ieee
+/// op over 64 elements]` sites lowered so far (`YAVS_COUNTERS`).
+pub fn inline_sites() -> [usize; 5] {
     SITES
         .each_ref()
         .map(|a| a.load(std::sync::atomic::Ordering::Relaxed))
@@ -7703,10 +7704,11 @@ impl Gen<'_> {
         // object has a word of its own to cover the rest of it.
         match self.const_of(n) {
             // A known size is zeroed by stores, not a call.
-            Some(k) if (8..=128).contains(&k) => {
+            Some(k) if (8..=192).contains(&k) => {
                 let z = self.c64(0);
                 self.b.ins().store(self.gf, z, at, 0);
-                self.zero_range(ptr, 0, k as u64);
+                self.zero_range(ptr, 0, k.min(128) as u64);
+                self.zero_range(ptr, 128, k as u64);
             }
             Some(k) if (1..8).contains(&k) => {
                 let (even, odd, merge) = (
@@ -7817,6 +7819,41 @@ impl Gen<'_> {
         self.guard(okv, slow);
         vec![size, align, stride, count]
     }
+}
+
+/// What `Gen::ieee_native` computed.
+enum Out {
+    Scalar(Value),
+    // Count, bits, and whether the bounds are `1 to n` (else `n - 1 downto 0`).
+    Vector(Value, Value, bool),
+    // Count, bits and the bounds (left, right, direction) of an operand.
+    Bounds(Value, Value, Value, Value, Value),
+    // Count, planes 0 and 1 of each block of 64 elements, bounds as `Vector`.
+    Planes(Value, Vec<[Value; 2]>, bool),
+}
+
+/// The four planes of a block held in a slice.
+fn four(p: &[Value]) -> [Value; 4] {
+    [p[0], p[1], p[2], p[3]]
+}
+
+/// The `LogicOp` of a `std_logic_1164` gate.
+fn gate_lop(g: yavs_ir::ieee::Gate) -> yavs_ir::LOp {
+    use yavs_ir::LOp;
+    use yavs_ir::ieee::Gate;
+    match g {
+        Gate::And => LOp::And,
+        Gate::Nand => LOp::Nand,
+        Gate::Or => LOp::Or,
+        Gate::Nor => LOp::Nor,
+        Gate::Xor => LOp::Xor,
+        Gate::Xnor => LOp::Xnor,
+    }
+}
+
+/// The mask of the low `n` bits of a word (all of them from 64).
+fn low_bits(n: u64) -> u64 {
+    if n >= 64 { !0 } else { (1 << n) - 1 }
 }
 
 /// A light `numeric_std` native computed in place (`yavs_rt::native::ieee_fast`): the
@@ -8042,6 +8079,326 @@ impl Gen<'_> {
         self.b.ins().sshr(up, k)
     }
 
+    /// The code of reduction `g` over blocks of planes, each with the mask of its elements, as
+    /// the native: a deciding `0`/`L` (`and`) or `1`/`H` (`or`), else `U` if any is `U`, `X` if
+    /// any other is not `0 1 L H`, else the gate of the bits.
+    fn reduce_code(&mut self, g: yavs_ir::ieee::Gate, blocks: &[([Value; 4], Value)]) -> Value {
+        use yavs_ir::ieee::Gate;
+        let or = |g: &mut Self, a: Option<Value>, b: Value| match a {
+            Some(a) => g.b.ins().bor(a, b),
+            None => b,
+        };
+        let (mut ones, mut zeros, mut un, mut other, mut count) = (None, None, None, None, None);
+        for &(p, mask) in blocks {
+            let live = self.b.ins().band_not(p[1], p[3]);
+            let live = self.b.ins().band(live, mask);
+            let o = self.b.ins().band(live, p[0]);
+            let z = self.b.ins().band_not(live, p[0]);
+            let a01 = self.b.ins().bor(p[0], p[1]);
+            let a23 = self.b.ins().bor(p[2], p[3]);
+            let any = self.b.ins().bor(a01, a23);
+            let u = self.b.ins().band_not(mask, any);
+            let known = self.b.ins().bor(live, u);
+            let x = self.b.ins().band_not(mask, known);
+            if matches!(g, Gate::Xor | Gate::Xnor) {
+                let c = self.b.ins().popcnt(o);
+                count = Some(match count {
+                    Some(t) => self.b.ins().iadd(t, c),
+                    None => c,
+                });
+            }
+            ones = Some(or(self, ones, o));
+            zeros = Some(or(self, zeros, z));
+            un = Some(or(self, un, u));
+            other = Some(or(self, other, x));
+        }
+        let (Some(ones), Some(zeros), Some(un), Some(other)) = (ones, zeros, un, other) else {
+            unreachable!("a reduction of no block")
+        };
+        let notu = self.b.ins().icmp_imm_s(IntCC::Equal, un, 0);
+        let meta = self.b.ins().uextend(I64, notu);
+        let bad = self.b.ins().bor(un, other);
+        let is_meta = self.b.ins().icmp_imm_s(IntCC::NotEqual, bad, 0);
+        let r = match g {
+            Gate::And | Gate::Nand | Gate::Or | Gate::Nor => {
+                let and = matches!(g, Gate::And | Gate::Nand);
+                let decide = if and { zeros } else { ones };
+                let hit = self.b.ins().icmp_imm_s(IntCC::NotEqual, decide, 0);
+                let (on_hit, plain) = if and { (2, 3) } else { (3, 2) };
+                let plain = self.c64(plain);
+                let rest = self.b.ins().select(is_meta, meta, plain);
+                let on_hit = self.c64(on_hit);
+                self.b.ins().select(hit, on_hit, rest)
+            }
+            Gate::Xor | Gate::Xnor => {
+                let n1 = count.unwrap_or(ones);
+                let par = self.b.ins().band_imm_s(n1, 1);
+                let bit = self.b.ins().iadd_imm_s(par, 2);
+                self.b.ins().select(is_meta, meta, bit)
+            }
+        };
+        // `not` swaps `0` and `1` and keeps `U` and `X`.
+        if matches!(g, Gate::Nand | Gate::Nor | Gate::Xnor) {
+            let ge2 = self
+                .b
+                .ins()
+                .icmp_imm_s(IntCC::UnsignedGreaterThanOrEqual, r, 2);
+            let flip = self.b.ins().bxor_imm_s(r, 1);
+            self.b.ins().select(ge2, flip, r)
+        } else {
+            r
+        }
+    }
+
+    /// `is_x` over blocks of planes with their masks: any element not `0 1 L H` (plane 1 set,
+    /// plane 3 clear).
+    fn is_x_code(&mut self, blocks: &[([Value; 4], Value)]) -> Value {
+        let mut bad = None;
+        for &(p, mask) in blocks {
+            let live = self.b.ins().band_not(p[1], p[3]);
+            let b = self.b.ins().band_not(mask, live);
+            bad = Some(match bad {
+                Some(a) => self.b.ins().bor(a, b),
+                None => b,
+            });
+        }
+        let bad = bad.unwrap_or_else(|| self.c64(0));
+        let r = self.b.ins().icmp_imm_s(IntCC::NotEqual, bad, 0);
+        self.b.ins().uextend(I64, r)
+    }
+
+    /// The element count of an array operand (`data, left, right, dir`) whose bounds are
+    /// constants here.
+    fn known_len(&self, r: &[Reg]) -> Option<u64> {
+        let (l, rt, d) = (self.kint(r[1])?, self.kint(r[2])?, self.kint(r[3])?);
+        let (hi, lo) = if d == 1 { (l, rt) } else { (rt, l) };
+        u64::try_from(hi.checked_sub(lo)?.checked_add(1)?).ok()
+    }
+
+    /// The lengths of the array operands of `op` when `ieee_wide` takes it: all known here, of
+    /// at most 128 elements (two blocks), and some operand or the result over 64.
+    fn wide_lens(&self, op: yavs_ir::ieee::Op, layout: &[Arg], rs: &[Reg]) -> Option<Vec<u64>> {
+        use yavs_ir::ieee::{ARRAY_REGS, Form, Op};
+        let mut lens = Vec::new();
+        let mut at = 0;
+        for a in layout {
+            if *a == Arg::Arr {
+                lens.push(self.known_len(rs.get(at..at + ARRAY_REGS)?)?);
+                at += ARRAY_REGS;
+            } else {
+                at += 1;
+            }
+        }
+        let wide = |n: u64| (65..=128).contains(&n);
+        let ok = match (op, lens.as_slice()) {
+            (Op::IsX(true) | Op::Reduce(_) | Op::VecNot | Op::NumNot, &[n]) => wide(n),
+            (Op::VecGate(_) | Op::NumGate(_), &[n, k]) => wide(n) && n == k,
+            (Op::Add { .. }, &[n]) => wide(n),
+            (Op::Add { .. }, &[n, k]) => (1..=128).contains(&n.min(k)) && wide(n.max(k)),
+            (Op::Mul { form: Form::Vv, .. }, &[n, k]) => {
+                n.max(k) <= 128 && n.min(k) >= 1 && (65..=192).contains(&(n + k))
+            }
+            _ => false,
+        };
+        ok.then_some(lens)
+    }
+
+    /// The blocks of planes of an array operand of `n` (1 to 128, known) elements, with the mask
+    /// of the elements of each.
+    fn wide_blocks(&mut self, r: &[Reg], n: u64, fb: Block) -> Vec<([Value; 4], Value)> {
+        let nb = n.div_ceil(64);
+        let a = self.ld(r[0]);
+        let p = self.host(a, Some(r[0]), Op::C(0), Op::C(32 * nb), false, fb);
+        let gf = self.gf;
+        (0..nb)
+            .map(|k| {
+                let w = std::array::from_fn(|j| {
+                    self.b
+                        .ins()
+                        .load(I64, gf, p, (32 * k + 8 * j as u64) as i32)
+                });
+                (w, self.c64(low_bits(n - 64 * k) as i64))
+            })
+            .collect()
+    }
+
+    /// The bits of blocks of `0 1 L H` (and, with `pure`, no `L` or `H`), taking `fb` for any
+    /// other element value.
+    fn clean_bits(&mut self, blocks: &[([Value; 4], Value)], pure: bool, fb: Block) -> Vec<Value> {
+        let mut ok = None;
+        let mut bits = Vec::new();
+        for &(w, mask) in blocks {
+            let live = self.b.ins().band_not(w[1], w[3]);
+            let zero = self.b.ins().band_not(live, w[0]);
+            let one = self.b.ins().band(live, w[0]);
+            let both = self.b.ins().bor(zero, one);
+            let all = self.b.ins().band(both, mask);
+            let mut good = self.b.ins().icmp(IntCC::Equal, all, mask);
+            if pure {
+                let weak = self.b.ins().band(w[2], mask);
+                let okw = self.b.ins().icmp_imm_s(IntCC::Equal, weak, 0);
+                good = self.b.ins().band(good, okw);
+            }
+            ok = Some(match ok {
+                Some(o) => self.b.ins().band(o, good),
+                None => good,
+            });
+            bits.push(self.b.ins().band(one, mask));
+        }
+        if let Some(ok) = ok {
+            self.guard(ok, fb);
+        }
+        bits
+    }
+
+    /// The bits of an operand of `n` elements (one word per block) extended to `words` words
+    /// with zeros or, `signed`, its sign.
+    fn ext_words(&mut self, bits: &[Value], n: u64, signed: bool, words: usize) -> Vec<Value> {
+        let mut w = bits.to_vec();
+        let top = w.len() - 1;
+        let k = n - 64 * top as u64;
+        if signed && k < 64 {
+            let up = self.b.ins().ishl_imm_s(w[top], (64 - k) as i64);
+            w[top] = self.b.ins().sshr_imm_s(up, (64 - k) as i64);
+        }
+        let fill = if signed {
+            self.b.ins().sshr_imm_s(w[top], 63)
+        } else {
+            self.c64(0)
+        };
+        w.resize(words, fill);
+        w
+    }
+
+    /// `ieee_native` of an op `wide_lens` takes: its operands of up to two blocks, the result of
+    /// up to three, the same values as the native's (the clean cases of the arithmetic; every
+    /// element value for the gates, `is_x` and the reductions).
+    fn ieee_wide(
+        &mut self,
+        op: yavs_ir::ieee::Op,
+        layout: &[Arg],
+        rs: &[Reg],
+        lens: &[u64],
+        fb: Block,
+    ) -> Out {
+        use yavs_ir::ieee::{ARRAY_REGS, Form, Op};
+        note_site(4);
+        let (mut arrs, mut ints) = (Vec::new(), Vec::new());
+        let mut at = 0;
+        for a in layout {
+            if *a == Arg::Arr {
+                let n = lens[arrs.len()];
+                arrs.push(self.wide_blocks(&rs[at..at + ARRAY_REGS], n, fb));
+                at += ARRAY_REGS;
+            } else {
+                ints.push(self.ld(rs[at]));
+                at += 1;
+            }
+        }
+        let ones = self.c64(-1);
+        match op {
+            Op::IsX(true) => Out::Scalar(self.is_x_code(&arrs[0])),
+            Op::Reduce(g) => Out::Scalar(self.reduce_code(g, &arrs[0])),
+            Op::VecGate(g) | Op::NumGate(g) => {
+                let r = (0..arrs[0].len())
+                    .map(|k| self.logic_block(gate_lop(g), arrs[0][k].0, arrs[1][k].0))
+                    .collect();
+                let n = self.c64(lens[0] as i64);
+                Out::Planes(n, r, matches!(op, Op::VecGate(_)))
+            }
+            Op::VecNot | Op::NumNot => {
+                let r = arrs[0]
+                    .iter()
+                    .map(|&(x, _)| self.logic_block(yavs_ir::LOp::Not, x, x))
+                    .collect();
+                let n = self.c64(lens[0] as i64);
+                Out::Planes(n, r, op == Op::VecNot)
+            }
+            Op::Add { sub, signed, form } => {
+                let (x, y, n) = if form == Form::Vv {
+                    let (a, b) = (
+                        self.clean_bits(&arrs[0], false, fb),
+                        self.clean_bits(&arrs[1], false, fb),
+                    );
+                    (
+                        self.ext_words(&a, lens[0], signed, 2),
+                        self.ext_words(&b, lens[1], signed, 2),
+                        lens[0].max(lens[1]),
+                    )
+                } else {
+                    // An integer of a vector of at least 64 elements always fits it; a `natural`
+                    // must not be negative.
+                    let v = ints[0];
+                    if !signed {
+                        let c0 = self.c64(0);
+                        let nn = self.b.ins().icmp(IntCC::SignedGreaterThanOrEqual, v, c0);
+                        self.guard(nn, fb);
+                    }
+                    let a = self.clean_bits(&arrs[0], false, fb);
+                    let vw = self.ext_words(&[v], 64, signed, 2);
+                    let a = self.ext_words(&a, lens[0], signed, 2);
+                    if form == Form::Vi {
+                        (a, vw, lens[0])
+                    } else {
+                        (vw, a, lens[0])
+                    }
+                };
+                let (lo, hi) = if sub {
+                    let lo = self.b.ins().isub(x[0], y[0]);
+                    let borrow = self.b.ins().icmp(IntCC::UnsignedLessThan, x[0], y[0]);
+                    let borrow = self.b.ins().uextend(I64, borrow);
+                    let hi = self.b.ins().isub(x[1], y[1]);
+                    (lo, self.b.ins().isub(hi, borrow))
+                } else {
+                    let lo = self.b.ins().iadd(x[0], y[0]);
+                    let carry = self.b.ins().icmp(IntCC::UnsignedLessThan, lo, x[0]);
+                    let carry = self.b.ins().uextend(I64, carry);
+                    let hi = self.b.ins().iadd(x[1], y[1]);
+                    (lo, self.b.ins().iadd(hi, carry))
+                };
+                let n = self.c64(n as i64);
+                Out::Planes(n, vec![[lo, ones], [hi, ones]], false)
+            }
+            // The product modulo 2 to the 192 of the operands extended to three words, from
+            // the 64-bit products of their words.
+            Op::Mul { signed, .. } => {
+                let (a, b) = (
+                    self.clean_bits(&arrs[0], false, fb),
+                    self.clean_bits(&arrs[1], false, fb),
+                );
+                let x = self.ext_words(&a, lens[0], signed, 3);
+                let y = self.ext_words(&b, lens[1], signed, 3);
+                let n = lens[0] + lens[1];
+                let w0 = self.b.ins().imul(x[0], y[0]);
+                let h00 = self.b.ins().umulhi(x[0], y[0]);
+                let l01 = self.b.ins().imul(x[0], y[1]);
+                let l10 = self.b.ins().imul(x[1], y[0]);
+                let s1 = self.b.ins().iadd(h00, l01);
+                let w1 = self.b.ins().iadd(s1, l10);
+                let mut r = vec![[w0, ones], [w1, ones]];
+                if n > 128 {
+                    let c1 = self.b.ins().icmp(IntCC::UnsignedLessThan, s1, h00);
+                    let c2 = self.b.ins().icmp(IntCC::UnsignedLessThan, w1, s1);
+                    let c1 = self.b.ins().uextend(I64, c1);
+                    let c2 = self.b.ins().uextend(I64, c2);
+                    let h01 = self.b.ins().umulhi(x[0], y[1]);
+                    let h10 = self.b.ins().umulhi(x[1], y[0]);
+                    let l11 = self.b.ins().imul(x[1], y[1]);
+                    let l20 = self.b.ins().imul(x[2], y[0]);
+                    let l02 = self.b.ins().imul(x[0], y[2]);
+                    let mut w2 = self.b.ins().iadd(h01, h10);
+                    for t in [c1, c2, l11, l20, l02] {
+                        w2 = self.b.ins().iadd(w2, t);
+                    }
+                    r.push([w2, ones]);
+                }
+                let n = self.c64(n as i64);
+                Out::Planes(n, r, false)
+            }
+            _ => unreachable!("`wide_lens` takes no {op:?}"),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn ieee_native(
         &mut self,
@@ -8060,6 +8417,10 @@ impl Gen<'_> {
         // The native call is the rare way (wide operands, metavalues): out of line.
         let (fb, done) = (self.b.create_block(), self.b.create_block());
         self.b.set_cold_block(fb);
+        if let Some(lens) = self.wide_lens(op, layout, &rs) {
+            let out = self.ieee_wide(op, layout, &rs, &lens, fb);
+            return self.ieee_put(pc, inst, f, native, args, d, out, fb, done);
+        }
         let pure = matches!(
             op,
             Op::Resize { .. }
@@ -8120,13 +8481,6 @@ impl Gen<'_> {
                 g.b.ins().band(nn, z)
             }
         };
-        enum Out {
-            Scalar(Value),
-            // Count, bits, and whether the bounds are `1 to n` (else `n - 1 downto 0`).
-            Vector(Value, Value, bool),
-            // Count, bits and the bounds (left, right, direction) of an operand.
-            Bounds(Value, Value, Value, Value, Value),
-        }
         let out = match op {
             Op::ToInteger { signed } => {
                 let (n, bits, mask) = arrs[0];
@@ -8760,62 +9114,12 @@ impl Gen<'_> {
             Op::IsX(true) => {
                 note_site(0);
                 let (_, _, mask) = arrs[0];
-                let p = &planes[0];
-                let live = self.b.ins().band_not(p[1], p[3]);
-                let bad = self.b.ins().band_not(mask, live);
-                let r = self.b.ins().icmp_imm_s(IntCC::NotEqual, bad, 0);
-                Out::Scalar(self.b.ins().uextend(I64, r))
+                Out::Scalar(self.is_x_code(&[(four(&planes[0]), mask)]))
             }
-            // As the native: a deciding `0`/`L` (`and`) or `1`/`H` (`or`), else `U` if any is `U`,
-            // `X` if any other is not `0 1 L H`, else the gate of the bits; the code of the result.
             Op::Reduce(g) => {
                 note_site(0);
                 let (_, _, mask) = arrs[0];
-                let p = &planes[0];
-                let live = self.b.ins().band_not(p[1], p[3]);
-                let live = self.b.ins().band(live, mask);
-                let ones = self.b.ins().band(live, p[0]);
-                let zeros = self.b.ins().band_not(live, p[0]);
-                let a01 = self.b.ins().bor(p[0], p[1]);
-                let a23 = self.b.ins().bor(p[2], p[3]);
-                let any = self.b.ins().bor(a01, a23);
-                let un = self.b.ins().band_not(mask, any);
-                let known = self.b.ins().bor(live, un);
-                let other = self.b.ins().band_not(mask, known);
-                let notu = self.b.ins().icmp_imm_s(IntCC::Equal, un, 0);
-                let meta = self.b.ins().uextend(I64, notu);
-                let bad = self.b.ins().bor(un, other);
-                let is_meta = self.b.ins().icmp_imm_s(IntCC::NotEqual, bad, 0);
-                let r = match g {
-                    Gate::And | Gate::Nand | Gate::Or | Gate::Nor => {
-                        let and = matches!(g, Gate::And | Gate::Nand);
-                        let decide = if and { zeros } else { ones };
-                        let hit = self.b.ins().icmp_imm_s(IntCC::NotEqual, decide, 0);
-                        let (on_hit, plain) = if and { (2, 3) } else { (3, 2) };
-                        let plain = self.c64(plain);
-                        let rest = self.b.ins().select(is_meta, meta, plain);
-                        let on_hit = self.c64(on_hit);
-                        self.b.ins().select(hit, on_hit, rest)
-                    }
-                    Gate::Xor | Gate::Xnor => {
-                        let n1 = self.b.ins().popcnt(ones);
-                        let par = self.b.ins().band_imm_s(n1, 1);
-                        let bit = self.b.ins().iadd_imm_s(par, 2);
-                        self.b.ins().select(is_meta, meta, bit)
-                    }
-                };
-                // `not` swaps `0` and `1` and keeps `U` and `X`.
-                let r = if matches!(g, Gate::Nand | Gate::Nor | Gate::Xnor) {
-                    let ge2 = self
-                        .b
-                        .ins()
-                        .icmp_imm_s(IntCC::UnsignedGreaterThanOrEqual, r, 2);
-                    let flip = self.b.ins().bxor_imm_s(r, 1);
-                    self.b.ins().select(ge2, flip, r)
-                } else {
-                    r
-                };
-                Out::Scalar(r)
+                Out::Scalar(self.reduce_code(g, &[(four(&planes[0]), mask)]))
             }
             // Only `0 1 L H` got here: the bits as `(n-1 downto 0)`, `xmap` unused.
             Op::To01 => {
@@ -8824,31 +9128,67 @@ impl Gen<'_> {
             }
             _ => return Err("not a native computed in place".into()),
         };
+        self.ieee_put(pc, inst, f, native, args, d, out, fb, done)
+    }
+
+    /// The end of `ieee_native`: what it computed stored in `d` (an array in the temporary
+    /// area), then the native call on the rare way `fb`; both go on at `done`.
+    #[allow(clippy::too_many_arguments)]
+    fn ieee_put(
+        &mut self,
+        pc: u32,
+        inst: &Inst,
+        f: &Func,
+        native: yavs_ir::NativeId,
+        args: yavs_ir::Regs,
+        d: Reg,
+        out: Out,
+        fb: Block,
+        done: Block,
+    ) -> Result<(), String> {
+        let (c0, c1) = (self.c64(0), self.c64(1));
         match out {
             Out::Scalar(v) => self.st(d, v),
-            out @ (Out::Vector(..) | Out::Bounds(..)) => {
-                let (n, bits, left, right, down) = match out {
-                    Out::Vector(n, bits, true) => (n, bits, c1, n, c0),
-                    Out::Vector(n, bits, false) => {
-                        (n, bits, self.b.ins().iadd_imm_s(n, -1), c0, c1)
+            out => {
+                let ones = self.c64(-1);
+                let (n, blocks, up, bounds) = match out {
+                    Out::Vector(n, bits, up) => (n, vec![[bits, ones]], up, None),
+                    Out::Planes(n, b, up) => (n, b, up, None),
+                    Out::Bounds(n, bits, l, r, dd) => {
+                        (n, vec![[bits, ones]], false, Some((l, r, dd)))
                     }
-                    Out::Bounds(n, bits, l, r, d) => (n, bits, l, r, d),
                     Out::Scalar(_) => unreachable!(),
                 };
-                let mask = self.low_mask(n);
-                let sz = self.c64(i64::from(PUT_SMALL_BYTES));
+                let (left, right, down) = match bounds {
+                    Some(b) => b,
+                    None if up => (c1, n, c0),
+                    None => (self.b.ins().iadd_imm_s(n, -1), c0, c1),
+                };
+                // Every block but the last is whole.
+                let last = blocks.len() as i64 - 1;
+                let mask = match self.const_of(n) {
+                    Some(k) => self.c64(low_bits((k - 64 * last) as u64) as i64),
+                    None => {
+                        let k = self.b.ins().iadd_imm_s(n, -64 * last);
+                        self.low_mask(k)
+                    }
+                };
+                let sz = self.c64(i64::from(PUT_SMALL_BYTES) + 32 * last);
                 let (at, p) = self.temp_alloc(sz, fb);
                 let data = self
                     .b
                     .ins()
                     .iadd_imm_s(at, (16 + yavs_ir::DOPE_DIM_BYTES) as i64);
                 let dope = self.b.ins().iadd_imm_s(at, 16);
-                let masked = self.b.ins().band(bits, mask);
+                let mut words = vec![data, dope, left, right, down];
+                for (k, [p0, p1]) in blocks.into_iter().enumerate() {
+                    let m = if k as i64 == last { mask } else { ones };
+                    let w0 = self.b.ins().band(p0, m);
+                    let w1 = self.b.ins().band(p1, m);
+                    words.extend([w0, w1, c0, c0]);
+                }
                 let gf = self.gf;
-                for (k, w) in [data, dope, left, right, down, masked, mask, c0, c0]
-                    .into_iter()
-                    .enumerate()
-                {
+                for (k, w) in words.into_iter().enumerate() {
                     self.b.ins().store(gf, w, p, 8 * k as i32);
                 }
                 self.st(d, at);
@@ -8864,7 +9204,7 @@ impl Gen<'_> {
         self.b.switch_to_block(fb);
         self.clear();
         self.rare(1);
-        self.native_direct(pc, inst, f, native, args, dst)?;
+        self.native_direct(pc, inst, f, native, args, Some(d))?;
         let alt = res.map(|_| match self.cache[d.0 as usize] {
             Some(v) => v,
             None => self.b.ins().load(I64, self.rf, self.regs, d.0 as i32 * 8),
@@ -11436,11 +11776,11 @@ impl Gen<'_> {
         true
     }
 
-    /// `Inst::Cat` of a logic array of at most 64 elements whose piece lengths are known here: the
-    /// planes of all pieces are combined in registers and stored once, as `Machine::cat_block`
-    /// does. `false` (nothing generated) where a length is not known or does not fit that pattern;
-    /// a runtime case it does not take (a code beyond 'U' to '-', memory compiled code does not
-    /// reach) steps the whole instruction before any store.
+    /// `Inst::Cat` of a logic array of at most 128 elements (two blocks) whose piece lengths are
+    /// known here: the planes of all pieces are combined in registers and stored once, as
+    /// `Machine::cat_block` does for one block. `false` (nothing generated) where a length is not
+    /// known or does not fit that pattern; a runtime case it does not take (a code beyond 'U' to
+    /// '-', memory compiled code does not reach) steps the whole instruction before any store.
     #[allow(clippy::too_many_arguments)]
     fn cat_block(
         &mut self,
@@ -11460,7 +11800,7 @@ impl Gen<'_> {
             .ok()
             .zip(u64::try_from(m).ok())
             .and_then(|(n, m)| n.checked_mul(m))
-            .filter(|&t| t <= 64)
+            .filter(|&t| t <= 128)
         else {
             return false;
         };
@@ -11475,7 +11815,7 @@ impl Gen<'_> {
                 let Some(len) = self.kint(pr[1]).and_then(|l| u64::try_from(l).ok()) else {
                     return false;
                 };
-                let Some(units) = len.checked_mul(m as u64).filter(|&u| u <= 64) else {
+                let Some(units) = len.checked_mul(m as u64).filter(|&u| u <= 128) else {
                     return false;
                 };
                 if units == 0 {
@@ -11488,19 +11828,15 @@ impl Gen<'_> {
                 return false;
             }
         }
-        let pmask = |units: u64| {
-            if units == 64 {
-                !0u64
-            } else {
-                (1u64 << units) - 1
-            }
-        };
+        let nb = total.div_ceil(64) as usize;
         let (slow, join) = self.slow_path(pc, i);
-        let mut words: [Value; 4] = std::array::from_fn(|_| self.b.ins().iconst(I64, 0));
-        let mut mask = 0u64;
+        let zero = self.b.ins().iconst(I64, 0);
+        let mut words = vec![[zero; 4]; nb];
+        let mut mask = vec![0u64; nb];
         let mut at_k = 0u64;
         for &(r, units, scalar) in &pieces {
-            let bits: [Value; 4] = if scalar {
+            // The piece's blocks of planes, each with its element count.
+            let src: Vec<([Value; 4], u64)> = if scalar {
                 let v = self.ld(r);
                 let code = self.b.ins().iadd_imm_s(v, i64::from(bias));
                 // A code beyond 'U' to '-' is the interpreter's error.
@@ -11509,39 +11845,75 @@ impl Gen<'_> {
                     .ins()
                     .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, code, 8);
                 self.guard(okc, slow);
-                std::array::from_fn(|p| {
-                    let b = self.b.ins().ushr_imm_s(code, p as i64);
-                    self.b.ins().band_imm_s(b, 1)
-                })
+                vec![(
+                    std::array::from_fn(|p| {
+                        let b = self.b.ins().ushr_imm_s(code, p as i64);
+                        self.b.ins().band_imm_s(b, 1)
+                    }),
+                    1,
+                )]
             } else {
                 let a = self.ld(r);
-                let ptr = self.host(a, Some(r), Op::C(0), Op::C(32), false, slow);
+                let sb = units.div_ceil(64);
+                let ptr = self.host(a, Some(r), Op::C(0), Op::C(32 * sb), false, slow);
                 let nf = self.gf;
-                std::array::from_fn(|p| {
-                    let w = self.b.ins().load(I64, nf, ptr, 8 * p as i32);
-                    self.b.ins().band_imm_s(w, pmask(units) as i64)
-                })
+                (0..sb)
+                    .map(|b| {
+                        let u = (units - 64 * b).min(64);
+                        let w = std::array::from_fn(|p| {
+                            let w = self
+                                .b
+                                .ins()
+                                .load(I64, nf, ptr, (32 * b + 8 * p as u64) as i32);
+                            self.b.ins().band_imm_s(w, low_bits(u) as i64)
+                        });
+                        (w, u)
+                    })
+                    .collect()
             };
-            let off = total - at_k - units;
-            for p in 0..4 {
-                let sh = self.b.ins().ishl_imm_s(bits[p], off as i64);
-                words[p] = self.b.ins().bor(words[p], sh);
+            // The pieces fill the result from its top end; a block of a piece may straddle two
+            // of the result.
+            let mut off = total - at_k - units;
+            for (bits, u) in src {
+                let (dw, sh) = ((off / 64) as usize, off % 64);
+                for p in 0..4 {
+                    let lo = self.b.ins().ishl_imm_s(bits[p], sh as i64);
+                    words[dw][p] = self.b.ins().bor(words[dw][p], lo);
+                    if sh + u > 64 {
+                        let hi = self.b.ins().ushr_imm_s(bits[p], (64 - sh) as i64);
+                        words[dw + 1][p] = self.b.ins().bor(words[dw + 1][p], hi);
+                    }
+                }
+                mask[dw] |= low_bits(u) << sh;
+                if sh + u > 64 {
+                    mask[dw + 1] |= low_bits(u) >> (64 - sh);
+                }
+                off += u;
             }
-            mask |= pmask(units) << off;
             at_k += units;
         }
-        if mask == 0 {
+        if mask.iter().all(|&w| w == 0) {
             self.join(join);
             return true;
         }
         let d = self.ld(dst);
-        let pd = self.host(d, Some(dst), Op::C(0), Op::C(32), true, slow);
+        let pd = self.host(d, Some(dst), Op::C(0), Op::C(32 * nb as u64), true, slow);
         let nf = self.gf;
-        for (p, &word) in words.iter().enumerate() {
-            let cur = self.b.ins().load(I64, nf, pd, 8 * p as i32);
-            let keep = self.b.ins().band_imm_s(cur, !mask as i64);
-            let v = self.b.ins().bor(keep, word);
-            self.b.ins().store(nf, v, pd, 8 * p as i32);
+        for (b, (ws, &mk)) in words.iter().zip(&mask).enumerate() {
+            if mk == 0 {
+                continue;
+            }
+            for (p, &word) in ws.iter().enumerate() {
+                let at = (32 * b + 8 * p) as i32;
+                let v = if mk == !0 {
+                    word
+                } else {
+                    let cur = self.b.ins().load(I64, nf, pd, at);
+                    let keep = self.b.ins().band_imm_s(cur, !mk as i64);
+                    self.b.ins().bor(keep, word)
+                };
+                self.b.ins().store(nf, v, pd, at);
+            }
         }
         self.join(join);
         true

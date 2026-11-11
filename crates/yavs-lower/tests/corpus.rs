@@ -376,6 +376,7 @@ const PASS: &[&str] = &[
     "ieee/std_logic_1164_ops",
     "ieee/std_logic_1164_ops_2019",
     "ieee/user_reduce_idiom",
+    "ieee/wide_ops",
     "postponed/postponed_basic",
     "postponed/postponed_wait",
     "process/all_local_subprogram",

@@ -1217,6 +1217,116 @@ begin
 end architecture;
 "#;
 
+/// Held whole values in code that is not a copy, which has no compare of its own: offset 0, an
+/// offset inside a plane word, a slice across two plane words, exactly 64 elements, values that
+/// differ in their first or last element only, a record field.
+const SHARED_FORMS: &str = r#"
+library ieee;
+use ieee.std_logic_1164.all;
+entity top is
+end entity;
+architecture a of top is
+  type rec is record
+    a : std_logic_vector(3 downto 0);
+    b : std_logic;
+  end record;
+  signal clk : std_logic := '0';
+  signal n : natural := 0;
+  signal v8 : std_logic_vector(7 downto 0) := x"5a";
+  signal big : std_logic_vector(99 downto 0) := (others => '0');
+  signal v64 : std_logic_vector(63 downto 0) := x"0123456789abcdef";
+  signal c8, d8 : std_logic_vector(7 downto 0) := x"00";
+  signal r : rec := (x"3", '1');
+begin
+  clk <= not clk after 5 ns;
+  process (clk)
+  begin
+    if rising_edge(clk) then
+      v8 <= v8;
+      big(9 downto 2) <= big(9 downto 2);
+      big(70 downto 60) <= big(70 downto 60);
+      if n mod 4 = 1 then
+        big(70 downto 60) <= not big(70 downto 60);
+      end if;
+      v64 <= v64;
+      if n mod 5 = 0 then
+        v64 <= not v64;
+      end if;
+      if n mod 3 = 0 then
+        c8 <= c8(7 downto 1) & not c8(0);
+        d8 <= not d8(7) & d8(6 downto 0);
+      else
+        c8 <= c8;
+        d8 <= d8;
+      end if;
+      r.a <= r.a;
+      if n mod 6 = 2 then
+        r.a <= not r.a;
+      end if;
+      n <= n + 1;
+    end if;
+  end process;
+  process (clk)
+  begin
+    if falling_edge(clk) then
+      report integer'image(n) & " " & to_hstring(v8) & " " & to_hstring(big) & " " & to_hstring(v64) & " " & to_hstring(c8) & " " & to_hstring(d8) & " " & to_hstring(r.a) & std_logic'image(r.b);
+      if n = 40 then std.env.finish; end if;
+    end if;
+  end process;
+end architecture;
+"#;
+
+/// Kept scalar drives that change, handed over before a whole-value drive: the held vectors after
+/// them are taken first by the runtime, but not a later drive of a kernel driver that has an entry
+/// of the run (the last drives of `v(3)` and of `v` win: `v` holds).
+const KEPT_THEN_HELD: &str = r#"
+library ieee;
+use ieee.std_logic_1164.all;
+entity unit is
+  generic (g : natural);
+end entity;
+architecture a of unit is
+  signal clk : std_logic := '0';
+  signal n : natural := 0;
+  signal f, h : std_logic := '0';
+  signal v : std_logic_vector(7 downto 0) := x"00";
+  signal w : std_logic_vector(15 downto 0) := x"1234";
+  signal q : std_logic_vector(3 downto 0) := x"5";
+begin
+  clk <= not clk after 5 ns;
+  process (clk)
+  begin
+    if rising_edge(clk) then
+      if g > 1000 then report "g"; end if;
+      f <= not f;
+      v(3) <= not v(3);
+      v(2) <= not v(2);
+      w <= w;
+      h <= h;
+      v(3) <= v(3);
+      v <= v;
+      q <= q;
+      if n mod 7 = 0 then w <= not w; end if;
+      n <= n + 1;
+    end if;
+  end process;
+  process (clk)
+  begin
+    if falling_edge(clk) then
+      report integer'image(n) & " " & std_logic'image(f) & std_logic'image(h) & " " & to_hstring(v) & " " & to_hstring(w) & " " & to_hstring(q);
+      if n = 40 then std.env.finish; end if;
+    end if;
+  end process;
+end architecture;
+entity top is
+end entity;
+architecture a of top is
+begin
+  u0 : entity work.unit generic map (0);
+  u1 : entity work.unit generic map (1);
+end architecture;
+"#;
+
 /// A process of 70 drivers: those past the gate's 64 bits take the host's way, and a kept drive of
 /// one stops a skip of none of the others wrongly.
 fn many_drivers() -> String {
@@ -1277,6 +1387,11 @@ fn yavs(dir: &Path, env: &[(&str, &str)], args: &[&str]) -> (i32, String, String
 
 /// Runs `text` at every tier against the interpreter; the number of skips the check saw on one thread.
 fn against_interp(name: &str, text: &str) -> u64 {
+    against_interp_after(name, text, "2")
+}
+
+/// [`against_interp`] with processes switching to their copies after `after` activations.
+fn against_interp_after(name: &str, text: &str, after: &str) -> u64 {
     let d = tempdir(name);
     std::fs::write(d.join("t.vhd"), text).expect("write");
     let work = format!("work:{}", d.join("lib").display());
@@ -1294,7 +1409,7 @@ fn against_interp(name: &str, text: &str) -> u64 {
     };
     let interp = run(&[], &["--tier=interp", "--no-cache"], "1");
     assert_eq!(interp.0, 0, "{}", interp.2);
-    let spec = ("YAVS_SPEC_AFTER", "2");
+    let spec = ("YAVS_SPEC_AFTER", after);
     let check = ("YAVS_INLCMP", "check");
     let heat = ["--tier=clift-auto", "--tier-heat=1,0,0"];
     let cold = ["--tier=clift-auto", "--tier-heat=1,0,0", "--no-cache"];
@@ -1319,7 +1434,7 @@ fn against_interp(name: &str, text: &str) -> u64 {
     let counters = ("YAVS_COUNTERS", "1");
     let (_, _, e) = run(&[spec, check, counters], &heat, "1");
     assert!(
-        e.contains("counters: gate_checked="),
+        e.contains("counters: gate_checked=") || e.contains("counters: drive_src_held="),
         "a warm run skipped nothing: {e}"
     );
     let (_, _, e) = run(&[spec, check, counters], &cold, "1");
@@ -1367,6 +1482,52 @@ fn the_general_assignment_of_a_direct_driver_stops_the_skips() {
 fn drives_kept_for_other_kernel_drivers_do_not_stop_a_skip() {
     let hits = against_interp("compiled_gate_kept_other", KEPT_OTHER);
     assert!(hits > 20, "the compare took only {hits} skips");
+}
+
+#[test]
+fn held_values_in_code_that_is_no_copy() {
+    against_interp_after("compiled_gate_shared", SHARED_FORMS, "1000000");
+    let held = held_first("compiled_gate_shared_n", SHARED_FORMS, "1000000");
+    assert!(held > 100, "only {held} held drives taken first");
+}
+
+/// The fused whole-value drives of `text` on `--tier=clift` that the runtime found held before the
+/// kernel's look-ups (`drive_src_held`), copies made after `after` activations.
+fn held_first(name: &str, text: &str, after: &str) -> u64 {
+    let d = tempdir(name);
+    std::fs::write(d.join("t.vhd"), text).expect("write");
+    let work = format!("work:{}", d.join("lib").display());
+    let a = yavs(
+        &d,
+        &[],
+        &["analyze", "--std=2008", "--work", &work, "t.vhd"],
+    );
+    assert_eq!(a.0, 0, "{}", a.2);
+    let (rc, _, e) = yavs(
+        &d,
+        &[("YAVS_SPEC_AFTER", after), ("YAVS_COUNTERS", "1")],
+        &[
+            "run",
+            "--std=2008",
+            "--work",
+            &work,
+            "--tier=clift",
+            "--threads",
+            "1",
+            "top",
+        ],
+    );
+    assert_eq!(rc, 0, "{e}");
+    e.lines()
+        .find_map(|l| l.strip_prefix("counters: drive_src_held="))
+        .map_or(0, |n| n.parse().expect("a number"))
+}
+
+#[test]
+fn drives_kept_and_handed_over_leave_the_others_open() {
+    against_interp("compiled_gate_kept_then_held", KEPT_THEN_HELD);
+    let held = held_first("compiled_gate_kept_then_held_n", KEPT_THEN_HELD, "2");
+    assert!(held > 100, "only {held} held drives taken first");
 }
 
 #[test]

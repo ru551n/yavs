@@ -200,6 +200,10 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         if n != 0 {
             eprintln!("counters: gate_checked={n}");
         }
+        let n = yavs_rt::rt::DRIVE_SRC_HELD.load(std::sync::atomic::Ordering::Relaxed);
+        if n != 0 {
+            eprintln!("counters: drive_src_held={n}");
+        }
         let n = yavs_rt::rt::SCATTER_CHECKED.load(std::sync::atomic::Ordering::Relaxed);
         if n != 0 {
             eprintln!("counters: scatter_checked={n}");

@@ -2029,6 +2029,33 @@ impl Signal {
         }
     }
 
+    /// Whether `cur` holds `planes` (the low `len` bits, 1 to 64) at `elem`, on a signal that allows
+    /// skipping: `direct_same_planes` where the driving value is known to be `cur` (`Ctx::gate_same`).
+    #[inline(always)]
+    pub(crate) fn cur_holds(&self, elem: u32, len: u32, planes: [u64; 4]) -> bool {
+        let Buf::Planes { b: cur, .. } = &self.cur else {
+            return false;
+        };
+        let (e, n) = (elem as usize, len as usize);
+        let (w, sh) = (e / 64, e % 64);
+        if !self.skip_ok || n == 0 || n > 64 {
+            return false;
+        }
+        if sh + n <= 64
+            && let Some(x) = cur.get(w)
+        {
+            let m = yavs_logic::wide::nmask(n) << sh;
+            let d = (x[0] ^ planes[0] << sh)
+                | (x[1] ^ planes[1] << sh)
+                | (x[2] ^ planes[2] << sh)
+                | (x[3] ^ planes[3] << sh);
+            return d & m == 0;
+        }
+        e + n <= cur.len() * 64
+            && yavs_logic::wide::get_block(cur, e, n)
+                == planes.map(|p| p & yavs_logic::wide::nmask(n))
+    }
+
     /// [`Signal::direct_same`] for `len` elements from `elem` (at most 64): `planes`, masked to
     /// `len`, is what `cur` and the driving value (the driver's, after a deposit) hold there.
     #[inline(always)]

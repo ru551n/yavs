@@ -5760,6 +5760,7 @@ fn process_panic(sh: &Shared, p: u32, panic: &(dyn std::any::Any + Send)) -> Sim
 fn resumption(procs: &[ProcMeta], p: u32, st: &mut ProcState) {
     *st.gate[0].get_mut() = st.gate_base[0];
     *st.gate[1].get_mut() = st.gate_base[1];
+    st.gate_taken = 0;
     if let Some(m) = &mut st.marks {
         m.epoch += 1;
     }

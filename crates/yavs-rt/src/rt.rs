@@ -1081,14 +1081,37 @@ pub unsafe extern "C" fn yavs_rt_drive_src(
     let Some((c, ds, ss)) = (unsafe { direct(&(*mem).fr) }) else {
         return 0;
     };
-    let logic = ss
+    let Some(s) = ss
         .get((lo >> 32) as usize)
-        .is_some_and(|s| s.bytes == 0 && s.codes | s.planes != 0);
-    if !logic || len == 0 || n != len.div_ceil(64) * 32 {
+        .filter(|s| s.bytes == 0 && s.codes | s.planes != 0)
+    else {
+        return 0;
+    };
+    if len == 0 || n != len.div_ceil(64) * 32 {
         return 0;
     }
     let done = if len <= 64 {
         let block = unsafe { std::ptr::read_unaligned(data.cast::<[u64; 4]>()) };
+        // The value held already, through a driver the skip gate admits: what compiled code's
+        // compare takes, asked first (shared code has no compare, a kept drive zeroed the word).
+        let r = yavs_kernel::Range::new(s.off as u32 + lo as u32, len as u32);
+        if let Some(d) = ds.get(driver as usize)
+            && c.gate_same(driver, d.id, r, block)
+        {
+            if COUNTING {
+                DRIVE_SRC_HELD.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            // (Debug builds hold every such skip against the kernel's full test.)
+            #[cfg(debug_assertions)]
+            if let Err(why) = c.gate_check(d.id, r.offset, r.len, block) {
+                eprintln!(
+                    "internal error: the runtime skipped the drive through driver {driver} of [{lo:#x}, {len}], value {block:x?}: {why}"
+                );
+                std::process::abort();
+            }
+            c.gate_skipped();
+            return 1;
+        }
         yavs_interp::direct_drive_now(c, ds, ss, driver, [lo, len], 0, block)
     } else {
         let planes = unsafe { std::slice::from_raw_parts(data, n as usize) };
@@ -3117,6 +3140,10 @@ fn gate_skipped(mem: &mut Mem) {
         }
     }
 }
+
+/// Fused whole-value drives `yavs_rt_drive_src` found held with the skip gate open (`Ctx::gate_same`;
+/// builds that count only, `COUNTING`).
+pub static DRIVE_SRC_HELD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Skips of a compiled drive checked against the full test (`yavs_rt_gate_check`).
 pub static GATE_CHECKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

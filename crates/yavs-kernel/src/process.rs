@@ -984,6 +984,9 @@ pub(crate) struct ProcState {
     pub gate_base: [u64; 2],
     /// The bits of each waveform (index into `waveforms`), 0 for none.
     pub gate_bits: Vec<[u64; 2]>,
+    /// The bits of the first word that direct entries of this run took (`gate_off`), all of them
+    /// when the run made entries before `gate_init`: `Ctx::gate_same` reads the gate from it.
+    pub gate_taken: u64,
     /// `gate_set` was asked.
     pub gate_set: bool,
     /// For good: a direct driver of this process was given a waveform (a delay, a preemption, a
@@ -1122,6 +1125,7 @@ impl ProcState {
     #[inline(always)]
     fn gate_off(&mut self, local: u32) {
         if let Some(&[a, b]) = self.gate_bits.get(local as usize) {
+            self.gate_taken |= a;
             *self.gate[0].get_mut() &= !a;
             *self.gate[1].get_mut() &= !b;
         }
@@ -2397,7 +2401,30 @@ impl Ctx<'_> {
         // Entries of this run made before the code was entered: only the next run may skip.
         if self.st.out.is_empty() && self.st.outv.is_empty() && self.st.outb.is_empty() {
             *self.st.gate[0].get_mut() = base;
+        } else {
+            self.st.gate_taken = !0;
         }
+    }
+
+    /// Whether a zero-delay drive of `planes` (at most 64 elements) to `r` of direct driver `d`,
+    /// bit `k` of compiled code's skip gate (`ProcState::gate`), changes nothing, asked when
+    /// compiled code keeps no drive for later: the bit is in `gate_base` and no entry of the run
+    /// took it (`gate_taken`; the word itself may be zeroed by drives compiled code kept and has
+    /// handed over since), and the signal holds the value (`Signal::cur_holds`: under an open bit
+    /// the driving value is the current one, as for compiled code's compare). The skip test of
+    /// `assign_planes_fast` without its look-ups; `gate_skipped` then takes the skip.
+    #[inline]
+    pub fn gate_same(&self, k: u32, d: DriverId, r: Range, planes: [u64; 4]) -> bool {
+        if k >= 64 || (self.st.gate_base[0] & !self.st.gate_taken) >> k & 1 == 0 {
+            return false;
+        }
+        let Some(info) = self.sh.drivers.get(d.0 as usize) else {
+            return false;
+        };
+        let n = r.len;
+        (1..=64).contains(&n)
+            && info.range.contains(r)
+            && self.sh.signals[info.signal.0 as usize].cur_holds(r.offset, n, planes)
     }
 
     /// Assignments of this run were skipped without asking the kernel (`ProcState::gate` in compiled

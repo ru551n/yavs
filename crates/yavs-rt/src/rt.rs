@@ -73,6 +73,7 @@ pub const SCALAR: &str = "yavs_rt_scalar";
 
 pub const PLANES: &str = "yavs_rt_planes";
 pub const MEMEQ: &str = "yavs_rt_memeq";
+pub const CAT: &str = "yavs_rt_cat";
 pub const NATIVE: &str = "yavs_rt_native";
 /// The bytes `ieee::put_small` writes: a fat pair, a descriptor and one block of planes.
 pub const PUT_SMALL_BYTES: u32 = 16 + yavs_ir::DOPE_DIM_BYTES as u32 + 32;
@@ -1932,6 +1933,85 @@ pub unsafe extern "C" fn yavs_rt_memeq(a: *const u8, b: *const u8, n: u64) -> u6
             std::slice::from_raw_parts(a, n as usize) == std::slice::from_raw_parts(b, n as usize),
         )
     }
+}
+
+/// `Inst::Cat` of bytes from compiled code (`Gen::cat_bytes`), as `Machine::cat` does: the `np`
+/// pieces at `parts` (pairs of an address, or of a value where bit `j` of `scalars` is set, and
+/// an element count) one after another into the `n * m` bytes at `dst`, a value stored as its
+/// low `w` bytes, an array copied as `memmove` does. Every piece is found and tested before the
+/// first byte is written: 0 (nothing written) leaves the instruction to the interpreter.
+///
+/// # Safety
+/// `env` and `mem` are what compiled code was given; `parts` holds `2 * np` words.
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn yavs_rt_cat(
+    env: *mut c_void,
+    mem: *mut Mem,
+    dst: u64,
+    n: u64,
+    m: u64,
+    parts: *const u64,
+    np: u32,
+    scalars: u32,
+    w: u32,
+) -> u32 {
+    cb(Cb::Cat);
+    const MAX: usize = 16;
+    // Counts and sizes below 2^31: no sum or product below wraps.
+    let small = |v: u64| v < 1 << 31;
+    if np as usize > MAX || !small(n) || !small(m) || !matches!(w, 1 | 4 | 8) {
+        return 0;
+    }
+    // SAFETY: compiled code passes `2 * np` words.
+    let parts = unsafe { std::slice::from_raw_parts(parts, 2 * np as usize) };
+    let find = |a: u64, len: u64, write: bool| {
+        // SAFETY: as `yavs_rt_host`, which this is without its count.
+        let p = unsafe { &*mem }
+            .find(a, 0, len, write)
+            .unwrap_or_else(|| host_miss(env, mem, a, 0, len, u32::from(write)));
+        (!p.is_null()).then_some(p)
+    };
+    let total = n * m;
+    let Some(out) = find(dst, total, true) else {
+        return 0;
+    };
+    // Offset in the result, the value or the source, and the bytes of an array piece.
+    let mut plan = [(0u64, 0u64, None::<u64>); MAX];
+    let mut off = 0u64;
+    for (j, pr) in parts.as_chunks::<2>().0.iter().enumerate() {
+        if scalars >> j & 1 == 1 {
+            if off + u64::from(w) > total {
+                return 0;
+            }
+            plan[j] = (off, pr[0], None);
+            off += m;
+        } else {
+            if !small(pr[1]) {
+                return 0;
+            }
+            let bytes = pr[1] * m;
+            if off + bytes > total {
+                return 0;
+            }
+            let Some(p) = find(pr[0], bytes, false) else {
+                return 0;
+            };
+            plan[j] = (off, p as u64, Some(bytes));
+            off += bytes;
+        }
+    }
+    for &(off, v, bytes) in &plan[..np as usize] {
+        // SAFETY: every range was found and tested above; the lookups move no memory, and a
+        // piece may overlap the result (`copy`, as `memmove`).
+        unsafe {
+            let at = out.add(off as usize);
+            match bytes {
+                Some(b) => std::ptr::copy(v as *const u8, at, b as usize),
+                None => std::ptr::copy_nonoverlapping(v.to_le_bytes().as_ptr(), at, w as usize),
+            }
+        }
+    }
+    1
 }
 
 /// Word `k` of the layout of type `ty` for the `dsz` descriptor bytes at `desc`: an

@@ -76,6 +76,9 @@ pub(crate) struct Images {
     any_asked: AtomicBool,
     /// Bit `s` set: signal `s` has a leaf in an image.
     has: Vec<u64>,
+    /// Leaves of at most 64 logic elements written in place (`write_item`; debug and
+    /// `op-census` builds only, else 0).
+    pub leaves_inline: u64,
 }
 
 impl Images {
@@ -141,7 +144,7 @@ impl Images {
                 for g in items.chunk_by(|a, b| a.sig == b.sig) {
                     let sig = &mut signals[g[0].sig.0 as usize];
                     for t in g {
-                        write_item(sig, t, &mut bytes);
+                        write_item(sig, t, &mut bytes, &mut self.leaves_inline);
                     }
                     // The changes listed, as their cover when no waiter wants them exact: exact
                     // runs cost every waiter scan of a record that changes in many places.
@@ -200,7 +203,13 @@ impl Images {
         let mut n = 0;
         for im in &sig.images {
             let img = &mut self.list[im.image as usize];
-            let w = write_runs(sig, &im.items, &sig.changed, &mut img.bytes);
+            let w = write_runs(
+                sig,
+                &im.items,
+                &sig.changed,
+                &mut img.bytes,
+                &mut self.leaves_inline,
+            );
             img.writes += w;
             n += w;
         }
@@ -297,7 +306,13 @@ fn fits(spec: &ImageSpec, signals: &[Signal]) -> bool {
 /// mostly in element order: the walk goes on from the last item and searches only when a run starts
 /// before it.
 #[inline(always)]
-fn write_runs(sig: &Signal, items: &[ImageItem], runs: &[Range], bytes: &mut [u8]) -> u64 {
+fn write_runs(
+    sig: &Signal,
+    items: &[ImageItem],
+    runs: &[Range],
+    bytes: &mut [u8],
+    inline: &mut u64,
+) -> u64 {
     let (mut n, mut i, mut at) = (0, 0, 0);
     for &r in runs {
         if r.offset < at {
@@ -312,7 +327,7 @@ fn write_runs(sig: &Signal, items: &[ImageItem], runs: &[Range], bytes: &mut [u8
         while let Some(t) = items.get(j)
             && t.k < r.end()
         {
-            write_item(sig, t, bytes);
+            write_item(sig, t, bytes, inline);
             j += 1;
         }
         n += (j - i) as u64;
@@ -325,7 +340,7 @@ fn write_runs(sig: &Signal, items: &[ImageItem], runs: &[Range], bytes: &mut [u8
 
 /// The current value of a leaf into its place (`fits` holds).
 #[inline(always)]
-fn write_item(sig: &Signal, t: &ImageItem, bytes: &mut [u8]) {
+fn write_item(sig: &Signal, t: &ImageItem, bytes: &mut [u8], _inline: &mut u64) {
     let o = &mut bytes[t.voff as usize..(t.voff + t.vsize) as usize];
     let (k, len) = (t.k as usize, t.len as usize);
     match t.kind {
@@ -343,6 +358,21 @@ fn write_item(sig: &Signal, t: &ImageItem, bytes: &mut [u8]) {
             };
             put_le(o, v);
         }
+        // A leaf of at most 64 elements (`fits`: one block of 32 bytes), in place.
+        ImageKind::Planes
+            if len <= 64
+                && let Buf::Planes { b, .. } = &sig.cur
+                && o.len() == 32 =>
+        {
+            let w = yavs_logic::wide::get_block(b, k, len);
+            for (dst, x) in o.as_chunks_mut::<8>().0.iter_mut().zip(w) {
+                *dst = x.to_le_bytes();
+            }
+            #[cfg(any(debug_assertions, feature = "op-census"))]
+            {
+                *_inline += 1;
+            }
+        }
         ImageKind::Planes | ImageKind::Raw => {
             let ok = sig.cur.write_to(k, len, o);
             debug_assert!(ok, "an image leaf of {} that does not fit", sig.name);
@@ -350,7 +380,73 @@ fn write_item(sig: &Signal, t: &ImageItem, bytes: &mut [u8]) {
     }
 }
 
+#[inline(always)]
 fn put_le(o: &mut [u8], v: u64) {
-    let n = o.len().min(8);
-    o[..n].copy_from_slice(&v.to_le_bytes()[..n]);
+    let b = v.to_le_bytes();
+    // The usual leaf sizes as fixed stores, not a copy of a length known only here.
+    match o.len() {
+        1 => o[0] = b[0],
+        4 => o.copy_from_slice(&b[..4]),
+        8 => o.copy_from_slice(&b),
+        n => {
+            let n = n.min(8);
+            o[..n].copy_from_slice(&b[..n]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::value::SignalType;
+
+    /// A leaf of at most 64 elements is written in place, also across a block boundary, as the
+    /// codes of its elements; longer ones take `Buf::write_to`.
+    #[test]
+    fn a_planes_leaf_holds_the_codes_of_its_elements() {
+        let ty = SignalType::logic(200);
+        let mut sig = Signal::new("s".into(), ty, Buf::zeroed(ty.elem, 200), None);
+        let codes: Vec<u8> = (0..200u32).map(|e| ((e * 7 + e / 9) % 9) as u8).collect();
+        sig.cur.set_codes(0, &codes);
+        let mut inline = 0;
+        for (k, len) in [(60, 10), (64, 64), (3, 1), (0, 64), (127, 2), (130, 70)] {
+            let t = ImageItem {
+                sig: SignalId(0),
+                k,
+                len,
+                voff: 8,
+                vsize: len.div_ceil(64) * 32,
+                kind: ImageKind::Planes,
+            };
+            let mut bytes = vec![0xa5; 8 + t.vsize as usize + 8];
+            write_item(&sig, &t, &mut bytes, &mut inline);
+            let leaf = &bytes[8..8 + t.vsize as usize];
+            let plane = |c: usize, p: usize, i: usize| {
+                let o = c * 32 + p * 8;
+                u64::from_le_bytes(leaf[o..o + 8].try_into().unwrap()) >> i & 1
+            };
+            for i in 0..len as usize {
+                let (c, j) = (i / 64, i % 64);
+                let got = (0..4).fold(0, |v, p| v | plane(c, p, j) << p) as u8;
+                assert_eq!(got, codes[k as usize + i], "leaf ({k}, {len}) element {i}");
+            }
+            // Bits past the leaf are 0, the bytes around it untouched.
+            let c = (len as usize - 1) / 64;
+            for j in (len as usize - 1) % 64 + 1..64 {
+                assert!(
+                    (0..4).all(|p| plane(c, p, j) == 0),
+                    "leaf ({k}, {len}) bit {j}"
+                );
+            }
+            assert!(
+                bytes[..8]
+                    .iter()
+                    .chain(&bytes[8 + t.vsize as usize..])
+                    .all(|&b| b == 0xa5)
+            );
+        }
+        if cfg!(any(debug_assertions, feature = "op-census")) {
+            assert_eq!(inline, 5);
+        }
+    }
 }

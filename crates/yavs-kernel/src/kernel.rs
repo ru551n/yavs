@@ -290,6 +290,9 @@ pub struct Stats {
     /// Runs of plane-word entries that were a whole bus with nothing pending, stored at once
     /// (`Signal::commit_whole`; debug and `op-census` builds only, else 0).
     pub whole_commits: u64,
+    /// Image leaves of at most 64 logic elements written in place (`Images::leaves_inline`;
+    /// debug and `op-census` builds only, else 0).
+    pub image_leaves_inline: u64,
 }
 
 /// A pending observer wake-up (`Hook::wake_at`). Ordered by time, then registration.
@@ -2049,6 +2052,7 @@ impl SimControl {
             image_bytes: self.images.memory().1,
             #[cfg(any(debug_assertions, feature = "op-census"))]
             whole_commits: self.signals.iter().map(|s| s.whole_commits).sum(),
+            image_leaves_inline: self.images.leaves_inline,
             ..self.stats
         }
     }

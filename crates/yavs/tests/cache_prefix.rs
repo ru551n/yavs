@@ -525,3 +525,80 @@ fn library_stages_depend_on_the_optimiser_and_the_build() {
         assert_eq!(visible(&r), plain(i), "{env:?}");
     }
 }
+
+/// The name a run gave its program (`Program::identity`) and how many lines start with `what`.
+#[cfg(feature = "clift")]
+fn program(o: &Out) -> Option<&str> {
+    o.stderr
+        .lines()
+        .find_map(|l| l.strip_prefix("debug: cache: program "))
+}
+
+#[cfg(feature = "clift")]
+fn count(o: &Out, what: &str) -> usize {
+    let start = format!("debug: cache: clif {what}");
+    o.stderr.lines().filter(|l| l.starts_with(&start)).count()
+}
+
+/// A closure on the lowered library stores no program of its own, but names it by the closure and
+/// the library's lowering: its next run links what it compiled, and the check holds the links to
+/// what it would lower. A sibling testbench, an edited testbench and an edited library package get
+/// other names, and every run prints what a run without the cache prints.
+#[cfg(feature = "clift")]
+#[test]
+fn a_closure_on_the_library_links_what_its_last_run_compiled() {
+    let l = Libs::new("prekey", false);
+    let tops: Vec<String> = (1..=6).map(|n| l.tb(n, n % 2 == 1)).collect();
+    let heat = ["--tier=clift-auto", "--tier-heat=1,0,0"];
+    let check = [("YAVS_CLIFT_PREKEY_CHECK", "1")];
+    let no_check = [("YAVS_CLIFT_PREKEY_CHECK", "0")];
+    // The fourth closure makes the library. The first lowered without it, under another name.
+    let cold = l.run_env(&tops[0], &heat, &no_check);
+    assert!(count(&cold, "lowered") > 0, "{cold:?}");
+    let cold = program(&cold).expect("a name").to_string();
+    for t in &tops[1..SIGHTINGS as usize] {
+        assert_eq!(l.run_env(t, &heat, &no_check).code, 0);
+    }
+    // Two runs of a closure on it (the first lowers, the second links), checked against a cold run.
+    let twice = |t: &str, name_before: Option<&str>| -> String {
+        let plain = visible(&l.run(t, &["--no-cache"]));
+        let first = l.run_env(t, &heat, &no_check);
+        assert!(note(&first, "hit prefix lib "), "{t}: {first:?}");
+        assert!(count(&first, "lowered") > 0, "{t}: {first:?}");
+        let name = program(&first)
+            .unwrap_or_else(|| panic!("{t}: no name: {first:?}"))
+            .to_string();
+        assert_ne!(Some(name.as_str()), name_before, "{t}");
+        assert_eq!(visible(&first), plain, "{t}");
+        let second = l.run_env(t, &heat, &check);
+        assert_eq!(program(&second), Some(name.as_str()), "{t}");
+        assert!(count(&second, "prehit") > 0, "{t}: {second:?}");
+        assert!(count(&second, "pre checked") > 0, "{t}: {second:?}");
+        assert_eq!(visible(&second), plain, "{t}");
+        name
+    };
+    let a = twice(&tops[4], None);
+    // The first closure again, now on the library: its old entries name other ids.
+    let plain = visible(&l.run(&tops[0], &["--no-cache"]));
+    let again = l.run_env(&tops[0], &heat, &check);
+    assert!(note(&again, "hit prefix lib "), "{again:?}");
+    assert_ne!(program(&again), Some(cold.as_str()));
+    assert_eq!(visible(&again), plain);
+    let b = twice(&tops[5], Some(&a));
+    // An edit of the testbench (a string constant, in no body): another name.
+    let f = l.tmp.join(format!("{}.vhd", tops[5]));
+    let text = std::fs::read_to_string(&f).expect("read");
+    std::fs::write(&f, text.replace("\"k=\"", "\"kk=\"")).expect("write");
+    l.analyze("work", &["liba"], &f);
+    twice(&tops[5], Some(&b));
+    // An edit of a package of the prefix: a new prefix, made into a library by four closures.
+    let p = l.tmp.join("pa9.vhd");
+    let text = std::fs::read_to_string(&p).expect("read");
+    std::fs::write(&p, text.replace("+ 9", "+ 90")).expect("write");
+    l.analyze("liba", &[], &p);
+    let tops: Vec<String> = (1..=5).map(|n| l.tb(n, n % 2 == 1)).collect();
+    for t in &tops[..SIGHTINGS as usize] {
+        assert_eq!(l.run_env(t, &heat, &no_check).code, 0);
+    }
+    twice(&tops[4], Some(&a));
+}

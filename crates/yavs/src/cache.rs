@@ -186,6 +186,10 @@ impl StageCache for Stages {
         }
     }
 
+    fn prefix_identity(&self, level: usize, kind: &str, part: &[u8]) -> Option<String> {
+        self.level_key(level, kind, part).map(|(_, k)| k.hex())
+    }
+
     fn prefix_release(&self, level: usize, kind: &str, part: &[u8]) {
         if let Some((l, k)) = self.level_key(level, kind, part) {
             l.store.release(kind, &k);

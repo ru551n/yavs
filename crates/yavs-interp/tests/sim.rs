@@ -295,6 +295,102 @@ fn a_callee_the_tier_never_touched_is_called_lean_in_the_loop_with_the_tier() {
     assert_eq!(*t.0.lock().unwrap(), want);
 }
 
+/// A return into a compiled caller whose next instruction is its own return is not an entry of
+/// its compiled code: the tier is never asked to run there, and the trace is the interpreter's.
+#[test]
+fn compiled_code_is_not_entered_at_a_return() {
+    // Compiled code for `.0` and `.1` that runs nothing (no progress); the pcs it was asked at.
+    struct Asked(FuncId, FuncId, std::sync::Mutex<Vec<(FuncId, u32)>>);
+    impl yavs_interp::Tier for Asked {
+        fn run(&self, f: FuncId, pc: u32, _: &mut dyn yavs_interp::TierHost) -> Option<u32> {
+            self.2.lock().unwrap().push((f, pc));
+            Some(pc)
+        }
+        fn ready(&self, f: FuncId) -> bool {
+            f == self.0 || f == self.1
+        }
+    }
+    let build = || {
+        let mut pb = ProgramBuilder::new();
+        let int = integer(&mut pb);
+        let sq = pb.declare("square", FuncKind::Function, None);
+        let outer = pb.declare("outer", FuncKind::Function, None);
+        let proc_ = pb.declare("p", FuncKind::Process, None);
+        // Both longer than the optimiser inlines; `outer` returns what `square` gave it.
+        for (f, call) in [(sq, None), (outer, Some(sq))] {
+            let mut fb = pb.define(f);
+            let x = fb.param("x", Width::B8, ParamClass::Value, Mode::In, None);
+            stmt(&mut fb, StmtKind::Return);
+            let v = load(&mut fb, AddrSpace::Frame, x, Width::B8);
+            let mut r = v;
+            for _ in 0..30 {
+                r = bin(&mut fb, IntOp::Add, r, v);
+            }
+            if let Some(callee) = call {
+                let args = fb.regs(&[r]);
+                r = fb.reg(RegTy::I64);
+                fb.emit(Inst::Call {
+                    func: callee,
+                    args,
+                    dst: Some(r),
+                });
+            }
+            fb.emit(Inst::Ret { v: Some(r) });
+            fb.finish();
+        }
+        {
+            let mut fb = pb.define(proc_);
+            let n = fb.local("n", int, 8, 8);
+            wait_for(&mut fb, 10 * NS);
+            stmt(&mut fb, StmtKind::Call);
+            let v = load(&mut fb, AddrSpace::Frame, n, Width::B8);
+            let one = fb.int(1);
+            let v1 = bin(&mut fb, IntOp::Add, v, one);
+            store(&mut fb, AddrSpace::Frame, n, v1, Width::B8);
+            let args = fb.regs(&[v1]);
+            let r = fb.reg(RegTy::I64);
+            fb.emit(Inst::Call {
+                func: outer,
+                args,
+                dst: Some(r),
+            });
+            drive(&mut fb, 0, 0, r, Width::B8);
+            fb.emit(Inst::Br { to: BlockId(0) });
+            fb.finish();
+        }
+        let mut d = Design::new(pb);
+        d.signals = vec![byte_sig("s", 1, 8)];
+        d.procs = vec![ProcSpec {
+            name: "p",
+            func: proc_,
+            drives: vec![(0, 1)],
+        }];
+        (d, outer, proc_)
+    };
+    let (d, _, _) = build();
+    let (want, r) = d.run(Time::ns(100));
+    assert!(r.is_ok());
+    let (d, outer, proc_) = build();
+    let rt = Runtime::new(d.prog.clone(), Default::default()).unwrap();
+    let tier = std::sync::Arc::new(Asked(proc_, outer, Default::default()));
+    assert!(rt.set_tier(tier.clone()));
+    let flags = rt.native_flags();
+    flags.set(proc_);
+    flags.set(outer);
+    let (mut sim, t, _) = d.build_rt(1, rt, |p, _| p);
+    sim.run_until(Time::ns(100)).unwrap();
+    assert_eq!(*t.0.lock().unwrap(), want);
+    let asked = tier.2.lock().unwrap();
+    let f = d.prog.func(outer).unwrap();
+    assert!(asked.iter().any(|&(g, _)| g == outer), "{asked:?}");
+    for &(g, pc) in asked.iter().filter(|a| a.0 == outer) {
+        assert!(
+            !matches!(f.code[pc as usize], Inst::Ret { .. }),
+            "asked at the return, pc {pc} of {g}"
+        );
+    }
+}
+
 type Sampler = Box<dyn Fn(&mut Vec<(FuncId, bool)>) + Send>;
 
 /// A tier whose only function is `.0`, called on a native frame once flagged (`.1` counts the

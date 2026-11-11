@@ -9362,6 +9362,11 @@ impl Machine {
         k: usize,
         ctx: &mut Option<&mut Ctx<'_>>,
     ) -> R<u64> {
+        // Compiled code leaves at a return for the interpreter to run (`Tier`): no entry there.
+        if let Some(Op::Ret { .. }) = code.ops.get(k) {
+            crate::census::tier_skip();
+            return Ok((k as u64) << 1);
+        }
         // The registers of a waveform buffer that is not run are undefined until the op that
         // drives it: not an entry for compiled code (it is asked again after the next jump).
         let at = code.no_tier.partition_point(|r| r.1 < k as u32);

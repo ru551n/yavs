@@ -39,13 +39,14 @@ rows! {
     "Not": Op::Not => NO_FAST, CALL;
     "Conv": Op::Conv(..) => FAST, CALL;
     "Truthy": Op::Truthy => FAST, CALL;
-    "IsX": Op::IsX(_) => FAST, CALL;
-    "Reduce": Op::Reduce(_) => FAST, CALL;
+    "IsX": Op::IsX(false) => FAST, CALL;
     "ToBitVector": Op::ToBitVector => FAST, CALL;
     // Compiled code tests the edge itself.
     "Edge": Op::Edge(_) => NO_FAST, CALL;
     "VecGate": Op::VecGate(_) => FAST, IN_PLACE;
     "VecNot": Op::VecNot => FAST, IN_PLACE;
+    "IsX vec": Op::IsX(true) => FAST, IN_PLACE;
+    "Reduce": Op::Reduce(_) => FAST, IN_PLACE;
     "NumGate": Op::NumGate(_) => FAST, IN_PLACE;
     "NumNot": Op::NumNot => FAST, IN_PLACE;
     "Neg": Op::Neg => FAST, IN_PLACE;

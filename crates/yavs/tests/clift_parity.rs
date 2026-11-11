@@ -838,6 +838,91 @@ fn numeric_std_in_place_in_compiled_code_matches_the_interpreter() {
     );
 }
 
+/// `is_x` and the reductions of `std_logic_1164`, `numeric_std` and `std_logic_misc`, computed in
+/// place by compiled code (1 to 64 elements) and by the native (null, 65 and more): every code in
+/// the vectors, ascending and descending, in a function (native frame) and in a process (frame
+/// mode), and `is_x` of each of the nine scalar codes.
+const REDUCE: &str = r#"library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+use ieee.std_logic_misc.all;
+entity r is end;
+architecture a of r is
+  function gen(len : natural; seed : natural; kinds : natural) return std_ulogic_vector is
+    variable r : std_ulogic_vector(len + 2 downto 3);
+    variable s : natural := seed;
+  begin
+    for k in r'range loop
+      s := (s * 75 + 74) mod 65537;
+      r(k) := std_ulogic'val(2 + (s / 7) mod 2 + 4 * ((s / 11) mod 2));
+      if kinds > 0 and s mod kinds = 0 then r(k) := std_ulogic'val((s / 13) mod 9); end if;
+    end loop;
+    return r;
+  end function;
+  function code(x : std_ulogic) return integer is
+  begin
+    return std_ulogic'pos(x);
+  end function;
+  function b(x : boolean) return integer is
+  begin
+    if x then return 1; else return 0; end if;
+  end function;
+  -- One digit per result: `is_x`, the six gates of each package.
+  function all_of(v : std_ulogic_vector) return string is
+    variable u : unsigned(v'length - 1 downto 0) := unsigned(v);
+    variable l : std_logic_vector(v'range) := std_logic_vector(v);
+    variable up : std_ulogic_vector(1 to v'length) := v;
+  begin
+    return integer'image(b(is_x(v))) & integer'image(b(is_x(l))) & integer'image(b(is_x(up))) &
+           integer'image(code(and v)) & integer'image(code(nand v)) & integer'image(code(or v)) &
+           integer'image(code(nor v)) & integer'image(code(xor v)) & integer'image(code(xnor v)) &
+           integer'image(code(and up)) & integer'image(code(xor up)) &
+           integer'image(code(and u)) & integer'image(code(or u)) & integer'image(code(xnor u)) &
+           integer'image(code(and_reduce(l))) & integer'image(code(or_reduce(l))) &
+           integer'image(code(xor_reduce(l))) & integer'image(code(nor_reduce(l)));
+  end function;
+begin
+  process
+    constant lens : integer_vector := (0, 1, 2, 3, 8, 9, 31, 32, 33, 63, 64, 65, 66);
+    constant every : integer_vector := (0, 2, 5, 23);
+    variable v8 : std_ulogic_vector(7 downto 0) := "01LH01HL";
+    variable n : integer := 0;
+  begin
+    for i in lens'range loop
+      for kinds in 0 to 3 loop
+        for seed in 0 to 6 loop
+          report integer'image(lens(i)) & "/" & integer'image(kinds) & "/" & integer'image(seed) &
+                 ": " & all_of(gen(lens(i), seed + 17 * kinds, every(kinds)));
+        end loop;
+      end loop;
+    end loop;
+    -- Metavalues with no deciding element, and with one.
+    report "fixed " & all_of("UUU1") & " " & all_of("U1H1") & " " & all_of("XX11") & " " &
+           all_of("-WZ1") & " " & all_of("UX") & " " & all_of("U0X1") & " " & all_of("HHHH") & " " &
+           all_of("L0L0") & " " & all_of("1U") & " " & all_of("Z") & " " & all_of("U") & " " &
+           all_of("0UX") & " " & all_of("1XU");
+    for c in std_ulogic loop
+      report "is_x " & std_ulogic'image(c) & " " & integer'image(b(is_x(c)));
+    end loop;
+    -- In the process itself.
+    for k in 0 to 80 loop
+      v8(k mod 8) := std_ulogic'val(k mod 9);
+      n := n * 3 + b(is_x(v8)) + code(and v8) + 2 * code(or v8) + 3 * code(xor v8) + b(is_x(v8(k mod 8)));
+      n := n mod 99991;
+    end loop;
+    report "done " & integer'image(n);
+    wait;
+  end process;
+end;
+"#;
+#[test]
+fn is_x_and_reductions_in_compiled_code_match_the_interpreter() {
+    let dir = design("clift_reduce", REDUCE);
+    let (want, _) = parity(&dir, "r", &[]);
+    assert!(want.out.contains("done "), "{want:?}");
+    assert!(want.out.contains("is_x 'U' 1"), "{want:?}");
+}
+
 /// Vectors of every length class read from signals in a clocked process, among them the ones
 /// whose last group of eight codes is partly past the signal (1, 4, 9, 12 elements) and the
 /// ones that fill their plane block (64) or need two (65).

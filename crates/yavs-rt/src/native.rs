@@ -443,7 +443,13 @@ pub enum Arg {
 pub fn ieee_layout(op: yavs_ir::ieee::Op) -> Option<&'static [Arg]> {
     use yavs_ir::ieee::{Form, Op, Opd, Syn};
     Some(match op {
-        Op::ToInteger { .. } | Op::NumNot | Op::VecNot | Op::Neg | Op::Abs => &[Arg::Arr],
+        Op::ToInteger { .. }
+        | Op::NumNot
+        | Op::VecNot
+        | Op::Neg
+        | Op::Abs
+        | Op::IsX(true)
+        | Op::Reduce(_) => &[Arg::Arr],
         Op::Add { form, .. }
         | Op::Compare { form, .. }
         | Op::QCompare { form, .. }

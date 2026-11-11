@@ -15298,3 +15298,32 @@ change below computes what the code did before (the same IR by `YAVS_DUMPIR` ove
   `a_copy_made_later_frees_what_it_calls` (fails without the change).
 - **Decided** (user, 2026-11-10): land it on the exact counts; GRLIB cycles and its first-run cold cap are timed on a
   quiet host later. `copy_compiled` stays for now, though the map now holds the process copies' calls too.
+
+## Compiled code: `is_x` and the reductions of a vector in place (yavs-clift `Gen::ieee_native`, perf/b4-stepops, 2026-11-11)
+
+- **Finding** (agent). A re-count of what compiled code hands back to the host on main 5e652cb7 (`YAVS_COUNTERS=pc`)
+  put the stepped instructions (`TierHost::step`) far below the other hand-backs: GRLIB about 1.06 M steps a run
+  (machinery 0.15 percent of run 2's instructions), against 6.2 M native callbacks (`native_direct` 2.2 percent self)
+  and 3.8 M steps of native frames (`native_step`). On Microwatt the native callbacks were 136 M a run: `is_x` of a
+  vector 82 M, of a `std_ulogic` 25 M, the `or` reduction 18.5 M; `native_frame`, `yavs_rt_native` and `is_x_vec`
+  were 3.1 percent of its instructions. `is_x` and the reductions had a one-word path in the interpreter
+  (`lookup_fast`) but none in compiled code, and `is_x` of a `std_ulogic` was not among the code tables.
+- **Change** (agent). `Op::IsX(true)` and `Op::Reduce` are in `ieee_layout` with one array operand read through
+  `plane_operand` (1 to 64 elements, all four planes): `is_x` is any element whose plane 1 is clear or plane 3 set;
+  a reduction is the native's fold on the plane words (`and`: a `0`/`L` decides, else `U` if any is `U`, else `X` if
+  any other is not `0 1 L H`, else `1`; `or` the same with `1`/`H`; `xor` the parity of the `1`/`H` when no element is
+  a metavalue; the negated gates swap `0` and `1` and keep `U` and `X`). A null or longer operand takes the native
+  call of the same site. `is_x` of a `std_ulogic` is a code table (`code_table`), as `??` is. Rows `IsX vec` and
+  `Reduce` are `IN_PLACE` in `ieee_paths.rs`; `IEEE_NATIVE_CALLS` bounds lowered. Counter `clift_scan_sites`.
+- **Measured** (agent; exact counts, plain bench builds of 5e652cb7 and of the change, all-thread instructions,
+  untimed on cores 0-7, no `YAVS_COUNTERS`, medians of 2 or 3 reps from pristine worlds, outputs and exit statuses
+  equal in every run): default tier Microwatt runs 1 and 2 0.957 and 0.960, GRLIB runs 1 to 4 1.001, 0.976, 0.971,
+  0.972 (run 1's compile set moves it by 1.5 percent either way; runs 2 to 4 repeat within 0.1 percent); forced
+  `--tier=clift --no-cache --threads=1` Microwatt 0.967, `neorv32_single_cache` 0.992, `sc5_fifo_repack` 0.996,
+  `hdlm_fifo_sync`, `vunit_logging`, `olo_axi_master_full`, `uvvm_axistream_vvc`, `uvvm_sb_slv`, `osvvm_axi4_random`
+  within 0.05 percent. Cycles are still to be timed.
+- **Test.** `clift_parity` `is_x_and_reductions_in_compiled_code_match_the_interpreter`: every code in vectors of 0
+  to 66 elements, both directions, the three packages' reductions, in a function and in a process, and the scalar
+  table; it fails with the decided `0` of `or` wrong, the parity wrong, `is_x`'s plane test wrong, the `U`/`X` choice
+  wrong, the negation of a metavalue wrong, or the scalar table wrong.
+

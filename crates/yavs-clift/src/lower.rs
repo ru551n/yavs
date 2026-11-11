@@ -2451,6 +2451,22 @@ enum Op {
     V(Value),
 }
 
+/// `YAVS_COUNTERS`: the sites lowered so far of an `is_x` or reduction of a vector computed in
+/// place (`Gen::ieee_native`).
+static SITES: [std::sync::atomic::AtomicUsize; 1] =
+    [const { std::sync::atomic::AtomicUsize::new(0) }; 1];
+
+/// `[is_x or reduction of a vector]` sites lowered so far (`YAVS_COUNTERS`).
+pub fn inline_sites() -> [usize; 1] {
+    SITES
+        .each_ref()
+        .map(|a| a.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+fn note_site(k: usize) {
+    SITES[k].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// The element count and offsets of an `LCopy` whose run-time tests the constants settle: all
 /// three in the range of those tests, at most `LCOPY_BLOCKS` blocks on each side. Anything else
 /// stays with the general lowering, which sends it to the interpreter.
@@ -7878,10 +7894,13 @@ impl Gen<'_> {
                 | Op::Syn(Syn::Shift { .. })
                 | Op::Syn(Syn::Unary { neg: false, .. } | Syn::Unary { abs: true, .. })
         );
-        // `std_match` and `?=` / `?/=` take every element value: all four planes.
+        // `std_match`, `?=` / `?/=`, `is_x` and the reductions take every element value: all
+        // four planes.
         let plane_op = matches!(
             op,
             Op::Match
+                | Op::IsX(true)
+                | Op::Reduce(_)
                 | Op::MatchEq { .. }
                 | Op::QCompare {
                     cmp: Cmp::Eq | Cmp::Ne,
@@ -8561,6 +8580,67 @@ impl Gen<'_> {
                 let m = self.b.ins().ineg(sign);
                 let x = self.b.ins().bxor(bits, m);
                 Out::Vector(n, self.b.ins().isub(x, m), false)
+            }
+            // Any element not `0 1 L H` (plane 1 set, plane 3 clear).
+            Op::IsX(true) => {
+                note_site(0);
+                let (_, _, mask) = arrs[0];
+                let p = &planes[0];
+                let live = self.b.ins().band_not(p[1], p[3]);
+                let bad = self.b.ins().band_not(mask, live);
+                let r = self.b.ins().icmp_imm_s(IntCC::NotEqual, bad, 0);
+                Out::Scalar(self.b.ins().uextend(I64, r))
+            }
+            // As the native: a deciding `0`/`L` (`and`) or `1`/`H` (`or`), else `U` if any is `U`,
+            // `X` if any other is not `0 1 L H`, else the gate of the bits; the code of the result.
+            Op::Reduce(g) => {
+                note_site(0);
+                let (_, _, mask) = arrs[0];
+                let p = &planes[0];
+                let live = self.b.ins().band_not(p[1], p[3]);
+                let live = self.b.ins().band(live, mask);
+                let ones = self.b.ins().band(live, p[0]);
+                let zeros = self.b.ins().band_not(live, p[0]);
+                let a01 = self.b.ins().bor(p[0], p[1]);
+                let a23 = self.b.ins().bor(p[2], p[3]);
+                let any = self.b.ins().bor(a01, a23);
+                let un = self.b.ins().band_not(mask, any);
+                let known = self.b.ins().bor(live, un);
+                let other = self.b.ins().band_not(mask, known);
+                let notu = self.b.ins().icmp_imm_s(IntCC::Equal, un, 0);
+                let meta = self.b.ins().uextend(I64, notu);
+                let bad = self.b.ins().bor(un, other);
+                let is_meta = self.b.ins().icmp_imm_s(IntCC::NotEqual, bad, 0);
+                let r = match g {
+                    Gate::And | Gate::Nand | Gate::Or | Gate::Nor => {
+                        let and = matches!(g, Gate::And | Gate::Nand);
+                        let decide = if and { zeros } else { ones };
+                        let hit = self.b.ins().icmp_imm_s(IntCC::NotEqual, decide, 0);
+                        let (on_hit, plain) = if and { (2, 3) } else { (3, 2) };
+                        let plain = self.c64(plain);
+                        let rest = self.b.ins().select(is_meta, meta, plain);
+                        let on_hit = self.c64(on_hit);
+                        self.b.ins().select(hit, on_hit, rest)
+                    }
+                    Gate::Xor | Gate::Xnor => {
+                        let n1 = self.b.ins().popcnt(ones);
+                        let par = self.b.ins().band_imm_s(n1, 1);
+                        let bit = self.b.ins().iadd_imm_s(par, 2);
+                        self.b.ins().select(is_meta, meta, bit)
+                    }
+                };
+                // `not` swaps `0` and `1` and keeps `U` and `X`.
+                let r = if matches!(g, Gate::Nand | Gate::Nor | Gate::Xnor) {
+                    let ge2 = self
+                        .b
+                        .ins()
+                        .icmp_imm_s(IntCC::UnsignedGreaterThanOrEqual, r, 2);
+                    let flip = self.b.ins().bxor_imm_s(r, 1);
+                    self.b.ins().select(ge2, flip, r)
+                } else {
+                    r
+                };
+                Out::Scalar(r)
             }
             // Only `0 1 L H` got here: the bits as `(n-1 downto 0)`, `xmap` unused.
             Op::To01 => {

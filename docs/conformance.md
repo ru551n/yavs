@@ -1,14 +1,14 @@
 # yavs conformance report
 
-Generated: yavs 0.19.0 at commit `9bbdb36189` (2026-11-10) by `tools/conformance/run.py`; do not edit by hand.
+Generated: yavs 0.19.0 at commit `e98c747827` (2026-11-11) by `tools/conformance/run.py`; do not edit by hand.
 
 yavs is checked by running the test suites of VHDL libraries, a VHDL language test suite and real designs on it, and by comparing its output
-with two established open-source VHDL simulators, called sim1 and sim2 here. Each suite judges its own tests. Over the suites below, 15073 of 15176
+with two established open-source VHDL simulators, called sim1 and sim2 here. Each suite judges its own tests. Over the suites below, 15075 of 15178
 tests pass; every failure is tracked as an issue. This is evidence, not a proof of correctness.
 
 | Project or suite | What it is | Passed / total |
 | --- | --- | ---: |
-| Differential testbenches | small testbenches of this repository; output must equal sim1's, at 1 and 4 threads | 667/667 |
+| Differential testbenches | small testbenches of this repository; output must equal sim1's, at 1 and 4 threads | 669/669 |
 | Known simulator differences | one reproducer per case where simulators disagree | 271/271 |
 | sim1's regression tests | a reference simulator's own self-checking tests (runnable ones) | 1014/1070 |
 | sim2's regression tests | a reference simulator's own self-checking tests (runnable ones) | 463/504 |
@@ -50,7 +50,7 @@ Every testbench of `tests/corpus` runs on yavs and its normalised output is comp
 | ieee | 21/21 | 21/21 | 21/21 |
 | implicit | 6/6 | 6/6 | 6/6 |
 | postponed | 2/2 | 2/2 | 2/2 |
-| process | 50/50 | 50/50 | 50/50 |
+| process | 51/51 | 51/51 | 51/51 |
 | protected | 27/27 | 27/27 | 27/27 |
 | psl | 16/16 | 16/16 | 16/16 |
 | reflect | 14/14 | 14/14 | 14/14 |
@@ -59,11 +59,11 @@ Every testbench of `tests/corpus` runs on yavs and its normalised output is comp
 | rtl | 5/5 | 5/5 | 5/5 |
 | scalar | 20/20 | 20/20 | 20/20 |
 | shared | 4/4 | 4/4 | 4/4 |
-| sigassign | 37/37 | 37/37 | 37/37 |
+| sigassign | 38/38 | 38/38 | 38/38 |
 | std93 | 6/6 | 6/6 | 6/6 |
 | synopsys | 20/20 | 20/20 | 20/20 |
 | textio | 19/19 | 19/19 | 19/19 |
-| total | 667/667 | 667/667 | 667/667 |
+| total | 669/669 | 669/669 | 669/669 |
 
 Failing: none.
 

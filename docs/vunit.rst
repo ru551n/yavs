@@ -10,7 +10,7 @@ test, collecting coverage and sharing CPU cores. :doc:`vunit-yavs` is the refere
 Install
 -------
 
-``vunit-yavs`` adds yavs to VUnit as a simulator. You need yavs 0.19.0 or later on ``PATH`` (:ref:`installation`):
+``vunit-yavs`` adds yavs to VUnit as a simulator. You need yavs 0.19.1 or later on ``PATH`` (:ref:`installation`):
 
 .. code-block:: bash
 

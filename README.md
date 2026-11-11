@@ -41,14 +41,14 @@ Both install for your user only, without administrator rights, and check the dow
 ```yaml
 - uses: ru551n/yavs-action@v1
   with:
-    version: 0.19.0
+    version: 0.19.1
 ```
 
 [yavs-action](https://github.com/ru551n/yavs-action) installs a release; [Continuous integration](https://yavs.readthedocs.io/en/latest/ci.html) has a whole job.
 
 ## Test frameworks
 
-- [VUnit](https://yavs.readthedocs.io/en/latest/vunit.html): through the `vunit-yavs` package; it needs yavs 0.19.0 or later.
+- [VUnit](https://yavs.readthedocs.io/en/latest/vunit.html): through the `vunit-yavs` package; it needs yavs 0.19.1 or later.
 - [OSVVM](https://yavs.readthedocs.io/en/latest/libraries.html): analyzed from its sources, under VHDL-2008 and VHDL-2019.
 - [UVVM](https://yavs.readthedocs.io/en/latest/libraries.html): analyzed from its sources; its testbenches that run pass, and a few are skipped (sources absent from the checkout, or over the time limit).
 

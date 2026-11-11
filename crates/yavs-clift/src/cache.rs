@@ -74,7 +74,8 @@ pub(crate) fn note_hit() {
 static PRE_UNSTORED: AtomicUsize = AtomicUsize::new(0);
 
 /// `YAVS_COUNTERS` `clift_pre_unstored`: pre-keys made for a program the stage cache does not
-/// hold yet (a closure's first run), whose entries its second run links.
+/// hold (a closure's first run, or any run of a closure on a library prefix's lowering), whose
+/// entries the closure's next run links.
 pub fn pre_unstored() -> usize {
     PRE_UNSTORED.load(Ordering::Relaxed)
 }

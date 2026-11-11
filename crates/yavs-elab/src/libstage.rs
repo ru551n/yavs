@@ -345,6 +345,12 @@ impl LibUse {
         }
     }
 
+    /// The name of the lowered library this closure goes on from: its prefix and the digest of its
+    /// ids (`Program::identity`).
+    pub(crate) fn identity(&self) -> Option<String> {
+        self.cache.prefix_identity(self.level, LIB, &self.part)
+    }
+
     /// Where the state of the prefix's packages after their initialisation is kept.
     pub(crate) fn init_entry(&self) -> (Arc<dyn StageCache>, usize, Vec<u8>) {
         (self.cache.clone(), self.level, self.part.clone())

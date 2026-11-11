@@ -525,12 +525,14 @@ impl Elaborated {
                 }
             };
         // Named by its stage entry (#785), also in a closure's first run, which stores none: the
-        // second stores the same program under that name and links what the first compiled. Not
-        // a program built on a library prefix's stages, which a cold lowering does not reproduce.
+        // second stores the same program under that name and links what the first compiled. One
+        // built on a library prefix's lowering (never stored) is named by that lowering too: a
+        // cold lowering of the closure gives other ids.
         program.named_before = learn.is_some();
-        program.identity = match (&learn, &key) {
-            (Some(l), _) => l.key.identity(),
-            (None, Some(k)) if lib.is_none() && LoweringKey::fits(&program) => k.identity(),
+        program.identity = match (&learn, &key, &lib) {
+            (Some(l), _, _) => l.key.identity(),
+            (None, Some(k), None) if LoweringKey::fits(&program) => k.identity(),
+            (None, Some(k), Some(u)) => k.identity().zip(u.identity()).map(|(c, l)| c + "+" + &l),
             _ => None,
         };
         if let (Some(k), Some(id)) = (&key, &program.identity) {

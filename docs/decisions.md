@@ -15298,3 +15298,37 @@ change below computes what the code did before (the same IR by `YAVS_DUMPIR` ove
   `a_copy_made_later_frees_what_it_calls` (fails without the change).
 - **Decided** (user, 2026-11-10): land it on the exact counts; GRLIB cycles and its first-run cold cap are timed on a
   quiet host later. `copy_compiled` stays for now, though the map now holds the process copies' calls too.
+
+## Cranelift first-run compile cost: settings kept, one hash per compiled body (yavs-clift `lower.rs` `cache.rs`, perf/b4-clcold, 2026-11-11)
+
+Written by Claude. Profile of a cold GRLIB run (frame pointers, all threads, `--tier=auto`): the compile thread is 16
+percent of the samples, Cranelift's `compile_stencil` 10.8 (register allocation 5.3, `optimize` 3.4 of which the egraph
+pass 2.3), the lowering to Cranelift IR 3.0 (`gen_func`), the two Cranelift key hashes 0.65. Per function (local lab
+log): 167 compiles in run 1, 62 process copies take 1.25 s of the 2.1 s of Cranelift time and 0.50 s of the 0.64 s of
+lowering; the five largest functions take 29 percent.
+
+- **Settings kept: `opt_level=speed`, backtracking register allocation.** Exact all-thread instructions, GRLIB,
+  default tier, one world, runs 1 to 4 (`YAVS_CLIFT_OPT`, `YAVS_CLIFT_RA`): `opt_level=none` run 1 1.009 of the
+  default, runs 3 and 4 1.049; single-pass allocation 1.059 and 1.120; both 1.089 and 1.194. The slower code costs more
+  inside the first run than the cheaper compile saves, and every later run keeps the slower code (the key of the stored
+  code includes the flags). Not a cold-only option either.
+- **The `prog.layouts` lock is left as is.** Under `--tier-compile=wait` (the default) the simulation is held at a
+  pause point for every compile, so the compile thread's and the main thread's optimisations do not overlap: a
+  context-switch profile of the cold GRLIB run has no wait under `optimize_body_with`.
+- **One hash per compiled body (landed).** A function with a pre-key that is not a copy hashed its Cranelift body for
+  the pre-key entry (`clif_key`) and again in `compile_with_cache`. The entry now takes the key the compile looked up
+  (`Kv::asked`, counter `clift_key_reused`); a copy still hashes first for `bodies`, a run under
+  `YAVS_CLIFT_PREKEY_CHECK` hashes early as before, and the names and stepped kinds of the entry are read before the
+  compile (which rewrites the body). Debug builds assert the key. Machine code and entries are unchanged. Exact
+  main-thread instructions, forced `--tier=clift --threads=1`, to 2 us, run 2 (everything lowered again and linked):
+  0.89 to 0.95 of before on seven designs, GRLIB 54.6 to 51.8 G; run 1 level (the first run of these worlds has no
+  program identity, so no pre-key and nothing to save). Default tier, all threads: GRLIB run 2 0.997, runs 1, 3, 4 level;
+  Microwatt level; the small testbenches compile nothing in their first runs and are level. Corpus machine code
+  byte-equal (`YAVS_CLIFT_CODEDIR` with a cache, 12 602 functions under `--tier=clift`, 8 611 under `auto` with every
+  function compiled); later runs under `YAVS_CLIFT_PREKEY_CHECK=1` agree with every entry written this way.
+- **Tried, not kept:** one Cranelift `Context` and `FunctionBuilderContext` reused for every function (keeps the
+  register allocator's buffers): forced GRLIB run 1 0.9991, the rest within 0.001.
+- **Not done, measured:** the lowering resets per-register state at every block and host call (`known.clone_from`,
+  `Gen::clear`, the `Heap` sweep over `known`): forced GRLIB run 1 1.1 and 0.7 percent of the instructions, cold
+  default tier about 0.4 percent, mostly in process copies. Sparse resets need every write to `known` tracked
+  (`track` in `yavs-rt` included).

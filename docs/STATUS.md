@@ -1052,6 +1052,14 @@ first run with hits reads the stored program instead of lowering and compiling t
 world, runs 1 to 5 at auto, all-thread instructions 52.9, 28.3, 19.8, 19.8, 19.7 G (before: run 3 at 50.1 G). Corpus test
 `generics/elab_call_table` reaches the path (`ecall_session_hits`).
 
+### Cranelift compile: one hash per compiled body (perf/b4-clcold, 2026-11-11)
+
+`docs/decisions.md` "Cranelift first-run compile cost". A pre-key entry takes the Cranelift key the compile hashed
+for its own lookup instead of hashing the body a second time (`clift_key_reused`); machine code unchanged. Forced
+`--tier=clift` second runs 5 to 11 percent fewer main-thread instructions (GRLIB to 2 us 54.6 to 51.8 G), GRLIB default
+tier run 2 0.3 percent fewer, first runs level. `opt_level=none` and single-pass allocation were measured and lose on
+GRLIB from the first run on; the optimiser's layout lock has no waits under `--tier-compile=wait`.
+
 ### Optimiser round 2: one optimised body per function (perf/b4-optpass2, 2026-11-10)
 
 `docs/decisions.md` "IR optimiser, round 2". The optimised body of a function is made once per program and handed

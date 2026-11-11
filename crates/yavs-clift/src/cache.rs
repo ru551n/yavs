@@ -21,6 +21,7 @@
 //! in debug builds) makes the body anyway and aborts when it is not what the entry says.
 
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::rc::Rc;
@@ -40,6 +41,7 @@ const KIND: &str = "clif";
 static STORE: Mutex<Option<Store>> = Mutex::new(None);
 static HITS: AtomicUsize = AtomicUsize::new(0);
 static STORED: AtomicUsize = AtomicUsize::new(0);
+static KEY_REUSED: AtomicUsize = AtomicUsize::new(0);
 
 /// Keep the compiled code in the cache of library directory `lib` from now on (`None`: compile
 /// every function).
@@ -50,6 +52,15 @@ pub fn set_cache(lib: Option<&Path>) {
 /// Functions linked from the cache, and functions compiled and stored, so far in this process.
 pub fn cache_stats() -> (usize, usize) {
     (HITS.load(Ordering::Relaxed), STORED.load(Ordering::Relaxed))
+}
+
+/// Pre-key entries named by the key the compile hashed (`Kv::asked`), so far in this process.
+pub fn key_reused() -> usize {
+    KEY_REUSED.load(Ordering::Relaxed)
+}
+
+pub(crate) fn note_key_reused() {
+    KEY_REUSED.fetch_add(1, Ordering::Relaxed);
 }
 
 pub(crate) fn store() -> Option<Store> {
@@ -87,10 +98,19 @@ pub(crate) fn note_sub(what: usize, id: u32, tag: u64) {
     });
 }
 
-/// The store as Cranelift's cache of compiled functions.
-pub(crate) struct Kv(pub Store);
+/// The store as Cranelift's cache of compiled functions, with the last key Cranelift asked for.
+pub(crate) struct Kv(Store, Cell<Option<[u8; 32]>>);
 
 impl Kv {
+    pub(crate) fn new(store: Store) -> Kv {
+        Kv(store, Cell::new(None))
+    }
+
+    /// The key of the last lookup: what `clif_key` gives for the body compiled.
+    pub(crate) fn asked(&self) -> Option<[u8; 32]> {
+        self.1.get()
+    }
+
     fn key(k: &[u8]) -> Key {
         let mut b = KeyBuilder::new(KIND);
         b.text(&yavs_ir::opt::fingerprint()).part(k);
@@ -122,6 +142,7 @@ pub(crate) fn clif_key(isa: &dyn TargetIsa, func: &Function) -> [u8; 32] {
 
 impl CacheKvStore for Kv {
     fn get(&self, key: &[u8]) -> Option<Cow<'_, [u8]>> {
+        self.1.set(key.try_into().ok());
         self.0
             .get(KIND, &Self::key(key))
             .map(|e| Cow::Owned(e.to_vec()))

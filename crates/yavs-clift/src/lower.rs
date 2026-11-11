@@ -800,11 +800,12 @@ impl Jit {
     }
 
     /// Compile `ctx` into `fid` (`define_code_in`) and list it for the perf map, whether the code
-    /// was compiled or linked from the compilation cache.
-    fn define_code(&mut self, fid: ClifId, ctx: &mut Context) -> Result<(), String> {
-        self.define_code_in(fid, ctx)?;
+    /// was compiled or linked from the compilation cache; Cranelift's key of the body when there
+    /// is a cache.
+    fn define_code(&mut self, fid: ClifId, ctx: &mut Context) -> Result<Option<[u8; 32]>, String> {
+        let key = self.define_code_in(fid, ctx)?;
         if self.perfmap.is_none() {
-            return Ok(());
+            return Ok(key);
         }
         let c = ctx.compiled_code().ok_or("no compiled code")?;
         // IR pc of each stretch of machine code (`YAVS_CLIFT_CODEDIR`: `<name>.srcmap`).
@@ -829,19 +830,24 @@ impl Jit {
         if let Some(list) = self.perfmap.as_mut() {
             list.push((name, fid, size, map));
         }
-        Ok(())
+        Ok(key)
     }
 
     /// Compile `ctx` into `fid`: linked from the compilation cache when it has the function
     /// (`cache.rs`), else compiled, and stored when there is a cache.
-    fn define_code_in(&mut self, fid: ClifId, ctx: &mut Context) -> Result<(), String> {
+    fn define_code_in(
+        &mut self,
+        fid: ClifId,
+        ctx: &mut Context,
+    ) -> Result<Option<[u8; 32]>, String> {
         let Some(store) = crate::cache::store() else {
             return self
                 .module
                 .define_function(fid, ctx)
+                .map(|_| None)
                 .map_err(|e| format!("{e:?}"));
         };
-        let mut kv = crate::cache::Kv(store);
+        let mut kv = crate::cache::Kv::new(store);
         let isa = self.module.isa();
         if self.cached_only && !kv.has(isa, &ctx.func) {
             self.missed = true;
@@ -857,7 +863,8 @@ impl Jit {
             crate::cache::note_sub(2, id, tag);
         }
         let code = ctx.compiled_code().ok_or("no compiled code")?;
-        self.define_compiled(fid, &ctx.func, code)
+        self.define_compiled(fid, &ctx.func, code)?;
+        Ok(kv.asked())
     }
 
     /// Define `fid` as `code`, whose references are named by `func`'s parameters.
@@ -1191,14 +1198,12 @@ impl Jit {
         // The instances of a process with equal code (`Program::copy_of` of data the code does not
         // read) are one function, as the LLVM tier's twins.
         let copy = !native && prog.base_of(id) != id;
-        let clif =
-            (copy || pre.is_some()).then(|| crate::cache::clif_key(self.module.isa(), &ctx.func));
-        let now = pre.as_ref().zip(clif).map(|(k, clif)| {
-            let now = Pre::Code {
-                clif,
-                names: self.names_of(&ctx.func),
-                stepped: crate::cache::stepped_counts(&stepped),
-            };
+        // A function with a pre-key and no copy gets its Cranelift key from the compile, which
+        // hashes the body anyway (`define_code_in`).
+        let clif = (copy || (check && pre.is_some()))
+            .then(|| crate::cache::clif_key(self.module.isa(), &ctx.func));
+        let mut now = pre.as_ref().zip(clif).map(|(k, clif)| {
+            let now = self.pre_code(clif, &ctx.func, &stepped);
             crate::cache::pre_check(k, stored.as_ref(), &now, &f.name, id.0, native);
             (k, now)
         });
@@ -1250,28 +1255,55 @@ impl Jit {
         let asm = std::env::var("YAVS_CLIFT_ASM")
             .is_ok_and(|v| v.parse::<u32>().is_ok_and(|n| n == id.0));
         ctx.set_disasm(asm);
+        // The names before the compile, which rewrites the body; the key comes with the compile.
+        let late = (now.is_none() && pre.is_some()).then(|| {
+            (
+                self.names_of(&ctx.func),
+                crate::cache::stepped_counts(&stepped),
+                cfg!(debug_assertions)
+                    .then(|| crate::cache::clif_key(self.module.isa(), &ctx.func)),
+            )
+        });
         self.sub_now = sub;
         let defined = self.define_code(fid, &mut ctx);
         self.sub_now = None;
-        if let Err(e) = defined {
-            if e == NOT_CACHED {
-                return Err(e);
+        let hashed = match defined {
+            Ok(k) => k,
+            Err(e) => {
+                if e == NOT_CACHED {
+                    return Err(e);
+                }
+                // A Cranelift error (the verifier is on in debug builds) is a bug of the lowering:
+                // debug builds stop with the function, release builds leave it interpreted.
+                if cfg!(debug_assertions) {
+                    panic!(
+                        "Cranelift rejected f{}{}: {e:?}\n{}",
+                        id.0,
+                        if native {
+                            " (native-frame variant)"
+                        } else {
+                            ""
+                        },
+                        ctx.func.display()
+                    );
+                }
+                return Err(format!("Cranelift: {e} (a bug in yavs)"));
             }
-            // A Cranelift error (the verifier is on in debug builds) is a bug of the lowering:
-            // debug builds stop with the function, release builds leave it interpreted.
-            if cfg!(debug_assertions) {
-                panic!(
-                    "Cranelift rejected f{}{}: {e:?}\n{}",
-                    id.0,
-                    if native {
-                        " (native-frame variant)"
-                    } else {
-                        ""
-                    },
-                    ctx.func.display()
-                );
-            }
-            return Err(format!("Cranelift: {e} (a bug in yavs)"));
+        };
+        if let (Some(k), Some((names, stepped, want)), Some(clif)) = (&pre, late, hashed) {
+            debug_assert!(
+                want.is_none_or(|w| w == clif),
+                "the key the compile hashed is not the body's"
+            );
+            crate::cache::note_key_reused();
+            now = Some((
+                k,
+                Pre::Code {
+                    clif,
+                    names,
+                    stepped,
+                },
+            ));
         }
         if let Some((k, now)) = &now {
             crate::cache::pre_note(k, stored.as_ref(), now, &f.name, id.0, native);
@@ -1344,6 +1376,15 @@ impl Jit {
             facts: &facts.0,
             callees: &callees,
         }))
+    }
+
+    /// The pre-key entry of the code `func` compiled to (Cranelift key `clif`).
+    fn pre_code(&self, clif: [u8; 32], func: &ir::Function, stepped: &[String]) -> Pre {
+        Pre::Code {
+            clif,
+            names: self.names_of(func),
+            stepped: crate::cache::stepped_counts(stepped),
+        }
     }
 
     /// The symbols `func` refers to, as any run names them, in the order of its references.

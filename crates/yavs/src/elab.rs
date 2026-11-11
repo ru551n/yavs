@@ -1976,6 +1976,8 @@ fn run_design(
     if a.vhpi.is_empty() && a.wave.is_none() && a.cov.is_none() {
         db.release_analysis();
     }
+    // A closure's first run stores its lowering when it ends (`learn`): serialised meanwhile.
+    e.store_first();
     // `vhpi_control(vhpiReset)` builds it again (#832).
     let cfg_again = (!a.vhpi.is_empty()).then(|| cfg.clone());
     let (mut sim, mut built) = match e.build_full_once(cfg) {

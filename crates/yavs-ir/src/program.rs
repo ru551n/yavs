@@ -356,6 +356,46 @@ impl Program {
             .collect()
     }
 
+    /// Add to `taken` the optimised copies made since the last call (`seen`: one flag per function
+    /// taken), serialised as [`Program::export_optimized`] does, so that a thread can serialise them
+    /// while the run goes on; the end adds the loaded ones ([`Program::export_loaded`]).
+    pub fn export_optimized_since(&self, seen: &mut Vec<bool>, taken: &mut Vec<OptCopy>) {
+        if !crate::opt::copies_are_portable() {
+            return;
+        }
+        seen.resize(self.funcs.len(), false);
+        for (id, f) in self.funcs.iter() {
+            if seen[id.0 as usize] {
+                continue;
+            }
+            if let Some(Some(o)) = f.opt.get()
+                && !f.spare
+                && !self.private_copy(id)
+            {
+                seen[id.0 as usize] = true;
+                if let Ok(bytes) = postcard::to_stdvec(&**o) {
+                    taken.push(OptCopy {
+                        func: id,
+                        bytes: bytes.into(),
+                    });
+                }
+            }
+        }
+    }
+
+    /// The loaded copies not used yet, the rest of [`Program::export_optimized`] after
+    /// [`Program::export_optimized_since`]; `all` comes out sorted by function.
+    pub fn export_loaded(&self, all: &mut Vec<OptCopy>) {
+        if !crate::opt::copies_are_portable() {
+            return;
+        }
+        all.extend(self.stored_opt.map().iter().map(|(&f, b)| OptCopy {
+            func: FuncId(f),
+            bytes: b.clone(),
+        }));
+        all.sort_by_key(|c| c.func.0);
+    }
+
     /// The optimised copies made so far and the loaded ones not used yet, serialised, by function
     /// id. Empty when copies are not portable (the pass is off, a debugger keeps variables).
     pub fn export_optimized(&self) -> Vec<OptCopy> {
@@ -386,16 +426,19 @@ impl Program {
     /// Verify the functions not verified yet (see `lazy_verify`), all of them; afterwards
     /// [`Program::func`] verifies nothing.
     pub fn verify_pending(&mut self) -> Result<(), Vec<crate::VerifyError>> {
+        self.check_pending()?;
+        self.lazy_verify = None;
+        Ok(())
+    }
+
+    /// [`Program::verify_pending`] on a shared program: the functions are verified, and
+    /// [`Program::func`] goes on verifying each it hands out first.
+    pub fn check_pending(&self) -> Result<(), Vec<crate::VerifyError>> {
         let Some(from) = self.lazy_verify else {
             return Ok(());
         };
         let errs = crate::verify::verify(self, from as usize);
-        if errs.is_empty() {
-            self.lazy_verify = None;
-            Ok(())
-        } else {
-            Err(errs)
-        }
+        if errs.is_empty() { Ok(()) } else { Err(errs) }
     }
 
     /// The process must run serially (ir.md 3.5): it or a subprogram it reaches touches

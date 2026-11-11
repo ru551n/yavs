@@ -63,6 +63,7 @@ pub const GATE_CHECK: &str = "yavs_rt_gate_check";
 pub const IMAGE_CHECK: &str = "yavs_rt_image_check";
 
 pub const LAYOUT_WORD: &str = "yavs_rt_layout_word";
+pub const LAYOUT_INTO: &str = "yavs_rt_layout_into";
 pub const SCAN: &str = "yavs_rt_scan";
 pub const ELOOP: &str = "yavs_rt_eloop";
 pub const ELOOP_EXEC: &str = "yavs_rt_eloop_exec";
@@ -2040,6 +2041,53 @@ pub unsafe extern "C" fn yavs_rt_layout_word(
             // SAFETY: as above.
             unsafe { (*envp).panic = Some(p) };
             u64::MAX
+        }
+    }
+}
+
+/// `Inst::LayoutOf` of type `ty` from the `dsz` descriptor bytes at `desc` on a native frame
+/// (`Gen::layout_into`): its `n` words from the interpreter's layout memo
+/// (`TierHost::layout_into`) in new temporary memory, without a step. The address, or 0 where
+/// the host declines or the area must grow (nothing changed): compiled code then has the
+/// interpreter execute the `LayoutOf`.
+pub unsafe extern "C" fn yavs_rt_layout_into(
+    env: *mut c_void,
+    mem: *mut Mem,
+    ty: u32,
+    desc: *const u8,
+    dsz: u64,
+    n: u64,
+) -> u64 {
+    cb(Cb::LayoutInto);
+    // SAFETY: as in `yavs_rt_step`.
+    let fr = unsafe { &mut (*mem).fr };
+    let len = fr.temp_len;
+    let off = (len + 7) & !7;
+    let end = off + 8 * n;
+    if end > 0xffff_ffff || end > fr.temp_cap {
+        return 0;
+    }
+    let (temp, envp) = (fr.temp, env as *mut Env<'_>);
+    // SAFETY: compiled code checked `dsz` readable bytes at `desc`, which lie below the
+    // temporary area's length or outside it; the area has `temp_cap >= end` bytes; `env` is the
+    // activation's.
+    let r = catch_unwind(AssertUnwindSafe(|| unsafe {
+        let d = std::slice::from_raw_parts(desc, dsz as usize);
+        let o = std::slice::from_raw_parts_mut(temp.add(off as usize), 8 * n as usize);
+        (*envp).host.layout_into(ty, d, o)
+    }));
+    match r {
+        Ok(true) => {
+            // SAFETY: as above; the pad before the words is zeroed, as `Machine::temp_alloc` does.
+            unsafe { std::ptr::write_bytes(temp.add(len as usize), 0, (off - len) as usize) };
+            fr.temp_len = end;
+            u64::from(space::TEMP) << 61 | off
+        }
+        Ok(false) => 0,
+        Err(p) => {
+            // SAFETY: as above.
+            unsafe { (*envp).panic = Some(p) };
+            0
         }
     }
 }

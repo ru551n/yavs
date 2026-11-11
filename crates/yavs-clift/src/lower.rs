@@ -128,6 +128,7 @@ pub struct Jit {
     fill: ClifId,
     memeq: ClifId,
     cat: ClifId,
+    layout_into: ClifId,
     deopt: ClifId,
     deopt_slots: ClifId,
     deopt_end: ClifId,
@@ -560,6 +561,7 @@ impl Jit {
             ("clift_fill", clift_fill as *const u8),
             (MEMEQ, yavs_rt_memeq as *const u8),
             (CAT, yavs_rt_cat as *const u8),
+            (LAYOUT_INTO, yavs_rt_layout_into as *const u8),
             (WAIT, yavs_rt_wait as *const u8),
             (WAIT_ON, yavs_rt_wait_on as *const u8),
             (WAIT_SAME, yavs_rt_wait_same as *const u8),
@@ -620,6 +622,7 @@ impl Jit {
             &[I64, I64, I64, I64, I64, I64, I32, I32, I32],
             Some(I32),
         )?;
+        let layout_into = imp(LAYOUT_INTO, &[I64, I64, I32, I64, I64, I64], Some(I64))?;
         let deopt = imp(
             DEOPT,
             &[I64, I64, I32, I32, I64, I64, I64, I64, I64],
@@ -730,6 +733,7 @@ impl Jit {
             fill,
             memeq,
             cat,
+            layout_into,
             deopt,
             deopt_slots,
             deopt_end,
@@ -1675,6 +1679,9 @@ impl Jit {
             fill: self.module.declare_func_in_func(self.fill, &mut ctx.func),
             memeq: self.module.declare_func_in_func(self.memeq, &mut ctx.func),
             cat: self.module.declare_func_in_func(self.cat, &mut ctx.func),
+            layout_into: self
+                .module
+                .declare_func_in_func(self.layout_into, &mut ctx.func),
             deopt: self.module.declare_func_in_func(self.deopt, &mut ctx.func),
             deopt_slots: self
                 .module
@@ -1894,6 +1901,9 @@ struct Imports {
     fill: FuncRef,
     memeq: FuncRef,
     cat: FuncRef,
+    /// `yavs_rt_layout_into(env, mem, ty, desc, dsz, n) -> address`: the `n` words of a layout from
+    /// the interpreter's layout memo in new temporary memory, 0 when it declines.
+    layout_into: FuncRef,
     deopt: FuncRef,
     deopt_slots: FuncRef,
     deopt_end: FuncRef,
@@ -2506,12 +2516,14 @@ enum Op {
 }
 
 /// `YAVS_COUNTERS`: the sites lowered so far of an `is_x` or reduction of a vector computed in
-/// place (`Gen::ieee_native`) and of a `Cat` of bytes (`Gen::cat_bytes`).
-static SITES: [std::sync::atomic::AtomicUsize; 2] =
-    [const { std::sync::atomic::AtomicUsize::new(0) }; 2];
+/// place (`Gen::ieee_native`), of a `Cat` of bytes (`Gen::cat_bytes`) and of a `LayoutOf` from the
+/// layout memo (`Gen::layout_into`).
+static SITES: [std::sync::atomic::AtomicUsize; 3] =
+    [const { std::sync::atomic::AtomicUsize::new(0) }; 3];
 
-/// `[is_x or reduction of a vector, Cat of bytes]` sites lowered so far (`YAVS_COUNTERS`).
-pub fn inline_sites() -> [usize; 2] {
+/// `[is_x or reduction of a vector, Cat of bytes, LayoutOf from the memo]` sites lowered so far
+/// (`YAVS_COUNTERS`).
+pub fn inline_sites() -> [usize; 3] {
     SITES
         .each_ref()
         .map(|a| a.load(std::sync::atomic::Ordering::Relaxed))
@@ -3817,6 +3829,17 @@ fn gen_func(
                     }
                     g.st(dst, a);
                     g.join(join);
+                }
+                // A layout from a run-time descriptor on a native frame: the memo's words in
+                // temporary memory, the step below where that declines. (Frame-mode code keeps its
+                // step: the code cost more to compile than it saved.)
+                None if g.nat.is_some()
+                    && yavs_rt::count_rule_on()
+                    && xstep_wide(f, &inst)
+                    && let Some((dsz, n)) = layout_shape(prog, ty)
+                    && dsz <= 4096 =>
+                {
+                    g.layout_into(pc, &inst, f, (ty, dst, desc), dsz, n)
                 }
                 // (A layout from a run-time descriptor on a native frame, as the other generator.)
                 None if g.nat.is_some() && yavs_rt::count_rule_on() && xstep_wide(f, &inst) => {
@@ -5781,6 +5804,40 @@ impl Gen<'_> {
             }
         };
         self.st(fu.out, v);
+    }
+
+    /// `Inst::LayoutOf` of `ty` from the run-time descriptor in `desc` (`dsz` bytes, `n` words) on a
+    /// native frame: the words from the interpreter's layout memo in temporary memory
+    /// (`yavs_rt_layout_into`), as `Machine::layout_of` makes them; the step it had before where
+    /// that declines.
+    fn layout_into(
+        &mut self,
+        pc: u32,
+        i: &Inst,
+        f: &Func,
+        (ty, dst, desc): (yavs_ir::TyId, Reg, Reg),
+        dsz: u32,
+        n: u32,
+    ) {
+        let (slow, join) = self.slow_path_x(pc, i, f);
+        note_site(2);
+        let d = self.ld(desc);
+        let pd = self.host(d, Some(desc), Op::C(0), Op::C(u64::from(dsz)), false, slow);
+        let (tyv, dszv, nv) = (
+            self.c32(ty.0),
+            self.c64(i64::from(dsz)),
+            self.c64(i64::from(n)),
+        );
+        let c = self.b.ins().call(
+            self.imp.layout_into,
+            &[self.env, self.mem, tyv, pd, dszv, nv],
+        );
+        let a = self.b.inst_results(c)[0];
+        self.clear();
+        let ok = self.b.ins().icmp_imm_s(IntCC::NotEqual, a, 0);
+        self.guard(ok, slow);
+        self.st(dst, a);
+        self.join(join);
     }
 
     /// At the head of an element loop of a variant: the iterations but the last in the helper;

@@ -45,9 +45,11 @@ pub(crate) enum Cb {
     DriveSrc,
     /// `yavs_rt_cat`: a concatenation of bytes.
     Cat,
+    /// `yavs_rt_layout_into`: the words of a layout from a run-time descriptor.
+    LayoutInto,
 }
 
-const N: usize = 28;
+const N: usize = 29;
 
 /// Whether this build counts (the generators emit the calls of `yavs_rt_rare` only then).
 pub const COUNTING: bool = cfg!(any(debug_assertions, feature = "op-census"));
@@ -81,6 +83,7 @@ const NAMES: [&str; N] = [
     "steps",
     "drive_src",
     "cat",
+    "layout_into",
 ];
 
 #[cfg(any(debug_assertions, feature = "op-census"))]

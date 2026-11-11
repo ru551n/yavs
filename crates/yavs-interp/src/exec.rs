@@ -3948,6 +3948,50 @@ impl Machine {
         word_of(&self.layouts[t].insert(m).words, k)
     }
 
+    /// All the layout words of `ty` for the descriptor bytes `d` into `out` (`TierHost::layout_into`),
+    /// as `layout_word_of` finds them; `false` where `out` has another size.
+    pub(crate) fn layout_into(
+        &mut self,
+        prog: &Program,
+        ty: TyId,
+        d: &[u8],
+        out: &mut [u8],
+    ) -> R<bool> {
+        let t = ty.0 as usize;
+        if self.layouts.len() <= t {
+            self.layouts.resize_with(t + 1, || None);
+            self.layouts2.resize_with(t + 1, || None);
+        }
+        let put = |w: &[u8], out: &mut [u8]| {
+            let ok = w.len() == out.len();
+            if ok {
+                out.copy_from_slice(w);
+            }
+            ok
+        };
+        if let Some(m) = &self.layouts[t]
+            && m.dsz == d.len() as u64
+        {
+            match m.simple {
+                // (The memo's own words stay as they are: `ckey` names them.)
+                Some(n) => {
+                    if let Some(w) = simple_words(n, d) {
+                        let mut b = [0u8; 32];
+                        for (c, x) in b.as_chunks_mut::<8>().0.iter_mut().zip(w) {
+                            *c = x.to_le_bytes();
+                        }
+                        return Ok(put(&b, out));
+                    }
+                }
+                None if m.desc == d => return Ok(put(&m.words, out)),
+                None => {}
+            }
+        }
+        let memo = self.layouts[t].take();
+        let m = memo_next(prog, ty, memo, &mut self.layouts2[t], d.len() as u64, d, 0)?;
+        Ok(put(&self.layouts[t].insert(m).words, out))
+    }
+
     /// `Inst::LayoutOf`: the layout words in temporary memory.
     #[inline(never)]
     fn layout_of(&mut self, prog: &Program, ty: TyId, desc: u64) -> R<u64> {
@@ -12859,6 +12903,12 @@ impl crate::TierHost for Host<'_, '_, '_> {
 
     fn layout_word(&mut self, ty: u32, desc: &[u8], k: u32) -> Option<u64> {
         self.m.layout_word_of(self.prog, TyId(ty), desc, k).ok()
+    }
+
+    fn layout_into(&mut self, ty: u32, desc: &[u8], out: &mut [u8]) -> bool {
+        self.m
+            .layout_into(self.prog, TyId(ty), desc, out)
+            .unwrap_or(false)
     }
 
     fn native_light(

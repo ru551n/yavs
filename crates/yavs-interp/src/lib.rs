@@ -885,6 +885,14 @@ pub trait TierHost {
         None
     }
 
+    /// All the layout words of type `ty` for the descriptor bytes `desc` into `out`, from the same
+    /// memo (`Inst::LayoutOf` with a run-time descriptor, in compiled code); `false` where the
+    /// layout fails or has another size than `out`.
+    fn layout_into(&mut self, ty: u32, desc: &[u8], out: &mut [u8]) -> bool {
+        let _ = (ty, desc, out);
+        false
+    }
+
     /// The memo of pure calls (`docs/decisions.md` "Memo of pure calls") for a call of `func`
     /// ([`Program::memo_sig`]) with argument `cells` made by compiled code: from the native
     /// frame `depth` (slots as for [`TierHost::native_direct`]) or, `None`, a frame-mode

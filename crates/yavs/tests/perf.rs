@@ -1590,6 +1590,18 @@ mod clift {
             ("cb_cat", Max(206))
         ]
     );
+    // A layout from a run-time descriptor on a native frame is one call of the layout memo, not
+    // a step (400 calls; the process's own `LayoutOf`s stay steps).
+    clift_case!(
+        layout_into,
+        "layout_into",
+        "s=34398",
+        [
+            ("cb_xstep", Max(0)),
+            ("cb_layout_into", Min(390)),
+            ("cb_layout_into", Max(410))
+        ]
+    );
     // A by-reference address of the enclosing frame in frame-mode code: no callback per access.
     clift_case!(
         nested_byref,

@@ -15402,3 +15402,38 @@ lowering; the five largest functions take 29 percent.
   array piece one byte short. The refusal path (0) is not reached by any test: the front end gives no `Cat` whose
   pieces exceed the result.
 
+
+## Compiled code: a native frame's layout from a run-time descriptor in one call (yavs-clift `Gen::layout_into`, yavs-rt `yavs_rt_layout_into`, perf/b4-layoutof, 2026-11-11)
+
+- **Finding** (agent). A census on main bd29a1e7 (`YAVS_COUNTERS=pc`) put the steps of native frames of `LayoutOf`
+  first among what compiled code still hands back to the host on GRLIB: 3.4 to 3.5 M a run (`icc_valid`, `op_find`,
+  `cwp_gen`, `ic_ctrl`, `lock_gen`), each a `TierHost::native_step` on a frame of the host's. They are layouts of a
+  record or array type whose words depend on the descriptor (no `static_layout`) and of which more than one word is
+  read (one word is `fuse_layout`, a call of the memo already). Frame-mode code steps about 50 k a GRLIB run.
+- **Change** (agent). In a native frame such a `LayoutOf` (`layout_shape` gives the word count, a descriptor of at
+  most 4 KiB) finds the descriptor inline (`Gen::host`) and calls `yavs_rt_layout_into`: it takes the words from the
+  interpreter's layout memo (`TierHost::layout_into`, `Machine::layout_into`: the memo's words when its descriptor
+  bytes are the same or its array of scalars takes them from the bounds, else the memo made again, as
+  `layout_word_of`) into new temporary memory it allocates itself (pad zeroed, as `Machine::temp_alloc`) and returns
+  their address. 0 (nothing changed: the memo declined, the area must grow) takes the step it had before.
+  Frame-mode code keeps its step. Counters `clift_layout_sites` (sites), `cb_layout_into` (calls, debug builds).
+- **Tried, not kept** (agent, exact counts, forced `--tier=clift --no-cache --threads=1`): the allocation inline
+  (`temp_alloc`, with or without its zeroing) and the call in frame-mode code too cost `osvvm_axi4_random` 0.9 to 1.0
+  percent of its run in compiles (51 native and the frame-mode sites; frame mode alone was 0.6 percent of it, for
+  about 50 k steps a GRLIB run); with the allocation inline in native frames only, 0.3 percent.
+- **Measured** (agent; plain bench builds of bd29a1e7 and of the change with the next one (reals to integers), all
+  thread instructions, untimed on cores 0-7, no `YAVS_COUNTERS`, medians from pristine worlds, outputs and exit
+  statuses equal in every run): default tier GRLIB runs 2 to 4 0.988, 0.989, 0.988 (a copy of the base binary: 0.998
+  to 1.0004; run 1 moves 1 to 5 percent with its compile set); forced GRLIB 0.989, `uvvm_axistream_vvc` 0.996,
+  `osvvm_axi4_random` 1.0009, `hdlm_fifo_sync` 1.0004, `olo_axi_master_full` 1.0003, `uvvm_sb_slv`, `vunit_logging`,
+  `neorv32_single_cache`, `sc5_fifo_repack` and Microwatt within 0.01 percent; default tier `uvvm_axistream_vvc`,
+  `osvvm_axi4_random`, `uvvm_sb_slv` 4-run sums inside the spread of the base against a copy of itself (5 reps:
+  101.0 to 105.0, 28.4 to 29.5, 35.1 G), the small tests and `neorv32_single_cache` within their run-to-run
+  spread; Microwatt 2-run sums 1818.8 and 1819.4 G against 1812.8 to 1817.7 G for the base and its copy (run 1
+  alone spans 0.5 percent): inside the spread, leaning 0.1 to 0.2 percent up, while forced it is level (
+  1.0000). Cycles are still to be timed.
+- **Test.** `clift_parity` `layouts_from_run_time_descriptors_in_compiled_code_match_the_interpreter`: records with
+  unconstrained fields of several constraints read in functions, an array of them, a record of generic constraint
+  in the process, at two generic values; `perf.rs` `layout_into` bounds `cb_xstep` at 0 and `cb_layout_into` at 400
+  calls. The decline (0) is not reached by any test: no VHDL gives a layout the memo fails on that analysis lets
+  through.

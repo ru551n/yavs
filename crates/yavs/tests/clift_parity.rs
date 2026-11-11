@@ -1000,6 +1000,61 @@ fn byte_concatenations_in_compiled_code_match_the_interpreter() {
     assert_ne!(want.code, Some(0), "{want:?}");
 }
 
+/// Layouts from run-time descriptors made by compiled code from the layout memo
+/// (`Gen::layout_into`): records with unconstrained fields of several constraints read in a
+/// function (native frame) and an array of such records; next to them a record of generic
+/// constraint in the process (frame mode, stepped).
+const LAYOUT: &str = r#"entity l is generic (N : positive := 3); end;
+architecture a of l is
+  type rec is record
+    a : integer_vector;
+    b : string;
+    k : integer;
+  end record;
+  type recs is array (natural range <>) of rec;
+  function f(r : rec) return integer is
+  begin
+    return r.a(r.a'left) * 3 + r.b'length + r.a'length + r.k + character'pos(r.b(r.b'right));
+  end function;
+  function g(v : recs) return integer is
+    variable s : integer := 0;
+  begin
+    for i in v'range loop
+      s := (s * 7 + f(v(i))) mod 99991;
+    end loop;
+    return s;
+  end function;
+begin
+  process
+    variable r1 : rec(a(1 to 3), b(1 to 2));
+    variable r2 : rec(a(0 to 4), b(1 to 7));
+    variable v : recs(1 to 2)(a(1 to 2), b(1 to 3));
+    variable s : integer := 0;
+    variable q : rec(a(1 to N), b(1 to N + 1));
+  begin
+    for k in 0 to 99 loop
+      r1 := ((k, 2, 3), "xy", k);
+      r2 := ((-k, 1, 2, 3, 4), "abcdefg", 2 * k);
+      v := (((k, 1), "abc", 1), ((2, k), "def", k));
+      q.a(1 + k mod N) := k;
+      q.k := q.a(1) + q.b'length;
+      s := (s * 31 + f(r1) + f(r2) + g(v) + q.k) mod 99991;
+      wait for 1 ns;
+    end loop;
+    report "s=" & integer'image(s);
+    wait;
+  end process;
+end;
+"#;
+#[test]
+fn layouts_from_run_time_descriptors_in_compiled_code_match_the_interpreter() {
+    let dir = design("clift_layout", LAYOUT);
+    let (want, _) = parity(&dir, "l", &[]);
+    assert!(want.out.contains("s=34398"), "{want:?}");
+    let (want, _) = parity(&dir, "l", &["-gN=6"]);
+    assert!(want.out.contains("s="), "{want:?}");
+}
+
 /// Vectors of every length class read from signals in a clocked process, among them the ones
 /// whose last group of eight codes is partly past the signal (1, 4, 9, 12 elements) and the
 /// ones that fill their plane block (64) or need two (65).

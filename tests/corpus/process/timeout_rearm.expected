@@ -20,7 +20,11 @@ diag	note	50000000	1	:timeout_rearm:next_delta	next_delta: cond u=1 at 50000000 
 diag	note	55000000	0	:timeout_rearm:wfor	wfor: 5 s=4 event=false at 55000000 fs
 diag	note	60000000	0	:timeout_rearm:wfor	wfor: 6 s=5 event=true at 60000000 fs
 diag	note	60000000	0	:timeout_rearm:plain	plain: s=5 at 60000000 fs
+diag	note	60000000	0	:timeout_rearm:plain2	plain2: s=5 at 60000000 fs
 diag	note	60000000	0	:timeout_rearm:post	post: s=5 at 60000000 fs
+diag	note	61000000	0	:timeout_rearm:lone	lone: w=4 at 61000000 fs
+diag	note	62000000	0	:timeout_rearm:pair1	pair1: x=4 at 62000000 fs
+diag	note	62000000	0	:timeout_rearm:pair2	pair2: x=4 at 62000000 fs
 diag	note	100000000	0	:timeout_rearm:leave	leave: same deadline at 100000000 fs
 diag	note	200000000	0	:timeout_rearm:leave	leave: later deadline at 200000000 fs
 diag	note	230000000	1	:timeout_rearm:leave	leave: condition at 230000000 fs

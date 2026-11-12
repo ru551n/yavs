@@ -1,6 +1,8 @@
 exit	0
 diag	note	800000000	0	:timeout_resident:check	clock waiters: 107
+diag	note	800000000	0	:timeout_resident:check	edge waiters: 107
 diag	note	800000000	0	:timeout_resident:check	receiver 0: 611
 diag	note	800000000	0	:timeout_resident:check	receiver 1: 611
 diag	note	800000000	0	:timeout_resident:check	receiver 2: 610
 diag	note	800000000	0	:timeout_resident:check	receiver 3: 610
+diag	finish	800000000	0	-	0

@@ -2,7 +2,10 @@
 -- Many processes in one `wait on x until c for T` loop on a clock and on a message signal: they
 -- wait again after every event that leaves the condition false, time out while the clock stops
 -- and again while it runs, and must not see a timeout at the next event after one. A wait that
--- completes with the condition false must be a timeout, exactly T after the wait began.
+-- completes with the condition false must be a timeout, exactly T after the wait began. The
+-- second clock group waits on the edge (`rising_edge(clk) and en = '1'`) with one wait statement:
+-- resident waiters with an edge trigger, which the kernel runs as one batch without a wake each, so
+-- a timeout's flag must not survive into the next edge.
 entity timeout_resident is end;
 architecture t of timeout_resident is
   constant K : natural := 20;
@@ -12,6 +15,7 @@ architecture t of timeout_resident is
   type nv is array (natural range <>) of natural;
   signal outs : nv(0 to K - 1) := (others => 0);
   signal msgs : nv(0 to M - 1) := (others => 0);
+  signal edges : nv(0 to K - 1) := (others => 0);
 begin
   clock : process begin
     for i in 1 to 40 loop
@@ -57,6 +61,27 @@ begin
     end process;
   end generate;
 
+  -- One wait statement (the kernel batches only processes with one suspension point): the process
+  -- runs until `check` finishes the simulation.
+  ge : for i in 0 to K - 1 generate
+    process
+      variable t0 : time;
+      variable n, m : natural := 0;
+    begin
+      t0 := now;
+      wait until rising_edge(clk) and en = '1' for 95 ns;
+      if clk = '1' and clk'event and en = '1' then
+        n := n + 1;
+      else
+        assert now = t0 + 95 ns
+          report "edge waiter " & integer'image(i) & " resumed early at " & time'image(now)
+          severity failure;
+        m := m + 1;
+      end if;
+      edges(i) <= 100 * n + m;
+    end process;
+  end generate;
+
   -- A message to one receiver at a time; the others wake with the condition false.
   sender : process begin
     for k in 1 to 24 loop
@@ -97,9 +122,14 @@ begin
       assert outs(i) = outs(0) report "clock waiter " & integer'image(i) & " differs" severity failure;
     end loop;
     report "clock waiters: " & integer'image(outs(0));
+    for i in 0 to K - 1 loop
+      assert edges(i) = edges(0) report "edge waiter " & integer'image(i) & " differs" severity failure;
+    end loop;
+    report "edge waiters: " & integer'image(edges(0));
     for i in 0 to M - 1 loop
       report "receiver " & integer'image(i) & ": " & integer'image(msgs(i));
     end loop;
+    std.env.finish;
     wait;
   end process;
 end;

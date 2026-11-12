@@ -10,6 +10,15 @@
 -- 60 ns), whose order the LRM leaves open (yavs: `docs/decisions.md` "Process order within a cycle").
 entity timeout_rearm is end;
 architecture t of timeout_rearm is
+  type counter_t is protected
+    procedure inc;
+  end protected;
+  type counter_t is protected body
+    variable n : natural := 0;
+    procedure inc is begin n := n + 1; end;
+  end protected body;
+  shared variable pv : counter_t;
+  signal w, x : integer := 0;
   signal s : integer := 0;
   signal u, v, z, f : integer := 0;
 begin
@@ -91,6 +100,48 @@ begin
       wait on s;
       report "plain: s=" & integer'image(s) & " at " & time'image(now);
     end loop;
+    wait;
+  end process;
+
+  -- The same, with nothing else in the activation that ends the timed wait (no report, no
+  -- assignment), so the commit of the untimed wait could take a short way that knows nothing of
+  -- timeouts: on `s` with many processes in the batch (`plain2`), alone on `w` (a batch of one,
+  -- `lone`), two on `x` (a pooled batch with `YAVS_POOL_ALL`), one of them serial (`pair2` calls a
+  -- protected method). Each waits again once with its condition false (resident from then on),
+  -- leaves at the next event and reports at the fourth after (60, 61, 62 ns), never at 50 ns.
+  w <= 9 after 11 ns, 1 after 21 ns, 2 after 31 ns, 3 after 41 ns, 4 after 61 ns;
+  x <= 9 after 12 ns, 1 after 22 ns, 2 after 32 ns, 3 after 42 ns, 4 after 62 ns;
+  plain2 : process begin
+    wait on s until s = 2 for 50 ns;
+    wait on s;
+    wait on s;
+    wait on s;
+    report "plain2: s=" & integer'image(s) & " at " & time'image(now);
+    wait;
+  end process;
+  lone : process begin
+    wait on w until w = 1 for 50 ns;
+    wait on w;
+    wait on w;
+    wait on w;
+    report "lone: w=" & integer'image(w) & " at " & time'image(now);
+    wait;
+  end process;
+  pair1 : process begin
+    wait on x until x = 1 for 50 ns;
+    wait on x;
+    wait on x;
+    wait on x;
+    report "pair1: x=" & integer'image(x) & " at " & time'image(now);
+    wait;
+  end process;
+  pair2 : process begin
+    pv.inc;
+    wait on x until x = 1 for 50 ns;
+    wait on x;
+    wait on x;
+    wait on x;
+    report "pair2: x=" & integer'image(x) & " at " & time'image(now);
     wait;
   end process;
 

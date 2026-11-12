@@ -546,6 +546,14 @@ struct ScanLoop {
     delta: i64,
 }
 
+/// What a timed-wait op (`Machine::timed_op`) leaves the op loop to do: the next op, a branch to
+/// op `Go`, the suspension at the op whose IR pc is the `Suspend`'s.
+pub(crate) enum TimedFlow {
+    Next,
+    Go(u32),
+    Suspend(usize),
+}
+
 pub(crate) enum Flow {
     Next,
     Jump(yavs_ir::BlockId),
@@ -5210,6 +5218,64 @@ impl Machine {
         Ok(())
     }
 
+    /// The timed-wait ops of the op loop (`Op::WaitTime`, `TimedOut`, `TimedOutBr`,
+    /// `WaitTimeSuspend`, `WaitSigAtSuspend`) at op `k`; an error comes with the op it belongs to.
+    #[inline(never)]
+    fn timed_op(
+        &mut self,
+        op: Op,
+        k: usize,
+        top: usize,
+        ctx: &mut Option<&mut Ctx<'_>>,
+    ) -> Result<TimedFlow, (usize, Fault)> {
+        match op {
+            Op::WaitTime { t, rel } => self.wait_time(Reg(t), rel, ctx).map_err(|e| (k, e))?,
+            Op::TimedOut { dst } => {
+                self.regs[dst as usize] = Self::timed_out(ctx).map_err(|e| (k, e))?;
+            }
+            Op::TimedOutBr { dst, t, f } => {
+                let v = Self::timed_out(ctx).map_err(|e| (k, e))?;
+                self.regs[dst as usize] = v;
+                return Ok(TimedFlow::Go(if v != 0 { t } else { f }));
+            }
+            Op::WaitTimeSuspend { t, at, rel } => {
+                let at = at as usize;
+                self.wait_time(Reg(t), rel, ctx).map_err(|e| (at, e))?;
+                return Ok(TimedFlow::Suspend(at + 1));
+            }
+            Op::WaitSigAtSuspend {
+                sig,
+                offset,
+                dst,
+                off,
+                at,
+            } => {
+                let at = at as usize;
+                self.wait_sig1(sig, self.regs[offset as usize], ctx)
+                    .map_err(|e| (at, e))?;
+                let slots = if top == 0 {
+                    Some(&self.root[..])
+                } else {
+                    self.fslots(top)
+                };
+                let d = match slots
+                    .and_then(|s| s.get(off as usize..))
+                    .and_then(|s| s.first_chunk::<8>())
+                {
+                    Some(b) => u64::from_le_bytes(*b),
+                    None => mk_addr(FRAME, top as u32, off.into())
+                        .and_then(|a| self.load_slow(a, Width::B8))
+                        .map_err(|e| (at + 1, e))?,
+                };
+                self.regs[dst as usize] = d;
+                self.wait_at(d, ctx).map_err(|e| (at + 2, e))?;
+                return Ok(TimedFlow::Suspend(at + 3));
+            }
+            _ => return Err((k, ice_s!("not a timed-wait op"))),
+        }
+        Ok(TimedFlow::Next)
+    }
+
     /// `Inst::WaitAt` of the deadline `d` (fs).
     fn wait_at(&mut self, d: u64, ctx: &mut Option<&mut Ctx<'_>>) -> R<()> {
         let t = to_time(d as i64)?;
@@ -7598,46 +7664,25 @@ impl Machine {
                     k += 1;
                     enter!();
                 }
-                Op::WaitTime { t, rel } => {
-                    t!(self.wait_time(Reg(t), rel, ctx));
-                    k += 1;
-                    enter!();
-                }
-                Op::TimedOut { dst } => {
-                    self.regs[dst as usize] = t!(Self::timed_out(ctx));
-                    k += 1;
-                    enter!();
-                }
-                Op::TimedOutBr { dst, t, f: e } => {
-                    let v = t!(Self::timed_out(ctx));
-                    self.regs[dst as usize] = v;
-                    go!(if v != 0 { t } else { e });
-                }
-                Op::WaitTimeSuspend { t, at, rel } => {
-                    k = at as usize;
-                    t!(self.wait_time(Reg(t), rel, ctx));
-                    self.frames[top].pc = code.at.get(k + 1).copied().unwrap_or(0);
-                    self.suspend(prog, f, ctx)?;
-                    return Ok(Flow::Suspend);
-                }
-                Op::WaitSigAtSuspend {
-                    sig,
-                    offset,
-                    dst,
-                    off,
-                    at,
-                } => {
-                    k = at as usize;
-                    t!(self.wait_sig1(sig, self.regs[offset as usize], ctx));
-                    k += 1;
-                    let d = slot8!(off);
-                    self.regs[dst as usize] = d;
-                    k += 1;
-                    t!(self.wait_at(d, ctx));
-                    self.frames[top].pc = code.at.get(k + 1).copied().unwrap_or(0);
-                    self.suspend(prog, f, ctx)?;
-                    return Ok(Flow::Suspend);
-                }
+                // Out of line, one arm: the loop's code is sensitive to what its arms inline
+                // (inlined, these cost `rtl_ff` 1.5 percent of its instructions).
+                op @ (Op::WaitTime { .. }
+                | Op::TimedOut { .. }
+                | Op::TimedOutBr { .. }
+                | Op::WaitTimeSuspend { .. }
+                | Op::WaitSigAtSuspend { .. }) => match self.timed_op(op, k, top, ctx) {
+                    Ok(TimedFlow::Next) => {
+                        k += 1;
+                        enter!();
+                    }
+                    Ok(TimedFlow::Go(to)) => go!(to),
+                    Ok(TimedFlow::Suspend(at)) => {
+                        self.frames[top].pc = code.at.get(at).copied().unwrap_or(0);
+                        self.suspend(prog, f, ctx)?;
+                        return Ok(Flow::Suspend);
+                    }
+                    Err((at, e)) => return Err(self.fault_at(top, code, at, e)),
+                },
                 Op::WaitStatic { to } => {
                     self.end_stmt();
                     k = if ctx.as_deref_mut().is_some_and(|c| c.wait_same()) {

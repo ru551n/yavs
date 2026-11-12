@@ -120,7 +120,9 @@ elements.
   process sensitive to the whole record registers one range per leaf as today (resident, so
   nothing per activation); step 4 makes it one range per pack.
 - **Ports.** Collapse runs first and is unchanged: a collapsed formal's leaves are its actual's
-  leaves, so it follows their `LeafLoc`. An uncollapsed whole-record port is one kernel edge per
+  leaves, so it follows their `LeafLoc`. A record formal collapsed onto an element of an array of
+  records (2026-11-13) has no pack of its own: its fields are parts of the array's field leaves
+  (`SigObj::parts`), which pack only when the whole array fits a pack. An uncollapsed whole-record port is one kernel edge per
   pack pair once consecutive leaf edges with consecutive ranges on both sides are coalesced; a
   partial association (`p.a => x, p.b => y`) keeps one edge per leaf, and the port rule of 3.2
   keeps leaves with different edges out of one pack.
@@ -149,7 +151,7 @@ All name objects and fields by the logical model, so only the lookups change, th
 - waves: `Src::Sig` keyed by leaf; `value_changes(signal, ranges)` goes through the reverse map to
   the leaves' variables (the recorder is already range based);
 - VHPI handles and DAP variables keep `ObjId`/`LeafId`; reads, forces and deposits use `kref`
-  (they ignore `SigObj::part` today; the same helper fixes that if it is a bug, see 7); DAP signal
+  (their collapsed ports are off; `SigObj::parts` gives the range per leaf); DAP signal
   watches compare the leaf's range, not the whole kernel signal;
 - coverage toggles: per leaf base plus the bit, re-keyed to the kernel signal;
 - kernel names: a pack's kernel name is the path of the innermost record holding its leaves; the
@@ -234,5 +236,4 @@ count each saving once. Step 4 depends on #677 landing first; steps 1 to 3 do no
 - The collapse remap adds a part's offset to driver ranges and `driver_ref` adds `InstSig::off`
   again; a collapsed `out` formal on `w(5 downto 2)` driven as a whole and element by element gave
   the right values, so the target path does not reach it. Step 1 fixes the convention anyway.
-- VHPI and DAP do not read `SigObj::part` (not verified to give wrong values); step 1 routes them
-  through `kref`.
+- VHPI reads `SigObj::parts` per leaf; under `--vhpi` and `--dap` ports are never collapsed.

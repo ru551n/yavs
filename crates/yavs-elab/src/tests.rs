@@ -2553,6 +2553,71 @@ end;
     }
 }
 
+/// A record formal on an element of an array of records (`ch(i)`), an array of records on a
+/// slice and an element of that formal: each leaf of the formal is part of the actual's leaf
+/// at its own offset (`SigObj::parts`), and no port edge is left. An `out` element with a
+/// second source keeps its edges.
+#[test]
+fn record_ports_on_elements_collapse() {
+    let src = "library ieee; use ieee.std_logic_1164.all;
+package p is
+  type rec_t is record v : std_logic; d : std_logic_vector(3 downto 0); n : integer; end record;
+  type rec_arr_t is array (natural range <>) of rec_t;
+end;
+library ieee; use ieee.std_logic_1164.all; use work.p.all;
+entity stage is port (s : in rec_t; m : out rec_t); end;
+architecture a of stage is begin m <= s; end;
+library ieee; use ieee.std_logic_1164.all; use work.p.all;
+entity bank is port (s : in rec_arr_t; m : out rec_arr_t); end;
+architecture a of bank is begin
+  g : for i in 0 to s'length - 1 generate
+    u : entity work.stage port map (s(s'low + i), m(m'low + i));
+  end generate;
+end;
+library ieee; use ieee.std_logic_1164.all; use work.p.all;
+entity top is end;
+architecture t of top is
+  signal ch : rec_arr_t(0 to 2);
+  signal bk : rec_arr_t(0 to 3);
+  signal x : rec_arr_t(0 to 1);
+begin
+  g : for i in 0 to 1 generate
+    u : entity work.stage port map (ch(i), ch(i + 1));
+  end generate;
+  b : entity work.bank port map (bk(0 to 2), bk(1 to 3));
+  k : entity work.stage port map (ch(0), x(1));
+  x(1).v <= 'Z';
+end;
+";
+    let obj = |e: &Elaborated, path: &str| {
+        let k = sig_paths(e).iter().position(|p| p == path).expect(path);
+        let o = &e.nets.objs[k];
+        (o.leaves, o.parts.clone())
+    };
+    let (_, e) = elab("elemcollapse", src, "top", &[]);
+    // `ch(1)` of `ch(0 to 2)`: `v` and `d` are logic leaves (mirrored), `n` bytes.
+    let (ch, _) = obj(&e, ":top:ch");
+    let parts = vec![Range::new(1, 1), Range::new(4, 4), Range::new(1, 1)];
+    assert_eq!(obj(&e, ":top:g(0):u:m"), (ch, parts.clone()));
+    assert_eq!(obj(&e, ":top:g(1):u:s"), (ch, parts));
+    // Element 1 of the bank's `s`, itself `bk(0 to 2)`: element 1 of `bk(0 to 3)`.
+    let (bk, _) = obj(&e, ":top:bk");
+    let parts = vec![Range::new(2, 1), Range::new(8, 4), Range::new(1, 1)];
+    assert_eq!(obj(&e, ":top:b:g(1):u:s"), (bk, parts));
+    // `m` of `b` is `bk(1 to 3)`: elements 1 to 3.
+    let parts = vec![Range::new(0, 3), Range::new(0, 12), Range::new(1, 3)];
+    assert_eq!(obj(&e, ":top:b:m"), (bk, parts));
+    // `x(1).v` has a second source: `k`'s `m` keeps its leaves and edges.
+    let (km, parts) = obj(&e, ":top:k:m");
+    assert!(parts.is_empty());
+    assert!(e.nets.ports.iter().any(|p| p.formal.0 == km.0));
+    let lanes = [":top:g(0):u:s", ":top:g(1):u:m", ":top:b:g(2):u:m"];
+    for l in lanes {
+        let (leaves, _) = obj(&e, l);
+        assert!(!e.nets.ports.iter().any(|p| p.formal.0 == leaves.0), "{l}");
+    }
+}
+
 #[test]
 fn scope_vals_keep_entries_sorted_by_declaration() {
     use yavs_sem::ids::Id;

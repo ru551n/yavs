@@ -1358,7 +1358,7 @@ a note and a help suggesting an access type, as the reference simulators reject 
   2026-10-19; plan rule 3): after `bind_late` (`collapse.rs`), the formal of an `in` port (or a
   component port) whose actual is whole kernel leaves of the same type (one consecutive range
   of one object), or, for a formal of one leaf, part of one leaf (`d => v(i)`, `s => b(3 downto
-  2)`: `SigObj::part`, the kernel range; yavs-interp `InstSig::off` and every reader of an
+  2)`: `SigObj::parts`, the kernel range of each leaf; yavs-interp `InstSig::off` and every reader of an
   object's elements add its offset), with no conversion, takes the actual's leaves: its own
   leaves, port edges and the copy per delta are gone, and the leaves are renumbered in their
   old order. The formal object keeps its
@@ -1390,6 +1390,23 @@ a note and a help suggesting an access type, as the reference simulators reject 
   whole, or forced or released by a VHDL statement; a resolved formal on an unresolved actual.
   The same `--no-collapse-ports`, `--dap` and `--vhpi` switch it off; the difftest corpus runs
   both ways and `hierarchy/out_port_collapse` covers the cases.
+- **Ports collapse into elements and slices of their actuals** (user, 2026-11-13; extends the two
+  entries above): a formal of any number of leaves (a record, an array of records, a record of
+  records) whose leaves are, one to one and in order, whole leaves or parts of consecutive leaves of
+  one object (a record port on `ch(i)` of an array of records, an array-of-records port on a slice
+  `ch(1 to N)`, an element of such a port passed on) collapses under the same conditions as above,
+  each leaf onto its own kernel range of the actual's leaf (`SigObj::parts`, one range per leaf;
+  instance signal offsets, waves, toggle coverage and VHPI read the range of the leaf they handle).
+  For `out` and `buffer` formals the sole-source rule is checked per leaf range and each range takes
+  the formal's initial value. Why: such a lane kept a kernel signal per field, a port edge per leaf
+  and a copy per delta, several times the cost of a lane of plain vectors; collapsed it costs about
+  what records on separate signals cost. A formal any leaf of which fails a condition keeps its edges
+  (a record with a null field, which has no port edge, is one). `--no-collapse-ports`, `--dap` and
+  `--vhpi` keep every port apart, as before; the decision is made at elaboration, so `--threads`
+  cannot change it. The multiple-sources check and the sole-source test look at the sources of a
+  leaf through one sort per leaf, never a scan per port (`elab_source_steps`, perf design
+  `out_ports_shared`). Tests: `hierarchy/record_port_element`, `record_port_slice`,
+  `record_port_element_force`; perf design `port_elem_record`.
 
 - **The elaboration-time session grows one program** (#383, elab agent, 2026-10-19): a function
   that uses package state and is called for the first time is lowered into the session's

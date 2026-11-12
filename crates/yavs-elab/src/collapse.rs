@@ -1,8 +1,9 @@
 //! Port collapsing (`docs/design/performance.md` R4, plan rule 3): the formal of an `in`,
-//! `out` or `buffer` port whose actual is whole kernel leaves of the same type, or (a formal
-//! of one leaf) part of one leaf (`d => v(i)`), with no conversion, becomes an alias of them.
+//! `out` or `buffer` port whose leaves are, one to one and in order, whole leaves or parts of
+//! consecutive leaves of one object (`d => v(i)`, a record formal on `ch(i)` of an array of
+//! records, an array of records on a slice), with no conversion, becomes an alias of them.
 //! The formal object keeps its name, scope and shape (waves, `'path_name`) and takes the
-//! actual's leaf range, with `SigObj::part` for a part of a leaf; its own leaves, their port
+//! actual's leaf range, with `SigObj::parts` for parts of leaves; its own leaves, their port
 //! edges and the copy per delta are gone. Run after `bind_late`, when every force target is
 //! known; leaves are renumbered in their old order, so elaboration order stays deterministic.
 //!
@@ -161,8 +162,6 @@ pub(crate) fn ports(
                     && e.formal.1.len == leaf.ty.len
                     && e.actual.1.len == leaf.ty.len
                     && al.ty.elem == leaf.ty.elem
-                    // Several leaves keep one leaf range: whole leaves of one object.
-                    && (b - a == 1 || (e.actual.1.offset == 0 && al.ty == leaf.ty))
                     // An `out` formal's drivers drive the actual: it resolves them the same
                     // way (an unresolved formal has at most one).
                     && (!out

@@ -28,6 +28,7 @@ mod whole;
 mod tests;
 
 pub use callcache::stats as call_cache_stats;
+pub use collapse::source_steps as collapse_source_steps;
 pub use eval::{Class, ConvFn, Enc, Model, ScopeVals, Side, Val, elem_of};
 pub use hier::{
     Bounds, Case, DriverDecl, Hierarchy, ImplicitKind, Leaf, LeafId, LeafLoc, LeafRes, NetGraph,

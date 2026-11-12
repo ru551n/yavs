@@ -22,6 +22,7 @@
 //! actual is not; `inout` ports.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use yavs_sem::Db;
 use yavs_sem::decl::{DeclKind, ObjRole};
@@ -31,6 +32,15 @@ use yavs_kernel::{PortMode, Range, Value};
 
 use crate::ProcInst;
 use crate::hier::{LeafId, LeafRes, NetGraph, ObjId, ObjKind};
+
+static SOURCE_STEPS: AtomicU64 = AtomicU64::new(0);
+
+/// The source ranges examined to decide whether an `out` formal is the only source of its
+/// actual's elements (a work counter, `YAVS_COUNTERS`): it grows with the square of the
+/// formals sharing one actual leaf if each looks at all of that leaf's sources.
+pub fn source_steps() -> u64 {
+    SOURCE_STEPS.load(Ordering::Relaxed)
+}
 
 /// Collapse the ports of `nets` that qualify; returns how many formals were collapsed.
 pub(crate) fn ports(
@@ -86,6 +96,7 @@ pub(crate) fn ports(
     let sole = |e: &crate::hier::PortEdge| {
         let (a, r) = (e.actual.0.index(), e.actual.1);
         let al = &nets.leaves[a];
+        SOURCE_STEPS.fetch_add(sources[a].len() as u64, Ordering::Relaxed);
         let overlaps = sources[a].iter().filter(|s| s.overlaps(r)).count();
         overlaps == 1 && !fed[a] && !excluded[a] && al.guard.is_none() && !forced.contains(&al.obj)
     };

@@ -15626,3 +15626,32 @@ Written by Claude. The drive side of Microwatt, measured first with lab counters
 - **Test.** `clift_parity` `deallocations_in_compiled_code_match_the_interpreter`: a local, a null value, a field
   of another heap object, a protected type's own variable (the shared heap), and the two errors (an object
   deallocated twice, a cell inside the object it frees); `perf.rs` `free_native` bounds `cb_free` at 400 calls.
+
+## Compiled code: an `LCopy` of a run-time count in a native frame in place (yavs-clift `Gen::lcopy_inline`, perf/b4-arrparam, 2026-11-12)
+
+- **Finding** (agent). Since array parameters are cells ("Array parameters as cells"), what is left of the cost of a small function
+  that returns a slice, such as a cache's `get_row(addr) return unsigned(addr(SET_SIZE_BITS - 1 downto
+  ROW_OFF_BITS))`, is mostly not the parameter's bounds. Per call of that function compiled (`--tier=clift`,
+  exact counts, a loop of calls less the loop alone), on 39454ad5: about 615 instructions with bounds from
+  generics and an open parameter, 490 with a literal slice and an open parameter, 369 with everything literal,
+  and 619 with a constrained parameter and the slice from generics: the parameter's own descriptor costs
+  nothing once the slice's bounds come from instance data. The copy of the slice into the result block, of a
+  count known only at run time, called `yavs_rt_lcopy`: about 100 to 190 instructions of the call. In a forced
+  compiled Microwatt run every native-frame body together is 1.2 percent of the instructions, `get_row`'s two
+  bodies 0.1, `yavs_rt_lcopy` 0.45.
+- **Change** (agent). In a native frame an `LCopy` whose count is known only at run time and whose destination
+  offset is the constant 0 (a slice into a block of its own: the result of a function, a fresh temporary)
+  copies up to 64 elements in place under one run-time test (`lcopy_inline` with one destination block: the
+  bits above the run stay), and calls `yavs_rt_lcopy` above 64. The two-block destination form of a constant
+  count writes its second blocks behind one branch instead of one per plane. Frame-mode code keeps the call:
+  inlined there too, the forced compile of GRLIB grew 1.4 percent, more than its run gained. `clift_lcopy_count_sites`
+  counts the sites.
+- **Measured** (agent, plain bench builds, all-thread instructions, forced `--tier=clift --no-cache`, repeat
+  within 0.01 percent): Microwatt 0.9994, GRLIB 0.9983; the small tests that are mostly compile under forced code
+  grow by the compile (`hdlm_fifo_sync` 1.0011, `olo_axi_master_full` 1.0008), the others within 0.01 percent.
+- **Not done**, sized. The bounds of instance data in a shared function (the generics of `get_row`) fold only in
+  a copy of the function per instance and per constant cell of the call (`opt/subcopy.rs` keys on `'dope`
+  slots only, and its copies carry no instance facts): about 250 instructions a call on the harness above,
+  at most the 1.2 percent of all native bodies on Microwatt. Holding an address parameter that a loop uses
+  once (`rt::hold_addrs`) cut a 64-element `bit_reverse` by 8 to 13 percent but made forced GRLIB 0.23 percent
+  dearer (the region asked at every entry): not kept.

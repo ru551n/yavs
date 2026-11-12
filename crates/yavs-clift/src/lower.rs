@@ -2527,15 +2527,15 @@ enum Op {
 /// `YAVS_COUNTERS`: the sites lowered so far of an `is_x` or reduction of a vector computed in
 /// place (`Gen::ieee_native`), of a `Cat` of bytes (`Gen::cat_bytes`), of a `LayoutOf` from the
 /// layout memo (`Gen::layout_into`), of a real rounded to an integer (`Gen::f_to_i`), of an
-/// `ieee` op of two blocks (`Gen::ieee_wide`) and of a gate that may meet a metavalue
-/// (`Gen::gate_planes`).
-static SITES: [std::sync::atomic::AtomicUsize; 6] =
-    [const { std::sync::atomic::AtomicUsize::new(0) }; 6];
+/// `ieee` op of two blocks (`Gen::ieee_wide`), of a gate that may meet a metavalue
+/// (`Gen::gate_planes`) and of an `LCopy` of a count known at run time only (`Gen::lcopy_inline`).
+static SITES: [std::sync::atomic::AtomicUsize; 7] =
+    [const { std::sync::atomic::AtomicUsize::new(0) }; 7];
 
 /// `[is_x or reduction of a vector, Cat of bytes, LayoutOf from the memo, real to integer, ieee
-/// op over 64 elements, gate with the tables for metavalues]` sites lowered so far
-/// (`YAVS_COUNTERS`).
-pub fn inline_sites() -> [usize; 6] {
+/// op over 64 elements, gate with the tables for metavalues, LCopy of a run-time count]` sites
+/// lowered so far (`YAVS_COUNTERS`).
+pub fn inline_sites() -> [usize; 7] {
     SITES
         .each_ref()
         .map(|a| a.load(std::sync::atomic::Ordering::Relaxed))
@@ -4521,14 +4521,21 @@ fn gen_func(
                 let ps = g.host(sa, Some(src), Op::V(sb), Op::V(sn), false, slow);
                 let pd = g.host(da, Some(dst), Op::V(db), Op::V(dn), true, slow);
                 // Up to 64 elements: at most two blocks each side, shifted in registers, when the
-                // count is a constant and an offset is not (an element of an array of logic
-                // arrays); a count known at run time only keeps the call.
-                if g.kint(n).is_some_and(|v| v <= 64) {
+                // count is a constant (an element of an array of logic arrays) or, in a native
+                // frame, known at run time only and copied to the start of the destination (a
+                // slice of bounds from a parameter or a generic returned: one block to write);
+                // more calls.
+                let runtime = g.kint(n).is_none() && g.kint(dst_off) == Some(0) && g.nat.is_some();
+                if runtime || g.kint(n).is_some_and(|v| v <= 64) {
+                    if runtime {
+                        note_site(6);
+                    }
                     let few = g.b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, k, 64);
                     let (inl, call) = (g.b.create_block(), g.b.create_block());
                     g.brif_split(few, inl, call);
                     g.b.switch_to_block(inl);
-                    g.lcopy_inline(pd, nd, d0, ps, ns, s0, k);
+                    let to = (!runtime).then_some((nd, d0));
+                    g.lcopy_inline(pd, to, ps, ns, s0, k);
                     g.b.ins().jump(join, &[]);
                     g.b.switch_to_block(call);
                 }
@@ -7635,13 +7642,13 @@ impl Gen<'_> {
     /// `Inst::LCopy` of `k` (1 to 64) elements from bit `s0` of the one or two plane blocks at
     /// `ps` (`ns` of them) to bit `d0` of those at `pd` (`nd`), as `copy_bits` does: the source
     /// planes are read first (the ranges may overlap), the destination bits outside the copied
-    /// range stay.
+    /// range stay. `nd` and `d0` `None`: the run starts the destination's first block, its only
+    /// one.
     #[allow(clippy::too_many_arguments)]
     fn lcopy_inline(
         &mut self,
         pd: Value,
-        nd: Value,
-        d0: Value,
+        nd_d0: Option<(Value, Value)>,
         ps: Value,
         ns: Value,
         s0: Value,
@@ -7658,7 +7665,6 @@ impl Gen<'_> {
         let ones = self.c64(-1);
         let mask = self.b.ins().select(full, ones, low);
         let two_s = self.b.ins().icmp_imm_s(IntCC::Equal, ns, 2);
-        let two_d = self.b.ins().icmp_imm_s(IntCC::Equal, nd, 2);
         let zero = self.c64(0);
         // The word of the second block, or 0 without one (block 0 is read again in its place, so
         // nothing past the run is touched).
@@ -7689,6 +7695,19 @@ impl Gen<'_> {
             let w = self.b.ins().bor(lo, hi);
             *v = self.b.ins().band(w, mask);
         }
+        let Some((nd, d0)) = nd_d0 else {
+            // One block from its first element: the bits above the run stay.
+            let keep = self.b.ins().bnot(mask);
+            for (plane, v) in vals.iter().enumerate() {
+                let at = plane as i32 * 8;
+                let old = self.b.ins().load(I64, gf, pd, at);
+                let kept = self.b.ins().band(old, keep);
+                let lo = self.b.ins().bor(kept, *v);
+                self.b.ins().store(gf, lo, pd, at);
+            }
+            return;
+        };
+        let two_d = self.b.ins().icmp_imm_s(IntCC::Equal, nd, 2);
         let hole = self.b.ins().ishl(mask, d0);
         let keep = self.b.ins().bnot(hole);
         let hole1 = down(self, mask, d0);
@@ -7700,18 +7719,21 @@ impl Gen<'_> {
             let put = self.b.ins().ishl(*v, d0);
             let lo = self.b.ins().bor(kept, put);
             self.b.ins().store(gf, lo, pd, at);
-            // The second block, when the destination has one.
-            let (hi_bb, done) = (self.b.create_block(), self.b.create_block());
-            self.brif_split(two_d, hi_bb, done);
-            self.b.switch_to_block(hi_bb);
+        }
+        // The second block, when the destination has one: one branch for the four planes.
+        let (hi_bb, done) = (self.b.create_block(), self.b.create_block());
+        self.brif_split(two_d, hi_bb, done);
+        self.b.switch_to_block(hi_bb);
+        for (plane, v) in vals.iter().enumerate() {
+            let at = plane as i32 * 8;
             let old = self.b.ins().load(I64, gf, pd, 32 + at);
             let kept = self.b.ins().band(old, keep1);
             let put = down(self, *v, d0);
             let hi = self.b.ins().bor(kept, put);
             self.b.ins().store(gf, hi, pd, 32 + at);
-            self.b.ins().jump(done, &[]);
-            self.b.switch_to_block(done);
         }
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(done);
     }
 
     /// `n` zeroed bytes of temporary memory as `Machine::temp_alloc` makes them: the address,

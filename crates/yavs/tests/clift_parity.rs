@@ -1808,6 +1808,13 @@ fn a_subprogram_that_loops_in_one_call_runs_compiled_in_the_next_run() {
     let (looped, early, _, err) = go();
     assert!(looped >= 1, "{err}");
     assert_eq!(early, 0, "{err}");
+    // A run is written to the profile only where the simulation CPU can be read (not on Windows):
+    // elsewhere the next run decides as the first did, and only the outputs are compared.
+    if !err.contains("profile: stored") {
+        let (_, early, _, err) = go();
+        assert_eq!(early, 0, "{err}");
+        return;
+    }
     let (_, early, compiled, err) = go();
     assert_eq!(early, 1, "{err}");
     assert!(compiled > 0, "{err}");

@@ -1,0 +1,6 @@
+exit	0
+diag	note	6000000	0	:memo_pure_calls:_p0	noisy 2
+diag	note	6000000	0	:memo_pure_calls:_p0	noisy 2
+diag	note	6000000	0	:memo_pure_calls:_p0	noisy 2
+diag	note	6000000	0	:memo_pure_calls:_p0	noisy 2
+diag	note	6000000	0	:memo_pure_calls:_p0	ones=20574 pick=296022 pick2=88243 par=1714 sig=3756494 shared=1498494 var=1498494 nest=8998 file=171

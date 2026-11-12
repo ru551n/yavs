@@ -85,6 +85,8 @@ pub(crate) struct Memo {
 #[derive(Default)]
 pub(crate) struct State {
     memos: Vec<Memo>,
+    /// The function of the last lookup and the index of its memo in `memos`.
+    last: Option<(u32, usize)>,
     /// The key being built (reused).
     pub key: Vec<u8>,
     /// Calls run to their end that are still running.
@@ -126,8 +128,13 @@ pub(crate) enum Look {
 }
 
 impl State {
-    /// The memo of `func`, made when the process first calls it.
-    fn memo(&mut self, func: u32) -> &mut Memo {
+    /// The index of the memo of `func`, made when the process first calls it.
+    fn index(&mut self, func: u32) -> usize {
+        if let Some((f, i)) = self.last
+            && f == func
+        {
+            return i;
+        }
         let i = match self.memos.iter().position(|m| m.func == func) {
             Some(i) => i,
             None => {
@@ -143,18 +150,29 @@ impl State {
                 self.memos.len() - 1
             }
         };
+        self.last = Some((func, i));
+        i
+    }
+
+    /// The memo of `func`, made when the process first calls it.
+    fn memo(&mut self, func: u32) -> &mut Memo {
+        let i = self.index(func);
         &mut self.memos[i]
     }
 
     /// Whether this process gave the memo of `func` up.
     pub fn is_off(&self, func: u32) -> bool {
-        self.memos.iter().any(|m| m.func == func && m.off)
+        match self.last {
+            Some((f, i)) if f == func => self.memos[i].off,
+            _ => self.memos.iter().any(|m| m.func == func && m.off),
+        }
     }
 
-    /// A call of `func` whose key could not be made (over `MAX_BYTES`): counted like a miss, so a
-    /// function whose calls never fit is given up too. True when it has just been.
-    pub fn unkeyed(&mut self, func: u32) -> bool {
-        let m = self.memo(func);
+    /// A call of the function of memo `at` whose key could not be made (over `MAX_BYTES`):
+    /// counted like a miss, so a function whose calls never fit is given up too. True when it
+    /// has just been.
+    fn unkeyed(&mut self, at: usize) -> bool {
+        let m = &mut self.memos[at];
         m.calls += 1;
         let give_up = !m.off && m.calls == WARM && m.hits < WARM / RATE;
         if give_up {
@@ -164,13 +182,13 @@ impl State {
         give_up
     }
 
-    /// Look the call of `func` with the key in `self.key` up. Counts the call, and judges the
-    /// function after `WARM` calls.
-    pub fn look(&mut self, func: u32) -> Look {
+    /// Look the call of the function of memo `at` with the key in `self.key` up. Counts the
+    /// call, and judges the function after `WARM` calls.
+    fn look(&mut self, at: usize) -> Look {
         let hash = hash(&self.key);
-        let key = std::mem::take(&mut self.key);
-        let m = self.memo(func);
-        let look = if m.off {
+        let key = &self.key;
+        let m = &mut self.memos[at];
+        if m.off {
             Look::Off
         } else {
             if m.slots.is_empty() {
@@ -193,14 +211,12 @@ impl State {
                 self.miss_hash = hash;
                 Look::Miss
             }
-        };
-        self.key = key;
-        look
+        }
     }
 
-    /// The result in slot `i` of `func` (from [`Look::Hit`]).
-    pub fn val(&mut self, func: u32, i: usize) -> Option<&Val> {
-        self.memo(func).slots.get(i)?.as_ref().map(|s| &s.val)
+    /// The result in slot `i` of memo `at` (from [`Look::Hit`]).
+    fn val(&self, at: usize, i: usize) -> Option<&Val> {
+        self.memos.get(at)?.slots.get(i)?.as_ref().map(|s| &s.val)
     }
 
     /// Remember a call that ended with `val` (`hash` and `key` from [`Look::Miss`] and the
@@ -282,7 +298,13 @@ impl Machine {
             return Ok(Probe::No);
         }
         let mut st = self.pm.take().unwrap_or_default();
-        if st.depth >= NEST || st.is_off(func.0) {
+        if st.depth >= NEST {
+            self.pm = Some(st);
+            return Ok(Probe::No);
+        }
+        // (A memo made here is on: `fresh` is read after the key below.)
+        let at = st.index(func.0);
+        if st.memos[at].off {
             self.pm = Some(st);
             return Ok(Probe::No);
         }
@@ -292,7 +314,7 @@ impl Machine {
         st.key = key;
         if !made {
             // A key too big, or one that cannot be read, counts as a call that did not repeat.
-            let gave_up = st.unkeyed(func.0);
+            let gave_up = st.unkeyed(at);
             let fresh = std::mem::take(&mut st.fresh);
             self.pm = Some(st);
             if fresh {
@@ -303,7 +325,7 @@ impl Machine {
             }
             return Ok(Probe::No);
         }
-        let look = st.look(func.0);
+        let look = st.look(at);
         if std::mem::take(&mut st.fresh) {
             self.memo_user(prog, func);
         }
@@ -318,7 +340,7 @@ impl Machine {
                 Ok(Probe::No)
             }
             Look::Hit(i) => {
-                let r = match st.val(func.0, i) {
+                let r = match st.val(at, i) {
                     Some(Val::Word(v)) => Ok(*v),
                     Some(Val::Array(b)) => match sig.ret {
                         MemoArg::Array(a) => self.memo_array(a, b),
@@ -542,44 +564,39 @@ impl Machine {
         cell: &impl Fn(&Machine, usize) -> u64,
         key: &mut Vec<u8>,
     ) -> bool {
+        // (The callers checked that the call has `sig.cells` cells.)
+        if n != sig.cells as usize {
+            return false;
+        }
         let mut at = 0;
-        let mut next = || {
-            at += 1;
-            (at <= n).then(|| cell(self, at - 1))
-        };
         for arg in &sig.args {
             match *arg {
                 MemoArg::Scalar => {
-                    let Some(v) = next() else {
-                        return false;
-                    };
-                    key.extend_from_slice(&v.to_le_bytes());
+                    key.extend_from_slice(&cell(self, at).to_le_bytes());
+                    at += 1;
                 }
                 MemoArg::Flat(a) => {
-                    let (Some(data), Some(l), Some(r), Some(w)) = (next(), next(), next(), next())
-                    else {
-                        return false;
-                    };
+                    let data = cell(self, at);
                     let mut d = [0u8; 24];
-                    d[..8].copy_from_slice(&l.to_le_bytes());
-                    d[8..16].copy_from_slice(&r.to_le_bytes());
-                    d[16..].copy_from_slice(&w.to_le_bytes());
+                    for k in 0..3 {
+                        d[k * 8..k * 8 + 8].copy_from_slice(&cell(self, at + 1 + k).to_le_bytes());
+                    }
+                    at += 4;
                     let Some(n) = a.data_bytes(&d) else {
                         return false;
                     };
                     if key.len() as u64 + n + 24 > MAX_BYTES as u64 {
                         return false;
                     }
-                    key.extend_from_slice(&d);
                     let Ok(b) = self.rd(data, n) else {
                         return false;
                     };
+                    key.extend_from_slice(&d);
                     key.extend_from_slice(b);
                 }
                 MemoArg::Array(a) => {
-                    let (Some(data), Some(dope)) = (next(), next()) else {
-                        return false;
-                    };
+                    let (data, dope) = (cell(self, at), cell(self, at + 1));
+                    at += 2;
                     let Ok(d) = self.rd(dope, a.desc_bytes() as u64) else {
                         return false;
                     };
@@ -589,18 +606,15 @@ impl Machine {
                     if key.len() as u64 + n + d.len() as u64 > MAX_BYTES as u64 {
                         return false;
                     }
-                    key.extend_from_slice(d);
                     let Ok(b) = self.rd(data, n) else {
                         return false;
                     };
+                    key.extend_from_slice(d);
                     key.extend_from_slice(b);
                 }
             }
-            if key.len() > MAX_BYTES {
-                return false;
-            }
         }
-        true
+        key.len() <= MAX_BYTES
     }
 
     /// The result `v` of a call, as the memo keeps it; `None` when it cannot be read or is
@@ -644,9 +658,7 @@ impl Machine {
         let (d, e) = bytes.split_at(n);
         let w = |k: usize| u64::from_le_bytes(d[k * 8..k * 8 + 8].try_into().unwrap_or([0; 8]));
         self.set_ret_bounds([w(0), w(1), w(2)]);
-        let at = self.temp_alloc(e.len() as u64)?;
-        self.wr(at, e.len() as u64)?.copy_from_slice(e);
-        Ok(at)
+        self.temp_bytes(e)
     }
 
     /// An array result `bytes` (descriptor, then elements) as a fat pair in temporary memory,

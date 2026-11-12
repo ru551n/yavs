@@ -59,7 +59,8 @@ impl MemoArr {
         let mut n: u64 = 1;
         // (`DOPE_DIM_BYTES` is 24: three words a dimension.)
         for d in desc.as_chunks::<24>().0 {
-            let word = |i: usize| i64::from_le_bytes(std::array::from_fn(|k| d[i * 8 + k]));
+            let w = d.as_chunks::<8>().0;
+            let word = |i: usize| i64::from_le_bytes(w[i]);
             n = n.checked_mul(crate::dim_len(word(0), word(1), word(2) == 1)?)?;
         }
         if self.logic {
@@ -77,6 +78,10 @@ pub struct MemoSig {
     pub ret: MemoArg,
     /// Cells of the argument list of a call.
     pub cells: u32,
+    /// The function or one it calls has a loop, concatenates bytes, calls a native other than a
+    /// cheap `ieee` one (`cheap_native`) or calls itself ([`Program::memo_sig`]): compiled callers probe only such
+    /// functions, as a compiled body without any costs less than the probe.
+    pub dear: bool,
 }
 
 /// A scalar of a plain type: an integer, physical, enumeration or real value in one cell.
@@ -235,6 +240,125 @@ fn worth(f: &Func) -> bool {
         })
 }
 
+/// Whether the blocks of `f` form a cycle (a jump to a lower block alone is none: blocks are
+/// not in the order of the code).
+fn cyclic(prog: &Program, f: &Func) -> bool {
+    let f = f.full();
+    let blocks: Vec<&[Inst]> = (f.blocks.iter())
+        .map(|(_, b)| f.code.get(b.start as usize..b.end as usize).unwrap_or(&[]))
+        .collect();
+    let nb = blocks.len();
+    let succ = |b: usize| -> Vec<usize> {
+        let mut to = Vec::new();
+        for i in blocks[b] {
+            match i {
+                Inst::Br { to: t } => to.push(t.0 as usize),
+                Inst::CondBr { t, f: e, .. } => to.extend([t.0 as usize, e.0 as usize]),
+                Inst::Case { table, .. } => {
+                    if let Some(t) = prog.cases.get(*table) {
+                        to.push(t.default.0 as usize);
+                        to.extend(t.arms.iter().map(|a| a.2.0 as usize));
+                    }
+                }
+                _ => {}
+            }
+        }
+        to.retain(|&t| t < nb);
+        to
+    };
+    // Depth-first from the entry: 1 on the path, 2 done.
+    let mut state = vec![0u8; nb];
+    if nb == 0 {
+        return false;
+    }
+    let mut stack = vec![(0usize, succ(0), 0usize)];
+    state[0] = 1;
+    while let Some((b, next, k)) = stack.last_mut() {
+        match next.get(*k).copied() {
+            Some(t) => {
+                *k += 1;
+                match state[t] {
+                    1 => return true,
+                    0 => {
+                        state[t] = 1;
+                        stack.push((t, succ(t), 0));
+                    }
+                    _ => {}
+                }
+            }
+            None => {
+                state[*b] = 2;
+                stack.pop();
+            }
+        }
+    }
+    false
+}
+
+/// Whether `id` or a function it calls, at any depth, has a loop, concatenates bytes, calls a
+/// native other than a cheap `ieee` one (`cheap_native`), or calls itself (`path`: the calls being looked at, `cheap`:
+/// the functions found cheap): work a compiled body does not do in a few instructions.
+fn dear(prog: &Program, id: FuncId, path: &mut Vec<FuncId>, cheap: &mut Vec<FuncId>) -> bool {
+    let id = prog.base_of(id);
+    if path.contains(&id) {
+        return true;
+    }
+    if cheap.contains(&id) {
+        return false;
+    }
+    let Some(f) = prog.funcs.get(id) else {
+        return false;
+    };
+    path.push(id);
+    let dear = cyclic(prog, f)
+        || f.full().code.iter().any(|i| match *i {
+            Inst::Call { func, .. } => dear(prog, func, path, cheap),
+            Inst::CallNative { native, .. } => prog
+                .natives
+                .get(native)
+                .is_none_or(|n| !cheap_native(&n.symbol)),
+            // (A concatenation of logic arrays is made in place too, one of bytes is a call.)
+            Inst::Cat { logic, .. } => !logic,
+            _ => false,
+        });
+    path.pop();
+    if !dear {
+        cheap.push(id);
+    }
+    dear
+}
+
+/// A native `ieee` gate, conversion or comparison: compiled code computes most of them in place
+/// for a few instructions. Arithmetic, shifts and resizing cost more (wide operands are calls).
+fn cheap_native(symbol: &str) -> bool {
+    use crate::ieee::Op;
+    crate::ieee::symbol_key(symbol)
+        .and_then(crate::ieee::parse)
+        .is_some_and(|op| {
+            matches!(
+                op,
+                Op::Gate(_)
+                    | Op::VecGate(_)
+                    | Op::Not
+                    | Op::VecNot
+                    | Op::Reduce(_)
+                    | Op::NumGate(_)
+                    | Op::NumNot
+                    | Op::Conv(..)
+                    | Op::To01
+                    | Op::Truthy
+                    | Op::IsX(_)
+                    | Op::Edge(_)
+                    | Op::Match
+                    | Op::MatchEq { .. }
+                    | Op::ToInteger { .. }
+                    | Op::ToUnsigned
+                    | Op::ToSigned
+                    | Op::Compare { .. }
+            )
+        })
+}
+
 impl Program {
     /// What the calls of function `id` can be memoised on, if they can (see the module).
     pub fn memo_sig(&self, id: FuncId) -> Option<&MemoSig> {
@@ -296,7 +420,13 @@ impl Program {
         if !worth(f) || !clean(self, id, &mut Vec::new()) {
             return None;
         }
-        Some(Box::new(MemoSig { args, ret, cells }))
+        let dear = dear(self, id, &mut Vec::new(), &mut Vec::new());
+        Some(Box::new(MemoSig {
+            args,
+            ret,
+            cells,
+            dear,
+        }))
     }
 }
 

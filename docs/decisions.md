@@ -15687,3 +15687,31 @@ cycle, and each question walks the function.
   at most the 1.2 percent of all native bodies on Microwatt. Holding an address parameter that a loop uses
   once (`rt::hold_addrs`) cut a 64-element `bit_reverse` by 8 to 13 percent but made forced GRLIB 0.23 percent
   dearer (the region asked at every entry): not kept.
+
+## Cranelift: tests a known fact settles (yavs-clift `lower`, perf/b4-guards, 2026-11-12)
+
+Written by Claude. A census of the conditional branches of compiled code (a lab build counting each branch by IR kind,
+lowering site and cold side) found about 3 100 per kernel cycle on Microwatt and 545 on GRLIB in the default tier,
+with no kind above 7 percent: the drive batch's flush test, overflow tests of integer arithmetic, address guesses and
+lookups, signal-form tests, `std_ulogic` codes, the statement end's temporary roots, then the VHDL's own branches.
+Never-taken tests take no branch-target entry, so what pays is a test removed, not two tests joined into one.
+
+- **Change.** Lowering gives the result of a `Pos` in a descriptor of the constant pool the interval of its dimension
+  (past its own test), a `std_ulogic` table's result `[0, 8]` and an `LGet` four bits (`Gen::iv_next`), so arithmetic
+  on them has no overflow test (`no_overflow`). A `BinRange` product by a positive constant with constant bounds tests
+  the other operand against the bounds divided by the constant before it multiplies: one range test and no overflow
+  test, since a product outside `i64` is outside the bounds too; a failure leaves at the same pc and the interpreter
+  reports its own error. A frame-mode `SigVal` of a run-time element tests offset and length in one compare. Every
+  index, range and subtype test whose failure is reported stays (the user's bounds ruling). Counter
+  `clift_guard_sites`; corpus tests `scalar/guard_pos_const`, `guard_pos_const_down`, `guard_mul_range`,
+  `guard_mul_range_low`, `ieee/guard_meta_add` make the tests fail in compiled code at a known time.
+- **Measured** (plain bench builds, all-thread `instructions:u`, untimed, no `YAVS_COUNTERS`, two reps, against two
+  copies of the base build): forced `--tier=clift --no-cache` Microwatt 0.9978, GRLIB 0.9978, the small designs
+  0.9994 to 1.0000; default tier Microwatt runs 1 and 2 0.995 and 0.998, GRLIB runs 2 to 4 0.997; `branches:u`
+  forced Microwatt 0.994, GRLIB 0.996.
+- **Tried, not kept.** One zero shared by every flush of the drive batch, so a flush test after ways in that all
+  flushed would fold: forced GRLIB 1.010, `olo_axi_master_full` 1.004 (the value lives through the whole process).
+  Dropping `SigVal`'s signal test where the entry's test of the table covers it: that rests on the host's table having
+  an entry for every instance signal, which lowering cannot see. Not tried: skipping the statement end's test of
+  temporary roots (a skip while roots exist corrupts the temporary area); joining never-taken tests into one branch
+  (no fewer instructions).

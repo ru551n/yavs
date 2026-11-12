@@ -555,7 +555,17 @@ pub(super) fn run(prog: &Program, raw: &crate::Func) -> Option<Box<crate::Func>>
     // A slot's three words: written where it is declared, read as words, used in no other way.
     // (Nested subprograms read them through their static link: the language gives an object one
     // constraint, so no code writes them after the declaration.)
+    // (By slot, the candidates whose words hold `o` are a run: a scan of all of them per access
+    // was quadratic in a long process.)
+    let mut by_slot: Vec<(u32, usize)> = Vec::new();
+    if cands.len() > 16 || cfg!(debug_assertions) {
+        by_slot = cands.iter().enumerate().map(|(k, c)| (c.slot, k)).collect();
+        by_slot.sort_unstable();
+    }
     let slot_of = |o: u32, cs: &[Cand], bad: &[bool]| {
+        if !by_slot.is_empty() {
+            return slot_sorted(&by_slot, o, cs, bad);
+        }
         cs.iter()
             .enumerate()
             .find(|(k, c)| !bad[*k] && c.slot <= o && o < c.slot + 24)
@@ -946,4 +956,24 @@ fn splice(f: &mut crate::Func, mut ins: Vec<(usize, Vec<Inst>)>) {
         b.start = map[b.start as usize];
         b.end = map[b.end as usize];
     }
+}
+
+/// The first candidate (by index) not `bad` whose three slot words hold `o`, from the candidates
+/// sorted by slot (`by_slot`: slot, index).
+#[inline(never)]
+fn slot_sorted(by_slot: &[(u32, usize)], o: u32, cs: &[Cand], bad: &[bool]) -> Option<usize> {
+    let hi = by_slot.partition_point(|x| x.0 <= o);
+    let lo = by_slot[..hi].partition_point(|x| u64::from(x.0) + 24 <= u64::from(o));
+    let k = by_slot[lo..hi]
+        .iter()
+        .map(|x| x.1)
+        .filter(|&k| !bad[k])
+        .min();
+    debug_assert_eq!(
+        k,
+        cs.iter()
+            .enumerate()
+            .position(|(k, c)| !bad[k] && c.slot <= o && o < c.slot + 24)
+    );
+    k
 }

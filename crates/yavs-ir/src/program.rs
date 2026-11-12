@@ -536,6 +536,58 @@ pub fn frame_object_addr(f: &Func, off: u32) -> Option<(u32, u32)> {
     ))
 }
 
+/// [`frame_object_addr`] for every `AddrOf` of a function: past 64 locals the frame objects are
+/// sorted by slot, so a lookup is a binary search instead of a scan (quadratic in a long process).
+/// Debug builds always sort and check each answer against the scan.
+pub struct FrameObjects<'a> {
+    f: &'a Func,
+    /// `(slot, end)` of the frame objects, sorted; `None`: scan (few locals, or two overlap).
+    sorted: Option<Vec<(u32, u32)>>,
+}
+
+impl<'a> FrameObjects<'a> {
+    pub fn of(f: &'a Func) -> Self {
+        let sorted = (f.locals.len() > 64 || cfg!(debug_assertions))
+            .then(|| {
+                let mut v: Vec<(u32, u32)> = f
+                    .locals
+                    .iter()
+                    .filter(|l| is_frame_object(l) && l.size > 0)
+                    .map(|l| (l.slot, l.slot + l.size))
+                    .collect();
+                v.sort_unstable();
+                v.windows(2).all(|w| w[0].1 <= w[1].0).then_some(v)
+            })
+            .flatten();
+        FrameObjects { f, sorted }
+    }
+
+    /// [`frame_object_addr`] of `off`.
+    #[inline]
+    pub fn addr(&self, off: u32) -> Option<(u32, u32)> {
+        match &self.sorted {
+            None => frame_object_addr(self.f, off),
+            Some(v) => Self::find(self.f, v, off),
+        }
+    }
+
+    #[inline(never)]
+    fn find(f: &Func, sorted: &[(u32, u32)], off: u32) -> Option<(u32, u32)> {
+        let k = sorted.partition_point(|x| x.0 <= off).checked_sub(1);
+        let got = k
+            .map(|k| sorted[k])
+            .filter(|&(_, end)| off < end)
+            .map(|(slot, end)| {
+                (
+                    FRAME_OBJECT | (slot / 8) << 12 | (end - slot).div_ceil(8),
+                    off - slot,
+                )
+            });
+        debug_assert_eq!(got, frame_object_addr(f, off));
+        got
+    }
+}
+
 /// The start and length in bytes of the frame object a frame index names.
 #[inline]
 pub fn frame_object_range(idx: u32) -> Option<(usize, usize)> {

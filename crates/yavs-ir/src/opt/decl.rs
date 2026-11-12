@@ -703,23 +703,95 @@ pub(super) fn layout_words(l: &crate::Layout) -> Vec<u64> {
     w
 }
 
+/// The locals of a function with many ([`LONG_LIST`]) sorted by slot, so the local holding an offset
+/// is a binary search; empty when two overlap (each offset then has one holder, the first a scan
+/// finds; locals of no bytes hold nothing and are left out), and the lookups scan.
+pub(super) struct SlotIx(Vec<(i64, i64, usize)>);
+
+impl SlotIx {
+    fn new(locals: &[crate::Local]) -> Self {
+        SLOT_TABLES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut v: Vec<(i64, i64, usize)> = locals
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.size > 0)
+            .map(|(k, l)| (i64::from(l.slot), i64::from(l.slot) + i64::from(l.size), k))
+            .collect();
+        v.sort_unstable();
+        if v.windows(2).any(|w| w[0].1 > w[1].0) {
+            v.clear();
+        }
+        SlotIx(v)
+    }
+
+    /// The locals [`Opt::holding`] scans for `o`: the one that may hold it.
+    #[inline(never)]
+    fn at(&self, locals: &[crate::Local], o: i64) -> std::ops::Range<usize> {
+        if self.0.is_empty() {
+            return 0..locals.len();
+        }
+        let k = self.0.partition_point(|x| x.0 <= o);
+        let at = k
+            .checked_sub(1)
+            .map_or(0..0, |k| self.0[k].2..self.0[k].2 + 1);
+        let holds =
+            |l: &&crate::Local| i64::from(l.slot) <= o && o < i64::from(l.slot) + i64::from(l.size);
+        debug_assert_eq!(
+            locals[at.clone()].iter().find(holds).map(|l| l as *const _),
+            locals.iter().find(holds).map(|l| l as *const _)
+        );
+        at
+    }
+}
+
+static SLOT_TABLES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Locals of long functions sorted for their lookups by offset (a work counter: `YAVS_COUNTERS`).
+pub fn slot_tables() -> u64 {
+    SLOT_TABLES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 impl Opt<'_> {
+    /// Sort the locals of a function with many before the lookups of the walk's escape analysis
+    /// and `promote` (once per `Opt`).
+    pub(super) fn index_slots(&mut self) {
+        if self.slot_ix.is_none() && self.f.locals.len() > LONG_LIST {
+            self.slot_ix = Some(SlotIx::new(&self.f.locals));
+        }
+    }
+
+    /// The locals holding frame offset `o` (`slot <= o < slot + size`), in their order.
+    #[inline]
+    pub(super) fn holding(&self, o: i64) -> impl Iterator<Item = &crate::Local> + '_ {
+        let locals = &self.f.locals;
+        let at = match &self.slot_ix {
+            Some(ix) => ix.at(locals, o),
+            None => 0..locals.len(),
+        };
+        locals[at]
+            .iter()
+            .filter(move |l| i64::from(l.slot) <= o && o < i64::from(l.slot) + i64::from(l.size))
+    }
+
     /// The frame object containing offset `o`: its range, or `[o, o + n)` for `n` bytes.
     pub(super) fn frame_range(&self, o: i64, n: Option<i64>) -> (i64, i64) {
         let frame = i64::from(self.f.frame);
         let objs = |o: i64| {
-            self.f
-                .locals
-                .iter()
+            self.holding(o)
                 .map(|l| (i64::from(l.slot), i64::from(l.size), l.ty))
-                .chain(self.f.params.iter().map(|p| {
-                    (
-                        i64::from(p.slot),
-                        i64::from(p.width.bytes()),
-                        TyId(u32::MAX),
-                    )
-                }))
-                .filter(move |&(s, z, _)| s <= o && o < s + z)
+                .chain(
+                    self.f
+                        .params
+                        .iter()
+                        .map(|p| {
+                            (
+                                i64::from(p.slot),
+                                i64::from(p.width.bytes()),
+                                TyId(u32::MAX),
+                            )
+                        })
+                        .filter(move |&(s, z, _)| s <= o && o < s + z),
+                )
         };
         match n {
             Some(n) => (o, n),
@@ -748,7 +820,7 @@ impl Opt<'_> {
     /// last `24 * dims` bytes? Nothing writes it after the declaration. (An array of composites
     /// has a `[data, desc, handle]` slot of 24 bytes and no descriptor in it.)
     pub(super) fn in_descriptor(&self, o: i64) -> bool {
-        self.f.locals.iter().any(|l| {
+        self.holding(o).any(|l| {
             matches!(self.prog.types.get(l.ty), Some(Ty::Array { dims, .. })
                 if o >= i64::from(l.slot) + 24
                     && o < i64::from(l.slot) + 24 + 24 * i64::from(*dims)

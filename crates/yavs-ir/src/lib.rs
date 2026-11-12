@@ -40,7 +40,8 @@ pub use program::{
     RootKind, StmtInfo, StmtKind, VhpiIndex, VhpiModel, VhpiParam, ViaNode,
 };
 pub use program::{
-    COV_INPUTS, FRAME_OBJECT, frame_object_addr, frame_object_range, is_frame_object, native_shown,
+    COV_INPUTS, FRAME_OBJECT, FrameObjects, frame_object_addr, frame_object_range, is_frame_object,
+    native_shown,
 };
 pub use program::{
     bytes, flat_elem_results, lazy_bodies, note_restart, optimised_functions, restarted_calls,

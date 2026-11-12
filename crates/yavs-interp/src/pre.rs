@@ -106,6 +106,7 @@ impl Pre {
     /// counted ([`count_back_edges`]).
     pub(crate) fn new(f: &Func, prog: &Program, budget: bool) -> Pre {
         let n = f.reg_ty.len();
+        let objs = yavs_ir::FrameObjects::of(f);
         let mut defs = vec![0u8; n];
         for inst in &f.code {
             inst.visit(&mut |r, role, _| {
@@ -151,7 +152,7 @@ impl Pre {
                         AddrSpace::Frame => {
                             known[dst.0 as usize] = Known::Frame(off as u32);
                             // (A variable in the frame is at the same address in any activation.)
-                            match yavs_ir::frame_object_addr(f, off as u32) {
+                            match objs.addr(off as u32) {
                                 Some((i, o)) => mk_addr(FRAME, i, o.into()).ok(),
                                 None => {
                                     frame.push((dst.0, off));
@@ -5027,6 +5028,7 @@ impl Code {
         budget: bool,
     ) -> Code {
         let n = f.code.len();
+        let objs = yavs_ir::FrameObjects::of(f);
         // A block start stops a fusion only where something can jump to it: a block that
         // only a skipped jump (to where execution goes on anyway) or nothing reaches is run
         // through, and what the optimiser left split by it fuses as one block (#534).
@@ -5947,7 +5949,7 @@ impl Code {
                 // The other spaces are numbers (an address the machine cannot make stays a
                 // step, which reports it).
                 Inst::AddrOf { dst, space, off } => match space {
-                    AddrSpace::Frame => match yavs_ir::frame_object_addr(f, off) {
+                    AddrSpace::Frame => match objs.addr(off) {
                         Some((i, o)) => const_addr(dst, FRAME, i, o, pc),
                         None => Op::AddrFrame { dst: dst.0, off },
                     },

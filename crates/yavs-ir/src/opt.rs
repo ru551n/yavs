@@ -36,6 +36,7 @@
 
 mod cfg;
 mod decl;
+pub use decl::slot_tables;
 mod dopes;
 pub use dopes::scans as dopes_scans;
 mod drives;
@@ -1060,6 +1061,11 @@ fn read_only(cls: &[Option<Cls>], a: Opn) -> bool {
     matches!(c, Some(Cls::Space(AddrSpace::Const(_) | AddrSpace::Inst)))
 }
 
+/// From this many entries a list the optimiser searches per access is sorted first (`decl.rs`
+/// `SlotIx`, `ensure_esc`): a scan per access is quadratic in a long body, a sort a waste in a
+/// short one. Debug builds sort every list (and check each answer against the scan).
+const LONG_LIST: usize = if cfg!(debug_assertions) { 0 } else { 64 };
+
 /// Is the byte range `[a, a + n)` clear of every range in `rs`?
 fn clear_of(rs: &[(i64, i64)], a: i64, n: i64) -> bool {
     rs.iter()
@@ -1355,6 +1361,8 @@ struct Opt<'a> {
     /// Frame ranges whose address is used other than directly by a load or store (or the
     /// whole frame when nested subprograms can reach it); computed when first needed.
     esc: Option<Vec<(i64, i64)>>,
+    /// The locals by slot for a function with many (`decl.rs` `SlotIx`), made when first needed.
+    slot_ix: Option<decl::SlotIx>,
     /// Definitions per register (saturating).
     defs: Vec<u8>,
     /// Registers defined once, by a `Const`.
@@ -1477,6 +1485,7 @@ impl<'a> Opt<'a> {
                 .map(|l| (i64::from(l.slot), i64::from(l.size)))
                 .collect(),
             esc: None,
+            slot_ix: None,
             defs: vec![0; n],
             kc: vec![None; n],
             ka: vec![None; n],
@@ -2331,6 +2340,7 @@ impl<'a> Opt<'a> {
     /// allocation, which may change or free the source).
     fn forward_frame_copies(&mut self) {
         let nb = self.blocks.len();
+        let mut cyc = Vec::new();
         // Constants the optimiser made and has not inserted yet.
         let pending: FxMap<u32, i64> = self
             .inserts
@@ -2401,7 +2411,7 @@ impl<'a> Opt<'a> {
             if self.defs.get(q.0 as usize) != Some(&1)
                 || self.defs.get(data.0 as usize) != Some(&1)
                 || !self.reach[b0]
-                || self.in_cycle(b0)
+                || self.in_cycle_memo(&mut cyc, b0)
                 || total < 0
             {
                 continue;
@@ -2615,6 +2625,7 @@ impl<'a> Opt<'a> {
     fn defaults_first(&mut self) {
         const MIN: i64 = DEFAULTS_MIN;
         let nb = self.blocks.len();
+        let mut cyc = Vec::new();
         let mut block_of = vec![0usize; self.code.len()];
         for b in 0..nb {
             for pc in self.range(b) {
@@ -2659,7 +2670,7 @@ impl<'a> Opt<'a> {
                 || self.defs.get(q.0 as usize) != Some(&1)
                 || self.defs.get(t.0 as usize) != Some(&1)
                 || !self.reach[bn]
-                || self.in_cycle(bn)
+                || self.in_cycle_memo(&mut cyc, bn)
             {
                 continue;
             }
@@ -2676,7 +2687,7 @@ impl<'a> Opt<'a> {
             // (The size register of the `Alloc` is the one defined where the object is now.)
             let Some((pca, size)) = alloc else { continue };
             let ba = block_of[pca];
-            if !self.reach[ba] || self.in_cycle(ba) {
+            if !self.reach[ba] || self.in_cycle_memo(&mut cyc, ba) {
                 continue;
             }
             // A heap object is dereferenced where the temporary was: the check message of the
@@ -3012,6 +3023,7 @@ impl<'a> Opt<'a> {
             return false;
         }
         let mut cands: FxMap<u32, usize> = FxMap::default();
+        let mut cyc = Vec::new();
         for b in 0..self.blocks.len() {
             if !self.reach[b] {
                 continue;
@@ -3029,7 +3041,7 @@ impl<'a> Opt<'a> {
                 if !shared
                     && self.defs.get(dst.0 as usize) == Some(&1)
                     && plain(types, ty, 0)
-                    && !self.in_cycle(b)
+                    && !self.in_cycle_memo(&mut cyc, b)
                 {
                     cands.insert(dst.0, pc);
                 }
@@ -3159,6 +3171,18 @@ impl<'a> Opt<'a> {
             }
         }
         false
+    }
+
+    /// [`Opt::in_cycle`] remembered per block in `memo`, for a pass that changes no branch: a long
+    /// function asks it for many candidates in the same few blocks.
+    fn in_cycle_memo(&self, memo: &mut Vec<u8>, b: usize) -> bool {
+        if memo.is_empty() {
+            memo.resize(self.blocks.len(), 0);
+        }
+        if memo[b] == 0 {
+            memo[b] = 1 + u8::from(self.in_cycle(b));
+        }
+        memo[b] == 2
     }
 
     /// Is block `b` on a cycle of the control flow graph?
@@ -3837,7 +3861,15 @@ impl<'a> Opt<'a> {
 
     fn ensure_esc(&mut self) {
         if self.esc.is_none() {
-            self.esc = Some(self.escapes());
+            self.index_slots();
+            let mut esc = self.escapes();
+            // (One range per use of an address: a long list has the same few many times. The
+            // order does not matter to `clear_of`.)
+            if esc.len() > LONG_LIST {
+                esc.sort_unstable();
+                esc.dedup();
+            }
+            self.esc = Some(esc);
         }
     }
 
@@ -3858,9 +3890,9 @@ impl<'a> Opt<'a> {
             let (Some(a), Some(s)) = (at(addr), at(src)) else {
                 return false;
             };
-            self.f.locals.iter().any(|l| {
+            self.holding(a).any(|l| {
                 let (b, e) = (i64::from(l.slot), i64::from(l.slot) + i64::from(l.size));
-                b <= a && a < e && b <= s && s < e && a != s
+                b <= s && s < e && a != s
             })
         };
         let mut esc = Vec::new();
@@ -5491,11 +5523,7 @@ impl<'a> Opt<'a> {
                         .wf
                         .as_ref()
                         .is_some_and(|w| u32::try_from(o).is_ok_and(|o| w.descs.contains_key(&o))))
-                || f.locals.iter().any(|l| {
-                    crate::is_frame_object(l)
-                        && i64::from(l.slot) <= o
-                        && o < i64::from(l.slot) + i64::from(l.size)
-                })
+                || self.holding(o).any(crate::is_frame_object)
                 || overlap
                 || !a.ok
                 || !matches!(a.w, Width::B8 | Width::B1)
@@ -5522,11 +5550,7 @@ impl<'a> Opt<'a> {
             }) {
                 continue;
             }
-            if let Some(l) = f
-                .locals
-                .iter()
-                .find(|l| i64::from(l.slot) <= o && o < i64::from(l.slot) + i64::from(l.size))
-            {
+            if let Some(l) = self.holding(o).next() {
                 let scalar = self
                     .prog
                     .types

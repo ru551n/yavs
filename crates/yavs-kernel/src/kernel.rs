@@ -302,6 +302,11 @@ pub struct Stats {
     /// Timeouts of waits a signal ended, dropped from the future queue before their time
     /// (`SimControl::drop_stale_timeouts`).
     pub stale_timeouts: u64,
+    /// Timeouts queued by the commit of a wait (`commit_rest`).
+    pub timeouts_queued: u64,
+    /// Waiters the commit of a wait registered (`Waiters::add` in `commit_rest`); a resident
+    /// wait (`ProcMeta::perm`) registers none.
+    pub waiters_added: u64,
 }
 
 /// A pending observer wake-up (`Hook::wake_at`). Ordered by time, then registration.
@@ -5125,6 +5130,7 @@ impl SimControl {
             );
             let timed = st.deadline.is_some();
             if let Some(t) = st.deadline.take() {
+                self.stats.timeouts_queued += 1;
                 self.queue.push(self.now, t, Entry::Timeout(p, generation));
             }
             // The same wait as the last run, without a timeout: the waiters of the last run
@@ -5203,6 +5209,7 @@ impl SimControl {
                     sig.watch_part(range, self.cfg.cells && !self.watch_changes);
                 }
                 let procs = &self.procs;
+                self.stats.waiters_added += 1;
                 self.waiters[s.0 as usize].add(
                     p,
                     range,

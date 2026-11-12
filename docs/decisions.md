@@ -15698,3 +15698,34 @@ cycle, and each question walks the function.
   at most the 1.2 percent of all native bodies on Microwatt. Holding an address parameter that a loop uses
   once (`rt::hold_addrs`) cut a 64-element `bit_reverse` by 8 to 13 percent but made forced GRLIB 0.23 percent
   dearer (the region asked at every entry): not kept.
+
+## Memo of pure calls: priced at compiled call sites, and a leaner probe (yavs-ir `memo_fn.rs`, yavs-clift `Gen::native_call`, yavs-interp `pmemo.rs`, perf/b4-memoprice, 2026-11-12)
+
+- **Finding** (agent, census on 4d94c5ef, forced `--tier=clift --no-cache --threads=1`, exact counts). A hit of the memo costs
+  about 900 to 1000 instructions from compiled code (`yavs_rt_memo`, `TierHost::memo_probe`, the key, the lookup, the result
+  copy), more than many whole compiled bodies, and every pure function with a loop, a call or 120 IR instructions was probed.
+  Microwatt makes 32 M probes (28 M hits) in 36 functions, GRLIB 4.8 M in 27. Leaving one function's probe out at a time (a lab
+  switch) gave its net worth: on Microwatt the memo pays 15 percent overall, but `andor`, `decode_a_const`, `decode_b_const`,
+  `recode_primary_opcode`, the four `addr_hash_*`, `num_to_fxm`, `dawrx_match_enable` and a few smaller ones lose 250 to 2100
+  instructions a call (about 9 G of 1048 G together); on GRLIB the memo costs 0.17 percent overall (`genmux`, `branch_true`,
+  `ahbdrivedata`, `ahbreadword`, `rex_dpc` lose 550 to 1250 a call; `decode`, `TO_INTEGER`, `tz` win).
+- **Change** (agent). `MemoSig::dear`: the function or one it calls has a cycle of blocks (a real one, not a jump to a lower
+  block), calls itself, concatenates bytes or calls a native other than an `ieee` gate, conversion or comparison
+  (`cheap_native`; arithmetic, shifts and resizing are calls on wide operands). A compiled call of a function that is not dear
+  is made directly, without the probe (`clift_memo_unprobed_sites`); the interpreter keeps probing every memoised function, as
+  an interpreted body is far dearer. The probe finds a function's memo once (`State::index`, keeping the last one found),
+  builds the key without a per-cell check and copies an array result straight into temporary memory (`Machine::temp_bytes`):
+  about 95 instructions less a hit.
+- **Not taken.** The price is static, so it misses both ways: `decode` (GRLIB, a result of `2**n` elements) and `bcd_to_dpd`
+  (Microwatt) are classed cheap but the memo paid for them; `decode_b_const` (a `resize`), `ahbdrivedata` and `ahbreadword` (a
+  one-trip loop, a loop on a path that does not run) are classed dear but lose. A profile price (sampled body cost per miss, kept across runs) or an
+  inline probe in compiled code (per-process table, arguments compared in place) would close more; neither was built.
+- **Measured** (agent, plain bench builds, all-thread instructions, outputs and exit status equal to the base in every run).
+  Forced `--tier=clift --no-cache --threads=1`, one run each (a byte copy of the base within 0.01 percent): Microwatt 0.9921
+  (the leaner probe alone 0.9969), GRLIB 0.9989 (0.9988), `hdlm_fifo_sync` 0.9990, `vunit_logging`, `sc5_fifo_repack`,
+  `hdlm_lfsr`, `neorv32_single_cache`, `olo_axi_master_full` 0.9994 to 0.9996.
+  Default tier (`wait`), runs 1 to 3 from a pristine world, Microwatt and GRLIB 2 reps, small tests 3: Microwatt 0.9866,
+  0.9881, 0.9881 (byte copy 0.9988, 0.9990, 0.9956), main thread alone 0.9868, 0.9916, 0.9899; GRLIB runs 2 and 3 0.9977
+  and 0.9983 outside the copy's range (run 1 moves with the policy in both), main thread 0.998; the small tests and the
+  cold-cap set (`uvvm_func_cov`, `osvvm_axi4_random`, `uvvm_axistream_vvc`, `neorv32_dual_full`, runs 1 and 2) inside
+  the byte copy's spread or below it.

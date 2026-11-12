@@ -690,6 +690,11 @@ case!(
         ("ops", Max(15983))
     ]
 );
+// A cheap pure function (no loop, recursion, concatenation of bytes or native call but `ieee`
+// gates and conversions) called with 40 different arguments, and a recursive one: the
+// interpreter answers repeats of both from the memo (compiled callers ask it for the recursive
+// one only, `clift::memo_loopfree`).
+case!(memo_loopfree, "s=4190", &[], [("pmemo_hits", Min(740))]);
 // A hex-digit parser of two 22-arm case functions (character to integer and to a nibble),
 // 384 calls of each: the result tables (#722) read them inline, so none reaches the memo.
 case!(
@@ -1721,6 +1726,20 @@ mod clift {
             ("pmemo_runs", Max(14)),
             ("cb_memo", Max(470)),
             ("cb_memo", Min(430)),
+        ]
+    );
+    // A compiled call of a cheap pure function skips the memo: its body costs less than the
+    // probe (`MemoSig::dear`); one of a recursive function without a loop does not.
+    clift_case!(
+        memo_loopfree,
+        "memo_loopfree",
+        "s=4190",
+        [
+            // `half` (recursive) only: `pick` would add its 248 hits.
+            ("pmemo_hits", Max(525)),
+            ("pmemo_hits", Min(495)),
+            ("cb_memo", Max(760)),
+            ("clift_memo_unprobed_sites", Min(1)),
         ]
     );
     // Functions and procedures that read signals run on native frames (#519): 900 calls, no step.

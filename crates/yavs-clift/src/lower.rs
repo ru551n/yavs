@@ -2548,14 +2548,15 @@ enum Op {
 /// place (`Gen::ieee_native`), of a `Cat` of bytes (`Gen::cat_bytes`), of a `LayoutOf` from the
 /// layout memo (`Gen::layout_into`), of a real rounded to an integer (`Gen::f_to_i`), of an
 /// `ieee` op of two blocks (`Gen::ieee_wide`), of a gate that may meet a metavalue
-/// (`Gen::gate_planes`) and of an `LCopy` of a count known at run time only (`Gen::lcopy_inline`).
-static SITES: [std::sync::atomic::AtomicUsize; 7] =
-    [const { std::sync::atomic::AtomicUsize::new(0) }; 7];
+/// (`Gen::gate_planes`), of an `LCopy` of a count known at run time only (`Gen::lcopy_inline`)
+/// and of a call of a cheap memoisable function (`MemoSig::dear`), made without the memo's probe.
+static SITES: [std::sync::atomic::AtomicUsize; 8] =
+    [const { std::sync::atomic::AtomicUsize::new(0) }; 8];
 
 /// `[is_x or reduction of a vector, Cat of bytes, LayoutOf from the memo, real to integer, ieee
-/// op over 64 elements, gate with the tables for metavalues, LCopy of a run-time count]` sites
-/// lowered so far (`YAVS_COUNTERS`).
-pub fn inline_sites() -> [usize; 7] {
+/// op over 64 elements, gate with the tables for metavalues, LCopy of a run-time count, call
+/// without the memo's probe]` sites lowered so far (`YAVS_COUNTERS`).
+pub fn inline_sites() -> [usize; 8] {
     SITES
         .each_ref()
         .map(|a| a.load(std::sync::atomic::Ordering::Relaxed))
@@ -4569,9 +4570,14 @@ fn gen_func(
                     (Some(nr), Some(callee))
                         if call_fits(f, prog.base_of(id), callee, args, false) =>
                     {
-                        let memo = prog.memo_sig(func).is_some_and(|m| {
-                            m.cells as usize == f.regs(args).map_or(0, <[_]>::len)
-                        });
+                        // A cheap body runs faster than the probe (`MemoSig::dear`).
+                        let memo = prog
+                            .memo_sig(func)
+                            .filter(|m| m.cells as usize == f.regs(args).map_or(0, <[_]>::len));
+                        if memo.is_some_and(|m| !m.dear) {
+                            note_site(7);
+                        }
+                        let memo = memo.is_some_and(|m| m.dear);
                         let caller = prog.base_of(id);
                         g.native_call(
                             pc, &inst, caller, f, nr, func, callee, args, dst, None, memo,

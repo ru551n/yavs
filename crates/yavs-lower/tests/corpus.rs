@@ -391,6 +391,7 @@ const PASS: &[&str] = &[
     "process/lean_array_params",
     "process/lean_param_addr_join",
     "process/no_wait_infinite",
+    "process/memo_pure_calls",
     "process/subtype_bounds_once",
     "process/wait_in_sensitivity_proc",
     "process/conditional_expr_2019",

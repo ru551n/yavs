@@ -1015,6 +1015,20 @@ case!(
     &[],
     [("elab_source_steps", Max(14200)), ("signals", Max(602))]
 );
+// Record ports on elements of an array of records through two levels (`ch(i)`, `ch(i + 1)`),
+// eight lanes: each lane's formals are their own signals with port edges, copied per delta.
+case!(
+    port_elem_record,
+    "sum=F54E",
+    &[],
+    [
+        ("signals", Max(62)),
+        ("events", Max(7720)),
+        ("update_general", Max(83)),
+        ("general_assigns", Max(0)),
+        ("process_runs", Max(760)),
+    ]
+);
 case!(
     out_port,
     "q=",

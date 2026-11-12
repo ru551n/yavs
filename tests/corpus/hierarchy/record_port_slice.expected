@@ -1,0 +1,5 @@
+exit	0
+diag	note	825000000	0	:record_port_slice:_p0	k=275 sum=12190FFE ch(40)=9BAF009F ch(17) last=1DD7E23A
+diag	note	1650000000	0	:record_port_slice:_p0	k=550 sum=9432A09D ch(40)=D05835A4 ch(17) last=5F3D82AB
+diag	note	2475000000	0	:record_port_slice:_p0	k=825 sum=DFBEBE37 ch(40)=D8B9B374 ch(17) last=D3097C47
+diag	note	3300000000	0	:record_port_slice:_p0	k=1100 sum=925FF850 ch(40)=B1A4F53D ch(17) last=4560CB67

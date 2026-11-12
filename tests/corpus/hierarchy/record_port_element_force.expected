@@ -1,0 +1,64 @@
+exit	0
+diag	note	1000000	1	:record_port_element_force:g(0):u:mon	lane 0 s.v=1 s.d=10 s'event=true
+diag	note	1000000	3	:record_port_element_force:g(1):u:mon	lane 1 s.v=1 s.d=11 s'event=true
+diag	note	1000000	3	:record_port_element_force:g(2):u:mon	lane 2 s.v=U s.d=XX s'event=true
+diag	note	1000000	3	:record_port_element_force:x:mon	lane 3 s.v=U s.d=XX s'event=true
+diag	note	1000000	3	:record_port_element_force:f:mon	forced port s.d=11 s'event=true
+diag	note	11000000	0	:record_port_element_force:_p0	k=1 ch=11 XX XX q=XX qf=XX v=U
+diag	note	11000000	1	:record_port_element_force:g(0):u:mon	lane 0 s.v=0 s.d=20 s'event=true
+diag	note	11000000	3	:record_port_element_force:g(1):u:mon	lane 1 s.v=0 s.d=21 s'event=true
+diag	note	11000000	3	:record_port_element_force:g(2):u:mon	lane 2 s.v=1 s.d=12 s'event=true
+diag	note	11000000	3	:record_port_element_force:f:mon	forced port s.d=21 s'event=true
+diag	note	21000000	0	:record_port_element_force:_p0	k=2 ch=21 12 XX q=XX qf=XX v=U
+diag	note	21000000	1	:record_port_element_force:g(0):u:mon	lane 0 s.v=1 s.d=30 s'event=true
+diag	note	21000000	1	:record_port_element_force:g(2):u:mon	lane 2 s.v=1 s.d=5A s'event=true
+diag	note	21000000	3	:record_port_element_force:g(1):u:mon	lane 1 s.v=1 s.d=31 s'event=true
+diag	note	21000000	3	:record_port_element_force:g(2):u:mon	lane 2 s.v=0 s.d=5A s'event=true
+diag	note	21000000	3	:record_port_element_force:x:mon	lane 3 s.v=1 s.d=5B s'event=true
+diag	note	21000000	3	:record_port_element_force:f:mon	forced port s.d=31 s'event=true
+diag	note	22000000	1	:record_port_element_force:f:mon	forced port s.d=C3 s'event=true
+diag	note	31000000	0	:record_port_element_force:_p0	k=3 ch=31 5A 5B q=5B qf=XX v=U
+diag	note	31000000	1	:record_port_element_force:g(0):u:mon	lane 0 s.v=0 s.d=40 s'event=true
+diag	note	31000000	3	:record_port_element_force:g(1):u:mon	lane 1 s.v=0 s.d=41 s'event=true
+diag	note	31000000	3	:record_port_element_force:g(2):u:mon	lane 2 s.v=1 s.d=5A s'event=true
+diag	note	31000000	3	:record_port_element_force:x:mon	lane 3 s.v=0 s.d=5B s'event=true
+diag	note	31000000	3	:record_port_element_force:f:mon	forced port s.d=C3 s'event=true
+diag	note	41000000	0	:record_port_element_force:_p0	k=4 ch=41 5A 5B q=5B qf=5C v=1
+diag	note	41000000	1	:record_port_element_force:g(0):u:mon	lane 0 s.v=1 s.d=50 s'event=true
+diag	note	41000000	1	:record_port_element_force:g(2):u:mon	lane 2 s.v=1 s.d=32 s'event=true
+diag	note	41000000	3	:record_port_element_force:g(1):u:mon	lane 1 s.v=1 s.d=51 s'event=true
+diag	note	41000000	3	:record_port_element_force:g(2):u:mon	lane 2 s.v=0 s.d=42 s'event=true
+diag	note	41000000	3	:record_port_element_force:x:mon	lane 3 s.v=1 s.d=33 s'event=true
+diag	note	41000000	3	:record_port_element_force:f:mon	forced port s.d=C3 s'event=true
+diag	note	42000000	1	:record_port_element_force:f:mon	forced port s.d=51 s'event=true
+diag	note	51000000	0	:record_port_element_force:_p0	k=5 ch=51 42 33 q=33 qf=5C v=0
+diag	note	51000000	1	:record_port_element_force:g(0):u:mon	lane 0 s.v=0 s.d=60 s'event=true
+diag	note	51000000	3	:record_port_element_force:g(1):u:mon	lane 1 s.v=0 s.d=61 s'event=true
+diag	note	51000000	3	:record_port_element_force:g(2):u:mon	lane 2 s.v=1 s.d=52 s'event=true
+diag	note	51000000	3	:record_port_element_force:x:mon	lane 3 s.v=0 s.d=43 s'event=true
+diag	note	51000000	3	:record_port_element_force:f:mon	forced port s.d=61 s'event=true
+diag	note	61000000	0	:record_port_element_force:_p0	k=6 ch=61 52 43 q=43 qf=EE v=1
+diag	note	61000000	1	:record_port_element_force:g(0):u:mon	lane 0 s.v=1 s.d=70 s'event=true
+diag	note	61000000	3	:record_port_element_force:g(1):u:mon	lane 1 s.v=1 s.d=71 s'event=true
+diag	note	61000000	3	:record_port_element_force:g(2):u:mon	lane 2 s.v=0 s.d=62 s'event=true
+diag	note	61000000	3	:record_port_element_force:x:mon	lane 3 s.v=1 s.d=53 s'event=true
+diag	note	61000000	3	:record_port_element_force:f:mon	forced port s.d=71 s'event=true
+diag	note	71000000	0	:record_port_element_force:_p0	k=7 ch=71 62 53 q=53 qf=EE v=1
+diag	note	71000000	1	:record_port_element_force:g(0):u:mon	lane 0 s.v=0 s.d=80 s'event=true
+diag	note	71000000	3	:record_port_element_force:g(1):u:mon	lane 1 s.v=0 s.d=81 s'event=true
+diag	note	71000000	3	:record_port_element_force:g(2):u:mon	lane 2 s.v=1 s.d=72 s'event=true
+diag	note	71000000	3	:record_port_element_force:x:mon	lane 3 s.v=0 s.d=63 s'event=true
+diag	note	71000000	3	:record_port_element_force:f:mon	forced port s.d=81 s'event=true
+diag	note	81000000	0	:record_port_element_force:_p0	k=8 ch=81 72 63 q=63 qf=54 v=1
+diag	note	81000000	1	:record_port_element_force:g(0):u:mon	lane 0 s.v=1 s.d=90 s'event=true
+diag	note	81000000	3	:record_port_element_force:g(1):u:mon	lane 1 s.v=1 s.d=91 s'event=true
+diag	note	81000000	3	:record_port_element_force:g(2):u:mon	lane 2 s.v=0 s.d=82 s'event=true
+diag	note	81000000	3	:record_port_element_force:x:mon	lane 3 s.v=1 s.d=73 s'event=true
+diag	note	81000000	3	:record_port_element_force:f:mon	forced port s.d=91 s'event=true
+diag	note	91000000	0	:record_port_element_force:_p0	k=9 ch=91 82 73 q=73 qf=64 v=0
+diag	note	91000000	1	:record_port_element_force:g(0):u:mon	lane 0 s.v=0 s.d=A0 s'event=true
+diag	note	91000000	3	:record_port_element_force:g(1):u:mon	lane 1 s.v=0 s.d=A1 s'event=true
+diag	note	91000000	3	:record_port_element_force:g(2):u:mon	lane 2 s.v=1 s.d=92 s'event=true
+diag	note	91000000	3	:record_port_element_force:x:mon	lane 3 s.v=0 s.d=83 s'event=true
+diag	note	91000000	3	:record_port_element_force:f:mon	forced port s.d=A1 s'event=true
+diag	note	101000000	0	:record_port_element_force:_p0	k=10 ch=A1 92 83 q=83 qf=74 v=1

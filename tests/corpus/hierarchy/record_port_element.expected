@@ -1,0 +1,92 @@
+exit	0
+diag	note	1000000	1	:record_port_element:g(0):u:mon	lane 0 s.d=FFFFF7 s.v=0 s'event=true s.n'last_value=3 m.d=0000AA m.n=-1 m'active=false m.k=101 m.h'event=false y.a='1' y.z'length=0
+diag	note	1000000	1	:record_port_element:mon	top ch(2).d=0000AA ch(2)'event=false ch(3).n=-1 ch(3).n'last_value=-1 ch(5)'active=false t(1).v=0 t(1).d=0000AA
+diag	note	1000000	1	:record_port_element:g(0):u:_p0	lane 0 drv d=0000AA n=-1 driving=true b=100
+diag	note	1000000	1	:record_port_element:g(1):u:_p0	lane 1 drv d=0000AA n=-1 driving=true b=100
+diag	note	1000000	1	:record_port_element:g(2):u:_p0	lane 2 drv d=0000AA n=-1 driving=true b=100
+diag	note	1000000	1	:record_port_element:g(3):u:_p0	lane 3 drv d=0000AA n=-1 driving=true b=100
+diag	note	1000000	1	:record_port_element:g(4):u:_p0	lane 4 drv d=0000AA n=-1 driving=true b=100
+diag	note	1000000	1	:record_port_element:x:_p0	lane 9 drv d=0000AA n=-1 driving=true b=100
+diag	note	1000000	2	:record_port_element:g(0):u:mon	lane 0 s.d=FFFFF7 s.v=0 s'event=false s.n'last_value=1 m.d=FFFFF8 m.n=2 m'active=true m.k=101 m.h'event=true y.a='0' y.z'length=0
+diag	note	1000000	2	:record_port_element:g(1):u:mon	lane 1 s.d=FFFFF8 s.v=0 s'event=true s.n'last_value=-1 m.d=0000AC m.n=0 m'active=true m.k=011 m.h'event=true y.a='0' y.z'length=0
+diag	note	1000000	2	:record_port_element:mon	top ch(2).d=0000AC ch(2)'event=true ch(3).n=0 ch(3).n'last_value=-1 ch(5)'active=true t(1).v=0 t(1).d=0000B4
+diag	note	1000000	2	:record_port_element:g(2):u:mon	lane 2 s.d=0000AC s.v=0 s'event=true s.n'last_value=-1 m.d=0000AD m.n=0 m'active=true m.k=011 m.h'event=true y.a='0' y.z'length=0
+diag	note	1000000	2	:record_port_element:g(3):u:mon	lane 3 s.d=0000AD s.v=0 s'event=true s.n'last_value=-1 m.d=0000AE m.n=0 m'active=true m.k=011 m.h'event=true y.a='0' y.z'length=0
+diag	note	1000000	2	:record_port_element:g(4):u:mon	lane 4 s.d=0000AE s.v=0 s'event=true s.n'last_value=-1 m.d=0000AF m.n=0 m'active=true m.k=011 m.h'event=true y.a='0' y.z'length=0
+diag	note	1000000	2	:record_port_element:x:mon	lane 9 s.d=0000AF s.v=0 s'event=true s.n'last_value=-1 m.d=0000B4 m.n=0 m'active=true m.k=011 m.h'event=true y.a='0' y.z'length=0
+diag	note	11000000	1	:record_port_element:g(0):u:mon	lane 0 s.d=FFFFFE s.v=1 s'event=true s.n'last_value=1 m.d=FFFFF8 m.n=2 m'active=false m.k=101 m.h'event=false y.a='0' y.z'length=0
+diag	note	11000000	1	:record_port_element:mon	top ch(2).d=0000AC ch(2)'event=false ch(3).n=0 ch(3).n'last_value=0 ch(5)'active=false t(1).v=0 t(1).d=0000B4
+diag	note	11000000	1	:record_port_element:g(0):u:_p0	lane 0 drv d=FFFFF8 n=2 driving=true b=101
+diag	note	11000000	1	:record_port_element:g(1):u:_p0	lane 1 drv d=0000AC n=0 driving=true b=99
+diag	note	11000000	1	:record_port_element:g(2):u:_p0	lane 2 drv d=0000AD n=0 driving=true b=99
+diag	note	11000000	1	:record_port_element:g(3):u:_p0	lane 3 drv d=0000AE n=0 driving=true b=99
+diag	note	11000000	1	:record_port_element:g(4):u:_p0	lane 4 drv d=0000AF n=0 driving=true b=99
+diag	note	11000000	1	:record_port_element:x:_p0	lane 9 drv d=0000B4 n=0 driving=true b=99
+diag	note	11000000	2	:record_port_element:g(0):u:mon	lane 0 s.d=FFFFFE s.v=1 s'event=false s.n'last_value=2 m.d=FFFFFF m.n=3 m'active=true m.k=011 m.h'event=true y.a='1' y.z'length=0
+diag	note	11000000	2	:record_port_element:g(1):u:mon	lane 1 s.d=FFFFFF s.v=1 s'event=true s.n'last_value=2 m.d=FFFFFA m.n=3 m'active=true m.k=011 m.h'event=true y.a='1' y.z'length=0
+diag	note	11000000	2	:record_port_element:mon	top ch(2).d=FFFFFA ch(2)'event=true ch(3).n=1 ch(3).n'last_value=0 ch(5)'active=true t(1).v=0 t(1).d=0000B9
+diag	note	11000000	2	:record_port_element:g(2):u:mon	lane 2 s.d=FFFFFA s.v=0 s'event=true s.n'last_value=0 m.d=0000AF m.n=1 m'active=true m.k=110 m.h'event=true y.a='1' y.z'length=0
+diag	note	11000000	2	:record_port_element:g(3):u:mon	lane 3 s.d=0000AF s.v=0 s'event=true s.n'last_value=0 m.d=0000B1 m.n=1 m'active=true m.k=110 m.h'event=true y.a='1' y.z'length=0
+diag	note	11000000	2	:record_port_element:g(4):u:mon	lane 4 s.d=0000B1 s.v=0 s'event=true s.n'last_value=0 m.d=0000B3 m.n=1 m'active=true m.k=110 m.h'event=true y.a='1' y.z'length=0
+diag	note	11000000	2	:record_port_element:x:mon	lane 9 s.d=0000B3 s.v=0 s'event=true s.n'last_value=0 m.d=0000B9 m.n=1 m'active=true m.k=110 m.h'event=true y.a='1' y.z'length=0
+diag	note	21000000	1	:record_port_element:g(0):u:mon	lane 0 s.d=000005 s.v=0 s'event=true s.n'last_value=2 m.d=FFFFFF m.n=3 m'active=false m.k=011 m.h'event=false y.a='1' y.z'length=0
+diag	note	21000000	1	:record_port_element:mon	top ch(2).d=FFFFFA ch(2)'event=false ch(3).n=1 ch(3).n'last_value=1 ch(5)'active=false t(1).v=0 t(1).d=0000B9
+diag	note	21000000	1	:record_port_element:g(0):u:_p0	lane 0 drv d=FFFFFF n=3 driving=true b=103
+diag	note	21000000	1	:record_port_element:g(1):u:_p0	lane 1 drv d=FFFFFA n=3 driving=true b=101
+diag	note	21000000	1	:record_port_element:g(2):u:_p0	lane 2 drv d=0000AF n=1 driving=true b=99
+diag	note	21000000	1	:record_port_element:g(3):u:_p0	lane 3 drv d=0000B1 n=1 driving=true b=99
+diag	note	21000000	1	:record_port_element:g(4):u:_p0	lane 4 drv d=0000B3 n=1 driving=true b=99
+diag	note	21000000	1	:record_port_element:x:_p0	lane 9 drv d=0000B9 n=1 driving=true b=99
+diag	note	21000000	2	:record_port_element:g(0):u:mon	lane 0 s.d=000005 s.v=0 s'event=false s.n'last_value=3 m.d=000006 m.n=4 m'active=true m.k=110 m.h'event=true y.a='0' y.z'length=0
+diag	note	21000000	2	:record_port_element:g(1):u:mon	lane 1 s.d=000006 s.v=0 s'event=true s.n'last_value=3 m.d=000001 m.n=4 m'active=true m.k=110 m.h'event=true y.a='0' y.z'length=0
+diag	note	21000000	2	:record_port_element:mon	top ch(2).d=000001 ch(2)'event=true ch(3).n=4 ch(3).n'last_value=1 ch(5)'active=true t(1).v=0 t(1).d=0000BD
+diag	note	21000000	2	:record_port_element:g(2):u:mon	lane 2 s.d=000001 s.v=1 s'event=true s.n'last_value=3 m.d=FFFFFD m.n=4 m'active=true m.k=110 m.h'event=true y.a='0' y.z'length=0
+diag	note	21000000	2	:record_port_element:g(3):u:mon	lane 3 s.d=FFFFFD s.v=0 s'event=true s.n'last_value=1 m.d=0000B3 m.n=2 m'active=true m.k=101 m.h'event=true y.a='0' y.z'length=0
+diag	note	21000000	2	:record_port_element:g(4):u:mon	lane 4 s.d=0000B3 s.v=0 s'event=true s.n'last_value=1 m.d=0000B6 m.n=2 m'active=true m.k=101 m.h'event=true y.a='0' y.z'length=0
+diag	note	21000000	2	:record_port_element:x:mon	lane 9 s.d=0000B6 s.v=0 s'event=true s.n'last_value=1 m.d=0000BD m.n=2 m'active=true m.k=101 m.h'event=true y.a='0' y.z'length=0
+diag	note	31000000	1	:record_port_element:g(0):u:mon	lane 0 s.d=00000C s.v=1 s'event=true s.n'last_value=3 m.d=000006 m.n=4 m'active=false m.k=110 m.h'event=false y.a='0' y.z'length=0
+diag	note	31000000	1	:record_port_element:mon	top ch(2).d=000001 ch(2)'event=false ch(3).n=4 ch(3).n'last_value=4 ch(5)'active=false t(1).v=0 t(1).d=0000BD
+diag	note	31000000	1	:record_port_element:g(0):u:_p0	lane 0 drv d=000006 n=4 driving=true b=106
+diag	note	31000000	1	:record_port_element:g(1):u:_p0	lane 1 drv d=000001 n=4 driving=true b=104
+diag	note	31000000	1	:record_port_element:g(2):u:_p0	lane 2 drv d=FFFFFD n=4 driving=true b=102
+diag	note	31000000	1	:record_port_element:g(3):u:_p0	lane 3 drv d=0000B3 n=2 driving=true b=100
+diag	note	31000000	1	:record_port_element:g(4):u:_p0	lane 4 drv d=0000B6 n=2 driving=true b=100
+diag	note	31000000	1	:record_port_element:x:_p0	lane 9 drv d=0000BD n=2 driving=true b=100
+diag	note	31000000	2	:record_port_element:g(0):u:mon	lane 0 s.d=00000C s.v=1 s'event=false s.n'last_value=4 m.d=00000D m.n=5 m'active=true m.k=101 m.h'event=true y.a='1' y.z'length=0
+diag	note	31000000	2	:record_port_element:g(1):u:mon	lane 1 s.d=00000D s.v=1 s'event=true s.n'last_value=4 m.d=000008 m.n=5 m'active=true m.k=101 m.h'event=true y.a='1' y.z'length=0
+diag	note	31000000	2	:record_port_element:mon	top ch(2).d=000008 ch(2)'event=true ch(3).n=5 ch(3).n'last_value=4 ch(5)'active=true t(1).v=0 t(1).d=0000C0
+diag	note	31000000	2	:record_port_element:g(2):u:mon	lane 2 s.d=000008 s.v=0 s'event=true s.n'last_value=4 m.d=000004 m.n=5 m'active=true m.k=101 m.h'event=true y.a='1' y.z'length=0
+diag	note	31000000	2	:record_port_element:g(3):u:mon	lane 3 s.d=000004 s.v=1 s'event=true s.n'last_value=4 m.d=000001 m.n=5 m'active=true m.k=101 m.h'event=true y.a='1' y.z'length=0
+diag	note	31000000	2	:record_port_element:g(4):u:mon	lane 4 s.d=000001 s.v=0 s'event=true s.n'last_value=2 m.d=0000B8 m.n=3 m'active=true m.k=011 m.h'event=true y.a='1' y.z'length=0
+diag	note	31000000	2	:record_port_element:x:mon	lane 9 s.d=0000B8 s.v=0 s'event=true s.n'last_value=2 m.d=0000C0 m.n=3 m'active=true m.k=011 m.h'event=true y.a='1' y.z'length=0
+diag	note	41000000	1	:record_port_element:g(0):u:mon	lane 0 s.d=000013 s.v=0 s'event=true s.n'last_value=4 m.d=00000D m.n=5 m'active=false m.k=101 m.h'event=false y.a='1' y.z'length=0
+diag	note	41000000	1	:record_port_element:mon	top ch(2).d=000008 ch(2)'event=false ch(3).n=5 ch(3).n'last_value=5 ch(5)'active=false t(1).v=0 t(1).d=0000C0
+diag	note	41000000	1	:record_port_element:g(0):u:_p0	lane 0 drv d=00000D n=5 driving=true b=110
+diag	note	41000000	1	:record_port_element:g(1):u:_p0	lane 1 drv d=000008 n=5 driving=true b=108
+diag	note	41000000	1	:record_port_element:g(2):u:_p0	lane 2 drv d=000004 n=5 driving=true b=106
+diag	note	41000000	1	:record_port_element:g(3):u:_p0	lane 3 drv d=000001 n=5 driving=true b=104
+diag	note	41000000	1	:record_port_element:g(4):u:_p0	lane 4 drv d=0000B8 n=3 driving=true b=102
+diag	note	41000000	1	:record_port_element:x:_p0	lane 9 drv d=0000C0 n=3 driving=true b=102
+diag	note	41000000	2	:record_port_element:g(0):u:mon	lane 0 s.d=000013 s.v=0 s'event=false s.n'last_value=5 m.d=000014 m.n=6 m'active=true m.k=011 m.h'event=true y.a='0' y.z'length=0
+diag	note	41000000	2	:record_port_element:g(1):u:mon	lane 1 s.d=000014 s.v=0 s'event=true s.n'last_value=5 m.d=00000F m.n=6 m'active=true m.k=011 m.h'event=true y.a='0' y.z'length=0
+diag	note	41000000	2	:record_port_element:mon	top ch(2).d=00000F ch(2)'event=true ch(3).n=6 ch(3).n'last_value=5 ch(5)'active=true t(1).v=0 t(1).d=0000C2
+diag	note	41000000	2	:record_port_element:g(2):u:mon	lane 2 s.d=00000F s.v=1 s'event=true s.n'last_value=5 m.d=00000B m.n=6 m'active=true m.k=011 m.h'event=true y.a='0' y.z'length=0
+diag	note	41000000	2	:record_port_element:g(3):u:mon	lane 3 s.d=00000B s.v=0 s'event=true s.n'last_value=5 m.d=000008 m.n=6 m'active=true m.k=011 m.h'event=true y.a='0' y.z'length=0
+diag	note	41000000	2	:record_port_element:g(4):u:mon	lane 4 s.d=000008 s.v=1 s'event=true s.n'last_value=5 m.d=000006 m.n=6 m'active=true m.k=011 m.h'event=true y.a='0' y.z'length=0
+diag	note	41000000	2	:record_port_element:x:mon	lane 9 s.d=000006 s.v=0 s'event=true s.n'last_value=3 m.d=0000C2 m.n=4 m'active=true m.k=110 m.h'event=true y.a='0' y.z'length=0
+diag	note	51000000	1	:record_port_element:g(0):u:mon	lane 0 s.d=00001A s.v=1 s'event=true s.n'last_value=5 m.d=000014 m.n=6 m'active=false m.k=011 m.h'event=false y.a='0' y.z'length=0
+diag	note	51000000	1	:record_port_element:mon	top ch(2).d=00000F ch(2)'event=false ch(3).n=6 ch(3).n'last_value=6 ch(5)'active=false t(1).v=0 t(1).d=0000C2
+diag	note	51000000	1	:record_port_element:g(0):u:_p0	lane 0 drv d=000014 n=6 driving=true b=115
+diag	note	51000000	1	:record_port_element:g(1):u:_p0	lane 1 drv d=00000F n=6 driving=true b=113
+diag	note	51000000	1	:record_port_element:g(2):u:_p0	lane 2 drv d=00000B n=6 driving=true b=111
+diag	note	51000000	1	:record_port_element:g(3):u:_p0	lane 3 drv d=000008 n=6 driving=true b=109
+diag	note	51000000	1	:record_port_element:g(4):u:_p0	lane 4 drv d=000006 n=6 driving=true b=107
+diag	note	51000000	1	:record_port_element:x:_p0	lane 9 drv d=0000C2 n=4 driving=true b=105
+diag	note	51000000	2	:record_port_element:g(0):u:mon	lane 0 s.d=00001A s.v=1 s'event=false s.n'last_value=6 m.d=00001B m.n=7 m'active=true m.k=110 m.h'event=true y.a='1' y.z'length=0
+diag	note	51000000	2	:record_port_element:g(1):u:mon	lane 1 s.d=00001B s.v=1 s'event=true s.n'last_value=6 m.d=000016 m.n=7 m'active=true m.k=110 m.h'event=true y.a='1' y.z'length=0
+diag	note	51000000	2	:record_port_element:mon	top ch(2).d=000016 ch(2)'event=true ch(3).n=7 ch(3).n'last_value=6 ch(5)'active=true t(1).v=0 t(1).d=000010
+diag	note	51000000	2	:record_port_element:g(2):u:mon	lane 2 s.d=000016 s.v=0 s'event=true s.n'last_value=6 m.d=000012 m.n=7 m'active=true m.k=110 m.h'event=true y.a='1' y.z'length=0
+diag	note	51000000	2	:record_port_element:g(3):u:mon	lane 3 s.d=000012 s.v=1 s'event=true s.n'last_value=6 m.d=00000F m.n=7 m'active=true m.k=110 m.h'event=true y.a='1' y.z'length=0
+diag	note	51000000	2	:record_port_element:g(4):u:mon	lane 4 s.d=00000F s.v=0 s'event=true s.n'last_value=6 m.d=00000D m.n=7 m'active=true m.k=110 m.h'event=true y.a='1' y.z'length=0
+diag	note	51000000	2	:record_port_element:x:mon	lane 9 s.d=00000D s.v=1 s'event=true s.n'last_value=6 m.d=000010 m.n=7 m'active=true m.k=110 m.h'event=true y.a='1' y.z'length=0
+diag	note	61000000	0	:record_port_element:_p1	end ch(5).d=00000D ch(5).n=7 cc(4).d=00000F bb(3)=115 t(1).n=7 ny(2).a='1'

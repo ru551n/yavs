@@ -15626,3 +15626,31 @@ Written by Claude. The drive side of Microwatt, measured first with lab counters
 - **Test.** `clift_parity` `deallocations_in_compiled_code_match_the_interpreter`: a local, a null value, a field
   of another heap object, a protected type's own variable (the shared heap), and the two errors (an object
   deallocated twice, a cell inside the object it frees); `perf.rs` `free_native` bounds `cb_free` at 400 calls.
+
+## IR optimiser, round 3: whether a block is on a cycle, once per block and pass (yavs-ir `opt`, perf/b4-deadpass, 2026-11-12)
+
+Written by Claude. On real testbenches the cold main-thread profile has no superlinear optimiser part left (no symbol
+of the kind over 1 percent on `uvvm_func_cov`, `hdlm_fifo_sync`, `uvvm_axistream_vvc`, GRLIB or Microwatt to 2 us).
+Long generated bodies still have some. In a function of 2400 mixed statements (vectors, slices, `if` chains,
+string calls, loops, procedure calls) `Opt::in_cycle` took 31 percent of the run: `forward_frame_copies`,
+`defaults_first` and `frame_objects` ask, per candidate (every local composite variable), whether its block is on a
+cycle, and each question walks the function.
+
+- **Change.** Those three passes keep the answer per block for the pass (`in_cycle_memo`): the candidates of a long
+  function sit in a few blocks (the declarations). A pass changes no branch while it asks (they rewrite loads,
+  allocations and copies, never a terminator), so the answer cannot go stale; debug builds walk again on each
+  remembered answer and assert it is the same. Counter `opt_cycle_memo` (answers taken from the memo), perf design
+  `cycle_memo` (`Min(1)`).
+- **Measured** (main-thread `instructions:u`, `--tier=interp --threads 1`, `--no-cache`, optimiser = run minus
+  `YAVS_NO_IROPT`): the optimiser on that function of 600 / 1200 / 2400 statements 0.40 / 1.09 / 3.28 G before,
+  0.31 / 0.71 / 1.79 G after. Cold runs of the small testbenches, `uvvm_func_cov`, Microwatt and GRLIB to 2 us: level
+  (inside the spread of two worlds of the same build). The same IR (`YAVS_DUMPIR` over the corpus and the generated
+  functions), so the same machine code.
+- **Held, not landed** (branch perf/b4-deadpass-held): the same per-access scans in processes, where the shape of
+  2400 statements costs 4.56 G in the optimiser: the locals by slot for `frame_range`, `in_descriptor`, `own_slot`
+  and `promote`, the frame objects by slot for the predecoder (`FrameObjects`), the candidates by slot in
+  `proc_objects`, and the escaping ranges without repeats. Together 4.56 to 1.46 G on that process and 1.79 to 1.37 G
+  on the function (with the escaping ranges also sorted for `kill`, 1.14 G on the process), but 0.05 to 0.2 percent
+  more main-thread instructions on the small testbenches and Microwatt, more than two worlds of one build differ,
+  though every lookup switches to the sorted form only past a size. A `Cell` in `Opt` (for a lazily built table)
+  alone cost about 0.1 percent: `&Opt` is then not `Freeze`.

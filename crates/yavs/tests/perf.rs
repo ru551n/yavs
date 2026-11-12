@@ -192,6 +192,10 @@ case!(dopes_scan, "t=", &[], [("dopes_scans", Max(19000))]);
 // A small function inlined at two levels: its optimised body is made once and handed out again,
 // not optimised at each level (the floor shows a slide back).
 case!(body_once, "s=672", &[], [("opt_bodies_kept", Min(1))]);
+// A function of eight local vectors: whether the block of each copy is on a cycle is asked once
+// per block and remembered for the pass (a walk of the function per copy made the optimiser grow
+// with the square of a long function).
+case!(cycle_memo, "m=", &[], [("opt_cycle_memo", Min(1))]);
 // A function reading its string parameter's descriptor in the frame: its calls are lean from the
 // 128th on (`Pre::late`), 2 x 300 calls, so about 470 lean ones.
 case!(lean_late, "n=", &[], [("lean_late", Min(450))]);

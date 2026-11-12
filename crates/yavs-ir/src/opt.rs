@@ -490,6 +490,14 @@ fn kept_body(prog: &Program, id: FuncId) -> Option<Box<crate::Func>> {
 
 static BODIES_KEPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+static CYCLE_MEMO: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Answers of the optimiser's "is this block on a cycle" taken from the pass's memo instead of a
+/// walk of the function (a work counter: `YAVS_COUNTERS`).
+pub fn cycle_memo_hits() -> u64 {
+    CYCLE_MEMO.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Bodies [`optimize_body`] handed out again instead of optimising the function once more (a
 /// work counter: `YAVS_COUNTERS`).
 pub fn bodies_kept() -> u64 {
@@ -2331,6 +2339,7 @@ impl<'a> Opt<'a> {
     /// allocation, which may change or free the source).
     fn forward_frame_copies(&mut self) {
         let nb = self.blocks.len();
+        let mut cyc = Vec::new();
         // Constants the optimiser made and has not inserted yet.
         let pending: FxMap<u32, i64> = self
             .inserts
@@ -2401,7 +2410,7 @@ impl<'a> Opt<'a> {
             if self.defs.get(q.0 as usize) != Some(&1)
                 || self.defs.get(data.0 as usize) != Some(&1)
                 || !self.reach[b0]
-                || self.in_cycle(b0)
+                || self.in_cycle_memo(&mut cyc, b0)
                 || total < 0
             {
                 continue;
@@ -2615,6 +2624,7 @@ impl<'a> Opt<'a> {
     fn defaults_first(&mut self) {
         const MIN: i64 = DEFAULTS_MIN;
         let nb = self.blocks.len();
+        let mut cyc = Vec::new();
         let mut block_of = vec![0usize; self.code.len()];
         for b in 0..nb {
             for pc in self.range(b) {
@@ -2659,7 +2669,7 @@ impl<'a> Opt<'a> {
                 || self.defs.get(q.0 as usize) != Some(&1)
                 || self.defs.get(t.0 as usize) != Some(&1)
                 || !self.reach[bn]
-                || self.in_cycle(bn)
+                || self.in_cycle_memo(&mut cyc, bn)
             {
                 continue;
             }
@@ -2676,7 +2686,7 @@ impl<'a> Opt<'a> {
             // (The size register of the `Alloc` is the one defined where the object is now.)
             let Some((pca, size)) = alloc else { continue };
             let ba = block_of[pca];
-            if !self.reach[ba] || self.in_cycle(ba) {
+            if !self.reach[ba] || self.in_cycle_memo(&mut cyc, ba) {
                 continue;
             }
             // A heap object is dereferenced where the temporary was: the check message of the
@@ -3012,6 +3022,7 @@ impl<'a> Opt<'a> {
             return false;
         }
         let mut cands: FxMap<u32, usize> = FxMap::default();
+        let mut cyc = Vec::new();
         for b in 0..self.blocks.len() {
             if !self.reach[b] {
                 continue;
@@ -3029,7 +3040,7 @@ impl<'a> Opt<'a> {
                 if !shared
                     && self.defs.get(dst.0 as usize) == Some(&1)
                     && plain(types, ty, 0)
-                    && !self.in_cycle(b)
+                    && !self.in_cycle_memo(&mut cyc, b)
                 {
                     cands.insert(dst.0, pc);
                 }
@@ -3159,6 +3170,26 @@ impl<'a> Opt<'a> {
             }
         }
         false
+    }
+
+    /// [`Opt::in_cycle`] remembered per block in `memo` (empty at the start of a pass that changes
+    /// no branch): a long function asks it for many candidates in the same few blocks, and each
+    /// walk is as long as the function (counter `opt_cycle_memo`).
+    fn in_cycle_memo(&self, memo: &mut Vec<u8>, b: usize) -> bool {
+        if memo.is_empty() {
+            memo.resize(self.blocks.len(), 0);
+        }
+        if memo[b] == 0 {
+            memo[b] = 1 + u8::from(self.in_cycle(b));
+        } else {
+            CYCLE_MEMO.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            debug_assert_eq!(
+                memo[b] == 2,
+                self.in_cycle(b),
+                "a branch changed under the memo"
+            );
+        }
+        memo[b] == 2
     }
 
     /// Is block `b` on a cycle of the control flow graph?

@@ -45,6 +45,9 @@ pub struct ImageSpec {
 /// An id `Images::find` gives for a spec with no image: its leaves overlap or do not fit.
 pub const NO_IMAGE: u32 = u32::MAX;
 
+/// More images than this on one signal take only the runs in their span (`Images::push_sig`).
+const SPAN_IMAGES: usize = 4;
+
 /// The items of one image on one signal, in element order.
 pub(crate) struct SigImage {
     image: u32,
@@ -198,9 +201,25 @@ impl Images {
     #[inline]
     pub fn push_sig(&mut self, sig: &Signal) -> u64 {
         let mut n = 0;
+        let runs = &sig.changed[..];
+        // Disjoint runs in element order (the usual case): each image looks only at the runs in
+        // its own span, not at every run. A wide signal that holds one record of each of many
+        // lanes (ports collapsed into `ch(i)`) has an image per lane and a run per changed lane.
+        // With a few images the walk is cheaper than the test.
+        let ordered = sig.images.len() > SPAN_IMAGES
+            && runs.len() > 1
+            && runs.windows(2).all(|w| w[0].end() <= w[1].offset);
         for im in &sig.images {
             let img = &mut self.list[im.image as usize];
-            let w = write_runs(sig, &im.items, &sig.changed, &mut img.bytes);
+            let runs = match (ordered, im.items.first(), im.items.last()) {
+                (true, Some(f), Some(l)) => {
+                    let a = runs.partition_point(|r| r.end() <= f.k);
+                    let b = a + runs[a..].partition_point(|r| r.offset < l.k + l.len);
+                    &runs[a..b]
+                }
+                _ => runs,
+            };
+            let w = write_runs(sig, &im.items, runs, &mut img.bytes);
             img.writes += w;
             n += w;
         }

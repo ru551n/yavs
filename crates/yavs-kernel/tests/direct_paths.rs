@@ -1611,3 +1611,97 @@ fn an_image_asked_for_while_its_last_user_lets_it_go_stays() {
     sim.run_until(ns(4)).unwrap();
     assert_eq!(*lens.lock().unwrap(), [32, 32, 32, 32]);
 }
+
+/// One signal holding a record lane of each of eight readers (ports collapsed into `ch(i)`), each
+/// reader with an image of its lane: more than four images, so an update with several changed
+/// lanes hands each image only the runs in its span, and one that changes the whole signal (one
+/// run) takes the walk. Every image equals its lane read from the signal after each update.
+#[test]
+fn record_images_of_many_lanes_follow_their_lanes() {
+    const LANES: u32 = 8;
+    const W: u32 = 6;
+    let mut b = Builder::new();
+    let s = b.signal(
+        "s",
+        SignalType::logic(LANES * W),
+        &"0".repeat((LANES * W) as usize)
+            .parse::<LogicVec>()
+            .unwrap(),
+    );
+    let d = b.driver(s);
+    let mut k = 0u32;
+    b.process(
+        "drive",
+        NONE,
+        &[d],
+        p(move |c| {
+            k += 1;
+            let lane = |i: u32| {
+                (0..W)
+                    .map(|j| {
+                        if (k * 7 + i * 3 + j).is_multiple_of(3) {
+                            '1'
+                        } else {
+                            '0'
+                        }
+                    })
+                    .collect::<String>()
+                    .parse::<LogicVec>()
+                    .unwrap()
+            };
+            if k.is_multiple_of(4) {
+                // The whole signal in one assignment: one changed run.
+                let all: String = (0..LANES).map(|i| lane(i).to_string()).collect();
+                let v = all.parse::<LogicVec>().unwrap();
+                c.assign(d, None, &[(Time::ZERO, &v)], DelayMode::INERTIAL)?;
+            } else {
+                // Some lanes, apart from each other: several changed runs in element order.
+                for i in (0..LANES).filter(|i| !(i + k).is_multiple_of(3)) {
+                    let v = lane(i);
+                    let r = Range::new(i * W, W);
+                    c.assign(d, Some(r), &[(Time::ZERO, &v)], DelayMode::INERTIAL)?;
+                }
+            }
+            c.wait_for(ns(1))
+        }),
+    );
+    let bad = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let checks = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    for i in 0..LANES {
+        let spec = ImageSpec {
+            size: 32,
+            items: Box::new([ImageItem {
+                sig: s,
+                k: i * W,
+                len: W,
+                voff: 0,
+                vsize: 32,
+                kind: ImageKind::Planes,
+            }]),
+        };
+        let (bad, checks) = (bad.clone(), checks.clone());
+        let mut asked = false;
+        b.process(
+            &format!("read{i}"),
+            NONE,
+            &[],
+            p(move |c| {
+                if !std::mem::replace(&mut asked, true) {
+                    c.image_ask(spec.clone());
+                } else if let Some(img) = c.image_id(&spec).and_then(|id| c.image(id)) {
+                    let mut want = [0u8; 32];
+                    c.read_into(s.slice(i * W, W), &mut want)?;
+                    if img != want {
+                        bad.lock().unwrap().push((i, c.now()));
+                    }
+                    checks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                c.wait_on(s)
+            }),
+        );
+    }
+    let mut sim = b.build(Config::default()).unwrap();
+    sim.run_until(ns(40)).unwrap();
+    assert!(bad.lock().unwrap().is_empty(), "{:?}", bad.lock().unwrap());
+    assert!(checks.load(std::sync::atomic::Ordering::Relaxed) > 100);
+}

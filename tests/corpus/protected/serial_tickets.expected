@@ -1,0 +1,4 @@
+exit	0
+out	tickets 640 sum 204480
+out	late 640 left 8
+out	own 315

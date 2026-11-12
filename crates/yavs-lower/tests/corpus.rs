@@ -451,6 +451,7 @@ const PASS: &[&str] = &[
     "protected/pointer_queue",
     "protected/private_variables",
     "protected/shared_var_regions",
+    "protected/serial_tickets",
     "protected/stack",
     "protected/variable_ports",
     "protected/variable_ports_same_delta",

@@ -382,6 +382,14 @@ case!(
         ("ops", Max(5552)),
     ]
 );
+// Serial processes run as other processes do and scan for shared roots only when they can hold
+// some.
+case!(
+    serial_wake,
+    "s=3600",
+    &[],
+    [("serial_execs", Max(0)), ("shared_publishes", Max(13))]
+);
 // One byte entry per activation in the batch loop is a store, not a slice move.
 case!(
     byte_store,

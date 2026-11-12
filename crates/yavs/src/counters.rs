@@ -26,6 +26,7 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
     let (hits, runs, session_hits) = yavs_elab::call_cache_stats();
     let (reads, idle) = yavs_wave::var_counts();
     let (memo_hits, memo_runs) = yavs_interp::pmemo_stats();
+    let (serial_execs, shared_publishes) = yavs_interp::serial_stats();
     let mut rows = vec![
         ("cycles", s.cycles),
         ("process_runs", s.process_runs),
@@ -51,6 +52,8 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         ("direct_planes", s.direct_planes),
         ("direct_bytes", s.direct_bytes),
         ("byte_moves", s.byte_moves),
+        ("serial_execs", serial_execs),
+        ("shared_publishes", shared_publishes),
         ("general_assigns", s.general_assigns),
         ("gathers_copied", s.gathers_copied),
         ("gathers_read", s.gathers_read),

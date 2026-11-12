@@ -177,6 +177,26 @@ pub(crate) struct ProcRoots {
     pub pinned: Vec<u32>,
 }
 
+impl ProcRoots {
+    fn is_empty(&self) -> bool {
+        self.handles.is_empty() && self.pinned.is_empty()
+    }
+}
+
+/// Work counters of serial processes (`YAVS_COUNTERS`): activations run by the general path
+/// (`InterpProcess::exec`, with a debugger or before the start), and shared-heap root scans of
+/// `Machine::publish_shared` (one with no roots to find is skipped).
+pub(crate) static SERIAL_EXECS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static SHARED_PUBLISHES: AtomicU64 = AtomicU64::new(0);
+
+/// `(serial_execs, shared_publishes)`, see [`SERIAL_EXECS`].
+pub fn serial_stats() -> (u64, u64) {
+    (
+        SERIAL_EXECS.load(Ordering::Relaxed),
+        SHARED_PUBLISHES.load(Ordering::Relaxed),
+    )
+}
+
 impl SharedState {
     /// Whether code run on this state did more than compute (see `tainted`): what a pure call
     /// reads of it may differ between runs.
@@ -3012,6 +3032,11 @@ impl InterpProcess {
 
     #[inline(always)]
     fn finish_quick(&mut self, q: exec::Quick, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+        // Not `hot` here only in `run_serial`: the shared-heap roots are published before the
+        // suspension drops the temporaries, as the general path did.
+        if !self.m.hot && !matches!(q, exec::Quick::Fault) {
+            self.m.publish_shared(&mut self.roots_slot);
+        }
         match q {
             exec::Quick::Suspended => {
                 self.m.after_suspend();
@@ -3039,7 +3064,8 @@ impl InterpProcess {
             let e = Fault::Internal("a terminated process was resumed".into());
             return Err(self.m.error(e, Some(ctx)));
         }
-        if !self.started {
+        let first = !self.started;
+        if first {
             self.started = true;
             if let Err(e) = self.m.enter(self.m.entry, &[]) {
                 return Err(self.m.error(e, Some(ctx)));
@@ -3049,7 +3075,10 @@ impl InterpProcess {
         if let Err(e) = self.m.borrow_scratch() {
             return Err(self.m.error(e, Some(ctx)));
         }
-        if self.shared.is_none() && self.m.can_run_quick() {
+        if self.m.can_run_quick() {
+            if self.shared.is_some() {
+                return self.run_serial(ctx, first);
+            }
             self.m.execs += 1;
             self.m.hot = true;
             return self.run_quick(ctx);
@@ -3085,8 +3114,48 @@ impl InterpProcess {
         }
     }
 
+    /// An activation of a serial process without a debugger: the path of a `hot` process (compiled
+    /// code entered directly, else `run_quick`) with the shared state lent out of its lock for it.
+    /// Serial processes run one at a time on the kernel thread; between activations the state is
+    /// in the lock, where other serial processes, the collector and observers take it. The process
+    /// stays not `hot`, which tells `finish_quick` to publish its shared-heap roots.
+    #[inline(never)]
+    fn run_serial(&mut self, ctx: &mut Ctx<'_>, first: bool) -> Result<(), SimError> {
+        self.m.execs += 1;
+        // (Before the state is lent: the switch refuses a machine that holds it.)
+        if self.m.execs == u64::from(self.m.spec_at) {
+            self.specialise(Some(&*ctx));
+        }
+        let Some(shared) = self.shared.take() else {
+            let e = Fault::Internal("a serial process without the shared state".into());
+            return Err(self.m.error(e, Some(ctx)));
+        };
+        let r = match shared.lock() {
+            Ok(mut g) => {
+                self.m.sh = Some(std::mem::take(&mut *g));
+                // (The first activation, as a `hot` process's, in the interpreter's loop.)
+                let r = if first {
+                    self.run_quick(ctx)
+                } else {
+                    self.run_ready(ctx)
+                };
+                if let Some(st) = self.m.sh.take() {
+                    *g = st;
+                }
+                r
+            }
+            Err(_) => {
+                let e = Fault::Internal("shared state lock poisoned".into());
+                Err(self.m.error(e, Some(ctx)))
+            }
+        };
+        self.shared = Some(shared);
+        r
+    }
+
     /// Runs the machine with the shared state locked, until it suspends or returns.
     fn exec(&mut self, ctx: Option<&mut Ctx<'_>>) -> Result<Outcome, Fault> {
+        SERIAL_EXECS.fetch_add(u64::from(self.shared.is_some()), Ordering::Relaxed);
         self.m.execs += 1;
         if self.m.execs == u64::from(self.m.spec_at) {
             self.specialise(ctx.as_deref());

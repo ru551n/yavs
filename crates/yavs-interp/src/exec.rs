@@ -2292,6 +2292,33 @@ impl Machine {
         if self.sh.is_none() {
             return;
         }
+        // Frames whose functions have no root map and no recorded temporaries hold no roots: an
+        // entry that is empty already stays right without a scan.
+        if let Some(i) = *slot
+            && self.troots.is_empty()
+            && (self.frames.iter()).all(|f| {
+                self.rt
+                    .prog
+                    .func_inline(f.func)
+                    .is_some_and(|f| f.roots.is_empty())
+            })
+            && let Some(sh) = self.sh.as_ref()
+            && sh
+                .procs
+                .get(i)
+                .is_some_and(|p| p.as_ref().is_some_and(ProcRoots::is_empty))
+        {
+            if cfg!(debug_assertions) || heap::STRESS {
+                let r = self.refs_in(false);
+                assert!(
+                    r.is_some_and(|r| r.handles.is_empty() && r.pinned(SHARED_HEAP).is_empty()),
+                    "internal error: a serial process skipped publishing roots it holds"
+                );
+            }
+            self.recycle_shared();
+            return;
+        }
+        crate::SHARED_PUBLISHES.fetch_add(1, Ordering::Relaxed);
         #[cfg(test)]
         ROOT_BUILDS.with(|c| c.set(c.get() + 1));
         // The buffers of the last scan and of this process's entry are reused: a serial process
@@ -2325,7 +2352,14 @@ impl Machine {
             sh.procs[i] = None;
         }
         self.rscratch = r;
-        if sh.heap.as_deref().is_some_and(Heap::has_quarantine)
+        self.recycle_shared();
+    }
+
+    /// Make the shared heap's deallocated slots reusable that no serial process's frames still
+    /// address (`publish_shared`).
+    fn recycle_shared(&mut self) {
+        if let Some(sh) = self.sh.as_mut()
+            && sh.heap.as_deref().is_some_and(Heap::has_quarantine)
             && let Some(pinned) = sh.pinned()
             && let Some(h) = sh.heap.as_mut()
         {
@@ -13603,7 +13637,8 @@ mod tests {
         assert_eq!(offset_of!(crate::InterpProcess, m), 0);
     }
 
-    /// A suspension of a process without the shared state builds no roots (#356).
+    /// A suspension of a process without the shared state builds no roots (#356), nor does one
+    /// whose frames can hold none and whose published entry is empty.
     #[test]
     fn publish_shared_needs_shared_state() {
         let rt = Runtime::new(Arc::new(Program::default()), crate::Bindings::default()).unwrap();
@@ -13612,6 +13647,9 @@ mod tests {
         m.publish_shared(&mut slot);
         assert_eq!((ROOT_BUILDS.get(), slot), (0, None));
         m.sh = Some(SharedState::new(vec![]));
+        m.publish_shared(&mut slot);
+        assert_eq!((ROOT_BUILDS.get(), slot), (1, Some(0)));
+        // No frame can hold a root and the entry is empty: no second scan.
         m.publish_shared(&mut slot);
         assert_eq!((ROOT_BUILDS.get(), slot), (1, Some(0)));
     }

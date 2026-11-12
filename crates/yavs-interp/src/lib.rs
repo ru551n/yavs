@@ -1576,7 +1576,7 @@ pub struct NativeFlags {
     /// Per function, the native frames of it that left to the interpreter (`materialised`).
     left_native: Box<[std::sync::atomic::AtomicU64]>,
     /// What the count rule did, for `YAVS_COUNTERS` (`CountStat`).
-    count_stat: [std::sync::atomic::AtomicU64; CountStat::CopyCalls as usize + 1],
+    count_stat: [std::sync::atomic::AtomicU64; CountStat::ForceReach as usize + 1],
 }
 
 /// What the count rule of `--tier=auto` did in a run (`YAVS_COUNTERS`), so a test sees it stop.
@@ -1615,6 +1615,9 @@ pub enum CountStat {
     /// Calls in copies taken into the policy's map of who calls whom (`Worker::graph`): a copy of
     /// a subprogram is called only from copies.
     CopyCalls,
+    /// Functions optimised ahead by the first question about callers in a run without the last
+    /// run's list of what it needed: what the processes reach by calls (`Worker::force_once`).
+    ForceReach,
 }
 
 impl NativeFlags {
@@ -1647,7 +1650,7 @@ impl NativeFlags {
     }
 
     /// What the count rule did so far, by `CountStat`.
-    pub fn count_stats(&self) -> [u64; CountStat::CopyCalls as usize + 1] {
+    pub fn count_stats(&self) -> [u64; CountStat::ForceReach as usize + 1] {
         std::array::from_fn(|i| self.count_stat[i].load(Ordering::Relaxed))
     }
 

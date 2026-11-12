@@ -15698,3 +15698,31 @@ cycle, and each question walks the function.
   at most the 1.2 percent of all native bodies on Microwatt. Holding an address parameter that a loop uses
   once (`rt::hold_addrs`) cut a 64-element `bit_reverse` by 8 to 13 percent but made forced GRLIB 0.23 percent
   dearer (the region asked at every entry): not kept.
+
+## `--tier=auto`: a first run optimises ahead what the processes reach (yavs-rt `auto.rs` `Worker::force_once`, perf/b4-callers3, 2026-11-12, agent; landing is the maintainer's)
+
+- **Finding** (agent). A run without the last run's list of what it needed (the first run of a program) optimised
+  every function of the program at the first question about callers (`force_all`), as the whole-program map did.
+  The map does not need it (every caller asked about is optimised already); it was kept as a prefetch, so the
+  simulation thread finds optimised what it calls later. In a suite most of those functions are library subprograms
+  no process calls: on the OSVVM suite (314 runs, `--tier-compile=wait`) 6 first runs optimised 23 756 functions
+  this way, of which 267 were later needed; on the UVVM suite (136 runs) 32 runs optimised 11 788, 477 needed.
+- **Change** (agent). The first ask optimises the processes and what their optimised code calls (`Call`,
+  `CallProt`), and so on down (`force_reach`); counter `tier_force_reach` counts the functions it optimised. The
+  functions the run later needed were all among them on both suites, GRLIB and `neorv32_dual_full` (none
+  of them was optimised after the first ask); a function reached only by an indirect call or by the kernel is
+  optimised when first called, as before. The answers about callers are unchanged: they never depended on it.
+- **Measured** (agent, exact counts, plain bench builds of b40eb8d8 and of a lab build with the same walk, a byte
+  copy of the base binary for the A/A; untimed, cores 0-7). All threads, first run: OSVVM suite 0.949 under `wait`
+  (572.0 to 542.9 G, ranges apart, A/A 0.995) and 0.969 under `background`; UVVM suite 0.993 (inside the A/A);
+  VUnit suite, `uvvm_func_cov`, GRLIB and `neorv32_dual_full` level (on GRLIB and `neorv32_dual_full` the processes
+  reach 425 of 661 and 974 of 1 337 of the functions forced before). Later runs (which prefetch from the profile and
+  never force) level, except OSVVM under `background`, second run, 1.010 on all threads with the A/A at 1.002
+  (the library copies the first run no longer optimises are optimised, on the compile thread, by the second). The
+  simulation thread is level everywhere measured (OSVVM, UVVM, VUnit suites, `wait` and `background`; GRLIB,
+  `neorv32_dual_full`, `uvvm_func_cov`). Output and exit status equal in every compared call and run.
+- **Check** (agent). Under `YAVS_AUTO_COUNT=1 YAVS_AUTO_GATE=0 YAVS_AUTO_SYNC=1` the compile decisions are identical
+  with and without the change on every design where that mode repeats itself (`hdlm_fifo_sync`, `vunit_logging`,
+  `olo_axi_master_full`, `neorv32_dual_full`, `uvvm_axistream_vvc`, runs 1 to 3, two reps). `YAVS_AUTO_CHECK_CALLS`
+  is clean over the difftest corpus and the suites. Unit test `the_first_ask_optimises_only_what_the_processes_reach`
+  (fails when every function is a root).

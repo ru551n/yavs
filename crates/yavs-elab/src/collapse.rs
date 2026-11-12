@@ -91,13 +91,36 @@ pub(crate) fn ports(
             .flatten()
             .for_each(|p| excluded[p.0.index()] = true);
     }
+    // Per leaf: the starts and the ends of its non-empty source ranges, each sorted. The sources
+    // overlapping a non-empty `r` are those starting before its end less those ending at or
+    // before its start (those start before its end too): two searches, not a scan per port.
+    let bounds: Vec<(Vec<u32>, Vec<u32>)> = sources
+        .iter()
+        .map(|s| {
+            let s = s.iter().filter(|r| r.len > 0);
+            let mut starts: Vec<u32> = s.clone().map(|r| r.offset).collect();
+            let mut ends: Vec<u32> = s.map(|r| r.end()).collect();
+            starts.sort_unstable();
+            ends.sort_unstable();
+            (starts, ends)
+        })
+        .collect();
     // The actual of an `out` formal: no other source of these elements, its effective value
     // its driving value, no guard, not forced, not in a composite resolved as a whole.
     let sole = |e: &crate::hier::PortEdge| {
         let (a, r) = (e.actual.0.index(), e.actual.1);
         let al = &nets.leaves[a];
-        SOURCE_STEPS.fetch_add(sources[a].len() as u64, Ordering::Relaxed);
-        let overlaps = sources[a].iter().filter(|s| s.overlaps(r)).count();
+        let (starts, ends) = &bounds[a];
+        SOURCE_STEPS.fetch_add(
+            2 * u64::from(starts.len().max(1).ilog2() + 1),
+            Ordering::Relaxed,
+        );
+        let overlaps = match r.len {
+            0 => 0,
+            _ => {
+                starts.partition_point(|&s| s < r.end()) - ends.partition_point(|&x| x <= r.offset)
+            }
+        };
         overlaps == 1 && !fed[a] && !excluded[a] && al.guard.is_none() && !forced.contains(&al.obj)
     };
     // The leaf and kernel offset each collapsed formal leaf aliases (before following chains):

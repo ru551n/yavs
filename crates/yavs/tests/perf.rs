@@ -1006,12 +1006,13 @@ case!(
     ]
 );
 // 600 `out` ports on elements of one array, each the only source of its element (collapsed):
-// the check looks at every source of the shared leaf for every port.
+// the check searches the sorted sources of the shared leaf, 20 steps per port (360000 when it
+// looked at every source of the leaf for every port).
 case!(
     out_ports_shared,
     "sum=150446",
     &[],
-    [("collapse_source_steps", Max(370000)), ("signals", Max(602))]
+    [("collapse_source_steps", Max(12400)), ("signals", Max(602))]
 );
 case!(
     out_port,

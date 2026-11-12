@@ -291,7 +291,7 @@ case!(
         ("process_runs", Max(440)),
         ("update_general", Max(0)),
         ("update_timed", Min(185)),
-        ("ops", Max(4647)),
+        ("ops", Max(4262)),
     ]
 );
 case!(
@@ -485,7 +485,7 @@ case!(
     "s=",
     &[],
     // The gates run in the kernel (#779): 10082 ops when they are interpreted.
-    [("process_runs", Max(335)), ("ops", Max(5841))]
+    [("process_runs", Max(335)), ("ops", Max(5626))]
 );
 case!(
     mux_bus,
@@ -493,7 +493,7 @@ case!(
     &[],
     // The muxes, the relation and the gates run in the kernel (#786): 5094 ops when they are
     // interpreted (the rest is the stimulus process).
-    [("process_runs", Max(257)), ("ops", Max(3340))]
+    [("process_runs", Max(257)), ("ops", Max(2883))]
 );
 case!(
     prog_bus,
@@ -501,7 +501,7 @@ case!(
     &[],
     // The tree, the conditions, the chain and the state test run in the kernel (#788): 7606 ops
     // when they are interpreted (the rest is the stimulus process).
-    [("process_runs", Max(410)), ("ops", Max(2920))]
+    [("process_runs", Max(410)), ("ops", Max(2799))]
 );
 case!(
     fan,
@@ -561,6 +561,9 @@ case!(
         ("timeouts_queued", Max(635)),
         ("waiters_added", Max(33)),
         ("wake_scans", Max(2)),
+        // The interpreter's wait again is one op (`WaitSigAtSuspend`), `TimedOut` and its branch
+        // another (`TimedOutBr`): 83462 ops before.
+        ("ops", Max(59119)),
     ]
 );
 case!(ieee_operands, "acc=", &[], [("ops", Max(2716))]);
@@ -736,7 +739,7 @@ case!(
     [
         ("pmemo_off", Min(1)),
         ("pmemo_runs", Max(130)),
-        ("ops", Max(24067))
+        ("ops", Max(19388))
     ]
 );
 // The digit loop of a textio HRead (#744): a result-table nibble stored into the slice
@@ -862,7 +865,7 @@ case!(
         ("wakes", Max(414)),
         ("update_general", Max(206)),
         ("events", Max(208)),
-        ("ops", Max(7150)),
+        ("ops", Max(6323)),
     ]
 );
 case!(
@@ -885,7 +888,7 @@ case!(
     [
         ("direct_codes", Max(137)),
         ("direct_planes", Max(63)),
-        ("ops", Max(3564)),
+        ("ops", Max(3378)),
     ]
 );
 // Repeated drives of inout ports (not direct) in one activation, mostly of the value held: the
@@ -967,7 +970,7 @@ case!(
     "acc=",
     &[],
     [
-        ("ops", Max(6310)),
+        ("ops", Max(6207)),
         ("wake_plans", Min(380)),
         ("wake_scans", Max(7)),
     ]
@@ -1017,7 +1020,7 @@ case!(
         ("wakes", Max(450)),
         ("events", Max(410)),
         ("update_general", Max(21)),
-        ("ops", Max(923)),
+        ("ops", Max(860)),
     ]
 );
 // 600 `out` ports on elements of one array, each the only source of its element (collapsed):

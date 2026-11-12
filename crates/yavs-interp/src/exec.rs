@@ -5210,6 +5210,38 @@ impl Machine {
         Ok(())
     }
 
+    /// `Inst::WaitAt` of the deadline `d` (fs).
+    fn wait_at(&mut self, d: u64, ctx: &mut Option<&mut Ctx<'_>>) -> R<()> {
+        let t = to_time(d as i64)?;
+        let Some(c) = ctx.as_deref_mut() else {
+            return rt_err_s!("signal or wait operation during elaboration");
+        };
+        c.wait_at(t)?;
+        if self.dbg.is_some() {
+            self.waits.timeout = Some(t);
+        }
+        Ok(())
+    }
+
+    /// `Inst::WaitAt` (`rel` false) or `Inst::WaitFor` of the time in `t`.
+    #[inline]
+    fn wait_time(&mut self, t: Reg, rel: bool, ctx: &mut Option<&mut Ctx<'_>>) -> R<()> {
+        if rel {
+            self.wait_for(t, ctx)
+        } else {
+            self.wait_at(self.ri(t) as u64, ctx)
+        }
+    }
+
+    /// `Inst::TimedOut`.
+    #[inline]
+    fn timed_out(ctx: &mut Option<&mut Ctx<'_>>) -> R<u64> {
+        match ctx.as_deref() {
+            Some(c) => Ok(u64::from(c.timed_out())),
+            None => rt_err_s!("signal or wait operation during elaboration"),
+        }
+    }
+
     /// `Inst::WaitOn`.
     #[inline(never)]
     fn wait_on(&mut self, sig: Reg, ctx: &mut Option<&mut Ctx<'_>>) -> R<()> {
@@ -7565,6 +7597,46 @@ impl Machine {
                     t!(self.wait_edge_inst(kind, Reg(sig), ctx));
                     k += 1;
                     enter!();
+                }
+                Op::WaitTime { t, rel } => {
+                    t!(self.wait_time(Reg(t), rel, ctx));
+                    k += 1;
+                    enter!();
+                }
+                Op::TimedOut { dst } => {
+                    self.regs[dst as usize] = t!(Self::timed_out(ctx));
+                    k += 1;
+                    enter!();
+                }
+                Op::TimedOutBr { dst, t, f: e } => {
+                    let v = t!(Self::timed_out(ctx));
+                    self.regs[dst as usize] = v;
+                    go!(if v != 0 { t } else { e });
+                }
+                Op::WaitTimeSuspend { t, at, rel } => {
+                    k = at as usize;
+                    t!(self.wait_time(Reg(t), rel, ctx));
+                    self.frames[top].pc = code.at.get(k + 1).copied().unwrap_or(0);
+                    self.suspend(prog, f, ctx)?;
+                    return Ok(Flow::Suspend);
+                }
+                Op::WaitSigAtSuspend {
+                    sig,
+                    offset,
+                    dst,
+                    off,
+                    at,
+                } => {
+                    k = at as usize;
+                    t!(self.wait_sig1(sig, self.regs[offset as usize], ctx));
+                    k += 1;
+                    let d = slot8!(off);
+                    self.regs[dst as usize] = d;
+                    k += 1;
+                    t!(self.wait_at(d, ctx));
+                    self.frames[top].pc = code.at.get(k + 1).copied().unwrap_or(0);
+                    self.suspend(prog, f, ctx)?;
+                    return Ok(Flow::Suspend);
                 }
                 Op::WaitStatic { to } => {
                     self.end_stmt();
@@ -11629,13 +11701,7 @@ impl Machine {
             }
             Inst::WaitOn { sig } => self.wait_on(sig, ctx)?,
             Inst::WaitFor { t } => self.wait_for(t, ctx)?,
-            Inst::WaitAt { t } => {
-                let t = to_time(self.ri(t))?;
-                kc!().wait_at(t)?;
-                if self.dbg.is_some() {
-                    self.waits.timeout = Some(t);
-                }
-            }
+            Inst::WaitAt { t } => self.wait_at(self.ri(t) as u64, ctx)?,
             Inst::Suspend { .. } => {
                 self.suspend(prog, f, ctx)?;
                 return Ok(Flow::Suspend);

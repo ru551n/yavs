@@ -861,6 +861,29 @@ pub(crate) enum Op {
         at: u32,
         stmt: bool,
     },
+    /// `WaitAt` (`rel` false) or `WaitFor` (`rel`) of the time in `t` and the `Suspend` after it,
+    /// as op `at` (placed like `WaitSuspend`).
+    WaitTimeSuspend {
+        t: u32,
+        at: u32,
+        rel: bool,
+    },
+    /// `WaitSig`, the `LoadSlot8` of the deadline from slot `off`, `WaitAt` and `Suspend`: the wait
+    /// of a `wait on s until c for T` on one element again after its condition was false (placed
+    /// like `WaitSuspend`; a `Br` to it is a copy). The `Suspend` is 3 ops on.
+    WaitSigAtSuspend {
+        sig: u32,
+        offset: u32,
+        dst: u32,
+        off: u32,
+        at: u32,
+    },
+    /// `TimedOut` and the `CondBr` on its result (which is also written).
+    TimedOutBr {
+        dst: u32,
+        t: u32,
+        f: u32,
+    },
     /// `SigVal`, `WaitEdge`, `WaitSig` and `Suspend` of a `wait until` on a clock edge of one
     /// element: the edge of the element the wait names, then the wait, then the suspension.
     /// Placed like `WaitSuspend` (`at`, `stmt`); `body` is the block id a `BrBody` copy of it
@@ -1243,6 +1266,15 @@ pub(crate) enum Op {
     },
     WaitOn {
         sig: u32,
+    },
+    /// `Inst::WaitAt`, `Inst::WaitFor` (`rel`).
+    WaitTime {
+        t: u32,
+        rel: bool,
+    },
+    /// `Inst::TimedOut`.
+    TimedOut {
+        dst: u32,
     },
     /// `Inst::WaitEdge`; `kind` is `EdgeKind::code`.
     WaitEdge {
@@ -3515,7 +3547,8 @@ fn targets_mut(op: &mut Op) -> [Option<&mut u32>; 2] {
         | Op::LoadSlot8CmpBr { t, f, .. }
         | Op::FlagBr { t, f, .. }
         | Op::SlotBr { t, f, .. }
-        | Op::EdgeBr { t, f, .. } => [Some(t), Some(f)],
+        | Op::EdgeBr { t, f, .. }
+        | Op::TimedOutBr { t, f, .. } => [Some(t), Some(f)],
         _ => [None, None],
     }
 }
@@ -4524,6 +4557,27 @@ fn superops(prog: &Program, ops: &mut [Op], at: &[u32], f: &Func, known: &[Known
                 at: k as u32,
                 stmt: false,
             }),
+            (Op::WaitTime { t, rel }, Some(&Op::Suspend), _) => Some(Op::WaitTimeSuspend {
+                t,
+                at: k as u32,
+                rel,
+            }),
+            (
+                Op::WaitSig { sig, offset },
+                Some(&Op::LoadSlot8 { dst, off }),
+                Some(&Op::WaitTime { t, rel: false }),
+            ) if t == dst && matches!(ops.get(k + 3), Some(Op::Suspend)) => {
+                Some(Op::WaitSigAtSuspend {
+                    sig,
+                    offset,
+                    dst,
+                    off,
+                    at: k as u32,
+                })
+            }
+            (Op::TimedOut { dst }, Some(&Op::CondBr { c, t, f }), _) if c == dst => {
+                Some(Op::TimedOutBr { dst, t, f })
+            }
             (Op::StmtLoadSlot8 { dst, off }, Some(&Op::CondBr { c, t, f }), _) if c == dst => {
                 Some(Op::FlagBr { dst, off, t, f })
             }
@@ -4937,8 +4991,11 @@ fn superops(prog: &Program, ops: &mut [Op], at: &[u32], f: &Func, known: &[Known
     for k in 0..ops.len() {
         match ops[k] {
             Op::Br { to } => {
-                if let Some(&w @ (Op::WaitSuspend { .. } | Op::WaitEdgeSuspend { .. })) =
-                    ops.get(to as usize)
+                if let Some(
+                    &w @ (Op::WaitSuspend { .. }
+                    | Op::WaitEdgeSuspend { .. }
+                    | Op::WaitSigAtSuspend { .. }),
+                ) = ops.get(to as usize)
                 {
                     ops[k] = w;
                 }
@@ -5922,6 +5979,9 @@ impl Code {
                     n: n.0,
                 },
                 Inst::Suspend { .. } => Op::Suspend,
+                Inst::WaitAt { t } => Op::WaitTime { t: t.0, rel: false },
+                Inst::WaitFor { t } => Op::WaitTime { t: t.0, rel: true },
+                Inst::TimedOut { dst } => Op::TimedOut { dst: dst.0 },
                 Inst::Ret { v } => Op::Ret {
                     v: v.map_or(NONE, |r| r.0),
                 },

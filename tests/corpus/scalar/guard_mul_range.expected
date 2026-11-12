@@ -1,0 +1,5 @@
+exit	1
+diag	note	5000000	0	:guard_mul_range:_p1	x 306783376 r 2147483632
+diag	note	15000000	0	:guard_mul_range:_p1	x 306783377 r 2147483639
+diag	note	25000000	0	:guard_mul_range:_p1	x 306783378 r 2147483646
+diag	fatal	35000000	0	-	result of 306783379 * 7 cannot be represented as INTEGER

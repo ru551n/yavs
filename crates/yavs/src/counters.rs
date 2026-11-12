@@ -69,6 +69,7 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         ("opt_huge", yavs_ir::opt::huge_bodies()),
         ("opt_bodies_kept", yavs_ir::opt::bodies_kept()),
         ("elab_restarts", yavs_ir::restarted_calls()),
+        ("ir_first_store", yavs_elab::first_stores()),
         ("gc_collections", yavs_interp::gc_collections()),
         ("pmemo_hits", memo_hits),
         ("pmemo_runs", memo_runs),

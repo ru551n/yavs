@@ -168,14 +168,17 @@ fn warm_run_is_identical_to_cold() {
         "the design should warn: {plain:?}"
     );
     assert_eq!(e.entries(), 0, "--no-cache must not write");
-    // The first run of a closure only notes it (no image, no lowered packages); the second stores.
+    // The first run of a closure notes it and stores only its lowered design (`ir`, at its end);
+    // the second stores the analysis (`sem`) and reads the lowered design.
     let first = e.run(&[]);
-    assert!(note(&first, "note") && !note(&first, "store"), "{first:?}");
-    assert_eq!(e.entries(), 0);
+    assert!(
+        note(&first, "note") && note(&first, "store ir"),
+        "{first:?}"
+    );
+    assert_eq!(e.entries(), 1);
     assert_eq!(visible(&plain), visible(&first));
     let cold = e.run(&[]);
-    assert!(note(&cold, "store"), "{cold:?}");
-    // The analysis and the lowered design (`sem`, `ir`).
+    assert!(note(&cold, "store") && note(&cold, "hit ir"), "{cold:?}");
     assert_eq!(e.entries(), 2);
     let warm = e.run(&[]);
     assert!(note(&warm, "hit"), "{warm:?}");
@@ -312,6 +315,8 @@ fn read_only_library_is_not_cached_into() {
         return; // running as a user the mode does not bind
     }
     assert_eq!(visible(&plain), visible(&r));
+    // A run that cannot leave its note is no first run: it serialises no lowering to store.
+    assert!(!note(&r, "first run") && !note(&r, "store ir"), "{r:?}");
     assert_eq!(
         before,
         tree(&work),
@@ -1338,7 +1343,8 @@ fn lowered_design_is_cached() {
         );
         assert_eq!(plain.code, 0, "{plain:?}");
         assert!(e.entry_files("ir").is_empty(), "--no-cache must not write");
-        let cold = e.cold(top, &[&format!("--wave={}", wave("cold.fst"))]);
+        // The first run of `tb` (`tb2` shares its closure, which then keeps entries).
+        let cold = e.run_top(top, &[&format!("--wave={}", wave("cold.fst"))]);
         assert!(note(&cold, "store ir"), "{top}: {cold:?}");
         let warm = e.run_top(top, &[&format!("--wave={}", wave("warm.fst"))]);
         assert!(note(&warm, "hit ir"), "{top}: {warm:?}");
@@ -1411,8 +1417,8 @@ fn editing_a_subprogram_replaces_the_lowered_design() {
     assert!(note(&e.run(&[]), "hit ir"));
     std::fs::write(e.tmp.join("pkg.vhd"), PKG.replace("x * K", "x * K + 1")).expect("write");
     assert_eq!(e.yavs(&["analyze", "--work", &e.work(), "pkg.vhd"]).code, 0);
-    let after = e.cold("tb", &[]);
-    assert!(!note(&after, "hit ir"), "{after:?}");
+    let after = e.run(&[]);
+    assert!(note(&after, "note") && !note(&after, "hit ir"), "{after:?}");
     assert!(after.stdout.contains("f=22"), "{after:?}");
     let warm = e.run(&[]);
     assert!(
@@ -1433,6 +1439,40 @@ fn editing_a_subprogram_replaces_the_lowered_design() {
         assert_eq!(visible(&after), visible(&r));
         assert!(note(&r, "store ir"), "the entry is rewritten");
         assert!(note(&e.run(&[]), "hit ir"));
+    }
+}
+
+/// A closure's first run stores its lowered design at its end and the second reads it; an edit
+/// between them (a constant, a function body) is a miss that runs as without the cache.
+#[test]
+fn the_first_run_stores_the_lowered_design_for_the_second() {
+    for (tag, from, to, want) in [
+        ("irfirst_const", "integer := 7", "integer := 8", "K=8 f=24"),
+        ("irfirst_body", "x * K", "x * K + 1", "K=7 f=22"),
+    ] {
+        let e = Env::new(tag);
+        let first = e.run(&[]);
+        assert!(
+            note(&first, "note") && note(&first, "store ir") && !note(&first, "hit"),
+            "{tag}: {first:?}"
+        );
+        let second = e.run(&[]);
+        assert!(
+            note(&second, "hit ir") && !note(&second, "store ir"),
+            "{tag}: {second:?}"
+        );
+        assert_eq!(visible(&first), visible(&second), "{tag}");
+        let _ = e.run(&[]);
+        std::fs::write(e.tmp.join("pkg.vhd"), PKG.replace(from, to)).expect("write");
+        assert_eq!(e.yavs(&["analyze", "--work", &e.work(), "pkg.vhd"]).code, 0);
+        let plain = e.run(&["--no-cache"]);
+        assert!(plain.stdout.contains(want), "{tag}: {plain:?}");
+        let r1 = e.run(&[]);
+        assert!(note(&r1, "note") && !note(&r1, "hit ir"), "{tag}: {r1:?}");
+        assert_eq!(visible(&plain), visible(&r1), "{tag}");
+        let after = e.run(&[]);
+        assert!(note(&after, "hit ir"), "{tag}: {after:?}");
+        assert_eq!(visible(&plain), visible(&after), "{tag}");
     }
 }
 
@@ -1463,7 +1503,7 @@ fn units_loaded_late_do_not_block_the_stage_entries() {
     leaf("one");
     let plain = e.run_top("tbl", &["--no-cache"]);
     assert!(plain.stdout.contains("leaf one"), "{plain:?}");
-    let cold = e.cold("tbl", &[]);
+    let cold = e.run_top("tbl", &[]);
     assert!(note(&cold, "store ir"), "{cold:?}");
     let warm = e.run_top("tbl", &[]);
     assert!(note(&warm, "hit ir"), "{warm:?}");
@@ -1607,6 +1647,15 @@ fn entries_do_not_depend_on_who_made_the_std_units() {
             yavs(&["analyze", "--work", &work, "n.vhd"]);
             assert!(yavs(&["run", "--work", &work, "tb"]).contains("k=7"));
             before_image();
+            // The second run lowers again and stores what it lowered (`low`) only on a miss.
+            for f in std::fs::read_dir(tmp.join("work").join("yavs-cache"))
+                .expect("cache dir")
+                .flatten()
+            {
+                if f.file_name().to_string_lossy().starts_with("ir-") {
+                    std::fs::remove_file(f.path()).expect("remove");
+                }
+            }
             assert!(yavs(&["run", "--work", &work, "tb"]).contains("k=7"));
             let mut files: Vec<(String, Vec<u8>)> =
                 std::fs::read_dir(tmp.join("work").join("yavs-cache"))

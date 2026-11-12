@@ -139,6 +139,13 @@ pub trait StageCache: Send + Sync + std::fmt::Debug {
         true
     }
 
+    /// Whether this is the closure's first run, which keeps no entries of its own but may store its
+    /// lowering (`ir`) at its end for the second run to read. Not for a closure under a
+    /// made library, which never keeps entries.
+    fn first(&self) -> bool {
+        false
+    }
+
     /// The [`Db::extent`] the analysis ended with: the library prefix entries are valid for a
     /// `Db` that has not grown since.
     fn analysed(&self) -> Vec<usize> {

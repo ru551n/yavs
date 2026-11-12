@@ -3381,9 +3381,7 @@ impl Worker {
     /// `force_all`, once.
     fn force_once(&self) {
         if self.force_all.replace(false) {
-            for k in 0..self.prog.funcs.len() {
-                let _ = self.prog.func(FuncId(k as u32));
-            }
+            self.prog.optimise_all();
         }
     }
 
@@ -4460,6 +4458,17 @@ impl AutoTier {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+
+    /// The functions this run needed so far (the profile's `ran`, as last published by the compile
+    /// thread); `None` when the run keeps no profile.
+    pub fn ran(&self) -> Option<Vec<u32>> {
+        self.shared
+            .profile
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(|j| j.snap.ran.clone())
     }
 
     /// End tier-up: functions still queued stay interpreted, and compiled code stays usable.

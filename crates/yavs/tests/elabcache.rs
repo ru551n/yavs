@@ -229,7 +229,9 @@ fn the_first_hit_reads_the_program_the_storing_run_left() {
         let all = format!("{}{}", first.stdout, first.stderr);
         assert!(all.contains(out), "{top}: {all}");
         assert!(second.noted("store ecall"), "{top}: {}", second.stderr);
-        assert!(second.noted("store ir"), "{top}: {}", second.stderr);
+        // The first run stores the program at its end, the second reads it.
+        assert!(first.noted("store ir"), "{top}: {}", first.stderr);
+        assert!(second.noted("hit ir"), "{top}: {}", second.stderr);
         assert!(third.noted("hit ecall"), "{top}: {}", third.stderr);
         assert!(third.noted("hit ir"), "{top}: {}", third.stderr);
         assert!(!third.noted("store ir"), "{top}: {}", third.stderr);

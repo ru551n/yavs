@@ -1094,6 +1094,16 @@ enum StopTierUp {
 }
 
 impl StopTierUp {
+    /// The functions this run needed so far (`yavs_rt::AutoTier::ran`).
+    fn ran(&self) -> Option<Vec<u32>> {
+        match self {
+            #[cfg(feature = "clift")]
+            StopTierUp::Clift(t) => t.ran(),
+            #[cfg(not(feature = "clift"))]
+            _ => None,
+        }
+    }
+
     /// Exit with `code` at once if the compile thread is still busy, so the run never waits
     /// for compilation; with `keep_exit` (foreign libraries or VHPI plugins loaded, whose exit
     /// handlers must run) wait for it instead.
@@ -1976,6 +1986,8 @@ fn run_design(
     if a.vhpi.is_empty() && a.wave.is_none() && a.cov.is_none() {
         db.release_analysis();
     }
+    // A closure's first run stores its lowering when it ends (`learn`): serialised meanwhile.
+    e.store_first();
     // `vhpi_control(vhpiReset)` builds it again (#832).
     let cfg_again = (!a.vhpi.is_empty()).then(|| cfg.clone());
     let (mut sim, mut built) = match e.build_full_once(cfg) {
@@ -2473,7 +2485,7 @@ fn run_design(
     };
     let done = out.finish(code);
     // The optimised copies of this run's functions go into the stored lowering of the design.
-    e.learn();
+    e.learn(tier_up.as_ref().and_then(StopTierUp::ran).as_deref());
     if let Some(t) = tier_up {
         // `end` may end the process at once, without destructors: the files the design left
         // open are written out and closed first.

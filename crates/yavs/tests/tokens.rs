@@ -296,7 +296,8 @@ fn worker_threads_start_with_the_first_token() {
     let idle = threads_of(child.id());
     child.kill().expect("kill");
     let _ = child.wait();
-    assert!(idle < 6, "{idle} threads in a run that holds no token");
+    // (A first run of a closure also has the thread that stores its lowering.)
+    assert!(idle < 7, "{idle} threads in a run that holds no token");
     let s = Server::new(8);
     let mut child = spawn(&lib, Some(&s), "--threads=8", &args);
     s.wait_for("a token", |s| s.held > 0);

@@ -137,7 +137,7 @@ pub struct Jit {
     deopt_slots: ClifId,
     deopt_end: ClifId,
     /// The kernel-facing callbacks of `rt.rs`, in the order of `KERNEL`.
-    kernel: [ClifId; 30],
+    kernel: [ClifId; 32],
     /// `yavs_rt_host` and the `Deref` of `yavs_rt_fast` through stubs that keep every register
     /// (`cold_stub`).
     cold_host: ClifId,
@@ -601,6 +601,8 @@ impl Jit {
             (RARE, yavs_rt_rare as *const u8),
             (STEPS, yavs_rt_steps as *const u8),
             (WAIT_EDGE, yavs_rt_wait_edge as *const u8),
+            (WAIT_AT, yavs_rt_wait_at as *const u8),
+            (TIMED_OUT, yavs_rt_timed_out as *const u8),
             (SCAN, yavs_rt_scan as *const u8),
         ] {
             b.symbol(n, p);
@@ -692,6 +694,8 @@ impl Jit {
                 &[I64, I32, I32, I64, I64, I64, I64, I64],
                 Some(I32),
             )?,
+            imp(WAIT_AT, &wait_sig, Some(I32))?,
+            imp(TIMED_OUT, &[I64], Some(I32))?,
         ];
         let hold_check = imp(HOLD_CHECK, &[I64, I64, I64, I64, I64, I32, I64, I64], None)?;
         let memo_holds = imp(MEMO_HOLDS, &[I64, I64, I32, I64, I32, I64, I64], None)?;
@@ -1799,6 +1803,12 @@ impl Jit {
             scatter_part: self
                 .module
                 .declare_func_in_func(self.kernel[29], &mut ctx.func),
+            wait_at: self
+                .module
+                .declare_func_in_func(self.kernel[30], &mut ctx.func),
+            timed_out: self
+                .module
+                .declare_func_in_func(self.kernel[31], &mut ctx.func),
             tables: tabs,
             consts: cons,
             natives,
@@ -2003,6 +2013,10 @@ struct Imports {
     /// `yavs_rt_scatter_part(mem, pc, driver, data, len_inertial, part, first, outer) -> u32`: a
     /// zero-delay drive of a part of a record signal.
     scatter_part: FuncRef,
+    /// `yavs_rt_wait_at(env, regs, mem, pc, t, 0) -> u32`: a `WaitAt` and its `Suspend`.
+    wait_at: FuncRef,
+    /// `yavs_rt_timed_out(mem) -> u32`: `TimedOut` (2: step it).
+    timed_out: FuncRef,
     tables: HashMap<Vec<u8>, GlobalValue>,
     /// Copies of the constants (up to 4 KiB of bytes) the function takes the address of, which
     /// never change: reads of them need no lookup.
@@ -4772,6 +4786,12 @@ fn gen_func(
                 g.wait_suspend(pc, sig)
             }
             Inst::WaitOn { sig } if g.nat.is_none() => g.wait_on(pc, sig),
+            Inst::WaitAt { t }
+                if g.nat.is_none() && matches!(f.code.get(i + 1), Some(Inst::Suspend { .. })) =>
+            {
+                g.wait_at(pc, t)
+            }
+            Inst::TimedOut { dst } if g.nat.is_none() => g.timed_out(pc, &inst, dst),
             Inst::WaitEdge { sig, kind } if g.nat.is_none() => g.wait_edge(pc, sig, kind.code()),
             Inst::SigRead { dst, sig } => g.sig_read(pc, dst, sig),
             // Through the signal callback rather than a step (#790), as the LLVM tier does; a
@@ -6954,6 +6974,7 @@ impl Gen<'_> {
             self.imp.signal,
             self.imp.wait,
             self.imp.wait_same,
+            self.imp.wait_at,
         ];
         let regs = if unused.contains(&f) || self.imp.steps == Some(f) {
             self.c64(0)
@@ -12572,6 +12593,25 @@ impl Gen<'_> {
         }
         let (pcv, lo, len) = (self.c32(pc), self.ld(sig), self.ld(Reg(sig.0 + 1)));
         self.call_go(self.imp.wait_on, &[pcv, lo, len], true);
+    }
+
+    /// A `WaitAt` and the `Suspend` after it through `yavs_rt_wait_at`: the kernel takes the
+    /// timeout and the process suspends, else the `WaitAt` is stepped and the `Suspend` follows.
+    fn wait_at(&mut self, pc: u32, t: Reg) {
+        let (pcv, tv, z) = (self.c32(pc), self.ld(t), self.c64(0));
+        self.call_go(self.imp.wait_at, &[pcv, tv, z], true);
+    }
+
+    /// `TimedOut` from the kernel context (`yavs_rt_timed_out`), else stepped.
+    fn timed_out(&mut self, pc: u32, inst: &Inst, dst: Reg) {
+        let (slow, join) = self.slow_path(pc, inst);
+        let call = self.b.ins().call(self.imp.timed_out, &[self.mem]);
+        let r = self.b.inst_results(call)[0];
+        let ok = self.b.ins().icmp_imm_s(IntCC::NotEqual, r, 2);
+        self.guard(ok, slow);
+        let v = self.b.ins().uextend(I64, r);
+        self.st(dst, v);
+        self.join(join);
     }
 
     /// The wait that names the same signals every time, at its first statement: the process

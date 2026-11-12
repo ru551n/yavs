@@ -155,7 +155,9 @@ pub fn leaves(prog: &Program, f: &Func, pc: usize, nc: &std::collections::HashSe
             ) || !matches!((f.regs(*args), dst), (Some(&[_]), Some(_)))
         }
         // The wait that ends the activation is its way out, not a callback in the middle of it.
-        Inst::WaitOn { .. } => !matches!(f.code.get(pc + 1), Some(Inst::Suspend { .. })),
+        Inst::WaitOn { .. } | Inst::WaitAt { .. } => {
+            !matches!(f.code.get(pc + 1), Some(Inst::Suspend { .. }))
+        }
         Inst::Suspend { .. } => false,
         Inst::Call { func, .. } | Inst::CallProt { func, .. } => !nc.contains(func),
         _ => true,

@@ -1762,6 +1762,20 @@ mod clift {
             ("cb_wait_same", Max(1780)),
         ]
     );
+    // A `wait until .. for` that waits again: the `WaitAt` and its `Suspend` are one call of the
+    // kernel (`yavs_rt_wait_at`) and `TimedOut` another, no step and no signal callback (6400
+    // wakes; 13 k steps and 6.8 k signal callbacks before).
+    clift_case!(
+        timed_wait,
+        "timeout_stale",
+        "s=1700 t=4010000000 fs",
+        [
+            ("cb_step", Max(207)),
+            ("cb_signal", Max(431)),
+            ("cb_wait_at", Max(6600)),
+            ("cb_timed_out", Max(6610)),
+        ]
+    );
     // The memo of pure calls (#701) answers the compiled calls of this tier too; once a function
     // passed its first 64 calls, compiled code finds a repeat in its table by itself (316 of the
     // 433 hits) and calls the host only for the rest.

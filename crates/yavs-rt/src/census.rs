@@ -53,9 +53,13 @@ pub(crate) enum Cb {
     RecordCmp,
     /// `yavs_rt_scatter_part`: a zero-delay drive of a part of a record signal.
     RecordPart,
+    /// `yavs_rt_wait_at`: a `WaitAt` and the `Suspend` after it (a timed `wait until`).
+    WaitAt,
+    /// `yavs_rt_timed_out`: `TimedOut` after such a wait.
+    TimedOut,
 }
 
-const N: usize = 32;
+const N: usize = 34;
 
 /// Whether this build counts (the generators emit the calls of `yavs_rt_rare` only then).
 pub const COUNTING: bool = cfg!(any(debug_assertions, feature = "op-census"));
@@ -93,6 +97,8 @@ const NAMES: [&str; N] = [
     "free",
     "record_cmp",
     "record_part",
+    "wait_at",
+    "timed_out",
 ];
 
 #[cfg(any(debug_assertions, feature = "op-census"))]

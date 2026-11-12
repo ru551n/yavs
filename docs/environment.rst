@@ -399,6 +399,11 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - any value
      - unset
      - ``run``
+   * - ``YAVS_FIRST_STORE``
+     - ``wait``: the first run of a design waits at its end until its lowered form is stored, so a test does not depend on how long the run let the storing thread work.
+     - ``wait``
+     - unset
+     - ``run``
    * - ``YAVS_SPEC_AFTER``
      - Activations before a process switches to its copy. Setting it forces the switch whatever the tier compiled.
      - a number, at least 2

@@ -92,6 +92,8 @@ struct Stages {
     extent: Vec<usize>,
     /// Whether the closure has entries of its own (made on its second run).
     closure: bool,
+    /// The closure's first run (noted now): only its lowering (`ir`) may be stored, at its end.
+    first: bool,
     /// Longest first.
     levels: Vec<Level>,
     opts: Options,
@@ -150,7 +152,11 @@ impl StageCache for Stages {
     }
 
     fn put(&self, extent: &[usize], kind: &str, part: &[u8], bytes: &[u8]) {
-        if let Some(k) = self.key(extent, kind, part) {
+        let first = self.first && kind == "ir";
+        if let Some(k) = self
+            .key(extent, kind, part)
+            .or_else(|| first.then(|| self.entry_key(extent, kind, part)))
+        {
             debug(format!("store {kind} {} ({} bytes)", k.hex(), bytes.len()));
             self.store.put(kind, &k, bytes);
         }
@@ -158,6 +164,10 @@ impl StageCache for Stages {
 
     fn closure(&self) -> bool {
         self.closure
+    }
+
+    fn first(&self) -> bool {
+        self.first
     }
 
     fn analysed(&self) -> Vec<usize> {
@@ -235,7 +245,7 @@ fn with_stages(
     mut db: Db,
     store: Store,
     k: &Key,
-    closure: bool,
+    (closure, first): (bool, bool),
     levels: Vec<Level>,
     opts: &Options,
     verified: &Arc<std::collections::HashSet<String>>,
@@ -246,6 +256,7 @@ fn with_stages(
         base: k.hex(),
         extent,
         closure,
+        first,
         levels,
         opts: opts.clone(),
         verified: verified.clone(),
@@ -525,7 +536,7 @@ pub fn analyze_closure(
     if let Some(db) = store.get(KIND, &k).and_then(|b| restore(b, "image")) {
         debug(format!("hit {}", k.hex()));
         return (
-            with_stages(db, store, &k, true, Vec::new(), &opts, &verified),
+            with_stages(db, store, &k, (true, false), Vec::new(), &opts, &verified),
             Ok(()),
         );
     }
@@ -617,17 +628,20 @@ pub fn analyze_closure(
     if library_made(&levels) {
         debug(format!("{} uses the library stages", k.hex()));
         return (
-            with_stages(db, store, &k, false, levels, &opts, &verified),
+            with_stages(db, store, &k, (false, false), levels, &opts, &verified),
             r,
         );
     }
     // The image of a closure is made on its second analysis: a design that runs once (one test of
-    // a suite) must not pay a fifth of its run for an image nobody reads.
+    // a suite) must not pay a fifth of its run for an image nobody reads. The first run stores only
+    // its lowering, at its end, so that the second does not lower and optimise again.
     if !store.noted(KIND, &k) {
         store.note(KIND, &k);
         debug(format!("note {}", k.hex()));
+        // Only a run whose note went in is a first run: a read-only library would be one forever.
+        let first = store.noted(KIND, &k);
         return (
-            with_stages(db, store, &k, false, levels, &opts, &verified),
+            with_stages(db, store, &k, (false, first), levels, &opts, &verified),
             r,
         );
     }
@@ -636,7 +650,7 @@ pub fn analyze_closure(
             debug(format!("store {} ({} bytes)", k.hex(), image.len()));
             store.put(KIND, &k, &image);
             (
-                with_stages(db, store, &k, true, levels, &opts, &verified),
+                with_stages(db, store, &k, (true, false), levels, &opts, &verified),
                 r,
             )
         }

@@ -1094,6 +1094,19 @@ enum StopTierUp {
 }
 
 impl StopTierUp {
+    /// Where the functions this run needed come from (`yavs_rt::AutoTier::ran`).
+    fn ran_source(&self) -> Option<yavs_elab::RanSource> {
+        match self {
+            #[cfg(feature = "clift")]
+            StopTierUp::Clift(t) => {
+                let t = t.clone();
+                Some(Box::new(move || t.ran()))
+            }
+            #[cfg(not(feature = "clift"))]
+            _ => None,
+        }
+    }
+
     /// Exit with `code` at once if the compile thread is still busy, so the run never waits
     /// for compilation; with `keep_exit` (foreign libraries or VHPI plugins loaded, whose exit
     /// handlers must run) wait for it instead.
@@ -1976,6 +1989,8 @@ fn run_design(
     if a.vhpi.is_empty() && a.wave.is_none() && a.cov.is_none() {
         db.release_analysis();
     }
+    // A closure's first run stores its lowering when it ends (`learn`): serialised meanwhile.
+    e.store_first();
     // `vhpi_control(vhpiReset)` builds it again (#832).
     let cfg_again = (!a.vhpi.is_empty()).then(|| cfg.clone());
     let (mut sim, mut built) = match e.build_full_once(cfg) {
@@ -2000,6 +2015,9 @@ fn run_design(
             return out.finish(code);
         }
     };
+    if let Some(r) = tier_up.as_ref().and_then(StopTierUp::ran_source) {
+        e.first_store_ran(r);
+    }
     if cfg_profile.is_some()
         && a.tier() == TierArg::Interp
         && let Some(b) = &built

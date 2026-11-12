@@ -125,6 +125,9 @@ struct Lowering<'a> {
     program: Cow<'a, yavs_ir::Program>,
     rest: Cow<'a, Rest>,
     optimized: Vec<yavs_ir::OptCopy>,
+    /// The functions the storing run did not verify (`Program::not_verified`): the reader
+    /// verifies each at its first use.
+    unverified: Vec<u32>,
 }
 
 /// The stage-cache entry of a [`Lowering`].
@@ -202,20 +205,170 @@ impl LoweringKey {
             program: Cow::Borrowed(program),
             rest: Cow::Borrowed(rest),
             optimized,
+            unverified: program.not_verified(),
         };
         if let Ok(bytes) = postcard::to_stdvec(&lw) {
             self.cache.put(&self.extent, "ir", &self.part, &bytes);
         }
         n
     }
+
+    /// Write a first run's entry: `head` ([`head_bytes`]), then the optimised copies made so far,
+    /// without those of functions optimised only because the whole program was
+    /// (`Program::optimise_all`) that did not run (`ran`, when known: the next run never asks for
+    /// them), and the functions not verified so far. Returns how many copies it kept.
+    fn put_first(
+        &self,
+        head: &[u8],
+        copies: &[yavs_ir::OptCopy],
+        program: &yavs_ir::Program,
+        rest: &Rest,
+        ran: Option<&RanSource>,
+    ) -> usize {
+        let keep: Vec<&yavs_ir::OptCopy> = match ran.and_then(|r| r()) {
+            Some(ran) => {
+                let ran: std::collections::HashSet<u32> = ran.into_iter().collect();
+                let forced: std::collections::HashSet<u32> =
+                    program.forced().iter().map(|f| f.0).collect();
+                copies
+                    .iter()
+                    .filter(|c| !forced.contains(&c.func.0) || ran.contains(&c.func.0))
+                    .collect()
+            }
+            None => copies.iter().collect(),
+        };
+        let unverified = program.not_verified();
+        let Ok(tail) = postcard::to_stdvec(&(&keep, &unverified)) else {
+            return 0;
+        };
+        let mut bytes = Vec::with_capacity(head.len() + tail.len());
+        bytes.extend_from_slice(head);
+        bytes.extend_from_slice(&tail);
+        debug_assert!(
+            postcard::to_stdvec(&Lowering {
+                program: Cow::Borrowed(program),
+                rest: Cow::Borrowed(rest),
+                optimized: keep.iter().map(|c| (*c).clone()).collect(),
+                unverified,
+            })
+            .is_ok_and(|b| b == bytes),
+            "the entry of a first run is a `Lowering`"
+        );
+        self.cache.put(&self.extent, "ir", &self.part, &bytes);
+        keep.len()
+    }
+}
+
+/// The stored form of `program` and `rest`, the head of a [`Lowering`]. Not verified: the entry
+/// lists what the run did not verify, and the reader verifies that at first use.
+fn head_bytes(program: &yavs_ir::Program, rest: &Rest) -> Result<Vec<u8>, String> {
+    postcard::to_stdvec(&(program, rest)).map_err(|e| e.to_string())
+}
+
+/// The functions a run needed (`yavs_rt::AutoTier::ran`), asked by a first run's [`Store`] once
+/// the tier is up (`Elaborated::first_store_ran`).
+pub type RanSource = Box<dyn Fn() -> Option<Vec<u32>> + Send + Sync>;
+
+/// A closure's first run stores its lowering from a thread of its own, off the simulation and off
+/// the end of the run: the thread serialises the program and the rest while the simulation runs
+/// and writes the entry as soon as they are ready, then each optimised copy soon after it is made
+/// (`Program::newly_optimised`), writing the entry again when copies were added, each time at
+/// most half as often as before. The end of the run only tells it to write a last time and does
+/// not wait; a write cut off by the end of the process is a damaged entry, which is a miss. So what
+/// is stored depends on how long the run let the thread work (any of it is a valid entry);
+/// `YAVS_FIRST_STORE=wait` (tests) waits for the last write.
+struct Store {
+    end: std::sync::mpsc::Sender<()>,
+    ran: Arc<std::sync::OnceLock<RanSource>>,
+    made: std::thread::JoinHandle<()>,
+}
+
+/// How often the thread of a [`Store`] looks for new optimised copies (a look at nothing new is
+/// one atomic load).
+const STORE_POLL: std::time::Duration = std::time::Duration::from_millis(2);
+
+/// The wait before the second write of a first run's entry; each later one waits twice as long,
+/// or only this long once the copies grew by half since the last write (a short run makes most of
+/// them in its last milliseconds, and those the end cuts off the next run makes again).
+const STORE_GAP: std::time::Duration = std::time::Duration::from_millis(5);
+
+impl Store {
+    fn start(program: Arc<yavs_ir::Program>, rest: Arc<Rest>, key: LoweringKey) -> Option<Store> {
+        let (end, wait) = std::sync::mpsc::channel::<()>();
+        let ran: Arc<std::sync::OnceLock<RanSource>> = Arc::default();
+        let source = ran.clone();
+        let made = std::thread::Builder::new()
+            .name("yavs-store".into())
+            .spawn(move || {
+                let head = match head_bytes(&program, &rest) {
+                    Ok(h) => h,
+                    Err(why) => return key.cache.note(&format!("lowering not stored: {why}")),
+                };
+                let (mut at, mut later, mut copies) = (0, Vec::new(), Vec::new());
+                let (mut written, mut writes, mut gap) = (None, 0, STORE_GAP);
+                let mut last = std::time::Instant::now();
+                loop {
+                    let end = !matches!(
+                        wait.recv_timeout(STORE_POLL),
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                    );
+                    program.export_optimized_new(&mut at, &mut later, &mut copies);
+                    let due = written.is_none_or(|n| {
+                        let since = last.elapsed();
+                        copies.len() > n
+                            && (end || since >= gap || (copies.len() >= n + n / 2 && since >= STORE_GAP))
+                    });
+                    if due {
+                        let kept = key.put_first(&head, &copies, &program, &rest, source.get());
+                        key.cache.note(&format!(
+                            "first run: lowering stored with {kept} of {} optimised copies (write {})",
+                            copies.len(),
+                            writes + 1
+                        ));
+                        if written.is_some() {
+                            gap *= 2;
+                        }
+                        (written, last, writes) = (Some(copies.len()), std::time::Instant::now(), writes + 1);
+                    }
+                    if end {
+                        return;
+                    }
+                }
+            })
+            .ok()?;
+        Some(Store { end, ran, made })
+    }
+
+    /// Tell the thread to write a last time; with `wait`, wait for it (a panic of the thread is
+    /// then the run's).
+    fn finish(self, wait: bool) {
+        drop(self.end);
+        if wait {
+            self.made
+                .join()
+                .unwrap_or_else(|p| std::panic::resume_unwind(p));
+        }
+    }
 }
 
 /// What the end of a run needs to store the optimised copies it made ([`Elaborated::learn`]).
 pub(crate) struct Learn {
     key: LoweringKey,
-    rest: Rest,
+    rest: Arc<Rest>,
     /// How many optimised copies the entry holds.
     stored: usize,
+    /// The closure's first run: nothing is stored yet, the end of the run stores the lowering.
+    first: bool,
+    /// The first run's [`Store`].
+    store: Option<Store>,
+}
+
+/// Runs whose lowering is stored at their end (`StageCache::first`; `YAVS_COUNTERS` `ir_first_store`).
+static FIRST_STORES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Runs of this process whose lowering is stored at their end, as a closure's first run.
+pub fn first_stores() -> u64 {
+    FIRST_STORES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// The interpreter side of a built simulation (`Elaborated::build_full`).
@@ -482,22 +635,21 @@ impl Elaborated {
                         program,
                         rest,
                         optimized,
+                        unverified,
                     } = lw;
                     let stored = optimized.len();
                     program.load_optimized(optimized);
+                    let mut program = program.into_owned();
+                    program.unverified = unverified.into_iter().collect();
                     let rest = rest.into_owned();
                     let learn = Learn {
                         key: k.clone(),
-                        rest: rest.clone(),
+                        rest: Arc::new(rest.clone()),
                         stored,
+                        first: false,
+                        store: None,
                     };
-                    (
-                        program.into_owned(),
-                        rest,
-                        session.map(|s| s.state),
-                        Some(learn),
-                        None,
-                    )
+                    (program, rest, session.map(|s| s.state), Some(learn), None)
                 }
                 None => {
                     let (resumed, start, lib) = match session {
@@ -509,16 +661,28 @@ impl Elaborated {
                     if let Some(l) = &mut lib {
                         program.load_optimized(l.take_optimized());
                     }
+                    let fits = LoweringKey::fits(&program);
                     let learn = match &key {
-                        Some(k) if k.cache.closure() && LoweringKey::fits(&program) => {
+                        Some(k) if k.cache.closure() && fits => {
                             yavs_lower::verify_stored(&mut program)?;
                             let stored = k.put(&program, &rest);
                             Some(Learn {
                                 key: k.clone(),
-                                rest: rest.clone(),
+                                rest: Arc::new(rest.clone()),
                                 stored,
+                                first: false,
+                                store: None,
                             })
                         }
+                        // The first run stores at its end, with the copies it made; not a
+                        // program on a library prefix's stages, which the key does not name.
+                        Some(k) if k.cache.first() && lib.is_none() && fits => Some(Learn {
+                            key: k.clone(),
+                            rest: Arc::new(rest.clone()),
+                            stored: 0,
+                            first: true,
+                            store: None,
+                        }),
                         _ => None,
                     };
                     (program, rest, start, learn, lib)
@@ -527,7 +691,7 @@ impl Elaborated {
         // Named by its stage entry (#785), also in a closure's first run, which stores none: the
         // second stores the same program under that name and links what the first compiled. Not
         // a program built on a library prefix's stages, which a cold lowering does not reproduce.
-        program.named_before = learn.is_some();
+        program.named_before = learn.as_ref().is_some_and(|l| !l.first);
         program.identity = match (&learn, &key) {
             (Some(l), _) => l.key.identity(),
             (None, Some(k)) if lib.is_none() && LoweringKey::fits(&program) => k.identity(),
@@ -634,7 +798,7 @@ impl Elaborated {
         };
         program.reserve_copies(instances.min(MAX_COPIES).min(room));
         // The copies of processes earlier runs of this lowering made, read when the first is.
-        if let Some(l) = &learn {
+        if let Some(l) = learn.as_ref().filter(|l| !l.first) {
             let key = l.key.clone();
             program.set_copy_loader(Box::new(move || key.get_copies()));
         }
@@ -673,6 +837,19 @@ impl Elaborated {
             lib,
         });
         Ok(())
+    }
+
+    /// Start storing a closure's first lowering ([`Store`]): for a run that calls
+    /// [`Elaborated::learn`] at its end, before it builds the simulation.
+    pub fn store_first(&mut self) {
+        if let Some(ir) = &mut self.ir
+            && let Some(l) = ir.learn.as_mut().filter(|l| l.first && l.store.is_none())
+        {
+            l.store = Store::start(ir.program.clone(), l.rest.clone(), l.key.clone());
+            if l.store.is_some() {
+                FIRST_STORES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
     }
 
     /// Lower the architectures `archs`, the subprograms and the resolution functions the design
@@ -886,6 +1063,18 @@ impl Elaborated {
     /// Call at the end of a run: when it optimised functions the stored lowering of the design
     /// does not hold yet, store them with it, so that the next run of the design reads them
     /// instead of optimising again (#479). Nothing when the design is not cached.
+    /// Where a first run's store finds the functions the run needed (see [`Store`]).
+    pub fn first_store_ran(&mut self, ran: RanSource) {
+        if let Some(s) = self
+            .ir
+            .as_mut()
+            .and_then(|ir| ir.learn.as_mut())
+            .and_then(|l| l.store.as_ref())
+        {
+            let _ = s.ran.set(ran);
+        }
+    }
+
     pub fn learn(&mut self) {
         let Some(ir) = &mut self.ir else { return };
         if let Some(lib) = &mut ir.lib {
@@ -893,11 +1082,26 @@ impl Elaborated {
             lib.learn(made);
         }
         let Some(l) = &mut ir.learn else { return };
-        if ir.program.fresh_copies() > 0 {
-            l.key.put_copies(&ir.program);
+        if l.first {
+            // (Only the lowering: the specialised copies are stored from the second run on.)
+            l.first = false;
+            match l.store.take() {
+                // Off the end of the run (`Store`): a last write, not waited for.
+                Some(s) => {
+                    s.finish(std::env::var_os("YAVS_FIRST_STORE").is_some_and(|v| v == "wait"))
+                }
+                None => l
+                    .key
+                    .cache
+                    .note("lowering not stored: no thread to serialise it"),
+            }
+            return;
         }
         if ir.program.optimized_count() > l.stored {
             l.stored = l.key.put(&ir.program, &l.rest);
+        }
+        if ir.program.fresh_copies() > 0 {
+            l.key.put_copies(&ir.program);
         }
     }
 

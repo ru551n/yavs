@@ -33,8 +33,8 @@ Warm runs
 ---------
 
 yavs keeps what a run analyzed and compiled in ``yavs-cache/`` next to the work library. The first
-run of a design notes it, the second stores it, and later runs of the same design, and the other
-test cases of the same testbench, reuse it. Short tests then mostly skip analysis and compilation.
+run of a design stores its lowered form as it ends, the second also stores the analysis, and later
+runs of the same design, and the other test cases of the same testbench, reuse them. Short tests then mostly skip analysis and compilation.
 
 * Keep ``yavs-cache/`` between runs (in CI, cache the library directories: :doc:`ci`).
 * An edited file, a different yavs or different options make a new entry; nothing has to be

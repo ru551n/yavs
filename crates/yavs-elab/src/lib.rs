@@ -33,7 +33,7 @@ pub use hier::{
     Bounds, Case, DriverDecl, Hierarchy, ImplicitKind, Leaf, LeafId, LeafLoc, LeafRes, NetGraph,
     ObjId, ObjKind, PortEdge, ProcIdx, Scope, ScopeId, ScopeKind, Sel, Shape, SigObj,
 };
-pub use sim::{Built, Ir};
+pub use sim::{Built, Ir, RanSource, first_stores};
 pub use stuck::{ProcTable, StuckWhy};
 pub use summary::{
     ActivityNames, activity_json, activity_text, assert_summary_json, assert_summary_text,

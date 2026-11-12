@@ -62,6 +62,15 @@ pub struct Program {
     /// The functions [`Program::func`] optimised, in that order ([`Program::newly_optimised`]).
     #[serde(skip)]
     pub optimised: OptLog,
+    /// Functions of a stored program its storing run had not verified (it never handed them
+    /// out): [`Program::func`] verifies each when it hands it out first, as `lazy_verify` does.
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub unverified: std::collections::HashSet<u32>,
+    /// The functions [`Program::optimise_all`] optimised (nobody had asked for them yet).
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub forced: OptLog,
     /// The key of the stage-cache entry this program was read from or stored to (the lowering
     /// key: the same key is the same program, ids and all); `None` for a program not cached.
     /// Compiled code is found by it before it is generated (the removed yavs-llvm `objcache`, #785).
@@ -266,7 +275,7 @@ impl Program {
 
     /// Verify `raw` (function `f`) when the program was not verified as a whole (`lazy_verify`).
     fn verify_lazily(&self, f: FuncId, raw: &Func) {
-        if self.lazy_verify.is_some_and(|from| f.0 >= from) {
+        if self.lazy_verify.is_some_and(|from| f.0 >= from) || self.unverified.contains(&f.0) {
             let mut errs = Vec::new();
             crate::verify::verify_func(self, f, raw.full(), &mut errs);
             // A producer bug: the kernel turns the panic into an internal error.
@@ -356,6 +365,42 @@ impl Program {
             .collect()
     }
 
+    /// Add to `taken` the optimised copies made since the last call, serialised as
+    /// [`Program::export_optimized`] does, so that a thread can serialise them while the run goes
+    /// on: `at` is a cursor into [`Program::newly_optimised`], `wait` the functions listed whose
+    /// copy was not in place yet. Not the loaded copies (a program that stores so has none).
+    pub fn export_optimized_new(
+        &self,
+        at: &mut usize,
+        wait: &mut Vec<FuncId>,
+        taken: &mut Vec<OptCopy>,
+    ) {
+        if !crate::opt::copies_are_portable() {
+            return;
+        }
+        let new = self.newly_optimised(at);
+        let mut later = Vec::new();
+        for id in wait.drain(..).chain(new) {
+            let Some(f) = self.funcs.get(id) else {
+                continue;
+            };
+            match f.opt.get() {
+                // (Listed just before its copy is in place.)
+                None => later.push(id),
+                Some(Some(o)) if !f.spare && !self.private_copy(id) => {
+                    if let Ok(bytes) = postcard::to_stdvec(&**o) {
+                        taken.push(OptCopy {
+                            func: id,
+                            bytes: bytes.into(),
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        *wait = later;
+    }
+
     /// The optimised copies made so far and the loaded ones not used yet, serialised, by function
     /// id. Empty when copies are not portable (the pass is off, a debugger keeps variables).
     pub fn export_optimized(&self) -> Vec<OptCopy> {
@@ -396,6 +441,39 @@ impl Program {
         } else {
             Err(errs)
         }
+    }
+
+    /// The functions not verified yet: never handed out by [`Program::func`] in a program that
+    /// verifies lazily. A stored program lists them, and the run that reads it verifies each at
+    /// its first use, so storing costs no verification.
+    pub fn not_verified(&self) -> Vec<u32> {
+        self.funcs
+            .iter()
+            .filter(|(id, f)| {
+                (self.lazy_verify.is_some_and(|from| id.0 >= from)
+                    || self.unverified.contains(&id.0))
+                    && !f.spare
+                    && f.opt.get().is_none()
+                    && f.fetches.0.load(std::sync::atomic::Ordering::Relaxed) == 0
+            })
+            .map(|(id, _)| id.0)
+            .collect()
+    }
+
+    /// Optimise every function nobody has asked for yet, listing them ([`Program::forced`]).
+    pub fn optimise_all(&self) {
+        for (id, f) in self.funcs.iter() {
+            if f.opt.get().is_none() {
+                let _ = self.func(id);
+                let _listed = Listed(&self.forced, id);
+            }
+        }
+    }
+
+    /// The functions [`Program::optimise_all`] optimised.
+    pub fn forced(&self) -> Vec<FuncId> {
+        let mut at = 0;
+        self.forced.since(&mut at)
     }
 
     /// The process must run serially (ir.md 3.5): it or a subprogram it reaches touches
@@ -684,10 +762,18 @@ impl Program {
     /// function is listed before its optimised code is handed out, so one whose code a thread
     /// was given is listed by the time that thread looks.
     pub fn newly_optimised(&self, seen: &mut usize) -> Vec<FuncId> {
-        if self.optimised.1.load(std::sync::atomic::Ordering::Acquire) == *seen {
+        self.optimised.since(seen)
+    }
+}
+
+impl OptLog {
+    /// The functions listed since the first `*seen` (and `*seen` moved past them).
+    fn since(&self, seen: &mut usize) -> Vec<FuncId> {
+        if self.1.load(std::sync::atomic::Ordering::Acquire) == *seen {
             return Vec::new();
         }
-        let v = (self.optimised.0)
+        let v = self
+            .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let new = v[*seen..].to_vec();
@@ -1676,6 +1762,43 @@ mod lazy_verify_tests {
         }));
         assert!(caught.is_err(), "the broken function must not run");
         assert!(prog.verify_pending().is_err());
+    }
+
+    /// A stored program lists the functions its run never handed out (`not_verified`); the run
+    /// that reads it verifies each of them at first use (`unverified`).
+    #[test]
+    fn a_stored_program_verifies_at_first_use_what_its_run_did_not() {
+        let build = || {
+            let mut pb = ProgramBuilder::new();
+            let fs: Vec<_> = ["f", "g"]
+                .into_iter()
+                .map(|n| {
+                    let f = pb.declare(n, crate::FuncKind::Procedure, None);
+                    let mut fb = pb.define(f);
+                    fb.stmt(StmtKind::Null, Span::new(FileId(0), 0, 1));
+                    fb.emit(Inst::Ret { v: None });
+                    fb.finish();
+                    f
+                })
+                .collect();
+            (pb.finish().expect("well formed"), fs[0], fs[1])
+        };
+        let (mut prog, f, g) = build();
+        prog.lazy_verify = Some(0);
+        prog.func(f);
+        assert_eq!(prog.not_verified(), [g.0]);
+        let (mut read, _, _) = build();
+        read.lazy_verify = None;
+        read.unverified = prog.not_verified().into_iter().collect();
+        assert_eq!(read.not_verified(), [g.0], "still listed until handed out");
+        read.funcs.get_mut(g).expect("g").code.clear();
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            read.func(g);
+        }));
+        assert!(
+            caught.is_err(),
+            "the unverified function is verified at first use"
+        );
     }
 }
 

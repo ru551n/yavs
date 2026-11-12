@@ -244,6 +244,13 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) -> bool {
     );
     // Fresh registers for each block and the addresses derived from it, up to its last use: the
     // frame starts with them (defined once), whatever register sharing made of the `Alloc`'s.
+    // How many instructions name each register list (one pass, kept up to date by `rename`).
+    let mut users: FxMap<crate::Regs, u32> = FxMap::default();
+    for i in &f.code {
+        if let Some(l) = i.list() {
+            *users.entry(l).or_default() += 1;
+        }
+    }
     for &c in &taken {
         let fresh = Reg(f.reg_ty.len() as u32);
         f.reg_ty.push(RegTy::Ptr);
@@ -251,7 +258,7 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) -> bool {
         map.insert(cands[c].dst, fresh);
         cands[c].dst = fresh;
         for pc in cands[c].pc + 1..=cands[c].end {
-            rename(f, pc, &mut map);
+            rename(f, pc, &mut map, &mut users);
         }
     }
     let base = f.frame.next_multiple_of(8);
@@ -349,7 +356,12 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) -> bool {
 /// Rename the registers of `map` that the instruction at `pc` reads; a derived address (an
 /// `Index`, `Field` or `Move` of a renamed register) gets a fresh register itself, and a register
 /// it writes otherwise is no longer renamed after it.
-fn rename(f: &mut crate::Func, pc: usize, map: &mut FxMap<Reg, Reg>) {
+fn rename(
+    f: &mut crate::Func,
+    pc: usize,
+    map: &mut FxMap<Reg, Reg>,
+    users: &mut FxMap<crate::Regs, u32>,
+) {
     let mut i = f.code[pc];
     i.visit_mut(&mut |r, role, _| {
         if role == Role::Use
@@ -368,13 +380,21 @@ fn rename(f: &mut crate::Func, pc: usize, map: &mut FxMap<Reg, Reg>) {
             .iter()
             .map(|r| map.get(r).copied().unwrap_or(*r))
             .collect();
-        let shared = f.code.iter().filter(|j| j.list() == Some(l)).count() > 1;
+        let shared = users.get(&l).is_some_and(|&n| n > 1);
+        debug_assert_eq!(
+            shared,
+            f.code.iter().filter(|j| j.list() == Some(l)).count() > 1
+        );
         if shared {
             let start = f.operands.len() as u32;
             f.operands.extend(new);
             if let Some(lm) = i.list_mut() {
                 *lm = crate::Regs { start, len: l.len };
             }
+            if let Some(n) = users.get_mut(&l) {
+                *n -= 1;
+            }
+            users.insert(crate::Regs { start, len: l.len }, 1);
         } else {
             let at = l.start as usize;
             f.operands[at..at + new.len()].copy_from_slice(&new);
@@ -653,7 +673,16 @@ fn live_out(prog: &Program, f: &crate::Func, tracked: &[Reg]) -> Option<Vec<Vec<
     if nb.checked_mul(w)? > 1 << 24 {
         return None;
     }
-    let bit = |r: &Reg| tracked.binary_search_by_key(&r.0, |t| t.0).ok();
+    // The position of each tracked register by number (no search per operand).
+    let mut pos = vec![u32::MAX; tracked.last().map_or(0, |r| r.0 as usize + 1)];
+    for (k, r) in tracked.iter().enumerate() {
+        pos[r.0 as usize] = k as u32;
+    }
+    let bit = |r: &Reg| {
+        pos.get(r.0 as usize)
+            .filter(|&&k| k != u32::MAX)
+            .map(|&k| k as usize)
+    };
     let (mut gen_, mut kill) = (vec![vec![0u64; w]; nb], vec![vec![0u64; w]; nb]);
     let (mut us, mut ds) = (Vec::new(), Vec::new());
     for (b, blk) in f.blocks.values().iter().enumerate() {

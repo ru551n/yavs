@@ -88,10 +88,15 @@ fn layout_size(prog: &Program, ty: TyId, desc: Option<(ConstId, u32)>) -> Option
     i64::try_from(l.size).ok()
 }
 
+/// The layout sizes found so far, by type and descriptor in the pool.
+type LayoutSizes = FxMap<(TyId, Option<(ConstId, u32)>), Option<i64>>;
+
 /// The values of the registers defined once, in code order.
 fn values(prog: &Program, f: &crate::Func, defs: &[u32]) -> Vec<Option<V>> {
     let mut v: Vec<Option<V>> = vec![None; f.reg_ty.len()];
     let once = |r: Reg| defs.get(r.0 as usize) == Some(&1);
+    // A layout is read from a descriptor in the pool once per (type, descriptor).
+    let mut sizes: LayoutSizes = FxMap::default();
     for i in &f.code {
         let new = match *i {
             Inst::Const { dst, v: k } => (dst, Some(V::K(k))),
@@ -135,7 +140,10 @@ fn values(prog: &Program, f: &crate::Func, defs: &[u32]) -> Vec<Option<V>> {
                 w: Width::B8,
             } => {
                 let k = match v[addr.0 as usize] {
-                    Some(V::Layout(ty, d)) => layout_size(prog, ty, d).map(V::K),
+                    Some(V::Layout(ty, d)) => (*sizes
+                        .entry((ty, d))
+                        .or_insert_with(|| layout_size(prog, ty, d)))
+                    .map(V::K),
                     _ => None,
                 };
                 (dst, k)
@@ -425,11 +433,29 @@ pub(super) fn run(prog: &Program, raw: &crate::Func) -> Option<Box<crate::Func>>
         Some(V::Fr(o)) => Some(o),
         _ => None,
     };
+    // The first block that holds each instruction (built on first use).
+    let block_tab: std::cell::OnceCell<Vec<u32>> = std::cell::OnceCell::new();
     let block_of = |pc: usize| {
-        raw.blocks
-            .values()
-            .iter()
-            .position(|b| (b.start as usize) <= pc && pc < b.end as usize)
+        let t = block_tab.get_or_init(|| {
+            let mut t = vec![u32::MAX; raw.code.len()];
+            for (i, b) in raw.blocks.values().iter().enumerate() {
+                for e in t.iter_mut().take(b.end as usize).skip(b.start as usize) {
+                    if *e == u32::MAX {
+                        *e = i as u32;
+                    }
+                }
+            }
+            t
+        });
+        let b = t.get(pc).filter(|&&b| b != u32::MAX).map(|&b| b as usize);
+        debug_assert_eq!(
+            b,
+            raw.blocks
+                .values()
+                .iter()
+                .position(|b| (b.start as usize) <= pc && pc < b.end as usize)
+        );
+        b
     };
     // What each register holding a handle or an address of interest is used for.
     let mut cands: Vec<Cand> = Vec::new();
@@ -555,11 +581,32 @@ pub(super) fn run(prog: &Program, raw: &crate::Func) -> Option<Box<crate::Func>>
     // A slot's three words: written where it is declared, read as words, used in no other way.
     // (Nested subprograms read them through their static link: the language gives an object one
     // constraint, so no code writes them after the declaration.)
-    let slot_of = |o: u32, cs: &[Cand], bad: &[bool]| {
-        cs.iter()
-            .enumerate()
-            .find(|(k, c)| !bad[*k] && c.slot <= o && o < c.slot + 24)
-            .map(|(k, _)| k)
+    let mut by_slot: Vec<(u32, usize)> = cands
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.slot != u32::MAX)
+        .map(|(k, c)| (c.slot, k))
+        .collect();
+    by_slot.sort_unstable();
+    // The first candidate (in code order) not rejected whose three words hold offset `o`.
+    let slot_of = |o: u32, bad: &[bool]| {
+        let hi = by_slot.partition_point(|e| e.0 <= o);
+        let k = by_slot[..hi]
+            .iter()
+            .rev()
+            .take_while(|e| u64::from(e.0) + 24 > u64::from(o))
+            .filter(|e| !bad[e.1])
+            .map(|e| e.1)
+            .min();
+        debug_assert_eq!(
+            k,
+            cands
+                .iter()
+                .enumerate()
+                .find(|(k, c)| !bad[*k] && c.slot <= o && o < c.slot.saturating_add(24))
+                .map(|(k, _)| k)
+        );
+        k
     };
     // Addresses of slot words used otherwise, and the stores of the words.
     let mut words: FxMap<u32, Vec<Reg>> = FxMap::default();
@@ -567,7 +614,7 @@ pub(super) fn run(prog: &Program, raw: &crate::Func) -> Option<Box<crate::Func>>
         match *i {
             Inst::Load { addr, w, .. } if at(addr).is_some() => {
                 let o = at(addr).unwrap_or(0);
-                if let Some(k) = slot_of(o, &cands, &bad)
+                if let Some(k) = slot_of(o, &bad)
                     && (w != Width::B8
                         || o - cands[k].slot >= 16
                         || !(o - cands[k].slot).is_multiple_of(8))
@@ -578,7 +625,7 @@ pub(super) fn run(prog: &Program, raw: &crate::Func) -> Option<Box<crate::Func>>
             }
             Inst::Store { addr, src, w } if at(addr).is_some() => {
                 let o = at(addr).unwrap_or(0);
-                if let Some(k) = slot_of(o, &cands, &bad) {
+                if let Some(k) = slot_of(o, &bad) {
                     if w != Width::B8 || !(o - cands[k].slot).is_multiple_of(8) {
                         bad[k] = true;
                     } else {
@@ -586,7 +633,7 @@ pub(super) fn run(prog: &Program, raw: &crate::Func) -> Option<Box<crate::Func>>
                     }
                 }
                 if let Some(s) = at(src)
-                    && let Some(k) = slot_of(s, &cands, &bad)
+                    && let Some(k) = slot_of(s, &bad)
                 {
                     bad[k] = true;
                 }
@@ -602,7 +649,7 @@ pub(super) fn run(prog: &Program, raw: &crate::Func) -> Option<Box<crate::Func>>
         }
         let mut hit = |r: Reg| {
             if let Some(o) = at(r)
-                && let Some(k) = slot_of(o, &cands, &bad)
+                && let Some(k) = slot_of(o, &bad)
             {
                 bad[k] = true;
             }

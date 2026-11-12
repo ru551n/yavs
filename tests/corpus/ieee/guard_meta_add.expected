@@ -1,0 +1,7 @@
+exit	0
+diag	note	5000000	0	:guard_meta_add:_p1	n 1 a 11
+diag	note	15000000	0	:guard_meta_add:_p1	n 2 a 12
+diag	note	25000000	0	:guard_meta_add:_p1	n 3 a XX
+diag	note	35000000	0	:guard_meta_add:_p1	n 4 a XX
+diag	note	45000000	0	:guard_meta_add:_p1	n 5 a 21
+diag	note	55000000	0	:guard_meta_add:_p1	n 6 a 22

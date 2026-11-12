@@ -285,6 +285,11 @@ const WATCH_CHUNK: u32 = 128;
 fn watch_tick(rt: &Runtime, func: FuncId, pc: u32) -> bool {
     // (A compile of `--tier-compile=wait` runs while the run waits here or between cycles.)
     yavs_kernel::pause_point();
+    // The look before named the same function: it loops in one activation (`NativeFlags::looped`).
+    let named = u64::from(rt.id) << 32 | u64::from(func.0);
+    if LAST_LOOK.replace(named) == named {
+        rt.native.mark_looped(func);
+    }
     if rt.native.tick(func.0) {
         rt.counted_out(func, true);
     }
@@ -298,6 +303,11 @@ fn watch_tick(rt: &Runtime, func: FuncId, pc: u32) -> bool {
         .func
         .get(func.0 as usize)
         .is_some_and(|n| n.load(Ordering::Acquire) & (NAT_CODE | NAT_ASK) != 0)
+}
+
+thread_local! {
+    /// The runtime and function the last `watch_tick` of this thread named.
+    static LAST_LOOK: std::cell::Cell<u64> = const { std::cell::Cell::new(u64::MAX) };
 }
 
 /// A return of the watching loop up frames it did not push (an activation that resumed inside a

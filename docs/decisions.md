@@ -15626,3 +15626,48 @@ Written by Claude. The drive side of Microwatt, measured first with lab counters
 - **Test.** `clift_parity` `deallocations_in_compiled_code_match_the_interpreter`: a local, a null value, a field
   of another heap object, a protected type's own variable (the shared heap), and the two errors (an object
   deallocated twice, a cell inside the object it frees); `perf.rs` `free_native` bounds `cb_free` at 400 calls.
+
+## `--tier=auto`: a subprogram that loops in one call is hot for the next run (yavs-interp `watch_tick`, yavs-rt `auto.rs` `snapshot`, `early_loop`, perf/b4-backedge, 2026-11-12, agent; landing is the maintainer's)
+
+- **What it was.** The interpreter already enters compiled code in the middle of an activation: the watching loop looks
+  for it every `WATCH` (128) jumps back and calls (`watch_tick`, `Flow::Retier`), the loop with the tier every `RECHECK`
+  (256), and frame-mode code has an entry at every loop head. Native-frame code cannot be entered in the middle; for a
+  native-callable function with a loop the policy makes its frame-mode code later (`frame_at`, `deferred`). So a long
+  first activation is not stuck by the entry. Measured (lab counters, default tier, `wait` and `background`, 34
+  designs of tools/realbench, runs 1 and 2): events interpreted while only native-frame code existed at most 0.2 M a run (`log` of
+  `uvvm_axistream_vvc`, a native frame left mid-call), the delay of the look at most `WATCH` events per hand-over
+  (at most 469 hand-overs a run), events lost to a look counter reset in a function with code about 0, returns into a
+  compiled caller before the next look at most 56 k events: all under 0.2 percent of any run.
+- **What held it.** A subprogram that runs one long call and no compiled code calls was never compiled, in any run:
+  the count rule holds it (`waits`: "uncalled subprogram", the natfall lesson about short calls), the first run's
+  payback rule reads the rest of a short run as too short, and the run-to-run profile named processes only.
+  `uvvm_func_cov`: `create_bin_array` 88 of 146 ms of run 1 and 92 of 110 ms of run 2 interpreted, every run.
+- **Change** (agent). `watch_tick` marks a function that the look before it on the same thread named too
+  (`NativeFlags::looped`, a thread-local of the last look; the dispatch loop is unchanged): 256 or more events of it
+  in a row. The profile's hot list takes such a subprogram whatever its kind (`snapshot`), and a run with it in the
+  profile compiles it at its first look (`next_early`, outside the budget as for processes) with its frame-mode code
+  beside the native-frame code (`early_loop` in `natural_part` and `asked_part`), so the call running then hands over
+  at the next look and goes on from a loop head. Run 1 decides as before; only its profile can name more.
+  Counters `tier_looped`, `tier_loop_early`.
+  Run 1 decides as main does: no profile, so `early_loop` is false and the marks change nothing but the profile it
+  writes; under `YAVS_AUTO_COUNT=1 YAVS_AUTO_GATE=0 YAVS_AUTO_SYNC=1` run 1 of 12 designs counts within 0.05 percent
+  of main.
+- **The kind filter stays** (maintainer 2026-10-27, #679: only kinds with a modelled speedup of 1.4 or more, or
+  `BigLoop`, are compiled early). For a subprogram it is applied when the profile is loaded (`early_kind`), so the run
+  that names it computes no kind. A run that compiles it early is judged by `profile::next` as for processes: not 3
+  percent better than the run before puts it on the loss list, and later runs decide as main does
+  (`olo_fix_cordic_rot`: `fixDynShift` early in run 2, lost, level).
+- **Measured** (agent, exact counts, plain bench builds of 12f11670 (`m1`, a byte copy `m1b` for the A/A) and of the
+  change on it, from pristine, runs 1 to 4, `wait`, untimed cores 0-7, 6 reps, ratio of medians): main thread
+  `uvvm_func_cov` run 2 0.819, runs 3 and 4 0.594 and 0.576 (A/A within 0.1 percent); `uvvm_rand_perf` runs 2 to 4
+  0.858, 0.804, 0.794 (A/A 0.964, 0.828, 1.010); `uvvm_util_rand` runs 2 to 4 0.969, 0.973, 0.983 (A/A 0.992, 0.996,
+  0.991); `uvvm_sb_slv` 0.945 to 0.928 inside its A/A of 0.908 to 0.991; `uvvm_axistream_vvc`, `osvvm_axi4_random`,
+  `olo_fix_cordic_rot` level within the A/A. All threads (the compile thread too, which `wait` puts on the critical
+  path), sums of runs 1 to 4: `uvvm_func_cov` 0.847, `uvvm_rand_perf` 0.898, `uvvm_axistream_vvc` 0.989, `uvvm_sb_slv`
+  1.002, `osvvm_axi4_random` 0.997 (A/A 0.987 to 1.007).
+- **What it costs** (agent; for the maintainer). The run that compiles early pays the compiles before they repay:
+  all threads, `olo_fix_cordic_rot` run 2 1.076 and a 4-run sum of 1.052 (`fixDynShift`, 28 percent of run 1, compiled
+  early in run 2 and lost by the profile's verdict; its native-frame code then sits in the cache, later runs link it and
+  its native frames leave to the interpreter about 6 000 times a run, so runs 3 and 4 stay 1.005 to 1.03 and under
+  `--tier-compile=background` 1.12), `uvvm_util_rand` sum 1.016 (its main thread 0.980), `uvvm_sb_slv` run 2 1.077 (sum
+  1.002). A trade by the bar's letter.

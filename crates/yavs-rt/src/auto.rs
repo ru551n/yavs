@@ -2219,7 +2219,10 @@ impl Worker {
         }
         match self.prog.func(id) {
             Some(f) if f.parent.is_none() && self.native_ok(id) => {
-                if loops(&self.prog, f) && (self.heat.budget == 0 || self.nat[id.0 as usize].0 != 0)
+                if loops(&self.prog, f)
+                    && (self.heat.budget == 0
+                        || self.nat[id.0 as usize].0 != 0
+                        || self.early_loop(id, f))
                 {
                     Part::Both
                 } else {
@@ -2237,7 +2240,7 @@ impl Worker {
     fn natural_part(&self, id: FuncId) -> Part {
         match self.prog.func(id) {
             Some(f) if f.parent.is_none() && self.native_ok(id) => {
-                if self.heat.budget == 0 && loops(&self.prog, f) {
+                if (self.heat.budget == 0 || self.early_loop(id, f)) && loops(&self.prog, f) {
                     Part::Both
                 } else {
                     Part::Native
@@ -2245,6 +2248,24 @@ impl Worker {
             }
             _ => Part::Frame,
         }
+    }
+
+    /// A subprogram of the profile (one that looped in one activation, `snapshot`) is compiled early
+    /// only of a kind the profile takes processes of: a modelled speedup of `EARLY_SPEEDUP` or more,
+    /// or `Kind::BigLoop`. Judged here, in the run that compiles it, not in the run that names it.
+    fn early_kind(&self, id: FuncId) -> bool {
+        self.prog
+            .raw(id)
+            .is_none_or(|f| f.kind == FuncKind::Process)
+            || self.model(id).speedup >= profile::EARLY_SPEEDUP
+            || self.kind(id) == Kind::BigLoop
+    }
+
+    /// A subprogram the profile names hot (`early`): only one that looped in one activation gets
+    /// there (`snapshot`), so its frame-mode code comes with the native-frame code, for that
+    /// activation to enter.
+    fn early_loop(&self, id: FuncId, f: &yavs_ir::Func) -> bool {
+        f.kind != FuncKind::Process && self.early.contains_key(&id)
     }
 
     /// The microseconds of compile time to expect for `id` as `tree` compiles it: what the
@@ -3147,7 +3168,8 @@ impl Worker {
             let fine = self.prog.funcs.get(id).is_some_and(|f| !f.spare)
                 && self.prog.base_of(id) == id
                 && !p.lost.contains(&id.0)
-                && (self.prog.specialisable(id) || us >= self.threshold(id));
+                && (self.prog.specialisable(id) || us >= self.threshold(id))
+                && self.early_kind(id);
             if fine {
                 self.early.insert(id, us);
             }
@@ -3204,6 +3226,16 @@ impl Worker {
             .iter()
             .map(|&b| (b, self.bseen[b as usize]))
             .filter(|&(b, us)| {
+                // A subprogram that loops in one activation: a later run compiles it early, and
+                // the activation running when it is ready enters its frame-mode code at a loop head.
+                if self.native.looped(FuncId(b))
+                    && self
+                        .prog
+                        .func(FuncId(b))
+                        .is_some_and(|f| f.kind != FuncKind::Process)
+                {
+                    return true;
+                }
                 self.prog
                     .func(FuncId(b))
                     .is_some_and(|f| f.kind == FuncKind::Process)
@@ -3644,6 +3676,9 @@ impl Worker {
                 if gen_.cache_enabled() && self.listed.insert(key.clone()) {
                     gen_.cache_note(&key.0, key.1);
                     self.in_cache[id.0 as usize] = Default::default();
+                }
+                if part != Part::Native && self.early_loop(id, f) {
+                    self.native.count_stat(CountStat::LoopEarly);
                 }
                 if part == Part::Native
                     && sampled
@@ -4895,6 +4930,90 @@ mod tests {
         let w = counted(prog, 0);
         assert!(w.waits(callee));
         assert!(opt(&w, caller), "no list: the whole program");
+    }
+
+    /// A process that calls a procedure with a loop of its own.
+    fn caller_looper() -> (yavs_ir::Program, yavs_ir::FuncId, yavs_ir::FuncId) {
+        let mut pb = ProgramBuilder::new();
+        let g = pb.declare("g", yavs_ir::FuncKind::Procedure, None);
+        let p = pb.declare("p", yavs_ir::FuncKind::Process, None);
+        let mut fb = pb.define(g);
+        // loop n := n - 1; exit when n = 0; end loop (n a parameter).
+        let n = fb.param(
+            "n",
+            yavs_ir::Width::B8,
+            yavs_ir::ParamClass::Value,
+            yavs_ir::Mode::In,
+            None,
+        );
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let head = fb.block();
+        let done = fb.block();
+        fb.emit(Inst::Br { to: head });
+        fb.at(head);
+        let at = fb.addr(yavs_ir::AddrSpace::Frame, n);
+        let v = fb.reg(yavs_ir::RegTy::I64);
+        fb.emit(Inst::Load {
+            dst: v,
+            addr: at,
+            w: yavs_ir::Width::B8,
+        });
+        let one = fb.int(1);
+        let v1 = fb.reg(yavs_ir::RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: yavs_ir::IntOp::Sub,
+            dst: v1,
+            a: v,
+            b: one,
+        });
+        fb.emit(Inst::Store {
+            addr: at,
+            src: v1,
+            w: yavs_ir::Width::B8,
+        });
+        fb.emit(Inst::CondBr {
+            c: v1,
+            t: head,
+            f: done,
+        });
+        fb.at(done);
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+        let mut fb = pb.define(p);
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let k = fb.int(1000);
+        let args = fb.regs(&[k]);
+        fb.emit(Inst::Call {
+            func: g,
+            args,
+            dst: None,
+        });
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+        (pb.finish().unwrap(), p, g)
+    }
+
+    /// A subprogram the watching loop found looping in one activation joins the profile's hot
+    /// list (processes alone did before), and a later run that compiles it early makes its
+    /// frame-mode code with its native-frame code, for the running activation to enter.
+    #[test]
+    fn a_subprogram_that_loops_in_one_activation_is_hot_for_the_next_run() {
+        let (prog, _, g) = caller_looper();
+        let mut w = counted(prog, 0);
+        w.bseen[g.0 as usize] = super::profile::HOT_MIN_US;
+        w.hotish.push(g.0);
+        assert!(
+            w.snapshot().seen.is_empty(),
+            "a subprogram that did not loop"
+        );
+        w.native.mark_looped(g);
+        assert_eq!(w.snapshot().seen, [(g.0, super::profile::HOT_MIN_US)]);
+        let f = w.prog.func(g).unwrap();
+        assert!(super::loops(&w.prog, f));
+        assert!(w.native_ok(g));
+        assert_eq!(w.natural_part(g), super::Part::Native);
+        w.early.insert(g, super::profile::HOT_MIN_US);
+        assert_eq!(w.natural_part(g), super::Part::Both);
     }
 
     /// The profile lists what a run needed, in the order it was optimised: what ran or compiled.

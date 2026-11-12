@@ -1733,3 +1733,82 @@ fn a_process_that_never_resumes_is_linked_from_the_cache_early() {
     );
     assert!(warm_at < cold_at, "cold {cold_at} us, warm {warm_at} us");
 }
+
+/// A subprogram that loops for a long time in one call, made at the start of the run (large
+/// enough not to be inlined, its argument a signal so the call is not folded).
+const LOOPSUB: &str = "entity loopsub is generic (N : natural := 6000000); end;
+architecture a of loopsub is
+  signal len : natural := N;
+  function churn(n : natural) return natural is
+    variable a, b, c : natural := 0;
+  begin
+    for i in 1 to n loop
+      a := (a * 3 + i mod 7) mod 1000003;
+      if a mod 5 = 0 then b := (b + a) mod 65521; elsif a mod 3 = 1 then c := (c + i) mod 4093; end if;
+      case i mod 4 is
+        when 0 => b := (b * 7 + 1) mod 65521;
+        when 1 => c := (c * 5 + 2) mod 4093;
+        when 2 => a := (a + b) mod 1000003;
+        when others => a := (a + c) mod 1000003;
+      end case;
+    end loop;
+    return (a + b + c) mod 1000003;
+  end;
+begin
+  process begin
+    report \"a=\" & integer'image(churn(len));
+    wait;
+  end process;
+end;
+";
+
+/// `--tier=auto`: a subprogram whose one call loops for most of the run is named hot by the run's
+/// profile (the interpreter saw it running at two looks in a row), so the next run compiles it
+/// early, frame-mode code with the native-frame code, and the call running by then goes on in
+/// compiled code from a loop head. Every run prints what the interpreter prints.
+#[test]
+fn a_subprogram_that_loops_in_one_call_runs_compiled_in_the_next_run() {
+    let dir = design("clift_loopsub", LOOPSUB);
+    let want = run(&dir, "loopsub", &["--tier=interp"], &[]);
+    let go = || {
+        let o = yavs(
+            &dir,
+            &[("YAVS_AUTO_TRACE", "1"), ("YAVS_COUNTERS", "1")],
+            &["run", "--std=2008", "--work=work:work", "loopsub"],
+        );
+        let err = String::from_utf8_lossy(&o.stderr).into_owned();
+        let out = String::from_utf8_lossy(&o.stdout).into_owned();
+        assert_eq!((o.status.code(), &out), (want.code, &want.out), "{err}");
+        let count = |name: &str| {
+            err.lines()
+                .find_map(|l| l.strip_prefix(&format!("counters: {name}=")))
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or_else(|| panic!("no {name} in {err}"))
+        };
+        // The microseconds `churn` ran compiled, from the line the trace ends with.
+        let compiled = err
+            .lines()
+            .filter(|l| l.contains(": seen f") && l.contains("`churn`"))
+            .find_map(|l| {
+                l.split("compiled ")
+                    .nth(1)?
+                    .split(' ')
+                    .next()?
+                    .parse::<u64>()
+                    .ok()
+            })
+            .unwrap_or(0);
+        (
+            count("tier_looped"),
+            count("tier_loop_early"),
+            compiled,
+            err,
+        )
+    };
+    let (looped, early, _, err) = go();
+    assert!(looped >= 1, "{err}");
+    assert_eq!(early, 0, "{err}");
+    let (_, early, compiled, err) = go();
+    assert_eq!(early, 1, "{err}");
+    assert!(compiled > 0, "{err}");
+}

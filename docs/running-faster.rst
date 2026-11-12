@@ -21,7 +21,9 @@ Tiers
   long as the run before, repays over a few runs. Compiles take at most about a quarter of a short run's time, the
   busiest functions for their compile time first, so the cache of a short test fills over its first few runs. A run of about half a second of simulation work or less compiles little: such a
   run would not get the compile time back. Longer runs compile the processes that keep waking up and
-  what compiled code calls, and loops that run for long.
+  what compiled code calls, and loops that run for long. A subprogram that a run spent long in within
+  one call, such as a set-up loop at time 0, is compiled early in the next run, and that call goes on
+  in compiled code from its loop.
 * ``--tier=clift`` compiles everything before time 0. It can pay off for a long run of a
   compute-heavy design.
 * ``--tier=interp`` runs the interpreter alone; it is the default of a source build without a

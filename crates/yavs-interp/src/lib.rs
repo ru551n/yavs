@@ -1557,7 +1557,10 @@ pub struct NativeFlags {
     /// Per function, the native frames of it that left to the interpreter (`materialised`).
     left_native: Box<[std::sync::atomic::AtomicU64]>,
     /// What the count rule did, for `YAVS_COUNTERS` (`CountStat`).
-    count_stat: [std::sync::atomic::AtomicU64; CountStat::CopyCalls as usize + 1],
+    count_stat: [std::sync::atomic::AtomicU64; CountStat::LoopEarly as usize + 1],
+    /// Per function, two looks of the watching loop in a row found it running (`watch_tick`): it
+    /// loops for a long time in one activation.
+    looped: Box<[std::sync::atomic::AtomicBool]>,
 }
 
 /// What the count rule of `--tier=auto` did in a run (`YAVS_COUNTERS`), so a test sees it stop.
@@ -1596,6 +1599,10 @@ pub enum CountStat {
     /// Calls in copies taken into the policy's map of who calls whom (`Worker::graph`): a copy of
     /// a subprogram is called only from copies.
     CopyCalls,
+    /// Functions the watching loop found running at two looks in a row (`NativeFlags::looped`),
+    /// and the subprograms among them a later run compiled early because the profile named them.
+    Looped,
+    LoopEarly,
 }
 
 impl NativeFlags {
@@ -1628,11 +1635,29 @@ impl NativeFlags {
     }
 
     /// What the count rule did so far, by `CountStat`.
-    pub fn count_stats(&self) -> [u64; CountStat::CopyCalls as usize + 1] {
+    pub fn count_stats(&self) -> [u64; CountStat::LoopEarly as usize + 1] {
         std::array::from_fn(|i| self.count_stat[i].load(Ordering::Relaxed))
     }
 
     /// How often native frames of `func` were left to the interpreter.
+    /// Whether two looks of the watching loop in a row found `func` running (`watch_tick`): one
+    /// activation of it runs a long loop, so its compiled code, entered at a loop head, pays even
+    /// when it is called seldom.
+    pub fn looped(&self, func: FuncId) -> bool {
+        self.looped
+            .get(func.0 as usize)
+            .is_some_and(|n| n.load(Ordering::Relaxed))
+    }
+
+    /// Mark `func` as `looped` (the watching loop does; a policy test too).
+    pub fn mark_looped(&self, func: FuncId) {
+        if let Some(n) = self.looped.get(func.0 as usize)
+            && !n.swap(true, Ordering::Relaxed)
+        {
+            self.count_stat(CountStat::Looped);
+        }
+    }
+
     pub fn materialised(&self, func: FuncId) -> u64 {
         self.left_native
             .get(func.0 as usize)
@@ -2047,6 +2072,7 @@ impl Runtime {
                 copies_wait: Default::default(),
                 left_native: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
                 count_stat: Default::default(),
+                looped: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
             }),
             live: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
             plans: Default::default(),

@@ -11137,7 +11137,7 @@ Cranelift frame-mode code reads and drives a whole record signal whose plan has 
 
 ## Record drive misses and parts in compiled code
 
-Cranelift frame-mode code that finds a whole zero-delay record drive different from the record image compares it run by run and drives what changed on the kernel itself (`yavs_rt_scatter_cmp`), and drives a part of a record signal at delay 0 on the kernel itself (`yavs_rt_scatter_part`), instead of going through the signal callback and the host (`YAVS_IMAGE_INLINE=nomiss`, `nopart` turn them off; counters `scatters_compared`, `part_scatters`; `docs/decisions.md` "Record drive misses and parts in compiled code"). Plain bench builds, simulation thread, against b98fcf5c: forced Microwatt 0.984, GRLIB 0.9945; default tier GRLIB 0.987, Microwatt 0.977 to 0.983; forced small tests +0.02 to +0.03 percent (compile of the drive sites). Cycles not measured.
+Cranelift frame-mode code that finds a whole zero-delay record drive different from the record image compares it run by run and drives what changed on the kernel itself (`yavs_rt_scatter_cmp`), and drives a part of a record signal at delay 0 on the kernel itself (`yavs_rt_scatter_part`), instead of going through the signal callback and the host (`YAVS_IMAGE_INLINE=nomiss`, `nopart` turn them off; counters `scatters_compared`, `part_scatters`; `docs/decisions.md` "Record drive misses and parts in compiled code"). Plain bench builds, simulation thread, against b98fcf5c: forced Microwatt 0.984, GRLIB 0.9945; default tier GRLIB 0.987, Microwatt 0.977 to 0.983; forced small tests +0.02 to +0.05 percent (compile of the drive sites). Cycles not measured.
 
 ## Whole-record reads and drives in Cranelift frame-mode code
 

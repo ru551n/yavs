@@ -548,13 +548,20 @@ case!(
     &[],
     [("process_runs", Max(2)), ("ops", Max(1374)),]
 );
-// Waiters whose long timeouts a signal beats (a message wait): the stale timeouts leave the time
-// heap as it fills, so it holds about the live ones (16 here), not one per wake (6400).
+// Waiters whose long timeouts a signal beats (a message wait): a wake whose condition is false
+// waits again with the queued timeout and the registered waiter (616 timeouts, 400 of them the
+// stimulus's `wait for`, not 6817; 32 waiters, not 6416), the wake plan wakes them without a scan,
+// and the heap holds the live timeouts and the ~200 of the waits that ended, not one per wake.
 case!(
     timeout_stale,
     "s=1700 t=4010000000 fs",
     &[],
-    [("heap_peak", Max(265))]
+    [
+        ("heap_peak", Max(223)),
+        ("timeouts_queued", Max(635)),
+        ("waiters_added", Max(33)),
+        ("wake_scans", Max(2)),
+    ]
 );
 case!(ieee_operands, "acc=", &[], [("ops", Max(2716))]);
 case!(ieee_share, "n=", &[], [("ops", Max(3626))]);

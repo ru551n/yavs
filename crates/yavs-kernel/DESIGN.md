@@ -115,14 +115,17 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   is split into its kept runs.
 - **Layers** (`Layer { mask, value }` over the whole signal): effective value per element =
   `force in`, else port input (`in`/`inout` formal), else `force out`, else `driving`.
-- **Event queue**: one binary heap of `(time, Driver | Timeout(proc, generation) |
-  Implicit(i))`. A zero-delay transaction is queued at `now` and matures in the next delta;
+- **Event queue**: one binary heap of `(time, Driver | Timeout(proc, token) |
+  Implicit(i))`. A process has at most one live timeout, the one whose token is its
+  `ProcMeta::tmo`, at the deadline `ProcState::armed`: a wake does not touch it; the commit of the
+  next wait keeps it when the wait has that deadline (the re-wait of a `wait until .. for` after a
+  false condition) and otherwise moves the token on and queues the wait's own. A zero-delay transaction is queued at `now` and matures in the next delta;
   entries at `now` go to a plain list instead of the heap, merged with the heap's due entries
   in the same `(time, entry)` order at the drain. Stale entries are dropped when they reach
-  the top, so they never cause an empty cycle. A timeout that a signal beat stays stale until
-  its time, which for a `wait ... for 1 hr` never comes, so after a full commit a queue of at
+  the top, so they never cause an empty cycle. A timeout that a wait left stays stale until
+  its time, which for a `wait ... for 1 hr` may never come, so after a full commit a queue of at
   least twice what its last clearing left (and `HEAP_FLOOR` entries) is cleared of the timeouts
-  whose process has a newer generation and made a heap again (`drop_stale_timeouts`): the queue
+  that are not their process's live one (token) and made a heap again (`drop_stale_timeouts`): the queue
   holds about the live entries, not one per wake. Driver and implicit entries stay (whether one
   is stale depends on its waveform, known only for the earliest).
 - **Transaction values** are recycled: a driver's waveform keeps a few buffers of applied
@@ -141,17 +144,16 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   VHPI plugin can ask for the next active time; wake-ups scheduled from the current call are
   added. Only when an observer says `Observer::wants_next_time` (VHPI does, waves do not). Other phases get `None`: the queue may still change in them.
 - **Waiters**: per signal, `(proc, range, generation)`. A process's generation increases on every
-  resumption, invalidating its other waiters and its timeout in O(1). Each signal buckets its
+  resumption, invalidating its other waiters in O(1). Each signal buckets its
   waiters by chunk of 8 elements, 64 for a signal over 4096 elements (a waiter over at most 4 chunks
   sits in each of them, a wider or null one in a wide list; a signal of one chunk has the one list;
   the lists are made when the first process waits), so an event looks only at the waiters of the chunks it touches
   and the wide list: one process per element of a wide vector costs O(1) per event, not
   O(processes). Waiters carry their registration number and wake in that order, each once.
   Lists are compacted when they reach twice their live size. A process that waits for the
-  same signals as in its previous wait, without a timeout, gets resident waiters
+  same signals as in its previous wait, with or without a timeout, gets resident waiters
   (`ProcMeta::perm`, an epoch): they stay in their lists when they wake the process, so a
-  clocked process is not removed and added again each cycle; a different wait, or one with a
-  timeout, ends the epoch and the stale waiters go at the next scan of their list. Resident
+  clocked process is not removed and added again each cycle; a different wait ends the epoch and the stale waiters go at the next scan of their list. Resident
   waiters keep their first registration number, so processes of one signal wake in the order
   they first waited, not in the order they last ran. A signal of 9 to 1024 elements has a list per
   element (one process per element of a vector scans one waiter per event). When every waiter of a

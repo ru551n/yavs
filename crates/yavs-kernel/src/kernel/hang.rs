@@ -322,7 +322,7 @@ impl SimControl {
         let mut zero: Vec<u32> = Vec::new();
         for e in &self.queue.next_delta {
             if let Entry::Timeout(p, g) = *e
-                && self.procs[p as usize].generation == g
+                && self.procs[p as usize].tmo == g
             {
                 zero.push(p);
             }

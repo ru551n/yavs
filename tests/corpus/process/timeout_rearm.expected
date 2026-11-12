@@ -1,0 +1,28 @@
+exit	0
+diag	note	5000000	1	:timeout_rearm:zero	zero: z=1 event=true at 5000000 fs
+diag	note	5000000	2	:timeout_rearm:zero	zero: z=2 event=true at 5000000 fs
+diag	note	5000000	3	:timeout_rearm:zero	zero: z=2 event=false at 5000000 fs
+diag	note	10000000	0	:timeout_rearm:wfor	wfor: 1 s=1 event=true at 10000000 fs
+diag	note	20000000	0	:timeout_rearm:leave	leave: condition at 20000000 fs
+diag	note	20000000	0	:timeout_rearm:plain	plain: condition at 20000000 fs
+diag	note	20000000	0	:timeout_rearm:wfor	wfor: 2 s=2 event=true at 20000000 fs
+diag	note	30000000	0	:timeout_rearm:tie	tie: s=3 event=true at 30000000 fs
+diag	note	30000000	0	:timeout_rearm:fwait	fwait: f=0 at 30000000 fs
+diag	note	30000000	0	:timeout_rearm:plain	plain: s=3 at 30000000 fs
+diag	note	30000000	0	:timeout_rearm:wfor	wfor: 3 s=3 event=true at 30000000 fs
+diag	note	35000000	0	:timeout_rearm:post	post: s=3 at 35000000 fs
+diag	note	40000000	0	:timeout_rearm:plain	plain: s=4 at 40000000 fs
+diag	note	40000000	0	:timeout_rearm:wfor	wfor: 4 s=4 event=true at 40000000 fs
+diag	note	40000000	0	:timeout_rearm:post	post: s=4 at 40000000 fs
+diag	note	45000000	0	:timeout_rearm:late	late: s=4 event=false at 45000000 fs
+diag	note	50000000	0	:timeout_rearm:next_delta	next_delta: timeout u=0 at 50000000 fs
+diag	note	50000000	1	:timeout_rearm:next_delta	next_delta: cond u=1 at 50000000 fs
+diag	note	55000000	0	:timeout_rearm:wfor	wfor: 5 s=4 event=false at 55000000 fs
+diag	note	60000000	0	:timeout_rearm:wfor	wfor: 6 s=5 event=true at 60000000 fs
+diag	note	60000000	0	:timeout_rearm:plain	plain: s=5 at 60000000 fs
+diag	note	60000000	0	:timeout_rearm:post	post: s=5 at 60000000 fs
+diag	note	100000000	0	:timeout_rearm:leave	leave: same deadline at 100000000 fs
+diag	note	200000000	0	:timeout_rearm:leave	leave: later deadline at 200000000 fs
+diag	note	230000000	1	:timeout_rearm:leave	leave: condition at 230000000 fs
+diag	note	270000000	0	:timeout_rearm:leave	leave: earlier deadline at 270000000 fs
+diag	note	470000000	0	:timeout_rearm:leave	leave: past the left one at 470000000 fs

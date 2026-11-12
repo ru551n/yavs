@@ -15946,3 +15946,29 @@ host's way in and out (`yavs_rt_memo`: the view sync, the unwind guard, `memo_ke
   as sim1 does.
 - **Exact.** Only entries every consumer already ignores go; the pop order is by (time, key), not by layout. Counters
   `heap_peak`, `stale_timeouts`; tests `perf.rs` `timeout_stale`, corpus `process/timeout_cancel`.
+
+## Timed waits keep their timeout and their waiters (yavs-kernel `ProcMeta::tmo`, `ProcState::armed`, `ACT_TIMER`, 2026-11-12)
+
+- **Problem.** After an event that leaves `c` false, `wait on s until c for T` waits again with the deadline of the
+  statement's execution (LRM 10.2). The timeout entry was named by the wake generation, so every such wake made it
+  stale and the re-wait queued a new one; a timed wait was never resident, so it also removed and registered its
+  waiters again and took the full commit: about 1450 instructions per wake more than the same wait without `for`, for
+  every message a verification component waits for.
+- **Decision** (agent). A queued timeout is named by a token of its process (`ProcMeta::tmo`: `Entry::Timeout(p, g)` is
+  live when `procs[p].tmo == g`), with its deadline in `ProcState::armed`; the wake generation names waiters only. A
+  wake leaves the entry queued. The commit of the next wait keeps it when that wait asks the armed deadline
+  (`Ctx::wait_at` of it clears `ACT_TIMER`, which `resumption` sets while a timeout is queued or resumed the process)
+  and otherwise moves the token on and queues the wait's own. A due timeout clears `armed` whether or not it resumes
+  the process. Timed waits get resident waiters (`ProcMeta::perm`) like untimed ones. The early commits (inline batch
+  loop, pooled worker, `run_one`, the usual-clocked shortcut of `commit_rest`) test `ACT_SLOW | ACT_TIMER`, so a run
+  that started armed or by a timeout and did not keep it takes the full commit, and the full commit clears
+  `by_timeout`, since the clock batch runs resident processes without a wake.
+- **Exact.** A timeout entry carries only (time, process), so keeping it is queueing it again. Timeouts are taken in
+  the update phase before any signal wake, as before, so a timeout and an event in one cycle resume the process by
+  the timeout; a woken process that meets its due entry ignores it, as it ignored the stale one.
+- **Not chosen.** sim1's form: one pending wake-up per process, deleted from its heap at every signal wake and queued
+  again with the remaining time at the re-wait; ours deletes nothing and queues nothing at the re-wait.
+- Tests: `perf.rs` `timeout_stale` (`timeouts_queued`, `waiters_added`, `wake_scans`, `heap_peak`), corpus
+  `process/timeout_rearm` and `process/timeout_resident`, each failing on the parent or under a mutation of the guards.
+  Compiled code and the interpreter take the same kernel calls without a step (`crates/yavs-rt/AGENTS.md`,
+  `crates/yavs-clift/AGENTS.md`, `crates/yavs-interp/AGENTS.md`).

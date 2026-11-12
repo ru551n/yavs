@@ -429,6 +429,8 @@ const PASS: &[&str] = &[
     "process/static_waits",
     "process/subprograms",
     "process/timeout_cancel",
+    "process/timeout_rearm",
+    "process/timeout_resident",
     "process/wait_past_time_high",
     "process/unaffected_2019",
     "process/wait_forms",

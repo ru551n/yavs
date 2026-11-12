@@ -702,6 +702,7 @@ impl Builder {
                 depth,
                 flags: p.flags,
                 generation: 0,
+                tmo: 0,
                 ready: false,
                 by_timeout: false,
                 resumed: false,

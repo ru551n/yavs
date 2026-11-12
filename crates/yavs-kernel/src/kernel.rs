@@ -12,8 +12,8 @@ use smallvec::SmallVec;
 use crate::builder::{PortConv, PortMode, ProcFlags};
 use crate::error::{ErrorKind, SimError};
 use crate::process::{
-    ACT_ASSIGNED, ACT_SLOW, Ctx, DriverInfo, Effect, LiveSink, OpMode, Out, OutB, OutV, ProcId,
-    ProcState, Process, Severity, Shared, SignalOp, check_ref, make_op,
+    ACT_ASSIGNED, ACT_SLOW, ACT_TIMER, Ctx, DriverInfo, Effect, LiveSink, OpMode, Out, OutB, OutV,
+    ProcId, ProcState, Process, Severity, Shared, SignalOp, check_ref, make_op,
 };
 use crate::signal::{
     DelayMode, DriverId, ForceMode, GuardKind, Hits, Range, Reg, SigRef, Signal, SignalId, Waiter,
@@ -302,7 +302,8 @@ pub struct Stats {
     /// Timeouts of waits a signal ended, dropped from the future queue before their time
     /// (`SimControl::drop_stale_timeouts`).
     pub stale_timeouts: u64,
-    /// Timeouts queued by the commit of a wait (`commit_rest`).
+    /// Timeouts queued by the commit of a wait (`commit_rest`); a wait that keeps the queued
+    /// one (`ProcState::armed`) queues none.
     pub timeouts_queued: u64,
     /// Waiters the commit of a wait registered (`Waiters::add` in `commit_rest`); a resident
     /// wait (`ProcMeta::perm`) registers none.
@@ -866,8 +867,14 @@ struct Early {
 
 pub(crate) struct ProcMeta {
     pub flags: ProcFlags,
-    /// Bumped on every resumption; stale waiters and timeouts carry an older one.
+    /// Bumped on every resumption; stale plain waiters carry an older one.
     pub generation: u64,
+    /// Names the process's queued timeout: `Entry::Timeout(p, tmo)` is live, every other
+    /// timeout entry of the process is stale. A new one is queued with `tmo + 1`; a commit that
+    /// drops the queued one moves it on too. A wake does not touch it: the commit of the next
+    /// wait decides (`ProcState::armed`), and a timeout due before that commit finds the process
+    /// woken already.
+    pub tmo: u64,
     /// Resumed but not yet executed.
     pub ready: bool,
     /// The pending resumption is a timeout (orders the batch, `SimControl::order`).
@@ -973,8 +980,8 @@ const HEAP_FLOOR: usize = 256;
 
 /// A heap item: `Entry` flattened to words. Ordered by `(time, key)`: the key puts drivers
 /// before timeouts before implicit signals, then by index, as `Entry` does; `generation` is the
-/// generation of a timeout (which of two timeouts of one process at one time is live does not
-/// matter to the order).
+/// token of a timeout (`ProcMeta::tmo`; which of two timeouts of one process at one time is live
+/// does not matter to the order).
 #[derive(Clone, Copy)]
 struct Later {
     time: Time,
@@ -2671,7 +2678,7 @@ impl SimControl {
     /// they could cause an empty cycle.
     fn live(&mut self, t: Time, e: Entry) -> bool {
         match e {
-            Entry::Timeout(p, g) => self.procs[p as usize].generation == g,
+            Entry::Timeout(p, g) => self.procs[p as usize].tmo == g,
             Entry::Driver(d) => {
                 let info = &self.drivers[d as usize];
                 let slot = slot_mut(&mut self.slots[info.owner.0 as usize]);
@@ -2878,8 +2885,10 @@ impl SimControl {
                 match waiters.cache_batch() {
                     // The clock's plain processes, all resident, run as one batch in list
                     // order, those of the triggers that hold: no wake per process (a resident
-                    // waiter needs no new generation, and nothing else wakes a process in this
-                    // cycle). The others wake as usual and run after them.
+                    // waiter needs no new generation, a timeout is independent of it
+                    // (`ProcMeta::tmo`), nothing else woke a process in this cycle, and the commit
+                    // after a timeout cleared `by_timeout`). The others wake as usual and run after
+                    // them.
                     Some(Some(b))
                         if batch
                             && self.changed_sigs.len() == 1
@@ -3195,11 +3204,7 @@ impl SimControl {
         }
         for &e in &entries {
             match e {
-                Entry::Timeout(p, g) => {
-                    if self.procs[p as usize].generation == g {
-                        self.wake(p, true);
-                    }
-                }
+                Entry::Timeout(p, g) => self.timeout_due(p, g),
                 Entry::Implicit(i) => _ = due.insert(i),
                 Entry::Driver(d) => {
                     let info = &self.drivers[d as usize];
@@ -3401,7 +3406,7 @@ impl SimControl {
     fn update_timed_many(&mut self) -> Option<Result<(), ErrorKind>> {
         const TIMED_MAX: usize = 4;
         let now = self.now;
-        // (signal, driver) and (process, generation).
+        // (signal, driver) and (process, timeout token).
         let mut drv = [(0u32, 0u32); TIMED_MAX];
         let mut tmo = [(0u32, 0u64); TIMED_MAX];
         let (mut nd, mut nt) = (0, 0);
@@ -3445,9 +3450,7 @@ impl SimControl {
             self.queue.later.pop();
         }
         for &(p, g) in &tmo[..nt] {
-            if self.procs[p as usize].generation == g {
-                self.wake(p, true);
-            }
+            self.timeout_due(p, g);
         }
         drv[..nd].sort_unstable();
         // An error is taken at the first signal that has one, after all of them were updated.
@@ -4133,6 +4136,16 @@ impl SimControl {
         ok
     }
 
+    /// A timeout entry of process `p` with token `g` is due: the live one leaves the queue and
+    /// resumes the process (nothing when a signal woke it first in this cycle).
+    #[inline]
+    fn timeout_due(&mut self, p: u32, g: u64) {
+        if self.procs[p as usize].tmo == g {
+            slot_mut(&mut self.slots[p as usize]).st.armed = None;
+            self.wake(p, true);
+        }
+    }
+
     #[inline(always)]
     fn wake(&mut self, p: u32, by_timeout: bool) {
         wake_proc(
@@ -4495,7 +4508,7 @@ impl SimControl {
                                 let (st, meta) = (&mut slot.st, &mut procs[i]);
                                 // As the early commit of the inline loop below.
                                 if st.again
-                                    && st.act & ACT_SLOW == 0
+                                    && st.act & (ACT_SLOW | ACT_TIMER) == 0
                                     && meta.perm != 0
                                     && st.wait_key == meta.wkey
                                     && slot.result.is_ok()
@@ -4687,7 +4700,7 @@ impl SimControl {
                                     if !init
                                         && !postponed
                                         && st.again
-                                        && st.act & ACT_SLOW == 0
+                                        && st.act & (ACT_SLOW | ACT_TIMER) == 0
                                         && meta.perm != 0
                                         && st.wait_key == meta.wkey
                                         && !failed
@@ -4930,7 +4943,7 @@ impl SimControl {
         let meta = &mut self.procs[p as usize];
         // The usual clocked process (see `run_batch`): committed here.
         if !(st.again
-            && st.act & ACT_SLOW == 0
+            && st.act & (ACT_SLOW | ACT_TIMER) == 0
             && meta.perm != 0
             && st.wait_key == meta.wkey
             && !failed)
@@ -5079,6 +5092,7 @@ impl SimControl {
                 && !postponed
                 && meta.perm != 0
                 && wkey == meta.wkey
+                && st.act & ACT_TIMER == 0
                 && st.sens.is_empty()
                 && st.deadline.is_none()
                 && st.effects.is_empty()
@@ -5128,13 +5142,25 @@ impl SimControl {
                 &mut st.outv,
                 &mut st.outb,
             );
-            let timed = st.deadline.is_some();
-            if let Some(t) = st.deadline.take() {
-                self.stats.timeouts_queued += 1;
-                self.queue.push(self.now, t, Entry::Timeout(p, generation));
+            // The queued timeout stays when this wait has its deadline (`Ctx::wait_at`: the
+            // run cleared `ACT_TIMER`), else it is dropped and this wait's queued. A timeout
+            // entry is only its time and its process, so keeping it is queueing it again.
+            let meta = &mut self.procs[p as usize];
+            meta.by_timeout = false;
+            if st.armed.is_none() || st.act & ACT_TIMER != 0 && st.deadline != st.armed {
+                if st.armed.take().is_some() {
+                    meta.tmo += 1;
+                }
+                if let Some(t) = st.deadline {
+                    meta.tmo += 1;
+                    st.armed = Some(t);
+                    self.stats.timeouts_queued += 1;
+                    self.queue.push(self.now, t, Entry::Timeout(p, meta.tmo));
+                }
             }
-            // The same wait as the last run, without a timeout: the waiters of the last run
-            // stay (resident, `ProcMeta::perm`), or become so now.
+            st.deadline = None;
+            // The same wait as the last run: the waiters of the last run stay (resident,
+            // `ProcMeta::perm`), or become so now; a timeout changes nothing there.
             // A wait that ended after naming a part of the last one again: that part first.
             if st.matched != 0 && !st.again {
                 let k = st.matched as usize;
@@ -5144,7 +5170,7 @@ impl SimControl {
             }
             st.matched = 0;
             let mut again = std::mem::take(&mut st.again);
-            if again && (timed || !st.sens.is_empty()) {
+            if again && !st.sens.is_empty() {
                 // More was added to the wait (`Ctx::wait_on_again`): the last wait's ranges
                 // come first, as they were first named.
                 let mut all = st.sens_prev.clone();
@@ -5160,9 +5186,7 @@ impl SimControl {
                 again = false;
             }
             meta.wkey = wkey;
-            let same = !timed
-                && !moved
-                && (again || !st.sens.is_empty() && st.sens[..] == st.sens_prev[..]);
+            let same = !moved && (again || !st.sens.is_empty() && st.sens[..] == st.sens_prev[..]);
             let mut perm = 0;
             // The ranges to register: `sens`, or `sens_prev` when they are the same or the new
             // wait became the previous one (the buffers swap, nothing is copied).
@@ -5223,9 +5247,6 @@ impl SimControl {
                 );
             }
             st.sens.clear();
-            if timed {
-                st.sens_prev.clear();
-            }
             let result = if slot.result.is_ok() {
                 Ok(())
             } else {
@@ -5263,9 +5284,10 @@ impl SimControl {
     }
 
     /// Drop the timeouts of waits that ended otherwise from the future queue. A timeout stays
-    /// queued until its time and a resumption only moves the process's generation on, so a
-    /// `wait on s until c for 1 hr` that events end leaves one stale entry per wake: the heap
-    /// grew with events times waiters, for a time that never comes. Asked after a
+    /// queued until its time and a later wait only moves the process's token on
+    /// (`ProcMeta::tmo`), so waits that end before their timeouts and are followed by other
+    /// timed waits leave one stale entry each, for a time that may never come (a `wait until ..
+    /// for 1 hr` that waits again after a false condition keeps its one entry instead). Asked after a
     /// full commit once the queue reaches `Queue::limit`, which then becomes twice what is left:
     /// a constant amortised cost per queued timeout. Only timeouts are dropped: whether a
     /// driver or implicit entry is stale depends on its waveform, which `live` can tell only
@@ -5274,9 +5296,9 @@ impl SimControl {
     fn drop_stale_timeouts(&mut self) {
         let procs = &self.procs;
         let before = self.queue.later.v.len();
-        self.queue.later.retain(|l| {
-            l.key >> 32 != 1 || procs[l.key as u32 as usize].generation == l.generation
-        });
+        self.queue
+            .later
+            .retain(|l| l.key >> 32 != 1 || procs[l.key as u32 as usize].tmo == l.generation);
         let left = self.queue.later.v.len();
         self.stats.stale_timeouts += (before - left) as u64;
         self.queue.limit = 2 * left;
@@ -5848,7 +5870,8 @@ fn resumption(procs: &[ProcMeta], p: u32, st: &mut ProcState) {
         m.epoch += 1;
     }
     let by_timeout = procs[p as usize].by_timeout;
-    st.act = 0;
+    // A queued timeout, or the one that resumed the process: the commit decides about it.
+    st.act = u8::from(by_timeout | st.armed.is_some()) * ACT_TIMER;
     st.timed_out = by_timeout;
     st.known = if by_timeout {
         crate::process::NO_EDGE

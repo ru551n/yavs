@@ -917,7 +917,7 @@ pub(crate) struct ProcState {
     pub waveforms: Vec<Waveform>,
     pub effects: Vec<Effect>,
     pub sens: Vec<(SignalId, Range)>,
-    /// The sensitivity the last commit registered, when that wait had no timeout.
+    /// The sensitivity the last commit registered.
     pub sens_prev: Vec<(SignalId, Range)>,
     /// The coming wait is exactly the one `sens_prev` holds (`Ctx::wait_on_again`): `sens`
     /// stays empty and the commit takes it from `sens_prev`.
@@ -927,6 +927,9 @@ pub(crate) struct ProcState {
     /// `sens_prev` ahead of the ranges named after it.
     pub matched: u32,
     pub deadline: Option<Time>,
+    /// The deadline of the process's queued timeout (`ProcMeta::tmo`), if one is queued. A wait
+    /// with that deadline keeps it (`Ctx::wait_at`); the commit of any other wait drops it.
+    pub armed: Option<Time>,
     pub timed_out: bool,
     /// Times of transactions scheduled during this run.
     pub scheduled: Vec<(Time, DriverId)>,
@@ -1015,6 +1018,10 @@ const SAME_MISSES: u8 = 8;
 /// `ProcState::act`: the run set a timeout or made an effect (`deadline`, `effects`), so the
 /// commit is not the usual clocked one.
 pub(crate) const ACT_SLOW: u8 = 1;
+/// `ProcState::act`, set when the run starts: a timeout is queued for the process or resumed it,
+/// and the run has not kept it (`Ctx::wait_at` of `ProcState::armed`), so the commit must
+/// drop it or queue another: not the usual clocked one.
+pub(crate) const ACT_TIMER: u8 = 4;
 /// `ProcState::act`: the run scheduled a transaction or made a direct entry or a phantom
 /// (`scheduled`, `phantoms`, `out`, `outv`, `outb`). Every push sets it.
 pub(crate) const ACT_ASSIGNED: u8 = 2;
@@ -3422,6 +3429,12 @@ impl Ctx<'_> {
     pub fn wait_at(&mut self, deadline: Time) -> Result<(), SimError> {
         if deadline < self.sh.now {
             return Err(self.error(ErrorKind::DeadlineInPast { deadline }));
+        }
+        // The queued timeout is this one: the commit keeps it (a `wait until .. for` waits
+        // again after an event that left its condition false).
+        if self.st.armed == Some(deadline) && self.st.deadline.is_none() {
+            self.st.act &= !ACT_TIMER;
+            return Ok(());
         }
         self.st.act |= ACT_SLOW;
         self.st.deadline = Some(deadline);

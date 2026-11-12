@@ -152,7 +152,8 @@ pub fn toggles(db: &Db, e: &Elaborated, max: u64) -> (Toggles, Vec<Skipped>) {
             for (sig, leaf, k) in out {
                 let n = e.nets.leaves[leaf as usize].ty.len;
                 // A port collapsed into part of its actual's leaf counts that part's bins.
-                let (off, own) = obj.part.map_or((0, n), |r| (r.offset, r.len));
+                let part = obj.part((leaf - obj.leaves.0.0) as usize);
+                let (off, own) = part.map_or((0, n), |r| (r.offset, r.len));
                 let (ks, at) = e.nets.kelem(yavs_elab::LeafId(leaf), off);
                 let base = *st.base[ks.0 as usize].get_or_insert_with(|| {
                     let b = st.nbits as u32;

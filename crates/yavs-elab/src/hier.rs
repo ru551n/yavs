@@ -410,10 +410,17 @@ pub struct SigObj {
     pub shape: Shape,
     /// Its leaves: `leaves.0 .. leaves.1`.
     pub leaves: (LeafId, LeafId),
-    /// A port collapsed into part of its actual's leaf (`collapse.rs`): its one leaf is
-    /// the actual's, and it is the elements of this kernel range of it. `None`: the whole
-    /// leaves.
-    pub part: Option<Range>,
+    /// A port collapsed into parts of its actual's leaves (`collapse.rs`): per leaf of the
+    /// object, the kernel range of the actual's leaf it is. Empty: the whole leaves.
+    pub parts: Vec<Range>,
+}
+
+impl SigObj {
+    /// The kernel range of the actual's leaf that leaf `k` of this object is (`parts`);
+    /// `None` when it is the whole leaf.
+    pub fn part(&self, k: usize) -> Option<Range> {
+        self.parts.get(k).copied()
+    }
 }
 
 #[derive(Clone, Debug)]

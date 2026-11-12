@@ -484,10 +484,12 @@ impl State {
         };
         let node = self.design.node(base);
         let mut l = node.layout.as_ref().ok_or_else(misuse)?;
-        let (mut leaf, mut k, mut reps, from) = match node.origin {
-            Origin::Signal { leaf, part, .. } => (leaf, 0u64, 1u64, part.map_or(0, |r| r.offset)),
-            _ => (0, 0, 1, 0),
+        let (mut k, mut reps) = (0u64, 1u64);
+        let first = match node.origin {
+            Origin::Signal { leaf, .. } => leaf,
+            _ => 0,
         };
+        let mut leaf = first;
         let mut cv = match &node.origin {
             Origin::Decl { value, .. } => value.clone(),
             _ => None,
@@ -512,6 +514,13 @@ impl State {
                 _ => unreachable!("element handles follow the layout"),
             }
         }
+        // A collapsed port: where the part of this leaf starts.
+        let from = match &node.origin {
+            Origin::Signal { parts, .. } => {
+                parts.get((leaf - first) as usize).map_or(0, |r| r.offset)
+            }
+            _ => 0,
+        };
         Ok(At {
             node,
             l,

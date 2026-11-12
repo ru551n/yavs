@@ -2479,7 +2479,7 @@ end;
 ";
     let obj = |e: &Elaborated, path: &str| {
         let k = sig_paths(e).iter().position(|p| p == path).expect(path);
-        (e.nets.objs[k].leaves, e.nets.objs[k].part)
+        (e.nets.objs[k].leaves, e.nets.objs[k].part(0))
     };
     let (_, apart) = elab_ports("collapse", src, "top", &[]);
     let (_, e) = elab("collapse", src, "top", &[]);
@@ -2534,7 +2534,7 @@ end;
 ";
     let obj = |e: &Elaborated, path: &str| {
         let k = sig_paths(e).iter().position(|p| p == path).expect(path);
-        (e.nets.objs[k].leaves, e.nets.objs[k].part)
+        (e.nets.objs[k].leaves, e.nets.objs[k].part(0))
     };
     let init = |e: &Elaborated, path: &str| e.nets.leaf(obj(e, path).0.0).init.clone();
     let (_, apart) = elab_ports("outcollapse", src, "top", &[]);

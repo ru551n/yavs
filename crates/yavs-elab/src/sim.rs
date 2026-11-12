@@ -2008,10 +2008,12 @@ impl Elaborated {
             };
             // A port collapsed into part of its actual's leaf: that part (`collapse.rs`).
             let mut ty = self.nets.leaf(leaf).ty;
-            let off = obj.part.map_or(0, |r| {
-                ty.len = r.len;
-                r.offset
-            });
+            let off = obj
+                .part(leaf.index() - obj.leaves.0.index())
+                .map_or(0, |r| {
+                    ty.len = r.len;
+                    r.offset
+                });
             let at = self.nets.loc[leaf.index()];
             inst.sigs.push(InstSig {
                 signal: at.signal,

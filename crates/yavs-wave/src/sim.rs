@@ -962,14 +962,10 @@ type VectorKey = (yavs_sem::TypeId, yavs_sem::TypeId, bool, (i64, i64, bool));
 /// Where a node's values come from.
 #[derive(Clone, Copy)]
 enum At {
-    /// Row-major instance `k` of the node in the leaves from `leaf` on; `part`: the kernel
-    /// range of `leaf` a port collapsed into part of its actual's leaf covers
-    /// (yavs-elab `SigObj::part`).
-    Sig {
-        leaf: u32,
-        k: u64,
-        part: Option<yavs_kernel::Range>,
-    },
+    /// Row-major instance `k` of the node in the leaves from `leaf` on, of object `obj`
+    /// (a port collapsed into parts of its actual's leaves covers those: yavs-elab
+    /// `SigObj::part`).
+    Sig { leaf: u32, k: u64, obj: u32 },
     /// A sub-element of a variable; its path is `Design::vpath`.
     Var,
 }
@@ -978,10 +974,10 @@ impl Design<'_> {
     /// Element `j` of an array node of `n` elements; pair with [`Self::up_path`].
     fn elem(&mut self, at: At, n: u64, j: u64) -> At {
         match at {
-            At::Sig { leaf, k, part } => At::Sig {
+            At::Sig { leaf, k, obj } => At::Sig {
                 leaf,
                 k: k * n + j,
-                part,
+                obj,
             },
             At::Var => {
                 self.vpath.push(j as u32);
@@ -994,10 +990,10 @@ impl Design<'_> {
     /// [`Self::up_path`].
     fn field(&mut self, at: At, i: u64, skip: u32) -> At {
         match at {
-            At::Sig { leaf, k, part } => At::Sig {
+            At::Sig { leaf, k, obj } => At::Sig {
                 leaf: leaf + skip,
                 k,
-                part,
+                obj,
             },
             At::Var => {
                 self.vpath.push(i as u32);
@@ -1157,7 +1153,7 @@ impl Design<'_> {
         let at = At::Sig {
             leaf: obj.leaves.0.0,
             k: 0,
-            part: obj.part,
+            obj: o.0,
         };
         self.node(
             &obj.shape,
@@ -1257,8 +1253,9 @@ impl Design<'_> {
         conv: Conv,
     ) {
         let src = match at {
-            At::Sig { leaf, k, part } => {
-                let (base, n) = match part {
+            At::Sig { leaf, k, obj } => {
+                let obj = self.e.nets.obj(yavs_elab::ObjId(obj));
+                let (base, n) = match obj.part((leaf - obj.leaves.0.0) as usize) {
                     Some(r) => (r.offset as u64, r.len as u64),
                     None => (0, self.e.nets.leaves[leaf as usize].ty.len as u64),
                 };

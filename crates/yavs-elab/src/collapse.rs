@@ -241,12 +241,22 @@ pub(crate) fn ports(
             obj.leaves = (LeafId(pos[a.index()]), LeafId(pos[a.index()]));
             continue;
         }
-        let (first, off) = m(a);
+        let (first, _) = m(a);
         obj.leaves = (first, LeafId(first.0 + (b.0 - a.0)));
-        let own = nets.leaves[a.index()].ty.len;
-        if alias[a.index()].is_some() && (off != 0 || own != nets.leaves[find(a).0.index()].ty.len)
-        {
-            obj.part = Some(Range::new(off, own));
+        if alias[a.index()].is_some() {
+            // Per leaf, the kernel range of the actual's leaf it is; none when all are whole.
+            let mut whole = true;
+            let parts: Vec<Range> = (a.0..b.0)
+                .map(|l| {
+                    let (t, off) = find(LeafId(l));
+                    let own = nets.leaves[l as usize].ty.len;
+                    whole &= off == 0 && own == nets.leaves[t.index()].ty.len;
+                    Range::new(off, own)
+                })
+                .collect();
+            if !whole {
+                obj.parts = parts;
+            }
         }
     }
     let mut i = 0;

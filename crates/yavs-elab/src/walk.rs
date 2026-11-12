@@ -5098,7 +5098,7 @@ impl Model {
             kind,
             shape,
             leaves: (first, end),
-            part: None,
+            parts: Vec::new(),
         });
         for (path, outer, func, sub) in wholes {
             // The parts of instance i of the resolved subelement, as `NetGraph::select` maps them.

@@ -48,11 +48,12 @@ pub(crate) enum Origin {
     Scope(ScopeId),
     /// A signal or port: its elaborated object and its first kernel leaf (its leaves are
     /// consecutive, one per scalar of the layout's record structure).
-    /// `part`: a port collapsed into part of its actual's leaf: the kernel elements it is.
+    /// `parts`: a port collapsed into parts of its actual's leaves: per leaf, the kernel
+    /// elements it is (yavs-elab `SigObj::parts`; empty for whole leaves).
     Signal {
         obj: ObjId,
         leaf: u32,
-        part: Option<yavs_kernel::Range>,
+        parts: Vec<yavs_kernel::Range>,
     },
     /// A generic, constant or variable, declared in elaborated region `scope` (a package's
     /// objects have none), with its value when elaboration knows it (generics, constants).
@@ -1118,7 +1119,7 @@ impl Builder<'_> {
                 Origin::Signal {
                     obj,
                     leaf: e.nets.obj(obj).leaves.0.0,
-                    part: e.nets.obj(obj).part,
+                    parts: e.nets.obj(obj).parts.clone(),
                 },
             ),
             None if kind == vhpiVarDeclK => {
@@ -1312,8 +1313,9 @@ impl Builder<'_> {
             let obj = nets.obj(o);
             (obj.leaves.0.0..obj.leaves.1.0)
                 .map(|l| {
+                    let part = obj.part((l - obj.leaves.0.0) as usize);
                     let l = yavs_elab::LeafId(l);
-                    nets.kpart(l, obj.part.unwrap_or(Range::new(0, nets.leaf(l).ty.len)))
+                    nets.kpart(l, part.unwrap_or(Range::new(0, nets.leaf(l).ty.len)))
                 })
                 .collect()
         };
@@ -1514,7 +1516,7 @@ impl Builder<'_> {
                 origin: Origin::Signal {
                     obj: ObjId(i as u32),
                     leaf: obj.leaves.0.0,
-                    part: obj.part,
+                    parts: obj.parts.clone(),
                 },
             });
             self.d.net.obj_nodes.insert(ObjId(i as u32), n);

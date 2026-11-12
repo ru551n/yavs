@@ -27,7 +27,7 @@ pub(crate) fn leaves(db: &Db, nets: &NetGraph) -> Vec<bool> {
         // and the interpreter asks one leaf part by part when the object is an array of
         // composites (a part per element).
         if parts.contains(&o.decl)
-            || (wholes.contains(&o.decl) && (o.part.is_some() || !one_part_per_leaf(&o.shape)))
+            || (wholes.contains(&o.decl) && (!o.parts.is_empty() || !one_part_per_leaf(&o.shape)))
         {
             lean[o.leaves.0.index()..o.leaves.1.index()].fill(false);
         }

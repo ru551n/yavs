@@ -82,7 +82,7 @@ Other rows of the 2026-10-21 head-to-head tables map to existing benchmarks: row
 
 ## 4. Invariants and pitfalls
 
-- Build both binaries with `tools/build-bench.sh` (release plus 64-byte aligned functions, #576; same features for both, own `CARGO_TARGET_DIR`); a plain release build moves some designs by 3 to 33 percent in cycles with identical instructions when unrelated code moves. Release builds and CI artefacts stay unaligned and have no line tables (#600); the script turns line tables on (`CARGO_PROFILE_RELEASE_DEBUG=line-tables-only` is its default) so `perf` and `gdb` show lines, without changing code or timing.
+- Build both binaries with `tools/build-bench.sh` (release plus 64-byte aligned functions, #576; same features for both, own `CARGO_TARGET_DIR`); a plain release build moves some designs by 3 to 33 percent in cycles with identical instructions when unrelated code moves. Release builds and CI artefacts stay unaligned and have no line tables (#600); the script turns line tables on (`CARGO_PROFILE_RELEASE_DEBUG=line-tables-only` is its default) so `perf` and `gdb` show lines, without changing code or timing. The script follows `[profile.release]`, which is fat LTO with one codegen unit since 2026-11-12: a binary or baseline from before then is of another profile, so compare only builds of one profile (rebuild the old side, or set `CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16` on both).
   Other agents load the host: for a decision, repeat with `--runs 5` and look at CPU, not wall.
 - The external benchmarks need the corpora (`tools/fetch-corpus.sh`, `YAVS_CORPUS`); the first run per binary
   analyzes the libraries (minutes) and caches them. A benchmark that cannot be prepared is skipped with the

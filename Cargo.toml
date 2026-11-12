@@ -32,6 +32,10 @@ unsafe_code = "forbid"
 # No line tables in release artefacts (docs/decisions.md, #600); `.symtab` stays. tools/build-bench.sh adds them
 # back for profiling builds: set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only on any other release build.
 debug = false
+# Whole-program optimisation (user, 2026-11-12; docs/decisions.md "Release profile"): the release archives, bench builds and
+# every `cargo build --release` get it. The old profile: CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16.
+lto = "fat"
+codegen-units = 1
 
 # Debug and overflow checks stay on: only the code generation of `cargo test` changes (#1014).
 [profile.test]

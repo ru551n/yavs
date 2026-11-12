@@ -142,6 +142,8 @@ Among the hand-written RTL designs, clocked designs with very many cheap process
 
 The figures in "The performance work of 0.15.0" are of plain bench builds (release, aligned functions, Cranelift for compiled code), built for the baseline x86-64 CPU, not of the release archives, which are profile-guided and, for the plain x86_64 ones, built for x86-64-v3. What the profile and x86-64-v3 add on top of those is given there (about 0.90 of the cycles warm across 46 tests). The tables of the profile gain below are wall-clock times on the GitHub runners.
 
+Since 2026-11-12 every release build, bench builds included, is optimised as one program (link-time optimisation, one codegen unit; `docs/decisions.md` "Release profile"). The figures on this page from before that date are of the earlier release profile.
+
 The release archives are profile-guided from 0.14.0 (see [Getting started](getting-started.rst)). Every comparison with other simulators on this page was made with a plain release build, so it says nothing about what the profile adds, and we have not repeated those comparisons with a profile-guided build.
 
 What the profile adds was measured on 2026-11-04 on the GitHub runners that build the archives. Each archive was built with and without a profile from the same source and flags, and ten benchmark designs that the training never ran took turns on all arms, with a second plain binary as a control for the machine's noise. Three workflow runs of seven rounds each; each cell gives the lowest and highest geometric mean of the three runs, profile-guided divided by plain, so below 1 is faster. Times are wall-clock. Only the aarch64 runner has an instruction counter.

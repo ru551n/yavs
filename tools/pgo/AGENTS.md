@@ -15,6 +15,7 @@ script, or measures a profile-guided binary.
   two such builds), those of generated-code changes on plain bench builds by exact counts (maintainer, 2026-11-06;
   `tools/bench/AGENTS.md` section 7). Say which kind of build a number is from. A profile-guided build moves every baseline,
   and a change to the runtime shifts the profile it was trained with.
+- Both builds use `[profile.release]`: fat LTO and one codegen unit since 2026-11-12 (`docs/decisions.md` "Release profile"), so each build ends in one long optimisation step of the whole program.
 - `.github/workflows/release.yml` runs this script for every archive (maintainer, 2026-11-03; `docs/decisions.md` "Profile-guided release archives"). `gain.py` is run with `pgo_gain=true` on a dispatch, never on a tag.
 
 ## 2. Map

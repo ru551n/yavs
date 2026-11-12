@@ -20,7 +20,10 @@ mod env;
 mod exec;
 mod foreign;
 mod gather;
-pub use gather::{DirectGather, DirectScatter, direct_gather, direct_scatter};
+pub use gather::{
+    DirectGather, DirectPart, DirectScatter, compared_scatter, direct_gather, direct_part,
+    direct_scatter,
+};
 mod pmemo;
 mod pre;
 mod scan;
@@ -1111,13 +1114,27 @@ pub struct ImageCell {
     pub size: u32,
     /// Skips left before the host must look: it counts them and reviews the image.
     pub left: std::sync::atomic::AtomicU32,
+    /// Leaves of those skips compiled code drove after all (`compared_scatter`): the host takes
+    /// them off the leaves spared.
+    pub lost: std::sync::atomic::AtomicU64,
     /// No image: the address of the [`DirectGather`] or [`DirectScatter`] of the plan, for
     /// [`direct_gather`] or [`direct_scatter`] (`docs/decisions.md` "Record drives in compiled
     /// code"); 0 for none.
     pub direct: u64,
+    /// The [`DirectPart`] of a part scatter of the same table and descriptor, for
+    /// [`direct_part`]; 0 for none.
+    pub part: u64,
 }
 
 impl ImageCell {
+    /// Before a whole scatter writes table `tab` and descriptor `desc` into the cell: a part of
+    /// another table or descriptor is let go.
+    pub(crate) fn keep_part(&mut self, tab: u32, desc: u64) {
+        if self.tab != tab || self.desc != desc {
+            self.part = 0;
+        }
+    }
+
     pub(crate) fn empty() -> ImageCell {
         ImageCell {
             image: 0,
@@ -1126,7 +1143,9 @@ impl ImageCell {
             tab: 0,
             size: 0,
             left: 0.into(),
+            lost: 0.into(),
             direct: 0,
+            part: 0,
         }
     }
 }

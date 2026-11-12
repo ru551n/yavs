@@ -49,9 +49,13 @@ pub(crate) enum Cb {
     LayoutInto,
     /// `yavs_rt_free`: a deallocation from a native frame.
     Free,
+    /// `yavs_rt_scatter_cmp`: a whole record drive that missed compiled code's compare.
+    RecordCmp,
+    /// `yavs_rt_scatter_part`: a zero-delay drive of a part of a record signal.
+    RecordPart,
 }
 
-const N: usize = 30;
+const N: usize = 32;
 
 /// Whether this build counts (the generators emit the calls of `yavs_rt_rare` only then).
 pub const COUNTING: bool = cfg!(any(debug_assertions, feature = "op-census"));
@@ -87,6 +91,8 @@ const NAMES: [&str; N] = [
     "cat",
     "layout_into",
     "free",
+    "record_cmp",
+    "record_part",
 ];
 
 #[cfg(any(debug_assertions, feature = "op-census"))]

@@ -57,6 +57,8 @@ pub const FAST_DEREF: u32 = 4;
 pub const DRIVE_BIT: &str = "yavs_rt_drive_bit";
 pub const DRIVE_F: &str = "yavs_rt_drive_f";
 pub const SCATTER: &str = "yavs_rt_scatter";
+pub const SCATTER_CMP: &str = "yavs_rt_scatter_cmp";
+pub const SCATTER_PART: &str = "yavs_rt_scatter_part";
 pub const GATHER: &str = "yavs_rt_gather";
 pub const DRIVE_SRC: &str = "yavs_rt_drive_src";
 pub const GATE_CHECK: &str = "yavs_rt_gate_check";
@@ -1148,6 +1150,85 @@ pub unsafe extern "C" fn yavs_rt_scatter(
         let data = unsafe { std::slice::from_raw_parts(data, (lf & 0xffff_ffff) as usize) };
         let d = unsafe { &*(d as *const yavs_interp::DirectScatter) };
         if yavs_interp::direct_scatter(c, ds, driver, d, data, lf >> 32 & 1 != 0) {
+            return GO;
+        }
+    }
+    let env = unsafe { env_or(std::ptr::null_mut(), mem) };
+    unsafe { yavs_rt_signal(env, std::ptr::null_mut(), mem, pc, 0) }
+}
+
+/// A whole zero-delay `SigScatter` at `pc` through driver slot `driver` that compiled code found
+/// to differ from the image of `cell` (a `yavs_interp::ImageCell` with uses left, its plan gate
+/// open): compared run by run and driven by the cell's `yavs_interp::DirectScatter`
+/// (`yavs_interp::compared_scatter`), one use of the cell taken, else the instruction through
+/// `yavs_rt_signal`; `lf` as for `yavs_rt_scatter`.
+pub unsafe extern "C" fn yavs_rt_scatter_cmp(
+    mem: *mut Mem,
+    pc: u32,
+    driver: u32,
+    data: *const u8,
+    lf: u64,
+    cell: *const yavs_interp::ImageCell,
+) -> u32 {
+    use std::sync::atomic::Ordering::Relaxed;
+    cb(Cb::RecordCmp);
+    // SAFETY: compiled code checked the `lf` bytes at `data` and found `cell` for this scatter;
+    // the image and the box it names live while the cell names them (the host clears the cell
+    // before either goes).
+    unsafe {
+        let cell = &*cell;
+        if let Some((c, ds, _)) = direct(&(*mem).fr)
+            && cell.direct != 0
+            && cell.image != 0
+        {
+            let n = (lf & 0xffff_ffff) as usize;
+            let data = std::slice::from_raw_parts(data, n);
+            let im = std::slice::from_raw_parts(cell.image as *const u8, n);
+            let d = &*(cell.direct as *const yavs_interp::DirectScatter);
+            match yavs_interp::compared_scatter(c, ds, driver, d, data, im, lf >> 32 & 1 != 0) {
+                Ok(Some(spared)) => {
+                    // (Only this process's thread writes the cell: no locked operation.)
+                    cell.left.store(cell.left.load(Relaxed) - 1, Relaxed);
+                    let lost = cell.lost.load(Relaxed) + u64::from(d.leaves() - spared);
+                    cell.lost.store(lost, Relaxed);
+                    return GO;
+                }
+                Ok(None) => {}
+                Err(why) => {
+                    eprintln!(
+                        "internal error: compiled code at pc {pc} and the record image: {why}"
+                    );
+                    std::process::abort();
+                }
+            }
+        }
+        let env = env_or(std::ptr::null_mut(), mem);
+        yavs_rt_signal(env, std::ptr::null_mut(), mem, pc, 0)
+    }
+}
+
+/// A zero-delay `SigScatter` at `pc` of a part of a record signal, elements `first ..` of
+/// `outer`, through driver slot `driver`: the `lf & 0xffff_ffff` bytes at `data` driven by `d`,
+/// the cell's `yavs_interp::DirectPart`, on the kernel itself, else the instruction through
+/// `yavs_rt_signal`; `lf` as for `yavs_rt_scatter`.
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn yavs_rt_scatter_part(
+    mem: *mut Mem,
+    pc: u32,
+    driver: u32,
+    data: *const u8,
+    lf: u64,
+    d: u64,
+    first: u64,
+    outer: u64,
+) -> u32 {
+    cb(Cb::RecordPart);
+    // SAFETY: as `yavs_rt_scatter`: the bytes were checked, `d` is a box the machine keeps.
+    if let Some((c, ds, _)) = unsafe { direct(&(*mem).fr) } {
+        let data = unsafe { std::slice::from_raw_parts(data, (lf & 0xffff_ffff) as usize) };
+        let d = unsafe { &*(d as *const yavs_interp::DirectPart) };
+        let inertial = lf >> 32 & 1 != 0;
+        if yavs_interp::direct_part(c, ds, driver, d, data, first, outer, inertial) {
             return GO;
         }
     }

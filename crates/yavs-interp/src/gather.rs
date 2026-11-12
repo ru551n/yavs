@@ -46,6 +46,86 @@ pub(crate) struct MPlan {
     /// What compiled code reads and drives the plan by once it has no image (`ImageCell::direct`).
     gather: Option<Box<DirectGather>>,
     scatter: Option<Box<DirectScatter>>,
+    part: Option<Box<DirectPart>>,
+}
+
+/// What a zero-delay scatter of a part of a record signal needs, fixed once the plan is bound:
+/// compiled code drives it through [`direct_part`] with no host and no plan lookup.
+pub struct DirectPart {
+    plan: Arc<Plan>,
+    sigs: Box<[InstSig]>,
+    /// `Bound::refs`: the facts of the byte drivers of its first driver slot `base`.
+    base: u32,
+    refs: Box<[Option<yavs_kernel::DirectRef>]>,
+}
+
+/// A zero-delay scatter of `data` through driver slots from `driver` (`drivers`, the machine's)
+/// by `d` into elements `first ..` of `outer`, as `Machine::scatter_leaves` drives a part.
+/// `false` on a mismatch or an error, as [`direct_scatter`].
+#[allow(clippy::too_many_arguments)]
+pub fn direct_part(
+    c: &mut Ctx<'_>,
+    drivers: &[crate::ProcDriver],
+    driver: u32,
+    d: &DirectPart,
+    data: &[u8],
+    first: u64,
+    outer: u64,
+    inertial: bool,
+) -> bool {
+    let Some(ds) = drivers.get(driver as usize..driver as usize + d.plan.leaves.len()) else {
+        return false;
+    };
+    if d.plan.size != data.len() as u64 || first.checked_add(d.plan.count).is_none_or(|e| e > outer)
+    {
+        return false;
+    }
+    let mode = if inertial {
+        yavs_kernel::DelayMode::Inertial { reject: None }
+    } else {
+        yavs_kernel::DelayMode::Transport
+    };
+    let when = (yavs_kernel::Time::ZERO, true, mode);
+    let refs: &[_] = if driver == d.base { &d.refs } else { &[] };
+    match scatter_each(c, &d.plan, &d.sigs, ds, refs, data, (first, outer), when) {
+        Ok(()) => {
+            c.note_part();
+            true
+        }
+        Err(e) => failed(e),
+    }
+}
+
+/// Every leaf instance of `data` driven, element `first` of `outer` on (a part or not).
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn scatter_each(
+    c: &mut Ctx<'_>,
+    plan: &Plan,
+    sigs: &[InstSig],
+    ds: &[crate::ProcDriver],
+    refs: &[Option<yavs_kernel::DirectRef>],
+    data: &[u8],
+    (first, outer): (u64, u64),
+    when: When,
+) -> R<()> {
+    let mut run = None;
+    for (li, ((l, s), d)) in plan.leaves.iter().zip(sigs).zip(ds).enumerate() {
+        let dref = refs.get(li).and_then(Option::as_ref);
+        let n = l.insts as usize;
+        for i in 0..n {
+            // A logic leaf's instances are mirrored in the kernel (`Leaf::kstart`): taken
+            // last first, they follow each other and join one run of the driver.
+            let j = if l.logic() { n - 1 - i } else { i };
+            let at = l.off(j);
+            let v = data
+                .get(at..at + l.vsize as usize)
+                .ok_or_else(|| cold(|| ice("a leaf outside its value")))?;
+            let r = Range::new(s.off + l.kstart(j, first, outer) as u32, l.len);
+            write_leaf(c, d.id, l, r, v, &mut run, when, dref)?;
+        }
+    }
+    flush_run(c, &mut run, when)
 }
 
 /// What a whole gather of a plan with no image needs, fixed once the plan is bound: compiled code
@@ -125,6 +205,84 @@ pub struct DirectScatter {
     items: Box<[Item]>,
     runs: Box<[Grp]>,
     refs: Box<[Option<yavs_kernel::DirectRef>]>,
+    /// The compare of [`compared_scatter`], when made for a plan with an image.
+    cmp: Option<RunCmp>,
+}
+
+/// What [`compared_scatter`] compares a value with its image by (`CmpReady`'s fixed part).
+struct RunCmp {
+    ranges: Box<[(u32, u32)]>,
+    at: Box<[u32]>,
+    drivers: Box<[yavs_kernel::DriverId]>,
+    sigs: Box<[InstSig]>,
+    check: bool,
+}
+
+impl DirectScatter {
+    /// The leaves of a whole value of the plan.
+    pub fn leaves(&self) -> u32 {
+        self.items.len() as u32
+    }
+}
+
+/// A whole zero-delay scatter of `data` by `d` that compiled code found to differ from image
+/// `im` under an open plan gate (so `Ctx::drive_clean` holds), as `scatter_compared` drives it:
+/// the runs that hold their value skipped, the others driven. The leaves spared; `None` on a
+/// mismatch or an error (the caller runs the instruction in the interpreter, as for
+/// [`direct_scatter`]); `Err` when the check (`YAVS_IMAGE_CHECK`) fails.
+pub fn compared_scatter(
+    c: &mut Ctx<'_>,
+    drivers: &[crate::ProcDriver],
+    driver: u32,
+    d: &DirectScatter,
+    data: &[u8],
+    im: &[u8],
+    inertial: bool,
+) -> Result<Option<u32>, String> {
+    let Some(rc) = &d.cmp else {
+        return Ok(None);
+    };
+    let Some(ds) = drivers.get(driver as usize..driver as usize + d.plan.leaves.len()) else {
+        return Ok(None);
+    };
+    if d.plan.size != data.len() as u64 || im.len() != data.len() {
+        return Ok(None);
+    }
+    if rc.check {
+        if !c.drive_clean(&rc.drivers) {
+            return Err("a compared record scatter with drivers that are not clean".into());
+        }
+        let p = (&*d.plan, &*d.items, &*d.runs, &*rc.sigs);
+        cmp_check(p, rc, c, ds, data, im).map_err(|e| format!("{e:?}"))?;
+    }
+    let mode = if inertial {
+        yavs_kernel::DelayMode::Inertial { reject: None }
+    } else {
+        yavs_kernel::DelayMode::Transport
+    };
+    let when = (yavs_kernel::Time::ZERO, true, mode);
+    let (mut spared, mut run) = (0, None);
+    for (ri, g) in d.runs.iter().enumerate() {
+        if rc.run_same(ri, data, im) {
+            c.gate_skipped();
+            spared += g.n;
+        } else if let Err(e) =
+            scatter_run(c, &d.plan, &d.items, g, ds, data, &d.refs, &mut run, when)
+        {
+            failed(e);
+            return Ok(None);
+        }
+    }
+    match flush_run(c, &mut run, when) {
+        Ok(()) => {
+            c.note_compared();
+            Ok(Some(spared))
+        }
+        Err(e) => {
+            failed(e);
+            Ok(None)
+        }
+    }
 }
 
 /// A whole zero-delay scatter of `data` through driver slots from `driver` (`drivers`, the
@@ -247,16 +405,32 @@ enum Inline {
     Bit(u64, u32),
 }
 
-impl CmpReady {
+/// Run `r` of a value, at `ranges[at[r]..at[r + 1]]`, compared with an image.
+trait Runs {
+    fn ranges(&self) -> (&[(u32, u32)], &[u32]);
+
     /// Whether run `r` of `data` holds what image `im` holds.
     #[inline(always)]
     fn run_same(&self, r: usize, data: &[u8], im: &[u8]) -> bool {
-        let rs = &self.ranges[self.at[r] as usize..self.at[r + 1] as usize];
+        let (ranges, at) = self.ranges();
+        let rs = &ranges[at[r] as usize..at[r + 1] as usize];
         !rs.is_empty()
             && rs.iter().all(|&(o, n)| {
                 let (o, n) = (o as usize, n as usize);
                 data[o..o + n] == im[o..o + n]
             })
+    }
+}
+
+impl Runs for CmpReady {
+    fn ranges(&self) -> (&[(u32, u32)], &[u32]) {
+        (&self.ranges, &self.at)
+    }
+}
+
+impl Runs for RunCmp {
+    fn ranges(&self) -> (&[(u32, u32)], &[u32]) {
+        (&self.ranges, &self.at)
     }
 }
 
@@ -491,20 +665,20 @@ fn cmp_review(cmp: &mut Cmp, c: &mut Ctx<'_>) {
 #[cold]
 #[inline(never)]
 fn cmp_check(
-    b: &Bound,
-    r: &CmpReady,
+    (plan, items, runs, sigs): (&Plan, &[Item], &[Grp], &[InstSig]),
+    r: &impl Runs,
     c: &Ctx<'_>,
     ds: &[crate::ProcDriver],
     data: &[u8],
     im: &[u8],
 ) -> R<()> {
-    for (ri, g) in b.runs.iter().enumerate() {
+    for (ri, g) in runs.iter().enumerate() {
         if !r.run_same(ri, data, im) {
             continue;
         }
-        for t in &b.items[g.first as usize..][..g.n as usize] {
+        for t in &items[g.first as usize..][..g.n as usize] {
             let v = &data[t.voff as usize..(t.voff + t.vsize) as usize];
-            let l = &b.plan.leaves[t.leaf as usize];
+            let l = &plan.leaves[t.leaf as usize];
             let d = ds[t.leaf as usize].id;
             let res = match t.kind {
                 LeafKind::LogicVec if t.len > 64 => (v.as_chunks::<32>().0.iter().enumerate())
@@ -528,7 +702,7 @@ fn cmp_check(
             res.map_err(|e| {
                 ice(format!(
                     "a record drive skipped by its image: signal {:?} element {} length {}: {e}",
-                    b.sigs[t.leaf as usize].signal, t.k, t.len
+                    sigs[t.leaf as usize].signal, t.k, t.len
                 ))
             })?;
         }
@@ -908,7 +1082,7 @@ fn scatter_compared(
     when: When,
 ) -> R<u32> {
     if r.check {
-        cmp_check(b, r, c, ds, data, im)?;
+        cmp_check((&b.plan, &b.items, &b.runs, &b.sigs), r, c, ds, data, im)?;
     }
     if *data == *im {
         c.gate_skipped();
@@ -955,7 +1129,7 @@ impl Machine {
         };
         let n = u64::from(given.saturating_sub(*cell.left.get_mut()));
         *given = *cell.left.get_mut();
-        let leaves = n * b.items.len() as u64;
+        let leaves = (n * b.items.len() as u64).saturating_sub(std::mem::take(cell.lost.get_mut()));
         r.seen += n as u32;
         r.spared += leaves;
         c.note_spared(leaves as u32);
@@ -999,16 +1173,38 @@ impl Machine {
         let Inline::Bit(bit, ref mut given) = r.inline else {
             return;
         };
-        let left = IMAGE_REVIEW.saturating_sub(r.seen);
+        // The scatter that reaches the review's count is the host's, which reviews in it as it
+        // does with no cell: compiled code's misses do not come by the host.
+        let left = IMAGE_REVIEW.saturating_sub(r.seen + 1);
         *given = left;
         let (id, size) = (r.id, b.plan.size as u32);
         let image = c.image(id).map_or(0, |i| i.as_ptr() as u64);
+        // A miss of compiled code's compare goes to `compared_scatter` by it; the plan never
+        // compares again once the image is gone, so the box then drives as `direct_scatter`.
+        let d = self.plans[at].scatter.get_or_insert_with(|| {
+            Box::new(DirectScatter {
+                plan: b.plan.clone(),
+                items: b.items.clone(),
+                runs: b.runs.clone(),
+                refs: b.refs.get().map_or(Box::default(), |(_, r)| r.clone()),
+                cmp: Some(RunCmp {
+                    ranges: r.ranges.clone(),
+                    at: r.at.clone(),
+                    drivers: r.drivers.clone(),
+                    sigs: b.sigs.clone(),
+                    check: r.check,
+                }),
+            })
+        });
+        let direct = &raw const **d as u64;
         let Some(cell) = self.cell(k, c) else {
             return;
         };
+        cell.keep_part(tab.0, desc);
         *cell.left.get_mut() = left;
+        *cell.lost.get_mut() = 0;
         cell.mask = bit;
-        cell.direct = 0;
+        cell.direct = direct;
         cell.tab = tab.0;
         cell.desc = desc;
         cell.size = size;
@@ -1048,12 +1244,14 @@ impl Machine {
                 items: b.items.clone(),
                 runs: b.runs.clone(),
                 refs,
+                cmp: None,
             })
         });
         let direct = &raw const **d as u64;
         let Some(cell) = self.cell(k, c) else {
             return;
         };
+        cell.keep_part(tab.0, desc);
         *cell.left.get_mut() = 0;
         cell.image = 0;
         cell.mask = 0;
@@ -1165,28 +1363,75 @@ impl Machine {
         cell.image = image;
     }
 
+    /// The cell of a part scatter through driver slot `driver` of plan `b` (at `at`): `part` names
+    /// its [`DirectPart`]. A cell another table or descriptor uses stays as it is.
+    #[cold]
+    #[inline(never)]
+    fn scat_part(
+        &mut self,
+        b: &Bound,
+        at: usize,
+        tab: ConstId,
+        desc: u64,
+        driver: u32,
+        c: &mut Ctx<'_>,
+    ) {
+        let k = crate::GATHER_CELLS + driver as usize;
+        let keep = self.plans[at].ds == 0 || self.plans[at].at == desc;
+        let Some((base, refs)) = b.refs.get() else {
+            return;
+        };
+        if !keep
+            || self.icells.get(k).is_some_and(|x| {
+                (x.image != 0 || x.direct != 0 || x.part != 0) && (x.tab != tab.0 || x.desc != desc)
+            })
+        {
+            return;
+        }
+        let d = self.plans[at].part.get_or_insert_with(|| {
+            Box::new(DirectPart {
+                plan: b.plan.clone(),
+                sigs: b.sigs.clone(),
+                base: *base,
+                refs: refs.clone(),
+            })
+        });
+        let part = &raw const **d as u64;
+        let size = b.plan.size as u32;
+        let Some(cell) = self.cell(k, c) else {
+            return;
+        };
+        if cell.image == 0 && cell.direct == 0 {
+            cell.tab = tab.0;
+            cell.desc = desc;
+            cell.size = size;
+        }
+        cell.part = part;
+    }
+
     /// `Process::images_tail`.
     pub(crate) fn images_tail(&self) -> (u64, u64) {
         let (mut copied, mut spared) = (0, 0);
         let left = |k: usize, tab: u32| {
             let c = self.icells.get(k).filter(|c| c.tab == tab)?;
-            Some(c.left.load(Relaxed))
+            Some((c.left.load(Relaxed), c.lost.load(Relaxed)))
         };
         for m in &self.plans {
             let Some(b) = &m.bound else {
                 continue;
             };
             if let Img::Ready { given, .. } = b.img
-                && let Some(l) = left(m.tab as usize % crate::GATHER_CELLS, m.tab)
+                && let Some((l, _)) = left(m.tab as usize % crate::GATHER_CELLS, m.tab)
             {
                 copied += u64::from(given.saturating_sub(l));
             }
             if let Cmp::Ready(r) = &b.cmp
                 && let Inline::Bit(_, given) = r.inline
                 && let Some((base, _)) = b.refs.get()
-                && let Some(l) = left(crate::GATHER_CELLS + *base as usize, m.tab)
+                && let Some((l, lost)) = left(crate::GATHER_CELLS + *base as usize, m.tab)
             {
-                spared += u64::from(given.saturating_sub(l)) * b.items.len() as u64;
+                spared += (u64::from(given.saturating_sub(l)) * b.items.len() as u64)
+                    .saturating_sub(lost);
             }
         }
         (copied, spared)
@@ -1249,7 +1494,7 @@ impl Machine {
                 "a compiled record skip through a cell that names no image",
             ));
         }
-        cmp_check(b, r, c, ds, data, im)
+        cmp_check((&b.plan, &b.items, &b.runs, &b.sigs), &**r, c, ds, data, im)
     }
 
     /// `YAVS_IMAGE_CHECK`, debug builds: compiled code copied the image into the value at `dst`:
@@ -1358,6 +1603,7 @@ impl Machine {
                     bound: None,
                     gather: None,
                     scatter: None,
+                    part: None,
                 });
                 self.plans.len() - 1
             }
@@ -1627,6 +1873,17 @@ impl Machine {
                 {
                     self.scat_direct(&b, at, tab, self.r(desc), driver, c);
                 }
+                // A part that compiled code drives: through `direct_part` from now on.
+                if tier
+                    && has == SCATTER_PART
+                    && let Some(c) = ctx.as_deref_mut()
+                    && !c.gate_unset()
+                    && (self.icells)
+                        .get(crate::GATHER_CELLS + driver as usize)
+                        .is_none_or(|x| x.part == 0)
+                {
+                    self.scat_part(&b, at, tab, self.r(desc), driver, c);
+                }
                 self.put_plan(at, b);
                 Ok(())
             }
@@ -1702,21 +1959,6 @@ impl Machine {
             }
             return flush_run(c, &mut run, when);
         }
-        for (li, ((l, s), d)) in plan.leaves.iter().zip(&*b.sigs).zip(ds).enumerate() {
-            let dref = refs.get(li).and_then(Option::as_ref);
-            let n = l.insts as usize;
-            for i in 0..n {
-                // A logic leaf's instances are mirrored in the kernel (`Leaf::kstart`): taken
-                // last first, they follow each other and join one run of the driver.
-                let j = if l.logic() { n - 1 - i } else { i };
-                let at = l.off(j);
-                let v = data
-                    .get(at..at + l.vsize as usize)
-                    .ok_or_else(|| cold(|| ice("a leaf outside its value")))?;
-                let r = Range::new(s.off + l.kstart(j, first, outer) as u32, l.len);
-                write_leaf(c, d.id, l, r, v, &mut run, when, dref)?;
-            }
-        }
-        flush_run(c, &mut run, when)
+        scatter_each(c, plan, &b.sigs, ds, refs, data, (first, outer), when)
     }
 }

@@ -264,6 +264,12 @@ pub struct Stats {
     pub gathers_read: u64,
     /// Leaves of whole record scatters that compared equal with their image (`gather.rs`).
     pub scatter_spared: u64,
+    /// Whole record scatters of compiled code that missed its compare and were compared run by
+    /// run with no host (`gather.rs` `compared_scatter`).
+    pub scatters_compared: u64,
+    /// Scatters of a part of a record signal compiled code drove with no host (`gather.rs`
+    /// `direct_part`).
+    pub part_scatters: u64,
     /// Leaves written into record images, the images and the bytes they hold.
     pub image_writes: u64,
     pub images: u64,
@@ -2045,6 +2051,12 @@ impl SimControl {
                 .map(|s| lock(s).st.scatter_spared)
                 .sum::<u64>()
                 + tail(|t| t.1),
+            scatters_compared: self
+                .slots
+                .iter()
+                .map(|s| lock(s).st.scatters_compared)
+                .sum(),
+            part_scatters: self.slots.iter().map(|s| lock(s).st.part_scatters).sum(),
             images: self.images.memory().0,
             image_bytes: self.images.memory().1,
             #[cfg(any(debug_assertions, feature = "op-census"))]

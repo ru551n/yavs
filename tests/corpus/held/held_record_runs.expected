@@ -1,0 +1,915 @@
+exit	0
+diag	note	0	0	:held_record_runs:i1:watch	r1 'U' 00000000 '0'0000 0 red false
+diag	note	0	0	:held_record_runs:i1:watch_rr	rr1 0,0 00 000000000000000000 '0'
+diag	note	0	0	:held_record_runs:i1:watch_q	q1 0000 0
+diag	note	0	0	:held_record_runs:i2:watch	r4 'U' 00000000 '0'0000 0 red false
+diag	note	0	0	:held_record_runs:i2:watch_rr	rr4 0,0 00 000000000000000000 '0'
+diag	note	0	0	:held_record_runs:i2:watch_q	q4 0000 0
+diag	note	5000000	1	:held_record_runs:i1:watch_rr	rr1 0,0 00 000000000000000000 'X'
+diag	note	5000000	1	:held_record_runs:i1:watch_q	q1 UXXX 0
+diag	note	5000000	1	:held_record_runs:i2:watch_rr	rr4 0,0 00 000000000000000000 'Z'
+diag	note	5000000	1	:held_record_runs:i2:watch_q	q4 UZZZ 0
+diag	note	15000000	1	:held_record_runs:i1:watch	r1 'X' 00000000 '0'0000 1 red false
+diag	note	15000000	1	:held_record_runs:i1:watch_rr	rr1 0,0 00 000000000000000002 'X'
+diag	note	15000000	1	:held_record_runs:i1:watch_q	q1 XXXX 1
+diag	note	15000000	1	:held_record_runs:i2:watch	r4 'U' 00000000 '0'0000 4 red false
+diag	note	15000000	1	:held_record_runs:i2:watch_rr	rr4 0,0 00 000000000000000002 'Z'
+diag	note	15000000	1	:held_record_runs:i2:watch_q	q4 ZXZZ 1
+diag	note	25000000	1	:held_record_runs:i1:watch	r1 'X' 00000000 '0'0000 2 red false
+diag	note	25000000	1	:held_record_runs:i1:watch_q	q1 XX0X 2
+diag	note	25000000	1	:held_record_runs:i2:watch	r4 'U' 00000000 '0'0000 3 red false
+diag	note	25000000	1	:held_record_runs:i2:watch_q	q4 ZZ0Z 2
+diag	note	35000000	1	:held_record_runs:i1:watch	r1 'X' 00001000 '0'0000 3 red false
+diag	note	35000000	1	:held_record_runs:i1:watch_q	q1 0001 3
+diag	note	35000000	1	:held_record_runs:i2:watch	r4 'U' 00001000 '0'0000 2 red false
+diag	note	35000000	1	:held_record_runs:i2:watch_q	q4 WWW1 3
+diag	note	45000000	1	:held_record_runs:i1:watch	r1 'X' 00001000 '0'0000 4 red false
+diag	note	45000000	1	:held_record_runs:i1:watch_q	q1 Z000 0
+diag	note	45000000	1	:held_record_runs:i2:watch	r4 'Z' 00001000 '0'0000 1 red false
+diag	note	45000000	1	:held_record_runs:i2:watch_q	q4 ZWWW 0
+diag	note	55000000	1	:held_record_runs:i1:watch	r1 'X' 00001000 '1'0U00 0 red false
+diag	note	55000000	1	:held_record_runs:i1:watch_rr	rr1 0,0 00 000000000000000002 '0'
+diag	note	55000000	1	:held_record_runs:i1:watch_q	q1 0W00 1
+diag	note	55000000	1	:held_record_runs:i2:watch	r4 'Z' 00001000 '1'0U00 0 red false
+diag	note	55000000	1	:held_record_runs:i2:watch_rr	rr4 0,0 00 000000000000000002 'W'
+diag	note	55000000	1	:held_record_runs:i2:watch_q	q4 WWWW 1
+diag	note	65000000	1	:held_record_runs:i1:watch	r1 'X' 00001000 '1'0U00 1 red false
+diag	note	65000000	1	:held_record_runs:i1:watch_q	q1 11L1 2
+diag	note	65000000	1	:held_record_runs:i2:watch	r4 'Z' 00001000 '1'0U00 4 red false
+diag	note	65000000	1	:held_record_runs:i2:watch_q	q4 LLLL 2
+diag	note	75000000	1	:held_record_runs:i1:watch	r1 'X' 00001000 '1'0U00 2 red false
+diag	note	75000000	1	:held_record_runs:i1:watch_q	q1 111H 3
+diag	note	75000000	1	:held_record_runs:i2:watch	r4 'Z' 00001000 '1'0U00 3 red false
+diag	note	75000000	1	:held_record_runs:i2:watch_q	q4 LLLH 3
+diag	note	85000000	1	:held_record_runs:i1:watch	r1 '0' 00001000 '1'0U00 3 red true
+diag	note	85000000	1	:held_record_runs:i1:watch_q	q1 -111 0
+diag	note	85000000	1	:held_record_runs:i2:watch	r4 'Z' 00001000 '1'0U00 2 red true
+diag	note	85000000	1	:held_record_runs:i2:watch_q	q4 -LLL 0
+diag	note	95000000	1	:held_record_runs:i1:watch	r1 '0' 00001000 '1'0U00 4 red true
+diag	note	95000000	1	:held_record_runs:i1:watch_rr	rr1 0,0 00 000000000000000002 '0'
+diag	note	95000000	1	:held_record_runs:i1:watch_q	q1 ZUZZ 1
+diag	note	95000000	1	:held_record_runs:i2:watch	r4 'Z' 00001000 '1'0U00 1 red true
+diag	note	95000000	1	:held_record_runs:i2:watch_rr	rr4 0,0 00 000000000000000002 'W'
+diag	note	95000000	1	:held_record_runs:i2:watch_q	q4 HUHH 1
+diag	note	105000000	1	:held_record_runs:i1:watch	r1 '0' 00001000 '1'0U00 0 red true
+diag	note	105000000	1	:held_record_runs:i1:watch_rr	rr1 0,0 00 000000000000000002 '1'
+diag	note	105000000	1	:held_record_runs:i1:watch_q	q1 ZZXZ 2
+diag	note	105000000	1	:held_record_runs:i2:watch	r4 'Z' 00001000 '1'0U00 0 red true
+diag	note	105000000	1	:held_record_runs:i2:watch_rr	rr4 0,0 00 000000000000000002 'L'
+diag	note	105000000	1	:held_record_runs:i2:watch_q	q4 HHXH 2
+diag	note	115000000	1	:held_record_runs:i1:watch	r1 '0' 00001000 '1'0U00 1 red true
+diag	note	115000000	1	:held_record_runs:i1:watch_q	q1 ZZZ0 3
+diag	note	115000000	1	:held_record_runs:i2:watch	r4 'W' 00001000 '1'0U00 4 red true
+diag	note	115000000	1	:held_record_runs:i2:watch_q	q4 HHH0 3
+diag	note	125000000	1	:held_record_runs:i1:watch	r1 '0' 00001000 '1'0U00 2 red true
+diag	note	125000000	1	:held_record_runs:i1:watch_q	q1 1WWW 0
+diag	note	125000000	1	:held_record_runs:i2:watch	r4 'W' 00001000 '1'0U00 3 red true
+diag	note	125000000	1	:held_record_runs:i2:watch_q	q4 1--- 0
+diag	note	135000000	1	:held_record_runs:i1:watch	r1 '0' 00001000 '1'0U00 3 red true
+diag	note	135000000	1	:held_record_runs:i1:watch_q	q1 WZWW 1
+diag	note	135000000	1	:held_record_runs:i2:watch	r4 'W' 00001000 '1'0U00 2 red true
+diag	note	135000000	1	:held_record_runs:i2:watch_q	q4 -Z-- 1
+diag	note	145000000	1	:held_record_runs:i1:watch	r1 '0' 0W001000 '1'0U00 4 red true
+diag	note	145000000	1	:held_record_runs:i1:watch_q	q1 WWWW 2
+diag	note	145000000	1	:held_record_runs:i2:watch	r4 'W' 0W001000 '1'0U00 1 red true
+diag	note	145000000	1	:held_record_runs:i2:watch_q	q4 --W- 2
+diag	note	155000000	1	:held_record_runs:i1:watch	r1 '1' 0W001000 '1'0U00 0 red true
+diag	note	155000000	1	:held_record_runs:i1:watch_rr	rr1 0,0 00 000000000000000002 'Z'
+diag	note	155000000	1	:held_record_runs:i1:watch_q	q1 LLLL 3
+diag	note	155000000	1	:held_record_runs:i2:watch	r4 'W' 0W001000 '1'0U00 0 red true
+diag	note	155000000	1	:held_record_runs:i2:watch_rr	rr4 0,0 00 000000000000000002 'H'
+diag	note	155000000	1	:held_record_runs:i2:watch_q	q4 UUUL 3
+diag	note	165000000	1	:held_record_runs:i1:watch	r1 '1' 0W001000 '1'0U00 1 red true
+diag	note	165000000	1	:held_record_runs:i1:watch_q	q1 HLLL 0
+diag	note	165000000	1	:held_record_runs:i2:watch	r4 'W' 0W001000 '1'0U00 4 red true
+diag	note	165000000	1	:held_record_runs:i2:watch_q	q4 HUUU 0
+diag	note	175000000	1	:held_record_runs:i1:watch	r1 '1' 0W001000 '1'0U00 2 red true
+diag	note	175000000	1	:held_record_runs:i1:watch_q	q1 L-LL 1
+diag	note	175000000	1	:held_record_runs:i2:watch	r4 'W' 0W001000 '1'0U00 3 red true
+diag	note	175000000	1	:held_record_runs:i2:watch_q	q4 U-UU 1
+diag	note	185000000	1	:held_record_runs:i1:watch	r1 '1' 0W001000 '0'0UZ0 3 red true
+diag	note	185000000	1	:held_record_runs:i1:watch_q	q1 HHUH 2
+diag	note	185000000	1	:held_record_runs:i2:watch	r4 'L' 0W001000 '0'0UZ0 2 red true
+diag	note	185000000	1	:held_record_runs:i2:watch_q	q4 XXUX 2
+diag	note	195000000	1	:held_record_runs:i1:watch	r1 '1' 0W001000 '0'0UZ0 4 green true
+diag	note	195000000	1	:held_record_runs:i1:watch_q	q1 HHHX 3
+diag	note	195000000	1	:held_record_runs:i2:watch	r4 'L' 0W001000 '0'0UZ0 1 green true
+diag	note	195000000	1	:held_record_runs:i2:watch_q	q4 XXXX 3
+diag	note	205000000	1	:held_record_runs:i1:watch	r1 '1' 0W001000 '0'0UZ0 0 green true
+diag	note	205000000	1	:held_record_runs:i1:watch_rr	rr1 0,0 00 000000000000000002 'W'
+diag	note	205000000	1	:held_record_runs:i1:watch_q	q1 0HHH 0
+diag	note	205000000	1	:held_record_runs:i2:watch	r4 'L' 0W001000 '0'0UZ0 0 green true
+diag	note	205000000	1	:held_record_runs:i2:watch_rr	rr4 0,0 00 000000000000000002 '-'
+diag	note	205000000	1	:held_record_runs:i2:watch_q	q4 0XXX 0
+diag	note	215000000	1	:held_record_runs:i1:watch	r1 '1' 0W001000 '0'0UZ0 1 green true
+diag	note	215000000	1	:held_record_runs:i1:watch_q	q1 -1-- 1
+diag	note	215000000	1	:held_record_runs:i2:watch	r4 'L' 0W001000 '0'0UZ0 4 green true
+diag	note	215000000	1	:held_record_runs:i2:watch_q	q4 0100 1
+diag	note	225000000	1	:held_record_runs:i1:watch	r1 'Z' 0W001000 '0'0UZ0 2 green true
+diag	note	225000000	1	:held_record_runs:i1:watch_q	q1 --Z- 2
+diag	note	225000000	1	:held_record_runs:i2:watch	r4 'L' 0W001000 '0'0UZ0 3 green true
+diag	note	225000000	1	:held_record_runs:i2:watch_q	q4 00Z0 2
+diag	note	235000000	1	:held_record_runs:i1:watch	r1 'Z' 0W001000 '0'0UZ0 3 green true
+diag	note	235000000	1	:held_record_runs:i1:watch_q	q1 ---W 3
+diag	note	235000000	1	:held_record_runs:i2:watch	r4 'L' 0W001000 '0'0UZ0 2 green true
+diag	note	235000000	1	:held_record_runs:i2:watch_q	q4 000W 3
+diag	note	245000000	1	:held_record_runs:i1:watch	r1 'Z' 0W001000 '0'0UZ0 4 green true
+diag	note	245000000	1	:held_record_runs:i1:watch_rr	rr1 0,0 00 000000000001000002 'W'
+diag	note	245000000	1	:held_record_runs:i1:watch_q	q1 LUUU 0
+diag	note	245000000	1	:held_record_runs:i2:watch	r4 'L' 0W001000 '0'0UZ0 1 green true
+diag	note	245000000	1	:held_record_runs:i2:watch_rr	rr4 0,0 00 000000000001000002 '-'
+diag	note	245000000	1	:held_record_runs:i2:watch_q	q4 L111 0
+diag	note	255000000	1	:held_record_runs:i1:watch	r1 'Z' 0W0010H0 '0'0UZ0 0 green true
+diag	note	255000000	1	:held_record_runs:i1:watch_rr	rr1 0,0 00 000000000001000002 'L'
+diag	note	255000000	1	:held_record_runs:i1:watch_q	q1 UHUU 1
+diag	note	255000000	1	:held_record_runs:i2:watch	r4 'H' 0W0010H0 '0'0UZ0 0 green true
+diag	note	255000000	1	:held_record_runs:i2:watch_rr	rr4 0,0 00 000000000001000002 'U'
+diag	note	255000000	1	:held_record_runs:i2:watch_q	q4 1H11 1
+diag	note	265000000	1	:held_record_runs:i1:watch	r1 'Z' 0W0010H0 '0'0UZ0 1 green true
+diag	note	265000000	1	:held_record_runs:i1:watch_q	q1 UU-U 2
+diag	note	265000000	1	:held_record_runs:i2:watch	r4 'H' 0W0010H0 '0'0UZ0 4 green true
+diag	note	265000000	1	:held_record_runs:i2:watch_q	q4 11-1 2
+diag	note	275000000	1	:held_record_runs:i1:watch	r1 'Z' 0W0010H0 '0'0UZ0 2 green true
+diag	note	275000000	1	:held_record_runs:i1:watch_q	q1 XXXU 3
+diag	note	275000000	1	:held_record_runs:i2:watch	r4 'H' 0W0010H0 '0'0UZ0 3 green true
+diag	note	275000000	1	:held_record_runs:i2:watch_q	q4 ZZZU 3
+diag	note	285000000	1	:held_record_runs:i1:watch	r1 'Z' 0W0010H0 '0'0UZ0 3 green true
+diag	note	285000000	1	:held_record_runs:i1:watch_rr	rr1 0,28 00 000000000001000002 'L'
+diag	note	285000000	1	:held_record_runs:i1:watch_q	q1 XXXX 0
+diag	note	285000000	1	:held_record_runs:i2:watch	r4 'H' 0W0010H0 '0'0UZ0 2 green true
+diag	note	285000000	1	:held_record_runs:i2:watch_rr	rr4 0,28 00 000000000001000002 'U'
+diag	note	285000000	1	:held_record_runs:i2:watch_q	q4 XZZZ 0
+diag	note	295000000	1	:held_record_runs:i1:watch	r1 'W' 0W0010H0 '0'0UZ0 4 green true
+diag	note	295000000	1	:held_record_runs:i1:watch_q	q1 X0XX 1
+diag	note	295000000	1	:held_record_runs:i2:watch	r4 'H' 0W0010H0 '0'0UZ0 1 green true
+diag	note	295000000	1	:held_record_runs:i2:watch_q	q4 Z0ZZ 1
+diag	note	305000000	1	:held_record_runs:i1:watch	r1 'U' 00000000 '0'0000 0 red false
+diag	note	305000000	1	:held_record_runs:i1:watch_rr	rr1 0,28 00 000000000001000002 'H'
+diag	note	305000000	1	:held_record_runs:i1:watch_q	q1 0010 2
+diag	note	305000000	1	:held_record_runs:i2:watch	r4 'U' 00000000 '0'0000 0 red false
+diag	note	305000000	1	:held_record_runs:i2:watch_rr	rr4 0,28 00 000000000001000002 'X'
+diag	note	305000000	1	:held_record_runs:i2:watch_q	q4 WW1W 2
+diag	note	315000000	1	:held_record_runs:i1:watch	r1 'U' 00000000 '1'000- 1 red false
+diag	note	315000000	1	:held_record_runs:i1:watch_q	q1 000Z 3
+diag	note	315000000	1	:held_record_runs:i2:watch	r4 'U' 00000000 '1'000- 4 red false
+diag	note	315000000	1	:held_record_runs:i2:watch_q	q4 WWWZ 3
+diag	note	325000000	1	:held_record_runs:i1:watch	r1 'U' 00000000 '1'000- 2 red false
+diag	note	325000000	1	:held_record_runs:i1:watch_q	q1 W000 0
+diag	note	325000000	1	:held_record_runs:i2:watch	r4 '-' 00000000 '1'000- 3 red false
+diag	note	325000000	1	:held_record_runs:i2:watch_q	q4 WWWW 0
+diag	note	335000000	1	:held_record_runs:i1:watch	r1 'U' 00000000 '1'000- 3 red false
+diag	note	335000000	1	:held_record_runs:i1:watch_q	q1 1L11 1
+diag	note	335000000	1	:held_record_runs:i2:watch	r4 '-' 00000000 '1'000- 2 red false
+diag	note	335000000	1	:held_record_runs:i2:watch_q	q4 LLLL 1
+diag	note	345000000	1	:held_record_runs:i1:watch	r1 'U' 00000000 '1'000- 4 red false
+diag	note	345000000	1	:held_record_runs:i1:watch_q	q1 11H1 2
+diag	note	345000000	1	:held_record_runs:i2:watch	r4 '-' 00000000 '1'000- 1 red false
+diag	note	345000000	1	:held_record_runs:i2:watch_q	q4 LLHL 2
+diag	note	355000000	1	:held_record_runs:i1:watch	r1 'U' 00000000 '1'000- 0 red false
+diag	note	355000000	1	:held_record_runs:i1:watch_rr	rr1 0,28 00 000000000001000002 '-'
+diag	note	355000000	1	:held_record_runs:i1:watch_q	q1 111- 3
+diag	note	355000000	1	:held_record_runs:i2:watch	r4 '-' 00000000 '1'000- 0 red false
+diag	note	355000000	1	:held_record_runs:i2:watch_rr	rr4 0,28 00 000000000001000002 '0'
+diag	note	355000000	1	:held_record_runs:i2:watch_q	q4 LLL- 3
+diag	note	365000000	1	:held_record_runs:i1:watch	r1 'L' 000U0000 '1'000- 1 blue false
+diag	note	365000000	1	:held_record_runs:i1:watch_q	q1 UZZZ 0
+diag	note	365000000	1	:held_record_runs:i2:watch	r4 '-' 000U0000 '1'000- 4 blue false
+diag	note	365000000	1	:held_record_runs:i2:watch_q	q4 UHHH 0
+diag	note	375000000	1	:held_record_runs:i1:watch	r1 'L' 000U0000 '1'000- 2 blue true
+diag	note	375000000	1	:held_record_runs:i1:watch_q	q1 ZXZZ 1
+diag	note	375000000	1	:held_record_runs:i2:watch	r4 '-' 000U0000 '1'000- 3 blue true
+diag	note	375000000	1	:held_record_runs:i2:watch_q	q4 HXHH 1
+diag	note	385000000	1	:held_record_runs:i1:watch	r1 'L' 000U0000 '1'000- 3 blue true
+diag	note	385000000	1	:held_record_runs:i1:watch_q	q1 ZZ0Z 2
+diag	note	385000000	1	:held_record_runs:i2:watch	r4 '-' 000U0000 '1'000- 2 blue true
+diag	note	385000000	1	:held_record_runs:i2:watch_q	q4 HH0H 2
+diag	note	395000000	1	:held_record_runs:i1:watch	r1 'L' 000U0000 '1'000- 4 blue true
+diag	note	395000000	1	:held_record_runs:i1:watch_q	q1 WWW1 3
+diag	note	395000000	1	:held_record_runs:i2:watch	r4 'U' 000U0000 '1'000- 1 blue true
+diag	note	395000000	1	:held_record_runs:i2:watch_q	q4 ---1 3
+diag	note	405000000	1	:held_record_runs:i1:watch	r1 'L' 000U0000 '1'000- 0 blue true
+diag	note	405000000	1	:held_record_runs:i1:watch_rr	rr1 0,28 00 000000000001000002 'U'
+diag	note	405000000	1	:held_record_runs:i1:watch_q	q1 ZWWW 0
+diag	note	405000000	1	:held_record_runs:i2:watch	r4 'U' 000U0000 '1'000- 0 blue true
+diag	note	405000000	1	:held_record_runs:i2:watch_rr	rr4 0,28 00 000000000001000002 '1'
+diag	note	405000000	1	:held_record_runs:i2:watch_q	q4 Z--- 0
+diag	note	415000000	1	:held_record_runs:i1:watch	r1 'L' 000U0000 '1'000- 1 blue true
+diag	note	415000000	1	:held_record_runs:i1:watch_q	q1 WWWW 1
+diag	note	415000000	1	:held_record_runs:i2:watch	r4 'U' 000U0000 '1'000- 4 blue true
+diag	note	415000000	1	:held_record_runs:i2:watch_q	q4 -W-- 1
+diag	note	425000000	1	:held_record_runs:i1:watch	r1 'L' 000U0000 '1'000- 2 blue true
+diag	note	425000000	1	:held_record_runs:i1:watch_q	q1 LLLL 2
+diag	note	425000000	1	:held_record_runs:i2:watch	r4 'U' 000U0000 '1'000- 3 blue true
+diag	note	425000000	1	:held_record_runs:i2:watch_q	q4 UULU 2
+diag	note	435000000	1	:held_record_runs:i1:watch	r1 'H' 000U0000 '1'000- 3 blue true
+diag	note	435000000	1	:held_record_runs:i1:watch_q	q1 LLLH 3
+diag	note	435000000	1	:held_record_runs:i2:watch	r4 'U' 000U0000 '1'000- 2 blue true
+diag	note	435000000	1	:held_record_runs:i2:watch_q	q4 UUUH 3
+diag	note	445000000	1	:held_record_runs:i1:watch	r1 'H' 000U0000 '0'100- 4 blue true
+diag	note	445000000	1	:held_record_runs:i1:watch_q	q1 -LLL 0
+diag	note	445000000	1	:held_record_runs:i2:watch	r4 'U' 000U0000 '0'100- 1 blue true
+diag	note	445000000	1	:held_record_runs:i2:watch_q	q4 -UUU 0
+diag	note	455000000	1	:held_record_runs:i1:watch	r1 'H' 000U0000 '0'100- 0 blue true
+diag	note	455000000	1	:held_record_runs:i1:watch_rr	rr1 0,28 00 000000000001000002 'X'
+diag	note	455000000	1	:held_record_runs:i1:watch_q	q1 HUHH 1
+diag	note	455000000	1	:held_record_runs:i2:watch	r4 'U' 000U0000 '0'100- 0 blue true
+diag	note	455000000	1	:held_record_runs:i2:watch_rr	rr4 0,28 00 000000000001000002 'Z'
+diag	note	455000000	1	:held_record_runs:i2:watch_q	q4 XUXX 1
+diag	note	465000000	1	:held_record_runs:i1:watch	r1 'H' 000U0000 '0'100- 1 blue true
+diag	note	465000000	1	:held_record_runs:i1:watch_q	q1 HHXH 2
+diag	note	465000000	1	:held_record_runs:i2:watch	r4 'X' 000U0000 '0'100- 4 blue true
+diag	note	465000000	1	:held_record_runs:i2:watch_q	q4 XXXX 2
+diag	note	475000000	1	:held_record_runs:i1:watch	r1 'H' 000U0000 '0'100- 2 blue true
+diag	note	475000000	1	:held_record_runs:i1:watch_rr	rr1 47,28 00 000000800001000002 'X'
+diag	note	475000000	1	:held_record_runs:i1:watch_q	q1 HHH0 3
+diag	note	475000000	1	:held_record_runs:i2:watch	r4 'X' 000U0000 '0'100- 3 blue true
+diag	note	475000000	1	:held_record_runs:i2:watch_rr	rr4 47,28 00 000000800001000002 'Z'
+diag	note	475000000	1	:held_record_runs:i2:watch_q	q4 XXX0 3
+diag	note	485000000	1	:held_record_runs:i1:watch	r1 'H' 000U0000 '0'100- 3 blue true
+diag	note	485000000	1	:held_record_runs:i1:watch_q	q1 1--- 0
+diag	note	485000000	1	:held_record_runs:i2:watch	r4 'X' 000U0000 '0'100- 2 blue true
+diag	note	485000000	1	:held_record_runs:i2:watch_q	q4 1000 0
+diag	note	495000000	1	:held_record_runs:i1:watch	r1 'H' 000U0000 '0'100- 4 blue true
+diag	note	495000000	1	:held_record_runs:i1:watch_q	q1 -Z-- 1
+diag	note	495000000	1	:held_record_runs:i2:watch	r4 'X' 000U0000 '0'100- 1 blue true
+diag	note	495000000	1	:held_record_runs:i2:watch_q	q4 0Z00 1
+diag	note	505000000	1	:held_record_runs:i1:watch	r1 '-' 000U0000 '0'100- 0 blue true
+diag	note	505000000	1	:held_record_runs:i1:watch_rr	rr1 47,28 00 000000800001000002 '0'
+diag	note	505000000	1	:held_record_runs:i1:watch_q	q1 --W- 2
+diag	note	505000000	1	:held_record_runs:i2:watch	r4 'X' 000U0000 '0'100- 0 blue true
+diag	note	505000000	1	:held_record_runs:i2:watch_rr	rr4 47,28 00 000000800001000002 'W'
+diag	note	505000000	1	:held_record_runs:i2:watch_q	q4 00W0 2
+diag	note	515000000	1	:held_record_runs:i1:watch	r1 '-' 000U0000 '0'100- 1 blue true
+diag	note	515000000	1	:held_record_runs:i1:watch_q	q1 UUUL 3
+diag	note	515000000	1	:held_record_runs:i2:watch	r4 'X' 000U0000 '0'100- 4 blue true
+diag	note	515000000	1	:held_record_runs:i2:watch_q	q4 111L 3
+diag	note	525000000	1	:held_record_runs:i1:watch	r1 '-' 000U0000 '0'100- 2 blue true
+diag	note	525000000	1	:held_record_runs:i1:watch_q	q1 HUUU 0
+diag	note	525000000	1	:held_record_runs:i2:watch	r4 'X' 000U0000 '0'100- 3 blue true
+diag	note	525000000	1	:held_record_runs:i2:watch_q	q4 H111 0
+diag	note	535000000	1	:held_record_runs:i1:watch	r1 '-' 000U0000 '0'100- 3 red true
+diag	note	535000000	1	:held_record_runs:i1:watch_q	q1 U-UU 1
+diag	note	535000000	1	:held_record_runs:i2:watch	r4 '0' 000U0000 '0'100- 2 red true
+diag	note	535000000	1	:held_record_runs:i2:watch_q	q4 1-11 1
+diag	note	545000000	1	:held_record_runs:i1:watch	r1 '-' 000U0000 '0'100- 4 red true
+diag	note	545000000	1	:held_record_runs:i1:watch_q	q1 XXUX 2
+diag	note	545000000	1	:held_record_runs:i2:watch	r4 '0' 000U0000 '0'100- 1 red true
+diag	note	545000000	1	:held_record_runs:i2:watch_q	q4 ZZUZ 2
+diag	note	555000000	1	:held_record_runs:i1:watch	r1 '-' 000U0000 '0'100- 0 red true
+diag	note	555000000	1	:held_record_runs:i1:watch_rr	rr1 47,28 00 000000800001000002 '1'
+diag	note	555000000	1	:held_record_runs:i1:watch_q	q1 XXXX 3
+diag	note	555000000	1	:held_record_runs:i2:watch	r4 '0' 000U0000 '0'100- 0 red true
+diag	note	555000000	1	:held_record_runs:i2:watch_rr	rr4 47,28 00 000000800001000002 'L'
+diag	note	555000000	1	:held_record_runs:i2:watch_q	q4 ZZZX 3
+diag	note	565000000	1	:held_record_runs:i1:watch	r1 '-' 000U0000 '0'100- 1 red true
+diag	note	565000000	1	:held_record_runs:i1:watch_q	q1 0XXX 0
+diag	note	565000000	1	:held_record_runs:i2:watch	r4 '0' 000U0000 '0'100- 4 red true
+diag	note	565000000	1	:held_record_runs:i2:watch_q	q4 0ZZZ 0
+diag	note	575000000	1	:held_record_runs:i1:watch	r1 'U' 000U0000 '1'1H0- 2 red true
+diag	note	575000000	1	:held_record_runs:i1:watch_q	q1 0100 1
+diag	note	575000000	1	:held_record_runs:i2:watch	r4 '0' 000U0000 '1'1H0- 3 red true
+diag	note	575000000	1	:held_record_runs:i2:watch_q	q4 W1WW 1
+diag	note	585000000	1	:held_record_runs:i1:watch	r1 'U' 000U0Z00 '1'1H0- 3 red true
+diag	note	585000000	1	:held_record_runs:i1:watch_q	q1 00Z0 2
+diag	note	585000000	1	:held_record_runs:i2:watch	r4 '0' 000U0Z00 '1'1H0- 2 red true
+diag	note	585000000	1	:held_record_runs:i2:watch_q	q4 WWZW 2
+diag	note	595000000	1	:held_record_runs:i1:watch	r1 'U' 000U0Z00 '1'1H0- 4 red true
+diag	note	595000000	1	:held_record_runs:i1:watch_q	q1 000W 3
+diag	note	595000000	1	:held_record_runs:i2:watch	r4 '0' 000U0Z00 '1'1H0- 1 red true
+diag	note	595000000	1	:held_record_runs:i2:watch_q	q4 WWWW 3
+diag	note	605000000	1	:held_record_runs:i1:watch	r1 'U' 000U0Z00 '1'1H0- 0 red true
+diag	note	605000000	1	:held_record_runs:i1:watch_rr	rr1 47,28 00 000000800001000002 'Z'
+diag	note	605000000	1	:held_record_runs:i1:watch_q	q1 L111 0
+diag	note	605000000	1	:held_record_runs:i2:watch	r4 '1' 000U0Z00 '1'1H0- 0 red true
+diag	note	605000000	1	:held_record_runs:i2:watch_rr	rr4 47,28 00 000000800001000002 'H'
+diag	note	605000000	1	:held_record_runs:i2:watch_q	q4 LLLL 0
+diag	note	615000000	1	:held_record_runs:i1:watch	r1 'U' 00000000 '0'0000 0 red false
+diag	note	615000000	1	:held_record_runs:i1:watch_q	q1 1H11 1
+diag	note	615000000	1	:held_record_runs:i2:watch	r4 'U' 00000000 '0'0000 0 red false
+diag	note	615000000	1	:held_record_runs:i2:watch_q	q4 LHLL 1
+diag	note	625000000	1	:held_record_runs:i1:watch	r1 'U' 00000000 '0'0000 2 red false
+diag	note	625000000	1	:held_record_runs:i1:watch_q	q1 11-1 2
+diag	note	625000000	1	:held_record_runs:i2:watch	r4 'U' 00000000 '0'0000 3 red false
+diag	note	625000000	1	:held_record_runs:i2:watch_q	q4 LL-L 2
+diag	note	635000000	1	:held_record_runs:i1:watch	r1 'U' 00000000 '0'0000 3 red false
+diag	note	635000000	1	:held_record_runs:i1:watch_q	q1 ZZZU 3
+diag	note	635000000	1	:held_record_runs:i2:watch	r4 'U' 00000000 '0'0000 2 red false
+diag	note	635000000	1	:held_record_runs:i2:watch_q	q4 HHHU 3
+diag	note	645000000	1	:held_record_runs:i1:watch	r1 'X' 00000000 '0'0000 4 red false
+diag	note	645000000	1	:held_record_runs:i1:watch_q	q1 XZZZ 0
+diag	note	645000000	1	:held_record_runs:i2:watch	r4 'U' 00000000 '0'0000 1 red false
+diag	note	645000000	1	:held_record_runs:i2:watch_q	q4 XHHH 0
+diag	note	655000000	1	:held_record_runs:i1:watch	r1 'X' 00000000 '0'0000 0 red false
+diag	note	655000000	1	:held_record_runs:i1:watch_rr	rr1 47,28 00 000000800001000002 'W'
+diag	note	655000000	1	:held_record_runs:i1:watch_q	q1 Z0ZZ 1
+diag	note	655000000	1	:held_record_runs:i2:watch	r4 'U' 00000000 '0'0000 0 red false
+diag	note	655000000	1	:held_record_runs:i2:watch_rr	rr4 47,28 00 000000800001000002 '-'
+diag	note	655000000	1	:held_record_runs:i2:watch_q	q4 H0HH 1
+diag	note	665000000	1	:held_record_runs:i1:watch	r1 'X' 00000000 '0'0000 1 red true
+diag	note	665000000	1	:held_record_runs:i1:watch_rr	rr1 47,28 00 000000800001000002 'W'
+diag	note	665000000	1	:held_record_runs:i1:watch_q	q1 WW1W 2
+diag	note	665000000	1	:held_record_runs:i2:watch	r4 'U' 00000000 '0'0000 4 red true
+diag	note	665000000	1	:held_record_runs:i2:watch_rr	rr4 47,28 00 000000800001000002 '-'
+diag	note	665000000	1	:held_record_runs:i2:watch_q	q4 --1- 2
+diag	note	675000000	1	:held_record_runs:i1:watch	r1 'X' 00000000 '0'0000 2 red true
+diag	note	675000000	1	:held_record_runs:i1:watch_q	q1 WWWZ 3
+diag	note	675000000	1	:held_record_runs:i2:watch	r4 'Z' 00000000 '0'0000 3 red true
+diag	note	675000000	1	:held_record_runs:i2:watch_q	q4 ---Z 3
+diag	note	685000000	1	:held_record_runs:i1:watch	r1 'X' 00000000 '0'0000 3 red true
+diag	note	685000000	1	:held_record_runs:i1:watch_q	q1 WWWW 0
+diag	note	685000000	1	:held_record_runs:i2:watch	r4 'Z' 00000000 '0'0000 2 red true
+diag	note	685000000	1	:held_record_runs:i2:watch_q	q4 W--- 0
+diag	note	695000000	1	:held_record_runs:i1:watch	r1 'X' 00L00000 '0'0000 4 red true
+diag	note	695000000	1	:held_record_runs:i1:watch_q	q1 LLLL 1
+diag	note	695000000	1	:held_record_runs:i2:watch	r4 'Z' 00L00000 '0'0000 1 red true
+diag	note	695000000	1	:held_record_runs:i2:watch_q	q4 ULUU 1
+diag	note	705000000	1	:held_record_runs:i1:watch	r1 'X' 00L00000 '1'0000 0 green true
+diag	note	705000000	1	:held_record_runs:i1:watch_rr	rr1 47,28 00 000000800001000003 'L'
+diag	note	705000000	1	:held_record_runs:i1:watch_q	q1 LLHL 2
+diag	note	705000000	1	:held_record_runs:i2:watch	r4 'Z' 00L00000 '1'0000 0 green true
+diag	note	705000000	1	:held_record_runs:i2:watch_rr	rr4 47,28 00 000000800001000003 'U'
+diag	note	705000000	1	:held_record_runs:i2:watch_q	q4 UUHU 2
+diag	note	715000000	1	:held_record_runs:i1:watch	r1 '0' 00L00000 '1'0000 1 green true
+diag	note	715000000	1	:held_record_runs:i1:watch_q	q1 LLL- 3
+diag	note	715000000	1	:held_record_runs:i2:watch	r4 'Z' 00L00000 '1'0000 4 green true
+diag	note	715000000	1	:held_record_runs:i2:watch_q	q4 UUU- 3
+diag	note	725000000	1	:held_record_runs:i1:watch	r1 '0' 00L00000 '1'0000 2 green true
+diag	note	725000000	1	:held_record_runs:i1:watch_q	q1 UHHH 0
+diag	note	725000000	1	:held_record_runs:i2:watch	r4 'Z' 00L00000 '1'0000 3 green true
+diag	note	725000000	1	:held_record_runs:i2:watch_q	q4 UXXX 0
+diag	note	735000000	1	:held_record_runs:i1:watch	r1 '0' 00L00000 '1'0000 3 green true
+diag	note	735000000	1	:held_record_runs:i1:watch_q	q1 HXHH 1
+diag	note	735000000	1	:held_record_runs:i2:watch	r4 'Z' 00L00000 '1'0000 2 green true
+diag	note	735000000	1	:held_record_runs:i2:watch_q	q4 XXXX 1
+diag	note	745000000	1	:held_record_runs:i1:watch	r1 '0' 00L00000 '1'0000 4 green true
+diag	note	745000000	1	:held_record_runs:i1:watch_q	q1 HH0H 2
+diag	note	745000000	1	:held_record_runs:i2:watch	r4 'W' 00L00000 '1'0000 1 green true
+diag	note	745000000	1	:held_record_runs:i2:watch_q	q4 XX0X 2
+diag	note	755000000	1	:held_record_runs:i1:watch	r1 '0' 00L00000 '1'0000 0 green true
+diag	note	755000000	1	:held_record_runs:i1:watch_rr	rr1 47,28 00 000000800001000003 'H'
+diag	note	755000000	1	:held_record_runs:i1:watch_q	q1 ---1 3
+diag	note	755000000	1	:held_record_runs:i2:watch	r4 'W' 00L00000 '1'0000 0 green true
+diag	note	755000000	1	:held_record_runs:i2:watch_rr	rr4 47,28 00 000000800001000003 'X'
+diag	note	755000000	1	:held_record_runs:i2:watch_q	q4 0001 3
+diag	note	765000000	1	:held_record_runs:i1:watch	r1 '0' 00L00000 '1'0000 1 green true
+diag	note	765000000	1	:held_record_runs:i1:watch_q	q1 Z--- 0
+diag	note	765000000	1	:held_record_runs:i2:watch	r4 'W' 00L00000 '1'0000 4 green true
+diag	note	765000000	1	:held_record_runs:i2:watch_q	q4 Z000 0
+diag	note	775000000	1	:held_record_runs:i1:watch	r1 '0' 00L00000 '1'0000 2 green true
+diag	note	775000000	1	:held_record_runs:i1:watch_q	q1 -W-- 1
+diag	note	775000000	1	:held_record_runs:i2:watch	r4 'W' 00L00000 '1'0000 3 green true
+diag	note	775000000	1	:held_record_runs:i2:watch_q	q4 0W00 1
+diag	note	785000000	1	:held_record_runs:i1:watch	r1 '1' 00L00000 '1'0000 3 green true
+diag	note	785000000	1	:held_record_runs:i1:watch_q	q1 UULU 2
+diag	note	785000000	1	:held_record_runs:i2:watch	r4 'W' 00L00000 '1'0000 2 green true
+diag	note	785000000	1	:held_record_runs:i2:watch_q	q4 11L1 2
+diag	note	795000000	1	:held_record_runs:i1:watch	r1 '1' 00L00000 '1'0000 4 green true
+diag	note	795000000	1	:held_record_runs:i1:watch_q	q1 UUUH 3
+diag	note	795000000	1	:held_record_runs:i2:watch	r4 'W' 00L00000 '1'0000 1 green true
+diag	note	795000000	1	:held_record_runs:i2:watch_q	q4 111H 3
+diag	note	805000000	1	:held_record_runs:i1:watch	r1 '1' 00L0000- '1'0000 0 green true
+diag	note	805000000	1	:held_record_runs:i1:watch_rr	rr1 47,28 00 000000800001000003 '-'
+diag	note	805000000	1	:held_record_runs:i1:watch_q	q1 -UUU 0
+diag	note	805000000	1	:held_record_runs:i2:watch	r4 'W' 00L0000- '1'0000 0 green true
+diag	note	805000000	1	:held_record_runs:i2:watch_rr	rr4 47,28 00 000000800001000003 '0'
+diag	note	805000000	1	:held_record_runs:i2:watch_q	q4 -111 0
+diag	note	815000000	1	:held_record_runs:i1:watch	r1 '1' 00L0000- '1'0000 1 green true
+diag	note	815000000	1	:held_record_runs:i1:watch_q	q1 XUXX 1
+diag	note	815000000	1	:held_record_runs:i2:watch	r4 'L' 00L0000- '1'0000 4 green true
+diag	note	815000000	1	:held_record_runs:i2:watch_q	q4 ZUZZ 1
+diag	note	825000000	1	:held_record_runs:i1:watch	r1 '1' 00L0000- '1'0000 2 green true
+diag	note	825000000	1	:held_record_runs:i1:watch_q	q1 XXXX 2
+diag	note	825000000	1	:held_record_runs:i2:watch	r4 'L' 00L0000- '1'0000 3 green true
+diag	note	825000000	1	:held_record_runs:i2:watch_q	q4 ZZXZ 2
+diag	note	835000000	1	:held_record_runs:i1:watch	r1 '1' 00L0000- '0'000L 3 green true
+diag	note	835000000	1	:held_record_runs:i1:watch_q	q1 XXX0 3
+diag	note	835000000	1	:held_record_runs:i2:watch	r4 'L' 00L0000- '0'000L 2 green true
+diag	note	835000000	1	:held_record_runs:i2:watch_q	q4 ZZZ0 3
+diag	note	845000000	1	:held_record_runs:i1:watch	r1 '1' 00L0000- '0'000L 4 green true
+diag	note	845000000	1	:held_record_runs:i1:watch_q	q1 1000 0
+diag	note	845000000	1	:held_record_runs:i2:watch	r4 'L' 00L0000- '0'000L 1 green true
+diag	note	845000000	1	:held_record_runs:i2:watch_q	q4 1WWW 0
+diag	note	855000000	1	:held_record_runs:i1:watch	r1 'Z' 00L0000- '0'000L 0 green true
+diag	note	855000000	1	:held_record_runs:i1:watch_rr	rr1 47,28 00 000000800001000003 'U'
+diag	note	855000000	1	:held_record_runs:i1:watch_q	q1 0Z00 1
+diag	note	855000000	1	:held_record_runs:i2:watch	r4 'L' 00L0000- '0'000L 0 green true
+diag	note	855000000	1	:held_record_runs:i2:watch_rr	rr4 47,28 00 000000800001000003 '1'
+diag	note	855000000	1	:held_record_runs:i2:watch_q	q4 WZWW 1
+diag	note	865000000	1	:held_record_runs:i1:watch	r1 'Z' 00L0000- '0'000L 1 green true
+diag	note	865000000	1	:held_record_runs:i1:watch_q	q1 00W0 2
+diag	note	865000000	1	:held_record_runs:i2:watch	r4 'L' 00L0000- '0'000L 4 green true
+diag	note	865000000	1	:held_record_runs:i2:watch_q	q4 WWWW 2
+diag	note	875000000	1	:held_record_runs:i1:watch	r1 'Z' 00L0000- '0'000L 2 blue true
+diag	note	875000000	1	:held_record_runs:i1:watch_q	q1 111L 3
+diag	note	875000000	1	:held_record_runs:i2:watch	r4 'L' 00L0000- '0'000L 3 blue true
+diag	note	875000000	1	:held_record_runs:i2:watch_q	q4 LLLL 3
+diag	note	885000000	1	:held_record_runs:i1:watch	r1 'Z' 00L0000- '0'000L 3 blue true
+diag	note	885000000	1	:held_record_runs:i1:watch_q	q1 H111 0
+diag	note	885000000	1	:held_record_runs:i2:watch	r4 'H' 00L0000- '0'000L 2 blue true
+diag	note	885000000	1	:held_record_runs:i2:watch_q	q4 HLLL 0
+diag	note	895000000	1	:held_record_runs:i1:watch	r1 'Z' 00L0000- '0'000L 4 blue true
+diag	note	895000000	1	:held_record_runs:i1:watch_q	q1 1-11 1
+diag	note	895000000	1	:held_record_runs:i2:watch	r4 'H' 00L0000- '0'000L 1 blue true
+diag	note	895000000	1	:held_record_runs:i2:watch_q	q4 L-LL 1
+diag	note	905000000	1	:held_record_runs:i1:watch	r1 'Z' 00L0000- '0'000L 0 blue true
+diag	note	905000000	1	:held_record_runs:i1:watch_rr	rr1 47,28 00 000000800001000003 'X'
+diag	note	905000000	1	:held_record_runs:i1:watch_q	q1 ZZUZ 2
+diag	note	905000000	1	:held_record_runs:i2:watch	r4 'H' 00L0000- '0'000L 0 blue true
+diag	note	905000000	1	:held_record_runs:i2:watch_rr	rr4 47,28 00 000000800001000003 'Z'
+diag	note	905000000	1	:held_record_runs:i2:watch_q	q4 HHUH 2
+diag	note	915000000	1	:held_record_runs:i1:watch	r1 'Z' 00L0X00- '0'000L 1 blue true
+diag	note	915000000	1	:held_record_runs:i1:watch_q	q1 ZZZX 3
+diag	note	915000000	1	:held_record_runs:i2:watch	r4 'H' 00L0X00- '0'000L 4 blue true
+diag	note	915000000	1	:held_record_runs:i2:watch_q	q4 HHHX 3
+diag	note	925000000	1	:held_record_runs:i1:watch	r1 'U' 00000000 '0'0000 0 red false
+diag	note	925000000	1	:held_record_runs:i1:watch_q	q1 0ZZZ 0
+diag	note	925000000	1	:held_record_runs:i2:watch	r4 'U' 00000000 '0'0000 0 red false
+diag	note	925000000	1	:held_record_runs:i2:watch_q	q4 0HHH 0
+diag	note	935000000	1	:held_record_runs:i1:watch	r1 'U' 00000000 '0'0000 3 red false
+diag	note	935000000	1	:held_record_runs:i1:watch_rr	rr1 47,28 00 000000800001800003 'X'
+diag	note	935000000	1	:held_record_runs:i1:watch_q	q1 W1WW 1
+diag	note	935000000	1	:held_record_runs:i2:watch	r4 'U' 00000000 '0'0000 2 red false
+diag	note	935000000	1	:held_record_runs:i2:watch_rr	rr4 47,28 00 000000800001800003 'Z'
+diag	note	935000000	1	:held_record_runs:i2:watch_q	q4 -1-- 1
+diag	note	945000000	1	:held_record_runs:i1:watch	r1 'U' 00000000 '0'0000 4 red false
+diag	note	945000000	1	:held_record_runs:i1:watch_q	q1 WWZW 2
+diag	note	945000000	1	:held_record_runs:i2:watch	r4 'U' 00000000 '0'0000 1 red false
+diag	note	945000000	1	:held_record_runs:i2:watch_q	q4 --Z- 2
+diag	note	955000000	1	:held_record_runs:i1:watch	r1 'U' 00000000 '0'0000 0 red true
+diag	note	955000000	1	:held_record_runs:i1:watch_rr	rr1 47,28 00 000000800001800003 '0'
+diag	note	955000000	1	:held_record_runs:i1:watch_q	q1 WWWW 3
+diag	note	955000000	1	:held_record_runs:i2:watch	r4 '-' 00000000 '0'0000 0 red true
+diag	note	955000000	1	:held_record_runs:i2:watch_rr	rr4 47,28 00 000000800001800003 'W'
+diag	note	955000000	1	:held_record_runs:i2:watch_q	q4 ---W 3
+diag	note	965000000	1	:held_record_runs:i1:watch	r1 'U' 00000000 '1'X000 1 red true
+diag	note	965000000	1	:held_record_runs:i1:watch_q	q1 LLLL 0
+diag	note	965000000	1	:held_record_runs:i2:watch	r4 '-' 00000000 '1'X000 4 red true
+diag	note	965000000	1	:held_record_runs:i2:watch_q	q4 LUUU 0
+diag	note	975000000	1	:held_record_runs:i1:watch	r1 'U' 00000000 '1'X000 2 red true
+diag	note	975000000	1	:held_record_runs:i1:watch_q	q1 LHLL 1
+diag	note	975000000	1	:held_record_runs:i2:watch	r4 '-' 00000000 '1'X000 3 red true
+diag	note	975000000	1	:held_record_runs:i2:watch_q	q4 UHUU 1
+diag	note	985000000	1	:held_record_runs:i1:watch	r1 'U' 00000000 '1'X000 3 red true
+diag	note	985000000	1	:held_record_runs:i1:watch_q	q1 LL-L 2
+diag	note	985000000	1	:held_record_runs:i2:watch	r4 '-' 00000000 '1'X000 2 red true
+diag	note	985000000	1	:held_record_runs:i2:watch_q	q4 UU-U 2
+diag	note	995000000	1	:held_record_runs:i1:watch	r1 'L' 00000000 '1'X000 4 red true
+diag	note	995000000	1	:held_record_runs:i1:watch_q	q1 HHHU 3
+diag	note	995000000	1	:held_record_runs:i2:watch	r4 '-' 00000000 '1'X000 1 red true
+diag	note	995000000	1	:held_record_runs:i2:watch_q	q4 XXXU 3
+diag	note	1005000000	1	:held_record_runs:i1:watch	r1 'L' 00000000 '1'X000 0 red true
+diag	note	1005000000	1	:held_record_runs:i1:watch_rr	rr1 47,28 00 000000800001800003 '1'
+diag	note	1005000000	1	:held_record_runs:i1:watch_q	q1 XHHH 0
+diag	note	1005000000	1	:held_record_runs:i2:watch	r4 '-' 00000000 '1'X000 0 red true
+diag	note	1005000000	1	:held_record_runs:i2:watch_rr	rr4 47,28 00 000000800001800003 'L'
+diag	note	1005000000	1	:held_record_runs:i2:watch_q	q4 XXXX 0
+diag	note	1015000000	1	:held_record_runs:i1:watch	r1 'L' 00000000 '1'X000 1 red true
+diag	note	1015000000	1	:held_record_runs:i1:watch_q	q1 H0HH 1
+diag	note	1015000000	1	:held_record_runs:i2:watch	r4 '-' 00000000 '1'X000 4 red true
+diag	note	1015000000	1	:held_record_runs:i2:watch_q	q4 X0XX 1
+diag	note	1025000000	1	:held_record_runs:i1:watch	r1 'L' 01000000 '1'X000 2 red true
+diag	note	1025000000	1	:held_record_runs:i1:watch_q	q1 --1- 2
+diag	note	1025000000	1	:held_record_runs:i2:watch	r4 'U' 01000000 '1'X000 3 red true
+diag	note	1025000000	1	:held_record_runs:i2:watch_q	q4 0010 2
+diag	note	1035000000	1	:held_record_runs:i1:watch	r1 'L' 01000000 '1'X000 3 red true
+diag	note	1035000000	1	:held_record_runs:i1:watch_q	q1 ---Z 3
+diag	note	1035000000	1	:held_record_runs:i2:watch	r4 'U' 01000000 '1'X000 2 red true
+diag	note	1035000000	1	:held_record_runs:i2:watch_q	q4 000Z 3
+diag	note	1045000000	1	:held_record_runs:i1:watch	r1 'L' 01000000 '1'X000 4 red true
+diag	note	1045000000	1	:held_record_runs:i1:watch_rr	rr1 47,104 00 000000800001800003 '1'
+diag	note	1045000000	1	:held_record_runs:i1:watch_q	q1 W--- 0
+diag	note	1045000000	1	:held_record_runs:i2:watch	r4 'U' 01000000 '1'X000 1 red true
+diag	note	1045000000	1	:held_record_runs:i2:watch_rr	rr4 47,104 00 000000800001800003 'L'
+diag	note	1045000000	1	:held_record_runs:i2:watch_q	q4 W000 0
+diag	note	1055000000	1	:held_record_runs:i1:watch	r1 'L' 01000000 '1'X000 0 red true
+diag	note	1055000000	1	:held_record_runs:i1:watch_rr	rr1 47,104 00 000000800001800003 'Z'
+diag	note	1055000000	1	:held_record_runs:i1:watch_q	q1 ULUU 1
+diag	note	1055000000	1	:held_record_runs:i2:watch	r4 'U' 01000000 '1'X000 0 red true
+diag	note	1055000000	1	:held_record_runs:i2:watch_rr	rr4 47,104 00 000000800001800003 'H'
+diag	note	1055000000	1	:held_record_runs:i2:watch_q	q4 1L11 1
+diag	note	1065000000	1	:held_record_runs:i1:watch	r1 'H' 01000000 '1'X000 1 red true
+diag	note	1065000000	1	:held_record_runs:i1:watch_q	q1 UUHU 2
+diag	note	1065000000	1	:held_record_runs:i2:watch	r4 'U' 01000000 '1'X000 4 red true
+diag	note	1065000000	1	:held_record_runs:i2:watch_q	q4 11H1 2
+diag	note	1075000000	1	:held_record_runs:i1:watch	r1 'H' 01000000 '1'X000 2 red true
+diag	note	1075000000	1	:held_record_runs:i1:watch_q	q1 UUU- 3
+diag	note	1075000000	1	:held_record_runs:i2:watch	r4 'U' 01000000 '1'X000 3 red true
+diag	note	1075000000	1	:held_record_runs:i2:watch_q	q4 111- 3
+diag	note	1085000000	1	:held_record_runs:i1:watch	r1 'H' 01000000 '1'X000 3 red true
+diag	note	1085000000	1	:held_record_runs:i1:watch_q	q1 UXXX 0
+diag	note	1085000000	1	:held_record_runs:i2:watch	r4 'U' 01000000 '1'X000 2 red true
+diag	note	1085000000	1	:held_record_runs:i2:watch_q	q4 UZZZ 0
+diag	note	1095000000	1	:held_record_runs:i1:watch	r1 'H' 01000000 '0'XW00 4 red true
+diag	note	1095000000	1	:held_record_runs:i1:watch_q	q1 XXXX 1
+diag	note	1095000000	1	:held_record_runs:i2:watch	r4 'X' 01000000 '0'XW00 1 red true
+diag	note	1095000000	1	:held_record_runs:i2:watch_q	q4 ZXZZ 1
+diag	note	1105000000	1	:held_record_runs:i1:watch	r1 'H' 01000000 '0'XW00 0 red true
+diag	note	1105000000	1	:held_record_runs:i1:watch_rr	rr1 47,104 00 000000800001800003 'W'
+diag	note	1105000000	1	:held_record_runs:i1:watch_q	q1 XX0X 2
+diag	note	1105000000	1	:held_record_runs:i2:watch	r4 'X' 01000000 '0'XW00 0 red true
+diag	note	1105000000	1	:held_record_runs:i2:watch_rr	rr4 47,104 00 000000800001800003 '-'
+diag	note	1105000000	1	:held_record_runs:i2:watch_q	q4 ZZ0Z 2
+diag	note	1115000000	1	:held_record_runs:i1:watch	r1 'H' 01000000 '0'XW00 1 red true
+diag	note	1115000000	1	:held_record_runs:i1:watch_q	q1 0001 3
+diag	note	1115000000	1	:held_record_runs:i2:watch	r4 'X' 01000000 '0'XW00 4 red true
+diag	note	1115000000	1	:held_record_runs:i2:watch_q	q4 WWW1 3
+diag	note	1125000000	1	:held_record_runs:i1:watch	r1 'H' 01000000 '0'XW00 2 red true
+diag	note	1125000000	1	:held_record_runs:i1:watch_q	q1 Z000 0
+diag	note	1125000000	1	:held_record_runs:i2:watch	r4 'X' 01000000 '0'XW00 3 red true
+diag	note	1125000000	1	:held_record_runs:i2:watch_q	q4 ZWWW 0
+diag	note	1135000000	1	:held_record_runs:i1:watch	r1 '-' 010000W0 '0'XW00 3 red true
+diag	note	1135000000	1	:held_record_runs:i1:watch_q	q1 0W00 1
+diag	note	1135000000	1	:held_record_runs:i2:watch	r4 'X' 010000W0 '0'XW00 2 red true
+diag	note	1135000000	1	:held_record_runs:i2:watch_q	q4 WWWW 1
+diag	note	1145000000	1	:held_record_runs:i1:watch	r1 '-' 010000W0 '0'XW00 4 red true
+diag	note	1145000000	1	:held_record_runs:i1:watch_q	q1 11L1 2
+diag	note	1145000000	1	:held_record_runs:i2:watch	r4 'X' 010000W0 '0'XW00 1 red true
+diag	note	1145000000	1	:held_record_runs:i2:watch_q	q4 LLLL 2
+diag	note	1155000000	1	:held_record_runs:i1:watch	r1 '-' 010000W0 '0'XW00 0 red true
+diag	note	1155000000	1	:held_record_runs:i1:watch_rr	rr1 47,104 00 000000800001800003 'L'
+diag	note	1155000000	1	:held_record_runs:i1:watch_q	q1 111H 3
+diag	note	1155000000	1	:held_record_runs:i2:watch	r4 'X' 010000W0 '0'XW00 0 red true
+diag	note	1155000000	1	:held_record_runs:i2:watch_rr	rr4 47,104 00 000000800001800003 'U'
+diag	note	1155000000	1	:held_record_runs:i2:watch_q	q4 LLLH 3
+diag	note	1165000000	1	:held_record_runs:i1:watch	r1 '-' 010000W0 '0'XW00 1 red true
+diag	note	1165000000	1	:held_record_runs:i1:watch_rr	rr1 47,104 00 000000C00001800003 'L'
+diag	note	1165000000	1	:held_record_runs:i1:watch_q	q1 -111 0
+diag	note	1165000000	1	:held_record_runs:i2:watch	r4 '0' 010000W0 '0'XW00 4 red true
+diag	note	1165000000	1	:held_record_runs:i2:watch_rr	rr4 47,104 00 000000C00001800003 'U'
+diag	note	1165000000	1	:held_record_runs:i2:watch_q	q4 -LLL 0
+diag	note	1175000000	1	:held_record_runs:i1:watch	r1 '-' 010000W0 '0'XW00 2 red true
+diag	note	1175000000	1	:held_record_runs:i1:watch_q	q1 ZUZZ 1
+diag	note	1175000000	1	:held_record_runs:i2:watch	r4 '0' 010000W0 '0'XW00 3 red true
+diag	note	1175000000	1	:held_record_runs:i2:watch_q	q4 HUHH 1
+diag	note	1185000000	1	:held_record_runs:i1:watch	r1 '-' 010000W0 '0'XW00 3 red true
+diag	note	1185000000	1	:held_record_runs:i1:watch_q	q1 ZZXZ 2
+diag	note	1185000000	1	:held_record_runs:i2:watch	r4 '0' 010000W0 '0'XW00 2 red true
+diag	note	1185000000	1	:held_record_runs:i2:watch_q	q4 HHXH 2
+diag	note	1195000000	1	:held_record_runs:i1:watch	r1 '-' 010000W0 '0'XW00 4 red true
+diag	note	1195000000	1	:held_record_runs:i1:watch_q	q1 ZZZ0 3
+diag	note	1195000000	1	:held_record_runs:i2:watch	r4 '0' 010000W0 '0'XW00 1 red true
+diag	note	1195000000	1	:held_record_runs:i2:watch_q	q4 HHH0 3
+diag	note	1205000000	1	:held_record_runs:i1:watch	r1 'U' 010000W0 '0'XW00 0 red true
+diag	note	1205000000	1	:held_record_runs:i1:watch_rr	rr1 47,104 00 000000C00001800003 'H'
+diag	note	1205000000	1	:held_record_runs:i1:watch_q	q1 1WWW 0
+diag	note	1205000000	1	:held_record_runs:i2:watch	r4 '0' 010000W0 '0'XW00 0 red true
+diag	note	1205000000	1	:held_record_runs:i2:watch_rr	rr4 47,104 00 000000C00001800003 'X'
+diag	note	1205000000	1	:held_record_runs:i2:watch_q	q4 1--- 0
+diag	note	1215000000	1	:held_record_runs:i1:watch	r1 'U' 010000W0 '0'XW00 1 green true
+diag	note	1215000000	1	:held_record_runs:i1:watch_q	q1 WZWW 1
+diag	note	1215000000	1	:held_record_runs:i2:watch	r4 '0' 010000W0 '0'XW00 4 green true
+diag	note	1215000000	1	:held_record_runs:i2:watch_q	q4 -Z-- 1
+diag	note	1225000000	1	:held_record_runs:i1:watch	r1 'U' 010000W0 '1'XWU0 2 green true
+diag	note	1225000000	1	:held_record_runs:i1:watch_q	q1 WWWW 2
+diag	note	1225000000	1	:held_record_runs:i2:watch	r4 '0' 010000W0 '1'XWU0 3 green true
+diag	note	1225000000	1	:held_record_runs:i2:watch_q	q4 --W- 2
+diag	note	1235000000	1	:held_record_runs:i1:watch	r1 'U' 00000000 '0'0000 0 red false
+diag	note	1235000000	1	:held_record_runs:i1:watch_rr	rr1 123,104 00 000000C00001800003 'H'
+diag	note	1235000000	1	:held_record_runs:i1:watch_q	q1 LLLL 3
+diag	note	1235000000	1	:held_record_runs:i2:watch	r4 'U' 00000000 '0'0000 0 red false
+diag	note	1235000000	1	:held_record_runs:i2:watch_rr	rr4 123,104 00 000000C00001800003 'X'
+diag	note	1235000000	1	:held_record_runs:i2:watch_q	q4 UUUL 3
+diag	note	1245000000	1	:held_record_runs:i1:watch	r1 'U' 000H0000 '0'0000 4 red true
+diag	note	1245000000	1	:held_record_runs:i1:watch_q	q1 HLLL 0
+diag	note	1245000000	1	:held_record_runs:i2:watch	r4 'U' 000H0000 '0'0000 1 red true
+diag	note	1245000000	1	:held_record_runs:i2:watch_q	q4 HUUU 0
+diag	note	1255000000	1	:held_record_runs:i1:watch	r1 'U' 000H0000 '0'0000 0 red true
+diag	note	1255000000	1	:held_record_runs:i1:watch_rr	rr1 123,104 00 000000C00001800003 '-'
+diag	note	1255000000	1	:held_record_runs:i1:watch_q	q1 L-LL 1
+diag	note	1255000000	1	:held_record_runs:i2:watch	r4 'U' 000H0000 '0'0000 0 red true
+diag	note	1255000000	1	:held_record_runs:i2:watch_rr	rr4 123,104 00 000000C00001800003 '0'
+diag	note	1255000000	1	:held_record_runs:i2:watch_q	q4 U-UU 1
+diag	note	1265000000	1	:held_record_runs:i1:watch	r1 'U' 000H0000 '0'0000 1 red true
+diag	note	1265000000	1	:held_record_runs:i1:watch_q	q1 HHUH 2
+diag	note	1265000000	1	:held_record_runs:i2:watch	r4 'U' 000H0000 '0'0000 4 red true
+diag	note	1265000000	1	:held_record_runs:i2:watch_q	q4 XXUX 2
+diag	note	1275000000	1	:held_record_runs:i1:watch	r1 'X' 000H0000 '0'0000 2 red true
+diag	note	1275000000	1	:held_record_runs:i1:watch_q	q1 HHHX 3
+diag	note	1275000000	1	:held_record_runs:i2:watch	r4 'U' 000H0000 '0'0000 3 red true
+diag	note	1275000000	1	:held_record_runs:i2:watch_q	q4 XXXX 3
+diag	note	1285000000	1	:held_record_runs:i1:watch	r1 'X' 000H0000 '0'0000 3 red true
+diag	note	1285000000	1	:held_record_runs:i1:watch_q	q1 0HHH 0
+diag	note	1285000000	1	:held_record_runs:i2:watch	r4 'U' 000H0000 '0'0000 2 red true
+diag	note	1285000000	1	:held_record_runs:i2:watch_q	q4 0XXX 0
+diag	note	1295000000	1	:held_record_runs:i1:watch	r1 'X' 000H0000 '0'0000 4 red true
+diag	note	1295000000	1	:held_record_runs:i1:watch_q	q1 -1-- 1
+diag	note	1295000000	1	:held_record_runs:i2:watch	r4 'U' 000H0000 '0'0000 1 red true
+diag	note	1295000000	1	:held_record_runs:i2:watch_q	q4 0100 1
+diag	note	1305000000	1	:held_record_runs:i1:watch	r1 'X' 000H0000 '0'0000 0 red true
+diag	note	1305000000	1	:held_record_runs:i1:watch_rr	rr1 123,104 00 000000C00001800003 'U'
+diag	note	1305000000	1	:held_record_runs:i1:watch_q	q1 --Z- 2
+diag	note	1305000000	1	:held_record_runs:i2:watch	r4 'Z' 000H0000 '0'0000 0 red true
+diag	note	1305000000	1	:held_record_runs:i2:watch_rr	rr4 123,104 00 000000C00001800003 '1'
+diag	note	1305000000	1	:held_record_runs:i2:watch_q	q4 00Z0 2
+diag	note	1315000000	1	:held_record_runs:i1:watch	r1 'X' 000H0000 '0'0000 1 red true
+diag	note	1315000000	1	:held_record_runs:i1:watch_q	q1 ---W 3
+diag	note	1315000000	1	:held_record_runs:i2:watch	r4 'Z' 000H0000 '0'0000 4 red true
+diag	note	1315000000	1	:held_record_runs:i2:watch_q	q4 000W 3
+diag	note	1325000000	1	:held_record_runs:i1:watch	r1 'X' 000H0000 '0'0000 2 red true
+diag	note	1325000000	1	:held_record_runs:i1:watch_q	q1 LUUU 0
+diag	note	1325000000	1	:held_record_runs:i2:watch	r4 'Z' 000H0000 '0'0000 3 red true
+diag	note	1325000000	1	:held_record_runs:i2:watch_q	q4 L111 0
+diag	note	1335000000	1	:held_record_runs:i1:watch	r1 'X' 000H0000 '0'0000 3 red true
+diag	note	1335000000	1	:held_record_runs:i1:watch_q	q1 UHUU 1
+diag	note	1335000000	1	:held_record_runs:i2:watch	r4 'Z' 000H0000 '0'0000 2 red true
+diag	note	1335000000	1	:held_record_runs:i2:watch_q	q4 1H11 1
+diag	note	1345000000	1	:held_record_runs:i1:watch	r1 '0' 000H0000 '0'0000 4 red true
+diag	note	1345000000	1	:held_record_runs:i1:watch_q	q1 UU-U 2
+diag	note	1345000000	1	:held_record_runs:i2:watch	r4 'Z' 000H0000 '0'0000 1 red true
+diag	note	1345000000	1	:held_record_runs:i2:watch_q	q4 11-1 2
+diag	note	1355000000	1	:held_record_runs:i1:watch	r1 '0' U00H0000 '1'000Z 0 red true
+diag	note	1355000000	1	:held_record_runs:i1:watch_rr	rr1 123,104 00 000000C00001800003 'X'
+diag	note	1355000000	1	:held_record_runs:i1:watch_q	q1 XXXU 3
+diag	note	1355000000	1	:held_record_runs:i2:watch	r4 'Z' U00H0000 '1'000Z 0 red true
+diag	note	1355000000	1	:held_record_runs:i2:watch_rr	rr4 123,104 00 000000C00001800003 'Z'
+diag	note	1355000000	1	:held_record_runs:i2:watch_q	q4 ZZZU 3
+diag	note	1365000000	1	:held_record_runs:i1:watch	r1 '0' U00H0000 '1'000Z 1 red true
+diag	note	1365000000	1	:held_record_runs:i1:watch_q	q1 XXXX 0
+diag	note	1365000000	1	:held_record_runs:i2:watch	r4 'Z' U00H0000 '1'000Z 4 red true
+diag	note	1365000000	1	:held_record_runs:i2:watch_q	q4 XZZZ 0
+diag	note	1375000000	1	:held_record_runs:i1:watch	r1 '0' U00H0000 '1'000Z 2 red true
+diag	note	1375000000	1	:held_record_runs:i1:watch_q	q1 X0XX 1
+diag	note	1375000000	1	:held_record_runs:i2:watch	r4 'W' U00H0000 '1'000Z 3 red true
+diag	note	1375000000	1	:held_record_runs:i2:watch_q	q4 Z0ZZ 1
+diag	note	1385000000	1	:held_record_runs:i1:watch	r1 '0' U00H0000 '1'000Z 3 blue true
+diag	note	1385000000	1	:held_record_runs:i1:watch_q	q1 0010 2
+diag	note	1385000000	1	:held_record_runs:i2:watch	r4 'W' U00H0000 '1'000Z 2 blue true
+diag	note	1385000000	1	:held_record_runs:i2:watch_q	q4 WW1W 2
+diag	note	1395000000	1	:held_record_runs:i1:watch	r1 '0' U00H0000 '1'000Z 4 blue true
+diag	note	1395000000	1	:held_record_runs:i1:watch_rr	rr1 123,104 00 200000C00001800003 'X'
+diag	note	1395000000	1	:held_record_runs:i1:watch_q	q1 000Z 3
+diag	note	1395000000	1	:held_record_runs:i2:watch	r4 'W' U00H0000 '1'000Z 1 blue true
+diag	note	1395000000	1	:held_record_runs:i2:watch_rr	rr4 123,104 00 200000C00001800003 'Z'
+diag	note	1395000000	1	:held_record_runs:i2:watch_q	q4 WWWZ 3
+diag	note	1405000000	1	:held_record_runs:i1:watch	r1 '0' U00H0000 '1'000Z 0 blue true
+diag	note	1405000000	1	:held_record_runs:i1:watch_rr	rr1 123,104 00 200000C00001800003 '0'
+diag	note	1405000000	1	:held_record_runs:i1:watch_q	q1 W000 0
+diag	note	1405000000	1	:held_record_runs:i2:watch	r4 'W' U00H0000 '1'000Z 0 blue true
+diag	note	1405000000	1	:held_record_runs:i2:watch_rr	rr4 123,104 00 200000C00001800003 'W'
+diag	note	1405000000	1	:held_record_runs:i2:watch_q	q4 WWWW 0
+diag	note	1415000000	1	:held_record_runs:i1:watch	r1 '1' U00H0000 '1'000Z 1 blue true
+diag	note	1415000000	1	:held_record_runs:i1:watch_q	q1 1L11 1
+diag	note	1415000000	1	:held_record_runs:i2:watch	r4 'W' U00H0000 '1'000Z 4 blue true
+diag	note	1415000000	1	:held_record_runs:i2:watch_q	q4 LLLL 1
+diag	note	1425000000	1	:held_record_runs:i1:watch	r1 '1' U00H0000 '1'000Z 2 blue true
+diag	note	1425000000	1	:held_record_runs:i1:watch_rr	rr1 123,104 00 200000C00001800003 '0'
+diag	note	1425000000	1	:held_record_runs:i1:watch_q	q1 11H1 2
+diag	note	1425000000	1	:held_record_runs:i2:watch	r4 'W' U00H0000 '1'000Z 3 blue true
+diag	note	1425000000	1	:held_record_runs:i2:watch_rr	rr4 123,104 00 200000C00001800003 'W'
+diag	note	1425000000	1	:held_record_runs:i2:watch_q	q4 LLHL 2
+diag	note	1435000000	1	:held_record_runs:i1:watch	r1 '1' U00H0000 '1'000Z 3 blue true
+diag	note	1435000000	1	:held_record_runs:i1:watch_q	q1 111- 3
+diag	note	1435000000	1	:held_record_runs:i2:watch	r4 'W' U00H0000 '1'000Z 2 blue true
+diag	note	1435000000	1	:held_record_runs:i2:watch_q	q4 LLL- 3
+diag	note	1445000000	1	:held_record_runs:i1:watch	r1 '1' U00H0000 '1'000Z 4 blue true
+diag	note	1445000000	1	:held_record_runs:i1:watch_q	q1 UZZZ 0
+diag	note	1445000000	1	:held_record_runs:i2:watch	r4 'L' U00H0000 '1'000Z 1 blue true
+diag	note	1445000000	1	:held_record_runs:i2:watch_q	q4 UHHH 0
+diag	note	1455000000	1	:held_record_runs:i1:watch	r1 '1' U00H0000 '1'000Z 0 blue true
+diag	note	1455000000	1	:held_record_runs:i1:watch_rr	rr1 123,104 00 200000C00001800003 '1'
+diag	note	1455000000	1	:held_record_runs:i1:watch_q	q1 ZXZZ 1
+diag	note	1455000000	1	:held_record_runs:i2:watch	r4 'L' U00H0000 '1'000Z 0 blue true
+diag	note	1455000000	1	:held_record_runs:i2:watch_rr	rr4 123,104 00 200000C00001800003 'L'
+diag	note	1455000000	1	:held_record_runs:i2:watch_q	q4 HXHH 1
+diag	note	1465000000	1	:held_record_runs:i1:watch	r1 '1' U00H0000 '1'000Z 1 blue true
+diag	note	1465000000	1	:held_record_runs:i1:watch_q	q1 ZZ0Z 2
+diag	note	1465000000	1	:held_record_runs:i2:watch	r4 'L' U00H0000 '1'000Z 4 blue true
+diag	note	1465000000	1	:held_record_runs:i2:watch_q	q4 HH0H 2
+diag	note	1475000000	1	:held_record_runs:i1:watch	r1 '1' U00H0000 '1'000Z 2 blue true
+diag	note	1475000000	1	:held_record_runs:i1:watch_q	q1 WWW1 3
+diag	note	1475000000	1	:held_record_runs:i2:watch	r4 'L' U00H0000 '1'000Z 3 blue true
+diag	note	1475000000	1	:held_record_runs:i2:watch_q	q4 ---1 3
+diag	note	1485000000	1	:held_record_runs:i1:watch	r1 'Z' U00H0000 '0'-00Z 3 blue true
+diag	note	1485000000	1	:held_record_runs:i1:watch_q	q1 ZWWW 0
+diag	note	1485000000	1	:held_record_runs:i2:watch	r4 'L' U00H0000 '0'-00Z 2 blue true
+diag	note	1485000000	1	:held_record_runs:i2:watch_q	q4 Z--- 0
+diag	note	1495000000	1	:held_record_runs:i1:watch	r1 'Z' U00H0000 '0'-00Z 4 blue true
+diag	note	1495000000	1	:held_record_runs:i1:watch_q	q1 WWWW 1
+diag	note	1495000000	1	:held_record_runs:i2:watch	r4 'L' U00H0000 '0'-00Z 1 blue true
+diag	note	1495000000	1	:held_record_runs:i2:watch_q	q4 -W-- 1
+diag	note	1505000000	1	:held_record_runs:i1:watch	r1 'Z' U00H0000 '0'-00Z 0 blue true
+diag	note	1505000000	1	:held_record_runs:i1:watch_rr	rr1 123,104 00 200000C00001800003 'Z'
+diag	note	1505000000	1	:held_record_runs:i1:watch_q	q1 LLLL 2
+diag	note	1505000000	1	:held_record_runs:i2:watch	r4 'L' U00H0000 '0'-00Z 0 blue true
+diag	note	1505000000	1	:held_record_runs:i2:watch_rr	rr4 123,104 00 200000C00001800003 'H'
+diag	note	1505000000	1	:held_record_runs:i2:watch_q	q4 UULU 2
+diag	note	1515000000	1	:held_record_runs:i1:watch	r1 'Z' U00H0000 '0'-00Z 1 blue true
+diag	note	1515000000	1	:held_record_runs:i1:watch_q	q1 LLLH 3
+diag	note	1515000000	1	:held_record_runs:i2:watch	r4 'H' U00H0000 '0'-00Z 4 blue true
+diag	note	1515000000	1	:held_record_runs:i2:watch_q	q4 UUUH 3
+diag	note	1525000000	1	:held_record_runs:i1:watch	r1 'Z' U00H0000 '0'-00Z 2 blue true
+diag	note	1525000000	1	:held_record_runs:i1:watch_q	q1 -LLL 0
+diag	note	1525000000	1	:held_record_runs:i2:watch	r4 'H' U00H0000 '0'-00Z 3 blue true
+diag	note	1525000000	1	:held_record_runs:i2:watch_q	q4 -UUU 0
+diag	note	1535000000	1	:held_record_runs:i1:watch	r1 'Z' U00H0000 '0'-00Z 3 blue false
+diag	note	1535000000	1	:held_record_runs:i1:watch_q	q1 HUHH 1
+diag	note	1535000000	1	:held_record_runs:i2:watch	r4 'H' U00H0000 '0'-00Z 2 blue false
+diag	note	1535000000	1	:held_record_runs:i2:watch_q	q4 XUXX 1
+diag	note	1545000000	1	:held_record_runs:i1:watch	r1 'U' 00000000 '0'0000 0 red false
+diag	note	1545000000	1	:held_record_runs:i1:watch_q	q1 HHXH 2
+diag	note	1545000000	1	:held_record_runs:i2:watch	r4 'U' 00000000 '0'0000 0 red false
+diag	note	1545000000	1	:held_record_runs:i2:watch_q	q4 XXXX 2
+diag	note	1555000000	1	:held_record_runs:i1:watch	r1 'W' 00000000 '0'0000 0 red false
+diag	note	1555000000	1	:held_record_runs:i1:watch_rr	rr1 123,104 00 200000C00001800003 'W'
+diag	note	1555000000	1	:held_record_runs:i1:watch_q	q1 HHH0 3
+diag	note	1555000000	1	:held_record_runs:i2:watch_rr	rr4 123,104 00 200000C00001800003 '-'
+diag	note	1555000000	1	:held_record_runs:i2:watch_q	q4 XXX0 3
+diag	note	1565000000	1	:held_record_runs:i1:watch	r1 'W' 00000000 '0'0000 1 red false
+diag	note	1565000000	1	:held_record_runs:i1:watch_q	q1 1--- 0
+diag	note	1565000000	1	:held_record_runs:i2:watch	r4 'U' 00000000 '0'0000 4 red false
+diag	note	1565000000	1	:held_record_runs:i2:watch_q	q4 1000 0
+diag	note	1575000000	1	:held_record_runs:i1:watch	r1 'W' 00Z00000 '0'0000 2 red false
+diag	note	1575000000	1	:held_record_runs:i1:watch_q	q1 -Z-- 1
+diag	note	1575000000	1	:held_record_runs:i2:watch	r4 'U' 00Z00000 '0'0000 3 red false
+diag	note	1575000000	1	:held_record_runs:i2:watch_q	q4 0Z00 1
+diag	note	1585000000	1	:held_record_runs:i1:watch	r1 'W' 00Z00000 '0'0000 3 red false
+diag	note	1585000000	1	:held_record_runs:i1:watch_q	q1 --W- 2
+diag	note	1585000000	1	:held_record_runs:i2:watch	r4 '-' 00Z00000 '0'0000 2 red false
+diag	note	1585000000	1	:held_record_runs:i2:watch_q	q4 00W0 2
+diag	note	1595000000	1	:held_record_runs:i1:watch	r1 'W' 00Z00000 '0'0000 4 red false
+diag	note	1595000000	1	:held_record_runs:i1:watch_q	q1 UUUL 3
+diag	note	1595000000	1	:held_record_runs:i2:watch	r4 '-' 00Z00000 '0'0000 1 red false
+diag	note	1595000000	1	:held_record_runs:i2:watch_q	q4 111L 3
+diag	note	1605000000	1	:held_record_runs:i1:watch	r1 'W' 00Z00000 '0'0000 0 red false
+diag	note	1605000000	1	:held_record_runs:i1:watch_rr	rr1 123,104 00 200000C00001800003 'L'
+diag	note	1605000000	1	:held_record_runs:i1:watch_q	q1 HUUU 0
+diag	note	1605000000	1	:held_record_runs:i2:watch	r4 '-' 00Z00000 '0'0000 0 red false
+diag	note	1605000000	1	:held_record_runs:i2:watch_rr	rr4 123,104 00 200000C00001800003 'U'
+diag	note	1605000000	1	:held_record_runs:i2:watch_q	q4 H111 0
+diag	note	1615000000	1	:held_record_runs:i1:watch	r1 'W' 00Z00000 '1'0100 1 red false
+diag	note	1615000000	1	:held_record_runs:i1:watch_rr	rr1 123,104 00 200000C00001800003 'L'
+diag	note	1615000000	1	:held_record_runs:i1:watch_q	q1 U-UU 1
+diag	note	1615000000	1	:held_record_runs:i2:watch	r4 '-' 00Z00000 '1'0100 4 red false
+diag	note	1615000000	1	:held_record_runs:i2:watch_rr	rr4 123,104 00 200000C00001800003 'U'
+diag	note	1615000000	1	:held_record_runs:i2:watch_q	q4 1-11 1
+diag	note	1625000000	1	:held_record_runs:i1:watch	r1 'L' 00Z00000 '1'0100 2 red false
+diag	note	1625000000	1	:held_record_runs:i1:watch_rr	rr1 123,104 00 200000C00001C00003 'L'
+diag	note	1625000000	1	:held_record_runs:i1:watch_q	q1 XXUX 2
+diag	note	1625000000	1	:held_record_runs:i2:watch	r4 '-' 00Z00000 '1'0100 3 red false
+diag	note	1625000000	1	:held_record_runs:i2:watch_rr	rr4 123,104 00 200000C00001C00003 'U'
+diag	note	1625000000	1	:held_record_runs:i2:watch_q	q4 ZZUZ 2
+diag	note	1635000000	1	:held_record_runs:i1:watch	r1 'L' 00Z00000 '1'0100 3 red false
+diag	note	1635000000	1	:held_record_runs:i1:watch_q	q1 XXXX 3
+diag	note	1635000000	1	:held_record_runs:i2:watch	r4 '-' 00Z00000 '1'0100 2 red false
+diag	note	1635000000	1	:held_record_runs:i2:watch_q	q4 ZZZX 3
+diag	note	1645000000	1	:held_record_runs:i1:watch	r1 'L' 00Z00000 '1'0100 4 red false
+diag	note	1645000000	1	:held_record_runs:i1:watch_q	q1 0XXX 0
+diag	note	1645000000	1	:held_record_runs:i2:watch	r4 '-' 00Z00000 '1'0100 1 red false
+diag	note	1645000000	1	:held_record_runs:i2:watch_q	q4 0ZZZ 0
+diag	note	1655000000	1	:held_record_runs:i1:watch	r1 'L' 00Z00000 '1'0100 0 red false
+diag	note	1655000000	1	:held_record_runs:i1:watch_rr	rr1 123,104 00 200000C00001C00003 'H'
+diag	note	1655000000	1	:held_record_runs:i1:watch_q	q1 0100 1
+diag	note	1655000000	1	:held_record_runs:i2:watch	r4 'U' 00Z00000 '1'0100 0 red false
+diag	note	1655000000	1	:held_record_runs:i2:watch_rr	rr4 123,104 00 200000C00001C00003 'X'
+diag	note	1655000000	1	:held_record_runs:i2:watch_q	q4 W1WW 1
+diag	note	1665000000	1	:held_record_runs:i1:watch	r1 'L' 00Z00000 '1'0100 1 red false
+diag	note	1665000000	1	:held_record_runs:i1:watch_q	q1 00Z0 2
+diag	note	1665000000	1	:held_record_runs:i2:watch	r4 'U' 00Z00000 '1'0100 4 red false
+diag	note	1665000000	1	:held_record_runs:i2:watch_q	q4 WWZW 2
+diag	note	1675000000	1	:held_record_runs:i1:watch	r1 'L' 00Z00000 '1'0100 2 red false
+diag	note	1675000000	1	:held_record_runs:i1:watch_q	q1 000W 3
+diag	note	1675000000	1	:held_record_runs:i2:watch	r4 'U' 00Z00000 '1'0100 3 red false
+diag	note	1675000000	1	:held_record_runs:i2:watch_q	q4 WWWW 3
+diag	note	1685000000	1	:held_record_runs:i1:watch	r1 'L' 00Z0000L '1'0100 3 red false
+diag	note	1685000000	1	:held_record_runs:i1:watch_q	q1 L111 0
+diag	note	1685000000	1	:held_record_runs:i2:watch	r4 'U' 00Z0000L '1'0100 2 red false
+diag	note	1685000000	1	:held_record_runs:i2:watch_q	q4 LLLL 0
+diag	note	1695000000	1	:held_record_runs:i1:watch	r1 'H' 00Z0000L '1'0100 4 red false
+diag	note	1695000000	1	:held_record_runs:i1:watch_q	q1 1H11 1
+diag	note	1695000000	1	:held_record_runs:i2:watch	r4 'U' 00Z0000L '1'0100 1 red false
+diag	note	1695000000	1	:held_record_runs:i2:watch_q	q4 LHLL 1
+diag	note	1705000000	1	:held_record_runs:i1:watch	r1 'H' 00Z0000L '1'0100 0 red false
+diag	note	1705000000	1	:held_record_runs:i1:watch_rr	rr1 123,104 00 200000C00001C00003 '-'
+diag	note	1705000000	1	:held_record_runs:i1:watch_q	q1 11-1 2
+diag	note	1705000000	1	:held_record_runs:i2:watch	r4 'U' 00Z0000L '1'0100 0 red false
+diag	note	1705000000	1	:held_record_runs:i2:watch_rr	rr4 123,104 00 200000C00001C00003 '0'
+diag	note	1705000000	1	:held_record_runs:i2:watch_q	q4 LL-L 2
+diag	note	1715000000	1	:held_record_runs:i1:watch	r1 'H' 00Z0000L '1'0100 1 red false
+diag	note	1715000000	1	:held_record_runs:i1:watch_q	q1 ZZZU 3
+diag	note	1715000000	1	:held_record_runs:i2:watch	r4 'U' 00Z0000L '1'0100 4 red false
+diag	note	1715000000	1	:held_record_runs:i2:watch_q	q4 HHHU 3
+diag	note	1725000000	1	:held_record_runs:i1:watch	r1 'H' 00Z0000L '1'0100 2 green false
+diag	note	1725000000	1	:held_record_runs:i1:watch_q	q1 XZZZ 0
+diag	note	1725000000	1	:held_record_runs:i2:watch	r4 'X' 00Z0000L '1'0100 3 green false
+diag	note	1725000000	1	:held_record_runs:i2:watch_q	q4 XHHH 0
+diag	note	1735000000	1	:held_record_runs:i1:watch	r1 'H' 00Z0000L '1'0100 3 green false
+diag	note	1735000000	1	:held_record_runs:i1:watch_q	q1 Z0ZZ 1
+diag	note	1735000000	1	:held_record_runs:i2:watch	r4 'X' 00Z0000L '1'0100 2 green false
+diag	note	1735000000	1	:held_record_runs:i2:watch_q	q4 H0HH 1
+diag	note	1745000000	1	:held_record_runs:i1:watch	r1 'H' 00Z0000L '0'01H0 4 green false
+diag	note	1745000000	1	:held_record_runs:i1:watch_q	q1 WW1W 2
+diag	note	1745000000	1	:held_record_runs:i2:watch	r4 'X' 00Z0000L '0'01H0 1 green false
+diag	note	1745000000	1	:held_record_runs:i2:watch_q	q4 --1- 2
+diag	note	1755000000	1	:held_record_runs:i1:watch	r1 'H' 00Z0000L '0'01H0 0 green false
+diag	note	1755000000	1	:held_record_runs:i1:watch_rr	rr1 123,104 00 200000C00001C00003 'U'
+diag	note	1755000000	1	:held_record_runs:i1:watch_q	q1 WWWZ 3
+diag	note	1755000000	1	:held_record_runs:i2:watch	r4 'X' 00Z0000L '0'01H0 0 green false
+diag	note	1755000000	1	:held_record_runs:i2:watch_rr	rr4 123,104 00 200000C00001C00003 '1'
+diag	note	1755000000	1	:held_record_runs:i2:watch_q	q4 ---Z 3
+diag	note	1765000000	1	:held_record_runs:i1:watch	r1 '-' 00Z0000L '0'01H0 1 green false
+diag	note	1765000000	1	:held_record_runs:i1:watch_q	q1 WWWW 0
+diag	note	1765000000	1	:held_record_runs:i2:watch	r4 'X' 00Z0000L '0'01H0 4 green false
+diag	note	1765000000	1	:held_record_runs:i2:watch_q	q4 W--- 0
+diag	note	1775000000	1	:held_record_runs:i1:watch	r1 '-' 00Z0000L '0'01H0 2 green false
+diag	note	1775000000	1	:held_record_runs:i1:watch_q	q1 LLLL 1
+diag	note	1775000000	1	:held_record_runs:i2:watch	r4 'X' 00Z0000L '0'01H0 3 green false
+diag	note	1775000000	1	:held_record_runs:i2:watch_q	q4 ULUU 1
+diag	note	1785000000	1	:held_record_runs:i1:watch	r1 '-' 00Z0000L '0'01H0 3 green false
+diag	note	1785000000	1	:held_record_runs:i1:watch_q	q1 LLHL 2
+diag	note	1785000000	1	:held_record_runs:i2:watch	r4 'X' 00Z0000L '0'01H0 2 green false
+diag	note	1785000000	1	:held_record_runs:i2:watch_q	q4 UUHU 2
+diag	note	1795000000	1	:held_record_runs:i1:watch	r1 '-' 00Z0-00L '0'01H0 4 green false
+diag	note	1795000000	1	:held_record_runs:i1:watch_q	q1 LLL- 3
+diag	note	1795000000	1	:held_record_runs:i2:watch	r4 '0' 00Z0-00L '0'01H0 1 green false
+diag	note	1795000000	1	:held_record_runs:i2:watch_q	q4 UUU- 3
+diag	note	1805000000	1	:held_record_runs:i1:watch	r1 '-' 00Z0-00L '0'01H0 0 green false
+diag	note	1805000000	1	:held_record_runs:i1:watch_rr	rr1 123,180 00 200000C00001C00003 'X'
+diag	note	1805000000	1	:held_record_runs:i1:watch_q	q1 UHHH 0
+diag	note	1805000000	1	:held_record_runs:i2:watch	r4 '0' 00Z0-00L '0'01H0 0 green false
+diag	note	1805000000	1	:held_record_runs:i2:watch_rr	rr4 123,180 00 200000C00001C00003 'Z'
+diag	note	1805000000	1	:held_record_runs:i2:watch_q	q4 UXXX 0
+diag	note	1815000000	1	:held_record_runs:i1:watch	r1 '-' 00Z0-00L '0'01H0 1 green false
+diag	note	1815000000	1	:held_record_runs:i1:watch_q	q1 HXHH 1
+diag	note	1815000000	1	:held_record_runs:i2:watch	r4 '0' 00Z0-00L '0'01H0 4 green false
+diag	note	1815000000	1	:held_record_runs:i2:watch_q	q4 XXXX 1
+diag	note	1825000000	1	:held_record_runs:i1:watch	r1 '-' 00Z0-00L '0'01H0 2 green true
+diag	note	1825000000	1	:held_record_runs:i1:watch_q	q1 HH0H 2
+diag	note	1825000000	1	:held_record_runs:i2:watch	r4 '0' 00Z0-00L '0'01H0 3 green true
+diag	note	1825000000	1	:held_record_runs:i2:watch_q	q4 XX0X 2
+diag	note	1835000000	1	:held_record_runs:i1:watch	r1 'U' 00Z0-00L '0'01H0 3 green true
+diag	note	1835000000	1	:held_record_runs:i1:watch_q	q1 ---1 3
+diag	note	1835000000	1	:held_record_runs:i2:watch	r4 '0' 00Z0-00L '0'01H0 2 green true
+diag	note	1835000000	1	:held_record_runs:i2:watch_q	q4 0001 3
+diag	note	1845000000	1	:held_record_runs:i1:watch	r1 'U' 00Z0-00L '0'01H0 4 green true
+diag	note	1845000000	1	:held_record_runs:i1:watch_q	q1 Z--- 0
+diag	note	1845000000	1	:held_record_runs:i2:watch	r4 '0' 00Z0-00L '0'01H0 1 green true
+diag	note	1845000000	1	:held_record_runs:i2:watch_q	q4 Z000 0
+diag	note	1855000000	1	:held_record_runs:i1:watch	r1 'U' 00000000 '0'0000 0 red false
+diag	note	1855000000	1	:held_record_runs:i1:watch_rr	rr1 123,180 00 200000E00001C00003 '0'
+diag	note	1855000000	1	:held_record_runs:i1:watch_q	q1 -W-- 1
+diag	note	1855000000	1	:held_record_runs:i2:watch	r4 'U' 00000000 '0'0000 0 red false
+diag	note	1855000000	1	:held_record_runs:i2:watch_rr	rr4 123,180 00 200000E00001C00003 'W'
+diag	note	1855000000	1	:held_record_runs:i2:watch_q	q4 0W00 1
+diag	note	1865000000	1	:held_record_runs:i1:watch	r1 'U' 00000000 '0'0000 1 red false
+diag	note	1865000000	1	:held_record_runs:i1:watch_q	q1 UULU 2
+diag	note	1865000000	1	:held_record_runs:i2:watch	r4 '1' 00000000 '0'0000 4 red false
+diag	note	1865000000	1	:held_record_runs:i2:watch_q	q4 11L1 2
+diag	note	1875000000	1	:held_record_runs:i1:watch	r1 'U' 00000000 '1'0000 2 red false
+diag	note	1875000000	1	:held_record_runs:i1:watch_q	q1 UUUH 3
+diag	note	1875000000	1	:held_record_runs:i2:watch	r4 '1' 00000000 '1'0000 3 red false
+diag	note	1875000000	1	:held_record_runs:i2:watch_q	q4 111H 3
+diag	note	1885000000	1	:held_record_runs:i1:watch	r1 'U' 00000000 '1'0000 3 red false
+diag	note	1885000000	1	:held_record_runs:i1:watch_q	q1 -UUU 0
+diag	note	1885000000	1	:held_record_runs:i2:watch	r4 '1' 00000000 '1'0000 2 red false
+diag	note	1885000000	1	:held_record_runs:i2:watch_q	q4 -111 0
+diag	note	1895000000	1	:held_record_runs:i1:watch	r1 'U' 00000000 '1'0000 4 blue false
+diag	note	1895000000	1	:held_record_runs:i1:watch_q	q1 XUXX 1
+diag	note	1895000000	1	:held_record_runs:i2:watch	r4 '1' 00000000 '1'0000 1 blue false
+diag	note	1895000000	1	:held_record_runs:i2:watch_q	q4 ZUZZ 1
+diag	note	1905000000	1	:held_record_runs:i1:watch	r1 'X' 0X000000 '1'0000 0 blue false
+diag	note	1905000000	1	:held_record_runs:i1:watch_rr	rr1 123,180 00 200000E00001C00003 '1'
+diag	note	1905000000	1	:held_record_runs:i1:watch_q	q1 XXXX 2
+diag	note	1905000000	1	:held_record_runs:i2:watch	r4 '1' 0X000000 '1'0000 0 blue false
+diag	note	1905000000	1	:held_record_runs:i2:watch_rr	rr4 123,180 00 200000E00001C00003 'L'
+diag	note	1905000000	1	:held_record_runs:i2:watch_q	q4 ZZXZ 2
+diag	note	1915000000	1	:held_record_runs:i1:watch	r1 'X' 0X000000 '1'0000 1 blue false
+diag	note	1915000000	1	:held_record_runs:i1:watch_q	q1 XXX0 3
+diag	note	1915000000	1	:held_record_runs:i2:watch	r4 '1' 0X000000 '1'0000 4 blue false
+diag	note	1915000000	1	:held_record_runs:i2:watch_q	q4 ZZZ0 3
+diag	note	1925000000	1	:held_record_runs:i1:watch	r1 'X' 0X000000 '1'0000 2 blue false
+diag	note	1925000000	1	:held_record_runs:i1:watch_q	q1 1000 0
+diag	note	1925000000	1	:held_record_runs:i2:watch	r4 '1' 0X000000 '1'0000 3 blue false
+diag	note	1925000000	1	:held_record_runs:i2:watch_q	q4 1WWW 0
+diag	note	1935000000	1	:held_record_runs:i1:watch	r1 'X' 0X000000 '1'0000 3 blue false
+diag	note	1935000000	1	:held_record_runs:i1:watch_q	q1 0Z00 1
+diag	note	1935000000	1	:held_record_runs:i2:watch	r4 'Z' 0X000000 '1'0000 2 blue false
+diag	note	1935000000	1	:held_record_runs:i2:watch_q	q4 WZWW 1
+diag	note	1945000000	1	:held_record_runs:i1:watch	r1 'X' 0X000000 '1'0000 4 blue false
+diag	note	1945000000	1	:held_record_runs:i1:watch_q	q1 00W0 2
+diag	note	1945000000	1	:held_record_runs:i2:watch	r4 'Z' 0X000000 '1'0000 1 blue false
+diag	note	1945000000	1	:held_record_runs:i2:watch_q	q4 WWWW 2
+diag	note	1955000000	1	:held_record_runs:i1:watch	r1 'X' 0X000000 '1'0000 0 blue false
+diag	note	1955000000	1	:held_record_runs:i1:watch_rr	rr1 123,180 00 200000E00001C00003 'Z'
+diag	note	1955000000	1	:held_record_runs:i1:watch_q	q1 111L 3
+diag	note	1955000000	1	:held_record_runs:i2:watch	r4 'Z' 0X000000 '1'0000 0 blue false
+diag	note	1955000000	1	:held_record_runs:i2:watch_rr	rr4 123,180 00 200000E00001C00003 'H'
+diag	note	1955000000	1	:held_record_runs:i2:watch_q	q4 LLLL 3
+diag	note	1965000000	1	:held_record_runs:i1:watch	r1 'X' 0X000000 '1'0000 1 blue false
+diag	note	1965000000	1	:held_record_runs:i1:watch_q	q1 H111 0
+diag	note	1965000000	1	:held_record_runs:i2:watch	r4 'Z' 0X000000 '1'0000 4 blue false
+diag	note	1965000000	1	:held_record_runs:i2:watch_q	q4 HLLL 0
+diag	note	1975000000	1	:held_record_runs:i1:watch	r1 '0' 0X000000 '1'0000 2 blue false
+diag	note	1975000000	1	:held_record_runs:i1:watch_q	q1 1-11 1
+diag	note	1975000000	1	:held_record_runs:i2:watch	r4 'Z' 0X000000 '1'0000 3 blue false
+diag	note	1975000000	1	:held_record_runs:i2:watch_q	q4 L-LL 1
+diag	note	1985000000	1	:held_record_runs:i1:watch	r1 '0' 0X000000 '1'0000 3 blue false
+diag	note	1985000000	1	:held_record_runs:i1:watch_q	q1 ZZUZ 2
+diag	note	1985000000	1	:held_record_runs:i2:watch	r4 'Z' 0X000000 '1'0000 2 blue false
+diag	note	1985000000	1	:held_record_runs:i2:watch_q	q4 HHUH 2
+diag	note	1995000000	1	:held_record_runs:i1:watch	r1 '0' 0X000000 '1'0000 4 blue false
+diag	note	1995000000	1	:held_record_runs:i1:watch_rr	rr1 199,180 00 200000E00001C00003 'Z'
+diag	note	1995000000	1	:held_record_runs:i1:watch_q	q1 ZZZX 3
+diag	note	1995000000	1	:held_record_runs:i2:watch	r4 'Z' 0X000000 '1'0000 1 blue false
+diag	note	1995000000	1	:held_record_runs:i2:watch_rr	rr4 199,180 00 200000E00001C00003 'H'
+diag	note	1995000000	1	:held_record_runs:i2:watch_q	q4 HHHX 3
+diag	note	2015000000	0	:held_record_runs:_p2	done 1813235 1814235

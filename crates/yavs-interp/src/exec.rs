@@ -2892,6 +2892,18 @@ impl Machine {
         mk_addr(TEMP, 0, off)
     }
 
+    /// `bytes` copied into new temporary memory, aligned as `temp_alloc` aligns: their address.
+    pub(crate) fn temp_bytes(&mut self, bytes: &[u8]) -> R<u64> {
+        let off = (self.temp.len() as u64).next_multiple_of(8);
+        if off + bytes.len() as u64 > u64::from(u32::MAX) {
+            return rt_err_s!("temporary memory of one statement exceeds 4 GiB");
+        }
+        self.temp.resize(off as usize, 0);
+        self.temp.extend_from_slice(bytes);
+        // `off` is below 2^32 (checked above): the address is the space and the offset.
+        Ok(u64::from(TEMP) << 61 | off)
+    }
+
     /// The words `f(addr)` in temporary memory, where `addr` is the address of the first one.
     #[inline(always)]
     pub(crate) fn temp_words<const N: usize>(&mut self, f: impl FnOnce(u64) -> [u64; N]) -> R<u64> {

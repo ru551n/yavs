@@ -96,8 +96,13 @@ fn tables_change_nothing_but_the_work() {
         );
         assert_eq!(all.matches("opwarn: sub").count(), 3, "{all}");
         assert_eq!(all.matches("opwarn: shr").count(), 3, "{all}");
-        // The tables answer the calls: fewer reach the memo of pure calls.
+        // The tables answer the calls: fewer reach the memo of pure calls. (Compiled callers do
+        // not ask it for the case functions at all: they are cheap, `MemoSig::dear`.)
         let calls = |e: &str| counter(e, "pmemo_hits") + counter(e, "pmemo_runs");
-        assert!(calls(&e1) < calls(&e0), "{e0}\n{e1}");
+        if args.contains(&"--tier=interp") {
+            assert!(calls(&e1) < calls(&e0), "{e0}\n{e1}");
+        } else {
+            assert!(calls(&e1) <= calls(&e0), "{e0}\n{e1}");
+        }
     }
 }

@@ -2013,7 +2013,8 @@ struct Imports {
     /// `yavs_rt_scatter_part(mem, pc, driver, data, len_inertial, part, first, outer) -> u32`: a
     /// zero-delay drive of a part of a record signal.
     scatter_part: FuncRef,
-    /// `yavs_rt_wait_at(env, regs, mem, pc, t, 0) -> u32`: a `WaitAt` and its `Suspend`.
+    /// `yavs_rt_wait_at(env, regs, mem, pc, t, rel) -> u32`: a `WaitAt` or `WaitFor` and its
+    /// `Suspend`.
     wait_at: FuncRef,
     /// `yavs_rt_timed_out(mem) -> u32`: `TimedOut` (2: step it).
     timed_out: FuncRef,
@@ -4789,7 +4790,12 @@ fn gen_func(
             Inst::WaitAt { t }
                 if g.nat.is_none() && matches!(f.code.get(i + 1), Some(Inst::Suspend { .. })) =>
             {
-                g.wait_at(pc, t)
+                g.wait_at(pc, t, false)
+            }
+            Inst::WaitFor { t }
+                if g.nat.is_none() && matches!(f.code.get(i + 1), Some(Inst::Suspend { .. })) =>
+            {
+                g.wait_at(pc, t, true)
             }
             Inst::TimedOut { dst } if g.nat.is_none() => g.timed_out(pc, &inst, dst),
             Inst::WaitEdge { sig, kind } if g.nat.is_none() => g.wait_edge(pc, sig, kind.code()),
@@ -12595,11 +12601,12 @@ impl Gen<'_> {
         self.call_go(self.imp.wait_on, &[pcv, lo, len], true);
     }
 
-    /// A `WaitAt` and the `Suspend` after it through `yavs_rt_wait_at`: the kernel takes the
-    /// timeout and the process suspends, else the `WaitAt` is stepped and the `Suspend` follows.
-    fn wait_at(&mut self, pc: u32, t: Reg) {
-        let (pcv, tv, z) = (self.c32(pc), self.ld(t), self.c64(0));
-        self.call_go(self.imp.wait_at, &[pcv, tv, z], true);
+    /// A `WaitAt` (a `WaitFor` with `rel`) and the `Suspend` after it through `yavs_rt_wait_at`:
+    /// the kernel takes the timeout and the process suspends, else the instruction runs as before
+    /// (a step, a signal callback) and the `Suspend` follows.
+    fn wait_at(&mut self, pc: u32, t: Reg, rel: bool) {
+        let (pcv, tv, r) = (self.c32(pc), self.ld(t), self.c64(i64::from(rel)));
+        self.call_go(self.imp.wait_at, &[pcv, tv, r], true);
     }
 
     /// `TimedOut` from the kernel context (`yavs_rt_timed_out`), else stepped.

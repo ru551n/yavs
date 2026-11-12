@@ -781,11 +781,11 @@ pub trait TierHost {
         false
     }
 
-    /// The `WaitAt` at `pc` of the deadline `t` (fs) and the `Suspend` after it, from the root
-    /// frame, as [`TierHost::wait_again`]: `true` when done; `false` (nothing done) otherwise,
-    /// and the caller steps the `WaitAt`.
-    fn wait_timed(&mut self, pc: u32, t: i64) -> bool {
-        let _ = (pc, t);
+    /// The `WaitAt` at `pc` of the deadline `t` (fs), or with `rel` the `WaitFor` of the delay
+    /// `t`, and the `Suspend` after it, from the root frame, as [`TierHost::wait_again`]: `true`
+    /// when done; `false` (nothing done) otherwise, and the caller steps the instruction.
+    fn wait_timed(&mut self, pc: u32, t: i64, rel: bool) -> bool {
+        let _ = (pc, t, rel);
         false
     }
 
@@ -1316,12 +1316,18 @@ pub fn direct_wait_again(c: &mut Ctx<'_>, sigs: &[TierSig], sig: [u64; 2]) -> bo
     )
 }
 
-/// `Inst::WaitAt` of the deadline `t` (fs) on the kernel context, the `Suspend` after it left to
-/// the caller as for [`direct_wait_again`]: `false`, nothing done, for a deadline the host must
-/// step (negative or past: its error).
+/// `Inst::WaitAt` of the deadline `t` (fs), or with `rel` `Inst::WaitFor` of the delay `t`, on
+/// the kernel context, the `Suspend` after it left to the caller as for [`direct_wait_again`]:
+/// `false`, nothing done, for a time the host must step (negative, or a past deadline: its error).
 #[inline(always)]
-pub fn direct_wait_at(c: &mut Ctx<'_>, t: i64) -> bool {
-    yavs_kernel::Time::from_vhdl(t).is_ok_and(|t| c.wait_at(t).is_ok())
+pub fn direct_wait_at(c: &mut Ctx<'_>, t: i64, rel: bool) -> bool {
+    yavs_kernel::Time::from_vhdl(t).is_ok_and(|t| {
+        if rel {
+            c.wait_for(t).is_ok()
+        } else {
+            c.wait_at(t).is_ok()
+        }
+    })
 }
 
 /// `Inst::WaitEdge` of the signal reference `sig` and edge code `kind` on the kernel context:

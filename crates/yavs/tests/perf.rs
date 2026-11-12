@@ -1767,15 +1767,16 @@ mod clift {
     );
     // A `wait until .. for` that waits again: the `WaitAt` and its `Suspend` are one call of the
     // kernel (`yavs_rt_wait_at`) and `TimedOut` another, no step and no signal callback (6400
-    // wakes; 13 k steps and 6.8 k signal callbacks before).
+    // wakes; 13 k steps and 6.8 k signal callbacks before); so are the stimulus's 400 `wait for`
+    // and their `Suspend`s (800 signal callbacks before).
     clift_case!(
         timed_wait,
         "timeout_stale",
         "s=1700 t=4010000000 fs",
         [
             ("cb_step", Max(207)),
-            ("cb_signal", Max(431)),
-            ("cb_wait_at", Max(6600)),
+            ("cb_signal", Max(19)),
+            ("cb_wait_at", Max(7004)),
             ("cb_timed_out", Max(6610)),
         ]
     );

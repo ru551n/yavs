@@ -1569,20 +1569,22 @@ pub unsafe extern "C" fn yavs_rt_wait(
     unsafe { stepped(envp, mem, pc, r) }
 }
 
-/// A `WaitAt` of the deadline `t` (the register's value, fs) at `pc` and the `Suspend` after it:
+/// A `WaitAt` of the deadline `t` (the register's value, fs) at `pc`, or with `rel` 1 a `WaitFor`
+/// of the delay `t`, and the `Suspend` after it:
 /// the wait's timeout given to the kernel (itself, `yavs_interp::direct_wait_at`, else through
 /// `TierHost::wait_timed`, as `yavs_rt_wait` does for a `WaitOn`), `TIER_SUSPEND` at the
-/// `Suspend`; else the `WaitAt` stepped (`yavs_rt_step`, which reports a past deadline), and
-/// compiled code goes on to the `Suspend`.
+/// `Suspend`; else the `WaitAt` stepped (`yavs_rt_step`, which reports a past deadline) or the
+/// `WaitFor` run through `yavs_rt_signal`, and compiled code goes on to the `Suspend`.
 pub unsafe extern "C" fn yavs_rt_wait_at(
     env: *mut c_void,
     regs: *mut u64,
     mem: *mut Mem,
     pc: u32,
     t: u64,
-    _len: u64,
+    rel: u64,
 ) -> u32 {
     cb(Cb::WaitAt);
+    let rel = rel != 0;
     // SAFETY: `mem` is what compiled code was given.
     let env = unsafe { env_or(env, mem) };
     // SAFETY: as in `yavs_rt_step`.
@@ -1591,16 +1593,22 @@ pub unsafe extern "C" fn yavs_rt_wait_at(
     let fr = unsafe { &(*mem).fr };
     if fr.flags & yavs_interp::TIER_ROOT_WAIT != 0 {
         if let Some((c, _, _)) = unsafe { direct(fr) }
-            && yavs_interp::direct_wait_at(c, t as i64)
+            && yavs_interp::direct_wait_at(c, t as i64, rel)
         {
             unsafe { (*mem).wait_at = pc + 1 };
             return TIER_SUSPEND;
         }
-    } else if unsafe { (*envp).host.wait_timed(pc, t as i64) } {
+    } else if unsafe { (*envp).host.wait_timed(pc, t as i64, rel) } {
         return TIER_SUSPEND;
     }
-    // SAFETY: as compiled code calls it.
-    unsafe { yavs_rt_step(env, regs, mem, pc) }
+    // SAFETY: as compiled code calls it; the instruction as its lowering before this call ran it.
+    unsafe {
+        if rel {
+            yavs_rt_signal(env, regs, mem, pc, 0)
+        } else {
+            yavs_rt_step(env, regs, mem, pc)
+        }
+    }
 }
 
 /// `TimedOut` on the kernel context: 1 when a timeout resumed the activation, 0 when not, 2

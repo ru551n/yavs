@@ -12643,7 +12643,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
         true
     }
 
-    fn wait_timed(&mut self, pc: u32, t: i64) -> bool {
+    fn wait_timed(&mut self, pc: u32, t: i64, rel: bool) -> bool {
         let m = &mut *self.m;
         if m.dbg.is_some() || !m.root_process || m.frames.len() != 1 {
             return false;
@@ -12651,7 +12651,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
         let Some(c) = self.ctx.as_deref_mut() else {
             return false;
         };
-        if !crate::direct_wait_at(c, t) {
+        if !crate::direct_wait_at(c, t, rel) {
             return false;
         }
         m.frames[0].pc = pc + 1;

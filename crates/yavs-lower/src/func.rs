@@ -755,6 +755,25 @@ impl<'a, 'b> Fx<'a, 'b> {
         }
         self.stmt_start(StmtKind::Decl, span);
         let name = db.decls[d].name.to_string();
+        // A constant in instance data (a generic, a constant of a region that is not locally
+        // static) is no assignment place. It never changes and the aliased name is static, so
+        // the alias has no storage either: its uses lower the aliased name (`alias_target`).
+        // The alias subtype is checked against the constant here, where the LRM checks it.
+        if let Some(yavs_sem::lsp::NameRoot::Obj(yavs_sem::hir::ObjRoot::Decl(t))) =
+            db.name_root(target)
+            && matches!(&db.decls[t].kind, DeclKind::Object(o) if o.class == ObjClass::Constant)
+            && matches!(
+                self.cx.objs.get(&t),
+                Some(Obj::InstArray { .. } | Obj::Fixed { .. })
+            )
+        {
+            if subtype.is_some()
+                && let crate::expr::V::A(_, dope) = self.expr(target)?
+            {
+                self.dope_as(dope, subtype, &name, span)?;
+            }
+            return Ok(());
+        }
         match self.place(target)? {
             Place::Scalar { addr, w, .. } => {
                 let off = self.fb.slot(8, 8);

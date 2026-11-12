@@ -296,6 +296,9 @@ pub struct Stats {
     /// Runs of plane-word entries that were a whole bus with nothing pending, stored at once
     /// (`Signal::commit_whole`; debug and `op-census` builds only, else 0).
     pub whole_commits: u64,
+    /// The most entries the future queue (`Queue::later`) held at the end of a full commit
+    /// (`commit_rest`, where timeouts are queued).
+    pub heap_peak: u64,
 }
 
 /// A pending observer wake-up (`Hook::wake_at`). Ordered by time, then registration.
@@ -5202,6 +5205,8 @@ impl SimControl {
         }
         late.clear();
         self.late = late;
+        let len = self.queue.later.v.len() as u64;
+        self.stats.heap_peak = self.stats.heap_peak.max(len);
         // The previous batch's buffer becomes the next cycle's ready list: no allocation per delta.
         let mut old = std::mem::replace(&mut self.last_ran, pids);
         if self.ready.capacity() == 0 {

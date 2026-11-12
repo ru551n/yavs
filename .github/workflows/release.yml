@@ -152,7 +152,42 @@ jobs:
             export PGO_BUILD="cargo build --release --locked -p yavs --features clift --target $t"
           fi
           export PGO_BIN_REL="$t/release/yavs$exe"
+          # Peak memory of the build: the machine's used memory above its level at the start, and on Linux
+          # the largest peak RSS of one process; sampled every second.
+          cat > "$RUNNER_TEMP/mem.py" <<'PY'
+          import os, sys, time
+          def used():
+              if os.name == "nt":
+                  import ctypes
+                  class M(ctypes.Structure):
+                      _fields_ = [("n", ctypes.c_ulong), ("load", ctypes.c_ulong)] + [(f, ctypes.c_ulonglong) for f in "tp ap tf af tv av ax".split()]
+                  m = M(); m.n = ctypes.sizeof(M); ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
+                  return m.tp - m.ap
+              d = {l.split(":")[0]: int(l.split()[1]) * 1024 for l in open("/proc/meminfo")}
+              return d["MemTotal"] - d["MemAvailable"]
+          def hwm():
+              best = 0
+              for p in os.listdir("/proc") if os.path.isdir("/proc") else []:
+                  try:
+                      for l in open(f"/proc/{p}/status"):
+                          if l.startswith("VmHWM:"):
+                              best = max(best, int(l.split()[1]) * 1024)
+                  except (OSError, ValueError):
+                      pass
+              return best
+          base = used(); peak = 0; proc = 0
+          while True:
+              peak = max(peak, used() - base); proc = max(proc, hwm())
+              with open(sys.argv[1], "w") as f:
+                  f.write(f"build memory: peak used above start {peak / 2**30:.2f} GiB, largest process peak RSS {proc / 2**30:.2f} GiB\n")
+              time.sleep(1)
+          PY
+          py=python3; "$py" -V > /dev/null 2>&1 || py=python
+          "$py" -I "$RUNNER_TEMP/mem.py" "$RUNNER_TEMP/mem.txt" &
+          mem=$!
           tools/pgo/build.sh "stage/yavs$exe"
+          kill "$mem" || true
+          { cat "$RUNNER_TEMP/mem.txt"; ls -l stage/; } | tee -a "$GITHUB_STEP_SUMMARY"
           if [[ "$RUNNER_OS" == Linux ]]; then
             v=$(objdump -T stage/yavs | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n1)
             echo "stage/yavs: highest glibc symbol version: $v"

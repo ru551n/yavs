@@ -1092,6 +1092,14 @@ for its own lookup instead of hashing the body a second time (`clift_key_reused`
 tier run 2 0.3 percent fewer, first runs level. `opt_level=none` and single-pass allocation were measured and lose on
 GRLIB from the first run on; the optimiser's layout lock has no waits under `--tier-compile=wait`.
 
+### Optimiser round 3: whether a block is on a cycle, once per block and pass (perf/b4-deadpass, 2026-11-12)
+
+`docs/decisions.md` "IR optimiser, round 3". Three passes that asked per local composite variable whether its block
+is on a cycle (a walk of the function each time) remember the answer per block for the pass (`opt_cycle_memo`, perf
+design `cycle_memo`). The same IR (`YAVS_DUMPIR` over the corpus). A function of 2400 mixed statements: optimiser
+3.28 to 1.79 G instructions; real testbenches level (none has such a function). The same lookups in long processes
+are held on a branch: they cost the small testbenches about 0.1 percent.
+
 ### Optimiser round 2: one optimised body per function (perf/b4-optpass2, 2026-11-10)
 
 `docs/decisions.md` "IR optimiser, round 2". The optimised body of a function is made once per program and handed

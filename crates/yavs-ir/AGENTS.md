@@ -117,6 +117,11 @@ the same commit (root `AGENTS.md` rule 24).
   `FwdCache`; counter `opt_bodies_kept`): inlining's forwarders and the function's own optimisation share it. So the
   result of optimising a function without instance data must depend on the program alone, never on what was optimised
   before or on state that changes during a run (`docs/decisions.md` "IR optimiser, round 2").
+- **A question about the whole graph asked per candidate is quadratic in a long function.** `Opt::in_cycle` walks the
+  function; the passes that ask it per candidate (`forward_frame_copies`, `defaults_first`, `frame_objects`) remember
+  the answer per block for the pass (`in_cycle_memo`, counter `opt_cycle_memo`), which holds only while the pass
+  changes no branch (debug builds check each remembered answer). Keep no `Cell` in `Opt`: a shared `&Opt` that is not
+  `Freeze` cost about 0.1 percent of the main thread of a small testbench (`docs/decisions.md` "IR optimiser, round 3").
 - Verifier errors are ICEs of the producer: never relax the verifier to make lowering pass
   without an ir.md note.
 - The descriptor format, the four cells of a `Param::flat` array and the fat pair `[data, dope]` for unconstrained results are shared with

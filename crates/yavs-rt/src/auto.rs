@@ -1282,10 +1282,10 @@ struct Worker {
     /// `unlocked`'s walk. Under the count rule `copy_compiled` also stands for a process's copies.
     graph: std::cell::RefCell<Calls>,
     check_calls: bool,
-    /// Optimise every function at the first question about callers, as the whole-program map did:
+    /// Optimise every function the processes reach by calls at the first question about callers:
     /// a run without the last run's list of what it needed (`prefetch`). Done beside the
     /// simulation, it optimises ahead what the simulation calls later.
-    force_all: std::cell::Cell<bool>,
+    force_reach: std::cell::Cell<bool>,
     /// Every function optimised so far, in that order (the first of `Program::newly_optimised`), for
     /// the profile's `ran` (`snapshot`); apart from `graph`, which a short run never asks.
     order: std::cell::RefCell<(usize, Vec<u32>)>,
@@ -1633,7 +1633,7 @@ impl Worker {
                 seen: 0,
             }),
             order: Default::default(),
-            force_all: std::cell::Cell::new(true),
+            force_reach: std::cell::Cell::new(true),
             walked: std::cell::RefCell::new(vec![false; nfuncs]),
             copy_compiled: vec![false; nfuncs],
             calls: vec![0; nfuncs],
@@ -3427,22 +3427,51 @@ impl Worker {
         n
     }
 
-    /// `force_all`, once.
+    /// `force_reach`, once: the processes and what their optimised code calls, and so on down.
+    /// The rest of the program (library subprograms no process calls) cannot run but by an
+    /// indirect call, which `Calls` does not hold either.
     fn force_once(&self) {
-        if self.force_all.replace(false) {
-            for k in 0..self.prog.funcs.len() {
-                let _ = self.prog.func(FuncId(k as u32));
+        if !self.force_reach.replace(false) {
+            return;
+        }
+        let mut seen = vec![false; self.prog.funcs.len()];
+        let mut todo: Vec<u32> = (self.prog.funcs.iter())
+            .filter(|(_, f)| f.kind == FuncKind::Process && !f.spare)
+            .map(|(k, _)| k.0)
+            .collect();
+        for &k in &todo {
+            seen[k as usize] = true;
+        }
+        let mut i = 0;
+        while let Some(&f) = todo.get(i) {
+            i += 1;
+            if self
+                .prog
+                .funcs
+                .get(FuncId(f))
+                .is_some_and(|g| g.opt.get().is_none())
+            {
+                self.native.count_stat(CountStat::ForceReach);
+            }
+            for inst in self.prog.func(FuncId(f)).map_or(&[][..], |g| &g.code[..]) {
+                if let yavs_ir::Inst::Call { func, .. } | yavs_ir::Inst::CallProt { func, .. } =
+                    inst
+                    && seen.get(func.0 as usize) == Some(&false)
+                {
+                    seen[func.0 as usize] = true;
+                    todo.push(func.0);
+                }
             }
         }
     }
 
     /// Optimise ahead, beside the simulation, the functions the last run needed (`Profile::ran`),
-    /// in the order it first optimised them, instead of the whole program (`force_all`).
+    /// in the order it first optimised them, instead of what the processes reach (`force_reach`).
     fn prefetch(&mut self) {
         if self.earlier.ran.is_empty() {
             return;
         }
-        self.force_all.set(false);
+        self.force_reach.set(false);
         for &k in &self.earlier.ran {
             let _ = self.prog.func(FuncId(k));
         }
@@ -4923,7 +4952,7 @@ mod tests {
 
     /// With the last run's list of what it needed, asking who calls a function optimises no other
     /// function (`graph`, `prefetch`): a caller is known once it is optimised, which compiled code
-    /// always is. Without the list the first ask optimises the whole program (`force_all`).
+    /// always is. Without the list the first ask optimises what the processes reach (`force_reach`).
     #[test]
     fn asking_for_callers_optimises_only_what_the_last_run_needed() {
         let opt = |w: &super::Worker, f: yavs_ir::FuncId| {
@@ -4946,7 +4975,51 @@ mod tests {
         let (prog, caller, callee) = caller_callee();
         let w = counted(prog, 0);
         assert!(w.waits(callee));
-        assert!(opt(&w, caller), "no list: the whole program");
+        assert!(opt(&w, caller), "no list: what the processes reach");
+    }
+
+    /// Without the last run's list, the first ask optimises the processes and what they call, and
+    /// not a subprogram no process calls, nor what that one calls.
+    #[test]
+    fn the_first_ask_optimises_only_what_the_processes_reach() {
+        let mut pb = ProgramBuilder::new();
+        let body = |pb: &mut ProgramBuilder, f, call: Option<yavs_ir::FuncId>| {
+            let mut fb = pb.define(f);
+            fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+            let keep = fb.slot(8, 8);
+            let at = fb.addr(yavs_ir::AddrSpace::Frame, keep);
+            fb.emit(Inst::Store {
+                addr: at,
+                src: at,
+                w: yavs_ir::Width::B8,
+            });
+            if let Some(func) = call {
+                let args = fb.regs(&[]);
+                fb.emit(Inst::Call {
+                    func,
+                    args,
+                    dst: None,
+                });
+            }
+            fb.emit(Inst::Ret { v: None });
+            fb.finish();
+        };
+        let g = pb.declare("g", yavs_ir::FuncKind::Procedure, None);
+        let k = pb.declare("k", yavs_ir::FuncKind::Procedure, None);
+        let h = pb.declare("h", yavs_ir::FuncKind::Procedure, None);
+        let p = pb.declare("p", yavs_ir::FuncKind::Process, None);
+        body(&mut pb, g, None);
+        body(&mut pb, k, None);
+        body(&mut pb, h, Some(k));
+        body(&mut pb, p, Some(g));
+        let mut w = counted(pb.finish().unwrap(), 0);
+        w.check_calls = true;
+        assert!(w.waits(g));
+        let opt = |f: yavs_ir::FuncId| w.prog.funcs.get(f).unwrap().opt.get().is_some();
+        assert!(opt(p) && opt(g), "reached");
+        assert!(!opt(h) && !opt(k), "no process calls h");
+        let reached = w.native.count_stats()[yavs_interp::CountStat::ForceReach as usize];
+        assert!(reached > 0, "tier_force_reach");
     }
 
     /// A process that calls a procedure with a loop of its own.
@@ -5131,7 +5204,7 @@ mod tests {
     fn the_profile_lists_what_ran() {
         let (prog, caller, callee) = caller_callee();
         let mut w = counted(prog, 0);
-        w.force_all.set(false);
+        w.force_reach.set(false);
         assert!(w.prog.func(callee).is_some() && w.prog.func(caller).is_some());
         assert!(w.snapshot().ran.is_empty(), "optimised, not run");
         w.time[caller.0 as usize][0] = 1;
@@ -5146,7 +5219,7 @@ mod tests {
     fn the_callers_check_stops_at_a_caller_the_map_cannot_know() {
         let (prog, caller, callee) = caller_callee();
         let mut w = counted(prog, 0);
-        (w.check_calls, w.force_all) = (true, false.into());
+        (w.check_calls, w.force_reach) = (true, false.into());
         w.nat[caller.0 as usize].0 = 64;
         let _ = w.entered_from_code(callee);
     }

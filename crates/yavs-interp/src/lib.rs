@@ -1600,7 +1600,7 @@ pub struct NativeFlags {
     /// Per function, the native frames of it that left to the interpreter (`materialised`).
     left_native: Box<[std::sync::atomic::AtomicU64]>,
     /// What the count rule did, for `YAVS_COUNTERS` (`CountStat`).
-    count_stat: [std::sync::atomic::AtomicU64; CountStat::LoopEarly as usize + 1],
+    count_stat: [std::sync::atomic::AtomicU64; CountStat::ForceReach as usize + 1],
     /// Per function, its count ran out at a look of the watching loop, nearly all of it spent by
     /// looks rather than calls (`watch_tick`).
     looped: Box<[std::sync::atomic::AtomicBool]>,
@@ -1650,6 +1650,9 @@ pub enum CountStat {
     /// the subprograms among them a later run compiled early because the profile named them.
     Looped,
     LoopEarly,
+    /// Functions optimised ahead by the first question about callers in a run without the last
+    /// run's list of what it needed: what the processes reach by calls (`Worker::force_once`).
+    ForceReach,
 }
 
 impl NativeFlags {
@@ -1683,7 +1686,7 @@ impl NativeFlags {
     }
 
     /// What the count rule did so far, by `CountStat`.
-    pub fn count_stats(&self) -> [u64; CountStat::LoopEarly as usize + 1] {
+    pub fn count_stats(&self) -> [u64; CountStat::ForceReach as usize + 1] {
         std::array::from_fn(|i| self.count_stat[i].load(Ordering::Relaxed))
     }
 

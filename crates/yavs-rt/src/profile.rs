@@ -4,8 +4,9 @@
 //! of the same program compiles its hot functions when it first sees them and leaves the losers
 //! alone. The text is the whole interface: a damaged or foreign one is no profile.
 
-/// A function (a process, not its copies) is hot when the run saw it for this part of the sampled
-/// time, and for at least `HOT_MIN_US` microseconds of work.
+/// A function (a process, not its copies, or a subprogram the interpreter found looping in one
+/// activation, `NativeFlags::looped`) is hot when the run saw it for this part of the sampled time,
+/// and for at least `HOT_MIN_US` microseconds of work.
 pub(crate) const HOT_DIV: u64 = 32;
 pub(crate) const HOT_MIN_US: u64 = 20_000;
 

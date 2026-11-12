@@ -1576,7 +1576,14 @@ pub struct NativeFlags {
     /// Per function, the native frames of it that left to the interpreter (`materialised`).
     left_native: Box<[std::sync::atomic::AtomicU64]>,
     /// What the count rule did, for `YAVS_COUNTERS` (`CountStat`).
-    count_stat: [std::sync::atomic::AtomicU64; CountStat::CopyCalls as usize + 1],
+    count_stat: [std::sync::atomic::AtomicU64; CountStat::LoopEarly as usize + 1],
+    /// Per function, its count ran out at a look of the watching loop, nearly all of it spent by
+    /// looks rather than calls (`watch_tick`).
+    looped: Box<[std::sync::atomic::AtomicBool]>,
+    /// Per function, the looks of the watching loop that named it, and the count of entries
+    /// `arm_count` gave each function.
+    looks: Box<[std::sync::atomic::AtomicU32]>,
+    armed: std::sync::atomic::AtomicU32,
 }
 
 /// What the count rule of `--tier=auto` did in a run (`YAVS_COUNTERS`), so a test sees it stop.
@@ -1615,6 +1622,10 @@ pub enum CountStat {
     /// Calls in copies taken into the policy's map of who calls whom (`Worker::graph`): a copy of
     /// a subprogram is called only from copies.
     CopyCalls,
+    /// Functions whose count ran out at a look of the watching loop (`NativeFlags::looped`), and
+    /// the subprograms among them a later run compiled early because the profile named them.
+    Looped,
+    LoopEarly,
 }
 
 impl NativeFlags {
@@ -1629,6 +1640,7 @@ impl NativeFlags {
             c.store(if spare { copy } else { count }, Ordering::Relaxed);
         }
         self.spec_count.store(switch, Ordering::Relaxed);
+        self.armed.store(count, Ordering::Relaxed);
         self.copies_wait.store(!spec_forced(), Ordering::Relaxed);
     }
 
@@ -1647,8 +1659,39 @@ impl NativeFlags {
     }
 
     /// What the count rule did so far, by `CountStat`.
-    pub fn count_stats(&self) -> [u64; CountStat::CopyCalls as usize + 1] {
+    pub fn count_stats(&self) -> [u64; CountStat::LoopEarly as usize + 1] {
         std::array::from_fn(|i| self.count_stat[i].load(Ordering::Relaxed))
+    }
+
+    /// Whether the count of `func` ran out at a look of the watching loop and looks spent nine
+    /// tenths of it or more, calls the rest (`watch_tick`): its time is in long loops of a few
+    /// calls, as of one long call, so its compiled code, entered at a loop head, pays though it is
+    /// seldom called.
+    pub fn looped(&self, func: FuncId) -> bool {
+        self.looped
+            .get(func.0 as usize)
+            .is_some_and(|n| n.load(Ordering::Relaxed))
+    }
+
+    /// One look of the watching loop named `func`; its count ran out there (`ran_out`): mark it
+    /// `looped` when looks spent nine tenths of the count.
+    pub(crate) fn look(&self, func: FuncId, ran_out: bool) {
+        let Some(n) = self.looks.get(func.0 as usize) else {
+            return;
+        };
+        let looks = n.fetch_add(1, Ordering::Relaxed) + 1;
+        if ran_out && u64::from(looks) * 10 >= u64::from(self.armed.load(Ordering::Relaxed)) * 9 {
+            self.mark_looped(func);
+        }
+    }
+
+    /// Mark `func` as `looped` (the watching loop does; a policy test too).
+    pub fn mark_looped(&self, func: FuncId) {
+        if let Some(n) = self.looped.get(func.0 as usize)
+            && !n.swap(true, Ordering::Relaxed)
+        {
+            self.count_stat(CountStat::Looped);
+        }
     }
 
     /// How often native frames of `func` were left to the interpreter.
@@ -2066,6 +2109,9 @@ impl Runtime {
                 copies_wait: Default::default(),
                 left_native: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
                 count_stat: Default::default(),
+                looped: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
+                looks: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
+                armed: Default::default(),
             }),
             live: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
             plans: Default::default(),

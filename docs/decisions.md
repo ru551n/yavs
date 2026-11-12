@@ -15733,3 +15733,58 @@ Never-taken tests take no branch-target entry, so what pays is a test removed, n
   an entry for every instance signal, which lowering cannot see. Not tried: skipping the statement end's test of
   temporary roots (a skip while roots exist corrupts the temporary area); joining never-taken tests into one branch
   (no fewer instructions).
+
+## `--tier=auto`: a subprogram that loops in one call is hot for the next run (yavs-interp `watch_tick`, yavs-rt `auto.rs` `snapshot`, `early_kind`, `early_loop`, perf/b4-backedge-2, 2026-11-12, agent; landing is the maintainer's)
+
+- **What it was.** The interpreter already enters compiled code in the middle of an activation: the watching loop looks
+  for it every `WATCH` (128) jumps back and calls (`watch_tick`, `Flow::Retier`), the loop with the tier every `RECHECK`
+  (256), and frame-mode code has an entry at every loop head. Native-frame code cannot be entered in the middle; for a
+  native-callable function with a loop the policy makes its frame-mode code later (`frame_at`, `deferred`). So a long
+  first activation is not stuck by the entry. Measured (lab counters, default tier, `wait` and `background`, 34
+  designs of tools/realbench, runs 1 and 2): events interpreted while only native-frame code existed at most 0.2 M a
+  run, the delay of the look at most `WATCH` events per hand-over, events lost to a look counter reset in a function
+  with code about 0, returns into a compiled caller before the next look at most 56 k events: all under 0.2 percent of
+  any run.
+- **What held it.** A subprogram that runs one long call and no compiled code calls was never compiled, in any run:
+  the count rule holds it (`waits`: "uncalled subprogram", the natfall lesson about short calls), the first run's
+  payback rule reads the rest of a short run as too short, and the run-to-run profile named processes only.
+  `uvvm_func_cov`: `create_bin_array` 88 of 146 ms of run 1 and 92 of 110 ms of run 2 interpreted, every run.
+- **Change** (agent). `watch_tick` marks a function whose count runs out at a look, nine tenths of it or more spent
+  by looks rather than calls (`NativeFlags::looped`, `NativeFlags::look`; the dispatch loop is unchanged): a look
+  comes every 128 events, so its time is in long loops of a few calls. The profile's hot list takes such a subprogram
+  when it took an eighth of the sampled time or more (`snapshot`, `LOOP_SHARE`). A run
+  that loads it compiles it at its first look (`next_early`), when it has a loop of its own and a kind the profile
+  takes processes of (`early_kind`: a modelled speedup of 1.4 or more, or `BigLoop`, the maintainer's filter of
+  2026-10-27, applied at load so the run that names it computes no kind), as frame-mode code alone (`early_loop` in
+  `natural_part`): the call running by then hands over at the next look and goes on from a loop head. Its
+  native-frame code is left to the count, as any function's. Run 1 decides as before; only its profile names more.
+  Counters `tier_looped`, `tier_loop_early`.
+- **Tried and dropped** (agent, measured by exact counts, round 1 and round 2 of the item). (1) The mark as two looks
+  in a row naming the same function: also named subprograms called often (`rand` of `uvvm_rand_perf`, `peek` and
+  `to_string` of `uvvm_sb_slv` and `uvvm_util_rand`, `fixDynShift` of `olo_fix_cordic_rot`). (2) Compiling those early
+  with native-frame code: the tree made at the first look leaves out callees this run has not seen, so the native
+  frames leave to the interpreter at their calls (`fixDynShift` about 6 000 times a run, in every later run through
+  the cache): `olo_fix_cordic_rot` all threads 1.05 to 1.07 over four runs, though `uvvm_rand_perf` gained 0.90. (3)
+  The same with the callees the last run ran (`Profile::ran`) in that tree: no leaves (`olo_fix_cordic_rot` runs 3 and
+  4 level or better), but the bigger tree costs run 2 (`uvvm_func_cov` run 2 all threads 1.09). (4) Frame-mode code
+  alone for every marked subprogram, the native-frame code by the count without the "uncalled subprogram" hold: a
+  subprogram called often from interpreted code then runs through the loop with the tier (`olo_fix_cordic_rot` 1.05
+  to 1.07 a run). (5) The mark of a count that runs out at a look, whatever the calls before: still took subprograms
+  called many times (`to_string` of `uvvm_util_rand`, `convert_byte_array_to_slv_array` of `uvvm_axistream_vvc`). Nine
+  tenths of the count spent by looks selects the subprograms of one or a few long calls and leaves the others to
+  main's rules. (6) Without a share of the run: `convert_byte_array_to_slv_array` of `uvvm_axistream_vvc` (7 percent
+  of run 1) compiled early in run 2 moved that run's compile budget, and run 3 recompiled about 110 ms that run 2 no
+  longer reached (all threads run 3 1.15). (7) Pricing a lost subprogram as a compile, not a link of the cache, and
+  letting a run whose lost tries were subprograms alone become the base: neither changed that run 3.
+- **A lost subprogram is not priced as a link** (agent; kept as a guard, not shown to matter on the measured designs). A subprogram compiled early that the profile's verdict puts
+  on the loss list keeps its code in the cache; priced as a link (`cached`), every later run would take that code at
+  once (`uvvm_axistream_vvc`: the frame-mode code of `convert_byte_array_to_slv_array`, lost in run 2, linked in run
+  3). Such a subprogram is priced as a compile, as before it was ever compiled; processes a trial lost keep their
+  price (main's rule, untouched). Only this feature puts a subprogram on the loss list.
+- **Measured** (agent, exact counts, plain bench builds of b40eb8d8 (`m2`, a byte copy `m2b` for the A/A) and of the
+  change on it, from pristine, runs 1 to 4, untimed cores 0-7, ratio of medians; sums of runs 1 to 4). `wait`, 6
+  reps: `uvvm_func_cov` all threads 0.814 (runs 2 to 4 0.872, 0.601, 0.591), main thread 0.795 (0.818, 0.583,
+  0.595); under `background`, 3 reps, 0.821. The other designs (`uvvm_rand_perf`, `uvvm_util_rand`, `uvvm_sb_slv`,
+  `olo_fix_cordic_rot`, `uvvm_axistream_vvc`, `osvvm_axi4_random`; 9 small designs at 2 reps; GRLIB runs 1 to 4)
+  name no subprogram and make main's decisions (traces); their cells read 0.989 to 1.015 against an A/A of 0.965 to
+  1.037 on the UVVM and OSVVM designs, whose runs are bimodal by compile set, and within 0.3 percent elsewhere.

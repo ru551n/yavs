@@ -885,6 +885,16 @@ pub trait TierHost {
         None
     }
 
+    /// `Inst::Free` from a native frame of the access value `h` (not null) that compiled code read
+    /// from the cell at `cell`: `true` once the object is deallocated (`fr`'s heap epochs brought up
+    /// to date; compiled code then sets the cell to null); `false`, nothing changed, where the
+    /// instruction is to be stepped: a collection or recycling is due, the value is stale, or the
+    /// cell lies in the object it frees.
+    fn free(&mut self, fr: &mut TierFrame, h: u64, cell: *const u8) -> bool {
+        let _ = (fr, h, cell);
+        false
+    }
+
     /// All the layout words of type `ty` for the descriptor bytes `desc` into `out`, from the same
     /// memo (`Inst::LayoutOf` with a run-time descriptor, in compiled code); `false` where the
     /// layout fails or has another size than `out`.

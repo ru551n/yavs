@@ -15591,3 +15591,38 @@ Written by Claude. The drive side of Microwatt, measured first with lab counters
   tables instead of the inline code would shrink the cost (not built).
 - **Test.** The same `clift_parity` and corpus tests (gates of 1 to 128 elements on every element value); it
   fails with the out-of-line tables never taken. `perf.rs` `wide_ieee` holds gates of a vector of `U`.
+
+## Compiled code: a native frame's deallocation in one call (yavs-clift `Gen::free`, yavs-rt `yavs_rt_free`, yavs-interp `TierHost::free`, perf/b4-callprice, 2026-11-12)
+
+- **Finding** (agent). After the layout change above, `Free` (`deallocate`) was the only instruction
+  `uvvm_axistream_vvc`'s native frames still handed to the host: 0.16 M a first run, 0.30 to 0.31 M a later one
+  (`to_string`, `return_and_deallocate`, `get_string_len`), each a `TierHost::native_step` through `yavs_rt_xstep`
+  (a frame of the host's pushed for the registers, the slot windows swapped in, the instruction dispatched by
+  `Machine::step`, the view rebuilt and the object table forgotten): about 700 instructions more than the
+  deallocation itself. Not a call between compiled functions: `Free` is an instruction, and `xstep_ok` sent every
+  heap instruction there. GRLIB, Microwatt and `osvvm_axi4_random` run none; `uvvm_func_cov` about 900 a run.
+- **Change** (agent). On a native frame compiled code reads the access value from its cell itself (`Gen::host`),
+  does nothing for null, else calls `yavs_rt_free(env, mem, handle, cell)` and sets the cell to null. The host
+  (`TierHost::free`) deallocates and brings the view's heap epochs up to date (`tier_heaps`); `Mem::forget_heap`
+  then drops the freed object's entry, as `forget` does for the heap. It declines with nothing changed where the
+  step would do more or fail: a collection or recycling due (`Machine::reclaim_work`, which also covers the cases
+  `reclaim_pending` lets through), a stale value (the interpreter reports the double deallocation) and a cell
+  inside the object it frees (the interpreter's null store after the free reports it, and the cell's memory is
+  gone). A decline leaves the frame to the interpreter at the `Free` (`slow_path`), as the step's own decline did
+  when a collection was due. Frame-mode code keeps its step. Counter `cb_free` (calls, debug builds).
+- **Tried, not kept** (agent). The old step as the slow path (`slow_path_x`, so a decline steps instead of
+  leaving): forced runs compile more per site (`uvvm_func_cov` +0.07 percent against -0.05 with the leave) for a
+  decline that is rare.
+- **Measured** (agent; plain bench builds of 39454ad5 and of the change, all-thread instructions, untimed on
+  cores 0-7, no `YAVS_COUNTERS`, from pristine worlds, outputs and exit statuses equal in every run). Forced
+  `--tier=clift --no-cache --threads=1`: `uvvm_axistream_vvc` 0.9950, `uvvm_sb_slv` 0.9951, `uvvm_func_cov`
+  0.9995, `hdlm_fifo_sync` 0.9999, `olo_axi_master_full` 1.0001, `osvvm_axi4_random` 1.0002 (forced runs repeat
+  within 0.01 percent; the compile of the sites). Default tier with the decisions fixed (`YAVS_AUTO_COUNT=1
+  YAVS_AUTO_GATE=0 YAVS_AUTO_SYNC=1`, which repeats within 0.05 percent on these two designs): `uvvm_axistream_vvc`
+  runs 2 to 4 0.985 to 0.987 (simulation thread 0.985), `uvvm_sb_slv` 0.970 to 0.975. Default tier as shipped:
+  inside the spread of the base against a copy of itself on `uvvm_axistream_vvc` (all threads and the simulation
+  thread, `wait` and `background`), `osvvm_axi4_random`, `uvvm_func_cov` and `uvvm_sb_slv`; GRLIB and Microwatt,
+  which run no `Free`, level. Cycles and the cold cap are still to be timed.
+- **Test.** `clift_parity` `deallocations_in_compiled_code_match_the_interpreter`: a local, a null value, a field
+  of another heap object, a protected type's own variable (the shared heap), and the two errors (an object
+  deallocated twice, a cell inside the object it frees); `perf.rs` `free_native` bounds `cb_free` at 400 calls.

@@ -1602,6 +1602,18 @@ mod clift {
             ("cb_layout_into", Max(410))
         ]
     );
+    // A deallocation on a native frame is one call of the host's free, not a step (the `new`
+    // before it stays one).
+    clift_case!(
+        free_native,
+        "free_native",
+        "s=",
+        [
+            ("cb_xstep", Max(410)),
+            ("cb_free", Min(390)),
+            ("cb_free", Max(410))
+        ]
+    );
     // A real rounded to an integer is computed in compiled code, on a native frame and in frame
     // mode, not stepped.
     clift_case!(

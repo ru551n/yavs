@@ -129,6 +129,7 @@ pub struct Jit {
     memeq: ClifId,
     cat: ClifId,
     layout_into: ClifId,
+    free: ClifId,
     deopt: ClifId,
     deopt_slots: ClifId,
     deopt_end: ClifId,
@@ -562,6 +563,7 @@ impl Jit {
             (MEMEQ, yavs_rt_memeq as *const u8),
             (CAT, yavs_rt_cat as *const u8),
             (LAYOUT_INTO, yavs_rt_layout_into as *const u8),
+            (FREE, yavs_rt_free as *const u8),
             (WAIT, yavs_rt_wait as *const u8),
             (WAIT_ON, yavs_rt_wait_on as *const u8),
             (WAIT_SAME, yavs_rt_wait_same as *const u8),
@@ -623,6 +625,7 @@ impl Jit {
             Some(I32),
         )?;
         let layout_into = imp(LAYOUT_INTO, &[I64, I64, I32, I64, I64, I64], Some(I64))?;
+        let free = imp(FREE, &[I64, I64, I64, I64], Some(I32))?;
         let deopt = imp(
             DEOPT,
             &[I64, I64, I32, I32, I64, I64, I64, I64, I64],
@@ -734,6 +737,7 @@ impl Jit {
             memeq,
             cat,
             layout_into,
+            free,
             deopt,
             deopt_slots,
             deopt_end,
@@ -1682,6 +1686,7 @@ impl Jit {
             layout_into: self
                 .module
                 .declare_func_in_func(self.layout_into, &mut ctx.func),
+            free: self.module.declare_func_in_func(self.free, &mut ctx.func),
             deopt: self.module.declare_func_in_func(self.deopt, &mut ctx.func),
             deopt_slots: self
                 .module
@@ -1904,6 +1909,8 @@ struct Imports {
     /// `yavs_rt_layout_into(env, mem, ty, desc, dsz, n) -> address`: the `n` words of a layout from
     /// the interpreter's layout memo in new temporary memory, 0 when it declines.
     layout_into: FuncRef,
+    /// `yavs_rt_free(env, mem, handle, cell) -> 1 | 0`: a deallocation, 0 when the host declines.
+    free: FuncRef,
     deopt: FuncRef,
     deopt_slots: FuncRef,
     deopt_end: FuncRef,
@@ -4742,6 +4749,7 @@ fn gen_func(
                     None => g.step(pc, &inst),
                 }
             }
+            Inst::Free { ptr } if g.nat.is_some() => g.free(pc, &inst, ptr),
             _ if g.nat.is_some() && xstep_wide(f, &inst) => g.native_step(pc, &inst, f),
             _ => g.step(pc, &inst),
         }
@@ -5854,6 +5862,34 @@ impl Gen<'_> {
         let ok = self.b.ins().icmp_imm_s(IntCC::NotEqual, a, 0);
         self.guard(ok, slow);
         self.st(dst, a);
+        self.join(join);
+    }
+
+    /// `Inst::Free` on a native frame: the access value read from its cell here, the object
+    /// deallocated by the host (`yavs_rt_free`), the cell set to null here; nothing for a null
+    /// value. Where the host declines (a collection due, an error to report) the frame leaves to
+    /// the interpreter, as the step it had before did then.
+    fn free(&mut self, pc: u32, i: &Inst, ptr: Reg) {
+        let (slow, join) = self.slow_path(pc, i);
+        let a = self.ld(ptr);
+        let p = self.host(a, Some(ptr), Op::C(0), Op::C(8), true, slow);
+        let h = self.b.ins().load(I64, self.gf, p, 0);
+        let (call, null) = (self.b.create_block(), self.b.create_block());
+        let nz = self.b.ins().icmp_imm_s(IntCC::NotEqual, h, 0);
+        self.brif_split(nz, call, null);
+        self.b.switch_to_block(call);
+        let c = self
+            .b
+            .ins()
+            .call(self.imp.free, &[self.env, self.mem, h, p]);
+        let st = self.b.inst_results(c)[0];
+        self.clear();
+        let ok = self.b.ins().icmp_imm_s(IntCC::NotEqual, st, 0);
+        self.guard(ok, slow);
+        let zero = self.b.ins().iconst(I64, 0);
+        self.b.ins().store(self.gf, zero, p, 0);
+        self.b.ins().jump(null, &[]);
+        self.b.switch_to_block(null);
         self.join(join);
     }
 

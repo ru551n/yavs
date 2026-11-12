@@ -1112,6 +1112,120 @@ fn reals_to_integers_in_compiled_code_match_the_interpreter() {
     }
 }
 
+/// `deallocate` on native frames (`Gen::free`): of a local, of a null value, of a field of another
+/// heap object, of a protected type's own variable (the shared heap); and the interpreter's errors:
+/// an object deallocated twice, and a cell inside the object it frees.
+const FREE: &str = r#"entity fr is generic (BAD : integer := 0); end;
+architecture a of fr is
+  type node;
+  type node_ptr is access node;
+  type node is record
+    v : integer;
+    nx : node_ptr;
+  end record;
+  type int_ptr is access integer;
+  function churn(n : integer) return integer is
+    variable p, q : int_ptr;
+    variable h : node_ptr;
+    variable s : integer := 0;
+  begin
+    for i in 1 to n loop
+      p := new integer'(i);
+      s := s + p.all;
+      deallocate(p);
+      if p = null then
+        s := s + 1;
+      end if;
+      deallocate(q);
+      h := new node'(i, null);
+      h.nx := new node'(2 * i, null);
+      s := s + h.nx.v;
+      deallocate(h.nx);
+      if h.nx = null then
+        s := s + 3;
+      end if;
+      deallocate(h);
+    end loop;
+    return s;
+  end function;
+  function twice return integer is
+    variable p, q : int_ptr;
+  begin
+    p := new integer'(5);
+    q := p;
+    deallocate(p);
+    deallocate(q);
+    return 0;
+  end function;
+  function inside return integer is
+    variable h : node_ptr;
+  begin
+    h := new node'(1, null);
+    h.nx := h;
+    deallocate(h.nx);
+    return 7;
+  end function;
+  type store is protected
+    procedure put(x : integer);
+    impure function take return integer;
+  end protected;
+  type store is protected body
+    variable p : int_ptr;
+    procedure put(x : integer) is
+    begin
+      deallocate(p);
+      p := new integer'(x);
+    end procedure;
+    impure function take return integer is
+      variable r : integer;
+    begin
+      r := p.all;
+      deallocate(p);
+      return r;
+    end function;
+  end protected body;
+  shared variable sv : store;
+begin
+  process
+    variable s : integer := 0;
+  begin
+    for k in 1 to 30 loop
+      s := (s * 7 + churn(k mod 5 + 1)) mod 99991;
+      sv.put(k);
+      sv.put(k + 1);
+      s := s + sv.take;
+      wait for 1 ns;
+    end loop;
+    report "s=" & integer'image(s);
+    if BAD = 1 then
+      s := twice;
+    elsif BAD = 2 then
+      s := inside;
+      report "inside " & integer'image(s);
+    end if;
+    wait;
+  end process;
+end;
+"#;
+#[test]
+fn deallocations_in_compiled_code_match_the_interpreter() {
+    let dir = design("clift_free", FREE);
+    let (want, got) = parity(&dir, "fr", &[]);
+    assert!(want.out.contains("s="), "{want:?}");
+    if counted(&got[0]) {
+        assert!(
+            calls(&got[0], "counters: cb_free=") > 0,
+            "{:?}",
+            got[0].census
+        );
+        assert_eq!(calls(&got[0], "cb_xstep.Free"), 0, "{:?}", got[0].census);
+    }
+    for bad in 1..=2 {
+        let g = format!("-gBAD={bad}");
+        parity(&dir, "fr", &[&g]);
+    }
+}
+
 /// `ieee` ops of 65 to 192 elements computed in place (`Gen::ieee_wide`), the gates on any
 /// element value, and concatenations of two blocks (`Gen::cat_block`), with metavalues, `L` and
 /// `H` now and then: in a function (native frame) and in a process (frame mode). The arithmetic

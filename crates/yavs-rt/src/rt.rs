@@ -64,6 +64,7 @@ pub const IMAGE_CHECK: &str = "yavs_rt_image_check";
 
 pub const LAYOUT_WORD: &str = "yavs_rt_layout_word";
 pub const LAYOUT_INTO: &str = "yavs_rt_layout_into";
+pub const FREE: &str = "yavs_rt_free";
 pub const SCAN: &str = "yavs_rt_scan";
 pub const ELOOP: &str = "yavs_rt_eloop";
 pub const ELOOP_EXEC: &str = "yavs_rt_eloop_exec";
@@ -665,6 +666,13 @@ impl Mem {
     #[inline(always)]
     pub fn forget(&mut self) {
         self.forget_end();
+        self.forget_heap();
+    }
+
+    /// The heap half of `forget`: after a host call that freed or edited heap objects and moved
+    /// nothing else.
+    #[inline(always)]
+    pub fn forget_heap(&mut self) {
         let to = [self.fr.heap_epoch, self.fr.shared_epoch];
         if to != self.cur_epochs {
             if !self.drop_changed(self.cur_epochs, to) {
@@ -2105,6 +2113,31 @@ pub unsafe extern "C" fn yavs_rt_layout_into(
             unsafe { std::ptr::write_bytes(temp.add(len as usize), 0, (off - len) as usize) };
             fr.temp_len = end;
             u64::from(space::TEMP) << 61 | off
+        }
+        Ok(false) => 0,
+        Err(p) => {
+            // SAFETY: as above.
+            unsafe { (*envp).panic = Some(p) };
+            0
+        }
+    }
+}
+
+/// `Inst::Free` on a native frame: deallocate the object of access value `h` (not null), read by
+/// compiled code from the cell at `cell`, which then sets the cell to null. 1 once done; 0, nothing
+/// changed, where the host declines (`TierHost::free`): the instruction is stepped.
+pub unsafe extern "C" fn yavs_rt_free(env: *mut c_void, mem: *mut Mem, h: u64, cell: u64) -> u32 {
+    cb(Cb::Free);
+    let envp = env as *mut Env<'_>;
+    // SAFETY: as in `yavs_rt_step`.
+    let r = catch_unwind(AssertUnwindSafe(|| unsafe {
+        (*envp).host.free(&mut (*mem).fr, h, cell as *const u8)
+    }));
+    match r {
+        Ok(true) => {
+            // SAFETY: as above.
+            unsafe { (*mem).forget_heap() };
+            1
         }
         Ok(false) => 0,
         Err(p) => {

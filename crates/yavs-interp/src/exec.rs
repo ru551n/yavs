@@ -9759,6 +9759,15 @@ impl Machine {
             + u64::from(STAMPS.load(Ordering::Relaxed)) * crate::TIER_STAMPS
     }
 
+    /// Whether `reclaim` would collect or recycle a heap now (`reclaim_pending` and more).
+    fn reclaim_work(&self) -> bool {
+        let t = self.rt.limits.gc_threshold;
+        let shared = self.sh.as_ref().and_then(|sh| sh.heap.as_deref());
+        self.heap.gc_due(t)
+            || self.heap.reclaim_due()
+            || shared.is_some_and(|h| h.gc_due(t) || h.reclaim_due())
+    }
+
     /// Whether a native call or an allocation would collect or recycle now (`reclaim`): native
     /// frames hold their registers outside the machine, so compiled code leaves them to the
     /// interpreter first.
@@ -12903,6 +12912,26 @@ impl crate::TierHost for Host<'_, '_, '_> {
 
     fn layout_word(&mut self, ty: u32, desc: &[u8], k: u32) -> Option<u64> {
         self.m.layout_word_of(self.prog, TyId(ty), desc, k).ok()
+    }
+
+    fn free(&mut self, tf: &mut crate::TierFrame, h: u64, cell: *const u8) -> bool {
+        let m = &mut *self.m;
+        // `step`'s `Free` when its `reclaim` has nothing to do; anything else is stepped.
+        if self.ctx.is_some() && m.reclaim_work() {
+            return false;
+        }
+        let Ok((hp, _)) = m.heap_of(h) else {
+            return false;
+        };
+        let Ok(i) = hp.resolve(h) else {
+            return false;
+        };
+        // (The interpreter's null store after the free reports a cell inside the object.)
+        if hp.data(i).is_some_and(|d| d.as_ptr_range().contains(&cell)) || hp.free(h).is_err() {
+            return false;
+        }
+        m.tier_heaps(tf);
+        true
     }
 
     fn layout_into(&mut self, ty: u32, desc: &[u8], out: &mut [u8]) -> bool {

@@ -989,12 +989,12 @@ impl Opt<'_> {
         while b != body {
             let r = f.blocks.get(BlockId(b as u32))?;
             let mut next = None;
-            for pc in r.start as usize..r.end as usize {
+            for ins in &f.code[r.start as usize..r.end as usize] {
                 steps += 1;
                 if steps > MAX_STEPS {
                     return None;
                 }
-                if let Some(t) = ev.step(&f.code[pc]).ok()? {
+                if let Some(t) = ev.step(ins).ok()? {
                     next = Some(t);
                     break;
                 }

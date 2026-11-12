@@ -2250,7 +2250,7 @@ impl Worker {
         }
     }
 
-    /// A subprogram of the profile (one that looped in one activation, `snapshot`) is compiled early
+    /// A subprogram of the profile (one the watching loop marked, `snapshot`) is compiled early
     /// only of a kind the profile takes processes of: a modelled speedup of `EARLY_SPEEDUP` or more,
     /// or `Kind::BigLoop`. Judged here, in the run that compiles it, not in the run that names it.
     fn early_kind(&self, id: FuncId) -> bool {
@@ -2261,9 +2261,9 @@ impl Worker {
             || self.kind(id) == Kind::BigLoop
     }
 
-    /// A subprogram the profile names hot (`early`): only one that looped in one activation gets
-    /// there (`snapshot`), so its frame-mode code comes with the native-frame code, for that
-    /// activation to enter.
+    /// A subprogram the profile names hot (`early`): only one the watching loop marked gets there
+    /// (`snapshot`), so its frame-mode code comes with the native-frame code, for an activation
+    /// running when it is ready to enter at a loop head.
     fn early_loop(&self, id: FuncId, f: &yavs_ir::Func) -> bool {
         f.kind != FuncKind::Process && self.early.contains_key(&id)
     }
@@ -3226,8 +3226,8 @@ impl Worker {
             .iter()
             .map(|&b| (b, self.bseen[b as usize]))
             .filter(|&(b, us)| {
-                // A subprogram that loops in one activation: a later run compiles it early, and
-                // the activation running when it is ready enters its frame-mode code at a loop head.
+                // A subprogram the watching loop marked: a later run compiles it early, and an
+                // activation running when it is ready enters its frame-mode code at a loop head.
                 if self.native.looped(FuncId(b))
                     && self
                         .prog

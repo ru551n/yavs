@@ -1558,8 +1558,7 @@ pub struct NativeFlags {
     left_native: Box<[std::sync::atomic::AtomicU64]>,
     /// What the count rule did, for `YAVS_COUNTERS` (`CountStat`).
     count_stat: [std::sync::atomic::AtomicU64; CountStat::LoopEarly as usize + 1],
-    /// Per function, two looks of the watching loop in a row found it running (`watch_tick`): it
-    /// loops for a long time in one activation.
+    /// Per function, two looks of the watching loop in a row found it running (`watch_tick`).
     looped: Box<[std::sync::atomic::AtomicBool]>,
 }
 
@@ -1639,10 +1638,9 @@ impl NativeFlags {
         std::array::from_fn(|i| self.count_stat[i].load(Ordering::Relaxed))
     }
 
-    /// How often native frames of `func` were left to the interpreter.
-    /// Whether two looks of the watching loop in a row found `func` running (`watch_tick`): one
-    /// activation of it runs a long loop, so its compiled code, entered at a loop head, pays even
-    /// when it is called seldom.
+    /// Whether two looks of the watching loop in a row found `func` running (`watch_tick`): a
+    /// sample that it keeps the thread busy, as one long loop of one activation does, so its
+    /// compiled code pays even when it is called seldom.
     pub fn looped(&self, func: FuncId) -> bool {
         self.looped
             .get(func.0 as usize)
@@ -1658,6 +1656,7 @@ impl NativeFlags {
         }
     }
 
+    /// How often native frames of `func` were left to the interpreter.
     pub fn materialised(&self, func: FuncId) -> u64 {
         self.left_native
             .get(func.0 as usize)

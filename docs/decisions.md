@@ -15643,22 +15643,25 @@ Written by Claude. The drive side of Microwatt, measured first with lab counters
   payback rule reads the rest of a short run as too short, and the run-to-run profile named processes only.
   `uvvm_func_cov`: `create_bin_array` 88 of 146 ms of run 1 and 92 of 110 ms of run 2 interpreted, every run.
 - **Change** (agent). `watch_tick` marks a function that the look before it on the same thread named too
-  (`NativeFlags::looped`, a thread-local of the last look; the dispatch loop is unchanged): 256 or more events of it
-  in a row. The profile's hot list takes such a subprogram whatever its kind (`snapshot`), and a run with it in the
+  (`NativeFlags::looped`, a thread-local of the last look; the dispatch loop is unchanged). The looks are 128 events
+  apart and name whatever runs then, so this is a sample: it admits a subprogram without a loop of its own that keeps
+  the thread busy (`to_string` of `uvvm_sb_slv` and `uvvm_util_rand`, compiled early as native-frame code alone), not
+  only one long call. The profile's hot list takes such a subprogram (`snapshot`), and a run with it in the
   profile compiles it at its first look (`next_early`, outside the budget as for processes) with its frame-mode code
   beside the native-frame code (`early_loop` in `natural_part` and `asked_part`), so the call running then hands over
   at the next look and goes on from a loop head. Run 1 decides as before; only its profile can name more.
   Counters `tier_looped`, `tier_loop_early`.
   Run 1 decides as main does: no profile, so `early_loop` is false and the marks change nothing but the profile it
   writes; under `YAVS_AUTO_COUNT=1 YAVS_AUTO_GATE=0 YAVS_AUTO_SYNC=1` run 1 of 12 designs counts within 0.05 percent
-  of main.
+  of main in the same mode (one rep each of `hdlm_fifo_sync` and `olo_axi_master_full` in a second mode, which the
+  default-tier series show on main and its copy as well).
 - **The kind filter stays** (maintainer 2026-10-27, #679: only kinds with a modelled speedup of 1.4 or more, or
   `BigLoop`, are compiled early). For a subprogram it is applied when the profile is loaded (`early_kind`), so the run
   that names it computes no kind. A run that compiles it early is judged by `profile::next` as for processes: not 3
   percent better than the run before puts it on the loss list, and later runs decide as main does
   (`olo_fix_cordic_rot`: `fixDynShift` early in run 2, lost, level).
 - **Measured** (agent, exact counts, plain bench builds of 12f11670 (`m1`, a byte copy `m1b` for the A/A) and of the
-  change on it, from pristine, runs 1 to 4, `wait`, untimed cores 0-7, 6 reps, ratio of medians): main thread
+  change on it (not repeated after the rebase onto three later codegen commits), from pristine, runs 1 to 4, `wait`, untimed cores 0-7, 6 reps, ratio of medians): main thread
   `uvvm_func_cov` run 2 0.819, runs 3 and 4 0.594 and 0.576 (A/A within 0.1 percent); `uvvm_rand_perf` runs 2 to 4
   0.858, 0.804, 0.794 (A/A 0.964, 0.828, 1.010); `uvvm_util_rand` runs 2 to 4 0.969, 0.973, 0.983 (A/A 0.992, 0.996,
   0.991); `uvvm_sb_slv` 0.945 to 0.928 inside its A/A of 0.908 to 0.991; `uvvm_axistream_vvc`, `osvvm_axi4_random`,

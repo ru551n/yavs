@@ -285,7 +285,7 @@ const WATCH_CHUNK: u32 = 128;
 fn watch_tick(rt: &Runtime, func: FuncId, pc: u32) -> bool {
     // (A compile of `--tier-compile=wait` runs while the run waits here or between cycles.)
     yavs_kernel::pause_point();
-    // The look before named the same function: it loops in one activation (`NativeFlags::looped`).
+    // The look before named the same function: it keeps the thread busy (`NativeFlags::looped`).
     let named = u64::from(rt.id) << 32 | u64::from(func.0);
     if LAST_LOOK.replace(named) == named {
         rt.native.mark_looped(func);

@@ -1,0 +1,1 @@
+The optimiser's frame passes for process variables and temporaries find the blocks, slots and register lists they need by index instead of scanning the whole function, so the first run of a testbench with one very large process starts faster.

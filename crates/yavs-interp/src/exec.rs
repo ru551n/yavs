@@ -285,7 +285,11 @@ const WATCH_CHUNK: u32 = 128;
 fn watch_tick(rt: &Runtime, func: FuncId, pc: u32) -> bool {
     // (A compile of `--tier-compile=wait` runs while the run waits here or between cycles.)
     yavs_kernel::pause_point();
-    if rt.native.tick(func.0) {
+    // A count spent nearly all by looks, not calls: the function runs long loops in a few calls
+    // (`NativeFlags::looped`).
+    let ran_out = rt.native.tick(func.0);
+    rt.native.look(func, ran_out);
+    if ran_out {
         rt.counted_out(func, true);
     }
     rt.sync_native();

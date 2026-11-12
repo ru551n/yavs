@@ -295,6 +295,142 @@ fn a_callee_the_tier_never_touched_is_called_lean_in_the_loop_with_the_tier() {
     assert_eq!(*t.0.lock().unwrap(), want);
 }
 
+/// A function whose count of `--tier=auto` runs out at a look of the watching loop, nine tenths
+/// of it spent by looks, is marked as looping in few calls (`NativeFlags::looped`, for the
+/// profile); the process that calls it is not, nor a function called often. The trace is the
+/// interpreter's.
+#[test]
+fn a_function_that_loops_in_one_activation_is_marked() {
+    // A tier with no compiled code: the watching loop runs everything.
+    struct Idle;
+    impl yavs_interp::Tier for Idle {
+        fn run(&self, _: FuncId, _: u32, _: &mut dyn yavs_interp::TierHost) -> Option<u32> {
+            None
+        }
+        fn ready(&self, _: FuncId) -> bool {
+            false
+        }
+    }
+    let build = |ks: &[i64]| {
+        let mut pb = ProgramBuilder::new();
+        let int = integer(&mut pb);
+        let spin = pb.declare("spin", FuncKind::Function, None);
+        let proc_ = pb.declare("p", FuncKind::Process, None);
+        {
+            // i := 0; loop i := i + 1; a := a * 3 + i mod 7; exit when i >= n; end loop;
+            // return i (a keeps the loop from being one fused op).
+            let mut fb = pb.define(spin);
+            let n = fb.param("n", Width::B8, ParamClass::Value, Mode::In, None);
+            let i = fb.local("i", int, 8, 8);
+            let a = fb.local("a", int, 8, 8);
+            let (head, done) = (fb.block(), fb.block());
+            stmt(&mut fb, StmtKind::VarAssign);
+            let zero = fb.int(0);
+            store(&mut fb, AddrSpace::Frame, i, zero, Width::B8);
+            store(&mut fb, AddrSpace::Frame, a, zero, Width::B8);
+            fb.emit(Inst::Br { to: head });
+            fb.at(head);
+            stmt(&mut fb, StmtKind::VarAssign);
+            let v = load(&mut fb, AddrSpace::Frame, i, Width::B8);
+            let one = fb.int(1);
+            let v1 = bin(&mut fb, IntOp::Add, v, one);
+            store(&mut fb, AddrSpace::Frame, i, v1, Width::B8);
+            let av = load(&mut fb, AddrSpace::Frame, a, Width::B8);
+            let three = fb.int(3);
+            let seven = fb.int(7);
+            let m = bin(&mut fb, IntOp::Mul, av, three);
+            let r7 = bin(&mut fb, IntOp::Mod, v1, seven);
+            let a1 = bin(&mut fb, IntOp::Add, m, r7);
+            let a1 = bin(&mut fb, IntOp::Mod, a1, seven);
+            store(&mut fb, AddrSpace::Frame, a, a1, Width::B8);
+            let lim = load(&mut fb, AddrSpace::Frame, n, Width::B8);
+            let more = cmp(&mut fb, CmpOp::Lt, v1, lim);
+            fb.emit(Inst::CondBr {
+                c: more,
+                t: head,
+                f: done,
+            });
+            fb.at(done);
+            // Longer than the optimiser inlines.
+            stmt(&mut fb, StmtKind::Return);
+            let r = load(&mut fb, AddrSpace::Frame, i, Width::B8);
+            let av = load(&mut fb, AddrSpace::Frame, a, Width::B8);
+            let mut pad = av;
+            for _ in 0..80 {
+                pad = bin(&mut fb, IntOp::Add, pad, av);
+            }
+            let pad = bin(&mut fb, IntOp::Mul, pad, zero);
+            let r = bin(&mut fb, IntOp::Add, r, pad);
+            fb.emit(Inst::Ret { v: Some(r) });
+            fb.finish();
+        }
+        {
+            // s <= the sum of spin(s + k) over `ks`, once (a signal, so no call is folded).
+            let mut fb = pb.define(proc_);
+            stmt(&mut fb, StmtKind::SigAssign);
+            let mut sum = fb.int(0);
+            for &k in ks {
+                let s0 = read_scalar(&mut fb, 0);
+                let kk = fb.int(k);
+                let a = bin(&mut fb, IntOp::Add, s0, kk);
+                let args = fb.regs(&[a]);
+                let r = fb.reg(RegTy::I64);
+                fb.emit(Inst::Call {
+                    func: spin,
+                    args,
+                    dst: Some(r),
+                });
+                sum = bin(&mut fb, IntOp::Add, sum, r);
+            }
+            drive(&mut fb, 0, 0, sum, Width::B8);
+            wait_for(&mut fb, 1000 * NS);
+            fb.emit(Inst::Br { to: BlockId(0) });
+            fb.finish();
+        }
+        let mut d = Design::new(pb);
+        d.signals = vec![byte_sig("s", 1, 8)];
+        d.procs = vec![ProcSpec {
+            name: "p",
+            func: proc_,
+            drives: vec![(0, 1)],
+        }];
+        (d, spin, proc_)
+    };
+    // One long call and a short one: the count of `spin` is spent by looks.
+    let (d, _, _) = build(&[3, 100_000]);
+    let (want, r) = d.run(Time::ns(10));
+    assert!(r.is_ok());
+    assert!(has(&want, "s=[163, 134, 1,"), "{want:#?}");
+    let (d, spin, proc_) = build(&[3, 100_000]);
+    let rt = Runtime::new(d.prog.clone(), Default::default()).unwrap();
+    assert!(rt.set_tier(std::sync::Arc::new(Idle)));
+    let flags = rt.native_flags();
+    flags.arm_count(&d.prog, 100, 50, 50);
+    let (mut sim, t, _) = d.build_rt(1, rt, |p, _| p);
+    sim.run_until(Time::ns(10)).unwrap();
+    assert_eq!(*t.0.lock().unwrap(), want);
+    assert!(flags.looped(spin));
+    assert!(!flags.looped(proc_));
+    assert_eq!(
+        flags.count_stats()[yavs_interp::CountStat::Looped as usize],
+        1
+    );
+    // Forty calls of a few looks each: calls spend a good part of the count, no mark.
+    let ks = [500; 40];
+    let (d, _, _) = build(&ks);
+    let (want, r) = d.run(Time::ns(10));
+    assert!(r.is_ok());
+    let (d, spin, _) = build(&ks);
+    let rt = Runtime::new(d.prog.clone(), Default::default()).unwrap();
+    assert!(rt.set_tier(std::sync::Arc::new(Idle)));
+    let flags = rt.native_flags();
+    flags.arm_count(&d.prog, 100, 50, 50);
+    let (mut sim, t, _) = d.build_rt(1, rt, |p, _| p);
+    sim.run_until(Time::ns(10)).unwrap();
+    assert_eq!(*t.0.lock().unwrap(), want);
+    assert!(!flags.looped(spin), "called often");
+}
+
 /// A return into a compiled caller whose next instruction is its own return is not an entry of
 /// its compiled code: the tier is never asked to run there, and the trace is the interpreter's.
 #[test]

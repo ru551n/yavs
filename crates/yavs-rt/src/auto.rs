@@ -344,6 +344,11 @@ const CALLBACKS: usize = 10;
 /// run or more (#532). ponytail: the share when the decision is made, early in the run; a
 /// measured comparison per process if a design sits near the line.
 const RTL_SHARE: u64 = 8;
+/// A subprogram whose count was spent by looks joins the profile when it took at least this part
+/// of the sampled time: compiled early in the next run, a smaller one moves that run's compile
+/// budget for nothing (`uvvm_axistream_vvc`: one at 7 percent made run 3 recompile 110 ms that
+/// run 2 no longer reached).
+const LOOP_SHARE: u64 = 8;
 
 /// Why an `rtl` process seen for `seen` of `total` sampled microseconds would run its compiled code
 /// cold, so slower than interpreted (`Tune::share`).
@@ -2236,6 +2241,7 @@ impl Worker {
     /// seen interpreted after that (`frame_at`); with `--tier-heat` (no budget) both at once.
     fn natural_part(&self, id: FuncId) -> Part {
         match self.prog.func(id) {
+            Some(f) if f.parent.is_none() && self.early_loop(id, f) => Part::Frame,
             Some(f) if f.parent.is_none() && self.native_ok(id) => {
                 if self.heat.budget == 0 && loops(&self.prog, f) {
                     Part::Both
@@ -2245,6 +2251,31 @@ impl Worker {
             }
             _ => Part::Frame,
         }
+    }
+
+    /// A subprogram of the profile (one the watching loop marked, `snapshot`) is compiled early
+    /// only with a loop of its own (the mark is a sample: a busy subprogram without one is marked
+    /// too) and of a kind the profile takes processes of: a modelled speedup of `EARLY_SPEEDUP` or
+    /// more, or `Kind::BigLoop`. Judged here, in the run that compiles it, not in the run that names it.
+    fn early_kind(&self, id: FuncId) -> bool {
+        if self
+            .prog
+            .raw(id)
+            .is_none_or(|f| f.kind == FuncKind::Process)
+        {
+            return true;
+        }
+        self.prog.func(id).is_some_and(|f| loops(&self.prog, f))
+            && (self.model(id).speedup >= profile::EARLY_SPEEDUP || self.kind(id) == Kind::BigLoop)
+    }
+
+    /// A subprogram the profile names hot (`early`; only one whose count was spent by looks, with a
+    /// loop of its own, gets there): compiled early as frame-mode code alone, which the activation
+    /// running when it is ready enters at a loop head. Its native-frame code is left to the count
+    /// as any function's: made at the first look it would leave to the interpreter at every callee
+    /// this run had not seen yet (6 000 frames a run on `olo_fix_cordic_rot`).
+    fn early_loop(&self, id: FuncId, f: &yavs_ir::Func) -> bool {
+        f.kind != FuncKind::Process && self.early.contains_key(&id)
     }
 
     /// The microseconds of compile time to expect for `id` as `tree` compiles it: what the
@@ -2314,11 +2345,18 @@ impl Worker {
     /// Whether the compilation cache holds the object of `id`: an earlier run compiled a function
     /// of its name and size (`listed`). A function of the cache costs `FIRST_HIT`, whatever its kind.
     /// Never with `YAVS_AUTO_PRICE=model` (the model's price and `Heat::threshold` for every
-    /// function, cold or warm: counts that do not depend on the cache, #728). Worked out once.
+    /// function, cold or warm: counts that do not depend on the cache, #728), and never for a
+    /// subprogram the profile lost (compiled early, no faster, `early_loop`): its code stays in
+    /// the cache, and priced as a link every later run would take it at once. Worked out once.
     fn cached(&self, id: FuncId) -> bool {
         static MODEL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *self.in_cache[id.0 as usize].get_or_init(|| {
             !*MODEL.get_or_init(|| std::env::var("YAVS_AUTO_PRICE").is_ok_and(|v| v == "model"))
+                && !(self.earlier.lost.contains(&id.0)
+                    && self
+                        .prog
+                        .raw(id)
+                        .is_some_and(|f| f.kind != FuncKind::Process))
                 && self.generator.cache_enabled()
                 && self
                     .prog
@@ -3147,7 +3185,8 @@ impl Worker {
             let fine = self.prog.funcs.get(id).is_some_and(|f| !f.spare)
                 && self.prog.base_of(id) == id
                 && !p.lost.contains(&id.0)
-                && (self.prog.specialisable(id) || us >= self.threshold(id));
+                && (self.prog.specialisable(id) || us >= self.threshold(id))
+                && self.early_kind(id);
             if fine {
                 self.early.insert(id, us);
             }
@@ -3204,6 +3243,16 @@ impl Worker {
             .iter()
             .map(|&b| (b, self.bseen[b as usize]))
             .filter(|&(b, us)| {
+                // A subprogram whose count was spent by looks: a later run compiles it early, and an
+                // activation running when it is ready enters its frame-mode code at a loop head.
+                if self.native.looped(FuncId(b))
+                    && self
+                        .prog
+                        .func(FuncId(b))
+                        .is_some_and(|f| f.kind != FuncKind::Process)
+                {
+                    return us.saturating_mul(LOOP_SHARE) >= self.total;
+                }
                 self.prog
                     .func(FuncId(b))
                     .is_some_and(|f| f.kind == FuncKind::Process)
@@ -3644,6 +3693,9 @@ impl Worker {
                 if gen_.cache_enabled() && self.listed.insert(key.clone()) {
                     gen_.cache_note(&key.0, key.1);
                     self.in_cache[id.0 as usize] = Default::default();
+                }
+                if part != Part::Native && self.early_loop(id, f) {
+                    self.native.count_stat(CountStat::LoopEarly);
                 }
                 if part == Part::Native
                     && sampled
@@ -4895,6 +4947,183 @@ mod tests {
         let w = counted(prog, 0);
         assert!(w.waits(callee));
         assert!(opt(&w, caller), "no list: the whole program");
+    }
+
+    /// A process that calls a procedure with a loop of its own.
+    fn caller_looper() -> (yavs_ir::Program, yavs_ir::FuncId, yavs_ir::FuncId) {
+        let mut pb = ProgramBuilder::new();
+        let g = pb.declare("g", yavs_ir::FuncKind::Procedure, None);
+        let p = pb.declare("p", yavs_ir::FuncKind::Process, None);
+        let mut fb = pb.define(g);
+        // loop n := n - 1; exit when n = 0; end loop (n a parameter).
+        let n = fb.param(
+            "n",
+            yavs_ir::Width::B8,
+            yavs_ir::ParamClass::Value,
+            yavs_ir::Mode::In,
+            None,
+        );
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let head = fb.block();
+        let done = fb.block();
+        fb.emit(Inst::Br { to: head });
+        fb.at(head);
+        let at = fb.addr(yavs_ir::AddrSpace::Frame, n);
+        let v = fb.reg(yavs_ir::RegTy::I64);
+        fb.emit(Inst::Load {
+            dst: v,
+            addr: at,
+            w: yavs_ir::Width::B8,
+        });
+        let one = fb.int(1);
+        let v1 = fb.reg(yavs_ir::RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: yavs_ir::IntOp::Sub,
+            dst: v1,
+            a: v,
+            b: one,
+        });
+        fb.emit(Inst::Store {
+            addr: at,
+            src: v1,
+            w: yavs_ir::Width::B8,
+        });
+        fb.emit(Inst::CondBr {
+            c: v1,
+            t: head,
+            f: done,
+        });
+        fb.at(done);
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+        let mut fb = pb.define(p);
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let k = fb.int(1000);
+        let args = fb.regs(&[k]);
+        fb.emit(Inst::Call {
+            func: g,
+            args,
+            dst: None,
+        });
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+        (pb.finish().unwrap(), p, g)
+    }
+
+    /// A subprogram the watching loop found looping in one activation joins the profile's hot
+    /// list (processes alone did before); a later run compiles it early as frame-mode code alone,
+    /// for the running activation to enter.
+    #[test]
+    fn a_subprogram_that_loops_in_one_activation_is_hot_for_the_next_run() {
+        let (prog, _, g) = caller_looper();
+        let mut w = counted(prog, 0);
+        w.bseen[g.0 as usize] = super::profile::HOT_MIN_US;
+        w.hotish.push(g.0);
+        assert!(
+            w.snapshot().seen.is_empty(),
+            "a subprogram that did not loop"
+        );
+        w.native.mark_looped(g);
+        w.total = super::profile::HOT_MIN_US * super::LOOP_SHARE + 1;
+        assert!(w.snapshot().seen.is_empty(), "under its share of the run");
+        w.total = super::profile::HOT_MIN_US * super::LOOP_SHARE;
+        assert_eq!(w.snapshot().seen, [(g.0, super::profile::HOT_MIN_US)]);
+        let f = w.prog.func(g).unwrap();
+        assert!(super::loops(&w.prog, f));
+        assert!(w.native_ok(g));
+        assert_eq!(w.natural_part(g), super::Part::Native);
+        assert_eq!(w.asked_part(g), super::Part::Native);
+        w.early.insert(g, super::profile::HOT_MIN_US);
+        assert_eq!(w.natural_part(g), super::Part::Frame);
+        assert_eq!(w.asked_part(g), super::Part::Native);
+    }
+
+    /// A subprogram of the profile is compiled early only with a loop of its own: the mark is a
+    /// sample, and a busy subprogram without a loop is marked too.
+    #[test]
+    fn only_a_subprogram_with_a_loop_is_compiled_early() {
+        // A straight subprogram long enough to be `Kind::Native` (a speedup the filter takes).
+        let mut pb = ProgramBuilder::new();
+        let g = pb.declare("g", yavs_ir::FuncKind::Function, None);
+        let mut fb = pb.define(g);
+        let x = fb.param(
+            "x",
+            yavs_ir::Width::B8,
+            yavs_ir::ParamClass::Value,
+            yavs_ir::Mode::In,
+            None,
+        );
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let at = fb.addr(yavs_ir::AddrSpace::Frame, x);
+        let mut r = fb.reg(yavs_ir::RegTy::I64);
+        fb.emit(Inst::Load {
+            dst: r,
+            addr: at,
+            w: yavs_ir::Width::B8,
+        });
+        for k in 0..2 * crate::rt::SHORT as i64 {
+            let c = fb.int(k + 3);
+            let d = fb.reg(yavs_ir::RegTy::I64);
+            fb.emit(Inst::Bin {
+                op: yavs_ir::IntOp::Mul,
+                dst: d,
+                a: r,
+                b: c,
+            });
+            r = d;
+        }
+        fb.emit(Inst::Ret { v: Some(r) });
+        fb.finish();
+        let w = counted(pb.finish().unwrap(), 0);
+        assert!(
+            w.model(g).speedup >= super::profile::EARLY_SPEEDUP,
+            "{:?}",
+            w.kind(g)
+        );
+        assert!(!w.early_kind(g), "no loop of its own");
+        let (prog, p, g) = caller_looper();
+        let w = counted(prog, 0);
+        assert!(w.early_kind(g));
+        assert!(w.early_kind(p), "processes keep their own filter");
+    }
+
+    /// A subprogram the profile lost is not priced as a link of the cache: its code stays there,
+    /// and a later run would link it at once though compiling it early gained nothing.
+    #[test]
+    fn a_subprogram_the_profile_lost_is_not_priced_as_a_link() {
+        struct Cached;
+        impl crate::Generator for Cached {
+            fn compile(
+                &mut self,
+                _: &yavs_ir::Program,
+                _: yavs_ir::FuncId,
+                _: &yavs_ir::Func,
+                _: super::Part,
+            ) -> Result<crate::native::Compiled, String> {
+                Err("stub".into())
+            }
+            fn cache_enabled(&self) -> bool {
+                true
+            }
+        }
+        let fresh = |lost: bool| {
+            let (prog, p, g) = caller_looper();
+            let mut w = counted(prog, 0);
+            w.generator = Box::new(Cached);
+            for id in [g, p] {
+                let key = w.list_key(id, w.prog.func(id).unwrap());
+                w.listed.insert(key);
+                if lost {
+                    w.earlier.lost.push(id.0);
+                }
+            }
+            (w, p, g)
+        };
+        let (w, p, g) = fresh(false);
+        assert!(w.cached(g) && w.cached(p));
+        let (w, p, g) = fresh(true);
+        assert!(!w.cached(g), "a subprogram the profile lost");
+        assert!(w.cached(p), "a process lost by its trial keeps its price");
     }
 
     /// The profile lists what a run needed, in the order it was optimised: what ran or compiled.

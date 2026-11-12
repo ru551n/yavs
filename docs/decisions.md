@@ -15929,3 +15929,20 @@ host's way in and out (`yavs_rt_memo`: the view sync, the unwind guard, `memo_ke
   `olo_axi_master_full`, `neorv32_dual_full`, `uvvm_axistream_vvc`, runs 1 to 3, two reps). `YAVS_AUTO_CHECK_CALLS`
   is clean over the difftest corpus and the suites. Unit test `the_first_ask_optimises_only_what_the_processes_reach`
   (fails when every function is a root).
+
+## Stale wait timeouts dropped from the time heap (yavs-kernel `SimControl::drop_stale_timeouts`, `TimeHeap::retain`, 2026-11-12)
+
+- **Problem.** A timeout entry stays in the future queue until its time; a signal wake only makes it stale (lazy
+  deletion, tested when the entry reaches the top). A `wait on s until c for 1 hr` that events end left one entry per
+  wake, so the heap grew with events times waiters (about 5 GB at 1024 waiters and 100 000 events), and once no earlier
+  live entry was left (the end of the test, also after `stop`) `next_queued` popped every stale entry with a full
+  sift-down. Same on v0.19.1; results were always right.
+- **Decision** (agent). After a full commit (`commit_rest`, the only place timeouts are queued), a queue of at least
+  `Queue::limit` entries (never below `HEAP_FLOOR`, 256) keeps every entry but the timeouts its process no longer
+  names and is made a heap again; the limit becomes twice what is left. Amortised O(1) per queued entry, push and pop
+  unchanged. Driver and implicit entries are not cleared: whether one is stale depends on its waveform, known only for
+  the earliest, and they are bounded by their delay over the assignment period.
+- **Not chosen.** Deleting a process's timeout from the heap at every wake (a search of the heap, O(heap) per wake),
+  as sim1 does.
+- **Exact.** Only entries every consumer already ignores go; the pop order is by (time, key), not by layout. Counters
+  `heap_peak`, `stale_timeouts`; tests `perf.rs` `timeout_stale`, corpus `process/timeout_cancel`.

@@ -1,0 +1,17 @@
+exit	0
+diag	note	10000000	1	:timeout_cancel:rearm	rearm: s=1 at 10000000 fs
+diag	note	10000000	1	:timeout_cancel:post	post: wake 1 s=1 at 10000000 fs
+diag	note	15000000	0	:timeout_cancel:rearm	rearm: short timeout at 15000000 fs
+diag	note	20000000	0	:timeout_cancel:same	same: wake 1 u=1 event=true at 20000000 fs
+diag	note	20000000	1	:timeout_cancel:post	post: wake 2 s=2 at 20000000 fs
+diag	note	35000000	1	:timeout_cancel:post	post: wake 3 s=2 at 35000000 fs
+diag	note	40000000	0	:timeout_cancel:same	same: wake 2 u=1 event=false at 40000000 fs
+diag	note	50000000	1	:timeout_cancel:post	post: wake 4 s=3 at 50000000 fs
+diag	note	65000000	0	:timeout_cancel:post	post: wake 5 s=3 at 65000000 fs
+diag	note	80000000	1	:timeout_cancel:post	post: wake 6 s=4 at 80000000 fs
+diag	note	800000000	1	:timeout_cancel:watch_d	d=5 at 800000000 fs
+diag	note	1600000000	1	:timeout_cancel:watch_d	d=6 at 1600000000 fs
+diag	note	2500000000	0	:timeout_cancel:watch_z	z=7 at 2500000000 fs
+diag	note	3000000000	0	:timeout_cancel:live	live: timeout at 3000000000 fs z=7 d=6
+diag	note	3000000000	1	:timeout_cancel:churn(3):_p0	churn: n=187 at 3000000000 fs
+diag	note	7200000000015000000	0	:timeout_cancel:rearm	rearm: long timeout at 7200000000015000000 fs s=4

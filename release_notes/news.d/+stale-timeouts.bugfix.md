@@ -1,0 +1,1 @@
+A long run in which processes wait with a long timeout that signal events beat (`wait on s until c for 1 hr` in a loop) keeps its memory flat: the timeouts of waits that ended early are dropped instead of staying queued until their time.

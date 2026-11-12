@@ -299,6 +299,9 @@ pub struct Stats {
     /// The most entries the future queue (`Queue::later`) held at the end of a full commit
     /// (`commit_rest`, where timeouts are queued).
     pub heap_peak: u64,
+    /// Timeouts of waits a signal ended, dropped from the future queue before their time
+    /// (`SimControl::drop_stale_timeouts`).
+    pub stale_timeouts: u64,
 }
 
 /// A pending observer wake-up (`Hook::wake_at`). Ordered by time, then registration.
@@ -955,7 +958,13 @@ struct Queue {
     later: TimeHeap,
     /// Entries at the current time, in push order.
     next_delta: Vec<Entry>,
+    /// `later` is cleared of stale timeouts when it reaches this length (at least
+    /// `HEAP_FLOOR`): twice what the last clearing left (`SimControl::drop_stale_timeouts`).
+    limit: usize,
 }
+
+/// The smallest future queue that `drop_stale_timeouts` clears.
+const HEAP_FLOOR: usize = 256;
 
 /// A heap item: `Entry` flattened to words. Ordered by `(time, key)`: the key puts drivers
 /// before timeouts before implicit signals, then by index, as `Entry` does; `generation` is the
@@ -1024,6 +1033,33 @@ impl TimeHeap {
             (Some(a), Some(b)) => Some(a.time.min(b.time)),
             (Some(a), None) => Some(a.time),
             _ => None,
+        }
+    }
+
+    /// Keep the items `keep` accepts and make the rest a heap again (sift-down from the last
+    /// parent). The pop order of `(time, key)` does not depend on the layout.
+    fn retain(&mut self, keep: impl FnMut(&Later) -> bool) {
+        self.v.retain(keep);
+        let n = self.v.len();
+        for mut i in (0..n / 2).rev() {
+            let item = self.v[i];
+            loop {
+                let mut c = 2 * i + 1;
+                if c >= n {
+                    break;
+                }
+                if c + 1 < n
+                    && (self.v[c + 1].time, self.v[c + 1].key) < (self.v[c].time, self.v[c].key)
+                {
+                    c += 1;
+                }
+                if (self.v[c].time, self.v[c].key) >= (item.time, item.key) {
+                    break;
+                }
+                self.v[i] = self.v[c];
+                i = c;
+            }
+            self.v[i] = item;
         }
     }
 
@@ -5205,8 +5241,11 @@ impl SimControl {
         }
         late.clear();
         self.late = late;
-        let len = self.queue.later.v.len() as u64;
-        self.stats.heap_peak = self.stats.heap_peak.max(len);
+        let len = self.queue.later.v.len();
+        self.stats.heap_peak = self.stats.heap_peak.max(len as u64);
+        if len >= self.queue.limit.max(HEAP_FLOOR) {
+            self.drop_stale_timeouts();
+        }
         // The previous batch's buffer becomes the next cycle's ready list: no allocation per delta.
         let mut old = std::mem::replace(&mut self.last_ran, pids);
         if self.ready.capacity() == 0 {
@@ -5214,6 +5253,26 @@ impl SimControl {
             self.ready = old;
         }
         first_err.map_or(Ok(()), Err)
+    }
+
+    /// Drop the timeouts of waits that ended otherwise from the future queue. A timeout stays
+    /// queued until its time and a resumption only moves the process's generation on, so a
+    /// `wait on s until c for 1 hr` that events end leaves one stale entry per wake: the heap
+    /// grew with events times waiters, for a time that never comes. Asked after a
+    /// full commit once the queue reaches `Queue::limit`, which then becomes twice what is left:
+    /// a constant amortised cost per queued timeout. Only timeouts are dropped: whether a
+    /// driver or implicit entry is stale depends on its waveform, which `live` can tell only
+    /// for the earliest entry.
+    #[cold]
+    fn drop_stale_timeouts(&mut self) {
+        let procs = &self.procs;
+        let before = self.queue.later.v.len();
+        self.queue.later.retain(|l| {
+            l.key >> 32 != 1 || procs[l.key as u32 as usize].generation == l.generation
+        });
+        let left = self.queue.later.v.len();
+        self.stats.stale_timeouts += (before - left) as u64;
+        self.queue.limit = 2 * left;
     }
 
     /// Report what resolution functions and port conversions reported in the update phase, in
@@ -5927,5 +5986,32 @@ fn shuffle(v: &mut [u32], state: &mut u64) {
         z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
         z ^= z >> 31;
         v.swap(i, (z % (i as u64 + 1)) as usize);
+    }
+}
+
+#[cfg(test)]
+mod heap_tests {
+    use super::{Time, TimeHeap};
+
+    /// `retain` leaves a heap: the kept items pop in `(time, key)` order.
+    #[test]
+    fn retain_keeps_the_heap_order() {
+        let mut h = TimeHeap::default();
+        let mut x = 0x9e37_79b9_u64;
+        for g in 0..2000u64 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            h.push(Time::fs(x % 500).unwrap(), (1 << 32) | ((x >> 40) % 64), g);
+        }
+        h.retain(|l| l.generation % 3 != 0);
+        let mut got = Vec::new();
+        while let Some(&l) = h.peek() {
+            assert_ne!(l.generation % 3, 0);
+            got.push((l.time, l.key));
+            h.pop();
+        }
+        assert_eq!(got.len(), 2000 - 667);
+        assert!(got.windows(2).all(|w| w[0] <= w[1]));
     }
 }

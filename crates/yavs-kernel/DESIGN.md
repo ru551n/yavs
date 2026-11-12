@@ -119,7 +119,12 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   Implicit(i))`. A zero-delay transaction is queued at `now` and matures in the next delta;
   entries at `now` go to a plain list instead of the heap, merged with the heap's due entries
   in the same `(time, entry)` order at the drain. Stale entries are dropped when they reach
-  the top, so they never cause an empty cycle.
+  the top, so they never cause an empty cycle. A timeout that a signal beat stays stale until
+  its time, which for a `wait ... for 1 hr` never comes, so after a full commit a queue of at
+  least twice what its last clearing left (and `HEAP_FLOOR` entries) is cleared of the timeouts
+  whose process has a newer generation and made a heap again (`drop_stale_timeouts`): the queue
+  holds about the live entries, not one per wake. Driver and implicit entries stay (whether one
+  is stale depends on its waveform, known only for the earliest).
 - **Transaction values** are recycled: a driver's waveform keeps a few buffers of applied
   transactions (a value covering the whole driver is swapped into the driver, not copied), and
   the next assignment refills one, so a steady stream of assignments allocates nothing. An

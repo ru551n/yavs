@@ -550,7 +550,12 @@ case!(
 );
 // Waiters whose long timeouts a signal beats (a message wait): the stale timeouts leave the time
 // heap as it fills, so it holds about the live ones (16 here), not one per wake (6400).
-case!(timeout_stale, "s=1700 t=4010000000 fs", &[], [("heap_peak", Max(300))]);
+case!(
+    timeout_stale,
+    "s=1700 t=4010000000 fs",
+    &[],
+    [("heap_peak", Max(265))]
+);
 case!(ieee_operands, "acc=", &[], [("ops", Max(2716))]);
 case!(ieee_share, "n=", &[], [("ops", Max(3626))]);
 

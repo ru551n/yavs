@@ -63,6 +63,7 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         ("wake_scans", s.wake_scans),
         ("wake_plans", s.wake_plans),
         ("heap_peak", s.heap_peak),
+        ("stale_timeouts", s.stale_timeouts),
         ("ecall_hits", hits),
         ("ecall_runs", runs),
         ("ecall_session_hits", session_hits),

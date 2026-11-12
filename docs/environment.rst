@@ -465,8 +465,8 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - unset
      - ``run``
    * - ``YAVS_IMAGE_INLINE``
-     - ``off``: Cranelift code leaves whole record signal reads and whole zero-delay assignments to the host, which uses the images as before; ``noread``, ``nodrive``: only the reads or only the assignments do.
-     - ``off``, ``noread`` or ``nodrive``
+     - ``off``: Cranelift code leaves whole record signal reads and whole zero-delay assignments to the host, which uses the images as before; ``noread``, ``nodrive``: only the reads or only the assignments do; ``nomiss``: an assignment that differs from the image goes to the host.
+     - ``off``, ``noread``, ``nodrive`` or ``nomiss``
      - unset
      - ``run``
    * - ``YAVS_IMAGE_AFTER``

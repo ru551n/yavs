@@ -134,7 +134,7 @@ pub struct Jit {
     deopt_slots: ClifId,
     deopt_end: ClifId,
     /// The kernel-facing callbacks of `rt.rs`, in the order of `KERNEL`.
-    kernel: [ClifId; 28],
+    kernel: [ClifId; 30],
     /// `yavs_rt_host` and the `Deref` of `yavs_rt_fast` through stubs that keep every register
     /// (`cold_stub`).
     cold_host: ClifId,
@@ -571,6 +571,8 @@ impl Jit {
             (DRIVE_BIT, yavs_rt_drive_bit as *const u8),
             (DRIVE_F, yavs_rt_drive_f as *const u8),
             (SCATTER, yavs_rt_scatter as *const u8),
+            (SCATTER_CMP, yavs_rt_scatter_cmp as *const u8),
+            (SCATTER_PART, yavs_rt_scatter_part as *const u8),
             (GATHER, yavs_rt_gather as *const u8),
             (DRIVE_SRC, yavs_rt_drive_src as *const u8),
             (GATE_CHECK, yavs_rt_gate_check as *const u8),
@@ -679,6 +681,12 @@ impl Jit {
             imp(SCATTER, &[I64, I32, I32, I64, I64, I64], Some(I32))?,
             imp(GATHER, &[I64, I32, I64, I64, I64], Some(I32))?,
             imp(DRIVE_SRC, &[I64, I32, I64, I64, I64, I64], Some(I32))?,
+            imp(SCATTER_CMP, &[I64, I32, I32, I64, I64, I64], Some(I32))?,
+            imp(
+                SCATTER_PART,
+                &[I64, I32, I32, I64, I64, I64, I64, I64],
+                Some(I32),
+            )?,
         ];
         let hold_check = imp(HOLD_CHECK, &[I64, I64, I64, I64, I64, I32, I64, I64], None)?;
         let rare = imp(RARE, &[I32], None)?;
@@ -1775,6 +1783,12 @@ impl Jit {
             drive_src: self
                 .module
                 .declare_func_in_func(self.kernel[27], &mut ctx.func),
+            scatter_cmp: self
+                .module
+                .declare_func_in_func(self.kernel[28], &mut ctx.func),
+            scatter_part: self
+                .module
+                .declare_func_in_func(self.kernel[29], &mut ctx.func),
             tables: tabs,
             consts: cons,
             natives,
@@ -1971,6 +1985,12 @@ struct Imports {
     /// `yavs_rt_drive_src(mem, driver, lo, len, data, n) -> u32`: a fused whole-value drive from
     /// the value itself (`yavs_interp::FusedCopy`), 0 when not taken.
     drive_src: FuncRef,
+    /// `yavs_rt_scatter_cmp(mem, pc, driver, data, len_inertial, cell) -> u32`: a whole record
+    /// drive that missed the image compare, compared run by run.
+    scatter_cmp: FuncRef,
+    /// `yavs_rt_scatter_part(mem, pc, driver, data, len_inertial, part, first, outer) -> u32`: a
+    /// zero-delay drive of a part of a record signal.
+    scatter_part: FuncRef,
     tables: HashMap<Vec<u8>, GlobalValue>,
     /// Copies of the constants (up to 4 KiB of bytes) the function takes the address of, which
     /// never change: reads of them need no lookup.
@@ -4680,6 +4700,30 @@ fn gen_func(
             } if g.nat.is_none() => {
                 let after = f.regs(ops).and_then(|o| o.first().copied());
                 g.scatter(pc, prog, driver, src, desc, tab, after, mode);
+            }
+            Inst::SigScatter {
+                src,
+                desc,
+                tab,
+                driver,
+                ops,
+                mode,
+                has: yavs_ir::SCATTER_PART,
+            } if g.nat.is_none() => {
+                if let Some(&[after, first, outer]) = f.regs(ops) {
+                    g.scatter_part(
+                        pc,
+                        prog,
+                        driver,
+                        src,
+                        desc,
+                        tab,
+                        [after, first, outer],
+                        mode,
+                    );
+                } else {
+                    g.signal(pc, 0);
+                }
             }
             Inst::SigGather {
                 dst,
@@ -10671,7 +10715,24 @@ impl Gen<'_> {
             self.guard(open, slow);
             let call = self.b.ins().call(self.imp.memeq, &[p, image, size]);
             let same = self.b.inst_results(call)[0];
-            self.guard(same, slow);
+            // A miss: the runs compared and driven by the cell's plan, with no host.
+            if direct && image_inline() != Ok("nomiss") {
+                let (hit, miss) = (self.b.create_block(), self.b.create_block());
+                self.b.ins().brif(same, hit, &[], miss, &[]);
+                self.b.switch_to_block(miss);
+                let d = self
+                    .b
+                    .ins()
+                    .load(I64, t, cell, offset_of!(C, direct) as i32);
+                self.guard(d, slow);
+                let (pcv, drv) = (self.c32(pc), self.c32(driver));
+                let inertial = i64::from(mode == yavs_ir::DriveMode::Inertial);
+                let lf = self.b.ins().bor_imm_s(size, inertial << 32);
+                self.call_stored(self.imp.scatter_cmp, &[pcv, drv, p, lf, cell], done);
+                self.b.switch_to_block(hit);
+            } else {
+                self.guard(same, slow);
+            }
             if image_mode() == InlCmp::Check {
                 let pcv = self.c32(pc);
                 let kept = match self.batch {
@@ -10689,6 +10750,50 @@ impl Gen<'_> {
         } else {
             self.b.ins().jump(slow, &[]);
         }
+        self.b.switch_to_block(done);
+        self.clear();
+        self.join(join);
+    }
+
+    /// A zero-delay `SigScatter` of a part of a record signal through driver slot `driver`: with
+    /// a plan the cell names (`ImageCell::part`), `yavs_rt_scatter_part`, else `yavs_rt_signal`.
+    #[allow(clippy::too_many_arguments)]
+    fn scatter_part(
+        &mut self,
+        pc: u32,
+        prog: &Program,
+        driver: u32,
+        src: Reg,
+        desc: Reg,
+        tab: yavs_ir::ConstId,
+        [after, first, outer]: [Reg; 3],
+        mode: yavs_ir::DriveMode,
+    ) {
+        type C = yavs_interp::ImageCell;
+        let a = self.ld(after);
+        let now = self.const_of(a) == Some(0);
+        let has = Self::tab_desc(prog, tab);
+        let on =
+            image_mode() != InlCmp::Off && !matches!(image_inline(), Ok("nodirect" | "nopart"));
+        let (Some(has), true, true) = (has, now, on) else {
+            self.signal(pc, 0);
+            return;
+        };
+        let (slow, join) = self.slow_signal(pc, 0);
+        let t = MemFlagsData::trusted();
+        let k = yavs_interp::GATHER_CELLS + driver as usize;
+        let cell = self.cell_of(k, tab, has.then_some(desc), slow);
+        let d = self.b.ins().load(I64, t, cell, offset_of!(C, part) as i32);
+        self.guard(d, slow);
+        let size = self.b.ins().uload32(t, cell, offset_of!(C, size) as i32);
+        let s = self.ld(src);
+        let p = self.host(s, Some(src), Op::C(0), Op::V(size), false, slow);
+        let (fv, ov) = (self.ld(first), self.ld(outer));
+        let done = self.b.create_block();
+        let (pcv, drv) = (self.c32(pc), self.c32(driver));
+        let inertial = i64::from(mode == yavs_ir::DriveMode::Inertial);
+        let lf = self.b.ins().bor_imm_s(size, inertial << 32);
+        self.call_stored(self.imp.scatter_part, &[pcv, drv, p, lf, d, fv, ov], done);
         self.b.switch_to_block(done);
         self.clear();
         self.join(join);

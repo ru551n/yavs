@@ -959,3 +959,81 @@ begin
   end process;
 end;
 "#;
+
+/// Whole record drives that change in some runs and hold in the rest (`held/held_record_runs`):
+/// compiled code's compare misses and `compared_scatter` compares run by run with no host
+/// (`scatters_compared`). The same output and the same counts as with the misses sent to the host
+/// (`YAVS_IMAGE_INLINE=nomiss`) and with no cells; checked from the first scatter at 1 and 4
+/// threads.
+#[cfg(feature = "clift")]
+#[test]
+fn compiled_misses_compare_run_by_run() {
+    let d = Design::new(
+        "record_compare_runs",
+        &corpus("held_record_runs"),
+        "held_record_runs",
+    );
+    compiled_cells_change_nothing(&d, 1, 500);
+    let on = counted(&d, &[], FORCED);
+    let host = counted(&d, &[("YAVS_IMAGE_INLINE", "nomiss")], FORCED);
+    assert_eq!((&on.0, &on.1), (&host.0, &host.1), "misses to the host");
+    for name in [
+        "scatter_spared",
+        "image_writes",
+        "images",
+        "cycles",
+        "events",
+    ] {
+        assert_eq!(
+            counter(&on.2, name),
+            counter(&host.2, name),
+            "{name}: compiled misses against the host's"
+        );
+    }
+    assert_eq!(counter(&host.2, "scatters_compared"), 0);
+    let n = counter(&on.2, "scatters_compared");
+    assert!(n > 500, "only {n} scatters compared run by run");
+    let first = counted(&d, CHECK, FORCED);
+    assert_eq!((&on.0, &on.1), (&first.0, &first.1), "checked");
+    assert!(counter(&first.2, "scatters_compared") > n);
+}
+
+/// Parts of record signals driven at delay 0 from compiled code (`held/held_record`: one record
+/// of an array, two, the whole array, around force and release) go through `direct_part`, with
+/// no host (`part_scatters`): the same output and counts as through the signal callback
+/// (`YAVS_IMAGE_INLINE=nopart`), at 1 and 4 threads.
+#[cfg(feature = "clift")]
+#[test]
+fn compiled_parts_drive_with_no_host() {
+    let d = Design::new(
+        "record_compare_parts",
+        &corpus("held_record"),
+        "held_record",
+    );
+    let interp = d.run(OFF, &["--tier=interp", "--no-cache"]);
+    let host = counted(&d, &[("YAVS_IMAGE_INLINE", "nopart")], FORCED);
+    assert_eq!(counter(&host.2, "part_scatters"), 0);
+    let mut par = FORCED.to_vec();
+    par.extend(["--threads=4", "--shuffle=5"]);
+    // A shuffled run reports processes of one cycle in another order: compare sorted.
+    let sorted = |s: &str| {
+        let mut v: Vec<_> = s.lines().map(str::to_owned).collect();
+        v.sort();
+        v
+    };
+    for args in [FORCED, &par[..]] {
+        let on = counted(&d, CHECK, args);
+        assert_eq!(interp.0, on.0, "{args:?}");
+        assert_eq!(sorted(&interp.1), sorted(&on.1), "{args:?}");
+        let n = counter(&on.2, "part_scatters");
+        assert!(n > 100, "only {n} parts driven with no host");
+    }
+    let on = counted(&d, &[], FORCED);
+    for name in ["scatter_spared", "events", "cycles", "general_assigns"] {
+        assert_eq!(
+            counter(&on.2, name),
+            counter(&host.2, name),
+            "{name}: parts with no host against the callback"
+        );
+    }
+}

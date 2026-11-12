@@ -994,10 +994,13 @@ pub(crate) struct ProcState {
     pub gate_shut: bool,
     /// The plans named so far (`Ctx::plan_gate`).
     pub plans: u32,
-    /// `Stats::gathers_copied`, `Stats::gathers_read`, `Stats::scatter_spared`.
+    /// `Stats::gathers_copied`, `Stats::gathers_read`, `Stats::scatter_spared`,
+    /// `Stats::scatters_compared`, `Stats::part_scatters`.
     pub gathers_copied: u64,
     pub gathers_read: u64,
     pub scatter_spared: u64,
+    pub scatters_compared: u64,
+    pub part_scatters: u64,
 }
 
 /// Drivers of a process with a skip-test state (`ProcState::same`); later ones always ask it.
@@ -1618,6 +1621,18 @@ impl Ctx<'_> {
     #[inline(always)]
     pub fn plan_open(&self, bit: u64) -> bool {
         self.st.gate[1].load(std::sync::atomic::Ordering::Relaxed) & bit != 0
+    }
+
+    /// Count a whole record scatter compiled code compared run by run (`Stats::scatters_compared`).
+    #[inline(always)]
+    pub fn note_compared(&mut self) {
+        self.st.scatters_compared += 1;
+    }
+
+    /// Count a part of a record signal compiled code drove with no host (`Stats::part_scatters`).
+    #[inline(always)]
+    pub fn note_part(&mut self) {
+        self.st.part_scatters += 1;
     }
 
     /// Count the leaves a compare spared a whole record scatter (`Stats::scatter_spared`).

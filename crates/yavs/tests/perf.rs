@@ -1773,9 +1773,12 @@ mod clift {
         "errors=0",
         [
             ("cb_step", Max(4)),
-            // A gather copied or a held scatter compared in compiled code needs no callback.
-            ("cb_signal", Max(245)),
-            ("cb_signal", Min(230)),
+            // A gather copied or a held scatter compared in compiled code needs no callback; a
+            // scatter that misses the compare is compared run by run in `yavs_rt_scatter_cmp`.
+            ("cb_signal", Max(72)),
+            ("cb_signal", Min(66)),
+            ("cb_record_cmp", Min(160)),
+            ("cb_record_cmp", Max(175)),
         ]
     );
     // Records that change in every leaf at every clock: once the review has let their images go,
@@ -1789,7 +1792,9 @@ mod clift {
         [
             ("cb_record", Min(1000)),
             ("cb_record", Max(1100)),
-            ("cb_signal", Max(7000)),
+            // Before the review lets the images go, the misses of the compare.
+            ("cb_record_cmp", Min(3950)),
+            ("cb_signal", Max(2800)),
             ("gathers_read", Max(40)),
         ]
     );

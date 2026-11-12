@@ -199,6 +199,7 @@ const PASS: &[&str] = &[
     "held/held_param_active",
     "held/held_ports",
     "held/held_postponed",
+    "held/held_record_runs",
     "held/held_reject",
     "held/held_transaction",
     "delta/wait_edge",

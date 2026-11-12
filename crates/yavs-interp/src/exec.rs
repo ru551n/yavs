@@ -2296,12 +2296,7 @@ impl Machine {
         // entry that is empty already stays right without a scan.
         if let Some(i) = *slot
             && self.troots.is_empty()
-            && (self.frames.iter()).all(|f| {
-                self.rt
-                    .prog
-                    .func_inline(f.func)
-                    .is_some_and(|f| f.roots.is_empty())
-            })
+            && self.rootless()
             && let Some(sh) = self.sh.as_ref()
             && sh
                 .procs
@@ -2355,12 +2350,31 @@ impl Machine {
         self.recycle_shared();
     }
 
+    /// Whether no frame's function has a root map (the usual process: one frame).
+    #[inline(always)]
+    fn rootless(&self) -> bool {
+        let prog = &self.rt.prog;
+        let none = |f: &Frame| prog.func_inline(f.func).is_some_and(|f| f.roots.is_empty());
+        match &self.frames[..] {
+            [f] => none(f),
+            fs => fs.iter().all(none),
+        }
+    }
+
     /// Make the shared heap's deallocated slots reusable that no serial process's frames still
     /// address (`publish_shared`).
+    #[inline(always)]
     fn recycle_shared(&mut self) {
         if let Some(sh) = self.sh.as_mut()
             && sh.heap.as_deref().is_some_and(Heap::has_quarantine)
-            && let Some(pinned) = sh.pinned()
+        {
+            Self::recycle_shared_slow(sh);
+        }
+    }
+
+    #[inline(never)]
+    fn recycle_shared_slow(sh: &mut SharedState) {
+        if let Some(pinned) = sh.pinned()
             && let Some(h) = sh.heap.as_mut()
         {
             h.recycle(&pinned);

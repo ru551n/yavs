@@ -3140,7 +3140,18 @@ impl InterpProcess {
                     self.run_ready(ctx)
                 };
                 if let Some(st) = self.m.sh.take() {
-                    *g = st;
+                    // ponytail: `take` left an empty state, which owns no memory: forgotten, not
+                    // dropped (its drop glue was a tenth of the activation). Needs `SharedState::default`
+                    // to stay allocation-free.
+                    let empty = std::mem::replace(&mut *g, st);
+                    debug_assert!(
+                        empty.vars.capacity() == 0
+                            && empty.heap.is_none()
+                            && empty.procs.capacity() == 0
+                            && empty.tainted.is_none()
+                            && empty.init_reports.capacity() == 0
+                    );
+                    std::mem::forget(empty);
                 }
                 r
             }

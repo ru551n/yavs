@@ -15664,7 +15664,9 @@ cycle, and each question walks the function.
   generics and an open parameter, 490 with a literal slice and an open parameter, 369 with everything literal,
   and 619 with a constrained parameter and the slice from generics: the parameter's own descriptor costs
   nothing once the slice's bounds come from instance data. The copy of the slice into the result block, of a
-  count known only at run time, called `yavs_rt_lcopy`: about 100 to 190 instructions of the call. In a forced
+  count known only at run time, called `yavs_rt_lcopy`; in place it saves 20 to 30 instructions a call there
+  (the runtime's copy, 100 to 190 instructions a loop iteration of the harness, is mostly the caller's
+  frame-mode copy of the result into its variable, which keeps the call). In a forced
   compiled Microwatt run every native-frame body together is 1.2 percent of the instructions, `get_row`'s two
   bodies 0.1, `yavs_rt_lcopy` 0.45.
 - **Change** (agent). In a native frame an `LCopy` whose count is known only at run time and whose destination
@@ -15676,7 +15678,9 @@ cycle, and each question walks the function.
   counts the sites.
 - **Measured** (agent, plain bench builds, all-thread instructions, forced `--tier=clift --no-cache`, repeat
   within 0.01 percent): Microwatt 0.9994, GRLIB 0.9983; the small tests that are mostly compile under forced code
-  grow by the compile (`hdlm_fifo_sync` 1.0011, `olo_axi_master_full` 1.0008), the others within 0.01 percent.
+  grow by the compile (`hdlm_fifo_sync` and `olo_axi_master_full` 1.0009), the others within 0.01 percent. Default
+  tier, runs 2 and 3 from pristine, 2 reps: GRLIB 0.9962 and 0.9963 outside the A/A range (main thread alone the
+  same); Microwatt and the small tests inside their A/A.
 - **Not done**, sized. The bounds of instance data in a shared function (the generics of `get_row`) fold only in
   a copy of the function per instance and per constant cell of the call (`opt/subcopy.rs` keys on `'dope`
   slots only, and its copies carry no instance facts): about 250 instructions a call on the harness above,

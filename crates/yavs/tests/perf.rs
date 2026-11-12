@@ -1640,8 +1640,8 @@ mod clift {
         ]
     );
     // Slices of a run-time length returned by small functions (bounds from generics and from
-    // the arguments) are copied in place on their native frames: no call of the runtime's copy
-    // (400 without).
+    // the arguments) are copied in place on their native frames: no call of the runtime's copy,
+    // which each of the 400 calls made before.
     clift_case!(
         slice_len,
         "clift_slice_len",

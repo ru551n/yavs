@@ -31,7 +31,7 @@ In a native frame a `deallocate` is one call of `yavs_rt_free` (`Gen::free`): co
 
 ### Slices of a run-time length copied in place on native frames (2026-11-12)
 
-In a native frame an `LCopy` of a count known only at run time to the start of its destination (a slice returned by a function, its bounds from a parameter or a generic) copies up to 64 elements in place instead of calling `yavs_rt_lcopy` (`Gen::lcopy_inline`, counter `clift_lcopy_count_sites`); frame-mode code keeps the call. Forced compiled Microwatt 0.9994, GRLIB 0.9983 in instructions; small forced runs pay up to 0.1 percent more compile. Tests: `clift_lcopy_shapes` (run-time counts in a function), corpus `composite/slice_runtime_len`, `perf.rs` `clift::slice_len`.
+In a native frame an `LCopy` of a count known only at run time to the start of its destination (a slice returned by a function, its bounds from a parameter or a generic) copies up to 64 elements in place instead of calling `yavs_rt_lcopy` (`Gen::lcopy_inline`, counter `clift_lcopy_count_sites`); frame-mode code keeps the call. Forced compiled Microwatt 0.9994, GRLIB 0.9983 in instructions, GRLIB at the default tier 0.996 from its second run; small forced runs pay up to 0.1 percent more compile. Tests: `clift_lcopy_shapes` (run-time counts in a function), corpus `composite/slice_runtime_len`, `perf.rs` `clift::slice_len`.
 
 ### The logical operators of vectors holding metavalues in compiled code (2026-11-11)
 

@@ -3032,11 +3032,6 @@ impl InterpProcess {
 
     #[inline(always)]
     fn finish_quick(&mut self, q: exec::Quick, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
-        // Not `hot` here only in `run_serial`: the shared-heap roots are published before the
-        // suspension drops the temporaries, as the general path did.
-        if !self.m.hot && !matches!(q, exec::Quick::Fault) {
-            self.m.publish_shared(&mut self.roots_slot);
-        }
         match q {
             exec::Quick::Suspended => {
                 self.m.after_suspend();
@@ -3118,7 +3113,7 @@ impl InterpProcess {
     /// code entered directly, else `run_quick`) with the shared state lent out of its lock for it.
     /// Serial processes run one at a time on the kernel thread; between activations the state is
     /// in the lock, where other serial processes, the collector and observers take it. The process
-    /// stays not `hot`, which tells `finish_quick` to publish its shared-heap roots.
+    /// stays not `hot`: the tier's views and the call paths read that it may hold the state.
     #[inline(never)]
     fn run_serial(&mut self, ctx: &mut Ctx<'_>, first: bool) -> Result<(), SimError> {
         self.m.execs += 1;
@@ -3133,12 +3128,7 @@ impl InterpProcess {
         let r = match shared.lock() {
             Ok(mut g) => {
                 self.m.sh = Some(std::mem::take(&mut *g));
-                // (The first activation, as a `hot` process's, in the interpreter's loop.)
-                let r = if first {
-                    self.run_quick(ctx)
-                } else {
-                    self.run_ready(ctx)
-                };
+                let r = self.run_lent(ctx, first);
                 if let Some(st) = self.m.sh.take() {
                     // ponytail: `take` left an empty state, which owns no memory: forgotten, not
                     // dropped (its drop glue was a tenth of the activation). Needs `SharedState::default`
@@ -3162,6 +3152,33 @@ impl InterpProcess {
         };
         self.shared = Some(shared);
         r
+    }
+
+    /// The activation of `run_serial` with the state lent: compiled code entered directly when it is
+    /// ready (not at the first activation, as for a `hot` process), else the interpreter's loop. The
+    /// roots are published as the general path did: before the suspension drops the temporaries
+    /// in the interpreter, after it behind compiled code's entry, whose suspension ends in
+    /// `finish_quick` (only temporaries that died there can differ; none of them is reachable).
+    #[inline(always)]
+    fn run_lent(&mut self, ctx: &mut Ctx<'_>, first: bool) -> Result<(), SimError> {
+        if !first
+            && let Some((entry, data, func, pc, flags)) = self.m.direct_ready()
+            && let Some(rt) = self.m.take_rt()
+        {
+            if flags & NAT_COUNT != 0 {
+                rt.native.activated(func);
+            }
+            let r = entry(self, ctx, rt, data, func, pc);
+            if r.is_ok() {
+                self.m.publish_shared(&mut self.roots_slot);
+            }
+            return r;
+        }
+        let q = self.m.run_quick(&mut Some(&mut *ctx), false);
+        if !matches!(q, exec::Quick::Fault) {
+            self.m.publish_shared(&mut self.roots_slot);
+        }
+        self.finish_quick(q, ctx)
     }
 
     /// Runs the machine with the shared state locked, until it suspends or returns.

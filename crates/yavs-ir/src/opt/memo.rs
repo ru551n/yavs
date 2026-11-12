@@ -601,7 +601,13 @@ fn only_preds(f: &crate::Func, succ: &[Vec<usize>]) -> (Vec<Option<usize>>, Vec<
     (only, join)
 }
 
-fn plan_block(f: &crate::Func, flow: &Flow, b: usize, live_out: &[u64]) -> Option<Plan> {
+fn plan_block(
+    f: &crate::Func,
+    flow: &Flow,
+    b: usize,
+    live_out: &[u64],
+    copy: bool,
+) -> Option<Plan> {
     let (mut inv, mut ro) = flow.entry(f, b, 0);
     let blk = f.blocks.values()[b];
     let (s, e) = (blk.start as usize, blk.end as usize);
@@ -613,7 +619,21 @@ fn plan_block(f: &crate::Func, flow: &Flow, b: usize, live_out: &[u64]) -> Optio
     let nregs = f.reg_ty.len();
     let sizes = flow.sizes(f, b);
     let kind = classify_block(f, b, &mut inv, &mut ro, &flow.fused, Some(&sizes));
-    let first = kind.iter().position(|&k| matches!(k, K::Memo | K::Dope))?;
+    // A process switches to its copy after the wait with no memo state (`Machine::specialise`):
+    // in a copy the split starts after the block's suspension, so the copy has one resume point
+    // and it reaches the flag test (#1137, #1138).
+    let after = if copy {
+        insts
+            .iter()
+            .rposition(|i| matches!(i, Inst::Suspend { .. }))
+            .map_or(0, |p| p + 1)
+    } else {
+        0
+    };
+    let first = after
+        + kind[after..]
+            .iter()
+            .position(|&k| matches!(k, K::Memo | K::Dope))?;
     let dope: Vec<u32> = (0..n)
         .map(|i| if kind[i] == K::Dope { sizes[i] } else { 0 })
         .collect();
@@ -851,7 +871,8 @@ fn merge_chains(prog: &Program, f: &mut crate::Func) -> bool {
 }
 
 /// Apply the pass to process `f`.
-pub(super) fn run(prog: &Program, f: &mut crate::Func) {
+/// `copy`: `f` is a specialised copy of a process (`copies.rs`).
+pub(super) fn run(prog: &Program, f: &mut crate::Func, copy: bool) {
     if f.kind != FuncKind::Process || f.code.len() > 6000 {
         return;
     }
@@ -945,7 +966,7 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) {
     let out = live_out(f, succ);
     let plans: Vec<Plan> = cands
         .into_iter()
-        .filter_map(|b| plan_block(f, &flow, b, &out[b]))
+        .filter_map(|b| plan_block(f, &flow, b, &out[b], copy))
         .collect();
     if plans.is_empty() {
         restore(f);

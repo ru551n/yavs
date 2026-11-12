@@ -1,0 +1,4 @@
+exit	0
+diag	note	15001000000	0	:copy_resume_waits:_p2	lane 1: 1499 1500
+diag	note	15001000000	0	:copy_resume_waits:_p2	lane 2: 1500 1499
+diag	note	15001000000	0	:copy_resume_waits:_p2	lane 3: 1500 1500

@@ -8828,6 +8828,11 @@ and auto, 1 and 4 threads (`tests/spec.rs` does the same for every design of `te
 Not verified: AArch64 and Windows (CI), a debugger or VHPI session with copies on (they are off there by design), copies with
 `--threads` above 4.
 
+Fixed 2026-11-12 (#1137, #1138): a copy whose memo split held its wait resumed in the split's fast arm with the memo slots
+zeroed by the switch, so for one activation a process of a generate lane read or drove element 0 (a wrong `'event`/`'active`,
+a spurious assertion, E3004 on a drive), interpreted and compiled. In a copy the split now starts after the `Suspend` and the
+switch refuses a copy with more than one resume point; corpus `process/copy_resume_{drive,attrs,hold,waits}`.
+
 ## llvm: a flat view of the heap slots, built and not landed (#655, 2026-10-23)
 
 A per-slot `{address, length, generation}` view of both heaps, read by compiled `Deref` and by accesses to the addresses it makes, was

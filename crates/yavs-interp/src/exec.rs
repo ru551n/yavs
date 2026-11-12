@@ -1869,7 +1869,9 @@ impl Machine {
                 .and_then(|p| f.code.get(p))
                 .is_some_and(|i| matches!(i, Inst::Suspend { .. }))
         };
-        let Some(&at) = new.resume.first() else {
+        // One resume point: a second is a copied suspension (`opt/memo.rs`), whose fast arm would
+        // read the memo slots zeroed below (#1137).
+        let &[at] = new.resume.as_slice() else {
             return;
         };
         if !waits_at(old, pc) || !waits_at(new, at as usize) || new.frame < raw.frame {

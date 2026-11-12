@@ -592,7 +592,7 @@ fn optimize_body_with(
         drop_markers(prog, &mut f, &mut layouts);
     }
     if memo_enabled() {
-        memo::run(prog, &mut f);
+        memo::run(prog, &mut f, inst.is_some());
         // Frame bytes only a compiled tier uses (`--tier=interp` has none).
         if layout_slots_on() {
             layout_cache::run(prog, &mut f);

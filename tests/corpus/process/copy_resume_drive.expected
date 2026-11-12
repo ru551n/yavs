@@ -1,0 +1,6 @@
+exit	0
+diag	note	15001000000	0	:copy_resume_drive:_p1	q=0000 s=10101010
+diag	note	15001000000	0	:copy_resume_drive:_p1	lane 0: hits 750 n 1500 a '0'
+diag	note	15001000000	0	:copy_resume_drive:_p1	lane 1: hits 750 n 1500 a '0'
+diag	note	15001000000	0	:copy_resume_drive:_p1	lane 2: hits 750 n 1500 a '0'
+diag	note	15001000000	0	:copy_resume_drive:_p1	lane 3: hits 750 n 1500 a '0'

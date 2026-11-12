@@ -1,0 +1,4 @@
+exit	0
+diag	note	15001000000	0	:copy_resume_attrs:_p2	lane 1: ch 1500 sum 56218 o 1499 sv 1500
+diag	note	15001000000	0	:copy_resume_attrs:_p2	lane 2: ch 1500 sum 56437 o 1500 sv 1500
+diag	note	15001000000	0	:copy_resume_attrs:_p2	lane 3: ch 1500 sum 56656 o 1500 sv 1500

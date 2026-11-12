@@ -7666,6 +7666,13 @@ core 11, `perf stat --no-inherit` main-thread cycles and instructions, medians o
 - **A copy folds reads of instance data into integer registers only** (a pointer or handle register keeps its load, the roots
   rule), never the bytes of a `for` generate's parameter (so the iterations of a generate share a copy), and runs through the
   existing pipeline (inlining, memo, layout slots), so the memo machinery that stays for what cannot fold is still there.
+- **In a copy the memo never copies the suspension** (#1137, #1138, 2026-11-12): the switch enters the copy after its wait with
+  the memo flag and slots zeroed, so a split block that holds the `Suspend` gave the copy two resume points, and the first, in the
+  fast arm, read zeroed slots for one activation (a generate lane read or drove element 0: wrong `'event`/`'active`, E3004 on a
+  drive). The memo pass of a copy starts its split after the block's `Suspend`, so the copy has one resume point and its flag test
+  follows it; `Machine::switch_to_copy` refuses a copy with more than one. Cost: the instance-constant work before the wait of such
+  a block runs at every activation of the copy (+1.6 percent interpreted instructions on a generate of record monitors, still
+  3.7 percent under the shared code). The shared code keeps its split: its memo state is never dropped.
 - **Growth cap 2.5 times** (user, 2026-10-24; 1.5 at first) the optimised IR of the shared process functions that ran; a copy
   over it is refused (`spec_capped`). At 1.5 it bound on `poc_arith_addw` (312 candidate copies of 40 functions, 3.5 times the
   shared IR; 147 allowed, 0.5 percent of the gain) and on `sc5_fifo_repack` (4.3 points); at 2.5 only `poc_arith_addw` is capped (244 of 312, within 0.1 percent of no cap) and `sc5_fifo_repack` interprets

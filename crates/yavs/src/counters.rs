@@ -174,7 +174,7 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
     rows.push(("clift_key_reused", yavs_clift::key_reused() as u64));
     // Sites compiled code computes in place instead of calling the host: `is_x` or a reduction
     // of a vector, a `Cat` of bytes, a `LayoutOf` from the layout memo, a real to an integer, an
-    // `ieee` op of two blocks, a gate that may meet a metavalue.
+    // `ieee` op of two blocks, a gate that may meet a metavalue, an `LCopy` of a run-time count.
     #[cfg(feature = "clift")]
     for (name, v) in [
         "clift_scan_sites",
@@ -183,6 +183,7 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         "clift_real_int_sites",
         "clift_wide_sites",
         "clift_gate_sites",
+        "clift_lcopy_count_sites",
     ]
     .into_iter()
     .zip(yavs_clift::inline_sites())

@@ -34,6 +34,7 @@ const PASS: &[&str] = &[
     "composite/array_param_cells_index",
     "composite/array_param_cells_result",
     "composite/array_param_cells_slice",
+    "composite/slice_runtime_len",
     "composite/array_result_cells",
     "composite/array_result_cells_res",
     "composite/array_result_elems",

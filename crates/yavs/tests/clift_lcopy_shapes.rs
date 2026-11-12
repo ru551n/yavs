@@ -1,6 +1,7 @@
 //! `LCopy` of a known length and offsets (`yavs-clift` `Gen::lcopy_const`): every length and offset
 //! within a 16-element vector, slices around block edges, wider runs, the same variable as source
-//! and destination, and a known count at offsets known at run time only (`Gen::lcopy_inline`).
+//! and destination, and a count and offsets known at run time only (`Gen::lcopy_inline`, the
+//! runtime's copy over 64 elements), null runs included.
 //! Every result is checked against a model written here, and
 //! the interpreter and the compiled tiers must print it. Needs the `clift` feature.
 #![cfg(feature = "clift")]
@@ -39,7 +40,7 @@ const CHUNK: usize = 40;
 fn processes(
     width: usize,
     shapes: &[(usize, usize, usize)],
-    dynamic: bool,
+    dynamic: Dyn,
     at: &mut usize,
     src: &mut String,
     want: &mut Vec<String>,
@@ -52,24 +53,40 @@ fn processes(
             src,
             "  process
     variable a, b : std_ulogic_vector(0 to {});
-    variable i : natural;
+    variable i, j : natural;
   begin
     wait for {at} ns;
-    i := zero;",
+    i := zero; j := zero2;",
             width - 1
         )
         .expect("to a string");
         for &(k, s, d) in chunk {
-            let (se, de) = (s + k - 1, d + k - 1);
-            // With `+ i` (0 at run time) the offsets are not known when the code is made.
-            let p = if dynamic { " + i" } else { "" };
-            writeln!(
-                src,
-                "    a := {av}; b := {bv};
-    b({d}{p} to {de}{p}) := a({s}{p} to {se}{p});
-    a({d}{p} to {de}{p}) := a({s}{p} to {se}{p});
+            // With `+ i` and `+ j` (0 at run time) the offsets, and with both the count, are not
+            // known when the code is made (`- 1 + j` keeps a null run's right bound a natural).
+            let (p, q) = match dynamic {
+                Dyn::No => ("", ""),
+                Dyn::Offsets => (" + i", " + i"),
+                Dyn::Count => (" + i", " + j"),
+            };
+            let (se, de) = (s + k, d + k);
+            if matches!(dynamic, Dyn::Count) {
+                // In a function, which runs on a native frame in compiled code.
+                writeln!(
+                    src,
+                    "    a := {av}; b := {bv};
+    b := put(b, a, {d}{p}, {de} - 1{q}, {s}{p}, {se} - 1{q});
+    a := put(a, a, {d}{p}, {de} - 1{q}, {s}{p}, {se} - 1{q});
     report to_string(b) & \" \" & to_string(a);"
-            )
+                )
+            } else {
+                writeln!(
+                    src,
+                    "    a := {av}; b := {bv};
+    b({d}{p} to {de} - 1{q}) := a({s}{p} to {se} - 1{q});
+    a({d}{p} to {de} - 1{q}) := a({s}{p} to {se} - 1{q});
+    report to_string(b) & \" \" & to_string(a);"
+                )
+            }
             .expect("to a string");
             let (x, y) = (model(&b, &a, d, s, k), model(&a, &a, d, s, k));
             want.push(format!(
@@ -80,6 +97,14 @@ fn processes(
         }
         src.push_str("    wait;\n  end process;\n");
     }
+}
+
+/// What of a copy is known only at run time.
+#[derive(Clone, Copy)]
+enum Dyn {
+    No,
+    Offsets,
+    Count,
 }
 
 fn design() -> (String, Vec<String>) {
@@ -124,16 +149,40 @@ fn design() -> (String, Vec<String>) {
             }
         }
     }
+    // A count known at run time only (a slice of a parameter's or a generic's bounds), in a
+    // function: null runs, one and two blocks each side, and over 64 elements, where the runtime
+    // copies.
+    let mut counted = Vec::new();
+    for k in [0, 1, 2, 31, 32, 33, 63, 64, 65, 100] {
+        for s in [0, 1, 62, 63, 64, 65, 90] {
+            for d in [0, 1, 63, 64, 66, 91] {
+                if s + k <= 192 && d + k <= 192 {
+                    counted.push((k, s, d));
+                }
+            }
+        }
+    }
     let (mut body, mut want, mut at) = (String::new(), Vec::new(), 0);
-    processes(16, &small, false, &mut at, &mut body, &mut want);
-    processes(192, &edges, false, &mut at, &mut body, &mut want);
-    processes(700, &wide, false, &mut at, &mut body, &mut want);
-    processes(192, &moving, true, &mut at, &mut body, &mut want);
+    processes(16, &small, Dyn::No, &mut at, &mut body, &mut want);
+    processes(192, &edges, Dyn::No, &mut at, &mut body, &mut want);
+    processes(700, &wide, Dyn::No, &mut at, &mut body, &mut want);
+    processes(192, &moving, Dyn::Offsets, &mut at, &mut body, &mut want);
+    processes(192, &counted, Dyn::Count, &mut at, &mut body, &mut want);
     let src = format!(
         "library ieee; use ieee.std_logic_1164.all;
 entity clift_lcopy_shapes is end;
 architecture t of clift_lcopy_shapes is
-  signal zero : natural := 0;
+  signal zero, zero2 : natural := 0;
+  function part(a : std_ulogic_vector; s, se : integer) return std_ulogic_vector is
+  begin
+    return a(s to se);
+  end;
+  function put(b, a : std_ulogic_vector; d, de, s, se : integer) return std_ulogic_vector is
+    variable r : std_ulogic_vector(b'range) := b;
+  begin
+    r(d to de) := part(a, s, se);
+    return r;
+  end;
 begin
 {body}end;
 "
@@ -184,7 +233,7 @@ fn constant_shape_copies_match_the_model_on_every_tier() {
             .args(tier)
             .arg("clift_lcopy_shapes");
         if let Some(e) = env {
-            c.env("YAVS_CLIFT_CLIF", e);
+            c.env("YAVS_CLIFT_CLIF", e).env("YAVS_COUNTERS", "1");
         }
         let o = c.output().expect("run");
         let (out, err) = (
@@ -203,6 +252,12 @@ fn constant_shape_copies_match_the_model_on_every_tier() {
                 "no Cranelift IR printed"
             );
             assert!(!err.contains("i128"), "a site took the general lowering");
+            // The copies of a run-time count in `part` are in place (`Gen::lcopy_inline`).
+            assert!(
+                !err.contains("clift_lcopy_count_sites=0\n")
+                    && err.contains("clift_lcopy_count_sites="),
+                "no run-time count copied in place"
+            );
         }
         let got = reports(&(out.to_string() + &err));
         assert_eq!(got.len(), want.len(), "{tier:?} lines: {:?}", got.first());

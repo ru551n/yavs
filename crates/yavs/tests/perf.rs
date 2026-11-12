@@ -1639,6 +1639,15 @@ mod clift {
             ("clift_wide_sites", Min(4))
         ]
     );
+    // Slices of a run-time length returned by small functions (bounds from generics and from
+    // the arguments) are copied in place on their native frames: no call of the runtime's copy
+    // (400 without).
+    clift_case!(
+        slice_len,
+        "clift_slice_len",
+        "rows=",
+        [("cb_lcopy", Max(0)), ("clift_lcopy_count_sites", Min(2))]
+    );
     // A by-reference address of the enclosing frame in frame-mode code: no callback per access.
     clift_case!(
         nested_byref,

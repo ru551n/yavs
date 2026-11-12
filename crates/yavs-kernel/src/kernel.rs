@@ -241,6 +241,8 @@ pub struct Stats {
     pub direct_codes: u64,
     pub direct_planes: u64,
     pub direct_bytes: u64,
+    /// Batch-loop moves of a process's byte entries that were more than one (one is a store).
+    pub byte_moves: u64,
     /// Activations of clocked processes skipped (or, with `Config::idle_check`, checked) because
     /// none of the signals they read had an event since the last one.
     pub idle_skips: u64,
@@ -4746,7 +4748,12 @@ impl SimControl {
                                                 self.directv.extend_from_slice(&st.outv);
                                                 st.outv.clear();
                                             }
-                                            if !st.outb.is_empty() {
+                                            if let [o] = st.outb[..] {
+                                                // An integer or enum register: a store, not a `memmove`.
+                                                self.directb.push(o);
+                                                st.outb.clear();
+                                            } else if !st.outb.is_empty() {
+                                                self.stats.byte_moves += 1;
                                                 self.directb.extend_from_slice(&st.outb);
                                                 st.outb.clear();
                                             }

@@ -382,6 +382,13 @@ case!(
         ("ops", Max(5552)),
     ]
 );
+// One byte entry per activation in the batch loop is a store, not a slice move.
+case!(
+    byte_store,
+    "s=3768",
+    &[],
+    [("direct_bytes", Min(800)), ("byte_moves", Max(0))]
+);
 case!(
     delayed,
     "a=",

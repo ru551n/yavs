@@ -50,6 +50,7 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         ("direct_codes", s.direct_codes),
         ("direct_planes", s.direct_planes),
         ("direct_bytes", s.direct_bytes),
+        ("byte_moves", s.byte_moves),
         ("general_assigns", s.general_assigns),
         ("gathers_copied", s.gathers_copied),
         ("gathers_read", s.gathers_read),

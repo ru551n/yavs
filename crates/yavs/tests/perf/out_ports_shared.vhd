@@ -1,6 +1,6 @@
 -- Many `out` ports on elements of one array signal (`q(i)`): each is the only source of its
 -- element and collapses into it. Deciding that looks at the sources of the shared leaf once,
--- not once per port (`collapse_source_steps`).
+-- not once per port (`elab_source_steps`).
 entity cell is
   generic (IDX : natural);
   port (clk : in bit; q : out integer);

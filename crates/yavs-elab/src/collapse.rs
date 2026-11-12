@@ -35,11 +35,16 @@ use crate::hier::{LeafId, LeafRes, NetGraph, ObjId, ObjKind};
 
 static SOURCE_STEPS: AtomicU64 = AtomicU64::new(0);
 
-/// The source ranges examined to decide whether an `out` formal is the only source of its
-/// actual's elements (a work counter, `YAVS_COUNTERS`): it grows with the square of the
-/// formals sharing one actual leaf if each looks at all of that leaf's sources.
+/// The source ranges examined by the multiple-sources check (`walk.rs` `check_sources`) and to
+/// decide whether an `out` formal is the only source of its actual's elements (a work counter,
+/// `YAVS_COUNTERS`): it grows with the square of the ports sharing one actual leaf if each
+/// looks at all of that leaf's sources.
 pub fn source_steps() -> u64 {
     SOURCE_STEPS.load(Ordering::Relaxed)
+}
+
+pub(crate) fn count_steps(n: u64) {
+    SOURCE_STEPS.fetch_add(n, Ordering::Relaxed);
 }
 
 /// Collapse the ports of `nets` that qualify; returns how many formals were collapsed.
@@ -111,10 +116,7 @@ pub(crate) fn ports(
         let (a, r) = (e.actual.0.index(), e.actual.1);
         let al = &nets.leaves[a];
         let (starts, ends) = &bounds[a];
-        SOURCE_STEPS.fetch_add(
-            2 * u64::from(starts.len().max(1).ilog2() + 1),
-            Ordering::Relaxed,
-        );
+        count_steps(2 * u64::from(starts.len().max(1).ilog2() + 1));
         let overlaps = match r.len {
             0 => 0,
             _ => {

@@ -4828,6 +4828,23 @@ impl Elab<'_> {
         }
         src.sort_by_key(|e| e.0);
         for group in src.chunk_by(|a, b| a.0 == b.0) {
+            // Sorted by start, a non-empty range overlaps an earlier one exactly when it starts
+            // before the largest end so far: one sort, not a test of every pair (many ports on
+            // elements of one array). Only a collision looks for the pair to name.
+            let mut spans: Vec<(u32, u32)> = (group.iter())
+                .filter(|e| e.1.len > 0)
+                .map(|e| (e.1.offset, e.1.end()))
+                .collect();
+            spans.sort_unstable();
+            crate::collapse::count_steps(spans.len() as u64);
+            let mut end = 0;
+            if !spans.iter().any(|&(s, e)| {
+                let clash = s < end;
+                end = end.max(e);
+                clash
+            }) {
+                continue;
+            }
             let leaf = self.m.nets.leaf(group[0].0);
             let v: Vec<(&Range, &Src)> = group.iter().map(|e| (&e.1, &e.2)).collect();
             for i in 0..v.len() {

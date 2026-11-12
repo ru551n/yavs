@@ -65,7 +65,7 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         ("ecall_hits", hits),
         ("ecall_runs", runs),
         ("ecall_session_hits", session_hits),
-        ("collapse_source_steps", yavs_elab::collapse_source_steps()),
+        ("elab_source_steps", yavs_elab::elab_source_steps()),
         ("opt_funcs", yavs_ir::optimised_functions()),
         ("dopes_scans", yavs_ir::opt::dopes_scans()),
         ("flat_elem_results", yavs_ir::flat_elem_results()),

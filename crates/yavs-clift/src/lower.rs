@@ -2188,6 +2188,9 @@ struct Gen<'a> {
     /// The interval of each integer register at the current instruction, as far as `known` goes
     /// (`yavs_ir::opt::iv_after`; a register's checks and arithmetic that passed).
     iv: Vec<Option<yavs_ir::opt::Iv>>,
+    /// An interval the instruction being generated proves for its result beyond `iv_after` (a
+    /// `Pos` in a descriptor of the constant pool, a logic code), entered by `iv_track`.
+    iv_next: Option<(Reg, yavs_ir::opt::Iv)>,
     /// The object the instruction being generated found for its result register: entered in
     /// `known` once `track` has run for it (`ObjRef`).
     objnew: Option<(Reg, ObjRef<Value>)>,
@@ -2528,14 +2531,16 @@ enum Op {
 /// place (`Gen::ieee_native`), of a `Cat` of bytes (`Gen::cat_bytes`), of a `LayoutOf` from the
 /// layout memo (`Gen::layout_into`), of a real rounded to an integer (`Gen::f_to_i`), of an
 /// `ieee` op of two blocks (`Gen::ieee_wide`), of a gate that may meet a metavalue
-/// (`Gen::gate_planes`) and of an `LCopy` of a count known at run time only (`Gen::lcopy_inline`).
-static SITES: [std::sync::atomic::AtomicUsize; 7] =
-    [const { std::sync::atomic::AtomicUsize::new(0) }; 7];
+/// (`Gen::gate_planes`), of an `LCopy` of a count known at run time only (`Gen::lcopy_inline`)
+/// and of a test merged into another or settled by an interval (a product's range, a
+/// constant-pool `Pos`).
+static SITES: [std::sync::atomic::AtomicUsize; 8] =
+    [const { std::sync::atomic::AtomicUsize::new(0) }; 8];
 
 /// `[is_x or reduction of a vector, Cat of bytes, LayoutOf from the memo, real to integer, ieee
-/// op over 64 elements, gate with the tables for metavalues, LCopy of a run-time count]` sites
-/// lowered so far (`YAVS_COUNTERS`).
-pub fn inline_sites() -> [usize; 7] {
+/// op over 64 elements, gate with the tables for metavalues, LCopy of a run-time count, merged or
+/// settled test]` sites lowered so far (`YAVS_COUNTERS`).
+pub fn inline_sites() -> [usize; 8] {
     SITES
         .each_ref()
         .map(|a| a.load(std::sync::atomic::Ordering::Relaxed))
@@ -2917,6 +2922,7 @@ fn gen_func(
         prog,
         known: base_known.clone(),
         iv: vec![None; f.reg_ty.len()],
+        iv_next: None,
         objnew: None,
         codes: Vec::new(),
         code_new: None,
@@ -3486,6 +3492,32 @@ fn gen_func(
                 let (x, y) = (g.ld(a), g.ld(b));
                 let (l, h) = (g.ld(lo), g.ld(hi));
                 let bounds = g.const_of(l).zip(g.const_of(h));
+                // A product by a positive constant within constant bounds: the range of the
+                // other operand, tested before the multiplication, which then cannot overflow
+                // (a product outside `i64` is outside the bounds too).
+                let by = match (g.const_of(x), g.const_of(y)) {
+                    (_, Some(c)) if c > 0 => Some((x, c)),
+                    (Some(c), _) if c > 0 => Some((y, c)),
+                    _ => None,
+                };
+                // (Within `i64`: the bounds divided by at least 1. No operand fits an empty range:
+                // the general form, which always leaves.)
+                let range = |(lv, hv): (i64, i64), c: i64| {
+                    let (c, l, h) = (i128::from(c), i128::from(lv), i128::from(hv));
+                    let (ml, mh) = (-(-l).div_euclid(c), h.div_euclid(c));
+                    (ml <= mh).then_some((ml as i64, mh as i64))
+                };
+                if op == IntOp::Mul
+                    && let (Some(bs), Some((m, c))) = (bounds, by)
+                    && let Some((ml, mh)) = range(bs, c)
+                {
+                    note_site(7);
+                    let (lc, hc) = (g.c64(ml), g.c64(mh));
+                    g.range_exit(m, lc, hc, pc);
+                    let v = g.b.ins().imul_imm_s(m, c);
+                    g.st(dst, v);
+                    continue;
+                }
                 let v = if g.no_overflow(op, a, b) {
                     Some(g.int_op_exact(op, x, y))
                 } else {
@@ -4225,6 +4257,10 @@ fn gen_func(
                     rel
                 };
                 g.st(dst, v);
+                // Past the test the position is within the dimension: arithmetic on it (a
+                // stride, a descending offset) needs no overflow test.
+                g.iv_next = hi.checked_sub(lo).map(|w| (dst, (0, w)));
+                note_site(7);
             }
             Inst::Pos {
                 dst,
@@ -4291,6 +4327,8 @@ fn gen_func(
                 }
                 g.st(dst, code);
                 g.join(join);
+                // Four bits, here and from the step.
+                g.iv_next = Some((dst, (0, 15)));
             }
             Inst::LSet { base, idx, v } => {
                 let (slow, join) = g.slow_path(pc, &inst);
@@ -4376,12 +4414,18 @@ fn gen_func(
                 // `Machine::sig_val`: element range within u32, an instance signal.
                 let (slow, join) = g.slow_path(pc, &inst);
                 let (o, l) = (g.ld(offset), g.ld(len));
+                // Both within u32: one test of their bits above it (a length of the code there
+                // already).
+                let ol = match g.const_of(l) {
+                    Some(k) if (0..=max).contains(&k) => o,
+                    _ => g.b.ins().bor(o, l),
+                };
+                let okv =
+                    g.b.ins()
+                        .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, ol, max);
                 let n = g.mem_ld(MEM_NSIGS);
-                let a = g.b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, o, max);
-                let b = g.b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, l, max);
                 let s = g.c64(i64::from(sig));
                 let has = g.b.ins().icmp(IntCC::UnsignedLessThan, s, n);
-                let okv = g.b.ins().band(a, b);
                 let okv = g.b.ins().band(okv, has);
                 g.guard(okv, slow);
                 let v = g.b.ins().bor_imm_s(o, i64::from(sig) << 32);
@@ -4717,6 +4761,7 @@ fn gen_func(
                         g.st(d, v);
                         g.join(join);
                         g.code_new = Some(d);
+                        g.iv_next = Some((d, (0, 8)));
                     }
                     Some(NativeKind::Edge(rising)) => {
                         let e = if rising { 1 } else { 2 };
@@ -6515,11 +6560,12 @@ impl Gen<'_> {
                 *x = None;
             }
         }
-        if let Some((r, v)) = out
+        if let Some((r, v)) = out.or(self.iv_next.take())
             && let Some(x) = self.iv.get_mut(r.0 as usize)
         {
             *x = Some(v);
         }
+        self.iv_next = None;
     }
 
     /// The interval of register `r` at the current instruction.

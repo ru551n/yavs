@@ -2752,7 +2752,8 @@ relocations, no line tables; one signal thread".
 ### Release profile: fat LTO and one codegen unit (2026-11-12)
 
 `[profile.release]` sets `lto = "fat"` and `codegen-units = 1`: profile-guided builds run 7 to 9 percent fewer instructions on
-small cold tests and 7 percent on Microwatt, at about twice the build time and a 5.9 GB peak in one compiler process. Bench
+small cold tests and 7 percent on Microwatt, at about twice the build time and a peak of 5.9 GB in one compiler process (8.3 GB for the instrumented build of a
+profile-guided one). Bench
 builds follow it; earlier baselines are of the old profile. `docs/decisions.md` "Release profile".
 
 ### floor of a run: the lowered design is cached (#479)

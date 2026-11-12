@@ -171,7 +171,7 @@ release archives are:
     cargo build --release -p yavs --features clift   # target/release/yavs
 
 The release build optimises the whole program at the end (link-time optimisation), as the archives are: it takes a few
-minutes and up to about 6 GB of memory in one compiler process. For a quicker build that runs a little slower, add
+minutes and about 6 GB of memory in one compiler process. For a quicker build that runs a little slower, add
 ``CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16`` in front of ``cargo build``.
 
 A build from source targets the baseline x86-64 CPU, so it runs on CPUs older than the archives need. It

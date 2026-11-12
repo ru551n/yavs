@@ -1693,7 +1693,8 @@ fn reloader(
                 stop: p.stop,
             }),
             Err((out, code)) => {
-                out.finish(code);
+                // The diagnostics are written; the debugger reports the failure, not an exit code.
+                let _ = out.finish(code);
                 Err("the design did not elaborate: the diagnostics are on standard error".into())
             }
         }

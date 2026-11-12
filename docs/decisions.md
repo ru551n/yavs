@@ -15698,3 +15698,13 @@ cycle, and each question walks the function.
   at most the 1.2 percent of all native bodies on Microwatt. Holding an address parameter that a loop uses
   once (`rt::hold_addrs`) cut a 64-element `bit_reverse` by 8 to 13 percent but made forced GRLIB 0.23 percent
   dearer (the region asked at every entry): not kept.
+
+## Release profile: fat LTO and one codegen unit (`Cargo.toml` `[profile.release]`, perf/b4-profile, 2026-11-12)
+
+Written by Claude. User ruling, 2026-11-12: try `lto = "fat"` with `codegen-units = 1` on a branch, check the release build of every archive in CI with its time and memory, rebuild the cap pin and the bench builds the same way, then land.
+
+- **Decision.** `[profile.release]` sets `lto = "fat"` and `codegen-units = 1` (before: rustc's defaults, 16 codegen units and no cross-crate LTO). It applies to everything built with `--release`: the release archives (`tools/pgo/build.sh`, both of its builds), `tools/build-bench.sh` (plain and `--pgo`; cargo's `bench` profile inherits `release`, and the script builds with `--release`), the release builds of CI and the conformance and cocotb workflows, and builds from source. `dev` and `test` do not change. The old profile is one environment setting away: `CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16`.
+- **Why, measured on this host** (exact main-thread `instructions:u`, cold from pristine, default tier, against the default profile of the same kind of build; output and exit status equal in every run): profile-guided builds 0.910 on `hdlm_fifo_sync`, 0.921 on `vunit_logging`, 0.919 on `olo_axi_master_full`, 0.936 on `uvvm_func_cov`, 0.965 on GRLIB and 0.927 on Microwatt (both stopped at 2 us); plain bench builds 0.93 to 0.97. Cycles of profile-guided builds, 15 runs per cell: `hdlm_fifo_sync` 0.930, Microwatt 0.948, `uvvm_func_cov` 0.969 (that design's A/A is wider than its gain).
+- **Cost.** A clean plain build took 246 s against 112 s with 4 jobs, a profile-guided one 743 s against about 450 s; the largest compiler process peaks at 5.9 GB against 2.0 GB, since the whole program is optimised in one process at the end. An incremental release build after a change to one crate pays the whole final step again. The binary is smaller (text 33.6 MB against 37.6 MB plain).
+- **Comparability.** Every bench number, pin and baseline recorded before this change is of the old profile: a comparison across the change compares profiles, not code. The cold-cap pin is rebuilt from the same source with the new profile.
+- **Not covered by this entry:** whether CI jobs that only test (the `corpus` and `sweep` jobs, the conformance and cocotb workflows) should keep the shorter old profile, which would test a different build than the one that ships.

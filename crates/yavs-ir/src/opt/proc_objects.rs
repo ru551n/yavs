@@ -827,7 +827,7 @@ pub(super) fn for_copy(
     id: FuncId,
     raw: &crate::Func,
     inst: Option<InstView<'_>>,
-    layouts: &mut FxMap<TyId, Option<Vec<u64>>>,
+    layouts: &mut super::TypeMemo,
 ) -> Option<Box<crate::Func>> {
     let body = raw.body?;
     if raw.kind != FuncKind::Process

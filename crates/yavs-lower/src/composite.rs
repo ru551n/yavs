@@ -314,7 +314,7 @@ impl Fx<'_, '_> {
     }
 
     pub fn desc_size(&mut self, tid: TyId) -> u32 {
-        Ty::desc_size(self.fb.program().types(), tid).unwrap_or(0) as u32
+        self.fb.program().desc_size(tid).unwrap_or(0) as u32
     }
 
     pub(crate) fn const_addr(&mut self, c: yavs_ir::ConstId) -> Reg {

@@ -181,7 +181,12 @@ macro_rules! case {
 }
 
 // The record variable is in the frame: the count is what its statements do without an object lookup.
-case!(frame_vars, "n=200", &[], [("ops", Max(11200))]);
+case!(
+    frame_vars,
+    "n=200",
+    &[],
+    [("ops", Max(11200)), ("opt_type_memo", Min(1))]
+);
 // Slices between variables in the frame, one block: more facts than the optimiser's table keeps
 // (#1059), so a table that stopped learning shows here as ops per statement.
 case!(frame_slices, "x=", &[], [("ops", Max(11400))]);

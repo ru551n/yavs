@@ -40,7 +40,19 @@ impl ProgramBuilder {
     pub fn set_ty(&mut self, id: TyId, t: Ty) {
         if let Some(x) = self.prog.types.get_mut(id) {
             *x = t;
+            // Answers about the types that reach `id` change with it.
+            self.prog.layouts = Default::default();
         }
+    }
+
+    /// [`Ty::desc_size`] against the types built so far, through the program's memo.
+    pub fn desc_size(&mut self, ty: TyId) -> Option<u64> {
+        let Program { layouts, types, .. } = &mut self.prog;
+        layouts
+            .0
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .desc_size(types, ty)
     }
 
     /// A GC root at `off` in the shared variables area (`Program::shared_roots`).

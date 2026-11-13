@@ -285,10 +285,100 @@ mod fingerprint_tests {
     }
 }
 
-/// Field offsets of the static record layouts met by the optimiser, kept in the program so
-/// that the functions optimised one by one share them. A copy of the program starts empty.
+/// What the optimiser and the lowering work out from the type table alone, kept in the program
+/// so that the functions optimised one by one share it ([`TypeMemo`]). A copy of the program
+/// starts empty; `ProgramBuilder::set_ty` empties it.
 #[derive(Default, Debug)]
-pub struct LayoutCache(std::sync::Mutex<FxMap<TyId, Option<Vec<u64>>>>);
+pub struct LayoutCache(pub(crate) std::sync::Mutex<TypeMemo>);
+
+/// Answers per type that depend on the type table only, each computed once: the layout words
+/// (`[size, align, offsets...]`) under the empty descriptor, the stride of a one-dimensional array
+/// whose element size does not depend on the bounds, the descriptor size. A type changes only
+/// through `ProgramBuilder::set_ty`, which empties the memo, so a kept answer stays right while
+/// types are appended; a `None` of `desc_size` (a missing type) is not kept. Debug builds check
+/// every answer taken from here against the computation.
+#[derive(Default, Debug)]
+pub struct TypeMemo {
+    words: FxMap<TyId, Option<Vec<u64>>>,
+    stride: FxMap<TyId, Option<u64>>,
+    /// `Ty::desc_size` plus one by type number, 0 while not known.
+    desc: Vec<u64>,
+}
+
+static TYPE_MEMO: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Answers taken from [`TypeMemo`] instead of a walk of the type (a work counter: `YAVS_COUNTERS`).
+pub fn type_memo_hits() -> u64 {
+    TYPE_MEMO.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn type_memo_hit() {
+    TYPE_MEMO.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+impl TypeMemo {
+    /// [`Ty::desc_size`].
+    pub(crate) fn desc_size(&mut self, types: &crate::IdVec<TyId, Ty>, ty: TyId) -> Option<u64> {
+        let i = ty.0 as usize;
+        if let Some(&n) = self.desc.get(i)
+            && n != 0
+        {
+            type_memo_hit();
+            debug_assert_eq!(Some(n - 1), Ty::desc_size(types, ty), "desc_size of {ty}");
+            return Some(n - 1);
+        }
+        let n = Ty::desc_size(types, ty)?;
+        if self.desc.len() <= i {
+            self.desc.resize(types.len().max(i + 1), 0);
+        }
+        self.desc[i] = n + 1;
+        Some(n)
+    }
+
+    /// The layout words of `ty` under the empty descriptor.
+    fn words(&mut self, prog: &Program, ty: TyId) -> Option<&[u64]> {
+        let hit = self.words.contains_key(&ty);
+        let w = self.words.entry(ty).or_insert_with(|| words_of(prog, ty));
+        if hit {
+            type_memo_hit();
+            debug_assert_eq!(*w, words_of(prog, ty), "layout words of {ty}");
+        }
+        w.as_deref()
+    }
+
+    /// The stride of the one-dimensional array type `ty` when it does not depend on the bounds.
+    fn stride(&mut self, prog: &Program, ty: TyId) -> Option<u64> {
+        if let Some(&s) = self.stride.get(&ty) {
+            type_memo_hit();
+            debug_assert_eq!(s, stride_of(prog, ty), "stride of {ty}");
+            return s;
+        }
+        *self.stride.entry(ty).or_insert_with(|| stride_of(prog, ty))
+    }
+}
+
+fn words_of(prog: &Program, ty: TyId) -> Option<Vec<u64>> {
+    let (l, _) = Ty::layout(&prog.types, &prog.consts, ty, &[]).ok()?;
+    let mut w = vec![l.size, l.align];
+    w.extend(l.offsets);
+    Some(w)
+}
+
+/// Arrays of elements of one size: checked on three lengths.
+fn stride_of(prog: &Program, ty: TyId) -> Option<u64> {
+    let types = &prog.types;
+    if Ty::desc_size(types, ty) != Some(24) || !matches!(types.get(ty), Some(Ty::Array { .. })) {
+        return None;
+    }
+    let stride = |n: u64| {
+        let mut d = [0u8; 24];
+        d[8..16].copy_from_slice(&(n as i64).wrapping_sub(1).to_le_bytes());
+        let (l, _) = Ty::layout(types, &prog.consts, ty, &d).ok()?;
+        l.offsets.is_empty().then_some(l.stride)
+    };
+    let s = stride(1)?;
+    (stride(3)? == s && stride(70)? == s).then_some(s)
+}
 
 impl Clone for LayoutCache {
     fn clone(&self) -> Self {
@@ -638,12 +728,7 @@ fn optimize_body_with(
 
 /// Walk the finished code of `f` once more after the clean-up copied blocks into their
 /// predecessors: a value known where a block is entered now decides the branches of its copy.
-fn tidy(
-    prog: &Program,
-    f: &mut crate::Func,
-    layouts: &mut FxMap<TyId, Option<Vec<u64>>>,
-    inst: Option<InstView<'_>>,
-) {
+fn tidy(prog: &Program, f: &mut crate::Func, layouts: &mut TypeMemo, inst: Option<InstView<'_>>) {
     let done = {
         let mut o = Opt::new(
             prog,
@@ -799,7 +884,7 @@ fn drop_declarations(prog: &Program, f: &mut crate::Func) {
 }
 
 /// Drop the `Stmt` markers a pass left with nothing to free (`Opt::drop_statements`).
-fn drop_markers(prog: &Program, f: &mut crate::Func, layouts: &mut FxMap<TyId, Option<Vec<u64>>>) {
+fn drop_markers(prog: &Program, f: &mut crate::Func, layouts: &mut TypeMemo) {
     let mut o = Opt::new(
         prog,
         f,
@@ -1424,9 +1509,8 @@ struct Opt<'a> {
     /// Native results met: the facts of `Key::Nat` carry the result's number in their upper half,
     /// so words of two descriptors of one length are not taken for one descriptor's.
     nid: i64,
-    /// Field offsets of the static record layouts met so far (shared by the functions of one
-    /// batch).
-    layouts: &'a mut FxMap<TyId, Option<Vec<u64>>>,
+    /// The program's answers per type (shared by the functions optimised one by one).
+    layouts: &'a mut TypeMemo,
     /// Readers per register, as left by the dead-code sweep.
     uses: Vec<u32>,
     /// The blocks some path from the entry reaches; definitions in the others do not count.
@@ -1458,7 +1542,7 @@ impl<'a> Opt<'a> {
         code: Vec<Inst>,
         operands: Vec<Reg>,
         nested: bool,
-        layouts: &'a mut FxMap<TyId, Option<Vec<u64>>>,
+        layouts: &'a mut TypeMemo,
     ) -> Self {
         let n = f.reg_ty.len();
         Opt {
@@ -1754,7 +1838,8 @@ impl<'a> Opt<'a> {
                 continue;
             }
             for pc in self.range(b) {
-                match self.code[pc] {
+                let i = self.code[pc];
+                match i {
                     Inst::Const { dst, v } if self.single(dst) => {
                         self.kc[dst.0 as usize] = Some(v);
                     }
@@ -1764,7 +1849,7 @@ impl<'a> Opt<'a> {
                     }
                     Inst::Deref { dst, .. } if self.single(dst) => self.set_cls(dst, Cls::Heap),
                     Inst::LayoutOf { dst, ty, .. }
-                        if self.single(dst) && Ty::desc_size(&self.prog.types, ty) == Some(0) =>
+                        if self.single(dst) && self.desc_size(ty) == Some(0) =>
                     {
                         self.set_cls(dst, Cls::Temp);
                         self.slay.insert(dst, ty);
@@ -4327,44 +4412,31 @@ impl<'a> Opt<'a> {
 
     /// The layout words (`[size, align, offsets...]`) of the record type `ty`, which has the
     /// same layout under every descriptor.
-    fn static_words(&self, ty: TyId) -> Option<Vec<u64>> {
-        let (l, _) = Ty::layout(&self.prog.types, &self.prog.consts, ty, &[]).ok()?;
-        if l.offsets.is_empty() {
-            return None;
-        }
-        let mut w = vec![l.size, l.align];
-        w.extend(l.offsets);
-        Some(w)
+    fn static_words(&mut self, ty: TyId) -> Option<Vec<u64>> {
+        self.layouts
+            .words(self.prog, ty)
+            .filter(|w| w.len() > 2)
+            .map(<[u64]>::to_vec)
     }
 
     /// The stride (word 2 of the layout) of the one-dimensional array type `ty` when it does
     /// not depend on the bounds: arrays of elements of one size. Checked on three lengths.
-    fn static_stride(&self, ty: TyId) -> Option<u64> {
-        let types = &self.prog.types;
-        if Ty::desc_size(types, ty) != Some(24) || !matches!(types.get(ty), Some(Ty::Array { .. }))
-        {
-            return None;
-        }
-        let stride = |n: u64| {
-            let mut d = [0u8; 24];
-            d[8..16].copy_from_slice(&(n as i64).wrapping_sub(1).to_le_bytes());
-            let (l, _) = Ty::layout(types, &self.prog.consts, ty, &d).ok()?;
-            l.offsets.is_empty().then_some(l.stride)
-        };
-        let s = stride(1)?;
-        (stride(3)? == s && stride(70)? == s).then_some(s)
+    fn static_stride(&mut self, ty: TyId) -> Option<u64> {
+        self.layouts.stride(self.prog, ty)
     }
 
     /// Offset of field `n` in record type `ty`, which has the same layout under every
     /// descriptor.
     fn static_offset(&mut self, ty: TyId, n: u32) -> Option<u64> {
-        let (types, consts) = (&self.prog.types, &self.prog.consts);
         self.layouts
-            .entry(ty)
-            .or_insert_with(|| Ty::layout(types, consts, ty, &[]).ok().map(|l| l.0.offsets))
-            .as_ref()?
-            .get(n as usize)
+            .words(self.prog, ty)?
+            .get(2 + n as usize)
             .copied()
+    }
+
+    /// [`Ty::desc_size`] through the memo.
+    fn desc_size(&mut self, ty: TyId) -> Option<u64> {
+        self.layouts.desc_size(&self.prog.types, ty)
     }
 
     /// Read pool constant bytes at `a` into `out` (compact ones in place, not expanded), and
@@ -4744,11 +4816,12 @@ impl<'a> Opt<'a> {
 
     /// The layout words of `ty` under a one-dimensional descriptor of known length: the
     /// layout depends on the length alone.
-    fn known_layout(&self, ty: TyId, desc: Reg) -> Option<Vec<u64>> {
+    fn known_layout(&mut self, ty: TyId, desc: Reg) -> Option<Vec<u64>> {
+        let dsz = self.desc_size(ty);
         let types = &self.prog.types;
         // A descriptor whose bytes are all known (the pool, instance data, a heap object's)
         // fixes every word of the layout.
-        if let Some(ds) = Ty::desc_size(types, ty).filter(|&d| 0 < d && d <= 4096)
+        if let Some(ds) = dsz.filter(|&d| 0 < d && d <= 4096)
             && matches!(types.get(ty), Some(Ty::Record { .. } | Ty::Array { .. }))
         {
             let mut b = vec![0u8; ds as usize];
@@ -4757,8 +4830,7 @@ impl<'a> Opt<'a> {
                 return Some(decl::layout_words(&l));
             }
         }
-        if Ty::desc_size(types, ty) != Some(24) || !matches!(types.get(ty), Some(Ty::Array { .. }))
-        {
+        if dsz != Some(24) || !matches!(types.get(ty), Some(Ty::Array { .. })) {
             return None;
         }
         let n = self.dope_known(desc, 0)?;

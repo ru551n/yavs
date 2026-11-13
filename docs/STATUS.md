@@ -1112,6 +1112,15 @@ for its own lookup instead of hashing the body a second time (`clift_key_reused`
 tier run 2 0.3 percent fewer, first runs level. `opt_level=none` and single-pass allocation were measured and lose on
 GRLIB from the first run on; the optimiser's layout lock has no waits under `--tier-compile=wait`.
 
+### Type answers once per type (perf/b4-descmemo, 2026-11-13)
+
+The optimiser and the lowering keep per type the layout words under the empty descriptor, the bounds-free stride and
+the descriptor size (`yavs_ir::opt::TypeMemo` in `Program::layouts`, counter `opt_type_memo`, floor on perf design
+`frame_vars`); the optimiser asked for the same record layouts tens of thousands of times on a large testbench. The
+same IR (`YAVS_DUMPIR` with `--tier=interp` on `uvvm_func_cov` and five realbench designs). Cold first run, main
+thread: `uvvm_func_cov` 3.4 percent fewer instructions, `olo_axi_master_full` 2.4, `hdlm_fifo_sync` 1.2,
+`vunit_logging` 0.7; the large designs level.
+
 ### Optimiser round 3: whether a block is on a cycle, once per block and pass (perf/b4-deadpass, 2026-11-12)
 
 `docs/decisions.md` "IR optimiser, round 3". Three passes that asked per local composite variable whether its block

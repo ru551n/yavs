@@ -1,0 +1,23 @@
+exit	0
+diag	note	0	0	:inout_port_collapse_parts:uv:rd	vec v=ZZZZ
+diag	note	0	0	:inout_port_collapse_parts:um:u:rd	ent c=U
+diag	note	0	0	:inout_port_collapse_parts:rd	top w=ZZZZZZZZ x=U
+diag	note	0	1	:inout_port_collapse_parts:rd	top w=0Z110ZLH x=0
+diag	note	0	1	:inout_port_collapse_parts:uv:rd	vec v=110Z
+diag	note	0	1	:inout_port_collapse_parts:um:u:rd	ent c=0
+diag	note	1000000	1	:inout_port_collapse_parts:rd	top w=ZZ1Z0ZLH x=0
+diag	note	1000000	1	:inout_port_collapse_parts:uv:rd	vec v=1Z0Z v(0)'last_value=Z v(2)'last_value=1 v(3)'event=false
+diag	note	2000000	1	:inout_port_collapse_parts:rd	top w=ZZ1Z01LH x=0
+diag	note	2000000	1	:inout_port_collapse_parts:uv:rd	vec v=1Z01 v(0)'last_value=Z v(2)'last_value=1 v(3)'event=false
+diag	note	3000000	1	:inout_port_collapse_parts:rd	top w=ZZ1Z01LH x=Z
+diag	note	3000000	1	:inout_port_collapse_parts:um:u:rd	ent c=Z
+diag	note	4000000	0	:inout_port_collapse_parts:rd	top w=ZZ1Z01LH x=L
+diag	note	4000000	0	:inout_port_collapse_parts:um:u:rd	ent c=L
+diag	note	4000000	1	:inout_port_collapse_parts:rd	top w=ZZ1HL1LH x=L
+diag	note	4000000	1	:inout_port_collapse_parts:uv:rd	vec v=1HL1 v(0)'last_value=Z v(2)'last_value=Z v(3)'event=false
+diag	note	5000000	1	:inout_port_collapse_parts:rd	top w=ZZXHL1LH x=W
+diag	note	5000000	1	:inout_port_collapse_parts:uv:rd	vec v=XHL1 v(0)'last_value=Z v(2)'last_value=Z v(3)'event=true
+diag	note	5000000	1	:inout_port_collapse_parts:um:u:rd	ent c=W
+diag	note	6000000	1	:inout_port_collapse_parts:rd	top w=ZZ0ZZZLH x=W
+diag	note	6000000	1	:inout_port_collapse_parts:uv:rd	vec v=0ZZZ v(0)'last_value=1 v(2)'last_value=H v(3)'event=true
+diag	note	9000000	0	:inout_port_collapse_parts:check	done

@@ -1,0 +1,12 @@
+exit	0
+diag	note	0	0	:inout_port_collapse_external:ue:rd	ext e=Z
+diag	note	0	0	:inout_port_collapse_external:rd	top xa=Z
+diag	note	0	1	:inout_port_collapse_external:ue:rd	ext e=1
+diag	note	0	1	:inout_port_collapse_external:rd	top xa=1
+diag	note	2000000	1	:inout_port_collapse_external:ue:rd	ext e=X
+diag	note	2000000	1	:inout_port_collapse_external:rd	top xa=X
+diag	note	4000000	1	:inout_port_collapse_external:ue:rd	ext e=0
+diag	note	4000000	1	:inout_port_collapse_external:rd	top xa=0
+diag	note	6000000	1	:inout_port_collapse_external:ue:rd	ext e=L
+diag	note	6000000	1	:inout_port_collapse_external:rd	top xa=L
+diag	note	9000000	0	:inout_port_collapse_external:check	done

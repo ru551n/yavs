@@ -147,6 +147,9 @@ Module-local decisions go in this section and ir.md section 4 or `docs/decisions
 - `ProcInst::lsps` must match `ProcessInfo::drivers` of the HIR statement one to one, in order
   (the lowering's driver slots).
 - Restart test: anything cached across `elaborate` calls breaks rule 4.
+- A stage entry holds ids of what elaboration appended to the `Db` (implicit aliases of external names, generic
+  entity instances, late units), in an order the generics choose: key it with `Db::stage_extent`, which digests
+  those entries, never with `Db::extent` alone (#1142, `tests/cache.rs` `lowered_design_depends_on_what_elaboration_added`).
 - The multiple-sources check (`check_sources`) keeps process and port origins as ids and
   makes their texts only for the error: formatting a path name per driver was a fifth of the
   walk of a design with many instances (#425).

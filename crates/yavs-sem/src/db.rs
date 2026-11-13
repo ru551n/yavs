@@ -149,6 +149,9 @@ impl Facts {
     }
 }
 
+/// [`Db::stage_extent`] and the extent, tracked arena writes and `ext_uses` entries it was made at.
+pub(crate) type StageMemo = ((Vec<usize>, u64, usize), Vec<usize>);
+
 /// A cached `lookup`: revision, epoch, generation of the key, direct hit, result.
 pub(crate) type LookupAnswer = (LangRev, u64, u32, bool, crate::scope::Visible);
 
@@ -298,6 +301,13 @@ pub struct Db {
     /// Implicit aliases of the external names used directly in a statement or an alias
     /// target, made by [`Db::alias_external_uses`] (#93).
     pub(crate) ext_uses: TrackedMap<crate::external::ExtOwner, Box<[DeclId]>>,
+    /// [`Db::extent`] when the analysis ended (`settle`, `from_image`): what lies past it,
+    /// elaboration made, and [`Db::stage_extent`] digests it (#1142).
+    #[serde(skip)]
+    pub(crate) settled: Vec<usize>,
+    /// The last [`Db::stage_extent`] and what it was made at.
+    #[serde(skip)]
+    pub(crate) stage_memo: std::sync::Mutex<Option<StageMemo>>,
     /// The package object each resolved package-path external name denotes, made by
     /// [`Db::bind_package_paths`] (#255).
     pub(crate) pkg_targets: TrackedMap<ExternalId, DeclId>,
@@ -1043,6 +1053,8 @@ impl Db {
             anon_reuse: Default::default(),
             ext_memo: HashMap::default(),
             ext_uses: Default::default(),
+            settled: Vec::new(),
+            stage_memo: Default::default(),
             pkg_targets: Default::default(),
             incomplete_ok: false,
             interface_default: false,

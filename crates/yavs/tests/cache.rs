@@ -1501,6 +1501,191 @@ fn lowered_design_depends_on_what_elaboration_asked_for() {
     assert_eq!(e.entry_files("ir").len(), 2);
 }
 
+/// A unit whose objects the designs below read through external names.
+const EXT_SUB: &str = r#"entity sub is end;
+architecture a of sub is
+  signal s : bit := '0';
+  signal n : integer := 0;
+  constant c : integer := 7;
+begin
+  s <= '1' after 1 ns;
+  n <= 3 after 2 ns;
+end;
+"#;
+
+/// Designs whose generate branches, chosen by generic `V`, make elaboration add to the analysis
+/// in another order (implicit aliases of external names, instances of a generic entity), and
+/// what each run must print. #1142: the third run of 1, 2, 1 read the lowering the second
+/// stored, with ids of the other order: `E3006 no signal 4294967295`, or a wrong value.
+const ELAB_ORDER: &[(&str, &str, &[&str], &[&str])] = &[
+    // The reproducer of the issue: an alias of an external name in a block, read by processes
+    // of both branches.
+    (
+        "alias",
+        r#"entity top is generic (V : natural := 1); end;
+architecture a of top is
+begin
+  u : entity work.sub;
+  b : block
+    alias s is <<signal .top.u.s : bit>>;
+  begin
+    g1 : if V = 1 generate
+      p : process begin wait on s; report "ok-run V=1 s=" & bit'image(s); wait; end process;
+    end generate;
+    g2 : if V = 2 generate
+      p : process begin wait until s = '1'; report "ok-run V=2"; wait; end process;
+    end generate;
+  end block;
+end;
+"#,
+        &["ok-run V=1 s='1'"],
+        &["ok-run V=2"],
+    ),
+    // External names used directly: a constant (the stored lowering read the wrong one, a
+    // wrong value without an error), a signal in a concurrent statement and in `process (all)`.
+    (
+        "direct",
+        r#"entity top is generic (V : natural := 1); end;
+architecture a of top is
+  signal o : bit;
+begin
+  u : entity work.sub;
+  g1 : if V = 1 generate
+    p : process begin wait for 1 ns; report "V=1 c=" & integer'image(<<constant .top.u.c : integer>> + 1); wait; end process;
+    o <= <<signal .top.u.s : bit>>;
+  end generate;
+  g2 : if V = 2 generate
+    p : process (all) begin report "V=2 n=" & integer'image(<<signal .top.u.n : integer>>); end process;
+    q : process begin wait for 1 ns; report "V=2 c=" & integer'image(<<constant .top.u.c : integer>>); wait; end process;
+  end generate;
+  r : process begin wait for 3 ns; report "V=" & integer'image(V) & " o=" & bit'image(o); wait; end process;
+end;
+"#,
+        &["V=1 c=8", "V=1 o='1'"],
+        &["V=2 n=0", "V=2 n=3", "V=2 c=7", "V=2 o='0'"],
+    ),
+    // An external constant: 1, 2, 1 printed `c=1` here, a wrong value without an error.
+    (
+        "constant",
+        r#"entity top is generic (V : natural := 1); end;
+architecture a of top is
+begin
+  u : entity work.sub;
+  g1 : if V = 1 generate
+    p : process begin wait for 1 ns; report "V=1 c=" & integer'image(<<constant .top.u.c : integer>> + 1); wait; end process;
+  end generate;
+  g2 : if V = 2 generate
+    p : process begin wait for 1 ns; report "V=2 c=" & integer'image(<<constant .top.u.c : integer>>) & " s=" & bit'image(<<signal .top.u.s : bit>>); wait; end process;
+  end generate;
+end;
+"#,
+        &["V=1 c=8"],
+        &["V=2 c=7 s='1'"],
+    ),
+    // A function of a package that reads the hierarchy, called from both branches.
+    (
+        "package",
+        r#"package pk is
+  impure function rd return integer;
+end;
+package body pk is
+  impure function rd return integer is begin return <<signal .top.u.n : integer>>; end;
+end;
+use work.pk.all;
+entity top is generic (V : natural := 1); end;
+architecture a of top is
+begin
+  u : entity work.sub;
+  g1 : if V = 1 generate
+    p : process begin wait for 3 ns; report "V=1 rd=" & integer'image(rd) & " s=" & bit'image(<<signal .top.u.s : bit>>); wait; end process;
+  end generate;
+  g2 : if V = 2 generate
+    p : process begin wait for 3 ns; report "V=2 rd=" & integer'image(rd + <<signal .top.u.n : integer>>); wait; end process;
+  end generate;
+end;
+"#,
+        &["V=1 rd=3 s='1'"],
+        &["V=2 rd=6"],
+    ),
+    // No external name: instances of an entity with a generic type, made in another order.
+    (
+        "gtype",
+        r#"package im is
+  function img (x : integer) return string;
+  function img (x : boolean) return string;
+end;
+package body im is
+  function img (x : integer) return string is begin return integer'image(x); end;
+  function img (x : boolean) return string is begin return boolean'image(x); end;
+end;
+entity gt is generic (type t; v : t; tag : string; function img (x : t) return string is <>); end;
+architecture a of gt is
+  signal q : t := v;
+begin
+  process begin wait for 1 ns; report tag & " " & img(q); wait; end process;
+end;
+use work.im.all;
+entity top is generic (V : natural := 1); end;
+use work.im.all;
+architecture a of top is
+begin
+  g1 : if V = 1 generate
+    a1 : entity work.gt generic map (t => integer, v => 4, tag => "int");
+    b1 : entity work.gt generic map (t => boolean, v => true, tag => "bool");
+  end generate;
+  g2 : if V = 2 generate
+    b2 : entity work.gt generic map (t => boolean, v => false, tag => "bool");
+    a2 : entity work.gt generic map (t => integer, v => 5, tag => "int");
+  end generate;
+end;
+"#,
+        &["int 4", "bool true"],
+        &["int 5", "bool false"],
+    ),
+];
+
+/// The stage entries of a design hold the ids elaboration gave what it added: runs whose generics
+/// make it add in another order keep entries of their own, and every run prints what a run
+/// without the cache prints (#1142).
+#[test]
+fn lowered_design_depends_on_what_elaboration_added() {
+    let mut bad = Vec::new();
+    for &(name, top, one, two) in ELAB_ORDER {
+        for order in [["1", "2", "1", "2", "1"], ["2", "1", "2", "1", "2"]] {
+            let e = Env::new(&format!("elaborder-{name}-{}", order[0]));
+            std::fs::write(e.tmp.join("sub.vhd"), EXT_SUB).expect("write");
+            std::fs::write(e.tmp.join("top.vhd"), top).expect("write");
+            for f in ["sub.vhd", "top.vhd"] {
+                assert_eq!(e.yavs(&["analyze", "--work", &e.work(), f]).code, 0, "{f}");
+            }
+            let mut hit = false;
+            for (k, v) in order.iter().enumerate() {
+                let r = e.run_top("top", &[&format!("-gV={v}")]);
+                let want = if *v == "1" { one } else { two };
+                let printed = |w: &&str| r.stdout.contains(w) || r.stderr.contains(w);
+                if r.code != 0 || !want.iter().all(printed) {
+                    bad.push(format!(
+                        "{name} {order:?} run {k} V={v}: {}{}",
+                        r.stdout,
+                        visible(&r).stderr
+                    ));
+                    break;
+                }
+                hit = note(&r, "hit ir");
+            }
+            // The cache is still used: the last run read a stored lowering.
+            if !hit
+                && !bad
+                    .iter()
+                    .any(|b| b.starts_with(&format!("{name} {order:?}")))
+            {
+                bad.push(format!("{name} {order:?}: the last run read no lowering"));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
 /// Entries that hold generated code are keyed by the optimiser and tier switches and by the
 /// build (#491): another setting or another build is a miss with the right output, the same one
 /// a hit.

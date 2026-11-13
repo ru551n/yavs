@@ -57,6 +57,7 @@ impl Db {
         self.files.clear();
         self.facts = Some(self.scan_facts(self.facts.as_ref()));
         self.unit_facts.clear();
+        self.settled = self.extent();
     }
 
     /// The store for stage results (`Options::stages`).
@@ -90,14 +91,73 @@ impl Db {
     }
 
     /// [`Db::extent`] and, last, a digest of the files the `Db` was made from (their paths and
-    /// content digests, in load order): the key part of a stage entry. Units loaded after the
-    /// analysis (while elaborating) grow the extent but are deterministic, so the entry holds
-    /// for a `Db` of the same extent made from the same files (#671).
+    /// content digests, in load order) and of what elaboration added to it: the key part of a
+    /// stage entry. Elaboration appends in the order it meets statements, which the generics
+    /// choose (implicit aliases of external names, instances of generic entities, units loaded
+    /// on demand), so equal extents can hold other entries under the same ids (#1142): their
+    /// content is digested, and the implicit aliases each statement's uses were turned into.
     pub fn stage_extent(&self) -> Vec<usize> {
+        // A run asks it a few times at the same extent (packages, their state, the design):
+        // the digest is kept while the sizes, the tracked arenas' writes and `ext_uses` stay.
+        // Debug builds compute it again and fail on a stale one.
+        let now = (
+            self.extent(),
+            self.decls.version() + self.scopes.version() + self.subtypes.version(),
+            self.ext_uses.len(),
+        );
+        let mut memo = self.stage_memo.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, key)) = memo.as_ref()
+            && *at == now
+        {
+            debug_assert_eq!(
+                *key,
+                self.stage_extent_now(),
+                "an entry past `settled` changed without a write the memo sees"
+            );
+            return key.clone();
+        }
+        let key = self.stage_extent_now();
+        *memo = Some((now, key.clone()));
+        key
+    }
+
+    fn stage_extent_now(&self) -> Vec<usize> {
         use std::hash::{Hash, Hasher};
         let mut h = std::hash::DefaultHasher::new();
         for f in self.sources.digests() {
             f.hash(&mut h);
+        }
+        let from = |k: usize| self.settled.get(k).copied().unwrap_or(0);
+        // Hash containers in key order: theirs follows symbol numbers and insertion history.
+        crate::ids::plain(|| {
+            crate::ids::image_order(|| {
+                yavs_syntax::text_symbols(|| {
+                    tail(&self.libs, from(0), &mut h);
+                    tail(&self.units, from(1), &mut h);
+                    tail(&self.decls, from(2), &mut h);
+                    tail(&self.scopes, from(3), &mut h);
+                    tail(&self.types, from(4), &mut h);
+                    tail(&self.subtypes, from(5), &mut h);
+                    tail(&self.exprs, from(6), &mut h);
+                    tail(&self.stmts, from(7), &mut h);
+                    tail(&self.consts, from(8), &mut h);
+                    tail(&self.insts, from(9), &mut h);
+                    tail(&self.views, from(10), &mut h);
+                    tail(&self.externals, from(11), &mut h);
+                    tail(&self.attr_values, from(12), &mut h);
+                })
+            })
+        });
+        // Every statement elaboration meets gets an entry, most of them empty.
+        let mut uses: Vec<_> = self
+            .ext_uses
+            .iter()
+            .filter(|(_, d)| !d.is_empty())
+            .collect();
+        uses.sort_unstable_by_key(|(o, _)| owner_key(**o));
+        for (o, ds) in uses {
+            owner_key(*o).hash(&mut h);
+            ds.iter().for_each(|d| d.index().hash(&mut h));
         }
         let mut e = self.extent();
         e.push(h.finish() as usize);
@@ -186,6 +246,7 @@ impl Db {
         db.sources
             .set_reader(|p| crate::stdlib::read(std::path::Path::new(p)));
         db.check_sources(verified)?;
+        db.settled = db.extent();
         Ok(db)
     }
 
@@ -199,4 +260,35 @@ impl Db {
         }
         Ok(())
     }
+}
+
+/// A sort key of `o` that does not depend on hash order.
+fn owner_key(o: crate::external::ExtOwner) -> (u8, usize) {
+    use crate::external::ExtOwner;
+    match o {
+        ExtOwner::Stmt(s) => (0, s.index()),
+        ExtOwner::Alias(d) => (1, d.index()),
+        ExtOwner::Expr(e) => (2, e.index()),
+        ExtOwner::Sub(d) => (3, d.index()),
+    }
+}
+
+/// Hash the entries of `a` from index `from` on, as bytes that are the same in every process.
+fn tail<I: Id, T: serde::Serialize>(
+    a: &crate::ids::Arena<I, T>,
+    from: usize,
+    h: &mut impl std::hash::Hasher,
+) {
+    let mut buf = Vec::new();
+    for i in from..a.len() {
+        buf = match postcard::to_extend(a.get_at(i), buf) {
+            Ok(b) => b,
+            // Cannot happen for an entry an image holds; a key that never matches if it does.
+            Err(_) => {
+                let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+                t.map_or(0, |d| d.as_nanos()).to_le_bytes().to_vec()
+            }
+        };
+    }
+    h.write(&buf);
 }

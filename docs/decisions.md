@@ -16062,3 +16062,41 @@ Amends the loss list of "`--tier=auto` run-to-run profile" (user, 2026-10-25).
   `policy_tests.rs` `the_snapshot_names_the_processes_that_are_hot_and_would_gain` (`fresh` deduplicated, empty for
   links). No unit test drives a compile that stores a module (the policy's stub generator compiles nothing): `fresh`
   from `cache_stores` is checked by the measurements only.
+
+## Stage entries hold what elaboration added to the analysis (yavs-sem `Db::stage_extent`, #1142, 2026-11-13)
+
+Amends "Stage entries of a design that loads units late" (#671).
+
+- **Finding** (agent). #671 keyed stage entries (`ir`, `spec`, `low`, `init`, `ecall`, and through the program
+  identity the compiled code) on the size of every arena and a digest of the source files, on the reading that what
+  elaboration appends is deterministic. It is deterministic for one elaboration, but its order follows the generate
+  branches the generics select: the implicit aliases of external names (`Db::alias_external_uses`, the selected
+  branch first, the others after it in `alias_untaken`), the instances of generic entities, and units loaded on
+  demand. Two runs with other generics then had arenas of equal size with other entries under the same ids, and the
+  third run of 1, 2, 1 in one library read the lowering the second stored (the first only leaves a note): a signal
+  table entry with no signal (`E3006 no signal 4294967295`, the slot of `inst_data` for a signal it cannot find), an
+  internal error, or the wrong external constant without any error.
+- **Decision** (agent): `Db::stage_extent` also digests every arena entry past `Db::settled`, the extent at the end
+  of the analysis (`settle`, `from_image`), as bytes that are equal in every process (symbols as text, plain ids,
+  hash containers in key order as an image writes them: `clift_prekey.rs` `a_unit_analysed_again_in_the_first_run_keeps_the_name`
+  caught a unit analysed from source and replayed giving two keys),
+  and the non-empty implicit-alias lists of `ext_uses` (which statement's uses were turned into which alias, a
+  rewrite of analysed expressions). Rationale: the key holds the content the entry's ids name, whatever path
+  appended it, so a new kind of elaboration-time append cannot reopen this. Not covered: an elaboration-time write
+  to an entry below `settled` other than the alias rewrites (none known; not checked). Runs whose generics change only values
+  append the same content and share entries as before (one `ir` entry for `-gV=1,2,3`, tested by hand); runs whose
+  generics reorder the appends keep one entry per order. The digest is kept while the sizes, the writes of the
+  tracked arenas and the `ext_uses` entries stay (`Db::stage_memo`; debug builds compute it again on a hit and fail
+  on a stale one), since a run asks it at one extent for packages, their state and the design.
+- **Cost** (agent, plain release builds, warm `--tier=interp --stop-time=0fs` of `fletcher_bufferwriter_512`, which
+  loads 21 units while it elaborates: 10197 entries appended, 9 interleaved runs each on one core, base f1274a22b): 137.1 M to
+  145.8 M instructions (+6.4 percent), 33.0 to 33.2 ms of an elaboration that ends at time 0 (whole
+  runs not measured). A design with nothing appended pays an empty scan. A cheaper key for unit
+  loads (the load's unit and position instead of its entries' bytes) was left as an idea: it relies on the replay
+  being exact, which the digest does not need.
+- **Tests**: `tests/cache.rs` `lowered_design_depends_on_what_elaboration_added` (five designs, 1, 2, 1, 2, 1 and
+  2, 1, 2, 1, 2 in one library each: an alias of an external name in a block, external names used directly in a
+  process, a concurrent statement and `process (all)`, an external constant, a package function reading the
+  hierarchy, instances of a generic-type entity; each run's output checked, and the last run reads a stored
+  lowering). Without the change every one of them fails at its third run.
+

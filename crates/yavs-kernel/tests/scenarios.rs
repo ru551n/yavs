@@ -207,6 +207,51 @@ fn resolution_with_several_drivers() {
     );
 }
 
+/// K drivers of one resolved element (and of one element of a two-element signal, whose other
+/// element has one driver of its own), all with a transaction in every cycle: the resolution
+/// function runs once per cycle and element range of the drivers, with all the sources, not
+/// once per driver (LRM 14.7.3.2).
+#[test]
+fn a_resolved_element_is_resolved_once_per_update() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = calls.clone();
+    let max = Resolution::Func(Arc::new(move |srcs: &[&[u8]], out: &mut [u8]| {
+        seen.fetch_add(1, Ordering::Relaxed);
+        for (i, o) in out.iter_mut().enumerate() {
+            *o = srcs.iter().map(|s| s[i]).max().unwrap_or(0);
+        }
+        Ok(())
+    }));
+    let mut b = Builder::new();
+    let one = b.resolved_signal("one", SignalType::bytes(1, 1), &[0], max.clone());
+    let two = b.resolved_signal("two", SignalType::bytes(1, 2), &[0; 2], max);
+    let k = 6u8;
+    let mut ds: Vec<DriverId> = (0..k).map(|_| b.driver(one)).collect();
+    ds.extend((0..k).map(|_| b.driver(two.slice(0, 1))));
+    ds.push(b.driver(two.slice(1, 1)));
+    for (j, &d) in ds.iter().enumerate() {
+        let mut n = 0u8;
+        b.process(
+            &format!("p{j}"),
+            NONE,
+            &[d],
+            p(move |c| {
+                n = n.wrapping_add(1);
+                let v = n.wrapping_mul(j as u8 + 1) % 50;
+                c.assign(d, None, &[(Time::ZERO, &[v])], DelayMode::INERTIAL)?;
+                c.wait_for(ns(1))
+            }),
+        );
+    }
+    let (mut sim, _t) = build(b, Config::default());
+    sim.run_until(ns(9)).unwrap();
+    // Initialisation and ten cycles with transactions, three resolutions each: `one`, and the
+    // two elements of `two` (one per part with its own sources). One per driver was 13.
+    let n = calls.load(Ordering::Relaxed);
+    assert!(n <= 3 * 11, "{n} resolutions");
+}
+
 #[test]
 fn unresolved_signal_rejects_overlapping_drivers() {
     let mut b = Builder::new();

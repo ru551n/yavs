@@ -1,0 +1,10 @@
+exit	0
+diag	note	0	0	:resolve_calls:_p1	r=0
+diag	note	0	2	-	res_max of 3 sources: 10
+diag	note	0	2	:resolve_calls:_p1	r=10
+diag	note	10000000	2	-	res_max of 3 sources: 20
+diag	note	10000000	2	:resolve_calls:_p1	r=20
+diag	note	20000000	2	-	res_max of 3 sources: 30
+diag	note	20000000	2	:resolve_calls:_p1	r=30
+diag	note	30000000	2	-	res_max of 3 sources: 40
+diag	note	30000000	2	:resolve_calls:_p1	r=40

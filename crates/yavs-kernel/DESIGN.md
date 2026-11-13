@@ -34,7 +34,8 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   projected output waveform in the owning process (`ProcState::waveforms`), so a running process
   mutates only its own state. `off` marks disconnected elements of drivers of guarded signals.
 - **Segments**: at build time each signal is split into runs of elements with the same set of
-  sources. Resolution runs once per dirty segment: `Resolution::StdLogic` resolves plane-wise
+  sources. Resolution runs once per dirty segment and update, however many drivers or ports
+  listed the element (`push_range`, `drop_relisted`, LRM 14.7.3.2, #1139): `Resolution::StdLogic` resolves plane-wise
   with `Planes::resolve_block` (an empty source set gives `Z`); `Resolution::Func` gets one byte
   per element (logic as `std_ulogic` codes, a transpose only for user resolution functions).
   A composite resolved as a whole (`Builder::resolved_composite`, #83) keeps its usual leaves,

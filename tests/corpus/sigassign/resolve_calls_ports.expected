@@ -1,0 +1,8 @@
+exit	0
+diag	note	0	0	:resolve_calls_ports:_p2	r=0
+diag	note	0	2	-	res_sum of 4 sources: 106
+diag	note	0	2	:resolve_calls_ports:_p2	r=106
+diag	note	10000000	2	-	res_sum of 4 sources: 212
+diag	note	10000000	2	:resolve_calls_ports:_p2	r=212
+diag	note	20000000	2	-	res_sum of 4 sources: 318
+diag	note	20000000	2	:resolve_calls_ports:_p2	r=318

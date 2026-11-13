@@ -3368,17 +3368,55 @@ fn stamp(t: Time) -> u64 {
 }
 
 /// Add `r` to a list of ranges, extending the last one when `r` continues it (ascending, or
-/// descending: processes numbered the other way round).
+/// descending: processes numbered the other way round) or overlaps it: the drivers of one
+/// resolved element, applied one after the other, list it once, so it is resolved once per
+/// update from all its sources (LRM 14.7.3.2), not once per driver.
 #[inline]
 fn push_range(list: &mut Vec<Range>, r: Range) {
     match list.last_mut() {
-        Some(l) if l.end() == r.offset => l.len += r.len,
-        Some(l) if r.end() == l.offset => {
-            l.offset = r.offset;
-            l.len += r.len;
+        Some(l) if r.offset <= l.end() && l.offset <= r.end() => {
+            let end = l.end().max(r.end());
+            l.offset = l.offset.min(r.offset);
+            l.len = end - l.offset;
         }
         _ => list.push(r),
     }
+}
+
+/// Drop from `list` the elements an earlier range of it holds, keeping the order in which they
+/// were first listed: the drivers of an element listed apart (another element's came between)
+/// make it dirty again, and it must be resolved once per update (LRM 14.7.3.2). Disjoint ranges
+/// in either order, the usual case, are left alone.
+pub(crate) fn drop_relisted(list: &mut Vec<Range>) {
+    if list.len() < 2
+        || list.windows(2).all(|w| w[0].end() <= w[1].offset)
+        || list.windows(2).all(|w| w[1].end() <= w[0].offset)
+    {
+        return;
+    }
+    let lo = list.iter().fold(u32::MAX, |m, r| m.min(r.offset));
+    let hi = list.iter().fold(0, |m, r| m.max(r.end()));
+    // ponytail: one test per listed element; a word at a time if long relisted ranges show up.
+    let mut seen = vec![0u64; (hi - lo).div_ceil(64) as usize];
+    let mut out = Vec::with_capacity(list.len());
+    for r in list.drain(..) {
+        let mut run = None;
+        for e in r.offset..r.end() {
+            let (w, b) = (((e - lo) / 64) as usize, (e - lo) % 64);
+            if seen[w] >> b & 1 != 0 {
+                if let Some(s) = run.take() {
+                    out.push(Range::new(s, e - s));
+                }
+            } else {
+                seen[w] |= 1 << b;
+                run.get_or_insert(e);
+            }
+        }
+        if let Some(s) = run {
+            out.push(Range::new(s, r.end() - s));
+        }
+    }
+    *list = out;
 }
 
 /// The blocks of 64 elements that `r` touches.
@@ -3870,6 +3908,24 @@ mod tests {
             time: Time::ns(ns),
             range: Range::new(off, v.len() as u32),
             value,
+        }
+    }
+
+    /// An element listed again is dropped, partial overlaps keep their new part in place, and a
+    /// disjoint list in either order is left as it is (#1139).
+    #[test]
+    fn relisted_elements_are_dropped_in_first_listed_order() {
+        let r = |o, l| Range::new(o, l);
+        let mut v = vec![r(3, 1), r(0, 1), r(3, 1), r(0, 1)];
+        drop_relisted(&mut v);
+        assert_eq!(v, [r(3, 1), r(0, 1)]);
+        let mut v = vec![r(0, 4), r(6, 1), r(2, 6), r(100, 2), r(6, 1)];
+        drop_relisted(&mut v);
+        assert_eq!(v, [r(0, 4), r(6, 1), r(4, 2), r(7, 1), r(100, 2)]);
+        for list in [vec![r(0, 2), r(5, 1)], vec![r(5, 1), r(0, 2)]] {
+            let mut v = list.clone();
+            drop_relisted(&mut v);
+            assert_eq!(v, list);
         }
     }
 

@@ -1,0 +1,14 @@
+exit	0
+diag	note	0	0	:resolve_calls_several:_p1	e=0,0 s2=0
+diag	note	0	2	-	res_max of 3 sources: 10
+diag	note	0	2	-	res_max of 3 sources: 20
+diag	note	0	2	-	res_max of 3 sources: 102
+diag	note	0	2	:resolve_calls_several:_p1	e=10,20 s2=102
+diag	note	10000000	2	-	res_max of 3 sources: 20
+diag	note	10000000	2	-	res_max of 3 sources: 40
+diag	note	10000000	2	-	res_max of 3 sources: 202
+diag	note	10000000	2	:resolve_calls_several:_p1	e=20,40 s2=202
+diag	note	20000000	2	-	res_max of 3 sources: 30
+diag	note	20000000	2	-	res_max of 3 sources: 60
+diag	note	20000000	2	-	res_max of 3 sources: 302
+diag	note	20000000	2	:resolve_calls_several:_p1	e=30,60 s2=302

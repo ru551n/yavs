@@ -1,0 +1,12 @@
+exit	0
+diag	note	0	0	:resolve_calls_apart:_p1	e=0,0 f=0,0
+diag	note	0	2	-	res_max of 4 sources: 102
+diag	note	0	2	-	res_max of 4 sources: 13
+diag	note	0	2	-	res_max of 2 sources: 1003
+diag	note	0	2	-	res_max of 2 sources: 1002
+diag	note	0	2	:resolve_calls_apart:_p1	e=13,102 f=1003,1002
+diag	note	10000000	2	-	res_max of 4 sources: 202
+diag	note	10000000	2	-	res_max of 4 sources: 23
+diag	note	10000000	2	-	res_max of 2 sources: 2003
+diag	note	10000000	2	-	res_max of 2 sources: 2002
+diag	note	10000000	2	:resolve_calls_apart:_p1	e=23,202 f=2003,2002

@@ -17,7 +17,7 @@ use crate::process::{
 };
 use crate::signal::{
     DelayMode, DriverId, ForceMode, GuardKind, Hits, Range, Reg, SigRef, Signal, SignalId, Waiter,
-    Waiters,
+    Waiters, drop_relisted,
 };
 use crate::time::{Time, Unit};
 use crate::value::{Buf, Elem, SignalType, Value, ValueRef, bits, fill_bits};
@@ -1974,7 +1974,8 @@ impl SimControl {
                         Some(idle) => actual.mark_active_except(ar, &idle, self.now, self.cycle),
                         None => actual.mark_active(ar, self.now, self.cycle),
                     }
-                    actual.dirty.push(ar);
+                    // Joined with the other ports and drivers of the element: resolved once.
+                    actual.push_dirty(ar);
                 }
                 touched.push(a.0);
             }
@@ -3257,6 +3258,7 @@ impl SimControl {
             }
             let sig = &mut self.signals[s as usize];
             let mut dirty = std::mem::take(&mut sig.dirty);
+            drop_relisted(&mut dirty);
             for r in dirty.drain(..) {
                 sig.compute_driving(r)?;
                 sig.eff_dirty.push(r);
@@ -5529,6 +5531,7 @@ fn finish_applied(sig: &mut Signal, fused: bool, now: Time, cycle: u64) -> Resul
 }
 
 fn finish_dirty(sig: &mut Signal, now: Time, cycle: u64) -> Result<bool, ErrorKind> {
+    drop_relisted(&mut sig.dirty);
     if let [r] = sig.dirty.as_slice()
         && r.len == 1
         && sig.fast_dirty.is_empty()

@@ -5575,6 +5575,14 @@ evaluation with ordered commit (threads and shuffle invariance tested on 1000+ p
 `SimControl` with run/step, interrupt, value-change bus and phase callbacks. Design in
 `crates/yavs-kernel/DESIGN.md`.
 
+A resolved element is resolved once per update with all its sources, however many drivers or out
+ports had a transaction in the cycle (2026-11-13, #1139: it was resolved once per driver, so a
+resolution function with a report printed it once per driver and K active drivers cost K times K
+sources). Corpus `sigassign/resolve_calls*` (process drivers, ports, guarded drivers that
+disconnect, a vector whose element drivers come apart, several signals, a record and an array
+resolved as a whole), scenario `a_resolved_element_is_resolved_once_per_update`, perf
+`resolve_many` (`Stats::resolutions`).
+
 Kernel asks of docs/design/ir.md, all done: K1 uncollapsed ports with conversions in the update
 phase (no extra delta; a port of several parts in different signals converts all of them in one
 call, `Builder::port_parts`, #74), K2 kernel-maintained `'stable`/`'quiet`/`'delayed`/`'transaction`, K3

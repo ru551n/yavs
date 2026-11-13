@@ -934,13 +934,14 @@ case!(
     ]
 );
 // Resolved signals whose many drivers all assign every clock (two std_logic signals of 16
-// drivers, an integer with a resolution function of 12): the parts resolved from their sources
-// in the update (`resolutions`, debug and `op-census` builds).
+// drivers, an integer with a resolution function of 12): each is resolved once per update from
+// all its sources (`resolutions`, debug and `op-census` builds; 2203, once per driver with a
+// transaction, before `push_range` joined the drivers' dirty ranges).
 case!(
     resolve_many,
     "sum=46413",
     &[],
-    [("resolutions", Max(2203)), ("cycles", Max(301))]
+    [("resolutions", Max(158)), ("cycles", Max(301))]
 );
 // Implicit signals in the design do not take the other signals off the fast update paths: only
 // the updates in which a source of an implicit signal has activity, or one is due, run the general

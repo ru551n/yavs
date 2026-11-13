@@ -1,0 +1,11 @@
+exit	0
+diag	note	0	0	:resolve_calls_composite:_p1	rr=0 rp=0,0
+diag	note	0	2	-	res_rec of 3 sources: 12 '1'
+diag	note	0	2	-	res_pair of 3 sources: 3 3
+diag	note	0	2	:resolve_calls_composite:_p1	rr=12 rp=3,3
+diag	note	10000000	2	-	res_rec of 3 sources: 22 '1'
+diag	note	10000000	2	-	res_pair of 3 sources: 6 3
+diag	note	10000000	2	:resolve_calls_composite:_p1	rr=22 rp=6,3
+diag	note	20000000	2	-	res_rec of 3 sources: 32 '1'
+diag	note	20000000	2	-	res_pair of 3 sources: 9 3
+diag	note	20000000	2	:resolve_calls_composite:_p1	rr=32 rp=9,3

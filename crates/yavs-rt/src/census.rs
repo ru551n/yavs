@@ -47,7 +47,7 @@ pub(crate) enum Cb {
     Cat,
     /// `yavs_rt_layout_into`: the words of a layout from a run-time descriptor.
     LayoutInto,
-    /// `yavs_rt_free`: a deallocation from a native frame.
+    /// `yavs_rt_free`: a deallocation from compiled code.
     Free,
     /// `yavs_rt_scatter_cmp`: a whole record drive that missed compiled code's compare.
     RecordCmp,

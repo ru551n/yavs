@@ -16149,7 +16149,6 @@ Amends "Stage entries of a design that loads units late" (#671).
   floating type, `'last_value`), `delta/real_negative_zero_force`, `held/held_real_zero` (hand-checked, equal to sim2; run in check
   mode of the compiled tier), catalogue `real-negative-zero-event`.
 
-
 ## Compiled code: allocations in one call (yavs-clift `Gen::new_obj`, yavs-rt `yavs_rt_new`, yavs-interp `TierHost::alloc`, perf/skid-access, 2026-11-13)
 
 - **Finding** (agent). Every `new` left compiled code through the generic host step: on a native frame a
@@ -16179,3 +16178,11 @@ Amends "Stage entries of a design that loads units late" (#671).
   `new`). `TierHost::alloc` now hands back the object as `object` of its address would for writing (address,
   pointer, length; `data_mut`, so the write count is what the `Deref` after it made it) and `yavs_rt_new` enters
   it with its handle as `FAST_DEREF` does. Not while `TIER_STAMPS` is set: then the step's path, with no entry.
+
+## Compiled code: frame mode's deallocation in one call (yavs-clift `Gen::free`, perf/skid-access, 2026-11-13)
+
+- **Change** (agent). Frame-mode code calls `yavs_rt_free` for a `deallocate` as native frames do since
+  2026-11-12 (a `yavs_rt_step` before: about 600 instructions a `deallocate` in a process body). A decline (a
+  collection or recycling due, a stale value, a cell inside the freed object) steps the instruction as before. The
+  host function reads no register, so frame mode's deferred register stores need nothing more than the slow path's
+  snapshot, which the step had too.

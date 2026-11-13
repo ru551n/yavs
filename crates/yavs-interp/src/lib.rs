@@ -935,7 +935,7 @@ pub trait TierHost {
         None
     }
 
-    /// `Inst::Free` from a native frame of the access value `h` (not null) that compiled code read
+    /// `Inst::Free` from compiled code of the access value `h` (not null) that compiled code read
     /// from the cell at `cell`: `true` once the object is deallocated (`fr`'s heap epochs brought up
     /// to date; compiled code then sets the cell to null); `false`, nothing changed, where the
     /// instruction is to be stepped: a collection or recycling is due, the value is stale, or the

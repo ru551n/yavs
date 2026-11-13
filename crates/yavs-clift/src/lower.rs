@@ -5010,7 +5010,7 @@ fn gen_func(
                     None => g.step(pc, &inst),
                 }
             }
-            Inst::Free { ptr } if g.nat.is_some() => g.free(pc, &inst, ptr),
+            Inst::Free { ptr } => g.free(pc, &inst, ptr),
             Inst::New {
                 dst,
                 ty,
@@ -6330,10 +6330,10 @@ impl Gen<'_> {
         self.join(join);
     }
 
-    /// `Inst::Free` on a native frame: the access value read from its cell here, the object
-    /// deallocated by the host (`yavs_rt_free`), the cell set to null here; nothing for a null
-    /// value. Where the host declines (a collection due, an error to report) the frame leaves to
-    /// the interpreter, as the step it had before did then.
+    /// `Inst::Free`: the access value read from its cell here, the object deallocated by the host
+    /// (`yavs_rt_free`), the cell set to null here; nothing for a null value. Where the host
+    /// declines (a collection due, an error to report) the instruction is the interpreter's: a
+    /// native frame leaves to it, frame mode steps it, as each did before.
     fn free(&mut self, pc: u32, i: &Inst, ptr: Reg) {
         let (slow, join) = self.slow_path(pc, i);
         let a = self.ld(ptr);

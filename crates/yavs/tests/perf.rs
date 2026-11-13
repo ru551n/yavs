@@ -1782,17 +1782,21 @@ mod clift {
             ("cb_layout_into", Max(410))
         ]
     );
-    // An allocation in compiled code is one call of the host's allocation, not a step: on a
-    // native frame (no `yavs_rt_xstep`) and in frame mode (no `yavs_rt_step` of a `New`).
+    // An allocation and a deallocation in compiled code are one call of the host each, not a
+    // step: on a native frame (no `yavs_rt_xstep`) and in frame mode (no `yavs_rt_step`).
     clift_case!(
         new_compiled,
         "new_compiled",
         "s=80786",
         [
             ("cb_xstep", Max(0)),
-            ("cb_step", Max(103)),
+            ("cb_step", Max(1)),
             ("cb_new", Min(1350)),
-            ("cb_new", Max(1440))
+            ("cb_new", Max(1440)),
+            ("cb_free", Min(870)),
+            ("cb_free", Max(930)),
+            // The `Deref` after a `new` finds the object in the table (no `yavs_rt_fast`).
+            ("cb_fast", Max(0))
         ]
     );
     // A deallocation on a native frame is one call of the host's free, not a step (nor is the

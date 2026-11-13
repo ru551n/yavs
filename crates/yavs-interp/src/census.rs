@@ -127,6 +127,23 @@ pub(crate) fn ieee_on() -> bool {
     *IEEE_ON.get_or_init(|| std::env::var_os("YAVS_COUNTERS").is_some())
 }
 
+static IMPLICIT_ELEMS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// `n` elements of an array the natives of `implicit.rs` decoded or encoded one by one
+/// (`read_arr`, `write_arr`), counted under `YAVS_COUNTERS` (every build): the work counter
+/// `implicit_elems`, which the operator matrix bounds at 0 on its word-wise rows.
+#[inline]
+pub(crate) fn implicit_elems(n: u64) {
+    if ieee_on() {
+        IMPLICIT_ELEMS.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// The elements [`implicit_elems`] counted so far.
+pub fn implicit_elems_total() -> u64 {
+    IMPLICIT_ELEMS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The key of a native `ieee` symbol without the body's function id, which moves with any
 /// change of the library.
 fn ieee_key(symbol: &str) -> Option<&str> {

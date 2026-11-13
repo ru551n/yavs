@@ -16,14 +16,16 @@
 //! - a `Word` row (cost per 64-bit word or less) adds at most `WORD_SLOPE` interpreter `ops` per
 //!   operation from W=64 to W=2048 (a per-element IR loop adds about 6 ops per element, 11.9 k);
 //! - no `ieee` native of a `Word` row runs its general path (`ieee_general.<key>`) at W of 64 or
-//!   less, nor at 2048 unless the row says why (`general_ok`);
+//!   less, nor at 2048 unless the row says why (`general_ok`), and no `yavs.implicit` native
+//!   decodes an element (`implicit_elems`, counted in every build);
 //! - siblings (`Row::group`: `<`/`<=`/`>`/`>=`, the array classes of one operator, ...) have
 //!   slopes within 4x of each other (slopes below `WORD_SLOPE` count as `WORD_SLOPE`), unless the
 //!   row names the sibling in `asym_ok` with a reason: the check that catches an operator whose
 //!   sibling has a fast path it lacks;
 //! - under `--features clift` (compiled before the run) no operation of any row is a host step of
 //!   compiled code (`cb_step`, `cb_xstep`), and a `Word` row makes no native callback
-//!   (`cb_native`) at W of 64 or less and at most one per operation above.
+//!   (`cb_native`) at W of 64 or less and at most one per operation above (a `native` row, an
+//!   operation compiled code always calls: at most one per operation at every width).
 //!
 //! Results are checked in every build; `ops` and `cb_*` are counted in debug builds and with
 //! `op-census` only. A changed bound is edited in the same commit with the reason (root `AGENTS.md`
@@ -48,7 +50,7 @@ const WIDTHS: [u32; 3] = [1, 64, 2048];
 /// The steps of the operator plan that have landed: 1 array ordering, 2 compiled code without
 /// host steps for `**` and `time * real`, 3 the `yavs.implicit` array natives on planes, 4 the
 /// missing natives.
-const LANDED: u8 = 2;
+const LANDED: u8 = 3;
 
 /// Designs run at once (each a `yavs` process).
 const JOBS: usize = 4;
@@ -124,6 +126,9 @@ struct Row {
     asym_ok: &'static [(&'static str, &'static str)],
     /// Why an `ieee` native of the row may run its general path at W=2048.
     general_ok: Option<&'static str>,
+    /// The operation is a native call in compiled code at every width (at most one `cb_native` per
+    /// operation, also at 64 elements or less).
+    native: bool,
     /// A host step of compiled code the row is known to make, and the plan step that removes it
     /// (`nothing_left_for_a_landed_step` fails once that step has landed).
     step_ok: Option<(u8, &'static str)>,
@@ -200,13 +205,13 @@ fn cell(f: Family, c: TypeClass) -> Vec<Item> {
         (Lt | Le | Gt | Ge, discrete_arrays!()) => rows(order_rows(f, c)),
         (Lt | Le | Gt | Ge, scalars!()) => vec![Pending(SCALAR_INLINE)],
         (Lt | Le | Gt | Ge, RealArray | ArrayOfArrays | Record | Access | File) => vec![Na],
-        (Minimum | Maximum, discrete_arrays!()) => vec![
-            Later(
-                3,
-                "`yavs.implicit` minimum/maximum of two arrays: both read element by element",
-            ),
-            Pending("the one-operand reduction form looks at every element by nature"),
-        ],
+        (Minimum | Maximum, discrete_arrays!()) => {
+            let mut v = rows(minmax_rows(f, c));
+            v.push(Pending(
+                "the one-operand reduction form looks at every element by nature",
+            ));
+            v
+        }
         (Minimum | Maximum, RealArray) => vec![Pending(
             "only the one-operand reduction form, which looks at every element by nature",
         )],
@@ -226,10 +231,7 @@ fn cell(f: Family, c: TypeClass) -> Vec<Item> {
             BooleanArray | IntArray | WideIntArray | RealArray | ArrayOfArrays | Record | Access
             | File,
         ) => vec![Na],
-        (ToHString | ToOString, BitArray) => vec![Later(
-            3,
-            "`yavs.implicit.to_hstring` of bit_vector above 64 elements: through `read_arr`",
-        )],
+        (ToHString | ToOString, BitArray) => rows(radix_rows(f)),
         (ToHString | ToOString, LogicArray) => {
             vec![Pending("the ieee `Str` native, guarded by `ieee_paths`")]
         }
@@ -278,14 +280,12 @@ fn cell(f: Family, c: TypeClass) -> Vec<Item> {
         (And | Or | Nand | Nor | Xor | Xnor | Not, StdULogic) => {
             vec![Pending("the ieee `Gate` native, guarded by `ieee_paths`")]
         }
-        (And | Or | Nand | Nor | Xor | Xnor, BitArray | BooleanArray) => {
-            let mut v = rows(logic_rows(f, c));
-            v.push(Later(
-                3,
-                "the array-scalar forms and the reductions: `yavs.implicit`, element by element",
-            ));
-            v
-        }
+        (And | Or | Nand | Nor | Xor | Xnor, BitArray | BooleanArray) => rows(
+            logic_rows(f, c)
+                .into_iter()
+                .chain(logic_form_rows(f, c))
+                .collect(),
+        ),
         (And | Or | Nand | Nor | Xor | Xnor, LogicArray) => {
             let mut v = rows(logic_rows(f, c));
             v.push(Later(
@@ -310,10 +310,7 @@ fn cell(f: Family, c: TypeClass) -> Vec<Item> {
                 "the ieee `MatchEq` native, guarded by `ieee_paths`",
             )]
         }
-        (MEq | MNeq, BitArray) => vec![Later(
-            3,
-            "`yavs.implicit.meq` of bit_vector: element by element",
-        )],
+        (MEq | MNeq, BitArray) => rows(match_rows(f, c)),
         (MEq | MNeq, LogicArray) => vec![
             Pending("std_ulogic_vector: the ieee `MatchEq` native, guarded by `ieee_paths`"),
             Later(
@@ -367,10 +364,7 @@ fn cell(f: Family, c: TypeClass) -> Vec<Item> {
         }
         (Cat, scalars!() | Access | File | Record) => vec![Na],
         // Shifts and rotations (LRM 9.2.4).
-        (Sll | Srl | Sla | Sra | Rol | Ror, BitArray | BooleanArray) => vec![Later(
-            3,
-            "`yavs.implicit` shifts and rotations: element by element",
-        )],
+        (Sll | Srl | Sla | Sra | Rol | Ror, BitArray | BooleanArray) => rows(shift_rows(f, c)),
         (Sll | Srl | Rol | Ror, LogicArray) => vec![Pending(
             "the std_logic_1164 bodies: slice copies, word-wise; no row yet",
         )],
@@ -651,6 +645,7 @@ fn array_row(name: &str, group: &str, c: TypeClass, ops: &str, n_ops: u64) -> Ro
         group: group.to_string(),
         asym_ok: &[],
         general_ok: None,
+        native: false,
         step_ok: None,
         decls: t.decls,
         vars: format!(
@@ -766,6 +761,189 @@ fn logic_rows(f: Family, c: TypeClass) -> Vec<Row> {
     vec![r]
 }
 
+/// The element type and the literals of '0' and '1' of a BIT or BOOLEAN array class.
+fn bit_class(c: TypeClass) -> (&'static str, &'static str, &'static str) {
+    match c {
+        TypeClass::BitArray => ("bit", "'0'", "'1'"),
+        _ => ("boolean", "false", "true"),
+    }
+}
+
+/// `array_row` for an operation that is a `yavs.implicit` native (a call in compiled code).
+fn native_row(name: &str, group: &str, c: TypeClass) -> (Row, Arr) {
+    let mut r = array_row(name, group, c, "", 2);
+    r.native = true;
+    (r, array(c))
+}
+
+/// The type of `t` over `W` elements.
+fn full(t: &Arr) -> String {
+    t.ty.replace("{r}", t.full)
+}
+
+/// Shifts and rotations of BIT and BOOLEAN arrays (LRM 9.2.4): by a static 3 and by a count from
+/// a variable (`W / 3 + 1`, the whole length at W=1), of both signs, against an element loop.
+fn shift_rows(f: Family, c: TypeClass) -> Vec<Row> {
+    let op = f.as_str();
+    let code = match f {
+        Family::Sll => 0,
+        Family::Srl => 1,
+        Family::Sla => 2,
+        Family::Sra => 3,
+        Family::Rol => 4,
+        _ => 5,
+    };
+    let (_, zero, _) = bit_class(c);
+    let (mut r, t) = native_row(op, op, c);
+    let ty = t.ty.replace("({r})", "");
+    r.vars += &format!(
+        "
+    variable kv : integer;
+    variable e3, e4, e5, e6 : {ty}(0 to W - 1);
+    function sh(x : {ty}; op : natural; k : integer) return {ty} is
+      constant n : natural := x'length;
+      alias v : {ty}(0 to n - 1) is x;
+      variable r : {ty}(0 to n - 1);
+      variable kk : integer := k;
+      variable o : natural := op;
+      variable j : integer;
+    begin
+      if kk < 0 then kk := -kk; o := o + 1 - 2 * (o mod 2); end if;
+      for i in 0 to n - 1 loop
+        case o is
+          when 0 => j := i + kk; if j < n then r(i) := v(j); else r(i) := {zero}; end if;
+          when 1 => j := i - kk; if j >= 0 then r(i) := v(j); else r(i) := {zero}; end if;
+          when 2 => j := i + kk; if j < n then r(i) := v(j); else r(i) := v(n - 1); end if;
+          when 3 => j := i - kk; if j >= 0 then r(i) := v(j); else r(i) := v(0); end if;
+          when 4 => r(i) := v((i + kk) mod n);
+          when others => r(i) := v((i - kk) mod n);
+        end case;
+      end loop;
+      return r;
+    end function;"
+    );
+    r.setup += &format!(
+        "
+    kv := W / 3 + 1;
+    e3 := sh(a, {code}, 3); e4 := sh(b1, {code}, kv);
+    e5 := sh(a, {code}, kv); e6 := sh(b1, {code}, -kv);"
+    );
+    r.ops1 = format!("check((a {op} 3) = e3, true); check((b1 {op} kv) = e4, true);");
+    r.ops0 = format!("check((a {op} kv) = e5, true); check((b1 {op} (-kv)) = e6, true);");
+    vec![r]
+}
+
+/// The reduction (`and v`, LRM 9.2.2: the base operator from its unit, inverted for `nand`,
+/// `nor`, `xnor`) and the array-scalar forms of a logical operator on BIT and BOOLEAN arrays,
+/// against element loops.
+fn logic_form_rows(f: Family, c: TypeClass) -> Vec<Row> {
+    let op = f.as_str();
+    let (el, zero, one) = bit_class(c);
+    let (base, unit, inv) = match f {
+        Family::And => ("and", one, ""),
+        Family::Nand => ("and", one, " ra := not ra; rb := not rb;"),
+        Family::Or => ("or", zero, ""),
+        Family::Nor => ("or", zero, " ra := not ra; rb := not rb;"),
+        Family::Xor => ("xor", zero, ""),
+        _ => ("xor", zero, " ra := not ra; rb := not rb;"),
+    };
+    let red_name = format!("{op}_reduce");
+    let (mut red, _) = native_row(&red_name, &red_name, c);
+    red.vars += &format!("\n    variable ra, rb : {el};");
+    red.setup += &format!(
+        "
+    ra := {unit}; rb := {unit};
+    for i in a'range loop ra := ra {base} a(i); rb := rb {base} b1(i); end loop;{inv}"
+    );
+    red.ops1 = format!("check(({op} b1) = rb, true); check(({op} a) = ra, true);");
+    red.ops0 = format!("check(({op} b0) = ra, true); check(({op} a) = ra, true);");
+    let sc_name = format!("{op}_scalar");
+    let (mut sc, t) = native_row(&sc_name, &sc_name, c);
+    sc.vars += &format!(
+        "\n    variable s0, s1 : {el};\n    variable q0, q1, q2, q3 : {};",
+        full(&t)
+    );
+    sc.setup += &format!(
+        "
+    s0 := {zero}; s1 := {one};
+    for i in a'range loop
+      q0(i) := a(i) {op} s1; q1(i) := s0 {op} a(i); q2(i) := a(i) {op} s0; q3(i) := s1 {op} a(i);
+    end loop;"
+    );
+    sc.ops1 = format!("check((a {op} s1) = q0, true); check((s0 {op} a) = q1, true);");
+    sc.ops0 = format!("check((a {op} s0) = q2, true); check((s1 {op} a) = q3, true);");
+    vec![red, sc]
+}
+
+/// `?=` and `?/=` of bit_vector (LRM 9.2.3: BIT has no metavalue, so `=` decides).
+fn match_rows(f: Family, c: TypeClass) -> Vec<Row> {
+    let (op, ne, eq) = match f {
+        Family::MEq => ("?=", "'0'", "'1'"),
+        _ => ("?/=", "'1'", "'0'"),
+    };
+    let (mut r, _) = native_row(f.as_str(), "match", c);
+    r.ops1 = format!("check((a {op} b1) = {ne}, true); check((b1 {op} a) = {ne}, true);");
+    r.ops0 = format!("check((a {op} b0) = {eq}, true); check((b0 {op} a) = {eq}, true);");
+    vec![r]
+}
+
+/// The predefined `minimum` and `maximum` of two one-dimensional discrete arrays (LRM 5.2.6:
+/// `MINIMUM(L, R)` is `L` when `L < R`, else `R`): the pair and the prefix.
+fn minmax_rows(f: Family, c: TypeClass) -> Vec<Row> {
+    let name = f.as_str();
+    let (mut r, t) = native_row(name, "minmax", c);
+    r.vars += &format!("\n    variable m1 : {};", full(&t));
+    let (pick, ops1, ops0) = match f {
+        Family::Minimum => (
+            "e1 < 0",
+            "check(minimum(a, b1) = m1, true); check(minimum(c, b1) = c, true);",
+            "check(minimum(a, b0) = a, true); check(minimum(b0, c) = c, true);",
+        ),
+        _ => (
+            "e1 > 0",
+            "check(maximum(a, b1) = m1, true); check(maximum(c, b1) = b1, true);",
+            "check(maximum(a, b0) = a, true); check(maximum(b0, c) = b0, true);",
+        ),
+    };
+    r.setup += &format!("\n    if {pick} then m1 := a; else m1 := b1; end if;");
+    (r.ops1, r.ops0) = (ops1.to_string(), ops0.to_string());
+    vec![r]
+}
+
+/// `to_hstring` and `to_ostring` of bit_vector (LRM 5.3.2.4: zero-extended on the left to whole
+/// digits), against digits made by an element loop.
+fn radix_rows(f: Family) -> Vec<Row> {
+    let (name, w) = match f {
+        Family::ToHString => ("to_hstring", 4),
+        _ => ("to_ostring", 3),
+    };
+    let (mut r, _) = native_row(name, "radix", TypeClass::BitArray);
+    r.vars += &format!(
+        "
+    variable h0, h1 : string(1 to (W + {}) / {w});
+    function rx(x : bit_vector; w : positive) return string is
+      constant nd : natural := (x'length + w - 1) / w;
+      variable v : bit_vector(nd * w - 1 downto 0) := (others => '0');
+      variable s : string(1 to nd);
+      variable d : natural;
+      constant digits : string(1 to 16) := \"0123456789ABCDEF\";
+    begin
+      v(x'length - 1 downto 0) := x;
+      for k in 0 to nd - 1 loop
+        d := 0;
+        for j in w - 1 downto 0 loop d := d * 2 + bit'pos(v((nd - 1 - k) * w + j)); end loop;
+        s(k + 1) := digits(d + 1);
+      end loop;
+      return s;
+    end function;",
+        w - 1
+    );
+    r.setup += &format!("\n    h0 := rx(a, {w}); h1 := rx(b1, {w});");
+    r.ops1 = format!("check({name}(b1) = h1, true); check({name}(a) = h0, true);");
+    r.ops0 = format!("check({name}(b0) = h0, true); check({name}(a) = h0, true);");
+    vec![r]
+}
+
 /// A scalar row: variables, their setup and the checks of odd and even iterations.
 fn scalar(name: &str, class: TypeClass, vars: &str, setup: &str, ops1: &str, ops0: &str) -> Row {
     Row {
@@ -775,6 +953,7 @@ fn scalar(name: &str, class: TypeClass, vars: &str, setup: &str, ops1: &str, ops
         group: String::new(),
         asym_ok: &[],
         general_ok: None,
+        native: false,
         step_ok: None,
         decls: "",
         vars: vars.to_string(),
@@ -909,6 +1088,8 @@ fn yavs(dir: &Path, args: &[&str]) -> (String, BTreeMap<String, u64>) {
     let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
         .current_dir(dir)
         .env("YAVS_COUNTERS", "1")
+        // The cost of the operation, not of the memo of pure calls that may answer it.
+        .env("YAVS_NO_PMEMO", "1")
         .args(["--color", "never"])
         .args(args)
         .output()
@@ -1103,6 +1284,12 @@ fn interpreter_slopes() {
         }
         if row.cost == Cost::Word {
             for (i, w) in WIDTHS.iter().enumerate() {
+                if let Some(&n) = v[i].get("implicit_elems").filter(|&&n| n > 0) {
+                    failed.push(format!(
+                        "{at} W={w}: `implicit_elems` {n} per iteration: a `yavs.implicit` native \
+                         decoded the elements one by one"
+                    ));
+                }
                 for (k, n) in &v[i] {
                     let general = k.starts_with("ieee_general.") && *n > 0;
                     if general && (*w <= 64 || row.general_ok.is_none()) {
@@ -1149,7 +1336,11 @@ fn compiled_host_steps() {
                 }
             }
             let native = n("cb_native");
-            let bound = if *w <= 64 { 0 } else { row.n_ops };
+            let bound = if *w <= 64 && !row.native {
+                0
+            } else {
+                row.n_ops
+            };
             if row.cost == Cost::Word && native > bound {
                 failed.push(format!(
                     "{at} W={w}: {native} `cb_native`, more than {bound} per iteration"

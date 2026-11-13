@@ -262,6 +262,7 @@ fn read_arr(m: &Machine, t: TyId, fat: u64) -> R<Arr> {
             .ok_or_else(|| Fault::Runtime("array too long".into()))?;
         dims.push((l, r, down));
     }
+    crate::census::implicit_elems(n);
     let el = match logic_of(sc) {
         Some(k) => {
             let v = m.planes(data, n)?;
@@ -290,6 +291,7 @@ fn read_arr(m: &Machine, t: TyId, fat: u64) -> R<Arr> {
 fn write_arr(m: &mut Machine, t: TyId, a: &Arr) -> R<u64> {
     let (_, sc, _) = array_ty(m, t)?;
     let n = a.el.len();
+    crate::census::implicit_elems(n as u64);
     let data = match logic_of(sc) {
         Some(k) => {
             let mut codes = Vec::with_capacity(n);
@@ -332,6 +334,206 @@ fn write_arr(m: &mut Machine, t: TyId, a: &Arr) -> R<u64> {
     m.store(fat, Width::B8, data)?;
     m.store(add_addr(fat, 8)?, Width::B8, dope)?;
     Ok(fat)
+}
+
+// ---- BIT and BOOLEAN arrays on their planes ----
+
+/// A one-dimensional array of BIT or BOOLEAN read from its planes, no element decoded: element
+/// `p` from the right in bit `p` of `w`, the bits at and above `n` clear. The codes of '0' and
+/// '1' (FALSE, TRUE) have plane 1 set and planes 2 and 3 clear, so plane 0 is the value.
+struct Bits {
+    w: Vec<u64>,
+    n: usize,
+    dim: (i64, i64, bool),
+}
+
+/// The mask of the `n % 64` elements of a last block (all for a full one).
+fn last_mask(n: usize) -> u64 {
+    match n % 64 {
+        0 => !0,
+        r => (1 << r) - 1,
+    }
+}
+
+/// [`Bits`] of the array at the fat pair `fat`, `None` unless `t` is a one-dimensional array
+/// type with BIT or BOOLEAN elements.
+fn bits_of(m: &Machine, t: TyId, fat: u64) -> R<Option<Bits>> {
+    if !is_array(m, t)? {
+        return Ok(None);
+    }
+    let (_, sc, nd) = array_ty(m, t)?;
+    if nd != 1 || !matches!(logic_of(sc), Some(LogicKind::Bit | LogicKind::Boolean)) {
+        return Ok(None);
+    }
+    let data = m.load(fat, Width::B8)?;
+    let dope = m.load(add_addr(fat, 8)?, Width::B8)?;
+    let l = m.load(dope, Width::B8)? as i64;
+    let r = m.load(add_addr(dope, 8)?, Width::B8)? as i64;
+    let down = m.load(add_addr(dope, 16)?, Width::B8)? == 1;
+    let too_long = || Fault::Runtime("array too long".into());
+    let n = usize::try_from(dim_len(l, r, down).ok_or_else(too_long)?).map_err(|_| too_long())?;
+    let nb = n.div_ceil(64);
+    let b = m.rd(data, nb as u64 * 32)?;
+    let word = |k: usize, p: usize| crate::reflect::le(&b[k * 32 + p * 8..k * 32 + p * 8 + 8]);
+    let w: Vec<u64> = (0..nb)
+        .map(|k| {
+            let mask = if k + 1 == nb { last_mask(n) } else { !0 };
+            debug_assert!(
+                word(k, 1) & mask == mask && (word(k, 2) | word(k, 3)) & mask == 0,
+                "BIT or BOOLEAN array element that is not the code of '0' or '1'"
+            );
+            word(k, 0) & mask
+        })
+        .collect();
+    Ok(Some(Bits {
+        w,
+        n,
+        dim: (l, r, down),
+    }))
+}
+
+/// `b` as an array result: the fat pair, the descriptor and the planes in one piece of
+/// temporary memory (`'0'`/`'1'` codes).
+fn put_bits(m: &mut Machine, b: &Bits) -> R<u64> {
+    let nb = b.w.len();
+    let size = 40 + nb as u64 * 32;
+    let fat = m.temp_alloc(size)?;
+    let (dope, data) = (add_addr(fat, 16)?, add_addr(fat, 40)?);
+    let (l, r, down) = b.dim;
+    let o = m.wr(fat, size)?;
+    for (k, v) in [data, dope, l as u64, r as u64, u64::from(down)]
+        .into_iter()
+        .enumerate()
+    {
+        o[k * 8..k * 8 + 8].copy_from_slice(&v.to_le_bytes());
+    }
+    // Planes 2 and 3 stay zero (`temp_alloc` clears).
+    for (k, &w) in b.w.iter().enumerate() {
+        let mask = if k + 1 == nb { last_mask(b.n) } else { !0 };
+        let c = &mut o[40 + k * 32..40 + k * 32 + 16];
+        c[..8].copy_from_slice(&(w & mask).to_le_bytes());
+        c[8..].copy_from_slice(&mask.to_le_bytes());
+    }
+    Ok(fat)
+}
+
+/// The bits of `w` moved `k` places up (`up`) or down, `n` elements; vacated bits clear.
+fn shifted(w: &[u64], n: usize, k: usize, up: bool) -> Vec<u64> {
+    let (ws, bs) = (k / 64, k % 64);
+    let at = |i: isize| -> u64 {
+        usize::try_from(i)
+            .ok()
+            .and_then(|i| w.get(i))
+            .copied()
+            .unwrap_or(0)
+    };
+    let mut out: Vec<u64> = (0..w.len() as isize)
+        .map(|i| {
+            if up {
+                let j = i - ws as isize;
+                let lo = if bs == 0 { 0 } else { at(j - 1) >> (64 - bs) };
+                at(j) << bs | lo
+            } else {
+                let j = i + ws as isize;
+                let hi = if bs == 0 { 0 } else { at(j + 1) << (64 - bs) };
+                at(j) >> bs | hi
+            }
+        })
+        .collect();
+    if let Some(last) = out.last_mut() {
+        *last &= last_mask(n);
+    }
+    out
+}
+
+/// Bits `lo..hi` of `w` set.
+fn set_range(w: &mut [u64], lo: usize, hi: usize) {
+    for (k, x) in w.iter_mut().enumerate() {
+        let (a, b) = (lo.max(k * 64), hi.min(k * 64 + 64));
+        if a < b {
+            let len = b - a;
+            let m = if len == 64 { !0 } else { (1u64 << len) - 1 };
+            *x |= m << (a - k * 64);
+        }
+    }
+}
+
+fn bit_at(w: &[u64], p: usize) -> bool {
+    w[p / 64] >> (p % 64) & 1 == 1
+}
+
+/// A shift or rotation (LRM 9.2.4) of the bits `b` by `k` places, `op` with the direction the
+/// sign of the count gave. Element `i` from the left is bit `n - 1 - i`: `sll` moves bits up,
+/// `srl` down, `sla` fills with the rightmost element (bit 0), `sra` with the leftmost.
+fn shift_bits(b: &mut Bits, op: Sh, k: usize) {
+    let n = b.n;
+    if n == 0 {
+        return;
+    }
+    let kk = k.min(n);
+    b.w = match op {
+        Sh::Sll | Sh::Sla => {
+            let fill = op == Sh::Sla && bit_at(&b.w, 0);
+            let mut r = shifted(&b.w, n, kk, true);
+            if fill {
+                set_range(&mut r, 0, kk);
+            }
+            r
+        }
+        Sh::Srl | Sh::Sra => {
+            let fill = op == Sh::Sra && bit_at(&b.w, n - 1);
+            let mut r = shifted(&b.w, n, kk, false);
+            if fill {
+                set_range(&mut r, n - kk, n);
+            }
+            r
+        }
+        Sh::Rol | Sh::Ror => {
+            let up = if op == Sh::Rol {
+                k % n
+            } else {
+                (n - k % n) % n
+            };
+            if up == 0 {
+                return;
+            }
+            let (a, c) = (shifted(&b.w, n, up, true), shifted(&b.w, n, n - up, false));
+            a.iter().zip(&c).map(|(x, y)| x | y).collect()
+        }
+    };
+}
+
+/// Words of `op` over words (`Not` takes `x`).
+fn lgw(op: Lg, x: u64, y: u64) -> u64 {
+    match op {
+        Lg::And => x & y,
+        Lg::Or => x | y,
+        Lg::Nand => !(x & y),
+        Lg::Nor => !(x | y),
+        Lg::Xor => x ^ y,
+        Lg::Xnor => !(x ^ y),
+        Lg::Not => !x,
+    }
+}
+
+/// The digits of `to_hstring` (`width` 4) or `to_ostring` (3) of the bits `w` of `n` elements:
+/// zero-extended on the left to whole digits.
+fn bits_radix(w: &[u64], n: usize, width: usize) -> Vec<u8> {
+    const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+    let get = |p: usize| -> u64 {
+        let (i, s) = (p / 64, p % 64);
+        let lo = w.get(i).copied().unwrap_or(0) >> s;
+        let hi = if s + width > 64 {
+            w.get(i + 1).copied().unwrap_or(0) << (64 - s)
+        } else {
+            0
+        };
+        (lo | hi) & ((1 << width) - 1)
+    };
+    (0..n.div_ceil(width))
+        .rev()
+        .map(|d| DIGITS[get(d * width) as usize])
+        .collect()
 }
 
 fn lens(a: &Arr) -> Vec<u64> {
@@ -386,13 +588,45 @@ fn minmax(m: &mut Machine, t: Option<TyId>, a: &[u64], max: bool) -> R<Option<u6
     let (x, y) = (arg(a, 0)?, arg(a, 1)?);
     let o = if is_array(m, t)? {
         let (_, sc, _) = array_ty(m, t)?;
-        arr_order(sc, &read_arr(m, t, x)?, &read_arr(m, t, y)?)?
+        match scan_width(sc) {
+            Some(w) => scan_order(m, x, y, w)?,
+            None => arr_order(sc, &read_arr(m, t, x)?, &read_arr(m, t, y)?)?,
+        }
     } else {
         order(scalar(m, t)?, x, y)?
     };
     // MINIMUM(L, R) is L when L < R, else R; MAXIMUM is L when L > R.
     let left = if max { o.is_gt() } else { o.is_lt() };
     Ok(Some(if left { x } else { y }))
+}
+
+/// How `yavs_interp::arr_cmp` reads the elements of a one-dimensional array of `sc`: planes
+/// (`Some(None)`), bytes of a width, or not at all (reals: `None`).
+fn scan_width(sc: Sc) -> Option<Option<Width>> {
+    Some(match sc {
+        Sc::Real => return None,
+        Sc::Enum(_, Some(_)) => None,
+        _ => Some(match elem_size(sc) {
+            1 => Width::B1,
+            4 => Width::B4,
+            _ => Width::B8,
+        }),
+    })
+}
+
+/// The order (LRM 9.2.3) of the one-dimensional arrays at the fat pairs `x` and `y`, one scan
+/// of their memory (`Inst::ArrCmp`'s); a null array orders by the lengths alone.
+fn scan_order(m: &Machine, x: u64, y: u64, w: Option<Width>) -> R<Ordering> {
+    let ((xd, xn), (yd, yn)) = (m.fat1(x)?, m.fat1(y)?);
+    if xn == 0 || yn == 0 {
+        return Ok(xn.cmp(&yn));
+    }
+    let size = |n: u64| match w {
+        None => n.div_ceil(64) * 32,
+        Some(w) => n * u64::from(w.bytes()),
+    };
+    let (a, b) = (m.rd(xd, size(xn))?, m.rd(yd, size(yn))?);
+    Ok(crate::exec::arr_cmp(a, xn as usize, b, yn as usize, w).cmp(&0))
 }
 
 /// `MINIMUM(L)` / `MAXIMUM(L)` of an array; a null array gives the element type's
@@ -586,6 +820,9 @@ fn logical(m: &mut Machine, t: Option<TyId>, a: &[u64], op: Lg, shape: Shape) ->
         let y = if op == Lg::Not { 0 } else { bit(arg(a, 1)?)? };
         return Ok(Some(lg(op, x, y)));
     }
+    if let Some(r) = logical_bits(m, t, a, op, shape)? {
+        return Ok(Some(r));
+    }
     let r = match shape {
         Shape::Reduce => {
             // The reduction is the operator applied left to right from the unit of its base
@@ -641,6 +878,51 @@ fn logical(m: &mut Machine, t: Option<TyId>, a: &[u64], op: Lg, shape: Shape) ->
     write_arr(m, t, &r).map(Some)
 }
 
+/// [`logical`] of BIT and BOOLEAN arrays on their planes, a word at a time: `None` for other
+/// arrays.
+fn logical_bits(m: &mut Machine, t: TyId, a: &[u64], op: Lg, shape: Shape) -> R<Option<u64>> {
+    let ai = if shape == Shape::ScalarArray { 1 } else { 0 };
+    let Some(mut p) = bits_of(m, t, arg(a, ai)?)? else {
+        return Ok(None);
+    };
+    match shape {
+        Shape::Reduce => {
+            // The operator applied left to right from the unit of its base operator (LRM 9.2.2):
+            // `and ""` is '1', `nand ""` is '0', `xnor ""` is '1'.
+            let ones: u32 = p.w.iter().map(|w| w.count_ones()).sum();
+            let (v, inv) = match op {
+                Lg::And | Lg::Nand => (u64::from(ones as usize == p.n), op == Lg::Nand),
+                Lg::Or | Lg::Nor => (u64::from(ones > 0), op == Lg::Nor),
+                _ => (u64::from(ones % 2), op == Lg::Xnor),
+            };
+            return Ok(Some(v ^ u64::from(inv)));
+        }
+        Shape::Plain if op == Lg::Not => p.w.iter_mut().for_each(|w| *w = !*w),
+        Shape::Plain => {
+            let Some(q) = bits_of(m, t, arg(a, 1)?)? else {
+                return Ok(None);
+            };
+            if p.n != q.n {
+                return rt_err(format!(
+                    "left and right operands of \"{}\" have different lengths ({} and {})",
+                    lg_name(op),
+                    p.n,
+                    q.n
+                ));
+            }
+            p.w.iter_mut()
+                .zip(&q.w)
+                .for_each(|(x, &y)| *x = lgw(op, *x, y));
+        }
+        // Every binary operator here is commutative, so the side of the scalar does not matter.
+        Shape::ArrayScalar | Shape::ScalarArray => {
+            let s = if bit(arg(a, 1 - ai)?)? == 1 { !0 } else { 0 };
+            p.w.iter_mut().for_each(|x| *x = lgw(op, *x, s));
+        }
+    }
+    put_bits(m, &p).map(Some)
+}
+
 fn lg_name(op: Lg) -> &'static str {
     match op {
         Lg::And => "and",
@@ -666,7 +948,6 @@ enum Sh {
 /// LRM 9.2.4, a negative count shifts the other way (`sla -1` is `sra 1`).
 fn shift(m: &mut Machine, t: Option<TyId>, a: &[u64], op: Sh) -> R<Option<u64>> {
     let (t, _) = ty_of(m, t)?;
-    let mut p = read_arr(m, t, arg(a, 0)?)?;
     let k = arg(a, 1)? as i64;
     let op = if k >= 0 {
         op
@@ -680,9 +961,14 @@ fn shift(m: &mut Machine, t: Option<TyId>, a: &[u64], op: Sh) -> R<Option<u64>> 
             Sh::Ror => Sh::Rol,
         }
     };
+    let k = usize::try_from(k.unsigned_abs()).unwrap_or(usize::MAX);
+    if let Some(mut b) = bits_of(m, t, arg(a, 0)?)? {
+        shift_bits(&mut b, op, k);
+        return put_bits(m, &b).map(Some);
+    }
+    let mut p = read_arr(m, t, arg(a, 0)?)?;
     let n = p.el.len();
     if n > 0 {
-        let k = usize::try_from(k.unsigned_abs()).unwrap_or(usize::MAX);
         let e = &p.el;
         let at = |i: usize, fill: u64| e.get(i).copied().unwrap_or(fill);
         let r: Vec<u64> = (0..n)
@@ -749,6 +1035,14 @@ fn cat(m: &mut Machine, t: Option<TyId>, a: &[u64], ls: bool, rs: bool) -> R<Opt
 fn matching(m: &mut Machine, t: Option<TyId>, a: &[u64], r: Rel) -> R<Option<u64>> {
     let (t, _) = ty_of(m, t)?;
     let (x, y) = (arg(a, 0)?, arg(a, 1)?);
+    if let Some(p) = bits_of(m, t, x)? {
+        // BIT has no metavalue: `?=` is `=` (LRM 9.2.3).
+        let q = bits_of(m, t, y)?.ok_or_else(|| ice("\"?=\" of two array types"))?;
+        if p.n != q.n {
+            return match_lengths(r == Rel::Ne, p.n, q.n);
+        }
+        return Ok(Some(u64::from((p.w == q.w) == (r == Rel::Eq))));
+    }
     if is_array(m, t)? {
         let (_, sc, _) = array_ty(m, t)?;
         let (p, q) = (read_arr(m, t, x)?, read_arr(m, t, y)?);
@@ -895,10 +1189,14 @@ fn radix(
     {
         return ret(m, &image::word_to_radix(v.bits, v.n, width));
     }
+    if let Some(b) = bits_of(m, t, arg(a, 0)?)? {
+        return ret(m, &bits_radix(&b.w, b.n, width));
+    }
     let bits: Vec<bool> = match logic_of(sc) {
         // The usual case: the bits straight from the planes.
         Some(k) if nd == 1 => {
             let (data, n) = m.fat1(arg(a, 0)?)?;
+            crate::census::implicit_elems(n);
             let v = m.planes(data, n)?;
             let nn = n as usize;
             (0..nn)
@@ -1275,6 +1573,96 @@ mod tests {
         assert_eq!(to_s(&mut t, s, IV, &[iv]), "(1,-2,3)");
         let d = "yavs.implicit.to_string.std.standard.real#digits";
         assert_eq!(to_s(&mut t, d, REAL, &[1.5f64.to_bits(), 3]), "1.500");
+    }
+
+    /// The plane paths of BIT arrays against the element rules (LRM 9.2.4 shifts and rotations,
+    /// 9.2.2 reductions, `to_hstring`/`to_ostring`), at lengths around the 64-element blocks and
+    /// every count from `-n - 2` to `n + 2`.
+    #[test]
+    fn bit_planes_match_the_element_rules() {
+        let mut t = setup();
+        let back = |op: &str| match op {
+            "sll" => "srl",
+            "srl" => "sll",
+            "sla" => "sra",
+            "sra" => "sla",
+            "rol" => "ror",
+            _ => "rol",
+        };
+        for n in [0usize, 1, 2, 3, 63, 64, 65, 127, 128, 130] {
+            let e: Vec<char> = (0..n)
+                .map(|i| if (i * 7 + i / 3) % 5 < 2 { '1' } else { '0' })
+                .collect();
+            let s: String = e.iter().collect();
+            let left = n as i64 + 3;
+            let v = arr(&mut t, BV, &s, left, true);
+            let dims = (left, left - n as i64 + 1, true);
+            for op in ["sll", "srl", "sla", "sra", "rol", "ror"] {
+                for k in -(n as i64) - 2..=n as i64 + 2 {
+                    let o = if k >= 0 { op } else { back(op) };
+                    let kk = k.unsigned_abs() as usize;
+                    let want: String = (0..n)
+                        .map(|i| match o {
+                            "sll" => e.get(i + kk).copied().unwrap_or('0'),
+                            "sla" => e.get(i + kk).copied().unwrap_or(e[n - 1]),
+                            "srl" => i.checked_sub(kk).map_or('0', |j| e[j]),
+                            "sra" => i.checked_sub(kk).map_or(e[0], |j| e[j]),
+                            "rol" => e[(i + kk % n) % n],
+                            _ => e[(i + n - kk % n) % n],
+                        })
+                        .collect();
+                    let sym = format!("yavs.implicit.{op}.std.standard.bit_vector");
+                    let r = call(&mut t, &sym, BV, &[v, k as u64]).unwrap();
+                    assert_eq!(text(&mut t, BV, r), (want, dims), "{op} {k} of {n}");
+                }
+            }
+            let ones = e.iter().filter(|&&c| c == '1').count();
+            for (op, want) in [
+                ("and", ones == n),
+                ("or", ones > 0),
+                ("xor", ones % 2 == 1),
+                ("nand", ones != n),
+                ("nor", ones == 0),
+                ("xnor", ones % 2 == 0),
+            ] {
+                let sym = format!("yavs.implicit.{op}.std.standard.bit_vector#reduce");
+                assert_eq!(
+                    call(&mut t, &sym, BV, &[v]),
+                    Ok(u64::from(want)),
+                    "{op} of {n}"
+                );
+                for (s, form) in [(0, "as"), (1, "as"), (0, "sa"), (1, "sa")] {
+                    let sym = format!("yavs.implicit.{op}.std.standard.bit_vector#{form}");
+                    let args = if form == "as" { [v, s] } else { [s, v] };
+                    let r = call(&mut t, &sym, BV, &args).unwrap();
+                    let want: String = e
+                        .iter()
+                        .map(|&c| {
+                            let (x, y) = (u64::from(c == '1'), s);
+                            let b = match op {
+                                "and" => x & y,
+                                "or" => x | y,
+                                "xor" => x ^ y,
+                                "nand" => 1 ^ (x & y),
+                                "nor" => 1 ^ (x | y),
+                                _ => 1 ^ x ^ y,
+                            };
+                            if b == 1 { '1' } else { '0' }
+                        })
+                        .collect();
+                    assert_eq!(text(&mut t, BV, r), (want, dims), "{op}#{form} {s} of {n}");
+                }
+            }
+            let bits: Vec<bool> = e.iter().map(|&c| c == '1').collect();
+            for (f, want) in [
+                ("to_hstring", image::bits_to_hstring(&bits)),
+                ("to_ostring", image::bits_to_ostring(&bits)),
+            ] {
+                let sym = format!("yavs.implicit.{f}.std.standard.bit_vector");
+                let r = call(&mut t, &sym, BV, &[v]).unwrap();
+                assert_eq!(t.m.fat_bytes(r).unwrap(), want, "{f} of {n}");
+            }
+        }
     }
 
     #[test]

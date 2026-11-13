@@ -4331,8 +4331,18 @@ fn gen_func(
             Inst::LEq { dst, a, b, n } => {
                 let (slow, join) = g.slow_path_x(pc, &inst, f);
                 let cnt = g.ld(n);
-                let okn = g.b.ins().icmp_imm_s(IntCC::SignedGreaterThan, cnt, 0);
+                let okn =
+                    g.b.ins()
+                        .icmp_imm_s(IntCC::SignedGreaterThanOrEqual, cnt, 0);
                 g.guard(okn, slow);
+                // Two null arrays are equal: no memory to find (a host step otherwise).
+                let (body, done) = (g.b.create_block(), g.b.create_block());
+                let res = g.b.append_block_param(done, I64);
+                let none = g.b.ins().icmp_imm_s(IntCC::Equal, cnt, 0);
+                let one = g.c64(1);
+                g.b.ins()
+                    .brif(none, done, &[BlockArg::Value(one)], body, &[]);
+                g.b.switch_to_block(body);
                 let words = g.b.ins().iadd_imm_s(cnt, 63);
                 let words = g.b.ins().ushr_imm_s(words, 6);
                 let bytes = g.b.ins().ishl_imm_s(words, 5);
@@ -4370,7 +4380,9 @@ fn gen_func(
                 g.b.switch_to_block(merge);
                 let tail = g.b.ins().uextend(I64, tail);
                 let v = g.b.ins().band(tail, front);
-                g.st(dst, v);
+                g.b.ins().jump(done, &[BlockArg::Value(v)]);
+                g.b.switch_to_block(done);
+                g.st(dst, res);
                 g.join(join);
             }
             // The elements as a number when all are '0' or '1' (plane 1 set, planes 2 and 3 clear).

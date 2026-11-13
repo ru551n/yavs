@@ -95,6 +95,8 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
             crate::cache::UNITS_STORED.load(std::sync::atomic::Ordering::Relaxed),
         ),
     ];
+    // Elements the `yavs.implicit` natives decoded one by one (every build).
+    rows.push(("implicit_elems", yavs_interp::implicit_elems_total()));
     // Only builds that count them (debug, or `op-census`).
     if let Some(n) = yavs_interp::ops_executed() {
         let before = OPS_BEFORE.load(std::sync::atomic::Ordering::Relaxed);

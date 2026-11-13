@@ -1,0 +1,6 @@
+exit	1
+diag	note	2000000	0	:zero_compare_index:_p0	checked 1
+diag	note	2000000	0	:zero_compare_index:_p0	checked 2
+diag	note	2000000	0	:zero_compare_index:_p0	checked 3
+diag	note	2000000	0	:zero_compare_index:_p0	checked 4
+diag	fatal	2000000	0	-	index 4 outside of INTEGER range 0 to 3

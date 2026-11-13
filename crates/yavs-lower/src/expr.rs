@@ -2322,8 +2322,67 @@ impl<'a> Fx<'a, '_> {
                 _ => {}
             }
         }
+        if let Some(d) = self.part_dope(e)? {
+            return Ok(d);
+        }
         let v = self.expr(e)?;
         Ok(self.arr(v, self.db.exprs[e].span)?.1)
+    }
+
+    /// The descriptor of an element or slice `e` of an array, from the prefix's descriptor:
+    /// the index and slice checks of the value path with the same messages, but no read or
+    /// copy of the elements (`mem(i)'range` of an array-of-arrays signal read `mem(i)` once
+    /// per bound). `None` where the value path is not one of these.
+    fn part_dope(&mut self, e: ExprId) -> R<Option<Reg>> {
+        let db = self.db;
+        let span = db.exprs[e].span;
+        let t = db.base(db.exprs[e].subtype);
+        if !ty::is_array(db, t) {
+            return Ok(None);
+        }
+        let (prefix, indices, range) = match &db.exprs[e].kind {
+            ExprKind::Index { prefix, indices } => (*prefix, Some(&indices[..]), None),
+            ExprKind::Slice { prefix, range } => (*prefix, None, Some(range)),
+            _ => return Ok(None),
+        };
+        // A signal part (`sig_part`, `sig_slice`): the walk of `sig_steps`, without the read.
+        if let Some((d, steps)) = self.nested_steps(e)
+            && matches!(
+                self.cx.objs.get(&d),
+                Some(Obj::Signal { .. } | Obj::SignalRef { .. })
+            )
+        {
+            let root_t = db.base(ty::obj_subtype(db, d).ok_or(Failed)?);
+            let part = !self.is_general(t, span)? && self.is_general(root_t, span)?;
+            let slice = range.is_some() && matches!(db.exprs[prefix].kind, ExprKind::Obj(_));
+            if part || (slice && !self.is_general(t, span)?) {
+                let Some(root) = self.sig_dope(d, span)? else {
+                    return Ok(None);
+                };
+                let what = db.decls[d].name.to_string();
+                return Ok(Some(
+                    self.walk_steps(root_t, root, &steps, &what, span)?.desc,
+                ));
+            }
+        }
+        // `index_comp`, `slice_comp` and `slice` of a variable, constant or value.
+        let pt = db.base(db.exprs[prefix].subtype);
+        let general = self.is_general(pt, span)?;
+        if indices.is_some() && !general {
+            return Ok(None);
+        }
+        let tid = self.ty(pt, span)?;
+        let what = self.prefix_name(prefix);
+        let dope = self.dope_of(prefix)?;
+        if let Some(ix) = indices {
+            self.flat_pos(dope, ix, &what)?;
+            return Ok(Some(self.elem_desc(tid, dope)?.1));
+        }
+        let (_, _, nd) = self.slice_of(dope, range.ok_or(Failed)?, &what, span)?;
+        if !general {
+            return Ok(Some(nd));
+        }
+        Ok(Some(self.slice_desc(tid, dope, nd)))
     }
 
     // ---- ranges and descriptors ----

@@ -700,6 +700,9 @@ case!(elem_loops, "acc=", &[], [("ops", Max(27715))]);
 // Predefined `/=` of logic vectors is one word-wise compare (`LEq`), as `=` is: a bit loop cost
 // six operations per bit of each element scanned.
 case!(zero_ne, "n=", &[], [("ops", Max(6200))]);
+// Bounds attributes of an element of an array-of-vectors signal read its descriptor, not the
+// element's value.
+case!(zero_range, "n=", &[], [("ops", Max(4950))]);
 case!(wide_vec, "wide=0", &[], [("ops", Max(1997254))]);
 case!(
     licm_loop,

@@ -16452,3 +16452,31 @@ run-to-run profile (user, 2026-11-09).
   worlds whose runs see the candidate a little over and a little under its tree's price, through `profile::next`,
   the profile's text and `Worker::use_profile`: both compile it, the second one run later; without the change the
   second never does in four runs).
+
+## `--tier=auto`: a function the last run made is looked up in the store when the list lost it (yavs-rt `auto.rs` `Worker::lost_line`, `wants_probe`, `profile.rs` format 6, #1148, user, 2026-11-13)
+
+- **Finding** (agent, #1148). `cached` and the store look-up of the sampled path (`wants_probe`) read only the cache's
+  list. A function whose compiled code is in the store but whose list line was lost (a run ended by a crash, a kill,
+  or before 22c4a5c88 a stop while the compile thread was busy) is priced as a full compile, and under
+  `--tier-compile=wait` a later run holds it by `unrepaid` in every run: `c03_big` (S=1500, 45 000 calls), list entry
+  deleted after run 1, ran 26.3 G instructions a run interpreted against 5.3 G linked, run after run. A settled
+  `uvvm_sb_slv_tb` world whose list entry is deleted falls back to its unsettled state (6.1 to 8.0-8.4 G a run).
+- **Decision** (user, 2026-11-13: file it, re-judge holds on new evidence, make existing code linkable). The profile
+  names the functions a run compiled or linked as modules of their own, the ones the list names (`made` lines,
+  format 6; a profile of format 5 is no profile, so each stored profile is read as none once). Such a function the
+  list does not name is looked up in the store by its code: by the sampled path's look-up (`wants_probe`, as for a
+  listed one), and once when the count rule holds it by `unrepaid` past the gate with a compiled caller or as a
+  process (`lost_line`, priced and budgeted as that look-up). A hit links it and notes its line again; a miss leaves
+  the hold. Rationale: a look-up lowers the body (a miss cost about 10 G instructions on `c03_big`'s 25 678-instruction
+  procedure), so it is asked only for what the last run made, where the code is in the store unless the store lost it
+  too; a run with its list intact asks none (0 look-ups in 6 runs x 3 worlds of `uvvm_axistream_vvc` and 12 x 2 of
+  `uvvm_sb_slv_tb`). Copies of processes have new ids in every run and are not named, so they are not looked up.
+- **Measured** (agent, all-thread instructions): `c03_big` 45 000 calls, list deleted after run 1: runs 2 to 4 7.4,
+  5.2, 5.3 G (base 26.5, 26.3, 26.3); 30 000 calls (run 1 compiles nothing, nothing is looked up): 15.5 G in both.
+  `uvvm_sb_slv_tb`, two settled worlds (run 12: 6.35 and 6.24 G), list deleted: runs 13 to 15 6.50, 6.33, 6.14 and
+  6.64, 6.41, 6.22 G (9 look-ups, 8 hits); before this change 8.37, 8.02, 8.16 and 8.30, 8.08, 8.00. With the list
+  intact the rule asks nothing, so the broad measurements of the previous entry stand for it.
+- **Test**: `auto.rs` `a_held_function_made_last_run_is_looked_up_in_the_store` (through the profile's text: the
+  held function is looked up once, not twice, not when the last run did not make it, and the sampled look-up takes
+  it; fails without the change), `profile.rs` round trip with `made` lines and format 5 read as no profile. Not in
+  the suite: an end-to-end run with a deleted list entry (the stub generator stores no code); `c03_big` above.

@@ -1478,6 +1478,12 @@ struct Worker {
     unmeasurable: bool,
     /// Per function: looked up in the compilation cache already (`probe`).
     probed: Vec<bool>,
+    /// Held functions to look up in the compilation cache by their code (`lost_line`).
+    relink: Vec<FuncId>,
+    /// Per function: the last run compiled or linked it (`Profile::made`).
+    made_before: Vec<bool>,
+    /// Per function: this run compiled or linked it as a module of its own, which the list names.
+    noted: Vec<bool>,
     /// A `probe` is running: a failure is no note and leaves the function to compile later.
     probing: bool,
     /// The warning that a generator cannot be opened was printed.
@@ -1795,6 +1801,9 @@ impl Worker {
             leaf: Default::default(),
             seen: 0,
             probed: vec![false; nfuncs],
+            relink: Vec::new(),
+            made_before: vec![false; nfuncs],
+            noted: vec![false; nfuncs],
             lost: vec![false; nfuncs],
             unmeasurable: false,
             told: vec![false; nfuncs],
@@ -2257,9 +2266,48 @@ impl Worker {
             let (stay, free): (Vec<_>, Vec<_>) = wait.into_iter().partition(|&i| self.waits(i));
             for &i in &stay {
                 self.note_unrepaid(i);
+                if self.lost_line(i) {
+                    self.relink.push(i);
+                }
             }
             self.waiting = stay;
             go.extend(free);
+        }
+        go
+    }
+
+    /// A function held because its compile would not repay (`unrepaid`), which the last run compiled
+    /// or linked (`Profile::made`) and the list does not name (`cached`): its code is likely in the
+    /// store, its list line lost (a run ended by a crash or a kill, #1148). Looked up once by its code
+    /// (`probe`, within the budget as in `wants_probe`): a hit links it and notes the line again, a
+    /// miss leaves the hold.
+    fn lost_line(&mut self, id: FuncId) -> bool {
+        let k = id.0 as usize;
+        let go = !self.probed[k]
+            && self.made_before.get(k).copied().unwrap_or(false)
+            && !self.done[k]
+            && self.nat[k].0 == 0
+            && self.generator.cache_enabled()
+            && self.total >= self.gate
+            && !self.unpaid(id)
+            && self
+                .prog
+                .func(id)
+                .is_some_and(|f| f.kind == FuncKind::Process || self.entered_from_code(id))
+            && self.unrepaid(id)
+            && within_budget(
+                self.heat.budget,
+                self.factor(id).max(NATIVE_BUDGET),
+                self.spent,
+                self.load_cost() + self.cost(id) / PROBE_PART,
+                self.total,
+            );
+        self.probed[k] |= go;
+        if let (true, Some(tr)) = (go, &self.trace) {
+            tr.line(format!(
+                "looks up f{} in the store: the last run made it, the list does not name it",
+                id.0
+            ));
         }
         go
     }
@@ -3076,8 +3124,9 @@ impl Worker {
         // The look-up generates the function's code: within the budget, as a compile is, with at
         // least the factor of a function called natively (code compiled before for a function
         // hot before is likely to pay); asked again at the next sample while there is no room.
+        // (Or the last run made it and the list lost its line, #1148: `lost_line`.)
         let go = self.generator.cache_enabled()
-            && self.listed.contains(&self.list_key(id, f))
+            && (self.listed.contains(&self.list_key(id, f)) || self.made_before[k])
             && within_budget(
                 self.heat.budget,
                 self.factor(id).max(NATIVE_BUDGET),
@@ -3361,6 +3410,11 @@ impl Worker {
             .iter()
             .map(|&(id, us, runs)| (FuncId(id), (us, runs)))
             .collect();
+        for &f in &p.made {
+            if let Some(m) = self.made_before.get_mut(f as usize) {
+                *m = true;
+            }
+        }
         self.earlier = p;
     }
 
@@ -3485,6 +3539,10 @@ impl Worker {
             fresh,
             held,
             ran,
+            made: (0..self.noted.len())
+                .filter(|&k| self.noted[k])
+                .map(|k| k as u32)
+                .collect(),
         }
     }
 
@@ -3890,6 +3948,7 @@ impl Worker {
                 }
                 // (A copy linked as the twin of another is listed under its own name too.)
                 let key = list_key;
+                self.noted[id.0 as usize] = true;
                 if gen_.cache_enabled() && self.listed.insert(key.clone()) {
                     gen_.cache_note(&key.0, key.1);
                     self.in_cache[id.0 as usize] = Default::default();
@@ -4464,6 +4523,7 @@ impl AutoTier {
                         }
                         let free = w.freed();
                         pending.asked.extend(free);
+                        pending.probes.append(&mut w.relink);
                         w.guard();
                         loop {
                             publish(&w);
@@ -4616,6 +4676,7 @@ impl AutoTier {
                             }
                             let free = w.freed();
                             pending.asked.extend(free);
+                            pending.probes.append(&mut w.relink);
                             // (Not a root the profile asked for: its share of the run is not known
                             // yet, and the run as a whole is judged at its end.)
                             if let (Some(id), true) =
@@ -5378,6 +5439,68 @@ mod tests {
 
     /// A subprogram the profile lost is not priced as a link of the cache: its code stays there,
     /// and a later run would link it at once though compiling it early gained nothing.
+    /// A held function the last run compiled or linked (`Profile::made`) but the cache's list does
+    /// not name (its line lost: a run ended by a crash or a kill) is looked up in the store once
+    /// (`lost_line`, `relink`), so the code there is linked rather than held for good (#1148); not
+    /// one the last run did not make, not twice, not one the list names (no hold then).
+    #[test]
+    fn a_held_function_made_last_run_is_looked_up_in_the_store() {
+        struct Cached;
+        impl crate::Generator for Cached {
+            fn compile(
+                &mut self,
+                _: &yavs_ir::Program,
+                _: yavs_ir::FuncId,
+                _: &yavs_ir::Func,
+                _: super::Part,
+            ) -> Result<crate::native::Compiled, String> {
+                Err("stub".into())
+            }
+            fn cache_enabled(&self) -> bool {
+                true
+            }
+        }
+        let held = |made: bool| {
+            let (prog, caller, _) = caller_callee();
+            let mut w = counted(prog, 0);
+            w.generator = Box::new(Cached);
+            let k = caller.0 as usize;
+            (w.stops, w.wait_gain, w.wait_payback) = (true, 0.5, 0.0);
+            (w.total, w.sim_us, w.time[k][0]) = (10_000_000, 10, 1);
+            let mut p = super::Profile {
+                base: Some(20),
+                ..Default::default()
+            };
+            if made {
+                p.made.push(caller.0);
+            }
+            // (Through the profile's text, as a run reads it.)
+            w.use_profile(super::Profile::parse(&p.render()).unwrap());
+            assert!(w.waits(caller) && w.unrepaid(caller), "held by its price");
+            w.waiting.push(caller);
+            (w, caller)
+        };
+        let (mut w, f) = held(true);
+        assert!(w.freed().is_empty());
+        assert_eq!(w.relink, [f], "looked up once");
+        w.relink.clear();
+        assert!(w.freed().is_empty());
+        assert!(w.relink.is_empty(), "not twice");
+        let (mut w, _) = held(false);
+        assert!(w.freed().is_empty());
+        assert!(w.relink.is_empty(), "not made last run");
+        // The sampled path's look-up takes such a function too, the list naming it or not.
+        for made in [true, false] {
+            let (mut w, f) = held(made);
+            w.probed.fill(false);
+            assert_eq!(
+                w.wants_probe(f, u64::MAX / 2),
+                made,
+                "made last run: {made}"
+            );
+        }
+    }
+
     #[test]
     fn a_subprogram_the_profile_lost_is_not_priced_as_a_link() {
         struct Cached;

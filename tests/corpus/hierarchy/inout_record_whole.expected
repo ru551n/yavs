@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:inout_record_whole:src	init ch(1)=ZZZZ r1=ZZZZ
+diag	note	300000000	0	:inout_record_whole:src	k=100 got=55 sum=C59D ch(2)=821 r2=1D711
+diag	note	600000000	0	:inout_record_whole:src	k=200 got=101 sum=3759 ch(2)=FF1 r2=11011
+diag	note	900000000	0	:inout_record_whole:src	k=300 got=154 sum=A846 ch(2)=B21 r2=1EF01
+diag	note	1200000000	0	:inout_record_whole:src	k=400 got=199 sum=E67C ch(2)=2E1 r2=1AD01

@@ -316,6 +316,7 @@ const PASS: &[&str] = &[
     "hierarchy/inout_port_defaults",
     "hierarchy/inout_port_user_resolution",
     "hierarchy/inout_record_lanes",
+    "hierarchy/inout_record_whole",
     "hierarchy/instance_path_names",
     "hierarchy/path_name_generic_actual",
     "hierarchy/instance_process_order",

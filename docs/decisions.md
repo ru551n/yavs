@@ -1401,7 +1401,7 @@ a note and a help suggesting an access type, as the reference simulators reject 
   the formal's initial value. Why: such a lane kept a kernel signal per field, a port edge per leaf
   and a copy per delta, several times the cost of a lane of plain vectors; collapsed it costs about
   what records on separate signals cost. A formal any leaf of which fails a condition keeps its edges
-  (a record with a null field, which has no port edge, is one). `--no-collapse-ports`, `--dap` and
+  (a record with a null field, which has no port edge, was one until the entry on null fields below). `--no-collapse-ports`, `--dap` and
   `--vhpi` keep every port apart, as before; the decision is made at elaboration, so `--threads`
   cannot change it. The multiple-sources check and the sole-source test look at the sources of a
   leaf through one sort per leaf, never a scan per port (`elab_source_steps`, perf design

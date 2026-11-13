@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	0	:local_aggregate_init:main	acc = 430010
+diag	note	0	0	:local_aggregate_init:main	p sum = 798
+diag	note	3000000	0	:local_aggregate_init:main	events = 3
+diag	note	3000000	0	:local_aggregate_init:main	done

@@ -16480,3 +16480,27 @@ run-to-run profile (user, 2026-11-09).
   held function is looked up once, not twice, not when the last run did not make it, and the sampled look-up takes
   it; fails without the change), `profile.rs` round trip with `made` lines and format 5 read as no profile. Not in
   the suite: an end-to-end run with a deleted list entry (the stub generator stores no code); `c03_big` above.
+
+## Locals of arrays of logic arrays made from their aggregate (yavs-lower `composite.rs`, 2026-11-13)
+
+- **Finding**: `variable r : t_arr(0 to N - 1) := (others => (others => '0'))` (an array of `signed`) wrote its value three
+  times per call: the aggregate in a temporary (with run-time bounds a loop copying one constant row per element), an
+  `LCopy` of all of it into a second temporary behind the descriptor, then `New` (the frame's `NewFrame`) copying that.
+  Records and arrays of scalars already took the value straight into the object (`NewFill`, #427).
+- **Decision**: a logic value is copied into its object by bytes too (`new_object`): a logic value starts at its
+  element 0 (a slice or a row of planes is copied out, never named in place: `slice`, `index_comp`), so its bytes are
+  the object's; the bits past the last element of a block are never read as elements (whole-block readers mask the
+  last block, `wide::eq_range`), as for one-dimensional logic variables, which `var_init` always copied by bytes.
+  An `others` whose value is a folded row of one literal (`uniform_row`: std_ulogic, bit and boolean rows, `Bytes` or
+  `Runs`) fills all the planes once, the row checked against the element subtype once when there is any element;
+  other rows, a named choice or a range keep their path. An aggregate with context bounds whose subtype is the object's,
+  fully constrained (`covers`), is not given a second descriptor and checked against it (`comp_init`).
+- **Not done, and why**: the copy of a run-time-bounded temporary into its `NewFrame` stays: `defaults_first`
+  below 4 KiB would need the descriptor made before the temporary and its sizes proved equal, and the copy is under
+  2 percent of such a call compiled (profile of the reproducer). The size of an array of logic rows with run-time bounds
+  stays a `LayoutOf`: the descriptor pass (`opt/dopes.rs`) takes only a `MakeDope` into a block allocated in the same
+  basic block, and the lowering allocates it before the range checks' branches.
+- **Measured** (bench builds of 467363b01 and of this change, instructions per call from the slope of two runs):
+  run-time bounds 7199 to 3587 interpreted, 2036 to 1109 compiled; static bounds 2825 to 2252 and 739 to 477; the
+  same in a procedure 3022 to 2450 and 793 to 529. Work counter `perf/agg_locals` `ops` 4172 to 2163.
+

@@ -1,0 +1,1 @@
+A local variable of an array of vectors initialised with an aggregate, such as `(others => (others => '0'))`, is now made in one step instead of being built and copied twice, so subprograms with such locals run faster.

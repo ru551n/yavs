@@ -1177,10 +1177,16 @@ impl Fx<'_, '_> {
             None => self.size_of(tid, desc),
         };
         let h = self.reg(RegTy::Handle);
-        // The object is built in place by the allocation, not in a temporary copied from.
+        // The object is built in place by the allocation, not in a temporary copied from. A
+        // logic value's planes start at its element 0, so its bytes are the object's too.
         let direct = match v {
-            Some(V::A(d, vd)) if !self.logic(tid) && scalar_w(self.fb.program(), tid).is_none() => {
-                Some((d, self.size_of(tid, vd), 0))
+            Some(V::A(d, vd)) if scalar_w(self.fb.program(), tid).is_none() => {
+                let n = if vd == desc {
+                    size
+                } else {
+                    self.size_of(tid, vd)
+                };
+                Some((d, n, 0))
             }
             None if self.zero_default(st, tid, span)? => Some((self.bytes_addr(vec![0]), size, 1)),
             _ => None,
@@ -1209,17 +1215,6 @@ impl Fx<'_, '_> {
         let vat = self.offset(buf, ds);
         self.temp_root(vat, tid, Some(buf));
         match v {
-            Some(V::A(d, _)) if self.logic(tid) && scalar_w(self.fb.program(), tid).is_none() => {
-                let count = self.layout_count(tid, desc);
-                let z = self.int(0);
-                self.emit(Inst::LCopy {
-                    dst: vat,
-                    dst_off: z,
-                    src: d,
-                    src_off: z,
-                    n: count,
-                });
-            }
             Some(v) => self.store_at(tid, vat, v, span)?,
             None => {
                 let c = self.db.subtypes[st].constraint.clone();
@@ -1297,10 +1292,34 @@ impl Fx<'_, '_> {
             Some(V::S(_)) => return Err(self.cx.ice(span, "scalar initial value of a composite")),
             None => None,
         };
-        let Some(desc) = self.desc_of(o.subtype, vd, span)? else {
+        // An aggregate that takes all its bounds from this object's subtype (fully constrained)
+        // already has the object's descriptor: no second one, no check of one against the other.
+        let full = covers(
+            db,
+            self.fb.program(),
+            t,
+            &db.subtypes[o.subtype].constraint,
+            tid,
+        );
+        let own = full
+            && o.default.is_some_and(|e| {
+                db.exprs[e].subtype == o.subtype
+                    && matches!(
+                        db.exprs[e].kind,
+                        ExprKind::Aggregate {
+                            bounds: AggBounds::Context,
+                            ..
+                        }
+                    )
+            });
+        let desc = match vd {
+            Some(vd) if own => Some(vd),
+            _ => self.desc_of(o.subtype, vd, span)?,
+        };
+        let Some(desc) = desc else {
             return Err(self.cx.ice(span, "unconstrained object without bounds"));
         };
-        if let Some(vd) = vd {
+        if let Some(vd) = vd.filter(|&vd| vd != desc) {
             self.check_desc(t, tid, vd, desc, &ty::obj_desc(db, d), span)?;
         }
         let (h, data, p) = self.new_object(o.subtype, tid, desc, init, shared, span)?;
@@ -1656,6 +1675,31 @@ impl Fx<'_, '_> {
                 self.at(done);
                 continue;
             }
+            // Rows of planes that are one constant of a single code (`others => (others =>
+            // '0')`): one fill of all the planes, the row checked once, not a copy per row.
+            if let Some(code) = self.uniform_row(tid, e).filter(|_| last && base.is_none()) {
+                let (go, done) = (self.block(), self.block());
+                let zero = self.int(0);
+                let any = self.cmp(CmpOp::Gt, len, zero);
+                self.branch(any, go, done);
+                self.at(go);
+                let V::A(_, vp) = self.expr(e)? else {
+                    return Err(self.cx.ice(span, "aggregate element of the wrong shape"));
+                };
+                let (etid, ed) = self.elem_desc(tid, desc)?;
+                self.check_desc(db.base(est), etid, vp, ed, "aggregate element", span)?;
+                let total = self.layout_count(tid, desc);
+                let v = self.int(code);
+                self.emit(Inst::LFill {
+                    base: data,
+                    idx: zero,
+                    n: total,
+                    v,
+                });
+                self.jump(done);
+                self.at(done);
+                continue;
+            }
             self.for_n(len, |fx, i| put(fx, i, e))?;
         }
         let mut n = 0i64;
@@ -1804,6 +1848,35 @@ impl Fx<'_, '_> {
             Some(Ty::Array { elem, .. }) => elem_w(p, *elem),
             _ => None,
         }
+    }
+
+    /// The plane code of every element of `e` when the elements of the logic array of arrays
+    /// `tid` are rows and `e` is a folded row whose elements are all one literal.
+    fn uniform_row(&mut self, tid: TyId, e: ExprId) -> Option<i64> {
+        let leaf = Ty::logic_leaf(self.fb.program().types(), tid)?;
+        let c = self.db.exprs[e].value?;
+        let ConstValue::Array(a) = &self.db.consts[c] else {
+            return None;
+        };
+        let p = match &a.elems {
+            Elems::Bytes(b) => {
+                let p = *b.first()?;
+                b.iter().all(|&x| x == p).then_some(i64::from(p))?
+            }
+            Elems::Runs(r) => {
+                let mut ps = r.iter().map(|(_, v)| match v {
+                    ConstValue::Enum(p) => Some(i64::from(*p)),
+                    _ => None,
+                });
+                let p = ps.next()??;
+                ps.all(|x| x == Some(p)).then_some(p)?
+            }
+        };
+        Some(if leaf == LogicKind::StdULogic {
+            p
+        } else {
+            p + 2
+        })
     }
 
     /// Does `e` give the same scalar every time, without side effects (so a fill may

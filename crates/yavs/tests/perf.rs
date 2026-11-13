@@ -189,6 +189,10 @@ case!(
     &[],
     [("ops", Max(11200)), ("opt_type_memo", Min(1))]
 );
+// Locals of arrays of vectors with `others` defaults in functions called in a loop: one copy of
+// the constant, or one fill of the planes then the object, not a row copied per element and the
+// value copied twice.
+case!(agg_locals, "acc=", &[], [("ops", Max(2230))]);
 // Slices between variables in the frame, one block: more facts than the optimiser's table keeps
 // (#1059), so a table that stopped learning shows here as ops per statement.
 case!(frame_slices, "x=", &[], [("ops", Max(11400))]);

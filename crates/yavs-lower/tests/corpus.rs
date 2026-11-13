@@ -132,6 +132,7 @@ const PASS: &[&str] = &[
     "composite/aggregate_open_elements",
     "composite/aggregate_2d_named_rows",
     "composite/aggregate_fill",
+    "composite/local_aggregate_init",
     "composite/periodic_const",
     "composite/element_attr_open",
     "composite/element_depth",

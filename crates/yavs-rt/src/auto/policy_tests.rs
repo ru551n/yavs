@@ -631,3 +631,91 @@ fn native_code_waits_only_for_callees_that_ran() {
     w.left[h.0 as usize].set(true);
     assert!(w.missing(f).is_none(), "h is left out");
 }
+
+/// A candidate that one run does not repay keeps the time it was seen for the runs after it
+/// (`Snapshot::held`, `Worker::carried`, through the profile's text): two worlds whose first runs
+/// see it a little more and a little less than its tree's price both end with it compiled, the
+/// second one run later. Judged by each run alone, a world whose runs all fell short never compiled
+/// it, and a cache that settled fast or slow at random followed (user, 2026-11-13).
+#[test]
+fn a_candidate_short_of_its_price_compiles_once_the_runs_together_repay_it() {
+    let mut pb = ProgramBuilder::new();
+    let (f, g) = (
+        pb.declare("f", yavs_ir::FuncKind::Procedure, None),
+        pb.declare("g", yavs_ir::FuncKind::Procedure, None),
+    );
+    for (id, callee) in [(f, Some(g)), (g, None)] {
+        let mut fb = pb.define(id);
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let keep = fb.slot(8, 8);
+        let at = fb.addr(yavs_ir::AddrSpace::Frame, keep);
+        for _ in 0..20 {
+            fb.emit(Inst::Store {
+                addr: at,
+                src: at,
+                w: yavs_ir::Width::B8,
+            });
+        }
+        if let Some(c) = callee {
+            let args = fb.regs(&[]);
+            fb.emit(Inst::Call {
+                func: c,
+                args,
+                dst: None,
+            });
+        }
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+    }
+    let prog = pb.finish().unwrap();
+    // One run seeing `f` for `us` in looks of a millisecond: whether `pick` took it, and the
+    // profile the run leaves, read back from its text.
+    let run = |earlier: &super::Profile, us: u64| {
+        let mut w = worker_of(prog.clone());
+        w.use_profile(earlier.clone());
+        let mut pending = super::Pending::default();
+        let (mut cand, mut picked) = (false, false);
+        for _ in 0..us / 1000 {
+            let look = super::Look {
+                running: vec![(f, false, 1000)],
+                cpu: 1000,
+            };
+            w.see(&look, &mut pending);
+            cand |= !pending.cands.is_empty();
+            if !picked && let Some(ids) = w.pick(&mut pending.cands) {
+                assert!(ids.iter().any(|&(i, _)| i == g), "{ids:?}");
+                picked = true;
+            }
+        }
+        let next = super::profile::next(earlier, &w.snapshot(), 1_000_000);
+        (
+            cand,
+            picked,
+            super::Profile::parse(&next.render()).expect("its text"),
+        )
+    };
+    // The work a first run needs to see it for: its own payback and its callee's price.
+    let need = (1..)
+        .map(|ms| ms * 1000)
+        .find(|&us| run(&super::Profile::default(), us).1)
+        .unwrap();
+    let w = worker_of(prog.clone());
+    assert!(need > 2 * w.need(f), "the callee's price counts: {need}");
+    let world = |us: u64| {
+        let mut p = super::Profile::default();
+        (1..=4)
+            .find(|_| {
+                let (cand, picked, next) = run(&p, us);
+                assert!(cand, "a candidate within {us} us");
+                p = next;
+                picked
+            })
+            .unwrap_or(0)
+    };
+    assert_eq!(world(need + 2000), 1);
+    assert_eq!(
+        world(need * 3 / 5),
+        2,
+        "the second run adds the first one's time"
+    );
+}

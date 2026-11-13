@@ -2953,7 +2953,8 @@ impl Worker {
                 }
                 let own = trees[k].first().map_or(0, |&(i, _)| self.price(i));
                 let extra = (prices[k].0 - load).saturating_sub(own);
-                let seen = self.time[id.0 as usize][0];
+                // (The earlier runs' time counts: the cache keeps the compile for the runs after.)
+                let seen = self.time[id.0 as usize][0] + self.carried_us(id);
                 let need = (own as f64 * self.model(id).payback()) as u64;
                 let owed = repaid(need, self.tune.tree_payback, extra, seen);
                 wait = wait.min(owed);
@@ -3048,6 +3049,11 @@ impl Worker {
             }
         }
         (saves, costs)
+    }
+
+    /// The time the earlier runs saw `id` interpreted while it stayed uncompiled (`carried`).
+    fn carried_us(&self, id: FuncId) -> u64 {
+        self.carried.get(&id).map_or(0, |c| c.0)
     }
 
     /// Whether `id` (interpreted, seen for `seen` microseconds) should be looked up in the
@@ -3321,6 +3327,11 @@ impl Worker {
         };
         self.profile_key = Some(key);
         p.remap(|rank| self.profile_order.get(rank as usize).copied());
+        self.use_profile(p);
+    }
+
+    /// Take what the earlier runs left (`load_profile`, ids remapped to this program's).
+    fn use_profile(&mut self, p: Profile) {
         // A function is compiled early once the time the earlier runs saw it, summed, repays its
         // compile by the payback rule (`threshold`: the rule's price, the object cache making it a
         // link), maintainer 2026-10-27 (#679): the compile is paid once and the cache serves the runs
@@ -3419,6 +3430,12 @@ impl Worker {
         fresh.dedup();
         // (What an earlier run held and this one has not compiled yet stays, its run counted again.)
         let mut ids = self.unrepaid_ids.clone();
+        // (So does a candidate this run did not compile: its time adds up over the runs, `pick`.)
+        ids.extend(
+            (0..self.asked_for.len())
+                .filter(|&k| self.asked_for[k] && !self.lost[k] && self.time[k][0] != 0)
+                .map(|k| FuncId(k as u32)),
+        );
         ids.extend(self.carried.keys().filter(|b| {
             self.prog.func(**b).is_some()
                 && !self

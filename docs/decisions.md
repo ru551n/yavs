@@ -16413,3 +16413,42 @@ Amends "Stage entries of a design that loads units late" (#671).
   its README line in each, the smoke test and the corpus on the archive's binary passing (721 of 721 in each of five
   tiers); the Linux archive of the same run has neither file nor line.
 - **Not measured**: peak memory under mimalloc on a big design; a crash report now shows a second allocator's frames.
+
+## `--tier=auto`: what a run left owing adds up over the runs (yavs-rt `auto.rs` `Worker::pick`, `snapshot`, perf/settle2, user, 2026-11-13)
+
+Amends "`--tier=auto`: a compile pays for the callees it brings" (#757, 2026-10-26) and the `held` lines of the
+run-to-run profile (user, 2026-11-09).
+
+- **Finding** (agent). Identical fresh cache worlds of a testbench settled at a random run into a fast or a slow
+  steady state, or never left the slow one (bench `uvvm_sb_slv_tb`: about 6.0 against 7.5 G instructions a run, half
+  of ten fresh worlds still slow after 14 runs). `pick` holds a sampled candidate until this run has seen it for its
+  own payback plus `tree_payback` (8) times the price of the callees its compile brings (`repaid`). The keystones of
+  the slow state (the scoreboard's `peek`, `check_received`, a `to_string`) are seen for about one run's worth of
+  that, so whether a run compiled them came down to the sampling and to which callees happened to be compiled
+  already; a run that fell short threw its evidence away and the next started from zero. Once one did compile, the
+  cache made it a link and the callees waiting for a compiled caller followed, so the fast state was absorbing and a
+  slow world flipped a coin every run; forked copies of a world slow for 14 runs flipped in none of 42 runs. Other
+  sources of run-to-run variation seen and left as they are: the sampler's attribution, which callees join a tree,
+  the guard taking native-frame code back within a run, trials, and the CPU-time inputs (`COUNT_GATE_CPU` against
+  the last run's CPU time makes `sc5_timestamp` alternate between two states run by run).
+- **Decision** (user, 2026-11-13: make settling reproducible, or at least self-correcting). A candidate a run leaves
+  uncompiled (and not lost) carries its seen time to the next run in the profile's `held` lines (`Worker::snapshot`,
+  summed over the runs as for `unrepaid`), and the tree test counts the sum with this run's time (`carried_us`).
+  Rationale: the cache keeps a compile for the runs after, so the time the runs saw a function, summed, is what
+  repays it (the principle of the profile's hot list, #679); a run that falls just short no longer resets the
+  evidence, and every world gets the compile within a few runs. Counting the sum in `repays` too changed nothing on
+  its own and added compiles with it; it was left out. Known ceiling: the sum has no window, so a candidate whose tree never repays
+  in one run compiles after enough runs all the same.
+- **Measured** (agent, `--tier=auto`, all-thread user instructions, fresh cache worlds, timing cores):
+  `uvvm_sb_slv_tb` (bench), 10 worlds x 14 runs: base 2 of 10 still in the slow state at run 14 (5 of 10 in an earlier
+  series), steady median 6.14 G [5.67-7.70]; after 0 of 10, 6.13 G [5.64-6.34], settled at runs 6 to 14; runs 1 to 10
+  together 3.8 percent fewer, 1 to 14 2.2 percent. `uvvm_util_rand_tb`, 8 x 14: steady 8.16 against 8.20 G, runs 1 to
+  5 2.2 percent more (the compiles it now pays in runs 5 to 9), 1 to 14 0.4 percent more; over 20 runs (an earlier
+  build of the rule) 1.2 percent fewer steady, 0.8 percent more in sum. realbench, 37 tests x 3 worlds (14 runs, the 11
+  longest 10): geomean steady 0.995 and 1.005, sum 0.995 and 1.001; its `uvvm_sb_slv` 0.946. VUnit cells, the
+  `c03`/dispatch cells and the skid cell: level. `sc5_timestamp`, `olo_fix_cordic_rot` and `neorv32_single_min` stay
+  bimodal (30 worlds: slow runs 202 against 210 and 215 against 205 of 240); not this rule.
+- **Test**: `policy_tests.rs` `a_candidate_short_of_its_price_compiles_once_the_runs_together_repay_it` (two fresh
+  worlds whose runs see the candidate a little over and a little under its tree's price, through `profile::next`,
+  the profile's text and `Worker::use_profile`: both compile it, the second one run later; without the change the
+  second never does in four runs).

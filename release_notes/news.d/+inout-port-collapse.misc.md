@@ -1,0 +1,1 @@
+`inout` ports, such as stream interfaces kept in one record with the ready signal inside, no longer keep a signal of their own per port and copy its value every delta cycle when they are connected to a signal, an element or a slice of one, so designs that use them run faster.

@@ -1,8 +1,9 @@
 -- difftest: top=serial_line_roots
 -- Serial processes keep lines, objects of the shared heap, across many waits (one in a procedure
 -- with a line of its own), and most wakes leave them as they were, while another serial process
--- allocates strings and frees half of them: every line survives the collections with what was
--- written to it. Only sums are printed, so the order the processes end in does not show.
+-- allocates strings, frees some and drops the rest, enough for the shared heap to be collected
+-- twice: every line survives the collections with what was written to it. Only sums are printed,
+-- so the order the processes end in does not show.
 use std.textio.all;
 entity serial_line_roots is end;
 architecture a of serial_line_roots is
@@ -63,7 +64,7 @@ begin
       tally.add(0);  -- serial: its strings are in the shared heap too
       p := new string'("garbage " & integer'image(e));
       deallocate(p);
-      q := new string'(integer'image(e));
+      q := new string'(1 to 8192 => character'val(97 + e mod 26));  -- 2.4 MB: collections
       net <= e mod 5;
       wait for 1 ns;
     end loop;

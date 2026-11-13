@@ -1965,6 +1965,9 @@ load 10 to 30, so read the ratios):
    `LEq`; array literals read in place from the constant pool. The bounds attributes of an element or slice of an
    array (`mem(i)'range`, `'length`, ...) read the prefix's descriptor, with the index checks of a read of the element
    (`Fx::part_dope`, 2026-11-13): a signal element was read once per attribute.
+   A range choice of a logic array aggregate is one `LFill` when it lies inside (`(x'range => v)`, any `v`;
+   2026-11-13), as `others` was: it set one element per loop iteration; the choice that is the whole aggregate
+   fills it without positions.
 
 | Benchmark (yavs interp) | main before the changes | after | ratio | reference `--jit` | yavs / reference |
 |---|---|---|---|---|---|

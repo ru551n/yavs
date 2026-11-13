@@ -1,0 +1,8 @@
+exit	0
+diag	note	1000000	0	:zero_compare:p_main	external: 0
+diag	note	1000000	0	:zero_compare:p_main	own all U: 66666
+diag	note	1000000	1	:zero_compare:p_main	own zero: 00000
+diag	note	1000000	2	:zero_compare:p_main	own metavalues: 66666
+diag	note	31000000	0	:zero_compare:p_main	external: 1
+diag	note	31000000	4	:zero_compare:p_main	records: 2
+diag	note	31000000	4	:zero_compare:p_main	zero_compare done

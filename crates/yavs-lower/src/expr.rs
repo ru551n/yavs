@@ -2834,10 +2834,49 @@ impl<'a> Fx<'a, '_> {
                         let step = self.select(up, one, m1, RegTy::I64);
                         let left = r.left;
                         let done = self.block();
+                        if assocs.len() == 1 && a.choices.len() == 1 {
+                            // `(x'range => '0')`: a range of as many elements as the aggregate
+                            // from its low bound is all of it, so every element gets the value:
+                            // one fill, no positions.
+                            let (all, rest) = (self.block(), self.block());
+                            let (l0, r0, d0) = self.dope_parts(dope);
+                            let up0 = self.cmp(CmpOp::Eq, d0, z);
+                            let alo = self.select(up0, l0, r0, RegTy::I64);
+                            let clo = self.select(up, left, r.right, RegTy::I64);
+                            let same_lo = self.cmp(CmpOp::Eq, clo, alo);
+                            let same_n = self.cmp(CmpOp::Eq, n, count);
+                            let same = self.bool_and(same_n, same_lo);
+                            self.branch(same, all, rest);
+                            self.at(all);
+                            let zero = self.int(0);
+                            if logic {
+                                let code = self.enc(v, bias);
+                                self.emit(Inst::LFill {
+                                    base: data,
+                                    idx: zero,
+                                    n: count,
+                                    v: code,
+                                });
+                            } else {
+                                self.fill_scalars(data, zero, count, v, w);
+                            }
+                            self.jump(done);
+                            self.at(rest);
+                        }
                         if logic {
-                            let slow = self.block();
-                            self.jump(slow);
-                            self.at(slow);
+                            // One plane fill when the run lies inside (`(x'range => '0')`).
+                            let (right, d) = (r.right, done);
+                            let code = self.enc(v, bias);
+                            self.fill_run_or_fall_at(
+                                data,
+                                dope,
+                                (left, right, n),
+                                Some(count),
+                                w,
+                                m,
+                                d,
+                                |_| Ok(code),
+                            )?;
                         } else {
                             let (right, d) = (r.right, done);
                             self.fill_run_or_fall(data, dope, left, right, n, w, m, d, |_| Ok(v))?;
@@ -2931,6 +2970,24 @@ impl<'a> Fx<'a, '_> {
         done: yavs_ir::BlockId,
         value: impl FnOnce(&mut Self) -> R<Reg>,
     ) -> R<()> {
+        self.fill_run_or_fall_at(data, dope, (left, right, n), None, w, what, done, value)
+    }
+
+    /// [`Fx::fill_run_or_fall`] of scalars, or with `logic = Some(count)` of the plane code
+    /// `value` gives into a logic array of `count` elements (`LFill`; element `p` from the left
+    /// is plane element `count - 1 - p`).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn fill_run_or_fall_at(
+        &mut self,
+        data: Reg,
+        dope: Reg,
+        (left, right, n): (Reg, Reg, Reg),
+        logic: Option<Reg>,
+        w: Width,
+        what: yavs_ir::CheckMsgId,
+        done: yavs_ir::BlockId,
+        value: impl FnOnce(&mut Self) -> R<Reg>,
+    ) -> R<()> {
         let (chk, inside, slow) = (self.block(), self.block(), self.block());
         let z = self.int(0);
         let any = self.cmp(CmpOp::Gt, n, z);
@@ -2960,8 +3017,24 @@ impl<'a> Fx<'a, '_> {
             pos
         });
         let first = self.cmp(CmpOp::Le, pl, pr);
-        let start = self.select(first, pl, pr, RegTy::I64);
-        self.fill_scalars(data, start, n, v, w);
+        match logic {
+            Some(count) => {
+                let last = self.select(first, pr, pl, RegTy::I64);
+                let one = self.int(1);
+                let c1 = self.bin(IntOp::Sub, count, one);
+                let idx = self.bin(IntOp::Sub, c1, last);
+                self.emit(Inst::LFill {
+                    base: data,
+                    idx,
+                    n,
+                    v,
+                });
+            }
+            None => {
+                let start = self.select(first, pl, pr, RegTy::I64);
+                self.fill_scalars(data, start, n, v, w);
+            }
+        }
         self.jump(done);
         self.at(slow);
         Ok(())

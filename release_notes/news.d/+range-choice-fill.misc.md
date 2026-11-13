@@ -1,0 +1,1 @@
+An aggregate such as `(x'range => '0')` or `(7 downto 0 => b)` of a logic vector is now filled in one step, as `(others => '0')` is, so checks that compare memory words with such an aggregate simulate faster.

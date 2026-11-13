@@ -1003,9 +1003,10 @@ fn a_batched_run_of_elements_is_one_entry_with_the_last_codes() {
         },
     );
     sim.run_until(ns(4)).unwrap();
-    // Two vector entries an activation (the run, then element 9), no one-element entry.
+    // One vector entry an activation (the run; element 9, inside it, takes its place there), no
+    // one-element entry.
     let st = sim.stats();
-    assert_eq!((st.direct_codes, st.direct_planes), (0, 10));
+    assert_eq!((st.direct_codes, st.direct_planes), (0, 5));
     let want = |run: u32| -> String {
         (0..24u32)
             .map(|e| match e {
@@ -1087,7 +1088,7 @@ fn adjacent_parts_join_one_vector_entry() {
                 part(c, ds, off, 8);
             }
             one(c, 84, code(v(84, run)))?;
-            // Inside that entry: one of its own, the later value.
+            // Inside that entry: the later value takes its place there.
             one(c, 70, code(!v(70, run)))?;
             // Down: one entry of 24..48.
             for off in [40, 32, 24] {
@@ -1103,9 +1104,9 @@ fn adjacent_parts_join_one_vector_entry() {
     let (mut sim, _t) = build(b, Config::default());
     sim.run_until(ns(4)).unwrap();
     assert_eq!(*bad.lock().unwrap(), Vec::<String>::new());
-    // Five activations of five vector entries.
+    // Five activations of four vector entries.
     let st = sim.stats();
-    assert_eq!((st.direct_codes, st.direct_planes), (0, 25));
+    assert_eq!((st.direct_codes, st.direct_planes), (0, 20));
 }
 
 /// A scalar and a vector direct driver whose values change at every activation for a while
@@ -1255,6 +1256,173 @@ fn repeated_unchanged_drives_of_a_run_keep_values_and_deltas() {
             g_skip * 10 < g_plain * 8,
             "seed {seed}: {g_skip} vs {g_plain}"
         );
+    }
+}
+
+/// Many drives of the same few elements in one run, as default-then-override code and wait-free
+/// loops make them: a 3-element logic signal (single elements one at a time and in batches, the
+/// whole vector, an element after it), a scalar between them, and a byte signal, now and then a
+/// delayed one in between. A second process reports what each signal holds, `'event`,
+/// `'last_value` (and `'active` when nothing allows skipping) after every run. `direct` false
+/// gives the signals identity resolution functions (no direct driver: the general paths), which
+/// must give the same: a later zero-delay drive of an element replaces its entry of the run.
+/// `extra` more one-element signals of the process are driven in between (more than
+/// `MARKED_DRIVERS` drivers: the process marks its drivers' entries instead of scanning them).
+fn redrive_twin(direct: bool, skip: bool, extra: u32, seed: u64) -> Vec<String> {
+    let mut b = Builder::new();
+    let same: Resolver = std::sync::Arc::new(|srcs: &[&[u8]], out: &mut [u8]| {
+        out.copy_from_slice(srcs[0]);
+        Ok(())
+    });
+    let mut sig = |name: &str, ty: SignalType, init: ValueRef<'_>| {
+        if direct {
+            b.signal(name, ty, init)
+        } else {
+            b.resolved_signal(name, ty, init, Resolution::Func(same.clone()))
+        }
+    };
+    let zero = |n| LogicVec::new(n, StdULogic::Zero);
+    let (z3, z1) = (zero(3), zero(1));
+    let v = sig("v", SignalType::logic(3), (&z3).into());
+    let t = sig("t", SignalType::logic(1), (&z1).into());
+    let n = sig("n", SignalType::bytes(4, 1), (&[0u8; 4][..]).into());
+    let xs: Vec<SignalId> = (0..extra)
+        .map(|k| sig(&format!("x{k}"), SignalType::logic(1), (&z1).into()))
+        .collect();
+    let (dv, dt, dn) = (b.driver(v), b.driver(t), b.driver(n));
+    let dx: Vec<DriverId> = xs.iter().map(|&x| b.driver(x)).collect();
+    let mut all = vec![dv, dt, dn];
+    all.extend(&dx);
+    let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    b.process(
+        "p",
+        NONE,
+        &all,
+        p(move |c| {
+            let mut next = || {
+                rng = rng
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                rng >> 33
+            };
+            let mut delayed = false;
+            for _ in 0..2 + next() % 11 {
+                let r = next();
+                // Mostly '0' and '1', so that a drive goes back to the value held.
+                let code = if r % 9 == 0 {
+                    (next() % 9) as u8
+                } else {
+                    ZERO + (next() % 2) as u8
+                };
+                let delay = if r % 13 == 0 {
+                    ns(1 + next() % 2)
+                } else {
+                    Time::ZERO
+                };
+                delayed |= delay != Time::ZERO;
+                let e = (next() % 3) as u32;
+                match (r >> 4) % 8 {
+                    0 if delay == Time::ZERO && c.assign_code_now(dv, Range::new(e, 1), code) => {}
+                    0 | 1 => {
+                        c.assign_code(dv, Some(Range::new(e, 1)), delay, code, DelayMode::INERTIAL)?
+                    }
+                    2 if delay == Time::ZERO => {
+                        let run: Vec<(u32, u8)> = (0..1 + next() % 6)
+                            .map(|_| ((next() % 3) as u32, ZERO + (next() % 2) as u8))
+                            .collect();
+                        let taken = if delayed {
+                            0
+                        } else {
+                            c.assign_codes_now(dv, run.len(), |k| run[k])
+                        };
+                        for &(e, x) in &run[taken..] {
+                            let t = Some(Range::new(e, 1));
+                            c.assign_code(dv, t, Time::ZERO, x, DelayMode::INERTIAL)?;
+                        }
+                    }
+                    2 | 3 => {
+                        let x: LogicVec = (0..3)
+                            .map(|_| if next() % 2 == 0 { '0' } else { '1' })
+                            .collect::<String>()
+                            .parse()
+                            .unwrap();
+                        c.assign(dv, None, &[(delay, &x)], DelayMode::INERTIAL)?;
+                    }
+                    4 => c.assign_code(dt, None, delay, code, DelayMode::INERTIAL)?,
+                    5 if !dx.is_empty() => {
+                        let d = dx[(next() % dx.len() as u64) as usize];
+                        c.assign_code(d, None, delay, code, DelayMode::INERTIAL)?
+                    }
+                    _ => {
+                        let x = ((next() % 3) as u32).to_le_bytes();
+                        if !(delay == Time::ZERO && c.assign_direct_bytes(dn, 0, &x)) {
+                            c.assign_bytes(dn, None, delay, &x, DelayMode::INERTIAL)?;
+                        }
+                    }
+                }
+            }
+            c.wait_for(ns(1))
+        }),
+    );
+    b.process(
+        "q",
+        NONE,
+        &[],
+        p(move |c| {
+            let mut line = String::new();
+            for s in [v, t] {
+                line += &format!(
+                    "{} ev {} lv {:?} ",
+                    c.logic(s)?,
+                    c.event(s)?,
+                    c.last_value(s)?,
+                );
+                if !skip {
+                    line += &format!("act {} ", c.active(s)?);
+                }
+            }
+            line += &format!(
+                "{:?} ev {} lv {:?}",
+                c.value(n)?,
+                c.event(n)?,
+                c.last_value(n)?
+            );
+            if !skip {
+                line += &format!(" act {}", c.active(n)?);
+            }
+            c.report(Severity::Note, line);
+            c.wait_on(v)?;
+            c.wait_on(t)?;
+            c.wait_on(n)
+        }),
+    );
+    let (mut sim, trace) = build(
+        b,
+        Config {
+            skip_unchanged: skip,
+            ..Config::default()
+        },
+    );
+    sim.run_until(ns(300)).unwrap();
+    trace
+        .take()
+        .into_iter()
+        .filter(|l| l.contains("Note:"))
+        .collect()
+}
+
+#[test]
+fn repeated_drives_of_an_element_match_the_general_path() {
+    for seed in 0..24 {
+        for (skip, extra) in [(false, 0), (true, 0), (false, 6), (true, 6)] {
+            let direct = redrive_twin(true, skip, extra, seed);
+            assert!(direct.len() > 100, "{}", direct.len());
+            assert_eq!(
+                direct,
+                redrive_twin(false, skip, extra, seed),
+                "seed {seed} skip {skip} extra {extra}"
+            );
+        }
     }
 }
 

@@ -1077,6 +1077,10 @@ const SKIPPED: u32 = u32::MAX;
 /// The fewest one-element drives `Ctx::assign_codes_now` makes one vector entry of.
 const RUN_MIN: usize = 4;
 
+/// How many of the run's last `out` (`outb`) entries a drive to a driver that has some looks
+/// through for the driver's latest one (`Ctx::redrive_out`).
+const REDRIVE_SCAN: usize = 8;
+
 /// The `n` drives `run(k)` of `Ctx::assign_codes_now` as one run within `range`: every element of
 /// the run driven (a later drive of an element wins), at most 64 elements, every code a logic
 /// value. `None`: anything else.
@@ -2135,23 +2139,13 @@ impl Ctx<'_> {
             // entries, in order, as an entry of one element. No skip: the entries before it
             // decide what the signal holds.
             if self.has_entries(info, 2) {
-                let planes = code_planes(code);
-                if !self.extend_outv(sig, slot, r.offset, 1, planes) {
-                    self.st.act |= ACT_ASSIGNED;
-                    self.st.gate_off(info.local);
-                    self.st.outv.push(OutV {
-                        sig,
-                        slot,
-                        elem: r.offset,
-                        len: 1,
-                        planes,
-                    });
-                }
+                self.elem_after_outv(info, r.offset, code);
                 return true;
             }
             // The signal and the driver have the code and nothing of this run is pending: the
             // commit would find no change (`Signal::commit_code`), so the entry is not made.
-            if !self.has_entries(info, 1)
+            let had = self.has_entries(info, 1);
+            if !had
                 && self.st.same_wanted(info.local)
                 && self.st.same_seen(
                     info.local,
@@ -2159,6 +2153,9 @@ impl Ctx<'_> {
                 )
             {
                 self.note_skipped();
+                return true;
+            }
+            if had && self.redrive_out(sig, slot, r.offset, code) {
                 return true;
             }
             self.mark_entries(info, 1);
@@ -2226,7 +2223,8 @@ impl Ctx<'_> {
         if !self.st.calm(info.local as usize) || self.has_entries(info, 2) {
             return false;
         }
-        if !self.has_entries(info, 1)
+        let had = self.has_entries(info, 1);
+        if !had
             && self.st.same_wanted(info.local)
             && self.st.same_seen(
                 info.local,
@@ -2234,6 +2232,9 @@ impl Ctx<'_> {
             )
         {
             self.note_skipped();
+            return true;
+        }
+        if had && self.redrive_out(info.signal.0, info.slot, elem, code) {
             return true;
         }
         self.mark_entries(info, 1);
@@ -2544,11 +2545,30 @@ impl Ctx<'_> {
             return usize::from(self.assign_code_now(d, Range::new(elem, 1), code));
         }
         let w = &self.st.waveforms[info.local as usize];
-        if info.owner != self.pid || !w.idle() || !w.phantom.is_empty() || self.has_entries(info, 2)
-        {
+        if info.owner != self.pid || !w.idle() || !w.phantom.is_empty() {
             return 0;
         }
         let (sig, slot, range) = (info.signal.0, info.slot, info.range);
+        // After a vector entry of the run each element joins the vector entries, as one at a time
+        // through `assign_code_fast` would.
+        if self.has_entries(info, 2) {
+            // The batch as one run (a loop driving one element) folded into the last entry.
+            if let Some((r, planes)) = codes_run(n, range, &run)
+                && self.redrive_outv(sig, slot, r.offset, r.len, planes)
+            {
+                return n;
+            }
+            let mut taken = 0;
+            while taken < n {
+                let (elem, code) = run(taken);
+                if code >= 9 || !range.contains(Range::new(elem, 1)) {
+                    break;
+                }
+                self.elem_after_outv(info, elem, code);
+                taken += 1;
+            }
+            return taken;
+        }
         // A loop over a run of elements (a shift register): one vector entry.
         if n >= RUN_MIN
             && let Some((r, planes)) = codes_run(n, range, &run)
@@ -2577,6 +2597,9 @@ impl Ctx<'_> {
                 && !self.st.out[first..].iter().any(|o| o.elem == elem)
             {
                 self.note_skipped();
+                continue;
+            }
+            if (!fresh || self.st.out.len() > first) && self.redrive_out(sig, slot, elem, code) {
                 continue;
             }
             self.st.act |= ACT_ASSIGNED;
@@ -2640,6 +2663,9 @@ impl Ctx<'_> {
             self.note_skipped();
             return true;
         }
+        if !fresh && self.redrive_outb(r.sig, r.slot, elem, bytes) {
+            return true;
+        }
         if let Some(m) = &mut self.st.marks
             && let Some(x) = m.d.get_mut(r.local as usize)
         {
@@ -2660,11 +2686,12 @@ impl Ctx<'_> {
     /// One zero-delay element of direct byte driver `info` with nothing pending: skipped when the
     /// signal and the driver hold `bytes` and nothing of this run is pending (the commit would
     /// find no change, `Signal::commit_bytes`), else an `OutB` entry. A later assignment of the
-    /// run to the driver is another entry (the last one wins).
+    /// run to the element takes over its entry (`redrive_outb`), else it is another entry.
     #[inline(always)]
     fn direct_bytes_entry(&mut self, info: &DriverInfo, elem: u32, bytes: &[u8]) {
         let sig = info.signal.0;
-        if !self.has_entries(info, 3)
+        let had = self.has_entries(info, 3);
+        if !had
             && self.st.same_wanted(info.local)
             && self.st.same_seen(
                 info.local,
@@ -2672,6 +2699,9 @@ impl Ctx<'_> {
             )
         {
             self.note_skipped();
+            return;
+        }
+        if had && self.redrive_outb(sig, info.slot, elem, bytes) {
             return;
         }
         self.mark_entries(info, 3);
@@ -2958,7 +2988,10 @@ impl Ctx<'_> {
                 self.note_skipped();
                 return true;
             }
-            if vec && self.extend_outv(sig, slot, r.offset, len, planes) {
+            if vec
+                && (self.redrive_outv(sig, slot, r.offset, len, planes)
+                    || self.extend_outv(sig, slot, r.offset, len, planes))
+            {
                 return true;
             }
             self.mark_entries(info, 2);
@@ -3099,6 +3132,101 @@ impl Ctx<'_> {
         self.st.act |= ACT_ASSIGNED;
         self.st.schedule(at, d);
         true
+    }
+
+    /// One element of direct driver `info` that has vector entries in this run (a record assigned
+    /// whole, then one of its fields): the commit applies `out` before `outv`, so the element
+    /// joins the vector entries, in order, as an entry of one element (in the last one when that
+    /// is the driver's and covers it or is next to it). No skip: the entries before it decide
+    /// what the signal holds.
+    #[inline(always)]
+    fn elem_after_outv(&mut self, info: &DriverInfo, elem: u32, code: u8) {
+        let (sig, slot, planes) = (info.signal.0, info.slot, code_planes(code));
+        if !self.redrive_outv(sig, slot, elem, 1, planes)
+            && !self.extend_outv(sig, slot, elem, 1, planes)
+        {
+            self.st.act |= ACT_ASSIGNED;
+            self.st.gate_off(info.local);
+            self.st.outv.push(OutV {
+                sig,
+                slot,
+                elem,
+                len: 1,
+                planes,
+            });
+        }
+    }
+
+    /// A zero-delay drive of element `elem` of driver `slot` of `sig`, which has `out` entries in
+    /// this run: when the driver's latest entry, among the run's last `REDRIVE_SCAN`, is of that
+    /// element, it takes the new code and no entry is added (LRM 10.5.2.2: the later transaction
+    /// deletes the earlier one at the same time). Nothing of the driver comes after that entry.
+    /// False, nothing done, otherwise (another element: a loop over a vector's elements stops at
+    /// once).
+    #[inline(always)]
+    fn redrive_out(&mut self, sig: u32, slot: u32, elem: u32, code: u8) -> bool {
+        let n = self.st.out.len();
+        // ponytail: a fixed window over other drivers' entries; a per-driver index of its last
+        // entry if longer runs of them between two drives of one element show up.
+        for o in self.st.out[n.saturating_sub(REDRIVE_SCAN)..]
+            .iter_mut()
+            .rev()
+        {
+            if o.slot == slot && o.sig == sig {
+                if o.elem != elem {
+                    return false;
+                }
+                o.code = u32::from(code);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// `redrive_out` for the `outb` entry of one element of a byte driver.
+    #[inline(always)]
+    fn redrive_outb(&mut self, sig: u32, slot: u32, elem: u32, bytes: &[u8]) -> bool {
+        let n = self.st.outb.len();
+        for o in self.st.outb[n.saturating_sub(REDRIVE_SCAN)..]
+            .iter_mut()
+            .rev()
+        {
+            if o.slot == slot && o.sig == sig {
+                if o.elem != elem || o.es as usize != bytes.len() {
+                    return false;
+                }
+                o.val = pack8(bytes);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The run's last vector entry, when it is of driver `slot` of `sig`, and `len` elements from
+    /// `elem` (planes masked to `len`) lie within it or cover it: the later drive takes those
+    /// elements in it, as `codes_run` does within one entry. It is the driver's latest entry (its
+    /// `out` entries come first at commit), so nothing of the driver after it sees the change.
+    #[inline(always)]
+    fn redrive_outv(&mut self, sig: u32, slot: u32, elem: u32, len: u32, planes: [u64; 4]) -> bool {
+        let Some(o) = self.st.outv.last_mut() else {
+            return false;
+        };
+        if o.sig != sig || o.slot != slot {
+            return false;
+        }
+        if elem >= o.elem && elem + len <= o.elem + o.len {
+            let sh = elem - o.elem;
+            let m = yavs_logic::wide::nmask(len as usize) << sh;
+            for (p, q) in o.planes.iter_mut().zip(planes) {
+                *p = *p & !m | q << sh;
+            }
+            return true;
+        }
+        if elem <= o.elem && elem + len >= o.elem + o.len {
+            (o.elem, o.len, o.planes) = (elem, len, planes);
+            return true;
+        }
+        false
     }
 
     /// The run's last vector entry, when it is of driver `slot` of `sig` and `len` elements from

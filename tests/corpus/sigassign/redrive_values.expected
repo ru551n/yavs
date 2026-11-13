@@ -1,0 +1,34 @@
+exit	0
+diag	note	0	0	:redrive_values:wa	a1 0 b1 0 false
+diag	note	0	0	:redrive_values:wb	b1 0 a1 0 false
+diag	note	0	2	:redrive_values:watch	s=1true t=1true u=0false w=1true n=10true r=100011true v=111111X1true sl=00000100true rs=Zfalse a=0false b=1true lv=000
+diag	note	0	2	:redrive_values:wb	b1 1 a1 0 false
+diag	note	5000000	2	:redrive_values:watch	s=1false t=1false u=0false w=1false n=10false r=100011false v=111111X1false sl=00000100false rs=Htrue a=0false b=1false lv=000
+diag	note	10000000	2	:redrive_values:watch	s=0true t=0true u=1true w=0true n=30true r=000102true v=00001XX0true sl=11100011true rs=0true a=1true b=0true lv=101
+diag	note	10000000	2	:redrive_values:wa	a1 1 b1 0 true
+diag	note	10000000	2	:redrive_values:wb	b1 0 a1 1 true
+diag	note	20000000	2	:redrive_values:watch	s=1true t=0false u=0true w=1true n=60true r=100013true v=1111XXX1true sl=00011100true rs=Htrue a=1false b=1true lv=111
+diag	note	20000000	2	:redrive_values:wb	b1 1 a1 1 false
+diag	note	30000000	2	:redrive_values:watch	s=0true t=1true u=1true w=0true n=100true r=000104true v=00011XX0true sl=00011100false rs=0true a=0true b=0true lv=0X1
+diag	note	30000000	2	:redrive_values:wa	a1 0 b1 0 true
+diag	note	30000000	2	:redrive_values:wb	b1 0 a1 0 true
+diag	note	40000000	2	:redrive_values:watch	s=1true t=0true u=0true w=1true n=150true r=100015true v=11X01XX1true sl=11100011true rs=Htrue a=0false b=1true lv=1X1
+diag	note	40000000	2	:redrive_values:wb	b1 1 a1 0 false
+diag	note	50000000	2	:redrive_values:watch	s=0true t=0false u=1true w=0true n=210true r=000106true v=0XX11XX0true sl=00011100true rs=0true a=1true b=0true lv=1X1
+diag	note	50000000	2	:redrive_values:wa	a1 1 b1 0 true
+diag	note	50000000	2	:redrive_values:wb	b1 0 a1 1 true
+diag	note	60000000	2	:redrive_values:watch	s=1true t=1true u=0true w=1true n=280true r=100017true v=XXX01XX1true sl=00011100false rs=Htrue a=1false b=1true lv=0X1
+diag	note	60000000	2	:redrive_values:wb	b1 1 a1 1 false
+diag	note	70000000	2	:redrive_values:watch	s=0true t=0true u=1true w=0true n=360true r=000108true v=XXX11XX1true sl=11100011true rs=0true a=0true b=0true lv=1X1
+diag	note	70000000	2	:redrive_values:wa	a1 0 b1 0 true
+diag	note	70000000	2	:redrive_values:wb	b1 0 a1 0 true
+diag	note	80000000	2	:redrive_values:watch	s=1true t=0false u=0true w=1true n=450true r=100019true v=XXX01XX0true sl=00011100true rs=Htrue a=0false b=1true lv=1X1
+diag	note	80000000	2	:redrive_values:wb	b1 1 a1 0 false
+diag	note	90000000	2	:redrive_values:watch	s=0true t=1true u=1true w=0true n=550true r=0001010true v=XXX11XX1true sl=00011100false rs=0true a=1true b=0true lv=0X1
+diag	note	90000000	2	:redrive_values:wa	a1 1 b1 0 true
+diag	note	90000000	2	:redrive_values:wb	b1 0 a1 1 true
+diag	note	100000000	2	:redrive_values:watch	s=1true t=0true u=0true w=1true n=660true r=1000111true v=XXX0XXX0true sl=11100011true rs=Htrue a=1false b=1true lv=111
+diag	note	100000000	2	:redrive_values:wb	b1 1 a1 1 false
+diag	note	110000000	2	:redrive_values:watch	s=0true t=0false u=1true w=0true n=780true r=0001012true v=XXX01XX1true sl=00011100true rs=0true a=0true b=0true lv=1X1
+diag	note	110000000	2	:redrive_values:wa	a1 0 b1 0 true
+diag	note	110000000	2	:redrive_values:wb	b1 0 a1 0 true

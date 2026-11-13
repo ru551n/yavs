@@ -1,0 +1,11 @@
+exit	0
+diag	note	0	2	:redrive_active:watch	s=1 act true ev true q false la 0 fs n=1 act true ev true v=1101 act true ev true v1 true
+diag	note	10000000	2	:redrive_active:watch	s=1 act true ev false q false la 0 fs n=1 act true ev false v=1101 act true ev false v1 true
+diag	note	20000000	2	:redrive_active:watch	s=1 act true ev false q false la 0 fs n=1 act true ev false v=0000 act true ev true v1 true
+diag	note	30000000	2	:redrive_active:watch	s=0 act true ev true q false la 0 fs n=5 act true ev true v=0000 act true ev false v1 true
+diag	note	40000000	2	:redrive_active:watch	s=0 act true ev false q false la 0 fs n=5 act true ev false v=1101 act true ev true v1 true
+diag	note	50000000	2	:redrive_active:watch	s=0 act true ev false q false la 0 fs n=5 act true ev false v=1101 act true ev false v1 true
+diag	note	60000000	2	:redrive_active:watch	s=1 act true ev true q false la 0 fs n=12 act true ev true v=0000 act true ev true v1 true
+diag	note	70000000	2	:redrive_active:watch	s=1 act true ev false q false la 0 fs n=12 act true ev false v=0000 act true ev false v1 true
+diag	note	80000000	2	:redrive_active:watch	s=1 act true ev false q false la 0 fs n=12 act true ev false v=1101 act true ev true v1 true
+diag	note	90000000	2	:redrive_active:watch	s=0 act true ev true q false la 0 fs n=22 act true ev true v=1101 act true ev false v1 true

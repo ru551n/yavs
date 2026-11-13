@@ -947,15 +947,17 @@ case!(
     [("resolutions", Max(158)), ("cycles", Max(301))]
 );
 // Direct drivers assigned again in one activation (a default then an override, loops of drives
-// to one element, an integer register twice, a vector whole twice then one element of it).
+// to one element, an integer register twice, a vector whole twice then one element of it): a
+// later drive of an element takes its entry of the run over (4966 one-element, 149 vector and 199
+// byte entries committed before, `Ctx::redrive_out`).
 case!(
     redrive,
     "sum=4017",
     &[],
     [
-        ("direct_codes", Max(4966)),
-        ("direct_planes", Max(149)),
-        ("direct_bytes", Max(199)),
+        ("direct_codes", Max(481)),
+        ("direct_planes", Max(102)),
+        ("direct_bytes", Max(103)),
         ("general_assigns", Max(0)),
     ]
 );
@@ -1823,15 +1825,16 @@ mod clift {
         ]
     );
     // The design of `redrive` compiled: the drives of one activation kept by compiled code reach
-    // the kernel together (`TierHost::drive_bits`).
+    // the kernel together (`TierHost::drive_bits`); the batches after a vector entry of the run
+    // fold into it (366 vector and 199 byte entries before).
     clift_case!(
         redrive,
         "redrive",
         "sum=4017",
         [
-            ("direct_codes", Max(316)),
-            ("direct_planes", Max(366)),
-            ("direct_bytes", Max(199)),
+            ("direct_codes", Max(326)),
+            ("direct_planes", Max(308)),
+            ("direct_bytes", Max(103)),
             ("general_assigns", Max(0)),
         ]
     );

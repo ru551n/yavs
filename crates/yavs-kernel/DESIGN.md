@@ -80,7 +80,9 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   an entry in the process's `ProcState::out` (signal, source slot, element, code) or, for more
   elements, `outv` (first element, length, plane words; the entries of one driver are in one of
   the two, so their order is kept), not a waveform entry, a `scheduled` time or a queue entry; a later assignment to the same driver in
-  the run is another entry (the last wins, as zero-delay preemption would give), and any
+  the run is another entry (the last wins, as zero-delay preemption would give), except that a later one of the element of the driver's latest
+  entry takes that entry over (`redrive_out`, `redrive_outb`; in `outv` only the driver's last entry, when it covers the
+  elements or they cover it, `redrive_outv`), and any
   assignment that needs the waveform first moves the driver's entries there (`Ctx::spill_out`).
   The commit (`commit_out`; for processes committed in the batch loop, after the batch, since
   the signals are shared until then) writes the driver value and the signal's driving value at

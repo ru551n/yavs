@@ -1,0 +1,27 @@
+exit	0
+diag	note	0	2	:redrive_after:watch	s=0 t=0 n=2 v=0101 f=1
+diag	note	10000000	2	:redrive_after:watch	s=0 t=1 n=4 v=0001 f=0
+diag	note	20000000	2	:redrive_after:watch	s=0 t=0 n=7 v=0001 f=1
+diag	note	30000000	2	:redrive_after:watch	s=0 t=1 n=7 v=1011 f=0
+diag	note	32000000	0	:redrive_after:watch	s=0 t=0 n=7 v=1011 f=0
+diag	note	33000000	0	:redrive_after:watch	s=0 t=0 n=104 v=1011 f=0
+diag	note	40000000	2	:redrive_after:watch	s=0 t=0 n=6 v=0101 f=1
+diag	note	42000000	1	:redrive_after:watch	s=0 t=0 n=6 v=0101 f=X
+diag	note	50000000	2	:redrive_after:watch	s=0 t=1 n=8 v=0001 f=X
+diag	note	60000000	2	:redrive_after:watch	s=0 t=0 n=7 v=0001 f=X
+diag	note	70000000	2	:redrive_after:watch	s=0 t=1 n=7 v=1011 f=X
+diag	note	72000000	0	:redrive_after:watch	s=0 t=0 n=7 v=1011 f=X
+diag	note	72000000	1	:redrive_after:watch	s=0 t=0 n=7 v=1011 f=0
+diag	note	73000000	0	:redrive_after:watch	s=0 t=0 n=108 v=1011 f=0
+diag	note	80000000	2	:redrive_after:watch	s=0 t=0 n=10 v=0101 f=1
+diag	note	90000000	2	:redrive_after:watch	s=0 t=1 n=12 v=0001 f=0
+diag	note	100000000	2	:redrive_after:watch	s=0 t=0 n=7 v=0001 f=1
+diag	note	110000000	2	:redrive_after:watch	s=0 t=1 n=7 v=1011 f=0
+diag	note	112000000	0	:redrive_after:watch	s=0 t=0 n=7 v=1011 f=0
+diag	note	113000000	0	:redrive_after:watch	s=0 t=0 n=112 v=1011 f=0
+diag	note	120000000	2	:redrive_after:watch	s=0 t=0 n=14 v=0101 f=1
+diag	note	130000000	2	:redrive_after:watch	s=0 t=1 n=16 v=0001 f=0
+diag	note	140000000	2	:redrive_after:watch	s=0 t=0 n=7 v=0001 f=1
+diag	note	150000000	2	:redrive_after:watch	s=0 t=1 n=7 v=1011 f=0
+diag	note	152000000	0	:redrive_after:watch	s=0 t=0 n=7 v=1011 f=0
+diag	note	153000000	0	:redrive_after:watch	s=0 t=0 n=116 v=1011 f=0
